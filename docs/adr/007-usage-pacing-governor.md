@@ -1,20 +1,61 @@
-# ADR-007 — Usage pacing: a central Scheduler/Governor
+# ADR-007 — Usage pacing: Governor control law (v1)
 
-- Status: Proposed · Date: 2026-10-17
+- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-17 (control law added after review)
 
 ## Context
-Running many agents on a Max plan can exhaust the weekly limit mid-week. Pacing is a core feature (SPEC §4.8): the budget must last the whole plan week according to the user's working schedule and priorities.
+A Max plan has a 5-hour window and a weekly window, and possibly a separate weekly limit for some models. Claude Code's statusline exposes used % and reset times for the 5h and weekly windows (ADR-002). Goal: never get locked out during working hours, and use ≥ 85 % of the week by the reset.
 
-## Decision
-1. **Single admission point**: every agent turn goes through the Governor before reaching a provider. Nothing bypasses it.
-2. **Signals**: the Usage collector records per-turn tokens and every plan-limit signal the provider exposes (utilization, reset times, rate-limit events). Where utilization is not exposed, an **Estimator** converts tokens to "% of window" using per-model weights, calibrated against observed signals and limit hits.
-3. **Policy**: the Weekly plan defines a working calendar, allocations (share %, priority) and a reserve. From it we compute an **ideal cumulative curve**. The Governor compares actual usage with the curve (weekly and 5h windows) and escalates through levels L1–L7 (queue low priority → cap concurrency → smooth 5h peaks → downgrade model/effort → compact context → pause teams at checkpoints → defer after reset). Each level is set to *auto / ask / off*.
-4. **Protection**: interactive sessions and *critical* allocations are never throttled unless the user opts in.
-5. **Transparency**: every decision is a `GovernorAction` record shown in the pacing log, and "ask" actions become Inbox items.
+## Admission points (what the Governor really controls)
+1. **Turn start**: every autonomous turn (a task, a message, a "continue") is delivered by the app, so it can be held in the queue.
+2. **Each tool call**: a PreToolUse hook asks for admission. If the Governor holds the agent, the hook waits up to a few seconds, then denies with "paused by governor" and the turn ends at that boundary.
+3. **Watchdog**: a turn exceeding its ceiling (usage or duration) is interrupted at the next tool boundary.
+4. **Never blocked**: what the user types in a pane. Built-in subagents run inside their agent's turn and are counted against it.
 
-## Open point
-- The exact signals the Claude Agent SDK exposes for subscription plans must be verified in the P0 spike (SPEC R1). The design works with estimator-only data, at lower accuracy.
+## Measurements
+- `W` = weekly used %: **observed** from the statusline when it is fresh (< 15 min). Otherwise it is **estimated** as `W_last + cost_since / k + margin`, where `k` is one scalar ("cost estimate per 1 % of the week") updated by an exponentially weighted average whenever a fresh observed value arrives. The margin is 10–15 pp and shrinks as confidence grows.
+- `F` = 5h used %, observed the same way.
+- `U` = unattributed rate: the exponentially weighted average of (observed weekly delta − the app's attributed delta).
+
+## Ideal curve
+`ideal(t) = H(t) / H_week × (100 − reserve − U_forecast)`, where `H` counts **weighted working hours** from the calendar (off-hours count only if an off-hours allowance is enabled). Error `e = W − ideal(t)` in pp. `eta` = projected time when W reaches 100 % at the current exponentially weighted burn rate.
+
+## Pressure states (hysteresis, minimum dwell 30 min)
+| State | Enter | Exit | Live autonomous agents |
+|---|---|---|---|
+| Green | default | — | `base` (e.g. 3) |
+| Amber | e > +3 pp | e < +1 pp | `ceil(base/2)` |
+| Red | e > +8 pp or eta < reset − 4 h | e < +5 pp and eta ≥ reset | 1, only tier ≥ normal |
+| Catch-up | e < −10 pp and < 24 working hours left | e > −5 pp | `base + 2`, queue released |
+
+All thresholds live in `PacingPolicy` and can be adjusted.
+
+**5h guard** (independent of the weekly state):
+- If the projected `F` at the 5h reset is > 85 %, the live cap is 1.
+- If `F` > 85 %, only interactive and critical work is admitted.
+
+## Admission rule
+```
+admit(item):
+  if item.interactive or item.tier == critical: admit        # draws the reserve first; warn if reserve < 0
+  if state == Red and item.tier <= normal: queue; propose "defer after reset"
+  if live_autonomous >= cap(state, 5h guard): queue
+  else admit
+next from queue = weighted fair queuing over allocation weights,
+                  strict for critical, aging +1 tier per 2 h waited
+```
+Unused weight is redistributed. Nothing rolls over to the next week. Sprint mode borrows from the later days: the curve goes up for today and down for the remaining days.
+
+## Actions in v1
+Live cap per state, queue, pause at turn boundary, defer after reset (asked, with a default and a 20-min timeout), 5h guard, watchdog.
+- **Deferred to later phases**: 5h peak smoothing and per-model estimator weights.
+- **Never automatic**: model downgrade (opt-in per role, at task boundaries; it breaks the prompt cache and risks quality).
+- **Not a lever**: compaction.
+
+## Transparency & safety
+- Every action is a `GovernorAction` record with its reason, expected effect and undo.
+- Every queued item shows why, its estimated start, and "Run now" with its estimated cost.
+- **Shadow mode** is on for the first week.
+- The **simulator** (SPEC FR-820, NFR-9) replays weeks against the policy; it is the acceptance test.
 
 ## Consequences
-- Pausing, prioritizing and accounting come for free from the single admission path.
-- Slight latency when turns are queued, by design.
+- Pacing that can be predicted and tested, with honest limits: queuing *defers* usage, it doesn't reduce it. Mostly-interactive weeks leave the Governor little to act on, and the planner says so.

@@ -1,27 +1,26 @@
-# ADR-003 — Isolation: one git worktree per agent + integration branch per feature
+# ADR-003 — Isolation: one worktree per agent, in a sibling folder
 
-- Status: Proposed · Date: 2026-10-17
+- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-17 (moved from inside the repo to a sibling folder)
 
 ## Context
-Many agents edit the same repository in parallel. Sharing a checkout leads to clobbered files and broken builds. The user wants worktrees to stay **inside the repository folder** so everything about a project lives in one place.
+Many agents edit the same repository in parallel, so each one needs its own checkout. Nesting worktrees inside the repo had real costs:
+- Claude Code loads CLAUDE.md files from parent folders, so agents would read the main checkout's CLAUDE.md.
+- Indexers, Spotlight, Time Machine, file watchers and Docker contexts would crawl every copy.
+- Tracked and ignored content would be mixed in `.orchestrator/`.
 
 ## Decision
-- Each agent/session gets its own **git worktree** and branch: `orchestrator/<feature>/<role>-<n>`.
-- Worktrees live **inside the repo** at `<repo>/.orchestrator/worktrees/<feature>/<role>-<n>/`.
-- The `worktrees/` folder is ignored through **`.git/info/exclude`**, so the app never has to modify the project's tracked `.gitignore`. The rest of `.orchestrator/` (feature specs, etc.) stays tracked.
-- Each feature has an **integration branch** `orchestrator/<feature>`. Specialist branches are created from it and the Lead merges them back.
-- A per-project **setup script** runs on worktree creation (install deps, copy `.env`).
-- The PR to the default branch is opened from the integration branch, behind the **PR gate**.
-- The location can be changed per project (e.g. to a sibling folder) if a project's tooling misbehaves.
-
-## Side effects of nesting worktrees in the repo (none blocking)
-| Effect | Mitigation |
-|---|---|
-| Tools run from the main checkout (ripgrep, tsc, eslint, jest/vitest, bundlers, file watchers, IDE indexers) may scan the worktrees and see duplicate sources. | Most tools respect git ignores (ripgrep, fd). For the rest, the app offers to add `.orchestrator/worktrees` to the tool's excludes (tsconfig `exclude`, test `testPathIgnorePatterns`…) and shows a warning in project settings. |
-| Node/Python module resolution walks up parent folders, so a worktree may resolve a package from the main checkout's `node_modules`. | Each worktree runs its own install (setup script). Prefer pnpm with a shared store (fast, little extra disk). |
-| Agents running in the main checkout could read or edit files in other agents' worktrees. | Permission rules deny access to `.orchestrator/worktrees/**` except the agent's own worktree. Out-of-sandbox access is a gate. |
+- Worktrees live in a **sibling folder**: `<parent>/<repo>.worktrees/<feature>/<role>-<n>/` and `<parent>/<repo>.worktrees/solo/<slug>/`. The root can be changed per project.
+- **Branch names** (no ref can be both a file and a folder):
+  - `orch/solo/<slug>` for solo sessions
+  - `orch/<feature>/integration` for a feature's integration branch
+  - `orch/<feature>/<role>-<n>` for team agents
+- The **Lead owns the integration worktree** (one branch can't be checked out in two worktrees) and does all merges. Specialists branch from the integration branch.
+- Feature docs (`.orchestrator/features/<slug>/`) have one source of truth: **the copy on the integration branch**.
+- Worktrees are `git worktree lock`ed while in use. The startup reconciler runs `git worktree list --porcelain` and `git worktree repair` when the repo has moved.
+- A per-project setup script runs on creation. Copying secrets (`.env`) is opt-in, with a warning.
+- The PR to the default branch is opened by the app from the integration branch, behind the PR gate (agents have no push credentials, ADR-009).
 
 ## Consequences
-- Safe parallelism, a clear history per agent, and everything for a project kept in its folder.
-- Disk usage and install time per worktree, mitigated by pnpm/shared caches and cleanup tooling (FR-104).
-- Conflicts surface at integration time and are routed to the owner agent.
+- Clean isolation; tools working in the main checkout don't see agent copies.
+- Disk space and install time per worktree; pnpm/shared caches and cleanup tooling mitigate it.
+- The sibling folder must be created next to the repo, so the user needs write access to the parent folder (otherwise the per-project root is used).

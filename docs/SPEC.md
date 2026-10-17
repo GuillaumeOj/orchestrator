@@ -1,38 +1,40 @@
 # Orchestrator — Product & Technical Specification
 
-> Status: **Draft v0.1** · Owner: Guillaume · Last update: 2026-10-17
-> Scope of this document: *what* we build and *why*, plus the high-level *how*. Implementation details live in ADRs (`docs/adr/`) and later design docs.
+> Status: **Draft v0.2** · Owner: Guillaume · Last update: 2026-10-17
+> v0.2 applies the decisions and fixes from [the 2026-10-17 review](reviews/2026-10-17-spec-review.md). Main change: **agents are real Claude Code CLI processes** on the user's Max plan; there is no Agent SDK.
+> Scope: *what* we build and *why*, plus the high-level *how*. Implementation choices are in the ADRs (`docs/adr/`).
 
 ---
 
 ## 1. Vision
 
-Orchestrator is a **personal, local-first desktop app** to run software projects with AI agents. It extends what the Claude app / Claude Code offer for a single developer who juggles several projects:
+Orchestrator is a **personal, local-first macOS app** for running software projects with AI agents. It is built **around the official Claude Code CLI** and adds what a solo developer juggling several projects is missing:
 
-- one place for all **projects** (local folders + git remote state),
+- one place for all **projects** (local folders plus their git and remote state),
 - **solo sessions or whole teams of specialist agents** (lead, backend, frontend, UI, UX…) working in parallel, each isolated in its own git worktree,
-- **a Claude‑Code‑grade chat** with any agent, plus a **real terminal** and **your own editor (nvim)**,
-- **full visibility on usage** (plan limits, context, tokens) and — key differentiator — **pacing**: the app spreads agent work so the Max plan lasts the whole week instead of running out on Wednesday.
+- each agent is a **real Claude Code session in a terminal pane**, so the chat is Claude Code's own, next to a **terminal that looks like kitty** and **your own nvim**,
+- **full visibility on usage** (5h and weekly plan limits, context, tokens) and **pacing**, the key differentiator: the app spreads agent work so the Max plan lasts the whole working week.
 
 ### 1.1 Goals
-| # | Goal |
-|---|---|
-| G1 | Manage many projects and see their git/remote/PR state at a glance. |
-| G2 | Launch and run many agent sessions in parallel, safely isolated. |
-| G3 | Compose teams of agents visually and let a lead agent coordinate them on a feature. |
-| G4 | Interact with any agent through a chat at least as capable as Claude Code's. |
-| G5 | Keep the developer's own tools: terminal that feels like kitty, nvim with their config. |
-| G6 | Monitor usage live and **pace all work against the plan's weekly and 5h limits**. |
-| G7 | Integrate with the developer's PM/design stack: GitHub, Linear, Notion, Figma, Penpot. |
-| G9 | Have a designed, consistent UI: a Penpot file is the source of truth for the interface. |
-| G8 | Stay provider-agnostic: Claude Code first, other agent CLIs later. |
+| # | Goal | Success measure |
+|---|---|---|
+| G1 | Manage many projects and see their git/remote/PR state at a glance. | Git state of every project visible in ≤ 1 screen. |
+| G2 | Run many agent sessions in parallel, safely isolated. | Agents never write outside their worktree; no lost work. |
+| G3 | Compose teams of agents **visually on a canvas** and let a lead agent coordinate them on a feature. | A feature delivered end to end by a team with 2 gates. |
+| G4 | Talk to any agent with the full Claude Code experience. | 100 % of Claude Code's interactive features are available, because it *is* Claude Code. |
+| G5 | Keep the developer's own tools: terminal rendered like kitty, nvim with their config. | Side-by-side screenshot: font, colors and spacing match kitty. |
+| G6 | Monitor usage live and **pace all work against the 5h and weekly limits**. | No hard limit lockout during working hours; ≥ 85 % of the weekly allowance used by reset. |
+| G7 | Integrate with the developer's PM/design stack: GitHub, Linear, Notion, Figma, Penpot. | Tasks and design links flow without copy/paste. |
+| G8 | Keep the runtime replaceable (other agent CLIs later). | Provider interface with one implementation (Claude Code CLI). Priority: **C**. |
+| G9 | A designed, consistent UI with a Penpot file as its source of truth. | P1 screens designed before they are built. |
 
 ### 1.2 Non-goals (for now)
-- Multi-user collaboration, shared workspaces, hosted/cloud service, accounts.
-- A built-in code editor (we delegate to the user's editor).
-- Replacing GitHub/Linear as a PM tool — we sync, we don't compete.
-- Windows/Linux support in the first versions (macOS first, keep it portable).
-- Running agents on remote machines/cloud sandboxes (possible later via providers).
+- Multi-user collaboration, hosted service, accounts.
+- **Rebuilding Claude Code's chat UI.** We embed the real CLI.
+- **The Claude Agent SDK and API-key billing.** Max-plan usage only works through the official Claude Code client; API usage is billed separately (see ADR-002).
+- A built-in code editor (the user's editor is used).
+- Replacing GitHub/Linear: we sync with them.
+- Windows/Linux in the first versions (macOS first, portable core).
 
 ---
 
@@ -41,289 +43,345 @@ Orchestrator is a **personal, local-first desktop app** to run software projects
 | Term | Definition |
 |---|---|
 | **Project** | A local directory registered in the app (usually a git repository). |
-| **Feature** | A unit of product work inside a project (e.g. "Checkout v2"). Owns a spec folder, tasks, a team run, an integration branch. |
-| **Session** | One conversation with one agent instance, backed by a provider session (e.g. a Claude Code session). Has a transcript, a cwd/worktree, usage. |
-| **Agent** | A running instance of a **Role** inside a Session. |
-| **Role** | A reusable agent definition: system prompt, model, effort, tools, MCP servers, permissions, worktree policy. |
-| **Team** | A graph of Roles (nodes) and relations (edges) authored in the visual builder. |
-| **Lead** | The Role in a Team that decomposes work, assigns tasks, and integrates results. |
-| **Task** | A unit of work assigned to an agent. Lives in the project's configured **task backend** (local / GitHub / Linear). |
-| **Worktree** | A git worktree + branch dedicated to one agent/session. |
-| **Gate** | A point where an agent must wait for user approval (spec, merge/PR, out-of-sandbox action, budget). |
-| **Inbox** | Central queue of gates, permission requests, and agent questions. |
-| **Provider** | An adapter to an agent runtime (Claude Agent SDK first). |
-| **Governor** | The scheduler that admits, delays, downgrades or pauses agent turns to respect the usage plan. |
-| **Weekly plan** | The user's budget allocation for the current plan week (working hours, shares per project, reserve). |
+| **Feature** | A unit of product work in a project (e.g. "Checkout v2"). It owns docs, tasks, a team run and an integration branch. |
+| **Agent** | One running **Claude Code CLI process** (`claude`) in a PTY, launched with a Role's configuration. |
+| **Session** | The Claude Code conversation behind an Agent, identified by its Claude session id. It can be resumed after its process stops. |
+| **Turn** | One unit of autonomous work the app hands to an agent (a task, a message, a "continue"). It is the unit the Governor admits. |
+| **Role** | A reusable agent definition: prompt, model, effort, tools, MCP servers, permission profile, sandbox, budget priority. |
+| **Team** | A graph of Roles (nodes) and relations (edges), authored on the canvas. |
+| **Lead** | The team role that decomposes work, assigns tasks and integrates results. Exactly one per team. |
+| **Task** | A unit of work assigned to a team node. Stored in the project's **task backend** (local / GitHub / Linear). |
+| **Worktree** | A git worktree and branch dedicated to one agent, in the project's **sibling worktree folder**. |
+| **Gate** | A decision only the user can make: spec approval, merge/PR, out-of-sandbox action, budget. |
+| **Inbox** | The central queue of everything that needs the user, ordered by the attention ladder (§9.6). |
+| **Governor** | The scheduler that admits, queues, pauses or defers agent work to respect the weekly plan. |
+| **Weekly plan** | The user's budget for the current plan week: working calendar, allocations, reserve. |
+| **Signal** | A usage figure observed from Claude Code (statusline `rate_limits`, context, cost; OpenTelemetry metrics; hook events). |
 
 ---
 
 ## 3. Persona & key user journeys
 
-**Persona — Guillaume**: senior developer, works alone on several projects in parallel, Claude Max subscriber, lives in kitty + nvim, uses GitHub, Linear, Notion, Figma/Penpot. Wants leverage (many agents) without losing control (gates, own tools) or blowing the weekly limit.
+**Persona: Guillaume.** A senior developer working alone on several projects in parallel. Claude Max subscriber, lives in kitty and nvim, keyboard first, **laptop with limited RAM**. Uses GitHub, Linear, Notion and Penpot/Figma. He wants leverage (many agents) without losing control (gates, his own tools) or running out of weekly limit.
+
+### J0 — Onboarding (first run)
+1. The app checks that `claude` is installed, its version, and that it is logged in with a Pro/Max subscription. If not: instructions, and the app stays in read-only mode.
+2. Add the first projects (J1). Import `kitty.conf` (fonts, colors). Pick the editor command (default `nvim`).
+3. Set the first weekly plan (J8). If last week's data is missing, the app proposes an even split.
 
 ### J1 — Add a project and see its state
-1. Click **Add project** → pick a folder (or clone a URL).
-2. App detects git, default branch, remotes; runs a background `git fetch`.
-3. Project card shows: current branch, ahead/behind remote, dirty files count, open PRs, CI status, active agents, week budget share.
+1. **Add project** (⌘N) → pick a folder or clone a URL.
+2. The app detects git, the default branch and the remotes, then runs a background `git fetch`.
+3. The project row in the Overview shows: branch, ahead/behind, dirty count, open PRs and CI, live agents, budget share and burn.
 
 ### J2 — Solo session in a worktree
-1. From the project, **New session** → choose role (or "plain Claude"), model, base branch, worktree on/off (default on).
-2. App creates `orchestrator/<session-slug>` branch + worktree, starts the agent.
-3. User chats; tool calls, diffs, todos stream in. User opens a terminal pane in the same worktree to run tests (J6) or opens a file in nvim (J7).
-4. At the end: **Create PR** (gate) or **Merge into base**, then cleanup worktree.
+1. From the project, **New session** (⌘T) → choose a role (or "plain Claude"), the base branch, and a worktree (default on).
+2. The app creates branch `orch/solo/<slug>` and a worktree in the sibling folder, then starts `claude` in a pane in that worktree with the role's configuration (§6.3).
+3. The user talks to Claude Code as usual. Paths in its output are clickable and open in nvim (J7). A shell pane can be split next to it (J6).
+4. When done: **Create PR** (gate) or **Merge into base**, then the worktree is cleaned up.
 
 ### J3 — Team on a feature
-1. User opens the **Team canvas**, drags *Lead*, *Backend*, *Frontend*, *UI designer*, *UX designer*; connects edges (reports‑to Lead, UX → UI handoff, Frontend reviews UI).
-2. **Launch on feature** → pick/create a Feature, write a 3‑line brief.
-3. Lead drafts `spec.md`, UX brief, API contract in `.orchestrator/features/<slug>/` → **Spec gate** in the Inbox.
-4. User comments/approves. Lead creates tasks in the project's task backend and assigns them.
-5. Specialists work in parallel, each in its own worktree branched from the feature integration branch; UI/UX roles use Figma/Penpot MCP.
-6. Specialists report via the orchestrator MCP tools; Lead reviews, requests fixes, merges branches into the integration branch.
-7. **PR gate**: user reviews the integration diff and approves PR creation (GitHub). Feature closed when merged.
+1. Open the **Team canvas** and add *Lead*, *Backend*, *Frontend*, *UI*, *UX* from the library, with the mouse or keyboard (§9.7). Connect edges: reports-to Lead, UX → UI hands-off, Frontend reviews UI. The **Rules panel** shows the result as text ("Frontend can message: Lead, UI").
+2. **Launch on feature** → pick or create a Feature and write a 3-line brief.
+3. The app creates the integration branch `orch/<feature>/integration` and **the Lead's worktree on it**. The Lead drafts `spec.md`, `ux-brief.md` and `api-contract.md` in `.orchestrator/features/<slug>/` on that branch → **Spec gate** in the Inbox.
+4. The user reviews (in nvim or the rendered view) and approves. The Lead creates tasks in the task backend and assigns them to team nodes.
+5. The Governor starts specialists as budget and the live-agent cap allow. Each one runs in its own worktree branched from the integration branch. UI/UX roles use the Penpot/Figma MCP.
+6. Specialists report through the orchestrator MCP tools. The Lead reviews and merges their branches into the integration branch; conflicts go back to the owning agent.
+7. **PR gate**: the user reviews the integration diff and approves. The app opens the PR (agents can't push themselves, §6.5).
 
-### J4 — Monitor everything
-1. **Monitor** view lists all running agents across projects: state (thinking / tool / waiting approval / queued by governor / idle / error), current tool, files touched, context %, tokens this session.
-2. User can pause, resume, interrupt, kill, or change model of any agent.
+### J4 — Overview & monitoring
+1. The **Overview** pane lists every agent across projects: state (§9.5), current tool, files touched, context %, usage this session, governor status, memory.
+2. From the keyboard: open, interrupt, pause (stop at the next turn boundary), suspend, kill, resume.
 
-### J5 — Inbox
-1. A badge shows pending items. Each item: who asks, what, why, diff/preview, actions (Approve / Reject / Reply / Open session).
-2. Answering unblocks the agent immediately.
+### J5 — Inbox triage
+1. The Inbox badge shows pending items ordered by the attention ladder: blocked agents first, by how long they have waited.
+2. Each item shows who is asking, what, why, a preview (diff/command/spec), and the actions Approve `a` / Reject `r` / Reply `⏎` / Open `o`.
+3. After approval the agent resumes. If the Governor queues it, the item says so, with an estimated start time.
 
 ### J6 — Terminal
-1. In any session or project, **Open terminal** → a pane opens with the user's login shell, cwd = worktree.
-2. The pane looks like the user's kitty (font, colors, ligatures, padding read from `kitty.conf`). Tabs and splits are available. **Open in kitty** is a shortcut to the real kitty at the same cwd.
+1. **Open terminal** (leader `t`) → a pane with the user's login shell in the focused agent's worktree or the project root.
+2. It renders like the user's kitty (font, colors, cursor, padding from `kitty.conf`). Splits, tabs and zoom are available. **Open in kitty** opens the real kitty at the same cwd.
 
 ### J7 — Edit in nvim
-1. Click a file path / diff hunk / tool-call card → **Open in editor**.
-2. nvim opens at the line (embedded pane by default, or kitty window). User edits and saves.
-3. The app detects the change and (optionally) informs the agent: "User edited `src/x.ts` lines 10–24".
+1. Click (or select with the keyboard) a file path in an agent pane, a diff or an Inbox preview → **Open in editor**.
+2. nvim opens at the file and line, reusing the project's nvim pane if one is open. The user edits and saves.
+3. The app detects the change. If the file belongs to an agent's worktree, the agent is told "the user edited `src/x.ts`" at its next turn.
 
 ### J8 — Pacing the week
-1. Monday (or at plan reset), the **Week planner** opens: working days/hours, projects A 50 % / B 30 % / C 20 %, 10 % reserve for ad‑hoc chats. Prefilled from last week.
-2. Title bar shows a pacing indicator: *On track · 41 % used · ideal 38 % · resets Mon 09:00*.
-3. Wednesday the burn rate is too high: the Governor queues low‑priority team tasks, caps concurrency to 3, switches the Lead to a cheaper model, and proposes in the Inbox to defer feature "Search v2" to next week.
-4. Thursday night, spare 5h windows are used for queued long tasks (off‑hours scheduling).
-5. The week ends at ~95 % usage near the reset. A weekly report summarizes usage per project/feature/role and pacing accuracy.
+1. When the weekly window resets, a **Week planner** item appears in the Inbox. Working days and hours, projects A 50 % / B 30 % / C 20 % and a 10 % reserve are prefilled from last week. The user adjusts and confirms.
+2. The title bar shows both windows: *Week 41 % · plan 38 % (+3) · 5h 22 % · resets Mon 09:00*.
+3. On Wednesday, usage is 9 pp over plan, so the Governor moves to **Red**. It caps live autonomous agents to 1, queues low-priority team tasks, and proposes in the Inbox to defer "Search v2" until after the reset. Every queued agent shows why and when it will start, with a **Run now** button that shows the cost ("≈ +2 pp").
+4. On Friday, usage is 12 pp under plan with < 24 working hours left, so the Governor moves to **Catch-up** and releases queued work at higher concurrency.
+5. The week ends at about 90–100 % used, near the reset. The weekly report summarizes usage per project, feature and role, plus the governor's actions.
+
+### J9 — Plan limit reached anyway
+1. Claude Code reports that a window is exhausted (statusline at 100 % or a rate-limit error from a hook or in the PTY output).
+2. The app marks all agents **Blocked by limit**, pauses autonomous work at the next turn boundary, and shows the reset time in a global banner.
+3. At the reset the Governor resumes queued work in priority order. Nothing is lost: sessions are resumed by id.
+
+### J10 — Recovery
+1. **Login expired**: a global banner appears and autonomous work is paused. The fix is one click: open a pane running `claude /login`.
+2. **App crash or restart**: on start, a reconciler compares the DB with `git worktree list`, the running `claude` processes and the Claude transcripts. Each agent is resumed (if it was working) or left suspended. Orphaned processes are listed for the user to kill. PTY shells are restarted in their cwd; their running programs are lost, and the spec says so (NFR-2).
+3. **Laptop asleep** during off-hours work: nothing runs while the machine sleeps. When off-hours work is queued, the app asks to keep the machine awake on AC power (macOS power assertion) and shows a warning if it isn't on AC.
+
+### J11 — Remove a project
+1. **Remove project** → the app lists its worktrees, branches and running agents, and offers to stop agents, delete merged worktrees and keep unmerged ones (never deleted silently).
+2. Settings and history are deleted or archived, as the user chooses. `.orchestrator/` in the repo is left untouched.
 
 ---
 
 ## 4. Functional requirements
 
-Priority: **M** = must, **S** = should, **C** = could. Journey refs in brackets.
+Priority: **M** must, **S** should, **C** could. Phases are listed in §11. Journeys are in brackets.
 
 ### 4.1 Projects & Git
 | ID | Requirement | P |
 |---|---|---|
-| FR-101 | Register a local folder as a project; clone from URL as a shortcut. [J1] | M |
-| FR-102 | Show branch, ahead/behind upstream, dirty/staged/untracked counts, last commit, stash count. [J1] | M |
-| FR-103 | Periodic + on-demand `git fetch` per project (configurable interval, off when on battery/offline). [J1] | M |
-| FR-104 | List branches and worktrees, including orphaned orchestrator worktrees, with one-click cleanup. | M |
-| FR-105 | Worktree lifecycle: create from a base branch, name `orchestrator/<feature>/<role>-<n>`, located **inside the repo** at `.orchestrator/worktrees/…` (ignored through `.git/info/exclude`, see ADR-003), delete with branch protection checks (never delete unmerged work without confirmation). [J2,J3] | M |
-| FR-106 | Show GitHub PRs and CI checks for the project (via `gh` / GitHub API). [J1] | S |
-| FR-107 | Diff viewer per worktree (vs base, vs integration branch), file tree with change markers. | M |
-| FR-108 | Merge/rebase helpers with conflict detection; conflicts can be handed to an agent to resolve. | S |
-| FR-109 | Per-project settings: default base branch, task backend, default team, budget share, env/setup script run on worktree creation (e.g. `pnpm install`). | M |
+| FR-101 | Register a local folder as a project; clone from a URL. [J1] | M |
+| FR-102 | Show the branch, ahead/behind upstream, dirty/staged/untracked counts, last commit and stash count. [J1] | M |
+| FR-103 | Run `git fetch` periodically and on demand, only for projects active in the last 7 days. The interval is configurable; fetching pauses on battery below 20 % and when offline. [J1] | M |
+| FR-104 | List branches and worktrees, including orphaned ones, with one-click cleanup. Unmerged work is never deleted without explicit confirmation. [J11] | M |
+| FR-105 | Worktree lifecycle (ADR-003): created in the **sibling folder** `<parent>/<repo>.worktrees/`, `git worktree lock`ed while in use, and cleaned up on completion. Branch names: `orch/solo/<slug>`, `orch/<feature>/integration`, `orch/<feature>/<role>-<n>`. [J2, J3] | M |
+| FR-106 | Show the project's GitHub PRs and CI checks (via `gh`). [J1] | S |
+| FR-107 | Diff viewer per worktree (against base or the integration branch) and file tree with change markers. | M |
+| FR-108 | Merge/rebase helpers with conflict detection; conflicts can be handed to the owning agent. | S |
+| FR-109 | Per-project settings: default base branch, task backend, default team, budget share, setup script run on worktree creation, whether `.orchestrator/` is tracked in the repo (default) or kept in app data. | M |
+| FR-110 | **Setup script safety**: copying `.env` or other secrets into worktrees is opt-in, with a warning that agents will read them and send them to the model. | M |
+| FR-111 | Remove a project with the guided cleanup of J11. | M |
 
-### 4.2 Sessions & chat
+### 4.2 Agent sessions (Claude Code in a pane)
 | ID | Requirement | P |
 |---|---|---|
-| FR-201 | Create, resume, fork, rename, archive sessions; sessions survive app restarts. [J2] | M |
-| FR-202 | Run N sessions in parallel across projects (target ≥ 10 concurrent). | M |
-| FR-203 | Streaming chat with markdown, code blocks, tool-call cards (collapsible input/output), inline diffs, todo/plan rendering. [J2] | M |
-| FR-204 | Composer: multiline, `@file` mentions with fuzzy finder, image paste/drag, slash commands (provider + app commands), history. | M |
-| FR-205 | Interrupt, steer (queue a message while the agent works), switch model/effort/permission mode mid-session, plan mode. | M |
-| FR-206 | Context indicator per session (tokens used / window, compactions) and a "compact now" action. | M |
-| FR-207 | Split view: several sessions side by side; a session can dock terminal and editor panes. | M |
-| FR-208 | Search across session transcripts (per project / global). | S |
-| FR-209 | Export a transcript (markdown/JSON). | C |
-| FR-210 | Notifications (macOS) when an agent finishes, errors, or needs input. | M |
+| FR-201 | An agent is the **real `claude` CLI** running interactively in a PTY pane, with a per-agent configuration generated from its role (§6.3). The user interacts with it directly: Claude Code's full UI (slash commands, plan mode, `!`/`#`, vim mode, rewind, subagents…) is available as is. [J2] | M |
+| FR-202 | Create, resume (`claude --resume <id>`), fork, rename and archive sessions. Sessions survive app restarts. | M |
+| FR-203 | **Live agents vs queued work**: any number of sessions can exist, but the number of live `claude` processes is capped (default set from the P0 memory measurement, expected 3–4). Extra work waits in the Governor's queue. | M |
+| FR-204 | **Suspend/resume**: an agent idle for N minutes (configurable, default 10) or waiting at a gate is stopped and later resumed by id. The UI shows "Suspended" and resumes it on focus or on new work. | M |
+| FR-205 | Agent metadata pulled from Claude Code (§6.4): model, context %, cost/usage, current tool, last activity, state. It is shown in the pane header, the sidebar and the Overview. | M |
+| FR-206 | **Programmatic input** for orchestration: the app can deliver a message or a "continue" to an idle agent (typed into the PTY as bracketed paste), and add context to a busy one (hook `additionalContext`, §6.4). The user's own typing always wins over the app's. | M |
+| FR-207 | **Interrupt** (Esc sent to the PTY), **pause** (no new turns delivered), **kill** (SIGTERM, then SIGKILL after 5 s). | M |
+| FR-208 | Clickable file paths and URLs in agent and shell panes (open in editor or browser). | M |
+| FR-209 | Search across session transcripts (Claude Code's JSONL files), per project or global. | S |
+| FR-210 | macOS notifications follow the attention ladder (§9.6), never one per finished turn. | M |
 
-### 4.3 Agent & team builder (visual only)
+### 4.3 Agent & team builder (visual canvas)
 | ID | Requirement | P |
 |---|---|---|
-| FR-301 | Canvas editor: add/move/connect nodes, zoom/pan, auto-layout, undo/redo. [J3] | M |
-| FR-302 | Node = Role config: name, icon/color, system prompt (markdown editor in a side panel), model, effort, allowed tools, MCP servers, permission profile, worktree policy (own / shared with X / read-only), max concurrency, budget priority. | M |
-| FR-303 | Edge types: **reports-to**, **hands-off-to** (artifact handoff), **reviews**, **can-message**. Edges define who may talk to whom. | M |
-| FR-304 | Exactly one Lead per team (validated). Team-level settings: integration branch policy, gates enabled, budget cap. | M |
-| FR-305 | Library of reusable Roles and Team presets (global or per project), duplicate/version them. | M |
-| FR-306 | Import/export Teams and Roles as JSON (backup/share between machines). | S |
-| FR-307 | Ship starter presets: *Solo dev*, *Full-stack feature team* (Lead, Backend, Frontend, UI, UX, Reviewer), *Bugfix squad*, *Design sprint*. | S |
-| FR-308 | Team definitions are compiled at launch into provider agent definitions (prompts + tools + MCP + permissions); compiled output is inspectable (read-only) for debugging. | M |
+| FR-301 | **The canvas is the main editor** for teams: add, move and connect nodes, zoom and pan, auto-layout, undo/redo, minimap. Sized for 3–10 nodes. [J3] | M |
+| FR-302 | **Full keyboard operation of the canvas**: add a node from the library (`n`), move the selection between nodes (arrows/hjkl), connect (`c` then the target and the edge type), delete, open the inspector (`⏎`). | M |
+| FR-303 | Node = a Role configuration in the inspector: name, icon/color, prompt (markdown, can be opened in nvim), model, effort, allowed tools, MCP servers, permission profile, sandbox profile, max concurrency, budget priority. | M |
+| FR-304 | Edge types and their meaning: **reports-to** (A → B: A sends reports to B, B can assign tasks to A), **hands-off-to** (A → B: A can send artifacts to B), **reviews** (A → B: A can request reviews from B and B can reply), **can-message** (both ways). The Lead can always message every node. | M |
+| FR-305 | **Rules panel**: a text view of the resulting permissions ("Frontend can message Lead, UI; can request review from Reviewer"). Validation errors are shown inline (no lead, unreachable node, cycle of reports-to). | M |
+| FR-306 | Library of reusable Roles and Team presets (global or per project): duplicate and version them. Starter presets: *Solo dev*, *Full-stack feature team*, *Bugfix squad*, *Design sprint*. | M |
+| FR-307 | Import/export teams and roles as JSON. | S |
+| FR-308 | At launch, a team is **compiled** into per-agent Claude Code configurations (§6.3). The compiled files can be inspected read-only, and a TeamRun keeps a snapshot of the team version it used. | M |
 
 ### 4.4 Orchestration runtime
 | ID | Requirement | P |
 |---|---|---|
-| FR-401 | Lead protocol: *understand → spec → (spec gate) → decompose → assign → track → review → integrate → (PR gate)*. [J3] | M |
-| FR-402 | Orchestrator exposes an internal **MCP server** to every agent with tools: `post_message(to, body)`, `read_messages()`, `create_task`, `update_task(status, notes)`, `list_tasks`, `request_review(branch)`, `handoff(artifact, to)`, `ask_user(question, options)`, `report_done(summary)`. Access is limited by the team graph edges. | M |
-| FR-403 | Task dependencies (blocked-by); an agent is started only when its task's dependencies are done. | M |
-| FR-404 | Integration branch per feature; Lead (or the app on Lead's request) merges specialist branches into it; conflicts routed to the owner agent. | M |
-| FR-405 | Team controls: pause/resume/stop whole team, restart one agent, reassign a task, add a role mid-run. | M |
-| FR-406 | Failure handling: retries with backoff for provider errors; stuck-agent detection (no progress for X min) → Inbox alert. | S |
-| FR-407 | Team activity timeline: messages, task transitions, merges, gates — filterable. | M |
-| FR-408 | User can join the team conversation (message Lead or any agent directly). | M |
+| FR-401 | Lead protocol: *understand → spec → (spec gate) → decompose → assign → track → review → integrate → (PR gate)*. It is written into the Lead's prompt and enforced by tool availability. [J3] | M |
+| FR-402 | **Orchestrator MCP server** (stdio, one per agent, ADR-002) with the tools `send_message(to, body)`, `inbox()`, `create_task`, `update_task(status, notes)`, `list_tasks`, `handoff(artifact, to)`, `request_review(branch, to)`, `ask_user(question, options)`, `report_done(summary)`. Recipients are checked against the team graph on the server side. | M |
+| FR-403 | **Message delivery without polling**: for a busy agent, messages are injected at its next tool call (PostToolUse `additionalContext`: "2 new messages from Lead"). For an idle agent, a new turn is delivered via the Governor. A suspended agent is resumed through the Governor first. | M |
+| FR-404 | Task dependencies (blocked-by): an agent is only given a task once its dependencies are done. | M |
+| FR-405 | The Lead owns the integration worktree and does all merges into it; specialists never merge. Conflicts are routed back to the owning agent. | M |
+| FR-406 | Team controls: pause, resume or stop the whole team; restart one agent; reassign a task; add a node mid-run. | M |
+| FR-407 | Watchdog: a turn exceeding its ceiling (usage or duration, set per role) is interrupted at the next tool boundary, and an Inbox item is created. An agent with no progress for 15 min creates an Inbox item. | M |
+| FR-408 | Team activity timeline: messages, task changes, merges, gates, governor actions; filterable. | M |
+| FR-409 | The user can message the Lead or any agent directly (in its pane, or through the team timeline). | M |
+| FR-410 | Claude Code subagents (Task tool) run inside the agent's process: their usage is counted against that agent, and a role can disable them. | M |
 
 ### 4.5 Tasks & project management
 | ID | Requirement | P |
 |---|---|---|
-| FR-501 | Task backend abstraction with 3 implementations: **Local** (stored in app DB, mirrored to `.orchestrator/tasks.json` optional), **GitHub Issues** (sub-issues/labels), **Linear** (issues/sub-issues, team/project mapping). Chosen per project. | M |
-| FR-502 | Board view (kanban: Backlog / Ready / In progress / Review / Done) rendered uniformly over any backend. | M |
-| FR-503 | Two-way sync for GitHub/Linear: status, assignee (agent label), comments; conflict = remote wins + notification. | S |
-| FR-504 | Feature folder `.orchestrator/features/<slug>/` with `spec.md`, `ux-brief.md`, `api-contract.md`, `decisions.md`; versioned in git; editable in nvim. | M |
-| FR-505 | Notion sync: publish/refresh a feature's docs to a Notion page; pull comments back as Inbox items. | C |
-| FR-506 | Link tasks ↔ branches ↔ PRs ↔ sessions so every artifact is navigable. | M |
+| FR-501 | Task backend abstraction (ADR-004): **Local** (app DB), **GitHub Issues**, **Linear**. Chosen per project. | M (Local, GitHub) / S (Linear) |
+| FR-502 | Board view (Backlog / Ready / In progress / Review / Done), the same over every backend. | M |
+| FR-503 | Two-way sync with GitHub/Linear (status, assignee label, comments). On conflict the remote wins and the user is notified. | S |
+| FR-504 | Feature docs in `.orchestrator/features/<slug>/` (`spec.md`, `ux-brief.md`, `api-contract.md`, `decisions.md`). **The source of truth is the copy on the integration branch**, edited in the Lead's worktree; the Feature page always opens that copy. | M |
+| FR-505 | Notion: publish a feature's docs to a page and refresh it; bring comments back as Inbox items. | C |
+| FR-506 | Links between tasks, branches, PRs and sessions, so every artifact can be reached from the others. | M |
 
 ### 4.6 Design tooling
 | ID | Requirement | P |
 |---|---|---|
-| FR-601 | UI/UX roles can be granted **Figma MCP** and/or **Penpot MCP** in the builder. | M |
-| FR-602 | Design artifacts (Figma/Penpot file/frame links, exported images) attached to the feature page and handed off to frontend roles. | S |
-| FR-603 | Preview of exported frames inside the feature page / handoff message. | C |
-| FR-604 | MCP auth status shown per server; missing auth surfaces as an Inbox item, never a silent failure. | M |
+| FR-601 | UI/UX roles can be given the **Penpot MCP** and/or **Figma MCP** in the builder. | M |
+| FR-602 | Design artifacts (file/frame links, exported images) are attached to the feature page and handed off to frontend roles. | S |
+| FR-603 | Preview of exported frames on the feature page. | C |
+| FR-604 | MCP auth status per server; missing auth becomes an Inbox item, never a silent failure. | M |
 
-### 4.7 Gates, permissions & Inbox
+### 4.7 Gates, permissions, sandbox & Inbox
 | ID | Requirement | P |
 |---|---|---|
-| FR-701 | Default autonomy "**gates at key points**": inside its worktree an agent may edit files and run allow-listed commands without asking. | M |
-| FR-702 | Gate types: **Spec approval**, **Merge/PR**, **Out-of-sandbox action** (writing outside worktree, network to non-allow-listed hosts, destructive git, installing global packages…), **Budget** (governor asks). | M |
-| FR-703 | Permission profiles (strict / gated / autonomous) assignable per role, overridable per session. | M |
-| FR-704 | Inbox: unified list with filters (project, type, agent), keyboard-driven approve/reject/reply, preview of diff/command/spec. [J5] | M |
-| FR-705 | "Always allow this for this project/role" creates a scoped rule, visible and revocable in settings. | S |
-| FR-706 | Every gate decision is logged (who/what/when). | M |
+| FR-701 | Default autonomy is **"gates at key points"**: inside its worktree an agent edits files and runs commands freely, within its sandbox. | M |
+| FR-702 | **Enforced sandbox** (ADR-009): Claude Code's OS-level sandbox for Bash, with writes limited to the agent's worktree (plus temp and caches) and network limited to an allow-list. Claude's Read/Edit permission rules deny the other worktrees and the main checkout. | M |
+| FR-703 | **No credentials for agents**: `GH_TOKEN`, git credential helpers and SSH agent forwarding are removed from agent environments. `git push`, PR creation and merges to protected branches are only possible through gated orchestrator MCP tools. | M |
+| FR-704 | Gate types: **Spec approval**, **Merge/PR**, **Out-of-sandbox action**, **Budget** (governor "ask"). Gates are implemented with **PreToolUse hooks** (they also run for allow-listed tools) and the orchestrator MCP tools. | M |
+| FR-705 | **Gates don't hold memory**: when a gate opens, the hook denies the action with "awaiting user approval", the turn ends, and the agent can be suspended. On approval the app resumes the agent and delivers "approved: proceed". | M |
+| FR-706 | Permission profiles (strict / gated / autonomous) per role, overridable per session. | M |
+| FR-707 | Inbox: one list ordered by the attention ladder (§9.6), with filters (project, type, agent) and keyboard triage (`j/k` move, `a` approve, `r` reject, `⏎` reply, `o` open, `x` select for batch, `u` undo for 5 s). Items whose context has changed are marked **stale**. | M |
+| FR-708 | "Always allow this for this project/role" creates a scoped rule that is visible and revocable in settings. | S |
+| FR-709 | Every gate decision and permission change is logged. | M |
 
 ### 4.8 Usage pacing & budgets (core)
-| ID | Requirement | P |
-|---|---|---|
-| FR-801 | **Usage collector**: record per turn tokens (input/output/cache read/write), model, cost equivalent, session/agent/role/team/feature/project, and plan-limit signals from the provider (window utilization, reset times, rate-limit events). | M |
-| FR-802 | **Weekly plan**: plan week aligned to the provider's weekly reset; working calendar (days, hours, time zone); shares per project/feature/team (%); priority (critical / high / normal / low); **reserve** for ad-hoc sessions. Prefilled from last week. [J8] | M |
-| FR-803 | **Ideal budget curve**: cumulative target computed from the working calendar (budget spent only during working hours + optional off-hours allowance). | M |
-| FR-804 | **Forecast**: actual vs ideal for the weekly window and current 5h window; projected exhaustion time; per-allocation burn; status = *under / on track / over / critical*. | M |
-| FR-805 | **Governor** — every agent turn is admitted by the governor before reaching the provider. Escalation levels, each action configurable *auto / ask / off*: | M |
-|  | L1 queue new turns of *low* priority work; L2 cap global/per-project concurrency; L3 smooth 5h-window peaks (spread starts); L4 downgrade model/effort for configured roles; L5 ask agents to compact / trim context; L6 pause teams at the next checkpoint (task boundary); L7 defer work until after reset. | |
-| FR-806 | Interactive sessions (user chatting right now) and *critical* allocations are never throttled unless explicitly allowed. | M |
-| FR-807 | Overrides: **Sprint mode** (raise today's burn target for a chosen project), per-allocation hard caps, global **Pause all agents** / **Resume**. | M |
-| FR-808 | **Off-hours scheduling**: queue long tasks to run in specified windows (night, weekend) when budget is available; respects gates (stops at the next gate). | S |
-| FR-809 | Alerts: thresholds (e.g. 50/75/90 % weekly), deviation from curve > X %, 5h window near limit, governor actions taken. | M |
-| FR-810 | **Pacing indicator** always visible in the title bar; click → Week planner. | M |
-| FR-811 | **Unattributed usage**: usage observed in the plan signals but not produced by the app (Claude app/CLI used elsewhere) is shown separately and taken into account by the forecast. | M |
-| FR-812 | Weekly report: usage per project/feature/role/model, governor actions, accuracy of pacing (planned vs actual); feeds the estimator. | S |
-| FR-813 | **Estimator**: when the provider does not expose window utilization directly, estimate it from tokens with per-model weights calibrated against observed rate-limit signals and resets. | M |
+The control law is specified in **ADR-007**. The requirements below are what the user sees.
 
-### 4.9 Monitoring
 | ID | Requirement | P |
 |---|---|---|
-| FR-901 | Monitor view: all agents with live state, current tool, files touched, elapsed time, context %, tokens, governor status (running / queued / throttled). [J4] | M |
-| FR-902 | Usage dashboards: by project, feature, team, role, model, day; cost-equivalent. | M |
-| FR-903 | Per-session context breakdown (system/tools/MCP/messages/files) when the provider exposes it. | S |
-| FR-904 | Actions from monitor: pause / resume / interrupt / kill / change model / open session. | M |
+| FR-801 | **Usage collector**: record the plan-limit signals from Claude Code (statusline `rate_limits.five_hour` / `seven_day` used % and reset times, rate-limit errors) and per-session usage (OpenTelemetry token/cost metrics, statusline cost and context), attributed to agent, role, team, feature and project. Each sample records where its value came from (*observed* or *estimated*). | M |
+| FR-802 | **Weekly plan**, aligned to the weekly reset: working calendar (days, hours, time zone, holidays), allocations per project/feature/team as **weights**, a priority tier (critical / high / normal / low), and a **reserve** for interactive work. Prefilled from last week. [J8] | M |
+| FR-803 | **Ideal curve**: `ideal(t)` = fraction of the week's weighted working hours elapsed at time t × (100 % − reserve − forecast unattributed usage). Off-hours count only if the user enables an off-hours allowance. | M |
+| FR-804 | **Pressure states** with hysteresis: **Green / Amber / Red / Catch-up**, computed from the error `e = used − ideal` (pp) and the projected exhaustion time. Thresholds are in ADR-007 and adjustable in settings. | M |
+| FR-805 | **Governor v1 actions**: cap live autonomous agents per state; queue new turns by priority; pause teams at the next turn boundary; propose to defer work until after the reset; a separate **5h guard** that keeps headroom for interactive work. | M |
+| FR-806 | **Admission points**: the Governor decides at **turn start** (the app delivers every autonomous turn) and at **each tool call** (a PreToolUse hook waits up to a few seconds for admission, then denies with "paused by governor" if it is still held). The user's own typing in a pane is never blocked. | M |
+| FR-807 | **Interactive and critical work** is admitted first and draws from the reserve. When the reserve is used up, the app warns instead of blocking and squeezes the other work harder. If most usage is interactive, the Governor has little to act on; the planner says so. | M |
+| FR-808 | **Fair scheduling**: queued work is picked by weighted fair queuing over allocation weights, with priority tiers and **aging** (one tier up for every 2 h of waiting) so nothing starves. Unused weight is redistributed. Nothing rolls over to the next week. | M |
+| FR-809 | **Transparency**: every queued or paused agent shows why, its estimated start, and **Run now** with its estimated cost. Every governor action is logged with its reason and can be undone from the log. A **next-action preview** shows what the Governor would do next. | M |
+| FR-810 | **"Ask" actions** come with a default and a timeout (default: apply after 20 min), so they never stall when the user is away. | M |
+| FR-811 | **Overrides**: Sprint mode (borrow budget: today's target goes up and the remaining days go down, and the trade-off is shown), hard caps per allocation, **Pause all** / **Resume**. | M |
+| FR-812 | **Shadow mode**: the Governor can log its decisions without enforcing them (default on for the first week). | M |
+| FR-813 | **Unattributed usage** (the user's Claude usage outside the app: claude.ai, mobile, other terminals) = observed weekly % − the app's own attributed share. It is forecast as its own rate, subtracted from the agents' budget, and shown as "outside the app". | M |
+| FR-814 | **Estimator fallback**: if the observed % is not available (e.g. before the first response of the week), the weekly % is estimated from usage with one calibrated scalar and a safety margin (10–15 pp), marked with a confidence indicator. | S |
+| FR-815 | **Per-model weekly limits**: if the plan has a separate weekly limit for some models, it is tracked as an extra window, and those models are avoided automatically when that window is under pressure. | S |
+| FR-816 | Off-hours scheduling: queue long work for configured windows; requires AC power and a power assertion (J10). | S |
+| FR-817 | Alerts: 50 / 75 / 90 % of the week, entering Red, 5h guard active, limit reached (J9). | M |
+| FR-818 | Weekly report: usage per project/feature/role/model, governor actions, plan versus actual. | S |
+| FR-819 | **Model downgrade** is manual or opt-in per role, applied only at a task boundary, never to the Lead or reviewers by default. (Switching models breaks the prompt cache and can cost quality.) | C |
+| FR-820 | **Pacing simulator**: replay a recorded or synthetic week against the policy, for testing and tuning (acceptance tests in §5). | M |
+
+### 4.9 Overview & monitoring
+| ID | Requirement | P |
+|---|---|---|
+| FR-901 | Overview pane: every agent with live state (§9.5), current tool, files touched, elapsed time, context %, usage, governor status, process memory; grouped by project or by state. [J4] | M |
+| FR-902 | Usage charts by project, feature, team, role, model and day. | S |
+| FR-903 | Actions from the Overview: open, interrupt, pause, suspend, resume, kill. | M |
+| FR-904 | The app's own memory (Tauri + webview processes + each `claude` process), with a warning threshold. | M |
 
 ### 4.10 Terminal
 | ID | Requirement | P |
 |---|---|---|
-| FR-1001 | Embedded terminal panes backed by a real PTY running the user's **login shell** with their env and dotfiles. [J6] | M |
-| FR-1002 | **Renders like kitty**: font family/size and line height, color scheme, cursor style, padding and opacity imported from the user's `kitty.conf` (unmapped options are listed), truecolor, ligatures, Nerd Fonts, GPU (WebGL) rendering. Keybindings for tabs/splits can be configured. | M |
-| FR-1003 | Tabs and splits; cwd defaults to the session's worktree or the project root; terminals persist (scrollback kept) when switching views. | M |
-| FR-1004 | **Open in kitty** at the same cwd, as a convenience (new window/tab via kitty remote control or `kitty --single-instance`). | S |
-| FR-1005 | Read-only "agent shell" view: live stream of commands agents run in a worktree. | S |
-| FR-1006 | Clickable file paths / URLs in terminal output (open in editor / browser). | S |
+| FR-1001 | Terminal panes on a real PTY running the user's **login shell** with their env and dotfiles. [J6] | M |
+| FR-1002 | **Renders like kitty**: font family/size, line height, colors, cursor style, padding and opacity imported from `kitty.conf` (unmapped options are listed), truecolor, ligatures, Nerd Fonts, GPU (WebGL) rendering. Acceptance: side-by-side screenshots with the user's kitty. | M |
+| FR-1003 | Tabs, splits and zoom; the cwd defaults to the focused agent's worktree or the project root; scrollback is capped in memory, with older output spilled to disk. | M |
+| FR-1004 | **Open in kitty** at the same cwd. | S |
+| FR-1005 | Hidden panes stop rendering (no WebGL context) and keep only their buffer. | M |
 
 ### 4.11 Editor integration
 | ID | Requirement | P |
 |---|---|---|
-| FR-1101 | **Open in editor** on every file path, diff hunk, tool-call card, task artifact. [J7] | M |
-| FR-1102 | Editor command template, default `nvim +{line} {file}`; target: **embedded pane** (default) or **external kitty** window/tab. | M |
-| FR-1103 | Optional reuse of a running nvim instance (`nvim --server <sock> --remote …`) per project. | S |
-| FR-1104 | File-change detection on worktrees; user edits are attributed to "user" in the activity timeline and optionally announced to the owning agent. | S |
-| FR-1105 | No built-in code editor; the only in-app text editing is for prompts/messages/spec previews (markdown). | M |
+| FR-1101 | **Open in editor** on file paths in panes, diffs, Inbox previews and task artifacts. [J7] | M |
+| FR-1102 | The editor command template defaults to `nvim +{line} {file}`, run in an embedded pane. If the project already has an nvim pane, the file opens there (`nvim --server <sock> --remote`). An external kitty window is optional. | M |
+| FR-1103 | File changes are detected in worktrees. User edits appear in the timeline and are announced to the owning agent at its next turn. | S |
+| FR-1104 | No built-in code editor; the only text editing in the app is for short fields (brief, replies). | M |
 
-### 4.12 Settings & providers
+### 4.12 Settings
 | ID | Requirement | P |
 |---|---|---|
-| FR-1201 | Provider settings: Claude Agent SDK (uses the existing Claude Code login; model defaults; extra CLI args). | M |
-| FR-1202 | Global MCP server registry (reused across roles), with per-project overrides. | M |
-| FR-1203 | Integrations: GitHub (token or `gh` auth), Linear, Notion, Figma, Penpot — status + reconnect. | M |
-| FR-1204 | Keyboard-first: command palette (⌘K), shortcuts for every main action, configurable. | M |
-| FR-1205 | Theme light/dark, follows system. | S |
+| FR-1201 | Claude Code: path to `claude`, minimum supported version, login status; the app never sets `ANTHROPIC_API_KEY`, and warns if it finds one in the environment (it would bill the API instead of the plan). | M |
+| FR-1202 | MCP server registry (reused across roles) with per-project overrides. | M |
+| FR-1203 | Integrations: GitHub (`gh` auth), Linear, Notion, Penpot, Figma, each with status and reconnect. | M (GitHub) / S (others) |
+| FR-1204 | **Keyboard contract** (§9.7) with configurable bindings and a conflict checker. | M |
+| FR-1205 | Theme: see §9.1 for precedence. | S |
+| FR-1206 | The user's global Claude Code configuration (`~/.claude`) is never modified; orchestrated agents get their own per-agent settings files (§6.3). | M |
 
 ---
 
-## 5. Non-functional requirements
+## 5. Non-functional requirements & acceptance tests
 
-| ID | Category | Requirement |
+| ID | Category | Requirement (testable) |
 |---|---|---|
-| NFR-1 | Performance | ≥ 10 concurrent agents + 10 terminals without UI jank; chat rendering virtualized; UI interactions < 100 ms. |
-| NFR-1b | **Memory (primary constraint)** | The laptop has limited resources, so memory is minimized everywhere (ADR-001). Targets to confirm in P0: app shell + core + sidecar ≤ 250 MB with no agent running. Idle agent processes are suspended and resumed on demand. A configurable cap on live agent processes is enforced by the Governor. Terminal scrollback is capped, and transcripts are paged from SQLite. The app's own memory is shown in the Monitor. |
-| NFR-2 | Resilience | App crash/restart resumes sessions, queues and terminals' cwd; agents are not lost (provider session ids persisted). Event log is append-only. |
-| NFR-3 | Security | No credentials stored by the app beyond OS keychain; Claude auth handled by Claude Code. Worktree sandbox enforced by permission rules; out-of-sandbox = gate. Internal MCP server bound to localhost with per-session tokens. |
-| NFR-4 | Privacy | Local-first; no telemetry by default. Data leaves the machine only through providers and integrations the user enabled. |
-| NFR-5 | Observability | Structured logs per session/agent; debug panel showing raw provider events. |
-| NFR-6 | Portability | macOS first (Apple Silicon); avoid macOS-only APIs in the core so Linux is possible later. |
-| NFR-7 | Extensibility | Providers, task backends and integrations are plugins behind stable interfaces. |
-| NFR-8 | Data | All app state in SQLite in the app data dir; shareable artifacts in the project's `.orchestrator/` (git-tracked). Schema migrations versioned. |
+| NFR-1 | Responsiveness | UI input-to-paint < 100 ms at p95 with 4 live agents, 6 terminals and 200 queued items; transcripts and lists virtualized. |
+| NFR-1b | **Memory (primary constraint)** | Measured in P0, then fixed as budgets: app (Tauri + WebContent/GPU/Network helpers + Rust core) ≤ 250 MB with nothing running; each live agent is the `claude` process only. The live-agent cap default comes from the P0 measurement, sized to the laptop's RAM. |
+| NFR-2 | Resilience | After a crash: every session can be resumed by id, queues and plans are intact, worktrees reconciled. **Not guaranteed**: programs running inside terminal panes (they are restarted in their cwd). Test: kill -9 the app mid-turn and mid-gate, restart, and check nothing is lost or duplicated. |
+| NFR-3 | Security | Sandbox and credential rules of FR-702/703. Orchestrator MCP traffic goes over a Unix socket with 0600 permissions, with no network port. Secrets only in the macOS Keychain. Test: an agent prompted to write outside its worktree, `curl` an unlisted host, or `git push` must fail. |
+| NFR-4 | Privacy | Local-first; no telemetry. OpenTelemetry from Claude Code is exported only to the app's local receiver. |
+| NFR-5 | Observability | Structured logs per agent; a debug pane with raw hook, statusline and OTEL events. |
+| NFR-6 | Portability | macOS (Apple Silicon) first; no macOS-only APIs in the core except behind interfaces (power assertion, notifications, Keychain). |
+| NFR-7 | Compatibility | A supported Claude Code version range is declared; the app checks it at start and warns on newer, untested versions (hooks and statusline formats can change). |
+| NFR-8 | Data | SQLite (WAL, one writer thread) in app data, with versioned migrations; large outputs stored outside the rows; retention for raw events (default 30 days). |
+| NFR-9 | Pacing quality | In the simulator (FR-820): with a synthetic week whose demand is 130 % of the allowance, the policy never hits 100 % before the reset during working hours and ends between 85 and 100 %; with 60 % demand it never queues work. |
+| NFR-10 | Compliance | Agents only use the official Claude Code client logged in with the user's subscription, with no API key. Unattended runs (off-hours, FR-816) stay disabled until the go/no-go of R1 (§10). |
 
 ---
 
 ## 6. Architecture
 
-Stack (see ADR-001), chosen for **low memory**: **Tauri 2** shell (system webview), lightweight UI framework (SolidJS/Svelte, final pick in P0), **Rust core** (git, PTY via `portable-pty`, SQLite via `rusqlite`, Governor, MCP server), **one Node sidecar** hosting all Claude Agent SDK sessions over JSON-RPC, and xterm.js for terminal rendering.
+Stack (ADR-001): **Tauri 2** shell (system webview), a light UI framework (SolidJS or Svelte, picked in P0), a **Rust core**, and **`claude` CLI processes** spawned directly by the core in PTYs. There is no Node runtime.
 
 ```mermaid
 flowchart LR
-  subgraph UI["Webview UI (Tauri)"]
-    P[Projects / Dashboard]
-    C[Chat & split views]
-    T[Team canvas]
-    B[Board & Feature pages]
-    M[Monitor & Week planner]
-    I[Inbox]
-    X[Terminal panes xterm.js]
+  subgraph UI["Webview UI"]
+    OV[Overview]
+    PN[Panes: agent / shell / nvim / diff]
+    CV[Team canvas]
+    FB[Feature & board]
+    WP[Week planner]
+    IN[Inbox]
   end
 
-  UI <-- Tauri IPC --> CORE
+  UI <-- "Tauri IPC + binary channels" --> CORE
 
-  subgraph CORE["Rust core — Orchestrator Core"]
-    PS[Project service]
-    GS[Git service]
-    SM[Session manager]
+  subgraph CORE["Rust core"]
+    PS[Project & Git service]
+    AM[Agent manager]
     TR[Team runtime]
-    GOV[Scheduler / Governor]
-    UC[Usage collector + Estimator]
-    GI[Gate & Inbox service]
+    GOV[Governor]
+    UC[Usage collector]
+    GI[Gate & Inbox]
     TB[Task backends]
-    MCP[Internal MCP server]
-    PTY[PTY / Terminal service]
-    ED[Editor launcher]
-    EV[(Event log + SQLite)]
+    PTY[PTY service]
+    BUS[Local bus: Unix socket]
+    OTL[OTLP receiver]
+    DB[(SQLite)]
   end
 
-  SM --> GOV --> PA
-  TR --> SM
-  TR <--> MCP
-  PA[Provider adapters] -- JSON-RPC --> SIDE[Node sidecar]
-  SIDE --> CLAUDE[Claude Agent SDK sessions]
-  PA -.later.-> OTHER[Codex / Gemini / ...]
-  PA --> UC
-  UC --> GOV
-  TB --> GH[GitHub]
-  TB --> LN[Linear]
-  TB --> LOC[Local]
-  GI --> UI
-  ED --> KITTY[kitty / nvim]
-  PTY --> SHELL[login shell]
-  CLAUDE <--> MCPX[External MCP: Figma, Penpot, Notion...]
-  CLAUDE <--> MCP
+  AM --> PTY --> CL["claude processes (one per live agent)"]
+  CL -- "hooks (orch-hook)" --> BUS
+  CL -- "statusline (orch-status)" --> BUS
+  CL -- "MCP stdio (orch-mcp)" --> BUS
+  CL -- OpenTelemetry --> OTL
+  BUS --> GOV & GI & TR & UC
+  OTL --> UC --> GOV
+  GOV --> AM
+  TB --> GH[GitHub] & LN[Linear] & LOC[Local]
+  CL <--> EXT[External MCP: Penpot, Figma, Notion…]
+  PTY --> SH[login shells, nvim]
 ```
 
-Key principles:
-1. **Single path to providers**: every agent turn goes `Session manager → Governor → Provider`. No component calls a provider directly (enables pacing, accounting, pausing).
-2. **Event-sourced sessions**: provider events are normalized into an internal event stream, persisted, and replayed to the UI. UI is a projection.
-3. **Agents coordinate only through the internal MCP server** (messages, tasks, handoffs), which enforces the team graph.
-4. **Git is the integration medium**: work = branches/worktrees; artifacts = files in `.orchestrator/`.
+### 6.1 Principles
+1. **Claude Code is the agent runtime.** The app never re-implements the agent loop or the chat. It **configures** each `claude` process, **observes** it (hooks, statusline, OTEL, transcripts) and **steers** it (turn delivery, hook decisions, MCP tools, PTY input).
+2. **The Governor controls every autonomous turn.** Autonomous work only starts when the app delivers it, and PreToolUse hooks give it a pause point at every tool call. Interactive typing is never blocked.
+3. **Agents coordinate only through the orchestrator MCP server**, which enforces the team graph.
+4. **Git is the integration medium**: work happens on branches and worktrees; artifacts are files in `.orchestrator/`.
+5. **Small helper binaries** (`orch-hook`, `orch-status`, `orch-mcp`, shipped with the app) connect each `claude` process to the core over a Unix socket. The agent's identity comes from the environment the core sets when it spawns the process.
 
-### 6.1 Session lifecycle
-`created → (governor admit) → running ⇄ waiting_user | waiting_gate | queued_by_governor → idle → suspended (agent process stopped to free memory, resumed on demand) → archived` (+ `error`, `killed`).
+### 6.2 Agent lifecycle
+`created → (governor admits) → working ⇄ waiting_for_you | waiting_gate | queued | blocked_by_limit → idle → suspended (process stopped, resumable) → archived`, plus `error` and `killed`. The mapping to UI labels is in §9.5.
 
-### 6.2 Team run lifecycle
-`draft → spec → spec_gate → planning → executing → integrating → pr_gate → done` (+ `paused`, `deferred`, `failed`).
+Team run: `draft → spec → spec_gate → planning → executing → integrating → pr_gate → done`, plus `paused`, `deferred` and `failed`.
+
+### 6.3 How an agent is configured (compiled from its Role)
+For each agent the core writes a per-agent directory in app data and launches `claude` in the worktree with flags pointing to it. The exact flags are verified in P0; they include `--settings`, `--mcp-config`, `--model`, `--permission-mode`, `--append-system-prompt`, `--resume` and `--session-id`. The generated settings contain:
+- **hooks** → `orch-hook` for SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SubagentStop, PreCompact and SessionEnd;
+- **statusLine** → `orch-status`, which forwards the JSON to the core and, if the user has their own statusline command, runs it and prints its output;
+- **sandbox** and **permissions** from the role's profiles (FR-702);
+- **environment**: the agent id and socket path, OpenTelemetry pointed at the local receiver, credentials removed (FR-703).
+
+The user's `~/.claude` settings, CLAUDE.md, skills and plugins still load as usual unless the role disables them.
+
+### 6.4 Signals and control channels
+| Need | Channel |
+|---|---|
+| 5h / weekly %, reset times, context %, cost | statusline JSON (`rate_limits`, `context_window`, `cost`) via `orch-status` |
+| Tokens and cost over time per session | OpenTelemetry metrics to the local receiver |
+| State (working, waiting for permission, idle, finished) | hooks (PreToolUse, Notification, Stop…) |
+| Tool admission, gates, audit | PreToolUse hook decisions (allow / deny with reason / ask) |
+| Inject messages into a busy agent | PostToolUse `additionalContext` |
+| Deliver a new turn to an idle agent | PTY input (bracketed paste + Enter), only while idle and the user isn't typing |
+| Keep an agent working on queued tasks | Stop hook returning "continue" with the next task, if the Governor admits it |
+| History and search | Claude Code's transcript JSONL |
+
+The P0 spike must confirm each channel against the installed Claude Code version (R2).
+
+### 6.5 Security model (ADR-009)
+Per-agent OS sandbox for Bash, permission rules for Claude's own tools, no credentials, push and PR only through gated MCP tools, and an audit log of every gate and permission decision.
 
 ---
 
@@ -331,196 +389,190 @@ Key principles:
 
 | Entity | Main fields |
 |---|---|
-| Project | id, name, path, defaultBranch, remotes, taskBackend {type, config}, settings, createdAt |
-| Feature | id, projectId, slug, title, status, integrationBranch, specPath, priority, allocationId |
-| Role | id, scope (global/project), name, icon, prompt, model, effort, tools[], mcpServers[], permissionProfile, worktreePolicy, budgetPriority, version |
-| Team | id, scope, name, nodes[] (AgentNode), edges[] (Edge), settings, version |
-| AgentNode | id, teamId, roleId, overrides, position {x,y}, maxConcurrency, isLead |
-| Edge | id, teamId, from, to, type (reports-to / hands-off-to / reviews / can-message) |
-| TeamRun | id, teamId, featureId, status, startedAt, endedAt |
-| Session | id, projectId, teamRunId?, agentNodeId?, providerId, providerSessionId, worktreePath, branch, model, state, priority, createdAt |
-| Event | id, sessionId, seq, type (message, tool_call, tool_result, usage, rate_limit, state, gate…), payload, ts |
-| Task | id, backend, externalId?, featureId, title, body, status, assigneeSessionId?, dependsOn[], branch?, prUrl? |
-| Message | id, teamRunId, from, to, body, ts |
-| Gate | id, sessionId, type, payload, status (pending/approved/rejected), decidedAt, decision |
-| PermissionRule | id, scope (project/role), pattern, effect, createdFrom (gateId) |
-| UsageSample | id, sessionId, ts, model, inputTokens, outputTokens, cacheRead, cacheWrite, costEq, windowSignals {fiveHourPct?, weeklyPct?, resetsAt?} |
-| WeeklyPlan | id, weekStart, weekReset, calendar, reservePct, offHoursPct, status |
-| BudgetAllocation | id, weeklyPlanId, target (project/feature/team), sharePct, priority, hardCapPct? |
-| PacingPolicy | id, levels {L1..L7: auto/ask/off}, thresholds, downgradeMap {role → model/effort}, protectInteractive |
-| GovernorAction | id, ts, level, action, targets[], reason, mode (auto/ask), outcome |
-| Terminal | id, projectId, sessionId?, cwd, shell, title, layout |
-| EditorConfig | command template, target (embedded/kitty), reuseServer |
+| Project | id, name, path, defaultBranch, remotes, worktreeRoot, taskBackend {type, config}, trackOrchestratorDir, settings |
+| Feature | id, projectId, slug, title, status, integrationBranch, integrationWorktreeId, priority, allocationId |
+| Role | id, scope, name, icon, prompt, model, effort, tools, mcpServers, permissionProfile, sandboxProfile, turnCeiling, subagentsAllowed, budgetPriority, version |
+| Team | id, scope, name, nodes[], edges[], settings, version |
+| AgentNode | id, teamId, roleId, overrides, position, maxConcurrency, isLead |
+| Edge | id, teamId, from, to, type |
+| TeamRun | id, teamId, teamVersionSnapshot, compiledConfigPath, featureId, status, startedAt, endedAt |
+| Worktree | id, projectId, path, branch, baseBranch, locked, state, createdAt |
+| Agent | id, projectId, teamRunId?, agentNodeId?, worktreeId, claudeSessionId, parentAgentId? (fork), pid?, state, priority, lastActiveAt |
+| Turn | id, agentId, kind (task / message / continue / user), admittedAt, startedAt, endedAt, usageDelta, outcome |
+| Task | id, backend, externalId?, featureId, title, body, status, assigneeNodeId?, dependsOn[], branch?, prUrl? |
+| Message | id, teamRunId, from, to, kind, body, deliveredAt?, readAt? |
+| Artifact | id, featureId, kind (doc / design / build), uri, fromNodeId, toNodeId? |
+| InboxItem | id, kind (gate / question / permission / budget / alert / planner), agentId?, payload, priority, status, stale, createdAt, decidedAt, decision |
+| PermissionRule | id, scope (project / role / agent), pattern, effect, sourceInboxItemId |
+| UsageSample | id, ts, agentId? (null = unattributed), turnId?, model, tokens {in, out, cacheRead, cacheWrite}, costEstimate, window {fiveHourPct?, weeklyPct?, modelWeeklyPct?, resetsAt?}, provenance (observed / estimated) |
+| WeeklyPlan | id, weekStart, resetAt, calendar, reservePct, offHoursAllowancePct, shadowMode, status |
+| BudgetAllocation | id, weeklyPlanId, target, weight, tier, hardCapPct? |
+| PacingPolicy | id, thresholds {amberEnter, amberExit, redEnter, redExit, catchupEnter, minDwellMin}, liveCapByState, fiveHourGuardPct, askTimeoutMin, defaultAskAction |
+| QueueEntry | id, kind, agentId/taskId, allocationId, tier, enqueuedAt, effectiveTier, reason, estimatedStart |
+| GovernorAction | id, ts, state, action, targets, reason, mode (auto / ask / shadow), expectedEffect, outcome, undoneAt? |
+| Calibration | id, ts, costPerWeeklyPct, confidence, unattributedRate |
+| ForecastSnapshot | id, ts, used, ideal, error, eta, state |
+| Terminal | id, projectId, agentId?, cwd, shell, layout |
 
 ---
 
-## 8. Provider adapter interface (sketch)
+## 8. Provider interface (kept small, G8)
 
-```ts
-interface Provider {
-  id: string;                        // "claude-agent-sdk"
-  capabilities: ProviderCapabilities; // planMode, fork, images, contextBreakdown, rateLimitSignals…
+Only one implementation is planned: **Claude Code CLI**. The interface exists so the core doesn't depend on Claude Code details everywhere.
 
-  startSession(opts: StartOptions): Promise<ProviderSession>;
-  resumeSession(providerSessionId: string, opts: ResumeOptions): Promise<ProviderSession>;
-  compile(role: Role, ctx: CompileContext): AgentDefinition; // role/team -> provider config
+```rust
+trait Provider {
+    fn capabilities(&self) -> Capabilities;           // resume, fork, statusline limits, hooks, sandbox…
+    fn compile(&self, role: &Role, ctx: &CompileCtx) -> AgentConfig; // files + flags + env
+    fn spawn(&self, cfg: &AgentConfig, resume: Option<SessionId>) -> Result<AgentProcess>;
+    fn deliver(&self, agent: &AgentProcess, input: Input) -> Result<()>; // PTY input, only when idle
+    fn interrupt(&self, agent: &AgentProcess) -> Result<()>;
+    fn stop(&self, agent: &AgentProcess) -> Result<()>;  // for suspend, kill
 }
-
-interface ProviderSession {
-  id: string;
-  send(input: UserInput): void;                 // text, images, slash commands
-  interrupt(): Promise<void>;
-  setModel(model: string, effort?: Effort): Promise<void>;
-  setPermissionMode(mode: PermissionMode): Promise<void>;
-  events(): AsyncIterable<NormalizedEvent>;     // message, tool_call, tool_result, usage, rate_limit, context, error, done
-  onPermissionRequest(handler: (req: PermissionRequest) => Promise<PermissionDecision>): void;
-  close(): Promise<void>;
-}
-
-interface StartOptions {
-  cwd: string;                 // worktree
-  agent: AgentDefinition;      // prompt, model, tools, mcpServers, permissions
-  internalMcp: McpEndpoint;    // orchestrator MCP with session token
-  env?: Record<string, string>;
-}
+// Observations arrive as normalized events on the local bus:
+// HookEvent, StatusSample, OtelSample, StateChange, LimitReached, Exited.
 ```
-
-The Governor wraps `send()` (admission) and consumes `usage` / `rate_limit` events.
 
 ---
 
 ## 9. User interface
 
-### 9.0 Penpot file: the UI source of truth (required)
-The UI is **designed in a Penpot file before it is implemented** (ADR-008). This section defines the UI's principles, structure and inventory. The Penpot file turns it into actual screens, and the implementation follows the Penpot file.
-
-- **File**: `Orchestrator — UI` in the user's Penpot workspace, linked from `docs/design/README.md`.
-- **Required pages**:
+### 9.0 Penpot file: the UI source of truth
+The UI is **designed in Penpot before it is built** (ADR-008), with a gate sized for one person.
+- **File**: `Orchestrator — UI`, linked from `docs/design/README.md`.
+- **Pages**:
   | Page | Content |
   |---|---|
-  | `00 Cover` | Version, changelog, links to SPEC and ADRs. |
-  | `01 Foundations` | Design tokens: colors (dark and light, plus status colors), typography (UI font + mono font), spacing scale, radius, borders, elevation, icon set, motion rules. |
-  | `02 Components` | Every component in §9.4, with its variants and states. |
-  | `03 App shell & layouts` | Title bar, sidebar, pane workspace, inspector, status bar; split layouts; compact width. |
-  | `04 Screens` | Every screen in §9.3, each with its empty / loading / normal / error states. |
-  | `05 Flows` | Clickable prototypes of journeys J1–J8. |
-  | `06 Explorations` | Drafts and alternatives (not binding). |
-- **Tokens to code**: Penpot design tokens are exported as JSON and turned into CSS variables in the app. The code never hard-codes a color or size that exists as a token.
-- **Process**: a UI change starts in Penpot, is reviewed, then implemented. UI/UX agents (including the ones working on Orchestrator itself) read and write the file through the Penpot MCP. A screen counts as "ready for dev" when its page is marked ✅ in `00 Cover`.
-- **Gate for implementation**: the P1 screens (§11) must be designed in Penpot before P1 UI development starts.
+  | `00 Cover` | Version, changelog, links, the list of screens marked "ready for dev". |
+  | `01 Foundations` | Tokens: colors (dark and light, fixed status colors), typography (UI font + mono font; the mono token accepts the font from `kitty.conf`), spacing, radius, borders, elevation, icons, motion. |
+  | `02 Components` | The components in §9.4. **States are component variants** (default, hover, focus, disabled, loading, error…). |
+  | `03 Shell & layouts` | Title bar, sidebar (full + icon rail), panes, inspector (docked + overlay), status bar; breakpoints 1280 / 1512 / 1728; zoomed pane. |
+  | `04 Screens` | The pane types of §9.3, normal state, plus the empty and error states that differ from the component variants. |
+  | `05 Keyboard & copy` | The shortcut map (§9.7) with conflict notes; notification and banner copy. |
+  | `06 Flows` | Prototypes of **J2, J5 and J8** only, with key sequences annotated. |
+  | `07 Explorations` | Drafts, not binding. |
+- **Tokens pipeline**: Penpot tokens are exported as W3C design-token JSON, converted to CSS variables with Style Dictionary (a script in the repo), and a CI check fails on drift. Code uses tokens only.
+- **Process**: new screens are designed first. Small changes may be made in code and **backported to Penpot in the same PR**. UI/UX agents can work on the file through the Penpot MCP.
+- **Gate**: Foundations, Shell and the P1 screens (Overview, agent pane, Week planner, Inbox) must be in Penpot before P1 UI work starts.
 
 ### 9.1 Design principles
-1. **Keyboard-first**: every action is reachable from the command palette (⌘K) and has a shortcut. The mouse is optional.
-2. **Terminal-native look**: dark first, monospace where content is code or shell, calm and dense. The app theme can be **derived from the user's kitty color scheme**, so the app, its terminals and nvim look like one environment.
-3. **Status always visible**: pacing, live agents, pending Inbox items and git state stay in view without opening a screen.
-4. **Panes, not pages**: the workspace is a tiling layout (chat, terminal, nvim, diff, board…), like kitty splits. Layouts are saved per project.
-5. **Progressive disclosure**: tool calls, raw events and configs are collapsed by default and open on demand.
-6. **Light on resources**: no heavy animations, blur or video. Virtualized lists everywhere. Motion is short and functional (NFR-1b).
-7. **Clear agent identity**: each role has a color and an icon, used consistently in the sidebar, chat, timeline, board and canvas.
+1. **Keyboard-first**: every action is in the command palette (⌘K) and has a shortcut (§9.7). The mouse is optional, including on the canvas.
+2. **Terminal-native look**: calm and dense, mono where content is code or shell. Theme precedence: **user choice > derived from kitty (if enabled) > system**. Deriving from kitty maps only *surface, foreground and accent* from the kitty palette, runs a contrast check (falls back if it fails), and **status colors stay fixed**.
+3. **Status always visible**: pacing, live agents, Inbox count and git state are always on screen.
+4. **Everything is a pane**: Overview, agent, shell, nvim, diff, board, feature, canvas, planner and Inbox are all pane types in a tiling workspace. Layouts are saved per project.
+5. **Progressive disclosure**: raw events and configs are hidden until asked for.
+6. **Light on resources**: no blur, video or long animations; hidden panes don't render; lists are virtualized.
+7. **Consistent agent identity**: each role has a color and icon, used in the sidebar, panes, timeline, board and canvas.
+8. **Accessible**: visible focus rings, color never the only signal, reduced-motion support, UI font scaling, throttled `aria-live` for streaming status.
 
 ### 9.2 App shell & navigation
 ```
-┌ Title bar: [project switcher ▾] [⌘K search/commands]      [pacing ▮▮▮▮▯ 41%] [Inbox 3] ┐
-├ Sidebar ─────┬ Workspace (tiling panes) ─────────────────────────────┬ Inspector ──────┤
-│ Projects     │  ┌ chat ───────────┐┌ nvim ─────────┐                 │ (contextual:    │
-│ └ Features   │  │                 ││               │                 │  session info,  │
-│   └ Agents ● │  │                 │├ zsh ──────────┤                 │  role config,   │
-│ Sessions     │  └─────────────────┘└───────────────┘                 │  task, gate)    │
-├──────────────┴────────────────────────────────────────────────────────┴─────────────────┤
-│ Status bar: ⎇ feature/checkout ↑2↓0 · 4 agents live · 2 queued · governor L1 · RAM 612 MB │
-└──────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Title: [⌘K]   Week 41% · plan 38% (+3) · 5h 22% · resets Mon 09:00   [Inbox 3] ┐
+├ Sidebar ─────┬ Workspace (tiling panes) ──────────────────────┬ Inspector ──────┤
+│ ▾ shop-api   │ ┌ claude · back-1 ────────┐┌ nvim ────────────┐ │ (selection:     │
+│   ▾ checkout │ │ Claude Code TUI         ││                  │ │  agent, task,   │
+│     ● lead   │ │                         │├ zsh ─────────────┤ │  node, gate)    │
+│     ● back-1 │ │                         ││ $ pnpm test      │ │                 │
+│   ◌ solo/fix │ └─────────────────────────┘└──────────────────┘ │                 │
+├──────────────┴────────────────────────────────────────────────┴─────────────────┤
+│ ⎇ orch/checkout/integration ↑2 · 3 live · 2 queued (Amber) · RAM 1.4 GB          │
+└───────────────────────────────────────────────────────────────────────────────────┘
 ```
-- **Title bar**: project switcher, command palette, pacing indicator (click → Week planner), Inbox badge.
-- **Sidebar** (collapsible, ⌘B): tree of Projects → Features → Agents with status dots, plus solo Sessions. Drag an item into the workspace to open it in a pane.
-- **Workspace**: tiling panes with tabs. Splits are created with keyboard shortcuts and layouts are saved per project.
-- **Inspector** (collapsible, ⌘I): details of the selected item.
-- **Status bar**: git state of the focused project, live/queued agents, governor level, app memory use.
+- **Sidebar** (⌘B): Projects → Features → agents, and solo sessions **under their project**. It is the only navigation tree. ⌘P is a fuzzy jump into it. Below 1512 px it collapses to an icon rail with status dots.
+- **Workspace**: tiling panes with splits, tabs and zoom.
+- **Inspector** (⌘I): docked at ≥ 1512 px, overlay below that.
+- **Status bar**: git state of the focused project, live/queued agents with the pressure state in words, memory.
 
-### 9.3 Screens
-| Screen | Purpose | Main content | Key states |
-|---|---|---|---|
-| Projects home | Overview of all projects | Cards: git state, PRs/CI, running agents, budget share and burn | no projects (onboarding), fetching, offline |
-| Project dashboard | One project at a glance | Branches/worktrees, features, board, recent activity, settings | not a git repo, dirty, conflicts |
-| Feature page | Everything about one feature | Spec docs (rendered, open in nvim), tasks, team run timeline, design artifacts, branches/PR | draft, waiting spec gate, executing, PR gate, done |
-| Team canvas | Build teams | Node graph + role config in the inspector; presets library | invalid graph (no lead, cycles), unsaved |
-| Session / chat | Talk to an agent | Transcript, composer, context meter, docked terminal/nvim/diff panes | streaming, waiting for you, queued/throttled, suspended, error |
-| Monitor | Watch all agents | Live table of agents with actions; usage and memory charts | nothing running |
-| Week planner & pacing | Plan and pace the week | Ideal vs actual curve (weekly + 5h), allocations editor, forecast, governor policy and log | no plan yet (Monday prompt), on track, over, critical |
-| Inbox | Decide | Gates, permission requests, questions, with previews | empty, many pending |
-| Settings | Configure | Providers, MCP registry, integrations, terminal/editor (kitty.conf import), pacing policy, shortcuts, memory limits | integration disconnected |
-| Onboarding | First run | Check Claude login, pick projects, import kitty.conf, set first weekly plan | — |
+### 9.3 Pane types
+| Pane | Purpose | Key states |
+|---|---|---|
+| Overview | All projects and agents in one place (replaces "Projects home" + "Monitor"); group by project or by state | no projects (→ J0), nothing running |
+| Agent | Claude Code in a PTY, with a header: role, model, context %, usage, governor status, actions | working, waiting for you, queued (why/ETA/Run now), suspended (resume on focus), blocked by limit, error |
+| Shell | Login shell | — |
+| Editor | nvim | — |
+| Diff | Worktree diff | no changes, conflict |
+| Project | Branches/worktrees, features, settings | not a git repo, dirty, conflicts |
+| Feature | Docs (rendered, open in nvim), tasks, team timeline, design artifacts, PR | draft, spec gate, executing, PR gate, done |
+| Board | Tasks over any backend | backend disconnected |
+| Team canvas | Builder + Rules panel | invalid (inline errors), unsaved |
+| Week planner | Ideal vs actual (week and 5h), allocations, forecast, policy, governor log, next-action preview | no plan yet, shadow mode, Green/Amber/Red/Catch-up, estimated (low confidence) |
+| Inbox | Triage | empty, many pending, stale items |
+| Settings | Claude Code, MCP registry, integrations, terminal/editor, pacing policy, keyboard, memory | integration disconnected |
+
+**Global banners** (component inventory): limit reached + reset time, login expired, Claude Code version unsupported, Governor in Red, live-agent cap reached, offline, not on AC power with off-hours work queued.
 
 ### 9.4 Component inventory
-- **Shell**: title bar, sidebar tree item (with status dot and badge), pane, pane tab, split handle, inspector panel, status bar, command palette, toast, macOS notification content.
-- **Chat**: message (user / agent / system), streaming indicator, tool-call card (collapsed / expanded / error / waiting permission), inline diff, todo/plan block, composer (with `@file` picker, slash menu, attachments), context meter, model/effort picker.
-- **Agents**: agent chip (role color + icon + name), **status badge** (thinking, running tool, waiting for you, queued, throttled, suspended, error, done), agent row (Monitor), action menu.
-- **Pacing**: pacing indicator (compact and expanded), budget curve chart, allocation row with share slider, governor level control (auto / ask / off), governor log entry.
-- **Work items**: task card, kanban column, feature card, project card, PR/CI badge, branch/worktree row, git status summary.
-- **Team builder**: canvas node, edge (4 types), port, mini-map, role config form, preset card.
-- **Inbox**: gate item per type (spec, merge/PR, out-of-sandbox, budget, question), with approve/reject/reply actions and a preview area.
-- **Terminal & editor**: terminal pane header (cwd, shell, "Open in kitty"), "Open in editor" button/link.
-- **Base**: button, icon button, input, select, toggle, segmented control, slider, tabs, table, tooltip, dialog, empty state, skeleton loader, keyboard shortcut hint.
+- **Shell**: title bar with pacing indicator (compact/expanded), sidebar item (status dot, badge), icon rail, pane, pane header, pane tab, split handle, zoom indicator, inspector (docked/overlay), status bar, command palette, fuzzy jump, toast, banner.
+- **Agents**: agent chip (role color + icon + name), status badge (§9.5), agent row (Overview), action menu, queued explanation ("Queued: low priority, week +9 pp, starts ≈14:20 · Run now ≈ +2 pp").
+- **Pacing**: two-window indicator, curve chart (ideal/actual/forecast, week and 5h), allocation row with weight slider and tier, pressure-state pill, governor log entry with undo, next-action preview, confidence marker.
+- **Work items**: task card, kanban column, feature card, PR/CI badge, branch/worktree row, git summary.
+- **Canvas**: node, edge (4 styles + labels), port, minimap, Rules panel, inline validation, role inspector form, preset card.
+- **Inbox**: item per kind with preview area, keyboard hints, stale marker, batch bar, undo toast.
+- **Base**: button, icon button, input, select, toggle, segmented control, slider, tabs, table, tooltip, dialog, empty state, skeleton, shortcut hint.
 
-### 9.5 Status vocabulary
-Each agent state has one **color + icon + label** across the whole app, and color is never the only signal:
+### 9.5 Status vocabulary (single source)
+| UI label | Internal state | Meaning |
+|---|---|---|
+| Working | working | Claude is generating or running a tool |
+| Waiting for you | waiting_for_you | Permission prompt or question in its pane |
+| At gate | waiting_gate | Waiting for an Inbox decision (process may be suspended) |
+| Queued | queued | Held by the Governor (budget or live-agent cap) |
+| Blocked by limit | blocked_by_limit | A plan window is exhausted until its reset |
+| Idle | idle | Turn finished, process alive |
+| Suspended | suspended | Process stopped to save memory; resumes on demand |
+| Error | error | Crashed or failed; needs attention |
+| Done | (task done) | Assigned task finished |
 
-| State | Meaning |
-|---|---|
-| Thinking | Model is generating |
-| Running tool | Executing a tool call |
-| Waiting for you | Blocked on permission, question or gate |
-| Queued | Held by the Governor (budget or process cap) |
-| Throttled | Running with downgraded model/effort |
-| Suspended | Idle; process stopped to save memory, resumes on demand |
-| Error | Failed; needs attention |
-| Done | Task finished |
+Each label has one color and one icon everywhere (§9.0 Foundations).
 
-### 9.6 Wireframes (low-fi, starting points for Penpot)
+### 9.6 Attention ladder
+| Level | What | Channel |
+|---|---|---|
+| 1 Blocking | An agent waiting for you or at a gate, sorted by waiting time | macOS notification (batched: "3 agents need you"), badge, sidebar dot |
+| 2 Errors | Crash, watchdog, login expired, limit reached | Notification + banner |
+| 3 Budget | Governor "ask" (with default/timeout), entering Red | Badge, toast |
+| 4 Info | Task done, merge done, report ready | Silent: digest in the Inbox |
 
-**Session view with docked terminal and nvim**
-```
-┌ Orchestrator ──────────────────── [▮▮▮▮▮▯▯▯ 41% · ideal 38% · resets Mon 09:00] [Inbox 3] ┐
-│ PROJECTS      │ shop-api › checkout-v2 › backend-1   (opus · ctx 46%) [⏸][■]               │
-│ ▸ shop-api    │ ┌─ chat ─────────────────────────────┐┌─ nvim src/cart.ts ───────────────┐ │
-│   ● checkout  │ │ you: add idempotency keys          ││  12 │ export async function …     │ │
-│     ◉ lead    │ │ ▸ Read src/cart.ts                 ││  13 │   const key = req.headers…  │ │
-│     ◉ back-1  │ │ ▸ Edit src/cart.ts  (+24 −3) [nvim]││                                  │ │
-│     ◌ front-1 │ │ agent: Done. Tests next…           │└──────────────────────────────────┘ │
-│ ▸ blog        │ │                                    │┌─ zsh ~/wt/checkout/back-1 ───────┐ │
-│ ▸ infra       │ │ [ message… @file /cmd        ⏎ ]   ││ $ pnpm test cart                 │ │
-│               │ └────────────────────────────────────┘└──────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────────────────────────────┘
-```
+Do-Not-Disturb holds levels 3–4 and batches level 1. **Jump to next waiting agent**: leader `w`.
+
+### 9.7 Keyboard contract
+- When a terminal pane (agent, shell, nvim) has focus, **every key goes to the PTY** except ⌘-chords and the **leader key** (default `Ctrl-Space`, configurable; press it twice to send it literally).
+- **Global ⌘ shortcuts**: ⌘K palette, ⌘P jump, ⌘B sidebar, ⌘I inspector, ⌘N new project, ⌘T new session, ⌘1…9 focus pane, ⌘W close pane, ⌘⇧I Inbox.
+- **Leader + key**: `s`/`v` split horizontally/vertically, `h j k l` move focus, `z` zoom, `t` new shell, `e` open editor, `w` next waiting agent, `p` pause/resume the focused agent, `o` Overview, `g` Week planner.
+- The Inbox and the canvas have their own single-key maps when focused (FR-707, FR-302).
+- P0 checks the conflicts with nvim and Claude Code inside xterm.js (e.g. Ctrl-I vs Tab, which the kitty keyboard protocol distinguishes and xterm.js doesn't) and records them on Penpot page `05`.
+
+### 9.8 Wireframes (low-fi, starting points for Penpot)
 
 **Week planner**
 ```
-┌ Week 42 · resets Mon 20 Oct 09:00 ───────────────────────────────────────────────┐
-│ 100%│                                              ....ideal                      │
-│     │                              ....´´´´  ___actual                            │
-│  50%│                  ....´´´´ ____/¯¯¯¯                                         │
-│     │      ....´´´´____/                         ⚠ projected empty: Fri 14:00     │
-│   0%└──Mon────Tue────Wed────Thu────Fri────Sat────Sun──                            │
-│ Allocations            share  used   status    priority                           │
-│  shop-api               50%   24%    over ▲    high      [cap]                    │
-│  blog                   30%    9%    on track  normal                             │
-│  infra                  10%    3%    under     low                                │
-│  reserve (chat)         10%    5%                                                 │
-│ Governor: L1 auto · L2 auto · L4 ask · L6 ask        [Sprint mode] [Pause all]    │
-│ Log: Wed 15:02 queued 2 low tasks (infra) · Wed 16:40 asked: downgrade Lead→sonnet │
-└───────────────────────────────────────────────────────────────────────────────────┘
+┌ Week 42 · resets Mon 20 Oct 09:00 · state: RED (+9 pp) · shadow mode off ─────────┐
+│ 100%│                                             ....ideal                         │
+│     │                             ....´´´´  ___actual   - - forecast              │
+│  50%│                 ....´´´´ ____/¯¯¯¯    - - - ⚠ empty Fri 14:00                │
+│   0%└─Mon────Tue────Wed────Thu────Fri────Sat────Sun──   5h: 61% · resets 16:00    │
+│ Allocations       weight  used  tier      status                                 │
+│  shop-api           50     24%  high      over ▲                                  │
+│  blog               30      9%  normal    on plan                                 │
+│  infra              10      3%  low       queued (2)                              │
+│  reserve            10      5%  —         outside app: 4%                         │
+│ Next action: queue "infra/upgrade-deps" (low) · [Sprint mode] [Pause all]          │
+│ Log: Wed 15:02 RED → live cap 1 · queued 2 (infra) [undo]                          │
+└────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Team canvas**
 ```
-┌ Team: Full-stack feature ──────────────────────────────┬ Role: Backend ──────────┐
-│        ┌───────┐                                       │ model   [opus ▾] effort[high▾]│
-│        │ Lead  │                                       │ tools   ☑ edit ☑ bash ☐ web │
-│        └─┬─┬─┬─┘  reports-to                           │ MCP     ☑ github ☐ figma   │
-│   ┌──────┘ │ └───────┐                                 │ perms   [gated ▾]          │
-│ ┌─▼────┐ ┌─▼─────┐ ┌─▼───┐  hands-off ┌────┐           │ worktree[own ▾]            │
-│ │Back  │ │Front  │◀┤ UI  │◀───────────┤ UX │           │ budget  [normal ▾]         │
-│ └──────┘ └───────┘ └─────┘            └────┘           │ prompt  [edit…]            │
-└────────────────────────────────────────────────────────┴────────────────────────────┘
+┌ Team: Full-stack feature ───────────────────────────┬ Role: Backend ─────────────┐
+│        ┌───────┐                                    │ model   [opus ▾] effort[high▾]│
+│        │ Lead  │                                    │ tools   ☑ edit ☑ bash ☐ web │
+│        └─┬─┬─┬─┘  reports-to                        │ MCP     ☑ orch ☐ penpot     │
+│   ┌──────┘ │ └───────┐                              │ perms   [gated ▾] sandbox[wt▾]│
+│ ┌─▼────┐ ┌─▼─────┐ ┌─▼───┐  hands-off ┌────┐        │ budget  [normal ▾]          │
+│ │Back  │ │Front  │◀┤ UI  │◀───────────┤ UX │        │ prompt  [open in nvim]      │
+│ └──────┘ └───────┘ └─────┘            └────┘        ├ Rules ─────────────────────┤
+│ [n] add  [c] connect  [⏎] inspect  [=] auto-layout   │ Backend → Lead (reports)   │
+└─────────────────────────────────────────────────────┴────────────────────────────┘
 ```
 
 ---
@@ -529,25 +581,25 @@ Each agent state has one **color + icon + label** across the whole app, and colo
 
 | # | Risk / question | Mitigation / next step |
 |---|---|---|
-| R1 | **Plan-limit data availability**: which usage/rate-limit signals the Claude Agent SDK exposes for subscription plans (utilization %, reset times) is not yet verified. Pacing accuracy depends on it. | Spike first: inspect SDK message types and rate-limit events. Fallback = estimator (FR-813) calibrated on observed limit hits/resets. |
-| R2 | Usage from outside the app (Claude app, CLI, other machines) shares the same plan. | Show as unattributed usage (FR-811); forecast uses provider signals when available. |
-| R3 | Estimation accuracy across models (weights per model change over time). | Per-model calibration, conservative margins, weekly re-fit. |
-| R4 | Merge conflicts between specialists working in parallel. | Lead decomposes by file/module ownership; integration branch merges often; conflicts routed to owner agent. |
-| R5 | Cost/usage blow-ups from runaway agents or loops. | Governor caps, stuck-agent detection, per-run budget caps, gates. |
-| R6 | MCP authentication (Figma, Linear, Notion, Penpot) inside spawned agents. | Central MCP registry; auth status surfaced in Inbox (FR-604). |
-| R7 | Visual fidelity to kitty in xterm.js on WKWebView (font rendering, ligatures, line height). | Validate in the P0 spike with the user's `kitty.conf`; side-by-side screenshot comparison. |
-| R8 | Provider parity for future adapters (Codex, Gemini…) — features like plan mode, forks, permissions differ. | Capability flags in the Provider interface; UI hides unsupported actions. |
-| R9 | Terms of use of the subscription when driven by an app. | Use only the official Agent SDK / Claude Code auth path; review terms before release. |
-| Q1 | Should the governor also manage API-key (pay-as-you-go) usage with € budgets? | Design the model to support both (costEq already tracked). |
-| Q2 | Should the Lead be allowed to create new roles at runtime? | Default no; possible later behind a gate. |
+| R1 | **Compliance of automated use.** Orchestrating the official CLI on a subscription is the supported client, but heavy unattended or overnight automation may fall under the consumer terms' limits on automated access. | **P0 go/no-go**: ask Anthropic support. Until confirmed, off-hours/unattended runs (FR-816) stay disabled and every autonomous turn starts from a user action or an approved plan. |
+| R2 | **Signal and control channels** (statusline `rate_limits`, hook fields, PTY idle detection, flags) are not a stable API and can change between Claude Code versions. | P0 spike against the installed version; declared supported range (NFR-7); a contract test suite that runs on each Claude Code update. |
+| R3 | **Statusline data appears only after the first response** of a session and only while some agent is running. | Keep the last observed values with their timestamp; estimator fallback (FR-814) with a confidence marker. |
+| R4 | **PTY-driven input** (typing into an idle agent) can collide with the user typing or with a TUI change. | Deliver only when idle (Stop/Notification hook) and the pane has had no user keystroke for 2 s; prefer hook channels where possible. |
+| R5 | **Memory**: each live agent is a full Claude Code process. | Live-agent cap, suspend/resume, P0 measurement (NFR-1b). |
+| R6 | **Resume cost**: a resumed session may have to re-read its whole context if the prompt cache has expired. | The Governor counts resume cost; suspend timeout tuned against cache lifetime. |
+| R7 | **Merge conflicts** between specialists. | Lead decomposes by module ownership; frequent integration; conflicts routed to the owner. |
+| R8 | **MCP auth** (Penpot, Figma, Linear, Notion) inside agents. | Central registry, status, Inbox items (FR-604). |
+| R9 | **Visual fidelity** to kitty in xterm.js on WKWebView, and the WebGL context limit. | P0 spike with the user's `kitty.conf`; hidden panes don't render (FR-1005). |
+| Q1 | Should the Lead be able to add roles at runtime? | Default no; possible later behind a gate. |
 
 ---
 
-## 11. Appendix — suggested phasing (non-binding)
+## 11. Phasing
 
 | Phase | Content | Exit criteria |
 |---|---|---|
-| **P0 — Spikes & UI design** | **Penpot file** (§9.0) for foundations, shell and P1 screens. Agent SDK spike (sessions, streaming, permissions callback, **usage & rate-limit signals**), Tauri + Node sidecar + `portable-pty` + xterm.js in WKWebView with nvim embedded, worktree automation, **memory baseline measurement**. | Each spike demo-able; R1 answered; **Penpot file created with Foundations, Components, App shell and the P1 screens designed**. |
-| **P1 — Solo power user** | Projects & git (4.1), sessions & chat (4.2), terminal (4.10), editor (4.11), monitoring (4.9), **usage collector + weekly plan + governor L1–L3 + indicator** (4.8), basic Inbox for permissions. | Daily driver replacing the Claude app for solo work. |
-| **P2 — Teams** | Team builder (4.3), orchestration runtime + internal MCP (4.4), task backends Local + GitHub (4.5), gates (4.7), governor L4–L7 + off-hours. | A feature delivered end-to-end by a team with 2 gates. |
-| **P3 — Ecosystem** | Linear + Notion sync, Figma/Penpot design flow (4.6), presets, weekly reports, second provider adapter. | Design → code flow on a real feature; second provider runs a solo session. |
+| **P0 — Spikes, go/no-go, UI foundations** | (1) R1 answer from Anthropic. (2) `claude` in a PTY: flags, per-agent settings, hooks, statusline `rate_limits`, OTEL, suspend/resume by id, PTY delivery while idle. (3) Memory: RSS per `claude` process, app baseline. (4) Sandbox scoped to the worktree, credentials removed, `git push` blocked. (5) xterm.js in WKWebView with the user's `kitty.conf` + nvim, key conflicts. (6) Crash/restart reconciliation. (7) **Penpot**: Foundations, Shell, P1 screens. | Each spike demoed; R1/R2 answered; NFR-1b numbers set; Penpot gate met. |
+| **P1 — Solo power user** | Projects & git (4.1), agent panes with suspend/resume (4.2), terminal (4.10), editor (4.11), Overview (4.9), Inbox for permissions, sandbox and credential rules (FR-702/703), **usage collector + Week planner + read-only forecast** (FR-801–804, 813, 817), pacing simulator (FR-820). | Daily driver for solo work; forecast within ±10 pp of the observed weekly % at reset. |
+| **P1b — Governor v1** | FR-805–812: live cap per state, queue, fair scheduling, pause/defer, 5h guard, transparency, shadow mode, overrides. | One real week in shadow mode, then one enforced week meeting G6. |
+| **P2 — Teams** | Canvas & builder (4.3), orchestration runtime + MCP server (4.4), task backends Local + GitHub (4.5), gates (4.7). | A feature delivered by a team with 2 gates and no sandbox violation. |
+| **P3 — Ecosystem** | Linear, Notion, Penpot/Figma design flow (4.6), presets, weekly report, estimator, per-model limits, off-hours (if R1 allows), optional model downgrade. | Design → code flow on a real feature. |

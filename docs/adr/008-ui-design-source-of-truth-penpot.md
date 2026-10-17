@@ -1,21 +1,21 @@
 # ADR-008 — UI design source of truth: a Penpot file
 
-- Status: Proposed · Date: 2026-10-17
+- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-17 (lighter gate after review)
 
 ## Context
-The app has many dense, stateful screens (chat, panes, canvas, pacing). Without a shared visual reference, agents and humans would each invent their own UI. The user already uses Penpot and has the Penpot MCP set up.
+The app has dense, stateful panes (agents, canvas, pacing). Without a shared visual reference, the UI would drift. The user uses Penpot and has the Penpot MCP set up. The process must stay proportionate for one person.
 
 ## Decision
-- One Penpot file, **`Orchestrator — UI`**, is the **source of truth for the interface**. Its structure is defined in SPEC §9.0 (Foundations, Components, App shell, Screens, Flows, Explorations).
-- **Design tokens** live in Penpot and are exported as JSON, then turned into CSS variables. The code uses tokens only.
-- **Design first**: any UI change starts in Penpot and is reviewed before implementation. P1 screens must be designed before P1 UI work starts.
-- UI/UX agents work on the file through the **Penpot MCP**, which also lets the project dogfood its own design flow.
-- `docs/design/README.md` links to the file and tracks which screens are ready for dev.
+- One Penpot file, **`Orchestrator — UI`**, is the source of truth for the interface. Its structure is in SPEC §9.0.
+- **States are component variants**, not separate screens. Prototypes only for J2, J5 and J8, with key sequences annotated.
+- **Tokens pipeline**: Penpot tokens → W3C design-token JSON → Style Dictionary → CSS variables, with a CI drift check. Code uses tokens only.
+- **Design first for new screens.** Small changes can be made in code and **backported to Penpot in the same PR**.
+- **Gate**: Foundations, Shell & layouts and the P1 panes (Overview, agent pane, Week planner, Inbox) before P1 UI work.
+- UI/UX agents can work on the file through the Penpot MCP.
 
 ## Alternatives
-- **Figma**: also supported by the app for user projects, but Penpot is open source, self-hostable and already in the user's setup.
-- **Code-first mockups only**: faster at first, but no shared component library and no overview of states.
+- **Figma**: supported for user projects, but Penpot is open source and already in the user's setup.
+- **Code-first only**: faster at first, but no shared component library or overview of states.
 
 ## Consequences
-- A coherent UI and a clear handoff to implementation.
-- An extra design step before UI code. Accepted.
+- A coherent UI with a clear handoff, at the cost of a short design step that is accepted.
