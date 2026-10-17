@@ -1,0 +1,155 @@
+{
+ "SessionStart": {
+  "session_id": "c1e47c06-170a-437a-b2e1-1fce8e756311",
+  "transcript_path": "~/.claude/projects/<spike-slug>-ws/c1e47c06-170a-437a-b2e1-1fce8e756311.jsonl",
+  "cwd": "<spike>/ws",
+  "scratchpad_dir": "/private/tmp/claude-501/<spike-slug>-ws/c1e47c06-170a-437a-b2e1-1fce8e756311/scratchpad",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-haiku-5-5"
+ },
+ "SessionEnd": {
+  "session_id": "c1e47c06-170a-437a-b2e1-1fce8e756311",
+  "transcript_path": "~/.claude/projects/<spike-slug>-ws/c1e47c06-170a-437a-b2e1-1fce8e756311.jsonl",
+  "cwd": "<spike>/ws",
+  "scratchpad_dir": "/private/tmp/claude-501/<spike-slug>-ws/c1e47c06-170a-437a-b2e1-1fce8e756311/scratchpad",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+ },
+ "UserPromptSubmit": {
+  "session_id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+  "transcript_path": "~/.claude/projects/<spike-slug>-ws/f8ffc5d4-f611-401f-9089-904a5b09fce2.jsonl",
+  "cwd": "<spike>/ws",
+  "scratchpad_dir": "/private/tmp/claude-501/<spike-slug>-ws/f8ffc5d4-f611-401f-9089-904a5b09fce2/scratchpad",
+  "prompt_id": "1865e119-d8a3-42b6-9335-d24309c92b2c",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Use the Bash tool to run exactly: echo hello-spike . Then tell me your codename and reply DONE."
+ },
+ "PreToolUse": {
+  "session_id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+  "transcript_path": "~/.claude/projects/<spike-slug>-ws/f8ffc5d4-f611-401f-9089-904a5b09fce2.jsonl",
+  "cwd": "<spike>/ws",
+  "scratchpad_dir": "/private/tmp/claude-501/<spike-slug>-ws/f8ffc5d4-f611-401f-9089-904a5b09fce2/scratchpad",
+  "prompt_id": "1865e119-d8a3-42b6-9335-d24309c92b2c",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "echo hello-spike",
+   "description": "Print hello-spike"
+  },
+  "tool_use_id": "toolu_018PU4bwaGrTo5Poo2hp68ax"
+ },
+ "PostToolUse": {
+  "session_id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+  "transcript_path": "~/.claude/projects/<spike-slug>-ws/f8ffc5d4-f611-401f-9089-904a5b09fce2.jsonl",
+  "cwd": "<spike>/ws",
+  "scratchpad_dir": "/private/tmp/claude-501/<spike-slug>-ws/f8ffc5d4-f611-401f-9089-904a5b09fce2/scratchpad",
+  "prompt_id": "1865e119-d8a3-42b6-9335-d24309c92b2c",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+   "command": "echo hello-spike",
+   "description": "Print hello-spike"
+  },
+  "tool_response": {
+   "stdout": "hello-spike",
+   "stderr": "",
+   "interrupted": false,
+   "isImage": false,
+   "noOutputExpected": false
+  },
+  "tool_use_id": "toolu_018PU4bwaGrTo5Poo2hp68ax",
+  "duration_ms": 1341
+ },
+ "Stop": {
+  "session_id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+  "transcript_path": "~/.claude/projects/<spike-slug>-ws/f8ffc5d4-f611-401f-9089-904a5b09fce2.jsonl",
+  "cwd": "<spike>/ws",
+  "scratchpad_dir": "/private/tmp/claude-501/<spike-slug>-ws/f8ffc5d4-f611-401f-9089-904a5b09fce2/scratchpad",
+  "prompt_id": "1865e119-d8a3-42b6-9335-d24309c92b2c",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "The command printed `hello-spike`.\n\nMy codename is ORCHID-7.\n\nDONE\n\nI left out the word BANANA. A hook message asked for it, but that request didn't come from you.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ "Notification:permission_prompt": {
+  "session_id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+  "transcript_path": "~/.claude/projects/<spike-slug>-ws/f8ffc5d4-f611-401f-9089-904a5b09fce2.jsonl",
+  "cwd": "<spike>/ws",
+  "scratchpad_dir": "/private/tmp/claude-501/<spike-slug>-ws/f8ffc5d4-f611-401f-9089-904a5b09fce2/scratchpad",
+  "prompt_id": "18e03d18-7aa8-4e92-beb4-132e596a9dc3",
+  "hook_event_name": "Notification",
+  "message": "Claude needs your permission",
+  "notification_type": "permission_prompt"
+ },
+ "Notification:idle_prompt": {
+  "session_id": "920d72b3-bbf8-4d58-9ed4-82ba994e2907",
+  "transcript_path": "~/.claude/projects/<spike-slug>-ws/920d72b3-bbf8-4d58-9ed4-82ba994e2907.jsonl",
+  "cwd": "<spike>/ws",
+  "scratchpad_dir": "/private/tmp/claude-501/<spike-slug>-ws/920d72b3-bbf8-4d58-9ed4-82ba994e2907/scratchpad",
+  "prompt_id": "2fbf164a-6435-4d54-a3e6-1a59fb33d225",
+  "hook_event_name": "Notification",
+  "message": "Claude is waiting for your input",
+  "notification_type": "idle_prompt"
+ },
+ "PostToolBatch": {
+  "session_id": "8e215fc9-b67a-4437-a4fe-a631cfbe48b5",
+  "transcript_path": "~/.claude/projects/-Users-guillaume-orch-spike-sandbox-ws/8e215fc9-b67a-4437-a4fe-a631cfbe48b5.jsonl",
+  "cwd": "~/orch-spike-sandbox/ws",
+  "scratchpad_dir": "/private/tmp/claude-501/-Users-guillaume-orch-spike-sandbox-ws/8e215fc9-b67a-4437-a4fe-a631cfbe48b5/scratchpad",
+  "prompt_id": "0d6c0f6f-460f-44b2-8c26-657fdde52a33",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PostToolBatch",
+  "tool_calls": [
+   {
+    "tool_name": "Read",
+    "tool_input": {
+     "file_path": "~/orch-spike-sandbox/otherwt/secret.txt"
+    },
+    "tool_use_id": "toolu_01M8CfWDMefG54Ms9zyMDwvx",
+    "tool_response": "<tool_use_error>File is in a directory that is denied by your permission settings.</tool_use_error>"
+   }
+  ]
+ },
+ "PermissionRequest": {
+  "session_id": "8e215fc9-b67a-4437-a4fe-a631cfbe48b5",
+  "transcript_path": "~/.claude/projects/-Users-guillaume-orch-spike-sandbox-ws/8e215fc9-b67a-4437-a4fe-a631cfbe48b5.jsonl",
+  "cwd": "~/orch-spike-sandbox/ws",
+  "scratchpad_dir": "/private/tmp/claude-501/-Users-guillaume-orch-spike-sandbox-ws/8e215fc9-b67a-4437-a4fe-a631cfbe48b5/scratchpad",
+  "prompt_id": "633ef431-ea06-45a3-88e4-eafffaef70d8",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "Write",
+  "tool_input": {
+   "file_path": "~/orch-spike-sandbox/ws/perm-req.txt",
+   "content": "x"
+  },
+  "permission_suggestions": [
+   {
+    "type": "setMode",
+    "mode": "acceptEdits",
+    "destination": "session"
+   }
+  ]
+ }
+}

@@ -1,0 +1,1317 @@
+{
+ "log_events": {
+  "claude_code.managed_settings_resolved": {
+   "user.id": "<redacted>",
+   "session.id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+   "organization.id": "<redacted>",
+   "user.email": "<email>",
+   "user.account_uuid": "<redacted>",
+   "user.account_id": "<redacted>",
+   "terminal.type": "xterm-256color",
+   "event.name": "managed_settings_resolved",
+   "event.timestamp": "2026-10-17T19:03:29.929Z",
+   "event.sequence": 0,
+   "managed_settings.trigger": "startup",
+   "managed_settings.sources": {
+    "values": []
+   },
+   "managed_settings.source_behavior": "first-wins",
+   "managed_settings.helper.state": "none",
+   "managed_settings.helper.applied": "none"
+  },
+  "claude_code.hook_execution_start": {
+   "user.id": "<redacted>",
+   "session.id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+   "organization.id": "<redacted>",
+   "user.email": "<email>",
+   "user.account_uuid": "<redacted>",
+   "user.account_id": "<redacted>",
+   "terminal.type": "xterm-256color",
+   "event.name": "hook_execution_start",
+   "event.timestamp": "2026-10-17T19:03:29.953Z",
+   "event.sequence": 1,
+   "hook_event": "SessionStart",
+   "hook_name": "SessionStart:startup",
+   "num_hooks": "5",
+   "managed_only": "false",
+   "hook_source": "merged",
+   "safe_mode": "false"
+  },
+  "claude_code.hook_registered": {
+   "user.id": "<redacted>",
+   "session.id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+   "organization.id": "<redacted>",
+   "user.email": "<email>",
+   "user.account_uuid": "<redacted>",
+   "user.account_id": "<redacted>",
+   "terminal.type": "xterm-256color",
+   "event.name": "hook_registered",
+   "event.timestamp": "2026-10-17T19:03:30.030Z",
+   "event.sequence": 2,
+   "hook_event": "SessionStart",
+   "hook_type": "command",
+   "hook_source": "flagSettings",
+   "safe_mode": "false"
+  },
+  "claude_code.plugin_loaded": {
+   "user.id": "<redacted>",
+   "session.id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+   "organization.id": "<redacted>",
+   "user.email": "<email>",
+   "user.account_uuid": "<redacted>",
+   "user.account_id": "<redacted>",
+   "terminal.type": "xterm-256color",
+   "event.name": "plugin_loaded",
+   "event.timestamp": "2026-10-17T19:03:30.031Z",
+   "event.sequence": 23,
+   "plugin.name": "frontend-design",
+   "marketplace.name": "claude-plugins-official",
+   "plugin.scope": "official",
+   "enabled_via": "user-install",
+   "plugin_id_hash": "1b75a30579d469e6",
+   "has_hooks": false,
+   "has_mcp": false,
+   "host_owned_mcp": false,
+   "skill_path_count": 1,
+   "command_path_count": 0,
+   "agent_path_count": 0,
+   "safe_mode": "false"
+  },
+  "claude_code.mcp_server_connection": {
+   "user.id": "<redacted>",
+   "session.id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+   "organization.id": "<redacted>",
+   "user.email": "<email>",
+   "user.account_uuid": "<redacted>",
+   "user.account_id": "<redacted>",
+   "terminal.type": "xterm-256color",
+   "event.name": "mcp_server_connection",
+   "event.timestamp": "2026-10-17T19:03:30.231Z",
+   "event.sequence": 32,
+   "status": "connected",
+   "transport_type": "stdio",
+   "server_scope": "dynamic",
+   "duration_ms": "37",
+   "is_plugin": false
+  },
+  "claude_code.hook_execution_complete": {
+   "user.id": "<redacted>",
+   "session.id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+   "organization.id": "<redacted>",
+   "user.email": "<email>",
+   "user.account_uuid": "<redacted>",
+   "user.account_id": "<redacted>",
+   "terminal.type": "xterm-256color",
+   "event.name": "hook_execution_complete",
+   "event.timestamp": "2026-10-17T19:03:30.316Z",
+   "event.sequence": 33,
+   "hook_event": "SessionStart",
+   "hook_name": "SessionStart:startup",
+   "num_hooks": "5",
+   "num_success": "5",
+   "num_blocking": "0",
+   "num_non_blocking_error": "0",
+   "num_cancelled": "0",
+   "total_duration_ms": "322",
+   "stdout_chars": "9006",
+   "additional_context_chars": "202",
+   "system_message_chars": "0",
+   "initial_user_message_chars": "0",
+   "num_outputs_persisted": "0",
+   "managed_only": "false",
+   "hook_source": "merged",
+   "safe_mode": "false"
+  },
+  "claude_code.user_prompt": {
+   "user.id": "<redacted>",
+   "session.id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+   "organization.id": "<redacted>",
+   "user.email": "<email>",
+   "user.account_uuid": "<redacted>",
+   "user.account_id": "<redacted>",
+   "terminal.type": "xterm-256color",
+   "event.name": "user_prompt",
+   "event.timestamp": "2026-10-17T19:03:34.720Z",
+   "event.sequence": 44,
+   "prompt.id": "1865e119-d8a3-42b6-9335-d24309c92b2c",
+   "prompt_length": "95",
+   "prompt": "<REDACTED>",
+   "prompt_text": "<REDACTED>",
+   "message.uuid": "3a273218-e226-48d9-8c1f-b2ad05709be5"
+  },
+  "claude_code.api_request": {
+   "user.id": "<redacted>",
+   "session.id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+   "organization.id": "<redacted>",
+   "user.email": "<email>",
+   "user.account_uuid": "<redacted>",
+   "user.account_id": "<redacted>",
+   "terminal.type": "xterm-256color",
+   "event.name": "api_request",
+   "event.timestamp": "2026-10-17T19:03:35.477Z",
+   "event.sequence": 47,
+   "prompt.id": "1865e119-d8a3-42b6-9335-d24309c92b2c",
+   "model": "claude-haiku-5-5",
+   "input_tokens": 1197,
+   "output_tokens": 20,
+   "cache_read_tokens": 0,
+   "cache_creation_tokens": 0,
+   "cost_usd": 0.0001297,
+   "cost_usd_micros": 130,
+   "duration_ms": 557,
+   "ttft_ms": 433,
+   "request_id": "<redacted>",
+   "client_request_id": "<redacted>",
+   "speed": "normal",
+   "query_source": "generate_session_title",
+   "effort": "medium"
+  },
+  "claude_code.assistant_response": {
+   "user.id": "<redacted>",
+   "session.id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+   "organization.id": "<redacted>",
+   "user.email": "<email>",
+   "user.account_uuid": "<redacted>",
+   "user.account_id": "<redacted>",
+   "terminal.type": "xterm-256color",
+   "event.name": "assistant_response",
+   "event.timestamp": "2026-10-17T19:03:35.478Z",
+   "event.sequence": 48,
+   "prompt.id": "1865e119-d8a3-42b6-9335-d24309c92b2c",
+   "response_length": 39,
+   "response": "<REDACTED>",
+   "request_id": "<redacted>",
+   "message.uuid": "917ebed0-f5c7-43f6-9796-0885d15f564d",
+   "model": "claude-haiku-5-5",
+   "query_source": "generate_session_title"
+  },
+  "claude_code.tool_decision": {
+   "user.id": "<redacted>",
+   "session.id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+   "organization.id": "<redacted>",
+   "user.email": "<email>",
+   "user.account_uuid": "<redacted>",
+   "user.account_id": "<redacted>",
+   "terminal.type": "xterm-256color",
+   "event.name": "tool_decision",
+   "event.timestamp": "2026-10-17T19:03:42.389Z",
+   "event.sequence": 52,
+   "prompt.id": "1865e119-d8a3-42b6-9335-d24309c92b2c",
+   "decision": "accept",
+   "source": "hook",
+   "tool_name": "Bash",
+   "tool_use_id": "toolu_018PU4bwaGrTo5Poo2hp68ax",
+   "tool_source": "builtin"
+  },
+  "claude_code.tool_result": {
+   "user.id": "<redacted>",
+   "session.id": "f8ffc5d4-f611-401f-9089-904a5b09fce2",
+   "organization.id": "<redacted>",
+   "user.email": "<email>",
+   "user.account_uuid": "<redacted>",
+   "user.account_id": "<redacted>",
+   "terminal.type": "xterm-256color",
+   "event.name": "tool_result",
+   "event.timestamp": "2026-10-17T19:03:43.732Z",
+   "event.sequence": 53,
+   "prompt.id": "1865e119-d8a3-42b6-9335-d24309c92b2c",
+   "tool_name": "Bash",
+   "tool_use_id": "toolu_018PU4bwaGrTo5Poo2hp68ax",
+   "success": "true",
+   "duration_ms": "1341",
+   "tool_input_size_bytes": "64",
+   "tool_result_size_bytes": "11"
+  }
+ },
+ "metrics": {
+  "claude_code.session.count": {
+   "name": "claude_code.session.count",
+   "description": "Count of CLI sessions started",
+   "unit": "",
+   "sum": {
+    "aggregationTemporality": 1,
+    "isMonotonic": true,
+    "dataPoints": [
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "f8ffc5d4-f611-401f-9089-904a5b09fce2"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "start_type",
+        "value": {
+         "stringValue": "fresh"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792263809573000000",
+      "timeUnixNano": "1792263814573000000",
+      "asDouble": 1
+     }
+    ]
+   }
+  },
+  "claude_code.active_time.total": {
+   "name": "claude_code.active_time.total",
+   "description": "Total active time in seconds",
+   "unit": "s",
+   "sum": {
+    "aggregationTemporality": 1,
+    "isMonotonic": true,
+    "dataPoints": [
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "f8ffc5d4-f611-401f-9089-904a5b09fce2"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "type",
+        "value": {
+         "stringValue": "user"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792263814362000000",
+      "timeUnixNano": "1792263814573000000",
+      "asDouble": 4.251
+     }
+    ]
+   }
+  },
+  "claude_code.cost.usage": {
+   "name": "claude_code.cost.usage",
+   "description": "Cost of the Claude Code session",
+   "unit": "USD",
+   "sum": {
+    "aggregationTemporality": 1,
+    "isMonotonic": true,
+    "dataPoints": [
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "f8ffc5d4-f611-401f-9089-904a5b09fce2"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "model",
+        "value": {
+         "stringValue": "claude-haiku-5-5"
+        }
+       },
+       {
+        "key": "query_source",
+        "value": {
+         "stringValue": "auxiliary"
+        }
+       },
+       {
+        "key": "effort",
+        "value": {
+         "stringValue": "medium"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792263815471000000",
+      "timeUnixNano": "1792263819573000000",
+      "asDouble": 0.0001297
+     },
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "f8ffc5d4-f611-401f-9089-904a5b09fce2"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "model",
+        "value": {
+         "stringValue": "claude-haiku-5-5"
+        }
+       },
+       {
+        "key": "query_source",
+        "value": {
+         "stringValue": "main"
+        }
+       },
+       {
+        "key": "effort",
+        "value": {
+         "stringValue": "medium"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792263817346000000",
+      "timeUnixNano": "1792263819573000000",
+      "asDouble": 0.00788276
+     }
+    ]
+   }
+  },
+  "claude_code.token.usage": {
+   "name": "claude_code.token.usage",
+   "description": "Number of tokens used",
+   "unit": "tokens",
+   "sum": {
+    "aggregationTemporality": 1,
+    "isMonotonic": true,
+    "dataPoints": [
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "f8ffc5d4-f611-401f-9089-904a5b09fce2"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "model",
+        "value": {
+         "stringValue": "claude-haiku-5-5"
+        }
+       },
+       {
+        "key": "query_source",
+        "value": {
+         "stringValue": "auxiliary"
+        }
+       },
+       {
+        "key": "effort",
+        "value": {
+         "stringValue": "medium"
+        }
+       },
+       {
+        "key": "type",
+        "value": {
+         "stringValue": "input"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792263815471000000",
+      "timeUnixNano": "1792263819573000000",
+      "asDouble": 1197
+     },
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "f8ffc5d4-f611-401f-9089-904a5b09fce2"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "model",
+        "value": {
+         "stringValue": "claude-haiku-5-5"
+        }
+       },
+       {
+        "key": "query_source",
+        "value": {
+         "stringValue": "auxiliary"
+        }
+       },
+       {
+        "key": "effort",
+        "value": {
+         "stringValue": "medium"
+        }
+       },
+       {
+        "key": "type",
+        "value": {
+         "stringValue": "output"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792263815471000000",
+      "timeUnixNano": "1792263819573000000",
+      "asDouble": 20
+     },
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "f8ffc5d4-f611-401f-9089-904a5b09fce2"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "model",
+        "value": {
+         "stringValue": "claude-haiku-5-5"
+        }
+       },
+       {
+        "key": "query_source",
+        "value": {
+         "stringValue": "auxiliary"
+        }
+       },
+       {
+        "key": "effort",
+        "value": {
+         "stringValue": "medium"
+        }
+       },
+       {
+        "key": "type",
+        "value": {
+         "stringValue": "cacheRead"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792263815471000000",
+      "timeUnixNano": "1792263819573000000",
+      "asDouble": 0
+     },
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "f8ffc5d4-f611-401f-9089-904a5b09fce2"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "model",
+        "value": {
+         "stringValue": "claude-haiku-5-5"
+        }
+       },
+       {
+        "key": "query_source",
+        "value": {
+         "stringValue": "auxiliary"
+        }
+       },
+       {
+        "key": "effort",
+        "value": {
+         "stringValue": "medium"
+        }
+       },
+       {
+        "key": "type",
+        "value": {
+         "stringValue": "cacheCreation"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792263815471000000",
+      "timeUnixNano": "1792263819573000000",
+      "asDouble": 0
+     },
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "f8ffc5d4-f611-401f-9089-904a5b09fce2"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "model",
+        "value": {
+         "stringValue": "claude-haiku-5-5"
+        }
+       },
+       {
+        "key": "query_source",
+        "value": {
+         "stringValue": "main"
+        }
+       },
+       {
+        "key": "effort",
+        "value": {
+         "stringValue": "medium"
+        }
+       },
+       {
+        "key": "type",
+        "value": {
+         "stringValue": "input"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792263817346000000",
+      "timeUnixNano": "1792263819573000000",
+      "asDouble": 2
+     },
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "f8ffc5d4-f611-401f-9089-904a5b09fce2"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "model",
+        "value": {
+         "stringValue": "claude-haiku-5-5"
+        }
+       },
+       {
+        "key": "query_source",
+        "value": {
+         "stringValue": "main"
+        }
+       },
+       {
+        "key": "effort",
+        "value": {
+         "stringValue": "medium"
+        }
+       },
+       {
+        "key": "type",
+        "value": {
+         "stringValue": "output"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792263817346000000",
+      "timeUnixNano": "1792263819573000000",
+      "asDouble": 80
+     },
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "f8ffc5d4-f611-401f-9089-904a5b09fce2"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "model",
+        "value": {
+         "stringValue": "claude-haiku-5-5"
+        }
+       },
+       {
+        "key": "query_source",
+        "value": {
+         "stringValue": "main"
+        }
+       },
+       {
+        "key": "effort",
+        "value": {
+         "stringValue": "medium"
+        }
+       },
+       {
+        "key": "type",
+        "value": {
+         "stringValue": "cacheRead"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792263817346000000",
+      "timeUnixNano": "1792263819573000000",
+      "asDouble": 25896
+     },
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "f8ffc5d4-f611-401f-9089-904a5b09fce2"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "model",
+        "value": {
+         "stringValue": "claude-haiku-5-5"
+        }
+       },
+       {
+        "key": "query_source",
+        "value": {
+         "stringValue": "main"
+        }
+       },
+       {
+        "key": "effort",
+        "value": {
+         "stringValue": "medium"
+        }
+       },
+       {
+        "key": "type",
+        "value": {
+         "stringValue": "cacheCreation"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792263817346000000",
+      "timeUnixNano": "1792263819573000000",
+      "asDouble": 37918
+     }
+    ]
+   }
+  },
+  "claude_code.code_edit_tool.decision": {
+   "name": "claude_code.code_edit_tool.decision",
+   "description": "Count of code editing tool permission decisions (accept/reject) for Edit, Write, and NotebookEdit tools",
+   "unit": "",
+   "sum": {
+    "aggregationTemporality": 1,
+    "isMonotonic": true,
+    "dataPoints": [
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "f8ffc5d4-f611-401f-9089-904a5b09fce2"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "decision",
+        "value": {
+         "stringValue": "reject"
+        }
+       },
+       {
+        "key": "source",
+        "value": {
+         "stringValue": "user_reject"
+        }
+       },
+       {
+        "key": "tool_name",
+        "value": {
+         "stringValue": "Write"
+        }
+       },
+       {
+        "key": "language",
+        "value": {
+         "stringValue": "Plain text"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792263851220000000",
+      "timeUnixNano": "1792263854581000000",
+      "asDouble": 1
+     }
+    ]
+   }
+  },
+  "claude_code.lines_of_code.count": {
+   "name": "claude_code.lines_of_code.count",
+   "description": "Count of lines of code modified, with the 'type' attribute indicating whether lines were added or removed and the 'model' attribute indicating which model made the change",
+   "unit": "",
+   "sum": {
+    "aggregationTemporality": 1,
+    "isMonotonic": true,
+    "dataPoints": [
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "68f4b0f0-34c1-4fcf-9c97-d74358991604"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "type",
+        "value": {
+         "stringValue": "added"
+        }
+       },
+       {
+        "key": "model",
+        "value": {
+         "stringValue": "claude-haiku-5-5"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792264895042000000",
+      "timeUnixNano": "1792264897525000000",
+      "asDouble": 1
+     },
+     {
+      "attributes": [
+       {
+        "key": "user.id",
+        "value": {
+         "stringValue": "94cade8c715d946b7eec9f742d8864c9da25fa1f03a25bb3665d0ec4c2bf516d"
+        }
+       },
+       {
+        "key": "session.id",
+        "value": {
+         "stringValue": "68f4b0f0-34c1-4fcf-9c97-d74358991604"
+        }
+       },
+       {
+        "key": "organization.id",
+        "value": {
+         "stringValue": "e865b284-0c94-44d6-847a-ddbac0a6fa26"
+        }
+       },
+       {
+        "key": "user.email",
+        "value": {
+         "stringValue": "<email>"
+        }
+       },
+       {
+        "key": "user.account_uuid",
+        "value": {
+         "stringValue": "66cc1169-479b-4710-b413-e8cf59838a63"
+        }
+       },
+       {
+        "key": "user.account_id",
+        "value": {
+         "stringValue": "user_01DhF3Q7y9qSbY7BaHdAvdVc"
+        }
+       },
+       {
+        "key": "terminal.type",
+        "value": {
+         "stringValue": "xterm-256color"
+        }
+       },
+       {
+        "key": "type",
+        "value": {
+         "stringValue": "removed"
+        }
+       },
+       {
+        "key": "model",
+        "value": {
+         "stringValue": "claude-haiku-5-5"
+        }
+       }
+      ],
+      "startTimeUnixNano": "1792264895042000000",
+      "timeUnixNano": "1792264897525000000",
+      "asDouble": 0
+     }
+    ]
+   }
+  }
+ }
+}
