@@ -1,0 +1,214 @@
+{
+ "hooks": {
+  "SessionStart": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ],
+  "UserPromptSubmit": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ],
+  "PreToolUse": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ],
+  "PostToolUse": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ],
+  "Notification": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ],
+  "Stop": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ],
+  "SubagentStop": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ],
+  "PreCompact": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ],
+  "SessionEnd": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ],
+  "PermissionRequest": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ],
+  "PermissionDenied": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ],
+  "PostToolUseFailure": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ],
+  "StopFailure": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ],
+  "SubagentStart": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ],
+  "PostToolBatch": [
+   {
+    "matcher": "*",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/hook.py",
+      "timeout": 120
+     }
+    ]
+   }
+  ]
+ },
+ "statusLine": {
+  "type": "command",
+  "command": "/Users/guillaume/dev/orchestrator/.claude/worktrees/jovial-chandrasekhar-62eee4/spikes/claude-cli/statusline.py"
+ },
+ "sandbox": {
+  "enabled": true,
+  "failIfUnavailable": true,
+  "autoAllowBashIfSandboxed": true,
+  "allowUnsandboxedCommands": false,
+  "network": {
+   "allowedDomains": [
+    "registry.npmjs.org",
+    "github.com",
+    "api.github.com"
+   ]
+  },
+  "filesystem": {
+   "denyRead": [
+    "~/.ssh",
+    "~/.config/gh"
+   ]
+  }
+ },
+ "permissions": {
+  "deny": [
+   "Bash(git push:*)",
+   "Read(//Users/guillaume/orch-spike-sandbox/otherwt/**)",
+   "Edit(//Users/guillaume/orch-spike-sandbox/outside/**)"
+  ]
+ }
+}
