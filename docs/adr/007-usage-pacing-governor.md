@@ -7,13 +7,15 @@ A Max plan has a 5-hour window and a weekly window, and possibly a separate week
 
 ## Admission points (what the Governor really controls)
 1. **Turn start**: every autonomous turn (a task, a message, a "continue") is delivered by the app, so it can be held in the queue.
-2. **Each tool call**: a PreToolUse hook asks for admission. If the Governor holds the agent, the hook waits up to a few seconds, then denies with "paused by governor" and the turn ends at that boundary.
+2. **Each tool call**: a PreToolUse hook asks for admission. If the Governor holds the agent, the hook waits up to a few seconds, then denies with "paused by governor" and the turn ends at that boundary. **Hook timeouts fail open** (P0: a hook past its `timeout` was dropped and the tool ran), so `orch-hook` enforces its own deadline well below the configured timeout (600 s) and always answers. Parallel tool calls run their hooks concurrently, and each one is admitted separately.
 3. **Watchdog**: a turn exceeding its ceiling (usage or duration) is interrupted at the next tool boundary.
 4. **Never blocked**: what the user types in a pane. Built-in subagents run inside their agent's turn and are counted against it.
 
 ## Measurements
 - `W` = weekly used %: **observed** from the statusline when it is fresh (< 15 min). Otherwise it is **estimated** as `W_last + cost_since / k + margin`, where `k` is one scalar ("cost estimate per 1 % of the week") updated by an exponentially weighted average whenever a fresh observed value arrives. The margin is 10–15 pp and shrinks as confidence grows.
 - `F` = 5h used %, observed the same way.
+- Observed values come from the statusline (`rate_limits`, integer %, `resets_at` in epoch s). They are missing until a session's first API response, and idle agents refresh them through `statusLine.refreshInterval`.
+- **Resume cost** uses the statusline `prompt_cache` (`expires_at`, `recache_tokens_if_cold`): resuming before expiry is nearly free (1 h TTL observed).
 - `U` = unattributed rate: the exponentially weighted average of (observed weekly delta − the app's attributed delta).
 
 ## Ideal curve

@@ -17,6 +17,7 @@ Many agents edit the same repository in parallel, so each one needs its own chec
 - The **Lead owns the integration worktree** (one branch can't be checked out in two worktrees) and does all merges. Specialists branch from the integration branch.
 - Feature docs (`.orchestrator/features/<slug>/`) have one source of truth: **the copy on the integration branch**.
 - Worktrees are `git worktree lock`ed while in use. The startup reconciler runs `git worktree list --porcelain` and `git worktree repair` when the repo has moved.
+- **Workspace trust**: the user trusts `<repo>.worktrees/` once (a one-time pane at project setup), and every worktree under it inherits the trust. Otherwise Claude Code's trust dialog would block each new agent before any hook runs. To confirm in a real worktree root (SPEC R10).
 - A per-project setup script runs on creation. Copying secrets (`.env`) is opt-in, with a warning.
 - The PR to the default branch is opened by the app from the integration branch, behind the PR gate (agents have no push credentials, ADR-009).
 

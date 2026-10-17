@@ -1,6 +1,7 @@
 # Orchestrator — Product & Technical Specification
 
-> Status: **Draft v0.2** · Owner: Guillaume · Last update: 2026-10-17
+> Status: **Draft v0.3** · Owner: Guillaume · Last update: 2026-10-17
+> v0.3 applies the findings of the [P0 CLI spike](spikes/p0-claude-cli.md) (Claude Code 2.1.302).
 > v0.2 applies the decisions and fixes from [the 2026-10-17 review](reviews/2026-10-17-spec-review.md). Main change: **agents are real Claude Code CLI processes** on the user's Max plan; there is no Agent SDK.
 > Scope: *what* we build and *why*, plus the high-level *how*. Implementation choices are in the ADRs (`docs/adr/`).
 
@@ -62,12 +63,13 @@ Orchestrator is a **personal, local-first macOS app** for running software proje
 
 ## 3. Persona & key user journeys
 
-**Persona: Guillaume.** A senior developer working alone on several projects in parallel. Claude Max subscriber, lives in kitty and nvim, keyboard first, **laptop with limited RAM**. Uses GitHub, Linear, Notion and Penpot/Figma. He wants leverage (many agents) without losing control (gates, his own tools) or running out of weekly limit.
+**Persona: Guillaume.** A senior developer working alone on several projects in parallel. Claude Max subscriber, lives in kitty and nvim, keyboard first, **8 GB laptop that is often under memory pressure**. Uses GitHub, Linear, Notion and Penpot/Figma. He wants leverage (many agents) without losing control (gates, his own tools) or running out of weekly limit.
 
 ### J0 — Onboarding (first run)
-1. The app checks that `claude` is installed, its version, and that it is logged in with a Pro/Max subscription. If not: instructions, and the app stays in read-only mode.
-2. Add the first projects (J1). Import `kitty.conf` (fonts, colors). Pick the editor command (default `nvim`).
-3. Set the first weekly plan (J8). If last week's data is missing, the app proposes an even split.
+1. The app checks that `claude` is installed, that its version is in the supported range (NFR-7), and that it is logged in with a Pro/Max subscription. If not: instructions, and the app stays in read-only mode.
+2. **Workspace trust**: Claude Code blocks the first launch in an untrusted folder with a trust dialog, before any hook runs. For each project the app opens a one-time pane in the project root and in its worktree root (`<repo>.worktrees/`) so the user can trust them; subfolders inherit the trust. The app never writes the trust itself.
+3. Add the first projects (J1). Import `kitty.conf` (fonts, colors). Pick the editor command (default `nvim`).
+4. Set the first weekly plan (J8). If last week's data is missing, the app proposes an even split.
 
 ### J1 — Add a project and see its state
 1. **Add project** (⌘N) → pick a folder or clone a URL.
@@ -154,11 +156,11 @@ Priority: **M** must, **S** should, **C** could. Phases are listed in §11. Jour
 |---|---|---|
 | FR-201 | An agent is the **real `claude` CLI** running interactively in a PTY pane, with a per-agent configuration generated from its role (§6.3). The user interacts with it directly: Claude Code's full UI (slash commands, plan mode, `!`/`#`, vim mode, rewind, subagents…) is available as is. [J2] | M |
 | FR-202 | Create, resume (`claude --resume <id>`), fork, rename and archive sessions. Sessions survive app restarts. | M |
-| FR-203 | **Live agents vs queued work**: any number of sessions can exist, but the number of live `claude` processes is capped (default set from the P0 memory measurement, expected 3–4). Extra work waits in the Governor's queue. | M |
-| FR-204 | **Suspend/resume**: an agent idle for N minutes (configurable, default 10) or waiting at a gate is stopped and later resumed by id. The UI shows "Suspended" and resumes it on focus or on new work. | M |
+| FR-203 | **Live agents vs queued work**: any number of sessions can exist, but the number of live `claude` processes is capped: **default 3** (about 250 MB each, measured in P0). The cap also **drops when macOS reports memory pressure** and recovers when it ends. Extra work waits in the Governor's queue. | M |
+| FR-204 | **Suspend/resume**: an agent idle for N minutes (configurable, default 10) or waiting at a gate is stopped and later resumed with `--resume <id>` (verified in P0, including after a kill mid-tool). Resuming within the prompt-cache lifetime (1 h observed, read from the statusline `prompt_cache.expires_at`) costs almost nothing; later resumes re-pay the context and are counted by the Governor. The UI shows "Suspended" and resumes on focus or on new work. | M |
 | FR-205 | Agent metadata pulled from Claude Code (§6.4): model, context %, cost/usage, current tool, last activity, state. It is shown in the pane header, the sidebar and the Overview. | M |
-| FR-206 | **Programmatic input** for orchestration: the app can deliver a message or a "continue" to an idle agent (typed into the PTY as bracketed paste), and add context to a busy one (hook `additionalContext`, §6.4). The user's own typing always wins over the app's. | M |
-| FR-207 | **Interrupt** (Esc sent to the PTY), **pause** (no new turns delivered), **kill** (SIGTERM, then SIGKILL after 5 s). | M |
+| FR-206 | **Programmatic input** for orchestration: the app can deliver a message or a "continue" to an idle agent (PTY bracketed paste), and add context to a busy one (hook `additionalContext`, §6.4). The user's own typing always wins over the app's. **Delivery rules** (from P0): start a message that begins with `/`, `!` or `#` with a space (otherwise the CLI runs it as a command and no turn starts); keep pastes under 900 characters (longer pastes are wrapped as untrusted `<pasted_content>`), and put longer instructions in a file under the agent's folder with a short message pointing to it; don't rely on tabs; wait 1.5 s after SessionStart before the first input. Input sent during a turn is queued by the CLI, not lost. | M |
+| FR-207 | **Interrupt** (Esc sent to the PTY), **pause** (no new turns delivered), **kill** (SIGTERM, then SIGKILL after 5 s) sent to the agent's **whole process group**: background shells survive a kill of `claude` alone (seen in P0). | M |
 | FR-208 | Clickable file paths and URLs in agent and shell panes (open in editor or browser). | M |
 | FR-209 | Search across session transcripts (Claude Code's JSONL files), per project or global. | S |
 | FR-210 | macOS notifications follow the attention ladder (§9.6), never one per finished turn. | M |
@@ -211,10 +213,10 @@ Priority: **M** must, **S** should, **C** could. Phases are listed in §11. Jour
 | ID | Requirement | P |
 |---|---|---|
 | FR-701 | Default autonomy is **"gates at key points"**: inside its worktree an agent edits files and runs commands freely, within its sandbox. | M |
-| FR-702 | **Enforced sandbox** (ADR-009): Claude Code's OS-level sandbox for Bash, with writes limited to the agent's worktree (plus temp and caches) and network limited to an allow-list. Claude's Read/Edit permission rules deny the other worktrees and the main checkout. | M |
-| FR-703 | **No credentials for agents**: `GH_TOKEN`, git credential helpers and SSH agent forwarding are removed from agent environments. `git push`, PR creation and merges to protected branches are only possible through gated orchestrator MCP tools. | M |
+| FR-702 | **Enforced sandbox** (ADR-009): Claude Code's OS-level sandbox for Bash, with writes limited to the agent's worktree (plus the CLI's scratch folder and caches), **reads denied** for credential stores, the main checkout and the other worktrees, and network limited to an allow-list. Claude's Read/Edit/Write tools are not covered by the OS sandbox, so permission rules (absolute paths written `//…`) deny the same places. | M |
+| FR-703 | **No credentials for agents**: credential env vars and `SSH_AUTH_SOCK` are removed; credential files on disk (`~/.ssh`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials`, cloud CLIs…) are unreadable inside the sandbox; git uses a generated global config with no credential helper (`GIT_CONFIG_GLOBAL`, `GIT_TERMINAL_PROMPT=0`). Removing env vars alone is not enough: in P0 the SSH key and the `gh` keyring token still reached GitHub. `git push`, PR creation and merges to protected branches are only possible through gated orchestrator MCP tools. | M |
 | FR-704 | Gate types: **Spec approval**, **Merge/PR**, **Out-of-sandbox action**, **Budget** (governor "ask"). Gates are implemented with **PreToolUse hooks** (they also run for allow-listed tools) and the orchestrator MCP tools. | M |
-| FR-705 | **Gates don't hold memory**: when a gate opens, the hook denies the action with "awaiting user approval", the turn ends, and the agent can be suspended. On approval the app resumes the agent and delivers "approved: proceed". | M |
+| FR-705 | **Gates and permission prompts**: a short decision (a permission prompt, a quick gate) is answered from the Inbox through the **PermissionRequest hook** without ending the turn, while `orch-hook` holds it within its own deadline. A long wait doesn't hold memory: the hook denies with "awaiting user approval", the turn ends, and the agent can be suspended. On approval the app resumes it and delivers "approved: proceed". | M |
 | FR-706 | Permission profiles (strict / gated / autonomous) per role, overridable per session. | M |
 | FR-707 | Inbox: one list ordered by the attention ladder (§9.6), with filters (project, type, agent) and keyboard triage (`j/k` move, `a` approve, `r` reject, `⏎` reply, `o` open, `x` select for batch, `u` undo for 5 s). Items whose context has changed are marked **stale**. | M |
 | FR-708 | "Always allow this for this project/role" creates a scoped rule that is visible and revocable in settings. | S |
@@ -230,7 +232,7 @@ The control law is specified in **ADR-007**. The requirements below are what the
 | FR-803 | **Ideal curve**: `ideal(t)` = fraction of the week's weighted working hours elapsed at time t × (100 % − reserve − forecast unattributed usage). Off-hours count only if the user enables an off-hours allowance. | M |
 | FR-804 | **Pressure states** with hysteresis: **Green / Amber / Red / Catch-up**, computed from the error `e = used − ideal` (pp) and the projected exhaustion time. Thresholds are in ADR-007 and adjustable in settings. | M |
 | FR-805 | **Governor v1 actions**: cap live autonomous agents per state; queue new turns by priority; pause teams at the next turn boundary; propose to defer work until after the reset; a separate **5h guard** that keeps headroom for interactive work. | M |
-| FR-806 | **Admission points**: the Governor decides at **turn start** (the app delivers every autonomous turn) and at **each tool call** (a PreToolUse hook waits up to a few seconds for admission, then denies with "paused by governor" if it is still held). The user's own typing in a pane is never blocked. | M |
+| FR-806 | **Admission points**: the Governor decides at **turn start** (the app delivers every autonomous turn) and at **each tool call** (a PreToolUse hook waits up to a few seconds for admission, then denies with "paused by governor" if it is still held). **Hook timeouts fail open** (the tool runs), so `orch-hook` always answers before its configured timeout. Parallel tool calls run their hooks concurrently, and each one is admitted separately. The user's own typing in a pane is never blocked. | M |
 | FR-807 | **Interactive and critical work** is admitted first and draws from the reserve. When the reserve is used up, the app warns instead of blocking and squeezes the other work harder. If most usage is interactive, the Governor has little to act on; the planner says so. | M |
 | FR-808 | **Fair scheduling**: queued work is picked by weighted fair queuing over allocation weights, with priority tiers and **aging** (one tier up for every 2 h of waiting) so nothing starves. Unused weight is redistributed. Nothing rolls over to the next week. | M |
 | FR-809 | **Transparency**: every queued or paused agent shows why, its estimated start, and **Run now** with its estimated cost. Every governor action is logged with its reason and can be undone from the log. A **next-action preview** shows what the Governor would do next. | M |
@@ -274,12 +276,12 @@ The control law is specified in **ADR-007**. The requirements below are what the
 ### 4.12 Settings
 | ID | Requirement | P |
 |---|---|---|
-| FR-1201 | Claude Code: path to `claude`, minimum supported version, login status; the app never sets `ANTHROPIC_API_KEY`, and warns if it finds one in the environment (it would bill the API instead of the plan). | M |
+| FR-1201 | Claude Code: path to `claude`, supported version range (checked at every spawn), login status. Agents run with `DISABLE_AUTOUPDATER=1` (in P0 the CLI replaced its own binary mid-session); Claude Code updates are applied by the user, and the contract tests (R2) run after each one. The app never sets `ANTHROPIC_API_KEY`, and warns if it finds one in the environment (it would bill the API instead of the plan). | M |
 | FR-1202 | MCP server registry (reused across roles) with per-project overrides. | M |
 | FR-1203 | Integrations: GitHub (`gh` auth), Linear, Notion, Penpot, Figma, each with status and reconnect. | M (GitHub) / S (others) |
 | FR-1204 | **Keyboard contract** (§9.7) with configurable bindings and a conflict checker. | M |
 | FR-1205 | Theme: see §9.1 for precedence. | S |
-| FR-1206 | The user's global Claude Code configuration (`~/.claude`) is never modified; orchestrated agents get their own per-agent settings files (§6.3). | M |
+| FR-1206 | The app never writes to the user's Claude Code configuration (`~/.claude`, `~/.claude.json`). All agents share it, because a separate config dir (`CLAUDE_CONFIG_DIR`) loses the login; Claude Code itself writes transcripts, history and trust there, and the app only reads them. Each agent gets an extra per-agent settings layer (§6.3). | M |
 
 ---
 
@@ -288,13 +290,13 @@ The control law is specified in **ADR-007**. The requirements below are what the
 | ID | Category | Requirement (testable) |
 |---|---|---|
 | NFR-1 | Responsiveness | UI input-to-paint < 100 ms at p95 with 4 live agents, 6 terminals and 200 queued items; transcripts and lists virtualized. |
-| NFR-1b | **Memory (primary constraint)** | Measured in P0, then fixed as budgets: app (Tauri + WebContent/GPU/Network helpers + Rust core) ≤ 250 MB with nothing running; each live agent is the `claude` process only. The live-agent cap default comes from the P0 measurement, sized to the laptop's RAM. |
+| NFR-1b | **Memory (primary constraint)** | Measured as **phys_footprint** (RSS is misleading under memory pressure: 66–315 MB for the same process in P0). App (Tauri + WebContent/GPU/Network helpers + Rust core) ≤ 250 MB with nothing running. Each live agent ≈ 250 MB (P0: 165–210 MB idle, 230–255 MB working; `--strict-mcp-config` saves about 25 MB). Default cap 3 live agents, lowered under memory pressure (FR-203). |
 | NFR-2 | Resilience | After a crash: every session can be resumed by id, queues and plans are intact, worktrees reconciled. **Not guaranteed**: programs running inside terminal panes (they are restarted in their cwd). Test: kill -9 the app mid-turn and mid-gate, restart, and check nothing is lost or duplicated. |
-| NFR-3 | Security | Sandbox and credential rules of FR-702/703. Orchestrator MCP traffic goes over a Unix socket with 0600 permissions, with no network port. Secrets only in the macOS Keychain. Test: an agent prompted to write outside its worktree, `curl` an unlisted host, or `git push` must fail. |
+| NFR-3 | Security | Sandbox and credential rules of FR-702/703. Orchestrator MCP traffic goes over a Unix socket with 0600 permissions, with no network port. Secrets only in the macOS Keychain. Test (ADR-009): an agent prompted to write outside its worktree, read another worktree or a credential file, `curl` an unlisted host, `ssh -T git@github.com`, `gh api user` or `git push` (directly or inside a script) must fail. |
 | NFR-4 | Privacy | Local-first; no telemetry. OpenTelemetry from Claude Code is exported only to the app's local receiver. |
 | NFR-5 | Observability | Structured logs per agent; a debug pane with raw hook, statusline and OTEL events. |
 | NFR-6 | Portability | macOS (Apple Silicon) first; no macOS-only APIs in the core except behind interfaces (power assertion, notifications, Keychain). |
-| NFR-7 | Compatibility | A supported Claude Code version range is declared; the app checks it at start and warns on newer, untested versions (hooks and statusline formats can change). |
+| NFR-7 | Compatibility | A supported Claude Code version range is declared (P0 baseline: 2.1.302); the app checks it at every spawn and refuses or warns on untested versions (hooks, flags and statusline formats can change). Auto-update is disabled for agents (FR-1201). |
 | NFR-8 | Data | SQLite (WAL, one writer thread) in app data, with versioned migrations; large outputs stored outside the rows; retention for raw events (default 30 days). |
 | NFR-9 | Pacing quality | In the simulator (FR-820): with a synthetic week whose demand is 130 % of the allowance, the policy never hits 100 % before the reset during working hours and ends between 85 and 100 %; with 60 % demand it never queues work. |
 | NFR-10 | Compliance | Agents only use the official Claude Code client logged in with the user's subscription, with no API key. Unattended runs (off-hours, FR-816) stay disabled until the go/no-go of R1 (§10). |
@@ -358,27 +360,41 @@ flowchart LR
 Team run: `draft → spec → spec_gate → planning → executing → integrating → pr_gate → done`, plus `paused`, `deferred` and `failed`.
 
 ### 6.3 How an agent is configured (compiled from its Role)
-For each agent the core writes a per-agent directory in app data and launches `claude` in the worktree with flags pointing to it. The exact flags are verified in P0; they include `--settings`, `--mcp-config`, `--model`, `--permission-mode`, `--append-system-prompt`, `--resume` and `--session-id`. The generated settings contain:
-- **hooks** → `orch-hook` for SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SubagentStop, PreCompact and SessionEnd;
-- **statusLine** → `orch-status`, which forwards the JSON to the core and, if the user has their own statusline command, runs it and prints its output;
-- **sandbox** and **permissions** from the role's profiles (FR-702);
-- **environment**: the agent id and socket path, OpenTelemetry pointed at the local receiver, credentials removed (FR-703).
+For each agent the core writes a per-agent directory in app data and launches `claude` in the worktree. Flags verified in P0 (Claude Code 2.1.302):
+- `--settings <file>`: the per-agent settings layer (loaded on top of the user's settings; its `statusLine` replaces the user's).
+- `--mcp-config <file>` and, when the role says so, `--strict-mcp-config` (ignore the user's other MCP servers; also saves memory).
+- `--setting-sources` when the role should not load the project's or the user's settings.
+- `--model`, `--effort`, `--append-system-prompt`, `-n/--name`.
+- `--session-id <uuid>` on first start, `--resume <id>` afterwards (`--fork-session` to fork).
+- `--permission-mode` **always passed explicitly**, one of `manual | acceptEdits | auto | dontAsk | plan` (`bypassPermissions` never). Otherwise the user's own `defaultMode` applies to agents.
+- **Never** `--bare` or `--safe-mode`: both disable hooks, including the app's.
 
-The user's `~/.claude` settings, CLAUDE.md, skills and plugins still load as usual unless the role disables them.
+The generated settings contain:
+- **hooks** → `orch-hook` for SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, PostToolUseFailure, PostToolBatch, Notification, Stop, StopFailure, SubagentStart/SubagentStop, PreCompact and SessionEnd, each with a generous `timeout` (600 s) that `orch-hook` never reaches (FR-806);
+- **statusLine** → `orch-status` with `refreshInterval: 5` so idle agents keep reporting; it forwards the JSON to the core and then runs the user's own statusline command, if any, and prints its output;
+- **sandbox** and **permissions** from the role's profiles (FR-702, ADR-009);
+- **environment**: built from scratch (not inherited from the app), with PATH taken from the user's login shell (user plugin hooks need tools like `node`), the agent id and socket path, `DISABLE_AUTOUPDATER=1`, OpenTelemetry to the local receiver tagged with `OTEL_RESOURCE_ATTRIBUTES=orch.agent_id=<id>`, the generated git config, and no credentials (FR-703).
 
-### 6.4 Signals and control channels
+**Orchestrator preamble**: every compiled prompt includes a short `--append-system-prompt` section saying that text starting with `ORCH:` in hook context comes from the orchestrator on the user's behalf. Without it, the model treats hook context as untrusted and ignores it (seen in P0).
+
+User customizations still load into every agent (CLAUDE.md, skills, plugins and their hooks, claude.ai connectors, user MCP servers, permissions) unless the role turns them off with `--strict-mcp-config` / `--setting-sources`.
+
+### 6.4 Signals and control channels (verified in P0 unless marked)
 | Need | Channel |
 |---|---|
-| 5h / weekly %, reset times, context %, cost | statusline JSON (`rate_limits`, `context_window`, `cost`) via `orch-status` |
-| Tokens and cost over time per session | OpenTelemetry metrics to the local receiver |
-| State (working, waiting for permission, idle, finished) | hooks (PreToolUse, Notification, Stop…) |
-| Tool admission, gates, audit | PreToolUse hook decisions (allow / deny with reason / ask) |
-| Inject messages into a busy agent | PostToolUse `additionalContext` |
-| Deliver a new turn to an idle agent | PTY input (bracketed paste + Enter), only while idle and the user isn't typing |
-| Keep an agent working on queued tasks | Stop hook returning "continue" with the next task, if the Governor admits it |
-| History and search | Claude Code's transcript JSONL |
+| 5h / weekly %, reset times, context %, cost, prompt-cache state | statusline JSON via `orch-status`: `rate_limits.five_hour/seven_day.{used_percentage, resets_at}` (integer %, epoch s), `context_window`, `cost`, `prompt_cache` (`ttl`, `expires_at`, `recache_tokens_if_cold`). Missing until the first API response of a session. |
+| Tokens and cost over time per session | OpenTelemetry (OTLP http/json, local only): metrics `claude_code.token.usage`, `cost.usage`, `active_time.total`, `session.count`…; events `api_request` (tokens, cache, cost, duration), `tool_result`, `tool_decision`. Records include the user's email and account ids, so the receiver stays on localhost. No rate-limit data here. |
+| State (working, waiting, idle, finished) | Hooks: UserPromptSubmit, PreToolUse, Stop, Notification (`permission_prompt`, `idle_prompt` ~60 s after Stop), SessionStart (`startup`/`resume`), SessionEnd. Nothing fires on SIGKILL. |
+| Tool admission | PreToolUse decision `allow` / `deny` with a reason. Deny rules in permissions win over a hook's `allow`. |
+| Permission prompts and short gates | **PermissionRequest** hook answering `allow`/`deny` (no dialog shown). |
+| Audit of rule-denied calls | **PostToolBatch** (calls denied by permission rules reach neither PreToolUse nor PermissionDenied). Sandbox violations only appear in tool output. |
+| API / rate-limit errors | **StopFailure** hook (registered, not yet exercised) + statusline at 100 % + PTY output. |
+| Inject messages into a busy agent | PostToolUse `additionalContext`, prefixed `ORCH:` (needs the preamble above). |
+| Deliver a new turn to an idle agent | PTY bracketed paste + Enter while idle and the user isn't typing, following the FR-206 delivery rules. |
+| Keep an agent working on queued tasks | Stop hook returning `{"decision":"block","reason":"<next task>"}` if the Governor admits it; never when the payload has `stop_hook_active: true` and nothing new was admitted (avoids loops). |
+| History and search | Claude Code's transcript JSONL (`transcript_path` in every hook payload). |
 
-The P0 spike must confirm each channel against the installed Claude Code version (R2).
+The contract test suite (R2) replays these checks after every Claude Code update.
 
 ### 6.5 Security model (ADR-009)
 Per-agent OS sandbox for Bash, permission rules for Claude's own tools, no credentials, push and PR only through gated MCP tools, and an audit log of every gate and permission decision.
@@ -583,13 +599,14 @@ Do-Not-Disturb holds levels 3–4 and batches level 1. **Jump to next waiting ag
 |---|---|---|
 | R1 | **Compliance of automated use.** Orchestrating the official CLI on a subscription is the supported client, but heavy unattended or overnight automation may fall under the consumer terms' limits on automated access. | **P0 go/no-go**: ask Anthropic support. Until confirmed, off-hours/unattended runs (FR-816) stay disabled and every autonomous turn starts from a user action or an approved plan. |
 | R2 | **Signal and control channels** (statusline `rate_limits`, hook fields, PTY idle detection, flags) are not a stable API and can change between Claude Code versions. | P0 spike against the installed version; declared supported range (NFR-7); a contract test suite that runs on each Claude Code update. |
-| R3 | **Statusline data appears only after the first response** of a session and only while some agent is running. | Keep the last observed values with their timestamp; estimator fallback (FR-814) with a confidence marker. |
-| R4 | **PTY-driven input** (typing into an idle agent) can collide with the user typing or with a TUI change. | Deliver only when idle (Stop/Notification hook) and the pane has had no user keystroke for 2 s; prefer hook channels where possible. |
+| R3 | **Statusline data appears only after the first response** of a session (confirmed in P0) and only while some agent is running. It is unproven whether idle refreshes return newer `rate_limits`. | `refreshInterval` on idle agents; keep the last observed values with their timestamp; estimator fallback (FR-814) with a confidence marker. |
+| R4 | **PTY-driven input** can collide with the user typing or a TUI change; leading `/`, long pastes and tabs are altered (P0). | Deliver only when idle (Stop/Notification hook) and the pane has had no user keystroke for 2 s; the FR-206 delivery rules; prefer hook channels where possible. |
 | R5 | **Memory**: each live agent is a full Claude Code process. | Live-agent cap, suspend/resume, P0 measurement (NFR-1b). |
-| R6 | **Resume cost**: a resumed session may have to re-read its whole context if the prompt cache has expired. | The Governor counts resume cost; suspend timeout tuned against cache lifetime. |
+| R6 | **Resume cost**: a resumed session re-pays its whole context once the prompt cache has expired (1 h TTL observed). | The Governor uses `prompt_cache.expires_at` and `recache_tokens_if_cold` from the statusline; resume before expiry when possible. |
 | R7 | **Merge conflicts** between specialists. | Lead decomposes by module ownership; frequent integration; conflicts routed to the owner. |
 | R8 | **MCP auth** (Penpot, Figma, Linear, Notion) inside agents. | Central registry, status, Inbox items (FR-604). |
 | R9 | **Visual fidelity** to kitty in xterm.js on WKWebView, and the WebGL context limit. | P0 spike with the user's `kitty.conf`; hidden panes don't render (FR-1005). |
+| R10 | **Hook behavior under long holds** (minutes, while the user types in the same pane), SubagentStop/PreCompact payloads, StopFailure on a real rate-limit hit, several agents at once, and the trust dialog inside a real worktree root: not yet tested. | Second P0 spike before P1b. |
 | Q1 | Should the Lead be able to add roles at runtime? | Default no; possible later behind a gate. |
 
 ---
@@ -598,7 +615,7 @@ Do-Not-Disturb holds levels 3–4 and batches level 1. **Jump to next waiting ag
 
 | Phase | Content | Exit criteria |
 |---|---|---|
-| **P0 — Spikes, go/no-go, UI foundations** | (1) R1 answer from Anthropic. (2) `claude` in a PTY: flags, per-agent settings, hooks, statusline `rate_limits`, OTEL, suspend/resume by id, PTY delivery while idle. (3) Memory: RSS per `claude` process, app baseline. (4) Sandbox scoped to the worktree, credentials removed, `git push` blocked. (5) xterm.js in WKWebView with the user's `kitty.conf` + nvim, key conflicts. (6) Crash/restart reconciliation. (7) **Penpot**: Foundations, Shell, P1 screens. | Each spike demoed; R1/R2 answered; NFR-1b numbers set; Penpot gate met. |
+| **P0 — Spikes, go/no-go, UI foundations** | (1) R1 answer from Anthropic. (2) `claude` in a PTY: flags, per-agent settings, hooks, statusline `rate_limits`, OTEL, suspend/resume by id, PTY delivery while idle. (3) Memory: footprint per `claude` process, app baseline. (4) Sandbox scoped to the worktree, credentials removed, `git push` blocked. Items (2)–(4) **done**: see [p0-claude-cli.md](spikes/p0-claude-cli.md); open items in R10. (5) xterm.js in WKWebView with the user's `kitty.conf` + nvim, key conflicts. (6) Crash/restart reconciliation. (7) **Penpot**: Foundations, Shell, P1 screens. | Each spike demoed; R1/R2 answered; NFR-1b numbers set; Penpot gate met. |
 | **P1 — Solo power user** | Projects & git (4.1), agent panes with suspend/resume (4.2), terminal (4.10), editor (4.11), Overview (4.9), Inbox for permissions, sandbox and credential rules (FR-702/703), **usage collector + Week planner + read-only forecast** (FR-801–804, 813, 817), pacing simulator (FR-820). | Daily driver for solo work; forecast within ±10 pp of the observed weekly % at reset. |
 | **P1b — Governor v1** | FR-805–812: live cap per state, queue, fair scheduling, pause/defer, 5h guard, transparency, shadow mode, overrides. | One real week in shadow mode, then one enforced week meeting G6. |
 | **P2 — Teams** | Canvas & builder (4.3), orchestration runtime + MCP server (4.4), task backends Local + GitHub (4.5), gates (4.7). | A feature delivered by a team with 2 gates and no sandbox violation. |
