@@ -1,0 +1,48 @@
+{
+ "after 429 (mock)": {
+  "rate_limits": {
+   "five_hour": {
+    "used_percentage": 100,
+    "resets_at": 1792492371
+   }
+  },
+  "cost": {
+   "total_cost_usd": 0,
+   "total_duration_ms": 41548,
+   "total_api_duration_ms": 0,
+   "total_lines_added": 0,
+   "total_lines_removed": 0
+  },
+  "version": "2.1.302"
+ },
+ "three agents: b7-x": {
+  "five_hour": {
+   "used_percentage": 40,
+   "resets_at": 1792489800
+  },
+  "seven_day": {
+   "used_percentage": 6,
+   "resets_at": 1792983600
+  }
+ },
+ "three agents: b7-y": {
+  "five_hour": {
+   "used_percentage": 40,
+   "resets_at": 1792489800
+  },
+  "seven_day": {
+   "used_percentage": 6,
+   "resets_at": 1792983600
+  }
+ },
+ "three agents: b7-z": {
+  "five_hour": {
+   "used_percentage": 40,
+   "resets_at": 1792489800
+  },
+  "seven_day": {
+   "used_percentage": 6,
+   "resets_at": 1792983600
+  }
+ }
+}
