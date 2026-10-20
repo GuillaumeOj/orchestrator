@@ -69,8 +69,23 @@ SPEC §9.7 should adopt the shortcut notation above (proposal; not edited).
 8. **FR-809 Run now cost** is shown as "≈ +2 pp of the week". When the 5h guard is the binding constraint, the 5h cost matters more. Proposal: show the cost in the binding window ("≈ +6 % of 5h").
 9. **§9.0 pages**: `00 Cover` lists screens "ready for dev". There is no "In review" status in the SPEC. The Cover uses Not started / In review / Ready for dev. Proposal: name these three statuses in §9.0.
 
+## 06 Flows: J5 Inbox triage
+
+Six 1512 frames on page 06, each with a notes board above it giving the step, the key sequence and what happens. A Penpot flow named "J5 · Inbox triage" starts at step 1.
+
+1. **Gate selected** (`⌘+⇧+I`, `j/k`, `a`).
+2. **Approved, permission next.** The undo toast offers `u`.
+3. **Allowed, question next.**
+4. **Reply composer.** `⏎` opens it, `⇧+⏎` adds a new line, `⏎` sends, `esc` cancels.
+5. **Budget ask.** Shows its default and a timeout countdown (FR-810).
+6. **Inbox clear.** Empty state; the Info digest keeps the history.
+
+- **Prototype wiring:** Penpot has no keyboard triggers, so clicks stand in for keys: Approve → 2, Allow once → 3, Reply → 4, Send → 5, Defer → 6, Cancel → 3. The undo toasts go back one step.
+- **Design decision:** after a gate is approved in Red, the lead **queues first for the live slot** instead of resuming, because back-1 holds the only slot. Interactive agents (front-1, solo/fix-tax) resume at once. The 04 Inbox screen now says the same.
+- **Spec gap:** SPEC J5 step 3 says "after approval the agent resumes". Proposal: "resumes, or queues with its tier if the Governor holds the live slot (the item says so)".
+
 ## Not done
 
-- **06 Flows** (J5 Inbox triage prototype) was not built.
+- **06 Flows**: J2 and J8 prototypes.
 - **05 Keyboard & copy** is untouched.
 - The pacing-indicator popover is a component, but no screen shows it opened over the title bar.

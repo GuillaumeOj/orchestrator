@@ -12,7 +12,7 @@ The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app 
 | 03 Shell & layouts | Shell at 1512 (docked inspector), 1280 (icon rail + overlay inspector), zoomed pane; 1728 not drawn | In review |
 | 04 Screens | P1 panes: Overview, Agent pane (+ states), Week planner, Inbox | In review (P1 panes) |
 | 05 Keyboard & copy | Shortcut map (§9.7) with conflicts; notification and banner copy | Not started |
-| 06 Flows | Prototypes of J2, J5, J8 with key sequences | Not started |
+| 06 Flows | J5 Inbox triage prototype (6 frames, key sequences annotated); J2, J8 not started | In review (J5) |
 | 07 Explorations | Drafts, not binding | — |
 
 **P1 gate:** before P1 UI work starts, 01, 03 and the P1 panes in 04 (Overview, Agent pane, Week planner, Inbox) are marked ready for dev on `00 Cover`. As of 2026-10-20 they are all **In review**; Guillaume decides Ready for dev. Open questions and spec gaps from the design pass: [p1-design-notes.md](p1-design-notes.md).
@@ -32,6 +32,7 @@ Exports of the Penpot boards (Dark theme unless noted), refreshed by hand:
 | 04 Agent pane | [04-agent-pane.png](img/04-agent-pane.png) · states: [04-agent-pane-states.png](img/04-agent-pane-states.png) |
 | 04 Week planner | [04-week-planner.png](img/04-week-planner.png) |
 | 04 Inbox | [04-inbox.png](img/04-inbox.png) · Light: [04-inbox-light.png](img/04-inbox-light.png) |
+| 06 J5 Inbox triage | [1 gate](img/06-j5-1-gate.png) → [2 approved](img/06-j5-2-approved.png) → [3 allowed](img/06-j5-3-allowed.png) → [4 reply](img/06-j5-4-reply.png) → [5 budget ask](img/06-j5-5-budget.png) → [6 clear](img/06-j5-6-clear.png) |
 
 All screens use one scenario: Wednesday 21 Oct 11:00, Governor in Red (+9 pp), live cap 1; shop-api › checkout-v2 team (lead at gate, back-1 working, front-1 waiting, ui-1 suspended), solo sessions in shop-api and blog, infra team queued.
 
