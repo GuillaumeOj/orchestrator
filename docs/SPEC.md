@@ -1,7 +1,7 @@
 # Orchestrator — Product & Technical Specification
 
-> Status: **Draft v0.3** · Owner: Guillaume · Last update: 2026-10-17
-> v0.3 applies the findings of the [P0 CLI spike](spikes/p0-claude-cli.md) (Claude Code 2.1.302).
+> Status: **Draft v0.4** · Owner: Guillaume · Last update: 2026-10-20
+> v0.3 applies the findings of the [P0 CLI spike](spikes/p0-claude-cli.md) (Claude Code 2.1.302). v0.4 applies the [P0 terminal spike](spikes/p0-terminal.md) (Tauri 2.12, xterm.js 6).
 > v0.2 applies the decisions and fixes from [the 2026-10-17 review](reviews/2026-10-17-spec-review.md). Main change: **agents are real Claude Code CLI processes** on the user's Max plan; there is no Agent SDK.
 > Scope: *what* we build and *why*, plus the high-level *how*. Implementation choices are in the ADRs (`docs/adr/`).
 
@@ -260,16 +260,16 @@ The control law is specified in **ADR-007**. The requirements below are what the
 | ID | Requirement | P |
 |---|---|---|
 | FR-1001 | Terminal panes on a real PTY running the user's **login shell** with their env and dotfiles. [J6] | M |
-| FR-1002 | **Renders like kitty**: font family/size, line height, colors, cursor style, padding and opacity imported from `kitty.conf` (unmapped options are listed), truecolor, ligatures, Nerd Fonts, GPU (WebGL) rendering. Acceptance: side-by-side screenshots with the user's kitty. | M |
+| FR-1002 | **Renders like kitty**: font family/size, line height, colors, cursor style, padding and opacity imported from `kitty.conf` (following `include`s; unmapped options are listed), truecolor, Nerd Font symbols, ligatures only if kitty has them enabled. How (P0, ADR-006): (a) resolve `font_family` **the way kitty does** (exact monospace family, otherwise Menlo) and warn when kitty itself can't resolve the configured font; (b) the core loads the font files for the UI, because WKWebView hides user-installed fonts; (c) kitty's bundled `SymbolsNerdFontMono` is the symbol fallback; (d) cell width rounds up and line height comes from CoreText metrics, like kitty. **Acceptance**: side-by-side screenshots against what kitty *actually* renders (`kitty --debug-font-fallback`), not what `kitty.conf` says. | M |
 | FR-1003 | Tabs, splits and zoom; the cwd defaults to the focused agent's worktree or the project root; scrollback is capped in memory, with older output spilled to disk. | M |
-| FR-1004 | **Open in kitty** at the same cwd. | S |
-| FR-1005 | Hidden panes stop rendering (no WebGL context) and keep only their buffer. | M |
+| FR-1004 | **Open in kitty** at the same cwd, using `kitty @ launch --cwd` when `kitty.conf` enables remote control (`allow_remote_control`, `listen_on`), otherwise a new kitty instance. | S |
+| FR-1005 | **Renderer policy** (P0 memory, NFR-1b): the **DOM renderer is the default**. The first WebGL pane costs about 110 MB in WebKit's GPU helper, against about 10–15 MB per pane for the DOM renderer. WebGL is opt-in (setting), and even then at most 12 visible panes use it. Hidden panes always drop their WebGL context and keep only their buffer. WebKit allows 16 live WebGL contexts per page, and a lost context falls back to the DOM renderer. P1 confirms that the DOM renderer holds NFR-1 under heavy output; if it doesn't, the focused pane may switch to WebGL. | M |
 
 ### 4.11 Editor integration
 | ID | Requirement | P |
 |---|---|---|
 | FR-1101 | **Open in editor** on file paths in panes, diffs, Inbox previews and task artifacts. [J7] | M |
-| FR-1102 | The editor command template defaults to `nvim +{line} {file}`, run in an embedded pane. If the project already has an nvim pane, the file opens there (`nvim --server <sock> --remote`). An external kitty window is optional. | M |
+| FR-1102 | The editor command template defaults to `nvim +{line} {file}` (or the `editor` set in `kitty.conf`), run in an embedded pane. If the project already has an nvim pane, the file opens there (`nvim --server <sock> --remote`). An external kitty window is optional. | M |
 | FR-1103 | File changes are detected in worktrees. User edits appear in the timeline and are announced to the owning agent at its next turn. | S |
 | FR-1104 | No built-in code editor; the only text editing in the app is for short fields (brief, replies). | M |
 
@@ -279,7 +279,7 @@ The control law is specified in **ADR-007**. The requirements below are what the
 | FR-1201 | Claude Code: path to `claude`, supported version range (checked at every spawn), login status. Agents run with `DISABLE_AUTOUPDATER=1` (in P0 the CLI replaced its own binary mid-session); Claude Code updates are applied by the user, and the contract tests (R2) run after each one. The app never sets `ANTHROPIC_API_KEY`, and warns if it finds one in the environment (it would bill the API instead of the plan). | M |
 | FR-1202 | MCP server registry (reused across roles) with per-project overrides. | M |
 | FR-1203 | Integrations: GitHub (`gh` auth), Linear, Notion, Penpot, Figma, each with status and reconnect. | M (GitHub) / S (others) |
-| FR-1204 | **Keyboard contract** (§9.7) with configurable bindings and a conflict checker. | M |
+| FR-1204 | **Keyboard contract** (§9.7) with configurable bindings and a conflict checker that also reads the macOS system shortcuts (`com.apple.symbolichotkeys`, e.g. input-source switching). | M |
 | FR-1205 | Theme: see §9.1 for precedence. | S |
 | FR-1206 | The app never writes to the user's Claude Code configuration (`~/.claude`, `~/.claude.json`). All agents share it, because a separate config dir (`CLAUDE_CONFIG_DIR`) loses the login; Claude Code itself writes transcripts, history and trust there, and the app only reads them. Each agent gets an extra per-agent settings layer (§6.3). | M |
 
@@ -289,8 +289,8 @@ The control law is specified in **ADR-007**. The requirements below are what the
 
 | ID | Category | Requirement (testable) |
 |---|---|---|
-| NFR-1 | Responsiveness | UI input-to-paint < 100 ms at p95 with 4 live agents, 6 terminals and 200 queued items; transcripts and lists virtualized. |
-| NFR-1b | **Memory (primary constraint)** | Measured as **phys_footprint** (RSS is misleading under memory pressure: 66–315 MB for the same process in P0). App (Tauri + WebContent/GPU/Network helpers + Rust core) ≤ 250 MB with nothing running. Each live agent ≈ 250 MB (P0: 165–210 MB idle, 230–255 MB working; `--strict-mcp-config` saves about 25 MB). Default cap 3 live agents, lowered under memory pressure (FR-203). |
+| NFR-1 | Responsiveness | UI input-to-paint < 100 ms at p95 with 4 live agents, 6 terminals and 200 queued items; transcripts and lists virtualized. PTY output uses the **pull transport** (ADR-001): with 6 panes streaming, P0 measured frames at p95 35 ms / max 50 ms, against 2–5 s UI stalls with Tauri Channels. |
+| NFR-1b | **Memory (primary constraint)** | Measured as **phys_footprint** (RSS is misleading under memory pressure: 66–315 MB for the same process in P0). App (Tauri + WebContent/GPU/Network helpers + Rust core) ≤ 250 MB with nothing running; **measured in P0: about 75 MB idle**, 88 MB with 1 DOM pane, 104 MB with 6 DOM panes (with WebGL: about 220 MB with 1 pane, 240 MB with 6). Test: 6 panes after heavy output ≤ 400 MB. The app's memory display counts the GPU helper. Measure with the screen unlocked and the window visible (WKWebView throttles otherwise). Each shell outside the app ≈ 5 MB. Each live agent ≈ 250 MB (P0: 165–210 MB idle, 230–255 MB working; `--strict-mcp-config` saves about 25 MB). Default cap 3 live agents, lowered under memory pressure (FR-203). |
 | NFR-2 | Resilience | After a crash: every session can be resumed by id, queues and plans are intact, worktrees reconciled. **Not guaranteed**: programs running inside terminal panes (they are restarted in their cwd). Test: kill -9 the app mid-turn and mid-gate, restart, and check nothing is lost or duplicated. |
 | NFR-3 | Security | Sandbox and credential rules of FR-702/703. Orchestrator MCP traffic goes over a Unix socket with 0600 permissions, with no network port. Secrets only in the macOS Keychain. Test (ADR-009): an agent prompted to write outside its worktree, read another worktree or a credential file, `curl` an unlisted host, `ssh -T git@github.com`, `gh api user` or `git push` (directly or inside a script) must fail. |
 | NFR-4 | Privacy | Local-first; no telemetry. OpenTelemetry from Claude Code is exported only to the app's local receiver. |
@@ -305,7 +305,7 @@ The control law is specified in **ADR-007**. The requirements below are what the
 
 ## 6. Architecture
 
-Stack (ADR-001): **Tauri 2** shell (system webview), a light UI framework (SolidJS or Svelte, picked in P0), a **Rust core**, and **`claude` CLI processes** spawned directly by the core in PTYs. There is no Node runtime.
+Stack (ADR-001): **Tauri 2** shell (system webview), a light UI framework (**Svelte 5**, picked in P0), a **Rust core**, and **`claude` CLI processes** spawned directly by the core in PTYs. There is no Node runtime.
 
 ```mermaid
 flowchart LR
@@ -318,7 +318,7 @@ flowchart LR
     IN[Inbox]
   end
 
-  UI <-- "Tauri IPC + binary channels" --> CORE
+  UI <-- "Tauri IPC (pull for PTY output)" --> CORE
 
   subgraph CORE["Rust core"]
     PS[Project & Git service]
@@ -552,11 +552,13 @@ Each label has one color and one icon everywhere (§9.0 Foundations).
 Do-Not-Disturb holds levels 3–4 and batches level 1. **Jump to next waiting agent**: leader `w`.
 
 ### 9.7 Keyboard contract
-- When a terminal pane (agent, shell, nvim) has focus, **every key goes to the PTY** except ⌘-chords and the **leader key** (default `Ctrl-Space`, configurable; press it twice to send it literally).
+- When a terminal pane (agent, shell, nvim) has focus, **every key goes to the PTY** except ⌘-chords and the **leader key**. The default leader is **`⌘;`**: ⌘ never reaches the PTY, so it can't clash with nvim or the shell. (`Ctrl-Space` was rejected in P0: it is macOS's input-source shortcut and nvim-cmp's completion key.) Any leader can be configured; a non-⌘ leader is sent literally when pressed twice.
+- **Shift+Enter** in agent panes sends `ESC CR`, so it adds a newline in Claude Code instead of submitting (P0).
+- The app ships its own macOS menu, so system items (Close Window ⌘W, Hide ⌘H, Minimize ⌘M) don't take chords this contract uses.
 - **Global ⌘ shortcuts**: ⌘K palette, ⌘P jump, ⌘B sidebar, ⌘I inspector, ⌘N new project, ⌘T new session, ⌘1…9 focus pane, ⌘W close pane, ⌘⇧I Inbox.
 - **Leader + key**: `s`/`v` split horizontally/vertically, `h j k l` move focus, `z` zoom, `t` new shell, `e` open editor, `w` next waiting agent, `p` pause/resume the focused agent, `o` Overview, `g` Week planner.
 - The Inbox and the canvas have their own single-key maps when focused (FR-707, FR-302).
-- P0 checks the conflicts with nvim and Claude Code inside xterm.js (e.g. Ctrl-I vs Tab, which the kitty keyboard protocol distinguishes and xterm.js doesn't) and records them on Penpot page `05`.
+- **Known limits** (P0): xterm.js has no kitty keyboard protocol, so `Ctrl-I` = Tab, `Ctrl-M` = Enter and `Ctrl-[` = Esc as in legacy terminals, and `Ctrl-/`, `Ctrl-.`, `Ctrl-;` and every `Ctrl-Shift-<letter>` send nothing. These are recorded on Penpot page `05`. Not yet tested with physical keys: ⌘-chords against the menu, dead keys and IME composition (R9).
 
 ### 9.8 Wireframes (low-fi, starting points for Penpot)
 
@@ -605,7 +607,7 @@ Do-Not-Disturb holds levels 3–4 and batches level 1. **Jump to next waiting ag
 | R6 | **Resume cost**: a resumed session re-pays its whole context once the prompt cache has expired (1 h TTL observed). | The Governor uses `prompt_cache.expires_at` and `recache_tokens_if_cold` from the statusline; resume before expiry when possible. |
 | R7 | **Merge conflicts** between specialists. | Lead decomposes by module ownership; frequent integration; conflicts routed to the owner. |
 | R8 | **MCP auth** (Penpot, Figma, Linear, Notion) inside agents. | Central registry, status, Inbox items (FR-604). |
-| R9 | **Visual fidelity** to kitty in xterm.js on WKWebView, and the WebGL context limit. | P0 spike with the user's `kitty.conf`; hidden panes don't render (FR-1005). |
+| R9 | **Terminal rendering & input** — mostly retired by the [P0 terminal spike](spikes/p0-terminal.md): fidelity matches kitty after the FR-1002 fixes, and the WebGL context limit is handled (FR-1005). Still open: physical-key checks (⌘-chords vs the menu, dead keys, IME), Retina 2× / 120 Hz rendering, transparent windows (`background_opacity < 1`), why the first WebGL context costs about 110 MB, input latency (keydown → paint), and the OSC 52 clipboard. | Test with a human at the keyboard on the built-in display during P1 setup. |
 | R10 | **Hook behavior under long holds** (minutes, while the user types in the same pane), SubagentStop/PreCompact payloads, StopFailure on a real rate-limit hit, several agents at once, and the trust dialog inside a real worktree root: not yet tested. | Second P0 spike before P1b. |
 | Q1 | Should the Lead be able to add roles at runtime? | Default no; possible later behind a gate. |
 
@@ -615,7 +617,7 @@ Do-Not-Disturb holds levels 3–4 and batches level 1. **Jump to next waiting ag
 
 | Phase | Content | Exit criteria |
 |---|---|---|
-| **P0 — Spikes, go/no-go, UI foundations** | (1) R1 answer from Anthropic. (2) `claude` in a PTY: flags, per-agent settings, hooks, statusline `rate_limits`, OTEL, suspend/resume by id, PTY delivery while idle. (3) Memory: footprint per `claude` process, app baseline. (4) Sandbox scoped to the worktree, credentials removed, `git push` blocked. Items (2)–(4) **done**: see [p0-claude-cli.md](spikes/p0-claude-cli.md); open items in R10. (5) xterm.js in WKWebView with the user's `kitty.conf` + nvim, key conflicts. (6) Crash/restart reconciliation. (7) **Penpot**: Foundations, Shell, P1 screens. | Each spike demoed; R1/R2 answered; NFR-1b numbers set; Penpot gate met. |
+| **P0 — Spikes, go/no-go, UI foundations** | (1) R1 answer from Anthropic. (2) `claude` in a PTY: flags, per-agent settings, hooks, statusline `rate_limits`, OTEL, suspend/resume by id, PTY delivery while idle. (3) Memory: footprint per `claude` process, app baseline. (4) Sandbox scoped to the worktree, credentials removed, `git push` blocked. Items (2)–(4) **done**: see [p0-claude-cli.md](spikes/p0-claude-cli.md); open items in R10. (5) xterm.js in WKWebView with the user's `kitty.conf` + nvim, key conflicts, app memory baseline: **done**, see [p0-terminal.md](spikes/p0-terminal.md); open items in R9. (6) Crash/restart reconciliation. (7) **Penpot**: Foundations, Shell, P1 screens. | Each spike demoed; R1/R2 answered; NFR-1b numbers set; Penpot gate met. |
 | **P1 — Solo power user** | Projects & git (4.1), agent panes with suspend/resume (4.2), terminal (4.10), editor (4.11), Overview (4.9), Inbox for permissions, sandbox and credential rules (FR-702/703), **usage collector + Week planner + read-only forecast** (FR-801–804, 813, 817), pacing simulator (FR-820). | Daily driver for solo work; forecast within ±10 pp of the observed weekly % at reset. |
 | **P1b — Governor v1** | FR-805–812: live cap per state, queue, fair scheduling, pause/defer, 5h guard, transparency, shadow mode, overrides. | One real week in shadow mode, then one enforced week meeting G6. |
 | **P2 — Teams** | Canvas & builder (4.3), orchestration runtime + MCP server (4.4), task backends Local + GitHub (4.5), gates (4.7). | A feature delivered by a team with 2 gates and no sandbox violation. |

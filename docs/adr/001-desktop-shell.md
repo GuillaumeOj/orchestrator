@@ -8,11 +8,11 @@
 - With no Agent SDK there is no reason to ship a Node runtime.
 
 ## Decision
-1. **Tauri 2** shell with the system webview (WKWebView) and no bundled Chromium. The UI uses SolidJS or Svelte (smaller runtime than React); the final pick is made in P0.
+1. **Tauri 2** shell with the system webview (WKWebView) and no bundled Chromium. The UI uses **Svelte 5** (decided in the P0 terminal spike: small compiled runtime, enough for an xterm-heavy UI; SolidJS showed no advantage).
 2. **Rust core** for everything: projects and git (git CLI; gitoxide for fast status), PTYs (`portable-pty`), SQLite (`rusqlite`, WAL), the Governor, Inbox, task backends, an OTLP receiver, and the local bus (a Unix socket).
 3. **Helper binaries** written in Rust and shipped with the app: `orch-hook`, `orch-status` and `orch-mcp`. Claude Code launches them (hooks, statusline, stdio MCP), and they talk to the core over the bus.
-4. **PTY output** reaches the UI through Tauri 2 Channels with binary payloads, not JSON events.
-5. **Memory management**: a live-agent cap, suspend/resume of idle agents (process exits and is resumed by session id), capped scrollback, hidden panes not rendering, and git fetches limited to active projects. The app shows its own memory, including the WebContent/GPU/Network helper processes.
+4. **PTY output** reaches the UI through a **pull command** (`pty_read`) that returns all buffered bytes as a raw IPC response. The core buffers each pane up to a high watermark, which gives backpressure. P0 measured Tauri 2 Channels at 2–5 s UI stalls with 6 busy panes (2.2 M IPC messages), and one lost message stalled 2 panes for good. Channels are kept for low-rate events only.
+5. **Memory management**: a live-agent cap, suspend/resume of idle agents (process exits and is resumed by session id), capped scrollback, hidden panes not rendering, and git fetches limited to active projects. The app shows its own memory, including the WebContent/GPU/Network helper processes. Measured in P0: about 75 MB idle with no pane. The first WebGL terminal adds about 110 MB in the GPU helper, so terminals use the DOM renderer by default (SPEC FR-1005).
 
 ## Alternatives
 - **Electron**: bundles Chromium plus a Node main process, a much higher fixed memory cost. Rejected.
