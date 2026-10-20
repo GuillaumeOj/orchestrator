@@ -2,7 +2,7 @@
 
 A personal, local-first macOS app to run software projects with AI agents, built around the official **Claude Code CLI**. Manage local projects and their git/remote state, launch solo sessions or canvas-designed teams of specialist agents (lead, backend, frontend, UI, UX) in isolated git worktrees, work with each agent in its real Claude Code session next to a kitty-like terminal and your own nvim, and **pace all agent work so your Claude Max plan lasts the whole week**.
 
-Status: specification phase (SPEC v0.2), no code yet.
+Status: specification phase (SPEC v0.4), no code yet.
 
 - [Specification](docs/SPEC.md)
 - [Spec review 2026-10-17](docs/reviews/2026-10-17-spec-review.md)

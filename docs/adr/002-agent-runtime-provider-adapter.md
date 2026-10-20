@@ -27,4 +27,4 @@
 - **Hook timeouts fail open** (the tool runs): every `orch-hook` answer must come before the configured timeout.
 - The workspace trust dialog blocks the first launch in a new folder before any hook runs, so the user trusts each project root and worktree root once (SPEC J0).
 - Validated by the [P0 CLI spike](../spikes/p0-claude-cli.md).
-- Heavy unattended automation on a subscription needs confirmation from Anthropic (SPEC R1, P0 go/no-go).
+- Automatic and unattended runs on the subscription are accepted for this personal tool, within the plan's limits (SPEC R1, resolved 2026-10-20). The conditions are an unmodified binary, the user's own login, and no credential handling.

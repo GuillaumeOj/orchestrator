@@ -34,6 +34,7 @@ All thresholds live in `PacingPolicy` and can be adjusted.
 **5h guard** (independent of the weekly state):
 - If the projected `F` at the 5h reset is > 85 %, the live cap is 1.
 - If `F` > 85 %, only interactive and critical work is admitted.
+- Margin for the overrun: Claude Code may finish a step in progress after the 5h limit is hit, and that capped overrun counts toward the weekly limit (Anthropic support, 2026-10-20). The 85 % threshold leaves room for it.
 
 ## Admission rule
 ```
