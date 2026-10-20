@@ -1,0 +1,235 @@
+{
+ "ts": 1792487686.49054,
+ "worktrees": [
+  {
+   "path": "<scratch>/r/proj/demo.worktrees/solo/a-idle",
+   "db": "ready",
+   "git": true,
+   "locked": "orch agent a-idle",
+   "prunable": null,
+   "state": {
+    "exists": true,
+    "gitdir": "<scratch>/r/proj/demo/.git/worktrees/a-idle",
+    "markers": [
+     "locked"
+    ],
+    "unmerged": 0,
+    "dirty": 0
+   },
+   "verdict": "ok"
+  },
+  {
+   "path": "<scratch>/r/proj/demo.worktrees/solo/b-tool",
+   "db": "ready",
+   "git": true,
+   "locked": "orch agent b-tool",
+   "prunable": null,
+   "state": {
+    "exists": true,
+    "gitdir": "<scratch>/r/proj/demo/.git/worktrees/b-tool",
+    "markers": [
+     "locked"
+    ],
+    "unmerged": 0,
+    "dirty": 1
+   },
+   "verdict": "ok"
+  },
+  {
+   "path": "<scratch>/r/proj/demo.worktrees/solo/c-gate",
+   "db": "ready",
+   "git": true,
+   "locked": "orch agent c-gate",
+   "prunable": null,
+   "state": {
+    "exists": true,
+    "gitdir": "<scratch>/r/proj/demo/.git/worktrees/c-gate",
+    "markers": [
+     "locked"
+    ],
+    "unmerged": 0,
+    "dirty": 0
+   },
+   "verdict": "ok"
+  }
+ ],
+ "agents": [
+  {
+   "id": "trust",
+   "db_state": "archived",
+   "last_event": "SessionEnd",
+   "procs": [],
+   "transcript": {
+    "found": false
+   },
+   "worktree": {
+    "exists": true,
+    "gitdir": "<scratch>/r/proj/demo/.git",
+    "unmerged": 0,
+    "dirty": 0
+   },
+   "decision": "none"
+  },
+  {
+   "id": "a-idle",
+   "db_state": "idle",
+   "last_event": "Stop",
+   "procs": [],
+   "transcript": {
+    "found": true,
+    "entries": 39,
+    "last_type": "assistant",
+    "last_ts": "2026-10-20T09:13:51.688Z",
+    "last_stop_reason": "end_turn",
+    "pending_tool_uses": {},
+    "turn_markers": [
+     "0777b160"
+    ]
+   },
+   "worktree": {
+    "exists": true,
+    "gitdir": "<scratch>/r/proj/demo/.git/worktrees/a-idle",
+    "markers": [
+     "locked"
+    ],
+    "unmerged": 0,
+    "dirty": 0
+   },
+   "decision": "suspend"
+  },
+  {
+   "id": "b-tool",
+   "db_state": "working",
+   "last_event": "PreToolUse",
+   "procs": [],
+   "transcript": {
+    "found": true,
+    "entries": 39,
+    "last_type": "user",
+    "last_ts": "2026-10-20T09:14:24.567Z",
+    "last_stop_reason": "tool_use",
+    "pending_tool_uses": {},
+    "turn_markers": [
+     "baf043a5"
+    ]
+   },
+   "worktree": {
+    "exists": true,
+    "gitdir": "<scratch>/r/proj/demo/.git/worktrees/b-tool",
+    "markers": [
+     "locked"
+    ],
+    "unmerged": 0,
+    "dirty": 1
+   },
+   "decision": "resume"
+  },
+  {
+   "id": "c-gate",
+   "db_state": "waiting_gate",
+   "last_event": "PreToolUse",
+   "procs": [],
+   "transcript": {
+    "found": true,
+    "entries": 31,
+    "last_type": "assistant",
+    "last_ts": "2026-10-20T09:13:52.992Z",
+    "last_stop_reason": "tool_use",
+    "pending_tool_uses": {
+     "toolu_01VRAKD51fjf2aHitpbemNnw": [
+      "Bash",
+      "{\"command\": \"echo gate-me >> gated.txt\", \"description\": \"Append gate-me line to gated.txt\"}"
+     ]
+    },
+    "turn_markers": [
+     "a07a5982"
+    ]
+   },
+   "worktree": {
+    "exists": true,
+    "gitdir": "<scratch>/r/proj/demo/.git/worktrees/c-gate",
+    "markers": [
+     "locked"
+    ],
+    "unmerged": 0,
+    "dirty": 0
+   },
+   "decision": "suspend (gate stays in Inbox)"
+  }
+ ],
+ "turns": [
+  {
+   "id": "baf043a5",
+   "agent": "b-tool",
+   "db": "delivered",
+   "in_transcript": true,
+   "now": "delivered"
+  },
+  {
+   "id": "a07a5982",
+   "agent": "c-gate",
+   "db": "delivered",
+   "in_transcript": true,
+   "now": "delivered"
+  }
+ ],
+ "holds": [
+  {
+   "id": "5e1c80fe",
+   "kind": "gate",
+   "was": "held",
+   "now": "pending (re-ask on resume)"
+  }
+ ],
+ "actions": [
+  {
+   "agent": "trust",
+   "do": "none"
+  },
+  {
+   "agent": "a-idle",
+   "do": "suspend"
+  },
+  {
+   "agent": "b-tool",
+   "do": "resume"
+  },
+  {
+   "agent": "c-gate",
+   "do": "suspend (gate stays in Inbox)"
+  }
+ ],
+ "spool": [
+  {
+   "agent": "a-idle",
+   "events": [
+    [
+     "SessionEnd",
+     "ConnectionRefusedError"
+    ]
+   ]
+  },
+  {
+   "agent": "b-tool",
+   "events": [
+    [
+     "SessionEnd",
+     "ConnectionRefusedError"
+    ]
+   ]
+  },
+  {
+   "agent": "c-gate",
+   "events": [
+    [
+     "PreToolUse",
+     "core closed the connection"
+    ],
+    [
+     "SessionEnd",
+     "ConnectionRefusedError"
+    ]
+   ]
+  }
+ ]
+}

@@ -1,0 +1,225 @@
+{
+ "SubagentStart (Agent tool, async)": {
+  "session_id": "79a3a844-c572-4197-9c27-727427da3594",
+  "transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594.jsonl",
+  "cwd": "<scratch>/r/proj/demo.worktrees/solo/b5-sub",
+  "scratchpad_dir": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594/scratchpad",
+  "prompt_id": "1760c36d-458c-41b1-88a9-2b434faacf40",
+  "agent_id": "a149a5e53b20a104b",
+  "agent_type": "general-purpose",
+  "hook_event_name": "SubagentStart"
+ },
+ "PostToolUse (Agent tool, async_launched)": {
+  "session_id": "79a3a844-c572-4197-9c27-727427da3594",
+  "transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594.jsonl",
+  "cwd": "<scratch>/r/proj/demo.worktrees/solo/b5-sub",
+  "scratchpad_dir": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594/scratchpad",
+  "prompt_id": "1760c36d-458c-41b1-88a9-2b434faacf40",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+   "description": "PONG reply check",
+   "prompt": "Reply with only the word PONG.",
+   "subagent_type": "general-purpose"
+  },
+  "tool_response": {
+   "isAsync": true,
+   "status": "async_launched",
+   "agentId": "a149a5e53b20a104b",
+   "description": "PONG reply check",
+   "resolvedModel": "claude-haiku-5-5",
+   "prompt": "Reply with only the word PONG.",
+   "outputFile": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594/tasks/a149a5e53b20a104b.output",
+   "canReadOutputFile": true,
+   "canContinueAgent": true
+  },
+  "tool_use_id": "toolu_01GGFtPepanY5PpnU7VeaGc6",
+  "duration_ms": 7
+ },
+ "Stop (with a running background subagent)": {
+  "session_id": "79a3a844-c572-4197-9c27-727427da3594",
+  "transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594.jsonl",
+  "cwd": "<scratch>/r/proj/demo.worktrees/solo/b5-sub",
+  "scratchpad_dir": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594/scratchpad",
+  "prompt_id": "1760c36d-458c-41b1-88a9-2b434faacf40",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "I've launched the general-purpose subagent with the prompt \"Reply with only the word PONG.\" It's running in the background, so I don't have its answer yet. I'll report what it returned once the completion notification arrives.",
+  "background_tasks": [
+   {
+    "id": "a149a5e53b20a104b",
+    "type": "subagent",
+    "status": "running",
+    "description": "PONG reply check",
+    "agent_type": "general-purpose"
+   }
+  ],
+  "session_crons": []
+ },
+ "SubagentStop (general-purpose)": {
+  "session_id": "79a3a844-c572-4197-9c27-727427da3594",
+  "transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594.jsonl",
+  "cwd": "<scratch>/r/proj/demo.worktrees/solo/b5-sub",
+  "scratchpad_dir": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594/scratchpad",
+  "prompt_id": "1760c36d-458c-41b1-88a9-2b434faacf40",
+  "permission_mode": "default",
+  "agent_id": "a149a5e53b20a104b",
+  "agent_type": "general-purpose",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594/subagents/agent-a149a5e53b20a104b.jsonl",
+  "last_assistant_message": "PONG",
+  "background_tasks": [
+   {
+    "id": "a149a5e53b20a104b",
+    "type": "subagent",
+    "status": "running",
+    "description": "PONG reply check",
+    "agent_type": "general-purpose"
+   }
+  ],
+  "session_crons": []
+ },
+ "UserPromptSubmit (task-notification turn started by the CLI)": {
+  "session_id": "79a3a844-c572-4197-9c27-727427da3594",
+  "transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594.jsonl",
+  "cwd": "<scratch>/r/proj/demo.worktrees/solo/b5-sub",
+  "scratchpad_dir": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594/scratchpad",
+  "prompt_id": "82d5b5b4-5fa7-4ec7-a68d-500f1a8b1116",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "<task-notification>\n<task-id>a149a5e53b20a104b</task-id>\n<tool-use-id>toolu_01GGFtPepanY5PpnU7VeaGc6</tool-use-id>\n<output-file>/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594/tasks/a149a5e53b20a104b.output</output-file>\n<status>completed</status>\n<summary>Agent \"PONG reply check\" finished</summary>\n<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>\n<result>PONG</result>\n<usage><subagent_tokens>30725</subagent_tokens><tool_uses>0</tool_uses><duration_ms>1437</duration_ms></usage>\n</task-notification>",
+  "session_title": "b5-sub"
+ },
+ "SubagentStop (internal, agent_type empty, no SubagentStart)": {
+  "session_id": "79a3a844-c572-4197-9c27-727427da3594",
+  "transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594.jsonl",
+  "cwd": "<scratch>/r/proj/demo.worktrees/solo/b5-sub",
+  "scratchpad_dir": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594/scratchpad",
+  "prompt_id": "82d5b5b4-5fa7-4ec7-a68d-500f1a8b1116",
+  "permission_mode": "default",
+  "agent_id": "aca429dd3c5111a98",
+  "agent_type": "",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594/subagents/agent-aca429dd3c5111a98.jsonl",
+  "last_assistant_message": "check the agent's answer",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ "PreCompact (manual)": {
+  "session_id": "79a3a844-c572-4197-9c27-727427da3594",
+  "transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594.jsonl",
+  "cwd": "<scratch>/r/proj/demo.worktrees/solo/b5-sub",
+  "scratchpad_dir": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594/scratchpad",
+  "prompt_id": "ae9962d8-2da6-4a12-8c35-de3cf0d25d23",
+  "hook_event_name": "PreCompact",
+  "trigger": "manual",
+  "custom_instructions": null
+ },
+ "SessionStart (source compact)": {
+  "session_id": "79a3a844-c572-4197-9c27-727427da3594",
+  "transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594.jsonl",
+  "cwd": "<scratch>/r/proj/demo.worktrees/solo/b5-sub",
+  "scratchpad_dir": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594/scratchpad",
+  "prompt_id": "ae9962d8-2da6-4a12-8c35-de3cf0d25d23",
+  "hook_event_name": "SessionStart",
+  "source": "compact",
+  "model": "claude-haiku-5-5",
+  "session_title": "b5-sub"
+ },
+ "PostCompact (manual)": {
+  "session_id": "79a3a844-c572-4197-9c27-727427da3594",
+  "transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594.jsonl",
+  "cwd": "<scratch>/r/proj/demo.worktrees/solo/b5-sub",
+  "scratchpad_dir": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-b5-sub/79a3a844-c572-4197-9c27-727427da3594/scratchpad",
+  "prompt_id": "ae9962d8-2da6-4a12-8c35-de3cf0d25d23",
+  "hook_event_name": "PostCompact",
+  "trigger": "manual",
+  "compact_summary": "<summary>\n**User requests in this conversation (all from user turns):**\n1. The user asked me to use the Agent tool to launch one general-purpose subagent with the prompt \"Reply with only the word PONG,\" then report what it answered.\n\n**Actions taken:**\n- I launched a general-purpose subagent (agent \u2026"
+ },
+ "StopFailure (model_not_found)": {
+  "session_id": "35fa91bc-fc8a-4795-b50d-06b485342c68",
+  "transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-b6-model/35fa91bc-fc8a-4795-b50d-06b485342c68.jsonl",
+  "cwd": "<scratch>/r/proj/demo.worktrees/solo/b6-model",
+  "scratchpad_dir": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-b6-model/35fa91bc-fc8a-4795-b50d-06b485342c68/scratchpad",
+  "prompt_id": "d83d1772-3a16-4fcf-b991-e7c03a4cdbd3",
+  "effort": {
+   "level": "high"
+  },
+  "hook_event_name": "StopFailure",
+  "error": "model_not_found",
+  "last_assistant_message": "There's an issue with the selected model (claude-nonexistent-0). It may not exist or you may not have access to it. Run /model to pick a different model."
+ },
+ "StopFailure (rate_limit, local 429 mock)": {
+  "session_id": "75f49c54-e670-42c9-a0bb-c9d4dff1ec27",
+  "transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-b6-429/75f49c54-e670-42c9-a0bb-c9d4dff1ec27.jsonl",
+  "cwd": "<scratch>/r/proj/demo.worktrees/solo/b6-429",
+  "scratchpad_dir": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-b6-429/75f49c54-e670-42c9-a0bb-c9d4dff1ec27/scratchpad",
+  "prompt_id": "a53dacdc-5515-40bc-9771-5958134b0173",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "StopFailure",
+  "error": "rate_limit",
+  "last_assistant_message": "You've hit your session limit \u00b7 resets 12:32pm (Europe/Paris)"
+ },
+ "UserPromptSubmit (typed while a PreToolUse hook was held: queued, same prompt_id)": {
+  "session_id": "ba7c052b-abfe-4747-91b1-2a4ae6e69258",
+  "transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-b4-hold/ba7c052b-abfe-4747-91b1-2a4ae6e69258.jsonl",
+  "cwd": "<scratch>/r/proj/demo.worktrees/solo/b4-hold",
+  "scratchpad_dir": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-b4-hold/ba7c052b-abfe-4747-91b1-2a4ae6e69258/scratchpad",
+  "prompt_id": "089a0d6f-fa2d-4995-b508-ea1e90b4adf7",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "typed while held and reply with the word ALPHA",
+  "session_title": "b4-hold"
+ },
+ "Stop (background shell running)": {
+  "session_id": "80e7a898-abc7-4f57-8eb2-4cda5241eecb",
+  "transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-e-bg/80e7a898-abc7-4f57-8eb2-4cda5241eecb.jsonl",
+  "cwd": "<scratch>/r/proj/demo.worktrees/solo/e-bg",
+  "scratchpad_dir": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-e-bg/80e7a898-abc7-4f57-8eb2-4cda5241eecb/scratchpad",
+  "prompt_id": "366f05e7-a83a-4a09-855f-327f131664a9",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "STARTED",
+  "background_tasks": [
+   {
+    "id": "b01t47djo",
+    "type": "shell",
+    "status": "running",
+    "description": "Run wip commit command in background",
+    "command": "echo wip > wip.txt && git add wip.txt && GIT_EDITOR=\"sleep 120;:\" git commit -q; echo bgdone >> bg.txt"
+   }
+  ],
+  "session_crons": []
+ },
+ "SessionEnd (after PTY hangup; reason other)": {
+  "session_id": "de206d71-9289-48b3-b7cd-11e1d547717c",
+  "transcript_path": "~/.claude/projects/<scratch-slug>-r-proj-demo-worktrees-solo-f-gov/de206d71-9289-48b3-b7cd-11e1d547717c.jsonl",
+  "cwd": "<scratch>/r/proj/demo.worktrees/solo/f-gov",
+  "scratchpad_dir": "/private/tmp/claude-501/<scratch-slug>-r-proj-demo-worktrees-solo-f-gov/de206d71-9289-48b3-b7cd-11e1d547717c/scratchpad",
+  "prompt_id": "617eb787-d6d8-4450-a238-bae92e35c723",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+ }
+}

@@ -1,0 +1,247 @@
+[
+ {
+  "agent": "a-idle",
+  "event": "SessionEnd",
+  "why": "ConnectionRefusedError"
+ },
+ {
+  "agent": "b-tool",
+  "event": "SessionEnd",
+  "why": "ConnectionRefusedError"
+ },
+ {
+  "agent": "b-tool",
+  "event": "SessionEnd",
+  "why": "ConnectionRefusedError"
+ },
+ {
+  "agent": "c-gate",
+  "event": "PreToolUse",
+  "why": "core closed the connection"
+ },
+ {
+  "agent": "c-gate",
+  "event": "SessionEnd",
+  "why": "ConnectionRefusedError"
+ },
+ {
+  "agent": "c-gate",
+  "event": "SessionEnd",
+  "why": "ConnectionRefusedError"
+ },
+ {
+  "agent": "d-merge",
+  "event": "Stop",
+  "why": "ConnectionRefusedError"
+ },
+ {
+  "agent": "d-merge",
+  "event": "SubagentStop",
+  "why": "ConnectionRefusedError"
+ },
+ {
+  "agent": "d-merge",
+  "event": "SessionEnd",
+  "why": "ConnectionRefusedError"
+ },
+ {
+  "agent": "d2-merge",
+  "event": "PostToolBatch",
+  "why": "ConnectionRefusedError"
+ },
+ {
+  "agent": "d2-merge",
+  "event": "SessionEnd",
+  "why": "ConnectionRefusedError"
+ },
+ {
+  "agent": "d2-merge",
+  "event": "PreToolUse",
+  "why": "core closed the connection"
+ },
+ {
+  "agent": "e-bg",
+  "event": "SessionEnd",
+  "why": "ConnectionRefusedError"
+ },
+ {
+  "agent": "f-gov",
+  "event": "PreToolUse",
+  "why": "core closed the connection"
+ },
+ {
+  "agent": "f-gov",
+  "event": "SessionEnd",
+  "why": "ConnectionRefusedError"
+ },
+ {
+  "agent": "g-orphan",
+  "event": "SessionEnd",
+  "why": "ConnectionRefusedError"
+ },
+ {
+  "agent": "h-deny",
+  "event": "SessionStart",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-deny",
+  "event": "UserPromptSubmit",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-deny",
+  "event": "PreToolUse",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-deny",
+  "event": "PostToolBatch",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-deny",
+  "event": "Stop",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-deny",
+  "event": "SubagentStop",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-deny",
+  "event": "SessionEnd",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-exit1",
+  "event": "SessionStart",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-exit1",
+  "event": "UserPromptSubmit",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-exit1",
+  "event": "PreToolUse",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-exit1",
+  "event": "PostToolUse",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-exit1",
+  "event": "PostToolBatch",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-exit1",
+  "event": "Stop",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-exit1",
+  "event": "SubagentStop",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-exit1",
+  "event": "SessionEnd",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-exit2",
+  "event": "SessionStart",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-exit2",
+  "event": "UserPromptSubmit",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-exit2",
+  "event": "SessionEnd",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-hung",
+  "event": "SessionStart",
+  "why": "deadline"
+ },
+ {
+  "agent": "h-hung",
+  "event": "UserPromptSubmit",
+  "why": "deadline"
+ },
+ {
+  "agent": "h-hung",
+  "event": "PreToolUse",
+  "why": "deadline"
+ },
+ {
+  "agent": "h-hung",
+  "event": "PostToolBatch",
+  "why": "deadline"
+ },
+ {
+  "agent": "h-hung",
+  "event": "Stop",
+  "why": "deadline"
+ },
+ {
+  "agent": "h-hung",
+  "event": "SubagentStop",
+  "why": "deadline"
+ },
+ {
+  "agent": "h-hung",
+  "event": "SessionEnd",
+  "why": "ConnectionRefusedError"
+ },
+ {
+  "agent": "h-open",
+  "event": "SessionStart",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-open",
+  "event": "UserPromptSubmit",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-open",
+  "event": "PreToolUse",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-open",
+  "event": "PostToolUse",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-open",
+  "event": "PostToolBatch",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-open",
+  "event": "Stop",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-open",
+  "event": "SubagentStop",
+  "why": "FileNotFoundError"
+ },
+ {
+  "agent": "h-open",
+  "event": "SessionEnd",
+  "why": "FileNotFoundError"
+ }
+]
