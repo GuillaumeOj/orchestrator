@@ -6,15 +6,15 @@
 A Max plan has a 5-hour window and a weekly window, and possibly a separate weekly limit for some models. Claude Code's statusline exposes used % and reset times for the 5h and weekly windows (ADR-002). Goal: never get locked out during working hours, and use ≥ 85 % of the week by the reset.
 
 ## Admission points (what the Governor really controls)
-1. **Turn start**: every autonomous turn (a task, a message, a "continue") is delivered by the app, so it can be held in the queue.
-2. **Each tool call**: a PreToolUse hook asks for admission. If the Governor holds the agent, the hook waits up to a few seconds, then denies with "paused by governor" and the turn ends at that boundary. **Hook timeouts fail open** (P0: a hook past its `timeout` was dropped and the tool ran), so `orch-hook` enforces its own deadline well below the configured timeout (600 s) and always answers. Parallel tool calls run their hooks concurrently, and each one is admitted separately.
+1. **Turn start**: autonomous turns the app delivers (a task, a message, a "continue") can be held in the queue. Not every turn comes from the app: async subagents and background shells start a new turn by themselves when they finish (`<task-notification>`, P0 recovery spike). Those are counted against the agent's allocation, still pass point 2, and can be disallowed per role (SPEC FR-410).
+2. **Each tool call**: a PreToolUse hook asks for admission. If the Governor holds the agent, the hook waits up to a few seconds, then denies with "paused by governor" and the turn ends at that boundary. Hook timeouts, crashes and a missing hook binary all **fail open** (the tool runs), so `orch-hook` always answers itself and **fails closed**: if the core is unreachable or misses the deadline, it denies (SPEC FR-806). Parallel tool calls run their hooks concurrently, and each one is admitted separately. While holding, the core watches the hook's connection: Esc in the pane kills the hook without any event.
 3. **Watchdog**: a turn exceeding its ceiling (usage or duration) is interrupted at the next tool boundary.
 4. **Never blocked**: what the user types in a pane. Built-in subagents run inside their agent's turn and are counted against it.
 
 ## Measurements
 - `W` = weekly used %: **observed** from the statusline when it is fresh (< 15 min). Otherwise it is **estimated** as `W_last + cost_since / k + margin`, where `k` is one scalar ("cost estimate per 1 % of the week") updated by an exponentially weighted average whenever a fresh observed value arrives. The margin is 10–15 pp and shrinks as confidence grows.
 - `F` = 5h used %, observed the same way.
-- Observed values come from the statusline (`rate_limits`, integer %, `resets_at` in epoch s). They are missing until a session's first API response, and idle agents refresh them through `statusLine.refreshInterval`.
+- Observed values come from the statusline (`rate_limits`, integer %, `resets_at` in epoch s). They are missing until a session's first API response. Each agent's statusline is a **copy of its own last API response**, so `W` and `F` use the most recent sample across all agents for each window, and a window missing from a response is unknown, not 0. A plan-limit 429 shows as StopFailure `rate_limit` plus `used_percentage: 100`; the CLI then arms its own auto-continue at the reset, which the Governor cancels and reschedules by default (SPEC J9).
 - **Resume cost** uses the statusline `prompt_cache` (`expires_at`, `recache_tokens_if_cold`): resuming before expiry is nearly free (1 h TTL observed).
 - `U` = unattributed rate: the exponentially weighted average of (observed weekly delta − the app's attributed delta).
 

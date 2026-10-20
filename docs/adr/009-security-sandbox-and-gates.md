@@ -26,9 +26,10 @@ The review found that permission rules alone don't enforce a "worktree sandbox":
    - PermissionRequest answers permission dialogs from the Inbox.
    - PostToolBatch records calls denied by permission rules, which reach neither PreToolUse nor PermissionDenied.
    - `orch-hook` always answers before its timeout, because timeouts fail open.
+   - **Fail closed when the core is down** (P0 recovery spike): if the socket is missing, refused, closes mid-hold or misses the deadline, PreToolUse and PermissionRequest answer deny; other events exit 0 and are spooled for replay. A **missing hook binary fails open**, so the helpers live at a stable path in app data and are checked at every spawn.
    - A gated action is denied with "awaiting user approval", so the turn ends and the agent can be suspended.
    - On approval, the app resumes the agent with "approved: proceed".
-5. **Orchestrator MCP** runs over stdio. `orch-mcp` connects to the core through a Unix socket with 0600 permissions, so there is no network port and no token in the command line. The agent's identity comes from the environment the core sets. Recipients are checked against the team graph on the server side.
+5. **Orchestrator MCP** runs over stdio. `orch-mcp` connects to the core through a Unix socket with 0600 permissions (path under macOS's 104-byte limit, stale file removed at start), so there is no network port and no token in the command line. The agent's identity comes from the environment the core sets. Recipients are checked against the team graph on the server side.
 6. **Audit**: every gate decision, permission rule change and denied action is logged.
 7. **Secrets**: copying `.env` into worktrees is opt-in, with a warning that agents send what they read to the model.
 

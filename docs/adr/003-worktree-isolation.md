@@ -16,8 +16,8 @@ Many agents edit the same repository in parallel, so each one needs its own chec
   - `orch/<feature>/<role>-<n>` for team agents
 - The **Lead owns the integration worktree** (one branch can't be checked out in two worktrees) and does all merges. Specialists branch from the integration branch.
 - Feature docs (`.orchestrator/features/<slug>/`) have one source of truth: **the copy on the integration branch**.
-- Worktrees are `git worktree lock`ed while in use. The startup reconciler runs `git worktree list --porcelain` and `git worktree repair` when the repo has moved.
-- **Workspace trust**: the user trusts `<repo>.worktrees/` once (a one-time pane at project setup), and every worktree under it inherits the trust. Otherwise Claude Code's trust dialog would block each new agent before any hook runs. To confirm in a real worktree root (SPEC R10).
+- Worktrees are created with **`worktree.useRelativePaths=true`** (git ≥ 2.48; it sets `extensions.relativeWorktrees`, so older git can't open the repo), so moving the repo together with its sibling folder needs no repair. They are `git worktree lock`ed while in use; locks survive crashes and moves and keep worktrees out of `prune`. If the links break anyway, the reconciler runs `git -C <repo> worktree repair <every known worktree path>` (a plain `repair` from the main checkout can't find moved worktrees) and re-locks.
+- **Workspace trust** is keyed by the **main repository root** (P0 recovery spike): once the user trusts the project root, its worktrees are trusted wherever they live. Trusting `<repo>.worktrees/` itself does *not* help. After a repo move the trust dialog comes back once.
 - A per-project setup script runs on creation. Copying secrets (`.env`) is opt-in, with a warning.
 - The PR to the default branch is opened by the app from the integration branch, behind the PR gate (agents have no push credentials, ADR-009).
 

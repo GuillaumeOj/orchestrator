@@ -8,7 +8,7 @@
   - Large payloads are stored as files outside the rows.
   - Raw events are kept for 30 days by default.
   - FTS5 indexes the search.
-- **Conversation history is not duplicated**: Claude Code's transcript JSONL files are the source of truth for messages. The app indexes them for search and keeps only references and metrics.
+- **Conversation history is not duplicated**: Claude Code's transcript JSONL files are the source of truth for messages. The app indexes them for search and keeps only references and metrics. Transcripts are found **by session id** across `~/.claude/projects/*/`, because a resumed session keeps writing to the transcript in its original project folder after a repo move.
 - **Shareable project docs** (feature specs, briefs, contracts, decisions) go in `<project>/.orchestrator/` on the integration branch, tracked in git. A project can opt out and keep them in app data, e.g. for client or open-source repos.
 - **Secrets** go only in the macOS Keychain. Claude auth stays with Claude Code.
 

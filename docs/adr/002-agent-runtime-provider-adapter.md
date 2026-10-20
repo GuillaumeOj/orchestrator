@@ -25,6 +25,6 @@
 - Control is coarser than an SDK. The Governor admits at turn start and at each tool call (ADR-007).
 - Hooks, the statusline format and flags are not a stable API: the app declares a supported Claude Code version range (baseline 2.1.302), checks it at every spawn, disables auto-update for agents, and runs contract tests after each update (SPEC R2, NFR-7).
 - **Hook timeouts fail open** (the tool runs): every `orch-hook` answer must come before the configured timeout.
-- The workspace trust dialog blocks the first launch in a new folder before any hook runs, so the user trusts each project root and worktree root once (SPEC J0).
+- The workspace trust dialog blocks the first launch in a new folder before any hook runs. Trust is keyed by the main repository root, so the user trusts each project root once and its worktrees inherit it (SPEC J0).
 - Validated by the [P0 CLI spike](../spikes/p0-claude-cli.md).
 - Automatic and unattended runs on the subscription are accepted for this personal tool, within the plan's limits (SPEC R1, resolved 2026-10-20). The conditions are an unmodified binary, the user's own login, and no credential handling.
