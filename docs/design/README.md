@@ -8,7 +8,7 @@ The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app 
 |---|---|---|
 | 00 Cover | Purpose, page index, P1 gate, changelog | Done |
 | 01 Foundations | Tokens: color, type, spacing, radius, sizing, elevation, rules | In review |
-| 02 Components | P1 subset of SPEC §9.4 (13 component sets), states as variants | In review (P1 subset) |
+| 02 Components | P1 subset of SPEC §9.4 (14 component sets), states as variants | In review (P1 subset) |
 | 03 Shell & layouts | Shell at 1512 (docked inspector), 1280 (icon rail + overlay inspector), zoomed pane; 1728 not drawn | In review |
 | 04 Screens | P1 panes: Overview, Agent pane (+ states), Week planner, Inbox | In review (P1 panes) |
 | 05 Keyboard & copy | Shortcut map (§9.7) with conflicts; notification and banner copy | Not started |
@@ -27,6 +27,7 @@ Exports of the Penpot boards (Dark theme unless noted), refreshed by hand:
 | 03 Shell · 1512 | [03-shell-1512.png](img/03-shell-1512.png) |
 | 03 Shell · 1280 | [03-shell-1280.png](img/03-shell-1280.png) |
 | 03 Shell · zoomed pane | [03-shell-zoomed.png](img/03-shell-zoomed.png) |
+| 03 Icon rail hover · 1280 | [03-rail-hover.png](img/03-rail-hover.png) |
 | 04 Overview | [04-overview.png](img/04-overview.png) |
 | 04 Agent pane | [04-agent-pane.png](img/04-agent-pane.png) · states: [04-agent-pane-states.png](img/04-agent-pane-states.png) |
 | 04 Week planner | [04-week-planner.png](img/04-week-planner.png) |

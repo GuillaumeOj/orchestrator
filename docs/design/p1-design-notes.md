@@ -23,6 +23,24 @@ Design pass on 2026-10-20 for the P1 gate (ADR-008, SPEC §9.0). Penpot file **O
   - **Inbox**: attention-ladder order with one gate expanded, a who/what/why preview, the rendered spec and the actions.
 - **Tokens**: no token changes. `tokens.json` is unchanged.
 
+## Review round 1 (Penpot comments 1–11), fixed
+
+- Glyphs in pills and role letters are centered (fixed-size text boxes, centered both ways).
+- **Shortcut convention:**
+  - Every shortcut is one Key hint container.
+  - "+" joins keys pressed together (⌘+K, ⌘+⇧+I).
+  - A space separates the steps of a sequence (leader then key: ⌘+; g).
+  - Pane headers, the status bar leader hint and the Agent pane strip now use key hints.
+  - The key hint sits at the far right of buttons.
+- **Sidebar tree:** indentation is now project 8 / feature and solo 24 / agent 48 (space.sm / xl / 3xl).
+- **Count badge:** new component (height 16, about 16 min width, caps at 99+), used for the Inbox count and the feature rows.
+- **Search icon:** drawn magnifier instead of the ⌕ glyph.
+- **Icon rail:** the per-agent status glyphs are gone; it shows a count badge when agents need you, and hover opens a project summary popover (board "Rail hover · 1280").
+- **1280 layout:** no pane hidden behind the overlay inspector.
+- **Foundations:** the focus-ring example is no longer clipped.
+
+SPEC §9.7 should adopt the shortcut notation above (proposal; not edited).
+
 ## Open questions for Guillaume
 
 1. **Primary button style.** `text.inverse` on `accent.default` is 2.7:1 in Light, so primary buttons use `accent.subtle` fill + accent border + `text.primary`. OK, or should the Light accent be darkened so a filled primary works?
