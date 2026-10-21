@@ -167,20 +167,19 @@ pub fn kill_tree(pgids: &[i32], pids: &[i32], grace: Duration) -> Vec<String> {
     log
 }
 
-/// `footprint -p <pid>` in MB (NFR-1b: phys_footprint, not RSS).
+/// phys_footprint in MB (NFR-1b: not RSS), from `proc_pid_rusage`, the
+/// figure `footprint -p` reports, without spawning a process.
 pub fn footprint_mb(pid: i32) -> Option<f64> {
-    let out = Command::new("footprint").args(["-p", &pid.to_string()]).output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let line = text.lines().find(|l| l.contains("Footprint:"))?;
-    let mut it = line.split("Footprint:").nth(1)?.split_whitespace();
-    let v: f64 = it.next()?.parse().ok()?;
-    let mult = match it.next()? {
-        "KB" => 1.0 / 1024.0,
-        "MB" => 1.0,
-        "GB" => 1024.0,
-        _ => return None,
+    // SAFETY: `info` is a plain C struct the kernel fills for RUSAGE_INFO_V4.
+    let bytes = unsafe {
+        let mut info: libc::rusage_info_v4 = std::mem::zeroed();
+        let r = libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V4, (&mut info as *mut libc::rusage_info_v4).cast());
+        if r != 0 {
+            return None;
+        }
+        info.ri_phys_footprint
     };
-    Some((v * mult * 10.0).round() / 10.0)
+    Some((bytes as f64 / (1024.0 * 1024.0) * 10.0).round() / 10.0)
 }
 
 #[cfg(test)]
@@ -250,10 +249,8 @@ mod tests {
 
     #[test]
     fn footprint_of_self() {
-        let mb = footprint_mb(std::process::id() as i32);
-        // `footprint` may be unavailable in some sandboxes; when present it parses.
-        if let Some(mb) = mb {
-            assert!(mb > 0.0);
-        }
+        let mb = footprint_mb(std::process::id() as i32).expect("own footprint");
+        assert!(mb > 0.0);
+        assert_eq!(footprint_mb(i32::MAX), None);
     }
 }

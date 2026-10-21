@@ -8,7 +8,9 @@ pub mod status;
 
 use serde::{Deserialize, Serialize};
 
-pub use bus::{BusError, MAX_SOCKET_PATH, bind_listener, check_socket_path, connect, read_line, write_line};
+pub use bus::{
+    BusError, MAX_SOCKET_PATH, bind_listener, check_socket_path, connect, is_listening, read_line, write_line,
+};
 pub use ctl::{AgentSpec, CtlReply, CtlRequest, WorktreeKindSpec};
 pub use hook::{HookEvent, HookOutput, HookPayload, PermissionBehavior, ToolDecision};
 pub use spool::SpoolRecord;

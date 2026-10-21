@@ -113,8 +113,9 @@ pub enum Effect {
     QueuedMessage,
     /// The turn ended and the agent is idle (deliver queued work, tell the Governor).
     TurnEnded,
-    /// The turn ended but background work runs on and will start a turn by itself.
-    TurnEndedWithBackground(usize),
+    /// The turn ended but background work runs on and will start a turn by
+    /// itself (the count is in `Tracker::background_tasks`).
+    TurnEndedWithBackground,
     /// StopFailure `rate_limit` (J9).
     RateLimited { message: Option<String> },
     /// StopFailure with another error.
@@ -194,7 +195,7 @@ pub fn apply(t: &mut Tracker, event: &HookEvent, p: &HookPayload) -> Vec<Effect>
             if bg > 0 {
                 // Not idle: background work will start a new turn by itself.
                 t.state = S::Working;
-                fx.push(Effect::TurnEndedWithBackground(bg));
+                fx.push(Effect::TurnEndedWithBackground);
             } else {
                 t.state = S::Idle;
                 fx.push(Effect::TurnEnded);
@@ -242,6 +243,18 @@ pub fn apply(t: &mut Tracker, event: &HookEvent, p: &HookPayload) -> Vec<Effect>
 
 fn is_busy(s: AgentState) -> bool {
     matches!(s, AgentState::Working | AgentState::WaitingForYou | AgentState::WaitingGate | AgentState::Queued)
+}
+
+/// The Governor holds a tool call (PreToolUse waiting for admission).
+pub fn hold_started(t: &mut Tracker) {
+    t.state = AgentState::Queued;
+}
+
+/// The hold is over (allowed, denied or interrupted): the turn goes on until its Stop.
+pub fn hold_ended(t: &mut Tracker) {
+    if t.state == AgentState::Queued {
+        t.state = AgentState::Working;
+    }
 }
 
 /// The process exited. The core's own intent decides the state.
@@ -315,7 +328,7 @@ mod tests {
         ev(&mut t, "SubagentStart", json!({"agent_id":"sa1","agent_type":"general-purpose"}));
         assert_eq!(t.subagents.len(), 1);
         let fx = ev(&mut t, "Stop", json!({"background_tasks":[{"id":"sa1","type":"subagent","status":"running"}]}));
-        assert_eq!(fx, [Effect::TurnEndedWithBackground(1)]);
+        assert_eq!(fx, [Effect::TurnEndedWithBackground]);
         assert_eq!(t.state, AgentState::Working);
         assert_eq!(t.background_tasks, 1);
         // Internal SubagentStop: no state.

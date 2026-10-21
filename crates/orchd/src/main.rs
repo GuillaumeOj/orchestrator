@@ -1,6 +1,6 @@
 //! `orchd`: the headless core for development. See README.md.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,7 +10,7 @@ use agent_runtime::paths::AppPaths;
 use agent_runtime::runtime::{Runtime, RuntimeConfig};
 use agent_runtime::server::{self, request};
 use anyhow::{Context, Result, anyhow, bail};
-use orch_protocol::{AgentSpec, CtlRequest, Envelope, Msg, ReplyEnvelope, WorktreeKindSpec, bus};
+use orch_protocol::{AgentSpec, CtlRequest, WorktreeKindSpec, bus};
 
 const USAGE: &str = "\
 orchd: headless Orchestrator core (dev)
@@ -119,7 +119,7 @@ fn run() -> Result<()> {
         }
         "reconcile" => {
             a.done()?;
-            if bus::connect(&sock, Duration::from_millis(300)).is_ok() {
+            if bus::is_listening(&sock) {
                 bail!("the core is running: the reconciler runs at its start");
             }
             let rt = Runtime::new(RuntimeConfig::new(paths))?;
@@ -239,7 +239,7 @@ fn serve(paths: AppPaths, mut a: Args) -> Result<()> {
     }
     a.done()?;
     // Refuse early if another core is up (before touching any agent).
-    if bus::connect(&paths.socket(), Duration::from_millis(300)).is_ok() {
+    if bus::is_listening(&paths.socket()) {
         bail!("another core is listening on {}", paths.socket().display());
     }
     if agent_runtime::preflight::check_helpers(&cfg.helpers).is_err() {
@@ -341,19 +341,9 @@ const DETACH: u8 = 0x1d; // Ctrl-]
 
 fn attach(sock: &std::path::Path, agent_id: &str) -> Result<()> {
     let (rows, cols) = winsize();
-    let s = bus::connect(sock, Duration::from_secs(1))?;
-    bus::write_line(&mut &s, &Envelope::new(Msg::Ctl(CtlRequest::Attach { agent_id: agent_id.into(), rows, cols })))?;
-    let mut r = BufReader::new(s.try_clone()?);
-    let mut line = String::new();
-    r.read_line(&mut line)?;
-    let reply: ReplyEnvelope = serde_json::from_str(&line)?;
-    match reply.reply {
-        orch_protocol::Reply::Ctl(c) if c.ok => {}
-        other => bail!("attach refused: {other:?}"),
-    }
+    let (s, leftover) = server::attach_client(sock, agent_id, rows, cols)?;
     eprint!("[attached to {agent_id}; detach with Ctrl-]]\r\n");
     let raw = RawMode::enable();
-    let leftover = r.buffer().to_vec();
     let done = Arc::new(AtomicBool::new(false));
     // Core → terminal.
     let out_thread = {

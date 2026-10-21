@@ -19,7 +19,6 @@ pub const TICK_EVERY: Duration = Duration::from_secs(30);
 
 /// Serves until `stop` is set (by a `shutdown` request or the caller).
 pub fn serve(rt: Arc<Runtime>, listener: UnixListener, stop: Arc<AtomicBool>) -> std::io::Result<()> {
-    listener.set_nonblocking(true)?;
     let loops = {
         let (rt, stop) = (rt.clone(), stop.clone());
         std::thread::Builder::new().name("orch-loops".into()).spawn(move || {
@@ -34,14 +33,30 @@ pub fn serve(rt: Arc<Runtime>, listener: UnixListener, stop: Arc<AtomicBool>) ->
             }
         })?
     };
-    while !stop.load(Ordering::SeqCst) {
-        match listener.accept() {
-            Ok((s, _)) => {
-                let _ = s.set_nonblocking(false);
+    // A blocking accept answers hooks at once; when `stop` is set, a
+    // connection to our own socket wakes it.
+    let path = listener.local_addr()?.as_pathname().map(PathBuf::from);
+    {
+        let stop = stop.clone();
+        std::thread::Builder::new().name("orch-stop-wake".into()).spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if let Some(p) = path {
+                let _ = UnixStream::connect(p);
+            }
+        })?;
+    }
+    for conn in listener.incoming() {
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+        match conn {
+            Ok(s) => {
                 let (rt, stop) = (rt.clone(), stop.clone());
                 std::thread::spawn(move || handle(&rt, s, &stop));
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
         }
     }
@@ -128,6 +143,24 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         CtlRequest::Usage => CtlReply::ok(rt.usage_json()),
         CtlRequest::Governor => CtlReply::ok(rt.governor_json()),
         CtlRequest::Attach { .. } | CtlRequest::Shutdown => CtlReply::err("handled by the server"),
+    }
+}
+
+/// Client side of `attach`: returns the raw stream and any PTY bytes that
+/// arrived in the same read as the reply.
+pub fn attach_client(
+    socket: &std::path::Path,
+    agent_id: &str,
+    rows: u16,
+    cols: u16,
+) -> anyhow::Result<(UnixStream, Vec<u8>)> {
+    let s = bus::connect(socket, Duration::from_secs(1))?;
+    bus::write_line(&mut &s, &Envelope::new(Msg::Ctl(CtlRequest::Attach { agent_id: agent_id.into(), rows, cols })))?;
+    let mut r = BufReader::new(s.try_clone()?);
+    let reply: ReplyEnvelope = bus::read_line(&mut r)?;
+    match reply.reply {
+        Reply::Ctl(c) if c.ok => Ok((s, r.buffer().to_vec())),
+        other => anyhow::bail!("attach refused: {other:?}"),
     }
 }
 

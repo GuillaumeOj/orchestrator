@@ -14,7 +14,7 @@ No UI, no Tauri: [`orchd`](../orchd/README.md) drives it from the command line.
 | `delivery` | FR-206 input rules: idle only, `/ ! #` escape, < 900 chars or file, start delay, turn marker | FR-206, R4 |
 | `state` | Agent state machine from hook events | §6.2, §6.4, §9.5 |
 | `worktree` | Sibling folder, relative paths, lock, idempotent create, branch naming, inspection | FR-105, ADR-003 |
-| `procs` | Process table (ps + lsof cwd), kill by group + cwd, `footprint` | FR-207, NFR-1b |
+| `procs` | Process table (ps + lsof cwd), kill by argv + cwd, phys_footprint via `proc_pid_rusage` | FR-207, NFR-1b |
 | `transcript` | Transcripts by session id across `~/.claude/projects/*/` (read only) | FR-209 |
 | `reconcile` | Startup reconciler in J10 step 2 order | J10, NFR-2 |
 | `usage` | Statusline samples merged by recency → Governor `UsageSample` | FR-801, R3 |

@@ -19,7 +19,7 @@ use serde::Serialize;
 use crate::paths::{AppPaths, real};
 use crate::procs::{AgentMatch, Found, ProcessTable, find_agent_procs};
 use crate::state::{AgentState, apply as apply_event};
-use crate::store::{HoldKind, HoldStatus, StateFile, Store, TurnStatus, WorktreeRowState};
+use crate::store::{Admission, HoldKind, HoldStatus, StateFile, Store, TurnRow, TurnStatus, WorktreeRowState};
 use crate::transcript::{self, Summary};
 use crate::worktree::{self, Inspection};
 
@@ -272,13 +272,10 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
         // Apply to the copy of the state.
         {
             let r = st.agents.get_mut(&id).expect("agent");
-            r.pid = None;
-            r.pgid = None;
-            r.trust_dialog = false;
-            r.tracker.prompt_id = None;
-            r.tracker.current_tool = None;
-            r.tracker.turn_origin = None;
-            r.tracker.subagents.clear();
+            // The process is gone (a core crash ends every agent); the decision sets the state.
+            let state = r.tracker.state;
+            r.on_process_gone();
+            r.tracker.state = state;
             r.tracker.background_tasks = 0;
             match &decision {
                 Decision::None => {}
@@ -293,16 +290,7 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
             // Durable: if the core dies again before the resume, the queued
             // turn still brings the agent back (the runtime resumes suspended
             // agents that have admitted work).
-            st.turns.push(crate::store::TurnRow {
-                id: crate::delivery::new_turn_id(),
-                agent_id: id.clone(),
-                body: RESUME_MESSAGE.into(),
-                status: TurnStatus::Queued,
-                created_at_ms: orch_protocol::now_ms(),
-                delivered_at_ms: None,
-                admitted: false,
-                governor_entry: None,
-            });
+            st.turns.push(TurnRow::queued(&id, RESUME_MESSAGE, governor::TurnKind::Continue, Admission::Pending));
         }
         if let Decision::Flag(why) = &decision {
             let msg = format!("{id}: work in progress after a restart: {why}");
@@ -350,8 +338,7 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                     in_transcript: seen,
                 });
                 if now == TurnStatus::Queued {
-                    t.admitted = false;
-                    t.governor_entry = None;
+                    t.admission = Admission::Pending;
                 }
                 t.status = now;
             }
@@ -386,7 +373,7 @@ mod tests {
     use crate::procs::ProcInfo;
     use crate::role::Role;
     use crate::state::Tracker;
-    use crate::store::{AgentRecord, HoldRow, TurnRow};
+    use crate::store::{AgentRecord, HoldRow};
     use crate::worktree::tests::scratch_repo;
     use orch_protocol::WorktreeKindSpec;
     use std::cell::RefCell;
@@ -420,16 +407,10 @@ mod tests {
     }
 
     fn turn(id: &str, agent: &str, status: TurnStatus) -> TurnRow {
-        TurnRow {
-            id: id.into(),
-            agent_id: agent.into(),
-            body: "b".into(),
-            status,
-            created_at_ms: 0,
-            delivered_at_ms: None,
-            admitted: true,
-            governor_entry: None,
-        }
+        let mut t = TurnRow::queued(agent, "b", governor::TurnKind::Message, Admission::Admitted);
+        t.id = id.into();
+        t.status = status;
+        t
     }
 
     /// A fixture world: a repo with worktrees, agents in every crash situation,
@@ -602,7 +583,7 @@ mod tests {
         assert_eq!(st("bbbb0001"), TurnStatus::Delivered);
         assert_eq!(st("bbbb0002"), TurnStatus::Queued);
         assert!(
-            !turns.iter().find(|t| t.id == "bbbb0002").unwrap().admitted,
+            turns.iter().find(|t| t.id == "bbbb0002").unwrap().admission == Admission::Pending,
             "requeued turns go through the Governor again"
         );
         let resumes: Vec<_> = turns.iter().filter(|t| t.body == RESUME_MESSAGE).map(|t| t.agent_id.as_str()).collect();

@@ -35,11 +35,14 @@ use crate::pty::PtyProcess;
 use crate::reconcile::{self, ReconcileEnv, Report};
 use crate::role::{PermissionMode, Role};
 use crate::state::{self, AgentState, Effect, StopIntent, TurnOrigin};
-use crate::store::{AgentRecord, HoldKind, HoldRow, HoldStatus, Store, TurnRow, TurnStatus};
+use crate::store::{Admission, AgentRecord, HoldKind, HoldRow, HoldStatus, Store, TurnRow, TurnStatus};
 use crate::usage::UsageCollector;
 use crate::worktree;
 
 pub const DEFAULT_ALLOCATION: &str = "default";
+/// The CLI shows its "continuing automatically at …" banner just after the
+/// StopFailure hook returns; Esc sent before it would cancel nothing.
+const ESC_AFTER_RATE_LIMIT: Duration = Duration::from_secs(1);
 const CONTINUE_MESSAGE: &str = "ORCH: the orchestrator admitted your work again. Continue the task you were doing.";
 
 #[derive(Clone, Debug)]
@@ -95,17 +98,12 @@ pub struct Runtime {
     usage: Mutex<UsageCollector>,
     live: Mutex<BTreeMap<String, Arc<Live>>>,
     decisions: Mutex<VecDeque<AdmissionDecision>>,
-    memory: Mutex<BTreeMap<i32, (std::time::Instant, Option<f64>)>>,
     events: Mutex<Option<std::fs::File>>,
     login_path: String,
     user_statusline: Option<String>,
     git_identity: (String, String),
     pub warnings: Vec<String>,
     me: Weak<Runtime>,
-}
-
-fn ts_now() -> Timestamp {
-    Timestamp::now()
 }
 
 /// The plan week: from last Monday 09:00 local to next Monday 09:00, weekdays
@@ -191,34 +189,41 @@ impl Runtime {
         orch_protocol::check_socket_path(&cfg.paths.socket())?;
         let store = Store::open(&cfg.paths.state_file())?;
         let policy = PacingPolicy { live_caps: governor::LiveCaps::from_base(cfg.base_cap), ..Default::default() };
-        let now = ts_now();
+        let now = Timestamp::now();
         let gov = Governor::new(default_plan(now, cfg.shadow), policy, now).map_err(|e| anyhow!("{e:?}"))?;
         let home = crate::paths::home_dir();
         let shell = std::env::var_os("SHELL").map(PathBuf::from).unwrap_or_else(|| "/bin/zsh".into());
-        let login_path = crate::env::login_path(&shell, &home);
+        // Independent subprocesses (the login shell can take seconds): run them together.
+        let (login_path, version, git, git_identity) = std::thread::scope(|sc| {
+            let path = sc.spawn(|| crate::env::login_path(&shell, &home));
+            let version = sc.spawn(|| preflight::claude_version(&cfg.claude).and_then(|v| cfg.version_range.check(v)));
+            let git = sc.spawn(preflight::check_git);
+            let identity = crate::env::user_git_identity();
+            let join = "startup probe panicked";
+            (path.join().expect(join), version.join().expect(join), git.join().expect(join), identity)
+        });
         let mut warnings = crate::env::parent_env_warnings();
-        match preflight::claude_version(&cfg.claude).and_then(|v| cfg.version_range.check(v)) {
+        match version {
             Ok(VersionCheck::Untested(v)) => {
                 warnings.push(format!("claude {v} is newer than the last tested version: run the contract tests (R2)"))
             }
             Ok(VersionCheck::Supported(_)) => {}
             Err(e) => warnings.push(format!("claude: {e}")),
         }
-        if let Err(e) = preflight::check_git() {
+        if let Err(e) = git {
             warnings.push(e.to_string());
         }
         let events =
             std::fs::OpenOptions::new().create(true).append(true).open(cfg.paths.state_dir().join("events.jsonl")).ok();
         Ok(Arc::new_cyclic(|me| Runtime {
             user_statusline: crate::env::user_statusline_command(&home),
-            git_identity: crate::env::user_git_identity(),
+            git_identity,
             cfg,
             store,
             gov: Mutex::new(gov),
             usage: Mutex::new(UsageCollector::new()),
             live: Mutex::new(BTreeMap::new()),
             decisions: Mutex::new(VecDeque::new()),
-            memory: Mutex::new(BTreeMap::new()),
             events: Mutex::new(events),
             login_path,
             warnings,
@@ -239,8 +244,11 @@ impl Runtime {
     }
 
     fn event(&self, agent: &str, kind: &str, detail: Value) {
+        let mut line = serde_json::to_vec(&json!({"ts_ms": now_ms(), "agent": agent, "kind": kind, "detail": detail}))
+            .unwrap_or_default();
+        line.push(b'\n');
         if let Some(f) = self.events.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            let _ = writeln!(f, "{}", json!({"ts_ms": now_ms(), "agent": agent, "kind": kind, "detail": detail}));
+            let _ = f.write_all(&line); // one append per line
         }
     }
 
@@ -265,16 +273,26 @@ impl Runtime {
         }
     }
 
-    fn turn_request(&self, rec: &AgentRecord, kind: TurnKind, interactive: bool, self_started: bool) -> TurnRequest {
-        TurnRequest {
+    /// Admission point 1: asks the Governor and logs the decision.
+    fn decide_turn(&self, rec: &AgentRecord, kind: TurnKind, origin: TurnOrigin) -> Decision {
+        let req = TurnRequest {
             agent: AgentId(rec.id.clone()),
             allocation: rec.allocation.clone().into(),
             tier: rec.tier,
-            interactive,
+            interactive: origin == TurnOrigin::User,
             kind,
-            self_started,
+            self_started: origin == TurnOrigin::SelfStarted,
             ceiling: None,
-        }
+        };
+        let ar = AdmissionRequest {
+            agent_id: rec.id.clone(),
+            point: AdmissionPoint::TurnStart,
+            interactive: req.interactive,
+            self_started: req.self_started,
+        };
+        let d = self.gov().request_turn(req, Timestamp::now());
+        self.record_decision(ar, &d);
+        d
     }
 
     // ------------------------------------------------------------ recovery
@@ -426,14 +444,7 @@ impl Runtime {
         );
         self.store.write(|s| {
             if let Some(a) = s.agents.get_mut(id) {
-                a.pid = Some(pid);
-                a.pgid = Some(pgid);
-                a.spawns += 1;
-                a.flag = None;
-                a.trust_dialog = false;
-                a.tracker.state = AgentState::Starting;
-                a.tracker.stop_intent = StopIntent::None;
-                a.tracker.background_tasks = 0;
+                a.on_spawned(pid, pgid);
             }
         })?;
         self.event(id, "spawned", json!({"pid": pid, "args": compiled.args}));
@@ -449,13 +460,11 @@ impl Runtime {
         }
         let _ = self.store.write(|s| {
             if let Some(a) = s.agents.get_mut(id).filter(|a| a.pid == Some(pid)) {
-                state::on_exit(&mut a.tracker);
-                a.pid = None;
-                a.pgid = None;
+                a.on_process_gone();
             }
         });
-        let releases = self.gov().turn_ended(&AgentId(id.into()), ts_now());
-        self.handle_releases(releases, None);
+        let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
+        self.handle_releases(releases);
         self.event(id, "exited", json!({"status": status}));
     }
 
@@ -507,9 +516,7 @@ impl Runtime {
             // Not ours to wait for: settle the state now.
             self.store.write(|s| {
                 if let Some(a) = s.agents.get_mut(id) {
-                    state::on_exit(&mut a.tracker);
-                    a.pid = None;
-                    a.pgid = None;
+                    a.on_process_gone();
                 }
             })?;
         } else if let Some(l) = live {
@@ -546,32 +553,22 @@ impl Runtime {
         if !self.store.read(|s| s.agents.contains_key(id)) {
             bail!("no agent {id}");
         }
-        let tid = delivery::new_turn_id();
-        self.store.write(|s| {
-            s.turns.push(TurnRow {
-                id: tid.clone(),
-                agent_id: id.into(),
-                body: text.into(),
-                status: TurnStatus::Queued,
-                created_at_ms: now_ms(),
-                delivered_at_ms: None,
-                admitted: false,
-                governor_entry: None,
-            })
-        })?;
+        let turn = TurnRow::queued(id, text, TurnKind::Message, Admission::Pending);
+        let tid = turn.id.clone();
+        self.store.write(|s| s.turns.push(turn))?;
         Ok(tid)
     }
 
     /// FR-811 Pause all. Returns the Governor action id.
     pub fn pause_all(&self) -> u64 {
-        self.gov().pause_all(ts_now()).0
+        self.gov().pause_all(Timestamp::now()).0
     }
 
     /// Lifts Pause all; returns how many queued turns were released.
     pub fn resume_all(&self) -> usize {
-        let releases = self.gov().resume_all(ts_now());
+        let releases = self.gov().resume_all(Timestamp::now());
         let n = releases.len();
-        self.handle_releases(releases, None);
+        self.handle_releases(releases);
         n
     }
 
@@ -641,37 +638,34 @@ impl Runtime {
                 if let Some(l) = &live {
                     l.ready_at_ms.store(0, Ordering::SeqCst);
                 }
-                let req = match origin {
-                    TurnOrigin::App => None, // admitted before delivery
-                    TurnOrigin::User => Some(self.turn_request(rec, TurnKind::User, true, false)),
-                    TurnOrigin::SelfStarted => Some(self.turn_request(rec, TurnKind::Continue, false, true)),
-                };
-                if let Some(req) = req {
-                    let ar = AdmissionRequest {
-                        agent_id: id.into(),
-                        point: AdmissionPoint::TurnStart,
-                        interactive: req.interactive,
-                        self_started: req.self_started,
-                    };
-                    let d = self.gov().request_turn(req, ts_now());
-                    self.record_decision(ar, &d);
+                match origin {
+                    TurnOrigin::App => {} // admitted before delivery
+                    TurnOrigin::User => {
+                        self.decide_turn(rec, TurnKind::User, origin);
+                    }
+                    TurnOrigin::SelfStarted => {
+                        self.decide_turn(rec, TurnKind::Continue, origin);
+                    }
                 }
             }
             Effect::QueuedMessage => {
                 let markers = delivery::find_markers(p.prompt.as_deref().unwrap_or(""));
                 self.mark_delivered(id, &markers);
             }
-            Effect::TurnEnded | Effect::TurnEndedWithBackground(_) => {
-                let _ = self.store.write(|s| {
-                    for turn in s.turns.iter_mut().filter(|x| x.agent_id == id && x.status == TurnStatus::Delivered) {
-                        turn.status = TurnStatus::Done;
-                    }
-                });
+            Effect::TurnEnded | Effect::TurnEndedWithBackground => {
+                let delivered = |t: &TurnRow| t.agent_id == id && t.status == TurnStatus::Delivered;
+                if self.store.read(|s| s.turns.iter().any(delivered)) {
+                    let _ = self.store.write(|s| {
+                        for turn in s.turns.iter_mut().filter(|t| delivered(t)) {
+                            turn.status = TurnStatus::Done;
+                        }
+                    });
+                }
                 if let (Some(l), Effect::TurnEnded) = (&live, &fx) {
                     l.ready_at_ms.store(now + delivery::AFTER_STOP.as_millis() as u64, Ordering::SeqCst);
                 }
-                let releases = self.gov().turn_ended(&AgentId(id.into()), ts_now());
-                self.handle_releases(releases, None);
+                let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
+                self.handle_releases(releases);
             }
             Effect::RateLimited { message } => {
                 let (window, resets) = self
@@ -680,14 +674,14 @@ impl Runtime {
                     .unwrap_or_else(|e| e.into_inner())
                     .exhausted_window(id)
                     .unwrap_or((governor::Window::FiveHour, (now / 1000) as i64 + 3600));
-                let resets_at = Timestamp::from_second(resets).unwrap_or_else(|_| ts_now());
-                let resp = self.gov().rate_limit_hit(Some(&AgentId(id.into())), window, resets_at, ts_now());
+                let resets_at = Timestamp::from_second(resets).unwrap_or_else(|_| Timestamp::now());
+                let resp = self.gov().rate_limit_hit(Some(&AgentId(id.into())), window, resets_at, Timestamp::now());
                 self.event(id, "rate_limited", json!({"window": window, "resets_at": resets, "message": message, "cancel_auto_continue": resp.cancel_auto_continue}));
                 if resp.cancel_auto_continue {
                     // J9: cancel the CLI's own auto-continue; the Governor reschedules.
                     if let Some(l) = live {
                         std::thread::spawn(move || {
-                            std::thread::sleep(Duration::from_secs(1));
+                            std::thread::sleep(ESC_AFTER_RATE_LIMIT);
                             let _ = l.pty.write(b"\x1b");
                         });
                     }
@@ -695,8 +689,8 @@ impl Runtime {
             }
             Effect::Failed { error } => {
                 let _ = self.store.write(|s| s.add_inbox(Some(id), "alert", format!("{id}: API error {error}")));
-                let releases = self.gov().turn_ended(&AgentId(id.into()), ts_now());
-                self.handle_releases(releases, None);
+                let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
+                self.handle_releases(releases);
             }
             Effect::NeedsUser => {}
         }
@@ -730,7 +724,7 @@ impl Runtime {
         let req = ToolCallRequest { agent: AgentId(id.into()), interactive };
         let ar =
             AdmissionRequest { agent_id: id.into(), point: AdmissionPoint::ToolCall, interactive, self_started: false };
-        let d = self.gov().tool_call(&req, ts_now());
+        let d = self.gov().tool_call(&req, Timestamp::now());
         self.record_decision(ar, &d);
         let reason = match &d.effective {
             Verdict::Admit => return None,
@@ -755,10 +749,13 @@ impl Runtime {
                 created_at_ms: now_ms(),
             });
             if let Some(a) = s.agents.get_mut(id) {
-                a.tracker.state = AgentState::Queued;
+                state::hold_started(&mut a.tracker);
             }
         });
+        // Wait for a release: whichever thread receives it marks this hold
+        // Allowed (`handle_releases`).
         let end = std::time::Instant::now() + budget;
+        let hold_status = || self.store.read(|s| s.holds.iter().find(|h| h.id == hold_id).map(|h| h.status));
         let mut outcome = HoldStatus::Denied;
         while std::time::Instant::now() < end {
             if let Some(c) = conn {
@@ -769,8 +766,9 @@ impl Runtime {
             } else {
                 std::thread::sleep(Duration::from_millis(250));
             }
-            let releases = self.gov().tick(ts_now());
-            if self.handle_releases(releases, Some(id)) {
+            let releases = self.gov().tick(Timestamp::now());
+            self.handle_releases(releases);
+            if hold_status() == Some(HoldStatus::Allowed) {
                 outcome = HoldStatus::Allowed;
                 break;
             }
@@ -780,9 +778,7 @@ impl Runtime {
                 h.status = outcome;
             }
             if let Some(a) = s.agents.get_mut(id) {
-                if a.tracker.state == AgentState::Queued {
-                    a.tracker.state = AgentState::Working;
-                }
+                state::hold_ended(&mut a.tracker);
             }
         });
         self.event(id, "hold", json!({"id": hold_id, "outcome": outcome, "reason": reason}));
@@ -797,43 +793,38 @@ impl Runtime {
         }
     }
 
-    /// Carries out the Governor's releases. Returns whether `holding` got one
-    /// (that tool call is then allowed instead of a new turn being delivered).
-    fn handle_releases(&self, releases: Vec<Release>, holding: Option<&str>) -> bool {
-        let mut held_released = false;
+    /// Carries out the Governor's releases. A release for an agent held in a
+    /// PreToolUse allows that tool call; otherwise it admits the agent's queued
+    /// turn (or a "continue" turn when none is queued).
+    fn handle_releases(&self, releases: Vec<Release>) {
         for r in releases {
             let id = r.agent.0.clone();
             self.event(&id, "released", serde_json::to_value(&r).unwrap_or(Value::Null));
-            if holding == Some(id.as_str()) && !held_released {
-                held_released = true;
-                continue;
-            }
             let _ = self.store.write(|s| {
+                let held = s
+                    .holds
+                    .iter_mut()
+                    .find(|h| h.agent_id == id && h.kind == HoldKind::Governor && h.status == HoldStatus::Held);
+                if let Some(h) = held {
+                    h.status = HoldStatus::Allowed;
+                    return;
+                }
                 let entry = r.entry.0;
                 let existing = s
                     .turns
                     .iter_mut()
-                    .filter(|t| t.agent_id == id && t.status == TurnStatus::Queued && !t.admitted)
-                    .min_by_key(|t| (t.governor_entry != Some(entry), t.created_at_ms));
+                    .filter(|t| {
+                        t.agent_id == id && t.status == TurnStatus::Queued && t.admission != Admission::Admitted
+                    })
+                    .min_by_key(|t| (t.admission != Admission::Waiting(entry), t.created_at_ms));
                 match existing {
-                    Some(t) => {
-                        t.admitted = true;
-                        t.governor_entry = Some(entry);
+                    Some(t) => t.admission = Admission::Admitted,
+                    None => {
+                        s.turns.push(TurnRow::queued(&id, CONTINUE_MESSAGE, TurnKind::Continue, Admission::Admitted))
                     }
-                    None => s.turns.push(TurnRow {
-                        id: delivery::new_turn_id(),
-                        agent_id: id.clone(),
-                        body: CONTINUE_MESSAGE.into(),
-                        status: TurnStatus::Queued,
-                        created_at_ms: now_ms(),
-                        delivered_at_ms: None,
-                        admitted: true,
-                        governor_entry: Some(entry),
-                    }),
                 }
             });
         }
-        held_released
     }
 
     pub fn on_status(&self, m: &StatusMsg) {
@@ -864,8 +855,8 @@ impl Runtime {
 
     /// The Governor's control loop (call every ~30 s).
     pub fn tick(&self) {
-        let releases = self.gov().tick(ts_now());
-        self.handle_releases(releases, None);
+        let releases = self.gov().tick(Timestamp::now());
+        self.handle_releases(releases);
     }
 
     /// Delivery loop (call every ~200 ms): trust-dialog detection, then for
@@ -907,38 +898,25 @@ impl Runtime {
     }
 
     fn admit_turn(&self, rec: &AgentRecord, turn: &TurnRow) -> bool {
-        if turn.admitted {
-            return true;
+        match turn.admission {
+            Admission::Admitted => return true,
+            Admission::Waiting(_) => return false, // in the Governor's queue until a release
+            Admission::Pending => {}
         }
-        if turn.governor_entry.is_some() {
-            return false; // waiting in the Governor's queue for a release
+        let d = self.decide_turn(rec, turn.kind, TurnOrigin::App);
+        let admission = match &d.effective {
+            Verdict::Admit => Admission::Admitted,
+            Verdict::Queue { entry: Some(e), .. } => Admission::Waiting(e.0),
+            _ => Admission::Pending,
+        };
+        if admission != Admission::Pending {
+            let _ = self.store.write(|s| {
+                if let Some(t) = s.turns.iter_mut().find(|t| t.id == turn.id) {
+                    t.admission = admission;
+                }
+            });
         }
-        let kind = if turn.body == CONTINUE_MESSAGE || turn.body == reconcile::RESUME_MESSAGE {
-            TurnKind::Continue
-        } else {
-            TurnKind::Message
-        };
-        let req = self.turn_request(rec, kind, false, false);
-        let ar = AdmissionRequest {
-            agent_id: rec.id.clone(),
-            point: AdmissionPoint::TurnStart,
-            interactive: false,
-            self_started: false,
-        };
-        let d = self.gov().request_turn(req, ts_now());
-        self.record_decision(ar, &d);
-        let (admitted, entry) = match &d.effective {
-            Verdict::Admit => (true, None),
-            Verdict::Queue { entry, .. } => (false, entry.map(|e| e.0)),
-            Verdict::Deny { .. } => (false, None),
-        };
-        let _ = self.store.write(|s| {
-            if let Some(t) = s.turns.iter_mut().find(|t| t.id == turn.id) {
-                t.admitted = admitted;
-                t.governor_entry = entry;
-            }
-        });
-        admitted
+        admission == Admission::Admitted
     }
 
     fn pump_one(&self, rec: &AgentRecord, turn: &TurnRow, now: u64) -> Result<()> {
@@ -1024,12 +1002,11 @@ impl Runtime {
         let _ = l.pty.resize(rows, cols.saturating_sub(1).max(1));
         let _ = l.pty.resize(rows, cols);
         loop {
-            let bytes = l.pty.read();
+            let bytes = l.pty.output.read_wait(Duration::from_millis(250));
             if bytes.is_empty() {
                 if l.pty.has_exited() && l.pty.output.is_closed() || reader.is_finished() {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(15));
                 continue;
             }
             if out.write_all(&bytes).is_err() {
@@ -1053,23 +1030,13 @@ impl Runtime {
 
     // ------------------------------------------------------------ views
 
-    /// `footprint` takes 50–100 ms per call: cache it for a few seconds.
-    fn memory_mb(&self, pid: i32) -> Option<f64> {
-        let mut cache = self.memory.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((at, mb)) = cache.get(&pid) {
-            if at.elapsed() < Duration::from_secs(5) {
-                return *mb;
-            }
-        }
-        let mb = procs::footprint_mb(pid);
-        cache.retain(|p, _| procs::alive(*p));
-        cache.insert(pid, (std::time::Instant::now(), mb));
-        mb
-    }
-
     pub fn state_json(&self) -> Value {
         let s = self.store.read(|s| s.clone());
         let usage = self.usage.lock().unwrap_or_else(|e| e.into_inner()).view();
+        let mut queued: BTreeMap<&str, usize> = BTreeMap::new();
+        for t in s.turns.iter().filter(|t| t.status == TurnStatus::Queued) {
+            *queued.entry(t.agent_id.as_str()).or_default() += 1;
+        }
         let agents: Vec<Value> = s
             .agents
             .values()
@@ -1082,7 +1049,7 @@ impl Runtime {
                     "label": a.tracker.state.label(),
                     "pid": a.pid,
                     "live": live.is_some(),
-                    "memory_mb": live.as_ref().and_then(|l| self.memory_mb(l.pty.pid)),
+                    "memory_mb": live.as_ref().and_then(|l| procs::footprint_mb(l.pty.pid)),
                     "session_id": a.session_id,
                     "worktree": a.worktree,
                     "model": u.and_then(|u| u.model.clone()).or(a.role.model.clone()),
@@ -1092,8 +1059,11 @@ impl Runtime {
                     "current_tool": a.tracker.current_tool,
                     "background_tasks": a.tracker.background_tasks,
                     "turns": a.tracker.turns,
-                    "queued_turns": s.turns.iter().filter(|t| t.agent_id == a.id && t.status == TurnStatus::Queued).count(),
+                    "queued_turns": queued.get(a.id.as_str()).copied().unwrap_or(0),
+                    "queued_messages": a.tracker.queued_messages,
                     "last_event": a.last_event,
+                    "last_event_at_ms": a.last_event_at_ms,
+                    "last_error": a.tracker.last_error,
                     "trust_dialog": a.trust_dialog,
                     "flag": a.flag,
                 })
@@ -1109,7 +1079,7 @@ impl Runtime {
 
     pub fn usage_json(&self) -> Value {
         let view = self.usage.lock().unwrap_or_else(|e| e.into_inner()).view();
-        let snap = self.gov().snapshot(ts_now());
+        let snap = self.gov().snapshot(Timestamp::now());
         json!({
             "five_hour": view.five_hour,
             "weekly": view.weekly,
@@ -1120,7 +1090,7 @@ impl Runtime {
 
     pub fn governor_json(&self) -> Value {
         let g = self.gov();
-        let now = ts_now();
+        let now = Timestamp::now();
         let actions: Vec<_> = g.actions().iter().rev().take(20).collect();
         json!({
             "shadow": g.plan().shadow_mode,

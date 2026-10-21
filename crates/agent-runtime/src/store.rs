@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::role::Role;
-use crate::state::Tracker;
+use crate::state::{self, Tracker};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AgentRecord {
@@ -40,6 +40,28 @@ pub struct AgentRecord {
     /// The CLI's trust dialog was seen on the PTY (J0): only the user answers it.
     #[serde(default)]
     pub trust_dialog: bool,
+}
+
+impl AgentRecord {
+    /// A new `claude` process was spawned for this agent.
+    pub fn on_spawned(&mut self, pid: i32, pgid: i32) {
+        self.pid = Some(pid);
+        self.pgid = Some(pgid);
+        self.spawns += 1;
+        self.flag = None;
+        self.trust_dialog = false;
+        self.tracker.state = crate::state::AgentState::Starting;
+        self.tracker.stop_intent = crate::state::StopIntent::None;
+        self.tracker.background_tasks = 0;
+    }
+
+    /// The agent's process is gone; its stop intent decides the state.
+    pub fn on_process_gone(&mut self) {
+        state::on_exit(&mut self.tracker);
+        self.pid = None;
+        self.pgid = None;
+        self.trust_dialog = false;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,20 +97,51 @@ pub enum TurnStatus {
     Cancelled,
 }
 
+/// Where a turn stands with the Governor (admission point 1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "admission", content = "entry", rename_all = "snake_case")]
+pub enum Admission {
+    /// Not asked yet: asked when the agent can take it.
+    #[default]
+    Pending,
+    /// In the Governor's queue as this entry, waiting for a release.
+    Waiting(u64),
+    Admitted,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TurnRow {
     pub id: String,
     pub agent_id: String,
     pub body: String,
+    #[serde(default = "message_kind")]
+    pub kind: governor::TurnKind,
     pub status: TurnStatus,
     pub created_at_ms: u64,
     #[serde(default)]
     pub delivered_at_ms: Option<u64>,
-    /// Admitted by the Governor (admission point 1).
     #[serde(default)]
-    pub admitted: bool,
-    #[serde(default)]
-    pub governor_entry: Option<u64>,
+    pub admission: Admission,
+}
+
+fn message_kind() -> governor::TurnKind {
+    governor::TurnKind::Message
+}
+
+impl TurnRow {
+    /// A new queued turn with a fresh turn id.
+    pub fn queued(agent_id: &str, body: &str, kind: governor::TurnKind, admission: Admission) -> TurnRow {
+        TurnRow {
+            id: crate::delivery::new_turn_id(),
+            agent_id: agent_id.into(),
+            body: body.into(),
+            kind,
+            status: TurnStatus::Queued,
+            created_at_ms: orch_protocol::now_ms(),
+            delivered_at_ms: None,
+            admission,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,39 +241,48 @@ impl StateFile {
 
 pub struct Store {
     path: Option<PathBuf>,
-    data: Mutex<StateFile>,
+    data: Mutex<Data>,
+}
+
+struct Data {
+    state: StateFile,
+    /// What is on disk, so a write that changed nothing costs no I/O.
+    saved: Vec<u8>,
 }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Store> {
-        let data = match std::fs::read(path) {
-            Ok(b) => serde_json::from_slice(&b).with_context(|| format!("reading {}", path.display()))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => StateFile::default(),
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let (state, saved) = match std::fs::read(path) {
+            Ok(b) => (serde_json::from_slice(&b).with_context(|| format!("reading {}", path.display()))?, b),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (StateFile::default(), vec![]),
             Err(e) => return Err(e.into()),
         };
-        Ok(Store { path: Some(path.to_path_buf()), data: Mutex::new(data) })
+        Ok(Store { path: Some(path.to_path_buf()), data: Mutex::new(Data { state, saved }) })
     }
 
     /// Not persisted (tests).
     pub fn in_memory(data: StateFile) -> Store {
-        Store { path: None, data: Mutex::new(data) }
+        Store { path: None, data: Mutex::new(Data { state: data, saved: vec![] }) }
     }
 
     pub fn read<R>(&self, f: impl FnOnce(&StateFile) -> R) -> R {
-        f(&self.data.lock().unwrap_or_else(|e| e.into_inner()))
+        f(&self.data.lock().unwrap_or_else(|e| e.into_inner()).state)
     }
 
     /// Mutates and saves. A failed save is returned but the change stays in memory.
     pub fn write<R>(&self, f: impl FnOnce(&mut StateFile) -> R) -> Result<R> {
         let mut g = self.data.lock().unwrap_or_else(|e| e.into_inner());
-        let r = f(&mut g);
-        g.prune();
+        let r = f(&mut g.state);
+        g.state.prune();
         if let Some(p) = &self.path {
-            if let Some(dir) = p.parent() {
-                std::fs::create_dir_all(dir)?;
+            let bytes = serde_json::to_vec(&g.state)?;
+            if bytes != g.saved {
+                crate::compile::write_atomic(p, &bytes)?;
+                g.saved = bytes;
             }
-            let bytes = serde_json::to_vec(&*g)?;
-            crate::compile::write_atomic(p, &bytes)?;
         }
         Ok(r)
     }
@@ -247,16 +309,10 @@ mod tests {
         s.write(|st| {
             for i in 0..KEEP_FINISHED + 50 {
                 let status = if i == 0 { TurnStatus::Queued } else { TurnStatus::Done };
-                st.turns.push(TurnRow {
-                    id: format!("{i}"),
-                    agent_id: "a".into(),
-                    body: String::new(),
-                    status,
-                    created_at_ms: i as u64,
-                    delivered_at_ms: None,
-                    admitted: false,
-                    governor_entry: None,
-                });
+                let mut t = TurnRow::queued("a", "", governor::TurnKind::Message, Admission::Pending);
+                t.id = format!("{i}");
+                t.status = status;
+                st.turns.push(t);
             }
         })
         .unwrap();

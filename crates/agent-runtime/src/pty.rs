@@ -37,11 +37,18 @@ pub struct Output {
     buf: Mutex<Buf>,
     cv: Condvar,
     pub trust_dialog: AtomicBool,
+    /// Off once SessionStart has fired: the dialog only comes before it.
+    watch_trust: AtomicBool,
 }
 
 impl Output {
     fn new() -> Self {
-        Output { buf: Mutex::new(Buf::default()), cv: Condvar::new(), trust_dialog: AtomicBool::new(false) }
+        Output {
+            buf: Mutex::new(Buf::default()),
+            cv: Condvar::new(),
+            trust_dialog: AtomicBool::new(false),
+            watch_trust: AtomicBool::new(true),
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Buf> {
@@ -69,8 +76,11 @@ impl Output {
             }
             b.tail_text.drain(..cut);
         }
-        let squashed: String = b.tail_text.split_whitespace().collect::<Vec<_>>().join(" ");
-        self.trust_dialog.store(squashed.contains(TRUST_DIALOG_TEXT), Ordering::Relaxed);
+        if self.watch_trust.load(Ordering::Relaxed) {
+            let squashed: String = b.tail_text.split_whitespace().collect::<Vec<_>>().join(" ");
+            self.trust_dialog.store(squashed.contains(TRUST_DIALOG_TEXT), Ordering::Relaxed);
+        }
+        self.cv.notify_all();
         let mut answers = vec![];
         if !b.attached {
             if contains(data, b"\x1b[6n") {
@@ -81,6 +91,18 @@ impl Output {
             }
         }
         answers
+    }
+
+    /// Like [`read`](Self::read), but waits up to `timeout` for output.
+    pub fn read_wait(&self, timeout: std::time::Duration) -> Vec<u8> {
+        let b = self.lock();
+        let (mut b, _) = self
+            .cv
+            .wait_timeout_while(b, timeout, |b| b.bytes.is_empty() && !b.closed)
+            .unwrap_or_else(|e| e.into_inner());
+        let out: Vec<u8> = b.bytes.drain(..).collect();
+        self.cv.notify_all();
+        out
     }
 
     /// Pull: everything buffered since the last read.
@@ -112,6 +134,7 @@ impl Output {
     /// SessionStart fired, so the trust dialog is gone (no hook fires before
     /// it is answered): forget the screen text that showed it.
     pub fn clear_trust_dialog(&self) {
+        self.watch_trust.store(false, Ordering::Relaxed);
         self.lock().tail_text.clear();
         self.trust_dialog.store(false, Ordering::Relaxed);
     }

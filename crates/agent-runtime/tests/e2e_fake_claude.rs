@@ -15,25 +15,8 @@ use agent_runtime::server::{self, request};
 use orch_protocol::{AgentSpec, CtlRequest, bus};
 use serde_json::Value;
 
-/// The helper binaries from this workspace's target dir (built on demand).
-fn helper_bins() -> PathBuf {
-    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug");
-    let have = |n: &str| target.join(n).is_file();
-    if !have("orch-hook") || !have("orch-status") {
-        let st = Command::new(env!("CARGO"))
-            .args(["build", "-q", "-p", "orch-hook", "-p", "orch-status"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .status()
-            .unwrap();
-        assert!(st.success());
-    }
-    target
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    let o = Command::new("git").arg("-C").arg(dir).args(args).env("GIT_CONFIG_GLOBAL", "/dev/null").output().unwrap();
-    assert!(o.status.success(), "{args:?} {}", String::from_utf8_lossy(&o.stderr));
-}
+mod common;
+use common::{agent, git, helper_bins, short_tempdir};
 
 fn wait_for(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(secs);
@@ -46,14 +29,10 @@ fn wait_for(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
     panic!("timed out waiting for {what}");
 }
 
-fn agent(state: &Value, id: &str) -> Value {
-    state["agents"].as_array().unwrap().iter().find(|a| a["id"] == id).cloned().unwrap_or(Value::Null)
-}
-
 #[test]
 fn start_deliver_suspend_resume_kill_with_fake_claude() {
     // Short root: the socket path must stay under 104 bytes.
-    let root = tempfile::Builder::new().prefix("orche2e").tempdir_in("/tmp").unwrap();
+    let root = short_tempdir("orche2e");
     let paths = AppPaths::new(root.path().join("app"));
     agent_runtime::preflight::install_helpers(&helper_bins(), &paths.bin_dir()).unwrap();
     let fake = root.path().join("fake-claude");
@@ -90,9 +69,7 @@ fn start_deliver_suspend_resume_kill_with_fake_claude() {
     assert!(r.ok, "{r:?}");
     let wt = PathBuf::from(r.data["worktree"].as_str().unwrap());
     assert!(wt.ends_with("demo.worktrees/solo/e2e"), "{wt:?}");
-    wait_for("first turn done", 15, || {
-        agent(&state(), "e2e")["turns"] == 1 && agent(&state(), "e2e")["state"] == "idle"
-    });
+    wait_for("first turn done", 15, || agent(&sock, "e2e")["turns"] == 1 && agent(&sock, "e2e")["state"] == "idle");
 
     // The pasted turn carried its marker and the leading-`/` escape, and came back Done.
     let s = state();
@@ -118,7 +95,7 @@ fn start_deliver_suspend_resume_kill_with_fake_claude() {
 
     // A second message: delivered only once the agent is idle again.
     request(&sock, CtlRequest::Deliver { agent_id: "e2e".into(), text: "second".into() }).unwrap();
-    wait_for("second turn", 10, || agent(&state(), "e2e")["turns"] == 2 && agent(&state(), "e2e")["state"] == "idle");
+    wait_for("second turn", 10, || agent(&sock, "e2e")["turns"] == 2 && agent(&sock, "e2e")["state"] == "idle");
 
     // Generated files.
     let settings: Value =
@@ -127,23 +104,23 @@ fn start_deliver_suspend_resume_kill_with_fake_claude() {
     assert!(std::fs::read_to_string(paths.agent_dir("e2e").join("gitconfig")).unwrap().contains("helper ="));
 
     // Suspend keeps the session; resume brings it back with --resume.
-    let sid = agent(&state(), "e2e")["session_id"].as_str().unwrap().to_string();
-    let pid = agent(&state(), "e2e")["pid"].as_i64().unwrap() as i32;
+    let sid = agent(&sock, "e2e")["session_id"].as_str().unwrap().to_string();
+    let pid = agent(&sock, "e2e")["pid"].as_i64().unwrap() as i32;
     assert!(request(&sock, CtlRequest::Suspend { agent_id: "e2e".into() }).unwrap().ok);
-    wait_for("suspended", 10, || agent(&state(), "e2e")["state"] == "suspended");
+    wait_for("suspended", 10, || agent(&sock, "e2e")["state"] == "suspended");
     assert!(!agent_runtime::procs::alive(pid));
     assert!(
         request(&sock, CtlRequest::Resume { agent_id: "e2e".into(), message: Some("after resume".into()) }).unwrap().ok
     );
-    wait_for("resumed turn", 15, || agent(&state(), "e2e")["turns"].as_u64() == Some(3));
-    assert_eq!(agent(&state(), "e2e")["session_id"], sid.as_str());
+    wait_for("resumed turn", 15, || agent(&sock, "e2e")["turns"].as_u64() == Some(3));
+    assert_eq!(agent(&sock, "e2e")["session_id"], sid.as_str());
     let screen = String::from_utf8_lossy(&std::fs::read(paths.state_dir().join("events.jsonl")).unwrap()).into_owned();
     assert!(screen.contains("--resume"), "resume used --resume");
 
     // Kill: process gone, state killed.
-    let pid = agent(&state(), "e2e")["pid"].as_i64().unwrap() as i32;
+    let pid = agent(&sock, "e2e")["pid"].as_i64().unwrap() as i32;
     assert!(request(&sock, CtlRequest::Kill { agent_id: "e2e".into() }).unwrap().ok);
-    wait_for("killed", 10, || agent(&state(), "e2e")["state"] == "killed");
+    wait_for("killed", 10, || agent(&sock, "e2e")["state"] == "killed");
     assert!(!agent_runtime::procs::alive(pid));
 
     assert!(request(&sock, CtlRequest::Shutdown).unwrap().ok);
@@ -154,7 +131,7 @@ fn start_deliver_suspend_resume_kill_with_fake_claude() {
 fn hook_with_core_down_denies_tools_and_spools() {
     // The real orch-hook binary, no core: PreToolUse is denied, Stop exits 0 and is spooled.
     let bins = helper_bins();
-    let d = tempfile::Builder::new().prefix("orchhk").tempdir_in("/tmp").unwrap();
+    let d = short_tempdir("orchhk");
     let run = |event: &str| {
         let mut c = Command::new(bins.join("orch-hook"))
             .env_clear()

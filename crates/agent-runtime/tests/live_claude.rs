@@ -21,36 +21,21 @@ use std::time::{Duration, Instant};
 use agent_runtime::paths::AppPaths;
 use agent_runtime::runtime::{Runtime, RuntimeConfig};
 use agent_runtime::server::{self, request};
-use orch_protocol::{AgentSpec, CtlRequest, Envelope, Msg, bus};
+use orch_protocol::{AgentSpec, CtlRequest, bus};
 use serde_json::Value;
 
-fn helper_bins() -> PathBuf {
-    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug");
-    let st = Command::new(env!("CARGO"))
-        .args(["build", "-q", "-p", "orch-hook", "-p", "orch-status"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status()
-        .unwrap();
-    assert!(st.success());
-    target
-}
+mod common;
+use common::{agent, helper_bins};
 
-fn git(dir: &Path, args: &[&str]) -> String {
+/// git that tolerates failure (cleanup of a branch that may not exist).
+fn git_try(dir: &Path, args: &[&str]) -> String {
     let o = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
     String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr)
 }
 
-fn agent(sock: &Path, id: &str) -> Value {
-    let s = request(sock, CtlRequest::State).unwrap().data;
-    s["agents"].as_array().unwrap().iter().find(|a| a["id"] == id).cloned().unwrap_or(Value::Null)
-}
-
 /// Writes raw keys to the agent's PTY through an attach connection.
 fn type_keys(sock: &Path, id: &str, keys: &[u8]) {
-    let s = bus::connect(sock, Duration::from_secs(1)).unwrap();
-    bus::write_line(&mut &s, &Envelope::new(Msg::Ctl(CtlRequest::Attach { agent_id: id.into(), rows: 50, cols: 160 })))
-        .unwrap();
-    std::thread::sleep(Duration::from_millis(300));
+    let (s, _) = server::attach_client(sock, id, 50, 160).unwrap();
     (&s).write_all(keys).unwrap();
     std::thread::sleep(Duration::from_millis(300));
 }
@@ -95,10 +80,10 @@ fn live_haiku_end_to_end() {
             let r = PathBuf::from("/tmp/orch-live/demo");
             if !r.join(".git").exists() {
                 std::fs::create_dir_all(&r).unwrap();
-                git(&r, &["init", "-q", "-b", "main"]);
+                git_try(&r, &["init", "-q", "-b", "main"]);
                 std::fs::write(r.join("README.md"), "# live demo\nsecret-main-checkout\n").unwrap();
-                git(&r, &["add", "."]);
-                git(&r, &["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-qm", "init"]);
+                git_try(&r, &["add", "."]);
+                git_try(&r, &["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-qm", "init"]);
             }
             std::fs::canonicalize(&r).unwrap()
         }
@@ -138,9 +123,9 @@ fn live_haiku_end_to_end() {
                 let _ = s.join();
             }
             if let Some(wt) = &self.wt {
-                git(&self.repo, &["worktree", "unlock", &wt.display().to_string()]);
-                git(&self.repo, &["worktree", "remove", "--force", &wt.display().to_string()]);
-                git(&self.repo, &["branch", "-D", &format!("orch/solo/{}", self.id)]);
+                git_try(&self.repo, &["worktree", "unlock", &wt.display().to_string()]);
+                git_try(&self.repo, &["worktree", "remove", "--force", &wt.display().to_string()]);
+                git_try(&self.repo, &["branch", "-D", &format!("orch/solo/{}", self.id)]);
             }
         }
     }
@@ -220,7 +205,7 @@ fn live_haiku_end_to_end() {
         std::thread::sleep(Duration::from_millis(500));
     }
     assert!(done, "tool turn did not finish: {}", agent(&sock, &id));
-    let committed = git(&wt, &["log", "--oneline", "-1"]);
+    let committed = git_try(&wt, &["log", "--oneline", "-1"]);
     let denied = std::fs::read_to_string(wt.join("denied.txt")).unwrap_or_default();
     let git_out = std::fs::read_to_string(wt.join("git.txt")).unwrap_or_default();
     eprintln!("commit: {committed}git: {git_out}\ndenied.txt: {denied}");

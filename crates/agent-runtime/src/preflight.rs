@@ -66,7 +66,25 @@ impl VersionRange {
     }
 }
 
+/// `claude --version`, cached per binary (path, size, mtime): it starts a
+/// whole Node/Bun process, and it is checked at every spawn.
 pub fn claude_version(claude: &Path) -> Result<Version> {
+    use std::sync::Mutex;
+    type Key = (std::path::PathBuf, u64, std::time::SystemTime);
+    static CACHE: Mutex<Vec<(Key, Version)>> = Mutex::new(Vec::new());
+    let meta = std::fs::metadata(claude).with_context(|| format!("no claude at {}", claude.display()))?;
+    let key: Key = (claude.to_path_buf(), meta.len(), meta.modified().unwrap_or(std::time::UNIX_EPOCH));
+    if let Some((_, v)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
+        return Ok(*v);
+    }
+    let v = run_claude_version(claude)?;
+    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    c.retain(|(k, _)| k.0 != key.0);
+    c.push((key, v));
+    Ok(v)
+}
+
+fn run_claude_version(claude: &Path) -> Result<Version> {
     let out = Command::new(claude)
         .arg("--version")
         .env("DISABLE_AUTOUPDATER", "1")

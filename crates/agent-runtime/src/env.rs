@@ -173,14 +173,13 @@ pub fn gitconfig(name: &str, email: &str) -> String {
 
 /// The user's git identity, read (never written) from their own config.
 pub fn user_git_identity() -> (String, String) {
+    let out = Command::new("git")
+        .args(["config", "--global", "--get-regexp", r"^user\.(name|email)$"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
     let get = |k: &str| {
-        Command::new("git")
-            .args(["config", "--global", "--get", k])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|s| !s.is_empty() && !s.contains('\n'))
+        out.lines().filter_map(|l| l.split_once(' ')).find(|(key, _)| *key == k).map(|(_, v)| v.trim().to_string())
     };
     (
         get("user.name").unwrap_or_else(|| "Orchestrator Agent".into()),

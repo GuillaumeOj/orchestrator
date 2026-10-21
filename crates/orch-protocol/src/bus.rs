@@ -101,10 +101,12 @@ pub fn bind_listener(path: &Path) -> Result<UnixListener, BusError> {
         }
     }
     match std::fs::symlink_metadata(path) {
-        Ok(m) if m.file_type().is_socket() => match connect(path, Duration::from_millis(300)) {
-            Ok(_) => return Err(BusError::AlreadyRunning),
-            Err(_) => std::fs::remove_file(path)?,
-        },
+        Ok(m) if m.file_type().is_socket() => {
+            if is_listening(path) {
+                return Err(BusError::AlreadyRunning);
+            }
+            std::fs::remove_file(path)?
+        }
         Ok(_) => return Err(BusError::Protocol(format!("{} exists and is not a socket", path.display()))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
@@ -122,6 +124,11 @@ pub fn connect(path: &Path, timeout: Duration) -> Result<UnixStream, BusError> {
     let s = socket2::Socket::new(socket2::Domain::UNIX, socket2::Type::STREAM, None)?;
     s.connect_timeout(&addr, timeout).map_err(BusError::from_io)?;
     Ok(UnixStream::from(OwnedFd::from(s)))
+}
+
+/// Whether a core answers on this socket.
+pub fn is_listening(path: &Path) -> bool {
+    connect(path, Duration::from_millis(300)).is_ok()
 }
 
 /// Writes one JSON line.

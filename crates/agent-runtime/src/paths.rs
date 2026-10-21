@@ -45,10 +45,6 @@ impl AppPaths {
     pub fn state_file(&self) -> PathBuf {
         self.state_dir().join("state.json")
     }
-
-    pub fn log_file(&self) -> PathBuf {
-        self.root.join("core.log")
-    }
 }
 
 pub fn home_dir() -> PathBuf {
