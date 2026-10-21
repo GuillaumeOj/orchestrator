@@ -133,7 +133,7 @@ fn hard_cap_per_allocation() {
     g.turn_ended(&"B-1".into(), at(31));
     let d = g.request_turn(task("B-1", "B", Tier::Normal), at(32));
     assert_eq!(queue_reason(&d), Some(QueueReason::HardCap));
-    assert_eq!(g.queue()[0].estimated_start, Some(RESET.parse().unwrap()));
+    assert_eq!(g.queue()[0].estimated_start, Some(reset()));
 }
 
 // ---------------------------------------------------------------- fair queuing
@@ -353,7 +353,7 @@ fn ideal_curve_follows_weighted_hours() {
     // The night does not move it.
     let night = g.snapshot(at(hours(20.0)));
     assert!((night.ideal - 18.0).abs() < 1e-6);
-    assert!((g.snapshot(RESET.parse().unwrap()).ideal - 90.0).abs() < 1e-6);
+    assert!((g.snapshot(reset()).ideal - 90.0).abs() < 1e-6);
 }
 
 #[test]
@@ -366,7 +366,7 @@ fn eta_projects_the_burn_over_working_time() {
     }
     let s = g.snapshot(at(hours(4.0)));
     let eta = s.eta.expect("projected");
-    assert!(eta < RESET.parse().unwrap());
+    assert!(eta < reset());
     assert_eq!(g.state(), PressureState::Red, "{s:?}");
 }
 
@@ -499,7 +499,7 @@ fn sprint_borrows_from_the_rest_of_the_week() {
     let d = g.snapshot(wed_19).ideal - base.snapshot(wed_19).ideal;
     assert!((d - 4.0).abs() < 1e-6, "{d}");
     assert!(g.snapshot(wed_10).ideal == base.snapshot(wed_10).ideal);
-    let reset = RESET.parse().unwrap();
+    let reset = reset();
     assert!((g.snapshot(reset).ideal - base.snapshot(reset).ideal).abs() < 1e-6, "nothing extra for the week");
     g.undo(id, wed_19).unwrap();
     assert!((g.snapshot(wed_19).ideal - base.snapshot(wed_19).ideal).abs() < 1e-9);
@@ -691,7 +691,7 @@ fn new_week_resets_budgets_but_keeps_calibration_and_queue() {
     g.ingest(&weekly(at(60), "A-1", 30.0, 3.0));
     g.pause_all(at(61));
     g.request_turn(task("B-1", "B", Tier::Normal), at(62));
-    let next_start: governor::jiff::Timestamp = RESET.parse().unwrap();
+    let next_start: governor::jiff::Timestamp = reset();
     let mut p = plan();
     p.week_start = next_start;
     p.reset_at = "2026-11-02T08:00:00Z".parse().unwrap();

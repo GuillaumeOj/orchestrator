@@ -536,7 +536,7 @@ pub fn run(sc: &Scenario) -> SimResult {
         .iter()
         .flat_map(|a| {
             (0..a.agents).map(move |i| Stream {
-                agent: AgentId(format!("{}-{}", a.allocation.id, i + 1)),
+                agent: agent_name(&a.allocation.id, i),
                 allocation: a.allocation.id.clone(),
                 state: StreamState::Idle,
                 task: None,
@@ -675,12 +675,7 @@ pub fn run(sc: &Scenario) -> SimResult {
         }
 
         // The user's own work in a pane: never held by the Governor.
-        let interactive_rate: f64 = sc
-            .interactive
-            .iter()
-            .filter(|b| now >= b.start && now < add_min(b.start, b.minutes))
-            .map(|b| b.pct / b.minutes as f64)
-            .sum();
+        let interactive_rate = burst_rate(&sc.interactive, now);
         if interactive_rate > 0.0 {
             let d = gov.tool_call(&ToolCallRequest { agent: user.clone(), interactive: true }, now);
             debug_assert!(d.effective.is_admit());
@@ -693,12 +688,7 @@ pub fn run(sc: &Scenario) -> SimResult {
         }
 
         // Usage outside the app: invisible except through later readings.
-        let outside: f64 = sc
-            .unattributed
-            .iter()
-            .filter(|b| now >= b.start && now < add_min(b.start, b.minutes))
-            .map(|b| b.pct / b.minutes as f64)
-            .sum();
+        let outside = burst_rate(&sc.unattributed, now);
         if outside > 0.0 && truth.exhausted().is_none() {
             truth.spend(outside, m.five_hour_per_weekly_pct, now);
         }
@@ -756,16 +746,9 @@ pub fn run(sc: &Scenario) -> SimResult {
         }
     }
 
-    let actions = gov.actions().to_vec();
-    let final_snap = gov.snapshot(sc.reset_at);
-    let demand_pct = sc.tasks.iter().map(|t| t.work_pct).sum::<f64>()
-        + sc.interactive.iter().map(|b| b.pct).sum::<f64>()
-        + sc.unattributed.iter().map(|b| b.pct).sum::<f64>();
-
     let summary = summarize(SummaryInputs {
         sc,
         gov: &gov,
-        actions: &actions,
         final_weekly: truth.weekly,
         weekly_at_end_of_work,
         max_weekly,
@@ -775,12 +758,22 @@ pub fn run(sc: &Scenario) -> SimResult {
         self_started_turns,
         done_pct,
         tasks_done,
-        demand_pct,
-        final_k: final_snap.calibration.cost_per_weekly_pct,
-        final_confidence: final_snap.calibration.confidence,
-        final_error: final_snap.error,
     });
-    SimResult { summary, rows, actions }
+    SimResult { summary, rows, actions: gov.actions().to_vec() }
+}
+
+/// The agent of a stream: `<allocation>-<n>`, numbered from 1.
+fn agent_name(allocation: &AllocationId, index: u32) -> AgentId {
+    AgentId(format!("{allocation}-{}", index + 1))
+}
+
+/// Weekly pp per minute from the bursts active at `now`.
+fn burst_rate(bursts: &[Burst], now: Timestamp) -> f64 {
+    bursts
+        .iter()
+        .filter(|b| now >= b.start && now < add_min(b.start, b.minutes))
+        .map(|b| b.pct / b.minutes as f64)
+        .sum()
 }
 
 fn alloc_tier(sc: &Scenario, id: &AllocationId) -> Tier {
@@ -816,7 +809,9 @@ fn apply_releases(
         match streams.iter_mut().find(|s| s.agent == r.agent) {
             Some(s) if s.state == StreamState::Waiting(r.entry) && s.task.is_some() => s.state = new_turn(sc, rng),
             _ => {
-                // Nothing to run (should not happen): give the slot back.
+                // The Governor released a turn this stream cannot run: a mismatch to fix,
+                // not to hide. Release builds give the slot back.
+                debug_assert!(false, "release for {} which is not waiting on entry {}", r.agent, r.entry);
                 let more = gov.turn_ended(&r.agent, now);
                 apply_releases(streams, gov, more, sc, rng, now);
             }
@@ -827,7 +822,6 @@ fn apply_releases(
 struct SummaryInputs<'a> {
     sc: &'a Scenario,
     gov: &'a Governor,
-    actions: &'a [GovernorAction],
     final_weekly: f64,
     weekly_at_end_of_work: f64,
     max_weekly: f64,
@@ -837,14 +831,14 @@ struct SummaryInputs<'a> {
     self_started_turns: u64,
     done_pct: BTreeMap<AllocationId, f64>,
     tasks_done: BTreeMap<AllocationId, usize>,
-    demand_pct: f64,
-    final_k: f64,
-    final_confidence: f64,
-    final_error: f64,
 }
 
 fn summarize(i: SummaryInputs<'_>) -> Summary {
     let sc = i.sc;
+    let final_snap = i.gov.snapshot(sc.reset_at);
+    let demand_pct = sc.tasks.iter().map(|t| t.work_pct).sum::<f64>()
+        + sc.interactive.iter().map(|b| b.pct).sum::<f64>()
+        + sc.unattributed.iter().map(|b| b.pct).sum::<f64>();
     let mut actions: BTreeMap<String, u64> = BTreeMap::new();
     let mut queued_at: BTreeMap<EntryId, (Timestamp, AgentId)> = BTreeMap::new();
     let mut waits = Vec::new();
@@ -853,11 +847,9 @@ fn summarize(i: SummaryInputs<'_>) -> Summary {
     let tiers: BTreeMap<AgentId, Tier> = sc
         .allocations
         .iter()
-        .flat_map(|a| {
-            (0..a.agents).map(move |n| (AgentId(format!("{}-{}", a.allocation.id, n + 1)), a.allocation.tier))
-        })
+        .flat_map(|a| (0..a.agents).map(move |n| (agent_name(&a.allocation.id, n), a.allocation.tier)))
         .collect();
-    for a in i.actions {
+    for a in i.gov.actions() {
         *actions.entry(a.kind_name().to_owned()).or_insert(0) += 1;
         match &a.action {
             ActionKind::Queue { entry: Some(e), agent, .. } => {
@@ -911,7 +903,7 @@ fn summarize(i: SummaryInputs<'_>) -> Summary {
     Summary {
         scenario: sc.name.clone(),
         shadow_mode: sc.shadow_mode,
-        demand_pct: i.demand_pct,
+        demand_pct,
         final_weekly_pct: i.final_weekly,
         weekly_at_end_of_work: i.weekly_at_end_of_work,
         max_weekly_pct: i.max_weekly,
@@ -931,10 +923,10 @@ fn summarize(i: SummaryInputs<'_>) -> Summary {
         min_dwell_min: min_dwell,
         interactive_blocked_min: i.interactive_blocked_min,
         allocations,
-        final_k: i.final_k,
+        final_k: final_snap.calibration.cost_per_weekly_pct,
         true_k: sc.model.cost_per_pct,
-        final_confidence: i.final_confidence,
-        final_error_pp: i.final_error,
+        final_confidence: final_snap.calibration.confidence,
+        final_error_pp: final_snap.error,
     }
 }
 

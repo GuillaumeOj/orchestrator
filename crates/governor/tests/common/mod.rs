@@ -13,6 +13,10 @@ pub fn start() -> Timestamp {
     WEEK_START.parse().unwrap()
 }
 
+pub fn reset() -> Timestamp {
+    RESET.parse().unwrap()
+}
+
 /// `start + minutes`.
 pub fn at(minutes: i64) -> Timestamp {
     start().checked_add(SignedDuration::from_mins(minutes)).unwrap()
@@ -31,7 +35,7 @@ pub fn plan() -> WeeklyPlan {
     WeeklyPlan {
         id: "test".into(),
         week_start: start(),
-        reset_at: RESET.parse().unwrap(),
+        reset_at: reset(),
         calendar: WorkingCalendar::weekdays("Europe/Paris", time(9, 0, 0, 0), time(19, 0, 0, 0)),
         reserve_pct: 10.0,
         off_hours_allowance_pct: 0.0,
@@ -63,7 +67,7 @@ pub fn weekly(ts: Timestamp, agent: &str, cost: f64, pct: f64) -> UsageSample {
         agent: Some(agent.into()),
         cost_delta: cost,
         five_hour: None,
-        weekly: Some(WindowReading { used_pct: pct, resets_at: RESET.parse().unwrap() }),
+        weekly: Some(WindowReading { used_pct: pct, resets_at: reset() }),
         provenance: Provenance::Observed,
     }
 }

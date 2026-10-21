@@ -1,5 +1,6 @@
 //! Queue entries and weighted fair queuing with strict critical and aging (FR-808).
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use jiff::Timestamp;
@@ -97,25 +98,25 @@ impl QueueEntry {
     }
 }
 
-/// Order eligible entries: strict by effective tier, then by allocation service
+/// Release order: strict by effective tier, then by allocation service
 /// (attributed usage / weight, lowest first), then FIFO. `service` must already
 /// include the start-time offset so idle allocations cannot hoard credit.
+pub fn release_cmp(a: &QueueEntry, b: &QueueEntry, service: &BTreeMap<AllocationId, f64>) -> Ordering {
+    let svc = |e: &QueueEntry| service.get(&e.allocation).copied().unwrap_or(0.0);
+    b.effective_tier
+        .cmp(&a.effective_tier)
+        .then_with(|| svc(a).total_cmp(&svc(b)))
+        .then_with(|| a.enqueued_at.cmp(&b.enqueued_at))
+        .then_with(|| a.id.cmp(&b.id))
+}
+
+/// Entries sorted by [`release_cmp`].
 pub fn release_order<'a>(
     entries: impl Iterator<Item = &'a QueueEntry>,
     service: &BTreeMap<AllocationId, f64>,
 ) -> Vec<&'a QueueEntry> {
     let mut v: Vec<&QueueEntry> = entries.collect();
-    v.sort_by(|a, b| {
-        b.effective_tier
-            .cmp(&a.effective_tier)
-            .then_with(|| {
-                let sa = service.get(&a.allocation).copied().unwrap_or(0.0);
-                let sb = service.get(&b.allocation).copied().unwrap_or(0.0);
-                sa.total_cmp(&sb)
-            })
-            .then_with(|| a.enqueued_at.cmp(&b.enqueued_at))
-            .then_with(|| a.id.cmp(&b.id))
-    });
+    v.sort_by(|a, b| release_cmp(a, b, service));
     v
 }
 

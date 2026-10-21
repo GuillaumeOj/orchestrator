@@ -11,7 +11,7 @@ use crate::calendar::{CalendarError, Curve};
 use crate::estimator::{Calibration, Calibrator, Observation};
 use crate::plan::{AskDefault, AutoContinue, PacingPolicy, WeeklyPlan};
 use crate::pressure::{PressureInputs, PressureState, StateMachine};
-use crate::queue::{QueueEntry, QueueReason, TurnCeiling, TurnKind, release_order};
+use crate::queue::{QueueEntry, QueueReason, TurnCeiling, TurnKind, release_cmp, release_order};
 use crate::types::{
     ActionId, AgentId, AllocationId, EntryId, Provenance, Tier, UsageSample, Window, WindowReading, add_hours,
     add_minutes, ewma_alpha, hours_between,
@@ -220,6 +220,18 @@ enum TurnClass {
     Autonomous,
 }
 
+impl TurnClass {
+    fn of(interactive: bool, tier: Tier) -> Self {
+        if interactive {
+            TurnClass::Interactive
+        } else if tier == Tier::Critical {
+            TurnClass::Critical
+        } else {
+            TurnClass::Autonomous
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct LiveTurn {
     allocation: AllocationId,
@@ -248,6 +260,8 @@ struct Metrics {
     k: f64,
     u_so_far: f64,
     u_forecast: f64,
+    /// `100 − reserve − U_forecast`: what the curve spreads over the week.
+    budget: f64,
     reserve_left: f64,
     ideal: f64,
     plan: f64,
@@ -327,9 +341,7 @@ pub struct Governor {
 
 impl Governor {
     pub fn new(plan: WeeklyPlan, policy: PacingPolicy, now: Timestamp) -> Result<Governor, GovernorError> {
-        let tz = TimeZone::get(&plan.calendar.time_zone)
-            .map_err(|_| CalendarError::UnknownTimeZone(plan.calendar.time_zone.clone()))?;
-        let base_curve = Curve::build(&plan.calendar, plan.week_start, plan.reset_at, plan.off_hours_allowance_pct)?;
+        let (tz, base_curve) = plan_curve(&plan)?;
         let calib = Calibrator::new(policy.initial_cost_per_pct, policy.calibration_decay);
         let mut g = Governor {
             curve: base_curve.clone(),
@@ -378,9 +390,7 @@ impl Governor {
     /// Switch to the next week's plan (after the weekly reset). Calibration and
     /// the queue carry over; budgets, deferrals and sprints do not (FR-808).
     pub fn new_week(&mut self, plan: WeeklyPlan, now: Timestamp) -> Result<(), GovernorError> {
-        let tz = TimeZone::get(&plan.calendar.time_zone)
-            .map_err(|_| CalendarError::UnknownTimeZone(plan.calendar.time_zone.clone()))?;
-        let curve = Curve::build(&plan.calendar, plan.week_start, plan.reset_at, plan.off_hours_allowance_pct)?;
+        let (tz, curve) = plan_curve(&plan)?;
         self.tz = tz;
         self.base_curve = curve.clone();
         self.curve = curve;
@@ -449,7 +459,12 @@ impl Governor {
     }
 
     pub fn action(&self, id: ActionId) -> Option<&GovernorAction> {
-        self.actions.iter().find(|a| a.id == id)
+        // Ids are dense from 1 and actions are never removed.
+        self.actions.get((id.0 as usize).checked_sub(1)?).filter(|a| a.id == id)
+    }
+
+    fn action_mut(&mut self, id: ActionId) -> Option<&mut GovernorAction> {
+        self.actions.get_mut((id.0 as usize).checked_sub(1)?).filter(|a| a.id == id)
     }
 
     pub fn stats(&self) -> &Stats {
@@ -540,11 +555,8 @@ impl Governor {
             None
         };
 
-        let (f, f_resets_at) = match self.five_obs {
-            Some(o) if now < o.resets_at => (Some(o.used_pct), Some(o.resets_at)),
-            Some(_) => (Some(0.0), None),
-            None => (None, None),
-        };
+        let f = self.five_hour_now(now);
+        let f_resets_at = self.five_obs.map(|o| o.resets_at).filter(|r| now < *r);
         let f_projected = f.map(|f| match f_resets_at {
             Some(r) => f + self.burn5 * hours_between(now, r).max(0.0),
             None => f,
@@ -558,6 +570,7 @@ impl Governor {
             k,
             u_so_far,
             u_forecast,
+            budget,
             reserve_left,
             ideal,
             plan,
@@ -569,6 +582,11 @@ impl Governor {
             f_projected,
             f_resets_at,
         }
+    }
+
+    /// F now: the latest 5h reading, 0 once its window has reset, `None` if never seen.
+    fn five_hour_now(&self, now: Timestamp) -> Option<f64> {
+        self.five_obs.map(|o| if now < o.resets_at { o.used_pct } else { 0.0 })
     }
 
     fn cap(&self, m: &Metrics) -> u32 {
@@ -735,15 +753,10 @@ impl Governor {
         let mut resp = LimitResponse { cancel_auto_continue: false, entry: None };
         let Some(agent) = agent else { return resp };
         let Some(turn) = self.live.get(agent).cloned() else { return resp };
-        if turn.class == TurnClass::Interactive {
-            self.end_turn(agent, now);
-            return resp;
-        }
-        if self.plan.shadow_mode {
-            self.end_turn(agent, now);
-            return resp;
-        }
         self.end_turn(agent, now);
+        if turn.class == TurnClass::Interactive || self.plan.shadow_mode {
+            return resp;
+        }
         if self.policy.auto_continue == AutoContinue::CancelAndReschedule {
             let reason = QueueReason::LimitReached { window };
             resp.entry = Some(self.enqueue(
@@ -823,13 +836,7 @@ impl Governor {
             self.end_turn(&req.agent, now);
         }
         let m = self.metrics(now);
-        let class = if req.interactive {
-            TurnClass::Interactive
-        } else if req.tier == Tier::Critical {
-            TurnClass::Critical
-        } else {
-            TurnClass::Autonomous
-        };
+        let class = TurnClass::of(req.interactive, req.tier);
 
         // Critical work is admitted now: drop the agent's older queued entry.
         if class == TurnClass::Critical {
@@ -905,9 +912,8 @@ impl Governor {
 
     /// Admission point 2: a PreToolUse hook asks whether the tool may run.
     pub fn tool_call(&mut self, req: &ToolCallRequest, now: Timestamp) -> Decision {
-        let m = self.metrics(now);
         let admit = Decision { effective: Verdict::Admit, proposed: Verdict::Admit };
-        let Some(turn) = self.live.get(&req.agent).cloned() else {
+        let Some(turn) = self.live.get(&req.agent) else {
             if req.interactive {
                 return admit;
             }
@@ -920,6 +926,7 @@ impl Governor {
                 .unwrap_or(QueueReason::BehindQueue);
             let proposed = Verdict::Deny { reason: DenyReason::PausedByGovernor { cause: cause.clone() } };
             if self.plan.shadow_mode {
+                self.stats.shadow_overrides += 1;
                 return Decision { effective: Verdict::Admit, proposed };
             }
             self.stats.tool_calls_denied += 1;
@@ -934,25 +941,26 @@ impl Governor {
         if turn.class == TurnClass::Interactive || req.interactive {
             return admit;
         }
+        let (class, cost, started_at, ceiling) = (turn.class, turn.cost, turn.started_at, turn.ceiling);
 
         // Watchdog (FR-407).
-        if let Some(c) = turn.ceiling {
-            let used_pct = turn.cost / m.k;
-            let minutes = hours_between(turn.started_at, now) * 60.0;
+        if let Some(c) = ceiling {
+            let used_pct = cost / self.calib.cost_per_pct();
+            let minutes = hours_between(started_at, now) * 60.0;
             let over = c.max_pct.is_some_and(|x| used_pct >= x) || c.max_minutes.is_some_and(|x| minutes >= x as f64);
             if over {
                 let proposed = Verdict::Deny { reason: DenyReason::TurnCeiling };
-                let mode = if self.plan.shadow_mode { ActionMode::Shadow } else { ActionMode::Auto };
                 self.log(
                     now,
                     ActionKind::Watchdog { agent: req.agent.clone() },
                     format!("turn over its ceiling ({used_pct:.1} pp, {minutes:.0} min)"),
                     "turn interrupted at this tool boundary; Inbox item for the user".into(),
-                    mode,
-                    if self.plan.shadow_mode { Outcome::Logged } else { Outcome::Applied },
+                    self.mode(),
+                    self.auto_outcome(),
                     None,
                 );
                 if self.plan.shadow_mode {
+                    self.stats.shadow_overrides += 1;
                     return Decision { effective: Verdict::Admit, proposed };
                 }
                 self.stats.tool_calls_denied += 1;
@@ -965,7 +973,9 @@ impl Governor {
             Some(QueueReason::PausedAll)
         } else if let Some((window, _)) = self.active_limit(now) {
             Some(QueueReason::LimitReached { window })
-        } else if turn.class == TurnClass::Autonomous && m.f.is_some_and(|f| f > self.policy.five_hour_guard_pct) {
+        } else if class == TurnClass::Autonomous
+            && self.five_hour_now(now).is_some_and(|f| f > self.policy.five_hour_guard_pct)
+        {
             Some(QueueReason::FiveHourGuard)
         } else {
             None
@@ -995,17 +1005,10 @@ impl Governor {
             Outcome::Applied,
             None,
         );
+        let Some(turn) = self.live.get(&req.agent) else { return admit };
+        let (allocation, tier) = (turn.allocation.clone(), turn.tier);
         self.end_turn(&req.agent, now);
-        self.enqueue(
-            req.agent.clone(),
-            turn.allocation,
-            turn.tier,
-            TurnKind::Continue,
-            false,
-            turn.ceiling,
-            cause,
-            now,
-        );
+        self.enqueue(req.agent.clone(), allocation, tier, TurnKind::Continue, false, ceiling, cause, now);
         self.refresh_queue(now);
         Decision { effective: proposed.clone(), proposed }
     }
@@ -1014,23 +1017,24 @@ impl Governor {
     /// returns the queued turns released into it.
     pub fn turn_ended(&mut self, agent: &AgentId, now: Timestamp) -> Vec<Release> {
         self.end_turn(agent, now);
-        let r = self.release_queue(now);
-        self.refresh_queue(now);
-        r
+        self.release_and_refresh(now)
     }
 
     fn start_turn(&mut self, req: &TurnRequest, class: TurnClass, now: Timestamp) {
-        self.live.insert(
-            req.agent.clone(),
-            LiveTurn {
-                allocation: req.allocation.clone(),
-                tier: req.tier,
-                class,
-                started_at: now,
-                cost: 0.0,
-                ceiling: req.ceiling,
-            },
-        );
+        self.start_live(&req.agent, &req.allocation, req.tier, req.ceiling, class, now);
+    }
+
+    fn start_live(
+        &mut self,
+        agent: &AgentId,
+        allocation: &AllocationId,
+        tier: Tier,
+        ceiling: Option<TurnCeiling>,
+        class: TurnClass,
+        now: Timestamp,
+    ) {
+        let turn = LiveTurn { allocation: allocation.clone(), tier, class, started_at: now, cost: 0.0, ceiling };
+        self.live.insert(agent.clone(), turn);
     }
 
     fn end_turn(&mut self, agent: &AgentId, now: Timestamp) {
@@ -1132,33 +1136,24 @@ impl Governor {
             return out;
         }
         let m = self.metrics(now);
+        self.age_queue(now);
         loop {
             let service = self.service();
-            let aging = self.policy.aging_hours;
-            for e in &mut self.queue {
-                e.effective_tier = e.aged_tier(now, aging);
-            }
-            let eligible = self
+            let first = self
                 .queue
                 .iter()
-                .filter(|e| !self.live.contains_key(&e.agent))
-                .filter(|e| self.check(&e.allocation, e.tier, e.effective_tier, &m, now).is_ok());
-            let Some(first) = release_order(eligible, &service).first().map(|e| (*e).clone()) else { break };
-            if first.tier != Tier::Critical && self.live_autonomous() >= self.cap(&m) {
+                .enumerate()
+                .filter(|(_, e)| !self.live.contains_key(&e.agent))
+                .filter(|(_, e)| self.check(&e.allocation, e.tier, e.effective_tier, &m, now).is_ok())
+                .min_by(|(_, a), (_, b)| release_cmp(a, b, &service))
+                .map(|(i, _)| i);
+            let Some(idx) = first else { break };
+            let class = TurnClass::of(false, self.queue[idx].tier);
+            if class == TurnClass::Autonomous && self.live_autonomous() >= self.cap(&m) {
                 break;
             }
-            self.queue.retain(|e| e.id != first.id);
-            let class = if first.tier == Tier::Critical { TurnClass::Critical } else { TurnClass::Autonomous };
-            let req = TurnRequest {
-                agent: first.agent.clone(),
-                allocation: first.allocation.clone(),
-                tier: first.tier,
-                interactive: false,
-                kind: first.kind,
-                self_started: first.self_started,
-                ceiling: first.ceiling,
-            };
-            self.start_turn(&req, class, now);
+            let first = self.queue.remove(idx);
+            self.start_live(&first.agent, &first.allocation, first.tier, first.ceiling, class, now);
             self.stats.released += 1;
             let waited = hours_between(first.enqueued_at, now);
             self.log(
@@ -1170,15 +1165,22 @@ impl Governor {
                 Outcome::Applied,
                 None,
             );
-            out.push(Release {
-                entry: first.id,
-                agent: first.agent,
-                allocation: first.allocation,
-                kind: first.kind,
-                self_started: first.self_started,
-            });
+            out.push(release_of(&first));
         }
         out
+    }
+
+    fn age_queue(&mut self, now: Timestamp) {
+        let aging = self.policy.aging_hours;
+        for e in &mut self.queue {
+            e.effective_tier = e.aged_tier(now, aging);
+        }
+    }
+
+    fn release_and_refresh(&mut self, now: Timestamp) -> Vec<Release> {
+        let released = self.release_queue(now);
+        self.refresh_queue(now);
+        released
     }
 
     /// Recompute effective tiers, reasons and estimated starts of queued entries.
@@ -1187,41 +1189,43 @@ impl Governor {
             return;
         }
         let m = self.metrics(now);
-        let aging = self.policy.aging_hours;
-        for e in &mut self.queue {
-            e.effective_tier = e.aged_tier(now, aging);
-        }
+        self.age_queue(now);
         let service = self.service();
-        let cap = self.cap(&m).max(1) as f64;
+        let cap = self.cap(&m);
+        let full = self.live_autonomous() >= cap;
+        let cap_reason = if full { self.cap_reason(&m) } else { QueueReason::BehindQueue };
+        // Entries ahead of an eligible one take `cap` slots per average turn.
+        let (base, extra) = if m.weight_now <= 0.0 {
+            (self.curve.next_active(now).unwrap_or(now), 0.0)
+        } else {
+            (now, if full { 1.0 } else { 0.0 })
+        };
+        let slots_per_turn = cap.max(1) as f64;
+        let mut order: Vec<usize> = (0..self.queue.len()).collect();
+        order.sort_by(|&a, &b| release_cmp(&self.queue[a], &self.queue[b], &service));
         let mut rank = 0.0;
-        let order: Vec<EntryId> = release_order(self.queue.iter(), &service).iter().map(|e| e.id).collect();
-        let k = m.k;
-        for id in order {
-            let idx = self.queue.iter().position(|e| e.id == id).expect("entry");
-            let e = self.queue[idx].clone();
-            let (reason, start) = match self.check(&e.allocation, e.tier, e.effective_tier, &m, now) {
+        let mut updates = Vec::with_capacity(order.len());
+        for idx in order {
+            let e = &self.queue[idx];
+            let update = match self.check(&e.allocation, e.tier, e.effective_tier, &m, now) {
                 Err(r) => {
-                    let start = self.estimate_start(&r, &e, &m, now);
+                    let start = self.estimate_start(&r, e, &m, now);
                     (r, start)
                 }
                 Ok(()) => {
-                    // Entries ahead of this one take `cap` slots per average turn.
-                    let full = self.live_autonomous() >= self.cap(&m);
-                    let (base, extra) = if m.weight_now <= 0.0 {
-                        (self.curve.next_active(now).unwrap_or(now), 0.0)
-                    } else {
-                        (now, if full { 1.0 } else { 0.0 })
-                    };
-                    let slots = (rank / cap).floor() + extra;
+                    let slots = (rank / slots_per_turn).floor() + extra;
                     rank += 1.0;
-                    let reason = if full { self.cap_reason(&m) } else { QueueReason::BehindQueue };
-                    (reason, Some(add_minutes(base, (slots * self.avg_turn_min).round() as i64)))
+                    (cap_reason.clone(), Some(add_minutes(base, (slots * self.avg_turn_min).round() as i64)))
                 }
             };
+            updates.push((idx, update));
+        }
+        let cost_pct = self.avg_turn_cost / m.k;
+        for (idx, (reason, start)) in updates {
             let q = &mut self.queue[idx];
             q.reason = reason;
             q.estimated_start = start;
-            q.estimated_cost_pct = self.avg_turn_cost / k;
+            q.estimated_cost_pct = cost_pct;
         }
     }
 
@@ -1234,7 +1238,7 @@ impl Governor {
             QueueReason::OffHours => self.curve.next_active(now),
             QueueReason::RedTier => {
                 // When plan(t) catches up with W − red_exit, or when aging lifts the tier.
-                let budget = (100.0 - self.plan.reserve_pct - m.u_forecast).max(1e-9);
+                let budget = m.budget.max(1e-9);
                 let target = m.w_eff - self.policy.thresholds.red_exit - m.u_so_far;
                 let by_curve = self
                     .curve
@@ -1352,19 +1356,24 @@ impl Governor {
         }
 
         // Alerts (FR-817) and the reserve (FR-807).
-        for level in self.policy.alerts_pct.clone() {
-            if m.w_eff >= level && !self.alerts_done.contains(&level) {
-                self.alerts_done.push(level);
-                self.log(
-                    now,
-                    ActionKind::Alert { level_pct: level },
-                    format!("weekly usage reached {level:.0} %"),
-                    "notification".into(),
-                    ActionMode::Auto,
-                    Outcome::Logged,
-                    None,
-                );
-            }
+        let reached: Vec<f64> = self
+            .policy
+            .alerts_pct
+            .iter()
+            .copied()
+            .filter(|level| m.w_eff >= *level && !self.alerts_done.contains(level))
+            .collect();
+        for level in reached {
+            self.alerts_done.push(level);
+            self.log(
+                now,
+                ActionKind::Alert { level_pct: level },
+                format!("weekly usage reached {level:.0} %"),
+                "notification".into(),
+                ActionMode::Auto,
+                Outcome::Logged,
+                None,
+            );
         }
         if !self.reserve_alerted && m.reserve_left < 0.0 {
             self.reserve_alerted = true;
@@ -1462,11 +1471,9 @@ impl Governor {
             .max_by(|(na, a), (nb, b)| {
                 na.cmp(nb).then_with(|| b.weight.total_cmp(&a.weight)).then_with(|| b.id.cmp(&a.id))
             })
-            .map(|(_, a)| a.id.clone());
-        let Some(allocation) = candidate else { return };
+            .map(|(n, a)| (n, a.id.clone()));
+        let Some((turns, allocation)) = candidate else { return };
         let k = self.calib.cost_per_pct();
-        let turns = self.queue.iter().filter(|e| e.allocation == allocation).count()
-            + self.live.values().filter(|t| t.allocation == allocation).count();
         let queued_pct = turns as f64 * self.avg_turn_cost / k;
         let deadline = add_minutes(now, self.policy.ask_timeout_min);
         let shadow = self.plan.shadow_mode;
@@ -1480,8 +1487,9 @@ impl Governor {
             Some(Undo::LiftDeferral { allocation }),
         );
         if !shadow {
-            if let Some(a) = self.actions.iter_mut().find(|a| a.id == id) {
-                a.ask = Some(Ask { deadline, default: self.policy.default_ask_action });
+            let default = self.policy.default_ask_action;
+            if let Some(a) = self.action_mut(id) {
+                a.ask = Some(Ask { deadline, default });
             }
             self.pending_ask = Some(id);
         }
@@ -1489,7 +1497,7 @@ impl Governor {
 
     fn resolve_ask(&mut self, id: ActionId, apply: bool) {
         self.pending_ask = None;
-        let Some(a) = self.actions.iter().find(|a| a.id == id).cloned() else { return };
+        let Some(a) = self.action(id).cloned() else { return };
         if apply {
             if let ActionKind::DeferAfterReset { allocation } = &a.action {
                 self.deferred.insert(allocation.clone(), id);
@@ -1501,7 +1509,7 @@ impl Governor {
     }
 
     fn set_outcome(&mut self, id: ActionId, outcome: Outcome) {
-        if let Some(a) = self.actions.iter_mut().find(|a| a.id == id) {
+        if let Some(a) = self.action_mut(id) {
             a.outcome = outcome;
         }
     }
@@ -1575,12 +1583,10 @@ impl Governor {
                 self.paused_all = false;
             }
         }
-        if let Some(a) = self.actions.iter_mut().find(|a| a.id == id) {
+        if let Some(a) = self.action_mut(id) {
             a.undone_at = Some(now);
         }
-        let r = self.release_queue(now);
-        self.refresh_queue(now);
-        Ok(r)
+        Ok(self.release_and_refresh(now))
     }
 
     /// Pause all autonomous work: running turns stop at their next tool call.
@@ -1608,26 +1614,15 @@ impl Governor {
             Outcome::Applied,
             None,
         );
-        let r = self.release_queue(now);
-        self.refresh_queue(now);
-        r
+        self.release_and_refresh(now)
     }
 
     /// "Run now" on a queued entry: the user overrides the Governor.
     pub fn run_now(&mut self, entry: EntryId, now: Timestamp) -> Option<Release> {
         let idx = self.queue.iter().position(|e| e.id == entry)?;
         let e = self.queue.remove(idx);
-        let req = TurnRequest {
-            agent: e.agent.clone(),
-            allocation: e.allocation.clone(),
-            tier: e.tier,
-            interactive: false,
-            kind: e.kind,
-            self_started: e.self_started,
-            ceiling: e.ceiling,
-        };
         // Counted like critical work: past the cap, drawing on the reserve.
-        self.start_turn(&req, TurnClass::Critical, now);
+        self.start_live(&e.agent, &e.allocation, e.tier, e.ceiling, TurnClass::Critical, now);
         self.log(
             now,
             ActionKind::RunNow { entry, agent: e.agent.clone() },
@@ -1638,7 +1633,7 @@ impl Governor {
             None,
         );
         self.refresh_queue(now);
-        Some(Release { entry, agent: e.agent, allocation: e.allocation, kind: e.kind, self_started: e.self_started })
+        Some(release_of(&e))
     }
 
     /// Drop a queued entry (task cancelled).
@@ -1653,7 +1648,7 @@ impl Governor {
     pub fn start_sprint(&mut self, extra_pp: f64, now: Timestamp) -> Result<ActionId, GovernorError> {
         let until = self.curve.end_of_working_day(now, &self.tz).ok_or(GovernorError::NoWorkingTimeToday)?;
         let m = self.metrics(now);
-        let budget = (100.0 - self.plan.reserve_pct - m.u_forecast).max(1e-9);
+        let budget = m.budget.max(1e-9);
         let h_sprint = self.curve.hours_at(until) - self.curve.hours_at(now);
         if h_sprint <= 0.0 {
             return Err(GovernorError::NoWorkingTimeToday);
@@ -1695,6 +1690,23 @@ impl Governor {
             target_state: self.sm.target(&inputs, &self.policy.thresholds),
             earliest_state_change: self.sm.dwell_end(&self.policy.thresholds).max(now),
         }
+    }
+}
+
+fn plan_curve(plan: &WeeklyPlan) -> Result<(TimeZone, Curve), GovernorError> {
+    let tz = TimeZone::get(&plan.calendar.time_zone)
+        .map_err(|_| CalendarError::UnknownTimeZone(plan.calendar.time_zone.clone()))?;
+    let curve = Curve::build(&plan.calendar, plan.week_start, plan.reset_at, plan.off_hours_allowance_pct)?;
+    Ok((tz, curve))
+}
+
+fn release_of(e: &QueueEntry) -> Release {
+    Release {
+        entry: e.id,
+        agent: e.agent.clone(),
+        allocation: e.allocation.clone(),
+        kind: e.kind,
+        self_started: e.self_started,
     }
 }
 

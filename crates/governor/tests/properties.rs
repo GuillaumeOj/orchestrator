@@ -37,11 +37,11 @@ proptest! {
         allowance in prop_oneof![Just(0.0), 1.0f64..50.0],
         a in 0i64..10_140, b in 0i64..10_140,
     ) {
-        let c = Curve::build(&cal, start(), RESET.parse().unwrap(), allowance).unwrap();
+        let c = Curve::build(&cal, start(), reset(), allowance).unwrap();
         let (t1, t2) = (at(a.min(b)), at(a.max(b)));
         prop_assert!(c.hours_at(t1) <= c.hours_at(t2) + 1e-9);
         prop_assert!((0.0..=1.0).contains(&c.fraction(t1)));
-        prop_assert!((c.fraction(RESET.parse().unwrap()) - 1.0).abs() < 1e-9);
+        prop_assert!((c.fraction(reset()) - 1.0).abs() < 1e-9);
         // The inverse never lands after the original instant.
         if let Some(t) = c.time_at_hours(c.hours_at(t2)) {
             prop_assert!(t <= t2);
@@ -55,7 +55,7 @@ proptest! {
         cal in calendar_strategy(),
         from in 0i64..9_000, len in 30i64..900, boost in 0.0f64..3.0,
     ) {
-        let c = Curve::build(&cal, start(), RESET.parse().unwrap(), 0.0).unwrap();
+        let c = Curve::build(&cal, start(), reset(), 0.0).unwrap();
         let (f, t) = (at(from), at(from + len));
         let (s, applied) = c.with_sprint(f, t, boost);
         prop_assert!(applied <= boost + 1e-12);
@@ -169,7 +169,7 @@ fn replay(events: &[(i64, Ev)], shadow: bool) -> Result<Vec<GovernorAction>, Tes
                     agent: Some(agent_name(*agent).into()),
                     cost_delta: *cost,
                     five_hour: Some(WindowReading { used_pct: f.floor(), resets_at: five_reset }),
-                    weekly: Some(WindowReading { used_pct: w.floor(), resets_at: RESET.parse().unwrap() }),
+                    weekly: Some(WindowReading { used_pct: w.floor(), resets_at: reset() }),
                     provenance: Provenance::Observed,
                 });
             }
