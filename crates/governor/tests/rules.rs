@@ -702,3 +702,48 @@ fn new_week_resets_budgets_but_keeps_calibration_and_queue() {
     assert!(s.used_central.abs() < 1e-9);
     assert_eq!(g.state(), PressureState::Green);
 }
+
+// ---------------------------------------------------------------- review regressions
+
+#[test]
+fn a_turns_last_sample_after_stop_still_counts_as_autonomous() {
+    let mut g = governor();
+    g.request_turn(task("A-1", "A", Tier::High), at(0));
+    g.turn_ended(&"A-1".into(), at(10));
+    // The statusline sample of the turn's last response arrives after Stop.
+    g.ingest(&UsageSample::cost(at(10), "A-1".into(), 20.0));
+    assert_eq!(g.snapshot(at(11)).interactive_used, 0.0);
+    // Later usage with no admitted turn is the user's own.
+    g.ingest(&UsageSample::cost(at(30), "A-1".into(), 20.0));
+    assert!((g.snapshot(at(31)).interactive_used - 2.0).abs() < 1e-9);
+}
+
+#[test]
+fn critical_work_is_not_stuck_behind_the_agents_queued_entry() {
+    let mut g = governor();
+    for a in ["A-1", "A-2", "B-1"] {
+        g.request_turn(task(a, &a[..1], Tier::Normal), at(0));
+    }
+    assert!(queue_reason(&g.request_turn(task("B-2", "B", Tier::Normal), at(1))).is_some());
+    assert_eq!(g.request_turn(task("B-2", "B", Tier::Critical), at(2)).effective, Verdict::Admit);
+    assert!(g.queue().is_empty());
+}
+
+#[test]
+fn undoing_a_sprint_ends_every_stacked_sprint() {
+    let mut g = governor();
+    let first = g.start_sprint(2.0, at(hours(25.0))).unwrap(); // Tue 10:00
+    let second = g.start_sprint(2.0, at(hours(49.0))).unwrap(); // Wed 10:00
+    g.undo(second, at(hours(50.0))).unwrap();
+    assert!(g.action(first).unwrap().undone_at.is_some());
+    assert_eq!(g.undo(first, at(hours(51.0))), Err(GovernorError::AlreadyUndone(first)));
+    assert!((g.snapshot(at(hours(58.0))).ideal - governor().snapshot(at(hours(58.0))).ideal).abs() < 1e-9);
+}
+
+#[test]
+fn a_sprint_on_the_last_working_day_has_nothing_to_borrow() {
+    let mut g = governor();
+    let fri_10 = at(hours(97.0));
+    assert_eq!(g.start_sprint(4.0, fri_10), Err(GovernorError::NothingToBorrow));
+    assert_eq!(count(&g, "sprint"), 0);
+}

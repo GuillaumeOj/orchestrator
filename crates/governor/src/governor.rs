@@ -187,6 +187,8 @@ pub enum GovernorError {
     AlreadyUndone(ActionId),
     NotPending(ActionId),
     NoWorkingTimeToday,
+    /// No working time is left after today to borrow from.
+    NothingToBorrow,
 }
 
 impl std::fmt::Display for GovernorError {
@@ -198,6 +200,7 @@ impl std::fmt::Display for GovernorError {
             GovernorError::AlreadyUndone(a) => write!(f, "action {a} was already undone"),
             GovernorError::NotPending(a) => write!(f, "action {a} is not a pending ask"),
             GovernorError::NoWorkingTimeToday => write!(f, "no working time left today"),
+            GovernorError::NothingToBorrow => write!(f, "no working time left this week to borrow from"),
         }
     }
 }
@@ -222,7 +225,6 @@ struct LiveTurn {
     allocation: AllocationId,
     tier: Tier,
     class: TurnClass,
-    kind: TurnKind,
     started_at: Timestamp,
     cost: f64,
     ceiling: Option<TurnCeiling>,
@@ -299,6 +301,9 @@ pub struct Governor {
     service_offset: BTreeMap<AllocationId, f64>,
     agent_alloc: BTreeMap<AgentId, AllocationId>,
     live: BTreeMap<AgentId, LiveTurn>,
+    /// Each agent's last ended turn: its class and end time, so the turn's
+    /// last API response, ingested after Stop, is still attributed to it.
+    ended: BTreeMap<AgentId, (TurnClass, Timestamp)>,
     queue: Vec<QueueEntry>,
     actions: Vec<GovernorAction>,
     next_entry: u64,
@@ -343,6 +348,7 @@ impl Governor {
             service_offset: BTreeMap::new(),
             agent_alloc: BTreeMap::new(),
             live: BTreeMap::new(),
+            ended: BTreeMap::new(),
             queue: Vec::new(),
             actions: Vec::new(),
             next_entry: 1,
@@ -626,7 +632,13 @@ impl Governor {
                     t.cost += c;
                     (t.class, Some(t.allocation.clone()))
                 }
-                None => (TurnClass::Interactive, self.agent_alloc.get(agent).cloned()),
+                None => {
+                    let class = match self.ended.get(agent) {
+                        Some((class, ended_at)) if s.ts <= *ended_at => *class,
+                        _ => TurnClass::Interactive,
+                    };
+                    (class, self.agent_alloc.get(agent).cloned())
+                }
             };
             if class != TurnClass::Autonomous {
                 self.reserve_cost += c;
@@ -819,6 +831,10 @@ impl Governor {
             TurnClass::Autonomous
         };
 
+        // Critical work is admitted now: drop the agent's older queued entry.
+        if class == TurnClass::Critical {
+            self.queue.retain(|e| e.agent != req.agent);
+        }
         // Already waiting in the queue: keep one entry per agent.
         if !req.interactive {
             if let Some(e) = self.queue.iter_mut().find(|e| e.agent == req.agent) {
@@ -1010,7 +1026,6 @@ impl Governor {
                 allocation: req.allocation.clone(),
                 tier: req.tier,
                 class,
-                kind: req.kind,
                 started_at: now,
                 cost: 0.0,
                 ceiling: req.ceiling,
@@ -1020,6 +1035,7 @@ impl Governor {
 
     fn end_turn(&mut self, agent: &AgentId, now: Timestamp) {
         if let Some(t) = self.live.remove(agent) {
+            self.ended.insert(agent.clone(), (t.class, now));
             if t.class != TurnClass::Interactive {
                 let minutes = hours_between(t.started_at, now) * 60.0;
                 if minutes > 0.0 {
@@ -1546,8 +1562,14 @@ impl Governor {
                 self.deferred.remove(&allocation);
             }
             Undo::EndSprint => {
+                // Sprints stack on the curve; ending one restores the plan's curve, so all end.
                 self.curve = self.base_curve.clone();
                 self.sprint = None;
+                for a in self.actions.iter_mut().filter(|a| a.id != id) {
+                    if matches!(a.action, ActionKind::Sprint { .. }) && a.undone_at.is_none() {
+                        a.undone_at = Some(now);
+                    }
+                }
             }
             Undo::ResumeAll => {
                 self.paused_all = false;
@@ -1639,6 +1661,9 @@ impl Governor {
         let total = self.curve.total_hours();
         let boost = extra_pp.max(0.0) * total / (budget * h_sprint);
         let (curve, applied) = self.curve.with_sprint(now, until, boost);
+        if applied <= 0.0 {
+            return Err(GovernorError::NothingToBorrow);
+        }
         let applied_pp = applied * h_sprint / total * budget;
         let hours_after = curve.active_hours_between(until, self.plan.reset_at);
         self.curve = curve;
