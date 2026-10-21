@@ -84,8 +84,30 @@ Six 1512 frames on page 06, each with a notes board above it giving the step, th
 - **Design decision:** after a gate is approved in Red, the lead **queues first for the live slot** instead of resuming, because back-1 holds the only slot. Interactive agents (front-1, solo/fix-tax) resume at once. The 04 Inbox screen now says the same.
 - **Spec gap:** SPEC J5 step 3 says "after approval the agent resumes". Proposal: "resumes, or queues with its tier if the Governor holds the live slot (the item says so)".
 
-## Not done
+## 06 Flows: J2 Solo session
 
-- **06 Flows**: J2 and J8 prototypes.
+Five frames with notes and the flow "J2 · Solo session":
+
+1. **New session (⌘+T).** The dialog has project, role (plain Claude by default), task, name, base branch, a worktree toggle with a preview of the branch and folder, model and effort, and a Governor note.
+2. **Session running.** The worktree is created, claude runs there, a zsh pane sits beside it, and the session appears under its project in the sidebar.
+3. **Command palette (⌘+K).** Scoped to the focused agent: Create PR, Merge into main, Open diff.
+4. **PR gate in the Inbox.** Title and body drafted by the agent, changed files, the local test run. On approval the app pushes and runs `gh pr create`; agents can't push (§6.5).
+5. **PR opened.** The agent is Done, the strip links the PR and offers to remove the worktree, and the sidebar shows the PR number.
+
+## 06 Flows: J8 Pacing the week
+
+Four frames with notes and the flow "J8 · Pacing the week":
+
+1. **Plan the week (Mon 09:02).** An Inbox Plan item prefilled from last week: calendar, weights, tiers, reserve, last week's outcome. If nobody answers, it applies at 09:20.
+2. **Run now with its cost (Wed, Red).** A confirmation dialog shows the week and 5h impact, the cap it exceeds and how to undo it. It is logged as your override.
+3. **Catch-up (Fri 16:00).** Usage is −12 pp with 2 working hours left. The live cap goes to 5, the queue is released, and the planner suggests the off-hours allowance for the weekend.
+4. **Weekly report (Mon 09:00).** Used at reset, hours locked out, time in Red, governor actions, use per project, and suggestions for the next plan (none applied). "Plan week 44" loops back to step 1.
+
+**Design decisions to confirm:**
+- **Run now in Red runs above the cap** for that one turn instead of pausing back-1. SPEC FR-809 doesn't say which; proposal: "Run now admits above the cap for one turn and is logged as an override; it never pauses another agent".
+- **The weekly report suggests plan changes** (reserve, ramp-up of team launches, weights) but applies none of them. FR-818 lists only usage and actions; proposal: add "suggestions for next week's plan (not applied)".
+- **A week plan with no answer applies itself after 20 minutes,** like other asks (FR-810). FR-802 doesn't say; proposal: state it there.
+
+## Not done
 - **05 Keyboard & copy** is untouched.
 - The pacing-indicator popover is a component, but no screen shows it opened over the title bar.
