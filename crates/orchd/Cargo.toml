@@ -1,0 +1,14 @@
+[package]
+name = "orchd"
+version = "0.1.0"
+description = "Headless dev core: runs the bus and drives agents from the command line (no UI)."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+agent-runtime.workspace = true
+orch-protocol.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+libc.workspace = true

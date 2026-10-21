@@ -1,0 +1,193 @@
+//! Control requests from a client (the orchd CLI now, the Tauri UI later), and
+//! the admission types the core reports.
+
+use serde::{Deserialize, Serialize};
+
+/// Which worktree to create (FR-105 branch naming).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorktreeKindSpec {
+    /// `orch/solo/<slug>` in `<repo>.worktrees/solo/<slug>`.
+    Solo { slug: String },
+    /// `orch/<feature>/integration` in `<repo>.worktrees/<feature>/integration`.
+    Integration { feature: String },
+    /// `orch/<feature>/<role>-<n>` in `<repo>.worktrees/<feature>/<role>-<n>`.
+    Team { feature: String, role: String, n: u32 },
+}
+
+/// What to start. Everything but `agent_id` and `repo` has a default.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AgentSpec {
+    pub agent_id: String,
+    /// The project's main checkout.
+    pub repo: String,
+    /// Solo slug for the worktree; defaults to the agent id.
+    #[serde(default)]
+    pub slug: Option<String>,
+    #[serde(default)]
+    pub base: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// `manual | acceptEdits | auto | dontAsk | plan`; never `bypassPermissions`.
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    /// Role prompt appended after the ORCH preamble.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// `--strict-mcp-config` (saves ~25 MB per agent).
+    #[serde(default)]
+    pub strict_mcp: Option<bool>,
+    /// Extra network allow-list entries for the sandbox.
+    #[serde(default)]
+    pub network_allow: Vec<String>,
+    /// Extra `permissions.allow` rules (e.g. `Bash` to skip Bash prompts inside the sandbox).
+    #[serde(default)]
+    pub allow_rules: Vec<String>,
+    /// Governor allocation this agent's work is charged to (default: the repo name).
+    #[serde(default)]
+    pub allocation: Option<String>,
+    /// `low | normal | high | critical`.
+    #[serde(default)]
+    pub tier: Option<String>,
+    /// First message, delivered through the Governor once the agent is ready.
+    #[serde(default)]
+    pub first_message: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "cmd", rename_all = "snake_case")]
+pub enum CtlRequest {
+    Ping,
+    CreateWorktree {
+        repo: String,
+        kind: WorktreeKindSpec,
+        #[serde(default)]
+        base: Option<String>,
+    },
+    Start {
+        spec: Box<AgentSpec>,
+    },
+    /// Respawn a suspended agent with `--resume <session id>`.
+    Resume {
+        agent_id: String,
+        #[serde(default)]
+        message: Option<String>,
+    },
+    /// Stop the process, keep the session (FR-204).
+    Suspend {
+        agent_id: String,
+    },
+    /// FR-207 kill: process group + every process whose cwd is in the worktree.
+    Kill {
+        agent_id: String,
+    },
+    /// Esc to the PTY.
+    Interrupt {
+        agent_id: String,
+    },
+    /// Queue a message; the Governor admits it and it is delivered when the agent is idle.
+    Deliver {
+        agent_id: String,
+        text: String,
+    },
+    /// Turns the connection into a raw byte stream to the agent's PTY.
+    Attach {
+        agent_id: String,
+        rows: u16,
+        cols: u16,
+    },
+    Resize {
+        agent_id: String,
+        rows: u16,
+        cols: u16,
+    },
+    /// FR-811 Pause all: autonomous work holds at its next tool call.
+    PauseAll,
+    ResumeAll,
+    State,
+    Usage,
+    Governor,
+    /// Pull transport: everything buffered for this agent since the last read.
+    Read {
+        agent_id: String,
+    },
+    Shutdown,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CtlReply {
+    pub ok: bool,
+    #[serde(default)]
+    pub data: serde_json::Value,
+}
+
+impl CtlReply {
+    pub fn ok(data: serde_json::Value) -> Self {
+        CtlReply { ok: true, data }
+    }
+
+    pub fn err(message: impl std::fmt::Display) -> Self {
+        CtlReply { ok: false, data: serde_json::json!({ "error": message.to_string() }) }
+    }
+}
+
+/// Where the Governor was asked (ADR-007 admission points).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionPoint {
+    TurnStart,
+    ToolCall,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AdmissionRequest {
+    pub agent_id: String,
+    pub point: AdmissionPoint,
+    pub interactive: bool,
+    #[serde(default)]
+    pub self_started: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionVerdict {
+    Admit,
+    Queue,
+    Deny,
+}
+
+/// The Governor's decision as reported on the bus and in the core's log.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AdmissionDecision {
+    pub request: AdmissionRequest,
+    pub ts_ms: u64,
+    /// What the core enforced.
+    pub verdict: AdmissionVerdict,
+    /// What the policy wanted (differs in shadow mode).
+    pub proposed: AdmissionVerdict,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub estimated_start_ms: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ctl_round_trip() {
+        let r = CtlRequest::CreateWorktree {
+            repo: "/r".into(),
+            kind: WorktreeKindSpec::Team { feature: "f".into(), role: "backend".into(), n: 1 },
+            base: None,
+        };
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(s.contains(r#""cmd":"create_worktree""#), "{s}");
+        assert_eq!(serde_json::from_str::<CtlRequest>(&s).unwrap(), r);
+        let spec: AgentSpec = serde_json::from_str(r#"{"agent_id":"a","repo":"/r"}"#).unwrap();
+        assert_eq!(spec.network_allow, Vec::<String>::new());
+    }
+}

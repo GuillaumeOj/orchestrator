@@ -1,0 +1,21 @@
+[package]
+name = "orch-status"
+version = "0.1.0"
+description = "Claude Code statusLine command: forwards the statusline JSON to the core, then runs the user's own statusline."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "orch-status"
+path = "src/main.rs"
+
+[dependencies]
+orch-protocol.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

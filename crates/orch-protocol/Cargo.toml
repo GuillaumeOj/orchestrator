@@ -1,0 +1,16 @@
+[package]
+name = "orch-protocol"
+version = "0.1.0"
+description = "Versioned messages and socket helpers for Orchestrator's local bus (hooks, statusline, admission, spool)."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+socket2.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "agent-runtime"
+version = "0.1.0"
+description = "Headless agent runtime: compile roles, spawn claude in PTYs, observe and steer it, reconcile after a crash."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+orch-protocol.workspace = true
+governor.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+libc.workspace = true
+portable-pty.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+# Opt-in tests that start a real `claude --model haiku` (they use plan quota).
+live-claude = []
