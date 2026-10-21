@@ -44,6 +44,18 @@ impl From<&str> for AllocationId {
     }
 }
 
+impl From<String> for AgentId {
+    fn from(s: String) -> Self {
+        AgentId(s)
+    }
+}
+
+impl From<String> for AllocationId {
+    fn from(s: String) -> Self {
+        AllocationId(s)
+    }
+}
+
 /// Priority tier (FR-802). Ordered: `Low < Normal < High < Critical`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

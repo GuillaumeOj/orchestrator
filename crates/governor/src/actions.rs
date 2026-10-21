@@ -46,7 +46,6 @@ pub enum ActionKind {
     Queue {
         entry: Option<EntryId>,
         agent: AgentId,
-        reason: String,
     },
     /// A queued turn was released.
     Release {

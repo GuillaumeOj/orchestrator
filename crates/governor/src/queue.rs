@@ -110,16 +110,6 @@ pub fn release_cmp(a: &QueueEntry, b: &QueueEntry, service: &BTreeMap<Allocation
         .then_with(|| a.id.cmp(&b.id))
 }
 
-/// Entries sorted by [`release_cmp`].
-pub fn release_order<'a>(
-    entries: impl Iterator<Item = &'a QueueEntry>,
-    service: &BTreeMap<AllocationId, f64>,
-) -> Vec<&'a QueueEntry> {
-    let mut v: Vec<&QueueEntry> = entries.collect();
-    v.sort_by(|a, b| release_cmp(a, b, service));
-    v
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,7 +135,9 @@ mod tests {
     fn tier_beats_service_and_service_beats_fifo() {
         let es = [entry(1, "a", Tier::Normal, 0), entry(2, "b", Tier::Normal, 5), entry(3, "a", Tier::High, 9)];
         let service: BTreeMap<AllocationId, f64> = [("a".into(), 10.0), ("b".into(), 2.0)].into();
-        let order: Vec<u64> = release_order(es.iter(), &service).iter().map(|e| e.id.0).collect();
+        let mut sorted: Vec<&QueueEntry> = es.iter().collect();
+        sorted.sort_by(|a, b| release_cmp(a, b, &service));
+        let order: Vec<u64> = sorted.iter().map(|e| e.id.0).collect();
         assert_eq!(order, vec![3, 2, 1]);
     }
 

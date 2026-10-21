@@ -11,7 +11,7 @@ use crate::calendar::{CalendarError, Curve};
 use crate::estimator::{Calibration, Calibrator, Observation};
 use crate::plan::{AskDefault, AutoContinue, PacingPolicy, WeeklyPlan};
 use crate::pressure::{PressureInputs, PressureState, StateMachine};
-use crate::queue::{QueueEntry, QueueReason, TurnCeiling, TurnKind, release_cmp, release_order};
+use crate::queue::{QueueEntry, QueueReason, TurnCeiling, TurnKind, release_cmp};
 use crate::types::{
     ActionId, AgentId, AllocationId, EntryId, Provenance, Tier, UsageSample, Window, WindowReading, add_hours,
     add_minutes, ewma_alpha, hours_between,
@@ -47,18 +47,6 @@ impl TurnRequest {
             self_started: false,
             ceiling: None,
         }
-    }
-}
-
-impl From<String> for AgentId {
-    fn from(s: String) -> Self {
-        AgentId(s)
-    }
-}
-
-impl From<String> for AllocationId {
-    fn from(s: String) -> Self {
-        AllocationId(s)
     }
 }
 
@@ -116,6 +104,17 @@ impl Verdict {
 pub struct Decision {
     pub effective: Verdict,
     pub proposed: Verdict,
+}
+
+impl Decision {
+    pub fn admit() -> Self {
+        Decision { effective: Verdict::Admit, proposed: Verdict::Admit }
+    }
+
+    /// Enforced as proposed.
+    pub fn enforced(v: Verdict) -> Self {
+        Decision { effective: v.clone(), proposed: v }
+    }
 }
 
 /// A queued turn the Governor released: the host must deliver it now.
@@ -286,13 +285,6 @@ pub struct Stats {
     pub queued_by_reason: BTreeMap<String, u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct SprintInfo {
-    action: ActionId,
-    until: Timestamp,
-    extra_pp: f64,
-}
-
 /// The usage-pacing Governor. Pure and deterministic: every method takes the
 /// current time, nothing does I/O.
 #[derive(Clone, Debug)]
@@ -302,12 +294,10 @@ pub struct Governor {
     tz: TimeZone,
     base_curve: Curve,
     curve: Curve,
-    sprint: Option<SprintInfo>,
     calib: Calibrator,
     weekly_obs: Option<Observation>,
     five_obs: Option<Observation>,
     calib_anchor: Option<Observation>,
-    week_start_known: bool,
     app_cost: f64,
     week_cost_start: f64,
     reserve_cost: f64,
@@ -321,7 +311,6 @@ pub struct Governor {
     queue: Vec<QueueEntry>,
     actions: Vec<GovernorAction>,
     next_entry: u64,
-    next_action: u64,
     sm: StateMachine,
     guard5: bool,
     burn: f64,
@@ -347,12 +336,10 @@ impl Governor {
             curve: base_curve.clone(),
             base_curve,
             tz,
-            sprint: None,
             calib,
             weekly_obs: None,
             five_obs: None,
             calib_anchor: None,
-            week_start_known: false,
             app_cost: 0.0,
             week_cost_start: 0.0,
             reserve_cost: 0.0,
@@ -364,7 +351,6 @@ impl Governor {
             queue: Vec::new(),
             actions: Vec::new(),
             next_entry: 1,
-            next_action: 1,
             sm: StateMachine::new(now),
             guard5: false,
             burn: 0.0,
@@ -395,7 +381,6 @@ impl Governor {
         self.base_curve = curve.clone();
         self.curve = curve;
         self.plan = plan;
-        self.sprint = None;
         if let Some(id) = self.pending_ask.take() {
             self.set_outcome(id, Outcome::Skipped);
         }
@@ -420,9 +405,10 @@ impl Governor {
         self.reserve_alerted = false;
         self.burn = self.budget_slope();
         self.last = None;
-        self.week_start_known = now <= add_minutes(self.plan.week_start, self.policy.fresh_minutes);
-        // The reset is a known reading of 0 (with the same offset as every reading).
-        self.calib_anchor = self.week_start_known.then_some(Observation {
+        // Created at the reset: W is a known reading of 0 (with the same offset as
+        // every reading). Without that anchor or any observation, W is unknown.
+        let at_reset = now <= add_minutes(self.plan.week_start, self.policy.fresh_minutes);
+        self.calib_anchor = at_reset.then_some(Observation {
             ts: self.plan.week_start,
             used_pct: self.policy.reading_offset_pct,
             resets_at: self.plan.reset_at,
@@ -485,7 +471,11 @@ impl Governor {
 
     /// Active sprint: its action, end and the pp borrowed for today.
     pub fn sprint(&self) -> Option<(ActionId, Timestamp, f64)> {
-        self.sprint.as_ref().map(|s| (s.action, s.until, s.extra_pp))
+        // A new week starts without sprints: only this week's count.
+        self.actions.iter().rev().take_while(|a| a.ts >= self.plan.week_start).find_map(|a| match a.action {
+            ActionKind::Sprint { extra_pp, until } if a.undone_at.is_none() => Some((a.id, until, extra_pp)),
+            _ => None,
+        })
     }
 
     pub fn calibration(&self, now: Timestamp) -> Calibration {
@@ -508,7 +498,7 @@ impl Governor {
         let k = self.calib.cost_per_pct();
         let u = self.calib.unattributed_rate();
         let week_start = self.plan.week_start;
-        let obs = self.weekly_obs.filter(|o| o.ts >= week_start);
+        let obs = self.weekly_obs;
         let (base, base_ts, base_cost, fresh) = match obs {
             Some(o) => (o.used_pct, o.ts, o.app_cost, now < add_minutes(o.ts, self.policy.fresh_minutes)),
             None => (0.0, week_start, self.week_cost_start, false),
@@ -520,7 +510,7 @@ impl Governor {
         // has no anchor at all (FR-814: before any observation).
         let margin = if fresh {
             0.0
-        } else if obs.is_none() && !self.week_start_known {
+        } else if obs.is_none() && self.calib_anchor.is_none() {
             self.margin_full()
         } else {
             self.margin_full().min(delta)
@@ -582,6 +572,10 @@ impl Governor {
             f_projected,
             f_resets_at,
         }
+    }
+
+    fn pressure_inputs(&self, m: &Metrics) -> PressureInputs {
+        PressureInputs { error_pp: m.error, eta: m.eta, reset_at: self.plan.reset_at, hours_left: m.hours_left }
     }
 
     /// F now: the latest 5h reading, 0 once its window has reset, `None` if never seen.
@@ -795,17 +789,11 @@ impl Governor {
         m: &Metrics,
         now: Timestamp,
     ) -> Result<(), QueueReason> {
-        if self.paused_all {
-            return Err(QueueReason::PausedAll);
-        }
-        if let Some((window, _)) = self.active_limit(now) {
-            return Err(QueueReason::LimitReached { window });
+        if let Some(r) = self.hold_reason(tier != Tier::Critical, now) {
+            return Err(r);
         }
         if tier == Tier::Critical {
             return Ok(());
-        }
-        if m.f.is_some_and(|f| f > self.policy.five_hour_guard_pct) {
-            return Err(QueueReason::FiveHourGuard);
         }
         if self.deferred.contains_key(alloc) {
             return Err(QueueReason::DeferredUntilReset);
@@ -848,7 +836,7 @@ impl Governor {
                 e.tier = e.tier.max(req.tier);
                 let v =
                     Verdict::Queue { entry: Some(e.id), reason: e.reason.clone(), estimated_start: e.estimated_start };
-                return Decision { effective: v.clone(), proposed: v };
+                return Decision::enforced(v);
             }
         }
 
@@ -865,25 +853,23 @@ impl Governor {
 
         match proposed_reason {
             None => {
-                self.start_turn(&req, class, now);
+                self.start_live(&req.agent, &req.allocation, req.tier, req.ceiling, class, now);
                 self.stats.admitted += 1;
-                Decision { effective: Verdict::Admit, proposed: Verdict::Admit }
+                Decision::admit()
             }
             Some(reason) if self.plan.shadow_mode => {
-                self.start_turn(&req, class, now);
+                self.start_live(&req.agent, &req.allocation, req.tier, req.ceiling, class, now);
                 self.stats.admitted += 1;
-                self.stats.shadow_overrides += 1;
                 self.log(
                     now,
-                    ActionKind::Queue { entry: None, agent: req.agent.clone(), reason: reason.to_string() },
+                    ActionKind::Queue { entry: None, agent: req.agent.clone() },
                     reason.to_string(),
                     "shadow mode: admitted anyway".into(),
                     ActionMode::Shadow,
                     Outcome::Logged,
                     None,
                 );
-                let proposed = Verdict::Queue { entry: None, reason, estimated_start: None };
-                Decision { effective: Verdict::Admit, proposed }
+                self.shadow_override(Verdict::Queue { entry: None, reason, estimated_start: None })
             }
             Some(reason) => {
                 let kind = if req.self_started { TurnKind::Continue } else { req.kind };
@@ -893,7 +879,7 @@ impl Governor {
                 let e = self.queue.iter().find(|e| e.id == id).expect("just queued");
                 let v =
                     Verdict::Queue { entry: Some(id), reason: e.reason.clone(), estimated_start: e.estimated_start };
-                Decision { effective: v.clone(), proposed: v }
+                Decision::enforced(v)
             }
         }
     }
@@ -912,10 +898,9 @@ impl Governor {
 
     /// Admission point 2: a PreToolUse hook asks whether the tool may run.
     pub fn tool_call(&mut self, req: &ToolCallRequest, now: Timestamp) -> Decision {
-        let admit = Decision { effective: Verdict::Admit, proposed: Verdict::Admit };
         let Some(turn) = self.live.get(&req.agent) else {
             if req.interactive {
-                return admit;
+                return Decision::admit();
             }
             // A turn the Governor did not admit (self-started while held, or unknown).
             let cause = self
@@ -926,20 +911,18 @@ impl Governor {
                 .unwrap_or(QueueReason::BehindQueue);
             let proposed = Verdict::Deny { reason: DenyReason::PausedByGovernor { cause: cause.clone() } };
             if self.plan.shadow_mode {
-                self.stats.shadow_overrides += 1;
-                return Decision { effective: Verdict::Admit, proposed };
+                return self.shadow_override(proposed);
             }
             self.stats.tool_calls_denied += 1;
-            if !self.queue.iter().any(|e| e.agent == req.agent) {
-                if let Some(alloc) = self.agent_alloc.get(&req.agent).cloned() {
-                    let tier = self.plan.allocation(&alloc).map_or(Tier::Normal, |a| a.tier);
-                    self.enqueue(req.agent.clone(), alloc, tier, TurnKind::Continue, true, None, cause, now);
-                }
+            if let Some(alloc) = self.agent_alloc.get(&req.agent).cloned() {
+                let tier = self.plan.allocation(&alloc).map_or(Tier::Normal, |a| a.tier);
+                // `enqueue` keeps the agent's entry if it already has one.
+                self.enqueue(req.agent.clone(), alloc, tier, TurnKind::Continue, true, None, cause, now);
             }
-            return Decision { effective: proposed.clone(), proposed };
+            return Decision::enforced(proposed);
         };
         if turn.class == TurnClass::Interactive || req.interactive {
-            return admit;
+            return Decision::admit();
         }
         let (class, cost, started_at, ceiling) = (turn.class, turn.cost, turn.started_at, turn.ceiling);
 
@@ -960,57 +943,32 @@ impl Governor {
                     None,
                 );
                 if self.plan.shadow_mode {
-                    self.stats.shadow_overrides += 1;
-                    return Decision { effective: Verdict::Admit, proposed };
+                    return self.shadow_override(proposed);
                 }
                 self.stats.tool_calls_denied += 1;
                 self.end_turn(&req.agent, now);
-                return Decision { effective: proposed.clone(), proposed };
+                return Decision::enforced(proposed);
             }
         }
 
-        let cause = if self.paused_all {
-            Some(QueueReason::PausedAll)
-        } else if let Some((window, _)) = self.active_limit(now) {
-            Some(QueueReason::LimitReached { window })
-        } else if class == TurnClass::Autonomous
-            && self.five_hour_now(now).is_some_and(|f| f > self.policy.five_hour_guard_pct)
-        {
-            Some(QueueReason::FiveHourGuard)
-        } else {
-            None
-        };
-        let Some(cause) = cause else { return admit };
+        let Some(cause) = self.hold_reason(class == TurnClass::Autonomous, now) else { return Decision::admit() };
         let proposed = Verdict::Deny { reason: DenyReason::PausedByGovernor { cause: cause.clone() } };
+        let effect = if self.plan.shadow_mode {
+            "shadow mode: tool allowed anyway"
+        } else {
+            "turn ends at this tool boundary and resumes from the queue"
+        };
+        let action = ActionKind::HoldToolCall { agent: req.agent.clone() };
+        self.log(now, action, cause.to_string(), effect.into(), self.mode(), self.auto_outcome(), None);
         if self.plan.shadow_mode {
-            self.stats.shadow_overrides += 1;
-            self.log(
-                now,
-                ActionKind::HoldToolCall { agent: req.agent.clone() },
-                cause.to_string(),
-                "shadow mode: tool allowed anyway".into(),
-                ActionMode::Shadow,
-                Outcome::Logged,
-                None,
-            );
-            return Decision { effective: Verdict::Admit, proposed };
+            return self.shadow_override(proposed);
         }
         self.stats.tool_calls_denied += 1;
-        self.log(
-            now,
-            ActionKind::HoldToolCall { agent: req.agent.clone() },
-            cause.to_string(),
-            "turn ends at this tool boundary and resumes from the queue".into(),
-            ActionMode::Auto,
-            Outcome::Applied,
-            None,
-        );
-        let Some(turn) = self.live.get(&req.agent) else { return admit };
-        let (allocation, tier) = (turn.allocation.clone(), turn.tier);
-        self.end_turn(&req.agent, now);
-        self.enqueue(req.agent.clone(), allocation, tier, TurnKind::Continue, false, ceiling, cause, now);
+        if let Some(t) = self.end_turn(&req.agent, now) {
+            self.enqueue(req.agent.clone(), t.allocation, t.tier, TurnKind::Continue, false, ceiling, cause, now);
+        }
         self.refresh_queue(now);
-        Decision { effective: proposed.clone(), proposed }
+        Decision::enforced(proposed)
     }
 
     /// The agent's turn ended (Stop, StopFailure, interrupt). Frees its slot and
@@ -1018,10 +976,6 @@ impl Governor {
     pub fn turn_ended(&mut self, agent: &AgentId, now: Timestamp) -> Vec<Release> {
         self.end_turn(agent, now);
         self.release_and_refresh(now)
-    }
-
-    fn start_turn(&mut self, req: &TurnRequest, class: TurnClass, now: Timestamp) {
-        self.start_live(&req.agent, &req.allocation, req.tier, req.ceiling, class, now);
     }
 
     fn start_live(
@@ -1037,16 +991,38 @@ impl Governor {
         self.live.insert(agent.clone(), turn);
     }
 
-    fn end_turn(&mut self, agent: &AgentId, now: Timestamp) {
-        if let Some(t) = self.live.remove(agent) {
-            self.ended.insert(agent.clone(), (t.class, now));
-            if t.class != TurnClass::Interactive {
-                let minutes = hours_between(t.started_at, now) * 60.0;
-                if minutes > 0.0 {
-                    self.avg_turn_min += 0.2 * (minutes - self.avg_turn_min);
-                    self.avg_turn_cost += 0.2 * (t.cost - self.avg_turn_cost);
-                }
+    fn end_turn(&mut self, agent: &AgentId, now: Timestamp) -> Option<LiveTurn> {
+        let t = self.live.remove(agent)?;
+        self.ended.insert(agent.clone(), (t.class, now));
+        if t.class != TurnClass::Interactive {
+            let minutes = hours_between(t.started_at, now) * 60.0;
+            if minutes > 0.0 {
+                self.avg_turn_min += 0.2 * (minutes - self.avg_turn_min);
+                self.avg_turn_cost += 0.2 * (t.cost - self.avg_turn_cost);
             }
+        }
+        Some(t)
+    }
+
+    /// Shadow mode: admit, and count what the policy would have done.
+    fn shadow_override(&mut self, proposed: Verdict) -> Decision {
+        self.stats.shadow_overrides += 1;
+        Decision { effective: Verdict::Admit, proposed }
+    }
+
+    /// Holds that apply to running turns too: Pause all, a hit limit, and (for
+    /// autonomous work) F above the 5h guard.
+    fn hold_reason(&self, five_hour_guard_applies: bool, now: Timestamp) -> Option<QueueReason> {
+        if self.paused_all {
+            Some(QueueReason::PausedAll)
+        } else if let Some((window, _)) = self.active_limit(now) {
+            Some(QueueReason::LimitReached { window })
+        } else if five_hour_guard_applies
+            && self.five_hour_now(now).is_some_and(|f| f > self.policy.five_hour_guard_pct)
+        {
+            Some(QueueReason::FiveHourGuard)
+        } else {
+            None
         }
     }
 
@@ -1105,7 +1081,7 @@ impl Governor {
         *self.stats.queued_by_reason.entry(reason_key(&reason).into()).or_insert(0) += 1;
         self.log(
             now,
-            ActionKind::Queue { entry: Some(id), agent, reason: reason.to_string() },
+            ActionKind::Queue { entry: Some(id), agent },
             reason.to_string(),
             format!("defers ≈ {:.1} pp of usage", self.avg_turn_cost / k),
             ActionMode::Auto,
@@ -1235,7 +1211,6 @@ impl Governor {
             QueueReason::LimitReached { window } => self.limits.get(window).copied(),
             QueueReason::FiveHourGuard => m.f_resets_at,
             QueueReason::DeferredUntilReset | QueueReason::HardCap => Some(self.plan.reset_at),
-            QueueReason::OffHours => self.curve.next_active(now),
             QueueReason::RedTier => {
                 // When plan(t) catches up with W − red_exit, or when aging lifts the tier.
                 let budget = m.budget.max(1e-9);
@@ -1248,9 +1223,8 @@ impl Governor {
                 let by_aging = add_hours(e.enqueued_at, steps * self.policy.aging_hours);
                 Some(by_curve.map_or(by_aging, |t| t.min(by_aging)).max(now))
             }
-            QueueReason::LiveCap { .. } | QueueReason::BehindQueue => {
-                Some(add_minutes(now, self.avg_turn_min.round() as i64))
-            }
+            // `check` never returns these; `refresh_queue` estimates slot waits itself.
+            QueueReason::OffHours | QueueReason::LiveCap { .. } | QueueReason::BehindQueue => None,
         }
     }
 
@@ -1306,8 +1280,7 @@ impl Governor {
         }
 
         // Pressure state.
-        let inputs =
-            PressureInputs { error_pp: m.error, eta: m.eta, reset_at: self.plan.reset_at, hours_left: m.hours_left };
+        let inputs = self.pressure_inputs(&m);
         if let Some((from, to)) = self.sm.step(&inputs, &self.policy.thresholds, now) {
             let reason = format!(
                 "W {:.1} % vs plan {:.1} % (e {:+.1} pp){}",
@@ -1316,7 +1289,7 @@ impl Governor {
                 m.error,
                 m.eta.map(|t| format!(", eta {t}")).unwrap_or_default()
             );
-            let cap = self.policy.live_caps.for_state(to);
+            let cap = self.cap(&m);
             self.log(
                 now,
                 ActionKind::StateChange { from, to },
@@ -1416,9 +1389,7 @@ impl Governor {
             self.last_cap = Some(cap);
         }
 
-        let released = self.release_queue(now);
-        self.refresh_queue(now);
-        released
+        self.release_and_refresh(now)
     }
 
     fn update_burn(&mut self, now: Timestamp) {
@@ -1525,8 +1496,7 @@ impl Governor {
         outcome: Outcome,
         undo: Option<Undo>,
     ) -> ActionId {
-        let id = ActionId(self.next_action);
-        self.next_action += 1;
+        let id = ActionId(self.actions.len() as u64 + 1);
         self.actions.push(GovernorAction {
             id,
             ts: now,
@@ -1572,7 +1542,6 @@ impl Governor {
             Undo::EndSprint => {
                 // Sprints stack on the curve; ending one restores the plan's curve, so all end.
                 self.curve = self.base_curve.clone();
-                self.sprint = None;
                 for a in self.actions.iter_mut().filter(|a| a.id != id) {
                     if matches!(a.action, ActionKind::Sprint { .. }) && a.undone_at.is_none() {
                         a.undone_at = Some(now);
@@ -1671,7 +1640,6 @@ impl Governor {
             Outcome::Applied,
             Some(Undo::EndSprint),
         );
-        self.sprint = Some(SprintInfo { action: id, until, extra_pp: applied_pp });
         Ok(id)
     }
 
@@ -1679,11 +1647,11 @@ impl Governor {
     pub fn next_action_preview(&self, now: Timestamp) -> NextActionPreview {
         let m = self.metrics(now);
         let service = self.service();
-        let next_release = release_order(self.queue.iter(), &service).first().map(|e| (e.id, e.estimated_start));
+        let next_release =
+            self.queue.iter().min_by(|a, b| release_cmp(a, b, &service)).map(|e| (e.id, e.estimated_start));
         let pending_ask =
             self.pending_ask.and_then(|id| self.action(id).and_then(|a| a.ask.as_ref()).map(|a| (id, a.deadline)));
-        let inputs =
-            PressureInputs { error_pp: m.error, eta: m.eta, reset_at: self.plan.reset_at, hours_left: m.hours_left };
+        let inputs = self.pressure_inputs(&m);
         NextActionPreview {
             next_release,
             pending_ask,

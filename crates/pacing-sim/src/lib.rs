@@ -556,8 +556,8 @@ pub fn run(sc: &Scenario) -> SimResult {
     let mut self_started_turns = 0u64;
     let mut weekly_at_end_of_work = 0.0;
     let mut max_weekly: f64 = 0.0;
-    let mut sprint_done = false;
-    let mut forced_done = false;
+    let mut forced = sc.forced_limit.clone();
+    let mut sprint = sc.sprint.clone();
 
     let minutes = (sc.reset_at.as_second() - sc.week_start.as_second()) / 60;
     for minute in 0..minutes {
@@ -566,21 +566,15 @@ pub fn run(sc: &Scenario) -> SimResult {
         let working = curve.weight_at(now) > 0.0;
         let offering = working || m.offer_off_hours;
 
-        if let Some(f) = &sc.forced_limit {
-            if !forced_done && now >= f.at {
-                forced_done = true;
-                if truth.five_reset.is_none() {
-                    truth.five_reset = Some(add_min(now, 300));
-                }
-                truth.forced_until = truth.five_reset;
-                truth.five = 100.0;
+        if forced.take_if(|f| now >= f.at).is_some() {
+            if truth.five_reset.is_none() {
+                truth.five_reset = Some(add_min(now, 300));
             }
+            truth.forced_until = truth.five_reset;
+            truth.five = 100.0;
         }
-        if let Some(s) = &sc.sprint {
-            if !sprint_done && now >= s.at {
-                sprint_done = true;
-                let _ = gov.start_sprint(s.extra_pct, now);
-            }
+        if let Some(s) = sprint.take_if(|s| now >= s.at) {
+            let _ = gov.start_sprint(s.extra_pct, now);
         }
 
         // Arrivals.
@@ -611,15 +605,11 @@ pub fn run(sc: &Scenario) -> SimResult {
             if self_started {
                 self_started_turns += 1;
             }
-            let req = TurnRequest {
-                agent: s.agent.clone(),
-                allocation: s.allocation.clone(),
-                tier,
-                interactive: false,
-                kind: if self_started { TurnKind::Continue } else { TurnKind::Task },
-                self_started,
-                ceiling: None,
-            };
+            let mut req = TurnRequest::task(s.agent.clone(), s.allocation.clone(), tier);
+            if self_started {
+                req.kind = TurnKind::Continue;
+                req.self_started = true;
+            }
             let d = gov.request_turn(req, now);
             set_from_decision(s, &d, sc, &mut rng);
         }

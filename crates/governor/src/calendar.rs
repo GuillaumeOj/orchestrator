@@ -109,6 +109,13 @@ struct Segment {
     cum: f64,
 }
 
+impl Segment {
+    /// Weighted hours in the whole segment.
+    fn hours(&self) -> f64 {
+        self.weight * (self.end - self.start) as f64 / 3600.0
+    }
+}
+
 /// The compiled curve: `H(t)` = weighted hours elapsed since the week start.
 ///
 /// Working blocks count their weight; off-hours count `w_off` per hour, chosen
@@ -193,17 +200,23 @@ impl Curve {
             0.0
         };
 
-        let mut segments = Vec::with_capacity(raw.len());
-        let mut cum = 0.0;
-        for (s, e, w) in raw {
-            let weight = w.unwrap_or(w_off);
-            segments.push(Segment { start: s, end: e, weight, cum });
-            cum += weight * (e - s) as f64 / 3600.0;
-        }
-        if cum <= 0.0 {
+        let curve = Curve::from_spans(raw.into_iter().map(|(s, e, w)| (s, e, w.unwrap_or(w_off))), ws, we);
+        if curve.total <= 0.0 {
             return Err(CalendarError::NoWorkingHours);
         }
-        Ok(Curve { segments, total: cum, start: ws, end: we })
+        Ok(curve)
+    }
+
+    /// Build from contiguous `(start, end, weight)` spans, accumulating `H`.
+    fn from_spans(spans: impl Iterator<Item = (i64, i64, f64)>, start: i64, end: i64) -> Curve {
+        let mut segments = Vec::new();
+        let mut cum = 0.0;
+        for (s, e, weight) in spans {
+            let g = Segment { start: s, end: e, weight, cum };
+            cum += g.hours();
+            segments.push(g);
+        }
+        Curve { segments, total: cum, start, end }
     }
 
     pub fn week_start(&self) -> Timestamp {
@@ -273,8 +286,7 @@ impl Curve {
             return None;
         }
         for g in &self.segments {
-            let seg_h = g.weight * (g.end - g.start) as f64 / 3600.0;
-            if g.weight > 0.0 && g.cum + seg_h >= h {
+            if g.weight > 0.0 && g.cum + g.hours() >= h {
                 let secs = ((h - g.cum) / g.weight * 3600.0 - 1e-6).ceil().max(0.0) as i64;
                 return Timestamp::from_second((g.start + secs).min(g.end)).ok();
             }
@@ -331,9 +343,7 @@ impl Curve {
         }
         let boost = if h_after > 0.0 { boost.min(h_after / h_sprint) } else { 0.0 };
         let scale_after = if h_after > 0.0 { (h_after - boost * h_sprint) / h_after } else { 1.0 };
-        let mut segments = Vec::with_capacity(split.segments.len());
-        let mut cum = 0.0;
-        for g in &split.segments {
+        let spans = split.segments.iter().map(|g| {
             let weight = if g.start >= f && g.end <= t {
                 g.weight * (1.0 + boost)
             } else if g.start >= t {
@@ -341,14 +351,13 @@ impl Curve {
             } else {
                 g.weight
             };
-            segments.push(Segment { start: g.start, end: g.end, weight, cum });
-            cum += weight * (g.end - g.start) as f64 / 3600.0;
-        }
-        (Curve { segments, total: cum, start: self.start, end: self.end }, boost)
+            (g.start, g.end, weight)
+        });
+        (Curve::from_spans(spans, self.start, self.end), boost)
     }
 
     fn segment_hours(&self, pred: impl Fn(&Segment) -> bool) -> f64 {
-        self.segments.iter().filter(|g| pred(g)).map(|g| g.weight * (g.end - g.start) as f64 / 3600.0).sum()
+        self.segments.iter().filter(|g| pred(g)).map(Segment::hours).sum()
     }
 
     fn split_at(&self, s: i64) -> Curve {

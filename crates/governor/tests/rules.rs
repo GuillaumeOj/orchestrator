@@ -652,23 +652,11 @@ fn pause_all_holds_at_the_next_tool_call_and_undo_resumes() {
     let id = g.pause_all(at(1));
     let d = g.tool_call(&tool("A-1"), at(2));
     assert_eq!(d.effective, Verdict::Deny { reason: DenyReason::PausedByGovernor { cause: QueueReason::PausedAll } });
-    assert_eq!(d.effective.to_string_reason(), "paused by governor (paused by the user)");
+    let Verdict::Deny { reason } = &d.effective else { panic!("denied") };
+    assert_eq!(reason.to_string(), "paused by governor (paused by the user)");
     assert_eq!(g.queue()[0].reason, QueueReason::PausedAll);
     let r = g.undo(id, at(3)).unwrap();
     assert_eq!(r.len(), 1);
-}
-
-trait ReasonText {
-    fn to_string_reason(&self) -> String;
-}
-
-impl ReasonText for Verdict {
-    fn to_string_reason(&self) -> String {
-        match self {
-            Verdict::Deny { reason } => reason.to_string(),
-            other => format!("{other:?}"),
-        }
-    }
 }
 
 #[test]
