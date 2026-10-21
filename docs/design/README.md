@@ -11,7 +11,7 @@ The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app 
 | 02 Components | P1 subset of SPEC §9.4 (14 component sets), states as variants | In review (P1 subset) |
 | 03 Shell & layouts | Shell at 1512 (docked inspector), 1280 (icon rail + overlay inspector), zoomed pane; 1728 not drawn | In review |
 | 04 Screens | P1 panes: Overview, Agent pane (+ states), Week planner, Inbox | In review (P1 panes) |
-| 05 Keyboard & copy | Shortcut map (§9.7) with conflicts; notification and banner copy | Not started |
+| 05 Keyboard & copy | Global, leader and pane-local shortcut maps; P0 conflicts; banner, notification and toast copy; copy rules | In review |
 | 06 Flows | Prototypes J2 solo session (5 frames), J5 Inbox triage (6), J8 pacing the week (4), key sequences annotated | In review |
 | 07 Explorations | Drafts, not binding | — |
 
@@ -23,6 +23,8 @@ Exports of the Penpot boards (Dark theme unless noted), refreshed by hand:
 
 | Page | Image |
 |---|---|
+| 00 Cover | [00-cover.png](img/00-cover.png) |
+| 05 Keyboard & copy | [05-keyboard-copy.png](img/05-keyboard-copy.png) |
 | 02 Components | [02-components.png](img/02-components.png) |
 | 03 Shell · 1512 | [03-shell-1512.png](img/03-shell-1512.png) |
 | 03 Shell · 1280 | [03-shell-1280.png](img/03-shell-1280.png) |

@@ -108,6 +108,14 @@ Four frames with notes and the flow "J8 · Pacing the week":
 - **The weekly report suggests plan changes** (reserve, ramp-up of team launches, weights) but applies none of them. FR-818 lists only usage and actions; proposal: add "suggestions for next week's plan (not applied)".
 - **A week plan with no answer applies itself after 20 minutes,** like other asks (FR-810). FR-802 doesn't say; proposal: state it there.
 
+## 05 Keyboard & copy
+
+- **Shortcut maps:** global ⌘-chords, leader sequences and pane-local single keys (Inbox, Overview, Week planner, icon rail, agent pane).
+- **P0 conflicts:** each with the decision taken.
+- **Copy:** for the 8 global banners of §9.3, the macOS notifications per attention level, and the toasts.
+- **Copy rules:** name the agent and project, use the §9.5 vocabulary, show usage in pp, give times with a relative hint, and say why and when for anything queued.
+- **Proposal:** SPEC §9.7 should link to page 05 as the full key map. The pane-local keys (Inbox, Overview, planner) aren't in the SPEC yet.
+- **Added:** I added a "5-hour limit reached" banner variant (spec gap 4 above). Version numbers in the "unsupported" banner are placeholders.
+
 ## Not done
-- **05 Keyboard & copy** is untouched.
 - The pacing-indicator popover is a component, but no screen shows it opened over the title bar.
