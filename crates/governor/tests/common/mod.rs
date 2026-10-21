@@ -1,0 +1,103 @@
+#![allow(dead_code)]
+
+use governor::jiff::civil::time;
+use governor::jiff::{SignedDuration, Timestamp};
+use governor::*;
+
+/// Monday 2026-10-19 09:00 Europe/Paris, the weekly reset.
+pub const WEEK_START: &str = "2026-10-19T07:00:00Z";
+/// The next Monday 09:00 Paris (UTC+1 after the DST change).
+pub const RESET: &str = "2026-10-26T08:00:00Z";
+
+pub fn start() -> Timestamp {
+    WEEK_START.parse().unwrap()
+}
+
+pub fn reset() -> Timestamp {
+    RESET.parse().unwrap()
+}
+
+/// `start + minutes`.
+pub fn at(minutes: i64) -> Timestamp {
+    start().checked_add(SignedDuration::from_mins(minutes)).unwrap()
+}
+
+pub fn hours(h: f64) -> i64 {
+    (h * 60.0).round() as i64
+}
+
+pub fn alloc(id: &str, weight: f64, tier: Tier) -> BudgetAllocation {
+    BudgetAllocation { id: id.into(), target: id.into(), weight, tier, hard_cap_pct: None }
+}
+
+/// Mon–Fri 09–19 Paris (50 weighted hours), reserve 10 %, A high / B normal / C low.
+pub fn plan() -> WeeklyPlan {
+    WeeklyPlan {
+        id: "test".into(),
+        week_start: start(),
+        reset_at: reset(),
+        calendar: WorkingCalendar::weekdays("Europe/Paris", time(9, 0, 0, 0), time(19, 0, 0, 0)),
+        reserve_pct: 10.0,
+        off_hours_allowance_pct: 0.0,
+        shadow_mode: false,
+        allocations: vec![alloc("A", 50.0, Tier::High), alloc("B", 30.0, Tier::Normal), alloc("C", 20.0, Tier::Low)],
+    }
+}
+
+/// k = 10 cost units per 1 % of the week.
+pub fn policy() -> PacingPolicy {
+    PacingPolicy { initial_cost_per_pct: 10.0, ..PacingPolicy::default() }
+}
+
+pub fn governor() -> Governor {
+    Governor::new(plan(), policy(), start()).unwrap()
+}
+
+pub fn task(agent: &str, allocation: &str, tier: Tier) -> TurnRequest {
+    TurnRequest::task(agent, allocation, tier)
+}
+
+pub fn tool(agent: &str) -> ToolCallRequest {
+    ToolCallRequest { agent: agent.into(), interactive: false }
+}
+
+pub fn weekly(ts: Timestamp, agent: &str, cost: f64, pct: f64) -> UsageSample {
+    UsageSample {
+        ts,
+        agent: Some(agent.into()),
+        cost_delta: cost,
+        five_hour: None,
+        weekly: Some(WindowReading { used_pct: pct, resets_at: reset() }),
+        provenance: Provenance::Observed,
+    }
+}
+
+pub fn five(ts: Timestamp, agent: &str, pct: f64, resets_at: Timestamp) -> UsageSample {
+    UsageSample {
+        ts,
+        agent: Some(agent.into()),
+        cost_delta: 0.0,
+        five_hour: Some(WindowReading { used_pct: pct, resets_at }),
+        weekly: None,
+        provenance: Provenance::Observed,
+    }
+}
+
+pub fn queue_reason(d: &Decision) -> Option<QueueReason> {
+    match &d.effective {
+        Verdict::Queue { reason, .. } => Some(reason.clone()),
+        _ => None,
+    }
+}
+
+pub fn count(g: &Governor, kind: &str) -> usize {
+    g.actions().iter().filter(|a| a.kind_name() == kind).count()
+}
+
+/// Push W well over plan with the app's own usage (k = 10) and tick past the
+/// dwell so the state is Red.
+pub fn drive_red(g: &mut Governor, minute: i64) {
+    g.ingest(&weekly(at(minute), "obs", 300.0, 30.0));
+    g.tick(at(minute));
+    assert_eq!(g.state(), PressureState::Red, "{:?}", g.snapshot(at(minute)));
+}
