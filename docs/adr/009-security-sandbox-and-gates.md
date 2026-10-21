@@ -1,6 +1,6 @@
 # ADR-009 — Security: enforced sandbox, no agent credentials, gates via hooks
 
-- Status: Proposed · Date: 2026-10-17
+- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-21 (agent runtime: worktree git access, commit gap)
 
 ## Context
 The review found that permission rules alone don't enforce a "worktree sandbox":
@@ -14,6 +14,9 @@ The review found that permission rules alone don't enforce a "worktree sandbox":
    - **Reads are denied** (`sandbox.filesystem.denyRead`) for credential stores (`~/.ssh`, `~/.config/gh`, `~/.netrc`, `~/.git-credentials`, `~/.aws`, other cloud CLI configs) and for the main checkout and the other worktrees. The sandbox's read side is open by default, so without this, "no credentials" and "can't read other worktrees" both fail (P0).
    - **Network** is limited to a per-role allow-list (package registries, docs, configured MCP hosts).
    - Don't deny `~/.gitconfig`: it breaks git entirely (P0).
+   - The main checkout is denied **entry by entry, except its `.git`**, and the repository's git dir gets `allowRead` and `allowWrite`: the worktree's git needs it, and the CLI drops an `allowWrite` that lies under a `denyRead` path. Top-level entries created later are covered at the next spawn.
+   - Sandbox paths are plain absolute paths (`/x`, `~/x`); the `//` form is for permission rules only.
+   - **Known gap (2026-10-21, Claude Code 2.1.302)**: sandboxed Bash in a linked worktree still cannot write the repository's git dir (`index.lock` denied), whatever `allowWrite` or `--add-dir` says, although the docs say linked worktrees get this grant. Agents can't commit; the core commits for them until this is fixed (SPEC R10). The same runs showed the sandbox blocking reads outside the working directory by default, unlike P0.
 2. **Permission rules** for Claude's own tools deny the main checkout, the other worktrees, credential stores and app data. Read/Edit/Write are **not** covered by the OS sandbox, only by these rules. **Absolute paths must be written `//abs/path`**: a single `/` is relative to the settings file and silently matches nothing (P0).
 3. **No credentials**:
    - The agent environment is built from scratch, with no `GH_TOKEN`/`GITHUB_TOKEN` and no `SSH_AUTH_SOCK`.
@@ -21,6 +24,7 @@ The review found that permission rules alone don't enforce a "worktree sandbox":
    - Removing env vars is not enough on its own: in P0 the SSH key on disk and the `gh` keyring token still reached GitHub until the files were made unreadable (decision 1).
    - A `Bash(git push:*)` deny rule is kept as defense in depth only, because a push inside a script bypasses it. Deny rules do win over a hook's `allow`.
    - Pushing, opening PRs and merging into protected branches is done **by the app** through gated orchestrator MCP tools, with the user's credentials kept in the core.
+   - Killing an agent (SPEC FR-207) targets `claude`'s process group and the processes **with no controlling terminal** whose cwd is in its worktree; the user's own shells there are left alone.
 4. **Gates through hooks**:
    - PreToolUse runs for every tool call, including allow-listed ones.
    - PermissionRequest answers permission dialogs from the Inbox.

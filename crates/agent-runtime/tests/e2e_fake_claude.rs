@@ -1,0 +1,162 @@
+//! End to end without quota: the real bus server, real PTYs, the real
+//! orch-hook and orch-status binaries, and a shell script standing in for
+//! `claude` (tests/fake_claude.sh).
+
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::{Duration, Instant};
+
+use agent_runtime::paths::AppPaths;
+use agent_runtime::runtime::{Runtime, RuntimeConfig};
+use agent_runtime::server::{self, request};
+use orch_protocol::{AgentSpec, CtlRequest, bus};
+use serde_json::Value;
+
+mod common;
+use common::{agent, git, helper_bins, short_tempdir};
+
+fn wait_for(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
+    let end = Instant::now() + Duration::from_secs(secs);
+    while Instant::now() < end {
+        if f() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("timed out waiting for {what}");
+}
+
+#[test]
+fn start_deliver_suspend_resume_kill_with_fake_claude() {
+    // Short root: the socket path must stay under 104 bytes.
+    let root = short_tempdir("orche2e");
+    let paths = AppPaths::new(root.path().join("app"));
+    agent_runtime::preflight::install_helpers(&helper_bins(), &paths.bin_dir()).unwrap();
+    let fake = root.path().join("fake-claude");
+    std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake_claude.sh"), &fake).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let repo = root.path().join("proj/demo");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "init"]);
+
+    let mut cfg = RuntimeConfig::new(paths.clone());
+    cfg.claude = fake;
+    cfg.projects_root = root.path().join("projects");
+    cfg.hold = Duration::from_secs(1);
+    let rt = Runtime::new(cfg).unwrap();
+    let listener = bus::bind_listener(&paths.socket()).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let srv = {
+        let (rt, stop) = (rt.clone(), stop.clone());
+        std::thread::spawn(move || server::serve(rt, listener, stop).unwrap())
+    };
+    let sock = paths.socket();
+    let state = || request(&sock, CtlRequest::State).unwrap().data;
+
+    // Start: worktree, compile, spawn, first message through the Governor.
+    let spec = AgentSpec {
+        agent_id: "e2e".into(),
+        repo: repo.display().to_string(),
+        model: Some("haiku".into()),
+        first_message: Some("/hello there".into()),
+        ..Default::default()
+    };
+    let r = request(&sock, CtlRequest::Start { spec: Box::new(spec) }).unwrap();
+    assert!(r.ok, "{r:?}");
+    let wt = PathBuf::from(r.data["worktree"].as_str().unwrap());
+    assert!(wt.ends_with("demo.worktrees/solo/e2e"), "{wt:?}");
+    wait_for("first turn done", 15, || agent(&sock, "e2e")["turns"] == 1 && agent(&sock, "e2e")["state"] == "idle");
+
+    // The pasted turn carried its marker and the leading-`/` escape, and came back Done.
+    let s = state();
+    let t = s["turns"].as_array().unwrap().iter().find(|t| t["agent_id"] == "e2e").unwrap().clone();
+    assert_eq!(t["status"], "done", "{t}");
+    let screen = String::from_utf8(
+        request(&sock, CtlRequest::Read { agent_id: "e2e".into() }).unwrap().data.as_str().unwrap().as_bytes().to_vec(),
+    )
+    .unwrap();
+    assert!(screen.contains("env-api-key=unset autoupdate=1"), "{screen}");
+    assert!(screen.contains(&format!("DONE[1] [t:{}]  /hello there", t["id"].as_str().unwrap())), "{screen}");
+    // Shadow mode: the tool call was admitted and nothing was printed for it.
+    assert!(screen.contains("PRE[1]:\r\n") || screen.contains("PRE[1]:\n"), "{screen}");
+
+    // Usage: the statusline sample reached the collector and the Governor.
+    let u = request(&sock, CtlRequest::Usage).unwrap().data;
+    assert_eq!(u["five_hour"]["used_pct"], 11.0, "{u}");
+    assert_eq!(u["weekly"]["used_pct"], 34.0);
+    let g = request(&sock, CtlRequest::Governor).unwrap().data;
+    let points: Vec<&str> =
+        g["decisions"].as_array().unwrap().iter().map(|d| d["request"]["point"].as_str().unwrap()).collect();
+    assert!(points.contains(&"turn_start") && points.contains(&"tool_call"), "{g}");
+
+    // A second message: delivered only once the agent is idle again.
+    request(&sock, CtlRequest::Deliver { agent_id: "e2e".into(), text: "second".into() }).unwrap();
+    wait_for("second turn", 10, || agent(&sock, "e2e")["turns"] == 2 && agent(&sock, "e2e")["state"] == "idle");
+
+    // Generated files.
+    let settings: Value =
+        serde_json::from_str(&std::fs::read_to_string(paths.agent_dir("e2e").join("settings.json")).unwrap()).unwrap();
+    assert_eq!(settings["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], 600);
+    assert!(std::fs::read_to_string(paths.agent_dir("e2e").join("gitconfig")).unwrap().contains("helper ="));
+
+    // Suspend keeps the session; resume brings it back with --resume.
+    let sid = agent(&sock, "e2e")["session_id"].as_str().unwrap().to_string();
+    let pid = agent(&sock, "e2e")["pid"].as_i64().unwrap() as i32;
+    assert!(request(&sock, CtlRequest::Suspend { agent_id: "e2e".into() }).unwrap().ok);
+    wait_for("suspended", 10, || agent(&sock, "e2e")["state"] == "suspended");
+    assert!(!agent_runtime::procs::alive(pid));
+    assert!(
+        request(&sock, CtlRequest::Resume { agent_id: "e2e".into(), message: Some("after resume".into()) }).unwrap().ok
+    );
+    wait_for("resumed turn", 15, || agent(&sock, "e2e")["turns"].as_u64() == Some(3));
+    assert_eq!(agent(&sock, "e2e")["session_id"], sid.as_str());
+    let screen = String::from_utf8_lossy(&std::fs::read(paths.state_dir().join("events.jsonl")).unwrap()).into_owned();
+    assert!(screen.contains("--resume"), "resume used --resume");
+
+    // Kill: process gone, state killed.
+    let pid = agent(&sock, "e2e")["pid"].as_i64().unwrap() as i32;
+    assert!(request(&sock, CtlRequest::Kill { agent_id: "e2e".into() }).unwrap().ok);
+    wait_for("killed", 10, || agent(&sock, "e2e")["state"] == "killed");
+    assert!(!agent_runtime::procs::alive(pid));
+
+    assert!(request(&sock, CtlRequest::Shutdown).unwrap().ok);
+    srv.join().unwrap();
+}
+
+#[test]
+fn hook_with_core_down_denies_tools_and_spools() {
+    // The real orch-hook binary, no core: PreToolUse is denied, Stop exits 0 and is spooled.
+    let bins = helper_bins();
+    let d = short_tempdir("orchhk");
+    let run = |event: &str| {
+        let mut c = Command::new(bins.join("orch-hook"))
+            .env_clear()
+            .env("ORCH_AGENT_ID", "a1")
+            .env("ORCH_SOCK", d.path().join("core.sock"))
+            .env("ORCH_AGENT_DIR", d.path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write;
+        c.stdin
+            .take()
+            .unwrap()
+            .write_all(format!(r#"{{"hook_event_name":"{event}","tool_name":"Bash"}}"#).as_bytes())
+            .unwrap();
+        c.wait_with_output().unwrap()
+    };
+    let o = run("PreToolUse");
+    assert_eq!(o.status.code(), Some(0));
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+    let o = run("Stop");
+    assert_eq!(o.status.code(), Some(0));
+    assert!(o.stdout.is_empty());
+    let spool = std::fs::read_to_string(d.path().join("spool.jsonl")).unwrap();
+    assert_eq!(spool.lines().count(), 2);
+}

@@ -1,6 +1,6 @@
 # ADR-002 — Agent runtime: the official Claude Code CLI, observed and steered
 
-- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-17 (supersedes "Agent SDK behind a Provider adapter")
+- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-21 (agent runtime findings; supersedes "Agent SDK behind a Provider adapter")
 
 ## Context
 - The user wants to use their **Claude Max plan**. Anthropic's support docs say API-key usage is "billed at standard API rates (distinct from Pro/Max Plan pricing)", and that monthly API credits included with Max can't be used in Claude Code. Plan usage only works through the official Claude Code client.
@@ -25,6 +25,7 @@
 - Control is coarser than an SDK. The Governor admits at turn start and at each tool call (ADR-007).
 - Hooks, the statusline format and flags are not a stable API: the app declares a supported Claude Code version range (baseline 2.1.302), checks it at every spawn, disables auto-update for agents, and runs contract tests after each update (SPEC R2, NFR-7).
 - **Hook timeouts fail open** (the tool runs): every `orch-hook` answer must come before the configured timeout.
-- The workspace trust dialog blocks the first launch in a new folder before any hook runs. Trust is keyed by the main repository root, so the user trusts each project root once and its worktrees inherit it (SPEC J0).
+- The workspace trust dialog blocks the first launch in a new folder before any hook runs. Trust is keyed by the main repository root, so the user trusts each project root once and its worktrees inherit it (SPEC J0). Its default choice is "No, exit"; the app detects it on the PTY, never answers it, and clears the detection at the first SessionStart.
+- An admitted PreToolUse gets no decision from `orch-hook` (an `allow` would skip the user's permission prompts). Statusline re-renders repeat the last response, so the usage collector only counts samples whose readings or cost changed.
 - Validated by the [P0 CLI spike](../spikes/p0-claude-cli.md).
 - Automatic and unattended runs on the subscription are accepted for this personal tool, within the plan's limits (SPEC R1, resolved 2026-10-20). The conditions are an unmodified binary, the user's own login, and no credential handling.
