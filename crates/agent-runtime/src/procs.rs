@@ -97,7 +97,7 @@ pub struct AgentMatch<'a> {
     pub exclude: &'a [i32],
 }
 
-/// Processes of the agent: its group, its argv, and **tty-less** processes
+/// Processes of the agent: its argv, and **tty-less** processes
 /// whose cwd is inside the worktree. A process with its own terminal and
 /// another group (the user's shell `cd`'d into the worktree) is left alone.
 pub fn find_agent_procs(procs: &[ProcInfo], m: &AgentMatch) -> Vec<Found> {
@@ -118,7 +118,9 @@ pub fn find_agent_procs(procs: &[ProcInfo], m: &AgentMatch) -> Vec<Found> {
                     how.push("cwd");
                 }
             }
-            (!how.is_empty()).then(|| Found { proc: p.clone(), how })
+            // A stored pgid alone is not proof: after a reboot it may belong to
+            // another program. It only adds weight to an argv or cwd match.
+            (how.contains(&"argv") || how.contains(&"cwd")).then(|| Found { proc: p.clone(), how })
         })
         .collect()
 }
@@ -198,6 +200,8 @@ mod tests {
             p(200, 200, "ttys001", "-zsh", Some("/w/solo/a1")),
             p(300, 300, "??", "sleep 1", Some("/w/solo/a10")),
             p(400, 400, "??", "orchd serve", Some("/w/solo/a1")),
+            // Same group as the stored pgid, but nothing else ties it to the agent.
+            p(500, 100, "ttys009", "vim notes.txt", Some("/Users/u")),
         ];
         let m = AgentMatch {
             pgid: Some(100),

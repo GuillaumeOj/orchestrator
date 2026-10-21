@@ -99,7 +99,6 @@ pub enum Blocker {
     BackgroundTasks(usize),
     StartingUp,
     UserTyping,
-    Paused,
     /// The trust dialog is up: only the user may answer it (J0).
     TrustDialog,
 }
@@ -109,7 +108,6 @@ pub enum Blocker {
 pub struct GateInputs {
     pub live: bool,
     pub idle: bool,
-    pub paused: bool,
     pub trust_dialog: bool,
     pub background_tasks: usize,
     /// Earliest time input may be sent (SessionStart + 1.5 s, Stop + 0.5 s).
@@ -124,9 +122,6 @@ pub fn can_deliver(g: &GateInputs) -> Result<(), Blocker> {
     }
     if g.trust_dialog {
         return Err(Blocker::TrustDialog);
-    }
-    if g.paused {
-        return Err(Blocker::Paused);
     }
     if !g.idle {
         return Err(Blocker::NotIdle);
@@ -209,7 +204,6 @@ mod tests {
             Err(Blocker::UserTyping)
         );
         assert_eq!(can_deliver(&GateInputs { last_user_input_ms: Some(2_900), ..ok.clone() }), Ok(()));
-        assert_eq!(can_deliver(&GateInputs { paused: true, ..ok.clone() }), Err(Blocker::Paused));
         assert_eq!(can_deliver(&GateInputs { trust_dialog: true, ..ok }), Err(Blocker::TrustDialog));
     }
 }

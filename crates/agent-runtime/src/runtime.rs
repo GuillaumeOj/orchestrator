@@ -95,6 +95,7 @@ pub struct Runtime {
     usage: Mutex<UsageCollector>,
     live: Mutex<BTreeMap<String, Arc<Live>>>,
     decisions: Mutex<VecDeque<AdmissionDecision>>,
+    memory: Mutex<BTreeMap<i32, (std::time::Instant, Option<f64>)>>,
     events: Mutex<Option<std::fs::File>>,
     login_path: String,
     user_statusline: Option<String>,
@@ -217,6 +218,7 @@ impl Runtime {
             usage: Mutex::new(UsageCollector::new()),
             live: Mutex::new(BTreeMap::new()),
             decisions: Mutex::new(VecDeque::new()),
+            memory: Mutex::new(BTreeMap::new()),
             events: Mutex::new(events),
             login_path,
             warnings,
@@ -401,18 +403,23 @@ impl Runtime {
         compiled.write()?;
         let weak = self.me.clone();
         let id_owned = id.to_string();
+        // The pid is known only after the spawn; the exit callback needs it so a
+        // late exit of an old process never touches a newer one.
+        let pid_cell = Arc::new(std::sync::OnceLock::<i32>::new());
+        let pid_for_exit = pid_cell.clone();
         let pty = PtyProcess::spawn(
             &compiled,
             self.cfg.rows,
             self.cfg.cols,
             None,
             Box::new(move |status| {
-                if let Some(rt) = weak.upgrade() {
-                    rt.on_exit(&id_owned, status);
+                if let (Some(rt), Some(pid)) = (weak.upgrade(), pid_for_exit.get()) {
+                    rt.on_exit(&id_owned, *pid, status);
                 }
             }),
         )?;
         let (pid, pgid) = (pty.pid, pty.pgid);
+        let _ = pid_cell.set(pid);
         self.live.lock().unwrap_or_else(|e| e.into_inner()).insert(
             id.into(),
             Arc::new(Live { pty, ready_at_ms: AtomicU64::new(0), last_user_input_ms: AtomicU64::new(0) }),
@@ -433,10 +440,15 @@ impl Runtime {
         Ok(())
     }
 
-    fn on_exit(&self, id: &str, status: Option<u32>) {
-        self.live.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+    fn on_exit(&self, id: &str, pid: i32, status: Option<u32>) {
+        {
+            let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+            if live.get(id).is_some_and(|l| l.pty.pid == pid) {
+                live.remove(id);
+            }
+        }
         let _ = self.store.write(|s| {
-            if let Some(a) = s.agents.get_mut(id) {
+            if let Some(a) = s.agents.get_mut(id).filter(|a| a.pid == Some(pid)) {
                 state::on_exit(&mut a.tracker);
                 a.pid = None;
                 a.pgid = None;
@@ -501,9 +513,10 @@ impl Runtime {
                 }
             })?;
         } else if let Some(l) = live {
-            // Wait (bounded) for the exit callback so callers see the new state.
+            // Wait (bounded) until the exit callback has run, so callers see the
+            // new state and a resume does not race it.
             for _ in 0..100 {
-                if l.pty.has_exited() {
+                if self.live_get(id).is_none_or(|cur| cur.pty.pid != l.pty.pid) {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -577,7 +590,8 @@ impl Runtime {
         let id = m.agent_id.as_str();
         let Some(rec) = self.store.read(|s| s.agents.get(id).cloned()) else {
             self.event(id, "hook_unknown_agent", json!(m.event));
-            return None;
+            // Fail closed: an agent the core doesn't know is not governed.
+            return HookOutput::fail_closed(&m.event);
         };
         let p = HookPayload::parse(&m.payload);
         self.event(
@@ -585,15 +599,20 @@ impl Runtime {
             m.event.as_str(),
             json!({"tool": p.tool_name, "prompt_id": p.prompt_id, "source": p.source, "error": p.error}),
         );
-        let mut tracker = rec.tracker.clone();
-        let effects = state::apply(&mut tracker, &m.event, &p);
-        let _ = self.store.write(|s| {
-            if let Some(a) = s.agents.get_mut(id) {
-                a.tracker = tracker.clone();
+        // Applied under the store lock: concurrent hooks (parallel tool calls)
+        // must not overwrite each other's transitions.
+        let (tracker, effects) = self
+            .store
+            .write(|s| {
+                let a = s.agents.get_mut(id)?;
+                let effects = state::apply(&mut a.tracker, &m.event, &p);
                 a.last_event = Some(m.event.to_string());
                 a.last_event_at_ms = Some(now_ms());
-            }
-        });
+                Some((a.tracker.clone(), effects))
+            })
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| (rec.tracker.clone(), vec![]));
         for fx in effects {
             self.on_effect(&rec, fx, &p);
         }
@@ -853,7 +872,8 @@ impl Runtime {
     /// each agent with queued work, admission and FR-206 delivery.
     pub fn pump(&self) {
         let now = now_ms();
-        for (id, l) in self.live.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        let live = self.live.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        for (id, l) in live {
             let seen = l.pty.output.trust_dialog.load(Ordering::Relaxed);
             let changed = self.store.read(|s| s.agents.get(&id).is_some_and(|a| a.trust_dialog != seen));
             if changed {
@@ -925,14 +945,23 @@ impl Runtime {
         let Some(l) = self.live_get(&rec.id) else {
             // A suspended agent with work is resumed through the Governor first (FR-403).
             if rec.tracker.state == AgentState::Suspended && rec.flag.is_none() && self.admit_turn(rec, turn) {
-                self.spawn(&rec.id, None)?;
+                if let Err(e) = self.spawn(&rec.id, None) {
+                    // Flag it so the next pump doesn't retry every 200 ms.
+                    let msg = format!("{}: could not resume: {e:#}", rec.id);
+                    self.store.write(|s| {
+                        if let Some(a) = s.agents.get_mut(&rec.id) {
+                            a.flag = Some(msg.clone());
+                        }
+                        s.add_inbox(Some(&rec.id), "alert", msg);
+                    })?;
+                    return Err(e);
+                }
             }
             return Ok(());
         };
         let gate = GateInputs {
             live: !l.pty.has_exited(),
             idle: rec.tracker.state == AgentState::Idle,
-            paused: false,
             trust_dialog: rec.trust_dialog,
             background_tasks: rec.tracker.background_tasks,
             ready_at_ms: Some(l.ready_at_ms.load(Ordering::SeqCst)).filter(|t| *t > 0),
@@ -965,10 +994,15 @@ impl Runtime {
 
     /// Bridges a client connection to the agent's PTY until either side
     /// closes. Keystrokes count as the user's typing (delivery waits 2 s).
-    pub fn attach(&self, id: &str, stream: UnixStream, rows: u16, cols: u16) -> Result<()> {
+    /// `initial` is input the client sent along with its request.
+    pub fn attach(&self, id: &str, stream: UnixStream, initial: &[u8], rows: u16, cols: u16) -> Result<()> {
         let l = self.live_get(id).ok_or_else(|| anyhow!("agent {id} is not running"))?;
         let _ = l.pty.resize(rows, cols);
         l.pty.output.set_attached(true);
+        if !initial.is_empty() {
+            l.last_user_input_ms.store(now_ms(), Ordering::SeqCst);
+            l.pty.write(initial)?;
+        }
         let mut input = stream.try_clone()?;
         let l2 = l.clone();
         let reader = std::thread::spawn(move || {
@@ -1019,6 +1053,20 @@ impl Runtime {
 
     // ------------------------------------------------------------ views
 
+    /// `footprint` takes 50–100 ms per call: cache it for a few seconds.
+    fn memory_mb(&self, pid: i32) -> Option<f64> {
+        let mut cache = self.memory.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, mb)) = cache.get(&pid) {
+            if at.elapsed() < Duration::from_secs(5) {
+                return *mb;
+            }
+        }
+        let mb = procs::footprint_mb(pid);
+        cache.retain(|p, _| procs::alive(*p));
+        cache.insert(pid, (std::time::Instant::now(), mb));
+        mb
+    }
+
     pub fn state_json(&self) -> Value {
         let s = self.store.read(|s| s.clone());
         let usage = self.usage.lock().unwrap_or_else(|e| e.into_inner()).view();
@@ -1034,7 +1082,7 @@ impl Runtime {
                     "label": a.tracker.state.label(),
                     "pid": a.pid,
                     "live": live.is_some(),
-                    "memory_mb": live.as_ref().and_then(|l| procs::footprint_mb(l.pty.pid)),
+                    "memory_mb": live.as_ref().and_then(|l| self.memory_mb(l.pty.pid)),
                     "session_id": a.session_id,
                     "worktree": a.worktree,
                     "model": u.and_then(|u| u.model.clone()).or(a.role.model.clone()),
@@ -1173,6 +1221,18 @@ mod tests {
         // Permission prompts are left to the pane (no decision).
         assert!(rt.on_hook(&hook("PermissionRequest", json!({"prompt_id": "p2"})), None).is_none());
         assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::WaitingForYou);
+    }
+
+    #[test]
+    fn unknown_agent_fails_closed_for_tools_only() {
+        let (_d, rt) = test_runtime(true);
+        let mut m = hook("PreToolUse", json!({"tool_name": "Bash"}));
+        m.agent_id = "ghost".into();
+        let out = rt.on_hook(&m, None).expect("denied");
+        assert_eq!(out.0["hookSpecificOutput"]["permissionDecision"], "deny");
+        let mut m = hook("Stop", json!({}));
+        m.agent_id = "ghost".into();
+        assert!(rt.on_hook(&m, None).is_none());
     }
 
     #[test]

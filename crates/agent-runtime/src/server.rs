@@ -54,7 +54,8 @@ fn reply(s: &UnixStream, r: Reply) {
 }
 
 fn handle(rt: &Runtime, s: UnixStream, stop: &AtomicBool) {
-    let env: Envelope = match bus::read_line(&mut BufReader::new(&s)) {
+    let mut reader = BufReader::new(&s);
+    let env: Envelope = match bus::read_line(&mut reader) {
         Ok(e) => e,
         Err(e) => return reply(&s, Reply::Error { message: e.to_string() }),
     };
@@ -78,8 +79,10 @@ fn handle(rt: &Runtime, s: UnixStream, stop: &AtomicBool) {
                 return reply(&s, Reply::Ctl(CtlReply::err(format!("agent {agent_id} is not running"))));
             }
             reply(&s, Reply::Ctl(CtlReply::ok(json!("attached"))));
+            // Input sent right after the request is already in the reader's buffer.
+            let initial = reader.buffer().to_vec();
             if let Ok(clone) = s.try_clone() {
-                let _ = rt.attach(&agent_id, clone, rows, cols);
+                let _ = rt.attach(&agent_id, clone, &initial, rows, cols);
             }
         }
         Msg::Ctl(CtlRequest::Shutdown) => {

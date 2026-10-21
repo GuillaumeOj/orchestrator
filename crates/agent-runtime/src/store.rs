@@ -148,7 +148,30 @@ pub struct StateFile {
     pub inbox: Vec<InboxItem>,
 }
 
+/// Finished rows kept for display; older ones are dropped on write.
+pub const KEEP_FINISHED: usize = 200;
+
 impl StateFile {
+    /// Drops the oldest finished turns, holds and Inbox items beyond
+    /// [`KEEP_FINISHED`] each. Open rows are always kept.
+    pub fn prune(&mut self) {
+        fn keep_last<T>(v: &mut Vec<T>, finished: impl Fn(&T) -> bool) {
+            let n = v.iter().filter(|x| finished(x)).count();
+            let mut drop = n.saturating_sub(KEEP_FINISHED);
+            v.retain(|x| {
+                if drop > 0 && finished(x) {
+                    drop -= 1;
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        keep_last(&mut self.turns, |t| matches!(t.status, TurnStatus::Done | TurnStatus::Cancelled));
+        keep_last(&mut self.holds, |h| h.status != HoldStatus::Held);
+        keep_last(&mut self.inbox, |i| !i.pending);
+    }
+
     pub fn add_inbox(&mut self, agent_id: Option<&str>, kind: &str, body: String) -> u64 {
         let id = self.inbox.iter().map(|i| i.id).max().unwrap_or(0) + 1;
         self.inbox.push(InboxItem {
@@ -191,11 +214,12 @@ impl Store {
     pub fn write<R>(&self, f: impl FnOnce(&mut StateFile) -> R) -> Result<R> {
         let mut g = self.data.lock().unwrap_or_else(|e| e.into_inner());
         let r = f(&mut g);
+        g.prune();
         if let Some(p) = &self.path {
             if let Some(dir) = p.parent() {
                 std::fs::create_dir_all(dir)?;
             }
-            let bytes = serde_json::to_vec_pretty(&*g)?;
+            let bytes = serde_json::to_vec(&*g)?;
             crate::compile::write_atomic(p, &bytes)?;
         }
         Ok(r)
@@ -215,5 +239,30 @@ mod tests {
         let s2 = Store::open(&p).unwrap();
         assert_eq!(s2.read(|st| st.inbox.len()), 1);
         assert_eq!(s2.write(|st| st.add_inbox(None, "gate", "y".into())).unwrap(), 2);
+    }
+
+    #[test]
+    fn prunes_old_finished_rows_only() {
+        let s = Store::in_memory(StateFile::default());
+        s.write(|st| {
+            for i in 0..KEEP_FINISHED + 50 {
+                let status = if i == 0 { TurnStatus::Queued } else { TurnStatus::Done };
+                st.turns.push(TurnRow {
+                    id: format!("{i}"),
+                    agent_id: "a".into(),
+                    body: String::new(),
+                    status,
+                    created_at_ms: i as u64,
+                    delivered_at_ms: None,
+                    admitted: false,
+                    governor_entry: None,
+                });
+            }
+        })
+        .unwrap();
+        let turns = s.read(|st| st.turns.clone());
+        assert_eq!(turns.len(), KEEP_FINISHED + 1);
+        assert_eq!(turns[0].status, TurnStatus::Queued, "open rows are kept");
+        assert_eq!(turns.last().unwrap().id, format!("{}", KEEP_FINISHED + 49), "newest kept");
     }
 }
