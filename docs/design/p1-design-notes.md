@@ -41,37 +41,51 @@ Design pass on 2026-10-20 for the P1 gate (ADR-008, SPEC §9.0). Penpot file **O
 
 SPEC §9.7 should adopt the shortcut notation above (proposal; not edited).
 
-## Open questions for Guillaume
+## Open questions: answered 2026-10-21
 
-1. **Primary button style.** `text.inverse` on `accent.default` is 2.7:1 in Light, so primary buttons use `accent.subtle` fill + accent border + `text.primary`. OK, or should the Light accent be darkened so a filled primary works?
-2. **Status icons in Light, and Suspended in both themes, are under 3:1 on `surface.raised`** (badge background). Suspended: 2.2:1 Dark, 2.0:1 Light. In Light, idle, queued, blocked, error, at gate and waiting-for-you are 2.3–2.95:1. The label always carries the meaning, but WCAG 1.4.11 wants 3:1 for the icon. Options:
-   - (a) badges without a fill in Light (on `surface.pane` most reach 3:1, but Suspended stays at 2.5);
-   - (b) darker `palette.day.*-aa` entries for the status colors;
-   - (c) a new `color.status.suspended` value in both themes.
-   My recommendation is (b) + (c).
-3. **`text.muted` on `surface.raised`** is 4.25:1 in Light (README guarantees only pane and chrome). It appears in the overlay inspector field labels and the queued strip. Avoid muted on raised, or add raised to the contrast guarantee and adjust `day.muted-aa`?
-4. **1728 breakpoint**: not drawn. Same as 1512 with a wider workspace, or a third pane column by default?
-5. **Role marks**: roles use a letter in a role-colored outline (L, B, F, U, X, S), not an icon set. Is a letter enough as the role "icon" (SPEC §9.1.7)? A real icon set would need an icon font or SVGs in Penpot.
-6. **IBM Plex Mono has no ⌘ ⏎ ⇧ glyphs**, so key hints use the UI font. In the app the mono font comes from kitty (FR-1002), so key hints should stay on the UI font there too.
-7. **Inbox count in the title bar** counts levels 1–3 (4 here) and excludes the level-4 digest. Confirm.
+1. **Primary button style:** kept (accent.subtle + accent border + text.primary).
+2. **Status icon contrast:** done.
+   - New palette entries:
+     - Light: darker day `*-aa` entries for every status and pacing color.
+     - Dark: storm `dark5-aa` (idle) and `red1-aa` (blocked by limit).
+     - A neutral grey `suspended-aa` in both themes, so Suspended no longer looks like Idle.
+   - Every status color is now ≥ 3:1 on `surface.raised` and `surface.selected` in both themes.
+   - Suspended's glyph is now □; the previous ‖ is reused for the new Paused state.
+3. **Muted text on raised surfaces:** `surface.raised` is now in the contrast guarantee, and `day.muted-aa` is #495178 (4.6:1 on raised).
+4. **1728:** a wider workspace for now; revisit after using the app.
+5. **Role marks:** the letter is fine for now.
+6. **Nerd Fonts (your idea).** Proposal:
+   - The app bundles *Symbols Nerd Font Mono*, a symbols-only font that sits beside the UI font and doesn't depend on the user's kitty font.
+   - It would draw the key glyphs (`nf-md-apple_keyboard_command`, `…_return`, `…_shift`), the status icons and the role icons, so they render the same everywhere and line up on the cell grid.
+   - Penpot can't load that font through the plugin API, so the file keeps Unicode stand-ins until the font is uploaded to the Penpot team.
+   - Decision needed: adopt it for P1, or keep Unicode.
+7. **Inbox badge:** counts levels 1–3, confirmed and added to SPEC §9.6.
 
-## SPEC gaps found while designing (proposed edits, not made)
+## SPEC gaps: status 2026-10-21
 
-1. **ADR-007 / FR-803: the ideal curve vs the measured W.** `ideal(t)` excludes the reserve and the unattributed forecast, but `e = W − ideal` uses the total W, which includes reserve use and outside-app use. Early interactive use or claude.ai use then shows up as "over plan" and can push the Governor into Amber/Red, which squeezes autonomous work for usage the Governor doesn't control. In the scenario, agents are exactly on plan (38 %) but W = 47 % because of 5 pp reserve and 4 pp outside use.
-   - Proposal: compute the error on the governed share, `e = (W − reserve_used − U_actual) − ideal(t)`, or add the reserve and U pro-rata to the ideal curve.
-   - Also state which one the title bar shows ("plan 38 % (+9)").
-2. **§9.5 has no "Paused" state.** FR-805 / FR-811 pause teams at a turn boundary, and "Pause all" exists, but the status vocabulary has only Queued and Suspended. I showed it as Queued with a "Paused by governor" reason row. Proposal: say in §9.5 that a governor pause is `queued` with reason `paused`, or add a 10th state.
-3. **§9.3 Agent pane, queued state: what does the PTY show before the first turn?** For a queued agent that has never run, is `claude` started (idle, costing memory) or not started at all? I designed "not started, prompt ready". Proposal: state that queued agents with no session have no process (FR-901 memory then reads "—").
-4. **J9: who owns the "blocked by limit" banner when only the 5h window is exhausted?** The banner copy differs (5h reset in hours vs weekly reset). Proposal: two banner variants, and J9 should say "a window" consistently.
-5. **J5 / FR-707: the Inbox key map is not written down.** I used `j/k` move, `a` approve, `r` reject, `⏎` reply, `o` open, `x` select (batch), `u` undo, `e` open in nvim. Proposal: list it in §9.7 next to the leader map.
-6. **J4 / FR-903: actions need keys in the Overview.** I used `⏎` open, `i` interrupt, `p` pause, `s` suspend, `r` resume, `k` kill (single keys while the Overview has focus). `r` clashes with Inbox "reject" only if both are focused at once, which can't happen, but write it down.
-7. **§9.2 status bar "live/queued agents with the pressure state in words"**: the 5h guard has no place in the status bar. When the guard is on, the cap is 1 even in Green. Proposal: show "5h guard" next to the pressure pill when active.
-8. **FR-809 Run now cost** is shown as "≈ +2 pp of the week". When the 5h guard is the binding constraint, the 5h cost matters more. Proposal: show the cost in the binding window ("≈ +6 % of 5h").
-9. **§9.0 pages**: `00 Cover` lists screens "ready for dev". There is no "In review" status in the SPEC. The Cover uses Not started / In review / Ready for dev. Proposal: name these three statuses in §9.0.
+The approved edits are now in SPEC v0.5 (§7 lifecycle, §9.0, §9.2, §9.3, §9.5, §9.6, §9.7, FR-809, J9) and in ADR-007 / ADR-008.
 
-## 06 Flows: J5 Inbox triage
+1. **Ideal curve vs measured W: open.** Today the error is `e = W − ideal`, where W includes your own interactive use and your claude.ai use. So the Governor can go Red because *you* used Claude, then squeeze the agents for it.
+   - Example from the scenario: agents are exactly on plan (38 %), but W is 47 % because of 5 pp of reserve use and 4 pp outside the app, so e = +9 pp and the state is Red.
+   - Option A (governed share): `e = (W − reserve_used − outside_actual) − ideal`. The Governor reacts only to agent usage. Your own heavy use is shown, but doesn't squeeze agents unless the week is really at risk (the exhaustion check stays on total W).
+   - Option B (status quo): the Governor protects the week as a whole, so your own use slows the agents down.
+   - Recommendation: A, with the exhaustion projection (`eta`) kept on total W so a lock-out is still prevented. The title bar would then show "plan 38 % (+0)" for agents, with a second number for the total.
+2. **Paused:** added to §9.5 and §7 as its own state, teal, glyph ‖. The Governor's pause-team and your Pause / Pause all both use it.
+3. **Not started yet:** no `claude` process until admitted. The queued state reads "Not started yet" and offers **Start now** with its cost (§7, §9.3, §9.5, FR-809).
+4. **Limit banners:** one variant per window (weekly and 5h) in §9.3 and J9.
+5. **Inbox keys:** already in FR-707; §9.7 now adds `e` and links to page 05.
+6. **Overview keys:** in §9.7.
+7. **5h guard chip:** in §9.2. It shows in the status bar whenever the guard holds work, in any pressure state.
+8. **Cost in the binding window:** in FR-809 and ADR-007. Week costs are in **pp**, 5h costs in **% of 5h**, and the confirmation shows both.
+9. **Page statuses:** Not started / In review / Ready for dev, named in §9.0.
 
-Six 1512 frames on page 06, each with a notes board above it giving the step, the key sequence and what happens. A Penpot flow named "J5 · Inbox triage" starts at step 1.
+## 06 Flows: storyboards
+
+Prototype wiring was removed on 2026-10-21 (you said flows are not required, and Penpot can't trigger on keys). The frames stay as annotated storyboards. SPEC §9.0 and ADR-008 now say "storyboards".
+
+### J5 Inbox triage
+
+Six 1512 frames on page 06, each with a notes board above it giving the step, the key sequence and what happens. 
 
 1. **Gate selected** (`⌘+⇧+I`, `j/k`, `a`).
 2. **Approved, permission next.** The undo toast offers `u`.
@@ -80,13 +94,12 @@ Six 1512 frames on page 06, each with a notes board above it giving the step, th
 5. **Budget ask.** Shows its default and a timeout countdown (FR-810).
 6. **Inbox clear.** Empty state; the Info digest keeps the history.
 
-- **Prototype wiring:** Penpot has no keyboard triggers, so clicks stand in for keys: Approve → 2, Allow once → 3, Reply → 4, Send → 5, Defer → 6, Cancel → 3. The undo toasts go back one step.
 - **Design decision:** after a gate is approved in Red, the lead **queues first for the live slot** instead of resuming, because back-1 holds the only slot. Interactive agents (front-1, solo/fix-tax) resume at once. The 04 Inbox screen now says the same.
 - **Spec gap:** SPEC J5 step 3 says "after approval the agent resumes". Proposal: "resumes, or queues with its tier if the Governor holds the live slot (the item says so)".
 
-## 06 Flows: J2 Solo session
+### J2 Solo session
 
-Five frames with notes and the flow "J2 · Solo session":
+Five frames with notes:
 
 1. **New session (⌘+T).** The dialog has project, role (plain Claude by default), task, name, base branch, a worktree toggle with a preview of the branch and folder, model and effort, and a Governor note.
 2. **Session running.** The worktree is created, claude runs there, a zsh pane sits beside it, and the session appears under its project in the sidebar.
@@ -94,9 +107,9 @@ Five frames with notes and the flow "J2 · Solo session":
 4. **PR gate in the Inbox.** Title and body drafted by the agent, changed files, the local test run. On approval the app pushes and runs `gh pr create`; agents can't push (§6.5).
 5. **PR opened.** The agent is Done, the strip links the PR and offers to remove the worktree, and the sidebar shows the PR number.
 
-## 06 Flows: J8 Pacing the week
+### J8 Pacing the week
 
-Four frames with notes and the flow "J8 · Pacing the week":
+Four frames with notes:
 
 1. **Plan the week (Mon 09:02).** An Inbox Plan item prefilled from last week: calendar, weights, tiers, reserve, last week's outcome. If nobody answers, it applies at 09:20.
 2. **Run now with its cost (Wed, Red).** A confirmation dialog shows the week and 5h impact, the cap it exceeds and how to undo it. It is logged as your override.

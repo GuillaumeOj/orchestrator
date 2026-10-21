@@ -56,7 +56,7 @@ Live cap per state, queue, pause at turn boundary, defer after reset (asked, wit
 
 ## Transparency & safety
 - Every action is a `GovernorAction` record with its reason, expected effect and undo.
-- Every queued item shows why, its estimated start, and "Run now" with its estimated cost.
+- Every queued item shows why, its estimated start, and "Run now" (or "Start now" if it never ran) with its estimated cost in the window that binds it (5h % under the 5h guard, week pp otherwise).
 - **Shadow mode** is on for the first week.
 - The **simulator** (SPEC FR-820, NFR-9) replays weeks against the policy; it is the acceptance test.
 

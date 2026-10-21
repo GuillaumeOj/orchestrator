@@ -12,7 +12,7 @@ The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app 
 | 03 Shell & layouts | Shell at 1512 (docked inspector), 1280 (icon rail + overlay inspector), zoomed pane; 1728 not drawn | In review |
 | 04 Screens | P1 panes: Overview, Agent pane (+ states), Week planner, Inbox | In review (P1 panes) |
 | 05 Keyboard & copy | Global, leader and pane-local shortcut maps; P0 conflicts; banner, notification and toast copy; copy rules | In review |
-| 06 Flows | Prototypes J2 solo session (5 frames), J5 Inbox triage (6), J8 pacing the week (4), key sequences annotated | In review |
+| 06 Flows | Storyboards (annotated frames, no clickable prototype): J2 solo session (5 frames), J5 Inbox triage (6), J8 pacing the week (4) | In review |
 | 07 Explorations | Drafts, not binding | — |
 
 **P1 gate:** before P1 UI work starts, 01, 03 and the P1 panes in 04 (Overview, Agent pane, Week planner, Inbox) are marked ready for dev on `00 Cover`. As of 2026-10-20 they are all **In review**; Guillaume decides Ready for dev. Open questions and spec gaps from the design pass: [p1-design-notes.md](p1-design-notes.md).
@@ -54,4 +54,4 @@ All screens use one scenario: Wednesday 21 Oct 11:00, Governor in Red (+9 pp), l
 
 Pipeline (to build in P1): Penpot token export → this JSON → Style Dictionary → CSS variables, with a CI check that fails when the code and the export drift. Until that exists, refresh `tokens.json` by hand after token changes in Penpot.
 
-**Contrast**: `text.primary` is ≥ 7:1 and `text.secondary` / `text.muted` are ≥ 4.5:1 on `surface.pane` and `surface.chrome` in both themes. Four `*-aa` palette entries adjust Tokyo Night values that fell short: storm `muted-aa` and day `fg-aa`, `fg-dark-aa`, `muted-aa`. `text.disabled` is exempt.
+**Contrast**: `text.primary` is ≥ 7:1 and `text.secondary` / `text.muted` are ≥ 4.5:1 on `surface.pane`, `surface.chrome` and `surface.raised` in both themes. Status and pacing colors (icons, glyphs, pill outlines) are ≥ 3:1 on `surface.raised` and `surface.selected` in both themes (WCAG 1.4.11); the label always carries the meaning too. The `*-aa` palette entries adjust Tokyo Night values that fell short: storm `muted-aa`, `dark5-aa`, `red1-aa`, `suspended-aa`; day `fg-aa`, `fg-dark-aa`, `muted-aa` and the status/pacing `*-aa` entries (cyan, orange, magenta, yellow, red, red1, green, blue1, teal, dark5, suspended). `text.disabled` is exempt.
