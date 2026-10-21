@@ -58,18 +58,17 @@ SPEC §9.7 should adopt the shortcut notation above (proposal; not edited).
    - The app bundles *Symbols Nerd Font Mono*, a symbols-only font that sits beside the UI font and doesn't depend on the user's kitty font.
    - It would draw the key glyphs (`nf-md-apple_keyboard_command`, `…_return`, `…_shift`), the status icons and the role icons, so they render the same everywhere and line up on the cell grid.
    - Penpot can't load that font through the plugin API, so the file keeps Unicode stand-ins until the font is uploaded to the Penpot team.
-   - Decision needed: adopt it for P1, or keep Unicode.
+   - Decided 2026-10-21: use **FiraCode Nerd Font Mono** (already on your machine, uploaded to the Penpot team) as the icon and key-glyph font. It has ⌘ ⇧ ⏎ natively and the Material Design icons.
 7. **Inbox badge:** counts levels 1–3, confirmed and added to SPEC §9.6.
 
 ## SPEC gaps: status 2026-10-21
 
 The approved edits are now in SPEC v0.5 (§7 lifecycle, §9.0, §9.2, §9.3, §9.5, §9.6, §9.7, FR-809, J9) and in ADR-007 / ADR-008.
 
-1. **Ideal curve vs measured W: open.** Today the error is `e = W − ideal`, where W includes your own interactive use and your claude.ai use. So the Governor can go Red because *you* used Claude, then squeeze the agents for it.
-   - Example from the scenario: agents are exactly on plan (38 %), but W is 47 % because of 5 pp of reserve use and 4 pp outside the app, so e = +9 pp and the state is Red.
-   - Option A (governed share): `e = (W − reserve_used − outside_actual) − ideal`. The Governor reacts only to agent usage. Your own heavy use is shown, but doesn't squeeze agents unless the week is really at risk (the exhaustion check stays on total W).
-   - Option B (status quo): the Governor protects the week as a whole, so your own use slows the agents down.
-   - Recommendation: A, with the exhaustion projection (`eta`) kept on total W so a lock-out is still prevented. The title bar would then show "plan 38 % (+0)" for agents, with a second number for the total.
+1. **Ideal curve vs measured W: decided 2026-10-21 (option A).**
+   - The error is now computed on the governed share, `e = (W − reserve used − outside used) − ideal`. The exhaustion projection stays on the total W.
+   - Changed in FR-804, ADR-007, J8 and the §9.2 title bar. The title bar reads "Week 56% · agents 47% · plan 38% (+9)".
+   - The scenario numbers are updated: total 56% = agents 47% (shop-api 33, blog 10, infra 4) + you 5% + outside the app 4%.
 2. **Paused:** added to §9.5 and §7 as its own state, teal, glyph ‖. The Governor's pause-team and your Pause / Pause all both use it.
 3. **Not started yet:** no `claude` process until admitted. The queued state reads "Not started yet" and offers **Start now** with its cost (§7, §9.3, §9.5, FR-809).
 4. **Limit banners:** one variant per window (weekly and 5h) in §9.3 and J9.

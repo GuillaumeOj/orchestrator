@@ -111,9 +111,9 @@ Orchestrator is a **personal, local-first macOS app** for running software proje
 
 ### J8 — Pacing the week
 1. When the weekly window resets, a **Week planner** item appears in the Inbox. Working days and hours, projects A 50 % / B 30 % / C 20 % and a 10 % reserve are prefilled from last week. The user adjusts and confirms.
-2. The title bar shows both windows: *Week 41 % · plan 38 % (+3) · 5h 22 % · resets Mon 09:00*.
-3. On Wednesday, usage is 9 pp over plan, so the Governor moves to **Red**. It caps live autonomous agents to 1, queues low-priority team tasks, and proposes in the Inbox to defer "Search v2" until after the reset. Every queued agent shows why and when it will start, with a **Run now** button that shows the cost ("≈ +2 pp").
-4. On Friday, usage is 12 pp under plan with < 24 working hours left, so the Governor moves to **Catch-up** and releases queued work at higher concurrency.
+2. The title bar shows both windows: *Week 50 % · agents 41 % · plan 38 % (+3) · 5h 22 % · resets Mon 09:00*. "Week" is the total the plan reports; "agents" is the share the Governor controls (total − your interactive use − usage outside the app), and the plan and the error refer to it.
+3. On Wednesday, the agents' usage is 9 pp over plan, so the Governor moves to **Red**. It caps live autonomous agents to 1, queues low-priority team tasks, and proposes in the Inbox to defer "Search v2" until after the reset. Every queued agent shows why and when it will start, with a **Run now** button that shows the cost ("≈ +2 pp").
+4. On Friday, the agents' usage is 12 pp under plan with < 24 working hours left, so the Governor moves to **Catch-up** and releases queued work at higher concurrency.
 5. The week ends at about 90–100 % used, near the reset. The weekly report summarizes usage per project, feature and role, plus the governor's actions.
 
 ### J9 — Plan limit reached anyway
@@ -239,7 +239,7 @@ The control law is specified in **ADR-007**. The requirements below are what the
 | FR-801 | **Usage collector**: record the plan-limit signals from Claude Code (statusline `rate_limits.five_hour` / `seven_day` used % and reset times, StopFailure `rate_limit` errors) and per-session usage (OpenTelemetry token/cost metrics, statusline cost and context), attributed to agent, role, team, feature and project. Each sample records where its value came from (*observed* or *estimated*). Statusline `rate_limits` are **per-process copies of that agent's last API response**, so for each window the collector uses the **most recent sample across all agents** (by sample time), and treats a missing window as unknown, not 0. | M |
 | FR-802 | **Weekly plan**, aligned to the weekly reset: working calendar (days, hours, time zone, holidays), allocations per project/feature/team as **weights**, a priority tier (critical / high / normal / low), and a **reserve** for interactive work. Prefilled from last week. [J8] | M |
 | FR-803 | **Ideal curve**: `ideal(t)` = fraction of the week's weighted working hours elapsed at time t × (100 % − reserve − forecast unattributed usage). Off-hours count only if the user enables an off-hours allowance. | M |
-| FR-804 | **Pressure states** with hysteresis: **Green / Amber / Red / Catch-up**, computed from the error `e = used − ideal` (pp) and the projected exhaustion time. Thresholds are in ADR-007 and adjustable in settings. | M |
+| FR-804 | **Pressure states** with hysteresis: **Green / Amber / Red / Catch-up**, computed from the error on the **governed share** `e = (used − reserve used − unattributed used) − ideal` (pp), so your own interactive use and usage outside the app never push agents into Amber/Red, and from the projected exhaustion time, which stays on the **total** used so a lock-out is still prevented. Thresholds are in ADR-007 and adjustable in settings. | M |
 | FR-805 | **Governor v1 actions**: cap live autonomous agents per state; queue new turns by priority; pause teams at the next turn boundary; propose to defer work until after the reset; a separate **5h guard** that keeps headroom for interactive work. | M |
 | FR-806 | **Admission points**: the Governor decides at **turn start** (for turns the app delivers; self-started turns from background work are counted, FR-410) and at **each tool call** (a PreToolUse hook waits up to a few seconds for admission, then denies with "paused by governor" if it is still held). Parallel tool calls run their hooks concurrently, and each one is admitted separately. The user's own typing in a pane is never blocked. **`orch-hook` fails closed for tools**: hook timeouts, crashes and a missing hook binary all let the tool run, so `orch-hook` always answers itself. If the core's socket is missing, refused, closes mid-hold, or misses `orch-hook`'s deadline, PreToolUse and PermissionRequest answer **deny** ("ORCH: orchestrator unavailable"); every other event exits 0 at once and is **spooled** to the agent's folder for replay. It never exits with code 2 on non-tool events (that blocks and erases the user's prompt), and only PreToolUse/PermissionRequest wait on the core; the others use a ≤ 1 s connect timeout. | M |
 | FR-807 | **Interactive and critical work** is admitted first and draws from the reserve. When the reserve is used up, the app warns instead of blocking and squeezes the other work harder. If most usage is interactive, the Governor has little to act on; the planner says so. | M |
@@ -492,7 +492,7 @@ The UI is **designed in Penpot before it is built** (ADR-008), with a gate sized
 
 ### 9.2 App shell & navigation
 ```
-┌ Title: [⌘K]   Week 41% · plan 38% (+3) · 5h 22% · resets Mon 09:00   [Inbox 3] ┐
+┌ Title: [⌘K]  Week 50% · agents 41% · plan 38% (+3) · 5h 22% · resets Mon 09:00  [Inbox 3] ┐
 ├ Sidebar ─────┬ Workspace (tiling panes) ──────────────────────┬ Inspector ──────┤
 │ ▾ shop-api   │ ┌ claude · back-1 ────────┐┌ nvim ────────────┐ │ (selection:     │
 │   ▾ checkout │ │ Claude Code TUI         ││                  │ │  agent, task,   │
