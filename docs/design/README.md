@@ -19,7 +19,7 @@ The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app 
 
 ## Screenshots
 
-Exports of the Penpot boards (Dark theme unless noted), refreshed by hand:
+Exports of the Penpot boards (Dark theme unless noted), refreshed by hand. The 03 (1280, zoomed), 04 Inbox Light and 06 storyboard exports predate the Nerd Font icon swap of 2026-10-22; Penpot is current.
 
 | Page | Image |
 |---|---|
@@ -51,6 +51,20 @@ All screens use one scenario: Wednesday 21 Oct 11:00, Governor in Red (+9 pp), l
 - **Naming**: semantic colors are `color.surface.*`, `color.text.*`, `color.border.*`, `color.accent.*`, `color.focus`, `color.status.*` (SPEC §9.5), `color.pacing.*` (ADR-007) and `color.role.1…8`. Code uses semantic tokens only, never `palette.*`.
 - **Fixed across kitty-derived themes**: status, pacing and role colors. Only surface, text and accent may be derived from the user's kitty palette (SPEC §9.1).
 - **Mono font**: `font.family.mono` is IBM Plex Mono in the designs. In the app it is replaced by the font kitty actually renders (SPEC FR-1002).
+- **Icon font**: `font.family.icon` is **FiraCode Nerd Font Mono** (uploaded to the Penpot team; bundled with the app). Typography `text.icon` (status glyphs) and `text.key` (key hints, which need ⌘ ⇧ ⏎). Status icons are Material Design glyphs:
+
+  | State | Glyph | Codepoint |
+  |---|---|---|
+  | Working | play | U+F040A |
+  | Waiting for you | account-alert | U+F0005 |
+  | At gate | shield-check | U+F0565 |
+  | Queued | timer-sand | U+F051F |
+  | Paused | pause | U+F03E4 |
+  | Blocked by limit | cancel | U+F073A |
+  | Idle | circle-outline | U+F0766 |
+  | Suspended | sleep | U+F04B2 |
+  | Error | close-circle | U+F0159 |
+  | Done | check | U+F012C |
 
 Pipeline (to build in P1): Penpot token export → this JSON → Style Dictionary → CSS variables, with a CI check that fails when the code and the export drift. Until that exists, refresh `tokens.json` by hand after token changes in Penpot.
 

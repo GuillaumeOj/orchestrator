@@ -58,7 +58,7 @@ SPEC §9.7 should adopt the shortcut notation above (proposal; not edited).
    - The app bundles *Symbols Nerd Font Mono*, a symbols-only font that sits beside the UI font and doesn't depend on the user's kitty font.
    - It would draw the key glyphs (`nf-md-apple_keyboard_command`, `…_return`, `…_shift`), the status icons and the role icons, so they render the same everywhere and line up on the cell grid.
    - Penpot can't load that font through the plugin API, so the file keeps Unicode stand-ins until the font is uploaded to the Penpot team.
-   - Decided 2026-10-21: use **FiraCode Nerd Font Mono** (already on your machine, uploaded to the Penpot team) as the icon and key-glyph font. It has ⌘ ⇧ ⏎ natively and the Material Design icons.
+   - Decided 2026-10-21: use **FiraCode Nerd Font Mono** (already on your machine, uploaded to the Penpot team) as the icon and key-glyph font. It has ⌘ ⇧ ⏎ natively and the Material Design icons. Applied: tokens `font.family.icon`, `text.icon` and `text.key`; status icons and key hints on every page; the glyph table is in the README.
 7. **Inbox badge:** counts levels 1–3, confirmed and added to SPEC §9.6.
 
 ## SPEC gaps: status 2026-10-21
