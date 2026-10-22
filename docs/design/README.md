@@ -19,7 +19,7 @@ The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app 
 
 ## Screenshots
 
-Exports of the Penpot boards (Dark theme unless noted), refreshed by hand. The 03 (1280, zoomed), 04 Inbox Light and 06 storyboard exports predate the Nerd Font icon swap of 2026-10-22; Penpot is current.
+Exports of the Penpot boards (Dark theme unless noted), refreshed by hand.
 
 | Page | Image |
 |---|---|
