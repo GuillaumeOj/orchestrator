@@ -55,7 +55,7 @@ for release in gov.tick(now) {
 }
 let released = gov.turn_ended(&"A-1".into(), now); // Stop / StopFailure
 
-let snap = gov.snapshot(now); // W, plan, e, eta, state, caps, 5h, estimator
+let snap = gov.snapshot(now); // W, G, plan, e, projected, eta, state, caps, 5h, estimator
 println!("W {:.0} % · plan {:.0} % ({:+.0}) · {}", snap.used, snap.plan, snap.error, snap.state);
 for action in gov.actions() {
     println!("{} {}: {} → {}", action.ts, action.kind_name(), action.reason, action.expected_effect);
@@ -105,17 +105,22 @@ All are `serde` types.
 - `H(t)` counts weighted working hours from the calendar: blocks per day in the plan's time zone,
   DST-safe, with holidays. Off-hours count only if `off_hours_allowance_pct > 0`; they then hold
   exactly that share of the week.
-- `ideal(t) = H(t)/H_week × (100 − reserve − U_forecast)` and `plan(t) = ideal(t) + U_so_far`.
-- The error is `e = W − plan(t)`. `reserve_left = 100 − W − autonomous plan left − unattributed left`.
+- `ideal(t) = H(t)/H_week × (100 − reserve − U_forecast)`.
+- The error is on the governed share (ADR-007, decision 2026-10-21): `G = W − I_used − U_so_far`,
+  `e = G − ideal(t)`, where `I_used` is interactive usage (critical agent work stays in `G`).
+  `plan(t) = ideal(t) + I_used + U_so_far`, so `e = W − plan(t)` too.
+  `reserve_left = 100 − W − autonomous plan left − unattributed left`.
 
-**Projected exhaustion.**
-- `eta`: `W + burn × active hours` reaches 100. Active hours are the wall hours in which autonomous
-  work can run (weight > 0).
-- `burn` is an EWMA per active hour with τ = 24 active hours, primed with the plan's pace.
+**Projected total.**
+- `P = W + burn × H_left + u × off-hours left`: the total W projected at the reset. Off-hours here
+  are the wall hours with weight 0, where outside usage goes on and the burn is not measured.
+- `burn` is an EWMA per weighted hour with τ = 24 weighted hours, primed with the plan's pace.
+  Per weighted hour, so the projection follows the curve: half-weight blocks and sprints.
+- `eta` (shown only) is when the total reaches 100 % along the curve at that burn.
 
 **States.**
 - Green, Amber, Red and Catch-up follow ADR-007's thresholds, with hysteresis and a minimum dwell of
-  30 min on every transition.
+  30 min on every transition. Red enters on `e > +8` or `P > 98 %` and exits on `e < +5` and `P < 96 %`.
 - Entering Red proposes deferring a low-tier allocation (see "Asks" below).
 - Entering Catch-up lifts the deferrals.
 
@@ -222,9 +227,10 @@ proposed edits).
 
 ### Known limits seen in simulation
 
-- With ADR defaults at 130 % demand, the eta rule usually enters Red on Tuesday or Wednesday at
-  `e ≈ +3`. With a 10 % reserve, a pace about 7 % over the plan already projects exhaustion before
-  Friday evening.
+- With the governed-share error, interactive and outside usage no longer slow the agents, so at
+  130 % demand heavy weeks end at about 93–99 % and the projection rule does the braking late in the
+  week. A front-loaded interactive burst raises the burn and can enter Red early in the week, since
+  the burn is extrapolated over all the hours left.
 - Entering Red asks to defer the low-tier allocation. The ask defaults to apply, so in 85 % of those
   weeks the low-tier project gets about 20 % of its demand done. Declined, aging still runs it.
 - Small outside usage (~4 %/week) is barely identifiable from whole-percent readings: `u` is often
@@ -239,13 +245,12 @@ reading that passes NFR-9. Each one is listed here as a proposed edit. SPEC and 
 
 1. **Unattributed usage is part of the plan, not only subtracted (FR-803/813).** Comparing `W` with
    `ideal(t)` alone counts outside usage twice: once inside `W`, once in the budget's
-   `− U_forecast`. *Edit*: `e = W − plan(t)` with `plan(t) = ideal(t) + U_so_far`. This is the
+   `− U_forecast`. *Edit*: `e = W − plan(t)` with `plan(t) = ideal(t) + U_so_far` (now `+ I_used` as well, item 2). This is the
    "plan" shown in J8's title bar.
-2. **The reserve is headroom, not a credit (FR-807).** Interactive and critical usage counts in `W`
-   like any other, so the pacing squeezes autonomous work to make room for it. "Reserve used up"
-   means `reserve_left < 0`. Crediting interactive usage against the plan made the plan end at 100 %
-   whenever the reserve was used, and 130 % weeks reached 101.9 %. *Edit*: say so in FR-807 and
-   ADR-007.
+2. **The reserve is a credit for interactive work (FR-804, decision 2026-10-21).** This crate first
+   counted interactive usage in the error; ADR-007 now takes it out (`G`), and the projection rule
+   on the total prevents the lock-out instead. Critical agent work stays in `G`: taking it out too
+   made 3 of 20 130 % weeks reach 100 %.
 3. **`k` and `U` are fitted together (FR-814, ADR measurements).** Two separate EWMAs are circular:
    `k` fitted from the observed deltas absorbs `U`. *Edit*: "one exponentially weighted fit of
    `ΔW ≈ ΔA/k + u·Δt`", which is the EWMA of the fit's statistics.
@@ -257,13 +262,13 @@ reading that passes NFR-9. Each one is listed here as a proposed edit. SPEC and 
 5. **Whole-percent readings.** This crate reads `n` as `n + 0.5`, assuming the statusline rounds
    down. That removed the last weekly-limit hits at 130 %. *Edit*: add to R10 a check of whether
    `used_percentage` is floored or rounded.
-6. **eta is measured in active time (ADR "eta < reset − 4 h").**
-   - Projecting in wall time counts nights and weekends; projecting in weighted hours mis-scales
-     half-weight blocks.
-   - *Edit*: the burn rate is per active hour (EWMA τ = 24 h) and is projected over the calendar's
-     active hours. With a 6–12 h τ, busy mornings sent 60 % weeks into Red.
-   - With a reset days after the last working hour, "reset − 4 h" means "any exhaustion during the
-     working week". The SPEC should say this was intended, or express the margin in working hours.
+6. **The exhaustion rule is a projected total in pp (ADR-007, decision 2026-10-26).**
+   - The earlier `eta < reset − 4 h` / `eta ≥ reset` pair lost its hysteresis late in the week: with
+     the reset days after the last working hour both mean "runs out before working time ends", and
+     with the governed-share error it flipped Red/Green every 30 min (up to 62 changes a week).
+   - The burn is per weighted hour (EWMA τ = 24 h), projected over the weighted hours left. Per
+     active hour, a sprint's higher burn was extrapolated over the whole week and the sprint ran
+     nothing extra. With a 6–12 h τ, busy mornings sent 60 % weeks into Red.
 7. **Red admits tier ≥ normal (ADR table vs ADR pseudo-code).** The table says "only tier ≥
    normal", while the pseudo-code queues `tier <= normal` in Red. This crate follows the table and
    J8 ("queues low-priority team tasks"), as the configurable `red_min_tier = Normal`. *Edit*: fix

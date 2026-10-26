@@ -125,6 +125,10 @@ pub struct Release {
     pub allocation: AllocationId,
     pub kind: TurnKind,
     pub self_started: bool,
+    /// Fair-queuing service of every allocation when the turn was picked
+    /// (attributed usage / weight + start-time offset; lowest goes first
+    /// within a tier).
+    pub service: BTreeMap<AllocationId, f64>,
 }
 
 /// Answer to a StopFailure `rate_limit` (J9).
@@ -148,10 +152,16 @@ pub struct ForecastSnapshot {
     pub margin: f64,
     /// `ideal(t)` of ADR-007 (the agents' curve).
     pub ideal: f64,
-    /// What W should be now: `ideal + unattributed so far`.
+    /// What W should be now: `ideal + interactive used + unattributed so far`.
     pub plan: f64,
+    /// The governed share `G = W − interactive used − unattributed so far`:
+    /// the agents' own usage, critical work included (title bar "agents").
+    pub governed: f64,
+    /// `G − ideal` (= `W − plan`), pp.
     pub error: f64,
     pub eta: Option<Timestamp>,
+    /// Total W projected at the reset (the Red rule's input), %.
+    pub projected: f64,
     pub state: PressureState,
     pub live_cap: u32,
     pub live_autonomous: u32,
@@ -159,6 +169,7 @@ pub struct ForecastSnapshot {
     pub five_hour: Option<f64>,
     pub five_hour_projected: Option<f64>,
     pub five_hour_guard: bool,
+    /// Weekly burn rate, pp per weighted hour of the curve.
     pub burn_pct_per_hour: f64,
     pub unattributed_so_far: f64,
     pub unattributed_forecast: f64,
@@ -259,6 +270,9 @@ struct Metrics {
     k: f64,
     u_so_far: f64,
     u_forecast: f64,
+    /// Reserve used this week by interactive work, pp.
+    r_used: f64,
+    governed: f64,
     /// `100 − reserve − U_forecast`: what the curve spreads over the week.
     budget: f64,
     reserve_left: f64,
@@ -266,6 +280,7 @@ struct Metrics {
     plan: f64,
     error: f64,
     eta: Option<Timestamp>,
+    w_projected: f64,
     hours_left: f64,
     weight_now: f64,
     f: Option<f64>,
@@ -301,6 +316,8 @@ pub struct Governor {
     app_cost: f64,
     week_cost_start: f64,
     reserve_cost: f64,
+    /// The interactive part of `reserve_cost` (critical work is the agents' own).
+    interactive_cost: f64,
     alloc_cost: BTreeMap<AllocationId, f64>,
     service_offset: BTreeMap<AllocationId, f64>,
     agent_alloc: BTreeMap<AgentId, AllocationId>,
@@ -343,6 +360,7 @@ impl Governor {
             app_cost: 0.0,
             week_cost_start: 0.0,
             reserve_cost: 0.0,
+            interactive_cost: 0.0,
             alloc_cost: BTreeMap::new(),
             service_offset: BTreeMap::new(),
             agent_alloc: BTreeMap::new(),
@@ -399,6 +417,7 @@ impl Governor {
     fn start_week_accounting(&mut self, now: Timestamp) {
         self.week_cost_start = self.app_cost;
         self.reserve_cost = 0.0;
+        self.interactive_cost = 0.0;
         self.alloc_cost.clear();
         self.service_offset.clear();
         self.alerts_done.clear();
@@ -416,10 +435,9 @@ impl Governor {
         });
     }
 
-    /// Prior burn rate: the plan's pace, pp per active hour.
+    /// Prior burn rate: the plan's pace, pp per weighted hour.
     fn budget_slope(&self) -> f64 {
-        let active = self.curve.active_hours_between(self.plan.week_start, self.plan.reset_at).max(1e-9);
-        (100.0 - self.plan.reserve_pct).max(0.0) / active
+        (100.0 - self.plan.reserve_pct).max(0.0) / self.curve.total_hours().max(1e-9)
     }
 
     // ---------------------------------------------------------------- accessors
@@ -528,19 +546,33 @@ impl Governor {
         let u_forecast = u_so_far + u * self.curve.wall_hours_left(now);
         let budget = (100.0 - self.plan.reserve_pct - u_forecast).max(0.0);
         let ideal = self.curve.fraction(now) * budget;
-        // Interactive and critical work is admitted first and counts in W like
-        // everything else: it eats into the reserve (the headroom between the
-        // agents' curve and 100 %), and the pacing squeezes autonomous work.
-        let plan = ideal + u_so_far;
-        let error = w_eff - plan;
+        // The error is on the governed share (ADR-007, decision 2026-10-21):
+        // interactive work draws on the reserve and outside-app usage on its
+        // forecast, so neither pushes agents into Amber/Red by itself. Critical
+        // work also draws on the reserve but is the agents' own, so it stays in
+        // G. The projection below stays on the total W, so a week that would
+        // run out still turns Red.
+        let r_used = self.interactive_cost / k;
+        let governed = (w_eff - r_used - u_so_far).max(0.0);
+        let error = governed - ideal;
+        let plan = w_eff - error;
         let reserve_left = 100.0 - w_eff - (budget - ideal) - (u_forecast - u_so_far);
 
-        // Projected exhaustion at the current burn rate, counted in active hours
-        // (when autonomous work runs), not in weighted hours.
+        // Total W projected at the reset: the burn rate (per weighted hour, so
+        // it follows the curve: half-weight hours, a sprint borrowing from the
+        // later days) over the weighted hours left, plus the unattributed rate
+        // over the other wall hours, where outside usage goes on while the
+        // agents are stopped and the burn is not measured.
+        let hours_left = self.curve.hours_left(now);
+        let off_left =
+            (self.curve.wall_hours_left(now) - self.curve.active_hours_between(now, self.plan.reset_at)).max(0.0);
+        let w_projected = w_eff + self.burn * hours_left + u * off_left;
+
+        // Projected exhaustion at the current burn rate, along the curve. Shown, not a trigger.
         let eta = if w_eff >= 100.0 {
             Some(now)
         } else if self.burn > 1e-9 {
-            self.curve.after_active_hours(now, (100.0 - w_eff) / self.burn).filter(|t| *t < self.plan.reset_at)
+            self.curve.time_at_hours(self.curve.hours_at(now) + (100.0 - w_eff) / self.burn)
         } else {
             None
         };
@@ -560,13 +592,16 @@ impl Governor {
             k,
             u_so_far,
             u_forecast,
+            r_used,
+            governed,
             budget,
             reserve_left,
             ideal,
             plan,
             error,
             eta,
-            hours_left: self.curve.hours_left(now),
+            w_projected,
+            hours_left,
             weight_now: self.curve.weight_at(now),
             f,
             f_projected,
@@ -575,7 +610,7 @@ impl Governor {
     }
 
     fn pressure_inputs(&self, m: &Metrics) -> PressureInputs {
-        PressureInputs { error_pp: m.error, eta: m.eta, reset_at: self.plan.reset_at, hours_left: m.hours_left }
+        PressureInputs { error_pp: m.error, projected_pp: m.w_projected, hours_left: m.hours_left }
     }
 
     /// F now: the latest 5h reading, 0 once its window has reset, `None` if never seen.
@@ -612,8 +647,10 @@ impl Governor {
             margin: m.margin,
             ideal: m.ideal,
             plan: m.plan,
+            governed: m.governed,
             error: m.error,
             eta: m.eta,
+            projected: m.w_projected,
             state: self.sm.state,
             live_cap: self.cap(&m),
             live_autonomous: self.live_autonomous(),
@@ -654,6 +691,9 @@ impl Governor {
             };
             if class != TurnClass::Autonomous {
                 self.reserve_cost += c;
+            }
+            if class == TurnClass::Interactive {
+                self.interactive_cost += c;
             }
             if let Some(a) = alloc {
                 *self.alloc_cost.entry(a).or_insert(0.0) += c;
@@ -1141,7 +1181,7 @@ impl Governor {
                 Outcome::Applied,
                 None,
             );
-            out.push(release_of(&first));
+            out.push(release_of(&first, service));
         }
         out
     }
@@ -1212,9 +1252,9 @@ impl Governor {
             QueueReason::FiveHourGuard => m.f_resets_at,
             QueueReason::DeferredUntilReset | QueueReason::HardCap => Some(self.plan.reset_at),
             QueueReason::RedTier => {
-                // When plan(t) catches up with W − red_exit, or when aging lifts the tier.
+                // When ideal(t) catches up with G − red_exit, or when aging lifts the tier.
                 let budget = m.budget.max(1e-9);
-                let target = m.w_eff - self.policy.thresholds.red_exit - m.u_so_far;
+                let target = m.governed - self.policy.thresholds.red_exit;
                 let by_curve = self
                     .curve
                     .time_at_hours(target / budget * self.curve.total_hours())
@@ -1283,11 +1323,8 @@ impl Governor {
         let inputs = self.pressure_inputs(&m);
         if let Some((from, to)) = self.sm.step(&inputs, &self.policy.thresholds, now) {
             let reason = format!(
-                "W {:.1} % vs plan {:.1} % (e {:+.1} pp){}",
-                m.w_eff,
-                m.plan,
-                m.error,
-                m.eta.map(|t| format!(", eta {t}")).unwrap_or_default()
+                "W {:.1} %, agents {:.1} % vs plan {:.1} % (e {:+.1} pp), {:.1} % projected at the reset",
+                m.w_eff, m.governed, m.ideal, m.error, m.w_projected
             );
             let cap = self.cap(&m);
             self.log(
@@ -1395,7 +1432,7 @@ impl Governor {
     fn update_burn(&mut self, now: Timestamp) {
         let m = self.metrics(now);
         if let Some(last) = self.last {
-            let dh = self.curve.active_hours_between(last.ts, now);
+            let dh = self.curve.hours_at(now) - self.curve.hours_at(last.ts);
             if dh > 1e-9 {
                 let r = (m.w_central - last.w) / dh;
                 self.burn = (self.burn + ewma_alpha(dh, self.policy.burn_tau_h) * (r - self.burn)).max(0.0);
@@ -1590,6 +1627,7 @@ impl Governor {
     pub fn run_now(&mut self, entry: EntryId, now: Timestamp) -> Option<Release> {
         let idx = self.queue.iter().position(|e| e.id == entry)?;
         let e = self.queue.remove(idx);
+        let service = self.service();
         // Counted like critical work: past the cap, drawing on the reserve.
         self.start_live(&e.agent, &e.allocation, e.tier, e.ceiling, TurnClass::Critical, now);
         self.log(
@@ -1602,7 +1640,7 @@ impl Governor {
             None,
         );
         self.refresh_queue(now);
-        Some(release_of(&e))
+        Some(release_of(&e, service))
     }
 
     /// Drop a queued entry (task cancelled).
@@ -1668,13 +1706,14 @@ fn plan_curve(plan: &WeeklyPlan) -> Result<(TimeZone, Curve), GovernorError> {
     Ok((tz, curve))
 }
 
-fn release_of(e: &QueueEntry) -> Release {
+fn release_of(e: &QueueEntry, service: BTreeMap<AllocationId, f64>) -> Release {
     Release {
         entry: e.id,
         agent: e.agent.clone(),
         allocation: e.allocation.clone(),
         kind: e.kind,
         self_started: e.self_started,
+        service,
     }
 }
 

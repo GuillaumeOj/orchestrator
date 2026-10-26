@@ -54,8 +54,10 @@ pub struct Thresholds {
     pub amber_exit: f64,
     pub red_enter: f64,
     pub red_exit: f64,
-    /// Red is entered when the projected exhaustion is earlier than `reset − red_eta_margin_h`.
-    pub red_eta_margin_h: f64,
+    /// Red is entered when W projected at the reset exceeds `100 − red_projection_enter_pp`.
+    pub red_projection_enter_pp: f64,
+    /// Red is left only once W projected at the reset is under `100 − red_projection_exit_pp`.
+    pub red_projection_exit_pp: f64,
     pub catchup_enter: f64,
     pub catchup_exit: f64,
     /// Catch-up needs fewer than this many weighted hours left.
@@ -70,7 +72,8 @@ impl Default for Thresholds {
             amber_exit: 1.0,
             red_enter: 8.0,
             red_exit: 5.0,
-            red_eta_margin_h: 4.0,
+            red_projection_enter_pp: 2.0,
+            red_projection_exit_pp: 4.0,
             catchup_enter: -10.0,
             catchup_exit: -5.0,
             catchup_hours_left: 24.0,
@@ -144,7 +147,7 @@ pub struct PacingPolicy {
     pub reading_offset_pct: f64,
     /// An observed value older than this is stale and W becomes estimated.
     pub fresh_minutes: i64,
-    /// Tau of the weekly burn-rate EWMA, in active hours (when autonomous work runs).
+    /// Tau of the weekly burn-rate EWMA, in weighted hours of the curve.
     pub burn_tau_h: f64,
     /// Safety margin of the estimator, pp, at zero and full confidence.
     pub margin_max_pp: f64,

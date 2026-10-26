@@ -29,11 +29,10 @@ impl std::fmt::Display for PressureState {
 /// What the state machine looks at.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PressureInputs {
-    /// `e = W − plan(t)`, pp.
+    /// `e = G − ideal(t)`, pp.
     pub error_pp: f64,
-    /// Projected time W reaches 100 %, `None` if not before the reset.
-    pub eta: Option<Timestamp>,
-    pub reset_at: Timestamp,
+    /// Total W projected at the reset, %.
+    pub projected_pp: f64,
     /// Weighted hours left in the week.
     pub hours_left: f64,
 }
@@ -57,9 +56,8 @@ impl StateMachine {
 
     /// The state the inputs call for, ignoring dwell.
     pub fn target(&self, i: &PressureInputs, t: &Thresholds) -> PressureState {
-        let red_line = add_hours(i.reset_at, -t.red_eta_margin_h);
-        let red_enter = i.error_pp > t.red_enter || i.eta.is_some_and(|eta| eta < red_line);
-        let red_exit_ok = i.error_pp < t.red_exit && i.eta.is_none_or(|eta| eta >= i.reset_at);
+        let red_enter = i.error_pp > t.red_enter || i.projected_pp > 100.0 - t.red_projection_enter_pp;
+        let red_exit_ok = i.error_pp < t.red_exit && i.projected_pp < 100.0 - t.red_projection_exit_pp;
         let catch_enter = i.error_pp < t.catchup_enter && i.hours_left < t.catchup_hours_left;
         let fresh = || {
             if catch_enter {
@@ -116,7 +114,7 @@ mod tests {
     }
 
     fn inputs(e: f64) -> PressureInputs {
-        PressureInputs { error_pp: e, eta: None, reset_at: ts(100_000), hours_left: 40.0 }
+        PressureInputs { error_pp: e, projected_pp: 90.0, hours_left: 40.0 }
     }
 
     fn at(state: PressureState) -> StateMachine {
@@ -143,19 +141,21 @@ mod tests {
     }
 
     #[test]
-    fn red_enters_on_error_or_eta_and_needs_both_to_exit() {
+    fn red_enters_on_error_or_projection_and_needs_both_to_exit() {
         let t = Thresholds::default();
         let sm = at(PressureState::Green);
         assert_eq!(sm.target(&inputs(8.5), &t), PressureState::Red);
         let mut i = inputs(0.0);
-        i.eta = Some(ts(100_000 - 300)); // 5 h before reset
+        i.projected_pp = 98.5; // over 100 − 2
         assert_eq!(sm.target(&i, &t), PressureState::Red);
-        i.eta = Some(ts(100_000 - 200)); // 3h20 before reset: not < reset − 4h
+        i.projected_pp = 97.0;
         assert_eq!(sm.target(&i, &t), PressureState::Green);
 
         let red = at(PressureState::Red);
         assert_eq!(red.target(&inputs(6.0), &t), PressureState::Red);
-        assert_eq!(red.target(&i, &t), PressureState::Red, "eta before reset keeps Red");
+        assert_eq!(red.target(&i, &t), PressureState::Red, "97 % projected is not under 100 − 4: stays Red");
+        i.projected_pp = 95.5;
+        assert_eq!(red.target(&i, &t), PressureState::Green);
         assert_eq!(red.target(&inputs(4.0), &t), PressureState::Amber);
         assert_eq!(red.target(&inputs(2.0), &t), PressureState::Green);
     }

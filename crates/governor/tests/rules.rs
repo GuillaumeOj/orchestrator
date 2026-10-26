@@ -60,11 +60,69 @@ fn caps_follow_the_state() {
 #[test]
 fn amber_halves_the_cap() {
     let mut g = governor();
-    // Plan at Mon 12:00 is 3 h / 50 h × 90 ≈ 5.4 %; read 9 % → e ≈ +4.1.
-    g.ingest(&weekly(at(180), "obs", 90.0, 9.0));
+    // Plan at Mon 12:00 is 3 h / 50 h × 90 ≈ 5.4 %; an agent's turn reads
+    // 9 % → e ≈ +4.1.
+    g.request_turn(task("A-1", "A", Tier::Normal), at(0));
+    g.ingest(&weekly(at(180), "A-1", 90.0, 9.0));
     g.tick(at(180));
     assert_eq!(g.state(), PressureState::Amber);
     assert_eq!(g.snapshot(at(180)).live_cap, 2);
+}
+
+/// Monday 09:00 → `until`: agent A-1 follows the curve while the user's own
+/// pane adds `interactive_pp_per_h` from `from` to `to` (minutes). Samples
+/// every 15 min, observed (k = 10, nothing unattributed). Amber/Red may only
+/// come from the projection, never from the error.
+fn interactive_week(interactive_pp_per_h: f64, from: i64, to: i64, until: i64) -> Governor {
+    let mut g = governor();
+    g.request_turn(task("A-1", "A", Tier::Normal), at(0));
+    let (mut w, mut agents) = (0.0, 0.0);
+    for m in (15..=until).step_by(15) {
+        let ideal = g.snapshot(at(m)).ideal;
+        let agent_pp = (ideal - agents).max(0.0);
+        agents += agent_pp;
+        w += agent_pp;
+        g.ingest(&weekly(at(m), "A-1", agent_pp * 10.0, w));
+        if m > from && m <= to {
+            let pp = interactive_pp_per_h / 4.0;
+            w += pp;
+            g.ingest(&weekly(at(m), "user-pane", pp * 10.0, w));
+        }
+        g.tick(at(m));
+        let s = g.snapshot(at(m));
+        assert!(s.error.abs() < 0.5, "minute {m}: agents are on plan: {s:?}");
+        if matches!(g.state(), PressureState::Amber | PressureState::Red) {
+            assert!(s.projected > 96.0, "minute {m}: {:?} from interactive use alone: {s:?}", g.state());
+        }
+    }
+    g
+}
+
+#[test]
+fn interactive_use_alone_never_enters_amber_or_red() {
+    // 4 pp of the user's own work on Thursday morning: W runs 4 pp over the
+    // curve, which used to mean Amber. It fits in the reserve, so agents stay Green.
+    let thu_9 = hours(72.0);
+    let g = interactive_week(2.0, thu_9, thu_9 + hours(2.0), thu_9 + hours(4.0));
+    let s = g.snapshot(at(thu_9 + hours(4.0)));
+    assert!((s.used - s.ideal - 4.0).abs() < 1.0, "{s:?}");
+    assert!((s.interactive_used - 4.0).abs() < 1e-6, "{s:?}");
+    assert!((s.governed - s.ideal).abs() < 0.5, "{s:?}");
+    assert!((s.used - s.plan - s.error).abs() < 1e-9);
+    assert!(s.projected < 98.0, "{s:?}");
+    assert_eq!(g.state(), PressureState::Green);
+}
+
+#[test]
+fn heavy_interactive_use_still_turns_red_through_the_projection() {
+    // 3 pp/h of the user's own work all of Monday: the agents are on plan,
+    // but at this burn the week runs out before the reset.
+    let end = hours(10.0);
+    let g = interactive_week(3.0, 0, end, end);
+    let s = g.snapshot(at(end));
+    assert!(s.projected > 100.0, "{s:?}");
+    assert!(s.eta.is_some_and(|t| t < reset()), "{s:?}");
+    assert_eq!(g.state(), PressureState::Red, "{s:?}");
 }
 
 #[test]
