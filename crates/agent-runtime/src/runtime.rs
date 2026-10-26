@@ -258,7 +258,7 @@ impl Runtime {
         let db = orch_store::Store::open(&cfg.paths.db_file())?;
         let store = Store::open(db.clone(), Some(&cfg.paths.legacy_state_file()))?;
         let now = Timestamp::now();
-        let gov = restore_governor(&db, &store, &cfg, now)?;
+        let gov = restore_governor(&db, &store, &cfg, cfg.shadow, now)?;
         let home = crate::paths::home_dir();
         let shell = std::env::var_os("SHELL").map(PathBuf::from).unwrap_or_else(|| "/bin/zsh".into());
         // Independent subprocesses (the login shell can take seconds): run them together.
@@ -1076,6 +1076,25 @@ impl Runtime {
         self.db.save_plan(&plan, orch_store::PlanStatus::Active)
     }
 
+    /// A plan edited during its week (the first plan, J0; shadow mode on or
+    /// off, FR-812): stored, then the Governor is rebuilt from it and this
+    /// week's samples are replayed, so the week's accounting is kept (unlike
+    /// `set_plan`, which starts a new week). Refused while turns are queued:
+    /// the rebuilt Governor starts with an empty queue.
+    pub fn replan(&self, plan: WeeklyPlan) -> Result<()> {
+        if !self.gov().queue().is_empty() {
+            bail!("turns are queued: run or resume them before changing the plan");
+        }
+        let now = Timestamp::now();
+        if plan.reset_at <= now || plan.week_start > now {
+            bail!("the plan does not cover now");
+        }
+        self.db.save_plan(&plan, orch_store::PlanStatus::Active)?;
+        let gov = restore_governor(&self.db, &self.store, &self.cfg, plan.shadow_mode, now)?;
+        *self.gov() = gov;
+        Ok(())
+    }
+
     /// The user is looking at or typing in this agent's pane (resets the idle timer).
     pub fn note_user_activity(&self, id: &str) {
         if let Some(l) = self.live_get(id) {
@@ -1512,15 +1531,15 @@ fn project_for_dir(projects: &[orch_store::Project], name: &str) -> Option<Strin
 /// The Governor at start: the active plan when its week is still running
 /// (else the default week), the stored policy (live cap from the config), and
 /// this week's statusline samples replayed with their cost class (NFR-2).
-fn restore_governor(db: &orch_store::Store, store: &Store, cfg: &RuntimeConfig, now: Timestamp) -> Result<Governor> {
+fn restore_governor(db: &orch_store::Store, store: &Store, cfg: &RuntimeConfig, shadow: bool, now: Timestamp) -> Result<Governor> {
     let mut policy = db.policy(POLICY_ID)?.unwrap_or_default();
     policy.live_caps = governor::LiveCaps::from_base(cfg.base_cap);
     db.save_policy(POLICY_ID, &policy)?;
     let mut plan = match db.active_plan()? {
         Some(p) if p.reset_at > now && p.week_start <= now => p,
-        _ => default_plan(now, cfg.shadow),
+        _ => default_plan(now, shadow),
     };
-    plan.shadow_mode = cfg.shadow;
+    plan.shadow_mode = shadow;
     db.save_plan(&plan, orch_store::PlanStatus::Active)?;
     let start = plan.week_start;
     let mut gov = Governor::new(plan, policy, start.min(now)).map_err(|e| anyhow!("{e:?}"))?;

@@ -13,6 +13,7 @@
   const pp = $derived(sessionPp(a, app.data?.usage?.snapshot));
   const cache = $derived(cacheState(a, clock));
   const home = $derived(app.data?.core?.user_home ?? '');
+  const tokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} M` : n >= 1e3 ? `${Math.round(n / 1e3)} k` : String(n));
   const short = (path) => (home && String(path).startsWith(home) ? `~${String(path).slice(home.length)}` : path);
 </script>
 
@@ -27,6 +28,7 @@
       <dt>Model</dt><dd>{a.model ?? 'default'}{a.effort ? ` · effort ${a.effort}` : ''}</dd>
       <dt>Context</dt><dd>{pct(a.context_pct)}{cache ? ` · cache ${cache}` : ''}</dd>
       <dt>Usage</dt><dd>{pp == null ? '—' : `${pp.toFixed(1)} pp this session`} · {a.turns ?? 0} turns</dd>
+      {#if a.otel_week}<dt>This week</dt><dd>{tokens(a.otel_week.tokens_in + a.otel_week.cache_read + a.otel_week.cache_write)} in · {tokens(a.otel_week.tokens_out)} out · ≈ ${a.otel_week.cost.toFixed(2)}</dd>{/if}
       <dt>Governor</dt><dd>{a.queue_entry ? `Queued · ${queueReason(a.queue_entry)}` : a.live ? 'Admitted' : '—'}</dd>
       <dt>Memory</dt><dd>{a.memory_mb ? mb(a.memory_mb) : '—'}</dd>
       <dt>Session</dt><dd class="wrap mono">{a.session_id}</dd>

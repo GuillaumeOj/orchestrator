@@ -1,24 +1,36 @@
-//! Backend services the app needs but that are built elsewhere (the SQLite
-//! store, the project and git registry, the OTLP receiver). The app codes
-//! against these small traits; the stubs here keep it usable until the real
-//! crates land, and are replaced by implementing the same traits.
+//! The app's view of the core services: projects from the store's registry
+//! (orch-git registers them, FR-101), git state from `orch_git::status`
+//! (FR-102), and UI settings in the store's `kv` table (§4.12).
 
-use crate::LockOk;
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Mutex;
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// A registered project (FR-101). Features come later (P2).
+/// A registered project as the shell shows it (FR-101). Features come later (P2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
     pub name: String,
+    /// The main checkout.
     pub path: PathBuf,
+    pub default_branch: String,
+    pub last_fetch_at_ms: Option<u64>,
+    pub last_fetch_error: Option<String>,
+}
+
+impl From<orch_store::Project> for Project {
+    fn from(p: orch_store::Project) -> Project {
+        Project {
+            id: p.id,
+            name: p.name,
+            path: p.path,
+            default_branch: p.default_branch,
+            last_fetch_at_ms: p.last_fetch_at_ms,
+            last_fetch_error: p.last_fetch_error,
+        }
+    }
 }
 
 /// Git state shown in the sidebar and the status bar (FR-102).
@@ -27,152 +39,77 @@ pub struct GitSummary {
     pub branch: Option<String>,
     pub ahead: u32,
     pub behind: u32,
-    /// Changed tracked files plus untracked files.
+    /// Changed tracked files plus untracked and conflicted files.
     pub dirty: u32,
+    pub staged: u32,
+    pub untracked: u32,
+    pub conflicted: u32,
+    pub stash: u32,
+    pub upstream: Option<String>,
+    pub last_commit: Option<String>,
+    pub last_commit_s: Option<i64>,
 }
 
-/// The project and git registry (§4.1). Real implementation: the parallel
-/// `projects`/git crate with its SQLite rows and periodic fetches.
-pub trait ProjectRegistry: Send + Sync {
-    fn list(&self) -> Vec<Project>;
-    fn add(&self, path: &Path) -> Result<Project>;
-    fn remove(&self, id: &str) -> Result<()>;
-    fn git_summary(&self, path: &Path) -> GitSummary;
-}
-
-/// Small key-value settings store: saved layouts per project (§9.1 principle 4),
-/// UI preferences. Real implementation: a table in the SQLite store.
-pub trait SettingsStore: Send + Sync {
-    fn get(&self, key: &str) -> Option<Value>;
-    fn set(&self, key: &str, value: Value) -> Result<()>;
-}
-
-/// Stub registry: projects live in memory, seeded at start; git state comes
-/// from one `git status --porcelain=v2 --branch` per call (no fetch, no PRs).
-#[derive(Default)]
-pub struct InMemoryProjects {
-    projects: Mutex<Vec<Project>>,
-}
-
-impl InMemoryProjects {
-    pub fn seeded(paths: impl IntoIterator<Item = PathBuf>) -> Self {
-        let me = Self::default();
-        for p in paths {
-            let _ = me.add(&p);
-        }
-        me
-    }
-}
-
-fn slug(name: &str) -> String {
-    let s: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
-    s.trim_matches('-').to_string()
-}
-
-impl ProjectRegistry for InMemoryProjects {
-    fn list(&self) -> Vec<Project> {
-        self.projects.lock_ok().clone()
-    }
-
-    fn add(&self, path: &Path) -> Result<Project> {
-        let path = path.canonicalize().with_context(|| format!("{} does not exist", path.display()))?;
-        if !path.is_dir() {
-            bail!("{} is not a folder", path.display());
-        }
-        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "project".into());
-        let mut list = self.projects.lock_ok();
-        if let Some(p) = list.iter().find(|p| p.path == path) {
-            return Ok(p.clone());
-        }
-        let mut id = slug(&name);
-        if id.is_empty() {
-            id = "project".into();
-        }
-        let base = id.clone();
-        let mut n = 2;
-        while list.iter().any(|p| p.id == id) {
-            id = format!("{base}-{n}");
-            n += 1;
-        }
-        let p = Project { id, name, path };
-        list.push(p.clone());
-        Ok(p)
-    }
-
-    fn remove(&self, id: &str) -> Result<()> {
-        let mut list = self.projects.lock_ok();
-        let before = list.len();
-        list.retain(|p| p.id != id);
-        if list.len() == before {
-            bail!("no project {id}");
-        }
-        Ok(())
-    }
-
-    fn git_summary(&self, path: &Path) -> GitSummary {
-        let out = Command::new("git")
-            .args(["status", "--porcelain=v2", "--branch", "--untracked-files=normal"])
-            .current_dir(path)
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .output();
-        match out {
-            Ok(o) if o.status.success() => parse_porcelain_v2(&String::from_utf8_lossy(&o.stdout)),
-            _ => GitSummary::default(),
+impl From<orch_git::status::RepoStatus> for GitSummary {
+    fn from(s: orch_git::status::RepoStatus) -> GitSummary {
+        GitSummary {
+            dirty: s.dirty(),
+            branch: s.branch,
+            ahead: s.ahead.unwrap_or(0),
+            behind: s.behind.unwrap_or(0),
+            staged: s.staged,
+            untracked: s.untracked,
+            conflicted: s.conflicted,
+            stash: s.stash,
+            upstream: s.upstream,
+            last_commit_s: s.last_commit.as_ref().map(|c| c.time_s),
+            last_commit: s.last_commit.map(|c| c.summary),
         }
     }
 }
 
-/// Parses `git status --porcelain=v2 --branch`.
-pub fn parse_porcelain_v2(text: &str) -> GitSummary {
-    let mut g = GitSummary::default();
-    for line in text.lines() {
-        if let Some(head) = line.strip_prefix("# branch.head ") {
-            if head != "(detached)" {
-                g.branch = Some(head.to_string());
+/// One `git status` (+ last commit); an unreadable folder gives the default.
+pub fn git_summary(path: &Path) -> GitSummary {
+    orch_git::status::status(path).map(GitSummary::from).unwrap_or_default()
+}
+
+/// UI settings (saved layout, theme, the project each session was started
+/// from, first-run progress) in the store's `kv` table, under `ui.`.
+#[derive(Clone)]
+pub struct Settings {
+    db: orch_store::Store,
+}
+
+const PREFIX: &str = "ui.";
+
+impl Settings {
+    pub fn new(db: orch_store::Store) -> Settings {
+        Settings { db }
+    }
+
+    pub fn get(&self, key: &str) -> Option<Value> {
+        self.db.setting(&format!("{PREFIX}{key}")).ok().flatten()
+    }
+
+    pub fn set(&self, key: &str, value: Value) -> Result<()> {
+        self.db.set_setting(&format!("{PREFIX}{key}"), &value)
+    }
+
+    /// Imports the first version's `<home>/ui/settings.json` once: keys the
+    /// store already has win; the file is renamed `settings.json.migrated`.
+    pub fn migrate_json(&self, path: &Path) -> Result<usize> {
+        let Ok(bytes) = std::fs::read(path) else { return Ok(0) };
+        let map: serde_json::Map<String, Value> = serde_json::from_slice(&bytes)?;
+        let mut n = 0;
+        for (k, v) in map {
+            if self.get(&k).is_none() {
+                self.set(&k, v)?;
+                n += 1;
             }
-        } else if let Some(ab) = line.strip_prefix("# branch.ab ") {
-            for part in ab.split_whitespace() {
-                if let Some(n) = part.strip_prefix('+') {
-                    g.ahead = n.parse().unwrap_or(0);
-                } else if let Some(n) = part.strip_prefix('-') {
-                    g.behind = n.parse().unwrap_or(0);
-                }
-            }
-        } else if line.starts_with(['1', '2', 'u', '?']) {
-            g.dirty += 1;
         }
-    }
-    g
-}
-
-/// Stub settings store: a JSON file, written whole on every change.
-pub struct JsonFileSettings {
-    path: PathBuf,
-    data: Mutex<BTreeMap<String, Value>>,
-}
-
-impl JsonFileSettings {
-    pub fn open(path: PathBuf) -> Self {
-        let data = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        JsonFileSettings { path, data: Mutex::new(data) }
-    }
-}
-
-impl SettingsStore for JsonFileSettings {
-    fn get(&self, key: &str) -> Option<Value> {
-        self.data.lock_ok().get(key).cloned()
-    }
-
-    fn set(&self, key: &str, value: Value) -> Result<()> {
-        let mut d = self.data.lock_ok();
-        d.insert(key.to_string(), value);
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = self.path.with_extension("tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&*d)?)?;
-        std::fs::rename(&tmp, &self.path)?;
-        Ok(())
+        self.db.flush()?;
+        std::fs::rename(path, path.with_extension("json.migrated"))?;
+        Ok(n)
     }
 }
 
@@ -181,38 +118,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn porcelain_v2() {
-        let g = parse_porcelain_v2(
-            "# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +2 -1\n\
-             1 .M N... 100644 100644 100644 a b src/x.rs\n? new.txt\n",
-        );
-        assert_eq!(g, GitSummary { branch: Some("main".into()), ahead: 2, behind: 1, dirty: 2 });
-        assert_eq!(parse_porcelain_v2("# branch.head (detached)\n").branch, None);
+    fn git_summary_of_a_real_repo() {
+        let (d, repo) = orch_git::fixtures::scratch_repo();
+        std::fs::write(repo.join("new.txt"), "x").unwrap();
+        let g = git_summary(&repo);
+        assert_eq!(g.branch.as_deref(), Some("main"));
+        assert_eq!((g.dirty, g.untracked), (1, 1));
+        assert!(g.last_commit.is_some());
+        assert_eq!(git_summary(&d.path().join("missing")), GitSummary::default());
     }
 
     #[test]
-    fn projects_dedupe_and_unique_ids() {
+    fn settings_in_the_store_and_the_json_migration() {
         let d = tempfile::tempdir().unwrap();
-        let a = d.path().join("Shop API");
-        let b = d.path().join("x").join("shop-api");
-        std::fs::create_dir_all(&a).unwrap();
-        std::fs::create_dir_all(&b).unwrap();
-        let reg = InMemoryProjects::default();
-        let pa = reg.add(&a).unwrap();
-        assert_eq!(pa.id, "shop-api");
-        assert_eq!(reg.add(&a).unwrap(), pa, "same folder twice");
-        assert_eq!(reg.add(&b).unwrap().id, "shop-api-2");
-        assert!(reg.add(&d.path().join("missing")).is_err());
-        reg.remove("shop-api").unwrap();
-        assert_eq!(reg.list().len(), 1);
-    }
-
-    #[test]
-    fn settings_round_trip() {
-        let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("ui/settings.json");
-        let s = JsonFileSettings::open(p.clone());
-        s.set("layout:shop", serde_json::json!({"a": 1})).unwrap();
-        assert_eq!(JsonFileSettings::open(p).get("layout:shop"), Some(serde_json::json!({"a": 1})));
+        let db = orch_store::Store::open(&d.path().join("orch.db")).unwrap();
+        let s = Settings::new(db.clone());
+        s.set("layout", serde_json::json!({"a": 1})).unwrap();
+        let json = d.path().join("ui/settings.json");
+        std::fs::create_dir_all(json.parent().unwrap()).unwrap();
+        std::fs::write(&json, r#"{"layout": {"a": 0}, "agent-project:a1": "shop"}"#).unwrap();
+        assert_eq!(s.migrate_json(&json).unwrap(), 1, "the store's own layout wins");
+        assert!(!json.exists() && json.with_extension("json.migrated").exists());
+        assert_eq!(s.migrate_json(&json).unwrap(), 0, "once");
+        drop(s);
+        let s = Settings::new(db);
+        assert_eq!(s.get("layout"), Some(serde_json::json!({"a": 1})));
+        assert_eq!(s.get("agent-project:a1"), Some(serde_json::json!("shop")));
+        assert_eq!(s.get("missing"), None);
     }
 }

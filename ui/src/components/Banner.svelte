@@ -11,6 +11,8 @@
     const out = [];
     if (!d) return out;
     if (d.core?.error) out.push({ id: 'core', color: 'var(--color-status-error)', title: 'No agent core.', text: d.core.error });
+    const c = d.setup?.claude;
+    if (c?.problem) out.push({ id: 'claude', color: 'var(--color-status-error)', title: 'Read-only:', text: c.problem, setup: true });
     const u = d.usage;
     if (u?.weekly?.used_pct >= 100)
       out.push({ id: 'week', color: 'var(--color-status-blocked-by-limit)', title: 'Weekly limit reached.', text: `All agents are blocked by limit; autonomous work resumes in priority order at the reset, ${when(u.weekly.resets_at * 1000)}. Nothing is lost.`, planner: true });
@@ -30,6 +32,7 @@
     <b>{top.title}</b>
     <span class="text">{top.text}</span>
     {#if top.planner}<button class="btn" onclick={() => openSingleton('planner')}>Week planner <Kbd keys="⌘+; g" /></button>{/if}
+    {#if top.setup}<button class="btn" onclick={() => openSingleton('setup')}>Set up</button>{/if}
     {#if top.pause}<button class="btn ghost" onclick={() => governor('pause_all')}>Pause all</button>{/if}
     {#if banners.length > 1}<span class="muted">+{banners.length - 1}</span>{/if}
     <button class="x" aria-label="Dismiss" onclick={() => (dismissed[top.id] = true)}>×</button>

@@ -2,7 +2,7 @@
   // Sidebar (§9.2): Projects → Features → agents; solo sessions under their
   // project. The only navigation tree. Features come with teams (P2): agents are
   // listed as solo sessions until then.
-  import { app, agents, projects, openAgent } from '../lib/app.svelte.js';
+  import { app, agents, projects, openAgent, openProject } from '../lib/app.svelte.js';
   import { displayState } from '../lib/status.js';
   import { pct } from '../lib/format.js';
   import AgentChip from './AgentChip.svelte';
@@ -26,17 +26,18 @@
 </script>
 
 <nav class="side" aria-label="Projects">
-  <div class="head"><span class="muted">Projects</span><Kbd keys="⌘+B" /></div>
+  <div class="head"><span class="muted">Projects</span><span class="grow"></span><button class="add" title="Add project (⌘N)" aria-label="Add project" onclick={() => (app.overlay = { kind: 'add-project' })}>+</button><Kbd keys="⌘+B" /></div>
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <ul role="tree" tabindex="-1" onkeydown={onKey}>
     {#each byProject as { p, list } (p.id)}
       <li role="treeitem" aria-selected="false" aria-expanded={!collapsed[p.id]}>
-        <button data-row class="row project" onclick={() => (collapsed[p.id] = !collapsed[p.id])}>
-          <span class="caret" aria-hidden="true">{collapsed[p.id] ? '▸' : '▾'}</span>
+        <button data-row class="row project" class:selected={app.panes[app.focused]?.type === 'project' && app.panes[app.focused]?.projectId === p.id} onclick={() => openProject(p.id)} title={p.path}>
+          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+          <span class="caret" aria-hidden="true" onclick={(e) => (e.stopPropagation(), (collapsed[p.id] = !collapsed[p.id]))}>{collapsed[p.id] ? '▸' : '▾'}</span>
           <span class="name">{p.name}</span>
           <span class="meta">
             {#if p.git?.branch}<span class="icon" aria-hidden="true">{'\u{E725}'}</span> {p.git.branch}{/if}
-            {#if p.git?.ahead}↑{p.git.ahead}{/if}{#if p.git?.dirty} ±{p.git.dirty}{/if}
+            {#if p.git?.ahead}↑{p.git.ahead}{/if}{#if p.git?.behind}↓{p.git.behind}{/if}{#if p.git?.dirty} ±{p.git.dirty}{/if}
           </span>
         </button>
         {#if !collapsed[p.id]}
@@ -101,6 +102,12 @@
   }
   .row.agent {
     padding-left: var(--space-xl);
+  }
+  .add {
+    border: 0;
+    background: none;
+    color: var(--color-text-secondary);
+    padding: 0 var(--space-sm);
   }
   .caret {
     width: var(--size-icon);

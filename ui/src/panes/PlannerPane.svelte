@@ -2,7 +2,10 @@
   // Week planner (§9.3, FR-802–804, FR-809, Penpot 04 Week planner): read-only
   // forecast from the Governor. Ideal vs actual vs forecast for the week and the
   // 5h window, allocations, next-action preview and the governor log with undo.
-  // Keys: S sprint mode, P pause all, u undo the selected log entry, a/r answer the ask.
+  // The actual line and the log cover the whole plan week across restarts.
+  // Shadow mode (FR-812) for the first week, then the user may enforce.
+  // Keys: S sprint mode, P pause all, u undo the selected log entry, a/r answer
+  // the ask, e edit the plan.
   import { onMount } from 'svelte';
   import { app, governor, confirm, toast } from '../lib/app.svelte.js';
   import { invoke, errText } from '../lib/ipc.js';
@@ -47,6 +50,26 @@
   const days = $derived(v ? Array.from({ length: 7 }, (_, i) => v.week_start_ms + i * 86400000) : []);
   const emptyAt = $derived(s?.eta ? Date.parse(s.eta) : null);
   const reserveTop = $derived(v ? 100 - v.reserve_pct - (s?.unattributed_forecast ?? 0) : 90);
+  const WEEK_MS = 7 * 86400000;
+  // Day n of the shadow week (FR-812), counted from the first start.
+  const shadowDay = $derived(v?.first_run_ms ? Math.floor((v.now_ms - v.first_run_ms) / 86400000) + 1 : null);
+  const shadowWeekDone = $derived(v?.first_run_ms != null && v.now_ms - v.first_run_ms >= WEEK_MS);
+
+  function setEnforce(on) {
+    const text = on ? 'Enforce the Governor?' : 'Back to shadow mode?';
+    const detail = on
+      ? 'From now on it holds autonomous turns over the live cap, queues work and applies its asks (FR-805–811). Your own typing is never blocked. Undo: back to shadow mode from here.'
+      : 'It keeps logging what it would do, and holds nothing.';
+    confirm(text, detail, async () => {
+      try {
+        await invoke('governor_enforce', { enforce: on });
+        toast(on ? 'Governor enforced' : 'Shadow mode on');
+        load();
+      } catch (e) {
+        toast(errText(e), { kind: 'error' });
+      }
+    }, on ? 'Enforce' : 'Shadow mode');
+  }
 
   function weekNo(ms) {
     const d = new Date(ms);
@@ -56,14 +79,16 @@
     return Math.ceil(((t - Date.UTC(t.getUTCFullYear(), 0, 1)) / 86400000 + 1) / 7);
   }
 
-  function logIcon(a) {
-    const k = a.action.kind;
-    if (k === 'state_change') return PRESSURE[a.action.to]?.icon ?? '●';
+  // A log entry is { key, action: GovernorAction, … }; the kind is GovernorAction.action.
+  function logIcon(entry) {
+    const a = entry.action.action;
+    const k = a.kind;
+    if (k === 'state_change') return PRESSURE[a.to]?.icon ?? '●';
     return { five_hour_guard: '⧗', pause_all: '‖', resume_all: '▶', limit_reached: '⊘', alert: '!', defer_after_reset: '▲' }[k] ?? '·';
   }
 
-  function describe(a) {
-    const k = a.action;
+  function describe(entry) {
+    const k = entry.action.action;
     switch (k.kind) {
       case 'state_change':
         return `${k.from} → ${k.to}`;
@@ -118,7 +143,7 @@
     if (k === 'k' || k === 'ArrowUp') return act(() => (logSel = Math.max(0, logSel - 1)));
     if (k === 'a' && v?.pending_ask) return act(() => answerAsk(true));
     if (k === 'r' && v?.pending_ask) return act(() => answerAsk(false));
-    if (k === 'e') return act(() => toast('Editing the plan comes with the plan store (read-only forecast for now)'));
+    if (k === 'e') return act(() => (app.overlay = { kind: 'plan' }));
   }
 </script>
 
@@ -135,10 +160,16 @@
       <PressurePill state={s.state} />
       <span class="grow"></span>
       <span class="muted">{s.provenance === 'observed' ? '● observed' : '○ estimated (low confidence)'}</span>
-      <span class="toggle" class:on={v.shadow} title="FR-812: decisions are logged, not enforced">{v.shadow ? 'Shadow mode on' : 'Shadow mode off'}</span>
+      {#if v.shadow}
+        <span class="toggle on" title="FR-812: decisions are logged, not enforced">Shadow mode{shadowDay && !shadowWeekDone ? ` · day ${shadowDay} of 7` : ''}</span>
+        {#if shadowWeekDone}<button class="btn" onclick={() => setEnforce(true)}>Shadow week done · Enforce…</button>{/if}
+      {:else}
+        <span class="toggle" title="The Governor holds and queues work">Enforced</span>
+        <button class="btn ghost" onclick={() => setEnforce(false)}>Shadow mode…</button>
+      {/if}
       <button class="btn" onclick={sprint}>Sprint mode <Kbd keys="S" /></button>
       <button class="btn danger" onclick={() => governor('pause_all').then(load)}>Pause all <Kbd keys="P" /></button>
-      <button class="btn ghost" disabled title="Read-only forecast: plan editing comes with the plan store">Edit plan <Kbd keys="e" /></button>
+      <button class="btn ghost" onclick={() => (app.overlay = { kind: 'plan' })}>{v.plan_set ? 'Edit plan' : 'Set this week’s plan'} <Kbd keys="e" /></button>
     </div>
 
     <div class="grid">
@@ -231,10 +262,10 @@
       <section class="card log">
         <div class="ch"><b>Governor log</b><span class="muted">reason + undo for every action</span></div>
         <ul>
-          {#each v.log as entry, i (entry.action.id)}
+          {#each v.log as entry, i (entry.key)}
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
             <li class:sel={i === logSel} onclick={() => (logSel = i)}>
-              <span class="muted when">{clock(Date.parse(entry.action.ts))}</span>
+              <span class="muted when" title={entry.past ? 'an earlier start of the app' : ''}>{entry.past ? dayTime(Date.parse(entry.action.ts)) : clock(Date.parse(entry.action.ts))}</span>
               <span class="ic" style:color={p.color}>{logIcon(entry)}</span>
               <span class="what"><b>{describe(entry)}</b> · {entry.action.reason}{entry.action.expected_effect ? ` → ${entry.action.expected_effect}` : ''}{entry.action.mode === 'shadow' ? ' · shadow' : ''}</span>
               {#if entry.can_undo}<button class="btn ghost" onclick={() => undo(entry)}>Undo <Kbd keys="u" /></button>

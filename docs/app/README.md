@@ -49,6 +49,20 @@ the app's own memory figure counts it (FR-904). `claude` processes are listed ap
 | 1 agent pane (+ Overview, Inbox tabs) | 29 | 120 | 86 | 7 | **242** | 240 (1) |
 | 3 agent panes side by side | 30 | 133 | 84 | 7 | **254** | 667 (3: 211–233 each) |
 
+**Installed bundle, P1 wiring (2026-10-26)**, `~/Applications/Orchestrator.app`, scratch home, the
+orchestrator repo as project, about 27–30 % free RAM, more tabs open (Overview, Week planner,
+Setup, Project, then agent panes):
+
+| State | Core | WebContent | GPU | **App** | claude processes |
+|---|---|---|---|---|---|
+| 0 agents (Overview + Setup + Project + Planner tabs) | 30–31 | 95 | 52–114 | **185–248** | — |
+| 1 agent pane, idle after one turn | 31 | 131–156 | 81–86 | **252–281** | 222 (1) |
+| 3 agent panes, idle | 32 | 137–139 | 105–106 | **283–285** | 656–663 (3: 219–228 each) |
+| + shell and nvim panes, resized to 1280 and back twice | 34 | 201 (peak) | 109 | — | — |
+
+The runaway did not recur; the memory watch logs these figures every minute (`logs/memory.log`).
+Daily use: [RUNNING.md](RUNNING.md).
+
 - **NFR-1b holds** (≤ 250 MB idle; 254 MB with 3 busy panes is in line with P0's 6-pane figures).
 - **Worse than P0's baseline (72–78 MB idle)**, almost all in the **GPU helper**: 28–41 MB with the
   shell hidden, 77–94 MB while it is visible and repainting. It does not depend on the window size,

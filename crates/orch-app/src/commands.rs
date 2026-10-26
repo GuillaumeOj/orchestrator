@@ -11,6 +11,10 @@ use tauri::State;
 use tauri::ipc::Response;
 
 use crate::core::{Core, EditorOpen, NewSession, TermInfo};
+use crate::services::Project;
+use crate::setup::PlanForm;
+use orch_git::project::RemovalChoices;
+use crate::LockOk;
 use crate::kitty::KittyImport;
 use crate::planner::PlannerView;
 use crate::terms::TermKind;
@@ -43,7 +47,7 @@ pub async fn app_state(core: CoreState<'_>) -> Res<Value> {
 
 #[tauri::command]
 pub fn kitty_config(core: CoreState) -> KittyImport {
-    core.kitty.clone()
+    core.kitty.lock_ok().clone()
 }
 
 #[tauri::command]
@@ -173,13 +177,74 @@ pub fn governor_act(core: CoreState, action: String, arg: Option<f64>) -> Res<Va
 // ---------------------------------------------------------------- projects, settings
 
 #[tauri::command]
-pub fn project_add(core: CoreState, path: PathBuf) -> Res<Value> {
-    core.projects.add(&path).map(|p| serde_json::json!(p)).map_err(e)
+pub async fn project_add(core: CoreState<'_>, path: PathBuf) -> Res<Project> {
+    blocking(core, move |c| c.project_add(&path)).await
 }
 
 #[tauri::command]
-pub fn project_remove(core: CoreState, id: String) -> Res<()> {
-    core.projects.remove(&id).map_err(e)
+pub async fn project_clone(core: CoreState<'_>, url: String, parent: Option<PathBuf>, name: Option<String>) -> Res<Project> {
+    blocking(core, move |c| c.project_clone(&url, parent.as_deref(), name.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn project_detail(core: CoreState<'_>, id: String, with_prs: bool) -> Res<Value> {
+    blocking(core, move |c| c.project_detail(&id, with_prs)).await
+}
+
+#[tauri::command]
+pub async fn project_fetch(core: CoreState<'_>, id: String) -> Res<Value> {
+    blocking(core, move |c| c.project_fetch(&id)).await
+}
+
+#[tauri::command]
+pub async fn worktree_remove(core: CoreState<'_>, project: String, path: PathBuf, delete_branch: bool, discard: bool) -> Res<Value> {
+    blocking(core, move |c| c.worktree_remove(&project, &path, delete_branch, discard)).await
+}
+
+#[tauri::command]
+pub async fn project_removal_plan(core: CoreState<'_>, id: String) -> Res<Value> {
+    blocking(core, move |c| c.removal_plan(&id)).await
+}
+
+#[tauri::command]
+pub async fn project_remove(core: CoreState<'_>, id: String, choices: RemovalChoices) -> Res<Value> {
+    blocking(core, move |c| c.project_remove(&id, &choices)).await
+}
+
+// ---------------------------------------------------------------- first run (J0)
+
+#[tauri::command]
+pub fn set_editor(core: CoreState, template: String) -> Res<()> {
+    core.set_editor(&template).map_err(e)
+}
+
+#[tauri::command]
+pub fn import_kitty(core: CoreState, path: PathBuf) -> Res<KittyImport> {
+    core.import_kitty(&path).map_err(e)
+}
+
+#[tauri::command]
+pub fn plan_form(core: CoreState) -> Res<PlanForm> {
+    core.plan_form().map_err(e)
+}
+
+#[tauri::command]
+pub fn plan_set(core: CoreState, form: PlanForm) -> Res<()> {
+    core.set_plan(&form).map_err(e)
+}
+
+#[tauri::command]
+pub fn governor_enforce(core: CoreState, enforce: bool) -> Res<()> {
+    core.set_enforce(enforce).map_err(e)
+}
+
+/// The command a trust pane runs: plain `claude` in the project root, for the
+/// user to answer the workspace trust dialog (J0 step 2). No orchestrator
+/// hooks, auto-update off; the pane is closed by the user.
+#[tauri::command]
+pub fn trust_command(core: CoreState) -> String {
+    let claude = core.claude_check().map(|c| c.path).unwrap_or_else(|| PathBuf::from("claude"));
+    format!("DISABLE_AUTOUPDATER=1 {}", crate::editor::sh_quote(&claude.display().to_string()))
 }
 
 #[tauri::command]
