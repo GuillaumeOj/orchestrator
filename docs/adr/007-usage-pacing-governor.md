@@ -1,6 +1,6 @@
 # ADR-007 — Usage pacing: Governor control law (v1)
 
-- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-17 (control law added after review)
+- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-26 (state across restarts)
 
 ## Context
 A Max plan has a 5-hour window and a weekly window, and possibly a separate weekly limit for some models. Claude Code's statusline exposes used % and reset times for the 5h and weekly windows (ADR-002). Goal: never get locked out during working hours, and use ≥ 85 % of the week by the reset.
@@ -59,6 +59,11 @@ Live cap per state, queue, pause at turn boundary, defer after reset (asked, wit
 - Every queued item shows why, its estimated start, and "Run now" (or "Start now" if it never ran) with its estimated cost in the window that binds it (5h % under the 5h guard, week pp otherwise).
 - **Shadow mode** is on for the first week.
 - The **simulator** (SPEC FR-820, NFR-9) replays weeks against the policy; it is the acceptance test.
+
+## State across restarts
+- The Governor stays a pure library with its state in memory. The core stores the active plan, the policy, every new statusline sample with the **cost class** it had (interactive / critical / autonomous) and its allocation, the recent actions, the queue (as a view), forecast snapshots and the calibration.
+- At start the core builds a new Governor on the active plan (if its week is still running) and **replays** this week's samples with their stored class (`Governor::replay`), so W, the governed share, per-allocation usage and the calibration come back. A plain re-ingest would count past agent work as interactive.
+- The queue is not restored: turns that waited in the old queue are asked again by the reconciler. Action ids restart at each core start.
 
 ## Consequences
 - Pacing that can be predicted and tested, with honest limits: queuing *defers* usage, it doesn't reduce it. Mostly-interactive weeks leave the Governor little to act on, and the planner says so.

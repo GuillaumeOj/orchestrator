@@ -9,16 +9,17 @@ the control clients (`orchd` now, the Tauri UI later). SPEC §6, FR-806, NFR-3, 
 - One connection per request. The client writes **one JSON line**, the core answers **one JSON
   line** and closes. The only exception is `ctl` `attach`, after which the connection carries raw
   PTY bytes both ways.
-- Every request is an `Envelope` `{"v": 1, "type": "hook" | "status" | "ctl", …}`. A peer that sees
+- Every request is an `Envelope` `{"v": 1, "type": "hook" | "status" | "ctl" | "mcp", …}`. A peer that sees
   another `v` answers `{"reply":"error"}`; the helpers then behave as if the core were down.
 - Replies: `{"reply":"hook","output":<json|null>}`, `{"reply":"ack"}`, `{"reply":"ctl","ok":…,"data":…}`,
-  `{"reply":"error","message":…}`.
+  `{"reply":"mcp","is_error":…,"text":…,"data":…}`, `{"reply":"error","message":…}`.
 
 | Type | Sender | Content |
 |---|---|---|
 | `hook` | orch-hook | `agent_id`, `event` (parsed `hook_event_name`), `ts_ms`, `deadline_ms` (0 = not waiting), raw `payload` |
 | `status` | orch-status | `agent_id`, `ts_ms`, raw statusline `payload` |
-| `ctl` | orchd / UI | `CtlRequest` (`create_worktree`, `start`, `resume`, `suspend`, `kill`, `interrupt`, `deliver`, `attach`, `resize`, `read`, `state`, `usage`, `governor`, `shutdown`) |
+| `ctl` | orchd / UI | `CtlRequest`: agents (`create_worktree`, `start`, `resume`, `suspend`, `kill`, `interrupt`, `deliver`, `attach`, `resize`, `read`, `state`, `usage`, `governor`, `pause_all`, `resume_all`, `shutdown`); Inbox and rules (`inbox`, `decide` with `InboxDecision`, `rules`, `add_rule`, `revoke_rule`, `audit`, `events`); projects and git (`project_add`, `project_clone`, `projects`, `project`, `fetch`, `diff`, `remove_worktree`, `removal_plan`, `remove_project`, `relocate_project`, `commit`, `search`) |
+| `mcp` | orch-mcp | `McpMsg`: `agent_id`, `tool` (`commit`, `request_pr`), `arguments`, `deadline_ms` (300 s by default); answered with `Reply::Mcp` |
 
 ## Socket
 

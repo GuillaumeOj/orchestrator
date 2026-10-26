@@ -1,0 +1,18 @@
+[package]
+name = "orch-store"
+version = "0.1.0"
+description = "SQLite persistence for the Rust core (ADR-005): WAL, one writer thread, versioned migrations, events, FTS5 transcript index."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+governor.workspace = true
+orch-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile.workspace = true

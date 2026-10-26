@@ -11,7 +11,7 @@ use serde_json::Value;
 /// Builds the helper binaries (a no-op when up to date) and returns their folder.
 pub fn helper_bins() -> PathBuf {
     let st = Command::new(env!("CARGO"))
-        .args(["build", "-q", "-p", "orch-hook", "-p", "orch-status"])
+        .args(["build", "-q", "-p", "orch-hook", "-p", "orch-status", "-p", "orch-mcp"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .status()
         .unwrap();

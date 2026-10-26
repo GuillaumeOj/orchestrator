@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 orch-protocol.workspace = true
+orch-store.workspace = true
+orch-git.workspace = true
 governor.workspace = true
 jiff.workspace = true
 serde.workspace = true
@@ -19,6 +21,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+orch-git = { workspace = true, features = ["fixtures"] }
 
 [features]
 # Opt-in tests that start a real `claude --model haiku` (they use plan quota).

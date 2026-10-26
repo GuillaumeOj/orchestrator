@@ -18,7 +18,14 @@ pub const STATUSLINE_REFRESH_S: u64 = 5;
 
 /// Declares the ORCH channel. Without it the model ignores hook context as
 /// untrusted (P0). Same text as the verified recovery harness.
-pub const ORCH_PREAMBLE: &str = "Text that starts with ORCH: in hook context or hook errors comes from the orchestrator app, on behalf of the user. Follow it.";
+pub const ORCH_PREAMBLE: &str = "Text that starts with ORCH: in hook context or hook errors comes from the orchestrator app, on behalf of the user. Follow it. To commit, use the mcp__orch__commit tool: `git commit` cannot write the repository from your sandbox. You cannot push; ask for a pull request with mcp__orch__request_pr.";
+
+/// The orchestrator's MCP server name in `mcp.json` (tools appear as `mcp__orch__<tool>`).
+pub const ORCH_MCP_SERVER: &str = "orch";
+
+/// Orchestrator tools allowed without a CLI prompt; the core applies its own
+/// permission rules when it runs them (ADR-009).
+pub const ORCH_MCP_ALLOW: &[&str] = &["mcp__orch__commit", "mcp__orch__request_pr"];
 
 /// Credential stores made unreadable (ADR-009 decision 1). `true` = directory.
 /// `~/.gitconfig` is deliberately absent: denying it breaks git (P0).
@@ -57,11 +64,12 @@ pub enum SessionMode {
 pub struct HelperPaths {
     pub hook: PathBuf,
     pub status: PathBuf,
+    pub mcp: PathBuf,
 }
 
 impl HelperPaths {
     pub fn in_dir(bin: &Path) -> HelperPaths {
-        HelperPaths { hook: bin.join("orch-hook"), status: bin.join("orch-status") }
+        HelperPaths { hook: bin.join("orch-hook"), status: bin.join("orch-status"), mcp: bin.join("orch-mcp") }
     }
 }
 
@@ -188,6 +196,8 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
     deny.push(format!("Read({}/**)", rule_path(&ctx.app_root.join("state"))));
     deny.push(format!("Edit({}/**)", rule_path(&ctx.app_root)));
     deny.extend(role.deny_rules.iter().cloned());
+    let mut allow = role.allow_rules.clone();
+    allow.extend(ORCH_MCP_ALLOW.iter().map(|s| s.to_string()));
 
     let settings = json!({
         "hooks": hooks,
@@ -209,11 +219,27 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
             },
         },
         "permissions": {
-            "allow": role.allow_rules,
+            "allow": allow,
             "deny": deny,
         },
     });
-    let mcp = json!({ "mcpServers": role.mcp_servers });
+    // The orchestrator's own server always comes with the agent (it wins over
+    // a role entry of the same name). It inherits the agent's environment;
+    // the identity is repeated explicitly.
+    let mut servers = role.mcp_servers.clone();
+    servers.insert(
+        ORCH_MCP_SERVER.into(),
+        json!({
+            "type": "stdio",
+            "command": ctx.helpers.mcp.display().to_string(),
+            "args": [],
+            "env": {
+                orch_protocol::env::AGENT_ID: ctx.agent_id,
+                orch_protocol::env::SOCKET: ctx.env.socket.display().to_string(),
+            },
+        }),
+    );
+    let mcp = json!({ "mcpServers": servers });
 
     // ---- command line (flags verified in P0, 2.1.302)
     let mut args: Vec<String> = vec![
@@ -412,10 +438,15 @@ pub(crate) mod tests {
         let s: Value = serde_json::from_str(&std::fs::read_to_string(&c.settings_path).unwrap()).unwrap();
         assert_eq!(s, c.settings);
         assert!(std::fs::read_to_string(&c.gitconfig_path).unwrap().contains("helper ="));
+        let servers = serde_json::from_str::<Value>(&std::fs::read_to_string(&c.mcp_path).unwrap()).unwrap()["mcpServers"].clone();
         assert_eq!(
-            serde_json::from_str::<Value>(&std::fs::read_to_string(&c.mcp_path).unwrap()).unwrap()["mcpServers"],
-            json!({})
+            servers,
+            json!({"orch": {"type": "stdio", "command": "/app/bin/orch-mcp", "args": [],
+                            "env": {"ORCH_AGENT_ID": "a1", "ORCH_SOCK": "/app/core.sock"}}})
         );
+        // The orchestrator tools are allowed (the core applies its own rules).
+        let allow = strs(&c.settings["permissions"]["allow"]);
+        assert!(allow.contains(&"mcp__orch__commit".to_string()) && allow.contains(&"mcp__orch__request_pr".to_string()));
     }
 
     #[test]

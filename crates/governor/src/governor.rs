@@ -223,21 +223,26 @@ impl From<CalendarError> for GovernorError {
     }
 }
 
+/// How a sample's cost counts: the user's own work and critical agent work
+/// draw from the reserve, autonomous work from the agents' budget. The host
+/// stores it with each sample so [`Governor::replay`] can rebuild the week's
+/// accounting after a restart (the turns that were live then are gone).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-enum TurnClass {
+#[serde(rename_all = "snake_case")]
+pub enum CostClass {
     Interactive,
     Critical,
     Autonomous,
 }
 
-impl TurnClass {
+impl CostClass {
     fn of(interactive: bool, tier: Tier) -> Self {
         if interactive {
-            TurnClass::Interactive
+            CostClass::Interactive
         } else if tier == Tier::Critical {
-            TurnClass::Critical
+            CostClass::Critical
         } else {
-            TurnClass::Autonomous
+            CostClass::Autonomous
         }
     }
 }
@@ -246,7 +251,7 @@ impl TurnClass {
 struct LiveTurn {
     allocation: AllocationId,
     tier: Tier,
-    class: TurnClass,
+    class: CostClass,
     started_at: Timestamp,
     cost: f64,
     ceiling: Option<TurnCeiling>,
@@ -324,7 +329,7 @@ pub struct Governor {
     live: BTreeMap<AgentId, LiveTurn>,
     /// Each agent's last ended turn: its class and end time, so the turn's
     /// last API response, ingested after Stop, is still attributed to it.
-    ended: BTreeMap<AgentId, (TurnClass, Timestamp)>,
+    ended: BTreeMap<AgentId, (CostClass, Timestamp)>,
     queue: Vec<QueueEntry>,
     actions: Vec<GovernorAction>,
     next_entry: u64,
@@ -480,7 +485,7 @@ impl Governor {
     }
 
     pub fn live_autonomous(&self) -> u32 {
-        self.live.values().filter(|t| t.class == TurnClass::Autonomous).count() as u32
+        self.live.values().filter(|t| t.class == CostClass::Autonomous).count() as u32
     }
 
     pub fn is_live(&self, agent: &AgentId) -> bool {
@@ -675,30 +680,61 @@ impl Governor {
     pub fn ingest(&mut self, s: &UsageSample) {
         if let Some(agent) = &s.agent {
             let c = if s.cost_delta.is_finite() { s.cost_delta.max(0.0) } else { 0.0 };
-            self.app_cost += c;
             let (class, alloc) = match self.live.get_mut(agent) {
                 Some(t) => {
                     t.cost += c;
                     (t.class, Some(t.allocation.clone()))
                 }
-                None => {
-                    let class = match self.ended.get(agent) {
-                        Some((class, ended_at)) if s.ts <= *ended_at => *class,
-                        _ => TurnClass::Interactive,
-                    };
-                    (class, self.agent_alloc.get(agent).cloned())
-                }
+                None => (self.class_without_turn(agent, s.ts), self.agent_alloc.get(agent).cloned()),
             };
-            if class != TurnClass::Autonomous {
-                self.reserve_cost += c;
-            }
-            if class == TurnClass::Interactive {
-                self.interactive_cost += c;
-            }
-            if let Some(a) = alloc {
-                *self.alloc_cost.entry(a).or_insert(0.0) += c;
-            }
+            self.account(c, class, alloc);
         }
+        self.observe_sample(s);
+    }
+
+    /// The class [`Governor::ingest`] gives this sample now (store it with the sample).
+    pub fn cost_class(&self, s: &UsageSample) -> CostClass {
+        match &s.agent {
+            Some(agent) => match self.live.get(agent) {
+                Some(t) => t.class,
+                None => self.class_without_turn(agent, s.ts),
+            },
+            None => CostClass::Interactive,
+        }
+    }
+
+    /// Re-ingests a stored sample after a restart, with the class and
+    /// allocation it had when it was recorded. Same windows and calibration
+    /// as [`Governor::ingest`]; no live turn is touched.
+    pub fn replay(&mut self, s: &UsageSample, class: CostClass, allocation: Option<AllocationId>) {
+        if s.agent.is_some() {
+            let c = if s.cost_delta.is_finite() { s.cost_delta.max(0.0) } else { 0.0 };
+            self.account(c, class, allocation);
+        }
+        self.observe_sample(s);
+    }
+
+    fn class_without_turn(&self, agent: &AgentId, ts: Timestamp) -> CostClass {
+        match self.ended.get(agent) {
+            Some((class, ended_at)) if ts <= *ended_at => *class,
+            _ => CostClass::Interactive,
+        }
+    }
+
+    fn account(&mut self, c: f64, class: CostClass, alloc: Option<AllocationId>) {
+        self.app_cost += c;
+        if class != CostClass::Autonomous {
+            self.reserve_cost += c;
+        }
+        if class == CostClass::Interactive {
+            self.interactive_cost += c;
+        }
+        if let Some(a) = alloc {
+            *self.alloc_cost.entry(a).or_insert(0.0) += c;
+        }
+    }
+
+    fn observe_sample(&mut self, s: &UsageSample) {
         if s.provenance == Provenance::Observed {
             if let Some(r) = s.weekly {
                 self.observe(Window::Weekly, s.ts, r);
@@ -788,7 +824,7 @@ impl Governor {
         let Some(agent) = agent else { return resp };
         let Some(turn) = self.live.get(agent).cloned() else { return resp };
         self.end_turn(agent, now);
-        if turn.class == TurnClass::Interactive || self.plan.shadow_mode {
+        if turn.class == CostClass::Interactive || self.plan.shadow_mode {
             return resp;
         }
         if self.policy.auto_continue == AutoContinue::CancelAndReschedule {
@@ -864,10 +900,10 @@ impl Governor {
             self.end_turn(&req.agent, now);
         }
         let m = self.metrics(now);
-        let class = TurnClass::of(req.interactive, req.tier);
+        let class = CostClass::of(req.interactive, req.tier);
 
         // Critical work is admitted now: drop the agent's older queued entry.
-        if class == TurnClass::Critical {
+        if class == CostClass::Critical {
             self.queue.retain(|e| e.agent != req.agent);
         }
         // Already waiting in the queue: keep one entry per agent.
@@ -881,10 +917,10 @@ impl Governor {
         }
 
         let proposed_reason: Option<QueueReason> = match class {
-            TurnClass::Interactive => None,
+            CostClass::Interactive => None,
             _ => match self.check(&req.allocation, req.tier, req.tier, &m, now) {
                 Err(r) => Some(r),
-                Ok(()) if class == TurnClass::Critical => None,
+                Ok(()) if class == CostClass::Critical => None,
                 Ok(()) if self.live_autonomous() >= self.cap(&m) => Some(self.cap_reason(&m)),
                 Ok(()) if self.queued_ahead(&req, &m, now) => Some(QueueReason::BehindQueue),
                 Ok(()) => None,
@@ -961,7 +997,7 @@ impl Governor {
             }
             return Decision::enforced(proposed);
         };
-        if turn.class == TurnClass::Interactive || req.interactive {
+        if turn.class == CostClass::Interactive || req.interactive {
             return Decision::admit();
         }
         let (class, cost, started_at, ceiling) = (turn.class, turn.cost, turn.started_at, turn.ceiling);
@@ -991,7 +1027,7 @@ impl Governor {
             }
         }
 
-        let Some(cause) = self.hold_reason(class == TurnClass::Autonomous, now) else { return Decision::admit() };
+        let Some(cause) = self.hold_reason(class == CostClass::Autonomous, now) else { return Decision::admit() };
         let proposed = Verdict::Deny { reason: DenyReason::PausedByGovernor { cause: cause.clone() } };
         let effect = if self.plan.shadow_mode {
             "shadow mode: tool allowed anyway"
@@ -1024,7 +1060,7 @@ impl Governor {
         allocation: &AllocationId,
         tier: Tier,
         ceiling: Option<TurnCeiling>,
-        class: TurnClass,
+        class: CostClass,
         now: Timestamp,
     ) {
         let turn = LiveTurn { allocation: allocation.clone(), tier, class, started_at: now, cost: 0.0, ceiling };
@@ -1034,7 +1070,7 @@ impl Governor {
     fn end_turn(&mut self, agent: &AgentId, now: Timestamp) -> Option<LiveTurn> {
         let t = self.live.remove(agent)?;
         self.ended.insert(agent.clone(), (t.class, now));
-        if t.class != TurnClass::Interactive {
+        if t.class != CostClass::Interactive {
             let minutes = hours_between(t.started_at, now) * 60.0;
             if minutes > 0.0 {
                 self.avg_turn_min += 0.2 * (minutes - self.avg_turn_min);
@@ -1084,14 +1120,14 @@ impl Governor {
         // Start-time fair queuing: an allocation that becomes backlogged starts
         // at the lowest service of the others, so idle time is not banked.
         let busy = self.queue.iter().any(|e| e.allocation == allocation)
-            || self.live.values().any(|t| t.allocation == allocation && t.class == TurnClass::Autonomous);
+            || self.live.values().any(|t| t.allocation == allocation && t.class == CostClass::Autonomous);
         if !busy {
             let service = self.service();
             let floor = self
                 .queue
                 .iter()
                 .map(|e| &e.allocation)
-                .chain(self.live.values().filter(|t| t.class == TurnClass::Autonomous).map(|t| &t.allocation))
+                .chain(self.live.values().filter(|t| t.class == CostClass::Autonomous).map(|t| &t.allocation))
                 .filter(|a| **a != allocation)
                 .filter_map(|a| service.get(a).copied())
                 .fold(f64::INFINITY, f64::min);
@@ -1137,7 +1173,7 @@ impl Governor {
         let mut out = BTreeMap::new();
         for a in &self.plan.allocations {
             let live =
-                self.live.values().filter(|t| t.allocation == a.id && t.class == TurnClass::Autonomous).count() as f64;
+                self.live.values().filter(|t| t.allocation == a.id && t.class == CostClass::Autonomous).count() as f64;
             let raw =
                 (self.alloc_cost.get(&a.id).copied().unwrap_or(0.0) + live * self.avg_turn_cost) / a.weight.max(1e-6);
             let offset = self.service_offset.get(&a.id).copied().unwrap_or(0.0);
@@ -1164,8 +1200,8 @@ impl Governor {
                 .min_by(|(_, a), (_, b)| release_cmp(a, b, &service))
                 .map(|(i, _)| i);
             let Some(idx) = first else { break };
-            let class = TurnClass::of(false, self.queue[idx].tier);
-            if class == TurnClass::Autonomous && self.live_autonomous() >= self.cap(&m) {
+            let class = CostClass::of(false, self.queue[idx].tier);
+            if class == CostClass::Autonomous && self.live_autonomous() >= self.cap(&m) {
                 break;
             }
             let first = self.queue.remove(idx);
@@ -1629,7 +1665,7 @@ impl Governor {
         let e = self.queue.remove(idx);
         let service = self.service();
         // Counted like critical work: past the cap, drawing on the reserve.
-        self.start_live(&e.agent, &e.allocation, e.tier, e.ceiling, TurnClass::Critical, now);
+        self.start_live(&e.agent, &e.allocation, e.tier, e.ceiling, CostClass::Critical, now);
         self.log(
             now,
             ActionKind::RunNow { entry, agent: e.agent.clone() },

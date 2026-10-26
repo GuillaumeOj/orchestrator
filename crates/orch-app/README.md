@@ -8,13 +8,13 @@ NFR-1/1b; ADR-001, ADR-006.
 ## Run it
 
 ```bash
-cargo build -p orch-hook -p orch-status          # the helpers Claude Code launches
+cargo build -p orch-hook -p orch-status -p orch-mcp   # the helpers Claude Code launches
 cd ui && npm install
 npm run tauri dev                                # Vite on :1430 + the app (debug)
 npm run tauri build -- --no-bundle               # release binary: target/release/orchestrator
 ```
 
-At start the app copies `orch-hook`/`orch-status` from next to its binary into `<home>/bin` (as
+At start the app copies `orch-hook`/`orch-status`/`orch-mcp` from next to its binary into `<home>/bin` (as
 `orchd install-helpers` does). Environment:
 
 | Variable | Effect |

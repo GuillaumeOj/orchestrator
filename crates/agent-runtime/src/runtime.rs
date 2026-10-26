@@ -16,7 +16,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use governor::jiff::{Timestamp, ToSpan, tz::TimeZone};
 use governor::{
-    AgentId, BudgetAllocation, Decision, Governor, PacingPolicy, Release, Tier, ToolCallRequest, TurnKind, TurnRequest,
+    AgentId, BudgetAllocation, Decision, Governor, Release, Tier, ToolCallRequest, TurnKind, TurnRequest,
     Verdict, WeeklyPlan, WorkingCalendar,
 };
 use orch_protocol::ctl::{AdmissionDecision, AdmissionPoint, AdmissionRequest, AdmissionVerdict};
@@ -31,6 +31,7 @@ use crate::env::EnvInputs;
 use crate::paths::{AppPaths, real, valid_id};
 use crate::preflight::{self, VersionCheck, VersionRange};
 use crate::procs::{self, AgentMatch, ProcessTable, SystemProcs};
+use crate::resources::{self, LiveAgent, MemoryProbe, PressureLevel, SystemMemory};
 use crate::pty::PtyProcess;
 use crate::reconcile::{self, ReconcileEnv, Report};
 use crate::role::{PermissionMode, Role};
@@ -62,6 +63,19 @@ pub struct RuntimeConfig {
     pub hold: Duration,
     pub rows: u16,
     pub cols: u16,
+    /// FR-705: how long a PermissionRequest waits for an Inbox decision
+    /// before the CLI's own dialog takes over in the pane. Zero = straight to the pane.
+    pub permission_hold: Duration,
+    /// FR-204: suspend an idle agent after this long (`None` = never).
+    pub idle_suspend: Option<Duration>,
+    /// FR-203: macOS memory pressure lowers the live-agent cap.
+    pub memory: Arc<dyn MemoryProbe>,
+    /// NFR-8 retention of raw events, snapshots and samples.
+    pub retention: orch_store::Retention,
+    /// FR-103 background fetch.
+    pub fetch: orch_git::fetch::FetchPolicy,
+    /// Power and network state for the fetch throttle.
+    pub conditions: Arc<dyn orch_git::fetch::Conditions>,
 }
 
 impl RuntimeConfig {
@@ -79,6 +93,12 @@ impl RuntimeConfig {
             hold: Duration::from_secs(5),
             rows: 50,
             cols: 160,
+            permission_hold: Duration::from_secs(300),
+            idle_suspend: Some(Duration::from_secs(10 * 60)),
+            memory: Arc::new(SystemMemory),
+            retention: orch_store::Retention::default(),
+            fetch: orch_git::fetch::FetchPolicy::default(),
+            conditions: Arc::new(orch_git::fetch::SystemConditions),
         }
     }
 }
@@ -102,17 +122,57 @@ impl Live {
 pub struct Runtime {
     pub cfg: RuntimeConfig,
     pub store: Store,
+    /// The SQLite database (shared with the git service and the UI's queries).
+    pub db: orch_store::Store,
     gov: Mutex<Governor>,
     usage: Mutex<UsageCollector>,
     live: Mutex<BTreeMap<String, Arc<Live>>>,
     decisions: Mutex<VecDeque<AdmissionDecision>>,
-    events: Mutex<Option<std::fs::File>>,
     login_path: String,
     user_statusline: Option<String>,
     git_identity: (String, String),
     pub warnings: Vec<String>,
-    me: Weak<Runtime>,
+    pub(crate) me: Weak<Runtime>,
+    /// Core start time: Governor action ids restart at each boot.
+    boot_ms: u64,
+    house: Mutex<House>,
+    /// The local OTLP receiver once started ([`Runtime::start_otlp`]).
+    otlp: Mutex<Option<crate::otlp::OtlpReceiver>>,
+    /// A transcript index pass is running.
+    indexing: std::sync::atomic::AtomicBool,
 }
+
+/// Clocks and flags of the periodic work (`tick`, `housekeeping`).
+#[derive(Default)]
+struct House {
+    last_forecast_ms: u64,
+    last_calibration_ms: u64,
+    last_purge_ms: u64,
+    last_index_ms: u64,
+    pressure: PressureLevel,
+    /// Agents whose transcript changed since the last index pass.
+    index_dirty: std::collections::BTreeSet<String>,
+    index_all: bool,
+    /// Agents told they wait for a live slot (logged once per wait).
+    cap_waiting: std::collections::BTreeSet<String>,
+    /// What `tick` last saved of the actions and the queue.
+    last_saved: (Vec<governor::GovernorAction>, Vec<governor::QueueEntry>),
+}
+
+/// True (and restamps `last`) when `every` ms have passed since `last`.
+fn due(last: &mut u64, now: u64, every: u64) -> bool {
+    let d = now.saturating_sub(*last) >= every;
+    if d {
+        *last = now;
+    }
+    d
+}
+
+pub const FORECAST_EVERY_MS: u64 = 5 * 60 * 1000;
+pub const CALIBRATION_EVERY_MS: u64 = 60 * 60 * 1000;
+pub const PURGE_EVERY_MS: u64 = 24 * 3600 * 1000;
+pub const INDEX_EVERY_MS: u64 = 60 * 1000;
+pub const POLICY_ID: &str = "default";
 
 /// The plan week: from last Monday 09:00 local to next Monday 09:00, weekdays
 /// 09:00–19:00, one allocation. The Week planner (FR-802) replaces this later.
@@ -195,10 +255,10 @@ impl Runtime {
         std::fs::create_dir_all(cfg.paths.agents_dir())?;
         std::fs::create_dir_all(cfg.paths.state_dir())?;
         orch_protocol::check_socket_path(&cfg.paths.socket())?;
-        let store = Store::open(&cfg.paths.state_file())?;
-        let policy = PacingPolicy { live_caps: governor::LiveCaps::from_base(cfg.base_cap), ..Default::default() };
+        let db = orch_store::Store::open(&cfg.paths.db_file())?;
+        let store = Store::open(db.clone(), Some(&cfg.paths.legacy_state_file()))?;
         let now = Timestamp::now();
-        let gov = Governor::new(default_plan(now, cfg.shadow), policy, now).map_err(|e| anyhow!("{e:?}"))?;
+        let gov = restore_governor(&db, &store, &cfg, now)?;
         let home = crate::paths::home_dir();
         let shell = std::env::var_os("SHELL").map(PathBuf::from).unwrap_or_else(|| "/bin/zsh".into());
         // Independent subprocesses (the login shell can take seconds): run them together.
@@ -221,21 +281,24 @@ impl Runtime {
         if let Err(e) = git {
             warnings.push(e.to_string());
         }
-        let events =
-            std::fs::OpenOptions::new().create(true).append(true).open(cfg.paths.state_dir().join("events.jsonl")).ok();
         Ok(Arc::new_cyclic(|me| Runtime {
             user_statusline: crate::env::user_statusline_command(&home),
             git_identity,
             cfg,
             store,
+            db,
             gov: Mutex::new(gov),
             usage: Mutex::new(UsageCollector::new()),
             live: Mutex::new(BTreeMap::new()),
             decisions: Mutex::new(VecDeque::new()),
-            events: Mutex::new(events),
             login_path,
             warnings,
             me: me.clone(),
+            boot_ms: now_ms(),
+            // The first purge waits a day like the others (not during the boot rush).
+            house: Mutex::new(House { index_all: true, last_purge_ms: now_ms(), ..Default::default() }),
+            otlp: Mutex::new(None),
+            indexing: std::sync::atomic::AtomicBool::new(false),
         }))
     }
 
@@ -281,13 +344,9 @@ impl Runtime {
         self.live.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect()
     }
 
-    fn event(&self, agent: &str, kind: &str, detail: Value) {
-        let mut line = serde_json::to_vec(&json!({"ts_ms": now_ms(), "agent": agent, "kind": kind, "detail": detail}))
-            .unwrap_or_default();
-        line.push(b'\n');
-        if let Some(f) = self.events.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            let _ = f.write_all(&line); // one append per line
-        }
+    /// Appends to the event table (never blocks on disk). `agent` "-" = core-wide.
+    pub(crate) fn event(&self, agent: &str, kind: &str, detail: Value) {
+        self.db.add_event(now_ms(), Some(agent).filter(|a| *a != "-"), kind, detail);
     }
 
     fn record_decision(&self, req: AdmissionRequest, d: &Decision) {
@@ -411,6 +470,10 @@ impl Runtime {
             trust_dialog: false,
         };
         self.store.write(|s| s.agents.insert(rec.id.clone(), rec.clone()))?;
+        // Every agent belongs to a registered project (J1); starting one marks it active (FR-103).
+        if let Ok(p) = orch_git::project::register(&self.db, &repo) {
+            let _ = self.db.touch_project(&p.id, now_ms());
+        }
         self.spawn(&rec.id, Some(SessionMode::New(rec.session_id.clone())))?;
         if let Some(m) = &spec.first_message {
             self.deliver(&rec.id, m)?;
@@ -438,7 +501,7 @@ impl Runtime {
         let mut env = EnvInputs::from_process(self.login_path.clone());
         env.socket = self.cfg.paths.socket();
         env.user_statusline = self.user_statusline.clone();
-        env.otel_endpoint = self.cfg.otel_endpoint.clone();
+        env.otel_endpoint = self.cfg.otel_endpoint.clone().or_else(|| self.otlp_endpoint());
         let git_common_dir = worktree::common_dir(&wt)?;
         let main = real(&rec.repo);
         let ctx = CompileCtx {
@@ -617,6 +680,51 @@ impl Runtime {
         for id in self.live_ids() {
             let _ = self.suspend(&id);
         }
+        self.otlp.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let _ = self.db.flush();
+    }
+
+    /// FR-801: starts the local OTLP receiver (127.0.0.1, `port` 0 = any) and
+    /// points agents spawned from now on at it. Returns the endpoint.
+    pub fn start_otlp(&self, port: u16) -> Result<String> {
+        let weak = self.me.clone();
+        let rx = crate::otlp::OtlpReceiver::start(
+            port,
+            Arc::new(move |reqs| {
+                if let Some(rt) = weak.upgrade() {
+                    rt.on_api_requests(reqs);
+                }
+            }),
+        )?;
+        let ep = rx.endpoint();
+        *self.otlp.lock().unwrap_or_else(|e| e.into_inner()) = Some(rx);
+        self.event("-", "otlp_started", json!({"endpoint": ep}));
+        Ok(ep)
+    }
+
+    pub fn otlp_endpoint(&self) -> Option<String> {
+        self.otlp.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|r| r.endpoint())
+    }
+
+    /// Per-request usage from OTLP (tokens, cost), stored as `otel` samples.
+    /// An unknown agent id is kept as unattributed.
+    pub fn on_api_requests(&self, reqs: Vec<crate::otlp::ApiRequest>) {
+        for r in reqs {
+            let agent = r.agent_id.clone().filter(|a| self.store.read(|s| s.agents.contains_key(a)));
+            self.db.add_usage(orch_store::UsageRecord {
+                ts_ms: r.ts_ms,
+                agent_id: agent,
+                model: r.model,
+                tokens_in: Some(r.input_tokens),
+                tokens_out: Some(r.output_tokens),
+                cache_read: Some(r.cache_read_tokens),
+                cache_write: Some(r.cache_creation_tokens),
+                cost_estimate: Some(r.cost_usd),
+                provenance: "observed".into(),
+                source: Some(orch_store::UsageSource::Otel),
+                ..Default::default()
+            });
+        }
     }
 
     // ------------------------------------------------------------ hooks
@@ -631,6 +739,15 @@ impl Runtime {
             return HookOutput::fail_closed(&m.event);
         };
         let p = HookPayload::parse(&m.payload);
+        // A permission prompt held for the Inbox but answered in the pane (the
+        // CLI shows its dialog while the hook is held): this call's next hook,
+        // or the turn's end, closes the Inbox item and ends the hold.
+        let call_done = matches!(m.event, HookEvent::PostToolUse | HookEvent::PostToolUseFailure | HookEvent::PermissionDenied);
+        let turn_done =
+            matches!(m.event, HookEvent::Stop | HookEvent::StopFailure | HookEvent::UserPromptSubmit | HookEvent::SessionEnd);
+        if call_done || turn_done {
+            self.answered_in_pane(id, if call_done { p.tool_use_id.as_deref() } else { None });
+        }
         self.event(
             id,
             m.event.as_str(),
@@ -657,7 +774,8 @@ impl Runtime {
             HookEvent::PreToolUse => {
                 self.admit_tool(&rec, tracker.turn_origin == Some(TurnOrigin::User), &p, m.deadline_ms, conn)
             }
-            // No decision: the dialog shows in the pane for the user (no Inbox UI yet).
+            // A rule, or the Inbox (held), or the pane when nobody answers in time.
+            HookEvent::PermissionRequest => self.permission_request(&rec, &p, m.deadline_ms, conn),
             _ => None,
         }
     }
@@ -693,6 +811,7 @@ impl Runtime {
                 self.mark_delivered(id, &markers);
             }
             Effect::TurnEnded | Effect::TurnEndedWithBackground => {
+                self.house().index_dirty.insert(id.to_string());
                 let delivered = |t: &TurnRow| t.agent_id == id && t.status == TurnStatus::Delivered;
                 if self.store.read(|s| s.turns.iter().any(delivered)) {
                     let _ = self.store.write(|s| {
@@ -787,6 +906,7 @@ impl Runtime {
                 status: HoldStatus::Held,
                 summary: summary.chars().take(200).collect(),
                 created_at_ms: now_ms(),
+                inbox_id: None,
             });
             if let Some(a) = s.agents.get_mut(id) {
                 state::hold_started(&mut a.tracker);
@@ -876,6 +996,9 @@ impl Runtime {
         if let Some(g) = g {
             self.event(&m.agent_id, "usage_sample", serde_json::to_value(&g).unwrap_or(Value::Null));
             let mut gov = self.gov();
+            let class = gov.cost_class(&g);
+            let allocation = self.store.read(|s| s.agents.get(&m.agent_id).map(|a| a.allocation.clone()));
+            self.db.add_usage(usage_record(&g, &sample, class, allocation));
             // FR-802: the plan week is aligned to the real weekly reset.
             if let Some(w) = g.weekly {
                 let off = (w.resets_at.as_second() - gov.plan().reset_at.as_second()).abs();
@@ -884,7 +1007,9 @@ impl Runtime {
                     plan.reset_at = w.resets_at;
                     plan.week_start = w.resets_at.checked_sub(168.hours()).unwrap_or(w.resets_at);
                     plan.id = format!("week-{}", plan.week_start.as_second());
-                    let _ = gov.new_week(plan, g.ts);
+                    if gov.new_week(plan.clone(), g.ts).is_ok() {
+                        let _ = self.db.save_plan(&plan, orch_store::PlanStatus::Active);
+                    }
                 }
             }
             gov.ingest(&g);
@@ -893,10 +1018,204 @@ impl Runtime {
 
     // ------------------------------------------------------------ loops
 
-    /// The Governor's control loop (call every ~30 s).
+    /// The Governor's control loop (call every ~30 s). Also persists its
+    /// recent actions, its queue, and (less often) forecast snapshots and the
+    /// calibration.
     pub fn tick(&self) {
-        let releases = self.gov().tick(Timestamp::now());
+        let now = Timestamp::now();
+        let releases = self.gov().tick(now);
         self.handle_releases(releases);
+        let (actions, queue, plan_id, snap, calib) = {
+            let g = self.gov();
+            let n = g.actions().len();
+            (g.actions()[n.saturating_sub(50)..].to_vec(), g.queue().to_vec(), g.plan().id.clone(), g.snapshot(now), g.calibration(now))
+        };
+        // Written only when they changed (outcomes and undo change after the fact).
+        let saved = (actions, queue);
+        let changed = {
+            let mut h = self.house();
+            let c = h.last_saved != saved;
+            if c {
+                h.last_saved = saved.clone();
+            }
+            c
+        };
+        if changed {
+            let _ = self.db.save_actions(self.boot_ms, &plan_id, &saved.0);
+            let _ = self.db.replace_queue(self.boot_ms, &saved.1);
+        }
+        let ms = now_ms();
+        let (do_forecast, do_calib) = {
+            let mut h = self.house();
+            (due(&mut h.last_forecast_ms, ms, FORECAST_EVERY_MS), due(&mut h.last_calibration_ms, ms, CALIBRATION_EVERY_MS))
+        };
+        if do_forecast {
+            let _ = self.db.add_forecast(&snap);
+        }
+        if do_calib {
+            let _ = self.db.add_calibration(&calib);
+        }
+    }
+
+    pub(crate) fn mark_full_index(&self) {
+        self.house().index_all = true;
+    }
+
+    fn house(&self) -> std::sync::MutexGuard<'_, House> {
+        self.house.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// FR-203: the live-agent cap now (base, lowered under memory pressure).
+    pub fn live_cap(&self) -> u32 {
+        resources::effective_cap(self.cfg.base_cap, self.house().pressure)
+    }
+
+    /// The Week planner's confirmed plan (FR-802): replaces the current one.
+    pub fn set_plan(&self, plan: WeeklyPlan) -> Result<()> {
+        self.gov().new_week(plan.clone(), Timestamp::now()).map_err(|e| anyhow!("{e:?}"))?;
+        self.db.save_plan(&plan, orch_store::PlanStatus::Active)
+    }
+
+    /// The user is looking at or typing in this agent's pane (resets the idle timer).
+    pub fn note_user_activity(&self, id: &str) {
+        if let Some(l) = self.live_get(id) {
+            l.last_user_input_ms.store(now_ms(), Ordering::SeqCst);
+        }
+    }
+
+    /// Periodic upkeep (call every few seconds): memory pressure and the live
+    /// cap, idle auto-suspend, transcript indexing, retention.
+    pub fn housekeeping(&self) {
+        let now = now_ms();
+        let level = self.cfg.memory.level();
+        let changed = {
+            let mut h = self.house();
+            let c = h.pressure != level;
+            h.pressure = level;
+            c
+        };
+        if changed {
+            self.event("-", "memory_pressure", json!({"level": level, "cap": self.live_cap()}));
+        }
+        let queued: BTreeMap<String, usize> = self.store.read(|s| {
+            let mut m = BTreeMap::new();
+            for t in s.turns.iter().filter(|t| t.status == TurnStatus::Queued) {
+                *m.entry(t.agent_id.clone()).or_default() += 1;
+            }
+            m
+        });
+        let live: Vec<LiveAgent> = self
+            .live
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter_map(|(id, l)| {
+                let rec = self.store.read(|s| s.agents.get(id).cloned())?;
+                // A stop already under way (a suspend waits up to 5 s for the exit).
+                if rec.tracker.stop_intent != StopIntent::None {
+                    return None;
+                }
+                let last = [
+                    rec.last_event_at_ms.unwrap_or(0),
+                    l.last_user_input_ms.load(Ordering::SeqCst),
+                    l.ready_at_ms.load(Ordering::SeqCst),
+                    l.pty.spawned_at_ms,
+                ]
+                .into_iter()
+                .max()
+                .unwrap_or(0);
+                Some(LiveAgent {
+                    id: id.clone(),
+                    idle: rec.tracker.state == AgentState::Idle,
+                    background_tasks: rec.tracker.background_tasks,
+                    queued_turns: queued.get(id).copied().unwrap_or(0),
+                    attached: l.pty.output.is_attached(),
+                    last_activity_ms: last,
+                })
+            })
+            .collect();
+        let idle_ms = self.cfg.idle_suspend.map(|d| d.as_millis() as u64);
+        for (id, why) in resources::to_suspend(&live, self.live_cap(), idle_ms, now) {
+            self.event(&id, "auto_suspend", json!({"why": why, "pressure": level}));
+            if let Some(me) = self.me.upgrade() {
+                // Suspending waits for the exit: never on the caller's loop.
+                std::thread::spawn(move || {
+                    let _ = me.suspend(&id);
+                });
+            }
+        }
+        let (do_index, do_purge) = {
+            let mut h = self.house();
+            let pending = !h.index_dirty.is_empty() || h.index_all;
+            (pending && due(&mut h.last_index_ms, now, INDEX_EVERY_MS), due(&mut h.last_purge_ms, now, PURGE_EVERY_MS))
+        };
+        if do_index && !self.indexing.swap(true, Ordering::SeqCst) {
+            let (all, dirty) = {
+                let mut h = self.house();
+                (std::mem::take(&mut h.index_all), std::mem::take(&mut h.index_dirty))
+            };
+            // Reading transcripts can take seconds (first pass): never on the delivery loop.
+            if let Some(me) = self.me.upgrade() {
+                std::thread::spawn(move || {
+                    let files = me.transcript_files(if all { None } else { Some(&dirty) });
+                    match me.db.index_transcripts(&files) {
+                        Ok(st) if st.entries > 0 => me.event("-", "transcripts_indexed", json!(st)),
+                        Ok(_) => {}
+                        Err(e) => me.event("-", "index_error", json!(e.to_string())),
+                    }
+                    me.indexing.store(false, Ordering::SeqCst);
+                });
+            } else {
+                self.indexing.store(false, Ordering::SeqCst);
+            }
+        }
+        if do_purge {
+            // Deletes across several tables: never on the delivery loop.
+            let (db, retention, me) = (self.db.clone(), self.cfg.retention, self.me.clone());
+            std::thread::spawn(move || {
+                if let (Ok(n), Some(me)) = (db.purge(now, retention), me.upgrade()) {
+                    if n > 0 {
+                        me.event("-", "purged", json!({"rows": n}));
+                    }
+                }
+            });
+        }
+    }
+
+    /// Transcripts to index: every known agent's session (found by id across
+    /// `~/.claude/projects/*/`), plus, for a full pass, every session in a
+    /// registered project's folders (its checkout and its worktrees).
+    pub fn transcript_files(&self, only: Option<&std::collections::BTreeSet<String>>) -> Vec<orch_store::TranscriptFile> {
+        let projects = self.db.projects(false).unwrap_or_default();
+        let project_of = |repo: &Path| projects.iter().find(|p| p.path == repo).map(|p| p.id.clone());
+        let mut files: Vec<orch_store::TranscriptFile> = vec![];
+        let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        for a in self.store.read(|s| s.agents.values().cloned().collect::<Vec<_>>()) {
+            if only.is_some_and(|o| !o.contains(&a.id)) {
+                continue;
+            }
+            // Already indexed: its path is known; else search every project folder.
+            let known = self.db.transcript_path(&a.session_id).ok().flatten().filter(|p| p.is_file());
+            if let Some(path) = known.or_else(|| crate::transcript::find(&self.cfg.projects_root, &a.session_id)) {
+                if seen.insert(path.clone()) {
+                    files.push(orch_store::TranscriptFile { path, session_id: a.session_id.clone(), project_id: project_of(&a.repo) });
+                }
+            }
+        }
+        if only.is_none() {
+            for d in std::fs::read_dir(&self.cfg.projects_root).into_iter().flatten().flatten() {
+                let name = d.file_name().to_string_lossy().into_owned();
+                let Some(pid) = project_for_dir(&projects, &name) else { continue };
+                for f in std::fs::read_dir(d.path()).into_iter().flatten().flatten() {
+                    let path = f.path();
+                    if path.extension().is_some_and(|e| e == "jsonl") && seen.insert(path.clone()) {
+                        let sid = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                        files.push(orch_store::TranscriptFile { path, session_id: sid, project_id: Some(pid.clone()) });
+                    }
+                }
+            }
+        }
+        files
     }
 
     /// Delivery loop (call every ~200 ms): trust-dialog detection, then for
@@ -961,7 +1280,18 @@ impl Runtime {
 
     fn pump_one(&self, rec: &AgentRecord, turn: &TurnRow, now: u64) -> Result<()> {
         let Some(l) = self.live_get(&rec.id) else {
-            // A suspended agent with work is resumed through the Governor first (FR-403).
+            // A suspended agent with work is resumed through the Governor first
+            // (FR-403), and only when a live slot is free (FR-203).
+            if rec.tracker.state == AgentState::Suspended && rec.flag.is_none() {
+                let (live, cap) = (self.live_ids().len() as u32, self.live_cap());
+                if live >= cap {
+                    if self.house().cap_waiting.insert(rec.id.clone()) {
+                        self.event(&rec.id, "cap_wait", json!({"live": live, "cap": cap}));
+                    }
+                    return Ok(());
+                }
+                self.house().cap_waiting.remove(&rec.id);
+            }
             if rec.tracker.state == AgentState::Suspended && rec.flag.is_none() && self.admit_turn(rec, turn) {
                 if let Err(e) = self.spawn(&rec.id, None) {
                     // Flag it so the next pump doesn't retry every 200 ms.
@@ -1077,6 +1407,15 @@ impl Runtime {
         for t in s.turns.iter().filter(|t| t.status == TurnStatus::Queued) {
             *queued.entry(t.agent_id.as_str()).or_default() += 1;
         }
+        // OTLP tokens and cost this plan week, per agent.
+        let week_start = self.gov().plan().week_start.as_millisecond().max(0) as u64;
+        let tokens: BTreeMap<String, orch_store::UsageTotal> = self
+            .db
+            .usage_totals(week_start)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|t| Some((t.agent_id.clone()?, t)))
+            .collect();
         let agents: Vec<Value> = s
             .agents
             .values()
@@ -1106,14 +1445,17 @@ impl Runtime {
                     "last_error": a.tracker.last_error,
                     "trust_dialog": a.trust_dialog,
                     "flag": a.flag,
+                    "otel_week": tokens.get(&a.id),
                 })
             })
             .collect();
         json!({
             "agents": agents,
-            "inbox": s.inbox.iter().filter(|i| i.pending).collect::<Vec<_>>(),
+            "inbox": s.inbox.iter().filter(|i| i.pending()).collect::<Vec<_>>(),
             "turns": s.turns.iter().rev().take(20).collect::<Vec<_>>(),
             "warnings": self.warnings,
+            "live_cap": {"base": self.cfg.base_cap, "effective": self.live_cap(), "pressure": self.house().pressure},
+            "otlp": self.otlp_endpoint(),
         })
     }
 
@@ -1144,8 +1486,100 @@ impl Runtime {
     }
 }
 
+/// The project a `~/.claude/projects/<name>` folder belongs to: the folder of
+/// its checkout exactly, or a folder under its worktree root (sessions started
+/// in a subfolder of the checkout can't be told apart from a sibling project
+/// with the same encoded prefix, so they are left out). The longest match wins.
+fn project_for_dir(projects: &[orch_store::Project], name: &str) -> Option<String> {
+    projects
+        .iter()
+        .filter_map(|p| {
+            let main = orch_store::encode_project_dir(&p.path);
+            let root = orch_store::encode_project_dir(&p.worktree_root);
+            let len = if name == main {
+                main.len()
+            } else if name == root || name.starts_with(&format!("{root}-")) {
+                root.len()
+            } else {
+                return None;
+            };
+            Some((len, p.id.clone()))
+        })
+        .max_by_key(|(len, _)| *len)
+        .map(|(_, id)| id)
+}
+
+/// The Governor at start: the active plan when its week is still running
+/// (else the default week), the stored policy (live cap from the config), and
+/// this week's statusline samples replayed with their cost class (NFR-2).
+fn restore_governor(db: &orch_store::Store, store: &Store, cfg: &RuntimeConfig, now: Timestamp) -> Result<Governor> {
+    let mut policy = db.policy(POLICY_ID)?.unwrap_or_default();
+    policy.live_caps = governor::LiveCaps::from_base(cfg.base_cap);
+    db.save_policy(POLICY_ID, &policy)?;
+    let mut plan = match db.active_plan()? {
+        Some(p) if p.reset_at > now && p.week_start <= now => p,
+        _ => default_plan(now, cfg.shadow),
+    };
+    plan.shadow_mode = cfg.shadow;
+    db.save_plan(&plan, orch_store::PlanStatus::Active)?;
+    let start = plan.week_start;
+    let mut gov = Governor::new(plan, policy, start.min(now)).map_err(|e| anyhow!("{e:?}"))?;
+    let allocs: BTreeMap<String, String> =
+        store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.allocation.clone())).collect());
+    let since = start.as_millisecond().max(0) as u64;
+    for u in db.usage_since(since, Some(orch_store::UsageSource::Statusline))? {
+        let Some(sample) = governor_sample(&u) else { continue };
+        let class = u.class.as_deref().and_then(orch_store::untag).unwrap_or(governor::CostClass::Interactive);
+        let alloc = u.allocation.clone().or_else(|| u.agent_id.as_ref().and_then(|a| allocs.get(a).cloned()));
+        gov.replay(&sample, class, alloc.map(Into::into));
+    }
+    let _ = gov.tick(now);
+    Ok(gov)
+}
+
+fn reading(pct: Option<f64>, resets: Option<i64>) -> Option<governor::WindowReading> {
+    Some(governor::WindowReading { used_pct: pct?, resets_at: Timestamp::from_second(resets?).ok()? })
+}
+
+/// A stored statusline row back into the Governor's sample.
+fn governor_sample(u: &orch_store::UsageRecord) -> Option<governor::UsageSample> {
+    Some(governor::UsageSample {
+        ts: Timestamp::from_millisecond(u.ts_ms as i64).ok()?,
+        agent: u.agent_id.clone().map(AgentId),
+        cost_delta: u.cost_delta.unwrap_or(0.0),
+        five_hour: reading(u.five_hour_pct, u.five_hour_resets_at),
+        weekly: reading(u.weekly_pct, u.weekly_resets_at),
+        provenance: orch_store::untag(&u.provenance).unwrap_or(governor::Provenance::Observed),
+    })
+}
+
+fn usage_record(
+    g: &governor::UsageSample,
+    s: &StatusSample,
+    class: governor::CostClass,
+    allocation: Option<String>,
+) -> orch_store::UsageRecord {
+    use orch_store::tag;
+    orch_store::UsageRecord {
+        ts_ms: g.ts.as_millisecond().max(0) as u64,
+        agent_id: g.agent.as_ref().map(|a| a.0.clone()),
+        model: s.model.clone(),
+        cost_estimate: s.total_cost_usd,
+        cost_delta: Some(g.cost_delta),
+        five_hour_pct: g.five_hour.map(|r| r.used_pct),
+        five_hour_resets_at: g.five_hour.map(|r| r.resets_at.as_second()),
+        weekly_pct: g.weekly.map(|r| r.used_pct),
+        weekly_resets_at: g.weekly.map(|r| r.resets_at.as_second()),
+        provenance: tag(&g.provenance),
+        source: Some(orch_store::UsageSource::Statusline),
+        class: Some(tag(&class)),
+        allocation,
+        ..Default::default()
+    }
+}
+
 /// True when the peer closed the connection (EOF). Waits up to 250 ms.
-fn conn_closed(c: &UnixStream) -> bool {
+pub(crate) fn conn_closed(c: &UnixStream) -> bool {
     let _ = c.set_read_timeout(Some(Duration::from_millis(250)));
     let mut b = [0u8; 1];
     match (&*c).read(&mut b) {
@@ -1159,20 +1593,33 @@ fn conn_closed(c: &UnixStream) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn test_runtime(shadow: bool) -> (tempfile::TempDir, Arc<Runtime>) {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
-        let mut cfg = RuntimeConfig::new(AppPaths::new(d.path().join("app")));
+    /// A runtime for unit tests: short holds, no idle timer, normal memory.
+    pub(crate) fn test_cfg(d: &Path, shadow: bool) -> RuntimeConfig {
+        let mut cfg = RuntimeConfig::new(AppPaths::new(d.join("app")));
         cfg.shadow = shadow;
         cfg.hold = Duration::from_millis(800);
-        cfg.projects_root = d.path().join("projects");
-        let rt = Runtime::new(cfg).unwrap();
-        let rec = AgentRecord {
+        cfg.permission_hold = Duration::from_millis(300);
+        cfg.idle_suspend = None;
+        cfg.memory = Arc::new(crate::resources::FixedMemory::new(PressureLevel::Normal));
+        cfg.projects_root = d.join("projects");
+        cfg
+    }
+
+    pub(crate) fn test_runtime(shadow: bool) -> (tempfile::TempDir, Arc<Runtime>) {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let rt = Runtime::new(test_cfg(d.path(), shadow)).unwrap();
+        rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
+        (d, rt)
+    }
+
+    pub(crate) fn test_agent(dir: &Path) -> AgentRecord {
+        AgentRecord {
             id: "a1".into(),
-            repo: d.path().into(),
-            worktree: d.path().into(),
+            repo: dir.into(),
+            worktree: dir.into(),
             role: Role::solo(),
             session_id: "s".into(),
             tracker: Default::default(),
@@ -1186,12 +1633,10 @@ mod tests {
             spawns: 1,
             flag: None,
             trust_dialog: false,
-        };
-        rt.store.write(|s| s.agents.insert("a1".into(), rec)).unwrap();
-        (d, rt)
+        }
     }
 
-    fn hook(event: &str, extra: Value) -> HookMsg {
+    pub(crate) fn hook(event: &str, extra: Value) -> HookMsg {
         let mut payload = json!({"hook_event_name": event, "session_id": "s", "prompt_id": "p1"});
         payload.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         HookMsg {
@@ -1286,6 +1731,98 @@ mod tests {
         assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::BlockedByLimit);
         let g = rt.governor_json();
         assert!(g["actions"].to_string().contains("limit"), "{g}");
+    }
+
+    #[test]
+    fn restart_rebuilds_the_governor_from_stored_samples() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let reset = (now_ms() / 1000) as i64 + 3 * 24 * 3600;
+        let (used, governed, plan_id) = {
+            let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+            rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
+            // An app turn (admitted by the Governor before delivery: autonomous), two responses.
+            let rec = rt.store.read(|s| s.agents["a1"].clone());
+            assert!(rt.decide_turn(&rec, TurnKind::Message, TurnOrigin::App).effective.is_admit());
+            rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "[t:0123abcd] go"})), None);
+            for (cost, pct) in [(0.5, 30), (1.5, 32)] {
+                rt.on_status(&StatusMsg {
+                    agent_id: "a1".into(),
+                    ts_ms: now_ms(),
+                    payload: json!({"session_id": "s", "cost": {"total_cost_usd": cost},
+                        "rate_limits": {"seven_day": {"used_percentage": pct, "resets_at": reset}}}),
+                });
+            }
+            rt.pause_all(); // one Governor action to persist
+            rt.tick();
+            rt.db.flush().unwrap();
+            assert!(!rt.db.actions(10).unwrap().is_empty(), "actions are persisted on tick");
+            let snap = rt.gov().snapshot(Timestamp::now());
+            (snap.used, snap.governed, rt.gov().plan().id.clone())
+        };
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        let snap = rt.gov().snapshot(Timestamp::now());
+        assert_eq!(rt.gov().plan().id, plan_id, "the realigned plan week is restored");
+        assert_eq!(rt.gov().plan().reset_at.as_second(), reset);
+        assert!((snap.used - used).abs() < 0.01, "{} vs {used}", snap.used);
+        assert!((snap.governed - governed).abs() < 0.01, "{} vs {governed}", snap.governed);
+        let samples = rt.db.usage_since(0, Some(orch_store::UsageSource::Statusline)).unwrap();
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].class.as_deref(), Some("autonomous"));
+    }
+
+    #[test]
+    fn otlp_requests_become_usage_samples() {
+        let (_d, rt) = test_runtime(true);
+        let ep = rt.start_otlp(0).unwrap();
+        assert_eq!(rt.otlp_endpoint().as_deref(), Some(ep.as_str()));
+        rt.on_api_requests(vec![
+            crate::otlp::ApiRequest { ts_ms: 5, agent_id: Some("a1".into()), input_tokens: 10, output_tokens: 2, cost_usd: 0.01, ..Default::default() },
+            crate::otlp::ApiRequest { ts_ms: 6, agent_id: Some("ghost".into()), input_tokens: 1, ..Default::default() },
+        ]);
+        rt.db.flush().unwrap();
+        let t = rt.db.usage_totals(0).unwrap();
+        assert_eq!(t.len(), 2);
+        assert_eq!((t[0].agent_id.as_deref(), t[0].tokens_in), (None, 1), "unknown agent: unattributed");
+        assert_eq!((t[1].agent_id.as_deref(), t[1].tokens_in, t[1].tokens_out, t[1].cost), (Some("a1"), 10, 2, 0.01));
+        rt.shutdown();
+        assert!(rt.otlp_endpoint().is_none());
+    }
+
+    #[test]
+    fn housekeeping_indexes_agent_transcripts_off_the_loop() {
+        let (d, rt) = test_runtime(true);
+        let dir = d.path().join("projects/-old-folder");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("s.jsonl"), "{\"type\":\"user\",\"uuid\":\"u1\",\"message\":{\"content\":\"refactor the parser\"}}\n").unwrap();
+        rt.housekeeping();
+        let end = std::time::Instant::now() + Duration::from_secs(5);
+        let mut hits = vec![];
+        while hits.is_empty() && std::time::Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(50));
+            hits = rt.db.search_transcripts("parser", None, 5).unwrap();
+        }
+        assert_eq!(hits.len(), 1, "found by session id in any project folder");
+        assert_eq!(hits[0].session_id, "s");
+    }
+
+    #[test]
+    fn transcript_folders_map_to_the_right_project() {
+        let pr = |id: &str, path: &str| {
+            let mut p: orch_store::Project = serde_json::from_value(json!({
+                "id": id, "name": id, "path": path, "default_branch": "main", "remotes": [],
+                "worktree_root": format!("{path}.worktrees"), "task_backend": {}, "track_orchestrator_dir": true,
+                "settings": {}, "created_at_ms": 0, "last_active_at_ms": 0, "last_fetch_at_ms": null,
+                "last_fetch_error": null, "archived": false}))
+            .unwrap();
+            p.path = path.into();
+            p
+        };
+        let ps = vec![pr("demo", "/x/demo"), pr("demo-api", "/x/demo-api")];
+        assert_eq!(project_for_dir(&ps, "-x-demo").as_deref(), Some("demo"));
+        assert_eq!(project_for_dir(&ps, "-x-demo-api").as_deref(), Some("demo-api"), "not the sibling's prefix");
+        assert_eq!(project_for_dir(&ps, "-x-demo-worktrees-solo-fix").as_deref(), Some("demo"));
+        assert_eq!(project_for_dir(&ps, "-x-demo-api-worktrees-solo-a").as_deref(), Some("demo-api"));
+        assert_eq!(project_for_dir(&ps, "-x-other"), None);
     }
 
     #[test]

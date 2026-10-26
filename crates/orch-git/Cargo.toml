@@ -1,0 +1,22 @@
+[package]
+name = "orch-git"
+version = "0.1.0"
+description = "Project registry and git service (FR-101–111): status, throttled fetch, worktrees, safe cleanup, diffs, gh, repo-move repair, commits on an agent's behalf."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+orch-store.workspace = true
+orch-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tempfile = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+# `fixtures::scratch_repo` for other crates' tests.
+fixtures = ["dep:tempfile"]

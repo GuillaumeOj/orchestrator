@@ -150,6 +150,25 @@ pub fn read_line<T: DeserializeOwned>(r: &mut impl BufRead) -> Result<T, BusErro
     serde_json::from_slice(&buf).map_err(|e| BusError::Protocol(e.to_string()))
 }
 
+/// One request, one reply: connects (within `connect_timeout`), writes
+/// `msg`, waits for the reply (up to `reply_timeout`, `None` = no limit) and
+/// checks its protocol version.
+pub fn round_trip(
+    path: &Path,
+    msg: &crate::Envelope,
+    connect_timeout: Duration,
+    reply_timeout: Option<Duration>,
+) -> Result<crate::Reply, BusError> {
+    let s = connect(path, connect_timeout)?;
+    write_line(&mut &s, msg)?;
+    s.set_read_timeout(reply_timeout)?;
+    let reply: crate::ReplyEnvelope = read_line(&mut std::io::BufReader::new(&s))?;
+    if reply.v != crate::PROTOCOL_VERSION {
+        return Err(BusError::Protocol(format!("protocol version {}", reply.v)));
+    }
+    Ok(reply.reply)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -151,6 +151,39 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                         "finish creation".to_string()
                     }
                 }
+                WorktreeRowState::Ready if !repo.join(".git").exists() => {
+                    // The whole project moved: the user points the app at it (relocate).
+                    let msg = format!(
+                        "Project {} is missing (moved or deleted?): relocate it to repair its worktrees",
+                        repo.display()
+                    );
+                    if !st.inbox.iter().any(|i| i.pending() && i.body == msg) {
+                        st.add_inbox(None, "alert", msg.clone());
+                        report.inbox.push(msg);
+                    }
+                    "project missing".to_string()
+                }
+                WorktreeRowState::Ready
+                    if row.path.is_dir() && (!in_git(&row.path) || !orch_git::repair::check_links(&row.path).ok) =>
+                {
+                    // Links broken (one of the repo / sibling folder moved): targeted repair.
+                    if env.apply {
+                        match orch_git::repair::repair(repo, &[(row.path.clone(), row.agent_id.clone())]) {
+                            Ok(r) if r.repaired.len() + r.already_ok.len() == 1 => {
+                                "repaired (targeted worktree repair + re-lock)".to_string()
+                            }
+                            Ok(r) => {
+                                let msg = format!("Worktree {} could not be repaired: {:?}", row.path.display(), r.failed);
+                                st.add_inbox(row.agent_id.as_deref(), "alert", msg.clone());
+                                report.inbox.push(msg);
+                                "repair failed".to_string()
+                            }
+                            Err(e) => format!("repair failed: {e}"),
+                        }
+                    } else {
+                        "repair (targeted worktree repair + re-lock)".to_string()
+                    }
+                }
                 WorktreeRowState::Ready if !in_git(&row.path) || !row.path.is_dir() => {
                     let msg = format!(
                         "Worktree {} is missing from git (moved or removed outside the app)",
@@ -243,6 +276,8 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
         let decision = if state_before == AgentState::Killed || (rec.spawns == 0 && state_before == AgentState::Created)
         {
             Decision::None
+        } else if !insp.exists {
+            Decision::Flag(format!("worktree {} is missing (moved?)", wt.display()))
         } else if state_before == AgentState::Suspended {
             // Stopped on purpose before the crash (a pending resume is a queued turn).
             Decision::Suspend("was suspended".into())
@@ -299,23 +334,32 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
         }
 
         // 7. Holds open when the core died were answered by orch-hook (deny).
+        // A hold waiting on its own Inbox item (a permission prompt) closes
+        // that item as interrupted: the agent already got the deny.
+        let mut closed_items = vec![];
+        let mut fresh_gates = vec![];
         for h in st.holds.iter_mut().filter(|h| h.agent_id == id && h.status == HoldStatus::Held) {
             h.status = HoldStatus::Interrupted;
-            let now = match h.kind {
-                HoldKind::Gate => "gate pending in the Inbox".to_string(),
-                HoldKind::Governor => "requeued".to_string(),
+            let now = match (h.kind, h.inbox_id) {
+                (HoldKind::Gate, Some(item)) => {
+                    closed_items.push(item);
+                    format!("Inbox item {item} closed: the agent was denied while the core was down")
+                }
+                (HoldKind::Gate, None) => {
+                    fresh_gates.push(h.summary.clone());
+                    "gate pending in the Inbox".to_string()
+                }
+                (HoldKind::Governor, _) => "requeued".to_string(),
             };
             report.holds.push((h.id.clone(), now));
         }
-        let gates: Vec<String> = st
-            .holds
-            .iter()
-            .filter(|h| h.agent_id == id && h.kind == HoldKind::Gate && h.status == HoldStatus::Interrupted)
-            .map(|h| h.summary.clone())
-            .collect();
+        for item in closed_items {
+            let _ = st.close_inbox(item, orch_store::InboxStatus::Interrupted, Some("core restarted: denied by orch-hook".into()));
+        }
+        let gates = fresh_gates;
         for g in gates {
             let msg = format!("{id}: gate still pending after a restart: {g}");
-            if !st.inbox.iter().any(|i| i.pending && i.body == msg) {
+            if !st.inbox.iter().any(|i| i.pending() && i.body == msg) {
                 st.add_inbox(Some(&id), "gate", msg.clone());
                 report.inbox.push(msg);
             }
@@ -329,6 +373,10 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                 TurnStatus::Delivering | TurnStatus::Delivered => TurnStatus::Queued,
                 other => other,
             };
+            // Governor queue entries died with the old core: ask again.
+            if now == TurnStatus::Queued && matches!(t.admission, Admission::Waiting(_)) {
+                t.admission = Admission::Pending;
+            }
             if now != t.status {
                 report.turns.push(TurnReport {
                     id: t.id.clone(),
@@ -374,7 +422,7 @@ mod tests {
     use crate::role::Role;
     use crate::state::Tracker;
     use crate::store::{AgentRecord, HoldRow};
-    use crate::worktree::tests::scratch_repo;
+    use orch_git::fixtures::scratch_repo;
     use orch_protocol::WorktreeKindSpec;
     use std::cell::RefCell;
 
@@ -428,7 +476,7 @@ mod tests {
         let (d, repo) = scratch_repo();
         let app = tempfile::tempdir().unwrap();
         let paths = AppPaths::new(app.path());
-        let store = Store::open(&paths.state_file()).unwrap();
+        let store = Store::open(orch_store::Store::open(&paths.db_file()).unwrap(), None).unwrap();
         let mut wts = std::collections::BTreeMap::new();
         for slug in ["idle", "tool", "gate", "merge", "orphan", "bg"] {
             let row = worktree::ensure(&store, &repo, &WorktreeKindSpec::Solo { slug: slug.into() }, None, Some(slug))
@@ -476,6 +524,7 @@ mod tests {
                 status: HoldStatus::Held,
                 summary: "git status".into(),
                 created_at_ms: 0,
+                inbox_id: None,
             });
         })
         .unwrap();
@@ -619,7 +668,7 @@ mod tests {
         let (_d, repo) = scratch_repo();
         let app = tempfile::tempdir().unwrap();
         let paths = AppPaths::new(app.path());
-        let store = Store::open(&paths.state_file()).unwrap();
+        let store = Store::open(orch_store::Store::open(&paths.db_file()).unwrap(), None).unwrap();
         // Crash between `git worktree add` and the DB write: row `creating`, no lock.
         let (p, b) = worktree::layout(&repo, &WorktreeKindSpec::Solo { slug: "half".into() }).unwrap();
         worktree::git(&repo, &["worktree", "add", "-q", "-b", &b, &p.display().to_string(), "main"]).unwrap();
@@ -669,5 +718,100 @@ mod tests {
         assert_eq!(store.read(|s| s.worktrees[&p].state), WorktreeRowState::Ready);
         assert!(worktree::list(&repo).unwrap().iter().any(|w| real(&w.path) == real(&p) && w.locked));
         assert!(store.read(|s| s.inbox.iter().any(|i| i.body.contains("missing"))));
+    }
+
+    fn run(store: &Store, paths: &AppPaths, projects: &Path) -> Report {
+        let kill = |_: &[i32], _: &[i32]| vec![];
+        reconcile(&ReconcileEnv {
+            store,
+            paths,
+            projects_root: projects,
+            procs: &FakeProcs(vec![]),
+            kill: &kill,
+            exclude_pids: &[],
+            apply: true,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn repairs_broken_links_and_alerts_on_a_missing_project() {
+        let (d, repo) = scratch_repo();
+        let app = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(app.path());
+        let store = Store::open(orch_store::Store::open(&paths.db_file()).unwrap(), None).unwrap();
+        let row = worktree::ensure(&store, &repo, &WorktreeKindSpec::Solo { slug: "a".into() }, None, Some("a")).unwrap();
+        store.write(|s| s.agents.insert("a".into(), agent("a", &repo, &row.path, AgentState::Idle))).unwrap();
+        // The repo moved without its sibling folder; the rows were pointed at the
+        // new place (as a relocate does) but the core died before the repair.
+        let new_repo = d.path().join("moved/demo");
+        std::fs::create_dir_all(new_repo.parent().unwrap()).unwrap();
+        std::fs::rename(&repo, &new_repo).unwrap();
+        let new_repo = real(&new_repo);
+        store
+            .write(|s| {
+                for w in s.worktrees.values_mut() {
+                    w.repo = new_repo.clone();
+                }
+                s.agents.get_mut("a").unwrap().repo = new_repo.clone();
+            })
+            .unwrap();
+        assert!(!orch_git::repair::check_links(&row.path).ok);
+        let r = run(&store, &paths, &app.path().join("none"));
+        let v = &r.worktrees.iter().find(|w| real(&w.path) == real(&row.path)).unwrap().verdict;
+        assert!(v.starts_with("repaired"), "{v}");
+        assert!(orch_git::repair::check_links(&row.path).ok);
+        assert!(worktree::list(&new_repo).unwrap().iter().any(|w| real(&w.path) == real(&row.path) && w.locked));
+
+        // A project whose checkout is gone: one alert, the agent is flagged.
+        let gone = d.path().join("gone/demo");
+        store
+            .write(|s| {
+                let mut w = s.worktrees.values().next().unwrap().clone();
+                w.repo = gone.clone();
+                w.path = gone.with_extension("worktrees").join("solo/b");
+                s.worktrees.insert(w.path.clone(), w.clone());
+                s.agents.insert("b".into(), agent("b", &gone, &w.path, AgentState::Working));
+            })
+            .unwrap();
+        let r = run(&store, &paths, &app.path().join("none"));
+        assert!(r.inbox.iter().any(|m| m.contains("is missing (moved or deleted?)")), "{:?}", r.inbox);
+        let b = r.agents.iter().find(|a| a.id == "b").unwrap();
+        assert!(matches!(&b.decision, Decision::Flag(w) if w.contains("missing")), "{:?}", b.decision);
+        // The alert is not repeated by the next start.
+        let again = run(&store, &paths, &app.path().join("none"));
+        assert!(!again.inbox.iter().any(|m| m.contains("moved or deleted")));
+    }
+
+    #[test]
+    fn stale_governor_entries_are_asked_again_and_permission_items_close() {
+        let (_d, repo) = scratch_repo();
+        let app = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(app.path());
+        let store = Store::open(orch_store::Store::open(&paths.db_file()).unwrap(), None).unwrap();
+        let row = worktree::ensure(&store, &repo, &WorktreeKindSpec::Solo { slug: "a".into() }, None, Some("a")).unwrap();
+        store
+            .write(|s| {
+                s.agents.insert("a".into(), agent("a", &repo, &row.path, AgentState::WaitingForYou));
+                s.turns.push(TurnRow::queued("a", "later", governor::TurnKind::Message, Admission::Waiting(7)));
+                let item = s.add_inbox_item(Some("a"), "permission", "a: Bash: ls".into(), serde_json::Value::Null, 30);
+                s.holds.push(HoldRow {
+                    id: "h".into(),
+                    agent_id: "a".into(),
+                    tool_use_id: None,
+                    kind: HoldKind::Gate,
+                    status: HoldStatus::Held,
+                    summary: "Bash: ls".into(),
+                    created_at_ms: 0,
+                    inbox_id: Some(item),
+                });
+            })
+            .unwrap();
+        let r = run(&store, &paths, &app.path().join("none"));
+        let st = store.read(|s| s.clone());
+        assert_eq!(st.turns[0].admission, Admission::Pending, "the old core's queue entry is gone: ask again");
+        assert_eq!(st.inbox[0].status, orch_store::InboxStatus::Interrupted);
+        assert_eq!(st.inbox.iter().filter(|i| i.pending()).count(), 0, "no duplicate gate item");
+        assert!(r.holds[0].1.contains("closed"));
     }
 }

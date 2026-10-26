@@ -76,6 +76,7 @@ for action in gov.actions() {
 | `start_sprint(extra_pp, now)` | Sprint mode until the end of today's working time (FR-811). |
 | `answer_ask(id, accept)`, `undo(id)` | "Ask" actions (FR-810) and undo from the log (FR-809). |
 | `new_week(plan, now)` | After the weekly reset. Calibration and the queue carry over; budgets don't. |
+| `cost_class(&sample)`, `replay(&sample, class, allocation)` | Store the class with each sample; after a restart, replay the week's samples so the accounting (interactive vs autonomous, per allocation) and the calibration come back. |
 | `snapshot`, `queue`, `actions`, `next_action_preview`, `stats` | Read-only views for the UI and the weekly report. |
 
 `Decision.effective` is what the host must do; `Decision.proposed` is what the policy wanted. They
