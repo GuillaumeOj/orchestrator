@@ -15,6 +15,7 @@
   const queued = $derived((app.data?.queue ?? []).length);
   const m = $derived(app.data?.memory);
   const fiveReset = $derived(app.data?.usage?.five_hour?.resets_at);
+  const watch = $derived(app.data?.memory_watch);
 </script>
 
 <footer class="status">
@@ -32,6 +33,7 @@
     {/if}
   {/if}
   <span class="grow"></span>
+  {#if watch?.alert}<span class="memwarn" title="WebKit helper above {watch.warn_mb} MB · logged every minute in {watch.log}"><span aria-hidden="true">⚠</span> {watch.alert}</span>{/if}
   {#if m}<span title="app {mb(m.app_mb)} · agents {mb(m.agents_mb)} · shells {mb(m.shells_mb)}">RAM {mb(m.total_mb)} / {mb(m.system_mb)}</span><span class="muted">·</span>{/if}
   <span class:armed={app.leader}>{app.leader ? 'LEADER' : 'leader'} <Kbd keys="⌘+;" /></span>
 </footer>
@@ -62,6 +64,10 @@
     padding: 0 var(--space-sm);
     border: var(--border-width-default) solid var(--color-border-strong);
     border-radius: var(--radius-full);
+  }
+  .memwarn {
+    color: var(--color-status-error);
+    font-weight: var(--font-weight-semibold);
   }
   .armed {
     color: var(--color-accent-default);

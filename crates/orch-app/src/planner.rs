@@ -1,8 +1,9 @@
 //! The Week planner's read-only forecast (FR-802–804, FR-809, FR-813, J8):
 //! ideal vs actual vs forecast for the week and the 5h window, allocations,
 //! the next-action preview and the governor log. Built from the Governor's
-//! state; the "actual" line is the history the app sampled while it ran (the
-//! SQLite store will keep it across restarts).
+//! state; the "actual" line is the history the app samples every minute,
+//! seeded at start from the forecast snapshots of the store (every 5 min), so
+//! it covers the plan week across restarts.
 
 use std::collections::VecDeque;
 
@@ -82,8 +83,12 @@ pub struct AllocationRow {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct LogEntry {
+    /// Unique in the log (action ids restart at each core start).
+    pub key: String,
     pub action: GovernorAction,
     pub can_undo: bool,
+    /// From an earlier start of the app this week.
+    pub past: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -106,6 +111,10 @@ pub struct PlannerView {
     pub pending_ask: Option<GovernorAction>,
     pub sprint: Option<(u64, i64, f64)>,
     pub five_hour_resets_at_ms: Option<i64>,
+    /// First start of the app (the shadow week, FR-812, counts from it).
+    pub first_run_ms: Option<i64>,
+    /// The user confirmed a plan (otherwise the default one is shown).
+    pub plan_set: bool,
 }
 
 fn ms(t: Timestamp) -> i64 {
@@ -117,6 +126,7 @@ pub fn build(
     gov: &Governor,
     now: Timestamp,
     history: &History,
+    past: &[GovernorAction],
     five_hour_resets_at: Option<Timestamp>,
     live_by_alloc: &dyn Fn(&str) -> usize,
 ) -> PlannerView {
@@ -201,7 +211,13 @@ pub fn build(
         .iter()
         .rev()
         .take(50)
-        .map(|a| LogEntry { can_undo: a.undo.is_some() && a.undone_at.is_none(), action: a.clone() })
+        .map(|a| LogEntry { key: format!("n{}", a.id.0), can_undo: a.undo.is_some() && a.undone_at.is_none(), action: a.clone(), past: false })
+        .chain(past.iter().filter(|a| a.ts >= start).take(50).enumerate().map(|(i, a)| LogEntry {
+            key: format!("p{i}"),
+            can_undo: false,
+            action: a.clone(),
+            past: true,
+        }))
         .collect();
     let next = gov.next_action_preview(now);
     let pending_ask = next.pending_ask.and_then(|(id, _)| gov.action(id).cloned());
@@ -223,6 +239,8 @@ pub fn build(
         pending_ask,
         sprint: gov.sprint().map(|(id, until, pp)| (id.0, ms(until), pp)),
         five_hour_resets_at_ms: five_hour_resets_at.map(ms),
+        first_run_ms: None,
+        plan_set: false,
     }
 }
 
@@ -261,7 +279,7 @@ mod tests {
         let (g, now) = gov();
         let mut h = History::default();
         h.push(HistoryPoint { t_ms: ms(now), used: 30.0, governed: 30.0, five_hour: Some(20.0) }, 0);
-        let v = build(&g, now, &h, None, &|_| 0);
+        let v = build(&g, now, &h, &[], None, &|_| 0);
         let at_now = v.curve.iter().find(|p| p.t_ms == ms(now)).unwrap();
         assert!((at_now.ideal - v.snapshot.ideal).abs() < 1e-6, "{} vs {}", at_now.ideal, v.snapshot.ideal);
         assert!((at_now.forecast.unwrap() - v.snapshot.governed).abs() < 1e-6);

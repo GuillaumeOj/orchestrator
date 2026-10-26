@@ -1,0 +1,8 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "externalBin": ["bundle/bin/orch-hook", "bundle/bin/orch-status", "bundle/bin/orch-mcp"],
+    "resources": { "bundle/fonts/": "fonts/" },
+    "macOS": { "minimumSystemVersion": "13.0" }
+  }
+}

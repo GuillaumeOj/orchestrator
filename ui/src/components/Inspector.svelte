@@ -2,7 +2,7 @@
   // Inspector (§9.2): the selection's details. Docked at ≥ 1512 px, overlay below.
   import { app, contextAgent, projects, agentAction, openShell, openInKitty, confirm } from '../lib/app.svelte.js';
   import { displayState, queueReason, sessionPp, cacheState } from '../lib/status.js';
-  import { clock, mb, pct } from '../lib/format.js';
+  import { clock, mb, pct, shortPath, tokens } from '../lib/format.js';
   import AgentChip from './AgentChip.svelte';
   import StatusBadge from './StatusBadge.svelte';
   import Kbd from './Kbd.svelte';
@@ -13,7 +13,7 @@
   const pp = $derived(sessionPp(a, app.data?.usage?.snapshot));
   const cache = $derived(cacheState(a, clock));
   const home = $derived(app.data?.core?.user_home ?? '');
-  const short = (path) => (home && String(path).startsWith(home) ? `~${String(path).slice(home.length)}` : path);
+  const short = (path) => shortPath(path, home);
 </script>
 
 <aside class="insp" class:overlay aria-label="Inspector">
@@ -27,6 +27,7 @@
       <dt>Model</dt><dd>{a.model ?? 'default'}{a.effort ? ` · effort ${a.effort}` : ''}</dd>
       <dt>Context</dt><dd>{pct(a.context_pct)}{cache ? ` · cache ${cache}` : ''}</dd>
       <dt>Usage</dt><dd>{pp == null ? '—' : `${pp.toFixed(1)} pp this session`} · {a.turns ?? 0} turns</dd>
+      {#if a.otel_week}<dt>This week</dt><dd>{tokens(a.otel_week.tokens_in + a.otel_week.cache_read + a.otel_week.cache_write)} in · {tokens(a.otel_week.tokens_out)} out · ≈ ${a.otel_week.cost.toFixed(2)}</dd>{/if}
       <dt>Governor</dt><dd>{a.queue_entry ? `Queued · ${queueReason(a.queue_entry)}` : a.live ? 'Admitted' : '—'}</dd>
       <dt>Memory</dt><dd>{a.memory_mb ? mb(a.memory_mb) : '—'}</dd>
       <dt>Session</dt><dd class="wrap mono">{a.session_id}</dd>

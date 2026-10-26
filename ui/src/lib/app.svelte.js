@@ -81,7 +81,9 @@ function title(spec) {
     case 'editor':
       return `nvim · ${spec.file ? spec.file.split('/').pop() : spec.projectId ?? ''}`;
     default:
-      return { overview: 'All projects', inbox: 'Inbox', planner: 'Week planner' }[spec.type] ?? spec.type;
+      if (spec.type === 'project') return projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId;
+      if (spec.type === 'trust') return `trust · ${spec.projectId}`;
+      return { overview: 'All projects', inbox: 'Inbox', planner: 'Week planner', setup: 'Set up Orchestrator' }[spec.type] ?? spec.type;
   }
 }
 
@@ -136,6 +138,31 @@ export function openSingleton(type) {
   const existing = findPane((s) => s.type === type);
   if (existing) return focusPane(existing);
   addPane({ type }, app.layout ? 'tab' : 'right');
+}
+
+/** A project's pane (§4.1): git state, worktrees, PRs, removal (J11). */
+export function openProject(projectId) {
+  app.selectedProject = projectId;
+  const existing = findPane((s) => s.type === 'project' && s.projectId === projectId);
+  if (existing) return focusPane(existing);
+  addPane({ type: 'project', projectId }, app.layout ? 'tab' : 'right');
+}
+
+/**
+ * J0 step 2: plain `claude` in the project root for the user to answer the
+ * workspace trust dialog (the app never answers it). The user exits it.
+ */
+export async function openTrust(projectId) {
+  const p = projects().find((x) => x.id === projectId);
+  if (!p) return;
+  try {
+    const run = await invoke('trust_command');
+    const t = await invoke('term_spawn', { req: { kind: 'shell', project_id: p.id, agent_id: null, cwd: p.path, run, rows: 30, cols: 100 } });
+    addPane({ type: 'shell', termId: t.id, cwd: t.cwd, projectId: p.id, title: `trust · ${p.name}` }, 'right');
+    toast(`Answer "Yes, I trust this folder" in the pane, then /exit · ${p.name}`, { ms: 10000 });
+  } catch (e) {
+    toast(`Could not start claude: ${errText(e)}`, { kind: 'error' });
+  }
 }
 
 export function openAgent(agentId) {
@@ -306,6 +333,7 @@ export async function restoreLayout() {
   }
   if (!saved?.layout) {
     addPane({ type: 'overview' });
+    if (!app.data?.setup?.done) openSingleton('setup');
     return;
   }
   const ids = L.allPanes(saved.layout);
@@ -315,6 +343,7 @@ export async function restoreLayout() {
     const s = saved.panes[id];
     if (!s) continue;
     if (s.type === 'agent' && !agent(s.agentId)) continue;
+    if (s.type === 'project' && !projects().some((p) => p.id === s.projectId)) continue;
     if (s.type === 'shell' || s.type === 'editor') {
       try {
         const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
@@ -328,6 +357,7 @@ export async function restoreLayout() {
   app.layout = L.reid(L.prune(saved.layout, (id) => !!panes[id]));
   if (!app.layout) addPane({ type: 'overview' });
   else focusPane(panes[saved.focused] ? saved.focused : L.visible(app.layout)[0]);
+  if (!app.data?.setup?.done) openSingleton('setup');
 }
 
 // ---------------------------------------------------------------- polling
@@ -374,6 +404,8 @@ export function commands() {
     { id: 'overview', label: 'Open Overview', run: () => openSingleton('overview') },
     { id: 'inbox', label: 'Open Inbox', run: () => openSingleton('inbox') },
     { id: 'planner', label: 'Open Week planner', run: () => openSingleton('planner') },
+    { id: 'setup', label: 'Set up Orchestrator (first run)…', run: () => openSingleton('setup') },
+    { id: 'plan.edit', label: 'Edit the weekly plan…', run: () => (app.overlay = { kind: 'plan' }) },
     { id: 'shell.new', label: 'New shell pane', run: () => openShell() },
     { id: 'editor.open', label: 'Open editor (nvim)', run: () => openEditor() },
     { id: 'pane.split.right', label: 'Split right (shell)', run: () => openShell({ how: 'right' }) },
@@ -402,6 +434,10 @@ export function commands() {
     ].filter(Boolean);
     for (const c of agentCmds) c.scope = 'agent';
     list.unshift(...agentCmds);
+  }
+  for (const p of projects()) {
+    list.push({ id: `project.open.${p.id}`, label: `Open project ${p.name}`, run: () => openProject(p.id) });
+    list.push({ id: `project.trust.${p.id}`, label: `Trust ${p.name} (Claude Code's dialog)…`, run: () => openTrust(p.id) });
   }
   for (const c of list) c.hint = hint(c.id);
   return list;
@@ -439,7 +475,7 @@ export function setTheme(t) {
 /** Jump targets (⌘P): the sidebar tree and the open panes. */
 export function jumpTargets() {
   const out = [];
-  for (const p of projects()) out.push({ label: p.name, detail: p.path, run: () => (app.selectedProject = p.id) });
+  for (const p of projects()) out.push({ label: p.name, detail: p.path, run: () => openProject(p.id) });
   for (const a of agents()) {
     const p = projects().find((x) => x.id === a.project_id);
     out.push({ label: `${p?.name ?? ''} › ${a.id}`, detail: displayState(a), run: () => openAgent(a.id) });

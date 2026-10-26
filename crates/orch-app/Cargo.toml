@@ -21,6 +21,8 @@ tauri-build = { version = "2.7", features = [] }
 agent-runtime.workspace = true
 governor.workspace = true
 orch-protocol.workspace = true
+orch-store.workspace = true
+orch-git.workspace = true
 jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -33,6 +35,7 @@ core-text = "22"
 
 [dev-dependencies]
 tempfile.workspace = true
+orch-git = { workspace = true, features = ["fixtures"] }
 
 [features]
 # Off for `cargo build`/`cargo test` (the UI is served by Vite, nothing to embed);

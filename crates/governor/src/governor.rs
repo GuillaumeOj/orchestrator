@@ -1631,6 +1631,11 @@ impl Governor {
         Ok(self.release_and_refresh(now))
     }
 
+    /// Pause all is in effect (until Resume all).
+    pub fn is_paused_all(&self) -> bool {
+        self.paused_all
+    }
+
     /// Pause all autonomous work: running turns stop at their next tool call.
     pub fn pause_all(&mut self, now: Timestamp) -> ActionId {
         self.paused_all = true;

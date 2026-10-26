@@ -12,7 +12,9 @@ pub mod menu;
 pub mod permissions;
 pub mod planner;
 pub mod services;
+pub mod setup;
 pub mod terms;
+pub mod watch;
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -30,8 +32,41 @@ impl<T> LockOk<T> for Mutex<T> {
     }
 }
 
+/// Started from the Finder (a bundle), the app has launchd's environment:
+/// stderr goes nowhere and PATH lacks Homebrew (`gh`, a newer git). Logs go
+/// to `<home>/logs/orchestrator.log` (the previous run's kept as `.1`) and
+/// PATH comes from the login shell, as for agents.
+fn bundle_environment(cfg: &core::CoreConfig) {
+    let in_bundle = std::env::current_exe().is_ok_and(|e| e.to_string_lossy().contains(".app/Contents/MacOS/"));
+    // SAFETY: isatty on fd 2.
+    let tty = unsafe { libc::isatty(2) } == 1;
+    if !in_bundle || tty {
+        return;
+    }
+    let dir = cfg.home.join("logs");
+    let log = dir.join("orchestrator.log");
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let _ = std::fs::rename(&log, dir.join("orchestrator.log.1"));
+        if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&log) {
+            use std::os::fd::AsRawFd;
+            // SAFETY: fd 2 now points at the log; `f` may close its own fd afterwards.
+            unsafe { libc::dup2(f.as_raw_fd(), 2) };
+        }
+    }
+    let home = agent_runtime::paths::home_dir();
+    let shell = std::env::var_os("SHELL").map(std::path::PathBuf::from).unwrap_or_else(|| "/bin/zsh".into());
+    let path = agent_runtime::env::login_path(&shell, &home);
+    if !path.is_empty() {
+        // SAFETY: called first in `run`, before any other thread starts.
+        unsafe { std::env::set_var("PATH", path) };
+    }
+    eprintln!("orchestrator {} started (pid {})", env!("CARGO_PKG_VERSION"), std::process::id());
+}
+
 pub fn run() {
-    let core = core::Core::start(core::CoreConfig::from_env());
+    let cfg = core::CoreConfig::from_env();
+    bundle_environment(&cfg);
+    let core = core::Core::start(cfg);
     let app = tauri::Builder::default()
         .manage(core.clone())
         .menu(menu::build)
@@ -65,7 +100,18 @@ pub fn run() {
             commands::planner_view,
             commands::governor_act,
             commands::project_add,
+            commands::project_clone,
+            commands::project_detail,
+            commands::project_fetch,
+            commands::worktree_remove,
+            commands::project_removal_plan,
             commands::project_remove,
+            commands::set_editor,
+            commands::import_kitty,
+            commands::plan_form,
+            commands::plan_set,
+            commands::governor_enforce,
+            commands::trust_command,
             commands::settings_get,
             commands::settings_set,
             commands::dev_enabled,

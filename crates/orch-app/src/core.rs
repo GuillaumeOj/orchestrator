@@ -32,7 +32,9 @@ use crate::kitty::{self, KittyImport};
 use crate::memory::{self, AppMemory};
 use crate::permissions::{Answer, PermissionBroker};
 use crate::planner::{self, History, HistoryPoint, PlannerView};
-use crate::services::{GitSummary, JsonFileSettings, Project, ProjectRegistry, SettingsStore, InMemoryProjects};
+use crate::services::{self, GitSummary, Project, Settings};
+use crate::setup::{self, ClaudeCheck};
+use crate::watch::MemoryWatch;
 use crate::terms::{TermKind, Terms};
 
 const GIT_EVERY: Duration = Duration::from_secs(10);
@@ -44,7 +46,8 @@ pub struct CoreConfig {
     pub home: PathBuf,
     pub claude: Option<PathBuf>,
     pub kitty_conf: PathBuf,
-    /// Projects to register at start (the stub registry has no persistence).
+    /// Projects to register at start (development override; the registry
+    /// keeps them).
     pub projects: Vec<PathBuf>,
     /// Run the J10 reconciler at start (resumes agents that were working).
     pub recover: bool,
@@ -76,23 +79,28 @@ pub struct Core {
     /// Why agents are unavailable (another core owns the socket, no claude…).
     pub core_error: Option<String>,
     pub broker: Arc<PermissionBroker>,
-    pub projects: Box<dyn ProjectRegistry>,
-    pub settings: Box<dyn SettingsStore>,
+    /// The store: the runtime's, or the app's own when the runtime is not up.
+    pub db: orch_store::Store,
+    pub settings: Settings,
     pub terms: Terms,
-    pub kitty: KittyImport,
-    pub editor_template: String,
+    pub kitty: Mutex<KittyImport>,
+    pub editor_template: Mutex<String>,
     history: Mutex<History>,
+    /// Governor actions of earlier starts this plan week (their ids restart
+    /// at each start): shown in the log, not undoable.
+    past_actions: Vec<governor::GovernorAction>,
+    claude: Mutex<Option<ClaudeCheck>>,
+    pub watch: Arc<MemoryWatch>,
     git: Mutex<Cached<BTreeMap<PathBuf, GitSummary>>>,
     memory: Mutex<Cached<AppMemory>>,
-    /// Project folder → its repository's main checkout (FR-105), resolved once.
-    mains: Mutex<BTreeMap<PathBuf, Option<PathBuf>>>,
     /// The UI pane reading each agent's output: its generation, and bytes a
     /// stale reader (a closed pane's last pull) took for the current one.
     readers: Mutex<BTreeMap<String, Reader>>,
     reader_gen: std::sync::atomic::AtomicU64,
     agent_input: Mutex<BTreeMap<String, std::sync::mpsc::Sender<Vec<u8>>>>,
     stop: Arc<AtomicBool>,
-    pub warnings: Vec<String>,
+    /// Shown as banners (from start, and raised later with `warn`).
+    warnings: Mutex<Vec<String>>,
 }
 
 /// A value refreshed at most every so often.
@@ -160,46 +168,89 @@ impl Core {
     pub fn start(cfg: CoreConfig) -> Arc<Core> {
         let paths = AppPaths::new(cfg.home.clone());
         let mut warnings = vec![];
-        let projects = InMemoryProjects::seeded(cfg.projects.clone());
-        let settings = JsonFileSettings::open(paths.root.join("ui").join("settings.json"));
-        let kitty = kitty::import(&cfg.kitty_conf);
-        let editor_template = editor::template_from_kitty(kitty.editor.as_deref());
+        let started = Timestamp::now();
         let (rt, core_error) = match start_runtime(&cfg, &paths, &mut warnings) {
             Ok(rt) => (Some(rt), None),
             Err(e) => (None, Some(format!("{e:#}"))),
+        };
+        let db = match &rt {
+            Some(rt) => rt.db.clone(),
+            None => open_store(&paths, &mut warnings),
+        };
+        let settings = Settings::new(db.clone());
+        match settings.migrate_json(&paths.root.join("ui").join("settings.json")) {
+            Ok(0) => {}
+            Ok(n) => eprintln!("orchestrator: {n} settings imported from ui/settings.json"),
+            Err(e) => warnings.push(format!("ui/settings.json not imported: {e:#}")),
+        }
+        if settings.get(setup::FIRST_RUN_KEY).is_none() {
+            let _ = settings.set(setup::FIRST_RUN_KEY, json!(now_ms()));
+        }
+        let kitty_conf = settings.get(setup::KITTY_KEY).and_then(|v| v.as_str().map(PathBuf::from)).unwrap_or(cfg.kitty_conf.clone());
+        let kitty = kitty::import(&kitty_conf);
+        let editor_template = settings
+            .get(setup::EDITOR_KEY)
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| editor::template_from_kitty(kitty.editor.as_deref()));
+        // The Week planner's "actual" line and log across restarts.
+        let (history, past_actions) = match &rt {
+            Some(rt) => past_week(rt, started),
+            None => (History::default(), vec![]),
         };
         let core = Arc::new(Core {
             paths,
             rt,
             core_error,
             broker: Arc::new(PermissionBroker::default()),
-            projects: Box::new(projects),
-            settings: Box::new(settings),
+            db,
+            settings,
             terms: Terms::default(),
-            kitty,
-            editor_template,
-            history: Mutex::new(History::default()),
+            kitty: Mutex::new(kitty),
+            editor_template: Mutex::new(editor_template),
+            history: Mutex::new(history),
+            past_actions,
+            claude: Mutex::new(None),
+            watch: Arc::new(MemoryWatch::default()),
             git: Mutex::new(Cached::default()),
             memory: Mutex::new(Cached::default()),
-            mains: Mutex::new(BTreeMap::new()),
             readers: Mutex::new(BTreeMap::new()),
             reader_gen: std::sync::atomic::AtomicU64::new(0),
             agent_input: Mutex::new(BTreeMap::new()),
             stop: Arc::new(AtomicBool::new(false)),
-            warnings,
+            warnings: Mutex::new(warnings),
         });
+        // Claude Code's version and login (J0): `claude` starts slowly, off the startup path.
+        {
+            let claude = match &core.rt {
+                Some(rt) => rt.cfg.claude.clone(),
+                None => cfg.claude.clone().unwrap_or_else(|| RuntimeConfig::new(core.paths.clone()).claude),
+            };
+            let core2 = core.clone();
+            std::thread::spawn(move || {
+                let c = setup::check_claude(&claude);
+                *core2.claude.lock_ok() = Some(c);
+            });
+        }
+        crate::watch::start(core.watch.clone(), core.paths.root.join("logs"), core.stop.clone());
         if let Some(rt) = &core.rt {
             if let Err(e) = core.serve() {
                 eprintln!("orchestrator: bus server failed: {e:#}");
             }
-            // Off the startup path (git per project): projects of known
-            // agents, unless a registered folder already maps to them, then J10.
+            for path in &cfg.projects {
+                if let Err(e) = core.project_add(path) {
+                    core.warn(format!("ORCH_PROJECTS: {} not registered: {e:#}", path.display()));
+                }
+            }
+            // Off the startup path (git per project): the projects of known
+            // agents (registered by an earlier version or `orchd`), then J10.
             let (core2, rt, recover) = (core.clone(), rt.clone(), cfg.recover);
             std::thread::spawn(move || {
-                let known = rt.store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.repo.clone())).collect::<Vec<_>>());
-                for (id, repo) in known {
-                    if core2.project_of(&id, &repo, &core2.projects.list()).is_none() {
-                        let _ = core2.projects.add(&repo);
+                let known = rt.store.read(|s| s.agents.values().map(|a| a.repo.clone()).collect::<std::collections::BTreeSet<_>>());
+                for path in &known {
+                    if core2.project_of(path, &core2.projects()).is_none() {
+                        if let Err(e) = rt.add_project(path) {
+                            eprintln!("orchestrator: {} not registered: {e:#}", path.display());
+                        }
                     }
                 }
                 if recover {
@@ -278,11 +329,24 @@ impl Core {
         self.history.lock_ok().push(p, week_start);
     }
 
+    fn warn(&self, w: String) {
+        eprintln!("orchestrator: {w}");
+        self.warnings.lock_ok().push(w);
+    }
+
+    /// The Claude Code check (J0), once the background probe has answered.
+    pub fn claude_check(&self) -> Option<ClaudeCheck> {
+        self.claude.lock_ok().clone()
+    }
+
     /// Graceful stop: suspend agents (resumed by id next time), close shells.
     pub fn shutdown(&self) {
         self.stop.store(true, Ordering::SeqCst);
         self.agent_input.lock_ok().clear(); // ends the writer threads
         if let Some(rt) = &self.rt {
+            // The planner's last point (the runtime stores one every 5 min).
+            let snap = rt.with_governor(|g| g.snapshot(Timestamp::now()));
+            let _ = rt.db.add_forecast(&snap);
             rt.shutdown();
         }
         self.terms.kill_all();
@@ -371,6 +435,10 @@ impl Core {
 
     pub fn agent_start(&self, req: &NewSession) -> Result<String> {
         let rt = self.runtime()?;
+        // J0: without a supported, logged-in Claude Code the app is read-only.
+        if let Some(c) = self.claude_check() {
+            c.ready()?;
+        }
         let project = self.project(&req.project_id)?;
         let id = req.name.trim().to_string();
         if !agent_runtime::paths::valid_id(&id) {
@@ -386,14 +454,13 @@ impl Core {
             permission_mode: req.permission_mode.clone().filter(|m| !m.is_empty()),
             first_message: req.message.clone().filter(|m| !m.trim().is_empty()),
             tier: req.tier.clone(),
+            // Charged to the project's allocation when the plan has one (FR-802).
+            allocation: rt
+                .with_governor(|g| g.plan().allocations.iter().any(|a| a.id.0 == project.id))
+                .then(|| project.id.clone()),
             ..Default::default()
         };
         rt.start(&spec)?;
-        // The runtime records the main checkout (FR-105); remember which project
-        // folder the session was started from, for the sidebar.
-        if let Err(err) = self.settings.set(&format!("agent-project:{id}"), json!(project.id)) {
-            eprintln!("orchestrator: could not remember {id}'s project: {err:#}");
-        }
         Ok(id)
     }
 
@@ -515,7 +582,7 @@ impl Core {
     // ------------------------------------------------------------ terminals
 
     fn project(&self, id: &str) -> Result<Project> {
-        self.projects.list().into_iter().find(|p| p.id == id).ok_or_else(|| anyhow!("no project {id}"))
+        self.projects().into_iter().find(|p| p.id == id).ok_or_else(|| anyhow!("no project {id}"))
     }
 
     /// cwd for a new pane (FR-1003): the agent's worktree, else the project
@@ -565,7 +632,8 @@ impl Core {
             std::fs::create_dir_all(dir)?;
         }
         let _ = std::fs::remove_file(&sock); // stale: nobody answered on it
-        let cmd = editor::render(&self.editor_template, file, line, Some(&sock));
+        let template = self.editor_template.lock_ok().clone();
+        let cmd = editor::render(&template, file, line, Some(&sock));
         let term = self.term_spawn(TermKind::Editor, &cwd, Some(&cmd), rows, cols)?;
         Ok(EditorOpen { reused: false, term: Some(term) })
     }
@@ -575,7 +643,8 @@ impl Core {
     pub fn open_in_kitty(&self, cwd: &Path) -> Result<()> {
         // Remote control first; `listen_on` may hold placeholders kitty expands
         // ({kitty_pid}), so a failure falls back to a new instance.
-        if let Some(to) = self.kitty.listen_on.as_deref().filter(|t| !t.contains('{')) {
+        let listen_on = self.kitty.lock_ok().listen_on.clone();
+        if let Some(to) = listen_on.as_deref().filter(|t| !t.contains('{')) {
             let remote = std::process::Command::new("kitty")
                 .args(["@", "--to", to, "launch", "--type=os-window", "--cwd"])
                 .arg(cwd)
@@ -679,7 +748,7 @@ impl Core {
         if !todo.is_empty() {
             let fresh: Vec<(PathBuf, GitSummary)> = std::thread::scope(|sc| {
                 let jobs: Vec<_> =
-                    todo.iter().map(|p| sc.spawn(|| ((*p).clone(), self.projects.git_summary(p)))).collect();
+                    todo.iter().map(|p| sc.spawn(|| ((*p).clone(), services::git_summary(p)))).collect();
                 jobs.into_iter().filter_map(|j| j.join().ok()).collect()
             });
             let mut value = if all { BTreeMap::new() } else { std::mem::take(&mut g.value) };
@@ -693,26 +762,10 @@ impl Core {
         g.value.iter().filter(|(p, _)| paths.contains(*p)).map(|(p, s)| (p.clone(), s.clone())).collect()
     }
 
-    fn main_of(&self, path: &Path) -> Option<PathBuf> {
-        let mut m = self.mains.lock_ok();
-        m.entry(path.to_path_buf()).or_insert_with(|| agent_runtime::worktree::main_checkout(path).ok()).clone()
-    }
-
-    /// The project an agent belongs to: the one it was started from, else the
-    /// project whose folder (or main checkout) is the agent's repository.
-    /// Paths are compared as stored: the registry, the runtime and
-    /// `main_checkout` all keep resolved paths.
-    fn project_of(&self, agent_id: &str, repo: &Path, projects: &[Project]) -> Option<String> {
-        if let Some(Value::String(id)) = self.settings.get(&format!("agent-project:{agent_id}")) {
-            if projects.iter().any(|p| p.id == id) {
-                return Some(id);
-            }
-        }
-        projects
-            .iter()
-            .find(|p| p.path == repo)
-            .or_else(|| projects.iter().find(|p| self.main_of(&p.path).as_deref() == Some(repo)))
-            .map(|p| p.id.clone())
+    /// The project of an agent's repository: projects and agents both record
+    /// the main checkout (FR-105), as resolved paths.
+    fn project_of(&self, repo: &Path, projects: &[Project]) -> Option<String> {
+        projects.iter().find(|p| p.path == repo).map(|p| p.id.clone())
     }
 
     fn memory(&self, agents_mb: f64) -> AppMemory {
@@ -727,9 +780,9 @@ impl Core {
 
     /// Everything the shell shows, polled by the UI about once a second.
     pub fn state(&self) -> Value {
-        let projects = self.projects.list();
+        let projects = self.projects();
         let mut agents = vec![];
-        let mut warnings: Vec<Value> = self.warnings.iter().map(|w| json!(w)).collect();
+        let mut warnings: Vec<Value> = self.warnings.lock_ok().iter().map(|w| json!(w)).collect();
         let (mut usage, mut queue, mut meta, mut alerts, mut done, mut ask) =
             (Value::Null, vec![], BTreeMap::new(), vec![], vec![], None);
         if let Some(rt) = &self.rt {
@@ -764,7 +817,7 @@ impl Core {
             if let Some(m) = meta.get(&id) {
                 a["created_at_ms"] = json!(m.created_at_ms);
                 a["effort"] = json!(m.effort);
-                a["project_id"] = json!(self.project_of(&id, &m.repo, &projects));
+                a["project_id"] = json!(self.project_of(&m.repo, &projects));
                 a["branch"] = json!(m.branch);
                 a["git"] = json!(git.get(&m.worktree));
             }
@@ -774,9 +827,16 @@ impl Core {
             a["attached"] = json!(readers.contains(&id));
         }
         let items = self.inbox_items(&agents, &alerts, &done, ask);
+        let setup = self.setup_view(&projects);
         let projects: Vec<Value> = projects
             .iter()
-            .map(|p| json!({"id": p.id, "name": p.name, "path": p.path, "git": git.get(&p.path)}))
+            .map(|p| {
+                json!({
+                    "id": p.id, "name": p.name, "path": p.path, "default_branch": p.default_branch,
+                    "last_fetch_at_ms": p.last_fetch_at_ms, "last_fetch_error": p.last_fetch_error,
+                    "git": git.get(&p.path),
+                })
+            })
             .collect();
         json!({
             "now_ms": now_ms(),
@@ -789,6 +849,8 @@ impl Core {
             "inbox": {"items": items, "badge": inbox::badge(&items)},
             "permissions": self.broker.list(),
             "memory": self.memory(agents_mb),
+            "memory_watch": self.watch.view(),
+            "setup": setup,
         })
     }
 
@@ -799,11 +861,14 @@ impl Core {
         let alloc_of: BTreeMap<String, String> =
             rt.store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.allocation.clone())).collect());
         let history = self.history.lock_ok();
-        Ok(rt.with_governor(|g| {
-            planner::build(g, Timestamp::now(), &history, five_reset, &|alloc| {
+        let mut v = rt.with_governor(|g| {
+            planner::build(g, Timestamp::now(), &history, &self.past_actions, five_reset, &|alloc| {
                 live.iter().filter(|id| alloc_of.get(*id).is_some_and(|a| a == alloc)).count()
             })
-        }))
+        });
+        v.first_run_ms = self.settings.get(setup::FIRST_RUN_KEY).and_then(|v| v.as_i64());
+        v.plan_set = self.settings.get(setup::PLAN_KEY).is_some();
+        Ok(v)
     }
 
     /// Week planner and title-bar controls (FR-809, FR-811).
@@ -838,6 +903,67 @@ impl Core {
     }
 }
 
+// ------------------------------------------------------------ projects (§4.1)
+
+/// Through the runtime when it runs (audit, its worktree rows and agents);
+/// registering also works on the app's own store without it.
+impl Core {
+    /// Registered projects, not archived (FR-101).
+    pub fn projects(&self) -> Vec<Project> {
+        self.db.projects(false).unwrap_or_default().into_iter().map(Project::from).collect()
+    }
+
+    /// FR-101: a local folder (its main checkout is registered).
+    pub fn project_add(&self, path: &Path) -> Result<Project> {
+        let p = match &self.rt {
+            Some(rt) => rt.add_project(path)?,
+            None => orch_git::project::register(&self.db, path)?,
+        };
+        Ok(p.into())
+    }
+
+    /// FR-101: clones `url` into `parent` (default `~/dev`), then registers it.
+    pub fn project_clone(&self, url: &str, parent: Option<&Path>, name: Option<&str>) -> Result<Project> {
+        let parent = parent.map(Path::to_path_buf).unwrap_or_else(|| agent_runtime::paths::home_dir().join("dev"));
+        std::fs::create_dir_all(&parent)?;
+        Ok(self.runtime()?.clone_project(url, &parent, name)?.into())
+    }
+
+    /// Status, worktrees (orphans flagged), branches, and with `with_prs` the
+    /// open PRs with CI (FR-102, FR-104, FR-106).
+    pub fn project_detail(&self, id: &str, with_prs: bool) -> Result<Value> {
+        let mut v = self.runtime()?.project_detail(id, with_prs)?;
+        if let Some(p) = self.db.project(id)? {
+            v["trusted"] = json!(setup::trusted(&p.path));
+        }
+        Ok(v)
+    }
+
+    /// FR-103 on demand.
+    pub fn project_fetch(&self, id: &str) -> Result<Value> {
+        let rt = self.runtime()?;
+        let out = rt.fetch_project(id, &rt.cfg.fetch, rt.cfg.conditions.as_ref())?;
+        self.git.lock_ok().at = None; // ahead/behind changed
+        Ok(json!(out))
+    }
+
+    /// FR-104: one worktree of the app's sibling folder; unmerged work needs `discard`.
+    pub fn worktree_remove(&self, project: &str, path: &Path, delete_branch: bool, discard: bool) -> Result<Value> {
+        Ok(json!(self.runtime()?.remove_worktree(project, path, delete_branch, discard)?))
+    }
+
+    /// J11 step 1: worktrees, branches and agents of the project.
+    pub fn removal_plan(&self, id: &str) -> Result<Value> {
+        self.runtime()?.removal_plan(id)
+    }
+
+    /// J11: stops and archives the project's agents, removes merged worktrees
+    /// and the confirmed ones, keeps the rest, deletes or archives history.
+    pub fn project_remove(&self, id: &str, choices: &orch_git::project::RemovalChoices) -> Result<Value> {
+        Ok(json!(self.runtime()?.remove_project(id, choices)?))
+    }
+}
+
 impl Drop for Core {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
@@ -859,7 +985,8 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
     if let Some(c) = &cfg.claude {
         rc.claude = c.clone();
     }
-    rc.shadow = !cfg.enforce;
+    // FR-812: shadow mode unless enforcing was chosen (after the first week).
+    rc.shadow = !(cfg.enforce || setup::enforce_chosen(&paths.db_file()));
     // Permission prompts: the runtime answers from the stored rules only; the
     // app's broker holds the rest for its Inbox (and the pane's own dialog).
     rc.permission_hold = Duration::ZERO;
@@ -888,6 +1015,39 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
         warnings.push(format!("OTLP receiver not started: {e:#}"));
     }
     Ok(rt)
+}
+
+/// The app's own store when the runtime did not start (another core owns
+/// the socket): projects and settings still work. A store that cannot be
+/// opened (a newer schema) gives a scratch one, with a warning.
+fn open_store(paths: &AppPaths, warnings: &mut Vec<String>) -> orch_store::Store {
+    match orch_store::Store::open(&paths.db_file()) {
+        Ok(db) => db,
+        Err(e) => {
+            warnings.push(format!("store {} not opened ({e:#}): projects and settings are not kept", paths.db_file().display()));
+            let tmp = std::env::temp_dir().join(format!("orchestrator-{}.db", std::process::id()));
+            orch_store::Store::open(&tmp).expect("a scratch store in the temp folder")
+        }
+    }
+}
+
+/// The plan week so far, from the store: the "actual" line (forecast
+/// snapshots, every 5 min while the app ran) and the log of earlier starts.
+fn past_week(rt: &Runtime, started: Timestamp) -> (History, Vec<governor::GovernorAction>) {
+    let week_start = rt.with_governor(|g| g.plan().week_start);
+    let since = week_start.as_millisecond().max(0) as u64;
+    let mut h = History::default();
+    for f in rt.db.forecasts_since(since).unwrap_or_default() {
+        h.push(HistoryPoint { t_ms: f.ts.as_millisecond(), used: f.used, governed: f.governed, five_hour: f.five_hour }, since as i64);
+    }
+    let actions = rt
+        .db
+        .actions(500)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| a.ts < started) // the planner keeps this plan week's
+        .collect();
+    (h, actions)
 }
 
 /// The Governor's pending "ask" (FR-810), as an Inbox item.
@@ -969,6 +1129,8 @@ mod tests {
     pub(crate) fn test_core(d: &Path) -> Arc<Core> {
         let repo = d.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
+        orch_git::fixtures::git(&repo, &["init", "-q", "-b", "main"]);
+        orch_git::fixtures::git(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
         Core::start(CoreConfig {
             home: d.join("home"),
             claude: Some(d.join("no-claude")),
@@ -1117,10 +1279,10 @@ mod tests {
         // The runtime records the main checkout as the agent's repo (FR-105).
         let main = main.canonicalize().unwrap();
         core.runtime().unwrap().store.write(|s| s.agents.insert("a1".into(), record("a1", main.clone()))).unwrap();
-        assert_eq!(core.state()["agents"][0]["project_id"], "feat", "found through the project's main checkout");
-        core.settings.set("agent-project:a1", json!("nope")).unwrap();
-        assert_eq!(core.state()["agents"][0]["project_id"], "feat", "an unknown remembered project is ignored");
-        assert_eq!(core.projects.list().len(), 1, "the main checkout was not added as a second project");
+        let projects = core.projects();
+        assert_eq!(projects.len(), 1, "registering the worktree registers its main checkout, once");
+        assert_eq!(projects[0].path, main);
+        assert_eq!(core.state()["agents"][0]["project_id"], json!(projects[0].id));
         core.shutdown();
     }
 
@@ -1168,6 +1330,188 @@ mod tests {
         core.governor_act("undo", Some(pause.action.id.0 as f64)).unwrap();
         assert!(core.governor_act("run_now", None).is_err());
         assert!(core.governor_act("nope", None).is_err());
+        core.shutdown();
+    }
+
+    /// Starts a core on `home` with `repo` registered (the restart tests reuse the home).
+    fn core_on(home: &Path, repo: &Path) -> Arc<Core> {
+        Core::start(CoreConfig {
+            home: home.to_path_buf(),
+            claude: Some(home.join("no-claude")),
+            kitty_conf: home.join("kitty.conf"),
+            projects: vec![repo.to_path_buf()],
+            recover: false,
+            enforce: false,
+        })
+    }
+
+    #[test]
+    fn the_planner_history_survives_a_restart() {
+        let d = tmp();
+        let core = test_core(d.path());
+        let rt = core.runtime().unwrap().clone();
+        let (week_start, reset) = rt.with_governor(|g| (g.plan().week_start, g.plan().reset_at));
+        // An observed weekly reading earlier this week, as the statusline stores it.
+        let t0 = (Timestamp::now().as_millisecond() - 60_000).max(week_start.as_millisecond() + 1) as u64;
+        rt.db.add_usage(orch_store::UsageRecord {
+            ts_ms: t0,
+            weekly_pct: Some(42.0),
+            weekly_resets_at: Some(reset.as_second()),
+            provenance: "observed".into(),
+            source: Some(orch_store::UsageSource::Statusline),
+            ..Default::default()
+        });
+        rt.db.flush().unwrap();
+        // Restore what the runtime would have seen live: replay through a restart first.
+        core.shutdown();
+        drop((core, rt));
+        let home = d.path().join("home");
+        let core = core_on(&home, &d.path().join("repo"));
+        let rt = core.runtime().unwrap().clone();
+        let used = rt.with_governor(|g| g.snapshot(Timestamp::now()).used_central);
+        assert!((used - 42.0).abs() < 2.0, "usage replayed: {used}");
+        rt.tick(); // a forecast snapshot (every 5 min) and the actions so far
+        core.governor_act("pause_all", None).unwrap();
+        rt.tick();
+        let before = core.planner().unwrap();
+        assert!(!before.log.is_empty() && before.log.iter().all(|l| !l.past));
+        core.shutdown(); // stores the last point
+        drop((core, rt));
+
+        let core = core_on(&home, &d.path().join("repo"));
+        let p = core.planner().unwrap();
+        assert!(p.actual.len() >= 2, "the actual line covers the earlier run: {:?}", p.actual);
+        assert!(p.actual.iter().all(|h| h.t_ms >= p.week_start_ms));
+        assert!(p.actual.iter().any(|h| (h.used - 42.0).abs() < 10.0), "the second run's points: {:?}", p.actual);
+        let past: Vec<_> = p.log.iter().filter(|l| l.past).collect();
+        assert!(past.iter().any(|l| l.action.kind_name() == "pause_all"), "earlier actions in the log");
+        assert!(past.iter().all(|l| !l.can_undo));
+        let keys: std::collections::BTreeSet<_> = p.log.iter().map(|l| l.key.clone()).collect();
+        assert_eq!(keys.len(), p.log.len(), "log keys are unique across starts");
+        assert!(p.shadow && p.first_run_ms.is_some());
+        core.shutdown();
+    }
+
+    #[test]
+    fn enforcing_is_chosen_once_and_kept_across_restarts() {
+        let d = tmp();
+        let core = test_core(d.path());
+        assert!(core.planner().unwrap().shadow, "shadow mode by default (FR-812)");
+        // Pause all survives the rebuilt Governor; stored actions are not overwritten.
+        let rt = core.runtime().unwrap().clone();
+        core.governor_act("pause_all", None).unwrap();
+        rt.tick();
+        core.set_enforce(true).unwrap();
+        assert!(!core.planner().unwrap().shadow);
+        assert!(rt.with_governor(|g| g.is_paused_all()), "Pause all carried over");
+        rt.tick();
+        rt.db.flush().unwrap();
+        let pauses = rt.db.actions(50).unwrap().iter().filter(|a| a.kind_name() == "pause_all").count();
+        assert_eq!(pauses, 2, "the first start's pause row is kept next to the re-applied one");
+        core.governor_act("resume_all", None).unwrap();
+        let sprint = rt.governor_act(|g, now| (g.start_sprint(5.0, now), vec![]));
+        assert!(sprint.is_ok());
+        assert!(core.set_enforce(false).unwrap_err().to_string().contains("sprint"));
+        drop(rt);
+        core.shutdown();
+        drop(core);
+        let core = core_on(&d.path().join("home"), &d.path().join("repo"));
+        assert!(!core.planner().unwrap().shadow, "kept");
+        core.set_enforce(false).unwrap();
+        assert!(core.planner().unwrap().shadow);
+        core.shutdown();
+    }
+
+    #[test]
+    fn the_first_plan_keeps_the_week_s_usage() {
+        let d = tmp();
+        let core = test_core(d.path());
+        let rt = core.runtime().unwrap().clone();
+        let reset = rt.with_governor(|g| g.plan().reset_at);
+        rt.db.add_usage(orch_store::UsageRecord {
+            ts_ms: now_ms() - 60_000,
+            weekly_pct: Some(30.0),
+            weekly_resets_at: Some(reset.as_second()),
+            provenance: "observed".into(),
+            source: Some(orch_store::UsageSource::Statusline),
+            ..Default::default()
+        });
+        rt.db.flush().unwrap();
+        let mut form = core.plan_form().unwrap();
+        assert_eq!(form.allocations.len(), 1, "even split over the one project");
+        assert_eq!(form.allocations[0].id, "repo");
+        form.reserve_pct = 15.0;
+        core.set_plan(&form).unwrap();
+        let p = core.planner().unwrap();
+        assert_eq!(p.reserve_pct, 15.0);
+        assert!(p.plan_set);
+        assert!((p.snapshot.used_central - 30.0).abs() < 2.0, "the week's samples replayed into the new plan: {}", p.snapshot.used_central);
+        assert!(p.allocations.iter().any(|a| a.id == "repo"));
+        core.shutdown();
+    }
+
+    #[test]
+    fn projects_live_in_the_store_and_leave_per_j11() {
+        let d = tmp();
+        let core = test_core(d.path());
+        assert_eq!(core.projects().len(), 1);
+        let (_keep, other) = orch_git::fixtures::scratch_repo();
+        let p = core.project_add(&other).unwrap();
+        assert_eq!(core.project_add(&other).unwrap(), p, "idempotent");
+        assert!(core.project_add(&d.path().join("missing")).is_err());
+        let detail = core.project_detail(&p.id, false).unwrap();
+        assert_eq!(detail["status"]["branch"], "main");
+        assert!(detail["worktrees"].is_array() && detail["branches"].is_array());
+        let st = core.state();
+        let row = st["projects"].as_array().unwrap().iter().find(|x| x["id"] == json!(p.id)).unwrap().clone();
+        assert_eq!(row["git"]["branch"], "main");
+        assert_eq!(row["default_branch"], "main");
+        // A worktree with unmerged work is kept unless confirmed (FR-104, J11).
+        let rt = core.runtime().unwrap();
+        let wt = rt
+            .create_worktree(&other, &orch_protocol::WorktreeKindSpec::Solo { slug: "w1".into() }, None)
+            .unwrap();
+        orch_git::fixtures::commit_file(&wt.path, "x.txt", "x", "work");
+        let own = other.join("mine");
+        orch_git::fixtures::git(&other, &["worktree", "add", "-q", "-b", "mine", own.to_str().unwrap()]);
+        assert!(core.worktree_remove(&p.id, &own, true, true).unwrap_err().to_string().contains("only removes its own"));
+        assert!(own.exists());
+        // A worktree whose folder is gone is still the app's to prune.
+        let gone = rt.create_worktree(&other, &orch_protocol::WorktreeKindSpec::Solo { slug: "gone".into() }, None).unwrap();
+        std::fs::remove_dir_all(&gone.path).unwrap();
+        core.worktree_remove(&p.id, &gone.path, true, false).unwrap();
+        let plan = core.removal_plan(&p.id).unwrap();
+        assert_eq!(plan["plan"]["worktrees"].as_array().unwrap().len(), 1);
+        let report = core
+            .project_remove(&p.id, &orch_git::project::RemovalChoices { remove_merged: true, discard: vec![], history: orch_git::project::History::Delete })
+            .unwrap();
+        assert_eq!(report["kept"].as_array().unwrap().len(), 1, "{report}");
+        assert!(wt.path.exists());
+        assert_eq!(core.projects().len(), 1);
+        // Projects persist: a new core on the same home lists the first one.
+        core.shutdown();
+        drop(core);
+        let core = core_on(&d.path().join("home"), &d.path().join("repo"));
+        assert_eq!(core.projects().len(), 1);
+        core.shutdown();
+    }
+
+    #[test]
+    fn the_first_version_s_settings_file_is_imported() {
+        let d = tmp();
+        let ui = d.path().join("home/ui");
+        std::fs::create_dir_all(&ui).unwrap();
+        std::fs::write(ui.join("settings.json"), r#"{"layout": {"focused": "p1"}}"#).unwrap();
+        let core = test_core(d.path());
+        assert_eq!(core.settings.get("layout"), Some(json!({"focused": "p1"})));
+        assert!(!ui.join("settings.json").exists());
+        core.set_editor("hx {file}:{line}").unwrap();
+        assert!(core.set_editor("  ").is_err());
+        assert_eq!(core.setup_view(&core.projects())["editor"], "hx {file}:{line}");
+        core.shutdown();
+        drop(core);
+        let core = core_on(&d.path().join("home"), &d.path().join("repo"));
+        assert_eq!(*core.editor_template.lock_ok(), "hx {file}:{line}", "kept");
         core.shutdown();
     }
 }

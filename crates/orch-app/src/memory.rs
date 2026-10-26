@@ -128,6 +128,11 @@ fn helpers_with_footprint(app_pid: i32) -> Vec<(String, f64)> {
     m
 }
 
+/// This app's WebKit helpers and their footprints now (`(name, MB)`).
+pub fn webkit_now() -> Vec<(String, f64)> {
+    helpers_with_footprint(std::process::id() as i32)
+}
+
 pub fn measure(shell_pids: &[i32], agent_mb: f64) -> AppMemory {
     let me = std::process::id() as i32;
     let core_mb = footprint_mb(me).unwrap_or(0.0);

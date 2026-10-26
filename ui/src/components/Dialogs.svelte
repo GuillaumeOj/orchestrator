@@ -1,7 +1,10 @@
 <script>
-  // Dialogs: New session (⌘T, Penpot 06 J2 step 1), Add project (⌘N), confirmations.
+  // Dialogs: New session (⌘T, Penpot 06 J2 step 1), Add project (⌘N: a folder
+  // or a git URL to clone, J1), the weekly plan, confirmations.
   // ⌘⏎ submits; esc cancels.
-  import { app, projects, contextProject, openAgent, refresh, toast } from '../lib/app.svelte.js';
+  import { app, projects, contextProject, openAgent, openProject, refresh, toast } from '../lib/app.svelte.js';
+  import PlanEditor from './PlanEditor.svelte';
+  import { expandHome } from '../lib/format.js';
   import { invoke, errText } from '../lib/ipc.js';
   import { PRESSURE } from '../lib/status.js';
   import Kbd from './Kbd.svelte';
@@ -13,6 +16,8 @@
   let form = $state({ project_id: '', name: '', model: 'haiku', effort: '', permission_mode: '', base: '', message: '' });
   // Add project
   let path = $state('');
+  let cloneInto = $state('');
+  const isUrl = (x) => /^(https?:\/\/|git@|ssh:\/\/)/.test(x.trim());
 
   $effect(() => {
     if (o?.kind === 'new-session') {
@@ -57,11 +62,15 @@
     if (busy) return;
     busy = true;
     try {
-      const p = await invoke('project_add', { path: path.trim().replace(/^~(?=\/)/, app.data?.core?.user_home ?? '~') });
+      const expand = (x) => expandHome(x, app.data?.core?.user_home ?? '~');
+      const p = isUrl(path)
+        ? await invoke('project_clone', { url: path.trim(), parent: cloneInto.trim() ? expand(cloneInto) : null, name: null })
+        : await invoke('project_add', { path: expand(path) });
       close();
       path = '';
       await refresh();
-      toast(`Added ${p.name}`);
+      openProject(p.id);
+      toast(`Added ${p.name} · fetching in the background`);
     } catch (e) {
       error = errText(e);
       busy = false;
@@ -74,7 +83,7 @@
   }
 </script>
 
-{#if o && ['new-session', 'add-project', 'confirm'].includes(o.kind)}
+{#if o && ['new-session', 'add-project', 'plan', 'confirm'].includes(o.kind)}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="scrim" onclick={close}></div>
   {#if o.kind === 'new-session'}
@@ -127,14 +136,24 @@
     <form onsubmit={(e) => (e.preventDefault(), addProject())}>
       <h3>Add project</h3>
       <!-- svelte-ignore a11y_autofocus -->
-      <label>Folder <input class="field mono" bind:value={path} autofocus placeholder="~/dev/my-project" spellcheck="false" /></label>
-      <p class="muted">A local folder, usually a git repository. Cloning from a URL comes with the project registry.</p>
+      <label>Folder or git URL <input class="field mono" bind:value={path} autofocus placeholder="~/dev/my-project or git@github.com:me/repo.git" spellcheck="false" /></label>
+      {#if isUrl(path)}
+        <label>Clone into <input class="field mono" bind:value={cloneInto} placeholder="~/dev" spellcheck="false" /></label>
+        <p class="muted">Cloned with your own git credentials (no prompt; 10 min at most), then registered.</p>
+      {:else}
+        <p class="muted">A git repository (a worktree registers its main checkout). The app reads its branch, remotes and status, then fetches in the background.</p>
+      {/if}
       {#if error}<p class="err">{error}</p>{/if}
       <div class="foot">
         <button type="button" class="btn ghost" onclick={close}>Cancel <Kbd keys="esc" /></button>
-        <button type="submit" class="btn primary" disabled={busy || !path.trim()}>Add <Kbd keys="⏎" /></button>
+        <button type="submit" class="btn primary" disabled={busy || !path.trim()}>{busy ? (isUrl(path) ? 'Cloning…' : 'Adding…') : isUrl(path) ? 'Clone' : 'Add'} <Kbd keys="⏎" /></button>
       </div>
     </form>
+    </div>
+  {:else if o.kind === 'plan'}
+    <div class="dlg" role="dialog" aria-modal="true" aria-label="Weekly plan" tabindex="-1" onkeydown={(e) => e.key === 'Escape' && (e.preventDefault(), close())}>
+      <h3>Weekly plan</h3>
+      <PlanEditor onSaved={close} onCancel={close} />
     </div>
   {:else}
     <div class="dlg small" role="alertdialog" aria-modal="true" aria-label={o.text} tabindex="-1" onkeydown={(e) => onKey(e, () => (close(), o.onYes()))}>
@@ -206,7 +225,6 @@
     border-radius: var(--radius-sm);
   }
   .err {
-    color: var(--color-status-error);
     white-space: pre-wrap;
   }
   .foot {
