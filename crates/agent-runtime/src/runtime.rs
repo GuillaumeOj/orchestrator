@@ -1083,7 +1083,7 @@ impl Runtime {
         json!({
             "five_hour": view.five_hour,
             "weekly": view.weekly,
-            "governor": {"used": snap.used, "provenance": snap.provenance, "plan": snap.plan, "error": snap.error, "state": snap.state, "five_hour": snap.five_hour},
+            "governor": {"used": snap.used, "provenance": snap.provenance, "plan": snap.plan, "ideal": snap.ideal, "governed": snap.governed, "error": snap.error, "state": snap.state, "five_hour": snap.five_hour},
             "agents": view.agents,
         })
     }

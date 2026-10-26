@@ -148,8 +148,12 @@ pub struct ForecastSnapshot {
     pub margin: f64,
     /// `ideal(t)` of ADR-007 (the agents' curve).
     pub ideal: f64,
-    /// What W should be now: `ideal + unattributed so far`.
+    /// What W should be now: `ideal + interactive used + unattributed so far`.
     pub plan: f64,
+    /// The governed share `G = W − interactive used − unattributed so far`:
+    /// the agents' own usage, critical work included (title bar "agents").
+    pub governed: f64,
+    /// `G − ideal` (= `W − plan`), pp.
     pub error: f64,
     pub eta: Option<Timestamp>,
     pub state: PressureState,
@@ -259,6 +263,9 @@ struct Metrics {
     k: f64,
     u_so_far: f64,
     u_forecast: f64,
+    /// Reserve used this week by interactive work, pp.
+    r_used: f64,
+    governed: f64,
     /// `100 − reserve − U_forecast`: what the curve spreads over the week.
     budget: f64,
     reserve_left: f64,
@@ -301,6 +308,8 @@ pub struct Governor {
     app_cost: f64,
     week_cost_start: f64,
     reserve_cost: f64,
+    /// The interactive part of `reserve_cost` (critical work is the agents' own).
+    interactive_cost: f64,
     alloc_cost: BTreeMap<AllocationId, f64>,
     service_offset: BTreeMap<AllocationId, f64>,
     agent_alloc: BTreeMap<AgentId, AllocationId>,
@@ -343,6 +352,7 @@ impl Governor {
             app_cost: 0.0,
             week_cost_start: 0.0,
             reserve_cost: 0.0,
+            interactive_cost: 0.0,
             alloc_cost: BTreeMap::new(),
             service_offset: BTreeMap::new(),
             agent_alloc: BTreeMap::new(),
@@ -399,6 +409,7 @@ impl Governor {
     fn start_week_accounting(&mut self, now: Timestamp) {
         self.week_cost_start = self.app_cost;
         self.reserve_cost = 0.0;
+        self.interactive_cost = 0.0;
         self.alloc_cost.clear();
         self.service_offset.clear();
         self.alerts_done.clear();
@@ -528,11 +539,16 @@ impl Governor {
         let u_forecast = u_so_far + u * self.curve.wall_hours_left(now);
         let budget = (100.0 - self.plan.reserve_pct - u_forecast).max(0.0);
         let ideal = self.curve.fraction(now) * budget;
-        // Interactive and critical work is admitted first and counts in W like
-        // everything else: it eats into the reserve (the headroom between the
-        // agents' curve and 100 %), and the pacing squeezes autonomous work.
-        let plan = ideal + u_so_far;
-        let error = w_eff - plan;
+        // The error is on the governed share (ADR-007, decision 2026-10-21):
+        // interactive work draws on the reserve and outside-app usage on its
+        // forecast, so neither pushes agents into Amber/Red by itself. Critical
+        // work also draws on the reserve but is the agents' own, so it stays in
+        // G. The eta below stays on the total W, so a week that would run out
+        // still turns Red.
+        let r_used = self.interactive_cost / k;
+        let governed = (w_eff - r_used - u_so_far).max(0.0);
+        let error = governed - ideal;
+        let plan = w_eff - error;
         let reserve_left = 100.0 - w_eff - (budget - ideal) - (u_forecast - u_so_far);
 
         // Projected exhaustion at the current burn rate, counted in active hours
@@ -560,6 +576,8 @@ impl Governor {
             k,
             u_so_far,
             u_forecast,
+            r_used,
+            governed,
             budget,
             reserve_left,
             ideal,
@@ -612,6 +630,7 @@ impl Governor {
             margin: m.margin,
             ideal: m.ideal,
             plan: m.plan,
+            governed: m.governed,
             error: m.error,
             eta: m.eta,
             state: self.sm.state,
@@ -654,6 +673,9 @@ impl Governor {
             };
             if class != TurnClass::Autonomous {
                 self.reserve_cost += c;
+            }
+            if class == TurnClass::Interactive {
+                self.interactive_cost += c;
             }
             if let Some(a) = alloc {
                 *self.alloc_cost.entry(a).or_insert(0.0) += c;
@@ -1212,9 +1234,9 @@ impl Governor {
             QueueReason::FiveHourGuard => m.f_resets_at,
             QueueReason::DeferredUntilReset | QueueReason::HardCap => Some(self.plan.reset_at),
             QueueReason::RedTier => {
-                // When plan(t) catches up with W − red_exit, or when aging lifts the tier.
+                // When ideal(t) catches up with G − red_exit, or when aging lifts the tier.
                 let budget = m.budget.max(1e-9);
-                let target = m.w_eff - self.policy.thresholds.red_exit - m.u_so_far;
+                let target = m.governed - self.policy.thresholds.red_exit;
                 let by_curve = self
                     .curve
                     .time_at_hours(target / budget * self.curve.total_hours())
@@ -1283,9 +1305,10 @@ impl Governor {
         let inputs = self.pressure_inputs(&m);
         if let Some((from, to)) = self.sm.step(&inputs, &self.policy.thresholds, now) {
             let reason = format!(
-                "W {:.1} % vs plan {:.1} % (e {:+.1} pp){}",
+                "W {:.1} %, agents {:.1} % vs plan {:.1} % (e {:+.1} pp){}",
                 m.w_eff,
-                m.plan,
+                m.governed,
+                m.ideal,
                 m.error,
                 m.eta.map(|t| format!(", eta {t}")).unwrap_or_default()
             );
