@@ -418,8 +418,12 @@ fn ideal_curve_follows_weighted_hours() {
 fn eta_projects_the_burn_over_working_time() {
     let mut g = governor();
     // Burn 4 pp per working hour from the start: 100 % in 25 h, i.e. Wednesday.
+    // The usage is the app's own (k = 10): outside usage would be damped (FR-813).
+    let mut last = 0.0;
     for m in (0..=hours(4.0)).step_by(10) {
-        g.ingest(&weekly(at(m), "A-1", 0.0, (m as f64 / 15.0).floor()));
+        let pct = (m as f64 / 15.0).floor();
+        g.ingest(&weekly(at(m), "A-1", (pct - last) * 10.0, pct));
+        last = pct;
         g.tick(at(m));
     }
     let s = g.snapshot(at(hours(4.0)));
@@ -469,7 +473,7 @@ fn five_hour_projection_caps_live_agents_to_one() {
 #[test]
 fn state_changes_wait_for_the_minimum_dwell() {
     let mut g = governor();
-    g.ingest(&weekly(at(5), "obs", 0.0, 30.0));
+    g.ingest(&weekly(at(5), "obs", 300.0, 30.0));
     for m in 5..30 {
         g.tick(at(m));
         assert_eq!(g.state(), PressureState::Green, "dwell from creation at minute {m}");
@@ -595,7 +599,7 @@ fn shadow_mode_decides_and_logs_but_never_enforces() {
 }
 
 fn drive_red_shadow(g: &mut Governor) {
-    g.ingest(&weekly(at(40), "obs", 0.0, 30.0));
+    g.ingest(&weekly(at(40), "obs", 300.0, 30.0));
     g.tick(at(40));
     assert_eq!(g.state(), PressureState::Red, "shadow mode still tracks the state");
     let defer = g.actions().iter().find(|a| a.kind_name() == "defer_after_reset");

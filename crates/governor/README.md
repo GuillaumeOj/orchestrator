@@ -95,12 +95,20 @@ All are `serde` types.
   `n + 0.5`.
 - Between observations, `W = W_obs + cost_since / k + u · Δt`. An observation older than 15 min is
   *estimated*. The margin is `min(margin(confidence), extrapolated delta)`, where
-  `margin(c) = 15 − 5c` pp. The full margin applies only when the week has no anchor at all.
+  `margin(c) = 15 − 5c` pp. The full margin applies only before the week's first reading when the
+  Governor did not see the reset.
+- The weekly reset is a reading of 0: the week's first reading calibrates against it, whether the
+  app ran from the reset, started later, or replays the week's samples after a restart. A late
+  start and a restart therefore give the same `k`, `u` and forecast.
 - `k` (cost per 1 % of the week) and `u` (unattributed pp per wall hour) come from an
   exponentially weighted least-squares fit of `ΔW ≈ ΔA/k + u·Δt`. It runs over calibration intervals
   of at least 3 pp and 30 min between observations, with weak priors `k = k0`, `u = 0`.
   Confidence is `n_eff / (n_eff + 3)`.
-- `U_so_far = W_obs − A_week/k`, and `U_forecast = U_so_far + u × wall hours left`.
+- `U_so_far = W_obs − A_week/k`, and `U_forecast = U_so_far + u' × wall hours left`, where
+  `u' = (u·h + u0·H0) / (h + H0)` shrinks the fitted rate toward a prior `u0`
+  (`unattributed_prior_pct_per_h`, default 0) by the hours `h` of the week observed so far, with
+  `H0 = unattributed_prior_hours` (default 48 h). One heavy day of outside use is then not
+  extrapolated over the whole week. All of the week's estimates use `u'`.
 
 **Curve.**
 - `H(t)` counts weighted working hours from the calendar: blocks per day in the plan's time zone,
@@ -115,8 +123,11 @@ All are `serde` types.
 **Projected total.**
 - `P = W + burn × H_left + u × off-hours left`: the total W projected at the reset. Off-hours here
   are the wall hours with weight 0, where outside usage goes on and the burn is not measured.
-- `burn` is an EWMA per weighted hour with τ = 24 weighted hours, primed with the plan's pace.
-  Per weighted hour, so the projection follows the curve: half-weight blocks and sprints.
+- `burn` is an EWMA per weighted hour with τ = 24 weighted hours. Per weighted hour, so the
+  projection follows the curve: half-weight blocks and sprints. It is bias-corrected: the weight
+  the measurement does not have yet (after the reset or a restart) goes to the on-plan pace,
+  `((budget − ideal) + u' × working wall hours left) / H_left`. Outside usage that already shrank
+  the agents' budget therefore does not by itself project the week over the limit.
 - `eta` (shown only) is when the total reaches 100 % along the curve at that burn.
 
 **States.**
