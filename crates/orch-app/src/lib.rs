@@ -104,6 +104,8 @@ pub fn run() {
             commands::project_detail,
             commands::project_fetch,
             commands::worktree_remove,
+            commands::worktree_diff,
+            commands::worktree_create_pr,
             commands::project_removal_plan,
             commands::project_remove,
             commands::set_editor,

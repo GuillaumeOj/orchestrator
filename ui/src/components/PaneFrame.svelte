@@ -11,12 +11,13 @@
   import PlannerPane from '../panes/PlannerPane.svelte';
   import ProjectPane from '../panes/ProjectPane.svelte';
   import SetupPane from '../panes/SetupPane.svelte';
+  import DiffPane from '../panes/DiffPane.svelte';
 
   let { paneId, zoomed = false } = $props();
   const spec = $derived(app.panes[paneId]);
   const focused = $derived(app.focused === paneId);
   const n = $derived(visible(app.layout).indexOf(paneId) + 1);
-  const kind = $derived({ agent: 'claude', shell: 'zsh', editor: 'nvim', overview: 'overview', inbox: 'inbox', planner: 'planner', project: 'project', setup: 'setup' }[spec?.type]);
+  const kind = $derived({ agent: 'claude', shell: 'zsh', editor: 'nvim', overview: 'overview', inbox: 'inbox', planner: 'planner', project: 'project', setup: 'setup', diff: 'diff' }[spec?.type]);
   const total = $derived(visible(app.layout).length);
 </script>
 
@@ -39,6 +40,7 @@
       {:else if spec.type === 'inbox'}<InboxPane />
       {:else if spec.type === 'planner'}<PlannerPane />
       {:else if spec.type === 'project'}<ProjectPane {paneId} />
+      {:else if spec.type === 'diff'}<DiffPane {paneId} />
       {:else if spec.type === 'setup'}<SetupPane />{/if}
     </div>
   </section>

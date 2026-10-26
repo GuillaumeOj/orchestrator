@@ -66,3 +66,15 @@ describe('components', () => {
     expect(app.pending).toHaveLength(0);
   });
 });
+
+describe('diff pane', () => {
+  it('renders its file list and reports a failed load', async () => {
+    const { default: DiffPane } = await import('../src/panes/DiffPane.svelte');
+    app.panes = { p1: { type: 'diff', projectId: 'shop-api', path: '/w', title: 'diff' } };
+    const { container } = render(DiffPane, { paneId: 'p1' });
+    expect(container.querySelector('[aria-label="Changed files"]')).toBeTruthy();
+    // Outside Tauri the load rejects: the pane says so instead of crashing.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(container.textContent).toMatch(/not in Tauri/);
+  });
+});

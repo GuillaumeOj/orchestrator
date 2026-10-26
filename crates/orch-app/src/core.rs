@@ -40,6 +40,8 @@ use crate::terms::{TermKind, Terms};
 const GIT_EVERY: Duration = Duration::from_secs(10);
 const MEMORY_EVERY: Duration = Duration::from_secs(5);
 const HISTORY_EVERY: Duration = Duration::from_secs(60);
+/// The diff pane renders at most this much patch (FR-107); the file list is always complete.
+const DIFF_PATCH_MAX: usize = 2 << 20;
 
 #[derive(Clone, Debug)]
 pub struct CoreConfig {
@@ -952,6 +954,51 @@ impl Core {
         Ok(json!(self.runtime()?.remove_worktree(project, path, delete_branch, discard)?))
     }
 
+    /// One of the project's git worktrees (the main checkout included) with its branch.
+    fn project_worktree(&self, p: &Project, path: &Path) -> Result<orch_git::worktree::GitWorktree> {
+        let want = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        orch_git::worktree::list(&p.path)?
+            .into_iter()
+            .find(|w| std::fs::canonicalize(&w.path).unwrap_or_else(|_| w.path.clone()) == want)
+            .ok_or_else(|| anyhow!("{} is not a worktree of {}", path.display(), p.name))
+    }
+
+    /// The branch a worktree's work goes back to: the base it was created from, else the default.
+    fn worktree_base(&self, p: &Project, wt: &Path) -> String {
+        self.rt
+            .as_ref()
+            .and_then(|rt| rt.store.read(|s| s.worktrees.get(wt).map(|w| w.base.clone())))
+            .unwrap_or_else(|| p.default_branch.clone())
+    }
+
+    /// FR-107: the worktree's changes against its base, from their merge base.
+    pub fn worktree_diff(&self, project: &str, path: &Path) -> Result<Value> {
+        let p = self.project(project)?;
+        let wt = self.project_worktree(&p, path)?;
+        let base = self.worktree_base(&p, &wt.path);
+        let mut v = json!(orch_git::diff::diff(&wt.path, &base, DIFF_PATCH_MAX)?);
+        v["branch"] = json!(wt.branch);
+        Ok(v)
+    }
+
+    /// The user's own "Create PR" (the UI confirms first): pushes the worktree's
+    /// branch with the user's credentials and opens the PR into its base (ADR-009).
+    pub fn worktree_create_pr(&self, project: &str, path: &Path, title: &str, body: &str, draft: bool) -> Result<String> {
+        let p = self.project(project)?;
+        let wt = self.project_worktree(&p, path)?;
+        let branch = wt.branch.clone().ok_or_else(|| anyhow!("the worktree has no branch (detached HEAD)"))?;
+        let base = self.worktree_base(&p, &wt.path);
+        if branch == base || branch == p.default_branch {
+            bail!("{branch} is the base branch: there is nothing to open a PR from");
+        }
+        if title.trim().is_empty() {
+            bail!("a PR needs a title");
+        }
+        let r = orch_git::gh::push(&wt.path, "origin", &branch).and_then(|_| orch_git::gh::create_pr(&wt.path, &base, &branch, title, body, draft));
+        let _ = self.db.audit("user", None, "pr", Some(&branch), if r.is_ok() { "ok" } else { "failed" }, json!({"base": base, "result": r.as_ref().map_err(|e| e.to_string())}));
+        r
+    }
+
     /// J11 step 1: worktrees, branches and agents of the project.
     pub fn removal_plan(&self, id: &str) -> Result<Value> {
         self.runtime()?.removal_plan(id)
@@ -1447,6 +1494,27 @@ mod tests {
         assert!(p.plan_set);
         assert!((p.snapshot.used_central - 30.0).abs() < 2.0, "the week's samples replayed into the new plan: {}", p.snapshot.used_central);
         assert!(p.allocations.iter().any(|a| a.id == "repo"));
+        core.shutdown();
+    }
+
+    #[test]
+    fn diff_and_pr_work_on_the_projects_own_worktrees_only() {
+        let d = tmp();
+        let core = test_core(d.path());
+        let (_keep, repo) = orch_git::fixtures::scratch_repo();
+        let p = core.project_add(&repo).unwrap();
+        let wt = core.runtime().unwrap().create_worktree(&repo, &orch_protocol::WorktreeKindSpec::Solo { slug: "d1".into() }, None).unwrap();
+        std::fs::write(wt.path.join("new.txt"), "hello\n").unwrap();
+        let v = core.worktree_diff(&p.id, &wt.path).unwrap();
+        assert_eq!(v["against"], "main");
+        assert!(v["files"].as_array().unwrap().iter().any(|f| f["path"] == "new.txt"));
+        assert!(v["branch"].as_str().unwrap().starts_with("orch/"));
+        // The main checkout is a worktree too; a stranger folder is not.
+        assert!(core.worktree_diff(&p.id, &repo).is_ok());
+        assert!(core.worktree_diff(&p.id, d.path()).unwrap_err().to_string().contains("not a worktree"));
+        // Nothing to open a PR from on the base branch; a PR needs a title.
+        assert!(core.worktree_create_pr(&p.id, &repo, "t", "", false).unwrap_err().to_string().contains("base branch"));
+        assert!(core.worktree_create_pr(&p.id, &wt.path, " ", "", false).unwrap_err().to_string().contains("title"));
         core.shutdown();
     }
 

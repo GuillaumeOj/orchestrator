@@ -83,6 +83,7 @@ function title(spec) {
     default:
       if (spec.type === 'project') return projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId;
       if (spec.type === 'trust') return `trust · ${spec.projectId}`;
+      if (spec.type === 'diff') return `diff · ${spec.branch ?? String(spec.path ?? '').split('/').pop()}`;
       return { overview: 'All projects', inbox: 'Inbox', planner: 'Week planner', setup: 'Set up Orchestrator' }[spec.type] ?? spec.type;
   }
 }
@@ -146,6 +147,13 @@ export function openProject(projectId) {
   const existing = findPane((s) => s.type === 'project' && s.projectId === projectId);
   if (existing) return focusPane(existing);
   addPane({ type: 'project', projectId }, app.layout ? 'tab' : 'right');
+}
+
+/** FR-107: a worktree's diff against its base, one pane per worktree. */
+export function openDiff(projectId, path, branch = null) {
+  const existing = findPane((s) => s.type === 'diff' && s.path === path);
+  if (existing) return focusPane(existing);
+  addPane({ type: 'diff', projectId, path, branch }, 'right');
 }
 
 /**
@@ -430,6 +438,7 @@ export function commands() {
       !live && { id: 'agent.resume', label: `Resume ${a.id}`, run: () => agentAction(a.id, 'resume') },
       { id: 'agent.kill', label: `Kill ${a.id}…`, run: () => confirm(`Kill ${a.id}?`, 'Its process group and every process left in its worktree get SIGTERM, then SIGKILL after 5 s. The session can be resumed.', () => agentAction(a.id, 'kill'), 'Kill') },
       { id: 'agent.shell', label: `Shell in ${a.id}'s worktree`, run: () => openShell({ agentId: a.id }) },
+      { id: 'agent.diff', label: `Diff of ${a.id} against its base`, run: () => openDiff(a.project_id, a.worktree, a.branch) },
       { id: 'agent.kitty', label: `Open ${a.id}'s worktree in kitty`, run: () => openInKitty(a.worktree) },
     ].filter(Boolean);
     for (const c of agentCmds) c.scope = 'agent';

@@ -5,7 +5,7 @@
   // work is never deleted without its own confirmation.
   // Keys (pane-local): f fetch, p load PRs, t trust, x remove project.
   import { onMount } from 'svelte';
-  import { app, projects, agents, openAgent, openShell, openTrust, refresh, toast, confirm, closePane } from '../lib/app.svelte.js';
+  import { app, projects, agents, openAgent, openShell, openTrust, openDiff, refresh, toast, confirm, closePane } from '../lib/app.svelte.js';
   import { invoke, errText } from '../lib/ipc.js';
   import { ago, dayTime, shortPath } from '../lib/format.js';
   import { displayState } from '../lib/status.js';
@@ -136,6 +136,7 @@
       <span class="grow"></span>
       <button class="btn" onclick={fetchNow} disabled={!!busy}>{busy === 'fetch' ? 'Fetching…' : 'Fetch'} <Kbd keys="f" /></button>
       <button class="btn ghost" onclick={() => openShell({ projectId: p.id, cwd: p.path, how: 'right' })}>Shell</button>
+      <button class="btn ghost" onclick={() => openDiff(p.id, p.path, d?.status?.branch)}>Diff</button>
       <button class="btn danger" onclick={startRemoval}>Remove project… <Kbd keys="x" /></button>
     </div>
 
@@ -175,7 +176,10 @@
               <td class="mono">{w.branch ?? '—'}</td>
               <td class="mono">{short(w.path)}</td>
               <td>{verdict(w)}{unmerged(w) ? ' · unmerged work' : ''}{w.row?.agent_id ? ` · ${w.row.agent_id}` : ''}{w.locked ? ' · locked' : ''}</td>
-              <td><button class="btn ghost" disabled={!!busy} onclick={() => removeWorktree(w)}>Remove</button></td>
+              <td>
+                <button class="btn ghost" onclick={() => openDiff(p.id, w.path, w.branch)}>Diff</button>
+                <button class="btn ghost" disabled={!!busy} onclick={() => removeWorktree(w)}>Remove</button>
+              </td>
             </tr>
           {:else}
             <tr><td colspan="4" class="muted">{d ? 'No worktree of the app.' : 'Loading…'}</td></tr>

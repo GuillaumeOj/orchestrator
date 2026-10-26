@@ -1,6 +1,6 @@
 <script>
   // Inspector (§9.2): the selection's details. Docked at ≥ 1512 px, overlay below.
-  import { app, contextAgent, projects, agentAction, openShell, openInKitty, confirm } from '../lib/app.svelte.js';
+  import { app, contextAgent, projects, agentAction, openShell, openInKitty, openDiff, confirm } from '../lib/app.svelte.js';
   import { displayState, queueReason, sessionPp, cacheState } from '../lib/status.js';
   import { clock, mb, pct, shortPath, tokens } from '../lib/format.js';
   import AgentChip from './AgentChip.svelte';
@@ -42,6 +42,7 @@
       {/if}
       <button class="btn danger" onclick={() => confirm(`Kill ${a.id}?`, 'SIGTERM to its group and to leftover processes in its worktree, SIGKILL after 5 s.', () => agentAction(a.id, 'kill'), 'Kill')}>Kill <Kbd keys="⇧+K" /></button>
       <button class="btn ghost" onclick={() => openShell({ agentId: a.id })}>Shell here <Kbd keys="⌘+; t" /></button>
+      <button class="btn ghost" onclick={() => openDiff(a.project_id, a.worktree, a.branch)}>Diff</button>
       <button class="btn ghost" onclick={() => openInKitty(a.worktree)}>Open in kitty</button>
     </div>
   {:else}

@@ -202,6 +202,16 @@ pub async fn worktree_remove(core: CoreState<'_>, project: String, path: PathBuf
 }
 
 #[tauri::command]
+pub async fn worktree_diff(core: CoreState<'_>, project: String, path: PathBuf) -> Res<Value> {
+    blocking(core, move |c| c.worktree_diff(&project, &path)).await
+}
+
+#[tauri::command]
+pub async fn worktree_create_pr(core: CoreState<'_>, project: String, path: PathBuf, title: String, body: String, draft: bool) -> Res<String> {
+    blocking(core, move |c| c.worktree_create_pr(&project, &path, &title, &body, draft)).await
+}
+
+#[tauri::command]
 pub async fn project_removal_plan(core: CoreState<'_>, id: String) -> Res<Value> {
     blocking(core, move |c| c.removal_plan(&id)).await
 }

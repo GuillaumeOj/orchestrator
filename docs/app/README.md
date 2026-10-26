@@ -93,8 +93,8 @@ Daily use: [RUNNING.md](RUNNING.md).
    component. Gate items (spec, PR) arrive with P2.
 7. **1280**: the overlay inspector covers the right pane when opened (Penpot avoided any covered
    pane by showing one pane only).
-8. **Week planner** is read-only: Edit plan is disabled; allocation weights are bars, not sliders.
-   Sprint mode (+5 pp), Pause all, undo and the pending ask work. The "actual" line starts when
+8. **Week planner**: Edit plan (`e`) opens the plan editor (days, hours, weights, reserve); allocation
+   weights are bars, not sliders. Sprint mode (+5 pp), Pause all, undo and the pending ask work. The "actual" line starts when
    the app starts (no stored history yet); "w/ governor" is an estimate (the error closing
    linearly by the reset).
 9. **Title bar**: native traffic lights over the bar (`titleBarStyle: Overlay`); the Inbox count
@@ -102,8 +102,13 @@ Daily use: [RUNNING.md](RUNNING.md).
 10. **Theme**: user choice (palette: Theme Dark/Light/system) > system. Deriving surface, text and
     accent from kitty (§9.1) is not implemented.
 11. **Icons**: Material glyphs of FiraCode Nerd Font Mono loaded from the user's fonts through
-    CoreText at start (not bundled in the `.app` yet).
-12. **Diff / Open diff** and **Create PR** are not in P1's app yet (no diff pane).
+    CoreText at start; `scripts/app.sh` bundles Regular, Medium, SemiBold and Bold in the `.app`
+    (`Contents/Resources/fonts`, not in git), used when the font is not installed.
+12. **Diff pane** (FR-107): a worktree's changes against its base from the merge base (uncommitted and
+    untracked included), a file list with change markers, `j`/`k`, `e` (open in nvim), `r`. Opened from the
+    project pane, the inspector or the palette. **Create PR** (`c`) is the user's own: it confirms, then
+    pushes the branch with the user's credentials and opens the PR with `gh` (ADR-009). No syntax
+    highlighting, no side-by-side view.
 
 ## Spec edits (applied in SPEC v0.7, ADR-003, ADR-006)
 
