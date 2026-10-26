@@ -6,6 +6,7 @@
   import { classify } from './lib/keyboard.js';
   import { invoke, listen, inTauri } from './lib/ipc.js';
   import { loadUiFont, prepareKitty } from './lib/fonts.js';
+  import { startDev } from './lib/dev.js';
   import TitleBar from './components/TitleBar.svelte';
   import Banner from './components/Banner.svelte';
   import Sidebar from './components/Sidebar.svelte';
@@ -73,6 +74,7 @@
       await restoreLayout();
       if (app.theme) setTheme(app.theme);
       ready = true;
+      startDev();
       poll = setInterval(() => {
         refresh();
         flushDecisions();

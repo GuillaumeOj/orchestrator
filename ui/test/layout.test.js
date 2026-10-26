@@ -47,3 +47,20 @@ describe('tiling layout', () => {
     expect(L.allPanes(t)).toEqual(['b']);
   });
 });
+
+describe('ids', () => {
+  it('stay unique next to a restored layout', () => {
+    const restored = { kind: 'leaf', id: 'l1', tabs: ['a'], active: 'a' };
+    const t = L.split(restored, 'a', 'row', 'b');
+    expect(new Set(t.children.map((c) => c.id)).size).toBe(2);
+  });
+});
+
+describe('restore', () => {
+  it('re-keys a saved layout with clashing ids', () => {
+    const saved = { kind: 'split', id: 's1', dir: 'row', sizes: [0.5, 0.5], children: [{ kind: 'leaf', id: 'l1', tabs: ['a'], active: 'a' }, { kind: 'leaf', id: 'l1', tabs: ['b'], active: 'b' }] };
+    const t = L.reid(saved);
+    expect(t.children[0].id).not.toBe(t.children[1].id);
+    expect(L.visible(t)).toEqual(['a', 'b']);
+  });
+});

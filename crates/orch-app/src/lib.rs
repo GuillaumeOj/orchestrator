@@ -2,6 +2,7 @@
 
 pub mod commands;
 pub mod core;
+pub mod devctl;
 pub mod editor;
 pub mod fonts;
 pub mod inbox;
@@ -22,6 +23,10 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(core.clone())
         .menu(menu::build)
+        .setup(|app| {
+            devctl::start(app.handle().clone());
+            Ok(())
+        })
         .on_menu_event(|app, ev| {
             let _ = app.emit("menu", ev.id().0.clone());
         })
@@ -51,6 +56,8 @@ pub fn run() {
             commands::project_remove,
             commands::settings_get,
             commands::settings_set,
+            commands::dev_enabled,
+            devctl::dev_report,
         ])
         .build(tauri::generate_context!())
         .expect("building the Tauri app");

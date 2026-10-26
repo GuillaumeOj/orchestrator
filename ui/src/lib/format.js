@@ -33,3 +33,10 @@ export function ago(ms, now = Date.now()) {
   if (!ms) return '';
   return duration(now - ms);
 }
+
+/** "Mon 26 Oct 09:00" */
+export function dayTime(ms) {
+  if (ms == null) return '—';
+  const d = new Date(ms);
+  return `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}

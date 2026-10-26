@@ -101,13 +101,28 @@ export class TermPane {
   }
 
   fitNow() {
-    if (this.host.isConnected && this.host.offsetWidth > 0 && this.host.offsetHeight > 0) {
-      try {
-        this.fit.fit();
-      } catch {
-        /* not laid out yet */
-      }
+    if (!this.host.isConnected || this.host.offsetWidth <= 0 || this.host.offsetHeight <= 0) return;
+    const d = this.fit.proposeDimensions?.();
+    if (!d || !Number.isFinite(d.cols) || !Number.isFinite(d.rows)) return;
+    if (d.cols === this.term.cols && d.rows === this.term.rows) return;
+    // A TUI that reprints on every resize can make the layout flip between two
+    // sizes (scrollbar, wrapping): A → B → A within a second stops here.
+    const now = Date.now();
+    this.fits = (this.fits ?? []).filter((f) => now - f.at < 1000);
+    const key = `${d.cols}x${d.rows}`;
+    if (this.fits.filter((f) => f.key === key).length >= 2) return;
+    this.fits.push({ key, at: now });
+    try {
+      this.term.resize(Math.max(2, d.cols), Math.max(1, d.rows));
+    } catch {
+      /* not laid out yet */
     }
+  }
+
+  /** Debounced fit for ResizeObservers (a window drag fires dozens). */
+  scheduleFit() {
+    clearTimeout(this.fitTimer);
+    this.fitTimer = setTimeout(() => this.fitNow(), 60);
   }
 
   get size() {
@@ -124,6 +139,9 @@ export class TermPane {
       this.starting = false;
     }
     this.alive = true;
+    // A TUI that sits idle draws nothing new: a size change makes it redraw
+    // (the runtime's own attach does the same).
+    if (this.source.kind === 'agent') this.resizePty(this.term.rows, Math.max(1, this.term.cols - 1));
     this.resizePty(this.term.rows, this.term.cols);
     this.pull();
   }

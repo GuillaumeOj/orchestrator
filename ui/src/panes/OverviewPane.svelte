@@ -107,7 +107,7 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <div class="ov" tabindex="0" data-pane-focus onkeydown={onKey} role="grid" aria-label="Overview">
-  <div class="bar">
+  <div class="toolbar">
     <span class="muted">Group by</span>
     <div class="seg" role="radiogroup">
       <button class:on={groupBy === 'project'} role="radio" aria-checked={groupBy === 'project'} onclick={() => (groupBy = 'project')}>Project</button>
@@ -187,7 +187,7 @@
     outline: none;
     font: var(--text-label);
   }
-  .bar,
+  .toolbar,
   .foot {
     display: flex;
     align-items: center;
@@ -195,10 +195,13 @@
     padding: var(--space-sm) var(--space-md);
     white-space: nowrap;
   }
-  .bar {
+  .toolbar {
+    flex: none;
+    flex-wrap: wrap;
     border-bottom: var(--border-width-default) solid var(--color-border-subtle);
   }
   .foot {
+    flex: none;
     border-top: var(--border-width-default) solid var(--color-border-subtle);
   }
   .grow {

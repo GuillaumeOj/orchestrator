@@ -4,8 +4,10 @@
 //   split { kind: 'split', id, dir: 'row' | 'col', children: [node], sizes: [fraction] }
 // 'row' = side by side (leader v), 'col' = stacked (leader s), as in vim.
 
+// Unique across restarts: a restored layout keeps the ids it was saved with.
 let seq = 0;
-const nid = (p) => `${p}${++seq}`;
+const run = Math.random().toString(36).slice(2, 6);
+const nid = (p) => `${p}${++seq}${run}`;
 
 export const leaf = (paneId) => ({ kind: 'leaf', id: nid('l'), tabs: [paneId], active: paneId });
 
@@ -170,4 +172,11 @@ export function prune(tree, exists) {
   let t = tree;
   for (const p of allPanes(tree)) if (!exists(p)) t = remove(t, p);
   return t;
+}
+
+/** Fresh ids for every node (a saved layout may carry ids that clash). */
+export function reid(tree) {
+  if (!tree) return tree;
+  if (tree.kind === 'leaf') return { ...tree, id: nid('l') };
+  return { ...tree, id: nid('s'), children: tree.children.map(reid) };
 }

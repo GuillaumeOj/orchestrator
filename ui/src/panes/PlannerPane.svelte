@@ -6,7 +6,7 @@
   import { onMount } from 'svelte';
   import { app, governor, confirm, toast } from '../lib/app.svelte.js';
   import { invoke, errText } from '../lib/ipc.js';
-  import { clock, duration, when, pct } from '../lib/format.js';
+  import { clock, dayTime, duration, when, pct } from '../lib/format.js';
   import { PRESSURE, queueReason } from '../lib/status.js';
   import PressurePill from '../components/PressurePill.svelte';
   import Kbd from '../components/Kbd.svelte';
@@ -132,7 +132,7 @@
   {:else}
     <div class="head">
       <h2>Week {weekNo(v.week_start_ms)}</h2>
-      <span class="secondary">{clock(v.week_start_ms, 0)} → {clock(v.reset_at_ms, 0)} · reset in {duration(v.reset_at_ms - v.now_ms)}</span>
+      <span class="secondary">{dayTime(v.week_start_ms)} → {dayTime(v.reset_at_ms)} · reset in {duration(v.reset_at_ms - v.now_ms)}</span>
       <PressurePill state={s.state} />
       <span class="grow"></span>
       <span class="muted">{s.provenance === 'observed' ? '● observed' : '○ estimated (low confidence)'}</span>
@@ -173,7 +173,7 @@
 
       <section class="card five">
         <div class="ch"><b>5h window</b><span class="muted">guard at 85%</span></div>
-        <div class="big">{s.five_hour == null ? '—' : pct(s.five_hour)}<span class="muted"> used{v.five_hour_resets_at_ms ? ` · resets ${when(v.five_hour_resets_at_ms)}` : ''}</span></div>
+        <div class="big">{s.five_hour == null ? '—' : pct(s.five_hour)}<span class="muted">{s.five_hour == null ? ' no reading' : ' used'}{v.five_hour_resets_at_ms ? ` · resets ${when(v.five_hour_resets_at_ms)}` : ''}</span></div>
         <span class="bar wide"><i style:width="{Math.min(100, s.five_hour ?? 0)}%"></i><em style:left="85%"></em></span>
         <p>
           {#if s.five_hour_projected != null}Projected {pct(s.five_hour_projected)} at the reset{s.five_hour_guard ? ' (> 85%) → 5h guard on: live cap 1 until the reset. Interactive and critical work stay admitted.' : '.'}{:else}No 5h reading yet: it arrives with the first response.{/if}
@@ -195,10 +195,10 @@
               {@const over = al.used_pct - al.plan_pct}
               <tr>
                 <td>{al.target || al.id}</td>
-                <td><span class="bar" style:width="80px"><i style:width="{Math.min(100, al.weight)}%"></i></span> {al.weight}</td>
+                <td><span class="bar" style:width="48px"><i style:width="{Math.min(100, al.weight)}%"></i></span> {al.weight}</td>
                 <td>{al.tier}</td>
                 <td>{al.used_pct.toFixed(0)}% / {al.plan_pct.toFixed(0)}%</td>
-                <td><span class="bar" style:width="100px"><i style:width="{Math.min(100, al.used_pct)}%" style:background={over > 2 ? 'var(--color-pacing-red)' : 'var(--color-pacing-green)'}></i><em style:left="{Math.min(100, al.plan_pct)}%"></em></span></td>
+                <td><span class="bar" style:width="60px"><i style:width="{Math.min(100, al.used_pct)}%" style:background={over > 2 ? 'var(--color-pacing-red)' : 'var(--color-pacing-green)'}></i><em style:left="{Math.min(100, al.plan_pct)}%"></em></span></td>
                 <td>{al.queued ? `queued (${al.queued})` : over > 2 ? `over +${over.toFixed(0)} pp` : over < -2 ? `under −${Math.abs(over).toFixed(0)} pp` : 'on plan'}{al.live ? ` · ${al.live} live` : ''}</td>
               </tr>
             {/each}
@@ -427,6 +427,12 @@
   th {
     padding: var(--space-xs) var(--space-sm) var(--space-xs) 0;
     white-space: nowrap;
+  }
+  td:last-child {
+    white-space: normal;
+  }
+  .alloc {
+    overflow-x: auto;
   }
   ul {
     list-style: none;

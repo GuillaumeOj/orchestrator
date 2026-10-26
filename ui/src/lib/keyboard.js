@@ -69,6 +69,8 @@ export function classify(e, ctx = {}) {
   if (name === 'cmd+;') return { kind: 'leader' };
   if (e.metaKey) {
     if (CHORDS[name]) return { kind: 'command', command: CHORDS[name] };
+    // ⌘⏎ submits a dialog (Penpot 05); the dialog handles it.
+    if (name === 'cmd+enter') return { kind: 'pass' };
     if (NATIVE.has(name)) return { kind: 'native' };
     // Any other ⌘ key: never to the PTY, nothing else to do.
     return { kind: 'swallow' };

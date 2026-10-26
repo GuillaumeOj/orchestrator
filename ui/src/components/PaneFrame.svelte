@@ -24,7 +24,7 @@
     <header class="ph">
       <span class="num">{n || '·'}</span>
       <span class="muted">{kind}</span>
-      <b class="t">{spec.title}{#if spec.type === 'agent' && spec.projectId}<span class="secondary"> · {spec.projectId}</span>{/if}</b>
+      <b class="t">{spec.title}{#if spec.type === 'agent' && spec.projectId}<span class="secondary">&nbsp;· {spec.projectId}</span>{/if}</b>
       {#if zoomed}<span class="zoomtag">ZOOMED · {n || 1} of {total}</span>{/if}
       <span class="grow"></span>
       <button class="hint" onclick={toggleZoom}><Kbd keys="⌘+; z" /> {zoomed ? 'restore' : 'zoom'}</button>

@@ -2,7 +2,7 @@
   // Shell and editor panes (FR-1001, FR-1102): the login shell or nvim on a PTY
   // the core owns, rendered like kitty. Closing the shell closes the pane, as in kitty.
   import { onMount } from 'svelte';
-  import { app, termFor, closePane, focusPane, openEditor } from '../lib/app.svelte.js';
+  import { app, focusing, termFor, closePane, focusPane, openEditor } from '../lib/app.svelte.js';
 
   let { paneId } = $props();
   let host;
@@ -14,13 +14,13 @@
     const t = termFor(paneId, {
       onKey: (e) => !e.metaKey,
       onExit: () => closePane(paneId),
-      onFocus: () => app.focused !== paneId && focusPane(paneId),
+      onFocus: () => !focusing && app.focused !== paneId && focusPane(paneId),
       onOpenPath: (file, line) => openEditor(file, line, { projectId: spec?.projectId }),
     });
     t.mount(host);
     t.start();
     if (app.focused === paneId) t.focus();
-    const ro = new ResizeObserver(() => t.fitNow());
+    const ro = new ResizeObserver(() => t.scheduleFit());
     ro.observe(host);
     return () => {
       ro.disconnect();

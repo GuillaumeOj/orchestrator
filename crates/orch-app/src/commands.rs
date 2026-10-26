@@ -91,19 +91,21 @@ pub async fn agent_action(core: CoreState<'_>, id: String, action: String, messa
 
 // ---------------------------------------------------------------- terminals
 
+#[derive(serde::Deserialize)]
+pub struct TermSpawn {
+    pub kind: TermKind,
+    pub project_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub cwd: Option<PathBuf>,
+    pub run: Option<String>,
+    pub rows: u16,
+    pub cols: u16,
+}
+
 #[tauri::command]
-pub fn term_spawn(
-    core: CoreState,
-    kind: TermKind,
-    project_id: Option<String>,
-    agent_id: Option<String>,
-    cwd: Option<PathBuf>,
-    run: Option<String>,
-    rows: u16,
-    cols: u16,
-) -> Res<TermInfo> {
-    let cwd = cwd.unwrap_or_else(|| core.pane_cwd(project_id.as_deref(), agent_id.as_deref()));
-    core.term_spawn(kind, &cwd, run.as_deref(), rows, cols).map_err(e)
+pub fn term_spawn(core: CoreState, req: TermSpawn) -> Res<TermInfo> {
+    let cwd = req.cwd.unwrap_or_else(|| core.pane_cwd(req.project_id.as_deref(), req.agent_id.as_deref()));
+    core.term_spawn(req.kind, &cwd, req.run.as_deref(), req.rows, req.cols).map_err(e)
 }
 
 #[tauri::command]
@@ -195,4 +197,9 @@ pub fn settings_get(core: CoreState, key: String) -> Option<Value> {
 #[tauri::command]
 pub fn settings_set(core: CoreState, key: String, value: Value) -> Res<()> {
     core.settings.set(&key, value).map_err(e)
+}
+
+#[tauri::command]
+pub fn dev_enabled() -> bool {
+    crate::devctl::enabled()
 }

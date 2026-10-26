@@ -7,8 +7,11 @@
 use tauri::menu::{Menu, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Runtime};
 
-/// `(id, label, accelerator)` of the app's own items, by submenu.
-pub const ITEMS: &[(&str, &[(&str, &str, &str)])] = &[
+/// `(id, label, accelerator)`.
+pub type Item = (&'static str, &'static str, &'static str);
+
+/// The app's own items, by submenu.
+pub const ITEMS: &[(&str, &[Item])] = &[
     (
         "File",
         &[

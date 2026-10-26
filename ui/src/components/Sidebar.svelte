@@ -66,7 +66,7 @@
     flex: none;
     background: var(--color-surface-chrome);
     border-right: var(--border-width-default) solid var(--color-border-subtle);
-    overflow: auto;
+    overflow: hidden auto;
   }
   .head {
     display: flex;
@@ -115,6 +115,9 @@
     flex: 1;
   }
   .meta {
+    max-width: 50%;
+    overflow: hidden;
+    text-overflow: ellipsis;
     color: var(--color-text-muted);
     font: var(--text-label);
     white-space: nowrap;

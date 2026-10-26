@@ -100,6 +100,9 @@ export function addPane(spec, how = 'right') {
   return id;
 }
 
+/** True while the app moves focus itself: terminals' focusin then is not a click. */
+export let focusing = false;
+
 export function focusPane(id) {
   if (!app.panes[id]) return;
   app.layout = L.activate(app.layout, id);
@@ -108,9 +111,14 @@ export function focusPane(id) {
   if (s.agentId) app.selectedAgent = s.agentId;
   if (app.zoomed && app.zoomed !== id) app.zoomed = id;
   queueMicrotask(() => {
-    const t = terms.get(id);
-    if (t) t.focus();
-    else document.querySelector(`[data-pane="${id}"] [data-pane-focus]`)?.focus();
+    focusing = true;
+    try {
+      const t = terms.get(id);
+      if (t) t.focus();
+      else document.querySelector(`[data-pane="${id}"] [data-pane-focus]`)?.focus();
+    } finally {
+      focusing = false;
+    }
   });
 }
 
@@ -151,13 +159,7 @@ export async function openShell(opts = {}) {
   const how = opts.how ?? 'below';
   try {
     const t = await invoke('term_spawn', {
-      kind: 'shell',
-      projectId: opts.projectId ?? p?.id ?? null,
-      agentId: opts.agentId ?? a?.id ?? null,
-      cwd: opts.cwd ?? null,
-      run: null,
-      rows: 24,
-      cols: 80,
+      req: { kind: 'shell', project_id: opts.projectId ?? p?.id ?? null, agent_id: opts.agentId ?? a?.id ?? null, cwd: opts.cwd ?? null, run: null, rows: 24, cols: 80 },
     });
     addPane({ type: 'shell', termId: t.id, cwd: t.cwd, projectId: p?.id, agentId: a?.id }, how);
   } catch (e) {
@@ -294,7 +296,7 @@ export async function restoreLayout() {
     if (s.type === 'agent' && !agent(s.agentId)) continue;
     if (s.type === 'shell' || s.type === 'editor') {
       try {
-        const t = await invoke('term_spawn', { kind: 'shell', projectId: s.projectId ?? null, agentId: null, cwd: s.cwd ?? null, run: null, rows: 24, cols: 80 });
+        const t = await invoke('term_spawn', { req: { kind: 'shell', project_id: s.projectId ?? null, agent_id: null, cwd: s.cwd ?? null, run: null, rows: 24, cols: 80 } });
         panes[id] = { ...s, type: 'shell', termId: t.id, cwd: t.cwd, title: title({ type: 'shell', cwd: t.cwd }) };
       } catch {
         continue;
@@ -302,7 +304,7 @@ export async function restoreLayout() {
     } else panes[id] = s;
   }
   app.panes = panes;
-  app.layout = L.prune(saved.layout, (id) => !!panes[id]);
+  app.layout = L.reid(L.prune(saved.layout, (id) => !!panes[id]));
   if (!app.layout) addPane({ type: 'overview' });
   else focusPane(panes[saved.focused] ? saved.focused : L.visible(app.layout)[0]);
 }

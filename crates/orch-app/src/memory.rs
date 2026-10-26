@@ -46,16 +46,34 @@ fn proc_name(pid: i32) -> String {
     String::from_utf8_lossy(&buf[..n.max(0) as usize]).to_string()
 }
 
-/// WebKit helper processes this app is responsible for.
+/// Start time of a process, in seconds since the epoch.
+fn start_time(pid: i32) -> Option<u64> {
+    // SAFETY: `info` is a plain C struct the kernel fills for PROC_PIDTBSDINFO.
+    unsafe {
+        let mut info: libc::proc_bsdinfo = std::mem::zeroed();
+        let size = size_of::<libc::proc_bsdinfo>() as i32;
+        let n = libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size);
+        (n == size).then_some(info.pbi_start_tvsec)
+    }
+}
+
+/// WebKit helper processes of this app: the XPC services share the app's
+/// "responsible" process (the app itself from the Finder, its launcher from a
+/// terminal) and started after it.
 pub fn webkit_helpers(app_pid: i32) -> Vec<(i32, String)> {
+    // SAFETY: plain queries on pids.
+    let resp = |p: i32| unsafe { responsibility_get_pid_responsible_for_pid(p) };
+    let me = resp(app_pid);
+    let since = start_time(app_pid).unwrap_or(0);
     all_pids()
         .into_iter()
         .filter(|&p| p > 0 && p != app_pid)
         .filter_map(|p| {
             let name = proc_name(p);
-            // SAFETY: plain query on a pid.
-            let owner = unsafe { responsibility_get_pid_responsible_for_pid(p) };
-            (name.starts_with("com.apple.WebKit") && owner == app_pid).then_some((p, name))
+            let ours = name.starts_with("com.apple.WebKit")
+                && (resp(p) == app_pid || resp(p) == me)
+                && start_time(p).is_some_and(|t| t >= since);
+            ours.then_some((p, name))
         })
         .collect()
 }

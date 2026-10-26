@@ -4,7 +4,7 @@
   // strip for the states that need words (queued, suspended, limit, error, a
   // permission prompt held for the Inbox). The PTY itself is left untouched.
   import { onMount } from 'svelte';
-  import { app, agent, termFor, focusPane, openEditor, agentAction, toast, confirm } from '../lib/app.svelte.js';
+  import { app, agent, focusing, termFor, focusPane, openEditor, agentAction, toast, confirm } from '../lib/app.svelte.js';
   import { invoke, errText } from '../lib/ipc.js';
   import { displayState, notStarted, queueReason } from '../lib/status.js';
   import { clock, ago, duration } from '../lib/format.js';
@@ -66,13 +66,13 @@
     t = termFor(paneId, {
       onKey: (e) => !e.metaKey,
       onExit: () => (ended = true),
-      onFocus: () => app.focused !== paneId && focusPane(paneId),
+      onFocus: () => !focusing && app.focused !== paneId && focusPane(paneId),
       onOpenPath: (file, line) => openEditor(file, line, { agentId: spec?.agentId }),
     });
     t.mount(host);
     attachIfLive();
     if (app.focused === paneId) t.focus();
-    const ro = new ResizeObserver(() => t.fitNow());
+    const ro = new ResizeObserver(() => t.scheduleFit());
     ro.observe(host);
     return () => {
       ro.disconnect();
@@ -188,6 +188,7 @@
   }
   .strip {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-sm);
     min-height: 36px;

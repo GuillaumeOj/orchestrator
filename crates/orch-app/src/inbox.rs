@@ -84,7 +84,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
             level: 1,
             kind: "permission".into(),
             agent_id: Some(p.agent_id.clone()),
-            title: format!("{}: {}", p.tool, p.description.clone().unwrap_or_else(|| "permission".into())),
+            title: format!("{}: {}", p.tool, p.description.clone().unwrap_or_else(|| p.summary.clone())),
             detail: format!("{} asks to run {}", p.agent_id, p.tool),
             preview: Some(p.summary.clone()),
             created_ms: p.created_ms,
@@ -200,6 +200,7 @@ mod tests {
             summary: "pnpm add x".into(),
             description: Some("Add the SDK".into()),
             created_ms: 50,
+            tool_use_id: None,
         };
         let agents = [
             agent("front-1", "waiting_for_you", 40), // held for the Inbox: not listed twice

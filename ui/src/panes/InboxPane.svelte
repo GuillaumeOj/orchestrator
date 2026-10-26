@@ -101,7 +101,7 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <div class="inbox" tabindex="0" data-pane-focus bind:this={root} onkeydown={onKey} role="application" aria-label="Inbox">
-  <div class="bar">
+  <div class="toolbar">
     {#each FILTERS as f (f.id)}
       {@const n = visibleItems(all, f.id, app.pending).length}
       {#if f.id === 'all' || n}<button class="chip" class:on={filter === f.id} onclick={() => (filter = f.id)}>{f.label} {n}</button>{/if}
@@ -184,6 +184,7 @@
 
 <style>
   .inbox {
+    container-type: inline-size;
     flex: 1;
     min-height: 0;
     display: flex;
@@ -191,10 +192,12 @@
     outline: none;
     font: var(--text-label);
   }
-  .bar {
+  .toolbar {
+    flex: none;
     display: flex;
     align-items: center;
     gap: var(--space-sm);
+    flex-wrap: wrap;
     padding: var(--space-sm) var(--space-md);
     border-bottom: var(--border-width-default) solid var(--color-border-subtle);
     white-space: nowrap;
@@ -271,7 +274,7 @@
   .detail {
     flex: 1;
     min-width: 0;
-    overflow: auto;
+    overflow: hidden auto;
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
@@ -309,6 +312,7 @@
   }
   .actions {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--space-sm);
     margin-top: auto;
   }
@@ -323,5 +327,17 @@
   }
   .note {
     margin: 0;
+  }
+  @container (max-width: 760px) {
+    .split {
+      flex-direction: column;
+    }
+    .list {
+      width: auto;
+      min-width: 0;
+      max-height: 45%;
+      border-right: 0;
+      border-bottom: var(--border-width-default) solid var(--color-border-subtle);
+    }
   }
 </style>

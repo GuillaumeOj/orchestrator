@@ -43,6 +43,8 @@ pub struct PendingPermission {
     pub summary: String,
     pub description: Option<String>,
     pub created_ms: u64,
+    #[serde(skip)]
+    pub tool_use_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -87,7 +89,15 @@ impl PermissionBroker {
         let mut g = self.lock();
         g.next += 1;
         let id = format!("perm-{}", g.next);
-        let p = PendingPermission { id: id.clone(), agent_id: agent_id.into(), tool, summary, description, created_ms: now_ms };
+        let p = PendingPermission {
+            id: id.clone(),
+            agent_id: agent_id.into(),
+            tool,
+            summary,
+            description,
+            created_ms: now_ms,
+            tool_use_id: payload.tool_use_id.clone(),
+        };
         g.pending.insert(id.clone(), (p, None));
         self.cv.notify_all();
         id
@@ -109,6 +119,28 @@ impl PermissionBroker {
             }
             _ => false,
         }
+    }
+
+    /// The user answered in the pane (the CLI shows its dialog while the hook
+    /// is held): the agent's next hook for that call, or a turn boundary,
+    /// closes the request with no decision. Returns how many were closed.
+    pub fn answered_in_pane(&self, agent_id: &str, tool_use_id: Option<&str>) -> usize {
+        let mut g = self.lock();
+        let mut n = 0;
+        for (p, slot) in g.pending.values_mut() {
+            let same_call = match (tool_use_id, p.tool_use_id.as_deref()) {
+                (Some(a), Some(b)) => a == b,
+                _ => true,
+            };
+            if p.agent_id == agent_id && slot.is_none() && same_call {
+                *slot = Some(Answer::InPane);
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.cv.notify_all();
+        }
+        n
     }
 
     /// Holds until an answer, `deadline`, or `closed()` (polled every `poll`).
@@ -182,6 +214,20 @@ mod tests {
         assert!(!b.answer(&id, Answer::Allow), "already closed");
         let out = PermissionBroker::hook_output(&Outcome::Answered(Answer::Allow)).unwrap();
         assert_eq!(out.0["hookSpecificOutput"]["decision"]["behavior"], "allow");
+    }
+
+    #[test]
+    fn answering_in_the_pane_closes_the_request() {
+        let b = PermissionBroker::default();
+        let mut p = payload("ls");
+        p.tool_use_id = Some("tu1".into());
+        let id = b.open("a1", &p, 1);
+        assert_eq!(b.answered_in_pane("a1", Some("other")), 0, "another call");
+        assert_eq!(b.answered_in_pane("a2", None), 0, "another agent");
+        assert_eq!(b.answered_in_pane("a1", Some("tu1")), 1);
+        let o = b.wait(&id, Instant::now() + Duration::from_secs(1), Duration::from_millis(10), || false);
+        assert_eq!(o, Outcome::Answered(Answer::InPane));
+        assert!(PermissionBroker::hook_output(&o).is_none());
     }
 
     #[test]

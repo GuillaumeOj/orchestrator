@@ -50,3 +50,9 @@ describe('keyboard contract §9.7', () => {
     expect(Object.values(CHORDS)).toContain('session.new');
   });
 });
+
+describe('dialogs', () => {
+  it('⌘⏎ reaches the dialog', () => {
+    expect(classify({ key: 'Enter', code: 'Enter', metaKey: true })).toEqual({ kind: 'pass' });
+  });
+});

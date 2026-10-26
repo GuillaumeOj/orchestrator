@@ -258,6 +258,21 @@ impl Core {
                 reply(Reply::Hook { output: PermissionBroker::hook_output(&outcome) });
             }
             Msg::Hook(m) => {
+                // A prompt held for the Inbox but answered in the pane: this call's
+                // next hook, or the turn's end, closes it.
+                let call_done = matches!(
+                    m.event,
+                    HookEvent::PostToolUse | HookEvent::PostToolUseFailure | HookEvent::PermissionDenied
+                );
+                let turn_done = matches!(
+                    m.event,
+                    HookEvent::Stop | HookEvent::StopFailure | HookEvent::UserPromptSubmit | HookEvent::SessionEnd
+                );
+                if call_done || turn_done {
+                    let p = HookPayload::parse(&m.payload);
+                    let tool_use = if call_done { p.tool_use_id.as_deref() } else { None };
+                    self.broker.answered_in_pane(&m.agent_id, tool_use);
+                }
                 let output = rt.on_hook(&m, Some(&s));
                 reply(Reply::Hook { output });
             }
