@@ -1,6 +1,6 @@
-//! Worktree service (FR-105, ADR-003): a sibling folder `<parent>/<repo>.worktrees/`,
-//! relative paths, `git worktree lock` while in use, and an idempotent
-//! creation = add + lock + DB row.
+//! Worktree service (FR-105, ADR-003): a sibling folder `<parent>/<repo>.worktrees/`
+//! of the **main checkout**, relative paths, `git worktree lock` while in use,
+//! and an idempotent creation = add + lock + DB row.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -102,6 +102,19 @@ pub fn common_dir(path: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(out.trim()))
 }
 
+/// The main checkout of the repository `path` belongs to: the folder that
+/// holds the common git dir. A linked worktree (even one nested inside the
+/// main checkout, like `<repo>/.claude/worktrees/x`) resolves to its main
+/// checkout (FR-105, ADR-003). Falls back to `path`'s own top level when the
+/// git dir is not a `.git` folder (bare repo, `--separate-git-dir`).
+pub fn main_checkout(path: &Path) -> Result<PathBuf> {
+    let common = real(&common_dir(path)?);
+    match (common.file_name(), common.parent()) {
+        (Some(n), Some(parent)) if n == ".git" => Ok(parent.to_path_buf()),
+        _ => toplevel(path).map(|p| real(&p)),
+    }
+}
+
 pub fn toplevel(path: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(git(path, &["rev-parse", "--show-toplevel"])?.trim()))
 }
@@ -117,6 +130,9 @@ fn branch_exists(repo: &Path, branch: &str) -> bool {
 /// Creates (or finishes creating) a worktree. Each step is idempotent:
 /// 1. DB row `creating`; 2. `git worktree add` unless git already has it;
 /// 3. `git worktree lock` unless locked; 4. row `ready`.
+///
+/// `repo` may be any checkout of the repository: the sibling folder goes next
+/// to the main checkout, and the default base is `repo`'s current branch.
 pub fn ensure(
     store: &Store,
     repo: &Path,
@@ -124,12 +140,13 @@ pub fn ensure(
     base: Option<&str>,
     agent_id: Option<&str>,
 ) -> Result<WorktreeRow> {
-    let repo = real(repo);
-    let (path, branch) = layout(&repo, kind)?;
+    let given = real(repo);
     let base = match base {
         Some(b) => b.to_string(),
-        None => default_branch(&repo)?,
+        None => default_branch(&given)?,
     };
+    let repo = main_checkout(&given).unwrap_or(given);
+    let (path, branch) = layout(&repo, kind)?;
     if let Some(row) = store.read(|s| s.worktrees.get(&path).cloned()) {
         if row.state == WorktreeRowState::Ready && path.is_dir() {
             lock(&repo, &path, row.agent_id.as_deref())?;
@@ -334,6 +351,30 @@ pub(crate) mod tests {
         assert!(list(&repo).unwrap().iter().any(|w| real(&w.path) == p2 && w.locked));
         assert_eq!(others(&repo, &row.path), vec![p2]);
         assert_eq!(common_dir(&row.path).unwrap(), repo.join(".git"));
+    }
+
+    #[test]
+    fn a_linked_worktree_project_places_worktrees_next_to_the_main_checkout() {
+        let (_d, repo) = scratch_repo();
+        // A project registered at a linked worktree nested in the main checkout,
+        // as Claude Code's own `.claude/worktrees/<name>` are.
+        let nested = repo.join(".claude/worktrees/feat");
+        git(&repo, &["worktree", "add", "-q", "-b", "feat", &nested.display().to_string(), "main"]).unwrap();
+        let nested = real(&nested);
+        assert_eq!(main_checkout(&nested).unwrap(), repo);
+        assert_eq!(main_checkout(&repo).unwrap(), repo);
+        let store = Store::in_memory(Default::default());
+        let row = ensure(&store, &nested, &WorktreeKindSpec::Solo { slug: "x".into() }, None, Some("a1")).unwrap();
+        assert_eq!(row.path, worktree_root(&repo).join("solo/x"));
+        assert!(!row.path.starts_with(&repo), "outside the main checkout: {}", row.path.display());
+        assert_eq!(row.repo, repo);
+        assert_eq!(row.base, "feat", "the registered checkout's branch is the default base");
+        // Seen from the main checkout, the project's own worktree is just another one.
+        assert!(others(&row.repo, &row.path).contains(&nested));
+        assert!(!others(&row.repo, &row.path).contains(&repo));
+        // No read deny of the agent's sandbox covers its own worktree.
+        let denies = crate::compile::main_read_denies(&row.repo, &common_dir(&row.path).unwrap());
+        assert!(denies.iter().all(|d| !row.path.starts_with(d)), "{denies:?}");
     }
 
     #[test]

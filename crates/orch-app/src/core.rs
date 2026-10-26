@@ -86,6 +86,8 @@ pub struct Core {
     history: Mutex<History>,
     git: Mutex<(Option<Instant>, BTreeMap<PathBuf, GitSummary>)>,
     memory: Mutex<(Option<Instant>, AppMemory)>,
+    /// Project folder → its repository's main checkout (FR-105), resolved once.
+    mains: Mutex<BTreeMap<PathBuf, Option<PathBuf>>>,
     answered: Mutex<BTreeMap<String, u64>>,
     attached: Mutex<std::collections::BTreeSet<String>>,
     stop: Arc<AtomicBool>,
@@ -145,14 +147,19 @@ impl Core {
             history: Mutex::new(History::default()),
             git: Mutex::new((None, BTreeMap::new())),
             memory: Mutex::new((None, AppMemory::default())),
+            mains: Mutex::new(BTreeMap::new()),
             answered: Mutex::new(BTreeMap::new()),
             attached: Mutex::new(Default::default()),
             stop: Arc::new(AtomicBool::new(false)),
             warnings,
         });
         if let Some(rt) = &core.rt {
-            for a in rt.store.read(|s| s.agents.values().map(|a| a.repo.clone()).collect::<Vec<_>>()) {
-                let _ = core.projects.add(&a);
+            // Projects of known agents, unless a registered folder already maps to them.
+            let known = rt.store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.repo.clone())).collect::<Vec<_>>());
+            for (id, repo) in known {
+                if core.project_of(&id, &repo, &core.projects.list()).is_none() {
+                    let _ = core.projects.add(&repo);
+                }
             }
             if let Err(e) = core.serve() {
                 eprintln!("orchestrator: bus server failed: {e:#}");
@@ -321,6 +328,9 @@ impl Core {
             ..Default::default()
         };
         rt.start(&spec)?;
+        // The runtime records the main checkout (FR-105); remember which project
+        // folder the session was started from, for the sidebar.
+        self.settings.set(&format!("agent-project:{id}"), json!(project.id))?;
         Ok(id)
     }
 
@@ -565,6 +575,28 @@ impl Core {
         g.1.clone()
     }
 
+    fn main_of(&self, path: &Path) -> Option<PathBuf> {
+        let mut m = self.mains.lock().unwrap_or_else(|e| e.into_inner());
+        m.entry(path.to_path_buf()).or_insert_with(|| agent_runtime::worktree::main_checkout(path).ok()).clone()
+    }
+
+    /// The project an agent belongs to: the one it was started from, else the
+    /// project whose folder (or main checkout) is the agent's repository.
+    fn project_of(&self, agent_id: &str, repo: &Path, projects: &[Project]) -> Option<String> {
+        if let Some(id) = self.settings.get(&format!("agent-project:{agent_id}")).and_then(|v| v.as_str().map(String::from)) {
+            if projects.iter().any(|p| p.id == id) {
+                return Some(id);
+            }
+        }
+        let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let repo = real(repo);
+        projects
+            .iter()
+            .find(|p| real(&p.path) == repo)
+            .or_else(|| projects.iter().find(|p| self.main_of(&p.path).is_some_and(|m| real(&m) == repo)))
+            .map(|p| p.id.clone())
+    }
+
     fn memory(&self, agents_mb: f64) -> AppMemory {
         let mut m = self.memory.lock().unwrap_or_else(|e| e.into_inner());
         if m.0.is_none_or(|t| t.elapsed() >= MEMORY_EVERY) {
@@ -615,8 +647,7 @@ impl Core {
             if let Some((repo, wt, branch, created, effort)) = worktrees.get(&id) {
                 a["created_at_ms"] = json!(created);
                 a["effort"] = json!(effort);
-                let project = projects.iter().find(|p| p.path == *repo || repo.starts_with(&p.path));
-                a["project_id"] = json!(project.map(|p| p.id.clone()));
+                a["project_id"] = json!(self.project_of(&id, repo, &projects));
                 a["branch"] = json!(branch);
                 a["git"] = json!(git.get(wt));
             }
@@ -766,6 +797,27 @@ mod tests {
         })
     }
 
+    fn record(id: &str, repo: PathBuf) -> agent_runtime::store::AgentRecord {
+        agent_runtime::store::AgentRecord {
+            id: id.into(),
+            worktree: repo.clone(),
+            repo,
+            role: agent_runtime::role::Role::solo(),
+            session_id: "s".into(),
+            tracker: Default::default(),
+            pid: None,
+            pgid: None,
+            allocation: "default".into(),
+            tier: governor::Tier::Normal,
+            created_at_ms: 0,
+            last_event: None,
+            last_event_at_ms: None,
+            spawns: 1,
+            flag: None,
+            trust_dialog: false,
+        }
+    }
+
     fn tmp() -> tempfile::TempDir {
         // Short path: the socket must fit in 104 bytes.
         tempfile::Builder::new().prefix("orchapp").tempdir_in("/tmp").unwrap()
@@ -806,24 +858,7 @@ mod tests {
             .write(|s| {
                 s.agents.insert(
                     "a1".into(),
-                    agent_runtime::store::AgentRecord {
-                        id: "a1".into(),
-                        repo: d.path().join("repo"),
-                        worktree: d.path().join("repo"),
-                        role: agent_runtime::role::Role::solo(),
-                        session_id: "s".into(),
-                        tracker: Default::default(),
-                        pid: None,
-                        pgid: None,
-                        allocation: "default".into(),
-                        tier: governor::Tier::Normal,
-                        created_at_ms: 0,
-                        last_event: None,
-                        last_event_at_ms: None,
-                        spawns: 1,
-                        flag: None,
-                        trust_dialog: false,
-                    },
+                    record("a1", d.path().join("repo")),
                 )
             })
             .unwrap();
@@ -865,6 +900,44 @@ mod tests {
         // Answered: not shown again as "waiting for you" while the next hook is on its way.
         assert_eq!(core.state()["inbox"]["badge"], 0);
         assert!(core.inbox_act(item["id"].as_str().unwrap(), "approve", None).is_err());
+        core.shutdown();
+    }
+
+    #[test]
+    fn agents_of_a_linked_worktree_project_stay_under_it() {
+        let d = tmp();
+        let main = d.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let o = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        };
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
+        let nested = main.join(".claude/worktrees/feat");
+        git(&main, &["worktree", "add", "-q", "-b", "feat", nested.to_str().unwrap()]);
+        let core = Core::start(CoreConfig {
+            home: d.path().join("home"),
+            claude: Some(d.path().join("no-claude")),
+            kitty_conf: d.path().join("kitty.conf"),
+            projects: vec![nested],
+            recover: false,
+            enforce: false,
+        });
+        // The runtime records the main checkout as the agent's repo (FR-105).
+        let main = main.canonicalize().unwrap();
+        core.runtime().unwrap().store.write(|s| s.agents.insert("a1".into(), record("a1", main.clone()))).unwrap();
+        assert_eq!(core.state()["agents"][0]["project_id"], "feat", "found through the project's main checkout");
+        core.settings.set("agent-project:a1", json!("nope")).unwrap();
+        assert_eq!(core.state()["agents"][0]["project_id"], "feat", "an unknown remembered project is ignored");
+        assert_eq!(core.projects.list().len(), 1, "the main checkout was not added as a second project");
         core.shutdown();
     }
 

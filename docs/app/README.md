@@ -101,5 +101,5 @@ the app's own memory figure counts it (FR-904). `claude` processes are listed ap
 | Suspended resumes on ⏎ or a click, not on focus | FR-204, §9.3 | done |
 | Resizes debounced, A → B → A flips not applied again | FR-1003, ADR-006 | done |
 | Measured app baseline with the full shell: 150–200 MB idle | NFR-1b | measured |
-| Sibling worktree folder next to the main checkout, also for a project that is a linked worktree | FR-105, ADR-003 | **not yet**: `agent-runtime`'s `worktree` module still uses the registered folder's parent |
-| Wrapped paths joined before matching | FR-208 | **not yet**: only unwrapped paths are links |
+| Sibling worktree folder next to the main checkout, also for a project that is a linked worktree | FR-105, ADR-003 | done: `worktree::main_checkout`, used by `ensure`; the agent's `repo` is the main checkout, so its sandbox no longer covers its own worktree |
+| Wrapped paths joined before matching | FR-208 | done: terminal soft wraps and Claude Code's indented continuations (`linksAcrossRows` in `ui/src/lib/term.js`) |

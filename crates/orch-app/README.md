@@ -61,7 +61,7 @@ stubs:
 | Trait | Stub | Real implementation |
 |---|---|---|
 | `ProjectRegistry` (list, add, remove, git summary) | `InMemoryProjects`: in memory, seeded from `ORCH_PROJECTS` and from the repos of known agents; git state from one `git status --porcelain=v2 --branch` (no fetch, no PRs) | the project/git registry crate |
-| `SettingsStore` (saved layout, theme) | `JsonFileSettings`: `<home>/ui/settings.json` | a table in the SQLite store |
+| `SettingsStore` (saved layout, theme, the project each session was started from) | `JsonFileSettings`: `<home>/ui/settings.json` | a table in the SQLite store |
 
 The OTLP receiver needs no trait yet: the runtime only sets the OTEL env when an endpoint is
 configured, and the Governor is fed by the statusline. The Week planner's "actual" line is the

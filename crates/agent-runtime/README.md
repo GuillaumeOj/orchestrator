@@ -13,7 +13,7 @@ No UI, no Tauri: [`orchd`](../orchd/README.md) drives it from the command line.
 | `pty` | `claude` in a PTY (portable-pty): own session/group, close-on-exec master, pull buffer | FR-201, FR-207, ADR-001 §4 |
 | `delivery` | FR-206 input rules: idle only, `/ ! #` escape, < 900 chars or file, start delay, turn marker | FR-206, R4 |
 | `state` | Agent state machine from hook events | §6.2, §6.4, §9.5 |
-| `worktree` | Sibling folder, relative paths, lock, idempotent create, branch naming, inspection | FR-105, ADR-003 |
+| `worktree` | Sibling folder next to the **main checkout** (also when the project folder is a linked worktree), relative paths, lock, idempotent create, branch naming, inspection | FR-105, ADR-003 |
 | `procs` | Process table (ps + lsof cwd), kill by argv + cwd, phys_footprint via `proc_pid_rusage` | FR-207, NFR-1b |
 | `transcript` | Transcripts by session id across `~/.claude/projects/*/` (read only) | FR-209 |
 | `reconcile` | Startup reconciler in J10 step 2 order | J10, NFR-2 |

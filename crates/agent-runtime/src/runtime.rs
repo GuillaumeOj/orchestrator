@@ -381,7 +381,9 @@ impl Runtime {
         )?;
         let rec = AgentRecord {
             id: spec.agent_id.clone(),
-            repo: repo.clone(),
+            // The main checkout (FR-105): its entries are denied one by one, and
+            // the project's own folder, if a linked worktree, is an "other" one.
+            repo: row.repo.clone(),
             worktree: row.path.clone(),
             role: role_from_spec(spec)?,
             session_id: uuid::Uuid::new_v4().to_string(),

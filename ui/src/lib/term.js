@@ -24,6 +24,50 @@ export function findPaths(line) {
   return out;
 }
 
+const PATH_CHAR = /[\w@.\-/]$/;
+/** How far a logical line may reach from the hovered row (rows). */
+export const LINK_REACH = 8;
+
+/**
+ * Path links across rows (FR-208). `rows[i]` = { text, wrapped }: `wrapped` is
+ * xterm's `isWrapped` (the row continues the previous one: a soft wrap). Claude
+ * Code also breaks long paths itself and indents the rest ("…/worktrees" then
+ * "      /cool-…/hello.txt"): a row that ends in a path character followed by a
+ * row that starts, after spaces, with "/" is joined too. Returns the links that
+ * touch row `y`, with 0-based rows and columns, `end` exclusive.
+ */
+export function linksAcrossRows(rows, y) {
+  const hardNext = (i) => {
+    const next = rows[i + 1];
+    return !!next && !next.wrapped && /^\s*\//.test(next.text) && PATH_CHAR.test(rows[i].text.trimEnd());
+  };
+  let s = y;
+  while (s > 0 && y - s < LINK_REACH && (rows[s].wrapped || hardNext(s - 1))) s--;
+  let e = y;
+  while (e + 1 < rows.length && e - y < LINK_REACH && (rows[e + 1].wrapped || hardNext(e))) e++;
+  // Joined text and, for each character, where it sits.
+  let text = '';
+  const at = [];
+  for (let i = s; i <= e; i++) {
+    let t = rows[i].text;
+    let col = 0;
+    if (i > s && !rows[i].wrapped) {
+      col = t.length - t.trimStart().length; // hard continuation: drop the indent
+      t = t.trimStart();
+    }
+    if (i < e && !rows[i + 1].wrapped) t = t.trimEnd(); // and the padding before it
+    for (let k = 0; k < t.length; k++) at.push({ row: i, col: col + k });
+    text += t;
+  }
+  return findPaths(text)
+    .map((p) => {
+      const a = at[p.start];
+      const b = at[p.end - 1];
+      return { file: p.file, line: p.line, text: text.slice(p.start, p.end), start: { row: a.row, col: a.col }, end: { row: b.row, col: b.col + 1 } };
+    })
+    .filter((l) => l.start.row <= y && l.end.row >= y);
+}
+
 /**
  * source: { kind: 'agent', id } | { kind: 'term', id }
  * hooks:  { onKey(e) -> bool, onExit(), onOpenPath(file, line), onFocus() }
@@ -61,12 +105,19 @@ export class TermPane {
     }
     this.term.registerLinkProvider({
       provideLinks: (y, cb) => {
-        const line = this.term.buffer.active.getLine(y - 1)?.translateToString(true) ?? '';
+        const buf = this.term.buffer.active;
+        const first = Math.max(0, y - 1 - LINK_REACH);
+        const rows = [];
+        for (let i = first; i < Math.min(buf.length, y + LINK_REACH); i++) {
+          const line = buf.getLine(i);
+          rows.push({ text: line?.translateToString(false) ?? '', wrapped: !!line?.isWrapped });
+        }
         cb(
-          findPaths(line).map((p) => ({
-            range: { start: { x: p.start + 1, y }, end: { x: p.end, y } },
-            text: line.slice(p.start, p.end),
-            activate: () => this.hooks.onOpenPath?.(p.file, p.line),
+          linksAcrossRows(rows, y - 1 - first).map((l) => ({
+            // xterm: 1-based, end inclusive.
+            range: { start: { x: l.start.col + 1, y: first + l.start.row + 1 }, end: { x: l.end.col, y: first + l.end.row + 1 } },
+            text: l.text,
+            activate: () => this.hooks.onOpenPath?.(l.file, l.line),
           })),
         );
       },
