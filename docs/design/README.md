@@ -7,15 +7,15 @@ The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app 
 | Page | Content | Status |
 |---|---|---|
 | 00 Cover | Purpose, page index, P1 gate, changelog | Done |
-| 01 Foundations | Tokens: color, type, spacing, radius, sizing, elevation, rules | In review |
-| 02 Components | P1 subset of SPEC §9.4 (14 component sets), states as variants | In review (P1 subset) |
-| 03 Shell & layouts | Shell at 1512 (docked inspector), 1280 (icon rail + overlay inspector), zoomed pane; 1728 not drawn | In review |
-| 04 Screens | P1 panes: Overview, Agent pane (+ states), Week planner, Inbox | In review (P1 panes) |
-| 05 Keyboard & copy | Global, leader and pane-local shortcut maps; P0 conflicts; banner, notification and toast copy; copy rules | In review |
-| 06 Flows | Storyboards (annotated frames, no clickable prototype): J2 solo session (5 frames), J5 Inbox triage (6), J8 pacing the week (4) | In review |
+| 01 Foundations | Tokens: color, type, spacing, radius, sizing, elevation, rules | Ready for dev |
+| 02 Components | P1 subset of SPEC §9.4 (14 component sets), states as variants | Ready for dev |
+| 03 Shell & layouts | Shell at 1512 (docked inspector), 1280 (icon rail + overlay inspector), zoomed pane; 1728 not drawn | Ready for dev |
+| 04 Screens | P1 panes: Overview, Agent pane (+ states), Week planner, Inbox | Ready for dev |
+| 05 Keyboard & copy | Global, leader and pane-local shortcut maps; P0 conflicts; banner, notification and toast copy; copy rules | Ready for dev |
+| 06 Flows | Storyboards (annotated frames, no clickable prototype): J2 solo session (5 frames), J5 Inbox triage (6), J8 pacing the week (4) | Ready for dev |
 | 07 Explorations | Drafts, not binding | — |
 
-**P1 gate:** before P1 UI work starts, 01, 03 and the P1 panes in 04 (Overview, Agent pane, Week planner, Inbox) are marked ready for dev on `00 Cover`. As of 2026-10-20 they are all **In review**; Guillaume decides Ready for dev. Open questions and spec gaps from the design pass: [p1-design-notes.md](p1-design-notes.md).
+**P1 gate:** before P1 UI work starts, 01, 03 and the P1 panes in 04 (Overview, Agent pane, Week planner, Inbox) are marked ready for dev on `00 Cover`. Reviewed by Guillaume on 2026-10-26: all pages are **Ready for dev** and the P1 design gate is passed. Open questions and spec gaps from the design pass: [p1-design-notes.md](p1-design-notes.md).
 
 ## Screenshots
 
