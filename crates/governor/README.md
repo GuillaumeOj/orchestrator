@@ -75,7 +75,7 @@ for action in gov.actions() {
 | `pause_all`, `resume_all`, `run_now(entry)`, `cancel(entry)` | User controls (FR-811, FR-809). |
 | `start_sprint(extra_pp, now)` | Sprint mode until the end of today's working time (FR-811). |
 | `answer_ask(id, accept)`, `undo(id)` | "Ask" actions (FR-810) and undo from the log (FR-809). |
-| `new_week(plan, now)` | After the weekly reset. Calibration and the queue carry over; budgets don't. |
+| `new_week(plan, now)` | After the weekly reset. Calibration and the queue carry over; budgets don't. A plan whose week contains the current week's start (a realignment, FR-802) keeps the week's usage. |
 | `cost_class(&sample)`, `replay(&sample, class, allocation)` | Store the class with each sample; after a restart, replay the week's samples so the accounting (interactive vs autonomous, per allocation) and the calibration come back. |
 | `snapshot`, `queue`, `actions`, `next_action_preview`, `stats` | Read-only views for the UI and the weekly report. |
 
@@ -269,8 +269,8 @@ reading that passes NFR-9. Each one is listed here as a proposed edit. SPEC and 
 4. **The estimator margin is bounded by what is extrapolated.** A flat 10–15 pp whenever the value is
    stale jolted the state at every idle gap: each night, and each morning before the first response.
    It also made 60 % weeks queue. *Edit*: the margin is `min(10–15 pp by confidence, estimated
-   delta)`, and the full margin applies only when the week has no anchor. The weekly reset counts
-   as a reading of 0.
+   delta)`, and the full margin applies only before the week's first reading when the Governor did
+   not see the reset. The weekly reset counts as a reading of 0 (applied in SPEC v0.9).
 5. **Whole-percent readings.** This crate reads `n` as `n + 0.5`, assuming the statusline rounds
    down. That removed the last weekly-limit hits at 130 %. *Edit*: add to R10 a check of whether
    `used_percentage` is floored or rounded.

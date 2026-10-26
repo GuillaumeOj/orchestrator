@@ -102,3 +102,34 @@ fn reserve_exhausted_is_a_shadow_action_in_shadow_mode() {
     assert_eq!(a.mode, ActionMode::Shadow);
     assert_eq!(a.outcome, Outcome::Logged);
 }
+
+#[test]
+fn sustained_outside_usage_still_turns_red() {
+    // 1.5 pp per wall hour outside the app, day and night, from the reset:
+    // 45 % by Tuesday 15:00, so the week runs out long before Monday.
+    let mut g = governor();
+    for m in (0..=hours(30.0)).step_by(15) {
+        g.ingest(&weekly(at(m), "user", 0.0, (m as f64 / 60.0 * 1.5).floor()));
+        g.tick(at(m));
+    }
+    let s = g.snapshot(at(hours(30.0)));
+    assert_eq!(g.state(), PressureState::Red, "{s:?}");
+    assert!(s.projected > 100.0, "{s:?}");
+}
+
+#[test]
+fn realigning_the_same_week_keeps_its_usage() {
+    // Cost ingested before the first weekly reading, then a realignment onto an
+    // earlier reset: the cost stays the week's, as a replay would count it.
+    let mut g = Governor::new(misaligned(), policy(), at(hours(9.5))).unwrap();
+    assert!(g.request_turn(task("A-1", "A", Tier::High), at(hours(9.5))).effective.is_admit());
+    g.ingest(&UsageSample::cost(at(hours(9.6)), "A-1".into(), 20.0));
+    g.new_week(plan(), at(hours(9.7))).unwrap();
+    assert!((g.allocation_usage_pct(&"A".into()) - 2.0).abs() < 1e-9);
+    let mut replayed = Governor::new(plan(), policy(), at(hours(9.5))).unwrap();
+    replayed.replay(&UsageSample::cost(at(hours(9.6)), "A-1".into(), 20.0), CostClass::Autonomous, Some("A".into()));
+    let s = weekly(at(hours(9.8)), "user", 0.0, 17.0);
+    g.ingest(&s);
+    replayed.replay(&s, CostClass::Interactive, None);
+    same_state(&g, &replayed, at(hours(9.8)));
+}

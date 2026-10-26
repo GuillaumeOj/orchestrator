@@ -409,8 +409,13 @@ impl Governor {
 
     /// Switch to the next week's plan (after the weekly reset). Calibration and
     /// the queue carry over; budgets, deferrals and sprints do not (FR-808).
+    /// A plan whose week contains the current week's start is the same week
+    /// realigned (FR-802) or edited: the week's usage so far is kept, as a
+    /// restart replaying the week's samples would keep it.
     pub fn new_week(&mut self, plan: WeeklyPlan, now: Timestamp) -> Result<(), GovernorError> {
         let (tz, curve) = plan_curve(&plan)?;
+        let same_week = plan.week_start <= self.plan.week_start && self.plan.week_start < plan.reset_at;
+        let start_moved = plan.week_start != self.plan.week_start;
         self.tz = tz;
         self.base_curve = curve.clone();
         self.curve = curve;
@@ -423,7 +428,13 @@ impl Governor {
         if self.weekly_obs.is_some_and(|o| o.ts < self.plan.week_start || o.resets_at <= self.plan.week_start) {
             self.weekly_obs = None;
         }
-        self.start_week_accounting(now);
+        if same_week {
+            // Moved to an earlier reset: the Governor did not see that one.
+            self.reset_seen &= !start_moved;
+            self.calib_anchor = Some(self.weekly_obs.unwrap_or_else(|| self.reset_reading()));
+        } else {
+            self.start_week_accounting(now);
+        }
         self.sm.reset(now);
         self.last_cap = None;
         self.refresh_queue(now);
@@ -446,12 +457,18 @@ impl Governor {
         // at the reset, later in the week, or after a restart that replays the
         // week's samples. The live and replayed paths then agree (FR-813).
         self.reset_seen = now <= add_minutes(self.plan.week_start, self.policy.fresh_minutes);
-        self.calib_anchor = Some(self.weekly_obs.unwrap_or(Observation {
+        self.calib_anchor = Some(self.weekly_obs.unwrap_or_else(|| self.reset_reading()));
+    }
+
+    /// The weekly reset as a reading: W = 0 (with the same offset as every
+    /// reading) and the app's cost at the start of the week's accounting.
+    fn reset_reading(&self) -> Observation {
+        Observation {
             ts: self.plan.week_start,
             used_pct: self.policy.reading_offset_pct,
             resets_at: self.plan.reset_at,
-            app_cost: self.app_cost,
-        }));
+            app_cost: self.week_cost_start,
+        }
     }
 
     // ---------------------------------------------------------------- accessors
@@ -571,7 +588,8 @@ impl Governor {
             }
             None => u * hours_between(week_start, now).max(0.0),
         };
-        let u_forecast = u_so_far + u * self.curve.wall_hours_left(now);
+        let wall_left = self.curve.wall_hours_left(now);
+        let u_forecast = u_so_far + u * wall_left;
         let budget = (100.0 - self.plan.reserve_pct - u_forecast).max(0.0);
         let ideal = self.curve.fraction(now) * budget;
         // The error is on the governed share (ADR-007, decision 2026-10-21):
@@ -596,7 +614,7 @@ impl Governor {
         // usage in working hours, per weighted hour left.
         let hours_left = self.curve.hours_left(now);
         let active_left = self.curve.active_hours_between(now, self.plan.reset_at);
-        let off_left = (self.curve.wall_hours_left(now) - active_left).max(0.0);
+        let off_left = (wall_left - active_left).max(0.0);
         let on_plan = if hours_left > 1e-9 { ((budget - ideal).max(0.0) + u * active_left) / hours_left } else { 0.0 };
         let burn = (self.burn + (1.0 - self.burn_weight) * on_plan).max(0.0);
         let w_projected = w_eff + burn * hours_left + u * off_left;
