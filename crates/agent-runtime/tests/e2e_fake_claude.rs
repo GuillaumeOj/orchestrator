@@ -114,8 +114,9 @@ fn start_deliver_suspend_resume_kill_with_fake_claude() {
     );
     wait_for("resumed turn", 15, || agent(&sock, "e2e")["turns"].as_u64() == Some(3));
     assert_eq!(agent(&sock, "e2e")["session_id"], sid.as_str());
-    let screen = String::from_utf8_lossy(&std::fs::read(paths.state_dir().join("events.jsonl")).unwrap()).into_owned();
-    assert!(screen.contains("--resume"), "resume used --resume");
+    rt.db.flush().unwrap();
+    let spawns = rt.db.events(0, Some("e2e"), Some("spawned"), 10).unwrap();
+    assert!(spawns.iter().any(|e| e.detail.to_string().contains("--resume")), "resume used --resume");
 
     // Kill: process gone, state killed.
     let pid = agent(&sock, "e2e")["pid"].as_i64().unwrap() as i32;

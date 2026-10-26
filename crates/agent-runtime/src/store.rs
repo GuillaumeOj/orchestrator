@@ -1,13 +1,18 @@
-//! The core's persistent state. A single JSON file written atomically after
-//! every change: a stand-in for ADR-005's SQLite that keeps the same rows
-//! (agents, worktrees, turns, holds, inbox), so the reconciler logic carries over.
+//! The runtime's state (agents, worktrees, turns, holds, inbox): kept in
+//! memory for the hot paths (hooks, the 200 ms delivery pump) and written
+//! through to SQLite ([`orch_store`], ADR-005) on every change, one
+//! transaction per [`Store::write`], so a crash never loses or half-applies a
+//! change. Other code must change these rows through the runtime.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
+pub use orch_store::{InboxItem, InboxStatus, WorktreeRow, WorktreeRowState};
+use orch_store::{AgentRow, HoldRowDb, RuntimeDiff, RuntimeRows, TurnRowDb};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::role::Role;
 use crate::state::{self, Tracker};
@@ -62,26 +67,6 @@ impl AgentRecord {
         self.pgid = None;
         self.trust_dialog = false;
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorktreeRowState {
-    Creating,
-    Ready,
-    Removed,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct WorktreeRow {
-    pub path: PathBuf,
-    pub repo: PathBuf,
-    pub branch: String,
-    pub base: String,
-    #[serde(default)]
-    pub agent_id: Option<String>,
-    pub state: WorktreeRowState,
-    pub created_at_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,18 +160,6 @@ pub struct HoldRow {
     pub created_at_ms: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct InboxItem {
-    pub id: u64,
-    #[serde(default)]
-    pub agent_id: Option<String>,
-    /// gate / alert / permission / budget …
-    pub kind: String,
-    pub body: String,
-    pub pending: bool,
-    pub created_at_ms: u64,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StateFile {
     #[serde(default)]
@@ -199,6 +172,9 @@ pub struct StateFile {
     pub holds: Vec<HoldRow>,
     #[serde(default)]
     pub inbox: Vec<InboxItem>,
+    /// Not persisted as such: rebuilt from the highest id at load.
+    #[serde(skip)]
+    pub next_inbox_id: u64,
 }
 
 /// Finished rows kept for display; older ones are dropped on write.
@@ -222,69 +198,244 @@ impl StateFile {
         }
         keep_last(&mut self.turns, |t| matches!(t.status, TurnStatus::Done | TurnStatus::Cancelled));
         keep_last(&mut self.holds, |h| h.status != HoldStatus::Held);
-        keep_last(&mut self.inbox, |i| !i.pending);
+        keep_last(&mut self.inbox, |i| !i.pending());
     }
 
     pub fn add_inbox(&mut self, agent_id: Option<&str>, kind: &str, body: String) -> u64 {
-        let id = self.inbox.iter().map(|i| i.id).max().unwrap_or(0) + 1;
-        self.inbox.push(InboxItem {
-            id,
-            agent_id: agent_id.map(str::to_string),
-            kind: kind.into(),
-            body,
-            pending: true,
-            created_at_ms: orch_protocol::now_ms(),
-        });
+        self.add_inbox_item(agent_id, kind, body, Value::Null, 0)
+    }
+
+    /// Adds a pending Inbox item; returns its id. Ids are never reused, even
+    /// after old items are pruned (`next_inbox_id`).
+    pub fn add_inbox_item(&mut self, agent_id: Option<&str>, kind: &str, body: String, payload: Value, priority: i64) -> u64 {
+        let id = self.next_inbox_id.max(self.inbox.iter().map(|i| i.id).max().unwrap_or(0) + 1);
+        self.next_inbox_id = id + 1;
+        let mut item = InboxItem::new(id, kind, agent_id, body);
+        item.payload = payload;
+        item.priority = priority;
+        self.inbox.push(item);
         id
     }
 }
 
 pub struct Store {
-    path: Option<PathBuf>,
+    db: Option<orch_store::Store>,
     data: Mutex<Data>,
 }
 
 struct Data {
     state: StateFile,
-    /// What is on disk, so a write that changed nothing costs no I/O.
-    saved: Vec<u8>,
+    /// What the database holds (the diff base), so a failed write is retried
+    /// with the next one.
+    saved: StateFile,
+}
+
+// ------------------------------------------------------------ row mapping
+
+fn tag<T: Serialize>(v: &T) -> String {
+    match serde_json::to_value(v) {
+        Ok(Value::String(s)) => s,
+        Ok(other) => other.to_string(),
+        Err(_) => String::new(),
+    }
+}
+
+fn agent_row(a: &AgentRecord) -> AgentRow {
+    AgentRow {
+        id: a.id.clone(),
+        repo: a.repo.clone(),
+        worktree: a.worktree.clone(),
+        session_id: a.session_id.clone(),
+        state: tag(&a.tracker.state),
+        pid: a.pid,
+        tier: Some(tag(&a.tier)),
+        allocation: Some(a.allocation.clone()),
+        last_active_at_ms: a.last_event_at_ms,
+        created_at_ms: a.created_at_ms,
+        data: serde_json::to_value(a).unwrap_or(Value::Null),
+    }
+}
+
+fn turn_row(t: &TurnRow) -> TurnRowDb {
+    TurnRowDb {
+        id: t.id.clone(),
+        agent_id: t.agent_id.clone(),
+        kind: tag(&t.kind),
+        status: tag(&t.status),
+        created_at_ms: t.created_at_ms,
+        delivered_at_ms: t.delivered_at_ms,
+        data: serde_json::to_value(t).unwrap_or(Value::Null),
+    }
+}
+
+fn hold_row(h: &HoldRow) -> HoldRowDb {
+    HoldRowDb {
+        id: h.id.clone(),
+        agent_id: h.agent_id.clone(),
+        kind: tag(&h.kind),
+        status: tag(&h.status),
+        created_at_ms: h.created_at_ms,
+        data: serde_json::to_value(h).unwrap_or(Value::Null),
+    }
+}
+
+fn from_rows(rows: RuntimeRows) -> Result<StateFile> {
+    let mut st = StateFile::default();
+    for a in rows.agents {
+        let rec: AgentRecord = serde_json::from_value(a.data).with_context(|| format!("agent row {}", a.id))?;
+        st.agents.insert(rec.id.clone(), rec);
+    }
+    for w in rows.worktrees {
+        st.worktrees.insert(w.path.clone(), w);
+    }
+    for t in rows.turns {
+        st.turns.push(serde_json::from_value(t.data).with_context(|| format!("turn row {}", t.id))?);
+    }
+    for h in rows.holds {
+        st.holds.push(serde_json::from_value(h.data).with_context(|| format!("hold row {}", h.id))?);
+    }
+    st.inbox = rows.inbox;
+    st.next_inbox_id = st.inbox.iter().map(|i| i.id).max().unwrap_or(0) + 1;
+    Ok(st)
+}
+
+/// What changed between two states, as row upserts and deletes.
+pub fn diff(before: &StateFile, after: &StateFile) -> RuntimeDiff {
+    let mut d = RuntimeDiff::default();
+    for (id, a) in &after.agents {
+        if before.agents.get(id) != Some(a) {
+            d.agents.push(agent_row(a));
+        }
+    }
+    d.agents_deleted = before.agents.keys().filter(|k| !after.agents.contains_key(*k)).cloned().collect();
+    for (p, w) in &after.worktrees {
+        if before.worktrees.get(p) != Some(w) {
+            d.worktrees.push(w.clone());
+        }
+    }
+    d.worktrees_deleted = before.worktrees.keys().filter(|k| !after.worktrees.contains_key(*k)).cloned().collect();
+    fn by_id<'a, T, K: Ord>(v: &'a [T], k: impl Fn(&T) -> K) -> BTreeMap<K, &'a T> {
+        v.iter().map(|x| (k(x), x)).collect()
+    }
+    let bt = by_id(&before.turns, |t| t.id.clone());
+    let at = by_id(&after.turns, |t| t.id.clone());
+    d.turns = after.turns.iter().filter(|t| bt.get(&t.id) != Some(t)).map(turn_row).collect();
+    d.turns_deleted = bt.keys().filter(|k| !at.contains_key(*k)).cloned().collect();
+    let bh = by_id(&before.holds, |h| h.id.clone());
+    let ah = by_id(&after.holds, |h| h.id.clone());
+    d.holds = after.holds.iter().filter(|h| bh.get(&h.id) != Some(h)).map(hold_row).collect();
+    d.holds_deleted = bh.keys().filter(|k| !ah.contains_key(*k)).cloned().collect();
+    let bi = by_id(&before.inbox, |i| i.id);
+    let ai = by_id(&after.inbox, |i| i.id);
+    d.inbox = after.inbox.iter().filter(|i| bi.get(&i.id) != Some(i)).cloned().collect();
+    d.inbox_deleted = bi.keys().filter(|k| !ai.contains_key(*k)).copied().collect();
+    d
+}
+
+/// The JSON stand-in's Inbox rows (before SQLite): `pending` instead of a status.
+#[derive(Deserialize)]
+struct LegacyInbox {
+    id: u64,
+    #[serde(default)]
+    agent_id: Option<String>,
+    kind: String,
+    body: String,
+    pending: bool,
+    created_at_ms: u64,
+}
+
+#[derive(Deserialize)]
+struct LegacyState {
+    #[serde(default)]
+    agents: BTreeMap<String, AgentRecord>,
+    #[serde(default)]
+    worktrees: BTreeMap<PathBuf, WorktreeRow>,
+    #[serde(default)]
+    turns: Vec<TurnRow>,
+    #[serde(default)]
+    holds: Vec<HoldRow>,
+    #[serde(default)]
+    inbox: Vec<LegacyInbox>,
+}
+
+/// Reads the pre-SQLite `state/state.json` (one-time import).
+pub fn read_legacy_json(path: &Path) -> Result<StateFile> {
+    let l: LegacyState = serde_json::from_slice(&std::fs::read(path)?).with_context(|| format!("reading {}", path.display()))?;
+    let mut st = StateFile { agents: l.agents, worktrees: l.worktrees, turns: l.turns, holds: l.holds, ..Default::default() };
+    for i in l.inbox {
+        let mut item = InboxItem::new(i.id, &i.kind, i.agent_id.as_deref(), i.body);
+        item.created_at_ms = i.created_at_ms;
+        if !i.pending {
+            item.status = InboxStatus::Dismissed;
+        }
+        st.inbox.push(item);
+    }
+    st.next_inbox_id = st.inbox.iter().map(|i| i.id).max().unwrap_or(0) + 1;
+    Ok(st)
 }
 
 impl Store {
-    pub fn open(path: &Path) -> Result<Store> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+    /// Loads the runtime's rows from the database. On the first start with an
+    /// empty database, a `state.json` left by the JSON stand-in is imported
+    /// once and renamed `state.json.imported`.
+    pub fn open(db: orch_store::Store, legacy_json: Option<&Path>) -> Result<Store> {
+        if let Some(j) = legacy_json.filter(|j| j.is_file()) {
+            if db.runtime_is_empty()? {
+                let st = read_legacy_json(j)?;
+                db.sync_runtime(diff(&StateFile::default(), &st))?;
+            }
+            std::fs::rename(j, j.with_extension("json.imported"))?;
         }
-        let (state, saved) = match std::fs::read(path) {
-            Ok(b) => (serde_json::from_slice(&b).with_context(|| format!("reading {}", path.display()))?, b),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (StateFile::default(), vec![]),
-            Err(e) => return Err(e.into()),
-        };
-        Ok(Store { path: Some(path.to_path_buf()), data: Mutex::new(Data { state, saved }) })
+        let state = from_rows(db.load_runtime()?)?;
+        Ok(Store { db: Some(db), data: Mutex::new(Data { saved: state.clone(), state }) })
     }
 
     /// Not persisted (tests).
-    pub fn in_memory(data: StateFile) -> Store {
-        Store { path: None, data: Mutex::new(Data { state: data, saved: vec![] }) }
+    pub fn in_memory(mut data: StateFile) -> Store {
+        data.next_inbox_id = data.inbox.iter().map(|i| i.id).max().unwrap_or(0) + 1;
+        Store { db: None, data: Mutex::new(Data { state: data, saved: StateFile::default() }) }
+    }
+
+    /// The database behind this store, if any.
+    pub fn db(&self) -> Option<&orch_store::Store> {
+        self.db.as_ref()
     }
 
     pub fn read<R>(&self, f: impl FnOnce(&StateFile) -> R) -> R {
         f(&self.data.lock().unwrap_or_else(|e| e.into_inner()).state)
     }
 
-    /// Mutates and saves. A failed save is returned but the change stays in memory.
+    /// Mutates, then writes the changed rows in one transaction. A failed
+    /// write is returned and the change stays in memory; it is written with
+    /// the next successful one (the diff is against what the database holds).
     pub fn write<R>(&self, f: impl FnOnce(&mut StateFile) -> R) -> Result<R> {
         let mut g = self.data.lock().unwrap_or_else(|e| e.into_inner());
         let r = f(&mut g.state);
         g.state.prune();
-        if let Some(p) = &self.path {
-            let bytes = serde_json::to_vec(&g.state)?;
-            if bytes != g.saved {
-                crate::compile::write_atomic(p, &bytes)?;
-                g.saved = bytes;
+        if let Some(db) = &self.db {
+            let d = diff(&g.saved, &g.state);
+            if !d.is_empty() {
+                db.sync_runtime(d).context("saving the runtime state")?;
+                g.saved = g.state.clone();
             }
         }
         Ok(r)
+    }
+}
+
+impl orch_git::worktree::WorktreeLedger for Store {
+    fn get_row(&self, path: &Path) -> Option<WorktreeRow> {
+        self.read(|s| s.worktrees.get(path).cloned())
+    }
+
+    fn put_row(&self, row: WorktreeRow) -> Result<()> {
+        self.write(|s| {
+            s.worktrees.insert(row.path.clone(), row);
+        })
+    }
+
+    fn rows_of(&self, repo: &Path) -> Vec<WorktreeRow> {
+        self.read(|s| s.worktrees.values().filter(|w| w.repo == repo).cloned().collect())
     }
 }
 
@@ -292,15 +443,49 @@ impl Store {
 mod tests {
     use super::*;
 
+    fn db(d: &tempfile::TempDir) -> orch_store::Store {
+        orch_store::Store::open(&d.path().join("state/orch.db")).unwrap()
+    }
+
     #[test]
-    fn persists_atomically() {
+    fn persists_through_sqlite() {
         let d = tempfile::tempdir().unwrap();
-        let p = d.path().join("state/state.json");
-        let s = Store::open(&p).unwrap();
-        s.write(|st| st.add_inbox(Some("a"), "alert", "x".into())).unwrap();
-        let s2 = Store::open(&p).unwrap();
+        {
+            let s = Store::open(db(&d), None).unwrap();
+            s.write(|st| st.add_inbox(Some("a"), "alert", "x".into())).unwrap();
+            s.write(|st| {
+                st.turns.push(TurnRow::queued("a", "hi", governor::TurnKind::Message, Admission::Waiting(3)));
+            })
+            .unwrap();
+        }
+        let s2 = Store::open(db(&d), None).unwrap();
         assert_eq!(s2.read(|st| st.inbox.len()), 1);
+        assert_eq!(s2.read(|st| st.turns[0].admission), Admission::Waiting(3));
         assert_eq!(s2.write(|st| st.add_inbox(None, "gate", "y".into())).unwrap(), 2);
+        // Removing a row deletes it.
+        s2.write(|st| st.turns.clear()).unwrap();
+        assert!(Store::open(db(&d), None).unwrap().read(|st| st.turns.is_empty()));
+    }
+
+    #[test]
+    fn imports_the_json_stand_in_once() {
+        let d = tempfile::tempdir().unwrap();
+        let json = d.path().join("state/state.json");
+        std::fs::create_dir_all(json.parent().unwrap()).unwrap();
+        std::fs::write(
+            &json,
+            r#"{"agents":{},"worktrees":{},"turns":[],"holds":[],
+                "inbox":[{"id":4,"kind":"alert","body":"old","pending":false,"created_at_ms":1},
+                         {"id":5,"kind":"gate","agent_id":"a1","body":"open","pending":true,"created_at_ms":2}]}"#,
+        )
+        .unwrap();
+        let s = Store::open(db(&d), Some(&json)).unwrap();
+        let inbox = s.read(|st| st.inbox.clone());
+        assert_eq!(inbox.len(), 2);
+        assert_eq!(inbox[0].status, InboxStatus::Dismissed);
+        assert!(inbox[1].pending());
+        assert!(!json.exists() && json.with_extension("json.imported").exists());
+        assert_eq!(s.write(|st| st.add_inbox(None, "alert", "n".into())).unwrap(), 6);
     }
 
     #[test]

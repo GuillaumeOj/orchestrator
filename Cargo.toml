@@ -11,6 +11,8 @@ publish = false
 governor = { path = "crates/governor" }
 orch-protocol = { path = "crates/orch-protocol" }
 agent-runtime = { path = "crates/agent-runtime" }
+orch-store = { path = "crates/orch-store" }
+orch-git = { path = "crates/orch-git" }
 jiff = { version = "0.2", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }

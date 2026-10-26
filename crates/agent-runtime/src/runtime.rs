@@ -102,11 +102,12 @@ impl Live {
 pub struct Runtime {
     pub cfg: RuntimeConfig,
     pub store: Store,
+    /// The SQLite database (shared with the git service and the UI's queries).
+    pub db: orch_store::Store,
     gov: Mutex<Governor>,
     usage: Mutex<UsageCollector>,
     live: Mutex<BTreeMap<String, Arc<Live>>>,
     decisions: Mutex<VecDeque<AdmissionDecision>>,
-    events: Mutex<Option<std::fs::File>>,
     login_path: String,
     user_statusline: Option<String>,
     git_identity: (String, String),
@@ -195,7 +196,8 @@ impl Runtime {
         std::fs::create_dir_all(cfg.paths.agents_dir())?;
         std::fs::create_dir_all(cfg.paths.state_dir())?;
         orch_protocol::check_socket_path(&cfg.paths.socket())?;
-        let store = Store::open(&cfg.paths.state_file())?;
+        let db = orch_store::Store::open(&cfg.paths.db_file())?;
+        let store = Store::open(db.clone(), Some(&cfg.paths.legacy_state_file()))?;
         let policy = PacingPolicy { live_caps: governor::LiveCaps::from_base(cfg.base_cap), ..Default::default() };
         let now = Timestamp::now();
         let gov = Governor::new(default_plan(now, cfg.shadow), policy, now).map_err(|e| anyhow!("{e:?}"))?;
@@ -221,18 +223,16 @@ impl Runtime {
         if let Err(e) = git {
             warnings.push(e.to_string());
         }
-        let events =
-            std::fs::OpenOptions::new().create(true).append(true).open(cfg.paths.state_dir().join("events.jsonl")).ok();
         Ok(Arc::new_cyclic(|me| Runtime {
             user_statusline: crate::env::user_statusline_command(&home),
             git_identity,
             cfg,
             store,
+            db,
             gov: Mutex::new(gov),
             usage: Mutex::new(UsageCollector::new()),
             live: Mutex::new(BTreeMap::new()),
             decisions: Mutex::new(VecDeque::new()),
-            events: Mutex::new(events),
             login_path,
             warnings,
             me: me.clone(),
@@ -281,13 +281,9 @@ impl Runtime {
         self.live.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect()
     }
 
-    fn event(&self, agent: &str, kind: &str, detail: Value) {
-        let mut line = serde_json::to_vec(&json!({"ts_ms": now_ms(), "agent": agent, "kind": kind, "detail": detail}))
-            .unwrap_or_default();
-        line.push(b'\n');
-        if let Some(f) = self.events.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
-            let _ = f.write_all(&line); // one append per line
-        }
+    /// Appends to the event table (never blocks on disk). `agent` "-" = core-wide.
+    pub(crate) fn event(&self, agent: &str, kind: &str, detail: Value) {
+        self.db.add_event(now_ms(), Some(agent).filter(|a| *a != "-"), kind, detail);
     }
 
     fn record_decision(&self, req: AdmissionRequest, d: &Decision) {
@@ -1111,7 +1107,7 @@ impl Runtime {
             .collect();
         json!({
             "agents": agents,
-            "inbox": s.inbox.iter().filter(|i| i.pending).collect::<Vec<_>>(),
+            "inbox": s.inbox.iter().filter(|i| i.pending()).collect::<Vec<_>>(),
             "turns": s.turns.iter().rev().take(20).collect::<Vec<_>>(),
             "warnings": self.warnings,
         })

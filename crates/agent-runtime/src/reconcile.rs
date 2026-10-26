@@ -315,7 +315,7 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
             .collect();
         for g in gates {
             let msg = format!("{id}: gate still pending after a restart: {g}");
-            if !st.inbox.iter().any(|i| i.pending && i.body == msg) {
+            if !st.inbox.iter().any(|i| i.pending() && i.body == msg) {
                 st.add_inbox(Some(&id), "gate", msg.clone());
                 report.inbox.push(msg);
             }
@@ -374,7 +374,7 @@ mod tests {
     use crate::role::Role;
     use crate::state::Tracker;
     use crate::store::{AgentRecord, HoldRow};
-    use crate::worktree::tests::scratch_repo;
+    use orch_git::fixtures::scratch_repo;
     use orch_protocol::WorktreeKindSpec;
     use std::cell::RefCell;
 
@@ -428,7 +428,7 @@ mod tests {
         let (d, repo) = scratch_repo();
         let app = tempfile::tempdir().unwrap();
         let paths = AppPaths::new(app.path());
-        let store = Store::open(&paths.state_file()).unwrap();
+        let store = Store::open(orch_store::Store::open(&paths.db_file()).unwrap(), None).unwrap();
         let mut wts = std::collections::BTreeMap::new();
         for slug in ["idle", "tool", "gate", "merge", "orphan", "bg"] {
             let row = worktree::ensure(&store, &repo, &WorktreeKindSpec::Solo { slug: slug.into() }, None, Some(slug))
@@ -619,7 +619,7 @@ mod tests {
         let (_d, repo) = scratch_repo();
         let app = tempfile::tempdir().unwrap();
         let paths = AppPaths::new(app.path());
-        let store = Store::open(&paths.state_file()).unwrap();
+        let store = Store::open(orch_store::Store::open(&paths.db_file()).unwrap(), None).unwrap();
         // Crash between `git worktree add` and the DB write: row `creating`, no lock.
         let (p, b) = worktree::layout(&repo, &WorktreeKindSpec::Solo { slug: "half".into() }).unwrap();
         worktree::git(&repo, &["worktree", "add", "-q", "-b", &b, &p.display().to_string(), "main"]).unwrap();
