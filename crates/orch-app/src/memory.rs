@@ -57,9 +57,14 @@ fn start_time(pid: i32) -> Option<u64> {
     }
 }
 
-/// WebKit helper processes of this app: the XPC services share the app's
-/// "responsible" process (the app itself from the Finder, its launcher from a
-/// terminal) and started after it.
+/// How long after the app WebKit starts its helpers.
+const HELPER_START_WINDOW_S: u64 = 30;
+
+/// WebKit helper processes of this app. Launched from the Finder, the app is
+/// their "responsible" process. Launched from a terminal, they share the app's
+/// responsible process (the terminal) with everything else it started, so
+/// only helpers that started with the app's webview count (a helper WebKit
+/// restarts later is then missed: the figure errs low, not high).
 pub fn webkit_helpers(app_pid: i32) -> Vec<(i32, String)> {
     // SAFETY: plain queries on pids.
     let resp = |p: i32| unsafe { responsibility_get_pid_responsible_for_pid(p) };
@@ -70,9 +75,13 @@ pub fn webkit_helpers(app_pid: i32) -> Vec<(i32, String)> {
         .filter(|&p| p > 0 && p != app_pid)
         .filter_map(|p| {
             let name = proc_name(p);
-            let ours = name.starts_with("com.apple.WebKit")
-                && (resp(p) == app_pid || resp(p) == me)
-                && start_time(p).is_some_and(|t| t >= since);
+            if !name.starts_with("com.apple.WebKit") {
+                return None;
+            }
+            let r = resp(p);
+            let started = start_time(p).unwrap_or(0);
+            let ours = r == app_pid
+                || (r == me && me != app_pid && (since..=since + HELPER_START_WINDOW_S).contains(&started));
             ours.then_some((p, name))
         })
         .collect()

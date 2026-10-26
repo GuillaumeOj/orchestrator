@@ -89,9 +89,19 @@ pub struct Core {
     /// Project folder → its repository's main checkout (FR-105), resolved once.
     mains: Mutex<BTreeMap<PathBuf, Option<PathBuf>>>,
     answered: Mutex<BTreeMap<String, u64>>,
-    attached: Mutex<std::collections::BTreeSet<String>>,
+    /// The UI pane reading each agent's output: its generation, and bytes a
+    /// stale reader (a closed pane's last pull) took for the current one.
+    readers: Mutex<BTreeMap<String, Reader>>,
+    reader_gen: std::sync::atomic::AtomicU64,
+    agent_input: Mutex<BTreeMap<String, std::sync::mpsc::Sender<Vec<u8>>>>,
     stop: Arc<AtomicBool>,
     pub warnings: Vec<String>,
+}
+
+#[derive(Default)]
+struct Reader {
+    reader: u64,
+    carry: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -149,7 +159,9 @@ impl Core {
             memory: Mutex::new((None, AppMemory::default())),
             mains: Mutex::new(BTreeMap::new()),
             answered: Mutex::new(BTreeMap::new()),
-            attached: Mutex::new(Default::default()),
+            readers: Mutex::new(BTreeMap::new()),
+            reader_gen: std::sync::atomic::AtomicU64::new(0),
+            agent_input: Mutex::new(BTreeMap::new()),
             stop: Arc::new(AtomicBool::new(false)),
             warnings,
         });
@@ -226,6 +238,7 @@ impl Core {
     /// Graceful stop: suspend agents (resumed by id next time), close shells.
     pub fn shutdown(&self) {
         self.stop.store(true, Ordering::SeqCst);
+        self.agent_input.lock().unwrap_or_else(|e| e.into_inner()).clear(); // ends the writer threads
         if let Some(rt) = &self.rt {
             rt.shutdown();
         }
@@ -291,7 +304,7 @@ impl Core {
                 if !rt.live_ids().contains(&agent_id) {
                     return reply(Reply::Ctl(CtlReply::err(format!("agent {agent_id} is not running"))));
                 }
-                if self.attached.lock().unwrap_or_else(|e| e.into_inner()).contains(&agent_id) {
+                if self.readers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&agent_id) {
                     return reply(Reply::Ctl(CtlReply::err(format!("agent {agent_id} is open in the app"))));
                 }
                 reply(Reply::Ctl(CtlReply::ok(json!("attached"))));
@@ -330,39 +343,95 @@ impl Core {
         rt.start(&spec)?;
         // The runtime records the main checkout (FR-105); remember which project
         // folder the session was started from, for the sidebar.
-        self.settings.set(&format!("agent-project:{id}"), json!(project.id))?;
+        if let Err(err) = self.settings.set(&format!("agent-project:{id}"), json!(project.id)) {
+            eprintln!("orchestrator: could not remember {id}'s project: {err:#}");
+        }
         Ok(id)
     }
 
     /// The UI takes the agent's output (pull transport): with a consumer the
     /// buffer applies backpressure, and xterm.js answers terminal queries.
-    pub fn agent_attach(&self, id: &str) -> Result<()> {
+    /// Returns the reader generation the pane passes to `agent_read`: a newer
+    /// pane for the same agent makes older readers stale.
+    pub fn agent_attach(&self, id: &str) -> Result<u64> {
         let l = self.runtime()?.live(id).ok_or_else(|| anyhow!("agent {id} is not running"))?;
         l.pty.output.set_attached(true);
-        self.attached.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string());
-        Ok(())
+        let reader = self.reader_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut r = self.readers.lock().unwrap_or_else(|e| e.into_inner());
+        let carry = r.remove(id).map(|old| old.carry).unwrap_or_default();
+        r.insert(id.to_string(), Reader { reader, carry });
+        Ok(reader)
     }
 
-    pub fn agent_detach(&self, id: &str) {
-        self.attached.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
-        if let Some(l) = self.rt.as_ref().and_then(|rt| rt.live(id)) {
-            l.pty.output.set_attached(false);
+    /// Only the current reader detaches (a closed pane's detach can arrive
+    /// after the reopened pane attached).
+    pub fn agent_detach(&self, id: &str, reader: u64) {
+        let mut r = self.readers.lock().unwrap_or_else(|e| e.into_inner());
+        if r.get(id).is_some_and(|x| x.reader == reader) {
+            r.remove(id);
+            if let Some(l) = self.rt.as_ref().and_then(|rt| rt.live(id)) {
+                l.pty.output.set_attached(false);
+            }
         }
     }
 
+    fn current_reader(&self, id: &str, reader: u64) -> bool {
+        self.readers.lock().unwrap_or_else(|e| e.into_inner()).get(id).is_some_and(|r| r.reader == reader)
+    }
+
     /// Pull: everything buffered, waiting up to `wait` for output. Err when
-    /// the process is gone (the pane then shows its state strip).
-    pub fn agent_read(&self, id: &str, wait: Duration) -> Result<Vec<u8>> {
+    /// the process is gone (the pane then shows its state strip) or when a
+    /// newer pane reads this agent; bytes a stale reader drained go to it.
+    pub fn agent_read(&self, id: &str, reader: u64, wait: Duration) -> Result<Vec<u8>> {
         let l = self.runtime()?.live(id).ok_or_else(|| anyhow!("agent {id} is not running"))?;
+        {
+            let mut r = self.readers.lock().unwrap_or_else(|e| e.into_inner());
+            match r.get_mut(id) {
+                Some(x) if x.reader == reader => {
+                    if !x.carry.is_empty() {
+                        return Ok(std::mem::take(&mut x.carry));
+                    }
+                }
+                _ => bail!("stale reader for {id}"),
+            }
+        }
         let b = l.pty.output.read_wait(wait);
+        if !self.current_reader(id, reader) {
+            if let Some(x) = self.readers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(id) {
+                x.carry.extend_from_slice(&b);
+            }
+            bail!("stale reader for {id}");
+        }
         if b.is_empty() && l.pty.output.is_closed() {
             bail!("agent {id} exited");
         }
         Ok(b)
     }
 
+    /// Queues the user's keystrokes for the agent's PTY, in order; a writer
+    /// thread per agent does the (possibly blocking) write.
     pub fn agent_write(&self, id: &str, data: &[u8]) -> Result<()> {
-        self.runtime()?.live(id).ok_or_else(|| anyhow!("agent {id} is not running"))?.user_input(data)
+        let rt = self.runtime()?.clone();
+        rt.live(id).ok_or_else(|| anyhow!("agent {id} is not running"))?;
+        let mut w = self.agent_input.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = match w.get(id) {
+            Some(tx) => tx.clone(),
+            None => {
+                let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+                let agent = id.to_string();
+                std::thread::Builder::new().name(format!("agent-{id}-in")).spawn(move || {
+                    for b in rx {
+                        // The process may have been resumed: look it up each time.
+                        if let Some(l) = rt.live(&agent) {
+                            let _ = l.user_input(&b);
+                        }
+                    }
+                })?;
+                w.insert(id.to_string(), tx.clone());
+                tx
+            }
+        };
+        tx.send(data.to_vec()).map_err(|_| anyhow!("agent {id}: input closed"))
     }
 
     pub fn agent_action(&self, id: &str, action: &str, message: Option<&str>) -> Result<Value> {
@@ -421,11 +490,16 @@ impl Core {
     ) -> Result<EditorOpen> {
         let cwd = self.pane_cwd(project_id, agent_id);
         let sock = editor::server_socket(&self.paths.root, project_id.unwrap_or("default"));
-        if let Some(f) = file {
-            let abs = if Path::new(f).is_absolute() { PathBuf::from(f) } else { cwd.join(f) };
-            if editor::open_remote(&sock, &abs.display().to_string(), line)? {
-                return Ok(EditorOpen { reused: true, term: None });
+        match file {
+            Some(f) => {
+                let abs = if Path::new(f).is_absolute() { PathBuf::from(f) } else { cwd.join(f) };
+                if editor::open_remote(&sock, &abs.display().to_string(), line)? {
+                    return Ok(EditorOpen { reused: true, term: None });
+                }
             }
+            // No file: the project's nvim, if it runs, is the editor to show.
+            None if orch_protocol::is_listening(&sock) => return Ok(EditorOpen { reused: true, term: None }),
+            None => {}
         }
         if let Some(dir) = sock.parent() {
             std::fs::create_dir_all(dir)?;
@@ -439,14 +513,22 @@ impl Core {
     /// FR-1004: the real kitty at the same cwd (remote control when kitty.conf
     /// enables it, otherwise a new instance).
     pub fn open_in_kitty(&self, cwd: &Path) -> Result<()> {
-        let st = match &self.kitty.listen_on {
-            Some(to) => std::process::Command::new("kitty")
+        // Remote control first; `listen_on` may hold placeholders kitty expands
+        // ({kitty_pid}), so a failure falls back to a new instance.
+        if let Some(to) = self.kitty.listen_on.as_deref().filter(|t| !t.contains('{')) {
+            let remote = std::process::Command::new("kitty")
                 .args(["@", "--to", to, "launch", "--type=os-window", "--cwd"])
                 .arg(cwd)
-                .status(),
-            None => std::process::Command::new("open").args(["-na", "kitty", "--args", "--directory"]).arg(cwd).status(),
+                .status();
+            if remote.is_ok_and(|s| s.success()) {
+                return Ok(());
+            }
         }
-        .context("starting kitty")?;
+        let st = std::process::Command::new("open")
+            .args(["-na", "kitty", "--args", "--directory"])
+            .arg(cwd)
+            .status()
+            .context("starting kitty")?;
         if !st.success() {
             bail!("kitty exited with {st}");
         }
@@ -582,18 +664,18 @@ impl Core {
 
     /// The project an agent belongs to: the one it was started from, else the
     /// project whose folder (or main checkout) is the agent's repository.
+    /// Paths are compared as stored: the registry, the runtime and
+    /// `main_checkout` all keep resolved paths.
     fn project_of(&self, agent_id: &str, repo: &Path, projects: &[Project]) -> Option<String> {
-        if let Some(id) = self.settings.get(&format!("agent-project:{agent_id}")).and_then(|v| v.as_str().map(String::from)) {
+        if let Some(Value::String(id)) = self.settings.get(&format!("agent-project:{agent_id}")) {
             if projects.iter().any(|p| p.id == id) {
                 return Some(id);
             }
         }
-        let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-        let repo = real(repo);
         projects
             .iter()
-            .find(|p| real(&p.path) == repo)
-            .or_else(|| projects.iter().find(|p| self.main_of(&p.path).is_some_and(|m| real(&m) == repo)))
+            .find(|p| p.path == repo)
+            .or_else(|| projects.iter().find(|p| self.main_of(&p.path).as_deref() == Some(repo)))
             .map(|p| p.id.clone())
     }
 
@@ -654,7 +736,7 @@ impl Core {
             if let Some(q) = queue.as_array().and_then(|q| q.iter().find(|e| e["agent"] == json!(id))) {
                 a["queue_entry"] = q.clone();
             }
-            a["attached"] = json!(self.attached.lock().unwrap_or_else(|e| e.into_inner()).contains(&id));
+            a["attached"] = json!(self.readers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&id));
         }
         let items = self.inbox_items(&agents);
         let projects: Vec<Value> = projects
@@ -938,6 +1020,19 @@ mod tests {
         core.settings.set("agent-project:a1", json!("nope")).unwrap();
         assert_eq!(core.state()["agents"][0]["project_id"], "feat", "an unknown remembered project is ignored");
         assert_eq!(core.projects.list().len(), 1, "the main checkout was not added as a second project");
+        core.shutdown();
+    }
+
+    #[test]
+    fn opening_the_editor_without_a_file_keeps_a_running_nvim() {
+        let d = tmp();
+        let core = test_core(d.path());
+        let sock = editor::server_socket(&core.paths.root, "repo");
+        std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+        let _nvim = UnixListener::bind(&sock).unwrap(); // stands in for nvim --listen
+        let r = core.editor_open(Some("repo"), None, None, None, 24, 80).unwrap();
+        assert!(r.reused && r.term.is_none());
+        assert!(sock.exists(), "the live server's socket is kept");
         core.shutdown();
     }
 

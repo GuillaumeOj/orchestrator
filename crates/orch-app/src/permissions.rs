@@ -122,15 +122,18 @@ impl PermissionBroker {
     }
 
     /// The user answered in the pane (the CLI shows its dialog while the hook
-    /// is held): the agent's next hook for that call, or a turn boundary,
-    /// closes the request with no decision. Returns how many were closed.
+    /// is held): the agent's next hook for that call (`tool_use_id` given and
+    /// equal to the request's), or a turn boundary (`None`), closes the request
+    /// with no decision. A call hook can't be matched to a request without an
+    /// id (parallel calls), so it closes nothing. Returns how many were closed.
     pub fn answered_in_pane(&self, agent_id: &str, tool_use_id: Option<&str>) -> usize {
         let mut g = self.lock();
         let mut n = 0;
         for (p, slot) in g.pending.values_mut() {
             let same_call = match (tool_use_id, p.tool_use_id.as_deref()) {
+                (None, _) => true,
                 (Some(a), Some(b)) => a == b,
-                _ => true,
+                (Some(_), None) => false,
             };
             if p.agent_id == agent_id && slot.is_none() && same_call {
                 *slot = Some(Answer::InPane);
@@ -223,11 +226,16 @@ mod tests {
         p.tool_use_id = Some("tu1".into());
         let id = b.open("a1", &p, 1);
         assert_eq!(b.answered_in_pane("a1", Some("other")), 0, "another call");
+        let no_id = b.open("a1", &payload("pwd"), 1);
+        assert_eq!(b.answered_in_pane("a1", Some("tu9")), 0, "a call hook can't close a request without an id");
         assert_eq!(b.answered_in_pane("a2", None), 0, "another agent");
         assert_eq!(b.answered_in_pane("a1", Some("tu1")), 1);
         let o = b.wait(&id, Instant::now() + Duration::from_secs(1), Duration::from_millis(10), || false);
         assert_eq!(o, Outcome::Answered(Answer::InPane));
         assert!(PermissionBroker::hook_output(&o).is_none());
+        assert_eq!(b.answered_in_pane("a1", None), 1, "the turn's end closes it");
+        let o = b.wait(&no_id, Instant::now() + Duration::from_secs(1), Duration::from_millis(10), || false);
+        assert_eq!(o, Outcome::Answered(Answer::InPane));
     }
 
     #[test]

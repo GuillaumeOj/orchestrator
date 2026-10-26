@@ -68,7 +68,9 @@ pub struct Term {
     pub cwd: PathBuf,
     pub pid: Option<u32>,
     master: Mutex<Box<dyn MasterPty + Send>>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    /// Bytes for the PTY, written in order by the pane's writer thread: a
+    /// child that stops reading blocks that thread, never the caller.
+    input: Mutex<std::sync::mpsc::Sender<Vec<u8>>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     pub output: Arc<Output>,
 }
@@ -135,6 +137,7 @@ impl Terms {
         let mut reader = pair.master.try_clone_reader().map_err(|e| anyhow!("{e}"))?;
         let writer = pair.master.take_writer().map_err(|e| anyhow!("{e}"))?;
         let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
+        let input = spawn_writer(format!("term-{id}-in"), writer)?;
         let output = Arc::new(Output::default());
         let out = output.clone();
         std::thread::Builder::new()
@@ -157,7 +160,7 @@ impl Terms {
             cwd,
             pid,
             master: Mutex::new(pair.master),
-            writer: Mutex::new(writer),
+            input: Mutex::new(input),
             child: Mutex::new(child),
             output,
         });
@@ -196,12 +199,27 @@ impl Terms {
     }
 }
 
+/// A thread that writes queued bytes to `w` in order until the queue closes
+/// or a write fails.
+pub fn spawn_writer(name: String, mut w: Box<dyn Write + Send>) -> Result<std::sync::mpsc::Sender<Vec<u8>>> {
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::Builder::new()
+        .name(name)
+        .spawn(move || {
+            for b in rx {
+                if w.write_all(&b).and_then(|_| w.flush()).is_err() {
+                    break;
+                }
+            }
+        })
+        .context("writer thread")?;
+    Ok(tx)
+}
+
 impl Term {
+    /// Queues bytes for the PTY (never blocks).
     pub fn write(&self, bytes: &[u8]) -> Result<()> {
-        let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
-        w.write_all(bytes)?;
-        w.flush()?;
-        Ok(())
+        self.input.lock().unwrap_or_else(|e| e.into_inner()).send(bytes.to_vec()).map_err(|_| anyhow!("terminal closed"))
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {

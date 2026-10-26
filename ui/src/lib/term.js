@@ -185,7 +185,7 @@ export class TermPane {
     if (this.alive || this.starting || this.disposed) return;
     this.starting = true;
     try {
-      if (this.source.kind === 'agent') await invoke('agent_attach', { id: this.source.id });
+      if (this.source.kind === 'agent') this.reader = await invoke('agent_attach', { id: this.source.id });
     } finally {
       this.starting = false;
     }
@@ -202,7 +202,7 @@ export class TermPane {
     while (this.alive && !this.disposed) {
       let buf;
       try {
-        buf = await invoke(cmd, { id: this.source.id });
+        buf = await invoke(cmd, { id: this.source.id, reader: this.reader ?? 0 });
       } catch {
         this.alive = false;
         if (!this.disposed) this.hooks.onExit?.();
@@ -237,7 +237,7 @@ export class TermPane {
   dispose() {
     this.disposed = true;
     this.alive = false;
-    if (this.source.kind === 'agent') invoke('agent_detach', { id: this.source.id }).catch(() => {});
+    if (this.source.kind === 'agent') invoke('agent_detach', { id: this.source.id, reader: this.reader ?? 0 }).catch(() => {});
     else invoke('term_kill', { id: this.source.id }).catch(() => {});
     this.term.dispose();
     this.host.remove();

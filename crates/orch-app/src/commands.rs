@@ -25,9 +25,11 @@ fn e(err: anyhow::Error) -> String {
     format!("{err:#}")
 }
 
+/// Off the main thread (sync commands run there): it runs git and scans processes.
 #[tauri::command]
-pub fn app_state(core: CoreState) -> Value {
-    core.state()
+pub async fn app_state(core: CoreState<'_>) -> Res<Value> {
+    let core = core.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || core.state()).await.map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -53,19 +55,19 @@ pub fn agent_start(core: CoreState, req: NewSession) -> Res<String> {
 }
 
 #[tauri::command]
-pub fn agent_attach(core: CoreState, id: String) -> Res<()> {
+pub fn agent_attach(core: CoreState, id: String) -> Res<u64> {
     core.agent_attach(&id).map_err(e)
 }
 
 #[tauri::command]
-pub fn agent_detach(core: CoreState, id: String) {
-    core.agent_detach(&id)
+pub fn agent_detach(core: CoreState, id: String, reader: u64) {
+    core.agent_detach(&id, reader)
 }
 
 #[tauri::command]
-pub async fn agent_read(core: CoreState<'_>, id: String) -> Res<Response> {
+pub async fn agent_read(core: CoreState<'_>, id: String, reader: u64) -> Res<Response> {
     let core = core.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || core.agent_read(&id, PULL_WAIT).map(Response::new).map_err(e))
+    tauri::async_runtime::spawn_blocking(move || core.agent_read(&id, reader, PULL_WAIT).map(Response::new).map_err(e))
         .await
         .map_err(|err| err.to_string())?
 }
@@ -153,8 +155,9 @@ pub async fn editor_open(
 }
 
 #[tauri::command]
-pub fn open_in_kitty(core: CoreState, cwd: PathBuf) -> Res<()> {
-    core.open_in_kitty(&cwd).map_err(e)
+pub async fn open_in_kitty(core: CoreState<'_>, cwd: PathBuf) -> Res<()> {
+    let core = core.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || core.open_in_kitty(&cwd).map_err(e)).await.map_err(|err| err.to_string())?
 }
 
 // ---------------------------------------------------------------- inbox, governor
@@ -168,8 +171,9 @@ pub async fn inbox_act(core: CoreState<'_>, item: String, action: String, messag
 }
 
 #[tauri::command]
-pub fn planner_view(core: CoreState) -> Res<PlannerView> {
-    core.planner().map_err(e)
+pub async fn planner_view(core: CoreState<'_>) -> Res<PlannerView> {
+    let core = core.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || core.planner().map_err(e)).await.map_err(|err| err.to_string())?
 }
 
 #[tauri::command]

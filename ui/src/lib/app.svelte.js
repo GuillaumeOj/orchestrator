@@ -176,7 +176,7 @@ export async function openEditor(file = null, line = null, opts = {}) {
     if (r.reused) {
       const pane = findPane((s) => s.type === 'editor' && s.projectId === p?.id);
       if (pane) focusPane(pane);
-      toast(`Opened ${file}${line ? `:${line}` : ''} in nvim · ${p?.name ?? ''}`);
+      toast(file ? `Opened ${file}${line ? `:${line}` : ''} in nvim · ${p?.name ?? ''}` : `nvim is already open · ${p?.name ?? ''}`);
       return;
     }
     addPane({ type: 'editor', termId: r.term.id, cwd: r.term.cwd, projectId: p?.id, file }, 'right');
