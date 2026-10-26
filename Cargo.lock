@@ -2296,6 +2296,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "governor",
+ "orch-protocol",
  "rusqlite",
  "serde",
  "serde_json",

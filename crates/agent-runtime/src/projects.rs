@@ -19,6 +19,7 @@ use crate::paths::real;
 use crate::runtime::Runtime;
 use crate::state::AgentState;
 use crate::store::WorktreeRowState;
+use orch_git::worktree::WorktreeLedger;
 
 /// Patch size kept in memory for a diff view.
 pub const MAX_PATCH_BYTES: usize = 4 * 1024 * 1024;
@@ -73,7 +74,7 @@ impl Runtime {
     /// `with_prs` open PRs with CI (FR-106).
     pub fn project_detail(&self, id: &str, with_prs: bool) -> Result<Value> {
         let p = self.project(id)?;
-        let rows = self.store.read(|s| s.worktrees.values().filter(|w| w.repo == p.path).cloned().collect::<Vec<_>>());
+        let rows = self.store.rows_of(&p.path);
         let worktrees = cleanup::worktrees(&p.path, &rows, &p.default_branch)?;
         let agents: Vec<Value> = self
             .agents_of(&p.path)
@@ -118,9 +119,10 @@ impl Runtime {
             Some(b) => b.to_string(),
             None => self
                 .store
-                .read(|s| s.worktrees.get(&wt).map(|w| w.base.clone()))
+                .get_row(&wt)
+                .map(|w| w.base)
                 .or_else(|| {
-                    let main = orch_git::worktree::common_dir(&wt).ok()?.parent()?.to_path_buf();
+                    let main = real(&orch_git::worktree::main_checkout(&wt).ok()?);
                     self.db.project_by_path(&main).ok().flatten().map(|p| p.default_branch)
                 })
                 .unwrap_or_else(|| "main".into()),
@@ -141,7 +143,7 @@ impl Runtime {
         }) {
             bail!("agent {a} uses this worktree: archive or kill it first");
         }
-        let base = self.store.read(|s| s.worktrees.get(&wt).map(|w| w.base.clone())).unwrap_or(p.default_branch.clone());
+        let base = self.store.get_row(&wt).map(|w| w.base).unwrap_or(p.default_branch.clone());
         let confirm = if confirm_discard { Confirm::DiscardUnmerged } else { Confirm::Safe };
         let out = cleanup::remove_worktree(&p.path, &wt, &base, delete_branch, confirm)?;
         self.store.write(|s| {
@@ -202,7 +204,7 @@ impl Runtime {
             bail!("{} is already registered as project {}", new.display(), other.id);
         }
         let old = p.path.clone();
-        let rows = self.store.read(|s| s.worktrees.values().filter(|w| w.repo == old).cloned().collect::<Vec<_>>());
+        let rows = self.store.rows_of(&old);
         let map = repair::plan_relocation(&old, &new, &rows);
         let moved = |x: &Path| map.iter().find(|(o, _)| o == x).map(|(_, n)| n.clone()).unwrap_or_else(|| x.to_path_buf());
         let targets: Vec<(PathBuf, Option<String>)> = rows

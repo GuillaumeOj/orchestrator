@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use crate::db::{Store, Tx};
 use crate::model::{InboxItem, InboxStatus, WorktreeRow, WorktreeRowState};
+use crate::util::{js, opt_u64, p};
 
 /// An agent: key columns for queries plus the runtime's full record in `data`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -81,13 +82,6 @@ impl RuntimeDiff {
     }
 }
 
-fn p(path: &std::path::Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
-fn json(v: &Value) -> String {
-    serde_json::to_string(v).unwrap_or_else(|_| "null".into())
-}
 
 /// Upserts one worktree row inside a write transaction.
 pub fn upsert_worktree(tx: &Tx, w: &WorktreeRow) -> rusqlite::Result<usize> {
@@ -113,7 +107,7 @@ pub(crate) fn upsert_inbox(tx: &Tx, i: &InboxItem) -> rusqlite::Result<usize> {
             i.agent_id,
             i.project_id,
             i.body,
-            json(&i.payload),
+            js(&i.payload),
             i.priority,
             i.status.as_str(),
             i.stale,
@@ -148,7 +142,7 @@ pub(crate) fn row_inbox(r: &rusqlite::Row) -> rusqlite::Result<InboxItem> {
         status: InboxStatus::parse(&r.get::<_, String>(7)?),
         stale: r.get(8)?,
         created_at_ms: r.get::<_, i64>(9)? as u64,
-        decided_at_ms: r.get::<_, Option<i64>>(10)?.map(|v| v as u64),
+        decided_at_ms: opt_u64(r, 10)?,
         decision: r.get(11)?,
     })
 }
@@ -175,7 +169,7 @@ fn load(c: &Connection) -> Result<RuntimeRows> {
                 pid: r.get(5)?,
                 tier: r.get(6)?,
                 allocation: r.get(7)?,
-                last_active_at_ms: r.get::<_, Option<i64>>(8)?.map(|v| v as u64),
+                last_active_at_ms: opt_u64(r, 8)?,
                 created_at_ms: r.get::<_, i64>(9)? as u64,
                 data: parse(r.get(10)?),
             })
@@ -194,7 +188,7 @@ fn load(c: &Connection) -> Result<RuntimeRows> {
                 kind: r.get(2)?,
                 status: r.get(3)?,
                 created_at_ms: r.get::<_, i64>(4)? as u64,
-                delivered_at_ms: r.get::<_, Option<i64>>(5)?.map(|v| v as u64),
+                delivered_at_ms: opt_u64(r, 5)?,
                 data: parse(r.get(6)?),
             })
         })?
@@ -218,9 +212,15 @@ fn load(c: &Connection) -> Result<RuntimeRows> {
     Ok(rows)
 }
 
+/// Runs a statement through the connection's statement cache (the same
+/// upserts run on every runtime change).
+fn exec(tx: &Tx, sql: &str, params: impl rusqlite::Params) -> rusqlite::Result<usize> {
+    tx.prepare_cached(sql)?.execute(params)
+}
+
 fn apply(tx: &Tx, d: &RuntimeDiff) -> Result<()> {
     for a in &d.agents {
-        tx.execute(
+        exec(tx, 
             "INSERT INTO agents(id, repo, worktree, session_id, state, pid, tier, allocation, last_active_at_ms, created_at_ms, data)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
              ON CONFLICT(id) DO UPDATE SET repo=excluded.repo, worktree=excluded.worktree, session_id=excluded.session_id,
@@ -237,21 +237,21 @@ fn apply(tx: &Tx, d: &RuntimeDiff) -> Result<()> {
                 a.allocation,
                 a.last_active_at_ms.map(|v| v as i64),
                 a.created_at_ms as i64,
-                json(&a.data)
+                js(&a.data)
             ],
         )?;
     }
     for id in &d.agents_deleted {
-        tx.execute("DELETE FROM agents WHERE id=?1", [id])?;
+        exec(tx, "DELETE FROM agents WHERE id=?1", [id])?;
     }
     for w in &d.worktrees {
         upsert_worktree(tx, w)?;
     }
     for path in &d.worktrees_deleted {
-        tx.execute("DELETE FROM worktrees WHERE path=?1", [p(path)])?;
+        exec(tx, "DELETE FROM worktrees WHERE path=?1", [p(path)])?;
     }
     for t in &d.turns {
-        tx.execute(
+        exec(tx, 
             "INSERT INTO turns(id, agent_id, kind, status, created_at_ms, delivered_at_ms, data) VALUES (?1,?2,?3,?4,?5,?6,?7)
              ON CONFLICT(id) DO UPDATE SET agent_id=excluded.agent_id, kind=excluded.kind, status=excluded.status,
                created_at_ms=excluded.created_at_ms, delivered_at_ms=excluded.delivered_at_ms, data=excluded.data",
@@ -262,29 +262,29 @@ fn apply(tx: &Tx, d: &RuntimeDiff) -> Result<()> {
                 t.status,
                 t.created_at_ms as i64,
                 t.delivered_at_ms.map(|v| v as i64),
-                json(&t.data)
+                js(&t.data)
             ],
         )?;
     }
     for id in &d.turns_deleted {
-        tx.execute("DELETE FROM turns WHERE id=?1", [id])?;
+        exec(tx, "DELETE FROM turns WHERE id=?1", [id])?;
     }
     for h in &d.holds {
-        tx.execute(
+        exec(tx, 
             "INSERT INTO holds(id, agent_id, kind, status, created_at_ms, data) VALUES (?1,?2,?3,?4,?5,?6)
              ON CONFLICT(id) DO UPDATE SET agent_id=excluded.agent_id, kind=excluded.kind, status=excluded.status,
                created_at_ms=excluded.created_at_ms, data=excluded.data",
-            params![h.id, h.agent_id, h.kind, h.status, h.created_at_ms as i64, json(&h.data)],
+            params![h.id, h.agent_id, h.kind, h.status, h.created_at_ms as i64, js(&h.data)],
         )?;
     }
     for id in &d.holds_deleted {
-        tx.execute("DELETE FROM holds WHERE id=?1", [id])?;
+        exec(tx, "DELETE FROM holds WHERE id=?1", [id])?;
     }
     for i in &d.inbox {
         upsert_inbox(tx, i)?;
     }
     for id in &d.inbox_deleted {
-        tx.execute("DELETE FROM inbox_items WHERE id=?1", [*id as i64])?;
+        exec(tx, "DELETE FROM inbox_items WHERE id=?1", [*id as i64])?;
     }
     Ok(())
 }
@@ -297,10 +297,12 @@ impl Store {
 
     /// Applies one runtime change in a single transaction and waits for the commit.
     pub fn sync_runtime(&self, diff: RuntimeDiff) -> Result<()> {
-        if diff.is_empty() {
-            return Ok(());
-        }
-        self.write(move |tx| apply(tx, &diff))
+        self.sync_runtime_begin(diff)?.wait()
+    }
+
+    /// Queues one runtime change (in order) and returns the wait for its commit.
+    pub fn sync_runtime_begin(&self, diff: RuntimeDiff) -> Result<crate::Pending<()>> {
+        self.write_begin(move |tx| if diff.is_empty() { Ok(()) } else { apply(tx, &diff) })
     }
 
     /// True when the runtime tables hold nothing (first start, or a JSON state to import).

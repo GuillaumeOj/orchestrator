@@ -43,7 +43,7 @@ pub fn branches(repo: &Path, base: &str) -> Result<Vec<BranchInfo>> {
         let name = f[0].to_string();
         let (ahead, behind) = ahead_behind(repo, &name, base);
         v.push(BranchInfo {
-            merged: git_ok(repo, &["merge-base", "--is-ancestor", &name, base]),
+            merged: is_merged(repo, &name, base),
             head: f[1].into(),
             upstream: Some(f[2].to_string()).filter(|s| !s.is_empty()),
             ahead_of_base: ahead,
@@ -55,6 +55,11 @@ pub fn branches(repo: &Path, base: &str) -> Result<Vec<BranchInfo>> {
         });
     }
     Ok(v)
+}
+
+/// Every commit of `tip` is reachable from `base` (false when either doesn't resolve).
+pub fn is_merged(repo: &Path, tip: &str, base: &str) -> bool {
+    git_ok(repo, &["merge-base", "--is-ancestor", tip, base])
 }
 
 /// (commits on `branch` not in `base`, commits on `base` not in `branch`).
@@ -93,7 +98,7 @@ pub struct WorktreeInfo {
     pub locked: bool,
     pub verdict: WorktreeVerdict,
     pub row: Option<WorktreeRow>,
-    pub base: Option<String>,
+    pub base: String,
     /// Uncommitted + untracked files.
     pub dirty: usize,
     /// Commits not in the base (unmerged work).
@@ -109,10 +114,13 @@ pub fn worktrees(repo: &Path, rows: &[WorktreeRow], default_base: &str) -> Resul
     let main = real(repo);
     let root = worktree::worktree_root(repo);
     let git_wts = worktree::list(repo)?;
+    // Canonicalized once (not per pair of worktree and row).
+    let live_rows: Vec<(PathBuf, &WorktreeRow)> =
+        rows.iter().filter(|r| r.state != WorktreeRowState::Removed).map(|r| (real(&r.path), r)).collect();
+    let git_paths: Vec<PathBuf> = git_wts.iter().map(|w| real(&w.path)).collect();
     let mut out = vec![];
-    for w in &git_wts {
-        let p = real(&w.path);
-        let row = rows.iter().find(|r| real(&r.path) == p && r.state != WorktreeRowState::Removed).cloned();
+    for (w, p) in git_wts.iter().zip(git_paths.iter().cloned()) {
+        let row = live_rows.iter().find(|(rp, _)| *rp == p).map(|(_, r)| (*r).clone());
         let verdict = if p == main {
             WorktreeVerdict::Main
         } else if w.prunable || !p.is_dir() {
@@ -124,11 +132,10 @@ pub fn worktrees(repo: &Path, rows: &[WorktreeRow], default_base: &str) -> Resul
         } else {
             WorktreeVerdict::External
         };
-        out.push(describe(repo, p, w.branch.clone(), w.head.clone(), w.locked, verdict, row, default_base));
+        out.push(describe(repo, w, p, verdict, row, default_base));
     }
-    for r in rows.iter().filter(|r| r.state != WorktreeRowState::Removed) {
-        let p = real(&r.path);
-        if !git_wts.iter().any(|w| real(&w.path) == p) {
+    for (p, r) in live_rows {
+        if !git_paths.contains(&p) {
             out.push(WorktreeInfo {
                 path: p,
                 branch: Some(r.branch.clone()),
@@ -136,11 +143,10 @@ pub fn worktrees(repo: &Path, rows: &[WorktreeRow], default_base: &str) -> Resul
                 locked: false,
                 verdict: WorktreeVerdict::Missing,
                 row: Some(r.clone()),
-                base: Some(r.base.clone()),
+                base: r.base.clone(),
                 dirty: 0,
                 unmerged_commits: ahead_behind(repo, &r.branch, &r.base).0,
-                merged: worktree::branch_exists(repo, &r.branch)
-                    && git_ok(repo, &["merge-base", "--is-ancestor", &r.branch, &r.base]),
+                merged: worktree::branch_exists(repo, &r.branch) && is_merged(repo, &r.branch, &r.base),
                 in_progress: vec![],
                 safe_to_remove: false,
             });
@@ -149,24 +155,20 @@ pub fn worktrees(repo: &Path, rows: &[WorktreeRow], default_base: &str) -> Resul
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn describe(
     repo: &Path,
+    w: &worktree::GitWorktree,
     path: PathBuf,
-    branch: Option<String>,
-    head: Option<String>,
-    locked: bool,
     verdict: WorktreeVerdict,
     row: Option<WorktreeRow>,
     default_base: &str,
 ) -> WorktreeInfo {
-    let base = row.as_ref().map(|r| r.base.clone()).or_else(|| Some(default_base.to_string()));
+    let base = row.as_ref().map(|r| r.base.clone()).unwrap_or_else(|| default_base.to_string());
     let insp = if path.is_dir() { worktree::inspect(&path) } else { Default::default() };
-    let (unmerged, merged) = match (&branch, &base) {
-        (Some(b), Some(base)) => {
-            (ahead_behind(repo, b, base).0, git_ok(repo, &["merge-base", "--is-ancestor", b, base]))
-        }
-        _ => (0, false),
+    let branch = w.branch.clone();
+    let (unmerged, merged) = match &branch {
+        Some(b) => (ahead_behind(repo, b, &base).0, is_merged(repo, b, &base)),
+        None => (0, false),
     };
     let safe = matches!(verdict, WorktreeVerdict::Ok | WorktreeVerdict::Unknown | WorktreeVerdict::Prunable)
         && insp.dirty == 0
@@ -175,8 +177,8 @@ fn describe(
     WorktreeInfo {
         path,
         branch,
-        head,
-        locked,
+        head: w.head.clone(),
+        locked: w.locked,
         verdict,
         row,
         base,
@@ -236,7 +238,7 @@ pub fn remove_worktree(
         // base that doesn't resolve counts as unmerged (never "0 ahead").
         let tip = branch.clone().or_else(|| git_wt.as_ref().and_then(|w| w.head.clone()));
         if let Some(t) = &tip {
-            if !git_ok(repo, &["merge-base", "--is-ancestor", t, base]) {
+            if !is_merged(repo, t, base) {
                 let (ahead, _) = ahead_behind(repo, t, base);
                 bail!("{t}: not merged into {base} ({ahead} commit(s) ahead; needs confirmation)");
             }
@@ -285,7 +287,7 @@ pub fn delete_branch(repo: &Path, branch: &str, base: &str, confirm: Confirm) ->
     if worktree::list(repo)?.iter().any(|w| w.branch.as_deref() == Some(branch)) {
         bail!("{branch} is checked out in a worktree: remove the worktree first");
     }
-    if confirm == Confirm::Safe && !git_ok(repo, &["merge-base", "--is-ancestor", branch, base]) {
+    if confirm == Confirm::Safe && !is_merged(repo, branch, base) {
         bail!("{branch} is not merged into {base} (needs confirmation)");
     }
     // `-d` would check against HEAD/upstream; the check against `base` is done above.

@@ -175,7 +175,7 @@ pub struct StateFile {
     pub holds: Vec<HoldRow>,
     #[serde(default)]
     pub inbox: Vec<InboxItem>,
-    /// Not persisted as such: rebuilt from the highest id at load.
+    /// Not persisted: `add_inbox_item` also starts above the highest id present.
     #[serde(skip)]
     pub next_inbox_id: u64,
 }
@@ -206,6 +206,21 @@ impl StateFile {
 
     pub fn add_inbox(&mut self, agent_id: Option<&str>, kind: &str, body: String) -> u64 {
         self.add_inbox_item(agent_id, kind, body, Value::Null, 0)
+    }
+
+    /// Closes a pending Inbox item: the one place an item leaves `pending`, so
+    /// it is claimed once. `Err` carries the status it already had.
+    pub fn close_inbox(&mut self, id: u64, status: InboxStatus, decision: Option<String>) -> Result<&mut InboxItem, InboxStatus> {
+        match self.inbox.iter_mut().find(|i| i.id == id) {
+            Some(i) if i.pending() => {
+                i.status = status;
+                i.decided_at_ms = Some(orch_protocol::now_ms());
+                i.decision = decision;
+                Ok(i)
+            }
+            Some(i) => Err(i.status),
+            None => Err(InboxStatus::Dismissed),
+        }
     }
 
     /// Adds a pending Inbox item; returns its id. Ids are never reused, even
@@ -292,7 +307,6 @@ fn from_rows(rows: RuntimeRows) -> Result<StateFile> {
         st.holds.push(serde_json::from_value(h.data).with_context(|| format!("hold row {}", h.id))?);
     }
     st.inbox = rows.inbox;
-    st.next_inbox_id = st.inbox.iter().map(|i| i.id).max().unwrap_or(0) + 1;
     Ok(st)
 }
 
@@ -311,17 +325,18 @@ pub fn diff(before: &StateFile, after: &StateFile) -> RuntimeDiff {
         }
     }
     d.worktrees_deleted = before.worktrees.keys().filter(|k| !after.worktrees.contains_key(*k)).cloned().collect();
-    fn by_id<T, K: Ord>(v: &[T], k: impl Fn(&T) -> K) -> BTreeMap<K, &T> {
+    // Keyed by borrowed ids: no allocation per row on every write.
+    fn by_id<'a, T, K: Ord>(v: &'a [T], k: impl Fn(&'a T) -> K) -> BTreeMap<K, &'a T> {
         v.iter().map(|x| (k(x), x)).collect()
     }
-    let bt = by_id(&before.turns, |t| t.id.clone());
-    let at = by_id(&after.turns, |t| t.id.clone());
-    d.turns = after.turns.iter().filter(|t| bt.get(&t.id) != Some(t)).map(turn_row).collect();
-    d.turns_deleted = bt.keys().filter(|k| !at.contains_key(*k)).cloned().collect();
-    let bh = by_id(&before.holds, |h| h.id.clone());
-    let ah = by_id(&after.holds, |h| h.id.clone());
-    d.holds = after.holds.iter().filter(|h| bh.get(&h.id) != Some(h)).map(hold_row).collect();
-    d.holds_deleted = bh.keys().filter(|k| !ah.contains_key(*k)).cloned().collect();
+    let bt = by_id(&before.turns, |t| t.id.as_str());
+    let at = by_id(&after.turns, |t| t.id.as_str());
+    d.turns = after.turns.iter().filter(|t| bt.get(t.id.as_str()) != Some(t)).map(turn_row).collect();
+    d.turns_deleted = bt.keys().filter(|k| !at.contains_key(*k)).map(|k| k.to_string()).collect();
+    let bh = by_id(&before.holds, |h| h.id.as_str());
+    let ah = by_id(&after.holds, |h| h.id.as_str());
+    d.holds = after.holds.iter().filter(|h| bh.get(h.id.as_str()) != Some(h)).map(hold_row).collect();
+    d.holds_deleted = bh.keys().filter(|k| !ah.contains_key(*k)).map(|k| k.to_string()).collect();
     let bi = by_id(&before.inbox, |i| i.id);
     let ai = by_id(&after.inbox, |i| i.id);
     d.inbox = after.inbox.iter().filter(|i| bi.get(&i.id) != Some(i)).cloned().collect();
@@ -367,7 +382,6 @@ pub fn read_legacy_json(path: &Path) -> Result<StateFile> {
         }
         st.inbox.push(item);
     }
-    st.next_inbox_id = st.inbox.iter().map(|i| i.id).max().unwrap_or(0) + 1;
     Ok(st)
 }
 
@@ -388,8 +402,7 @@ impl Store {
     }
 
     /// Not persisted (tests).
-    pub fn in_memory(mut data: StateFile) -> Store {
-        data.next_inbox_id = data.inbox.iter().map(|i| i.id).max().unwrap_or(0) + 1;
+    pub fn in_memory(data: StateFile) -> Store {
         Store { db: None, data: Mutex::new(Data { state: data, saved: StateFile::default() }) }
     }
 
@@ -402,18 +415,31 @@ impl Store {
         f(&self.data.lock().unwrap_or_else(|e| e.into_inner()).state)
     }
 
-    /// Mutates, then writes the changed rows in one transaction. A failed
-    /// write is returned and the change stays in memory; it is written with
-    /// the next successful one (the diff is against what the database holds).
+    /// Mutates, then writes the changed rows in one transaction and waits
+    /// for the commit. The change is queued under the lock (so changes reach
+    /// the database in order) and the wait happens after releasing it, so
+    /// readers (hooks, the delivery pump) never wait on the disk. A failed
+    /// write is returned and the change stays in memory; the next write then
+    /// re-sends every row.
     pub fn write<R>(&self, f: impl FnOnce(&mut StateFile) -> R) -> Result<R> {
-        let mut g = self.data.lock().unwrap_or_else(|e| e.into_inner());
-        let r = f(&mut g.state);
-        g.state.prune();
-        if let Some(db) = &self.db {
-            let d = diff(&g.saved, &g.state);
-            if !d.is_empty() {
-                db.sync_runtime(d).context("saving the runtime state")?;
-                g.saved = g.state.clone();
+        let (r, pending) = {
+            let mut g = self.data.lock().unwrap_or_else(|e| e.into_inner());
+            let r = f(&mut g.state);
+            g.state.prune();
+            let mut pending = None;
+            if let Some(db) = &self.db {
+                let d = diff(&g.saved, &g.state);
+                if !d.is_empty() {
+                    pending = Some(db.sync_runtime_begin(d).context("saving the runtime state")?);
+                    g.saved = g.state.clone();
+                }
+            }
+            (r, pending)
+        };
+        if let Some(p) = pending {
+            if let Err(e) = p.wait() {
+                self.data.lock().unwrap_or_else(|e| e.into_inner()).saved = StateFile::default();
+                return Err(e.context("saving the runtime state"));
             }
         }
         Ok(r)

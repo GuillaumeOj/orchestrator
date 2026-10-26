@@ -3,39 +3,15 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use governor::jiff::Timestamp;
 use governor::{Calibration, ForecastSnapshot, GovernorAction, PacingPolicy, QueueEntry, WeeklyPlan};
 use rusqlite::{OptionalExtension, params};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::db::Store;
 use crate::model::*;
-
-fn p(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
-fn js<T: Serialize>(v: &T) -> String {
-    serde_json::to_string(v).unwrap_or_else(|_| "null".into())
-}
-
-fn from_js<T: DeserializeOwned>(s: &str) -> rusqlite::Result<T> {
-    serde_json::from_str(s).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into()))
-}
-
-/// A unit enum's serde name (`Tier::High` → `high`); for an externally
-/// tagged variant with data, its tag.
-pub fn tag<T: Serialize>(v: &T) -> String {
-    match serde_json::to_value(v) {
-        Ok(Value::String(s)) => s,
-        Ok(Value::Object(m)) => m.keys().next().cloned().unwrap_or_default(),
-        Ok(other) => other.to_string(),
-        Err(_) => String::new(),
-    }
-}
+use crate::util::{from_js, js, json_row, opt_u64, p, tag};
 
 fn ms(t: Timestamp) -> i64 {
     t.as_millisecond()
@@ -56,7 +32,7 @@ fn row_project(r: &rusqlite::Row) -> rusqlite::Result<Project> {
         settings: from_js(&r.get::<_, String>(8)?)?,
         created_at_ms: r.get::<_, i64>(9)? as u64,
         last_active_at_ms: r.get::<_, i64>(10)? as u64,
-        last_fetch_at_ms: r.get::<_, Option<i64>>(11)?.map(|v| v as u64),
+        last_fetch_at_ms: opt_u64(r, 11)?,
         last_fetch_error: r.get(12)?,
         archived: r.get(13)?,
     })
@@ -74,16 +50,16 @@ fn row_rule(r: &rusqlite::Row) -> rusqlite::Result<PermissionRule> {
         scope_id: r.get(2)?,
         pattern: r.get(3)?,
         effect: RuleEffect::parse(&effect).ok_or_else(|| bad(effect))?,
-        source_inbox_item_id: r.get::<_, Option<i64>>(5)?.map(|v| v as u64),
+        source_inbox_item_id: opt_u64(r, 5)?,
         created_at_ms: r.get::<_, i64>(6)? as u64,
-        revoked_at_ms: r.get::<_, Option<i64>>(7)?.map(|v| v as u64),
+        revoked_at_ms: opt_u64(r, 7)?,
     })
 }
 
 const USAGE_COLS: &str = "id, ts_ms, agent_id, turn_id, model, tokens_in, tokens_out, cache_read, cache_write, cost_estimate, cost_delta, five_hour_pct, five_hour_resets_at, weekly_pct, weekly_resets_at, model_weekly_pct, provenance, source, class, allocation";
 
 fn row_usage(r: &rusqlite::Row) -> rusqlite::Result<UsageRecord> {
-    let u = |i: usize| -> rusqlite::Result<Option<u64>> { Ok(r.get::<_, Option<i64>>(i)?.map(|v| v as u64)) };
+    let u = |i: usize| opt_u64(r, i);
     let source: String = r.get(17)?;
     Ok(UsageRecord {
         id: r.get::<_, i64>(0)? as u64,
@@ -103,12 +79,7 @@ fn row_usage(r: &rusqlite::Row) -> rusqlite::Result<UsageRecord> {
         weekly_resets_at: r.get(14)?,
         model_weekly_pct: r.get(15)?,
         provenance: r.get(16)?,
-        source: match source.as_str() {
-            "statusline" => Some(UsageSource::Statusline),
-            "otel" => Some(UsageSource::Otel),
-            "estimate" => Some(UsageSource::Estimate),
-            _ => None,
-        },
+        source: crate::untag(&source),
         class: r.get(18)?,
         allocation: r.get(19)?,
     })
@@ -386,28 +357,14 @@ impl Store {
     /// The active plan, if any.
     pub fn active_plan(&self) -> Result<Option<WeeklyPlan>> {
         self.read(|c| {
-            let s: Option<String> = c
-                .query_row(
-                    "SELECT data FROM weekly_plans WHERE status='active' ORDER BY reset_at_ms DESC LIMIT 1",
-                    [],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            s.map(|s| serde_json::from_str(&s).map_err(|e| anyhow!("weekly plan: {e}"))).transpose()
+            json_row(c, "SELECT data FROM weekly_plans WHERE status='active' ORDER BY reset_at_ms DESC LIMIT 1", [], "weekly plan")
         })
     }
 
     /// The most recent plan that ended before `before` (Week planner prefill, J8).
     pub fn previous_plan(&self, before: Timestamp) -> Result<Option<WeeklyPlan>> {
         self.read(move |c| {
-            let s: Option<String> = c
-                .query_row(
-                    "SELECT data FROM weekly_plans WHERE reset_at_ms <= ?1 ORDER BY reset_at_ms DESC LIMIT 1",
-                    [ms(before)],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            s.map(|s| serde_json::from_str(&s).map_err(|e| anyhow!("weekly plan: {e}"))).transpose()
+            json_row(c, "SELECT data FROM weekly_plans WHERE reset_at_ms <= ?1 ORDER BY reset_at_ms DESC LIMIT 1", [ms(before)], "weekly plan")
         })
     }
 
@@ -426,11 +383,7 @@ impl Store {
 
     pub fn policy(&self, id: &str) -> Result<Option<PacingPolicy>> {
         let id = id.to_string();
-        self.read(move |c| {
-            let s: Option<String> =
-                c.query_row("SELECT data FROM pacing_policies WHERE id=?1", [id], |r| r.get(0)).optional()?;
-            s.map(|s| serde_json::from_str(&s).map_err(|e| anyhow!("pacing policy: {e}"))).transpose()
-        })
+        self.read(move |c| json_row(c, "SELECT data FROM pacing_policies WHERE id=?1", [id], "pacing policy"))
     }
 
     // ------------------------------------------------------------ governor log
@@ -523,12 +476,7 @@ impl Store {
     }
 
     pub fn latest_calibration(&self) -> Result<Option<Calibration>> {
-        self.read(|c| {
-            let s: Option<String> = c
-                .query_row("SELECT data FROM calibrations ORDER BY ts_ms DESC, id DESC LIMIT 1", [], |r| r.get(0))
-                .optional()?;
-            s.map(|s| serde_json::from_str(&s).map_err(|e| anyhow!("calibration: {e}"))).transpose()
-        })
+        self.read(|c| json_row(c, "SELECT data FROM calibrations ORDER BY ts_ms DESC, id DESC LIMIT 1", [], "calibration"))
     }
 
     pub fn add_forecast(&self, f: &ForecastSnapshot) -> Result<()> {

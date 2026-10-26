@@ -332,12 +332,4 @@ impl PlanStatus {
             PlanStatus::Closed => "closed",
         }
     }
-
-    pub fn parse(s: &str) -> PlanStatus {
-        match s {
-            "draft" => PlanStatus::Draft,
-            "closed" => PlanStatus::Closed,
-            _ => PlanStatus::Active,
-        }
-    }
 }

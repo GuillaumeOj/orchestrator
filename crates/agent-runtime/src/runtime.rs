@@ -156,7 +156,16 @@ struct House {
     /// Agents told they wait for a live slot (logged once per wait).
     cap_waiting: std::collections::BTreeSet<String>,
     /// What `tick` last saved of the actions and the queue.
-    last_saved: String,
+    last_saved: (Vec<governor::GovernorAction>, Vec<governor::QueueEntry>),
+}
+
+/// True (and restamps `last`) when `every` ms have passed since `last`.
+fn due(last: &mut u64, now: u64, every: u64) -> bool {
+    let d = now.saturating_sub(*last) >= every;
+    if d {
+        *last = now;
+    }
+    d
 }
 
 pub const FORECAST_EVERY_MS: u64 = 5 * 60 * 1000;
@@ -286,7 +295,8 @@ impl Runtime {
             warnings,
             me: me.clone(),
             boot_ms: now_ms(),
-            house: Mutex::new(House { index_all: true, ..Default::default() }),
+            // The first purge waits a day like the others (not during the boot rush).
+            house: Mutex::new(House { index_all: true, last_purge_ms: now_ms(), ..Default::default() }),
             otlp: Mutex::new(None),
             indexing: std::sync::atomic::AtomicBool::new(false),
         }))
@@ -1012,31 +1022,23 @@ impl Runtime {
             (g.actions()[n.saturating_sub(50)..].to_vec(), g.queue().to_vec(), g.plan().id.clone(), g.snapshot(now), g.calibration(now))
         };
         // Written only when they changed (outcomes and undo change after the fact).
-        let fingerprint = serde_json::to_string(&(&actions, &queue)).unwrap_or_default();
+        let saved = (actions, queue);
         let changed = {
             let mut h = self.house();
-            let c = h.last_saved != fingerprint;
+            let c = h.last_saved != saved;
             if c {
-                h.last_saved = fingerprint;
+                h.last_saved = saved.clone();
             }
             c
         };
         if changed {
-            let _ = self.db.save_actions(self.boot_ms, &plan_id, &actions);
-            let _ = self.db.replace_queue(self.boot_ms, &queue);
+            let _ = self.db.save_actions(self.boot_ms, &plan_id, &saved.0);
+            let _ = self.db.replace_queue(self.boot_ms, &saved.1);
         }
         let ms = now_ms();
         let (do_forecast, do_calib) = {
             let mut h = self.house();
-            let f = ms.saturating_sub(h.last_forecast_ms) >= FORECAST_EVERY_MS;
-            let c = ms.saturating_sub(h.last_calibration_ms) >= CALIBRATION_EVERY_MS;
-            if f {
-                h.last_forecast_ms = ms;
-            }
-            if c {
-                h.last_calibration_ms = ms;
-            }
-            (f, c)
+            (due(&mut h.last_forecast_ms, ms, FORECAST_EVERY_MS), due(&mut h.last_calibration_ms, ms, CALIBRATION_EVERY_MS))
         };
         if do_forecast {
             let _ = self.db.add_forecast(&snap);
@@ -1135,15 +1137,8 @@ impl Runtime {
         }
         let (do_index, do_purge) = {
             let mut h = self.house();
-            let i = (!h.index_dirty.is_empty() || h.index_all) && now.saturating_sub(h.last_index_ms) >= INDEX_EVERY_MS;
-            let p = now.saturating_sub(h.last_purge_ms) >= PURGE_EVERY_MS;
-            if i {
-                h.last_index_ms = now;
-            }
-            if p {
-                h.last_purge_ms = now;
-            }
-            (i, p)
+            let pending = !h.index_dirty.is_empty() || h.index_all;
+            (pending && due(&mut h.last_index_ms, now, INDEX_EVERY_MS), due(&mut h.last_purge_ms, now, PURGE_EVERY_MS))
         };
         if do_index && !self.indexing.swap(true, Ordering::SeqCst) {
             let (all, dirty) = {
@@ -1166,10 +1161,15 @@ impl Runtime {
             }
         }
         if do_purge {
-            match self.db.purge(now, self.cfg.retention) {
-                Ok(n) if n > 0 => self.event("-", "purged", json!({"rows": n})),
-                _ => {}
-            }
+            // Deletes across several tables: never on the delivery loop.
+            let (db, retention, me) = (self.db.clone(), self.cfg.retention, self.me.clone());
+            std::thread::spawn(move || {
+                if let (Ok(n), Some(me)) = (db.purge(now, retention), me.upgrade()) {
+                    if n > 0 {
+                        me.event("-", "purged", json!({"rows": n}));
+                    }
+                }
+            });
         }
     }
 
@@ -1180,12 +1180,17 @@ impl Runtime {
         let projects = self.db.projects(false).unwrap_or_default();
         let project_of = |repo: &Path| projects.iter().find(|p| p.path == repo).map(|p| p.id.clone());
         let mut files: Vec<orch_store::TranscriptFile> = vec![];
+        let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         for a in self.store.read(|s| s.agents.values().cloned().collect::<Vec<_>>()) {
             if only.is_some_and(|o| !o.contains(&a.id)) {
                 continue;
             }
-            if let Some(path) = crate::transcript::find(&self.cfg.projects_root, &a.session_id) {
-                files.push(orch_store::TranscriptFile { path, session_id: a.session_id.clone(), project_id: project_of(&a.repo) });
+            // Already indexed: its path is known; else search every project folder.
+            let known = self.db.transcript_path(&a.session_id).ok().flatten().filter(|p| p.is_file());
+            if let Some(path) = known.or_else(|| crate::transcript::find(&self.cfg.projects_root, &a.session_id)) {
+                if seen.insert(path.clone()) {
+                    files.push(orch_store::TranscriptFile { path, session_id: a.session_id.clone(), project_id: project_of(&a.repo) });
+                }
             }
         }
         if only.is_none() {
@@ -1194,7 +1199,7 @@ impl Runtime {
                 let Some(pid) = project_for_dir(&projects, &name) else { continue };
                 for f in std::fs::read_dir(d.path()).into_iter().flatten().flatten() {
                     let path = f.path();
-                    if path.extension().is_some_and(|e| e == "jsonl") && !files.iter().any(|x| x.path == path) {
+                    if path.extension().is_some_and(|e| e == "jsonl") && seen.insert(path.clone()) {
                         let sid = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                         files.push(orch_store::TranscriptFile { path, session_id: sid, project_id: Some(pid.clone()) });
                     }
@@ -1515,11 +1520,7 @@ fn restore_governor(db: &orch_store::Store, store: &Store, cfg: &RuntimeConfig, 
     let since = start.as_millisecond().max(0) as u64;
     for u in db.usage_since(since, Some(orch_store::UsageSource::Statusline))? {
         let Some(sample) = governor_sample(&u) else { continue };
-        let class = match u.class.as_deref() {
-            Some("autonomous") => governor::CostClass::Autonomous,
-            Some("critical") => governor::CostClass::Critical,
-            _ => governor::CostClass::Interactive,
-        };
+        let class = u.class.as_deref().and_then(orch_store::untag).unwrap_or(governor::CostClass::Interactive);
         let alloc = u.allocation.clone().or_else(|| u.agent_id.as_ref().and_then(|a| allocs.get(a).cloned()));
         gov.replay(&sample, class, alloc.map(Into::into));
     }
@@ -1539,7 +1540,7 @@ fn governor_sample(u: &orch_store::UsageRecord) -> Option<governor::UsageSample>
         cost_delta: u.cost_delta.unwrap_or(0.0),
         five_hour: reading(u.five_hour_pct, u.five_hour_resets_at),
         weekly: reading(u.weekly_pct, u.weekly_resets_at),
-        provenance: if u.provenance == "estimated" { governor::Provenance::Estimated } else { governor::Provenance::Observed },
+        provenance: orch_store::untag(&u.provenance).unwrap_or(governor::Provenance::Observed),
     })
 }
 

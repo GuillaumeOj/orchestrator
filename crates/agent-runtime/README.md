@@ -277,7 +277,7 @@ std::thread::spawn({ let rt = rt.clone(); move || server::serve(rt, bus::bind_li
 |---|---|
 | Agents | `start(&AgentSpec)`, `resume`, `suspend`, `kill`, `interrupt`, `deliver`, `attach`/`read_output`/`resize`, `note_user_activity`, `state_json`, `live_ids`, `live_cap` |
 | Governor | `usage_json`, `governor_json`, `pause_all`, `resume_all`, `set_plan`, `tick` (the server loop calls it) |
-| Inbox | `inbox()`, `decide(id, InboxDecision, scope, message)`; rules via `rt.db.add_rule/revoke_rule/rules` |
+| Inbox | `inbox()`, `decide(id, InboxDecision, scope, message)`, `add_rule`, `revoke_rule` (audited); `rt.db.rules()` to list |
 | Commits | `commit_for(agent, &CommitRequest, "user")` |
 | Projects | `add_project`, `clone_project`, `projects_overview`, `project_detail(id, with_prs)`, `fetch_project`, `diff`, `remove_worktree`, `removal_plan`, `remove_project`, `relocate_project` |
 | Data | `rt.db` (`orch_store::Store`): `events`, `audit_log`, `search_transcripts`, `usage_since`, `forecasts_since`, `actions`, `terminals`… (read freely; change runtime-owned tables through `rt`) |

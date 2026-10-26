@@ -131,8 +131,9 @@ pub fn toplevel(path: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(git(path, &["rev-parse", "--show-toplevel"])?.trim()))
 }
 
-pub fn default_branch(repo: &Path) -> Result<String> {
-    Ok(git(repo, &["symbolic-ref", "--short", "HEAD"]).map(|s| s.trim().to_string()).unwrap_or_else(|_| "main".into()))
+/// The checked-out branch, `main` when HEAD is detached or unreadable.
+pub fn default_branch(repo: &Path) -> String {
+    git(repo, &["symbolic-ref", "--short", "HEAD"]).map(|s| s.trim().to_string()).unwrap_or_else(|_| "main".into())
 }
 
 pub fn branch_exists(repo: &Path, branch: &str) -> bool {
@@ -155,7 +156,7 @@ pub fn ensure(
     let given = real(repo);
     let base = match base {
         Some(b) => b.to_string(),
-        None => default_branch(&given)?,
+        None => default_branch(&given),
     };
     let repo = main_checkout(&given).unwrap_or(given);
     let (path, branch) = layout(&repo, kind)?;
@@ -190,12 +191,9 @@ pub fn complete(store: &dyn WorktreeLedger, row: &WorktreeRow) -> Result<Worktre
         }
         let p = row.path.display().to_string();
         if branch_exists(repo, &row.branch) {
-            git(repo, &["-c", "worktree.useRelativePaths=true", "worktree", "add", "-q", &p, &row.branch])?;
+            git(repo, &["worktree", "add", "-q", &p, &row.branch])?;
         } else {
-            git(
-                repo,
-                &["-c", "worktree.useRelativePaths=true", "worktree", "add", "-q", "-b", &row.branch, &p, &row.base],
-            )?;
+            git(repo, &["worktree", "add", "-q", "-b", &row.branch, &p, &row.base])?;
         }
     }
     lock(repo, &row.path, row.agent_id.as_deref())?;

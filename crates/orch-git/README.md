@@ -10,8 +10,8 @@ use are protected ([agent-runtime `projects`](../agent-runtime/README.md)).
 | `project` | `register(store, path)` (idempotent; a worktree registers its main checkout), `clone(store, url, parent, name, deadline)`, `removal_plan`, `remove` (J11) | FR-101, FR-109, FR-111 |
 | `status` | `status(repo) -> RepoStatus`: branch, head, upstream, ahead/behind, staged/unstaged/untracked/conflicted, stash, last commit; `dirty()` | FR-102 |
 | `fetch` | `FetchPolicy` (15 min, active within 7 days, battery ≥ 20 %, 120 s deadline), `Conditions` (`SystemConditions`: `pmset`, default route), `tick`, `fetch_now`, `due`, `blocked` | FR-103 |
-| `worktree` | layout and naming, `ensure`/`complete` (add + lock + row, idempotent), `lock`, `list`, `inspect`, `others`, `common_dir`, `WorktreeLedger` | FR-105 |
-| `cleanup` | `branches(repo, base)`, `worktrees(repo, rows, base)` with verdicts (ok / missing / unknown / prunable / main / external), `remove_worktree`, `delete_branch` | FR-104 |
+| `worktree` | layout and naming, `ensure`/`complete` (add + lock + row, idempotent), `lock`, `list`, `inspect`, `others`, `common_dir`, `main_checkout`, `default_branch`, `WorktreeLedger` | FR-105 |
+| `cleanup` | `branches(repo, base)`, `worktrees(repo, rows, base)` with verdicts (ok / missing / unknown / prunable / main / external), `is_merged`, `remove_worktree`, `delete_branch` | FR-104 |
 | `diff` | `diff(worktree, against, max_bytes) -> Diff`: from the merge base to the working tree, untracked included, per-file status and counts, patch (bounded) | FR-107 |
 | `gh` | `prs(repo)` with CI rollup, `runs(repo, branch)`, `available`; **gated** `push`, `create_pr` | FR-106, ADR-009 |
 | `repair` | `check_links(wt)`, `plan_relocation(old, new, rows)`, `repair(repo, worktrees)` (targeted `git worktree repair` + re-lock) | J10, ADR-003 |

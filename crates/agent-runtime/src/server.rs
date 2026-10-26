@@ -176,15 +176,9 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         CtlRequest::AddRule { scope, scope_id, pattern, effect } => ok_or((|| {
             let sc = orch_store::RuleScope::parse(&scope).ok_or_else(|| anyhow::anyhow!("scope: project | role | agent"))?;
             let ef = orch_store::RuleEffect::parse(&effect).ok_or_else(|| anyhow::anyhow!("effect: allow | deny | ask"))?;
-            let r = rt.db.add_rule(sc, &scope_id, &pattern, ef, None)?;
-            rt.db.audit("user", None, "rule_added", Some(&pattern), &effect, json!(r))?;
-            Ok(json!(r))
+            Ok(json!(rt.add_rule(sc, &scope_id, &pattern, ef, None)?))
         })()),
-        CtlRequest::RevokeRule { id } => ok_or((|| {
-            let done = rt.db.revoke_rule(id)?;
-            rt.db.audit("user", None, "rule_revoked", Some(&id.to_string()), if done { "ok" } else { "unknown" }, json!({}))?;
-            Ok(json!({"revoked": done}))
-        })()),
+        CtlRequest::RevokeRule { id } => ok_or(rt.revoke_rule(id).map(|done| json!({"revoked": done}))),
         CtlRequest::Audit { agent_id, limit } => {
             ok_or(rt.db.audit_log(agent_id.as_deref(), limit.unwrap_or(100)).map(|v| json!(v)))
         }
@@ -208,11 +202,8 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         ),
         CtlRequest::RemovalPlan { project_id } => ok_or(rt.removal_plan(&project_id)),
         CtlRequest::RemoveProject { project_id, discard, keep_merged, history } => ok_or((|| {
-            let history = match history.as_str() {
-                "delete" => orch_git::project::History::Delete,
-                "archive" => orch_git::project::History::Archive,
-                other => anyhow::bail!("history: delete | archive (got {other:?})"),
-            };
+            let history: orch_git::project::History = orch_store::untag(&history)
+                .ok_or_else(|| anyhow::anyhow!("history: delete | archive (got {history:?})"))?;
             let choices = orch_git::project::RemovalChoices {
                 remove_merged: !keep_merged,
                 discard: discard.into_iter().map(PathBuf::from).collect(),
@@ -253,10 +244,7 @@ pub fn attach_client(
 
 /// Client side: one request, one reply.
 pub fn request(socket: &std::path::Path, req: CtlRequest) -> anyhow::Result<CtlReply> {
-    let s = bus::connect(socket, Duration::from_secs(1))?;
-    bus::write_line(&mut &s, &Envelope::new(Msg::Ctl(req)))?;
-    let r: ReplyEnvelope = bus::read_line(&mut BufReader::new(&s))?;
-    match r.reply {
+    match bus::round_trip(socket, &Envelope::new(Msg::Ctl(req)), Duration::from_secs(1), None)? {
         Reply::Ctl(c) => Ok(c),
         Reply::Error { message } => anyhow::bail!(message),
         other => anyhow::bail!("unexpected reply {other:?}"),

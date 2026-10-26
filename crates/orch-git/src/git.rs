@@ -6,15 +6,16 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
+/// `git -C <dir> <args>` with no prompts.
+fn git_cmd(dir: &Path, args: &[&str]) -> Command {
+    let mut c = Command::new("git");
+    c.arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0");
+    c
+}
+
 /// Runs git with no prompts and returns stdout.
 pub fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .with_context(|| format!("git {args:?}"))?;
+    let out = git_cmd(dir, args).output().with_context(|| format!("git {args:?}"))?;
     check(dir, args, out)
 }
 
@@ -27,11 +28,7 @@ fn check(dir: &Path, args: &[&str], out: Output) -> Result<String> {
 
 /// Like [`git`], true/false on the exit status (for `--verify`, `merge-base --is-ancestor`…).
 pub fn git_ok(dir: &Path, args: &[&str]) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
+    git_cmd(dir, args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -42,22 +39,17 @@ pub fn git_ok(dir: &Path, args: &[&str]) -> bool {
 pub fn run_with_deadline(mut cmd: Command, deadline: Duration) -> Result<Output> {
     let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     // Drain the pipes on threads so a chatty child never blocks on a full pipe.
-    let mut so = child.stdout.take();
-    let mut se = child.stderr.take();
-    let t_out = std::thread::spawn(move || {
-        let mut b = vec![];
-        if let Some(s) = so.as_mut() {
-            let _ = std::io::Read::read_to_end(s, &mut b);
-        }
-        b
-    });
-    let t_err = std::thread::spawn(move || {
-        let mut b = vec![];
-        if let Some(s) = se.as_mut() {
-            let _ = std::io::Read::read_to_end(s, &mut b);
-        }
-        b
-    });
+    fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut b = vec![];
+            if let Some(mut s) = pipe {
+                let _ = s.read_to_end(&mut b);
+            }
+            b
+        })
+    }
+    let t_out = drain(child.stdout.take());
+    let t_err = drain(child.stderr.take());
     let end = Instant::now() + deadline;
     let status = loop {
         if let Some(st) = child.try_wait()? {
@@ -76,9 +68,7 @@ pub fn run_with_deadline(mut cmd: Command, deadline: Duration) -> Result<Output>
 
 /// git with a deadline (fetch, clone, push).
 pub fn git_deadline(dir: &Path, args: &[&str], deadline: Duration) -> Result<String> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0");
-    let out = run_with_deadline(cmd, deadline).with_context(|| format!("git {}", args.join(" ")))?;
+    let out = run_with_deadline(git_cmd(dir, args), deadline).with_context(|| format!("git {}", args.join(" ")))?;
     check(dir, args, out)
 }
 

@@ -19,6 +19,16 @@ pub const PRIORITY_BLOCKING: i64 = 30;
 pub const PRIORITY_GATE: i64 = 20;
 pub const PRIORITY_ALERT: i64 = 10;
 
+/// The user allowed the held call (approve or always allow).
+pub fn allows(item: &InboxItem) -> bool {
+    matches!(item.decision.as_deref().and_then(orch_store::untag::<InboxDecision>), Some(InboxDecision::Approve | InboxDecision::AlwaysAllow))
+}
+
+/// The user's words with a decision, if any.
+pub fn reply(item: &InboxItem) -> Option<&str> {
+    item.payload.get("reply").and_then(Value::as_str)
+}
+
 /// How a wait for a decision ended.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Waited {
@@ -53,11 +63,7 @@ impl Runtime {
 
     fn close_item(&self, id: u64, status: InboxStatus, decision: Option<String>) {
         let _ = self.store.write(|s| {
-            if let Some(i) = s.inbox.iter_mut().find(|i| i.id == id && i.pending()) {
-                i.status = status;
-                i.decided_at_ms = Some(now_ms());
-                i.decision = decision;
-            }
+            let _ = s.close_inbox(id, status, decision);
         });
     }
 
@@ -127,8 +133,6 @@ impl Runtime {
     }
 
     /// The Inbox part of [`Runtime::permission_request`], after the rules.
-    /// `ask_rule`: the `ask` rule that sent it here (then "always allow" is not
-    /// offered: an allow rule would never win over it).
     pub(crate) fn permission_request_with(
         &self,
         rec: &AgentRecord,
@@ -143,8 +147,38 @@ impl Runtime {
         }
         let tool = p.tool_name.clone().unwrap_or_else(|| "?".into());
         let input = p.tool_input.clone().unwrap_or(Value::Null);
-        let always = if ask_rule.is_some() { None } else { permissions::always_pattern(&tool, &input) };
-        let summary = permissions::summary(&tool, &input);
+        match self.hold_for_decision(rec, &tool, &input, p.tool_use_id.clone(), subject, ask_rule, budget, conn) {
+            Waited::Decided(i) if allows(&i) => Some(HookOutput::permission_request(PermissionBehavior::Allow, None)),
+            Waited::Decided(i) => {
+                let m = reply(&i).map(|m| format!("ORCH: the user says: {m}"));
+                let m = m.unwrap_or_else(|| "ORCH: the user denied this in the Inbox.".into());
+                Some(HookOutput::permission_request(PermissionBehavior::Deny, Some(&m)))
+            }
+            // The CLI's own dialog takes over in the pane.
+            Waited::Interrupted | Waited::Expired => None,
+        }
+    }
+
+    /// Holds a tool call for an Inbox decision: a `permission` item, a gate
+    /// hold row (for the reconciler), the wait (EOF on `conn` = Esc in the
+    /// pane), and the item closed if nobody decided. Shared by
+    /// PermissionRequest hooks and orch-mcp calls under an `ask` rule.
+    /// `ask_rule`: the rule that sent it here (then "always allow" is not
+    /// offered: an allow rule would never win over it).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn hold_for_decision(
+        &self,
+        rec: &AgentRecord,
+        tool: &str,
+        input: &Value,
+        tool_use_id: Option<String>,
+        subject: &Subject,
+        ask_rule: Option<u64>,
+        budget: Duration,
+        conn: Option<&UnixStream>,
+    ) -> Waited {
+        let always = if ask_rule.is_some() { None } else { permissions::always_pattern(tool, input) };
+        let summary = permissions::summary(tool, input);
         let item = match self.add_item(
             Some(&rec.id),
             "permission",
@@ -152,7 +186,7 @@ impl Runtime {
             json!({
                 "tool": tool,
                 "input": input,
-                "tool_use_id": p.tool_use_id,
+                "tool_use_id": tool_use_id,
                 "always_pattern": always,
                 "ask_rule": ask_rule,
                 "project_id": subject.project_id,
@@ -161,40 +195,32 @@ impl Runtime {
             PRIORITY_BLOCKING,
         ) {
             Ok(i) => i,
-            Err(_) => return None,
+            Err(_) => return Waited::Expired,
         };
         let hold_id = crate::delivery::new_turn_id();
         let _ = self.store.write(|s| {
             s.holds.push(HoldRow {
                 id: hold_id.clone(),
                 agent_id: rec.id.clone(),
-                tool_use_id: p.tool_use_id.clone(),
+                tool_use_id,
                 kind: HoldKind::Gate,
                 status: HoldStatus::Held,
-                summary: summary.clone(),
+                summary,
                 created_at_ms: now_ms(),
                 inbox_id: Some(item),
             })
         });
         let waited = self.wait_decision(item, budget, conn);
-        let (hold_status, out) = match &waited {
-            Waited::Decided(i) => {
-                let allow = matches!(i.decision.as_deref(), Some("approve" | "always_allow"));
-                let msg = i.payload.get("reply").and_then(Value::as_str).map(|m| format!("ORCH: the user says: {m}"));
-                if allow {
-                    (HoldStatus::Allowed, Some(HookOutput::permission_request(PermissionBehavior::Allow, None)))
-                } else {
-                    let m = msg.unwrap_or_else(|| "ORCH: the user denied this in the Inbox.".into());
-                    (HoldStatus::Denied, Some(HookOutput::permission_request(PermissionBehavior::Deny, Some(&m))))
-                }
-            }
+        let hold_status = match &waited {
+            Waited::Decided(i) if allows(i) => HoldStatus::Allowed,
+            Waited::Decided(_) => HoldStatus::Denied,
             Waited::Interrupted => {
                 self.close_item(item, InboxStatus::Interrupted, Some("interrupted by the user".into()));
-                (HoldStatus::Interrupted, None)
+                HoldStatus::Interrupted
             }
             Waited::Expired => {
-                self.close_item(item, InboxStatus::Expired, Some("not answered in time: the dialog is in the pane".into()));
-                (HoldStatus::Interrupted, None)
+                self.close_item(item, InboxStatus::Expired, Some("not answered in time".into()));
+                HoldStatus::Interrupted
             }
         };
         let _ = self.store.write(|s| {
@@ -203,7 +229,28 @@ impl Runtime {
             }
         });
         self.event(&rec.id, "permission", json!({"item": item, "tool": tool, "outcome": hold_status}));
-        out
+        waited
+    }
+
+    /// Adds a permission rule (FR-708) and logs it (FR-709).
+    pub fn add_rule(
+        &self,
+        scope: RuleScope,
+        scope_id: &str,
+        pattern: &str,
+        effect: RuleEffect,
+        source_inbox_item: Option<u64>,
+    ) -> Result<orch_store::PermissionRule> {
+        let rule = self.db.add_rule(scope, scope_id, pattern, effect, source_inbox_item)?;
+        self.db.audit("user", None, "rule_added", Some(pattern), effect.as_str(), json!(rule))?;
+        Ok(rule)
+    }
+
+    /// Revokes a rule (the row is kept) and logs it. False if unknown or already revoked.
+    pub fn revoke_rule(&self, id: u64) -> Result<bool> {
+        let done = self.db.revoke_rule(id)?;
+        self.db.audit("user", None, "rule_revoked", Some(&id.to_string()), if done { "ok" } else { "unknown" }, json!({}))?;
+        Ok(done)
     }
 
     /// The user's decision on an Inbox item. The item is claimed atomically
@@ -225,36 +272,25 @@ impl Runtime {
                     None => bail!("item {id} cannot become a rule (approve it once instead)"),
                 }
             };
-            let (sc, sid) = match scope.unwrap_or("project") {
-                "agent" => (RuleScope::Agent, item.agent_id.clone()),
-                "role" => (RuleScope::Role, item.payload.get("role").and_then(Value::as_str).map(str::to_string)),
-                _ => (RuleScope::Project, item.payload.get("project_id").and_then(Value::as_str).map(str::to_string)),
+            let sc = RuleScope::parse(scope.unwrap_or("project")).ok_or_else(|| anyhow!("scope: project | role | agent"))?;
+            let sid = match sc {
+                RuleScope::Agent => item.agent_id.clone(),
+                RuleScope::Role => item.payload.get("role").and_then(Value::as_str).map(str::to_string),
+                RuleScope::Project => item.payload.get("project_id").and_then(Value::as_str).map(str::to_string),
             };
             let sid = sid.ok_or_else(|| anyhow!("no {} to scope the rule to", sc.as_str()))?;
             Some((sc, sid, pattern))
         } else {
             None
         };
-        let word = match decision {
-            InboxDecision::Approve => "approve",
-            InboxDecision::Reject => "reject",
-            InboxDecision::AlwaysAllow => "always_allow",
-            InboxDecision::Reply => "reply",
-            InboxDecision::Dismiss => "dismiss",
-        };
+        let word = orch_store::tag(&decision);
         let status = if decision == InboxDecision::Dismiss { InboxStatus::Dismissed } else { InboxStatus::Decided };
-        let claimed = self.store.write(|s| match s.inbox.iter_mut().find(|i| i.id == id) {
-            Some(i) if i.pending() => {
-                i.status = status;
-                i.decided_at_ms = Some(now_ms());
-                i.decision = Some(word.into());
+        let claimed = self.store.write(|s| {
+            s.close_inbox(id, status, Some(word.clone())).map(|i| {
                 if let Some(m) = message {
                     i.payload["reply"] = json!(m);
                 }
-                Ok(())
-            }
-            Some(i) => Err(i.status),
-            None => Err(InboxStatus::Dismissed),
+            })
         })?;
         if let Err(now) = claimed {
             bail!("Inbox item {id} is already {now:?}");
@@ -265,14 +301,12 @@ impl Runtime {
             item.agent_id.as_deref(),
             &item.kind,
             target.as_deref(),
-            word,
+            &word,
             json!({"item": id, "body": item.body, "message": message, "scope": scope}),
         )?;
         let mut result = json!({"item": id, "decision": word});
         if let Some((sc, sid, pattern)) = rule_spec {
-            let rule = self.db.add_rule(sc, &sid, &pattern, RuleEffect::Allow, Some(id))?;
-            self.db.audit("user", item.agent_id.as_deref(), "rule_added", Some(&pattern), "allow", json!(rule))?;
-            result["rule"] = json!(rule);
+            result["rule"] = json!(self.add_rule(sc, &sid, &pattern, RuleEffect::Allow, Some(id))?);
         }
         // Kind-specific follow-ups that don't wait on a held hook.
         let action = item.payload.get("action").and_then(Value::as_str).unwrap_or("");

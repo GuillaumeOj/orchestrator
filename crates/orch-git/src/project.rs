@@ -29,7 +29,7 @@ pub fn detect_default_branch(repo: &Path) -> String {
     git(repo, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
         .ok()
         .and_then(|s| s.trim().strip_prefix("origin/").map(str::to_string))
-        .unwrap_or_else(|| worktree::default_branch(repo).unwrap_or_else(|_| "main".into()))
+        .unwrap_or_else(|| worktree::default_branch(repo))
 }
 
 fn slug(name: &str) -> String {
@@ -47,12 +47,7 @@ pub fn register(store: &Store, path: &Path) -> Result<Project> {
     let top = worktree::toplevel(path).with_context(|| format!("{} is not a git repository", path.display()))?;
     let top = real(&top);
     // A linked worktree is not a project: register its main checkout.
-    let common = worktree::common_dir(&top)?;
-    let main = if common.file_name().is_some_and(|n| n == ".git") {
-        real(common.parent().unwrap_or(&top))
-    } else {
-        top.clone()
-    };
+    let main = real(&worktree::main_checkout(&top)?);
     let now = orch_store::now_ms();
     if let Some(mut p) = store.project_by_path(&main)? {
         p.archived = false;
@@ -193,7 +188,7 @@ pub fn remove(
             report.kept.push((w.path.clone(), why));
             continue;
         }
-        let base = w.base.clone().unwrap_or_else(|| plan.project.default_branch.clone());
+        let base = w.base.clone();
         if w.verdict == WorktreeVerdict::Missing {
             report.removed.push(w.path.clone());
         } else {

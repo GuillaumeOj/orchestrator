@@ -10,11 +10,11 @@
 //! - `request_pr(title, body?, draft?)`: asks the user to push the branch and
 //!   open a PR (an Inbox gate). Agents never push themselves.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use orch_protocol::{CONNECT_TIMEOUT_MS, DEFAULT_MCP_DEADLINE_MS, Envelope, McpMsg, Msg, PROTOCOL_VERSION, Reply, ReplyEnvelope, bus};
+use orch_protocol::{CONNECT_TIMEOUT_MS, DEFAULT_MCP_DEADLINE_MS, Envelope, McpMsg, Msg, Reply, bus};
 use serde_json::{Value, json};
 
 /// Protocol revisions this server accepts; it answers with the client's when listed.
@@ -125,20 +125,15 @@ pub fn call_core(env: &McpEnv, tool: &str, args: &Value) -> (bool, String) {
     let Some(socket) = &env.socket else { return (true, "orchestrator unavailable (ORCH_SOCK not set)".into()) };
     let Some(agent_id) = &env.agent_id else { return (true, "orchestrator unavailable (ORCH_AGENT_ID not set)".into()) };
     let r = (|| -> Result<(bool, String), String> {
-        let s = bus::connect(socket, Duration::from_millis(CONNECT_TIMEOUT_MS)).map_err(|e| e.tag())?;
         let m = Envelope::new(Msg::Mcp(McpMsg {
             agent_id: agent_id.clone(),
             tool: tool.into(),
             arguments: args.clone(),
             deadline_ms: env.deadline.as_millis() as u64,
         }));
-        bus::write_line(&mut &s, &m).map_err(|e| e.tag())?;
-        s.set_read_timeout(Some(env.deadline)).map_err(|e| e.to_string())?;
-        let reply: ReplyEnvelope = bus::read_line(&mut BufReader::new(&s)).map_err(|e| e.tag())?;
-        if reply.v != PROTOCOL_VERSION {
-            return Err(format!("protocol version {}", reply.v));
-        }
-        match reply.reply {
+        let reply = bus::round_trip(socket, &m, Duration::from_millis(CONNECT_TIMEOUT_MS), Some(env.deadline))
+            .map_err(|e| e.tag())?;
+        match reply {
             Reply::Mcp { is_error, text, .. } => Ok((is_error, text)),
             Reply::Error { message } => Err(message),
             other => Err(format!("unexpected reply {other:?}")),
@@ -174,7 +169,8 @@ pub fn serve(input: impl BufRead, mut output: impl Write, env: &McpEnv) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use orch_protocol::ReplyEnvelope;
+    use std::io::{BufReader, Cursor};
 
     fn run(lines: &[Value], env: &McpEnv) -> Vec<Value> {
         let input = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");

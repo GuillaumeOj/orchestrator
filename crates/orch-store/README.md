@@ -15,6 +15,10 @@ db.write_detached(|tx| …);                                      // same, witho
 db.flush()?;                                                    // everything queued so far is committed
 ```
 
+- Writes are applied in the order they are queued. `write_begin` queues a write and returns a
+  `Pending` to wait on (the runtime waits after releasing its own lock); consecutive detached
+  writes share one transaction (one WAL commit per batch, each in its own savepoint).
+- `tag`/`untag`: a unit enum's serde name and back (used for key columns).
 - `Store` is `Clone + Send + Sync`; every clone talks to the same writer thread. Dropping the last
   clone drains the queue and joins the thread.
 - `synchronous=NORMAL` in WAL: a crash of the process (kill -9) never loses a committed transaction
@@ -66,8 +70,8 @@ deletes older rows). The audit log is never purged.
 
 ### Transcript index
 
-`index_transcripts` reads each file from its last indexed byte (complete lines only, 16 MB per
-pass), indexes user text, assistant text and tool calls (`tool: Bash cargo test`), skips tool
+`index_transcripts` reads each file from its last indexed byte in 2 MB chunks, one transaction
+per chunk, until caught up (complete lines only; a line over 16 MB is skipped), indexes user text, assistant text and tool calls (`tool: Bash cargo test`), skips tool
 results and meta entries, and re-indexes a file that shrank. `search_transcripts` quotes every term
 (all must match; `-`, `:` and `*` are never operators), ranks by BM25 and returns a snippet with
 `[`…`]` around matches, the entry's `uuid` and the file path. `encode_project_dir(path)` gives

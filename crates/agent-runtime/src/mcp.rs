@@ -12,7 +12,7 @@ use orch_protocol::{McpMsg, now_ms};
 use orch_store::RuleEffect;
 use serde_json::{Value, json};
 
-use crate::inbox::{PRIORITY_BLOCKING, Waited};
+use crate::inbox::{Waited, allows, reply};
 use crate::permissions;
 use crate::runtime::Runtime;
 use crate::store::AgentRecord;
@@ -76,34 +76,15 @@ impl Runtime {
         conn: Option<&UnixStream>,
     ) -> Result<()> {
         let subject = self.subject(rec);
-        let item = self.store.write(|s| {
-            s.add_inbox_item(
-                Some(&rec.id),
-                "permission",
-                format!("{}: {}", rec.id, permissions::summary(tool, args)),
-                // No "always allow": an allow rule never wins over the ask rule.
-                json!({"tool": tool, "input": args, "ask_rule": ask_rule, "project_id": subject.project_id, "role": subject.role}),
-                PRIORITY_BLOCKING,
-            )
-        })?;
         let budget = Duration::from_millis(deadline_ms.saturating_sub(2_000)).min(self.cfg.permission_hold.max(Duration::from_secs(1)));
-        match self.wait_decision(item, budget, conn) {
-            Waited::Decided(i) if matches!(i.decision.as_deref(), Some("approve" | "always_allow")) => Ok(()),
+        match self.hold_for_decision(rec, tool, args, None, &subject, Some(ask_rule), budget, conn) {
+            Waited::Decided(i) if allows(&i) => Ok(()),
             Waited::Decided(i) => {
-                let why = i.payload.get("reply").and_then(Value::as_str).map(|m| format!(" They said: {m}")).unwrap_or_default();
+                let why = reply(&i).map(|m| format!(" They said: {m}")).unwrap_or_default();
                 bail!("The user declined this.{why}")
             }
             Waited::Interrupted => bail!("Interrupted by the user."),
-            Waited::Expired => {
-                let _ = self.store.write(|s| {
-                    if let Some(i) = s.inbox.iter_mut().find(|i| i.id == item && i.pending()) {
-                        i.status = orch_store::InboxStatus::Expired;
-                        i.decided_at_ms = Some(now_ms());
-                        i.decision = Some("not answered in time".into());
-                    }
-                });
-                bail!("The user did not answer in time. Nothing was done; continue with other work or end your turn.")
-            }
+            Waited::Expired => bail!("The user did not answer in time. Nothing was done; continue with other work or end your turn."),
         }
     }
 

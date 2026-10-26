@@ -353,10 +353,8 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
             };
             report.holds.push((h.id.clone(), now));
         }
-        for item in st.inbox.iter_mut().filter(|i| closed_items.contains(&i.id) && i.pending()) {
-            item.status = orch_store::InboxStatus::Interrupted;
-            item.decided_at_ms = Some(orch_protocol::now_ms());
-            item.decision = Some("core restarted: denied by orch-hook".into());
+        for item in closed_items {
+            let _ = st.close_inbox(item, orch_store::InboxStatus::Interrupted, Some("core restarted: denied by orch-hook".into()));
         }
         let gates = fresh_gates;
         for g in gates {

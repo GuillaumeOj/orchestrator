@@ -3,6 +3,7 @@
 //! assistant messages plus a pointer back (path, entry uuid). Files are read
 //! incrementally from the last indexed byte; only complete lines are indexed.
 
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -40,8 +41,10 @@ pub struct SearchHit {
     pub snippet: String,
 }
 
-/// Never index more than this per file per pass (memory bound on 8 GB).
-const MAX_CHUNK: u64 = 16 * 1024 * 1024;
+/// Read and indexed per transaction (memory and writer time stay small).
+const CHUNK: u64 = 2 * 1024 * 1024;
+/// A single line longer than this is skipped.
+const MAX_LINE: u64 = 16 * 1024 * 1024;
 /// Text kept per entry.
 const MAX_ENTRY_TEXT: usize = 8 * 1024;
 
@@ -101,6 +104,22 @@ pub fn extract_text(entry: &Value) -> Option<(String, String)> {
     Some((t.to_string(), text))
 }
 
+type Row = (String, String, Option<String>, Option<String>);
+
+/// (role, text, timestamp, uuid) of the indexable entries in complete lines.
+fn parse_rows(lines: &[u8]) -> Vec<Row> {
+    lines
+        .split(|b| *b == b'\n')
+        .filter_map(|line| {
+            let v = serde_json::from_slice::<Value>(line).ok()?;
+            let (role, text) = extract_text(&v)?;
+            let ts = v.get("timestamp").and_then(Value::as_str).map(str::to_string);
+            let uuid = v.get("uuid").and_then(Value::as_str).map(str::to_string);
+            Some((role, text, ts, uuid))
+        })
+        .collect()
+}
+
 /// Turns user input into an FTS5 query: every whitespace-separated term is
 /// quoted (all terms must match), so `-`, `:` or `*` are never operators.
 fn fts_query(q: &str) -> Option<String> {
@@ -114,6 +133,11 @@ impl Store {
     /// that shrank (rewritten) is re-indexed from the start.
     pub fn index_transcripts(&self, files: &[TranscriptFile]) -> Result<IndexStats> {
         let mut stats = IndexStats::default();
+        // One query for every file's progress, not one per file.
+        let offsets: HashMap<String, u64> = self.read(|c| {
+            let mut st = c.prepare("SELECT path, offset FROM transcript_files")?;
+            Ok(st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?.collect::<rusqlite::Result<_>>()?)
+        })?;
         for f in files {
             let Ok(meta) = std::fs::metadata(&f.path) else { continue };
             let size = meta.len();
@@ -124,78 +148,81 @@ impl Store {
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
             let key = f.path.to_string_lossy().into_owned();
-            let k2 = key.clone();
-            let prev: Option<(i64, i64)> = self.read(move |c| {
-                Ok(c.query_row("SELECT offset, size FROM transcript_files WHERE path=?1", [k2], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })
-                .optional()?)
-            })?;
-            let mut offset = prev.map(|p| p.0 as u64).unwrap_or(0);
-            let restart = offset > size;
+            let prev = offsets.get(&key).copied();
+            let mut offset = prev.unwrap_or(0);
+            let mut restart = offset > size;
             if restart {
                 offset = 0;
             }
-            if prev.is_some() && offset == size && !restart {
+            if prev.is_some() && offset == size {
                 continue;
             }
-            let mut file = std::fs::File::open(&f.path)?;
-            file.seek(SeekFrom::Start(offset))?;
-            let mut buf = Vec::new();
-            file.take(MAX_CHUNK).read_to_end(&mut buf)?;
-            // Only complete lines; a partial last line is read next time. A
-            // single line longer than a whole chunk is skipped (not indexed),
-            // or the file would never move on.
-            let end = match buf.iter().rposition(|b| *b == b'\n') {
-                Some(i) => i + 1,
-                None if buf.len() as u64 == MAX_CHUNK => buf.len(),
-                None => 0,
-            };
-            let mut rows: Vec<(String, String, Option<String>, Option<String>)> = vec![];
-            for line in buf[..end].split(|b| *b == b'\n') {
-                let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
-                if let Some((role, text)) = extract_text(&v) {
-                    let ts = v.get("timestamp").and_then(Value::as_str).map(str::to_string);
-                    let uuid = v.get("uuid").and_then(Value::as_str).map(str::to_string);
-                    rows.push((role, text, ts, uuid));
-                }
-            }
-            let new_offset = offset + end as u64;
             stats.files += 1;
-            stats.entries += rows.len();
-            stats.bytes += end as u64;
-            let f = f.clone();
-            self.write(move |tx| {
-                if restart {
-                    tx.execute("DELETE FROM transcript_fts WHERE path=?1", [&key])?;
-                }
-                {
-                    let mut ins = tx.prepare_cached(
-                        "INSERT INTO transcript_fts(body, session_id, project_id, role, ts, uuid, path) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                    )?;
-                    for (role, text, ts, uuid) in &rows {
-                        ins.execute(params![text, f.session_id, f.project_id, role, ts, uuid, key])?;
+            let mut file = std::fs::File::open(&f.path)?;
+            // Small chunks, one transaction each: the writer is never held long.
+            while offset < size {
+                file.seek(SeekFrom::Start(offset))?;
+                let end;
+                let mut buf = Vec::new();
+                loop {
+                    let start = buf.len();
+                    (&mut file).take(CHUNK).read_to_end(&mut buf)?;
+                    let got = buf.len() - start;
+                    if let Some(i) = buf.iter().rposition(|b| *b == b'\n') {
+                        end = i + 1;
+                        break;
+                    }
+                    // No newline yet: a long line. Past MAX_LINE it is skipped
+                    // (not indexed), or the file would never move on.
+                    if got < CHUNK as usize || buf.len() as u64 >= MAX_LINE {
+                        end = if buf.len() as u64 >= MAX_LINE { buf.len() } else { 0 };
+                        break;
                     }
                 }
-                tx.execute(
-                    "INSERT INTO transcript_files(path, session_id, project_id, offset, size, mtime_ms, indexed_at_ms)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7)
-                     ON CONFLICT(path) DO UPDATE SET session_id=excluded.session_id, project_id=excluded.project_id,
-                       offset=excluded.offset, size=excluded.size, mtime_ms=excluded.mtime_ms, indexed_at_ms=excluded.indexed_at_ms",
-                    params![
-                        key,
-                        f.session_id,
-                        f.project_id,
-                        new_offset as i64,
-                        size as i64,
-                        mtime_ms,
-                        crate::now_ms() as i64
-                    ],
-                )?;
-                Ok(())
-            })?;
+                if end == 0 {
+                    break; // a partial last line: read next time
+                }
+                let rows = parse_rows(&buf[..end]);
+                stats.entries += rows.len();
+                stats.bytes += end as u64;
+                offset += end as u64;
+                let (f, key, wipe) = (f.clone(), key.clone(), restart);
+                restart = false;
+                self.write(move |tx| {
+                    if wipe {
+                        tx.execute("DELETE FROM transcript_fts WHERE path=?1", [&key])?;
+                    }
+                    {
+                        let mut ins = tx.prepare_cached(
+                            "INSERT INTO transcript_fts(body, session_id, project_id, role, ts, uuid, path) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                        )?;
+                        for (role, text, ts, uuid) in &rows {
+                            ins.execute(params![text, f.session_id, f.project_id, role, ts, uuid, key])?;
+                        }
+                    }
+                    tx.execute(
+                        "INSERT INTO transcript_files(path, session_id, project_id, offset, size, mtime_ms, indexed_at_ms)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7)
+                         ON CONFLICT(path) DO UPDATE SET session_id=excluded.session_id, project_id=excluded.project_id,
+                           offset=excluded.offset, size=excluded.size, mtime_ms=excluded.mtime_ms, indexed_at_ms=excluded.indexed_at_ms",
+                        params![key, f.session_id, f.project_id, offset as i64, size as i64, mtime_ms, crate::now_ms() as i64],
+                    )?;
+                    Ok(())
+                })?;
+            }
         }
         Ok(stats)
+    }
+
+    /// The transcript file indexed for a session, if any (saves a search
+    /// across every project folder).
+    pub fn transcript_path(&self, session_id: &str) -> Result<Option<PathBuf>> {
+        let sid = session_id.to_string();
+        self.read(move |c| {
+            Ok(c.query_row("SELECT path FROM transcript_files WHERE session_id=?1 LIMIT 1", [sid], |r| r.get::<_, String>(0))
+                .optional()?
+                .map(PathBuf::from))
+        })
     }
 
     /// Full-text search, best matches first; `project_id` limits it to one project.
@@ -256,6 +283,7 @@ mod tests {
         assert!(s.search_transcripts("  ", None, 10).unwrap().is_empty());
         // Nothing new: nothing read. A partial line waits for its newline.
         assert_eq!(s.index_transcripts(std::slice::from_ref(&tf)).unwrap().files, 0);
+        assert_eq!(s.transcript_path("sid").unwrap(), Some(path.clone()));
         let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         write!(f, r#"{{"type":"user","uuid":"u4","message":{{"content":"zebra crossing"}}}}"#).unwrap();
         s.index_transcripts(std::slice::from_ref(&tf)).unwrap();
@@ -275,7 +303,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let s = Store::open(&d.path().join("orch.db")).unwrap();
         let path = d.path().join("big.jsonl");
-        let huge = format!(r#"{{"type":"user","message":{{"content":"{}"}}}}"#, "x".repeat(MAX_CHUNK as usize + 10));
+        let huge = format!(r#"{{"type":"user","message":{{"content":"{}"}}}}"#, "x".repeat(MAX_LINE as usize + 10));
         std::fs::write(&path, format!("{huge}\n{}\n", r#"{"type":"user","message":{"content":"after the giant"}}"#)).unwrap();
         let tf = [TranscriptFile { path, session_id: "s".into(), project_id: None }];
         for _ in 0..3 {
