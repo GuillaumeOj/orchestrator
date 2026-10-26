@@ -2,7 +2,7 @@
   // The app shell (§9.2, Penpot 03): title bar, sidebar or icon rail, tiling
   // workspace, inspector (docked ≥ 1512 px, overlay below), status bar.
   import { onMount } from 'svelte';
-  import { app, terms, refresh, restoreLayout, run, focusedSpec, isTerminal, flushDecisions, wide, setTheme } from './lib/app.svelte.js';
+  import { app, terms, refresh, restoreLayout, run, focusedSpec, isTerminal, flushDecisions, wide, applyTheme } from './lib/app.svelte.js';
   import { classify } from './lib/keyboard.js';
   import { invoke, listen, inTauri } from './lib/ipc.js';
   import { loadUiFont, prepareKitty } from './lib/fonts.js';
@@ -78,7 +78,7 @@
       if (kitty) app.kitty = await prepareKitty(kitty).catch(() => kitty);
       await refresh();
       await restoreLayout();
-      if (app.theme) setTheme(app.theme);
+      applyTheme();
       ready = true;
       startDev();
       // One poll at a time (a git refresh can take longer than a second);

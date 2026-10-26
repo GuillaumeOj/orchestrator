@@ -99,8 +99,12 @@ Daily use: [RUNNING.md](RUNNING.md).
    linearly by the reset).
 9. **Title bar**: native traffic lights over the bar (`titleBarStyle: Overlay`); the Inbox count
    badge uses the waiting-for-you color when non-zero and a neutral border at 0.
-10. **Theme**: user choice (palette: Theme Dark/Light/system) > system. Deriving surface, text and
-    accent from kitty (§9.1) is not implemented.
+10. **Theme**: user choice (palette: Theme Dark/Light) > derived from kitty (palette: "Theme: derive from
+    kitty.conf", off by default) > system. The derivation takes only surface (background), text
+    (foreground) and accent (a cursor color of its own, else kitty's blue) and computes the other
+    surface, text and border tokens from them; status colors stay fixed. It needs 4.5:1 for text and
+    3:1 for muted text and the accent, and otherwise falls back to the system theme with a toast
+    (`ui/src/lib/kittytheme.js`).
 11. **Icons**: Material glyphs of FiraCode Nerd Font Mono loaded from the user's fonts through
     CoreText at start; `scripts/app.sh` bundles Regular, Medium, SemiBold and Bold in the `.app`
     (`Contents/Resources/fonts`, not in git), used when the font is not installed.

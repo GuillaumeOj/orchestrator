@@ -8,6 +8,7 @@ import { breakpoint } from './tokens.js';
 import { hint } from './keyboard.js';
 import { displayState } from './status.js';
 import { UNDO_MS, due, toastFor } from './inbox.js';
+import { deriveKittyTheme } from './kittytheme.js';
 
 export const app = $state({
   data: null, // app_state
@@ -27,6 +28,8 @@ export const app = $state({
   selectedAgent: null,
   selectedProject: null,
   theme: null, // null = system, 'dark' | 'light' (user choice)
+  kittyTheme: false, // derive surface, text and accent from kitty.conf (§9.1); a user choice wins
+  themeSource: 'system', // what applyTheme used: 'user' | 'kitty' | 'system'
   error: null,
 });
 
@@ -327,7 +330,7 @@ export function saveLayout() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     const panes = Object.fromEntries(Object.entries(app.panes).map(([id, s]) => [id, { ...s, termId: undefined }]));
-    invoke('settings_set', { key: 'layout', value: { layout: $state.snapshot(app.layout), panes, focused: app.focused, sidebar: app.sidebar, inspector: app.inspector, theme: app.theme } }).catch(() => {});
+    invoke('settings_set', { key: 'layout', value: { layout: $state.snapshot(app.layout), panes, focused: app.focused, sidebar: app.sidebar, inspector: app.inspector, theme: app.theme, kittyTheme: app.kittyTheme } }).catch(() => {});
   }, 400);
 }
 
@@ -338,6 +341,7 @@ export async function restoreLayout() {
     app.sidebar = saved.sidebar ?? true;
     app.inspector = saved.inspector ?? true;
     app.theme = saved.theme ?? null;
+    app.kittyTheme = saved.kittyTheme ?? false;
   }
   if (!saved?.layout) {
     addPane({ type: 'overview' });
@@ -427,7 +431,8 @@ export function commands() {
     { id: 'governor.resume-all', label: 'Resume all', run: () => governor('resume_all').then(() => toast('Resumed all')) },
     { id: 'theme.dark', label: 'Theme: Dark', run: () => setTheme('dark') },
     { id: 'theme.light', label: 'Theme: Light', run: () => setTheme('light') },
-    { id: 'theme.system', label: 'Theme: follow the system', run: () => setTheme(null) },
+    { id: 'theme.kitty', label: 'Theme: derive from kitty.conf', run: () => setKittyTheme(true) },
+    { id: 'theme.system', label: 'Theme: follow the system', run: () => ((app.kittyTheme = false), setTheme(null)) },
   ];
   if (a) {
     const live = a.live;
@@ -474,11 +479,47 @@ export function run(commandId) {
   if (c) c.run();
 }
 
+let kittyVars = [];
+
+/**
+ * Theme precedence (§9.1): user choice > derived from kitty (if enabled and the
+ * palette passes the contrast check) > system. The derived scheme picks which
+ * fixed status colors apply.
+ */
+export function applyTheme() {
+  const root = document.documentElement;
+  for (const v of kittyVars) root.style.removeProperty(v);
+  kittyVars = [];
+  let scheme = app.theme;
+  let derived = null;
+  if (!scheme && app.kittyTheme) {
+    derived = deriveKittyTheme(app.kitty?.options?.theme);
+    scheme = derived?.scheme ?? null;
+  }
+  if (scheme) root.dataset.theme = scheme;
+  else delete root.dataset.theme;
+  if (derived) {
+    for (const [k, v] of Object.entries(derived.vars)) root.style.setProperty(k, v);
+    kittyVars = Object.keys(derived.vars);
+  }
+  app.themeSource = app.theme ? 'user' : derived ? 'kitty' : 'system';
+  return app.themeSource;
+}
+
 export function setTheme(t) {
   app.theme = t;
-  if (t) document.documentElement.dataset.theme = t;
-  else delete document.documentElement.dataset.theme;
+  applyTheme();
   saveLayout();
+}
+
+/** Turns the kitty-derived theme on or off; tells the user when the palette is refused. */
+export function setKittyTheme(on) {
+  app.kittyTheme = on;
+  app.theme = null;
+  const src = applyTheme();
+  saveLayout();
+  if (on && src !== 'kitty') toast(app.kitty?.options?.theme?.background ? 'kitty.conf colors are not readable enough (contrast): using the system theme' : 'No colors in kitty.conf: using the system theme');
+  else if (on) toast('Theme derived from kitty.conf: surface, text and accent; status colors stay fixed');
 }
 
 /** Jump targets (⌘P): the sidebar tree and the open panes. */
