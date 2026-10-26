@@ -1764,7 +1764,7 @@ pub(crate) mod tests {
     fn restart_rebuilds_the_governor_from_stored_samples() {
         let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
         let reset = (now_ms() / 1000) as i64 + 3 * 24 * 3600;
-        let (used, plan_id) = {
+        let (live, plan_id) = {
             let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
             // An app turn (admitted by the Governor before delivery: autonomous), two responses.
@@ -1793,13 +1793,12 @@ pub(crate) mod tests {
         let snap = rt.gov().snapshot(Timestamp::now());
         assert_eq!(rt.gov().plan().id, plan_id, "the realigned plan week is restored");
         assert_eq!(rt.gov().plan().reset_at.as_second(), reset);
-        assert!((snap.used - used.used).abs() < 0.01, "{} vs {}", snap.used, used.used);
-        assert!((snap.governed - used.governed).abs() < 0.01, "{} vs {}", snap.governed, used.governed);
         // The usage before the app (30 % since the reset, 4 days ago) gets the
         // same outside-the-app forecast and plan live and after the restart.
-        assert!((snap.unattributed_forecast - used.unattributed_forecast).abs() < 0.01, "{snap:?} vs {used:?}");
-        assert!((snap.ideal - used.ideal).abs() < 0.01, "{snap:?} vs {used:?}");
-        assert_eq!(snap.state, used.state);
+        let same = |a: f64, b: f64| (a - b).abs() < 0.01;
+        assert!(same(snap.used, live.used) && same(snap.governed, live.governed), "{snap:?} vs {live:?}");
+        assert!(same(snap.unattributed_forecast, live.unattributed_forecast), "{snap:?} vs {live:?}");
+        assert!(same(snap.ideal, live.ideal) && snap.state == live.state, "{snap:?} vs {live:?}");
         let samples = rt.db.usage_since(0, Some(orch_store::UsageSource::Statusline)).unwrap();
         assert_eq!(samples.len(), 2);
         assert_eq!(samples[0].class.as_deref(), Some("autonomous"));

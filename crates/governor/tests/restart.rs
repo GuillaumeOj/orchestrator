@@ -8,8 +8,8 @@ use governor::*;
 
 /// The plan the app guessed before its first reading: 5 h off the real reset.
 fn misaligned() -> WeeklyPlan {
-    let shift = |t: governor::jiff::Timestamp| t.checked_add(governor::jiff::SignedDuration::from_hours(5)).unwrap();
-    WeeklyPlan { id: "guess".into(), week_start: shift(start()), reset_at: shift(reset()), ..plan() }
+    let reset_at = reset().checked_add(jiff::SignedDuration::from_hours(5)).unwrap();
+    WeeklyPlan { id: "guess".into(), week_start: at(hours(5.0)), reset_at, ..plan() }
 }
 
 /// A heavy first day: 17 % used outside the app by 18:30 (the app starts
@@ -56,7 +56,7 @@ fn restart_on_a_heavy_first_day_matches_the_live_realignment() {
     // Restart: the stored plan, created when the app first saw the week (or,
     // as before, at the week start: the anchor is W = 0 at the reset either
     // way), the samples replayed, one tick.
-    let restart = |created: governor::jiff::Timestamp| {
+    let restart = |created: jiff::Timestamp| {
         let mut g = Governor::new(plan(), policy(), created).unwrap();
         for (s, class, alloc) in &stored {
             g.replay(s, *class, alloc.clone());
@@ -75,46 +75,6 @@ fn restart_on_a_heavy_first_day_matches_the_live_realignment() {
     assert!(a.unattributed_forecast < 70.0, "{a:?}");
     assert!(a.projected < 98.0, "{a:?}");
     assert!(live.snapshot(reset()).ideal > 15.0, "agents keep a budget for the week");
-}
-
-fn same_state(live: &Governor, restarted: &Governor, now: governor::jiff::Timestamp) {
-    let (a, b) = (live.snapshot(now), restarted.snapshot(now));
-    let same = |x: f64, y: f64| (x - y).abs() < 1e-9;
-    assert!(same(a.used, b.used) && same(a.margin, b.margin), "{a:?}\n{b:?}");
-    assert!(same(a.ideal, b.ideal) && same(a.plan, b.plan) && same(a.governed, b.governed), "{a:?}\n{b:?}");
-    assert!(same(a.unattributed_so_far, b.unattributed_so_far), "{a:?}\n{b:?}");
-    assert!(same(a.unattributed_forecast, b.unattributed_forecast), "{a:?}\n{b:?}");
-    assert!(same(a.reserve_left, b.reserve_left), "{a:?}\n{b:?}");
-    assert_eq!(a.calibration, b.calibration);
-    // The burn is measured between ticks, which a replay does not have; the
-    // restarted one starts from the on-plan pace.
-    assert!((a.projected - b.projected).abs() < 2.0, "{} vs {}", a.projected, b.projected);
-    assert_eq!(live.state(), restarted.state());
-}
-
-#[test]
-fn reserve_exhausted_is_a_shadow_action_in_shadow_mode() {
-    let mut g = Governor::new(WeeklyPlan { shadow_mode: true, ..plan() }, policy(), start()).unwrap();
-    // 95 % of the week by the user's own work on Monday: no headroom left.
-    g.ingest(&weekly(at(60), "user", 950.0, 95.0));
-    g.tick(at(60));
-    let a = g.actions().iter().find(|a| a.kind_name() == "reserve_exhausted").expect("logged");
-    assert_eq!(a.mode, ActionMode::Shadow);
-    assert_eq!(a.outcome, Outcome::Logged);
-}
-
-#[test]
-fn sustained_outside_usage_still_turns_red() {
-    // 1.5 pp per wall hour outside the app, day and night, from the reset:
-    // 45 % by Tuesday 15:00, so the week runs out long before Monday.
-    let mut g = governor();
-    for m in (0..=hours(30.0)).step_by(15) {
-        g.ingest(&weekly(at(m), "user", 0.0, (m as f64 / 60.0 * 1.5).floor()));
-        g.tick(at(m));
-    }
-    let s = g.snapshot(at(hours(30.0)));
-    assert_eq!(g.state(), PressureState::Red, "{s:?}");
-    assert!(s.projected > 100.0, "{s:?}");
 }
 
 #[test]

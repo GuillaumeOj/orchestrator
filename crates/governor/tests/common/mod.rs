@@ -103,3 +103,19 @@ pub fn drive_red(g: &mut Governor, minute: i64) {
     g.tick(at(minute));
     assert_eq!(g.state(), PressureState::Red, "{:?}", g.snapshot(at(minute)));
 }
+
+/// The restarted Governor matches the live one (ADR-007 "replay"): same
+/// measurements, forecast, calibration and state. The burn is measured between
+/// ticks, which a replay does not have, so the projection may differ a little.
+pub fn same_state(live: &Governor, restarted: &Governor, now: Timestamp) {
+    let (a, b) = (live.snapshot(now), restarted.snapshot(now));
+    let same = |x: f64, y: f64| (x - y).abs() < 1e-9;
+    assert!(same(a.used, b.used) && same(a.margin, b.margin), "{a:?}\n{b:?}");
+    assert!(same(a.ideal, b.ideal) && same(a.plan, b.plan) && same(a.governed, b.governed), "{a:?}\n{b:?}");
+    assert!(same(a.unattributed_so_far, b.unattributed_so_far), "{a:?}\n{b:?}");
+    assert!(same(a.unattributed_forecast, b.unattributed_forecast), "{a:?}\n{b:?}");
+    assert!(same(a.reserve_left, b.reserve_left), "{a:?}\n{b:?}");
+    assert_eq!(a.calibration, b.calibration);
+    assert!((a.projected - b.projected).abs() < 2.0, "{} vs {}", a.projected, b.projected);
+    assert_eq!(live.state(), restarted.state());
+}

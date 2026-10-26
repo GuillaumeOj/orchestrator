@@ -830,9 +830,35 @@ fn replaying_stored_samples_with_their_class_rebuilds_the_accounting() {
     for (s, _) in &stored {
         naive.ingest(s);
     }
-    let (a, b, c) = (live.snapshot(at(300)), restarted.snapshot(at(300)), naive.snapshot(at(300)));
-    assert_eq!(a.used, b.used);
-    assert!((a.governed - b.governed).abs() < 1e-9, "{} vs {}", a.governed, b.governed);
+    same_state(&live, &restarted, at(300));
+    let (a, c) = (live.snapshot(at(300)), naive.snapshot(at(300)));
     assert!((a.governed - c.governed).abs() > 1.0, "naive replay loses the agents' share");
     assert!((live.allocation_usage_pct(&"A".into()) - restarted.allocation_usage_pct(&"A".into())).abs() < 1e-9);
+}
+
+// ---------------------------------------------------------------- shadow reserve, outside usage
+
+#[test]
+fn reserve_exhausted_is_a_shadow_action_in_shadow_mode() {
+    let mut g = Governor::new(WeeklyPlan { shadow_mode: true, ..plan() }, policy(), start()).unwrap();
+    // 95 % of the week by the user's own work on Monday: no headroom left.
+    g.ingest(&weekly(at(60), "user", 950.0, 95.0));
+    g.tick(at(60));
+    let a = g.actions().iter().find(|a| a.kind_name() == "reserve_exhausted").expect("logged");
+    assert_eq!(a.mode, ActionMode::Shadow);
+    assert_eq!(a.outcome, Outcome::Logged);
+}
+
+#[test]
+fn sustained_outside_usage_still_turns_red() {
+    // 1.5 pp per wall hour outside the app, day and night, from the reset:
+    // 45 % by Tuesday 15:00, so the week runs out long before Monday.
+    let mut g = governor();
+    for m in (0..=hours(30.0)).step_by(15) {
+        g.ingest(&weekly(at(m), "user", 0.0, (m as f64 / 60.0 * 1.5).floor()));
+        g.tick(at(m));
+    }
+    let s = g.snapshot(at(hours(30.0)));
+    assert_eq!(g.state(), PressureState::Red, "{s:?}");
+    assert!(s.projected > 100.0, "{s:?}");
 }

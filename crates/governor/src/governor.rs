@@ -320,7 +320,8 @@ pub struct Governor {
     calib: Calibrator,
     weekly_obs: Option<Observation>,
     five_obs: Option<Observation>,
-    calib_anchor: Option<Observation>,
+    /// The reading the next calibration interval starts from.
+    calib_anchor: Observation,
     /// The week's accounting started at the reset (W is then known to be 0
     /// even before the first reading).
     reset_seen: bool,
@@ -370,7 +371,8 @@ impl Governor {
             calib,
             weekly_obs: None,
             five_obs: None,
-            calib_anchor: None,
+            // Replaced by `start_week_accounting` below.
+            calib_anchor: Observation { ts: plan.week_start, used_pct: 0.0, resets_at: plan.reset_at, app_cost: 0.0 },
             reset_seen: false,
             app_cost: 0.0,
             week_cost_start: 0.0,
@@ -428,12 +430,14 @@ impl Governor {
         if self.weekly_obs.is_some_and(|o| o.ts < self.plan.week_start || o.resets_at <= self.plan.week_start) {
             self.weekly_obs = None;
         }
-        if same_week {
-            // Moved to an earlier reset: the Governor did not see that one.
-            self.reset_seen &= !start_moved;
-            self.calib_anchor = Some(self.weekly_obs.unwrap_or_else(|| self.reset_reading()));
-        } else {
+        if !same_week {
             self.start_week_accounting(now);
+        } else {
+            if start_moved {
+                // Moved to an earlier reset: the Governor did not see that one.
+                self.reset_seen = false;
+            }
+            self.calib_anchor = self.week_anchor();
         }
         self.sm.reset(now);
         self.last_cap = None;
@@ -457,18 +461,19 @@ impl Governor {
         // at the reset, later in the week, or after a restart that replays the
         // week's samples. The live and replayed paths then agree (FR-813).
         self.reset_seen = now <= add_minutes(self.plan.week_start, self.policy.fresh_minutes);
-        self.calib_anchor = Some(self.weekly_obs.unwrap_or_else(|| self.reset_reading()));
+        self.calib_anchor = self.week_anchor();
     }
 
-    /// The weekly reset as a reading: W = 0 (with the same offset as every
-    /// reading) and the app's cost at the start of the week's accounting.
-    fn reset_reading(&self) -> Observation {
-        Observation {
+    /// Where the week's calibration starts: its latest reading, else the
+    /// weekly reset as a reading of W = 0 (with the same offset as every
+    /// reading) at the app's cost when the week's accounting started.
+    fn week_anchor(&self) -> Observation {
+        self.weekly_obs.unwrap_or(Observation {
             ts: self.plan.week_start,
             used_pct: self.policy.reading_offset_pct,
             resets_at: self.plan.reset_at,
             app_cost: self.week_cost_start,
-        }
+        })
     }
 
     // ---------------------------------------------------------------- accessors
@@ -824,10 +829,7 @@ impl Governor {
     }
 
     fn calibrate(&mut self, obs: Observation) {
-        let Some(anchor) = self.calib_anchor else {
-            self.calib_anchor = Some(obs);
-            return;
-        };
+        let anchor = self.calib_anchor;
         let dp = obs.used_pct - anchor.used_pct;
         let dh = hours_between(anchor.ts, obs.ts);
         if dp < 0.0 || obs.used_pct >= 100.0 {
@@ -835,7 +837,7 @@ impl Governor {
         }
         if dp >= self.policy.calibration_min_pp && dh * 60.0 >= self.policy.calibration_min_minutes as f64 {
             self.calib.update(obs.app_cost - anchor.app_cost, dh, dp);
-            self.calib_anchor = Some(obs);
+            self.calib_anchor = obs;
         }
     }
 
