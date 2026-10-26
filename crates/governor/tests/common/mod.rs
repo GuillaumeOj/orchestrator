@@ -96,7 +96,8 @@ pub fn count(g: &Governor, kind: &str) -> usize {
 
 /// Push W to 30 % at minute 40 with usage outside any admitted turn (the
 /// user's own, k = 10) and tick past the dwell: it is not the agents' share,
-/// so the state turns Red through the eta (the week would run out), not the error.
+/// so the state turns Red through the projection (the week would run out), not
+/// the error.
 pub fn drive_red(g: &mut Governor, minute: i64) {
     g.ingest(&weekly(at(minute), "obs", 300.0, 30.0));
     g.tick(at(minute));

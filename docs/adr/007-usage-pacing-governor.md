@@ -19,14 +19,14 @@ A Max plan has a 5-hour window and a weekly window, and possibly a separate week
 - `U` = unattributed rate: the exponentially weighted average of (observed weekly delta − the app's attributed delta).
 
 ## Ideal curve
-`ideal(t) = H(t) / H_week × (100 − reserve − U_forecast)`, where `H` counts **weighted working hours** from the calendar (off-hours count only if an off-hours allowance is enabled). Error on the **governed share**: `G = W − R_used − U_actual` (total minus the reserve used by interactive work minus the unattributed usage observed so far), `e = G − ideal(t)` in pp. Interactive and outside-app usage therefore never push the Governor into Amber/Red by themselves (decision 2026-10-21). `eta` = projected time when the **total** W reaches 100 % at the current exponentially weighted burn rate, so heavy interactive or outside use can still trigger Red through the exhaustion rule. The title bar shows W as "Week" and G against the plan as "agents".
+`ideal(t) = H(t) / H_week × (100 − reserve − U_forecast)`, where `H` counts **weighted working hours** from the calendar (off-hours count only if an off-hours allowance is enabled). Error on the **governed share**: `G = W − R_used − U_actual` (total minus the reserve used by interactive work minus the unattributed usage observed so far), `e = G − ideal(t)` in pp. Interactive and outside-app usage therefore never push the Governor into Amber/Red by themselves (decision 2026-10-21). Critical agent work also draws on the reserve (admission rule) but is the agents' own usage, so it stays in G. The exhaustion rule works on the **total** W projected at the reset: `P = W + burn × H_left + u × off-hours left`, where `burn` is the exponentially weighted burn rate per weighted hour (so it follows the curve: half-weight blocks, a sprint borrowing from later days) and `u` covers outside usage in the hours when agents are stopped and the burn is not measured. Heavy interactive or outside use can therefore still trigger Red. P is in pp rather than a time so that the rule keeps its hysteresis at the end of the week; an `eta < reset − 4 h` rule lost it there, because once only off-hours remain both its thresholds mean "runs out before working time ends", and it flipped Red/Green every 30 min (decision 2026-10-26). `eta`, the time the total reaches 100 % along the curve, is still shown. The title bar shows W as "Week" and G against the plan as "agents".
 
 ## Pressure states (hysteresis, minimum dwell 30 min)
 | State | Enter | Exit | Live autonomous agents |
 |---|---|---|---|
 | Green | default | — | `base` (e.g. 3) |
 | Amber | e > +3 pp | e < +1 pp | `ceil(base/2)` |
-| Red | e > +8 pp or eta < reset − 4 h | e < +5 pp and eta ≥ reset | 1, only tier ≥ normal |
+| Red | e > +8 pp or P > 98 % | e < +5 pp and P < 96 % | 1, only tier ≥ normal |
 | Catch-up | e < −10 pp and < 24 working hours left | e > −5 pp | `base + 2`, queue released |
 
 All thresholds live in `PacingPolicy` and can be adjusted.

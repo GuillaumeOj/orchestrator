@@ -156,6 +156,8 @@ pub struct ForecastSnapshot {
     /// `G − ideal` (= `W − plan`), pp.
     pub error: f64,
     pub eta: Option<Timestamp>,
+    /// Total W projected at the reset (the Red rule's input), %.
+    pub projected: f64,
     pub state: PressureState,
     pub live_cap: u32,
     pub live_autonomous: u32,
@@ -163,6 +165,7 @@ pub struct ForecastSnapshot {
     pub five_hour: Option<f64>,
     pub five_hour_projected: Option<f64>,
     pub five_hour_guard: bool,
+    /// Weekly burn rate, pp per weighted hour of the curve.
     pub burn_pct_per_hour: f64,
     pub unattributed_so_far: f64,
     pub unattributed_forecast: f64,
@@ -273,6 +276,7 @@ struct Metrics {
     plan: f64,
     error: f64,
     eta: Option<Timestamp>,
+    w_projected: f64,
     hours_left: f64,
     weight_now: f64,
     f: Option<f64>,
@@ -427,10 +431,9 @@ impl Governor {
         });
     }
 
-    /// Prior burn rate: the plan's pace, pp per active hour.
+    /// Prior burn rate: the plan's pace, pp per weighted hour.
     fn budget_slope(&self) -> f64 {
-        let active = self.curve.active_hours_between(self.plan.week_start, self.plan.reset_at).max(1e-9);
-        (100.0 - self.plan.reserve_pct).max(0.0) / active
+        (100.0 - self.plan.reserve_pct).max(0.0) / self.curve.total_hours().max(1e-9)
     }
 
     // ---------------------------------------------------------------- accessors
@@ -543,20 +546,29 @@ impl Governor {
         // interactive work draws on the reserve and outside-app usage on its
         // forecast, so neither pushes agents into Amber/Red by itself. Critical
         // work also draws on the reserve but is the agents' own, so it stays in
-        // G. The eta below stays on the total W, so a week that would run out
-        // still turns Red.
+        // G. The projection below stays on the total W, so a week that would
+        // run out still turns Red.
         let r_used = self.interactive_cost / k;
         let governed = (w_eff - r_used - u_so_far).max(0.0);
         let error = governed - ideal;
         let plan = w_eff - error;
         let reserve_left = 100.0 - w_eff - (budget - ideal) - (u_forecast - u_so_far);
 
-        // Projected exhaustion at the current burn rate, counted in active hours
-        // (when autonomous work runs), not in weighted hours.
+        // Total W projected at the reset: the burn rate (per weighted hour, so
+        // it follows the curve: half-weight hours, a sprint borrowing from the
+        // later days) over the weighted hours left, plus the unattributed rate
+        // over the other wall hours, where outside usage goes on while the
+        // agents are stopped and the burn is not measured.
+        let hours_left = self.curve.hours_left(now);
+        let off_left =
+            (self.curve.wall_hours_left(now) - self.curve.active_hours_between(now, self.plan.reset_at)).max(0.0);
+        let w_projected = w_eff + self.burn * hours_left + u * off_left;
+
+        // Projected exhaustion at the current burn rate, along the curve. Shown, not a trigger.
         let eta = if w_eff >= 100.0 {
             Some(now)
         } else if self.burn > 1e-9 {
-            self.curve.after_active_hours(now, (100.0 - w_eff) / self.burn).filter(|t| *t < self.plan.reset_at)
+            self.curve.time_at_hours(self.curve.hours_at(now) + (100.0 - w_eff) / self.burn)
         } else {
             None
         };
@@ -584,7 +596,8 @@ impl Governor {
             plan,
             error,
             eta,
-            hours_left: self.curve.hours_left(now),
+            w_projected,
+            hours_left,
             weight_now: self.curve.weight_at(now),
             f,
             f_projected,
@@ -593,7 +606,7 @@ impl Governor {
     }
 
     fn pressure_inputs(&self, m: &Metrics) -> PressureInputs {
-        PressureInputs { error_pp: m.error, eta: m.eta, reset_at: self.plan.reset_at, hours_left: m.hours_left }
+        PressureInputs { error_pp: m.error, projected_pp: m.w_projected, hours_left: m.hours_left }
     }
 
     /// F now: the latest 5h reading, 0 once its window has reset, `None` if never seen.
@@ -633,6 +646,7 @@ impl Governor {
             governed: m.governed,
             error: m.error,
             eta: m.eta,
+            projected: m.w_projected,
             state: self.sm.state,
             live_cap: self.cap(&m),
             live_autonomous: self.live_autonomous(),
@@ -1305,12 +1319,8 @@ impl Governor {
         let inputs = self.pressure_inputs(&m);
         if let Some((from, to)) = self.sm.step(&inputs, &self.policy.thresholds, now) {
             let reason = format!(
-                "W {:.1} %, agents {:.1} % vs plan {:.1} % (e {:+.1} pp){}",
-                m.w_eff,
-                m.governed,
-                m.ideal,
-                m.error,
-                m.eta.map(|t| format!(", eta {t}")).unwrap_or_default()
+                "W {:.1} %, agents {:.1} % vs plan {:.1} % (e {:+.1} pp), {:.1} % projected at the reset",
+                m.w_eff, m.governed, m.ideal, m.error, m.w_projected
             );
             let cap = self.cap(&m);
             self.log(
@@ -1418,7 +1428,7 @@ impl Governor {
     fn update_burn(&mut self, now: Timestamp) {
         let m = self.metrics(now);
         if let Some(last) = self.last {
-            let dh = self.curve.active_hours_between(last.ts, now);
+            let dh = self.curve.hours_at(now) - self.curve.hours_at(last.ts);
             if dh > 1e-9 {
                 let r = (m.w_central - last.w) / dh;
                 self.burn = (self.burn + ewma_alpha(dh, self.policy.burn_tau_h) * (r - self.burn)).max(0.0);

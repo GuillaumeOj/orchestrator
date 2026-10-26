@@ -355,6 +355,7 @@ pub struct Row {
     pub ideal: f64,
     pub governed: f64,
     pub error: f64,
+    pub projected: f64,
     pub state: PressureState,
     pub live_cap: u32,
     pub live: u32,
@@ -720,6 +721,7 @@ pub fn run(sc: &Scenario) -> SimResult {
                 ideal: snap.ideal,
                 governed: snap.governed,
                 error: snap.error,
+                projected: snap.projected,
                 state: snap.state,
                 live_cap: snap.live_cap,
                 live: snap.live_autonomous,
@@ -1014,13 +1016,13 @@ impl Summary {
 /// CSV of the curves, one row per 5 minutes.
 pub fn csv(rows: &[Row]) -> String {
     let mut s = String::from(
-        "ts,local,true_weekly,observed_weekly,used,used_central,provenance,plan,ideal,governed,error,state,live_cap,live,queued,true_five_hour,five_hour,five_hour_projected,five_hour_guard,burn,k,confidence,unattributed_so_far,reserve_left,interactive_used\n",
+        "ts,local,true_weekly,observed_weekly,used,used_central,provenance,plan,ideal,governed,error,projected,state,live_cap,live,queued,true_five_hour,five_hour,five_hour_projected,five_hour_guard,burn,k,confidence,unattributed_so_far,reserve_left,interactive_used\n",
     );
     let opt = |v: Option<f64>| v.map_or(String::new(), |x| format!("{x:.2}"));
     for r in rows {
         let _ = writeln!(
             s,
-            "{},{},{:.3},{},{:.3},{:.3},{:?},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{:.2},{},{},{},{:.4},{:.3},{:.3},{:.3},{:.3},{:.3}",
+            "{},{},{:.3},{},{:.3},{:.3},{:?},{:.3},{:.3},{:.3},{:.3},{:.3},{},{},{},{},{:.2},{},{},{},{:.4},{:.3},{:.3},{:.3},{:.3},{:.3}",
             r.ts,
             r.local,
             r.true_weekly,
@@ -1032,6 +1034,7 @@ pub fn csv(rows: &[Row]) -> String {
             r.ideal,
             r.governed,
             r.error,
+            r.projected,
             r.state,
             r.live_cap,
             r.live,

@@ -70,9 +70,10 @@ fn amber_halves_the_cap() {
 }
 
 /// Monday 09:00 → `until`: agent A-1 follows the curve while the user's own
-/// pane adds `interactive_pp_per_h` in the first `interactive_h` hours. Samples
-/// every 15 min, observed (k = 10, nothing unattributed).
-fn interactive_week(interactive_pp_per_h: f64, interactive_h: f64, until: i64) -> Governor {
+/// pane adds `interactive_pp_per_h` from `from` to `to` (minutes). Samples
+/// every 15 min, observed (k = 10, nothing unattributed). Amber/Red may only
+/// come from the projection, never from the error.
+fn interactive_week(interactive_pp_per_h: f64, from: i64, to: i64, until: i64) -> Governor {
     let mut g = governor();
     g.request_turn(task("A-1", "A", Tier::Normal), at(0));
     let (mut w, mut agents) = (0.0, 0.0);
@@ -82,45 +83,44 @@ fn interactive_week(interactive_pp_per_h: f64, interactive_h: f64, until: i64) -
         agents += agent_pp;
         w += agent_pp;
         g.ingest(&weekly(at(m), "A-1", agent_pp * 10.0, w));
-        if (m as f64) <= interactive_h * 60.0 {
+        if m > from && m <= to {
             let pp = interactive_pp_per_h / 4.0;
             w += pp;
             g.ingest(&weekly(at(m), "user-pane", pp * 10.0, w));
         }
         g.tick(at(m));
-        assert!(
-            !matches!(g.state(), PressureState::Amber | PressureState::Red) || g.snapshot(at(m)).eta.is_some(),
-            "minute {m}: {:?} from interactive use alone: {:?}",
-            g.state(),
-            g.snapshot(at(m))
-        );
+        let s = g.snapshot(at(m));
+        assert!(s.error.abs() < 0.5, "minute {m}: agents are on plan: {s:?}");
+        if matches!(g.state(), PressureState::Amber | PressureState::Red) {
+            assert!(s.projected > 96.0, "minute {m}: {:?} from interactive use alone: {s:?}", g.state());
+        }
     }
     g
 }
 
 #[test]
 fn interactive_use_alone_never_enters_amber_or_red() {
-    // 4 pp of the user's own work on Monday morning: W runs 4 pp over the
+    // 4 pp of the user's own work on Thursday morning: W runs 4 pp over the
     // curve, which used to mean Amber. It fits in the reserve, so agents stay Green.
-    let g = interactive_week(2.0, 2.0, hours(10.0));
-    let s = g.snapshot(at(hours(10.0)));
+    let thu_9 = hours(72.0);
+    let g = interactive_week(2.0, thu_9, thu_9 + hours(2.0), thu_9 + hours(4.0));
+    let s = g.snapshot(at(thu_9 + hours(4.0)));
     assert!((s.used - s.ideal - 4.0).abs() < 1.0, "{s:?}");
     assert!((s.interactive_used - 4.0).abs() < 1e-6, "{s:?}");
-    assert!(s.error.abs() < 0.5, "{s:?}");
     assert!((s.governed - s.ideal).abs() < 0.5, "{s:?}");
     assert!((s.used - s.plan - s.error).abs() < 1e-9);
-    assert!(s.eta.is_none(), "{s:?}");
+    assert!(s.projected < 98.0, "{s:?}");
     assert_eq!(g.state(), PressureState::Green);
 }
 
 #[test]
-fn heavy_interactive_use_still_turns_red_through_the_eta() {
+fn heavy_interactive_use_still_turns_red_through_the_projection() {
     // 3 pp/h of the user's own work all of Monday: the agents are on plan,
     // but at this burn the week runs out before the reset.
     let end = hours(10.0);
-    let g = interactive_week(3.0, 10.0, end);
+    let g = interactive_week(3.0, 0, end, end);
     let s = g.snapshot(at(end));
-    assert!(s.error.abs() < 0.5, "agents are on plan: {s:?}");
+    assert!(s.projected > 100.0, "{s:?}");
     assert!(s.eta.is_some_and(|t| t < reset()), "{s:?}");
     assert_eq!(g.state(), PressureState::Red, "{s:?}");
 }
