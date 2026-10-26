@@ -99,9 +99,8 @@ pub struct Core {
     reader_gen: std::sync::atomic::AtomicU64,
     agent_input: Mutex<BTreeMap<String, std::sync::mpsc::Sender<Vec<u8>>>>,
     stop: Arc<AtomicBool>,
-    pub warnings: Vec<String>,
-    /// Warnings raised after start (shown like `warnings`).
-    late_warnings: Mutex<Vec<String>>,
+    /// Shown as banners (from start, and raised later with `warn`).
+    warnings: Mutex<Vec<String>>,
 }
 
 /// A value refreshed at most every so often.
@@ -218,8 +217,7 @@ impl Core {
             reader_gen: std::sync::atomic::AtomicU64::new(0),
             agent_input: Mutex::new(BTreeMap::new()),
             stop: Arc::new(AtomicBool::new(false)),
-            warnings,
-            late_warnings: Mutex::new(vec![]),
+            warnings: Mutex::new(warnings),
         });
         // Claude Code's version and login (J0): `claude` starts slowly, off the startup path.
         {
@@ -331,12 +329,12 @@ impl Core {
         self.history.lock_ok().push(p, week_start);
     }
 
-    /// The Claude Code check (J0), once the background probe has answered.
     fn warn(&self, w: String) {
         eprintln!("orchestrator: {w}");
-        self.late_warnings.lock_ok().push(w);
+        self.warnings.lock_ok().push(w);
     }
 
+    /// The Claude Code check (J0), once the background probe has answered.
     pub fn claude_check(&self) -> Option<ClaudeCheck> {
         self.claude.lock_ok().clone()
     }
@@ -784,7 +782,7 @@ impl Core {
     pub fn state(&self) -> Value {
         let projects = self.projects();
         let mut agents = vec![];
-        let mut warnings: Vec<Value> = self.warnings.iter().chain(self.late_warnings.lock_ok().iter()).map(|w| json!(w)).collect();
+        let mut warnings: Vec<Value> = self.warnings.lock_ok().iter().map(|w| json!(w)).collect();
         let (mut usage, mut queue, mut meta, mut alerts, mut done, mut ask) =
             (Value::Null, vec![], BTreeMap::new(), vec![], vec![], None);
         if let Some(rt) = &self.rt {
@@ -949,18 +947,8 @@ impl Core {
         Ok(json!(out))
     }
 
-    /// FR-104: one worktree of the app's sibling folder (the user's own
-    /// worktrees elsewhere are never removed from here); unmerged work needs `discard`.
+    /// FR-104: one worktree of the app's sibling folder; unmerged work needs `discard`.
     pub fn worktree_remove(&self, project: &str, path: &Path, delete_branch: bool, discard: bool) -> Result<Value> {
-        let root = self.db.project(project)?.map(|p| p.worktree_root).ok_or_else(|| anyhow!("no project {project}"))?;
-        // A worktree whose folder is gone (prunable) is resolved through its parent.
-        let resolved = match (path.exists(), path.parent(), path.file_name()) {
-            (false, Some(dir), Some(name)) => orch_git::real(dir).join(name),
-            _ => orch_git::real(path),
-        };
-        if !resolved.starts_with(orch_git::real(&root)) {
-            bail!("{} is not in {}: the app only removes its own worktrees", path.display(), root.display());
-        }
         Ok(json!(self.runtime()?.remove_worktree(project, path, delete_branch, discard)?))
     }
 
@@ -972,8 +960,7 @@ impl Core {
     /// J11: stops and archives the project's agents, removes merged worktrees
     /// and the confirmed ones, keeps the rest, deletes or archives history.
     pub fn project_remove(&self, id: &str, choices: &orch_git::project::RemovalChoices) -> Result<Value> {
-        let report = self.runtime()?.remove_project(id, choices)?;
-        Ok(json!(report))
+        Ok(json!(self.runtime()?.remove_project(id, choices)?))
     }
 }
 
@@ -1058,7 +1045,7 @@ fn past_week(rt: &Runtime, started: Timestamp) -> (History, Vec<governor::Govern
         .actions(500)
         .unwrap_or_default()
         .into_iter()
-        .filter(|a| a.ts >= week_start && a.ts < started)
+        .filter(|a| a.ts < started) // the planner keeps this plan week's
         .collect();
     (h, actions)
 }

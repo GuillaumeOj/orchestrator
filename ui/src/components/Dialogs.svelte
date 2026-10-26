@@ -4,6 +4,7 @@
   // ⌘⏎ submits; esc cancels.
   import { app, projects, contextProject, openAgent, openProject, refresh, toast } from '../lib/app.svelte.js';
   import PlanEditor from './PlanEditor.svelte';
+  import { expandHome } from '../lib/format.js';
   import { invoke, errText } from '../lib/ipc.js';
   import { PRESSURE } from '../lib/status.js';
   import Kbd from './Kbd.svelte';
@@ -61,8 +62,7 @@
     if (busy) return;
     busy = true;
     try {
-      const home = app.data?.core?.user_home ?? '~';
-      const expand = (x) => x.trim().replace(/^~(?=\/)/, home);
+      const expand = (x) => expandHome(x, app.data?.core?.user_home ?? '~');
       const p = isUrl(path)
         ? await invoke('project_clone', { url: path.trim(), parent: cloneInto.trim() ? expand(cloneInto) : null, name: null })
         : await invoke('project_add', { path: expand(path) });
@@ -225,7 +225,6 @@
     border-radius: var(--radius-sm);
   }
   .err {
-    color: var(--color-status-error);
     white-space: pre-wrap;
   }
   .foot {

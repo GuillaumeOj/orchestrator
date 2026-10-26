@@ -196,3 +196,15 @@ describe('memory watch', () => {
     expect(text(container)).toContain('⚠ WebContent 2800 MB');
   });
 });
+
+describe('path and token formatting', async () => {
+  const { shortPath, expandHome, tokens } = await import('../src/lib/format.js');
+  it('shortens only paths under home, expands ~', () => {
+    expect(shortPath('/Users/g/dev/app', '/Users/g')).toBe('~/dev/app');
+    expect(shortPath('/Users/gx/dev', '/Users/g')).toBe('/Users/gx/dev');
+    expect(expandHome(' ~/dev/app ', '/Users/g')).toBe('/Users/g/dev/app');
+    expect(expandHome('~', '/Users/g')).toBe('/Users/g');
+    expect(tokens(63197)).toBe('63 k');
+    expect(tokens(1_250_000)).toBe('1.3 M');
+  });
+});

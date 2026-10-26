@@ -54,7 +54,7 @@
   <form class="plan" onsubmit={(e) => (e.preventDefault(), save())}>
     <div class="days" role="group" aria-label="Working days">
       {#each DAYS as d (d)}
-        <button type="button" class="day" class:on={form.days.includes(d)} aria-pressed={form.days.includes(d)} onclick={() => toggleDay(d)}>{d}</button>
+        <button type="button" class="filter-chip day" class:on={form.days.includes(d)} aria-pressed={form.days.includes(d)} onclick={() => toggleDay(d)}>{d}</button>
       {/each}
     </div>
     <div class="row">
@@ -100,15 +100,6 @@
   }
   .day {
     min-width: 40px;
-    padding: var(--space-xxs) var(--space-sm);
-    border: var(--border-width-default) solid var(--color-border-strong);
-    border-radius: var(--radius-full);
-    background: none;
-    color: var(--color-text-secondary);
-  }
-  .day.on {
-    border-color: var(--color-accent-default);
-    color: var(--color-text-primary);
   }
   .row {
     display: flex;
@@ -138,9 +129,6 @@
   }
   p {
     margin: 0;
-  }
-  .err {
-    color: var(--color-status-error);
   }
   .foot {
     display: flex;

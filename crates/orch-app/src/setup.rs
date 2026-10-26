@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use agent_runtime::preflight::{self, VersionCheck};
 use anyhow::{Result, anyhow, bail};
@@ -30,16 +30,12 @@ pub const ENFORCE_KEY: &str = "governor.enforce";
 /// The first-run checklist was closed.
 pub const DONE_KEY: &str = "setup.done";
 
-/// The length of the shadow week (FR-812).
-pub const SHADOW_WEEK_MS: i64 = 7 * 24 * 3600 * 1000;
-
 /// What `claude` reports at start (J0 step 1).
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ClaudeCheck {
     pub path: PathBuf,
     pub version: Option<String>,
-    /// In the supported range (NFR-7); `untested` when newer than the last tested.
-    pub supported: bool,
+    /// Newer than the last tested version (NFR-7: runs, with a warning).
     pub untested: bool,
     pub logged_in: Option<bool>,
     pub auth_method: Option<String>,
@@ -74,8 +70,8 @@ pub fn check_claude(path: &Path) -> ClaudeCheck {
         Ok(v) => {
             c.version = Some(v.to_string());
             match preflight::SUPPORTED_CLAUDE.check(v) {
-                Ok(VersionCheck::Supported(_)) => c.supported = true,
-                Ok(VersionCheck::Untested(_)) => (c.supported, c.untested) = (true, true),
+                Ok(VersionCheck::Supported(_)) => {}
+                Ok(VersionCheck::Untested(_)) => c.untested = true,
                 Err(e) => c.problem = Some(format!("{e:#}: update Claude Code (claude update), then restart the app.")),
             }
         }
@@ -115,26 +111,27 @@ fn apply_auth(c: &mut ClaudeCheck, v: &Value) {
 }
 
 /// Claude Code's workspace trust for `repo` (keyed by the main checkout),
-/// read from `~/.claude.json` (cached a few seconds; never written).
+/// read from `~/.claude.json` (re-read when its size or mtime changes; never written).
 pub fn trusted(repo: &Path) -> Option<bool> {
     trusted_in(&agent_runtime::paths::home_dir().join(".claude.json"), repo)
 }
 
 fn trusted_in(file: &Path, repo: &Path) -> Option<bool> {
-    type Cache = Option<(Instant, PathBuf, Value)>;
-    static CACHE: std::sync::Mutex<Cache> = std::sync::Mutex::new(None);
+    type Stamp = (PathBuf, u64, Option<std::time::SystemTime>);
+    static CACHE: std::sync::Mutex<Option<(Stamp, Value)>> = std::sync::Mutex::new(None);
+    let meta = std::fs::metadata(file).ok()?;
+    let stamp: Stamp = (file.to_path_buf(), meta.len(), meta.modified().ok());
     let mut c = CACHE.lock_ok();
-    let fresh = c.as_ref().is_some_and(|(at, f, _)| f == file && at.elapsed() < Duration::from_secs(3));
-    if !fresh {
+    if c.as_ref().is_none_or(|(s, _)| *s != stamp) {
         let v: Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
         // Keep only the trust flags: the file also holds account details.
         let trust: serde_json::Map<String, Value> = v["projects"]
             .as_object()
             .map(|m| m.iter().map(|(k, p)| (k.clone(), p["hasTrustDialogAccepted"].clone())).collect())
             .unwrap_or_default();
-        *c = Some((Instant::now(), file.to_path_buf(), Value::Object(trust)));
+        *c = Some((stamp, Value::Object(trust)));
     }
-    let trust = &c.as_ref()?.2;
+    let trust = &c.as_ref()?.1;
     Some(trust[repo.to_string_lossy().as_ref()].as_bool().unwrap_or(false))
 }
 
@@ -146,7 +143,7 @@ pub fn enforce_chosen(db_file: &Path) -> bool {
     }
     orch_store::Store::open(db_file)
         .ok()
-        .and_then(|db| db.setting(&format!("ui.{ENFORCE_KEY}")).ok().flatten())
+        .and_then(|db| crate::services::Settings::new(db).get(ENFORCE_KEY))
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
 }
@@ -292,8 +289,6 @@ impl Core {
             "kitty": {"sources": kitty.sources, "font": kitty.font_family, "mapped": kitty.mapped.len(), "unmapped": kitty.unmapped.len(), "editor": kitty.editor},
             "editor": *self.editor_template.lock_ok(),
             "plan_confirmed": self.settings.get(PLAN_KEY).is_some(),
-            "first_run_ms": self.settings.get(FIRST_RUN_KEY),
-            "enforce": self.settings.get(ENFORCE_KEY).and_then(|v| v.as_bool()).unwrap_or(false),
         })
     }
 
@@ -370,7 +365,7 @@ mod tests {
 
     #[test]
     fn auth_status_decides_read_only_mode() {
-        let mut c = ClaudeCheck { supported: true, ..Default::default() };
+        let mut c = ClaudeCheck::default();
         apply_auth(&mut c, &json!({"loggedIn": true, "authMethod": "claude.ai", "subscriptionType": "max"}));
         assert!(c.ready().is_ok(), "{c:?}");
         let mut c = ClaudeCheck::default();

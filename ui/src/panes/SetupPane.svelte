@@ -6,6 +6,7 @@
   // until "Done"; the palette reopens it.
   import { app, projects, openTrust, openProject, refresh, toast, closePane, findPane } from '../lib/app.svelte.js';
   import { invoke, errText } from '../lib/ipc.js';
+  import { expandHome, shortPath } from '../lib/format.js';
   import PlanEditor from '../components/PlanEditor.svelte';
   import Kbd from '../components/Kbd.svelte';
 
@@ -13,7 +14,7 @@
   const c = $derived(s?.claude);
   const trust = $derived(Object.fromEntries((s?.trust ?? []).map((t) => [t.id, t.trusted])));
   const home = $derived(app.data?.core?.user_home ?? '');
-  const short = (path) => (home && String(path).startsWith(home) ? `~${String(path).slice(home.length)}` : path);
+  const short = (path) => shortPath(path, home);
 
   let editor = $state(null);
   let kittyPath = $state(null);
@@ -23,15 +24,14 @@
     if (s && kittyPath === null) kittyPath = s.kitty?.sources?.[0] ?? `${home}/.config/kitty/kitty.conf`;
   });
 
-  const claudeOk = $derived(c && !c.problem);
-  const steps = $derived([
-    { id: 'claude', done: !!claudeOk },
-    { id: 'projects', done: projects().length > 0 },
-    { id: 'trust', done: projects().length > 0 && projects().every((p) => trust[p.id]) },
-    { id: 'look', done: !!s?.kitty?.sources?.length },
-    { id: 'plan', done: !!s?.plan_confirmed },
-  ]);
-  const left = $derived(steps.filter((x) => !x.done).length);
+  const done = $derived({
+    claude: !!c && !c.problem,
+    projects: projects().length > 0,
+    trust: projects().length > 0 && projects().every((p) => trust[p.id]),
+    look: !!s?.kitty?.sources?.length,
+    plan: !!s?.plan_confirmed,
+  });
+  const left = $derived(Object.values(done).filter((x) => !x).length);
 
   async function saveEditor() {
     try {
@@ -45,7 +45,7 @@
 
   async function importKitty() {
     try {
-      const k = await invoke('import_kitty', { path: kittyPath.trim().replace(/^~(?=\/)/, home) });
+      const k = await invoke('import_kitty', { path: expandHome(kittyPath, home) });
       app.kitty = { ...k, letterSpacing: app.kitty?.letterSpacing ?? 0 };
       toast(`Imported ${k.font_family} · ${k.mapped.length} settings mapped; new panes use it`);
       await refresh();
@@ -54,7 +54,7 @@
     }
   }
 
-  async function done() {
+  async function finish() {
     await invoke('settings_set', { key: 'setup.done', value: Date.now() }).catch(() => {});
     await refresh();
     const id = findPane((x) => x.type === 'setup');
@@ -68,11 +68,11 @@
     <h2>Set up Orchestrator</h2>
     <span class="secondary">{left ? `${left} step${left > 1 ? 's' : ''} left` : 'Ready'}</span>
     <span class="grow"></span>
-    <button class="btn primary" onclick={done}>{left ? 'Finish later' : 'Done'}</button>
+    <button class="btn primary" onclick={finish}>{left ? 'Finish later' : 'Done'}</button>
   </div>
 
-  <section class="card" class:ok={steps[0].done}>
-    <div class="ch"><span class="mark">{steps[0].done ? '✓' : '1'}</span><b>Claude Code</b></div>
+  <section class="card" class:ok={done.claude}>
+    <div class="ch"><span class="mark">{done.claude ? '✓' : '1'}</span><b>Claude Code</b></div>
     {#if !c}
       <p class="muted">Checking claude --version and the login…</p>
     {:else}
@@ -86,8 +86,8 @@
     {/if}
   </section>
 
-  <section class="card" class:ok={steps[1].done}>
-    <div class="ch"><span class="mark">{steps[1].done ? '✓' : '2'}</span><b>Projects</b><span class="grow"></span><button class="btn" onclick={() => (app.overlay = { kind: 'add-project' })}>Add project <Kbd keys="⌘+N" /></button></div>
+  <section class="card" class:ok={done.projects}>
+    <div class="ch"><span class="mark">{done.projects ? '✓' : '2'}</span><b>Projects</b><span class="grow"></span><button class="btn" onclick={() => (app.overlay = { kind: 'add-project' })}>Add project <Kbd keys="⌘+N" /></button></div>
     {#each projects() as p (p.id)}
       <div class="prow">
         <button class="link" onclick={() => openProject(p.id)}>{p.name}</button>
@@ -104,8 +104,8 @@
     {/if}
   </section>
 
-  <section class="card" class:ok={steps[3].done}>
-    <div class="ch"><span class="mark">{steps[3].done ? '✓' : '3'}</span><b>Terminal look and editor</b></div>
+  <section class="card" class:ok={done.look}>
+    <div class="ch"><span class="mark">{done.look ? '✓' : '3'}</span><b>Terminal look and editor</b></div>
     <div class="row">
       <label class="grow">kitty.conf (read only) <input class="field mono" bind:value={kittyPath} spellcheck="false" /></label>
       <button class="btn" onclick={importKitty}>Import</button>
@@ -119,10 +119,10 @@
     </div>
   </section>
 
-  <section class="card" class:ok={steps[4].done}>
-    <div class="ch"><span class="mark">{steps[4].done ? '✓' : '4'}</span><b>First weekly plan</b><span class="muted">aligned to your weekly reset</span>
-      <span class="grow"></span>{#if steps[4].done && !editPlan}<button class="btn ghost" onclick={() => (editPlan = true)}>Edit</button>{/if}</div>
-    {#if !steps[4].done || editPlan}
+  <section class="card" class:ok={done.plan}>
+    <div class="ch"><span class="mark">{done.plan ? '✓' : '4'}</span><b>First weekly plan</b><span class="muted">aligned to your weekly reset</span>
+      <span class="grow"></span>{#if done.plan && !editPlan}<button class="btn ghost" onclick={() => (editPlan = true)}>Edit</button>{/if}</div>
+    {#if !done.plan || editPlan}
       <!-- The proposed split follows the projects added above. -->
       {#key projects().map((p) => p.id).join()}<PlanEditor onSaved={() => (editPlan = false)} />{/key}
     {:else}
@@ -155,9 +155,6 @@
     font: var(--text-heading);
   }
   .card {
-    border: var(--border-width-default) solid var(--color-border-subtle);
-    border-radius: var(--radius-md);
-    padding: var(--space-md);
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
@@ -205,8 +202,5 @@
   }
   p {
     margin: 0;
-  }
-  .err {
-    color: var(--color-status-error);
   }
 </style>

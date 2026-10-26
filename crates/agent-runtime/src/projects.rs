@@ -130,11 +130,20 @@ impl Runtime {
         orch_git::diff::diff(&wt, &base, MAX_PATCH_BYTES)
     }
 
-    /// FR-104 cleanup of one worktree. Refuses while an agent that is not
-    /// archived or killed uses it; unmerged work needs `confirm_discard`.
+    /// FR-104 cleanup of one worktree of the project's sibling folder (the
+    /// user's own worktrees elsewhere are never removed from here). Refuses
+    /// while an agent that is not archived or killed uses it; unmerged work
+    /// needs `confirm_discard`.
     pub fn remove_worktree(&self, project_id: &str, path: &Path, delete_branch: bool, confirm_discard: bool) -> Result<RemoveOutcome> {
         let p = self.project(project_id)?;
-        let wt = real(path);
+        // A worktree whose folder is gone (prunable) is resolved through its parent.
+        let wt = match (path.exists(), path.parent(), path.file_name()) {
+            (false, Some(dir), Some(name)) => real(dir).join(name),
+            _ => real(path),
+        };
+        if !wt.starts_with(real(&p.worktree_root)) {
+            bail!("{} is not in {}: the app only removes its own worktrees", path.display(), p.worktree_root.display());
+        }
         if let Some(a) = self.store.read(|s| {
             s.agents
                 .values()

@@ -55,6 +55,17 @@ textarea {
 .mono {
   font: var(--text-mono);
 }
+.err {
+  color: var(--color-status-error);
+}
+
+/* A bordered section of a pane (Week planner, Project, Setup). */
+.card {
+  border: var(--border-width-default) solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  min-width: 0;
+}
 .icon {
   font: var(--text-icon);
 }

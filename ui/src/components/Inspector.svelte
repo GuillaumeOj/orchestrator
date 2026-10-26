@@ -2,7 +2,7 @@
   // Inspector (§9.2): the selection's details. Docked at ≥ 1512 px, overlay below.
   import { app, contextAgent, projects, agentAction, openShell, openInKitty, confirm } from '../lib/app.svelte.js';
   import { displayState, queueReason, sessionPp, cacheState } from '../lib/status.js';
-  import { clock, mb, pct } from '../lib/format.js';
+  import { clock, mb, pct, shortPath, tokens } from '../lib/format.js';
   import AgentChip from './AgentChip.svelte';
   import StatusBadge from './StatusBadge.svelte';
   import Kbd from './Kbd.svelte';
@@ -13,8 +13,7 @@
   const pp = $derived(sessionPp(a, app.data?.usage?.snapshot));
   const cache = $derived(cacheState(a, clock));
   const home = $derived(app.data?.core?.user_home ?? '');
-  const tokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} M` : n >= 1e3 ? `${Math.round(n / 1e3)} k` : String(n));
-  const short = (path) => (home && String(path).startsWith(home) ? `~${String(path).slice(home.length)}` : path);
+  const short = (path) => shortPath(path, home);
 </script>
 
 <aside class="insp" class:overlay aria-label="Inspector">

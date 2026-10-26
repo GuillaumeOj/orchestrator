@@ -42,3 +42,15 @@ export function dayTime(ms) {
   const d = new Date(ms);
   return `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
+
+/** "~/dev/app" for a path under `home`. */
+export function shortPath(path, home) {
+  const p = String(path ?? '');
+  return home && (p === home || p.startsWith(`${home}/`)) ? `~${p.slice(home.length)}` : p;
+}
+
+/** "~/dev/app" → "<home>/dev/app" (the core wants absolute paths). */
+export const expandHome = (path, home) => String(path).trim().replace(/^~(?=\/|$)/, home);
+
+/** Token counts: "63 k", "1.2 M". */
+export const tokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} M` : n >= 1e3 ? `${Math.round(n / 1e3)} k` : String(n));

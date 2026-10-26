@@ -7,7 +7,7 @@
   import { onMount } from 'svelte';
   import { app, projects, agents, openAgent, openShell, openTrust, refresh, toast, confirm, closePane } from '../lib/app.svelte.js';
   import { invoke, errText } from '../lib/ipc.js';
-  import { ago, dayTime } from '../lib/format.js';
+  import { ago, dayTime, shortPath } from '../lib/format.js';
   import { displayState } from '../lib/status.js';
   import StatusBadge from '../components/StatusBadge.svelte';
   import Kbd from '../components/Kbd.svelte';
@@ -17,13 +17,13 @@
   const p = $derived(projects().find((x) => x.id === spec?.projectId));
   const list = $derived(agents().filter((a) => a.project_id === p?.id && a.state !== 'archived'));
   const home = $derived(app.data?.core?.user_home ?? '');
-  const short = (path) => (home && String(path).startsWith(home) ? `~${String(path).slice(home.length)}` : path);
+  const short = (path) => shortPath(path, home);
 
   let d = $state(null);
   let err = $state(null);
   let prs = $state(null);
   let busy = $state(null);
-  let removal = $state(null); // J11: { plan, agents, discard: Set, history }
+  let removal = $state(null); // J11: { plan, agents, discard: { [path]: bool }, history, removeMerged }
 
   async function load() {
     if (!p) return;
@@ -41,7 +41,8 @@
     return () => clearInterval(t);
   });
 
-  async function act(label, fn) {
+  /** Runs an action; then reloads the detail and the app state unless `reload` is false. */
+  async function act(label, fn, reload = true) {
     if (busy) return;
     busy = label;
     try {
@@ -50,8 +51,7 @@
       toast(errText(e), { kind: 'error' });
     } finally {
       busy = null;
-      await load();
-      await refresh();
+      if (reload) await Promise.all([load(), refresh()]);
     }
   }
 
@@ -63,9 +63,9 @@
 
   const loadPrs = () =>
     act('prs', async () => {
-      const r = await invoke('project_detail', { id: p.id, withPrs: true });
-      prs = r.prs;
-    });
+      d = await invoke('project_detail', { id: p.id, withPrs: true });
+      prs = d.prs;
+    }, false);
 
   const VERDICT = {
     ok: 'in use or clean',
@@ -249,9 +249,6 @@
     font: var(--text-heading);
   }
   .card {
-    border: var(--border-width-default) solid var(--color-border-subtle);
-    border-radius: var(--radius-md);
-    padding: var(--space-md);
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
@@ -317,8 +314,5 @@
   }
   .warn {
     color: var(--color-status-queued);
-  }
-  .err {
-    color: var(--color-status-error);
   }
 </style>
