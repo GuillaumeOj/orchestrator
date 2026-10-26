@@ -454,6 +454,8 @@ pub struct SimResult {
     pub summary: Summary,
     pub rows: Vec<Row>,
     pub actions: Vec<GovernorAction>,
+    /// Every queued turn the Governor released, with the fair-queuing service at the time.
+    pub releases: Vec<(Timestamp, Release)>,
 }
 
 // ------------------------------------------------------------------ engine
@@ -552,6 +554,7 @@ pub fn run(sc: &Scenario) -> SimResult {
     let mut tasks_done: BTreeMap<AllocationId, usize> = BTreeMap::new();
     let mut truth = Truth { weekly: 0.0, five: 0.0, five_reset: None, forced_until: None };
     let mut rows = Vec::new();
+    let mut releases = Vec::new();
     let mut limit_hits: Vec<LimitHit> = Vec::new();
     let mut weekly_exhausted_at = None;
     let mut interactive_blocked_min = 0i64;
@@ -587,7 +590,7 @@ pub fn run(sc: &Scenario) -> SimResult {
 
         // Control loop.
         let released = gov.tick(now);
-        apply_releases(&mut streams, &mut gov, released, sc, &mut rng, now);
+        apply_releases(&mut streams, &mut gov, released, &mut releases, sc, &mut rng, now);
 
         // Idle streams ask for turns.
         for s in streams.iter_mut() {
@@ -640,7 +643,7 @@ pub fn run(sc: &Scenario) -> SimResult {
                     None => StreamState::Idle,
                 };
                 let released = gov.turn_ended(&agent, now);
-                apply_releases(&mut streams, &mut gov, released, sc, &mut rng, now);
+                apply_releases(&mut streams, &mut gov, released, &mut releases, sc, &mut rng, now);
                 continue;
             }
             let burn = m.agent_rate_pct_h / 60.0 * (1.0 + m.rate_jitter * (2.0 * rng.f64() - 1.0));
@@ -660,7 +663,7 @@ pub fn run(sc: &Scenario) -> SimResult {
                 streams[i].state = StreamState::Idle;
                 streams[i].next_self_started = left > 0.0 && working && rng.f64() < m.self_started_share;
                 let released = gov.turn_ended(&agent, now);
-                apply_releases(&mut streams, &mut gov, released, sc, &mut rng, now);
+                apply_releases(&mut streams, &mut gov, released, &mut releases, sc, &mut rng, now);
             } else {
                 streams[i].state = StreamState::Running { turn_left };
             }
@@ -753,7 +756,7 @@ pub fn run(sc: &Scenario) -> SimResult {
         done_pct,
         tasks_done,
     });
-    SimResult { summary, rows, actions: gov.actions().to_vec() }
+    SimResult { summary, rows, actions: gov.actions().to_vec(), releases }
 }
 
 /// The agent of a stream: `<allocation>-<n>`, numbered from 1.
@@ -795,11 +798,13 @@ fn apply_releases(
     streams: &mut [Stream],
     gov: &mut Governor,
     released: Vec<Release>,
+    log: &mut Vec<(Timestamp, Release)>,
     sc: &Scenario,
     rng: &mut Rng,
     now: Timestamp,
 ) {
     for r in released {
+        log.push((now, r.clone()));
         match streams.iter_mut().find(|s| s.agent == r.agent) {
             Some(s) if s.state == StreamState::Waiting(r.entry) && s.task.is_some() => s.state = new_turn(sc, rng),
             _ => {
@@ -807,7 +812,7 @@ fn apply_releases(
                 // not to hide. Release builds give the slot back.
                 debug_assert!(false, "release for {} which is not waiting on entry {}", r.agent, r.entry);
                 let more = gov.turn_ended(&r.agent, now);
-                apply_releases(streams, gov, more, sc, rng, now);
+                apply_releases(streams, gov, more, log, sc, rng, now);
             }
         }
     }

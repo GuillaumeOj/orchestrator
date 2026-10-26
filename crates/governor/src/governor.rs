@@ -125,6 +125,10 @@ pub struct Release {
     pub allocation: AllocationId,
     pub kind: TurnKind,
     pub self_started: bool,
+    /// Fair-queuing service of every allocation when the turn was picked
+    /// (attributed usage / weight + start-time offset; lowest goes first
+    /// within a tier).
+    pub service: BTreeMap<AllocationId, f64>,
 }
 
 /// Answer to a StopFailure `rate_limit` (J9).
@@ -1177,7 +1181,7 @@ impl Governor {
                 Outcome::Applied,
                 None,
             );
-            out.push(release_of(&first));
+            out.push(release_of(&first, service));
         }
         out
     }
@@ -1623,6 +1627,7 @@ impl Governor {
     pub fn run_now(&mut self, entry: EntryId, now: Timestamp) -> Option<Release> {
         let idx = self.queue.iter().position(|e| e.id == entry)?;
         let e = self.queue.remove(idx);
+        let service = self.service();
         // Counted like critical work: past the cap, drawing on the reserve.
         self.start_live(&e.agent, &e.allocation, e.tier, e.ceiling, TurnClass::Critical, now);
         self.log(
@@ -1635,7 +1640,7 @@ impl Governor {
             None,
         );
         self.refresh_queue(now);
-        Some(release_of(&e))
+        Some(release_of(&e, service))
     }
 
     /// Drop a queued entry (task cancelled).
@@ -1701,13 +1706,14 @@ fn plan_curve(plan: &WeeklyPlan) -> Result<(TimeZone, Curve), GovernorError> {
     Ok((tz, curve))
 }
 
-fn release_of(e: &QueueEntry) -> Release {
+fn release_of(e: &QueueEntry, service: BTreeMap<AllocationId, f64>) -> Release {
     Release {
         entry: e.id,
         agent: e.agent.clone(),
         allocation: e.allocation.clone(),
         kind: e.kind,
         self_started: e.self_started,
+        service,
     }
 }
 
