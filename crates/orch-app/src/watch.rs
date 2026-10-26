@@ -24,15 +24,10 @@ pub const DEFAULT_WARN_MB: f64 = 600.0;
 /// The log is rotated once (to `memory.log.1`) above this size.
 const LOG_MAX: u64 = 4 << 20;
 
+/// What the status bar reads; the figures themselves go to the log.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct WatchView {
     pub warn_mb: f64,
-    pub at_ms: u64,
-    pub core_mb: f64,
-    /// `(helper, MB)` at the last check.
-    pub helpers: Vec<(String, f64)>,
-    /// The largest footprint seen per helper since start.
-    pub peak: Vec<(String, f64)>,
     /// Set while a helper is above the threshold, e.g. "WebContent 2800 MB".
     pub alert: Option<String>,
     pub log: PathBuf,
@@ -48,27 +43,25 @@ impl MemoryWatch {
         self.view.lock_ok().clone()
     }
 
-    /// Records one reading; returns the log line.
-    pub fn record(&self, at_ms: u64, core_mb: f64, helpers: Vec<(String, f64)>, warn_mb: f64) -> serde_json::Value {
+    /// Records one reading; returns the log line and whether the alert just started.
+    pub fn record(
+        &self,
+        at_ms: u64,
+        core_mb: f64,
+        helpers: &[(String, f64)],
+        warn_mb: f64,
+    ) -> (serde_json::Value, bool) {
         let mut v = self.view.lock_ok();
+        let was = v.alert.is_some();
         v.warn_mb = warn_mb;
-        v.at_ms = at_ms;
-        v.core_mb = core_mb;
-        for (name, mb) in &helpers {
-            match v.peak.iter_mut().find(|(n, _)| n == name) {
-                Some(p) => p.1 = p.1.max(*mb),
-                None => v.peak.push((name.clone(), *mb)),
-            }
-        }
         v.alert = helpers
             .iter()
             .filter(|(_, mb)| *mb > warn_mb)
             .map(|(n, mb)| format!("{} {mb:.0} MB", short(n)))
             .reduce(|a, b| format!("{a}, {b}"));
-        v.helpers = helpers;
         let h: serde_json::Map<String, serde_json::Value> =
-            v.helpers.iter().map(|(n, mb)| (short(n).to_string(), json!(round(*mb)))).collect();
-        json!({"ts_ms": at_ms, "core_mb": round(core_mb), "helpers": h, "alert": v.alert})
+            helpers.iter().map(|(n, mb)| (short(n).to_string(), json!(round(*mb)))).collect();
+        (json!({"ts_ms": at_ms, "core_mb": round(core_mb), "helpers": h, "alert": v.alert}), !was && v.alert.is_some())
     }
 }
 
@@ -104,17 +97,12 @@ pub fn start(watch: Arc<MemoryWatch>, log_dir: PathBuf, stop: Arc<AtomicBool>) {
         while !stop.load(Ordering::SeqCst) {
             if std::time::Instant::now() >= next {
                 let core = agent_runtime::procs::footprint_mb(std::process::id() as i32).unwrap_or(0.0);
-                let was = watch.view().alert;
-                let line = watch.record(orch_protocol::now_ms(), core, memory::webkit_now(), warn_mb());
+                let warn = warn_mb();
+                let (line, started) = watch.record(orch_protocol::now_ms(), core, &memory::webkit_now(), warn);
                 append(&log, &line);
-                let now = watch.view().alert;
-                if now.is_some() && was.is_none() {
-                    eprintln!(
-                        "orchestrator: memory watch: {} above {} MB (see {})",
-                        now.as_deref().unwrap_or(""),
-                        warn_mb(),
-                        log.display()
-                    );
+                if started {
+                    let alert = line["alert"].as_str().unwrap_or("");
+                    eprintln!("orchestrator: memory watch: {alert} above {warn} MB (see {})", log.display());
                 }
                 next = std::time::Instant::now() + EVERY;
             }
@@ -128,19 +116,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn alerts_above_the_threshold_and_keeps_peaks() {
+    fn alerts_above_the_threshold_until_back_under() {
         let w = MemoryWatch::default();
         let wc = "com.apple.WebKit.WebContent".to_string();
         let gpu = "com.apple.WebKit.GPU".to_string();
-        let line = w.record(1, 30.0, vec![(wc.clone(), 120.0), (gpu.clone(), 80.0)], 600.0);
+        let (line, started) = w.record(1, 30.0, &[(wc.clone(), 120.0), (gpu.clone(), 80.0)], 600.0);
         assert_eq!(line["helpers"]["WebContent"], 120.0);
-        assert!(w.view().alert.is_none());
-        w.record(2, 30.0, vec![(wc.clone(), 2800.0), (gpu.clone(), 90.0)], 600.0);
+        assert!(!started && w.view().alert.is_none());
+        let (_, started) = w.record(2, 30.0, &[(wc.clone(), 2800.0), (gpu.clone(), 90.0)], 600.0);
+        assert!(started);
         assert_eq!(w.view().alert.as_deref(), Some("WebContent 2800 MB"));
-        w.record(3, 30.0, vec![(wc.clone(), 130.0), (gpu, 85.0)], 600.0);
-        let v = w.view();
-        assert!(v.alert.is_none(), "cleared once back under");
-        assert_eq!(v.peak.iter().find(|p| p.0 == wc).unwrap().1, 2800.0);
+        let (_, started) = w.record(3, 30.0, &[(wc.clone(), 2900.0), (gpu.clone(), 90.0)], 600.0);
+        assert!(!started, "reported once");
+        w.record(4, 30.0, &[(wc, 130.0), (gpu, 85.0)], 600.0);
+        assert!(w.view().alert.is_none(), "cleared once back under");
     }
 
     #[test]

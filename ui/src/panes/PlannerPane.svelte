@@ -313,12 +313,6 @@
     grid-template-columns: minmax(0, 2.4fr) minmax(260px, 1fr);
     gap: var(--space-md);
   }
-  .card {
-    border: var(--border-width-default) solid var(--color-border-subtle);
-    border-radius: var(--radius-md);
-    padding: var(--space-md);
-    min-width: 0;
-  }
   .log {
     grid-column: 1 / -1;
   }

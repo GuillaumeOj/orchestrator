@@ -133,8 +133,9 @@ pub struct Runtime {
     git_identity: (String, String),
     pub warnings: Vec<String>,
     pub(crate) me: Weak<Runtime>,
-    /// Core start time: Governor action ids restart at each boot.
-    boot_ms: u64,
+    /// Core start time: Governor action ids restart at each boot (and at each
+    /// `replan`, which takes a new key so stored actions are not overwritten).
+    boot_ms: AtomicU64,
     house: Mutex<House>,
     /// The local OTLP receiver once started ([`Runtime::start_otlp`]).
     otlp: Mutex<Option<crate::otlp::OtlpReceiver>>,
@@ -294,7 +295,7 @@ impl Runtime {
             login_path,
             warnings,
             me: me.clone(),
-            boot_ms: now_ms(),
+            boot_ms: AtomicU64::new(now_ms()),
             // The first purge waits a day like the others (not during the boot rush).
             house: Mutex::new(House { index_all: true, last_purge_ms: now_ms(), ..Default::default() }),
             otlp: Mutex::new(None),
@@ -1041,8 +1042,9 @@ impl Runtime {
             c
         };
         if changed {
-            let _ = self.db.save_actions(self.boot_ms, &plan_id, &saved.0);
-            let _ = self.db.replace_queue(self.boot_ms, &saved.1);
+            let boot = self.boot_ms.load(Ordering::SeqCst);
+            let _ = self.db.save_actions(boot, &plan_id, &saved.0);
+            let _ = self.db.replace_queue(boot, &saved.1);
         }
         let ms = now_ms();
         let (do_forecast, do_calib) = {
@@ -1079,18 +1081,33 @@ impl Runtime {
     /// A plan edited during its week (the first plan, J0; shadow mode on or
     /// off, FR-812): stored, then the Governor is rebuilt from it and this
     /// week's samples are replayed, so the week's accounting is kept (unlike
-    /// `set_plan`, which starts a new week). Refused while turns are queued:
-    /// the rebuilt Governor starts with an empty queue.
+    /// `set_plan`, which starts a new week). Refused while turns are queued
+    /// (the rebuilt Governor starts with an empty queue) or during a sprint;
+    /// Pause all is carried over.
     pub fn replan(&self, plan: WeeklyPlan) -> Result<()> {
-        if !self.gov().queue().is_empty() {
-            bail!("turns are queued: run or resume them before changing the plan");
-        }
+        let paused = {
+            let g = self.gov();
+            if !g.queue().is_empty() {
+                bail!("turns are queued: run or resume them before changing the plan");
+            }
+            if g.sprint().is_some() {
+                bail!("sprint mode is on: undo it from the governor log before changing the plan");
+            }
+            g.is_paused_all()
+        };
         let now = Timestamp::now();
         if plan.reset_at <= now || plan.week_start > now {
             bail!("the plan does not cover now");
         }
         self.db.save_plan(&plan, orch_store::PlanStatus::Active)?;
-        let gov = restore_governor(&self.db, &self.store, &self.cfg, plan.shadow_mode, now)?;
+        let mut gov = restore_governor(&self.db, &self.store, &self.cfg, plan.shadow_mode, now)?;
+        if paused {
+            gov.pause_all(now);
+        }
+        // The new Governor's action ids start again: store them under a new key.
+        let prev = self.boot_ms.load(Ordering::SeqCst);
+        self.boot_ms.store(now_ms().max(prev + 1), Ordering::SeqCst);
+        self.house().last_saved = Default::default();
         *self.gov() = gov;
         Ok(())
     }

@@ -99,9 +99,8 @@ pub struct Core {
     reader_gen: std::sync::atomic::AtomicU64,
     agent_input: Mutex<BTreeMap<String, std::sync::mpsc::Sender<Vec<u8>>>>,
     stop: Arc<AtomicBool>,
-    pub warnings: Vec<String>,
-    /// Warnings raised after start (shown like `warnings`).
-    late_warnings: Mutex<Vec<String>>,
+    /// Shown as banners (from start, and raised later with `warn`).
+    warnings: Mutex<Vec<String>>,
 }
 
 /// A value refreshed at most every so often.
@@ -218,8 +217,7 @@ impl Core {
             reader_gen: std::sync::atomic::AtomicU64::new(0),
             agent_input: Mutex::new(BTreeMap::new()),
             stop: Arc::new(AtomicBool::new(false)),
-            warnings,
-            late_warnings: Mutex::new(vec![]),
+            warnings: Mutex::new(warnings),
         });
         // Claude Code's version and login (J0): `claude` starts slowly, off the startup path.
         {
@@ -331,12 +329,12 @@ impl Core {
         self.history.lock_ok().push(p, week_start);
     }
 
-    /// The Claude Code check (J0), once the background probe has answered.
     fn warn(&self, w: String) {
         eprintln!("orchestrator: {w}");
-        self.late_warnings.lock_ok().push(w);
+        self.warnings.lock_ok().push(w);
     }
 
+    /// The Claude Code check (J0), once the background probe has answered.
     pub fn claude_check(&self) -> Option<ClaudeCheck> {
         self.claude.lock_ok().clone()
     }
@@ -784,7 +782,7 @@ impl Core {
     pub fn state(&self) -> Value {
         let projects = self.projects();
         let mut agents = vec![];
-        let mut warnings: Vec<Value> = self.warnings.iter().chain(self.late_warnings.lock_ok().iter()).map(|w| json!(w)).collect();
+        let mut warnings: Vec<Value> = self.warnings.lock_ok().iter().map(|w| json!(w)).collect();
         let (mut usage, mut queue, mut meta, mut alerts, mut done, mut ask) =
             (Value::Null, vec![], BTreeMap::new(), vec![], vec![], None);
         if let Some(rt) = &self.rt {
@@ -829,6 +827,7 @@ impl Core {
             a["attached"] = json!(readers.contains(&id));
         }
         let items = self.inbox_items(&agents, &alerts, &done, ask);
+        let setup = self.setup_view(&projects);
         let projects: Vec<Value> = projects
             .iter()
             .map(|p| {
@@ -851,7 +850,7 @@ impl Core {
             "permissions": self.broker.list(),
             "memory": self.memory(agents_mb),
             "memory_watch": self.watch.view(),
-            "setup": self.setup_view(),
+            "setup": setup,
         })
     }
 
@@ -934,7 +933,7 @@ impl Core {
     /// open PRs with CI (FR-102, FR-104, FR-106).
     pub fn project_detail(&self, id: &str, with_prs: bool) -> Result<Value> {
         let mut v = self.runtime()?.project_detail(id, with_prs)?;
-        if let Some(p) = self.projects().into_iter().find(|p| p.id == id) {
+        if let Some(p) = self.db.project(id)? {
             v["trusted"] = json!(setup::trusted(&p.path));
         }
         Ok(v)
@@ -948,14 +947,8 @@ impl Core {
         Ok(json!(out))
     }
 
-    /// FR-104: one worktree of the app's sibling folder (the user's own
-    /// worktrees elsewhere are never removed from here); unmerged work needs `discard`.
+    /// FR-104: one worktree of the app's sibling folder; unmerged work needs `discard`.
     pub fn worktree_remove(&self, project: &str, path: &Path, delete_branch: bool, discard: bool) -> Result<Value> {
-        let root = self.db.project(project)?.map(|p| p.worktree_root).ok_or_else(|| anyhow!("no project {project}"))?;
-        let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-        if !real(path).starts_with(real(&root)) {
-            bail!("{} is not in {}: the app only removes its own worktrees", path.display(), root.display());
-        }
         Ok(json!(self.runtime()?.remove_worktree(project, path, delete_branch, discard)?))
     }
 
@@ -967,8 +960,7 @@ impl Core {
     /// J11: stops and archives the project's agents, removes merged worktrees
     /// and the confirmed ones, keeps the rest, deletes or archives history.
     pub fn project_remove(&self, id: &str, choices: &orch_git::project::RemovalChoices) -> Result<Value> {
-        let report = self.runtime()?.remove_project(id, choices)?;
-        Ok(json!(report))
+        Ok(json!(self.runtime()?.remove_project(id, choices)?))
     }
 }
 
@@ -1053,7 +1045,7 @@ fn past_week(rt: &Runtime, started: Timestamp) -> (History, Vec<governor::Govern
         .actions(500)
         .unwrap_or_default()
         .into_iter()
-        .filter(|a| a.ts >= week_start && a.ts < started)
+        .filter(|a| a.ts < started) // the planner keeps this plan week's
         .collect();
     (h, actions)
 }
@@ -1405,8 +1397,22 @@ mod tests {
         let d = tmp();
         let core = test_core(d.path());
         assert!(core.planner().unwrap().shadow, "shadow mode by default (FR-812)");
+        // Pause all survives the rebuilt Governor; stored actions are not overwritten.
+        let rt = core.runtime().unwrap().clone();
+        core.governor_act("pause_all", None).unwrap();
+        rt.tick();
         core.set_enforce(true).unwrap();
         assert!(!core.planner().unwrap().shadow);
+        assert!(rt.with_governor(|g| g.is_paused_all()), "Pause all carried over");
+        rt.tick();
+        rt.db.flush().unwrap();
+        let pauses = rt.db.actions(50).unwrap().iter().filter(|a| a.kind_name() == "pause_all").count();
+        assert_eq!(pauses, 2, "the first start's pause row is kept next to the re-applied one");
+        core.governor_act("resume_all", None).unwrap();
+        let sprint = rt.governor_act(|g, now| (g.start_sprint(5.0, now), vec![]));
+        assert!(sprint.is_ok());
+        assert!(core.set_enforce(false).unwrap_err().to_string().contains("sprint"));
+        drop(rt);
         core.shutdown();
         drop(core);
         let core = core_on(&d.path().join("home"), &d.path().join("repo"));
@@ -1470,6 +1476,10 @@ mod tests {
         orch_git::fixtures::git(&other, &["worktree", "add", "-q", "-b", "mine", own.to_str().unwrap()]);
         assert!(core.worktree_remove(&p.id, &own, true, true).unwrap_err().to_string().contains("only removes its own"));
         assert!(own.exists());
+        // A worktree whose folder is gone is still the app's to prune.
+        let gone = rt.create_worktree(&other, &orch_protocol::WorktreeKindSpec::Solo { slug: "gone".into() }, None).unwrap();
+        std::fs::remove_dir_all(&gone.path).unwrap();
+        core.worktree_remove(&p.id, &gone.path, true, false).unwrap();
         let plan = core.removal_plan(&p.id).unwrap();
         assert_eq!(plan["plan"]["worktrees"].as_array().unwrap().len(), 1);
         let report = core
@@ -1497,7 +1507,7 @@ mod tests {
         assert!(!ui.join("settings.json").exists());
         core.set_editor("hx {file}:{line}").unwrap();
         assert!(core.set_editor("  ").is_err());
-        assert_eq!(core.setup_view()["editor"], "hx {file}:{line}");
+        assert_eq!(core.setup_view(&core.projects())["editor"], "hx {file}:{line}");
         core.shutdown();
         drop(core);
         let core = core_on(&d.path().join("home"), &d.path().join("repo"));
