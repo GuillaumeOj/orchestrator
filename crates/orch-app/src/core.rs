@@ -965,9 +965,12 @@ impl Core {
 
     /// The branch a worktree's work goes back to: the base it was created from, else the default.
     fn worktree_base(&self, p: &Project, wt: &Path) -> String {
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let want = canon(wt);
+        // The store keys rows by the path the app created; git reports the real path.
         self.rt
             .as_ref()
-            .and_then(|rt| rt.store.read(|s| s.worktrees.get(wt).map(|w| w.base.clone())))
+            .and_then(|rt| rt.store.read(|s| s.worktrees.get(wt).or_else(|| s.worktrees.iter().find(|(k, _)| canon(k) == want).map(|(_, w)| w)).map(|w| w.base.clone())))
             .unwrap_or_else(|| p.default_branch.clone())
     }
 

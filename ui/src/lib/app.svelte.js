@@ -518,7 +518,7 @@ export function setKittyTheme(on) {
   app.theme = null;
   const src = applyTheme();
   saveLayout();
-  if (on && src !== 'kitty') toast(app.kitty?.options?.theme?.background ? 'kitty.conf colors are not readable enough (contrast): using the system theme' : 'No colors in kitty.conf: using the system theme');
+  if (on && src !== 'kitty') toast(!(app.kitty?.options?.theme?.background && app.kitty?.options?.theme?.foreground) ? 'No background and foreground colors in kitty.conf: using the system theme' : 'kitty.conf colors are not readable enough (contrast) or lack an accent: using the system theme');
   else if (on) toast('Theme derived from kitty.conf: surface, text and accent; status colors stay fixed');
 }
 

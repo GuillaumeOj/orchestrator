@@ -7,6 +7,8 @@ describe('kitty theme', () => {
   it('parses hex colors only', () => {
     expect(parseHex('#fff')).toEqual([255, 255, 255]);
     expect(parseHex('1a1b26')).toEqual([26, 27, 38]);
+    expect(parseHex('#1a1b26e6')).toEqual([26, 27, 38]); // background_opacity appends an alpha
+    expect(parseHex('#12345')).toBeNull();
     expect(parseHex('red')).toBeNull();
   });
 

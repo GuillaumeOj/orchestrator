@@ -25,12 +25,17 @@
   const totals = $derived({ added: files.reduce((n, f) => n + (f.added ?? 0), 0), deleted: files.reduce((n, f) => n + (f.deleted ?? 0), 0) });
   const canPr = $derived(!!d?.branch && d.branch !== d.against);
 
+  let loading = false;
   async function load() {
+    if (loading) return; // a slow git must not stack up polls
+    loading = true;
     try {
       d = await invoke('worktree_diff', { project: spec.projectId, path: spec.path });
       err = null;
     } catch (e) {
       err = errText(e);
+    } finally {
+      loading = false;
     }
   }
   onMount(() => {
@@ -46,6 +51,7 @@
   }
 
   function startPr() {
+    if (pr) return; // keep what is typed
     if (!canPr) return toast(`${d?.branch ?? 'This worktree'} is the base branch: nothing to open a PR from`);
     pr = { title: (d.branch ?? '').split('/').pop().replace(/[-_]/g, ' '), body: '', draft: false };
   }
@@ -53,7 +59,7 @@
   function submitPr() {
     const { title, body, draft } = pr;
     if (!title.trim()) return toast('A PR needs a title', { kind: 'error' });
-    const dirty = files.length ? ' Uncommitted changes are not part of the branch: they are not pushed.' : '';
+    const dirty = files.length ? ' Only commits are pushed: changes listed here that are not committed stay out of the PR.' : '';
     confirm(`Push ${d.branch} and open a PR into ${d.against}?`, `This pushes the branch to origin with your credentials and opens ${draft ? 'a draft ' : 'a '}PR.${dirty}`, async () => {
       busy = true;
       try {
@@ -113,7 +119,7 @@
         <li class="muted pad">{d ? 'No changes against the base.' : 'Loading…'}</li>
       {/each}
     </ul>
-    <pre class="patch" aria-label="Patch of {current?.path ?? 'no file'}">{#each lines as l, i (i)}<span class="ln {lineKind(l)}">{l}{'\n'}</span>{:else}{#if current}<span class="muted">{current.status === '?' ? 'Untracked file: no patch until it is added.' : 'No textual patch (binary file).'}</span>{/if}{/each}</pre>
+    <pre class="patch" aria-label="Patch of {current?.path ?? 'no file'}">{#each lines as l, i (i)}<span class="ln {lineKind(l)}">{l}{'\n'}</span>{:else}{#if current}<span class="muted">{current.status === '?' ? 'Untracked file: no patch until it is added.' : d?.truncated ? 'Patch cut before this file.' : 'No textual patch (binary file).'}</span>{/if}{/each}</pre>
   </div>
 </div>
 

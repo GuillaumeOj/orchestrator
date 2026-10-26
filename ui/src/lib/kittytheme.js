@@ -3,11 +3,11 @@
 // and the status colors stay fixed. A contrast check guards the result: if any
 // pair is unreadable the derivation is refused and the caller falls back.
 
-/** `[r, g, b]` (0–255) from `#rgb` / `#rrggbb`, else null. */
+/** `[r, g, b]` (0–255) from `#rgb` / `#rrggbb`, else null. A trailing alpha (kitty's background_opacity) is dropped. */
 export function parseHex(s) {
-  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(s ?? '').trim());
+  const m = /^#?(?:([0-9a-f]{3})[0-9a-f]?|([0-9a-f]{6})(?:[0-9a-f]{2})?)$/i.exec(String(s ?? '').trim());
   if (!m) return null;
-  const h = m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1];
+  const h = m[2] ?? [...m[1]].map((c) => c + c).join('');
   return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
 }
 
@@ -41,7 +41,7 @@ export function deriveKittyTheme(t) {
   const bg = parseHex(t?.background);
   const fg = parseHex(t?.foreground);
   if (!bg || !fg) return null;
-  const dark = luminance(bg) < 0.4;
+  const dark = luminance(bg) < 0.179; // where white and black give the surface equal contrast
   const toward = dark ? [255, 255, 255] : [0, 0, 0];
   // Accent: the cursor color if it is its own color (often it is just the foreground),
   // else kitty's blue; it must stand out from the background.
