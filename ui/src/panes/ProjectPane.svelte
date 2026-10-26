@@ -36,7 +36,8 @@
   }
   onMount(() => {
     load();
-    const t = setInterval(load, 15000);
+    // git per worktree and branch: not more often than the user can read it.
+    const t = setInterval(load, 60000);
     return () => clearInterval(t);
   });
 

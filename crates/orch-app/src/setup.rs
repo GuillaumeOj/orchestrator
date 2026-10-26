@@ -4,7 +4,7 @@
 //! files (FR-1206): trust is read from `~/.claude.json`, never written.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use agent_runtime::preflight::{self, VersionCheck};
@@ -46,6 +46,9 @@ pub struct ClaudeCheck {
     pub subscription: Option<String>,
     /// What is wrong, with the fix (the app is read-only until it is fixed).
     pub problem: Option<String>,
+    /// The login could not be checked (a slow or failed `claude auth status`):
+    /// shown, not blocking.
+    pub note: Option<String>,
 }
 
 impl ClaudeCheck {
@@ -79,30 +82,15 @@ pub fn check_claude(path: &Path) -> ClaudeCheck {
     }
     match auth_status(path) {
         Ok(v) => apply_auth(&mut c, &v),
-        Err(e) => c.problem = c.problem.take().or(Some(format!("claude auth status failed: {e:#}"))),
+        Err(e) => c.note = Some(format!("the login could not be checked (claude auth status: {e:#})")),
     }
     c
 }
 
 fn auth_status(claude: &Path) -> Result<Value> {
-    let mut child = Command::new(claude)
-        .args(["auth", "status", "--json"])
-        .env("DISABLE_AUTOUPDATER", "1")
-        .env_remove("ANTHROPIC_API_KEY")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while child.try_wait()?.is_none() {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("no answer in 15 s");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let out = child.wait_with_output()?;
+    let mut cmd = Command::new(claude);
+    cmd.args(["auth", "status", "--json"]).env("DISABLE_AUTOUPDATER", "1").env_remove("ANTHROPIC_API_KEY");
+    let out = orch_git::git::run_with_deadline(cmd, Duration::from_secs(15))?;
     Ok(serde_json::from_slice(&out.stdout)?)
 }
 
@@ -292,9 +280,9 @@ impl PlanForm {
 }
 
 impl Core {
-    /// The first-run checklist (J0) as the UI shows it.
-    pub fn setup_view(&self) -> Value {
-        let projects = self.projects();
+    /// The first-run checklist (J0) as the UI shows it (`projects`: the
+    /// registered ones, already read by the caller).
+    pub fn setup_view(&self, projects: &[Project]) -> Value {
         let trust: Vec<Value> = projects.iter().map(|p| json!({"id": p.id, "trusted": trusted(&p.path)})).collect();
         let kitty = self.kitty.lock_ok();
         json!({
@@ -396,6 +384,17 @@ mod tests {
         apply_auth(&mut c, &json!({"loggedIn": false}));
         assert_eq!(c.problem.as_deref(), Some("old"));
         assert!(check_claude(Path::new("/no/such/claude")).ready().unwrap_err().to_string().contains("not found"));
+        // A login that could not be checked is noted, not blocking.
+        let d = tempfile::tempdir().unwrap();
+        let fake = d.path().join("claude");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\n[ \"$1\" = --version ] && echo '2.1.302 (Claude Code)' && exit 0\necho garbage\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let c = check_claude(&fake);
+        assert!(c.ready().is_ok() && c.note.is_some(), "{c:?}");
     }
 
     #[test]
