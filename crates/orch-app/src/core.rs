@@ -3,6 +3,7 @@
 //! clients), holds permission prompts for the Inbox, and owns the shell and
 //! editor PTYs. Every Tauri command is a thin wrapper over a method here.
 
+use crate::LockOk;
 use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::os::fd::AsRawFd;
@@ -34,9 +35,6 @@ use crate::planner::{self, History, HistoryPoint, PlannerView};
 use crate::services::{GitSummary, JsonFileSettings, Project, ProjectRegistry, SettingsStore, InMemoryProjects};
 use crate::terms::{TermKind, Terms};
 
-/// How long the pane strip and the Inbox hide a "waiting for you" item after
-/// the user answered (the next hook moves the agent on).
-const ANSWERED_GRACE_MS: u64 = 5_000;
 const GIT_EVERY: Duration = Duration::from_secs(10);
 const MEMORY_EVERY: Duration = Duration::from_secs(5);
 const HISTORY_EVERY: Duration = Duration::from_secs(60);
@@ -84,11 +82,10 @@ pub struct Core {
     pub kitty: KittyImport,
     pub editor_template: String,
     history: Mutex<History>,
-    git: Mutex<(Option<Instant>, BTreeMap<PathBuf, GitSummary>)>,
-    memory: Mutex<(Option<Instant>, AppMemory)>,
+    git: Mutex<Cached<BTreeMap<PathBuf, GitSummary>>>,
+    memory: Mutex<Cached<AppMemory>>,
     /// Project folder → its repository's main checkout (FR-105), resolved once.
     mains: Mutex<BTreeMap<PathBuf, Option<PathBuf>>>,
-    answered: Mutex<BTreeMap<String, u64>>,
     /// The UI pane reading each agent's output: its generation, and bytes a
     /// stale reader (a closed pane's last pull) took for the current one.
     readers: Mutex<BTreeMap<String, Reader>>,
@@ -96,6 +93,33 @@ pub struct Core {
     agent_input: Mutex<BTreeMap<String, std::sync::mpsc::Sender<Vec<u8>>>>,
     stop: Arc<AtomicBool>,
     pub warnings: Vec<String>,
+}
+
+/// A value refreshed at most every so often.
+#[derive(Default)]
+struct Cached<T> {
+    at: Option<Instant>,
+    value: T,
+}
+
+impl<T> Cached<T> {
+    fn stale(&self, every: Duration) -> bool {
+        self.at.is_none_or(|t| t.elapsed() >= every)
+    }
+
+    fn set(&mut self, value: T) {
+        self.value = value;
+        self.at = Some(Instant::now());
+    }
+}
+
+/// What `state()` reads about an agent from the store, besides the runtime's view.
+struct AgentMeta {
+    repo: PathBuf,
+    worktree: PathBuf,
+    branch: String,
+    created_at_ms: u64,
+    effort: Option<String>,
 }
 
 #[derive(Default)]
@@ -155,10 +179,9 @@ impl Core {
             kitty,
             editor_template,
             history: Mutex::new(History::default()),
-            git: Mutex::new((None, BTreeMap::new())),
-            memory: Mutex::new((None, AppMemory::default())),
+            git: Mutex::new(Cached::default()),
+            memory: Mutex::new(Cached::default()),
             mains: Mutex::new(BTreeMap::new()),
-            answered: Mutex::new(BTreeMap::new()),
             readers: Mutex::new(BTreeMap::new()),
             reader_gen: std::sync::atomic::AtomicU64::new(0),
             agent_input: Mutex::new(BTreeMap::new()),
@@ -166,25 +189,25 @@ impl Core {
             warnings,
         });
         if let Some(rt) = &core.rt {
-            // Projects of known agents, unless a registered folder already maps to them.
-            let known = rt.store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.repo.clone())).collect::<Vec<_>>());
-            for (id, repo) in known {
-                if core.project_of(&id, &repo, &core.projects.list()).is_none() {
-                    let _ = core.projects.add(&repo);
-                }
-            }
             if let Err(e) = core.serve() {
                 eprintln!("orchestrator: bus server failed: {e:#}");
             }
-            if cfg.recover {
-                let (c, rt) = (core.clone(), rt.clone());
-                std::thread::spawn(move || {
+            // Off the startup path (git per project): projects of known
+            // agents, unless a registered folder already maps to them, then J10.
+            let (core2, rt, recover) = (core.clone(), rt.clone(), cfg.recover);
+            std::thread::spawn(move || {
+                let known = rt.store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.repo.clone())).collect::<Vec<_>>());
+                for (id, repo) in known {
+                    if core2.project_of(&id, &repo, &core2.projects.list()).is_none() {
+                        let _ = core2.projects.add(&repo);
+                    }
+                }
+                if recover {
                     if let Err(e) = rt.recover(true) {
                         eprintln!("orchestrator: recovery failed: {e:#}");
                     }
-                    drop(c);
-                });
-            }
+                }
+            });
         }
         core
     }
@@ -232,13 +255,13 @@ impl Core {
                 g.plan().week_start.as_millisecond(),
             )
         });
-        self.history.lock().unwrap_or_else(|e| e.into_inner()).push(p, week_start);
+        self.history.lock_ok().push(p, week_start);
     }
 
     /// Graceful stop: suspend agents (resumed by id next time), close shells.
     pub fn shutdown(&self) {
         self.stop.store(true, Ordering::SeqCst);
-        self.agent_input.lock().unwrap_or_else(|e| e.into_inner()).clear(); // ends the writer threads
+        self.agent_input.lock_ok().clear(); // ends the writer threads
         if let Some(rt) = &self.rt {
             rt.shutdown();
         }
@@ -304,7 +327,7 @@ impl Core {
                 if !rt.live_ids().contains(&agent_id) {
                     return reply(Reply::Ctl(CtlReply::err(format!("agent {agent_id} is not running"))));
                 }
-                if self.readers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&agent_id) {
+                if self.readers.lock_ok().contains_key(&agent_id) {
                     return reply(Reply::Ctl(CtlReply::err(format!("agent {agent_id} is open in the app"))));
                 }
                 reply(Reply::Ctl(CtlReply::ok(json!("attached"))));
@@ -351,13 +374,21 @@ impl Core {
 
     /// The UI takes the agent's output (pull transport): with a consumer the
     /// buffer applies backpressure, and xterm.js answers terminal queries.
+    fn live(&self, id: &str) -> Result<Arc<agent_runtime::runtime::Live>> {
+        self.runtime()?.live(id).ok_or_else(|| anyhow!("agent {id} is not running"))
+    }
+
     /// Returns the reader generation the pane passes to `agent_read`: a newer
     /// pane for the same agent makes older readers stale.
-    pub fn agent_attach(&self, id: &str) -> Result<u64> {
-        let l = self.runtime()?.live(id).ok_or_else(|| anyhow!("agent {id} is not running"))?;
+    pub fn agent_attach(&self, id: &str, rows: u16, cols: u16) -> Result<u64> {
+        let l = self.live(id)?;
         l.pty.output.set_attached(true);
+        // An idle TUI draws nothing new: a size change makes it redraw for the
+        // new pane (as the runtime's own `attach` does).
+        let _ = l.pty.resize(rows, cols.saturating_sub(1).max(1));
+        let _ = l.pty.resize(rows, cols);
         let reader = self.reader_gen.fetch_add(1, Ordering::SeqCst) + 1;
-        let mut r = self.readers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut r = self.readers.lock_ok();
         let carry = r.remove(id).map(|old| old.carry).unwrap_or_default();
         r.insert(id.to_string(), Reader { reader, carry });
         Ok(reader)
@@ -366,7 +397,7 @@ impl Core {
     /// Only the current reader detaches (a closed pane's detach can arrive
     /// after the reopened pane attached).
     pub fn agent_detach(&self, id: &str, reader: u64) {
-        let mut r = self.readers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut r = self.readers.lock_ok();
         if r.get(id).is_some_and(|x| x.reader == reader) {
             r.remove(id);
             if let Some(l) = self.rt.as_ref().and_then(|rt| rt.live(id)) {
@@ -376,16 +407,16 @@ impl Core {
     }
 
     fn current_reader(&self, id: &str, reader: u64) -> bool {
-        self.readers.lock().unwrap_or_else(|e| e.into_inner()).get(id).is_some_and(|r| r.reader == reader)
+        self.readers.lock_ok().get(id).is_some_and(|r| r.reader == reader)
     }
 
     /// Pull: everything buffered, waiting up to `wait` for output. Err when
     /// the process is gone (the pane then shows its state strip) or when a
     /// newer pane reads this agent; bytes a stale reader drained go to it.
     pub fn agent_read(&self, id: &str, reader: u64, wait: Duration) -> Result<Vec<u8>> {
-        let l = self.runtime()?.live(id).ok_or_else(|| anyhow!("agent {id} is not running"))?;
+        let l = self.live(id)?;
         {
-            let mut r = self.readers.lock().unwrap_or_else(|e| e.into_inner());
+            let mut r = self.readers.lock_ok();
             match r.get_mut(id) {
                 Some(x) if x.reader == reader => {
                     if !x.carry.is_empty() {
@@ -397,7 +428,7 @@ impl Core {
         }
         let b = l.pty.output.read_wait(wait);
         if !self.current_reader(id, reader) {
-            if let Some(x) = self.readers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(id) {
+            if let Some(x) = self.readers.lock_ok().get_mut(id) {
                 x.carry.extend_from_slice(&b);
             }
             bail!("stale reader for {id}");
@@ -411,9 +442,9 @@ impl Core {
     /// Queues the user's keystrokes for the agent's PTY, in order; a writer
     /// thread per agent does the (possibly blocking) write.
     pub fn agent_write(&self, id: &str, data: &[u8]) -> Result<()> {
+        self.live(id)?;
         let rt = self.runtime()?.clone();
-        rt.live(id).ok_or_else(|| anyhow!("agent {id} is not running"))?;
-        let mut w = self.agent_input.lock().unwrap_or_else(|e| e.into_inner());
+        let mut w = self.agent_input.lock_ok();
         let tx = match w.get(id) {
             Some(tx) => tx.clone(),
             None => {
@@ -539,7 +570,7 @@ impl Core {
 
     pub fn inbox_act(&self, item: &str, action: &str, message: Option<&str>) -> Result<Value> {
         let rt = self.runtime()?;
-        if let Some(_n) = item.strip_prefix("perm-") {
+        if item.starts_with("perm-") {
             let agent = self.broker.list().into_iter().find(|p| p.id == item).map(|p| p.agent_id);
             let answer = match action {
                 "approve" => Answer::Allow,
@@ -550,8 +581,10 @@ impl Core {
             if !self.broker.answer(item, answer) {
                 bail!("this permission prompt is no longer open");
             }
-            if let Some(a) = agent {
-                self.answered.lock().unwrap_or_else(|e| e.into_inner()).insert(a, now_ms());
+            // Allowed or denied, the tool call goes on; answering in the pane
+            // leaves the CLI's dialog up.
+            if let (Some(a), false) = (agent, action == "in_pane") {
+                rt.permission_answered(&a)?;
             }
             return Ok(json!("answered"));
         }
@@ -582,19 +615,13 @@ impl Core {
         bail!("{action} does not apply to {item}")
     }
 
-    fn inbox_items(&self, agents: &[Value]) -> Vec<inbox::InboxItem> {
+    fn inbox_items(&self, agents: &[Value], alerts: &[Alert], done: &[Done], ask: Option<Ask>) -> Vec<inbox::InboxItem> {
         let Some(rt) = &self.rt else { return vec![] };
-        let now = now_ms();
-        let answered = self.answered.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let facts: Vec<AgentFacts> = agents
             .iter()
             .filter_map(|a| {
                 let id = a["id"].as_str()?.to_string();
-                let mut state = a["state"].as_str().unwrap_or("").to_string();
-                if state == "waiting_for_you" && answered.get(&id).is_some_and(|t| now.saturating_sub(*t) < ANSWERED_GRACE_MS)
-                {
-                    state = "working".into();
-                }
+                let state = a["state"].as_str().unwrap_or("").to_string();
                 let interesting = state == "waiting_for_you" || state == "error" || a["trust_dialog"] == true;
                 let tail = interesting.then(|| rt.live(&id).map(|l| l.pty.output.tail_text())).flatten();
                 Some(AgentFacts {
@@ -607,58 +634,36 @@ impl Core {
                 })
             })
             .collect();
-        let (alerts, done) = rt.store.read(|s| {
-            let alerts: Vec<Alert> = s
-                .inbox
-                .iter()
-                .filter(|i| i.pending)
-                .map(|i| Alert { id: i.id, agent_id: i.agent_id.clone(), body: i.body.clone(), created_ms: i.created_at_ms })
-                .collect();
-            let done: Vec<Done> = s
-                .turns
-                .iter()
-                .rev()
-                .filter(|t| t.status == agent_runtime::store::TurnStatus::Done)
-                .take(10)
-                .map(|t| Done {
-                    turn_id: t.id.clone(),
-                    agent_id: t.agent_id.clone(),
-                    body: t.body.clone(),
-                    at_ms: t.delivered_at_ms.unwrap_or(t.created_at_ms),
-                })
-                .collect();
-            (alerts, done)
-        });
-        let ask = rt.with_governor(|g| {
-            let (id, _) = g.next_action_preview(Timestamp::now()).pending_ask?;
-            let a = g.action(id)?;
-            let ask = a.ask.as_ref()?;
-            Some(Ask {
-                id: id.0,
-                reason: a.reason.clone(),
-                effect: a.expected_effect.clone(),
-                created_ms: a.ts.as_millisecond() as u64,
-                deadline_ms: ask.deadline.as_millisecond(),
-                default_apply: matches!(ask.default, governor::AskDefault::Apply),
-            })
-        });
-        inbox::build(&inbox::Inputs { permissions: &self.broker.list(), agents: &facts, alerts: &alerts, ask, done: &done })
+        inbox::build(&inbox::Inputs { permissions: &self.broker.list(), agents: &facts, alerts, ask, done })
     }
 
     // ------------------------------------------------------------ views
 
-    fn git_for(&self, paths: &[PathBuf]) -> BTreeMap<PathBuf, GitSummary> {
-        let mut g = self.git.lock().unwrap_or_else(|e| e.into_inner());
-        let stale = g.0.is_none_or(|t| t.elapsed() >= GIT_EVERY) || paths.iter().any(|p| !g.1.contains_key(p));
-        if stale {
-            g.1 = paths.iter().map(|p| (p.clone(), self.projects.git_summary(p))).collect();
-            g.0 = Some(Instant::now());
+    /// Git state of `paths`: every `GIT_EVERY`, or for paths not seen yet,
+    /// one `git status` per path, in parallel.
+    fn git_for(&self, paths: &std::collections::BTreeSet<PathBuf>) -> BTreeMap<PathBuf, GitSummary> {
+        let mut g = self.git.lock_ok();
+        let all = g.stale(GIT_EVERY);
+        let todo: Vec<&PathBuf> = paths.iter().filter(|p| all || !g.value.contains_key(*p)).collect();
+        if !todo.is_empty() {
+            let fresh: Vec<(PathBuf, GitSummary)> = std::thread::scope(|sc| {
+                let jobs: Vec<_> =
+                    todo.iter().map(|p| sc.spawn(|| ((*p).clone(), self.projects.git_summary(p)))).collect();
+                jobs.into_iter().filter_map(|j| j.join().ok()).collect()
+            });
+            let mut value = if all { BTreeMap::new() } else { std::mem::take(&mut g.value) };
+            value.extend(fresh);
+            if all {
+                g.set(value);
+            } else {
+                g.value = value;
+            }
         }
-        g.1.clone()
+        g.value.iter().filter(|(p, _)| paths.contains(*p)).map(|(p, s)| (p.clone(), s.clone())).collect()
     }
 
     fn main_of(&self, path: &Path) -> Option<PathBuf> {
-        let mut m = self.mains.lock().unwrap_or_else(|e| e.into_inner());
+        let mut m = self.mains.lock_ok();
         m.entry(path.to_path_buf()).or_insert_with(|| agent_runtime::worktree::main_checkout(path).ok()).clone()
     }
 
@@ -680,75 +685,72 @@ impl Core {
     }
 
     fn memory(&self, agents_mb: f64) -> AppMemory {
-        let mut m = self.memory.lock().unwrap_or_else(|e| e.into_inner());
-        if m.0.is_none_or(|t| t.elapsed() >= MEMORY_EVERY) {
+        let mut m = self.memory.lock_ok();
+        if m.stale(MEMORY_EVERY) {
             let pids: Vec<i32> =
                 self.terms.ids().iter().filter_map(|i| self.terms.get(*i).ok()?.pid.map(|p| p as i32)).collect();
-            m.1 = memory::measure(&pids, agents_mb);
-            m.0 = Some(Instant::now());
+            m.set(memory::measure(&pids, agents_mb));
         }
-        m.1.clone()
+        m.value.clone()
     }
 
     /// Everything the shell shows, polled by the UI about once a second.
     pub fn state(&self) -> Value {
         let projects = self.projects.list();
-        let (mut agents, warnings, usage, queue, worktrees) = match &self.rt {
-            Some(rt) => {
-                let st = rt.state_json();
-                let usage = rt.usage_json();
-                let (queue, snapshot) = rt.with_governor(|g| {
-                    (serde_json::to_value(g.queue()).unwrap_or(Value::Null), g.snapshot(Timestamp::now()))
-                });
-                let mut usage = usage;
-                usage["live_cap"] = json!(snapshot.live_cap);
-                usage["snapshot"] = serde_json::to_value(&snapshot).unwrap_or(Value::Null);
-                let (reset, shadow) = rt.with_governor(|g| (g.plan().reset_at.as_millisecond(), g.plan().shadow_mode));
-                usage["reset_at_ms"] = json!(reset);
-                usage["shadow"] = json!(shadow);
-                let worktrees: BTreeMap<String, (PathBuf, PathBuf, String, u64, Option<String>)> = rt.store.read(|s| {
-                    s.agents
-                        .values()
-                        .map(|a| {
-                            let branch = s.worktrees.get(&a.worktree).map(|w| w.branch.clone()).unwrap_or_default();
-                            (a.id.clone(), (a.repo.clone(), a.worktree.clone(), branch, a.created_at_ms, a.role.effort.clone()))
-                        })
-                        .collect()
-                });
-                (st["agents"].as_array().cloned().unwrap_or_default(), st["warnings"].clone(), usage, queue, worktrees)
+        let mut agents = vec![];
+        let mut warnings: Vec<Value> = self.warnings.iter().map(|w| json!(w)).collect();
+        let (mut usage, mut queue, mut meta, mut alerts, mut done, mut ask) =
+            (Value::Null, vec![], BTreeMap::new(), vec![], vec![], None);
+        if let Some(rt) = &self.rt {
+            let st = rt.state_json();
+            agents = st["agents"].as_array().cloned().unwrap_or_default();
+            warnings.extend(st["warnings"].as_array().cloned().unwrap_or_default());
+            usage = rt.usage_json();
+            if let Some(u) = usage.as_object_mut() {
+                // Per-agent usage is already in `agents`, and `snapshot` replaces `governor`.
+                u.remove("agents");
+                u.remove("governor");
             }
-            None => (vec![], json!([]), Value::Null, json!([]), BTreeMap::new()),
-        };
-        let mut git_paths: Vec<PathBuf> = projects.iter().map(|p| p.path.clone()).collect();
-        git_paths.extend(worktrees.values().map(|w| w.1.clone()));
+            let (snapshot, reset, shadow);
+            (queue, snapshot, reset, shadow, ask) = rt.with_governor(|g| {
+                let now = Timestamp::now();
+                (g.queue().to_vec(), g.snapshot(now), g.plan().reset_at.as_millisecond(), g.plan().shadow_mode, pending_ask(g, now))
+            });
+            usage["live_cap"] = json!(snapshot.live_cap);
+            usage["snapshot"] = json!(snapshot);
+            usage["reset_at_ms"] = json!(reset);
+            usage["shadow"] = json!(shadow);
+            (meta, alerts, done) = rt.store.read(store_view);
+        }
+        let mut git_paths: std::collections::BTreeSet<PathBuf> = projects.iter().map(|p| p.path.clone()).collect();
+        git_paths.extend(meta.values().map(|m: &AgentMeta| m.worktree.clone()));
         let git = self.git_for(&git_paths);
+        let readers = self.readers.lock_ok().keys().cloned().collect::<std::collections::BTreeSet<_>>();
         let mut agents_mb = 0.0;
         for a in agents.iter_mut() {
             let id = a["id"].as_str().unwrap_or("").to_string();
             agents_mb += a["memory_mb"].as_f64().unwrap_or(0.0);
-            if let Some((repo, wt, branch, created, effort)) = worktrees.get(&id) {
-                a["created_at_ms"] = json!(created);
-                a["effort"] = json!(effort);
-                a["project_id"] = json!(self.project_of(&id, repo, &projects));
-                a["branch"] = json!(branch);
-                a["git"] = json!(git.get(wt));
+            if let Some(m) = meta.get(&id) {
+                a["created_at_ms"] = json!(m.created_at_ms);
+                a["effort"] = json!(m.effort);
+                a["project_id"] = json!(self.project_of(&id, &m.repo, &projects));
+                a["branch"] = json!(m.branch);
+                a["git"] = json!(git.get(&m.worktree));
             }
-            if let Some(q) = queue.as_array().and_then(|q| q.iter().find(|e| e["agent"] == json!(id))) {
-                a["queue_entry"] = q.clone();
+            if let Some(q) = queue.iter().find(|e| e.agent.0 == id) {
+                a["queue_entry"] = json!(q);
             }
-            a["attached"] = json!(self.readers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&id));
+            a["attached"] = json!(readers.contains(&id));
         }
-        let items = self.inbox_items(&agents);
+        let items = self.inbox_items(&agents, &alerts, &done, ask);
         let projects: Vec<Value> = projects
             .iter()
             .map(|p| json!({"id": p.id, "name": p.name, "path": p.path, "git": git.get(&p.path)}))
             .collect();
-        let mut all_warnings: Vec<Value> = warnings.as_array().cloned().unwrap_or_default();
-        all_warnings.extend(self.warnings.iter().map(|w| json!(w)));
         json!({
             "now_ms": now_ms(),
-            "core": {"ok": self.rt.is_some(), "error": self.core_error, "home": self.paths.root, "socket": self.paths.socket()},
-            "warnings": all_warnings,
+            "core": {"ok": self.rt.is_some(), "error": self.core_error, "home": self.paths.root, "user_home": agent_runtime::paths::home_dir()},
+            "warnings": warnings,
             "projects": projects,
             "agents": agents,
             "usage": usage,
@@ -756,7 +758,6 @@ impl Core {
             "inbox": {"items": items, "badge": inbox::badge(&items)},
             "permissions": self.broker.list(),
             "memory": self.memory(agents_mb),
-            "terms": self.terms.ids(),
         })
     }
 
@@ -766,7 +767,7 @@ impl Core {
         let live = rt.live_ids();
         let alloc_of: BTreeMap<String, String> =
             rt.store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.allocation.clone())).collect());
-        let history = self.history.lock().unwrap_or_else(|e| e.into_inner());
+        let history = self.history.lock_ok();
         Ok(rt.with_governor(|g| {
             planner::build(g, Timestamp::now(), &history, five_reset, &|alloc| {
                 live.iter().filter(|id| alloc_of.get(*id).is_some_and(|a| a == alloc)).count()
@@ -828,7 +829,11 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
     // Helpers next to the app binary (target/<profile>, or Contents/MacOS in a
     // bundle) are copied to <home>/bin, a stable path outside the .app.
     if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
-        if dir.join("orch-hook").is_file() && dir.join("orch-status").is_file() {
+        let changed = ["orch-hook", "orch-status"].iter().any(|n| {
+            let meta = |p: PathBuf| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok()));
+            meta(dir.join(n)).is_some_and(|src| meta(paths.bin_dir().join(n)).is_none_or(|dst| dst.0 != src.0 || dst.1 < src.1))
+        });
+        if changed && dir.join("orch-hook").is_file() && dir.join("orch-status").is_file() {
             if let Err(e) = agent_runtime::preflight::install_helpers(&dir, &paths.bin_dir()) {
                 warnings.push(format!("helpers: {e:#}"));
             }
@@ -841,6 +846,59 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
         ));
     }
     Runtime::new(rc)
+}
+
+/// The Governor's pending "ask" (FR-810), as an Inbox item.
+fn pending_ask(g: &governor::Governor, now: Timestamp) -> Option<Ask> {
+    let (id, _) = g.next_action_preview(now).pending_ask?;
+    let a = g.action(id)?;
+    let ask = a.ask.as_ref()?;
+    Some(Ask {
+        id: id.0,
+        reason: a.reason.clone(),
+        effect: a.expected_effect.clone(),
+        created_ms: a.ts.as_millisecond() as u64,
+        deadline_ms: ask.deadline.as_millisecond(),
+        default_apply: matches!(ask.default, governor::AskDefault::Apply),
+    })
+}
+
+/// One pass over the store: agent metadata, pending alerts, the last finished turns.
+fn store_view(s: &agent_runtime::store::StateFile) -> (BTreeMap<String, AgentMeta>, Vec<Alert>, Vec<Done>) {
+    let meta = s
+        .agents
+        .values()
+        .map(|a| {
+            let m = AgentMeta {
+                repo: a.repo.clone(),
+                worktree: a.worktree.clone(),
+                branch: s.worktrees.get(&a.worktree).map(|w| w.branch.clone()).unwrap_or_default(),
+                created_at_ms: a.created_at_ms,
+                effort: a.role.effort.clone(),
+            };
+            (a.id.clone(), m)
+        })
+        .collect();
+    let alerts = s
+        .inbox
+        .iter()
+        .filter(|i| i.pending)
+        .map(|i| Alert { id: i.id, agent_id: i.agent_id.clone(), body: i.body.clone(), created_ms: i.created_at_ms })
+        .collect();
+    let done = s
+        .turns
+        .iter()
+        .rev()
+        .filter(|t| t.status == agent_runtime::store::TurnStatus::Done)
+        .take(10)
+        .map(|t| Done {
+            turn_id: t.id.clone(),
+            agent_id: t.agent_id.clone(),
+            body: t.body.clone(),
+            at_ms: t.delivered_at_ms.unwrap_or(t.created_at_ms),
+        })
+        .collect();
+    (meta, alerts, done)
 }
 
 fn accept_loop(listener: UnixListener, core: std::sync::Weak<Core>, stop: Arc<AtomicBool>) {
@@ -914,7 +972,8 @@ mod tests {
         assert_eq!(s["core"]["ok"], true);
         assert_eq!(s["projects"][0]["id"], "repo");
         assert_eq!(s["inbox"]["badge"], 0);
-        assert!(s["usage"]["governor"]["state"].is_string(), "{}", s["usage"]);
+        assert!(s["usage"]["snapshot"]["state"].is_string(), "{}", s["usage"]);
+        assert!(s["usage"]["governor"].is_null() && s["usage"]["agents"].is_null(), "dropped from the poll");
         assert!(s["memory"]["core_mb"].as_f64().unwrap() > 0.0);
         let p = core.planner().unwrap();
         assert!(p.curve.len() > 100);

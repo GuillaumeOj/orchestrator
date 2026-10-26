@@ -50,7 +50,7 @@ describe('tiling layout', () => {
 
 describe('ids', () => {
   it('stay unique next to a restored layout', () => {
-    const restored = { kind: 'leaf', id: 'l1', tabs: ['a'], active: 'a' };
+    const restored = L.reid({ kind: 'leaf', id: 'l1', tabs: ['a'], active: 'a' });
     const t = L.split(restored, 'a', 'row', 'b');
     expect(new Set(t.children.map((c) => c.id)).size).toBe(2);
   });

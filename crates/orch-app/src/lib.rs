@@ -14,9 +14,21 @@ pub mod planner;
 pub mod services;
 pub mod terms;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use tauri::{Emitter, Manager, RunEvent};
+
+/// Locks a mutex, recovering from a poisoned one: a panic in one command
+/// must not take the app's shared state down with it.
+pub(crate) trait LockOk<T> {
+    fn lock_ok(&self) -> MutexGuard<'_, T>;
+}
+
+impl<T> LockOk<T> for Mutex<T> {
+    fn lock_ok(&self) -> MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
 
 pub fn run() {
     let core = core::Core::start(core::CoreConfig::from_env());

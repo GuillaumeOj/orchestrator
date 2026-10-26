@@ -85,3 +85,16 @@ export function queueReason(entry) {
       return 'queued';
   }
 }
+
+/** The agent's session usage in pp of the week (cost / cost per weekly %). */
+export function sessionPp(agent, snapshot) {
+  const k = snapshot?.calibration?.cost_per_weekly_pct;
+  return agent?.cost_usd != null && k ? agent.cost_usd / k : null;
+}
+
+/** "warm until 16:42" / "cold since 15:10" from the statusline's prompt cache (R6). */
+export function cacheState(agent, clock, now = Date.now()) {
+  const at = agent?.prompt_cache_expires_at;
+  if (!at) return null;
+  return at * 1000 > now ? `warm until ${clock(at * 1000)}` : `cold since ${clock(at * 1000)}`;
+}

@@ -88,20 +88,46 @@ pub fn webkit_helpers(app_pid: i32) -> Vec<(i32, String)> {
 }
 
 pub fn system_memory_mb() -> f64 {
-    let mut size: u64 = 0;
-    let mut len = size_of::<u64>();
-    // SAFETY: sysctlbyname writes a u64 into `size`.
-    unsafe {
-        libc::sysctlbyname(c"hw.memsize".as_ptr(), (&mut size as *mut u64).cast(), &mut len, std::ptr::null_mut(), 0);
+    static MB: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *MB.get_or_init(|| {
+        let mut size: u64 = 0;
+        let mut len = size_of::<u64>();
+        // SAFETY: sysctlbyname writes a u64 into `size`.
+        unsafe {
+            libc::sysctlbyname(c"hw.memsize".as_ptr(), (&mut size as *mut u64).cast(), &mut len, std::ptr::null_mut(), 0);
+        }
+        size as f64 / (1024.0 * 1024.0)
+    })
+}
+
+/// How long a scan of all processes for the WebKit helpers is reused.
+const HELPER_RESCAN: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The app's WebKit helpers with their footprints. The pid scan (hundreds of
+/// syscalls) is redone every minute, or when a known helper is gone.
+fn helpers_with_footprint(app_pid: i32) -> Vec<(String, f64)> {
+    use crate::LockOk;
+    type Scan = Option<(std::time::Instant, Vec<(i32, String)>)>;
+    static CACHE: std::sync::Mutex<Scan> = std::sync::Mutex::new(None);
+    let mut c = CACHE.lock_ok();
+    let measure = |hs: &[(i32, String)]| hs.iter().map(|(p, n)| footprint_mb(*p).map(|mb| (n.clone(), mb))).collect::<Option<Vec<_>>>();
+    if let Some((at, hs)) = c.as_ref() {
+        if at.elapsed() < HELPER_RESCAN {
+            if let Some(m) = measure(hs) {
+                return m;
+            }
+        }
     }
-    size as f64 / (1024.0 * 1024.0)
+    let hs = webkit_helpers(app_pid);
+    let m = hs.iter().map(|(p, n)| (n.clone(), footprint_mb(*p).unwrap_or(0.0))).collect();
+    *c = Some((std::time::Instant::now(), hs));
+    m
 }
 
 pub fn measure(shell_pids: &[i32], agent_mb: f64) -> AppMemory {
     let me = std::process::id() as i32;
     let core_mb = footprint_mb(me).unwrap_or(0.0);
-    let webkit: Vec<(String, f64)> =
-        webkit_helpers(me).into_iter().map(|(p, n)| (n, footprint_mb(p).unwrap_or(0.0))).collect();
+    let webkit = helpers_with_footprint(me);
     let app_mb = core_mb + webkit.iter().map(|w| w.1).sum::<f64>();
     let shells_mb = shell_pids.iter().filter_map(|p| footprint_mb(*p)).sum();
     let r = |x: f64| (x * 10.0).round() / 10.0;

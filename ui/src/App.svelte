@@ -20,6 +20,7 @@
 
   let ready = $state(false);
   let lastKeyCommand = { id: null, at: 0 };
+  const isNav = (k) => k === 'palette' || k === 'jump';
 
   // Keyboard contract §9.7, in the capture phase: ⌘-chords and the leader never
   // reach xterm.js; everything else goes on to the focused element.
@@ -47,11 +48,14 @@
         app.leader = false;
         lastKeyCommand = { id: r.command, at: Date.now() };
         stop();
-        if (app.overlay && !['palette', 'jump'].includes(r.command) && app.overlay.kind !== 'palette' && app.overlay.kind !== 'jump') return;
-        if (app.overlay && ['palette', 'jump'].includes(app.overlay.kind) && !['palette', 'jump'].includes(r.command)) app.overlay = null;
+        // A dialog keeps the chords to itself; the palette and jump give way.
+        if (app.overlay && !isNav(r.command)) {
+          if (!isNav(app.overlay.kind)) return;
+          app.overlay = null;
+        }
         return run(r.command);
       case 'pty':
-        terms.get(app.focused)?.send(r.bytes);
+        terms.get(app.focused)?.write(r.bytes);
         return stop();
       default:
         if (e.key === 'Escape' && app.inspectorOverlay && !inXterm) {
@@ -66,6 +70,8 @@
     window.addEventListener('resize', onResize);
     window.addEventListener('keydown', onKeyDown, true);
     let poll;
+    let decisions;
+    const onVisible = () => !document.hidden && refresh();
     let unlisten = () => {};
     (async () => {
       const [kitty] = await Promise.all([invoke('kitty_config').catch(() => null), loadUiFont().catch(() => [])]);
@@ -75,10 +81,15 @@
       if (app.theme) setTheme(app.theme);
       ready = true;
       startDev();
-      poll = setInterval(() => {
-        refresh();
-        flushDecisions();
-      }, 1000);
+      // One poll at a time (a git refresh can take longer than a second);
+      // none while the window is hidden.
+      const tick = async () => {
+        if (!document.hidden) await refresh();
+        poll = setTimeout(tick, 1000);
+      };
+      tick();
+      decisions = setInterval(flushDecisions, 1000);
+      document.addEventListener('visibilitychange', onVisible);
       unlisten = await listen('menu', (ev) => {
         // A chord handled by the webview may also fire its menu item: once is enough.
         if (lastKeyCommand.id === ev.payload && Date.now() - lastKeyCommand.at < 400) return;
@@ -86,7 +97,9 @@
       });
     })();
     return () => {
-      clearInterval(poll);
+      clearTimeout(poll);
+      clearInterval(decisions);
+      document.removeEventListener('visibilitychange', onVisible);
       unlisten();
       window.removeEventListener('resize', onResize);
       window.removeEventListener('keydown', onKeyDown, true);

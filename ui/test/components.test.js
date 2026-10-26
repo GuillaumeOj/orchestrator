@@ -50,7 +50,7 @@ describe('components', () => {
   });
 
   it('inbox triage: j moves, a decides with a 5 s undo window, u undoes', async () => {
-    const { container, getAllByText } = render(InboxPane, { paneId: 'p1' });
+    const { container, getAllByText } = render(InboxPane);
     const root = container.querySelector('[data-pane-focus]');
     expect(getAllByText('Allow once', { exact: false }).length).toBeGreaterThan(0);
     await fireEvent.keyDown(root, { key: 'j' });

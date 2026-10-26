@@ -4,9 +4,10 @@
   // strip for the states that need words (queued, suspended, limit, error, a
   // permission prompt held for the Inbox). The PTY itself is left untouched.
   import { onMount } from 'svelte';
-  import { app, agent, focusing, termFor, focusPane, openEditor, agentAction, toast, confirm } from '../lib/app.svelte.js';
+  import { app, agent, mountTerm, openEditor, agentAction, toast, confirm, runNow } from '../lib/app.svelte.js';
   import { invoke, errText } from '../lib/ipc.js';
-  import { displayState, notStarted, queueReason } from '../lib/status.js';
+  import { displayState, notStarted, queueReason, sessionPp as ppOf, cacheState } from '../lib/status.js';
+  import TermHost from '../components/TermHost.svelte';
   import { clock, ago, duration } from '../lib/format.js';
   import StatusBadge from '../components/StatusBadge.svelte';
   import AgentChip from '../components/AgentChip.svelte';
@@ -14,19 +15,16 @@
   import Kbd from '../components/Kbd.svelte';
 
   let { paneId } = $props();
-  let host;
+  let host = $state();
   let t = null;
   let ended = $state(false);
   const spec = $derived(app.panes[paneId]);
   const a = $derived(agent(spec?.agentId));
   const ds = $derived(a ? displayState(a) : 'idle');
   const snap = $derived(app.data?.usage?.snapshot);
-  const k = $derived(snap?.calibration?.cost_per_weekly_pct);
-  const sessionPp = $derived(a?.cost_usd != null && k ? a.cost_usd / k : null);
+  const sessionPp = $derived(ppOf(a, snap));
   const perm = $derived((app.data?.permissions ?? []).find((p) => p.agent_id === a?.id));
   const liveCount = $derived((app.data?.agents ?? []).filter((x) => x.live).length);
-  const pad = $derived(app.kitty?.padding ?? [0, 0, 0, 0]);
-  const bg = $derived(app.kitty?.options?.theme?.background);
   const queuePos = $derived.by(() => {
     const q = app.data?.queue ?? [];
     const i = q.findIndex((e) => e.agent === a?.id);
@@ -39,7 +37,7 @@
     if (a.live) return `admitted · ${liveCount}/${snap?.live_cap ?? '?'} live`;
     return '—';
   });
-  const cacheWarm = $derived(a?.prompt_cache_expires_at && a.prompt_cache_expires_at * 1000 > Date.now() ? `cache warm until ${clock(a.prompt_cache_expires_at * 1000)}` : null);
+  const cache = $derived(cacheState(a, clock));
 
   function ordinal(n) {
     if (!n) return '';
@@ -63,21 +61,13 @@
   }
 
   onMount(() => {
-    t = termFor(paneId, {
-      onKey: (e) => !e.metaKey,
+    const m = mountTerm(paneId, host, {
       onExit: () => (ended = true),
-      onFocus: () => !focusing && app.focused !== paneId && focusPane(paneId),
       onOpenPath: (file, line) => openEditor(file, line, { agentId: spec?.agentId }),
     });
-    t.mount(host);
+    t = m.t;
     attachIfLive();
-    if (app.focused === paneId) t.focus();
-    const ro = new ResizeObserver(() => t.scheduleFit());
-    ro.observe(host);
-    return () => {
-      ro.disconnect();
-      t.unmount();
-    };
+    return m.destroy;
   });
 
   // A resumed agent: attach again (Claude Code redraws its screen).
@@ -129,7 +119,7 @@
       <span class="icon" style:color="var(--color-status-queued)">{'\u{F051F}'}</span>
       <span>{notStarted(a) ? 'Not started yet' : 'Queued'} · {queueReason(a.queue_entry)}{a.queue_entry.estimated_start ? ` · starts ≈ ${clock(Date.parse(a.queue_entry.estimated_start))}` : ''}</span>
       <span class="grow"></span>
-      <button class="btn" onclick={() => confirm(`Run ${a.id} now?`, `≈ +${a.queue_entry.estimated_cost_pct.toFixed(1)} pp of the week. It runs above the live cap for one turn and is logged as your override.`, () => invoke('governor_act', { action: 'run_now', arg: a.queue_entry.id }).catch((e) => toast(errText(e), { kind: 'error' })), 'Run now')}>
+      <button class="btn" onclick={() => runNow(a, notStarted(a))}>
         {notStarted(a) ? 'Start now' : 'Run now'} ≈ +{a.queue_entry.estimated_cost_pct.toFixed(1)} pp <Kbd keys="⏎" />
       </button>
     </div>
@@ -147,7 +137,7 @@
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
     <div class="strip" tabindex="0" onkeydown={onStripKey} role="group" data-pane-focus>
       <span class="icon" style:color="var(--color-status-suspended)">{'\u{F04B2}'}</span>
-      <span>Suspended{a.last_event_at_ms ? ` ${clock(a.last_event_at_ms)}` : ''}{cacheWarm ? ` · ${cacheWarm}` : ''} · the session is saved</span>
+      <span>Suspended{a.last_event_at_ms ? ` ${clock(a.last_event_at_ms)}` : ''}{cache ? ` · cache ${cache}` : ''} · the session is saved</span>
       <span class="grow"></span>
       <button class="btn" onclick={() => agentAction(a.id, 'resume')}>Resume <Kbd keys="⏎" /></button>
       <button class="btn danger" onclick={() => confirm(`Kill ${a.id}?`, 'Also stops leftover processes in its worktree.', () => agentAction(a.id, 'kill'), 'Kill')}>Kill</button>
@@ -157,10 +147,9 @@
   <div class="strip">This agent no longer exists.</div>
 {/if}
 
-<div class="term" style:background={bg} style:padding="{pad[0]}px {pad[1]}px {pad[2]}px {pad[3]}px">
-  <div class="host" bind:this={host}></div>
+<TermHost bind:host>
   {#if a && !a.live && ended}<div class="ended muted">claude exited · {a.label} · {duration(Date.now() - (a.last_event_at_ms ?? Date.now()))} ago</div>{/if}
-</div>
+</TermHost>
 
 <style>
   .ah {
@@ -174,18 +163,6 @@
     font: var(--text-label);
     white-space: nowrap;
   }
-  .grow {
-    flex: 1;
-  }
-  .hint {
-    display: inline-flex;
-    gap: var(--space-xs);
-    align-items: center;
-    background: none;
-    border: 0;
-    padding: 0;
-    color: var(--color-text-secondary);
-  }
   .strip {
     display: flex;
     flex-wrap: wrap;
@@ -198,17 +175,6 @@
   }
   .strip.warn {
     box-shadow: inset 3px 0 0 var(--color-status-waiting-for-you);
-  }
-  .term {
-    position: relative;
-    flex: 1;
-    min-height: 0;
-    display: flex;
-  }
-  .host {
-    flex: 1;
-    min-width: 0;
-    min-height: 0;
   }
   .ended {
     position: absolute;

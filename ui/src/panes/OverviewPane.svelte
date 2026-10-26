@@ -3,11 +3,9 @@
   // current tool, elapsed time, context, usage, governor status and memory;
   // grouped by project or by state. Keys (pane-local): j/k move, ⏎ open,
   // i interrupt, s suspend, r resume, K kill (asks first), p pause.
-  import { app, agents, projects, openAgent, agentAction, confirm, run } from '../lib/app.svelte.js';
-  import { invoke, errText } from '../lib/ipc.js';
-  import { displayState, notStarted, STATUS, queueReason } from '../lib/status.js';
+  import { app, agents, projects, openAgent, agentAction, confirm, run, runNow } from '../lib/app.svelte.js';
+  import { displayState, notStarted, STATUS, queueReason, sessionPp } from '../lib/status.js';
   import { duration, mb } from '../lib/format.js';
-  import { toast } from '../lib/app.svelte.js';
   import StatusBadge from '../components/StatusBadge.svelte';
   import AgentChip from '../components/AgentChip.svelte';
   import CtxBar from '../components/CtxBar.svelte';
@@ -19,7 +17,6 @@
   let selected = $state(null);
   let collapsed = $state({});
 
-  const k = $derived(app.data?.usage?.snapshot?.calibration?.cost_per_weekly_pct);
   const queue = $derived(app.data?.queue ?? []);
   const needYou = (a) => a.state === 'waiting_for_you' || a.trust_dialog || a.state === 'waiting_gate';
   const FILTERS = [
@@ -70,6 +67,11 @@
     return '—';
   }
 
+  function usage(a) {
+    const v = sessionPp(a, app.data?.usage?.snapshot);
+    return v == null ? '—' : `${v.toFixed(1)} pp`;
+  }
+
   const sel = () => flat.find((a) => a.id === selected) ?? null;
 
   function onKey(e) {
@@ -97,12 +99,6 @@
     selected = flat[Math.max(0, Math.min(flat.length - 1, i < 0 ? 0 : i + d))].id;
     queueMicrotask(() => document.querySelector(`[data-pane="${paneId}"] tr.sel`)?.scrollIntoView({ block: 'nearest' }));
   }
-
-  async function runNow(a) {
-    confirm(`${notStarted(a) ? 'Start' : 'Run'} ${a.id} now?`, `≈ +${a.queue_entry.estimated_cost_pct.toFixed(1)} pp of the week; above the live cap for one turn, logged as your override.`, () =>
-      invoke('governor_act', { action: 'run_now', arg: a.queue_entry.id }).catch((err) => toast(errText(err), { kind: 'error' })),
-    );
-  }
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
@@ -114,7 +110,7 @@
       <button class:on={groupBy === 'state'} role="radio" aria-checked={groupBy === 'state'} onclick={() => (groupBy = 'state')}>State</button>
     </div>
     {#each FILTERS as f (f.id)}
-      <button class="chip" class:on={filter === f.id} onclick={() => (filter = f.id)}>{f.label} {list.filter(f.test).length}</button>
+      <button class="filter-chip" class:on={filter === f.id} onclick={() => (filter = f.id)}>{f.label} {list.filter(f.test).length}</button>
     {/each}
     <span class="grow"></span>
     <span class="keys"><Kbd keys="⏎" /> open <Kbd keys="i" /> interrupt <Kbd keys="p" /> pause <Kbd keys="s" /> suspend <Kbd keys="r" /> resume <Kbd keys="⇧+K" /> kill</span>
@@ -142,12 +138,12 @@
                 <td class="doing">
                   {doing(a)}
                   {#if a.queue_entry}
-                    <button class="btn" onclick={(e) => (e.stopPropagation(), runNow(a))}>{notStarted(a) ? 'Start now' : 'Run now'} ≈ +{a.queue_entry.estimated_cost_pct.toFixed(1)} pp</button>
+                    <button class="btn" onclick={(e) => (e.stopPropagation(), runNow(a, notStarted(a)))}>{notStarted(a) ? 'Start now' : 'Run now'} ≈ +{a.queue_entry.estimated_cost_pct.toFixed(1)} pp</button>
                   {/if}
                 </td>
                 <td>{duration(Date.now() - (a.created_at_ms ?? a.last_event_at_ms ?? Date.now()))}</td>
                 <td><CtxBar value={a.context_pct} /></td>
-                <td>{a.cost_usd != null && k ? `${(a.cost_usd / k).toFixed(1)} pp` : '—'}</td>
+                <td>{usage(a)}</td>
                 <td>{governor(a)}</td>
                 <td class="r">{a.memory_mb ? mb(a.memory_mb) : '—'}</td>
               </tr>
@@ -187,25 +183,15 @@
     outline: none;
     font: var(--text-label);
   }
-  .toolbar,
   .foot {
+    flex: none;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-sm);
     padding: var(--space-sm) var(--space-md);
-    white-space: nowrap;
-  }
-  .toolbar {
-    flex: none;
-    flex-wrap: wrap;
-    border-bottom: var(--border-width-default) solid var(--color-border-subtle);
-  }
-  .foot {
-    flex: none;
     border-top: var(--border-width-default) solid var(--color-border-subtle);
-  }
-  .grow {
-    flex: 1;
+    white-space: nowrap;
   }
   .seg {
     display: inline-flex;
@@ -219,22 +205,6 @@
   }
   .seg button.on {
     background: var(--color-surface-selected);
-  }
-  .chip {
-    border: var(--border-width-default) solid var(--color-border-strong);
-    border-radius: var(--radius-full);
-    background: none;
-    padding: var(--space-xxs) var(--space-sm);
-  }
-  .chip.on {
-    border-color: var(--color-accent-default);
-    background: var(--color-accent-subtle);
-  }
-  .keys {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    color: var(--color-text-secondary);
   }
   .scroll {
     flex: 1;

@@ -4,7 +4,7 @@
   // refer to the agents. Bars: fill = agents used, 2 px tick = plan.
   import { app, openSingleton } from '../lib/app.svelte.js';
   import { PRESSURE } from '../lib/status.js';
-  import { clock, when } from '../lib/format.js';
+  import { clock, when, pp, pct } from '../lib/format.js';
   import Kbd from './Kbd.svelte';
   import PressurePill from './PressurePill.svelte';
 
@@ -14,7 +14,8 @@
   const est = $derived(s?.provenance === 'estimated' ? '≈' : '');
   const p = $derived(PRESSURE[s?.state] ?? PRESSURE.green);
   const five = $derived(u?.five_hour?.used_pct ?? s?.five_hour);
-  const sign = (e) => (e >= 0 ? `+${Math.round(e)}` : `−${Math.abs(Math.round(e))}`);
+  // "+9": the delta in pp, as in "plan 38% (+9)".
+  const sign = (e) => pp(e).replace(' pp', '');
 </script>
 
 {#if s}
@@ -26,7 +27,7 @@
     <span>plan {Math.round(s.ideal)}% ({sign(s.error)})</span>
     <span class="bar" style:width="40px"><i style:width="{Math.min(100, s.governed)}%" style:background={p.color}></i><em style:left="{Math.min(100, s.ideal)}%"></em></span>
     <span class="muted">·</span>
-    <b>5h {five == null ? '—' : `${Math.round(five)}%`}</b>
+    <b>5h {pct(five)}</b>
     <span class="bar" style:width="24px"><i style:width="{Math.min(100, five ?? 0)}%"></i></span>
     <span class="muted">·</span>
     <span class="muted">resets {clock(u.reset_at_ms, 0)}</span>

@@ -6,12 +6,11 @@
   import { onMount } from 'svelte';
   import { app, governor, confirm, toast } from '../lib/app.svelte.js';
   import { invoke, errText } from '../lib/ipc.js';
-  import { clock, dayTime, duration, when, pct } from '../lib/format.js';
+  import { clock, dayTime, duration, when, pct, pp } from '../lib/format.js';
   import { PRESSURE, queueReason } from '../lib/status.js';
   import PressurePill from '../components/PressurePill.svelte';
   import Kbd from '../components/Kbd.svelte';
 
-  let { paneId } = $props();
   let v = $state(null);
   let err = $state(null);
   let logSel = $state(0);
@@ -165,7 +164,7 @@
           <path d={forecast} class="fc" />
           <path d={actual} class="actual" />
           <line x1={x(v.now_ms)} x2={x(v.now_ms)} y1={pad.t} y2={H - pad.b} class="now" />
-          <text x={x(v.now_ms) + 6} y={y(s.governed) - 8} class="tag">now {clock(v.now_ms)} · agents {Math.round(s.governed)}% (plan {Math.round(s.ideal)}%, {s.error >= 0 ? '+' : '−'}{Math.abs(s.error).toFixed(0)} pp) · total {Math.round(s.used)}%</text>
+          <text x={x(v.now_ms) + 6} y={y(s.governed) - 8} class="tag">now {clock(v.now_ms)} · agents {Math.round(s.governed)}% (plan {Math.round(s.ideal)}%, {pp(s.error)}) · total {Math.round(s.used)}%</text>
           {#if emptyAt && emptyAt < v.reset_at_ms}<text x={Math.min(x(emptyAt), w - 180)} y={y(100) - 2} class="tag warn">⚠ empty {clock(emptyAt)} at this rate</text>{/if}
           <text x={w - pad.r - 4} y={y(reserveTop) - 4} class="ax" text-anchor="end">reserve {v.reserve_pct}% + outside app {Math.round(s.unattributed_forecast)}%</text>
         </svg>
@@ -206,7 +205,7 @@
             <tr><td>outside the app</td><td>—</td><td>—</td><td>{s.unattributed_so_far.toFixed(0)}%</td><td></td><td class="muted">claude.ai, other terminals</td></tr>
           </tbody>
         </table>
-        <p class="muted">Agents {Math.round(s.governed)}% vs plan {Math.round(s.ideal)}% ({s.error >= 0 ? '+' : '−'}{Math.abs(s.error).toFixed(0)} pp) · total {Math.round(s.used)}% with you ({s.interactive_used.toFixed(0)}%) and outside the app ({s.unattributed_so_far.toFixed(0)}%). Weights are relative; unused weight is redistributed; aging +1 tier per 2 h.</p>
+        <p class="muted">Agents {Math.round(s.governed)}% vs plan {Math.round(s.ideal)}% ({pp(s.error)}) · total {Math.round(s.used)}% with you ({s.interactive_used.toFixed(0)}%) and outside the app ({s.unattributed_so_far.toFixed(0)}%). Weights are relative; unused weight is redistributed; aging +1 tier per 2 h.</p>
       </section>
 
       <section class="card next">
@@ -269,9 +268,6 @@
   h2 {
     margin: 0;
     font: var(--text-heading);
-  }
-  .grow {
-    flex: 1;
   }
   .toggle {
     padding: var(--space-xxs) var(--space-sm);

@@ -9,6 +9,7 @@
 //! request as interrupted. With no answer before the deadline the request
 //! also falls back to the pane's dialog.
 
+use crate::LockOk;
 use std::collections::BTreeMap;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -79,14 +80,10 @@ pub fn summarize(tool: &str, input: Option<&Value>) -> (String, Option<String>) 
 }
 
 impl PermissionBroker {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     pub fn open(&self, agent_id: &str, payload: &HookPayload, now_ms: u64) -> String {
         let tool = payload.tool_name.clone().unwrap_or_else(|| "tool".into());
         let (summary, description) = summarize(&tool, payload.tool_input.as_ref());
-        let mut g = self.lock();
+        let mut g = self.inner.lock_ok();
         g.next += 1;
         let id = format!("perm-{}", g.next);
         let p = PendingPermission {
@@ -104,13 +101,13 @@ impl PermissionBroker {
     }
 
     pub fn list(&self) -> Vec<PendingPermission> {
-        self.lock().pending.values().filter(|(_, a)| a.is_none()).map(|(p, _)| p.clone()).collect()
+        self.inner.lock_ok().pending.values().filter(|(_, a)| a.is_none()).map(|(p, _)| p.clone()).collect()
     }
 
     /// Records the user's answer. False when the request is gone (answered,
     /// interrupted or timed out).
     pub fn answer(&self, id: &str, answer: Answer) -> bool {
-        let mut g = self.lock();
+        let mut g = self.inner.lock_ok();
         match g.pending.get_mut(id) {
             Some((_, slot @ None)) => {
                 *slot = Some(answer);
@@ -127,7 +124,7 @@ impl PermissionBroker {
     /// with no decision. A call hook can't be matched to a request without an
     /// id (parallel calls), so it closes nothing. Returns how many were closed.
     pub fn answered_in_pane(&self, agent_id: &str, tool_use_id: Option<&str>) -> usize {
-        let mut g = self.lock();
+        let mut g = self.inner.lock_ok();
         let mut n = 0;
         for (p, slot) in g.pending.values_mut() {
             let same_call = match (tool_use_id, p.tool_use_id.as_deref()) {
@@ -150,7 +147,7 @@ impl PermissionBroker {
     pub fn wait(&self, id: &str, deadline: Instant, poll: Duration, closed: impl Fn() -> bool) -> Outcome {
         let outcome = loop {
             {
-                let g = self.lock();
+                let g = self.inner.lock_ok();
                 if let Some((_, Some(a))) = g.pending.get(id) {
                     break Outcome::Answered(a.clone());
                 }
@@ -164,7 +161,7 @@ impl PermissionBroker {
                 break Outcome::Interrupted;
             }
         };
-        self.lock().pending.remove(id);
+        self.inner.lock_ok().pending.remove(id);
         self.cv.notify_all();
         outcome
     }

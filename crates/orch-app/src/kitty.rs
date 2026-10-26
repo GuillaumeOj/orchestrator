@@ -76,7 +76,7 @@ fn parse(path: &Path, out: &mut Vec<(String, String)>, sources: &mut Vec<String>
 
 fn expand(v: &str, dir: &Path) -> PathBuf {
     if let Some(rest) = v.strip_prefix("~/") {
-        return PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(rest);
+        return agent_runtime::paths::home_dir().join(rest);
     }
     let p = PathBuf::from(v);
     if p.is_absolute() {

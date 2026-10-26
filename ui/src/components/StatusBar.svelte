@@ -49,9 +49,6 @@
     white-space: nowrap;
     overflow: hidden;
   }
-  .grow {
-    flex: 1;
-  }
   .plain {
     background: none;
     border: 0;

@@ -34,8 +34,8 @@
       {#if spec.type === 'agent'}<AgentPane {paneId} />
       {:else if spec.type === 'shell' || spec.type === 'editor'}<TermPaneView {paneId} />
       {:else if spec.type === 'overview'}<OverviewPane {paneId} />
-      {:else if spec.type === 'inbox'}<InboxPane {paneId} />
-      {:else if spec.type === 'planner'}<PlannerPane {paneId} />{/if}
+      {:else if spec.type === 'inbox'}<InboxPane />
+      {:else if spec.type === 'planner'}<PlannerPane />{/if}
     </div>
   </section>
 {/if}
@@ -83,18 +83,6 @@
   .t {
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-  .grow {
-    flex: 1;
-  }
-  .hint {
-    display: inline-flex;
-    gap: var(--space-xs);
-    align-items: center;
-    background: none;
-    border: 0;
-    padding: 0;
-    color: var(--color-text-secondary);
   }
   .zoomtag {
     color: var(--color-accent-default);

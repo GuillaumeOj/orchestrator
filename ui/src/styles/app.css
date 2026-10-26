@@ -156,3 +156,44 @@ select.field {
   user-select: text;
   -webkit-user-select: text;
 }
+
+.grow {
+  flex: 1;
+}
+
+/* A pane's filter and key-hint row (Overview, Inbox). */
+.toolbar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: var(--border-width-default) solid var(--color-border-subtle);
+  white-space: nowrap;
+}
+
+.filter-chip {
+  border: var(--border-width-default) solid var(--color-border-strong);
+  border-radius: var(--radius-full);
+  background: none;
+  padding: var(--space-xxs) var(--space-sm);
+}
+.filter-chip.on {
+  border-color: var(--color-accent-default);
+  background: var(--color-accent-subtle);
+}
+
+/* Key hints next to their action (pane headers, toolbars). */
+.keys,
+.hint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--color-text-secondary);
+}
+.hint {
+  background: none;
+  border: 0;
+  padding: 0;
+}

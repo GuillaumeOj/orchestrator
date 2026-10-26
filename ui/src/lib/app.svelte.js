@@ -42,7 +42,6 @@ export const wide = () => app.width >= breakpoint.md;
 export const agents = () => app.data?.agents ?? [];
 export const agent = (id) => agents().find((a) => a.id === id);
 export const projects = () => app.data?.projects ?? [];
-export const visiblePanes = () => (app.zoomed ? [app.zoomed] : L.visible(app.layout));
 export const focusedSpec = () => app.panes[app.focused];
 export const isTerminal = (spec) => ['agent', 'shell', 'editor'].includes(spec?.type);
 
@@ -100,9 +99,6 @@ export function addPane(spec, how = 'right') {
   return id;
 }
 
-/** True while the app moves focus itself: terminals' focusin then is not a click. */
-export let focusing = false;
-
 export function focusPane(id) {
   if (!app.panes[id]) return;
   app.layout = L.activate(app.layout, id);
@@ -110,15 +106,12 @@ export function focusPane(id) {
   const s = app.panes[id];
   if (s.agentId) app.selectedAgent = s.agentId;
   if (app.zoomed && app.zoomed !== id) app.zoomed = id;
+  // Focus whatever is focused when this runs: several calls in a row end on
+  // the last, and each terminal's focusin then matches `app.focused`.
   queueMicrotask(() => {
-    focusing = true;
-    try {
-      const t = terms.get(id);
-      if (t) t.focus();
-      else document.querySelector(`[data-pane="${id}"] [data-pane-focus]`)?.focus();
-    } finally {
-      focusing = false;
-    }
+    const t = terms.get(app.focused);
+    if (t) t.focus();
+    else document.querySelector(`[data-pane="${app.focused}"] [data-pane-focus]`)?.focus();
   });
 }
 
@@ -153,14 +146,16 @@ export function openAgent(agentId) {
   addPane({ type: 'agent', agentId, projectId: a?.project_id }, n >= 3 ? 'tab' : 'right');
 }
 
+/** A login shell PTY in the core; the pane fits it once mounted. */
+const spawnShell = ({ projectId, agentId, cwd }) =>
+  invoke('term_spawn', { req: { kind: 'shell', project_id: projectId ?? null, agent_id: agentId ?? null, cwd: cwd ?? null, run: null, rows: 24, cols: 80 } });
+
 export async function openShell(opts = {}) {
   const a = contextAgent();
   const p = contextProject();
   const how = opts.how ?? 'below';
   try {
-    const t = await invoke('term_spawn', {
-      req: { kind: 'shell', project_id: opts.projectId ?? p?.id ?? null, agent_id: opts.agentId ?? a?.id ?? null, cwd: opts.cwd ?? null, run: null, rows: 24, cols: 80 },
-    });
+    const t = await spawnShell({ projectId: opts.projectId ?? p?.id, agentId: opts.agentId ?? a?.id, cwd: opts.cwd });
     addPane({ type: 'shell', termId: t.id, cwd: t.cwd, projectId: p?.id, agentId: a?.id }, how);
   } catch (e) {
     toast(`Could not open a shell: ${errText(e)}`, { kind: 'error' });
@@ -221,10 +216,6 @@ export function toggleZoom() {
   focusPane(app.focused);
 }
 
-export function splitFocused(how) {
-  // A new shell in the focused pane's context (§9.7 leader s / v).
-  openShell({ how });
-}
 
 /** Leader w: the next agent waiting for you, by waiting time (attention ladder level 1). */
 export function nextWaiting() {
@@ -258,6 +249,36 @@ export async function governor(action, arg = null) {
   } catch (e) {
     toast(errText(e), { kind: 'error' });
   }
+}
+
+export function openInKitty(cwd) {
+  invoke('open_in_kitty', { cwd }).catch((e) => toast(errText(e), { kind: 'error' }));
+}
+
+/** Run a queued turn now, after the user confirms its cost (FR-809). */
+export function runNow(a, notStarted) {
+  const cost = a.queue_entry.estimated_cost_pct.toFixed(1);
+  confirm(`${notStarted ? 'Start' : 'Run'} ${a.id} now?`, `≈ +${cost} pp of the week. It runs above the live cap for one turn and is logged as your override.`, () => governor('run_now', a.queue_entry.id), notStarted ? 'Start now' : 'Run now');
+}
+
+/** Mounts the pane's xterm in `host`, fits it on resize; returns the cleanup. */
+export function mountTerm(paneId, host, hooks) {
+  const t = termFor(paneId, {
+    onKey: (e) => !e.metaKey,
+    onFocus: () => app.focused !== paneId && focusPane(paneId),
+    ...hooks,
+  });
+  t.mount(host);
+  if (app.focused === paneId) t.focus();
+  const ro = new ResizeObserver(() => t.scheduleFit());
+  ro.observe(host);
+  return {
+    t,
+    destroy() {
+      ro.disconnect();
+      t.unmount();
+    },
+  };
 }
 
 export function confirm(text, detail, onYes, yes = 'Confirm') {
@@ -296,7 +317,7 @@ export async function restoreLayout() {
     if (s.type === 'agent' && !agent(s.agentId)) continue;
     if (s.type === 'shell' || s.type === 'editor') {
       try {
-        const t = await invoke('term_spawn', { req: { kind: 'shell', project_id: s.projectId ?? null, agent_id: null, cwd: s.cwd ?? null, run: null, rows: 24, cols: 80 } });
+        const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
         panes[id] = { ...s, type: 'shell', termId: t.id, cwd: t.cwd, title: title({ type: 'shell', cwd: t.cwd }) };
       } catch {
         continue;
@@ -311,9 +332,20 @@ export async function restoreLayout() {
 
 // ---------------------------------------------------------------- polling
 
+/**
+ * The poll's payload, replaced whole every second and never edited: a class
+ * instance is not turned into a deep reactive proxy, so Svelte only tracks
+ * `app.data` itself instead of wrapping the whole tree each time.
+ */
+class Snapshot {
+  constructor(data) {
+    Object.assign(this, data);
+  }
+}
+
 export async function refresh() {
   try {
-    app.data = await invoke('app_state');
+    app.data = new Snapshot(await invoke('app_state'));
     app.error = null;
   } catch (e) {
     app.error = errText(e);
@@ -336,8 +368,8 @@ export function commands() {
     { id: 'planner', label: 'Open Week planner', run: () => openSingleton('planner') },
     { id: 'shell.new', label: 'New shell pane', run: () => openShell() },
     { id: 'editor.open', label: 'Open editor (nvim)', run: () => openEditor() },
-    { id: 'pane.split.right', label: 'Split right (shell)', run: () => splitFocused('right') },
-    { id: 'pane.split.below', label: 'Split below (shell)', run: () => splitFocused('below') },
+    { id: 'pane.split.right', label: 'Split right (shell)', run: () => openShell({ how: 'right' }) },
+    { id: 'pane.split.below', label: 'Split below (shell)', run: () => openShell({ how: 'below' }) },
     { id: 'pane.zoom', label: 'Zoom / restore the focused pane', run: toggleZoom },
     { id: 'pane.close', label: 'Close pane', run: () => closePane() },
     { id: 'sidebar', label: 'Toggle sidebar', run: () => ((app.sidebar = !app.sidebar), saveLayout()) },
@@ -358,7 +390,7 @@ export function commands() {
       !live && { id: 'agent.resume', label: `Resume ${a.id}`, run: () => agentAction(a.id, 'resume') },
       { id: 'agent.kill', label: `Kill ${a.id}…`, run: () => confirm(`Kill ${a.id}?`, 'Its process group and every process left in its worktree get SIGTERM, then SIGKILL after 5 s. The session can be resumed.', () => agentAction(a.id, 'kill'), 'Kill') },
       { id: 'agent.shell', label: `Shell in ${a.id}'s worktree`, run: () => openShell({ agentId: a.id }) },
-      { id: 'agent.kitty', label: `Open ${a.id}'s worktree in kitty`, run: () => invoke('open_in_kitty', { cwd: a.worktree }).catch((e) => toast(errText(e), { kind: 'error' })) },
+      { id: 'agent.kitty', label: `Open ${a.id}'s worktree in kitty`, run: () => openInKitty(a.worktree) },
     ].filter(Boolean);
     for (const c of agentCmds) c.scope = 'agent';
     list.unshift(...agentCmds);

@@ -57,7 +57,7 @@
     if (busy) return;
     busy = true;
     try {
-      const p = await invoke('project_add', { path: path.trim().replace(/^~(?=\/)/, String(app.data?.core?.home ?? '').replace(/\/Library\/.*$/, '')) });
+      const p = await invoke('project_add', { path: path.trim().replace(/^~(?=\/)/, app.data?.core?.user_home ?? '~') });
       close();
       path = '';
       await refresh();

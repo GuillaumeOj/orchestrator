@@ -9,8 +9,6 @@ import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { FitAddon } from '@xterm/addon-fit';
 import { invoke } from './ipc.js';
 
-const enc = new TextEncoder();
-
 /** File paths with an optional line, for FR-208 links: src/x.ts:71, ./a/b.rs:3:9 */
 export const PATH_RE = /(?:^|[\s(["'`])((?:\.{0,2}\/)?(?:[\w@.-]+\/)+[\w@.-]+\.[A-Za-z0-9]{1,8})(?::(\d+))?(?::\d+)?/g;
 
@@ -75,6 +73,8 @@ export function linksAcrossRows(rows, y) {
 export class TermPane {
   constructor(source, kitty, hooks) {
     this.source = source;
+    const k = source.kind === 'agent' ? 'agent' : 'term';
+    this.cmd = { read: `${k}_read`, write: `${k}_write`, resize: `${k}_resize` };
     this.kitty = kitty;
     this.hooks = hooks;
     this.alive = false;
@@ -176,33 +176,26 @@ export class TermPane {
     this.fitTimer = setTimeout(() => this.fitNow(), 60);
   }
 
-  get size() {
-    return { rows: this.term.rows, cols: this.term.cols };
-  }
-
   /** Starts pulling. For an agent, attaches to its output first. */
   async start() {
     if (this.alive || this.starting || this.disposed) return;
     this.starting = true;
     try {
-      if (this.source.kind === 'agent') this.reader = await invoke('agent_attach', { id: this.source.id });
+      // The core also nudges the agent's size so its idle TUI redraws for this pane.
+      if (this.source.kind === 'agent') this.reader = await invoke('agent_attach', { id: this.source.id, rows: this.term.rows, cols: this.term.cols });
     } finally {
       this.starting = false;
     }
     this.alive = true;
-    // A TUI that sits idle draws nothing new: a size change makes it redraw
-    // (the runtime's own attach does the same).
-    if (this.source.kind === 'agent') this.resizePty(this.term.rows, Math.max(1, this.term.cols - 1));
-    this.resizePty(this.term.rows, this.term.cols);
+    if (this.source.kind === 'term') this.resizePty(this.term.rows, this.term.cols);
     this.pull();
   }
 
   async pull() {
-    const cmd = this.source.kind === 'agent' ? 'agent_read' : 'term_read';
     while (this.alive && !this.disposed) {
       let buf;
       try {
-        buf = await invoke(cmd, { id: this.source.id, reader: this.reader ?? 0 });
+        buf = await invoke(this.cmd.read, { id: this.source.id, reader: this.reader ?? 0 });
       } catch {
         this.alive = false;
         if (!this.disposed) this.hooks.onExit?.();
@@ -215,19 +208,12 @@ export class TermPane {
 
   write(d) {
     if (!this.alive) return;
-    const cmd = this.source.kind === 'agent' ? 'agent_write' : 'term_write';
-    invoke(cmd, { id: this.source.id, data: d }).catch(() => {});
-  }
-
-  /** Raw bytes from the key handler (Shift+Enter → ESC CR, kitty remaps). */
-  send(bytes) {
-    this.write(bytes);
+    invoke(this.cmd.write, { id: this.source.id, data: d }).catch(() => {});
   }
 
   resizePty(rows, cols) {
     if (!this.alive) return;
-    const cmd = this.source.kind === 'agent' ? 'agent_resize' : 'term_resize';
-    invoke(cmd, { id: this.source.id, rows, cols }).catch(() => {});
+    invoke(this.cmd.resize, { id: this.source.id, rows, cols }).catch(() => {});
   }
 
   focus() {
@@ -243,5 +229,3 @@ export class TermPane {
     this.host.remove();
   }
 }
-
-export const bytesOf = (s) => enc.encode(s);

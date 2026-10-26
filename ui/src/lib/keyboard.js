@@ -43,7 +43,7 @@ export function chordName(e) {
   if (/^Digit\d$/.test(e.code ?? '')) key = e.code.slice(5);
   else if (e.code === 'Semicolon') key = ';';
   else if (/^Key[A-Z]$/.test(e.code ?? '') && (e.metaKey || e.ctrlKey)) key = e.code.slice(3);
-  key = key.length === 1 ? key.toLowerCase() : key.toLowerCase();
+  key = key.toLowerCase();
   const mods = [e.metaKey && 'cmd', e.ctrlKey && 'ctrl', e.altKey && 'alt', e.shiftKey && 'shift'].filter(Boolean);
   return [...mods, key].join('+');
 }
@@ -61,8 +61,7 @@ export function classify(e, ctx = {}) {
   if (MODIFIERS.has(e.key)) return { kind: ctx.leader ? 'swallow' : 'pass' };
   const name = chordName(e);
   if (ctx.leader) {
-    if (name === 'escape') return { kind: 'cancel' };
-    if (name === 'cmd+;') return { kind: 'cancel' };
+    if (name === 'escape' || name === 'cmd+;') return { kind: 'cancel' };
     const cmd = LEADER[name];
     return cmd ? { kind: 'command', command: cmd } : { kind: 'cancel' };
   }

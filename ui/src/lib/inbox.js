@@ -55,12 +55,11 @@ export function keyIntent(key, item) {
     case 'o':
     case 'e': {
       if (!item) return null;
-      const k = key === 'enter' ? 'enter' : key;
-      if (!item.actions.includes(k)) return null;
-      if (k === 'a') return { kind: 'decide', action: 'approve' };
-      if (k === 'r') return { kind: 'decide', action: 'reject' };
-      if (k === 'enter') return { kind: 'reply' };
-      if (k === 'o') return { kind: 'open' };
+      if (!item.actions.includes(key)) return null;
+      if (key === 'a') return { kind: 'decide', action: 'approve' };
+      if (key === 'r') return { kind: 'decide', action: 'reject' };
+      if (key === 'enter') return { kind: 'reply' };
+      if (key === 'o') return { kind: 'open' };
       return { kind: 'editor' };
     }
     default:

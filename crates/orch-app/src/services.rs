@@ -3,6 +3,7 @@
 //! against these small traits; the stubs here keep it usable until the real
 //! crates land, and are replaced by implementing the same traits.
 
+use crate::LockOk;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -70,7 +71,7 @@ fn slug(name: &str) -> String {
 
 impl ProjectRegistry for InMemoryProjects {
     fn list(&self) -> Vec<Project> {
-        self.projects.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.projects.lock_ok().clone()
     }
 
     fn add(&self, path: &Path) -> Result<Project> {
@@ -79,7 +80,7 @@ impl ProjectRegistry for InMemoryProjects {
             bail!("{} is not a folder", path.display());
         }
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "project".into());
-        let mut list = self.projects.lock().unwrap_or_else(|e| e.into_inner());
+        let mut list = self.projects.lock_ok();
         if let Some(p) = list.iter().find(|p| p.path == path) {
             return Ok(p.clone());
         }
@@ -99,7 +100,7 @@ impl ProjectRegistry for InMemoryProjects {
     }
 
     fn remove(&self, id: &str) -> Result<()> {
-        let mut list = self.projects.lock().unwrap_or_else(|e| e.into_inner());
+        let mut list = self.projects.lock_ok();
         let before = list.len();
         list.retain(|p| p.id != id);
         if list.len() == before {
@@ -159,11 +160,11 @@ impl JsonFileSettings {
 
 impl SettingsStore for JsonFileSettings {
     fn get(&self, key: &str) -> Option<Value> {
-        self.data.lock().unwrap_or_else(|e| e.into_inner()).get(key).cloned()
+        self.data.lock_ok().get(key).cloned()
     }
 
     fn set(&self, key: &str, value: Value) -> Result<()> {
-        let mut d = self.data.lock().unwrap_or_else(|e| e.into_inner());
+        let mut d = self.data.lock_ok();
         d.insert(key.to_string(), value);
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;

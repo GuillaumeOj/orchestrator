@@ -4,6 +4,7 @@
   // listed as solo sessions until then.
   import { app, agents, projects, openAgent } from '../lib/app.svelte.js';
   import { displayState } from '../lib/status.js';
+  import { pct } from '../lib/format.js';
   import AgentChip from './AgentChip.svelte';
   import StatusBadge from './StatusBadge.svelte';
   import Kbd from './Kbd.svelte';
@@ -45,7 +46,7 @@
                 <button data-row class="row agent" class:selected={focusedAgent === a.id} onclick={() => openAgent(a.id)}>
                   <StatusBadge state={displayState(a)} compact />
                   <AgentChip id={a.id} />
-                  <span class="meta">{a.context_pct == null ? (a.live ? '' : '—') : `${Math.round(a.context_pct)}%`}</span>
+                  <span class="meta">{a.context_pct == null && a.live ? '' : pct(a.context_pct)}</span>
                 </button>
               </li>
             {/each}

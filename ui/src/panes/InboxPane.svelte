@@ -10,7 +10,6 @@
   import AgentChip from '../components/AgentChip.svelte';
   import Kbd from '../components/Kbd.svelte';
 
-  let { paneId } = $props();
   let filter = $state('all');
   let selected = $state(null);
   let marked = $state(new Set());
@@ -104,7 +103,7 @@
   <div class="toolbar">
     {#each FILTERS as f (f.id)}
       {@const n = visibleItems(all, f.id, app.pending).length}
-      {#if f.id === 'all' || n}<button class="chip" class:on={filter === f.id} onclick={() => (filter = f.id)}>{f.label} {n}</button>{/if}
+      {#if f.id === 'all' || n}<button class="filter-chip" class:on={filter === f.id} onclick={() => (filter = f.id)}>{f.label} {n}</button>{/if}
     {/each}
     {#if marked.size}<span class="secondary">{marked.size} selected · a/r apply to all</span>{/if}
     <span class="grow"></span>
@@ -191,35 +190,6 @@
     flex-direction: column;
     outline: none;
     font: var(--text-label);
-  }
-  .toolbar {
-    flex: none;
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    flex-wrap: wrap;
-    padding: var(--space-sm) var(--space-md);
-    border-bottom: var(--border-width-default) solid var(--color-border-subtle);
-    white-space: nowrap;
-  }
-  .grow {
-    flex: 1;
-  }
-  .chip {
-    border: var(--border-width-default) solid var(--color-border-strong);
-    border-radius: var(--radius-full);
-    background: none;
-    padding: var(--space-xxs) var(--space-sm);
-  }
-  .chip.on {
-    border-color: var(--color-accent-default);
-    background: var(--color-accent-subtle);
-  }
-  .keys {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    color: var(--color-text-secondary);
   }
   .split {
     flex: 1;

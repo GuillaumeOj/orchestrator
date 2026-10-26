@@ -4,6 +4,7 @@
 //! high watermark (backpressure); `read_wait` hands everything buffered to one
 //! IPC response.
 
+use crate::LockOk;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -29,12 +30,8 @@ pub struct Output {
 }
 
 impl Output {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Buf> {
-        self.buf.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     fn push(&self, data: &[u8]) {
-        let mut b = self.lock();
+        let mut b = self.buf.lock_ok();
         while b.bytes.len() >= HIGH_WATERMARK && !b.closed {
             b = self.cv.wait(b).unwrap_or_else(|e| e.into_inner());
         }
@@ -43,14 +40,14 @@ impl Output {
     }
 
     fn close(&self) {
-        self.lock().closed = true;
+        self.buf.lock_ok().closed = true;
         self.cv.notify_all();
     }
 
     /// Everything buffered, waiting up to `timeout` for the first byte.
     /// `None` once the PTY is closed and drained.
     pub fn read_wait(&self, timeout: Duration) -> Option<Vec<u8>> {
-        let b = self.lock();
+        let b = self.buf.lock_ok();
         let (mut b, _) =
             self.cv.wait_timeout_while(b, timeout, |b| b.bytes.is_empty() && !b.closed).unwrap_or_else(|e| e.into_inner());
         if b.bytes.is_empty() && b.closed {
@@ -164,28 +161,28 @@ impl Terms {
             child: Mutex::new(child),
             output,
         });
-        self.map.lock().unwrap_or_else(|e| e.into_inner()).insert(id, t.clone());
+        self.map.lock_ok().insert(id, t.clone());
         Ok(t)
     }
 
     pub fn get(&self, id: u32) -> Result<Arc<Term>> {
-        self.map.lock().unwrap_or_else(|e| e.into_inner()).get(&id).cloned().ok_or_else(|| anyhow!("no terminal {id}"))
+        self.map.lock_ok().get(&id).cloned().ok_or_else(|| anyhow!("no terminal {id}"))
     }
 
     pub fn ids(&self) -> Vec<u32> {
-        self.map.lock().unwrap_or_else(|e| e.into_inner()).keys().copied().collect()
+        self.map.lock_ok().keys().copied().collect()
     }
 
     /// SIGHUP to the pane's process group (the shell is a session leader), as
     /// closing a terminal window does; the child is reaped.
     pub fn kill(&self, id: u32) {
-        let t = self.map.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        let t = self.map.lock_ok().remove(&id);
         if let Some(t) = t {
             if let Some(pid) = t.pid {
                 // SAFETY: plain syscall on a pid we spawned.
                 unsafe { libc::killpg(pid as i32, libc::SIGHUP) };
             }
-            let mut c = t.child.lock().unwrap_or_else(|e| e.into_inner());
+            let mut c = t.child.lock_ok();
             let _ = c.kill();
             let _ = c.wait();
             t.output.close();
@@ -219,13 +216,12 @@ pub fn spawn_writer(name: String, mut w: Box<dyn Write + Send>) -> Result<std::s
 impl Term {
     /// Queues bytes for the PTY (never blocks).
     pub fn write(&self, bytes: &[u8]) -> Result<()> {
-        self.input.lock().unwrap_or_else(|e| e.into_inner()).send(bytes.to_vec()).map_err(|_| anyhow!("terminal closed"))
+        self.input.lock_ok().send(bytes.to_vec()).map_err(|_| anyhow!("terminal closed"))
     }
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
         self.master
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .lock_ok()
             .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| anyhow!("resize: {e}"))
     }

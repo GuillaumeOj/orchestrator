@@ -266,6 +266,17 @@ impl Runtime {
         r
     }
 
+    /// A permission prompt was answered outside the pane (the Inbox): the
+    /// tool now runs or is refused, so the agent is working again until its
+    /// next hook says otherwise.
+    pub fn permission_answered(&self, id: &str) -> Result<()> {
+        self.store.write(|s| {
+            if let Some(a) = s.agents.get_mut(id).filter(|a| a.tracker.state == AgentState::WaitingForYou) {
+                a.tracker.state = AgentState::Working;
+            }
+        })
+    }
+
     pub fn live_ids(&self) -> Vec<String> {
         self.live.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect()
     }

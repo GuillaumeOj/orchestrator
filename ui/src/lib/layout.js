@@ -4,10 +4,9 @@
 //   split { kind: 'split', id, dir: 'row' | 'col', children: [node], sizes: [fraction] }
 // 'row' = side by side (leader v), 'col' = stacked (leader s), as in vim.
 
-// Unique across restarts: a restored layout keeps the ids it was saved with.
+// A restored layout gets fresh ids (`reid`), so ids only need to be unique per run.
 let seq = 0;
-const run = Math.random().toString(36).slice(2, 6);
-const nid = (p) => `${p}${++seq}${run}`;
+const nid = (p) => `${p}${++seq}`;
 
 export const leaf = (paneId) => ({ kind: 'leaf', id: nid('l'), tabs: [paneId], active: paneId });
 
