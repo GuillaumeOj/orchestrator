@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use agent_runtime::paths::AppPaths;
 use agent_runtime::runtime::{Runtime, RuntimeConfig};
-use agent_runtime::server::{PUMP_EVERY, TICK_EVERY};
+use agent_runtime::server::{FETCH_EVERY, HOUSEKEEPING_EVERY, PUMP_EVERY, TICK_EVERY};
 use anyhow::{Context, Result, anyhow, bail};
 use governor::jiff::Timestamp;
 use orch_protocol::bus;
@@ -225,11 +225,17 @@ impl Core {
         std::thread::Builder::new().name("orch-loops".into()).spawn(move || {
             let mut last_tick = Instant::now();
             let mut last_hist: Option<Instant> = None;
+            let mut last_house: Option<Instant> = None;
             while !stop.load(Ordering::SeqCst) {
                 rt.pump();
                 if last_tick.elapsed() >= TICK_EVERY {
                     rt.tick();
                     last_tick = Instant::now();
+                }
+                // Memory-pressure cap, idle suspend, transcript index, retention.
+                if last_house.is_none_or(|t| t.elapsed() >= HOUSEKEEPING_EVERY) {
+                    rt.housekeeping();
+                    last_house = Some(Instant::now());
                 }
                 if last_hist.is_none_or(|t| t.elapsed() >= HISTORY_EVERY) {
                     if let Some(c) = me.upgrade() {
@@ -240,6 +246,20 @@ impl Core {
                 std::thread::sleep(PUMP_EVERY);
             }
         })?;
+        // Background git fetch (FR-103) on its own thread: network calls take a while.
+        {
+            let (rt, stop) = (self.runtime()?.clone(), self.stop.clone());
+            std::thread::Builder::new().name("orch-fetch".into()).spawn(move || {
+                let mut last: Option<Instant> = None;
+                while !stop.load(Ordering::SeqCst) {
+                    if last.is_none_or(|t| t.elapsed() >= FETCH_EVERY) {
+                        rt.fetch_tick(&rt.cfg.fetch, rt.cfg.conditions.as_ref());
+                        last = Some(Instant::now());
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            })?;
+        }
         let me = Arc::downgrade(self);
         let stop = self.stop.clone();
         std::thread::Builder::new().name("orch-bus".into()).spawn(move || accept_loop(listener, me, stop))?;
@@ -322,6 +342,11 @@ impl Core {
             Msg::Status(m) => {
                 rt.on_status(&m);
                 reply(Reply::Ack);
+            }
+            // orch-mcp: commits (and PR requests) the core runs for the agent.
+            Msg::Mcp(m) => {
+                let (is_error, text, data) = rt.on_mcp(&m, Some(&s));
+                reply(Reply::Mcp { is_error, text, data });
             }
             Msg::Ctl(CtlRequest::Attach { agent_id, rows, cols }) => {
                 if !rt.live_ids().contains(&agent_id) {
@@ -599,9 +624,7 @@ impl Core {
         if let Some(n) = item.strip_prefix("alert-") {
             let n: u64 = n.parse()?;
             rt.store.write(|s| {
-                if let Some(i) = s.inbox.iter_mut().find(|i| i.id == n) {
-                    i.pending = false;
-                }
+                let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("dismiss".into()));
             })?;
             return Ok(json!("dismissed"));
         }
@@ -821,6 +844,9 @@ impl Drop for Core {
     }
 }
 
+/// The helper binaries Claude Code launches for each agent (FR-1201).
+const HELPERS: [&str; 3] = ["orch-hook", "orch-status", "orch-mcp"];
+
 fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>) -> Result<Arc<Runtime>> {
     if orch_protocol::is_listening(&paths.socket()) {
         bail!(
@@ -834,14 +860,17 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
         rc.claude = c.clone();
     }
     rc.shadow = !cfg.enforce;
+    // Permission prompts: the runtime answers from the stored rules only; the
+    // app's broker holds the rest for its Inbox (and the pane's own dialog).
+    rc.permission_hold = Duration::ZERO;
     // Helpers next to the app binary (target/<profile>, or Contents/MacOS in a
     // bundle) are copied to <home>/bin, a stable path outside the .app.
     if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
-        let changed = ["orch-hook", "orch-status"].iter().any(|n| {
+        let changed = HELPERS.iter().any(|n| {
             let meta = |p: PathBuf| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok()));
             meta(dir.join(n)).is_some_and(|src| meta(paths.bin_dir().join(n)).is_none_or(|dst| dst.0 != src.0 || dst.1 < src.1))
         });
-        if changed && dir.join("orch-hook").is_file() && dir.join("orch-status").is_file() {
+        if changed && HELPERS.iter().all(|n| dir.join(n).is_file()) {
             if let Err(e) = agent_runtime::preflight::install_helpers(&dir, &paths.bin_dir()) {
                 warnings.push(format!("helpers: {e:#}"));
             }
@@ -849,11 +878,16 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
     }
     if agent_runtime::preflight::check_helpers(&rc.helpers).is_err() {
         warnings.push(format!(
-            "orch-hook/orch-status missing in {}: build them (cargo build -p orch-hook -p orch-status); agents can't start",
+            "orch-hook/orch-status/orch-mcp missing in {}: build them (cargo build -p orch-hook -p orch-status -p orch-mcp); agents can't start",
             paths.bin_dir().display()
         ));
     }
-    Runtime::new(rc)
+    let rt = Runtime::new(rc)?;
+    // The local OTLP receiver (FR-801): agents spawned from now on export to it.
+    if let Err(e) = rt.start_otlp(0) {
+        warnings.push(format!("OTLP receiver not started: {e:#}"));
+    }
+    Ok(rt)
 }
 
 /// The Governor's pending "ask" (FR-810), as an Inbox item.
@@ -890,7 +924,7 @@ fn store_view(s: &agent_runtime::store::StateFile) -> (BTreeMap<String, AgentMet
     let alerts = s
         .inbox
         .iter()
-        .filter(|i| i.pending)
+        .filter(|i| i.pending())
         .map(|i| Alert { id: i.id, agent_id: i.agent_id.clone(), body: i.body.clone(), created_ms: i.created_at_ms })
         .collect();
     let done = s

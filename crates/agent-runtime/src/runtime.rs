@@ -739,6 +739,15 @@ impl Runtime {
             return HookOutput::fail_closed(&m.event);
         };
         let p = HookPayload::parse(&m.payload);
+        // A permission prompt held for the Inbox but answered in the pane (the
+        // CLI shows its dialog while the hook is held): this call's next hook,
+        // or the turn's end, closes the Inbox item and ends the hold.
+        let call_done = matches!(m.event, HookEvent::PostToolUse | HookEvent::PostToolUseFailure | HookEvent::PermissionDenied);
+        let turn_done =
+            matches!(m.event, HookEvent::Stop | HookEvent::StopFailure | HookEvent::UserPromptSubmit | HookEvent::SessionEnd);
+        if call_done || turn_done {
+            self.answered_in_pane(id, if call_done { p.tool_use_id.as_deref() } else { None });
+        }
         self.event(
             id,
             m.event.as_str(),

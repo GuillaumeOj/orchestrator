@@ -126,7 +126,11 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
   `allow`; Reject → `deny` "the user denied this in the Inbox"; Reply → `deny` with the user's words;
   Always allow → `allow` + a scoped rule (default project) created from `always_pattern`. Esc in the
   pane (EOF on the hook connection) closes the item as `interrupted`; no answer in time closes it as
-  `expired` and returns **no decision**, so the CLI's own dialog appears in the pane.
+  `expired` and returns **no decision**. The CLI shows its own dialog in the pane while the hook is
+  held, so the user may answer there: the call's next hook (PostToolUse, PostToolUseFailure,
+  PermissionDenied) or the end of the turn closes the item as "answered in the pane" and ends the
+  hold. An embedding UI with its own prompt broker (orch-app) sets `permission_hold` to zero: the
+  rules still answer, everything else goes to its broker.
 - `decide(item, InboxDecision, scope, message)` is logged in the audit log before it acts. Alerts
   are dismissed; a Reply to a non-permission item becomes a turn for the agent.
 - **PR gate**: `request_pr` (orch-mcp) creates a `gate` item (one pending per agent). Approve →

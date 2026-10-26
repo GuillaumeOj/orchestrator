@@ -67,6 +67,27 @@ impl Runtime {
         });
     }
 
+    /// Closes the Inbox items of `agent`'s held permission prompts that were
+    /// answered in the pane: the one for `tool_use_id`, or all of them.
+    pub(crate) fn answered_in_pane(&self, agent: &str, tool_use_id: Option<&str>) {
+        let open = |s: &crate::store::StateFile| -> Vec<u64> {
+            s.holds
+                .iter()
+                .filter(|h| h.agent_id == agent && h.kind == HoldKind::Gate && h.status == HoldStatus::Held)
+                .filter(|h| tool_use_id.is_none() || h.tool_use_id.as_deref() == tool_use_id)
+                .filter_map(|h| h.inbox_id)
+                .collect()
+        };
+        if self.store.read(|s| open(s).is_empty()) {
+            return;
+        }
+        let _ = self.store.write(|s| {
+            for item in open(s) {
+                let _ = s.close_inbox(item, InboxStatus::Dismissed, Some("answered in the pane".into()));
+            }
+        });
+    }
+
     /// Waits for a decision on `id`, watching the hook connection for EOF.
     pub(crate) fn wait_decision(&self, id: u64, budget: Duration, conn: Option<&UnixStream>) -> Waited {
         let end = Instant::now() + budget;
@@ -504,6 +525,33 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_in_the_pane_closes_the_item_and_ends_the_hold() {
+        let (_d, rt) = test_runtime(true);
+        let rt2 = rt.clone();
+        let t0 = Instant::now();
+        let h = std::thread::spawn(move || rt2.permission_request_for_test("make deploy", Duration::from_secs(10)));
+        let mut item = None;
+        for _ in 0..200 {
+            item = rt.inbox().into_iter().next();
+            if item.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let item = item.expect("held");
+        assert_eq!(item.payload["tool_use_id"], "tu-make deploy");
+        // Another call's hook does not close it.
+        rt.on_hook(&hook("PostToolUse", json!({"tool_name": "Bash", "tool_use_id": "other"})), None);
+        assert!(rt.store.read(|s| s.inbox.iter().find(|i| i.id == item.id).unwrap().pending()));
+        // The user answered the CLI's dialog: the tool ran.
+        rt.on_hook(&hook("PostToolUse", json!({"tool_name": "Bash", "tool_use_id": item.payload["tool_use_id"].clone()})), None);
+        assert!(h.join().unwrap().is_none(), "no decision from the Inbox");
+        assert!(t0.elapsed() < Duration::from_secs(5), "the hold ended at once");
+        let i = rt.store.read(|s| s.inbox.iter().find(|i| i.id == item.id).cloned().unwrap());
+        assert_eq!((i.status, i.decision.as_deref()), (InboxStatus::Dismissed, Some("answered in the pane")));
+    }
+
+    #[test]
     fn esc_in_the_pane_interrupts_the_hold() {
         let (_d, rt) = test_runtime(true);
         let (core_end, hook_end) = UnixStream::pair().unwrap();
@@ -532,7 +580,8 @@ mod tests {
         /// A PermissionRequest for `a1` with a longer hold than the test config.
         fn permission_request_for_test(&self, cmd: &str, hold: Duration) -> Option<HookOutput> {
             let rec = self.store.read(|s| s.agents["a1"].clone());
-            let p = HookPayload::parse(&json!({"hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": cmd}}));
+            let p = HookPayload::parse(&json!({"hook_event_name": "PermissionRequest", "tool_name": "Bash",
+                "tool_input": {"command": cmd}, "tool_use_id": format!("tu-{cmd}")}));
             let subject = self.subject(&rec);
             self.permission_request_with(&rec, &p, &subject, None, hold, None)
         }
