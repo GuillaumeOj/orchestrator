@@ -1371,6 +1371,15 @@ impl Runtime {
         for t in s.turns.iter().filter(|t| t.status == TurnStatus::Queued) {
             *queued.entry(t.agent_id.as_str()).or_default() += 1;
         }
+        // OTLP tokens and cost this plan week, per agent.
+        let week_start = self.gov().plan().week_start.as_millisecond().max(0) as u64;
+        let tokens: BTreeMap<String, orch_store::UsageTotal> = self
+            .db
+            .usage_totals(week_start)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|t| Some((t.agent_id.clone()?, t)))
+            .collect();
         let agents: Vec<Value> = s
             .agents
             .values()
@@ -1400,6 +1409,7 @@ impl Runtime {
                     "last_error": a.tracker.last_error,
                     "trust_dialog": a.trust_dialog,
                     "flag": a.flag,
+                    "otel_week": tokens.get(&a.id),
                 })
             })
             .collect();
@@ -1408,6 +1418,8 @@ impl Runtime {
             "inbox": s.inbox.iter().filter(|i| i.pending()).collect::<Vec<_>>(),
             "turns": s.turns.iter().rev().take(20).collect::<Vec<_>>(),
             "warnings": self.warnings,
+            "live_cap": {"base": self.cfg.base_cap, "effective": self.live_cap(), "pressure": self.house().pressure},
+            "otlp": self.otlp_endpoint(),
         })
     }
 
@@ -1730,7 +1742,9 @@ pub(crate) mod tests {
         ]);
         rt.db.flush().unwrap();
         let t = rt.db.usage_totals(0).unwrap();
-        assert_eq!(t, vec![(None, 1, 0, 0, 0, 0.0), (Some("a1".into()), 10, 2, 0, 0, 0.01)]);
+        assert_eq!(t.len(), 2);
+        assert_eq!((t[0].agent_id.as_deref(), t[0].tokens_in), (None, 1), "unknown agent: unattributed");
+        assert_eq!((t[1].agent_id.as_deref(), t[1].tokens_in, t[1].tokens_out, t[1].cost), (Some("a1"), 10, 2, 0.01));
         rt.shutdown();
         assert!(rt.otlp_endpoint().is_none());
     }

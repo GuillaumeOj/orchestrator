@@ -181,7 +181,8 @@ impl Runtime {
         })?;
         let report = project::remove(&self.db, &self.store, id, choices)?;
         if choices.history == project::History::Delete {
-            self.store.write(|s| s.worktrees.retain(|_, w| !(w.repo == p.path && w.state == WorktreeRowState::Removed)))?;
+            // The project's rows went with it (kept worktrees stay on disk, unmanaged).
+            self.store.write(|s| s.worktrees.retain(|_, w| w.repo != p.path))?;
         }
         self.db.audit("user", None, "project_removed", p.path.to_str(), "ok", json!(report))?;
         Ok(report)
@@ -233,5 +234,70 @@ impl Runtime {
 
     fn request_full_index(&self) {
         self.mark_full_index();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::tests::test_runtime;
+    use orch_git::fixtures::{commit_file, scratch_repo};
+    use orch_protocol::WorktreeKindSpec;
+
+    #[test]
+    fn projects_through_the_runtime() {
+        let (_d, rt) = test_runtime(true);
+        let (r, repo) = scratch_repo();
+        let p = rt.add_project(&repo).unwrap();
+        let row = rt.create_worktree(&repo, &WorktreeKindSpec::Solo { slug: "a1".into() }, None).unwrap();
+        rt.store
+            .write(|s| {
+                let a = s.agents.get_mut("a1").unwrap();
+                a.repo = repo.clone();
+                a.worktree = row.path.clone();
+            })
+            .unwrap();
+        commit_file(&row.path, "x.txt", "x", "work");
+        let ov = rt.projects_overview().unwrap();
+        assert_eq!(ov[0]["project"]["id"], p.id.as_str());
+        assert_eq!(ov[0]["agents"], 1);
+        let det = rt.project_detail(&p.id, false).unwrap();
+        assert!(det["worktrees"].as_array().unwrap().iter().any(|w| w["verdict"] == "ok" && w["unmerged_commits"] == 1));
+        let d = rt.diff(&row.path, None).unwrap();
+        assert_eq!(d.against, "main");
+        assert_eq!(d.files[0].path, "x.txt");
+        // In use by an agent: refused, even with confirmation.
+        assert!(rt.remove_worktree(&p.id, &row.path, true, true).unwrap_err().to_string().contains("uses this worktree"));
+        rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.state = AgentState::Killed).unwrap();
+        // Unmerged: needs confirmation.
+        assert!(rt.remove_worktree(&p.id, &row.path, true, false).is_err());
+        let out = rt.remove_worktree(&p.id, &row.path, true, true).unwrap();
+        assert!(out.worktree_removed && out.branch_deleted);
+        assert_eq!(rt.store.read(|s| s.worktrees[&row.path].state), WorktreeRowState::Removed);
+        assert!(rt.db.audit_log(None, 10).unwrap().iter().any(|e| e.action == "worktree_removed" && e.decision == "discard"));
+
+        // Relocate: the repo moved alone; rows, agents and the project follow.
+        let row2 = rt.create_worktree(&repo, &WorktreeKindSpec::Solo { slug: "b".into() }, None).unwrap();
+        let new_repo = r.path().join("elsewhere/demo");
+        std::fs::create_dir_all(new_repo.parent().unwrap()).unwrap();
+        std::fs::rename(&repo, &new_repo).unwrap();
+        let rep = rt.relocate_project(&p.id, &new_repo).unwrap();
+        assert_eq!(rep.repaired, vec![row2.path.clone()], "{rep:?}");
+        let new_repo = real(&new_repo);
+        assert_eq!(rt.db.project(&p.id).unwrap().unwrap().path, new_repo);
+        assert_eq!(rt.store.read(|s| s.worktrees[&row2.path].repo.clone()), new_repo);
+        assert_eq!(rt.store.read(|s| s.agents["a1"].repo.clone()), new_repo);
+        assert!(orch_git::repair::check_links(&row2.path).ok);
+        assert!(rt.relocate_project(&p.id, &row2.path).is_err(), "a worktree is not a main checkout");
+
+        // J11 delete: agents archived, rows gone from memory and database.
+        let report = rt
+            .remove_project(&p.id, &RemovalChoices { remove_merged: true, discard: vec![], history: project::History::Delete })
+            .unwrap();
+        assert!(report.removed.contains(&row2.path));
+        assert!(rt.db.project(&p.id).unwrap().is_none());
+        assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::Archived);
+        assert!(rt.store.read(|s| s.worktrees.values().all(|w| w.repo != new_repo)));
+        assert!(rt.db.worktrees_of(&new_repo).unwrap().is_empty());
     }
 }

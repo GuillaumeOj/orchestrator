@@ -721,4 +721,99 @@ mod tests {
         assert!(worktree::list(&repo).unwrap().iter().any(|w| real(&w.path) == real(&p) && w.locked));
         assert!(store.read(|s| s.inbox.iter().any(|i| i.body.contains("missing"))));
     }
+
+    fn run(store: &Store, paths: &AppPaths, projects: &Path) -> Report {
+        let kill = |_: &[i32], _: &[i32]| vec![];
+        reconcile(&ReconcileEnv {
+            store,
+            paths,
+            projects_root: projects,
+            procs: &FakeProcs(vec![]),
+            kill: &kill,
+            exclude_pids: &[],
+            apply: true,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn repairs_broken_links_and_alerts_on_a_missing_project() {
+        let (d, repo) = scratch_repo();
+        let app = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(app.path());
+        let store = Store::open(orch_store::Store::open(&paths.db_file()).unwrap(), None).unwrap();
+        let row = worktree::ensure(&store, &repo, &WorktreeKindSpec::Solo { slug: "a".into() }, None, Some("a")).unwrap();
+        store.write(|s| s.agents.insert("a".into(), agent("a", &repo, &row.path, AgentState::Idle))).unwrap();
+        // The repo moved without its sibling folder; the rows were pointed at the
+        // new place (as a relocate does) but the core died before the repair.
+        let new_repo = d.path().join("moved/demo");
+        std::fs::create_dir_all(new_repo.parent().unwrap()).unwrap();
+        std::fs::rename(&repo, &new_repo).unwrap();
+        let new_repo = real(&new_repo);
+        store
+            .write(|s| {
+                for w in s.worktrees.values_mut() {
+                    w.repo = new_repo.clone();
+                }
+                s.agents.get_mut("a").unwrap().repo = new_repo.clone();
+            })
+            .unwrap();
+        assert!(!orch_git::repair::check_links(&row.path).ok);
+        let r = run(&store, &paths, &app.path().join("none"));
+        let v = &r.worktrees.iter().find(|w| real(&w.path) == real(&row.path)).unwrap().verdict;
+        assert!(v.starts_with("repaired"), "{v}");
+        assert!(orch_git::repair::check_links(&row.path).ok);
+        assert!(worktree::list(&new_repo).unwrap().iter().any(|w| real(&w.path) == real(&row.path) && w.locked));
+
+        // A project whose checkout is gone: one alert, the agent is flagged.
+        let gone = d.path().join("gone/demo");
+        store
+            .write(|s| {
+                let mut w = s.worktrees.values().next().unwrap().clone();
+                w.repo = gone.clone();
+                w.path = gone.with_extension("worktrees").join("solo/b");
+                s.worktrees.insert(w.path.clone(), w.clone());
+                s.agents.insert("b".into(), agent("b", &gone, &w.path, AgentState::Working));
+            })
+            .unwrap();
+        let r = run(&store, &paths, &app.path().join("none"));
+        assert!(r.inbox.iter().any(|m| m.contains("is missing (moved or deleted?)")), "{:?}", r.inbox);
+        let b = r.agents.iter().find(|a| a.id == "b").unwrap();
+        assert!(matches!(&b.decision, Decision::Flag(w) if w.contains("missing")), "{:?}", b.decision);
+        // The alert is not repeated by the next start.
+        let again = run(&store, &paths, &app.path().join("none"));
+        assert!(!again.inbox.iter().any(|m| m.contains("moved or deleted")));
+    }
+
+    #[test]
+    fn stale_governor_entries_are_asked_again_and_permission_items_close() {
+        let (_d, repo) = scratch_repo();
+        let app = tempfile::tempdir().unwrap();
+        let paths = AppPaths::new(app.path());
+        let store = Store::open(orch_store::Store::open(&paths.db_file()).unwrap(), None).unwrap();
+        let row = worktree::ensure(&store, &repo, &WorktreeKindSpec::Solo { slug: "a".into() }, None, Some("a")).unwrap();
+        store
+            .write(|s| {
+                s.agents.insert("a".into(), agent("a", &repo, &row.path, AgentState::WaitingForYou));
+                s.turns.push(TurnRow::queued("a", "later", governor::TurnKind::Message, Admission::Waiting(7)));
+                let item = s.add_inbox_item(Some("a"), "permission", "a: Bash: ls".into(), serde_json::Value::Null, 30);
+                s.holds.push(HoldRow {
+                    id: "h".into(),
+                    agent_id: "a".into(),
+                    tool_use_id: None,
+                    kind: HoldKind::Gate,
+                    status: HoldStatus::Held,
+                    summary: "Bash: ls".into(),
+                    created_at_ms: 0,
+                    inbox_id: Some(item),
+                });
+            })
+            .unwrap();
+        let r = run(&store, &paths, &app.path().join("none"));
+        let st = store.read(|s| s.clone());
+        assert_eq!(st.turns[0].admission, Admission::Pending, "the old core's queue entry is gone: ask again");
+        assert_eq!(st.inbox[0].status, orch_store::InboxStatus::Interrupted);
+        assert_eq!(st.inbox.iter().filter(|i| i.pending()).count(), 0, "no duplicate gate item");
+        assert!(r.holds[0].1.contains("closed"));
+    }
 }

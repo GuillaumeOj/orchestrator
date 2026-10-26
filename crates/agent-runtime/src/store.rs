@@ -317,7 +317,7 @@ pub fn diff(before: &StateFile, after: &StateFile) -> RuntimeDiff {
         }
     }
     d.worktrees_deleted = before.worktrees.keys().filter(|k| !after.worktrees.contains_key(*k)).cloned().collect();
-    fn by_id<'a, T, K: Ord>(v: &'a [T], k: impl Fn(&T) -> K) -> BTreeMap<K, &'a T> {
+    fn by_id<T, K: Ord>(v: &[T], k: impl Fn(&T) -> K) -> BTreeMap<K, &T> {
         v.iter().map(|x| (k(x), x)).collect()
     }
     let bt = by_id(&before.turns, |t| t.id.clone());

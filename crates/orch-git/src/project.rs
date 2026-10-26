@@ -179,7 +179,8 @@ pub fn remove(
     for w in &plan.worktrees {
         let confirmed = choices.discard.iter().any(|d| real(d) == w.path);
         let confirm = if confirmed { Confirm::DiscardUnmerged } else { Confirm::Safe };
-        if !confirmed && !(choices.remove_merged && w.safe_to_remove) {
+        let remove = confirmed || (choices.remove_merged && w.safe_to_remove);
+        if !remove {
             let why = if w.dirty > 0 {
                 format!("{} uncommitted file(s)", w.dirty)
             } else if w.unmerged_commits > 0 {

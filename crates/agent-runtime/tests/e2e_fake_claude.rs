@@ -10,6 +10,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use agent_runtime::paths::AppPaths;
+use agent_runtime::resources::PressureLevel;
 use agent_runtime::runtime::{Runtime, RuntimeConfig};
 use agent_runtime::server::{self, request};
 use orch_protocol::{AgentSpec, CtlRequest, bus};
@@ -93,9 +94,15 @@ fn start_deliver_suspend_resume_kill_with_fake_claude() {
         g["decisions"].as_array().unwrap().iter().map(|d| d["request"]["point"].as_str().unwrap()).collect();
     assert!(points.contains(&"turn_start") && points.contains(&"tool_call"), "{g}");
 
-    // A second message: delivered only once the agent is idle again.
-    request(&sock, CtlRequest::Deliver { agent_id: "e2e".into(), text: "second".into() }).unwrap();
+    // A second message: delivered only once the agent is idle again. It asks
+    // the fake to commit through orch-mcp: the core commits in the worktree.
+    request(&sock, CtlRequest::Deliver { agent_id: "e2e".into(), text: "second COMMIT".into() }).unwrap();
     wait_for("second turn", 10, || agent(&sock, "e2e")["turns"] == 2 && agent(&sock, "e2e")["state"] == "idle");
+    assert_eq!(git(&wt, &["log", "-1", "--format=%s"]).trim(), "fake commit 2");
+    assert_eq!(git(&wt, &["show", "--name-only", "--format=", "HEAD"]).trim(), "work-2.txt");
+    let audit = request(&sock, CtlRequest::Audit { agent_id: Some("e2e".into()), limit: None }).unwrap().data;
+    assert_eq!(audit[0]["action"], "commit", "{audit}");
+    assert_eq!(audit[0]["decision"], "ok");
 
     // Generated files.
     let settings: Value =
@@ -160,4 +167,104 @@ fn hook_with_core_down_denies_tools_and_spools() {
     assert!(o.stdout.is_empty());
     let spool = std::fs::read_to_string(d.path().join("spool.jsonl")).unwrap();
     assert_eq!(spool.lines().count(), 2);
+}
+
+/// A core on a fake claude with its own config tweaks; returns what tests need.
+struct Core {
+    _root: tempfile::TempDir,
+    rt: Arc<Runtime>,
+    sock: PathBuf,
+    repo: PathBuf,
+    stop: Arc<AtomicBool>,
+    srv: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Core {
+    fn start(prefix: &str, tweak: impl FnOnce(&mut RuntimeConfig)) -> Core {
+        let root = short_tempdir(prefix);
+        let paths = AppPaths::new(root.path().join("app"));
+        agent_runtime::preflight::install_helpers(&helper_bins(), &paths.bin_dir()).unwrap();
+        let fake = root.path().join("fake-claude");
+        std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake_claude.sh"), &fake).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let repo = root.path().join("proj/demo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "init"]);
+        let mut cfg = RuntimeConfig::new(paths.clone());
+        cfg.claude = fake;
+        cfg.projects_root = root.path().join("projects");
+        cfg.hold = Duration::from_secs(1);
+        cfg.idle_suspend = None;
+        tweak(&mut cfg);
+        let rt = Runtime::new(cfg).unwrap();
+        let listener = bus::bind_listener(&paths.socket()).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let srv = {
+            let (rt, stop) = (rt.clone(), stop.clone());
+            std::thread::spawn(move || server::serve(rt, listener, stop).unwrap())
+        };
+        Core { _root: root, rt, sock: paths.socket(), repo, stop, srv: Some(srv) }
+    }
+
+    fn start_agent(&self, id: &str) {
+        let spec = AgentSpec { agent_id: id.into(), repo: self.repo.display().to_string(), ..Default::default() };
+        let r = request(&self.sock, CtlRequest::Start { spec: Box::new(spec) }).unwrap();
+        assert!(r.ok, "{r:?}");
+        request(&self.sock, CtlRequest::Deliver { agent_id: id.into(), text: "hello".into() }).unwrap();
+        wait_for("first turn", 15, || agent(&self.sock, id)["turns"] == 1 && agent(&self.sock, id)["state"] == "idle");
+    }
+
+    fn state_of(&self, id: &str) -> String {
+        agent(&self.sock, id)["state"].as_str().unwrap_or("").to_string()
+    }
+}
+
+impl Drop for Core {
+    fn drop(&mut self) {
+        let _ = request(&self.sock, CtlRequest::Shutdown);
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(h) = self.srv.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+#[test]
+fn memory_pressure_lowers_the_live_cap_and_queued_work_waits_for_a_slot() {
+    let mem = Arc::new(agent_runtime::resources::FixedMemory::new(PressureLevel::Normal));
+    let m2 = mem.clone();
+    let core = Core::start("orchmp", move |c| {
+        c.base_cap = 2;
+        c.memory = m2;
+    });
+    core.start_agent("old");
+    std::thread::sleep(Duration::from_millis(300));
+    core.start_agent("new");
+    assert_eq!(core.rt.live_cap(), 2);
+    // Critical pressure: cap 1, the least recently active idle agent is suspended.
+    mem.set(PressureLevel::Critical);
+    wait_for("one suspended", 15, || core.state_of("old") == "suspended");
+    assert_eq!(core.state_of("new"), "idle");
+    assert_eq!(core.rt.live_cap(), 1);
+    // Work for the suspended agent waits: no live slot.
+    request(&core.sock, CtlRequest::Deliver { agent_id: "old".into(), text: "more".into() }).unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(core.state_of("old"), "suspended");
+    // Pressure ends: the cap recovers and the agent is resumed through the Governor.
+    mem.set(PressureLevel::Normal);
+    wait_for("resumed and done", 20, || agent(&core.sock, "old")["turns"].as_u64() == Some(2));
+    let ev = core.rt.db.events(0, Some("old"), Some("cap_wait"), 5).unwrap();
+    assert!(!ev.is_empty());
+}
+
+#[test]
+fn idle_agents_are_suspended_and_resume_on_new_work() {
+    let core = Core::start("orchid", |c| c.idle_suspend = Some(Duration::from_secs(2)));
+    core.start_agent("a");
+    wait_for("idle suspend", 15, || core.state_of("a") == "suspended");
+    let ev = core.rt.db.events(0, Some("a"), Some("auto_suspend"), 5).unwrap();
+    assert_eq!(ev[0].detail["why"], "idle");
+    request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "wake up".into() }).unwrap();
+    wait_for("resumed turn", 20, || agent(&core.sock, "a")["turns"].as_u64() == Some(2));
 }

@@ -289,6 +289,17 @@ pub struct UsageRecord {
     pub allocation: Option<String>,
 }
 
+/// OTLP token and cost totals of one agent (`None` = unattributed).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UsageTotal {
+    pub agent_id: Option<String>,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub cost: f64,
+}
+
 /// A terminal pane to restore after a restart (cwd only, NFR-2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Terminal {

@@ -54,30 +54,30 @@ pub fn serve(rt: Arc<Runtime>, listener: UnixListener, stop: Arc<AtomicBool>) ->
             }
         })?;
     }
-    // A blocking accept answers hooks at once; when `stop` is set, a
-    // connection to our own socket wakes it.
-    let path = listener.local_addr()?.as_pathname().map(PathBuf::from);
-    {
-        let stop = stop.clone();
-        std::thread::Builder::new().name("orch-stop-wake".into()).spawn(move || {
-            while !stop.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_millis(100));
+    // poll() wakes at once for a connection and every 100 ms to check
+    // `stop` (a wake-up connection would fail if the socket file was removed).
+    use std::os::fd::AsRawFd;
+    let fd = listener.as_raw_fd();
+    while !stop.load(Ordering::SeqCst) {
+        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        // SAFETY: one pollfd we own, for the listener's open fd.
+        let n = unsafe { libc::poll(&mut pfd, 1, 100) };
+        if n < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                continue;
             }
-            if let Some(p) = path {
-                let _ = UnixStream::connect(p);
-            }
-        })?;
-    }
-    for conn in listener.incoming() {
-        if stop.load(Ordering::SeqCst) {
-            break;
+            return Err(e);
         }
-        match conn {
-            Ok(s) => {
+        if n == 0 {
+            continue;
+        }
+        match listener.accept() {
+            Ok((s, _)) => {
                 let (rt, stop) = (rt.clone(), stop.clone());
                 std::thread::spawn(move || handle(&rt, s, &stop));
             }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock) => {}
             Err(e) => return Err(e),
         }
     }

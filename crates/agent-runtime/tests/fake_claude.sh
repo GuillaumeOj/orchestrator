@@ -12,11 +12,23 @@ done
 ROOT=$(dirname "$ORCH_SOCK")
 HOOK="$ROOT/bin/orch-hook"
 STATUS="$ROOT/bin/orch-status"
+MCP="$ROOT/bin/orch-mcp"
+# A pasted "COMMIT <msg>" writes a file and commits it through orch-mcp, the
+# way the model calls mcp__orch__commit.
+mcp_commit() {
+  printf '%s\n%s\n' \
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}' \
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"commit\",\"arguments\":{\"message\":\"$1\"}}}" \
+    | "$MCP" | tail -1
+}
 hook() { printf '%s' "$1" | "$HOOK"; }
 status() {
   printf '{"session_id":"%s","rate_limits":{"five_hour":{"used_percentage":%s,"resets_at":1792489800},"seven_day":{"used_percentage":34,"resets_at":1792983600}},"cost":{"total_cost_usd":%s}}' \
     "$SID" "$1" "$2" | "$STATUS" >/dev/null
 }
+# A transcript like Claude Code's (by session id), in a test-only folder.
+TR="$ROOT/fake-projects/-fake"
+mkdir -p "$TR"
 echo "FAKE CLAUDE $SID env-api-key=${ANTHROPIC_API_KEY:-unset} autoupdate=${DISABLE_AUTOUPDATER:-unset}"
 hook "{\"hook_event_name\":\"SessionStart\",\"session_id\":\"$SID\",\"source\":\"startup\"}"
 status 0 0
@@ -25,9 +37,14 @@ cost=0
 while IFS= read -r line; do
   n=$((n+1))
   prompt=$(printf '%s' "$line" | tr -d '\033\r' | sed 's/\[200~//; s/\[201~//; s/"/'"'"'/g')
+  printf '{"type":"user","message":{"role":"user","content":"%s"}}\n' "$prompt" >> "$TR/$SID.jsonl"
   hook "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"prompt\":\"$prompt\"}"
   out=$(hook "{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo hi\"},\"tool_use_id\":\"tu$n\"}")
   echo "PRE[$n]:$out"
+  case "$prompt" in
+    *SLOW*) sleep 30 ;;
+    *COMMIT*) echo "work $n" > "work-$n.txt"; echo "MCP[$n]:$(mcp_commit "fake commit $n")" ;;
+  esac
   hook "{\"hook_event_name\":\"PostToolUse\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"tool_name\":\"Bash\"}"
   cost="0.0$n"
   status $((10 + n)) "$cost"

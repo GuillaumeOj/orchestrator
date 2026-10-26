@@ -322,7 +322,7 @@ impl Store {
     }
 
     /// Token and cost totals per agent since `since_ms` (OTLP rows).
-    pub fn usage_totals(&self, since_ms: u64) -> Result<Vec<(Option<String>, u64, u64, u64, u64, f64)>> {
+    pub fn usage_totals(&self, since_ms: u64) -> Result<Vec<UsageTotal>> {
         self.read(move |c| {
             let mut st = c.prepare(
                 "SELECT agent_id, coalesce(sum(tokens_in),0), coalesce(sum(tokens_out),0), coalesce(sum(cache_read),0),
@@ -331,14 +331,14 @@ impl Store {
             )?;
             Ok(st
                 .query_map([since_ms as i64], |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get::<_, i64>(1)? as u64,
-                        r.get::<_, i64>(2)? as u64,
-                        r.get::<_, i64>(3)? as u64,
-                        r.get::<_, i64>(4)? as u64,
-                        r.get(5)?,
-                    ))
+                    Ok(UsageTotal {
+                        agent_id: r.get(0)?,
+                        tokens_in: r.get::<_, i64>(1)? as u64,
+                        tokens_out: r.get::<_, i64>(2)? as u64,
+                        cache_read: r.get::<_, i64>(3)? as u64,
+                        cache_write: r.get::<_, i64>(4)? as u64,
+                        cost: r.get(5)?,
+                    })
                 })?
                 .collect::<rusqlite::Result<_>>()?)
         })
@@ -511,7 +511,7 @@ impl Store {
     }
 
     pub fn add_calibration(&self, c: &Calibration) -> Result<()> {
-        let c = c.clone();
+        let c = *c;
         self.write(move |tx| {
             tx.execute(
                 "INSERT INTO calibrations(ts_ms, cost_per_weekly_pct, confidence, unattributed_rate, data) VALUES (?1,?2,?3,?4,?5)",
@@ -722,7 +722,10 @@ mod tests {
         assert_eq!(st[0].weekly_pct, Some(40.0));
         assert_eq!(s.usage_since(11, None).unwrap().len(), 1);
         let tot = s.usage_totals(0).unwrap();
-        assert_eq!(tot, vec![(Some("a1".into()), 100, 20, 0, 0, 0.05)]);
+        assert_eq!(
+            tot,
+            vec![UsageTotal { agent_id: Some("a1".into()), tokens_in: 100, tokens_out: 20, cache_read: 0, cache_write: 0, cost: 0.05 }]
+        );
 
         let start: Timestamp = "2026-10-19T07:00:00Z".parse().unwrap();
         let plan = WeeklyPlan {

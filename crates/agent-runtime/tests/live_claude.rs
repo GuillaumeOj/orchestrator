@@ -99,10 +99,12 @@ fn live_haiku_end_to_end() {
     for w in &rt.warnings {
         eprintln!("warning: {w}");
     }
+    // The bundled OTLP receiver (FR-801): agents export api_request events to it.
+    eprintln!("otlp: {}", rt.start_otlp(0).unwrap());
     let listener = bus::bind_listener(&paths.socket()).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let srv = {
-        let (rt, stop) = (rt, stop.clone());
+        let (rt, stop) = (rt.clone(), stop.clone());
         std::thread::spawn(move || server::serve(rt, listener, stop).unwrap())
     };
     let sock = paths.socket();
@@ -219,6 +221,20 @@ fn live_haiku_end_to_end() {
             .unwrap_or_default()
     );
 
+    // P1: the core commits for the agent through orch-mcp (the sandbox blocks git commit).
+    request(
+        &sock,
+        CtlRequest::Deliver {
+            agent_id: id.clone(),
+            text: "Commit the file live.txt with the mcp__orch__commit tool, message: live via orch. Then reply DONE.".into(),
+        },
+    )
+    .unwrap();
+    let mcp_done = wait_turns(&sock, &id, 3, 180, false);
+    let mcp_log = git_try(&wt, &["log", "-1", "--format=%s"]);
+    let audit = request(&sock, CtlRequest::Audit { agent_id: Some(id.clone()), limit: Some(5) }).unwrap().data;
+    eprintln!("orch-mcp commit: {mcp_log}audit: {audit}");
+
     // Suspend, then resume by session id.
     let sid = agent(&sock, &id)["session_id"].clone();
     assert!(request(&sock, CtlRequest::Suspend { agent_id: id.clone() }).unwrap().ok);
@@ -231,7 +247,7 @@ fn live_haiku_end_to_end() {
         .unwrap()
         .ok
     );
-    let resumed = wait_turns(&sock, &id, 3, 120, false);
+    let resumed = wait_turns(&sock, &id, 4, 120, false);
     let after_mb = agent(&sock, &id)["memory_mb"].as_f64();
     assert_eq!(agent(&sock, &id)["session_id"], sid);
     let g = request(&sock, CtlRequest::Governor).unwrap().data;
@@ -239,7 +255,15 @@ fn live_haiku_end_to_end() {
         "memory (phys_footprint MB): idle {idle_mb:?}, working {working_mb:?}, after resume {after_mb:?}\ngovernor decisions: {}",
         g["decisions"].as_array().map_or(0, |d| d.len())
     );
+    // OTLP: logs are exported every 2 s.
+    std::thread::sleep(Duration::from_secs(3));
+    rt.db.flush().unwrap();
+    let otel = rt.db.usage_totals(0).unwrap();
+    eprintln!("otlp usage: {otel:?}");
     drop(guard);
+    assert!(mcp_done, "orch-mcp commit turn did not finish");
+    assert!(mcp_log.contains("live via orch"), "the core did not commit for the agent: {mcp_log}");
+    assert!(otel.iter().any(|t| t.agent_id.as_deref() == Some(id.as_str()) && t.tokens_out > 0), "no OTLP usage: {otel:?}");
     assert!(resumed, "resumed turn did not finish");
     // Known gap (README): with Claude Code 2.1.302 sandboxed Bash cannot write the main
     // repo's .git from a linked worktree, so this commit fails. Report, don't fail.

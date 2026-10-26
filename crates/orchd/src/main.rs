@@ -10,16 +10,17 @@ use agent_runtime::paths::AppPaths;
 use agent_runtime::runtime::{Runtime, RuntimeConfig};
 use agent_runtime::server::{self, request};
 use anyhow::{Context, Result, anyhow, bail};
-use orch_protocol::{AgentSpec, CtlRequest, WorktreeKindSpec, bus};
+use orch_protocol::{AgentSpec, CtlRequest, InboxDecision, WorktreeKindSpec, bus};
 
 const USAGE: &str = "\
 orchd: headless Orchestrator core (dev)
 
 usage: orchd [--home DIR] <command> [args]
 
-  serve [--enforce] [--no-recover] [--cap N] [--hold-secs N] [--otel URL] [--claude PATH]
+  serve [--enforce] [--no-recover] [--cap N] [--hold-secs N] [--claude PATH]
+        [--otel URL | --no-otel] [--permission-hold-secs N] [--idle-min N] [--fetch-min N]
                                 run the core in the foreground (Ctrl-C suspends every agent)
-  install-helpers               copy orch-hook and orch-status next to this binary into <home>/bin
+  install-helpers               copy orch-hook, orch-status and orch-mcp next to this binary into <home>/bin
   reconcile                     dry run of the startup reconciler (core not running)
   worktree <repo> solo <slug> | integration <feature> | team <feature> <role> <n>  [--base B]
   start <agent> --repo <path> [--slug S] [--base B] [--model M] [--effort E] [--mode manual|acceptEdits|auto|dontAsk|plan]
@@ -33,6 +34,20 @@ usage: orchd [--home DIR] <command> [args]
   pause-all | resume-all        Governor Pause all (FR-811): autonomous work holds at its next tool call
   state | usage | governor      print JSON
   stop                          shut the core down (suspends agents)
+
+  projects                      registered projects with git status
+  project add <path> | clone <url> <parent> [--name N] | show <id> [--prs] | fetch <id>
+  project relocate <id> <new-path>        after a repo move: repair worktree links, re-lock
+  project remove-plan <id>                J11: worktrees, branches, agents
+  project remove <id> --history delete|archive [--discard PATH]... [--keep-merged]
+  diff <worktree> [--against BRANCH]
+  worktree-rm <project> <path> [--delete-branch] [--discard]
+  commit <agent> <message...> [--path P]...   commit in the agent's worktree (same path as orch-mcp)
+  inbox                         pending Inbox items
+  decide <item> approve|reject|always|reply|dismiss [--scope project|role|agent] [--message TEXT]
+  rules | rule add <project|role|agent> <id> <pattern> <allow|deny|ask> | rule revoke <id>
+  audit [agent] | events [--agent A] [--kind PREFIX] [--limit N]
+  search <query...> [--project ID]        full-text search over indexed transcripts
 
 The home defaults to $ORCH_HOME or ~/Library/Application Support/Orchestrator.";
 
@@ -114,7 +129,7 @@ fn run() -> Result<()> {
             a.done()?;
             let exe_dir = std::env::current_exe()?.parent().map(PathBuf::from).context("no exe dir")?;
             let h = agent_runtime::preflight::install_helpers(&exe_dir, &paths.bin_dir())?;
-            println!("installed {} and {}", h.hook.display(), h.status.display());
+            println!("installed {}, {} and {}", h.hook.display(), h.status.display(), h.mcp.display());
             Ok(())
         }
         "reconcile" => {
@@ -209,6 +224,119 @@ fn run() -> Result<()> {
             a.done()?;
             attach(&sock, &agent_id)
         }
+        "projects" => {
+            a.done()?;
+            print(request(&sock, CtlRequest::Projects)?)
+        }
+        "project" => {
+            let req = match a.next("project subcommand")?.as_str() {
+                "add" => CtlRequest::ProjectAdd { path: abs(&a.next("path")?)? },
+                "clone" => {
+                    let url = a.next("url")?;
+                    let parent = abs(&a.next("parent folder")?)?;
+                    CtlRequest::ProjectClone { url, parent, name: a.opt("--name")? }
+                }
+                "show" => {
+                    let with_prs = a.flag("--prs");
+                    CtlRequest::Project { project_id: a.next("project id")?, with_prs }
+                }
+                "fetch" => CtlRequest::Fetch { project_id: a.next("project id")? },
+                "relocate" => {
+                    let project_id = a.next("project id")?;
+                    CtlRequest::RelocateProject { project_id, new_path: abs(&a.next("new path")?)? }
+                }
+                "remove-plan" => CtlRequest::RemovalPlan { project_id: a.next("project id")? },
+                "remove" => {
+                    let history = a.opt("--history")?.context("--history delete|archive is required")?;
+                    let discard = a.opts("--discard")?.iter().map(|p| abs(p)).collect::<Result<Vec<_>>>()?;
+                    let keep_merged = a.flag("--keep-merged");
+                    CtlRequest::RemoveProject { project_id: a.next("project id")?, discard, keep_merged, history }
+                }
+                other => bail!("unknown project subcommand {other:?}\n\n{USAGE}"),
+            };
+            a.done()?;
+            print(request(&sock, req)?)
+        }
+        "diff" => {
+            let against = a.opt("--against")?;
+            let worktree = abs(&a.next("worktree")?)?;
+            a.done()?;
+            print(request(&sock, CtlRequest::Diff { worktree, against })?)
+        }
+        "worktree-rm" => {
+            let delete_branch = a.flag("--delete-branch");
+            let confirm_discard = a.flag("--discard");
+            let project_id = a.next("project id")?;
+            let path = abs(&a.next("worktree path")?)?;
+            a.done()?;
+            print(request(&sock, CtlRequest::RemoveWorktree { project_id, path, delete_branch, confirm_discard })?)
+        }
+        "commit" => {
+            let paths = a.opts("--path")?;
+            let agent_id = a.next("agent")?;
+            if a.0.is_empty() {
+                bail!("missing message");
+            }
+            let message = a.0.join(" ");
+            print(request(&sock, CtlRequest::Commit { agent_id, message, paths: Some(paths).filter(|p| !p.is_empty()) })?)
+        }
+        "inbox" => {
+            a.done()?;
+            print(request(&sock, CtlRequest::Inbox)?)
+        }
+        "decide" => {
+            let scope = a.opt("--scope")?;
+            let message = a.opt("--message")?;
+            let item_id: u64 = a.next("item id")?.parse().context("item id")?;
+            let decision = match a.next("decision")?.as_str() {
+                "approve" | "allow" | "a" => InboxDecision::Approve,
+                "reject" | "deny" | "r" => InboxDecision::Reject,
+                "always" | "always-allow" => InboxDecision::AlwaysAllow,
+                "reply" => InboxDecision::Reply,
+                "dismiss" => InboxDecision::Dismiss,
+                other => bail!("unknown decision {other:?}"),
+            };
+            a.done()?;
+            print(request(&sock, CtlRequest::Decide { item_id, decision, scope, message })?)
+        }
+        "rules" => {
+            a.done()?;
+            print(request(&sock, CtlRequest::Rules)?)
+        }
+        "rule" => {
+            let req = match a.next("rule subcommand")?.as_str() {
+                "add" => CtlRequest::AddRule {
+                    scope: a.next("scope")?,
+                    scope_id: a.next("scope id")?,
+                    pattern: a.next("pattern")?,
+                    effect: a.next("effect")?,
+                },
+                "revoke" => CtlRequest::RevokeRule { id: a.next("rule id")?.parse().context("rule id")? },
+                other => bail!("unknown rule subcommand {other:?}"),
+            };
+            a.done()?;
+            print(request(&sock, req)?)
+        }
+        "audit" => {
+            let agent_id = if a.0.is_empty() { None } else { Some(a.next("agent")?) };
+            a.done()?;
+            print(request(&sock, CtlRequest::Audit { agent_id, limit: None })?)
+        }
+        "events" => {
+            let agent_id = a.opt("--agent")?;
+            let kind = a.opt("--kind")?;
+            let limit = a.opt("--limit")?.map(|l| l.parse()).transpose()?;
+            a.done()?;
+            print(request(&sock, CtlRequest::Events { agent_id, kind, since_ms: None, limit })?)
+        }
+        "search" => {
+            let project_id = a.opt("--project")?;
+            if a.0.is_empty() {
+                bail!("missing query");
+            }
+            let query = a.0.join(" ");
+            print(request(&sock, CtlRequest::Search { query, project_id, limit: None })?)
+        }
         other => bail!("unknown command {other:?}\n\n{USAGE}"),
     }
 }
@@ -234,8 +362,23 @@ fn serve(paths: AppPaths, mut a: Args) -> Result<()> {
         cfg.hold = Duration::from_secs(h.parse()?);
     }
     cfg.otel_endpoint = a.opt("--otel")?;
+    let no_otel = a.flag("--no-otel");
     if let Some(c) = a.opt("--claude")? {
         cfg.claude = PathBuf::from(c);
+    }
+    if let Some(h) = a.opt("--permission-hold-secs")? {
+        cfg.permission_hold = Duration::from_secs(h.parse()?);
+    }
+    if let Some(m) = a.opt("--idle-min")? {
+        let m: u64 = m.parse()?;
+        cfg.idle_suspend = (m > 0).then(|| Duration::from_secs(m * 60));
+    }
+    if let Some(p) = a.opt("--projects-root")? {
+        // Tests only: where transcripts are looked up instead of ~/.claude/projects.
+        cfg.projects_root = PathBuf::from(p);
+    }
+    if let Some(m) = a.opt("--fetch-min")? {
+        cfg.fetch.interval = Duration::from_secs(m.parse::<u64>()?.max(1) * 60);
     }
     a.done()?;
     // Refuse early if another core is up (before touching any agent).
@@ -248,9 +391,16 @@ fn serve(paths: AppPaths, mut a: Args) -> Result<()> {
             paths.bin_dir().display()
         );
     }
+    let external_otel = cfg.otel_endpoint.is_some();
     let rt = Runtime::new(cfg)?;
     for w in &rt.warnings {
         eprintln!("orchd: warning: {w}");
+    }
+    if !external_otel && !no_otel {
+        match rt.start_otlp(0) {
+            Ok(ep) => eprintln!("orchd: OTLP receiver on {ep} (local only)"),
+            Err(e) => eprintln!("orchd: warning: OTLP receiver not started: {e:#}"),
+        }
     }
     if recover {
         let r = rt.recover(true)?;
