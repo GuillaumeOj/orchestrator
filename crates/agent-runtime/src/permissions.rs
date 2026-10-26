@@ -57,6 +57,11 @@ pub fn matches(pattern: &str, tool: &str, input: &Value) -> bool {
     }
     let Some(spec) = spec else { return true };
     let Some(arg) = primary_input(tool, input) else { return false };
+    // A prefix rule never covers a compound command: `git status:*` must not
+    // allow `git status && rm -rf ~`.
+    if tool == "Bash" && is_compound(&arg) && spec.ends_with('*') {
+        return false;
+    }
     if let Some(prefix) = spec.strip_suffix(":*") {
         // `git status:*` matches `git status` and `git status -s`, not `git statusx`.
         return arg == prefix || arg.starts_with(&format!("{prefix} "));
@@ -74,6 +79,12 @@ pub fn matches(pattern: &str, tool: &str, input: &Value) -> bool {
     arg == spec
 }
 
+/// Shell control operators, substitutions or redirections: more than one
+/// simple command (or a side effect) hides behind the prefix.
+pub fn is_compound(cmd: &str) -> bool {
+    ["&&", "||", ";", "|", "&", "`", "$(", "<(", ">(", ">", "<", "\n"].iter().any(|op| cmd.contains(op))
+}
+
 fn applies(r: &PermissionRule, s: &Subject) -> bool {
     match r.scope {
         RuleScope::Agent => r.scope_id == s.agent_id,
@@ -89,12 +100,15 @@ pub fn evaluate<'a>(rules: &'a [PermissionRule], s: &Subject, tool: &str, input:
     [RuleEffect::Deny, RuleEffect::Ask, RuleEffect::Allow].iter().find_map(|e| hits.iter().find(|r| r.effect == *e).copied())
 }
 
-/// The rule "always allow this" creates: exact Bash command, the tool for the
-/// others (a file tool's scope is the project already).
-pub fn always_pattern(tool: &str, input: &Value) -> String {
+/// The rule "always allow this" creates: the exact Bash command, the tool for
+/// the others (a file tool's scope is the project already). `None` when no
+/// rule would mean exactly this call (a command a rule would read as a prefix,
+/// or with parentheses the pattern syntax can't hold).
+pub fn always_pattern(tool: &str, input: &Value) -> Option<String> {
     match (tool, primary_input(tool, input)) {
-        ("Bash", Some(cmd)) if !cmd.contains(['(', ')']) => format!("Bash({cmd})"),
-        _ => tool.to_string(),
+        ("Bash", Some(cmd)) => (!cmd.contains(['(', ')']) && !cmd.ends_with('*')).then(|| format!("Bash({cmd})")),
+        ("Bash", None) => None,
+        _ => Some(tool.to_string()),
     }
 }
 
@@ -142,6 +156,12 @@ mod tests {
         assert!(matches("mcp__penpot__*", "mcp__penpot__export", &json!({})));
         assert!(matches("mcp__orch__commit", "mcp__orch__commit", &json!({"message": "x"})));
         assert!(!matches("WebFetch(https://a.example/*)", "WebFetch", &json!({})));
+        // Prefix rules never cover compound commands; exact rules match only themselves.
+        for c in ["git status && rm -rf ~", "git status; curl x", "git status | sh", "git status $(rm x)", "git status > /etc/x"] {
+            assert!(!matches("Bash(git status:*)", "Bash", &bash(c)), "{c}");
+        }
+        assert!(!matches("Bash(ls *)", "Bash", &bash("ls ; rm -rf /")));
+        assert!(matches("Bash(cargo test | tee log)", "Bash", &bash("cargo test | tee log")));
     }
 
     #[test]
@@ -164,8 +184,10 @@ mod tests {
 
     #[test]
     fn always_patterns_and_summaries() {
-        assert_eq!(always_pattern("Bash", &json!({"command": "cargo test"})), "Bash(cargo test)");
-        assert_eq!(always_pattern("Edit", &json!({"file_path": "/x"})), "Edit");
+        assert_eq!(always_pattern("Bash", &json!({"command": "cargo test"})).as_deref(), Some("Bash(cargo test)"));
+        assert_eq!(always_pattern("Bash", &json!({"command": "ls *"})), None, "would read as a prefix");
+        assert_eq!(always_pattern("Bash", &json!({"command": "echo $(x)"})), None);
+        assert_eq!(always_pattern("Edit", &json!({"file_path": "/x"})).as_deref(), Some("Edit"));
         assert_eq!(summary("Bash", &json!({"command": "ls"})), "Bash: ls");
         assert_eq!(summary("mcp__x__y", &json!({})), "mcp__x__y");
     }

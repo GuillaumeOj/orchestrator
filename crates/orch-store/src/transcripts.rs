@@ -45,10 +45,10 @@ const MAX_CHUNK: u64 = 16 * 1024 * 1024;
 /// Text kept per entry.
 const MAX_ENTRY_TEXT: usize = 8 * 1024;
 
-/// Claude Code's folder name for a project path under `~/.claude/projects`
-/// (`/` and `.` become `-`).
+/// Claude Code's folder name for a project path under `~/.claude/projects`:
+/// every character that is not an ASCII letter or digit becomes `-`.
 pub fn encode_project_dir(path: &Path) -> String {
-    path.to_string_lossy().chars().map(|c| if c == '/' || c == '.' { '-' } else { c }).collect()
+    path.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
 /// The searchable text of one transcript entry: user text, assistant text,
@@ -143,8 +143,14 @@ impl Store {
             file.seek(SeekFrom::Start(offset))?;
             let mut buf = Vec::new();
             file.take(MAX_CHUNK).read_to_end(&mut buf)?;
-            // Only complete lines; a partial last line is read next time.
-            let end = buf.iter().rposition(|b| *b == b'\n').map(|i| i + 1).unwrap_or(0);
+            // Only complete lines; a partial last line is read next time. A
+            // single line longer than a whole chunk is skipped (not indexed),
+            // or the file would never move on.
+            let end = match buf.iter().rposition(|b| *b == b'\n') {
+                Some(i) => i + 1,
+                None if buf.len() as u64 == MAX_CHUNK => buf.len(),
+                None => 0,
+            };
             let mut rows: Vec<(String, String, Option<String>, Option<String>)> = vec![];
             for line in buf[..end].split(|b| *b == b'\n') {
                 let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
@@ -265,10 +271,25 @@ mod tests {
     }
 
     #[test]
+    fn a_line_longer_than_a_chunk_does_not_stall_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(&d.path().join("orch.db")).unwrap();
+        let path = d.path().join("big.jsonl");
+        let huge = format!(r#"{{"type":"user","message":{{"content":"{}"}}}}"#, "x".repeat(MAX_CHUNK as usize + 10));
+        std::fs::write(&path, format!("{huge}\n{}\n", r#"{"type":"user","message":{"content":"after the giant"}}"#)).unwrap();
+        let tf = [TranscriptFile { path, session_id: "s".into(), project_id: None }];
+        for _ in 0..3 {
+            s.index_transcripts(&tf).unwrap();
+        }
+        assert_eq!(s.search_transcripts("giant", None, 5).unwrap().len(), 1);
+    }
+
+    #[test]
     fn project_dir_encoding() {
         assert_eq!(
             encode_project_dir(Path::new("/Users/g/dev/orchestrator/.claude/worktrees/epic")),
             "-Users-g-dev-orchestrator--claude-worktrees-epic"
         );
+        assert_eq!(encode_project_dir(Path::new("/Users/g/dev/my_app v2")), "-Users-g-dev-my-app-v2");
     }
 }

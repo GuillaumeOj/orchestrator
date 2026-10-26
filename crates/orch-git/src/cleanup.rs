@@ -184,7 +184,7 @@ fn describe(
         unmerged_commits: unmerged,
         merged,
         in_progress: insp.in_progress,
-        safe_to_remove: safe || (verdict == WorktreeVerdict::Prunable && merged),
+        safe_to_remove: safe,
     }
 }
 
@@ -232,10 +232,13 @@ pub fn remove_worktree(
                 bail!("{}: {} uncommitted file(s) (needs confirmation)", p.display(), i.dirty);
             }
         }
-        if let Some(b) = &branch {
-            let (ahead, _) = ahead_behind(repo, b, base);
-            if ahead > 0 && !git_ok(repo, &["merge-base", "--is-ancestor", b, base]) {
-                bail!("{b}: {ahead} commit(s) not merged into {base} (needs confirmation)");
+        // The branch, or a detached HEAD, must be reachable from the base. A
+        // base that doesn't resolve counts as unmerged (never "0 ahead").
+        let tip = branch.clone().or_else(|| git_wt.as_ref().and_then(|w| w.head.clone()));
+        if let Some(t) = &tip {
+            if !git_ok(repo, &["merge-base", "--is-ancestor", t, base]) {
+                let (ahead, _) = ahead_behind(repo, t, base);
+                bail!("{t}: not merged into {base} ({ahead} commit(s) ahead; needs confirmation)");
             }
         }
     }
@@ -285,9 +288,8 @@ pub fn delete_branch(repo: &Path, branch: &str, base: &str, confirm: Confirm) ->
     if confirm == Confirm::Safe && !git_ok(repo, &["merge-base", "--is-ancestor", branch, base]) {
         bail!("{branch} is not merged into {base} (needs confirmation)");
     }
-    let flag = if confirm == Confirm::DiscardUnmerged { "-D" } else { "-d" };
-    // `-d` checks against HEAD/upstream; we checked against `base` ourselves.
-    git(repo, &["branch", if flag == "-d" { "-D" } else { flag }, branch])?;
+    // `-d` would check against HEAD/upstream; the check against `base` is done above.
+    git(repo, &["branch", "-D", branch])?;
     Ok(())
 }
 
@@ -364,6 +366,14 @@ mod tests {
         tgit(&repo, &["worktree", "add", "-q", ext.to_str().unwrap(), "orch/solo/lonely2"]);
         assert!(delete_branch(&repo, "orch/solo/lonely2", "main", Confirm::Safe).is_err());
         tgit(&repo, &["worktree", "remove", "--force", ext.to_str().unwrap()]);
+        // A detached HEAD with its own commits, and a base that doesn't exist, need confirmation.
+        let det = solo(&store, &repo, "det");
+        tgit(&det.path, &["checkout", "-q", "--detach"]);
+        commit_file(&det.path, "d.txt", "d", "detached work");
+        assert!(remove_worktree(&repo, &det.path, "main", false, Confirm::Safe).unwrap_err().to_string().contains("not merged"));
+        let clean = solo(&store, &repo, "clean");
+        assert!(remove_worktree(&repo, &clean.path, "no-such-base", true, Confirm::Safe).is_err());
+        assert!(det.path.is_dir() && clean.path.is_dir());
         // A prunable entry (folder deleted by hand) is pruned.
         std::fs::remove_dir_all(&stray).unwrap();
         let infos = worktrees(&repo, &[], "main").unwrap();

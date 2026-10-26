@@ -235,13 +235,7 @@ struct Data {
 
 // ------------------------------------------------------------ row mapping
 
-fn tag<T: Serialize>(v: &T) -> String {
-    match serde_json::to_value(v) {
-        Ok(Value::String(s)) => s,
-        Ok(other) => other.to_string(),
-        Err(_) => String::new(),
-    }
-}
+use orch_store::tag;
 
 fn agent_row(a: &AgentRecord) -> AgentRow {
     AgentRow {

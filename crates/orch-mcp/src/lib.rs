@@ -84,7 +84,7 @@ fn tool_text(text: &str, is_error: bool) -> Value {
 }
 
 /// Answers one JSON-RPC message; `None` for notifications.
-pub fn handle(msg: &Value, env: &McpEnv, call: &dyn Fn(&str, &Value) -> (bool, String)) -> Option<Value> {
+pub fn handle(msg: &Value, call: &dyn Fn(&str, &Value) -> (bool, String)) -> Option<Value> {
     let id = msg.get("id")?.clone();
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
@@ -111,7 +111,6 @@ pub fn handle(msg: &Value, env: &McpEnv, call: &dyn Fn(&str, &Value) -> (bool, S
             }
             let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
             let (is_error, text) = call(name, &args);
-            let _ = env;
             result(&id, tool_text(&text, is_error))
         }
         "resources/list" => result(&id, json!({"resources": []})),
@@ -158,10 +157,10 @@ pub fn serve(input: impl BufRead, mut output: impl Write, env: &McpEnv) {
         }
         let reply = match serde_json::from_str::<Value>(&line) {
             Ok(Value::Array(batch)) => {
-                let rs: Vec<Value> = batch.iter().filter_map(|m| handle(m, env, &call)).collect();
+                let rs: Vec<Value> = batch.iter().filter_map(|m| handle(m, &call)).collect();
                 if rs.is_empty() { None } else { Some(Value::Array(rs)) }
             }
-            Ok(m) => handle(&m, env, &call),
+            Ok(m) => handle(&m, &call),
             Err(e) => Some(error(&Value::Null, -32700, &format!("parse error: {e}"))),
         };
         if let Some(r) = reply {

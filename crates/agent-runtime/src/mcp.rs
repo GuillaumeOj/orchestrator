@@ -37,7 +37,7 @@ impl Runtime {
                     let _ = self.db.audit(&format!("rule:{}", rule.id), Some(&rec.id), &m.tool, None, "deny", m.arguments.clone());
                     return (true, format!("Denied by the user's rule {} ({}). Do not retry.", rule.id, rule.pattern), Value::Null);
                 }
-                RuleEffect::Ask => match self.ask_user(&rec, &tool, &m.arguments, m.deadline_ms, conn) {
+                RuleEffect::Ask => match self.ask_user(&rec, &tool, &m.arguments, rule.id, m.deadline_ms, conn) {
                     Ok(()) => actor = "user".into(),
                     Err(e) => return (true, format!("{e:#}"), Value::Null),
                 },
@@ -65,15 +65,24 @@ impl Runtime {
         }
     }
 
-    /// Holds a tool call for an Inbox decision (an `ask` rule).
-    fn ask_user(&self, rec: &AgentRecord, tool: &str, args: &Value, deadline_ms: u64, conn: Option<&UnixStream>) -> Result<()> {
+    /// Holds a tool call for an Inbox decision (the `ask` rule `ask_rule`).
+    fn ask_user(
+        &self,
+        rec: &AgentRecord,
+        tool: &str,
+        args: &Value,
+        ask_rule: u64,
+        deadline_ms: u64,
+        conn: Option<&UnixStream>,
+    ) -> Result<()> {
         let subject = self.subject(rec);
         let item = self.store.write(|s| {
             s.add_inbox_item(
                 Some(&rec.id),
                 "permission",
                 format!("{}: {}", rec.id, permissions::summary(tool, args)),
-                json!({"tool": tool, "input": args, "always_pattern": tool, "project_id": subject.project_id, "role": subject.role}),
+                // No "always allow": an allow rule never wins over the ask rule.
+                json!({"tool": tool, "input": args, "ask_rule": ask_rule, "project_id": subject.project_id, "role": subject.role}),
                 PRIORITY_BLOCKING,
             )
         })?;

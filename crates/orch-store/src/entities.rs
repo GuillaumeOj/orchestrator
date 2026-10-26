@@ -26,8 +26,9 @@ fn from_js<T: DeserializeOwned>(s: &str) -> rusqlite::Result<T> {
     serde_json::from_str(s).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into()))
 }
 
-/// A unit enum's serde name (`Tier::High` → `high`).
-pub(crate) fn tag<T: Serialize>(v: &T) -> String {
+/// A unit enum's serde name (`Tier::High` → `high`); for an externally
+/// tagged variant with data, its tag.
+pub fn tag<T: Serialize>(v: &T) -> String {
     match serde_json::to_value(v) {
         Ok(Value::String(s)) => s,
         Ok(Value::Object(m)) => m.keys().next().cloned().unwrap_or_default(),

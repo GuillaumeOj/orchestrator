@@ -9,6 +9,7 @@ mod runtime_rows;
 mod transcripts;
 
 pub use db::{Store, Tx};
+pub use entities::tag;
 pub use events::{AuditEntry, Event, Retention};
 pub use migrations::SCHEMA_VERSION;
 pub use model::*;

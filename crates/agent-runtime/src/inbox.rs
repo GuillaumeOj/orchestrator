@@ -104,6 +104,7 @@ impl Runtime {
         let input = p.tool_input.clone().unwrap_or(Value::Null);
         let subject = self.subject(rec);
         let rules = self.db.rules().unwrap_or_default();
+        let mut ask_rule = None;
         if let Some(rule) = permissions::evaluate(&rules, &subject, &tool, &input) {
             let actor = format!("rule:{}", rule.id);
             match rule.effect {
@@ -118,18 +119,22 @@ impl Runtime {
                         Some(&format!("ORCH: denied by the user's rule {} ({}).", rule.id, rule.pattern)),
                     ));
                 }
-                RuleEffect::Ask => {}
+                RuleEffect::Ask => ask_rule = Some(rule.id),
             }
         }
         let budget = self.cfg.permission_hold.min(Duration::from_millis(deadline_ms.saturating_sub(1_000)));
-        self.permission_request_with(rec, p, budget, conn)
+        self.permission_request_with(rec, p, &subject, ask_rule, budget, conn)
     }
 
     /// The Inbox part of [`Runtime::permission_request`], after the rules.
+    /// `ask_rule`: the `ask` rule that sent it here (then "always allow" is not
+    /// offered: an allow rule would never win over it).
     pub(crate) fn permission_request_with(
         &self,
         rec: &AgentRecord,
         p: &HookPayload,
+        subject: &Subject,
+        ask_rule: Option<u64>,
         budget: Duration,
         conn: Option<&UnixStream>,
     ) -> Option<HookOutput> {
@@ -138,7 +143,7 @@ impl Runtime {
         }
         let tool = p.tool_name.clone().unwrap_or_else(|| "?".into());
         let input = p.tool_input.clone().unwrap_or(Value::Null);
-        let subject = self.subject(rec);
+        let always = if ask_rule.is_some() { None } else { permissions::always_pattern(&tool, &input) };
         let summary = permissions::summary(&tool, &input);
         let item = match self.add_item(
             Some(&rec.id),
@@ -148,7 +153,8 @@ impl Runtime {
                 "tool": tool,
                 "input": input,
                 "tool_use_id": p.tool_use_id,
-                "always_pattern": permissions::always_pattern(&tool, &input),
+                "always_pattern": always,
+                "ask_rule": ask_rule,
                 "project_id": subject.project_id,
                 "role": subject.role,
             }),
@@ -200,7 +206,9 @@ impl Runtime {
         out
     }
 
-    /// The user's decision on an Inbox item. Logged (FR-709) before it is acted on.
+    /// The user's decision on an Inbox item. The item is claimed atomically
+    /// (a second decision, or one after the hold expired, is refused), then
+    /// logged (FR-709) before anything acts on it.
     pub fn decide(&self, id: u64, decision: InboxDecision, scope: Option<&str>, message: Option<&str>) -> Result<Value> {
         let item = self
             .store
@@ -209,6 +217,24 @@ impl Runtime {
         if !item.pending() {
             bail!("Inbox item {id} is already {:?}", item.status);
         }
+        // Checked before claiming: an always-allow that can't become a rule is refused whole.
+        let rule_spec = if decision == InboxDecision::AlwaysAllow {
+            let Some(pattern) = item.payload.get("always_pattern").and_then(Value::as_str).map(str::to_string) else {
+                match item.payload.get("ask_rule").and_then(Value::as_u64) {
+                    Some(r) => bail!("rule {r} says to always ask for this: revoke it to allow it always"),
+                    None => bail!("item {id} cannot become a rule (approve it once instead)"),
+                }
+            };
+            let (sc, sid) = match scope.unwrap_or("project") {
+                "agent" => (RuleScope::Agent, item.agent_id.clone()),
+                "role" => (RuleScope::Role, item.payload.get("role").and_then(Value::as_str).map(str::to_string)),
+                _ => (RuleScope::Project, item.payload.get("project_id").and_then(Value::as_str).map(str::to_string)),
+            };
+            let sid = sid.ok_or_else(|| anyhow!("no {} to scope the rule to", sc.as_str()))?;
+            Some((sc, sid, pattern))
+        } else {
+            None
+        };
         let word = match decision {
             InboxDecision::Approve => "approve",
             InboxDecision::Reject => "reject",
@@ -216,6 +242,23 @@ impl Runtime {
             InboxDecision::Reply => "reply",
             InboxDecision::Dismiss => "dismiss",
         };
+        let status = if decision == InboxDecision::Dismiss { InboxStatus::Dismissed } else { InboxStatus::Decided };
+        let claimed = self.store.write(|s| match s.inbox.iter_mut().find(|i| i.id == id) {
+            Some(i) if i.pending() => {
+                i.status = status;
+                i.decided_at_ms = Some(now_ms());
+                i.decision = Some(word.into());
+                if let Some(m) = message {
+                    i.payload["reply"] = json!(m);
+                }
+                Ok(())
+            }
+            Some(i) => Err(i.status),
+            None => Err(InboxStatus::Dismissed),
+        })?;
+        if let Err(now) = claimed {
+            bail!("Inbox item {id} is already {now:?}");
+        }
         let target = item.payload.get("tool").and_then(Value::as_str).map(str::to_string);
         self.db.audit(
             "user",
@@ -226,34 +269,11 @@ impl Runtime {
             json!({"item": id, "body": item.body, "message": message, "scope": scope}),
         )?;
         let mut result = json!({"item": id, "decision": word});
-        if decision == InboxDecision::AlwaysAllow {
-            let pattern = item
-                .payload
-                .get("always_pattern")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow!("item {id} cannot become a rule"))?
-                .to_string();
-            let (sc, sid) = match scope.unwrap_or("project") {
-                "agent" => (RuleScope::Agent, item.agent_id.clone()),
-                "role" => (RuleScope::Role, item.payload.get("role").and_then(Value::as_str).map(str::to_string)),
-                _ => (RuleScope::Project, item.payload.get("project_id").and_then(Value::as_str).map(str::to_string)),
-            };
-            let sid = sid.ok_or_else(|| anyhow!("no {} to scope the rule to", sc.as_str()))?;
+        if let Some((sc, sid, pattern)) = rule_spec {
             let rule = self.db.add_rule(sc, &sid, &pattern, RuleEffect::Allow, Some(id))?;
             self.db.audit("user", item.agent_id.as_deref(), "rule_added", Some(&pattern), "allow", json!(rule))?;
             result["rule"] = json!(rule);
         }
-        let status = if decision == InboxDecision::Dismiss { InboxStatus::Dismissed } else { InboxStatus::Decided };
-        self.store.write(|s| {
-            if let Some(i) = s.inbox.iter_mut().find(|i| i.id == id) {
-                i.status = status;
-                i.decided_at_ms = Some(now_ms());
-                i.decision = Some(word.into());
-                if let Some(m) = message {
-                    i.payload["reply"] = json!(m);
-                }
-            }
-        })?;
         // Kind-specific follow-ups that don't wait on a held hook.
         let action = item.payload.get("action").and_then(Value::as_str).unwrap_or("");
         match (item.kind.as_str(), action, decision) {
@@ -416,6 +436,40 @@ mod tests {
     }
 
     #[test]
+    fn a_decision_is_claimed_once_and_ask_rules_refuse_always_allow() {
+        let (_d, rt) = test_runtime(true);
+        let id = rt.store.write(|s| s.add_inbox(Some("a1"), "question", "q".into())).unwrap();
+        let hs: Vec<_> = (0..8)
+            .map(|_| {
+                let rt = rt.clone();
+                std::thread::spawn(move || rt.decide(id, InboxDecision::Reply, None, Some("yes")).is_ok())
+            })
+            .collect();
+        let wins = hs.into_iter().map(|h| h.join().unwrap()).filter(|ok| *ok).count();
+        assert_eq!(wins, 1, "exactly one decision acts");
+        assert_eq!(rt.store.read(|s| s.turns.iter().filter(|t| t.body == "yes").count()), 1);
+        // An item sent to the Inbox by an `ask` rule can be approved, not always-allowed.
+        rt.db.add_rule(RuleScope::Role, "solo", "Bash(make:*)", RuleEffect::Ask, None).unwrap();
+        let rt2 = rt.clone();
+        let h = std::thread::spawn(move || rt2.on_hook(&perm("make all"), None));
+        let mut item = None;
+        for _ in 0..100 {
+            item = rt.inbox().into_iter().find(|i| i.kind == "permission");
+            if item.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let item = item.unwrap();
+        let e = rt.decide(item.id, InboxDecision::AlwaysAllow, None, None).unwrap_err();
+        assert!(e.to_string().contains("always ask"), "{e}");
+        let st = rt.store.read(|s| s.inbox.iter().find(|i| i.id == item.id).unwrap().status);
+        assert_ne!(st, InboxStatus::Decided, "refused whole");
+        assert!(rt.db.rules().unwrap().iter().all(|r| r.effect != RuleEffect::Allow));
+        let _ = h.join();
+    }
+
+    #[test]
     fn esc_in_the_pane_interrupts_the_hold() {
         let (_d, rt) = test_runtime(true);
         let (core_end, hook_end) = UnixStream::pair().unwrap();
@@ -445,7 +499,8 @@ mod tests {
         fn permission_request_for_test(&self, cmd: &str, hold: Duration) -> Option<HookOutput> {
             let rec = self.store.read(|s| s.agents["a1"].clone());
             let p = HookPayload::parse(&json!({"hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": cmd}}));
-            self.permission_request_with(&rec, &p, hold, None)
+            let subject = self.subject(&rec);
+            self.permission_request_with(&rec, &p, &subject, None, hold, None)
         }
     }
 }

@@ -29,7 +29,7 @@ impl Runtime {
     pub fn add_project(&self, path: &Path) -> Result<Project> {
         let p = project::register(&self.db, path)?;
         self.db.audit("user", None, "project_added", p.path.to_str(), "ok", json!({"id": p.id}))?;
-        self.request_full_index();
+        self.mark_full_index();
         Ok(p)
     }
 
@@ -198,6 +198,9 @@ impl Runtime {
         if real(&top) != new || !new.join(".git").is_dir() {
             bail!("{} is not a main checkout", new.display());
         }
+        if let Some(other) = self.db.project_by_path(&new)?.filter(|o| o.id != p.id) {
+            bail!("{} is already registered as project {}", new.display(), other.id);
+        }
         let old = p.path.clone();
         let rows = self.store.read(|s| s.worktrees.values().filter(|w| w.repo == old).cloned().collect::<Vec<_>>());
         let map = repair::plan_relocation(&old, &new, &rows);
@@ -230,10 +233,6 @@ impl Runtime {
         self.db.upsert_project(&np)?;
         self.db.audit("user", None, "project_relocated", new.to_str(), "ok", json!({"from": old, "report": report}))?;
         Ok(report)
-    }
-
-    fn request_full_index(&self) {
-        self.mark_full_index();
     }
 }
 
@@ -289,6 +288,11 @@ mod tests {
         assert_eq!(rt.store.read(|s| s.agents["a1"].repo.clone()), new_repo);
         assert!(orch_git::repair::check_links(&row2.path).ok);
         assert!(rt.relocate_project(&p.id, &row2.path).is_err(), "a worktree is not a main checkout");
+        let (_o, other) = scratch_repo();
+        rt.add_project(&other).unwrap();
+        let e = rt.relocate_project(&p.id, &other).unwrap_err();
+        assert!(e.to_string().contains("already registered"), "{e}");
+        assert_eq!(rt.store.read(|s| s.agents["a1"].repo.clone()), new_repo, "nothing changed");
 
         // J11 delete: agents archived, rows gone from memory and database.
         let report = rt

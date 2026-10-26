@@ -25,16 +25,17 @@ pub fn serve(rt: Arc<Runtime>, listener: UnixListener, stop: Arc<AtomicBool>) ->
         let (rt, stop) = (rt.clone(), stop.clone());
         std::thread::Builder::new().name("orch-loops".into()).spawn(move || {
             let mut last_tick = Instant::now();
-            let mut last_house = Instant::now() - HOUSEKEEPING_EVERY;
+            // `Instant - Duration` can underflow shortly after boot: start "due" with None.
+            let mut last_house: Option<Instant> = None;
             while !stop.load(Ordering::SeqCst) {
                 rt.pump();
                 if last_tick.elapsed() >= TICK_EVERY {
                     rt.tick();
                     last_tick = Instant::now();
                 }
-                if last_house.elapsed() >= HOUSEKEEPING_EVERY {
+                if last_house.is_none_or(|t| t.elapsed() >= HOUSEKEEPING_EVERY) {
                     rt.housekeeping();
-                    last_house = Instant::now();
+                    last_house = Some(Instant::now());
                 }
                 std::thread::sleep(PUMP_EVERY);
             }
@@ -44,11 +45,11 @@ pub fn serve(rt: Arc<Runtime>, listener: UnixListener, stop: Arc<AtomicBool>) ->
     {
         let (rt, stop) = (rt.clone(), stop.clone());
         std::thread::Builder::new().name("orch-fetch".into()).spawn(move || {
-            let mut last = Instant::now() - FETCH_EVERY;
+            let mut last: Option<Instant> = None;
             while !stop.load(Ordering::SeqCst) {
-                if last.elapsed() >= FETCH_EVERY {
+                if last.is_none_or(|t| t.elapsed() >= FETCH_EVERY) {
                     rt.fetch_tick(&rt.cfg.fetch, rt.cfg.conditions.as_ref());
-                    last = Instant::now();
+                    last = Some(Instant::now());
                 }
                 std::thread::sleep(Duration::from_millis(500));
             }

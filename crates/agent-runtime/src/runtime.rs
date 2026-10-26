@@ -155,6 +155,8 @@ struct House {
     index_all: bool,
     /// Agents told they wait for a live slot (logged once per wait).
     cap_waiting: std::collections::BTreeSet<String>,
+    /// What `tick` last saved of the actions and the queue.
+    last_saved: String,
 }
 
 pub const FORECAST_EVERY_MS: u64 = 5 * 60 * 1000;
@@ -1009,8 +1011,20 @@ impl Runtime {
             let n = g.actions().len();
             (g.actions()[n.saturating_sub(50)..].to_vec(), g.queue().to_vec(), g.plan().id.clone(), g.snapshot(now), g.calibration(now))
         };
-        let _ = self.db.save_actions(self.boot_ms, &plan_id, &actions);
-        let _ = self.db.replace_queue(self.boot_ms, &queue);
+        // Written only when they changed (outcomes and undo change after the fact).
+        let fingerprint = serde_json::to_string(&(&actions, &queue)).unwrap_or_default();
+        let changed = {
+            let mut h = self.house();
+            let c = h.last_saved != fingerprint;
+            if c {
+                h.last_saved = fingerprint;
+            }
+            c
+        };
+        if changed {
+            let _ = self.db.save_actions(self.boot_ms, &plan_id, &actions);
+            let _ = self.db.replace_queue(self.boot_ms, &queue);
+        }
         let ms = now_ms();
         let (do_forecast, do_calib) = {
             let mut h = self.house();
@@ -1086,6 +1100,10 @@ impl Runtime {
             .iter()
             .filter_map(|(id, l)| {
                 let rec = self.store.read(|s| s.agents.get(id).cloned())?;
+                // A stop already under way (a suspend waits up to 5 s for the exit).
+                if rec.tracker.stop_intent != StopIntent::None {
+                    return None;
+                }
                 let last = [
                     rec.last_event_at_ms.unwrap_or(0),
                     l.last_user_input_ms.load(Ordering::SeqCst),
@@ -1171,21 +1189,14 @@ impl Runtime {
             }
         }
         if only.is_none() {
-            for p in &projects {
-                let prefixes = [orch_store::encode_project_dir(&p.path), orch_store::encode_project_dir(&p.worktree_root)];
-                let Ok(dirs) = std::fs::read_dir(&self.cfg.projects_root) else { break };
-                for d in dirs.flatten() {
-                    let name = d.file_name().to_string_lossy().into_owned();
-                    let mine = prefixes.iter().any(|pre| name == *pre || name.starts_with(&format!("{pre}-")));
-                    if !mine {
-                        continue;
-                    }
-                    for f in std::fs::read_dir(d.path()).into_iter().flatten().flatten() {
-                        let path = f.path();
-                        if path.extension().is_some_and(|e| e == "jsonl") && !files.iter().any(|x| x.path == path) {
-                            let sid = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                            files.push(orch_store::TranscriptFile { path, session_id: sid, project_id: Some(p.id.clone()) });
-                        }
+            for d in std::fs::read_dir(&self.cfg.projects_root).into_iter().flatten().flatten() {
+                let name = d.file_name().to_string_lossy().into_owned();
+                let Some(pid) = project_for_dir(&projects, &name) else { continue };
+                for f in std::fs::read_dir(d.path()).into_iter().flatten().flatten() {
+                    let path = f.path();
+                    if path.extension().is_some_and(|e| e == "jsonl") && !files.iter().any(|x| x.path == path) {
+                        let sid = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                        files.push(orch_store::TranscriptFile { path, session_id: sid, project_id: Some(pid.clone()) });
                     }
                 }
             }
@@ -1461,6 +1472,29 @@ impl Runtime {
     }
 }
 
+/// The project a `~/.claude/projects/<name>` folder belongs to: the folder of
+/// its checkout exactly, or a folder under its worktree root (sessions started
+/// in a subfolder of the checkout can't be told apart from a sibling project
+/// with the same encoded prefix, so they are left out). The longest match wins.
+fn project_for_dir(projects: &[orch_store::Project], name: &str) -> Option<String> {
+    projects
+        .iter()
+        .filter_map(|p| {
+            let main = orch_store::encode_project_dir(&p.path);
+            let root = orch_store::encode_project_dir(&p.worktree_root);
+            let len = if name == main {
+                main.len()
+            } else if name == root || name.starts_with(&format!("{root}-")) {
+                root.len()
+            } else {
+                return None;
+            };
+            Some((len, p.id.clone()))
+        })
+        .max_by_key(|(len, _)| *len)
+        .map(|(_, id)| id)
+}
+
 /// The Governor at start: the active plan when its week is still running
 /// (else the default week), the stored policy (live cap from the config), and
 /// this week's statusline samples replayed with their cost class (NFR-2).
@@ -1515,7 +1549,7 @@ fn usage_record(
     class: governor::CostClass,
     allocation: Option<String>,
 ) -> orch_store::UsageRecord {
-    let tag = |v: &dyn erased::Tag| v.tag();
+    use orch_store::tag;
     orch_store::UsageRecord {
         ts_ms: g.ts.as_millisecond().max(0) as u64,
         agent_id: g.agent.as_ref().map(|a| a.0.clone()),
@@ -1531,22 +1565,6 @@ fn usage_record(
         class: Some(tag(&class)),
         allocation,
         ..Default::default()
-    }
-}
-
-mod erased {
-    /// A unit enum's serde name.
-    pub trait Tag {
-        fn tag(&self) -> String;
-    }
-
-    impl<T: serde::Serialize> Tag for T {
-        fn tag(&self) -> String {
-            match serde_json::to_value(self) {
-                Ok(serde_json::Value::String(s)) => s,
-                _ => String::new(),
-            }
-        }
     }
 }
 
@@ -1775,6 +1793,26 @@ pub(crate) mod tests {
         }
         assert_eq!(hits.len(), 1, "found by session id in any project folder");
         assert_eq!(hits[0].session_id, "s");
+    }
+
+    #[test]
+    fn transcript_folders_map_to_the_right_project() {
+        let pr = |id: &str, path: &str| {
+            let mut p: orch_store::Project = serde_json::from_value(json!({
+                "id": id, "name": id, "path": path, "default_branch": "main", "remotes": [],
+                "worktree_root": format!("{path}.worktrees"), "task_backend": {}, "track_orchestrator_dir": true,
+                "settings": {}, "created_at_ms": 0, "last_active_at_ms": 0, "last_fetch_at_ms": null,
+                "last_fetch_error": null, "archived": false}))
+            .unwrap();
+            p.path = path.into();
+            p
+        };
+        let ps = vec![pr("demo", "/x/demo"), pr("demo-api", "/x/demo-api")];
+        assert_eq!(project_for_dir(&ps, "-x-demo").as_deref(), Some("demo"));
+        assert_eq!(project_for_dir(&ps, "-x-demo-api").as_deref(), Some("demo-api"), "not the sibling's prefix");
+        assert_eq!(project_for_dir(&ps, "-x-demo-worktrees-solo-fix").as_deref(), Some("demo"));
+        assert_eq!(project_for_dir(&ps, "-x-demo-api-worktrees-solo-a").as_deref(), Some("demo-api"));
+        assert_eq!(project_for_dir(&ps, "-x-other"), None);
     }
 
     #[test]

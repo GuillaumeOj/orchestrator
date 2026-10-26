@@ -27,6 +27,8 @@ pub struct RepoStatus {
     pub behind: Option<u32>,
     pub staged: u32,
     pub unstaged: u32,
+    /// Tracked files with a staged or an unstaged change (each file once).
+    pub changed: u32,
     pub untracked: u32,
     pub conflicted: u32,
     pub stash: u32,
@@ -36,7 +38,7 @@ pub struct RepoStatus {
 impl RepoStatus {
     /// Files with any change (the "dirty count" of J1).
     pub fn dirty(&self) -> u32 {
-        self.staged.max(self.unstaged) + self.untracked + self.conflicted
+        self.changed + self.untracked + self.conflicted
     }
 }
 
@@ -63,6 +65,7 @@ pub fn parse_porcelain_v2(out: &str) -> RepoStatus {
         let mut it = line.splitn(3, ' ');
         match it.next() {
             Some("1") | Some("2") => {
+                s.changed += 1;
                 let xy = it.next().unwrap_or("..").as_bytes();
                 if xy.first().is_some_and(|c| *c != b'.') {
                     s.staged += 1;
@@ -113,6 +116,7 @@ mod tests {
         assert_eq!(s.branch.as_deref(), Some("main"));
         assert_eq!((s.ahead, s.behind, s.stash), (Some(2), Some(3), 4));
         assert_eq!((s.staged, s.unstaged, s.untracked, s.conflicted), (3, 2, 2, 1));
+        assert_eq!(s.dirty(), 4 + 2 + 1, "3 staged + 1 unstaged-only file, untracked, conflicted");
         let d = parse_porcelain_v2("# branch.oid (initial)\n# branch.head (detached)\n");
         assert_eq!((d.branch, d.head, d.ahead), (None, None, None));
     }

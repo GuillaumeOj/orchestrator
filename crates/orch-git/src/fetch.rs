@@ -93,7 +93,9 @@ pub fn due<'a>(projects: &'a [Project], now_ms: u64, policy: &FetchPolicy) -> Ve
     let every = policy.interval.as_millis() as u64;
     projects
         .iter()
-        .filter(|p| !p.archived && !p.remotes.is_empty())
+        // Remotes are not filtered on: one added after registration must be fetched too
+        // (`fetch --all` with no remote is a quick no-op).
+        .filter(|p| !p.archived)
         .filter(|p| now_ms.saturating_sub(p.last_active_at_ms) <= active)
         .filter(|p| p.last_fetch_at_ms.is_none_or(|t| now_ms.saturating_sub(t) >= every))
         .collect()
