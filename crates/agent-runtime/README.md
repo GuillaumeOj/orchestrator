@@ -217,7 +217,7 @@ new place, the known worktrees are repaired (targeted) and re-locked.
 - **Commit default**: `mcp__orch__commit` is allowed in the generated settings and runs unless a
   rule says `deny`/`ask` (committing in its own worktree is the agent's normal work, FR-701).
 - **Hooks off for agent commits**: a pre-commit hook would run agent-editable code outside the
-  sandbox. Proposed spec edit below.
+  sandbox (SPEC FR-702, ADR-009 decision 5).
 - **Permission hold** default 300 s: long enough to answer from the Inbox, then the pane's own
   dialog takes over (FR-705 leaves the length open).
 - **Live cap**: user-started or user-resumed agents may exceed the cap (the user's action wins);

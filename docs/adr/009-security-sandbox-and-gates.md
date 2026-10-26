@@ -1,6 +1,6 @@
 # ADR-009 — Security: enforced sandbox, no agent credentials, gates via hooks
 
-- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-21 (agent runtime: worktree git access, commit gap)
+- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-26 (P1 core services: commits through `orch-mcp`, PR gate, rule evaluation)
 
 ## Context
 The review found that permission rules alone don't enforce a "worktree sandbox":
@@ -16,7 +16,7 @@ The review found that permission rules alone don't enforce a "worktree sandbox":
    - Don't deny `~/.gitconfig`: it breaks git entirely (P0).
    - The main checkout is denied **entry by entry, except its `.git`**, and the repository's git dir gets `allowRead` and `allowWrite`: the worktree's git needs it, and the CLI drops an `allowWrite` that lies under a `denyRead` path. Top-level entries created later are covered at the next spawn.
    - Sandbox paths are plain absolute paths (`/x`, `~/x`); the `//` form is for permission rules only.
-   - **Known gap (2026-10-21, Claude Code 2.1.302)**: sandboxed Bash in a linked worktree still cannot write the repository's git dir (`index.lock` denied), whatever `allowWrite` or `--add-dir` says, although the docs say linked worktrees get this grant. Agents can't commit; the core commits for them until this is fixed (SPEC R10). The same runs showed the sandbox blocking reads outside the working directory by default, unlike P0.
+   - **Known gap (2026-10-21, Claude Code 2.1.302)**: sandboxed Bash in a linked worktree still cannot write the repository's git dir (`index.lock` denied), whatever `allowWrite` or `--add-dir` says, although the docs say linked worktrees get this grant. Agents can't `git commit`; they call the orchestrator MCP tool `commit` and the core commits for them (decision 5, SPEC FR-702, R10). The same runs showed the sandbox blocking reads outside the working directory by default, unlike P0.
 2. **Permission rules** for Claude's own tools deny the main checkout, the other worktrees, credential stores and app data. Read/Edit/Write are **not** covered by the OS sandbox, only by these rules. **Absolute paths must be written `//abs/path`**: a single `/` is relative to the settings file and silently matches nothing (P0).
 3. **No credentials**:
    - The agent environment is built from scratch, with no `GH_TOKEN`/`GITHUB_TOKEN` and no `SSH_AUTH_SOCK`.
@@ -34,7 +34,10 @@ The review found that permission rules alone don't enforce a "worktree sandbox":
    - A gated action is denied with "awaiting user approval", so the turn ends and the agent can be suspended.
    - On approval, the app resumes the agent with "approved: proceed".
 5. **Orchestrator MCP** runs over stdio. `orch-mcp` connects to the core through a Unix socket with 0600 permissions (path under macOS's 104-byte limit, stale file removed at start), so there is no network port and no token in the command line. The agent's identity comes from the environment the core sets. Recipients are checked against the team graph on the server side.
-6. **Audit**: every gate decision, permission rule change and denied action is logged.
+   - P1 tools: `commit(message, paths?)` and `request_pr(title, body?, draft?)`. Both are allowed in the generated settings (no CLI prompt); the core evaluates the store's permission rules before running them (deny > ask > allow, scopes project / role / agent): *deny* refuses, *ask* holds the call for an Inbox decision, otherwise it runs.
+   - **Commits run outside the sandbox**, so nothing the agent wrote may execute: only in that agent's linked worktree (never a main checkout, never while `index.lock` exists), git hooks off (`core.hooksPath=/dev/null`, `--no-verify`), no signing, a cleared environment with the agent's generated `GIT_CONFIG_GLOBAL`, literal pathspecs that must stay inside the worktree. Running repo hooks inside the agent's sandbox is a possible later option.
+   - `request_pr` creates an Inbox gate; on approval the app pushes the branch with the user's credentials and opens the PR with `gh`, then tells the agent. `orch-mcp` answers a tool error ("orchestrator unavailable", nothing done) when the core is unreachable.
+6. **Audit**: every gate decision, permission rule change, denied action, agent commit and PR is logged in an audit table that retention never purges (SPEC FR-709).
 7. **Secrets**: copying `.env` into worktrees is opt-in, with a warning that agents send what they read to the model.
 
 ## Acceptance tests (P0)
