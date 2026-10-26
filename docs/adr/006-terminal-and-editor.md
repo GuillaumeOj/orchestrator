@@ -1,6 +1,6 @@
 # ADR-006 — Terminal & editor: kitty-looking panes, user's own nvim
 
-- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-17 (PTY in Rust, keyboard contract)
+- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-17 (PTY in Rust, keyboard contract), 2026-10-26 (resize debouncing)
 
 ## Context
 The user lives in kitty + nvim. Agents themselves are Claude Code TUIs in terminal panes (ADR-002), so terminal quality is central. The goal is that panes **render and feel like kitty**: same font, colors, ligatures, cursor and spacing. Reproducing kitty's protocols is not a goal.
@@ -15,6 +15,7 @@ The user lives in kitty + nvim. Agents themselves are Claude Code TUIs in termin
   4. Round the cell width up and take the line height from CoreText metrics, as kitty does.
 
   Result: near pixel-identical side by side; kitty's text is slightly heavier, which only shows when zoomed in.
+- **Resizes** are debounced and an A → B → A size flip within a second is not applied again (SPEC FR-1003): Claude Code reprints its whole screen on each resize, and one resize feedback loop ran the webview to 2.8 GB in the first app build (2026-10-26). A pane that re-attaches to an idle agent sends a size change so the TUI redraws.
 - **Keyboard contract** (SPEC §9.7): when a pane has focus, every key goes to the PTY except ⌘-chords and the leader key, **`⌘;`** by default (`Ctrl-Space` clashes with macOS input-source switching and nvim-cmp). Shift+Enter sends `ESC CR` in agent panes. The app ships its own menu so system items don't take its chords. Known gaps: no kitty keyboard protocol, so `Ctrl-I` = Tab; `Ctrl-/ . ;` and `Ctrl-Shift-<letter>` send nothing.
 - **Editor**: no in-app code editor. "Open in editor" runs `nvim +{line} {file}` (configurable; defaults to kitty.conf's `editor` if set) in a pane, reusing the project's nvim through `--server/--remote` when one is open. External kitty is optional, through `kitty @ launch --cwd` when remote control is enabled. nvim with the full user config was verified in P0: truecolor, SGR mouse, `"+` clipboard.
 

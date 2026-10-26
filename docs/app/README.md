@@ -91,25 +91,15 @@ the app's own memory figure counts it (FR-904). `claude` processes are listed ap
     CoreText at start (not bundled in the `.app` yet).
 12. **Diff / Open diff** and **Create PR** are not in P1's app yet (no diff pane).
 
-## Proposed spec edits (not applied)
+## Spec edits (applied in SPEC v0.7, ADR-003, ADR-006)
 
-1. **FR-705 / J5**: with Claude Code 2.1.302 the CLI **shows its own permission dialog while the
-   PermissionRequest hook is held**, so the pane and the Inbox can both answer. Add: "if the user
-   answers in the pane, the next hook for that call (PostToolUse, PostToolUseFailure,
-   PermissionDenied) or the turn's end closes the Inbox item" (implemented).
-2. **§9.7 / Penpot 05**: Overview `k` conflicts (move up vs kill); use `⇧K` for kill.
-3. **§9.7**: ⌘⏎ submits dialogs: the app's chord handler must let it through when focus is not
-   in a field (fixed; worth a line in the contract).
-4. **§9.3 Agent pane**: "Suspended: resume on focus" → "resume with ⏎ (or a click)": an implicit
-   resume spends quota.
-5. **FR-1003 / ADR-006**: a resized terminal pane redraws Claude Code's whole screen; resizes must
-   be debounced and guarded against A→B→A oscillation (seen once as a WebContent runaway).
-6. **NFR-1b**: record the app's measured idle baseline as 150–200 MB with the full shell
-   (GPU helper 40–90 MB while it repaints), not P0's 75 MB empty page; keep the ≤ 250 MB target.
-7. **FR-105 / ADR-003**: when the project folder is itself a linked worktree inside the main
-   checkout (as in this repository's `.claude/worktrees/…`), the sibling worktree folder lands
-   inside the main checkout and the runtime's entry-by-entry read denies cover it: Claude's Write
-   tool was denied in the agent's own worktree. Either put the sibling folder next to the **main**
-   checkout, or refuse such a project with a clear message.
-8. **FR-208**: file paths in agent output are links that open in nvim; Claude Code's output wraps
-   long paths, so only unwrapped paths are matched (xterm.js wrapped lines are not joined yet).
+| Edit | Where | In the code |
+|---|---|---|
+| Pane and Inbox both answer a permission prompt; the call's next hook closes the Inbox item | FR-705 | done (`orch-app`) |
+| Overview kill is `⇧K` (`k` moves up) | §9.7 | done; Penpot page 05 still says `k` |
+| ⌘⏎ submits a dialog | §9.7 | done |
+| Suspended resumes on ⏎ or a click, not on focus | FR-204, §9.3 | done |
+| Resizes debounced, A → B → A flips not applied again | FR-1003, ADR-006 | done |
+| Measured app baseline with the full shell: 150–200 MB idle | NFR-1b | measured |
+| Sibling worktree folder next to the main checkout, also for a project that is a linked worktree | FR-105, ADR-003 | **not yet**: `agent-runtime`'s `worktree` module still uses the registered folder's parent |
+| Wrapped paths joined before matching | FR-208 | **not yet**: only unwrapped paths are links |
