@@ -288,6 +288,9 @@ struct Metrics {
     w_projected: f64,
     hours_left: f64,
     weight_now: f64,
+    /// Total W per weighted hour: the measured burn, completed by the
+    /// on-plan pace while the measurement is young.
+    burn: f64,
     f: Option<f64>,
     f_projected: Option<f64>,
     f_resets_at: Option<Timestamp>,
@@ -317,7 +320,11 @@ pub struct Governor {
     calib: Calibrator,
     weekly_obs: Option<Observation>,
     five_obs: Option<Observation>,
-    calib_anchor: Option<Observation>,
+    /// The reading the next calibration interval starts from.
+    calib_anchor: Observation,
+    /// The week's accounting started at the reset (W is then known to be 0
+    /// even before the first reading).
+    reset_seen: bool,
     app_cost: f64,
     week_cost_start: f64,
     reserve_cost: f64,
@@ -335,7 +342,10 @@ pub struct Governor {
     next_entry: u64,
     sm: StateMachine,
     guard5: bool,
+    /// EWMA of the measured burn, started at 0; `burn_weight` is the weight of
+    /// data in it (bias correction), the rest goes to the on-plan pace.
     burn: f64,
+    burn_weight: f64,
     burn5: f64,
     last: Option<TickPoint>,
     limits: BTreeMap<Window, Timestamp>,
@@ -361,7 +371,9 @@ impl Governor {
             calib,
             weekly_obs: None,
             five_obs: None,
-            calib_anchor: None,
+            // Replaced by `start_week_accounting` below.
+            calib_anchor: Observation { ts: plan.week_start, used_pct: 0.0, resets_at: plan.reset_at, app_cost: 0.0 },
+            reset_seen: false,
             app_cost: 0.0,
             week_cost_start: 0.0,
             reserve_cost: 0.0,
@@ -377,6 +389,7 @@ impl Governor {
             sm: StateMachine::new(now),
             guard5: false,
             burn: 0.0,
+            burn_weight: 0.0,
             burn5: 0.0,
             last: None,
             limits: BTreeMap::new(),
@@ -398,8 +411,13 @@ impl Governor {
 
     /// Switch to the next week's plan (after the weekly reset). Calibration and
     /// the queue carry over; budgets, deferrals and sprints do not (FR-808).
+    /// A plan whose week contains the current week's start is the same week
+    /// realigned (FR-802) or edited: the week's usage so far is kept, as a
+    /// restart replaying the week's samples would keep it.
     pub fn new_week(&mut self, plan: WeeklyPlan, now: Timestamp) -> Result<(), GovernorError> {
         let (tz, curve) = plan_curve(&plan)?;
+        let same_week = plan.week_start <= self.plan.week_start && self.plan.week_start < plan.reset_at;
+        let start_moved = plan.week_start != self.plan.week_start;
         self.tz = tz;
         self.base_curve = curve.clone();
         self.curve = curve;
@@ -412,7 +430,15 @@ impl Governor {
         if self.weekly_obs.is_some_and(|o| o.ts < self.plan.week_start || o.resets_at <= self.plan.week_start) {
             self.weekly_obs = None;
         }
-        self.start_week_accounting(now);
+        if !same_week {
+            self.start_week_accounting(now);
+        } else {
+            if start_moved {
+                // Moved to an earlier reset: the Governor did not see that one.
+                self.reset_seen = false;
+            }
+            self.calib_anchor = self.week_anchor();
+        }
         self.sm.reset(now);
         self.last_cap = None;
         self.refresh_queue(now);
@@ -427,22 +453,27 @@ impl Governor {
         self.service_offset.clear();
         self.alerts_done.clear();
         self.reserve_alerted = false;
-        self.burn = self.budget_slope();
+        self.burn = 0.0;
+        self.burn_weight = 0.0;
         self.last = None;
-        // Created at the reset: W is a known reading of 0 (with the same offset as
-        // every reading). Without that anchor or any observation, W is unknown.
-        let at_reset = now <= add_minutes(self.plan.week_start, self.policy.fresh_minutes);
-        self.calib_anchor = at_reset.then_some(Observation {
+        // W is 0 at the reset (with the same offset as every reading), so the
+        // week's first reading calibrates against it whenever the app started:
+        // at the reset, later in the week, or after a restart that replays the
+        // week's samples. The live and replayed paths then agree (FR-813).
+        self.reset_seen = now <= add_minutes(self.plan.week_start, self.policy.fresh_minutes);
+        self.calib_anchor = self.week_anchor();
+    }
+
+    /// Where the week's calibration starts: its latest reading, else the
+    /// weekly reset as a reading of W = 0 (with the same offset as every
+    /// reading) at the app's cost when the week's accounting started.
+    fn week_anchor(&self) -> Observation {
+        self.weekly_obs.unwrap_or(Observation {
             ts: self.plan.week_start,
             used_pct: self.policy.reading_offset_pct,
             resets_at: self.plan.reset_at,
-            app_cost: self.app_cost,
-        });
-    }
-
-    /// Prior burn rate: the plan's pace, pp per weighted hour.
-    fn budget_slope(&self) -> f64 {
-        (100.0 - self.plan.reserve_pct).max(0.0) / self.curve.total_hours().max(1e-9)
+            app_cost: self.week_cost_start,
+        })
     }
 
     // ---------------------------------------------------------------- accessors
@@ -517,9 +548,23 @@ impl Governor {
         p.margin_max_pp - (p.margin_max_pp - p.margin_min_pp) * self.calib.confidence()
     }
 
+    /// `u` for the week's forecasts, pp per wall hour: the fitted rate, shrunk
+    /// toward the policy's prior by the hours of this week already observed.
+    /// One heavy day of outside use early in the week is then not extrapolated
+    /// over the whole week (FR-813), and the fit takes over as the week goes on.
+    fn unattributed_rate(&self) -> f64 {
+        let u = self.calib.unattributed_rate();
+        let seen = self.weekly_obs.map_or(0.0, |o| hours_between(self.plan.week_start, o.ts).max(0.0));
+        let prior_h = self.policy.unattributed_prior_hours.max(0.0);
+        if seen + prior_h <= 0.0 {
+            return u;
+        }
+        (u * seen + self.policy.unattributed_prior_pct_per_h.max(0.0) * prior_h) / (seen + prior_h)
+    }
+
     fn metrics(&self, now: Timestamp) -> Metrics {
         let k = self.calib.cost_per_pct();
-        let u = self.calib.unattributed_rate();
+        let u = self.unattributed_rate();
         let week_start = self.plan.week_start;
         let obs = self.weekly_obs;
         let (base, base_ts, base_cost, fresh) = match obs {
@@ -529,11 +574,11 @@ impl Governor {
         let delta = ((self.app_cost - base_cost).max(0.0) / k + u * hours_between(base_ts, now).max(0.0)).max(0.0);
         let w_central = (base + delta).min(100.0);
         // The margin covers what is extrapolated: at most the full margin, and
-        // never more than the extrapolated delta itself, except when the week
-        // has no anchor at all (FR-814: before any observation).
+        // never more than the extrapolated delta itself, except before the
+        // week's first reading when the app did not see the reset (FR-814).
         let margin = if fresh {
             0.0
-        } else if obs.is_none() && self.calib_anchor.is_none() {
+        } else if obs.is_none() && !self.reset_seen {
             self.margin_full()
         } else {
             self.margin_full().min(delta)
@@ -548,7 +593,8 @@ impl Governor {
             }
             None => u * hours_between(week_start, now).max(0.0),
         };
-        let u_forecast = u_so_far + u * self.curve.wall_hours_left(now);
+        let wall_left = self.curve.wall_hours_left(now);
+        let u_forecast = u_so_far + u * wall_left;
         let budget = (100.0 - self.plan.reserve_pct - u_forecast).max(0.0);
         let ideal = self.curve.fraction(now) * budget;
         // The error is on the governed share (ADR-007, decision 2026-10-21):
@@ -568,16 +614,21 @@ impl Governor {
         // later days) over the weighted hours left, plus the unattributed rate
         // over the other wall hours, where outside usage goes on while the
         // agents are stopped and the burn is not measured.
+        // While the burn is barely measured (after the reset or a restart), the
+        // rest of it is the on-plan pace: the agents' budget left plus outside
+        // usage in working hours, per weighted hour left.
         let hours_left = self.curve.hours_left(now);
-        let off_left =
-            (self.curve.wall_hours_left(now) - self.curve.active_hours_between(now, self.plan.reset_at)).max(0.0);
-        let w_projected = w_eff + self.burn * hours_left + u * off_left;
+        let active_left = self.curve.active_hours_between(now, self.plan.reset_at);
+        let off_left = (wall_left - active_left).max(0.0);
+        let on_plan = if hours_left > 1e-9 { ((budget - ideal).max(0.0) + u * active_left) / hours_left } else { 0.0 };
+        let burn = (self.burn + (1.0 - self.burn_weight) * on_plan).max(0.0);
+        let w_projected = w_eff + burn * hours_left + u * off_left;
 
         // Projected exhaustion at the current burn rate, along the curve. Shown, not a trigger.
         let eta = if w_eff >= 100.0 {
             Some(now)
-        } else if self.burn > 1e-9 {
-            self.curve.time_at_hours(self.curve.hours_at(now) + (100.0 - w_eff) / self.burn)
+        } else if burn > 1e-9 {
+            self.curve.time_at_hours(self.curve.hours_at(now) + (100.0 - w_eff) / burn)
         } else {
             None
         };
@@ -608,6 +659,7 @@ impl Governor {
             w_projected,
             hours_left,
             weight_now: self.curve.weight_at(now),
+            burn,
             f,
             f_projected,
             f_resets_at,
@@ -663,7 +715,7 @@ impl Governor {
             five_hour: m.f,
             five_hour_projected: m.f_projected,
             five_hour_guard: self.guard5,
-            burn_pct_per_hour: self.burn,
+            burn_pct_per_hour: m.burn,
             unattributed_so_far: m.u_so_far,
             unattributed_forecast: m.u_forecast,
             reserve_left: m.reserve_left,
@@ -777,10 +829,7 @@ impl Governor {
     }
 
     fn calibrate(&mut self, obs: Observation) {
-        let Some(anchor) = self.calib_anchor else {
-            self.calib_anchor = Some(obs);
-            return;
-        };
+        let anchor = self.calib_anchor;
         let dp = obs.used_pct - anchor.used_pct;
         let dh = hours_between(anchor.ts, obs.ts);
         if dp < 0.0 || obs.used_pct >= 100.0 {
@@ -788,7 +837,7 @@ impl Governor {
         }
         if dp >= self.policy.calibration_min_pp && dh * 60.0 >= self.policy.calibration_min_minutes as f64 {
             self.calib.update(obs.app_cost - anchor.app_cost, dh, dp);
-            self.calib_anchor = Some(obs);
+            self.calib_anchor = obs;
         }
     }
 
@@ -1428,7 +1477,7 @@ impl Governor {
                 ActionKind::ReserveExhausted,
                 format!("no headroom left for interactive work ({:.1} pp)", m.reserve_left),
                 "other work is squeezed harder; interactive work is never blocked".into(),
-                ActionMode::Auto,
+                self.mode(),
                 Outcome::Logged,
                 None,
             );
@@ -1471,7 +1520,9 @@ impl Governor {
             let dh = self.curve.hours_at(now) - self.curve.hours_at(last.ts);
             if dh > 1e-9 {
                 let r = (m.w_central - last.w) / dh;
-                self.burn = (self.burn + ewma_alpha(dh, self.policy.burn_tau_h) * (r - self.burn)).max(0.0);
+                let a = ewma_alpha(dh, self.policy.burn_tau_h);
+                self.burn = (self.burn + a * (r - self.burn)).max(0.0);
+                self.burn_weight += a * (1.0 - self.burn_weight);
             }
             let dt = hours_between(last.ts, now);
             if dt > 0.0 {

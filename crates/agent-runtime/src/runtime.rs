@@ -1559,12 +1559,20 @@ fn restore_governor(db: &orch_store::Store, store: &Store, cfg: &RuntimeConfig, 
     plan.shadow_mode = shadow;
     db.save_plan(&plan, orch_store::PlanStatus::Active)?;
     let start = plan.week_start;
-    let mut gov = Governor::new(plan, policy, start.min(now)).map_err(|e| anyhow!("{e:?}"))?;
+    let since = start.as_millisecond().max(0) as u64;
+    let samples: Vec<_> = db
+        .usage_since(since, Some(orch_store::UsageSource::Statusline))?
+        .into_iter()
+        .filter_map(|u| governor_sample(&u).map(|s| (u, s)))
+        .collect();
+    // Created when the app first saw this week, as the live Governor was: it
+    // trusts W = 0 before the week's first reading only if that was at the
+    // reset (FR-814). Either way the reset anchors the calibration.
+    let seen_from = samples.first().map_or(now, |(_, s)| s.ts).clamp(start, now.max(start));
+    let mut gov = Governor::new(plan, policy, seen_from).map_err(|e| anyhow!("{e:?}"))?;
     let allocs: BTreeMap<String, String> =
         store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.allocation.clone())).collect());
-    let since = start.as_millisecond().max(0) as u64;
-    for u in db.usage_since(since, Some(orch_store::UsageSource::Statusline))? {
-        let Some(sample) = governor_sample(&u) else { continue };
+    for (u, sample) in samples {
         let class = u.class.as_deref().and_then(orch_store::untag).unwrap_or(governor::CostClass::Interactive);
         let alloc = u.allocation.clone().or_else(|| u.agent_id.as_ref().and_then(|a| allocs.get(a).cloned()));
         gov.replay(&sample, class, alloc.map(Into::into));
@@ -1773,11 +1781,14 @@ pub(crate) mod tests {
     fn restart_rebuilds_the_governor_from_stored_samples() {
         let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
         let reset = (now_ms() / 1000) as i64 + 3 * 24 * 3600;
-        let (used, governed, plan_id) = {
+        let (live, plan_id) = {
             let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
             // An app turn (admitted by the Governor before delivery: autonomous), two responses.
             let rec = rt.store.read(|s| s.agents["a1"].clone());
+            // Off-hours allowed, so the turn is admitted at any time of day.
+            let plan = rt.gov().plan().clone();
+            rt.replan(WeeklyPlan { off_hours_allowance_pct: 10.0, ..plan }).unwrap();
             assert!(rt.decide_turn(&rec, TurnKind::Message, TurnOrigin::App).effective.is_admit());
             rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "[t:0123abcd] go"})), None);
             for (cost, pct) in [(0.5, 30), (1.5, 32)] {
@@ -1792,15 +1803,19 @@ pub(crate) mod tests {
             rt.tick();
             rt.db.flush().unwrap();
             assert!(!rt.db.actions(10).unwrap().is_empty(), "actions are persisted on tick");
-            let snap = rt.gov().snapshot(Timestamp::now());
-            (snap.used, snap.governed, rt.gov().plan().id.clone())
+            let g = rt.gov();
+            (g.snapshot(Timestamp::now()), g.plan().id.clone())
         };
         let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
         let snap = rt.gov().snapshot(Timestamp::now());
         assert_eq!(rt.gov().plan().id, plan_id, "the realigned plan week is restored");
         assert_eq!(rt.gov().plan().reset_at.as_second(), reset);
-        assert!((snap.used - used).abs() < 0.01, "{} vs {used}", snap.used);
-        assert!((snap.governed - governed).abs() < 0.01, "{} vs {governed}", snap.governed);
+        // The usage before the app (30 % since the reset, 4 days ago) gets the
+        // same outside-the-app forecast and plan live and after the restart.
+        let same = |a: f64, b: f64| (a - b).abs() < 0.01;
+        assert!(same(snap.used, live.used) && same(snap.governed, live.governed), "{snap:?} vs {live:?}");
+        assert!(same(snap.unattributed_forecast, live.unattributed_forecast), "{snap:?} vs {live:?}");
+        assert!(same(snap.ideal, live.ideal) && snap.state == live.state, "{snap:?} vs {live:?}");
         let samples = rt.db.usage_since(0, Some(orch_store::UsageSource::Statusline)).unwrap();
         assert_eq!(samples.len(), 2);
         assert_eq!(samples[0].class.as_deref(), Some("autonomous"));

@@ -159,6 +159,13 @@ pub struct PacingPolicy {
     pub calibration_min_minutes: i64,
     /// Exponential forgetting per calibration interval (0 < decay ≤ 1).
     pub calibration_decay: f64,
+    /// Prior of the unattributed rate `u`, pp per wall hour, and its weight in
+    /// hours of observed week: the forecast blends the two by the hours of
+    /// the week seen so far (FR-813).
+    #[serde(default)]
+    pub unattributed_prior_pct_per_h: f64,
+    #[serde(default = "default_unattributed_prior_hours")]
+    pub unattributed_prior_hours: f64,
     /// Aging: +1 tier per this many hours waited.
     pub aging_hours: f64,
     pub ask_timeout_min: i64,
@@ -166,6 +173,12 @@ pub struct PacingPolicy {
     pub auto_continue: AutoContinue,
     /// Usage alerts, % of the week (FR-817).
     pub alerts_pct: Vec<f64>,
+}
+
+const UNATTRIBUTED_PRIOR_HOURS: f64 = 48.0;
+
+fn default_unattributed_prior_hours() -> f64 {
+    UNATTRIBUTED_PRIOR_HOURS
 }
 
 impl Default for PacingPolicy {
@@ -187,6 +200,8 @@ impl Default for PacingPolicy {
             calibration_min_pp: 3.0,
             calibration_min_minutes: 30,
             calibration_decay: 0.85,
+            unattributed_prior_pct_per_h: 0.0,
+            unattributed_prior_hours: UNATTRIBUTED_PRIOR_HOURS,
             aging_hours: 2.0,
             ask_timeout_min: 20,
             default_ask_action: AskDefault::Apply,

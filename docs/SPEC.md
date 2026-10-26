@@ -1,6 +1,7 @@
 # Orchestrator — Product & Technical Specification
 
-> Status: **Draft v0.8** · Owner: Guillaume · Last update: 2026-10-26
+> Status: **Draft v0.9** · Owner: Guillaume · Last update: 2026-10-26
+> v0.9 applies the first day of daily use of the installed app (2026-10-26): the same Governor forecast after a restart as live (the reset as a reading of 0, a damped outside-the-app rate, the on-plan burn prior), and shadow logging of every admission action.
 > v0.8 applies what building the P1 core services found (`crates/orch-store`, `orch-git`, `orch-mcp`, live run with Claude Code 2.1.302 on 2026-10-26): agents commit through the orchestrator MCP server, Inbox holds for permission prompts, memory-pressure cap levels, retention, restart replay of usage, and the data model additions.
 > v0.7 applies what building the first desktop app found ([docs/app](app/README.md), Claude Code 2.1.302): permission prompts answered in the pane or the Inbox, resize debouncing, the measured app baseline, keyboard fixes, worktrees of a project that is itself a linked worktree.
 > v0.6 applies what building the headless agent runtime found (`crates/agent-runtime`, live runs with Claude Code 2.1.302 on 2026-10-21): sandbox rules for worktrees, the commit gap, kill and hook details, usage sampling, recovery.
@@ -250,9 +251,9 @@ The control law is specified in **ADR-007**. The requirements below are what the
 | FR-809 | **Transparency**: every queued or paused agent shows why, its estimated start, and **Run now** (or **Start now** if it never ran) with its estimated cost **in the window that binds it**: % of the 5h window when the 5h guard holds it, pp of the week otherwise; the confirmation shows both. Every governor action is logged with its reason and can be undone from the log. A **next-action preview** shows what the Governor would do next. | M |
 | FR-810 | **"Ask" actions** come with a default and a timeout (default: apply after 20 min), so they never stall when the user is away. | M |
 | FR-811 | **Overrides**: Sprint mode (borrow budget: today's target goes up and the remaining days go down, and the trade-off is shown), hard caps per allocation, **Pause all** / **Resume**. | M |
-| FR-812 | **Shadow mode**: the Governor can log its decisions without enforcing them (default on for the first week). | M |
-| FR-813 | **Unattributed usage** (the user's Claude usage outside the app: claude.ai, mobile, other terminals) = observed weekly % − the app's own attributed share. It is forecast as its own rate, subtracted from the agents' budget, and shown as "outside the app". | M |
-| FR-814 | **Estimator fallback**: if the observed % is not available (e.g. before the first response of the week), the weekly % is estimated from usage with one calibrated scalar and a safety margin (10–15 pp), marked with a confidence indicator. | S |
+| FR-812 | **Shadow mode**: the Governor can log its decisions without enforcing them (default on for the first week). Every action that would change admission is logged as *shadow*, including the reserve warning. | M |
+| FR-813 | **Unattributed usage** (the user's Claude usage outside the app: claude.ai, mobile, other terminals) = observed weekly % − the app's own attributed share. It is forecast as its own rate, subtracted from the agents' budget, and shown as "outside the app". The rate used for the forecast is shrunk toward a prior by the hours of the week observed so far, so one heavy day early in the week is not extrapolated over the whole week. A restart that replays the week's samples gives the same forecast as the live app. | M |
+| FR-814 | **Estimator fallback**: if the observed % is not available (e.g. before the first response of the week), the weekly % is estimated from usage with one calibrated scalar and a safety margin (10–15 pp), marked with a confidence indicator. The weekly reset counts as a reading of 0: the full margin applies only before the week's first reading when the app did not see the reset, and is otherwise capped by what is extrapolated. | S |
 | FR-815 | **Per-model weekly limits**: if the plan has a separate weekly limit for some models, it is tracked as an extra window, and those models are avoided automatically when that window is under pressure. | S |
 | FR-816 | Off-hours scheduling: queue long work for configured windows, inside the plan's limits; requires AC power and a power assertion (J10). Allowed by the R1 decision. | S |
 | FR-817 | Alerts: 50 / 75 / 90 % of the week, entering Red, 5h guard active, limit reached (J9). | M |
@@ -438,7 +439,7 @@ Per-agent OS sandbox for Bash, permission rules for Claude's own tools, no crede
 | UsageSample | id, ts, agentId? (null = unattributed), turnId?, model, tokens {in, out, cacheRead, cacheWrite}, costEstimate, costDelta, window {fiveHourPct?, weeklyPct?, modelWeeklyPct?, resetsAt?}, provenance (observed / estimated), source (statusline / otel), costClass (interactive / critical / autonomous), allocationId |
 | WeeklyPlan | id, weekStart, resetAt, calendar, reservePct, offHoursAllowancePct, shadowMode, status |
 | BudgetAllocation | id, weeklyPlanId, target, weight, tier, hardCapPct? |
-| PacingPolicy | id, thresholds {amberEnter, amberExit, redEnter, redExit, catchupEnter, minDwellMin}, liveCapByState, fiveHourGuardPct, askTimeoutMin, defaultAskAction |
+| PacingPolicy | id, thresholds {amberEnter, amberExit, redEnter, redExit, catchupEnter, minDwellMin}, liveCapByState, fiveHourGuardPct, askTimeoutMin, defaultAskAction, unattributedPriorPctPerHour, unattributedPriorHours |
 | QueueEntry | id, kind, agentId/taskId, allocationId, tier, enqueuedAt, effectiveTier, reason, estimatedStart (a view of the Governor's queue; after a restart turns that waited in it are asked again) |
 | GovernorAction | id (per core start: stored with the start time), ts, state, action, targets, reason, mode (auto / ask / shadow), expectedEffect, outcome, undoneAt? |
 | Calibration | id, ts, costPerWeeklyPct, confidence, unattributedRate |

@@ -418,8 +418,12 @@ fn ideal_curve_follows_weighted_hours() {
 fn eta_projects_the_burn_over_working_time() {
     let mut g = governor();
     // Burn 4 pp per working hour from the start: 100 % in 25 h, i.e. Wednesday.
+    // The usage is the app's own (k = 10): outside usage would be damped (FR-813).
+    let mut last = 0.0;
     for m in (0..=hours(4.0)).step_by(10) {
-        g.ingest(&weekly(at(m), "A-1", 0.0, (m as f64 / 15.0).floor()));
+        let pct = (m as f64 / 15.0).floor();
+        g.ingest(&weekly(at(m), "A-1", (pct - last) * 10.0, pct));
+        last = pct;
         g.tick(at(m));
     }
     let s = g.snapshot(at(hours(4.0)));
@@ -469,7 +473,7 @@ fn five_hour_projection_caps_live_agents_to_one() {
 #[test]
 fn state_changes_wait_for_the_minimum_dwell() {
     let mut g = governor();
-    g.ingest(&weekly(at(5), "obs", 0.0, 30.0));
+    g.ingest(&weekly(at(5), "obs", 300.0, 30.0));
     for m in 5..30 {
         g.tick(at(m));
         assert_eq!(g.state(), PressureState::Green, "dwell from creation at minute {m}");
@@ -595,7 +599,7 @@ fn shadow_mode_decides_and_logs_but_never_enforces() {
 }
 
 fn drive_red_shadow(g: &mut Governor) {
-    g.ingest(&weekly(at(40), "obs", 0.0, 30.0));
+    g.ingest(&weekly(at(40), "obs", 300.0, 30.0));
     g.tick(at(40));
     assert_eq!(g.state(), PressureState::Red, "shadow mode still tracks the state");
     let defer = g.actions().iter().find(|a| a.kind_name() == "defer_after_reset");
@@ -826,9 +830,35 @@ fn replaying_stored_samples_with_their_class_rebuilds_the_accounting() {
     for (s, _) in &stored {
         naive.ingest(s);
     }
-    let (a, b, c) = (live.snapshot(at(300)), restarted.snapshot(at(300)), naive.snapshot(at(300)));
-    assert_eq!(a.used, b.used);
-    assert!((a.governed - b.governed).abs() < 1e-9, "{} vs {}", a.governed, b.governed);
+    same_state(&live, &restarted, at(300));
+    let (a, c) = (live.snapshot(at(300)), naive.snapshot(at(300)));
     assert!((a.governed - c.governed).abs() > 1.0, "naive replay loses the agents' share");
     assert!((live.allocation_usage_pct(&"A".into()) - restarted.allocation_usage_pct(&"A".into())).abs() < 1e-9);
+}
+
+// ---------------------------------------------------------------- shadow reserve, outside usage
+
+#[test]
+fn reserve_exhausted_is_a_shadow_action_in_shadow_mode() {
+    let mut g = Governor::new(WeeklyPlan { shadow_mode: true, ..plan() }, policy(), start()).unwrap();
+    // 95 % of the week by the user's own work on Monday: no headroom left.
+    g.ingest(&weekly(at(60), "user", 950.0, 95.0));
+    g.tick(at(60));
+    let a = g.actions().iter().find(|a| a.kind_name() == "reserve_exhausted").expect("logged");
+    assert_eq!(a.mode, ActionMode::Shadow);
+    assert_eq!(a.outcome, Outcome::Logged);
+}
+
+#[test]
+fn sustained_outside_usage_still_turns_red() {
+    // 1.5 pp per wall hour outside the app, day and night, from the reset:
+    // 45 % by Tuesday 15:00, so the week runs out long before Monday.
+    let mut g = governor();
+    for m in (0..=hours(30.0)).step_by(15) {
+        g.ingest(&weekly(at(m), "user", 0.0, (m as f64 / 60.0 * 1.5).floor()));
+        g.tick(at(m));
+    }
+    let s = g.snapshot(at(hours(30.0)));
+    assert_eq!(g.state(), PressureState::Red, "{s:?}");
+    assert!(s.projected > 100.0, "{s:?}");
 }
