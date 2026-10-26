@@ -1,0 +1,1139 @@
+//! The app's core: embeds the agent runtime and its Governor in the Tauri
+//! process, serves the bus socket (hooks, statusline, `orchd` control
+//! clients), holds permission prompts for the Inbox, and owns the shell and
+//! editor PTYs. Every Tauri command is a thin wrapper over a method here.
+
+use crate::LockOk;
+use std::collections::BTreeMap;
+use std::io::BufReader;
+use std::os::fd::AsRawFd;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use agent_runtime::paths::AppPaths;
+use agent_runtime::runtime::{Runtime, RuntimeConfig};
+use agent_runtime::server::{PUMP_EVERY, TICK_EVERY};
+use anyhow::{Context, Result, anyhow, bail};
+use governor::jiff::Timestamp;
+use orch_protocol::bus;
+use orch_protocol::{
+    AgentSpec, CtlReply, CtlRequest, Envelope, HookEvent, HookPayload, Msg, PROTOCOL_VERSION, Reply, ReplyEnvelope,
+    now_ms,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use crate::editor;
+use crate::inbox::{self, AgentFacts, Alert, Ask, Done};
+use crate::kitty::{self, KittyImport};
+use crate::memory::{self, AppMemory};
+use crate::permissions::{Answer, PermissionBroker};
+use crate::planner::{self, History, HistoryPoint, PlannerView};
+use crate::services::{GitSummary, JsonFileSettings, Project, ProjectRegistry, SettingsStore, InMemoryProjects};
+use crate::terms::{TermKind, Terms};
+
+const GIT_EVERY: Duration = Duration::from_secs(10);
+const MEMORY_EVERY: Duration = Duration::from_secs(5);
+const HISTORY_EVERY: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Debug)]
+pub struct CoreConfig {
+    pub home: PathBuf,
+    pub claude: Option<PathBuf>,
+    pub kitty_conf: PathBuf,
+    /// Projects to register at start (the stub registry has no persistence).
+    pub projects: Vec<PathBuf>,
+    /// Run the J10 reconciler at start (resumes agents that were working).
+    pub recover: bool,
+    pub enforce: bool,
+}
+
+impl CoreConfig {
+    /// `ORCH_HOME`, `ORCH_CLAUDE`, `ORCH_KITTY_CONF`, `ORCH_PROJECTS` (colon
+    /// separated), `ORCH_NO_RECOVER`, `ORCH_ENFORCE`.
+    pub fn from_env() -> CoreConfig {
+        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let home = agent_runtime::paths::home_dir();
+        CoreConfig {
+            home: var("ORCH_HOME").map(PathBuf::from).unwrap_or_else(AppPaths::default_root),
+            claude: var("ORCH_CLAUDE").map(PathBuf::from),
+            kitty_conf: var("ORCH_KITTY_CONF")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".config/kitty/kitty.conf")),
+            projects: var("ORCH_PROJECTS").map(|v| v.split(':').map(PathBuf::from).collect()).unwrap_or_default(),
+            recover: var("ORCH_NO_RECOVER").is_none(),
+            enforce: var("ORCH_ENFORCE").is_some(),
+        }
+    }
+}
+
+pub struct Core {
+    pub paths: AppPaths,
+    rt: Option<Arc<Runtime>>,
+    /// Why agents are unavailable (another core owns the socket, no claude…).
+    pub core_error: Option<String>,
+    pub broker: Arc<PermissionBroker>,
+    pub projects: Box<dyn ProjectRegistry>,
+    pub settings: Box<dyn SettingsStore>,
+    pub terms: Terms,
+    pub kitty: KittyImport,
+    pub editor_template: String,
+    history: Mutex<History>,
+    git: Mutex<Cached<BTreeMap<PathBuf, GitSummary>>>,
+    memory: Mutex<Cached<AppMemory>>,
+    /// Project folder → its repository's main checkout (FR-105), resolved once.
+    mains: Mutex<BTreeMap<PathBuf, Option<PathBuf>>>,
+    /// The UI pane reading each agent's output: its generation, and bytes a
+    /// stale reader (a closed pane's last pull) took for the current one.
+    readers: Mutex<BTreeMap<String, Reader>>,
+    reader_gen: std::sync::atomic::AtomicU64,
+    agent_input: Mutex<BTreeMap<String, std::sync::mpsc::Sender<Vec<u8>>>>,
+    stop: Arc<AtomicBool>,
+    pub warnings: Vec<String>,
+}
+
+/// A value refreshed at most every so often.
+#[derive(Default)]
+struct Cached<T> {
+    at: Option<Instant>,
+    value: T,
+}
+
+impl<T> Cached<T> {
+    fn stale(&self, every: Duration) -> bool {
+        self.at.is_none_or(|t| t.elapsed() >= every)
+    }
+
+    fn set(&mut self, value: T) {
+        self.value = value;
+        self.at = Some(Instant::now());
+    }
+}
+
+/// What `state()` reads about an agent from the store, besides the runtime's view.
+struct AgentMeta {
+    repo: PathBuf,
+    worktree: PathBuf,
+    branch: String,
+    created_at_ms: u64,
+    effort: Option<String>,
+}
+
+#[derive(Default)]
+struct Reader {
+    reader: u64,
+    carry: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct NewSession {
+    pub project_id: String,
+    pub name: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub permission_mode: Option<String>,
+    pub base: Option<String>,
+    pub message: Option<String>,
+    pub tier: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TermInfo {
+    pub id: u32,
+    pub kind: TermKind,
+    pub cwd: PathBuf,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct EditorOpen {
+    /// The file went to the project's running nvim.
+    pub reused: bool,
+    pub term: Option<TermInfo>,
+}
+
+impl Core {
+    /// Builds the core. A failure to start the runtime (another core on the
+    /// socket, bad home) leaves the app usable without agents.
+    pub fn start(cfg: CoreConfig) -> Arc<Core> {
+        let paths = AppPaths::new(cfg.home.clone());
+        let mut warnings = vec![];
+        let projects = InMemoryProjects::seeded(cfg.projects.clone());
+        let settings = JsonFileSettings::open(paths.root.join("ui").join("settings.json"));
+        let kitty = kitty::import(&cfg.kitty_conf);
+        let editor_template = editor::template_from_kitty(kitty.editor.as_deref());
+        let (rt, core_error) = match start_runtime(&cfg, &paths, &mut warnings) {
+            Ok(rt) => (Some(rt), None),
+            Err(e) => (None, Some(format!("{e:#}"))),
+        };
+        let core = Arc::new(Core {
+            paths,
+            rt,
+            core_error,
+            broker: Arc::new(PermissionBroker::default()),
+            projects: Box::new(projects),
+            settings: Box::new(settings),
+            terms: Terms::default(),
+            kitty,
+            editor_template,
+            history: Mutex::new(History::default()),
+            git: Mutex::new(Cached::default()),
+            memory: Mutex::new(Cached::default()),
+            mains: Mutex::new(BTreeMap::new()),
+            readers: Mutex::new(BTreeMap::new()),
+            reader_gen: std::sync::atomic::AtomicU64::new(0),
+            agent_input: Mutex::new(BTreeMap::new()),
+            stop: Arc::new(AtomicBool::new(false)),
+            warnings,
+        });
+        if let Some(rt) = &core.rt {
+            if let Err(e) = core.serve() {
+                eprintln!("orchestrator: bus server failed: {e:#}");
+            }
+            // Off the startup path (git per project): projects of known
+            // agents, unless a registered folder already maps to them, then J10.
+            let (core2, rt, recover) = (core.clone(), rt.clone(), cfg.recover);
+            std::thread::spawn(move || {
+                let known = rt.store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.repo.clone())).collect::<Vec<_>>());
+                for (id, repo) in known {
+                    if core2.project_of(&id, &repo, &core2.projects.list()).is_none() {
+                        let _ = core2.projects.add(&repo);
+                    }
+                }
+                if recover {
+                    if let Err(e) = rt.recover(true) {
+                        eprintln!("orchestrator: recovery failed: {e:#}");
+                    }
+                }
+            });
+        }
+        core
+    }
+
+    pub fn runtime(&self) -> Result<&Arc<Runtime>> {
+        self.rt.as_ref().ok_or_else(|| anyhow!(self.core_error.clone().unwrap_or_else(|| "no core".into())))
+    }
+
+    /// Bus socket + the runtime's loops (pump 200 ms, tick 30 s, history 60 s).
+    fn serve(self: &Arc<Self>) -> Result<()> {
+        let rt = self.runtime()?.clone();
+        let listener = orch_protocol::bind_listener(&self.paths.socket())?;
+        let me = Arc::downgrade(self);
+        let stop = self.stop.clone();
+        std::thread::Builder::new().name("orch-loops".into()).spawn(move || {
+            let mut last_tick = Instant::now();
+            let mut last_hist: Option<Instant> = None;
+            while !stop.load(Ordering::SeqCst) {
+                rt.pump();
+                if last_tick.elapsed() >= TICK_EVERY {
+                    rt.tick();
+                    last_tick = Instant::now();
+                }
+                if last_hist.is_none_or(|t| t.elapsed() >= HISTORY_EVERY) {
+                    if let Some(c) = me.upgrade() {
+                        c.sample_history();
+                    }
+                    last_hist = Some(Instant::now());
+                }
+                std::thread::sleep(PUMP_EVERY);
+            }
+        })?;
+        let me = Arc::downgrade(self);
+        let stop = self.stop.clone();
+        std::thread::Builder::new().name("orch-bus".into()).spawn(move || accept_loop(listener, me, stop))?;
+        Ok(())
+    }
+
+    fn sample_history(&self) {
+        let Some(rt) = &self.rt else { return };
+        let (p, week_start) = rt.with_governor(|g| {
+            let s = g.snapshot(Timestamp::now());
+            (
+                HistoryPoint { t_ms: s.ts.as_millisecond(), used: s.used, governed: s.governed, five_hour: s.five_hour },
+                g.plan().week_start.as_millisecond(),
+            )
+        });
+        self.history.lock_ok().push(p, week_start);
+    }
+
+    /// Graceful stop: suspend agents (resumed by id next time), close shells.
+    pub fn shutdown(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.agent_input.lock_ok().clear(); // ends the writer threads
+        if let Some(rt) = &self.rt {
+            rt.shutdown();
+        }
+        self.terms.kill_all();
+        let _ = UnixStream::connect(self.paths.socket()); // wake the accept loop
+        let _ = std::fs::remove_file(self.paths.socket());
+    }
+
+    // ------------------------------------------------------------ hooks
+
+    fn handle_conn(&self, s: UnixStream) {
+        let Ok(rt) = self.runtime().cloned() else { return };
+        let mut reader = BufReader::new(&s);
+        let reply = |r: Reply| {
+            let _ = bus::write_line(&mut &s, &ReplyEnvelope::new(r));
+        };
+        let env: Envelope = match bus::read_line(&mut reader) {
+            Ok(e) => e,
+            Err(e) => return reply(Reply::Error { message: e.to_string() }),
+        };
+        if env.v != PROTOCOL_VERSION {
+            return reply(Reply::Error {
+                message: format!("protocol version {} (core speaks {PROTOCOL_VERSION})", env.v),
+            });
+        }
+        match env.msg {
+            Msg::Hook(m) if m.event == HookEvent::PermissionRequest => {
+                // The state machine first (Waiting for you); an unknown agent fails closed.
+                if let Some(out) = rt.on_hook(&m, None) {
+                    return reply(Reply::Hook { output: Some(out) });
+                }
+                let p = HookPayload::parse(&m.payload);
+                let id = self.broker.open(&m.agent_id, &p, now_ms());
+                // Answer before orch-hook's own deadline; then the pane's dialog shows.
+                let hold = Duration::from_millis(m.deadline_ms.saturating_sub(2_000).max(1_000));
+                let outcome = self.broker.wait(&id, Instant::now() + hold, Duration::from_millis(250), || peer_closed(&s));
+                reply(Reply::Hook { output: PermissionBroker::hook_output(&outcome) });
+            }
+            Msg::Hook(m) => {
+                // A prompt held for the Inbox but answered in the pane: this call's
+                // next hook, or the turn's end, closes it.
+                let call_done = matches!(
+                    m.event,
+                    HookEvent::PostToolUse | HookEvent::PostToolUseFailure | HookEvent::PermissionDenied
+                );
+                let turn_done = matches!(
+                    m.event,
+                    HookEvent::Stop | HookEvent::StopFailure | HookEvent::UserPromptSubmit | HookEvent::SessionEnd
+                );
+                if call_done || turn_done {
+                    let p = HookPayload::parse(&m.payload);
+                    let tool_use = if call_done { p.tool_use_id.as_deref() } else { None };
+                    self.broker.answered_in_pane(&m.agent_id, tool_use);
+                }
+                let output = rt.on_hook(&m, Some(&s));
+                reply(Reply::Hook { output });
+            }
+            Msg::Status(m) => {
+                rt.on_status(&m);
+                reply(Reply::Ack);
+            }
+            Msg::Ctl(CtlRequest::Attach { agent_id, rows, cols }) => {
+                if !rt.live_ids().contains(&agent_id) {
+                    return reply(Reply::Ctl(CtlReply::err(format!("agent {agent_id} is not running"))));
+                }
+                if self.readers.lock_ok().contains_key(&agent_id) {
+                    return reply(Reply::Ctl(CtlReply::err(format!("agent {agent_id} is open in the app"))));
+                }
+                reply(Reply::Ctl(CtlReply::ok(json!("attached"))));
+                let initial = reader.buffer().to_vec();
+                if let Ok(clone) = s.try_clone() {
+                    let _ = rt.attach(&agent_id, clone, &initial, rows, cols);
+                }
+            }
+            // The app owns its lifetime: `orchd stop` does not quit it.
+            Msg::Ctl(CtlRequest::Shutdown) => reply(Reply::Ctl(CtlReply::err("quit the app to stop its core"))),
+            Msg::Ctl(req) => reply(Reply::Ctl(agent_runtime::server::ctl(&rt, req))),
+        }
+    }
+
+    // ------------------------------------------------------------ agents
+
+    pub fn agent_start(&self, req: &NewSession) -> Result<String> {
+        let rt = self.runtime()?;
+        let project = self.project(&req.project_id)?;
+        let id = req.name.trim().to_string();
+        if !agent_runtime::paths::valid_id(&id) {
+            bail!("name {id:?}: use letters, digits, '-' or '_'");
+        }
+        let spec = AgentSpec {
+            agent_id: id.clone(),
+            repo: project.path.display().to_string(),
+            slug: Some(id.clone()),
+            base: req.base.clone().filter(|b| !b.is_empty()),
+            model: req.model.clone().filter(|m| !m.is_empty()),
+            effort: req.effort.clone().filter(|e| !e.is_empty()),
+            permission_mode: req.permission_mode.clone().filter(|m| !m.is_empty()),
+            first_message: req.message.clone().filter(|m| !m.trim().is_empty()),
+            tier: req.tier.clone(),
+            ..Default::default()
+        };
+        rt.start(&spec)?;
+        // The runtime records the main checkout (FR-105); remember which project
+        // folder the session was started from, for the sidebar.
+        if let Err(err) = self.settings.set(&format!("agent-project:{id}"), json!(project.id)) {
+            eprintln!("orchestrator: could not remember {id}'s project: {err:#}");
+        }
+        Ok(id)
+    }
+
+    /// The UI takes the agent's output (pull transport): with a consumer the
+    /// buffer applies backpressure, and xterm.js answers terminal queries.
+    fn live(&self, id: &str) -> Result<Arc<agent_runtime::runtime::Live>> {
+        self.runtime()?.live(id).ok_or_else(|| anyhow!("agent {id} is not running"))
+    }
+
+    /// Returns the reader generation the pane passes to `agent_read`: a newer
+    /// pane for the same agent makes older readers stale.
+    pub fn agent_attach(&self, id: &str, rows: u16, cols: u16) -> Result<u64> {
+        let l = self.live(id)?;
+        l.pty.output.set_attached(true);
+        // An idle TUI draws nothing new: a size change makes it redraw for the
+        // new pane (as the runtime's own `attach` does).
+        let _ = l.pty.resize(rows, cols.saturating_sub(1).max(1));
+        let _ = l.pty.resize(rows, cols);
+        let reader = self.reader_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut r = self.readers.lock_ok();
+        let carry = r.remove(id).map(|old| old.carry).unwrap_or_default();
+        r.insert(id.to_string(), Reader { reader, carry });
+        Ok(reader)
+    }
+
+    /// Only the current reader detaches (a closed pane's detach can arrive
+    /// after the reopened pane attached).
+    pub fn agent_detach(&self, id: &str, reader: u64) {
+        let mut r = self.readers.lock_ok();
+        if r.get(id).is_some_and(|x| x.reader == reader) {
+            r.remove(id);
+            if let Some(l) = self.rt.as_ref().and_then(|rt| rt.live(id)) {
+                l.pty.output.set_attached(false);
+            }
+        }
+    }
+
+    fn current_reader(&self, id: &str, reader: u64) -> bool {
+        self.readers.lock_ok().get(id).is_some_and(|r| r.reader == reader)
+    }
+
+    /// Pull: everything buffered, waiting up to `wait` for output. Err when
+    /// the process is gone (the pane then shows its state strip) or when a
+    /// newer pane reads this agent; bytes a stale reader drained go to it.
+    pub fn agent_read(&self, id: &str, reader: u64, wait: Duration) -> Result<Vec<u8>> {
+        let l = self.live(id)?;
+        {
+            let mut r = self.readers.lock_ok();
+            match r.get_mut(id) {
+                Some(x) if x.reader == reader => {
+                    if !x.carry.is_empty() {
+                        return Ok(std::mem::take(&mut x.carry));
+                    }
+                }
+                _ => bail!("stale reader for {id}"),
+            }
+        }
+        let b = l.pty.output.read_wait(wait);
+        if !self.current_reader(id, reader) {
+            if let Some(x) = self.readers.lock_ok().get_mut(id) {
+                x.carry.extend_from_slice(&b);
+            }
+            bail!("stale reader for {id}");
+        }
+        if b.is_empty() && l.pty.output.is_closed() {
+            bail!("agent {id} exited");
+        }
+        Ok(b)
+    }
+
+    /// Queues the user's keystrokes for the agent's PTY, in order; a writer
+    /// thread per agent does the (possibly blocking) write.
+    pub fn agent_write(&self, id: &str, data: &[u8]) -> Result<()> {
+        self.live(id)?;
+        let rt = self.runtime()?.clone();
+        let mut w = self.agent_input.lock_ok();
+        let tx = match w.get(id) {
+            Some(tx) => tx.clone(),
+            None => {
+                let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+                let agent = id.to_string();
+                std::thread::Builder::new().name(format!("agent-{id}-in")).spawn(move || {
+                    for b in rx {
+                        // The process may have been resumed: look it up each time.
+                        if let Some(l) = rt.live(&agent) {
+                            let _ = l.user_input(&b);
+                        }
+                    }
+                })?;
+                w.insert(id.to_string(), tx.clone());
+                tx
+            }
+        };
+        tx.send(data.to_vec()).map_err(|_| anyhow!("agent {id}: input closed"))
+    }
+
+    pub fn agent_action(&self, id: &str, action: &str, message: Option<&str>) -> Result<Value> {
+        let rt = self.runtime()?;
+        Ok(match action {
+            "interrupt" => {
+                rt.interrupt(id)?;
+                json!("esc sent")
+            }
+            "suspend" => json!(rt.suspend(id)?),
+            "kill" => {
+                // Ends the agent's input thread; a later resume starts a new one.
+                self.agent_input.lock_ok().remove(id);
+                json!(rt.kill(id)?)
+            }
+            "resume" => {
+                rt.resume(id, message)?;
+                json!("resumed")
+            }
+            "deliver" => json!(rt.deliver(id, message.ok_or_else(|| anyhow!("no message"))?)?),
+            other => bail!("unknown agent action {other}"),
+        })
+    }
+
+    // ------------------------------------------------------------ terminals
+
+    fn project(&self, id: &str) -> Result<Project> {
+        self.projects.list().into_iter().find(|p| p.id == id).ok_or_else(|| anyhow!("no project {id}"))
+    }
+
+    /// cwd for a new pane (FR-1003): the agent's worktree, else the project
+    /// root, else the home folder.
+    pub fn pane_cwd(&self, project_id: Option<&str>, agent_id: Option<&str>) -> PathBuf {
+        if let (Some(a), Some(rt)) = (agent_id, &self.rt) {
+            if let Some(wt) = rt.store.read(|s| s.agents.get(a).map(|r| r.worktree.clone())) {
+                return wt;
+            }
+        }
+        if let Some(p) = project_id.and_then(|p| self.project(p).ok()) {
+            return p.path;
+        }
+        agent_runtime::paths::home_dir()
+    }
+
+    pub fn term_spawn(&self, kind: TermKind, cwd: &Path, run: Option<&str>, rows: u16, cols: u16) -> Result<TermInfo> {
+        let t = self.terms.spawn(kind, cwd, run, rows, cols)?;
+        Ok(TermInfo { id: t.id, kind, cwd: t.cwd.clone() })
+    }
+
+    /// FR-1101/1102: reuse the project's nvim if it answers, else a new pane
+    /// running the editor template (nvim listens on the project's socket).
+    pub fn editor_open(
+        &self,
+        project_id: Option<&str>,
+        agent_id: Option<&str>,
+        file: Option<&str>,
+        line: Option<u32>,
+        rows: u16,
+        cols: u16,
+    ) -> Result<EditorOpen> {
+        let cwd = self.pane_cwd(project_id, agent_id);
+        let sock = editor::server_socket(&self.paths.root, project_id.unwrap_or("default"));
+        match file {
+            Some(f) => {
+                let abs = if Path::new(f).is_absolute() { PathBuf::from(f) } else { cwd.join(f) };
+                if editor::open_remote(&sock, &abs.display().to_string(), line)? {
+                    return Ok(EditorOpen { reused: true, term: None });
+                }
+            }
+            // No file: the project's nvim, if it runs, is the editor to show.
+            None if orch_protocol::is_listening(&sock) => return Ok(EditorOpen { reused: true, term: None }),
+            None => {}
+        }
+        if let Some(dir) = sock.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let _ = std::fs::remove_file(&sock); // stale: nobody answered on it
+        let cmd = editor::render(&self.editor_template, file, line, Some(&sock));
+        let term = self.term_spawn(TermKind::Editor, &cwd, Some(&cmd), rows, cols)?;
+        Ok(EditorOpen { reused: false, term: Some(term) })
+    }
+
+    /// FR-1004: the real kitty at the same cwd (remote control when kitty.conf
+    /// enables it, otherwise a new instance).
+    pub fn open_in_kitty(&self, cwd: &Path) -> Result<()> {
+        // Remote control first; `listen_on` may hold placeholders kitty expands
+        // ({kitty_pid}), so a failure falls back to a new instance.
+        if let Some(to) = self.kitty.listen_on.as_deref().filter(|t| !t.contains('{')) {
+            let remote = std::process::Command::new("kitty")
+                .args(["@", "--to", to, "launch", "--type=os-window", "--cwd"])
+                .arg(cwd)
+                .status();
+            if remote.is_ok_and(|s| s.success()) {
+                return Ok(());
+            }
+        }
+        let st = std::process::Command::new("open")
+            .args(["-na", "kitty", "--args", "--directory"])
+            .arg(cwd)
+            .status()
+            .context("starting kitty")?;
+        if !st.success() {
+            bail!("kitty exited with {st}");
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------ inbox
+
+    pub fn inbox_act(&self, item: &str, action: &str, message: Option<&str>) -> Result<Value> {
+        let rt = self.runtime()?;
+        if item.starts_with("perm-") {
+            let agent = self.broker.list().into_iter().find(|p| p.id == item).map(|p| p.agent_id);
+            let answer = match action {
+                "approve" => Answer::Allow,
+                "reject" => Answer::Deny { message: message.map(str::to_string) },
+                "in_pane" => Answer::InPane,
+                other => bail!("{other} does not apply to a permission"),
+            };
+            if !self.broker.answer(item, answer) {
+                bail!("this permission prompt is no longer open");
+            }
+            // Allowed or denied, the tool call goes on; answering in the pane
+            // leaves the CLI's dialog up.
+            if let (Some(a), false) = (agent, action == "in_pane") {
+                // The answer is already on its way to the hook: a failure here
+                // only delays the state until the agent's next hook.
+                if let Err(err) = rt.permission_answered(&a) {
+                    eprintln!("orchestrator: {a}: {err:#}");
+                }
+            }
+            return Ok(json!("answered"));
+        }
+        if let Some(n) = item.strip_prefix("alert-") {
+            let n: u64 = n.parse()?;
+            rt.store.write(|s| {
+                if let Some(i) = s.inbox.iter_mut().find(|i| i.id == n) {
+                    i.pending = false;
+                }
+            })?;
+            return Ok(json!("dismissed"));
+        }
+        if let Some(n) = item.strip_prefix("ask-") {
+            let id = governor::ActionId(n.parse()?);
+            let accept = action == "approve";
+            rt.governor_act(|g, now| (g.answer_ask(id, accept, now), vec![])).map_err(|e| anyhow!("{e:?}"))?;
+            return Ok(json!("answered"));
+        }
+        if let Some(a) = item.strip_prefix("wait-").or_else(|| item.strip_prefix("error-")) {
+            if action == "reply" {
+                let m = message.ok_or_else(|| anyhow!("empty reply"))?;
+                return self.agent_action(a, if rt.live(a).is_some() { "deliver" } else { "resume" }, Some(m));
+            }
+            if action == "reject" && item.starts_with("error-") {
+                return self.agent_action(a, "resume", None);
+            }
+        }
+        bail!("{action} does not apply to {item}")
+    }
+
+    fn inbox_items(&self, agents: &[Value], alerts: &[Alert], done: &[Done], ask: Option<Ask>) -> Vec<inbox::InboxItem> {
+        let Some(rt) = &self.rt else { return vec![] };
+        let facts: Vec<AgentFacts> = agents
+            .iter()
+            .filter_map(|a| {
+                let id = a["id"].as_str()?.to_string();
+                let state = a["state"].as_str().unwrap_or("").to_string();
+                let interesting = state == "waiting_for_you" || state == "error" || a["trust_dialog"] == true;
+                let tail = interesting.then(|| rt.live(&id).map(|l| l.pty.output.tail_text())).flatten();
+                Some(AgentFacts {
+                    since_ms: a["last_event_at_ms"].as_u64().unwrap_or(0),
+                    trust_dialog: a["trust_dialog"] == true,
+                    last_error: a["last_error"].as_str().map(str::to_string),
+                    tail,
+                    id,
+                    state,
+                })
+            })
+            .collect();
+        inbox::build(&inbox::Inputs { permissions: &self.broker.list(), agents: &facts, alerts, ask, done })
+    }
+
+    // ------------------------------------------------------------ views
+
+    /// Git state of `paths`: every `GIT_EVERY`, or for paths not seen yet,
+    /// one `git status` per path, in parallel.
+    fn git_for(&self, paths: &std::collections::BTreeSet<PathBuf>) -> BTreeMap<PathBuf, GitSummary> {
+        let mut g = self.git.lock_ok();
+        let all = g.stale(GIT_EVERY);
+        let todo: Vec<&PathBuf> = paths.iter().filter(|p| all || !g.value.contains_key(*p)).collect();
+        if !todo.is_empty() {
+            let fresh: Vec<(PathBuf, GitSummary)> = std::thread::scope(|sc| {
+                let jobs: Vec<_> =
+                    todo.iter().map(|p| sc.spawn(|| ((*p).clone(), self.projects.git_summary(p)))).collect();
+                jobs.into_iter().filter_map(|j| j.join().ok()).collect()
+            });
+            let mut value = if all { BTreeMap::new() } else { std::mem::take(&mut g.value) };
+            value.extend(fresh);
+            if all {
+                g.set(value);
+            } else {
+                g.value = value;
+            }
+        }
+        g.value.iter().filter(|(p, _)| paths.contains(*p)).map(|(p, s)| (p.clone(), s.clone())).collect()
+    }
+
+    fn main_of(&self, path: &Path) -> Option<PathBuf> {
+        let mut m = self.mains.lock_ok();
+        m.entry(path.to_path_buf()).or_insert_with(|| agent_runtime::worktree::main_checkout(path).ok()).clone()
+    }
+
+    /// The project an agent belongs to: the one it was started from, else the
+    /// project whose folder (or main checkout) is the agent's repository.
+    /// Paths are compared as stored: the registry, the runtime and
+    /// `main_checkout` all keep resolved paths.
+    fn project_of(&self, agent_id: &str, repo: &Path, projects: &[Project]) -> Option<String> {
+        if let Some(Value::String(id)) = self.settings.get(&format!("agent-project:{agent_id}")) {
+            if projects.iter().any(|p| p.id == id) {
+                return Some(id);
+            }
+        }
+        projects
+            .iter()
+            .find(|p| p.path == repo)
+            .or_else(|| projects.iter().find(|p| self.main_of(&p.path).as_deref() == Some(repo)))
+            .map(|p| p.id.clone())
+    }
+
+    fn memory(&self, agents_mb: f64) -> AppMemory {
+        let mut m = self.memory.lock_ok();
+        if m.stale(MEMORY_EVERY) {
+            let pids: Vec<i32> =
+                self.terms.ids().iter().filter_map(|i| self.terms.get(*i).ok()?.pid.map(|p| p as i32)).collect();
+            m.set(memory::measure(&pids, agents_mb));
+        }
+        m.value.clone()
+    }
+
+    /// Everything the shell shows, polled by the UI about once a second.
+    pub fn state(&self) -> Value {
+        let projects = self.projects.list();
+        let mut agents = vec![];
+        let mut warnings: Vec<Value> = self.warnings.iter().map(|w| json!(w)).collect();
+        let (mut usage, mut queue, mut meta, mut alerts, mut done, mut ask) =
+            (Value::Null, vec![], BTreeMap::new(), vec![], vec![], None);
+        if let Some(rt) = &self.rt {
+            let st = rt.state_json();
+            agents = st["agents"].as_array().cloned().unwrap_or_default();
+            warnings.extend(st["warnings"].as_array().cloned().unwrap_or_default());
+            usage = rt.usage_json();
+            if let Some(u) = usage.as_object_mut() {
+                // Per-agent usage is already in `agents`, and `snapshot` replaces `governor`.
+                u.remove("agents");
+                u.remove("governor");
+            }
+            let (snapshot, reset, shadow);
+            (queue, snapshot, reset, shadow, ask) = rt.with_governor(|g| {
+                let now = Timestamp::now();
+                (g.queue().to_vec(), g.snapshot(now), g.plan().reset_at.as_millisecond(), g.plan().shadow_mode, pending_ask(g, now))
+            });
+            usage["live_cap"] = json!(snapshot.live_cap);
+            usage["snapshot"] = json!(snapshot);
+            usage["reset_at_ms"] = json!(reset);
+            usage["shadow"] = json!(shadow);
+            (meta, alerts, done) = rt.store.read(store_view);
+        }
+        let mut git_paths: std::collections::BTreeSet<PathBuf> = projects.iter().map(|p| p.path.clone()).collect();
+        git_paths.extend(meta.values().map(|m: &AgentMeta| m.worktree.clone()));
+        let git = self.git_for(&git_paths);
+        let readers = self.readers.lock_ok().keys().cloned().collect::<std::collections::BTreeSet<_>>();
+        let mut agents_mb = 0.0;
+        for a in agents.iter_mut() {
+            let id = a["id"].as_str().unwrap_or("").to_string();
+            agents_mb += a["memory_mb"].as_f64().unwrap_or(0.0);
+            if let Some(m) = meta.get(&id) {
+                a["created_at_ms"] = json!(m.created_at_ms);
+                a["effort"] = json!(m.effort);
+                a["project_id"] = json!(self.project_of(&id, &m.repo, &projects));
+                a["branch"] = json!(m.branch);
+                a["git"] = json!(git.get(&m.worktree));
+            }
+            if let Some(q) = queue.iter().find(|e| e.agent.0 == id) {
+                a["queue_entry"] = json!(q);
+            }
+            a["attached"] = json!(readers.contains(&id));
+        }
+        let items = self.inbox_items(&agents, &alerts, &done, ask);
+        let projects: Vec<Value> = projects
+            .iter()
+            .map(|p| json!({"id": p.id, "name": p.name, "path": p.path, "git": git.get(&p.path)}))
+            .collect();
+        json!({
+            "now_ms": now_ms(),
+            "core": {"ok": self.rt.is_some(), "error": self.core_error, "home": self.paths.root, "user_home": agent_runtime::paths::home_dir()},
+            "warnings": warnings,
+            "projects": projects,
+            "agents": agents,
+            "usage": usage,
+            "queue": queue,
+            "inbox": {"items": items, "badge": inbox::badge(&items)},
+            "permissions": self.broker.list(),
+            "memory": self.memory(agents_mb),
+        })
+    }
+
+    pub fn planner(&self) -> Result<PlannerView> {
+        let rt = self.runtime()?;
+        let five_reset = rt.usage_json()["five_hour"]["resets_at"].as_i64().and_then(|s| Timestamp::from_second(s).ok());
+        let live = rt.live_ids();
+        let alloc_of: BTreeMap<String, String> =
+            rt.store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.allocation.clone())).collect());
+        let history = self.history.lock_ok();
+        Ok(rt.with_governor(|g| {
+            planner::build(g, Timestamp::now(), &history, five_reset, &|alloc| {
+                live.iter().filter(|id| alloc_of.get(*id).is_some_and(|a| a == alloc)).count()
+            })
+        }))
+    }
+
+    /// Week planner and title-bar controls (FR-809, FR-811).
+    pub fn governor_act(&self, action: &str, arg: Option<f64>) -> Result<Value> {
+        let rt = self.runtime()?;
+        let id = || arg.map(|a| a as u64).ok_or_else(|| anyhow!("{action} needs an id"));
+        Ok(match action {
+            "pause_all" => json!(rt.pause_all()),
+            "resume_all" => json!(rt.resume_all()),
+            "run_now" => {
+                let e = governor::EntryId(id()?);
+                json!(rt.governor_act(|g, now| {
+                    let r = g.run_now(e, now);
+                    (r.is_some(), r.into_iter().collect())
+                }))
+            }
+            "undo" => {
+                let a = governor::ActionId(id()?);
+                rt.governor_act(|g, now| match g.undo(a, now) {
+                    Ok(r) => (Ok(()), r),
+                    Err(e) => (Err(anyhow!("{e:?}")), vec![]),
+                })?;
+                json!("undone")
+            }
+            "sprint" => {
+                let pp = arg.unwrap_or(5.0);
+                let a = rt.governor_act(|g, now| (g.start_sprint(pp, now), vec![])).map_err(|e| anyhow!("{e:?}"))?;
+                json!(a.0)
+            }
+            other => bail!("unknown governor action {other}"),
+        })
+    }
+}
+
+impl Drop for Core {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>) -> Result<Arc<Runtime>> {
+    if orch_protocol::is_listening(&paths.socket()) {
+        bail!(
+            "another core is running on {} (orchd?): stop it to run agents in the app",
+            paths.socket().display()
+        );
+    }
+    std::fs::create_dir_all(&paths.root)?;
+    let mut rc = RuntimeConfig::new(paths.clone());
+    if let Some(c) = &cfg.claude {
+        rc.claude = c.clone();
+    }
+    rc.shadow = !cfg.enforce;
+    // Helpers next to the app binary (target/<profile>, or Contents/MacOS in a
+    // bundle) are copied to <home>/bin, a stable path outside the .app.
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+        let changed = ["orch-hook", "orch-status"].iter().any(|n| {
+            let meta = |p: PathBuf| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok()));
+            meta(dir.join(n)).is_some_and(|src| meta(paths.bin_dir().join(n)).is_none_or(|dst| dst.0 != src.0 || dst.1 < src.1))
+        });
+        if changed && dir.join("orch-hook").is_file() && dir.join("orch-status").is_file() {
+            if let Err(e) = agent_runtime::preflight::install_helpers(&dir, &paths.bin_dir()) {
+                warnings.push(format!("helpers: {e:#}"));
+            }
+        }
+    }
+    if agent_runtime::preflight::check_helpers(&rc.helpers).is_err() {
+        warnings.push(format!(
+            "orch-hook/orch-status missing in {}: build them (cargo build -p orch-hook -p orch-status); agents can't start",
+            paths.bin_dir().display()
+        ));
+    }
+    Runtime::new(rc)
+}
+
+/// The Governor's pending "ask" (FR-810), as an Inbox item.
+fn pending_ask(g: &governor::Governor, now: Timestamp) -> Option<Ask> {
+    let (id, _) = g.next_action_preview(now).pending_ask?;
+    let a = g.action(id)?;
+    let ask = a.ask.as_ref()?;
+    Some(Ask {
+        id: id.0,
+        reason: a.reason.clone(),
+        effect: a.expected_effect.clone(),
+        created_ms: a.ts.as_millisecond() as u64,
+        deadline_ms: ask.deadline.as_millisecond(),
+        default_apply: matches!(ask.default, governor::AskDefault::Apply),
+    })
+}
+
+/// One pass over the store: agent metadata, pending alerts, the last finished turns.
+fn store_view(s: &agent_runtime::store::StateFile) -> (BTreeMap<String, AgentMeta>, Vec<Alert>, Vec<Done>) {
+    let meta = s
+        .agents
+        .values()
+        .map(|a| {
+            let m = AgentMeta {
+                repo: a.repo.clone(),
+                worktree: a.worktree.clone(),
+                branch: s.worktrees.get(&a.worktree).map(|w| w.branch.clone()).unwrap_or_default(),
+                created_at_ms: a.created_at_ms,
+                effort: a.role.effort.clone(),
+            };
+            (a.id.clone(), m)
+        })
+        .collect();
+    let alerts = s
+        .inbox
+        .iter()
+        .filter(|i| i.pending)
+        .map(|i| Alert { id: i.id, agent_id: i.agent_id.clone(), body: i.body.clone(), created_ms: i.created_at_ms })
+        .collect();
+    let done = s
+        .turns
+        .iter()
+        .rev()
+        .filter(|t| t.status == agent_runtime::store::TurnStatus::Done)
+        .take(10)
+        .map(|t| Done {
+            turn_id: t.id.clone(),
+            agent_id: t.agent_id.clone(),
+            body: t.body.clone(),
+            at_ms: t.delivered_at_ms.unwrap_or(t.created_at_ms),
+        })
+        .collect();
+    (meta, alerts, done)
+}
+
+fn accept_loop(listener: UnixListener, core: std::sync::Weak<Core>, stop: Arc<AtomicBool>) {
+    for conn in listener.incoming() {
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+        let Ok(s) = conn else { continue };
+        let Some(c) = core.upgrade() else { break };
+        std::thread::spawn(move || c.handle_conn(s));
+    }
+}
+
+/// True when orch-hook closed its end (Esc in the pane kills it).
+fn peer_closed(s: &UnixStream) -> bool {
+    let mut b = [0u8; 1];
+    // SAFETY: a non-blocking peek into a local buffer.
+    let n = unsafe { libc::recv(s.as_raw_fd(), b.as_mut_ptr().cast(), 1, libc::MSG_PEEK | libc::MSG_DONTWAIT) };
+    n == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    pub(crate) fn test_core(d: &Path) -> Arc<Core> {
+        let repo = d.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        Core::start(CoreConfig {
+            home: d.join("home"),
+            claude: Some(d.join("no-claude")),
+            kitty_conf: d.join("kitty.conf"),
+            projects: vec![repo],
+            recover: false,
+            enforce: false,
+        })
+    }
+
+    fn record(id: &str, repo: PathBuf) -> agent_runtime::store::AgentRecord {
+        agent_runtime::store::AgentRecord {
+            id: id.into(),
+            worktree: repo.clone(),
+            repo,
+            role: agent_runtime::role::Role::solo(),
+            session_id: "s".into(),
+            tracker: Default::default(),
+            pid: None,
+            pgid: None,
+            allocation: "default".into(),
+            tier: governor::Tier::Normal,
+            created_at_ms: 0,
+            last_event: None,
+            last_event_at_ms: None,
+            spawns: 1,
+            flag: None,
+            trust_dialog: false,
+        }
+    }
+
+    fn tmp() -> tempfile::TempDir {
+        // Short path: the socket must fit in 104 bytes.
+        tempfile::Builder::new().prefix("orchapp").tempdir_in("/tmp").unwrap()
+    }
+
+    #[test]
+    fn state_has_the_shell_s_inputs() {
+        let d = tmp();
+        let core = test_core(d.path());
+        assert!(core.core_error.is_none(), "{:?}", core.core_error);
+        let s = core.state();
+        assert_eq!(s["core"]["ok"], true);
+        assert_eq!(s["projects"][0]["id"], "repo");
+        assert_eq!(s["inbox"]["badge"], 0);
+        assert!(s["usage"]["snapshot"]["state"].is_string(), "{}", s["usage"]);
+        assert!(s["usage"]["governor"].is_null() && s["usage"]["agents"].is_null(), "dropped from the poll");
+        assert!(s["memory"]["core_mb"].as_f64().unwrap() > 0.0);
+        let p = core.planner().unwrap();
+        assert!(p.curve.len() > 100);
+        core.shutdown();
+    }
+
+    #[test]
+    fn a_second_core_on_the_same_home_is_refused() {
+        let d = tmp();
+        let a = test_core(d.path());
+        let b = test_core(d.path());
+        assert!(b.core_error.as_deref().unwrap_or("").contains("another core"));
+        assert!(b.agent_start(&NewSession { project_id: "repo".into(), name: "x".into(), ..Default::default() }).is_err());
+        a.shutdown();
+    }
+
+    #[test]
+    fn permission_prompt_is_held_until_the_inbox_answers() {
+        let d = tmp();
+        let core = test_core(d.path());
+        let rt = core.runtime().unwrap().clone();
+        rt.store
+            .write(|s| {
+                s.agents.insert(
+                    "a1".into(),
+                    record("a1", d.path().join("repo")),
+                )
+            })
+            .unwrap();
+        // What orch-hook sends, on the real socket.
+        let sock = core.paths.socket();
+        let hook = std::thread::spawn(move || {
+            let s = bus::connect(&sock, Duration::from_secs(1)).unwrap();
+            let msg = Envelope::new(Msg::Hook(orch_protocol::HookMsg {
+                agent_id: "a1".into(),
+                event: HookEvent::PermissionRequest,
+                ts_ms: now_ms(),
+                deadline_ms: 30_000,
+                payload: json!({"hook_event_name": "PermissionRequest", "session_id": "s",
+                    "tool_name": "Bash", "tool_input": {"command": "pnpm add x"}}),
+            }));
+            bus::write_line(&mut &s, &msg).unwrap();
+            let r: ReplyEnvelope = bus::read_line(&mut BufReader::new(&s)).unwrap();
+            r
+        });
+        let mut item = None;
+        for _ in 0..50 {
+            let s = core.state();
+            if let Some(i) = s["inbox"]["items"].as_array().and_then(|i| i.first()).cloned() {
+                item = Some(i);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let item = item.expect("the prompt reached the Inbox");
+        assert_eq!(item["kind"], "permission");
+        assert_eq!(item["preview"], "pnpm add x");
+        assert_eq!(core.state()["agents"][0]["state"], "waiting_for_you");
+        core.inbox_act(item["id"].as_str().unwrap(), "approve", None).unwrap();
+        let r = hook.join().unwrap();
+        match r.reply {
+            Reply::Hook { output: Some(o) } => assert_eq!(o.0["hookSpecificOutput"]["decision"]["behavior"], "allow"),
+            other => panic!("{other:?}"),
+        }
+        // Answered: not shown again as "waiting for you" while the next hook is on its way.
+        assert_eq!(core.state()["inbox"]["badge"], 0);
+        assert!(core.inbox_act(item["id"].as_str().unwrap(), "approve", None).is_err());
+        core.shutdown();
+    }
+
+    #[test]
+    fn agents_of_a_linked_worktree_project_stay_under_it() {
+        let d = tmp();
+        let main = d.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let o = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        };
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
+        let nested = main.join(".claude/worktrees/feat");
+        git(&main, &["worktree", "add", "-q", "-b", "feat", nested.to_str().unwrap()]);
+        let core = Core::start(CoreConfig {
+            home: d.path().join("home"),
+            claude: Some(d.path().join("no-claude")),
+            kitty_conf: d.path().join("kitty.conf"),
+            projects: vec![nested],
+            recover: false,
+            enforce: false,
+        });
+        // The runtime records the main checkout as the agent's repo (FR-105).
+        let main = main.canonicalize().unwrap();
+        core.runtime().unwrap().store.write(|s| s.agents.insert("a1".into(), record("a1", main.clone()))).unwrap();
+        assert_eq!(core.state()["agents"][0]["project_id"], "feat", "found through the project's main checkout");
+        core.settings.set("agent-project:a1", json!("nope")).unwrap();
+        assert_eq!(core.state()["agents"][0]["project_id"], "feat", "an unknown remembered project is ignored");
+        assert_eq!(core.projects.list().len(), 1, "the main checkout was not added as a second project");
+        core.shutdown();
+    }
+
+    #[test]
+    fn opening_the_editor_without_a_file_keeps_a_running_nvim() {
+        let d = tmp();
+        let core = test_core(d.path());
+        let sock = editor::server_socket(&core.paths.root, "repo");
+        std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+        let _nvim = UnixListener::bind(&sock).unwrap(); // stands in for nvim --listen
+        let r = core.editor_open(Some("repo"), None, None, None, 24, 80).unwrap();
+        assert!(r.reused && r.term.is_none());
+        assert!(sock.exists(), "the live server's socket is kept");
+        core.shutdown();
+    }
+
+    #[test]
+    fn shell_panes_and_cwd_fallbacks() {
+        let d = tmp();
+        let core = test_core(d.path());
+        assert_eq!(core.pane_cwd(Some("repo"), Some("nobody")), d.path().join("repo").canonicalize().unwrap());
+        assert_eq!(core.pane_cwd(None, None), agent_runtime::paths::home_dir());
+        let t = core.term_spawn(TermKind::Shell, &d.path().join("repo"), Some("/bin/echo hi-there"), 24, 80).unwrap();
+        let term = core.terms.get(t.id).unwrap();
+        let mut out = String::new();
+        while let Some(b) = term.output.read_wait(Duration::from_secs(5)) {
+            out.push_str(&String::from_utf8_lossy(&b));
+            if out.contains("hi-there") {
+                break;
+            }
+        }
+        assert!(out.contains("hi-there"), "{out:?}");
+        core.terms.kill(t.id);
+        core.shutdown();
+    }
+
+    #[test]
+    fn governor_controls() {
+        let d = tmp();
+        let core = test_core(d.path());
+        core.governor_act("pause_all", None).unwrap();
+        let p = core.planner().unwrap();
+        let pause = p.log.iter().find(|l| l.action.kind_name() == "pause_all").expect("logged");
+        assert!(pause.can_undo);
+        core.governor_act("undo", Some(pause.action.id.0 as f64)).unwrap();
+        assert!(core.governor_act("run_now", None).is_err());
+        assert!(core.governor_act("nope", None).is_err());
+        core.shutdown();
+    }
+}

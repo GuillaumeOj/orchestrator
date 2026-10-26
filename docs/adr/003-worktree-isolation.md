@@ -1,6 +1,6 @@
 # ADR-003 — Isolation: one worktree per agent, in a sibling folder
 
-- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-17 (moved from inside the repo to a sibling folder)
+- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-17 (moved from inside the repo to a sibling folder), 2026-10-26 (sibling of the main checkout)
 
 ## Context
 Many agents edit the same repository in parallel, so each one needs its own checkout. Nesting worktrees inside the repo had real costs:
@@ -9,7 +9,7 @@ Many agents edit the same repository in parallel, so each one needs its own chec
 - Tracked and ignored content would be mixed in `.orchestrator/`.
 
 ## Decision
-- Worktrees live in a **sibling folder**: `<parent>/<repo>.worktrees/<feature>/<role>-<n>/` and `<parent>/<repo>.worktrees/solo/<slug>/`. The root can be changed per project.
+- Worktrees live in a **sibling folder**: `<parent>/<repo>.worktrees/<feature>/<role>-<n>/` and `<parent>/<repo>.worktrees/solo/<slug>/`. The root can be changed per project. `<repo>` is the **main checkout** (the parent of `git rev-parse --git-common-dir`), also when the registered folder is itself a linked worktree. Placed next to a worktree that lives inside the main checkout (for example `<repo>/.claude/worktrees/x`), the sibling folder would sit inside the checkout, where the sandbox's entry-by-entry read denies cover it: Claude's Write tool was denied in the agent's own worktree (2026-10-26).
 - **Branch names** (no ref can be both a file and a folder):
   - `orch/solo/<slug>` for solo sessions
   - `orch/<feature>/integration` for a feature's integration branch

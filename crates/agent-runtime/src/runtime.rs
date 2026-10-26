@@ -91,6 +91,14 @@ pub struct Live {
     pub last_user_input_ms: AtomicU64,
 }
 
+impl Live {
+    /// The user's keystrokes: delivery waits 2 s after them (FR-206).
+    pub fn user_input(&self, bytes: &[u8]) -> Result<()> {
+        self.last_user_input_ms.store(now_ms(), Ordering::SeqCst);
+        self.pty.write(bytes)
+    }
+}
+
 pub struct Runtime {
     pub cfg: RuntimeConfig,
     pub store: Store,
@@ -239,6 +247,36 @@ impl Runtime {
         self.live.lock().unwrap_or_else(|e| e.into_inner()).get(id).cloned()
     }
 
+    /// The live process of an agent, for a UI that drives its PTY directly
+    /// (pull transport, keystrokes) instead of `attach`.
+    pub fn live(&self, id: &str) -> Option<Arc<Live>> {
+        self.live_get(id)
+    }
+
+    /// Read access to the Governor (snapshot, curve, queue, log) for a UI.
+    pub fn with_governor<R>(&self, f: impl FnOnce(&Governor) -> R) -> R {
+        f(&self.gov())
+    }
+
+    /// A user control on the Governor (FR-809/811: run now, undo, asks, sprint).
+    /// Releases it returns are handled like the loop's.
+    pub fn governor_act<R>(&self, f: impl FnOnce(&mut Governor, Timestamp) -> (R, Vec<Release>)) -> R {
+        let (r, releases) = f(&mut self.gov(), Timestamp::now());
+        self.handle_releases(releases);
+        r
+    }
+
+    /// A permission prompt was answered outside the pane (the Inbox): the
+    /// tool now runs or is refused, so the agent is working again until its
+    /// next hook says otherwise.
+    pub fn permission_answered(&self, id: &str) -> Result<()> {
+        self.store.write(|s| {
+            if let Some(a) = s.agents.get_mut(id).filter(|a| a.tracker.state == AgentState::WaitingForYou) {
+                a.tracker.state = AgentState::Working;
+            }
+        })
+    }
+
     pub fn live_ids(&self) -> Vec<String> {
         self.live.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect()
     }
@@ -354,7 +392,9 @@ impl Runtime {
         )?;
         let rec = AgentRecord {
             id: spec.agent_id.clone(),
-            repo: repo.clone(),
+            // The main checkout (FR-105): its entries are denied one by one, and
+            // the project's own folder, if a linked worktree, is an "other" one.
+            repo: row.repo.clone(),
             worktree: row.path.clone(),
             role: role_from_spec(spec)?,
             session_id: uuid::Uuid::new_v4().to_string(),

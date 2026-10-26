@@ -1,0 +1,40 @@
+[package]
+name = "orch-app"
+version = "0.1.0"
+description = "The Orchestrator desktop app: a Tauri 2 shell that embeds the agent runtime and the Governor."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "orch_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "orchestrator"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+agent-runtime.workspace = true
+governor.workspace = true
+orch-protocol.workspace = true
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+libc.workspace = true
+portable-pty.workspace = true
+uuid.workspace = true
+tauri = { version = "2.12", features = [] }
+core-text = "22"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+# Off for `cargo build`/`cargo test` (the UI is served by Vite, nothing to embed);
+# `npm run tauri build` turns it on and embeds ui/dist.
+custom-protocol = ["tauri/custom-protocol"]

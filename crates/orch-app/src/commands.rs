@@ -1,0 +1,198 @@
+//! Tauri commands: thin wrappers over [`Core`](crate::core::Core). PTY output
+//! uses the pull transport: `*_read` waits for output on a blocking thread and
+//! returns everything buffered as one raw IPC response (ADR-001 §4).
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde_json::Value;
+use tauri::State;
+use tauri::ipc::Response;
+
+use crate::core::{Core, EditorOpen, NewSession, TermInfo};
+use crate::kitty::KittyImport;
+use crate::planner::PlannerView;
+use crate::terms::TermKind;
+
+type Res<T> = Result<T, String>;
+type CoreState<'a> = State<'a, Arc<Core>>;
+
+/// A pull returns at least this often, so a closed pane's loop ends promptly.
+const PULL_WAIT: Duration = Duration::from_secs(2);
+
+fn e(err: anyhow::Error) -> String {
+    format!("{err:#}")
+}
+
+/// Runs `f` on the blocking pool: async commands keep the main thread free
+/// (sync commands run on it) and may wait on PTYs, processes or git.
+async fn blocking<T: Send + 'static>(
+    core: CoreState<'_>,
+    f: impl FnOnce(&Core) -> anyhow::Result<T> + Send + 'static,
+) -> Res<T> {
+    let core = core.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || f(&core).map_err(e)).await.map_err(|err| err.to_string())?
+}
+
+/// Off the main thread (sync commands run there): it runs git and scans processes.
+#[tauri::command]
+pub async fn app_state(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, |c| Ok(c.state())).await
+}
+
+#[tauri::command]
+pub fn kitty_config(core: CoreState) -> KittyImport {
+    core.kitty.clone()
+}
+
+#[tauri::command]
+pub fn font_files(family: String) -> Vec<(String, String)> {
+    crate::fonts::font_files(&family)
+}
+
+#[tauri::command]
+pub fn read_font(path: String) -> Res<Response> {
+    crate::fonts::read_font(&path).map(Response::new).map_err(e)
+}
+
+// ---------------------------------------------------------------- agents
+
+#[tauri::command]
+pub fn agent_start(core: CoreState, req: NewSession) -> Res<String> {
+    core.agent_start(&req).map_err(e)
+}
+
+#[tauri::command]
+pub fn agent_attach(core: CoreState, id: String, rows: u16, cols: u16) -> Res<u64> {
+    core.agent_attach(&id, rows, cols).map_err(e)
+}
+
+#[tauri::command]
+pub fn agent_detach(core: CoreState, id: String, reader: u64) {
+    core.agent_detach(&id, reader)
+}
+
+#[tauri::command]
+pub async fn agent_read(core: CoreState<'_>, id: String, reader: u64) -> Res<Response> {
+    blocking(core, move |c| c.agent_read(&id, reader, PULL_WAIT).map(Response::new)).await
+}
+
+#[tauri::command]
+pub fn agent_write(core: CoreState, id: String, data: String) -> Res<()> {
+    core.agent_write(&id, data.as_bytes()).map_err(e)
+}
+
+#[tauri::command]
+pub fn agent_resize(core: CoreState, id: String, rows: u16, cols: u16) -> Res<()> {
+    core.runtime().and_then(|rt| rt.resize(&id, rows, cols)).map_err(e)
+}
+
+#[tauri::command]
+pub async fn agent_action(core: CoreState<'_>, id: String, action: String, message: Option<String>) -> Res<Value> {
+    // Suspend and kill wait (bounded) for the process to exit.
+    blocking(core, move |c| c.agent_action(&id, &action, message.as_deref())).await
+}
+
+// ---------------------------------------------------------------- terminals
+
+#[derive(serde::Deserialize)]
+pub struct TermSpawn {
+    pub kind: TermKind,
+    pub project_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub cwd: Option<PathBuf>,
+    pub run: Option<String>,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+#[tauri::command]
+pub fn term_spawn(core: CoreState, req: TermSpawn) -> Res<TermInfo> {
+    let cwd = req.cwd.unwrap_or_else(|| core.pane_cwd(req.project_id.as_deref(), req.agent_id.as_deref()));
+    core.term_spawn(req.kind, &cwd, req.run.as_deref(), req.rows, req.cols).map_err(e)
+}
+
+#[tauri::command]
+pub async fn term_read(core: CoreState<'_>, id: u32) -> Res<Response> {
+    blocking(core, move |c| c.terms.get(id)?.output.read_wait(PULL_WAIT).map(Response::new).ok_or_else(|| anyhow::anyhow!("eof")))
+        .await
+}
+
+#[tauri::command]
+pub fn term_write(core: CoreState, id: u32, data: String) -> Res<()> {
+    core.terms.get(id).and_then(|t| t.write(data.as_bytes())).map_err(e)
+}
+
+#[tauri::command]
+pub fn term_resize(core: CoreState, id: u32, rows: u16, cols: u16) -> Res<()> {
+    core.terms.get(id).and_then(|t| t.resize(rows, cols)).map_err(e)
+}
+
+#[tauri::command]
+pub fn term_kill(core: CoreState, id: u32) {
+    core.terms.kill(id)
+}
+
+#[tauri::command]
+pub async fn editor_open(
+    core: CoreState<'_>,
+    project_id: Option<String>,
+    agent_id: Option<String>,
+    file: Option<String>,
+    line: Option<u32>,
+    rows: u16,
+    cols: u16,
+) -> Res<EditorOpen> {
+    blocking(core, move |c| c.editor_open(project_id.as_deref(), agent_id.as_deref(), file.as_deref(), line, rows, cols))
+        .await
+}
+
+#[tauri::command]
+pub async fn open_in_kitty(core: CoreState<'_>, cwd: PathBuf) -> Res<()> {
+    blocking(core, move |c| c.open_in_kitty(&cwd)).await
+}
+
+// ---------------------------------------------------------------- inbox, governor
+
+#[tauri::command]
+pub async fn inbox_act(core: CoreState<'_>, item: String, action: String, message: Option<String>) -> Res<Value> {
+    blocking(core, move |c| c.inbox_act(&item, &action, message.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn planner_view(core: CoreState<'_>) -> Res<PlannerView> {
+    blocking(core, |c| c.planner()).await
+}
+
+#[tauri::command]
+pub fn governor_act(core: CoreState, action: String, arg: Option<f64>) -> Res<Value> {
+    core.governor_act(&action, arg).map_err(e)
+}
+
+// ---------------------------------------------------------------- projects, settings
+
+#[tauri::command]
+pub fn project_add(core: CoreState, path: PathBuf) -> Res<Value> {
+    core.projects.add(&path).map(|p| serde_json::json!(p)).map_err(e)
+}
+
+#[tauri::command]
+pub fn project_remove(core: CoreState, id: String) -> Res<()> {
+    core.projects.remove(&id).map_err(e)
+}
+
+#[tauri::command]
+pub fn settings_get(core: CoreState, key: String) -> Option<Value> {
+    core.settings.get(&key)
+}
+
+#[tauri::command]
+pub fn settings_set(core: CoreState, key: String, value: Value) -> Res<()> {
+    core.settings.set(&key, value).map_err(e)
+}
+
+#[tauri::command]
+pub fn dev_enabled() -> bool {
+    crate::devctl::enabled()
+}
