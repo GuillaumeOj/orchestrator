@@ -473,7 +473,11 @@ impl Core {
                 json!("esc sent")
             }
             "suspend" => json!(rt.suspend(id)?),
-            "kill" => json!(rt.kill(id)?),
+            "kill" => {
+                // Ends the agent's input thread; a later resume starts a new one.
+                self.agent_input.lock_ok().remove(id);
+                json!(rt.kill(id)?)
+            }
             "resume" => {
                 rt.resume(id, message)?;
                 json!("resumed")
@@ -584,7 +588,11 @@ impl Core {
             // Allowed or denied, the tool call goes on; answering in the pane
             // leaves the CLI's dialog up.
             if let (Some(a), false) = (agent, action == "in_pane") {
-                rt.permission_answered(&a)?;
+                // The answer is already on its way to the hook: a failure here
+                // only delays the state until the agent's next hook.
+                if let Err(err) = rt.permission_answered(&a) {
+                    eprintln!("orchestrator: {a}: {err:#}");
+                }
             }
             return Ok(json!("answered"));
         }

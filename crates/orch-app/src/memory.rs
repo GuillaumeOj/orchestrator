@@ -103,8 +103,12 @@ pub fn system_memory_mb() -> f64 {
 /// How long a scan of all processes for the WebKit helpers is reused.
 const HELPER_RESCAN: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// WebKit runs these three helpers per app; fewer means some have not started yet.
+const HELPERS: usize = 3;
+
 /// The app's WebKit helpers with their footprints. The pid scan (hundreds of
-/// syscalls) is redone every minute, or when a known helper is gone.
+/// syscalls) is redone every minute, when a known helper is gone, or while
+/// not all three have been seen yet (the GPU helper starts lazily).
 fn helpers_with_footprint(app_pid: i32) -> Vec<(String, f64)> {
     use crate::LockOk;
     type Scan = Option<(std::time::Instant, Vec<(i32, String)>)>;
@@ -112,7 +116,7 @@ fn helpers_with_footprint(app_pid: i32) -> Vec<(String, f64)> {
     let mut c = CACHE.lock_ok();
     let measure = |hs: &[(i32, String)]| hs.iter().map(|(p, n)| footprint_mb(*p).map(|mb| (n.clone(), mb))).collect::<Option<Vec<_>>>();
     if let Some((at, hs)) = c.as_ref() {
-        if at.elapsed() < HELPER_RESCAN {
+        if at.elapsed() < HELPER_RESCAN && hs.len() >= HELPERS {
             if let Some(m) = measure(hs) {
                 return m;
             }

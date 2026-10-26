@@ -343,7 +343,15 @@ class Snapshot {
   }
 }
 
-export async function refresh() {
+let refreshing = null;
+
+/** One poll at a time: a call made while one is in flight waits for that one. */
+export function refresh() {
+  refreshing ??= poll().finally(() => (refreshing = null));
+  return refreshing;
+}
+
+async function poll() {
   try {
     app.data = new Snapshot(await invoke('app_state'));
     app.error = null;

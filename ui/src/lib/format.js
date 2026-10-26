@@ -1,6 +1,8 @@
 // Copy rules (Penpot 05): usage in pp of the week, times in 24 h with a relative hint.
 export const pct = (v, digits = 0) => (v == null || Number.isNaN(v) ? '—' : `${Number(v).toFixed(digits)}%`);
-export const pp = (v, digits = 0) => (v == null ? '—' : `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(digits)} pp`);
+/** "+9", "−3": a signed delta. */
+export const signed = (v, digits = 0) => (v == null ? '—' : `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(digits)}`);
+export const pp = (v, digits = 0) => (v == null ? '—' : `${signed(v, digits)} pp`);
 
 export function clock(ms, now = Date.now()) {
   if (ms == null) return '—';

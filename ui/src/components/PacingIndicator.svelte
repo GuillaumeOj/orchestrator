@@ -4,7 +4,7 @@
   // refer to the agents. Bars: fill = agents used, 2 px tick = plan.
   import { app, openSingleton } from '../lib/app.svelte.js';
   import { PRESSURE } from '../lib/status.js';
-  import { clock, when, pp, pct } from '../lib/format.js';
+  import { clock, when, signed, pct } from '../lib/format.js';
   import Kbd from './Kbd.svelte';
   import PressurePill from './PressurePill.svelte';
 
@@ -14,8 +14,6 @@
   const est = $derived(s?.provenance === 'estimated' ? '≈' : '');
   const p = $derived(PRESSURE[s?.state] ?? PRESSURE.green);
   const five = $derived(u?.five_hour?.used_pct ?? s?.five_hour);
-  // "+9": the delta in pp, as in "plan 38% (+9)".
-  const sign = (e) => pp(e).replace(' pp', '');
 </script>
 
 {#if s}
@@ -24,7 +22,7 @@
     <b>Week {est}{Math.round(s.used)}%</b>
     <span>agents {Math.round(s.governed)}%</span>
     <span class="muted">·</span>
-    <span>plan {Math.round(s.ideal)}% ({sign(s.error)})</span>
+    <span>plan {Math.round(s.ideal)}% ({signed(s.error)})</span>
     <span class="bar" style:width="40px"><i style:width="{Math.min(100, s.governed)}%" style:background={p.color}></i><em style:left="{Math.min(100, s.ideal)}%"></em></span>
     <span class="muted">·</span>
     <b>5h {pct(five)}</b>
@@ -37,7 +35,7 @@
     <div class="backdrop" onclick={() => (open = false)}></div>
     <div class="pop" role="dialog" aria-label="Usage pacing">
       <div class="row"><b>Usage pacing</b><PressurePill state={s.state} shadow={u.shadow} /></div>
-      <div class="row"><span>Week {est}{Math.round(s.used)}%</span><span>agents {Math.round(s.governed)}% · plan {Math.round(s.ideal)}% ({sign(s.error)})</span></div>
+      <div class="row"><span>Week {est}{Math.round(s.used)}%</span><span>agents {Math.round(s.governed)}% · plan {Math.round(s.ideal)}% ({signed(s.error)})</span></div>
       <span class="bar wide"><i style:width="{Math.min(100, s.governed)}%" style:background={p.color}></i><em style:left="{Math.min(100, s.ideal)}%"></em></span>
       <div class="muted">you {Math.round(s.interactive_used)}% · outside app {Math.round(s.unattributed_so_far)}% · projected {Math.round(s.projected)}% at the reset</div>
       <div class="row"><span>5h window</span><span>{five == null ? 'no reading yet' : `${Math.round(five)}% used`}</span></div>

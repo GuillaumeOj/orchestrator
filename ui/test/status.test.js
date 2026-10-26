@@ -39,3 +39,12 @@ describe('fuzzy and format', () => {
     expect(when(Date.now() + 3600_000 * 2 + 60000)).toMatch(/\(in 2h 0[01]m\)/);
   });
 });
+
+describe('signed', () => {
+  it('formats the title bar delta', async () => {
+    const { signed } = await import('../src/lib/format.js');
+    expect(signed(9)).toBe('+9');
+    expect(signed(-2.6)).toBe('−3');
+    expect(signed(null)).toBe('—');
+  });
+});
