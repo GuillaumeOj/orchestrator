@@ -1,0 +1,158 @@
+/* Base styles: semantic tokens only (tokens.css is generated from tokens.json). */
+@import './tokens.css';
+@import '@xterm/xterm/css/xterm.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--color-surface-chrome);
+  color: var(--color-text-primary);
+  font: var(--text-body);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: var(--border-width-focus) solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+.muted {
+  color: var(--color-text-muted);
+}
+.secondary {
+  color: var(--color-text-secondary);
+}
+.mono {
+  font: var(--text-mono);
+}
+.icon {
+  font: var(--text-icon);
+}
+
+/* Key hint (§9.7 notation): one container per shortcut. */
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 var(--space-xs);
+  border: var(--border-width-default) solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  font: var(--text-key);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+/* Buttons (Penpot 02): primary, secondary, ghost, danger. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  height: var(--size-control);
+  padding: 0 var(--space-xs) 0 var(--space-md);
+  border-radius: var(--radius-sm);
+  border: var(--border-width-default) solid var(--color-border-strong);
+  background: transparent;
+  color: var(--color-text-primary);
+  font: var(--text-body-strong);
+  white-space: nowrap;
+}
+.btn:hover {
+  background: var(--color-surface-raised);
+}
+.btn.primary {
+  background: var(--color-accent-subtle);
+  border-color: var(--color-accent-default);
+}
+.btn.ghost {
+  border-color: transparent;
+}
+.btn.danger {
+  border-color: var(--color-status-error);
+}
+.btn:disabled {
+  color: var(--color-text-disabled);
+  border-color: var(--color-border-subtle);
+  background: transparent;
+}
+.btn:not(:has(.kbd)) {
+  padding-right: var(--space-md);
+}
+
+/* Count badge (Penpot review round 1). */
+.count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 var(--space-xs);
+  border-radius: var(--radius-full);
+  border: var(--border-width-default) solid var(--color-status-waiting-for-you);
+  color: var(--color-text-primary);
+  font: var(--text-caption);
+}
+
+.bar {
+  display: inline-block;
+  position: relative;
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--color-border-subtle);
+  overflow: hidden;
+  vertical-align: middle;
+}
+.bar > i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: var(--radius-full);
+  background: var(--color-accent-default);
+}
+
+.xterm-host {
+  width: 100%;
+  height: 100%;
+}
+
+input.field,
+textarea.field,
+select.field {
+  width: 100%;
+  min-height: var(--size-control);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  border: var(--border-width-default) solid var(--color-border-strong);
+  background: var(--color-surface-pane);
+  color: var(--color-text-primary);
+  user-select: text;
+  -webkit-user-select: text;
+}
