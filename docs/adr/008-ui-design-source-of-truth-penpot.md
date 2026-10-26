@@ -7,7 +7,7 @@ The app has dense, stateful panes (agents, canvas, pacing). Without a shared vis
 
 ## Decision
 - One Penpot file, **`Orchestrator — UI`**, is the source of truth for the interface. Its structure is in SPEC §9.0.
-- **States are component variants**, not separate screens. Prototypes only for J2, J5 and J8, with key sequences annotated.
+- **States are component variants**, not separate screens. Storyboards (annotated frame sequences, no clickable prototypes) only for J2, J5 and J8, with key sequences annotated.
 - **Tokens pipeline**: Penpot tokens → W3C design-token JSON → Style Dictionary → CSS variables, with a CI drift check. Code uses tokens only.
 - **Design first for new screens.** Small changes can be made in code and **backported to Penpot in the same PR**.
 - **Gate**: Foundations, Shell & layouts and the P1 panes (Overview, agent pane, Week planner, Inbox) before P1 UI work.

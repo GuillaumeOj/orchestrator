@@ -112,14 +112,14 @@ Orchestrator is a **personal, local-first macOS app** for running software proje
 
 ### J8 — Pacing the week
 1. When the weekly window resets, a **Week planner** item appears in the Inbox. Working days and hours, projects A 50 % / B 30 % / C 20 % and a 10 % reserve are prefilled from last week. The user adjusts and confirms.
-2. The title bar shows both windows: *Week 41 % · plan 38 % (+3) · 5h 22 % · resets Mon 09:00*.
-3. On Wednesday, usage is 9 pp over plan, so the Governor moves to **Red**. It caps live autonomous agents to 1, queues low-priority team tasks, and proposes in the Inbox to defer "Search v2" until after the reset. Every queued agent shows why and when it will start, with a **Run now** button that shows the cost ("≈ +2 pp").
-4. On Friday, usage is 12 pp under plan with < 24 working hours left, so the Governor moves to **Catch-up** and releases queued work at higher concurrency.
+2. The title bar shows both windows: *Week 50 % · agents 41 % · plan 38 % (+3) · 5h 22 % · resets Mon 09:00*. "Week" is the total the plan reports; "agents" is the share the Governor controls (total − your interactive use − usage outside the app), and the plan and the error refer to it.
+3. On Wednesday, the agents' usage is 9 pp over plan, so the Governor moves to **Red**. It caps live autonomous agents to 1, queues low-priority team tasks, and proposes in the Inbox to defer "Search v2" until after the reset. Every queued agent shows why and when it will start, with a **Run now** button that shows the cost ("≈ +2 pp").
+4. On Friday, the agents' usage is 12 pp under plan with < 24 working hours left, so the Governor moves to **Catch-up** and releases queued work at higher concurrency.
 5. The week ends at about 90–100 % used, near the reset. The weekly report summarizes usage per project, feature and role, plus the governor's actions.
 
 ### J9 — Plan limit reached anyway
 1. Claude Code reports that a window is exhausted: a **StopFailure** hook with `error: "rate_limit"`, and the statusline jumps to `used_percentage: 100` with the reset time (a window the response doesn't report is *absent*, not 0).
-2. The app marks all agents **Blocked by limit**, pauses autonomous work at the next turn boundary, and shows the reset time in a global banner.
+2. The app marks all agents **Blocked by limit**, pauses autonomous work at the next turn boundary, and shows the exhausted window and its reset time in a global banner (one variant for the weekly window, one for the 5h window).
 3. At the reset the Governor resumes queued work in priority order. Nothing is lost: sessions are resumed by id. The CLI also arms **its own auto-continue at the reset** ("continuing automatically at …"). The app either counts that turn as admitted work or sends Esc to cancel it and reschedules the agent through the Governor (default: cancel and reschedule, so the Governor keeps control). A real limit hit is still untested (R10).
 
 ### J10 — Recovery
@@ -240,12 +240,12 @@ The control law is specified in **ADR-007**. The requirements below are what the
 | FR-801 | **Usage collector**: record the plan-limit signals from Claude Code (statusline `rate_limits.five_hour` / `seven_day` used % and reset times, StopFailure `rate_limit` errors) and per-session usage (OpenTelemetry token/cost metrics, statusline cost and context), attributed to agent, role, team, feature and project. Each sample records where its value came from (*observed* or *estimated*). Statusline `rate_limits` are **per-process copies of that agent's last API response**, so for each window the collector uses the **most recent sample across all agents** (by sample time), and treats a missing window as unknown, not 0. A statusline re-render carries no response time: a sample counts as a **new response** only when its readings or its cost changed, and is timed when the core receives it (idle re-renders are dropped). The first response's sample can arrive up to `refreshInterval` (5 s) after its Stop. | M |
 | FR-802 | **Weekly plan**, aligned to the weekly reset (`rate_limits.seven_day.resets_at`; the plan week moves when a reading shows another reset): working calendar (days, hours, time zone, holidays), allocations per project/feature/team as **weights**, a priority tier (critical / high / normal / low), and a **reserve** for interactive work. Prefilled from last week. [J8] | M |
 | FR-803 | **Ideal curve**: `ideal(t)` = fraction of the week's weighted working hours elapsed at time t × (100 % − reserve − forecast unattributed usage). Off-hours count only if the user enables an off-hours allowance. | M |
-| FR-804 | **Pressure states** with hysteresis: **Green / Amber / Red / Catch-up**, computed from the error `e = used − ideal` (pp) and the projected exhaustion time. Thresholds are in ADR-007 and adjustable in settings. | M |
+| FR-804 | **Pressure states** with hysteresis: **Green / Amber / Red / Catch-up**, computed from the error on the **governed share** `e = (used − reserve used − unattributed used) − ideal` (pp), so your own interactive use and usage outside the app never push agents into Amber/Red, and from the projected exhaustion time, which stays on the **total** used so a lock-out is still prevented. Thresholds are in ADR-007 and adjustable in settings. | M |
 | FR-805 | **Governor v1 actions**: cap live autonomous agents per state; queue new turns by priority; pause teams at the next turn boundary; propose to defer work until after the reset; a separate **5h guard** that keeps headroom for interactive work. | M |
 | FR-806 | **Admission points**: the Governor decides at **turn start** (for turns the app delivers; self-started turns from background work are counted, FR-410) and at **each tool call** (a PreToolUse hook waits up to a few seconds for admission, then denies with "paused by governor" if it is still held). Parallel tool calls run their hooks concurrently, and each one is admitted separately. The user's own typing in a pane is never blocked. **`orch-hook` fails closed for tools**: hook timeouts, crashes and a missing hook binary all let the tool run, so `orch-hook` always answers itself. If the core's socket is missing, refused, closes mid-hold, or misses `orch-hook`'s deadline, PreToolUse and PermissionRequest answer **deny** ("ORCH: orchestrator unavailable"); every other event exits 0 at once and is **spooled** to the agent's folder for replay. It never exits with code 2 on non-tool events (that blocks and erases the user's prompt), and only PreToolUse/PermissionRequest wait on the core; the others wait at most 1 s for the connection **and** the reply together, so a hung core never delays a prompt by more than a second. An admitted tool call gets **no decision** from the hook (not `allow`), so the agent's own permission prompts still apply. | M |
 | FR-807 | **Interactive and critical work** is admitted first and draws from the reserve. When the reserve is used up, the app warns instead of blocking and squeezes the other work harder. If most usage is interactive, the Governor has little to act on; the planner says so. | M |
 | FR-808 | **Fair scheduling**: queued work is picked by weighted fair queuing over allocation weights, with priority tiers and **aging** (one tier up for every 2 h of waiting) so nothing starves. Unused weight is redistributed. Nothing rolls over to the next week. | M |
-| FR-809 | **Transparency**: every queued or paused agent shows why, its estimated start, and **Run now** with its estimated cost. Every governor action is logged with its reason and can be undone from the log. A **next-action preview** shows what the Governor would do next. | M |
+| FR-809 | **Transparency**: every queued or paused agent shows why, its estimated start, and **Run now** (or **Start now** if it never ran) with its estimated cost **in the window that binds it**: % of the 5h window when the 5h guard holds it, pp of the week otherwise; the confirmation shows both. Every governor action is logged with its reason and can be undone from the log. A **next-action preview** shows what the Governor would do next. | M |
 | FR-810 | **"Ask" actions** come with a default and a timeout (default: apply after 20 min), so they never stall when the user is away. | M |
 | FR-811 | **Overrides**: Sprint mode (borrow budget: today's target goes up and the remaining days go down, and the trade-off is shown), hard caps per allocation, **Pause all** / **Resume**. | M |
 | FR-812 | **Shadow mode**: the Governor can log its decisions without enforcing them (default on for the first week). | M |
@@ -365,7 +365,7 @@ flowchart LR
 5. **Small helper binaries** (`orch-hook`, `orch-status`, `orch-mcp`, shipped with the app) connect each `claude` process to the core over a Unix socket. The agent's identity comes from the environment the core sets when it spawns the process.
 
 ### 6.2 Agent lifecycle
-`created → (governor admits) → working ⇄ waiting_for_you | waiting_gate | queued | blocked_by_limit → idle → suspended (process stopped, resumable) → archived`, plus `error` and `killed`. A Stop with a non-empty `background_tasks` is **not idle**: background work is still running and will start a new turn by itself. The mapping to UI labels is in §9.5.
+`created (queued, no process: "Not started yet") → (governor admits, or the user presses Start now) → working ⇄ waiting_for_you | waiting_gate | queued | paused | blocked_by_limit → idle → suspended (process stopped, resumable) → archived`, plus `error` and `killed`. `paused` holds the agent at a turn boundary with its process alive until Resume. A Stop with a non-empty `background_tasks` is **not idle**: background work is still running and will start a new turn by itself. The mapping to UI labels is in §9.5.
 
 Team run: `draft → spec → spec_gate → planning → executing → integrating → pr_gate → done`, plus `paused`, `deferred` and `failed`.
 
@@ -469,13 +469,13 @@ The UI is **designed in Penpot before it is built** (ADR-008), with a gate sized
 - **Pages**:
   | Page | Content |
   |---|---|
-  | `00 Cover` | Version, changelog, links, the list of screens marked "ready for dev". |
+  | `00 Cover` | Version, changelog, links, and the status of each page: **Not started**, **In review** (designed, waiting for the user's review) or **Ready for dev** (approved; only the user sets it). |
   | `01 Foundations` | Tokens: colors (dark and light, fixed status colors), typography (UI font + mono font; the mono token accepts the font from `kitty.conf`), spacing, radius, borders, elevation, icons, motion. |
   | `02 Components` | The components in §9.4. **States are component variants** (default, hover, focus, disabled, loading, error…). |
   | `03 Shell & layouts` | Title bar, sidebar (full + icon rail), panes, inspector (docked + overlay), status bar; breakpoints 1280 / 1512 / 1728; zoomed pane. |
   | `04 Screens` | The pane types of §9.3, normal state, plus the empty and error states that differ from the component variants. |
-  | `05 Keyboard & copy` | The shortcut map (§9.7) with conflict notes; notification and banner copy. |
-  | `06 Flows` | Prototypes of **J2, J5 and J8** only, with key sequences annotated. |
+  | `05 Keyboard & copy` | The full shortcut map (global, leader and pane-local keys of §9.7) with conflict notes; banner, notification and toast copy. |
+  | `06 Flows` | Storyboards of **J2, J5 and J8** only: annotated frame sequences with the key sequence of each step (no clickable prototypes). |
   | `07 Explorations` | Drafts, not binding. |
 - **Tokens pipeline**: Penpot tokens are exported as W3C design-token JSON, converted to CSS variables with Style Dictionary (a script in the repo), and a CI check fails on drift. Code uses tokens only.
 - **Process**: new screens are designed first. Small changes may be made in code and **backported to Penpot in the same PR**. UI/UX agents can work on the file through the Penpot MCP.
@@ -493,7 +493,7 @@ The UI is **designed in Penpot before it is built** (ADR-008), with a gate sized
 
 ### 9.2 App shell & navigation
 ```
-┌ Title: [⌘K]   Week 41% · plan 38% (+3) · 5h 22% · resets Mon 09:00   [Inbox 3] ┐
+┌ Title: [⌘K]  Week 50% · agents 41% · plan 38% (+3) · 5h 22% · resets Mon 09:00  [Inbox 3] ┐
 ├ Sidebar ─────┬ Workspace (tiling panes) ──────────────────────┬ Inspector ──────┤
 │ ▾ shop-api   │ ┌ claude · back-1 ────────┐┌ nvim ────────────┐ │ (selection:     │
 │   ▾ checkout │ │ Claude Code TUI         ││                  │ │  agent, task,   │
@@ -507,13 +507,13 @@ The UI is **designed in Penpot before it is built** (ADR-008), with a gate sized
 - **Sidebar** (⌘B): Projects → Features → agents, and solo sessions **under their project**. It is the only navigation tree. ⌘P is a fuzzy jump into it. Below 1512 px it collapses to an icon rail with status dots.
 - **Workspace**: tiling panes with splits, tabs and zoom.
 - **Inspector** (⌘I): docked at ≥ 1512 px, overlay below that.
-- **Status bar**: git state of the focused project, live/queued agents with the pressure state in words, memory.
+- **Status bar**: git state of the focused project, live/queued agents with the pressure state in words, a **5h guard** chip whenever the guard holds work ("5h guard · cap 1 until 13:00", in any pressure state), memory.
 
 ### 9.3 Pane types
 | Pane | Purpose | Key states |
 |---|---|---|
 | Overview | All projects and agents in one place (replaces "Projects home" + "Monitor"); group by project or by state | no projects (→ J0), nothing running |
-| Agent | Claude Code in a PTY, with a header: role, model, context %, usage, governor status, actions | working, waiting for you, queued (why/ETA/Run now), suspended (resume on focus), blocked by limit, error |
+| Agent | Claude Code in a PTY, with a header: role, model, context %, usage, governor status, actions | working, waiting for you, queued (why/ETA/Run now), not started yet (queued, no process; Start now), paused (Resume), suspended (resume on focus), blocked by limit, error |
 | Shell | Login shell | — |
 | Editor | nvim | — |
 | Diff | Worktree diff | no changes, conflict |
@@ -525,7 +525,7 @@ The UI is **designed in Penpot before it is built** (ADR-008), with a gate sized
 | Inbox | Triage | empty, many pending, stale items |
 | Settings | Claude Code, MCP registry, integrations, terminal/editor, pacing policy, keyboard, memory | integration disconnected |
 
-**Global banners** (component inventory): limit reached + reset time, login expired, Claude Code version unsupported, Governor in Red, live-agent cap reached, offline, not on AC power with off-hours work queued.
+**Global banners** (component inventory): limit reached + reset time (one variant per window: weekly and 5h), login expired, Claude Code version unsupported, Governor in Red, live-agent cap reached, offline, not on AC power with off-hours work queued.
 
 ### 9.4 Component inventory
 - **Shell**: title bar with pacing indicator (compact/expanded), sidebar item (status dot, badge), icon rail, pane, pane header, pane tab, split handle, zoom indicator, inspector (docked/overlay), status bar, command palette, fuzzy jump, toast, banner.
@@ -542,7 +542,8 @@ The UI is **designed in Penpot before it is built** (ADR-008), with a gate sized
 | Working | working | Claude is generating or running a tool |
 | Waiting for you | waiting_for_you | Permission prompt or question in its pane |
 | At gate | waiting_gate | Waiting for an Inbox decision (process may be suspended) |
-| Queued | queued | Held by the Governor (budget or live-agent cap) |
+| Queued | queued | Held by the Governor (budget, live-agent cap or 5h guard). An agent that never ran has **no `claude` process** yet: it reads "Not started yet" and offers **Start now** with its cost |
+| Paused | paused | Stopped at a turn boundary by the user (pause, **Pause all**) or by the Governor (pause team); process alive; resumes only on **Resume** or when the Governor releases it |
 | Blocked by limit | blocked_by_limit | A plan window is exhausted until its reset |
 | Idle | idle | Turn finished, process alive |
 | Suspended | suspended | Process stopped to save memory; resumes on demand |
@@ -559,7 +560,7 @@ Each label has one color and one icon everywhere (§9.0 Foundations).
 | 3 Budget | Governor "ask" (with default/timeout), entering Red | Badge, toast |
 | 4 Info | Task done, merge done, report ready | Silent: digest in the Inbox |
 
-Do-Not-Disturb holds levels 3–4 and batches level 1. **Jump to next waiting agent**: leader `w`.
+The Inbox badge counts levels 1–3; level 4 stays in the digest. Do-Not-Disturb holds levels 3–4 and batches level 1. **Jump to next waiting agent**: leader `w`.
 
 ### 9.7 Keyboard contract
 - When a terminal pane (agent, shell, nvim) has focus, **every key goes to the PTY** except ⌘-chords and the **leader key**. The default leader is **`⌘;`**: ⌘ never reaches the PTY, so it can't clash with nvim or the shell. (`Ctrl-Space` was rejected in P0: it is macOS's input-source shortcut and nvim-cmp's completion key.) Any leader can be configured; a non-⌘ leader is sent literally when pressed twice.
@@ -567,7 +568,8 @@ Do-Not-Disturb holds levels 3–4 and batches level 1. **Jump to next waiting ag
 - The app ships its own macOS menu, so system items (Close Window ⌘W, Hide ⌘H, Minimize ⌘M) don't take chords this contract uses.
 - **Global ⌘ shortcuts**: ⌘K palette, ⌘P jump, ⌘B sidebar, ⌘I inspector, ⌘N new project, ⌘T new session, ⌘1…9 focus pane, ⌘W close pane, ⌘⇧I Inbox.
 - **Leader + key**: `s`/`v` split horizontally/vertically, `h j k l` move focus, `z` zoom, `t` new shell, `e` open editor, `w` next waiting agent, `p` pause/resume the focused agent, `o` Overview, `g` Week planner.
-- The Inbox and the canvas have their own single-key maps when focused (FR-707, FR-302).
+- **Notation** (Penpot, docs, UI): one key-hint container per shortcut; `+` joins keys pressed together (`⌘+⇧+I`), a space separates the steps of a sequence (`⌘+; z` = leader, then `z`).
+- **Pane-local single keys** when the pane has focus and is not a terminal: Inbox (FR-707, plus `e` open in nvim), Overview (`⏎` open, `i` interrupt, `p` pause, `s` suspend, `r` resume, `k` kill, FR-903), Week planner (`S` sprint mode, `P` pause all, `e` edit plan, `u` undo the selected log entry), canvas (FR-302). The full map is on Penpot page `05`.
 - **Known limits** (P0): xterm.js has no kitty keyboard protocol, so `Ctrl-I` = Tab, `Ctrl-M` = Enter and `Ctrl-[` = Esc as in legacy terminals, and `Ctrl-/`, `Ctrl-.`, `Ctrl-;` and every `Ctrl-Shift-<letter>` send nothing. These are recorded on Penpot page `05`. Not yet tested with physical keys: ⌘-chords against the menu, dead keys and IME composition (R9).
 
 ### 9.8 Wireframes (low-fi, starting points for Penpot)

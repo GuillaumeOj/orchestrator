@@ -19,7 +19,7 @@ A Max plan has a 5-hour window and a weekly window, and possibly a separate week
 - `U` = unattributed rate: the exponentially weighted average of (observed weekly delta − the app's attributed delta).
 
 ## Ideal curve
-`ideal(t) = H(t) / H_week × (100 − reserve − U_forecast)`, where `H` counts **weighted working hours** from the calendar (off-hours count only if an off-hours allowance is enabled). Error `e = W − ideal(t)` in pp. `eta` = projected time when W reaches 100 % at the current exponentially weighted burn rate.
+`ideal(t) = H(t) / H_week × (100 − reserve − U_forecast)`, where `H` counts **weighted working hours** from the calendar (off-hours count only if an off-hours allowance is enabled). Error on the **governed share**: `G = W − R_used − U_actual` (total minus the reserve used by interactive work minus the unattributed usage observed so far), `e = G − ideal(t)` in pp. Interactive and outside-app usage therefore never push the Governor into Amber/Red by themselves (decision 2026-10-21). `eta` = projected time when the **total** W reaches 100 % at the current exponentially weighted burn rate, so heavy interactive or outside use can still trigger Red through the exhaustion rule. The title bar shows W as "Week" and G against the plan as "agents".
 
 ## Pressure states (hysteresis, minimum dwell 30 min)
 | State | Enter | Exit | Live autonomous agents |
@@ -56,7 +56,7 @@ Live cap per state, queue, pause at turn boundary, defer after reset (asked, wit
 
 ## Transparency & safety
 - Every action is a `GovernorAction` record with its reason, expected effect and undo.
-- Every queued item shows why, its estimated start, and "Run now" with its estimated cost.
+- Every queued item shows why, its estimated start, and "Run now" (or "Start now" if it never ran) with its estimated cost in the window that binds it (5h % under the 5h guard, week pp otherwise).
 - **Shadow mode** is on for the first week.
 - The **simulator** (SPEC FR-820, NFR-9) replays weeks against the policy; it is the acceptance test.
 
