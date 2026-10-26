@@ -24,6 +24,7 @@ Exports of the Penpot boards (Dark theme unless noted), refreshed by hand.
 | Page | Image |
 |---|---|
 | 00 Cover | [00-cover.png](img/00-cover.png) |
+| 01 Foundations | [01-foundations.png](img/01-foundations.png) |
 | 05 Keyboard & copy | [05-keyboard-copy.png](img/05-keyboard-copy.png) |
 | 02 Components | [02-components.png](img/02-components.png) |
 | 03 Shell · 1512 | [03-shell-1512.png](img/03-shell-1512.png) |
@@ -50,8 +51,8 @@ All screens use one scenario: Wednesday 21 Oct 11:00, Governor in Red (+9 pp), l
 - **Themes**: group `mode` with `Dark` = core + theme/dark (default) and `Light` = core + theme/light.
 - **Naming**: semantic colors are `color.surface.*`, `color.text.*`, `color.border.*`, `color.accent.*`, `color.focus`, `color.status.*` (SPEC §9.5), `color.pacing.*` (ADR-007) and `color.role.1…8`. Code uses semantic tokens only, never `palette.*`.
 - **Fixed across kitty-derived themes**: status, pacing and role colors. Only surface, text and accent may be derived from the user's kitty palette (SPEC §9.1).
-- **Mono font**: `font.family.mono` is IBM Plex Mono in the designs. In the app it is replaced by the font kitty actually renders (SPEC FR-1002).
-- **Icon font**: `font.family.icon` is **FiraCode Nerd Font Mono** (uploaded to the Penpot team; bundled with the app). Typography `text.icon` (status glyphs) and `text.key` (key hints, which need ⌘ ⇧ ⏎). Status icons are Material Design glyphs:
+- **Fonts**: one face for everything, **FiraCode Nerd Font Mono** (`font.family.ui` = `font.family.mono` = `font.family.icon`, since 2026-10-26; was IBM Plex Sans / Mono). In agent and shell panes the app replaces `font.family.mono` with the font kitty actually renders (SPEC FR-1002).
+- **Icon font**: `font.family.icon` is the same face (uploaded to the Penpot team; bundled with the app). Typography `text.icon` (status glyphs) and `text.key` (key hints, which need ⌘ ⇧ ⏎). Status icons are Material Design glyphs:
 
   | State | Glyph | Codepoint |
   |---|---|---|
