@@ -138,6 +138,8 @@ pub struct Runtime {
     house: Mutex<House>,
     /// The local OTLP receiver once started ([`Runtime::start_otlp`]).
     otlp: Mutex<Option<crate::otlp::OtlpReceiver>>,
+    /// A transcript index pass is running.
+    indexing: std::sync::atomic::AtomicBool,
 }
 
 /// Clocks and flags of the periodic work (`tick`, `housekeeping`).
@@ -284,6 +286,7 @@ impl Runtime {
             boot_ms: now_ms(),
             house: Mutex::new(House { index_all: true, ..Default::default() }),
             otlp: Mutex::new(None),
+            indexing: std::sync::atomic::AtomicBool::new(false),
         }))
     }
 
@@ -1124,16 +1127,24 @@ impl Runtime {
             }
             (i, p)
         };
-        if do_index {
+        if do_index && !self.indexing.swap(true, Ordering::SeqCst) {
             let (all, dirty) = {
                 let mut h = self.house();
                 (std::mem::take(&mut h.index_all), std::mem::take(&mut h.index_dirty))
             };
-            let files = self.transcript_files(if all { None } else { Some(&dirty) });
-            match self.db.index_transcripts(&files) {
-                Ok(st) if st.entries > 0 => self.event("-", "transcripts_indexed", json!(st)),
-                Ok(_) => {}
-                Err(e) => self.event("-", "index_error", json!(e.to_string())),
+            // Reading transcripts can take seconds (first pass): never on the delivery loop.
+            if let Some(me) = self.me.upgrade() {
+                std::thread::spawn(move || {
+                    let files = me.transcript_files(if all { None } else { Some(&dirty) });
+                    match me.db.index_transcripts(&files) {
+                        Ok(st) if st.entries > 0 => me.event("-", "transcripts_indexed", json!(st)),
+                        Ok(_) => {}
+                        Err(e) => me.event("-", "index_error", json!(e.to_string())),
+                    }
+                    me.indexing.store(false, Ordering::SeqCst);
+                });
+            } else {
+                self.indexing.store(false, Ordering::SeqCst);
             }
         }
         if do_purge {
@@ -1747,6 +1758,23 @@ pub(crate) mod tests {
         assert_eq!((t[1].agent_id.as_deref(), t[1].tokens_in, t[1].tokens_out, t[1].cost), (Some("a1"), 10, 2, 0.01));
         rt.shutdown();
         assert!(rt.otlp_endpoint().is_none());
+    }
+
+    #[test]
+    fn housekeeping_indexes_agent_transcripts_off_the_loop() {
+        let (d, rt) = test_runtime(true);
+        let dir = d.path().join("projects/-old-folder");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("s.jsonl"), "{\"type\":\"user\",\"uuid\":\"u1\",\"message\":{\"content\":\"refactor the parser\"}}\n").unwrap();
+        rt.housekeeping();
+        let end = std::time::Instant::now() + Duration::from_secs(5);
+        let mut hits = vec![];
+        while hits.is_empty() && std::time::Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(50));
+            hits = rt.db.search_transcripts("parser", None, 5).unwrap();
+        }
+        assert_eq!(hits.len(), 1, "found by session id in any project folder");
+        assert_eq!(hits[0].session_id, "s");
     }
 
     #[test]
