@@ -109,7 +109,7 @@ pub fn check_git() -> Result<Version> {
 
 /// Each helper must exist and be executable at a stable path, not in the app bundle.
 pub fn check_helpers(h: &HelperPaths) -> Result<()> {
-    for p in [&h.hook, &h.status] {
+    for p in [&h.hook, &h.status, &h.mcp] {
         let m = std::fs::metadata(p).with_context(|| format!("helper missing: {}", p.display()))?;
         if !m.is_file() || m.permissions().mode() & 0o111 == 0 {
             bail!("helper not executable: {}", p.display());
@@ -124,7 +124,7 @@ pub fn check_helpers(h: &HelperPaths) -> Result<()> {
 /// Copies the helpers next to `from_exe` (the build output) to the stable bin dir.
 pub fn install_helpers(from_dir: &Path, bin_dir: &Path) -> Result<HelperPaths> {
     std::fs::create_dir_all(bin_dir)?;
-    for name in ["orch-hook", "orch-status"] {
+    for name in ["orch-hook", "orch-status", "orch-mcp"] {
         let src = from_dir.join(name);
         let dst = bin_dir.join(name);
         let tmp = bin_dir.join(format!(".{name}.tmp"));
@@ -164,9 +164,10 @@ mod tests {
         assert!(check_helpers(&h).is_err());
         std::fs::write(&h.hook, "#!/bin/sh\n").unwrap();
         std::fs::write(&h.status, "#!/bin/sh\n").unwrap();
+        std::fs::write(&h.mcp, "#!/bin/sh\n").unwrap();
         assert!(check_helpers(&h).is_err(), "not executable");
         let src = tempfile::tempdir().unwrap();
-        for n in ["orch-hook", "orch-status"] {
+        for n in ["orch-hook", "orch-status", "orch-mcp"] {
             std::fs::write(src.path().join(n), "#!/bin/sh\n").unwrap();
         }
         let h = install_helpers(src.path(), &d.path().join("bin")).unwrap();

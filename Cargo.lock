@@ -2262,6 +2262,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-mcp"
+version = "0.1.0"
+dependencies = [
+ "orch-protocol",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "orch-protocol"
 version = "0.1.0"
 dependencies = [

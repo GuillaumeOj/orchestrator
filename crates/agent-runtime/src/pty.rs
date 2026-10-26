@@ -113,6 +113,10 @@ impl Output {
         out
     }
 
+    pub fn is_attached(&self) -> bool {
+        self.lock().attached
+    }
+
     pub fn set_attached(&self, on: bool) {
         self.lock().attached = on;
         self.cv.notify_all();
@@ -197,6 +201,8 @@ pub struct PtyProcess {
     writer: Mutex<Box<dyn Write + Send>>,
     pub output: Arc<Output>,
     exited: Arc<AtomicBool>,
+    /// When the process was spawned (ms since the epoch).
+    pub spawned_at_ms: u64,
 }
 
 impl PtyProcess {
@@ -244,6 +250,7 @@ impl PtyProcess {
             writer: Mutex::new(writer),
             output: output.clone(),
             exited: exited.clone(),
+            spawned_at_ms: orch_protocol::now_ms(),
         };
         let mut log = raw_log.and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
         let out2 = output.clone();

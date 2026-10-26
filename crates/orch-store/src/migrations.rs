@@ -122,7 +122,9 @@ CREATE TABLE usage_samples (
     weekly_resets_at INTEGER,
     model_weekly_pct REAL,
     provenance TEXT NOT NULL,
-    source TEXT NOT NULL
+    source TEXT NOT NULL,
+    class TEXT,
+    allocation TEXT
 );
 CREATE INDEX usage_samples_ts ON usage_samples(ts_ms);
 CREATE INDEX usage_samples_agent ON usage_samples(agent_id, ts_ms);

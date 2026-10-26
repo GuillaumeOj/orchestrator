@@ -230,6 +230,38 @@ enum TurnClass {
     Autonomous,
 }
 
+/// How a sample's cost counts: the user's own work and critical agent work
+/// draw from the reserve, autonomous work from the agents' budget. The host
+/// stores it with each sample so [`Governor::replay`] can rebuild the week's
+/// accounting after a restart (the turns that were live then are gone).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CostClass {
+    Interactive,
+    Critical,
+    Autonomous,
+}
+
+impl From<TurnClass> for CostClass {
+    fn from(c: TurnClass) -> Self {
+        match c {
+            TurnClass::Interactive => CostClass::Interactive,
+            TurnClass::Critical => CostClass::Critical,
+            TurnClass::Autonomous => CostClass::Autonomous,
+        }
+    }
+}
+
+impl From<CostClass> for TurnClass {
+    fn from(c: CostClass) -> Self {
+        match c {
+            CostClass::Interactive => TurnClass::Interactive,
+            CostClass::Critical => TurnClass::Critical,
+            CostClass::Autonomous => TurnClass::Autonomous,
+        }
+    }
+}
+
 impl TurnClass {
     fn of(interactive: bool, tier: Tier) -> Self {
         if interactive {
@@ -675,30 +707,61 @@ impl Governor {
     pub fn ingest(&mut self, s: &UsageSample) {
         if let Some(agent) = &s.agent {
             let c = if s.cost_delta.is_finite() { s.cost_delta.max(0.0) } else { 0.0 };
-            self.app_cost += c;
             let (class, alloc) = match self.live.get_mut(agent) {
                 Some(t) => {
                     t.cost += c;
                     (t.class, Some(t.allocation.clone()))
                 }
-                None => {
-                    let class = match self.ended.get(agent) {
-                        Some((class, ended_at)) if s.ts <= *ended_at => *class,
-                        _ => TurnClass::Interactive,
-                    };
-                    (class, self.agent_alloc.get(agent).cloned())
-                }
+                None => (self.class_without_turn(agent, s.ts), self.agent_alloc.get(agent).cloned()),
             };
-            if class != TurnClass::Autonomous {
-                self.reserve_cost += c;
-            }
-            if class == TurnClass::Interactive {
-                self.interactive_cost += c;
-            }
-            if let Some(a) = alloc {
-                *self.alloc_cost.entry(a).or_insert(0.0) += c;
-            }
+            self.account(c, class, alloc);
         }
+        self.observe_sample(s);
+    }
+
+    /// The class [`Governor::ingest`] gives this sample now (store it with the sample).
+    pub fn cost_class(&self, s: &UsageSample) -> CostClass {
+        match &s.agent {
+            Some(agent) => match self.live.get(agent) {
+                Some(t) => t.class.into(),
+                None => self.class_without_turn(agent, s.ts).into(),
+            },
+            None => CostClass::Interactive,
+        }
+    }
+
+    /// Re-ingests a stored sample after a restart, with the class and
+    /// allocation it had when it was recorded. Same windows and calibration
+    /// as [`Governor::ingest`]; no live turn is touched.
+    pub fn replay(&mut self, s: &UsageSample, class: CostClass, allocation: Option<AllocationId>) {
+        if s.agent.is_some() {
+            let c = if s.cost_delta.is_finite() { s.cost_delta.max(0.0) } else { 0.0 };
+            self.account(c, class.into(), allocation);
+        }
+        self.observe_sample(s);
+    }
+
+    fn class_without_turn(&self, agent: &AgentId, ts: Timestamp) -> TurnClass {
+        match self.ended.get(agent) {
+            Some((class, ended_at)) if ts <= *ended_at => *class,
+            _ => TurnClass::Interactive,
+        }
+    }
+
+    fn account(&mut self, c: f64, class: TurnClass, alloc: Option<AllocationId>) {
+        self.app_cost += c;
+        if class != TurnClass::Autonomous {
+            self.reserve_cost += c;
+        }
+        if class == TurnClass::Interactive {
+            self.interactive_cost += c;
+        }
+        if let Some(a) = alloc {
+            *self.alloc_cost.entry(a).or_insert(0.0) += c;
+        }
+    }
+
+    fn observe_sample(&mut self, s: &UsageSample) {
         if s.provenance == Provenance::Observed {
             if let Some(r) = s.weekly {
                 self.observe(Window::Weekly, s.ts, r);

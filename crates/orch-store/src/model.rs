@@ -283,6 +283,10 @@ pub struct UsageRecord {
     /// `observed` / `estimated`.
     pub provenance: String,
     pub source: Option<UsageSource>,
+    /// The Governor's cost class when recorded (`autonomous` / `critical` /
+    /// `interactive`), so the week can be replayed after a restart.
+    pub class: Option<String>,
+    pub allocation: Option<String>,
 }
 
 /// A terminal pane to restore after a restart (cwd only, NFR-2).

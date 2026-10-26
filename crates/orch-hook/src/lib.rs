@@ -126,7 +126,7 @@ fn ask_core(
         Reply::Hook { output } => Ok(output),
         Reply::Ack => Ok(None),
         Reply::Error { message } => Err(format!("core error: {message}")),
-        Reply::Ctl(_) => Err("unexpected ctl reply".into()),
+        Reply::Ctl(_) | Reply::Mcp { .. } => Err("unexpected reply".into()),
     }
 }
 

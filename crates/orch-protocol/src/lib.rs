@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 pub use bus::{
     BusError, MAX_SOCKET_PATH, bind_listener, check_socket_path, connect, is_listening, read_line, write_line,
 };
-pub use ctl::{AgentSpec, CtlReply, CtlRequest, WorktreeKindSpec};
+pub use ctl::{AgentSpec, CtlReply, CtlRequest, InboxDecision, WorktreeKindSpec};
 pub use hook::{HookEvent, HookOutput, HookPayload, PermissionBehavior, ToolDecision};
 pub use spool::SpoolRecord;
 pub use status::{RateLimits, StatusSample, WindowSample};
@@ -36,6 +36,10 @@ pub mod env {
 /// configured hook `timeout` is 600 s; hook timeouts fail open, so orch-hook
 /// must always answer well before it (FR-806).
 pub const DEFAULT_HOOK_DEADLINE_MS: u64 = 540_000;
+
+/// How long orch-mcp waits for a tool call (a commit, or an Inbox approval
+/// when a rule says "ask"). Below Claude Code's own MCP tool timeout.
+pub const DEFAULT_MCP_DEADLINE_MS: u64 = 300_000;
 
 /// Connect timeout for every helper (FR-806: ≤ 1 s).
 pub const CONNECT_TIMEOUT_MS: u64 = 1_000;
@@ -64,6 +68,20 @@ pub enum Msg {
     Status(StatusMsg),
     /// From a control client (orchd CLI, later the UI).
     Ctl(CtlRequest),
+    /// From orch-mcp: one orchestrator tool call by an agent.
+    Mcp(McpMsg),
+}
+
+/// An orchestrator MCP tool call (`commit`, `request_pr`…), executed by the
+/// core outside the agent's sandbox, subject to permission rules (ADR-009).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct McpMsg {
+    pub agent_id: String,
+    pub tool: String,
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+    /// How long orch-mcp waits for the answer, in ms.
+    pub deadline_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -112,6 +130,13 @@ pub enum Reply {
     /// For a statusline sample or anything that needs no answer.
     Ack,
     Ctl(CtlReply),
+    /// For an MCP tool call: text for the model, `is_error` marks a failure.
+    Mcp {
+        is_error: bool,
+        text: String,
+        #[serde(default)]
+        data: serde_json::Value,
+    },
     Error {
         message: String,
     },
@@ -137,6 +162,21 @@ mod tests {
         assert!(s.contains(r#""v":1"#) && s.contains(r#""type":"status""#), "{s}");
         let back: Envelope = serde_json::from_str(&s).unwrap();
         assert_eq!(back, e);
+    }
+
+    #[test]
+    fn mcp_round_trip() {
+        let e = Envelope::new(Msg::Mcp(McpMsg {
+            agent_id: "a1".into(),
+            tool: "commit".into(),
+            arguments: serde_json::json!({"message": "fix"}),
+            deadline_ms: 1000,
+        }));
+        let s = serde_json::to_string(&e).unwrap();
+        assert!(s.contains(r#""type":"mcp""#), "{s}");
+        assert_eq!(serde_json::from_str::<Envelope>(&s).unwrap(), e);
+        let r = Reply::Mcp { is_error: false, text: "ok".into(), data: serde_json::Value::Null };
+        assert_eq!(serde_json::from_str::<Reply>(&serde_json::to_string(&r).unwrap()).unwrap(), r);
     }
 
     #[test]

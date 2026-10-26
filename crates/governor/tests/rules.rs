@@ -793,3 +793,42 @@ fn a_sprint_on_the_last_working_day_has_nothing_to_borrow() {
     assert_eq!(g.start_sprint(4.0, fri_10), Err(GovernorError::NothingToBorrow));
     assert_eq!(count(&g, "sprint"), 0);
 }
+
+// ---------------------------------------------------------------- restart
+
+#[test]
+fn replaying_stored_samples_with_their_class_rebuilds_the_accounting() {
+    // A live core: an autonomous turn, then the user's own work.
+    let mut live = governor();
+    let mut stored = vec![];
+    assert!(live.request_turn(task("A-1", "A", Tier::Normal), at(0)).effective.is_admit());
+    for (m, cost, pct) in [(60, 20.0, 5.0), (120, 20.0, 10.0)] {
+        let s = weekly(at(m), "A-1", cost, pct);
+        stored.push((s.clone(), live.cost_class(&s)));
+        live.ingest(&s);
+    }
+    live.turn_ended(&"A-1".into(), at(121));
+    let mut r = task("A-1", "A", Tier::Normal);
+    r.interactive = true;
+    live.request_turn(r, at(200));
+    let s = weekly(at(240), "A-1", 10.0, 14.0);
+    stored.push((s.clone(), live.cost_class(&s)));
+    live.ingest(&s);
+    assert_eq!(stored.iter().map(|x| x.1).collect::<Vec<_>>(), [CostClass::Autonomous, CostClass::Autonomous, CostClass::Interactive]);
+
+    // After a restart: a fresh Governor replays the samples with their class.
+    let mut restarted = governor();
+    for (s, class) in &stored {
+        restarted.replay(s, *class, Some("A".into()));
+    }
+    // Plain ingest would count everything as the user's own work.
+    let mut naive = governor();
+    for (s, _) in &stored {
+        naive.ingest(s);
+    }
+    let (a, b, c) = (live.snapshot(at(300)), restarted.snapshot(at(300)), naive.snapshot(at(300)));
+    assert_eq!(a.used, b.used);
+    assert!((a.governed - b.governed).abs() < 1e-9, "{} vs {}", a.governed, b.governed);
+    assert!((a.governed - c.governed).abs() > 1.0, "naive replay loses the agents' share");
+    assert!((live.allocation_usage_pct(&"A".into()) - restarted.allocation_usage_pct(&"A".into())).abs() < 1e-9);
+}

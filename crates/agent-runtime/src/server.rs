@@ -16,6 +16,8 @@ use crate::runtime::Runtime;
 
 pub const PUMP_EVERY: Duration = Duration::from_millis(200);
 pub const TICK_EVERY: Duration = Duration::from_secs(30);
+pub const HOUSEKEEPING_EVERY: Duration = Duration::from_secs(5);
+pub const FETCH_EVERY: Duration = Duration::from_secs(60);
 
 /// Serves until `stop` is set (by a `shutdown` request or the caller).
 pub fn serve(rt: Arc<Runtime>, listener: UnixListener, stop: Arc<AtomicBool>) -> std::io::Result<()> {
@@ -23,16 +25,35 @@ pub fn serve(rt: Arc<Runtime>, listener: UnixListener, stop: Arc<AtomicBool>) ->
         let (rt, stop) = (rt.clone(), stop.clone());
         std::thread::Builder::new().name("orch-loops".into()).spawn(move || {
             let mut last_tick = Instant::now();
+            let mut last_house = Instant::now() - HOUSEKEEPING_EVERY;
             while !stop.load(Ordering::SeqCst) {
                 rt.pump();
                 if last_tick.elapsed() >= TICK_EVERY {
                     rt.tick();
                     last_tick = Instant::now();
                 }
+                if last_house.elapsed() >= HOUSEKEEPING_EVERY {
+                    rt.housekeeping();
+                    last_house = Instant::now();
+                }
                 std::thread::sleep(PUMP_EVERY);
             }
         })?
     };
+    // Network work (fetch) on its own thread: it can take a while.
+    {
+        let (rt, stop) = (rt.clone(), stop.clone());
+        std::thread::Builder::new().name("orch-fetch".into()).spawn(move || {
+            let mut last = Instant::now() - FETCH_EVERY;
+            while !stop.load(Ordering::SeqCst) {
+                if last.elapsed() >= FETCH_EVERY {
+                    rt.fetch_tick(&rt.cfg.fetch, rt.cfg.conditions.as_ref());
+                    last = Instant::now();
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        })?;
+    }
     // A blocking accept answers hooks at once; when `stop` is set, a
     // connection to our own socket wakes it.
     let path = listener.local_addr()?.as_pathname().map(PathBuf::from);
@@ -89,6 +110,10 @@ fn handle(rt: &Runtime, s: UnixStream, stop: &AtomicBool) {
             rt.on_status(&m);
             reply(&s, Reply::Ack);
         }
+        Msg::Mcp(m) => {
+            let (is_error, text, data) = rt.on_mcp(&m, Some(&s));
+            reply(&s, Reply::Mcp { is_error, text, data });
+        }
         Msg::Ctl(CtlRequest::Attach { agent_id, rows, cols }) => {
             if !rt.live_ids().contains(&agent_id) {
                 return reply(&s, Reply::Ctl(CtlReply::err(format!("agent {agent_id} is not running"))));
@@ -142,6 +167,67 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         CtlRequest::State => CtlReply::ok(rt.state_json()),
         CtlRequest::Usage => CtlReply::ok(rt.usage_json()),
         CtlRequest::Governor => CtlReply::ok(rt.governor_json()),
+        CtlRequest::Inbox => CtlReply::ok(json!(rt.inbox())),
+        CtlRequest::Decide { item_id, decision, scope, message } => {
+            ok_or(rt.decide(item_id, decision, scope.as_deref(), message.as_deref()))
+        }
+        CtlRequest::Rules => ok_or(rt.db.rules().map(|r| json!(r))),
+        CtlRequest::AddRule { scope, scope_id, pattern, effect } => ok_or((|| {
+            let sc = orch_store::RuleScope::parse(&scope).ok_or_else(|| anyhow::anyhow!("scope: project | role | agent"))?;
+            let ef = orch_store::RuleEffect::parse(&effect).ok_or_else(|| anyhow::anyhow!("effect: allow | deny | ask"))?;
+            let r = rt.db.add_rule(sc, &scope_id, &pattern, ef, None)?;
+            rt.db.audit("user", None, "rule_added", Some(&pattern), &effect, json!(r))?;
+            Ok(json!(r))
+        })()),
+        CtlRequest::RevokeRule { id } => ok_or((|| {
+            let done = rt.db.revoke_rule(id)?;
+            rt.db.audit("user", None, "rule_revoked", Some(&id.to_string()), if done { "ok" } else { "unknown" }, json!({}))?;
+            Ok(json!({"revoked": done}))
+        })()),
+        CtlRequest::Audit { agent_id, limit } => {
+            ok_or(rt.db.audit_log(agent_id.as_deref(), limit.unwrap_or(100)).map(|v| json!(v)))
+        }
+        CtlRequest::Events { agent_id, kind, since_ms, limit } => ok_or(
+            rt.db.events(since_ms.unwrap_or(0), agent_id.as_deref(), kind.as_deref(), limit.unwrap_or(200)).map(|v| json!(v)),
+        ),
+        CtlRequest::ProjectAdd { path } => ok_or(rt.add_project(&PathBuf::from(path)).map(|p| json!(p))),
+        CtlRequest::ProjectClone { url, parent, name } => {
+            ok_or(rt.clone_project(&url, &PathBuf::from(parent), name.as_deref()).map(|p| json!(p)))
+        }
+        CtlRequest::Projects => ok_or(rt.projects_overview().map(|v| json!(v))),
+        CtlRequest::Project { project_id, with_prs } => ok_or(rt.project_detail(&project_id, with_prs)),
+        CtlRequest::Fetch { project_id } => {
+            ok_or(rt.fetch_project(&project_id, &rt.cfg.fetch, rt.cfg.conditions.as_ref()).map(|o| json!(o)))
+        }
+        CtlRequest::Diff { worktree, against } => {
+            ok_or(rt.diff(&PathBuf::from(worktree), against.as_deref()).map(|d| json!(d)))
+        }
+        CtlRequest::RemoveWorktree { project_id, path, delete_branch, confirm_discard } => ok_or(
+            rt.remove_worktree(&project_id, &PathBuf::from(path), delete_branch, confirm_discard).map(|o| json!(o)),
+        ),
+        CtlRequest::RemovalPlan { project_id } => ok_or(rt.removal_plan(&project_id)),
+        CtlRequest::RemoveProject { project_id, discard, keep_merged, history } => ok_or((|| {
+            let history = match history.as_str() {
+                "delete" => orch_git::project::History::Delete,
+                "archive" => orch_git::project::History::Archive,
+                other => anyhow::bail!("history: delete | archive (got {other:?})"),
+            };
+            let choices = orch_git::project::RemovalChoices {
+                remove_merged: !keep_merged,
+                discard: discard.into_iter().map(PathBuf::from).collect(),
+                history,
+            };
+            Ok(json!(rt.remove_project(&project_id, &choices)?))
+        })()),
+        CtlRequest::RelocateProject { project_id, new_path } => {
+            ok_or(rt.relocate_project(&project_id, &PathBuf::from(new_path)).map(|r| json!(r)))
+        }
+        CtlRequest::Commit { agent_id, message, paths } => ok_or(
+            rt.commit_for(&agent_id, &orch_git::commit::CommitRequest { message, paths }, "user").map(|c| json!(c)),
+        ),
+        CtlRequest::Search { query, project_id, limit } => {
+            ok_or(rt.db.search_transcripts(&query, project_id.as_deref(), limit.unwrap_or(50)).map(|v| json!(v)))
+        }
         CtlRequest::Attach { .. } | CtlRequest::Shutdown => CtlReply::err("handled by the server"),
     }
 }

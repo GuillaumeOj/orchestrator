@@ -56,6 +56,22 @@ pub struct AgentSpec {
     pub first_message: Option<String>,
 }
 
+/// The user's answer to an Inbox item (FR-705, FR-707).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InboxDecision {
+    /// Allow / approve (`a`).
+    Approve,
+    /// Deny / reject (`r`); `message` goes back to the agent.
+    Reject,
+    /// Approve and create a scoped rule (FR-708); `scope` = project (default) / role / agent.
+    AlwaysAllow,
+    /// Answer with text (`⏎`): a denial with that message for a permission, a turn otherwise.
+    Reply,
+    /// Close without acting (alerts).
+    Dismiss,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum CtlRequest {
@@ -112,6 +128,109 @@ pub enum CtlRequest {
     /// Pull transport: everything buffered for this agent since the last read.
     Read {
         agent_id: String,
+    },
+    // ---- Inbox and permission rules (FR-705, FR-707–709)
+    Inbox,
+    Decide {
+        item_id: u64,
+        decision: InboxDecision,
+        #[serde(default)]
+        scope: Option<String>,
+        #[serde(default)]
+        message: Option<String>,
+    },
+    Rules,
+    AddRule {
+        /// `project` / `role` / `agent`.
+        scope: String,
+        scope_id: String,
+        pattern: String,
+        /// `allow` / `deny` / `ask`.
+        effect: String,
+    },
+    RevokeRule {
+        id: u64,
+    },
+    Audit {
+        #[serde(default)]
+        agent_id: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    Events {
+        #[serde(default)]
+        agent_id: Option<String>,
+        #[serde(default)]
+        kind: Option<String>,
+        #[serde(default)]
+        since_ms: Option<u64>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    // ---- Projects and git (FR-101–111)
+    ProjectAdd {
+        path: String,
+    },
+    ProjectClone {
+        url: String,
+        parent: String,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    Projects,
+    /// Status, worktrees, branches (and PRs when `with_prs`).
+    Project {
+        project_id: String,
+        #[serde(default)]
+        with_prs: bool,
+    },
+    Fetch {
+        project_id: String,
+    },
+    Diff {
+        worktree: String,
+        #[serde(default)]
+        against: Option<String>,
+    },
+    RemoveWorktree {
+        project_id: String,
+        path: String,
+        #[serde(default)]
+        delete_branch: bool,
+        /// Required to discard uncommitted or unmerged work.
+        #[serde(default)]
+        confirm_discard: bool,
+    },
+    RemovalPlan {
+        project_id: String,
+    },
+    RemoveProject {
+        project_id: String,
+        /// Worktrees the user confirmed to discard even with unmerged work.
+        #[serde(default)]
+        discard: Vec<String>,
+        #[serde(default)]
+        keep_merged: bool,
+        /// `delete` / `archive`.
+        history: String,
+    },
+    RelocateProject {
+        project_id: String,
+        new_path: String,
+    },
+    /// Commit in an agent's worktree as the user would (same path as orch-mcp `commit`).
+    Commit {
+        agent_id: String,
+        message: String,
+        #[serde(default)]
+        paths: Option<Vec<String>>,
+    },
+    Search {
+        query: String,
+        #[serde(default)]
+        project_id: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
     },
     Shutdown,
 }

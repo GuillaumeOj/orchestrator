@@ -79,7 +79,7 @@ fn row_rule(r: &rusqlite::Row) -> rusqlite::Result<PermissionRule> {
     })
 }
 
-const USAGE_COLS: &str = "id, ts_ms, agent_id, turn_id, model, tokens_in, tokens_out, cache_read, cache_write, cost_estimate, cost_delta, five_hour_pct, five_hour_resets_at, weekly_pct, weekly_resets_at, model_weekly_pct, provenance, source";
+const USAGE_COLS: &str = "id, ts_ms, agent_id, turn_id, model, tokens_in, tokens_out, cache_read, cache_write, cost_estimate, cost_delta, five_hour_pct, five_hour_resets_at, weekly_pct, weekly_resets_at, model_weekly_pct, provenance, source, class, allocation";
 
 fn row_usage(r: &rusqlite::Row) -> rusqlite::Result<UsageRecord> {
     let u = |i: usize| -> rusqlite::Result<Option<u64>> { Ok(r.get::<_, Option<i64>>(i)?.map(|v| v as u64)) };
@@ -108,6 +108,8 @@ fn row_usage(r: &rusqlite::Row) -> rusqlite::Result<UsageRecord> {
             "estimate" => Some(UsageSource::Estimate),
             _ => None,
         },
+        class: r.get(18)?,
+        allocation: r.get(19)?,
     })
 }
 
@@ -278,7 +280,7 @@ impl Store {
             let o = |v: Option<u64>| v.map(|x| x as i64);
             tx.execute(
                 &format!(
-                    "INSERT INTO usage_samples({}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+                    "INSERT INTO usage_samples({}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
                     &USAGE_COLS[4..]
                 ),
                 params![
@@ -298,7 +300,9 @@ impl Store {
                     u.weekly_resets_at,
                     u.model_weekly_pct,
                     u.provenance,
-                    u.source.map(|s| s.as_str()).unwrap_or("statusline")
+                    u.source.map(|s| s.as_str()).unwrap_or("statusline"),
+                    u.class,
+                    u.allocation
                 ],
             )?;
             Ok(())

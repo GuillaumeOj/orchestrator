@@ -33,13 +33,14 @@ impl Default for FetchPolicy {
 }
 
 /// Power and network state (behind a trait: NFR-6, and for tests).
-pub trait Conditions: Send + Sync {
+pub trait Conditions: Send + Sync + std::fmt::Debug {
     /// `Some(pct)` when running on battery.
     fn battery(&self) -> Option<u8>;
     fn online(&self) -> bool;
 }
 
 /// macOS: `pmset -g batt` and a default route.
+#[derive(Debug, Default)]
 pub struct SystemConditions;
 
 /// Parses `pmset -g batt`: `Some(pct)` only when drawing from the battery.
@@ -141,6 +142,7 @@ mod tests {
     use super::*;
     use crate::fixtures::{commit_file, git as tgit, scratch_repo};
 
+    #[derive(Debug)]
     struct Fake {
         battery: Option<u8>,
         online: bool,

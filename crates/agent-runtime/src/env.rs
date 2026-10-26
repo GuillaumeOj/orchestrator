@@ -158,6 +158,7 @@ pub fn agent_env(i: &EnvInputs) -> BTreeMap<String, String> {
         set("OTEL_METRICS_EXPORTER", "otlp".into());
         set("OTEL_LOGS_EXPORTER", "otlp".into());
         set("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json".into());
+        set("OTEL_EXPORTER_OTLP_COMPRESSION", "none".into());
         set("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint.clone());
         set("OTEL_METRIC_EXPORT_INTERVAL", "5000".into());
         set("OTEL_LOGS_EXPORT_INTERVAL", "2000".into());

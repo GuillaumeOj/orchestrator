@@ -151,6 +151,39 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                         "finish creation".to_string()
                     }
                 }
+                WorktreeRowState::Ready if !repo.join(".git").exists() => {
+                    // The whole project moved: the user points the app at it (relocate).
+                    let msg = format!(
+                        "Project {} is missing (moved or deleted?): relocate it to repair its worktrees",
+                        repo.display()
+                    );
+                    if !st.inbox.iter().any(|i| i.pending() && i.body == msg) {
+                        st.add_inbox(None, "alert", msg.clone());
+                        report.inbox.push(msg);
+                    }
+                    "project missing".to_string()
+                }
+                WorktreeRowState::Ready
+                    if row.path.is_dir() && (!in_git(&row.path) || !orch_git::repair::check_links(&row.path).ok) =>
+                {
+                    // Links broken (one of the repo / sibling folder moved): targeted repair.
+                    if env.apply {
+                        match orch_git::repair::repair(repo, &[(row.path.clone(), row.agent_id.clone())]) {
+                            Ok(r) if r.repaired.len() + r.already_ok.len() == 1 => {
+                                "repaired (targeted worktree repair + re-lock)".to_string()
+                            }
+                            Ok(r) => {
+                                let msg = format!("Worktree {} could not be repaired: {:?}", row.path.display(), r.failed);
+                                st.add_inbox(row.agent_id.as_deref(), "alert", msg.clone());
+                                report.inbox.push(msg);
+                                "repair failed".to_string()
+                            }
+                            Err(e) => format!("repair failed: {e}"),
+                        }
+                    } else {
+                        "repair (targeted worktree repair + re-lock)".to_string()
+                    }
+                }
                 WorktreeRowState::Ready if !in_git(&row.path) || !row.path.is_dir() => {
                     let msg = format!(
                         "Worktree {} is missing from git (moved or removed outside the app)",
@@ -243,6 +276,8 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
         let decision = if state_before == AgentState::Killed || (rec.spawns == 0 && state_before == AgentState::Created)
         {
             Decision::None
+        } else if !insp.exists {
+            Decision::Flag(format!("worktree {} is missing (moved?)", wt.display()))
         } else if state_before == AgentState::Suspended {
             // Stopped on purpose before the crash (a pending resume is a queued turn).
             Decision::Suspend("was suspended".into())
@@ -299,20 +334,31 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
         }
 
         // 7. Holds open when the core died were answered by orch-hook (deny).
+        // A hold waiting on its own Inbox item (a permission prompt) closes
+        // that item as interrupted: the agent already got the deny.
+        let mut closed_items = vec![];
+        let mut fresh_gates = vec![];
         for h in st.holds.iter_mut().filter(|h| h.agent_id == id && h.status == HoldStatus::Held) {
             h.status = HoldStatus::Interrupted;
-            let now = match h.kind {
-                HoldKind::Gate => "gate pending in the Inbox".to_string(),
-                HoldKind::Governor => "requeued".to_string(),
+            let now = match (h.kind, h.inbox_id) {
+                (HoldKind::Gate, Some(item)) => {
+                    closed_items.push(item);
+                    format!("Inbox item {item} closed: the agent was denied while the core was down")
+                }
+                (HoldKind::Gate, None) => {
+                    fresh_gates.push(h.summary.clone());
+                    "gate pending in the Inbox".to_string()
+                }
+                (HoldKind::Governor, _) => "requeued".to_string(),
             };
             report.holds.push((h.id.clone(), now));
         }
-        let gates: Vec<String> = st
-            .holds
-            .iter()
-            .filter(|h| h.agent_id == id && h.kind == HoldKind::Gate && h.status == HoldStatus::Interrupted)
-            .map(|h| h.summary.clone())
-            .collect();
+        for item in st.inbox.iter_mut().filter(|i| closed_items.contains(&i.id) && i.pending()) {
+            item.status = orch_store::InboxStatus::Interrupted;
+            item.decided_at_ms = Some(orch_protocol::now_ms());
+            item.decision = Some("core restarted: denied by orch-hook".into());
+        }
+        let gates = fresh_gates;
         for g in gates {
             let msg = format!("{id}: gate still pending after a restart: {g}");
             if !st.inbox.iter().any(|i| i.pending() && i.body == msg) {
@@ -329,6 +375,10 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                 TurnStatus::Delivering | TurnStatus::Delivered => TurnStatus::Queued,
                 other => other,
             };
+            // Governor queue entries died with the old core: ask again.
+            if now == TurnStatus::Queued && matches!(t.admission, Admission::Waiting(_)) {
+                t.admission = Admission::Pending;
+            }
             if now != t.status {
                 report.turns.push(TurnReport {
                     id: t.id.clone(),
@@ -476,6 +526,7 @@ mod tests {
                 status: HoldStatus::Held,
                 summary: "git status".into(),
                 created_at_ms: 0,
+                inbox_id: None,
             });
         })
         .unwrap();

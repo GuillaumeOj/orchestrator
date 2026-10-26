@@ -158,6 +158,9 @@ pub struct HoldRow {
     pub status: HoldStatus,
     pub summary: String,
     pub created_at_ms: u64,
+    /// The Inbox item a gate hold waits on.
+    #[serde(default)]
+    pub inbox_id: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
