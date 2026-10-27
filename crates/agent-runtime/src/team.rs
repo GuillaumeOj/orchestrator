@@ -264,7 +264,8 @@ impl Runtime {
                 if !self.db.runs(Some(&f.id), true)?.is_empty() {
                     bail!("feature {} already has a running team", f.slug);
                 }
-                f
+                // A deleted feature launched again comes back.
+                Feature { archived: false, ..f }
             }
             None => {
                 let base = spec
@@ -449,8 +450,10 @@ impl Runtime {
 
     /// Queues a turn of `kind` (delivered when the Governor admits it).
     pub(crate) fn deliver_kind(&self, id: &str, text: &str, kind: TurnKind) -> Result<String> {
-        if !self.store.read(|s| s.agents.contains_key(id)) {
-            bail!("no agent {id}");
+        match self.store.read(|s| s.agents.get(id).map(|a| a.tracker.state)) {
+            None => bail!("no agent {id}"),
+            Some(AgentState::Archived) => bail!("agent {id} is deleted"),
+            Some(_) => {}
         }
         let turn = TurnRow::queued(id, text, kind, Admission::Pending);
         let tid = turn.id.clone();
@@ -846,6 +849,50 @@ impl Runtime {
             }
         }
         Ok(run)
+    }
+
+    /// Deletes a feature: its runs end as failed ("deleted by the user"), every
+    /// agent of the feature is deleted (killed, checked, archived), then the
+    /// feature is archived. With `remove_worktrees`, the agents' worktrees and
+    /// the integration worktree go too (unmerged work needs `discard`). Stops
+    /// at the first agent whose kill can't be verified: the feature stays.
+    pub fn delete_feature(&self, feature_id: &str, remove_worktrees: bool, discard: bool) -> Result<Value> {
+        let mut f = self.db.feature(feature_id)?.ok_or_else(|| anyhow!("no feature {feature_id}"))?;
+        // First the runs, so the team tick starts no new seat meanwhile.
+        for run in self.db.runs(Some(feature_id), true)? {
+            self.set_run_state(&run.id, RunState::Failed, "deleted by the user")?;
+        }
+        let recs: Vec<(String, std::path::PathBuf)> = self.store.read(|s| {
+            s.agents
+                .values()
+                .filter(|a| a.team.as_ref().is_some_and(|t| t.feature_id == feature_id))
+                .filter(|a| a.tracker.state != AgentState::Archived)
+                .map(|a| (a.id.clone(), crate::paths::real(&a.worktree)))
+                .collect()
+        });
+        let mut agents = vec![];
+        for (id, _) in &recs {
+            agents.push(self.delete_agent(id, false, false)?);
+        }
+        // Then each worktree once, now that none of the feature's agents
+        // holds it (the lead shares the integration worktree).
+        let mut worktrees = vec![];
+        if remove_worktrees {
+            let mut paths: Vec<std::path::PathBuf> = recs.into_iter().map(|(_, wt)| wt).collect();
+            paths.extend(f.integration_worktree.as_deref().map(crate::paths::real));
+            paths.sort();
+            paths.dedup();
+            for wt in paths {
+                let mut r = self.remove_worktree_report(&f.project_id, &wt, discard);
+                r["path"] = json!(wt);
+                worktrees.push(r);
+            }
+        }
+        f.archived = true;
+        self.db.upsert_feature(&f)?;
+        let out = json!({"deleted": f.slug, "agents": agents, "worktrees": worktrees});
+        self.db.audit("user", None, "feature_deleted", Some(&f.slug), "ok", out.clone())?;
+        Ok(out)
     }
 
     /// Gives a task to another node (FR-406). Its current agent is freed.
@@ -1636,6 +1683,50 @@ mod tests {
         for k in ["run.launched", "task.created", "task.assigned", "message", "git.merge", "task.done", "run.state"] {
             assert!(ev.iter().any(|e| e.kind == k), "timeline has {k}");
         }
+    }
+
+    #[test]
+    fn deleting_a_feature_ends_its_run_and_hides_it_and_its_agents() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        let run = rt
+            .launch(&LaunchSpec {
+                project_id: pid.clone(),
+                team_id: "bugfix-squad".into(),
+                slug: "fx".into(),
+                title: "Fix X".into(),
+                brief: "Fix the X bug.".into(),
+                base: None,
+            })
+            .unwrap();
+        let lead = "fx-lead-1";
+        let wt = rt.store.read(|s| s.agents[lead].worktree.clone());
+        let out = rt.delete_feature(&run.feature_id, true, true).unwrap();
+        assert_eq!(out["agents"].as_array().unwrap().len(), 1, "{out}");
+        assert_eq!(state(&rt, &run.id), RunState::Failed);
+        assert_eq!(rt.store.read(|s| s.agents[lead].tracker.state), AgentState::Archived);
+        assert!(queued(&rt, lead).is_empty());
+        assert!(rt.db.features(Some(&pid)).unwrap().is_empty());
+        assert!(!wt.exists(), "integration worktree removed");
+        // The lead's worktree is the integration one: removed once, reported once.
+        let wts = out["worktrees"].as_array().unwrap();
+        assert_eq!(wts.len(), 1, "{out}");
+        assert_eq!(wts[0]["worktree_removed"], true, "{out}");
+        // The tick starts nothing for a deleted feature.
+        let before = rt.store.read(|s| s.agents.len());
+        rt.team_tick();
+        assert_eq!(rt.store.read(|s| s.agents.len()), before);
+        // The slug can be launched again, and the feature comes back.
+        let again = rt
+            .launch(&LaunchSpec {
+                project_id: pid.clone(),
+                team_id: "bugfix-squad".into(),
+                slug: "fx".into(),
+                title: "Again".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(again.feature_id, run.feature_id);
+        assert_eq!(rt.db.features(Some(&pid)).unwrap().len(), 1);
     }
 
     #[test]

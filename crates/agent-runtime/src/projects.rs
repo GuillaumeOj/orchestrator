@@ -150,14 +150,7 @@ impl Runtime {
         if !wt.starts_with(real(&p.worktree_root)) {
             bail!("{} is not in {}: the app only removes its own worktrees", path.display(), p.worktree_root.display());
         }
-        if let Some(a) = self.store.read(|s| {
-            s.agents
-                .values()
-                .find(|a| {
-                    real(&a.worktree) == wt && !matches!(a.tracker.state, AgentState::Archived | AgentState::Killed)
-                })
-                .map(|a| a.id.clone())
-        }) {
+        if let Some(a) = self.worktree_users(&wt, "").first() {
             bail!("agent {a} uses this worktree: archive or kill it first");
         }
         let base = self.store.get_row(&wt).map(|w| w.base).unwrap_or(p.default_branch.clone());
@@ -179,6 +172,93 @@ impl Runtime {
         Ok(out)
     }
 
+    /// What the delete dialog shows: the agent's worktree (merged, dirty,
+    /// safe to remove) and the other agents still using it.
+    pub fn delete_plan(&self, id: &str) -> Result<Value> {
+        let rec = self.store.read(|s| s.agents.get(id).cloned()).ok_or_else(|| anyhow!("no agent {id}"))?;
+        let wt = real(&rec.worktree);
+        let worktree = match self.db.project_by_path(&rec.repo)? {
+            Some(p) if wt.starts_with(real(&p.worktree_root)) => {
+                cleanup::worktree(&p.path, &wt, &self.store.rows_of(&p.path), &p.default_branch)?
+            }
+            _ => None,
+        };
+        Ok(json!({"worktree": worktree, "shared_with": self.worktree_users(&wt, id)}))
+    }
+
+    /// Agents other than `except` that use `wt` (canonical) and are neither
+    /// archived nor killed: while one does, the worktree is not removed.
+    fn worktree_users(&self, wt: &Path, except: &str) -> Vec<String> {
+        // Canonicalized outside the lock (a syscall per agent).
+        let candidates: Vec<(String, PathBuf)> = self.store.read(|s| {
+            s.agents
+                .values()
+                .filter(|a| a.id != except && !matches!(a.tracker.state, AgentState::Archived | AgentState::Killed))
+                .map(|a| (a.id.clone(), a.worktree.clone()))
+                .collect()
+        });
+        candidates.into_iter().filter(|(_, w)| real(w) == wt).map(|(id, _)| id).collect()
+    }
+
+    /// Hides an agent for good (FR-202): archived, its queued turns dropped
+    /// and the Governor told to forget it, so no release ever comes for it.
+    /// Its process must already be stopped.
+    pub(crate) fn archive_agent(&self, id: &str) -> Result<()> {
+        self.store.write(|s| {
+            if let Some(a) = s.agents.get_mut(id) {
+                a.tracker.state = AgentState::Archived;
+                a.tracker.stop_intent = crate::state::StopIntent::None;
+                // A late exit callback matches on pid: with none it changes nothing.
+                a.pid = None;
+                a.pgid = None;
+            }
+            s.turns.retain(|t| !(t.agent_id == id && t.status == crate::store::TurnStatus::Queued));
+        })?;
+        self.governor_forget(id);
+        Ok(())
+    }
+
+    /// FR-202 archive, from the UI's Delete: kills the agent (FR-207, checked:
+    /// nothing is archived while one of its processes survives), drops its
+    /// queued turns and hides it. With `remove_worktree`, its worktree and
+    /// branch go too when no other agent uses them; unmerged work needs
+    /// `confirm_discard`. A worktree that can't be removed is reported, the
+    /// agent stays deleted.
+    pub fn delete_agent(&self, id: &str, remove_worktree: bool, confirm_discard: bool) -> Result<Value> {
+        let rec = self.store.read(|s| s.agents.get(id).cloned()).ok_or_else(|| anyhow!("no agent {id}"))?;
+        // Always through kill, even for a suspended, crashed or killed agent:
+        // its scan finds leftovers of an earlier run of the app.
+        let log = self.kill(id)?;
+        self.archive_agent(id)?;
+        let worktree = if !remove_worktree {
+            Value::Null
+        } else {
+            match self.db.project_by_path(&rec.repo) {
+                Ok(Some(p)) => self.remove_worktree_report(&p.id, &real(&rec.worktree), confirm_discard),
+                Ok(None) => json!({"error": "no project for this agent"}),
+                Err(e) => json!({"error": format!("{e:#}")}),
+            }
+        };
+        let out = json!({"deleted": id, "log": log, "worktree": worktree});
+        self.db.audit("user", Some(id), "agent_deleted", rec.worktree.to_str(), "ok", out.clone())?;
+        self.event(id, "deleted", out.clone());
+        Ok(out)
+    }
+
+    /// [`Self::remove_worktree`] (branch included) as a delete reports it:
+    /// the outcome, or why the worktree stays (another agent uses it, or the
+    /// removal was refused).
+    pub(crate) fn remove_worktree_report(&self, project_id: &str, wt: &Path, confirm_discard: bool) -> Value {
+        let users = self.worktree_users(wt, "");
+        if !users.is_empty() {
+            return json!({"kept": format!("used by {}", users.join(", "))});
+        }
+        match self.remove_worktree(project_id, wt, true, confirm_discard) {
+            Ok(o) => json!(o),
+            Err(e) => json!({"error": format!("{e:#}")}),
+        }
+    }
+
     /// J11 step 1: worktrees, branches and agents of the project.
     pub fn removal_plan(&self, id: &str) -> Result<Value> {
         let plan = project::removal_plan(&self.db, &self.store, id)?;
@@ -195,19 +275,11 @@ impl Runtime {
     pub fn remove_project(&self, id: &str, choices: &RemovalChoices) -> Result<RemovalReport> {
         let p = self.project(id)?;
         for a in self.agents_of(&p.path) {
-            if self.live_ids().contains(&a.id) {
+            if self.live(&a.id).is_some() {
                 let _ = self.suspend(&a.id);
             }
+            self.archive_agent(&a.id)?;
         }
-        self.store.write(|s| {
-            for a in s.agents.values_mut().filter(|a| a.repo == p.path) {
-                a.tracker.state = AgentState::Archived;
-            }
-            s.turns.retain(|t| {
-                !(s.agents.get(&t.agent_id).is_some_and(|a| a.repo == p.path)
-                    && t.status == crate::store::TurnStatus::Queued)
-            });
-        })?;
         let report = project::remove(&self.db, &self.store, id, choices)?;
         if choices.history == project::History::Delete {
             // The project's rows went with it (kept worktrees stay on disk, unmanaged).
@@ -347,5 +419,55 @@ mod tests {
         assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::Archived);
         assert!(rt.store.read(|s| s.worktrees.values().all(|w| w.repo != new_repo)));
         assert!(rt.db.worktrees_of(&new_repo).unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_kills_leftovers_archives_and_removes_the_worktree_on_request() {
+        let (_d, rt) = test_runtime(true);
+        let (_r, repo) = scratch_repo();
+        rt.add_project(&repo).unwrap();
+        let row = rt.create_worktree(&repo, &WorktreeKindSpec::Solo { slug: "a1".into() }, None).unwrap();
+        commit_file(&row.path, "x.txt", "x", "unmerged work");
+        rt.store
+            .write(|s| {
+                let a = s.agents.get_mut("a1").unwrap();
+                a.repo = real(&repo);
+                a.worktree = row.path.clone();
+                a.tracker.state = AgentState::Suspended;
+                s.turns.push(crate::store::TurnRow::queued(
+                    "a1",
+                    "later",
+                    governor::TurnKind::Message,
+                    crate::store::Admission::Pending,
+                ));
+            })
+            .unwrap();
+        // A leftover of an earlier run: detached, tty-less, cwd in the worktree.
+        let mut child = crate::procs::tests::spawn_detached(&row.path, "exec sleep 300");
+        let pid = child.id() as i32;
+        std::thread::sleep(Duration::from_millis(200));
+        let reaper = std::thread::spawn(move || child.wait());
+
+        let plan = rt.delete_plan("a1").unwrap();
+        assert_eq!(plan["worktree"]["safe_to_remove"], false, "{plan}");
+        assert_eq!(plan["worktree"]["unmerged_commits"], 1);
+
+        // Unmerged and not confirmed: the agent goes, the worktree stays.
+        let out = rt.delete_agent("a1", true, false).unwrap();
+        let _ = reaper.join();
+        assert!(!crate::procs::alive(pid), "the leftover is dead");
+        assert!(out["worktree"]["error"].as_str().unwrap().contains("not merged"), "{out}");
+        assert!(row.path.is_dir());
+        let a = rt.store.read(|s| s.agents["a1"].clone());
+        assert_eq!(a.tracker.state, AgentState::Archived);
+        assert!(rt.store.read(|s| s.turns.iter().all(|t| t.agent_id != "a1")));
+        assert!(rt.spawn("a1", None).unwrap_err().to_string().contains("deleted"));
+
+        // Confirmed: the worktree and its branch go.
+        let out = rt.delete_agent("a1", true, true).unwrap();
+        assert_eq!(out["worktree"]["worktree_removed"], true, "{out}");
+        assert!(!row.path.exists());
+        assert!(rt.db.audit_log(Some("a1"), 10).unwrap().iter().any(|e| e.action == "agent_deleted"));
+        assert!(rt.delete_agent("nope", false, false).is_err());
     }
 }

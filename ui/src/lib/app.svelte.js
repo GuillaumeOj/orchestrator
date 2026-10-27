@@ -45,6 +45,8 @@ const newPaneId = () => `p${nextPane++}`;
 export const wide = () => app.width >= breakpoint.md;
 export const agents = () => app.data?.agents ?? [];
 export const agent = (id) => agents().find((a) => a.id === id);
+/** Agents not deleted (archived ones stay in the snapshot for history). */
+export const activeAgents = () => agents().filter((a) => a.state !== 'archived');
 export const projects = () => app.data?.projects ?? [];
 /** Features with their latest team run (P2). */
 export const features = () => app.data?.features ?? [];
@@ -356,11 +358,41 @@ export async function agentAction(id, action, message = null) {
       pause: 'Paused',
       unpause: 'Unpaused',
     }[action];
-    toast(`${verb ?? action} · ${id}`);
+    // A kill is checked: the core scans again and fails if anything survived.
+    toast(`${verb ?? action} · ${id}${action === 'kill' ? ' · no process left' : ''}`);
     await refresh();
   } catch (e) {
     toast(`${id}: ${errText(e)}`, { kind: 'error' });
   }
+}
+
+/** FR-202: kill (checked) and hide the agent; its worktree on request. Its
+ *  panes close on the refresh (see `prunePanes`). */
+export async function deleteAgent(id, removeWorktree, confirmDiscard) {
+  const r = await invoke('agent_delete', { id, removeWorktree, confirmDiscard });
+  const w = r.worktree;
+  const note = !w
+    ? ''
+    : w.error || w.kept
+      ? ` · worktree kept: ${w.error ?? w.kept}`
+      : w.worktree_removed
+        ? ` · worktree removed${w.branch_deleted ? ' with its branch' : ''}`
+        : '';
+  toast(`Deleted ${id} · no process left${note}`, w?.error ? { kind: 'error' } : {});
+  await refresh();
+  return r;
+}
+
+/** Ends the feature's runs, deletes its agents, hides the feature. */
+export async function deleteFeature(featureId, removeWorktrees, discard) {
+  const r = await invoke('feature_delete', { feature: featureId, removeWorktrees, discard });
+  const kept = r.worktrees.filter((w) => w.error || w.kept).length;
+  toast(
+    `Deleted ${r.deleted} · ${r.agents.length} agent(s), no process left${kept ? ` · ${kept} worktree(s) kept` : ''}`,
+    kept ? { kind: 'error' } : {},
+  );
+  await refresh();
+  return r;
 }
 
 export async function governor(action, arg = null) {
@@ -464,10 +496,7 @@ export async function restoreLayout() {
   for (const id of ids) {
     const s = saved.panes[id];
     if (!s) continue;
-    if (s.type === 'agent' && !agent(s.agentId)) continue;
-    if (s.type === 'project' && !projects().some((p) => p.id === s.projectId)) continue;
-    if (s.type === 'board' && !projects().some((p) => p.id === s.projectId)) continue;
-    if (s.type === 'feature' && !features().some((f) => f.id === s.featureId)) continue;
+    if (paneGone(s)) continue;
     if (s.type === 'shell' || s.type === 'editor') {
       try {
         const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
@@ -509,9 +538,24 @@ async function poll() {
   try {
     app.data = new Snapshot(await invoke('app_state'));
     app.error = null;
+    prunePanes();
   } catch (e) {
     app.error = errText(e);
   }
+}
+
+/** A pane whose agent, feature or project is gone (deleted or archived),
+ *  however that happened: a button, the CLI, a project removal. */
+function paneGone(s) {
+  if (s.type === 'agent') return !activeAgents().some((a) => a.id === s.agentId);
+  if (s.type === 'project' || s.type === 'board') return !projects().some((p) => p.id === s.projectId);
+  if (s.type === 'feature') return !features().some((f) => f.id === s.featureId);
+  return false;
+}
+
+function prunePanes() {
+  for (const [id, s] of Object.entries(app.panes)) if (paneGone(s)) closePane(id);
+  if (app.selectedAgent && !activeAgents().some((a) => a.id === app.selectedAgent)) app.selectedAgent = null;
 }
 
 // ---------------------------------------------------------------- commands
@@ -584,6 +628,11 @@ export function commands() {
             'Kill',
           ),
       },
+      {
+        id: 'agent.delete',
+        label: `Delete ${a.id}…`,
+        run: () => (app.overlay = { kind: 'delete-agent', agentId: a.id }),
+      },
       { id: 'agent.shell', label: `Shell in ${a.id}'s worktree`, run: () => openShell({ agentId: a.id }) },
       {
         id: 'agent.diff',
@@ -597,6 +646,11 @@ export function commands() {
   }
   for (const f of features()) {
     list.push({ id: `feature.open.${f.id}`, label: `Open feature ${f.slug}`, run: () => openFeature(f.id) });
+    list.push({
+      id: `feature.delete.${f.id}`,
+      label: `Delete feature ${f.slug}…`,
+      run: () => (app.overlay = { kind: 'delete-feature', featureId: f.id }),
+    });
   }
   for (const p of projects()) {
     list.push({ id: `board.open.${p.id}`, label: `Board: ${p.name}`, run: () => openBoard(p.id) });

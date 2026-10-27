@@ -2,7 +2,7 @@
   // Sidebar (§9.2): Projects → Features → agents; solo sessions under their
   // project. The only navigation tree. A feature's badge counts its agents
   // that need you (waiting for you or at a gate).
-  import { agents, app, features, openAgent, openFeature, openProject, projects } from '../lib/app.svelte.js';
+  import { activeAgents, app, features, openAgent, openFeature, openProject, projects } from '../lib/app.svelte.js';
   import { pct } from '../lib/format.js';
   import { displayState } from '../lib/status.js';
   import { runStateLabel } from '../lib/teams.js';
@@ -14,7 +14,7 @@
   const focusedAgent = $derived(app.panes[app.focused]?.agentId ?? app.selectedAgent);
   const byProject = $derived(
     projects().map((p) => {
-      const mine = agents().filter((a) => a.project_id === p.id && a.state !== 'archived');
+      const mine = activeAgents().filter((a) => a.project_id === p.id);
       const feats = features()
         .filter((f) => f.project_id === p.id)
         .map((f) => ({ f, list: mine.filter((a) => a.team?.feature_id === f.id) }));
