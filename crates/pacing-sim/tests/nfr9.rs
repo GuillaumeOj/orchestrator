@@ -195,3 +195,20 @@ fn red_happens_under_heavy_demand_and_never_at_60() {
     let light = week(60.0, 1);
     assert!(light.rows.iter().all(|r| r.state != PressureState::Red && r.state != PressureState::Amber));
 }
+
+/// FR-811: a hard cap stops an allocation near its cap (its running turn
+/// stops at the next tool call), and the week still paces as NFR-9 asks.
+#[test]
+fn a_hard_cap_holds_its_allocation_in_a_heavy_week() {
+    const CAP: f64 = 8.0;
+    for seed in 1..=5 {
+        let mut sc = Scenario::synthetic(&SyntheticParams::nfr9(130.0, seed));
+        let b = sc.allocations.iter_mut().find(|a| a.allocation.id.0 == "B").unwrap();
+        b.allocation.hard_cap_pct = Some(CAP);
+        let r = run(&sc).summary;
+        let done = r.allocations.iter().find(|a| a.id.0 == "B").unwrap().done_pct;
+        assert!(done <= CAP + 1.5, "seed {seed}: B used {done:.1} % against a {CAP} % cap");
+        assert!(r.queued_by_reason.get("hard_cap").copied().unwrap_or(0) > 0, "seed {seed}: {:?}", r.queued_by_reason);
+        assert!(r.weekly_exhausted_at.is_none() && !r.limit_hits.iter().any(|h| h.working_hours), "seed {seed}");
+    }
+}

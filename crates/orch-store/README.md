@@ -82,8 +82,9 @@ Claude Code's folder name under `~/.claude/projects`.
 - **Runtime rows as JSON + key columns**: `agents.data`, `turns.data` and `holds.data` hold the
   runtime's full records (its types live in `agent-runtime`); the key columns are for queries.
 - **Holds** are not a §7 entity but the reconciler needs them (J10 step 7), so they have a table.
-- **Queue entries** are a view of the Governor's queue for the UI. After a restart the Governor
-  starts empty and turns waiting in its old queue are asked again (the reconciler resets them).
+- **Queue entries** are a view of the Governor's queue for the UI. What a restart restores is the
+  carry-over state in `kv` (`governor.carry`: the queue with its ids, pauses, deferrals, the ask,
+  sprints, limits), written by the runtime.
 - **Governor actions** restart their ids at each core start, so rows are keyed by (boot, id).
 - **Usage samples** carry the Governor's cost class and allocation at record time, so the week's
   accounting can be replayed after a restart (`governor::Governor::replay`).

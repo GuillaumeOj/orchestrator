@@ -114,7 +114,14 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
 - The usage collector sends the Governor only **new responses** (readings or cost changed), with
   `ts` = receive time and the cost delta from `cost.total_cost_usd`. The first weekly reading
   re-aligns the plan week on `seven_day.resets_at` (`new_week`).
-- Shadow mode (FR-812) is the default: decisions are logged with the proposed verdict.
+- Shadow mode (FR-812) is the default: decisions are logged with the proposed verdict. The memory
+  cap on processes is enforced in shadow mode too (see "Live cap").
+- User controls (FR-809–812): `pause_all`, `resume_all`, `pause_agent`, `resume_agent`, `run_now`,
+  `cancel` (drops the entry and cancels its waiting turn), `undo`, `sprint`, `answer_ask`,
+  `set_shadow` (a replan with the shadow flag). Each goes through `governor_act`, which handles the
+  releases and stores the carry-over state.
+- `reserve_exhausted` (FR-807) becomes a `budget` Inbox item, once per plan week (also in shadow
+  mode: it is a warning).
 
 ## Inbox and permissions (FR-705, FR-707–709)
 
@@ -154,8 +161,11 @@ behind `MemoryProbe`); the live cap is `base_cap` when normal, one less on warn 
 critical, and recovers when the pressure ends. Idle agents (no queued turn, no background task, not
 attached) are suspended after `idle_suspend` (default 10 min), and while more agents are live than
 the cap, the least recently active idle ones are suspended too. **Working agents are never
-stopped.** A suspended agent with queued work resumes only when a live slot is free (`cap_wait`
-event once). `note_user_activity(id)` resets the idle clock (pane focus).
+stopped.** The live processes and the cap go to the Governor (`set_process_slots`, every
+housekeeping pass and before a suspended agent's turn is asked); the turn of a suspended agent asks
+with `needs_spawn`, so it waits in the Governor's queue as `memory_pressure` (reason, Run now, in
+the UI like any queued turn) and is released when a slot frees. Run now spawns past the cap.
+`note_user_activity(id)` resets the idle clock (pane focus).
 
 ## OTLP receiver (FR-801)
 
@@ -172,8 +182,14 @@ compressed bodies get 415.
 - The Governor at start: the active plan if its week is still running (else the default week), the
   stored policy (live cap from the config), and this week's statusline samples **replayed with the
   cost class and allocation they had** (`Governor::replay`), so W, the governed share and the
-  calibration survive a restart. Each tick saves the last 50 actions and the queue; a forecast
-  snapshot every 5 min, the calibration hourly; retention purge daily.
+  calibration survive a restart. Then the **carry-over state** (`Governor::carry`, kv key
+  `governor.carry`, stored on every control and tick when it changed) is restored: pauses, limits,
+  this week's deferrals, pending ask and sprints, and the queue entries whose turns still wait
+  (`Admission::Waiting(id)`); a waiting turn whose entry did not come back is asked again. A replan
+  (plan edit, enforce on/off) restores the live carry the same way, whole queue included, so it is
+  no longer refused while turns are queued or a sprint is on. Each tick saves the last 50 actions
+  and the queue view; a forecast snapshot every 5 min, the calibration hourly; retention purge
+  daily.
 - Transcripts of known agents and registered projects are indexed for search (FTS5) at start,
   then after each turn end (at most once a minute).
 
@@ -193,7 +209,8 @@ compressed bodies get 415.
    queue (and through the Governor again);
 7. held gates → pending Inbox item (a permission hold closes its own item as `interrupted`: the
    agent was denied by orch-hook); held governor holds → `interrupted` (the resume continues);
-   queued turns waiting in the old core's Governor queue are asked again.
+   queued turns waiting in the Governor's queue keep their entry (the core restored it before the
+   reconciler runs, or already reset the turn to be asked again).
 
 An agent whose worktree is missing is flagged (error + Inbox), never resumed blindly.
 `Runtime::relocate_project(id, new_path)` handles a moved repo: rows and agents are pointed at the
@@ -252,11 +269,13 @@ new place, the known worktrees are repaired (targeted) and re-locked.
 - `tests/e2e_fake_claude.rs`: real bus server, PTYs and helper binaries, with `tests/fake_claude.sh`
   in place of `claude` (no quota): start, delivery (marker, `/` escape), usage → Governor, a commit
   through the real orch-mcp, suspend, resume (`--resume`), kill; memory pressure (cap 1, LRU idle
-  agent suspended, queued work waits for a slot, resumes when pressure ends); idle auto-suspend and
+  agent suspended, queued work waits in the Governor's queue as `memory_pressure`, resumes when
+  pressure ends); idle auto-suspend and
   resume on new work; orch-hook with the core down.
 - Unit tests for the Inbox (rules, approve, reply, always-allow, Esc, expiry), orch-mcp tools (commit
-  with deny/ask rules, PR gate), restart (Governor rebuilt from stored samples), OTLP, and the
-  reconciler (repair, missing project, stale queue entries, permission items).
+  with deny/ask rules, PR gate), restart (Governor rebuilt from stored samples; pauses and waiting
+  turns kept across a replan and a restart; cancel), OTLP, and the reconciler (repair, missing
+  project, waiting turns, permission items).
 - `orchd/tests/crash_restart.rs`: `kill -9` of `orchd serve` mid-turn, restart, resume by id, no
   double delivery.
 - `tests/live_claude.rs` (opt-in, uses quota):
@@ -280,7 +299,7 @@ std::thread::spawn({ let rt = rt.clone(); move || server::serve(rt, bus::bind_li
 | Area | Calls |
 |---|---|
 | Agents | `start(&AgentSpec)`, `resume`, `suspend`, `kill`, `interrupt`, `deliver`, `attach`/`read_output`/`resize`, `note_user_activity`, `state_json`, `live_ids`, `live_cap` |
-| Governor | `usage_json`, `governor_json`, `pause_all`, `resume_all`, `set_plan`, `tick` (the server loop calls it) |
+| Governor | `usage_json`, `governor_json`, `pause_all`, `resume_all`, `pause_agent`, `resume_agent`, `run_now`, `cancel`, `undo`, `sprint`, `answer_ask`, `set_shadow`, `set_plan`, `replan`, `tick` (the server loop calls it) |
 | Inbox | `inbox()`, `decide(id, InboxDecision, scope, message)`, `add_rule`, `revoke_rule` (audited); `rt.db.rules()` to list |
 | Commits | `commit_for(agent, &CommitRequest, "user")` |
 | Projects | `add_project`, `clone_project`, `projects_overview`, `project_detail(id, with_prs)`, `fetch_project`, `diff`, `remove_worktree`, `removal_plan`, `remove_project`, `relocate_project` |
