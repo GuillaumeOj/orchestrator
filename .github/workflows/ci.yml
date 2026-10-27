@@ -7,7 +7,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs only: every commit on main keeps its result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -21,8 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: rustup toolchain install # from rust-toolchain.toml
-      - run: cargo fmt --all --check
+      - run: make fmt-check
 
   rust:
     name: Rust lint and test
@@ -30,26 +33,32 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: rustup toolchain install # from rust-toolchain.toml
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: git version (tests need >= 2.48)
-        run: git --version
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+        run: |
+          git --version
+          IFS=. read -r major minor _ <<< "$(git --version | awk '{print $3}')"
+          if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 48 ]; }; then
+            echo "::error::git >= 2.48 required, found $major.$minor"
+            exit 1
+          fi
+      - run: make clippy
+      - run: make rust-test
 
   ui:
     name: UI lint, type check, test and build
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ui
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: ui/package.json
-      - run: bun install --frozen-lockfile
-      - run: bun run lint
-      - run: bun run check
-      - run: bun run test
-      - run: bun run build
+      - run: make ui-deps
+      - run: make ui-lint
+      - run: make ui-test
+      - run: make ui-build
