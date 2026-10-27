@@ -378,10 +378,8 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                 TurnStatus::Delivering | TurnStatus::Delivered => TurnStatus::Queued,
                 other => other,
             };
-            // Governor queue entries died with the old core: ask again.
-            if now == TurnStatus::Queued && matches!(t.admission, Admission::Waiting(_)) {
-                t.admission = Admission::Pending;
-            }
+            // A turn still waiting in the Governor's queue keeps its entry: the
+            // core restored it with the carry-over state (or asks again if not).
             if now != t.status {
                 report.turns.push(TurnReport {
                     id: t.id.clone(),
@@ -790,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_governor_entries_are_asked_again_and_permission_items_close() {
+    fn waiting_turns_keep_their_entry_and_permission_items_close() {
         let (_d, repo) = scratch_repo();
         let app = tempfile::tempdir().unwrap();
         let paths = AppPaths::new(app.path());
@@ -816,7 +814,7 @@ mod tests {
             .unwrap();
         let r = run(&store, &paths, &app.path().join("none"));
         let st = store.read(|s| s.clone());
-        assert_eq!(st.turns[0].admission, Admission::Pending, "the old core's queue entry is gone: ask again");
+        assert_eq!(st.turns[0].admission, Admission::Waiting(7), "the core restores the entry or asks again");
         assert_eq!(st.inbox[0].status, orch_store::InboxStatus::Interrupted);
         assert_eq!(st.inbox.iter().filter(|i| i.pending()).count(), 0, "no duplicate gate item");
         assert!(r.holds[0].1.contains("closed"));

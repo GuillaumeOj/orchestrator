@@ -39,6 +39,8 @@ pub struct AgentFacts {
 #[derive(Clone, Debug)]
 pub struct Alert {
     pub id: u64,
+    /// The store item's kind: `budget` (the Governor's warnings) is level 3, the rest level 2.
+    pub kind: String,
     pub agent_id: Option<String>,
     pub body: String,
     pub created_ms: u64,
@@ -132,10 +134,11 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
         }
     }
     for al in i.alerts {
+        let budget = al.kind == "budget";
         out.push(InboxItem {
             id: format!("alert-{}", al.id),
-            level: 2,
-            kind: "alert".into(),
+            level: if budget { 3 } else { 2 },
+            kind: if budget { "budget" } else { "alert" }.into(),
             agent_id: al.agent_id.clone(),
             title: al.body.lines().next().unwrap_or("").to_string(),
             detail: al.body.clone(),
@@ -208,7 +211,10 @@ mod tests {
             agent("ci-1", "error", 5),
             agent("back-1", "working", 1),
         ];
-        let alerts = [Alert { id: 7, agent_id: None, body: "x: API error".into(), created_ms: 1 }];
+        let alerts = [
+            Alert { id: 7, kind: "alert".into(), agent_id: None, body: "x: API error".into(), created_ms: 1 },
+            Alert { id: 8, kind: "budget".into(), agent_id: None, body: "reserve used up".into(), created_ms: 0 },
+        ];
         let done = [Done { turn_id: "t1".into(), agent_id: "back-1".into(), body: "go".into(), at_ms: 0 }];
         let items = build(&Inputs {
             permissions: std::slice::from_ref(&perm),
@@ -225,8 +231,9 @@ mod tests {
             done: &done,
         });
         let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
-        assert_eq!(ids, ["wait-solo", "perm-1", "alert-7", "error-ci-1", "ask-12", "info-t1"]);
-        assert_eq!(badge(&items), 5);
+        assert_eq!(ids, ["wait-solo", "perm-1", "alert-7", "error-ci-1", "alert-8", "ask-12", "info-t1"]);
+        assert_eq!(items[4].kind, "budget");
+        assert_eq!(badge(&items), 6);
         assert_eq!(items[1].preview.as_deref(), Some("pnpm add x"));
     }
 

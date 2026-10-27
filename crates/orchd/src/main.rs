@@ -32,6 +32,10 @@ usage: orchd [--home DIR] <command> [args]
   resume <agent> [--message TEXT]
   kill <agent>                  process group + processes whose cwd is in the worktree
   pause-all | resume-all        Governor Pause all (FR-811): autonomous work holds at its next tool call
+  pause <agent> | unpause <agent>         pause one agent's autonomous work (until unpause)
+  run-now <entry> | cancel <entry>        a queued entry (ids in `governor`): run it past the caps, or drop it
+  undo <action> | sprint [pp] | answer-ask <action> apply|skip
+  enforce on|off                shadow mode off (enforce) or back on (FR-812)
   state | usage | governor      print JSON
   stop                          shut the core down (suspends agents)
 
@@ -214,6 +218,49 @@ fn run() -> Result<()> {
         "pause-all" | "resume-all" => {
             a.done()?;
             print(request(&sock, if cmd == "pause-all" { CtlRequest::PauseAll } else { CtlRequest::ResumeAll })?)
+        }
+        "pause" | "unpause" => {
+            let agent_id = a.next("agent")?;
+            a.done()?;
+            let req = if cmd == "pause" { CtlRequest::PauseAgent { agent_id } } else { CtlRequest::ResumeAgent { agent_id } };
+            print(request(&sock, req)?)
+        }
+        "run-now" | "cancel" | "undo" => {
+            let id: u64 = a.next("id")?.parse().map_err(|_| anyhow!("{cmd}: the id is a number"))?;
+            a.done()?;
+            let req = match cmd.as_str() {
+                "run-now" => CtlRequest::RunNow { entry: id },
+                "cancel" => CtlRequest::Cancel { entry: id },
+                _ => CtlRequest::Undo { action: id },
+            };
+            print(request(&sock, req)?)
+        }
+        "sprint" => {
+            let pp = match a.0.is_empty() {
+                true => None,
+                false => Some(a.next("pp")?.parse::<f64>().map_err(|_| anyhow!("sprint: pp is a number"))?),
+            };
+            a.done()?;
+            print(request(&sock, CtlRequest::Sprint { pp })?)
+        }
+        "answer-ask" => {
+            let action: u64 = a.next("action")?.parse().map_err(|_| anyhow!("answer-ask: the action is a number"))?;
+            let accept = match a.next("apply|skip")?.as_str() {
+                "apply" => true,
+                "skip" => false,
+                other => bail!("answer-ask: apply or skip, not {other}"),
+            };
+            a.done()?;
+            print(request(&sock, CtlRequest::AnswerAsk { action, accept })?)
+        }
+        "enforce" => {
+            let on = match a.next("on|off")?.as_str() {
+                "on" => true,
+                "off" => false,
+                other => bail!("enforce: on or off, not {other}"),
+            };
+            a.done()?;
+            print(request(&sock, CtlRequest::Enforce { on })?)
         }
         "stop" => {
             a.done()?;

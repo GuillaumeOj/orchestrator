@@ -331,10 +331,7 @@ impl Core {
 
     /// FR-812: leave (or go back to) shadow mode. Takes effect now.
     pub fn set_enforce(&self, enforce: bool) -> Result<()> {
-        let rt = self.runtime()?;
-        let mut plan = rt.with_governor(|g| g.plan().clone());
-        plan.shadow_mode = !enforce;
-        rt.replan(plan)?;
+        self.runtime()?.set_shadow(!enforce)?;
         self.settings.set(ENFORCE_KEY, json!(enforce))?;
         Ok(())
     }

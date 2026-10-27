@@ -247,15 +247,16 @@ fn memory_pressure_lowers_the_live_cap_and_queued_work_waits_for_a_slot() {
     wait_for("one suspended", 15, || core.state_of("old") == "suspended");
     assert_eq!(core.state_of("new"), "idle");
     assert_eq!(core.rt.live_cap(), 1);
-    // Work for the suspended agent waits: no live slot.
+    // Work for the suspended agent waits in the Governor's queue (shadow mode
+    // too: memory is enforced), with its reason.
     request(&core.sock, CtlRequest::Deliver { agent_id: "old".into(), text: "more".into() }).unwrap();
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(core.state_of("old"), "suspended");
+    let reason = core.rt.with_governor(|g| g.queue().iter().find(|e| e.agent.0 == "old").map(|e| e.reason.clone()));
+    assert_eq!(reason, Some(governor::QueueReason::MemoryPressure { cap: 1 }));
     // Pressure ends: the cap recovers and the agent is resumed through the Governor.
     mem.set(PressureLevel::Normal);
     wait_for("resumed and done", 20, || agent(&core.sock, "old")["turns"].as_u64() == Some(2));
-    let ev = core.rt.db.events(0, Some("old"), Some("cap_wait"), 5).unwrap();
-    assert!(!ev.is_empty());
 }
 
 #[test]

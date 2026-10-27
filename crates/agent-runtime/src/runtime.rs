@@ -154,10 +154,10 @@ struct House {
     /// Agents whose transcript changed since the last index pass.
     index_dirty: std::collections::BTreeSet<String>,
     index_all: bool,
-    /// Agents told they wait for a live slot (logged once per wait).
-    cap_waiting: std::collections::BTreeSet<String>,
     /// What `tick` last saved of the actions and the queue.
     last_saved: (Vec<governor::GovernorAction>, Vec<governor::QueueEntry>),
+    /// What was last stored of the Governor's carry-over state.
+    last_carry: Option<governor::Carry>,
 }
 
 /// True (and restamps `last`) when `every` ms have passed since `last`.
@@ -174,6 +174,10 @@ pub const CALIBRATION_EVERY_MS: u64 = 60 * 60 * 1000;
 pub const PURGE_EVERY_MS: u64 = 24 * 3600 * 1000;
 pub const INDEX_EVERY_MS: u64 = 60 * 1000;
 pub const POLICY_ID: &str = "default";
+/// Settings key of the Governor's carry-over state (ADR-007 "State across restarts").
+pub const CARRY_KEY: &str = "governor.carry";
+/// Settings key: the plan week (start, ms) whose reserve warning reached the Inbox.
+pub const RESERVE_ALERT_KEY: &str = "governor.reserve_alerted";
 
 /// The plan week: from last Monday 09:00 local to next Monday 09:00, weekdays
 /// 09:00–19:00, one allocation. The Week planner (FR-802) replaces this later.
@@ -259,7 +263,7 @@ impl Runtime {
         let db = orch_store::Store::open(&cfg.paths.db_file())?;
         let store = Store::open(db.clone(), Some(&cfg.paths.legacy_state_file()))?;
         let now = Timestamp::now();
-        let gov = restore_governor(&db, &store, &cfg, cfg.shadow, now)?;
+        let (gov, released) = restore_governor(&db, &store, &cfg, cfg.shadow, None, now)?;
         let home = crate::paths::home_dir();
         let shell = std::env::var_os("SHELL").map(PathBuf::from).unwrap_or_else(|| "/bin/zsh".into());
         // Independent subprocesses (the login shell can take seconds): run them together.
@@ -282,7 +286,7 @@ impl Runtime {
         if let Err(e) = git {
             warnings.push(e.to_string());
         }
-        Ok(Arc::new_cyclic(|me| Runtime {
+        let rt = Arc::new_cyclic(|me| Runtime {
             user_statusline: crate::env::user_statusline_command(&home),
             git_identity,
             cfg,
@@ -300,7 +304,9 @@ impl Runtime {
             house: Mutex::new(House { index_all: true, last_purge_ms: now_ms(), ..Default::default() }),
             otlp: Mutex::new(None),
             indexing: std::sync::atomic::AtomicBool::new(false),
-        }))
+        });
+        rt.handle_releases(released);
+        Ok(rt)
     }
 
     fn gov(&self) -> std::sync::MutexGuard<'_, Governor> {
@@ -327,7 +333,51 @@ impl Runtime {
     pub fn governor_act<R>(&self, f: impl FnOnce(&mut Governor, Timestamp) -> (R, Vec<Release>)) -> R {
         let (r, releases) = f(&mut self.gov(), Timestamp::now());
         self.handle_releases(releases);
+        self.save_carry();
         r
+    }
+
+    /// Stores the Governor's carry-over state when it changed, so a restart
+    /// or a replan keeps pauses, deferrals, the ask, sprints and the queue.
+    fn save_carry(&self) {
+        let carry = self.gov().carry();
+        let mut h = self.house();
+        if h.last_carry.as_ref() != Some(&carry) {
+            if let Ok(v) = serde_json::to_value(&carry) {
+                if self.db.set_setting(CARRY_KEY, &v).is_ok() {
+                    h.last_carry = Some(carry);
+                }
+            }
+        }
+    }
+
+    /// FR-807: the reserve for interactive work is used up. A budget item in
+    /// the Inbox (level 3), once per plan week, also in shadow mode (a warning).
+    fn reserve_alert(&self) {
+        let (week, reason) = {
+            let g = self.gov();
+            let week = g.plan().week_start.as_millisecond();
+            let a = g.actions().iter().rev().find(|a| matches!(a.action, governor::ActionKind::ReserveExhausted));
+            (week, a.map(|a| a.reason.clone()))
+        };
+        let Some(reason) = reason else { return };
+        if self.db.setting(RESERVE_ALERT_KEY).ok().flatten().and_then(|v| v.as_i64()) == Some(week) {
+            return;
+        }
+        let body = format!(
+            "The reserve for your own work is used up\n{reason}. Interactive work is never blocked; agents are squeezed harder until the reset."
+        );
+        if self.store.write(|s| s.add_inbox(None, "budget", body)).is_ok() {
+            let _ = self.db.set_setting(RESERVE_ALERT_KEY, &json!(week));
+        }
+    }
+
+    /// Tells the Governor how many `claude` processes run and the memory cap
+    /// on them (FR-203); spawns it held wait for a free slot.
+    fn sync_process_slots(&self) {
+        let live = self.live_ids().len() as u32;
+        let releases = self.gov().set_process_slots(live, self.live_cap(), Timestamp::now());
+        self.handle_releases(releases);
     }
 
     /// A permission prompt was answered outside the pane (the Inbox): the
@@ -372,7 +422,7 @@ impl Runtime {
     }
 
     /// Admission point 1: asks the Governor and logs the decision.
-    fn decide_turn(&self, rec: &AgentRecord, kind: TurnKind, origin: TurnOrigin) -> Decision {
+    fn decide_turn(&self, rec: &AgentRecord, kind: TurnKind, origin: TurnOrigin, needs_spawn: bool) -> Decision {
         let req = TurnRequest {
             agent: AgentId(rec.id.clone()),
             allocation: rec.allocation.clone().into(),
@@ -381,6 +431,7 @@ impl Runtime {
             kind,
             self_started: origin == TurnOrigin::SelfStarted,
             ceiling: None,
+            needs_spawn,
         };
         let ar = AdmissionRequest {
             agent_id: rec.id.clone(),
@@ -665,15 +716,83 @@ impl Runtime {
 
     /// FR-811 Pause all. Returns the Governor action id.
     pub fn pause_all(&self) -> u64 {
-        self.gov().pause_all(Timestamp::now()).0
+        self.governor_act(|g, now| (g.pause_all(now).0, Vec::new()))
     }
 
     /// Lifts Pause all; returns how many queued turns were released.
     pub fn resume_all(&self) -> usize {
-        let releases = self.gov().resume_all(Timestamp::now());
-        let n = releases.len();
-        self.handle_releases(releases);
-        n
+        self.governor_act(|g, now| {
+            let r = g.resume_all(now);
+            (r.len(), r)
+        })
+    }
+
+    /// FR-805/811: pause one agent at its next tool boundary (until Resume).
+    pub fn pause_agent(&self, id: &str) -> Result<u64> {
+        if !self.store.read(|s| s.agents.contains_key(id)) {
+            bail!("no agent {id}");
+        }
+        Ok(self.governor_act(|g, now| (g.pause_agent(&AgentId(id.to_owned()), now).0, Vec::new())))
+    }
+
+    /// Lifts an agent's pause; returns how many queued turns were released.
+    pub fn resume_agent(&self, id: &str) -> usize {
+        self.governor_act(|g, now| {
+            let r = g.resume_agent(&AgentId(id.to_owned()), now);
+            (r.len(), r)
+        })
+    }
+
+    /// "Run now" on a queued entry (FR-809): past every cap, the memory cap included.
+    pub fn run_now(&self, entry: u64) -> Result<()> {
+        let done = self.governor_act(|g, now| match g.run_now(governor::EntryId(entry), now) {
+            Some(r) => (true, vec![r]),
+            None => (false, Vec::new()),
+        });
+        if !done {
+            bail!("no queued entry {entry}");
+        }
+        Ok(())
+    }
+
+    /// Undoes a Governor action from the log (FR-809).
+    pub fn undo(&self, action: u64) -> Result<()> {
+        self.governor_act(|g, now| match g.undo(governor::ActionId(action), now) {
+            Ok(r) => (Ok(()), r),
+            Err(e) => (Err(anyhow!("{e}")), Vec::new()),
+        })
+    }
+
+    /// Sprint mode (FR-811): `extra_pp` more today, borrowed from the rest of the week.
+    pub fn sprint(&self, extra_pp: f64) -> Result<u64> {
+        let r = self.governor_act(|g, now| (g.start_sprint(extra_pp, now), Vec::new()));
+        r.map(|a| a.0).map_err(|e| anyhow!("{e}"))
+    }
+
+    /// Answers a Governor ask (FR-810): accept applies it.
+    pub fn answer_ask(&self, action: u64, accept: bool) -> Result<()> {
+        let r = self.governor_act(|g, now| (g.answer_ask(governor::ActionId(action), accept, now), Vec::new()));
+        r.map_err(|e| anyhow!("{e}"))
+    }
+
+    /// FR-812: shadow mode on (log only) or off (enforce), from now on.
+    pub fn set_shadow(&self, shadow: bool) -> Result<()> {
+        let mut plan = self.gov().plan().clone();
+        plan.shadow_mode = shadow;
+        self.replan(plan)
+    }
+
+    /// Drops a queued entry and cancels the turn waiting on it.
+    pub fn cancel(&self, entry: u64) -> Result<()> {
+        let agent = self.governor_act(|g, now| (g.cancel(governor::EntryId(entry), now), Vec::new()));
+        let Some(agent) = agent else { bail!("no queued entry {entry}") };
+        self.store.write(|s| {
+            for t in s.turns.iter_mut().filter(|t| t.agent_id == agent.0 && t.status == TurnStatus::Queued) {
+                if t.admission == Admission::Waiting(entry) {
+                    t.status = TurnStatus::Cancelled;
+                }
+            }
+        })
     }
 
     /// Graceful stop of the core: suspend every live agent.
@@ -803,10 +922,10 @@ impl Runtime {
                 match origin {
                     TurnOrigin::App => {} // admitted before delivery
                     TurnOrigin::User => {
-                        self.decide_turn(rec, TurnKind::User, origin);
+                        self.decide_turn(rec, TurnKind::User, origin, false);
                     }
                     TurnOrigin::SelfStarted => {
-                        self.decide_turn(rec, TurnKind::Continue, origin);
+                        self.decide_turn(rec, TurnKind::Continue, origin, false);
                     }
                 }
             }
@@ -1029,6 +1148,8 @@ impl Runtime {
         let now = Timestamp::now();
         let releases = self.gov().tick(now);
         self.handle_releases(releases);
+        self.save_carry();
+        self.reserve_alert();
         let (actions, queue, plan_id, snap, calib) = {
             let g = self.gov();
             let n = g.actions().len();
@@ -1093,34 +1214,24 @@ impl Runtime {
     /// A plan edited during its week (the first plan, J0; shadow mode on or
     /// off, FR-812): stored, then the Governor is rebuilt from it and this
     /// week's samples are replayed, so the week's accounting is kept (unlike
-    /// `set_plan`, which starts a new week). Refused while turns are queued
-    /// (the rebuilt Governor starts with an empty queue) or during a sprint;
-    /// Pause all is carried over.
+    /// `set_plan`, which starts a new week). The queue, pauses, deferrals, the
+    /// ask and sprints carry over (`Governor::carry`); a sprint keeps its boost
+    /// on the new curve.
     pub fn replan(&self, plan: WeeklyPlan) -> Result<()> {
-        let paused = {
-            let g = self.gov();
-            if !g.queue().is_empty() {
-                bail!("turns are queued: run or resume them before changing the plan");
-            }
-            if g.sprint().is_some() {
-                bail!("sprint mode is on: undo it from the governor log before changing the plan");
-            }
-            g.is_paused_all()
-        };
         let now = Timestamp::now();
         if plan.reset_at <= now || plan.week_start > now {
             bail!("the plan does not cover now");
         }
+        let carry = self.gov().carry();
         self.db.save_plan(&plan, orch_store::PlanStatus::Active)?;
-        let mut gov = restore_governor(&self.db, &self.store, &self.cfg, plan.shadow_mode, now)?;
-        if paused {
-            gov.pause_all(now);
-        }
+        let (gov, released) = restore_governor(&self.db, &self.store, &self.cfg, plan.shadow_mode, Some(carry), now)?;
         // The new Governor's action ids start again: store them under a new key.
         let prev = self.boot_ms.load(Ordering::SeqCst);
         self.boot_ms.store(now_ms().max(prev + 1), Ordering::SeqCst);
         self.house().last_saved = Default::default();
         *self.gov() = gov;
+        self.handle_releases(released);
+        self.save_carry();
         Ok(())
     }
 
@@ -1145,6 +1256,7 @@ impl Runtime {
         if changed {
             self.event("-", "memory_pressure", json!({"level": level, "cap": self.live_cap()}));
         }
+        self.sync_process_slots();
         let queued: BTreeMap<String, usize> = self.store.read(|s| {
             let mut m = BTreeMap::new();
             for t in s.turns.iter().filter(|t| t.status == TurnStatus::Queued) {
@@ -1311,13 +1423,13 @@ impl Runtime {
         }
     }
 
-    fn admit_turn(&self, rec: &AgentRecord, turn: &TurnRow) -> bool {
+    fn admit_turn(&self, rec: &AgentRecord, turn: &TurnRow, needs_spawn: bool) -> bool {
         match turn.admission {
             Admission::Admitted => return true,
             Admission::Waiting(_) => return false, // in the Governor's queue until a release
             Admission::Pending => {}
         }
-        let d = self.decide_turn(rec, turn.kind, TurnOrigin::App);
+        let d = self.decide_turn(rec, turn.kind, TurnOrigin::App, needs_spawn);
         let admission = match &d.effective {
             Verdict::Admit => Admission::Admitted,
             Verdict::Queue { entry: Some(e), .. } => Admission::Waiting(e.0),
@@ -1335,19 +1447,14 @@ impl Runtime {
 
     fn pump_one(&self, rec: &AgentRecord, turn: &TurnRow, now: u64) -> Result<()> {
         let Some(l) = self.live_get(&rec.id) else {
-            // A suspended agent with work is resumed through the Governor first
-            // (FR-403), and only when a live slot is free (FR-203).
-            if rec.tracker.state == AgentState::Suspended && rec.flag.is_none() {
-                let (live, cap) = (self.live_ids().len() as u32, self.live_cap());
-                if live >= cap {
-                    if self.house().cap_waiting.insert(rec.id.clone()) {
-                        self.event(&rec.id, "cap_wait", json!({"live": live, "cap": cap}));
-                    }
-                    return Ok(());
-                }
-                self.house().cap_waiting.remove(&rec.id);
+            // A suspended agent with work is resumed through the Governor
+            // (FR-403), which also holds the spawn until a process slot is
+            // free under memory pressure (FR-203).
+            let suspended = rec.tracker.state == AgentState::Suspended && rec.flag.is_none();
+            if suspended && turn.admission == Admission::Pending {
+                self.sync_process_slots();
             }
-            if rec.tracker.state == AgentState::Suspended && rec.flag.is_none() && self.admit_turn(rec, turn) {
+            if suspended && self.admit_turn(rec, turn, true) {
                 if let Err(e) = self.spawn(&rec.id, None) {
                     // Flag it so the next pump doesn't retry every 200 ms.
                     let msg = format!("{}: could not resume: {e:#}", rec.id);
@@ -1371,7 +1478,7 @@ impl Runtime {
             last_user_input_ms: Some(l.last_user_input_ms.load(Ordering::SeqCst)).filter(|t| *t > 0),
             now_ms: now,
         };
-        if delivery::can_deliver(&gate).is_err() || !self.admit_turn(rec, turn) {
+        if delivery::can_deliver(&gate).is_err() || !self.admit_turn(rec, turn, false) {
             return Ok(());
         }
         let prepared = delivery::prepare(&turn.body, &turn.id, &self.cfg.paths.agent_dir(&rec.id));
@@ -1565,15 +1672,19 @@ fn project_for_dir(projects: &[orch_store::Project], name: &str) -> Option<Strin
 }
 
 /// The Governor at start: the active plan when its week is still running
-/// (else the default week), the stored policy (live cap from the config), and
-/// this week's statusline samples replayed with their cost class (NFR-2).
+/// (else the default week), the stored policy (live cap from the config),
+/// this week's statusline samples replayed with their cost class (NFR-2), and
+/// the carry-over state (`carry`, else the stored one): pauses, deferrals, the
+/// ask, sprints and the queue entries whose turns still wait for them. A turn
+/// that waited on an entry that did not come back is asked again.
 fn restore_governor(
     db: &orch_store::Store,
     store: &Store,
     cfg: &RuntimeConfig,
     shadow: bool,
+    carry: Option<governor::Carry>,
     now: Timestamp,
-) -> Result<Governor> {
+) -> Result<(Governor, Vec<Release>)> {
     let mut policy = db.policy(POLICY_ID)?.unwrap_or_default();
     policy.live_caps = governor::LiveCaps::from_base(cfg.base_cap);
     db.save_policy(POLICY_ID, &policy)?;
@@ -1603,7 +1714,38 @@ fn restore_governor(
         gov.replay(&sample, class, alloc.map(Into::into));
     }
     let _ = gov.tick(now);
-    Ok(gov)
+    // A replan keeps the whole queue (held turns wait as entries with no turn
+    // row); after a restart the reconciler resumes those, so only waiting turns stay.
+    let keep_all = carry.is_some();
+    let mut released = Vec::new();
+    let carry = match carry {
+        Some(c) => Some(c),
+        None => db.setting(CARRY_KEY)?.and_then(|v| serde_json::from_value::<governor::Carry>(v).ok()),
+    };
+    if let Some(carry) = carry {
+        let waiting: std::collections::BTreeSet<u64> = store.read(|s| {
+            s.turns
+                .iter()
+                .filter(|t| t.status == TurnStatus::Queued)
+                .filter_map(|t| match t.admission {
+                    Admission::Waiting(e) => Some(e),
+                    _ => None,
+                })
+                .collect()
+        });
+        released = gov.restore(carry, |e| keep_all || waiting.contains(&e.id.0), now);
+    }
+    // The caller hands `released` to `handle_releases`, which admits their turns.
+    let kept: std::collections::BTreeSet<u64> =
+        gov.queue().iter().map(|e| e.id.0).chain(released.iter().map(|r| r.entry.0)).collect();
+    store.write(|s| {
+        for t in s.turns.iter_mut().filter(|t| t.status == TurnStatus::Queued) {
+            if matches!(t.admission, Admission::Waiting(e) if !kept.contains(&e)) {
+                t.admission = Admission::Pending;
+            }
+        }
+    })?;
+    Ok((gov, released))
 }
 
 fn reading(pct: Option<f64>, resets: Option<i64>) -> Option<governor::WindowReading> {
@@ -1814,7 +1956,7 @@ pub(crate) mod tests {
             // Off-hours allowed, so the turn is admitted at any time of day.
             let plan = rt.gov().plan().clone();
             rt.replan(WeeklyPlan { off_hours_allowance_pct: 10.0, ..plan }).unwrap();
-            assert!(rt.decide_turn(&rec, TurnKind::Message, TurnOrigin::App).effective.is_admit());
+            assert!(rt.decide_turn(&rec, TurnKind::Message, TurnOrigin::App, false).effective.is_admit());
             rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "[t:0123abcd] go"})), None);
             for (cost, pct) in [(0.5, 30), (1.5, 32)] {
                 rt.on_status(&StatusMsg {
@@ -1844,6 +1986,53 @@ pub(crate) mod tests {
         let samples = rt.db.usage_since(0, Some(orch_store::UsageSource::Statusline)).unwrap();
         assert_eq!(samples.len(), 2);
         assert_eq!(samples[0].class.as_deref(), Some("autonomous"));
+    }
+
+    #[test]
+    fn pauses_and_waiting_turns_survive_a_replan_and_a_restart() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let waiting = |rt: &Runtime| rt.store.read(|s| s.turns.iter().find(|t| t.agent_id == "a1").map(|t| t.admission));
+        let entry = {
+            let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+            rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
+            let plan = rt.gov().plan().clone();
+            rt.replan(WeeklyPlan { off_hours_allowance_pct: 10.0, ..plan }).unwrap();
+            rt.pause_agent("a1").unwrap();
+            rt.pause_all();
+            rt.deliver("a1", "later").unwrap();
+            let (rec, turn) = rt.store.read(|s| (s.agents["a1"].clone(), s.turns[0].clone()));
+            assert!(!rt.admit_turn(&rec, &turn, false));
+            let Some(Admission::Waiting(e)) = waiting(&rt) else { panic!("queued: {:?}", waiting(&rt)) };
+            // A replan keeps the queue and the pauses (it used to be refused).
+            let plan = rt.gov().plan().clone();
+            rt.replan(WeeklyPlan { reserve_pct: 15.0, ..plan }).unwrap();
+            assert_eq!(rt.gov().queue().iter().map(|q| q.id.0).collect::<Vec<_>>(), vec![e]);
+            assert!(rt.gov().is_paused_all());
+            rt.tick();
+            rt.db.flush().unwrap();
+            e
+        };
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        assert_eq!(waiting(&rt), Some(Admission::Waiting(entry)), "the turn keeps its entry");
+        assert_eq!(rt.gov().queue()[0].id.0, entry);
+        assert!(rt.gov().paused_agents().contains(&AgentId("a1".into())));
+        assert_eq!(rt.resume_all(), 0, "a1 is still paused on its own");
+        assert_eq!(rt.resume_agent("a1"), 1);
+        assert_eq!(waiting(&rt), Some(Admission::Admitted));
+    }
+
+    #[test]
+    fn cancel_drops_the_entry_and_its_turn() {
+        let (_d, rt) = test_runtime(false);
+        rt.pause_all();
+        rt.deliver("a1", "later").unwrap();
+        let (rec, turn) = rt.store.read(|s| (s.agents["a1"].clone(), s.turns[0].clone()));
+        assert!(!rt.admit_turn(&rec, &turn, false));
+        let e = rt.gov().queue()[0].id.0;
+        rt.cancel(e).unwrap();
+        assert!(rt.gov().queue().is_empty());
+        assert_eq!(rt.store.read(|s| s.turns[0].status), TurnStatus::Cancelled);
+        assert!(rt.cancel(e).is_err());
     }
 
     #[test]
