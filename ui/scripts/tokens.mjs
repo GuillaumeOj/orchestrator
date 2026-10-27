@@ -5,8 +5,8 @@
 // equivalent of Style Dictionary: resolves `{a.b}` references, emits semantic
 // tokens only (never `palette.*`).
 //
-//   node scripts/tokens.mjs           write the files
-//   node scripts/tokens.mjs --check   fail when the files drift from tokens.json,
+//   bun scripts/tokens.mjs            write the files
+//   bun scripts/tokens.mjs --check    fail when the files drift from tokens.json,
 //                                     or when UI code uses a raw color or an
 //                                     unknown token
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';

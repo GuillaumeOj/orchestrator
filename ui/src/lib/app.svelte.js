@@ -425,7 +425,9 @@ export async function restoreLayout() {
       try {
         const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
         panes[id] = { ...s, type: 'shell', termId: t.id, cwd: t.cwd, title: title({ type: 'shell', cwd: t.cwd }) };
-      } catch {}
+      } catch {
+        // The shell did not start: the pane is dropped from the restored layout.
+      }
     } else panes[id] = s;
   }
   app.panes = panes;
