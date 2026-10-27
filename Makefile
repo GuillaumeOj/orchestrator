@@ -9,7 +9,7 @@ install:        ## Build, then install into ~/Applications
 
 test:           ## Rust and UI tests
 	cargo test
-	cd ui && npm test
+	cd ui && bun run test
 
 clippy:
 	cargo clippy --all-targets -- -D warnings

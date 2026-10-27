@@ -14,7 +14,7 @@ make install
 `Orchestrator.app` to `~/Applications` (refused while the app runs: quit it with ⌘Q first).
 `make app` only builds (`target/release/bundle/macos/Orchestrator.app`).
 
-Needs: Rust (rustup), Node + npm, Xcode command line tools, git ≥ 2.48, and FiraCode Nerd Font
+Needs: Rust (rustup), bun, Xcode command line tools, git ≥ 2.48, and FiraCode Nerd Font
 Mono in `~/Library/Fonts` (the build bundles four of its weights into the app; `ORCH_FONT_DIR`
 points elsewhere). `gh` (logged in) for PRs and CI. The app is not signed or notarized: it is
 built on this Mac, so Gatekeeper does not quarantine it.

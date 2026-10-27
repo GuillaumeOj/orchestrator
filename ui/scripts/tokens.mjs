@@ -179,8 +179,8 @@ export function check() {
   const doc = JSON.parse(readFileSync(SOURCE, 'utf8'));
   const { css, js, variables } = build(doc);
   const problems = [];
-  if (readFileSync(CSS_OUT, 'utf8') !== css) problems.push(`${relative(UI, CSS_OUT)} drifted from tokens.json: run npm run tokens`);
-  if (readFileSync(JS_OUT, 'utf8') !== js) problems.push(`${relative(UI, JS_OUT)} drifted from tokens.json: run npm run tokens`);
+  if (readFileSync(CSS_OUT, 'utf8') !== css) problems.push(`${relative(UI, CSS_OUT)} drifted from tokens.json: run bun run tokens`);
+  if (readFileSync(JS_OUT, 'utf8') !== js) problems.push(`${relative(UI, JS_OUT)} drifted from tokens.json: run bun run tokens`);
   problems.push(...lint(join(UI, 'src'), variables));
   return problems;
 }
