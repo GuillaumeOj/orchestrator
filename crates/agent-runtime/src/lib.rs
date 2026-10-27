@@ -3,6 +3,7 @@
 pub mod compile;
 pub mod delivery;
 pub mod env;
+pub mod flow;
 pub mod inbox;
 pub mod mcp;
 pub mod otlp;
@@ -11,8 +12,8 @@ pub mod permissions;
 pub mod preflight;
 pub mod procs;
 pub mod projects;
-pub mod questions;
 pub mod pty;
+pub mod questions;
 pub mod reconcile;
 pub mod resources;
 pub mod role;

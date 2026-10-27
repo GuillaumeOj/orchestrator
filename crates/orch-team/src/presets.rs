@@ -83,7 +83,15 @@ fn node(id: &str, role: &str, x: f64, y: f64, lead: bool) -> AgentNode {
 }
 
 fn team(id: &str, name: &str, nodes: Vec<AgentNode>, edges: Vec<Edge>) -> Team {
-    Team { id: id.into(), name: name.into(), scope: Scope::Global, nodes, edges, version: 1 }
+    Team {
+        id: id.into(),
+        name: name.into(),
+        scope: Scope::Global,
+        nodes,
+        edges,
+        version: 1,
+        review: Default::default(),
+    }
 }
 
 fn with_roles(t: Team) -> (Vec<RoleDef>, Team) {

@@ -131,6 +131,10 @@ pub struct TurnRow {
     /// when it never runs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<u64>,
+    /// A slash command the app types as is (no turn marker, never batched):
+    /// its turn is recognised by its prompt.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub command: bool,
 }
 
 fn message_kind() -> governor::TurnKind {
@@ -150,6 +154,7 @@ impl TurnRow {
             delivered_at_ms: None,
             admission,
             messages: vec![],
+            command: false,
         }
     }
 }

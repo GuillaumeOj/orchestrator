@@ -429,6 +429,10 @@ INSERT INTO teams_v3 SELECT COALESCE(project_id, ''), id, name, version, data, u
 DROP TABLE teams;
 ALTER TABLE teams_v3 RENAME TO teams;
 "#,
+    // 4: the core's own workflow state of a task (plan first, review).
+    r#"
+ALTER TABLE tasks ADD COLUMN flow TEXT NOT NULL DEFAULT '{}';
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

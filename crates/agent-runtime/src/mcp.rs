@@ -59,6 +59,12 @@ impl Runtime {
                 RuleEffect::Allow => actor = format!("rule:{}", rule.id),
             }
         }
+        if m.tool == "commit"
+            && let Some(out) = self.plan_lock(&rec, "mcp__orch__commit")
+        {
+            let why = out.0["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap_or("").to_string();
+            return (true, why, Value::Null);
+        }
         let r = match m.tool.as_str() {
             "commit" => self.commit_args(&rec, &m.arguments, &actor).map(|c| {
                 let text = format!(

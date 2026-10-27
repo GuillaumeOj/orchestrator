@@ -7,7 +7,7 @@ use governor::Tier;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::model::{RoleDef, Team, TurnCeiling};
+use crate::model::{ReviewMode, RoleDef, Team, TurnCeiling};
 use crate::rules;
 
 /// Orchestrator MCP tools every team node has.
@@ -23,9 +23,11 @@ pub const LEAD_TOOLS: &[&str] = &[
     "team_status",
     "nudge",
     "resume_agent",
+    "decide_plan",
 ];
 /// Specialists only.
-pub const SPECIALIST_TOOLS: &[&str] = &["update_task", "report_done", "sync_integration"];
+pub const SPECIALIST_TOOLS: &[&str] =
+    &["update_task", "report_done", "sync_integration", "submit_plan", "submit_review"];
 /// A solo session (P1).
 pub const SOLO_TOOLS: &[&str] = &["commit", "request_pr"];
 /// Every orchestrator tool, in the order orch-mcp lists them.
@@ -46,7 +48,10 @@ pub const ALL_TOOLS: &[&str] = &[
     "team_status",
     "nudge",
     "resume_agent",
+    "decide_plan",
     "sync_integration",
+    "submit_plan",
+    "submit_review",
 ];
 
 pub fn tools_for(is_lead: bool) -> Vec<String> {
@@ -113,7 +118,8 @@ pub fn compile_node(team: &Team, node_id: &str, roles: &[RoleDef], f: &FeatureCt
     if !role.tools.web {
         deny.extend(["WebFetch", "WebSearch"].map(String::from));
     }
-    if !role.subagents_allowed {
+    // `/code-review` runs its reviewers as subagents.
+    if !role.subagents_allowed && team.review != ReviewMode::SelfReview {
         deny.push("Agent".into());
     }
     let mut prompt = role.prompt.trim().to_string();
@@ -189,8 +195,9 @@ fn lead_protocol(team: &Team, f: &FeatureCtx) -> String {
          never wait inside a turn: when nothing is left to do now, end your turn. Answer with \
          mcp__orch__send_message. When you are told a member is stuck, unblock it: mcp__orch__team_status shows \
          everyone, mcp__orch__nudge tells a member what to do, mcp__orch__resume_agent restarts a suspended one.\n\
-         6. When a node reports a task done, review its branch, then merge it into {} with mcp__orch__merge. On a \
-         conflict the owner is told to sync and fix; merge again when it reports.\n\
+         6. {} Then merge it into {} with mcp__orch__merge. On a conflict the owner is told to sync and fix; merge \
+         again when it reports. A task created with `plan_first` starts with a plan: approve it or send it back \
+         with mcp__orch__decide_plan.\n\
          7. When every task is done and the integration branch passes its tests, call mcp__orch__request_pr. The \
          user approves the pull request; the orchestrator pushes and opens it.\n\
          You keep the team moving so the user only talks to you: settle what you can yourself, and send the user \
@@ -198,8 +205,26 @@ fn lead_protocol(team: &Team, f: &FeatureCtx) -> String {
          question in plain text at the end of a turn: nobody reads it there. You never push and never merge with \
          git yourself.",
         if specialists.is_empty() { "yourself".to_string() } else { specialists.join(", ") },
+        review_step(team.review),
         f.integration_branch()
     )
+}
+
+fn review_step(mode: ReviewMode) -> &'static str {
+    match mode {
+        ReviewMode::SelfReview => {
+            "A task reported done has been reviewed by its owner (`/code-review` with fixes, then `/simplify`); the \
+             report lists what was fixed and what was left. Decide each finding left: accept it (say why), send it \
+             back with mcp__orch__nudge, or, only for a product, scope or security call, ask the user (one \
+             mcp__orch__ask_user per task)."
+        }
+        ReviewMode::Node => {
+            "A task reported done is reviewed by the team's reviewer; its findings come with the report. Decide each \
+             open finding: accept it (say why), send it back with mcp__orch__nudge, or, only for a product, scope or \
+             security call, ask the user (one mcp__orch__ask_user per task)."
+        }
+        ReviewMode::None => "When a node reports a task done, review its branch.",
+    }
 }
 
 fn specialist_protocol(team: &Team, me: &str, f: &FeatureCtx) -> String {
@@ -214,8 +239,20 @@ fn specialist_protocol(team: &Team, me: &str, f: &FeatureCtx) -> String {
          mcp__orch__request_review (allowed recipients are in the rules above). Ask the user with \
          mcp__orch__ask_user only when `{up}` can't answer, never in plain text at the end of a turn.\n\
          - When the task is done (tests pass, everything committed), call mcp__orch__report_done with a short \
-         summary for `{up}`, then end your turn.",
-        f.integration_branch()
+         summary for `{up}`, then end your turn.{}\n\
+         - A task that says \"plan first\": read what you need, then call mcp__orch__submit_plan and end your turn. \
+         Edits are refused until `{up}` approves the plan.\n\
+         - Asked to review a branch: read it (`git diff`), run `/code-review high --max-findings all` on it, then \
+         call mcp__orch__submit_review with what you found. You don't change another node's branch.",
+        f.integration_branch(),
+        match team.review {
+            ReviewMode::SelfReview => {
+                " The orchestrator then has you review your own branch (`/code-review`, then `/simplify`): when it \
+                 asks, commit the fixes and call mcp__orch__report_done again with what you fixed and what you left."
+            }
+            ReviewMode::Node => " Your branch is then reviewed by the team's reviewer; you get its findings.",
+            ReviewMode::None => "",
+        }
     )
 }
 
@@ -244,10 +281,13 @@ mod tests {
 
         let back = compile_node(&t, "back", &roles, &ctx()).unwrap();
         assert!(!back.is_lead);
-        assert_eq!(back.permission_mode, "acceptEdits");
+        assert_eq!(back.permission_mode, "auto");
         assert!(back.orch_tools.contains(&"report_done".to_string()));
+        assert!(!back.deny_tools.contains(&"Agent".to_string()), "/code-review runs subagents");
+        let mut no_review = t.clone();
+        no_review.review = crate::model::ReviewMode::None;
+        assert!(compile_node(&no_review, "back", &roles, &ctx()).unwrap().deny_tools.contains(&"Agent".to_string()));
         assert!(!back.orch_tools.contains(&"merge".to_string()));
-        assert!(back.deny_tools.contains(&"Agent".to_string()));
         assert!(back.deny_tools.contains(&"WebFetch".to_string()));
         assert!(back.prompt.contains("You are node `back`"));
         assert!(back.prompt.contains("summary for `lead`"));

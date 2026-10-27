@@ -454,6 +454,35 @@ impl Runtime {
         })
     }
 
+    /// A slash command the app typed has no marker: its prompt is matched
+    /// to its turn and given the marker, so the turn reads as the app's.
+    fn bind_command(&self, id: &str, p: &mut HookPayload) {
+        let Some(prompt) = p.prompt.as_deref().map(str::trim) else { return };
+        let turn = self.store.read(|s| {
+            s.turns
+                .iter()
+                .find(|t| {
+                    t.agent_id == id && t.command && t.status == TurnStatus::Delivering && t.body.trim() == prompt
+                })
+                .map(|t| t.id.clone())
+        });
+        if let Some(t) = turn {
+            p.prompt = Some(format!("{} {prompt}", delivery::marker(&t)));
+        }
+    }
+
+    /// Queues a slash command for the agent (`/code-review …`), typed as is
+    /// once it is idle and admitted like any app turn.
+    pub(crate) fn deliver_command(&self, id: &str, command: &str) -> Result<String> {
+        let tid = self.deliver_kind(id, command, TurnKind::Task)?;
+        self.store.write(|s| {
+            if let Some(t) = s.turns.iter_mut().find(|t| t.id == tid) {
+                t.command = true;
+            }
+        })?;
+        Ok(tid)
+    }
+
     pub(crate) fn mark_asked(&self, id: &str) {
         self.house().asked.insert(id.to_string());
     }
@@ -502,7 +531,14 @@ impl Runtime {
         }
         let list: String = msgs
             .iter()
-            .map(|m| format!("\n- {} from {}: {}", m.kind.replace('_', " "), m.from_agent.as_deref().unwrap_or(&m.from_node), m.body))
+            .map(|m| {
+                format!(
+                    "\n- {} from {}: {}",
+                    m.kind.replace('_', " "),
+                    m.from_agent.as_deref().unwrap_or(&m.from_node),
+                    m.body
+                )
+            })
             .collect();
         Some(HookOutput::stop_block(&format!(
             "ORCH: before you stop: {} team message(s) reached you during this turn:{list}\n\nAct on each one now (review and merge a report, answer with mcp__orch__send_message, update the task). If you already have, end your turn.",
@@ -1024,7 +1060,10 @@ impl Runtime {
             // Fail closed: an agent the core doesn't know is not governed.
             return HookOutput::fail_closed(&m.event);
         };
-        let p = HookPayload::parse(&m.payload);
+        let mut p = HookPayload::parse(&m.payload);
+        if m.event == HookEvent::UserPromptSubmit {
+            self.bind_command(id, &mut p);
+        }
         // A permission prompt held for the Inbox but answered in the pane (the
         // CLI shows its dialog while the hook is held): this call's next hook,
         // or the turn's end, closes the Inbox item and ends the hold.
@@ -1071,9 +1110,12 @@ impl Runtime {
             self.on_effect(&rec, fx, &p);
         }
         match m.event {
-            HookEvent::PreToolUse => self.forward_ask_user_question(&rec, &p).or_else(|| {
-                self.admit_tool(&rec, tracker.turn_origin == Some(TurnOrigin::User), &p, m.deadline_ms, conn)
-            }),
+            HookEvent::PreToolUse => self
+                .plan_lock(&rec, p.tool_name.as_deref().unwrap_or(""))
+                .or_else(|| self.forward_ask_user_question(&rec, &p))
+                .or_else(|| {
+                    self.admit_tool(&rec, tracker.turn_origin == Some(TurnOrigin::User), &p, m.deadline_ms, conn)
+                }),
             // A rule, or the Inbox (held), or the pane when nobody answers in time.
             HookEvent::PermissionRequest => self.permission_request(&rec, &p, m.deadline_ms, conn),
             // FR-403: a busy team agent gets its messages at its next tool call.
@@ -1117,7 +1159,11 @@ impl Runtime {
             }
             Effect::TurnEnded | Effect::TurnEndedWithBackground => {
                 self.house().index_dirty.insert(id.to_string());
-                let delivered = |t: &TurnRow| t.agent_id == id && t.status == TurnStatus::Delivered;
+                // A command whose prompt never reached a hook ends with the turn too.
+                let delivered = |t: &TurnRow| {
+                    t.agent_id == id
+                        && (t.status == TurnStatus::Delivered || t.command && t.status == TurnStatus::Delivering)
+                };
                 let mut read = {
                     let mut h = self.house();
                     h.asked.remove(id);
@@ -1793,20 +1839,30 @@ impl Runtime {
         if delivery::can_deliver(&gate).is_err() || !self.admit_turn(rec, turn, false) {
             return Ok(());
         }
-        // The agent's other queued turns ride along: one turn, one paste.
-        let batch: Vec<TurnRow> = self.store.read(|s| {
-            s.turns
-                .iter()
-                .filter(|t| {
-                    t.agent_id == rec.id
-                        && t.status == TurnStatus::Queued
-                        && (t.id == turn.id || matches!(t.admission, Admission::Pending | Admission::Admitted))
-                })
-                .cloned()
-                .collect()
-        });
-        let parts: Vec<(&str, &str)> = batch.iter().map(|t| (t.id.as_str(), t.body.as_str())).collect();
-        let prepared = delivery::prepare_many(&parts, &self.cfg.paths.agent_dir(&rec.id));
+        // The agent's next queued turns ride along (one turn, one paste), up
+        // to a slash command, which is typed alone and as is.
+        let batch: Vec<TurnRow> = if turn.command {
+            vec![turn.clone()]
+        } else {
+            self.store.read(|s| {
+                s.turns
+                    .iter()
+                    .filter(|t| t.agent_id == rec.id && t.status == TurnStatus::Queued)
+                    .skip_while(|t| t.id != turn.id)
+                    .take_while(|t| {
+                        !t.command
+                            && (t.id == turn.id || matches!(t.admission, Admission::Pending | Admission::Admitted))
+                    })
+                    .cloned()
+                    .collect()
+            })
+        };
+        let prepared = if turn.command {
+            delivery::Prepared { turn_id: turn.id.clone(), text: turn.body.trim().to_string(), file: None }
+        } else {
+            let parts: Vec<(&str, &str)> = batch.iter().map(|t| (t.id.as_str(), t.body.as_str())).collect();
+            delivery::prepare_many(&parts, &self.cfg.paths.agent_dir(&rec.id))
+        };
         if let Some((path, body)) = &prepared.file {
             std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))?;
             std::fs::write(path, body)?;
@@ -2585,7 +2641,9 @@ pub(crate) mod tests {
         let out = rt.on_hook(&hook("Stop", json!({"last_assistant_message": q})), None).expect("blocked");
         assert!(out.0["reason"].as_str().unwrap().contains("mcp__orch__ask_user"));
         assert!(questions(&rt).is_empty());
-        assert!(rt.on_hook(&hook("Stop", json!({"last_assistant_message": q, "stop_hook_active": true})), None).is_none());
+        assert!(
+            rt.on_hook(&hook("Stop", json!({"last_assistant_message": q, "stop_hook_active": true})), None).is_none()
+        );
         let items = questions(&rt);
         assert_eq!(items.len(), 1);
         assert!(items[0].body.contains("do you want that column?"));

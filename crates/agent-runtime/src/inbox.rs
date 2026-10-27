@@ -402,7 +402,10 @@ impl Runtime {
             ("question", _, InboxDecision::Reply) => {
                 if let (Some(a), Some(m)) = (&item.agent_id, message) {
                     let q = item.payload.get("question").and_then(Value::as_str).unwrap_or(&item.body);
-                    let text = format!("ORCH: the user answered your question.\nQuestion: {}\nAnswer: {m}", crate::team::cut(q, 600));
+                    let text = format!(
+                        "ORCH: the user answered your question.\nQuestion: {}\nAnswer: {m}",
+                        crate::team::cut(q, 600)
+                    );
                     result["turn"] = json!(self.deliver_user(a, &text)?);
                 }
             }

@@ -391,7 +391,18 @@ fn a_team_run_end_to_end_with_fake_claude() {
     // Work, report, merge.
     std::fs::write(back_wt.join("api.rs"), "fn api() {}\n").unwrap();
     call(back, r#"ORCHTOOL commit {"message":"add api.rs"}"#);
+    // The team reviews itself first: the core types the review commands as is,
+    // each its own turn, then asks for the report again.
     call(back, r#"ORCHTOOL report_done {"summary":"api.rs added"}"#);
+    let s = request(&sock, CtlRequest::State).unwrap().data;
+    let commands: Vec<&Value> =
+        s["turns"].as_array().unwrap().iter().filter(|t| t["agent_id"] == back && t["command"] == true).collect();
+    assert_eq!(commands.len(), 2, "{s}");
+    assert!(commands.iter().all(|t| t["status"] == "done"), "each command ran as its own turn: {commands:?}");
+    let out = screen(back);
+    assert!(out.contains("DONE") && out.contains("/simplify"), "{out}");
+    assert!(out.contains("your self-review is done"), "{out}");
+    call(back, r#"ORCHTOOL report_done {"summary":"api.rs added","review":{"fixed":["typo"],"unfixed":[]}}"#);
     let tasks = request(&sock, CtlRequest::Tasks { project_id: None, run_id: Some(run.clone()) }).unwrap().data;
     let task = tasks[0]["id"].as_u64().unwrap();
     assert_eq!(tasks[0]["status"], "review", "{}", screen(back));

@@ -526,8 +526,15 @@ impl Runtime {
         } else {
             format!("\nIt builds on: {}.", t.depends_on.iter().map(|d| format!("T-{d}")).collect::<Vec<_>>().join(", "))
         };
+        let next = if t.flow.plan_first && !t.flow.plan_approved {
+            format!(
+                "Plan first: read what you need, then send your plan with mcp__orch__submit_plan and end your turn. Edits are refused until `{up}` approves it."
+            )
+        } else {
+            format!("When it is done, tested and committed, call mcp__orch__report_done for `{up}`.")
+        };
         format!(
-            "ORCH: task {} (id {}): {}\n\n{}{deps}\n\nWork in your worktree on {}. When it is done, tested and committed, call mcp__orch__report_done for `{up}`.",
+            "ORCH: task {} (id {}): {}\n\n{}{deps}\n\nWork in your worktree on {}. {next}",
             t.handle(),
             t.id,
             t.title,
@@ -1015,6 +1022,7 @@ impl Runtime {
         let is_lead = cx.team.is_lead(&seat.node);
         let me = seat.node.as_str();
         match tool {
+            "submit_plan" | "decide_plan" | "submit_review" => self.flow_tool(&cx, rec, me, is_lead, tool, args),
             "team_status" | "nudge" | "resume_agent" => {
                 if !is_lead {
                     bail!("only the lead manages the team");
@@ -1192,6 +1200,7 @@ impl Runtime {
                 t.status = status;
                 t.feature_id = Some(cx.feature.id.clone());
                 t.team_run_id = Some(cx.run.id.clone());
+                t.flow.plan_first = args.get("plan_first").and_then(Value::as_bool).unwrap_or(false);
                 let out = self.tasks_of(&cx).create(t)?;
                 let t = out.value;
                 self.run_event(
@@ -1220,6 +1229,12 @@ impl Runtime {
                         bail!("only the lead reassigns tasks");
                     }
                     t = self.reassign_task(id, node)?;
+                }
+                if let Some(p) = args.get("plan_first").and_then(Value::as_bool) {
+                    if !is_lead {
+                        bail!("only the lead asks for a plan first");
+                    }
+                    t.flow.plan_first = p;
                 }
                 if let Some(s) = str_arg(args, "status") {
                     let s: TaskStatus = s.parse().map_err(|e: String| anyhow!(e))?;
@@ -1254,6 +1269,9 @@ impl Runtime {
                 if !st.trim().is_empty() {
                     bail!("you have uncommitted changes: commit them with mcp__orch__commit first");
                 }
+                if let Some(text) = self.review_first(&cx, rec, me, &mut t, args)? {
+                    return Ok((text, Value::Null));
+                }
                 self.apply_status(&mut t, TaskStatus::Review);
                 let svc = self.tasks_of(&cx);
                 svc.update(t.clone(), now_ms())?;
@@ -1265,7 +1283,12 @@ impl Runtime {
                     Sender(me, Some(&rec.id)),
                     &up,
                     "report",
-                    &format!("task id {id} ({}) is done on {branch}: {}", t.title, cut(summary, 2_000)),
+                    &format!(
+                        "task id {id} ({}) is done on {branch}: {}{}",
+                        t.title,
+                        cut(summary, 2_000),
+                        t.flow.review.as_ref().map(crate::flow::render_review).unwrap_or_default()
+                    ),
                     json!({"task": id, "branch": branch}),
                 )?;
                 self.run_event(&cx.run.id, Some(&rec.id), "task.reported", json!({"task": id}));
@@ -1306,6 +1329,12 @@ impl Runtime {
                 let prefix = format!("orch/{}/", cx.feature.slug);
                 if !branch.starts_with(&prefix) || branch == cx.feature.integration_branch() {
                     bail!("only branches of this feature ({prefix}<node>-<n>) can be merged here");
+                }
+                if let Some(id) = args.get("task").and_then(Value::as_u64)
+                    && let Some(t) = self.db.task(id)?
+                    && let Some(why) = self.review_missing(&cx, &t)
+                {
+                    bail!("{why}");
                 }
                 let r = orch_git::commit::merge_into_worktree(
                     &rec.worktree,
@@ -1594,6 +1623,51 @@ mod tests {
         ok(rt, agent, "commit", json!({"message": format!("add {file}")}));
     }
 
+    /// A launched feature past its spec gate.
+    fn approved(rt: &Runtime, pid: &str) -> TeamRun {
+        let run = rt
+            .launch(&LaunchSpec {
+                project_id: pid.into(),
+                team_id: "bugfix-squad".into(),
+                slug: "fx".into(),
+                title: "Fix X".into(),
+                brief: "Fix the X bug.".into(),
+                base: None,
+            })
+            .unwrap();
+        write_commit(rt, "fx-lead-1", ".orchestrator/features/fx/spec.md", "# Fix X\n");
+        ok(rt, "fx-lead-1", "request_spec_approval", json!({"summary": "s"}));
+        let gate = rt.store.read(|s| s.inbox.iter().find(|i| i.pending() && i.kind == "gate").cloned().unwrap());
+        rt.decide(gate.id, InboxDecision::Approve, None, None).unwrap();
+        run
+    }
+
+    #[test]
+    fn a_plan_first_task_is_planned_then_approved_before_any_edit() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back", "plan_first": true}));
+        rt.team_tick();
+        assert!(queued(&rt, back)[0].contains("mcp__orch__submit_plan"));
+        let rec = || rt.store.read(|s| s.agents[back].clone());
+        let edit = |rt: &Runtime| rt.plan_lock(&rec(), "Edit");
+        assert!(edit(&rt).is_some(), "no edit before a plan");
+        assert!(call(&rt, back, "commit", json!({"message": "x"})).1.contains("plan-first"));
+        assert!(rt.plan_lock(&rec(), "Read").is_none());
+        ok(&rt, back, "submit_plan", json!({"plan": "add api.rs; test it"}));
+        let lrec = rt.store.read(|s| s.agents[lead].clone());
+        assert!(rt.inject_messages(&lrec).unwrap().contains("add api.rs; test it"));
+        let task = rec().team.unwrap().task.unwrap();
+        ok(&rt, lead, "decide_plan", json!({"task": task, "approve": false, "note": "also docs"}));
+        assert!(queued(&rt, back).iter().any(|b| b.contains("needs changes: also docs")));
+        assert!(edit(&rt).is_some());
+        ok(&rt, back, "submit_plan", json!({"plan": "api.rs, docs, tests"}));
+        ok(&rt, lead, "decide_plan", json!({"task": task, "approve": true}));
+        assert!(queued(&rt, back).iter().any(|b| b.contains("is approved")));
+        assert!(edit(&rt).is_none(), "edits allowed once approved");
+    }
+
     #[test]
     fn a_feature_goes_from_launch_through_both_gates() {
         let (_d, rt, _rd, _repo, pid) = setup();
@@ -1693,9 +1767,22 @@ mod tests {
         std::fs::write(brec.worktree.join("api.rs"), "fn api() {}").unwrap();
         assert!(call(&rt, back, "report_done", json!({"summary": "s"})).1.contains("uncommitted"));
         ok(&rt, back, "commit", json!({"message": "add api.rs"}));
-        ok(&rt, back, "report_done", json!({"summary": "api.rs added, tested"}));
+        // Self-review first (the team's default): the commands, then the report.
+        assert!(
+            ok(&rt, back, "report_done", json!({"summary": "api.rs added, tested"})).contains("review your branch")
+        );
+        assert_eq!(rt.db.task(t1.id).unwrap().unwrap().status, TaskStatus::InProgress);
+        let q = queued(&rt, back);
+        assert_eq!(q[q.len() - 3..][..2], *crate::flow::SELF_REVIEW);
+        assert!(
+            call(&rt, lead, "merge", json!({"branch": "orch/fx/back-1", "task": t1.id})).1.contains("being reviewed")
+        );
+        assert!(call(&rt, back, "report_done", json!({"summary": "again"})).1.contains("pass `review`"));
+        let review = json!({"fixed": ["a typo"], "unfixed": [{"finding": "no index on x", "reason": "out of scope"}]});
+        ok(&rt, back, "report_done", json!({"summary": "api.rs added, tested", "review": review}));
         assert_eq!(rt.db.task(t1.id).unwrap().unwrap().status, TaskStatus::Review);
-        assert!(rt.inject_messages(&lrec).unwrap().contains("report from fx-back-1"));
+        let report = rt.inject_messages(&lrec).unwrap();
+        assert!(report.contains("report from fx-back-1") && report.contains("LEFT: no index on x"), "{report}");
         assert!(call(&rt, lead, "merge", json!({"branch": "main"})).1.contains("only branches of this feature"));
         assert!(ok(&rt, lead, "merge", json!({"branch": "orch/fx/back-1", "task": t1.id})).contains("is done"));
         assert!(lrec.worktree.join("api.rs").is_file());
@@ -1708,6 +1795,7 @@ mod tests {
         ok(&rt, front, "sync_integration", json!({}));
         write_commit(&rt, front, "ui.rs", "fn ui() {}");
         ok(&rt, front, "report_done", json!({"summary": "ui done"}));
+        ok(&rt, front, "report_done", json!({"summary": "ui done", "review": {"fixed": [], "unfixed": []}}));
         let t2 = rt.db.tasks(None, None, Some(&run.id)).unwrap().into_iter().find(|t| t.title == "UI").unwrap();
         ok(&rt, lead, "merge", json!({"branch": "orch/fx/front-1", "task": t2.id}));
         rt.team_tick();

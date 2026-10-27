@@ -91,7 +91,8 @@ pub fn prepare_many(turns: &[(&str, &str)], agent_dir: &Path) -> Prepared {
         return Prepared { turn_id: turn_id.into(), text, file: None };
     }
     let path = agent_dir.join("messages").join(format!("{turn_id}.md"));
-    let text = format!("{head} ORCH: the orchestrator's message is too long to paste. Read {} and follow it.", path.display());
+    let text =
+        format!("{head} ORCH: the orchestrator's message is too long to paste. Read {} and follow it.", path.display());
     Prepared { turn_id: turn_id.into(), text, file: Some((path, body)) }
 }
 
