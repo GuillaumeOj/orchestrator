@@ -412,7 +412,7 @@ fn run() -> Result<()> {
                     let path = a.next("file")?;
                     CtlRequest::TeamImport { json: std::fs::read_to_string(&path).with_context(|| path.clone())? }
                 }
-                "export" => CtlRequest::TeamExport { team_id: a.next("team")? },
+                "export" => CtlRequest::TeamExport { team_id: a.next("team")?, project_id: a.opt("--project")? },
                 "launch" => {
                     let (title, brief, base) = (a.opt("--title")?, a.opt("--brief")?, a.opt("--base")?);
                     CtlRequest::Launch {

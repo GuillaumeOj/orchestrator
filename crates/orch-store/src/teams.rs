@@ -47,6 +47,9 @@ impl Feature {
 pub struct TeamRun {
     pub id: String,
     pub team_id: String,
+    /// Where `team_id` lives: global or the feature's project.
+    #[serde(default)]
+    pub team_scope: Scope,
     pub team_version: u32,
     pub feature_id: String,
     pub status: RunState,
@@ -235,11 +238,27 @@ impl Project {
     }
 }
 
-fn scope_project(s: &Scope) -> Option<String> {
+/// The `scope` column: '' for global, else the project id.
+fn scope_key(s: &Scope) -> String {
     match s {
-        Scope::Global => None,
-        Scope::Project(p) => Some(p.clone()),
+        Scope::Global => String::new(),
+        Scope::Project(p) => p.clone(),
     }
+}
+
+fn scope_of(key: String) -> Scope {
+    if key.is_empty() { Scope::Global } else { Scope::Project(key) }
+}
+
+/// Global rows plus `project`'s own, a project row shadowing the global one
+/// of the same id. `rows` is (scope, id, data) ordered by name, id.
+fn shadowed<T: serde::de::DeserializeOwned>(rows: Vec<(String, String, String)>) -> Result<Vec<T>> {
+    let local: std::collections::HashSet<String> =
+        rows.iter().filter(|(s, ..)| !s.is_empty()).map(|(_, id, _)| id.clone()).collect();
+    rows.into_iter()
+        .filter(|(s, id, _)| !s.is_empty() || !local.contains(id))
+        .map(|(_, _, d)| Ok(serde_json::from_str(&d)?))
+        .collect()
 }
 
 const FEATURE_COLS: &str =
@@ -261,7 +280,7 @@ fn row_feature(r: &rusqlite::Row) -> rusqlite::Result<Feature> {
 }
 
 const RUN_COLS: &str =
-    "id, team_id, team_version, feature_id, status, resume_status, pr_url, started_at_ms, ended_at_ms";
+    "id, team_id, team_version, feature_id, status, resume_status, pr_url, started_at_ms, ended_at_ms, team_scope";
 
 fn bad(s: String) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, s.into())
@@ -280,6 +299,7 @@ fn row_run(r: &rusqlite::Row) -> rusqlite::Result<TeamRun> {
         pr_url: r.get(6)?,
         started_at_ms: r.get::<_, i64>(7)? as u64,
         ended_at_ms: opt_u64(r, 8)?,
+        team_scope: scope_of(r.get(9)?),
     })
 }
 
@@ -362,39 +382,42 @@ impl Store {
         let role = role.clone();
         self.write(move |tx| {
             tx.execute(
-                "INSERT INTO roles(id, project_id, name, version, data, updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6)
-                 ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id, name=excluded.name,
+                "INSERT INTO roles(id, scope, name, version, data, updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6)
+                 ON CONFLICT(scope, id) DO UPDATE SET name=excluded.name,
                    version=excluded.version, data=excluded.data, updated_at_ms=excluded.updated_at_ms, archived=0",
-                params![role.id, scope_project(&role.scope), role.name, role.version, js(&role), at_ms as i64],
+                params![role.id, scope_key(&role.scope), role.name, role.version, js(&role), at_ms as i64],
             )?;
             Ok(())
         })
     }
 
-    pub fn role(&self, id: &str) -> Result<Option<RoleDef>> {
-        let id = id.to_string();
+    /// The role `id` in exactly `scope`.
+    pub fn role(&self, scope: &Scope, id: &str) -> Result<Option<RoleDef>> {
+        let (scope, id) = (scope_key(scope), id.to_string());
         self.read(move |c| {
-            let s: Option<String> = c.query_row("SELECT data FROM roles WHERE id=?1", [id], |r| r.get(0)).optional()?;
+            let s: Option<String> =
+                c.query_row("SELECT data FROM roles WHERE scope=?1 AND id=?2", [scope, id], |r| r.get(0)).optional()?;
             Ok(s.map(|s| serde_json::from_str(&s)).transpose()?)
         })
     }
 
-    /// Global roles, plus `project`'s own when given. Archived ones are left out.
+    /// Global roles, plus `project`'s own when given (a project role
+    /// shadows the global one of the same id). Archived ones are left out.
     pub fn roles(&self, project: Option<&str>) -> Result<Vec<RoleDef>> {
-        let project = project.map(str::to_string);
+        let project = project.unwrap_or_default().to_string();
         self.read(move |c| {
             let mut st = c.prepare(
-                "SELECT data FROM roles WHERE archived=0 AND (project_id IS NULL OR project_id=?1) ORDER BY name, id",
+                "SELECT scope, id, data FROM roles WHERE archived=0 AND scope IN ('', ?1) ORDER BY name, id",
             )?;
-            let rows: Vec<String> = st.query_map([project], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-            rows.iter().map(|s| Ok(serde_json::from_str(s)?)).collect()
+            let rows = st.query_map([project], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            shadowed(rows.collect::<rusqlite::Result<_>>()?)
         })
     }
 
-    pub fn archive_role(&self, id: &str) -> Result<()> {
-        let id = id.to_string();
+    pub fn archive_role(&self, scope: &Scope, id: &str) -> Result<()> {
+        let (scope, id) = (scope_key(scope), id.to_string());
         self.write(move |tx| {
-            tx.execute("UPDATE roles SET archived=1 WHERE id=?1", [id])?;
+            tx.execute("UPDATE roles SET archived=1 WHERE scope=?1 AND id=?2", [scope, id])?;
             Ok(())
         })
     }
@@ -410,46 +433,61 @@ impl Store {
             roles.iter().filter(|r| team.nodes.iter().any(|n| n.role_id == r.id)).cloned().collect();
         self.write(move |tx| {
             tx.execute(
-                "INSERT INTO teams(id, project_id, name, version, data, updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6)
-                 ON CONFLICT(id) DO UPDATE SET project_id=excluded.project_id, name=excluded.name,
+                "INSERT INTO teams(id, scope, name, version, data, updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6)
+                 ON CONFLICT(scope, id) DO UPDATE SET name=excluded.name,
                    version=excluded.version, data=excluded.data, updated_at_ms=excluded.updated_at_ms, archived=0",
-                params![team.id, scope_project(&team.scope), team.name, team.version, js(&team), at_ms as i64],
+                params![team.id, scope_key(&team.scope), team.name, team.version, js(&team), at_ms as i64],
             )?;
             tx.execute(
-                "INSERT OR IGNORE INTO team_versions(team_id, version, team, roles, created_at_ms) VALUES (?1,?2,?3,?4,?5)",
-                params![team.id, team.version, js(&team), js(&used), at_ms as i64],
+                "INSERT OR IGNORE INTO team_versions(team_scope, team_id, version, team, roles, created_at_ms)
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                params![scope_key(&team.scope), team.id, team.version, js(&team), js(&used), at_ms as i64],
             )?;
             Ok(())
         })
     }
 
-    pub fn team(&self, id: &str) -> Result<Option<Team>> {
-        let id = id.to_string();
+    /// The team `id` in exactly `scope` (archived ones too).
+    pub fn team(&self, scope: &Scope, id: &str) -> Result<Option<Team>> {
+        let (scope, id) = (scope_key(scope), id.to_string());
         self.read(move |c| {
-            let s: Option<String> = c.query_row("SELECT data FROM teams WHERE id=?1", [id], |r| r.get(0)).optional()?;
+            let s: Option<String> =
+                c.query_row("SELECT data FROM teams WHERE scope=?1 AND id=?2", [scope, id], |r| r.get(0)).optional()?;
             Ok(s.map(|s| serde_json::from_str(&s)).transpose()?)
         })
     }
 
+    /// The team `id` as seen from `project`: its own, else the global one.
+    pub fn team_in(&self, project: Option<&str>, id: &str) -> Result<Option<Team>> {
+        if let Some(p) = project
+            && let Some(t) = self.team(&Scope::Project(p.to_string()), id)?
+        {
+            return Ok(Some(t));
+        }
+        self.team(&Scope::Global, id)
+    }
+
+    /// Global teams, plus `project`'s own (shadowing a global one of the
+    /// same id). Archived ones are left out.
     pub fn teams(&self, project: Option<&str>) -> Result<Vec<Team>> {
-        let project = project.map(str::to_string);
+        let project = project.unwrap_or_default().to_string();
         self.read(move |c| {
             let mut st = c.prepare(
-                "SELECT data FROM teams WHERE archived=0 AND (project_id IS NULL OR project_id=?1) ORDER BY name, id",
+                "SELECT scope, id, data FROM teams WHERE archived=0 AND scope IN ('', ?1) ORDER BY name, id",
             )?;
-            let rows: Vec<String> = st.query_map([project], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-            rows.iter().map(|s| Ok(serde_json::from_str(s)?)).collect()
+            let rows = st.query_map([project], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            shadowed(rows.collect::<rusqlite::Result<_>>()?)
         })
     }
 
     /// The snapshot a run uses: the team graph and its roles at `version`.
-    pub fn team_version(&self, id: &str, version: u32) -> Result<Option<(Team, Vec<RoleDef>)>> {
-        let id = id.to_string();
+    pub fn team_version(&self, scope: &Scope, id: &str, version: u32) -> Result<Option<(Team, Vec<RoleDef>)>> {
+        let (scope, id) = (scope_key(scope), id.to_string());
         self.read(move |c| {
             let row: Option<(String, String)> = c
                 .query_row(
-                    "SELECT team, roles FROM team_versions WHERE team_id=?1 AND version=?2",
-                    params![id, version],
+                    "SELECT team, roles FROM team_versions WHERE team_scope=?1 AND team_id=?2 AND version=?3",
+                    params![scope, id, version],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
@@ -457,10 +495,10 @@ impl Store {
         })
     }
 
-    pub fn archive_team(&self, id: &str) -> Result<()> {
-        let id = id.to_string();
+    pub fn archive_team(&self, scope: &Scope, id: &str) -> Result<()> {
+        let (scope, id) = (scope_key(scope), id.to_string());
         self.write(move |tx| {
-            tx.execute("UPDATE teams SET archived=1 WHERE id=?1", [id])?;
+            tx.execute("UPDATE teams SET archived=1 WHERE scope=?1 AND id=?2", [scope, id])?;
             Ok(())
         })
     }
@@ -533,7 +571,7 @@ impl Store {
         self.write(move |tx| {
             tx.execute(
                 &format!(
-                    "INSERT INTO team_runs({RUN_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+                    "INSERT INTO team_runs({RUN_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
                      ON CONFLICT(id) DO UPDATE SET team_version=excluded.team_version, status=excluded.status,
                        resume_status=excluded.resume_status, pr_url=excluded.pr_url, ended_at_ms=excluded.ended_at_ms"
                 ),
@@ -546,7 +584,8 @@ impl Store {
                     run.resume_status.map(|s| s.as_str()),
                     run.pr_url,
                     run.started_at_ms as i64,
-                    run.ended_at_ms.map(|v| v as i64)
+                    run.ended_at_ms.map(|v| v as i64),
+                    scope_key(&run.team_scope)
                 ],
             )?;
             Ok(())
@@ -824,9 +863,9 @@ impl Store {
         tx.execute("DELETE FROM team_runs WHERE feature_id IN (SELECT id FROM features WHERE project_id=?1)", [id])?;
         tx.execute("DELETE FROM tasks WHERE project_id=?1", [id])?;
         tx.execute("DELETE FROM features WHERE project_id=?1", [id])?;
-        tx.execute("DELETE FROM team_versions WHERE team_id IN (SELECT id FROM teams WHERE project_id=?1)", [id])?;
-        tx.execute("DELETE FROM teams WHERE project_id=?1", [id])?;
-        tx.execute("DELETE FROM roles WHERE project_id=?1", [id])?;
+        tx.execute("DELETE FROM team_versions WHERE team_scope=?1", [id])?;
+        tx.execute("DELETE FROM teams WHERE scope=?1", [id])?;
+        tx.execute("DELETE FROM roles WHERE scope=?1", [id])?;
         Ok(())
     }
 }
@@ -860,16 +899,55 @@ mod tests {
         team.nodes.retain(|n| n.id != "ux");
         team.edges.retain(|e| e.from != "ux" && e.to != "ux");
         s.save_team(&team, &roles, 2).unwrap();
-        assert_eq!(s.team("full-stack").unwrap().unwrap().version, 2);
-        let (v1, r1) = s.team_version("full-stack", 1).unwrap().unwrap();
+        let g = Scope::Global;
+        assert_eq!(s.team(&g, "full-stack").unwrap().unwrap().version, 2);
+        let (v1, r1) = s.team_version(&g, "full-stack", 1).unwrap().unwrap();
         assert_eq!(v1.nodes.len(), 5);
         assert_eq!(r1.len(), 5);
-        let (v2, r2) = s.team_version("full-stack", 2).unwrap().unwrap();
+        let (v2, r2) = s.team_version(&g, "full-stack", 2).unwrap().unwrap();
         assert_eq!(v2.nodes.len(), 4);
         assert!(r2.iter().all(|r| r.id != "ux"));
-        s.archive_team("full-stack").unwrap();
+        s.archive_team(&g, "full-stack").unwrap();
         assert!(s.teams(None).unwrap().is_empty());
-        assert!(s.team_version("full-stack", 1).unwrap().is_some(), "snapshots outlive the team");
+        assert!(s.team_version(&g, "full-stack", 1).unwrap().is_some(), "snapshots outlive the team");
+    }
+
+    #[test]
+    fn a_project_role_or_team_shadows_the_global_one() {
+        let (_d, s) = store();
+        let (roles, team) = presets::full_stack();
+        for r in &roles {
+            s.upsert_role(r, 1).unwrap();
+        }
+        s.save_team(&team, &roles, 1).unwrap();
+        let p1 = Scope::Project("p1".into());
+        let mut backend = roles.iter().find(|r| r.id == "backend").unwrap().clone();
+        backend.scope = p1.clone();
+        backend.prompt = "p1's own backend".into();
+        s.upsert_role(&backend, 2).unwrap();
+        let mut local = team.clone();
+        local.scope = p1.clone();
+        local.name = "p1's team".into();
+        local.nodes.retain(|n| n.id != "ux");
+        local.edges.retain(|e| e.from != "ux" && e.to != "ux");
+        let p1_roles = s.roles(Some("p1")).unwrap();
+        s.save_team(&local, &p1_roles, 2).unwrap();
+
+        // The global rows are untouched.
+        let g = Scope::Global;
+        assert_ne!(s.role(&g, "backend").unwrap().unwrap().prompt, "p1's own backend");
+        assert_eq!(s.team(&g, "full-stack").unwrap().unwrap().nodes.len(), 5);
+        assert_eq!(s.roles(None).unwrap().len(), roles.len());
+        // From p1, its own shadow the global ones; from p2, only globals.
+        assert_eq!(p1_roles.len(), roles.len());
+        assert_eq!(p1_roles.iter().find(|r| r.id == "backend").unwrap().prompt, "p1's own backend");
+        assert_eq!(s.teams(Some("p1")).unwrap().len(), 1);
+        assert_eq!(s.team_in(Some("p1"), "full-stack").unwrap().unwrap().name, "p1's team");
+        assert_eq!(s.team_in(Some("p2"), "full-stack").unwrap().unwrap().nodes.len(), 5);
+        let (snap, snap_roles) = s.team_version(&p1, "full-stack", 1).unwrap().unwrap();
+        assert_eq!(snap.nodes.len(), 4);
+        assert_eq!(snap_roles.iter().find(|r| r.id == "backend").unwrap().prompt, "p1's own backend");
+        assert_eq!(s.team_version(&g, "full-stack", 1).unwrap().unwrap().0.nodes.len(), 5);
     }
 
     #[test]
@@ -893,6 +971,7 @@ mod tests {
         let mut run = TeamRun {
             id: "r1".into(),
             team_id: "full-stack".into(),
+            team_scope: Scope::Project("p1".into()),
             team_version: 1,
             feature_id: "f1".into(),
             status: RunState::Spec,

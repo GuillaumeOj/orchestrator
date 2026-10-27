@@ -191,8 +191,8 @@ pub async fn team_import(core: CoreState<'_>, json: String) -> Res<Value> {
 }
 
 #[tauri::command]
-pub async fn team_export(core: CoreState<'_>, team: String) -> Res<String> {
-    blocking(core, move |c| c.team_export(&team)).await
+pub async fn team_export(core: CoreState<'_>, team: String, project: Option<String>) -> Res<String> {
+    blocking(core, move |c| c.team_export(&team, project.as_deref())).await
 }
 
 #[tauri::command]

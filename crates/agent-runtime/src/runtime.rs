@@ -146,6 +146,8 @@ pub struct Runtime {
     indexing: std::sync::atomic::AtomicBool,
     /// A team pass ([`Runtime::team_tick`]) is running.
     teaming: std::sync::atomic::AtomicBool,
+    /// Each project's task backend, kept across calls.
+    pub(crate) task_backends: orch_tasks::Backends,
 }
 
 /// Clocks and flags of the periodic work (`tick`, `housekeeping`).
@@ -335,6 +337,7 @@ impl Runtime {
             otlp: Mutex::new(None),
             indexing: std::sync::atomic::AtomicBool::new(false),
             teaming: std::sync::atomic::AtomicBool::new(false),
+            task_backends: orch_tasks::Backends::default(),
         });
         rt.handle_releases(released);
         Ok(rt)

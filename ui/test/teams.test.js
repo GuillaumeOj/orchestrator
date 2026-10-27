@@ -233,6 +233,23 @@ describe('P2 panes', () => {
     );
   });
 
+  it('the launch dialog lists the teams of the project picked', async () => {
+    const view = (...ids) => ({
+      teams: ids.map((id) => ({ team: { id, name: id, nodes: [], edges: [], version: 1 }, issues: [], rules: [] })),
+      roles: [],
+    });
+    replies.teams_view = (a) => (a.project === 'blog' ? view('blog-team') : view('duo'));
+    app.overlay = { kind: 'launch', teamId: 'duo', projectId: 'shop-api' };
+    const { container } = render(Dialogs);
+    await waitFor(() => expect(container.textContent).toContain('duo'));
+    const [projectSel, teamSel] = container.querySelectorAll('select');
+    projectSel.value = 'blog';
+    await fireEvent.change(projectSel);
+    await waitFor(() => expect(/** @type {HTMLSelectElement} */ (teamSel).value).toBe('blog-team'));
+    expect(calls.filter(([c]) => c === 'teams_view').map(([, a]) => a.project)).toEqual(['shop-api', 'blog']);
+    expect(container.textContent).not.toContain('duo');
+  });
+
   it('the team canvas edits with keys and saves through the core', async () => {
     const team = {
       id: 'duo',
@@ -300,6 +317,13 @@ describe('P2 panes', () => {
     await fireEvent.keyDown(pane, { key: 'r', ctrlKey: true });
     await tick();
     expect(container.querySelector('.node.bad')).toBeNull();
+    // ⇧R opens the library with a node selected (⇧L moves the node).
+    await fireEvent.keyDown(pane, { key: 'R', shiftKey: true });
+    await tick();
+    expect(container.querySelector('[aria-label="Library"]')).toBeTruthy();
+    await fireEvent.keyDown(pane, { key: 'Escape' });
+    await tick();
+    expect(container.querySelector('[aria-label="Library"]')).toBeNull();
     await waitFor(() => expect(calls.some(([c, a]) => c === 'team_save' && a.team.nodes.length === 3)).toBe(true), {
       timeout: 2000,
     });

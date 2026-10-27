@@ -28,6 +28,24 @@
   // Launch on feature
   let launch = $state({ project_id: '', team_id: '', existing: '', slug: '', title: '', brief: '', base: '' });
   let teamsView = $state(null);
+  /** The teams seen from `project_id` (its own and the global ones). A team
+   *  that isn't among them, or an existing feature of another project, is
+   *  dropped from the form. */
+  function loadTeams(project_id) {
+    error = null;
+    invoke('teams_view', { project: project_id || null })
+      .then((v) => {
+        if (launch.project_id !== project_id) return;
+        teamsView = v;
+        if (!v.teams.some((t) => t.team.id === launch.team_id)) launch.team_id = v.teams[0]?.team.id ?? '';
+      })
+      .catch((e) => (error = errText(e)));
+  }
+  function setLaunchProject(project_id) {
+    launch.project_id = project_id;
+    launch.existing = '';
+    loadTeams(project_id);
+  }
   $effect(() => {
     // Once per opening: only the overlay is tracked (the form must not reset
     // with the poll, nor depend on what it writes).
@@ -36,13 +54,7 @@
     untrack(() => {
       const project_id = ov.projectId ?? contextProject()?.id ?? '';
       launch = { project_id, team_id: ov.teamId ?? '', existing: '', slug: '', title: '', brief: '', base: '' };
-      error = null;
-      invoke('teams_view', { project: project_id || null })
-        .then((v) => {
-          teamsView = v;
-          if (!launch.team_id) launch.team_id = v.teams[0]?.team.id ?? '';
-        })
-        .catch((e) => (error = errText(e)));
+      loadTeams(project_id);
     });
   });
   const launchTeam = $derived(teamsView?.teams.find((t) => t.team.id === launch.team_id));
@@ -214,7 +226,7 @@
       </div>
       <div class="row">
         <label>Project
-          <select class="field" bind:value={launch.project_id}>
+          <select class="field" value={launch.project_id} onchange={(e) => setLaunchProject(e.currentTarget.value)}>
             {#each projects() as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
           </select>
         </label>

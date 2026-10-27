@@ -152,7 +152,7 @@ impl Runtime {
         let feature = self.db.feature(&run.feature_id)?.ok_or_else(|| anyhow!("no feature {}", run.feature_id))?;
         let (team, roles) = self
             .db
-            .team_version(&run.team_id, run.team_version)?
+            .team_version(&run.team_scope, &run.team_id, run.team_version)?
             .ok_or_else(|| anyhow!("team {} v{} is gone", run.team_id, run.team_version))?;
         let project =
             self.db.project(&feature.project_id)?.ok_or_else(|| anyhow!("no project {}", feature.project_id))?;
@@ -182,7 +182,12 @@ impl Runtime {
     }
 
     fn tasks_of(&self, cx: &RunCtx) -> TaskService<'_> {
-        TaskService::new(&self.db, &cx.project, self.gh_override())
+        self.tasks_for(&cx.project)
+    }
+
+    /// The tasks of `project` over its backend, kept across calls.
+    pub fn tasks_for(&self, project: &orch_store::Project) -> TaskService<'_> {
+        self.task_backends.service(&self.db, project, || self.gh_override())
     }
 
     /// Tests replace `gh` (orch-tasks' `Gh`); `None` = the real one.
@@ -247,7 +252,8 @@ impl Runtime {
     /// J3 steps 2–3. Returns the run; the lead waits for the Governor.
     pub fn launch(&self, spec: &LaunchSpec) -> Result<TeamRun> {
         let project = self.db.project(&spec.project_id)?.ok_or_else(|| anyhow!("no project {}", spec.project_id))?;
-        let team = self.db.team(&spec.team_id)?.ok_or_else(|| anyhow!("no team {}", spec.team_id))?;
+        let team =
+            self.db.team_in(Some(&project.id), &spec.team_id)?.ok_or_else(|| anyhow!("no team {}", spec.team_id))?;
         let roles = self.db.roles(Some(&project.id))?;
         let issues = orch_team::validate(&team, Some(&roles));
         if !issues.is_empty() {
@@ -295,7 +301,7 @@ impl Runtime {
         // after a draft was saved) gets a new version instead of being kept.
         let mut team = team;
         let used = used_roles(&team, &roles);
-        while let Some((t, r)) = self.db.team_version(&team.id, team.version)? {
+        while let Some((t, r)) = self.db.team_version(&team.scope, &team.id, team.version)? {
             let mut r = r;
             r.sort_by(|a, b| a.id.cmp(&b.id));
             if t == team && r == used {
@@ -318,6 +324,7 @@ impl Runtime {
         let run = TeamRun {
             id: format!("run-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]),
             team_id: team.id.clone(),
+            team_scope: team.scope.clone(),
             team_version: team.version,
             feature_id: feature.id.clone(),
             status: RunState::Draft,
@@ -853,7 +860,7 @@ impl Runtime {
     /// which the run then uses.
     pub fn add_node(&self, run_id: &str, team: &Team) -> Result<TeamRun> {
         let mut run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
-        if team.id != run.team_id {
+        if team.id != run.team_id || team.scope != run.team_scope {
             bail!("run {run_id} uses team {}", run.team_id);
         }
         let old = self.run_ctx(run_id)?;
@@ -871,9 +878,9 @@ impl Runtime {
         let mut team = team.clone();
         // Past every version snapshotted so far: an existing one is kept as
         // it was, so reusing its number would drop the new node.
-        let latest = self.db.team(&team.id)?.map_or(0, |t| t.version);
+        let latest = self.db.team(&team.scope, &team.id)?.map_or(0, |t| t.version);
         team.version = team.version.max(old.team.version).max(latest) + 1;
-        while self.db.team_version(&team.id, team.version)?.is_some() {
+        while self.db.team_version(&team.scope, &team.id, team.version)?.is_some() {
             team.version += 1;
         }
         self.db.save_team(&team, &roles, now_ms())?;

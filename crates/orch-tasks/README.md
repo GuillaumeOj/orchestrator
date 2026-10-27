@@ -16,11 +16,16 @@ runtime read one table. Agents never call a backend: the orchestrator MCP tools 
 conflicts, errors }`. A failed push keeps the local change (`Outcome.remote_error`) and marks the
 task pending; `sync` pushes it again.
 
+`Backends::service(store, project, gh)` does the same but keeps one GitHub backend per project for
+the life of the process (the runtime holds one `Backends`), so the repository is looked up and the
+labels are created once, not on every write. A change of the project's backend setting or checkout
+makes a new one.
+
 ## GitHub mapping
 
 - `orch` marks managed issues; `orch:<status>` the column (`orch:backlog`, `orch:ready`,
   `orch:in_progress`, `orch:review`; a **closed** issue is Done); `orch:node:<id>` the assignee
-  node. Other labels are kept on every update. The status labels are created once per process.
+  node. Other labels are kept on every update. The status labels are created once per backend.
 - Dependencies are a last body line `Blocked by: #12, #13` (issue numbers), parsed back into
   local task ids.
 - A task's handle is `#<number>` on GitHub, `T-<id>` locally.

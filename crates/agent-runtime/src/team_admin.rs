@@ -5,12 +5,18 @@
 use anyhow::{Result, anyhow, bail};
 use orch_protocol::now_ms;
 use orch_store::Task;
-use orch_tasks::TaskService;
 use orch_team::{RoleDef, TaskStatus, Team, rules};
 use serde_json::{Value, json};
 
 use crate::runtime::Runtime;
 use crate::team::{feature_docs, read_feature_doc};
+
+fn scope_project(s: &orch_team::Scope) -> Option<&str> {
+    match s {
+        orch_team::Scope::Project(p) => Some(p),
+        orch_team::Scope::Global => None,
+    }
+}
 
 impl Runtime {
     /// Saves the starter roles and presets that are not in the library yet.
@@ -19,14 +25,14 @@ impl Runtime {
         let now = now_ms();
         let mut n = 0;
         for r in orch_team::presets::starter_roles() {
-            if self.db.role(&r.id)?.is_none() {
+            if self.db.role(&r.scope, &r.id)?.is_none() {
                 self.db.upsert_role(&r, now)?;
                 n += 1;
             }
         }
         let roles = self.db.roles(None)?;
         for (_, t) in orch_team::presets::all() {
-            if self.db.team(&t.id)?.is_none() {
+            if self.db.team(&t.scope, &t.id)?.is_none() {
                 self.db.save_team(&t, &roles, now)?;
                 n += 1;
             }
@@ -63,12 +69,8 @@ impl Runtime {
         if team.name.trim().is_empty() {
             bail!("the team needs a name");
         }
-        let project = match &team.scope {
-            orch_team::Scope::Project(p) => Some(p.clone()),
-            orch_team::Scope::Global => None,
-        };
-        let roles = self.db.roles(project.as_deref())?;
-        if let Some(old) = self.db.team(&team.id)? {
+        let roles = self.db.roles(scope_project(&team.scope))?;
+        if let Some(old) = self.db.team(&team.scope, &team.id)? {
             let same = old.nodes == team.nodes && old.edges == team.edges && old.name == team.name;
             team.version = if same { old.version } else { old.version + 1 };
         }
@@ -82,7 +84,7 @@ impl Runtime {
         if !orch_team::valid_slug(&role.id) {
             bail!("invalid role id {:?}", role.id);
         }
-        if let Some(old) = self.db.role(&role.id)? {
+        if let Some(old) = self.db.role(&role.scope, &role.id)? {
             let mut cmp = old.clone();
             cmp.version = role.version;
             role.version = if cmp == role { old.version } else { old.version + 1 };
@@ -96,26 +98,24 @@ impl Runtime {
     pub fn import_team(&self, json_text: &str) -> Result<Team> {
         let file = orch_team::export::import(json_text).map_err(|e| anyhow!("{e}"))?;
         for r in &file.roles {
-            if self.db.role(&r.id)?.is_none() {
+            if self.db.role(&r.scope, &r.id)?.is_none() {
                 self.db.upsert_role(r, now_ms())?;
             }
         }
         let mut team = file.team;
-        if let Some(old) = self.db.team(&team.id)? {
+        if let Some(old) = self.db.team(&team.scope, &team.id)? {
             team.version = team.version.max(old.version + 1);
         }
-        let roles = self.db.roles(None)?;
+        let roles = self.db.roles(scope_project(&team.scope))?;
         self.db.save_team(&team, &roles, now_ms())?;
         Ok(team)
     }
 
-    pub fn export_team(&self, team_id: &str) -> Result<String> {
-        let team = self.db.team(team_id)?.ok_or_else(|| anyhow!("no team {team_id}"))?;
-        let project = match &team.scope {
-            orch_team::Scope::Project(p) => Some(p.clone()),
-            orch_team::Scope::Global => None,
-        };
-        Ok(orch_team::export::export(&team, &self.db.roles(project.as_deref())?))
+    /// Exports the team `team_id` as seen from `project` (its own, else the
+    /// global one).
+    pub fn export_team(&self, team_id: &str, project: Option<&str>) -> Result<String> {
+        let team = self.db.team_in(project, team_id)?.ok_or_else(|| anyhow!("no team {team_id}"))?;
+        Ok(orch_team::export::export(&team, &self.db.roles(scope_project(&team.scope))?))
     }
 
     /// Everything the Feature pane shows about a run.
@@ -187,7 +187,7 @@ impl Runtime {
         }
         t.node = node.map(str::to_string);
         t.notes.push(orch_store::TaskNote { ts_ms: now_ms(), by: "user".into(), text: "created by the user".into() });
-        let out = TaskService::new(&self.db, &project, self.cfg.gh.as_ref().map(|f| (f.0)())).create(t)?;
+        let out = self.tasks_for(&project).create(t)?;
         if let Some(r) = run_id {
             self.run_event(
                 r,
@@ -212,7 +212,7 @@ impl Runtime {
             t = self.reassign_task(task_id, n)?;
         }
         let project = self.db.project(&t.project_id)?.ok_or_else(|| anyhow!("no project {}", t.project_id))?;
-        let svc = TaskService::new(&self.db, &project, self.cfg.gh.as_ref().map(|f| (f.0)()));
+        let svc = self.tasks_for(&project);
         if let Some(s) = status {
             let s: TaskStatus = s.parse().map_err(|e: String| anyhow!(e))?;
             if s != t.status {

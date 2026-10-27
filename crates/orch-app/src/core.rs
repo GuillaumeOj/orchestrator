@@ -1366,7 +1366,7 @@ mod tests {
         bad["id"] = json!("draft");
         bad["nodes"][0]["is_lead"] = json!(false);
         assert!(!core.team_save(bad).unwrap()["issues"].as_array().unwrap().is_empty());
-        let exported = core.team_export("bugfix-squad").unwrap();
+        let exported = core.team_export("bugfix-squad", None).unwrap();
         assert!(exported.contains("\"format\": 1"));
         // Launch: the feature shows in app_state; the Feature pane and the Board read it.
         let run = core

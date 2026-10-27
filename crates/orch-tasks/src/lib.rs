@@ -2,6 +2,10 @@
 
 pub mod github;
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
 use anyhow::{Result, anyhow};
 use orch_store::{Project, Store, Task, TaskBackendConfig, TaskNote};
 use orch_team::TaskStatus;
@@ -38,7 +42,46 @@ pub struct SyncReport {
 
 enum Backend {
     Local,
-    Github(GithubIssues<Box<dyn Gh>>),
+    Github(Arc<GithubIssues<Box<dyn Gh>>>),
+}
+
+type GithubBackend = Arc<GithubIssues<Box<dyn Gh>>>;
+
+/// One backend per project, kept across calls: a GitHub backend resolves
+/// its repository and creates its labels once, not on every task write. A
+/// project whose backend setting or checkout changes gets a new one.
+#[derive(Default)]
+pub struct Backends {
+    by_project: Mutex<HashMap<String, (TaskBackendConfig, PathBuf, GithubBackend)>>,
+}
+
+impl Backends {
+    /// The tasks of `project`. `gh` makes the `gh` runner when a GitHub
+    /// backend is created (`None` = the real `gh`).
+    pub fn service<'a>(
+        &self,
+        store: &'a Store,
+        project: &Project,
+        gh: impl FnOnce() -> Option<Box<dyn Gh>>,
+    ) -> TaskService<'a> {
+        let cfg = project.backend();
+        let TaskBackendConfig::Github { repo } = &cfg else {
+            return TaskService { store, project: project.clone(), backend: Backend::Local };
+        };
+        let mut m = self.by_project.lock().unwrap_or_else(|e| e.into_inner());
+        let gh = match m.get(&project.id) {
+            Some((c, path, b)) if *c == cfg && *path == project.path => b.clone(),
+            _ => {
+                let b = Arc::new(GithubIssues::new(
+                    gh().unwrap_or_else(|| Box::new(GhCli::new(project.path.clone()))),
+                    repo.clone(),
+                ));
+                m.insert(project.id.clone(), (cfg.clone(), project.path.clone(), b.clone()));
+                b
+            }
+        };
+        TaskService { store, project: project.clone(), backend: Backend::Github(gh) }
+    }
 }
 
 /// The tasks of one project over its backend (ADR-004). Every task is
@@ -55,10 +98,10 @@ impl<'a> TaskService<'a> {
     pub fn new(store: &'a Store, project: &Project, gh: Option<Box<dyn Gh>>) -> TaskService<'a> {
         let backend = match project.backend() {
             TaskBackendConfig::Local => Backend::Local,
-            TaskBackendConfig::Github { repo } => Backend::Github(GithubIssues::new(
+            TaskBackendConfig::Github { repo } => Backend::Github(Arc::new(GithubIssues::new(
                 gh.unwrap_or_else(|| Box::new(GhCli::new(project.path.clone()))),
                 repo,
-            )),
+            ))),
         };
         TaskService { store, project: project.clone(), backend }
     }

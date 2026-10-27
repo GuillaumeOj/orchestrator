@@ -247,3 +247,31 @@ fn create_while_offline_is_pushed_later() {
     assert_eq!(s.task(t.value.id).unwrap().unwrap().external_id.as_deref(), Some("1"));
     assert!(rep.imported.is_empty(), "the pushed issue is not imported twice: {rep:?}");
 }
+
+#[test]
+fn backends_keep_one_github_backend_per_project() {
+    let (_d, s, mut p) = setup(json!({"type": "github", "repo": "me/shop"}));
+    let gh = FakeGh::default();
+    let made = Arc::new(Mutex::new(0));
+    let backends = Backends::default();
+    let service = |p: &Project| {
+        let (gh, made) = (gh.clone(), made.clone());
+        backends.service(&s, p, move || {
+            *made.lock().unwrap() += 1;
+            Some(Box::new(gh) as Box<dyn Gh>)
+        })
+    };
+    service(&p).create(Task::new("", "", "One", 1)).unwrap();
+    let after_first = gh.0.lock().unwrap().calls;
+    service(&p).create(Task::new("", "", "Two", 2)).unwrap();
+    // The second write only creates its issue: labels were made once.
+    assert_eq!(gh.0.lock().unwrap().calls - after_first, 1);
+    assert_eq!(*made.lock().unwrap(), 1);
+    // Another repository: a new backend.
+    p.task_backend = json!({"type": "github", "repo": "me/other"});
+    assert_eq!(service(&p).kind(), "github");
+    assert_eq!(*made.lock().unwrap(), 2);
+    // Local projects need no backend.
+    p.task_backend = json!({"type": "local"});
+    assert_eq!(service(&p).kind(), "local");
+}

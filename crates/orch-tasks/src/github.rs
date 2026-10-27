@@ -196,7 +196,7 @@ impl<G: Gh> GithubIssues<G> {
         Ok(self.repo.get_or_init(|| r).clone())
     }
 
-    /// Creates the managed labels once per process (an existing one is fine).
+    /// Creates the managed labels once per backend (an existing one is fine).
     fn ensure_labels(&self) -> Result<()> {
         if self.labels_ready.get().is_some() {
             return Ok(());

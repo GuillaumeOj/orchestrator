@@ -241,7 +241,9 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
             ok_or(serde_json::from_value(role).map_err(Into::into).and_then(|r| rt.save_role(r)).map(|r| json!(r)))
         }
         CtlRequest::TeamImport { json: text } => ok_or(rt.import_team(&text).map(|t| json!(t))),
-        CtlRequest::TeamExport { team_id } => ok_or(rt.export_team(&team_id).map(|s| json!(s))),
+        CtlRequest::TeamExport { team_id, project_id } => {
+            ok_or(rt.export_team(&team_id, project_id.as_deref()).map(|s| json!(s)))
+        }
         CtlRequest::Launch { project_id, team_id, slug, title, brief, base } => ok_or(
             rt.launch(&crate::team::LaunchSpec {
                 project_id,

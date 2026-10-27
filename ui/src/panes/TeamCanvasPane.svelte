@@ -2,7 +2,7 @@
   // Team canvas (FR-301–308, Penpot 04 Team canvas · 1512): the builder, the
   // role inspector and the Rules panel. Mouse optional (§9.1): n add, hjkl /
   // arrows select, ⇧+hjkl move, c connect (target number, then edge type 1–4),
-  // ⏎ inspect, x delete, = auto-layout, u undo, ⌃r redo, L library, ⌘⏎ launch.
+  // ⏎ inspect, x delete, = auto-layout, u undo, ⌃r redo, ⇧R library (roles and teams), ⌘⏎ launch.
   // Every edit saves (debounced); the core validates and versions the team.
   import { onMount } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
@@ -153,7 +153,7 @@
 
   async function exportTeam() {
     try {
-      const json = await invoke('team_export', { team: team.id });
+      const json = await invoke('team_export', { team: team.id, project: team.scope?.kind === 'project' ? team.scope.id : null });
       await navigator.clipboard?.writeText(json);
       toast(`Copied ${team.name} as JSON to the clipboard`);
     } catch (e) {
@@ -235,7 +235,7 @@
       const [dx, dy] = { left: [-20, 0], right: [20, 0], up: [0, -20], down: [0, 20] }[dir];
       return (edit(C.moveNode(team, node.id, [node.position[0] + dx, node.position[1] + dy])), handled());
     }
-    if (dir && k !== 'L') {
+    if (dir) {
       sel = C.neighbor(team, sel, dir);
       selEdge = null;
       ensureVisible(sel);
@@ -262,7 +262,7 @@
       case 'u':
         undo();
         return handled();
-      case 'L':
+      case 'R':
         mode = mode?.kind === 'library' ? null : { kind: 'library' };
         return handled();
       case 'Escape':
@@ -361,7 +361,7 @@
       <b>Team canvas</b>
     {/if}
     <span class="grow"></span>
-    <button class="btn ghost" onclick={() => (mode = mode?.kind === 'library' ? null : { kind: 'library' })}>Library <Kbd keys="L" /></button>
+    <button class="btn ghost" onclick={() => (mode = mode?.kind === 'library' ? null : { kind: 'library' })}>Library <Kbd keys="⇧+R" /></button>
     <button class="btn ghost" onclick={() => (mode = { kind: 'import', text: '' })}>Import</button>
     <button class="btn ghost" disabled={!team} onclick={exportTeam}>Export</button>
     <button class="btn primary" disabled={!team} onclick={launch}>Launch on feature <Kbd keys="⌘+⏎" /></button>
@@ -422,7 +422,7 @@
       {:else}
         <div class="empty">
           <p><b>No team open.</b></p>
-          <p class="muted">Open one from the library (L) or start a new one.</p>
+          <p class="muted">Open one from the library (⇧R) or start a new one.</p>
           <button class="btn" onclick={newTeam}>New team</button>
         </div>
       {/if}

@@ -284,6 +284,9 @@ pub enum CtlRequest {
     },
     TeamExport {
         team_id: String,
+        /// The project it's seen from (its own team first, else the global one).
+        #[serde(default)]
+        project_id: Option<String>,
     },
     Launch {
         project_id: String,

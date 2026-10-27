@@ -47,8 +47,8 @@ db.flush()?;                                                    // everything qu
 | (events) | `events` | `add_event(ts, agent, kind, detail)` (detached), `events(since, agent, kind_prefix, limit)` |
 | (audit, FR-709) | `audit_log` | `audit(actor, agent, action, target, decision, detail)` (waits), `audit_log(agent, limit)` |
 | (settings) | `kv` | `set_setting`, `setting` |
-| Role (P2) | `roles` | `upsert_role(role, at)`, `role`, `roles(project)` (global + that project's), `archive_role` |
-| Team, AgentNode, Edge (P2) | `teams`, `team_versions` | `save_team(team, roles, at)` (also snapshots the version with the roles it uses, FR-308), `team`, `teams(project)`, `team_version(id, v)`, `archive_team` |
+| Role (P2) | `roles` | `upsert_role(role, at)`, `role(scope, id)`, `roles(project)` (global + that project's, which shadow), `archive_role(scope, id)` |
+| Team, AgentNode, Edge (P2) | `teams`, `team_versions` | `save_team(team, roles, at)` (also snapshots the version with the roles it uses, FR-308), `team(scope, id)`, `team_in(project, id)` (its own, else the global one), `teams(project)`, `team_version(scope, id, v)`, `archive_team(scope, id)` |
 | Feature (P2) | `features` | `upsert_feature`, `feature`, `feature_by_slug(project, slug)`, `features(project)` |
 | TeamRun (P2) | `team_runs` | `upsert_run`, `run`, `runs(feature, active_only)` |
 | Task (P2) | `tasks` | `upsert_task` (id 0 = insert; returns the id), `task`, `task_by_external(project, backend, ext)`, `tasks(project, feature, run)`, `delete_task`. Every backend is mirrored here (ADR-004). |
@@ -98,6 +98,11 @@ Claude Code's folder name under `~/.claude/projects`.
 - **Roles and teams as JSON**: `roles.data` and `teams.data` hold `orch_team::RoleDef` / `Team`;
   `team_versions` keeps every version a run may point at, with the roles it used, and outlives an
   archived team.
+- **Scoped ids** (migration 3): roles, teams and snapshots are keyed by (scope, id), `scope` being
+  `''` for global or a project id. A project's role or team with a global one's id shadows it in
+  that project and leaves it untouched elsewhere; a run records its team's scope (`team_scope`).
+  A global team launched from a project that shadows one of its roles snapshots that project's
+  role, so its version goes up when launched from projects whose roles differ.
 - **Tasks**: one model over every backend (ADR-004); `depends_on` are local task ids. `delete_project`
   removes the project's features, runs, tasks, messages, artifacts and project-scoped roles and
   teams; events stay.

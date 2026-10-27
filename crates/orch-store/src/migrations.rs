@@ -379,6 +379,56 @@ CREATE INDEX artifacts_feature ON artifacts(feature_id);
 ALTER TABLE events ADD COLUMN team_run_id TEXT;
 CREATE INDEX events_run ON events(team_run_id, ts_ms);
 "#,
+    // 3: roles and teams keyed by (scope, id), '' being global, so a
+    // project's role or team no longer replaces a global one of the same id
+    // (it shadows it in that project). Snapshots and runs carry the scope.
+    r#"
+CREATE TABLE roles_v3 (
+    scope TEXT NOT NULL DEFAULT '',
+    id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    archived INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (scope, id)
+);
+INSERT INTO roles_v3 SELECT COALESCE(project_id, ''), id, name, version, data, updated_at_ms, archived FROM roles;
+DROP TABLE roles;
+ALTER TABLE roles_v3 RENAME TO roles;
+
+CREATE TABLE team_versions_v3 (
+    team_scope TEXT NOT NULL DEFAULT '',
+    team_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    team TEXT NOT NULL,
+    roles TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (team_scope, team_id, version)
+);
+INSERT INTO team_versions_v3
+  SELECT COALESCE((SELECT project_id FROM teams t WHERE t.id = v.team_id), ''), team_id, version, team, roles, created_at_ms
+  FROM team_versions v;
+DROP TABLE team_versions;
+ALTER TABLE team_versions_v3 RENAME TO team_versions;
+
+ALTER TABLE team_runs ADD COLUMN team_scope TEXT NOT NULL DEFAULT '';
+UPDATE team_runs SET team_scope = COALESCE((SELECT project_id FROM teams t WHERE t.id = team_runs.team_id), '');
+
+CREATE TABLE teams_v3 (
+    scope TEXT NOT NULL DEFAULT '',
+    id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    archived INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (scope, id)
+);
+INSERT INTO teams_v3 SELECT COALESCE(project_id, ''), id, name, version, data, updated_at_ms, archived FROM teams;
+DROP TABLE teams;
+ALTER TABLE teams_v3 RENAME TO teams;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {
@@ -412,5 +462,38 @@ mod tests {
         c.execute("INSERT INTO transcript_fts(body, session_id) VALUES ('hello world', 's')", []).unwrap();
         c.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
         assert!(migrate(&mut c).unwrap_err().to_string().contains("newer"));
+    }
+
+    #[test]
+    fn migration_3_keeps_roles_teams_snapshots_and_runs_with_their_scope() {
+        let d = tempfile::tempdir().unwrap();
+        let mut c = Connection::open(d.path().join("m.db")).unwrap();
+        for sql in &MIGRATIONS[..2] {
+            c.execute_batch(sql).unwrap();
+        }
+        c.pragma_update(None, "user_version", 2).unwrap();
+        c.execute_batch(
+            "INSERT INTO roles VALUES ('lead', NULL, 'Lead', 1, '{}', 1, 0), ('shop', 'p1', 'Shop', 2, '{}', 1, 0);
+             INSERT INTO teams VALUES ('t', 'p1', 'T', 3, '{}', 1, 0), ('g', NULL, 'G', 1, '{}', 1, 0);
+             INSERT INTO team_versions VALUES ('t', 3, '{}', '[]', 1), ('g', 1, '{}', '[]', 1);
+             INSERT INTO team_runs(id, team_id, team_version, feature_id, status, started_at_ms)
+               VALUES ('r', 't', 3, 'f', 'spec', 1);",
+        )
+        .unwrap();
+        migrate(&mut c).unwrap();
+        let q = |sql: &str| -> Vec<String> {
+            let mut st = c.prepare(sql).unwrap();
+            st.query_map([], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+        };
+        assert_eq!(q("SELECT scope || ':' || id FROM roles ORDER BY id"), [":lead", "p1:shop"]);
+        assert_eq!(q("SELECT scope || ':' || id FROM teams ORDER BY id"), [":g", "p1:t"]);
+        assert_eq!(q("SELECT team_scope || ':' || team_id FROM team_versions ORDER BY team_id"), [":g", "p1:t"]);
+        assert_eq!(q("SELECT team_scope FROM team_runs"), ["p1"]);
+        // The same id may now live in two scopes.
+        c.execute(
+            "INSERT INTO roles(scope, id, name, version, data, updated_at_ms) VALUES ('p1', 'lead', 'L', 1, '{}', 1)",
+            [],
+        )
+        .unwrap();
     }
 }

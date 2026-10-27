@@ -5,7 +5,6 @@
 
 use anyhow::{Result, anyhow};
 use orch_store::{ProjectSettings, TaskBackendConfig};
-use orch_tasks::TaskService;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -88,8 +87,8 @@ impl Core {
         Ok(json!(self.runtime()?.import_team(text)?))
     }
 
-    pub fn team_export(&self, team_id: &str) -> Result<String> {
-        self.runtime()?.export_team(team_id)
+    pub fn team_export(&self, team_id: &str, project: Option<&str>) -> Result<String> {
+        self.runtime()?.export_team(team_id, project)
     }
 
     pub fn team_launch(&self, f: LaunchForm) -> Result<Value> {
@@ -158,7 +157,7 @@ impl Core {
     pub fn board_sync(&self, project_id: &str) -> Result<Value> {
         let rt = self.runtime()?;
         let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
-        let r = TaskService::new(&rt.db, &p, None).sync(orch_store::now_ms());
+        let r = rt.tasks_for(&p).sync(orch_store::now_ms());
         if let Ok(mut m) = self.sync_errors.lock() {
             match &r {
                 Ok(_) => m.remove(project_id),
