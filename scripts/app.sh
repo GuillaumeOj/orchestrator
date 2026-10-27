@@ -57,7 +57,7 @@ build() {
   (cd ui && bun install --frozen-lockfile)
   echo "==> Orchestrator.app (release)"
   core_release
-  (cd ui && bun run tauri build -- --config ../crates/orch-app/tauri.bundle.json)
+  (cd ui && bun run tauri build --config ../crates/orch-app/tauri.bundle.json)
   echo "built $APP"
 }
 
