@@ -50,7 +50,7 @@
     {#each app.dock.tabs as t (t)}
       <div class="tab" class:on={t === app.dock.active} class:focused={t === app.focused} role="tab" aria-selected={t === app.dock.active}>
         <button class="label" onclick={() => focusPane(t)}>{app.panes[t]?.title ?? t}</button>
-        <button class="x" aria-label="Close shell" onclick={() => closePane(t)}>×</button>
+        <button class="x" aria-label="Close shell" onclick={() => closePane(t, { record: true })}>×</button>
       </div>
     {/each}
     <button class="add" aria-label="New shell" onclick={() => openShell()}>+</button>

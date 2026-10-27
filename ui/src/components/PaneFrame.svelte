@@ -34,7 +34,7 @@
       {#if zoomed}<span class="zoomtag">ZOOMED · {n || 1} of {total}</span>{/if}
       <span class="grow"></span>
       <button class="hint" onclick={toggleZoom}><Kbd keys="⌘+; z" /> {zoomed ? 'restore' : 'zoom'}</button>
-      <button class="hint" onclick={() => closePane(paneId)}><Kbd keys="⌘+W" /> close</button>
+      <button class="hint" onclick={() => closePane(paneId, { record: true })}><Kbd keys="⌘+W" /> close</button>
     </header>
     <div class="body">
       {#if spec.type === 'agent'}<AgentPane {paneId} />

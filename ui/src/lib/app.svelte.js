@@ -187,11 +187,13 @@ export function focusPane(id) {
   });
 }
 
-/** Panes the user closed, newest last, for Reopen closed pane (⌘⇧T). */
+/** Panes the user closed (`record`), newest last, for Reopen closed pane
+ *  (⌘⇧T). A pane that closes itself (a shell exits, Setup is done, its
+ *  agent or feature is gone) is not offered back. */
 const closed = [];
 const CLOSED_MAX = 20;
 
-export function closePane(id = app.focused, { record = true } = {}) {
+export function closePane(id = app.focused, { record = false } = {}) {
   if (!id || !app.panes[id]) return;
   if (record) {
     closed.push({ ...app.panes[id], termId: undefined, docked: inDock(id) });
@@ -231,15 +233,16 @@ export function reopenClosed() {
       case 'diff':
         return openDiff(s.projectId, s.path, s.branch);
       case 'shell':
-        // Back where it was: the dock, or a pane.
+        // Back where it was: the dock, or a pane. `null`: no agent, not the
+        // one in focus now.
         return openShell({
           projectId: s.projectId,
-          agentId: s.agentId,
+          agentId: s.agentId ?? null,
           cwd: s.cwd,
           how: s.docked ? undefined : 'right',
         });
       case 'editor':
-        return openEditor(s.file ?? null, null, { projectId: s.projectId });
+        return openEditor(s.file ?? null, null, { projectId: s.projectId, agentId: s.agentId ?? null });
       default:
         return openSingleton(s.type);
     }
@@ -343,10 +346,11 @@ const spawnShell = ({ projectId, agentId, cwd }) =>
     },
   });
 
-/** A shell: a dock tab by default, a pane with `how` ('right' | 'below'). */
+/** A shell: a dock tab by default, a pane with `how` ('right' | 'below').
+ *  `agentId: null` = no agent (undefined = the one in focus). */
 export async function openShell(opts = {}) {
   const projectId = opts.projectId ?? contextProject()?.id;
-  const agentId = opts.agentId ?? contextAgent()?.id;
+  const agentId = opts.agentId !== undefined ? (opts.agentId ?? undefined) : contextAgent()?.id;
   try {
     const t = await spawnShell({ projectId, agentId, cwd: opts.cwd });
     const spec = { type: 'shell', termId: t.id, cwd: t.cwd, projectId, agentId };
@@ -357,9 +361,10 @@ export async function openShell(opts = {}) {
   }
 }
 
-/** FR-1101/1102: reuse the project's nvim when it runs, else a new editor pane. */
+/** FR-1101/1102: reuse the project's nvim when it runs, else a new editor pane.
+ *  `opts.agentId: null` = no agent (undefined = the one in focus). */
 export async function openEditor(file = null, line = null, opts = {}) {
-  const a = opts.agentId ? agent(opts.agentId) : contextAgent();
+  const a = opts.agentId === null ? undefined : opts.agentId ? agent(opts.agentId) : contextAgent();
   const p = projects().find((x) => x.id === (opts.projectId ?? a?.project_id)) ?? contextProject();
   try {
     const r = await invoke('editor_open', {
@@ -380,7 +385,7 @@ export async function openEditor(file = null, line = null, opts = {}) {
       );
       return;
     }
-    addPane({ type: 'editor', termId: r.term.id, cwd: r.term.cwd, projectId: p?.id, file }, 'right');
+    addPane({ type: 'editor', termId: r.term.id, cwd: r.term.cwd, projectId: p?.id, agentId: a?.id, file }, 'right');
   } catch (e) {
     toast(`Could not open the editor: ${errText(e)}`, { kind: 'error' });
   }
@@ -669,7 +674,7 @@ function paneGone(s) {
 }
 
 function prunePanes() {
-  for (const [id, s] of Object.entries(app.panes)) if (paneGone(s)) closePane(id, { record: false });
+  for (const [id, s] of Object.entries(app.panes)) if (paneGone(s)) closePane(id);
   if (app.selectedAgent && !activeAgents().some((a) => a.id === app.selectedAgent)) app.selectedAgent = null;
 }
 
@@ -704,7 +709,7 @@ export function commands() {
     { id: 'pane.split.right', label: 'Split right (shell)', run: () => openShell({ how: 'right' }) },
     { id: 'pane.split.below', label: 'Split below (shell)', run: () => openShell({ how: 'below' }) },
     { id: 'pane.zoom', label: 'Zoom / restore the focused pane', run: toggleZoom },
-    { id: 'pane.close', label: 'Close pane', run: () => closePane() },
+    { id: 'pane.close', label: 'Close pane', run: () => closePane(app.focused, { record: true }) },
     { id: 'pane.reopen', label: 'Reopen closed pane', run: reopenClosed },
     { id: 'sidebar', label: 'Toggle sidebar', run: () => ((app.sidebar = !app.sidebar), saveLayout()) },
     {

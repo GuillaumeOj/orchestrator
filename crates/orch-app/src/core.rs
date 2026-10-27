@@ -1461,6 +1461,18 @@ mod tests {
         core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).unwrap();
         assert_eq!(core.state()["features"][0]["run"]["status"], "planning");
         assert!(core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).is_err(), "decided once");
+        // A feature archived under its team stays listed, flagged, while one
+        // of its agents is not deleted; it goes once none is left.
+        let mut fr = rt.db.feature(&fid).unwrap().unwrap();
+        fr.archived = true;
+        rt.db.upsert_feature(&fr).unwrap();
+        let s = core.state();
+        assert_eq!(
+            (s["features"][0]["id"].as_str(), s["features"][0]["archived"].as_bool()),
+            (Some(&*fid), Some(true))
+        );
+        rt.delete_agent("fx-lead-1", false, false).unwrap();
+        assert!(core.state()["features"].as_array().unwrap().is_empty());
         core.shutdown();
     }
 
@@ -1692,7 +1704,13 @@ mod tests {
         plan.calendar.blocks =
             days.map(|day| WorkBlock { day, start: time(0, 0, 0, 0), end: time(23, 59, 59, 0), weight: 1.0 }).into();
         rt.replan(plan).unwrap();
-        let sprint = rt.governor_act(|g, now| (g.start_sprint(5.0, now), vec![]));
+        let mut sprint = rt.governor_act(|g, now| (g.start_sprint(5.0, now), vec![]));
+        if sprint == Err(governor::GovernorError::NoWorkingTimeToday) {
+            // The last second of the day (blocks end at 23:59:59): the next
+            // one is a new day with all its hours.
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            sprint = rt.governor_act(|g, now| (g.start_sprint(5.0, now), vec![]));
+        }
         assert!(sprint.is_ok(), "{sprint:?}");
         // A sprint carries over a switch, both ways (it used to be refused).
         core.set_enforce(false).unwrap();

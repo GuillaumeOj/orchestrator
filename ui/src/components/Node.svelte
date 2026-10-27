@@ -61,7 +61,7 @@
         {#each node.tabs as t (t)}
           <div class="tab" class:on={t === node.active} role="tab" aria-selected={t === node.active}>
             <button class="label" onclick={() => focusPane(t)}>{app.panes[t]?.title ?? t}</button>
-            <button class="x" aria-label="Close tab" onclick={() => closePane(t)}>×</button>
+            <button class="x" aria-label="Close tab" onclick={() => closePane(t, { record: true })}>×</button>
           </div>
         {/each}
       </div>
