@@ -113,7 +113,7 @@ pub fn watchdog_check(a: &AgentRecord, now: u64) -> Option<(Watch, u64)> {
 }
 
 /// Longest message body kept (the rest is cut).
-const MAX_BODY: usize = 8_000;
+pub(crate) const MAX_BODY: usize = 8_000;
 /// Longest text injected at a tool call.
 const MAX_INJECT: usize = 1_500;
 
@@ -450,23 +450,24 @@ impl Runtime {
 
     /// Queues a turn carrying team messages: they are read when it ends.
     pub(crate) fn deliver_messages_turn(&self, id: &str, text: &str, messages: Vec<u64>) -> Result<String> {
-        let tid = self.deliver_kind(id, text, TurnKind::Message)?;
-        self.store.write(|s| {
-            if let Some(t) = s.turns.iter_mut().find(|t| t.id == tid) {
-                t.messages = messages;
-            }
-        })?;
-        Ok(tid)
+        let mut turn = TurnRow::queued(id, text, TurnKind::Message, Admission::Pending);
+        turn.messages = messages;
+        self.deliver_row(turn)
     }
 
     /// Queues a turn of `kind` (delivered when the Governor admits it).
     pub(crate) fn deliver_kind(&self, id: &str, text: &str, kind: TurnKind) -> Result<String> {
+        self.deliver_row(TurnRow::queued(id, text, kind, Admission::Pending))
+    }
+
+    /// Queues `turn` as it is: the delivery loop never sees it half made.
+    pub(crate) fn deliver_row(&self, turn: TurnRow) -> Result<String> {
+        let id = turn.agent_id.as_str();
         match self.store.read(|s| s.agents.get(id).map(|a| a.tracker.state)) {
             None => bail!("no agent {id}"),
             Some(AgentState::Archived) => bail!("agent {id} is deleted"),
             Some(_) => {}
         }
-        let turn = TurnRow::queued(id, text, kind, Admission::Pending);
         let tid = turn.id.clone();
         self.store.write(|s| s.turns.push(turn))?;
         Ok(tid)
@@ -503,9 +504,18 @@ impl Runtime {
     /// and the lead tools added since (seen from its next start).
     fn promote_lead(&self, cx: &RunCtx) {
         let tools = orch_team::compile::tools_for(true);
+        let is_lead =
+            |a: &AgentRecord| a.team.as_ref().is_some_and(|t| t.run_id == cx.run.id && cx.team.is_lead(&t.node));
+        let stale = |a: &AgentRecord| {
+            is_lead(a) && (a.tier != governor::Tier::Critical || tools.iter().any(|t| !a.role.orch_tools.contains(t)))
+        };
+        // Every team tick: the store (and its diff) is written only for a change.
+        if !self.store.read(|s| s.agents.values().any(stale)) {
+            return;
+        }
         let _ = self.store.write(|s| {
             for a in s.agents.values_mut() {
-                if !a.team.as_ref().is_some_and(|t| t.run_id == cx.run.id && cx.team.is_lead(&t.node)) {
+                if !is_lead(&*a) {
                     continue;
                 }
                 a.tier = governor::Tier::Critical;
@@ -792,7 +802,7 @@ impl Runtime {
         Ok(ids)
     }
 
-    fn render_messages(msgs: &[Message], max: usize) -> String {
+    pub(crate) fn render_messages(msgs: &[Message], max: usize) -> String {
         let mut s = String::new();
         for m in msgs {
             let who = m.from_agent.clone().unwrap_or_else(|| m.from_node.clone());
@@ -1330,10 +1340,18 @@ impl Runtime {
                 if !branch.starts_with(&prefix) || branch == cx.feature.integration_branch() {
                     bail!("only branches of this feature ({prefix}<node>-<n>) can be merged here");
                 }
-                if let Some(id) = args.get("task").and_then(Value::as_u64)
-                    && let Some(t) = self.db.task(id)?
-                    && let Some(why) = self.review_missing(&cx, &t)
-                {
+                // The review gate holds without `task` too: a branch whose task
+                // is under review is not merged.
+                let gated: Vec<Task> = match args.get("task").and_then(Value::as_u64) {
+                    Some(id) => self.db.task(id)?.into_iter().collect(),
+                    None => self
+                        .db
+                        .tasks(None, None, Some(&cx.run.id))?
+                        .into_iter()
+                        .filter(|t| t.branch.as_deref() == Some(branch) && t.flow.reviewing)
+                        .collect(),
+                };
+                if let Some(why) = gated.iter().find_map(|t| self.review_missing(&cx, t)) {
                     bail!("{why}");
                 }
                 let r = orch_git::commit::merge_into_worktree(

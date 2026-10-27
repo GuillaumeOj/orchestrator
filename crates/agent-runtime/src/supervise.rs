@@ -65,6 +65,9 @@ impl MemberStatus {
                     ),
                 ));
             }
+            // A long turn with work behind it is busy, not stuck (the
+            // watchdog watches long turns).
+            AgentState::Working => return None,
             _ => {}
         }
         let q = self.queued_since_ms.filter(|t| now.saturating_sub(*t) >= STUCK_MS)?;
@@ -190,6 +193,13 @@ impl Runtime {
                 if self.live(&m.agent).is_some() {
                     bail!("{} is running ({}): nudge it instead", m.agent, m.state.label());
                 }
+                // A failed resume flags the agent, and the delivery loop never
+                // starts a flagged one: the lead's resume is a new attempt.
+                self.store.write(|s| {
+                    if let Some(a) = s.agents.get_mut(&m.agent) {
+                        a.flag = None;
+                    }
+                })?;
                 // Through the Governor like any work: a continue turn.
                 let turn = self.deliver_kind(
                     &m.agent,

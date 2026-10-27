@@ -489,7 +489,7 @@ pub(crate) mod tests {
         assert!(!allow.contains(&json!("mcp__orch__request_pr")), "specialists don't open PRs");
         assert!(
             !c.settings["permissions"]["deny"].as_array().unwrap().contains(&json!("Agent")),
-            "self-review runs /code-review's subagents"
+            "reviews run /code-review's subagents"
         );
         let tools = c.mcp["mcpServers"]["orch"]["env"]["ORCH_TOOLS"].as_str().unwrap();
         assert!(tools.contains("sync_integration") && !tools.contains("merge"));

@@ -39,26 +39,27 @@ fn ask_user_question_text(input: &Value) -> (String, Vec<String>) {
     let mut options = vec![];
     for q in &qs {
         let s = |k: &str| q.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string();
-        let opts: Vec<String> = q
+        let opts: Vec<(String, Option<&str>)> = q
             .get("options")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .map(|o| {
-                let label = o.get("label").and_then(Value::as_str).unwrap_or("");
-                match o.get("description").and_then(Value::as_str) {
-                    Some(d) if !d.is_empty() => format!("{label}: {d}"),
-                    _ => label.to_string(),
-                }
+                let label = o.get("label").and_then(Value::as_str).unwrap_or("").to_string();
+                (label, o.get("description").and_then(Value::as_str).filter(|d| !d.is_empty()))
             })
             .collect();
         let mut line = s("question");
-        for o in &opts {
-            line.push_str(&format!("\n  - {o}"));
+        for (label, d) in &opts {
+            match d {
+                Some(d) => line.push_str(&format!("\n  - {label}: {d}")),
+                None => line.push_str(&format!("\n  - {label}")),
+            }
         }
         text.push(line);
         if qs.len() == 1 {
-            options = opts.iter().map(|o| o.split(": ").next().unwrap_or(o).to_string()).collect();
+            // The labels as they are (a label may contain ": " itself).
+            options = opts.into_iter().map(|(label, _)| label).collect();
         }
     }
     (text.join("\n\n"), options)
@@ -122,19 +123,22 @@ impl Runtime {
 
     /// The user typed in the pane: questions the agent asked there are answered.
     pub(crate) fn close_pane_questions(&self, agent: &str) {
-        let open: Vec<u64> = self.store.read(|s| {
-            s.inbox
-                .iter()
-                .filter(|i| i.agent_id.as_deref() == Some(agent) && i.kind == "question" && i.pending())
-                .filter(|i| i.payload.get("via").and_then(Value::as_str) == Some("pane"))
-                .map(|i| i.id)
-                .collect()
-        });
-        for id in open {
-            let _ = self.store.write(|s| {
-                let _ = s.close_inbox(id, orch_store::InboxStatus::Decided, Some("answered in pane".into()));
-            });
+        let pane_question = |i: &crate::store::InboxItem| {
+            i.agent_id.as_deref() == Some(agent)
+                && i.kind == "question"
+                && i.pending()
+                && i.payload.get("via").and_then(Value::as_str) == Some("pane")
+        };
+        // Every user prompt passes here: the store is written only when one is open.
+        if !self.store.read(|s| s.inbox.iter().any(pane_question)) {
+            return;
         }
+        let _ = self.store.write(|s| {
+            let open: Vec<u64> = s.inbox.iter().filter(|i| pane_question(i)).map(|i| i.id).collect();
+            for id in open {
+                let _ = s.close_inbox(id, orch_store::InboxStatus::Decided, Some("answered in pane".into()));
+            }
+        });
     }
 }
 

@@ -52,6 +52,11 @@ pub fn render_review(v: &Value) -> String {
     s
 }
 
+/// The title of the reviewer's task for `t` (before its own title).
+fn review_title(t: &Task) -> String {
+    format!("Review {}", t.handle())
+}
+
 /// The node that reviews `me`'s work: a `reviews` edge from it, else a
 /// node whose role is a reviewer.
 fn reviewer_of(cx: &RunCtx, me: &str) -> Option<String> {
@@ -98,11 +103,15 @@ impl Runtime {
         if cx.team.review == ReviewMode::None || t.flow.review.is_some() {
             return None;
         }
-        Some(if t.flow.reviewing {
-            format!("{} is still being reviewed: merge it when the report comes", t.handle())
-        } else {
-            format!("{} has not been reviewed yet: wait for its report", t.handle())
-        })
+        if t.flow.reviewing {
+            return Some(format!("{} is still being reviewed: merge it when the report comes", t.handle()));
+        }
+        // Reported with no review to wait for (a `node` team without a
+        // reviewer, or reported before reviews existed): nothing will come.
+        if t.status == TaskStatus::Review {
+            return None;
+        }
+        Some(format!("{} has not been reviewed yet: wait for its report", t.handle()))
     }
 
     /// `report_done` before the review: start it. `Some(text)` is the answer
@@ -115,7 +124,14 @@ impl Runtime {
         t: &mut Task,
         args: &Value,
     ) -> Result<Option<String>> {
-        if let Some(r) = args.get("review").filter(|v| v.is_object()) {
+        // The owner's own `review` counts only after the self-review it was
+        // asked for (never in place of a reviewer node's).
+        let own = match cx.team.review {
+            ReviewMode::SelfReview => t.flow.reviewing,
+            ReviewMode::None => true,
+            ReviewMode::Node => false,
+        };
+        if let Some(r) = args.get("review").filter(|v| v.is_object() && own) {
             t.flow.review = Some(r.clone());
             t.flow.reviewing = false;
             return Ok(None);
@@ -150,7 +166,7 @@ impl Runtime {
                 let branch = t.branch.clone().unwrap_or_default();
                 let summary = cut(str_arg(args, "summary").unwrap_or(""), 2_000);
                 let mut r =
-                    Task::new(&cx.project.id, "", &format!("Review {} ({})", t.handle(), cut(&t.title, 120)), now_ms());
+                    Task::new(&cx.project.id, "", &format!("{} ({})", review_title(t), cut(&t.title, 120)), now_ms());
                 r.body = format!(
                     "Review {branch} for task id {} ({}). The owner says: {summary}\n\nRead it with `git diff {}...{branch}`, run `/code-review high --max-findings all` on it, then call mcp__orch__submit_review with task {} and your findings. Don't change the branch.",
                     t.id,
@@ -161,9 +177,14 @@ impl Runtime {
                 r.node = Some(reviewer.clone());
                 r.feature_id = Some(cx.feature.id.clone());
                 r.team_run_id = Some(cx.run.id.clone());
-                let r = self.tasks_for(&cx.project).create(r)?.value;
+                let svc = self.tasks_for(&cx.project);
+                let r = svc.create(r)?.value;
                 t.flow.reviewing = true;
                 self.save_flow(t)?;
+                // The owner's summary goes with the reviewer's report to the lead.
+                if !summary.is_empty() {
+                    *t = svc.note(t.id, me, &summary, now_ms())?.value;
+                }
                 self.run_event(
                     &cx.run.id,
                     Some(&rec.id),
@@ -280,6 +301,9 @@ impl Runtime {
                 if t.node.as_deref() == Some(me) {
                     bail!("you can't review your own task");
                 }
+                if !t.flow.reviewing {
+                    bail!("{} is not waiting for a review", t.handle());
+                }
                 let review = json!({"reviewer": me, "findings": findings, "summary": summary});
                 t.flow.review = Some(review.clone());
                 t.flow.reviewing = false;
@@ -287,9 +311,11 @@ impl Runtime {
                 self.apply_status(&mut t, TaskStatus::Review);
                 let svc = self.tasks_for(&cx.project);
                 svc.update(t.clone(), now_ms())?;
-                // The reviewer's own review task is done.
+                // The reviewer's own review task (of this task) is done.
                 if let Some(mine) = rec.team.as_ref().and_then(|s| s.task) {
-                    if let Ok(Some(mut r)) = self.db.task(mine) {
+                    if let Ok(Some(mut r)) = self.db.task(mine)
+                        && r.title.starts_with(&format!("{} (", review_title(&t)))
+                    {
                         self.apply_status(&mut r, TaskStatus::Done);
                         svc.update(r, now_ms())?;
                     }

@@ -184,9 +184,10 @@ struct House {
     supervised: BTreeMap<String, std::collections::BTreeSet<String>>,
 }
 
-/// A team lead (compiled at the critical tier): outside the process cap.
+/// A team lead (the node that merges): outside the process cap. Not the
+/// tier alone, which a specialist's role can also set to critical.
 pub(crate) fn reserved_slot(a: &AgentRecord) -> bool {
-    a.team.is_some() && a.tier == Tier::Critical
+    a.team.is_some() && a.role.orch_tools.iter().any(|t| t == "merge")
 }
 
 /// True (and restamps `last`) when `every` ms have passed since `last`.
@@ -474,13 +475,9 @@ impl Runtime {
     /// Queues a slash command for the agent (`/code-review …`), typed as is
     /// once it is idle and admitted like any app turn.
     pub fn deliver_command(&self, id: &str, command: &str) -> Result<String> {
-        let tid = self.deliver_kind(id, command, TurnKind::Task)?;
-        self.store.write(|s| {
-            if let Some(t) = s.turns.iter_mut().find(|t| t.id == tid) {
-                t.command = true;
-            }
-        })?;
-        Ok(tid)
+        let mut turn = TurnRow::queued(id, command, TurnKind::Task, Admission::Pending);
+        turn.command = true;
+        self.deliver_row(turn)
     }
 
     pub(crate) fn mark_asked(&self, id: &str) {
@@ -525,21 +522,14 @@ impl Runtime {
             return None;
         }
         let ids = self.house().injected.get(&rec.id).cloned().unwrap_or_default();
+        if ids.is_empty() {
+            return None;
+        }
         let msgs = self.unread_of(rec, &ids);
         if msgs.is_empty() {
             return None;
         }
-        let list: String = msgs
-            .iter()
-            .map(|m| {
-                format!(
-                    "\n- {} from {}: {}",
-                    m.kind.replace('_', " "),
-                    m.from_agent.as_deref().unwrap_or(&m.from_node),
-                    m.body
-                )
-            })
-            .collect();
+        let list = Self::render_messages(&msgs, crate::team::MAX_BODY);
         Some(HookOutput::stop_block(&format!(
             "ORCH: before you stop: {} team message(s) reached you during this turn:{list}\n\nAct on each one now (review and merge a report, answer with mcp__orch__send_message, update the task). If you already have, end your turn.",
             msgs.len()
@@ -1852,11 +1842,12 @@ impl Runtime {
             return Ok(());
         }
         // The agent's next queued turns ride along (one turn, one paste), up
-        // to a slash command, which is typed alone and as is.
+        // to a slash command, which is typed alone and as is. Each one is
+        // admitted first: a pause or a budget wait holds it like any turn.
         let batch: Vec<TurnRow> = if turn.command {
             vec![turn.clone()]
         } else {
-            self.store.read(|s| {
+            let next: Vec<TurnRow> = self.store.read(|s| {
                 s.turns
                     .iter()
                     .filter(|t| t.agent_id == rec.id && t.status == TurnStatus::Queued)
@@ -1867,7 +1858,15 @@ impl Runtime {
                     })
                     .cloned()
                     .collect()
-            })
+            });
+            let mut batch = vec![];
+            for t in next {
+                if t.id != turn.id && !self.admit_turn(rec, &t, false) {
+                    break;
+                }
+                batch.push(t);
+            }
+            batch
         };
         let prepared = if turn.command {
             delivery::Prepared { turn_id: turn.id.clone(), text: turn.body.trim().to_string(), file: None }

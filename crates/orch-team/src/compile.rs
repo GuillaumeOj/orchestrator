@@ -118,8 +118,9 @@ pub fn compile_node(team: &Team, node_id: &str, roles: &[RoleDef], f: &FeatureCt
     if !role.tools.web {
         deny.extend(["WebFetch", "WebSearch"].map(String::from));
     }
-    // `/code-review` runs its reviewers as subagents.
-    if !role.subagents_allowed && team.review != ReviewMode::SelfReview {
+    // `/code-review` runs its reviewers as subagents: the owner's self-review
+    // and the reviewer node's review alike.
+    if !role.subagents_allowed && team.review == ReviewMode::None {
         deny.push("Agent".into());
     }
     let mut prompt = role.prompt.trim().to_string();
