@@ -24,24 +24,26 @@ pub struct ProjectSettingsForm {
 /// never hidden. An error is not "no features": the UI would hide every
 /// feature and close their panes for that poll.
 pub fn features(rt: &agent_runtime::runtime::Runtime) -> Result<Vec<Value>> {
-    // Polled with the app state: three queries in all, not two per feature.
+    // Polled with the app state: three queries in all, not two per feature,
+    // plus one per deleted feature whose team has agents left.
     let mut latest: std::collections::BTreeMap<String, orch_store::TeamRun> = std::collections::BTreeMap::new();
     for r in rt.db.runs(None, false)? {
         latest.entry(r.feature_id.clone()).or_insert(r); // newest first
     }
     let counts = rt.db.task_counts_by_run()?;
     let mut list = rt.db.features(None)?;
-    let seated: std::collections::BTreeSet<String> = rt.store.read(|s| {
+    let mut seated: std::collections::BTreeSet<String> = rt.store.read(|s| {
         s.agents
             .values()
             .filter(|a| a.tracker.state != agent_runtime::state::AgentState::Archived)
             .filter_map(|a| a.team.as_ref().map(|t| t.feature_id.clone()))
             .collect()
     });
+    for f in &list {
+        seated.remove(&f.id);
+    }
     for id in seated {
-        if !list.iter().any(|f| f.id == id) {
-            list.extend(rt.db.feature(&id)?);
-        }
+        list.extend(rt.db.feature(&id)?);
     }
     Ok(list
         .into_iter()

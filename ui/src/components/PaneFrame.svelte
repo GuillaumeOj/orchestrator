@@ -1,7 +1,7 @@
 <script>
   // Pane + pane header (Penpot 02): number (⌘1…9), type and title, zoom/close
   // hints. Focused = raised surface + accent border.
-  import { app, closePane, focusPane, toggleZoom } from '../lib/app.svelte.js';
+  import { app, closePaneByUser, focusPane, toggleZoom } from '../lib/app.svelte.js';
   import { visible } from '../lib/layout.js';
   import AgentPane from '../panes/AgentPane.svelte';
   import BoardPane from '../panes/BoardPane.svelte';
@@ -34,7 +34,7 @@
       {#if zoomed}<span class="zoomtag">ZOOMED · {n || 1} of {total}</span>{/if}
       <span class="grow"></span>
       <button class="hint" onclick={toggleZoom}><Kbd keys="⌘+; z" /> {zoomed ? 'restore' : 'zoom'}</button>
-      <button class="hint" onclick={() => closePane(paneId, { record: true })}><Kbd keys="⌘+W" /> close</button>
+      <button class="hint" onclick={() => closePaneByUser(paneId)}><Kbd keys="⌘+W" /> close</button>
     </header>
     <div class="body">
       {#if spec.type === 'agent'}<AgentPane {paneId} />

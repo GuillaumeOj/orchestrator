@@ -10,7 +10,7 @@ vi.mock('../src/lib/ipc.js', () => ({
   invoke: (cmd) => (cmd === 'app_state' ? Promise.resolve(next) : Promise.resolve(null)),
 }));
 
-const { app, closePane, refresh, run } = await import('../src/lib/app.svelte.js');
+const { app, closePane, refresh, reopenClosed, run } = await import('../src/lib/app.svelte.js');
 const { default: Sidebar } = await import('../src/components/Sidebar.svelte');
 
 const feature = { id: 'shop-api-fx', project_id: 'shop-api', slug: 'fx', branch: 'orch/fx/integration', run: null };
@@ -43,20 +43,14 @@ describe('sidebar', () => {
     expect(Object.values(app.panes)).toMatchObject([{ type: 'feature', featureId: gone.id }]);
   });
 
-  it('shows a team agent whose feature row is missing', () => {
-    app.data = { ...fixture(), features: [], agents: [...fixture().agents, lead('shop-api-gone')] };
-    const { container } = render(Sidebar);
-    const row = [...container.querySelectorAll('.row.feature')].find((r) => r.textContent.includes('gone'));
-    expect(row).toBeDefined();
-    expect(container.querySelector('.row.agent.team')).not.toBeNull();
-  });
-
-  it('does not call a feature deleted before the features were ever read', () => {
-    app.data = { ...fixture(), features: null, agents: [...fixture().agents, lead('shop-api-fx')] };
-    const { container } = render(Sidebar);
-    const row = [...container.querySelectorAll('.row.feature')].find((r) => r.textContent.includes('fx'));
-    expect(row).toBeDefined();
-    expect(row.textContent).not.toContain('deleted');
+  it('shows a team agent whose feature is not listed with the solo sessions', () => {
+    for (const features of [[], null]) {
+      app.data = { ...fixture(), features, agents: [...fixture().agents, lead('shop-api-gone')] };
+      const { container, unmount } = render(Sidebar);
+      expect(container.querySelector('.row.feature')).toBeNull();
+      expect([...container.querySelectorAll('.row.agent')].some((r) => r.textContent.includes('fx-lead-1'))).toBe(true);
+      unmount();
+    }
   });
 
   it('lists a team agent under its feature', () => {
@@ -79,20 +73,20 @@ describe('feature panes', () => {
     next = { ...fixture(), features: [] };
     await refresh();
     expect(app.panes.p1).toBeUndefined();
-    run('pane.reopen');
+    await reopenClosed();
     expect(Object.values(app.panes)).toHaveLength(0);
   });
 
-  it('does not offer back a pane that closed itself', () => {
+  it('does not offer back a pane that closed itself', async () => {
     closePane('p1');
-    run('pane.reopen');
+    await reopenClosed();
     expect(Object.values(app.panes)).toHaveLength(0);
   });
 
-  it('reopens a closed feature pane (⌘⇧T)', () => {
+  it('reopens a closed feature pane (⌘⇧T)', async () => {
     run('pane.close');
     expect(Object.values(app.panes)).toHaveLength(0);
-    run('pane.reopen');
+    await reopenClosed();
     const panes = Object.values(app.panes);
     expect(panes).toHaveLength(1);
     expect(panes[0]).toMatchObject({ type: 'feature', featureId: feature.id });

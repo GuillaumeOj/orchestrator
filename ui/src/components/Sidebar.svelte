@@ -16,19 +16,12 @@
     projects().map((p) => {
       const mine = activeAgents().filter((a) => (a.team?.project_id ?? a.project_id) === p.id);
       const listed = features().filter((f) => f.project_id === p.id);
+      const ids = new Set(listed.map((f) => f.id));
       // The core lists a deleted feature (`archived`) while its team has
-      // agents. A team agent is still never hidden: before the features were
-      // ever read (`null`), its feature gets a row from its seat.
-      const unlisted = [...new Set(mine.map((a) => a.team?.feature_id))]
-        .filter((id) => id && !listed.some((f) => f.id === id))
-        .map((id) => ({
-          id,
-          project_id: p.id,
-          slug: id.startsWith(`${p.id}-`) ? id.slice(p.id.length + 1) : id,
-          unlisted: true,
-        }));
-      const feats = [...listed, ...unlisted].map((f) => ({ f, list: mine.filter((a) => a.team?.feature_id === f.id) }));
-      return { p, feats, list: mine.filter((a) => !a.team) };
+      // agents. A team agent is still never hidden: one whose feature is not
+      // listed (features not read yet) shows with the solo sessions.
+      const feats = listed.map((f) => ({ f, list: mine.filter((a) => a.team?.feature_id === f.id) }));
+      return { p, feats, list: mine.filter((a) => !ids.has(a.team?.feature_id)) };
     }),
   );
   const focusedFeature = $derived(app.panes[app.focused]?.type === 'feature' ? app.panes[app.focused].featureId : null);
@@ -72,7 +65,7 @@
               {@const k = `f:${f.id}`}
               {@const n = needsYou(fl)}
               <li role="treeitem" aria-selected={focusedFeature === f.id} aria-expanded={!collapsed[k]}>
-                <button data-row class="row feature" class:selected={focusedFeature === f.id} onclick={() => (f.unlisted ? fl[0] && openAgent(fl[0].id) : openFeature(f.id))} title={f.unlisted ? 'Features not read yet' : `${f.archived ? 'Deleted feature, agents left · ' : ''}${f.branch} · ${f.run ? runStateLabel(f.run.status) : 'no run'}`}>
+                <button data-row class="row feature" class:selected={focusedFeature === f.id} onclick={() => openFeature(f.id)} title="{f.archived ? 'Deleted, agents left · ' : ''}{f.branch} · {f.run ? runStateLabel(f.run.status) : 'no run'}">
                   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                   <span class="caret" aria-hidden="true" onclick={(e) => (e.stopPropagation(), (collapsed[k] = !collapsed[k]))}>{collapsed[k] ? '▸' : '▾'}</span>
                   <span class="name">{f.slug}</span>

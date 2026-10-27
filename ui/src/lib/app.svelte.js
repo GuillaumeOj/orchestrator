@@ -187,18 +187,8 @@ export function focusPane(id) {
   });
 }
 
-/** Panes the user closed (`record`), newest last, for Reopen closed pane
- *  (⌘⇧T). A pane that closes itself (a shell exits, Setup is done, its
- *  agent or feature is gone) is not offered back. */
-const closed = [];
-const CLOSED_MAX = 20;
-
-export function closePane(id = app.focused, { record = false } = {}) {
+export function closePane(id = app.focused) {
   if (!id || !app.panes[id]) return;
-  if (record) {
-    closed.push({ ...app.panes[id], termId: undefined, docked: inDock(id) });
-    if (closed.length > CLOSED_MAX) closed.shift();
-  }
   terms.get(id)?.dispose();
   terms.delete(id);
   delete app.panes[id];
@@ -215,39 +205,50 @@ export function closePane(id = app.focused, { record = false } = {}) {
   saveLayout();
 }
 
-/** Reopens the last closed pane whose agent, feature or project still exists. */
-export function reopenClosed() {
-  for (let s = closed.pop(); s; s = closed.pop()) {
-    if (paneGone(s)) continue;
-    switch (s.type) {
-      case 'agent':
-        return openAgent(s.agentId);
-      case 'feature':
-        return openFeature(s.featureId);
-      case 'project':
-        return openProject(s.projectId);
-      case 'board':
-        return openBoard(s.projectId);
-      case 'canvas':
-        return openCanvas(s.teamId, s.projectId);
-      case 'diff':
-        return openDiff(s.projectId, s.path, s.branch);
-      case 'shell':
-        // Back where it was: the dock, or a pane. `null`: no agent, not the
-        // one in focus now.
-        return openShell({
-          projectId: s.projectId,
-          agentId: s.agentId ?? null,
-          cwd: s.cwd,
-          how: s.docked ? undefined : 'right',
-        });
-      case 'editor':
-        return openEditor(s.file ?? null, null, { projectId: s.projectId, agentId: s.agentId ?? null });
-      default:
-        return openSingleton(s.type);
-    }
+/** Panes the user closed, newest last, for Reopen closed pane (⌘⇧T). A
+ *  pane that closes itself (a shell exits, Setup is done, its agent or
+ *  feature is gone) goes through `closePane` and is not offered back. */
+const closed = [];
+const CLOSED_MAX = 20;
+
+/** ⌘W, a tab's ×, a pane's close: the pane can be reopened. */
+export function closePaneByUser(id = app.focused) {
+  if (!id || !app.panes[id]) return;
+  closed.push({ spec: app.panes[id], docked: inDock(id) });
+  if (closed.length > CLOSED_MAX) closed.shift();
+  closePane(id);
+}
+
+/** Reopens the last closed pane whose agent, feature or project still
+ *  exists, as a restart restores it (a terminal as a shell in its cwd). */
+export async function reopenClosed() {
+  for (let c = closed.pop(); c; c = closed.pop()) {
+    const { spec, docked } = c;
+    if (paneGone(spec)) continue;
+    const open = findPane((s) => s.type === spec.type && PANE_KEYS.every((k) => s[k] === spec[k]));
+    if (open) return focusPane(open);
+    const s = await revive(spec);
+    if (!s) continue;
+    if (docked) return addDockPane(s);
+    return addPane(s, isTerminal(s) || !app.layout ? 'right' : 'tab');
   }
   toast('No closed pane to reopen');
+}
+
+/** What a pane is about: two panes with these equal show the same thing. */
+const PANE_KEYS = ['agentId', 'featureId', 'projectId', 'teamId', 'path'];
+
+/** A saved pane spec made live: shells and editors restart as a shell in
+ *  their cwd; `null` when the shell does not start. */
+async function revive(s) {
+  if (s.type !== 'shell' && s.type !== 'editor') return s;
+  try {
+    const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
+    const spec = { ...s, type: 'shell', termId: t.id, cwd: t.cwd };
+    return { ...spec, title: title(spec) };
+  } catch {
+    return null;
+  }
 }
 
 export function findPane(pred) {
@@ -350,7 +351,7 @@ const spawnShell = ({ projectId, agentId, cwd }) =>
  *  `agentId: null` = no agent (undefined = the one in focus). */
 export async function openShell(opts = {}) {
   const projectId = opts.projectId ?? contextProject()?.id;
-  const agentId = opts.agentId !== undefined ? (opts.agentId ?? undefined) : contextAgent()?.id;
+  const agentId = opts.agentId ?? contextAgent()?.id;
   try {
     const t = await spawnShell({ projectId, agentId, cwd: opts.cwd });
     const spec = { type: 'shell', termId: t.id, cwd: t.cwd, projectId, agentId };
@@ -361,10 +362,9 @@ export async function openShell(opts = {}) {
   }
 }
 
-/** FR-1101/1102: reuse the project's nvim when it runs, else a new editor pane.
- *  `opts.agentId: null` = no agent (undefined = the one in focus). */
+/** FR-1101/1102: reuse the project's nvim when it runs, else a new editor pane. */
 export async function openEditor(file = null, line = null, opts = {}) {
-  const a = opts.agentId === null ? undefined : opts.agentId ? agent(opts.agentId) : contextAgent();
+  const a = opts.agentId ? agent(opts.agentId) : contextAgent();
   const p = projects().find((x) => x.id === (opts.projectId ?? a?.project_id)) ?? contextProject();
   try {
     const r = await invoke('editor_open', {
@@ -385,7 +385,7 @@ export async function openEditor(file = null, line = null, opts = {}) {
       );
       return;
     }
-    addPane({ type: 'editor', termId: r.term.id, cwd: r.term.cwd, projectId: p?.id, agentId: a?.id, file }, 'right');
+    addPane({ type: 'editor', termId: r.term.id, cwd: r.term.cwd, projectId: p?.id, file }, 'right');
   } catch (e) {
     toast(`Could not open the editor: ${errText(e)}`, { kind: 'error' });
   }
@@ -600,17 +600,9 @@ export async function restoreLayout() {
     ids.map(async (id) => {
       const s = saved.panes[id];
       if (!s || paneGone(s)) return;
-      if (s.type !== 'shell' && s.type !== 'editor') {
-        panes[id] = s;
-        return;
-      }
-      try {
-        const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
-        const spec = { ...s, type: 'shell', termId: t.id, cwd: t.cwd };
-        panes[id] = { ...spec, title: title(spec) };
-      } catch {
-        // The shell did not start: the pane is dropped from the restored layout.
-      }
+      // A shell that does not start is dropped from the restored layout.
+      const live = await revive(s);
+      if (live) panes[id] = live;
     }),
   );
   app.panes = panes;
@@ -709,7 +701,7 @@ export function commands() {
     { id: 'pane.split.right', label: 'Split right (shell)', run: () => openShell({ how: 'right' }) },
     { id: 'pane.split.below', label: 'Split below (shell)', run: () => openShell({ how: 'below' }) },
     { id: 'pane.zoom', label: 'Zoom / restore the focused pane', run: toggleZoom },
-    { id: 'pane.close', label: 'Close pane', run: () => closePane(app.focused, { record: true }) },
+    { id: 'pane.close', label: 'Close pane', run: () => closePaneByUser() },
     { id: 'pane.reopen', label: 'Reopen closed pane', run: reopenClosed },
     { id: 'sidebar', label: 'Toggle sidebar', run: () => ((app.sidebar = !app.sidebar), saveLayout()) },
     {
