@@ -96,7 +96,8 @@ pub fn parse_pr_list(json: &str) -> Result<Vec<PullRequest>> {
         .collect())
 }
 
-fn gh(dir: &Path, args: &[&str]) -> Result<String> {
+/// Runs `gh` in `dir` (no prompts, no color, a deadline); stdout on success.
+pub fn gh(dir: &Path, args: &[&str]) -> Result<String> {
     let mut cmd = Command::new("gh");
     cmd.current_dir(dir).args(args).env("GH_PROMPT_DISABLED", "1").env("NO_COLOR", "1");
     let out = run_with_deadline(cmd, GH_DEADLINE).with_context(|| format!("gh {}", args.join(" ")))?;

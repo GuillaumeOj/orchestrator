@@ -17,8 +17,7 @@ pub struct TeamFile {
 }
 
 pub fn export(team: &Team, roles: &[RoleDef]) -> String {
-    let used: Vec<RoleDef> = roles.iter().filter(|r| team.nodes.iter().any(|n| n.role_id == r.id)).cloned().collect();
-    serde_json::to_string_pretty(&TeamFile { format: FORMAT, team: team.clone(), roles: used })
+    serde_json::to_string_pretty(&TeamFile { format: FORMAT, team: team.clone(), roles: team.used_roles(roles) })
         .expect("team serializes")
 }
 

@@ -1370,7 +1370,7 @@ mod tests {
         assert!(exported.contains("\"format\": 1"));
         // Launch: the feature shows in app_state; the Feature pane and the Board read it.
         let run = core
-            .team_launch(crate::teams::LaunchForm {
+            .team_launch(agent_runtime::team::LaunchSpec {
                 project_id: "repo".into(),
                 team_id: "bugfix-squad".into(),
                 slug: "fx".into(),

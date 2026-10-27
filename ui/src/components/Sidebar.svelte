@@ -5,6 +5,7 @@
   import { agents, app, features, openAgent, openFeature, openProject, projects } from '../lib/app.svelte.js';
   import { pct } from '../lib/format.js';
   import { displayState } from '../lib/status.js';
+  import { runStateLabel } from '../lib/teams.js';
   import AgentChip from './AgentChip.svelte';
   import Kbd from './Kbd.svelte';
   import StatusBadge from './StatusBadge.svelte';
@@ -61,11 +62,11 @@
               {@const k = `f:${f.id}`}
               {@const n = needsYou(fl)}
               <li role="treeitem" aria-selected={focusedFeature === f.id} aria-expanded={!collapsed[k]}>
-                <button data-row class="row feature" class:selected={focusedFeature === f.id} onclick={() => openFeature(f.id)} title="{f.branch} · {f.run?.label ?? 'no run'}">
+                <button data-row class="row feature" class:selected={focusedFeature === f.id} onclick={() => openFeature(f.id)} title="{f.branch} · {f.run ? runStateLabel(f.run.status) : 'no run'}">
                   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                   <span class="caret" aria-hidden="true" onclick={(e) => (e.stopPropagation(), (collapsed[k] = !collapsed[k]))}>{collapsed[k] ? '▸' : '▾'}</span>
                   <span class="name">{f.slug}</span>
-                  {#if n}<span class="badge" aria-label="{n} need you">{n}</span>{:else if f.run}<span class="meta">{f.run.label}</span>{/if}
+                  {#if n}<span class="badge" aria-label="{n} need you">{n}</span>{:else if f.run}<span class="meta">{runStateLabel(f.run.status)}</span>{/if}
                 </button>
                 {#if !collapsed[k]}
                   <ul role="group">

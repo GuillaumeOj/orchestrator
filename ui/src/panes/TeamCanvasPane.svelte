@@ -87,7 +87,7 @@
     try {
       const r = await invoke('team_save', { team: $state.snapshot(team) });
       team = { ...team, version: r.team.version };
-      serverIssues = r.issues.map((text) => ({ node: issueNode(text), text }));
+      serverIssues = r.issues;
       status = 'saved';
       await load();
     } catch (e) {
@@ -95,9 +95,6 @@
       toast(`Could not save the team: ${errText(e)}`, { kind: 'error' });
     }
   }
-
-  /** The core's issue texts start with the node they are about. */
-  const issueNode = (text) => team?.nodes.find((n) => text.startsWith(`${n.id} `) || text.includes(`: ${n.id}`))?.id ?? null;
 
   function undo() {
     const t = history.undo($state.snapshot(team));
@@ -300,7 +297,9 @@
     if (drag.kind === 'pan') pan = { x: drag.ox + dx, y: drag.oy + dy };
     else {
       drag.moved = drag.moved || Math.abs(dx) + Math.abs(dy) > 3;
-      if (drag.moved) team = C.moveNode(team, drag.id, [drag.ox + dx / zoom, drag.oy + dy / zoom]);
+      // In place while dragging (one node re-renders); `up` records the undo step.
+      const n = drag.moved && team.nodes.find((x) => x.id === drag.id);
+      if (n) n.position = [Math.round(drag.ox + dx / zoom), Math.round(drag.oy + dy / zoom)];
     }
   }
   function up() {

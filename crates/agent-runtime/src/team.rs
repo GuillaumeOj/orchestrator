@@ -131,17 +131,7 @@ pub fn agent_id_for(slug: &str, node: &str, n: u32) -> String {
 
 /// The state a run is in or, paused or deferred, the one it resumes into.
 pub fn effective(run: &TeamRun) -> RunState {
-    match run.status {
-        RunState::Paused | RunState::Deferred => run.resume_status.unwrap_or(run.status),
-        s => s,
-    }
-}
-
-/// The roles a team uses, by id (what its snapshot holds).
-fn used_roles(team: &Team, roles: &[RoleDef]) -> Vec<RoleDef> {
-    let mut v: Vec<RoleDef> = roles.iter().filter(|r| team.nodes.iter().any(|n| n.role_id == r.id)).cloned().collect();
-    v.sort_by(|a, b| a.id.cmp(&b.id));
-    v
+    if run.status.held() { run.resume_status.unwrap_or(run.status) } else { run.status }
 }
 
 impl Runtime {
@@ -177,8 +167,7 @@ impl Runtime {
     }
 
     pub(crate) fn run_event(&self, run_id: &str, agent: Option<&str>, kind: &str, detail: Value) {
-        self.db.add_run_event(now_ms(), run_id, agent, kind, detail.clone());
-        self.event(agent.unwrap_or("-"), kind, detail);
+        self.db.add_run_event(now_ms(), run_id, agent, kind, detail);
     }
 
     fn tasks_of(&self, cx: &RunCtx) -> TaskService<'_> {
@@ -207,12 +196,10 @@ impl Runtime {
             bail!("a {} run can't go to {}", run.status, to);
         }
         let from = run.status;
-        if matches!(to, RunState::Paused | RunState::Deferred) && !matches!(from, RunState::Paused | RunState::Deferred)
-        {
+        if to.held() && !from.held() {
             run.resume_status = Some(from);
         }
-        if matches!(from, RunState::Paused | RunState::Deferred) && !matches!(to, RunState::Paused | RunState::Deferred)
-        {
+        if from.held() && !to.held() {
             run.resume_status = None;
         }
         run.status = to;
@@ -229,9 +216,7 @@ impl Runtime {
     /// resumes into, so the pause holds (its agents stay paused).
     pub(crate) fn advance_run(&self, run_id: &str, to: RunState, why: &str) -> Result<TeamRun> {
         let mut run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
-        if !matches!(run.status, RunState::Paused | RunState::Deferred)
-            || matches!(to, RunState::Paused | RunState::Deferred | RunState::Failed)
-        {
+        if !run.status.held() || to.held() || to == RunState::Failed {
             return self.set_run_state(run_id, to, why);
         }
         let from = effective(&run);
@@ -251,6 +236,11 @@ impl Runtime {
 
     /// J3 steps 2–3. Returns the run; the lead waits for the Governor.
     pub fn launch(&self, spec: &LaunchSpec) -> Result<TeamRun> {
+        let spec = &LaunchSpec {
+            slug: spec.slug.trim().to_string(),
+            base: spec.base.clone().filter(|b| !b.trim().is_empty()),
+            ..spec.clone()
+        };
         let project = self.db.project(&spec.project_id)?.ok_or_else(|| anyhow!("no project {}", spec.project_id))?;
         let team =
             self.db.team_in(Some(&project.id), &spec.team_id)?.ok_or_else(|| anyhow!("no team {}", spec.team_id))?;
@@ -300,10 +290,8 @@ impl Runtime {
         // taken earlier with other roles (a role edited since, or created
         // after a draft was saved) gets a new version instead of being kept.
         let mut team = team;
-        let used = used_roles(&team, &roles);
+        let used = team.used_roles(&roles);
         while let Some((t, r)) = self.db.team_version(&team.scope, &team.id, team.version)? {
-            let mut r = r;
-            r.sort_by(|a, b| a.id.cmp(&b.id));
             if t == team && r == used {
                 break;
             }
@@ -357,10 +345,7 @@ impl Runtime {
     /// new lead takes the next free number.
     fn start_lead(&self, cx: &RunCtx, lead: &str, row: &orch_store::WorktreeRow) -> Result<()> {
         let feature = &cx.feature;
-        let n = (1..=99)
-            .find(|k| !self.store.read(|s| s.agents.contains_key(&agent_id_for(&feature.slug, lead, *k))))
-            .ok_or_else(|| anyhow!("no free agent number for {lead}"))?;
-        let rec = self.add_team_agent(cx, lead, n, row)?;
+        let rec = self.add_team_agent(cx, lead, self.free_agent_number(&feature.slug, lead)?, row)?;
         let brief = format!(
             "ORCH: you lead the team on feature {} ({}). Brief from the user:\n\n{}\n\nFollow your protocol: write the docs in {}, commit them, then call mcp__orch__request_spec_approval.",
             feature.title,
@@ -374,6 +359,44 @@ impl Runtime {
         );
         self.deliver_kind(&rec.id, &brief, TurnKind::Task)?;
         Ok(())
+    }
+
+    /// The first `n` with no agent `<slug>-<node>-<n>` yet (archived ones
+    /// keep their number).
+    fn free_agent_number(&self, slug: &str, node: &str) -> Result<u32> {
+        (1..=99)
+            .find(|k| !self.store.read(|s| s.agents.contains_key(&agent_id_for(slug, node, *k))))
+            .ok_or_else(|| anyhow!("no free agent number for {node}"))
+    }
+
+    /// The branch an agent works on, as its worktree row records it.
+    fn branch_of(&self, rec: &AgentRecord) -> String {
+        self.store.read(|s| s.worktrees.get(&rec.worktree).map(|w| w.branch.clone())).unwrap_or_default()
+    }
+
+    /// The agent's own git identity file, when it has one.
+    pub(crate) fn agent_gitconfig(&self, id: &str) -> Option<std::path::PathBuf> {
+        Some(self.cfg.paths.agent_dir(id).join("gitconfig")).filter(|p| p.is_file())
+    }
+
+    /// Sets a task's status and what follows for its agent: back in the
+    /// queue (Ready, Backlog) it loses its agent, whose seat is freed; in
+    /// review or done the agent stays on record and its seat is freed.
+    pub(crate) fn apply_status(&self, t: &mut Task, s: TaskStatus) {
+        t.status = s;
+        match s {
+            TaskStatus::Ready | TaskStatus::Backlog => {
+                if let Some(a) = t.agent_id.take() {
+                    self.free_seat(&a, t.id);
+                }
+            }
+            TaskStatus::Review | TaskStatus::Done => {
+                if let Some(a) = &t.agent_id {
+                    self.free_seat(a, t.id);
+                }
+            }
+            TaskStatus::InProgress => {}
+        }
     }
 
     /// Creates an agent for `node` in `worktree` (not started: its first
@@ -417,7 +440,7 @@ impl Runtime {
                 w.agent_id = Some(id.clone());
             }
         })?;
-        if cx.run.status == RunState::Paused {
+        if cx.run.status.held() {
             self.governor_act(|g, now| (g.pause_agent(&AgentId(id.clone()), now), Vec::new()));
         }
         self.run_event(&cx.run.id, Some(&id), "agent.added", json!({"node": node, "branch": row.branch}));
@@ -460,7 +483,7 @@ impl Runtime {
         }
     }
 
-    fn task_turn(&self, cx: &RunCtx, t: &Task, rec: &AgentRecord) -> String {
+    fn task_turn(&self, cx: &RunCtx, t: &Task, rec: &AgentRecord, branch: &str) -> String {
         let up = rules::reports_to(&cx.team, &rec.team.as_ref().map(|s| s.node.clone()).unwrap_or_default())
             .unwrap_or_else(|| "the lead".into());
         let deps = if t.depends_on.is_empty() {
@@ -478,9 +501,7 @@ impl Runtime {
             } else {
                 t.body.trim()
             },
-            orch_git::git(&rec.worktree, &["symbolic-ref", "--short", "HEAD"])
-                .map(|b| b.trim().to_string())
-                .unwrap_or_default()
+            branch
         )
     }
 
@@ -506,10 +527,7 @@ impl Runtime {
             let rec = match free {
                 Some(a) => a.clone(),
                 None if (agents.len() as u32) < n.max_concurrency.max(1) => {
-                    let k = (1..=99).find(|k| {
-                        !self.store.read(|s| s.agents.contains_key(&agent_id_for(&cx.feature.slug, node, *k)))
-                    });
-                    let k = k.ok_or_else(|| anyhow!("no free agent number for {node}"))?;
+                    let k = self.free_agent_number(&cx.feature.slug, node)?;
                     let row = self.create_worktree(
                         &cx.project.path,
                         &WorktreeKindSpec::Team { feature: cx.feature.slug.clone(), role: node.into(), n: k },
@@ -529,13 +547,13 @@ impl Runtime {
             let mut task = t.clone();
             task.agent_id = Some(rec.id.clone());
             task.status = TaskStatus::InProgress;
-            task.branch =
-                orch_git::git(&rec.worktree, &["symbolic-ref", "--short", "HEAD"]).ok().map(|b| b.trim().to_string());
+            let branch = self.branch_of(&rec);
+            task.branch = Some(branch.clone()).filter(|b| !b.is_empty());
             let out = self.tasks_of(cx).update(task.clone(), now_ms())?;
             if let Some(e) = out.remote_error {
                 self.run_event(&cx.run.id, None, "task.remote_error", json!({"task": t.id, "error": e}));
             }
-            self.deliver_kind(&rec.id, &self.task_turn(cx, &task, &rec), TurnKind::Task)?;
+            self.deliver_kind(&rec.id, &self.task_turn(cx, &task, &rec, &branch), TurnKind::Task)?;
             self.run_event(
                 &cx.run.id,
                 Some(&rec.id),
@@ -578,40 +596,44 @@ impl Runtime {
     /// is interrupted (Esc) and the user told; a working agent with no hook
     /// for `NO_PROGRESS` gets an Inbox alert. Once per turn each.
     pub fn watchdog(&self, now: u64) {
-        let agents: Vec<AgentRecord> = self.store.read(|s| s.agents.values().cloned().collect());
-        for a in agents {
-            if self.live(&a.id).is_none() {
+        // Only the hits leave the store lock: (agent, run, what, turn start).
+        let hits: Vec<(String, Option<String>, Watch, u64)> = self.store.read(|s| {
+            s.agents
+                .values()
+                .filter_map(|a| {
+                    let (what, start) = watchdog_check(a, now)?;
+                    Some((a.id.clone(), a.team.as_ref().map(|t| t.run_id.clone()), what, start))
+                })
+                .collect()
+        });
+        let keys: std::collections::BTreeSet<String> =
+            hits.iter().map(|(id, _, what, start)| format!("{id}:{start}:{what:?}")).collect();
+        for (id, run, what, start) in hits {
+            if self.live(&id).is_none() || !self.watchdog_once(format!("{id}:{start}:{what:?}")) {
                 continue;
             }
-            let Some((what, start)) = watchdog_check(&a, now) else { continue };
-            if !self.watchdog_once(format!("{}:{start}:{what:?}", a.id)) {
-                continue;
-            }
-            if let Watch::Ceiling(m) = what {
-                let _ = self.interrupt(&a.id);
-                let _ = self.add_item(
-                    Some(&a.id),
-                    "alert",
-                    format!("{}: the turn ran past its {m} min ceiling and was interrupted (FR-407)", a.id),
-                    json!({"action": "watchdog", "kind": "ceiling", "minutes": m}),
-                    crate::inbox::PRIORITY_ALERT,
-                );
-                if let Some(seat) = &a.team {
-                    self.run_event(&seat.run_id, Some(&a.id), "watchdog", json!({"kind": "ceiling", "minutes": m}));
+            let (text, detail) = match what {
+                Watch::Ceiling(m) => {
+                    let _ = self.interrupt(&id);
+                    (
+                        format!("{id}: the turn ran past its {m} min ceiling and was interrupted (FR-407)"),
+                        json!({"kind": "ceiling", "minutes": m}),
+                    )
                 }
-            } else {
-                let _ = self.add_item(
-                    Some(&a.id),
-                    "alert",
-                    format!("{}: no progress for {} min (no tool call or answer)", a.id, NO_PROGRESS_MS / 60_000),
-                    json!({"action": "watchdog", "kind": "stalled"}),
-                    crate::inbox::PRIORITY_ALERT,
-                );
-                if let Some(seat) = &a.team {
-                    self.run_event(&seat.run_id, Some(&a.id), "watchdog", json!({"kind": "stalled"}));
-                }
+                Watch::Stalled => (
+                    format!("{id}: no progress for {} min (no tool call or answer)", NO_PROGRESS_MS / 60_000),
+                    json!({"kind": "stalled"}),
+                ),
+            };
+            let mut payload = detail.clone();
+            payload["action"] = json!("watchdog");
+            let _ = self.add_item(Some(&id), "alert", text, payload, crate::inbox::PRIORITY_ALERT);
+            if let Some(run) = run {
+                self.run_event(&run, Some(&id), "watchdog", detail);
             }
         }
+        // A turn that ended (or moved on) needs no key any more.
+        self.watchdog_keep(&keys);
     }
 
     /// FR-503: syncs the remote task backend of every project with an active
@@ -619,11 +641,15 @@ impl Runtime {
     pub fn sync_task_backends(&self) {
         let mut seen = std::collections::BTreeSet::new();
         for run in self.db.runs(None, true).unwrap_or_default() {
-            let Ok(cx) = self.run_ctx(&run.id) else { continue };
-            if cx.project.backend().kind() == "local" || !seen.insert(cx.project.id.clone()) {
+            let Ok(Some(feature)) = self.db.feature(&run.feature_id) else { continue };
+            if !seen.insert(feature.project_id.clone()) {
                 continue;
             }
-            match self.tasks_of(&cx).sync(now_ms()) {
+            let Ok(Some(project)) = self.db.project(&feature.project_id) else { continue };
+            if project.backend().kind() == "local" {
+                continue;
+            }
+            match self.tasks_for(&project).sync(now_ms()) {
                 Ok(rep) => {
                     for id in &rep.conflicts {
                         let handle = self.db.task(*id).ok().flatten().map(|t| t.handle()).unwrap_or_default();
@@ -632,18 +658,20 @@ impl Runtime {
                             "info",
                             format!(
                                 "{}: task {handle} changed here and on GitHub; GitHub's version was kept",
-                                cx.project.name
+                                project.name
                             ),
-                            json!({"action": "task_conflict", "task": id, "project": cx.project.id}),
+                            json!({"action": "task_conflict", "task": id, "project": project.id}),
                             0,
                         );
                     }
                     if rep != orch_tasks::SyncReport::default() {
-                        self.event("-", "tasks_synced", json!({"project": cx.project.id, "imported": rep.imported.len(), "updated": rep.updated.len(), "pushed": rep.pushed.len(), "conflicts": rep.conflicts.len(), "errors": rep.errors}));
+                        let mut detail = rep.summary();
+                        detail["project"] = json!(project.id);
+                        self.event("-", "tasks_synced", detail);
                     }
                 }
                 Err(e) => {
-                    self.event("-", "tasks_sync_error", json!({"project": cx.project.id, "error": format!("{e:#}")}))
+                    self.event("-", "tasks_sync_error", json!({"project": project.id, "error": format!("{e:#}")}))
                 }
             }
         }
@@ -741,12 +769,7 @@ impl Runtime {
 
     fn undelivered(&self, rec: &AgentRecord) -> Vec<Message> {
         let Some(seat) = &rec.team else { return vec![] };
-        self.db
-            .messages(&seat.run_id, Some((&seat.node, Some(&rec.id))), true)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|m| m.delivered_at_ms.is_none())
-            .collect()
+        self.db.messages(&seat.run_id, Some((&seat.node, Some(&rec.id))), true).unwrap_or_default()
     }
 
     /// FR-403 for a busy agent: its new messages, as PostToolUse context.
@@ -756,7 +779,7 @@ impl Runtime {
             return None;
         }
         let ids: Vec<u64> = msgs.iter().map(|m| m.id).collect();
-        let _ = self.db.mark_messages(&ids, Some(&rec.id), true, now_ms());
+        let _ = self.db.mark_messages(&ids, Some(&rec.id), now_ms());
         Some(format!("ORCH: {} new message(s):{}", msgs.len(), Self::render_messages(&msgs, MAX_INJECT)))
     }
 
@@ -769,7 +792,7 @@ impl Runtime {
                 AgentState::Working | AgentState::WaitingForYou | AgentState::Queued | AgentState::Starting
             );
             // Busy: at its next tool call. Not started yet: with its first turn.
-            if busy || (rec.tracker.state == AgentState::Created && rec.spawns == 0) && self.has_queued_turn(&rec.id) {
+            if busy || rec.never_started() && self.has_queued_turn(&rec.id) {
                 continue;
             }
             let msgs = self.undelivered(&rec);
@@ -783,7 +806,7 @@ impl Runtime {
             );
             if self.deliver_kind(&rec.id, &text, TurnKind::Message).is_ok() {
                 let ids: Vec<u64> = msgs.iter().map(|m| m.id).collect();
-                let _ = self.db.mark_messages(&ids, Some(&rec.id), true, now_ms());
+                let _ = self.db.mark_messages(&ids, Some(&rec.id), now_ms());
             }
         }
     }
@@ -913,7 +936,7 @@ impl Runtime {
                 let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
                 let msgs = self.db.messages(&cx.run.id, Some((me, Some(&rec.id))), !all)?;
                 let unread: Vec<u64> = msgs.iter().filter(|m| m.read_at_ms.is_none()).map(|m| m.id).collect();
-                self.db.mark_messages(&unread, Some(&rec.id), true, now_ms())?;
+                self.db.mark_messages(&unread, Some(&rec.id), now_ms())?;
                 if msgs.is_empty() {
                     return Ok(("No new messages.".into(), json!([])));
                 }
@@ -988,7 +1011,7 @@ impl Runtime {
                 }
                 let branch = match str_arg(args, "branch") {
                     Some(b) => b.to_string(),
-                    None => orch_git::git(&rec.worktree, &["symbolic-ref", "--short", "HEAD"])?.trim().to_string(),
+                    None => self.branch_of(rec),
                 };
                 let note = str_arg(args, "note").unwrap_or("");
                 let body = format!(
@@ -1107,17 +1130,7 @@ impl Runtime {
                     if s == TaskStatus::Done && !is_lead {
                         bail!("the lead marks tasks done when it merges them: call mcp__orch__report_done");
                     }
-                    t.status = s;
-                    if matches!(s, TaskStatus::Ready | TaskStatus::Backlog) {
-                        // Back in the queue: dispatch only picks tasks with no agent.
-                        if let Some(a) = t.agent_id.take() {
-                            self.free_seat(&a, id);
-                        }
-                    } else if matches!(s, TaskStatus::Review | TaskStatus::Done)
-                        && let Some(a) = &t.agent_id
-                    {
-                        self.free_seat(a, id);
-                    }
+                    self.apply_status(&mut t, s);
                 }
                 let svc = self.tasks_of(&cx);
                 let mut t = svc.update(t, now_ms())?.value;
@@ -1145,11 +1158,10 @@ impl Runtime {
                 if !st.trim().is_empty() {
                     bail!("you have uncommitted changes: commit them with mcp__orch__commit first");
                 }
-                t.status = TaskStatus::Review;
+                self.apply_status(&mut t, TaskStatus::Review);
                 let svc = self.tasks_of(&cx);
                 svc.update(t.clone(), now_ms())?;
                 svc.note(id, me, &cut(summary, 4_000), now_ms())?;
-                self.free_seat(&rec.id, id);
                 let up = rules::reports_to(&cx.team, me).unwrap_or_else(|| "lead".into());
                 let branch = t.branch.clone().unwrap_or_default();
                 self.post_message(
@@ -1167,13 +1179,12 @@ impl Runtime {
                 if is_lead {
                     bail!("you are on the integration branch");
                 }
-                let gc = self.cfg.paths.agent_dir(&rec.id).join("gitconfig");
                 let integ = cx.feature.integration_branch();
                 let r = orch_git::commit::merge_into_worktree(
                     &rec.worktree,
                     &integ,
                     &format!("Merge {integ} into {}", rec.id),
-                    gc.is_file().then_some(gc.as_path()),
+                    self.agent_gitconfig(&rec.id).as_deref(),
                     false,
                 )?;
                 self.run_event(&cx.run.id, Some(&rec.id), "git.sync", json!(r));
@@ -1200,12 +1211,11 @@ impl Runtime {
                 if !branch.starts_with(&prefix) || branch == cx.feature.integration_branch() {
                     bail!("only branches of this feature ({prefix}<node>-<n>) can be merged here");
                 }
-                let gc = self.cfg.paths.agent_dir(&rec.id).join("gitconfig");
                 let r = orch_git::commit::merge_into_worktree(
                     &rec.worktree,
                     branch,
                     &format!("Merge {branch}"),
-                    gc.is_file().then_some(gc.as_path()),
+                    self.agent_gitconfig(&rec.id).as_deref(),
                     true,
                 );
                 let (decision, detail) = match &r {
@@ -1231,10 +1241,7 @@ impl Runtime {
                 match (&r, task) {
                     (MergeOutcome::Conflict { files, .. }, task) => {
                         // Back to the owner (FR-405).
-                        let owner = self.run_agents(&cx.run.id).into_iter().find(|a| {
-                            orch_git::git(&a.worktree, &["symbolic-ref", "--short", "HEAD"])
-                                .is_ok_and(|b| b.trim() == branch)
-                        });
+                        let owner = self.run_agents(&cx.run.id).into_iter().find(|a| self.branch_of(a) == branch);
                         if let Some(o) = &owner {
                             self.post_message(
                                 &cx,
@@ -1276,10 +1283,7 @@ impl Runtime {
                         ))
                     }
                     (MergeOutcome::Merged { .. } | MergeOutcome::UpToDate, Some(mut t)) => {
-                        t.status = TaskStatus::Done;
-                        if let Some(a) = &t.agent_id {
-                            self.free_seat(a, t.id);
-                        }
+                        self.apply_status(&mut t, TaskStatus::Done);
                         self.tasks_of(&cx).update(t.clone(), now_ms())?;
                         self.run_event(&cx.run.id, Some(&rec.id), "task.done", json!({"task": t.id}));
                         Ok((format!("Merged {branch}; task {} is done.", t.handle()), json!(r)))

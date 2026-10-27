@@ -13,7 +13,7 @@
   import { ago } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { displayState } from '../lib/status.js';
-  import { runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
+  import { runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -107,7 +107,7 @@
     if (k === 'e') openDoc();
     else if (k === 'b') openBoard(v.feature.project_id);
     else if (k === 'c' && run) openCanvas(run.team_id, v.feature.project_id);
-    else if (k === 'p' && run && !['done', 'failed'].includes(run.status)) act(paused ? 'resume' : 'pause');
+    else if (k === 'p' && run && !runFinished(run.status)) act(paused ? 'resume' : 'pause');
     else if (k === 'm') msgBox?.focus();
     else return;
     e.preventDefault();
@@ -134,7 +134,7 @@
       <span class="grow"></span>
       <button class="btn ghost" onclick={() => openBoard(v.feature.project_id)}>Board <Kbd keys="b" /></button>
       {#if run}<button class="btn ghost" onclick={() => openCanvas(run.team_id, v.feature.project_id)}>Canvas <Kbd keys="c" /></button>{/if}
-      {#if run && !['done', 'failed'].includes(run.status)}
+      {#if run && !runFinished(run.status)}
         <button class="btn" onclick={() => act(paused ? 'resume' : 'pause')}>{paused ? 'Resume team' : 'Pause team'} <Kbd keys="p" /></button>
         <button class="btn danger" onclick={stop}>Stop</button>
       {/if}
@@ -203,7 +203,7 @@
               <div class="ev"><span class="mono muted">{new Date(e.ts_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>{#if e.agent_id}<AgentChip id={e.agent_id} role={roleOfAgent(e.agent_id)} compact />{/if}<span class="evt">{timelineText(e)}</span></div>
             {:else}<span class="muted">Nothing yet.</span>{/each}
           </div>
-          {#if run && !['done', 'failed'].includes(run.status)}
+          {#if run && !runFinished(run.status)}
             <div class="msg">
               <select class="field to" bind:value={to} aria-label="To">
                 {#each v.team?.nodes ?? [] as n (n.id)}<option value={n.id}>{n.id}{n.is_lead ? ' (lead)' : ''}</option>{/each}

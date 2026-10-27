@@ -15,6 +15,16 @@ pub enum Scope {
     Project(String),
 }
 
+impl Scope {
+    /// The project it belongs to; `None` for global.
+    pub fn project(&self) -> Option<&str> {
+        match self {
+            Scope::Global => None,
+            Scope::Project(p) => Some(p),
+        }
+    }
+}
+
 /// Permission profile of a role (FR-706). Mapped to `--permission-mode`:
 /// strict → `manual`, gated → `acceptEdits` (the default: edits and commands
 /// run freely inside the worktree sandbox, FR-701), autonomous → `auto`.
@@ -245,6 +255,14 @@ pub struct Team {
 }
 
 impl Team {
+    /// The roles its nodes use, by id: what a snapshot or an export holds.
+    pub fn used_roles(&self, roles: &[RoleDef]) -> Vec<RoleDef> {
+        let mut v: Vec<RoleDef> =
+            roles.iter().filter(|r| self.nodes.iter().any(|n| n.role_id == r.id)).cloned().collect();
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+        v
+    }
+
     pub fn node(&self, id: &str) -> Option<&AgentNode> {
         self.nodes.iter().find(|n| n.id == id)
     }

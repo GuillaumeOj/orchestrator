@@ -63,6 +63,11 @@ pub struct TeamSeat {
 }
 
 impl AgentRecord {
+    /// Created and never spawned: a team agent waiting for its first turn.
+    pub fn never_started(&self) -> bool {
+        self.tracker.state == crate::state::AgentState::Created && self.spawns == 0
+    }
+
     /// A new `claude` process was spawned for this agent.
     pub fn on_spawned(&mut self, pid: i32, pgid: i32) {
         self.pid = Some(pid);

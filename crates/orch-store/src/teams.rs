@@ -240,10 +240,7 @@ impl Project {
 
 /// The `scope` column: '' for global, else the project id.
 fn scope_key(s: &Scope) -> String {
-    match s {
-        Scope::Global => String::new(),
-        Scope::Project(p) => p.clone(),
-    }
+    s.project().unwrap_or_default().to_string()
 }
 
 fn scope_of(key: String) -> Scope {
@@ -364,16 +361,6 @@ fn row_artifact(r: &rusqlite::Row) -> rusqlite::Result<Artifact> {
     })
 }
 
-/// A run event for the team timeline (FR-408), newest first.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RunEvent {
-    pub id: u64,
-    pub ts_ms: u64,
-    pub agent_id: Option<String>,
-    pub kind: String,
-    pub detail: Value,
-}
-
 impl Store {
     // ------------------------------------------------------------ roles
 
@@ -429,8 +416,7 @@ impl Store {
     /// left as it was: the caller bumps `version` when the graph changes.
     pub fn save_team(&self, team: &Team, roles: &[RoleDef], at_ms: u64) -> Result<()> {
         let team = team.clone();
-        let used: Vec<RoleDef> =
-            roles.iter().filter(|r| team.nodes.iter().any(|n| n.role_id == r.id)).cloned().collect();
+        let used = team.used_roles(roles);
         self.write(move |tx| {
             tx.execute(
                 "INSERT INTO teams(id, scope, name, version, data, updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6)
@@ -687,10 +673,17 @@ impl Store {
         })
     }
 
-    pub fn delete_task(&self, id: u64) -> Result<()> {
-        self.write(move |tx| {
-            tx.execute("DELETE FROM tasks WHERE id=?1", [id as i64])?;
-            Ok(())
+    /// (done, total) tasks per team run, for progress counts.
+    pub fn task_counts_by_run(&self) -> Result<std::collections::HashMap<String, (usize, usize)>> {
+        self.read(|c| {
+            let mut st = c.prepare(
+                "SELECT team_run_id, SUM(status='done'), COUNT(*) FROM tasks
+                 WHERE team_run_id IS NOT NULL GROUP BY team_run_id",
+            )?;
+            let rows = st.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)? as usize, r.get::<_, i64>(2)? as usize)))
+            })?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
         })
     }
 
@@ -739,7 +732,9 @@ impl Store {
 
     /// Marks messages delivered (`read = false`) or read, and binds them to
     /// the agent that got them.
-    pub fn mark_messages(&self, ids: &[u64], agent_id: Option<&str>, read: bool, at_ms: u64) -> Result<()> {
+    /// Marks messages delivered and read (they are shown in full when
+    /// delivered), and to which agent of the node.
+    pub fn mark_messages(&self, ids: &[u64], agent_id: Option<&str>, at_ms: u64) -> Result<()> {
         let ids = ids.to_vec();
         let agent = agent_id.map(str::to_string);
         self.write(move |tx| {
@@ -747,9 +742,9 @@ impl Store {
                 tx.execute(
                     "UPDATE messages SET to_agent=coalesce(to_agent, ?2),
                        delivered_at_ms=coalesce(delivered_at_ms, ?3),
-                       read_at_ms=CASE WHEN ?4 THEN coalesce(read_at_ms, ?3) ELSE read_at_ms END
+                       read_at_ms=coalesce(read_at_ms, ?3)
                      WHERE id=?1",
-                    params![id as i64, agent, at_ms as i64, read],
+                    params![id as i64, agent, at_ms as i64],
                 )?;
             }
             Ok(())
@@ -785,41 +780,6 @@ impl Store {
             let mut st =
                 c.prepare(&format!("SELECT {ARTIFACT_COLS} FROM artifacts WHERE feature_id=?1 ORDER BY id"))?;
             Ok(st.query_map([f], row_artifact)?.collect::<rusqlite::Result<_>>()?)
-        })
-    }
-
-    // ------------------------------------------------------------ run events
-
-    /// Appends a timeline event of a run (FR-408) without waiting.
-    pub fn add_run_event(&self, ts_ms: u64, run_id: &str, agent_id: Option<&str>, kind: &str, detail: Value) {
-        let (run, agent, kind) = (run_id.to_string(), agent_id.map(str::to_string), kind.to_string());
-        self.write_detached(move |tx| {
-            tx.execute(
-                "INSERT INTO events(ts_ms, agent_id, kind, detail, team_run_id) VALUES (?1,?2,?3,?4,?5)",
-                params![ts_ms as i64, agent, kind, js(&detail), run],
-            )?;
-            Ok(())
-        });
-    }
-
-    pub fn run_events(&self, run_id: &str, limit: usize) -> Result<Vec<RunEvent>> {
-        let run = run_id.to_string();
-        self.read(move |c| {
-            let mut st = c.prepare(
-                "SELECT id, ts_ms, agent_id, kind, detail FROM events WHERE team_run_id=?1
-                 ORDER BY ts_ms DESC, id DESC LIMIT ?2",
-            )?;
-            Ok(st
-                .query_map(params![run, limit as i64], |r| {
-                    Ok(RunEvent {
-                        id: r.get::<_, i64>(0)? as u64,
-                        ts_ms: r.get::<_, i64>(1)? as u64,
-                        agent_id: r.get(2)?,
-                        kind: r.get(3)?,
-                        detail: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or(Value::Null),
-                    })
-                })?
-                .collect::<rusqlite::Result<_>>()?)
         })
     }
 
@@ -1026,10 +986,10 @@ mod tests {
         let m2 = s.add_message(&Message { to_agent: Some("back-2".into()), ..m.clone() }).unwrap();
         assert_eq!(s.messages("r1", Some(("back", Some("back-1"))), true).unwrap().len(), 1);
         assert_eq!(s.messages("r1", Some(("back", Some("back-2"))), true).unwrap().len(), 2);
-        s.mark_messages(&[m1], Some("back-1"), false, 9).unwrap();
-        let got = s.messages("r1", Some(("back", Some("back-1"))), true).unwrap();
-        assert_eq!(got[0].delivered_at_ms, Some(9));
-        s.mark_messages(&[m1, m2], None, true, 10).unwrap();
+        s.mark_messages(&[m1], Some("back-1"), 9).unwrap();
+        let got = s.messages("r1", None, false).unwrap().into_iter().find(|x| x.id == m1).unwrap();
+        assert_eq!((got.delivered_at_ms, got.read_at_ms, got.to_agent.as_deref()), (Some(9), Some(9), Some("back-1")));
+        s.mark_messages(&[m1, m2], None, 10).unwrap();
         assert!(s.messages("r1", Some(("back", None)), true).unwrap().is_empty());
         assert_eq!(s.messages("r1", None, false).unwrap().len(), 2);
 

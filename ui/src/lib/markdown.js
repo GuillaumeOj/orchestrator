@@ -13,17 +13,12 @@
 export function inline(text) {
   /** @type {Span[]} */
   const out = [];
-  const re = /(`[^`]+`)|(\*\*[^*]+\*\*|__[^_]+__)|(\*[^*\s][^*]*\*|_[^_\s][^_]*_)|(\[[^\]]+\]\([^)]*\))/g;
+  // `_` emphasis only at word edges: snake_case names in specs stay as written.
+  const re =
+    /(`[^`]+`)|(\*\*[^*]+\*\*|(?<!\w)__[^_]+__(?!\w))|(\*[^*\s][^*]*\*|(?<!\w)_[^_\s][^_]*_(?!\w))|(\[[^\]]+\]\([^)]*\))/g;
   let last = 0;
-  // `_` inside a word (snake_case names in specs) is not emphasis: such a
-  // match is skipped by one character and the scan goes on from there.
-  const word = /\w/;
-  for (let m = re.exec(text); m; m = re.exec(text)) {
+  for (const m of text.matchAll(re)) {
     const s = m[0];
-    if (s[0] === '_' && (word.test(text[m.index - 1] ?? '') || word.test(text[m.index + s.length] ?? ''))) {
-      re.lastIndex = m.index + 1;
-      continue;
-    }
     if (m.index > last) out.push({ t: 'text', s: text.slice(last, m.index) });
     if (m[1]) out.push({ t: 'code', s: s.slice(1, -1) });
     else if (m[2]) out.push({ t: 'b', s: s.slice(2, -2) });

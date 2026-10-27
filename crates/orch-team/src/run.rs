@@ -76,6 +76,11 @@ impl RunState {
         matches!(self, RunState::Done | RunState::Failed)
     }
 
+    /// Paused or deferred: on hold, with the state it resumes into aside.
+    pub fn held(self) -> bool {
+        matches!(self, RunState::Paused | RunState::Deferred)
+    }
+
     /// The lead may create tasks (FR-401: only after the spec gate). For a
     /// paused or deferred run, ask the state it resumes into.
     pub fn tasks_allowed(self) -> bool {

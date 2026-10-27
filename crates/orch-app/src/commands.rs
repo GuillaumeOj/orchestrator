@@ -196,7 +196,7 @@ pub async fn team_export(core: CoreState<'_>, team: String, project: Option<Stri
 }
 
 #[tauri::command]
-pub async fn team_launch(core: CoreState<'_>, form: crate::teams::LaunchForm) -> Res<Value> {
+pub async fn team_launch(core: CoreState<'_>, form: agent_runtime::team::LaunchSpec) -> Res<Value> {
     blocking(core, move |c| c.team_launch(form)).await
 }
 

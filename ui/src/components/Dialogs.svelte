@@ -8,7 +8,7 @@
   import { expandHome } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { PRESSURE } from '../lib/status.js';
-  import { slugify } from '../lib/teams.js';
+  import { runFinished, slugify } from '../lib/teams.js';
   import Kbd from './Kbd.svelte';
   import PlanEditor from './PlanEditor.svelte';
 
@@ -58,7 +58,7 @@
     });
   });
   const launchTeam = $derived(teamsView?.teams.find((t) => t.team.id === launch.team_id));
-  const free = $derived(features().filter((f) => f.project_id === launch.project_id && (!f.run || ['done', 'failed'].includes(f.run.status))));
+  const free = $derived(features().filter((f) => f.project_id === launch.project_id && (!f.run || runFinished(f.run.status))));
   const launchSlug = $derived(launch.existing ? (free.find((f) => f.id === launch.existing)?.slug ?? '') : launch.slug || slugify(launch.title));
 
   async function launchTeamOnFeature() {

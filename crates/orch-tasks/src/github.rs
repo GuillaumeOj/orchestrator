@@ -5,15 +5,12 @@
 //! `Blocked by: #12, #13` line at the end of the body.
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::OnceLock;
-use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use orch_team::TaskStatus;
 use serde_json::Value;
 
-const GH_DEADLINE: Duration = Duration::from_secs(30);
 pub const LABEL: &str = "orch";
 const NODE_PREFIX: &str = "orch:node:";
 const BLOCKED: &str = "Blocked by:";
@@ -26,30 +23,18 @@ pub trait Gh: Send + Sync {
 
 /// The real `gh`, run in the project's checkout (so `gh` finds the repo).
 pub struct GhCli {
-    pub program: PathBuf,
     pub dir: PathBuf,
 }
 
 impl GhCli {
     pub fn new(dir: PathBuf) -> GhCli {
-        GhCli { program: PathBuf::from("gh"), dir }
+        GhCli { dir }
     }
 }
 
 impl Gh for GhCli {
     fn run(&self, args: &[String]) -> Result<String> {
-        let mut cmd = Command::new(&self.program);
-        cmd.current_dir(&self.dir).args(args).env("GH_PROMPT_DISABLED", "1").env("NO_COLOR", "1");
-        let out =
-            orch_git::git::run_with_deadline(cmd, GH_DEADLINE).with_context(|| format!("gh {}", args.join(" ")))?;
-        if !out.status.success() {
-            bail!(
-                "gh {}: {}",
-                args.first().map(String::as_str).unwrap_or(""),
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        orch_git::gh::gh(&self.dir, &args.iter().map(String::as_str).collect::<Vec<_>>())
     }
 }
 

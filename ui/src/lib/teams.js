@@ -20,6 +20,10 @@ export function runStateColor(s) {
   );
 }
 
+/** No more work happens in a finished run (orch-team `RunState::finished`). */
+export const runFinished = (s) => s === 'done' || s === 'failed';
+
+/** The UI's one label table for run states (sidebar, palette, Feature pane, timeline). */
 export function runStateLabel(s) {
   return (
     {

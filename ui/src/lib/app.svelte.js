@@ -8,6 +8,7 @@ import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
 import * as L from './layout.js';
 import { displayState, runCost } from './status.js';
+import { runStateLabel } from './teams.js';
 import { TermPane } from './term.js';
 import { breakpoint } from './tokens.js';
 
@@ -689,7 +690,7 @@ export function jumpTargets() {
     const p = projects().find((x) => x.id === f.project_id);
     out.push({
       label: `${p?.name ?? ''} › ${f.slug}`,
-      detail: f.run?.label ?? 'feature',
+      detail: f.run ? runStateLabel(f.run.status) : 'feature',
       run: () => openFeature(f.id),
     });
   }

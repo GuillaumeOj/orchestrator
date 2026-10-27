@@ -106,22 +106,28 @@ fn run(mut c: Command, stdin: Option<&str>) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// `wt` is a linked worktree (never the main checkout) that git isn't busy
+/// in; `what` names the refused operation.
+fn linked_worktree(wt: &Path, what: &str) -> Result<worktree::Inspection> {
+    let insp = worktree::inspect(wt);
+    let Some(gitdir) = &insp.gitdir else {
+        bail!("{} is not a git worktree: {}", wt.display(), insp.error.clone().unwrap_or_default());
+    };
+    if real(gitdir) == real(&worktree::common_dir(wt)?) {
+        bail!("refusing to {what} in a main checkout");
+    }
+    if insp.index_lock {
+        bail!("git is busy in this worktree (index.lock): try again");
+    }
+    Ok(insp)
+}
+
 /// Stages and commits in `worktree` (a linked worktree, never the main
 /// checkout). `gitconfig` is the agent's generated global config.
 pub fn commit_in_worktree(worktree_path: &Path, req: &CommitRequest, gitconfig: Option<&Path>) -> Result<CommitResult> {
     validate(req)?;
     let wt = real(worktree_path);
-    let insp = worktree::inspect(&wt);
-    let Some(gitdir) = &insp.gitdir else {
-        bail!("{} is not a git worktree: {}", wt.display(), insp.error.unwrap_or_default());
-    };
-    let common = worktree::common_dir(&wt)?;
-    if real(gitdir) == real(&common) {
-        bail!("refusing to commit in a main checkout");
-    }
-    if insp.index_lock {
-        bail!("git is busy in this worktree (index.lock): try again");
-    }
+    let insp = linked_worktree(&wt, "commit")?;
     let paths: Vec<String> = req.paths.clone().unwrap_or_default();
     let mut add = git_cmd(&wt, gitconfig);
     add.args(["add", "-A", "--"]);
@@ -192,51 +198,41 @@ pub fn merge_into_worktree(
         bail!("invalid merge message");
     }
     let wt = real(worktree_path);
-    let insp = worktree::inspect(&wt);
-    let Some(gitdir) = &insp.gitdir else {
-        bail!("{} is not a git worktree: {}", wt.display(), insp.error.unwrap_or_default());
-    };
-    if real(gitdir) == real(&worktree::common_dir(&wt)?) {
-        bail!("refusing to merge in a main checkout");
-    }
-    if insp.index_lock {
-        bail!("git is busy in this worktree (index.lock): try again");
-    }
+    let insp = linked_worktree(&wt, "merge")?;
     if !insp.in_progress.is_empty() {
         bail!("a {} is already in progress in this worktree", insp.in_progress.join("/"));
     }
     if insp.dirty > 0 {
         bail!("the worktree has uncommitted changes: commit them first");
     }
-    let mut verify = git_cmd(&wt, gitconfig);
-    verify.args(["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("refs/heads/{branch}^{{commit}}")]);
-    let target = run(verify, None).with_context(|| format!("no branch {branch}"))?.trim().to_string();
-    let mut before = git_cmd(&wt, gitconfig);
-    before.args(["rev-parse", "HEAD"]);
-    let head = run(before, None)?.trim().to_string();
-    let mut merge = git_cmd(&wt, gitconfig);
-    merge.args(["merge", "--no-ff", "--no-verify", "--no-edit", "-m", message, &target]);
-    if let Err(e) = run(merge, None) {
-        let mut u = git_cmd(&wt, gitconfig);
-        u.args(["diff", "--name-only", "--diff-filter=U", "-z"]);
-        let files: Vec<String> =
-            run(u, None).unwrap_or_default().split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect();
+    let g = |args: &[&str]| {
+        let mut c = git_cmd(&wt, gitconfig);
+        c.args(args);
+        run(c, None)
+    };
+    let target =
+        g(&["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("refs/heads/{branch}^{{commit}}")])
+            .with_context(|| format!("no branch {branch}"))?
+            .trim()
+            .to_string();
+    let head = g(&["rev-parse", "HEAD"])?.trim().to_string();
+    if let Err(e) = g(&["merge", "--no-ff", "--no-verify", "--no-edit", "-m", message, &target]) {
+        let files: Vec<String> = g(&["diff", "--name-only", "--diff-filter=U", "-z"])
+            .unwrap_or_default()
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
         if files.is_empty() {
-            let mut abort = git_cmd(&wt, gitconfig);
-            abort.args(["merge", "--abort"]);
-            let _ = run(abort, None);
+            let _ = g(&["merge", "--abort"]);
             return Err(e.context("git merge"));
         }
         if abort_on_conflict {
-            let mut abort = git_cmd(&wt, gitconfig);
-            abort.args(["merge", "--abort"]);
-            run(abort, None).context("git merge --abort")?;
+            g(&["merge", "--abort"]).context("git merge --abort")?;
         }
         return Ok(MergeOutcome::Conflict { files, aborted: abort_on_conflict });
     }
-    let mut after = git_cmd(&wt, gitconfig);
-    after.args(["rev-parse", "HEAD"]);
-    let sha = run(after, None)?.trim().to_string();
+    let sha = g(&["rev-parse", "HEAD"])?.trim().to_string();
     Ok(if sha == head { MergeOutcome::UpToDate } else { MergeOutcome::Merged { sha } })
 }
 

@@ -40,12 +40,24 @@ pub struct SyncReport {
     pub errors: Vec<String>,
 }
 
+impl SyncReport {
+    /// Counts for the UI and the event log.
+    pub fn summary(&self) -> serde_json::Value {
+        serde_json::json!({"imported": self.imported.len(), "updated": self.updated.len(), "pushed": self.pushed.len(),
+                           "conflicts": self.conflicts.len(), "errors": self.errors})
+    }
+}
+
 enum Backend {
     Local,
     Github(Arc<GithubIssues<Box<dyn Gh>>>),
 }
 
 type GithubBackend = Arc<GithubIssues<Box<dyn Gh>>>;
+
+fn github(project: &Project, repo: Option<String>, gh: Option<Box<dyn Gh>>) -> GithubBackend {
+    Arc::new(GithubIssues::new(gh.unwrap_or_else(|| Box::new(GhCli::new(project.path.clone()))), repo))
+}
 
 /// One backend per project, kept across calls: a GitHub backend resolves
 /// its repository and creates its labels once, not on every task write. A
@@ -72,10 +84,7 @@ impl Backends {
         let gh = match m.get(&project.id) {
             Some((c, path, b)) if *c == cfg && *path == project.path => b.clone(),
             _ => {
-                let b = Arc::new(GithubIssues::new(
-                    gh().unwrap_or_else(|| Box::new(GhCli::new(project.path.clone()))),
-                    repo.clone(),
-                ));
+                let b = github(project, repo.clone(), gh());
                 m.insert(project.id.clone(), (cfg.clone(), project.path.clone(), b.clone()));
                 b
             }
@@ -98,10 +107,7 @@ impl<'a> TaskService<'a> {
     pub fn new(store: &'a Store, project: &Project, gh: Option<Box<dyn Gh>>) -> TaskService<'a> {
         let backend = match project.backend() {
             TaskBackendConfig::Local => Backend::Local,
-            TaskBackendConfig::Github { repo } => Backend::Github(Arc::new(GithubIssues::new(
-                gh.unwrap_or_else(|| Box::new(GhCli::new(project.path.clone()))),
-                repo,
-            ))),
+            TaskBackendConfig::Github { repo } => Backend::Github(github(project, repo, gh)),
         };
         TaskService { store, project: project.clone(), backend }
     }
@@ -111,10 +117,6 @@ impl<'a> TaskService<'a> {
             Backend::Local => "local",
             Backend::Github(_) => "github",
         }
-    }
-
-    pub fn store(&self) -> &Store {
-        self.store
     }
 
     fn write_of<'t>(&self, t: &'t Task) -> IssueWrite<'t> {

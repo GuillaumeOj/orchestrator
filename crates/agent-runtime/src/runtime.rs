@@ -148,6 +148,8 @@ pub struct Runtime {
     teaming: std::sync::atomic::AtomicBool,
     /// Each project's task backend, kept across calls.
     pub(crate) task_backends: orch_tasks::Backends,
+    /// The starter roles and presets were checked this run.
+    pub(crate) presets_checked: std::sync::atomic::AtomicBool,
 }
 
 /// Clocks and flags of the periodic work (`tick`, `housekeeping`).
@@ -338,6 +340,7 @@ impl Runtime {
             indexing: std::sync::atomic::AtomicBool::new(false),
             teaming: std::sync::atomic::AtomicBool::new(false),
             task_backends: orch_tasks::Backends::default(),
+            presets_checked: std::sync::atomic::AtomicBool::new(false),
         });
         rt.handle_releases(released);
         Ok(rt)
@@ -982,12 +985,7 @@ impl Runtime {
                 }
             }
             Effect::TurnStarted { origin, markers } => {
-                self.mark_delivered(id, &markers);
-                let _ = self.store.write(|s| {
-                    if let Some(a) = s.agents.get_mut(id) {
-                        a.tracker.turn_started_ms = Some(now);
-                    }
-                });
+                self.mark_delivered(id, &markers, Some(now));
                 if let Some(l) = &live {
                     l.ready_at_ms.store(0, Ordering::SeqCst);
                 }
@@ -1003,7 +1001,7 @@ impl Runtime {
             }
             Effect::QueuedMessage => {
                 let markers = delivery::find_markers(p.prompt.as_deref().unwrap_or(""));
-                self.mark_delivered(id, &markers);
+                self.mark_delivered(id, &markers, None);
             }
             Effect::TurnEnded | Effect::TurnEndedWithBackground => {
                 self.house().index_dirty.insert(id.to_string());
@@ -1050,8 +1048,10 @@ impl Runtime {
         }
     }
 
-    fn mark_delivered(&self, id: &str, markers: &[String]) {
-        if markers.is_empty() {
+    /// Marks the turns `markers` delivered and, for a turn that started at
+    /// `started`, records its start (one store write).
+    fn mark_delivered(&self, id: &str, markers: &[String], started: Option<u64>) {
+        if markers.is_empty() && started.is_none() {
             return;
         }
         let _ = self.store.write(|s| {
@@ -1059,6 +1059,11 @@ impl Runtime {
                 if matches!(t.status, TurnStatus::Queued | TurnStatus::Delivering) {
                     t.status = TurnStatus::Delivered;
                 }
+            }
+            if let Some(now) = started
+                && let Some(a) = s.agents.get_mut(id)
+            {
+                a.tracker.turn_started_ms = Some(now);
             }
         });
     }
@@ -1265,6 +1270,11 @@ impl Runtime {
     /// True the first time `key` is seen (one watchdog alert per turn).
     pub(crate) fn watchdog_once(&self, key: String) -> bool {
         self.house().watchdog.insert(key)
+    }
+
+    /// Forgets the keys of turns that are no longer flagged.
+    pub(crate) fn watchdog_keep(&self, keys: &std::collections::BTreeSet<String>) {
+        self.house().watchdog.retain(|k| keys.contains(k));
     }
 
     /// Every 5 minutes: time to sync the remote task backends.
@@ -1554,7 +1564,7 @@ impl Runtime {
             // free under memory pressure (FR-203).
             // A team agent that never ran starts the same way (with its own
             // session id) once its first turn is admitted.
-            let never_started = rec.tracker.state == AgentState::Created && rec.spawns == 0;
+            let never_started = rec.never_started();
             let suspended = (rec.tracker.state == AgentState::Suspended || never_started) && rec.flag.is_none();
             if suspended && turn.admission == Admission::Pending {
                 self.sync_process_slots();

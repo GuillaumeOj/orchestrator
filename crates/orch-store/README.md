@@ -51,7 +51,7 @@ db.flush()?;                                                    // everything qu
 | Team, AgentNode, Edge (P2) | `teams`, `team_versions` | `save_team(team, roles, at)` (also snapshots the version with the roles it uses, FR-308), `team(scope, id)`, `team_in(project, id)` (its own, else the global one), `teams(project)`, `team_version(scope, id, v)`, `archive_team(scope, id)` |
 | Feature (P2) | `features` | `upsert_feature`, `feature`, `feature_by_slug(project, slug)`, `features(project)` |
 | TeamRun (P2) | `team_runs` | `upsert_run`, `run`, `runs(feature, active_only)` |
-| Task (P2) | `tasks` | `upsert_task` (id 0 = insert; returns the id), `task`, `task_by_external(project, backend, ext)`, `tasks(project, feature, run)`, `delete_task`. Every backend is mirrored here (ADR-004). |
+| Task (P2) | `tasks` | `upsert_task` (id 0 = insert; returns the id), `task`, `task_by_external(project, backend, ext)`, `tasks(project, feature, run)`. Every backend is mirrored here (ADR-004). |
 | Message (P2) | `messages` | `add_message`, `messages(run, Some((node, agent)), unread)`, `mark_messages(ids, agent, read, at)` |
 | Artifact (P2) | `artifacts` | `add_artifact`, `artifacts(feature)` |
 | (team timeline, FR-408) | `events.team_run_id` | `add_run_event(ts, run, agent, kind, detail)` (detached), `run_events(run, limit)` |

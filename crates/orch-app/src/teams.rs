@@ -10,20 +10,6 @@ use serde_json::{Value, json};
 
 use crate::core::Core;
 
-/// The launch dialog's form (J3 step 2).
-#[derive(Clone, Debug, Deserialize)]
-pub struct LaunchForm {
-    pub project_id: String,
-    pub team_id: String,
-    pub slug: String,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub brief: String,
-    #[serde(default)]
-    pub base: Option<String>,
-}
-
 /// The project settings form (FR-109).
 #[derive(Clone, Debug, Deserialize)]
 pub struct ProjectSettingsForm {
@@ -35,19 +21,12 @@ pub struct ProjectSettingsForm {
 /// Every feature with its latest run, for the sidebar (Projects → Features
 /// → agents), the palette and ⌘P.
 pub fn features(rt: &agent_runtime::runtime::Runtime) -> Vec<Value> {
-    // Polled with the app state: a few queries in all, not two per feature.
+    // Polled with the app state: three queries in all, not two per feature.
     let mut latest: std::collections::BTreeMap<String, orch_store::TeamRun> = std::collections::BTreeMap::new();
     for r in rt.db.runs(None, false).unwrap_or_default() {
         latest.entry(r.feature_id.clone()).or_insert(r); // newest first
     }
-    let mut counts: std::collections::BTreeMap<String, (usize, usize)> = std::collections::BTreeMap::new();
-    for t in rt.db.tasks(None, None, None).unwrap_or_default() {
-        if let Some(r) = t.team_run_id {
-            let c = counts.entry(r).or_default();
-            c.1 += 1;
-            c.0 += usize::from(t.status == orch_team::TaskStatus::Done);
-        }
-    }
+    let counts = rt.db.task_counts_by_run().unwrap_or_default();
     rt.db
         .features(None)
         .unwrap_or_default()
@@ -58,7 +37,7 @@ pub fn features(rt: &agent_runtime::runtime::Runtime) -> Vec<Value> {
             json!({
                 "id": f.id, "project_id": f.project_id, "slug": f.slug, "title": f.title,
                 "branch": f.integration_branch(),
-                "run": run.as_ref().map(|r| json!({"id": r.id, "status": r.status, "label": r.status.label(), "team_id": r.team_id, "pr_url": r.pr_url})),
+                "run": run.as_ref().map(|r| json!({"id": r.id, "status": r.status, "team_id": r.team_id, "pr_url": r.pr_url})),
                 "tasks": {"done": done, "total": total},
             })
         })
@@ -69,7 +48,7 @@ impl Core {
     pub fn teams_view(&self, project: Option<&str>) -> Result<Value> {
         let rt = self.runtime()?;
         // The starter library is there from the first look (FR-306).
-        rt.install_presets()?;
+        rt.ensure_presets()?;
         let mut v = rt.teams_json(project)?;
         v["presets"] = json!(orch_team::presets::all().iter().map(|(_, t)| t.id.clone()).collect::<Vec<_>>());
         Ok(v)
@@ -91,16 +70,8 @@ impl Core {
         self.runtime()?.export_team(team_id, project)
     }
 
-    pub fn team_launch(&self, f: LaunchForm) -> Result<Value> {
-        let run = self.runtime()?.launch(&agent_runtime::team::LaunchSpec {
-            project_id: f.project_id,
-            team_id: f.team_id,
-            slug: f.slug.trim().to_string(),
-            title: f.title,
-            brief: f.brief,
-            base: f.base.filter(|b| !b.trim().is_empty()),
-        })?;
-        Ok(json!(run))
+    pub fn team_launch(&self, spec: agent_runtime::team::LaunchSpec) -> Result<Value> {
+        Ok(json!(self.runtime()?.launch(&spec)?))
     }
 
     /// The Feature pane: a feature's latest run with its agents, tasks, docs,
@@ -126,14 +97,17 @@ impl Core {
         let rt = self.runtime()?;
         let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
         let features = rt.db.features(Some(project_id))?;
+        // One query for the active runs (newest first), then each feature's snapshot.
+        let mut active: std::collections::HashMap<String, orch_store::TeamRun> = std::collections::HashMap::new();
+        for r in rt.db.runs(None, true)? {
+            active.entry(r.feature_id.clone()).or_insert(r);
+        }
         let runs: Vec<Value> = features
             .iter()
             .filter_map(|f| {
-                let run = rt.db.runs(Some(&f.id), true).ok()?.into_iter().next()?;
-                let nodes = rt
-                    .run_ctx(&run.id)
-                    .ok()?
-                    .team
+                let run = active.remove(&f.id)?;
+                let (team, _) = rt.db.team_version(&run.team_scope, &run.team_id, run.team_version).ok()??;
+                let nodes = team
                     .nodes
                     .into_iter()
                     .map(|n| json!({"id": n.id, "role": n.role_id, "lead": n.is_lead}))
@@ -164,9 +138,7 @@ impl Core {
                 Err(e) => m.insert(project_id.to_string(), format!("{e:#}")),
             };
         }
-        let rep = r?;
-        Ok(json!({"imported": rep.imported.len(), "updated": rep.updated.len(), "pushed": rep.pushed.len(),
-                  "conflicts": rep.conflicts.len(), "errors": rep.errors}))
+        Ok(r?.summary())
     }
 
     pub fn task_create(&self, f: Value) -> Result<Value> {
@@ -229,7 +201,7 @@ mod tests {
 
     #[test]
     fn forms_parse_like_the_ui_sends_them() {
-        let f: LaunchForm =
+        let f: agent_runtime::team::LaunchSpec =
             serde_json::from_value(json!({"project_id": "p", "team_id": "full-stack", "slug": "x"})).unwrap();
         assert_eq!((f.title.as_str(), f.base), ("", None));
         let s: ProjectSettingsForm = serde_json::from_value(json!({

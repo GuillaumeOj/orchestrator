@@ -11,11 +11,13 @@ use serde_json::{Value, json};
 use crate::runtime::Runtime;
 use crate::team::{feature_docs, read_feature_doc};
 
-fn scope_project(s: &orch_team::Scope) -> Option<&str> {
-    match s {
-        orch_team::Scope::Project(p) => Some(p),
-        orch_team::Scope::Global => None,
-    }
+/// A team's validation issues for the canvas: the node each is about, and
+/// its text (FR-305).
+fn issues_json(team: &Team, roles: &[RoleDef]) -> Vec<Value> {
+    orch_team::validate(team, Some(roles))
+        .into_iter()
+        .map(|i| json!({"node": i.node(), "text": i.to_string(), "issue": i}))
+        .collect()
 }
 
 impl Runtime {
@@ -40,6 +42,16 @@ impl Runtime {
         Ok(n)
     }
 
+    /// [`Runtime::install_presets`] once per run of the app (the views call
+    /// it on every load).
+    pub fn ensure_presets(&self) -> Result<()> {
+        if !self.presets_checked.load(std::sync::atomic::Ordering::Relaxed) {
+            self.install_presets()?;
+            self.presets_checked.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(())
+    }
+
     /// Teams and roles visible from `project` (global + its own), each team
     /// with its validation issues and Rules-panel lines (FR-305).
     pub fn teams_json(&self, project: Option<&str>) -> Result<Value> {
@@ -48,13 +60,7 @@ impl Runtime {
             .db
             .teams(project)?
             .into_iter()
-            .map(|t| {
-                let issues: Vec<Value> = orch_team::validate(&t, Some(&roles))
-                    .into_iter()
-                    .map(|i| json!({"node": i.node(), "text": i.to_string(), "issue": i}))
-                    .collect();
-                json!({"team": t, "issues": issues, "rules": rules::rules_text(&t)})
-            })
+            .map(|t| json!({"team": t, "issues": issues_json(&t, &roles), "rules": rules::rules_text(&t)}))
             .collect();
         Ok(json!({"teams": teams, "roles": roles}))
     }
@@ -69,14 +75,13 @@ impl Runtime {
         if team.name.trim().is_empty() {
             bail!("the team needs a name");
         }
-        let roles = self.db.roles(scope_project(&team.scope))?;
+        let roles = self.db.roles(team.scope.project())?;
         if let Some(old) = self.db.team(&team.scope, &team.id)? {
             let same = old.nodes == team.nodes && old.edges == team.edges && old.name == team.name;
             team.version = if same { old.version } else { old.version + 1 };
         }
         self.db.save_team(&team, &roles, now_ms())?;
-        let issues: Vec<String> = orch_team::validate(&team, Some(&roles)).iter().map(|i| i.to_string()).collect();
-        Ok(json!({"team": team, "issues": issues}))
+        Ok(json!({"issues": issues_json(&team, &roles), "team": team}))
     }
 
     /// Saves a role (the version goes up when it changed).
@@ -106,7 +111,7 @@ impl Runtime {
         if let Some(old) = self.db.team(&team.scope, &team.id)? {
             team.version = team.version.max(old.version + 1);
         }
-        let roles = self.db.roles(scope_project(&team.scope))?;
+        let roles = self.db.roles(team.scope.project())?;
         self.db.save_team(&team, &roles, now_ms())?;
         Ok(team)
     }
@@ -115,7 +120,7 @@ impl Runtime {
     /// global one).
     pub fn export_team(&self, team_id: &str, project: Option<&str>) -> Result<String> {
         let team = self.db.team_in(project, team_id)?.ok_or_else(|| anyhow!("no team {team_id}"))?;
-        Ok(orch_team::export::export(&team, &self.db.roles(scope_project(&team.scope))?))
+        Ok(orch_team::export::export(&team, &self.db.roles(team.scope.project())?))
     }
 
     /// Everything the Feature pane shows about a run.
@@ -216,12 +221,7 @@ impl Runtime {
         if let Some(s) = status {
             let s: TaskStatus = s.parse().map_err(|e: String| anyhow!(e))?;
             if s != t.status {
-                if matches!(s, TaskStatus::Ready | TaskStatus::Backlog | TaskStatus::Done)
-                    && let Some(a) = t.agent_id.take()
-                {
-                    self.free_seat(&a, task_id);
-                }
-                t.status = s;
+                self.apply_status(&mut t, s);
                 t = svc.update(t, now_ms())?.value;
                 if let Some(r) = &t.team_run_id {
                     self.run_event(r, None, "task.updated", json!({"task": task_id, "status": s, "by": "user"}));
