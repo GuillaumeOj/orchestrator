@@ -117,7 +117,7 @@ const MAX_BODY: usize = 8_000;
 /// Longest text injected at a tool call.
 const MAX_INJECT: usize = 1_500;
 
-fn cut(s: &str, n: usize) -> String {
+pub(crate) fn cut(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n).collect::<String>()) }
 }
 
@@ -448,6 +448,17 @@ impl Runtime {
         Ok(rec)
     }
 
+    /// Queues a turn carrying team messages: they are read when it ends.
+    pub(crate) fn deliver_messages_turn(&self, id: &str, text: &str, messages: Vec<u64>) -> Result<String> {
+        let tid = self.deliver_kind(id, text, TurnKind::Message)?;
+        self.store.write(|s| {
+            if let Some(t) = s.turns.iter_mut().find(|t| t.id == tid) {
+                t.messages = messages;
+            }
+        })?;
+        Ok(tid)
+    }
+
     /// Queues a turn of `kind` (delivered when the Governor admits it).
     pub(crate) fn deliver_kind(&self, id: &str, text: &str, kind: TurnKind) -> Result<String> {
         match self.store.read(|s| s.agents.get(id).map(|a| a.tracker.state)) {
@@ -772,7 +783,15 @@ impl Runtime {
 
     fn undelivered(&self, rec: &AgentRecord) -> Vec<Message> {
         let Some(seat) = &rec.team else { return vec![] };
-        self.db.messages(&seat.run_id, Some((&seat.node, Some(&rec.id))), true).unwrap_or_default()
+        let unread = self.db.messages(&seat.run_id, Some((&seat.node, Some(&rec.id))), true).unwrap_or_default();
+        unread.into_iter().filter(|m| m.delivered_at_ms.is_none()).collect()
+    }
+
+    /// The agent's unread messages among `ids` (to remind it at its Stop).
+    pub(crate) fn unread_of(&self, rec: &AgentRecord, ids: &[u64]) -> Vec<Message> {
+        let Some(seat) = &rec.team else { return vec![] };
+        let unread = self.db.messages(&seat.run_id, Some((&seat.node, Some(&rec.id))), true).unwrap_or_default();
+        unread.into_iter().filter(|m| ids.contains(&m.id)).collect()
     }
 
     /// FR-403 for a busy agent: its new messages, as PostToolUse context.
@@ -782,7 +801,9 @@ impl Runtime {
             return None;
         }
         let ids: Vec<u64> = msgs.iter().map(|m| m.id).collect();
-        let _ = self.db.mark_messages(&ids, Some(&rec.id), now_ms());
+        let _ = self.db.deliver_messages(&ids, &rec.id, now_ms());
+        // Read when this turn ends; its Stop reminds the agent of them first.
+        self.note_injected(&rec.id, &ids);
         Some(format!("ORCH: {} new message(s):{}", msgs.len(), Self::render_messages(&msgs, MAX_INJECT)))
     }
 
@@ -807,9 +828,9 @@ impl Runtime {
                 msgs.len(),
                 Self::render_messages(&msgs, MAX_BODY)
             );
-            if self.deliver_kind(&rec.id, &text, TurnKind::Message).is_ok() {
-                let ids: Vec<u64> = msgs.iter().map(|m| m.id).collect();
-                let _ = self.db.mark_messages(&ids, Some(&rec.id), now_ms());
+            let ids: Vec<u64> = msgs.iter().map(|m| m.id).collect();
+            if self.deliver_messages_turn(&rec.id, &text, ids.clone()).is_ok() {
+                let _ = self.db.deliver_messages(&ids, &rec.id, now_ms());
             }
         }
     }
@@ -843,7 +864,7 @@ impl Runtime {
     pub fn run_stop(&self, run_id: &str) -> Result<TeamRun> {
         let run = self.set_run_state(run_id, RunState::Failed, "stopped by the user")?;
         for a in self.run_agents(run_id) {
-            let _ = self.store.write(|s| s.turns.retain(|t| !(t.agent_id == a.id && t.status == TurnStatus::Queued)));
+            self.drop_queued_turns(&a.id);
             if self.live(&a.id).is_some() {
                 let _ = self.suspend(&a.id);
             }
@@ -1401,7 +1422,7 @@ impl Runtime {
         };
         match (r, agent) {
             (Ok(text), Some(a)) => {
-                let _ = self.deliver_kind(a, &text, TurnKind::Continue);
+                let _ = self.deliver_user(a, &text);
             }
             (Err(e), _) => self.event("-", "team_error", json!({"run": run_id, "error": e.to_string()})),
             _ => {}

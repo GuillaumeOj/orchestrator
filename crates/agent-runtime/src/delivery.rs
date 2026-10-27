@@ -76,17 +76,22 @@ impl Prepared {
 /// than [`MAX_PASTE_CHARS`] goes to `<agent dir>/messages/<id>.md`, and the
 /// paste points to it.
 pub fn prepare(body: &str, turn_id: &str, agent_dir: &Path) -> Prepared {
-    let body = escape_leading(body.trim_end());
-    let text = format!("{} {}", marker(turn_id), body);
+    prepare_many(&[(turn_id, body)], agent_dir)
+}
+
+/// Several queued turns of one agent in one paste: every marker leads, so
+/// each turn is marked delivered when the prompt starts, even when the
+/// bodies go to a file. The first id names the paste and its file.
+pub fn prepare_many(turns: &[(&str, &str)], agent_dir: &Path) -> Prepared {
+    let turn_id = turns.first().map(|t| t.0).unwrap_or_default();
+    let head = turns.iter().map(|t| marker(t.0)).collect::<Vec<_>>().join(" ");
+    let body = turns.iter().map(|t| escape_leading(t.1.trim_end())).collect::<Vec<_>>().join("\n\n---\n\n");
+    let text = format!("{head} {body}");
     if text.chars().count() <= MAX_PASTE_CHARS {
         return Prepared { turn_id: turn_id.into(), text, file: None };
     }
     let path = agent_dir.join("messages").join(format!("{turn_id}.md"));
-    let text = format!(
-        "{} ORCH: the orchestrator's message is too long to paste. Read {} and follow it.",
-        marker(turn_id),
-        path.display()
-    );
+    let text = format!("{head} ORCH: the orchestrator's message is too long to paste. Read {} and follow it.", path.display());
     Prepared { turn_id: turn_id.into(), text, file: Some((path, body)) }
 }
 
@@ -180,6 +185,17 @@ mod tests {
         // Exactly at the limit still pastes.
         let fits = "y".repeat(MAX_PASTE_CHARS - "[t:0123abcd] ".len());
         assert!(prepare(&fits, "0123abcd", Path::new("/ag")).file.is_none());
+    }
+
+    #[test]
+    fn several_turns_share_one_paste() {
+        let p = prepare_many(&[("0000000a", "first"), ("0000000b", "second")], Path::new("/ag"));
+        assert_eq!(p.text, "[t:0000000a] [t:0000000b] first\n\n---\n\nsecond");
+        assert_eq!(find_markers(&p.text), ["0000000a", "0000000b"]);
+        let long = "x".repeat(MAX_PASTE_CHARS);
+        let p = prepare_many(&[("0000000a", "a"), ("0000000b", &long)], Path::new("/ag"));
+        assert_eq!(find_markers(&p.text), ["0000000a", "0000000b"], "markers stay in the paste");
+        assert!(p.file.unwrap().1.ends_with(&long));
     }
 
     #[test]

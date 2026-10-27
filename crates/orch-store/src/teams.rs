@@ -730,10 +730,55 @@ impl Store {
         })
     }
 
-    /// Marks messages delivered (`read = false`) or read, and binds them to
-    /// the agent that got them.
-    /// Marks messages delivered and read (they are shown in full when
-    /// delivered), and to which agent of the node.
+    /// Marks messages delivered (handed to the agent, not yet acted on) and
+    /// binds them to the agent of the node that got them. They stay unread
+    /// until [`Store::ack_messages`].
+    pub fn deliver_messages(&self, ids: &[u64], agent_id: &str, at_ms: u64) -> Result<()> {
+        let ids = ids.to_vec();
+        let agent = agent_id.to_string();
+        self.write(move |tx| {
+            for id in ids {
+                tx.execute(
+                    "UPDATE messages SET to_agent=coalesce(to_agent, ?2), delivered_at_ms=coalesce(delivered_at_ms, ?3)
+                     WHERE id=?1",
+                    params![id as i64, agent, at_ms as i64],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// The turn that carried these messages ended: they are read.
+    pub fn ack_messages(&self, ids: &[u64], at_ms: u64) -> Result<()> {
+        let ids = ids.to_vec();
+        self.write(move |tx| {
+            for id in ids {
+                tx.execute(
+                    "UPDATE messages SET read_at_ms=coalesce(read_at_ms, ?2) WHERE id=?1",
+                    params![id as i64, at_ms as i64],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// The turn that carried these messages never ran (cancelled, dropped):
+    /// unread ones are delivered again.
+    pub fn undeliver_messages(&self, ids: &[u64]) -> Result<()> {
+        let ids = ids.to_vec();
+        self.write(move |tx| {
+            for id in ids {
+                tx.execute(
+                    "UPDATE messages SET delivered_at_ms=NULL WHERE id=?1 AND read_at_ms IS NULL",
+                    params![id as i64],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Marks messages delivered and read at once (shown in full where they
+    /// are listed: the `inbox` tool), and to which agent of the node.
     pub fn mark_messages(&self, ids: &[u64], agent_id: Option<&str>, at_ms: u64) -> Result<()> {
         let ids = ids.to_vec();
         let agent = agent_id.map(str::to_string);

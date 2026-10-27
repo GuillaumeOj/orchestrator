@@ -1026,6 +1026,21 @@ fn memory_pressure_holds_spawns_even_in_shadow_mode() {
 }
 
 #[test]
+fn a_spawn_wait_ends_when_the_agent_is_started_anyway() {
+    let mut g = Governor::new(WeeklyPlan { shadow_mode: true, ..plan() }, policy(), start()).unwrap();
+    g.set_process_slots(2, 2, at(0));
+    let mut r = task("C-1", "C", Tier::High);
+    r.needs_spawn = true;
+    assert_eq!(queue_reason(&g.request_turn(r, at(1))), Some(QueueReason::MemoryPressure { cap: 2 }));
+    // The user resumes it: it now holds a slot itself, and the cap stays full.
+    g.set_process_slots(3, 2, at(2));
+    assert!(g.set_process_slots(3, 2, at(3)).is_empty(), "the entry would wait for its own slot");
+    let released = g.spawned(&AgentId::from("C-1"), at(4));
+    assert_eq!(released.len(), 1);
+    assert!(g.queue().is_empty());
+}
+
+#[test]
 fn memory_pressure_is_one_more_reason_when_enforced() {
     let mut g = governor();
     g.set_process_slots(1, 1, at(0));

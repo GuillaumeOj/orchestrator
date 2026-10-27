@@ -175,6 +175,9 @@ struct House {
     last_task_sync_ms: u64,
     /// Watchdog alerts already raised, by `<agent>:<turn start>` (FR-407).
     watchdog: std::collections::BTreeSet<String>,
+    /// Team messages given to a busy agent during its running turn: read
+    /// when it ends, reminded at its Stop first.
+    injected: BTreeMap<String, Vec<u64>>,
 }
 
 /// True (and restamps `last`) when `every` ms have passed since `last`.
@@ -442,6 +445,54 @@ impl Runtime {
         })
     }
 
+    pub(crate) fn note_injected(&self, id: &str, ids: &[u64]) {
+        self.house().injected.entry(id.to_string()).or_default().extend(ids);
+    }
+
+    /// Drops an agent's queued turns; the team messages they carried are
+    /// delivered again later.
+    pub(crate) fn drop_queued_turns(&self, id: &str) {
+        let msgs = self.store.write(|s| {
+            let mut msgs: Vec<u64> = vec![];
+            s.turns.retain(|t| {
+                let drop = t.agent_id == id && t.status == TurnStatus::Queued;
+                if drop {
+                    msgs.extend(&t.messages);
+                }
+                !drop
+            });
+            msgs
+        });
+        if let Ok(msgs) = msgs
+            && !msgs.is_empty()
+        {
+            let _ = self.db.undeliver_messages(&msgs);
+        }
+    }
+
+    /// A Stop that should not end the turn yet: team messages that came in
+    /// during it (as tool-call context) are listed once more, so a report
+    /// that arrived during the user's turn is not lost in it. Once per turn:
+    /// the CLI sets `stop_hook_active` on the Stop that follows a block.
+    fn stop_reminder(&self, rec: &AgentRecord, p: &HookPayload) -> Option<HookOutput> {
+        if rec.team.is_none() || p.stop_hook_active == Some(true) {
+            return None;
+        }
+        let ids = self.house().injected.get(&rec.id).cloned().unwrap_or_default();
+        let msgs = self.unread_of(rec, &ids);
+        if msgs.is_empty() {
+            return None;
+        }
+        let list: String = msgs
+            .iter()
+            .map(|m| format!("\n- {} from {}: {}", m.kind.replace('_', " "), m.from_agent.as_deref().unwrap_or(&m.from_node), m.body))
+            .collect();
+        Some(HookOutput::stop_block(&format!(
+            "ORCH: before you stop: {} team message(s) reached you during this turn:{list}\n\nAct on each one now (review and merge a report, answer with mcp__orch__send_message, update the task). If you already have, end your turn.",
+            msgs.len()
+        )))
+    }
+
     fn live_count(&self) -> u32 {
         self.live.lock().unwrap_or_else(|e| e.into_inner()).len() as u32
     }
@@ -662,6 +713,10 @@ impl Runtime {
             }
         })?;
         self.event(id, "spawned", json!({"pid": pid, "args": compiled.args}));
+        // A Resume or a restart outside a release: a turn queued for a process
+        // slot would otherwise wait for the slot this agent now holds.
+        let agent = AgentId(id.into());
+        self.governor_act(|g, now| ((), g.spawned(&agent, now)));
         Ok(())
     }
 
@@ -764,7 +819,7 @@ impl Runtime {
     pub fn resume(&self, id: &str, message: Option<&str>) -> Result<()> {
         self.spawn(id, None)?;
         if let Some(m) = message {
-            self.deliver(id, m)?;
+            self.deliver_user(id, m)?;
         }
         Ok(())
     }
@@ -779,6 +834,13 @@ impl Runtime {
     /// idle; then it is pasted with its turn marker.
     pub fn deliver(&self, id: &str, text: &str) -> Result<String> {
         self.deliver_kind(id, text, TurnKind::Message)
+    }
+
+    /// Queues the user's own words (an Inbox answer, a gate decision, a
+    /// message from the app): admitted like typing in the pane is, past the
+    /// Governor and the memory cap.
+    pub fn deliver_user(&self, id: &str, text: &str) -> Result<String> {
+        self.deliver_kind(id, text, TurnKind::User)
     }
 
     /// FR-811 Pause all. Returns the Governor action id.
@@ -863,13 +925,20 @@ impl Runtime {
     pub fn cancel(&self, entry: u64) -> Result<()> {
         let agent = self.governor_act(|g, now| (g.cancel(governor::EntryId(entry), now), Vec::new()));
         let Some(agent) = agent else { bail!("no queued entry {entry}") };
-        self.store.write(|s| {
+        let msgs = self.store.write(|s| {
+            let mut msgs = vec![];
             for t in s.turns.iter_mut().filter(|t| t.agent_id == agent.0 && t.status == TurnStatus::Queued) {
                 if t.admission == Admission::Waiting(entry) {
                     t.status = TurnStatus::Cancelled;
+                    msgs.extend(&t.messages);
                 }
             }
-        })
+            msgs
+        })?;
+        if !msgs.is_empty() {
+            self.db.undeliver_messages(&msgs)?;
+        }
+        Ok(())
     }
 
     /// Graceful stop of the core: suspend every live agent.
@@ -953,6 +1022,13 @@ impl Runtime {
             m.event.as_str(),
             json!({"tool": p.tool_name, "prompt_id": p.prompt_id, "source": p.source, "error": p.error}),
         );
+        // Before any state change: a blocked Stop keeps the turn running.
+        if m.event == HookEvent::Stop
+            && let Some(out) = self.stop_reminder(&rec, &p)
+        {
+            self.event(id, "stop_blocked", json!({"why": "messages"}));
+            return Some(out);
+        }
         // Applied under the store lock: concurrent hooks (parallel tool calls)
         // must not overwrite each other's transitions.
         let (tracker, effects) = self
@@ -1017,12 +1093,20 @@ impl Runtime {
             Effect::TurnEnded | Effect::TurnEndedWithBackground => {
                 self.house().index_dirty.insert(id.to_string());
                 let delivered = |t: &TurnRow| t.agent_id == id && t.status == TurnStatus::Delivered;
+                let mut read = self.house().injected.remove(id).unwrap_or_default();
                 if self.store.read(|s| s.turns.iter().any(delivered)) {
-                    let _ = self.store.write(|s| {
+                    let carried = self.store.write(|s| {
+                        let mut carried: Vec<u64> = vec![];
                         for turn in s.turns.iter_mut().filter(|t| delivered(t)) {
                             turn.status = TurnStatus::Done;
+                            carried.extend(&turn.messages);
                         }
+                        carried
                     });
+                    read.extend(carried.unwrap_or_default());
+                }
+                if !read.is_empty() {
+                    let _ = self.db.ack_messages(&read, now);
                 }
                 if let (Some(l), Effect::TurnEnded) = (&live, &fx) {
                     l.ready_at_ms.store(now + delivery::AFTER_STOP.as_millis() as u64, Ordering::SeqCst);
@@ -1579,7 +1663,8 @@ impl Runtime {
             Admission::Waiting(_) => return false, // in the Governor's queue until a release
             Admission::Pending => {}
         }
-        let d = self.decide_turn(rec, turn.kind, TurnOrigin::App, needs_spawn);
+        let origin = if turn.kind == TurnKind::User { TurnOrigin::User } else { TurnOrigin::App };
+        let d = self.decide_turn(rec, turn.kind, origin, needs_spawn);
         let admission = match &d.effective {
             Verdict::Admit => Admission::Admitted,
             Verdict::Queue { entry: Some(e), .. } => Admission::Waiting(e.0),
@@ -1596,6 +1681,21 @@ impl Runtime {
     }
 
     fn pump_one(&self, rec: &AgentRecord, turn: &TurnRow, now: u64) -> Result<()> {
+        if let Admission::Waiting(e) = turn.admission
+            && !self.gov().queue().iter().any(|q| q.id.0 == e)
+        {
+            // Its entry is gone without a release (dropped for a critical
+            // turn): ask again rather than wait forever. A release that comes
+            // meanwhile admits the turn anyway.
+            self.store.write(|s| {
+                let stale = s.turns.iter_mut().find(|t| t.id == turn.id && t.admission == Admission::Waiting(e));
+                if let Some(t) = stale {
+                    t.admission = Admission::Pending;
+                }
+            })?;
+            self.event(&rec.id, "stale_admission", json!({"turn": turn.id, "entry": e}));
+            return Ok(());
+        }
         let Some(l) = self.live_get(&rec.id) else {
             // A suspended agent with work is resumed through the Governor
             // (FR-403), which also holds the spawn until a process slot is
@@ -1613,7 +1713,7 @@ impl Runtime {
                 // a slot the turn goes back to the queue as a memory wait,
                 // unless the user ran it now.
                 let (live, cap) = (self.live_count(), self.live_cap());
-                let forced = self.house().spawn_override.remove(&rec.id);
+                let forced = self.house().spawn_override.remove(&rec.id) || turn.kind == TurnKind::User;
                 if live >= cap && !forced {
                     let (agent, alloc) = (AgentId(rec.id.clone()), rec.allocation.clone().into());
                     let e = self
@@ -1652,14 +1752,28 @@ impl Runtime {
         if delivery::can_deliver(&gate).is_err() || !self.admit_turn(rec, turn, false) {
             return Ok(());
         }
-        let prepared = delivery::prepare(&turn.body, &turn.id, &self.cfg.paths.agent_dir(&rec.id));
+        // The agent's other queued turns ride along: one turn, one paste.
+        let batch: Vec<TurnRow> = self.store.read(|s| {
+            s.turns
+                .iter()
+                .filter(|t| {
+                    t.agent_id == rec.id
+                        && t.status == TurnStatus::Queued
+                        && (t.id == turn.id || matches!(t.admission, Admission::Pending | Admission::Admitted))
+                })
+                .cloned()
+                .collect()
+        });
+        let parts: Vec<(&str, &str)> = batch.iter().map(|t| (t.id.as_str(), t.body.as_str())).collect();
+        let prepared = delivery::prepare_many(&parts, &self.cfg.paths.agent_dir(&rec.id));
         if let Some((path, body)) = &prepared.file {
             std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))?;
             std::fs::write(path, body)?;
         }
         l.ready_at_ms.store(0, Ordering::SeqCst);
+        let ids: Vec<&str> = batch.iter().map(|t| t.id.as_str()).collect();
         self.store.write(|s| {
-            if let Some(t) = s.turns.iter_mut().find(|t| t.id == turn.id) {
+            for t in s.turns.iter_mut().filter(|t| ids.contains(&t.id.as_str())) {
                 t.status = TurnStatus::Delivering;
                 t.delivered_at_ms = Some(now);
             }
@@ -1667,7 +1781,7 @@ impl Runtime {
         l.pty.write(&prepared.paste_bytes())?;
         std::thread::sleep(delivery::PASTE_TO_ENTER);
         l.pty.write(b"\r")?;
-        self.event(&rec.id, "delivered", json!({"turn": turn.id, "chars": prepared.text.chars().count(), "file": prepared.file.as_ref().map(|f| f.0.clone())}));
+        self.event(&rec.id, "delivered", json!({"turn": turn.id, "turns": ids, "chars": prepared.text.chars().count(), "file": prepared.file.as_ref().map(|f| f.0.clone())}));
         Ok(())
     }
 
@@ -2333,6 +2447,115 @@ pub(crate) mod tests {
         assert_eq!(project_for_dir(&ps, "-x-demo-worktrees-solo-fix").as_deref(), Some("demo"));
         assert_eq!(project_for_dir(&ps, "-x-demo-api-worktrees-solo-a").as_deref(), Some("demo-api"));
         assert_eq!(project_for_dir(&ps, "-x-other"), None);
+    }
+
+    fn team_message(rt: &Runtime, body: &str) -> u64 {
+        rt.db
+            .add_message(&orch_store::Message {
+                id: 0,
+                team_run_id: "r1".into(),
+                from_node: "back".into(),
+                from_agent: Some("back-1".into()),
+                to_node: "lead".into(),
+                to_agent: Some("a1".into()),
+                kind: "report".into(),
+                body: body.into(),
+                r#ref: Value::Null,
+                created_at_ms: 1,
+                delivered_at_ms: None,
+                read_at_ms: None,
+            })
+            .unwrap()
+    }
+
+    fn seat(rt: &Runtime) {
+        rt.store
+            .write(|s| {
+                s.agents.get_mut("a1").unwrap().team = Some(crate::store::TeamSeat {
+                    run_id: "r1".into(),
+                    node: "lead".into(),
+                    feature_id: "f1".into(),
+                    project_id: "p1".into(),
+                    task: None,
+                })
+            })
+            .unwrap();
+    }
+
+    fn read_at(rt: &Runtime, id: u64) -> Option<u64> {
+        rt.db.messages("r1", None, false).unwrap().into_iter().find(|m| m.id == id).unwrap().read_at_ms
+    }
+
+    #[test]
+    fn messages_are_read_when_their_turn_ends_not_when_queued() {
+        let (_d, rt) = test_runtime(true);
+        seat(&rt);
+        let m = team_message(&rt, "T-2 done");
+        let tid = rt.deliver_messages_turn("a1", "ORCH: 1 new message", vec![m]).unwrap();
+        rt.db.deliver_messages(&[m], "a1", 5).unwrap();
+        assert!(rt.inject_messages(&rt.store.read(|s| s.agents["a1"].clone())).is_none(), "delivered once");
+        assert_eq!(read_at(&rt, m), None, "queued is not read");
+        rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": format!("[t:{tid}] ORCH: 1 new message")})), None);
+        assert_eq!(read_at(&rt, m), None, "started is not read either");
+        rt.on_hook(&hook("Stop", json!({})), None);
+        assert!(read_at(&rt, m).is_some(), "read when the turn ends");
+    }
+
+    #[test]
+    fn a_dropped_turn_gives_its_messages_back() {
+        let (_d, rt) = test_runtime(true);
+        seat(&rt);
+        let m = team_message(&rt, "T-2 done");
+        rt.deliver_messages_turn("a1", "ORCH: 1 new message", vec![m]).unwrap();
+        rt.db.deliver_messages(&[m], "a1", 5).unwrap();
+        rt.drop_queued_turns("a1");
+        let rec = rt.store.read(|s| s.agents["a1"].clone());
+        assert!(rt.inject_messages(&rec).unwrap().contains("T-2 done"), "delivered again");
+    }
+
+    #[test]
+    fn a_message_that_came_mid_turn_is_reminded_once_at_stop() {
+        let (_d, rt) = test_runtime(true);
+        seat(&rt);
+        rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "review T-1"})), None);
+        let m = team_message(&rt, "T-2 done");
+        let ctx = rt.on_hook(&hook("PostToolUse", json!({"tool_name": "Edit"})), None).expect("injected");
+        assert!(ctx.0.to_string().contains("T-2 done"));
+        let out = rt.on_hook(&hook("Stop", json!({})), None).expect("blocked");
+        assert_eq!(out.0["decision"], "block");
+        assert!(out.0["reason"].as_str().unwrap().contains("T-2 done"));
+        assert_eq!(read_at(&rt, m), None);
+        // The Stop after the block ends the turn.
+        assert!(rt.on_hook(&hook("Stop", json!({"stop_hook_active": true})), None).is_none());
+        assert!(read_at(&rt, m).is_some());
+        assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::Idle);
+    }
+
+    #[test]
+    fn the_users_answer_is_admitted_past_a_pause() {
+        let (_d, rt) = test_runtime(false);
+        rt.pause_all();
+        rt.deliver_user("a1", "go with ux's proposal").unwrap();
+        let (rec, turn) = rt.store.read(|s| (s.agents["a1"].clone(), s.turns[0].clone()));
+        assert!(rt.admit_turn(&rec, &turn, false));
+        rt.deliver("a1", "an app turn").unwrap();
+        let turn = rt.store.read(|s| s.turns[1].clone());
+        assert!(!rt.admit_turn(&rec, &turn, false));
+    }
+
+    #[test]
+    fn a_turn_whose_entry_vanished_asks_again() {
+        let (_d, rt) = test_runtime(false);
+        rt.pause_all();
+        rt.deliver("a1", "later").unwrap();
+        let (rec, turn) = rt.store.read(|s| (s.agents["a1"].clone(), s.turns[0].clone()));
+        assert!(!rt.admit_turn(&rec, &turn, false));
+        let Admission::Waiting(e) = rt.store.read(|s| s.turns[0].admission) else { panic!() };
+        // Dropped without a release (e.g. replaced by a critical turn).
+        rt.gov().cancel(governor::EntryId(e), Timestamp::now());
+        assert_eq!(rt.store.read(|s| s.turns[0].admission), Admission::Waiting(e));
+        rt.pump();
+        assert_eq!(rt.store.read(|s| s.turns[0].admission), Admission::Pending);
     }
 
     #[test]

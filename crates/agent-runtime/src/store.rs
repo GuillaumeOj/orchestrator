@@ -127,6 +127,10 @@ pub struct TurnRow {
     pub delivered_at_ms: Option<u64>,
     #[serde(default)]
     pub admission: Admission,
+    /// Team messages this turn carries: read when it ends, delivered again
+    /// when it never runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<u64>,
 }
 
 fn message_kind() -> governor::TurnKind {
@@ -145,6 +149,7 @@ impl TurnRow {
             created_at_ms: orch_protocol::now_ms(),
             delivered_at_ms: None,
             admission,
+            messages: vec![],
         }
     }
 }

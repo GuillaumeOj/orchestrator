@@ -592,7 +592,7 @@ impl Core {
                 rt.resume(id, message)?;
                 json!("resumed")
             }
-            "deliver" => json!(rt.deliver(id, message.ok_or_else(|| anyhow!("no message"))?)?),
+            "deliver" => json!(rt.deliver_user(id, message.ok_or_else(|| anyhow!("no message"))?)?),
             // FR-805/811: the Governor holds this agent's autonomous work (until unpause).
             "pause" => json!(rt.pause_agent(id)?),
             "unpause" => json!(rt.resume_agent(id)),
