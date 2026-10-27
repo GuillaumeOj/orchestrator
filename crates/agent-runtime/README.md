@@ -362,6 +362,29 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   "roles"}`, level 2), not repeated while one is pending; `connected` (probe or a successful call)
   closes it. The app answers its `open` / `reconnect` with where to go (decisions D3).
 
+## Design artifacts and presets (P3: FR-602, FR-603, FR-306)
+
+- **Artifacts** (`artifacts.rs`): a hand-off stores what its URI points at (`meta`, parsed by
+  `orch_team::artifact`: Penpot file/page/frame ids, Figma file key and node id, a repo-relative
+  file, another URL); rows from before P3 are parsed when read. `feature_view` adds
+  `on_integration` for files (`git cat-file -e orch/<slug>/integration:<path>` in the project repo).
+- **Previews** read the image with `git cat-file` from the integration branch, else from the
+  sender's own branches (`orch/<slug>/<node>-*`, newest first); never from a worktree on disk.
+  Over 5 MB → `too large`; nowhere → `not found on branch`; not png/jpg/webp/svg → `not previewable`.
+  SVG is returned as data for an `<img>`, never inlined.
+- **Open**: http(s) links with `open`; files with `qlmanage -p`, the integration worktree's copy,
+  else one extracted from the branch into `<app>/previews/`.
+- **Design hand-off message**: `handoff(kind="design")` tells the recipient the repo paths of every
+  image the sender exported in the run, that they arrive through the lead's merge and
+  `sync_integration`, and flags a link-only hand-off (agents can't open it).
+- **Starters** (`presets.rs`): each installed starter records its origin (starter id, version,
+  fingerprint of what was installed). At start, a copy older than `STARTER_VERSION` whose
+  fingerprint is unchanged is replaced in place (its version goes up only if the content changed);
+  a modified one is left alone and `teams_view` shows `update_available`. P2 installs carry no
+  origin and are recognised by the P2 fingerprints (`V1_FINGERPRINTS`). `preset_update` re-copies an
+  unmodified starter and refuses a modified one. Duplicates get `<id>-copy` (then `-2`…), version 1,
+  no origin, not a preset; roles the target scope can't see are copied with the team.
+
 ## Known gaps
 
 - **Commits from a sandboxed worktree fail** (worked around: the core commits, see above) (measured 2026-10-21, Claude Code 2.1.302): sandboxed

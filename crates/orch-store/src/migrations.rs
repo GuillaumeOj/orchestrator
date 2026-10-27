@@ -456,6 +456,10 @@ INSERT INTO mcp_registry(scope, id, data, updated_at_ms) VALUES ('', 'penpot',
   '{"id":"penpot","name":"Penpot","kind":"connector","allow_secret_env":false,"connector_name":"claude.ai Penpot","design_tool":"penpot"}',
   0);
 "#,
+    // 5: P3 design artifacts: what a hand-off URI points at (FR-602), as JSON.
+    r#"
+ALTER TABLE artifacts ADD COLUMN meta TEXT;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

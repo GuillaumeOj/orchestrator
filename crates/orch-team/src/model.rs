@@ -127,6 +127,9 @@ pub struct RoleDef {
     pub budget_priority: Tier,
     #[serde(default = "one")]
     pub version: u32,
+    /// The starter it was installed from (FR-306 starter upgrades).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<StarterOrigin>,
 }
 
 fn worktree() -> String {
@@ -161,6 +164,7 @@ impl RoleDef {
             subagents_allowed: false,
             budget_priority: Tier::Normal,
             version: 1,
+            origin: None,
         }
     }
 }
@@ -257,6 +261,22 @@ pub struct Team {
     pub edges: Vec<Edge>,
     #[serde(default = "one")]
     pub version: u32,
+    /// Shown in the presets row of the canvas and the Launch dialog (FR-306).
+    #[serde(default)]
+    pub preset: bool,
+    /// The starter it was installed from (FR-306 starter upgrades).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<StarterOrigin>,
+}
+
+/// Where an installed starter role or team came from: the starter's id, the
+/// starter version installed and the fingerprint of what was installed, so
+/// an unmodified copy can be upgraded in place and a modified one is left alone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StarterOrigin {
+    pub starter: String,
+    pub version: u32,
+    pub fingerprint: String,
 }
 
 impl Team {

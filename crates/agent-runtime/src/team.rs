@@ -1000,9 +1000,27 @@ impl Runtime {
                     to_node: Some(to.into()),
                     note: cut(note, 2_000),
                     created_at_ms: now_ms(),
+                    meta: orch_team::artifact::parse(artifact),
                 })?;
-                let body =
-                    format!("{kind} {artifact}{}", if note.is_empty() { String::new() } else { format!(": {note}") });
+                let body = if kind == "design" {
+                    // Spec §3.2: the recipient gets the repo paths of every image exported so far.
+                    let mut exported: Vec<String> = self
+                        .db
+                        .artifacts(&cx.feature.id)?
+                        .iter()
+                        .filter(|a| {
+                            a.kind == "design"
+                                && a.from_node == me
+                                && a.team_run_id.as_deref() == Some(cx.run.id.as_str())
+                        })
+                        .filter_map(|a| crate::artifacts::meta_of(a).and_then(|m| m.path))
+                        .collect();
+                    exported.dedup();
+                    let lead = cx.team.lead().map(|n| n.id.as_str()).unwrap_or("the lead");
+                    crate::artifacts::design_handoff_body(artifact, note, me, lead, &exported)
+                } else {
+                    format!("{kind} {artifact}{}", if note.is_empty() { String::new() } else { format!(": {note}") })
+                };
                 self.post_message(&cx, Sender(me, Some(&rec.id)), to, "handoff", &body, json!({"artifact": id}))?;
                 Ok((format!("Handed {artifact} to {to}."), json!({"artifact": id})))
             }
@@ -1498,6 +1516,40 @@ mod tests {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, body).unwrap();
         ok(rt, agent, "commit", json!({"message": format!("add {file}")}));
+    }
+
+    #[test]
+    fn a_design_handoff_lists_the_exported_images() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        let run = rt
+            .launch(&LaunchSpec {
+                project_id: pid,
+                team_id: "bugfix-squad".into(),
+                slug: "fx".into(),
+                title: "Fix X".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let lead = "fx-lead-1";
+        let png = ".orchestrator/features/fx/design/a.png";
+        write_commit(&rt, lead, png, "PNG");
+        ok(&rt, lead, "handoff", json!({"artifact": png, "to": "back", "kind": "design", "note": "checkout"}));
+        ok(
+            &rt,
+            lead,
+            "handoff",
+            json!({"artifact": "https://design.penpot.app/#/workspace?file-id=f", "to": "back", "kind": "design"}),
+        );
+        let msgs = rt.db.messages(&run.id, Some(("back", None)), false).unwrap();
+        let bodies: Vec<&str> = msgs.iter().filter(|m| m.kind == "handoff").map(|m| m.body.as_str()).collect();
+        assert!(bodies[0].starts_with(&format!("design {png}: checkout")), "{}", bodies[0]);
+        assert!(bodies[0].contains(&format!("\n- {png}")) && bodies[0].contains("mcp__orch__sync_integration"));
+        assert!(bodies[1].contains("link only") && bodies[1].contains(&format!("- {png}")), "{}", bodies[1]);
+        let arts = rt.db.artifacts(&run.feature_id).unwrap();
+        assert_eq!(arts[0].meta.as_ref().unwrap().path.as_deref(), Some(png));
+        assert_eq!(arts[1].meta.as_ref().unwrap().tool, "penpot");
+        let fv = rt.run_json(&run.id).unwrap();
+        assert_eq!(fv["artifacts"][0]["meta"]["on_integration"], true, "the lead's branch is the integration branch");
     }
 
     #[test]

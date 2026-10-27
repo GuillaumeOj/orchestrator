@@ -26,6 +26,15 @@ fn check(dir: &Path, args: &[&str], out: Output) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Like [`git`], stdout as bytes (`git show <rev>:<path>` of an image).
+pub fn git_bytes(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let out = git_cmd(dir, args).output().with_context(|| format!("git {args:?}"))?;
+    if !out.status.success() {
+        bail!("git {} in {}: {}", args.join(" "), dir.display(), String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(out.stdout)
+}
+
 /// Like [`git`], true/false on the exit status (for `--verify`, `merge-base --is-ancestor`…).
 pub fn git_ok(dir: &Path, args: &[&str]) -> bool {
     git_cmd(dir, args).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())

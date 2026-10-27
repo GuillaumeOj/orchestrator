@@ -36,6 +36,17 @@ entry's `allow_secret_env`; a connector is left out and turns strict MCP off) an
 (for `teams_view`: errors, and the connector + strict MCP warning). `RoleDef.mcp_refs` defaults
 to empty, so older roles and imported teams load unchanged; raw `mcp_servers` keep working.
 
+## Starters, presets and design artifacts (P3, FR-306, FR-602)
+
+- `presets::STARTER_VERSION` (2 = P3) and `role_fingerprint` / `team_fingerprint`: FNV-1a of the
+  canonical JSON, without scope, version, preset flag or origin, and without default values, so
+  fields added later don't change it. `V1_FINGERPRINTS` are the P2 starters'.
+- v2 starters: UX and UI use the `penpot` registry entry and carry the design hand-off convention
+  (`DESIGN_EXPORTS`: export frames under the feature's `design/`, commit, hand off the repo path
+  with `kind="design"`); the lead orders frontend after the design task; Full-stack has
+  `ui → front` hands-off-to (D2).
+- `artifact::parse`: a hand-off URI → `ArtifactMeta` (Penpot, Figma, repo file, URL).
+
 ## Readings of the spec (simplest reading taken)
 
 - **Messaging**: every node may message the lead and the lead everyone; reports-to and reviews

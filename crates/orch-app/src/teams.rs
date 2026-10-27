@@ -5,6 +5,7 @@
 
 use anyhow::{Result, anyhow};
 use orch_store::{ProjectSettings, TaskBackendConfig};
+use orch_team::Scope;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -85,6 +86,32 @@ impl Core {
                 json!({"feature": f, "run": null, "agents": [], "tasks": [], "docs": [], "artifacts": [], "timeline": []}),
             ),
         }
+    }
+
+    /// FR-603: an exported image's bytes (base64) for the Design section.
+    pub fn artifact_preview(&self, feature_id: &str, artifact: u64) -> Result<Value> {
+        self.runtime()?.artifact_preview(feature_id, artifact)
+    }
+
+    /// A link in the browser, a file in Quick Look.
+    pub fn artifact_open(&self, feature_id: &str, artifact: u64) -> Result<()> {
+        self.runtime()?.artifact_open(feature_id, artifact)
+    }
+
+    pub fn team_duplicate(&self, team: &str, from: &Scope, to: &Scope, new_id: Option<&str>) -> Result<Value> {
+        self.runtime()?.team_duplicate(team, from, to, new_id)
+    }
+
+    pub fn role_duplicate(&self, role: &str, from: &Scope, to: &Scope, new_id: Option<&str>) -> Result<Value> {
+        Ok(json!(self.runtime()?.role_duplicate(role, from, to, new_id)?))
+    }
+
+    pub fn team_set_preset(&self, team: &str, scope: &Scope, preset: bool) -> Result<Value> {
+        Ok(json!(self.runtime()?.team_set_preset(team, scope, preset)?))
+    }
+
+    pub fn preset_update(&self, team: &str, scope: &Scope) -> Result<Value> {
+        Ok(json!(self.runtime()?.preset_update(team, scope)?))
     }
 
     pub fn feature_doc(&self, feature_id: &str, name: &str) -> Result<String> {

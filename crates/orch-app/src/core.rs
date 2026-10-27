@@ -1353,6 +1353,28 @@ mod tests {
         core.shutdown();
     }
 
+    #[test]
+    fn presets_duplicate_and_flags_through_the_core() {
+        let d = tempfile::Builder::new().prefix("orchapp").tempdir_in("/tmp").unwrap();
+        let core = test_core(d.path());
+        let v = core.teams_view(None).unwrap();
+        let fs = v["teams"].as_array().unwrap().iter().find(|t| t["team"]["id"] == "full-stack").unwrap().clone();
+        assert_eq!(
+            (fs["preset"].as_bool(), fs["starter"].as_str(), fs["update_available"].as_bool()),
+            (Some(true), Some("full-stack"), Some(false))
+        );
+        let scope = |v: Value| -> orch_team::Scope { serde_json::from_value(v).unwrap() };
+        let (g, p) = (scope(json!({"kind": "global"})), scope(json!({"kind": "project", "id": "repo"})));
+        let dup = core.team_duplicate("full-stack", &g, &p, Some("shop-team")).unwrap();
+        assert_eq!(dup["team"]["scope"], json!({"kind": "project", "id": "repo"}));
+        assert_eq!(core.team_set_preset("shop-team", &p, true).unwrap()["preset"], true);
+        assert_eq!(core.role_duplicate("ui", &g, &g, None).unwrap()["id"], "ui-copy");
+        assert!(core.preset_update("shop-team", &p).unwrap_err().to_string().contains("not a starter"));
+        assert_eq!(core.preset_update("full-stack", &g).unwrap()["version"], 1, "already current");
+        assert!(core.artifact_preview("nope", 1).is_err());
+        core.shutdown();
+    }
+
     fn record(id: &str, repo: PathBuf) -> agent_runtime::store::AgentRecord {
         agent_runtime::store::AgentRecord {
             id: id.into(),

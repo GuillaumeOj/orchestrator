@@ -109,6 +109,8 @@ Claude Code's folder name under `~/.claude/projects`.
   `checked_at_ms` (a changed definition resets it to `unknown`). The migration seeds the `penpot`
   connector entry once (deleting it sticks). `integrations` holds a status only: secrets live in
   the Keychain (NFR-3).
+- **Artifact meta** (migration 5): `artifacts.meta` is the parsed hand-off URI
+  (`orch_team::artifact::ArtifactMeta`, JSON), NULL for rows from before P3.
 - **Tasks**: one model over every backend (ADR-004); `depends_on` are local task ids. `delete_project`
   removes the project's features, runs, tasks, messages, artifacts and project-scoped roles and
   teams; events stay.
