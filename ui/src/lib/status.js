@@ -1,6 +1,8 @@
 // Status vocabulary (SPEC §9.5): one label, one icon and one color per state,
 // used everywhere. Icons are Material Design glyphs of FiraCode Nerd Font Mono
 // (docs/design/README.md).
+import { pp, signed } from './format.js';
+
 export const STATUS = {
   working: { label: 'Working', icon: '\u{F040A}', color: 'var(--color-status-working)' },
   waiting_for_you: { label: 'Waiting for you', icon: '\u{F0005}', color: 'var(--color-status-waiting-for-you)' },
@@ -98,10 +100,12 @@ export function queueReason(entry) {
  * window under the 5h guard, pp of the week otherwise. `both` adds the other.
  */
 export function runCost(entry, both = false) {
-  const pp = `+${(entry?.estimated_cost_pct ?? 0).toFixed(1)} pp`;
+  const week = pp(entry?.estimated_cost_pct ?? 0, 1);
   const f = entry?.estimated_cost_5h_pct;
-  if (entry?.binding === 'five_hour' && f != null) return both ? `+${f.toFixed(0)} % of the 5h window (${pp} of the week)` : `+${f.toFixed(0)} % 5h`;
-  return both && f != null ? `${pp} of the week (+${f.toFixed(0)} % of the 5h window)` : pp;
+  if (f == null) return week;
+  const five = `${signed(f)} %`;
+  if (entry?.binding === 'five_hour') return both ? `${five} of the 5h window (${week} of the week)` : `${five} 5h`;
+  return both ? `${week} of the week (${five} of the 5h window)` : week;
 }
 
 /** The agent's session usage in pp of the week (cost / cost per weekly %). */

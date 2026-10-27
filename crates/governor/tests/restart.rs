@@ -176,7 +176,7 @@ fn a_rebuild_keeps_the_running_turns_against_the_caps() {
     assert_eq!(g.queue().len(), 2);
     assert_eq!(g.tool_call(&tool("A-1"), at(4)).effective, Verdict::Admit, "still an admitted turn");
     // Its cost so far came along (the watchdog's usage ceiling).
-    assert_eq!(g.carry().live.iter().find(|r| r.agent == AgentId::from("A-1")).unwrap().cost, 7.0);
+    assert_eq!(g.carry().live.iter().find(|r| r.agent == AgentId::from("A-1")).unwrap().turn.cost(), 7.0);
     // When one ends, a queued turn takes its slot.
     assert_eq!(g.turn_ended(&"A-1".into(), at(5)).len(), 1);
 

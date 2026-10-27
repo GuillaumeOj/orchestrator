@@ -133,7 +133,6 @@ fn trusted_in(file: &Path, repo: &Path) -> Option<bool> {
     Some(trust[repo.to_string_lossy().as_ref()].as_bool().unwrap_or(false))
 }
 
-
 /// The weekly plan as the first-run form and the planner edit it (FR-802):
 /// working days and hours, reserve, one weighted allocation per project.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -101,6 +101,21 @@ impl Args {
         Ok(self.0.remove(0))
     }
 
+    /// The next argument as a number.
+    fn num<T: std::str::FromStr>(&mut self, what: &str) -> Result<T> {
+        let v = self.next(what)?;
+        v.parse().map_err(|_| anyhow!("{what}: {v:?} is not a number"))
+    }
+
+    /// The next argument, which must be `yes` (true) or `no` (false).
+    fn choice(&mut self, yes: &str, no: &str) -> Result<bool> {
+        match self.next(&format!("{yes}|{no}"))? {
+            v if v == yes => Ok(true),
+            v if v == no => Ok(false),
+            other => bail!("{yes} or {no}, not {other:?}"),
+        }
+    }
+
     fn done(&self) -> Result<()> {
         if let Some(a) = self.0.first() {
             bail!("unexpected argument {a:?}");
@@ -226,7 +241,7 @@ fn run() -> Result<()> {
             print(request(&sock, req)?)
         }
         "run-now" | "cancel" | "undo" => {
-            let id: u64 = a.next("id")?.parse().map_err(|_| anyhow!("{cmd}: the id is a number"))?;
+            let id = a.num("id")?;
             a.done()?;
             let req = match cmd.as_str() {
                 "run-now" => CtlRequest::RunNow { entry: id },
@@ -236,29 +251,18 @@ fn run() -> Result<()> {
             print(request(&sock, req)?)
         }
         "sprint" => {
-            let pp = match a.0.is_empty() {
-                true => None,
-                false => Some(a.next("pp")?.parse::<f64>().map_err(|_| anyhow!("sprint: pp is a number"))?),
-            };
+            let pp = if a.0.is_empty() { None } else { Some(a.num("pp")?) };
             a.done()?;
             print(request(&sock, CtlRequest::Sprint { pp })?)
         }
         "answer-ask" => {
-            let action: u64 = a.next("action")?.parse().map_err(|_| anyhow!("answer-ask: the action is a number"))?;
-            let accept = match a.next("apply|skip")?.as_str() {
-                "apply" => true,
-                "skip" => false,
-                other => bail!("answer-ask: apply or skip, not {other}"),
-            };
+            let action = a.num("action")?;
+            let accept = a.choice("apply", "skip")?;
             a.done()?;
             print(request(&sock, CtlRequest::AnswerAsk { action, accept })?)
         }
         "enforce" => {
-            let on = match a.next("on|off")?.as_str() {
-                "on" => true,
-                "off" => false,
-                other => bail!("enforce: on or off, not {other}"),
-            };
+            let on = a.choice("on", "off")?;
             a.done()?;
             print(request(&sock, CtlRequest::Enforce { on })?)
         }

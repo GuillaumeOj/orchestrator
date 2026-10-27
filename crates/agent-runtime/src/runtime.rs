@@ -160,6 +160,8 @@ struct House {
     last_carry: Option<governor::Carry>,
     /// Agents the user ran now (FR-809): their next spawn may exceed the memory cap (FR-203).
     spawn_override: std::collections::BTreeSet<String>,
+    /// The plan week (start, ms) whose reserve warning reached the Inbox, once read from the store.
+    reserve_alerted: Option<Option<i64>>,
 }
 
 /// True (and restamps `last`) when `every` ms have passed since `last`.
@@ -178,6 +180,8 @@ pub const INDEX_EVERY_MS: u64 = 60 * 1000;
 pub const POLICY_ID: &str = "default";
 /// Settings key of the Governor's carry-over state (ADR-007 "State across restarts").
 pub const CARRY_KEY: &str = "governor.carry";
+/// Sprint mode's default extra pp for today (FR-811).
+pub const DEFAULT_SPRINT_PP: f64 = 5.0;
 /// Settings key: the user's FR-812 choice, `true` = enforce. Every way of
 /// switching (the app, `orchd enforce`) stores it here, and every start reads it.
 pub const ENFORCE_KEY: &str = "governor.enforce";
@@ -355,7 +359,9 @@ impl Runtime {
     /// Stores the Governor's carry-over state when it changed, so a restart
     /// or a replan keeps pauses, deferrals, the ask, sprints and the queue.
     fn save_carry(&self) {
-        let carry = self.gov().carry();
+        // Running turns are not stored: a restart has no use for them (their
+        // processes end with the core), and their cost changes with every sample.
+        let carry = governor::Carry { live: Vec::new(), ..self.gov().carry() };
         let mut h = self.house();
         if h.last_carry.as_ref() != Some(&carry) {
             if let Ok(v) = serde_json::to_value(&carry) {
@@ -383,7 +389,12 @@ impl Runtime {
             (week, a.map(|a| a.reason.clone()))
         };
         let Some(reason) = reason else { return };
-        if self.db.setting(RESERVE_ALERT_KEY).ok().flatten().and_then(|v| v.as_i64()) == Some(week) {
+        // The week already alerted: kept in memory, read from the store once.
+        let alerted = *self
+            .house()
+            .reserve_alerted
+            .get_or_insert_with(|| self.db.setting(RESERVE_ALERT_KEY).ok().flatten().and_then(|v| v.as_i64()));
+        if alerted == Some(week) {
             return;
         }
         let body = format!(
@@ -391,14 +402,14 @@ impl Runtime {
         );
         if self.store.write(|s| s.add_inbox(None, "budget", body)).is_ok() {
             let _ = self.db.set_setting(RESERVE_ALERT_KEY, &json!(week));
+            self.house().reserve_alerted = Some(Some(week));
         }
     }
 
     /// Tells the Governor how many `claude` processes run and the memory cap
     /// on them (FR-203); spawns it held wait for a free slot.
     fn sync_process_slots(&self) {
-        let live = self.live_ids().len() as u32;
-        let releases = self.gov().set_process_slots(live, self.live_cap(), Timestamp::now());
+        let releases = self.gov().set_process_slots(self.live_count(), self.live_cap(), Timestamp::now());
         self.handle_releases(releases);
     }
 
@@ -411,6 +422,10 @@ impl Runtime {
                 a.tracker.state = AgentState::Working;
             }
         })
+    }
+
+    fn live_count(&self) -> u32 {
+        self.live.lock().unwrap_or_else(|e| e.into_inner()).len() as u32
     }
 
     pub fn live_ids(&self) -> Vec<String> {
@@ -794,15 +809,15 @@ impl Runtime {
     }
 
     /// Sprint mode (FR-811): `extra_pp` more today, borrowed from the rest of the week.
-    pub fn sprint(&self, extra_pp: f64) -> Result<u64> {
-        let r = self.governor_act(|g, now| (g.start_sprint(extra_pp, now), Vec::new()));
-        r.map(|a| a.0).map_err(|e| anyhow!("{e}"))
+    /// `None` borrows [`DEFAULT_SPRINT_PP`].
+    pub fn sprint(&self, extra_pp: Option<f64>) -> Result<u64> {
+        let pp = extra_pp.unwrap_or(DEFAULT_SPRINT_PP);
+        Ok(self.governor_act(|g, now| (g.start_sprint(pp, now), Vec::new()))?.0)
     }
 
     /// Answers a Governor ask (FR-810): accept applies it.
     pub fn answer_ask(&self, action: u64, accept: bool) -> Result<()> {
-        let r = self.governor_act(|g, now| (g.answer_ask(governor::ActionId(action), accept, now), Vec::new()));
-        r.map_err(|e| anyhow!("{e}"))
+        Ok(self.governor_act(|g, now| (g.answer_ask(governor::ActionId(action), accept, now), Vec::new()))?)
     }
 
     /// FR-812: shadow mode on (log only) or off (enforce), from now on.
@@ -1178,9 +1193,7 @@ impl Runtime {
     /// calibration.
     pub fn tick(&self) {
         let now = Timestamp::now();
-        let releases = self.gov().tick(now);
-        self.handle_releases(releases);
-        self.save_carry();
+        self.governor_act(|g, now| ((), g.tick(now)));
         self.reserve_alert();
         let (actions, queue, plan_id, snap, calib) = {
             let g = self.gov();
@@ -1498,10 +1511,11 @@ impl Runtime {
                 // admission and here (another resume, a restored turn). Without
                 // a slot the turn goes back to the queue as a memory wait,
                 // unless the user ran it now.
-                let (live, cap) = (self.live_ids().len() as u32, self.live_cap());
+                let (live, cap) = (self.live_count(), self.live_cap());
                 let forced = self.house().spawn_override.remove(&rec.id);
                 if live >= cap && !forced {
-                    let e = self.gov().hold_spawn(&AgentId(rec.id.clone()), &rec.allocation.clone().into(), rec.tier, live, cap, Timestamp::now());
+                    let (agent, alloc) = (AgentId(rec.id.clone()), rec.allocation.clone().into());
+                    let e = self.governor_act(|g, now| (g.hold_spawn(&agent, &alloc, rec.tier, live, cap, now), Vec::new()));
                     self.event(&rec.id, "spawn_held", json!({"live": live, "cap": cap, "entry": e.0}));
                     self.store.write(|s| {
                         if let Some(t) = s.turns.iter_mut().find(|t| t.id == turn.id) {
@@ -1774,10 +1788,8 @@ fn restore_governor(
     // with the old core; the reconciler resumes those agents through the queue).
     let carry = match carry {
         Some(c) => Some(c),
-        None => db
-            .setting(CARRY_KEY)?
-            .and_then(|v| serde_json::from_value::<governor::Carry>(v).ok())
-            .map(|c| governor::Carry { live: Vec::new(), ..c }),
+        // Stored without running turns (`save_carry`).
+        None => db.setting(CARRY_KEY)?.and_then(|v| serde_json::from_value::<governor::Carry>(v).ok()),
     };
     if let Some(carry) = carry {
         // No queued work is lost: an entry stays while its agent exists. An

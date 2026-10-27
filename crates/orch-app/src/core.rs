@@ -819,17 +819,12 @@ impl Core {
                 u.remove("governor");
             }
             let (snapshot, reset, shadow);
-            (queue, snapshot, reset, shadow, ask) = rt.with_governor(|g| {
+            (queue, snapshot, reset, shadow, ask, paused) = rt.with_governor(|g| {
                 let now = Timestamp::now();
-                (
-                    g.queue().to_vec(),
-                    g.snapshot(now),
-                    g.plan().reset_at.as_millisecond(),
-                    g.plan().shadow_mode,
-                    pending_ask(g, now),
-                )
+                let paused = g.paused_agents().iter().map(|a| a.0.clone()).collect();
+                let plan = g.plan();
+                (g.queue().to_vec(), g.snapshot(now), plan.reset_at.as_millisecond(), plan.shadow_mode, pending_ask(g, now), paused)
             });
-            paused = rt.with_governor(|g| g.paused_agents().iter().map(|a| a.0.clone()).collect());
             usage["live_cap"] = json!(snapshot.live_cap);
             usage["snapshot"] = json!(snapshot);
             usage["reset_at_ms"] = json!(reset);
@@ -922,7 +917,7 @@ impl Core {
                 rt.undo(id()?)?;
                 json!("undone")
             }
-            "sprint" => json!(rt.sprint(arg.unwrap_or(5.0))?),
+            "sprint" => json!(rt.sprint(arg)?),
             other => bail!("unknown governor action {other}"),
         })
     }

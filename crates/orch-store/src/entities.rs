@@ -401,8 +401,8 @@ impl Store {
 
     // ------------------------------------------------------------ governor log
 
-    /// Replaces the stored queue with the Governor's current one (for views;
-    /// the Governor rebuilds its queue from queued turns after a restart).
+    /// Replaces the stored queue with the Governor's current one, for views
+    /// (a restart restores the queue from the runtime's carry-over state).
     pub fn replace_queue(&self, boot_ms: u64, entries: &[QueueEntry]) -> Result<()> {
         let entries = entries.to_vec();
         self.write(move |tx| {

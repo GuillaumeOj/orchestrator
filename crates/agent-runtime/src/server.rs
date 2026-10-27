@@ -170,7 +170,7 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         CtlRequest::RunNow { entry } => ok_or(rt.run_now(entry).map(|_| json!("released"))),
         CtlRequest::Cancel { entry } => ok_or(rt.cancel(entry).map(|_| json!("cancelled"))),
         CtlRequest::Undo { action } => ok_or(rt.undo(action).map(|_| json!("undone"))),
-        CtlRequest::Sprint { pp } => ok_or(rt.sprint(pp.unwrap_or(5.0)).map(|a| json!({"action": a}))),
+        CtlRequest::Sprint { pp } => ok_or(rt.sprint(pp).map(|a| json!({"action": a}))),
         CtlRequest::AnswerAsk { action, accept } => ok_or(rt.answer_ask(action, accept).map(|_| json!("answered"))),
         CtlRequest::Enforce { on } => ok_or(rt.set_shadow(!on).map(|_| json!({"enforced": on}))),
         CtlRequest::State => CtlReply::ok(rt.state_json()),

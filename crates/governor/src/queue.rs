@@ -112,6 +112,21 @@ fn weekly() -> Window {
 }
 
 impl QueueEntry {
+    /// The entry without what the Governor's refresh recomputes (reason,
+    /// aged tier, estimates, binding window): what a restart needs to keep,
+    /// and stable while only time passes, so a stored copy rarely changes.
+    pub fn persistent(&self) -> QueueEntry {
+        QueueEntry {
+            effective_tier: self.tier,
+            reason: QueueReason::BehindQueue,
+            estimated_start: None,
+            estimated_cost_pct: 0.0,
+            estimated_cost_5h_pct: None,
+            binding: Window::Weekly,
+            ..self.clone()
+        }
+    }
+
     /// Tier after aging: +1 per `aging_hours` waited, up to `High`.
     pub fn aged_tier(&self, now: Timestamp, aging_hours: f64) -> Tier {
         let waited = hours_between(self.enqueued_at, now).max(0.0);
