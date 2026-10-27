@@ -592,7 +592,7 @@ impl Core {
                 rt.resume(id, message)?;
                 json!("resumed")
             }
-            "deliver" => json!(rt.deliver(id, message.ok_or_else(|| anyhow!("no message"))?)?),
+            "deliver" => json!(rt.deliver_user(id, message.ok_or_else(|| anyhow!("no message"))?)?),
             // FR-805/811: the Governor holds this agent's autonomous work (until unpause).
             "pause" => json!(rt.pause_agent(id)?),
             "unpause" => json!(rt.resume_agent(id)),
@@ -752,7 +752,13 @@ impl Core {
         if let Some(a) = item.strip_prefix("wait-").or_else(|| item.strip_prefix("error-")) {
             if action == "reply" {
                 let m = message.ok_or_else(|| anyhow!("empty reply"))?;
-                return self.agent_action(a, if rt.live(a).is_some() { "deliver" } else { "resume" }, Some(m));
+                // It comes after the prompt in the pane is answered: say what it answers.
+                let text = if item.starts_with("wait-") {
+                    format!("ORCH: the user answered from the Inbox while a prompt was open in your pane: {m}")
+                } else {
+                    m.to_string()
+                };
+                return self.agent_action(a, if rt.live(a).is_some() { "deliver" } else { "resume" }, Some(&text));
             }
             if action == "reject" && item.starts_with("error-") {
                 return self.agent_action(a, "resume", None);
@@ -827,6 +833,15 @@ impl Core {
             m.set(memory::measure(&pids, agents_mb));
         }
         m.value.clone()
+    }
+
+    /// The Inbox alone (no git, no usage): what the notifier watches, also
+    /// while the window is hidden and the UI does not poll.
+    pub fn attention(&self) -> Vec<inbox::InboxItem> {
+        let Some(rt) = &self.rt else { return vec![] };
+        let agents = rt.state_json()["agents"].as_array().cloned().unwrap_or_default();
+        let (_, alerts, done) = rt.store.read(store_view);
+        self.inbox_items(&agents, &alerts, &done, None)
     }
 
     /// Everything the shell shows, polled by the UI about once a second.
@@ -1661,8 +1676,16 @@ mod tests {
         let pauses = rt.db.actions(50).unwrap().iter().filter(|a| a.kind_name() == "pause_all").count();
         assert_eq!(pauses, 2, "the first start's pause row is kept next to the re-applied one");
         core.governor_act("resume_all", None).unwrap();
+        // A sprint needs working time left today: a calendar of every hour of
+        // every day, so the test passes at any time (CI runs at night too).
+        use governor::{Day, WorkBlock, jiff::civil::time};
+        let mut plan = rt.with_governor(|g| g.plan().clone());
+        let days = [Day::Mon, Day::Tue, Day::Wed, Day::Thu, Day::Fri, Day::Sat, Day::Sun];
+        plan.calendar.blocks =
+            days.map(|day| WorkBlock { day, start: time(0, 0, 0, 0), end: time(23, 59, 59, 0), weight: 1.0 }).into();
+        rt.replan(plan).unwrap();
         let sprint = rt.governor_act(|g, now| (g.start_sprint(5.0, now), vec![]));
-        assert!(sprint.is_ok());
+        assert!(sprint.is_ok(), "{sprint:?}");
         // A sprint carries over a switch, both ways (it used to be refused).
         core.set_enforce(false).unwrap();
         assert!(rt.with_governor(|g| g.sprint().is_some()), "sprint carried over");

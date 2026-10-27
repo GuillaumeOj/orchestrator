@@ -175,6 +175,19 @@ struct House {
     last_task_sync_ms: u64,
     /// Watchdog alerts already raised, by `<agent>:<turn start>` (FR-407).
     watchdog: std::collections::BTreeSet<String>,
+    /// Team messages given to a busy agent during its running turn: read
+    /// when it ends, reminded at its Stop first.
+    injected: BTreeMap<String, Vec<u64>>,
+    /// Agents that asked the user (Inbox question) during their running turn.
+    asked: std::collections::BTreeSet<String>,
+    /// Stuck team members already told to their lead, by run.
+    supervised: BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
+/// A team lead (the node that merges): outside the process cap. Not the
+/// tier alone, which a specialist's role can also set to critical.
+pub(crate) fn reserved_slot(a: &AgentRecord) -> bool {
+    a.team.is_some() && a.role.orch_tools.iter().any(|t| t == "merge")
 }
 
 /// True (and restamps `last`) when `every` ms have passed since `last`.
@@ -442,8 +455,100 @@ impl Runtime {
         })
     }
 
+    /// A slash command the app typed has no marker: its prompt is matched
+    /// to its turn and given the marker, so the turn reads as the app's.
+    fn bind_command(&self, id: &str, p: &mut HookPayload) {
+        let Some(prompt) = p.prompt.as_deref().map(str::trim).filter(|p| p.starts_with('/')) else { return };
+        let turn = self.store.read(|s| {
+            s.turns
+                .iter()
+                .find(|t| {
+                    t.agent_id == id && t.command && t.status == TurnStatus::Delivering && t.body.trim() == prompt
+                })
+                .map(|t| t.id.clone())
+        });
+        if let Some(t) = turn {
+            p.prompt = Some(format!("{} {prompt}", delivery::marker(&t)));
+        }
+    }
+
+    /// Queues a slash command for the agent (`/code-review …`), typed as is
+    /// once it is idle and admitted like any app turn.
+    pub fn deliver_command(&self, id: &str, command: &str) -> Result<String> {
+        let mut turn = TurnRow::queued(id, command, TurnKind::Task, Admission::Pending);
+        turn.command = true;
+        self.deliver_row(turn)
+    }
+
+    pub(crate) fn mark_asked(&self, id: &str) {
+        self.house().asked.insert(id.to_string());
+    }
+
+    pub(crate) fn asked(&self, id: &str) -> bool {
+        self.house().asked.contains(id)
+    }
+
+    pub(crate) fn note_injected(&self, id: &str, ids: &[u64]) {
+        self.house().injected.entry(id.to_string()).or_default().extend(ids);
+    }
+
+    /// Drops an agent's queued turns; the team messages they carried are
+    /// delivered again later.
+    pub(crate) fn drop_queued_turns(&self, id: &str) {
+        let msgs = self.store.write(|s| {
+            let mut msgs: Vec<u64> = vec![];
+            s.turns.retain(|t| {
+                let drop = t.agent_id == id && t.status == TurnStatus::Queued;
+                if drop {
+                    msgs.extend(&t.messages);
+                }
+                !drop
+            });
+            msgs
+        });
+        if let Ok(msgs) = msgs
+            && !msgs.is_empty()
+        {
+            let _ = self.db.undeliver_messages(&msgs);
+        }
+    }
+
+    /// Team messages that came in during the turn (as tool-call context),
+    /// listed once more at its Stop, so a report that arrived during the
+    /// user's turn is not lost in it.
+    fn messages_at_stop(&self, rec: &AgentRecord) -> Option<String> {
+        rec.team.as_ref()?;
+        let ids = self.house().injected.get(&rec.id).cloned().unwrap_or_default();
+        if ids.is_empty() {
+            return None;
+        }
+        let msgs = self.unread_of(rec, &ids);
+        if msgs.is_empty() {
+            return None;
+        }
+        let list = Self::render_messages(&msgs, crate::team::MAX_BODY);
+        Some(format!(
+            "ORCH: before you stop: {} team message(s) reached you during this turn:{list}\n\nAct on each one now (review and merge a report, answer with mcp__orch__send_message, update the task). If you already have, end your turn.",
+            msgs.len()
+        ))
+    }
+
+    /// One Stop policy for every reason to keep a team agent's turn going
+    /// (messages that came in during it, a question left in the pane), in
+    /// one block: the CLI marks only the Stop after a block, so a second
+    /// block would never come.
+    fn stop_check(&self, rec: &AgentRecord, p: &HookPayload) -> Option<HookOutput> {
+        let first = p.stop_hook_active != Some(true);
+        let msgs = if first { self.messages_at_stop(rec) } else { None };
+        let reasons: Vec<String> = msgs.into_iter().chain(self.question_at_stop(rec, p).map(String::from)).collect();
+        (!reasons.is_empty()).then(|| HookOutput::stop_block(&reasons.join("\n\n")))
+    }
+
+    /// Live processes under the memory cap (FR-203): a team lead has a slot
+    /// of its own, so it never waits for one and never takes one.
     fn live_count(&self) -> u32 {
-        self.live.lock().unwrap_or_else(|e| e.into_inner()).len() as u32
+        let ids = self.live_ids();
+        self.store.read(|s| ids.iter().filter(|id| !s.agents.get(*id).is_some_and(reserved_slot)).count()) as u32
     }
 
     pub fn live_ids(&self) -> Vec<String> {
@@ -595,6 +700,7 @@ impl Runtime {
         if self.live_get(id).is_some() {
             bail!("agent {id} is already running");
         }
+        self.refresh_team_role(id);
         let rec = self.store.read(|s| s.agents.get(id).cloned()).ok_or_else(|| anyhow!("no agent {id}"))?;
         if rec.tracker.state == AgentState::Archived {
             bail!("agent {id} is deleted");
@@ -662,6 +768,10 @@ impl Runtime {
             }
         })?;
         self.event(id, "spawned", json!({"pid": pid, "args": compiled.args}));
+        // A Resume or a restart outside a release: a turn queued for a process
+        // slot would otherwise wait for the slot this agent now holds.
+        let agent = AgentId(id.into());
+        self.governor_act(|g, now| ((), g.spawned(&agent, now)));
         Ok(())
     }
 
@@ -764,7 +874,7 @@ impl Runtime {
     pub fn resume(&self, id: &str, message: Option<&str>) -> Result<()> {
         self.spawn(id, None)?;
         if let Some(m) = message {
-            self.deliver(id, m)?;
+            self.deliver_user(id, m)?;
         }
         Ok(())
     }
@@ -779,6 +889,13 @@ impl Runtime {
     /// idle; then it is pasted with its turn marker.
     pub fn deliver(&self, id: &str, text: &str) -> Result<String> {
         self.deliver_kind(id, text, TurnKind::Message)
+    }
+
+    /// Queues the user's own words (an Inbox answer, a gate decision, a
+    /// message from the app): admitted like typing in the pane is, past the
+    /// Governor and the memory cap.
+    pub fn deliver_user(&self, id: &str, text: &str) -> Result<String> {
+        self.deliver_kind(id, text, TurnKind::User)
     }
 
     /// FR-811 Pause all. Returns the Governor action id.
@@ -863,13 +980,20 @@ impl Runtime {
     pub fn cancel(&self, entry: u64) -> Result<()> {
         let agent = self.governor_act(|g, now| (g.cancel(governor::EntryId(entry), now), Vec::new()));
         let Some(agent) = agent else { bail!("no queued entry {entry}") };
-        self.store.write(|s| {
+        let msgs = self.store.write(|s| {
+            let mut msgs = vec![];
             for t in s.turns.iter_mut().filter(|t| t.agent_id == agent.0 && t.status == TurnStatus::Queued) {
                 if t.admission == Admission::Waiting(entry) {
                     t.status = TurnStatus::Cancelled;
+                    msgs.extend(&t.messages);
                 }
             }
-        })
+            msgs
+        })?;
+        if !msgs.is_empty() {
+            self.db.undeliver_messages(&msgs)?;
+        }
+        Ok(())
     }
 
     /// Graceful stop of the core: suspend every live agent.
@@ -935,7 +1059,10 @@ impl Runtime {
             // Fail closed: an agent the core doesn't know is not governed.
             return HookOutput::fail_closed(&m.event);
         };
-        let p = HookPayload::parse(&m.payload);
+        let mut p = HookPayload::parse(&m.payload);
+        if m.event == HookEvent::UserPromptSubmit {
+            self.bind_command(id, &mut p);
+        }
         // A permission prompt held for the Inbox but answered in the pane (the
         // CLI shows its dialog while the hook is held): this call's next hook,
         // or the turn's end, closes the Inbox item and ends the hold.
@@ -953,6 +1080,13 @@ impl Runtime {
             m.event.as_str(),
             json!({"tool": p.tool_name, "prompt_id": p.prompt_id, "source": p.source, "error": p.error}),
         );
+        // Before any state change: a blocked Stop keeps the turn running.
+        if m.event == HookEvent::Stop {
+            if let Some(out) = self.stop_check(&rec, &p) {
+                self.event(id, "stop_blocked", json!({"reason": out.0["reason"]}));
+                return Some(out);
+            }
+        }
         // Applied under the store lock: concurrent hooks (parallel tool calls)
         // must not overwrite each other's transitions.
         let (tracker, effects) = self
@@ -971,9 +1105,12 @@ impl Runtime {
             self.on_effect(&rec, fx, &p);
         }
         match m.event {
-            HookEvent::PreToolUse => {
-                self.admit_tool(&rec, tracker.turn_origin == Some(TurnOrigin::User), &p, m.deadline_ms, conn)
-            }
+            HookEvent::PreToolUse => self
+                .plan_lock(&rec, p.tool_name.as_deref().unwrap_or(""))
+                .or_else(|| self.forward_ask_user_question(&rec, &p))
+                .or_else(|| {
+                    self.admit_tool(&rec, tracker.turn_origin == Some(TurnOrigin::User), &p, m.deadline_ms, conn)
+                }),
             // A rule, or the Inbox (held), or the pane when nobody answers in time.
             HookEvent::PermissionRequest => self.permission_request(&rec, &p, m.deadline_ms, conn),
             // FR-403: a busy team agent gets its messages at its next tool call.
@@ -1003,6 +1140,7 @@ impl Runtime {
                 match origin {
                     TurnOrigin::App => {} // admitted before delivery
                     TurnOrigin::User => {
+                        self.close_pane_questions(id);
                         self.decide_turn(rec, TurnKind::User, origin, false);
                     }
                     TurnOrigin::SelfStarted => {
@@ -1016,13 +1154,29 @@ impl Runtime {
             }
             Effect::TurnEnded | Effect::TurnEndedWithBackground => {
                 self.house().index_dirty.insert(id.to_string());
-                let delivered = |t: &TurnRow| t.agent_id == id && t.status == TurnStatus::Delivered;
+                // A command whose prompt never reached a hook ends with the turn too.
+                let delivered = |t: &TurnRow| {
+                    t.agent_id == id
+                        && (t.status == TurnStatus::Delivered || t.command && t.status == TurnStatus::Delivering)
+                };
+                let mut read = {
+                    let mut h = self.house();
+                    h.asked.remove(id);
+                    h.injected.remove(id).unwrap_or_default()
+                };
                 if self.store.read(|s| s.turns.iter().any(delivered)) {
-                    let _ = self.store.write(|s| {
+                    let carried = self.store.write(|s| {
+                        let mut carried: Vec<u64> = vec![];
                         for turn in s.turns.iter_mut().filter(|t| delivered(t)) {
                             turn.status = TurnStatus::Done;
+                            carried.extend(&turn.messages);
                         }
+                        carried
                     });
+                    read.extend(carried.unwrap_or_default());
+                }
+                if !read.is_empty() {
+                    let _ = self.db.ack_messages(&read, now);
                 }
                 if let (Some(l), Effect::TurnEnded) = (&live, &fx) {
                     l.ready_at_ms.store(now + delivery::AFTER_STOP.as_millis() as u64, Ordering::SeqCst);
@@ -1315,6 +1469,15 @@ impl Runtime {
         self.house().watchdog.retain(|k| keys.contains(k));
     }
 
+    /// True the first time `key` is seen in `run` (one note to the lead per
+    /// stuck member and episode); keys of `run` not in `keys` are forgotten.
+    pub(crate) fn supervised(&self, run: &str, keys: &std::collections::BTreeSet<String>) -> Vec<String> {
+        let mut h = self.house();
+        let seen = h.supervised.entry(run.to_string()).or_default();
+        seen.retain(|k| keys.contains(k));
+        keys.iter().filter(|k| seen.insert((*k).clone())).cloned().collect()
+    }
+
     /// Every 5 minutes: time to sync the remote task backends.
     pub(crate) fn task_sync_due(&self) -> bool {
         due(&mut self.house().last_task_sync_ms, now_ms(), TASK_SYNC_EVERY_MS)
@@ -1399,6 +1562,20 @@ impl Runtime {
             }
             m
         });
+        // A lead's prompt cache: kept alive until it goes cold (FR-204).
+        let warm: BTreeMap<String, u64> = {
+            let ids = self.live_ids();
+            // Only a lead's is used.
+            let ids: Vec<String> =
+                self.store.read(|s| ids.into_iter().filter(|id| s.agents.get(id).is_some_and(reserved_slot)).collect());
+            let u = self.usage.lock().unwrap_or_else(|e| e.into_inner());
+            ids.into_iter()
+                .filter_map(|id| {
+                    let t = u.agent(&id)?.prompt_cache_expires_at?;
+                    Some((id, (t.max(0) as u64) * 1000))
+                })
+                .collect()
+        };
         let live: Vec<LiveAgent> = self
             .live
             .lock()
@@ -1426,6 +1603,8 @@ impl Runtime {
                     queued_turns: queued.get(id).copied().unwrap_or(0),
                     attached: l.pty.output.is_attached(),
                     last_activity_ms: last,
+                    reserved: reserved_slot(&rec),
+                    warm_until_ms: warm.get(id).copied().unwrap_or(0),
                 })
             })
             .collect();
@@ -1566,8 +1745,15 @@ impl Runtime {
             }
             out.into_values().collect()
         });
+        // The Governor's queue, read once for every agent's waiting turn.
+        let entries: std::collections::BTreeSet<u64> =
+            if queued.iter().any(|(_, t)| matches!(t.admission, Admission::Waiting(_))) {
+                self.with_governor(|g| g.queue().iter().map(|q| q.id.0).collect())
+            } else {
+                Default::default()
+            };
         for (rec, turn) in queued {
-            if let Err(e) = self.pump_one(&rec, &turn, now) {
+            if let Err(e) = self.pump_one(&rec, &turn, now, &entries) {
                 self.event(&rec.id, "delivery_error", json!(e.to_string()));
             }
         }
@@ -1579,7 +1765,8 @@ impl Runtime {
             Admission::Waiting(_) => return false, // in the Governor's queue until a release
             Admission::Pending => {}
         }
-        let d = self.decide_turn(rec, turn.kind, TurnOrigin::App, needs_spawn);
+        let origin = if turn.kind == TurnKind::User { TurnOrigin::User } else { TurnOrigin::App };
+        let d = self.decide_turn(rec, turn.kind, origin, needs_spawn);
         let admission = match &d.effective {
             Verdict::Admit => Admission::Admitted,
             Verdict::Queue { entry: Some(e), .. } => Admission::Waiting(e.0),
@@ -1595,7 +1782,28 @@ impl Runtime {
         admission == Admission::Admitted
     }
 
-    fn pump_one(&self, rec: &AgentRecord, turn: &TurnRow, now: u64) -> Result<()> {
+    fn pump_one(
+        &self,
+        rec: &AgentRecord,
+        turn: &TurnRow,
+        now: u64,
+        entries: &std::collections::BTreeSet<u64>,
+    ) -> Result<()> {
+        if let Admission::Waiting(e) = turn.admission
+            && !entries.contains(&e)
+        {
+            // Its entry is gone without a release (dropped for a critical
+            // turn): ask again rather than wait forever. A release that comes
+            // meanwhile admits the turn anyway.
+            self.store.write(|s| {
+                let stale = s.turns.iter_mut().find(|t| t.id == turn.id && t.admission == Admission::Waiting(e));
+                if let Some(t) = stale {
+                    t.admission = Admission::Pending;
+                }
+            })?;
+            self.event(&rec.id, "stale_admission", json!({"turn": turn.id, "entry": e}));
+            return Ok(());
+        }
         let Some(l) = self.live_get(&rec.id) else {
             // A suspended agent with work is resumed through the Governor
             // (FR-403), which also holds the spawn until a process slot is
@@ -1607,13 +1815,15 @@ impl Runtime {
             if suspended && turn.admission == Admission::Pending {
                 self.sync_process_slots();
             }
-            if suspended && self.admit_turn(rec, turn, true) {
+            // A lead's process has its own slot: it waits for none.
+            let reserved = reserved_slot(rec);
+            if suspended && self.admit_turn(rec, turn, !reserved) {
                 // FR-203 at spawn time too: processes start and stop between
                 // admission and here (another resume, a restored turn). Without
                 // a slot the turn goes back to the queue as a memory wait,
                 // unless the user ran it now.
                 let (live, cap) = (self.live_count(), self.live_cap());
-                let forced = self.house().spawn_override.remove(&rec.id);
+                let forced = self.house().spawn_override.remove(&rec.id) || turn.kind == TurnKind::User || reserved;
                 if live >= cap && !forced {
                     let (agent, alloc) = (AgentId(rec.id.clone()), rec.allocation.clone().into());
                     let e = self
@@ -1652,14 +1862,44 @@ impl Runtime {
         if delivery::can_deliver(&gate).is_err() || !self.admit_turn(rec, turn, false) {
             return Ok(());
         }
-        let prepared = delivery::prepare(&turn.body, &turn.id, &self.cfg.paths.agent_dir(&rec.id));
+        // The agent's next queued turns ride along (one turn, one paste), up
+        // to a slash command, which is typed alone and as is. Each one is
+        // admitted first: a pause or a budget wait holds it like any turn.
+        let (batch, prepared) = if turn.command {
+            let text = turn.body.trim().to_string();
+            (vec![turn.clone()], delivery::Prepared { turn_id: turn.id.clone(), text, file: None })
+        } else {
+            let next: Vec<TurnRow> = self.store.read(|s| {
+                s.turns
+                    .iter()
+                    .filter(|t| t.agent_id == rec.id && t.status == TurnStatus::Queued)
+                    .skip_while(|t| t.id != turn.id)
+                    .take_while(|t| {
+                        !t.command
+                            && (t.id == turn.id || matches!(t.admission, Admission::Pending | Admission::Admitted))
+                    })
+                    .cloned()
+                    .collect()
+            });
+            let mut batch = vec![];
+            for t in next {
+                if t.id != turn.id && !self.admit_turn(rec, &t, false) {
+                    break;
+                }
+                batch.push(t);
+            }
+            let parts: Vec<(&str, &str)> = batch.iter().map(|t| (t.id.as_str(), t.body.as_str())).collect();
+            let prepared = delivery::prepare_many(&parts, &self.cfg.paths.agent_dir(&rec.id));
+            (batch, prepared)
+        };
         if let Some((path, body)) = &prepared.file {
             std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))?;
             std::fs::write(path, body)?;
         }
         l.ready_at_ms.store(0, Ordering::SeqCst);
+        let ids: Vec<&str> = batch.iter().map(|t| t.id.as_str()).collect();
         self.store.write(|s| {
-            if let Some(t) = s.turns.iter_mut().find(|t| t.id == turn.id) {
+            for t in s.turns.iter_mut().filter(|t| ids.contains(&t.id.as_str())) {
                 t.status = TurnStatus::Delivering;
                 t.delivered_at_ms = Some(now);
             }
@@ -1667,7 +1907,7 @@ impl Runtime {
         l.pty.write(&prepared.paste_bytes())?;
         std::thread::sleep(delivery::PASTE_TO_ENTER);
         l.pty.write(b"\r")?;
-        self.event(&rec.id, "delivered", json!({"turn": turn.id, "chars": prepared.text.chars().count(), "file": prepared.file.as_ref().map(|f| f.0.clone())}));
+        self.event(&rec.id, "delivered", json!({"turn": turn.id, "turns": ids, "chars": prepared.text.chars().count(), "file": prepared.file.as_ref().map(|f| f.0.clone())}));
         Ok(())
     }
 
@@ -2333,6 +2573,155 @@ pub(crate) mod tests {
         assert_eq!(project_for_dir(&ps, "-x-demo-worktrees-solo-fix").as_deref(), Some("demo"));
         assert_eq!(project_for_dir(&ps, "-x-demo-api-worktrees-solo-a").as_deref(), Some("demo-api"));
         assert_eq!(project_for_dir(&ps, "-x-other"), None);
+    }
+
+    fn team_message(rt: &Runtime, body: &str) -> u64 {
+        rt.db
+            .add_message(&orch_store::Message {
+                id: 0,
+                team_run_id: "r1".into(),
+                from_node: "back".into(),
+                from_agent: Some("back-1".into()),
+                to_node: "lead".into(),
+                to_agent: Some("a1".into()),
+                kind: "report".into(),
+                body: body.into(),
+                r#ref: Value::Null,
+                created_at_ms: 1,
+                delivered_at_ms: None,
+                read_at_ms: None,
+            })
+            .unwrap()
+    }
+
+    fn seat(rt: &Runtime) {
+        rt.store
+            .write(|s| {
+                s.agents.get_mut("a1").unwrap().team = Some(crate::store::TeamSeat {
+                    run_id: "r1".into(),
+                    node: "lead".into(),
+                    feature_id: "f1".into(),
+                    project_id: "p1".into(),
+                    task: None,
+                })
+            })
+            .unwrap();
+    }
+
+    fn read_at(rt: &Runtime, id: u64) -> Option<u64> {
+        rt.db.messages("r1", None, false).unwrap().into_iter().find(|m| m.id == id).unwrap().read_at_ms
+    }
+
+    #[test]
+    fn messages_are_read_when_their_turn_ends_not_when_queued() {
+        let (_d, rt) = test_runtime(true);
+        seat(&rt);
+        let m = team_message(&rt, "T-2 done");
+        let tid = rt.deliver_messages_turn("a1", "ORCH: 1 new message", vec![m]).unwrap();
+        rt.db.deliver_messages(&[m], "a1", 5).unwrap();
+        assert!(rt.inject_messages(&rt.store.read(|s| s.agents["a1"].clone())).is_none(), "delivered once");
+        assert_eq!(read_at(&rt, m), None, "queued is not read");
+        rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": format!("[t:{tid}] ORCH: 1 new message")})), None);
+        assert_eq!(read_at(&rt, m), None, "started is not read either");
+        rt.on_hook(&hook("Stop", json!({})), None);
+        assert!(read_at(&rt, m).is_some(), "read when the turn ends");
+    }
+
+    #[test]
+    fn a_dropped_turn_gives_its_messages_back() {
+        let (_d, rt) = test_runtime(true);
+        seat(&rt);
+        let m = team_message(&rt, "T-2 done");
+        rt.deliver_messages_turn("a1", "ORCH: 1 new message", vec![m]).unwrap();
+        rt.db.deliver_messages(&[m], "a1", 5).unwrap();
+        rt.drop_queued_turns("a1");
+        let rec = rt.store.read(|s| s.agents["a1"].clone());
+        assert!(rt.inject_messages(&rec).unwrap().contains("T-2 done"), "delivered again");
+    }
+
+    #[test]
+    fn a_message_that_came_mid_turn_is_reminded_once_at_stop() {
+        let (_d, rt) = test_runtime(true);
+        seat(&rt);
+        rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "review T-1"})), None);
+        let m = team_message(&rt, "T-2 done");
+        let ctx = rt.on_hook(&hook("PostToolUse", json!({"tool_name": "Edit"})), None).expect("injected");
+        assert!(ctx.0.to_string().contains("T-2 done"));
+        let out = rt.on_hook(&hook("Stop", json!({})), None).expect("blocked");
+        assert_eq!(out.0["decision"], "block");
+        assert!(out.0["reason"].as_str().unwrap().contains("T-2 done"));
+        assert_eq!(read_at(&rt, m), None);
+        // The Stop after the block ends the turn.
+        assert!(rt.on_hook(&hook("Stop", json!({"stop_hook_active": true})), None).is_none());
+        assert!(read_at(&rt, m).is_some());
+        assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::Idle);
+    }
+
+    fn questions(rt: &Runtime) -> Vec<crate::store::InboxItem> {
+        rt.store.read(|s| s.inbox.iter().filter(|i| i.kind == "question" && i.pending()).cloned().collect())
+    }
+
+    #[test]
+    fn a_plain_text_question_is_sent_back_once_then_reaches_the_inbox() {
+        let (_d, rt) = test_runtime(true);
+        seat(&rt);
+        rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "[t:0123abcd] ORCH: report"})), None);
+        let q = "I merged T-1.\n\nDecision for you: do you want that column?";
+        let out = rt.on_hook(&hook("Stop", json!({"last_assistant_message": q})), None).expect("blocked");
+        assert!(out.0["reason"].as_str().unwrap().contains("mcp__orch__ask_user"));
+        assert!(questions(&rt).is_empty());
+        assert!(
+            rt.on_hook(&hook("Stop", json!({"last_assistant_message": q, "stop_hook_active": true})), None).is_none()
+        );
+        let items = questions(&rt);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].body.contains("do you want that column?"));
+        // The user answers in the pane instead: the item closes.
+        rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "no dollars"})), None);
+        assert!(questions(&rt).is_empty());
+    }
+
+    #[test]
+    fn ask_user_question_in_an_app_turn_goes_to_the_inbox() {
+        let (_d, rt) = test_runtime(true);
+        seat(&rt);
+        rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "[t:0123abcd] ORCH: task"})), None);
+        let input = json!({"questions": [{"question": "Which db?", "options": [{"label": "SQLite"}]}]});
+        let out = rt
+            .on_hook(&hook("PreToolUse", json!({"tool_name": "AskUserQuestion", "tool_input": input})), None)
+            .expect("denied");
+        assert_eq!(out.0["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(questions(&rt)[0].payload["options"], json!(["SQLite"]));
+        // It asked: the Stop on its question is not sent back.
+        assert!(rt.on_hook(&hook("Stop", json!({"last_assistant_message": "Which db?"})), None).is_none());
+        assert_eq!(questions(&rt).len(), 1);
+    }
+
+    #[test]
+    fn the_users_answer_is_admitted_past_a_pause() {
+        let (_d, rt) = test_runtime(false);
+        rt.pause_all();
+        rt.deliver_user("a1", "go with ux's proposal").unwrap();
+        let (rec, turn) = rt.store.read(|s| (s.agents["a1"].clone(), s.turns[0].clone()));
+        assert!(rt.admit_turn(&rec, &turn, false));
+        rt.deliver("a1", "an app turn").unwrap();
+        let turn = rt.store.read(|s| s.turns[1].clone());
+        assert!(!rt.admit_turn(&rec, &turn, false));
+    }
+
+    #[test]
+    fn a_turn_whose_entry_vanished_asks_again() {
+        let (_d, rt) = test_runtime(false);
+        rt.pause_all();
+        rt.deliver("a1", "later").unwrap();
+        let (rec, turn) = rt.store.read(|s| (s.agents["a1"].clone(), s.turns[0].clone()));
+        assert!(!rt.admit_turn(&rec, &turn, false));
+        let Admission::Waiting(e) = rt.store.read(|s| s.turns[0].admission) else { panic!() };
+        // Dropped without a release (e.g. replaced by a critical turn).
+        rt.gov().cancel(governor::EntryId(e), Timestamp::now());
+        assert_eq!(rt.store.read(|s| s.turns[0].admission), Admission::Waiting(e));
+        rt.pump();
+        assert_eq!(rt.store.read(|s| s.turns[0].admission), Admission::Pending);
     }
 
     #[test]

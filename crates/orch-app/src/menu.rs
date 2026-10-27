@@ -28,6 +28,7 @@ pub const ITEMS: &[(&str, &[Item])] = &[
             ("jump", "Jump…", "CmdOrCtrl+P"),
             ("sidebar", "Toggle Sidebar", "CmdOrCtrl+B"),
             ("inspector", "Toggle Inspector", "CmdOrCtrl+I"),
+            ("dock.toggle", "Toggle Shell Dock", "CmdOrCtrl+J"),
             ("inbox", "Inbox", "CmdOrCtrl+Shift+I"),
             ("pane.focus.1", "Focus Pane 1", "CmdOrCtrl+1"),
             ("pane.focus.2", "Focus Pane 2", "CmdOrCtrl+2"),

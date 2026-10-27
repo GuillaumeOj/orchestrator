@@ -487,13 +487,16 @@ pub(crate) mod tests {
         let allow = c.settings["permissions"]["allow"].as_array().unwrap();
         assert!(allow.contains(&json!("mcp__orch__report_done")));
         assert!(!allow.contains(&json!("mcp__orch__request_pr")), "specialists don't open PRs");
-        assert!(c.settings["permissions"]["deny"].as_array().unwrap().contains(&json!("Agent")));
+        assert!(
+            !c.settings["permissions"]["deny"].as_array().unwrap().contains(&json!("Agent")),
+            "reviews run /code-review's subagents"
+        );
         let tools = c.mcp["mcpServers"]["orch"]["env"]["ORCH_TOOLS"].as_str().unwrap();
         assert!(tools.contains("sync_integration") && !tools.contains("merge"));
         let prompt = &c.args[c.args.iter().position(|a| a == "--append-system-prompt").unwrap() + 1];
         assert!(prompt.starts_with(ORCH_PREAMBLE_TEAM));
         assert!(prompt.contains("You are node `back`"));
-        assert!(c.args.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "acceptEdits"));
+        assert!(c.args.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "auto"));
     }
 
     #[test]

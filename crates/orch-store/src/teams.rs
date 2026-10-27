@@ -109,6 +109,32 @@ pub struct Task {
     /// The backend's `updatedAt` at the last sync (conflict detection, FR-503).
     #[serde(default)]
     pub remote_updated_at: Option<String>,
+    /// The core's workflow state (never synced to a backend).
+    #[serde(default)]
+    pub flow: TaskFlow,
+}
+
+/// Where a task stands in the team's own workflow: a plan approved by the
+/// lead before any edit, and a review before the merge.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TaskFlow {
+    /// The lead asked for a plan first: edits are refused until it approves.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plan_first: bool,
+    /// The plan the owner submitted, waiting for the lead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plan_approved: bool,
+    /// The review is under way (self-review commands, or a reviewer).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reviewing: bool,
+    /// The review's outcome: `{fixed: [...], unfixed: [{finding, reason}]}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<Value>,
+    /// On a reviewer's own task: the task it reviews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviews: Option<u64>,
 }
 
 impl Task {
@@ -132,6 +158,7 @@ impl Task {
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
             remote_updated_at: None,
+            flow: TaskFlow::default(),
         }
     }
 
@@ -300,7 +327,7 @@ fn row_run(r: &rusqlite::Row) -> rusqlite::Result<TeamRun> {
     })
 }
 
-const TASK_COLS: &str = "id, project_id, backend, external_id, feature_id, team_run_id, title, body, status, node, agent_id, depends_on, branch, pr_url, notes, created_at_ms, updated_at_ms, remote_updated_at";
+const TASK_COLS: &str = "id, project_id, backend, external_id, feature_id, team_run_id, title, body, status, node, agent_id, depends_on, branch, pr_url, notes, created_at_ms, updated_at_ms, remote_updated_at, flow";
 
 fn row_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
     let status: String = r.get(8)?;
@@ -323,6 +350,7 @@ fn row_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
         created_at_ms: r.get::<_, i64>(15)? as u64,
         updated_at_ms: r.get::<_, i64>(16)? as u64,
         remote_updated_at: r.get(17)?,
+        flow: from_js(&r.get::<_, String>(18)?)?,
     })
 }
 
@@ -607,13 +635,13 @@ impl Store {
             let id = if t.id == 0 { None } else { Some(t.id as i64) };
             tx.execute(
                 &format!(
-                    "INSERT INTO tasks({TASK_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+                    "INSERT INTO tasks({TASK_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
                      ON CONFLICT(id) DO UPDATE SET external_id=excluded.external_id, feature_id=excluded.feature_id,
                        team_run_id=excluded.team_run_id, title=excluded.title, body=excluded.body,
                        status=excluded.status, node=excluded.node, agent_id=excluded.agent_id,
                        depends_on=excluded.depends_on, branch=excluded.branch, pr_url=excluded.pr_url,
                        notes=excluded.notes, updated_at_ms=excluded.updated_at_ms,
-                       remote_updated_at=excluded.remote_updated_at"
+                       remote_updated_at=excluded.remote_updated_at, flow=excluded.flow"
                 ),
                 params![
                     id,
@@ -633,7 +661,8 @@ impl Store {
                     js(&t.notes),
                     t.created_at_ms as i64,
                     t.updated_at_ms as i64,
-                    t.remote_updated_at
+                    t.remote_updated_at,
+                    js(&t.flow)
                 ],
             )?;
             Ok(match id {
@@ -730,10 +759,47 @@ impl Store {
         })
     }
 
-    /// Marks messages delivered (`read = false`) or read, and binds them to
-    /// the agent that got them.
-    /// Marks messages delivered and read (they are shown in full when
-    /// delivered), and to which agent of the node.
+    /// Runs `sql` once per message id (`?1`), the same `args` after it.
+    fn each_message(&self, ids: &[u64], sql: &'static str, args: Vec<rusqlite::types::Value>) -> Result<()> {
+        let ids = ids.to_vec();
+        self.write(move |tx| {
+            let mut st = tx.prepare_cached(sql)?;
+            for id in ids {
+                let all = std::iter::once(rusqlite::types::Value::Integer(id as i64)).chain(args.iter().cloned());
+                st.execute(rusqlite::params_from_iter(all))?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Marks messages delivered (handed to the agent, not yet acted on) and
+    /// binds them to the agent of the node that got them. They stay unread
+    /// until [`Store::ack_messages`].
+    pub fn deliver_messages(&self, ids: &[u64], agent_id: &str, at_ms: u64) -> Result<()> {
+        self.each_message(
+            ids,
+            "UPDATE messages SET to_agent=coalesce(to_agent, ?2), delivered_at_ms=coalesce(delivered_at_ms, ?3) WHERE id=?1",
+            vec![agent_id.to_string().into(), (at_ms as i64).into()],
+        )
+    }
+
+    /// The turn that carried these messages ended: they are read.
+    pub fn ack_messages(&self, ids: &[u64], at_ms: u64) -> Result<()> {
+        self.each_message(
+            ids,
+            "UPDATE messages SET read_at_ms=coalesce(read_at_ms, ?2) WHERE id=?1",
+            vec![(at_ms as i64).into()],
+        )
+    }
+
+    /// The turn that carried these messages never ran (cancelled, dropped):
+    /// unread ones are delivered again.
+    pub fn undeliver_messages(&self, ids: &[u64]) -> Result<()> {
+        self.each_message(ids, "UPDATE messages SET delivered_at_ms=NULL WHERE id=?1 AND read_at_ms IS NULL", vec![])
+    }
+
+    /// Marks messages delivered and read at once (shown in full where they
+    /// are listed: the `inbox` tool), and to which agent of the node.
     pub fn mark_messages(&self, ids: &[u64], agent_id: Option<&str>, at_ms: u64) -> Result<()> {
         let ids = ids.to_vec();
         let agent = agent_id.map(str::to_string);

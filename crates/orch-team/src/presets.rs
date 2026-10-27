@@ -64,8 +64,8 @@ pub fn starter_roles() -> Vec<RoleDef> {
             "reviewer",
             "Reviewer",
             7,
-            "You are the reviewer. You review the branches you are asked to review and reply with concrete findings; \
-             you do not change them yourself.",
+            "You are the reviewer. You review the branches you are asked to review and send concrete findings \
+             (file:line, the problem, the fix) with mcp__orch__submit_review; you do not change them yourself.",
             Tier::Normal,
         ),
     ]
@@ -83,7 +83,15 @@ fn node(id: &str, role: &str, x: f64, y: f64, lead: bool) -> AgentNode {
 }
 
 fn team(id: &str, name: &str, nodes: Vec<AgentNode>, edges: Vec<Edge>) -> Team {
-    Team { id: id.into(), name: name.into(), scope: Scope::Global, nodes, edges, version: 1 }
+    Team {
+        id: id.into(),
+        name: name.into(),
+        scope: Scope::Global,
+        nodes,
+        edges,
+        version: 1,
+        review: Default::default(),
+    }
 }
 
 fn with_roles(t: Team) -> (Vec<RoleDef>, Team) {
@@ -117,6 +125,24 @@ pub fn full_stack() -> (Vec<RoleDef>, Team) {
             Edge::new("back", "front", CanMessage),
         ],
     ))
+}
+
+/// The full-stack team with a reviewer node: every task is reviewed by it
+/// before the lead merges (review mode `node`, ADR-010).
+pub fn full_stack_reviewed() -> (Vec<RoleDef>, Team) {
+    use EdgeKind::*;
+    let (_, mut t) = full_stack();
+    t.id = "full-stack-reviewed".into();
+    t.name = "Full-stack team with a reviewer".into();
+    t.review = crate::model::ReviewMode::Node;
+    t.nodes.push(node("review", "reviewer", 800.0, 240.0, false));
+    // The reviewer node reviews everyone (front no longer asks ui).
+    t.edges.retain(|e| e.kind != Reviews);
+    for n in ["back", "front", "ui", "ux"] {
+        t.edges.push(Edge::new(n, "review", Reviews));
+    }
+    t.edges.push(Edge::new("review", "lead", ReportsTo));
+    with_roles(t)
 }
 
 pub fn bugfix_squad() -> (Vec<RoleDef>, Team) {
@@ -154,7 +180,7 @@ pub fn design_sprint() -> (Vec<RoleDef>, Team) {
 
 /// Every starter preset, in library order.
 pub fn all() -> Vec<(Vec<RoleDef>, Team)> {
-    vec![solo_dev(), full_stack(), bugfix_squad(), design_sprint()]
+    vec![solo_dev(), full_stack(), full_stack_reviewed(), bugfix_squad(), design_sprint()]
 }
 
 #[cfg(test)]

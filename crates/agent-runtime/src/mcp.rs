@@ -59,6 +59,11 @@ impl Runtime {
                 RuleEffect::Allow => actor = format!("rule:{}", rule.id),
             }
         }
+        if m.tool == "commit"
+            && let Some(why) = self.plan_lock_reason(&rec)
+        {
+            return (true, why, Value::Null);
+        }
         let r = match m.tool.as_str() {
             "commit" => self.commit_args(&rec, &m.arguments, &actor).map(|c| {
                 let text = format!(

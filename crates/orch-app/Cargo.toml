@@ -34,6 +34,7 @@ portable-pty.workspace = true
 uuid.workspace = true
 tauri = { version = "2.12", features = [] }
 core-text = "22"
+tauri-plugin-notification = "2.4"
 
 [dev-dependencies]
 tempfile.workspace = true

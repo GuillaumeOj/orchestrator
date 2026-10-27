@@ -526,6 +526,13 @@
       <section class="card rules" aria-label="Rules">
         <div class="rh"><b>Rules</b><span class="grow"></span>{#if issues.length}<span class="err">{issues.length} error{issues.length === 1 ? '' : 's'}</span>{:else if status === 'saved'}<span class="ok">valid</span>{:else}<span class="muted">{status}…</span>{/if}</div>
         {#each issues as i (i.text)}<div class="err">{'\u{F0028}'} {i.text}</div>{/each}
+        <label class="lab"><span>review</span>
+          <select class="field" value={team?.review ?? 'self'} disabled={!team} onchange={(e) => edit({ ...team, review: e.currentTarget.value })}>
+            <option value="self">self: /code-review, then /simplify</option>
+            <option value="node">by the reviewer node</option>
+            <option value="none">by the lead</option>
+          </select>
+        </label>
         {#each lines as [who, what] (who)}
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <div class="rule" onclick={() => (sel = who)}><b>{who}</b> <span>{what}</span></div>
