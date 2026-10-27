@@ -9,13 +9,18 @@ use orch_protocol::CtlRequest;
 use serde_json::Value;
 
 /// Builds the helper binaries (a no-op when up to date) and returns their folder.
+/// Once per test process: parallel tests each running cargo could copy a helper
+/// while another cargo replaces it (seen on a cold build).
 pub fn helper_bins() -> PathBuf {
-    let st = Command::new(env!("CARGO"))
-        .args(["build", "-q", "-p", "orch-hook", "-p", "orch-status", "-p", "orch-mcp"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status()
-        .unwrap();
-    assert!(st.success());
+    static BUILT: std::sync::Once = std::sync::Once::new();
+    BUILT.call_once(|| {
+        let st = Command::new(env!("CARGO"))
+            .args(["build", "-q", "-p", "orch-hook", "-p", "orch-status", "-p", "orch-mcp"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .status()
+            .unwrap();
+        assert!(st.success());
+    });
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug")
 }
 
