@@ -1,6 +1,7 @@
 # Orchestrator — Product & Technical Specification
 
-> Status: **Draft v0.9** · Owner: Guillaume · Last update: 2026-10-26
+> Status: **Draft v0.10** · Owner: Guillaume · Last update: 2026-10-27
+> v0.10 applies what building P2 (teams) found: three more orchestrator tools forced by the sandbox commit gap (`merge`, `sync_integration`, `request_spec_approval`), no Stop-hook "continue" (the next task is a normal turn), the duration-only turn ceiling for now, and the data model additions (scoped role and team ids, the team seat on agents, task and message fields).
 > v0.9 applies the first day of daily use of the installed app (2026-10-26): the same Governor forecast after a restart as live (the reset as a reading of 0, a damped outside-the-app rate, the on-plan burn prior), and shadow logging of every admission action.
 > v0.8 applies what building the P1 core services found (`crates/orch-store`, `orch-git`, `orch-mcp`, live run with Claude Code 2.1.302 on 2026-10-26): agents commit through the orchestrator MCP server, Inbox holds for permission prompts, memory-pressure cap levels, retention, restart replay of usage, and the data model additions.
 > v0.7 applies what building the first desktop app found ([docs/app](app/README.md), Claude Code 2.1.302): permission prompts answered in the pane or the Inbox, resize debouncing, the measured app baseline, keyboard fixes, worktrees of a project that is itself a linked worktree.
@@ -194,12 +195,12 @@ Priority: **M** must, **S** should, **C** could. Phases are listed in §11. Jour
 | ID | Requirement | P |
 |---|---|---|
 | FR-401 | Lead protocol: *understand → spec → (spec gate) → decompose → assign → track → review → integrate → (PR gate)*. It is written into the Lead's prompt and enforced by tool availability. [J3] | M |
-| FR-402 | **Orchestrator MCP server** (stdio, one per agent, ADR-002) with the tools `send_message(to, body)`, `inbox()`, `create_task`, `update_task(status, notes)`, `list_tasks`, `handoff(artifact, to)`, `request_review(branch, to)`, `ask_user(question, options)`, `report_done(summary)`. Recipients are checked against the team graph on the server side. | M |
+| FR-402 | **Orchestrator MCP server** (stdio, one per agent, ADR-002) with the tools `send_message(to, body)`, `inbox()`, `create_task`, `update_task(status, notes)`, `list_tasks`, `handoff(artifact, to)`, `request_review(branch, to)`, `ask_user(question, options)`, `report_done(summary)`. Because sandboxed agents can't write git from a worktree (FR-702), three more tools let the core do the git work outside the sandbox, as `commit` does: the Lead's `request_spec_approval(summary)` (the spec gate, FR-401), the Lead's `merge(branch, task?)` (FR-405) and a specialist's `sync_integration()` (merges the integration branch into its own; a conflict is left in progress for the agent, whose `commit` concludes it). Each role sees only its own tools (the compiled role lists them for orch-mcp in `ORCH_TOOLS`); the core checks again, and checks recipients against the team graph. | M |
 | FR-403 | **Message delivery without polling**: for a busy agent, messages are injected at its next tool call (PostToolUse `additionalContext`: "2 new messages from Lead"). For an idle agent, a new turn is delivered via the Governor. A suspended agent is resumed through the Governor first. | M |
 | FR-404 | Task dependencies (blocked-by): an agent is only given a task once its dependencies are done. | M |
-| FR-405 | The Lead owns the integration worktree and does all merges into it; specialists never merge. Conflicts are routed back to the owning agent. | M |
+| FR-405 | The Lead owns the integration worktree and does all merges into it, through `merge` (FR-402: the core merges outside the sandbox, hooks off, with the Lead's identity, and audits it); specialists never merge. On a conflict the merge is aborted, the task goes back to its owner, and the owner is told to `sync_integration`, fix and report again. | M |
 | FR-406 | Team controls: pause, resume or stop the whole team; restart one agent; reassign a task; add a node mid-run. | M |
-| FR-407 | Watchdog: a turn exceeding its ceiling (usage or duration, set per role) is interrupted at the next tool boundary, and an Inbox item is created. An agent with no progress for 15 min creates an Inbox item. | M |
+| FR-407 | Watchdog: a turn exceeding its ceiling (usage or duration, set per role) is interrupted (Esc), and an Inbox item is created. An agent with no progress for 15 min creates an Inbox item. Once per turn each. **P2 enforces the duration ceiling only**; the usage ceiling (weekly percentage points per turn) needs per-turn usage attribution and comes later. | M |
 | FR-408 | Team activity timeline: messages, task changes, merges, gates, governor actions; filterable. | M |
 | FR-409 | The user can message the Lead or any agent directly (in its pane, or through the team timeline). | M |
 | FR-410 | **Subagents and background work**: Claude Code's Agent tool runs subagents **asynchronously by default**, and background shells too; when they finish they start a **new turn by themselves** (a `<task-notification>` prompt). These turns don't come from the app, so the Governor counts them (they still pass PreToolUse admission), and a role can disallow background Bash and async subagents (exact switch to confirm, R10). Subagent usage is attributed to the agent through SubagentStart/SubagentStop (`agent_id`, `agent_type`, transcript path) and the notification's `subagent_tokens`. | M |
@@ -405,7 +406,7 @@ User customizations still load into every agent (CLAUDE.md, skills, plugins and 
 | API / rate-limit errors | **StopFailure** hook (verified): `error` = `rate_limit` or `model_not_found`, with `last_assistant_message`; no Stop follows. On a plan-limit 429 the statusline shows `used_percentage: 100` and the CLI arms its own auto-continue at the reset (J9). |
 | Inject messages into a busy agent | PostToolUse `additionalContext`, prefixed `ORCH:` (needs the preamble above). |
 | Deliver a new turn to an idle agent | PTY bracketed paste + Enter while idle and the user isn't typing, following the FR-206 delivery rules. |
-| Keep an agent working on queued tasks | Stop hook returning `{"decision":"block","reason":"<next task>"}` if the Governor admits it; never when the payload has `stop_hook_active: true` and nothing new was admitted (avoids loops). |
+| Keep an agent working on queued tasks | **Not the Stop hook** (P2): a Stop `block` keeps the turn running, so the state tracker and the Governor would see one endless turn. The agent stops; its next task is queued as a normal turn and delivered through the Governor (FR-206), which costs one delivery round trip. |
 | History and search | Claude Code's transcript JSONL (`transcript_path` in every hook payload). |
 
 The contract test suite (R2) replays these checks after every Claude Code update.
@@ -420,17 +421,18 @@ Per-agent OS sandbox for Bash, permission rules for Claude's own tools, no crede
 | Entity | Main fields |
 |---|---|
 | Project | id, name, path, defaultBranch, remotes, worktreeRoot, taskBackend {type, config}, trackOrchestratorDir, settings |
-| Feature | id, projectId, slug, title, status, integrationBranch, integrationWorktreeId, priority, allocationId |
-| Role | id, scope, name, icon, prompt, model, effort, tools, mcpServers, permissionProfile, sandboxProfile, turnCeiling, subagentsAllowed, budgetPriority, version |
-| Team | id, scope, name, nodes[], edges[], settings, version |
+| Feature | id, projectId, slug, title, brief, base, status, integrationBranch, integrationWorktreeId, priority, allocationId (default: the project) |
+| Role | id, scope, name, icon, prompt, model, effort, tools, mcpServers, permissionProfile, sandboxProfile, turnCeiling, subagentsAllowed, budgetPriority, version. Keyed by (scope, id): a project's role shadows the global one with the same id in that project only |
+| Team | id, scope, name, nodes[], edges[], settings, version. Keyed by (scope, id), like Role |
+| TeamVersion | teamScope, teamId, version, team, roles (the roles its nodes use): the snapshot a run points at (FR-308), kept after the team is archived |
 | AgentNode | id, teamId, roleId, overrides, position, maxConcurrency, isLead |
 | Edge | id, teamId, from, to, type |
-| TeamRun | id, teamId, teamVersionSnapshot, compiledConfigPath, featureId, status, startedAt, endedAt |
+| TeamRun | id, teamId, teamScope, teamVersion (→ TeamVersion), compiledConfigPath, featureId, status, resumeStatus? (where a paused or deferred run goes back to), prUrl?, startedAt, endedAt |
 | Worktree | id, projectId, path, branch, baseBranch, locked, state, createdAt |
-| Agent | id, projectId, teamRunId?, agentNodeId?, worktreeId, claudeSessionId, parentAgentId? (fork), pid?, state, priority, lastActiveAt |
+| Agent | id, projectId, teamRunId?, agentNodeId?, featureId?, taskId? (its current task; the team seat), worktreeId, claudeSessionId, parentAgentId? (fork), pid?, state, priority, lastActiveAt |
 | Turn | id, agentId, kind (task / message / continue / user), admittedAt, startedAt, endedAt, usageDelta, outcome |
-| Task | id, backend, externalId?, featureId, title, body, status, assigneeNodeId?, dependsOn[], branch?, prUrl? |
-| Message | id, teamRunId, from, to, kind, body, deliveredAt?, readAt? |
+| Task | id, projectId, backend, externalId?, featureId, teamRunId?, title, body, status, assigneeNodeId?, agentId?, dependsOn[], branch?, prUrl?, notes[], createdAt, updatedAt, remoteUpdatedAt? (the remote's last change seen, or a pending local change, FR-503) |
+| Message | id, teamRunId, from, fromAgent?, to (a node), toAgent? (set when one agent of the node receives it), kind, body, ref, deliveredAt?, readAt? |
 | Artifact | id, featureId, kind (doc / design / build), uri, fromNodeId, toNodeId? |
 | InboxItem | id, kind (gate / question / permission / budget / alert / planner), agentId?, payload, priority, status, stale, createdAt, decidedAt, decision |
 | PermissionRule | id, scope (project / role / agent), pattern, effect (allow / deny / ask), sourceInboxItemId, createdAt, revokedAt? (revoked rules are kept for the audit trail) |
