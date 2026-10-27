@@ -17,6 +17,7 @@ pub mod resources;
 pub mod role;
 pub mod runtime;
 pub mod server;
+pub mod shell;
 pub mod state;
 pub mod store;
 pub mod team;

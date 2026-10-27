@@ -373,7 +373,7 @@ pub fn governor_enforce(core: CoreState, enforce: bool) -> Res<()> {
 #[tauri::command]
 pub fn trust_command(core: CoreState) -> String {
     let claude = core.claude_check().map(|c| c.path).unwrap_or_else(|| PathBuf::from("claude"));
-    format!("DISABLE_AUTOUPDATER=1 {}", crate::editor::sh_quote(&claude.display().to_string()))
+    format!("DISABLE_AUTOUPDATER=1 {}", agent_runtime::shell::sh_quote(&claude.display().to_string()))
 }
 
 #[tauri::command]
