@@ -1,7 +1,7 @@
 <script>
   // Icon rail below 1512 px (§9.2): one mark per project with a count badge when
   // agents need you; hover or focus opens the project summary (Penpot 03 rail hover).
-  import { agents, openAgent, projects } from '../lib/app.svelte.js';
+  import { activeAgents, openAgent, projects } from '../lib/app.svelte.js';
   import { displayState } from '../lib/status.js';
   import AgentChip from './AgentChip.svelte';
   import StatusBadge from './StatusBadge.svelte';
@@ -9,7 +9,7 @@
   let hover = $state(null);
   const rows = $derived(
     projects().map((p) => {
-      const list = agents().filter((a) => a.project_id === p.id && a.state !== 'archived');
+      const list = activeAgents().filter((a) => a.project_id === p.id);
       return { p, list, need: list.filter((a) => a.state === 'waiting_for_you' || a.trust_dialog).length };
     }),
   );

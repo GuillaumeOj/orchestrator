@@ -208,3 +208,10 @@ select.field {
   border: 0;
   padding: 0;
 }
+
+/* A checkbox or radio with its label (dialogs, removal choices). */
+.check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}

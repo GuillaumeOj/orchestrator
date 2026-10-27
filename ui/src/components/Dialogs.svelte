@@ -1,11 +1,12 @@
 <script>
   // Dialogs: New session (⌘T, Penpot 06 J2 step 1), Add project (⌘N: a folder
   // or a git URL to clone, J1), Launch a team on a feature (Penpot 04 Launch
-  // on feature, J3 step 2), the weekly plan, confirmations.
+  // on feature, J3 step 2), the weekly plan, deleting an agent or a feature
+  // (FR-202: killed, checked, hidden; worktrees on request), confirmations.
   // ⌘⏎ submits; esc cancels.
   import { untrack } from 'svelte';
-  import { app, contextProject, features, openAgent, openFeature, openProject, projects, refresh, toast } from '../lib/app.svelte.js';
-  import { expandHome } from '../lib/format.js';
+  import { activeAgents, agent, app, contextProject, deleteAgent, deleteFeature, features, openAgent, openFeature, openProject, projects, refresh, toast } from '../lib/app.svelte.js';
+  import { expandHome, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { PRESSURE } from '../lib/status.js';
   import { runFinished, slugify } from '../lib/teams.js';
@@ -78,6 +79,53 @@
       busy = false;
     }
   }
+
+  // Delete an agent or a feature. A feature removes its worktrees by
+  // default (unmerged ones are kept unless discarded); an agent's worktree
+  // (merged? dirty? shared?) decides its default once its plan is loaded.
+  let del = $state({ plan: null, remove: false, discard: false });
+  $effect(() => {
+    const ov = o;
+    if (!ov?.kind.startsWith('delete-')) return;
+    untrack(() => {
+      del = { plan: null, remove: ov.kind === 'delete-feature', discard: false };
+      error = null;
+      if (ov.kind !== 'delete-agent') return;
+      invoke('agent_action', { id: ov.agentId, action: 'delete_plan', message: null })
+        .then((plan) => {
+          if (app.overlay !== ov) return;
+          del = { plan, remove: !!plan.worktree && !plan.shared_with.length && plan.worktree.safe_to_remove, discard: false };
+        })
+        .catch((e) => (error = errText(e)));
+    });
+  });
+  const delWt = $derived(del.plan?.worktree ?? null);
+  const delAgent = $derived(o?.kind === 'delete-agent' ? agent(o.agentId) : null);
+
+  /** Runs a delete; a failure seen after the dialog was dismissed (the kill
+   *  takes seconds) becomes a toast instead of an error nobody sees. */
+  async function runDelete(what, fn) {
+    if (busy) return;
+    const ov = app.overlay;
+    busy = true;
+    error = null;
+    try {
+      await fn();
+      if (app.overlay === ov) close();
+    } catch (e) {
+      if (app.overlay !== ov) return void toast(`${what}: ${errText(e)}`, { kind: 'error' });
+      error = errText(e);
+      busy = false;
+    }
+  }
+
+  // The core ignores `discard` unless the worktree is removed.
+  const confirmDeleteAgent = () => runDelete(o.agentId, () => deleteAgent(o.agentId, del.remove, del.discard));
+
+  const delFeature = $derived(o?.kind === 'delete-feature' ? features().find((f) => f.id === o.featureId) : null);
+  const delFeatureAgents = $derived(delFeature ? activeAgents().filter((a) => a.team?.feature_id === delFeature.id) : []);
+
+  const confirmDeleteFeature = () => runDelete(delFeature?.slug ?? o.featureId, () => deleteFeature(o.featureId, del.remove, del.discard));
 
   $effect(() => {
     if (o?.kind !== 'new-session') return;
@@ -163,7 +211,7 @@
   }
 </script>
 
-{#if o && ['new-session', 'add-project', 'launch', 'plan', 'confirm'].includes(o.kind)}
+{#if o && ['new-session', 'add-project', 'launch', 'plan', 'delete-agent', 'delete-feature', 'confirm'].includes(o.kind)}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="scrim" onclick={close}></div>
   {#if o.kind === 'new-session'}
@@ -278,6 +326,57 @@
       <div class="foot">
         <button type="button" class="btn ghost" onclick={close}>Cancel <Kbd keys="esc" /></button>
         <button type="submit" class="btn primary" disabled={busy || !path.trim()}>{busy ? (isUrl(path) ? 'Cloning…' : 'Adding…') : isUrl(path) ? 'Clone' : 'Add'} <Kbd keys="⏎" /></button>
+      </div>
+    </form>
+    </div>
+  {:else if o.kind === 'delete-agent'}
+    <div class="dlg small" role="alertdialog" aria-modal="true" aria-label="Delete {o.agentId}" tabindex="-1" onkeydown={(e) => onKey(e, confirmDeleteAgent)}>
+    <form onsubmit={(e) => (e.preventDefault(), confirmDeleteAgent())}>
+      <h3>Delete {o.agentId}?</h3>
+      <div class="note what">
+        <span>• {delAgent?.live ? 'Its process' : 'Any process it left'} and every process left in its worktree get SIGTERM, then SIGKILL after 5 s. The app scans again: nothing is deleted while one survives.</span>
+        <span>• The agent leaves the sidebar. Its session transcript, usage and audit log stay.</span>
+      </div>
+      {#if !del.plan && !error}
+        <p class="muted">Checking its worktree…</p>
+      {:else if delWt}
+        {#if del.plan.shared_with.length}
+          <p class="muted">Its worktree <span class="mono">{shortPath(delWt.path, app.data?.core?.user_home ?? '')}</span> is also used by {del.plan.shared_with.join(', ')}: it stays.</p>
+        {:else}
+          <label class="check"><input type="checkbox" bind:checked={del.remove} /> Remove its worktree and branch <span class="mono">{delWt.branch ?? ''}</span></label>
+          {#if del.remove && !delWt.safe_to_remove}
+            <label class="check"><input type="checkbox" bind:checked={del.discard} /> Discard {[delWt.dirty && `${delWt.dirty} uncommitted file(s)`, delWt.unmerged_commits && `${delWt.unmerged_commits} unmerged commit(s)`].filter(Boolean).join(' and ') || 'unmerged work'} (otherwise the worktree is kept)</label>
+          {/if}
+        {/if}
+      {:else if del.plan}
+        <p class="muted">Its worktree is not one of the app's: it stays.</p>
+      {/if}
+      {#if error}<p class="err">{error}</p>{/if}
+      <div class="foot">
+        <button type="button" class="btn ghost" onclick={close}>Cancel <Kbd keys="esc" /></button>
+        <!-- svelte-ignore a11y_autofocus -->
+        <button type="submit" class="btn danger" autofocus disabled={busy}>{busy ? 'Deleting…' : 'Kill and delete'} <Kbd keys="⏎" /></button>
+      </div>
+    </form>
+    </div>
+  {:else if o.kind === 'delete-feature'}
+    <div class="dlg small" role="alertdialog" aria-modal="true" aria-label="Delete feature" tabindex="-1" onkeydown={(e) => onKey(e, confirmDeleteFeature)}>
+    <form onsubmit={(e) => (e.preventDefault(), confirmDeleteFeature())}>
+      <h3>Delete feature {delFeature?.slug ?? ''}?</h3>
+      <div class="note what">
+        <span>• Its team run ends (failed, deleted by the user).</span>
+        <span>• {delFeatureAgents.length ? `Killed (checked) and deleted: ${delFeatureAgents.map((a) => a.id).join(', ')}.` : 'No agent left.'}</span>
+        <span>• The feature leaves the sidebar. Tasks, timeline, usage and audit log stay.</span>
+      </div>
+      <label class="check"><input type="checkbox" bind:checked={del.remove} /> Remove its worktrees and branches, <span class="mono">orch/{delFeature?.slug ?? '…'}/integration</span> included</label>
+      {#if del.remove}
+        <label class="check"><input type="checkbox" bind:checked={del.discard} /> Discard unmerged work (otherwise unmerged worktrees are kept)</label>
+      {/if}
+      {#if error}<p class="err">{error}</p>{/if}
+      <div class="foot">
+        <button type="button" class="btn ghost" onclick={close}>Cancel <Kbd keys="esc" /></button>
+        <!-- svelte-ignore a11y_autofocus -->
+        <button type="submit" class="btn danger" autofocus disabled={busy || !delFeature}>{busy ? 'Deleting…' : 'Delete feature'} <Kbd keys="⏎" /></button>
       </div>
     </form>
     </div>

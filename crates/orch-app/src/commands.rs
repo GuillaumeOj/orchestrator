@@ -98,6 +98,12 @@ pub async fn agent_action(core: CoreState<'_>, id: String, action: String, messa
     blocking(core, move |c| c.agent_action(&id, &action, message.as_deref())).await
 }
 
+#[tauri::command]
+pub async fn agent_delete(core: CoreState<'_>, id: String, remove_worktree: bool, confirm_discard: bool) -> Res<Value> {
+    // Kills (and checks) first: waits for the process like kill does.
+    blocking(core, move |c| c.agent_delete(&id, remove_worktree, confirm_discard)).await
+}
+
 // ---------------------------------------------------------------- terminals
 
 #[derive(serde::Deserialize)]
@@ -239,6 +245,11 @@ pub async fn task_update(
 #[tauri::command]
 pub async fn run_act(core: CoreState<'_>, run: String, action: String) -> Res<Value> {
     blocking(core, move |c| c.run_act(&run, &action)).await
+}
+
+#[tauri::command]
+pub async fn feature_delete(core: CoreState<'_>, feature: String, remove_worktrees: bool, discard: bool) -> Res<Value> {
+    blocking(core, move |c| c.feature_delete(&feature, remove_worktrees, discard)).await
 }
 
 #[tauri::command]

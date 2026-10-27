@@ -30,7 +30,7 @@ use crate::delivery::{self, GateInputs};
 use crate::env::EnvInputs;
 use crate::paths::{AppPaths, real, valid_id};
 use crate::preflight::{self, VersionCheck, VersionRange};
-use crate::procs::{self, AgentMatch, ProcessTable, SystemProcs};
+use crate::procs::{self, AgentMatch, SystemProcs};
 use crate::pty::PtyProcess;
 use crate::reconcile::{self, ReconcileEnv, Report};
 use crate::resources::{self, LiveAgent, MemoryProbe, PressureLevel, SystemMemory};
@@ -596,6 +596,9 @@ impl Runtime {
             bail!("agent {id} is already running");
         }
         let rec = self.store.read(|s| s.agents.get(id).cloned()).ok_or_else(|| anyhow!("no agent {id}"))?;
+        if rec.tracker.state == AgentState::Archived {
+            bail!("agent {id} is deleted");
+        }
         let mode = mode.unwrap_or_else(|| SessionMode::Resume(rec.session_id.clone()));
         // Checked at every spawn (NFR-7, FR-1201).
         let v = preflight::claude_version(&self.cfg.claude)?;
@@ -702,27 +705,41 @@ impl Runtime {
             Some(l) => (Some(l.pty.pgid), Some(l.pty.pid)),
             None => (rec.pgid, rec.pid),
         };
-        let log = match intent {
-            StopIntent::Suspend => procs::kill_tree(
-                &pgid.into_iter().collect::<Vec<_>>(),
-                &pid.into_iter().collect::<Vec<_>>(),
-                Duration::from_secs(5),
+        let (log, left) = match intent {
+            StopIntent::Suspend => (
+                procs::kill_tree(
+                    &pgid.into_iter().collect::<Vec<_>>(),
+                    &pid.into_iter().collect::<Vec<_>>(),
+                    Duration::from_secs(5),
+                ),
+                vec![],
             ),
             _ => {
                 let agent_dir = self.cfg.paths.agent_dir(id);
                 let wt = real(&rec.worktree);
                 let me = [std::process::id() as i32];
-                let found = procs::find_agent_procs(
-                    &SystemProcs.snapshot(),
+                procs::kill_verified(
+                    &SystemProcs,
                     &AgentMatch { pgid, agent_dir: &agent_dir, worktree: &wt, exclude: &me },
-                );
-                let mut pgids: Vec<i32> = found.iter().map(|f| f.proc.pgid).chain(pgid).filter(|g| *g > 1).collect();
-                pgids.sort();
-                pgids.dedup();
-                let pids: Vec<i32> = found.iter().map(|f| f.proc.pid).chain(pid).collect();
-                procs::kill_tree(&pgids, &pids, Duration::from_secs(5))
+                    &pgid.into_iter().collect::<Vec<_>>(),
+                    &pid.into_iter().collect::<Vec<_>>(),
+                    Duration::from_secs(5),
+                    Duration::from_secs(2),
+                )
             }
         };
+        if !left.is_empty() {
+            // Not verified: keep pid/pgid so a retry finds the same processes.
+            let what: Vec<String> = left.iter().map(|f| format!("{} {}", f.proc.pid, f.proc.cmd)).collect();
+            let err = format!("{} process(es) survived the kill: {}", what.len(), what.join("; "));
+            let _ = self.store.write(|s| {
+                if let Some(a) = s.agents.get_mut(id) {
+                    a.tracker.last_error = Some(err.clone());
+                }
+            });
+            self.event(id, "stopped", json!({"intent": intent, "log": log, "survivors": left}));
+            bail!("agent {id}: {err}");
+        }
         if live.is_none() {
             // Not ours to wait for: settle the state now.
             self.store.write(|s| {
@@ -761,13 +778,7 @@ impl Runtime {
     /// Queues an app-delivered turn. The Governor admits it when the agent is
     /// idle; then it is pasted with its turn marker.
     pub fn deliver(&self, id: &str, text: &str) -> Result<String> {
-        if !self.store.read(|s| s.agents.contains_key(id)) {
-            bail!("no agent {id}");
-        }
-        let turn = TurnRow::queued(id, text, TurnKind::Message, Admission::Pending);
-        let tid = turn.id.clone();
-        self.store.write(|s| s.turns.push(turn))?;
-        Ok(tid)
+        self.deliver_kind(id, text, TurnKind::Message)
     }
 
     /// FR-811 Pause all. Returns the Governor action id.
@@ -1157,8 +1168,15 @@ impl Runtime {
     /// PreToolUse allows that tool call; otherwise it admits the agent's queued
     /// turn (or a "continue" turn when none is queued).
     fn handle_releases(&self, releases: Vec<Release>) {
+        let mut gone = vec![];
         for r in releases {
             let id = r.agent.0.clone();
+            // A deleted agent's last Governor entry: nothing to run, and the
+            // slot the release took is given back below.
+            if self.store.read(|s| s.agents.get(&id).is_none_or(|a| a.tracker.state == AgentState::Archived)) {
+                gone.push(r.agent);
+                continue;
+            }
             self.event(&id, "released", serde_json::to_value(&r).unwrap_or(Value::Null));
             let _ = self.store.write(|s| {
                 let held = s
@@ -1185,6 +1203,26 @@ impl Runtime {
                 }
             });
         }
+        for agent in gone {
+            let releases = self.gov().turn_ended(&agent, Timestamp::now());
+            self.handle_releases(releases);
+        }
+    }
+
+    /// Forgets a deleted agent in the Governor: its queued entries are
+    /// dropped, its pause lifted and its running turn (if any) ended, so it
+    /// holds no slot and no release ever comes for it.
+    pub(crate) fn governor_forget(&self, id: &str) {
+        let agent = AgentId(id.to_owned());
+        self.governor_act(|g, now| {
+            let entries: Vec<_> = g.queue().iter().filter(|e| e.agent == agent).map(|e| e.id).collect();
+            for e in entries {
+                g.cancel(e, now);
+            }
+            let mut releases = g.resume_agent(&agent, now);
+            releases.extend(g.turn_ended(&agent, now));
+            ((), releases)
+        });
     }
 
     pub fn on_status(&self, m: &StatusMsg) {

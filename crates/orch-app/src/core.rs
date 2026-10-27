@@ -557,6 +557,10 @@ impl Core {
         let tx = match w.get(id) {
             Some(tx) => tx.clone(),
             None => {
+                // Writers of agents no longer running (stopped, killed,
+                // deleted) end here: dropping the sender ends the thread.
+                let live = rt.live_ids();
+                w.retain(|a, _| live.contains(a));
                 let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
                 let agent = id.to_string();
                 std::thread::Builder::new().name(format!("agent-{id}-in")).spawn(move || {
@@ -582,11 +586,8 @@ impl Core {
                 json!("esc sent")
             }
             "suspend" => json!(rt.suspend(id)?),
-            "kill" => {
-                // Ends the agent's input thread; a later resume starts a new one.
-                self.agent_input.lock_ok().remove(id);
-                json!(rt.kill(id)?)
-            }
+            "kill" => json!(rt.kill(id)?),
+            "delete_plan" => rt.delete_plan(id)?,
             "resume" => {
                 rt.resume(id, message)?;
                 json!("resumed")
@@ -597,6 +598,16 @@ impl Core {
             "unpause" => json!(rt.resume_agent(id)),
             other => bail!("unknown agent action {other}"),
         })
+    }
+
+    /// FR-202: kill (checked) and hide the agent, its worktree on request.
+    pub fn agent_delete(&self, id: &str, remove_worktree: bool, confirm_discard: bool) -> Result<Value> {
+        self.runtime()?.delete_agent(id, remove_worktree, confirm_discard)
+    }
+
+    /// Ends the feature's runs, deletes its agents, archives it.
+    pub fn feature_delete(&self, feature_id: &str, remove_worktrees: bool, discard: bool) -> Result<Value> {
+        self.runtime()?.delete_feature(feature_id, remove_worktrees, discard)
     }
 
     // ------------------------------------------------------------ terminals

@@ -138,6 +138,7 @@
         <button class="btn" onclick={() => act(paused ? 'resume' : 'pause')}>{paused ? 'Resume team' : 'Pause team'} <Kbd keys="p" /></button>
         <button class="btn danger" onclick={stop}>Stop</button>
       {/if}
+      <button class="btn danger" onclick={() => (app.overlay = { kind: 'delete-feature', featureId: v.feature.id })}>Delete…</button>
     </header>
 
     <div class="cols">
