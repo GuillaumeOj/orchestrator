@@ -166,10 +166,17 @@ mod tests {
 
     fn setup() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
         let (d, repo) = scratch_repo();
-        let row = worktree::ensure(&MemLedger::default(), &repo, &WorktreeKindSpec::Solo { slug: "a1".into() }, None, Some("a1"))
-            .unwrap();
+        let row = worktree::ensure(
+            &MemLedger::default(),
+            &repo,
+            &WorktreeKindSpec::Solo { slug: "a1".into() },
+            None,
+            Some("a1"),
+        )
+        .unwrap();
         let gc = d.path().join("gitconfig");
-        std::fs::write(&gc, "[user]\n\tname = Agent Test\n\temail = agent@example.invalid\n[credential]\n\thelper =\n").unwrap();
+        std::fs::write(&gc, "[user]\n\tname = Agent Test\n\temail = agent@example.invalid\n[credential]\n\thelper =\n")
+            .unwrap();
         (d, repo, row.path, gc)
     }
 
@@ -205,8 +212,12 @@ mod tests {
 
         std::fs::write(wt.join("a.txt"), "a").unwrap();
         std::fs::write(wt.join("b.txt"), "b").unwrap();
-        let r = commit_in_worktree(&wt, &CommitRequest { message: "add a\n\nbody".into(), paths: Some(vec!["a.txt".into()]) }, Some(&gc))
-            .unwrap();
+        let r = commit_in_worktree(
+            &wt,
+            &CommitRequest { message: "add a\n\nbody".into(), paths: Some(vec!["a.txt".into()]) },
+            Some(&gc),
+        )
+        .unwrap();
         assert_eq!(r.files, ["a.txt"]);
         assert_eq!(r.branch.as_deref(), Some("orch/solo/a1"));
         assert_eq!(r.summary, "add a");
@@ -216,19 +227,23 @@ mod tests {
         // b.txt is still uncommitted; commit everything.
         let r2 = commit_in_worktree(&wt, &CommitRequest { message: "rest".into(), paths: None }, Some(&gc)).unwrap();
         assert_eq!(r2.files, ["b.txt"]);
-        assert!(commit_in_worktree(&wt, &CommitRequest { message: "again".into(), paths: None }, Some(&gc))
-            .unwrap_err()
-            .to_string()
-            .contains("nothing to commit"));
+        assert!(
+            commit_in_worktree(&wt, &CommitRequest { message: "again".into(), paths: None }, Some(&gc))
+                .unwrap_err()
+                .to_string()
+                .contains("nothing to commit")
+        );
         // Never in the main checkout; never while git is busy.
         std::fs::write(repo.join("m.txt"), "m").unwrap();
         assert!(commit_in_worktree(&repo, &CommitRequest { message: "x".into(), paths: None }, Some(&gc)).is_err());
         let gd = worktree::inspect(&wt).gitdir.unwrap();
         std::fs::write(wt.join("c.txt"), "c").unwrap();
         std::fs::write(gd.join("index.lock"), "").unwrap();
-        assert!(commit_in_worktree(&wt, &CommitRequest { message: "x".into(), paths: None }, Some(&gc))
-            .unwrap_err()
-            .to_string()
-            .contains("busy"));
+        assert!(
+            commit_in_worktree(&wt, &CommitRequest { message: "x".into(), paths: None }, Some(&gc))
+                .unwrap_err()
+                .to_string()
+                .contains("busy")
+        );
     }
 }

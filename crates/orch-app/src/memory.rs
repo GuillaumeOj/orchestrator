@@ -94,7 +94,13 @@ pub fn system_memory_mb() -> f64 {
         let mut len = size_of::<u64>();
         // SAFETY: sysctlbyname writes a u64 into `size`.
         unsafe {
-            libc::sysctlbyname(c"hw.memsize".as_ptr(), (&mut size as *mut u64).cast(), &mut len, std::ptr::null_mut(), 0);
+            libc::sysctlbyname(
+                c"hw.memsize".as_ptr(),
+                (&mut size as *mut u64).cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            );
         }
         size as f64 / (1024.0 * 1024.0)
     })
@@ -114,7 +120,9 @@ fn helpers_with_footprint(app_pid: i32) -> Vec<(String, f64)> {
     type Scan = Option<(std::time::Instant, Vec<(i32, String)>)>;
     static CACHE: std::sync::Mutex<Scan> = std::sync::Mutex::new(None);
     let mut c = CACHE.lock_ok();
-    let measure = |hs: &[(i32, String)]| hs.iter().map(|(p, n)| footprint_mb(*p).map(|mb| (n.clone(), mb))).collect::<Option<Vec<_>>>();
+    let measure = |hs: &[(i32, String)]| {
+        hs.iter().map(|(p, n)| footprint_mb(*p).map(|mb| (n.clone(), mb))).collect::<Option<Vec<_>>>()
+    };
     if let Some((at, hs)) = c.as_ref() {
         if at.elapsed() < HELPER_RESCAN && hs.len() >= HELPERS {
             if let Some(m) = measure(hs) {

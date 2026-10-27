@@ -818,7 +818,10 @@ fn replaying_stored_samples_with_their_class_rebuilds_the_accounting() {
     let s = weekly(at(240), "A-1", 10.0, 14.0);
     stored.push((s.clone(), live.cost_class(&s)));
     live.ingest(&s);
-    assert_eq!(stored.iter().map(|x| x.1).collect::<Vec<_>>(), [CostClass::Autonomous, CostClass::Autonomous, CostClass::Interactive]);
+    assert_eq!(
+        stored.iter().map(|x| x.1).collect::<Vec<_>>(),
+        [CostClass::Autonomous, CostClass::Autonomous, CostClass::Interactive]
+    );
 
     // After a restart: a fresh Governor replays the samples with their class.
     let mut restarted = governor();

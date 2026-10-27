@@ -68,7 +68,8 @@ pub fn remote_keys(file: &str, line: Option<u32>) -> String {
 fn nvim_path() -> Option<&'static str> {
     static P: OnceLock<Option<String>> = OnceLock::new();
     P.get_or_init(|| {
-        let out = Command::new(crate::terms::login_shell()).args(["-l", "-i", "-c", "command -v nvim"]).output().ok()?;
+        let out =
+            Command::new(crate::terms::login_shell()).args(["-l", "-i", "-c", "command -v nvim"]).output().ok()?;
         let s = String::from_utf8_lossy(&out.stdout);
         s.lines().rev().map(str::trim).find(|l| l.starts_with('/')).map(str::to_string)
     })
@@ -81,12 +82,7 @@ pub fn open_remote(sock: &Path, file: &str, line: Option<u32>) -> Result<bool> {
         return Ok(false);
     }
     let Some(nvim) = nvim_path() else { bail!("nvim not found in the login shell's PATH") };
-    let st = Command::new(nvim)
-        .arg("--server")
-        .arg(sock)
-        .arg("--remote-send")
-        .arg(remote_keys(file, line))
-        .status()?;
+    let st = Command::new(nvim).arg("--server").arg(sock).arg("--remote-send").arg(remote_keys(file, line)).status()?;
     Ok(st.success())
 }
 

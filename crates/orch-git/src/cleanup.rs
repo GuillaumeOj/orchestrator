@@ -32,7 +32,11 @@ pub fn branches(repo: &Path, base: &str) -> Result<Vec<BranchInfo>> {
     let wts = worktree::list(repo)?;
     let out = git(
         repo,
-        &["for-each-ref", "--format=%(refname:short)%1f%(objectname)%1f%(upstream:short)%1f%(committerdate:unix)", "refs/heads"],
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)%1f%(objectname)%1f%(upstream:short)%1f%(committerdate:unix)",
+            "refs/heads",
+        ],
     )?;
     let mut v = vec![];
     for line in out.lines() {
@@ -348,8 +352,18 @@ mod tests {
         assert_eq!(b("orch/solo/work").worktree, Some(real(&work.path)));
 
         // Unmerged and dirty work is refused without confirmation.
-        assert!(remove_worktree(&repo, &work.path, "main", true, Confirm::Safe).unwrap_err().to_string().contains("not merged"));
-        assert!(remove_worktree(&repo, &dirty.path, "main", true, Confirm::Safe).unwrap_err().to_string().contains("uncommitted"));
+        assert!(
+            remove_worktree(&repo, &work.path, "main", true, Confirm::Safe)
+                .unwrap_err()
+                .to_string()
+                .contains("not merged")
+        );
+        assert!(
+            remove_worktree(&repo, &dirty.path, "main", true, Confirm::Safe)
+                .unwrap_err()
+                .to_string()
+                .contains("uncommitted")
+        );
         assert!(work.path.is_dir() && dirty.path.is_dir());
         assert!(remove_worktree(&repo, &repo, "main", false, Confirm::DiscardUnmerged).is_err());
         // Merged and locked: unlocked, removed, branch deleted.
@@ -372,7 +386,12 @@ mod tests {
         let det = solo(&store, &repo, "det");
         tgit(&det.path, &["checkout", "-q", "--detach"]);
         commit_file(&det.path, "d.txt", "d", "detached work");
-        assert!(remove_worktree(&repo, &det.path, "main", false, Confirm::Safe).unwrap_err().to_string().contains("not merged"));
+        assert!(
+            remove_worktree(&repo, &det.path, "main", false, Confirm::Safe)
+                .unwrap_err()
+                .to_string()
+                .contains("not merged")
+        );
         let clean = solo(&store, &repo, "clean");
         assert!(remove_worktree(&repo, &clean.path, "no-such-base", true, Confirm::Safe).is_err());
         assert!(det.path.is_dir() && clean.path.is_dir());

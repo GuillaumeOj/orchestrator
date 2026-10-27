@@ -18,7 +18,8 @@ pub(crate) fn js<T: Serialize + ?Sized>(v: &T) -> String {
 }
 
 pub(crate) fn from_js<T: DeserializeOwned>(s: &str) -> rusqlite::Result<T> {
-    serde_json::from_str(s).map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into()))
+    serde_json::from_str(s)
+        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into()))
 }
 
 /// A nullable integer column as `u64`.
@@ -27,7 +28,12 @@ pub(crate) fn opt_u64(r: &rusqlite::Row, i: usize) -> rusqlite::Result<Option<u6
 }
 
 /// One row's JSON `data` column, decoded (`None` when there is no row).
-pub(crate) fn json_row<T: DeserializeOwned>(c: &Connection, sql: &str, params: impl Params, what: &str) -> Result<Option<T>> {
+pub(crate) fn json_row<T: DeserializeOwned>(
+    c: &Connection,
+    sql: &str,
+    params: impl Params,
+    what: &str,
+) -> Result<Option<T>> {
     let s: Option<String> = c.query_row(sql, params, |r| r.get(0)).optional()?;
     s.map(|s| serde_json::from_str(&s).map_err(|e| anyhow!("{what}: {e}"))).transpose()
 }

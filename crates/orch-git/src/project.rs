@@ -155,8 +155,7 @@ pub fn removal_plan(store: &Store, ledger: &dyn WorktreeLedger, project_id: &str
         .into_iter()
         .filter(|w| !matches!(w.verdict, WorktreeVerdict::Main | WorktreeVerdict::External))
         .collect();
-    let branches =
-        cleanup::branches(&project.path, &project.default_branch)?.into_iter().filter(|b| b.orch).collect();
+    let branches = cleanup::branches(&project.path, &project.default_branch)?.into_iter().filter(|b| b.orch).collect();
     Ok(RemovalPlan { project, worktrees, branches })
 }
 
@@ -256,7 +255,8 @@ mod tests {
         let (d, repo) = scratch_repo();
         let store = Store::open(&d.path().join("orch.db")).unwrap();
         let p = register(&store, &repo).unwrap();
-        let mk = |s: &str| worktree::ensure(&store, &repo, &WorktreeKindSpec::Solo { slug: s.into() }, None, None).unwrap();
+        let mk =
+            |s: &str| worktree::ensure(&store, &repo, &WorktreeKindSpec::Solo { slug: s.into() }, None, None).unwrap();
         let merged = mk("merged");
         let work = mk("work");
         let wip = mk("wip");
@@ -284,8 +284,13 @@ mod tests {
         assert!(store.project(&p.id).unwrap().unwrap().archived);
         assert_eq!(store.worktree(&merged.path).unwrap().unwrap().state, WorktreeRowState::Removed);
         // Delete: the project row goes, the kept worktree stays on disk.
-        remove(&store, &store, &p.id, &RemovalChoices { remove_merged: true, discard: vec![], history: History::Delete })
-            .unwrap();
+        remove(
+            &store,
+            &store,
+            &p.id,
+            &RemovalChoices { remove_merged: true, discard: vec![], history: History::Delete },
+        )
+        .unwrap();
         assert!(store.project(&p.id).unwrap().is_none());
         assert!(work.path.is_dir());
     }

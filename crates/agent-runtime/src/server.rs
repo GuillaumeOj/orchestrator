@@ -174,8 +174,10 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         }
         CtlRequest::Rules => ok_or(rt.db.rules().map(|r| json!(r))),
         CtlRequest::AddRule { scope, scope_id, pattern, effect } => ok_or((|| {
-            let sc = orch_store::RuleScope::parse(&scope).ok_or_else(|| anyhow::anyhow!("scope: project | role | agent"))?;
-            let ef = orch_store::RuleEffect::parse(&effect).ok_or_else(|| anyhow::anyhow!("effect: allow | deny | ask"))?;
+            let sc =
+                orch_store::RuleScope::parse(&scope).ok_or_else(|| anyhow::anyhow!("scope: project | role | agent"))?;
+            let ef =
+                orch_store::RuleEffect::parse(&effect).ok_or_else(|| anyhow::anyhow!("effect: allow | deny | ask"))?;
             Ok(json!(rt.add_rule(sc, &scope_id, &pattern, ef, None)?))
         })()),
         CtlRequest::RevokeRule { id } => ok_or(rt.revoke_rule(id).map(|done| json!({"revoked": done}))),
@@ -183,7 +185,9 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
             ok_or(rt.db.audit_log(agent_id.as_deref(), limit.unwrap_or(100)).map(|v| json!(v)))
         }
         CtlRequest::Events { agent_id, kind, since_ms, limit } => ok_or(
-            rt.db.events(since_ms.unwrap_or(0), agent_id.as_deref(), kind.as_deref(), limit.unwrap_or(200)).map(|v| json!(v)),
+            rt.db
+                .events(since_ms.unwrap_or(0), agent_id.as_deref(), kind.as_deref(), limit.unwrap_or(200))
+                .map(|v| json!(v)),
         ),
         CtlRequest::ProjectAdd { path } => ok_or(rt.add_project(&PathBuf::from(path)).map(|p| json!(p))),
         CtlRequest::ProjectClone { url, parent, name } => {

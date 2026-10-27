@@ -83,11 +83,13 @@ pub fn parse_logs(body: &Value) -> Vec<ApiRequest> {
         for sl in rl.get("scopeLogs").and_then(Value::as_array).into_iter().flatten() {
             for rec in sl.get("logRecords").and_then(Value::as_array).into_iter().flatten() {
                 let a = attrs(rec.get("attributes").unwrap_or(&Value::Null));
-                let name = text(a.get("event.name")).or_else(|| text(rec.pointer("/body/stringValue"))).unwrap_or_default();
+                let name =
+                    text(a.get("event.name")).or_else(|| text(rec.pointer("/body/stringValue"))).unwrap_or_default();
                 if name != "api_request" && name != "claude_code.api_request" {
                     continue;
                 }
-                let ts_ns = num(rec.get("timeUnixNano")).or_else(|| num(rec.get("observedTimeUnixNano"))).unwrap_or(0.0);
+                let ts_ns =
+                    num(rec.get("timeUnixNano")).or_else(|| num(rec.get("observedTimeUnixNano"))).unwrap_or(0.0);
                 let ts_ms = if ts_ns > 0.0 { (ts_ns / 1e6) as u64 } else { orch_protocol::now_ms() };
                 let u = |k: &str| num(a.get(k)).unwrap_or(0.0).max(0.0) as u64;
                 out.push(ApiRequest {
@@ -137,7 +139,9 @@ impl OtlpReceiver {
                         let (sink, rq, st) = (sink.clone(), rq.clone(), st.clone());
                         std::thread::spawn(move || serve_conn(s, &sink, &rq, &st));
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(100)),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(100))
+                    }
                     Err(_) => std::thread::sleep(Duration::from_millis(100)),
                 }
             }
@@ -223,7 +227,11 @@ fn read_request(r: &mut BufReader<TcpStream>) -> Result<Option<Request>> {
 }
 
 fn respond(w: &mut TcpStream, code: u16, reason: &str, body: &str) -> std::io::Result<()> {
-    write!(w, "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len())?;
+    write!(
+        w,
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )?;
     w.flush()
 }
 
@@ -305,7 +313,10 @@ mod tests {
         assert_eq!(r.len(), 1);
         let a = &r[0];
         assert_eq!(a.agent_id.as_deref(), Some("a1"));
-        assert_eq!((a.input_tokens, a.output_tokens, a.cache_read_tokens, a.cache_creation_tokens), (1200, 80, 9000, 300));
+        assert_eq!(
+            (a.input_tokens, a.output_tokens, a.cache_read_tokens, a.cache_creation_tokens),
+            (1200, 80, 9000, 300)
+        );
         assert_eq!(a.cost_usd, 0.0042);
         assert_eq!(a.ts_ms, 1_793_000_000_000);
         assert_eq!(a.session_id.as_deref(), Some("sid"));

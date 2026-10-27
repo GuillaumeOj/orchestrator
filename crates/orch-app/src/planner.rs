@@ -211,7 +211,12 @@ pub fn build(
         .iter()
         .rev()
         .take(50)
-        .map(|a| LogEntry { key: format!("n{}", a.id.0), can_undo: a.undo.is_some() && a.undone_at.is_none(), action: a.clone(), past: false })
+        .map(|a| LogEntry {
+            key: format!("n{}", a.id.0),
+            can_undo: a.undo.is_some() && a.undone_at.is_none(),
+            action: a.clone(),
+            past: false,
+        })
         .chain(past.iter().filter(|a| a.ts >= start).take(50).enumerate().map(|(i, a)| LogEntry {
             key: format!("p{i}"),
             can_undo: false,
@@ -261,7 +266,8 @@ mod tests {
 
     fn gov() -> (Governor, Timestamp) {
         let now: Timestamp = "2026-10-21T09:00:00Z".parse().unwrap();
-        let mut g = Governor::new(agent_runtime::runtime::default_plan(now, true), PacingPolicy::default(), now).unwrap();
+        let mut g =
+            Governor::new(agent_runtime::runtime::default_plan(now, true), PacingPolicy::default(), now).unwrap();
         let reset = g.plan().reset_at;
         g.ingest(&UsageSample {
             ts: now,

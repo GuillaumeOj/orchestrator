@@ -100,7 +100,12 @@ impl LiveAgent {
 /// Agents to suspend now: idle ones past `idle_after_ms`, then, while more
 /// agents are live than `cap`, the least recently active idle ones. Working
 /// agents are never stopped.
-pub fn to_suspend(agents: &[LiveAgent], cap: u32, idle_after_ms: Option<u64>, now_ms: u64) -> Vec<(String, &'static str)> {
+pub fn to_suspend(
+    agents: &[LiveAgent],
+    cap: u32,
+    idle_after_ms: Option<u64>,
+    now_ms: u64,
+) -> Vec<(String, &'static str)> {
     let mut out: Vec<(String, &'static str)> = vec![];
     if let Some(idle) = idle_after_ms {
         for a in agents.iter().filter(|a| a.suspendable() && now_ms.saturating_sub(a.last_activity_ms) >= idle) {

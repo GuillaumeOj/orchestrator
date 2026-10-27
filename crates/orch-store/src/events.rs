@@ -172,7 +172,9 @@ impl Store {
                 let mut st = tx.prepare("SELECT detail FROM events WHERE ts_ms < ?1 AND detail LIKE '{\"blob\":%'")?;
                 let rows = st.query_map([cut(r.events_days)], |row| row.get::<_, String>(0))?;
                 for d in rows.flatten() {
-                    if let Some(p) = serde_json::from_str::<Value>(&d).ok().and_then(|v| v["blob"].as_str().map(PathBuf::from)) {
+                    if let Some(p) =
+                        serde_json::from_str::<Value>(&d).ok().and_then(|v| v["blob"].as_str().map(PathBuf::from))
+                    {
                         blobs.push(p);
                     }
                 }

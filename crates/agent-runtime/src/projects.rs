@@ -134,7 +134,13 @@ impl Runtime {
     /// user's own worktrees elsewhere are never removed from here). Refuses
     /// while an agent that is not archived or killed uses it; unmerged work
     /// needs `confirm_discard`.
-    pub fn remove_worktree(&self, project_id: &str, path: &Path, delete_branch: bool, confirm_discard: bool) -> Result<RemoveOutcome> {
+    pub fn remove_worktree(
+        &self,
+        project_id: &str,
+        path: &Path,
+        delete_branch: bool,
+        confirm_discard: bool,
+    ) -> Result<RemoveOutcome> {
         let p = self.project(project_id)?;
         // A worktree whose folder is gone (prunable) is resolved through its parent.
         let wt = match (path.exists(), path.parent(), path.file_name()) {
@@ -147,7 +153,9 @@ impl Runtime {
         if let Some(a) = self.store.read(|s| {
             s.agents
                 .values()
-                .find(|a| real(&a.worktree) == wt && !matches!(a.tracker.state, AgentState::Archived | AgentState::Killed))
+                .find(|a| {
+                    real(&a.worktree) == wt && !matches!(a.tracker.state, AgentState::Archived | AgentState::Killed)
+                })
                 .map(|a| a.id.clone())
         }) {
             bail!("agent {a} uses this worktree: archive or kill it first");
@@ -160,7 +168,14 @@ impl Runtime {
                 w.state = WorktreeRowState::Removed;
             }
         })?;
-        self.db.audit("user", None, "worktree_removed", wt.to_str(), if confirm_discard { "discard" } else { "safe" }, json!(out))?;
+        self.db.audit(
+            "user",
+            None,
+            "worktree_removed",
+            wt.to_str(),
+            if confirm_discard { "discard" } else { "safe" },
+            json!(out),
+        )?;
         Ok(out)
     }
 
@@ -188,7 +203,10 @@ impl Runtime {
             for a in s.agents.values_mut().filter(|a| a.repo == p.path) {
                 a.tracker.state = AgentState::Archived;
             }
-            s.turns.retain(|t| !(s.agents.get(&t.agent_id).is_some_and(|a| a.repo == p.path) && t.status == crate::store::TurnStatus::Queued));
+            s.turns.retain(|t| {
+                !(s.agents.get(&t.agent_id).is_some_and(|a| a.repo == p.path)
+                    && t.status == crate::store::TurnStatus::Queued)
+            });
         })?;
         let report = project::remove(&self.db, &self.store, id, choices)?;
         if choices.history == project::History::Delete {
@@ -205,7 +223,8 @@ impl Runtime {
     pub fn relocate_project(&self, id: &str, new_path: &Path) -> Result<RepairReport> {
         let p = self.project(id)?;
         let new = real(new_path);
-        let top = orch_git::worktree::toplevel(&new).with_context(|| format!("{} is not a git repository", new.display()))?;
+        let top =
+            orch_git::worktree::toplevel(&new).with_context(|| format!("{} is not a git repository", new.display()))?;
         if real(&top) != new || !new.join(".git").is_dir() {
             bail!("{} is not a main checkout", new.display());
         }
@@ -215,7 +234,8 @@ impl Runtime {
         let old = p.path.clone();
         let rows = self.store.rows_of(&old);
         let map = repair::plan_relocation(&old, &new, &rows);
-        let moved = |x: &Path| map.iter().find(|(o, _)| o == x).map(|(_, n)| n.clone()).unwrap_or_else(|| x.to_path_buf());
+        let moved =
+            |x: &Path| map.iter().find(|(o, _)| o == x).map(|(_, n)| n.clone()).unwrap_or_else(|| x.to_path_buf());
         let targets: Vec<(PathBuf, Option<String>)> = rows
             .iter()
             .filter(|r| r.state != WorktreeRowState::Removed)
@@ -272,19 +292,29 @@ mod tests {
         assert_eq!(ov[0]["project"]["id"], p.id.as_str());
         assert_eq!(ov[0]["agents"], 1);
         let det = rt.project_detail(&p.id, false).unwrap();
-        assert!(det["worktrees"].as_array().unwrap().iter().any(|w| w["verdict"] == "ok" && w["unmerged_commits"] == 1));
+        assert!(
+            det["worktrees"].as_array().unwrap().iter().any(|w| w["verdict"] == "ok" && w["unmerged_commits"] == 1)
+        );
         let d = rt.diff(&row.path, None).unwrap();
         assert_eq!(d.against, "main");
         assert_eq!(d.files[0].path, "x.txt");
         // In use by an agent: refused, even with confirmation.
-        assert!(rt.remove_worktree(&p.id, &row.path, true, true).unwrap_err().to_string().contains("uses this worktree"));
+        assert!(
+            rt.remove_worktree(&p.id, &row.path, true, true).unwrap_err().to_string().contains("uses this worktree")
+        );
         rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.state = AgentState::Killed).unwrap();
         // Unmerged: needs confirmation.
         assert!(rt.remove_worktree(&p.id, &row.path, true, false).is_err());
         let out = rt.remove_worktree(&p.id, &row.path, true, true).unwrap();
         assert!(out.worktree_removed && out.branch_deleted);
         assert_eq!(rt.store.read(|s| s.worktrees[&row.path].state), WorktreeRowState::Removed);
-        assert!(rt.db.audit_log(None, 10).unwrap().iter().any(|e| e.action == "worktree_removed" && e.decision == "discard"));
+        assert!(
+            rt.db
+                .audit_log(None, 10)
+                .unwrap()
+                .iter()
+                .any(|e| e.action == "worktree_removed" && e.decision == "discard")
+        );
 
         // Relocate: the repo moved alone; rows, agents and the project follow.
         let row2 = rt.create_worktree(&repo, &WorktreeKindSpec::Solo { slug: "b".into() }, None).unwrap();
@@ -307,7 +337,10 @@ mod tests {
 
         // J11 delete: agents archived, rows gone from memory and database.
         let report = rt
-            .remove_project(&p.id, &RemovalChoices { remove_merged: true, discard: vec![], history: project::History::Delete })
+            .remove_project(
+                &p.id,
+                &RemovalChoices { remove_merged: true, discard: vec![], history: project::History::Delete },
+            )
             .unwrap();
         assert!(report.removed.contains(&row2.path));
         assert!(rt.db.project(&p.id).unwrap().is_none());

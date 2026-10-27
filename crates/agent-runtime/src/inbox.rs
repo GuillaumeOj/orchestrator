@@ -21,7 +21,10 @@ pub const PRIORITY_ALERT: i64 = 10;
 
 /// The user allowed the held call (approve or always allow).
 pub fn allows(item: &InboxItem) -> bool {
-    matches!(item.decision.as_deref().and_then(orch_store::untag::<InboxDecision>), Some(InboxDecision::Approve | InboxDecision::AlwaysAllow))
+    matches!(
+        item.decision.as_deref().and_then(orch_store::untag::<InboxDecision>),
+        Some(InboxDecision::Approve | InboxDecision::AlwaysAllow)
+    )
 }
 
 /// The user's words with a decision, if any.
@@ -136,11 +139,25 @@ impl Runtime {
             let actor = format!("rule:{}", rule.id);
             match rule.effect {
                 RuleEffect::Allow => {
-                    let _ = self.db.audit(&actor, Some(&rec.id), "permission", Some(&tool), "allow", json!({"input": input}));
+                    let _ = self.db.audit(
+                        &actor,
+                        Some(&rec.id),
+                        "permission",
+                        Some(&tool),
+                        "allow",
+                        json!({"input": input}),
+                    );
                     return Some(HookOutput::permission_request(PermissionBehavior::Allow, None));
                 }
                 RuleEffect::Deny => {
-                    let _ = self.db.audit(&actor, Some(&rec.id), "permission", Some(&tool), "deny", json!({"input": input}));
+                    let _ = self.db.audit(
+                        &actor,
+                        Some(&rec.id),
+                        "permission",
+                        Some(&tool),
+                        "deny",
+                        json!({"input": input}),
+                    );
                     return Some(HookOutput::permission_request(
                         PermissionBehavior::Deny,
                         Some(&format!("ORCH: denied by the user's rule {} ({}).", rule.id, rule.pattern)),
@@ -270,14 +287,27 @@ impl Runtime {
     /// Revokes a rule (the row is kept) and logs it. False if unknown or already revoked.
     pub fn revoke_rule(&self, id: u64) -> Result<bool> {
         let done = self.db.revoke_rule(id)?;
-        self.db.audit("user", None, "rule_revoked", Some(&id.to_string()), if done { "ok" } else { "unknown" }, json!({}))?;
+        self.db.audit(
+            "user",
+            None,
+            "rule_revoked",
+            Some(&id.to_string()),
+            if done { "ok" } else { "unknown" },
+            json!({}),
+        )?;
         Ok(done)
     }
 
     /// The user's decision on an Inbox item. The item is claimed atomically
     /// (a second decision, or one after the hold expired, is refused), then
     /// logged (FR-709) before anything acts on it.
-    pub fn decide(&self, id: u64, decision: InboxDecision, scope: Option<&str>, message: Option<&str>) -> Result<Value> {
+    pub fn decide(
+        &self,
+        id: u64,
+        decision: InboxDecision,
+        scope: Option<&str>,
+        message: Option<&str>,
+    ) -> Result<Value> {
         let item = self
             .store
             .read(|s| s.inbox.iter().find(|i| i.id == id).cloned())
@@ -293,7 +323,8 @@ impl Runtime {
                     None => bail!("item {id} cannot become a rule (approve it once instead)"),
                 }
             };
-            let sc = RuleScope::parse(scope.unwrap_or("project")).ok_or_else(|| anyhow!("scope: project | role | agent"))?;
+            let sc =
+                RuleScope::parse(scope.unwrap_or("project")).ok_or_else(|| anyhow!("scope: project | role | agent"))?;
             let sid = match sc {
                 RuleScope::Agent => item.agent_id.clone(),
                 RuleScope::Role => item.payload.get("role").and_then(Value::as_str).map(str::to_string),
@@ -365,7 +396,11 @@ impl Runtime {
         let branch = orch_git::git(&rec.worktree, &["symbolic-ref", "--short", "HEAD"])?.trim().to_string();
         let base = row.map(|r| r.base).unwrap_or_else(|| "main".into());
         if self.store.read(|s| {
-            s.inbox.iter().any(|i| i.pending() && i.payload.get("action") == Some(&json!("push_pr")) && i.agent_id.as_deref() == Some(&rec.id))
+            s.inbox.iter().any(|i| {
+                i.pending()
+                    && i.payload.get("action") == Some(&json!("push_pr"))
+                    && i.agent_id.as_deref() == Some(&rec.id)
+            })
         }) {
             bail!("a pull request request is already waiting for the user");
         }
@@ -377,7 +412,14 @@ impl Runtime {
                    "worktree": rec.worktree}),
             PRIORITY_GATE,
         )?;
-        self.db.audit(&format!("agent:{}", rec.id), Some(&rec.id), "pr_requested", Some(&branch), "pending", json!({"item": id}))?;
+        self.db.audit(
+            &format!("agent:{}", rec.id),
+            Some(&rec.id),
+            "pr_requested",
+            Some(&branch),
+            "pending",
+            json!({"item": id}),
+        )?;
         Ok(format!(
             "Requested: Inbox item {id} asks the user to push {branch} and open a PR into {base}. You will be told the result; there is nothing else to do for it now."
         ))
@@ -397,7 +439,14 @@ impl Runtime {
             Ok(url) => ("ok", format!("ORCH: the user approved; the orchestrator pushed {branch} and opened {url}")),
             Err(e) => ("failed", format!("ORCH: the user approved, but pushing or opening the PR failed: {e:#}")),
         };
-        let _ = self.db.audit("core", agent.as_deref(), "pr", Some(&branch), decision, json!({"item": item, "result": r.as_ref().map_err(|e| e.to_string())}));
+        let _ = self.db.audit(
+            "core",
+            agent.as_deref(),
+            "pr",
+            Some(&branch),
+            decision,
+            json!({"item": item, "result": r.as_ref().map_err(|e| e.to_string())}),
+        );
         self.event(agent.as_deref().unwrap_or("-"), "pr", json!({"item": item, "ok": r.is_ok()}));
         if let Some(a) = agent {
             let _ = self.deliver(&a, &msg);
@@ -420,7 +469,12 @@ mod tests {
     }
 
     /// Decides the next pending item from another thread, like the UI would.
-    fn decide_soon(rt: &Arc<Runtime>, d: InboxDecision, scope: Option<&'static str>, msg: Option<&'static str>) -> std::thread::JoinHandle<u64> {
+    fn decide_soon(
+        rt: &Arc<Runtime>,
+        d: InboxDecision,
+        scope: Option<&'static str>,
+        msg: Option<&'static str>,
+    ) -> std::thread::JoinHandle<u64> {
         let rt = rt.clone();
         std::thread::spawn(move || {
             for _ in 0..100 {
@@ -485,7 +539,9 @@ mod tests {
         assert!(rt.inbox().is_empty());
         // Every decision is in the audit log (FR-709).
         let actions: Vec<String> = rt.db.audit_log(None, 50).unwrap().into_iter().map(|e| e.action).collect();
-        assert!(actions.contains(&"rule_added".to_string()) && actions.iter().filter(|a| *a == "permission").count() >= 3);
+        assert!(
+            actions.contains(&"rule_added".to_string()) && actions.iter().filter(|a| *a == "permission").count() >= 3
+        );
         // A decided item can't be decided again.
         assert!(rt.decide(id, InboxDecision::Reject, None, None).is_err());
     }
@@ -544,7 +600,10 @@ mod tests {
         rt.on_hook(&hook("PostToolUse", json!({"tool_name": "Bash", "tool_use_id": "other"})), None);
         assert!(rt.store.read(|s| s.inbox.iter().find(|i| i.id == item.id).unwrap().pending()));
         // The user answered the CLI's dialog: the tool ran.
-        rt.on_hook(&hook("PostToolUse", json!({"tool_name": "Bash", "tool_use_id": item.payload["tool_use_id"].clone()})), None);
+        rt.on_hook(
+            &hook("PostToolUse", json!({"tool_name": "Bash", "tool_use_id": item.payload["tool_use_id"].clone()})),
+            None,
+        );
         assert!(h.join().unwrap().is_none(), "no decision from the Inbox");
         assert!(t0.elapsed() < Duration::from_secs(5), "the hold ended at once");
         let i = rt.store.read(|s| s.inbox.iter().find(|i| i.id == item.id).cloned().unwrap());

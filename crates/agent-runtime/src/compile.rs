@@ -438,7 +438,9 @@ pub(crate) mod tests {
         let s: Value = serde_json::from_str(&std::fs::read_to_string(&c.settings_path).unwrap()).unwrap();
         assert_eq!(s, c.settings);
         assert!(std::fs::read_to_string(&c.gitconfig_path).unwrap().contains("helper ="));
-        let servers = serde_json::from_str::<Value>(&std::fs::read_to_string(&c.mcp_path).unwrap()).unwrap()["mcpServers"].clone();
+        let servers =
+            serde_json::from_str::<Value>(&std::fs::read_to_string(&c.mcp_path).unwrap()).unwrap()["mcpServers"]
+                .clone();
         assert_eq!(
             servers,
             json!({"orch": {"type": "stdio", "command": "/app/bin/orch-mcp", "args": [],
@@ -446,7 +448,9 @@ pub(crate) mod tests {
         );
         // The orchestrator tools are allowed (the core applies its own rules).
         let allow = strs(&c.settings["permissions"]["allow"]);
-        assert!(allow.contains(&"mcp__orch__commit".to_string()) && allow.contains(&"mcp__orch__request_pr".to_string()));
+        assert!(
+            allow.contains(&"mcp__orch__commit".to_string()) && allow.contains(&"mcp__orch__request_pr".to_string())
+        );
     }
 
     #[test]

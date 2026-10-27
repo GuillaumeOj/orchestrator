@@ -173,7 +173,8 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                                 "repaired (targeted worktree repair + re-lock)".to_string()
                             }
                             Ok(r) => {
-                                let msg = format!("Worktree {} could not be repaired: {:?}", row.path.display(), r.failed);
+                                let msg =
+                                    format!("Worktree {} could not be repaired: {:?}", row.path.display(), r.failed);
                                 st.add_inbox(row.agent_id.as_deref(), "alert", msg.clone());
                                 report.inbox.push(msg);
                                 "repair failed".to_string()
@@ -354,7 +355,11 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
             report.holds.push((h.id.clone(), now));
         }
         for item in closed_items {
-            let _ = st.close_inbox(item, orch_store::InboxStatus::Interrupted, Some("core restarted: denied by orch-hook".into()));
+            let _ = st.close_inbox(
+                item,
+                orch_store::InboxStatus::Interrupted,
+                Some("core restarted: denied by orch-hook".into()),
+            );
         }
         let gates = fresh_gates;
         for g in gates {
@@ -740,7 +745,8 @@ mod tests {
         let app = tempfile::tempdir().unwrap();
         let paths = AppPaths::new(app.path());
         let store = Store::open(orch_store::Store::open(&paths.db_file()).unwrap(), None).unwrap();
-        let row = worktree::ensure(&store, &repo, &WorktreeKindSpec::Solo { slug: "a".into() }, None, Some("a")).unwrap();
+        let row =
+            worktree::ensure(&store, &repo, &WorktreeKindSpec::Solo { slug: "a".into() }, None, Some("a")).unwrap();
         store.write(|s| s.agents.insert("a".into(), agent("a", &repo, &row.path, AgentState::Idle))).unwrap();
         // The repo moved without its sibling folder; the rows were pointed at the
         // new place (as a relocate does) but the core died before the repair.
@@ -789,7 +795,8 @@ mod tests {
         let app = tempfile::tempdir().unwrap();
         let paths = AppPaths::new(app.path());
         let store = Store::open(orch_store::Store::open(&paths.db_file()).unwrap(), None).unwrap();
-        let row = worktree::ensure(&store, &repo, &WorktreeKindSpec::Solo { slug: "a".into() }, None, Some("a")).unwrap();
+        let row =
+            worktree::ensure(&store, &repo, &WorktreeKindSpec::Solo { slug: "a".into() }, None, Some("a")).unwrap();
         store
             .write(|s| {
                 s.agents.insert("a".into(), agent("a", &repo, &row.path, AgentState::WaitingForYou));

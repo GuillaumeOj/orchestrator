@@ -82,7 +82,6 @@ impl RuntimeDiff {
     }
 }
 
-
 /// Upserts one worktree row inside a write transaction.
 pub fn upsert_worktree(tx: &Tx, w: &WorktreeRow) -> rusqlite::Result<usize> {
     tx.execute(
@@ -220,7 +219,7 @@ fn exec(tx: &Tx, sql: &str, params: impl rusqlite::Params) -> rusqlite::Result<u
 
 fn apply(tx: &Tx, d: &RuntimeDiff) -> Result<()> {
     for a in &d.agents {
-        exec(tx, 
+        exec(tx,
             "INSERT INTO agents(id, repo, worktree, session_id, state, pid, tier, allocation, last_active_at_ms, created_at_ms, data)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
              ON CONFLICT(id) DO UPDATE SET repo=excluded.repo, worktree=excluded.worktree, session_id=excluded.session_id,
@@ -251,7 +250,7 @@ fn apply(tx: &Tx, d: &RuntimeDiff) -> Result<()> {
         exec(tx, "DELETE FROM worktrees WHERE path=?1", [p(path)])?;
     }
     for t in &d.turns {
-        exec(tx, 
+        exec(tx,
             "INSERT INTO turns(id, agent_id, kind, status, created_at_ms, delivered_at_ms, data) VALUES (?1,?2,?3,?4,?5,?6,?7)
              ON CONFLICT(id) DO UPDATE SET agent_id=excluded.agent_id, kind=excluded.kind, status=excluded.status,
                created_at_ms=excluded.created_at_ms, delivered_at_ms=excluded.delivered_at_ms, data=excluded.data",
@@ -270,7 +269,8 @@ fn apply(tx: &Tx, d: &RuntimeDiff) -> Result<()> {
         exec(tx, "DELETE FROM turns WHERE id=?1", [id])?;
     }
     for h in &d.holds {
-        exec(tx, 
+        exec(
+            tx,
             "INSERT INTO holds(id, agent_id, kind, status, created_at_ms, data) VALUES (?1,?2,?3,?4,?5,?6)
              ON CONFLICT(id) DO UPDATE SET agent_id=excluded.agent_id, kind=excluded.kind, status=excluded.status,
                created_at_ms=excluded.created_at_ms, data=excluded.data",

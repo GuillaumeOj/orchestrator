@@ -123,8 +123,7 @@ fn parse_rows(lines: &[u8]) -> Vec<Row> {
 /// Turns user input into an FTS5 query: every whitespace-separated term is
 /// quoted (all terms must match), so `-`, `:` or `*` are never operators.
 fn fts_query(q: &str) -> Option<String> {
-    let terms: Vec<String> =
-        q.split_whitespace().map(|t| format!("\"{}\"", t.replace('"', "\"\""))).collect();
+    let terms: Vec<String> = q.split_whitespace().map(|t| format!("\"{}\"", t.replace('"', "\"\""))).collect();
     if terms.is_empty() { None } else { Some(terms.join(" ")) }
 }
 
@@ -136,7 +135,9 @@ impl Store {
         // One query for every file's progress, not one per file.
         let offsets: HashMap<String, u64> = self.read(|c| {
             let mut st = c.prepare("SELECT path, offset FROM transcript_files")?;
-            Ok(st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?.collect::<rusqlite::Result<_>>()?)
+            Ok(st
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?
+                .collect::<rusqlite::Result<_>>()?)
         })?;
         for f in files {
             let Ok(meta) = std::fs::metadata(&f.path) else { continue };
@@ -219,9 +220,11 @@ impl Store {
     pub fn transcript_path(&self, session_id: &str) -> Result<Option<PathBuf>> {
         let sid = session_id.to_string();
         self.read(move |c| {
-            Ok(c.query_row("SELECT path FROM transcript_files WHERE session_id=?1 LIMIT 1", [sid], |r| r.get::<_, String>(0))
-                .optional()?
-                .map(PathBuf::from))
+            Ok(c.query_row("SELECT path FROM transcript_files WHERE session_id=?1 LIMIT 1", [sid], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?
+            .map(PathBuf::from))
         })
     }
 
@@ -304,7 +307,8 @@ mod tests {
         let s = Store::open(&d.path().join("orch.db")).unwrap();
         let path = d.path().join("big.jsonl");
         let huge = format!(r#"{{"type":"user","message":{{"content":"{}"}}}}"#, "x".repeat(MAX_LINE as usize + 10));
-        std::fs::write(&path, format!("{huge}\n{}\n", r#"{"type":"user","message":{"content":"after the giant"}}"#)).unwrap();
+        std::fs::write(&path, format!("{huge}\n{}\n", r#"{"type":"user","message":{"content":"after the giant"}}"#))
+            .unwrap();
         let tf = [TranscriptFile { path, session_id: "s".into(), project_id: None }];
         for _ in 0..3 {
             s.index_transcripts(&tf).unwrap();

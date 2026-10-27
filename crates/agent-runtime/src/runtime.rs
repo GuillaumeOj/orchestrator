@@ -16,8 +16,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use governor::jiff::{Timestamp, ToSpan, tz::TimeZone};
 use governor::{
-    AgentId, BudgetAllocation, Decision, Governor, Release, Tier, ToolCallRequest, TurnKind, TurnRequest,
-    Verdict, WeeklyPlan, WorkingCalendar,
+    AgentId, BudgetAllocation, Decision, Governor, Release, Tier, ToolCallRequest, TurnKind, TurnRequest, Verdict,
+    WeeklyPlan, WorkingCalendar,
 };
 use orch_protocol::ctl::{AdmissionDecision, AdmissionPoint, AdmissionRequest, AdmissionVerdict};
 use orch_protocol::{
@@ -31,9 +31,9 @@ use crate::env::EnvInputs;
 use crate::paths::{AppPaths, real, valid_id};
 use crate::preflight::{self, VersionCheck, VersionRange};
 use crate::procs::{self, AgentMatch, ProcessTable, SystemProcs};
-use crate::resources::{self, LiveAgent, MemoryProbe, PressureLevel, SystemMemory};
 use crate::pty::PtyProcess;
 use crate::reconcile::{self, ReconcileEnv, Report};
+use crate::resources::{self, LiveAgent, MemoryProbe, PressureLevel, SystemMemory};
 use crate::role::{PermissionMode, Role};
 use crate::state::{self, AgentState, Effect, StopIntent, TurnOrigin};
 use crate::store::{Admission, AgentRecord, HoldKind, HoldRow, HoldStatus, Store, TurnRow, TurnStatus};
@@ -743,9 +743,12 @@ impl Runtime {
         // A permission prompt held for the Inbox but answered in the pane (the
         // CLI shows its dialog while the hook is held): this call's next hook,
         // or the turn's end, closes the Inbox item and ends the hold.
-        let call_done = matches!(m.event, HookEvent::PostToolUse | HookEvent::PostToolUseFailure | HookEvent::PermissionDenied);
-        let turn_done =
-            matches!(m.event, HookEvent::Stop | HookEvent::StopFailure | HookEvent::UserPromptSubmit | HookEvent::SessionEnd);
+        let call_done =
+            matches!(m.event, HookEvent::PostToolUse | HookEvent::PostToolUseFailure | HookEvent::PermissionDenied);
+        let turn_done = matches!(
+            m.event,
+            HookEvent::Stop | HookEvent::StopFailure | HookEvent::UserPromptSubmit | HookEvent::SessionEnd
+        );
         if call_done || turn_done {
             self.answered_in_pane(id, if call_done { p.tool_use_id.as_deref() } else { None });
         }
@@ -1029,7 +1032,13 @@ impl Runtime {
         let (actions, queue, plan_id, snap, calib) = {
             let g = self.gov();
             let n = g.actions().len();
-            (g.actions()[n.saturating_sub(50)..].to_vec(), g.queue().to_vec(), g.plan().id.clone(), g.snapshot(now), g.calibration(now))
+            (
+                g.actions()[n.saturating_sub(50)..].to_vec(),
+                g.queue().to_vec(),
+                g.plan().id.clone(),
+                g.snapshot(now),
+                g.calibration(now),
+            )
         };
         // Written only when they changed (outcomes and undo change after the fact).
         let saved = (actions, queue);
@@ -1049,7 +1058,10 @@ impl Runtime {
         let ms = now_ms();
         let (do_forecast, do_calib) = {
             let mut h = self.house();
-            (due(&mut h.last_forecast_ms, ms, FORECAST_EVERY_MS), due(&mut h.last_calibration_ms, ms, CALIBRATION_EVERY_MS))
+            (
+                due(&mut h.last_forecast_ms, ms, FORECAST_EVERY_MS),
+                due(&mut h.last_calibration_ms, ms, CALIBRATION_EVERY_MS),
+            )
         };
         if do_forecast {
             let _ = self.db.add_forecast(&snap);
@@ -1221,7 +1233,10 @@ impl Runtime {
     /// Transcripts to index: every known agent's session (found by id across
     /// `~/.claude/projects/*/`), plus, for a full pass, every session in a
     /// registered project's folders (its checkout and its worktrees).
-    pub fn transcript_files(&self, only: Option<&std::collections::BTreeSet<String>>) -> Vec<orch_store::TranscriptFile> {
+    pub fn transcript_files(
+        &self,
+        only: Option<&std::collections::BTreeSet<String>>,
+    ) -> Vec<orch_store::TranscriptFile> {
         let projects = self.db.projects(false).unwrap_or_default();
         let project_of = |repo: &Path| projects.iter().find(|p| p.path == repo).map(|p| p.id.clone());
         let mut files: Vec<orch_store::TranscriptFile> = vec![];
@@ -1234,7 +1249,11 @@ impl Runtime {
             let known = self.db.transcript_path(&a.session_id).ok().flatten().filter(|p| p.is_file());
             if let Some(path) = known.or_else(|| crate::transcript::find(&self.cfg.projects_root, &a.session_id)) {
                 if seen.insert(path.clone()) {
-                    files.push(orch_store::TranscriptFile { path, session_id: a.session_id.clone(), project_id: project_of(&a.repo) });
+                    files.push(orch_store::TranscriptFile {
+                        path,
+                        session_id: a.session_id.clone(),
+                        project_id: project_of(&a.repo),
+                    });
                 }
             }
         }
@@ -1548,7 +1567,13 @@ fn project_for_dir(projects: &[orch_store::Project], name: &str) -> Option<Strin
 /// The Governor at start: the active plan when its week is still running
 /// (else the default week), the stored policy (live cap from the config), and
 /// this week's statusline samples replayed with their cost class (NFR-2).
-fn restore_governor(db: &orch_store::Store, store: &Store, cfg: &RuntimeConfig, shadow: bool, now: Timestamp) -> Result<Governor> {
+fn restore_governor(
+    db: &orch_store::Store,
+    store: &Store,
+    cfg: &RuntimeConfig,
+    shadow: bool,
+    now: Timestamp,
+) -> Result<Governor> {
     let mut policy = db.policy(POLICY_ID)?.unwrap_or_default();
     policy.live_caps = governor::LiveCaps::from_base(cfg.base_cap);
     db.save_policy(POLICY_ID, &policy)?;
@@ -1827,7 +1852,14 @@ pub(crate) mod tests {
         let ep = rt.start_otlp(0).unwrap();
         assert_eq!(rt.otlp_endpoint().as_deref(), Some(ep.as_str()));
         rt.on_api_requests(vec![
-            crate::otlp::ApiRequest { ts_ms: 5, agent_id: Some("a1".into()), input_tokens: 10, output_tokens: 2, cost_usd: 0.01, ..Default::default() },
+            crate::otlp::ApiRequest {
+                ts_ms: 5,
+                agent_id: Some("a1".into()),
+                input_tokens: 10,
+                output_tokens: 2,
+                cost_usd: 0.01,
+                ..Default::default()
+            },
             crate::otlp::ApiRequest { ts_ms: 6, agent_id: Some("ghost".into()), input_tokens: 1, ..Default::default() },
         ]);
         rt.db.flush().unwrap();
@@ -1844,7 +1876,11 @@ pub(crate) mod tests {
         let (d, rt) = test_runtime(true);
         let dir = d.path().join("projects/-old-folder");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("s.jsonl"), "{\"type\":\"user\",\"uuid\":\"u1\",\"message\":{\"content\":\"refactor the parser\"}}\n").unwrap();
+        std::fs::write(
+            dir.join("s.jsonl"),
+            "{\"type\":\"user\",\"uuid\":\"u1\",\"message\":{\"content\":\"refactor the parser\"}}\n",
+        )
+        .unwrap();
         rt.housekeeping();
         let end = std::time::Instant::now() + Duration::from_secs(5);
         let mut hits = vec![];

@@ -28,11 +28,7 @@ fn check(dir: &Path, args: &[&str], out: Output) -> Result<String> {
 
 /// Like [`git`], true/false on the exit status (for `--verify`, `merge-base --is-ancestor`…).
 pub fn git_ok(dir: &Path, args: &[&str]) -> bool {
-    git_cmd(dir, args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    git_cmd(dir, args).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
 /// Runs a command and kills it at the deadline (network commands: fetch, gh).
