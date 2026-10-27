@@ -3,6 +3,7 @@
   // or a git URL to clone, J1), Launch a team on a feature (Penpot 04 Launch
   // on feature, J3 step 2), the weekly plan, confirmations.
   // ⌘⏎ submits; esc cancels.
+  import { untrack } from 'svelte';
   import { app, contextProject, features, openAgent, openFeature, openProject, projects, refresh, toast } from '../lib/app.svelte.js';
   import { expandHome } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
@@ -28,16 +29,21 @@
   let launch = $state({ project_id: '', team_id: '', existing: '', slug: '', title: '', brief: '', base: '' });
   let teamsView = $state(null);
   $effect(() => {
-    if (o?.kind === 'launch') {
-      launch = { project_id: o.projectId ?? contextProject()?.id ?? '', team_id: o.teamId ?? '', existing: '', slug: '', title: '', brief: '', base: '' };
+    // Once per opening: only the overlay is tracked (the form must not reset
+    // with the poll, nor depend on what it writes).
+    const ov = o;
+    if (ov?.kind !== 'launch') return;
+    untrack(() => {
+      const project_id = ov.projectId ?? contextProject()?.id ?? '';
+      launch = { project_id, team_id: ov.teamId ?? '', existing: '', slug: '', title: '', brief: '', base: '' };
       error = null;
-      invoke('teams_view', { project: launch.project_id || null })
+      invoke('teams_view', { project: project_id || null })
         .then((v) => {
           teamsView = v;
           if (!launch.team_id) launch.team_id = v.teams[0]?.team.id ?? '';
         })
         .catch((e) => (error = errText(e)));
-    }
+    });
   });
   const launchTeam = $derived(teamsView?.teams.find((t) => t.team.id === launch.team_id));
   const free = $derived(features().filter((f) => f.project_id === launch.project_id && (!f.run || ['done', 'failed'].includes(f.run.status))));
@@ -62,10 +68,13 @@
   }
 
   $effect(() => {
-    if (o?.kind === 'new-session' && !roles.length)
-      invoke('teams_view', { project: null })
-        .then((v) => (roles = v.roles))
-        .catch(() => {});
+    if (o?.kind !== 'new-session') return;
+    untrack(() => {
+      if (!roles.length)
+        invoke('teams_view', { project: null })
+          .then((v) => (roles = v.roles))
+          .catch(() => {});
+    });
   });
 
   function pickRole(id) {

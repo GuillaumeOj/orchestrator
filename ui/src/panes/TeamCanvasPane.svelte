@@ -502,6 +502,7 @@
               {#each ['low', 'normal', 'high', 'critical'] as v (v)}<option value={v}>{v}</option>{/each}
             </select>
           </label>
+          <label><span>turn ceiling</span><input class="field" type="number" min="0" placeholder="minutes (none)" value={role.turn_ceiling?.minutes ?? ''} onchange={(e) => saveRole({ turn_ceiling: { ...(role.turn_ceiling ?? {}), minutes: Number(e.currentTarget.value) > 0 ? Number(e.currentTarget.value) : null } })} /></label>
           <label class="col"><span>prompt</span><textarea class="field" rows="4" value={role.prompt} onchange={(e) => saveRole({ prompt: e.currentTarget.value })}></textarea></label>
           <div class="row">
             {#if !node.is_lead}<button class="btn ghost" onclick={() => edit(C.setLead(team, node.id))}>Make lead</button>{/if}

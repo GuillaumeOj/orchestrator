@@ -35,6 +35,7 @@ vi.mock('../src/lib/ipc.js', () => ({
 const { default: BoardPane } = await import('../src/panes/BoardPane.svelte');
 const { default: FeaturePane } = await import('../src/panes/FeaturePane.svelte');
 const { default: TeamCanvasPane } = await import('../src/panes/TeamCanvasPane.svelte');
+const { default: Dialogs } = await import('../src/components/Dialogs.svelte');
 
 const task = (id, status, over = {}) => ({
   id,
@@ -199,6 +200,36 @@ describe('P2 panes', () => {
     await fireEvent.keyDown(input, { key: 'Enter' });
     await waitFor(() =>
       expect(calls.some(([c, a]) => c === 'message_send' && a.to === 'lead' && a.body === 'Keep v1')).toBe(true),
+    );
+  });
+
+  it('the launch dialog loads the teams once per opening, whatever the poll does', async () => {
+    replies.teams_view = {
+      teams: [{ team: { id: 'duo', name: 'Duo', nodes: [], edges: [], version: 1 }, issues: [], rules: [] }],
+      roles: [],
+      presets: [],
+    };
+    replies.team_launch = { id: 'run-1', feature_id: 'demo-fx' };
+    app.overlay = { kind: 'launch', teamId: 'duo', projectId: 'shop' };
+    const { container } = render(Dialogs);
+    await tick();
+    const title = container.querySelector('input[placeholder="Search v2"]');
+    await fireEvent.input(title, { target: { value: 'Fix login' } });
+    // Polls replace app.data: the form keeps what was typed, and no new load starts.
+    for (let i = 0; i < 3; i++) {
+      app.data = fixture();
+      await tick();
+    }
+    expect(calls.filter(([c]) => c === 'teams_view')).toHaveLength(1);
+    expect(/** @type {HTMLInputElement} */ (container.querySelector('input[placeholder="Search v2"]')).value).toBe(
+      'Fix login',
+    );
+    expect(container.textContent).toContain('orch/fix-login/integration');
+    await fireEvent.click(container.querySelector('button[type=submit]'));
+    await waitFor(() =>
+      expect(
+        calls.some(([c, a]) => c === 'team_launch' && a.form.slug === 'fix-login' && a.form.team_id === 'duo'),
+      ).toBe(true),
     );
   });
 

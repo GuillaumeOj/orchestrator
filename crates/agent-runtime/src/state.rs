@@ -97,6 +97,9 @@ pub struct Tracker {
     pub subagents: BTreeSet<String>,
     pub stop_intent: StopIntent,
     pub last_error: Option<String>,
+    /// When the running turn started (ms; set by the runtime, for the watchdog, FR-407).
+    #[serde(default)]
+    pub turn_started_ms: Option<u64>,
     /// Messages queued by the CLI during a turn (same prompt_id).
     pub queued_messages: u32,
     pub turns: u32,

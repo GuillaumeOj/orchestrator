@@ -203,6 +203,11 @@ through `orch-tasks` (Local or GitHub Issues, FR-501–503).
   `asked_user` events tagged with the run (`events.team_run_id`).
 - **Remote tasks**: every 5 minutes `sync_task_backends` syncs the GitHub backend of projects with
   an active run; a conflict keeps GitHub's version and adds an `info` Inbox item.
+- **Watchdog** (FR-407, every housekeeping pass, any live agent): a turn past its role's
+  `turn_ceiling_minutes` is interrupted (Esc) with an Inbox alert; a working agent with no hook for
+  15 minutes (and no background work) gets an alert. Once per turn each (`Tracker.turn_started_ms`
+  is stamped when a turn starts). The ceiling in weekly pp is not enforced yet: it needs a per-turn
+  usage delta.
 
 ## Live cap and idle suspend (FR-203, FR-204)
 

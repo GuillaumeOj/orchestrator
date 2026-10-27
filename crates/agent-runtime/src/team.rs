@@ -84,6 +84,34 @@ impl std::fmt::Debug for GhFactory {
 #[derive(Clone, Copy, Debug)]
 pub struct Sender<'a>(pub &'a str, pub Option<&'a str>);
 
+/// FR-407: a working agent silent this long gets an Inbox alert.
+pub const NO_PROGRESS_MS: u64 = 15 * 60 * 1000;
+
+/// What the watchdog found about one agent's running turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Watch {
+    /// Past its role's ceiling (minutes).
+    Ceiling(u32),
+    /// No hook for [`NO_PROGRESS_MS`].
+    Stalled,
+}
+
+/// FR-407 for one agent at `now`: what is wrong with its running turn, with
+/// the turn's start (the key that makes each alert once per turn).
+pub fn watchdog_check(a: &AgentRecord, now: u64) -> Option<(Watch, u64)> {
+    let start = a.tracker.turn_started_ms?;
+    if a.tracker.state != AgentState::Working {
+        return None;
+    }
+    if let Some(m) = a.role.turn_ceiling_minutes
+        && now.saturating_sub(start) > u64::from(m) * 60_000
+    {
+        return Some((Watch::Ceiling(m), start));
+    }
+    let last = a.last_event_at_ms.unwrap_or(start).max(start);
+    (a.tracker.background_tasks == 0 && now.saturating_sub(last) > NO_PROGRESS_MS).then_some((Watch::Stalled, start))
+}
+
 /// Longest message body kept (the rest is cut).
 const MAX_BODY: usize = 8_000;
 /// Longest text injected at a tool call.
@@ -468,6 +496,46 @@ impl Runtime {
             )?;
         }
         Ok(())
+    }
+
+    /// FR-407 watchdog, for every live agent: a turn past its role's ceiling
+    /// is interrupted (Esc) and the user told; a working agent with no hook
+    /// for `NO_PROGRESS` gets an Inbox alert. Once per turn each.
+    pub fn watchdog(&self, now: u64) {
+        let agents: Vec<AgentRecord> = self.store.read(|s| s.agents.values().cloned().collect());
+        for a in agents {
+            if self.live(&a.id).is_none() {
+                continue;
+            }
+            let Some((what, start)) = watchdog_check(&a, now) else { continue };
+            if !self.watchdog_once(format!("{}:{start}:{what:?}", a.id)) {
+                continue;
+            }
+            if let Watch::Ceiling(m) = what {
+                let _ = self.interrupt(&a.id);
+                let _ = self.add_item(
+                    Some(&a.id),
+                    "alert",
+                    format!("{}: the turn ran past its {m} min ceiling and was interrupted (FR-407)", a.id),
+                    json!({"action": "watchdog", "kind": "ceiling", "minutes": m}),
+                    crate::inbox::PRIORITY_ALERT,
+                );
+                if let Some(seat) = &a.team {
+                    self.run_event(&seat.run_id, Some(&a.id), "watchdog", json!({"kind": "ceiling", "minutes": m}));
+                }
+            } else {
+                let _ = self.add_item(
+                    Some(&a.id),
+                    "alert",
+                    format!("{}: no progress for {} min (no tool call or answer)", a.id, NO_PROGRESS_MS / 60_000),
+                    json!({"action": "watchdog", "kind": "stalled"}),
+                    crate::inbox::PRIORITY_ALERT,
+                );
+                if let Some(seat) = &a.team {
+                    self.run_event(&seat.run_id, Some(&a.id), "watchdog", json!({"kind": "stalled"}));
+                }
+            }
+        }
     }
 
     /// FR-503: syncs the remote task backend of every project with an active
@@ -1447,6 +1515,26 @@ mod tests {
         for k in ["run.launched", "task.created", "task.assigned", "message", "git.merge", "task.done", "run.state"] {
             assert!(ev.iter().any(|e| e.kind == k), "timeline has {k}");
         }
+    }
+
+    #[test]
+    fn the_watchdog_flags_long_and_silent_turns() {
+        let (_d, rt) = test_runtime(false);
+        let mut a = rt.store.read(|s| s.agents["a1"].clone());
+        let min = 60_000;
+        assert_eq!(watchdog_check(&a, 100 * min), None, "no turn running");
+        a.tracker.state = AgentState::Working;
+        a.tracker.turn_started_ms = Some(0);
+        a.last_event_at_ms = Some(10 * min);
+        assert_eq!(watchdog_check(&a, 20 * min), None);
+        assert_eq!(watchdog_check(&a, 26 * min), Some((Watch::Stalled, 0)));
+        a.tracker.background_tasks = 1;
+        assert_eq!(watchdog_check(&a, 26 * min), None, "background work is progress elsewhere");
+        a.role.turn_ceiling_minutes = Some(20);
+        assert_eq!(watchdog_check(&a, 21 * min), Some((Watch::Ceiling(20), 0)));
+        a.tracker.state = AgentState::Idle;
+        assert_eq!(watchdog_check(&a, 60 * min), None);
+        assert!(rt.watchdog_once("a1:0:Stalled".into()) && !rt.watchdog_once("a1:0:Stalled".into()));
     }
 
     #[test]

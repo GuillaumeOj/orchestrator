@@ -169,6 +169,8 @@ struct House {
     reserve_alerted: Option<Option<i64>>,
     /// Last sync of the remote task backends (FR-503).
     last_task_sync_ms: u64,
+    /// Watchdog alerts already raised, by `<agent>:<turn start>` (FR-407).
+    watchdog: std::collections::BTreeSet<String>,
 }
 
 /// True (and restamps `last`) when `every` ms have passed since `last`.
@@ -978,6 +980,11 @@ impl Runtime {
             }
             Effect::TurnStarted { origin, markers } => {
                 self.mark_delivered(id, &markers);
+                let _ = self.store.write(|s| {
+                    if let Some(a) = s.agents.get_mut(id) {
+                        a.tracker.turn_started_ms = Some(now);
+                    }
+                });
                 if let Some(l) = &live {
                     l.ready_at_ms.store(0, Ordering::SeqCst);
                 }
@@ -1252,6 +1259,11 @@ impl Runtime {
         }
     }
 
+    /// True the first time `key` is seen (one watchdog alert per turn).
+    pub(crate) fn watchdog_once(&self, key: String) -> bool {
+        self.house().watchdog.insert(key)
+    }
+
     /// Every 5 minutes: time to sync the remote task backends.
     pub(crate) fn task_sync_due(&self) -> bool {
         due(&mut self.house().last_task_sync_ms, now_ms(), TASK_SYNC_EVERY_MS)
@@ -1406,6 +1418,7 @@ impl Runtime {
             if let Some(me) = self.me.upgrade() {
                 std::thread::spawn(move || {
                     me.team_tick();
+                    me.watchdog(now_ms());
                     if me.task_sync_due() {
                         me.sync_task_backends();
                     }

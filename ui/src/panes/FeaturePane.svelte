@@ -31,6 +31,11 @@
   const byStatus = (s) => (v?.tasks ?? []).filter((t) => t.status === s);
   const events = $derived((v?.timeline ?? []).filter(timelineFilter(tl)).slice(0, 60));
   const lead = $derived(v?.team?.nodes?.find((n) => n.is_lead)?.id ?? 'lead');
+  /** An agent's role from the run's own team (the poll may not list a new agent yet). */
+  const roleOfAgent = (id) => {
+    const node = v?.agents?.find((a) => a.id === id)?.node;
+    return v?.team?.nodes?.find((n) => n.id === node)?.role_id ?? null;
+  };
 
   async function load() {
     try {
@@ -181,7 +186,7 @@
             {@const live = agent(a.id)}
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
             <div class="arow" onclick={() => openAgent(a.id)} title="Open {a.id}">
-              <AgentChip id={a.id} />
+              <AgentChip id={a.id} role={roleOfAgent(a.id)} />
               <StatusBadge state={live ? displayState(live) : a.state} />
               <span class="muted ell">{a.tool ? `${a.tool}` : a.task ? `task T-${a.task}` : ''}{a.flag ? ` · ${a.flag}` : ''}</span>
             </div>
@@ -193,7 +198,7 @@
           <div class="chips">{#each TL_FILTERS as f (f.id)}<button class="chip" class:on={tl === f.id} onclick={() => (tl = f.id)}>{f.label}</button>{/each}</div>
           <div class="events">
             {#each events as e (e.id)}
-              <div class="ev"><span class="mono muted">{new Date(e.ts_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>{#if e.agent_id}<AgentChip id={e.agent_id} compact />{/if}<span class="evt">{timelineText(e)}</span></div>
+              <div class="ev"><span class="mono muted">{new Date(e.ts_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>{#if e.agent_id}<AgentChip id={e.agent_id} role={roleOfAgent(e.agent_id)} compact />{/if}<span class="evt">{timelineText(e)}</span></div>
             {:else}<span class="muted">Nothing yet.</span>{/each}
           </div>
           {#if run && !['done', 'failed'].includes(run.status)}

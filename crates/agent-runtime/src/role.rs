@@ -93,6 +93,9 @@ pub struct Role {
     /// (`commit`, `request_pr`). Listed by orch-mcp and checked by the core.
     #[serde(default)]
     pub orch_tools: Vec<String>,
+    /// FR-407: a turn running longer is interrupted (the watchdog) and the user told.
+    #[serde(default)]
+    pub turn_ceiling_minutes: Option<u32>,
 }
 
 fn default_network() -> Vec<String> {
@@ -116,6 +119,7 @@ impl Role {
             deny_rules: vec![],
             extra_write: vec![],
             orch_tools: vec![],
+            turn_ceiling_minutes: None,
         }
     }
 
@@ -137,6 +141,7 @@ impl Role {
             deny_rules: n.deny_tools.clone(),
             extra_write: vec![],
             orch_tools: n.orch_tools.clone(),
+            turn_ceiling_minutes: n.turn_ceiling.minutes.filter(|m| *m > 0),
         })
     }
 
