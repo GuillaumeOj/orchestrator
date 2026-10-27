@@ -122,6 +122,39 @@ pub enum CtlRequest {
     /// FR-811 Pause all: autonomous work holds at its next tool call.
     PauseAll,
     ResumeAll,
+    /// One agent's autonomous work holds at its next tool call (until ResumeAgent).
+    PauseAgent {
+        agent_id: String,
+    },
+    ResumeAgent {
+        agent_id: String,
+    },
+    /// FR-809 Run now / Start now on a queued entry.
+    RunNow {
+        entry: u64,
+    },
+    /// Drop a queued entry and its waiting turn.
+    Cancel {
+        entry: u64,
+    },
+    /// Undo a Governor action from its log.
+    Undo {
+        action: u64,
+    },
+    /// FR-811 Sprint mode: extra pp today (default 5).
+    Sprint {
+        #[serde(default)]
+        pp: Option<f64>,
+    },
+    /// FR-810: answer a Governor ask (accept applies it).
+    AnswerAsk {
+        action: u64,
+        accept: bool,
+    },
+    /// FR-812: enforce (`true`) or go back to shadow mode.
+    Enforce {
+        on: bool,
+    },
     State,
     Usage,
     Governor,

@@ -9,10 +9,10 @@
   import Kbd from '../components/Kbd.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import TermHost from '../components/TermHost.svelte';
-  import { agent, agentAction, app, confirm, mountTerm, openEditor, runNow, toast } from '../lib/app.svelte.js';
+  import { agent, agentAction, app, cancelQueued, confirm, mountTerm, openEditor, runNow, toast } from '../lib/app.svelte.js';
   import { ago, clock, duration } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { cacheState, displayState, notStarted, sessionPp as ppOf, queueReason } from '../lib/status.js';
+  import { cacheState, displayState, notStarted, sessionPp as ppOf, queueReason, runCost } from '../lib/status.js';
 
   let { paneId } = $props();
   let host = $state();
@@ -32,6 +32,7 @@
   });
   const governorText = $derived.by(() => {
     if (!a) return '—';
+    if (a.paused && !a.queue_entry) return 'paused · ⌘; p resumes';
     if (a.queue_entry) return `queued ${ordinal(queuePos)} (${a.queue_entry.tier})`;
     if (ds === 'waiting_for_you') return 'interactive · not counted against cap';
     if (a.live) return `admitted · ${liveCount}/${snap?.live_cap ?? '?'} live`;
@@ -119,8 +120,9 @@
       <span class="icon" style:color="var(--color-status-queued)">{'\u{F051F}'}</span>
       <span>{notStarted(a) ? 'Not started yet' : 'Queued'} · {queueReason(a.queue_entry)}{a.queue_entry.estimated_start ? ` · starts ≈ ${clock(Date.parse(a.queue_entry.estimated_start))}` : ''}</span>
       <span class="grow"></span>
+      <button class="btn ghost" onclick={() => cancelQueued(a)} title="Drop the queued turn">Cancel</button>
       <button class="btn" onclick={() => runNow(a, notStarted(a))}>
-        {notStarted(a) ? 'Start now' : 'Run now'} ≈ +{a.queue_entry.estimated_cost_pct.toFixed(1)} pp <Kbd keys="⏎" />
+        {notStarted(a) ? 'Start now' : 'Run now'} ≈ {runCost(a.queue_entry)} <Kbd keys="⏎" />
       </button>
     </div>
   {:else if ds === 'blocked_by_limit'}

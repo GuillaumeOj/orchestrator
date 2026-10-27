@@ -589,6 +589,9 @@ impl Core {
                 json!("resumed")
             }
             "deliver" => json!(rt.deliver(id, message.ok_or_else(|| anyhow!("no message"))?)?),
+            // FR-805/811: the Governor holds this agent's autonomous work (until unpause).
+            "pause" => json!(rt.pause_agent(id)?),
+            "unpause" => json!(rt.resume_agent(id)),
             other => bail!("unknown agent action {other}"),
         })
     }
@@ -713,8 +716,7 @@ impl Core {
         }
         if let Some(n) = item.strip_prefix("ask-") {
             let id = governor::ActionId(n.parse()?);
-            let accept = action == "approve";
-            rt.governor_act(|g, now| (g.answer_ask(id, accept, now), vec![])).map_err(|e| anyhow!("{e:?}"))?;
+            rt.answer_ask(id.0, action == "approve")?;
             return Ok(json!("answered"));
         }
         if let Some(a) = item.strip_prefix("wait-").or_else(|| item.strip_prefix("error-")) {
@@ -804,6 +806,8 @@ impl Core {
         let mut warnings: Vec<Value> = self.warnings.lock_ok().iter().map(|w| json!(w)).collect();
         let (mut usage, mut queue, mut meta, mut alerts, mut done, mut ask) =
             (Value::Null, vec![], BTreeMap::new(), vec![], vec![], None);
+        // Agents paused one by one (FR-805/811): idle ones have no queue entry.
+        let mut paused = std::collections::BTreeSet::new();
         if let Some(rt) = &self.rt {
             let st = rt.state_json();
             agents = st["agents"].as_array().cloned().unwrap_or_default();
@@ -815,14 +819,17 @@ impl Core {
                 u.remove("governor");
             }
             let (snapshot, reset, shadow);
-            (queue, snapshot, reset, shadow, ask) = rt.with_governor(|g| {
+            (queue, snapshot, reset, shadow, ask, paused) = rt.with_governor(|g| {
                 let now = Timestamp::now();
+                let paused = g.paused_agents().iter().map(|a| a.0.clone()).collect();
+                let plan = g.plan();
                 (
                     g.queue().to_vec(),
                     g.snapshot(now),
-                    g.plan().reset_at.as_millisecond(),
-                    g.plan().shadow_mode,
+                    plan.reset_at.as_millisecond(),
+                    plan.shadow_mode,
                     pending_ask(g, now),
+                    paused,
                 )
             });
             usage["live_cap"] = json!(snapshot.live_cap);
@@ -849,6 +856,7 @@ impl Core {
             if let Some(q) = queue.iter().find(|e| e.agent.0 == id) {
                 a["queue_entry"] = json!(q);
             }
+            a["paused"] = json!(paused.contains(&id));
             a["attached"] = json!(readers.contains(&id));
         }
         let items = self.inbox_items(&agents, &alerts, &done, ask);
@@ -905,25 +913,18 @@ impl Core {
             "pause_all" => json!(rt.pause_all()),
             "resume_all" => json!(rt.resume_all()),
             "run_now" => {
-                let e = governor::EntryId(id()?);
-                json!(rt.governor_act(|g, now| {
-                    let r = g.run_now(e, now);
-                    (r.is_some(), r.into_iter().collect())
-                }))
+                rt.run_now(id()?)?;
+                json!(true)
+            }
+            "cancel" => {
+                rt.cancel(id()?)?;
+                json!("cancelled")
             }
             "undo" => {
-                let a = governor::ActionId(id()?);
-                rt.governor_act(|g, now| match g.undo(a, now) {
-                    Ok(r) => (Ok(()), r),
-                    Err(e) => (Err(anyhow!("{e:?}")), vec![]),
-                })?;
+                rt.undo(id()?)?;
                 json!("undone")
             }
-            "sprint" => {
-                let pp = arg.unwrap_or(5.0);
-                let a = rt.governor_act(|g, now| (g.start_sprint(pp, now), vec![])).map_err(|e| anyhow!("{e:?}"))?;
-                json!(a.0)
-            }
+            "sprint" => json!(rt.sprint(arg)?),
             other => bail!("unknown governor action {other}"),
         })
     }
@@ -1076,8 +1077,9 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
     if let Some(c) = &cfg.claude {
         rc.claude = c.clone();
     }
-    // FR-812: shadow mode unless enforcing was chosen (after the first week).
-    rc.shadow = !(cfg.enforce || setup::enforce_chosen(&paths.db_file()));
+    // FR-812: shadow mode unless ORCH_ENFORCE; the runtime then applies the
+    // user's stored choice (`governor.enforce`, also set by `orchd enforce`).
+    rc.shadow = !cfg.enforce;
     // Permission prompts: the runtime answers from the stored rules only; the
     // app's broker holds the rest for its Inbox (and the pane's own dialog).
     rc.permission_hold = Duration::ZERO;
@@ -1183,7 +1185,13 @@ fn store_view(s: &agent_runtime::store::StateFile) -> (BTreeMap<String, AgentMet
         .inbox
         .iter()
         .filter(|i| i.pending())
-        .map(|i| Alert { id: i.id, agent_id: i.agent_id.clone(), body: i.body.clone(), created_ms: i.created_at_ms })
+        .map(|i| Alert {
+            id: i.id,
+            kind: i.kind.clone(),
+            agent_id: i.agent_id.clone(),
+            body: i.body.clone(),
+            created_ms: i.created_at_ms,
+        })
         .collect();
     let done = s
         .turns
@@ -1507,7 +1515,10 @@ mod tests {
         core.governor_act("resume_all", None).unwrap();
         let sprint = rt.governor_act(|g, now| (g.start_sprint(5.0, now), vec![]));
         assert!(sprint.is_ok());
-        assert!(core.set_enforce(false).unwrap_err().to_string().contains("sprint"));
+        // A sprint carries over a switch, both ways (it used to be refused).
+        core.set_enforce(false).unwrap();
+        assert!(rt.with_governor(|g| g.sprint().is_some()), "sprint carried over");
+        core.set_enforce(true).unwrap();
         drop(rt);
         core.shutdown();
         drop(core);

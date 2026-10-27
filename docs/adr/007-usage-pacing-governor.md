@@ -1,6 +1,6 @@
 # ADR-007 — Usage pacing: Governor control law (v1)
 
-- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-26 (state across restarts, same forecast after a restart)
+- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-26 (state across restarts, same forecast after a restart), 2026-10-27 (P1b: carry-over state, per-agent pause, memory slots)
 
 ## Context
 A Max plan has a 5-hour window and a weekly window, and possibly a separate weekly limit for some models. Claude Code's statusline exposes used % and reset times for the 5h and weekly windows (ADR-002). Goal: never get locked out during working hours, and use ≥ 85 % of the week by the reset.
@@ -51,6 +51,8 @@ Unused weight is redistributed. Nothing rolls over to the next week. Sprint mode
 
 ## Actions in v1
 Live cap per state, queue, pause at turn boundary, defer after reset (asked, with a default and a 20-min timeout), 5h guard, watchdog.
+- **Pause** is Pause all or one agent (teams come in P2); both stop autonomous work at the next tool call. A deferral or a hard cap crossed during a turn also stops it there.
+- **Memory slots** (SPEC FR-203): the core reports its live processes and the memory-pressure cap; a turn that must spawn a process (a suspended agent) waits in the queue with that reason. It is a memory limit, not pacing, so it holds in shadow mode too; Run now overrides it.
 - **Deferred to later phases**: 5h peak smoothing and per-model estimator weights.
 - **Never automatic**: model downgrade (opt-in per role, at task boundaries; it breaks the prompt cache and risks quality).
 - **Not a lever**: compaction.
@@ -65,7 +67,7 @@ Live cap per state, queue, pause at turn boundary, defer after reset (asked, wit
 - The Governor stays a pure library with its state in memory. The core stores the active plan, the policy, every new statusline sample with the **cost class** it had (interactive / critical / autonomous) and its allocation, the recent actions, the queue (as a view), forecast snapshots and the calibration.
 - At start the core builds a new Governor on the active plan (if its week is still running) and **replays** this week's samples with their stored class (`Governor::replay`), so W, the governed share, per-allocation usage and the calibration come back. A plain re-ingest would count past agent work as interactive.
 - The replayed Governor and the live one agree for the same samples: both calibrate the week's first reading against W = 0 at the reset (see Measurements). Two differences remain: the burn is measured between control-loop ticks, which a replay does not have, so after a restart it starts again from the on-plan pace; and the calibration is not carried across weeks by a restart (the live Governor keeps `k` and `u` from earlier weeks). A later step persists the calibrator and seeds `u0` from last week's observed outside usage.
-- The queue is not restored: turns that waited in the old queue are asked again by the reconciler. Action ids restart at each core start.
+- The **carry-over state** (`Governor::carry`) is stored whenever it changes: pauses, plan limits until their reset, this week's deferrals, pending ask (with its deadline) and sprints, and the queue, and the running turns. At start it is restored after the replay (`Governor::restore`), before the first tick: the queue keeps its entry ids and enqueue times (aging goes on), and no queued work is lost (an entry is kept while its agent exists, with or without a waiting turn); running turns are dropped, since their processes ended with the old core and the reconciler resumes those agents through the queue. Restored overrides are logged again, so they can be undone. A plan edit or an enforce switch rebuilds the Governor the same way from the live carry, running turns included, so the caps still count them and neither is refused while work is queued or a sprint is on. The enforce choice itself is stored and read at every start. Action ids restart at each core start.
 
 ## Consequences
 - Pacing that can be predicted and tested, with honest limits: queuing *defers* usage, it doesn't reduce it. Mostly-interactive weeks leave the Governor little to act on, and the planner says so.

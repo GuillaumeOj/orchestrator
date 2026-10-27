@@ -1,6 +1,8 @@
 // Status vocabulary (SPEC §9.5): one label, one icon and one color per state,
 // used everywhere. Icons are Material Design glyphs of FiraCode Nerd Font Mono
 // (docs/design/README.md).
+import { pp, signed } from './format.js';
+
 export const STATUS = {
   working: { label: 'Working', icon: '\u{F040A}', color: 'var(--color-status-working)' },
   waiting_for_you: { label: 'Waiting for you', icon: '\u{F0005}', color: 'var(--color-status-waiting-for-you)' },
@@ -19,11 +21,15 @@ export const STATUS = {
  * runtime has a few states the vocabulary doesn't name: `starting` (before
  * SessionStart) reads Working, `created` reads Queued ("Not started yet"),
  * `killed` reads Suspended (its session can be resumed), `archived` Done.
- * A queued turn held by Pause all reads Paused.
+ * A queued turn held by Pause all, and an agent paused on its own, read Paused.
  */
 export function displayState(agent) {
   const s = agent?.state;
-  if (agent?.queue_entry?.reason?.kind === 'paused_all') return 'paused';
+  const held = agent?.queue_entry?.reason?.kind;
+  if (held === 'paused_all' || held === 'paused_agent') return 'paused';
+  // A pause never hides what needs the user (a prompt, a gate, an error) or a running turn.
+  if (agent?.paused && !['working', 'starting', 'waiting_for_you', 'waiting_gate', 'error'].includes(s))
+    return 'paused';
   switch (s) {
     case 'starting':
       return 'working';
@@ -79,11 +85,28 @@ export function queueReason(entry) {
       return 'allocation hard cap';
     case 'paused_all':
       return 'Pause all';
+    case 'paused_agent':
+      return 'paused (p resumes)';
+    case 'memory_pressure':
+      return `memory pressure (${r.cap} live)`;
     case 'behind_queue':
       return 'behind other queued work';
     default:
       return 'queued';
   }
+}
+
+/**
+ * Run now's cost in the window that holds the entry (FR-809): % of the 5h
+ * window under the 5h guard, pp of the week otherwise. `both` adds the other.
+ */
+export function runCost(entry, both = false) {
+  const week = pp(entry?.estimated_cost_pct ?? 0, 1);
+  const f = entry?.estimated_cost_5h_pct;
+  if (f == null) return week;
+  const five = `${signed(f)} %`;
+  if (entry?.binding === 'five_hour') return both ? `${five} of the 5h window (${week} of the week)` : `${five} 5h`;
+  return both ? `${week} of the week (${five} of the 5h window)` : week;
 }
 
 /** The agent's session usage in pp of the week (cost / cost per weekly %). */

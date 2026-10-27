@@ -41,7 +41,9 @@ target/debug/orchd stop
   (unmerged work needs `--discard`). `project remove-plan` / `project remove --history delete|archive`
   is J11; `project relocate <id> <new-path>` repairs worktrees after a repo move.
 - `reconcile` prints a dry run of the reconciler (core stopped). `pause-all` / `resume-all` drive the
-  Governor's Pause all (FR-811).
+  Governor's Pause all (FR-811); `pause <agent>` / `unpause <agent>` one agent. `run-now <entry>`
+  and `cancel <entry>` act on a queued entry (ids in `governor`), `undo <action>`,
+  `sprint [pp]` (default 5), `answer-ask <action> apply|skip`, and `enforce on|off` (FR-809–812).
 - A new repo shows Claude Code's trust dialog on the first start: `state` flags `trust_dialog`, an
   Inbox item appears, and nothing is delivered until you `attach` and answer it yourself.
 - Stopping the core (`stop`, Ctrl-C, SIGTERM) suspends agents. Killing it hard ends them anyway

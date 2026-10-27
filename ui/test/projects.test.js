@@ -283,6 +283,33 @@ describe('first run (J0)', () => {
     const [, { form }] = calls.find(([c]) => c === 'plan_set');
     expect(form.days).toEqual(['mon', 'tue', 'wed', 'thu', 'fri', 'sat']);
     expect(form.allocations.map((a) => a.weight)).toEqual([1, 3]);
+    // Empty means no cap.
+    expect(form.allocations.map((a) => a.hard_cap_pct)).toEqual([null, null]);
+    expect(form.off_hours_allowance_pct).toBe(0);
+  });
+
+  it('the plan editor saves hard caps and the off-hours allowance (FR-811, FR-816)', async () => {
+    replies.plan_form = {
+      days: ['mon'],
+      start: '09:00',
+      end: '19:00',
+      reserve_pct: 10,
+      off_hours_allowance_pct: 0,
+      allocations: [{ id: 'blog', target: 'blog', weight: 1, tier: 'low', hard_cap_pct: null }],
+    };
+    replies.plan_set = null;
+    replies.app_state = fixture();
+    const saved = vi.fn();
+    const { container } = render(PlanEditor, { onSaved: saved });
+    const { getByText, getByLabelText } = within(container);
+    await waitFor(() => expect(text(container)).toContain('blog'));
+    await fireEvent.input(getByLabelText('Hard cap of blog'), { target: { value: '12' } });
+    await fireEvent.input(getByLabelText('Off-hours allowance (%)'), { target: { value: '5' } });
+    await fireEvent.click(getByText('Save plan'));
+    await waitFor(() => expect(saved).toHaveBeenCalled());
+    const [, { form }] = calls.filter(([c]) => c === 'plan_set').at(-1);
+    expect(form.allocations[0].hard_cap_pct).toBe(12);
+    expect(form.off_hours_allowance_pct).toBe(5);
   });
 });
 

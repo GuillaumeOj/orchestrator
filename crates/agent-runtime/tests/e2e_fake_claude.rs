@@ -247,15 +247,47 @@ fn memory_pressure_lowers_the_live_cap_and_queued_work_waits_for_a_slot() {
     wait_for("one suspended", 15, || core.state_of("old") == "suspended");
     assert_eq!(core.state_of("new"), "idle");
     assert_eq!(core.rt.live_cap(), 1);
-    // Work for the suspended agent waits: no live slot.
+    // Work for the suspended agent waits in the Governor's queue (shadow mode
+    // too: memory is enforced), with its reason.
     request(&core.sock, CtlRequest::Deliver { agent_id: "old".into(), text: "more".into() }).unwrap();
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(core.state_of("old"), "suspended");
+    let reason = core.rt.with_governor(|g| g.queue().iter().find(|e| e.agent.0 == "old").map(|e| e.reason.clone()));
+    assert_eq!(reason, Some(governor::QueueReason::MemoryPressure { cap: 1 }));
     // Pressure ends: the cap recovers and the agent is resumed through the Governor.
     mem.set(PressureLevel::Normal);
     wait_for("resumed and done", 20, || agent(&core.sock, "old")["turns"].as_u64() == Some(2));
-    let ev = core.rt.db.events(0, Some("old"), Some("cap_wait"), 5).unwrap();
-    assert!(!ev.is_empty());
+}
+
+#[test]
+fn the_memory_cap_is_checked_at_spawn_and_run_now_overrides_it() {
+    use agent_runtime::store::{Admission, TurnRow};
+    let mem = Arc::new(agent_runtime::resources::FixedMemory::new(PressureLevel::Normal));
+    let m2 = mem.clone();
+    let core = Core::start("orchsp", move |c| {
+        c.base_cap = 2;
+        c.memory = m2;
+    });
+    core.start_agent("old");
+    std::thread::sleep(Duration::from_millis(300));
+    core.start_agent("new");
+    mem.set(PressureLevel::Critical);
+    wait_for("one suspended", 15, || core.state_of("old") == "suspended");
+    // A turn already admitted (a release, a restored turn) for the suspended
+    // agent: the spawn finds no slot, so it goes back to the queue.
+    core.rt
+        .store
+        .write(|s| s.turns.push(TurnRow::queued("old", "more", governor::TurnKind::Message, Admission::Admitted)))
+        .unwrap();
+    wait_for("spawn held", 10, || !core.rt.db.events(0, Some("old"), Some("spawn_held"), 5).unwrap().is_empty());
+    assert_eq!(core.state_of("old"), "suspended");
+    let entry = core.rt.with_governor(|g| g.queue().iter().find(|e| e.agent.0 == "old").cloned()).expect("queued");
+    assert_eq!(entry.reason, governor::QueueReason::MemoryPressure { cap: 1 });
+    // Run now: the user may exceed the cap (FR-203).
+    core.rt.run_now(entry.id.0).unwrap();
+    // (Housekeeping may then suspend the other, idle agent to get back under the cap.)
+    wait_for("resumed past the cap", 20, || core.state_of("old") != "suspended");
+    assert_eq!(core.rt.live_cap(), 1);
 }
 
 #[test]

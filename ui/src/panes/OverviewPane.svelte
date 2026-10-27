@@ -7,9 +7,9 @@
   // current tool, elapsed time, context, usage, governor status and memory;
   // grouped by project or by state. Keys (pane-local): j/k move, ⏎ open,
   // i interrupt, s suspend, r resume, K kill (asks first), p pause.
-  import { agentAction, agents, app, confirm, openAgent, projects, run, runNow } from '../lib/app.svelte.js';
+  import { agentAction, agents, app, cancelQueued, confirm, openAgent, projects, run, runNow } from '../lib/app.svelte.js';
   import { duration, mb } from '../lib/format.js';
-  import { displayState, notStarted, queueReason, STATUS, sessionPp } from '../lib/status.js';
+  import { displayState, notStarted, queueReason, runCost, STATUS, sessionPp } from '../lib/status.js';
 
   let { paneId } = $props();
   let groupBy = $state('project');
@@ -138,7 +138,8 @@
                 <td class="doing">
                   {doing(a)}
                   {#if a.queue_entry}
-                    <button class="btn" onclick={(e) => (e.stopPropagation(), runNow(a, notStarted(a)))}>{notStarted(a) ? 'Start now' : 'Run now'} ≈ +{a.queue_entry.estimated_cost_pct.toFixed(1)} pp</button>
+                    <button class="btn" onclick={(e) => (e.stopPropagation(), runNow(a, notStarted(a)))}>{notStarted(a) ? 'Start now' : 'Run now'} ≈ {runCost(a.queue_entry)}</button>
+                    <button class="btn ghost" onclick={(e) => (e.stopPropagation(), cancelQueued(a))} title="Drop the queued turn">Cancel</button>
                   {/if}
                 </td>
                 <td>{duration(Date.now() - (a.created_at_ms ?? a.last_event_at_ms ?? Date.now()))}</td>

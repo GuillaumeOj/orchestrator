@@ -81,8 +81,11 @@ Daily use: [RUNNING.md](RUNNING.md).
 
 1. **Features in the sidebar**: none yet (teams come in P2); agents are listed as solo sessions
    under their project. Role marks are derived from the agent name (solo → S).
-2. **Pause per agent** (`⌘; p`, Overview `p`): the runtime has Pause all only; the app says so and
-   offers Pause all. Paused shows when Pause all holds the agent's queued turn.
+2. **Pause per agent** (`⌘; p`, Overview `p`) toggles: the Governor holds that agent's autonomous
+   work at its next tool call until pressed again (a stand-in for "pause team" until teams exist).
+   Paused shows for a paused agent and when Pause all holds its queued turn. Queued rows and strips
+   also offer **Cancel** (drop the queued turn), and Run now shows its cost in the window that holds
+   the turn (`+12 % 5h` under the 5h guard), with both windows in the confirmation.
 3. **Overview kill key** is `⇧K`: Penpot 05 gives `k` both to "move up" (j/k) and to "kill".
 4. **Suspended resumes on ⏎** in its pane strip, not on focus (§9.3 "resume on focus"): resuming
    costs quota, so the app asks for one key.
@@ -93,7 +96,8 @@ Daily use: [RUNNING.md](RUNNING.md).
    component. Gate items (spec, PR) arrive with P2.
 7. **1280**: the overlay inspector covers the right pane when opened (Penpot avoided any covered
    pane by showing one pane only).
-8. **Week planner**: Edit plan (`e`) opens the plan editor (days, hours, weights, reserve); allocation
+8. **Week planner**: Edit plan (`e`) opens the plan editor (days, hours, reserve, off-hours
+   allowance, weights, tiers, hard caps); allocation
    weights are bars, not sliders. Sprint mode (+5 pp), Pause all, undo and the pending ask work. The "actual" line starts when
    the app starts (no stored history yet); "w/ governor" is an estimate (the error closing
    linearly by the reset).

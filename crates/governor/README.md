@@ -72,12 +72,16 @@ for action in gov.actions() {
 | `ingest(&UsageSample)` | Every statusline sample (with cost delta). `None` windows stay unknown. |
 | `rate_limit_hit(agent, window, resets_at, now) -> LimitResponse` | StopFailure `rate_limit` (J9). `cancel_auto_continue` = send Esc. |
 | `tick(now) -> Vec<Release>` | Periodically. Limits, burn rates, 5h guard, state, ask timeouts, alerts, releases. |
-| `pause_all`, `resume_all`, `run_now(entry)`, `cancel(entry)` | User controls (FR-811, FR-809). |
+| `pause_all`, `resume_all`, `pause_agent(agent)`, `resume_agent(agent)` | Pause all, or one agent: its autonomous turn stops at the next tool call, its queued work waits (FR-805, FR-811). |
+| `run_now(entry)`, `cancel(entry, now)` | Run a queued entry past every cap (the memory cap included), or drop it; both logged (FR-809). |
+| `set_process_slots(live, cap, now) -> Vec<Release>` | The host's live `claude` processes and the memory-pressure cap on them (FR-203). Spawns (`TurnRequest.needs_spawn`) wait for a slot. |
 | `start_sprint(extra_pp, now)` | Sprint mode until the end of today's working time (FR-811). |
 | `answer_ask(id, accept)`, `undo(id)` | "Ask" actions (FR-810) and undo from the log (FR-809). |
 | `new_week(plan, now)` | After the weekly reset. Calibration and the queue carry over; budgets don't. A plan whose week contains the current week's start (a realignment, FR-802) keeps the week's usage. |
 | `cost_class(&sample)`, `replay(&sample, class, allocation)` | Store the class with each sample; after a restart, replay the week's samples so the accounting (interactive vs autonomous, per allocation) and the calibration come back. |
-| `snapshot`, `queue`, `actions`, `next_action_preview`, `stats` | Read-only views for the UI and the weekly report. |
+| `hold_spawn(agent, allocation, tier, live, cap, now)` | The memory cap checked again at spawn time: an admitted spawn with no slot goes back to the queue. |
+| `carry() -> Carry`, `restore(carry, keep, now)` | What a restart or a replan would otherwise lose: pauses, deferrals, the pending ask, sprints, limits, the running turns and the queue (ADR-007 "State across restarts"). |
+| `snapshot`, `queue`, `actions`, `next_action_preview`, `paused_agents`, `stats` | Read-only views for the UI and the weekly report. |
 
 `Decision.effective` is what the host must do; `Decision.proposed` is what the policy wanted. They
 only differ in **shadow mode** (FR-812), where everything is admitted and the would-be decisions are
@@ -149,12 +153,17 @@ All are `serde` types.
 
 **Admission order.**
 1. Interactive work is always admitted.
-2. Pause-all and an active plan limit queue the work.
-3. Critical work is admitted.
-4. Then, in order: `F` above 85 % (5h guard), a deferred allocation, a hard cap, and in Red
+2. Pause all, a paused agent and an active plan limit queue the work.
+3. A spawn (a suspended agent's turn) waits for a process slot under memory pressure.
+4. Critical work is admitted.
+5. Then, in order: `F` above 85 % (5h guard), a deferred allocation, a hard cap, and in Red
    anything below `red_min_tier` (Normal) are queued.
-5. A live cap reached, or eligible work already waiting ahead, queues the turn.
-6. Otherwise the turn is admitted.
+6. A live cap reached, or eligible work already waiting ahead, queues the turn.
+7. Otherwise the turn is admitted.
+
+At each tool call of a running autonomous turn, Pause all, a paused agent, a hit limit and `F`
+above 85 % hold it, and so do a deferral of its allocation and a hard cap it crossed during the
+turn. Red's tier rule and the live cap apply at turn start only.
 
 **Queue.**
 - Strict by effective tier: Critical first, then High, then Normal, then Low.
@@ -162,10 +171,34 @@ All are `serde` types.
 - Within a tier, weighted fair queuing on `usage / weight` (live turns included). An allocation
   that becomes backlogged starts at the others' level (start-time fair queuing): unused weight is
   redistributed and idle time is not banked.
-- Each entry carries its reason, an estimated start, and the cost of "Run now" in pp.
+- Each entry carries its reason, an estimated start, and the cost of "Run now": in pp of the week,
+  and in % of the 5h window once a 5h reading was seen. `binding` names the window that holds it
+  (the 5h window under the 5h guard or a 5h limit), so the UI shows that cost first. The 5h cost
+  per pp is fitted from two readings of the same 5h window (cost between them / ΔF; outside usage
+  makes it err high), else `k / five_hour_per_weekly_pct` (default 5).
+- The next-action preview names the entry the next release would pick: eligible and not live.
 
 **Asks** carry a default and a 20-min timeout. The default is `Apply`; `Skip` is configurable.
-Deferral and sprint asks can be undone, and so can Pause all.
+Deferrals, sprints, Pause all and an agent's pause can be undone. Undoing a pause logs the resume;
+Resume all (or an agent's resume) marks the pauses it ends as undone.
+
+**Memory slots (FR-203).** The host reports its live processes and the cap that memory pressure
+leaves (`set_process_slots`). A turn that must spawn a process waits as `MemoryPressure { cap }`
+with no estimated start, and is released when a slot frees. This is a memory limit, not pacing:
+it is **enforced in shadow mode too**, where the queue holds only these waits. Run now overrides it
+(FR-203: the user may exceed the cap).
+
+**Carry across restarts.** `carry()` holds the pauses (always restored), the limits until their
+reset, and, for the same plan week only, deferrals, the pending ask (with its deadline) and sprints
+(re-applied to the curve with their boost). The queue comes back with its ids and `enqueued_at`
+(aging goes on); `keep` lets the host drop entries whose agents are gone. `live` holds the running
+turns: a replan restores them first, so the caps still count them; after a restart the host
+empties it (the processes are gone). Restored overrides are logged again as actions ("restored
+after a restart"), so they can be undone.
+
+**Spawn-time check.** `hold_spawn(agent, allocation, tier, live, cap, now)`: the host found no
+process slot when it was about to spawn an admitted turn. The turn leaves the live set (no turn
+statistics) and waits as a memory wait, also in shadow mode.
 
 **J9.**
 - A 429 marks the window limited until `resets_at`. The agent's work is queued as `Continue`.
@@ -227,7 +260,8 @@ interactive and outside bursts, and the plan and policy.
 - 60 %: zero queued turns and zero denied tool calls;
 - no oscillation: every state lasts at least the dwell;
 - no starvation: with deferral declined, every queued turn starts within 5 working hours;
-- the J9 flow, shadow mode, sprint, determinism, and a JSON round trip of a recorded week.
+- the J9 flow, shadow mode, sprint, determinism, and a JSON round trip of a recorded week;
+- a hard cap (FR-811) holding its allocation within 1.5 pp of the cap in 130 % weeks.
 
 The simulator's assumptions drive these numbers. Each agent burns 0.8 % of the week per hour
 (±25 %). One weekly percent costs 5 % of the 5h window (`five_hour_per_weekly_pct`). The reserve is
@@ -308,16 +342,26 @@ reading that passes NFR-9. Each one is listed here as a proposed edit. SPEC and 
     week whose concurrency fits the base cap (3 agents) and whose work is offered in working time.
     *Edit*: state that the base cap is a memory cap too (NFR-1b), so a 60 % week with more parallel
     work queues by design. Also state the assumed 5h-per-weekly ratio.
-16. **Undo (FR-809, "every governor action … can be undone").** Undo applies to deferral, sprint
-    and Pause all. State changes, caps and holds are re-decided by the loop, and undoing them has no
+16. **Undo (FR-809, "every governor action … can be undone").** Undo applies to deferral, sprint,
+    Pause all and an agent's pause. State changes, caps and holds are re-decided by the loop, and undoing them has no
     meaning. *Edit*: "every user-affecting action".
 17. **A self-started turn that is not admitted** keeps running until its first tool call, which is
     denied; its place in the queue is a `Continue` entry. This matches FR-410 and states how.
+18. **The memory cap counts processes and is enforced in shadow mode (FR-203, FR-812).** The
+    Governor's live caps count admitted autonomous turns; memory pressure caps live `claude`
+    processes, so it holds only spawns (resuming a suspended agent). A memory limit is not pacing,
+    so shadow mode does not lift it. *Edit*: say so in FR-203 and FR-812.
+19. **Deferral and hard caps hold running turns (FR-811).** A turn that crosses its allocation's
+    hard cap, or whose allocation is deferred, stops at its next tool call, like Pause all.
+    *Edit*: "a running turn stops at its next tool boundary" in FR-811.
 
 ## Not done yet
 
 - FR-815 per-model weekly windows (S priority): `Window` has room for them.
 - Resume-cost awareness (`prompt_cache.expires_at`, R6): the queue does not prefer warm sessions yet.
 - 5h peak smoothing and per-model estimator weights (deferred by ADR-007).
-- Persistence: the state is a plain struct. Serialising it for crash recovery (NFR-2) belongs to the
-  core.
+- Pausing a team at its turn boundary (FR-805): teams come in P2; per-agent pause and Pause all
+  cover P1b.
+- "Start now" vs "Run now" is the host's call (the Governor does not know whether an agent ever
+  ran).
+- The calibration is still not carried across weeks by a restart (ADR-007).

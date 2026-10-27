@@ -32,6 +32,10 @@ usage: orchd [--home DIR] <command> [args]
   resume <agent> [--message TEXT]
   kill <agent>                  process group + processes whose cwd is in the worktree
   pause-all | resume-all        Governor Pause all (FR-811): autonomous work holds at its next tool call
+  pause <agent> | unpause <agent>         pause one agent's autonomous work (until unpause)
+  run-now <entry> | cancel <entry>        a queued entry (ids in `governor`): run it past the caps, or drop it
+  undo <action> | sprint [pp] | answer-ask <action> apply|skip
+  enforce on|off                shadow mode off (enforce) or back on (FR-812)
   state | usage | governor      print JSON
   stop                          shut the core down (suspends agents)
 
@@ -95,6 +99,21 @@ impl Args {
             bail!("missing {what}\n\n{USAGE}");
         }
         Ok(self.0.remove(0))
+    }
+
+    /// The next argument as a number.
+    fn num<T: std::str::FromStr>(&mut self, what: &str) -> Result<T> {
+        let v = self.next(what)?;
+        v.parse().map_err(|_| anyhow!("{what}: {v:?} is not a number"))
+    }
+
+    /// The next argument, which must be `yes` (true) or `no` (false).
+    fn choice(&mut self, yes: &str, no: &str) -> Result<bool> {
+        match self.next(&format!("{yes}|{no}"))? {
+            v if v == yes => Ok(true),
+            v if v == no => Ok(false),
+            other => bail!("{yes} or {no}, not {other:?}"),
+        }
     }
 
     fn done(&self) -> Result<()> {
@@ -214,6 +233,39 @@ fn run() -> Result<()> {
         "pause-all" | "resume-all" => {
             a.done()?;
             print(request(&sock, if cmd == "pause-all" { CtlRequest::PauseAll } else { CtlRequest::ResumeAll })?)
+        }
+        "pause" | "unpause" => {
+            let agent_id = a.next("agent")?;
+            a.done()?;
+            let req =
+                if cmd == "pause" { CtlRequest::PauseAgent { agent_id } } else { CtlRequest::ResumeAgent { agent_id } };
+            print(request(&sock, req)?)
+        }
+        "run-now" | "cancel" | "undo" => {
+            let id = a.num("id")?;
+            a.done()?;
+            let req = match cmd.as_str() {
+                "run-now" => CtlRequest::RunNow { entry: id },
+                "cancel" => CtlRequest::Cancel { entry: id },
+                _ => CtlRequest::Undo { action: id },
+            };
+            print(request(&sock, req)?)
+        }
+        "sprint" => {
+            let pp = if a.0.is_empty() { None } else { Some(a.num("pp")?) };
+            a.done()?;
+            print(request(&sock, CtlRequest::Sprint { pp })?)
+        }
+        "answer-ask" => {
+            let action = a.num("action")?;
+            let accept = a.choice("apply", "skip")?;
+            a.done()?;
+            print(request(&sock, CtlRequest::AnswerAsk { action, accept })?)
+        }
+        "enforce" => {
+            let on = a.choice("on", "off")?;
+            a.done()?;
+            print(request(&sock, CtlRequest::Enforce { on })?)
         }
         "stop" => {
             a.done()?;

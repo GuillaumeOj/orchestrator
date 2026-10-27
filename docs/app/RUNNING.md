@@ -64,7 +64,12 @@ day n of 7", its log lists what it would have done (including earlier runs of th
 title bar shows the pressure state with "· shadow". The "actual" line and the forecast cover the
 whole plan week across restarts (the store keeps a point every 5 minutes while the app runs).
 After the week, "Shadow week done · Enforce…" switches it on; "Shadow mode…" switches it back.
-P1's exit check: the forecast within ±10 pp of the observed weekly % at the reset.
+P1's exit check: the forecast within ±10 pp of the observed weekly % at the reset. P1b's: that
+shadow week, then one enforced week meeting G6.
+
+Even in shadow mode, memory pressure holds the resume of a suspended agent until a process slot
+frees (Queued · memory pressure, with Run now): that is a memory limit, not pacing. The reserve
+warning (your own work used up the reserve) also reaches the Inbox in shadow mode.
 
 ## Where data lives
 
@@ -119,14 +124,14 @@ Quit the app first.
   `git worktree remove` after.
 - WebKit caches: `~/Library/Caches/dev.orchestrator.app`, `~/Library/WebKit/dev.orchestrator.app`.
 
-## Known limits (P1)
+## Known limits (P1, P1b)
 
-- Solo sessions only (teams, gates and the PR gate UI come in P2); no diff pane yet (FR-107 is in
-  the core); pause per agent is Pause all.
-- The Governor's queue is not restored after a restart: turns waiting in it are asked again.
-  Changing the plan or switching enforce is refused while turns are queued.
-- Plan editing covers days, hours, reserve, weights and tiers; holidays, off-hours allowance and
-  hard caps are not in the form yet.
+- Solo sessions only (teams, gates and the PR gate UI come in P2), so "pause a team" is per-agent
+  pause (`⌘; p`) or Pause all.
+- After a restart the Governor's queue (all of it), pauses, deferrals, the pending ask, a sprint
+  and the enforce choice come back; `orchd enforce on|off` is remembered the same way.
+- Plan editing covers days, hours, reserve, off-hours allowance, weights, tiers and hard caps;
+  holidays are not in the form yet.
 - The bundle is unsigned; the helpers must stay executable in `bin/` (checked at every spawn).
 - ⌘-chords against the menu, dead keys and IME were not checked with physical keys (R9).
 - The "actual" line has one point every 5 minutes for earlier runs, every minute for this one.
