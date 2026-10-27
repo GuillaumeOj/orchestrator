@@ -84,7 +84,7 @@ pub fn tools() -> Value {
         ),
         tool(
             "send_message",
-            "Send a message to another node of your team (by node id, e.g. `lead`, `back`), or to one agent (e.g. `back-1`). Only the recipients the team rules allow. Returns at once; replies arrive as ORCH: notes.",
+            "Send a message to another node of your team (by node id, e.g. `lead`, `back`), or to one agent by its full id (e.g. `<feature>-back-1`). Only the recipients the team rules allow. Returns at once; replies arrive as ORCH: notes.",
             json!({"to": s("Node id or agent id."), "body": s("The message.")}),
             &["to", "body"],
         ),

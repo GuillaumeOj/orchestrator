@@ -19,6 +19,12 @@ describe('markdown', () => {
     expect(b[6].text).toBe('let x = 1;');
   });
 
+  it('leaves underscores inside words alone', () => {
+    const spans = inline('call request_spec_approval then report_done, _really_');
+    expect(spans.filter((s) => s.t === 'i')).toEqual([{ t: 'i', s: 'really' }]);
+    expect(spans.map((s) => s.s).join('')).toBe('call request_spec_approval then report_done, really');
+  });
+
   it('keeps link text and drops the target', () => {
     expect(inline('see [the contract](https://x.example/a)')).toEqual([
       { t: 'text', s: 'see ' },

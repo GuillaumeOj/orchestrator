@@ -76,9 +76,10 @@ impl RunState {
         matches!(self, RunState::Done | RunState::Failed)
     }
 
-    /// The lead may create tasks (FR-401: only after the spec gate).
+    /// The lead may create tasks (FR-401: only after the spec gate). For a
+    /// paused or deferred run, ask the state it resumes into.
     pub fn tasks_allowed(self) -> bool {
-        matches!(self, RunState::Planning | RunState::Executing | RunState::Integrating | RunState::Paused)
+        matches!(self, RunState::Planning | RunState::Executing | RunState::Integrating)
     }
 
     /// Allowed moves. Pause, defer and fail are possible from any unfinished

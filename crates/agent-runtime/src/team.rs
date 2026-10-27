@@ -129,6 +129,21 @@ pub fn agent_id_for(slug: &str, node: &str, n: u32) -> String {
     format!("{slug}-{node}-{n}")
 }
 
+/// The state a run is in or, paused or deferred, the one it resumes into.
+pub fn effective(run: &TeamRun) -> RunState {
+    match run.status {
+        RunState::Paused | RunState::Deferred => run.resume_status.unwrap_or(run.status),
+        s => s,
+    }
+}
+
+/// The roles a team uses, by id (what its snapshot holds).
+fn used_roles(team: &Team, roles: &[RoleDef]) -> Vec<RoleDef> {
+    let mut v: Vec<RoleDef> = roles.iter().filter(|r| team.nodes.iter().any(|n| n.role_id == r.id)).cloned().collect();
+    v.sort_by(|a, b| a.id.cmp(&b.id));
+    v
+}
+
 impl Runtime {
     // ------------------------------------------------------------ loading
 
@@ -204,6 +219,29 @@ impl Runtime {
         Ok(run)
     }
 
+    /// A move the run makes by itself (a gate decided, a PR asked or
+    /// opened). On a paused or deferred run it becomes the state the run
+    /// resumes into, so the pause holds (its agents stay paused).
+    pub(crate) fn advance_run(&self, run_id: &str, to: RunState, why: &str) -> Result<TeamRun> {
+        let mut run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
+        if !matches!(run.status, RunState::Paused | RunState::Deferred)
+            || matches!(to, RunState::Paused | RunState::Deferred | RunState::Failed)
+        {
+            return self.set_run_state(run_id, to, why);
+        }
+        let from = effective(&run);
+        if from == to {
+            return Ok(run);
+        }
+        if !from.can_go(to) {
+            bail!("a {from} run can't go to {to}");
+        }
+        run.resume_status = Some(to);
+        self.db.upsert_run(&run)?;
+        self.run_event(run_id, None, "run.state", json!({"from": from, "to": to, "why": why, "while": run.status}));
+        Ok(run)
+    }
+
     // ------------------------------------------------------------ launch
 
     /// J3 steps 2–3. Returns the run; the lead waits for the Governor.
@@ -252,7 +290,19 @@ impl Runtime {
                 }
             }
         };
-        // The snapshot this run uses (FR-308).
+        // The snapshot this run uses (FR-308). A snapshot of this version
+        // taken earlier with other roles (a role edited since, or created
+        // after a draft was saved) gets a new version instead of being kept.
+        let mut team = team;
+        let used = used_roles(&team, &roles);
+        while let Some((t, r)) = self.db.team_version(&team.id, team.version)? {
+            let mut r = r;
+            r.sort_by(|a, b| a.id.cmp(&b.id));
+            if t == team && r == used {
+                break;
+            }
+            team.version += 1;
+        }
         self.db.save_team(&team, &roles, now)?;
         let row = self.create_worktree(
             &project.path,
@@ -284,7 +334,26 @@ impl Runtime {
             json!({"team": team.id, "version": team.version, "feature": feature.slug}),
         );
         let cx = RunCtx { run: run.clone(), feature: feature.clone(), team, roles, project };
-        let rec = self.add_team_agent(&cx, &lead.id, 1, &row)?;
+        // A launch that fails from here ends its run: a draft left behind
+        // would count as the feature's running team forever.
+        match self.start_lead(&cx, &lead.id, &row) {
+            Ok(()) => self.set_run_state(&run.id, RunState::Spec, "launched"),
+            Err(e) => {
+                let _ = self.set_run_state(&run.id, RunState::Failed, &format!("launch failed: {e:#}"));
+                Err(e)
+            }
+        }
+    }
+
+    /// The lead of a new run, on the integration worktree, with the brief as
+    /// its first turn. A feature launched again keeps its earlier agents: the
+    /// new lead takes the next free number.
+    fn start_lead(&self, cx: &RunCtx, lead: &str, row: &orch_store::WorktreeRow) -> Result<()> {
+        let feature = &cx.feature;
+        let n = (1..=99)
+            .find(|k| !self.store.read(|s| s.agents.contains_key(&agent_id_for(&feature.slug, lead, *k))))
+            .ok_or_else(|| anyhow!("no free agent number for {lead}"))?;
+        let rec = self.add_team_agent(cx, lead, n, row)?;
         let brief = format!(
             "ORCH: you lead the team on feature {} ({}). Brief from the user:\n\n{}\n\nFollow your protocol: write the docs in {}, commit them, then call mcp__orch__request_spec_approval.",
             feature.title,
@@ -297,7 +366,7 @@ impl Runtime {
             cx.fctx().docs_dir()
         );
         self.deliver_kind(&rec.id, &brief, TurnKind::Task)?;
-        self.set_run_state(&run.id, RunState::Spec, "launched")
+        Ok(())
     }
 
     /// Creates an agent for `node` in `worktree` (not started: its first
@@ -800,7 +869,13 @@ impl Runtime {
             bail!("the team is not valid: {}", issues.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("; "));
         }
         let mut team = team.clone();
-        team.version = team.version.max(old.team.version + 1);
+        // Past every version snapshotted so far: an existing one is kept as
+        // it was, so reusing its number would drop the new node.
+        let latest = self.db.team(&team.id)?.map_or(0, |t| t.version);
+        team.version = team.version.max(old.team.version).max(latest) + 1;
+        while self.db.team_version(&team.id, team.version)?.is_some() {
+            team.version += 1;
+        }
         self.db.save_team(&team, &roles, now_ms())?;
         run.team_version = team.version;
         self.db.upsert_run(&run)?;
@@ -952,7 +1027,7 @@ impl Runtime {
                 if !is_lead {
                     bail!("only the lead creates tasks");
                 }
-                if !cx.run.status.tasks_allowed() {
+                if !effective(&cx.run).tasks_allowed() {
                     bail!(
                         "tasks can be created once the user approves the spec (call mcp__orch__request_spec_approval first)"
                     );
@@ -1026,7 +1101,12 @@ impl Runtime {
                         bail!("the lead marks tasks done when it merges them: call mcp__orch__report_done");
                     }
                     t.status = s;
-                    if matches!(s, TaskStatus::Review | TaskStatus::Done | TaskStatus::Backlog)
+                    if matches!(s, TaskStatus::Ready | TaskStatus::Backlog) {
+                        // Back in the queue: dispatch only picks tasks with no agent.
+                        if let Some(a) = t.agent_id.take() {
+                            self.free_seat(&a, id);
+                        }
+                    } else if matches!(s, TaskStatus::Review | TaskStatus::Done)
                         && let Some(a) = &t.agent_id
                     {
                         self.free_seat(a, id);
@@ -1051,7 +1131,7 @@ impl Runtime {
                     .or(seat.task)
                     .ok_or_else(|| anyhow!("you have no current task"))?;
                 let mut t = self.db.task(id)?.ok_or_else(|| anyhow!("no task {id}"))?;
-                if t.node.as_deref() != Some(me) {
+                if t.node.as_deref() != Some(me) || t.team_run_id.as_deref() != Some(&cx.run.id) {
                     bail!("task {id} is not yours");
                 }
                 let st = orch_git::git(&rec.worktree, &["status", "--porcelain"])?;
@@ -1136,6 +1216,11 @@ impl Runtime {
                 self.run_event(&cx.run.id, Some(&rec.id), "git.merge", json!({"branch": branch, "result": detail}));
                 let r = r?;
                 let task = args.get("task").and_then(Value::as_u64).map(|id| self.db.task(id)).transpose()?.flatten();
+                if let Some(t) = &task
+                    && t.team_run_id.as_deref() != Some(&cx.run.id)
+                {
+                    bail!("task {} is not part of this feature", t.id);
+                }
                 match (&r, task) {
                     (MergeOutcome::Conflict { files, .. }, task) => {
                         // Back to the owner (FR-405).
@@ -1159,6 +1244,19 @@ impl Runtime {
                         }
                         if let Some(mut t) = task {
                             t.status = TaskStatus::InProgress;
+                            // The owner works on it again: no new task meanwhile.
+                            if let (Some(o), Some(a)) = (&owner, &t.agent_id)
+                                && o.id == *a
+                            {
+                                let tid = t.id;
+                                self.store.write(|s| {
+                                    if let Some(seat) = s.agents.get_mut(a).and_then(|x| x.team.as_mut())
+                                        && seat.task.is_none()
+                                    {
+                                        seat.task = Some(tid);
+                                    }
+                                })?;
+                            }
                             self.tasks_of(&cx).update(t, now_ms())?;
                         }
                         Ok((
@@ -1187,8 +1285,8 @@ impl Runtime {
                 if !is_lead {
                     bail!("only the lead asks for the spec gate");
                 }
-                if !matches!(cx.run.status, RunState::Spec | RunState::Draft) {
-                    bail!("the spec gate is for a run in spec (this one is {})", cx.run.status.label());
+                if !matches!(effective(&cx.run), RunState::Spec | RunState::Draft) {
+                    bail!("the spec gate is for a run in spec (this one is {})", effective(&cx.run).label());
                 }
                 let summary = str_arg(args, "summary").ok_or_else(|| anyhow!("`summary` is required"))?;
                 let st = orch_git::git(&rec.worktree, &["status", "--porcelain"])?;
@@ -1208,7 +1306,7 @@ impl Runtime {
                            "branch": cx.feature.integration_branch()}),
                     crate::inbox::PRIORITY_GATE,
                 )?;
-                self.set_run_state(&cx.run.id, RunState::SpecGate, "spec gate asked")?;
+                self.advance_run(&cx.run.id, RunState::SpecGate, "spec gate asked")?;
                 let _ = self.db.audit(
                     &format!("agent:{}", rec.id),
                     Some(&rec.id),
@@ -1232,11 +1330,11 @@ impl Runtime {
     pub(crate) fn spec_decided(&self, payload: &Value, agent: Option<&str>, approved: bool, message: Option<&str>) {
         let Some(run_id) = payload.get("run").and_then(Value::as_str) else { return };
         let r = if approved {
-            self.set_run_state(run_id, RunState::Planning, "spec approved").map(|_| {
+            self.advance_run(run_id, RunState::Planning, "spec approved").map(|_| {
                 "ORCH: approved: proceed. The user approved the spec. Create the tasks with mcp__orch__create_task (each to one node, with depends_on); they start by themselves.".to_string()
             })
         } else {
-            self.set_run_state(run_id, RunState::Spec, "spec sent back").map(|_| {
+            self.advance_run(run_id, RunState::Spec, "spec sent back").map(|_| {
                 format!(
                     "ORCH: the user did not approve the spec.{} Revise the docs, commit, and call mcp__orch__request_spec_approval again.",
                     message.map(|m| format!(" They said: {m}")).unwrap_or_default()
@@ -1260,25 +1358,37 @@ impl Runtime {
             Some(u) => {
                 run.pr_url = Some(u.to_string());
                 let _ = self.db.upsert_run(&run);
-                let _ = self.set_run_state(&run.id, RunState::Done, "pull request opened");
+                let _ = self.advance_run(&run.id, RunState::Done, "pull request opened");
             }
             None => {
-                let _ = self.set_run_state(&run.id, RunState::Integrating, "pull request failed");
+                let _ = self.advance_run(&run.id, RunState::Integrating, "pull request failed");
             }
         }
+    }
+
+    /// A team agent's `request_pr` is refused before the run can reach its PR
+    /// gate (a PR opened from the spec step would leave the run behind).
+    pub(crate) fn pr_allowed(&self, rec: &AgentRecord) -> Result<()> {
+        let Some(seat) = &rec.team else { return Ok(()) };
+        let run = self.db.run(&seat.run_id)?.ok_or_else(|| anyhow!("no team run {}", seat.run_id))?;
+        let eff = effective(&run);
+        if eff != RunState::PrGate && !eff.can_go(RunState::PrGate) {
+            bail!("the pull request comes once the tasks are merged (this run is {})", eff.label());
+        }
+        Ok(())
     }
 
     /// A team lead asked for the PR: the run is at its PR gate.
     pub(crate) fn pr_requested(&self, agent: &str) {
         if let Some(seat) = self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.clone())) {
-            let _ = self.set_run_state(&seat.run_id, RunState::PrGate, "pull request asked");
+            let _ = self.advance_run(&seat.run_id, RunState::PrGate, "pull request asked");
         }
     }
 
     /// A team lead's PR gate was declined.
     pub(crate) fn pr_declined(&self, agent: &str) {
         if let Some(seat) = self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.clone())) {
-            let _ = self.set_run_state(&seat.run_id, RunState::Integrating, "pull request declined");
+            let _ = self.advance_run(&seat.run_id, RunState::Integrating, "pull request declined");
         }
     }
 

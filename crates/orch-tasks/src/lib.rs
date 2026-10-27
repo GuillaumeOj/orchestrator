@@ -159,10 +159,20 @@ impl<'a> TaskService<'a> {
         t.updated_at_ms = now_ms;
         self.store.upsert_task(&t)?;
         let mut remote_error = None;
-        if let (Backend::Github(gh), Some(n)) = (&self.backend, &t.external_id)
-            && let Err(e) = gh.comment(n, &format!("**{by}**: {text}"))
-        {
-            remote_error = Some(format!("{e:#}"));
+        if let (Backend::Github(gh), Some(n)) = (&self.backend, t.external_id.clone()) {
+            match gh.comment(&n, &format!("**{by}**: {text}")) {
+                Err(e) => remote_error = Some(format!("{e:#}")),
+                // A comment moves the issue's updatedAt: record it, or the next
+                // sync takes our own comment for a remote change (and a later
+                // pending change for a conflict).
+                Ok(()) if Self::pending(&t).is_none() => {
+                    if let Ok(issue) = gh.get(&n) {
+                        t.remote_updated_at = Some(issue.updated_at);
+                        self.store.upsert_task(&t)?;
+                    }
+                }
+                Ok(()) => {}
+            }
         }
         Ok(Outcome { value: t, remote_error })
     }
@@ -188,6 +198,9 @@ impl<'a> TaskService<'a> {
                 Err(e) => rep.errors.push(format!("{}: {e:#}", t.handle())),
             }
         }
+        // Adopted issues whose `Blocked by:` may name an issue imported later
+        // in this pass: resolved again once every issue is in the store.
+        let mut adopted: Vec<(u64, &Issue)> = Vec::new();
         for issue in &issues {
             match self.store.task_by_external(&self.project.id, "github", &issue.number)? {
                 None => {
@@ -196,6 +209,7 @@ impl<'a> TaskService<'a> {
                     self.adopt(&mut t, issue);
                     t.id = self.store.upsert_task(&t)?;
                     rep.imported.push(t.id);
+                    adopted.push((t.id, issue));
                 }
                 Some(mut t) => match Self::pending(&t) {
                     Some(seen) if seen == issue.updated_at || seen.is_empty() && issue.updated_at.is_empty() => {
@@ -213,15 +227,28 @@ impl<'a> TaskService<'a> {
                         t.updated_at_ms = now_ms;
                         self.store.upsert_task(&t)?;
                         rep.conflicts.push(t.id);
+                        adopted.push((t.id, issue));
                     }
                     None if t.remote_updated_at.as_deref() != Some(issue.updated_at.as_str()) => {
                         self.adopt(&mut t, issue);
                         t.updated_at_ms = now_ms;
                         self.store.upsert_task(&t)?;
                         rep.updated.push(t.id);
+                        adopted.push((t.id, issue));
                     }
                     None => {}
                 },
+            }
+        }
+        for (id, issue) in adopted {
+            if issue.blocked_by.is_empty() {
+                continue;
+            }
+            let Some(mut t) = self.store.task(id)? else { continue };
+            let deps = self.deps_of(issue);
+            if deps != t.depends_on {
+                t.depends_on = deps;
+                self.store.upsert_task(&t)?;
             }
         }
         Ok(rep)
@@ -232,13 +259,18 @@ impl<'a> TaskService<'a> {
         t.body = issue.body.clone();
         t.status = issue.status;
         t.node = issue.node.clone().or(t.node.take());
-        t.depends_on = issue
+        t.depends_on = self.deps_of(issue);
+        t.remote_updated_at = Some(issue.updated_at.clone());
+    }
+
+    /// An issue's `Blocked by:` as local task ids (the ones in the store).
+    fn deps_of(&self, issue: &Issue) -> Vec<u64> {
+        issue
             .blocked_by
             .iter()
             .filter_map(|n| self.store.task_by_external(&self.project.id, "github", n).ok().flatten())
             .map(|d| d.id)
-            .collect();
-        t.remote_updated_at = Some(issue.updated_at.clone());
+            .collect()
     }
 }
 

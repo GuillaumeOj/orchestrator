@@ -21,7 +21,7 @@
   let error = $state(null);
   let doc = $state({ name: null, text: '' });
   let tl = $state('all');
-  let to = $state('lead');
+  let to = $state(null); // a node id; null = the lead (whatever its id)
   let msg = $state('');
   let root;
   let msgBox = $state(null);
@@ -41,6 +41,8 @@
     try {
       v = await invoke('feature_view', { feature: spec.featureId });
       error = null;
+      // Default the message box to the lead's node, whatever its id.
+      if (!to || !v.team?.nodes?.some((n) => n.id === to)) to = v.team?.nodes?.find((n) => n.is_lead)?.id ?? null;
       const names = v.docs ?? [];
       if (names.length && (!doc.name || !names.includes(doc.name))) await showDoc(names[0]);
     } catch (e) {
@@ -78,7 +80,7 @@
 
   async function send() {
     const body = msg.trim();
-    if (!body || !run) return;
+    if (!body || !run || !to) return;
     try {
       await invoke('message_send', { run: run.id, to, body });
       msg = '';

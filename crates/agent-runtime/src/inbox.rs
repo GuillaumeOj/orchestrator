@@ -390,6 +390,16 @@ impl Runtime {
                     let _ = self.deliver(a, &format!("ORCH: the user declined your pull request request.{why}"));
                 }
             }
+            // The agent was told the answer comes as a turn: say there is none.
+            ("question", "ask_user", InboxDecision::Dismiss) => {
+                if let Some(a) = &item.agent_id {
+                    let _ = self.deliver_kind(
+                        a,
+                        "ORCH: the user dismissed your question without answering. Decide yourself, or ask your team.",
+                        governor::TurnKind::Continue,
+                    );
+                }
+            }
             (k, _, InboxDecision::Reply) if k != "permission" => {
                 if let (Some(a), Some(m)) = (&item.agent_id, message) {
                     result["turn"] = json!(self.deliver(a, m)?);

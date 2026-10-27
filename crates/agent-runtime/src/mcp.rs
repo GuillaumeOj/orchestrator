@@ -71,7 +71,7 @@ impl Runtime {
                 );
                 (text, json!(c))
             }),
-            "request_pr" => self.request_pr(&rec, &m.arguments).map(|t| {
+            "request_pr" => self.pr_allowed(&rec).and_then(|()| self.request_pr(&rec, &m.arguments)).map(|t| {
                 if rec.team.is_some() {
                     self.pr_requested(&rec.id);
                 }

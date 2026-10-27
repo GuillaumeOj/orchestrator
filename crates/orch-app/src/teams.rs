@@ -36,19 +36,31 @@ pub struct ProjectSettingsForm {
 /// Every feature with its latest run, for the sidebar (Projects → Features
 /// → agents), the palette and ⌘P.
 pub fn features(rt: &agent_runtime::runtime::Runtime) -> Vec<Value> {
+    // Polled with the app state: a few queries in all, not two per feature.
+    let mut latest: std::collections::BTreeMap<String, orch_store::TeamRun> = std::collections::BTreeMap::new();
+    for r in rt.db.runs(None, false).unwrap_or_default() {
+        latest.entry(r.feature_id.clone()).or_insert(r); // newest first
+    }
+    let mut counts: std::collections::BTreeMap<String, (usize, usize)> = std::collections::BTreeMap::new();
+    for t in rt.db.tasks(None, None, None).unwrap_or_default() {
+        if let Some(r) = t.team_run_id {
+            let c = counts.entry(r).or_default();
+            c.1 += 1;
+            c.0 += usize::from(t.status == orch_team::TaskStatus::Done);
+        }
+    }
     rt.db
         .features(None)
         .unwrap_or_default()
         .into_iter()
         .map(|f| {
-            let run = rt.db.runs(Some(&f.id), false).ok().and_then(|r| r.into_iter().next());
-            let tasks = run.as_ref().map(|r| rt.db.tasks(None, None, Some(&r.id)).unwrap_or_default()).unwrap_or_default();
-            let done = tasks.iter().filter(|t| t.status == orch_team::TaskStatus::Done).count();
+            let run = latest.remove(&f.id);
+            let (done, total) = run.as_ref().and_then(|r| counts.get(&r.id).copied()).unwrap_or_default();
             json!({
                 "id": f.id, "project_id": f.project_id, "slug": f.slug, "title": f.title,
                 "branch": f.integration_branch(),
                 "run": run.as_ref().map(|r| json!({"id": r.id, "status": r.status, "label": r.status.label(), "team_id": r.team_id, "pr_url": r.pr_url})),
-                "tasks": {"done": done, "total": tasks.len()},
+                "tasks": {"done": done, "total": total},
             })
         })
         .collect()

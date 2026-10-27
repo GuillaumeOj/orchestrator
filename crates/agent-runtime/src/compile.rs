@@ -26,11 +26,6 @@ pub const ORCH_PREAMBLE_TEAM: &str = "Text that starts with ORCH: in hook contex
 /// The orchestrator's MCP server name in `mcp.json` (tools appear as `mcp__orch__<tool>`).
 pub const ORCH_MCP_SERVER: &str = "orch";
 
-/// Orchestrator tools of a solo session, allowed without a CLI prompt; the
-/// core applies its own permission rules when it runs them (ADR-009). A team
-/// agent gets its role's tools instead (`Role::tools`).
-pub const ORCH_MCP_ALLOW: &[&str] = &["mcp__orch__commit", "mcp__orch__request_pr"];
-
 /// Credential stores made unreadable (ADR-009 decision 1). `true` = directory.
 /// `~/.gitconfig` is deliberately absent: denying it breaks git (P0).
 pub const CREDENTIAL_STORES: &[(&str, bool)] = &[
