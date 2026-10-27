@@ -12,6 +12,8 @@ macOS only. Needs Rust (rustup), bun, Xcode command line tools, git ≥ 2.48, th
 make install   # build Orchestrator.app (release) and copy it to ~/Applications
 make test      # cargo test + bun run test in ui/
 make clippy
+make fmt       # cargo fmt + biome (format, imports, safe fixes) in ui/
+make lint      # what CI checks: fmt, clippy, biome, svelte-check
 ```
 
 ## Layout
