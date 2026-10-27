@@ -1623,12 +1623,43 @@ mod tests {
         ok(rt, agent, "commit", json!({"message": format!("add {file}")}));
     }
 
+    #[test]
+    fn a_reviewer_node_reviews_before_the_lead_merges() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        let (roles, team) = orch_team::presets::full_stack_reviewed();
+        for r in &roles {
+            rt.db.upsert_role(r, 1).unwrap();
+        }
+        rt.db.save_team(&team, &roles, 1).unwrap();
+        approved_with(&rt, &pid, "full-stack-reviewed");
+        let (lead, back, rev) = ("fx-lead-1", "fx-back-1", "fx-review-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        write_commit(&rt, back, "api.rs", "fn api() {}");
+        let t = rt.store.read(|s| s.agents[back].team.as_ref().unwrap().task.unwrap());
+        assert!(ok(&rt, back, "report_done", json!({"summary": "api added"})).contains("review reviews"));
+        assert!(call(&rt, lead, "merge", json!({"branch": "orch/fx/back-1", "task": t})).1.contains("being reviewed"));
+        rt.team_tick();
+        assert!(queued(&rt, rev)[0].contains("submit_review"), "the reviewer starts with its review task");
+        ok(&rt, rev, "submit_review", json!({"task": t, "findings": ["api.rs:1 no test"], "summary": "one gap"}));
+        assert_eq!(rt.db.task(t).unwrap().unwrap().status, TaskStatus::Review);
+        let lrec = rt.store.read(|s| s.agents[lead].clone());
+        let report = rt.inject_messages(&lrec).unwrap();
+        assert!(report.contains("Reviewed by review: one gap") && report.contains("api.rs:1 no test"), "{report}");
+        assert!(queued(&rt, back).iter().any(|b| b.contains("api.rs:1 no test")), "the owner sees the findings");
+        assert!(ok(&rt, lead, "merge", json!({"branch": "orch/fx/back-1", "task": t})).contains("is done"));
+    }
+
     /// A launched feature past its spec gate.
     fn approved(rt: &Runtime, pid: &str) -> TeamRun {
+        approved_with(rt, pid, "bugfix-squad")
+    }
+
+    fn approved_with(rt: &Runtime, pid: &str, team: &str) -> TeamRun {
         let run = rt
             .launch(&LaunchSpec {
                 project_id: pid.into(),
-                team_id: "bugfix-squad".into(),
+                team_id: team.into(),
                 slug: "fx".into(),
                 title: "Fix X".into(),
                 brief: "Fix the X bug.".into(),

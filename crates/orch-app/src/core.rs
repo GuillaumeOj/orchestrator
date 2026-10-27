@@ -752,7 +752,13 @@ impl Core {
         if let Some(a) = item.strip_prefix("wait-").or_else(|| item.strip_prefix("error-")) {
             if action == "reply" {
                 let m = message.ok_or_else(|| anyhow!("empty reply"))?;
-                return self.agent_action(a, if rt.live(a).is_some() { "deliver" } else { "resume" }, Some(m));
+                // It comes after the prompt in the pane is answered: say what it answers.
+                let text = if item.starts_with("wait-") {
+                    format!("ORCH: the user answered from the Inbox while a prompt was open in your pane: {m}")
+                } else {
+                    m.to_string()
+                };
+                return self.agent_action(a, if rt.live(a).is_some() { "deliver" } else { "resume" }, Some(&text));
             }
             if action == "reject" && item.starts_with("error-") {
                 return self.agent_action(a, "resume", None);

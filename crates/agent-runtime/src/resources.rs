@@ -90,6 +90,9 @@ pub struct LiveAgent {
     pub last_activity_ms: u64,
     /// A team lead: its process has a slot of its own, outside the cap.
     pub reserved: bool,
+    /// Its prompt cache is warm until then (ms): a reserved agent is kept
+    /// that long even when idle, so the next report costs almost nothing.
+    pub warm_until_ms: u64,
 }
 
 impl LiveAgent {
@@ -111,7 +114,9 @@ pub fn to_suspend(
 ) -> Vec<(String, &'static str)> {
     let mut out: Vec<(String, &'static str)> = vec![];
     if let Some(idle) = idle_after_ms {
-        for a in agents.iter().filter(|a| a.suspendable() && now_ms.saturating_sub(a.last_activity_ms) >= idle) {
+        let idle_for = |a: &&LiveAgent| now_ms.saturating_sub(a.last_activity_ms) >= idle;
+        let cold = |a: &&LiveAgent| !a.reserved || now_ms >= a.warm_until_ms;
+        for a in agents.iter().filter(|a| a.suspendable()).filter(idle_for).filter(cold) {
             out.push((a.id.clone(), "idle"));
         }
     }
@@ -144,6 +149,7 @@ mod tests {
             attached: false,
             last_activity_ms: last,
             reserved: false,
+            warm_until_ms: 0,
         }
     }
 
@@ -187,5 +193,11 @@ mod tests {
         assert!(to_suspend(&agents, 2, None, now).is_empty());
         // Cap 1: back goes, never the lead (older, idle).
         assert_eq!(to_suspend(&agents, 1, None, now), vec![("back".to_string(), "memory_pressure")]);
+        // Idle past the timer: suspended only once its cache went cold.
+        let mut warm = agents[0].clone();
+        warm.warm_until_ms = now + 1;
+        assert!(to_suspend(&[warm.clone()], 3, Some(10), now).is_empty());
+        warm.warm_until_ms = now;
+        assert_eq!(to_suspend(&[warm], 3, Some(10), now), vec![("lead".to_string(), "idle")]);
     }
 }

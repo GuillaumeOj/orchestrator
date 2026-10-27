@@ -32,6 +32,7 @@ impl Runtime {
                 n += 1;
             }
         }
+        n += self.migrate_auto_mode(now)?;
         let roles = self.db.roles(None)?;
         for (_, t) in orch_team::presets::all() {
             if self.db.team(&t.scope, &t.id)?.is_none() {
@@ -39,6 +40,38 @@ impl Runtime {
                 n += 1;
             }
         }
+        Ok(n)
+    }
+
+    /// Once (v0.11): roles saved with the old default, `gated` (accept-edits,
+    /// which stops on most commands), move to `autonomous` (auto mode), the
+    /// new default. A role set to gated afterwards stays so.
+    fn migrate_auto_mode(&self, now: u64) -> Result<usize> {
+        const KEY: &str = "roles.auto_mode_v011";
+        if self.db.setting(KEY)?.is_some() {
+            return Ok(0);
+        }
+        let mut n = 0;
+        let projects = self.db.projects(false)?;
+        let scopes = std::iter::once(None).chain(projects.iter().map(|p| Some(p.id.as_str())));
+        for scope in scopes {
+            for mut r in self.db.roles(scope)? {
+                if r.permission_profile == orch_team::PermissionProfile::Gated {
+                    r.permission_profile = orch_team::PermissionProfile::Autonomous;
+                    self.db.upsert_role(&r, now)?;
+                    n += 1;
+                }
+            }
+        }
+        // Team agents already created carry their compiled mode: from their next start.
+        self.store.write(|s| {
+            for a in s.agents.values_mut().filter(|a| a.team.is_some()) {
+                if a.role.permission_mode == crate::role::PermissionMode::AcceptEdits {
+                    a.role.permission_mode = crate::role::PermissionMode::Auto;
+                }
+            }
+        })?;
+        self.db.set_setting(KEY, &json!(now))?;
         Ok(n)
     }
 
@@ -238,5 +271,26 @@ impl Runtime {
     pub fn user_message(&self, run_id: &str, to: &str, body: &str) -> Result<Vec<u64>> {
         let cx = self.run_ctx(run_id)?;
         self.post_message(&cx, crate::team::Sender(rules::USER, None), to, "message", body, Value::Null)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::runtime::tests::test_runtime;
+    use orch_team::{PermissionProfile, RoleDef, Scope};
+
+    #[test]
+    fn gated_roles_move_to_auto_mode_once() {
+        let (_d, rt) = test_runtime(true);
+        let mut r = RoleDef::new("mine", "Mine");
+        r.permission_profile = PermissionProfile::Gated;
+        rt.db.upsert_role(&r, 1).unwrap();
+        rt.install_presets().unwrap();
+        let get = || rt.db.role(&Scope::Global, "mine").unwrap().unwrap().permission_profile;
+        assert_eq!(get(), PermissionProfile::Autonomous);
+        // Set back to gated by the user: it stays.
+        rt.db.upsert_role(&r, 2).unwrap();
+        rt.install_presets().unwrap();
+        assert_eq!(get(), PermissionProfile::Gated);
     }
 }

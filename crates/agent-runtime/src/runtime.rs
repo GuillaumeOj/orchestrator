@@ -1567,6 +1567,17 @@ impl Runtime {
             }
             m
         });
+        // A lead's prompt cache: kept alive until it goes cold (FR-204).
+        let warm: BTreeMap<String, u64> = {
+            let ids = self.live_ids();
+            let u = self.usage.lock().unwrap_or_else(|e| e.into_inner());
+            ids.into_iter()
+                .filter_map(|id| {
+                    let t = u.agent(&id)?.prompt_cache_expires_at?;
+                    Some((id, (t.max(0) as u64) * 1000))
+                })
+                .collect()
+        };
         let live: Vec<LiveAgent> = self
             .live
             .lock()
@@ -1595,6 +1606,7 @@ impl Runtime {
                     attached: l.pty.output.is_attached(),
                     last_activity_ms: last,
                     reserved: reserved_slot(&rec),
+                    warm_until_ms: warm.get(id).copied().unwrap_or(0),
                 })
             })
             .collect();
