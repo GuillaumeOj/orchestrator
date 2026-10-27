@@ -136,7 +136,13 @@ Additions to existing crates (wiring only): `Runtime::live`, `Runtime::with_gove
   workspace, pane frame, inspector, status bar, palette and jump, dialogs, toasts, banners) and the
   base components (status badge, agent chip, pressure pill, key hint).
 - `src/panes`: Agent, Shell/Editor, Overview, Inbox, Week planner, Project (git state, worktrees,
-  PRs, J11 removal), Setup (J0). `src/components/PlanEditor.svelte`: the weekly plan form.
+  PRs, J11 removal), Setup (J0), and P2: **Team canvas** (`TeamCanvasPane`, model in
+  `lib/canvas.js`: edits, keyboard selection, connect mode, undo/redo, auto-layout, local
+  validation), **Feature** (`FeaturePane`: docs, tasks, team, timeline, message box, artifacts,
+  PR), **Board** (`BoardPane`: five columns over any backend). `lib/teams.js`: run states,
+  timeline copy, board moves. `lib/markdown.js` + `components/Markdown.svelte`: agent-written
+  markdown read into elements, never HTML. `src/components/PlanEditor.svelte`: the weekly plan
+  form; `Dialogs.svelte` also has Launch on feature.
 - **Tokens** (`scripts/tokens.mjs`): `docs/design/tokens.json` → `src/styles/tokens.css` (Dark,
   Light, system) and `src/lib/tokens.js`; semantic tokens only. `bun run tokens:check` (also run
   by `bun run build` and the vitest suite) fails when the generated files drift from tokens.json,

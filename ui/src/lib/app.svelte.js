@@ -45,6 +45,8 @@ export const wide = () => app.width >= breakpoint.md;
 export const agents = () => app.data?.agents ?? [];
 export const agent = (id) => agents().find((a) => a.id === id);
 export const projects = () => app.data?.projects ?? [];
+/** Features with their latest team run (P2). */
+export const features = () => app.data?.features ?? [];
 export const focusedSpec = () => app.panes[app.focused];
 export const isTerminal = (spec) => ['agent', 'shell', 'editor'].includes(spec?.type);
 
@@ -90,6 +92,10 @@ function title(spec) {
     default:
       if (spec.type === 'project') return projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId;
       if (spec.type === 'trust') return `trust · ${spec.projectId}`;
+      if (spec.type === 'feature') return features().find((f) => f.id === spec.featureId)?.slug ?? 'feature';
+      if (spec.type === 'board')
+        return `${projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId} tasks`;
+      if (spec.type === 'canvas') return spec.teamId ? `Team: ${spec.teamId}` : 'Team canvas';
       if (spec.type === 'diff')
         return `diff · ${
           spec.branch ??
@@ -168,6 +174,32 @@ export function openProject(projectId) {
   const existing = findPane((s) => s.type === 'project' && s.projectId === projectId);
   if (existing) return focusPane(existing);
   addPane({ type: 'project', projectId }, app.layout ? 'tab' : 'right');
+}
+
+/** P2: a feature's pane (docs, tasks, team, timeline), one per feature. */
+export function openFeature(featureId) {
+  const existing = findPane((s) => s.type === 'feature' && s.featureId === featureId);
+  if (existing) return focusPane(existing);
+  const f = features().find((x) => x.id === featureId);
+  addPane({ type: 'feature', featureId, projectId: f?.project_id }, app.layout ? 'tab' : 'right');
+}
+
+/** P2: a project's Board (FR-502), one per project. */
+export function openBoard(projectId) {
+  if (!projectId) return toast('No project in focus');
+  const existing = findPane((s) => s.type === 'board' && s.projectId === projectId);
+  if (existing) return focusPane(existing);
+  addPane({ type: 'board', projectId }, app.layout ? 'tab' : 'right');
+}
+
+/** P2: the Team canvas (FR-301), on a team (or the library when none). */
+export function openCanvas(teamId = null, projectId = null) {
+  const existing = findPane((s) => s.type === 'canvas' && (!teamId || s.teamId === teamId));
+  if (existing) return focusPane(existing);
+  addPane(
+    { type: 'canvas', teamId, projectId: projectId ?? contextProject()?.id ?? null },
+    app.layout ? 'tab' : 'right',
+  );
 }
 
 /** FR-107: a worktree's diff against its base, one pane per worktree. */
@@ -433,6 +465,8 @@ export async function restoreLayout() {
     if (!s) continue;
     if (s.type === 'agent' && !agent(s.agentId)) continue;
     if (s.type === 'project' && !projects().some((p) => p.id === s.projectId)) continue;
+    if (s.type === 'board' && !projects().some((p) => p.id === s.projectId)) continue;
+    if (s.type === 'feature' && !features().some((f) => f.id === s.featureId)) continue;
     if (s.type === 'shell' || s.type === 'editor') {
       try {
         const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
@@ -495,6 +529,13 @@ export function commands() {
     { id: 'planner', label: 'Open Week planner', run: () => openSingleton('planner') },
     { id: 'setup', label: 'Set up Orchestrator (first run)…', run: () => openSingleton('setup') },
     { id: 'plan.edit', label: 'Edit the weekly plan…', run: () => (app.overlay = { kind: 'plan' }) },
+    { id: 'team.canvas', label: 'Open the Team canvas', run: () => openCanvas() },
+    {
+      id: 'team.launch',
+      label: 'Launch a team on a feature…',
+      run: () => (app.overlay = { kind: 'launch', projectId: contextProject()?.id ?? null }),
+    },
+    { id: 'board.open', label: 'Open the Board of the focused project', run: () => openBoard(contextProject()?.id) },
     { id: 'shell.new', label: 'New shell pane', run: () => openShell() },
     { id: 'editor.open', label: 'Open editor (nvim)', run: () => openEditor() },
     { id: 'pane.split.right', label: 'Split right (shell)', run: () => openShell({ how: 'right' }) },
@@ -553,7 +594,11 @@ export function commands() {
     for (const c of agentCmds) c.scope = 'agent';
     list.unshift(...agentCmds);
   }
+  for (const f of features()) {
+    list.push({ id: `feature.open.${f.id}`, label: `Open feature ${f.slug}`, run: () => openFeature(f.id) });
+  }
   for (const p of projects()) {
+    list.push({ id: `board.open.${p.id}`, label: `Board: ${p.name}`, run: () => openBoard(p.id) });
     list.push({ id: `project.open.${p.id}`, label: `Open project ${p.name}`, run: () => openProject(p.id) });
     list.push({
       id: `project.trust.${p.id}`,
@@ -640,6 +685,14 @@ export function setKittyTheme(on) {
 export function jumpTargets() {
   const out = [];
   for (const p of projects()) out.push({ label: p.name, detail: p.path, run: () => openProject(p.id) });
+  for (const f of features()) {
+    const p = projects().find((x) => x.id === f.project_id);
+    out.push({
+      label: `${p?.name ?? ''} › ${f.slug}`,
+      detail: f.run?.label ?? 'feature',
+      run: () => openFeature(f.id),
+    });
+  }
   for (const a of agents()) {
     const p = projects().find((x) => x.id === a.project_id);
     out.push({ label: `${p?.name ?? ''} › ${a.id}`, detail: displayState(a), run: () => openAgent(a.id) });

@@ -8,16 +8,16 @@ The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app 
 |---|---|---|
 | 00 Cover | Purpose, page index, P1 gate, changelog | Done |
 | 01 Foundations | Tokens: color, type, spacing, radius, sizing, elevation, rules | Ready for dev |
-| 02 Components | P1 subset of SPEC §9.4 (14 component sets), states as variants. **P2**: Canvas node, Edge (4 types), Task card, Kanban column header, Feature card, Rules panel, Preset card, Minimap, Connect menu / target | P1 Ready for dev · **P2 in review** |
+| 02 Components | P1 subset of SPEC §9.4 (14 component sets), states as variants. **P2**: Canvas node, Edge (4 types), Task card, Kanban column header, Feature card, Rules panel, Preset card, Minimap, Connect menu / target | P1 Ready for dev · **P2 Ready for dev** |
 | 03 Shell & layouts | Shell at 1512 (docked inspector), 1280 (icon rail + overlay inspector), zoomed pane; 1728 not drawn | Ready for dev |
-| 04 Screens | P1 panes: Overview, Agent pane (+ states), Week planner, Inbox. **P2** (row at y = 2000): Team canvas, Feature, Board, Launch on feature dialog | P1 Ready for dev · **P2 in review** |
-| 05 Keyboard & copy | Global, leader and pane-local shortcut maps (**P2**: Team canvas, Board, Feature rows); P0 conflicts; banner, notification and toast copy; copy rules | P1 Ready for dev · **P2 in review** |
-| 06 Flows | Storyboards (annotated frames, no clickable prototype): J2 solo session (5 frames), J5 Inbox triage (6), J8 pacing the week (4). **P2**: J3 team on a feature, 5 notes over the 04 frames (y = 4500) | P1 Ready for dev · **P2 in review** |
+| 04 Screens | P1 panes: Overview, Agent pane (+ states), Week planner, Inbox. **P2** (row at y = 2000): Team canvas, Feature, Board, Launch on feature dialog | P1 Ready for dev · **P2 Ready for dev** |
+| 05 Keyboard & copy | Global, leader and pane-local shortcut maps (**P2**: Team canvas, Board, Feature rows); P0 conflicts; banner, notification and toast copy; copy rules | P1 Ready for dev · **P2 Ready for dev** |
+| 06 Flows | Storyboards (annotated frames, no clickable prototype): J2 solo session (5 frames), J5 Inbox triage (6), J8 pacing the week (4). **P2**: J3 team on a feature, 5 notes over the 04 frames (y = 4500) | P1 Ready for dev · **P2 Ready for dev** |
 | 07 Explorations | Drafts, not binding | — |
 
 **P1 gate:** before P1 UI work starts, 01, 03 and the P1 panes in 04 (Overview, Agent pane, Week planner, Inbox) are marked ready for dev on `00 Cover`. Reviewed by Guillaume on 2026-10-26: all pages are **Ready for dev** and the P1 design gate is passed. Open questions and spec gaps from the design pass: [p1-design-notes.md](p1-design-notes.md).
 
-**P2 gate:** before P2 UI work starts (Team canvas, Feature, Board, Launch dialog, P2 keys), the P2 additions on 02, 04, 05 and 06 are marked Ready for dev on `00 Cover`. Status 2026-10-27: **in review**. The spec and PR gate Inbox items were already designed in P1 (04 Inbox, J2 · 4), so P2 adds no gate screen.
+**P2 gate:** before P2 UI work starts (Team canvas, Feature, Board, Launch dialog, P2 keys), the P2 additions on 02, 04, 05 and 06 are marked Ready for dev on `00 Cover`. Status 2026-10-27: **approved as designed by Guillaume; the P2 gate is passed**. The spec and PR gate Inbox items were already designed in P1 (04 Inbox, J2 · 4), so P2 adds no gate screen.
 
 ## Screenshots
 

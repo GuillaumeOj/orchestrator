@@ -1,11 +1,13 @@
 <script>
   // Dialogs: New session (⌘T, Penpot 06 J2 step 1), Add project (⌘N: a folder
-  // or a git URL to clone, J1), the weekly plan, confirmations.
+  // or a git URL to clone, J1), Launch a team on a feature (Penpot 04 Launch
+  // on feature, J3 step 2), the weekly plan, confirmations.
   // ⌘⏎ submits; esc cancels.
-  import { app, contextProject, openAgent, openProject, projects, refresh, toast } from '../lib/app.svelte.js';
+  import { app, contextProject, features, openAgent, openFeature, openProject, projects, refresh, toast } from '../lib/app.svelte.js';
   import { expandHome } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { PRESSURE } from '../lib/status.js';
+  import { slugify } from '../lib/teams.js';
   import Kbd from './Kbd.svelte';
   import PlanEditor from './PlanEditor.svelte';
 
@@ -18,6 +20,62 @@
   let path = $state('');
   let cloneInto = $state('');
   const isUrl = (x) => /^(https?:\/\/|git@|ssh:\/\/)/.test(x.trim());
+
+  // Roles for the New session dialog (a role's settings for a solo session).
+  let roles = $state([]);
+  let roleId = $state('');
+  // Launch on feature
+  let launch = $state({ project_id: '', team_id: '', existing: '', slug: '', title: '', brief: '', base: '' });
+  let teamsView = $state(null);
+  $effect(() => {
+    if (o?.kind === 'launch') {
+      launch = { project_id: o.projectId ?? contextProject()?.id ?? '', team_id: o.teamId ?? '', existing: '', slug: '', title: '', brief: '', base: '' };
+      error = null;
+      invoke('teams_view', { project: launch.project_id || null })
+        .then((v) => {
+          teamsView = v;
+          if (!launch.team_id) launch.team_id = v.teams[0]?.team.id ?? '';
+        })
+        .catch((e) => (error = errText(e)));
+    }
+  });
+  const launchTeam = $derived(teamsView?.teams.find((t) => t.team.id === launch.team_id));
+  const free = $derived(features().filter((f) => f.project_id === launch.project_id && (!f.run || ['done', 'failed'].includes(f.run.status))));
+  const launchSlug = $derived(launch.existing ? (free.find((f) => f.id === launch.existing)?.slug ?? '') : launch.slug || slugify(launch.title));
+
+  async function launchTeamOnFeature() {
+    if (busy) return;
+    busy = true;
+    error = null;
+    try {
+      const run = await invoke('team_launch', {
+        form: { project_id: launch.project_id, team_id: launch.team_id, slug: launchSlug, title: launch.title, brief: launch.brief, base: launch.base || null },
+      });
+      close();
+      await refresh();
+      openFeature(run.feature_id);
+      toast(`Launched ${launchTeam?.team.name ?? launch.team_id} on ${launchSlug} · the lead starts when the Governor admits it`);
+    } catch (e) {
+      error = errText(e);
+      busy = false;
+    }
+  }
+
+  $effect(() => {
+    if (o?.kind === 'new-session' && !roles.length)
+      invoke('teams_view', { project: null })
+        .then((v) => (roles = v.roles))
+        .catch(() => {});
+  });
+
+  function pickRole(id) {
+    roleId = id;
+    const r = roles.find((x) => x.id === id);
+    if (!r) return;
+    form.model = r.model ?? '';
+    form.effort = r.effort ?? '';
+    form.permission_mode = { strict: '', gated: 'acceptEdits', autonomous: 'auto' }[r.permission_profile] ?? '';
+  }
 
   $effect(() => {
     if (o?.kind === 'new-session') {
@@ -46,7 +104,8 @@
     busy = true;
     error = null;
     try {
-      const id = await invoke('agent_start', { req: { ...$state.snapshot(form), name: form.name.trim() } });
+      const role = roles.find((x) => x.id === roleId);
+      const id = await invoke('agent_start', { req: { ...$state.snapshot(form), name: form.name.trim(), prompt: role?.prompt || null } });
       close();
       form = { ...form, name: '', message: '' };
       await refresh();
@@ -83,7 +142,7 @@
   }
 </script>
 
-{#if o && ['new-session', 'add-project', 'plan', 'confirm'].includes(o.kind)}
+{#if o && ['new-session', 'add-project', 'launch', 'plan', 'confirm'].includes(o.kind)}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="scrim" onclick={close}></div>
   {#if o.kind === 'new-session'}
@@ -95,7 +154,12 @@
           {#each projects() as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
         </select>
       </label>
-      <label>Role <select class="field" disabled><option>plain Claude (roles come with teams)</option></select></label>
+      <label>Role
+        <select class="field" value={roleId} onchange={(e) => pickRole(e.currentTarget.value)}>
+          <option value="">plain Claude</option>
+          {#each roles.filter((r) => r.id !== 'lead') as r (r.id)}<option value={r.id}>{r.name}</option>{/each}
+        </select>
+      </label>
       <label>Task <span class="muted">(first message, optional)</span>
         <textarea class="field" rows="3" bind:value={form.message} placeholder="What should Claude do?"></textarea>
       </label>
@@ -128,6 +192,52 @@
       <div class="foot">
         <button type="button" class="btn ghost" onclick={close}>Cancel <Kbd keys="esc" /></button>
         <button type="submit" class="btn primary" disabled={busy || !form.project_id}>{busy ? 'Starting…' : 'Start session'} <Kbd keys="⌘+⏎" /></button>
+      </div>
+    </form>
+    </div>
+  {:else if o.kind === 'launch'}
+    <div class="dlg" role="dialog" aria-modal="true" aria-label="Launch on feature" tabindex="-1" onkeydown={(e) => onKey(e, launchTeamOnFeature)}>
+    <form onsubmit={(e) => (e.preventDefault(), launchTeamOnFeature())}>
+      <h3>Launch {launchTeam?.team.name ?? 'a team'}</h3>
+      <div class="seg" role="radiogroup" aria-label="Feature">
+        <button type="button" class:on={!launch.existing} onclick={() => (launch.existing = '')}>New feature</button>
+        {#each free as f (f.id)}<button type="button" class:on={launch.existing === f.id} onclick={() => (launch.existing = f.id)}>Existing: {f.slug}</button>{/each}
+      </div>
+      <div class="row">
+        <label>Project
+          <select class="field" bind:value={launch.project_id}>
+            {#each projects() as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
+          </select>
+        </label>
+        <label>Team
+          <select class="field" bind:value={launch.team_id}>
+            {#each teamsView?.teams ?? [] as t (t.team.id)}<option value={t.team.id} disabled={t.issues.length > 0}>{t.team.name}{t.issues.length ? ' (invalid)' : ''}</option>{/each}
+          </select>
+        </label>
+      </div>
+      {#if !launch.existing}
+        <div class="row">
+          <label>Slug <input class="field mono" bind:value={launch.slug} placeholder={slugify(launch.title) || 'search-v2'} spellcheck="false" /></label>
+          <label>Base <input class="field mono" bind:value={launch.base} placeholder={projects().find((p) => p.id === launch.project_id)?.default_branch ?? 'main'} spellcheck="false" /></label>
+        </div>
+        <!-- svelte-ignore a11y_autofocus -->
+        <label>Title <input class="field" bind:value={launch.title} autofocus placeholder="Search v2" /></label>
+      {/if}
+      <label>Brief <span class="muted">(3 lines)</span>
+        <textarea class="field" rows="3" bind:value={launch.brief} placeholder="What to build, the constraints, where the designs are."></textarea>
+      </label>
+      <div class="note what">
+        <span>• Creates <span class="mono">orch/{launchSlug || '…'}/integration</span> and the lead's worktree on it.</span>
+        <span>• The lead drafts spec.md (and ux-brief.md, api-contract.md) in <span class="mono">.orchestrator/features/{launchSlug || '…'}/</span>, then asks for the Spec gate.</span>
+        <span>• Specialists start after the gate, as the Governor and the live-agent cap allow.</span>
+      </div>
+      {#if snap}
+        <p class="note"><span style:color={PRESSURE[snap.state]?.color}>{PRESSURE[snap.state]?.icon}</span> Governor {PRESSURE[snap.state]?.label}{app.data?.usage?.shadow ? ' (shadow mode)' : ''} · {live}/{snap.live_cap} live: the lead {live >= snap.live_cap ? 'queues for a live slot' : 'starts when its first turn is admitted'}.</p>
+      {/if}
+      {#if error}<p class="err">{error}</p>{/if}
+      <div class="foot">
+        <button type="button" class="btn ghost" onclick={close}>Cancel <Kbd keys="esc" /></button>
+        <button type="submit" class="btn primary" disabled={busy || !launch.team_id || !launchSlug || !launch.project_id}>{busy ? 'Launching…' : 'Launch'} <Kbd keys="⌘+⏎" /></button>
       </div>
     </form>
     </div>
@@ -231,5 +341,31 @@
     display: flex;
     justify-content: flex-end;
     gap: var(--space-sm);
+  }
+  .seg {
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .seg button {
+    padding: var(--space-xxs) var(--space-sm);
+    background: none;
+    border: var(--border-width-default) solid var(--color-border-subtle);
+    color: var(--color-text-secondary);
+    font: var(--text-label);
+    cursor: pointer;
+  }
+  .seg button + button {
+    border-left: 0;
+  }
+  .seg button.on {
+    background: var(--color-surface-selected);
+    color: var(--color-text-primary);
+  }
+  .what {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xxs);
+    background: var(--color-surface-chrome);
+    font: var(--text-caption);
   }
 </style>

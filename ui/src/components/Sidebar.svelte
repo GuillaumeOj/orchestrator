@@ -1,8 +1,8 @@
 <script>
   // Sidebar (§9.2): Projects → Features → agents; solo sessions under their
-  // project. The only navigation tree. Features come with teams (P2): agents are
-  // listed as solo sessions until then.
-  import { agents, app, openAgent, openProject, projects } from '../lib/app.svelte.js';
+  // project. The only navigation tree. A feature's badge counts its agents
+  // that need you (waiting for you or at a gate).
+  import { agents, app, features, openAgent, openFeature, openProject, projects } from '../lib/app.svelte.js';
   import { pct } from '../lib/format.js';
   import { displayState } from '../lib/status.js';
   import AgentChip from './AgentChip.svelte';
@@ -12,8 +12,23 @@
   let collapsed = $state({});
   const focusedAgent = $derived(app.panes[app.focused]?.agentId ?? app.selectedAgent);
   const byProject = $derived(
-    projects().map((p) => ({ p, list: agents().filter((a) => a.project_id === p.id && a.state !== 'archived') })),
+    projects().map((p) => {
+      const mine = agents().filter((a) => a.project_id === p.id && a.state !== 'archived');
+      const feats = features()
+        .filter((f) => f.project_id === p.id)
+        .map((f) => ({ f, list: mine.filter((a) => a.team?.feature_id === f.id) }));
+      return { p, feats, list: mine.filter((a) => !a.team) };
+    }),
   );
+  const focusedFeature = $derived(app.panes[app.focused]?.type === 'feature' ? app.panes[app.focused].featureId : null);
+  // Waiting for you, plus open gates and questions of these agents (a lead at
+  // its spec gate is idle: the gate is in the Inbox).
+  const needsYou = (list) => {
+    const ids = new Set(list.map((a) => a.id));
+    const items = (app.data?.inbox?.items ?? []).filter((i) => ids.has(i.agent_id) && (i.kind === 'gate' || i.kind === 'question'));
+    const waiting = list.filter((a) => displayState(a) === 'waiting_for_you' && !items.some((i) => i.agent_id === a.id));
+    return items.length + waiting.length;
+  };
 
   function onKey(e) {
     // Arrow keys move between rows (the tree is keyboard reachable without the mouse).
@@ -29,7 +44,7 @@
   <div class="head"><span class="muted">Projects</span><span class="grow"></span><button class="add" title="Add project (⌘N)" aria-label="Add project" onclick={() => (app.overlay = { kind: 'add-project' })}>+</button><Kbd keys="⌘+B" /></div>
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <ul role="tree" tabindex="-1" onkeydown={onKey}>
-    {#each byProject as { p, list } (p.id)}
+    {#each byProject as { p, feats, list } (p.id)}
       <li role="treeitem" aria-selected="false" aria-expanded={!collapsed[p.id]}>
         <button data-row class="row project" class:selected={app.panes[app.focused]?.type === 'project' && app.panes[app.focused]?.projectId === p.id} onclick={() => openProject(p.id)} title={p.path}>
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
@@ -42,6 +57,31 @@
         </button>
         {#if !collapsed[p.id]}
           <ul role="group">
+            {#each feats as { f, list: fl } (f.id)}
+              {@const k = `f:${f.id}`}
+              {@const n = needsYou(fl)}
+              <li role="treeitem" aria-selected={focusedFeature === f.id} aria-expanded={!collapsed[k]}>
+                <button data-row class="row feature" class:selected={focusedFeature === f.id} onclick={() => openFeature(f.id)} title="{f.branch} · {f.run?.label ?? 'no run'}">
+                  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+                  <span class="caret" aria-hidden="true" onclick={(e) => (e.stopPropagation(), (collapsed[k] = !collapsed[k]))}>{collapsed[k] ? '▸' : '▾'}</span>
+                  <span class="name">{f.slug}</span>
+                  {#if n}<span class="badge" aria-label="{n} need you">{n}</span>{:else if f.run}<span class="meta">{f.run.label}</span>{/if}
+                </button>
+                {#if !collapsed[k]}
+                  <ul role="group">
+                    {#each fl as a (a.id)}
+                      <li role="treeitem" aria-selected={focusedAgent === a.id}>
+                        <button data-row class="row agent team" class:selected={focusedAgent === a.id} onclick={() => openAgent(a.id)}>
+                          <StatusBadge state={displayState(a)} compact />
+                          <AgentChip id={a.id} name={a.team.node} />
+                          <span class="meta">{a.context_pct == null && a.live ? '' : pct(a.context_pct)}</span>
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </li>
+            {/each}
             {#each list as a (a.id)}
               <li role="treeitem" aria-selected={focusedAgent === a.id}>
                 <button data-row class="row agent" class:selected={focusedAgent === a.id} onclick={() => openAgent(a.id)}>
@@ -102,6 +142,21 @@
   }
   .row.agent {
     padding-left: var(--space-xl);
+  }
+  .row.feature {
+    padding-left: var(--space-lg);
+  }
+  .row.agent.team {
+    padding-left: var(--space-2xl);
+  }
+  .badge {
+    min-width: 16px;
+    padding: 0 var(--space-xs);
+    border: var(--border-width-default) solid var(--color-status-waiting-for-you);
+    border-radius: var(--radius-full);
+    color: var(--color-status-waiting-for-you);
+    font: var(--text-caption);
+    text-align: center;
   }
   .add {
     border: 0;
