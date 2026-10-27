@@ -473,7 +473,7 @@ impl Runtime {
 
     /// Queues a slash command for the agent (`/code-review …`), typed as is
     /// once it is idle and admitted like any app turn.
-    pub(crate) fn deliver_command(&self, id: &str, command: &str) -> Result<String> {
+    pub fn deliver_command(&self, id: &str, command: &str) -> Result<String> {
         let tid = self.deliver_kind(id, command, TurnKind::Task)?;
         self.store.write(|s| {
             if let Some(t) = s.turns.iter_mut().find(|t| t.id == tid) {
