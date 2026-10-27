@@ -1,7 +1,7 @@
 <script>
   // Global banners (§9.3, Penpot 05 copy): one at a time, highest attention first;
   // the rest collapse to "+n". Error banners: a 4 px left bar in the status color.
-  import { app, openSingleton, governor } from '../lib/app.svelte.js';
+  import { app, governor, openSingleton } from '../lib/app.svelte.js';
   import { when } from '../lib/format.js';
   import Kbd from './Kbd.svelte';
 

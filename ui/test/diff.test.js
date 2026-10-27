@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { patchByFile, lineKind } from '../src/lib/diff.js';
+import { lineKind, patchByFile } from '../src/lib/diff.js';
 
 const PATCH = [
   'diff --git a/src/a.rs b/src/a.rs',
@@ -27,6 +27,13 @@ describe('diff', () => {
   });
 
   it('classifies lines', () => {
-    expect(['@@ -1 +1 @@', '+++ b/x', '--- a/x', '+a', '-b', ' c'].map(lineKind)).toEqual(['hunk', 'meta', 'meta', 'add', 'del', 'ctx']);
+    expect(['@@ -1 +1 @@', '+++ b/x', '--- a/x', '+a', '-b', ' c'].map(lineKind)).toEqual([
+      'hunk',
+      'meta',
+      'meta',
+      'add',
+      'del',
+      'ctx',
+    ]);
   });
 });

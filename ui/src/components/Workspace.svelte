@@ -2,9 +2,9 @@
   // Tiling workspace (§9.2): splits, tabs, zoom. Hidden panes don't render; their
   // terminals keep their buffers (§9.1 principle 6, FR-1005).
   import { app } from '../lib/app.svelte.js';
+  import Kbd from './Kbd.svelte';
   import Node from './Node.svelte';
   import PaneFrame from './PaneFrame.svelte';
-  import Kbd from './Kbd.svelte';
 </script>
 
 <main class="ws">

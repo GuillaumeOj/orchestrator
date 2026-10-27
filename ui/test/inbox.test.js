@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { visibleItems, move, afterRemoval, keyIntent, toastFor, due, UNDO_MS } from '../src/lib/inbox.js';
+import { afterRemoval, due, keyIntent, move, toastFor, UNDO_MS, visibleItems } from '../src/lib/inbox.js';
 
 const items = [
-  { id: 'perm-1', level: 1, kind: 'permission', agent_id: 'front-1', preview: 'pnpm add x', actions: ['a', 'r', 'enter', 'o', 'e'] },
+  {
+    id: 'perm-1',
+    level: 1,
+    kind: 'permission',
+    agent_id: 'front-1',
+    preview: 'pnpm add x',
+    actions: ['a', 'r', 'enter', 'o', 'e'],
+  },
   { id: 'wait-solo', level: 1, kind: 'question', agent_id: 'solo', actions: ['enter', 'o'] },
   { id: 'ask-3', level: 3, kind: 'budget', title: 'Defer infra', actions: ['a', 'r'] },
   { id: 'info-t', level: 4, kind: 'info', actions: ['o'] },
@@ -35,7 +42,10 @@ describe('inbox triage', () => {
   it('copy and the undo window', () => {
     expect(toastFor(items[0], 'approve')).toBe('Allowed once · front-1 · pnpm add x');
     expect(toastFor(items[2], 'reject')).toBe('Skipped · Defer infra');
-    const p = [{ item: 'a', at: 0 }, { item: 'b', at: 1000 }];
+    const p = [
+      { item: 'a', at: 0 },
+      { item: 'b', at: 1000 },
+    ];
     expect(due(p, UNDO_MS).map((x) => x.item)).toEqual(['a']);
   });
 });

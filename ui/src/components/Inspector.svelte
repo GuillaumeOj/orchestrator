@@ -1,11 +1,11 @@
 <script>
   // Inspector (§9.2): the selection's details. Docked at ≥ 1512 px, overlay below.
-  import { app, contextAgent, projects, agentAction, openShell, openInKitty, openDiff, confirm } from '../lib/app.svelte.js';
-  import { displayState, queueReason, sessionPp, cacheState } from '../lib/status.js';
+  import { agentAction, app, confirm, contextAgent, openDiff, openInKitty, openShell, projects } from '../lib/app.svelte.js';
   import { clock, mb, pct, shortPath, tokens } from '../lib/format.js';
+  import { cacheState, displayState, queueReason, sessionPp } from '../lib/status.js';
   import AgentChip from './AgentChip.svelte';
-  import StatusBadge from './StatusBadge.svelte';
   import Kbd from './Kbd.svelte';
+  import StatusBadge from './StatusBadge.svelte';
 
   let { overlay = false } = $props();
   const a = $derived(contextAgent());

@@ -1,14 +1,15 @@
 // The app's state: what the core reports (polled about once a second), the
 // tiling workspace, focus, overlays and the command registry. Terminal objects
 // (xterm.js) live outside the reactive state, in `terms`.
+
+import { due, toastFor, UNDO_MS } from './inbox.js';
+import { errText, invoke } from './ipc.js';
+import { hint } from './keyboard.js';
+import { deriveKittyTheme } from './kittytheme.js';
 import * as L from './layout.js';
-import { invoke, errText } from './ipc.js';
+import { displayState } from './status.js';
 import { TermPane } from './term.js';
 import { breakpoint } from './tokens.js';
-import { hint } from './keyboard.js';
-import { displayState } from './status.js';
-import { UNDO_MS, due, toastFor } from './inbox.js';
-import { deriveKittyTheme } from './kittytheme.js';
 
 export const app = $state({
   data: null, // app_state
@@ -79,14 +80,28 @@ function title(spec) {
     case 'agent':
       return spec.agentId;
     case 'shell':
-      return `zsh · ${String(spec.cwd ?? '').split('/').slice(-1)[0] || '~'}`;
+      return `zsh · ${
+        String(spec.cwd ?? '')
+          .split('/')
+          .slice(-1)[0] || '~'
+      }`;
     case 'editor':
-      return `nvim · ${spec.file ? spec.file.split('/').pop() : spec.projectId ?? ''}`;
+      return `nvim · ${spec.file ? spec.file.split('/').pop() : (spec.projectId ?? '')}`;
     default:
       if (spec.type === 'project') return projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId;
       if (spec.type === 'trust') return `trust · ${spec.projectId}`;
-      if (spec.type === 'diff') return `diff · ${spec.branch ?? String(spec.path ?? '').split('/').pop()}`;
-      return { overview: 'All projects', inbox: 'Inbox', planner: 'Week planner', setup: 'Set up Orchestrator' }[spec.type] ?? spec.type;
+      if (spec.type === 'diff')
+        return `diff · ${
+          spec.branch ??
+          String(spec.path ?? '')
+            .split('/')
+            .pop()
+        }`;
+      return (
+        { overview: 'All projects', inbox: 'Inbox', planner: 'Week planner', setup: 'Set up Orchestrator' }[
+          spec.type
+        ] ?? spec.type
+      );
   }
 }
 
@@ -116,7 +131,11 @@ export function focusPane(id) {
   queueMicrotask(() => {
     const t = terms.get(app.focused);
     if (t) t.focus();
-    else document.querySelector(`[data-pane="${app.focused}"] [data-pane-focus]`)?.focus();
+    else {
+      /** @type {HTMLElement | null} */
+      const el = document.querySelector(`[data-pane="${app.focused}"] [data-pane-focus]`);
+      el?.focus();
+    }
   });
 }
 
@@ -167,7 +186,9 @@ export async function openTrust(projectId) {
   if (!p) return;
   try {
     const run = await invoke('trust_command');
-    const t = await invoke('term_spawn', { req: { kind: 'shell', project_id: p.id, agent_id: null, cwd: p.path, run, rows: 30, cols: 100 } });
+    const t = await invoke('term_spawn', {
+      req: { kind: 'shell', project_id: p.id, agent_id: null, cwd: p.path, run, rows: 30, cols: 100 },
+    });
     addPane({ type: 'shell', termId: t.id, cwd: t.cwd, projectId: p.id, title: `trust · ${p.name}` }, 'right');
     toast(`Answer "Yes, I trust this folder" in the pane, then /exit · ${p.name}`, { ms: 10000 });
   } catch (e) {
@@ -183,9 +204,22 @@ export function openAgent(agentId) {
   addPane({ type: 'agent', agentId, projectId: a?.project_id }, n >= 3 ? 'tab' : 'right');
 }
 
-/** A login shell PTY in the core; the pane fits it once mounted. */
+/**
+ * A login shell PTY in the core; the pane fits it once mounted.
+ * @param {{ projectId?: string, agentId?: string, cwd?: string }} req
+ */
 const spawnShell = ({ projectId, agentId, cwd }) =>
-  invoke('term_spawn', { req: { kind: 'shell', project_id: projectId ?? null, agent_id: agentId ?? null, cwd: cwd ?? null, run: null, rows: 24, cols: 80 } });
+  invoke('term_spawn', {
+    req: {
+      kind: 'shell',
+      project_id: projectId ?? null,
+      agent_id: agentId ?? null,
+      cwd: cwd ?? null,
+      run: null,
+      rows: 24,
+      cols: 80,
+    },
+  });
 
 export async function openShell(opts = {}) {
   const a = contextAgent();
@@ -204,11 +238,22 @@ export async function openEditor(file = null, line = null, opts = {}) {
   const a = opts.agentId ? agent(opts.agentId) : contextAgent();
   const p = projects().find((x) => x.id === (opts.projectId ?? a?.project_id)) ?? contextProject();
   try {
-    const r = await invoke('editor_open', { projectId: p?.id ?? null, agentId: a?.id ?? null, file, line, rows: 30, cols: 100 });
+    const r = await invoke('editor_open', {
+      projectId: p?.id ?? null,
+      agentId: a?.id ?? null,
+      file,
+      line,
+      rows: 30,
+      cols: 100,
+    });
     if (r.reused) {
       const pane = findPane((s) => s.type === 'editor' && s.projectId === p?.id);
       if (pane) focusPane(pane);
-      toast(file ? `Opened ${file}${line ? `:${line}` : ''} in nvim · ${p?.name ?? ''}` : `nvim is already open · ${p?.name ?? ''}`);
+      toast(
+        file
+          ? `Opened ${file}${line ? `:${line}` : ''} in nvim · ${p?.name ?? ''}`
+          : `nvim is already open · ${p?.name ?? ''}`,
+      );
       return;
     }
     addPane({ type: 'editor', termId: r.term.id, cwd: r.term.cwd, projectId: p?.id, file }, 'right');
@@ -253,7 +298,6 @@ export function toggleZoom() {
   focusPane(app.focused);
 }
 
-
 /** Leader w: the next agent waiting for you, by waiting time (attention ladder level 1). */
 export function nextWaiting() {
   const waiting = agents()
@@ -270,7 +314,13 @@ export function nextWaiting() {
 export async function agentAction(id, action, message = null) {
   try {
     await invoke('agent_action', { id, action, message });
-    const verb = { interrupt: 'Interrupted', suspend: 'Suspended', kill: 'Killed', resume: 'Resumed', deliver: 'Sent to' }[action];
+    const verb = {
+      interrupt: 'Interrupted',
+      suspend: 'Suspended',
+      kill: 'Killed',
+      resume: 'Resumed',
+      deliver: 'Sent to',
+    }[action];
     toast(`${verb ?? action} · ${id}`);
     await refresh();
   } catch (e) {
@@ -295,7 +345,12 @@ export function openInKitty(cwd) {
 /** Run a queued turn now, after the user confirms its cost (FR-809). */
 export function runNow(a, notStarted) {
   const cost = a.queue_entry.estimated_cost_pct.toFixed(1);
-  confirm(`${notStarted ? 'Start' : 'Run'} ${a.id} now?`, `≈ +${cost} pp of the week. It runs above the live cap for one turn and is logged as your override.`, () => governor('run_now', a.queue_entry.id), notStarted ? 'Start now' : 'Run now');
+  confirm(
+    `${notStarted ? 'Start' : 'Run'} ${a.id} now?`,
+    `≈ +${cost} pp of the week. It runs above the live cap for one turn and is logged as your override.`,
+    () => governor('run_now', a.queue_entry.id),
+    notStarted ? 'Start now' : 'Run now',
+  );
 }
 
 /** Mounts the pane's xterm in `host`, fits it on resize; returns the cleanup. */
@@ -329,7 +384,18 @@ export function saveLayout() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     const panes = Object.fromEntries(Object.entries(app.panes).map(([id, s]) => [id, { ...s, termId: undefined }]));
-    invoke('settings_set', { key: 'layout', value: { layout: $state.snapshot(app.layout), panes, focused: app.focused, sidebar: app.sidebar, inspector: app.inspector, theme: app.theme, kittyTheme: app.kittyTheme } }).catch(() => {});
+    invoke('settings_set', {
+      key: 'layout',
+      value: {
+        layout: $state.snapshot(app.layout),
+        panes,
+        focused: app.focused,
+        sidebar: app.sidebar,
+        inspector: app.inspector,
+        theme: app.theme,
+        kittyTheme: app.kittyTheme,
+      },
+    }).catch(() => {});
   }, 400);
 }
 
@@ -359,9 +425,7 @@ export async function restoreLayout() {
       try {
         const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
         panes[id] = { ...s, type: 'shell', termId: t.id, cwd: t.cwd, title: title({ type: 'shell', cwd: t.cwd }) };
-      } catch {
-        continue;
-      }
+      } catch {}
     } else panes[id] = s;
   }
   app.panes = panes;
@@ -424,10 +488,23 @@ export function commands() {
     { id: 'pane.zoom', label: 'Zoom / restore the focused pane', run: toggleZoom },
     { id: 'pane.close', label: 'Close pane', run: () => closePane() },
     { id: 'sidebar', label: 'Toggle sidebar', run: () => ((app.sidebar = !app.sidebar), saveLayout()) },
-    { id: 'inspector', label: 'Toggle inspector', run: () => (wide() ? ((app.inspector = !app.inspector), saveLayout()) : (app.inspectorOverlay = !app.inspectorOverlay)) },
+    {
+      id: 'inspector',
+      label: 'Toggle inspector',
+      run: () =>
+        wide() ? ((app.inspector = !app.inspector), saveLayout()) : (app.inspectorOverlay = !app.inspectorOverlay),
+    },
     { id: 'agent.next-waiting', label: 'Jump to next waiting agent', run: nextWaiting },
-    { id: 'governor.pause-all', label: 'Pause all autonomous work', run: () => governor('pause_all').then(() => toast('Paused all · resumes on Resume all')) },
-    { id: 'governor.resume-all', label: 'Resume all', run: () => governor('resume_all').then(() => toast('Resumed all')) },
+    {
+      id: 'governor.pause-all',
+      label: 'Pause all autonomous work',
+      run: () => governor('pause_all').then(() => toast('Paused all · resumes on Resume all')),
+    },
+    {
+      id: 'governor.resume-all',
+      label: 'Resume all',
+      run: () => governor('resume_all').then(() => toast('Resumed all')),
+    },
     { id: 'theme.dark', label: 'Theme: Dark', run: () => setTheme('dark') },
     { id: 'theme.light', label: 'Theme: Light', run: () => setTheme('light') },
     { id: 'theme.kitty', label: 'Theme: derive from kitty.conf', run: () => setKittyTheme(true) },
@@ -440,9 +517,23 @@ export function commands() {
       live && { id: 'agent.interrupt', label: `Interrupt ${a.id} (Esc)`, run: () => agentAction(a.id, 'interrupt') },
       live && { id: 'agent.suspend', label: `Suspend ${a.id}`, run: () => agentAction(a.id, 'suspend') },
       !live && { id: 'agent.resume', label: `Resume ${a.id}`, run: () => agentAction(a.id, 'resume') },
-      { id: 'agent.kill', label: `Kill ${a.id}…`, run: () => confirm(`Kill ${a.id}?`, 'Its process group and every process left in its worktree get SIGTERM, then SIGKILL after 5 s. The session can be resumed.', () => agentAction(a.id, 'kill'), 'Kill') },
+      {
+        id: 'agent.kill',
+        label: `Kill ${a.id}…`,
+        run: () =>
+          confirm(
+            `Kill ${a.id}?`,
+            'Its process group and every process left in its worktree get SIGTERM, then SIGKILL after 5 s. The session can be resumed.',
+            () => agentAction(a.id, 'kill'),
+            'Kill',
+          ),
+      },
       { id: 'agent.shell', label: `Shell in ${a.id}'s worktree`, run: () => openShell({ agentId: a.id }) },
-      { id: 'agent.diff', label: `Diff of ${a.id} against its base`, run: () => openDiff(a.project_id, a.worktree, a.branch) },
+      {
+        id: 'agent.diff',
+        label: `Diff of ${a.id} against its base`,
+        run: () => openDiff(a.project_id, a.worktree, a.branch),
+      },
       { id: 'agent.kitty', label: `Open ${a.id}'s worktree in kitty`, run: () => openInKitty(a.worktree) },
     ].filter(Boolean);
     for (const c of agentCmds) c.scope = 'agent';
@@ -450,7 +541,11 @@ export function commands() {
   }
   for (const p of projects()) {
     list.push({ id: `project.open.${p.id}`, label: `Open project ${p.name}`, run: () => openProject(p.id) });
-    list.push({ id: `project.trust.${p.id}`, label: `Trust ${p.name} (Claude Code's dialog)…`, run: () => openTrust(p.id) });
+    list.push({
+      id: `project.trust.${p.id}`,
+      label: `Trust ${p.name} (Claude Code's dialog)…`,
+      run: () => openTrust(p.id),
+    });
   }
   for (const c of list) c.hint = hint(c.id);
   return list;
@@ -469,7 +564,9 @@ export function run(commandId) {
       const a = contextAgent();
       // The runtime has Pause all only; a per-agent pause needs runtime support.
       if (!a) return toast('No agent in focus');
-      toast(`Pause per agent is not available yet · use Pause all`, { action: { label: 'Pause all', run: () => run('governor.pause-all') } });
+      toast(`Pause per agent is not available yet · use Pause all`, {
+        action: { label: 'Pause all', run: () => run('governor.pause-all') },
+      });
     },
     'window.close': () => {},
   };
@@ -518,7 +615,12 @@ export function setKittyTheme(on) {
   app.theme = null;
   const src = applyTheme();
   saveLayout();
-  if (on && src !== 'kitty') toast(!(app.kitty?.options?.theme?.background && app.kitty?.options?.theme?.foreground) ? 'No background and foreground colors in kitty.conf: using the system theme' : 'kitty.conf colors are not readable enough (contrast) or lack an accent: using the system theme');
+  if (on && src !== 'kitty')
+    toast(
+      !(app.kitty?.options?.theme?.background && app.kitty?.options?.theme?.foreground)
+        ? 'No background and foreground colors in kitty.conf: using the system theme'
+        : 'kitty.conf colors are not readable enough (contrast) or lack an accent: using the system theme',
+    );
   else if (on) toast('Theme derived from kitty.conf: surface, text and accent; status colors stay fixed');
 }
 
@@ -530,7 +632,8 @@ export function jumpTargets() {
     const p = projects().find((x) => x.id === a.project_id);
     out.push({ label: `${p?.name ?? ''} › ${a.id}`, detail: displayState(a), run: () => openAgent(a.id) });
   }
-  for (const [id, s] of Object.entries(app.panes)) out.push({ label: `pane: ${s.title}`, detail: s.type, run: () => focusPane(id) });
+  for (const [id, s] of Object.entries(app.panes))
+    out.push({ label: `pane: ${s.title}`, detail: s.type, run: () => focusPane(id) });
   return out;
 }
 

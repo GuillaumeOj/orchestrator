@@ -1,14 +1,14 @@
 <script>
+  import AgentChip from '../components/AgentChip.svelte';
+  import Kbd from '../components/Kbd.svelte';
+  import StatusBadge from '../components/StatusBadge.svelte';
   // Inbox (FR-707, §9.6, Penpot 04 Inbox and 06 J5): one list in attention-ladder
   // order with a who/what/why preview. Keys: j/k move, a approve, r reject,
   // ⏎ reply, o open the agent pane, e open in nvim, x select (batch), u undo, esc back.
-  import { app, agent, openAgent, openEditor, decide, undoLast, toast } from '../lib/app.svelte.js';
-  import { FILTERS, LEVELS, visibleItems, move, afterRemoval, keyIntent, actionLabels } from '../lib/inbox.js';
+  import { agent, app, decide, openAgent, openEditor, toast, undoLast } from '../lib/app.svelte.js';
   import { ago } from '../lib/format.js';
+  import { actionLabels, afterRemoval, FILTERS, keyIntent, LEVELS, move, visibleItems } from '../lib/inbox.js';
   import { displayState } from '../lib/status.js';
-  import StatusBadge from '../components/StatusBadge.svelte';
-  import AgentChip from '../components/AgentChip.svelte';
-  import Kbd from '../components/Kbd.svelte';
 
   let filter = $state('all');
   let selected = $state(null);

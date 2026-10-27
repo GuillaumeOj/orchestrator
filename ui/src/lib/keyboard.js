@@ -33,7 +33,19 @@ export const LEADER = {
 };
 
 /** ⌘-chords the system menu handles (Edit menu): left alone. */
-const NATIVE = new Set(['cmd+c', 'cmd+v', 'cmd+x', 'cmd+a', 'cmd+z', 'cmd+shift+z', 'cmd+q', 'cmd+h', 'cmd+alt+h', 'cmd+m', 'cmd+shift+w']);
+const NATIVE = new Set([
+  'cmd+c',
+  'cmd+v',
+  'cmd+x',
+  'cmd+a',
+  'cmd+z',
+  'cmd+shift+z',
+  'cmd+q',
+  'cmd+h',
+  'cmd+alt+h',
+  'cmd+m',
+  'cmd+shift+w',
+]);
 
 const MODIFIERS = new Set(['Meta', 'Control', 'Alt', 'Shift', 'CapsLock', 'Fn']);
 
@@ -88,7 +100,23 @@ export function kittyKey(k) {
   return String(k)
     .toLowerCase()
     .split('+')
-    .map((p) => ({ left: 'arrowleft', right: 'arrowright', up: 'arrowup', down: 'arrowdown', super: 'cmd', opt: 'alt', option: 'alt', ctrl: 'ctrl', control: 'ctrl', enter: 'enter', return: 'enter', esc: 'escape' })[p] ?? p)
+    .map(
+      (p) =>
+        ({
+          left: 'arrowleft',
+          right: 'arrowright',
+          up: 'arrowup',
+          down: 'arrowdown',
+          super: 'cmd',
+          opt: 'alt',
+          option: 'alt',
+          ctrl: 'ctrl',
+          control: 'ctrl',
+          enter: 'enter',
+          return: 'enter',
+          esc: 'escape',
+        })[p] ?? p,
+    )
     .join('+');
 }
 

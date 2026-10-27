@@ -5,12 +5,12 @@
   // work is never deleted without its own confirmation.
   // Keys (pane-local): f fetch, p load PRs, t trust, x remove project.
   import { onMount } from 'svelte';
-  import { app, projects, agents, openAgent, openShell, openTrust, openDiff, refresh, toast, confirm, closePane } from '../lib/app.svelte.js';
-  import { invoke, errText } from '../lib/ipc.js';
-  import { ago, dayTime, shortPath } from '../lib/format.js';
-  import { displayState } from '../lib/status.js';
-  import StatusBadge from '../components/StatusBadge.svelte';
   import Kbd from '../components/Kbd.svelte';
+  import StatusBadge from '../components/StatusBadge.svelte';
+  import { agents, app, closePane, confirm, openAgent, openDiff, openShell, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
+  import { ago, dayTime, shortPath } from '../lib/format.js';
+  import { errText, invoke } from '../lib/ipc.js';
+  import { displayState } from '../lib/status.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);

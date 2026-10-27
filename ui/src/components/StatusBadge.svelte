@@ -1,6 +1,7 @@
 <script>
   // §9.5: one icon, one color and one label per state; the label carries the meaning.
   import { STATUS } from '../lib/status.js';
+
   let { state, compact = false, label = null } = $props();
   const s = $derived(STATUS[state] ?? STATUS.idle);
 </script>

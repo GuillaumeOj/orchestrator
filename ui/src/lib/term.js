@@ -4,9 +4,10 @@
 // (FR-1005); WebGL is opt-in. The kitty look (ADR-006): kitty's resolved font
 // and theme, kitty's Nerd Font symbols as fallback, the cell width rounded up
 // (letterSpacing) and kitty's CoreText line height (lineHeight ratio).
-import { Terminal } from '@xterm/xterm';
-import { Unicode11Addon } from '@xterm/addon-unicode11';
+
 import { FitAddon } from '@xterm/addon-fit';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { Terminal } from '@xterm/xterm';
 import { invoke } from './ipc.js';
 
 /** File paths with an optional line, for FR-208 links: src/x.ts:71, ./a/b.rs:3:9 */
@@ -61,7 +62,13 @@ export function linksAcrossRows(rows, y) {
     .map((p) => {
       const a = at[p.start];
       const b = at[p.end - 1];
-      return { file: p.file, line: p.line, text: text.slice(p.start, p.end), start: { row: a.row, col: a.col }, end: { row: b.row, col: b.col + 1 } };
+      return {
+        file: p.file,
+        line: p.line,
+        text: text.slice(p.start, p.end),
+        start: { row: a.row, col: a.col },
+        end: { row: b.row, col: b.col + 1 },
+      };
     })
     .filter((l) => l.start.row <= y && l.end.row >= y);
 }
@@ -84,7 +91,9 @@ export class TermPane {
     const o = kitty?.options ?? {};
     this.term = new Terminal({
       ...o,
-      fontFamily: kitty?.symbols_font ? `${o.fontFamily ?? '"Menlo", monospace'}`.replace(/,\s*monospace$/, ', "Symbols Nerd Font Mono", monospace') : o.fontFamily,
+      fontFamily: kitty?.symbols_font
+        ? `${o.fontFamily ?? '"Menlo", monospace'}`.replace(/,\s*monospace$/, ', "Symbols Nerd Font Mono", monospace')
+        : o.fontFamily,
       allowProposedApi: true,
       convertEol: false,
       letterSpacing: kitty?.letterSpacing ?? 0,
@@ -115,7 +124,10 @@ export class TermPane {
         cb(
           linksAcrossRows(rows, y - 1 - first).map((l) => ({
             // xterm: 1-based, end inclusive.
-            range: { start: { x: l.start.col + 1, y: first + l.start.row + 1 }, end: { x: l.end.col, y: first + l.end.row + 1 } },
+            range: {
+              start: { x: l.start.col + 1, y: first + l.start.row + 1 },
+              end: { x: l.end.col, y: first + l.end.row + 1 },
+            },
             text: l.text,
             activate: () => this.hooks.onOpenPath?.(l.file, l.line),
           })),
@@ -145,7 +157,7 @@ export class TermPane {
   /** kitty's cell height from CoreText vs the one xterm.js measured (lineHeight 1). */
   applyLineHeight() {
     const want = this.kitty?.cell_height;
-    const cell = this.term._core?._renderService?.dimensions?.css?.cell;
+    const cell = /** @type {any} */ (this.term)._core?._renderService?.dimensions?.css?.cell;
     if (!want || !cell?.height || this.kitty?.options?.lineHeight) return;
     const ratio = want / cell.height;
     if (Math.abs(ratio - 1) > 0.01) this.term.options.lineHeight = ratio;
@@ -182,7 +194,8 @@ export class TermPane {
     this.starting = true;
     try {
       // The core also nudges the agent's size so its idle TUI redraws for this pane.
-      if (this.source.kind === 'agent') this.reader = await invoke('agent_attach', { id: this.source.id, rows: this.term.rows, cols: this.term.cols });
+      if (this.source.kind === 'agent')
+        this.reader = await invoke('agent_attach', { id: this.source.id, rows: this.term.rows, cols: this.term.cols });
     } finally {
       this.starting = false;
     }
@@ -202,7 +215,7 @@ export class TermPane {
         return;
       }
       const u8 = new Uint8Array(buf);
-      if (u8.length) await new Promise((res) => this.term.write(u8, res));
+      if (u8.length) await new Promise((res) => this.term.write(u8, () => res(undefined)));
     }
   }
 
@@ -223,7 +236,8 @@ export class TermPane {
   dispose() {
     this.disposed = true;
     this.alive = false;
-    if (this.source.kind === 'agent') invoke('agent_detach', { id: this.source.id, reader: this.reader ?? 0 }).catch(() => {});
+    if (this.source.kind === 'agent')
+      invoke('agent_detach', { id: this.source.id, reader: this.reader ?? 0 }).catch(() => {});
     else invoke('term_kill', { id: this.source.id }).catch(() => {});
     this.term.dispose();
     this.host.remove();

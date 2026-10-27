@@ -50,7 +50,11 @@ export function shortPath(path, home) {
 }
 
 /** "~/dev/app" → "<home>/dev/app" (the core wants absolute paths). */
-export const expandHome = (path, home) => String(path).trim().replace(/^~(?=\/|$)/, home);
+export const expandHome = (path, home) =>
+  String(path)
+    .trim()
+    .replace(/^~(?=\/|$)/, home);
 
 /** Token counts: "63 k", "1.2 M". */
-export const tokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} M` : n >= 1e3 ? `${Math.round(n / 1e3)} k` : String(n));
+export const tokens = (n) =>
+  n >= 1e6 ? `${(n / 1e6).toFixed(1)} M` : n >= 1e3 ? `${Math.round(n / 1e3)} k` : String(n);

@@ -1,8 +1,8 @@
 <script>
   // Status bar (§9.2): git state of the focused project, live/queued agents with
   // the pressure state in words, the 5h guard chip whenever it holds work, memory.
-  import { app, agents, contextAgent, contextProject, openSingleton } from '../lib/app.svelte.js';
-  import { mb, clock } from '../lib/format.js';
+  import { agents, app, contextAgent, contextProject, openSingleton } from '../lib/app.svelte.js';
+  import { clock, mb } from '../lib/format.js';
   import Kbd from './Kbd.svelte';
   import PressurePill from './PressurePill.svelte';
 

@@ -1,6 +1,7 @@
 <script>
   // ADR-007 states: glyph shape differs per state and the word is always shown.
   import { PRESSURE } from '../lib/status.js';
+
   let { state, shadow = false } = $props();
   const p = $derived(PRESSURE[state] ?? PRESSURE.green);
 </script>
