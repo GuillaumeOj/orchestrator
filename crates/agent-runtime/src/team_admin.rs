@@ -21,27 +21,6 @@ fn issues_json(team: &Team, roles: &[RoleDef]) -> Vec<Value> {
 }
 
 impl Runtime {
-    /// Saves the starter roles and presets that are not in the library yet.
-    /// Returns how many were added.
-    pub fn install_presets(&self) -> Result<usize> {
-        let now = now_ms();
-        let mut n = 0;
-        for r in orch_team::presets::starter_roles() {
-            if self.db.role(&r.scope, &r.id)?.is_none() {
-                self.db.upsert_role(&r, now)?;
-                n += 1;
-            }
-        }
-        let roles = self.db.roles(None)?;
-        for (_, t) in orch_team::presets::all() {
-            if self.db.team(&t.scope, &t.id)?.is_none() {
-                self.db.save_team(&t, &roles, now)?;
-                n += 1;
-            }
-        }
-        Ok(n)
-    }
-
     /// [`Runtime::install_presets`] once per run of the app (the views call
     /// it on every load).
     pub fn ensure_presets(&self) -> Result<()> {
@@ -62,6 +41,7 @@ impl Runtime {
             .teams(project)?
             .into_iter()
             .map(|t| {
+                let (preset, starter, update_available) = crate::presets::preset_fields(&t);
                 let mut issues = issues_json(&t, &roles);
                 // A node whose role's MCP servers can't work (FR-601) is an
                 // issue; one the compile works around is a warning (no block).
@@ -74,7 +54,8 @@ impl Runtime {
                         }
                     }
                 }
-                json!({"team": t, "issues": issues, "warnings": warnings, "rules": rules::rules_text(&t)})
+                json!({"team": t, "issues": issues, "warnings": warnings, "rules": rules::rules_text(&t),
+                       "preset": preset, "starter": starter, "update_available": update_available})
             })
             .collect();
         let roles: Vec<Value> = roles
@@ -102,6 +83,10 @@ impl Runtime {
         if let Some(old) = self.db.team(&team.scope, &team.id)? {
             let same = old.nodes == team.nodes && old.edges == team.edges && old.name == team.name;
             team.version = if same { old.version } else { old.version + 1 };
+            // Where a starter came from stays with it (the canvas may not send it back).
+            if team.origin.is_none() {
+                team.origin = old.origin;
+            }
         }
         self.db.save_team(&team, &roles, now_ms())?;
         Ok(json!({"issues": issues_json(&team, &roles), "team": team}))
@@ -113,6 +98,9 @@ impl Runtime {
             bail!("invalid role id {:?}", role.id);
         }
         if let Some(old) = self.db.role(&role.scope, &role.id)? {
+            if role.origin.is_none() {
+                role.origin = old.origin.clone();
+            }
             let mut cmp = old.clone();
             cmp.version = role.version;
             role.version = if cmp == role { old.version } else { old.version + 1 };
@@ -164,7 +152,7 @@ impl Runtime {
         Ok(json!({
             "run": cx.run, "feature": cx.feature, "team": cx.team, "project": {"id": cx.project.id, "name": cx.project.name, "backend": cx.project.backend().kind()},
             "rules": rules::rules_text(&cx.team), "agents": agents, "tasks": tasks, "docs": docs,
-            "artifacts": self.db.artifacts(&cx.feature.id)?,
+            "artifacts": self.artifacts_json(&cx.feature)?,
             "timeline": self.db.run_events(run_id, 200)?,
         }))
     }

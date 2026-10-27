@@ -186,6 +186,10 @@ pub struct Artifact {
     #[serde(default)]
     pub note: String,
     pub created_at_ms: u64,
+    /// What `uri` points at (FR-602); `None` for rows from before P3 or an
+    /// unrecognised URI.
+    #[serde(default)]
+    pub meta: Option<orch_team::artifact::ArtifactMeta>,
 }
 
 /// Typed view of `projects.settings` (FR-109). Unknown keys are kept.
@@ -345,7 +349,7 @@ fn row_message(r: &rusqlite::Row) -> rusqlite::Result<Message> {
     })
 }
 
-const ARTIFACT_COLS: &str = "id, feature_id, team_run_id, kind, uri, from_node, to_node, note, created_at_ms";
+const ARTIFACT_COLS: &str = "id, feature_id, team_run_id, kind, uri, from_node, to_node, note, created_at_ms, meta";
 
 fn row_artifact(r: &rusqlite::Row) -> rusqlite::Result<Artifact> {
     Ok(Artifact {
@@ -358,6 +362,7 @@ fn row_artifact(r: &rusqlite::Row) -> rusqlite::Result<Artifact> {
         to_node: r.get(6)?,
         note: r.get(7)?,
         created_at_ms: r.get::<_, i64>(8)? as u64,
+        meta: r.get::<_, Option<String>>(9)?.and_then(|s| serde_json::from_str(&s).ok()),
     })
 }
 
@@ -757,8 +762,8 @@ impl Store {
         let a = a.clone();
         self.write(move |tx| {
             tx.execute(
-                "INSERT INTO artifacts(feature_id, team_run_id, kind, uri, from_node, to_node, note, created_at_ms)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                "INSERT INTO artifacts(feature_id, team_run_id, kind, uri, from_node, to_node, note, created_at_ms, meta)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
                 params![
                     a.feature_id,
                     a.team_run_id,
@@ -767,7 +772,8 @@ impl Store {
                     a.from_node,
                     a.to_node,
                     a.note,
-                    a.created_at_ms as i64
+                    a.created_at_ms as i64,
+                    a.meta.as_ref().map(js)
                 ],
             )?;
             Ok(tx.last_insert_rowid() as u64)
@@ -1003,9 +1009,25 @@ mod tests {
             to_node: Some("ui".into()),
             note: String::new(),
             created_at_ms: 3,
+            meta: None,
         })
         .unwrap();
-        assert_eq!(s.artifacts("f1").unwrap().len(), 1);
+        let meta = orch_team::artifact::parse("design/a.png");
+        s.add_artifact(&Artifact {
+            id: 0,
+            feature_id: "f1".into(),
+            team_run_id: Some("r1".into()),
+            kind: "design".into(),
+            uri: "design/a.png".into(),
+            from_node: "ui".into(),
+            to_node: Some("front".into()),
+            note: String::new(),
+            created_at_ms: 4,
+            meta: meta.clone(),
+        })
+        .unwrap();
+        let arts = s.artifacts("f1").unwrap();
+        assert_eq!((arts.len(), &arts[0].meta, &arts[1].meta), (2, &None, &meta));
 
         s.add_run_event(5, "r1", Some("lead-1"), "run.state", serde_json::json!({"to": "spec_gate"}));
         s.add_event(6, Some("lead-1"), "hook.Stop", Value::Null);

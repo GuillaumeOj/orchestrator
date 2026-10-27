@@ -75,8 +75,11 @@ impl Net for SystemNet {
         let mut cmd = Command::new("/usr/bin/curl");
         cmd.args(["-sS", "-N", "--max-time", &secs, "--max-redirs", "0", "-D", "-", "-o", "-", "-X", req.method]);
         cmd.args(["-H", "@-"]);
-        if let Some(b) = &req.body {
-            cmd.args(["--data-binary", b]);
+        // The body (task text, whole docs) never goes on the command line:
+        // a 0600 file, removed when curl is done.
+        let body_file = req.body.as_deref().map(BodyFile::new).transpose()?;
+        if let Some(f) = &body_file {
+            cmd.arg("--data-binary").arg(format!("@{}", f.0.display()));
         }
         cmd.arg("--").arg(&req.url);
         let mut child =
@@ -108,6 +111,34 @@ impl Net for SystemNet {
             bail!("{}", text.trim());
         }
         Ok(text)
+    }
+}
+
+/// A request body in a private temp file, deleted on drop.
+struct BodyFile(std::path::PathBuf);
+
+impl BodyFile {
+    fn new(body: &str) -> Result<BodyFile> {
+        use std::os::unix::fs::OpenOptionsExt;
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("orch-body-{}-{n}-{}", std::process::id(), orch_protocol::now_ms()));
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .with_context(|| format!("creating {}", path.display()))?;
+        let file = BodyFile(path);
+        f.write_all(body.as_bytes())?;
+        Ok(file)
+    }
+}
+
+impl Drop for BodyFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 
@@ -214,6 +245,17 @@ mod tests {
         };
         let d = format!("{r:?}");
         assert!(d.contains("Authorization") && !d.contains("s3cret"), "{d}");
+    }
+
+    #[test]
+    fn a_body_goes_through_a_private_file_removed_after() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = BodyFile::new("{\"query\": \"secret task text\"}").unwrap();
+        let p = f.0.clone();
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{\"query\": \"secret task text\"}");
+        drop(f);
+        assert!(!p.exists());
     }
 
     #[test]

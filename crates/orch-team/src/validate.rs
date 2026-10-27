@@ -213,7 +213,16 @@ mod tests {
     }
 
     fn team(nodes: Vec<AgentNode>, edges: Vec<Edge>) -> Team {
-        Team { id: "t".into(), name: "t".into(), scope: Scope::Global, nodes, edges, version: 1 }
+        Team {
+            id: "t".into(),
+            name: "t".into(),
+            scope: Scope::Global,
+            nodes,
+            edges,
+            version: 1,
+            preset: false,
+            origin: None,
+        }
     }
 
     #[test]

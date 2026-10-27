@@ -387,7 +387,7 @@ impl Runtime {
             return Ok(json!({"deleted": false, "used_by": used}));
         }
         self.db.delete_mcp_server(scope, id)?;
-        self.close_needs_auth(id, "deleted");
+        self.close_needs_auth(id, scope.project(), "deleted");
         Ok(json!({"deleted": true, "used_by": []}))
     }
 
@@ -438,31 +438,40 @@ impl Runtime {
 
     /// Records a status; `needs_auth` raises the server's one Inbox alert,
     /// `connected` closes it.
+    ///
+    /// A probe that can't tell (`unknown`: an OAuth server, a connector)
+    /// never replaces what the agents' calls showed (`connected`,
+    /// `needs_auth`): only the detail and the check time change.
     pub fn set_mcp_status(&self, scope: &Scope, s: &McpServer, status: McpStatus, detail: Option<&str>) -> Result<()> {
-        self.db.set_mcp_status(scope, &s.id, status, detail, now_ms())?;
-        if status != s.status {
-            self.event("-", "mcp_status", json!({"server": s.id, "status": status, "detail": detail}));
+        let observed = matches!(s.status, McpStatus::Connected | McpStatus::NeedsAuth);
+        let kept = if status == McpStatus::Unknown && observed { s.status } else { status };
+        self.db.set_mcp_status(scope, &s.id, kept, detail, now_ms())?;
+        if kept != s.status {
+            self.event("-", "mcp_status", json!({"server": s.id, "status": kept, "detail": detail}));
         }
+        let project = scope.project();
         match status {
-            McpStatus::NeedsAuth => self.raise_needs_auth(s, detail),
-            McpStatus::Connected => self.close_needs_auth(&s.id, "connected"),
+            McpStatus::NeedsAuth => self.raise_needs_auth(s, project, detail),
+            McpStatus::Connected => self.close_needs_auth(&s.id, project, "connected"),
             _ => {}
         }
         Ok(())
     }
 
-    fn pending_needs_auth(&self, id: &str) -> Vec<u64> {
+    /// Pending alerts of the entry `id` in `project` (`None`: the global one).
+    fn pending_needs_auth(&self, id: &str, project: Option<&str>) -> Vec<u64> {
         self.store.read(|st| {
             st.inbox
                 .iter()
                 .filter(|i| i.pending() && i.payload["alert"] == NEEDS_AUTH_ALERT && i.payload["server"] == id)
+                .filter(|i| i.payload["project"].as_str() == project)
                 .map(|i| i.id)
                 .collect()
         })
     }
 
-    fn raise_needs_auth(&self, s: &McpServer, detail: Option<&str>) {
-        if !self.pending_needs_auth(&s.id).is_empty() {
+    fn raise_needs_auth(&self, s: &McpServer, project: Option<&str>, detail: Option<&str>) {
+        if !self.pending_needs_auth(&s.id, project).is_empty() {
             return; // one per server
         }
         let mut roles: Vec<String> = self
@@ -479,12 +488,14 @@ impl Runtime {
             s.name,
             detail.map(|d| format!(": {d}")).unwrap_or_default()
         );
-        let payload = json!({"alert": NEEDS_AUTH_ALERT, "server": s.id, "name": s.name, "roles": roles});
+        // `project`: whose entry it is (null: the global one), for the reconnect target.
+        let payload =
+            json!({"alert": NEEDS_AUTH_ALERT, "server": s.id, "name": s.name, "roles": roles, "project": project});
         let _ = self.add_item(None, "alert", body, payload, 0);
     }
 
-    fn close_needs_auth(&self, id: &str, why: &str) {
-        let open = self.pending_needs_auth(id);
+    fn close_needs_auth(&self, id: &str, project: Option<&str>, why: &str) {
+        let open = self.pending_needs_auth(id, project);
         if open.is_empty() {
             return;
         }
@@ -689,7 +700,7 @@ pub(crate) mod tests {
         assert_eq!(alerts.len(), 1, "deduplicated");
         assert_eq!(
             alerts[0].payload,
-            json!({"alert": "mcp_needs_auth", "server": "figma", "name": "figma", "roles": ["ui"]})
+            json!({"alert": "mcp_needs_auth", "server": "figma", "name": "figma", "roles": ["ui"], "project": null})
         );
         // Connected again → the alert is closed.
         fake.route("https://figma.example/mcp", 200, &[], "{}");
@@ -725,6 +736,66 @@ pub(crate) mod tests {
         ev("PostToolUseFailure", "mcp__claude_ai_Penpot_Perso__execute_code", Some("401 again"));
         ev("PostToolUseFailure", "mcp__unknown__x", Some("401"));
         assert_eq!(pending(), 1, "one per server, none for a server outside the registry");
+    }
+
+    #[test]
+    fn a_probe_that_cant_tell_keeps_what_the_agents_showed() {
+        let (_d, rt, fake) = test_runtime_net();
+        let status = |id: &str| rt.db.mcp_server(&Scope::Global, id).unwrap().unwrap();
+        let ev = |event: &str, tool: &str| {
+            rt.on_hook(&hook(event, json!({"tool_name": tool, "tool_use_id": "t1", "tool_input": {}})), None);
+        };
+        // A connector seen working stays connected through probes (spawn, 30 min).
+        ev("PostToolUse", "mcp__claude_ai_Penpot__export_shape");
+        assert_eq!(status("penpot").status, McpStatus::Connected);
+        let t = rt.mcp_server_test("penpot", None).unwrap();
+        assert_eq!(t.status, McpStatus::Connected);
+        assert!(t.checked_at_ms.is_some() && t.detail.unwrap().contains("connector"), "detail and time updated");
+
+        // An OAuth server: needs_auth from a call; the probe's 401+OAuth keeps it, and
+        // a dismissed alert is not raised again by the probe.
+        let mut s = McpServer::new("linear", "Linear", McpKind::Http);
+        s.url = Some("https://mcp.linear.example/mcp".into());
+        rt.mcp_server_save(s, &Scope::Global).unwrap();
+        fake.route(
+            "https://mcp.linear.example/mcp",
+            401,
+            &[("www-authenticate", "Bearer resource_metadata=\"x\"")],
+            "",
+        );
+        ev("PreToolUse", "mcp__linear__authenticate");
+        assert_eq!(status("linear").status, McpStatus::NeedsAuth);
+        let alert = rt.inbox().into_iter().find(|i| i.payload["server"] == "linear").unwrap();
+        assert_eq!(alert.payload["project"], Value::Null, "the global entry");
+        rt.store.write(|st| st.close_inbox(alert.id, InboxStatus::Dismissed, None).map(|_| ()).ok()).unwrap();
+        assert_eq!(rt.mcp_server_test("linear", None).unwrap().status, McpStatus::NeedsAuth);
+        assert!(rt.inbox().iter().all(|i| i.payload["server"] != "linear"), "the probe raised nothing");
+        // A never-observed server takes the probe's answer.
+        let mut s2 = McpServer::new("other", "Other", McpKind::Http);
+        s2.url = Some("https://mcp.linear.example/mcp".into());
+        rt.mcp_server_save(s2, &Scope::Global).unwrap();
+        assert_eq!(rt.mcp_server_test("other", None).unwrap().status, McpStatus::Unknown);
+    }
+
+    #[test]
+    fn a_project_override_alert_names_its_project() {
+        let (_d, rt, fake) = test_runtime_net();
+        let (_r, repo) = orch_git::fixtures::scratch_repo();
+        let p = orch_git::project::register(&rt.db, &repo).unwrap();
+        let mut s = McpServer::new("penpot", "Penpot (self-hosted)", McpKind::Http);
+        s.url = Some("https://penpot.example/mcp".into());
+        rt.mcp_server_save(s, &Scope::Project(p.id.clone())).unwrap();
+        fake.route("https://penpot.example/mcp", 403, &[], "");
+        assert_eq!(rt.mcp_server_test("penpot", Some(&p.id)).unwrap().status, McpStatus::NeedsAuth);
+        let a = rt.inbox().into_iter().find(|i| i.payload["server"] == "penpot").unwrap();
+        assert_eq!(a.payload["project"], json!(p.id));
+        // The global entry's own alert is a different one; connected closes only its own.
+        let g = rt.db.mcp_server(&Scope::Global, "penpot").unwrap().unwrap();
+        rt.set_mcp_status(&Scope::Global, &g, McpStatus::NeedsAuth, None).unwrap();
+        assert_eq!(rt.inbox().iter().filter(|i| i.payload["server"] == "penpot").count(), 2);
+        rt.set_mcp_status(&Scope::Global, &g, McpStatus::Connected, None).unwrap();
+        let left: Vec<_> = rt.inbox().into_iter().filter(|i| i.payload["server"] == "penpot").collect();
+        assert_eq!((left.len(), left[0].payload["project"].clone()), (1, json!(p.id)));
     }
 
     /// A test runtime whose network is a [`FakeNet`].
