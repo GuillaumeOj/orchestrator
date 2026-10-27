@@ -1,0 +1,18 @@
+[package]
+name = "orch-tasks"
+version = "0.1.0"
+description = "Task backends (ADR-004, FR-501–503): one task model mirrored in the store, Local and GitHub Issues, sync where the remote wins."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+orch-store.workspace = true
+orch-team.workspace = true
+orch-git.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

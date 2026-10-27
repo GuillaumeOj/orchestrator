@@ -2308,6 +2308,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-tasks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "orch-git",
+ "orch-store",
+ "orch-team",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "orch-team"
 version = "0.1.0"
 dependencies = [
