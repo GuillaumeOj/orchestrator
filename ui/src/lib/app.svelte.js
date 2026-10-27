@@ -7,7 +7,7 @@ import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
 import * as L from './layout.js';
-import { displayState } from './status.js';
+import { displayState, runCost } from './status.js';
 import { TermPane } from './term.js';
 import { breakpoint } from './tokens.js';
 
@@ -314,13 +314,7 @@ export function nextWaiting() {
 export async function agentAction(id, action, message = null) {
   try {
     await invoke('agent_action', { id, action, message });
-    const verb = {
-      interrupt: 'Interrupted',
-      suspend: 'Suspended',
-      kill: 'Killed',
-      resume: 'Resumed',
-      deliver: 'Sent to',
-    }[action];
+    const verb = { interrupt: 'Interrupted', suspend: 'Suspended', kill: 'Killed', resume: 'Resumed', deliver: 'Sent to', pause: 'Paused', unpause: 'Unpaused' }[action];
     toast(`${verb ?? action} · ${id}`);
     await refresh();
   } catch (e) {
@@ -342,15 +336,15 @@ export function openInKitty(cwd) {
   invoke('open_in_kitty', { cwd }).catch((e) => toast(errText(e), { kind: 'error' }));
 }
 
-/** Run a queued turn now, after the user confirms its cost (FR-809). */
+/** Run a queued turn now, after the user confirms its cost in both windows (FR-809). */
 export function runNow(a, notStarted) {
-  const cost = a.queue_entry.estimated_cost_pct.toFixed(1);
-  confirm(
-    `${notStarted ? 'Start' : 'Run'} ${a.id} now?`,
-    `≈ +${cost} pp of the week. It runs above the live cap for one turn and is logged as your override.`,
-    () => governor('run_now', a.queue_entry.id),
-    notStarted ? 'Start now' : 'Run now',
-  );
+  const cost = runCost(a.queue_entry, true);
+  confirm(`${notStarted ? 'Start' : 'Run'} ${a.id} now?`, `≈ ${cost}. It runs above the live cap for one turn and is logged as your override.`, () => governor('run_now', a.queue_entry.id), notStarted ? 'Start now' : 'Run now');
+}
+
+/** Drop a queued turn (its message is not delivered). */
+export function cancelQueued(a) {
+  confirm(`Cancel ${a.id}'s queued turn?`, 'The waiting message is dropped and logged; the agent keeps its session.', () => governor('cancel', a.queue_entry.id), 'Cancel turn');
 }
 
 /** Mounts the pane's xterm in `host`, fits it on resize; returns the cleanup. */
@@ -563,12 +557,10 @@ export function run(commandId) {
     'focus.up': () => focusDirection('up'),
     'focus.down': () => focusDirection('down'),
     'agent.pause': () => {
+      // FR-805/811: the Governor holds this agent at its next tool boundary; again resumes it.
       const a = contextAgent();
-      // The runtime has Pause all only; a per-agent pause needs runtime support.
       if (!a) return toast('No agent in focus');
-      toast(`Pause per agent is not available yet · use Pause all`, {
-        action: { label: 'Pause all', run: () => run('governor.pause-all') },
-      });
+      agentAction(a.id, a.paused ? 'unpause' : 'pause');
     },
     'window.close': () => {},
   };

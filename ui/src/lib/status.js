@@ -19,11 +19,13 @@ export const STATUS = {
  * runtime has a few states the vocabulary doesn't name: `starting` (before
  * SessionStart) reads Working, `created` reads Queued ("Not started yet"),
  * `killed` reads Suspended (its session can be resumed), `archived` Done.
- * A queued turn held by Pause all reads Paused.
+ * A queued turn held by Pause all, and an agent paused on its own, read Paused.
  */
 export function displayState(agent) {
   const s = agent?.state;
-  if (agent?.queue_entry?.reason?.kind === 'paused_all') return 'paused';
+  const held = agent?.queue_entry?.reason?.kind;
+  if (held === 'paused_all' || held === 'paused_agent') return 'paused';
+  if (agent?.paused && s !== 'working') return 'paused';
   switch (s) {
     case 'starting':
       return 'working';
@@ -79,11 +81,26 @@ export function queueReason(entry) {
       return 'allocation hard cap';
     case 'paused_all':
       return 'Pause all';
+    case 'paused_agent':
+      return 'paused (p resumes)';
+    case 'memory_pressure':
+      return `memory pressure (${r.cap} live)`;
     case 'behind_queue':
       return 'behind other queued work';
     default:
       return 'queued';
   }
+}
+
+/**
+ * Run now's cost in the window that holds the entry (FR-809): % of the 5h
+ * window under the 5h guard, pp of the week otherwise. `both` adds the other.
+ */
+export function runCost(entry, both = false) {
+  const pp = `+${(entry?.estimated_cost_pct ?? 0).toFixed(1)} pp`;
+  const f = entry?.estimated_cost_5h_pct;
+  if (entry?.binding === 'five_hour' && f != null) return both ? `+${f.toFixed(0)} % of the 5h window (${pp} of the week)` : `+${f.toFixed(0)} % 5h`;
+  return both && f != null ? `${pp} of the week (+${f.toFixed(0)} % of the 5h window)` : pp;
 }
 
 /** The agent's session usage in pp of the week (cost / cost per weekly %). */

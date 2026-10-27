@@ -158,6 +158,9 @@ pub struct PlanForm {
     pub start: String,
     pub end: String,
     pub reserve_pct: f64,
+    /// % of the week agents may use outside working hours (FR-816; 0 = none).
+    #[serde(default)]
+    pub off_hours_allowance_pct: f64,
     pub allocations: Vec<AllocationForm>,
 }
 
@@ -168,6 +171,9 @@ pub struct AllocationForm {
     pub target: String,
     pub weight: f64,
     pub tier: Tier,
+    /// FR-811: the allocation stops for the week at this % of the week (none: no cap).
+    #[serde(default)]
+    pub hard_cap_pct: Option<f64>,
 }
 
 const DAYS: [(&str, Day); 7] = [
@@ -205,7 +211,13 @@ impl PlanForm {
         let allocations = if only_default && !projects.is_empty() {
             projects
                 .iter()
-                .map(|p| AllocationForm { id: p.id.clone(), target: p.name.clone(), weight: 1.0, tier: Tier::Normal })
+                .map(|p| AllocationForm {
+                    id: p.id.clone(),
+                    target: p.name.clone(),
+                    weight: 1.0,
+                    tier: Tier::Normal,
+                    hard_cap_pct: None,
+                })
                 .collect()
         } else {
             plan.allocations
@@ -215,6 +227,7 @@ impl PlanForm {
                     target: a.target.clone(),
                     weight: a.weight,
                     tier: a.tier,
+                    hard_cap_pct: a.hard_cap_pct,
                 })
                 .collect()
         };
@@ -223,6 +236,7 @@ impl PlanForm {
             start: first.map(|b| hhmm(b.start)).unwrap_or_else(|| "09:00".into()),
             end: first.map(|b| hhmm(b.end)).unwrap_or_else(|| "19:00".into()),
             reserve_pct: plan.reserve_pct,
+            off_hours_allowance_pct: plan.off_hours_allowance_pct,
             allocations,
         }
     }
@@ -237,6 +251,9 @@ impl PlanForm {
         if !(0.0..=50.0).contains(&self.reserve_pct) {
             bail!("reserve {}%: use 0–50 %", self.reserve_pct);
         }
+        if !(0.0..=100.0).contains(&self.off_hours_allowance_pct) {
+            bail!("off-hours allowance {}%: use 0–100 %", self.off_hours_allowance_pct);
+        }
         let mut blocks = vec![];
         for d in &self.days {
             let (_, day) = DAYS.iter().find(|(n, _)| n == d).ok_or_else(|| anyhow!("unknown day {d:?}"))?;
@@ -250,12 +267,15 @@ impl PlanForm {
             if allocations.iter().any(|x| x.id.0 == a.id) {
                 bail!("allocation {} twice", a.id);
             }
+            if let Some(c) = a.hard_cap_pct.filter(|c| !(0.0..=100.0).contains(c)) {
+                bail!("hard cap of {} {c}%: use 0–100 %, or leave it empty", a.id);
+            }
             allocations.push(BudgetAllocation {
                 id: AllocationId(a.id.clone()),
                 target: a.target.clone(),
                 weight: a.weight,
                 tier: a.tier,
-                hard_cap_pct: None,
+                hard_cap_pct: a.hard_cap_pct,
             });
         }
         if !allocations.iter().any(|a| a.id.0 == agent_runtime::runtime::DEFAULT_ALLOCATION) {
@@ -271,6 +291,7 @@ impl PlanForm {
         let mut p = plan.clone();
         p.calendar.blocks = blocks;
         p.reserve_pct = self.reserve_pct;
+        p.off_hours_allowance_pct = self.off_hours_allowance_pct;
         p.allocations = allocations;
         Ok(p)
     }
@@ -415,13 +436,17 @@ mod tests {
         f2.days = vec!["mon".into(), "sat".into()];
         f2.start = "10:00".into();
         f2.allocations[1].weight = 3.0;
+        f2.allocations[1].hard_cap_pct = Some(12.0);
+        f2.off_hours_allowance_pct = 5.0;
         let p = f2.apply(&plan).unwrap();
         assert_eq!(plan_days(&p), ["mon", "sat"]);
+        assert_eq!((p.allocations[1].hard_cap_pct, p.off_hours_allowance_pct), (Some(12.0), 5.0));
         assert_eq!(p.allocations.len(), 3, "default kept for other sessions");
         assert_eq!((p.week_start, p.reset_at), (plan.week_start, plan.reset_at), "same week");
         let back = PlanForm::from_plan(&p, &[]);
         assert_eq!(back.allocations.len(), 3);
         assert_eq!(back.start, "10:00");
+        assert_eq!((back.allocations[1].hard_cap_pct, back.off_hours_allowance_pct), (Some(12.0), 5.0));
         governor::Governor::new(p, governor::PacingPolicy::default(), now).expect("a valid plan");
         let bad = |m: fn(&mut PlanForm)| {
             let mut x = f.clone();
@@ -431,6 +456,8 @@ mod tests {
         assert!(bad(|x| x.days.clear()));
         assert!(bad(|x| x.end = "08:00".into()));
         assert!(bad(|x| x.reserve_pct = 80.0));
+        assert!(bad(|x| x.off_hours_allowance_pct = 120.0));
+        assert!(bad(|x| x.allocations[0].hard_cap_pct = Some(-1.0)));
         assert!(bad(|x| x.days = vec!["funday".into()]));
     }
 }

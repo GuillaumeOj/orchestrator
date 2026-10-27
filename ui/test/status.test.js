@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { duration, mb, pp, when } from '../src/lib/format.js';
 import { filter, score } from '../src/lib/fuzzy.js';
-import { displayState, notStarted, queueReason, roleOf, STATUS } from '../src/lib/status.js';
+import { displayState, notStarted, queueReason, roleOf, runCost, STATUS } from '../src/lib/status.js';
 
 describe('status vocabulary §9.5', () => {
   it('maps every runtime state onto the vocabulary', () => {
@@ -32,6 +32,23 @@ describe('status vocabulary §9.5', () => {
     expect(roleOf('back-1').letter).toBe('B');
     expect(roleOf('fix-tax').letter).toBe('S');
     expect(queueReason({ reason: { kind: 'live_cap', cap: 1, state: 'red' } })).toBe('live-agent cap 1 (red)');
+    expect(queueReason({ reason: { kind: 'memory_pressure', cap: 1 } })).toBe('memory pressure (1 live)');
+  });
+
+  it('paused agents read Paused, except while the user has them working', () => {
+    expect(displayState({ state: 'idle', queue_entry: { reason: { kind: 'paused_agent' } } })).toBe('paused');
+    expect(displayState({ state: 'idle', paused: true })).toBe('paused');
+    expect(displayState({ state: 'working', paused: true })).toBe('working');
+  });
+
+  it('Run now costs the window that holds the entry (FR-809)', () => {
+    const weekly = { estimated_cost_pct: 1.25, estimated_cost_5h_pct: 6.2, binding: 'weekly' };
+    expect(runCost(weekly)).toBe('+1.3 pp');
+    expect(runCost(weekly, true)).toBe('+1.3 pp of the week (+6 % of the 5h window)');
+    const five = { ...weekly, binding: 'five_hour' };
+    expect(runCost(five)).toBe('+6 % 5h');
+    expect(runCost(five, true)).toBe('+6 % of the 5h window (+1.3 pp of the week)');
+    expect(runCost({ estimated_cost_pct: 0.5, estimated_cost_5h_pct: null, binding: 'five_hour' }, true)).toBe('+0.5 pp');
   });
 });
 

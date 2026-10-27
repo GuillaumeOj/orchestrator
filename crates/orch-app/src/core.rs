@@ -806,6 +806,8 @@ impl Core {
         let mut warnings: Vec<Value> = self.warnings.lock_ok().iter().map(|w| json!(w)).collect();
         let (mut usage, mut queue, mut meta, mut alerts, mut done, mut ask) =
             (Value::Null, vec![], BTreeMap::new(), vec![], vec![], None);
+        // Agents paused one by one (FR-805/811): idle ones have no queue entry.
+        let mut paused = std::collections::BTreeSet::new();
         if let Some(rt) = &self.rt {
             let st = rt.state_json();
             agents = st["agents"].as_array().cloned().unwrap_or_default();
@@ -827,6 +829,7 @@ impl Core {
                     pending_ask(g, now),
                 )
             });
+            paused = rt.with_governor(|g| g.paused_agents().iter().map(|a| a.0.clone()).collect());
             usage["live_cap"] = json!(snapshot.live_cap);
             usage["snapshot"] = json!(snapshot);
             usage["reset_at_ms"] = json!(reset);
@@ -851,6 +854,7 @@ impl Core {
             if let Some(q) = queue.iter().find(|e| e.agent.0 == id) {
                 a["queue_entry"] = json!(q);
             }
+            a["paused"] = json!(paused.contains(&id));
             a["attached"] = json!(readers.contains(&id));
         }
         let items = self.inbox_items(&agents, &alerts, &done, ask);

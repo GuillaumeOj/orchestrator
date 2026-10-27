@@ -1,6 +1,7 @@
 <script>
   // The weekly plan (FR-802, J0 step 4, J8): working days and hours, the
-  // interactive reserve, and one weighted allocation per project. Without a
+  // interactive reserve, the off-hours allowance (FR-816), and one weighted
+  // allocation per project with an optional hard cap (FR-811). Without a
   // confirmed plan the core proposes an even split. Saving keeps the week's
   // usage (the Governor replays it into the new plan).
   import { onMount } from 'svelte';
@@ -35,7 +36,12 @@
     try {
       const f = $state.snapshot(form);
       f.reserve_pct = Number(f.reserve_pct);
-      for (const a of f.allocations) a.weight = Number(a.weight);
+      f.off_hours_allowance_pct = Number(f.off_hours_allowance_pct) || 0;
+      for (const a of f.allocations) {
+        a.weight = Number(a.weight);
+        // Empty means no cap.
+        a.hard_cap_pct = a.hard_cap_pct === '' || a.hard_cap_pct == null ? null : Number(a.hard_cap_pct);
+      }
       await invoke('plan_set', { form: f });
       toast('Weekly plan saved · this week’s usage kept');
       await refresh();
@@ -61,9 +67,10 @@
       <label>From <input class="field mono" bind:value={form.start} size="5" /></label>
       <label>To <input class="field mono" bind:value={form.end} size="5" /></label>
       <label>Reserve for your own sessions (%) <input class="field mono" type="number" min="0" max="50" bind:value={form.reserve_pct} /></label>
+      <label title="Share of the week agents may use outside working hours; 0 keeps them stopped at night">Off-hours allowance (%) <input class="field mono" type="number" min="0" max="100" bind:value={form.off_hours_allowance_pct} /></label>
     </div>
     <table>
-      <thead><tr><th>Allocation</th><th>Weight</th><th>Share</th><th>Tier</th></tr></thead>
+      <thead><tr><th>Allocation</th><th>Weight</th><th>Share</th><th>Tier</th><th title="Stops this allocation's agents for the week at this % of the week">Hard cap (%)</th></tr></thead>
       <tbody>
         {#each form.allocations as a (a.id)}
           <tr>
@@ -75,11 +82,12 @@
                 <option value="critical">critical</option><option value="high">high</option><option value="normal">normal</option><option value="low">low</option>
               </select>
             </td>
+            <td><input class="field mono" type="number" min="0" max="100" step="1" placeholder="none" bind:value={a.hard_cap_pct} aria-label="Hard cap of {a.id}" /></td>
           </tr>
         {/each}
       </tbody>
     </table>
-    <p class="muted">Weights are relative; a weight of 0 drops the allocation. Sessions outside these projects are charged to “other sessions”.</p>
+    <p class="muted">Weights are relative; a weight of 0 drops the allocation. A hard cap stops the allocation for the week once it used that % of the week. Sessions outside these projects are charged to “other sessions”.</p>
     {#if error}<p class="err">{error}</p>{/if}
     <div class="foot">
       {#if onCancel}<button type="button" class="btn ghost" onclick={onCancel}>Cancel <Kbd keys="esc" /></button>{/if}
