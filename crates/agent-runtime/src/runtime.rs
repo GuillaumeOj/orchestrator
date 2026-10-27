@@ -178,6 +178,8 @@ struct House {
     /// Team messages given to a busy agent during its running turn: read
     /// when it ends, reminded at its Stop first.
     injected: BTreeMap<String, Vec<u64>>,
+    /// Agents that asked the user (Inbox question) during their running turn.
+    asked: std::collections::BTreeSet<String>,
 }
 
 /// True (and restamps `last`) when `every` ms have passed since `last`.
@@ -443,6 +445,14 @@ impl Runtime {
                 a.tracker.state = AgentState::Working;
             }
         })
+    }
+
+    pub(crate) fn mark_asked(&self, id: &str) {
+        self.house().asked.insert(id.to_string());
+    }
+
+    pub(crate) fn asked(&self, id: &str) -> bool {
+        self.house().asked.contains(id)
     }
 
     pub(crate) fn note_injected(&self, id: &str, ids: &[u64]) {
@@ -1023,11 +1033,15 @@ impl Runtime {
             json!({"tool": p.tool_name, "prompt_id": p.prompt_id, "source": p.source, "error": p.error}),
         );
         // Before any state change: a blocked Stop keeps the turn running.
-        if m.event == HookEvent::Stop
-            && let Some(out) = self.stop_reminder(&rec, &p)
-        {
-            self.event(id, "stop_blocked", json!({"why": "messages"}));
-            return Some(out);
+        if m.event == HookEvent::Stop {
+            if let Some(out) = self.stop_reminder(&rec, &p) {
+                self.event(id, "stop_blocked", json!({"why": "messages"}));
+                return Some(out);
+            }
+            if let Some(out) = self.question_at_stop(&rec, &p) {
+                self.event(id, "stop_blocked", json!({"why": "question"}));
+                return Some(out);
+            }
         }
         // Applied under the store lock: concurrent hooks (parallel tool calls)
         // must not overwrite each other's transitions.
@@ -1047,9 +1061,9 @@ impl Runtime {
             self.on_effect(&rec, fx, &p);
         }
         match m.event {
-            HookEvent::PreToolUse => {
+            HookEvent::PreToolUse => self.forward_ask_user_question(&rec, &p).or_else(|| {
                 self.admit_tool(&rec, tracker.turn_origin == Some(TurnOrigin::User), &p, m.deadline_ms, conn)
-            }
+            }),
             // A rule, or the Inbox (held), or the pane when nobody answers in time.
             HookEvent::PermissionRequest => self.permission_request(&rec, &p, m.deadline_ms, conn),
             // FR-403: a busy team agent gets its messages at its next tool call.
@@ -1079,6 +1093,7 @@ impl Runtime {
                 match origin {
                     TurnOrigin::App => {} // admitted before delivery
                     TurnOrigin::User => {
+                        self.close_pane_questions(id);
                         self.decide_turn(rec, TurnKind::User, origin, false);
                     }
                     TurnOrigin::SelfStarted => {
@@ -1093,7 +1108,11 @@ impl Runtime {
             Effect::TurnEnded | Effect::TurnEndedWithBackground => {
                 self.house().index_dirty.insert(id.to_string());
                 let delivered = |t: &TurnRow| t.agent_id == id && t.status == TurnStatus::Delivered;
-                let mut read = self.house().injected.remove(id).unwrap_or_default();
+                let mut read = {
+                    let mut h = self.house();
+                    h.asked.remove(id);
+                    h.injected.remove(id).unwrap_or_default()
+                };
                 if self.store.read(|s| s.turns.iter().any(delivered)) {
                     let carried = self.store.write(|s| {
                         let mut carried: Vec<u64> = vec![];
@@ -2529,6 +2548,44 @@ pub(crate) mod tests {
         assert!(rt.on_hook(&hook("Stop", json!({"stop_hook_active": true})), None).is_none());
         assert!(read_at(&rt, m).is_some());
         assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::Idle);
+    }
+
+    fn questions(rt: &Runtime) -> Vec<crate::store::InboxItem> {
+        rt.store.read(|s| s.inbox.iter().filter(|i| i.kind == "question" && i.pending()).cloned().collect())
+    }
+
+    #[test]
+    fn a_plain_text_question_is_sent_back_once_then_reaches_the_inbox() {
+        let (_d, rt) = test_runtime(true);
+        seat(&rt);
+        rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "[t:0123abcd] ORCH: report"})), None);
+        let q = "I merged T-1.\n\nDecision for you: do you want that column?";
+        let out = rt.on_hook(&hook("Stop", json!({"last_assistant_message": q})), None).expect("blocked");
+        assert!(out.0["reason"].as_str().unwrap().contains("mcp__orch__ask_user"));
+        assert!(questions(&rt).is_empty());
+        assert!(rt.on_hook(&hook("Stop", json!({"last_assistant_message": q, "stop_hook_active": true})), None).is_none());
+        let items = questions(&rt);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].body.contains("do you want that column?"));
+        // The user answers in the pane instead: the item closes.
+        rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "no dollars"})), None);
+        assert!(questions(&rt).is_empty());
+    }
+
+    #[test]
+    fn ask_user_question_in_an_app_turn_goes_to_the_inbox() {
+        let (_d, rt) = test_runtime(true);
+        seat(&rt);
+        rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "[t:0123abcd] ORCH: task"})), None);
+        let input = json!({"questions": [{"question": "Which db?", "options": [{"label": "SQLite"}]}]});
+        let out = rt
+            .on_hook(&hook("PreToolUse", json!({"tool_name": "AskUserQuestion", "tool_input": input})), None)
+            .expect("denied");
+        assert_eq!(out.0["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(questions(&rt)[0].payload["options"], json!(["SQLite"]));
+        // It asked: the Stop on its question is not sent back.
+        assert!(rt.on_hook(&hook("Stop", json!({"last_assistant_message": "Which db?"})), None).is_none());
+        assert_eq!(questions(&rt).len(), 1);
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub mod permissions;
 pub mod preflight;
 pub mod procs;
 pub mod projects;
+pub mod questions;
 pub mod pty;
 pub mod reconcile;
 pub mod resources;

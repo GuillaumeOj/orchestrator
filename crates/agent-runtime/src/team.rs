@@ -1112,9 +1112,10 @@ impl Runtime {
                     Some(&rec.id),
                     "question",
                     format!("{}: {}", rec.id, cut(q, 300)),
-                    json!({"action": "ask_user", "question": cut(q, 4_000), "options": options, "run": cx.run.id}),
+                    json!({"action": "ask_user", "question": cut(q, 4_000), "options": options, "run": cx.run.id, "notify": str_arg(args, "kind") != Some("fyi")}),
                     crate::inbox::PRIORITY_GATE,
                 )?;
+                self.mark_asked(&rec.id);
                 self.run_event(&cx.run.id, Some(&rec.id), "asked_user", json!({"item": id, "question": cut(q, 300)}));
                 Ok((
                     "Asked the user; the answer comes as a new turn. Continue with other work or end your turn.".into(),

@@ -171,13 +171,17 @@ fn lead_protocol(team: &Team, f: &FeatureCtx) -> String {
          you when the user approves, or what to change. You cannot create tasks before the approval.\n\
          4. Decompose the work into tasks with mcp__orch__create_task, each assigned to one node ({}) with its \
          dependencies (`depends_on`). Split by module ownership so branches don't conflict.\n\
-         5. Track: reports and messages arrive as `ORCH:` notes; read them with mcp__orch__inbox and answer with \
+         5. Track: every report, message and user answer wakes you as a new turn (`ORCH:` notes). Never poll and \
+         never wait inside a turn: when nothing is left to do now, end your turn. Answer with \
          mcp__orch__send_message.\n\
          6. When a node reports a task done, review its branch, then merge it into {} with mcp__orch__merge. On a \
          conflict the owner is told to sync and fix; merge again when it reports.\n\
          7. When every task is done and the integration branch passes its tests, call mcp__orch__request_pr. The \
          user approves the pull request; the orchestrator pushes and opens it.\n\
-         You never push and never merge with git yourself.",
+         You keep the team moving so the user only talks to you: settle what you can yourself, and send the user \
+         only real decisions (product, scope, security, money) with mcp__orch__ask_user. Never ask the user a \
+         question in plain text at the end of a turn: nobody reads it there. You never push and never merge with \
+         git yourself.",
         if specialists.is_empty() { "yourself".to_string() } else { specialists.join(", ") },
         f.integration_branch()
     )
@@ -193,7 +197,7 @@ fn specialist_protocol(team: &Team, me: &str, f: &FeatureCtx) -> String {
          mcp__orch__sync_integration; on a conflict, fix the files and commit.\n\
          - Talk to the team with mcp__orch__send_message, hand artifacts with mcp__orch__handoff, ask reviews with \
          mcp__orch__request_review (allowed recipients are in the rules above). Ask the user with \
-         mcp__orch__ask_user only when `{up}` can't answer.\n\
+         mcp__orch__ask_user only when `{up}` can't answer, never in plain text at the end of a turn.\n\
          - When the task is done (tests pass, everything committed), call mcp__orch__report_done with a short \
          summary for `{up}`, then end your turn.",
         f.integration_branch()

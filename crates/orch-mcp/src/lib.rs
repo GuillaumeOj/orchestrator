@@ -90,7 +90,7 @@ pub fn tools() -> Value {
         ),
         tool(
             "inbox",
-            "Read the messages sent to you (and mark them read). Call it when an ORCH: note says you have new messages.",
+            "List your unread messages (and mark them read). New messages already reach you by themselves, as a turn or as an ORCH: note: call this only to read them again or to see older ones with `all`.",
             json!({"all": {"type": "boolean", "description": "Also list messages already read."}}),
             &[],
         ),
@@ -114,8 +114,12 @@ pub fn tools() -> Value {
         ),
         tool(
             "ask_user",
-            "Ask the user a question when your team can't answer it. Returns at once; the answer arrives later as a new turn.",
-            json!({"question": s("The question."), "options": {"type": "array", "items": {"type": "string"}, "description": "Suggested answers."}}),
+            "Ask the user a question when your team can't answer it: the only way to reach the user (a question written in your reply is not read). Returns at once; the answer arrives later as a new turn.",
+            json!({
+                "question": s("The question, with the context the user needs to answer it."),
+                "options": {"type": "array", "items": {"type": "string"}, "description": "Suggested answers."},
+                "kind": s("decision (default: the user is notified) or fyi (shown in the Inbox, no notification).")
+            }),
             &["question"],
         ),
         tool(
