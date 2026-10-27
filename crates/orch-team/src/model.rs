@@ -103,6 +103,10 @@ pub struct RoleDef {
     /// `mcpServers` entries added to the agent's `--mcp-config` (Penpot, Figma…).
     #[serde(default)]
     pub mcp_servers: Map<String, Value>,
+    /// MCP registry ids (FR-601), resolved at compile time (project override
+    /// > global) into `mcpServers`.
+    #[serde(default)]
+    pub mcp_refs: Vec<String>,
     /// `--strict-mcp-config`: ignore the user's own MCP servers.
     #[serde(default)]
     pub strict_mcp: bool,
@@ -148,6 +152,7 @@ impl RoleDef {
             effort: None,
             tools: Tools::default(),
             mcp_servers: Map::new(),
+            mcp_refs: vec![],
             strict_mcp: false,
             permission_profile: PermissionProfile::Gated,
             sandbox_profile: worktree(),

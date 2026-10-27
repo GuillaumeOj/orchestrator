@@ -78,6 +78,10 @@ pub struct RuntimeConfig {
     pub conditions: Arc<dyn orch_git::fetch::Conditions>,
     /// Replaces `gh` for the GitHub task backend (tests).
     pub gh: Option<crate::team::GhFactory>,
+    /// Integration tokens and MCP env secrets (NFR-3): the Keychain.
+    pub secrets: Arc<dyn orch_secrets::Secrets>,
+    /// The core's own network calls (MCP probes, token tests).
+    pub net: Arc<dyn crate::net::Net>,
 }
 
 impl RuntimeConfig {
@@ -102,6 +106,8 @@ impl RuntimeConfig {
             fetch: orch_git::fetch::FetchPolicy::default(),
             conditions: Arc::new(orch_git::fetch::SystemConditions),
             gh: None,
+            secrets: Arc::new(orch_secrets::Keychain),
+            net: Arc::new(crate::net::SystemNet),
         }
     }
 }
@@ -175,6 +181,8 @@ struct House {
     last_task_sync_ms: u64,
     /// Watchdog alerts already raised, by `<agent>:<turn start>` (FR-407).
     watchdog: std::collections::BTreeSet<String>,
+    /// Last FR-604 probe of the servers the running agents use.
+    last_mcp_probe_ms: u64,
 }
 
 /// True (and restamps `last`) when `every` ms have passed since `last`.
@@ -628,8 +636,13 @@ impl Runtime {
             env,
             git_identity: self.git_identity.clone(),
         };
-        let compiled = compile(&rec.role, &ctx);
+        // Registry refs and opted-in Keychain env values, for this spawn's
+        // files only (FR-601, NFR-3); a ref that can't work refuses the spawn.
+        let project = self.agent_project(&rec);
+        let role = self.resolve_mcp(&rec.role, project.as_deref(), true)?;
+        let compiled = compile(&role, &ctx);
         compiled.write()?;
+        self.probe_in_background(project, rec.role.mcp_refs.clone());
         let weak = self.me.clone();
         let id_owned = id.to_string();
         // The pid is known only after the spawn; the exit callback needs it so a
@@ -959,6 +972,8 @@ impl Runtime {
         for fx in effects {
             self.on_effect(&rec, fx, &p);
         }
+        // FR-604: the agents' calls to registry servers tell their auth status.
+        self.observe_mcp_call(&rec, &m.event, &p);
         match m.event {
             HookEvent::PreToolUse => {
                 self.admit_tool(&rec, tracker.turn_origin == Some(TurnOrigin::User), &p, m.deadline_ms, conn)
@@ -1343,6 +1358,9 @@ impl Runtime {
     /// cap, idle auto-suspend, transcript indexing, retention.
     pub fn housekeeping(&self) {
         let now = now_ms();
+        if due(&mut self.house().last_mcp_probe_ms, now, crate::registry::PROBE_EVERY_MS) {
+            self.probe_used_servers();
+        }
         let level = self.cfg.memory.level();
         let changed = {
             let mut h = self.house();
@@ -1943,6 +1961,9 @@ pub(crate) mod tests {
     /// A runtime for unit tests: short holds, no idle timer, normal memory.
     pub(crate) fn test_cfg(d: &Path, shadow: bool) -> RuntimeConfig {
         let mut cfg = RuntimeConfig::new(AppPaths::new(d.join("app")));
+        // Never the real Keychain or network from a test.
+        cfg.secrets = Arc::new(orch_secrets::MemorySecrets::default());
+        cfg.net = Arc::new(crate::net::fake::FakeNet::default());
         cfg.shadow = shadow;
         cfg.hold = Duration::from_millis(800);
         cfg.permission_hold = Duration::from_millis(300);

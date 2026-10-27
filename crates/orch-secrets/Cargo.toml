@@ -1,0 +1,11 @@
+[package]
+name = "orch-secrets"
+version = "0.1.0"
+description = "The macOS Keychain for integration tokens (NFR-3): service `Orchestrator`, one account per integration."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+security-framework = "3"

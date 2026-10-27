@@ -78,6 +78,11 @@ pub struct Role {
     /// `mcpServers` entries for `--mcp-config`.
     #[serde(default)]
     pub mcp_servers: serde_json::Map<String, serde_json::Value>,
+    /// MCP registry ids (FR-601), resolved at each spawn (project override >
+    /// global) into `mcp_servers`: a registry edit applies at the next spawn,
+    /// and no resolved secret is ever stored with the agent.
+    #[serde(default)]
+    pub mcp_refs: Vec<String>,
     #[serde(default = "default_network")]
     pub network_allow: Vec<String>,
     /// Extra `permissions.allow` rules.
@@ -114,6 +119,7 @@ impl Role {
             strict_mcp: false,
             setting_sources: None,
             mcp_servers: Default::default(),
+            mcp_refs: vec![],
             network_allow: default_network(),
             allow_rules: vec![],
             deny_rules: vec![],
@@ -136,6 +142,7 @@ impl Role {
             strict_mcp: n.strict_mcp,
             setting_sources: None,
             mcp_servers: n.mcp_servers.clone(),
+            mcp_refs: n.mcp_refs.clone(),
             network_allow: network,
             allow_rules: vec![],
             deny_rules: n.deny_tools.clone(),
