@@ -1350,6 +1350,16 @@ mod tests {
         assert_eq!(core.inbox_act(id, "reconnect", None).unwrap()["open"], "url");
         assert_eq!(core.inbox_act(id, "open", None).unwrap(), json!({"open": "settings", "server": "penpot"}));
         assert_eq!(core.inbox_act(id, "reject", None).unwrap(), json!("dismissed"));
+        // A project override (http) gets its own reconnect target.
+        let over: orch_team::mcp::McpServer = serde_json::from_value(
+            json!({"id": "penpot", "name": "Penpot", "kind": "http", "url": "https://penpot.invalid/mcp", "allow_secret_env": false}),
+        )
+        .unwrap();
+        let pscope: orch_team::Scope = serde_json::from_value(json!({"kind": "project", "id": "repo"})).unwrap();
+        core.mcp_server_save(over, pscope).unwrap();
+        let pay = |project: Value| json!({"alert": "mcp_needs_auth", "server": "penpot", "project": project});
+        assert_eq!(core.mcp_alert_action(&pay(json!("repo")), "reconnect").unwrap()["run"], "claude /mcp");
+        assert_eq!(core.mcp_alert_action(&pay(Value::Null), "reconnect").unwrap()["open"], "url");
         core.shutdown();
     }
 

@@ -58,7 +58,8 @@ impl Core {
             return Ok(settings);
         }
         let rt = self.runtime()?;
-        let kind = rt.db.mcp_registry(None)?.get(id).map(|s| s.kind);
+        // The alert's project sees its own override first, then the global entry.
+        let kind = rt.db.mcp_registry(payload["project"].as_str())?.get(id).map(|s| s.kind);
         Ok(match kind {
             Some(McpKind::Http | McpKind::Sse) => json!({"open": "pane", "run": "claude /mcp", "server": id}),
             Some(McpKind::Connector) => json!({"open": "url", "url": CONNECTOR_SETTINGS_URL, "server": id}),
