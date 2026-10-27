@@ -18,6 +18,7 @@ use agent_runtime::runtime::{Runtime, RuntimeConfig};
 use agent_runtime::server::{FETCH_EVERY, HOUSEKEEPING_EVERY, PUMP_EVERY, TICK_EVERY};
 use anyhow::{Context, Result, anyhow, bail};
 use governor::jiff::Timestamp;
+use orch_git::git::real;
 use orch_protocol::bus;
 use orch_protocol::{
     AgentSpec, CtlReply, CtlRequest, Envelope, HookEvent, HookPayload, Msg, PROTOCOL_VERSION, Reply, ReplyEnvelope,
@@ -954,31 +955,27 @@ impl Core {
         Ok(json!(self.runtime()?.remove_worktree(project, path, delete_branch, discard)?))
     }
 
-    /// One of the project's git worktrees (the main checkout included) with its branch.
-    fn project_worktree(&self, p: &Project, path: &Path) -> Result<orch_git::worktree::GitWorktree> {
-        let want = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        orch_git::worktree::list(&p.path)?
+    /// The project, one of its git worktrees (the main checkout included) and the
+    /// branch its work goes back to: the base it was created from, else the default.
+    fn resolve_worktree(&self, project: &str, path: &Path) -> Result<(Project, orch_git::worktree::GitWorktree, String)> {
+        let p = self.project(project)?;
+        let want = real(path);
+        let wt = orch_git::worktree::list(&p.path)?
             .into_iter()
-            .find(|w| std::fs::canonicalize(&w.path).unwrap_or_else(|_| w.path.clone()) == want)
-            .ok_or_else(|| anyhow!("{} is not a worktree of {}", path.display(), p.name))
-    }
-
-    /// The branch a worktree's work goes back to: the base it was created from, else the default.
-    fn worktree_base(&self, p: &Project, wt: &Path) -> String {
-        let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        let want = canon(wt);
+            .find(|w| real(&w.path) == want)
+            .ok_or_else(|| anyhow!("{} is not a worktree of {}", path.display(), p.name))?;
         // The store keys rows by the path the app created; git reports the real path.
-        self.rt
+        let base = self
+            .rt
             .as_ref()
-            .and_then(|rt| rt.store.read(|s| s.worktrees.get(wt).or_else(|| s.worktrees.iter().find(|(k, _)| canon(k) == want).map(|(_, w)| w)).map(|w| w.base.clone())))
-            .unwrap_or_else(|| p.default_branch.clone())
+            .and_then(|rt| rt.store.read(|s| s.worktrees.get(&wt.path).or_else(|| s.worktrees.iter().find(|(k, _)| real(k) == want).map(|(_, w)| w)).map(|w| w.base.clone())))
+            .unwrap_or_else(|| p.default_branch.clone());
+        Ok((p, wt, base))
     }
 
     /// FR-107: the worktree's changes against its base, from their merge base.
     pub fn worktree_diff(&self, project: &str, path: &Path) -> Result<Value> {
-        let p = self.project(project)?;
-        let wt = self.project_worktree(&p, path)?;
-        let base = self.worktree_base(&p, &wt.path);
+        let (_, wt, base) = self.resolve_worktree(project, path)?;
         let mut v = json!(orch_git::diff::diff(&wt.path, &base, DIFF_PATCH_MAX)?);
         v["branch"] = json!(wt.branch);
         Ok(v)
@@ -987,10 +984,8 @@ impl Core {
     /// The user's own "Create PR" (the UI confirms first): pushes the worktree's
     /// branch with the user's credentials and opens the PR into its base (ADR-009).
     pub fn worktree_create_pr(&self, project: &str, path: &Path, title: &str, body: &str, draft: bool) -> Result<String> {
-        let p = self.project(project)?;
-        let wt = self.project_worktree(&p, path)?;
+        let (p, wt, base) = self.resolve_worktree(project, path)?;
         let branch = wt.branch.clone().ok_or_else(|| anyhow!("the worktree has no branch (detached HEAD)"))?;
-        let base = self.worktree_base(&p, &wt.path);
         if branch == base || branch == p.default_branch {
             bail!("{branch} is the base branch: there is nothing to open a PR from");
         }

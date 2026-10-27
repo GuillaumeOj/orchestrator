@@ -29,7 +29,6 @@ export const app = $state({
   selectedProject: null,
   theme: null, // null = system, 'dark' | 'light' (user choice)
   kittyTheme: false, // derive surface, text and accent from kitty.conf (§9.1); a user choice wins
-  themeSource: 'system', // what applyTheme used: 'user' | 'kitty' | 'system'
   error: null,
 });
 
@@ -432,7 +431,7 @@ export function commands() {
     { id: 'theme.dark', label: 'Theme: Dark', run: () => setTheme('dark') },
     { id: 'theme.light', label: 'Theme: Light', run: () => setTheme('light') },
     { id: 'theme.kitty', label: 'Theme: derive from kitty.conf', run: () => setKittyTheme(true) },
-    { id: 'theme.system', label: 'Theme: follow the system', run: () => ((app.kittyTheme = false), setTheme(null)) },
+    { id: 'theme.system', label: 'Theme: follow the system', run: () => setTheme(null) },
   ];
   if (a) {
     const live = a.live;
@@ -502,12 +501,13 @@ export function applyTheme() {
     for (const [k, v] of Object.entries(derived.vars)) root.style.setProperty(k, v);
     kittyVars = Object.keys(derived.vars);
   }
-  app.themeSource = app.theme ? 'user' : derived ? 'kitty' : 'system';
-  return app.themeSource;
+  return app.theme ? 'user' : derived ? 'kitty' : 'system';
 }
 
+/** An explicit choice (dark, light, or null = system) ends the kitty-derived theme. */
 export function setTheme(t) {
   app.theme = t;
+  app.kittyTheme = false;
   applyTheme();
   saveLayout();
 }

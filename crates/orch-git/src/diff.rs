@@ -75,8 +75,8 @@ fn parse_numstat_z(out: &str) -> BTreeMap<String, (Option<u32>, Option<u32>)> {
 /// HEAD to the working tree. `max_patch_bytes` bounds the patch in memory.
 pub fn diff(worktree: &Path, against: &str, max_patch_bytes: usize) -> Result<Diff> {
     let base_sha = git(worktree, &["merge-base", against, "HEAD"])?.trim().to_string();
-    let ns = git(worktree, &["-c", "core.quotepath=false", "diff", "--name-status", "-z", "-M", &base_sha])?;
-    let num = parse_numstat_z(&git(worktree, &["-c", "core.quotepath=false", "diff", "--numstat", "-z", "-M", &base_sha])?);
+    let ns = git(worktree, &["diff", "--name-status", "-z", "-M", &base_sha])?;
+    let num = parse_numstat_z(&git(worktree, &["diff", "--numstat", "-z", "-M", &base_sha])?);
     let mut files: Vec<FileChange> = parse_name_status_z(&ns)
         .into_iter()
         .map(|(path, old_path, status)| {
@@ -88,6 +88,7 @@ pub fn diff(worktree: &Path, against: &str, max_patch_bytes: usize) -> Result<Di
         files.push(FileChange { path: u.into(), old_path: None, status: "?".into(), added: None, deleted: None });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    // -z output is never quoted; the patch headers are, unless quotepath is off.
     let mut patch = git(worktree, &["-c", "core.quotepath=false", "diff", "-M", "--no-color", &base_sha])?;
     let truncated = patch.len() > max_patch_bytes;
     if truncated {

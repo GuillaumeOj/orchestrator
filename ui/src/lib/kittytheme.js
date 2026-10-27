@@ -28,9 +28,8 @@ export function contrast(a, b) {
 /** `a` moved `t` (0–1) of the way toward `b`. */
 export const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
 
-const MIN_TEXT = 4.5; // primary text on surfaces
-const MIN_MUTED = 3; // secondary text, accent
-const MIN_SECONDARY = 4.5;
+const MIN_TEXT = 4.5; // primary and secondary text on surfaces
+const MIN_MUTED = 3; // muted text, accent
 
 /**
  * CSS variables (and the color scheme their status colors pair with) for a
@@ -76,7 +75,7 @@ export function deriveKittyTheme(t) {
   const ok =
     contrast(fg, bg) >= MIN_TEXT &&
     contrast(fg, raised) >= MIN_TEXT &&
-    contrast(text['--color-text-secondary'], bg) >= MIN_SECONDARY &&
+    contrast(text['--color-text-secondary'], bg) >= MIN_TEXT &&
     contrast(text['--color-text-muted'], raised) >= MIN_MUTED &&
     contrast(accent, bg) >= MIN_MUTED;
   if (!ok) return null;
