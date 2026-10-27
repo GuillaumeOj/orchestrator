@@ -2236,6 +2236,7 @@ dependencies = [
  "libc",
  "orch-git",
  "orch-protocol",
+ "orch-secrets",
  "orch-store",
  "orch-tasks",
  "orch-team",

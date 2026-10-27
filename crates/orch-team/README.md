@@ -27,6 +27,15 @@ turns a compiled node into its `Role`.
 the repository's git dir from a linked worktree (FR-702 known gap), so merges are done by the core,
 like commits.
 
+## MCP registry model (`mcp`, P3 FR-601/FR-1202)
+
+`McpServer` (stdio, http, sse or a claude.ai `connector`; `env` values may be `keychain:<account>`),
+`Registry` (global + one project's overrides; `get` = project override > global), `resolve` (a
+role's `mcp_refs` → `mcpServers` entries; refuses an unknown ref or a Keychain env without the
+entry's `allow_secret_env`; a connector is left out and turns strict MCP off) and `role_issues`
+(for `teams_view`: errors, and the connector + strict MCP warning). `RoleDef.mcp_refs` defaults
+to empty, so older roles and imported teams load unchanged; raw `mcp_servers` keep working.
+
 ## Readings of the spec (simplest reading taken)
 
 - **Messaging**: every node may message the lead and the lead everyone; reports-to and reviews

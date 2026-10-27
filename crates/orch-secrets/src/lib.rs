@@ -56,7 +56,9 @@ pub trait Secrets: Send + Sync + fmt::Debug {
 }
 
 fn check_account(account: &str) -> Result<()> {
-    if account.is_empty() || account.len() > 64 || !account.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+    if account.is_empty()
+        || account.len() > 64
+        || !account.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
     {
         bail!("invalid secret account {account:?} (a-z, 0-9, - _ ., up to 64)");
     }

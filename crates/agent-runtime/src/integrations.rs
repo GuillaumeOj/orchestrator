@@ -71,9 +71,8 @@ pub fn gh_account(text: &str) -> Option<String> {
 /// Linear's GraphQL answer to `{ viewer { name } organization { name } }`.
 pub fn linear_outcome(r: &HttpResponse) -> Outcome {
     let v: Value = serde_json::from_str(&r.body).unwrap_or(Value::Null);
-    let auth_error = v["errors"]
-        .as_array()
-        .is_some_and(|es| es.iter().any(|e| e["extensions"]["code"] == "AUTHENTICATION_ERROR"));
+    let auth_error =
+        v["errors"].as_array().is_some_and(|es| es.iter().any(|e| e["extensions"]["code"] == "AUTHENTICATION_ERROR"));
     if r.status == 401 || r.status == 403 || auth_error {
         return (McpStatus::NeedsAuth, Some(format!("{} from api.linear.app", r.status)), None);
     }
@@ -124,11 +123,8 @@ impl Runtime {
             None => self.integration_row(id),
         };
         // No token, nothing to test: not configured, whatever was stored.
-        let (status, detail) = if needs && !has_secret {
-            (McpStatus::NotConfigured, None)
-        } else {
-            (row.status, row.detail)
-        };
+        let (status, detail) =
+            if needs && !has_secret { (McpStatus::NotConfigured, None) } else { (row.status, row.detail) };
         json!({
             "id": id, "name": name_of(id), "status": status, "detail": detail,
             "has_secret": has_secret, "needs_secret": needs,
@@ -180,11 +176,7 @@ impl Runtime {
         let secret = Secret::new(secret.expose().trim());
         self.secrets().set(id, &secret)?;
         self.event("-", "integration_secret_set", json!({"id": id}));
-        if IDS.contains(&id) {
-            self.integration_test(id)
-        } else {
-            Ok(self.integration_json(id))
-        }
+        if IDS.contains(&id) { self.integration_test(id) } else { Ok(self.integration_json(id)) }
     }
 
     pub fn integration_secret_remove(&self, id: &str) -> Result<Value> {
@@ -379,7 +371,8 @@ mod tests {
         *net.gh.lock().unwrap() = Some(Ok("  ✓ Logged in to github.com account Octo (keyring)".into()));
         let v = rt.integration_test("github").unwrap();
         assert_eq!((v["status"].as_str(), v["account"].as_str()), (Some("connected"), Some("Octo")));
-        *net.gh.lock().unwrap() = Some(Err("You are not logged into any GitHub hosts. To log in, run: gh auth login".into()));
+        *net.gh.lock().unwrap() =
+            Some(Err("You are not logged into any GitHub hosts. To log in, run: gh auth login".into()));
         assert_eq!(rt.integration_test("github").unwrap()["status"], "needs_auth");
 
         let mut f = McpServer::new("figma", "Figma", McpKind::Http);

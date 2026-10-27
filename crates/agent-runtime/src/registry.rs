@@ -121,7 +121,9 @@ pub fn probe(s: &McpServer, secrets: &dyn Secrets, net: &dyn Net) -> (McpStatus,
     match s.kind {
         McpKind::Connector => (
             McpStatus::Unknown,
-            Some("claude.ai connector: loaded by Claude Code from your login; checked on the agents' tool calls".into()),
+            Some(
+                "claude.ai connector: loaded by Claude Code from your login; checked on the agents' tool calls".into(),
+            ),
         ),
         McpKind::Http | McpKind::Sse => probe_http(s, net),
         McpKind::Stdio => match probe_env(s, secrets) {
@@ -220,9 +222,8 @@ pub fn probe_stdio(s: &McpServer, env: &[(String, String)], deadline: Duration) 
         tail
     });
     let mut stdin = child.stdin.take();
-    let mut send = |v: Value| -> bool {
-        stdin.as_mut().is_some_and(|i| writeln!(i, "{v}").and_then(|_| i.flush()).is_ok())
-    };
+    let mut send =
+        |v: Value| -> bool { stdin.as_mut().is_some_and(|i| writeln!(i, "{v}").and_then(|_| i.flush()).is_ok()) };
     let end = Instant::now() + deadline;
     let wait_for = |id: u64| -> Result<Value, String> {
         loop {
@@ -315,6 +316,9 @@ impl Runtime {
             let r = orch_team::mcp::resolve(&role.mcp_refs, role.strict_mcp, &reg).map_err(|e| anyhow!(e))?;
             out.mcp_servers.extend(r.servers);
             allowed = r.secret_env;
+            if r.strict_off {
+                out.strict_mcp = false;
+            }
         }
         if secrets {
             resolve_secret_env(&mut out.mcp_servers, &allowed, self.secrets())?;
@@ -466,7 +470,7 @@ impl Runtime {
             .roles_all()
             .unwrap_or_default()
             .into_iter()
-            .filter(|r| r.mcp_refs.iter().any(|x| *x == s.id))
+            .filter(|r| r.mcp_refs.contains(&s.id))
             .map(|r| r.id)
             .collect();
         roles.dedup();
@@ -575,7 +579,10 @@ pub(crate) mod tests {
         assert!(looks_like_auth("HTTP 401 Unauthorized"));
         assert!(looks_like_auth("Error: token expired, please re-authenticate"));
         assert!(!looks_like_auth("file not found"));
-        assert_eq!(mcp_tool("mcp__claude_ai_Penpot_Perso__execute_code"), Some(("claude_ai_Penpot_Perso", "execute_code")));
+        assert_eq!(
+            mcp_tool("mcp__claude_ai_Penpot_Perso__execute_code"),
+            Some(("claude_ai_Penpot_Perso", "execute_code"))
+        );
         assert_eq!(mcp_tool("mcp__orch__commit"), None);
         assert_eq!(mcp_tool("Bash"), None);
     }
@@ -680,7 +687,10 @@ pub(crate) mod tests {
         rt.mcp_server_test("figma", None).unwrap();
         let alerts: Vec<_> = rt.inbox().into_iter().filter(|i| i.payload["alert"] == NEEDS_AUTH_ALERT).collect();
         assert_eq!(alerts.len(), 1, "deduplicated");
-        assert_eq!(alerts[0].payload, json!({"alert": "mcp_needs_auth", "server": "figma", "name": "figma", "roles": ["ui"]}));
+        assert_eq!(
+            alerts[0].payload,
+            json!({"alert": "mcp_needs_auth", "server": "figma", "name": "figma", "roles": ["ui"]})
+        );
         // Connected again → the alert is closed.
         fake.route("https://figma.example/mcp", 200, &[], "{}");
         assert_eq!(rt.mcp_server_test("figma", None).unwrap().status, McpStatus::Connected);
@@ -695,7 +705,10 @@ pub(crate) mod tests {
         let (_d, rt) = test_runtime(true);
         let penpot = || rt.db.mcp_server(&Scope::Global, "penpot").unwrap().unwrap();
         let ev = |event: &str, tool: &str, error: Option<&str>| {
-            rt.on_hook(&hook(event, json!({"tool_name": tool, "tool_use_id": "t1", "tool_input": {}, "error": error})), None);
+            rt.on_hook(
+                &hook(event, json!({"tool_name": tool, "tool_use_id": "t1", "tool_input": {}, "error": error})),
+                None,
+            );
         };
         let pending = || rt.inbox().iter().filter(|i| i.payload["alert"] == NEEDS_AUTH_ALERT).count();
         // What Claude Code exposes for a connector that needs a sign-in.
@@ -738,8 +751,12 @@ pub(crate) mod tests {
         assert_eq!(ui["issues"], json!(["connector `penpot` with strict MCP", "mcp ref `ghost` not in the registry"]));
         assert_eq!(ui["mcp_refs"], json!(["penpot", "ghost"]));
         let sprint = v["teams"].as_array().unwrap().iter().find(|t| t["team"]["id"] == "design-sprint").unwrap();
-        let texts: Vec<&str> = sprint["issues"].as_array().unwrap().iter().filter_map(|i| i["text"].as_str()).collect();
-        assert!(texts.contains(&"ui: mcp ref `ghost` not in the registry"), "{texts:?}");
+        let mcp: Vec<&Value> =
+            sprint["issues"].as_array().unwrap().iter().filter(|i| i["issue"]["kind"] == "mcp").collect();
+        assert_eq!(mcp.len(), 1);
+        assert_eq!(mcp[0]["text"], "ui: mcp ref `ghost` not in the registry");
+        // A warning doesn't block a launch: not in `issues`.
+        assert_eq!(sprint["warnings"][0]["text"], "ui: connector `penpot` with strict MCP");
         let lead = v["roles"].as_array().unwrap().iter().find(|r| r["id"] == "lead").unwrap();
         assert_eq!(lead["issues"], json!([]));
     }
@@ -783,7 +800,9 @@ pub(crate) mod tests {
         let stored = serde_json::to_string(&Role::from_node(&node).unwrap()).unwrap();
         assert!(stored.contains("figma-local") && !stored.contains("figd_OPTIN"));
         // And the Keychain itself is out of the agent's sandbox.
-        assert!(c.settings["sandbox"]["filesystem"]["denyRead"].as_array().unwrap().contains(&json!("~/Library/Keychains")));
+        assert!(
+            c.settings["sandbox"]["filesystem"]["denyRead"].as_array().unwrap().contains(&json!("~/Library/Keychains"))
+        );
     }
 
     #[test]
@@ -807,6 +826,6 @@ pub(crate) mod tests {
         assert_eq!(r.mcp_servers["linear-mcp"]["env"]["LINEAR_API_KEY"], "lin_123");
         assert!(!r.mcp_servers.contains_key("penpot"), "a connector comes from the user's login");
         role.strict_mcp = true;
-        assert!(rt.resolve_mcp(&role, None, false).unwrap_err().to_string().contains("strict MCP"));
+        assert!(!rt.resolve_mcp(&role, None, false).unwrap().strict_mcp, "a connector turns strict MCP off");
     }
 }

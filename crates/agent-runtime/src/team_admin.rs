@@ -63,22 +63,25 @@ impl Runtime {
             .into_iter()
             .map(|t| {
                 let mut issues = issues_json(&t, &roles);
-                // A node whose role's MCP servers can't work (FR-601).
+                // A node whose role's MCP servers can't work (FR-601) is an
+                // issue; one the compile works around is a warning (no block).
+                let mut warnings = vec![];
                 for n in &t.nodes {
                     if let Some(r) = roles.iter().find(|r| r.id == n.role_id) {
-                        for text in mcp::role_issues(r, &reg) {
-                            issues.push(json!({"node": n.id, "text": format!("{}: {text}", n.id), "issue": {"kind": "mcp"}}));
+                        for i in mcp::role_issues(r, &reg) {
+                            let v = json!({"node": n.id, "text": format!("{}: {}", n.id, i.text), "issue": {"kind": "mcp"}});
+                            if i.warning { warnings.push(v) } else { issues.push(v) }
                         }
                     }
                 }
-                json!({"team": t, "issues": issues, "rules": rules::rules_text(&t)})
+                json!({"team": t, "issues": issues, "warnings": warnings, "rules": rules::rules_text(&t)})
             })
             .collect();
         let roles: Vec<Value> = roles
             .iter()
             .map(|r| {
                 let mut v = json!(r);
-                v["issues"] = json!(mcp::role_issues(r, &reg));
+                v["issues"] = json!(mcp::role_issues(r, &reg).into_iter().map(|i| i.text).collect::<Vec<_>>());
                 v
             })
             .collect();

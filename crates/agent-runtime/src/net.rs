@@ -24,7 +24,11 @@ impl std::fmt::Debug for HttpRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Header names only.
         let names: Vec<&str> = self.headers.iter().map(|(k, _)| k.as_str()).collect();
-        f.debug_struct("HttpRequest").field("method", &self.method).field("url", &self.url).field("headers", &names).finish()
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("headers", &names)
+            .finish()
     }
 }
 
@@ -75,12 +79,8 @@ impl Net for SystemNet {
             cmd.args(["--data-binary", b]);
         }
         cmd.arg("--").arg(&req.url);
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("starting curl")?;
+        let mut child =
+            cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().context("starting curl")?;
         if let Some(mut i) = child.stdin.take() {
             i.write_all(stdin.as_bytes())?;
         }

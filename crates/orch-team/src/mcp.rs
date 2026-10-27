@@ -255,20 +255,20 @@ pub struct Resolved {
     pub secret_env: Vec<String>,
     /// Connectors used: they come from the user's login, not `--mcp-config`.
     pub connectors: Vec<String>,
+    /// A connector on a strict-MCP role: the compile turns strict MCP off
+    /// (`--strict-mcp-config` would hide it; decisions §5.5).
+    pub strict_off: bool,
 }
 
 /// Resolves `refs` against `reg`. Errors: an unknown ref, a `keychain:` env
-/// value without the entry's opt-in, a connector with `--strict-mcp-config`.
+/// value without the entry's opt-in. A connector on a strict-MCP role turns
+/// strict MCP off (`strict_off`).
 pub fn resolve(refs: &[String], strict_mcp: bool, reg: &Registry) -> Result<Resolved, String> {
     let mut out = Resolved::default();
     for id in refs {
         let s = reg.get(id).ok_or_else(|| format!("mcp ref `{id}` is not in the registry"))?;
         if s.kind == McpKind::Connector {
-            if strict_mcp {
-                return Err(format!(
-                    "connector `{id}` with strict MCP: --strict-mcp-config hides claude.ai connectors; turn strict MCP off"
-                ));
-            }
+            out.strict_off |= strict_mcp;
             out.connectors.push(id.clone());
             continue;
         }
@@ -288,17 +288,26 @@ pub fn resolve(refs: &[String], strict_mcp: bool, reg: &Registry) -> Result<Reso
     Ok(out)
 }
 
+/// One registry problem of a role. A warning doesn't block a launch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpIssue {
+    pub text: String,
+    pub warning: bool,
+}
+
 /// A role's registry problems for the inspector and `teams_view`.
-pub fn role_issues(role: &RoleDef, reg: &Registry) -> Vec<String> {
+pub fn role_issues(role: &RoleDef, reg: &Registry) -> Vec<McpIssue> {
     let mut out = Vec::new();
+    let mut push = |text: String, warning| out.push(McpIssue { text, warning });
     for id in &role.mcp_refs {
         match reg.get(id) {
-            None => out.push(format!("mcp ref `{id}` not in the registry")),
+            None => push(format!("mcp ref `{id}` not in the registry"), false),
+            // The compile turns strict MCP off for this role.
             Some(s) if s.kind == McpKind::Connector && role.strict_mcp => {
-                out.push(format!("connector `{id}` with strict MCP"))
+                push(format!("connector `{id}` with strict MCP"), true)
             }
             Some(s) if !s.allow_secret_env && !s.keychain_accounts().is_empty() => {
-                out.push(format!("mcp server `{id}` uses a Keychain secret without the opt-in"))
+                push(format!("mcp server `{id}` uses a Keychain secret without the opt-in"), false)
             }
             _ => {}
         }
@@ -363,7 +372,8 @@ mod tests {
         assert_eq!(r.servers["figma"], json!({"type": "http", "url": "https://figma.example/mcp"}));
         assert!(!r.servers.contains_key("penpot"), "a connector is not in --mcp-config");
         assert_eq!(r.connectors, ["penpot"]);
-        assert!(resolve(&["penpot".into()], true, &reg).unwrap_err().contains("strict MCP"));
+        assert!(!r.strict_off);
+        assert!(resolve(&["penpot".into()], true, &reg).unwrap().strict_off, "strict MCP would hide it");
         assert!(resolve(&["nope".into()], false, &reg).unwrap_err().contains("not in the registry"));
 
         let mut sec = stdio("linear-mcp");
@@ -385,7 +395,12 @@ mod tests {
         let mut r = RoleDef::new("ui", "UI");
         r.mcp_refs = vec!["penpot".into(), "ghost".into()];
         r.strict_mcp = true;
-        assert_eq!(role_issues(&r, &reg), ["connector `penpot` with strict MCP", "mcp ref `ghost` not in the registry"]);
+        let issues = role_issues(&r, &reg);
+        let texts: Vec<(&str, bool)> = issues.iter().map(|i| (i.text.as_str(), i.warning)).collect();
+        assert_eq!(
+            texts,
+            [("connector `penpot` with strict MCP", true), ("mcp ref `ghost` not in the registry", false)]
+        );
     }
 
     #[test]
