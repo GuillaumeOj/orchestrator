@@ -45,6 +45,21 @@ pub struct AgentRecord {
     /// The CLI's trust dialog was seen on the PTY (J0): only the user answers it.
     #[serde(default)]
     pub trust_dialog: bool,
+    /// Set for an agent of a team run (P2); `None` for a solo session.
+    #[serde(default)]
+    pub team: Option<TeamSeat>,
+}
+
+/// Where a team agent sits: its run, its node and its current task.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TeamSeat {
+    pub run_id: String,
+    pub node: String,
+    pub feature_id: String,
+    pub project_id: String,
+    /// The task it works on (one at a time).
+    #[serde(default)]
+    pub task: Option<u64>,
 }
 
 impl AgentRecord {

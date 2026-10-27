@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 governor = { path = "crates/governor" }
 orch-team = { path = "crates/orch-team" }
+orch-tasks = { path = "crates/orch-tasks" }
 orch-protocol = { path = "crates/orch-protocol" }
 agent-runtime = { path = "crates/agent-runtime" }
 orch-store = { path = "crates/orch-store" }

@@ -53,6 +53,18 @@ usage: orchd [--home DIR] <command> [args]
   audit [agent] | events [--agent A] [--kind PREFIX] [--limit N]
   search <query...> [--project ID]        full-text search over indexed transcripts
 
+  team list [--project ID]      teams and roles, with validation issues and rules (P2)
+  team presets                  add the starter roles and presets that are missing
+  team import <file> | team export <team>
+  team launch <project> <team> <slug> [--title T] [--brief TEXT] [--base B]
+  team runs | team run <run>    runs; one run with agents, tasks, docs, timeline
+  team pause|resume|stop <run>
+  team tasks [--project ID] [--run RUN]
+  team task add <project> <title...> [--node N] [--run RUN] [--after ID]... [--body TEXT]
+  team task set <id> [--status S] [--node N] [--note TEXT]
+  team msg <run> <node|agent> <text...>   message the team as the user (FR-409)
+  team timeline <run>
+
 The home defaults to $ORCH_HOME or ~/Library/Application Support/Orchestrator.";
 
 fn main() {
@@ -391,6 +403,77 @@ fn run() -> Result<()> {
             }
             let query = a.0.join(" ");
             print(request(&sock, CtlRequest::Search { query, project_id, limit: None })?)
+        }
+        "team" => {
+            let req = match a.next("team command")?.as_str() {
+                "list" => CtlRequest::Teams { project_id: a.opt("--project")? },
+                "presets" => CtlRequest::InstallPresets,
+                "import" => {
+                    let path = a.next("file")?;
+                    CtlRequest::TeamImport { json: std::fs::read_to_string(&path).with_context(|| path.clone())? }
+                }
+                "export" => CtlRequest::TeamExport { team_id: a.next("team")? },
+                "launch" => {
+                    let (title, brief, base) = (a.opt("--title")?, a.opt("--brief")?, a.opt("--base")?);
+                    CtlRequest::Launch {
+                        project_id: a.next("project")?,
+                        team_id: a.next("team")?,
+                        slug: a.next("feature slug")?,
+                        title,
+                        brief,
+                        base,
+                    }
+                }
+                "runs" => CtlRequest::Runs,
+                "run" => CtlRequest::Run { run_id: a.next("run")? },
+                action @ ("pause" | "resume" | "stop") => {
+                    CtlRequest::RunAct { run_id: a.next("run")?, action: action.to_string() }
+                }
+                "tasks" => CtlRequest::Tasks { project_id: a.opt("--project")?, run_id: a.opt("--run")? },
+                "task" => match a.next("add|set")?.as_str() {
+                    "add" => {
+                        let (node, run_id, body) = (a.opt("--node")?, a.opt("--run")?, a.opt("--body")?);
+                        let depends_on = a
+                            .opts("--after")?
+                            .iter()
+                            .map(|s| s.parse::<u64>().context("--after takes a task id"))
+                            .collect::<Result<Vec<_>>>()?;
+                        let project_id = a.next("project")?;
+                        if a.0.is_empty() {
+                            bail!("missing title");
+                        }
+                        CtlRequest::TaskCreate {
+                            project_id,
+                            title: std::mem::take(&mut a.0).join(" "),
+                            body,
+                            node,
+                            run_id,
+                            depends_on,
+                        }
+                    }
+                    "set" => {
+                        let (status, node, note) = (a.opt("--status")?, a.opt("--node")?, a.opt("--note")?);
+                        CtlRequest::TaskUpdate {
+                            task_id: a.next("task id")?.parse().context("task id")?,
+                            status,
+                            node,
+                            note,
+                        }
+                    }
+                    other => bail!("team task {other:?}: add | set"),
+                },
+                "msg" => {
+                    let (run_id, to) = (a.next("run")?, a.next("node or agent")?);
+                    if a.0.is_empty() {
+                        bail!("missing message");
+                    }
+                    CtlRequest::Message { run_id, to, body: std::mem::take(&mut a.0).join(" ") }
+                }
+                "timeline" => CtlRequest::Timeline { run_id: a.next("run")?, limit: None },
+                other => bail!("unknown team command {other:?}\n\n{USAGE}"),
+            };
+            a.done()?;
+            print(request(&sock, req)?)
         }
         other => bail!("unknown command {other:?}\n\n{USAGE}"),
     }

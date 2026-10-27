@@ -89,6 +89,10 @@ pub struct Role {
     /// Extra sandbox write allowances (e.g. a tool cache), visible in the settings.
     #[serde(default)]
     pub extra_write: Vec<PathBuf>,
+    /// Orchestrator MCP tools this agent may call; empty = a solo session's
+    /// (`commit`, `request_pr`). Listed by orch-mcp and checked by the core.
+    #[serde(default)]
+    pub orch_tools: Vec<String>,
 }
 
 fn default_network() -> Vec<String> {
@@ -111,7 +115,42 @@ impl Role {
             allow_rules: vec![],
             deny_rules: vec![],
             extra_write: vec![],
+            orch_tools: vec![],
         }
+    }
+
+    /// A team node compiled by orch-team (FR-308).
+    pub fn from_node(n: &orch_team::NodeConfig) -> Result<Role, String> {
+        let mut network = default_network();
+        network.extend(n.network_allow.iter().cloned());
+        Ok(Role {
+            name: n.role_id.clone(),
+            prompt: Some(n.prompt.clone()),
+            model: n.model.clone(),
+            effort: n.effort.clone(),
+            permission_mode: PermissionMode::parse(&n.permission_mode)?,
+            strict_mcp: n.strict_mcp,
+            setting_sources: None,
+            mcp_servers: n.mcp_servers.clone(),
+            network_allow: network,
+            allow_rules: vec![],
+            deny_rules: n.deny_tools.clone(),
+            extra_write: vec![],
+            orch_tools: n.orch_tools.clone(),
+        })
+    }
+
+    /// The orchestrator tools this agent may call.
+    pub fn tools(&self) -> Vec<String> {
+        if self.orch_tools.is_empty() {
+            orch_team::compile::SOLO_TOOLS.iter().map(|s| s.to_string()).collect()
+        } else {
+            self.orch_tools.clone()
+        }
+    }
+
+    pub fn may_call(&self, tool: &str) -> bool {
+        self.tools().iter().any(|t| t == tool)
     }
 }
 

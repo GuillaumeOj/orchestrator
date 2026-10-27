@@ -27,6 +27,10 @@ impl Runtime {
         };
         let tool = format!("mcp__orch__{}", m.tool);
         self.event(&rec.id, "mcp", json!({"tool": m.tool}));
+        // The role's tools only (orch-mcp lists no others; checked again here).
+        if !rec.role.may_call(&m.tool) {
+            return (true, format!("{} is not one of your tools", m.tool), Value::Null);
+        }
         // Rules first (deny > ask > allow), for every orchestrator tool.
         let rules = self.db.rules().unwrap_or_default();
         let subject = self.subject(&rec);
@@ -67,7 +71,24 @@ impl Runtime {
                 );
                 (text, json!(c))
             }),
-            "request_pr" => self.request_pr(&rec, &m.arguments).map(|t| (t, Value::Null)),
+            "request_pr" => self.request_pr(&rec, &m.arguments).map(|t| {
+                if rec.team.is_some() {
+                    self.pr_requested(&rec.id);
+                }
+                (t, Value::Null)
+            }),
+            "send_message"
+            | "inbox"
+            | "list_tasks"
+            | "handoff"
+            | "request_review"
+            | "ask_user"
+            | "create_task"
+            | "update_task"
+            | "request_spec_approval"
+            | "merge"
+            | "report_done"
+            | "sync_integration" => self.team_tool(&rec, &m.tool, &m.arguments),
             other => Err(anyhow!("unknown tool {other:?}")),
         };
         match r {

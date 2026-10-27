@@ -454,6 +454,7 @@ mod tests {
             spawns: 1,
             flag: None,
             trust_dialog: false,
+            team: None,
         }
     }
 

@@ -19,6 +19,8 @@ dependencies = [
  "orch-git",
  "orch-protocol",
  "orch-store",
+ "orch-tasks",
+ "orch-team",
  "portable-pty",
  "serde",
  "serde_json",
@@ -2325,6 +2327,7 @@ name = "orch-team"
 version = "0.1.0"
 dependencies = [
  "governor",
+ "orch-mcp",
  "proptest",
  "serde",
  "serde_json",

@@ -232,6 +232,53 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         CtlRequest::Search { query, project_id, limit } => {
             ok_or(rt.db.search_transcripts(&query, project_id.as_deref(), limit.unwrap_or(50)).map(|v| json!(v)))
         }
+        CtlRequest::Teams { project_id } => ok_or(rt.teams_json(project_id.as_deref())),
+        CtlRequest::InstallPresets => ok_or(rt.install_presets().map(|n| json!({"added": n}))),
+        CtlRequest::TeamSave { team } => {
+            ok_or(serde_json::from_value(team).map_err(Into::into).and_then(|t| rt.save_team(t)))
+        }
+        CtlRequest::RoleSave { role } => {
+            ok_or(serde_json::from_value(role).map_err(Into::into).and_then(|r| rt.save_role(r)).map(|r| json!(r)))
+        }
+        CtlRequest::TeamImport { json: text } => ok_or(rt.import_team(&text).map(|t| json!(t))),
+        CtlRequest::TeamExport { team_id } => ok_or(rt.export_team(&team_id).map(|s| json!(s))),
+        CtlRequest::Launch { project_id, team_id, slug, title, brief, base } => ok_or(
+            rt.launch(&crate::team::LaunchSpec {
+                project_id,
+                team_id,
+                slug,
+                title: title.unwrap_or_default(),
+                brief: brief.unwrap_or_default(),
+                base,
+            })
+            .map(|r| json!(r)),
+        ),
+        CtlRequest::Runs => CtlReply::ok(rt.runs_json()),
+        CtlRequest::Run { run_id } => ok_or(rt.run_json(&run_id)),
+        CtlRequest::RunAct { run_id, action } => ok_or(rt.run_act(&run_id, &action)),
+        CtlRequest::Tasks { project_id, run_id } => {
+            ok_or(rt.db.tasks(project_id.as_deref(), None, run_id.as_deref()).map(|v| json!(v)))
+        }
+        CtlRequest::TaskCreate { project_id, title, body, node, run_id, depends_on } => ok_or(
+            rt.user_create_task(
+                &project_id,
+                &title,
+                body.as_deref().unwrap_or(""),
+                node.as_deref(),
+                run_id.as_deref(),
+                depends_on,
+            )
+            .map(|t| json!(t)),
+        ),
+        CtlRequest::TaskUpdate { task_id, status, node, note } => {
+            ok_or(rt.user_update_task(task_id, status.as_deref(), node.as_deref(), note.as_deref()).map(|t| json!(t)))
+        }
+        CtlRequest::Message { run_id, to, body } => {
+            ok_or(rt.user_message(&run_id, &to, &body).map(|ids| json!({"ids": ids})))
+        }
+        CtlRequest::Timeline { run_id, limit } => {
+            ok_or(rt.db.run_events(&run_id, limit.unwrap_or(200)).map(|v| json!(v)))
+        }
         CtlRequest::Attach { .. } | CtlRequest::Shutdown => CtlReply::err("handled by the server"),
     }
 }

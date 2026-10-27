@@ -30,6 +30,9 @@ pub mod env {
     pub const HOOK_DEADLINE_MS: &str = "ORCH_HOOK_DEADLINE_MS";
     /// The user's own statusline command, which orch-status runs after forwarding.
     pub const USER_STATUSLINE: &str = "ORCH_USER_STATUSLINE";
+    /// Comma-separated orchestrator tools orch-mcp lists for this agent
+    /// (unset: the solo session's `commit,request_pr`). The core checks again.
+    pub const TOOLS: &str = "ORCH_TOOLS";
 }
 
 /// Default orch-hook deadline for the two events that wait on the core. The

@@ -13,3 +13,5 @@ serde_json.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+# The tool names in `compile` must match what orch-mcp serves.
+orch-mcp = { path = "../orch-mcp" }

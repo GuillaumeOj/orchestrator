@@ -265,6 +265,84 @@ pub enum CtlRequest {
         #[serde(default)]
         limit: Option<usize>,
     },
+    // ---- P2 teams. Teams and roles travel as `orch_team` JSON.
+    /// Teams and roles (global + the project's), with validation and rules.
+    Teams {
+        #[serde(default)]
+        project_id: Option<String>,
+    },
+    /// Saves the starter roles and presets that don't exist yet (FR-306).
+    InstallPresets,
+    TeamSave {
+        team: serde_json::Value,
+    },
+    RoleSave {
+        role: serde_json::Value,
+    },
+    TeamImport {
+        json: String,
+    },
+    TeamExport {
+        team_id: String,
+    },
+    Launch {
+        project_id: String,
+        team_id: String,
+        slug: String,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        brief: Option<String>,
+        #[serde(default)]
+        base: Option<String>,
+    },
+    Runs,
+    Run {
+        run_id: String,
+    },
+    /// `pause` / `resume` / `stop`.
+    RunAct {
+        run_id: String,
+        action: String,
+    },
+    Tasks {
+        #[serde(default)]
+        project_id: Option<String>,
+        #[serde(default)]
+        run_id: Option<String>,
+    },
+    TaskCreate {
+        project_id: String,
+        title: String,
+        #[serde(default)]
+        body: Option<String>,
+        #[serde(default)]
+        node: Option<String>,
+        #[serde(default)]
+        run_id: Option<String>,
+        #[serde(default)]
+        depends_on: Vec<u64>,
+    },
+    TaskUpdate {
+        task_id: u64,
+        #[serde(default)]
+        status: Option<String>,
+        #[serde(default)]
+        node: Option<String>,
+        #[serde(default)]
+        note: Option<String>,
+    },
+    /// The user messages a node or agent of a run (FR-409).
+    Message {
+        run_id: String,
+        to: String,
+        body: String,
+    },
+    Timeline {
+        run_id: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     Shutdown,
 }
 

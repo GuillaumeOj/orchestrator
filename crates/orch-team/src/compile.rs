@@ -257,6 +257,14 @@ mod tests {
     }
 
     #[test]
+    fn orch_mcp_serves_exactly_these_tools() {
+        let served: Vec<String> =
+            orch_mcp::tools().as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+        assert_eq!(served, ALL_TOOLS);
+        assert_eq!(orch_mcp::SOLO_TOOLS, SOLO_TOOLS);
+    }
+
+    #[test]
     fn tool_sets_are_known() {
         for t in COMMON_TOOLS.iter().chain(LEAD_TOOLS).chain(SPECIALIST_TOOLS).chain(SOLO_TOOLS) {
             assert!(ALL_TOOLS.contains(t), "{t}");
