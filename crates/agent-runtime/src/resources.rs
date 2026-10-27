@@ -88,6 +88,8 @@ pub struct LiveAgent {
     pub attached: bool,
     /// Last hook event, user keystroke or delivery, ms since the epoch.
     pub last_activity_ms: u64,
+    /// A team lead: its process has a slot of its own, outside the cap.
+    pub reserved: bool,
 }
 
 impl LiveAgent {
@@ -99,7 +101,8 @@ impl LiveAgent {
 
 /// Agents to suspend now: idle ones past `idle_after_ms`, then, while more
 /// agents are live than `cap`, the least recently active idle ones. Working
-/// agents are never stopped.
+/// agents are never stopped; reserved ones (team leads) don't count toward
+/// the cap and are never stopped for it.
 pub fn to_suspend(
     agents: &[LiveAgent],
     cap: u32,
@@ -112,11 +115,10 @@ pub fn to_suspend(
             out.push((a.id.clone(), "idle"));
         }
     }
-    let live_after = agents.len().saturating_sub(out.len());
-    let mut over = live_after.saturating_sub(cap as usize);
+    let counted = |a: &&LiveAgent| !a.reserved && !out.iter().any(|(id, _)| id == &a.id);
+    let mut over = agents.iter().filter(counted).count().saturating_sub(cap as usize);
     if over > 0 {
-        let mut cands: Vec<&LiveAgent> =
-            agents.iter().filter(|a| a.suspendable() && !out.iter().any(|(id, _)| id == &a.id)).collect();
+        let mut cands: Vec<&LiveAgent> = agents.iter().filter(counted).filter(|a| a.suspendable()).collect();
         cands.sort_by_key(|a| a.last_activity_ms);
         for a in cands {
             if over == 0 {
@@ -134,7 +136,15 @@ mod tests {
     use super::*;
 
     fn a(id: &str, idle: bool, last: u64) -> LiveAgent {
-        LiveAgent { id: id.into(), idle, background_tasks: 0, queued_turns: 0, attached: false, last_activity_ms: last }
+        LiveAgent {
+            id: id.into(),
+            idle,
+            background_tasks: 0,
+            queued_turns: 0,
+            attached: false,
+            last_activity_ms: last,
+            reserved: false,
+        }
     }
 
     #[test]
@@ -165,5 +175,17 @@ mod tests {
         agents[0].queued_turns = 0;
         agents[0].background_tasks = 1;
         assert!(to_suspend(&agents, 1, None, now).is_empty());
+    }
+
+    #[test]
+    fn a_reserved_lead_is_outside_the_cap() {
+        let now = 1_000_000;
+        let mut lead = a("lead", true, 0);
+        lead.reserved = true;
+        let agents = vec![lead, a("back", true, 10), a("front", false, 0)];
+        // Cap 2: back and front fit, the lead doesn't count.
+        assert!(to_suspend(&agents, 2, None, now).is_empty());
+        // Cap 1: back goes, never the lead (older, idle).
+        assert_eq!(to_suspend(&agents, 1, None, now), vec![("back".to_string(), "memory_pressure")]);
     }
 }

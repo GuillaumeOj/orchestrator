@@ -161,7 +161,7 @@ impl Runtime {
         })
     }
 
-    fn lead_of(&self, cx: &RunCtx) -> Option<AgentRecord> {
+    pub(crate) fn lead_of(&self, cx: &RunCtx) -> Option<AgentRecord> {
         let lead = cx.team.lead()?.id.clone();
         self.run_agents(&cx.run.id).into_iter().find(|a| a.team.as_ref().is_some_and(|t| t.node == lead))
     }
@@ -487,14 +487,35 @@ impl Runtime {
                     continue;
                 }
             };
+            self.promote_lead(&cx);
             if let Err(e) = self.dispatch(&cx) {
                 self.run_event(&run.id, None, "dispatch_error", json!(format!("{e:#}")));
             }
+            self.supervise(&cx, now_ms());
             self.deliver_messages(&cx);
             if let Err(e) = self.progress(&cx) {
                 self.run_event(&run.id, None, "team_error", json!(format!("{e:#}")));
             }
         }
+    }
+
+    /// A lead started before leads ran at the critical tier gets it now,
+    /// and the lead tools added since (seen from its next start).
+    fn promote_lead(&self, cx: &RunCtx) {
+        let tools = orch_team::compile::tools_for(true);
+        let _ = self.store.write(|s| {
+            for a in s.agents.values_mut() {
+                if !a.team.as_ref().is_some_and(|t| t.run_id == cx.run.id && cx.team.is_lead(&t.node)) {
+                    continue;
+                }
+                a.tier = governor::Tier::Critical;
+                for t in &tools {
+                    if !a.role.orch_tools.contains(t) {
+                        a.role.orch_tools.push(t.clone());
+                    }
+                }
+            }
+        });
     }
 
     fn task_turn(&self, cx: &RunCtx, t: &Task, rec: &AgentRecord, branch: &str) -> String {
@@ -994,6 +1015,12 @@ impl Runtime {
         let is_lead = cx.team.is_lead(&seat.node);
         let me = seat.node.as_str();
         match tool {
+            "team_status" | "nudge" | "resume_agent" => {
+                if !is_lead {
+                    bail!("only the lead manages the team");
+                }
+                self.lead_tool(&cx, tool, args)
+            }
             "send_message" => {
                 let to = str_arg(args, "to").ok_or_else(|| anyhow!("`to` is required"))?;
                 let body = str_arg(args, "body").ok_or_else(|| anyhow!("`body` is required"))?;

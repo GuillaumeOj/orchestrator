@@ -21,6 +21,7 @@ pub mod server;
 pub mod shell;
 pub mod state;
 pub mod store;
+pub mod supervise;
 pub mod team;
 pub mod team_admin;
 pub mod transcript;

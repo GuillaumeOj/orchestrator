@@ -159,6 +159,24 @@ pub fn tools() -> Value {
             &["summary"],
         ),
         tool(
+            "team_status",
+            "The state of every member of your team: running, idle, waiting for the user, suspended or queued (and why), with its task.",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "nudge",
+            "Tell a member of your team what to do next (by agent or node id). It gets it as its next turn: use it to unblock a member that stopped, to answer what it asked, or to send a review back.",
+            json!({"agent": s("Agent or node id."), "text": s("What it should do.")}),
+            &["agent", "text"],
+        ),
+        tool(
+            "resume_agent",
+            "Restart a suspended or failed member of your team (by agent or node id) so it carries on with its task. It starts when the orchestrator admits it.",
+            json!({"agent": s("Agent or node id.")}),
+            &["agent"],
+        ),
+        tool(
             "sync_integration",
             "Merge the latest integration branch into your branch. On a conflict the merge stays in progress: fix the conflicted files, then call commit.",
             json!({}),

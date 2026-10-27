@@ -14,7 +14,16 @@ use crate::rules;
 pub const COMMON_TOOLS: &[&str] =
     &["commit", "send_message", "inbox", "list_tasks", "handoff", "request_review", "ask_user"];
 /// Lead only (FR-401: the protocol is enforced by tool availability).
-pub const LEAD_TOOLS: &[&str] = &["create_task", "update_task", "request_spec_approval", "merge", "request_pr"];
+pub const LEAD_TOOLS: &[&str] = &[
+    "create_task",
+    "update_task",
+    "request_spec_approval",
+    "merge",
+    "request_pr",
+    "team_status",
+    "nudge",
+    "resume_agent",
+];
 /// Specialists only.
 pub const SPECIALIST_TOOLS: &[&str] = &["update_task", "report_done", "sync_integration"];
 /// A solo session (P1).
@@ -34,6 +43,9 @@ pub const ALL_TOOLS: &[&str] = &[
     "request_spec_approval",
     "merge",
     "report_done",
+    "team_status",
+    "nudge",
+    "resume_agent",
     "sync_integration",
 ];
 
@@ -128,7 +140,9 @@ pub fn compile_node(team: &Team, node_id: &str, roles: &[RoleDef], f: &FeatureCt
         network_allow: role.network_allow.clone(),
         deny_tools: deny,
         orch_tools: tools_for(node.is_lead),
-        tier: o.budget_priority.unwrap_or(role.budget_priority),
+        // The lead keeps the team moving: its turns are short (review, merge,
+        // answer) and must never wait behind the specialists it unblocks.
+        tier: if node.is_lead { Tier::Critical } else { o.budget_priority.unwrap_or(role.budget_priority) },
         max_concurrency: node.max_concurrency.max(1),
         turn_ceiling: role.turn_ceiling,
     })
@@ -173,7 +187,8 @@ fn lead_protocol(team: &Team, f: &FeatureCtx) -> String {
          dependencies (`depends_on`). Split by module ownership so branches don't conflict.\n\
          5. Track: every report, message and user answer wakes you as a new turn (`ORCH:` notes). Never poll and \
          never wait inside a turn: when nothing is left to do now, end your turn. Answer with \
-         mcp__orch__send_message.\n\
+         mcp__orch__send_message. When you are told a member is stuck, unblock it: mcp__orch__team_status shows \
+         everyone, mcp__orch__nudge tells a member what to do, mcp__orch__resume_agent restarts a suspended one.\n\
          6. When a node reports a task done, review its branch, then merge it into {} with mcp__orch__merge. On a \
          conflict the owner is told to sync and fix; merge again when it reports.\n\
          7. When every task is done and the integration branch passes its tests, call mcp__orch__request_pr. The \
@@ -219,7 +234,7 @@ mod tests {
         let lead = compile_node(&t, "lead", &roles, &ctx()).unwrap();
         assert!(lead.is_lead);
         assert_eq!(lead.model.as_deref(), Some("opus"));
-        assert_eq!(lead.tier, Tier::High);
+        assert_eq!(lead.tier, Tier::Critical, "the lead is never queued behind its team");
         assert!(lead.orch_tools.contains(&"merge".to_string()));
         assert!(lead.orch_tools.contains(&"request_spec_approval".to_string()));
         assert!(!lead.orch_tools.contains(&"report_done".to_string()));

@@ -180,6 +180,13 @@ struct House {
     injected: BTreeMap<String, Vec<u64>>,
     /// Agents that asked the user (Inbox question) during their running turn.
     asked: std::collections::BTreeSet<String>,
+    /// Stuck team members already told to their lead, by run.
+    supervised: BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
+/// A team lead (compiled at the critical tier): outside the process cap.
+pub(crate) fn reserved_slot(a: &AgentRecord) -> bool {
+    a.team.is_some() && a.tier == Tier::Critical
 }
 
 /// True (and restamps `last`) when `every` ms have passed since `last`.
@@ -503,8 +510,11 @@ impl Runtime {
         )))
     }
 
+    /// Live processes under the memory cap (FR-203): a team lead has a slot
+    /// of its own, so it never waits for one and never takes one.
     fn live_count(&self) -> u32 {
-        self.live.lock().unwrap_or_else(|e| e.into_inner()).len() as u32
+        let ids = self.live_ids();
+        self.store.read(|s| ids.iter().filter(|id| !s.agents.get(*id).is_some_and(reserved_slot)).count()) as u32
     }
 
     pub fn live_ids(&self) -> Vec<String> {
@@ -1418,6 +1428,15 @@ impl Runtime {
         self.house().watchdog.retain(|k| keys.contains(k));
     }
 
+    /// True the first time `key` is seen in `run` (one note to the lead per
+    /// stuck member and episode); keys of `run` not in `keys` are forgotten.
+    pub(crate) fn supervised(&self, run: &str, keys: &std::collections::BTreeSet<String>) -> Vec<String> {
+        let mut h = self.house();
+        let seen = h.supervised.entry(run.to_string()).or_default();
+        seen.retain(|k| keys.contains(k));
+        keys.iter().filter(|k| seen.insert((*k).clone())).cloned().collect()
+    }
+
     /// Every 5 minutes: time to sync the remote task backends.
     pub(crate) fn task_sync_due(&self) -> bool {
         due(&mut self.house().last_task_sync_ms, now_ms(), TASK_SYNC_EVERY_MS)
@@ -1529,6 +1548,7 @@ impl Runtime {
                     queued_turns: queued.get(id).copied().unwrap_or(0),
                     attached: l.pty.output.is_attached(),
                     last_activity_ms: last,
+                    reserved: reserved_slot(&rec),
                 })
             })
             .collect();
@@ -1726,13 +1746,15 @@ impl Runtime {
             if suspended && turn.admission == Admission::Pending {
                 self.sync_process_slots();
             }
-            if suspended && self.admit_turn(rec, turn, true) {
+            // A lead's process has its own slot: it waits for none.
+            let reserved = reserved_slot(rec);
+            if suspended && self.admit_turn(rec, turn, !reserved) {
                 // FR-203 at spawn time too: processes start and stop between
                 // admission and here (another resume, a restored turn). Without
                 // a slot the turn goes back to the queue as a memory wait,
                 // unless the user ran it now.
                 let (live, cap) = (self.live_count(), self.live_cap());
-                let forced = self.house().spawn_override.remove(&rec.id) || turn.kind == TurnKind::User;
+                let forced = self.house().spawn_override.remove(&rec.id) || turn.kind == TurnKind::User || reserved;
                 if live >= cap && !forced {
                     let (agent, alloc) = (AgentId(rec.id.clone()), rec.allocation.clone().into());
                     let e = self
