@@ -69,7 +69,7 @@ downgrade: { to: string, when: 'amber' | 'red' | 'model_window' } | null;   // F
 // teams_view → roles[].issues may now include "mcp ref `x` not in the registry", "connector `x` with strict MCP"
 ```
 
-Inbox (P1 shapes): a new alert kind payload `{"alert":"mcp_needs_auth","server":id,"name":…,"roles":[…]}` with actions `open` (→ Settings › MCP servers) and `reject` (dismiss until the next failure).
+Inbox (P1 shapes): a new alert kind payload `{"alert":"mcp_needs_auth","server":id,"name":…,"roles":[…]}` with actions `open` (→ Settings › MCP servers), `reconnect` (D3: http/sse → a pane running `claude /mcp`; connector → the claude.ai connector settings in the browser; stdio → Settings with the server selected) and `reject` (dismiss until the next failure). Connector + strict MCP is a **warning** issue: the compile turns strict MCP off for that role.
 
 ## 3. Design artifacts (FR-602, FR-603)
 
@@ -142,7 +142,7 @@ Inbox: `{"kind":"info","digest":"weekly_report","report":id}` (level 4); `open` 
 snapshot.model_windows: { name: string, family: ModelFamily, used_pct: number, resets_at: string, state: 'green' | 'amber' | 'red' | 'exhausted' }[];   // [] when never seen
 snapshot.calibration: { … P1 fields, per_model?: Record<ModelFamily, { k: number, samples: number }> };
 off_hours: { windows: { start: string, end: string }[], live_cap: number, queued: number, running: number };
-queue[].reason: … P1 reasons | { kind: 'off_hours', starts_at: string } | { kind: 'model_window', model: ModelFamily, resets_at: string };
+queue[].reason: … P1 reasons (incl. 'off_hours' = outside working hours, unchanged) | { kind: 'scheduled_off_hours', starts_at: string } /* D4 */ | { kind: 'model_window', model: ModelFamily, resets_at: string, exhausted: boolean };
 actions[].kind: … | 'downgrade' | 'restore_model';
 ```
 
@@ -173,6 +173,8 @@ agents[].model_note: string | null;           // "downgraded (Red)" while a down
 |---|---|---|
 | `linear_teams` | — | `{ teams: { id, key, name }[] }` (needs the `linear` integration) |
 | `linear_states` | `team: string` | `{ states: { id, name, type, default_column }[], projects: { id, name }[] }` |
+
+D8: `project_settings_set` with a change **to** Linear on a project that has tasks takes `migrate: 'push_open' | 'leave'` (required then; refused without it, with the counts in the error so the UI can ask). `push_open` creates the open tasks as Linear issues; `leave` keeps them local and unsynced (their `backend` stays the old one). Done tasks are never pushed.
 
 `board_sync` (P2) returns the same `SyncReport` for every backend; conflicts (remote won) also create an Inbox info item.
 
