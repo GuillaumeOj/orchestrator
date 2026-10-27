@@ -212,8 +212,8 @@ impl Runtime {
                 a.pid = None;
                 a.pgid = None;
             }
-            s.turns.retain(|t| !(t.agent_id == id && t.status == crate::store::TurnStatus::Queued));
         })?;
+        self.drop_queued_turns(id);
         self.governor_forget(id);
         Ok(())
     }

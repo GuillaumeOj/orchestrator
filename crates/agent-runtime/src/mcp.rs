@@ -60,9 +60,8 @@ impl Runtime {
             }
         }
         if m.tool == "commit"
-            && let Some(out) = self.plan_lock(&rec, "mcp__orch__commit")
+            && let Some(why) = self.plan_lock_reason(&rec)
         {
-            let why = out.0["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap_or("").to_string();
             return (true, why, Value::Null);
         }
         let r = match m.tool.as_str() {

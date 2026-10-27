@@ -458,7 +458,7 @@ impl Runtime {
     /// A slash command the app typed has no marker: its prompt is matched
     /// to its turn and given the marker, so the turn reads as the app's.
     fn bind_command(&self, id: &str, p: &mut HookPayload) {
-        let Some(prompt) = p.prompt.as_deref().map(str::trim) else { return };
+        let Some(prompt) = p.prompt.as_deref().map(str::trim).filter(|p| p.starts_with('/')) else { return };
         let turn = self.store.read(|s| {
             s.turns
                 .iter()
@@ -513,14 +513,11 @@ impl Runtime {
         }
     }
 
-    /// A Stop that should not end the turn yet: team messages that came in
-    /// during it (as tool-call context) are listed once more, so a report
-    /// that arrived during the user's turn is not lost in it. Once per turn:
-    /// the CLI sets `stop_hook_active` on the Stop that follows a block.
-    fn stop_reminder(&self, rec: &AgentRecord, p: &HookPayload) -> Option<HookOutput> {
-        if rec.team.is_none() || p.stop_hook_active == Some(true) {
-            return None;
-        }
+    /// Team messages that came in during the turn (as tool-call context),
+    /// listed once more at its Stop, so a report that arrived during the
+    /// user's turn is not lost in it.
+    fn messages_at_stop(&self, rec: &AgentRecord) -> Option<String> {
+        rec.team.as_ref()?;
         let ids = self.house().injected.get(&rec.id).cloned().unwrap_or_default();
         if ids.is_empty() {
             return None;
@@ -530,10 +527,21 @@ impl Runtime {
             return None;
         }
         let list = Self::render_messages(&msgs, crate::team::MAX_BODY);
-        Some(HookOutput::stop_block(&format!(
+        Some(format!(
             "ORCH: before you stop: {} team message(s) reached you during this turn:{list}\n\nAct on each one now (review and merge a report, answer with mcp__orch__send_message, update the task). If you already have, end your turn.",
             msgs.len()
-        )))
+        ))
+    }
+
+    /// One Stop policy for every reason to keep a team agent's turn going
+    /// (messages that came in during it, a question left in the pane), in
+    /// one block: the CLI marks only the Stop after a block, so a second
+    /// block would never come.
+    fn stop_check(&self, rec: &AgentRecord, p: &HookPayload) -> Option<HookOutput> {
+        let first = p.stop_hook_active != Some(true);
+        let msgs = if first { self.messages_at_stop(rec) } else { None };
+        let reasons: Vec<String> = msgs.into_iter().chain(self.question_at_stop(rec, p).map(String::from)).collect();
+        (!reasons.is_empty()).then(|| HookOutput::stop_block(&reasons.join("\n\n")))
     }
 
     /// Live processes under the memory cap (FR-203): a team lead has a slot
@@ -692,6 +700,7 @@ impl Runtime {
         if self.live_get(id).is_some() {
             bail!("agent {id} is already running");
         }
+        self.refresh_team_role(id);
         let rec = self.store.read(|s| s.agents.get(id).cloned()).ok_or_else(|| anyhow!("no agent {id}"))?;
         if rec.tracker.state == AgentState::Archived {
             bail!("agent {id} is deleted");
@@ -1073,12 +1082,8 @@ impl Runtime {
         );
         // Before any state change: a blocked Stop keeps the turn running.
         if m.event == HookEvent::Stop {
-            if let Some(out) = self.stop_reminder(&rec, &p) {
-                self.event(id, "stop_blocked", json!({"why": "messages"}));
-                return Some(out);
-            }
-            if let Some(out) = self.question_at_stop(&rec, &p) {
-                self.event(id, "stop_blocked", json!({"why": "question"}));
+            if let Some(out) = self.stop_check(&rec, &p) {
+                self.event(id, "stop_blocked", json!({"reason": out.0["reason"]}));
                 return Some(out);
             }
         }
@@ -1560,6 +1565,9 @@ impl Runtime {
         // A lead's prompt cache: kept alive until it goes cold (FR-204).
         let warm: BTreeMap<String, u64> = {
             let ids = self.live_ids();
+            // Only a lead's is used.
+            let ids: Vec<String> =
+                self.store.read(|s| ids.into_iter().filter(|id| s.agents.get(id).is_some_and(reserved_slot)).collect());
             let u = self.usage.lock().unwrap_or_else(|e| e.into_inner());
             ids.into_iter()
                 .filter_map(|id| {
@@ -1737,8 +1745,15 @@ impl Runtime {
             }
             out.into_values().collect()
         });
+        // The Governor's queue, read once for every agent's waiting turn.
+        let entries: std::collections::BTreeSet<u64> =
+            if queued.iter().any(|(_, t)| matches!(t.admission, Admission::Waiting(_))) {
+                self.with_governor(|g| g.queue().iter().map(|q| q.id.0).collect())
+            } else {
+                Default::default()
+            };
         for (rec, turn) in queued {
-            if let Err(e) = self.pump_one(&rec, &turn, now) {
+            if let Err(e) = self.pump_one(&rec, &turn, now, &entries) {
                 self.event(&rec.id, "delivery_error", json!(e.to_string()));
             }
         }
@@ -1767,9 +1782,15 @@ impl Runtime {
         admission == Admission::Admitted
     }
 
-    fn pump_one(&self, rec: &AgentRecord, turn: &TurnRow, now: u64) -> Result<()> {
+    fn pump_one(
+        &self,
+        rec: &AgentRecord,
+        turn: &TurnRow,
+        now: u64,
+        entries: &std::collections::BTreeSet<u64>,
+    ) -> Result<()> {
         if let Admission::Waiting(e) = turn.admission
-            && !self.gov().queue().iter().any(|q| q.id.0 == e)
+            && !entries.contains(&e)
         {
             // Its entry is gone without a release (dropped for a critical
             // turn): ask again rather than wait forever. A release that comes
@@ -1844,8 +1865,9 @@ impl Runtime {
         // The agent's next queued turns ride along (one turn, one paste), up
         // to a slash command, which is typed alone and as is. Each one is
         // admitted first: a pause or a budget wait holds it like any turn.
-        let batch: Vec<TurnRow> = if turn.command {
-            vec![turn.clone()]
+        let (batch, prepared) = if turn.command {
+            let text = turn.body.trim().to_string();
+            (vec![turn.clone()], delivery::Prepared { turn_id: turn.id.clone(), text, file: None })
         } else {
             let next: Vec<TurnRow> = self.store.read(|s| {
                 s.turns
@@ -1866,13 +1888,9 @@ impl Runtime {
                 }
                 batch.push(t);
             }
-            batch
-        };
-        let prepared = if turn.command {
-            delivery::Prepared { turn_id: turn.id.clone(), text: turn.body.trim().to_string(), file: None }
-        } else {
             let parts: Vec<(&str, &str)> = batch.iter().map(|t| (t.id.as_str(), t.body.as_str())).collect();
-            delivery::prepare_many(&parts, &self.cfg.paths.agent_dir(&rec.id))
+            let prepared = delivery::prepare_many(&parts, &self.cfg.paths.agent_dir(&rec.id));
+            (batch, prepared)
         };
         if let Some((path, body)) = &prepared.file {
             std::fs::create_dir_all(path.parent().unwrap_or(Path::new("/")))?;

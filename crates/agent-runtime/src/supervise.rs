@@ -6,13 +6,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, anyhow, bail};
 use orch_protocol::now_ms;
-use orch_store::Message;
+
 use serde_json::{Value, json};
 
 use crate::runtime::Runtime;
 use crate::state::AgentState;
-use crate::store::TurnStatus;
-use crate::team::RunCtx;
+use crate::store::{AgentRecord, TurnStatus};
+use crate::team::{RunCtx, str_arg};
 
 /// A permission prompt nobody answered this long is worth the lead's note.
 pub const WAITING_FOR_USER_MS: u64 = 3 * 60 * 1000;
@@ -89,12 +89,16 @@ impl MemberStatus {
 impl Runtime {
     /// Every member of the run but the lead, with its queue facts.
     pub(crate) fn members(&self, cx: &RunCtx) -> Vec<MemberStatus> {
-        let agents = self.run_agents(&cx.run.id);
+        self.members_of(cx, &self.run_agents(&cx.run.id))
+    }
+
+    fn members_of(&self, cx: &RunCtx, agents: &[AgentRecord]) -> Vec<MemberStatus> {
+        let ids: BTreeSet<&str> = agents.iter().map(|a| a.id.as_str()).collect();
+        // Turns are kept in queue order: the first one seen is the oldest.
         let queued: BTreeMap<String, u64> = self.store.read(|s| {
             let mut m: BTreeMap<String, u64> = BTreeMap::new();
-            for t in s.turns.iter().filter(|t| t.status == TurnStatus::Queued) {
-                let e = m.entry(t.agent_id.clone()).or_insert(t.created_at_ms);
-                *e = (*e).min(t.created_at_ms);
+            for t in s.turns.iter().filter(|t| t.status == TurnStatus::Queued && ids.contains(t.agent_id.as_str())) {
+                m.entry(t.agent_id.clone()).or_insert(t.created_at_ms);
             }
             m
         });
@@ -122,39 +126,27 @@ impl Runtime {
 
     /// Tells the lead about members stuck for a while (once per episode).
     pub(crate) fn supervise(&self, cx: &RunCtx, now: u64) {
-        let Some(lead) = self.lead_of(cx) else { return };
-        let mut keys = BTreeSet::new();
-        let mut text: BTreeMap<String, String> = BTreeMap::new();
-        for m in self.members(cx) {
-            if let Some((what, since, line)) = m.stuck(now) {
-                let key = format!("{}:{what}:{since}", m.agent);
-                text.insert(key.clone(), line);
-                keys.insert(key);
-            }
-        }
-        let new = self.supervised(&cx.run.id, &keys);
+        let agents = self.run_agents(&cx.run.id);
+        let lead_node = cx.team.lead().map(|n| n.id.as_str());
+        let Some(lead) = agents.iter().find(|a| a.team.as_ref().map(|t| t.node.as_str()) == lead_node) else {
+            return;
+        };
+        let text: BTreeMap<String, String> = self
+            .members_of(cx, &agents)
+            .iter()
+            .filter_map(|m| m.stuck(now).map(|(what, since, line)| (format!("{}:{what}:{since}", m.agent), line)))
+            .collect();
+        let new = self.supervised(&cx.run.id, &text.keys().cloned().collect());
         if new.is_empty() {
             return;
         }
-        let lines: Vec<String> = new.iter().filter_map(|k| text.get(k)).map(|l| format!("\n- {l}")).collect();
+        let lines: String = new.iter().map(|k| format!("\n- {}", text[k])).collect();
         let body = format!(
-            "Team status:{}\n\nUnblock them yourself: mcp__orch__nudge to tell a member what to do, mcp__orch__resume_agent to restart a suspended one, mcp__orch__update_task to reassign. Only a permission prompt needs the user.",
-            lines.concat()
+            "Team status:{lines}\n\nUnblock them yourself: mcp__orch__nudge to tell a member what to do, mcp__orch__resume_agent to restart a suspended one, mcp__orch__update_task to reassign. Only a permission prompt needs the user."
         );
-        let _ = self.db.add_message(&Message {
-            id: 0,
-            team_run_id: cx.run.id.clone(),
-            from_node: "orchestrator".into(),
-            from_agent: None,
-            to_node: lead.team.as_ref().map(|t| t.node.clone()).unwrap_or_default(),
-            to_agent: Some(lead.id.clone()),
-            kind: "status".into(),
-            body,
-            r#ref: json!({"stuck": new}),
-            created_at_ms: now,
-            delivered_at_ms: None,
-            read_at_ms: None,
-        });
+        let to_node = lead.team.as_ref().map(|t| t.node.clone()).unwrap_or_default();
+        let to = Some(lead.id.clone());
+        let _ = self.add_run_message(cx, "orchestrator", None, &to_node, to, "status", &body, json!({"stuck": new}));
         self.run_event(&cx.run.id, Some(&lead.id), "team.stuck", json!({"members": new}));
     }
 
@@ -162,7 +154,7 @@ impl Runtime {
     pub(crate) fn lead_tool(&self, cx: &RunCtx, tool: &str, args: &Value) -> Result<(String, Value)> {
         let now = now_ms();
         let member = |args: &Value| -> Result<MemberStatus> {
-            let a = args.get("agent").and_then(Value::as_str).map(str::trim).unwrap_or("");
+            let a = str_arg(args, "agent").unwrap_or("");
             self.members(cx)
                 .into_iter()
                 .find(|m| m.agent == a || m.node == a)
@@ -183,8 +175,7 @@ impl Runtime {
             }
             "nudge" => {
                 let m = member(args)?;
-                let text = args.get("text").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
-                let text = text.ok_or_else(|| anyhow!("`text` is required"))?;
+                let text = str_arg(args, "text").ok_or_else(|| anyhow!("`text` is required"))?;
                 let turn = self.deliver(&m.agent, &format!("ORCH: from your lead: {text}"))?;
                 Ok((format!("Told {}; it gets it as its next turn.", m.agent), json!({"turn": turn})))
             }

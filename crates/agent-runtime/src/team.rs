@@ -121,7 +121,7 @@ pub(crate) fn cut(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n).collect::<String>()) }
 }
 
-fn str_arg<'a>(args: &'a Value, k: &str) -> Option<&'a str> {
+pub(crate) fn str_arg<'a>(args: &'a Value, k: &str) -> Option<&'a str> {
     args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
 }
 
@@ -488,7 +488,6 @@ impl Runtime {
                     continue;
                 }
             };
-            self.promote_lead(&cx);
             if let Err(e) = self.dispatch(&cx) {
                 self.run_event(&run.id, None, "dispatch_error", json!(format!("{e:#}")));
             }
@@ -500,30 +499,19 @@ impl Runtime {
         }
     }
 
-    /// A lead started before leads ran at the critical tier gets it now,
-    /// and the lead tools added since (seen from its next start).
-    fn promote_lead(&self, cx: &RunCtx) {
-        let tools = orch_team::compile::tools_for(true);
-        let is_lead =
-            |a: &AgentRecord| a.team.as_ref().is_some_and(|t| t.run_id == cx.run.id && cx.team.is_lead(&t.node));
-        let stale = |a: &AgentRecord| {
-            is_lead(a) && (a.tier != governor::Tier::Critical || tools.iter().any(|t| !a.role.orch_tools.contains(t)))
-        };
-        // Every team tick: the store (and its diff) is written only for a change.
-        if !self.store.read(|s| s.agents.values().any(stale)) {
-            return;
-        }
+    /// A team agent's role is compiled again from its node at each start,
+    /// so role edits and what the team compiles in later (tools, tier, the
+    /// permission mode) reach agents created before them. On any error the
+    /// role it has is kept.
+    pub(crate) fn refresh_team_role(&self, id: &str) {
+        let Some(seat) = self.store.read(|s| s.agents.get(id).and_then(|a| a.team.clone())) else { return };
+        let Ok(cx) = self.run_ctx(&seat.run_id) else { return };
+        let Ok(cfg) = orch_team::compile_node(&cx.team, &seat.node, &cx.roles, &cx.fctx()) else { return };
+        let Ok(role) = Role::from_node(&cfg) else { return };
         let _ = self.store.write(|s| {
-            for a in s.agents.values_mut() {
-                if !is_lead(&*a) {
-                    continue;
-                }
-                a.tier = governor::Tier::Critical;
-                for t in &tools {
-                    if !a.role.orch_tools.contains(t) {
-                        a.role.orch_tools.push(t.clone());
-                    }
-                }
+            if let Some(a) = s.agents.get_mut(id) {
+                a.role = role;
+                a.tier = cfg.tier;
             }
         });
     }
@@ -778,20 +766,7 @@ impl Runtime {
         };
         let mut ids = vec![];
         for r in recipients {
-            ids.push(self.db.add_message(&Message {
-                id: 0,
-                team_run_id: cx.run.id.clone(),
-                from_node: from_node.into(),
-                from_agent: from_agent.map(str::to_string),
-                to_node: to_node.clone(),
-                to_agent: r,
-                kind: kind.into(),
-                body: body.clone(),
-                r#ref: r#ref.clone(),
-                created_at_ms: now_ms(),
-                delivered_at_ms: None,
-                read_at_ms: None,
-            })?);
+            ids.push(self.add_run_message(cx, from_node, from_agent, &to_node, r, kind, &body, r#ref.clone())?);
         }
         self.run_event(
             &cx.run.id,
@@ -800,6 +775,36 @@ impl Runtime {
             json!({"from": from_node, "to": to, "kind": kind, "body": cut(&body, 300)}),
         );
         Ok(ids)
+    }
+
+    /// Stores one message of the run (no rules checked: callers do, or it is
+    /// the orchestrator's own).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn add_run_message(
+        &self,
+        cx: &RunCtx,
+        from_node: &str,
+        from_agent: Option<&str>,
+        to_node: &str,
+        to_agent: Option<String>,
+        kind: &str,
+        body: &str,
+        r#ref: Value,
+    ) -> Result<u64> {
+        self.db.add_message(&Message {
+            id: 0,
+            team_run_id: cx.run.id.clone(),
+            from_node: from_node.into(),
+            from_agent: from_agent.map(str::to_string),
+            to_node: to_node.into(),
+            to_agent,
+            kind: kind.into(),
+            body: cut(body, MAX_BODY),
+            r#ref,
+            created_at_ms: now_ms(),
+            delivered_at_ms: None,
+            read_at_ms: None,
+        })
     }
 
     pub(crate) fn render_messages(msgs: &[Message], max: usize) -> String {
@@ -819,17 +824,27 @@ impl Runtime {
         s
     }
 
-    fn undelivered(&self, rec: &AgentRecord) -> Vec<Message> {
+    fn unread(&self, rec: &AgentRecord) -> Vec<Message> {
         let Some(seat) = &rec.team else { return vec![] };
-        let unread = self.db.messages(&seat.run_id, Some((&seat.node, Some(&rec.id))), true).unwrap_or_default();
-        unread.into_iter().filter(|m| m.delivered_at_ms.is_none()).collect()
+        self.db.messages(&seat.run_id, Some((&seat.node, Some(&rec.id))), true).unwrap_or_default()
+    }
+
+    fn undelivered(&self, rec: &AgentRecord) -> Vec<Message> {
+        self.unread(rec).into_iter().filter(|m| m.delivered_at_ms.is_none()).collect()
     }
 
     /// The agent's unread messages among `ids` (to remind it at its Stop).
     pub(crate) fn unread_of(&self, rec: &AgentRecord, ids: &[u64]) -> Vec<Message> {
-        let Some(seat) = &rec.team else { return vec![] };
-        let unread = self.db.messages(&seat.run_id, Some((&seat.node, Some(&rec.id))), true).unwrap_or_default();
-        unread.into_iter().filter(|m| ids.contains(&m.id)).collect()
+        self.unread(rec).into_iter().filter(|m| ids.contains(&m.id)).collect()
+    }
+
+    /// A task of this run, by id.
+    pub(crate) fn run_task(&self, cx: &RunCtx, id: u64) -> Result<Task> {
+        let t = self.db.task(id)?.ok_or_else(|| anyhow!("no task {id}"))?;
+        if t.team_run_id.as_deref() != Some(&cx.run.id) {
+            bail!("task {id} is not part of this feature");
+        }
+        Ok(t)
     }
 
     /// FR-403 for a busy agent: its new messages, as PostToolUse context.
@@ -1153,15 +1168,7 @@ impl Runtime {
                     .map(|s| cut(s, 200))
                     .take(8)
                     .collect();
-                let id = self.add_item(
-                    Some(&rec.id),
-                    "question",
-                    format!("{}: {}", rec.id, cut(q, 300)),
-                    json!({"action": "ask_user", "question": cut(q, 4_000), "options": options, "run": cx.run.id, "notify": str_arg(args, "kind") != Some("fyi")}),
-                    crate::inbox::PRIORITY_GATE,
-                )?;
-                self.mark_asked(&rec.id);
-                self.run_event(&cx.run.id, Some(&rec.id), "asked_user", json!({"item": id, "question": cut(q, 300)}));
+                let id = self.question_item(rec, q, options, "ask_user", str_arg(args, "kind") != Some("fyi"))?;
                 Ok((
                     "Asked the user; the answer comes as a new turn. Continue with other work or end your turn.".into(),
                     json!({"item": id}),
@@ -1227,10 +1234,7 @@ impl Runtime {
             }
             "update_task" => {
                 let id = args.get("id").and_then(Value::as_u64).ok_or_else(|| anyhow!("`id` is required"))?;
-                let mut t = self.db.task(id)?.ok_or_else(|| anyhow!("no task {id}"))?;
-                if t.team_run_id.as_deref() != Some(&cx.run.id) {
-                    bail!("task {id} is not part of this feature");
-                }
+                let mut t = self.run_task(&cx, id)?;
                 if !is_lead && t.node.as_deref() != Some(me) {
                     bail!("you can only update your own tasks");
                 }

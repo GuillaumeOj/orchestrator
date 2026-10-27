@@ -7,13 +7,14 @@
   import Kbd from './Kbd.svelte';
 
   let el = $state();
+  const clamp = (h) => Math.min(0.8, Math.max(0.12, h));
 
   /** Drag the top edge: the dock's share of the column. */
   function drag(e) {
     e.preventDefault();
     const box = el.parentElement.getBoundingClientRect();
     const move = (ev) => {
-      app.dock.height = Math.min(0.8, Math.max(0.12, (box.bottom - ev.clientY) / box.height));
+      app.dock.height = clamp((box.bottom - ev.clientY) / box.height);
     };
     const up = () => {
       window.removeEventListener('pointermove', move);
@@ -27,7 +28,7 @@
   function nudge(e) {
     const d = { ArrowUp: 0.05, ArrowDown: -0.05 }[e.key];
     if (d) {
-      app.dock.height = Math.min(0.8, Math.max(0.12, app.dock.height + d));
+      app.dock.height = clamp(app.dock.height + d);
       saveLayout();
       e.preventDefault();
     }

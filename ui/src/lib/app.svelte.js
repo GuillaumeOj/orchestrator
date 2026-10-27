@@ -302,17 +302,11 @@ const spawnShell = ({ projectId, agentId, cwd }) =>
 
 /** A shell: a dock tab by default, a pane with `how` ('right' | 'below'). */
 export async function openShell(opts = {}) {
-  const a = opts.agentId ? agent(opts.agentId) : contextAgent();
-  const p = contextProject();
+  const projectId = opts.projectId ?? contextProject()?.id;
+  const agentId = opts.agentId ?? contextAgent()?.id;
   try {
-    const t = await spawnShell({ projectId: opts.projectId ?? p?.id, agentId: opts.agentId ?? a?.id, cwd: opts.cwd });
-    const spec = {
-      type: 'shell',
-      termId: t.id,
-      cwd: t.cwd,
-      projectId: opts.projectId ?? p?.id,
-      agentId: opts.agentId ?? a?.id,
-    };
+    const t = await spawnShell({ projectId, agentId, cwd: opts.cwd });
+    const spec = { type: 'shell', termId: t.id, cwd: t.cwd, projectId, agentId };
     if (opts.how) addPane(spec, opts.how);
     else addDockPane(spec);
   } catch (e) {
@@ -553,11 +547,15 @@ export async function restoreLayout() {
   const ids = [...L.allPanes(saved.layout), ...docked];
   for (const id of ids) nextPane = Math.max(nextPane, Number(id.slice(1)) + 1);
   const panes = {};
-  for (const id of ids) {
-    const s = saved.panes[id];
-    if (!s) continue;
-    if (paneGone(s)) continue;
-    if (s.type === 'shell' || s.type === 'editor') {
+  // Shells and editors restart in parallel; one that does not start is dropped.
+  await Promise.all(
+    ids.map(async (id) => {
+      const s = saved.panes[id];
+      if (!s || paneGone(s)) return;
+      if (s.type !== 'shell' && s.type !== 'editor') {
+        panes[id] = s;
+        return;
+      }
       try {
         const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
         const spec = { ...s, type: 'shell', termId: t.id, cwd: t.cwd };
@@ -565,8 +563,8 @@ export async function restoreLayout() {
       } catch {
         // The shell did not start: the pane is dropped from the restored layout.
       }
-    } else panes[id] = s;
-  }
+    }),
+  );
   app.panes = panes;
   const tabs = docked.filter((id) => panes[id]);
   app.dock = {

@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::runtime::Runtime;
 use crate::store::AgentRecord;
-use crate::team::{RunCtx, Sender, cut};
+use crate::team::{RunCtx, Sender, cut, str_arg};
 
 /// What the owner runs on its branch before it reports (in order).
 pub const SELF_REVIEW: &[&str] = &["/code-review high --fix --max-findings all", "/simplify"];
@@ -22,10 +22,6 @@ pub const AFTER_SELF_REVIEW: &str = "ORCH: your self-review is done. Commit its 
 
 /// Tools that change files: refused until a plan-first task's plan is approved.
 const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
-
-fn str_arg<'a>(args: &'a Value, k: &str) -> Option<&'a str> {
-    args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
-}
 
 /// The review as the lead reads it.
 pub fn render_review(v: &Value) -> String {
@@ -52,11 +48,6 @@ pub fn render_review(v: &Value) -> String {
     s
 }
 
-/// The title of the reviewer's task for `t` (before its own title).
-fn review_title(t: &Task) -> String {
-    format!("Review {}", t.handle())
-}
-
 /// The node that reviews `me`'s work: a `reviews` edge from it, else a
 /// node whose role is a reviewer.
 fn reviewer_of(cx: &RunCtx, me: &str) -> Option<String> {
@@ -70,20 +61,10 @@ fn reviewer_of(cx: &RunCtx, me: &str) -> Option<String> {
 }
 
 impl Runtime {
-    fn save_flow(&self, t: &Task) -> Result<()> {
-        self.db.upsert_task(t)?;
-        Ok(())
-    }
-
-    /// PreToolUse of a team agent on a plan-first task whose plan is not
-    /// approved yet: edits are refused.
-    pub(crate) fn plan_lock(&self, rec: &AgentRecord, tool: &str) -> Option<HookOutput> {
-        let task = rec.team.as_ref()?.task?;
-        let edits = EDIT_TOOLS.contains(&tool) || tool == "mcp__orch__commit";
-        if !edits {
-            return None;
-        }
-        let t = self.db.task(task).ok()??;
+    /// Why a team agent may not change files yet: its plan-first task's
+    /// plan is not approved (for edit tools and the `commit` tool).
+    pub(crate) fn plan_lock_reason(&self, rec: &AgentRecord) -> Option<String> {
+        let t = self.db.task(rec.team.as_ref()?.task?).ok()??;
         if !t.flow.plan_first || t.flow.plan_approved {
             return None;
         }
@@ -92,10 +73,15 @@ impl Runtime {
         } else {
             "send your plan with mcp__orch__submit_plan first"
         };
-        Some(HookOutput::pre_tool_use(
-            ToolDecision::Deny,
-            &format!("ORCH: {} is a plan-first task: {why}.", t.handle()),
-        ))
+        Some(format!("ORCH: {} is a plan-first task: {why}.", t.handle()))
+    }
+
+    /// PreToolUse: edit tools are refused while [`Self::plan_lock_reason`] holds.
+    pub(crate) fn plan_lock(&self, rec: &AgentRecord, tool: &str) -> Option<HookOutput> {
+        if !EDIT_TOOLS.contains(&tool) {
+            return None;
+        }
+        self.plan_lock_reason(rec).map(|why| HookOutput::pre_tool_use(ToolDecision::Deny, &why))
     }
 
     /// Merging a task needs its review first (unless the team reviews none).
@@ -126,27 +112,26 @@ impl Runtime {
     ) -> Result<Option<String>> {
         // The owner's own `review` counts only after the self-review it was
         // asked for (never in place of a reviewer node's).
-        let own = match cx.team.review {
-            ReviewMode::SelfReview => t.flow.reviewing,
-            ReviewMode::None => true,
-            ReviewMode::Node => false,
-        };
-        if let Some(r) = args.get("review").filter(|v| v.is_object() && own) {
-            t.flow.review = Some(r.clone());
-            t.flow.reviewing = false;
-            return Ok(None);
-        }
+        let own = args.get("review").filter(|v| v.is_object()).cloned();
         if t.flow.review.is_some() {
             return Ok(None);
         }
         match cx.team.review {
-            ReviewMode::None => Ok(None),
+            ReviewMode::None => {
+                t.flow.review = own;
+                Ok(None)
+            }
             ReviewMode::SelfReview if t.flow.reviewing => {
-                bail!("pass `review` (what you fixed, and each finding you left with why) with this report")
+                let r = own.ok_or_else(|| {
+                    anyhow!("pass `review` (what you fixed, and each finding you left with why) with this report")
+                })?;
+                t.flow.review = Some(r);
+                t.flow.reviewing = false;
+                Ok(None)
             }
             ReviewMode::SelfReview => {
                 t.flow.reviewing = true;
-                self.save_flow(t)?;
+                self.db.upsert_task(t)?;
                 for c in SELF_REVIEW {
                     self.deliver_command(&rec.id, c)?;
                 }
@@ -166,7 +151,7 @@ impl Runtime {
                 let branch = t.branch.clone().unwrap_or_default();
                 let summary = cut(str_arg(args, "summary").unwrap_or(""), 2_000);
                 let mut r =
-                    Task::new(&cx.project.id, "", &format!("{} ({})", review_title(t), cut(&t.title, 120)), now_ms());
+                    Task::new(&cx.project.id, "", &format!("Review {} ({})", t.handle(), cut(&t.title, 120)), now_ms());
                 r.body = format!(
                     "Review {branch} for task id {} ({}). The owner says: {summary}\n\nRead it with `git diff {}...{branch}`, run `/code-review high --max-findings all` on it, then call mcp__orch__submit_review with task {} and your findings. Don't change the branch.",
                     t.id,
@@ -177,10 +162,11 @@ impl Runtime {
                 r.node = Some(reviewer.clone());
                 r.feature_id = Some(cx.feature.id.clone());
                 r.team_run_id = Some(cx.run.id.clone());
+                r.flow.reviews = Some(t.id);
                 let svc = self.tasks_for(&cx.project);
                 let r = svc.create(r)?.value;
                 t.flow.reviewing = true;
-                self.save_flow(t)?;
+                self.db.upsert_task(t)?;
                 // The owner's summary goes with the reviewer's report to the lead.
                 if !summary.is_empty() {
                     *t = svc.note(t.id, me, &summary, now_ms())?.value;
@@ -210,13 +196,7 @@ impl Runtime {
         args: &Value,
     ) -> Result<(String, Value)> {
         let task_arg = |k: &str| args.get(k).and_then(Value::as_u64);
-        let load = |id: u64| -> Result<Task> {
-            let t = self.db.task(id)?.ok_or_else(|| anyhow!("no task {id}"))?;
-            if t.team_run_id.as_deref() != Some(&cx.run.id) {
-                bail!("task {id} is not part of this feature");
-            }
-            Ok(t)
-        };
+        let load = |id: u64| self.run_task(cx, id);
         match tool {
             "submit_plan" => {
                 if is_lead {
@@ -232,7 +212,7 @@ impl Runtime {
                 }
                 t.flow.plan = Some(cut(plan, 8_000));
                 t.flow.plan_approved = false;
-                self.save_flow(&t)?;
+                self.db.upsert_task(&t)?;
                 let up = rules::reports_to(&cx.team, me).unwrap_or_else(|| "lead".into());
                 self.post_message(
                     cx,
@@ -272,7 +252,7 @@ impl Runtime {
                         t.handle()
                     )
                 };
-                self.save_flow(&t)?;
+                self.db.upsert_task(&t)?;
                 self.deliver(&owner, &text)?;
                 self.run_event(
                     &cx.run.id,
@@ -305,16 +285,16 @@ impl Runtime {
                     bail!("{} is not waiting for a review", t.handle());
                 }
                 let review = json!({"reviewer": me, "findings": findings, "summary": summary});
-                t.flow.review = Some(review.clone());
+                let rendered = render_review(&review);
+                t.flow.review = Some(review);
                 t.flow.reviewing = false;
-                t.flow.review_rounds += 1;
                 self.apply_status(&mut t, TaskStatus::Review);
                 let svc = self.tasks_for(&cx.project);
                 svc.update(t.clone(), now_ms())?;
                 // The reviewer's own review task (of this task) is done.
                 if let Some(mine) = rec.team.as_ref().and_then(|s| s.task) {
                     if let Ok(Some(mut r)) = self.db.task(mine)
-                        && r.title.starts_with(&format!("{} (", review_title(&t)))
+                        && r.flow.reviews == Some(t.id)
                     {
                         self.apply_status(&mut r, TaskStatus::Done);
                         svc.update(r, now_ms())?;
@@ -333,7 +313,7 @@ impl Runtime {
                         "task id {id} ({}) is done on {branch}: {}{}",
                         t.title,
                         owner_note.unwrap_or_default(),
-                        render_review(&review)
+                        rendered
                     ),
                     json!({"task": id, "branch": branch}),
                 )?;
@@ -342,9 +322,8 @@ impl Runtime {
                         let _ = self.deliver(
                             owner,
                             &format!(
-                                "ORCH: {me} reviewed {}:{} Your lead decides what to fix; wait for it.",
+                                "ORCH: {me} reviewed {}:{rendered} Your lead decides what to fix; wait for it.",
                                 t.handle(),
-                                render_review(&review)
                             ),
                         );
                     }

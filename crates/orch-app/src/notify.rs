@@ -40,10 +40,9 @@ pub struct Watch {
 
 impl Watch {
     pub fn poll(&mut self, items: &[InboxItem]) -> Option<Note> {
-        let now: BTreeSet<String> = items.iter().filter(|i| notifies(i)).map(|i| i.id.clone()).collect();
-        let fresh: Vec<&InboxItem> =
-            items.iter().filter(|i| now.contains(&i.id) && !self.seen.contains(&i.id)).collect();
-        self.seen = now;
+        let items: Vec<&InboxItem> = items.iter().filter(|i| notifies(i)).collect();
+        let fresh: Vec<&InboxItem> = items.iter().copied().filter(|i| !self.seen.contains(&i.id)).collect();
+        self.seen = items.iter().map(|i| i.id.clone()).collect();
         if !std::mem::replace(&mut self.started, true) {
             return None;
         }
@@ -77,11 +76,13 @@ pub fn start(app: AppHandle) {
         loop {
             std::thread::sleep(EVERY);
             let Some(core) = app.try_state::<Arc<Core>>() else { continue };
-            let Some(note) = watch.poll(&core.attention()) else { continue };
             let (desktop, sound) = prefs(&core);
             if !desktop {
+                // Off: no Inbox work, and no burst of what came meanwhile once back on.
+                watch = Watch::default();
                 continue;
             }
+            let Some(note) = watch.poll(&core.attention()) else { continue };
             let mut n = app.notification().builder().title(&note.title).body(&note.body);
             if sound {
                 n = n.sound("Glass");

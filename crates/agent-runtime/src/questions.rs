@@ -66,20 +66,32 @@ fn ask_user_question_text(input: &Value) -> (String, Vec<String>) {
 }
 
 impl Runtime {
-    fn question_item(&self, rec: &AgentRecord, question: &str, options: Vec<String>, via: &str) -> Option<u64> {
+    /// An Inbox question from `rec` (the `ask_user` tool, a forwarded
+    /// `AskUserQuestion`, a question left in the pane). `notify: false` is
+    /// an fyi: listed, never a desktop notification.
+    pub(crate) fn question_item(
+        &self,
+        rec: &AgentRecord,
+        question: &str,
+        options: Vec<String>,
+        via: &str,
+        notify: bool,
+    ) -> anyhow::Result<u64> {
         let run = rec.team.as_ref().map(|s| s.run_id.clone());
-        let id = self
-            .add_item(
-                Some(&rec.id),
-                "question",
-                format!("{}: {}", rec.id, cut(last_paragraph(question), 300)),
-                json!({"action": "ask_user", "question": cut(question, 4_000), "options": options, "run": run, "via": via}),
-                PRIORITY_GATE,
-            )
-            .ok()?;
+        let id = self.add_item(
+            Some(&rec.id),
+            "question",
+            format!("{}: {}", rec.id, cut(last_paragraph(question), 300)),
+            json!({"action": "ask_user", "question": cut(question, 4_000), "options": options, "run": run, "via": via, "notify": notify}),
+            PRIORITY_GATE,
+        )?;
         self.mark_asked(&rec.id);
-        self.event(&rec.id, "asked_user", json!({"item": id, "via": via}));
-        Some(id)
+        let ev = json!({"item": id, "via": via, "question": cut(question, 300)});
+        match &run {
+            Some(r) => self.run_event(r, Some(&rec.id), "asked_user", ev),
+            None => self.event(&rec.id, "asked_user", ev),
+        }
+        Ok(id)
     }
 
     /// PreToolUse of `AskUserQuestion` in a team agent's autonomous turn: an
@@ -95,7 +107,7 @@ impl Runtime {
         if text.trim().is_empty() {
             return None;
         }
-        self.question_item(rec, &text, options, "AskUserQuestion")?;
+        self.question_item(rec, &text, options, "AskUserQuestion", true).ok()?;
         Some(HookOutput::pre_tool_use(
             ToolDecision::Deny,
             "ORCH: forwarded to the user through the Inbox; the answer arrives as a new turn. Continue with other work or end your turn.",
@@ -104,20 +116,22 @@ impl Runtime {
 
     /// A team agent's Stop on a plain-text question it did not send with
     /// `ask_user`. In an autonomous turn it is sent back once to use the
-    /// tool; after that, or in a turn the user started in the pane, the
-    /// question goes to the Inbox as it is (the pane answer closes it).
-    pub(crate) fn question_at_stop(&self, rec: &AgentRecord, p: &HookPayload) -> Option<HookOutput> {
+    /// tool (the reason is returned for the Stop's block); after that, or in
+    /// a turn the user started in the pane, the question goes to the Inbox
+    /// as it is (the pane answer closes it).
+    pub(crate) fn question_at_stop(&self, rec: &AgentRecord, p: &HookPayload) -> Option<&'static str> {
+        rec.team.as_ref()?;
         let text = p.last_assistant_message.as_deref().filter(|t| looks_like_question(t))?;
-        if rec.team.is_none() || self.asked(&rec.id) {
+        if self.asked(&rec.id) {
             return None;
         }
         let users_turn = rec.tracker.turn_origin == Some(TurnOrigin::User);
         if !users_turn && p.stop_hook_active != Some(true) {
-            return Some(HookOutput::stop_block(
+            return Some(
                 "ORCH: your turn ends on a question for the user, but nobody reads this pane. If it is for the user, call mcp__orch__ask_user with the question (and its options), then end your turn. If it is for your team, use mcp__orch__send_message. If it was not a question, just end your turn.",
-            ));
+            );
         }
-        self.question_item(rec, text, vec![], "pane");
+        let _ = self.question_item(rec, text, vec![], "pane", true);
         None
     }
 

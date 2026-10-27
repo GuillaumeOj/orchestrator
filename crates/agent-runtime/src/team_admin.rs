@@ -63,14 +63,8 @@ impl Runtime {
                 }
             }
         }
-        // Team agents already created carry their compiled mode: from their next start.
-        self.store.write(|s| {
-            for a in s.agents.values_mut().filter(|a| a.team.is_some()) {
-                if a.role.permission_mode == crate::role::PermissionMode::AcceptEdits {
-                    a.role.permission_mode = crate::role::PermissionMode::Auto;
-                }
-            }
-        })?;
+        // Team agents already created get it at their next start (their
+        // role is compiled again then).
         self.db.set_setting(KEY, &json!(now))?;
         Ok(n)
     }

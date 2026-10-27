@@ -132,13 +132,9 @@ pub struct TaskFlow {
     /// The review's outcome: `{fixed: [...], unfixed: [{finding, reason}]}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<Value>,
-    /// Reviewer rounds so far (a reviewer node's findings sent back).
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub review_rounds: u32,
-}
-
-fn is_zero(n: &u32) -> bool {
-    *n == 0
+    /// On a reviewer's own task: the task it reviews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviews: Option<u64>,
 }
 
 impl Task {
@@ -763,51 +759,43 @@ impl Store {
         })
     }
 
-    /// Marks messages delivered (handed to the agent, not yet acted on) and
-    /// binds them to the agent of the node that got them. They stay unread
-    /// until [`Store::ack_messages`].
-    pub fn deliver_messages(&self, ids: &[u64], agent_id: &str, at_ms: u64) -> Result<()> {
+    /// Runs `sql` once per message id (`?1`), the same `args` after it.
+    fn each_message(&self, ids: &[u64], sql: &'static str, args: Vec<rusqlite::types::Value>) -> Result<()> {
         let ids = ids.to_vec();
-        let agent = agent_id.to_string();
         self.write(move |tx| {
+            let mut st = tx.prepare_cached(sql)?;
             for id in ids {
-                tx.execute(
-                    "UPDATE messages SET to_agent=coalesce(to_agent, ?2), delivered_at_ms=coalesce(delivered_at_ms, ?3)
-                     WHERE id=?1",
-                    params![id as i64, agent, at_ms as i64],
-                )?;
+                let all = std::iter::once(rusqlite::types::Value::Integer(id as i64)).chain(args.iter().cloned());
+                st.execute(rusqlite::params_from_iter(all))?;
             }
             Ok(())
         })
     }
 
+    /// Marks messages delivered (handed to the agent, not yet acted on) and
+    /// binds them to the agent of the node that got them. They stay unread
+    /// until [`Store::ack_messages`].
+    pub fn deliver_messages(&self, ids: &[u64], agent_id: &str, at_ms: u64) -> Result<()> {
+        self.each_message(
+            ids,
+            "UPDATE messages SET to_agent=coalesce(to_agent, ?2), delivered_at_ms=coalesce(delivered_at_ms, ?3) WHERE id=?1",
+            vec![agent_id.to_string().into(), (at_ms as i64).into()],
+        )
+    }
+
     /// The turn that carried these messages ended: they are read.
     pub fn ack_messages(&self, ids: &[u64], at_ms: u64) -> Result<()> {
-        let ids = ids.to_vec();
-        self.write(move |tx| {
-            for id in ids {
-                tx.execute(
-                    "UPDATE messages SET read_at_ms=coalesce(read_at_ms, ?2) WHERE id=?1",
-                    params![id as i64, at_ms as i64],
-                )?;
-            }
-            Ok(())
-        })
+        self.each_message(
+            ids,
+            "UPDATE messages SET read_at_ms=coalesce(read_at_ms, ?2) WHERE id=?1",
+            vec![(at_ms as i64).into()],
+        )
     }
 
     /// The turn that carried these messages never ran (cancelled, dropped):
     /// unread ones are delivered again.
     pub fn undeliver_messages(&self, ids: &[u64]) -> Result<()> {
-        let ids = ids.to_vec();
-        self.write(move |tx| {
-            for id in ids {
-                tx.execute(
-                    "UPDATE messages SET delivered_at_ms=NULL WHERE id=?1 AND read_at_ms IS NULL",
-                    params![id as i64],
-                )?;
-            }
-            Ok(())
-        })
+        self.each_message(ids, "UPDATE messages SET delivered_at_ms=NULL WHERE id=?1 AND read_at_ms IS NULL", vec![])
     }
 
     /// Marks messages delivered and read at once (shown in full where they
