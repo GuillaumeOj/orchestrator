@@ -356,8 +356,15 @@ impl Runtime {
     fn reserve_alert(&self) {
         let (week, reason) = {
             let g = self.gov();
-            let week = g.plan().week_start.as_millisecond();
-            let a = g.actions().iter().rev().find(|a| matches!(a.action, governor::ActionKind::ReserveExhausted));
+            let start = g.plan().week_start;
+            let week = start.as_millisecond();
+            // This week's only: the log keeps earlier weeks' actions.
+            let a = g
+                .actions()
+                .iter()
+                .rev()
+                .take_while(|a| a.ts >= start)
+                .find(|a| matches!(a.action, governor::ActionKind::ReserveExhausted));
             (week, a.map(|a| a.reason.clone()))
         };
         let Some(reason) = reason else { return };
@@ -1222,14 +1229,21 @@ impl Runtime {
         if plan.reset_at <= now || plan.week_start > now {
             bail!("the plan does not cover now");
         }
-        let carry = self.gov().carry();
-        self.db.save_plan(&plan, orch_store::PlanStatus::Active)?;
-        let (gov, released) = restore_governor(&self.db, &self.store, &self.cfg, plan.shadow_mode, Some(carry), now)?;
-        // The new Governor's action ids start again: store them under a new key.
-        let prev = self.boot_ms.load(Ordering::SeqCst);
-        self.boot_ms.store(now_ms().max(prev + 1), Ordering::SeqCst);
-        self.house().last_saved = Default::default();
-        *self.gov() = gov;
+        let released = {
+            // Held through the rebuild: a turn queued meanwhile on the old
+            // Governor would miss the carry and wait on an entry that is gone.
+            let mut old = self.gov();
+            let carry = old.carry();
+            self.db.save_plan(&plan, orch_store::PlanStatus::Active)?;
+            let (gov, released) =
+                restore_governor(&self.db, &self.store, &self.cfg, plan.shadow_mode, Some(carry), now)?;
+            // The new Governor's action ids start again: store them under a new key.
+            let prev = self.boot_ms.load(Ordering::SeqCst);
+            self.boot_ms.store(now_ms().max(prev + 1), Ordering::SeqCst);
+            self.house().last_saved = Default::default();
+            *old = gov;
+            released
+        };
         self.handle_releases(released);
         self.save_carry();
         Ok(())

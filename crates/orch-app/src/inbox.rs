@@ -138,7 +138,8 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
         out.push(InboxItem {
             id: format!("alert-{}", al.id),
             level: if budget { 3 } else { 2 },
-            kind: if budget { "budget" } else { "alert" }.into(),
+            // Still an alert to dismiss: `budget` items are asks (Apply/Skip).
+            kind: "alert".into(),
             agent_id: al.agent_id.clone(),
             title: al.body.lines().next().unwrap_or("").to_string(),
             detail: al.body.clone(),
@@ -232,7 +233,7 @@ mod tests {
         });
         let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
         assert_eq!(ids, ["wait-solo", "perm-1", "alert-7", "error-ci-1", "alert-8", "ask-12", "info-t1"]);
-        assert_eq!(items[4].kind, "budget");
+        assert_eq!((items[4].level, items[4].kind.as_str()), (3, "alert"), "a budget warning, dismissed like an alert");
         assert_eq!(badge(&items), 6);
         assert_eq!(items[1].preview.as_deref(), Some("pnpm add x"));
     }

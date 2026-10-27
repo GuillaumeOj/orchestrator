@@ -25,7 +25,8 @@ export function displayState(agent) {
   const s = agent?.state;
   const held = agent?.queue_entry?.reason?.kind;
   if (held === 'paused_all' || held === 'paused_agent') return 'paused';
-  if (agent?.paused && s !== 'working') return 'paused';
+  // A pause never hides what needs the user (a prompt, a gate, an error) or a running turn.
+  if (agent?.paused && !['working', 'starting', 'waiting_for_you', 'waiting_gate', 'error'].includes(s)) return 'paused';
   switch (s) {
     case 'starting':
       return 'working';

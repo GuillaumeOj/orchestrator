@@ -362,6 +362,8 @@ pub struct Governor {
     calib: Calibrator,
     weekly_obs: Option<Observation>,
     five_obs: Option<Observation>,
+    /// Where the 5h cost fit starts: advances only on a fit or a new 5h window.
+    five_anchor: Option<Observation>,
     /// The reading the next calibration interval starts from.
     calib_anchor: Observation,
     /// The week's accounting started at the reset (W is then known to be 0
@@ -419,6 +421,7 @@ impl Governor {
             calib,
             weekly_obs: None,
             five_obs: None,
+            five_anchor: None,
             // Replaced by `start_week_accounting` below.
             calib_anchor: Observation { ts: plan.week_start, used_pct: 0.0, resets_at: plan.reset_at, app_cost: 0.0 },
             reset_seen: false,
@@ -884,17 +887,27 @@ impl Governor {
         }
     }
 
-    /// Cost per 5h pp, from two readings of the same 5h window. Outside usage
-    /// in between makes it low, so the 5h cost of Run now errs high.
+    /// Cost per 5h pp, from two readings of the same 5h window at least
+    /// `calibration_min_pp` apart (the anchor stays put between fits, as the
+    /// weekly calibration's does). Outside usage in between makes it low, so
+    /// the 5h cost of Run now errs high.
     fn fit_five_hour(&mut self, obs: Observation) {
-        let Some(prev) = self.five_obs else { return };
-        let (dp, dc) = (obs.used_pct - prev.used_pct, obs.app_cost - prev.app_cost);
-        if prev.resets_at != obs.resets_at || dp < self.policy.calibration_min_pp || dc <= 0.0 || obs.used_pct >= 100.0
-        {
+        let anchor = match self.five_anchor {
+            Some(a) if a.resets_at == obs.resets_at && obs.used_pct >= a.used_pct => a,
+            _ => {
+                self.five_anchor = Some(obs);
+                return;
+            }
+        };
+        let (dp, dc) = (obs.used_pct - anchor.used_pct, obs.app_cost - anchor.app_cost);
+        if dp < self.policy.calibration_min_pp || obs.used_pct >= 100.0 {
             return;
         }
-        let k5 = dc / dp;
-        self.k5 = Some(self.k5.map_or(k5, |old| old + 0.3 * (k5 - old)));
+        if dc > 0.0 {
+            let k5 = dc / dp;
+            self.k5 = Some(self.k5.map_or(k5, |old| old + 0.3 * (k5 - old)));
+        }
+        self.five_anchor = Some(obs);
     }
 
     /// Cost per 1 % of the 5h window: fitted, else `k` over the policy's ratio.
@@ -1052,6 +1065,8 @@ impl Governor {
         if !req.interactive {
             if let Some(e) = self.queue.iter_mut().find(|e| e.agent == req.agent) {
                 e.tier = e.tier.max(req.tier);
+                // The agent was suspended since: its release now spawns a process.
+                e.needs_spawn |= req.needs_spawn;
                 let v =
                     Verdict::Queue { entry: Some(e.id), reason: e.reason.clone(), estimated_start: e.estimated_start };
                 return Decision::enforced(v);
