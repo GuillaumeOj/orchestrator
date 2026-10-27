@@ -158,6 +158,8 @@ struct House {
     last_saved: (Vec<governor::GovernorAction>, Vec<governor::QueueEntry>),
     /// What was last stored of the Governor's carry-over state.
     last_carry: Option<governor::Carry>,
+    /// Agents the user ran now (FR-809): their next spawn may exceed the memory cap (FR-203).
+    spawn_override: std::collections::BTreeSet<String>,
 }
 
 /// True (and restamps `last`) when `every` ms have passed since `last`.
@@ -176,6 +178,16 @@ pub const INDEX_EVERY_MS: u64 = 60 * 1000;
 pub const POLICY_ID: &str = "default";
 /// Settings key of the Governor's carry-over state (ADR-007 "State across restarts").
 pub const CARRY_KEY: &str = "governor.carry";
+/// Settings key: the user's FR-812 choice, `true` = enforce. Every way of
+/// switching (the app, `orchd enforce`) stores it here, and every start reads it.
+pub const ENFORCE_KEY: &str = "governor.enforce";
+/// Where the app stored the choice before the runtime did.
+const LEGACY_ENFORCE_KEY: &str = "ui.governor.enforce";
+
+/// FR-812: enforcing was chosen (by the app or `orchd enforce on`).
+pub fn enforce_chosen(db: &orch_store::Store) -> Option<bool> {
+    [ENFORCE_KEY, LEGACY_ENFORCE_KEY].iter().find_map(|k| db.setting(k).ok().flatten()?.as_bool())
+}
 /// Settings key: the plan week (start, ms) whose reserve warning reached the Inbox.
 pub const RESERVE_ALERT_KEY: &str = "governor.reserve_alerted";
 
@@ -256,13 +268,16 @@ pub fn role_from_spec(spec: &AgentSpec) -> Result<Role> {
 }
 
 impl Runtime {
-    pub fn new(cfg: RuntimeConfig) -> Result<Arc<Runtime>> {
+    pub fn new(mut cfg: RuntimeConfig) -> Result<Arc<Runtime>> {
         std::fs::create_dir_all(cfg.paths.agents_dir())?;
         std::fs::create_dir_all(cfg.paths.state_dir())?;
         orch_protocol::check_socket_path(&cfg.paths.socket())?;
         let db = orch_store::Store::open(&cfg.paths.db_file())?;
         let store = Store::open(db.clone(), Some(&cfg.paths.legacy_state_file()))?;
         let now = Timestamp::now();
+        // `cfg.shadow = false` forces enforcement (`serve --enforce`, ORCH_ENFORCE);
+        // otherwise the user's stored choice decides (FR-812).
+        cfg.shadow = cfg.shadow && enforce_chosen(&db) != Some(true);
         let (gov, released) = restore_governor(&db, &store, &cfg, cfg.shadow, None, now)?;
         let home = crate::paths::home_dir();
         let shell = std::env::var_os("SHELL").map(PathBuf::from).unwrap_or_else(|| "/bin/zsh".into());
@@ -752,11 +767,19 @@ impl Runtime {
 
     /// "Run now" on a queued entry (FR-809): past every cap, the memory cap included.
     pub fn run_now(&self, entry: u64) -> Result<()> {
+        let agent = self.gov().queue().iter().find(|e| e.id.0 == entry).map(|e| e.agent.0.clone());
+        let Some(agent) = agent else { bail!("no queued entry {entry}") };
+        // Set before the release, so the pump never sees the turn without it;
+        // only for an agent with no process (it would linger otherwise).
+        if self.live_get(&agent).is_none() {
+            self.house().spawn_override.insert(agent.clone());
+        }
         let done = self.governor_act(|g, now| match g.run_now(governor::EntryId(entry), now) {
             Some(r) => (true, vec![r]),
             None => (false, Vec::new()),
         });
         if !done {
+            self.house().spawn_override.remove(&agent);
             bail!("no queued entry {entry}");
         }
         Ok(())
@@ -783,10 +806,12 @@ impl Runtime {
     }
 
     /// FR-812: shadow mode on (log only) or off (enforce), from now on.
+    /// The choice is stored, so the next start keeps it.
     pub fn set_shadow(&self, shadow: bool) -> Result<()> {
         let mut plan = self.gov().plan().clone();
         plan.shadow_mode = shadow;
-        self.replan(plan)
+        self.replan(plan)?;
+        self.db.set_setting(ENFORCE_KEY, &json!(!shadow))
     }
 
     /// Drops a queued entry and cancels the turn waiting on it.
@@ -1469,6 +1494,22 @@ impl Runtime {
                 self.sync_process_slots();
             }
             if suspended && self.admit_turn(rec, turn, true) {
+                // FR-203 at spawn time too: processes start and stop between
+                // admission and here (another resume, a restored turn). Without
+                // a slot the turn goes back to the queue as a memory wait,
+                // unless the user ran it now.
+                let (live, cap) = (self.live_ids().len() as u32, self.live_cap());
+                let forced = self.house().spawn_override.remove(&rec.id);
+                if live >= cap && !forced {
+                    let e = self.gov().hold_spawn(&AgentId(rec.id.clone()), &rec.allocation.clone().into(), rec.tier, live, cap, Timestamp::now());
+                    self.event(&rec.id, "spawn_held", json!({"live": live, "cap": cap, "entry": e.0}));
+                    self.store.write(|s| {
+                        if let Some(t) = s.turns.iter_mut().find(|t| t.id == turn.id) {
+                            t.admission = Admission::Waiting(e.0);
+                        }
+                    })?;
+                    return Ok(());
+                }
                 if let Err(e) = self.spawn(&rec.id, None) {
                     // Flag it so the next pump doesn't retry every 200 ms.
                     let msg = format!("{}: could not resume: {e:#}", rec.id);
@@ -1727,28 +1768,27 @@ fn restore_governor(
         let alloc = u.allocation.clone().or_else(|| u.agent_id.as_ref().and_then(|a| allocs.get(a).cloned()));
         gov.replay(&sample, class, alloc.map(Into::into));
     }
-    let _ = gov.tick(now);
-    // A replan keeps the whole queue (held turns wait as entries with no turn
-    // row); after a restart the reconciler resumes those, so only waiting turns stay.
-    let keep_all = carry.is_some();
     let mut released = Vec::new();
+    // A replan carries the live Governor's state, running turns included; a
+    // restart the stored one, without running turns (their processes ended
+    // with the old core; the reconciler resumes those agents through the queue).
     let carry = match carry {
         Some(c) => Some(c),
-        None => db.setting(CARRY_KEY)?.and_then(|v| serde_json::from_value::<governor::Carry>(v).ok()),
+        None => db
+            .setting(CARRY_KEY)?
+            .and_then(|v| serde_json::from_value::<governor::Carry>(v).ok())
+            .map(|c| governor::Carry { live: Vec::new(), ..c }),
     };
     if let Some(carry) = carry {
-        let waiting: std::collections::BTreeSet<u64> = store.read(|s| {
-            s.turns
-                .iter()
-                .filter(|t| t.status == TurnStatus::Queued)
-                .filter_map(|t| match t.admission {
-                    Admission::Waiting(e) => Some(e),
-                    _ => None,
-                })
-                .collect()
-        });
-        released = gov.restore(carry, |e| keep_all || waiting.contains(&e.id.0), now);
+        // No queued work is lost: an entry stays while its agent exists. An
+        // entry with no turn row (a held tool call, a rate-limit reschedule)
+        // becomes a "continue" turn on release; a turn row that was asked
+        // again meanwhile finds the agent's entry and waits on it.
+        let agents: std::collections::BTreeSet<String> = store.read(|s| s.agents.keys().cloned().collect());
+        released = gov.restore(carry, |e| agents.contains(&e.agent.0), now);
     }
+    // Ticked after the restore, so a carried ask is not replaced by a fresh one.
+    released.extend(gov.tick(now));
     // The caller hands `released` to `handle_releases`, which admits their turns.
     let kept: std::collections::BTreeSet<u64> =
         gov.queue().iter().map(|e| e.id.0).chain(released.iter().map(|r| r.entry.0)).collect();
@@ -2033,6 +2073,67 @@ pub(crate) mod tests {
         assert_eq!(rt.resume_all(), 0, "a1 is still paused on its own");
         assert_eq!(rt.resume_agent("a1"), 1);
         assert_eq!(waiting(&rt), Some(Admission::Admitted));
+    }
+
+    #[test]
+    fn replan_keeps_running_turns_and_restart_keeps_held_work() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        {
+            let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+            rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
+            let plan = rt.gov().plan().clone();
+            rt.replan(WeeklyPlan { off_hours_allowance_pct: 10.0, ..plan }).unwrap();
+            // An app turn is running.
+            let rec = rt.store.read(|s| s.agents["a1"].clone());
+            assert!(rt.decide_turn(&rec, TurnKind::Message, TurnOrigin::App, false).effective.is_admit());
+            rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "[t:0123abcd] go"})), None);
+            // A replan (an enforce switch) keeps it: still admitted, still counted.
+            let plan = rt.gov().plan().clone();
+            rt.replan(WeeklyPlan { reserve_pct: 12.0, ..plan }).unwrap();
+            assert!(rt.gov().is_live(&AgentId("a1".into())));
+            assert_eq!(rt.gov().live_autonomous(), 1);
+            assert!(rt.on_hook(&hook("PreToolUse", json!({"tool_name": "Bash"})), None).is_none(), "tool admitted");
+            // Paused mid-turn: its next tool call is denied and the turn waits
+            // as a queue entry with no turn row.
+            rt.pause_agent("a1").unwrap();
+            assert!(rt.on_hook(&hook("PreToolUse", json!({"tool_name": "Bash"})), None).is_some(), "held");
+            assert_eq!(rt.gov().queue().len(), 1);
+            assert_eq!(rt.store.read(|s| s.turns.iter().filter(|t| t.status == TurnStatus::Queued).count()), 0);
+            rt.tick();
+            rt.db.flush().unwrap();
+        }
+        // The restart keeps that work (it used to be dropped).
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        assert_eq!(rt.gov().queue().len(), 1);
+        assert!(!rt.gov().is_live(&AgentId("a1".into())), "its process ended with the old core");
+        assert_eq!(rt.resume_agent("a1"), 1);
+        let continued = rt.store.read(|s| {
+            s.turns.iter().any(|t| t.status == TurnStatus::Queued && t.admission == Admission::Admitted)
+        });
+        assert!(continued, "a continue turn is admitted on release");
+    }
+
+    #[test]
+    fn the_enforce_choice_is_kept_across_restarts() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        {
+            let rt = Runtime::new(test_cfg(d.path(), true)).unwrap();
+            assert!(rt.gov().plan().shadow_mode);
+            rt.set_shadow(false).unwrap(); // `orchd enforce on` takes this path too
+            rt.db.flush().unwrap();
+        }
+        let rt = Runtime::new(test_cfg(d.path(), true)).unwrap();
+        assert!(!rt.gov().plan().shadow_mode, "kept");
+        assert!(!rt.cfg.shadow);
+        rt.set_shadow(true).unwrap();
+        rt.db.flush().unwrap();
+        drop(rt);
+        let rt = Runtime::new(test_cfg(d.path(), true)).unwrap();
+        assert!(rt.gov().plan().shadow_mode, "back to shadow, kept too");
+        // The app's earlier key still counts.
+        rt.db.set_setting(ENFORCE_KEY, &Value::Null).unwrap();
+        rt.db.set_setting("ui.governor.enforce", &json!(true)).unwrap();
+        assert_eq!(enforce_chosen(&rt.db), Some(true));
     }
 
     #[test]

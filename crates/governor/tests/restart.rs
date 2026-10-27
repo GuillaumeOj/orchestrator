@@ -154,3 +154,51 @@ fn week_bound_overrides_do_not_cross_into_the_next_week() {
     assert!(g.sprint().is_none());
     assert!(g.is_paused_all(), "a pause is the user's, whatever the week");
 }
+
+#[test]
+fn a_rebuild_keeps_the_running_turns_against_the_caps() {
+    let mut live = governor();
+    for a in ["A-1", "A-2", "B-1"] {
+        live.request_turn(task(a, &a[..1], Tier::Normal), at(0));
+    }
+    for a in ["C-1", "C-2"] {
+        live.request_turn(task(a, "C", Tier::Low), at(1));
+    }
+    live.ingest(&UsageSample::cost(at(2), "A-1".into(), 7.0));
+    let carry = live.carry();
+    assert_eq!(carry.live.len(), 3);
+
+    // A replan: the rebuilt Governor knows the 3 running turns, so nothing is released.
+    let mut g = governor();
+    let released = g.restore(carry.clone(), |_| true, at(3));
+    assert!(released.is_empty(), "{released:?}");
+    assert_eq!(g.live_autonomous(), 3);
+    assert_eq!(g.queue().len(), 2);
+    assert_eq!(g.tool_call(&tool("A-1"), at(4)).effective, Verdict::Admit, "still an admitted turn");
+    // Its cost so far came along (the watchdog's usage ceiling).
+    assert_eq!(g.carry().live.iter().find(|r| r.agent == AgentId::from("A-1")).unwrap().cost, 7.0);
+    // When one ends, a queued turn takes its slot.
+    assert_eq!(g.turn_ended(&"A-1".into(), at(5)).len(), 1);
+
+    // After a restart the host drops them (their processes are gone): the queue runs.
+    let mut g = governor();
+    let released = g.restore(governor::Carry { live: vec![], ..carry }, |_| true, at(3));
+    assert_eq!(released.len(), 2);
+}
+
+#[test]
+fn a_spawn_without_a_slot_goes_back_to_the_queue() {
+    let mut g = Governor::new(WeeklyPlan { shadow_mode: true, ..plan() }, policy(), start()).unwrap();
+    g.set_process_slots(0, 1, at(0));
+    let mut r = task("C-1", "C", Tier::Low);
+    r.needs_spawn = true;
+    assert_eq!(g.request_turn(r, at(1)).effective, Verdict::Admit);
+    // Another process started before the host could spawn C-1.
+    let e = g.hold_spawn(&"C-1".into(), &"C".into(), Tier::Low, 1, 1, at(2));
+    assert!(!g.is_live(&"C-1".into()));
+    let q = g.queue().iter().find(|q| q.id == e).unwrap();
+    assert_eq!(q.reason, QueueReason::MemoryPressure { cap: 1 });
+    assert!(q.needs_spawn);
+    assert!(g.set_process_slots(1, 1, at(3)).is_empty());
+    assert_eq!(g.set_process_slots(0, 1, at(4)).len(), 1, "released when a slot frees, in shadow mode too");
+}

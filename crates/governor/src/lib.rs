@@ -13,7 +13,7 @@ pub use actions::{ActionKind, ActionMode, Ask, GovernorAction, Outcome, Undo};
 pub use calendar::{CalendarError, Curve, Day, WorkBlock, WorkingCalendar};
 pub use estimator::{Calibration, Calibrator};
 pub use governor::{
-    Carry, CostClass, Decision, DenyReason, ForecastSnapshot, Governor, GovernorError, LimitResponse,
+    Carry, CostClass, Decision, DenyReason, ForecastSnapshot, Governor, GovernorError, LimitResponse, LiveRecord,
     NextActionPreview, Release, SprintRecord, Stats, ToolCallRequest, TurnRequest, Verdict,
 };
 pub use plan::{AskDefault, AutoContinue, BudgetAllocation, LiveCaps, PacingPolicy, Thresholds, WeeklyPlan};

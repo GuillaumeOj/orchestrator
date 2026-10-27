@@ -164,7 +164,11 @@ the cap, the least recently active idle ones are suspended too. **Working agents
 stopped.** The live processes and the cap go to the Governor (`set_process_slots`, every
 housekeeping pass and before a suspended agent's turn is asked); the turn of a suspended agent asks
 with `needs_spawn`, so it waits in the Governor's queue as `memory_pressure` (reason, Run now, in
-the UI like any queued turn) and is released when a slot frees. Run now spawns past the cap.
+the UI like any queued turn) and is released when a slot frees. The cap is checked **again at
+spawn time** (processes start and stop between admission and spawn, and a restored or released
+turn may already be admitted): without a slot the turn goes back to the queue
+(`Governor::hold_spawn`, event `spawn_held`). Run now marks the agent so its next spawn may
+exceed the cap (FR-203).
 `note_user_activity(id)` resets the idle clock (pane focus).
 
 ## OTLP receiver (FR-801)
@@ -184,10 +188,17 @@ compressed bodies get 415.
   cost class and allocation they had** (`Governor::replay`), so W, the governed share and the
   calibration survive a restart. Then the **carry-over state** (`Governor::carry`, kv key
   `governor.carry`, stored on every control and tick when it changed) is restored: pauses, limits,
-  this week's deferrals, pending ask and sprints, and the queue entries whose turns still wait
-  (`Admission::Waiting(id)`); a waiting turn whose entry did not come back is asked again. A replan
-  (plan edit, enforce on/off) restores the live carry the same way, whole queue included, so it is
-  no longer refused while turns are queued or a sprint is on. Each tick saves the last 50 actions
+  this week's deferrals, pending ask and sprints, and every queue entry whose agent still exists:
+  no queued work is lost, including entries with no turn row (a tool call held mid-turn, a
+  rate-limit reschedule), which become a "continue" turn on release. Running turns are not
+  restored (their processes ended with the old core; the reconciler resumes those agents). The
+  Governor ticks after the restore, so a carried ask is not replaced by a fresh one. A replan
+  (plan edit, enforce on/off) restores the live carry the same way, **running turns included**, so
+  the rebuilt Governor still counts them against its caps; it is no longer refused while turns
+  are queued or a sprint is on.
+- The enforce choice (FR-812) is the kv key `governor.enforce`, written by `set_shadow` (the app,
+  `orchd enforce on|off`) and read at every start (`serve --enforce` / `ORCH_ENFORCE` force
+  enforcement; the app's earlier `ui.governor.enforce` still counts). Each tick saves the last 50 actions
   and the queue view; a forecast snapshot every 5 min, the calibration hourly; retention purge
   daily.
 - Transcripts of known agents and registered projects are indexed for search (FTS5) at start,

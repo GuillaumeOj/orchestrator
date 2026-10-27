@@ -220,6 +220,25 @@ pub struct Carry {
     pub limits: Vec<(Window, Timestamp)>,
     #[serde(default)]
     pub queue: Vec<QueueEntry>,
+    /// Turns running now. A replan keeps them, so the rebuilt Governor counts
+    /// them against its caps; after a restart their processes are gone, so the
+    /// host drops them (the reconciler resumes those agents through the queue).
+    #[serde(default)]
+    pub live: Vec<LiveRecord>,
+}
+
+/// A running turn, as [`Carry`] keeps it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LiveRecord {
+    pub agent: AgentId,
+    pub allocation: AllocationId,
+    pub tier: Tier,
+    pub class: CostClass,
+    pub started_at: Timestamp,
+    /// Cost so far (the watchdog's usage ceiling).
+    pub cost: f64,
+    #[serde(default)]
+    pub ceiling: Option<TurnCeiling>,
 }
 
 /// What the Governor will do next (FR-809 next-action preview).
@@ -1927,6 +1946,35 @@ impl Governor {
         self.release_and_refresh(now)
     }
 
+    /// An admitted turn whose agent must spawn a process found no slot when
+    /// the host was about to spawn it (FR-203: the cap is checked at spawn
+    /// time too, since processes start and stop between admission and spawn).
+    /// `live` and `cap` are the host's process count and memory cap at that
+    /// moment. The turn goes back to the queue as a memory wait, with no turn
+    /// statistics recorded. Enforced in shadow mode too. Returns its entry.
+    pub fn hold_spawn(
+        &mut self,
+        agent: &AgentId,
+        allocation: &AllocationId,
+        tier: Tier,
+        live: u32,
+        cap: u32,
+        now: Timestamp,
+    ) -> EntryId {
+        let (allocation, tier, ceiling) = match self.live.remove(agent) {
+            Some(t) => (t.allocation, t.tier, t.ceiling),
+            None => (allocation.clone(), tier, None),
+        };
+        let reason = QueueReason::MemoryPressure { cap };
+        let id = self.enqueue(agent.clone(), allocation, tier, TurnKind::Continue, false, ceiling, reason, now);
+        if let Some(e) = self.queue.iter_mut().find(|e| e.id == id) {
+            e.needs_spawn = true;
+        }
+        self.slots = Some((live, cap));
+        self.refresh_queue(now);
+        id
+    }
+
     /// The host's live `claude` processes and the memory cap on them (FR-203).
     /// Returns the turns released into freed slots.
     pub fn set_process_slots(&mut self, live: u32, cap: u32, now: Timestamp) -> Vec<Release> {
@@ -2022,15 +2070,29 @@ impl Governor {
             sprints: self.sprints.clone(),
             limits: self.limits.iter().map(|(w, t)| (*w, *t)).collect(),
             queue: self.queue.clone(),
+            live: self
+                .live
+                .iter()
+                .map(|(agent, t)| LiveRecord {
+                    agent: agent.clone(),
+                    allocation: t.allocation.clone(),
+                    tier: t.tier,
+                    class: t.class,
+                    started_at: t.started_at,
+                    cost: t.cost,
+                    ceiling: t.ceiling,
+                })
+                .collect(),
         }
     }
 
     /// Applies a [`Carry`] to a Governor just rebuilt from the plan and the
     /// week's samples. The overrides come back as actions in this Governor's
     /// log, so they can still be undone. Deferrals, the ask and sprints are
-    /// kept only within their plan week; pauses and the queue always are.
-    /// `keep` filters the queue (the host keeps the entries whose turns are
-    /// still waiting). Returns the turns to deliver now.
+    /// kept only within their plan week; pauses, running turns and the queue
+    /// always are. `keep` filters the queue (the host drops entries whose
+    /// agents are gone). Running turns come back first, so the releases below
+    /// respect the caps they occupy. Returns the turns to deliver now.
     pub fn restore(&mut self, c: Carry, keep: impl Fn(&QueueEntry) -> bool, now: Timestamp) -> Vec<Release> {
         const WHY: &str = "restored after a restart";
         if c.paused_all && !self.paused_all {
@@ -2094,6 +2156,21 @@ impl Governor {
                 let effect = format!("today +{:.1} pp until {}", s.extra_pp, s.until);
                 self.log(now, action, WHY.into(), effect, ActionMode::Auto, Outcome::Applied, Some(Undo::EndSprint));
             }
+        }
+        for r in c.live {
+            if self.live.contains_key(&r.agent) {
+                continue;
+            }
+            self.agent_alloc.entry(r.agent.clone()).or_insert_with(|| r.allocation.clone());
+            let turn = LiveTurn {
+                allocation: r.allocation,
+                tier: r.tier,
+                class: r.class,
+                started_at: r.started_at,
+                cost: r.cost,
+                ceiling: r.ceiling,
+            };
+            self.live.insert(r.agent, turn);
         }
         for e in c.queue {
             if self.queue.iter().any(|q| q.id == e.id || q.agent == e.agent)

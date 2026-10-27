@@ -1075,8 +1075,9 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
     if let Some(c) = &cfg.claude {
         rc.claude = c.clone();
     }
-    // FR-812: shadow mode unless enforcing was chosen (after the first week).
-    rc.shadow = !(cfg.enforce || setup::enforce_chosen(&paths.db_file()));
+    // FR-812: shadow mode unless ORCH_ENFORCE; the runtime then applies the
+    // user's stored choice (`governor.enforce`, also set by `orchd enforce`).
+    rc.shadow = !cfg.enforce;
     // Permission prompts: the runtime answers from the stored rules only; the
     // app's broker holds the rest for its Inbox (and the pane's own dialog).
     rc.permission_hold = Duration::ZERO;

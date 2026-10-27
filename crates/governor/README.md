@@ -79,7 +79,8 @@ for action in gov.actions() {
 | `answer_ask(id, accept)`, `undo(id)` | "Ask" actions (FR-810) and undo from the log (FR-809). |
 | `new_week(plan, now)` | After the weekly reset. Calibration and the queue carry over; budgets don't. A plan whose week contains the current week's start (a realignment, FR-802) keeps the week's usage. |
 | `cost_class(&sample)`, `replay(&sample, class, allocation)` | Store the class with each sample; after a restart, replay the week's samples so the accounting (interactive vs autonomous, per allocation) and the calibration come back. |
-| `carry() -> Carry`, `restore(carry, keep, now)` | What a restart or a replan would otherwise lose: pauses, deferrals, the pending ask, sprints, limits and the queue (ADR-007 "State across restarts"). |
+| `hold_spawn(agent, allocation, tier, live, cap, now)` | The memory cap checked again at spawn time: an admitted spawn with no slot goes back to the queue. |
+| `carry() -> Carry`, `restore(carry, keep, now)` | What a restart or a replan would otherwise lose: pauses, deferrals, the pending ask, sprints, limits, the running turns and the queue (ADR-007 "State across restarts"). |
 | `snapshot`, `queue`, `actions`, `next_action_preview`, `paused_agents`, `stats` | Read-only views for the UI and the weekly report. |
 
 `Decision.effective` is what the host must do; `Decision.proposed` is what the policy wanted. They
@@ -190,8 +191,14 @@ it is **enforced in shadow mode too**, where the queue holds only these waits. R
 **Carry across restarts.** `carry()` holds the pauses (always restored), the limits until their
 reset, and, for the same plan week only, deferrals, the pending ask (with its deadline) and sprints
 (re-applied to the curve with their boost). The queue comes back with its ids and `enqueued_at`
-(aging goes on); `keep` lets the host drop entries whose turns no longer wait. Restored overrides
-are logged again as actions ("restored after a restart"), so they can be undone.
+(aging goes on); `keep` lets the host drop entries whose agents are gone. `live` holds the running
+turns: a replan restores them first, so the caps still count them; after a restart the host
+empties it (the processes are gone). Restored overrides are logged again as actions ("restored
+after a restart"), so they can be undone.
+
+**Spawn-time check.** `hold_spawn(agent, allocation, tier, live, cap, now)`: the host found no
+process slot when it was about to spawn an admitted turn. The turn leaves the live set (no turn
+statistics) and waits as a memory wait, also in shadow mode.
 
 **J9.**
 - A 429 marks the window limited until `resets_at`. The agent's work is queued as `Continue`.

@@ -128,8 +128,8 @@ Quit the app first.
 
 - Solo sessions only (teams, gates and the PR gate UI come in P2), so "pause a team" is per-agent
   pause (`⌘; p`) or Pause all.
-- After a restart the Governor's queue, pauses, deferrals, the pending ask and a sprint come back;
-  a turn that was held mid-tool is resumed by the reconciler instead of its queue entry.
+- After a restart the Governor's queue (all of it), pauses, deferrals, the pending ask, a sprint
+  and the enforce choice come back; `orchd enforce on|off` is remembered the same way.
 - Plan editing covers days, hours, reserve, off-hours allowance, weights, tiers and hard caps;
   holidays are not in the form yet.
 - The bundle is unsigned; the helpers must stay executable in `bin/` (checked at every spawn).

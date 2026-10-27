@@ -25,8 +25,6 @@ pub const KITTY_KEY: &str = "kitty.conf";
 pub const EDITOR_KEY: &str = "editor.command";
 /// When the user confirmed a weekly plan (J0 step 4).
 pub const PLAN_KEY: &str = "plan.confirmed_ms";
-/// The user chose to enforce the Governor (FR-812: shadow mode before).
-pub const ENFORCE_KEY: &str = "governor.enforce";
 /// The first-run checklist was closed.
 pub const DONE_KEY: &str = "setup.done";
 
@@ -135,18 +133,6 @@ fn trusted_in(file: &Path, repo: &Path) -> Option<bool> {
     Some(trust[repo.to_string_lossy().as_ref()].as_bool().unwrap_or(false))
 }
 
-/// FR-812: enforcing was chosen in the settings (read before the runtime
-/// starts, which opens the store itself).
-pub fn enforce_chosen(db_file: &Path) -> bool {
-    if !db_file.exists() {
-        return false;
-    }
-    orch_store::Store::open(db_file)
-        .ok()
-        .and_then(|db| crate::services::Settings::new(db).get(ENFORCE_KEY))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-}
 
 /// The weekly plan as the first-run form and the planner edit it (FR-802):
 /// working days and hours, reserve, one weighted allocation per project.
@@ -352,9 +338,8 @@ impl Core {
 
     /// FR-812: leave (or go back to) shadow mode. Takes effect now.
     pub fn set_enforce(&self, enforce: bool) -> Result<()> {
-        self.runtime()?.set_shadow(!enforce)?;
-        self.settings.set(ENFORCE_KEY, json!(enforce))?;
-        Ok(())
+        // The runtime stores the choice (`governor.enforce`), like `orchd enforce`.
+        self.runtime()?.set_shadow(!enforce)
     }
 }
 
