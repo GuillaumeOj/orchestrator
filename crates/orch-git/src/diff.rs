@@ -84,7 +84,8 @@ pub fn diff(worktree: &Path, against: &str, max_patch_bytes: usize) -> Result<Di
             FileChange { path, old_path, status, added, deleted }
         })
         .collect();
-    for u in git(worktree, &["ls-files", "--others", "--exclude-standard", "-z"])?.split('\0').filter(|s| !s.is_empty()) {
+    for u in git(worktree, &["ls-files", "--others", "--exclude-standard", "-z"])?.split('\0').filter(|s| !s.is_empty())
+    {
         files.push(FileChange { path: u.into(), old_path: None, status: "?".into(), added: None, deleted: None });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));

@@ -4,6 +4,7 @@
   import { app, openSingleton } from '../lib/app.svelte.js';
   import Kbd from './Kbd.svelte';
   import PacingIndicator from './PacingIndicator.svelte';
+
   const badge = $derived(app.data?.inbox?.badge ?? 0);
 </script>
 

@@ -6,12 +6,14 @@ Status: **P1 app in daily use** (SPEC v0.9). It runs real Claude Code agents in 
 
 ## Build and run
 
-macOS only. Needs Rust (rustup), Node + npm, Xcode command line tools, git ≥ 2.48, the Claude Code CLI logged in with a Pro/Max plan, and `gh` for PRs. Details and first run: [docs/app/RUNNING.md](docs/app/RUNNING.md).
+macOS only. Needs Rust (rustup), bun, Xcode command line tools, git ≥ 2.48, the Claude Code CLI logged in with a Pro/Max plan, and `gh` for PRs. Details and first run: [docs/app/RUNNING.md](docs/app/RUNNING.md).
 
 ```bash
 make install   # build Orchestrator.app (release) and copy it to ~/Applications
-make test      # cargo test + npm test in ui/
-make clippy
+make test      # cargo test + vitest in ui/
+make fmt       # cargo fmt + biome (format, imports, safe fixes) in ui/
+make lint      # fmt check, clippy, biome, svelte-check
+make ci        # everything CI runs (CI calls these same targets)
 ```
 
 ## Layout

@@ -7,12 +7,12 @@
   // Keys: S sprint mode, P pause all, u undo the selected log entry, a/r answer
   // the ask, e edit the plan.
   import { onMount } from 'svelte';
-  import { app, governor, confirm, toast } from '../lib/app.svelte.js';
-  import { invoke, errText } from '../lib/ipc.js';
-  import { clock, dayTime, duration, when, pct, pp } from '../lib/format.js';
-  import { PRESSURE, queueReason } from '../lib/status.js';
-  import PressurePill from '../components/PressurePill.svelte';
   import Kbd from '../components/Kbd.svelte';
+  import PressurePill from '../components/PressurePill.svelte';
+  import { app, confirm, governor, toast } from '../lib/app.svelte.js';
+  import { clock, dayTime, duration, pct, pp, when } from '../lib/format.js';
+  import { errText, invoke } from '../lib/ipc.js';
+  import { PRESSURE, queueReason } from '../lib/status.js';
 
   let v = $state(null);
   let err = $state(null);
@@ -76,7 +76,7 @@
     const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
     const day = t.getUTCDay() || 7;
     t.setUTCDate(t.getUTCDate() + 4 - day);
-    return Math.ceil(((t - Date.UTC(t.getUTCFullYear(), 0, 1)) / 86400000 + 1) / 7);
+    return Math.ceil(((t.getTime() - Date.UTC(t.getUTCFullYear(), 0, 1)) / 86400000 + 1) / 7);
   }
 
   // A log entry is { key, action: GovernorAction, … }; the kind is GovernorAction.action.

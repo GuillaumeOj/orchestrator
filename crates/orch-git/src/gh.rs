@@ -155,7 +155,11 @@ pub fn push(worktree: &Path, remote: &str, branch: &str) -> Result<()> {
     if remote.starts_with('-') || branch.starts_with('-') {
         bail!("invalid remote or branch");
     }
-    git_deadline(worktree, &["push", "--set-upstream", remote, &format!("{branch}:{branch}")], Duration::from_secs(120))?;
+    git_deadline(
+        worktree,
+        &["push", "--set-upstream", remote, &format!("{branch}:{branch}")],
+        Duration::from_secs(120),
+    )?;
     Ok(())
 }
 

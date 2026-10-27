@@ -39,5 +39,5 @@ orch-git = { workspace = true, features = ["fixtures"] }
 
 [features]
 # Off for `cargo build`/`cargo test` (the UI is served by Vite, nothing to embed);
-# `npm run tauri build` turns it on and embeds ui/dist.
+# `bun run tauri build` turns it on and embeds ui/dist.
 custom-protocol = ["tauri/custom-protocol"]

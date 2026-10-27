@@ -3,13 +3,17 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "bun@1.4.2",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/tokens.mjs --check && vite build",
-    "tokens": "node scripts/tokens.mjs",
-    "tokens:check": "node scripts/tokens.mjs --check",
+    "build": "bun scripts/tokens.mjs --check && vite build",
+    "tokens": "bun scripts/tokens.mjs",
+    "tokens:check": "bun scripts/tokens.mjs --check",
     "test": "vitest run",
-    "tauri": "TAURI_APP_PATH=../crates/orch-app TAURI_FRONTEND_PATH=. tauri"
+    "tauri": "TAURI_APP_PATH=../crates/orch-app TAURI_FRONTEND_PATH=. tauri",
+    "check": "svelte-check --tsconfig ./jsconfig.json --fail-on-warnings",
+    "lint": "biome ci .",
+    "fix": "biome check --write ."
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.4",
@@ -20,11 +24,15 @@
     "@xterm/xterm": "6.0.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.3",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@tauri-apps/cli": "2.12.4",
     "@testing-library/svelte": "5.4.2",
+    "@types/node": "24.19.2",
     "jsdom": "30.1.3",
     "svelte": "5.57.2",
+    "svelte-check": "4.7.7",
+    "typescript": "6.0.3",
     "vite": "8.3.4",
     "vitest": "5.0.5"
   }

@@ -2,12 +2,12 @@
   // Sidebar (§9.2): Projects → Features → agents; solo sessions under their
   // project. The only navigation tree. Features come with teams (P2): agents are
   // listed as solo sessions until then.
-  import { app, agents, projects, openAgent, openProject } from '../lib/app.svelte.js';
-  import { displayState } from '../lib/status.js';
+  import { agents, app, openAgent, openProject, projects } from '../lib/app.svelte.js';
   import { pct } from '../lib/format.js';
+  import { displayState } from '../lib/status.js';
   import AgentChip from './AgentChip.svelte';
-  import StatusBadge from './StatusBadge.svelte';
   import Kbd from './Kbd.svelte';
+  import StatusBadge from './StatusBadge.svelte';
 
   let collapsed = $state({});
   const focusedAgent = $derived(app.panes[app.focused]?.agentId ?? app.selectedAgent);

@@ -12,8 +12,8 @@ Daily use (build, install, first run, data, logs, reset): [docs/app/RUNNING.md](
 ```bash
 make install                                     # release Orchestrator.app into ~/Applications
 cargo build -p orch-hook -p orch-status -p orch-mcp   # development: the helpers Claude Code launches
-cd ui && npm install
-npm run tauri dev                                # Vite on :1430 + the app (debug)
+cd ui && bun install
+bun run tauri dev                                # Vite on :1430 + the app (debug)
 ```
 
 At start the app copies `orch-hook`/`orch-status`/`orch-mcp` from next to its binary (target/<profile>,
@@ -132,8 +132,8 @@ Additions to existing crates (wiring only): `Runtime::live`, `Runtime::with_gove
 - `src/panes`: Agent, Shell/Editor, Overview, Inbox, Week planner, Project (git state, worktrees,
   PRs, J11 removal), Setup (J0). `src/components/PlanEditor.svelte`: the weekly plan form.
 - **Tokens** (`scripts/tokens.mjs`): `docs/design/tokens.json` → `src/styles/tokens.css` (Dark,
-  Light, system) and `src/lib/tokens.js`; semantic tokens only. `npm run tokens:check` (also run
-  by `npm run build` and the vitest suite) fails when the generated files drift from tokens.json,
+  Light, system) and `src/lib/tokens.js`; semantic tokens only. `bun run tokens:check` (also run
+  by `bun run build` and the vitest suite) fails when the generated files drift from tokens.json,
   when UI code uses a raw color, or when it names an unknown token. A small script instead of
   Style Dictionary: no dependency, ~150 lines, same output shape.
 - **Keyboard** (§9.7): one capture-phase handler: ⌘-chords and the leader `⌘;` never reach
@@ -151,7 +151,7 @@ settings.json import, projects through the registry and J11 (unmerged worktree k
 history, log and usage across a restart, the first plan keeping the week's usage, enforce kept
 across restarts, the Claude Code check, trust from `~/.claude.json`, the memory watch.
 
-UI: `cd ui && npm test` (vitest + jsdom): keyboard contract, tiling layout, Inbox triage, status
+UI: `cd ui && bun run test` (vitest + jsdom): keyboard contract, tiling layout, Inbox triage, status
 vocabulary, fuzzy match, formatting, the token pipeline (drift and semantic-only check), and
 components (sidebar, title bar, status bar, Inbox keyboard triage with undo), and with a mocked
 IPC (`test/projects.test.js`): the project pane (git state, worktree removal confirmations, J11

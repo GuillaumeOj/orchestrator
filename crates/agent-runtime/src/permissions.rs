@@ -95,9 +95,13 @@ fn applies(r: &PermissionRule, s: &Subject) -> bool {
 
 /// The deciding rule for a call, if any: deny, then ask, then allow.
 pub fn evaluate<'a>(rules: &'a [PermissionRule], s: &Subject, tool: &str, input: &Value) -> Option<&'a PermissionRule> {
-    let hits: Vec<&PermissionRule> =
-        rules.iter().filter(|r| r.revoked_at_ms.is_none() && applies(r, s) && matches(&r.pattern, tool, input)).collect();
-    [RuleEffect::Deny, RuleEffect::Ask, RuleEffect::Allow].iter().find_map(|e| hits.iter().find(|r| r.effect == *e).copied())
+    let hits: Vec<&PermissionRule> = rules
+        .iter()
+        .filter(|r| r.revoked_at_ms.is_none() && applies(r, s) && matches(&r.pattern, tool, input))
+        .collect();
+    [RuleEffect::Deny, RuleEffect::Ask, RuleEffect::Allow]
+        .iter()
+        .find_map(|e| hits.iter().find(|r| r.effect == *e).copied())
 }
 
 /// The rule "always allow this" creates: the exact Bash command, the tool for
@@ -157,7 +161,13 @@ mod tests {
         assert!(matches("mcp__orch__commit", "mcp__orch__commit", &json!({"message": "x"})));
         assert!(!matches("WebFetch(https://a.example/*)", "WebFetch", &json!({})));
         // Prefix rules never cover compound commands; exact rules match only themselves.
-        for c in ["git status && rm -rf ~", "git status; curl x", "git status | sh", "git status $(rm x)", "git status > /etc/x"] {
+        for c in [
+            "git status && rm -rf ~",
+            "git status; curl x",
+            "git status | sh",
+            "git status $(rm x)",
+            "git status > /etc/x",
+        ] {
             assert!(!matches("Bash(git status:*)", "Bash", &bash(c)), "{c}");
         }
         assert!(!matches("Bash(ls *)", "Bash", &bash("ls ; rm -rf /")));

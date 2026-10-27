@@ -1,8 +1,9 @@
 // The P1 wiring: the project pane (FR-102/104, J11), the first-run checklist
 // (J0), the plan editor (FR-802), the memory watch and read-only banners.
-import { describe, expect, it, beforeEach, vi } from 'vitest';
-import { render, fireEvent, waitFor, within, cleanup } from '@testing-library/svelte';
+
+import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/lib/app.svelte.js';
 import { fixture } from './fixture.js';
 
@@ -29,19 +30,69 @@ const { default: PlannerPane } = await import('../src/panes/PlannerPane.svelte')
 function plannerView(over = {}) {
   const now = Date.now();
   const ws = now - 2 * 86400000;
-  const action = (id, ts, action, mode = 'shadow') => ({ id, ts: new Date(ts).toISOString(), state: 'green', action, reason: 'why', expected_effect: 'effect', mode, outcome: 'logged', ask: null, undo: null, undone_at: null });
+  const action = (id, ts, action, mode = 'shadow') => ({
+    id,
+    ts: new Date(ts).toISOString(),
+    state: 'green',
+    action,
+    reason: 'why',
+    expected_effect: 'effect',
+    mode,
+    outcome: 'logged',
+    ask: null,
+    undo: null,
+    undone_at: null,
+  });
   return {
-    plan_id: 'w', week_start_ms: ws, reset_at_ms: ws + 7 * 86400000, now_ms: now, shadow: true, reserve_pct: 10,
-    snapshot: { state: 'green', provenance: 'observed', used: 20, governed: 12, ideal: 15, error: -3, eta: null, five_hour: 30, five_hour_projected: 40, five_hour_guard: false, interactive_used: 5, live_autonomous: 0, live_cap: 3, burn_pct_per_hour: 0.4, calibration: { confidence: 0.5 }, reserve_left: 5, unattributed_so_far: 3, unattributed_forecast: 4 },
-    curve: [{ t_ms: ws, ideal: 0, forecast: null, with_governor: null }, { t_ms: now, ideal: 15, forecast: 12, with_governor: 12 }],
+    plan_id: 'w',
+    week_start_ms: ws,
+    reset_at_ms: ws + 7 * 86400000,
+    now_ms: now,
+    shadow: true,
+    reserve_pct: 10,
+    snapshot: {
+      state: 'green',
+      provenance: 'observed',
+      used: 20,
+      governed: 12,
+      ideal: 15,
+      error: -3,
+      eta: null,
+      five_hour: 30,
+      five_hour_projected: 40,
+      five_hour_guard: false,
+      interactive_used: 5,
+      live_autonomous: 0,
+      live_cap: 3,
+      burn_pct_per_hour: 0.4,
+      calibration: { confidence: 0.5 },
+      reserve_left: 5,
+      unattributed_so_far: 3,
+      unattributed_forecast: 4,
+    },
+    curve: [
+      { t_ms: ws, ideal: 0, forecast: null, with_governor: null },
+      { t_ms: now, ideal: 15, forecast: 12, with_governor: 12 },
+    ],
     actual: [{ t_ms: ws + 3600000, used: 2, governed: 1, five_hour: null }],
-    working: [], allocations: [], queue: [],
+    working: [],
+    allocations: [],
+    queue: [],
     log: [
-      { key: 'n1', can_undo: false, past: false, action: action(1, now - 60000, { kind: 'state_change', from: 'green', to: 'amber' }) },
+      {
+        key: 'n1',
+        can_undo: false,
+        past: false,
+        action: action(1, now - 60000, { kind: 'state_change', from: 'green', to: 'amber' }),
+      },
       { key: 'p0', can_undo: false, past: true, action: action(1, ws + 7200000, { kind: 'pause_all' }, 'auto') },
     ],
     next: { target_state: 'green', earliest_state_change: new Date(now).toISOString(), pending_ask: null },
-    pending_ask: null, sprint: null, five_hour_resets_at_ms: null, first_run_ms: now - 2.5 * 86400000, plan_set: true,
+    pending_ask: null,
+    sprint: null,
+    five_hour_resets_at_ms: null,
+    first_run_ms: now - 2.5 * 86400000,
+    plan_set: true,
     ...over,
   };
 }
@@ -51,12 +102,52 @@ const text = (c) => c.textContent.replace(/\s+/g, ' ');
 const detail = {
   trusted: false,
   worktrees: [
-    { path: '/dev/shop-api', branch: 'main', verdict: 'main', safe_to_remove: false, dirty: 0, unmerged_commits: 0, in_progress: [], locked: false },
-    { path: '/dev/shop-api.worktrees/back-1', branch: 'orch/solo/back-1', verdict: 'ok', safe_to_remove: false, dirty: 2, unmerged_commits: 1, in_progress: [], locked: true, row: { agent_id: 'back-1' } },
-    { path: '/dev/shop-api.worktrees/old', branch: 'orch/solo/old', verdict: 'ok', safe_to_remove: true, dirty: 0, unmerged_commits: 0, in_progress: [], locked: false },
-    { path: '/dev/shop-api/.claude/worktrees/mine', branch: 'claude/mine', verdict: 'external', safe_to_remove: false, dirty: 1, unmerged_commits: 3, in_progress: [], locked: false },
+    {
+      path: '/dev/shop-api',
+      branch: 'main',
+      verdict: 'main',
+      safe_to_remove: false,
+      dirty: 0,
+      unmerged_commits: 0,
+      in_progress: [],
+      locked: false,
+    },
+    {
+      path: '/dev/shop-api.worktrees/back-1',
+      branch: 'orch/solo/back-1',
+      verdict: 'ok',
+      safe_to_remove: false,
+      dirty: 2,
+      unmerged_commits: 1,
+      in_progress: [],
+      locked: true,
+      row: { agent_id: 'back-1' },
+    },
+    {
+      path: '/dev/shop-api.worktrees/old',
+      branch: 'orch/solo/old',
+      verdict: 'ok',
+      safe_to_remove: true,
+      dirty: 0,
+      unmerged_commits: 0,
+      in_progress: [],
+      locked: false,
+    },
+    {
+      path: '/dev/shop-api/.claude/worktrees/mine',
+      branch: 'claude/mine',
+      verdict: 'external',
+      safe_to_remove: false,
+      dirty: 1,
+      unmerged_commits: 3,
+      in_progress: [],
+      locked: false,
+    },
   ],
-  branches: [{ name: 'orch/solo/old', merged: true, orch: true }, { name: 'claude/mine', merged: false, orch: false }],
+  branches: [
+    { name: 'orch/solo/old', merged: true, orch: true },
+    { name: 'claude/mine', merged: false, orch: false },
+  ],
 };
 
 beforeEach(() => {
@@ -64,7 +155,20 @@ beforeEach(() => {
   calls.length = 0;
   for (const k of Object.keys(replies)) delete replies[k];
   app.data = fixture();
-  app.data.projects[0] = { ...app.data.projects[0], default_branch: 'main', last_fetch_at_ms: null, git: { ...app.data.projects[0].git, upstream: 'origin/main', staged: 1, untracked: 1, stash: 1, last_commit: 'Add checkout', last_commit_s: Math.floor(Date.now() / 1000) - 600 } };
+  app.data.projects[0] = {
+    ...app.data.projects[0],
+    default_branch: 'main',
+    last_fetch_at_ms: null,
+    git: {
+      ...app.data.projects[0].git,
+      upstream: 'origin/main',
+      staged: 1,
+      untracked: 1,
+      stash: 1,
+      last_commit: 'Add checkout',
+      last_commit_s: Math.floor(Date.now() / 1000) - 600,
+    },
+  };
   app.panes = { p1: { type: 'project', projectId: 'shop-api', title: 'shop-api' } };
   app.focused = 'p1';
   app.overlay = null;
@@ -94,7 +198,11 @@ describe('project pane', () => {
     await fireEvent.click(getAllByText('Remove')[1]);
     expect(app.overlay.text).toBe('Remove worktree orch/solo/old?');
     app.overlay.onYes();
-    await waitFor(() => expect(calls.some(([c, a]) => c === 'worktree_remove' && a.discard === false && a.path.endsWith('/old'))).toBe(true));
+    await waitFor(() =>
+      expect(calls.some(([c, a]) => c === 'worktree_remove' && a.discard === false && a.path.endsWith('/old'))).toBe(
+        true,
+      ),
+    );
     expect(getByText('Trust in a pane', { exact: false })).toBeTruthy();
   });
 
@@ -121,8 +229,16 @@ describe('first run (J0)', () => {
   it('is read-only until Claude Code is fixed, and counts the steps left', async () => {
     app.data.setup = {
       done: false,
-      claude: { path: '/u/.local/bin/claude', version: '2.1.302', logged_in: false, problem: 'Claude Code is not logged in: run `claude` …' },
-      trust: [{ id: 'shop-api', trusted: true }, { id: 'blog', trusted: false }],
+      claude: {
+        path: '/u/.local/bin/claude',
+        version: '2.1.302',
+        logged_in: false,
+        problem: 'Claude Code is not logged in: run `claude` …',
+      },
+      trust: [
+        { id: 'shop-api', trusted: true },
+        { id: 'blog', trusted: false },
+      ],
       kitty: { sources: ['/u/.config/kitty/kitty.conf'], font: 'FiraCode Nerd Font Mono', mapped: 12, unmapped: 3 },
       editor: 'nvim +{line} {file}',
       plan_confirmed: false,
@@ -141,7 +257,16 @@ describe('first run (J0)', () => {
   });
 
   it('the plan editor proposes the core’s form and saves it', async () => {
-    replies.plan_form = { days: ['mon', 'tue', 'wed', 'thu', 'fri'], start: '09:00', end: '19:00', reserve_pct: 10, allocations: [{ id: 'shop-api', target: 'shop-api', weight: 1, tier: 'normal' }, { id: 'blog', target: 'blog', weight: 1, tier: 'normal' }] };
+    replies.plan_form = {
+      days: ['mon', 'tue', 'wed', 'thu', 'fri'],
+      start: '09:00',
+      end: '19:00',
+      reserve_pct: 10,
+      allocations: [
+        { id: 'shop-api', target: 'shop-api', weight: 1, tier: 'normal' },
+        { id: 'blog', target: 'blog', weight: 1, tier: 'normal' },
+      ],
+    };
     replies.plan_set = null;
     replies.app_state = fixture();
     const saved = vi.fn();

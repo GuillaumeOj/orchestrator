@@ -109,7 +109,12 @@ pub fn fetch_repo(repo: &Path, deadline: Duration) -> Result<()> {
 }
 
 /// One background pass: fetches every due project, records the result.
-pub fn tick(store: &Store, policy: &FetchPolicy, c: &dyn Conditions, now_ms: u64) -> Result<Vec<(String, FetchOutcome)>> {
+pub fn tick(
+    store: &Store,
+    policy: &FetchPolicy,
+    c: &dyn Conditions,
+    now_ms: u64,
+) -> Result<Vec<(String, FetchOutcome)>> {
     let projects = store.projects(false)?;
     let due = due(&projects, now_ms, policy);
     if due.is_empty() {
@@ -163,7 +168,9 @@ mod tests {
     fn pmset() {
         assert_eq!(parse_pmset("Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t100%; charged;"), None);
         assert_eq!(
-            parse_pmset("Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t17%; discharging; 1:02 remaining"),
+            parse_pmset(
+                "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t17%; discharging; 1:02 remaining"
+            ),
             Some(17)
         );
     }
@@ -185,11 +192,17 @@ mod tests {
         let now = orch_store::now_ms();
         let pol = FetchPolicy::default();
         let ok = Fake { battery: None, online: true };
-        assert_eq!(tick(&store, &pol, &Fake { battery: Some(10), online: true }, now).unwrap()[0].1,
-            FetchOutcome::Skipped { reason: "on battery at 10 %".into() });
-        assert_eq!(tick(&store, &pol, &Fake { battery: None, online: false }, now).unwrap()[0].1,
-            FetchOutcome::Skipped { reason: "offline".into() });
-        assert!(tick(&store, &pol, &Fake { battery: Some(80), online: true }, now).unwrap()[0].1 == FetchOutcome::Fetched);
+        assert_eq!(
+            tick(&store, &pol, &Fake { battery: Some(10), online: true }, now).unwrap()[0].1,
+            FetchOutcome::Skipped { reason: "on battery at 10 %".into() }
+        );
+        assert_eq!(
+            tick(&store, &pol, &Fake { battery: None, online: false }, now).unwrap()[0].1,
+            FetchOutcome::Skipped { reason: "offline".into() }
+        );
+        assert!(
+            tick(&store, &pol, &Fake { battery: Some(80), online: true }, now).unwrap()[0].1 == FetchOutcome::Fetched
+        );
         assert!(crate::git::git(&repo, &["rev-parse", "origin/main"]).is_ok());
         // Throttled until the interval passes; inactive projects are skipped.
         assert!(tick(&store, &pol, &ok, now + 1000).unwrap().is_empty());

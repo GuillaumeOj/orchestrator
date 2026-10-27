@@ -123,7 +123,9 @@ pub fn handle(msg: &Value, call: &dyn Fn(&str, &Value) -> (bool, String)) -> Opt
 /// model (never a crash of the server).
 pub fn call_core(env: &McpEnv, tool: &str, args: &Value) -> (bool, String) {
     let Some(socket) = &env.socket else { return (true, "orchestrator unavailable (ORCH_SOCK not set)".into()) };
-    let Some(agent_id) = &env.agent_id else { return (true, "orchestrator unavailable (ORCH_AGENT_ID not set)".into()) };
+    let Some(agent_id) = &env.agent_id else {
+        return (true, "orchestrator unavailable (ORCH_AGENT_ID not set)".into());
+    };
     let r = (|| -> Result<(bool, String), String> {
         let m = Envelope::new(Msg::Mcp(McpMsg {
             agent_id: agent_id.clone(),
@@ -212,7 +214,9 @@ mod tests {
             deadline: Duration::from_secs(1),
         };
         let out = run(
-            &[json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"commit","arguments":{"message":"x"}}})],
+            &[
+                json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"commit","arguments":{"message":"x"}}}),
+            ],
             &env,
         );
         assert_eq!(out[0]["result"]["isError"], true);
@@ -238,7 +242,9 @@ mod tests {
         });
         let env = McpEnv { agent_id: Some("a1".into()), socket: Some(sock), deadline: Duration::from_secs(5) };
         let out = run(
-            &[json!({"jsonrpc":"2.0","id":"x","method":"tools/call","params":{"name":"commit","arguments":{"message":"fix: x"}}})],
+            &[
+                json!({"jsonrpc":"2.0","id":"x","method":"tools/call","params":{"name":"commit","arguments":{"message":"fix: x"}}}),
+            ],
             &env,
         );
         t.join().unwrap();

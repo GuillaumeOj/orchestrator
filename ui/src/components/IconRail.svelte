@@ -1,10 +1,10 @@
 <script>
   // Icon rail below 1512 px (§9.2): one mark per project with a count badge when
   // agents need you; hover or focus opens the project summary (Penpot 03 rail hover).
-  import { agents, projects, openAgent } from '../lib/app.svelte.js';
+  import { agents, openAgent, projects } from '../lib/app.svelte.js';
   import { displayState } from '../lib/status.js';
-  import StatusBadge from './StatusBadge.svelte';
   import AgentChip from './AgentChip.svelte';
+  import StatusBadge from './StatusBadge.svelte';
 
   let hover = $state(null);
   const rows = $derived(

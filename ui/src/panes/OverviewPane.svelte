@@ -1,15 +1,15 @@
 <script>
+  import AgentChip from '../components/AgentChip.svelte';
+  import CtxBar from '../components/CtxBar.svelte';
+  import Kbd from '../components/Kbd.svelte';
+  import StatusBadge from '../components/StatusBadge.svelte';
   // Overview (§9.3, FR-901/903, Penpot 04 Overview): every agent with live state,
   // current tool, elapsed time, context, usage, governor status and memory;
   // grouped by project or by state. Keys (pane-local): j/k move, ⏎ open,
   // i interrupt, s suspend, r resume, K kill (asks first), p pause.
-  import { app, agents, projects, openAgent, agentAction, confirm, run, runNow } from '../lib/app.svelte.js';
-  import { displayState, notStarted, STATUS, queueReason, sessionPp } from '../lib/status.js';
+  import { agentAction, agents, app, confirm, openAgent, projects, run, runNow } from '../lib/app.svelte.js';
   import { duration, mb } from '../lib/format.js';
-  import StatusBadge from '../components/StatusBadge.svelte';
-  import AgentChip from '../components/AgentChip.svelte';
-  import CtxBar from '../components/CtxBar.svelte';
-  import Kbd from '../components/Kbd.svelte';
+  import { displayState, notStarted, queueReason, STATUS, sessionPp } from '../lib/status.js';
 
   let { paneId } = $props();
   let groupBy = $state('project');

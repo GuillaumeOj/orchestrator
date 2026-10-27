@@ -1,0 +1,55 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests", ":semanticCommits"],
+  "schedule": ["before 6am on monday"],
+  "ignorePaths": ["**/node_modules/**", "spikes/**"],
+  "lockFileMaintenance": { "enabled": true },
+  "minimumReleaseAge": "3 days",
+  "customManagers": [
+    {
+      "description": "The pinned Rust toolchain (CI and local use the same version)",
+      "customType": "regex",
+      "managerFilePatterns": ["/^rust-toolchain\\.toml$/"],
+      "matchStrings": ["channel = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""],
+      "depNameTemplate": "rust",
+      "packageNameTemplate": "rust-lang/rust",
+      "datasourceTemplate": "github-releases"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Cargo.toml keeps loose ranges: bump Cargo.lock, touch Cargo.toml only for majors",
+      "matchManagers": ["cargo"],
+      "rangeStrategy": "update-lockfile"
+    },
+    {
+      "description": "ui/package.json pins exact versions",
+      "matchManagers": ["bun"],
+      "rangeStrategy": "pin"
+    },
+    {
+      "groupName": "rust non-major",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"]
+    },
+    {
+      "groupName": "ui non-major",
+      "matchManagers": ["bun"],
+      "matchUpdateTypes": ["minor", "patch"]
+    },
+    {
+      "description": "The tauri crates and @tauri-apps packages must move together",
+      "groupName": "tauri",
+      "matchPackageNames": ["tauri", "tauri-build", "@tauri-apps/**"]
+    },
+    {
+      "groupName": "xterm",
+      "matchPackageNames": ["@xterm/**"]
+    },
+    {
+      "groupName": "github actions",
+      "matchManagers": ["github-actions"],
+      "automerge": true
+    }
+  ]
+}

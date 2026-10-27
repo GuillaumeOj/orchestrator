@@ -11,9 +11,16 @@ export function parseHex(s) {
   return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
 }
 
-const toHex = (c) => `#${c.map((v) => Math.round(Math.min(255, Math.max(0, v))).toString(16).padStart(2, '0')).join('')}`;
+const toHex = (c) =>
+  `#${c
+    .map((v) =>
+      Math.round(Math.min(255, Math.max(0, v)))
+        .toString(16)
+        .padStart(2, '0'),
+    )
+    .join('')}`;
 
-/** WCAG relative luminance. */
+/** WCAG relative luminance. @param {number[]} rgb */
 export function luminance([r, g, b]) {
   const f = (v) => ((v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
   return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
@@ -41,6 +48,7 @@ export function deriveKittyTheme(t) {
   const fg = parseHex(t?.foreground);
   if (!bg || !fg) return null;
   const dark = luminance(bg) < 0.179; // where white and black give the surface equal contrast
+  /** @type {[number, number, number]} */
   const toward = dark ? [255, 255, 255] : [0, 0, 0];
   // Accent: the cursor color if it is its own color (often it is just the foreground),
   // else kitty's blue; it must stand out from the background.

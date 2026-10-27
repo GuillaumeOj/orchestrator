@@ -278,7 +278,10 @@ fn run() -> Result<()> {
                 bail!("missing message");
             }
             let message = a.0.join(" ");
-            print(request(&sock, CtlRequest::Commit { agent_id, message, paths: Some(paths).filter(|p| !p.is_empty()) })?)
+            print(request(
+                &sock,
+                CtlRequest::Commit { agent_id, message, paths: Some(paths).filter(|p| !p.is_empty()) },
+            )?)
         }
         "inbox" => {
             a.done()?;

@@ -3,8 +3,8 @@
   // total the plan reports, "agents" the governed share; the plan and the pp delta
   // refer to the agents. Bars: fill = agents used, 2 px tick = plan.
   import { app, openSingleton } from '../lib/app.svelte.js';
+  import { clock, pct, signed, when } from '../lib/format.js';
   import { PRESSURE } from '../lib/status.js';
-  import { clock, when, signed, pct } from '../lib/format.js';
   import Kbd from './Kbd.svelte';
   import PressurePill from './PressurePill.svelte';
 

@@ -1,6 +1,7 @@
 <script>
   // Role color + role initial + agent name (§9.1 principle 7).
   import { roleOf } from '../lib/status.js';
+
   let { id, compact = false } = $props();
   const r = $derived(roleOf(id));
 </script>

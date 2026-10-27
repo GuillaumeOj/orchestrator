@@ -34,8 +34,19 @@ impl Runtime {
         if let Some(rule) = permissions::evaluate(&rules, &subject, &tool, &m.arguments) {
             match rule.effect {
                 RuleEffect::Deny => {
-                    let _ = self.db.audit(&format!("rule:{}", rule.id), Some(&rec.id), &m.tool, None, "deny", m.arguments.clone());
-                    return (true, format!("Denied by the user's rule {} ({}). Do not retry.", rule.id, rule.pattern), Value::Null);
+                    let _ = self.db.audit(
+                        &format!("rule:{}", rule.id),
+                        Some(&rec.id),
+                        &m.tool,
+                        None,
+                        "deny",
+                        m.arguments.clone(),
+                    );
+                    return (
+                        true,
+                        format!("Denied by the user's rule {} ({}). Do not retry.", rule.id, rule.pattern),
+                        Value::Null,
+                    );
                 }
                 RuleEffect::Ask => match self.ask_user(&rec, &tool, &m.arguments, rule.id, m.deadline_ms, conn) {
                     Ok(()) => actor = "user".into(),
@@ -76,7 +87,8 @@ impl Runtime {
         conn: Option<&UnixStream>,
     ) -> Result<()> {
         let subject = self.subject(rec);
-        let budget = Duration::from_millis(deadline_ms.saturating_sub(2_000)).min(self.cfg.permission_hold.max(Duration::from_secs(1)));
+        let budget = Duration::from_millis(deadline_ms.saturating_sub(2_000))
+            .min(self.cfg.permission_hold.max(Duration::from_secs(1)));
         match self.hold_for_decision(rec, tool, args, None, &subject, Some(ask_rule), budget, conn) {
             Waited::Decided(i) if allows(&i) => Ok(()),
             Waited::Decided(i) => {
@@ -84,7 +96,9 @@ impl Runtime {
                 bail!("The user declined this.{why}")
             }
             Waited::Interrupted => bail!("Interrupted by the user."),
-            Waited::Expired => bail!("The user did not answer in time. Nothing was done; continue with other work or end your turn."),
+            Waited::Expired => {
+                bail!("The user did not answer in time. Nothing was done; continue with other work or end your turn.")
+            }
         }
     }
 
@@ -125,7 +139,14 @@ mod tests {
     /// Agent `a1` on a real worktree of a scratch repo, with its gitconfig.
     fn with_worktree(rt: &Runtime) -> (tempfile::TempDir, PathBuf, PathBuf) {
         let (d, repo) = scratch_repo();
-        let row = orch_git::worktree::ensure(&rt.store, &repo, &WorktreeKindSpec::Solo { slug: "a1".into() }, None, Some("a1")).unwrap();
+        let row = orch_git::worktree::ensure(
+            &rt.store,
+            &repo,
+            &WorktreeKindSpec::Solo { slug: "a1".into() },
+            None,
+            Some("a1"),
+        )
+        .unwrap();
         rt.store
             .write(|s| {
                 let a = s.agents.get_mut("a1").unwrap();
@@ -155,7 +176,10 @@ mod tests {
         assert_eq!(data["files"], json!(["a.txt"]));
         assert_eq!(tgit(&wt, &["log", "-1", "--format=%s"]).trim(), "add a");
         let log = rt.db.audit_log(Some("a1"), 5).unwrap();
-        assert_eq!((log[0].action.as_str(), log[0].decision.as_str(), log[0].actor.as_str()), ("commit", "ok", "agent:a1"));
+        assert_eq!(
+            (log[0].action.as_str(), log[0].decision.as_str(), log[0].actor.as_str()),
+            ("commit", "ok", "agent:a1")
+        );
         // Bad input is a tool error the model can read.
         let (err, text, _) = call(&rt, "commit", json!({"message": "x", "paths": ["../../etc/passwd"]}));
         assert!(err && text.contains("leaves the worktree"), "{text}");
@@ -210,9 +234,14 @@ mod tests {
         // One request at a time.
         assert!(call(&rt, "request_pr", json!({"title": "again"})).0);
         rt.decide(item.id, InboxDecision::Reject, None, Some("not yet")).unwrap();
-        assert!(rt.store.read(|s| s.turns.iter().any(|t| t.agent_id == "a1" && t.body.contains("declined") && t.body.contains("not yet"))));
+        assert!(rt.store.read(|s| {
+            s.turns.iter().any(|t| t.agent_id == "a1" && t.body.contains("declined") && t.body.contains("not yet"))
+        }));
         assert!(call(&rt, "nope", json!({})).0);
-        let unknown = rt.on_mcp(&McpMsg { agent_id: "ghost".into(), tool: "commit".into(), arguments: json!({}), deadline_ms: 1000 }, None);
+        let unknown = rt.on_mcp(
+            &McpMsg { agent_id: "ghost".into(), tool: "commit".into(), arguments: json!({}), deadline_ms: 1000 },
+            None,
+        );
         assert!(unknown.0);
     }
 }

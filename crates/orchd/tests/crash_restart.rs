@@ -112,7 +112,9 @@ fn kill_9_mid_turn_then_restart_resumes_without_double_delivery() {
         if let Ok(r) = request(&sock, CtlRequest::Read { agent_id: "a1".into() }) {
             screen.push_str(r.data.as_str().unwrap_or(""));
         }
-        screen.contains("DONE[") && screen.contains("the orchestrator restarted") && agent(&sock, "a1")["state"] == "idle"
+        screen.contains("DONE[")
+            && screen.contains("the orchestrator restarted")
+            && agent(&sock, "a1")["state"] == "idle"
     });
     let a = agent(&sock, "a1");
     assert_eq!(a["session_id"], sid.as_str(), "same session, resumed by id");
@@ -125,10 +127,8 @@ fn kill_9_mid_turn_then_restart_resumes_without_double_delivery() {
     let spawns: Vec<&Value> = evs.iter().filter(|e| e["kind"] == "spawned" && e["agent_id"] == "a1").collect();
     assert!(spawns[0]["detail"]["args"].to_string().contains("--resume"), "{:?}", spawns[0]);
     // The slow turn reached the transcript before the crash: delivered once only.
-    let deliveries = evs
-        .iter()
-        .filter(|e| e["kind"] == "delivered" && e["detail"]["turn"] == slow_turn.as_str())
-        .count();
+    let deliveries =
+        evs.iter().filter(|e| e["kind"] == "delivered" && e["detail"]["turn"] == slow_turn.as_str()).count();
     assert_eq!(deliveries, 1, "turn {slow_turn} delivered {deliveries} times");
     assert!(!screen.contains("SLOW work"), "the slow turn was not pasted again: {screen}");
 

@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
-pub use orch_store::{InboxItem, InboxStatus, WorktreeRow, WorktreeRowState};
 use orch_store::{AgentRow, HoldRowDb, RuntimeDiff, RuntimeRows, TurnRowDb};
+pub use orch_store::{InboxItem, InboxStatus, WorktreeRow, WorktreeRowState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -210,7 +210,12 @@ impl StateFile {
 
     /// Closes a pending Inbox item: the one place an item leaves `pending`, so
     /// it is claimed once. `Err` carries the status it already had.
-    pub fn close_inbox(&mut self, id: u64, status: InboxStatus, decision: Option<String>) -> Result<&mut InboxItem, InboxStatus> {
+    pub fn close_inbox(
+        &mut self,
+        id: u64,
+        status: InboxStatus,
+        decision: Option<String>,
+    ) -> Result<&mut InboxItem, InboxStatus> {
         match self.inbox.iter_mut().find(|i| i.id == id) {
             Some(i) if i.pending() => {
                 i.status = status;
@@ -225,7 +230,14 @@ impl StateFile {
 
     /// Adds a pending Inbox item; returns its id. Ids are never reused, even
     /// after old items are pruned (`next_inbox_id`).
-    pub fn add_inbox_item(&mut self, agent_id: Option<&str>, kind: &str, body: String, payload: Value, priority: i64) -> u64 {
+    pub fn add_inbox_item(
+        &mut self,
+        agent_id: Option<&str>,
+        kind: &str,
+        body: String,
+        payload: Value,
+        priority: i64,
+    ) -> u64 {
         let id = self.next_inbox_id.max(self.inbox.iter().map(|i| i.id).max().unwrap_or(0) + 1);
         self.next_inbox_id = id + 1;
         let mut item = InboxItem::new(id, kind, agent_id, body);
@@ -372,8 +384,10 @@ struct LegacyState {
 
 /// Reads the pre-SQLite `state/state.json` (one-time import).
 pub fn read_legacy_json(path: &Path) -> Result<StateFile> {
-    let l: LegacyState = serde_json::from_slice(&std::fs::read(path)?).with_context(|| format!("reading {}", path.display()))?;
-    let mut st = StateFile { agents: l.agents, worktrees: l.worktrees, turns: l.turns, holds: l.holds, ..Default::default() };
+    let l: LegacyState =
+        serde_json::from_slice(&std::fs::read(path)?).with_context(|| format!("reading {}", path.display()))?;
+    let mut st =
+        StateFile { agents: l.agents, worktrees: l.worktrees, turns: l.turns, holds: l.holds, ..Default::default() };
     for i in l.inbox {
         let mut item = InboxItem::new(i.id, &i.kind, i.agent_id.as_deref(), i.body);
         item.created_at_ms = i.created_at_ms;

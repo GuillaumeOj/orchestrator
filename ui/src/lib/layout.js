@@ -45,7 +45,9 @@ export function split(tree, paneId, dir, newPaneId) {
       return { ...n, children, sizes: children.map(() => 1 / children.length) };
     });
   }
-  return map(tree, (n) => (n === target ? { kind: 'split', id: nid('s'), dir, children: [target, fresh], sizes: [0.5, 0.5] } : n));
+  return map(tree, (n) =>
+    n === target ? { kind: 'split', id: nid('s'), dir, children: [target, fresh], sizes: [0.5, 0.5] } : n,
+  );
 }
 
 export function addTab(tree, paneId, newPaneId) {
@@ -124,7 +126,10 @@ export function rects(tree, box = { x: 0, y: 0, w: 1, h: 1 }, out = {}) {
   let off = 0;
   tree.children.forEach((c, i) => {
     const s = tree.sizes[i];
-    const b = tree.dir === 'row' ? { x: box.x + off * box.w, y: box.y, w: s * box.w, h: box.h } : { x: box.x, y: box.y + off * box.h, w: box.w, h: s * box.h };
+    const b =
+      tree.dir === 'row'
+        ? { x: box.x + off * box.w, y: box.y, w: s * box.w, h: box.h }
+        : { x: box.x, y: box.y + off * box.h, w: box.w, h: s * box.h };
     rects(c, b, out);
     off += s;
   });
@@ -143,10 +148,14 @@ export function neighbor(tree, paneId, direction) {
     if (id === paneId) continue;
     let dist;
     let ov;
-    if (direction === 'right' && b.x >= a.x + a.w - eps) [dist, ov] = [b.x - (a.x + a.w), overlap(a.y, a.y + a.h, b.y, b.y + b.h)];
-    else if (direction === 'left' && b.x + b.w <= a.x + eps) [dist, ov] = [a.x - (b.x + b.w), overlap(a.y, a.y + a.h, b.y, b.y + b.h)];
-    else if (direction === 'down' && b.y >= a.y + a.h - eps) [dist, ov] = [b.y - (a.y + a.h), overlap(a.x, a.x + a.w, b.x, b.x + b.w)];
-    else if (direction === 'up' && b.y + b.h <= a.y + eps) [dist, ov] = [a.y - (b.y + b.h), overlap(a.x, a.x + a.w, b.x, b.x + b.w)];
+    if (direction === 'right' && b.x >= a.x + a.w - eps)
+      [dist, ov] = [b.x - (a.x + a.w), overlap(a.y, a.y + a.h, b.y, b.y + b.h)];
+    else if (direction === 'left' && b.x + b.w <= a.x + eps)
+      [dist, ov] = [a.x - (b.x + b.w), overlap(a.y, a.y + a.h, b.y, b.y + b.h)];
+    else if (direction === 'down' && b.y >= a.y + a.h - eps)
+      [dist, ov] = [b.y - (a.y + a.h), overlap(a.x, a.x + a.w, b.x, b.x + b.w)];
+    else if (direction === 'up' && b.y + b.h <= a.y + eps)
+      [dist, ov] = [a.y - (b.y + b.h), overlap(a.x, a.x + a.w, b.x, b.x + b.w)];
     else continue;
     if (ov <= eps) continue;
     if (!best || dist < best.dist - eps || (Math.abs(dist - best.dist) <= eps && ov > best.ov)) best = { id, dist, ov };

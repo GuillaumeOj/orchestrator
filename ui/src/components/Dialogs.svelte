@@ -2,12 +2,12 @@
   // Dialogs: New session (⌘T, Penpot 06 J2 step 1), Add project (⌘N: a folder
   // or a git URL to clone, J1), the weekly plan, confirmations.
   // ⌘⏎ submits; esc cancels.
-  import { app, projects, contextProject, openAgent, openProject, refresh, toast } from '../lib/app.svelte.js';
-  import PlanEditor from './PlanEditor.svelte';
+  import { app, contextProject, openAgent, openProject, projects, refresh, toast } from '../lib/app.svelte.js';
   import { expandHome } from '../lib/format.js';
-  import { invoke, errText } from '../lib/ipc.js';
+  import { errText, invoke } from '../lib/ipc.js';
   import { PRESSURE } from '../lib/status.js';
   import Kbd from './Kbd.svelte';
+  import PlanEditor from './PlanEditor.svelte';
 
   const o = $derived(app.overlay);
   let busy = $state(false);

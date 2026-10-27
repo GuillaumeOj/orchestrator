@@ -22,7 +22,9 @@ use serde_json::Value;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Answer {
     Allow,
-    Deny { message: Option<String> },
+    Deny {
+        message: Option<String>,
+    },
     /// No decision: the CLI shows its own dialog in the pane.
     InPane,
 }
@@ -192,7 +194,10 @@ mod tests {
 
     #[test]
     fn summarizes_like_the_dialog() {
-        assert_eq!(summarize("Bash", Some(&json!({"command": "pnpm add x", "description": "d"}))), ("pnpm add x".into(), Some("d".into())));
+        assert_eq!(
+            summarize("Bash", Some(&json!({"command": "pnpm add x", "description": "d"}))),
+            ("pnpm add x".into(), Some("d".into()))
+        );
         assert_eq!(summarize("Edit", Some(&json!({"file_path": "/a/b.rs"}))).0, "/a/b.rs");
         assert_eq!(summarize("mcp__x", Some(&json!({"q": 1}))).0, r#"{"q":1}"#);
         assert_eq!(summarize("Bash", None).0, "Bash");

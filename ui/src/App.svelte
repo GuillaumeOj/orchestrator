@@ -2,21 +2,21 @@
   // The app shell (§9.2, Penpot 03): title bar, sidebar or icon rail, tiling
   // workspace, inspector (docked ≥ 1512 px, overlay below), status bar.
   import { onMount } from 'svelte';
-  import { app, terms, refresh, restoreLayout, run, focusedSpec, isTerminal, flushDecisions, wide, applyTheme } from './lib/app.svelte.js';
-  import { classify } from './lib/keyboard.js';
-  import { invoke, listen, inTauri } from './lib/ipc.js';
-  import { loadUiFont, prepareKitty } from './lib/fonts.js';
-  import { startDev } from './lib/dev.js';
-  import TitleBar from './components/TitleBar.svelte';
   import Banner from './components/Banner.svelte';
-  import Sidebar from './components/Sidebar.svelte';
-  import IconRail from './components/IconRail.svelte';
-  import Workspace from './components/Workspace.svelte';
-  import Inspector from './components/Inspector.svelte';
-  import StatusBar from './components/StatusBar.svelte';
-  import Palette from './components/Palette.svelte';
   import Dialogs from './components/Dialogs.svelte';
+  import IconRail from './components/IconRail.svelte';
+  import Inspector from './components/Inspector.svelte';
+  import Palette from './components/Palette.svelte';
+  import Sidebar from './components/Sidebar.svelte';
+  import StatusBar from './components/StatusBar.svelte';
+  import TitleBar from './components/TitleBar.svelte';
   import Toasts from './components/Toasts.svelte';
+  import Workspace from './components/Workspace.svelte';
+  import { app, applyTheme, flushDecisions, focusedSpec, isTerminal, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
+  import { startDev } from './lib/dev.js';
+  import { loadUiFont, prepareKitty } from './lib/fonts.js';
+  import { inTauri, invoke, listen } from './lib/ipc.js';
+  import { classify } from './lib/keyboard.js';
 
   let ready = $state(false);
   let lastKeyCommand = { id: null, at: 0 };

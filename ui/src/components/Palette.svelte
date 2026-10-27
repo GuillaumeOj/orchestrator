@@ -1,7 +1,7 @@
 <script>
   // Command palette (⌘K: every action, scoped to the focused agent first) and
   // fuzzy jump (⌘P: the sidebar tree and open panes).
-  import { app, commands, jumpTargets, contextAgent } from '../lib/app.svelte.js';
+  import { app, commands, contextAgent, jumpTargets } from '../lib/app.svelte.js';
   import { filter } from '../lib/fuzzy.js';
   import Kbd from './Kbd.svelte';
 

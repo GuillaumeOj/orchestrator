@@ -5,7 +5,9 @@ const rows = (...lines) => lines.map((l) => (typeof l === 'string' ? { text: l, 
 
 describe('path links (FR-208)', () => {
   it('finds paths with lines on one row', () => {
-    expect(findPaths('Fixing in src/services/checkout.ts:71.').map((p) => [p.file, p.line])).toEqual([['src/services/checkout.ts', 71]]);
+    expect(findPaths('Fixing in src/services/checkout.ts:71.').map((p) => [p.file, p.line])).toEqual([
+      ['src/services/checkout.ts', 71],
+    ]);
   });
 
   it('joins a soft-wrapped path and reports it on every row it covers', () => {

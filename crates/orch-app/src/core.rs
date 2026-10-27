@@ -35,8 +35,8 @@ use crate::permissions::{Answer, PermissionBroker};
 use crate::planner::{self, History, HistoryPoint, PlannerView};
 use crate::services::{self, GitSummary, Project, Settings};
 use crate::setup::{self, ClaudeCheck};
-use crate::watch::MemoryWatch;
 use crate::terms::{TermKind, Terms};
+use crate::watch::MemoryWatch;
 
 const GIT_EVERY: Duration = Duration::from_secs(10);
 const MEMORY_EVERY: Duration = Duration::from_secs(5);
@@ -189,7 +189,10 @@ impl Core {
         if settings.get(setup::FIRST_RUN_KEY).is_none() {
             let _ = settings.set(setup::FIRST_RUN_KEY, json!(now_ms()));
         }
-        let kitty_conf = settings.get(setup::KITTY_KEY).and_then(|v| v.as_str().map(PathBuf::from)).unwrap_or(cfg.kitty_conf.clone());
+        let kitty_conf = settings
+            .get(setup::KITTY_KEY)
+            .and_then(|v| v.as_str().map(PathBuf::from))
+            .unwrap_or(cfg.kitty_conf.clone());
         let kitty = kitty::import(&kitty_conf);
         let editor_template = settings
             .get(setup::EDITOR_KEY)
@@ -248,7 +251,9 @@ impl Core {
             // agents (registered by an earlier version or `orchd`), then J10.
             let (core2, rt, recover) = (core.clone(), rt.clone(), cfg.recover);
             std::thread::spawn(move || {
-                let known = rt.store.read(|s| s.agents.values().map(|a| a.repo.clone()).collect::<std::collections::BTreeSet<_>>());
+                let known = rt
+                    .store
+                    .read(|s| s.agents.values().map(|a| a.repo.clone()).collect::<std::collections::BTreeSet<_>>());
                 for path in &known {
                     if core2.project_of(path, &core2.projects()).is_none() {
                         if let Err(e) = rt.add_project(path) {
@@ -325,7 +330,12 @@ impl Core {
         let (p, week_start) = rt.with_governor(|g| {
             let s = g.snapshot(Timestamp::now());
             (
-                HistoryPoint { t_ms: s.ts.as_millisecond(), used: s.used, governed: s.governed, five_hour: s.five_hour },
+                HistoryPoint {
+                    t_ms: s.ts.as_millisecond(),
+                    used: s.used,
+                    governed: s.governed,
+                    five_hour: s.five_hour,
+                },
                 g.plan().week_start.as_millisecond(),
             )
         });
@@ -384,7 +394,8 @@ impl Core {
                 let id = self.broker.open(&m.agent_id, &p, now_ms());
                 // Answer before orch-hook's own deadline; then the pane's dialog shows.
                 let hold = Duration::from_millis(m.deadline_ms.saturating_sub(2_000).max(1_000));
-                let outcome = self.broker.wait(&id, Instant::now() + hold, Duration::from_millis(250), || peer_closed(&s));
+                let outcome =
+                    self.broker.wait(&id, Instant::now() + hold, Duration::from_millis(250), || peer_closed(&s));
                 reply(Reply::Hook { output: PermissionBroker::hook_output(&outcome) });
             }
             Msg::Hook(m) => {
@@ -718,7 +729,13 @@ impl Core {
         bail!("{action} does not apply to {item}")
     }
 
-    fn inbox_items(&self, agents: &[Value], alerts: &[Alert], done: &[Done], ask: Option<Ask>) -> Vec<inbox::InboxItem> {
+    fn inbox_items(
+        &self,
+        agents: &[Value],
+        alerts: &[Alert],
+        done: &[Done],
+        ask: Option<Ask>,
+    ) -> Vec<inbox::InboxItem> {
         let Some(rt) = &self.rt else { return vec![] };
         let facts: Vec<AgentFacts> = agents
             .iter()
@@ -750,8 +767,7 @@ impl Core {
         let todo: Vec<&PathBuf> = paths.iter().filter(|p| all || !g.value.contains_key(*p)).collect();
         if !todo.is_empty() {
             let fresh: Vec<(PathBuf, GitSummary)> = std::thread::scope(|sc| {
-                let jobs: Vec<_> =
-                    todo.iter().map(|p| sc.spawn(|| ((*p).clone(), services::git_summary(p)))).collect();
+                let jobs: Vec<_> = todo.iter().map(|p| sc.spawn(|| ((*p).clone(), services::git_summary(p)))).collect();
                 jobs.into_iter().filter_map(|j| j.join().ok()).collect()
             });
             let mut value = if all { BTreeMap::new() } else { std::mem::take(&mut g.value) };
@@ -801,7 +817,13 @@ impl Core {
             let (snapshot, reset, shadow);
             (queue, snapshot, reset, shadow, ask) = rt.with_governor(|g| {
                 let now = Timestamp::now();
-                (g.queue().to_vec(), g.snapshot(now), g.plan().reset_at.as_millisecond(), g.plan().shadow_mode, pending_ask(g, now))
+                (
+                    g.queue().to_vec(),
+                    g.snapshot(now),
+                    g.plan().reset_at.as_millisecond(),
+                    g.plan().shadow_mode,
+                    pending_ask(g, now),
+                )
             });
             usage["live_cap"] = json!(snapshot.live_cap);
             usage["snapshot"] = json!(snapshot);
@@ -859,7 +881,8 @@ impl Core {
 
     pub fn planner(&self) -> Result<PlannerView> {
         let rt = self.runtime()?;
-        let five_reset = rt.usage_json()["five_hour"]["resets_at"].as_i64().and_then(|s| Timestamp::from_second(s).ok());
+        let five_reset =
+            rt.usage_json()["five_hour"]["resets_at"].as_i64().and_then(|s| Timestamp::from_second(s).ok());
         let live = rt.live_ids();
         let alloc_of: BTreeMap<String, String> =
             rt.store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.allocation.clone())).collect());
@@ -957,7 +980,11 @@ impl Core {
 
     /// The project, one of its git worktrees (the main checkout included) and the
     /// branch its work goes back to: the base it was created from, else the default.
-    fn resolve_worktree(&self, project: &str, path: &Path) -> Result<(Project, orch_git::worktree::GitWorktree, String)> {
+    fn resolve_worktree(
+        &self,
+        project: &str,
+        path: &Path,
+    ) -> Result<(Project, orch_git::worktree::GitWorktree, String)> {
         let p = self.project(project)?;
         let want = real(path);
         let wt = orch_git::worktree::list(&p.path)?
@@ -968,7 +995,14 @@ impl Core {
         let base = self
             .rt
             .as_ref()
-            .and_then(|rt| rt.store.read(|s| s.worktrees.get(&wt.path).or_else(|| s.worktrees.iter().find(|(k, _)| real(k) == want).map(|(_, w)| w)).map(|w| w.base.clone())))
+            .and_then(|rt| {
+                rt.store.read(|s| {
+                    s.worktrees
+                        .get(&wt.path)
+                        .or_else(|| s.worktrees.iter().find(|(k, _)| real(k) == want).map(|(_, w)| w))
+                        .map(|w| w.base.clone())
+                })
+            })
             .unwrap_or_else(|| p.default_branch.clone());
         Ok((p, wt, base))
     }
@@ -983,7 +1017,14 @@ impl Core {
 
     /// The user's own "Create PR" (the UI confirms first): pushes the worktree's
     /// branch with the user's credentials and opens the PR into its base (ADR-009).
-    pub fn worktree_create_pr(&self, project: &str, path: &Path, title: &str, body: &str, draft: bool) -> Result<String> {
+    pub fn worktree_create_pr(
+        &self,
+        project: &str,
+        path: &Path,
+        title: &str,
+        body: &str,
+        draft: bool,
+    ) -> Result<String> {
         let (p, wt, base) = self.resolve_worktree(project, path)?;
         let branch = wt.branch.clone().ok_or_else(|| anyhow!("the worktree has no branch (detached HEAD)"))?;
         if branch == base || branch == p.default_branch {
@@ -992,8 +1033,16 @@ impl Core {
         if title.trim().is_empty() {
             bail!("a PR needs a title");
         }
-        let r = orch_git::gh::push(&wt.path, "origin", &branch).and_then(|_| orch_git::gh::create_pr(&wt.path, &base, &branch, title, body, draft));
-        let _ = self.db.audit("user", None, "pr", Some(&branch), if r.is_ok() { "ok" } else { "failed" }, json!({"base": base, "result": r.as_ref().map_err(|e| e.to_string())}));
+        let r = orch_git::gh::push(&wt.path, "origin", &branch)
+            .and_then(|_| orch_git::gh::create_pr(&wt.path, &base, &branch, title, body, draft));
+        let _ = self.db.audit(
+            "user",
+            None,
+            "pr",
+            Some(&branch),
+            if r.is_ok() { "ok" } else { "failed" },
+            json!({"base": base, "result": r.as_ref().map_err(|e| e.to_string())}),
+        );
         r
     }
 
@@ -1020,10 +1069,7 @@ const HELPERS: [&str; 3] = ["orch-hook", "orch-status", "orch-mcp"];
 
 fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>) -> Result<Arc<Runtime>> {
     if orch_protocol::is_listening(&paths.socket()) {
-        bail!(
-            "another core is running on {} (orchd?): stop it to run agents in the app",
-            paths.socket().display()
-        );
+        bail!("another core is running on {} (orchd?): stop it to run agents in the app", paths.socket().display());
     }
     std::fs::create_dir_all(&paths.root)?;
     let mut rc = RuntimeConfig::new(paths.clone());
@@ -1040,7 +1086,8 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
     if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
         let changed = HELPERS.iter().any(|n| {
             let meta = |p: PathBuf| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok()));
-            meta(dir.join(n)).is_some_and(|src| meta(paths.bin_dir().join(n)).is_none_or(|dst| dst.0 != src.0 || dst.1 < src.1))
+            meta(dir.join(n))
+                .is_some_and(|src| meta(paths.bin_dir().join(n)).is_none_or(|dst| dst.0 != src.0 || dst.1 < src.1))
         });
         if changed && HELPERS.iter().all(|n| dir.join(n).is_file()) {
             if let Err(e) = agent_runtime::preflight::install_helpers(&dir, &paths.bin_dir()) {
@@ -1069,7 +1116,10 @@ fn open_store(paths: &AppPaths, warnings: &mut Vec<String>) -> orch_store::Store
     match orch_store::Store::open(&paths.db_file()) {
         Ok(db) => db,
         Err(e) => {
-            warnings.push(format!("store {} not opened ({e:#}): projects and settings are not kept", paths.db_file().display()));
+            warnings.push(format!(
+                "store {} not opened ({e:#}): projects and settings are not kept",
+                paths.db_file().display()
+            ));
             let tmp = std::env::temp_dir().join(format!("orchestrator-{}.db", std::process::id()));
             orch_store::Store::open(&tmp).expect("a scratch store in the temp folder")
         }
@@ -1083,7 +1133,10 @@ fn past_week(rt: &Runtime, started: Timestamp) -> (History, Vec<governor::Govern
     let since = week_start.as_millisecond().max(0) as u64;
     let mut h = History::default();
     for f in rt.db.forecasts_since(since).unwrap_or_default() {
-        h.push(HistoryPoint { t_ms: f.ts.as_millisecond(), used: f.used, governed: f.governed, five_hour: f.five_hour }, since as i64);
+        h.push(
+            HistoryPoint { t_ms: f.ts.as_millisecond(), used: f.used, governed: f.governed, five_hour: f.five_hour },
+            since as i64,
+        );
     }
     let actions = rt
         .db
@@ -1175,7 +1228,10 @@ mod tests {
         let repo = d.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         orch_git::fixtures::git(&repo, &["init", "-q", "-b", "main"]);
-        orch_git::fixtures::git(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
+        orch_git::fixtures::git(
+            &repo,
+            &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"],
+        );
         Core::start(CoreConfig {
             home: d.join("home"),
             claude: Some(d.join("no-claude")),
@@ -1235,7 +1291,9 @@ mod tests {
         let a = test_core(d.path());
         let b = test_core(d.path());
         assert!(b.core_error.as_deref().unwrap_or("").contains("another core"));
-        assert!(b.agent_start(&NewSession { project_id: "repo".into(), name: "x".into(), ..Default::default() }).is_err());
+        assert!(
+            b.agent_start(&NewSession { project_id: "repo".into(), name: "x".into(), ..Default::default() }).is_err()
+        );
         a.shutdown();
     }
 
@@ -1244,14 +1302,7 @@ mod tests {
         let d = tmp();
         let core = test_core(d.path());
         let rt = core.runtime().unwrap().clone();
-        rt.store
-            .write(|s| {
-                s.agents.insert(
-                    "a1".into(),
-                    record("a1", d.path().join("repo")),
-                )
-            })
-            .unwrap();
+        rt.store.write(|s| s.agents.insert("a1".into(), record("a1", d.path().join("repo")))).unwrap();
         // What orch-hook sends, on the real socket.
         let sock = core.paths.socket();
         let hook = std::thread::spawn(move || {
@@ -1490,7 +1541,11 @@ mod tests {
         let p = core.planner().unwrap();
         assert_eq!(p.reserve_pct, 15.0);
         assert!(p.plan_set);
-        assert!((p.snapshot.used_central - 30.0).abs() < 2.0, "the week's samples replayed into the new plan: {}", p.snapshot.used_central);
+        assert!(
+            (p.snapshot.used_central - 30.0).abs() < 2.0,
+            "the week's samples replayed into the new plan: {}",
+            p.snapshot.used_central
+        );
         assert!(p.allocations.iter().any(|a| a.id == "repo"));
         core.shutdown();
     }
@@ -1501,7 +1556,11 @@ mod tests {
         let core = test_core(d.path());
         let (_keep, repo) = orch_git::fixtures::scratch_repo();
         let p = core.project_add(&repo).unwrap();
-        let wt = core.runtime().unwrap().create_worktree(&repo, &orch_protocol::WorktreeKindSpec::Solo { slug: "d1".into() }, None).unwrap();
+        let wt = core
+            .runtime()
+            .unwrap()
+            .create_worktree(&repo, &orch_protocol::WorktreeKindSpec::Solo { slug: "d1".into() }, None)
+            .unwrap();
         std::fs::write(wt.path.join("new.txt"), "hello\n").unwrap();
         let v = core.worktree_diff(&p.id, &wt.path).unwrap();
         assert_eq!(v["against"], "main");
@@ -1534,22 +1593,31 @@ mod tests {
         assert_eq!(row["default_branch"], "main");
         // A worktree with unmerged work is kept unless confirmed (FR-104, J11).
         let rt = core.runtime().unwrap();
-        let wt = rt
-            .create_worktree(&other, &orch_protocol::WorktreeKindSpec::Solo { slug: "w1".into() }, None)
-            .unwrap();
+        let wt =
+            rt.create_worktree(&other, &orch_protocol::WorktreeKindSpec::Solo { slug: "w1".into() }, None).unwrap();
         orch_git::fixtures::commit_file(&wt.path, "x.txt", "x", "work");
         let own = other.join("mine");
         orch_git::fixtures::git(&other, &["worktree", "add", "-q", "-b", "mine", own.to_str().unwrap()]);
-        assert!(core.worktree_remove(&p.id, &own, true, true).unwrap_err().to_string().contains("only removes its own"));
+        assert!(
+            core.worktree_remove(&p.id, &own, true, true).unwrap_err().to_string().contains("only removes its own")
+        );
         assert!(own.exists());
         // A worktree whose folder is gone is still the app's to prune.
-        let gone = rt.create_worktree(&other, &orch_protocol::WorktreeKindSpec::Solo { slug: "gone".into() }, None).unwrap();
+        let gone =
+            rt.create_worktree(&other, &orch_protocol::WorktreeKindSpec::Solo { slug: "gone".into() }, None).unwrap();
         std::fs::remove_dir_all(&gone.path).unwrap();
         core.worktree_remove(&p.id, &gone.path, true, false).unwrap();
         let plan = core.removal_plan(&p.id).unwrap();
         assert_eq!(plan["plan"]["worktrees"].as_array().unwrap().len(), 1);
         let report = core
-            .project_remove(&p.id, &orch_git::project::RemovalChoices { remove_merged: true, discard: vec![], history: orch_git::project::History::Delete })
+            .project_remove(
+                &p.id,
+                &orch_git::project::RemovalChoices {
+                    remove_merged: true,
+                    discard: vec![],
+                    history: orch_git::project::History::Delete,
+                },
+            )
             .unwrap();
         assert_eq!(report["kept"].as_array().unwrap().len(), 1, "{report}");
         assert!(wt.path.exists());

@@ -10,14 +10,14 @@ use serde_json::Value;
 use tauri::State;
 use tauri::ipc::Response;
 
-use crate::core::{Core, EditorOpen, NewSession, TermInfo};
-use crate::services::Project;
-use crate::setup::PlanForm;
-use orch_git::project::RemovalChoices;
 use crate::LockOk;
+use crate::core::{Core, EditorOpen, NewSession, TermInfo};
 use crate::kitty::KittyImport;
 use crate::planner::PlannerView;
+use crate::services::Project;
+use crate::setup::PlanForm;
 use crate::terms::TermKind;
+use orch_git::project::RemovalChoices;
 
 type Res<T> = Result<T, String>;
 type CoreState<'a> = State<'a, Arc<Core>>;
@@ -119,8 +119,10 @@ pub fn term_spawn(core: CoreState, req: TermSpawn) -> Res<TermInfo> {
 
 #[tauri::command]
 pub async fn term_read(core: CoreState<'_>, id: u32) -> Res<Response> {
-    blocking(core, move |c| c.terms.get(id)?.output.read_wait(PULL_WAIT).map(Response::new).ok_or_else(|| anyhow::anyhow!("eof")))
-        .await
+    blocking(core, move |c| {
+        c.terms.get(id)?.output.read_wait(PULL_WAIT).map(Response::new).ok_or_else(|| anyhow::anyhow!("eof"))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -148,8 +150,10 @@ pub async fn editor_open(
     rows: u16,
     cols: u16,
 ) -> Res<EditorOpen> {
-    blocking(core, move |c| c.editor_open(project_id.as_deref(), agent_id.as_deref(), file.as_deref(), line, rows, cols))
-        .await
+    blocking(core, move |c| {
+        c.editor_open(project_id.as_deref(), agent_id.as_deref(), file.as_deref(), line, rows, cols)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -182,7 +186,12 @@ pub async fn project_add(core: CoreState<'_>, path: PathBuf) -> Res<Project> {
 }
 
 #[tauri::command]
-pub async fn project_clone(core: CoreState<'_>, url: String, parent: Option<PathBuf>, name: Option<String>) -> Res<Project> {
+pub async fn project_clone(
+    core: CoreState<'_>,
+    url: String,
+    parent: Option<PathBuf>,
+    name: Option<String>,
+) -> Res<Project> {
     blocking(core, move |c| c.project_clone(&url, parent.as_deref(), name.as_deref())).await
 }
 
@@ -197,7 +206,13 @@ pub async fn project_fetch(core: CoreState<'_>, id: String) -> Res<Value> {
 }
 
 #[tauri::command]
-pub async fn worktree_remove(core: CoreState<'_>, project: String, path: PathBuf, delete_branch: bool, discard: bool) -> Res<Value> {
+pub async fn worktree_remove(
+    core: CoreState<'_>,
+    project: String,
+    path: PathBuf,
+    delete_branch: bool,
+    discard: bool,
+) -> Res<Value> {
     blocking(core, move |c| c.worktree_remove(&project, &path, delete_branch, discard)).await
 }
 
@@ -207,7 +222,14 @@ pub async fn worktree_diff(core: CoreState<'_>, project: String, path: PathBuf) 
 }
 
 #[tauri::command]
-pub async fn worktree_create_pr(core: CoreState<'_>, project: String, path: PathBuf, title: String, body: String, draft: bool) -> Res<String> {
+pub async fn worktree_create_pr(
+    core: CoreState<'_>,
+    project: String,
+    path: PathBuf,
+    title: String,
+    body: String,
+    draft: bool,
+) -> Res<String> {
     blocking(core, move |c| c.worktree_create_pr(&project, &path, &title, &body, draft)).await
 }
 

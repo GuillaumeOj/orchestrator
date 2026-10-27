@@ -1,14 +1,14 @@
 <script>
+  import Kbd from '../components/Kbd.svelte';
+  import PlanEditor from '../components/PlanEditor.svelte';
   // First run (J0): Claude Code installed, in the supported range and logged in
   // with Pro/Max (otherwise the app stays read-only); projects; workspace trust
   // per project (the user answers Claude Code's own dialog in a pane); the
   // kitty.conf import; the editor command; the first weekly plan. Shown at start
   // until "Done"; the palette reopens it.
-  import { app, projects, openTrust, openProject, refresh, toast, closePane, findPane, applyTheme } from '../lib/app.svelte.js';
-  import { invoke, errText } from '../lib/ipc.js';
+  import { app, applyTheme, closePane, findPane, openProject, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
   import { expandHome, shortPath } from '../lib/format.js';
-  import PlanEditor from '../components/PlanEditor.svelte';
-  import Kbd from '../components/Kbd.svelte';
+  import { errText, invoke } from '../lib/ipc.js';
 
   const s = $derived(app.data?.setup);
   const c = $derived(s?.claude);

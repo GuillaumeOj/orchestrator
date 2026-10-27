@@ -226,7 +226,8 @@ fn live_haiku_end_to_end() {
         &sock,
         CtlRequest::Deliver {
             agent_id: id.clone(),
-            text: "Commit the file live.txt with the mcp__orch__commit tool, message: live via orch. Then reply DONE.".into(),
+            text: "Commit the file live.txt with the mcp__orch__commit tool, message: live via orch. Then reply DONE."
+                .into(),
         },
     )
     .unwrap();
@@ -263,7 +264,10 @@ fn live_haiku_end_to_end() {
     drop(guard);
     assert!(mcp_done, "orch-mcp commit turn did not finish");
     assert!(mcp_log.contains("live via orch"), "the core did not commit for the agent: {mcp_log}");
-    assert!(otel.iter().any(|t| t.agent_id.as_deref() == Some(id.as_str()) && t.tokens_out > 0), "no OTLP usage: {otel:?}");
+    assert!(
+        otel.iter().any(|t| t.agent_id.as_deref() == Some(id.as_str()) && t.tokens_out > 0),
+        "no OTLP usage: {otel:?}"
+    );
     assert!(resumed, "resumed turn did not finish");
     // Known gap (README): with Claude Code 2.1.302 sandboxed Bash cannot write the main
     // repo's .git from a linked worktree, so this commit fails. Report, don't fail.

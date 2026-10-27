@@ -19,11 +19,21 @@ export function patchByFile(patch) {
 /** The CSS class of a patch line. */
 export function lineKind(line) {
   if (line.startsWith('@@')) return 'hunk';
-  if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') || line.startsWith('index ')) return 'meta';
+  if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') || line.startsWith('index '))
+    return 'meta';
   if (line.startsWith('+')) return 'add';
   if (line.startsWith('-')) return 'del';
   return 'ctx';
 }
 
 /** Change marker letter for the file tree; untracked files show `?`. */
-export const STATUS_WORD = { A: 'added', M: 'modified', D: 'deleted', R: 'renamed', C: 'copied', T: 'type changed', U: 'conflict', '?': 'untracked' };
+export const STATUS_WORD = {
+  A: 'added',
+  M: 'modified',
+  D: 'deleted',
+  R: 'renamed',
+  C: 'copied',
+  T: 'type changed',
+  U: 'conflict',
+  '?': 'untracked',
+};

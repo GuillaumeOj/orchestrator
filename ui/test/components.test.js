@@ -1,13 +1,13 @@
-import { describe, expect, it, beforeEach } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { fireEvent, render } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
-import { app } from '../src/lib/app.svelte.js';
-import { fixture } from './fixture.js';
-import InboxPane from '../src/panes/InboxPane.svelte';
-import Sidebar from '../src/components/Sidebar.svelte';
-import StatusBar from '../src/components/StatusBar.svelte';
+import { beforeEach, describe, expect, it } from 'vitest';
 import PacingIndicator from '../src/components/PacingIndicator.svelte';
+import Sidebar from '../src/components/Sidebar.svelte';
 import StatusBadge from '../src/components/StatusBadge.svelte';
+import StatusBar from '../src/components/StatusBar.svelte';
+import { app } from '../src/lib/app.svelte.js';
+import InboxPane from '../src/panes/InboxPane.svelte';
+import { fixture } from './fixture.js';
 
 beforeEach(() => {
   app.data = fixture();

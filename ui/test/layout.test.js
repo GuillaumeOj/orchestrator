@@ -58,7 +58,16 @@ describe('ids', () => {
 
 describe('restore', () => {
   it('re-keys a saved layout with clashing ids', () => {
-    const saved = { kind: 'split', id: 's1', dir: 'row', sizes: [0.5, 0.5], children: [{ kind: 'leaf', id: 'l1', tabs: ['a'], active: 'a' }, { kind: 'leaf', id: 'l1', tabs: ['b'], active: 'b' }] };
+    const saved = {
+      kind: 'split',
+      id: 's1',
+      dir: 'row',
+      sizes: [0.5, 0.5],
+      children: [
+        { kind: 'leaf', id: 'l1', tabs: ['a'], active: 'a' },
+        { kind: 'leaf', id: 'l1', tabs: ['b'], active: 'b' },
+      ],
+    };
     const t = L.reid(saved);
     expect(t.children[0].id).not.toBe(t.children[1].id);
     expect(L.visible(t)).toEqual(['a', 'b']);

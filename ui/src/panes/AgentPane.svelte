@@ -4,15 +4,15 @@
   // strip for the states that need words (queued, suspended, limit, error, a
   // permission prompt held for the Inbox). The PTY itself is left untouched.
   import { onMount } from 'svelte';
-  import { app, agent, mountTerm, openEditor, agentAction, toast, confirm, runNow } from '../lib/app.svelte.js';
-  import { invoke, errText } from '../lib/ipc.js';
-  import { displayState, notStarted, queueReason, sessionPp as ppOf, cacheState } from '../lib/status.js';
-  import TermHost from '../components/TermHost.svelte';
-  import { clock, ago, duration } from '../lib/format.js';
-  import StatusBadge from '../components/StatusBadge.svelte';
   import AgentChip from '../components/AgentChip.svelte';
   import CtxBar from '../components/CtxBar.svelte';
   import Kbd from '../components/Kbd.svelte';
+  import StatusBadge from '../components/StatusBadge.svelte';
+  import TermHost from '../components/TermHost.svelte';
+  import { agent, agentAction, app, confirm, mountTerm, openEditor, runNow, toast } from '../lib/app.svelte.js';
+  import { ago, clock, duration } from '../lib/format.js';
+  import { errText, invoke } from '../lib/ipc.js';
+  import { cacheState, displayState, notStarted, sessionPp as ppOf, queueReason } from '../lib/status.js';
 
   let { paneId } = $props();
   let host = $state();

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { build, check, resolve, flatten, SOURCE, CSS_OUT } from '../scripts/tokens.mjs';
+import { build, CSS_OUT, check, flatten, resolve, SOURCE } from '../scripts/tokens.mjs';
 
 describe('token pipeline', () => {
   it('generated files match tokens.json and the UI uses semantic tokens only', () => {

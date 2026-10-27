@@ -1,6 +1,8 @@
 <script>
   // The box a terminal pane's xterm lives in: kitty's background and padding.
   import { app } from '../lib/app.svelte.js';
+
+  /** @type {{ host?: HTMLElement, children?: import('svelte').Snippet }} */
   let { host = $bindable(), children } = $props();
   const pad = $derived(app.kitty?.padding ?? [0, 0, 0, 0]);
 </script>

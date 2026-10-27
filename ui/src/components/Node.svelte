@@ -1,8 +1,8 @@
 <script>
-  import { app, focusPane, closePane, saveLayout } from '../lib/app.svelte.js';
+  import { app, closePane, focusPane, saveLayout } from '../lib/app.svelte.js';
   import * as L from '../lib/layout.js';
-  import PaneFrame from './PaneFrame.svelte';
   import Node from './Node.svelte';
+  import PaneFrame from './PaneFrame.svelte';
 
   let { node } = $props();
   let el = $state();

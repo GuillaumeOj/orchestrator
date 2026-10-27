@@ -1,6 +1,6 @@
 /* Base styles: semantic tokens only (tokens.css is generated from tokens.json). */
-@import './tokens.css';
-@import '@xterm/xterm/css/xterm.css';
+@import "./tokens.css";
+@import "@xterm/xterm/css/xterm.css";
 
 *,
 *::before,

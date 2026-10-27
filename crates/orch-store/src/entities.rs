@@ -125,7 +125,8 @@ impl Store {
     pub fn project(&self, id: &str) -> Result<Option<Project>> {
         let id = id.to_string();
         self.read(move |c| {
-            Ok(c.query_row(&format!("SELECT {PROJECT_COLS} FROM projects WHERE id=?1"), [id], row_project).optional()?)
+            Ok(c.query_row(&format!("SELECT {PROJECT_COLS} FROM projects WHERE id=?1"), [id], row_project)
+                .optional()?)
         })
     }
 
@@ -140,9 +141,8 @@ impl Store {
     /// Every project, archived ones included when `with_archived`.
     pub fn projects(&self, with_archived: bool) -> Result<Vec<Project>> {
         self.read(move |c| {
-            let mut st = c.prepare(&format!(
-                "SELECT {PROJECT_COLS} FROM projects WHERE archived=0 OR ?1 ORDER BY name, id"
-            ))?;
+            let mut st =
+                c.prepare(&format!("SELECT {PROJECT_COLS} FROM projects WHERE archived=0 OR ?1 ORDER BY name, id"))?;
             Ok(st.query_map([with_archived], row_project)?.collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -150,7 +150,10 @@ impl Store {
     pub fn touch_project(&self, id: &str, at_ms: u64) -> Result<()> {
         let id = id.to_string();
         self.write(move |tx| {
-            tx.execute("UPDATE projects SET last_active_at_ms=max(last_active_at_ms, ?2) WHERE id=?1", params![id, at_ms as i64])?;
+            tx.execute(
+                "UPDATE projects SET last_active_at_ms=max(last_active_at_ms, ?2) WHERE id=?1",
+                params![id, at_ms as i64],
+            )?;
             Ok(())
         })
     }
@@ -357,14 +360,24 @@ impl Store {
     /// The active plan, if any.
     pub fn active_plan(&self) -> Result<Option<WeeklyPlan>> {
         self.read(|c| {
-            json_row(c, "SELECT data FROM weekly_plans WHERE status='active' ORDER BY reset_at_ms DESC LIMIT 1", [], "weekly plan")
+            json_row(
+                c,
+                "SELECT data FROM weekly_plans WHERE status='active' ORDER BY reset_at_ms DESC LIMIT 1",
+                [],
+                "weekly plan",
+            )
         })
     }
 
     /// The most recent plan that ended before `before` (Week planner prefill, J8).
     pub fn previous_plan(&self, before: Timestamp) -> Result<Option<WeeklyPlan>> {
         self.read(move |c| {
-            json_row(c, "SELECT data FROM weekly_plans WHERE reset_at_ms <= ?1 ORDER BY reset_at_ms DESC LIMIT 1", [ms(before)], "weekly plan")
+            json_row(
+                c,
+                "SELECT data FROM weekly_plans WHERE reset_at_ms <= ?1 ORDER BY reset_at_ms DESC LIMIT 1",
+                [ms(before)],
+                "weekly plan",
+            )
         })
     }
 
@@ -420,7 +433,9 @@ impl Store {
     pub fn queue_entries(&self) -> Result<Vec<QueueEntry>> {
         self.read(|c| {
             let mut st = c.prepare("SELECT data FROM queue_entries ORDER BY enqueued_at_ms, id")?;
-            Ok(st.query_map([], |r| from_js::<QueueEntry>(&r.get::<_, String>(0)?))?.collect::<rusqlite::Result<_>>()?)
+            Ok(st
+                .query_map([], |r| from_js::<QueueEntry>(&r.get::<_, String>(0)?))?
+                .collect::<rusqlite::Result<_>>()?)
         })
     }
 
@@ -476,7 +491,9 @@ impl Store {
     }
 
     pub fn latest_calibration(&self) -> Result<Option<Calibration>> {
-        self.read(|c| json_row(c, "SELECT data FROM calibrations ORDER BY ts_ms DESC, id DESC LIMIT 1", [], "calibration"))
+        self.read(|c| {
+            json_row(c, "SELECT data FROM calibrations ORDER BY ts_ms DESC, id DESC LIMIT 1", [], "calibration")
+        })
     }
 
     pub fn add_forecast(&self, f: &ForecastSnapshot) -> Result<()> {
@@ -616,7 +633,10 @@ mod tests {
         s.touch_project("demo", 10).unwrap(); // never goes back
         s.record_fetch("demo", 60, Some("offline".into())).unwrap();
         let p = s.project("demo").unwrap().unwrap();
-        assert_eq!((p.last_active_at_ms, p.last_fetch_at_ms, p.last_fetch_error.as_deref()), (50, Some(60), Some("offline")));
+        assert_eq!(
+            (p.last_active_at_ms, p.last_fetch_at_ms, p.last_fetch_error.as_deref()),
+            (50, Some(60), Some("offline"))
+        );
         assert_eq!(s.project_by_path(Path::new("/x/other")).unwrap().unwrap().id, "other");
         let mut arch = s.project("other").unwrap().unwrap();
         arch.archived = true;
@@ -673,7 +693,14 @@ mod tests {
         let tot = s.usage_totals(0).unwrap();
         assert_eq!(
             tot,
-            vec![UsageTotal { agent_id: Some("a1".into()), tokens_in: 100, tokens_out: 20, cache_read: 0, cache_write: 0, cost: 0.05 }]
+            vec![UsageTotal {
+                agent_id: Some("a1".into()),
+                tokens_in: 100,
+                tokens_out: 20,
+                cache_read: 0,
+                cache_write: 0,
+                cost: 0.05
+            }]
         );
 
         let start: Timestamp = "2026-10-19T07:00:00Z".parse().unwrap();
@@ -706,7 +733,9 @@ mod tests {
         assert_eq!(s.active_plan().unwrap().unwrap().id, "w2");
         assert_eq!(s.previous_plan(next.week_start).unwrap().unwrap(), plan);
         let tier: String = s
-            .read(|c| Ok(c.query_row("SELECT tier FROM budget_allocations WHERE weekly_plan_id='w1'", [], |r| r.get(0))?))
+            .read(|c| {
+                Ok(c.query_row("SELECT tier FROM budget_allocations WHERE weekly_plan_id='w1'", [], |r| r.get(0))?)
+            })
             .unwrap();
         assert_eq!(tier, "high");
 

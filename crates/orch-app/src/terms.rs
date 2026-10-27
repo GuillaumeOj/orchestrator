@@ -48,8 +48,10 @@ impl Output {
     /// `None` once the PTY is closed and drained.
     pub fn read_wait(&self, timeout: Duration) -> Option<Vec<u8>> {
         let b = self.buf.lock_ok();
-        let (mut b, _) =
-            self.cv.wait_timeout_while(b, timeout, |b| b.bytes.is_empty() && !b.closed).unwrap_or_else(|e| e.into_inner());
+        let (mut b, _) = self
+            .cv
+            .wait_timeout_while(b, timeout, |b| b.bytes.is_empty() && !b.closed)
+            .unwrap_or_else(|e| e.into_inner());
         if b.bytes.is_empty() && b.closed {
             return None;
         }

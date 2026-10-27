@@ -1,11 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { displayState, notStarted, STATUS, roleOf, queueReason } from '../src/lib/status.js';
-import { score, filter } from '../src/lib/fuzzy.js';
-import { pp, duration, mb, when } from '../src/lib/format.js';
+import { duration, mb, pp, when } from '../src/lib/format.js';
+import { filter, score } from '../src/lib/fuzzy.js';
+import { displayState, notStarted, queueReason, roleOf, STATUS } from '../src/lib/status.js';
 
 describe('status vocabulary §9.5', () => {
   it('maps every runtime state onto the vocabulary', () => {
-    for (const s of ['created', 'starting', 'working', 'waiting_for_you', 'waiting_gate', 'queued', 'blocked_by_limit', 'idle', 'suspended', 'archived', 'error', 'killed']) {
+    for (const s of [
+      'created',
+      'starting',
+      'working',
+      'waiting_for_you',
+      'waiting_gate',
+      'queued',
+      'blocked_by_limit',
+      'idle',
+      'suspended',
+      'archived',
+      'error',
+      'killed',
+    ]) {
       expect(STATUS[displayState({ state: s })]).toBeTruthy();
     }
     expect(displayState({ state: 'starting' })).toBe('working');

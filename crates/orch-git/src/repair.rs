@@ -142,7 +142,9 @@ mod tests {
         let led = MemLedger::default();
         let rows: Vec<WorktreeRow> = ["a", "b"]
             .iter()
-            .map(|s| worktree::ensure(&led, &repo, &WorktreeKindSpec::Solo { slug: (*s).into() }, None, Some(s)).unwrap())
+            .map(|s| {
+                worktree::ensure(&led, &repo, &WorktreeKindSpec::Solo { slug: (*s).into() }, None, Some(s)).unwrap()
+            })
             .collect();
         (d, repo, rows)
     }

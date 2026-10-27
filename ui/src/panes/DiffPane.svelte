@@ -4,10 +4,10 @@
   // and the user's own Create PR (push + gh pr create, ADR-009).
   // Keys (pane-local): j/k next/previous file, r refresh, e open in editor, c create PR.
   import { onMount } from 'svelte';
-  import { app, openEditor, toast, confirm } from '../lib/app.svelte.js';
-  import { invoke, errText } from '../lib/ipc.js';
-  import { patchByFile, lineKind, STATUS_WORD } from '../lib/diff.js';
   import Kbd from '../components/Kbd.svelte';
+  import { app, confirm, openEditor, toast } from '../lib/app.svelte.js';
+  import { lineKind, patchByFile, STATUS_WORD } from '../lib/diff.js';
+  import { errText, invoke } from '../lib/ipc.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);

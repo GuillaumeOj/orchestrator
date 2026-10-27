@@ -6,7 +6,7 @@
 //! are the fallback, and the cell height comes from CoreText metrics.
 
 use serde::Serialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -39,8 +39,15 @@ pub struct KittyImport {
 }
 
 const MULTI: &[&str] = &[
-    "map", "mouse_map", "symbol_map", "font_features", "narrow_symbols", "env", "action_alias",
-    "kitten_alias", "modify_font",
+    "map",
+    "mouse_map",
+    "symbol_map",
+    "font_features",
+    "narrow_symbols",
+    "env",
+    "action_alias",
+    "kitten_alias",
+    "modify_font",
 ];
 
 fn parse(path: &Path, out: &mut Vec<(String, String)>, sources: &mut Vec<String>, depth: u32) {
@@ -79,11 +86,7 @@ fn expand(v: &str, dir: &Path) -> PathBuf {
         return agent_runtime::paths::home_dir().join(rest);
     }
     let p = PathBuf::from(v);
-    if p.is_absolute() {
-        p
-    } else {
-        dir.join(p)
-    }
+    if p.is_absolute() { p } else { dir.join(p) }
 }
 
 /// kitty matches font names fuzzily ("FiraCode-Regular Nerd Font"); CSS needs
@@ -172,20 +175,37 @@ pub fn import(conf: &Path) -> KittyImport {
                     o.insert("lineHeight".into(), json!(r));
                     ok(&mut imp.mapped, "lineHeight");
                 } else {
-                    imp.unmapped.push((k.clone(), v.clone(), "absolute px line height: needs measured cell height".into()));
+                    imp.unmapped.push((
+                        k.clone(),
+                        v.clone(),
+                        "absolute px line height: needs measured cell height".into(),
+                    ));
                 }
             }
             "disable_ligatures" => {
                 imp.ligatures = v != "always";
-                ok(&mut imp.mapped, if imp.ligatures { "ligatures addon loaded" } else { "ligatures addon NOT loaded" });
+                ok(
+                    &mut imp.mapped,
+                    if imp.ligatures { "ligatures addon loaded" } else { "ligatures addon NOT loaded" },
+                );
             }
             "cursor_shape" => {
-                let s = match v.as_str() { "beam" => "bar", "underline" => "underline", _ => "block" };
+                let s = match v.as_str() {
+                    "beam" => "bar",
+                    "underline" => "underline",
+                    _ => "block",
+                };
                 o.insert("cursorStyle".into(), json!(s));
                 ok(&mut imp.mapped, &format!("cursorStyle {s}"));
             }
             "cursor_shape_unfocused" => {
-                let s = match v.as_str() { "beam" => "bar", "underline" => "underline", "hollow" => "outline", "unchanged" => "block", _ => "outline" };
+                let s = match v.as_str() {
+                    "beam" => "bar",
+                    "underline" => "underline",
+                    "hollow" => "outline",
+                    "unchanged" => "block",
+                    _ => "outline",
+                };
                 o.insert("cursorInactiveStyle".into(), json!(s));
                 ok(&mut imp.mapped, "cursorInactiveStyle");
             }
@@ -231,12 +251,24 @@ pub fn import(conf: &Path) -> KittyImport {
                 imp.opacity = v.parse().unwrap_or(1.0);
                 ok(&mut imp.mapped, "allowTransparency + rgba background (needs a transparent window)");
             }
-            "foreground" => { theme.insert("foreground".into(), json!(v)); }
-            "background" => { theme.insert("background".into(), json!(v)); }
-            "selection_background" => { theme.insert("selectionBackground".into(), json!(v)); }
-            "selection_foreground" => { theme.insert("selectionForeground".into(), json!(v)); }
-            "cursor" => { theme.insert("cursor".into(), json!(v)); }
-            "cursor_text_color" => { theme.insert("cursorAccent".into(), json!(v)); }
+            "foreground" => {
+                theme.insert("foreground".into(), json!(v));
+            }
+            "background" => {
+                theme.insert("background".into(), json!(v));
+            }
+            "selection_background" => {
+                theme.insert("selectionBackground".into(), json!(v));
+            }
+            "selection_foreground" => {
+                theme.insert("selectionForeground".into(), json!(v));
+            }
+            "cursor" => {
+                theme.insert("cursor".into(), json!(v));
+            }
+            "cursor_text_color" => {
+                theme.insert("cursorAccent".into(), json!(v));
+            }
             c if c.starts_with("color") && c[5..].parse::<u32>().is_ok() => {
                 let n: u32 = c[5..].parse().unwrap();
                 if n < 16 {
@@ -245,13 +277,25 @@ pub fn import(conf: &Path) -> KittyImport {
                     ext.insert(n, v.clone());
                 }
             }
-            "url_color" | "url_style" => imp.unmapped.push((k.clone(), v.clone(), "xterm.js links have no color option".into())),
-            "active_tab_background" | "active_tab_foreground" | "inactive_tab_background" | "inactive_tab_foreground"
-            | "tab_bar_background" | "active_border_color" | "inactive_border_color" | "tab_bar_style" => {
+            "url_color" | "url_style" => {
+                imp.unmapped.push((k.clone(), v.clone(), "xterm.js links have no color option".into()))
+            }
+            "active_tab_background"
+            | "active_tab_foreground"
+            | "inactive_tab_background"
+            | "inactive_tab_foreground"
+            | "tab_bar_background"
+            | "active_border_color"
+            | "inactive_border_color"
+            | "tab_bar_style" => {
                 imp.unmapped.push((k.clone(), v.clone(), "app chrome, not the terminal (theme derivation §9.1)".into()))
             }
-            "term" => imp.unmapped.push((k.clone(), v.clone(), "xterm.js is not kitty: TERM stays xterm-256color".into())),
-            "shell_integration" => imp.unmapped.push((k.clone(), v.clone(), "kitty shell integration needs kitty".into())),
+            "term" => {
+                imp.unmapped.push((k.clone(), v.clone(), "xterm.js is not kitty: TERM stays xterm-256color".into()))
+            }
+            "shell_integration" => {
+                imp.unmapped.push((k.clone(), v.clone(), "kitty shell integration needs kitty".into()))
+            }
             "editor" => {
                 imp.editor = Some(v.clone());
                 ok(&mut imp.mapped, "default editor command (FR-1102)");
@@ -267,7 +311,11 @@ pub fn import(conf: &Path) -> KittyImport {
     let colors = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
     for (i, c) in ansi.iter().enumerate() {
         if !c.is_null() {
-            let name = if i < 8 { colors[i].to_string() } else { format!("bright{}{}", colors[i - 8][..1].to_uppercase(), &colors[i - 8][1..]) };
+            let name = if i < 8 {
+                colors[i].to_string()
+            } else {
+                format!("bright{}{}", colors[i - 8][..1].to_uppercase(), &colors[i - 8][1..])
+            };
             theme.insert(name, c.clone());
         }
     }
@@ -311,7 +359,11 @@ pub fn import(conf: &Path) -> KittyImport {
             }
             imp.unmapped.push((k, v, "kitty action, not a terminal key".into()));
         } else if k == "modify_font" {
-            imp.unmapped.push((k, v, "TODO: cell_height % -> lineHeight, cell_width -> letterSpacing, baseline: none".into()));
+            imp.unmapped.push((
+                k,
+                v,
+                "TODO: cell_height % -> lineHeight, cell_width -> letterSpacing, baseline: none".into(),
+            ));
         } else {
             imp.unmapped.push((k, v, "no xterm.js equivalent".into()));
         }

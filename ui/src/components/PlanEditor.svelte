@@ -5,7 +5,7 @@
   // usage (the Governor replays it into the new plan).
   import { onMount } from 'svelte';
   import { refresh, toast } from '../lib/app.svelte.js';
-  import { invoke, errText } from '../lib/ipc.js';
+  import { errText, invoke } from '../lib/ipc.js';
   import Kbd from './Kbd.svelte';
 
   let { onSaved = () => {}, onCancel = null } = $props();

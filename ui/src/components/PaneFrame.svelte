@@ -1,17 +1,17 @@
 <script>
   // Pane + pane header (Penpot 02): number (⌘1…9), type and title, zoom/close
   // hints. Focused = raised surface + accent border.
-  import { app, focusPane, closePane, toggleZoom } from '../lib/app.svelte.js';
+  import { app, closePane, focusPane, toggleZoom } from '../lib/app.svelte.js';
   import { visible } from '../lib/layout.js';
-  import Kbd from './Kbd.svelte';
   import AgentPane from '../panes/AgentPane.svelte';
-  import TermPaneView from '../panes/TermPaneView.svelte';
-  import OverviewPane from '../panes/OverviewPane.svelte';
+  import DiffPane from '../panes/DiffPane.svelte';
   import InboxPane from '../panes/InboxPane.svelte';
+  import OverviewPane from '../panes/OverviewPane.svelte';
   import PlannerPane from '../panes/PlannerPane.svelte';
   import ProjectPane from '../panes/ProjectPane.svelte';
   import SetupPane from '../panes/SetupPane.svelte';
-  import DiffPane from '../panes/DiffPane.svelte';
+  import TermPaneView from '../panes/TermPaneView.svelte';
+  import Kbd from './Kbd.svelte';
 
   let { paneId, zoomed = false } = $props();
   const spec = $derived(app.panes[paneId]);

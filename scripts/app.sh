@@ -54,10 +54,10 @@ build() {
     cp "$f" crates/orch-app/bundle/fonts/
   done
   echo "==> UI dependencies"
-  [ -d ui/node_modules ] || (cd ui && npm ci)
+  (cd ui && bun install --frozen-lockfile)
   echo "==> Orchestrator.app (release)"
   core_release
-  (cd ui && npm run tauri build -- --config ../crates/orch-app/tauri.bundle.json)
+  (cd ui && bun run tauri build -- --config ../crates/orch-app/tauri.bundle.json)
   echo "built $APP"
 }
 
