@@ -106,22 +106,28 @@ fn run(mut c: Command, stdin: Option<&str>) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// `wt` is a linked worktree (never the main checkout) that git isn't busy
+/// in; `what` names the refused operation.
+fn linked_worktree(wt: &Path, what: &str) -> Result<worktree::Inspection> {
+    let insp = worktree::inspect(wt);
+    let Some(gitdir) = &insp.gitdir else {
+        bail!("{} is not a git worktree: {}", wt.display(), insp.error.clone().unwrap_or_default());
+    };
+    if real(gitdir) == real(&worktree::common_dir(wt)?) {
+        bail!("refusing to {what} in a main checkout");
+    }
+    if insp.index_lock {
+        bail!("git is busy in this worktree (index.lock): try again");
+    }
+    Ok(insp)
+}
+
 /// Stages and commits in `worktree` (a linked worktree, never the main
 /// checkout). `gitconfig` is the agent's generated global config.
 pub fn commit_in_worktree(worktree_path: &Path, req: &CommitRequest, gitconfig: Option<&Path>) -> Result<CommitResult> {
     validate(req)?;
     let wt = real(worktree_path);
-    let insp = worktree::inspect(&wt);
-    let Some(gitdir) = &insp.gitdir else {
-        bail!("{} is not a git worktree: {}", wt.display(), insp.error.unwrap_or_default());
-    };
-    let common = worktree::common_dir(&wt)?;
-    if real(gitdir) == real(&common) {
-        bail!("refusing to commit in a main checkout");
-    }
-    if insp.index_lock {
-        bail!("git is busy in this worktree (index.lock): try again");
-    }
+    let insp = linked_worktree(&wt, "commit")?;
     let paths: Vec<String> = req.paths.clone().unwrap_or_default();
     let mut add = git_cmd(&wt, gitconfig);
     add.args(["add", "-A", "--"]);
@@ -158,10 +164,142 @@ pub fn commit_in_worktree(worktree_path: &Path, req: &CommitRequest, gitconfig: 
     Ok(CommitResult { sha, branch, files, summary: req.message.lines().next().unwrap_or("").to_string() })
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum MergeOutcome {
+    Merged {
+        sha: String,
+    },
+    UpToDate,
+    /// Conflicted paths. With `abort_on_conflict` the merge was aborted;
+    /// otherwise it is left in progress for the agent to resolve and commit.
+    Conflict {
+        files: Vec<String>,
+        aborted: bool,
+    },
+}
+
+/// Merges `branch` into the branch checked out in `worktree` (a linked
+/// worktree), outside the sandbox with the same safety as
+/// [`commit_in_worktree`]: hooks off, the agent's identity, a cleared
+/// environment. The lead's `merge` aborts on a conflict; a specialist's
+/// `sync_integration` leaves it for the agent.
+pub fn merge_into_worktree(
+    worktree_path: &Path,
+    branch: &str,
+    message: &str,
+    gitconfig: Option<&Path>,
+    abort_on_conflict: bool,
+) -> Result<MergeOutcome> {
+    if branch.is_empty() || branch.starts_with('-') || branch.contains("..") || branch.contains('\0') {
+        bail!("invalid branch {branch:?}");
+    }
+    if message.trim().is_empty() || message.len() > MAX_MESSAGE {
+        bail!("invalid merge message");
+    }
+    let wt = real(worktree_path);
+    let insp = linked_worktree(&wt, "merge")?;
+    if !insp.in_progress.is_empty() {
+        bail!("a {} is already in progress in this worktree", insp.in_progress.join("/"));
+    }
+    if insp.dirty > 0 {
+        bail!("the worktree has uncommitted changes: commit them first");
+    }
+    let g = |args: &[&str]| {
+        let mut c = git_cmd(&wt, gitconfig);
+        c.args(args);
+        run(c, None)
+    };
+    let target =
+        g(&["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("refs/heads/{branch}^{{commit}}")])
+            .with_context(|| format!("no branch {branch}"))?
+            .trim()
+            .to_string();
+    let head = g(&["rev-parse", "HEAD"])?.trim().to_string();
+    if let Err(e) = g(&["merge", "--no-ff", "--no-verify", "--no-edit", "-m", message, &target]) {
+        let files: Vec<String> = g(&["diff", "--name-only", "--diff-filter=U", "-z"])
+            .unwrap_or_default()
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        if files.is_empty() {
+            let _ = g(&["merge", "--abort"]);
+            return Err(e.context("git merge"));
+        }
+        if abort_on_conflict {
+            g(&["merge", "--abort"]).context("git merge --abort")?;
+        }
+        return Ok(MergeOutcome::Conflict { files, aborted: abort_on_conflict });
+    }
+    let sha = g(&["rev-parse", "HEAD"])?.trim().to_string();
+    Ok(if sha == head { MergeOutcome::UpToDate } else { MergeOutcome::Merged { sha } })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fixtures::{MemLedger, git as tgit, scratch_repo};
+
+    #[test]
+    fn merges_into_a_worktree_and_reports_conflicts() {
+        let (d, repo) = scratch_repo();
+        let led = MemLedger::default();
+        let integ = worktree::ensure(&led, &repo, &WorktreeKindSpec::Integration { feature: "f".into() }, None, None)
+            .unwrap()
+            .path;
+        let back = worktree::ensure(
+            &led,
+            &repo,
+            &WorktreeKindSpec::Team { feature: "f".into(), role: "back".into(), n: 1 },
+            Some("orch/f/integration"),
+            None,
+        )
+        .unwrap()
+        .path;
+        let gc = d.path().join("gitconfig");
+        std::fs::write(&gc, "[user]\n\tname = Agent\n\temail = a@example.invalid\n").unwrap();
+        let commit = |wt: &Path, f: &str, body: &str| {
+            std::fs::write(wt.join(f), body).unwrap();
+            commit_in_worktree(wt, &CommitRequest { message: format!("edit {f}"), paths: None }, Some(&gc)).unwrap();
+        };
+        commit(&back, "api.rs", "fn api() {}");
+        let r = merge_into_worktree(&integ, "orch/f/back-1", "Merge back-1", Some(&gc), true).unwrap();
+        assert!(matches!(r, MergeOutcome::Merged { .. }), "{r:?}");
+        assert!(integ.join("api.rs").is_file());
+        assert_eq!(
+            merge_into_worktree(&integ, "orch/f/back-1", "again", Some(&gc), true).unwrap(),
+            MergeOutcome::UpToDate
+        );
+        // Both sides change the same file: the lead's merge aborts…
+        commit(&integ, "shared.txt", "lead");
+        commit(&back, "shared.txt", "back");
+        let r = merge_into_worktree(&integ, "orch/f/back-1", "Merge", Some(&gc), true).unwrap();
+        assert_eq!(r, MergeOutcome::Conflict { files: vec!["shared.txt".into()], aborted: true });
+        assert!(worktree::inspect(&integ).in_progress.is_empty());
+        // …a sync leaves it for the agent, whose commit concludes it.
+        let r = merge_into_worktree(&back, "orch/f/integration", "Sync", Some(&gc), false).unwrap();
+        assert_eq!(r, MergeOutcome::Conflict { files: vec!["shared.txt".into()], aborted: false });
+        assert_eq!(worktree::inspect(&back).in_progress, vec!["MERGE_HEAD"]);
+        std::fs::write(back.join("shared.txt"), "both").unwrap();
+        commit_in_worktree(&back, &CommitRequest { message: "resolve".into(), paths: None }, Some(&gc)).unwrap();
+        assert!(worktree::inspect(&back).in_progress.is_empty());
+        assert!(matches!(
+            merge_into_worktree(&integ, "orch/f/back-1", "Merge", Some(&gc), true).unwrap(),
+            MergeOutcome::Merged { .. }
+        ));
+        // Refusals.
+        assert!(merge_into_worktree(&integ, "--upload-pack=x", "m", Some(&gc), true).is_err());
+        assert!(merge_into_worktree(&integ, "orch/f/nope", "m", Some(&gc), true).is_err());
+        assert!(merge_into_worktree(&repo, "orch/f/back-1", "m", Some(&gc), true).is_err());
+        std::fs::write(integ.join("dirty.txt"), "x").unwrap();
+        assert!(
+            merge_into_worktree(&integ, "orch/f/back-1", "m", Some(&gc), true)
+                .unwrap_err()
+                .to_string()
+                .contains("uncommitted")
+        );
+    }
     use orch_protocol::WorktreeKindSpec;
 
     fn setup() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {

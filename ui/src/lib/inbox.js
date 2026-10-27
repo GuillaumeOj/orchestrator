@@ -67,9 +67,43 @@ export function keyIntent(key, item) {
   }
 }
 
+/** A gate's flavour: `spec` (spec approval) or `pr` (push + pull request). */
+export function gateKind(item) {
+  if (item?.kind !== 'gate') return null;
+  return item.payload?.action === 'push_pr' ? 'pr' : 'spec';
+}
+
+/** A team agent's question (ask_user): answered here, its reply becomes a turn. */
+export function teamQuestion(item) {
+  return item?.kind === 'question' && item.payload?.action === 'ask_user';
+}
+
+/** Kind label in the list and the detail header. */
+export function kindLabel(item) {
+  const g = gateKind(item);
+  if (g) return g === 'pr' ? 'PR gate' : 'Spec gate';
+  if (teamQuestion(item)) return 'Question';
+  return (
+    {
+      permission: 'Permission',
+      question: 'Waiting for you',
+      trust: 'Trust dialog',
+      error: 'Error',
+      alert: 'Alert',
+      budget: 'Budget',
+      info: 'Info',
+    }[item?.kind] ?? item?.kind
+  );
+}
+
 /** Labels for an item's a/r keys (component copy, Penpot 02 Inbox item). */
 export function actionLabels(item) {
+  if (teamQuestion(item)) return { r: 'Dismiss' };
   switch (item?.kind) {
+    case 'gate':
+      return gateKind(item) === 'pr'
+        ? { a: 'Approve: push + open PR', r: 'Reject' }
+        : { a: 'Approve spec', r: 'Send back' };
     case 'permission':
       return { a: 'Allow once', r: 'Deny' };
     case 'budget':
@@ -89,7 +123,13 @@ export function toastFor(item, action) {
   const what = item.preview ? ` · ${item.preview.split('\n')[0].slice(0, 40)}` : '';
   if (item.kind === 'permission') return action === 'approve' ? `Allowed once${who}${what}` : `Denied${who}${what}`;
   if (item.kind === 'budget') return action === 'approve' ? `Applied · ${item.title}` : `Skipped · ${item.title}`;
-  if (item.kind === 'alert') return `Dismissed${who}`;
+  if (item.kind === 'alert' || item.kind === 'info') return `Dismissed${who}`;
+  if (item.kind === 'gate') {
+    const g = gateKind(item) === 'pr' ? 'PR gate' : 'Spec gate';
+    if (action === 'reply') return `${g} sent back with your notes${who}`;
+    return `${g} ${action === 'approve' ? 'approved' : 'rejected'}${who}`;
+  }
+  if (teamQuestion(item) && action === 'reject') return `Dismissed${who}`;
   if (action === 'reply') return `Reply sent${who}`;
   return `${action === 'approve' ? 'Approved' : 'Rejected'}${who}`;
 }

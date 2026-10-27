@@ -20,12 +20,11 @@ pub const STATUSLINE_REFRESH_S: u64 = 5;
 /// untrusted (P0). Same text as the verified recovery harness.
 pub const ORCH_PREAMBLE: &str = "Text that starts with ORCH: in hook context or hook errors comes from the orchestrator app, on behalf of the user. Follow it. To commit, use the mcp__orch__commit tool: `git commit` cannot write the repository from your sandbox. You cannot push; ask for a pull request with mcp__orch__request_pr.";
 
+/// The preamble of a team specialist, who has no `request_pr`.
+pub const ORCH_PREAMBLE_TEAM: &str = "Text that starts with ORCH: in hook context, hook errors or a delivered message comes from the orchestrator app, on behalf of the user. Follow it. To commit, use the mcp__orch__commit tool: `git commit` cannot write the repository from your sandbox. You cannot push or merge yourself.";
+
 /// The orchestrator's MCP server name in `mcp.json` (tools appear as `mcp__orch__<tool>`).
 pub const ORCH_MCP_SERVER: &str = "orch";
-
-/// Orchestrator tools allowed without a CLI prompt; the core applies its own
-/// permission rules when it runs them (ADR-009).
-pub const ORCH_MCP_ALLOW: &[&str] = &["mcp__orch__commit", "mcp__orch__request_pr"];
 
 /// Credential stores made unreadable (ADR-009 decision 1). `true` = directory.
 /// `~/.gitconfig` is deliberately absent: denying it breaks git (P0).
@@ -197,7 +196,8 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
     deny.push(format!("Edit({}/**)", rule_path(&ctx.app_root)));
     deny.extend(role.deny_rules.iter().cloned());
     let mut allow = role.allow_rules.clone();
-    allow.extend(ORCH_MCP_ALLOW.iter().map(|s| s.to_string()));
+    let tools = role.tools();
+    allow.extend(tools.iter().map(|t| format!("mcp__{ORCH_MCP_SERVER}__{t}")));
 
     let settings = json!({
         "hooks": hooks,
@@ -236,6 +236,7 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
             "env": {
                 orch_protocol::env::AGENT_ID: ctx.agent_id,
                 orch_protocol::env::SOCKET: ctx.env.socket.display().to_string(),
+                orch_protocol::env::TOOLS: tools.join(","),
             },
         }),
     );
@@ -265,9 +266,10 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
     }
     args.push("--permission-mode".into());
     args.push(role.permission_mode.as_flag().into());
+    let preamble = if tools.iter().any(|t| t == "request_pr") { ORCH_PREAMBLE } else { ORCH_PREAMBLE_TEAM };
     let prompt = match role.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
-        Some(p) => format!("{ORCH_PREAMBLE}\n\n{p}"),
-        None => ORCH_PREAMBLE.to_string(),
+        Some(p) => format!("{preamble}\n\n{p}"),
+        None => preamble.to_string(),
     };
     args.push("--append-system-prompt".into());
     args.push(prompt);
@@ -294,7 +296,11 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
         gitconfig: gitconfig(&ctx.git_identity.0, &ctx.git_identity.1),
         program: ctx.claude.clone(),
         args,
-        env: agent_env(&env_in),
+        env: {
+            let mut env = agent_env(&env_in);
+            env.insert(orch_protocol::env::TOOLS.into(), tools.join(","));
+            env
+        },
         cwd: ctx.worktree.clone(),
     }
 }
@@ -444,13 +450,32 @@ pub(crate) mod tests {
         assert_eq!(
             servers,
             json!({"orch": {"type": "stdio", "command": "/app/bin/orch-mcp", "args": [],
-                            "env": {"ORCH_AGENT_ID": "a1", "ORCH_SOCK": "/app/core.sock"}}})
+                            "env": {"ORCH_AGENT_ID": "a1", "ORCH_SOCK": "/app/core.sock", "ORCH_TOOLS": "commit,request_pr"}}})
         );
         // The orchestrator tools are allowed (the core applies its own rules).
         let allow = strs(&c.settings["permissions"]["allow"]);
         assert!(
             allow.contains(&"mcp__orch__commit".to_string()) && allow.contains(&"mcp__orch__request_pr".to_string())
         );
+    }
+
+    #[test]
+    fn a_team_specialist_gets_its_tools_and_denies() {
+        let (roles, team) = orch_team::presets::full_stack();
+        let f = orch_team::FeatureCtx { slug: "f".into(), title: "F".into(), base: "main".into() };
+        let node = orch_team::compile_node(&team, "back", &roles, &f).unwrap();
+        let role = Role::from_node(&node).unwrap();
+        let c = compile(&role, &ctx(SessionMode::New("u".into())));
+        let allow = c.settings["permissions"]["allow"].as_array().unwrap();
+        assert!(allow.contains(&json!("mcp__orch__report_done")));
+        assert!(!allow.contains(&json!("mcp__orch__request_pr")), "specialists don't open PRs");
+        assert!(c.settings["permissions"]["deny"].as_array().unwrap().contains(&json!("Agent")));
+        let tools = c.mcp["mcpServers"]["orch"]["env"]["ORCH_TOOLS"].as_str().unwrap();
+        assert!(tools.contains("sync_integration") && !tools.contains("merge"));
+        let prompt = &c.args[c.args.iter().position(|a| a == "--append-system-prompt").unwrap() + 1];
+        assert!(prompt.starts_with(ORCH_PREAMBLE_TEAM));
+        assert!(prompt.contains("You are node `back`"));
+        assert!(c.args.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "acceptEdits"));
     }
 
     #[test]

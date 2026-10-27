@@ -19,6 +19,8 @@ dependencies = [
  "orch-git",
  "orch-protocol",
  "orch-store",
+ "orch-tasks",
+ "orch-team",
  "portable-pty",
  "serde",
  "serde_json",
@@ -2234,6 +2236,8 @@ dependencies = [
  "orch-git",
  "orch-protocol",
  "orch-store",
+ "orch-tasks",
+ "orch-team",
  "portable-pty",
  "serde",
  "serde_json",
@@ -2300,10 +2304,35 @@ dependencies = [
  "anyhow",
  "governor",
  "orch-protocol",
+ "orch-team",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "orch-tasks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "orch-git",
+ "orch-store",
+ "orch-team",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "orch-team"
+version = "0.1.0"
+dependencies = [
+ "governor",
+ "orch-mcp",
+ "proptest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

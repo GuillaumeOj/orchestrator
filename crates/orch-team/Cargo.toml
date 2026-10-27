@@ -1,0 +1,17 @@
+[package]
+name = "orch-team"
+version = "0.1.0"
+description = "Teams of agents (SPEC §4.3, §4.4): roles, the team graph, validation, rules, compiled node configs, presets. Pure, no I/O."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+governor.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+# The tool names in `compile` must match what orch-mcp serves.
+orch-mcp = { path = "../orch-mcp" }

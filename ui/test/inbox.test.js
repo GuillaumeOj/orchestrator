@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { afterRemoval, due, keyIntent, move, toastFor, UNDO_MS, visibleItems } from '../src/lib/inbox.js';
+import {
+  actionLabels,
+  afterRemoval,
+  due,
+  gateKind,
+  keyIntent,
+  kindLabel,
+  move,
+  teamQuestion,
+  toastFor,
+  UNDO_MS,
+  visibleItems,
+} from '../src/lib/inbox.js';
 
 const items = [
   {
@@ -47,5 +59,45 @@ describe('inbox triage', () => {
       { item: 'b', at: 1000 },
     ];
     expect(due(p, UNDO_MS).map((x) => x.item)).toEqual(['a']);
+  });
+
+  it('gates and team questions (P2)', () => {
+    const spec = {
+      id: 'gate-5',
+      kind: 'gate',
+      agent_id: 'fx-lead-1',
+      payload: { action: 'spec_approval' },
+      actions: ['a', 'r', 'enter', 'o'],
+    };
+    const pr = {
+      id: 'gate-6',
+      kind: 'gate',
+      agent_id: 'fx-lead-1',
+      payload: { action: 'push_pr' },
+      actions: ['a', 'r', 'enter', 'o'],
+    };
+    const q = {
+      id: 'q-7',
+      kind: 'question',
+      agent_id: 'fx-back-1',
+      payload: { action: 'ask_user', question: 'Keep v1?' },
+      actions: ['enter', 'r', 'o'],
+    };
+    expect([gateKind(spec), gateKind(pr), gateKind(q)]).toEqual(['spec', 'pr', null]);
+    expect([kindLabel(spec), kindLabel(pr), kindLabel(q), kindLabel(items[1])]).toEqual([
+      'Spec gate',
+      'PR gate',
+      'Question',
+      'Waiting for you',
+    ]);
+    expect(actionLabels(spec)).toEqual({ a: 'Approve spec', r: 'Send back' });
+    expect(actionLabels(pr).a).toBe('Approve: push + open PR');
+    expect(actionLabels(q)).toEqual({ r: 'Dismiss' });
+    expect(teamQuestion(q) && !teamQuestion(items[1])).toBe(true);
+    expect(keyIntent('a', spec)).toEqual({ kind: 'decide', action: 'approve' });
+    expect(keyIntent('a', q)).toBe(null);
+    expect(toastFor(spec, 'approve')).toBe('Spec gate approved · fx-lead-1');
+    expect(toastFor(spec, 'reply')).toBe('Spec gate sent back with your notes · fx-lead-1');
+    expect(toastFor(pr, 'reject')).toBe('PR gate rejected · fx-lead-1');
   });
 });

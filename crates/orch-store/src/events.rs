@@ -11,6 +11,17 @@ use serde_json::Value;
 
 use crate::db::Store;
 
+/// `SELECT id, ts_ms, agent_id, kind, detail` → [`Event`].
+fn row_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
+    Ok(Event {
+        id: r.get::<_, i64>(0)? as u64,
+        ts_ms: r.get::<_, i64>(1)? as u64,
+        agent_id: r.get(2)?,
+        kind: r.get(3)?,
+        detail: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or(Value::Null),
+    })
+}
+
 /// Details larger than this go to a file in [`Store::blob_dir`] (NFR-8).
 pub const BLOB_THRESHOLD: usize = 64 * 1024;
 
@@ -60,6 +71,17 @@ const DAY_MS: u64 = 24 * 3600 * 1000;
 impl Store {
     /// Appends an event without waiting.
     pub fn add_event(&self, ts_ms: u64, agent_id: Option<&str>, kind: &str, detail: Value) {
+        self.add_event_in(None, ts_ms, agent_id, kind, detail)
+    }
+
+    /// An event on a team run's timeline too (FR-408): one row, which the
+    /// agent's and the global event lists show as well.
+    pub fn add_run_event(&self, ts_ms: u64, run_id: &str, agent_id: Option<&str>, kind: &str, detail: Value) {
+        self.add_event_in(Some(run_id), ts_ms, agent_id, kind, detail)
+    }
+
+    fn add_event_in(&self, run_id: Option<&str>, ts_ms: u64, agent_id: Option<&str>, kind: &str, detail: Value) {
+        let run_id = run_id.map(str::to_string);
         let agent_id = agent_id.map(str::to_string);
         let kind = kind.to_string();
         let blob_dir = self.blob_dir();
@@ -72,8 +94,8 @@ impl Store {
                 text = serde_json::to_string(&serde_json::json!({"blob": path, "bytes": text.len()}))?;
             }
             tx.execute(
-                "INSERT INTO events(ts_ms, agent_id, kind, detail) VALUES (?1,?2,?3,?4)",
-                params![ts_ms as i64, agent_id, kind, text],
+                "INSERT INTO events(ts_ms, agent_id, kind, detail, team_run_id) VALUES (?1,?2,?3,?4,?5)",
+                params![ts_ms as i64, agent_id, kind, text, run_id],
             )?;
             Ok(())
         });
@@ -96,16 +118,20 @@ impl Store {
                  ORDER BY ts_ms DESC, id DESC LIMIT ?4",
             )?;
             Ok(st
-                .query_map(params![since_ms as i64, agent_id, like, limit as i64], |r| {
-                    Ok(Event {
-                        id: r.get::<_, i64>(0)? as u64,
-                        ts_ms: r.get::<_, i64>(1)? as u64,
-                        agent_id: r.get(2)?,
-                        kind: r.get(3)?,
-                        detail: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or(Value::Null),
-                    })
-                })?
+                .query_map(params![since_ms as i64, agent_id, like, limit as i64], row_event)?
                 .collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// A team run's timeline (FR-408), newest first.
+    pub fn run_events(&self, run_id: &str, limit: usize) -> Result<Vec<Event>> {
+        let run = run_id.to_string();
+        self.read(move |c| {
+            let mut st = c.prepare(
+                "SELECT id, ts_ms, agent_id, kind, detail FROM events WHERE team_run_id=?1
+                 ORDER BY ts_ms DESC, id DESC LIMIT ?2",
+            )?;
+            Ok(st.query_map(params![run, limit as i64], row_event)?.collect::<rusqlite::Result<_>>()?)
         })
     }
 

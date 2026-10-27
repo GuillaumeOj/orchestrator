@@ -58,7 +58,14 @@ impl Runtime {
         v
     }
 
-    fn add_item(&self, agent: Option<&str>, kind: &str, body: String, payload: Value, priority: i64) -> Result<u64> {
+    pub(crate) fn add_item(
+        &self,
+        agent: Option<&str>,
+        kind: &str,
+        body: String,
+        payload: Value,
+        priority: i64,
+    ) -> Result<u64> {
         let id = self.store.write(|s| s.add_inbox_item(agent, kind, body, payload, priority))?;
         self.event(agent.unwrap_or("-"), "inbox_added", json!({"id": id, "kind": kind}));
         Ok(id)
@@ -370,10 +377,27 @@ impl Runtime {
                 }
                 result["pr"] = json!("pushing and opening the PR");
             }
+            ("gate", "spec_approval", InboxDecision::Approve | InboxDecision::AlwaysAllow) => {
+                self.spec_decided(&item.payload, item.agent_id.as_deref(), true, None);
+            }
+            ("gate", "spec_approval", InboxDecision::Reject | InboxDecision::Reply) => {
+                self.spec_decided(&item.payload, item.agent_id.as_deref(), false, message);
+            }
             ("gate", "push_pr", InboxDecision::Reject | InboxDecision::Reply) => {
                 if let Some(a) = &item.agent_id {
+                    self.pr_declined(a);
                     let why = message.map(|m| format!(" They said: {m}")).unwrap_or_default();
                     let _ = self.deliver(a, &format!("ORCH: the user declined your pull request request.{why}"));
+                }
+            }
+            // The agent was told the answer comes as a turn: say there is none.
+            ("question", "ask_user", InboxDecision::Dismiss) => {
+                if let Some(a) = &item.agent_id {
+                    let _ = self.deliver_kind(
+                        a,
+                        "ORCH: the user dismissed your question without answering. Decide yourself, or ask your team.",
+                        governor::TurnKind::Continue,
+                    );
                 }
             }
             (k, _, InboxDecision::Reply) if k != "permission" => {
@@ -449,6 +473,7 @@ impl Runtime {
         );
         self.event(agent.as_deref().unwrap_or("-"), "pr", json!({"item": item, "ok": r.is_ok()}));
         if let Some(a) = agent {
+            self.pr_opened(&a, r.as_ref().ok().map(String::as_str));
             let _ = self.deliver(&a, &msg);
         }
     }

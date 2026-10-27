@@ -182,6 +182,7 @@ impl Store {
             tx.execute("DELETE FROM transcript_fts WHERE project_id=?1", [&id])?;
             tx.execute("DELETE FROM transcript_files WHERE project_id=?1", [&id])?;
             tx.execute("DELETE FROM terminals WHERE project_id=?1", [&id])?;
+            Store::delete_project_teams(tx, &id)?;
             tx.execute("DELETE FROM projects WHERE id=?1", [&id])?;
             Ok(())
         })

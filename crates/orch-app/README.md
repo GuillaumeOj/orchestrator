@@ -109,7 +109,8 @@ until it falls back under. For the WebContent runaway seen once (docs/app/README
 |---|---|---|
 | `core` | Embeds the runtime; bus server (hooks, statusline, `orchd` control); loops (pump 200 ms, tick 30 s, history 60 s); the `app_state` view; agent, terminal, editor, Inbox and Governor actions | §6, ADR-001 |
 | `permissions` | `PermissionRequest` hooks held for the Inbox: allow, deny (with a message), or "answer in the pane" (no decision: the CLI shows its dialog). Esc in the pane (EOF) closes the item; no answer before orch-hook's deadline falls back to the pane | FR-705, J5 |
-| `inbox` | Attention ladder: held permissions, agents waiting for you, trust dialogs (1); errors and runtime alerts (2); the Governor's pending ask and budget items such as the reserve used up (3); finished turns (4, digest). Badge = levels 1–3 | FR-707, FR-807, §9.6 |
+| `inbox` | Attention ladder: held permissions, **gates** (`gate-N`: spec approval and pull requests, decided through `Runtime::decide`, which moves the team run, pushes and opens the PR), **team questions** (`q-N`, `ask_user`: the reply becomes the agent's turn), agents waiting for you, trust dialogs (1); errors and runtime alerts (2); the Governor's pending ask and budget items such as the reserve used up (3); finished turns and task-sync notes (4, digest). Badge = levels 1–3. `gate_detail` gives a gate's preview: the spec docs (read from the integration worktree) or the PR's changed files | FR-704, FR-707, FR-807, §9.6 |
+| `teams` | P2: the team library for the canvas (`teams_view` installs the starter presets; `team_save` bumps the version on a change and keeps an invalid team as a draft; `role_save`, `team_import`/`team_export`), `team_launch`, `feature_view` (the feature's latest run: agents, tasks, docs, artifacts, timeline), `feature_doc`, `board_view` / `board_sync` (one task model over Local and GitHub), `task_create` / `task_update`, `run_act` (pause / resume / stop), `message_send` (FR-409), `project_settings` / `project_settings_set` (FR-109). `app_state.features` lists every feature with its latest run for the sidebar and ⌘P | §4.3–4.5, FR-109, J3 |
 | `planner` | Week planner view: ideal curve, actual (sampled), forecast at the current burn, an estimate "with governor", working blocks, allocations, queue, log with undo, next action, pending ask | FR-802–804, FR-809, J8 |
 | `terms` | Shell and editor PTYs (login shell, minimal env), pull transport with a 2 MB high watermark | FR-1001, ADR-006 |
 | `editor` | Editor command template (`nvim +{line} {file}`, or kitty.conf's `editor`); one nvim server socket per project, reused through `--remote-send` | FR-1101/1102 |
@@ -135,7 +136,13 @@ Additions to existing crates (wiring only): `Runtime::live`, `Runtime::with_gove
   workspace, pane frame, inspector, status bar, palette and jump, dialogs, toasts, banners) and the
   base components (status badge, agent chip, pressure pill, key hint).
 - `src/panes`: Agent, Shell/Editor, Overview, Inbox, Week planner, Project (git state, worktrees,
-  PRs, J11 removal), Setup (J0). `src/components/PlanEditor.svelte`: the weekly plan form.
+  PRs, J11 removal), Setup (J0), and P2: **Team canvas** (`TeamCanvasPane`, model in
+  `lib/canvas.js`: edits, keyboard selection, connect mode, undo/redo, auto-layout, local
+  validation), **Feature** (`FeaturePane`: docs, tasks, team, timeline, message box, artifacts,
+  PR), **Board** (`BoardPane`: five columns over any backend). `lib/teams.js`: run states,
+  timeline copy, board moves. `lib/markdown.js` + `components/Markdown.svelte`: agent-written
+  markdown read into elements, never HTML. `src/components/PlanEditor.svelte`: the weekly plan
+  form; `Dialogs.svelte` also has Launch on feature.
 - **Tokens** (`scripts/tokens.mjs`): `docs/design/tokens.json` → `src/styles/tokens.css` (Dark,
   Light, system) and `src/lib/tokens.js`; semantic tokens only. `bun run tokens:check` (also run
   by `bun run build` and the vitest suite) fails when the generated files drift from tokens.json,

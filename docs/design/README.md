@@ -8,14 +8,16 @@ The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app 
 |---|---|---|
 | 00 Cover | Purpose, page index, P1 gate, changelog | Done |
 | 01 Foundations | Tokens: color, type, spacing, radius, sizing, elevation, rules | Ready for dev |
-| 02 Components | P1 subset of SPEC §9.4 (14 component sets), states as variants | Ready for dev |
+| 02 Components | P1 subset of SPEC §9.4 (14 component sets), states as variants. **P2**: Canvas node, Edge (4 types), Task card, Kanban column header, Feature card, Rules panel, Preset card, Minimap, Connect menu / target | P1 Ready for dev · **P2 Ready for dev** |
 | 03 Shell & layouts | Shell at 1512 (docked inspector), 1280 (icon rail + overlay inspector), zoomed pane; 1728 not drawn | Ready for dev |
-| 04 Screens | P1 panes: Overview, Agent pane (+ states), Week planner, Inbox | Ready for dev |
-| 05 Keyboard & copy | Global, leader and pane-local shortcut maps; P0 conflicts; banner, notification and toast copy; copy rules | Ready for dev |
-| 06 Flows | Storyboards (annotated frames, no clickable prototype): J2 solo session (5 frames), J5 Inbox triage (6), J8 pacing the week (4) | Ready for dev |
+| 04 Screens | P1 panes: Overview, Agent pane (+ states), Week planner, Inbox. **P2** (row at y = 2000): Team canvas, Feature, Board, Launch on feature dialog | P1 Ready for dev · **P2 Ready for dev** |
+| 05 Keyboard & copy | Global, leader and pane-local shortcut maps (**P2**: Team canvas, Board, Feature rows); P0 conflicts; banner, notification and toast copy; copy rules | P1 Ready for dev · **P2 Ready for dev** |
+| 06 Flows | Storyboards (annotated frames, no clickable prototype): J2 solo session (5 frames), J5 Inbox triage (6), J8 pacing the week (4). **P2**: J3 team on a feature, 5 notes over the 04 frames (y = 4500) | P1 Ready for dev · **P2 Ready for dev** |
 | 07 Explorations | Drafts, not binding | — |
 
 **P1 gate:** before P1 UI work starts, 01, 03 and the P1 panes in 04 (Overview, Agent pane, Week planner, Inbox) are marked ready for dev on `00 Cover`. Reviewed by Guillaume on 2026-10-26: all pages are **Ready for dev** and the P1 design gate is passed. Open questions and spec gaps from the design pass: [p1-design-notes.md](p1-design-notes.md).
+
+**P2 gate:** before P2 UI work starts (Team canvas, Feature, Board, Launch dialog, P2 keys), the P2 additions on 02, 04, 05 and 06 are marked Ready for dev on `00 Cover`. Status 2026-10-27: **approved as designed by Guillaume; the P2 gate is passed**. The spec and PR gate Inbox items were already designed in P1 (04 Inbox, J2 · 4), so P2 adds no gate screen.
 
 ## Screenshots
 
@@ -35,6 +37,10 @@ Exports of the Penpot boards (Dark theme unless noted), refreshed by hand.
 | 04 Agent pane | [04-agent-pane.png](img/04-agent-pane.png) · states: [04-agent-pane-states.png](img/04-agent-pane-states.png) |
 | 04 Week planner | [04-week-planner.png](img/04-week-planner.png) |
 | 04 Inbox | [04-inbox.png](img/04-inbox.png) · Light: [04-inbox-light.png](img/04-inbox-light.png) |
+| 04 Team canvas (P2) | [04-team-canvas.png](img/04-team-canvas.png) |
+| 04 Feature (P2) | [04-feature.png](img/04-feature.png) |
+| 04 Board (P2) | [04-board.png](img/04-board.png) |
+| 04 Launch on feature (P2) | [04-launch-feature.png](img/04-launch-feature.png) |
 | 06 J5 Inbox triage | [1 gate](img/06-j5-1-gate.png) → [2 approved](img/06-j5-2-approved.png) → [3 allowed](img/06-j5-3-allowed.png) → [4 reply](img/06-j5-4-reply.png) → [5 budget ask](img/06-j5-5-budget.png) → [6 clear](img/06-j5-6-clear.png) |
 | 06 J2 Solo session | [1 new session](img/06-j2-1-new-session.png) → [2 running](img/06-j2-2-running.png) → [3 palette](img/06-j2-3-palette.png) → [4 PR gate](img/06-j2-4-pr-gate.png) → [5 PR opened](img/06-j2-5-pr-opened.png) |
 | 06 J8 Pacing the week | [1 plan](img/06-j8-1-plan.png) → [2 run now](img/06-j8-2-run-now.png) → [3 catch-up](img/06-j8-3-catch-up.png) → [4 report](img/06-j8-4-report.png) |

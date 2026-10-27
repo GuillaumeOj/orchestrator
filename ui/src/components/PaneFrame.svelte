@@ -4,12 +4,15 @@
   import { app, closePane, focusPane, toggleZoom } from '../lib/app.svelte.js';
   import { visible } from '../lib/layout.js';
   import AgentPane from '../panes/AgentPane.svelte';
+  import BoardPane from '../panes/BoardPane.svelte';
   import DiffPane from '../panes/DiffPane.svelte';
+  import FeaturePane from '../panes/FeaturePane.svelte';
   import InboxPane from '../panes/InboxPane.svelte';
   import OverviewPane from '../panes/OverviewPane.svelte';
   import PlannerPane from '../panes/PlannerPane.svelte';
   import ProjectPane from '../panes/ProjectPane.svelte';
   import SetupPane from '../panes/SetupPane.svelte';
+  import TeamCanvasPane from '../panes/TeamCanvasPane.svelte';
   import TermPaneView from '../panes/TermPaneView.svelte';
   import Kbd from './Kbd.svelte';
 
@@ -17,7 +20,7 @@
   const spec = $derived(app.panes[paneId]);
   const focused = $derived(app.focused === paneId);
   const n = $derived(visible(app.layout).indexOf(paneId) + 1);
-  const kind = $derived({ agent: 'claude', shell: 'zsh', editor: 'nvim', overview: 'overview', inbox: 'inbox', planner: 'planner', project: 'project', setup: 'setup', diff: 'diff' }[spec?.type]);
+  const kind = $derived({ agent: 'claude', shell: 'zsh', editor: 'nvim', overview: 'overview', inbox: 'inbox', planner: 'planner', project: 'project', setup: 'setup', diff: 'diff', canvas: 'canvas', feature: 'feature', board: 'board' }[spec?.type]);
   const total = $derived(visible(app.layout).length);
 </script>
 
@@ -41,6 +44,9 @@
       {:else if spec.type === 'planner'}<PlannerPane />
       {:else if spec.type === 'project'}<ProjectPane {paneId} />
       {:else if spec.type === 'diff'}<DiffPane {paneId} />
+      {:else if spec.type === 'canvas'}<TeamCanvasPane {paneId} />
+      {:else if spec.type === 'feature'}<FeaturePane {paneId} />
+      {:else if spec.type === 'board'}<BoardPane {paneId} />
       {:else if spec.type === 'setup'}<SetupPane />{/if}
     </div>
   </section>

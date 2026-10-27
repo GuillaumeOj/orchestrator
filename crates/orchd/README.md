@@ -24,6 +24,21 @@ target/debug/orchd suspend a1 && target/debug/orchd resume a1 --message "Continu
 target/debug/orchd stop
 ```
 
+Teams (P2, J3):
+
+```bash
+target/debug/orchd team presets              # starter roles + Solo dev, Full-stack, Bugfix squad, Design sprint
+target/debug/orchd team list --project myproj   # teams with validation issues and rules
+target/debug/orchd team launch myproj bugfix-squad fix-login --title "Fix login" --brief "Login fails after a reset."
+target/debug/orchd team runs                 # runs with their agents and tasks
+target/debug/orchd inbox && target/debug/orchd decide 7 approve   # the spec gate, later the PR gate
+target/debug/orchd team run run-1a2b3c4d5e   # agents, tasks, docs, artifacts, timeline
+target/debug/orchd team msg run-1a2b3c4d5e lead "Keep the old endpoint for now"
+target/debug/orchd team task set 3 --status ready --node back
+target/debug/orchd team pause run-1a2b3c4d5e # resume | stop
+target/debug/orchd team export full-stack > team.json && target/debug/orchd team import team.json
+```
+
 - Home: `--home DIR`, else `$ORCH_HOME`, else `~/Library/Application Support/Orchestrator`. The socket
   is `<home>/core.sock` (checked < 104 bytes, 0600, stale file removed at start); the database is
   `<home>/state/orch.db` (a `state.json` from earlier builds is imported once).

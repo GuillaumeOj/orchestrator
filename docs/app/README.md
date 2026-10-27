@@ -79,8 +79,10 @@ Daily use: [RUNNING.md](RUNNING.md).
 
 ## Design deviations
 
-1. **Features in the sidebar**: none yet (teams come in P2); agents are listed as solo sessions
-   under their project. Role marks are derived from the agent name (solo → S).
+1. **Features in the sidebar** (P2): Projects → Features → team agents, solo sessions under their
+   project. A feature's badge counts its open gates and questions plus agents waiting for you (a
+   lead at its spec gate is idle: the gate is in the Inbox). Role marks come from the agent's role
+   (`Role.name`); only agents without one fall back to the name's prefix.
 2. **Pause per agent** (`⌘; p`, Overview `p`) toggles: the Governor holds that agent's autonomous
    work at its next tool call until pressed again (a stand-in for "pause team" until teams exist).
    Paused shows for a paused agent and when Pause all holds its queued turn. Queued rows and strips
@@ -93,7 +95,10 @@ Daily use: [RUNNING.md](RUNNING.md).
    CLI's dialog). A question (an agent waiting in its pane) is answered in the pane: `⏎` opens it.
    Penpot's "Allow once / don't ask again" choice is reached with "Answer in the pane".
 6. **Info digest** lists finished turns (level 4); gates, budget asks and errors use the same item
-   component. Gate items (spec, PR) arrive with P2.
+   component. Gate items (spec, PR) are level 1: the spec gate shows the docs rendered from the
+   integration branch (tabs per file), the PR gate the branch, title, body and changed files.
+   Markdown is read into elements (`ui/src/lib/markdown.js`), never injected as HTML: the docs are
+   agent-written.
 7. **1280**: the overlay inspector covers the right pane when opened (Penpot avoided any covered
    pane by showing one pane only).
 8. **Week planner**: Edit plan (`e`) opens the plan editor (days, hours, reserve, off-hours
@@ -117,6 +122,23 @@ Daily use: [RUNNING.md](RUNNING.md).
     project pane, the inspector or the palette. **Create PR** (`c`) is the user's own: it confirms, then
     pushes the branch with the user's credentials and opens the PR with `gh` (ADR-009). No syntax
     highlighting, no side-by-side view.
+
+### P2 panes (Team canvas, Feature, Board, Launch dialog)
+
+13. **Team canvas**: the inspector edits the **role** (model, effort, tools, subagents, permission
+    profile, budget, prompt): a change applies to every node with that role; the node itself keeps
+    its role choice, lead mark and max live. The prompt is a textarea, not "open in nvim". Undo is
+    `u` / `⌃r` (⌘Z belongs to the Edit menu). Edits save by themselves (600 ms after the last one);
+    the core versions the team and validates it; an invalid team is saved as a draft and can't be
+    launched. Edges are selected with a click (`x` deletes) or removed from the inspector's edge
+    list; the minimap pans on click.
+14. **Launch dialog**: no "Start now" button: the lead is created "Not started yet" and the
+    Overview / agent strip offers Start now with its cost like any queued agent.
+15. **Feature pane**: the PR card shows the URL once the PR gate opened it; the timeline filters
+    are All / Messages / Tasks / Git / Gates / Run (the Governor's own log stays in the Week
+    planner).
+16. **Board**: "mine" is not a filter (tasks go to nodes, not to the user); `⏎` opens the task's
+    feature; `a` reassigns among the run's nodes.
 
 ## Spec edits (applied in SPEC v0.7, ADR-003, ADR-006)
 

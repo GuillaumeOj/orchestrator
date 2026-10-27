@@ -154,6 +154,61 @@ that agent's worktree with its generated gitconfig, hooks off. The result (sha, 
 back to the model as text; the audit log records actor (`agent:<id>`, `rule:<n>` or `user`),
 decision and files. `Runtime::commit_for(agent, req, "user")` is the same path for the UI.
 
+## Teams (P2: SPEC §4.4, J3)
+
+`team.rs` runs a team on a feature; `team_admin.rs` is the user's side (library, run details, the
+user's task and message actions). Teams, roles and the rules come from `orch-team`; tasks go
+through `orch-tasks` (Local or GitHub Issues, FR-501–503).
+
+- **Launch** (`launch(LaunchSpec)`): validates the team, snapshots it with its roles
+  (`team_versions`, FR-308), creates or reuses the Feature, creates `orch/<slug>/integration` and
+  the lead (`<slug>-<node>-1`) on it, queues the brief as its first turn and moves the run
+  `draft → spec`. A team agent is **not started** until its first turn is admitted: `pump_one`
+  spawns a never-started agent (`--session-id`) the way it resumes a suspended one, within the
+  live cap and the memory cap.
+- **Agents**: `AgentRecord.team = TeamSeat { run_id, node, feature_id, project_id, task }`. The role
+  comes from `orch_team::compile_node` (`Role::from_node`): prompt with the lead protocol (FR-401)
+  or the specialist's rules, permission profile, denied tools (`Agent` unless subagents are allowed,
+  FR-410), and `orch_tools`, the orchestrator tools it may call. `compile` allows exactly those
+  (`mcp__orch__<tool>`) and passes them as `ORCH_TOOLS` (mcp.json and the agent's env); `on_mcp`
+  refuses any other.
+- **Dispatch** (`team_tick`, from `housekeeping` on its own thread): a Ready task of a node whose
+  dependencies are Done goes to a free agent of that node, or to a new one
+  (`orch/<slug>/<node>-<n>` branched from the integration branch, up to the node's concurrency);
+  the task turns In progress and the agent gets an `ORCH: task …` turn. `Planning → Executing` at
+  the first dispatch; `Executing → Integrating` when every task is Done (the lead is told to check
+  and ask for the PR).
+- **Messages** (FR-403): `post_message` checks the team rules (`orch_team::rules`), one row per
+  agent of the recipient node. A busy agent gets them at its next tool call (PostToolUse
+  `additionalContext`, "ORCH: n new message(s): …"); an idle or suspended one as a turn through
+  the Governor. The text is in the note itself (no extra `inbox` call needed).
+- **Tools** (`team_tool`): `send_message`, `inbox`, `list_tasks`, `handoff` (Artifact row +
+  message), `request_review`, `ask_user` (an Inbox question; the reply becomes a turn),
+  `create_task` (lead; only once the spec is approved), `update_task` (specialists: their own
+  tasks, not Done), `report_done` (refused with uncommitted changes; task → Review, report to the
+  node it reports to), `request_spec_approval` (lead; docs committed; a `gate` item with action
+  `spec_approval`; run → `spec_gate`), `merge` (lead; only `orch/<slug>/*`; the core merges
+  outside the sandbox like a commit, hooks off; a conflict aborts and the branch's owner is told to
+  sync; with `task`, the task → Done), `sync_integration` (specialist; a conflict is left in
+  progress and the agent's `commit` concludes it).
+- **Gates**: spec approve → `planning` and "ORCH: approved: proceed…"; reject/reply → `spec` with
+  the user's words. A lead's `request_pr` → `pr_gate`; approved and opened → `done` with the PR
+  URL; declined or failed → `integrating`.
+- **Controls** (FR-406): `run_pause` (run `paused`, every member paused in the Governor; new members
+  of a paused run start paused), `run_resume`, `run_stop` (queued turns dropped, live members
+  suspended, run `failed` "stopped by the user"), `reassign_task`, `add_node` (a new team version,
+  existing nodes kept), and the user's `user_create_task`, `user_update_task`, `user_message`
+  (FR-409).
+- **Timeline** (FR-408): `run.*`, `agent.added`, `task.*`, `message`, `git.merge`, `git.sync`,
+  `asked_user` events tagged with the run (`events.team_run_id`).
+- **Remote tasks**: every 5 minutes `sync_task_backends` syncs the GitHub backend of projects with
+  an active run; a conflict keeps GitHub's version and adds an `info` Inbox item.
+- **Watchdog** (FR-407, every housekeeping pass, any live agent): a turn past its role's
+  `turn_ceiling_minutes` is interrupted (Esc) with an Inbox alert; a working agent with no hook for
+  15 minutes (and no background work) gets an alert. Once per turn each (`Tracker.turn_started_ms`
+  is stamped when a turn starts). The ceiling in weekly pp is not enforced yet: it needs a per-turn
+  usage delta.
+
 ## Live cap and idle suspend (FR-203, FR-204)
 
 `housekeeping()` (every 5 s): reads macOS memory pressure (`kern.memorystatus_vm_pressure_level`,
@@ -267,8 +322,10 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   by default now (`<repo>/README.md`, `<repo>/.git/worktrees/`), which P0 did not see on the same
   version: probably a server-side switch. `allowRead` on the git dir restores reads. Until this is
   resolved, agents can edit but not commit; the core (or a gated MCP tool) has to commit for them.
-- No Stop "continue" with the next task (P2 team runtime); gates other than permissions and the PR
-  gate (spec gate, budget asks) are P2.
+- **No Stop "continue"** (§6.4): blocking the Stop hook with the next task would leave the state
+  machine at Idle and the Governor without a running turn while the agent works on. The next task
+  (or message) goes through the normal delivery instead: pasted once the agent is idle after its
+  Stop (1.5 s), admitted by the Governor like any app turn.
 - The Week planner UI (FR-802) is not here: `set_plan` takes a confirmed `WeeklyPlan`.
 - Calibration carries over a restart only through this week's replayed samples (a restart in a new
   week starts from the prior).
@@ -282,7 +339,12 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   through the real orch-mcp, suspend, resume (`--resume`), kill; memory pressure (cap 1, LRU idle
   agent suspended, queued work waits in the Governor's queue as `memory_pressure`, resumes when
   pressure ends); idle auto-suspend and
-  resume on new work; orch-hook with the core down.
+  resume on new work; orch-hook with the core down; a **team run** (launch, the lead started on
+  admission, spec gate, a task dispatched to a new specialist in its own worktree, tools by role, a
+  message delivered as a turn, report, merge, integrating, PR gate). The fake reads a bracketed
+  paste as one message and runs `ORCHTOOL <tool> <json>` through the real orch-mcp.
+- `team::tests`: the whole run lifecycle through `on_mcp` (both gates, a send-back, dependencies,
+  message injection, merge, pause/resume, the timeline).
 - Unit tests for the Inbox (rules, approve, reply, always-allow, Esc, expiry), orch-mcp tools (commit
   with deny/ask rules, PR gate), restart (Governor rebuilt from stored samples; pauses and waiting
   turns kept across a replan and a restart; cancel), OTLP, and the reconciler (repair, missing

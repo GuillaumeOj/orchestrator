@@ -1,14 +1,17 @@
 <script>
-  // Role color + role initial + agent name (§9.1 principle 7).
+  // Role color + role initial + agent name (§9.1 principle 7). The role comes
+  // from the agent's data; `role` / `color` / `name` override it (canvas
+  // nodes, tasks assigned to a node).
+  import { agent } from '../lib/app.svelte.js';
   import { roleOf } from '../lib/status.js';
 
-  let { id, compact = false } = $props();
-  const r = $derived(roleOf(id));
+  let { id, compact = false, role = null, color = null, name = null } = $props();
+  const r = $derived(roleOf(id, role ?? agent(id)?.role ?? null, color));
 </script>
 
 <span class="chip">
   <span class="mark" style:color={r.color} style:border-color={r.color}>{r.letter}</span>
-  {#if !compact}<span class="name">{id}</span>{/if}
+  {#if !compact}<span class="name">{name ?? id}</span>{/if}
 </span>
 
 <style>

@@ -13,6 +13,7 @@ pub mod permissions;
 pub mod planner;
 pub mod services;
 pub mod setup;
+pub mod teams;
 pub mod terms;
 pub mod watch;
 
@@ -97,6 +98,23 @@ pub fn run() {
             commands::editor_open,
             commands::open_in_kitty,
             commands::inbox_act,
+            commands::gate_detail,
+            commands::teams_view,
+            commands::team_save,
+            commands::role_save,
+            commands::team_import,
+            commands::team_export,
+            commands::team_launch,
+            commands::feature_view,
+            commands::feature_doc,
+            commands::board_view,
+            commands::board_sync,
+            commands::task_create,
+            commands::task_update,
+            commands::run_act,
+            commands::message_send,
+            commands::project_settings,
+            commands::project_settings_set,
             commands::planner_view,
             commands::governor_act,
             commands::project_add,

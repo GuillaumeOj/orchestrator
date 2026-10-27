@@ -19,6 +19,8 @@ pub mod runtime;
 pub mod server;
 pub mod state;
 pub mod store;
+pub mod team;
+pub mod team_admin;
 pub mod transcript;
 pub mod usage;
 pub mod worktree;

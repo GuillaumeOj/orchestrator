@@ -21,8 +21,8 @@ use governor::jiff::Timestamp;
 use orch_git::git::real;
 use orch_protocol::bus;
 use orch_protocol::{
-    AgentSpec, CtlReply, CtlRequest, Envelope, HookEvent, HookPayload, Msg, PROTOCOL_VERSION, Reply, ReplyEnvelope,
-    now_ms,
+    AgentSpec, CtlReply, CtlRequest, Envelope, HookEvent, HookPayload, InboxDecision, Msg, PROTOCOL_VERSION, Reply,
+    ReplyEnvelope, now_ms,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -104,6 +104,8 @@ pub struct Core {
     stop: Arc<AtomicBool>,
     /// Shown as banners (from start, and raised later with `warn`).
     warnings: Mutex<Vec<String>>,
+    /// The last failed manual task sync, per project (the Board shows it).
+    pub(crate) sync_errors: Mutex<BTreeMap<String, String>>,
 }
 
 /// A value refreshed at most every so often.
@@ -224,6 +226,7 @@ impl Core {
             agent_input: Mutex::new(BTreeMap::new()),
             stop: Arc::new(AtomicBool::new(false)),
             warnings: Mutex::new(warnings),
+            sync_errors: Mutex::new(BTreeMap::new()),
         });
         // Claude Code's version and login (J0): `claude` starts slowly, off the startup path.
         {
@@ -714,6 +717,22 @@ impl Core {
             })?;
             return Ok(json!("dismissed"));
         }
+        // Gates and team questions: the runtime decides (audited) and acts
+        // (spec gate → the run moves on; PR gate → push + PR; reply → a turn).
+        if let Some(n) = item.strip_prefix("gate-").or_else(|| item.strip_prefix("q-")) {
+            let n: u64 = n.parse()?;
+            let decision = match action {
+                "approve" => InboxDecision::Approve,
+                "reject" if item.starts_with("q-") => InboxDecision::Dismiss,
+                "reject" => InboxDecision::Reject,
+                "reply" => InboxDecision::Reply,
+                other => bail!("{other} does not apply to {item}"),
+            };
+            if decision == InboxDecision::Reply && message.is_none_or(|m| m.trim().is_empty()) {
+                bail!("empty reply");
+            }
+            return rt.decide(n, decision, None, message);
+        }
         if let Some(n) = item.strip_prefix("ask-") {
             let id = governor::ActionId(n.parse()?);
             rt.answer_ask(id.0, action == "approve")?;
@@ -881,6 +900,7 @@ impl Core {
             "queue": queue,
             "inbox": {"items": items, "badge": inbox::badge(&items)},
             "permissions": self.broker.list(),
+            "features": self.rt.as_deref().map(crate::teams::features).unwrap_or_default(),
             "memory": self.memory(agents_mb),
             "memory_watch": self.watch.view(),
             "setup": setup,
@@ -1009,6 +1029,39 @@ impl Core {
     }
 
     /// FR-107: the worktree's changes against its base, from their merge base.
+    /// What a gate's preview shows: a spec gate's docs (markdown, read from
+    /// the integration worktree), a PR gate's changed files against its base.
+    pub fn gate_detail(&self, item: &str) -> Result<Value> {
+        let rt = self.runtime()?;
+        let n: u64 = item.strip_prefix("gate-").ok_or_else(|| anyhow!("{item} is not a gate"))?.parse()?;
+        let it = rt
+            .store
+            .read(|s| s.inbox.iter().find(|i| i.id == n).cloned())
+            .ok_or_else(|| anyhow!("no Inbox item {n}"))?;
+        let p = &it.payload;
+        let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let wt = PathBuf::from(s("worktree"));
+        match s("action").as_str() {
+            "spec_approval" => {
+                let docs: Vec<Value> = agent_runtime::team::feature_docs(&wt, &s("feature"))
+                    .into_iter()
+                    .map(|name| {
+                        let text = agent_runtime::team::read_feature_doc(&wt, &s("feature"), &name)
+                            .unwrap_or_else(|e| format!("({e:#})"));
+                        json!({"name": name, "text": text})
+                    })
+                    .collect();
+                Ok(json!({"action": "spec_approval", "summary": s("summary"), "docs": docs}))
+            }
+            "push_pr" => {
+                let d = orch_git::diff::diff(&wt, &s("base"), DIFF_PATCH_MAX)?;
+                Ok(json!({"action": "push_pr", "title": s("title"), "body": s("body"), "branch": s("branch"),
+                          "base": s("base"), "files": d.files, "truncated": d.truncated}))
+            }
+            other => bail!("unknown gate {other:?}"),
+        }
+    }
+
     pub fn worktree_diff(&self, project: &str, path: &Path) -> Result<Value> {
         let (_, wt, base) = self.resolve_worktree(project, path)?;
         let mut v = json!(orch_git::diff::diff(&wt.path, &base, DIFF_PATCH_MAX)?);
@@ -1191,6 +1244,7 @@ fn store_view(s: &agent_runtime::store::StateFile) -> (BTreeMap<String, AgentMet
             agent_id: i.agent_id.clone(),
             body: i.body.clone(),
             created_ms: i.created_at_ms,
+            payload: i.payload.clone(),
         })
         .collect();
     let done = s
@@ -1268,6 +1322,7 @@ mod tests {
             spawns: 1,
             flag: None,
             trust_dialog: false,
+            team: None,
         }
     }
 
@@ -1290,6 +1345,88 @@ mod tests {
         assert!(s["memory"]["core_mb"].as_f64().unwrap() > 0.0);
         let p = core.planner().unwrap();
         assert!(p.curve.len() > 100);
+        core.shutdown();
+    }
+
+    #[test]
+    fn teams_launch_board_feature_and_gates_through_the_core() {
+        let d = tmp();
+        let core = test_core(d.path());
+        let v = core.teams_view(Some("repo")).unwrap();
+        let ids: Vec<&str> = v["teams"].as_array().unwrap().iter().map(|t| t["team"]["id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"full-stack") && ids.contains(&"bugfix-squad"), "presets installed: {ids:?}");
+        assert!(v["teams"][0]["rules"].is_array());
+        // Saving a changed team bumps its version; an invalid one is kept as a draft.
+        let mut t =
+            v["teams"].as_array().unwrap().iter().find(|t| t["team"]["id"] == "bugfix-squad").unwrap()["team"].clone();
+        t["nodes"][1]["position"] = json!([10.0, 20.0]);
+        let saved = core.team_save(t.clone()).unwrap();
+        assert_eq!(saved["team"]["version"], 2);
+        let mut bad = t.clone();
+        bad["id"] = json!("draft");
+        bad["nodes"][0]["is_lead"] = json!(false);
+        assert!(!core.team_save(bad).unwrap()["issues"].as_array().unwrap().is_empty());
+        let exported = core.team_export("bugfix-squad", None).unwrap();
+        assert!(exported.contains("\"format\": 1"));
+        // Launch: the feature shows in app_state; the Feature pane and the Board read it.
+        let run = core
+            .team_launch(agent_runtime::team::LaunchSpec {
+                project_id: "repo".into(),
+                team_id: "bugfix-squad".into(),
+                slug: "fx".into(),
+                title: "Fix X".into(),
+                brief: "b".into(),
+                base: None,
+            })
+            .unwrap();
+        let s = core.state();
+        let f = &s["features"][0];
+        assert_eq!((f["slug"].as_str(), f["run"]["status"].as_str()), (Some("fx"), Some("spec")));
+        let fid = f["id"].as_str().unwrap().to_string();
+        let fv = core.feature_view(&fid).unwrap();
+        assert_eq!(fv["agents"][0]["id"], "fx-lead-1");
+        assert_eq!(fv["agents"][0]["node"], "lead");
+        let t = core
+            .task_create(json!({"project_id": "repo", "title": "By hand", "run_id": run["id"], "node": "back"}))
+            .unwrap();
+        let b = core.board_view("repo").unwrap();
+        assert_eq!(b["backend"], "local");
+        assert_eq!(b["tasks"][0]["title"], "By hand");
+        assert_eq!(b["runs"][0]["nodes"].as_array().unwrap().len(), 3);
+        let t = core.task_update(t["id"].as_u64().unwrap(), Some("backlog"), None, Some("later")).unwrap();
+        assert_eq!((t["status"].as_str(), t["notes"].as_array().unwrap().len()), (Some("backlog"), 2));
+        // A message from the user; pause and resume the team.
+        assert!(core.message_send(run["id"].as_str().unwrap(), "lead", "hello").is_ok());
+        assert_eq!(core.run_act(run["id"].as_str().unwrap(), "pause").unwrap()["status"], "paused");
+        assert_eq!(core.run_act(run["id"].as_str().unwrap(), "resume").unwrap()["status"], "spec");
+        // Project settings (FR-109).
+        let ps = core
+            .project_settings_set(
+                "repo",
+                serde_json::from_value(json!({"settings": {"default_team": "bugfix-squad"}, "backend": {"type": "local"}, "track_orchestrator_dir": true})).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(ps["settings"]["default_team"], "bugfix-squad");
+        // A runtime gate is a level-1 gate in the Inbox and decides through the runtime.
+        let rt = core.runtime().unwrap().clone();
+        rt.store
+            .write(|s| {
+                s.add_inbox_item(
+                    Some("fx-lead-1"),
+                    "gate",
+                    "Spec gate · fx".into(),
+                    json!({"action": "spec_approval", "run": run["id"], "summary": "s"}),
+                    20,
+                )
+            })
+            .unwrap();
+        rt.set_run_state(run["id"].as_str().unwrap(), orch_team::RunState::SpecGate, "test").unwrap();
+        let items = core.state()["inbox"]["items"].clone();
+        let gate = items.as_array().unwrap().iter().find(|i| i["kind"] == "gate").unwrap().clone();
+        assert_eq!(gate["level"], 1);
+        core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).unwrap();
+        assert_eq!(core.state()["features"][0]["run"]["status"], "planning");
+        assert!(core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).is_err(), "decided once");
         core.shutdown();
     }
 

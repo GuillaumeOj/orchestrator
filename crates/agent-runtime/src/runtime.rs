@@ -76,6 +76,8 @@ pub struct RuntimeConfig {
     pub fetch: orch_git::fetch::FetchPolicy,
     /// Power and network state for the fetch throttle.
     pub conditions: Arc<dyn orch_git::fetch::Conditions>,
+    /// Replaces `gh` for the GitHub task backend (tests).
+    pub gh: Option<crate::team::GhFactory>,
 }
 
 impl RuntimeConfig {
@@ -99,6 +101,7 @@ impl RuntimeConfig {
             retention: orch_store::Retention::default(),
             fetch: orch_git::fetch::FetchPolicy::default(),
             conditions: Arc::new(orch_git::fetch::SystemConditions),
+            gh: None,
         }
     }
 }
@@ -141,6 +144,12 @@ pub struct Runtime {
     otlp: Mutex<Option<crate::otlp::OtlpReceiver>>,
     /// A transcript index pass is running.
     indexing: std::sync::atomic::AtomicBool,
+    /// A team pass ([`Runtime::team_tick`]) is running.
+    teaming: std::sync::atomic::AtomicBool,
+    /// Each project's task backend, kept across calls.
+    pub(crate) task_backends: orch_tasks::Backends,
+    /// The starter roles and presets were checked this run.
+    pub(crate) presets_checked: std::sync::atomic::AtomicBool,
 }
 
 /// Clocks and flags of the periodic work (`tick`, `housekeeping`).
@@ -162,6 +171,10 @@ struct House {
     spawn_override: std::collections::BTreeSet<String>,
     /// The plan week (start, ms) whose reserve warning reached the Inbox, once read from the store.
     reserve_alerted: Option<Option<i64>>,
+    /// Last sync of the remote task backends (FR-503).
+    last_task_sync_ms: u64,
+    /// Watchdog alerts already raised, by `<agent>:<turn start>` (FR-407).
+    watchdog: std::collections::BTreeSet<String>,
 }
 
 /// True (and restamps `last`) when `every` ms have passed since `last`.
@@ -177,6 +190,8 @@ pub const FORECAST_EVERY_MS: u64 = 5 * 60 * 1000;
 pub const CALIBRATION_EVERY_MS: u64 = 60 * 60 * 1000;
 pub const PURGE_EVERY_MS: u64 = 24 * 3600 * 1000;
 pub const INDEX_EVERY_MS: u64 = 60 * 1000;
+/// FR-503: how often remote task backends (GitHub) are synced.
+pub const TASK_SYNC_EVERY_MS: u64 = 5 * 60 * 1000;
 pub const POLICY_ID: &str = "default";
 /// Settings key of the Governor's carry-over state (ADR-007 "State across restarts").
 pub const CARRY_KEY: &str = "governor.carry";
@@ -323,6 +338,9 @@ impl Runtime {
             house: Mutex::new(House { index_all: true, last_purge_ms: now_ms(), ..Default::default() }),
             otlp: Mutex::new(None),
             indexing: std::sync::atomic::AtomicBool::new(false),
+            teaming: std::sync::atomic::AtomicBool::new(false),
+            task_backends: orch_tasks::Backends::default(),
+            presets_checked: std::sync::atomic::AtomicBool::new(false),
         });
         rt.handle_releases(released);
         Ok(rt)
@@ -557,6 +575,7 @@ impl Runtime {
             spawns: 0,
             flag: None,
             trust_dialog: false,
+            team: None,
         };
         self.store.write(|s| s.agents.insert(rec.id.clone(), rec.clone()))?;
         // Every agent belongs to a registered project (J1); starting one marks it active (FR-103).
@@ -946,6 +965,10 @@ impl Runtime {
             }
             // A rule, or the Inbox (held), or the pane when nobody answers in time.
             HookEvent::PermissionRequest => self.permission_request(&rec, &p, m.deadline_ms, conn),
+            // FR-403: a busy team agent gets its messages at its next tool call.
+            HookEvent::PostToolUse | HookEvent::PostToolUseFailure if rec.team.is_some() => {
+                self.inject_messages(&rec).map(|t| HookOutput::additional_context(&m.event, &t))
+            }
             _ => None,
         }
     }
@@ -962,7 +985,7 @@ impl Runtime {
                 }
             }
             Effect::TurnStarted { origin, markers } => {
-                self.mark_delivered(id, &markers);
+                self.mark_delivered(id, &markers, Some(now));
                 if let Some(l) = &live {
                     l.ready_at_ms.store(0, Ordering::SeqCst);
                 }
@@ -978,7 +1001,7 @@ impl Runtime {
             }
             Effect::QueuedMessage => {
                 let markers = delivery::find_markers(p.prompt.as_deref().unwrap_or(""));
-                self.mark_delivered(id, &markers);
+                self.mark_delivered(id, &markers, None);
             }
             Effect::TurnEnded | Effect::TurnEndedWithBackground => {
                 self.house().index_dirty.insert(id.to_string());
@@ -1025,8 +1048,10 @@ impl Runtime {
         }
     }
 
-    fn mark_delivered(&self, id: &str, markers: &[String]) {
-        if markers.is_empty() {
+    /// Marks the turns `markers` delivered and, for a turn that started at
+    /// `started`, records its start (one store write).
+    fn mark_delivered(&self, id: &str, markers: &[String], started: Option<u64>) {
+        if markers.is_empty() && started.is_none() {
             return;
         }
         let _ = self.store.write(|s| {
@@ -1034,6 +1059,11 @@ impl Runtime {
                 if matches!(t.status, TurnStatus::Queued | TurnStatus::Delivering) {
                     t.status = TurnStatus::Delivered;
                 }
+            }
+            if let Some(now) = started
+                && let Some(a) = s.agents.get_mut(id)
+            {
+                a.tracker.turn_started_ms = Some(now);
             }
         });
     }
@@ -1237,6 +1267,21 @@ impl Runtime {
         }
     }
 
+    /// True the first time `key` is seen (one watchdog alert per turn).
+    pub(crate) fn watchdog_once(&self, key: String) -> bool {
+        self.house().watchdog.insert(key)
+    }
+
+    /// Forgets the keys of turns that are no longer flagged.
+    pub(crate) fn watchdog_keep(&self, keys: &std::collections::BTreeSet<String>) {
+        self.house().watchdog.retain(|k| keys.contains(k));
+    }
+
+    /// Every 5 minutes: time to sync the remote task backends.
+    pub(crate) fn task_sync_due(&self) -> bool {
+        due(&mut self.house().last_task_sync_ms, now_ms(), TASK_SYNC_EVERY_MS)
+    }
+
     pub(crate) fn mark_full_index(&self) {
         self.house().index_all = true;
     }
@@ -1381,6 +1426,21 @@ impl Runtime {
                 self.indexing.store(false, Ordering::SeqCst);
             }
         }
+        // Teams: dispatch, messages, run progress (network calls with GitHub).
+        if !self.teaming.swap(true, Ordering::SeqCst) {
+            if let Some(me) = self.me.upgrade() {
+                std::thread::spawn(move || {
+                    me.team_tick();
+                    me.watchdog(now_ms());
+                    if me.task_sync_due() {
+                        me.sync_task_backends();
+                    }
+                    me.teaming.store(false, Ordering::SeqCst);
+                });
+            } else {
+                self.teaming.store(false, Ordering::SeqCst);
+            }
+        }
         if do_purge {
             // Deletes across several tables: never on the delivery loop.
             let (db, retention, me) = (self.db.clone(), self.cfg.retention, self.me.clone());
@@ -1502,7 +1562,10 @@ impl Runtime {
             // A suspended agent with work is resumed through the Governor
             // (FR-403), which also holds the spawn until a process slot is
             // free under memory pressure (FR-203).
-            let suspended = rec.tracker.state == AgentState::Suspended && rec.flag.is_none();
+            // A team agent that never ran starts the same way (with its own
+            // session id) once its first turn is admitted.
+            let never_started = rec.never_started();
+            let suspended = (rec.tracker.state == AgentState::Suspended || never_started) && rec.flag.is_none();
             if suspended && turn.admission == Admission::Pending {
                 self.sync_process_slots();
             }
@@ -1525,7 +1588,7 @@ impl Runtime {
                     })?;
                     return Ok(());
                 }
-                if let Err(e) = self.spawn(&rec.id, None) {
+                if let Err(e) = self.spawn(&rec.id, never_started.then(|| SessionMode::New(rec.session_id.clone()))) {
                     // Flag it so the next pump doesn't retry every 200 ms.
                     let msg = format!("{}: could not resume: {e:#}", rec.id);
                     self.store.write(|s| {
@@ -1678,6 +1741,9 @@ impl Runtime {
                     "trust_dialog": a.trust_dialog,
                     "flag": a.flag,
                     "otel_week": tokens.get(&a.id),
+                    // P2: the role and, for a team agent, its seat (run, node, task).
+                    "role": a.role.name,
+                    "team": a.team,
                 })
             })
             .collect();
@@ -1911,6 +1977,7 @@ pub(crate) mod tests {
             spawns: 1,
             flag: None,
             trust_dialog: false,
+            team: None,
         }
     }
 

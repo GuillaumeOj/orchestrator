@@ -27,6 +27,10 @@ impl Runtime {
         };
         let tool = format!("mcp__orch__{}", m.tool);
         self.event(&rec.id, "mcp", json!({"tool": m.tool}));
+        // The role's tools only (orch-mcp lists no others; checked again here).
+        if !rec.role.may_call(&m.tool) {
+            return (true, format!("{} is not one of your tools", m.tool), Value::Null);
+        }
         // Rules first (deny > ask > allow), for every orchestrator tool.
         let rules = self.db.rules().unwrap_or_default();
         let subject = self.subject(&rec);
@@ -67,8 +71,12 @@ impl Runtime {
                 );
                 (text, json!(c))
             }),
-            "request_pr" => self.request_pr(&rec, &m.arguments).map(|t| (t, Value::Null)),
-            other => Err(anyhow!("unknown tool {other:?}")),
+            "request_pr" => self.pr_allowed(&rec).and_then(|()| self.request_pr(&rec, &m.arguments)).map(|t| {
+                self.pr_requested(&rec.id);
+                (t, Value::Null)
+            }),
+            // The team tools (the role's own; `may_call` checked it above).
+            _ => self.team_tool(&rec, &m.tool, &m.arguments),
         };
         match r {
             Ok((text, data)) => (false, text, data),
@@ -111,9 +119,7 @@ impl Runtime {
     /// the user from the UI with `actor = "user"`). Logged either way.
     pub fn commit_for(&self, agent_id: &str, req: &CommitRequest, actor: &str) -> Result<CommitResult> {
         let rec = self.store.read(|s| s.agents.get(agent_id).cloned()).ok_or_else(|| anyhow!("no agent {agent_id}"))?;
-        let gitconfig = self.cfg.paths.agent_dir(agent_id).join("gitconfig");
-        let gc = gitconfig.is_file().then_some(gitconfig.as_path());
-        let r = orch_git::commit::commit_in_worktree(&rec.worktree, req, gc);
+        let r = orch_git::commit::commit_in_worktree(&rec.worktree, req, self.agent_gitconfig(agent_id).as_deref());
         let (decision, detail) = match &r {
             Ok(c) => ("ok", json!({"sha": c.sha, "branch": c.branch, "files": c.files, "message": req.message})),
             Err(e) => ("failed", json!({"error": format!("{e:#}"), "message": req.message, "paths": req.paths})),

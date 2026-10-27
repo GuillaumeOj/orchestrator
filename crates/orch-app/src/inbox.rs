@@ -1,19 +1,22 @@
-//! The Inbox (FR-707, §9.6): everything that needs the user, in attention
+//! Inbox (FR-707, §9.6): everything that needs the user, in attention
 //! ladder order. Level 1 blocking (permission prompts held for the Inbox,
-//! agents waiting for you, trust dialogs), level 2 errors (crashes, API
-//! errors, runtime alerts), level 3 budget (the Governor's pending ask), level
-//! 4 info (finished turns; a silent digest). Within a level, oldest first.
+//! gates: spec approval and pull requests, questions from team agents, agents
+//! waiting for you, trust dialogs), level 2 errors (crashes, API errors,
+//! runtime alerts), level 3 budget (the Governor's pending ask), level 4 info
+//! (finished turns, task-sync notes; a silent digest). Within a level, oldest
+//! first.
 
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::permissions::PendingPermission;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct InboxItem {
-    /// Stable across refreshes: `perm-3`, `wait-a1`, `alert-7`, `ask-12`, `info-<turn>`.
+    /// Stable across refreshes: `perm-3`, `gate-5`, `q-6`, `wait-a1`, `alert-7`, `ask-12`, `info-<turn>`.
     pub id: String,
     pub level: u8,
-    /// permission / question / trust / error / alert / budget / info
+    /// permission / gate / question / trust / error / alert / budget / info
     pub kind: String,
     pub agent_id: Option<String>,
     pub title: String,
@@ -23,6 +26,11 @@ pub struct InboxItem {
     pub created_ms: u64,
     /// Keys this item answers to, besides j/k/x (FR-707).
     pub actions: Vec<&'static str>,
+    /// A gate's or a team question's details for the preview (`action`:
+    /// `spec_approval` with `docs`, `summary`, `feature`; `push_pr` with
+    /// `title`, `body`, `branch`, `base`; `ask_user` with `question`, `options`).
+    #[serde(skip_serializing_if = "Value::is_null")]
+    pub payload: Value,
 }
 
 /// What the Inbox needs to know about an agent.
@@ -39,11 +47,13 @@ pub struct AgentFacts {
 #[derive(Clone, Debug)]
 pub struct Alert {
     pub id: u64,
-    /// The store item's kind: `budget` (the Governor's warnings) is level 3, the rest level 2.
+    /// The store item's kind: `gate` and `question` are level 1, `budget`
+    /// (the Governor's warnings) level 3, `info` level 4, the rest level 2.
     pub kind: String,
     pub agent_id: Option<String>,
     pub body: String,
     pub created_ms: u64,
+    pub payload: Value,
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +101,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
             preview: Some(p.summary.clone()),
             created_ms: p.created_ms,
             actions: vec!["a", "r", "enter", "o", "e"],
+            payload: Value::Null,
         });
     }
     for a in i.agents {
@@ -106,6 +117,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 preview: a.tail.as_deref().map(|t| last_lines(t, 6)),
                 created_ms: a.since_ms,
                 actions: vec!["o"],
+                payload: Value::Null,
             });
         } else if a.state == "waiting_for_you" && !held {
             out.push(InboxItem {
@@ -118,6 +130,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 preview: a.tail.as_deref().map(|t| last_lines(t, 8)),
                 created_ms: a.since_ms,
                 actions: vec!["enter", "o"],
+                payload: Value::Null,
             });
         } else if a.state == "error" {
             out.push(InboxItem {
@@ -130,23 +143,70 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 preview: None,
                 created_ms: a.since_ms,
                 actions: vec!["o", "r"],
+                payload: Value::Null,
             });
         }
     }
     for al in i.alerts {
-        let budget = al.kind == "budget";
-        out.push(InboxItem {
-            id: format!("alert-{}", al.id),
-            level: if budget { 3 } else { 2 },
-            // Still an alert to dismiss: `budget` items are asks (Apply/Skip).
-            kind: "alert".into(),
-            agent_id: al.agent_id.clone(),
-            title: al.body.lines().next().unwrap_or("").to_string(),
-            detail: al.body.clone(),
-            preview: None,
-            created_ms: al.created_ms,
-            actions: vec!["a", "o"],
-        });
+        let title = al.body.lines().next().unwrap_or("").to_string();
+        let s = |k: &str| al.payload.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let item = match (al.kind.as_str(), s("action").as_str()) {
+            // Gates (FR-704): decided through the runtime, which acts on them.
+            ("gate", action) => InboxItem {
+                id: format!("gate-{}", al.id),
+                level: 1,
+                kind: "gate".into(),
+                agent_id: al.agent_id.clone(),
+                title,
+                detail: match action {
+                    "spec_approval" => format!(
+                        "Spec gate: approve the feature docs so the lead can create tasks and the team can start ({})",
+                        s("branch")
+                    ),
+                    "push_pr" => format!("Push {} and open a pull request into {}", s("branch"), s("base")),
+                    _ => al.body.clone(),
+                },
+                preview: match action {
+                    "spec_approval" => Some(s("summary")),
+                    "push_pr" => Some(s("body")).filter(|b| !b.is_empty()),
+                    _ => None,
+                },
+                created_ms: al.created_ms,
+                actions: vec!["a", "r", "enter", "o"],
+                payload: al.payload.clone(),
+            },
+            // A team agent's question (`ask_user`): the reply becomes its next turn.
+            ("question", _) => InboxItem {
+                id: format!("q-{}", al.id),
+                level: 1,
+                kind: "question".into(),
+                agent_id: al.agent_id.clone(),
+                title,
+                detail: s("question"),
+                preview: None,
+                created_ms: al.created_ms,
+                actions: vec!["enter", "r", "o"],
+                payload: al.payload.clone(),
+            },
+            (kind, _) => InboxItem {
+                id: format!("alert-{}", al.id),
+                level: match kind {
+                    "budget" => 3,
+                    "info" => 4,
+                    _ => 2,
+                },
+                // Still an alert to dismiss: `budget` items are asks (Apply/Skip).
+                kind: if kind == "info" { "info".into() } else { "alert".into() },
+                agent_id: al.agent_id.clone(),
+                title,
+                detail: al.body.clone(),
+                preview: None,
+                created_ms: al.created_ms,
+                actions: vec!["a", "o"],
+                payload: Value::Null,
+            },
+        };
+        out.push(item);
     }
     if let Some(a) = &i.ask {
         out.push(InboxItem {
@@ -163,6 +223,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
             preview: None,
             created_ms: a.created_ms,
             actions: vec!["a", "r"],
+            payload: Value::Null,
         });
     }
     for d in i.done {
@@ -176,6 +237,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
             preview: None,
             created_ms: d.at_ms,
             actions: vec!["o"],
+            payload: Value::Null,
         });
     }
     out.sort_by(|a, b| a.level.cmp(&b.level).then(a.created_ms.cmp(&b.created_ms)).then(a.id.cmp(&b.id)));
@@ -212,10 +274,15 @@ mod tests {
             agent("ci-1", "error", 5),
             agent("back-1", "working", 1),
         ];
-        let alerts = [
-            Alert { id: 7, kind: "alert".into(), agent_id: None, body: "x: API error".into(), created_ms: 1 },
-            Alert { id: 8, kind: "budget".into(), agent_id: None, body: "reserve used up".into(), created_ms: 0 },
-        ];
+        let alert = |id, kind: &str, body: &str, created_ms| Alert {
+            id,
+            kind: kind.into(),
+            agent_id: None,
+            body: body.into(),
+            created_ms,
+            payload: Value::Null,
+        };
+        let alerts = [alert(7, "alert", "x: API error", 1), alert(8, "budget", "reserve used up", 0)];
         let done = [Done { turn_id: "t1".into(), agent_id: "back-1".into(), body: "go".into(), at_ms: 0 }];
         let items = build(&Inputs {
             permissions: std::slice::from_ref(&perm),
@@ -236,6 +303,42 @@ mod tests {
         assert_eq!((items[4].level, items[4].kind.as_str()), (3, "alert"), "a budget warning, dismissed like an alert");
         assert_eq!(badge(&items), 6);
         assert_eq!(items[1].preview.as_deref(), Some("pnpm add x"));
+    }
+
+    #[test]
+    fn gates_questions_and_info_from_the_runtime() {
+        let mk = |id, kind: &str, payload: Value| Alert {
+            id,
+            kind: kind.into(),
+            agent_id: Some("fx-lead-1".into()),
+            body: format!("item {id}"),
+            created_ms: id,
+            payload,
+        };
+        let alerts = [
+            mk(3, "info", Value::Null),
+            mk(
+                4,
+                "gate",
+                serde_json::json!({"action": "push_pr", "branch": "orch/fx/integration", "base": "main", "title": "Fix X", "body": "b"}),
+            ),
+            mk(
+                5,
+                "gate",
+                serde_json::json!({"action": "spec_approval", "summary": "two tasks", "branch": "orch/fx/integration", "docs": ["spec.md"]}),
+            ),
+            mk(6, "question", serde_json::json!({"action": "ask_user", "question": "Keep v1?"})),
+        ];
+        let items = build(&Inputs { alerts: &alerts, ..Default::default() });
+        let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["gate-4", "gate-5", "q-6", "alert-3"]);
+        assert_eq!((items[0].level, items[0].kind.as_str()), (1, "gate"));
+        assert!(items[0].detail.contains("orch/fx/integration") && items[0].detail.contains("main"));
+        assert_eq!(items[1].preview.as_deref(), Some("two tasks"));
+        assert_eq!(items[1].payload["docs"][0], "spec.md");
+        assert_eq!((items[2].kind.as_str(), items[2].detail.as_str()), ("question", "Keep v1?"));
+        assert_eq!((items[3].level, items[3].kind.as_str()), (4, "info"));
+        assert_eq!(badge(&items), 3);
     }
 
     #[test]

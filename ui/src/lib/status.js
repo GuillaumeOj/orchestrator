@@ -54,15 +54,29 @@ export const PRESSURE = {
   catch_up: { label: 'Catch-up', icon: '⇡', color: 'var(--color-pacing-catch-up)' },
 };
 
-// Role marks (§9.1 principle 7): solo sessions until teams exist (P2).
-export const ROLES = { lead: 1, back: 2, front: 3, ui: 4, ux: 5, solo: 6 };
+// Role marks (§9.1 principle 7): color.role.1…8 in the order Lead, Backend,
+// Frontend, UI, UX, Solo, Reviewer; the initial is a graphic mark, the name
+// carries the meaning (Penpot 02 Agent chip).
+export const ROLES = { lead: 1, back: 2, front: 3, ui: 4, ux: 5, solo: 6, reviewer: 7 };
+const ROLE_ALIAS = { backend: 'back', frontend: 'front', b: 'back', f: 'front', l: 'lead', review: 'reviewer' };
+const ROLE_LETTER = { lead: 'L', back: 'B', front: 'F', ui: 'U', ux: 'X', solo: 'S', reviewer: 'R' };
 
-export function roleOf(agentId) {
-  const prefix = String(agentId).split(/[-_]/)[0].toLowerCase();
-  const key = { l: 'lead', b: 'back', backend: 'back', f: 'front', frontend: 'front' }[prefix] ?? prefix;
-  const n = ROLES[key] ?? ROLES.solo;
-  const letter = key in ROLES && key !== 'solo' ? key[0].toUpperCase() : 'S';
-  return { letter, color: `var(--color-role-${n})` };
+/**
+ * The mark of an agent or a role: from its role id when known (team agents,
+ * canvas nodes; `color` = the role's own color.role index), else guessed from
+ * the agent id's prefix (fixtures, older agents).
+ */
+export function roleOf(agentId, role = null, color = null) {
+  const raw = String(role ?? String(agentId).split(/[-_]/)[0]).toLowerCase();
+  const key = ROLE_ALIAS[raw] ?? raw;
+  if (key in ROLES) {
+    const n = color ?? ROLES[key];
+    return { letter: ROLE_LETTER[key], color: `var(--color-role-${n})` };
+  }
+  if (!role) return { letter: 'S', color: `var(--color-role-${color ?? ROLES.solo})` };
+  // A custom role: its own color, else a stable one of the 8.
+  const n = color ?? 1 + ([...key].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % 8);
+  return { letter: key[0].toUpperCase(), color: `var(--color-role-${n})` };
 }
 
 /** Why a queued agent waits, in words (FR-809 copy). */

@@ -300,3 +300,109 @@ fn idle_agents_are_suspended_and_resume_on_new_work() {
     request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "wake up".into() }).unwrap();
     wait_for("resumed turn", 20, || agent(&core.sock, "a")["turns"].as_u64() == Some(2));
 }
+
+/// J3 end to end with the fake claude: launch, the lead starts when the
+/// Governor admits it, spec gate, a task dispatched to a new specialist in its
+/// own worktree, a message, report, merge, then the PR gate.
+#[test]
+fn a_team_run_end_to_end_with_fake_claude() {
+    let core = Core::start("orchtm", |_| {});
+    let sock = core.sock.clone();
+    // Settled: idle with nothing queued (the app's own turns included).
+    let settled = |agent_id: &str| {
+        let a = agent(&sock, agent_id);
+        a["state"] == "idle" && a["queued_turns"] == 0
+    };
+    // Until that very turn is done and the agent settled.
+    let call = |agent_id: &str, line: &str| {
+        let r = request(&sock, CtlRequest::Deliver { agent_id: agent_id.into(), text: line.into() }).unwrap();
+        let turn = r.data["turn"].as_str().unwrap().to_string();
+        wait_for(line, 30, || {
+            let s = request(&sock, CtlRequest::State).unwrap().data;
+            let done = s["turns"].as_array().unwrap().iter().any(|t| t["id"] == turn.as_str() && t["status"] == "done");
+            done && settled(agent_id)
+        });
+    };
+    let screen = |agent_id: &str| {
+        request(&sock, CtlRequest::Read { agent_id: agent_id.into() }).unwrap().data.as_str().unwrap_or("").to_string()
+    };
+    let run_state =
+        |run: &str| request(&sock, CtlRequest::Run { run_id: run.into() }).unwrap().data["run"]["status"].clone();
+    let p = request(&sock, CtlRequest::ProjectAdd { path: core.repo.display().to_string() }).unwrap();
+    let pid = p.data["id"].as_str().unwrap().to_string();
+    assert!(request(&sock, CtlRequest::InstallPresets).unwrap().ok);
+    let r = request(
+        &sock,
+        CtlRequest::Launch {
+            project_id: pid.clone(),
+            team_id: "bugfix-squad".into(),
+            slug: "fx".into(),
+            title: Some("Fix X".into()),
+            brief: Some("Fix the X bug.".into()),
+            base: None,
+        },
+    )
+    .unwrap();
+    assert!(r.ok, "{r:?}");
+    let run = r.data["id"].as_str().unwrap().to_string();
+    let lead = "fx-lead-1";
+    // The lead starts with its brief once admitted.
+    wait_for("lead's first turn", 20, || agent(&sock, lead)["turns"] == 1 && agent(&sock, lead)["state"] == "idle");
+    assert!(screen(lead).contains("Fix the X bug."));
+    let lead_wt = PathBuf::from(agent(&sock, lead)["worktree"].as_str().unwrap());
+    assert!(lead_wt.ends_with("demo.worktrees/fx/integration"), "{lead_wt:?}");
+    // The spec, committed through orch-mcp, then the gate.
+    std::fs::create_dir_all(lead_wt.join(".orchestrator/features/fx")).unwrap();
+    std::fs::write(lead_wt.join(".orchestrator/features/fx/spec.md"), "# Fix X\n").unwrap();
+    call(lead, r#"ORCHTOOL commit {"message":"spec for fx"}"#);
+    call(lead, r#"ORCHTOOL request_spec_approval {"summary":"one task for back"}"#);
+    assert_eq!(run_state(&run), "spec_gate", "{}", screen(lead));
+    let inbox = request(&sock, CtlRequest::Inbox).unwrap().data;
+    let gate = inbox.as_array().unwrap().iter().find(|i| i["payload"]["action"] == "spec_approval").unwrap().clone();
+    let d = request(
+        &sock,
+        CtlRequest::Decide {
+            item_id: gate["id"].as_u64().unwrap(),
+            decision: orch_protocol::InboxDecision::Approve,
+            scope: None,
+            message: None,
+        },
+    )
+    .unwrap();
+    assert!(d.ok, "{d:?}");
+    assert_eq!(run_state(&run), "planning");
+    wait_for("approval delivered", 20, || agent(&sock, lead)["turns"].as_u64() >= Some(4));
+    wait_for("approval in the pane", 10, || screen(lead).contains("approved: proceed"));
+    call(lead, r#"ORCHTOOL create_task {"title":"API","node":"back","body":"add api.rs"}"#);
+    // Dispatch: a new specialist in its own worktree, branched from integration.
+    let back = "fx-back-1";
+    wait_for("back's first turn", 30, || agent(&sock, back)["turns"] == 1 && agent(&sock, back)["state"] == "idle");
+    assert!(screen(back).contains("ORCH: task T-"));
+    assert_eq!(run_state(&run), "executing");
+    let back_wt = PathBuf::from(agent(&sock, back)["worktree"].as_str().unwrap());
+    assert_eq!(git(&back_wt, &["symbolic-ref", "--short", "HEAD"]).trim(), "orch/fx/back-1");
+    assert!(back_wt.join(".orchestrator/features/fx/spec.md").is_file());
+    // A tool the role lacks is not even listed.
+    call(back, r#"ORCHTOOL merge {"branch":"orch/fx/back-1"}"#);
+    assert!(screen(back).contains("unknown tool"), "{}", screen(back));
+    // A message to the idle lead arrives as a turn.
+    call(back, r#"ORCHTOOL send_message {"to":"lead","body":"which file?"}"#);
+    wait_for("message delivered", 20, || screen(lead).contains("which file?"));
+    // Work, report, merge.
+    std::fs::write(back_wt.join("api.rs"), "fn api() {}\n").unwrap();
+    call(back, r#"ORCHTOOL commit {"message":"add api.rs"}"#);
+    call(back, r#"ORCHTOOL report_done {"summary":"api.rs added"}"#);
+    let tasks = request(&sock, CtlRequest::Tasks { project_id: None, run_id: Some(run.clone()) }).unwrap().data;
+    let task = tasks[0]["id"].as_u64().unwrap();
+    assert_eq!(tasks[0]["status"], "review", "{}", screen(back));
+    call(lead, &format!(r#"ORCHTOOL merge {{"branch":"orch/fx/back-1","task":{task}}}"#));
+    assert!(lead_wt.join("api.rs").is_file(), "{}", screen(lead));
+    wait_for("integrating", 20, || run_state(&run) == "integrating");
+    call(lead, r#"ORCHTOOL request_pr {"title":"Fix X"}"#);
+    assert_eq!(run_state(&run), "pr_gate", "{}", screen(lead));
+    let tl = request(&sock, CtlRequest::Timeline { run_id: run.clone(), limit: None }).unwrap().data;
+    let kinds: Vec<&str> = tl.as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+    for k in ["run.launched", "agent.added", "task.assigned", "message", "git.merge", "task.done"] {
+        assert!(kinds.contains(&k), "timeline has {k}: {kinds:?}");
+    }
+}
