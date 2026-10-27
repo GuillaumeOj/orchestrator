@@ -1715,6 +1715,9 @@ impl Runtime {
                     "trust_dialog": a.trust_dialog,
                     "flag": a.flag,
                     "otel_week": tokens.get(&a.id),
+                    // P2: the role and, for a team agent, its seat (run, node, task).
+                    "role": a.role.name,
+                    "team": a.team,
                 })
             })
             .collect();

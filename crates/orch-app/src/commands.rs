@@ -168,6 +168,98 @@ pub async fn inbox_act(core: CoreState<'_>, item: String, action: String, messag
     blocking(core, move |c| c.inbox_act(&item, &action, message.as_deref())).await
 }
 
+// ---- P2 teams
+
+#[tauri::command]
+pub async fn teams_view(core: CoreState<'_>, project: Option<String>) -> Res<Value> {
+    blocking(core, move |c| c.teams_view(project.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn team_save(core: CoreState<'_>, team: Value) -> Res<Value> {
+    blocking(core, move |c| c.team_save(team)).await
+}
+
+#[tauri::command]
+pub async fn role_save(core: CoreState<'_>, role: Value) -> Res<Value> {
+    blocking(core, move |c| c.role_save(role)).await
+}
+
+#[tauri::command]
+pub async fn team_import(core: CoreState<'_>, json: String) -> Res<Value> {
+    blocking(core, move |c| c.team_import(&json)).await
+}
+
+#[tauri::command]
+pub async fn team_export(core: CoreState<'_>, team: String) -> Res<String> {
+    blocking(core, move |c| c.team_export(&team)).await
+}
+
+#[tauri::command]
+pub async fn team_launch(core: CoreState<'_>, form: crate::teams::LaunchForm) -> Res<Value> {
+    blocking(core, move |c| c.team_launch(form)).await
+}
+
+#[tauri::command]
+pub async fn feature_view(core: CoreState<'_>, feature: String) -> Res<Value> {
+    blocking(core, move |c| c.feature_view(&feature)).await
+}
+
+#[tauri::command]
+pub async fn feature_doc(core: CoreState<'_>, feature: String, name: String) -> Res<String> {
+    blocking(core, move |c| c.feature_doc(&feature, &name)).await
+}
+
+#[tauri::command]
+pub async fn board_view(core: CoreState<'_>, project: String) -> Res<Value> {
+    blocking(core, move |c| c.board_view(&project)).await
+}
+
+#[tauri::command]
+pub async fn board_sync(core: CoreState<'_>, project: String) -> Res<Value> {
+    blocking(core, move |c| c.board_sync(&project)).await
+}
+
+#[tauri::command]
+pub async fn task_create(core: CoreState<'_>, form: Value) -> Res<Value> {
+    blocking(core, move |c| c.task_create(form)).await
+}
+
+#[tauri::command]
+pub async fn task_update(
+    core: CoreState<'_>,
+    id: u64,
+    status: Option<String>,
+    node: Option<String>,
+    note: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| c.task_update(id, status.as_deref(), node.as_deref(), note.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn run_act(core: CoreState<'_>, run: String, action: String) -> Res<Value> {
+    blocking(core, move |c| c.run_act(&run, &action)).await
+}
+
+#[tauri::command]
+pub async fn message_send(core: CoreState<'_>, run: String, to: String, body: String) -> Res<Value> {
+    blocking(core, move |c| c.message_send(&run, &to, &body)).await
+}
+
+#[tauri::command]
+pub async fn project_settings(core: CoreState<'_>, project: String) -> Res<Value> {
+    blocking(core, move |c| c.project_settings(&project)).await
+}
+
+#[tauri::command]
+pub async fn project_settings_set(
+    core: CoreState<'_>,
+    project: String,
+    form: crate::teams::ProjectSettingsForm,
+) -> Res<Value> {
+    blocking(core, move |c| c.project_settings_set(&project, form)).await
+}
+
 #[tauri::command]
 pub async fn gate_detail(core: CoreState<'_>, item: String) -> Res<Value> {
     blocking(core, move |c| c.gate_detail(&item)).await
