@@ -2307,6 +2307,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "orch-team"
+version = "0.1.0"
+dependencies = [
+ "governor",
+ "proptest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "orchd"
 version = "0.1.0"
 dependencies = [
