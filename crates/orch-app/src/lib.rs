@@ -3,6 +3,7 @@
 pub mod commands;
 pub mod core;
 pub mod devctl;
+pub mod ecosystem;
 pub mod editor;
 pub mod fonts;
 pub mod inbox;
@@ -116,6 +117,14 @@ pub fn run() {
             commands::project_settings,
             commands::project_settings_set,
             commands::planner_view,
+            commands::integrations_view,
+            commands::integration_secret_set,
+            commands::integration_secret_remove,
+            commands::integration_test,
+            commands::mcp_registry_view,
+            commands::mcp_server_save,
+            commands::mcp_server_delete,
+            commands::mcp_server_test,
             commands::governor_act,
             commands::project_add,
             commands::project_clone,

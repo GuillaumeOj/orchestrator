@@ -429,6 +429,33 @@ INSERT INTO teams_v3 SELECT COALESCE(project_id, ''), id, name, version, data, u
 DROP TABLE teams;
 ALTER TABLE teams_v3 RENAME TO teams;
 "#,
+    // 4: P3 MCP server registry (global '' and per-project overrides, with
+    // the last FR-604 probe) and integrations (status only: secrets live in
+    // the Keychain, NFR-3). Seeds the `penpot` connector entry once.
+    r#"
+CREATE TABLE mcp_registry (
+    scope TEXT NOT NULL DEFAULT '',
+    id TEXT NOT NULL,
+    data TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    detail TEXT,
+    checked_at_ms INTEGER,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (scope, id)
+);
+
+CREATE TABLE integrations (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    detail TEXT,
+    account TEXT,
+    checked_at_ms INTEGER
+);
+
+INSERT INTO mcp_registry(scope, id, data, updated_at_ms) VALUES ('', 'penpot',
+  '{"id":"penpot","name":"Penpot","kind":"connector","allow_secret_env":false,"connector_name":"claude.ai Penpot","design_tool":"penpot"}',
+  0);
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

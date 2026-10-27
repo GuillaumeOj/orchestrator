@@ -22,6 +22,7 @@ make ci        # everything CI runs (CI calls these same targets)
 - [`crates/orch-protocol`](crates/orch-protocol/README.md): versioned messages and socket helpers for the local bus.
 - [`crates/orch-hook`](crates/orch-hook/README.md), [`crates/orch-status`](crates/orch-status/README.md): the hook and statusLine commands Claude Code runs for each agent.
 - [`crates/orch-mcp`](crates/orch-mcp/README.md): the orchestrator's MCP server (commit, request_pr outside the sandbox).
+- [`crates/orch-secrets`](crates/orch-secrets/README.md): integration tokens in the macOS Keychain (never in the database, logs or agents).
 - [`crates/orch-store`](crates/orch-store/README.md): SQLite persistence (WAL, migrations, events, transcript search).
 - [`crates/orch-git`](crates/orch-git/README.md): project registry and git service (status, fetch, worktrees, diffs, `gh`).
 - [`crates/agent-runtime`](crates/agent-runtime/README.md): the headless agent runtime (spawn `claude` in PTYs, observe, steer, recover).

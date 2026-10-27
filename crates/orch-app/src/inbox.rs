@@ -202,8 +202,9 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 detail: al.body.clone(),
                 preview: None,
                 created_ms: al.created_ms,
-                actions: vec!["a", "o"],
-                payload: Value::Null,
+                actions: if al.payload["alert"] == "mcp_needs_auth" { vec!["a", "o", "r"] } else { vec!["a", "o"] },
+                // `{"alert": "mcp_needs_auth", "server", "name", "roles"}` (FR-604).
+                payload: if al.payload.is_object() { al.payload.clone() } else { Value::Null },
             },
         };
         out.push(item);

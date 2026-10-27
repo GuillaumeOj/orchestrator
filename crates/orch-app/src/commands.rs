@@ -260,6 +260,54 @@ pub async fn project_settings_set(
     blocking(core, move |c| c.project_settings_set(&project, form)).await
 }
 
+// ---- P3 integrations and the MCP registry (api-contract §1–2)
+
+#[tauri::command]
+pub async fn integrations_view(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, |c| c.integrations_view()).await
+}
+
+/// The secret is wrapped at once and never logged or returned (NFR-3).
+#[tauri::command]
+pub async fn integration_secret_set(core: CoreState<'_>, id: String, secret: String) -> Res<Value> {
+    let secret = orch_secrets::Secret::new(secret);
+    blocking(core, move |c| c.integration_secret_set(&id, secret)).await
+}
+
+#[tauri::command]
+pub async fn integration_secret_remove(core: CoreState<'_>, id: String) -> Res<Value> {
+    blocking(core, move |c| c.integration_secret_remove(&id)).await
+}
+
+#[tauri::command]
+pub async fn integration_test(core: CoreState<'_>, id: String) -> Res<Value> {
+    blocking(core, move |c| c.integration_test(&id)).await
+}
+
+#[tauri::command]
+pub async fn mcp_registry_view(core: CoreState<'_>, project: Option<String>) -> Res<Value> {
+    blocking(core, move |c| c.mcp_registry_view(project.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn mcp_server_save(
+    core: CoreState<'_>,
+    server: orch_team::mcp::McpServer,
+    scope: orch_team::Scope,
+) -> Res<Value> {
+    blocking(core, move |c| c.mcp_server_save(server, scope)).await
+}
+
+#[tauri::command]
+pub async fn mcp_server_delete(core: CoreState<'_>, id: String, scope: orch_team::Scope) -> Res<Value> {
+    blocking(core, move |c| c.mcp_server_delete(&id, scope)).await
+}
+
+#[tauri::command]
+pub async fn mcp_server_test(core: CoreState<'_>, id: String, project: Option<String>) -> Res<Value> {
+    blocking(core, move |c| c.mcp_server_test(&id, project.as_deref())).await
+}
+
 #[tauri::command]
 pub async fn gate_detail(core: CoreState<'_>, item: String) -> Res<Value> {
     blocking(core, move |c| c.gate_detail(&item)).await

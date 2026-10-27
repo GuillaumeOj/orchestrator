@@ -11,6 +11,7 @@ publish = false
 governor = { path = "crates/governor" }
 orch-team = { path = "crates/orch-team" }
 orch-tasks = { path = "crates/orch-tasks" }
+orch-secrets = { path = "crates/orch-secrets" }
 orch-protocol = { path = "crates/orch-protocol" }
 agent-runtime = { path = "crates/agent-runtime" }
 orch-store = { path = "crates/orch-store" }

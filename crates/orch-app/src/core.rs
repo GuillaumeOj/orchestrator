@@ -712,6 +712,14 @@ impl Core {
         }
         if let Some(n) = item.strip_prefix("alert-") {
             let n: u64 = n.parse()?;
+            // An MCP sign-in alert: `open` and `reconnect` say where to go
+            // (decisions D3); it closes once the server is connected again.
+            if matches!(action, "open" | "reconnect") {
+                let payload = rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).map(|i| i.payload.clone()));
+                if let Some(p) = payload.filter(|p| p["alert"] == agent_runtime::registry::NEEDS_AUTH_ALERT) {
+                    return self.mcp_alert_action(&p, action);
+                }
+            }
             rt.store.write(|s| {
                 let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("dismiss".into()));
             })?;
@@ -1136,6 +1144,11 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
     // Permission prompts: the runtime answers from the stored rules only; the
     // app's broker holds the rest for its Inbox (and the pane's own dialog).
     rc.permission_hold = Duration::ZERO;
+    // Unit tests never read or write the user's Keychain.
+    #[cfg(test)]
+    {
+        rc.secrets = Arc::new(orch_secrets::MemorySecrets::default());
+    }
     // Helpers next to the app binary (target/<profile>, or Contents/MacOS in a
     // bundle) are copied to <home>/bin, a stable path outside the .app.
     if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
@@ -1302,6 +1315,42 @@ mod tests {
             recover: false,
             enforce: false,
         })
+    }
+
+    #[test]
+    fn integrations_registry_and_mcp_alerts() {
+        let d = tempfile::Builder::new().prefix("orchapp").tempdir_in("/tmp").unwrap();
+        let core = test_core(d.path());
+        let v = core.integrations_view().unwrap();
+        assert_eq!(v["items"].as_array().unwrap().len(), 5);
+        assert_eq!(v["items"][1]["status"], "not_configured");
+        // The registry starts with the penpot connector.
+        let reg = core.mcp_registry_view(None).unwrap();
+        assert_eq!(reg["servers"][0]["id"], "penpot");
+        assert_eq!(reg["project_overrides"], json!({}));
+        let s: orch_team::mcp::McpServer = serde_json::from_value(
+            json!({"id": "figma", "name": "Figma", "kind": "http", "url": "https://figma.invalid/mcp", "allow_secret_env": false}),
+        )
+        .unwrap();
+        let scope: orch_team::Scope = serde_json::from_value(json!({"kind": "project", "id": "repo"})).unwrap();
+        assert_eq!(core.mcp_server_save(s, scope.clone()).unwrap()["status"], "unknown");
+        assert_eq!(
+            core.mcp_registry_view(Some("repo")).unwrap()["project_overrides"]["figma"]["url"],
+            "https://figma.invalid/mcp"
+        );
+        assert_eq!(core.mcp_server_delete("figma", scope).unwrap()["deleted"], true);
+        // A needs-auth alert carries its payload; open/reconnect say where to go.
+        let rt = core.runtime().unwrap().clone();
+        let penpot = rt.db.mcp_server(&orch_team::Scope::Global, "penpot").unwrap().unwrap();
+        rt.set_mcp_status(&orch_team::Scope::Global, &penpot, orch_team::mcp::McpStatus::NeedsAuth, Some("x")).unwrap();
+        let items = core.state()["inbox"]["items"].clone();
+        let al = items.as_array().unwrap().iter().find(|i| i["payload"]["alert"] == "mcp_needs_auth").unwrap().clone();
+        assert_eq!((al["level"].as_u64(), al["payload"]["server"].as_str()), (Some(2), Some("penpot")));
+        let id = al["id"].as_str().unwrap();
+        assert_eq!(core.inbox_act(id, "reconnect", None).unwrap()["open"], "url");
+        assert_eq!(core.inbox_act(id, "open", None).unwrap(), json!({"open": "settings", "server": "penpot"}));
+        assert_eq!(core.inbox_act(id, "reject", None).unwrap(), json!("dismissed"));
+        core.shutdown();
     }
 
     fn record(id: &str, repo: PathBuf) -> agent_runtime::store::AgentRecord {

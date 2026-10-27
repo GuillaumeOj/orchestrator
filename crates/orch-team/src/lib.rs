@@ -2,6 +2,7 @@
 
 pub mod compile;
 pub mod export;
+pub mod mcp;
 pub mod model;
 pub mod presets;
 pub mod rules;

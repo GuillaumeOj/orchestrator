@@ -405,6 +405,8 @@ impl Runtime {
         let id = agent_id_for(&cx.feature.slug, node, n);
         let cfg = orch_team::compile_node(&cx.team, node, &cx.roles, &cx.fctx()).map_err(|e| anyhow!(e))?;
         let role = Role::from_node(&cfg).map_err(|e| anyhow!(e))?;
+        // Refs that can't work refuse the launch now, not at the first spawn.
+        self.resolve_mcp(&role, Some(&cx.project.id), false).map_err(|e| anyhow!("node {node}: {e:#}"))?;
         if self.store.read(|s| s.agents.get(&id).is_some_and(|a| a.tracker.state != AgentState::Archived)) {
             bail!("agent {id} exists");
         }

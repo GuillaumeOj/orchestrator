@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 mod db;
+mod ecosystem;
 mod entities;
 mod events;
 mod migrations;
@@ -11,6 +12,7 @@ mod transcripts;
 mod util;
 
 pub use db::{Pending, Store, Tx};
+pub use ecosystem::IntegrationRow;
 pub use events::{AuditEntry, Event, Retention};
 pub use migrations::SCHEMA_VERSION;
 pub use model::*;

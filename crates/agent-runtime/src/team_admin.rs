@@ -5,7 +5,7 @@
 use anyhow::{Result, anyhow, bail};
 use orch_protocol::now_ms;
 use orch_store::Task;
-use orch_team::{RoleDef, TaskStatus, Team, rules};
+use orch_team::{RoleDef, TaskStatus, Team, mcp, rules};
 use serde_json::{Value, json};
 
 use crate::runtime::Runtime;
@@ -56,11 +56,34 @@ impl Runtime {
     /// with its validation issues and Rules-panel lines (FR-305).
     pub fn teams_json(&self, project: Option<&str>) -> Result<Value> {
         let roles = self.db.roles(project)?;
+        let reg = self.db.mcp_registry(project)?;
         let teams: Vec<Value> = self
             .db
             .teams(project)?
             .into_iter()
-            .map(|t| json!({"team": t, "issues": issues_json(&t, &roles), "rules": rules::rules_text(&t)}))
+            .map(|t| {
+                let mut issues = issues_json(&t, &roles);
+                // A node whose role's MCP servers can't work (FR-601) is an
+                // issue; one the compile works around is a warning (no block).
+                let mut warnings = vec![];
+                for n in &t.nodes {
+                    if let Some(r) = roles.iter().find(|r| r.id == n.role_id) {
+                        for i in mcp::role_issues(r, &reg) {
+                            let v = json!({"node": n.id, "text": format!("{}: {}", n.id, i.text), "issue": {"kind": "mcp"}});
+                            if i.warning { warnings.push(v) } else { issues.push(v) }
+                        }
+                    }
+                }
+                json!({"team": t, "issues": issues, "warnings": warnings, "rules": rules::rules_text(&t)})
+            })
+            .collect();
+        let roles: Vec<Value> = roles
+            .iter()
+            .map(|r| {
+                let mut v = json!(r);
+                v["issues"] = json!(mcp::role_issues(r, &reg).into_iter().map(|i| i.text).collect::<Vec<_>>());
+                v
+            })
             .collect();
         Ok(json!({"teams": teams, "roles": roles}))
     }

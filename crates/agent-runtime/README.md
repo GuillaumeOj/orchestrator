@@ -312,6 +312,56 @@ new place, the known worktrees are repaired (targeted) and re-locked.
 - **Idle**: "attached" (a terminal attached through `attach`) protects an agent; the UI marks focus
   with `note_user_activity`.
 
+## MCP registry, integrations and auth status (P3: FR-601, FR-604, FR-1202, FR-1203, NFR-3)
+
+- **Registry refs** (`Role.mcp_refs`, from `RoleDef.mcp_refs`) are resolved at **each spawn**
+  (`registry.rs`, project override > global) into the agent's `mcpServers`; the agent record keeps
+  the ids only, so a registry edit applies at the next spawn. A launch checks them too
+  (`add_team_agent`). A **connector** (claude.ai) is never put in `--mcp-config` (Claude Code loads
+  it from the user's login); on a strict-MCP role it turns `--strict-mcp-config` off (it would hide
+  the connector) and `teams_view` lists it under the team's `warnings`.
+- **Secrets** live in the Keychain (`orch-secrets`, `RuntimeConfig.secrets`). An MCP `env` value
+  `keychain:<account>` is resolved into that server's entry of `mcp.json` only when the entry's
+  `allow_secret_env` is on; otherwise the spawn (and the launch) is refused. Nothing else of an
+  agent (env, argv, settings, gitconfig) ever carries a token: `no_integration_token_reaches_an_agent`.
+- **Integrations** (`integrations.rs`): GitHub from `gh auth status`; Linear (`POST
+  api.linear.app/graphql`, `{ viewer organization }`) and Notion (`GET api.notion.com/v1/users/me`)
+  with the Keychain token; Penpot and Figma from the registry entries tagged `design_tool`. Only the
+  status is stored (`integrations` table).
+- **Network**: `net.rs` runs `/usr/bin/curl` (system TLS and proxies, no TLS stack in the app) with
+  the headers on **stdin** (`-H @-`), so a token is never on a command line. Tests use `FakeNet`.
+
+### What the probe can see (verified 2026-10-27, Claude Code **2.1.311**, not 2.1.302)
+
+- **OAuth remote servers answer 401 to the core whatever the user's sign-in.** `initialize` without
+  a token to `mcp.linear.app/mcp`, `mcp.notion.com/mcp` and `mcp.figma.com/mcp` all return `401`
+  with `WWW-Authenticate: Bearer … resource_metadata=…`. Claude Code keeps the OAuth token (FR-1206),
+  the app never has it, so the spec's "401/403 → needs_auth" would flag every OAuth server forever.
+  The probe therefore maps a 401/403 **that announces OAuth** (`resource_metadata` or `OAuth` in
+  `WWW-Authenticate`) to `unknown` ("Claude Code keeps the sign-in"), and a 401/403 without it to
+  `needs_auth`. 2xx → `connected`; anything else → `error`.
+- **Claude Code doesn't fail the calls of a server that needs a sign-in: it replaces its tools.**
+  An unauthenticated OAuth server or claude.ai connector shows up as `mcp__<server>__authenticate`
+  (and `__complete_authentication`) instead of its own tools. So the runtime marks a server
+  `needs_auth` when an agent's hook shows a call to one of those (PreToolUse/PostToolUse), or a
+  `PostToolUseFailure` on `mcp__<server>__*` whose error looks like auth (401, 403, unauthorized,
+  token expired, …); a successful `PostToolUse` on one of its tools marks it `connected` (which
+  closes the alert). This is also how a **connector** gets a status (the probe says `unknown`).
+- **Tool names**: a connector "claude.ai Penpot Perso" appears as `mcp__claude_ai_Penpot_Perso__…`
+  (non `[A-Za-z0-9_-]` → `_`). An entry's `connector_name` matches that prefix and longer names
+  ("claude.ai Penpot" matches "claude.ai Penpot Perso"), so the seeded `penpot` entry works with a
+  personal connector name.
+- `claude mcp list` health-checks the user's own servers (and prints their URLs, tokens in query
+  strings included): not used, it would read the user's config and is slow.
+- **stdio**: spawned with its env (Keychain values only with the opt-in), `initialize`, then
+  `notifications/initialized` + `tools/list`, all within 10 s, then killed. An auth-looking error
+  or stderr line → `needs_auth`.
+- **When**: on `mcp_server_test` / `integration_test` (Settings, Test), at each agent spawn (a thread,
+  the refs of that agent, connectors skipped), and every 30 min for the servers of running agents.
+- **Inbox**: `needs_auth` raises one alert per server (`{"alert":"mcp_needs_auth","server","name",
+  "roles"}`, level 2), not repeated while one is pending; `connected` (probe or a successful call)
+  closes it. The app answers its `open` / `reconnect` with where to go (decisions D3).
+
 ## Known gaps
 
 - **Commits from a sandboxed worktree fail** (worked around: the core commits, see above) (measured 2026-10-21, Claude Code 2.1.302): sandboxed
