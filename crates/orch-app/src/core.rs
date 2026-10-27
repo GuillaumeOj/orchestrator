@@ -1676,8 +1676,16 @@ mod tests {
         let pauses = rt.db.actions(50).unwrap().iter().filter(|a| a.kind_name() == "pause_all").count();
         assert_eq!(pauses, 2, "the first start's pause row is kept next to the re-applied one");
         core.governor_act("resume_all", None).unwrap();
+        // A sprint needs working time left today: a calendar of every hour of
+        // every day, so the test passes at any time (CI runs at night too).
+        use governor::{Day, WorkBlock, jiff::civil::time};
+        let mut plan = rt.with_governor(|g| g.plan().clone());
+        let days = [Day::Mon, Day::Tue, Day::Wed, Day::Thu, Day::Fri, Day::Sat, Day::Sun];
+        plan.calendar.blocks =
+            days.map(|day| WorkBlock { day, start: time(0, 0, 0, 0), end: time(23, 59, 59, 0), weight: 1.0 }).into();
+        rt.replan(plan).unwrap();
         let sprint = rt.governor_act(|g, now| (g.start_sprint(5.0, now), vec![]));
-        assert!(sprint.is_ok());
+        assert!(sprint.is_ok(), "{sprint:?}");
         // A sprint carries over a switch, both ways (it used to be refused).
         core.set_enforce(false).unwrap();
         assert!(rt.with_governor(|g| g.sprint().is_some()), "sprint carried over");
