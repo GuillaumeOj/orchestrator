@@ -143,6 +143,10 @@ pub struct PacingPolicy {
     pub five_hour_guard_exit_pct: f64,
     /// Tau of the 5h burn-rate EWMA, wall hours.
     pub five_hour_tau_h: f64,
+    /// 5h-window pp per weekly pp, until the 5h cost is fitted from readings
+    /// (Run now's cost in the 5h window, FR-809).
+    #[serde(default = "default_five_hour_per_weekly_pct")]
+    pub five_hour_per_weekly_pct: f64,
     /// Added to whole-percent readings below 100 (0.5 = read `n` as `n + 0.5`).
     pub reading_offset_pct: f64,
     /// An observed value older than this is stale and W becomes estimated.
@@ -177,6 +181,10 @@ pub struct PacingPolicy {
 
 const UNATTRIBUTED_PRIOR_HOURS: f64 = 48.0;
 
+fn default_five_hour_per_weekly_pct() -> f64 {
+    5.0
+}
+
 fn default_unattributed_prior_hours() -> f64 {
     UNATTRIBUTED_PRIOR_HOURS
 }
@@ -191,6 +199,7 @@ impl Default for PacingPolicy {
             five_hour_guard_pct: 85.0,
             five_hour_guard_exit_pct: 80.0,
             five_hour_tau_h: 2.0,
+            five_hour_per_weekly_pct: default_five_hour_per_weekly_pct(),
             reading_offset_pct: 0.5,
             fresh_minutes: 15,
             burn_tau_h: 24.0,

@@ -87,6 +87,18 @@ pub enum ActionKind {
     },
     PauseAll,
     ResumeAll,
+    /// One agent paused by the user: its turns stop at the next tool boundary.
+    PauseAgent {
+        agent: AgentId,
+    },
+    ResumeAgent {
+        agent: AgentId,
+    },
+    /// A queued turn dropped by the user.
+    Cancel {
+        entry: EntryId,
+        agent: AgentId,
+    },
     RunNow {
         entry: EntryId,
         agent: AgentId,
@@ -106,6 +118,7 @@ pub enum Undo {
     LiftDeferral { allocation: AllocationId },
     EndSprint,
     ResumeAll,
+    ResumeAgent { agent: AgentId },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -151,6 +164,9 @@ impl GovernorAction {
             ActionKind::Sprint { .. } => "sprint",
             ActionKind::PauseAll => "pause_all",
             ActionKind::ResumeAll => "resume_all",
+            ActionKind::PauseAgent { .. } => "pause_agent",
+            ActionKind::ResumeAgent { .. } => "resume_agent",
+            ActionKind::Cancel { .. } => "cancel",
             ActionKind::RunNow { .. } => "run_now",
             ActionKind::Alert { .. } => "alert",
             ActionKind::ReserveExhausted => "reserve_exhausted",

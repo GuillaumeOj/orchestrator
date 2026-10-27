@@ -41,6 +41,12 @@ pub enum QueueReason {
     DeferredUntilReset,
     HardCap,
     PausedAll,
+    /// The user paused this agent (until Resume).
+    PausedAgent,
+    /// macOS memory pressure lowered the live-agent cap (FR-203).
+    MemoryPressure {
+        cap: u32,
+    },
     /// Waiting behind other queued work picked first by fair queuing.
     BehindQueue,
 }
@@ -56,6 +62,8 @@ impl std::fmt::Display for QueueReason {
             QueueReason::DeferredUntilReset => write!(f, "deferred until the weekly reset"),
             QueueReason::HardCap => write!(f, "allocation hard cap reached"),
             QueueReason::PausedAll => write!(f, "paused by the user"),
+            QueueReason::PausedAgent => write!(f, "agent paused by the user"),
+            QueueReason::MemoryPressure { cap } => write!(f, "memory pressure: {cap} live agents allowed"),
             QueueReason::BehindQueue => write!(f, "waiting behind higher-priority work"),
         }
     }
@@ -84,9 +92,23 @@ pub struct QueueEntry {
     pub estimated_start: Option<Timestamp>,
     /// Estimated cost of running it now, pp of the week ("Run now ≈ +2 pp").
     pub estimated_cost_pct: f64,
+    /// The same cost in % of the 5h window, once a 5h reading was seen.
+    #[serde(default)]
+    pub estimated_cost_5h_pct: Option<f64>,
+    /// The window that holds it: Run now shows its cost in this one (FR-809).
+    #[serde(default = "weekly")]
+    pub binding: Window,
     pub self_started: bool,
     #[serde(default)]
     pub ceiling: Option<TurnCeiling>,
+    /// Starting it needs a new `claude` process (a suspended agent): it waits
+    /// for a process slot under memory pressure (FR-203).
+    #[serde(default)]
+    pub needs_spawn: bool,
+}
+
+fn weekly() -> Window {
+    Window::Weekly
 }
 
 impl QueueEntry {
@@ -126,8 +148,11 @@ mod tests {
             reason: QueueReason::BehindQueue,
             estimated_start: None,
             estimated_cost_pct: 0.5,
+            estimated_cost_5h_pct: None,
+            binding: Window::Weekly,
             self_started: false,
             ceiling: None,
+            needs_spawn: false,
         }
     }
 

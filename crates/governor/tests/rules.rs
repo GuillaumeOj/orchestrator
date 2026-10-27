@@ -865,3 +865,173 @@ fn sustained_outside_usage_still_turns_red() {
     assert_eq!(g.state(), PressureState::Red, "{s:?}");
     assert!(s.projected > 100.0, "{s:?}");
 }
+
+// ---------------------------------------------------------------- P1b: transparency, controls, memory
+
+#[test]
+fn run_now_cost_is_in_the_window_that_binds_it() {
+    let mut g = governor();
+    for a in ["A-1", "A-2", "B-1"] {
+        g.request_turn(task(a, &a[..1], Tier::Normal), at(0));
+    }
+    g.request_turn(task("C-1", "C", Tier::Low), at(1));
+    let e = &g.queue()[0];
+    assert_eq!(e.binding, Window::Weekly);
+    assert_eq!(e.estimated_cost_5h_pct, None, "no 5h reading yet");
+
+    // F above the guard: the 5h window holds it. k = 10, 5 % of the 5h
+    // window per weekly pp, first turn estimate 0.5 pp → 2.5 % of the 5h window.
+    g.ingest(&five(at(10), "A-1", 86.0, at(100)));
+    g.tick(at(10));
+    let e = g.queue().iter().find(|e| e.agent == AgentId::from("C-1")).unwrap().clone();
+    assert_eq!(e.binding, Window::FiveHour);
+    assert!((e.estimated_cost_5h_pct.unwrap() - 2.5).abs() < 1e-9, "{e:?}");
+    g.run_now(e.id, at(11)).unwrap();
+    let a = g.actions().iter().rev().find(|a| a.kind_name() == "run_now").unwrap();
+    assert!(a.expected_effect.contains("5h window") && a.expected_effect.contains("pp of the week"), "{a:?}");
+}
+
+#[test]
+fn the_5h_cost_is_fitted_from_readings_of_the_same_window() {
+    let mut g = governor();
+    g.request_turn(task("A-1", "A", Tier::High), at(0));
+    g.ingest(&five(at(0), "A-1", 10.0, at(300)));
+    // 40 cost units for 8 pp of the 5h window: 5 units per 5h pp.
+    g.ingest(&UsageSample::cost(at(20), "A-1".into(), 40.0));
+    g.ingest(&five(at(21), "A-1", 18.0, at(300)));
+    g.pause_all(at(22));
+    g.request_turn(task("B-1", "B", Tier::Normal), at(23));
+    let e = &g.queue()[0];
+    // Turn estimate 5 units (initial: no autonomous turn ended yet) / 5 units per pp.
+    assert!((e.estimated_cost_5h_pct.unwrap() - 1.0).abs() < 1e-9, "{e:?}");
+}
+
+#[test]
+fn the_preview_never_shows_a_held_entry_as_next() {
+    let mut p = plan();
+    p.allocations[1].hard_cap_pct = Some(5.0);
+    let mut g = Governor::new(p, policy(), start()).unwrap();
+    g.request_turn(task("B-1", "B", Tier::Normal), at(0));
+    g.ingest(&UsageSample::cost(at(30), "B-1".into(), 60.0));
+    g.turn_ended(&"B-1".into(), at(31));
+    g.request_turn(task("B-1", "B", Tier::Normal), at(32));
+    for a in ["A-1", "A-2", "A-3"] {
+        g.request_turn(task(a, "A", Tier::High), at(33));
+    }
+    g.request_turn(task("C-1", "C", Tier::Low), at(34));
+    assert_eq!(g.queue().len(), 2);
+    let next = g.next_action_preview(at(35)).next_release.expect("one eligible").0;
+    let e = g.queue().iter().find(|e| e.id == next).unwrap();
+    assert_eq!(e.agent, AgentId::from("C-1"), "B-1 is over its hard cap");
+}
+
+#[test]
+fn shadow_mode_logs_a_tool_call_of_a_turn_it_never_admitted() {
+    let mut g = Governor::new(WeeklyPlan { shadow_mode: true, ..plan() }, policy(), start()).unwrap();
+    let d = g.tool_call(&tool("stray"), at(1));
+    assert_eq!(d.effective, Verdict::Admit);
+    let a = g.actions().iter().find(|a| a.kind_name() == "hold_tool_call").expect("logged");
+    assert_eq!(a.mode, ActionMode::Shadow);
+}
+
+#[test]
+fn resume_all_undoes_the_pause_and_undo_logs_the_resume() {
+    let mut g = governor();
+    let p1 = g.pause_all(at(0));
+    g.resume_all(at(1));
+    assert_eq!(g.action(p1).unwrap().undone_at, Some(at(1)));
+    assert!(g.undo(p1, at(2)).is_err(), "already undone");
+    let p2 = g.pause_all(at(3));
+    g.undo(p2, at(4)).unwrap();
+    assert!(!g.is_paused_all());
+    assert_eq!(g.action(p2).unwrap().undone_at, Some(at(4)));
+    assert_eq!(count(&g, "resume_all"), 2);
+}
+
+#[test]
+fn deferral_and_hard_caps_stop_a_running_turn_at_its_next_tool_call() {
+    let mut p = plan();
+    p.allocations[1].hard_cap_pct = Some(5.0);
+    let mut g = Governor::new(p, policy(), start()).unwrap();
+    g.request_turn(task("B-1", "B", Tier::Normal), at(0));
+    assert_eq!(g.tool_call(&tool("B-1"), at(1)).effective, Verdict::Admit);
+    g.ingest(&UsageSample::cost(at(30), "B-1".into(), 60.0));
+    let d = g.tool_call(&tool("B-1"), at(31));
+    assert_eq!(d.effective, Verdict::Deny { reason: DenyReason::PausedByGovernor { cause: QueueReason::HardCap } });
+    assert!(!g.is_live(&"B-1".into()));
+
+    let mut g = governor();
+    g.request_turn(task("C-1", "C", Tier::Low), at(0));
+    drive_red(&mut g, 40);
+    let ask = g.next_action_preview(at(41)).pending_ask.unwrap().0;
+    g.answer_ask(ask, true, at(41)).unwrap();
+    let d = g.tool_call(&tool("C-1"), at(42));
+    let cause = QueueReason::DeferredUntilReset;
+    assert_eq!(d.effective, Verdict::Deny { reason: DenyReason::PausedByGovernor { cause } });
+}
+
+#[test]
+fn cancel_drops_the_entry_and_logs_it() {
+    let mut g = governor();
+    g.pause_all(at(0));
+    g.request_turn(task("C-1", "C", Tier::Low), at(1));
+    let e = g.queue()[0].id;
+    assert_eq!(g.cancel(e, at(2)), Some(AgentId::from("C-1")));
+    assert!(g.queue().is_empty());
+    assert_eq!(g.cancel(e, at(3)), None);
+    assert_eq!(count(&g, "cancel"), 1);
+}
+
+#[test]
+fn pausing_one_agent_holds_only_that_agent() {
+    let mut g = governor();
+    g.request_turn(task("A-1", "A", Tier::High), at(0));
+    g.request_turn(task("B-1", "B", Tier::Normal), at(0));
+    let id = g.pause_agent(&"A-1".into(), at(1));
+    let cause = QueueReason::PausedAgent;
+    let held = Verdict::Deny { reason: DenyReason::PausedByGovernor { cause: cause.clone() } };
+    assert_eq!(g.tool_call(&tool("A-1"), at(2)).effective, held);
+    assert_eq!(g.tool_call(&tool("B-1"), at(2)).effective, Verdict::Admit);
+    assert_eq!(g.queue()[0].reason, cause);
+    assert_eq!(g.queue()[0].estimated_start, None);
+    // Critical work of a paused agent waits too; the user's own never does.
+    assert!(queue_reason(&g.request_turn(task("A-1", "A", Tier::Critical), at(3))).is_some());
+    let mut r = task("A-1", "A", Tier::High);
+    r.interactive = true;
+    assert_eq!(g.request_turn(r, at(4)).effective, Verdict::Admit);
+    g.turn_ended(&"A-1".into(), at(5));
+    let released = g.undo(id, at(6)).unwrap();
+    assert_eq!(released.len(), 1);
+    assert!(g.paused_agents().is_empty());
+    assert_eq!(count(&g, "resume_agent"), 1);
+}
+
+#[test]
+fn memory_pressure_holds_spawns_even_in_shadow_mode() {
+    let mut g = Governor::new(WeeklyPlan { shadow_mode: true, ..plan() }, policy(), start()).unwrap();
+    assert!(g.set_process_slots(2, 2, at(0)).is_empty());
+    let mut r = task("C-1", "C", Tier::Low);
+    r.needs_spawn = true;
+    let d = g.request_turn(r.clone(), at(1));
+    assert_eq!(queue_reason(&d), Some(QueueReason::MemoryPressure { cap: 2 }));
+    assert_eq!(g.queue()[0].estimated_start, None);
+    // A turn for a live process is not held by memory.
+    assert_eq!(g.request_turn(task("B-1", "B", Tier::Normal), at(1)).effective, Verdict::Admit);
+    let released = g.set_process_slots(1, 2, at(2));
+    assert_eq!(released.len(), 1);
+    assert_eq!(released[0].agent, AgentId::from("C-1"));
+    // The released spawn took the slot.
+    r.agent = "C-2".into();
+    assert_eq!(queue_reason(&g.request_turn(r, at(3))), Some(QueueReason::MemoryPressure { cap: 2 }));
+}
+
+#[test]
+fn memory_pressure_is_one_more_reason_when_enforced() {
+    let mut g = governor();
+    g.set_process_slots(1, 1, at(0));
+    let mut r = task("A-1", "A", Tier::Critical);
+    r.needs_spawn = true;
+    assert_eq!(queue_reason(&g.request_turn(r, at(1))), Some(QueueReason::MemoryPressure { cap: 1 }));
+    let e = g.queue()[0].id;
+    assert!(g.run_now(e, at(2)).is_some(), "Run now overrides the memory cap (FR-203)");
+}

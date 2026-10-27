@@ -93,3 +93,64 @@ fn realigning_the_same_week_keeps_its_usage() {
     replayed.replay(&s, CostClass::Interactive, None);
     same_state(&g, &replayed, at(hours(9.8)));
 }
+
+#[test]
+fn overrides_and_the_queue_survive_a_restart() {
+    let mut live = governor();
+    live.request_turn(task("C-1", "C", Tier::Low), at(0));
+    drive_red(&mut live, 40); // asks to defer C
+    live.start_sprint(3.0, at(41)).unwrap();
+    live.pause_agent(&"B-1".into(), at(42));
+    for a in ["A-1", "A-2"] {
+        live.request_turn(task(a, "A", Tier::High), at(43));
+    }
+    live.request_turn(task("A-3", "A", Tier::High), at(44)); // over Red's cap
+    live.rate_limit_hit(None, Window::FiveHour, at(200), at(45));
+    let carry = live.carry();
+    // Through the store and back.
+    let carry: Carry = serde_json::from_str(&serde_json::to_string(&carry).unwrap()).unwrap();
+    assert_eq!(carry.queue.len(), live.queue().len());
+    assert!(carry.queue.len() >= 2, "{:?}", carry.queue);
+
+    let now = at(46);
+    let mut restarted = Governor::new(plan(), policy(), start()).unwrap();
+    restarted.ingest(&weekly(at(40), "obs", 300.0, 30.0));
+    let released = restarted.restore(carry, |e| e.agent != AgentId::from("A-2"), now);
+    assert!(released.is_empty(), "the 5h limit still holds");
+    let ids = |g: &Governor| g.queue().iter().map(|e| (e.id, e.agent.clone(), e.enqueued_at)).collect::<Vec<_>>();
+    assert_eq!(ids(&restarted), ids(&live).into_iter().filter(|e| e.1 != AgentId::from("A-2")).collect::<Vec<_>>());
+    assert_eq!(restarted.curve().fraction(at(300)), live.curve().fraction(at(300)), "same sprint curve");
+    assert!(restarted.paused_agents().contains(&AgentId::from("B-1")));
+    let ask = restarted.next_action_preview(now).pending_ask.expect("the ask is back");
+    assert_eq!(ask.1, live.next_action_preview(now).pending_ask.unwrap().1, "same deadline");
+    // New entries never reuse a restored id.
+    restarted.request_turn(task("B-2", "B", Tier::Normal), now);
+    let mut seen: Vec<_> = restarted.queue().iter().map(|e| e.id).collect();
+    seen.dedup();
+    assert_eq!(seen.len(), restarted.queue().len());
+    // Restored actions can be undone.
+    let sprint = restarted.sprint().expect("sprint restored").0;
+    restarted.undo(sprint, now).unwrap();
+    assert_eq!(
+        restarted.curve().fraction(at(300)),
+        Governor::new(plan(), policy(), start()).unwrap().curve().fraction(at(300))
+    );
+}
+
+#[test]
+fn week_bound_overrides_do_not_cross_into_the_next_week() {
+    let mut live = governor();
+    live.start_sprint(3.0, at(41)).unwrap();
+    live.pause_all(at(42));
+    let carry = live.carry();
+    let next = WeeklyPlan {
+        id: "next".into(),
+        week_start: reset(),
+        reset_at: reset().checked_add(jiff::SignedDuration::from_hours(168)).unwrap(),
+        ..plan()
+    };
+    let mut g = Governor::new(next, policy(), reset()).unwrap();
+    g.restore(carry, |_| true, reset());
+    assert!(g.sprint().is_none());
+    assert!(g.is_paused_all(), "a pause is the user's, whatever the week");
+}

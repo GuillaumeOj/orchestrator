@@ -1,6 +1,6 @@
 //! The Governor: measurements, pressure, admission, queue and actions (ADR-007).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
@@ -34,6 +34,10 @@ pub struct TurnRequest {
     pub self_started: bool,
     #[serde(default)]
     pub ceiling: Option<TurnCeiling>,
+    /// The agent is suspended: starting the turn spawns a `claude` process,
+    /// which waits for a process slot under memory pressure (FR-203).
+    #[serde(default)]
+    pub needs_spawn: bool,
 }
 
 impl TurnRequest {
@@ -46,6 +50,7 @@ impl TurnRequest {
             kind: TurnKind::Task,
             self_started: false,
             ceiling: None,
+            needs_spawn: false,
         }
     }
 }
@@ -178,6 +183,43 @@ pub struct ForecastSnapshot {
     /// Interactive and critical usage this week, pp.
     pub interactive_used: f64,
     pub calibration: Calibration,
+}
+
+/// A sprint applied to the curve, kept so a restart can apply it again.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SprintRecord {
+    pub at: Timestamp,
+    pub until: Timestamp,
+    /// The boost passed to [`Curve::with_sprint`].
+    pub boost: f64,
+    pub extra_pp: f64,
+}
+
+/// What a restart would otherwise lose (ADR-007 "State across restarts"): the
+/// user's overrides, the Governor's own holds and its queue. The samples are
+/// replayed separately. The host stores it and gives it to
+/// [`Governor::restore`] on the rebuilt Governor.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Carry {
+    /// The plan week the week-bound parts (deferrals, ask, sprints) belong to.
+    #[serde(default)]
+    pub week_start: Option<Timestamp>,
+    #[serde(default)]
+    pub paused_all: bool,
+    #[serde(default)]
+    pub paused_agents: Vec<AgentId>,
+    #[serde(default)]
+    pub deferred: Vec<AllocationId>,
+    /// A deferral ask still waiting: its allocation and deadline.
+    #[serde(default)]
+    pub pending_ask: Option<(AllocationId, Timestamp)>,
+    #[serde(default)]
+    pub sprints: Vec<SprintRecord>,
+    /// Plan limits hit (StopFailure `rate_limit`), until their reset.
+    #[serde(default)]
+    pub limits: Vec<(Window, Timestamp)>,
+    #[serde(default)]
+    pub queue: Vec<QueueEntry>,
 }
 
 /// What the Governor will do next (FR-809 next-action preview).
@@ -350,8 +392,14 @@ pub struct Governor {
     last: Option<TickPoint>,
     limits: BTreeMap<Window, Timestamp>,
     paused_all: bool,
+    paused_agents: BTreeSet<AgentId>,
+    /// Live `claude` processes and the memory cap on them (FR-203), from the host.
+    slots: Option<(u32, u32)>,
+    /// Fitted cost per 1 % of the 5h window (Run now's 5h cost, FR-809).
+    k5: Option<f64>,
     deferred: BTreeMap<AllocationId, ActionId>,
     pending_ask: Option<ActionId>,
+    sprints: Vec<SprintRecord>,
     avg_turn_min: f64,
     avg_turn_cost: f64,
     alerts_done: Vec<f64>,
@@ -394,8 +442,12 @@ impl Governor {
             last: None,
             limits: BTreeMap::new(),
             paused_all: false,
+            paused_agents: BTreeSet::new(),
+            slots: None,
+            k5: None,
             deferred: BTreeMap::new(),
             pending_ask: None,
+            sprints: Vec::new(),
             avg_turn_min: 20.0,
             avg_turn_cost: policy.initial_cost_per_pct * 0.5,
             alerts_done: Vec::new(),
@@ -426,6 +478,7 @@ impl Governor {
             self.set_outcome(id, Outcome::Skipped);
         }
         self.deferred.clear();
+        self.sprints.clear();
         self.limits.retain(|_, until| *until > now);
         if self.weekly_obs.is_some_and(|o| o.ts < self.plan.week_start || o.resets_at <= self.plan.week_start) {
             self.weekly_obs = None;
@@ -821,11 +874,32 @@ impl Governor {
                 self.weekly_obs = Some(obs);
                 self.calibrate(obs);
             }
-            Window::FiveHour => self.five_obs = Some(obs),
+            Window::FiveHour => {
+                self.fit_five_hour(obs);
+                self.five_obs = Some(obs);
+            }
         }
         if r.used_pct >= 100.0 {
             self.mark_limit(window, r.resets_at, ts);
         }
+    }
+
+    /// Cost per 5h pp, from two readings of the same 5h window. Outside usage
+    /// in between makes it low, so the 5h cost of Run now errs high.
+    fn fit_five_hour(&mut self, obs: Observation) {
+        let Some(prev) = self.five_obs else { return };
+        let (dp, dc) = (obs.used_pct - prev.used_pct, obs.app_cost - prev.app_cost);
+        if prev.resets_at != obs.resets_at || dp < self.policy.calibration_min_pp || dc <= 0.0 || obs.used_pct >= 100.0
+        {
+            return;
+        }
+        let k5 = dc / dp;
+        self.k5 = Some(self.k5.map_or(k5, |old| old + 0.3 * (k5 - old)));
+    }
+
+    /// Cost per 1 % of the 5h window: fitted, else `k` over the policy's ratio.
+    fn cost_per_five_hour_pct(&self) -> f64 {
+        self.k5.unwrap_or_else(|| self.calib.cost_per_pct() / self.policy.five_hour_per_weekly_pct.max(1e-6))
     }
 
     fn calibrate(&mut self, obs: Observation) {
@@ -906,16 +980,21 @@ impl Governor {
 
     /// The admission checks of ADR-007 for non-interactive work, except the
     /// fair-queuing order. `Ok` means it may run if a slot is free.
+    #[allow(clippy::too_many_arguments)]
     fn check(
         &self,
+        agent: &AgentId,
         alloc: &AllocationId,
         tier: Tier,
         eff_tier: Tier,
-        m: &Metrics,
+        needs_spawn: bool,
         now: Timestamp,
     ) -> Result<(), QueueReason> {
-        if let Some(r) = self.hold_reason(tier != Tier::Critical, now) {
+        if let Some(r) = self.hold_reason(agent, tier != Tier::Critical, now) {
             return Err(r);
+        }
+        if needs_spawn {
+            self.memory_check()?;
         }
         if tier == Tier::Critical {
             return Ok(());
@@ -923,15 +1002,29 @@ impl Governor {
         if self.deferred.contains_key(alloc) {
             return Err(QueueReason::DeferredUntilReset);
         }
-        if let Some(cap) = self.plan.allocation(alloc).and_then(|a| a.hard_cap_pct) {
-            if self.alloc_cost.get(alloc).copied().unwrap_or(0.0) / m.k >= cap {
-                return Err(QueueReason::HardCap);
-            }
+        if self.over_hard_cap(alloc) {
+            return Err(QueueReason::HardCap);
         }
         if self.sm.state == PressureState::Red && eff_tier < self.policy.red_min_tier {
             return Err(QueueReason::RedTier);
         }
         Ok(())
+    }
+
+    /// A new process must wait for a slot under memory pressure (FR-203).
+    /// Enforced in shadow mode too: it is a memory limit, not pacing.
+    fn memory_check(&self) -> Result<(), QueueReason> {
+        match self.slots {
+            Some((live, cap)) if live >= cap => Err(QueueReason::MemoryPressure { cap }),
+            _ => Ok(()),
+        }
+    }
+
+    fn over_hard_cap(&self, alloc: &AllocationId) -> bool {
+        self.plan
+            .allocation(alloc)
+            .and_then(|a| a.hard_cap_pct)
+            .is_some_and(|cap| self.allocation_usage_pct(alloc) >= cap)
     }
 
     fn cap_reason(&self, m: &Metrics) -> QueueReason {
@@ -967,11 +1060,11 @@ impl Governor {
 
         let proposed_reason: Option<QueueReason> = match class {
             CostClass::Interactive => None,
-            _ => match self.check(&req.allocation, req.tier, req.tier, &m, now) {
+            _ => match self.check(&req.agent, &req.allocation, req.tier, req.tier, req.needs_spawn, now) {
                 Err(r) => Some(r),
                 Ok(()) if class == CostClass::Critical => None,
                 Ok(()) if self.live_autonomous() >= self.cap(&m) => Some(self.cap_reason(&m)),
-                Ok(()) if self.queued_ahead(&req, &m, now) => Some(QueueReason::BehindQueue),
+                Ok(()) if self.queued_ahead(&req, now) => Some(QueueReason::BehindQueue),
                 Ok(()) => None,
             },
         };
@@ -982,7 +1075,13 @@ impl Governor {
                 self.stats.admitted += 1;
                 Decision::admit()
             }
-            Some(reason) if self.plan.shadow_mode => {
+            Some(reason) if self.plan.shadow_mode && !matches!(reason, QueueReason::MemoryPressure { .. }) => {
+                // A memory wait is still enforced, behind the policy's reason.
+                if req.needs_spawn {
+                    if let Err(mem) = self.memory_check() {
+                        return self.queue_request(req, mem, now);
+                    }
+                }
                 self.start_live(&req.agent, &req.allocation, req.tier, req.ceiling, class, now);
                 self.stats.admitted += 1;
                 self.log(
@@ -996,27 +1095,30 @@ impl Governor {
                 );
                 self.shadow_override(Verdict::Queue { entry: None, reason, estimated_start: None })
             }
-            Some(reason) => {
-                let kind = if req.self_started { TurnKind::Continue } else { req.kind };
-                let id =
-                    self.enqueue(req.agent, req.allocation, req.tier, kind, req.self_started, req.ceiling, reason, now);
-                self.refresh_queue(now);
-                let e = self.queue.iter().find(|e| e.id == id).expect("just queued");
-                let v =
-                    Verdict::Queue { entry: Some(id), reason: e.reason.clone(), estimated_start: e.estimated_start };
-                Decision::enforced(v)
-            }
+            Some(reason) => self.queue_request(req, reason, now),
         }
     }
 
+    fn queue_request(&mut self, req: TurnRequest, reason: QueueReason, now: Timestamp) -> Decision {
+        let kind = if req.self_started { TurnKind::Continue } else { req.kind };
+        let id = self.enqueue(req.agent, req.allocation, req.tier, kind, req.self_started, req.ceiling, reason, now);
+        if let Some(e) = self.queue.iter_mut().find(|e| e.id == id) {
+            e.needs_spawn |= req.needs_spawn;
+        }
+        self.refresh_queue(now);
+        let e = self.queue.iter().find(|e| e.id == id).expect("just queued");
+        let v = Verdict::Queue { entry: Some(id), reason: e.reason.clone(), estimated_start: e.estimated_start };
+        Decision::enforced(v)
+    }
+
     /// Would an eligible queued entry be released before this request?
-    fn queued_ahead(&self, req: &TurnRequest, m: &Metrics, now: Timestamp) -> bool {
+    fn queued_ahead(&self, req: &TurnRequest, now: Timestamp) -> bool {
         let service = self.service();
         let mine = service.get(&req.allocation).copied().unwrap_or(0.0);
         self.queue.iter().any(|e| {
             let eff = e.aged_tier(now, self.policy.aging_hours);
             !self.live.contains_key(&e.agent)
-                && self.check(&e.allocation, e.tier, eff, m, now).is_ok()
+                && self.check(&e.agent, &e.allocation, e.tier, eff, e.needs_spawn, now).is_ok()
                 && (eff > req.tier || (eff == req.tier && service.get(&e.allocation).copied().unwrap_or(0.0) <= mine))
         })
     }
@@ -1036,6 +1138,15 @@ impl Governor {
                 .unwrap_or(QueueReason::BehindQueue);
             let proposed = Verdict::Deny { reason: DenyReason::PausedByGovernor { cause: cause.clone() } };
             if self.plan.shadow_mode {
+                self.log(
+                    now,
+                    ActionKind::HoldToolCall { agent: req.agent.clone() },
+                    format!("turn not admitted: {cause}"),
+                    "shadow mode: tool allowed anyway".into(),
+                    ActionMode::Shadow,
+                    Outcome::Logged,
+                    None,
+                );
                 return self.shadow_override(proposed);
             }
             self.stats.tool_calls_denied += 1;
@@ -1076,7 +1187,20 @@ impl Governor {
             }
         }
 
-        let Some(cause) = self.hold_reason(class == CostClass::Autonomous, now) else { return Decision::admit() };
+        let autonomous = class == CostClass::Autonomous;
+        let cause = self.hold_reason(&req.agent, autonomous, now).or_else(|| {
+            // Deferral and hard caps also stop a running autonomous turn at
+            // its next tool boundary, not only the next turn (FR-811).
+            let alloc = &self.live.get(&req.agent)?.allocation;
+            if !autonomous {
+                None
+            } else if self.deferred.contains_key(alloc) {
+                Some(QueueReason::DeferredUntilReset)
+            } else {
+                self.over_hard_cap(alloc).then_some(QueueReason::HardCap)
+            }
+        });
+        let Some(cause) = cause else { return Decision::admit() };
         let proposed = Verdict::Deny { reason: DenyReason::PausedByGovernor { cause: cause.clone() } };
         let effect = if self.plan.shadow_mode {
             "shadow mode: tool allowed anyway"
@@ -1135,11 +1259,13 @@ impl Governor {
         Decision { effective: Verdict::Admit, proposed }
     }
 
-    /// Holds that apply to running turns too: Pause all, a hit limit, and (for
-    /// autonomous work) F above the 5h guard.
-    fn hold_reason(&self, five_hour_guard_applies: bool, now: Timestamp) -> Option<QueueReason> {
+    /// Holds that apply to running turns too: Pause all, a paused agent, a hit
+    /// limit, and (for autonomous work) F above the 5h guard.
+    fn hold_reason(&self, agent: &AgentId, five_hour_guard_applies: bool, now: Timestamp) -> Option<QueueReason> {
         if self.paused_all {
             Some(QueueReason::PausedAll)
+        } else if self.paused_agents.contains(agent) {
+            Some(QueueReason::PausedAgent)
         } else if let Some((window, _)) = self.active_limit(now) {
             Some(QueueReason::LimitReached { window })
         } else if five_hour_guard_applies
@@ -1199,8 +1325,11 @@ impl Governor {
             reason: reason.clone(),
             estimated_start: None,
             estimated_cost_pct: self.avg_turn_cost / k,
+            estimated_cost_5h_pct: None,
+            binding: Window::Weekly,
             self_started,
             ceiling,
+            needs_spawn: false,
         });
         self.stats.queued += 1;
         *self.stats.queued_by_reason.entry(reason_key(&reason).into()).or_insert(0) += 1;
@@ -1233,9 +1362,8 @@ impl Governor {
 
     fn release_queue(&mut self, now: Timestamp) -> Vec<Release> {
         let mut out = Vec::new();
-        if self.plan.shadow_mode {
-            return out;
-        }
+        // In shadow mode the queue only holds memory waits (FR-203).
+        let shadow = self.plan.shadow_mode;
         let m = self.metrics(now);
         self.age_queue(now);
         loop {
@@ -1245,15 +1373,27 @@ impl Governor {
                 .iter()
                 .enumerate()
                 .filter(|(_, e)| !self.live.contains_key(&e.agent))
-                .filter(|(_, e)| self.check(&e.allocation, e.tier, e.effective_tier, &m, now).is_ok())
+                .filter(|(_, e)| {
+                    if shadow {
+                        !e.needs_spawn || self.memory_check().is_ok()
+                    } else {
+                        self.check(&e.agent, &e.allocation, e.tier, e.effective_tier, e.needs_spawn, now).is_ok()
+                    }
+                })
                 .min_by(|(_, a), (_, b)| release_cmp(a, b, &service))
                 .map(|(i, _)| i);
             let Some(idx) = first else { break };
             let class = CostClass::of(false, self.queue[idx].tier);
-            if class == CostClass::Autonomous && self.live_autonomous() >= self.cap(&m) {
+            if !shadow && class == CostClass::Autonomous && self.live_autonomous() >= self.cap(&m) {
                 break;
             }
             let first = self.queue.remove(idx);
+            if first.needs_spawn {
+                // The spawn takes a slot until the host reports again.
+                if let Some((live, _)) = &mut self.slots {
+                    *live += 1;
+                }
+            }
             self.start_live(&first.agent, &first.allocation, first.tier, first.ceiling, class, now);
             self.stats.released += 1;
             let waited = hours_between(first.enqueued_at, now);
@@ -1308,7 +1448,7 @@ impl Governor {
         let mut updates = Vec::with_capacity(order.len());
         for idx in order {
             let e = &self.queue[idx];
-            let update = match self.check(&e.allocation, e.tier, e.effective_tier, &m, now) {
+            let update = match self.check(&e.agent, &e.allocation, e.tier, e.effective_tier, e.needs_spawn, now) {
                 Err(r) => {
                     let start = self.estimate_start(&r, e, &m, now);
                     (r, start)
@@ -1322,17 +1462,26 @@ impl Governor {
             updates.push((idx, update));
         }
         let cost_pct = self.avg_turn_cost / m.k;
+        let cost_5h = self.five_obs.map(|_| self.avg_turn_cost / self.cost_per_five_hour_pct());
+        let guard5 = self.guard5;
         for (idx, (reason, start)) in updates {
             let q = &mut self.queue[idx];
+            q.binding = match reason {
+                QueueReason::LimitReached { window } => window,
+                QueueReason::FiveHourGuard => Window::FiveHour,
+                _ if guard5 => Window::FiveHour,
+                _ => Window::Weekly,
+            };
             q.reason = reason;
             q.estimated_start = start;
             q.estimated_cost_pct = cost_pct;
+            q.estimated_cost_5h_pct = cost_5h;
         }
     }
 
     fn estimate_start(&self, r: &QueueReason, e: &QueueEntry, m: &Metrics, now: Timestamp) -> Option<Timestamp> {
         match r {
-            QueueReason::PausedAll => None,
+            QueueReason::PausedAll | QueueReason::PausedAgent | QueueReason::MemoryPressure { .. } => None,
             QueueReason::LimitReached { window } => self.limits.get(window).copied(),
             QueueReason::FiveHourGuard => m.f_resets_at,
             QueueReason::DeferredUntilReset | QueueReason::HardCap => Some(self.plan.reset_at),
@@ -1666,15 +1815,15 @@ impl Governor {
             Undo::EndSprint => {
                 // Sprints stack on the curve; ending one restores the plan's curve, so all end.
                 self.curve = self.base_curve.clone();
+                self.sprints.clear();
                 for a in self.actions.iter_mut().filter(|a| a.id != id) {
                     if matches!(a.action, ActionKind::Sprint { .. }) && a.undone_at.is_none() {
                         a.undone_at = Some(now);
                     }
                 }
             }
-            Undo::ResumeAll => {
-                self.paused_all = false;
-            }
+            Undo::ResumeAll => return Ok(self.resume_all(now)),
+            Undo::ResumeAgent { agent } => return Ok(self.resume_agent(&agent, now)),
         }
         if let Some(a) = self.action_mut(id) {
             a.undone_at = Some(now);
@@ -1703,6 +1852,7 @@ impl Governor {
 
     pub fn resume_all(&mut self, now: Timestamp) -> Vec<Release> {
         self.paused_all = false;
+        self.mark_undone(now, |a| matches!(a, ActionKind::PauseAll));
         self.log(
             now,
             ActionKind::ResumeAll,
@@ -1713,6 +1863,61 @@ impl Governor {
             None,
         );
         self.release_and_refresh(now)
+    }
+
+    /// Marks the open actions that `is_open` matches as undone (a Resume
+    /// undoes every Pause still in effect).
+    fn mark_undone(&mut self, now: Timestamp, is_open: impl Fn(&ActionKind) -> bool) {
+        for a in self.actions.iter_mut().filter(|a| a.undone_at.is_none() && is_open(&a.action)) {
+            a.undone_at = Some(now);
+        }
+    }
+
+    /// Agents paused one by one (until Resume).
+    pub fn paused_agents(&self) -> &BTreeSet<AgentId> {
+        &self.paused_agents
+    }
+
+    /// Pause one agent: its running turn stops at its next tool call and its
+    /// queued work waits until Resume. Interactive work is never blocked.
+    pub fn pause_agent(&mut self, agent: &AgentId, now: Timestamp) -> ActionId {
+        self.paused_agents.insert(agent.clone());
+        let id = self.log(
+            now,
+            ActionKind::PauseAgent { agent: agent.clone() },
+            "requested by the user".into(),
+            "its autonomous turn stops at the next tool boundary".into(),
+            ActionMode::Auto,
+            Outcome::Applied,
+            Some(Undo::ResumeAgent { agent: agent.clone() }),
+        );
+        self.refresh_queue(now);
+        id
+    }
+
+    pub fn resume_agent(&mut self, agent: &AgentId, now: Timestamp) -> Vec<Release> {
+        if !self.paused_agents.remove(agent) {
+            return Vec::new();
+        }
+        self.mark_undone(now, |a| matches!(a, ActionKind::PauseAgent { agent: x } if x == agent));
+        self.log(
+            now,
+            ActionKind::ResumeAgent { agent: agent.clone() },
+            "requested by the user".into(),
+            "its queued work resumes".into(),
+            ActionMode::Auto,
+            Outcome::Applied,
+            None,
+        );
+        self.release_and_refresh(now)
+    }
+
+    /// The host's live `claude` processes and the memory cap on them (FR-203).
+    /// Returns the turns released into freed slots.
+    pub fn set_process_slots(&mut self, live: u32, cap: u32, now: Timestamp) -> Vec<Release> {
+        let freed = self.slots.is_none_or(|(l, c)| live < l || cap > c);
+        self.slots = Some((live, cap));
+        if freed && self.queue.iter().any(|e| e.needs_spawn) { self.release_and_refresh(now) } else { Vec::new() }
     }
 
     /// "Run now" on a queued entry: the user overrides the Governor.
@@ -1726,7 +1931,7 @@ impl Governor {
             now,
             ActionKind::RunNow { entry, agent: e.agent.clone() },
             "run now, requested by the user".into(),
-            format!("≈ +{:.1} pp", e.estimated_cost_pct),
+            run_now_cost(&e),
             ActionMode::Auto,
             Outcome::Applied,
             None,
@@ -1735,11 +1940,21 @@ impl Governor {
         Some(release_of(&e, service))
     }
 
-    /// Drop a queued entry (task cancelled).
-    pub fn cancel(&mut self, entry: EntryId) -> bool {
-        let n = self.queue.len();
-        self.queue.retain(|e| e.id != entry);
-        self.queue.len() != n
+    /// Drop a queued entry (cancelled by the user). Returns its agent.
+    pub fn cancel(&mut self, entry: EntryId, now: Timestamp) -> Option<AgentId> {
+        let idx = self.queue.iter().position(|e| e.id == entry)?;
+        let e = self.queue.remove(idx);
+        self.log(
+            now,
+            ActionKind::Cancel { entry, agent: e.agent.clone() },
+            "cancelled by the user".into(),
+            format!("≈ {:.1} pp not spent", e.estimated_cost_pct),
+            ActionMode::Auto,
+            Outcome::Applied,
+            None,
+        );
+        self.refresh_queue(now);
+        Some(e.agent)
     }
 
     /// Sprint mode (FR-811): raise today's target by `extra_pp` until the end of
@@ -1761,6 +1976,7 @@ impl Governor {
         let applied_pp = applied * h_sprint / total * budget;
         let hours_after = curve.active_hours_between(until, self.plan.reset_at);
         self.curve = curve;
+        self.sprints.push(SprintRecord { at: now, until, boost, extra_pp: applied_pp });
         let id = self.log(
             now,
             ActionKind::Sprint { extra_pp: applied_pp, until },
@@ -1773,12 +1989,123 @@ impl Governor {
         Ok(id)
     }
 
+    /// The state to keep across a restart (see [`Carry`]).
+    pub fn carry(&self) -> Carry {
+        let pending_ask = self.pending_ask.and_then(|id| {
+            let a = self.action(id)?;
+            match (&a.action, &a.ask) {
+                (ActionKind::DeferAfterReset { allocation }, Some(ask)) => Some((allocation.clone(), ask.deadline)),
+                _ => None,
+            }
+        });
+        Carry {
+            week_start: Some(self.plan.week_start),
+            paused_all: self.paused_all,
+            paused_agents: self.paused_agents.iter().cloned().collect(),
+            deferred: self.deferred.keys().cloned().collect(),
+            pending_ask,
+            sprints: self.sprints.clone(),
+            limits: self.limits.iter().map(|(w, t)| (*w, *t)).collect(),
+            queue: self.queue.clone(),
+        }
+    }
+
+    /// Applies a [`Carry`] to a Governor just rebuilt from the plan and the
+    /// week's samples. The overrides come back as actions in this Governor's
+    /// log, so they can still be undone. Deferrals, the ask and sprints are
+    /// kept only within their plan week; pauses and the queue always are.
+    /// `keep` filters the queue (the host keeps the entries whose turns are
+    /// still waiting). Returns the turns to deliver now.
+    pub fn restore(&mut self, c: Carry, keep: impl Fn(&QueueEntry) -> bool, now: Timestamp) -> Vec<Release> {
+        const WHY: &str = "restored after a restart";
+        if c.paused_all && !self.paused_all {
+            self.paused_all = true;
+            let effect = "autonomous turns stop at their next tool boundary".into();
+            self.log(
+                now,
+                ActionKind::PauseAll,
+                WHY.into(),
+                effect,
+                ActionMode::Auto,
+                Outcome::Applied,
+                Some(Undo::ResumeAll),
+            );
+        }
+        for agent in c.paused_agents {
+            if self.paused_agents.insert(agent.clone()) {
+                let undo = Some(Undo::ResumeAgent { agent: agent.clone() });
+                let effect = "its autonomous turn stops at the next tool boundary".into();
+                let action = ActionKind::PauseAgent { agent };
+                self.log(now, action, WHY.into(), effect, ActionMode::Auto, Outcome::Applied, undo);
+            }
+        }
+        for (window, until) in c.limits {
+            if until > now {
+                self.mark_limit(window, until, now);
+            }
+        }
+        if c.week_start == Some(self.plan.week_start) {
+            for allocation in c.deferred {
+                if self.plan.allocation(&allocation).is_none() || self.deferred.contains_key(&allocation) {
+                    continue;
+                }
+                let undo = Some(Undo::LiftDeferral { allocation: allocation.clone() });
+                let action = ActionKind::DeferAfterReset { allocation: allocation.clone() };
+                let effect = "this allocation's work waits for the weekly reset".into();
+                let id = self.log(now, action, WHY.into(), effect, ActionMode::Auto, Outcome::Applied, undo);
+                self.deferred.insert(allocation, id);
+            }
+            if let Some((allocation, deadline)) = c.pending_ask {
+                if self.pending_ask.is_none() && self.plan.allocation(&allocation).is_some() {
+                    let undo = Some(Undo::LiftDeferral { allocation: allocation.clone() });
+                    let action = ActionKind::DeferAfterReset { allocation };
+                    let effect = "moves this allocation's work after the weekly reset".into();
+                    let id = self.log(now, action, WHY.into(), effect, ActionMode::Ask, Outcome::Pending, undo);
+                    let default = self.policy.default_ask_action;
+                    if let Some(a) = self.action_mut(id) {
+                        a.ask = Some(Ask { deadline, default });
+                    }
+                    self.pending_ask = Some(id);
+                }
+            }
+            for s in c.sprints {
+                if s.until <= now {
+                    continue;
+                }
+                let (curve, _) = self.curve.with_sprint(s.at, s.until, s.boost);
+                self.curve = curve;
+                self.sprints.push(s);
+                let action = ActionKind::Sprint { extra_pp: s.extra_pp, until: s.until };
+                let effect = format!("today +{:.1} pp until {}", s.extra_pp, s.until);
+                self.log(now, action, WHY.into(), effect, ActionMode::Auto, Outcome::Applied, Some(Undo::EndSprint));
+            }
+        }
+        for e in c.queue {
+            if self.queue.iter().any(|q| q.id == e.id || q.agent == e.agent)
+                || self.live.contains_key(&e.agent)
+                || !keep(&e)
+            {
+                continue;
+            }
+            self.agent_alloc.entry(e.agent.clone()).or_insert_with(|| e.allocation.clone());
+            self.next_entry = self.next_entry.max(e.id.0 + 1);
+            self.queue.push(e);
+        }
+        self.release_and_refresh(now)
+    }
+
     /// What the Governor would do next.
     pub fn next_action_preview(&self, now: Timestamp) -> NextActionPreview {
         let m = self.metrics(now);
         let service = self.service();
-        let next_release =
-            self.queue.iter().min_by(|a, b| release_cmp(a, b, &service)).map(|e| (e.id, e.estimated_start));
+        // The entry `release_queue` would pick: eligible and not already live.
+        let next_release = self
+            .queue
+            .iter()
+            .filter(|e| !self.live.contains_key(&e.agent))
+            .filter(|e| self.check(&e.agent, &e.allocation, e.tier, e.effective_tier, e.needs_spawn, now).is_ok())
+            .min_by(|a, b| release_cmp(a, b, &service))
+            .map(|e| (e.id, e.estimated_start));
         let pending_ask =
             self.pending_ask.and_then(|id| self.action(id).and_then(|a| a.ask.as_ref()).map(|a| (id, a.deadline)));
         let inputs = self.pressure_inputs(&m);
@@ -1809,6 +2136,16 @@ fn release_of(e: &QueueEntry, service: BTreeMap<AllocationId, f64>) -> Release {
     }
 }
 
+/// "≈ +2.0 pp" of the week, or the 5h share first when the 5h window holds it (FR-809).
+fn run_now_cost(e: &QueueEntry) -> String {
+    match (e.binding, e.estimated_cost_5h_pct) {
+        (Window::FiveHour, Some(f)) => {
+            format!("≈ +{f:.0} % of the 5h window (+{:.1} pp of the week)", e.estimated_cost_pct)
+        }
+        _ => format!("≈ +{:.1} pp", e.estimated_cost_pct),
+    }
+}
+
 fn reason_key(r: &QueueReason) -> &'static str {
     match r {
         QueueReason::LiveCap { .. } => "live_cap",
@@ -1819,6 +2156,8 @@ fn reason_key(r: &QueueReason) -> &'static str {
         QueueReason::DeferredUntilReset => "deferred",
         QueueReason::HardCap => "hard_cap",
         QueueReason::PausedAll => "paused_all",
+        QueueReason::PausedAgent => "paused_agent",
+        QueueReason::MemoryPressure { .. } => "memory_pressure",
         QueueReason::BehindQueue => "behind_queue",
     }
 }
