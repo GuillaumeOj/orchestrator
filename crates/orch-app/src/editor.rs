@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+use agent_runtime::shell::sh_quote;
 use anyhow::{Result, bail};
 
 pub const DEFAULT_TEMPLATE: &str = "nvim +{line} {file}";
@@ -19,14 +20,6 @@ pub fn template_from_kitty(editor: Option<&str>) -> String {
         Some(e) => format!("{e} {{file}}"),
         None => DEFAULT_TEMPLATE.to_string(),
     }
-}
-
-/// POSIX shell single quoting.
-pub fn sh_quote(s: &str) -> String {
-    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_./+:@,=".contains(c)) {
-        return s.to_string();
-    }
-    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 fn program(template: &str) -> &str {
@@ -108,7 +101,6 @@ mod tests {
         );
         assert_eq!(render(DEFAULT_TEMPLATE, None, None, None), "nvim");
         assert_eq!(render("hx {file}", Some("x.rs"), Some(3), Some(sock)), "hx x.rs", "only nvim listens");
-        assert_eq!(sh_quote("it's"), r"'it'\''s'");
     }
 
     #[test]

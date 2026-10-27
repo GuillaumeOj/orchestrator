@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use crate::env::{EnvInputs, agent_env, gitconfig};
 use crate::role::Role;
+use crate::shell::sh_quote;
 
 /// Generous hook timeout that orch-hook never reaches (FR-806): timeouts fail open.
 pub const HOOK_TIMEOUT_S: u64 = 600;
@@ -161,10 +162,11 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
     let gitconfig_path = ctx.agent_dir.join("gitconfig");
     let home = &ctx.env.home;
 
-    // ---- hooks: every event → orch-hook, 600 s
+    // ---- hooks: every event → orch-hook, 600 s. Hook and status line
+    // commands run through `sh`: the default home has a space in it.
     let hook = json!([{ "matcher": "*", "hooks": [{
         "type": "command",
-        "command": ctx.helpers.hook.display().to_string(),
+        "command": sh_quote(&ctx.helpers.hook.display().to_string()),
         "timeout": HOOK_TIMEOUT_S,
     }]}]);
     let hooks: serde_json::Map<String, Value> =
@@ -203,7 +205,7 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
         "hooks": hooks,
         "statusLine": {
             "type": "command",
-            "command": ctx.helpers.status.display().to_string(),
+            "command": sh_quote(&ctx.helpers.status.display().to_string()),
             "refreshInterval": STATUSLINE_REFRESH_S,
         },
         "sandbox": {
@@ -335,6 +337,22 @@ pub(crate) mod tests {
 
     fn strs(v: &Value) -> Vec<String> {
         v.as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn shell_run_helpers_are_quoted() {
+        let mut c = ctx(SessionMode::New("u-1".into()));
+        let bin = Path::new("/Users/u/Library/Application Support/Orchestrator/bin");
+        c.helpers = HelperPaths::in_dir(bin);
+        let out = compile(&Role::solo(), &c);
+        let s = &out.settings;
+        assert_eq!(
+            s["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            "'/Users/u/Library/Application Support/Orchestrator/bin/orch-hook'"
+        );
+        assert_eq!(s["statusLine"]["command"], "'/Users/u/Library/Application Support/Orchestrator/bin/orch-status'");
+        // The MCP server is exec'd with its args, not through a shell.
+        assert_eq!(out.mcp["mcpServers"][ORCH_MCP_SERVER]["command"], bin.join("orch-mcp").display().to_string());
     }
 
     #[test]
