@@ -47,6 +47,15 @@ db.flush()?;                                                    // everything qu
 | (events) | `events` | `add_event(ts, agent, kind, detail)` (detached), `events(since, agent, kind_prefix, limit)` |
 | (audit, FR-709) | `audit_log` | `audit(actor, agent, action, target, decision, detail)` (waits), `audit_log(agent, limit)` |
 | (settings) | `kv` | `set_setting`, `setting` |
+| Role (P2) | `roles` | `upsert_role(role, at)`, `role`, `roles(project)` (global + that project's), `archive_role` |
+| Team, AgentNode, Edge (P2) | `teams`, `team_versions` | `save_team(team, roles, at)` (also snapshots the version with the roles it uses, FR-308), `team`, `teams(project)`, `team_version(id, v)`, `archive_team` |
+| Feature (P2) | `features` | `upsert_feature`, `feature`, `feature_by_slug(project, slug)`, `features(project)` |
+| TeamRun (P2) | `team_runs` | `upsert_run`, `run`, `runs(feature, active_only)` |
+| Task (P2) | `tasks` | `upsert_task` (id 0 = insert; returns the id), `task`, `task_by_external(project, backend, ext)`, `tasks(project, feature, run)`, `delete_task`. Every backend is mirrored here (ADR-004). |
+| Message (P2) | `messages` | `add_message`, `messages(run, Some((node, agent)), unread)`, `mark_messages(ids, agent, read, at)` |
+| Artifact (P2) | `artifacts` | `add_artifact`, `artifacts(feature)` |
+| (team timeline, FR-408) | `events.team_run_id` | `add_run_event(ts, run, agent, kind, detail)` (detached), `run_events(run, limit)` |
+| (project settings, FR-109) | `projects.settings`, `task_backend` | `Project::typed_settings()`, `Project::backend()`, `set_project_settings(id, settings, backend, track)` |
 | (search, FR-209) | `transcript_files`, `transcript_fts` | `index_transcripts(&[TranscriptFile])`, `search_transcripts(q, project, limit)` |
 
 Governor entities are stored as the `governor` crate's serde types (JSON in `data`, key columns
@@ -86,6 +95,12 @@ Claude Code's folder name under `~/.claude/projects`.
   carry-over state in `kv` (`governor.carry`: the queue with its ids, pauses, deferrals, the ask,
   sprints, limits), written by the runtime.
 - **Governor actions** restart their ids at each core start, so rows are keyed by (boot, id).
+- **Roles and teams as JSON**: `roles.data` and `teams.data` hold `orch_team::RoleDef` / `Team`;
+  `team_versions` keeps every version a run may point at, with the roles it used, and outlives an
+  archived team.
+- **Tasks**: one model over every backend (ADR-004); `depends_on` are local task ids. `delete_project`
+  removes the project's features, runs, tasks, messages, artifacts and project-scoped roles and
+  teams; events stay.
 - **Usage samples** carry the Governor's cost class and allocation at record time, so the week's
   accounting can be replayed after a restart (`governor::Governor::replay`).
 

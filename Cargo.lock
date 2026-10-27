@@ -2300,6 +2300,7 @@ dependencies = [
  "anyhow",
  "governor",
  "orch-protocol",
+ "orch-team",
  "rusqlite",
  "serde",
  "serde_json",

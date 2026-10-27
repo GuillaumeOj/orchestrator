@@ -265,6 +265,120 @@ CREATE VIRTUAL TABLE transcript_fts USING fts5(
     tokenize = 'unicode61 remove_diacritics 2'
 );
 "#,
+    // 2: P2 teams (roles, teams, features, team runs, tasks, messages, artifacts).
+    r#"
+CREATE TABLE roles (
+    id TEXT PRIMARY KEY,
+    project_id TEXT,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    archived INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE teams (
+    id TEXT PRIMARY KEY,
+    project_id TEXT,
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    data TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    archived INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE team_versions (
+    team_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    team TEXT NOT NULL,
+    roles TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (team_id, version)
+);
+
+CREATE TABLE features (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    title TEXT NOT NULL,
+    brief TEXT NOT NULL DEFAULT '',
+    base TEXT NOT NULL,
+    integration_worktree TEXT,
+    allocation TEXT,
+    created_at_ms INTEGER NOT NULL,
+    archived INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (project_id, slug)
+);
+
+CREATE TABLE team_runs (
+    id TEXT PRIMARY KEY,
+    team_id TEXT NOT NULL,
+    team_version INTEGER NOT NULL,
+    feature_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    resume_status TEXT,
+    pr_url TEXT,
+    started_at_ms INTEGER NOT NULL,
+    ended_at_ms INTEGER
+);
+CREATE INDEX team_runs_feature ON team_runs(feature_id);
+
+CREATE TABLE tasks (
+    id INTEGER PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    backend TEXT NOT NULL,
+    external_id TEXT,
+    feature_id TEXT,
+    team_run_id TEXT,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    node TEXT,
+    agent_id TEXT,
+    depends_on TEXT NOT NULL DEFAULT '[]',
+    branch TEXT,
+    pr_url TEXT,
+    notes TEXT NOT NULL DEFAULT '[]',
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    remote_updated_at TEXT
+);
+CREATE INDEX tasks_project ON tasks(project_id);
+CREATE INDEX tasks_run ON tasks(team_run_id);
+CREATE UNIQUE INDEX tasks_external ON tasks(project_id, backend, external_id) WHERE external_id IS NOT NULL;
+
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY,
+    team_run_id TEXT NOT NULL,
+    from_node TEXT NOT NULL,
+    from_agent TEXT,
+    to_node TEXT NOT NULL,
+    to_agent TEXT,
+    kind TEXT NOT NULL,
+    body TEXT NOT NULL,
+    ref TEXT NOT NULL DEFAULT 'null',
+    created_at_ms INTEGER NOT NULL,
+    delivered_at_ms INTEGER,
+    read_at_ms INTEGER
+);
+CREATE INDEX messages_to ON messages(team_run_id, to_node, read_at_ms);
+
+CREATE TABLE artifacts (
+    id INTEGER PRIMARY KEY,
+    feature_id TEXT NOT NULL,
+    team_run_id TEXT,
+    kind TEXT NOT NULL,
+    uri TEXT NOT NULL,
+    from_node TEXT NOT NULL,
+    to_node TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX artifacts_feature ON artifacts(feature_id);
+
+ALTER TABLE events ADD COLUMN team_run_id TEXT;
+CREATE INDEX events_run ON events(team_run_id, ts_ms);
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {
