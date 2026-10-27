@@ -93,7 +93,10 @@ Daily use: [RUNNING.md](RUNNING.md).
    CLI's dialog). A question (an agent waiting in its pane) is answered in the pane: `⏎` opens it.
    Penpot's "Allow once / don't ask again" choice is reached with "Answer in the pane".
 6. **Info digest** lists finished turns (level 4); gates, budget asks and errors use the same item
-   component. Gate items (spec, PR) arrive with P2.
+   component. Gate items (spec, PR) are level 1: the spec gate shows the docs rendered from the
+   integration branch (tabs per file), the PR gate the branch, title, body and changed files.
+   Markdown is read into elements (`ui/src/lib/markdown.js`), never injected as HTML: the docs are
+   agent-written.
 7. **1280**: the overlay inspector covers the right pane when opened (Penpot avoided any covered
    pane by showing one pane only).
 8. **Week planner**: Edit plan (`e`) opens the plan editor (days, hours, reserve, off-hours

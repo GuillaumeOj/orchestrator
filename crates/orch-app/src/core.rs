@@ -21,8 +21,8 @@ use governor::jiff::Timestamp;
 use orch_git::git::real;
 use orch_protocol::bus;
 use orch_protocol::{
-    AgentSpec, CtlReply, CtlRequest, Envelope, HookEvent, HookPayload, Msg, PROTOCOL_VERSION, Reply, ReplyEnvelope,
-    now_ms,
+    AgentSpec, CtlReply, CtlRequest, Envelope, HookEvent, HookPayload, InboxDecision, Msg, PROTOCOL_VERSION, Reply,
+    ReplyEnvelope, now_ms,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -714,6 +714,22 @@ impl Core {
             })?;
             return Ok(json!("dismissed"));
         }
+        // Gates and team questions: the runtime decides (audited) and acts
+        // (spec gate → the run moves on; PR gate → push + PR; reply → a turn).
+        if let Some(n) = item.strip_prefix("gate-").or_else(|| item.strip_prefix("q-")) {
+            let n: u64 = n.parse()?;
+            let decision = match action {
+                "approve" => InboxDecision::Approve,
+                "reject" if item.starts_with("q-") => InboxDecision::Dismiss,
+                "reject" => InboxDecision::Reject,
+                "reply" => InboxDecision::Reply,
+                other => bail!("{other} does not apply to {item}"),
+            };
+            if decision == InboxDecision::Reply && message.is_none_or(|m| m.trim().is_empty()) {
+                bail!("empty reply");
+            }
+            return rt.decide(n, decision, None, message);
+        }
         if let Some(n) = item.strip_prefix("ask-") {
             let id = governor::ActionId(n.parse()?);
             rt.answer_ask(id.0, action == "approve")?;
@@ -1009,6 +1025,39 @@ impl Core {
     }
 
     /// FR-107: the worktree's changes against its base, from their merge base.
+    /// What a gate's preview shows: a spec gate's docs (markdown, read from
+    /// the integration worktree), a PR gate's changed files against its base.
+    pub fn gate_detail(&self, item: &str) -> Result<Value> {
+        let rt = self.runtime()?;
+        let n: u64 = item.strip_prefix("gate-").ok_or_else(|| anyhow!("{item} is not a gate"))?.parse()?;
+        let it = rt
+            .store
+            .read(|s| s.inbox.iter().find(|i| i.id == n).cloned())
+            .ok_or_else(|| anyhow!("no Inbox item {n}"))?;
+        let p = &it.payload;
+        let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let wt = PathBuf::from(s("worktree"));
+        match s("action").as_str() {
+            "spec_approval" => {
+                let docs: Vec<Value> = agent_runtime::team::feature_docs(&wt, &s("feature"))
+                    .into_iter()
+                    .map(|name| {
+                        let text = agent_runtime::team::read_feature_doc(&wt, &s("feature"), &name)
+                            .unwrap_or_else(|e| format!("({e:#})"));
+                        json!({"name": name, "text": text})
+                    })
+                    .collect();
+                Ok(json!({"action": "spec_approval", "summary": s("summary"), "docs": docs}))
+            }
+            "push_pr" => {
+                let d = orch_git::diff::diff(&wt, &s("base"), DIFF_PATCH_MAX)?;
+                Ok(json!({"action": "push_pr", "title": s("title"), "body": s("body"), "branch": s("branch"),
+                          "base": s("base"), "files": d.files, "truncated": d.truncated}))
+            }
+            other => bail!("unknown gate {other:?}"),
+        }
+    }
+
     pub fn worktree_diff(&self, project: &str, path: &Path) -> Result<Value> {
         let (_, wt, base) = self.resolve_worktree(project, path)?;
         let mut v = json!(orch_git::diff::diff(&wt.path, &base, DIFF_PATCH_MAX)?);
@@ -1191,6 +1240,7 @@ fn store_view(s: &agent_runtime::store::StateFile) -> (BTreeMap<String, AgentMet
             agent_id: i.agent_id.clone(),
             body: i.body.clone(),
             created_ms: i.created_at_ms,
+            payload: i.payload.clone(),
         })
         .collect();
     let done = s

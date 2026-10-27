@@ -169,6 +169,11 @@ pub async fn inbox_act(core: CoreState<'_>, item: String, action: String, messag
 }
 
 #[tauri::command]
+pub async fn gate_detail(core: CoreState<'_>, item: String) -> Res<Value> {
+    blocking(core, move |c| c.gate_detail(&item)).await
+}
+
+#[tauri::command]
 pub async fn planner_view(core: CoreState<'_>) -> Res<PlannerView> {
     blocking(core, |c| c.planner()).await
 }

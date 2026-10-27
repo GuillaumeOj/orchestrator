@@ -1,13 +1,15 @@
 <script>
   import AgentChip from '../components/AgentChip.svelte';
   import Kbd from '../components/Kbd.svelte';
+  import Markdown from '../components/Markdown.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   // Inbox (FR-707, §9.6, Penpot 04 Inbox and 06 J5): one list in attention-ladder
   // order with a who/what/why preview. Keys: j/k move, a approve, r reject,
   // ⏎ reply, o open the agent pane, e open in nvim, x select (batch), u undo, esc back.
   import { agent, app, decide, openAgent, openEditor, toast, undoLast } from '../lib/app.svelte.js';
   import { ago } from '../lib/format.js';
-  import { actionLabels, afterRemoval, FILTERS, keyIntent, LEVELS, move, visibleItems } from '../lib/inbox.js';
+  import { actionLabels, afterRemoval, FILTERS, gateKind, keyIntent, kindLabel, LEVELS, move, teamQuestion, visibleItems } from '../lib/inbox.js';
+  import { invoke } from '../lib/ipc.js';
   import { displayState } from '../lib/status.js';
 
   let filter = $state('all');
@@ -24,14 +26,30 @@
   const a = $derived(sel?.agent_id ? agent(sel.agent_id) : null);
 
   const KIND = {
-    permission: { label: 'Permission', state: 'waiting_for_you' },
-    question: { label: 'Waiting for you', state: 'waiting_for_you' },
-    trust: { label: 'Trust dialog', state: 'waiting_for_you' },
-    error: { label: 'Error', state: 'error' },
-    alert: { label: 'Alert', state: 'error' },
-    budget: { label: 'Budget', state: 'queued' },
-    info: { label: 'Info', state: 'done' },
+    permission: { state: 'waiting_for_you' },
+    gate: { state: 'waiting_gate' },
+    question: { state: 'waiting_for_you' },
+    trust: { state: 'waiting_for_you' },
+    error: { state: 'error' },
+    alert: { state: 'error' },
+    budget: { state: 'queued' },
+    info: { state: 'done' },
   };
+
+  // A gate's preview (the spec docs, or the PR's changed files), loaded once per item.
+  let gate = $state(null); // { id, data?, error?, doc }
+  $effect(() => {
+    const it = sel;
+    if (it?.kind !== 'gate' || gate?.id === it.id) return;
+    gate = { id: it.id, data: null, error: null, doc: 0 };
+    invoke('gate_detail', { item: it.id })
+      .then((d) => {
+        if (gate?.id === it.id) gate = { ...gate, data: d };
+      })
+      .catch((e) => {
+        if (gate?.id === it.id) gate = { ...gate, error: String(e) };
+      });
+  });
 
   function apply(intent, item) {
     if (!intent) return false;
@@ -59,7 +77,7 @@
         return true;
       }
       case 'reply':
-        if (item.kind === 'question' || item.kind === 'trust') {
+        if ((item.kind === 'question' && !teamQuestion(item)) || item.kind === 'trust') {
           if (item.agent_id) openAgent(item.agent_id);
         } else reply = { item, text: '' };
         return true;
@@ -118,7 +136,7 @@
           <div class="item" class:sel={sel?.id === it.id} class:marked={marked.has(it.id)} role="option" tabindex="-1" aria-selected={sel?.id === it.id} onclick={() => (selected = it.id)}>
             <div class="top">
               <StatusBadge state={KIND[it.kind]?.state ?? 'idle'} compact />
-              <span class="muted">{KIND[it.kind]?.label ?? it.kind}</span>
+              <span class="muted">{kindLabel(it)}</span>
               {#if it.agent_id}<AgentChip id={it.agent_id} />{:else}<span class="secondary">Governor</span>{/if}
               <span class="grow"></span>
               <span class="muted">{ago(it.created_ms)}</span>
@@ -129,7 +147,7 @@
               <div class="acts">
                 {#if labels.a && it.actions.includes('a')}<span><Kbd keys="a" /> {labels.a}</span>{/if}
                 {#if labels.r && it.actions.includes('r')}<span><Kbd keys="r" /> {labels.r}</span>{/if}
-                {#if it.actions.includes('enter')}<span><Kbd keys="⏎" /> {it.kind === 'question' ? 'Answer in the pane' : 'Reply'}</span>{/if}
+                {#if it.actions.includes('enter')}<span><Kbd keys="⏎" /> {it.kind === 'question' && !teamQuestion(it) ? 'Answer in the pane' : 'Reply'}</span>{/if}
                 {#if it.actions.includes('o')}<span><Kbd keys="o" /> Open</span>{/if}
               </div>
             {/if}
@@ -146,7 +164,7 @@
       {#if sel}
         <div class="dh">
           <StatusBadge state={KIND[sel.kind]?.state ?? 'idle'} compact />
-          <b>{KIND[sel.kind]?.label} · {sel.agent_id ?? 'Governor'}</b>
+          <b>{kindLabel(sel)} · {sel.agent_id ?? 'Governor'}</b>
           {#if a}<StatusBadge state={displayState(a)} />{/if}
           <span class="grow"></span>
           <span class="muted">waiting {ago(sel.created_ms)}</span>
@@ -156,7 +174,47 @@
           <dt>What</dt><dd>{sel.title}</dd>
           <dt>Why</dt><dd>{sel.detail}</dd>
         </dl>
-        {#if sel.preview}<pre class="mono preview">{sel.preview}</pre>{/if}
+        {#if sel.kind === 'gate'}
+          {#if gate?.error}
+            <p class="muted">Could not load the gate's details: {gate.error}</p>
+          {:else if !gate?.data}
+            <p class="muted">Loading…</p>
+          {:else if gateKind(sel) === 'spec'}
+            {#if gate.data.summary}<p class="summary">{gate.data.summary}</p>{/if}
+            <div class="doc-tabs" role="tablist">
+              {#each gate.data.docs as d, i (d.name)}
+                <button class="tab" class:on={gate.doc === i} role="tab" aria-selected={gate.doc === i} onclick={() => (gate = { ...gate, doc: i })}>{d.name}</button>
+              {/each}
+              <span class="grow"></span>
+              <span class="muted">{gate.data.docs.length} file{gate.data.docs.length === 1 ? '' : 's'}</span>
+            </div>
+            {#if gate.data.docs[gate.doc]}<div class="rendered"><Markdown text={gate.data.docs[gate.doc].text} /></div>{/if}
+          {:else}
+            <dl>
+              <dt>Branch</dt><dd class="mono">{gate.data.branch} → {gate.data.base}</dd>
+              <dt>Title</dt><dd>{gate.data.title}</dd>
+            </dl>
+            {#if gate.data.body}<div class="rendered"><Markdown text={gate.data.body} /></div>{/if}
+            <div class="files">
+              <div class="muted">{gate.data.files.length} changed file{gate.data.files.length === 1 ? '' : 's'}{gate.data.truncated ? ' (diff cut)' : ''}</div>
+              {#each gate.data.files as f (f.path)}
+                <div class="mono file"><span class="st">{f.status}</span> {f.path}</div>
+              {/each}
+            </div>
+          {/if}
+        {:else if teamQuestion(sel)}
+          <pre class="mono preview">{sel.payload.question}</pre>
+          {#if sel.payload.options?.length}
+            <div class="opts">
+              {#each sel.payload.options as o (o)}<button class="btn ghost" onclick={() => decide(sel, 'reply', o)}>{o}</button>{/each}
+            </div>
+          {/if}
+        {:else if sel.preview}<pre class="mono preview">{sel.preview}</pre>{/if}
+        {#if gateKind(sel) === 'spec'}
+          <p class="muted note">Approving lets the lead create the tasks and the team start. Send back (or reply) with what to change: the lead revises and asks again.</p>
+        {:else if gateKind(sel) === 'pr'}
+          <p class="muted note">Approving pushes the branch with your credentials and opens the pull request with gh; agents never push.</p>
+        {/if}
         {#if sel.kind === 'permission'}
           <p class="muted note">Allowing answers Claude Code's permission prompt for this one call (no "always allow" rule). Deny with a reply to tell Claude what to do instead; "Answer in the pane" shows its own dialog.</p>
         {/if}
@@ -170,7 +228,7 @@
         <div class="actions">
           {#if labels.a && sel.actions.includes('a')}<button class="btn primary" onclick={() => apply({ kind: 'decide', action: 'approve' }, sel)}>{labels.a} <Kbd keys="a" /></button>{/if}
           {#if labels.r && sel.actions.includes('r')}<button class="btn danger" onclick={() => apply({ kind: 'decide', action: 'reject' }, sel)}>{labels.r} <Kbd keys="r" /></button>{/if}
-          {#if sel.actions.includes('enter')}<button class="btn" onclick={() => apply({ kind: 'reply' }, sel)}>{sel.kind === 'question' ? 'Answer in the pane' : 'Reply'} <Kbd keys="⏎" /></button>{/if}
+          {#if sel.actions.includes('enter')}<button class="btn" onclick={() => apply({ kind: 'reply' }, sel)}>{sel.kind === 'question' && !teamQuestion(sel) ? 'Answer in the pane' : 'Reply'} <Kbd keys="⏎" /></button>{/if}
           {#if sel.kind === 'permission'}<button class="btn ghost" onclick={() => decide(sel, 'in_pane')}>Answer in the pane</button>{/if}
           {#if sel.actions.includes('o')}<button class="btn ghost" onclick={() => apply({ kind: 'open' }, sel)}>Open <Kbd keys="o" /></button>{/if}
         </div>
@@ -285,6 +343,52 @@
     flex-wrap: wrap;
     gap: var(--space-sm);
     margin-top: auto;
+  }
+  .summary {
+    margin: 0;
+    font: var(--text-body);
+  }
+  .doc-tabs {
+    display: flex;
+    align-items: center;
+    gap: 0;
+  }
+  .tab {
+    padding: var(--space-xxs) var(--space-sm);
+    background: none;
+    border: var(--border-width-default) solid var(--color-border-subtle);
+    color: var(--color-text-secondary);
+    font: var(--text-label);
+    cursor: pointer;
+  }
+  .tab + .tab {
+    border-left: 0;
+  }
+  .tab.on {
+    background: var(--color-surface-selected);
+    color: var(--color-text-primary);
+  }
+  .rendered {
+    padding: var(--space-md) var(--space-lg);
+    border: var(--border-width-default) solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    max-height: 50vh;
+    overflow: auto;
+  }
+  .files {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xxs);
+  }
+  .file .st {
+    display: inline-block;
+    width: 1.5em;
+    color: var(--color-text-muted);
+  }
+  .opts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
   }
   .reply {
     display: flex;

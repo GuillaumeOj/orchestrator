@@ -97,6 +97,7 @@ pub fn run() {
             commands::editor_open,
             commands::open_in_kitty,
             commands::inbox_act,
+            commands::gate_detail,
             commands::planner_view,
             commands::governor_act,
             commands::project_add,
