@@ -48,7 +48,9 @@ describe('status vocabulary §9.5', () => {
     const five = { ...weekly, binding: 'five_hour' };
     expect(runCost(five)).toBe('+6 % 5h');
     expect(runCost(five, true)).toBe('+6 % of the 5h window (+1.3 pp of the week)');
-    expect(runCost({ estimated_cost_pct: 0.5, estimated_cost_5h_pct: null, binding: 'five_hour' }, true)).toBe('+0.5 pp');
+    expect(runCost({ estimated_cost_pct: 0.5, estimated_cost_5h_pct: null, binding: 'five_hour' }, true)).toBe(
+      '+0.5 pp',
+    );
   });
 });
 

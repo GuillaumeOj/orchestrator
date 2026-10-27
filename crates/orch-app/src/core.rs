@@ -823,7 +823,14 @@ impl Core {
                 let now = Timestamp::now();
                 let paused = g.paused_agents().iter().map(|a| a.0.clone()).collect();
                 let plan = g.plan();
-                (g.queue().to_vec(), g.snapshot(now), plan.reset_at.as_millisecond(), plan.shadow_mode, pending_ask(g, now), paused)
+                (
+                    g.queue().to_vec(),
+                    g.snapshot(now),
+                    plan.reset_at.as_millisecond(),
+                    plan.shadow_mode,
+                    pending_ask(g, now),
+                    paused,
+                )
             });
             usage["live_cap"] = json!(snapshot.live_cap);
             usage["snapshot"] = json!(snapshot);

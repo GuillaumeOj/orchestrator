@@ -1265,7 +1265,17 @@ impl Governor {
         }
         self.stats.tool_calls_denied += 1;
         if let Some(t) = self.end_turn(&req.agent, now) {
-            self.enqueue(req.agent.clone(), t.allocation, t.tier, TurnKind::Continue, false, false, ceiling, cause, now);
+            self.enqueue(
+                req.agent.clone(),
+                t.allocation,
+                t.tier,
+                TurnKind::Continue,
+                false,
+                false,
+                ceiling,
+                cause,
+                now,
+            );
         }
         self.refresh_queue(now);
         Decision::enforced(proposed)

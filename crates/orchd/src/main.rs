@@ -237,7 +237,8 @@ fn run() -> Result<()> {
         "pause" | "unpause" => {
             let agent_id = a.next("agent")?;
             a.done()?;
-            let req = if cmd == "pause" { CtlRequest::PauseAgent { agent_id } } else { CtlRequest::ResumeAgent { agent_id } };
+            let req =
+                if cmd == "pause" { CtlRequest::PauseAgent { agent_id } } else { CtlRequest::ResumeAgent { agent_id } };
             print(request(&sock, req)?)
         }
         "run-now" | "cancel" | "undo" => {

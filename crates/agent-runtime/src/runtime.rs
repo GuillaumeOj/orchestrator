@@ -1515,7 +1515,8 @@ impl Runtime {
                 let forced = self.house().spawn_override.remove(&rec.id);
                 if live >= cap && !forced {
                     let (agent, alloc) = (AgentId(rec.id.clone()), rec.allocation.clone().into());
-                    let e = self.governor_act(|g, now| (g.hold_spawn(&agent, &alloc, rec.tier, live, cap, now), Vec::new()));
+                    let e = self
+                        .governor_act(|g, now| (g.hold_spawn(&agent, &alloc, rec.tier, live, cap, now), Vec::new()));
                     self.event(&rec.id, "spawn_held", json!({"live": live, "cap": cap, "entry": e.0}));
                     self.store.write(|s| {
                         if let Some(t) = s.turns.iter_mut().find(|t| t.id == turn.id) {
@@ -2057,7 +2058,8 @@ pub(crate) mod tests {
     #[test]
     fn pauses_and_waiting_turns_survive_a_replan_and_a_restart() {
         let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
-        let waiting = |rt: &Runtime| rt.store.read(|s| s.turns.iter().find(|t| t.agent_id == "a1").map(|t| t.admission));
+        let waiting =
+            |rt: &Runtime| rt.store.read(|s| s.turns.iter().find(|t| t.agent_id == "a1").map(|t| t.admission));
         let entry = {
             let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
@@ -2119,9 +2121,9 @@ pub(crate) mod tests {
         assert_eq!(rt.gov().queue().len(), 1);
         assert!(!rt.gov().is_live(&AgentId("a1".into())), "its process ended with the old core");
         assert_eq!(rt.resume_agent("a1"), 1);
-        let continued = rt.store.read(|s| {
-            s.turns.iter().any(|t| t.status == TurnStatus::Queued && t.admission == Admission::Admitted)
-        });
+        let continued = rt
+            .store
+            .read(|s| s.turns.iter().any(|t| t.status == TurnStatus::Queued && t.admission == Admission::Admitted));
         assert!(continued, "a continue turn is admitted on release");
     }
 

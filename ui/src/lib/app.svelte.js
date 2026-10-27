@@ -314,7 +314,15 @@ export function nextWaiting() {
 export async function agentAction(id, action, message = null) {
   try {
     await invoke('agent_action', { id, action, message });
-    const verb = { interrupt: 'Interrupted', suspend: 'Suspended', kill: 'Killed', resume: 'Resumed', deliver: 'Sent to', pause: 'Paused', unpause: 'Unpaused' }[action];
+    const verb = {
+      interrupt: 'Interrupted',
+      suspend: 'Suspended',
+      kill: 'Killed',
+      resume: 'Resumed',
+      deliver: 'Sent to',
+      pause: 'Paused',
+      unpause: 'Unpaused',
+    }[action];
     toast(`${verb ?? action} · ${id}`);
     await refresh();
   } catch (e) {
@@ -339,12 +347,22 @@ export function openInKitty(cwd) {
 /** Run a queued turn now, after the user confirms its cost in both windows (FR-809). */
 export function runNow(a, notStarted) {
   const cost = runCost(a.queue_entry, true);
-  confirm(`${notStarted ? 'Start' : 'Run'} ${a.id} now?`, `≈ ${cost}. It runs above the live cap for one turn and is logged as your override.`, () => governor('run_now', a.queue_entry.id), notStarted ? 'Start now' : 'Run now');
+  confirm(
+    `${notStarted ? 'Start' : 'Run'} ${a.id} now?`,
+    `≈ ${cost}. It runs above the live cap for one turn and is logged as your override.`,
+    () => governor('run_now', a.queue_entry.id),
+    notStarted ? 'Start now' : 'Run now',
+  );
 }
 
 /** Drop a queued turn (its message is not delivered). */
 export function cancelQueued(a) {
-  confirm(`Cancel ${a.id}'s queued turn?`, 'The waiting message is dropped and logged; the agent keeps its session.', () => governor('cancel', a.queue_entry.id), 'Cancel turn');
+  confirm(
+    `Cancel ${a.id}'s queued turn?`,
+    'The waiting message is dropped and logged; the agent keeps its session.',
+    () => governor('cancel', a.queue_entry.id),
+    'Cancel turn',
+  );
 }
 
 /** Mounts the pane's xterm in `host`, fits it on resize; returns the cleanup. */
