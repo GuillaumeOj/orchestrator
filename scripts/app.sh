@@ -56,14 +56,20 @@ build() {
   echo "==> UI dependencies"
   (cd ui && bun install --frozen-lockfile)
   echo "==> Orchestrator.app (release)"
+  # The release core embeds ui/dist: build it first (it is gitignored).
+  (cd ui && bun run build)
   core_release
-  (cd ui && bun run tauri build --config ../crates/orch-app/tauri.bundle.json)
+  (cd ui && bun run tauri build --config "$ROOT/crates/orch-app/tauri.bundle.json")
   echo "built $APP"
 }
 
 install_app() {
   if pgrep -qf "Orchestrator.app/Contents/MacOS/orchestrator"; then
     echo "Orchestrator is running: quit it first (⌘Q suspends its agents; they resume next start)" >&2
+    exit 1
+  fi
+  if [ ! -d "$APP" ]; then
+    echo "no $APP: run $0 build first" >&2
     exit 1
   fi
   mkdir -p "$DEST"
@@ -74,7 +80,9 @@ install_app() {
 
 case "${1:-install}" in
   build) build ;;
-  install) build && install_app ;;
+  # Not `build && install_app`: set -e is off on the left of &&, so a failed
+  # build would fall through and install the previous bundle.
+  install) build; install_app ;;
   install-only) install_app ;;
   *) echo "usage: $0 [build|install|install-only]" >&2; exit 2 ;;
 esac
