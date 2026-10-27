@@ -5,6 +5,17 @@
   "ignorePaths": ["**/node_modules/**", "spikes/**"],
   "lockFileMaintenance": { "enabled": true },
   "minimumReleaseAge": "3 days",
+  "customManagers": [
+    {
+      "description": "The pinned Rust toolchain (CI and local use the same version)",
+      "customType": "regex",
+      "managerFilePatterns": ["/^rust-toolchain\\.toml$/"],
+      "matchStrings": ["channel = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""],
+      "depNameTemplate": "rust",
+      "packageNameTemplate": "rust-lang/rust",
+      "datasourceTemplate": "github-releases"
+    }
+  ],
   "packageRules": [
     {
       "description": "Cargo.toml keeps loose ranges: bump Cargo.lock, touch Cargo.toml only for majors",

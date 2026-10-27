@@ -14,7 +14,7 @@ const CHILD_ENV: &str = "ORCH_STORE_CRASH_CHILD";
 fn child_writer() {
     let Ok(path) = std::env::var(CHILD_ENV) else { return };
     let s = Store::open(std::path::Path::new(&path)).unwrap();
-    for i in 0.. {
+    for i in 0..=u64::MAX {
         s.sync_runtime(RuntimeDiff {
             agents: vec![AgentRow {
                 id: "a1".into(),
