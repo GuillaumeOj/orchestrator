@@ -829,6 +829,15 @@ impl Core {
         m.value.clone()
     }
 
+    /// The Inbox alone (no git, no usage): what the notifier watches, also
+    /// while the window is hidden and the UI does not poll.
+    pub fn attention(&self) -> Vec<inbox::InboxItem> {
+        let Some(rt) = &self.rt else { return vec![] };
+        let agents = rt.state_json()["agents"].as_array().cloned().unwrap_or_default();
+        let (_, alerts, done) = rt.store.read(store_view);
+        self.inbox_items(&agents, &alerts, &done, None)
+    }
+
     /// Everything the shell shows, polled by the UI about once a second.
     pub fn state(&self) -> Value {
         let projects = self.projects();

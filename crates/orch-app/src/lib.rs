@@ -9,6 +9,7 @@ pub mod inbox;
 pub mod kitty;
 pub mod memory;
 pub mod menu;
+pub mod notify;
 pub mod permissions;
 pub mod planner;
 pub mod services;
@@ -70,9 +71,11 @@ pub fn run() {
     let core = core::Core::start(cfg);
     let app = tauri::Builder::default()
         .manage(core.clone())
+        .plugin(tauri_plugin_notification::init())
         .menu(menu::build)
         .setup(|app| {
             devctl::start(app.handle().clone());
+            notify::start(app.handle().clone());
             Ok(())
         })
         .on_menu_event(|app, ev| {

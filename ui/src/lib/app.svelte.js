@@ -609,6 +609,8 @@ export function commands() {
     { id: 'theme.light', label: 'Theme: Light', run: () => setTheme('light') },
     { id: 'theme.kitty', label: 'Theme: derive from kitty.conf', run: () => setKittyTheme(true) },
     { id: 'theme.system', label: 'Theme: follow the system', run: () => setTheme(null) },
+    { id: 'notify.desktop', label: 'Notifications: desktop on/off', run: () => toggleNotify('desktop') },
+    { id: 'notify.sound', label: 'Notifications: sound on/off', run: () => toggleNotify('sound') },
   ];
   if (a) {
     const live = a.live;
@@ -711,6 +713,15 @@ export function applyTheme() {
     kittyVars = Object.keys(derived.vars);
   }
   return app.theme ? 'user' : derived ? 'kitty' : 'system';
+}
+
+/** Desktop notifications and their sound (both on by default), read by the core's notifier. */
+export async function toggleNotify(key) {
+  const cur = (await invoke('settings_get', { key: 'notifications' }).catch(() => null)) ?? {};
+  const next = { desktop: true, sound: true, ...cur };
+  next[key] = !next[key];
+  await invoke('settings_set', { key: 'notifications', value: next }).catch(() => {});
+  toast(`${key === 'desktop' ? 'Desktop notifications' : 'Notification sound'} ${next[key] ? 'on' : 'off'}`);
 }
 
 /** An explicit choice (dark, light, or null = system) ends the kitty-derived theme. */
