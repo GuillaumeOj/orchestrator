@@ -53,7 +53,8 @@ export const agent = (id) => agents().find((a) => a.id === id);
 /** Agents not deleted (archived ones stay in the snapshot for history). */
 export const activeAgents = () => agents().filter((a) => a.state !== 'archived');
 export const projects = () => app.data?.projects ?? [];
-/** Features with their latest team run (P2). */
+/** Features with their latest team run (P2). `null` in a snapshot when the
+ *  core could not read them: the poll then keeps the previous list. */
 export const features = () => app.data?.features ?? [];
 export const focusedSpec = () => app.panes[app.focused];
 export const isTerminal = (spec) => ['agent', 'shell', 'editor'].includes(spec?.type);
@@ -186,8 +187,16 @@ export function focusPane(id) {
   });
 }
 
-export function closePane(id = app.focused) {
+/** Panes the user closed, newest last, for Reopen closed pane (⌘⇧T). */
+const closed = [];
+const CLOSED_MAX = 20;
+
+export function closePane(id = app.focused, { record = true } = {}) {
   if (!id || !app.panes[id]) return;
+  if (record) {
+    closed.push({ ...app.panes[id], termId: undefined, docked: inDock(id) });
+    if (closed.length > CLOSED_MAX) closed.shift();
+  }
   terms.get(id)?.dispose();
   terms.delete(id);
   delete app.panes[id];
@@ -202,6 +211,40 @@ export function closePane(id = app.focused) {
   if (app.focused === id) app.focused = L.visible(app.layout)[0] ?? null;
   if (app.focused) focusPane(app.focused);
   saveLayout();
+}
+
+/** Reopens the last closed pane whose agent, feature or project still exists. */
+export function reopenClosed() {
+  for (let s = closed.pop(); s; s = closed.pop()) {
+    if (paneGone(s)) continue;
+    switch (s.type) {
+      case 'agent':
+        return openAgent(s.agentId);
+      case 'feature':
+        return openFeature(s.featureId);
+      case 'project':
+        return openProject(s.projectId);
+      case 'board':
+        return openBoard(s.projectId);
+      case 'canvas':
+        return openCanvas(s.teamId, s.projectId);
+      case 'diff':
+        return openDiff(s.projectId, s.path, s.branch);
+      case 'shell':
+        // Back where it was: the dock, or a pane.
+        return openShell({
+          projectId: s.projectId,
+          agentId: s.agentId,
+          cwd: s.cwd,
+          how: s.docked ? undefined : 'right',
+        });
+      case 'editor':
+        return openEditor(s.file ?? null, null, { projectId: s.projectId });
+      default:
+        return openSingleton(s.type);
+    }
+  }
+  toast('No closed pane to reopen');
 }
 
 export function findPane(pred) {
@@ -605,7 +648,9 @@ export function refresh() {
 
 async function poll() {
   try {
-    app.data = new Snapshot(await invoke('app_state'));
+    const data = await invoke('app_state');
+    data.features ??= app.data?.features ?? null;
+    app.data = new Snapshot(data);
     app.error = null;
     prunePanes();
   } catch (e) {
@@ -618,12 +663,13 @@ async function poll() {
 function paneGone(s) {
   if (s.type === 'agent') return !activeAgents().some((a) => a.id === s.agentId);
   if (s.type === 'project' || s.type === 'board') return !projects().some((p) => p.id === s.projectId);
-  if (s.type === 'feature') return !features().some((f) => f.id === s.featureId);
+  // Features never read yet (the core's read failed): nothing is known gone.
+  if (s.type === 'feature') return app.data?.features != null && !features().some((f) => f.id === s.featureId);
   return false;
 }
 
 function prunePanes() {
-  for (const [id, s] of Object.entries(app.panes)) if (paneGone(s)) closePane(id);
+  for (const [id, s] of Object.entries(app.panes)) if (paneGone(s)) closePane(id, { record: false });
   if (app.selectedAgent && !activeAgents().some((a) => a.id === app.selectedAgent)) app.selectedAgent = null;
 }
 
@@ -659,6 +705,7 @@ export function commands() {
     { id: 'pane.split.below', label: 'Split below (shell)', run: () => openShell({ how: 'below' }) },
     { id: 'pane.zoom', label: 'Zoom / restore the focused pane', run: toggleZoom },
     { id: 'pane.close', label: 'Close pane', run: () => closePane() },
+    { id: 'pane.reopen', label: 'Reopen closed pane', run: reopenClosed },
     { id: 'sidebar', label: 'Toggle sidebar', run: () => ((app.sidebar = !app.sidebar), saveLayout()) },
     {
       id: 'inspector',

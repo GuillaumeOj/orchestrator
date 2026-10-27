@@ -19,17 +19,18 @@ pub struct ProjectSettingsForm {
 }
 
 /// Every feature with its latest run, for the sidebar (Projects → Features
-/// → agents), the palette and ⌘P.
-pub fn features(rt: &agent_runtime::runtime::Runtime) -> Vec<Value> {
+/// → agents), the palette and ⌘P. An error is not "no features": the UI
+/// would hide every feature and close their panes for that poll.
+pub fn features(rt: &agent_runtime::runtime::Runtime) -> Result<Vec<Value>> {
     // Polled with the app state: three queries in all, not two per feature.
     let mut latest: std::collections::BTreeMap<String, orch_store::TeamRun> = std::collections::BTreeMap::new();
-    for r in rt.db.runs(None, false).unwrap_or_default() {
+    for r in rt.db.runs(None, false)? {
         latest.entry(r.feature_id.clone()).or_insert(r); // newest first
     }
-    let counts = rt.db.task_counts_by_run().unwrap_or_default();
-    rt.db
-        .features(None)
-        .unwrap_or_default()
+    let counts = rt.db.task_counts_by_run()?;
+    Ok(rt
+        .db
+        .features(None)?
         .into_iter()
         .map(|f| {
             let run = latest.remove(&f.id);
@@ -41,7 +42,7 @@ pub fn features(rt: &agent_runtime::runtime::Runtime) -> Vec<Value> {
                 "tasks": {"done": done, "total": total},
             })
         })
-        .collect()
+        .collect())
 }
 
 impl Core {

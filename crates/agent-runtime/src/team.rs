@@ -488,6 +488,15 @@ impl Runtime {
                     continue;
                 }
             };
+            // A deleted feature has no running team: a run left active under
+            // it (a relaunch that didn't un-archive) would spawn seats nobody
+            // sees and block every new launch on the slug.
+            if cx.feature.archived {
+                if let Err(e) = self.set_run_state(&run.id, RunState::Failed, "feature deleted") {
+                    self.run_event(&run.id, None, "team_error", json!(format!("{e:#}")));
+                }
+                continue;
+            }
             if let Err(e) = self.dispatch(&cx) {
                 self.run_event(&run.id, None, "dispatch_error", json!(format!("{e:#}")));
             }
@@ -1916,6 +1925,39 @@ mod tests {
             })
             .unwrap();
         assert_eq!(again.feature_id, run.feature_id);
+        assert_eq!(rt.db.features(Some(&pid)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_run_left_active_under_a_deleted_feature_ends_on_the_tick() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        let run = rt
+            .launch(&LaunchSpec {
+                project_id: pid.clone(),
+                team_id: "bugfix-squad".into(),
+                slug: "fx".into(),
+                title: "Fix X".into(),
+                brief: "Fix the X bug.".into(),
+                base: None,
+            })
+            .unwrap();
+        // The feature archived under its active run (an older relaunch).
+        let mut f = rt.db.feature(&run.feature_id).unwrap().unwrap();
+        f.archived = true;
+        rt.db.upsert_feature(&f).unwrap();
+        let before = rt.store.read(|s| s.agents.len());
+        rt.team_tick();
+        assert_eq!(state(&rt, &run.id), RunState::Failed);
+        assert_eq!(rt.store.read(|s| s.agents.len()), before, "no seat spawned");
+        // The slug is free again, and the feature comes back.
+        rt.launch(&LaunchSpec {
+            project_id: pid.clone(),
+            team_id: "bugfix-squad".into(),
+            slug: "fx".into(),
+            title: "Again".into(),
+            ..Default::default()
+        })
+        .unwrap();
         assert_eq!(rt.db.features(Some(&pid)).unwrap().len(), 1);
     }
 

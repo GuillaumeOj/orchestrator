@@ -14,10 +14,14 @@
   const focusedAgent = $derived(app.panes[app.focused]?.agentId ?? app.selectedAgent);
   const byProject = $derived(
     projects().map((p) => {
-      const mine = activeAgents().filter((a) => a.project_id === p.id);
-      const feats = features()
-        .filter((f) => f.project_id === p.id)
-        .map((f) => ({ f, list: mine.filter((a) => a.team?.feature_id === f.id) }));
+      const mine = activeAgents().filter((a) => (a.team?.project_id ?? a.project_id) === p.id);
+      const listed = features().filter((f) => f.project_id === p.id);
+      // A team agent is never hidden: one whose feature is not listed (deleted
+      // under a running team) gets a row from its seat.
+      const unlisted = [...new Set(mine.map((a) => a.team?.feature_id))]
+        .filter((id) => id && !listed.some((f) => f.id === id))
+        .map((id) => ({ id, project_id: p.id, slug: id.replace(`${p.id}-`, ''), unlisted: true }));
+      const feats = [...listed, ...unlisted].map((f) => ({ f, list: mine.filter((a) => a.team?.feature_id === f.id) }));
       return { p, feats, list: mine.filter((a) => !a.team) };
     }),
   );
@@ -62,11 +66,11 @@
               {@const k = `f:${f.id}`}
               {@const n = needsYou(fl)}
               <li role="treeitem" aria-selected={focusedFeature === f.id} aria-expanded={!collapsed[k]}>
-                <button data-row class="row feature" class:selected={focusedFeature === f.id} onclick={() => openFeature(f.id)} title="{f.branch} · {f.run ? runStateLabel(f.run.status) : 'no run'}">
+                <button data-row class="row feature" class:selected={focusedFeature === f.id} onclick={() => (f.unlisted ? fl[0] && openAgent(fl[0].id) : openFeature(f.id))} title={f.unlisted ? 'Feature deleted; its agents still run' : `${f.branch} · ${f.run ? runStateLabel(f.run.status) : 'no run'}`}>
                   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                   <span class="caret" aria-hidden="true" onclick={(e) => (e.stopPropagation(), (collapsed[k] = !collapsed[k]))}>{collapsed[k] ? '▸' : '▾'}</span>
                   <span class="name">{f.slug}</span>
-                  {#if n}<span class="badge" aria-label="{n} need you">{n}</span>{:else if f.run}<span class="meta">{runStateLabel(f.run.status)}</span>{/if}
+                  {#if n}<span class="badge" aria-label="{n} need you">{n}</span>{:else if f.unlisted}<span class="meta">deleted</span>{:else if f.run}<span class="meta">{runStateLabel(f.run.status)}</span>{/if}
                 </button>
                 {#if !collapsed[k]}
                   <ul role="group">

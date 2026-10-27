@@ -904,6 +904,14 @@ impl Core {
             a["paused"] = json!(paused.contains(&id));
             a["attached"] = json!(readers.contains(&id));
         }
+        // `null` when the read failed: the UI keeps the features it has.
+        let features = match self.rt.as_deref().map(crate::teams::features).transpose() {
+            Ok(f) => json!(f.unwrap_or_default()),
+            Err(e) => {
+                warnings.push(json!(format!("features not read: {e:#}")));
+                Value::Null
+            }
+        };
         let items = self.inbox_items(&agents, &alerts, &done, ask);
         let setup = self.setup_view(&projects);
         let projects: Vec<Value> = projects
@@ -926,7 +934,7 @@ impl Core {
             "queue": queue,
             "inbox": {"items": items, "badge": inbox::badge(&items)},
             "permissions": self.broker.list(),
-            "features": self.rt.as_deref().map(crate::teams::features).unwrap_or_default(),
+            "features": features,
             "memory": self.memory(agents_mb),
             "memory_watch": self.watch.view(),
             "setup": setup,

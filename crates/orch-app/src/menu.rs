@@ -18,6 +18,7 @@ pub const ITEMS: &[(&str, &[Item])] = &[
             ("project.add", "Add Project…", "CmdOrCtrl+N"),
             ("session.new", "New Session…", "CmdOrCtrl+T"),
             ("pane.close", "Close Pane", "CmdOrCtrl+W"),
+            ("pane.reopen", "Reopen Closed Pane", "CmdOrCtrl+Shift+T"),
             ("window.close", "Close Window", "CmdOrCtrl+Shift+W"),
         ],
     ),
