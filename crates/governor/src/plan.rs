@@ -177,6 +177,10 @@ pub struct PacingPolicy {
     pub auto_continue: AutoContinue,
     /// Usage alerts, % of the week (FR-817).
     pub alerts_pct: Vec<f64>,
+    /// FR-814: convert each model family's cost with its own `k` (fitted once
+    /// the family has 20 samples this week). Off by default (ADR-007 deferred it).
+    #[serde(default)]
+    pub per_model_weights: bool,
 }
 
 const UNATTRIBUTED_PRIOR_HOURS: f64 = 48.0;
@@ -216,6 +220,7 @@ impl Default for PacingPolicy {
             default_ask_action: AskDefault::Apply,
             auto_continue: AutoContinue::CancelAndReschedule,
             alerts_pct: vec![50.0, 75.0, 90.0],
+            per_model_weights: false,
         }
     }
 }

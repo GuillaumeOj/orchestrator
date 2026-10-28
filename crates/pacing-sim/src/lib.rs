@@ -47,6 +47,26 @@ pub struct SimModel {
     pub self_started_share: f64,
     /// Offer work outside working time (otherwise agents wait for the next block).
     pub offer_off_hours: bool,
+    /// FR-814 per-model weights: a third of the agents run on opus, whose
+    /// cost per weekly pp is this many times the others' (sonnet); 0 = one
+    /// unnamed model for everyone (the samples carry no model).
+    #[serde(default)]
+    pub opus_cost_factor: f64,
+}
+
+impl SimModel {
+    /// The model an agent runs on, and the factor on its cost per pp.
+    fn agent_model(&self, agent: &AgentId) -> (Option<String>, f64) {
+        if self.opus_cost_factor <= 0.0 {
+            return (None, 1.0);
+        }
+        let h = agent.0.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+        if h % 3 == 0 {
+            (Some("claude-opus-4-1".into()), self.opus_cost_factor)
+        } else {
+            (Some("claude-sonnet-4-5".into()), 1.0)
+        }
+    }
 }
 
 impl Default for SimModel {
@@ -60,6 +80,7 @@ impl Default for SimModel {
             turn_pct_max: 0.6,
             self_started_share: 0.15,
             offer_off_hours: false,
+            opus_cost_factor: 0.0,
         }
     }
 }
@@ -691,13 +712,15 @@ pub fn run(sc: &Scenario) -> SimResult {
         // Statusline samples for every API response of this minute.
         let (five, weekly) = truth.reading(sc);
         for (agent, pct) in samples {
+            let (model, factor) = m.agent_model(&agent);
             gov.ingest(&UsageSample {
                 ts: now,
                 agent: Some(agent),
-                cost_delta: pct * m.cost_per_pct,
+                cost_delta: pct * m.cost_per_pct * factor,
                 five_hour: five,
                 weekly,
                 provenance: Provenance::Observed,
+                model,
             });
         }
 

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::actions::{ActionKind, ActionMode, Ask, GovernorAction, Outcome, Undo};
 use crate::calendar::{CalendarError, Curve};
-use crate::estimator::{Calibration, Calibrator, Observation};
+use crate::estimator::{Calibration, Calibrator, FAMILIES, FamilyCalibrator, ModelK, Observation, family_index};
 use crate::plan::{AskDefault, AutoContinue, PacingPolicy, WeeklyPlan};
 use crate::pressure::{PressureInputs, PressureState, StateMachine};
 use crate::queue::{QueueEntry, QueueReason, TurnCeiling, TurnKind, release_cmp};
@@ -183,6 +183,14 @@ pub struct ForecastSnapshot {
     /// Interactive and critical usage this week, pp.
     pub interactive_used: f64,
     pub calibration: Calibration,
+}
+
+/// The estimator's state (FR-814): what the host persists to carry the
+/// calibration across restarts and weeks ([`Governor::restore_estimator`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EstimatorState {
+    pub calibrator: Calibrator,
+    pub families: FamilyCalibrator,
 }
 
 /// A sprint applied to the curve, kept so a restart can apply it again.
@@ -382,6 +390,13 @@ pub struct Governor {
     base_curve: Curve,
     curve: Curve,
     calib: Calibrator,
+    fam: FamilyCalibrator,
+    /// The estimator as this week started: a restart restores it, then
+    /// replays the week's samples, and gets the live run's fit back.
+    week_estimator: EstimatorState,
+    /// Raw app cost per model family ([`FAMILIES`]), and at the week's start.
+    family_cost: [f64; 5],
+    week_family_start: [f64; 5],
     weekly_obs: Option<Observation>,
     five_obs: Option<Observation>,
     /// Where the 5h cost fit starts: advances only on a fit or a new 5h window.
@@ -436,16 +451,27 @@ impl Governor {
     pub fn new(plan: WeeklyPlan, policy: PacingPolicy, now: Timestamp) -> Result<Governor, GovernorError> {
         let (tz, base_curve) = plan_curve(&plan)?;
         let calib = Calibrator::new(policy.initial_cost_per_pct, policy.calibration_decay);
+        let fam = FamilyCalibrator::new(policy.calibration_decay);
         let mut g = Governor {
             curve: base_curve.clone(),
             base_curve,
             tz,
+            week_estimator: EstimatorState { calibrator: calib.clone(), families: fam.clone() },
             calib,
+            fam,
+            family_cost: [0.0; 5],
+            week_family_start: [0.0; 5],
             weekly_obs: None,
             five_obs: None,
             five_anchor: None,
             // Replaced by `start_week_accounting` below.
-            calib_anchor: Observation { ts: plan.week_start, used_pct: 0.0, resets_at: plan.reset_at, app_cost: 0.0 },
+            calib_anchor: Observation {
+                ts: plan.week_start,
+                used_pct: 0.0,
+                resets_at: plan.reset_at,
+                app_cost: 0.0,
+                family_cost: [0.0; 5],
+            },
             reset_seen: false,
             app_cost: 0.0,
             week_cost_start: 0.0,
@@ -525,6 +551,9 @@ impl Governor {
 
     fn start_week_accounting(&mut self, now: Timestamp) {
         self.week_cost_start = self.app_cost;
+        self.week_family_start = self.family_cost;
+        self.fam.new_week();
+        self.week_estimator = EstimatorState { calibrator: self.calib.clone(), families: self.fam.clone() };
         self.reserve_cost = 0.0;
         self.interactive_cost = 0.0;
         self.alloc_cost.clear();
@@ -551,6 +580,7 @@ impl Governor {
             used_pct: self.policy.reading_offset_pct,
             resets_at: self.plan.reset_at,
             app_cost: self.week_cost_start,
+            family_cost: self.week_family_start,
         })
     }
 
@@ -611,7 +641,58 @@ impl Governor {
     }
 
     pub fn calibration(&self, now: Timestamp) -> Calibration {
-        self.calib.snapshot(now)
+        let mut c = self.calib.snapshot(now);
+        if self.policy.per_model_weights {
+            let k = self.calib.cost_per_pct();
+            let own = self.fam.solve(k);
+            c.per_model = Some(
+                FAMILIES
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| self.fam.counts[*i] > 0)
+                    .map(|(i, f)| {
+                        (
+                            f.to_string(),
+                            ModelK { k: own[i].unwrap_or(k), samples: self.fam.counts[i], fitted: own[i].is_some() },
+                        )
+                    })
+                    .collect(),
+            );
+        }
+        c
+    }
+
+    /// The estimator now (persist it on each fit change, FR-814).
+    pub fn estimator(&self) -> EstimatorState {
+        EstimatorState { calibrator: self.calib.clone(), families: self.fam.clone() }
+    }
+
+    /// The estimator as this week started.
+    pub fn week_estimator(&self) -> &EstimatorState {
+        &self.week_estimator
+    }
+
+    /// Restores the estimator a week started with, on a fresh Governor, before
+    /// the week's samples are replayed (FR-814: the calibration carries over
+    /// a restart and a reset).
+    pub fn restore_estimator(&mut self, e: EstimatorState) {
+        self.calib = e.calibrator.clone();
+        self.fam = e.families.clone();
+        self.fam.new_week();
+        self.week_estimator = EstimatorState { calibrator: self.calib.clone(), families: self.fam.clone() };
+    }
+
+    /// How many units of the shared `k` one unit of a family's cost is
+    /// (1 unless per-model weights are on and the family has its own fit).
+    fn family_weight(&self, family: usize) -> f64 {
+        if !self.policy.per_model_weights {
+            return 1.0;
+        }
+        let k = self.calib.cost_per_pct();
+        match self.fam.solve(k)[family] {
+            Some(kf) if kf > 0.0 => (k / kf).clamp(0.2, 5.0),
+            _ => 1.0,
+        }
     }
 
     /// Usage attributed to an allocation this week, % of the week.
@@ -798,7 +879,7 @@ impl Governor {
             unattributed_forecast: m.u_forecast,
             reserve_left: m.reserve_left,
             interactive_used: self.reserve_cost / m.k,
-            calibration: self.calib.snapshot(now),
+            calibration: self.calibration(now),
         }
     }
 
@@ -817,7 +898,7 @@ impl Governor {
                 }
                 None => (self.class_without_turn(agent, s.ts), self.agent_alloc.get(agent).cloned()),
             };
-            self.account(c, class, alloc);
+            self.account(c, class, alloc, s.model.as_deref());
         }
         self.observe_sample(s);
     }
@@ -839,7 +920,7 @@ impl Governor {
     pub fn replay(&mut self, s: &UsageSample, class: CostClass, allocation: Option<AllocationId>) {
         if s.agent.is_some() {
             let c = if s.cost_delta.is_finite() { s.cost_delta.max(0.0) } else { 0.0 };
-            self.account(c, class, allocation);
+            self.account(c, class, allocation, s.model.as_deref());
         }
         self.observe_sample(s);
     }
@@ -851,7 +932,14 @@ impl Governor {
         }
     }
 
-    fn account(&mut self, c: f64, class: CostClass, alloc: Option<AllocationId>) {
+    /// `c` raw cost; counted in shared-`k` units (its family's weight).
+    fn account(&mut self, c: f64, class: CostClass, alloc: Option<AllocationId>, model: Option<&str>) {
+        let f = family_index(model);
+        if c > 0.0 {
+            self.family_cost[f] += c;
+            self.fam.counts[f] = self.fam.counts[f].saturating_add(1);
+        }
+        let c = c * self.family_weight(f);
         self.app_cost += c;
         if class != CostClass::Autonomous {
             self.reserve_cost += c;
@@ -893,7 +981,13 @@ impl Governor {
         // The statusline reports whole percents; read `n` as the middle of `[n, n + 1)`.
         let used_pct =
             if r.used_pct >= 100.0 { 100.0 } else { (r.used_pct + self.policy.reading_offset_pct).clamp(0.0, 100.0) };
-        let obs = Observation { ts, used_pct, resets_at: r.resets_at, app_cost: self.app_cost };
+        let obs = Observation {
+            ts,
+            used_pct,
+            resets_at: r.resets_at,
+            app_cost: self.app_cost,
+            family_cost: self.family_cost,
+        };
         match window {
             Window::Weekly => {
                 self.weekly_obs = Some(obs);
@@ -946,6 +1040,11 @@ impl Governor {
         }
         if dp >= self.policy.calibration_min_pp && dh * 60.0 >= self.policy.calibration_min_minutes as f64 {
             self.calib.update(obs.app_cost - anchor.app_cost, dh, dp);
+            let mut dc = [0.0; 5];
+            for (i, d) in dc.iter_mut().enumerate() {
+                *d = obs.family_cost[i] - anchor.family_cost[i];
+            }
+            self.fam.update(dc, dh, dp);
             self.calib_anchor = obs;
         }
     }

@@ -464,6 +464,25 @@ INSERT INTO mcp_registry(scope, id, data, updated_at_ms) VALUES ('', 'penpot',
     r#"
 ALTER TABLE artifacts ADD COLUMN meta TEXT;
 "#,
+    // 7: P3 weekly reports (FR-818, kept: never purged) and the estimator's
+    // state with each calibration (FR-814): `fit` rows on each fit change,
+    // one `week` row per week (the estimator the week started with).
+    r#"
+CREATE TABLE weekly_reports (
+    id TEXT PRIMARY KEY,
+    week_start_ms INTEGER NOT NULL,
+    reset_at_ms INTEGER NOT NULL,
+    final_weekly_pct REAL,
+    data TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX weekly_reports_reset ON weekly_reports(reset_at_ms);
+
+ALTER TABLE calibrations ADD COLUMN kind TEXT NOT NULL DEFAULT 'fit';
+ALTER TABLE calibrations ADD COLUMN week_start_ms INTEGER;
+ALTER TABLE calibrations ADD COLUMN state TEXT;
+CREATE INDEX calibrations_week ON calibrations(kind, week_start_ms);
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

@@ -167,7 +167,7 @@ pub fn parse(uri: &str) -> Option<ArtifactMeta> {
     let uri = uri.trim();
     if let Some(u) = parse_url(uri) {
         let host = u.host.to_ascii_lowercase();
-        if host.contains("penpot") {
+        if host == "penpot.app" || host.ends_with(".penpot.app") {
             return Some(penpot(&u));
         }
         if (host == "figma.com" || host.ends_with(".figma.com"))
@@ -202,7 +202,8 @@ mod tests {
         );
         let m = parse("https://design.penpot.app/#/workspace/proj-1/file-2?page-id=page-3").unwrap();
         assert_eq!((m.file_id.as_deref(), m.page_id.as_deref(), m.frame_id), (Some("file-2"), Some("page-3"), None));
-        let m = parse("https://penpot.example.com/#/view/file-5?page-id=p&frame-id=fr&section=interactions").unwrap();
+        assert_eq!(parse("https://penpot.example.com/#/view/file-5").unwrap().tool, "url", "only penpot.app hosts");
+        let m = parse("https://design.penpot.app/#/view/file-5?page-id=p&frame-id=fr&section=interactions").unwrap();
         assert_eq!((m.file_id.as_deref(), m.frame_id.as_deref()), (Some("file-5"), Some("fr")));
         assert!(!m.previewable);
     }

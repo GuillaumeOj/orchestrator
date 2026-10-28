@@ -171,6 +171,7 @@ fn replay(events: &[(i64, Ev)], shadow: bool) -> Result<Vec<GovernorAction>, Tes
                     five_hour: Some(WindowReading { used_pct: f.floor(), resets_at: five_reset }),
                     weekly: Some(WindowReading { used_pct: w.floor(), resets_at: reset() }),
                     provenance: Provenance::Observed,
+                    model: None,
                 });
             }
             Ev::Limit { agent } => {

@@ -130,6 +130,9 @@ pub struct UsageSample {
     #[serde(default)]
     pub weekly: Option<WindowReading>,
     pub provenance: Provenance,
+    /// The model the cost was spent on (FR-814 per-model weights), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl UsageSample {
@@ -142,6 +145,7 @@ impl UsageSample {
             five_hour: None,
             weekly: None,
             provenance: Provenance::Observed,
+            model: None,
         }
     }
 }

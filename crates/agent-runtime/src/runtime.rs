@@ -2213,6 +2213,7 @@ fn governor_sample(u: &orch_store::UsageRecord) -> Option<governor::UsageSample>
         five_hour: reading(u.five_hour_pct, u.five_hour_resets_at),
         weekly: reading(u.weekly_pct, u.weekly_resets_at),
         provenance: orch_store::untag(&u.provenance).unwrap_or(governor::Provenance::Observed),
+        model: u.model.clone(),
     })
 }
 
@@ -2226,7 +2227,8 @@ fn usage_record(
     orch_store::UsageRecord {
         ts_ms: g.ts.as_millisecond().max(0) as u64,
         agent_id: g.agent.as_ref().map(|a| a.0.clone()),
-        model: s.model.clone(),
+        // What the Governor was given, so a replay weighs it the same (FR-814).
+        model: g.model.clone().or_else(|| s.model.clone()),
         cost_estimate: s.total_cost_usd,
         cost_delta: Some(g.cost_delta),
         five_hour_pct: g.five_hour.map(|r| r.used_pct),

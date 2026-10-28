@@ -157,7 +157,9 @@ impl Runtime {
         };
         if let Some(wt) = &f.integration_worktree {
             let p = wt.join(&path);
-            if p.is_file() {
+            // A plain file only: a committed symlink would open its target; the
+            // git blob below is the link's own content.
+            if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_file()) {
                 return Ok(OpenTarget::File(p));
             }
         }
@@ -297,6 +299,13 @@ mod tests {
         std::fs::write(wt.join(format!("{dir}/a.png")), "x").unwrap();
         rt.db.upsert_feature(&Feature { integration_worktree: Some(wt.clone()), ..f }).unwrap();
         assert_eq!(rt.artifact_open_target("f1", a).unwrap(), OpenTarget::File(wt.join(format!("{dir}/a.png"))));
+        // A symlink there is not followed: the blob from the branch is used instead.
+        let secret = rt.cfg.paths.root.join("secret.txt");
+        std::fs::write(&secret, "private").unwrap();
+        std::os::unix::fs::symlink(&secret, wt.join(format!("{dir}/b.svg"))).unwrap();
+        let OpenTarget::File(p) = rt.artifact_open_target("f1", b).unwrap() else { panic!() };
+        assert!(p.starts_with(rt.cfg.paths.root.join("previews")), "{}", p.display());
+        assert_eq!(std::fs::read_to_string(p).unwrap(), "<svg/>");
     }
 
     #[test]

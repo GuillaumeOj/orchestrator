@@ -212,3 +212,26 @@ fn a_hard_cap_holds_its_allocation_in_a_heavy_week() {
         assert!(r.weekly_exhausted_at.is_none() && !r.limit_hits.iter().any(|h| h.working_hours), "seed {seed}");
     }
 }
+
+/// FR-814: NFR-9 holds with per-model weights on (the default weeks, one
+/// model) and off and on when opus agents cost 2.5× more per pp.
+#[test]
+fn nfr9_with_per_model_weights() {
+    for seed in 1..=8u64 {
+        for (per_model, opus) in [(true, 0.0), (false, 2.5), (true, 2.5)] {
+            let run_at = |demand: f64| {
+                let mut sc = Scenario::synthetic(&SyntheticParams::nfr9(demand, seed));
+                sc.policy.per_model_weights = per_model;
+                sc.model.opus_cost_factor = opus;
+                run(&sc).summary
+            };
+            let tag = format!("seed {seed} per_model {per_model} opus ×{opus}");
+            let s = run_at(130.0);
+            assert!(!s.limit_hits.iter().any(|h| h.working_hours), "{tag}: {:?}", s.limit_hits);
+            assert!(s.weekly_exhausted_at.is_none(), "{tag}: weekly limit at {:?}", s.weekly_exhausted_at);
+            assert!((85.0..=100.0).contains(&s.final_weekly_pct), "{tag}: ended at {:.1} %", s.final_weekly_pct);
+            let s = run_at(60.0);
+            assert_eq!(s.queued, 0, "{tag}: queued {:?}", s.queued_by_reason);
+        }
+    }
+}

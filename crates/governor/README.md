@@ -43,6 +43,7 @@ gov.ingest(&UsageSample {
     five_hour: Some(WindowReading { used_pct: 3.0, resets_at: "2026-10-19T12:00:00Z".parse()? }),
     weekly: Some(WindowReading { used_pct: 1.0, resets_at: "2026-10-26T08:00:00Z".parse()? }),
     provenance: Provenance::Observed,
+    model: None,
 });
 
 // Admission point 2: PreToolUse. A Deny ends the turn ("paused by governor").

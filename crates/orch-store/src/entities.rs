@@ -481,7 +481,7 @@ impl Store {
     }
 
     pub fn add_calibration(&self, c: &Calibration) -> Result<()> {
-        let c = *c;
+        let c = c.clone();
         self.write(move |tx| {
             tx.execute(
                 "INSERT INTO calibrations(ts_ms, cost_per_weekly_pct, confidence, unattributed_rate, data) VALUES (?1,?2,?3,?4,?5)",

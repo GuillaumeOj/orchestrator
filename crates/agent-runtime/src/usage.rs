@@ -115,6 +115,8 @@ impl UsageCollector {
             five_hour: reading(rl.five_hour),
             weekly: reading(rl.seven_day),
             provenance: Provenance::Observed,
+            // The session's model, for per-model weights (FR-814).
+            model: a.model.clone(),
         })
     }
 

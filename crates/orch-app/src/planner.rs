@@ -276,6 +276,7 @@ mod tests {
             five_hour: Some(WindowReading { used_pct: 20.0, resets_at: now }),
             weekly: Some(WindowReading { used_pct: 30.0, resets_at: reset }),
             provenance: Provenance::Observed,
+            model: None,
         });
         (g, now)
     }

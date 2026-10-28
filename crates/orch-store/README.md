@@ -111,6 +111,8 @@ Claude Code's folder name under `~/.claude/projects`.
   the Keychain (NFR-3).
 - **Artifact meta** (migration 6): `artifacts.meta` is the parsed hand-off URI
   (`orch_team::artifact::ArtifactMeta`, JSON), NULL for rows from before P3.
+- **Weekly reports and estimator state** (migration 7): `weekly_reports` (FR-818, never purged);
+  `calibrations` gains `kind` (`fit` or `week`), `week_start_ms` and the estimator `state` (FR-814).
 - **Tasks**: one model over every backend (ADR-004); `depends_on` are local task ids. `delete_project`
   removes the project's features, runs, tasks, messages, artifacts and project-scoped roles and
   teams; events stay.

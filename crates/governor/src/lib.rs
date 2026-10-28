@@ -11,10 +11,10 @@ pub mod types;
 
 pub use actions::{ActionKind, ActionMode, Ask, GovernorAction, Outcome, Undo};
 pub use calendar::{CalendarError, Curve, Day, WorkBlock, WorkingCalendar};
-pub use estimator::{Calibration, Calibrator};
+pub use estimator::{Calibration, Calibrator, FAMILIES, FamilyCalibrator, MIN_FAMILY_SAMPLES, ModelK, family_index};
 pub use governor::{
-    Carry, CostClass, Decision, DenyReason, ForecastSnapshot, Governor, GovernorError, LimitResponse, LiveRecord,
-    LiveTurn, NextActionPreview, Release, SprintRecord, Stats, ToolCallRequest, TurnRequest, Verdict,
+    Carry, CostClass, Decision, DenyReason, EstimatorState, ForecastSnapshot, Governor, GovernorError, LimitResponse,
+    LiveRecord, LiveTurn, NextActionPreview, Release, SprintRecord, Stats, ToolCallRequest, TurnRequest, Verdict,
 };
 pub use plan::{AskDefault, AutoContinue, BudgetAllocation, LiveCaps, PacingPolicy, Thresholds, WeeklyPlan};
 pub use pressure::{PressureInputs, PressureState, StateMachine};

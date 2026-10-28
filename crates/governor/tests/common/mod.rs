@@ -69,6 +69,7 @@ pub fn weekly(ts: Timestamp, agent: &str, cost: f64, pct: f64) -> UsageSample {
         five_hour: None,
         weekly: Some(WindowReading { used_pct: pct, resets_at: reset() }),
         provenance: Provenance::Observed,
+        model: None,
     }
 }
 
@@ -80,6 +81,7 @@ pub fn five(ts: Timestamp, agent: &str, pct: f64, resets_at: Timestamp) -> Usage
         five_hour: Some(WindowReading { used_pct: pct, resets_at }),
         weekly: None,
         provenance: Provenance::Observed,
+        model: None,
     }
 }
 
