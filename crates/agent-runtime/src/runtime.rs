@@ -262,33 +262,22 @@ pub fn default_plan(now: Timestamp, shadow: bool) -> WeeklyPlan {
     }
 }
 
-/// A plan for tests that no date can break: the week runs from three days
-/// before `now` to four days after, every hour of every day is working time,
-/// and the time zone is the fixed offset where `now` is between 12:00 and
-/// 13:00. No test starts near the end of a day or of the week, whatever the
-/// date, the hour, the system time zone or a DST change.
+/// For tests: a plan no date can break. The week runs from three days
+/// before `now` to four days after, every hour is working time, and the
+/// zone is the fixed offset where `now` is between 12:00 and 13:00: no test
+/// starts near the end of a day or of the week, whatever the date, the
+/// system time zone or a DST change.
+#[doc(hidden)]
 pub fn test_plan(now: Timestamp, shadow: bool) -> WeeklyPlan {
     use governor::jiff::civil::time;
-    let utc_hour = now.to_zoned(TimeZone::UTC).hour() as i32;
-    // Etc/GMT names count west as positive: Etc/GMT-5 is UTC+5.
-    let tz_name = match 12 - utc_hour {
-        0 => "Etc/UTC".to_string(),
-        h if h > 0 => format!("Etc/GMT-{h}"),
-        h => format!("Etc/GMT+{}", -h),
-    };
-    use governor::Day::*;
-    let days = [Mon, Tue, Wed, Thu, Fri, Sat, Sun];
+    let utc_hour = now.to_zoned(TimeZone::UTC).hour();
+    // Etc/GMT counts west as positive: Etc/GMT-5 is UTC+5.
+    let tz_name = format!("Etc/GMT{:+}", utc_hour - 12);
     let mut plan = default_plan(now, shadow);
     plan.week_start = now.checked_sub(72.hours()).unwrap_or(now);
     plan.reset_at = now.checked_add(96.hours()).unwrap_or(now);
     plan.id = format!("week-{}", plan.week_start.as_second());
-    plan.calendar = WorkingCalendar {
-        time_zone: tz_name,
-        blocks: days
-            .map(|day| governor::WorkBlock { day, start: time(0, 0, 0, 0), end: time(23, 59, 59, 0), weight: 1.0 })
-            .into(),
-        holidays: Vec::new(),
-    };
+    plan.calendar = WorkingCalendar::every_day(&tz_name, time(0, 0, 0, 0), time(23, 59, 59, 0));
     plan
 }
 
@@ -2400,9 +2389,6 @@ pub(crate) mod tests {
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
             // An app turn (admitted by the Governor before delivery: autonomous), two responses.
             let rec = rt.store.read(|s| s.agents["a1"].clone());
-            // Off-hours allowed, so the turn is admitted at any time of day.
-            let plan = rt.gov().plan().clone();
-            rt.replan(WeeklyPlan { off_hours_allowance_pct: 10.0, ..plan }).unwrap();
             assert!(rt.decide_turn(&rec, TurnKind::Message, TurnOrigin::App, false).effective.is_admit());
             rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "[t:0123abcd] go"})), None);
             for (cost, pct) in [(0.5, 30), (1.5, 32)] {
@@ -2443,8 +2429,6 @@ pub(crate) mod tests {
         let entry = {
             let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
-            let plan = rt.gov().plan().clone();
-            rt.replan(WeeklyPlan { off_hours_allowance_pct: 10.0, ..plan }).unwrap();
             rt.pause_agent("a1").unwrap();
             rt.pause_all();
             rt.deliver("a1", "later").unwrap();
@@ -2475,8 +2459,6 @@ pub(crate) mod tests {
         {
             let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
-            let plan = rt.gov().plan().clone();
-            rt.replan(WeeklyPlan { off_hours_allowance_pct: 10.0, ..plan }).unwrap();
             // An app turn is running.
             let rec = rt.store.read(|s| s.agents["a1"].clone());
             assert!(rt.decide_turn(&rec, TurnKind::Message, TurnOrigin::App, false).effective.is_admit());
@@ -2769,25 +2751,21 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_test_plan_holds_at_any_date_and_hour() {
-        // Every hour of every weekday (a 5 h step is prime to 24 and 168),
-        // and the last instant before each, over leap years, year ends and
-        // DST changes: a sprint can start, with most of the day and the week
-        // left.
-        let from: Timestamp = "2024-01-01T00:00:00Z".parse().unwrap();
-        for step in 0..(3 * 365 * 24 / 5) {
-            let hour = from.checked_add((step * 5).hours()).unwrap();
-            for now in [hour, hour.checked_add(3_599_900.milliseconds()).unwrap()] {
-                let p = test_plan(now, false);
-                assert!(
-                    p.week_start.checked_add(72.hours()).unwrap() <= now
-                        && now.checked_add(96.hours()).unwrap() <= p.reset_at
-                );
-                let mut g = Governor::new(p, governor::PacingPolicy::default(), now).unwrap();
-                let tz = TimeZone::get(&g.plan().calendar.time_zone).unwrap();
-                let end = g.curve().end_of_working_day(now, &tz).unwrap();
-                assert!(end.as_second() - now.as_second() >= 11 * 3600 - 1, "{now}: the day ends at {end}");
-                assert!(g.start_sprint(5.0, now).is_ok(), "{now}");
+    fn the_test_plan_holds_at_any_hour() {
+        // The plan depends on the UTC hour only: each hour and the last
+        // instant before the next, on a few dates (a leap day, a year end, a
+        // DST change in Europe): a sprint can start with most of the day left.
+        for day in ["2024-02-29", "2026-03-29", "2026-10-25", "2026-12-31"] {
+            let midnight: Timestamp = format!("{day}T00:00:00Z").parse().unwrap();
+            for h in 0..24 {
+                let hour = midnight.checked_add(h.hours()).unwrap();
+                for now in [hour, hour.checked_add(3_599_900.milliseconds()).unwrap()] {
+                    let mut g = Governor::new(test_plan(now, false), governor::PacingPolicy::default(), now).unwrap();
+                    let tz = TimeZone::get(&g.plan().calendar.time_zone).unwrap();
+                    let end = g.curve().end_of_working_day(now, &tz).unwrap();
+                    assert!(end.as_second() - now.as_second() >= 11 * 3600 - 1, "{now}: the day ends at {end}");
+                    assert!(g.start_sprint(5.0, now).is_ok(), "{now}");
+                }
             }
         }
     }

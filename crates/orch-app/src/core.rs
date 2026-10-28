@@ -1332,15 +1332,7 @@ mod tests {
             &repo,
             &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"],
         );
-        Core::start(CoreConfig {
-            home: d.join("home"),
-            claude: Some(d.join("no-claude")),
-            kitty_conf: d.join("kitty.conf"),
-            projects: vec![repo],
-            recover: false,
-            enforce: false,
-            default_plan: agent_runtime::runtime::test_plan,
-        })
+        core_on(&d.join("home"), &repo)
     }
 
     fn record(id: &str, repo: PathBuf) -> agent_runtime::store::AgentRecord {
@@ -1560,15 +1552,7 @@ mod tests {
         git(&main, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
         let nested = main.join(".claude/worktrees/feat");
         git(&main, &["worktree", "add", "-q", "-b", "feat", nested.to_str().unwrap()]);
-        let core = Core::start(CoreConfig {
-            home: d.path().join("home"),
-            claude: Some(d.path().join("no-claude")),
-            kitty_conf: d.path().join("kitty.conf"),
-            projects: vec![nested],
-            recover: false,
-            enforce: false,
-            default_plan: agent_runtime::runtime::test_plan,
-        });
+        let core = core_on(&d.path().join("home"), &nested);
         // The runtime records the main checkout as the agent's repo (FR-105).
         let main = main.canonicalize().unwrap();
         core.runtime().unwrap().store.write(|s| s.agents.insert("a1".into(), record("a1", main.clone()))).unwrap();
@@ -1627,6 +1611,7 @@ mod tests {
     }
 
     /// Starts a core on `home` with `repo` registered (the restart tests reuse the home).
+    /// A core on `home` with `repo` registered, on the test plan (any date).
     fn core_on(home: &Path, repo: &Path) -> Arc<Core> {
         Core::start(CoreConfig {
             home: home.to_path_buf(),
@@ -1644,9 +1629,9 @@ mod tests {
         let d = tmp();
         let core = test_core(d.path());
         let rt = core.runtime().unwrap().clone();
-        let (week_start, reset) = rt.with_governor(|g| (g.plan().week_start, g.plan().reset_at));
+        let reset = rt.with_governor(|g| g.plan().reset_at);
         // An observed weekly reading earlier this week, as the statusline stores it.
-        let t0 = (Timestamp::now().as_millisecond() - 60_000).max(week_start.as_millisecond() + 1) as u64;
+        let t0 = (Timestamp::now().as_millisecond() - 60_000) as u64;
         rt.db.add_usage(orch_store::UsageRecord {
             ts_ms: t0,
             weekly_pct: Some(42.0),
