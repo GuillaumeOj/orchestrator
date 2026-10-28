@@ -199,6 +199,11 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         CtlRequest::Audit { agent_id, limit } => {
             ok_or(rt.db.audit_log(agent_id.as_deref(), limit.unwrap_or(100)).map(|v| json!(v)))
         }
+        CtlRequest::RunReport { team_run_id, since_ms, until_ms } => ok_or(
+            rt.db
+                .run_report(&orch_store::ReportQuery { team_run_id, since_ms, until_ms }, orch_protocol::now_ms())
+                .map(|r| json!(r)),
+        ),
         CtlRequest::Events { agent_id, kind, since_ms, limit } => ok_or(
             rt.db
                 .events(since_ms.unwrap_or(0), agent_id.as_deref(), kind.as_deref(), limit.unwrap_or(200))

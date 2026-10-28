@@ -148,14 +148,6 @@ pub struct Live {
     pub resumed: bool,
 }
 
-impl Live {
-    /// The user's keystrokes: delivery waits 2 s after them (FR-206).
-    pub fn user_input(&self, bytes: &[u8]) -> Result<()> {
-        self.last_user_input_ms.store(now_ms(), Ordering::SeqCst);
-        self.pty.write(bytes)
-    }
-}
-
 pub struct Runtime {
     pub cfg: RuntimeConfig,
     pub store: Store,
@@ -205,6 +197,8 @@ pub(crate) struct House {
     last_fit: Option<governor::Calibrator>,
     last_purge_ms: u64,
     last_index_ms: u64,
+    /// FR-1311: each agent's wait episode already recorded as a pane intervention.
+    pub(crate) interventions: BTreeMap<String, crate::intervention::Wait>,
     /// FR-203: the probe's level with hysteresis; its `effective` sets the cap.
     pressure: PressureFilter,
     /// Agents whose transcript changed since the last index pass.
@@ -240,6 +234,32 @@ pub(crate) struct House {
     pub(crate) last_notion_ms: u64,
     /// FR-816: the off-hours marks of tasks and runs (the store's, cached).
     pub(crate) off_hours_marks: Option<crate::pacing::OffHoursMarks>,
+}
+
+/// A hook's event detail (FR-1311, the run report): the common fields, plus
+/// the type and text of a Notification, the call id of a tool event and the
+/// permission mode a SessionStart reports.
+pub(crate) fn hook_event_detail(event: &HookEvent, p: &HookPayload) -> Value {
+    let mut d = json!({"tool": p.tool_name, "prompt_id": p.prompt_id, "source": p.source, "error": p.error});
+    let mut put = |k: &str, v: &Option<String>| {
+        if let Some(v) = v {
+            d[k] = json!(v);
+        }
+    };
+    match event {
+        HookEvent::Notification => {
+            put("notification_type", &p.notification_type);
+            put("message", &p.message);
+        }
+        HookEvent::SessionStart => put("permission_mode", &p.permission_mode),
+        HookEvent::PreToolUse
+        | HookEvent::PostToolUse
+        | HookEvent::PostToolUseFailure
+        | HookEvent::PermissionRequest
+        | HookEvent::PermissionDenied => put("tool_use_id", &p.tool_use_id),
+        _ => {}
+    }
+    d
 }
 
 /// A team lead (the node that merges): outside the process cap. Not the
@@ -1213,11 +1233,7 @@ impl Runtime {
         if call_done || turn_done {
             self.answered_in_pane(id, if call_done { p.tool_use_id.as_deref() } else { None });
         }
-        self.event(
-            id,
-            m.event.as_str(),
-            json!({"tool": p.tool_name, "prompt_id": p.prompt_id, "source": p.source, "error": p.error}),
-        );
+        self.event(id, m.event.as_str(), hook_event_detail(&m.event, &p));
         // Before any state change: a blocked Stop keeps the turn running.
         if m.event == HookEvent::Stop {
             if let Some(out) = self.stop_check(&rec, &p) {
@@ -1277,6 +1293,7 @@ impl Runtime {
                 }
             }
             Effect::TurnStarted { origin, markers } => {
+                self.end_wait_episode(id);
                 self.mark_delivered(id, &markers, Some(now));
                 if let Some(l) = &live {
                     l.ready_at_ms.store(0, Ordering::SeqCst);
@@ -2203,19 +2220,18 @@ impl Runtime {
         let _ = l.pty.resize(rows, cols);
         l.pty.output.set_attached(true);
         if !initial.is_empty() {
-            l.last_user_input_ms.store(now_ms(), Ordering::SeqCst);
-            l.pty.write(initial)?;
+            self.pane_write(id, &l, initial)?;
         }
         let mut input = stream.try_clone()?;
         let l2 = l.clone();
+        let (me, id2) = (self.me.upgrade().ok_or_else(|| anyhow!("runtime gone"))?, id.to_string());
         let reader = std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
                 match input.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        l2.last_user_input_ms.store(now_ms(), Ordering::SeqCst);
-                        if l2.pty.write(&buf[..n]).is_err() {
+                        if me.pane_write(&id2, &l2, &buf[..n]).is_err() {
                             break;
                         }
                     }
@@ -2657,6 +2673,26 @@ pub(crate) mod tests {
         let out = rt.on_hook(&hook("PermissionRequest", json!({"prompt_id": "p2"})), None).expect("parked");
         assert_eq!(out.0["hookSpecificOutput"]["decision"]["message"], crate::inbox::PARKED_MESSAGE);
         assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::Working);
+    }
+
+    #[test]
+    fn hook_events_keep_their_specific_fields() {
+        let p = |v: Value| HookPayload::parse(&v);
+        let n = hook_event_detail(
+            &HookEvent::Notification,
+            &p(json!({"notification_type": "permission_prompt", "message": "Claude needs your permission"})),
+        );
+        assert_eq!(
+            (n["notification_type"].as_str(), n["message"].as_str()),
+            (Some("permission_prompt"), Some("Claude needs your permission"))
+        );
+        let t = hook_event_detail(&HookEvent::PreToolUse, &p(json!({"tool_name": "Bash", "tool_use_id": "tu1"})));
+        assert_eq!((t["tool"].as_str(), t["tool_use_id"].as_str()), (Some("Bash"), Some("tu1")));
+        let s =
+            hook_event_detail(&HookEvent::SessionStart, &p(json!({"source": "startup", "permission_mode": "auto"})));
+        assert_eq!(s["permission_mode"], "auto");
+        let plain = hook_event_detail(&HookEvent::Stop, &p(json!({"permission_mode": "auto"})));
+        assert!(plain.get("permission_mode").is_none() && plain.get("tool_use_id").is_none());
     }
 
     #[test]

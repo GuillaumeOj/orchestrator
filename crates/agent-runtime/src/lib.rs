@@ -7,6 +7,7 @@ pub mod env;
 pub mod flow;
 pub mod inbox;
 pub mod integrations;
+pub mod intervention;
 pub mod linear;
 pub mod mcp;
 pub mod net;

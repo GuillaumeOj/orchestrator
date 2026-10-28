@@ -2600,8 +2600,10 @@ version = "0.1.0"
 dependencies = [
  "agent-runtime",
  "anyhow",
+ "governor",
  "libc",
  "orch-protocol",
+ "orch-store",
  "serde_json",
  "tempfile",
 ]

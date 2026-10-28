@@ -538,9 +538,8 @@ impl Core {
                 std::thread::Builder::new().name(format!("agent-{id}-in")).spawn(move || {
                     for b in rx {
                         // The process may have been resumed: look it up each time.
-                        if let Some(l) = rt.live(&agent) {
-                            let _ = l.user_input(&b);
-                        }
+                        // FR-1311: typing (not terminal replies) may be a pane intervention.
+                        let _ = rt.pane_input(&agent, &b);
                     }
                 })?;
                 w.insert(id.to_string(), tx.clone());
@@ -733,14 +732,16 @@ impl Core {
                 if let Some(p) = payload.as_ref().filter(|p| p["source"] == "notion" && action == "open") {
                     let url = p["page_url"].clone();
                     rt.store.write(|s| {
-                        let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()), "user");
+                        let _ =
+                            s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()), "user");
                     })?;
                     return Ok(json!({"open": "url", "url": url}));
                 }
                 // "Weekly report ready" (FR-818): read once opened; the UI opens the report.
                 if let Some(p) = payload.filter(|p| p["digest"] == "weekly_report" && action == "open") {
                     rt.store.write(|s| {
-                        let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()), "user");
+                        let _ =
+                            s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()), "user");
                     })?;
                     return Ok(json!({"open": "report", "report": p["report"]}));
                 }

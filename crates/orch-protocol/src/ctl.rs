@@ -210,6 +210,16 @@ pub enum CtlRequest {
         #[serde(default)]
         limit: Option<usize>,
     },
+    /// The run report (P4.0 exit criterion): prompts, pane interventions and
+    /// waiting of a team run or a time range.
+    RunReport {
+        #[serde(default)]
+        team_run_id: Option<String>,
+        #[serde(default)]
+        since_ms: Option<u64>,
+        #[serde(default)]
+        until_ms: Option<u64>,
+    },
     Events {
         #[serde(default)]
         agent_id: Option<String>,

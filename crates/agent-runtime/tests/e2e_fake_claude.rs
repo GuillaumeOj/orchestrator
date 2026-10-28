@@ -463,6 +463,30 @@ fn a_flapping_probe_keeps_the_cap_and_a_pasted_turn_is_never_suspended() {
     assert_ne!(core.state_of("a"), "suspended");
 }
 
+/// FR-1311 (acceptance 7): typing into a waiting agent's pane records one
+/// `pane_intervention` with its cause; focus changes record nothing.
+#[test]
+fn typing_into_a_waiting_pane_is_one_intervention_and_focus_is_none() {
+    let core = Core::start("orchpi", |c| c.permission_hold = Duration::from_secs(30));
+    core.start_agent("a");
+    request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "PERMIT pnpm add zod".into() }).unwrap();
+    wait_for("held prompt", 15, || core.rt.inbox().iter().any(|i| i.kind == "permission"));
+    let events = || {
+        core.rt.db.flush().unwrap();
+        core.rt.db.events(0, Some("a"), Some("pane_intervention"), 10).unwrap()
+    };
+    core.rt.pane_input("a", b"\x1b[I\x1b[O").unwrap();
+    assert!(events().is_empty(), "focus in/out is not typing");
+    core.rt.pane_input("a", b"y").unwrap();
+    core.rt.pane_input("a", b"y").unwrap();
+    let ev = events();
+    assert_eq!(ev.len(), 1, "one per wait episode");
+    assert_eq!(ev[0].detail["waited_on"], "permission");
+    let item = core.rt.inbox().into_iter().find(|i| i.kind == "permission").unwrap();
+    assert_eq!(ev[0].detail["item"], item.id);
+    core.rt.decide(item.id, orch_protocol::InboxDecision::Approve, None, None).unwrap();
+}
+
 /// J3 end to end with the fake claude: launch, the lead starts when the
 /// Governor admits it, spec gate, a task dispatched to a new specialist in its
 /// own worktree, a message, report, merge, then the PR gate.

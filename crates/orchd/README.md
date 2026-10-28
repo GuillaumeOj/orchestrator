@@ -17,7 +17,8 @@ target/debug/orchd decide 3 approve          # or reject | always [--scope proje
 target/debug/orchd projects                  # J1: branch, ahead/behind, dirty, live agents
 target/debug/orchd project show myproj --prs # worktrees (orphans flagged), branches, PRs + CI
 target/debug/orchd diff ~/dev/myproj.worktrees/solo/a1
-target/debug/orchd audit a1                  # commits, permission decisions, rule changes
+target/debug/orchd audit a1                  # commits, permission decisions (actor user|pane|rule:<id>|expired|core), rule changes
+target/debug/orchd report --run <id> --baseline   # prompts by tool and decider, pane interventions, waiting vs 2026-10-27
 target/debug/orchd search "flaky test"       # FTS over indexed transcripts
 target/debug/orchd usage | governor          # 5h / weekly + Governor W/F, plan, queue, actions
 target/debug/orchd suspend a1 && target/debug/orchd resume a1 --message "Continue"

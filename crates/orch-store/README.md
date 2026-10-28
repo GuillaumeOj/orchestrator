@@ -47,6 +47,7 @@ db.flush()?;                                                    // everything qu
 | Terminal | `terminals` | `upsert_terminal`, `delete_terminal`, `terminals` |
 | (events) | `events` | `add_event(ts, agent, kind, detail)` (detached), `events(since, agent, kind_prefix, limit)` |
 | (audit, FR-709) | `audit_log` | `audit(actor, agent, action, target, decision, detail)` (waits), `audit_log(agent, limit)` |
+| (run report, D7) | events + `audit_log` + `inbox_items` | `run_report(ReportQuery, now)` → `RunReport` (`render(baseline)`), `BASELINE` |
 | (settings) | `kv` | `set_setting`, `setting` |
 | Role (P2) | `roles` | `upsert_role(role, at)`, `role(scope, id)`, `roles(project)` (global + that project's, which shadow), `archive_role(scope, id)` |
 | Team, AgentNode, Edge (P2) | `teams`, `team_versions` | `save_team(team, roles, at)` (also snapshots the version with the roles it uses, FR-308), `team(scope, id)`, `team_in(project, id)` (its own, else the global one), `teams(project)`, `team_version(scope, id, v)`, `archive_team(scope, id)` |
