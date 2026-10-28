@@ -158,7 +158,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                     actions.push("always");
                 }
                 InboxItem {
-                    id: format!("inbox-{}", al.id),
+                    id: ui_id(&al.kind, al.id),
                     level: 1,
                     kind: "permission".into(),
                     agent_id: al.agent_id.clone(),
@@ -177,7 +177,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
             }
             // Gates (FR-704): decided through the runtime, which acts on them.
             ("gate", action) => InboxItem {
-                id: format!("gate-{}", al.id),
+                id: ui_id(&al.kind, al.id),
                 level: 1,
                 kind: "gate".into(),
                 agent_id: al.agent_id.clone(),
@@ -206,7 +206,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
             },
             // A team agent's question (`ask_user`): the reply becomes its next turn.
             ("question", _) => InboxItem {
-                id: format!("q-{}", al.id),
+                id: ui_id(&al.kind, al.id),
                 level: 1,
                 kind: "question".into(),
                 agent_id: al.agent_id.clone(),
@@ -234,7 +234,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 status: "open",
             },
             (kind, _) => InboxItem {
-                id: format!("alert-{}", al.id),
+                id: ui_id(kind, al.id),
                 level: match kind {
                     "budget" => 3,
                     "info" => 4,

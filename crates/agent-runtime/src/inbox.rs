@@ -99,7 +99,9 @@ impl Call {
 
 /// The call's main argument as the dialog shows it, and its description.
 fn brief(tool: &str, input: &Value) -> (String, Option<String>) {
-    let mut main = permissions::primary_input(tool, input).unwrap_or_else(|| tool.to_string());
+    let notebook = input.get("notebook_path").and_then(Value::as_str).map(str::to_string);
+    let main = permissions::primary_input(tool, input).or(notebook);
+    let mut main = main.unwrap_or_else(|| tool.to_string());
     if main.chars().count() > 200 {
         main = main.chars().take(199).collect::<String>() + "…";
     }
@@ -518,7 +520,7 @@ impl Runtime {
         scope: Option<&str>,
         message: Option<&str>,
     ) -> Result<Value> {
-        let item = self
+        let mut item = self
             .store
             .read(|s| s.inbox.iter().find(|i| i.id == id).cloned())
             .ok_or_else(|| anyhow!("no Inbox item {id}"))?;
@@ -549,14 +551,19 @@ impl Runtime {
         let word = orch_store::tag(&decision);
         let status = if decision == InboxDecision::Dismiss { InboxStatus::Dismissed } else { InboxStatus::Decided };
         let claimed = self.store.write(|s| {
+            let was = s.inbox.iter().find(|i| i.id == id).map(|i| i.status);
             s.close_inbox(id, status, Some(word.clone()), "user").map(|i| {
                 if let Some(m) = message {
                     i.payload["reply"] = json!(m);
                 }
+                was
             })
         })?;
-        if let Err(now) = claimed {
-            bail!("Inbox item {id} is already {now:?}");
+        match claimed {
+            Err(now) => bail!("Inbox item {id} is already {now:?}"),
+            // The hold may have parked it since it was read: act on the status it was claimed in.
+            Ok(Some(was)) => item.status = was,
+            Ok(None) => {}
         }
         let target = item.payload.get("tool").and_then(Value::as_str).map(str::to_string);
         self.db.audit(

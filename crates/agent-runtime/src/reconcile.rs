@@ -347,17 +347,25 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
         // A permission prompt's item stays open, parked with its payload
         // (FR-705): the agent resumes on the answer. A legacy hold with no
         // item comes back as a restart gate; Governor holds are requeued.
-        let mut parked = vec![];
         let mut fresh_gates = vec![];
         for h in st.holds.iter_mut().filter(|h| h.agent_id == id && h.status == HoldStatus::Held) {
             let now = match (h.kind, h.inbox_id) {
-                (HoldKind::Gate, Some(item)) => {
-                    h.status = HoldStatus::Parked;
-                    parked.push(item);
-                    format!(
-                        "Inbox item {item} parked: the agent was denied while the core was down and resumes on the answer"
-                    )
-                }
+                (HoldKind::Gate, Some(item)) => match st.inbox.iter_mut().find(|i| i.id == item && i.pending()) {
+                    Some(i) => {
+                        h.status = HoldStatus::Parked;
+                        i.status = orch_store::InboxStatus::Parked;
+                        i.payload["restarted"] = serde_json::json!(true);
+                        report.parked.push(item);
+                        format!(
+                            "Inbox item {item} parked: the agent was denied while the core was down and resumes on the answer"
+                        )
+                    }
+                    // Decided (or parked) just before the core died: nothing waits on this hold.
+                    None => {
+                        h.status = HoldStatus::Interrupted;
+                        format!("Inbox item {item} already closed or parked")
+                    }
+                },
                 (HoldKind::Gate, None) => {
                     h.status = HoldStatus::Interrupted;
                     fresh_gates.push(h.summary.clone());
@@ -369,13 +377,6 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                 }
             };
             report.holds.push((h.id.clone(), now));
-        }
-        for item in parked {
-            if let Some(i) = st.inbox.iter_mut().find(|i| i.id == item && i.pending()) {
-                i.status = orch_store::InboxStatus::Parked;
-                i.payload["restarted"] = serde_json::json!(true);
-                report.parked.push(item);
-            }
         }
         // Gates and questions still open come back as they were, marked.
         for i in st.inbox.iter_mut().filter(|i| {

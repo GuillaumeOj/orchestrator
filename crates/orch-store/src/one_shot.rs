@@ -9,9 +9,14 @@ use serde_json::Value;
 use crate::db::Store;
 
 /// `tool_input` as one canonical string: serde_json's maps are sorted, so
-/// key order never matters.
+/// key order never matters. The model's own `description` of the call is
+/// left out: it does not change what runs, and a retry may word it anew.
 fn canonical(input: &Value) -> String {
-    input.to_string()
+    let mut v = input.clone();
+    if let Some(m) = v.as_object_mut() {
+        m.remove("description");
+    }
+    v.to_string()
 }
 
 impl Store {
@@ -71,12 +76,20 @@ mod tests {
         s.add_one_shot("a1", "Bash", &input, Some(7), far).unwrap();
         assert_eq!(s.take_one_shot("a2", "Bash", &input).unwrap(), None, "another agent");
         assert_eq!(s.take_one_shot("a1", "Write", &input).unwrap(), None, "another tool");
-        assert_eq!(s.take_one_shot("a1", "Bash", &json!({"command": "pnpm add zod"})).unwrap(), None, "another input");
+        assert_eq!(
+            s.take_one_shot("a1", "Bash", &json!({"command": "pnpm add zod -D"})).unwrap(),
+            None,
+            "another input"
+        );
         // Key order does not matter.
         let reordered: serde_json::Value =
             serde_json::from_str(r#"{"description":"Add zod","command":"pnpm add zod"}"#).unwrap();
         assert_eq!(s.take_one_shot("a1", "Bash", &reordered).unwrap(), Some(Some(7)));
         assert_eq!(s.take_one_shot("a1", "Bash", &input).unwrap(), None, "consumed");
+        // The same call described in other words is the same call.
+        s.add_one_shot("a1", "Bash", &input, Some(8), far).unwrap();
+        let reworded = json!({"command": "pnpm add zod", "description": "Install zod"});
+        assert_eq!(s.take_one_shot("a1", "Bash", &reworded).unwrap(), Some(Some(8)));
         s.add_one_shot("a1", "Bash", &input, None, crate::now_ms().saturating_sub(1)).unwrap();
         assert_eq!(s.take_one_shot("a1", "Bash", &input).unwrap(), None, "expired");
     }

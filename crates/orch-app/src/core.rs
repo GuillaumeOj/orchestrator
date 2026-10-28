@@ -675,7 +675,11 @@ impl Core {
         // audits and acts (the hook answers, or the agent is told).
         if let Some(n) = item.strip_prefix("inbox-") {
             let n: u64 = n.parse()?;
-            let open = rt.store.read(|st| st.inbox.iter().find(|i| i.id == n).map(|i| i.status));
+            let found = rt.store.read(|st| st.inbox.iter().find(|i| i.id == n).map(|i| (i.status, i.payload.clone())));
+            let open = found.as_ref().map(|(st, _)| *st);
+            // "Always allow" for the agent's project, or for the agent itself when it has none.
+            let in_project = found.is_some_and(|(_, p)| p.get("project_id").is_some_and(Value::is_string));
+            let scope = (action == "always").then_some(if in_project { "project" } else { "agent" });
             let decision = match action {
                 "approve" => InboxDecision::Approve,
                 "reject" => InboxDecision::Reject,
@@ -687,7 +691,7 @@ impl Core {
                 "in_pane" => bail!("the prompt is no longer in the pane"),
                 other => bail!("{other} does not apply to a permission"),
             };
-            let r = rt.decide(n, decision, None, message.filter(|m| !m.trim().is_empty()))?;
+            let r = rt.decide(n, decision, scope, message.filter(|m| !m.trim().is_empty()))?;
             return Ok(json!({"ok": true, "effect": r["effect"], "result": r}));
         }
         if let Some(n) = item.strip_prefix("alert-") {
