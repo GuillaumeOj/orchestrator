@@ -104,6 +104,8 @@ function title(spec) {
     default:
       if (spec.type === 'project') return projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId;
       if (spec.type === 'trust') return `trust · ${spec.projectId}`;
+      if (spec.type === 'project-settings')
+        return `${projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId} settings`;
       if (spec.type === 'feature') return features().find((f) => f.id === spec.featureId)?.slug ?? 'feature';
       if (spec.type === 'board')
         return `${projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId} tasks`;
@@ -279,6 +281,17 @@ export function openSettings(section = null, server = null, projectId = null) {
     return focusPane(existing);
   }
   addPane({ type: 'settings', section: section ?? 'integrations', server, projectId }, app.layout ? 'tab' : 'right');
+}
+
+/** P3: a project's settings (Task backend, Notion, MCP overrides), one pane per project. */
+export function openProjectSettings(projectId, section = null) {
+  if (!projectId) return toast('No project in focus');
+  const existing = findPane((s) => s.type === 'project-settings' && s.projectId === projectId);
+  if (existing) {
+    if (section) app.panes[existing] = { ...app.panes[existing], section };
+    return focusPane(existing);
+  }
+  addPane({ type: 'project-settings', projectId, section: section ?? 'backend' }, app.layout ? 'tab' : 'right');
 }
 
 /** FR-818: the weekly report ('current' = this week so far), one pane. */
@@ -748,7 +761,8 @@ async function poll() {
  *  however that happened: a button, the CLI, a project removal. */
 function paneGone(s) {
   if (s.type === 'agent') return !activeAgents().some((a) => a.id === s.agentId);
-  if (s.type === 'project' || s.type === 'board') return !projects().some((p) => p.id === s.projectId);
+  if (s.type === 'project' || s.type === 'board' || s.type === 'project-settings')
+    return !projects().some((p) => p.id === s.projectId);
   // Features never read yet (the core's read failed): nothing is known gone.
   if (s.type === 'feature') return app.data?.features != null && !features().some((f) => f.id === s.featureId);
   return false;
@@ -884,6 +898,7 @@ export function commands() {
   for (const p of projects()) {
     list.push({ id: `board.open.${p.id}`, label: `Board: ${p.name}`, run: () => openBoard(p.id) });
     list.push({ id: `project.open.${p.id}`, label: `Open project ${p.name}`, run: () => openProject(p.id) });
+    list.push({ id: `project.settings.${p.id}`, label: `${p.name} settings`, run: () => openProjectSettings(p.id) });
     list.push({
       id: `project.trust.${p.id}`,
       label: `Trust ${p.name} (Claude Code's dialog)…`,

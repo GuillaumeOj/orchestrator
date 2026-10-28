@@ -15,7 +15,7 @@
   import { ago } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { displayState } from '../lib/status.js';
-  import { runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
+  import { handle, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -162,7 +162,7 @@
         <DesignSection bind:this={design} {v} />
 
         <section class="card">
-          <div class="cardh"><b>Tasks</b><span class="muted">{v.project?.backend === 'github' ? 'GitHub Issues' : 'Local'} · {byStatus('done').length}/{v.tasks.length} done</span><span class="grow"></span><button class="btn ghost" onclick={() => openBoard(v.feature.project_id)}>Open board <Kbd keys="b" /></button></div>
+          <div class="cardh"><b>Tasks</b><span class="muted">{v.project?.backend === 'github' ? 'GitHub Issues' : v.project?.backend === 'linear' ? 'Linear' : 'Local'} · {byStatus('done').length}/{v.tasks.length} done</span><span class="grow"></span><button class="btn ghost" onclick={() => openBoard(v.feature.project_id)}>Open board <Kbd keys="b" /></button></div>
           <div class="taskcols">
             {#each [['in_progress', 'In progress', 'working'], ['review', 'Review', 'waiting_gate'], ['ready', 'Ready', 'idle'], ['done', 'Done', 'done']] as [s, label, st] (s)}
               {@const list = byStatus(s)}
@@ -171,7 +171,7 @@
                   <div class="colh"><StatusBadge state={st} compact /> {label} <span class="muted">{list.length}</span></div>
                   {#each list as t (t.id)}
                     <div class="task">
-                      <div class="tt"><span class="muted mono">{t.backend === 'github' && t.external_id ? `#${t.external_id}` : `T-${t.id}`}</span><span class="grow"></span><span class="muted">{t.backend === 'github' ? 'GitHub' : 'Local'}</span></div>
+                      <div class="tt"><span class="muted mono">{handle(t)}</span><span class="grow"></span><span class="muted">{t.backend === 'github' ? 'GitHub' : t.backend === 'linear' ? 'Linear' : 'Local'}</span></div>
                       <div class="title">{t.title}</div>
                       <div class="tt">
                         {#if t.node}<AgentChip id={t.node} role={v.team?.nodes?.find((n) => n.id === t.node)?.role_id ?? t.node} />{/if}

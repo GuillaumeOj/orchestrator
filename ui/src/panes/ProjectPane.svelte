@@ -7,7 +7,7 @@
   import { onMount } from 'svelte';
   import Kbd from '../components/Kbd.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
-  import { activeAgents, app, closePane, confirm, openAgent, openDiff, openShell, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
+  import { activeAgents, app, closePane, confirm, openAgent, openDiff, openProjectSettings, openShell, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
   import { ago, dayTime, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { displayState } from '../lib/status.js';
@@ -137,6 +137,7 @@
       <button class="btn" onclick={fetchNow} disabled={!!busy}>{busy === 'fetch' ? 'Fetching…' : 'Fetch'} <Kbd keys="f" /></button>
       <button class="btn ghost" onclick={() => openShell({ projectId: p.id, cwd: p.path, how: 'right' })}>Shell</button>
       <button class="btn ghost" onclick={() => openDiff(p.id, p.path, d?.status?.branch)}>Diff</button>
+      <button class="btn ghost" onclick={() => openProjectSettings(p.id)}>Settings</button>
       <button class="btn danger" onclick={startRemoval}>Remove project… <Kbd keys="x" /></button>
     </div>
 
