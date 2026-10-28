@@ -42,28 +42,32 @@ pub struct ReportAgent {
     pub permission_mode: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Counts {
-    pub total: u64,
-    pub by: BTreeMap<String, u64>,
+fn bump(m: &mut BTreeMap<String, u64>, key: &str) {
+    *m.entry(key.to_string()).or_default() += 1;
 }
 
-impl Counts {
-    fn add(&mut self, key: &str) {
-        self.total += 1;
-        *self.by.entry(key.to_string()).or_default() += 1;
-    }
+/// Permission prompts (api-contract §4).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Prompts {
+    /// PermissionRequest hooks.
+    pub total: u64,
+    pub by_tool: BTreeMap<String, u64>,
+    /// Permission answers (audit rows): `user`, `pane`, `rule:<id>`, `expired`, `core`.
+    pub by_decider: BTreeMap<String, u64>,
+}
+
+/// `pane_intervention` events (api-contract §4).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Interventions {
+    pub total: u64,
+    pub by_cause: BTreeMap<String, u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunReport {
     pub agents: Vec<ReportAgent>,
-    /// PermissionRequest hooks, by tool.
-    pub prompts_by_tool: Counts,
-    /// Permission answers (audit rows), by decider: `user`, `pane`, `rule:<id>`, `expired`, `core`.
-    pub prompts_by_decider: Counts,
-    /// `pane_intervention` events, by cause.
-    pub interventions: Counts,
+    pub prompts: Prompts,
+    pub interventions: Interventions,
     /// Open → decided of the agents' permission, question, gate and startup
     /// items (parked time included; still open ones up to `until`).
     pub waiting_ms: u64,
@@ -83,15 +87,24 @@ fn permission_mode(args: &Value) -> String {
     a.windows(2).find(|w| w[0] == "--permission-mode").map(|w| w[1].to_string()).unwrap_or_else(|| "default".into())
 }
 
+/// An event's detail, read from its blob file when it was stored outside the row.
+fn detail(text: &str) -> Value {
+    let d: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+    match d.get("blob").and_then(Value::as_str) {
+        Some(p) => std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null),
+        None => d,
+    }
+}
+
 fn hours(ms: u64) -> String {
     format!("{:.1} h", ms as f64 / 3_600_000.0)
 }
 
-fn by(c: &Counts) -> String {
-    if c.by.is_empty() {
+fn by(m: &BTreeMap<String, u64>) -> String {
+    if m.is_empty() {
         return "-".into();
     }
-    let mut v: Vec<(&String, &u64)> = c.by.iter().collect();
+    let mut v: Vec<(&String, &u64)> = m.iter().collect();
     v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
     v.iter().map(|(k, n)| format!("{k} {n}")).collect::<Vec<_>>().join(", ")
 }
@@ -105,24 +118,29 @@ impl RunReport {
         for a in &self.agents {
             out.push_str(&format!("  {:<28} {:<12} mode {}\n", a.id, a.role, a.permission_mode));
         }
-        let line = |name: &str, now: String, base: String, detail: String| {
-            let now = if baseline { format!("{now:<10} (baseline {base})") } else { now };
+        let line = |name: &str, now: String, base: Option<String>, detail: String| {
+            let now = match (baseline, base) {
+                (true, Some(base)) => format!("{now:<10} (baseline {base})"),
+                // A continuation row: no baseline of its own.
+                (true, None) => format!("{now:<10}"),
+                (false, _) => now,
+            };
             format!("{name:<22} {now}  {detail}\n")
         };
         out.push_str(&line(
             "permission prompts",
-            self.prompts_by_tool.total.to_string(),
-            BASELINE.prompts.to_string(),
-            format!("by tool: {}", by(&self.prompts_by_tool)),
+            self.prompts.total.to_string(),
+            Some(BASELINE.prompts.to_string()),
+            format!("by tool: {}", by(&self.prompts.by_tool)),
         ));
-        out.push_str(&line("", String::new(), String::new(), format!("by decider: {}", by(&self.prompts_by_decider))));
+        out.push_str(&line("", String::new(), None, format!("by decider: {}", by(&self.prompts.by_decider))));
         out.push_str(&line(
             "pane interventions",
             self.interventions.total.to_string(),
-            BASELINE.interventions.to_string(),
-            format!("by cause: {}", by(&self.interventions)),
+            Some(BASELINE.interventions.to_string()),
+            format!("by cause: {}", by(&self.interventions.by_cause)),
         ));
-        out.push_str(&line("waiting", hours(self.waiting_ms), hours(BASELINE.waiting_ms), String::new()));
+        out.push_str(&line("waiting", hours(self.waiting_ms), Some(hours(BASELINE.waiting_ms)), String::new()));
         out.push_str(&format!(
             "startups blocked {}, fresh restarts {}, pressure changes {}, pressure suspends {}\n",
             self.startup_blocked, self.restarted_fresh, self.pressure_changes, self.pressure_suspends
@@ -155,22 +173,18 @@ impl Store {
             let mut rep = RunReport { since_ms: since, until_ms: until, ..Default::default() };
 
             // Events in the range.
-            let mut spawned: BTreeMap<String, Value> = BTreeMap::new();
             let mut st = c.prepare(
                 "SELECT agent_id, kind, detail FROM events WHERE ts_ms >= ?1 AND ts_ms < ?2
                  AND kind IN ('PermissionRequest', 'pane_intervention', 'restarted_fresh', 'memory_pressure',
-                              'auto_suspend', 'spawned')
+                              'auto_suspend')
                  ORDER BY ts_ms, id",
             )?;
             let rows = st.query_map(params![since as i64, until as i64], |r| {
                 Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
             })?;
             for row in rows {
-                let (agent, kind, detail) = row?;
-                let mut d: Value = serde_json::from_str(&detail).unwrap_or(Value::Null);
-                if let Some(p) = d.get("blob").and_then(Value::as_str) {
-                    d = std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
-                }
+                let (agent, kind, text) = row?;
+                let d = detail(&text);
                 if kind == "memory_pressure" {
                     rep.pressure_changes += 1;
                     continue;
@@ -180,29 +194,29 @@ impl Store {
                 }
                 let s = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or("?").to_string();
                 match kind.as_str() {
-                    "PermissionRequest" => rep.prompts_by_tool.add(&s("tool")),
-                    "pane_intervention" => rep.interventions.add(&s("waited_on")),
+                    "PermissionRequest" => {
+                        rep.prompts.total += 1;
+                        bump(&mut rep.prompts.by_tool, &s("tool"));
+                    }
+                    "pane_intervention" => {
+                        rep.interventions.total += 1;
+                        bump(&mut rep.interventions.by_cause, &s("waited_on"));
+                    }
                     "restarted_fresh" => rep.restarted_fresh += 1,
                     "auto_suspend" if d["why"] == "memory_pressure" => rep.pressure_suspends += 1,
-                    "spawned" => {
-                        spawned.insert(agent.unwrap_or_default(), d["args"].clone());
-                    }
                     _ => {}
                 }
             }
-            // Spawned before the range: its last spawn still says how it runs.
-            for (id, _) in &agents {
-                if !spawned.contains_key(id) {
-                    let last: Option<String> = c
-                        .query_row(
-                            "SELECT detail FROM events WHERE agent_id=?1 AND kind='spawned' ORDER BY ts_ms DESC, id DESC LIMIT 1",
-                            [id],
-                            |r| r.get(0),
-                        )
-                        .ok();
-                    if let Some(d) = last.and_then(|t| serde_json::from_str::<Value>(&t).ok()) {
-                        spawned.insert(id.clone(), d["args"].clone());
-                    }
+            // How each agent runs: its last spawn up to `until`, in the range or before it.
+            let mut spawned: BTreeMap<String, Value> = BTreeMap::new();
+            let mut st = c.prepare(
+                "SELECT agent_id, detail FROM events WHERE kind='spawned' AND ts_ms < ?1 AND agent_id IS NOT NULL
+                 ORDER BY ts_ms, id",
+            )?;
+            for row in st.query_map([until as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+                let (agent, text) = row?;
+                if ids.contains(agent.as_str()) {
+                    spawned.insert(agent, detail(&text)["args"].clone());
                 }
             }
             rep.agents = agents
@@ -214,35 +228,68 @@ impl Store {
                 })
                 .collect();
 
-            // Who answered each permission prompt.
+            // Who answered each permission prompt (a decision that reached nobody,
+            // `failed`, left the item open: its real decider comes later).
             let mut st = c.prepare(
-                "SELECT agent_id, actor FROM audit_log WHERE action='permission' AND ts_ms >= ?1 AND ts_ms < ?2",
+                "SELECT agent_id, actor FROM audit_log
+                 WHERE action='permission' AND decision <> 'failed' AND ts_ms >= ?1 AND ts_ms < ?2",
             )?;
             for row in st.query_map(params![since as i64, until as i64], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)))? {
                 let (agent, actor) = row?;
                 if mine(&agent) {
-                    rep.prompts_by_decider.add(&actor);
+                    bump(&mut rep.prompts.by_decider, &actor);
                 }
             }
 
             // Waiting on the user, and starts that were blocked.
-            let mut st = c.prepare(
-                "SELECT agent_id, kind, created_at_ms, decided_at_ms FROM inbox_items
-                 WHERE kind IN ('permission', 'question', 'gate', 'startup') AND created_at_ms >= ?1 AND created_at_ms < ?2",
-            )?;
-            let rows = st.query_map(params![since as i64, until as i64], |r| {
-                Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, Option<i64>>(3)?))
-            })?;
-            for row in rows {
-                let (agent, kind, created, decided) = row?;
-                if !mine(&agent) {
-                    continue;
-                }
-                let end = decided.map_or(until, |d| (d as u64).min(until));
-                rep.waiting_ms += end.saturating_sub(created as u64);
+            const WAITS: [&str; 4] = ["permission", "question", "gate", "startup"];
+            let mut waits = |kind: &str, created: u64, end: u64| {
+                rep.waiting_ms += end.min(until).saturating_sub(created);
                 if kind == "startup" {
                     rep.startup_blocked += 1;
                 }
+            };
+            let mut st = c.prepare(
+                "SELECT id, agent_id, kind, created_at_ms, decided_at_ms FROM inbox_items
+                 WHERE kind IN ('permission', 'question', 'gate', 'startup') AND created_at_ms >= ?1 AND created_at_ms < ?2",
+            )?;
+            let rows = st.query_map(params![since as i64, until as i64], |r| {
+                Ok((
+                    r.get::<_, i64>(0)? as u64,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)? as u64,
+                    r.get::<_, Option<i64>>(4)?,
+                ))
+            })?;
+            let mut have = BTreeSet::new();
+            for row in rows {
+                let (id, agent, kind, created, decided) = row?;
+                have.insert(id);
+                if mine(&agent) {
+                    waits(&kind, created, decided.map_or(until, |d| d as u64));
+                }
+            }
+            // Closed rows the store pruned (it keeps the last 200): their
+            // `inbox_outcome` events still say when they opened and closed.
+            let mut closed: BTreeMap<u64, (String, u64, u64)> = BTreeMap::new();
+            let mut st = c.prepare(
+                "SELECT agent_id, detail FROM events WHERE kind='inbox_outcome' AND ts_ms >= ?1 ORDER BY ts_ms, id",
+            )?;
+            for row in st.query_map(params![since as i64], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)))? {
+                let (agent, d) = row?;
+                let d: Value = serde_json::from_str(&d).unwrap_or(Value::Null);
+                let (Some(item), Some(kind)) = (d["item"].as_u64(), d["kind"].as_str()) else { continue };
+                let created = d["created_at_ms"].as_u64().unwrap_or(0);
+                // A park or a failed delivery left it open.
+                let reopened = matches!(d["effect"].as_str(), Some("parked" | "failed"));
+                if have.contains(&item) || !mine(&agent) || !WAITS.contains(&kind) || reopened || created < since || created >= until {
+                    continue;
+                }
+                closed.insert(item, (kind.to_string(), created, d["at_ms"].as_u64().unwrap_or(created)));
+            }
+            for (kind, created, at) in closed.into_values() {
+                waits(&kind, created, at);
             }
             Ok(rep)
         })
@@ -290,6 +337,11 @@ mod tests {
                     params![actor, agent],
                 )?;
             }
+            // A decision that reached nobody (the item stays parked) is not a decider.
+            tx.execute(
+                "INSERT INTO audit_log(ts_ms, actor, agent_id, action, target, decision, detail) VALUES (21,'user','f-back-1','permission','Bash','failed','{}')",
+                [],
+            )?;
             let item = |id: u64, agent: &str, kind: &str, created: u64, decided: Option<u64>| {
                 let mut i = crate::InboxItem::new(id, kind, Some(agent), "x".into());
                 i.created_at_ms = created;
@@ -302,6 +354,11 @@ mod tests {
             item(3, "f-lead-1", "startup", 900, Some(950))?; // 50 ms
             item(4, "f-lead-1", "info", 0, Some(5_000))?; // not a wait
             item(5, "g-back-1", "question", 0, Some(900))?; // another run
+            // Item 6 was pruned: its outcomes remain (parked, then decided: 200 ms in all).
+            ev(30, "f-back-1", "inbox_outcome", json!({"item": 6, "kind": "permission", "effect": "parked", "created_at_ms": 600, "at_ms": 700}))?;
+            ev(31, "f-back-1", "inbox_outcome", json!({"item": 6, "kind": "permission", "effect": "resumed", "created_at_ms": 600, "at_ms": 800}))?;
+            // An outcome for a row still there is not counted twice.
+            ev(32, "f-back-1", "inbox_outcome", json!({"item": 1, "kind": "permission", "effect": "allowed", "created_at_ms": 100, "at_ms": 400}))?;
             Ok(())
         })
         .unwrap();
@@ -311,14 +368,20 @@ mod tests {
         let ids: Vec<(&str, &str, &str)> =
             r.agents.iter().map(|a| (a.id.as_str(), a.role.as_str(), a.permission_mode.as_str())).collect();
         assert_eq!(ids, [("f-back-1", "back", "auto"), ("f-lead-1", "lead", "default")]);
-        assert_eq!((r.prompts_by_tool.total, r.prompts_by_tool.by["Bash"], r.prompts_by_tool.by["Read"]), (3, 2, 1));
-        assert_eq!(r.prompts_by_decider.total, 4);
+        assert_eq!((r.prompts.total, r.prompts.by_tool["Bash"], r.prompts.by_tool["Read"]), (3, 2, 1));
+        assert_eq!(r.prompts.by_decider.values().sum::<u64>(), 4);
         assert_eq!(
-            (r.prompts_by_decider.by["expired"], r.prompts_by_decider.by["user"], r.prompts_by_decider.by["pane"]),
+            (r.prompts.by_decider["expired"], r.prompts.by_decider["user"], r.prompts.by_decider["pane"]),
             (1, 1, 1)
         );
-        assert_eq!((r.interventions.total, r.interventions.by["permission"]), (2, 1));
-        assert_eq!(r.waiting_ms, 300 + 500 + 50);
+        assert_eq!((r.interventions.total, r.interventions.by_cause["permission"]), (2, 1));
+        let j = serde_json::to_value(&r).unwrap();
+        assert!(
+            j["prompts"]["by_tool"].is_object()
+                && j["prompts"]["by_decider"].is_object()
+                && j["interventions"]["by_cause"].is_object()
+        );
+        assert_eq!(r.waiting_ms, 300 + 500 + 50 + 200);
         assert_eq!((r.startup_blocked, r.restarted_fresh, r.pressure_changes, r.pressure_suspends), (1, 1, 1, 1));
         let text = r.render(true);
         assert!(text.contains("permission prompts     3") && text.contains("(baseline 29)"), "{text}");
@@ -327,9 +390,10 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("baseline: the 2026-10-27 team run"), "{text}");
+        assert!(!text.contains("(baseline )"), "{text}");
         assert!(!r.render(false).contains("baseline"));
         // A time range alone covers every agent; one ending early cuts the events.
         let all = s.run_report(&ReportQuery { until_ms: Some(12), ..Default::default() }, 0).unwrap();
-        assert_eq!((all.agents.len(), all.prompts_by_tool.total), (3, 2));
+        assert_eq!((all.agents.len(), all.prompts.total), (3, 2));
     }
 }

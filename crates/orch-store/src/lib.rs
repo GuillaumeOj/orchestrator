@@ -19,7 +19,7 @@ pub use ecosystem::IntegrationRow;
 pub use events::{AuditEntry, Event, Retention};
 pub use migrations::SCHEMA_VERSION;
 pub use model::*;
-pub use report::{BASELINE, Baseline, Counts, ReportAgent, ReportQuery, RunReport};
+pub use report::{BASELINE, Baseline, Interventions, Prompts, ReportAgent, ReportQuery, RunReport};
 pub use reports::ReportRow;
 pub use runtime_rows::upsert_worktree as upsert_worktree_tx;
 pub use runtime_rows::{AgentRow, HoldRowDb, RuntimeDiff, RuntimeRows, TurnRowDb};

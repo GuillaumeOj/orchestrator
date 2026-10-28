@@ -1,7 +1,8 @@
 //! Pane interventions (FR-1311): the user typing into an agent's pane while
 //! the agent waits on something, recorded once per wait episode so the run
-//! report can count them by cause. Terminal replies (focus, cursor position
-//! and device attribute reports, mouse reports) are not typing.
+//! report can count them by cause. Terminal replies (focus, cursor position,
+//! device attribute and mode reports, mouse reports, OSC/DCS answers) are not
+//! typing.
 
 use std::sync::atomic::Ordering;
 
@@ -38,12 +39,36 @@ pub fn typed(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Whether anything in `bytes` was typed (not a terminal reply); [`typed`]
+/// without building the result, for every keystroke.
+pub fn is_typing(bytes: &[u8]) -> bool {
+    let mut i = 0;
+    while i < bytes.len() {
+        match (bytes[i] == 0x1b).then(|| reply_len(&bytes[i..])).flatten() {
+            Some(n) => i += n,
+            None => return true,
+        }
+    }
+    false
+}
+
 /// The length of a terminal reply starting at `b[0] == ESC`, if it is one:
 /// focus `ESC[I` / `ESC[O`, CPR `ESC[r;cR`, DA `ESC[?…c` / `ESC[>…c`, SGR
-/// mouse `ESC[<b;x;yM|m`, X10 mouse `ESC[M` + 3 bytes.
+/// mouse `ESC[<b;x;yM|m`, X10 mouse `ESC[M` + 3 bytes, DECRPM `ESC[?…$y`,
+/// keyboard flags `ESC[?…u`, and OSC / DCS replies ended by BEL or ST.
 fn reply_len(b: &[u8]) -> Option<usize> {
-    if b.get(1) != Some(&b'[') {
-        return None;
+    match b.get(1)? {
+        b'[' => {}
+        // OSC (`ESC]11;rgb:…`) or DCS (`ESCP>|…`): only a terminated one is a reply.
+        b']' | b'P' => {
+            let body = &b[2..];
+            return body.iter().enumerate().find_map(|(j, &c)| match c {
+                0x07 => Some(2 + j + 1),
+                0x1b if body.get(j + 1) == Some(&b'\\') => Some(2 + j + 2),
+                _ => None,
+            });
+        }
+        _ => return None,
     }
     match b.get(2)? {
         b'I' | b'O' => return Some(3),
@@ -59,6 +84,8 @@ fn reply_len(b: &[u8]) -> Option<usize> {
         b'R' => lead.is_ascii_digit() && b[2..end].contains(&b';'),
         b'c' => matches!(lead, b'?' | b'>'),
         b'M' | b'm' => lead == b'<',
+        b'u' => lead == b'?',
+        b'$' if b.get(end + 1) == Some(&b'y') => return Some(end + 2),
         _ => false,
     };
     is_reply.then_some(end + 1)
@@ -67,36 +94,28 @@ fn reply_len(b: &[u8]) -> Option<usize> {
 /// What `id` waits on now, if anything (FR-1311 priority order).
 pub(crate) fn wait_of(s: &StateFile, id: &str) -> Option<Wait> {
     let rec = s.agents.get(id)?;
-    let item = |kind: &str, pending: bool| {
-        s.inbox
-            .iter()
-            .filter(|i| i.agent_id.as_deref() == Some(id) && i.kind == kind)
-            .find(|i| if pending { i.pending() } else { i.status == orch_store::InboxStatus::Parked })
-    };
+    let mine = || s.inbox.iter().filter(|i| i.agent_id.as_deref() == Some(id));
     let from = |cause, i: &orch_store::InboxItem| Some(Wait { cause, item: Some(i.id), since_ms: i.created_at_ms });
-    if let Some(i) = item("permission", true) {
-        return from("permission", i);
+    for kind in ["permission", "question", "gate"] {
+        if let Some(i) = mine().find(|i| i.kind == kind && i.pending()) {
+            return from(kind, i);
+        }
     }
-    if let Some(i) = item("question", true) {
-        return from("question", i);
-    }
-    if let Some(i) = item("gate", true) {
-        return from("gate", i);
-    }
-    if let Some(i) =
-        s.inbox.iter().find(|i| i.agent_id.as_deref() == Some(id) && i.status == orch_store::InboxStatus::Parked)
-    {
+    if let Some(i) = mine().find(|i| i.status == orch_store::InboxStatus::Parked) {
         return from("parked", i);
     }
-    if let Some(i) = s.inbox.iter().find(|i| i.agent_id.as_deref() == Some(id) && i.kind == "startup" && i.open()) {
+    if let Some(i) = mine().find(|i| i.kind == "startup" && i.open()) {
         return from("startup", i);
     }
     let last = rec.last_event_at_ms.unwrap_or(rec.created_at_ms);
     if rec.trust_dialog {
         return Some(Wait { cause: "trust", item: None, since_ms: last });
     }
-    let turn =
-        |st: TurnStatus| s.turns.iter().filter(|t| t.agent_id == id && t.status == st).min_by_key(|t| t.created_at_ms);
+    // A working agent is not waiting on its next turn: typing into it is no intervention.
+    let working = rec.tracker.state == AgentState::Working;
+    let turn = |st: TurnStatus| {
+        s.turns.iter().filter(|t| !working && t.agent_id == id && t.status == st).min_by_key(|t| t.created_at_ms)
+    };
     if let Some(t) = turn(TurnStatus::Delivering) {
         return Some(Wait { cause: "delivering", item: None, since_ms: t.delivered_at_ms.unwrap_or(t.created_at_ms) });
     }
@@ -122,15 +141,16 @@ impl Runtime {
 
     /// [`Runtime::pane_input`] to a given process (an attached client keeps its own).
     pub(crate) fn pane_write(&self, id: &str, l: &Live, bytes: &[u8]) -> Result<()> {
-        if !typed(bytes).is_empty() {
+        if is_typing(bytes) {
             l.last_user_input_ms.store(now_ms(), Ordering::SeqCst);
             self.note_intervention(id);
         }
         l.pty.write(bytes)
     }
 
-    /// One `pane_intervention` per wait episode: the same wait (cause, item,
-    /// start) typed into again records nothing more.
+    /// One `pane_intervention` per wait episode: the same wait (cause and
+    /// item; its start may move with the agent's events) typed into again
+    /// records nothing more.
     fn note_intervention(&self, id: &str) {
         let Some((wait, run)) = self.store.read(|s| {
             wait_of(s, id).map(|w| (w, s.agents.get(id).and_then(|a| a.team.as_ref().map(|t| t.run_id.clone()))))
@@ -139,7 +159,7 @@ impl Runtime {
         };
         {
             let mut h = self.house();
-            if h.interventions.get(id) == Some(&wait) {
+            if h.interventions.get(id).is_some_and(|w| (w.cause, w.item) == (wait.cause, wait.item)) {
                 return;
             }
             h.interventions.insert(id.to_string(), wait.clone());
@@ -177,13 +197,21 @@ mod tests {
             b"\x1b[<0;10;5M",
             b"\x1b[<0;10;5m",
             b"\x1b[M !!",
+            b"\x1b[?2026;2$y",
+            b"\x1b[?1u",
+            b"\x1b]11;rgb:1e1e/1e1e/1e1e\x07",
+            b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\",
+            b"\x1bP>|xterm.js(5.5.0)\x1b\\",
         ] {
             assert!(typed(reply).is_empty(), "{reply:?}");
+            assert!(!is_typing(reply), "{reply:?}");
         }
         assert_eq!(typed(b"\x1b[Iy\x1b[O"), b"y");
-        // Keys are typing: Enter, Esc, arrows, letters.
-        for key in [&b"\r"[..], b"\x1b", b"\x1b[A", b"1", b"\x1b[3~"] {
+        assert!(is_typing(b"\x1b[Iy\x1b[O"));
+        // Keys are typing: Enter, Esc, arrows, letters, Alt+].
+        for key in [&b"\r"[..], b"\x1b", b"\x1b[A", b"1", b"\x1b[3~", b"\x1b]"] {
             assert!(!typed(key).is_empty(), "{key:?}");
+            assert!(is_typing(key), "{key:?}");
         }
     }
 
@@ -195,6 +223,10 @@ mod tests {
             .write(|s| s.turns.push(TurnRow::queued("a1", "x", governor::TurnKind::Message, Admission::Pending)))
             .unwrap();
         assert_eq!(rt.store.read(|s| wait_of(s, "a1")).unwrap().cause, "queued");
+        // A working agent's queued turn is not a wait: typing into it records nothing.
+        rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.state = AgentState::Working).unwrap();
+        assert_eq!(rt.store.read(|s| wait_of(s, "a1")), None, "working");
+        rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.state = AgentState::Idle).unwrap();
         let startup = rt.add_item(Some("a1"), "startup", "a1 did not start".into(), json!({}), 10).unwrap();
         assert_eq!(rt.store.read(|s| wait_of(s, "a1")).unwrap().cause, "startup");
         let q = rt.add_item(Some("a1"), "question", "q".into(), json!({}), 30).unwrap();

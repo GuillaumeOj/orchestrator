@@ -140,7 +140,7 @@ impl Args {
 
 /// `2026-10-27T09:00:00Z` (or a date, at midnight UTC) as ms since the epoch.
 fn iso_ms(s: &str) -> Result<u64> {
-    let t: governor::jiff::Timestamp = match s.parse() {
+    let t: jiff::Timestamp = match s.parse() {
         Ok(t) => t,
         Err(_) => format!("{s}T00:00:00Z").parse().with_context(|| format!("not an ISO time: {s}"))?,
     };

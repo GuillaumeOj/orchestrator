@@ -2223,40 +2223,43 @@ impl Runtime {
             self.pane_write(id, &l, initial)?;
         }
         let mut input = stream.try_clone()?;
-        let l2 = l.clone();
-        let (me, id2) = (self.me.upgrade().ok_or_else(|| anyhow!("runtime gone"))?, id.to_string());
-        let reader = std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            loop {
-                match input.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if me.pane_write(&id2, &l2, &buf[..n]).is_err() {
-                            break;
+        let mut out = stream;
+        // Scoped: the reader borrows the runtime and the process, and is
+        // joined before `attach` returns.
+        std::thread::scope(|sc| {
+            let l = &l;
+            let reader = sc.spawn(move || {
+                let mut buf = [0u8; 4096];
+                loop {
+                    match input.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if self.pane_write(id, l, &buf[..n]).is_err() {
+                                break;
+                            }
                         }
                     }
                 }
-            }
-        });
-        let mut out = stream;
-        // Redraw at the new size.
-        let _ = l.pty.resize(rows, cols.saturating_sub(1).max(1));
-        let _ = l.pty.resize(rows, cols);
-        loop {
-            let bytes = l.pty.output.read_wait(Duration::from_millis(250));
-            if bytes.is_empty() {
-                if l.pty.has_exited() && l.pty.output.is_closed() || reader.is_finished() {
+            });
+            // Redraw at the new size.
+            let _ = l.pty.resize(rows, cols.saturating_sub(1).max(1));
+            let _ = l.pty.resize(rows, cols);
+            loop {
+                let bytes = l.pty.output.read_wait(Duration::from_millis(250));
+                if bytes.is_empty() {
+                    if l.pty.has_exited() && l.pty.output.is_closed() || reader.is_finished() {
+                        break;
+                    }
+                    continue;
+                }
+                if out.write_all(&bytes).is_err() {
                     break;
                 }
-                continue;
             }
-            if out.write_all(&bytes).is_err() {
-                break;
-            }
-        }
-        l.pty.output.set_attached(false);
-        let _ = out.shutdown(std::net::Shutdown::Both);
-        let _ = reader.join();
+            l.pty.output.set_attached(false);
+            let _ = out.shutdown(std::net::Shutdown::Both);
+            let _ = reader.join();
+        });
         Ok(())
     }
 

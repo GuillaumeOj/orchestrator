@@ -124,7 +124,7 @@ until it falls back under. For the WebContent runaway seen once (docs/app/README
 | `commands` | Tauri commands, thin wrappers over `core` | |
 
 Additions to existing crates (wiring only): `Runtime::live`, `Runtime::with_governor`,
-`Runtime::governor_act` and `Live::user_input` in `agent-runtime`.
+`Runtime::governor_act` and `Runtime::pane_input` in `agent-runtime`.
 
 ## UI (`ui/`)
 
