@@ -46,6 +46,7 @@ impl Graphql for LinearHttp {
             ],
             body: Some(json!({"query": query, "variables": variables}).to_string()),
             timeout: Duration::from_secs(30),
+            max_body: crate::net::API_MAX_BODY,
         };
         let r = self.net.http(&req).map_err(|e| GqlError::Failed(format!("{e:#}")))?;
         linear::parse_answer(r.status, r.header("retry-after"), &r.body)

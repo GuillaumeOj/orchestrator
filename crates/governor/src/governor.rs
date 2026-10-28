@@ -890,11 +890,13 @@ impl Governor {
         let mut cap = if m.weight_now <= 0.0 {
             caps.off_hours
         } else if !m.in_work {
-            // FR-816: off-hours under an allowance run at most the off-hours
-            // cap, and only while the week is on or under plan; an hour of
+            // FR-816: off-hours under an allowance run the state's cap while
+            // the week is under plan, the off-hours cap while it is a little
+            // over (Green), and nothing under pressure; an hour of
             // the allowance weighs a fraction of a working hour, so rounding
             // the cap up would run an agent all night even in Red.
             match self.sm.state {
+                PressureState::Green | PressureState::CatchUp if m.error <= 0.0 => caps.for_state(self.sm.state),
                 PressureState::Green | PressureState::CatchUp => {
                     caps.for_state(self.sm.state).min(self.policy.off_hours_live_cap)
                 }
@@ -1430,9 +1432,13 @@ impl Governor {
         let cause = self.hold_reason(&req.agent, autonomous, now).or_else(|| {
             // Deferral and hard caps also stop a running autonomous turn at
             // its next tool boundary, not only the next turn (FR-811).
-            let alloc = &self.live.get(&req.agent)?.allocation;
+            let live = self.live.get(&req.agent)?;
+            let alloc = &live.allocation;
             if !autonomous {
                 None
+            } else if live.scheduled && self.in_working_time(now) {
+                // FR-816: work scheduled off-hours stops when working time starts.
+                Some(QueueReason::ScheduledOffHours { starts_at: self.next_off_hours(now) })
             } else if self.deferred.contains_key(alloc) {
                 Some(QueueReason::DeferredUntilReset)
             } else {
@@ -1453,6 +1459,10 @@ impl Governor {
         }
         self.stats.tool_calls_denied += 1;
         if let Some(t) = self.end_turn(&req.agent, now) {
+            if t.scheduled {
+                // Still off-hours work: it goes on in the next window.
+                self.off_hours.insert(req.agent.clone());
+            }
             self.enqueue(
                 req.agent.clone(),
                 t.allocation,

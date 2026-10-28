@@ -147,6 +147,7 @@ fn probe_http(s: &McpServer, net: &dyn Net) -> (McpStatus, Option<String>) {
             headers: vec![("Accept".into(), "text/event-stream".into())],
             body: None,
             timeout: Duration::from_secs(5),
+            max_body: crate::net::MAX_BODY,
         }
     } else {
         HttpRequest {
@@ -158,6 +159,7 @@ fn probe_http(s: &McpServer, net: &dyn Net) -> (McpStatus, Option<String>) {
             ],
             body: Some(initialize().to_string()),
             timeout: HTTP_DEADLINE,
+            max_body: crate::net::MAX_BODY,
         }
     };
     match net.http(&req) {

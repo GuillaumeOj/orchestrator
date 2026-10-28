@@ -32,6 +32,11 @@ pub const POLL_EVERY_MS: u64 = 15 * 60 * 1000;
 /// Notion takes at most this many blocks per request, and this many chars per text.
 const MAX_BLOCKS: usize = 100;
 const MAX_TEXT: usize = 2000;
+/// … and this many rich-text runs per block.
+const MAX_RUNS: usize = 100;
+/// Retries of a rate-limited call (Retry-After, at most this long each).
+const RETRIES: u32 = 3;
+const MAX_RETRY_WAIT: Duration = Duration::from_secs(10);
 
 /// One Notion API call; returns the JSON answer.
 pub trait NotionApi: Send + Sync {
@@ -71,8 +76,9 @@ impl NotionApi for NotionHttp {
             headers,
             body: body.map(Value::to_string),
             timeout: Duration::from_secs(30),
+            max_body: crate::net::API_MAX_BODY,
         };
-        let r = self.net.http(&req)?;
+        let r = http_with_retry(self.net.as_ref(), &req, std::thread::sleep)?;
         let v: Value = serde_json::from_str(&r.body).unwrap_or(Value::Null);
         if !(200..300).contains(&r.status) {
             let msg = v["message"].as_str().unwrap_or("").to_string();
@@ -85,6 +91,21 @@ impl NotionApi for NotionHttp {
         }
         Ok(v)
     }
+}
+
+/// One request, retried (up to [`RETRIES`]) after a 429 once its Retry-After
+/// (at most [`MAX_RETRY_WAIT`], else 1 s) has passed.
+pub fn http_with_retry(net: &dyn Net, req: &HttpRequest, sleep: impl Fn(Duration)) -> Result<crate::net::HttpResponse> {
+    let mut r = net.http(req)?;
+    for _ in 0..RETRIES {
+        if r.status != 429 {
+            break;
+        }
+        let wait = r.header("retry-after").and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(1.0);
+        sleep(Duration::from_secs_f64(wait.max(0.0)).min(MAX_RETRY_WAIT));
+        r = net.http(req)?;
+    }
+    Ok(r)
 }
 
 /// A feature's publication, kept in the settings.
@@ -106,6 +127,8 @@ pub struct Published {
 
 /// A Notion page id from a URL or an id (32 hex digits, dashes or not).
 pub fn page_id(s: &str) -> Option<String> {
+    // `?pvs=4`, `?source=copy_link`, `#heading` are not part of the id.
+    let s = s.trim().split(['?', '#']).next().unwrap_or("");
     let hex: String = s.trim().trim_end_matches('/').rsplit(['/', '-']).next().unwrap_or("").chars().collect();
     let hex = if hex.len() == 32 { hex } else { s.chars().filter(|c| c.is_ascii_hexdigit()).collect::<String>() };
     let hex = hex.get(hex.len().saturating_sub(32)..)?.to_string();
@@ -166,8 +189,20 @@ pub fn rich_text(line: &str) -> Vec<Value> {
     out
 }
 
+/// Notion takes at most 100 rich-text runs per block: past that, the text is
+/// sent plain (in 2000-char runs), and cut at 100 runs.
+fn cap_runs(rt: Vec<Value>) -> Vec<Value> {
+    if rt.len() <= MAX_RUNS {
+        return rt;
+    }
+    let plain: String = rt.iter().filter_map(|t| t["text"]["content"].as_str()).collect();
+    let mut out = text(&plain, None, false);
+    out.truncate(MAX_RUNS);
+    out
+}
+
 fn block(kind: &str, rt: Vec<Value>) -> Value {
-    json!({"object": "block", "type": kind, kind: {"rich_text": rt}})
+    json!({"object": "block", "type": kind, kind: {"rich_text": cap_runs(rt)}})
 }
 
 fn code_block(code: &str, lang: &str) -> Value {
@@ -202,7 +237,7 @@ fn table(rows: &[Vec<String>]) -> Value {
         .iter()
         .map(|r| {
             let cells: Vec<Value> =
-                (0..width).map(|i| json!(rich_text(r.get(i).map(String::as_str).unwrap_or("")))).collect();
+                (0..width).map(|i| json!(cap_runs(rich_text(r.get(i).map(String::as_str).unwrap_or(""))))).collect();
             json!({"object": "block", "type": "table_row", "table_row": {"cells": cells}})
         })
         .collect();
@@ -256,7 +291,17 @@ pub fn blocks(md: &str) -> Vec<Value> {
                 }
                 i += 1;
             }
-            out.push(table(&rows));
+            // Notion takes at most 100 rows per table: the rest in more
+            // tables, each with the header row again.
+            let (head, body) = rows.split_first().map_or((None, &rows[..]), |(h, b)| (Some(h), b));
+            for chunk in body.chunks(MAX_BLOCKS - 1) {
+                let mut t: Vec<Vec<String>> = head.cloned().into_iter().collect();
+                t.extend(chunk.iter().cloned());
+                out.push(table(&t));
+            }
+            if body.is_empty() {
+                out.push(table(&rows));
+            }
             continue;
         } else if let Some(item) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) {
             flush(&mut para, &mut out);
@@ -304,8 +349,10 @@ fn replace_children(api: &dyn NotionApi, page: &str, children: &[Value]) -> Resu
     Ok(())
 }
 
-/// Creates a page under `parent` with `children` (the first 100; the rest appended).
-fn create_page(api: &dyn NotionApi, parent: &str, title: &str, children: &[Value]) -> Result<Value> {
+/// Creates a page under `parent` with the first 100 of `children`; returns
+/// `(id, url)`. The caller records the id before [`append_rest`], so a failed
+/// append never leads to a second page.
+fn create_page(api: &dyn NotionApi, parent: &str, title: &str, children: &[Value]) -> Result<(String, Option<String>)> {
     let first: Vec<Value> = children.iter().take(MAX_BLOCKS).cloned().collect();
     let page = api.call(
         "POST",
@@ -313,10 +360,15 @@ fn create_page(api: &dyn NotionApi, parent: &str, title: &str, children: &[Value
         Some(&json!({"parent": {"page_id": parent}, "properties": title_props(title), "children": first})),
     )?;
     let id = page["id"].as_str().ok_or_else(|| anyhow!("Notion: no page id in the answer"))?.to_string();
+    Ok((id, page["url"].as_str().map(str::to_string)))
+}
+
+/// The blocks past the first 100 of a page just created.
+fn append_rest(api: &dyn NotionApi, id: &str, children: &[Value]) -> Result<()> {
     for chunk in children.chunks(MAX_BLOCKS).skip(1) {
         api.call("PATCH", &format!("/v1/blocks/{id}/children"), Some(&json!({"children": chunk})))?;
     }
-    Ok(page)
+    Ok(())
 }
 
 /// A comment as an Inbox item's payload.
@@ -351,7 +403,16 @@ impl Runtime {
 
     /// `notion_publish`: creates (then refreshes) the feature's page and one
     /// child page per doc, from the integration branch.
+    /// One publish or comment poll of a feature at a time: both read, change
+    /// and save its state (a concurrent one would lose comments it saw, and
+    /// make their Inbox items twice).
+    fn notion_lock(&self, feature_id: &str) -> Arc<std::sync::Mutex<()>> {
+        self.notion_locks.lock().unwrap_or_else(|e| e.into_inner()).entry(feature_id.to_string()).or_default().clone()
+    }
+
     pub fn notion_publish(&self, feature_id: &str) -> Result<Value> {
+        let lock = self.notion_lock(feature_id);
+        let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
         let f = self.db.feature(feature_id)?.ok_or_else(|| anyhow!("no feature {feature_id}"))?;
         let project = self.db.project(&f.project_id)?.ok_or_else(|| anyhow!("no project {}", f.project_id))?;
         let parent_raw = project.typed_settings().notion_parent_page.clone().unwrap_or_default();
@@ -367,17 +428,18 @@ impl Runtime {
         let mut p = self.published(feature_id);
         let r = (|| -> Result<()> {
             let intro = blocks(&format!(
-                "Published by Orchestrator from the integration branch of **{}**. Comment on these pages: \
-                 the comments come back to the app's Inbox.",
+                "Published by Orchestrator from the integration branch of **{}**. Comment on these pages \
+                 (page comments, at the top of a page): they come back to the app's Inbox.",
                 f.slug
             ));
             match &p.page_id {
                 Some(id) => replace_children(api.as_ref(), id, &intro)?,
                 None => {
-                    let page = create_page(api.as_ref(), &parent, &f.title, &intro)?;
-                    p.page_id = page["id"].as_str().map(str::to_string);
-                    p.page_url = page["url"].as_str().map(str::to_string);
+                    let (id, url) = create_page(api.as_ref(), &parent, &f.title, &intro)?;
+                    (p.page_id, p.page_url) = (Some(id.clone()), url);
                     p.docs.clear();
+                    self.save_published(feature_id, &p)?;
+                    append_rest(api.as_ref(), &id, &intro)?;
                 }
             }
             let root = p.page_id.clone().ok_or_else(|| anyhow!("no page"))?;
@@ -387,9 +449,10 @@ impl Runtime {
                 match p.docs.get(n) {
                     Some(id) => replace_children(api.as_ref(), id, &bl).with_context(|| n.clone())?,
                     None => {
-                        let page = create_page(api.as_ref(), &root, n, &bl).with_context(|| n.clone())?;
-                        let id = page["id"].as_str().ok_or_else(|| anyhow!("no page id"))?.to_string();
-                        p.docs.insert(n.clone(), id);
+                        let (id, _) = create_page(api.as_ref(), &root, n, &bl).with_context(|| n.clone())?;
+                        p.docs.insert(n.clone(), id.clone());
+                        self.save_published(feature_id, &p)?;
+                        append_rest(api.as_ref(), &id, &bl).with_context(|| n.clone())?;
                     }
                 }
             }
@@ -414,6 +477,8 @@ impl Runtime {
     /// Reads the comments of a published feature's pages; new ones become
     /// Inbox items (question kind, level 3, `open` → the page). Returns how many.
     pub fn notion_poll(&self, feature_id: &str) -> Result<usize> {
+        let lock = self.notion_lock(feature_id);
+        let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut p = self.published(feature_id);
         let Some(root) = p.page_id.clone() else { return Ok(0) };
         let api = self.notion_api();
@@ -422,8 +487,20 @@ impl Runtime {
         let pages: Vec<String> = std::iter::once(root).chain(p.docs.values().cloned()).collect();
         let r = (|| -> Result<()> {
             for page in &pages {
-                let c = api.call("GET", &format!("/v1/comments?block_id={page}&page_size=100"), None)?;
-                for cm in c["results"].as_array().into_iter().flatten() {
+                // Page comments only (the discussion at the top of a page):
+                // reading every block's would cost a request per block.
+                let mut list = vec![];
+                let mut cursor: Option<String> = None;
+                for _ in 0..100 {
+                    let q = cursor.as_deref().map(|c| format!("&start_cursor={c}")).unwrap_or_default();
+                    let c = api.call("GET", &format!("/v1/comments?block_id={page}&page_size=100{q}"), None)?;
+                    list.extend(c["results"].as_array().cloned().unwrap_or_default());
+                    if c["has_more"] != true {
+                        break;
+                    }
+                    cursor = c["next_cursor"].as_str().map(str::to_string);
+                }
+                for cm in &list {
                     let Some(id) = cm["id"].as_str() else { continue };
                     if p.comments_seen.iter().any(|s| s == id) {
                         continue;
@@ -459,8 +536,9 @@ impl Runtime {
                   "comments_seen": p.comments_seen.len(), "error": p.error}))
     }
 
-    /// Housekeeping: features with an active run and a published page are
-    /// polled every 15 min.
+    /// Housekeeping: at most once a minute, a thread of its own polls the
+    /// features with an active run and a published page every 15 min (the
+    /// calls block; housekeeping must not).
     pub(crate) fn notion_tick(&self) {
         let now = now_ms();
         {
@@ -470,6 +548,17 @@ impl Runtime {
             }
             h.last_notion_ms = now;
         }
+        if self.notion_polling.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return; // the last pass still runs
+        }
+        let Some(me) = self.me.upgrade() else { return };
+        std::thread::spawn(move || {
+            me.notion_poll_due(now);
+            me.notion_polling.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+
+    fn notion_poll_due(&self, now: u64) {
         for run in self.db.runs(None, true).unwrap_or_default() {
             let p = self.published(&run.feature_id);
             if p.page_id.is_some() && now.saturating_sub(p.last_poll_ms) >= POLL_EVERY_MS {
@@ -499,6 +588,8 @@ pub mod fake {
         pub comments: Vec<(String, String, String, String)>,
         pub calls: Vec<String>,
         pub next: u64,
+        /// The next PATCH (block append) fails this many times.
+        pub fail_patch: u32,
     }
 
     #[derive(Clone, Default)]
@@ -555,6 +646,10 @@ pub mod fake {
                     Ok(json!({}))
                 }
                 ("PATCH", ["", "v1", "blocks", id, "children"]) => {
+                    if w.fail_patch > 0 {
+                        w.fail_patch -= 1;
+                        bail!("Notion: 502 bad gateway");
+                    }
                     let add = body.unwrap()["children"].as_array().cloned().unwrap_or_default();
                     let Some(p) = w.pages.get_mut(*id) else { bail!("Notion: not found") };
                     p.2.extend(add);
@@ -562,13 +657,23 @@ pub mod fake {
                 }
                 ("GET", ["", "v1", "comments", q, ..]) => {
                     let page = q.split('&').find_map(|kv| kv.strip_prefix("block_id=")).unwrap_or("");
-                    let results: Vec<Value> = w
+                    let from: usize = q
+                        .split('&')
+                        .find_map(|kv| kv.strip_prefix("start_cursor="))
+                        .and_then(|c| c.parse().ok())
+                        .unwrap_or(0);
+                    let all: Vec<Value> = w
                         .comments
                         .iter()
                         .filter(|c| c.1 == page)
                         .map(|c| json!({"id": c.0, "created_by": {"id": c.2}, "rich_text": [{"plain_text": c.3}]}))
                         .collect();
-                    Ok(json!({"results": results, "has_more": false}))
+                    // Two per page, like a long discussion over several pages.
+                    let results: Vec<Value> = all.iter().skip(from).take(2).cloned().collect();
+                    let more = from + 2 < all.len();
+                    Ok(
+                        json!({"results": results, "has_more": more, "next_cursor": more.then(|| (from + 2).to_string())}),
+                    )
                 }
                 other => bail!("unexpected Notion call {other:?}"),
             }
@@ -703,5 +808,143 @@ mod tests {
         );
         let st = rt.notion_status("f1").unwrap();
         assert_eq!((st["comments_seen"].as_u64(), st["error"].clone()), (Some(1), Value::Null));
+    }
+
+    /// Review fixes (T-11): URL forms, table and run limits, 429 retries.
+    #[test]
+    fn page_ids_limits_and_retries() {
+        let id = Some("0123456789abcdef0123456789abcdef".to_string());
+        assert_eq!(page_id("https://www.notion.so/me/Docs-0123456789abcdef0123456789abcdef?pvs=4"), id);
+        assert_eq!(page_id("https://www.notion.so/Docs-0123456789abcdef0123456789abcdef?source=copy_link#x"), id);
+        let mut md = String::from("| A | B |\n|---|---|\n");
+        for i in 0..250 {
+            md.push_str(&format!("| {i} | x |\n"));
+        }
+        let b = blocks(&md);
+        assert_eq!(b.len(), 3, "250 rows: 3 tables");
+        for t in &b {
+            let rows = t["table"]["children"].as_array().unwrap();
+            assert!(rows.len() <= 100 && rows[0]["table_row"]["cells"][0][0]["text"]["content"] == "A", "header kept");
+        }
+        let links: String = (0..300).map(|i| format!("[l{i}](https://x.y/{i}) ")).collect();
+        let p = &blocks(&links)[0];
+        assert!(p["paragraph"]["rich_text"].as_array().unwrap().len() <= 100);
+
+        #[derive(Debug, Default)]
+        struct Flaky(std::sync::Mutex<u32>);
+        impl Net for Flaky {
+            fn http(&self, _: &HttpRequest) -> Result<crate::net::HttpResponse> {
+                let mut n = self.0.lock().unwrap();
+                *n += 1;
+                let status = if *n <= 2 { 429 } else { 200 };
+                Ok(crate::net::HttpResponse {
+                    status,
+                    headers: vec![("retry-after".into(), "0.5".into())],
+                    body: "{}".into(),
+                    timed_out: false,
+                })
+            }
+            fn gh_auth_status(&self) -> Result<String> {
+                bail!("no")
+            }
+        }
+        let net = Flaky::default();
+        let req = HttpRequest {
+            method: "DELETE",
+            url: "https://api.notion.com/v1/blocks/x".into(),
+            headers: vec![],
+            body: None,
+            timeout: Duration::from_secs(1),
+            max_body: crate::net::MAX_BODY,
+        };
+        let waits = std::sync::Mutex::new(vec![]);
+        let r = http_with_retry(&net, &req, |d| waits.lock().unwrap().push(d)).unwrap();
+        assert_eq!((r.status, *net.0.lock().unwrap()), (200, 3));
+        assert_eq!(waits.lock().unwrap().as_slice(), [Duration::from_millis(500); 2]);
+    }
+
+    /// Review fixes (T-11): every page of comments is read; a failed append
+    /// after a page was made never makes a second page; a publish and polls
+    /// at the same time make each comment's Inbox item once.
+    #[test]
+    fn comments_pages_failed_appends_and_concurrency() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let fake = fake::FakeNotion::default();
+        let mut cfg = crate::runtime::tests::test_cfg(d.path(), true);
+        let f2 = fake.clone();
+        cfg.notion = Some(NotionFactory(Arc::new(move || Box::new(f2.clone()))));
+        let rt = Runtime::new(cfg).unwrap();
+        let wt = d.path().join("integration");
+        let docs = wt.join(".orchestrator/features/login");
+        std::fs::create_dir_all(&docs).unwrap();
+        // Over 100 blocks: the page is made with 100, the rest appended.
+        let long: String = (0..150).map(|i| format!("- item {i}\n")).collect();
+        std::fs::write(docs.join("spec.md"), long).unwrap();
+        setup_feature(&rt, d.path(), &wt);
+        fake.0.lock().unwrap().fail_patch = 1;
+        assert!(rt.notion_publish("f1").is_err(), "the append failed");
+        let pages = fake.0.lock().unwrap().pages.len();
+        rt.notion_publish("f1").unwrap();
+        assert_eq!(fake.0.lock().unwrap().pages.len(), pages, "no second page for the doc");
+        let (spec_id, spec) = fake.page_titled("spec.md").unwrap();
+        assert_eq!(spec.len(), 150);
+
+        for i in 0..5 {
+            fake.comment(&spec_id, "Ada", &format!("c{i}"));
+        }
+        std::thread::scope(|s| {
+            for k in 0..4 {
+                let rt = rt.clone();
+                s.spawn(move || {
+                    if k == 0 {
+                        rt.notion_publish("f1").unwrap();
+                    } else {
+                        rt.notion_poll("f1").unwrap();
+                    }
+                });
+            }
+        });
+        rt.notion_poll("f1").unwrap();
+        let n = rt.store.read(|s| s.inbox.iter().filter(|i| i.kind == "notion").count());
+        assert_eq!(n, 5, "every comment of every page, once");
+    }
+
+    fn setup_feature(rt: &Runtime, d: &std::path::Path, wt: &std::path::Path) {
+        let project = orch_store::Project {
+            id: "p".into(),
+            name: "shop".into(),
+            path: d.into(),
+            default_branch: "main".into(),
+            remotes: vec![],
+            worktree_root: d.join("w"),
+            task_backend: json!({"type": "local"}),
+            track_orchestrator_dir: true,
+            settings: json!({}),
+            created_at_ms: 1,
+            last_active_at_ms: 1,
+            last_fetch_at_ms: None,
+            last_fetch_error: None,
+            archived: false,
+        };
+        rt.db.upsert_project(&project).unwrap();
+        rt.db
+            .upsert_feature(&orch_store::Feature {
+                id: "f1".into(),
+                project_id: "p".into(),
+                slug: "login".into(),
+                title: "Login".into(),
+                brief: String::new(),
+                base: "main".into(),
+                integration_worktree: Some(wt.into()),
+                allocation: None,
+                created_at_ms: 1,
+                archived: false,
+            })
+            .unwrap();
+        let settings = orch_store::ProjectSettings {
+            notion_parent_page: Some("0123456789abcdef0123456789abcdef".into()),
+            ..Default::default()
+        };
+        rt.db.set_project_settings("p", &settings, &orch_store::TaskBackendConfig::Local, true).unwrap();
     }
 }

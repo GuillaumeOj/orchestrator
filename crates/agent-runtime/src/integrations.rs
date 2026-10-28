@@ -241,6 +241,7 @@ impl Runtime {
                         ],
                         body: Some(json!({"query": "{ viewer { name } organization { name } }"}).to_string()),
                         timeout: DEADLINE,
+                        max_body: crate::net::MAX_BODY,
                     }
                 } else {
                     HttpRequest {
@@ -252,6 +253,7 @@ impl Runtime {
                         ],
                         body: None,
                         timeout: DEADLINE,
+                        max_body: crate::net::MAX_BODY,
                     }
                 };
                 match self.cfg.net.http(&req) {
