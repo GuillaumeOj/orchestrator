@@ -907,13 +907,19 @@ impl Core {
             usage["snapshot"] = json!(snapshot);
             usage["reset_at_ms"] = json!(reset);
             usage["shadow"] = json!(shadow);
-            let running_off: std::collections::BTreeSet<String> = rt.with_governor(|g| {
-                g.off_hours_agents().iter().filter(|a| g.running_off_hours(a)).map(|a| a.0.clone()).collect()
+            // One look at the Governor for every agent's note and off-hours flag.
+            let ids: Vec<String> = agents.iter().map(|a| a["id"].as_str().unwrap_or("").to_string()).collect();
+            let per_agent: Vec<(Option<String>, bool)> = rt.with_governor(|g| {
+                ids.iter()
+                    .map(|id| {
+                        let a = governor::AgentId(id.clone());
+                        (g.model_override(&a).map(|o| o.note()), g.running_off_hours(&a))
+                    })
+                    .collect()
             });
-            for a in agents.iter_mut() {
-                let id = a["id"].as_str().unwrap_or("").to_string();
-                a["model_note"] = json!(rt.model_note(&id));
-                a["off_hours"] = json!(running_off.contains(&id));
+            for (a, (note, off)) in agents.iter_mut().zip(per_agent) {
+                a["model_note"] = json!(note);
+                a["off_hours"] = json!(off);
             }
             (meta, alerts, done) = rt.store.read(store_view);
         }

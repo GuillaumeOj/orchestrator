@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow, bail};
+use orch_store::now_ms;
 use orch_team::TaskStatus;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -199,10 +200,6 @@ fn team_info(gql: &dyn Graphql, key: &str) -> Result<TeamInfo> {
     Ok(TeamInfo { id: s(&t["id"]), states, projects })
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
-}
-
 /// The managed issues of one Linear team (and project).
 pub struct LinearIssues<T: Graphql> {
     gql: T,
@@ -253,6 +250,17 @@ impl<T: Graphql> LinearIssues<T> {
             }
             Err(e) => bail!("{e}"),
         }
+    }
+
+    /// The team's state names (as last read) that the project's mapping does
+    /// not name; empty when the project has no mapping (all by type).
+    pub fn unmapped_states(&self) -> Vec<String> {
+        if self.mapping.is_empty() {
+            return Vec::new();
+        }
+        let t = self.team.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        t.map(|t| t.states.iter().filter(|s| !self.mapping.contains_key(&s.id)).map(|s| s.name.clone()).collect())
+            .unwrap_or_default()
     }
 
     /// Seconds until calls resume after a rate limit (0 = now).

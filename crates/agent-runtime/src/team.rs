@@ -737,7 +737,9 @@ impl Runtime {
                         0,
                     );
                 }
-                if rep != &orch_tasks::SyncReport::default() {
+                // Something moved (the unmapped states are a standing note, not a change).
+                let moved = orch_tasks::SyncReport { unmapped_states: vec![], ..rep.clone() };
+                if moved != orch_tasks::SyncReport::default() {
                     let mut detail = rep.summary();
                     detail["project"] = json!(project.id);
                     self.event("-", "tasks_synced", detail);

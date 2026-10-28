@@ -59,9 +59,14 @@ impl Runtime {
         if rule.is_none() && self.with_governor(|g| g.model_override(&agent).is_none()) {
             return false;
         }
-        let want = self
-            .governor_act(|g, now| (g.task_boundary_model(&agent, rec.role.model.as_deref(), rule, now), Vec::new()))
-            .or_else(|| rec.role.model.clone());
+        let model = rec.role.model.as_deref();
+        // A look first: the write (and its carry save) only when something changes.
+        let settled = self.with_governor(|g| g.task_boundary_settled(&agent, model, rule, Timestamp::now()));
+        let want = match settled {
+            Some(m) => m,
+            None => self.governor_act(|g, now| (g.task_boundary_model(&agent, model, rule, now), Vec::new())),
+        }
+        .or_else(|| rec.role.model.clone());
         let Some(l) = self.live(&rec.id) else { return false };
         if l.model == want {
             return false;
@@ -81,8 +86,21 @@ impl Runtime {
         true
     }
 
+    /// The marks, read from the store once and kept in memory (written by
+    /// [`Runtime::mark_off_hours`], the only writer).
     pub fn off_hours_marks(&self) -> OffHoursMarks {
-        self.db.setting(OFF_HOURS_KEY).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+        if let Some(m) = self.house().off_hours_marks.clone() {
+            return m;
+        }
+        let m: OffHoursMarks = self
+            .db
+            .setting(OFF_HOURS_KEY)
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        self.house().off_hours_marks = Some(m.clone());
+        m
     }
 
     /// Marks (or clears) a task or a team run for off-hours.
@@ -102,7 +120,9 @@ impl Runtime {
                 m.runs.remove(r)
             };
         }
-        self.db.set_setting(OFF_HOURS_KEY, &serde_json::to_value(&m)?)
+        self.db.set_setting(OFF_HOURS_KEY, &serde_json::to_value(&m)?)?;
+        self.house().off_hours_marks = Some(m);
+        Ok(())
     }
 
     /// Before an app turn is decided: a team agent on a task (or run) marked

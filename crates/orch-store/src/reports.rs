@@ -8,11 +8,7 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::Value;
 
 use crate::db::Store;
-use crate::util::js;
-
-fn ms(t: Timestamp) -> i64 {
-    t.as_millisecond()
-}
+use crate::util::{js, json_row_lenient, ms};
 
 /// One stored report's line in the list.
 #[derive(Clone, Debug, PartialEq)]
@@ -59,14 +55,11 @@ impl Store {
     /// The estimator the week starting at `week_start` started with.
     pub fn week_estimator(&self, week_start: Timestamp) -> Result<Option<EstimatorState>> {
         self.read(move |c| {
-            let s: Option<String> = c
-                .query_row(
-                    "SELECT state FROM calibrations WHERE kind='week' AND week_start_ms=?1 ORDER BY id DESC LIMIT 1",
-                    [ms(week_start)],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            Ok(s.and_then(|s| serde_json::from_str(&s).ok()))
+            json_row_lenient(
+                c,
+                "SELECT state FROM calibrations WHERE kind='week' AND week_start_ms=?1 ORDER BY id DESC LIMIT 1",
+                [ms(week_start)],
+            )
         })
     }
 
@@ -129,11 +122,7 @@ impl Store {
 
     pub fn report(&self, id: &str) -> Result<Option<Value>> {
         let id = id.to_string();
-        self.read(move |c| {
-            let s: Option<String> =
-                c.query_row("SELECT data FROM weekly_reports WHERE id=?1", [id], |r| r.get(0)).optional()?;
-            Ok(s.and_then(|s| serde_json::from_str(&s).ok()))
-        })
+        self.read(move |c| json_row_lenient(c, "SELECT data FROM weekly_reports WHERE id=?1", [id]))
     }
 
     /// Stored reports, newest first.
@@ -159,8 +148,8 @@ impl Store {
     pub fn report_for_reset(&self, reset_at: Timestamp) -> Result<Option<String>> {
         self.read(move |c| {
             Ok(c.query_row(
-                "SELECT id FROM weekly_reports WHERE abs(reset_at_ms - ?1) <= 3600000 LIMIT 1",
-                [ms(reset_at)],
+                "SELECT id FROM weekly_reports WHERE abs(reset_at_ms - ?1) <= ?2 LIMIT 1",
+                [ms(reset_at), governor::SAME_RESET_S * 1000],
                 |r| r.get(0),
             )
             .optional()?)

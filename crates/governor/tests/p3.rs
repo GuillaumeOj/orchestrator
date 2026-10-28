@@ -58,7 +58,13 @@ fn downgrade_switches_to_sonnet_at_the_next_task_and_undo_restores() {
     opus_window(&mut g, 60, 95.0);
     let rule = Downgrade { to: "sonnet".into(), when: DowngradeWhen::ModelWindow };
     let agent = AgentId::from("A-1");
+    assert_eq!(g.task_boundary_settled(&agent, Some("opus"), Some(&rule), at(61)), None, "a downgrade to start");
     let m = g.task_boundary_model(&agent, Some("opus"), Some(&rule), at(61));
+    assert_eq!(
+        g.task_boundary_settled(&agent, Some("opus"), Some(&rule), at(61)),
+        Some(Some("sonnet".into())),
+        "nothing more to do: the same answer, read-only"
+    );
     assert_eq!(m.as_deref(), Some("sonnet"));
     assert_eq!(g.model_override(&agent).unwrap().note(), "downgraded (model window)");
     let d = g.request_turn(with_model("A-1", "A", Tier::High, "sonnet"), at(61));

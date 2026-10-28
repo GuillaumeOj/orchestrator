@@ -9,11 +9,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::db::Store;
-use crate::util::{js, opt_u64};
-
-fn scope_key(s: &Scope) -> String {
-    s.project().unwrap_or_default().to_string()
-}
+use crate::util::{js, opt_u64, scope_key, scope_of};
 
 /// An integration's last known status (api-contract §1, without what the
 /// Keychain says).
@@ -67,10 +63,7 @@ impl Store {
         self.read(|c| {
             let mut st = c.prepare(&format!("SELECT {SERVER_COLS} FROM mcp_registry ORDER BY scope, id"))?;
             let rows = st.query_map([], row_server)?.collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows
-                .into_iter()
-                .map(|(k, s)| (if k.is_empty() { Scope::Global } else { Scope::Project(k) }, s))
-                .collect())
+            Ok(rows.into_iter().map(|(k, s)| (scope_of(k), s)).collect())
         })
     }
 

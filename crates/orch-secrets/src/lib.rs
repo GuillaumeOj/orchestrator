@@ -95,6 +95,17 @@ impl Secrets for Keychain {
             .with_context(|| format!("Keychain write of {account}"))
     }
 
+    /// Whether the item exists, without reading (decrypting) its value.
+    fn has(&self, account: &str) -> bool {
+        use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
+        if check_account(account).is_err() {
+            return false;
+        }
+        let mut q = ItemSearchOptions::new();
+        q.class(ItemClass::generic_password()).service(SERVICE).account(account).limit(Limit::Max(1));
+        q.search().is_ok_and(|r| !r.is_empty())
+    }
+
     fn remove(&self, account: &str) -> Result<()> {
         check_account(account)?;
         match security_framework::passwords::delete_generic_password(SERVICE, account) {

@@ -136,6 +136,28 @@ pub struct OffHoursView {
     pub running: u32,
 }
 
+/// [`off_hours_windows`] of the last plan seen: they change only with the
+/// plan's week or calendar, and the planner is polled every few seconds
+/// under the Governor's lock (672 time-zone conversions a call).
+fn cached_off_hours_windows(gov: &Governor) -> Vec<OffHoursWindow> {
+    type Key = (String, i64, i64, String);
+    static CACHE: std::sync::Mutex<Option<(Key, Vec<OffHoursWindow>)>> = std::sync::Mutex::new(None);
+    let p = gov.plan();
+    let key: Key = (
+        p.id.clone(),
+        p.week_start.as_millisecond(),
+        p.reset_at.as_millisecond(),
+        serde_json::to_string(&p.calendar).unwrap_or_default(),
+    );
+    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, w)) = c.as_ref().filter(|(k, _)| *k == key) {
+        return w.clone();
+    }
+    let w = off_hours_windows(gov);
+    *c = Some((key, w.clone()));
+    w
+}
+
 /// The week's time outside working blocks, at 15-minute resolution.
 fn off_hours_windows(gov: &Governor) -> Vec<OffHoursWindow> {
     let plan = gov.plan();
@@ -292,7 +314,7 @@ pub fn build(
         plan_set: false,
         off_hours: OffHoursView {
             allowance_pct: plan.off_hours_allowance_pct,
-            windows: if plan.off_hours_allowance_pct > 0.0 { off_hours_windows(gov) } else { vec![] },
+            windows: if plan.off_hours_allowance_pct > 0.0 { cached_off_hours_windows(gov) } else { vec![] },
             live_cap: gov.policy().off_hours_live_cap,
             queued: gov.queue().iter().filter(|q| gov.off_hours_agents().contains(&q.agent)).count(),
             running: gov.off_hours_running(),

@@ -41,6 +41,15 @@ pub struct WeeklyPlan {
     pub allocations: Vec<BudgetAllocation>,
 }
 
+/// Two weekly resets this close are the same week (a plan realigned to the
+/// statusline's `resets_at`, FR-802), seconds.
+pub const SAME_RESET_S: i64 = 3600;
+
+/// `a` and `b` are the same weekly reset ([`SAME_RESET_S`]).
+pub fn same_reset(a: Timestamp, b: Timestamp) -> bool {
+    (a.as_second() - b.as_second()).abs() <= SAME_RESET_S
+}
+
 impl WeeklyPlan {
     pub fn allocation(&self, id: &AllocationId) -> Option<&BudgetAllocation> {
         self.allocations.iter().find(|a| &a.id == id)

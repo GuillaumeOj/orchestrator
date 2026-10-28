@@ -210,7 +210,7 @@ pub fn footprint_mb(pid: i32) -> Option<f64> {
         }
         info.ri_phys_footprint
     };
-    Some((bytes as f64 / (1024.0 * 1024.0) * 10.0).round() / 10.0)
+    Some(orch_protocol::round1(bytes as f64 / (1024.0 * 1024.0)))
 }
 
 #[cfg(test)]

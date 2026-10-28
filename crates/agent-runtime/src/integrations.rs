@@ -10,17 +10,18 @@ use anyhow::{Result, anyhow, bail};
 use orch_protocol::now_ms;
 use orch_secrets::Secret;
 use orch_store::IntegrationRow;
-use orch_team::mcp::{DesignTool, McpStatus};
+use orch_team::Scope;
+use orch_team::mcp::{DesignTool, McpServer, McpStatus};
 use serde_json::{Value, json};
 
-use crate::net::{HttpRequest, HttpResponse, host_of};
+use crate::net::{HttpResponse, host_of};
 use crate::runtime::Runtime;
 
 /// The integrations, in display order.
 pub const IDS: &[&str] = &["github", "linear", "notion", "penpot", "figma"];
 
-pub const LINEAR_URL: &str = "https://api.linear.app/graphql";
-pub const NOTION_URL: &str = "https://api.notion.com/v1/users/me";
+/// The Notion integration test's call (the bot user).
+pub const NOTION_ME: &str = "/v1/users/me";
 pub const NOTION_VERSION: &str = "2022-06-28";
 const DEADLINE: Duration = Duration::from_secs(15);
 
@@ -81,9 +82,12 @@ pub fn gh_account(text: &str) -> Option<String> {
 /// Linear's GraphQL answer to `{ viewer { name } organization { name } }`.
 pub fn linear_outcome(r: &HttpResponse) -> Outcome {
     let v: Value = serde_json::from_str(&r.body).unwrap_or(Value::Null);
-    let auth_error =
-        v["errors"].as_array().is_some_and(|es| es.iter().any(|e| e["extensions"]["code"] == "AUTHENTICATION_ERROR"));
-    if r.status == 401 || r.status == 403 || auth_error {
+    // The sync's own classification of an auth failure.
+    let auth_error = matches!(
+        orch_tasks::linear::parse_answer(r.status, None, &r.body),
+        Err(orch_tasks::linear::GqlError::Unauthorized(_))
+    );
+    if auth_error {
         return (McpStatus::NeedsAuth, Some(format!("{} from api.linear.app", r.status)), None);
     }
     if r.status == 200
@@ -113,24 +117,57 @@ pub fn notion_outcome(r: &HttpResponse) -> Outcome {
     }
 }
 
+/// Penpot and Figma: the registry servers tagged with the tool, in any scope.
+fn design_tool_row(id: &str, tool: DesignTool, all: &[(Scope, McpServer)]) -> IntegrationRow {
+    let servers: Vec<&McpServer> = all.iter().map(|(_, s)| s).filter(|s| s.design_tool == Some(tool)).collect();
+    let pick = [McpStatus::NeedsAuth, McpStatus::Error, McpStatus::Connected, McpStatus::Checking];
+    let status = if servers.is_empty() {
+        McpStatus::NotConfigured
+    } else {
+        pick.into_iter().find(|p| servers.iter().any(|s| s.status == *p)).unwrap_or(McpStatus::Unknown)
+    };
+    let mut names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
+    // Listed by scope first: the same name in two scopes is not adjacent.
+    names.sort_unstable();
+    names.dedup();
+    IntegrationRow {
+        id: id.into(),
+        status,
+        detail: (!names.is_empty()).then(|| format!("MCP: {}", names.join(", "))),
+        account: None,
+        checked_at_ms: servers.iter().filter_map(|s| s.checked_at_ms).max(),
+    }
+}
+
 impl Runtime {
-    fn integration_row(&self, id: &str) -> IntegrationRow {
-        self.db.integrations().unwrap_or_default().into_iter().find(|r| r.id == id).unwrap_or(IntegrationRow {
-            id: id.into(),
-            status: McpStatus::Unknown,
-            detail: None,
-            account: None,
-            checked_at_ms: None,
-        })
+    /// An integration's secret changed: transports read it again.
+    fn forget_tokens(&self, id: &str) {
+        if id == "linear" {
+            *self.linear_token.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
     }
 
     /// api-contract §1 `Integration`.
     pub fn integration_json(&self, id: &str) -> Value {
+        let rows = self.db.integrations().unwrap_or_default();
+        let servers = if design_tool(id).is_some() { self.db.mcp_servers_all().unwrap_or_default() } else { vec![] };
+        self.integration_json_from(id, &rows, &servers)
+    }
+
+    /// [`Runtime::integration_json`] from the integrations table and the
+    /// registry, read once by the caller.
+    fn integration_json_from(&self, id: &str, rows: &[IntegrationRow], servers: &[(Scope, McpServer)]) -> Value {
         let needs = needs_secret(id);
         let has_secret = needs && self.secrets().has(&secret_account(id));
         let row = match design_tool(id) {
-            Some(tool) => self.design_tool_row(id, tool),
-            None => self.integration_row(id),
+            Some(tool) => design_tool_row(id, tool, servers),
+            None => rows.iter().find(|r| r.id == id).cloned().unwrap_or(IntegrationRow {
+                id: id.into(),
+                status: McpStatus::Unknown,
+                detail: None,
+                account: None,
+                checked_at_ms: None,
+            }),
         };
         // No token, nothing to test: not configured, whatever was stored.
         let (status, detail) =
@@ -142,37 +179,10 @@ impl Runtime {
         })
     }
 
-    /// Penpot and Figma: the registry servers tagged with the tool, in any scope.
-    fn design_tool_row(&self, id: &str, tool: DesignTool) -> IntegrationRow {
-        let servers: Vec<_> = self
-            .db
-            .mcp_servers_all()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|(_, s)| s.design_tool == Some(tool))
-            .map(|(_, s)| s)
-            .collect();
-        let pick = [McpStatus::NeedsAuth, McpStatus::Error, McpStatus::Connected, McpStatus::Checking];
-        let status = if servers.is_empty() {
-            McpStatus::NotConfigured
-        } else {
-            pick.into_iter().find(|p| servers.iter().any(|s| s.status == *p)).unwrap_or(McpStatus::Unknown)
-        };
-        let mut names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
-        // Listed by scope first: the same name in two scopes is not adjacent.
-        names.sort_unstable();
-        names.dedup();
-        IntegrationRow {
-            id: id.into(),
-            status,
-            detail: (!names.is_empty()).then(|| format!("MCP: {}", names.join(", "))),
-            account: None,
-            checked_at_ms: servers.iter().filter_map(|s| s.checked_at_ms).max(),
-        }
-    }
-
     pub fn integrations_json(&self) -> Value {
-        json!({"items": IDS.iter().map(|id| self.integration_json(id)).collect::<Vec<_>>()})
+        let rows = self.db.integrations().unwrap_or_default();
+        let servers = self.db.mcp_servers_all().unwrap_or_default();
+        json!({"items": IDS.iter().map(|id| self.integration_json_from(id, &rows, &servers)).collect::<Vec<_>>()})
     }
 
     /// Stores a token in the Keychain (never anywhere else), then tests it.
@@ -192,6 +202,7 @@ impl Runtime {
             return Ok(self.integration_json(id));
         }
         self.secrets().set(id, &secret)?;
+        self.forget_tokens(id);
         self.event("-", "integration_secret_set", json!({"id": id}));
         if IDS.contains(&id) { self.integration_test(id) } else { Ok(self.integration_json(id)) }
     }
@@ -205,6 +216,7 @@ impl Runtime {
             return Ok(self.integration_json(id));
         }
         self.secrets().remove(id)?;
+        self.forget_tokens(id);
         self.db.set_integration(&IntegrationRow {
             id: id.into(),
             status: McpStatus::NotConfigured,
@@ -253,29 +265,10 @@ impl Runtime {
                     return Ok(self.integration_json(id));
                 };
                 let req = if id == "linear" {
-                    HttpRequest {
-                        method: "POST",
-                        url: LINEAR_URL.into(),
-                        headers: vec![
-                            ("Authorization".into(), token.expose().into()),
-                            ("Content-Type".into(), "application/json".into()),
-                        ],
-                        body: Some(json!({"query": "{ viewer { name } organization { name } }"}).to_string()),
-                        timeout: DEADLINE,
-                        max_body: crate::net::MAX_BODY,
-                    }
+                    let q = "{ viewer { name } organization { name } }";
+                    crate::linear::request(token.expose(), q, &Value::Null, DEADLINE, crate::net::MAX_BODY)
                 } else {
-                    HttpRequest {
-                        method: "GET",
-                        url: NOTION_URL.into(),
-                        headers: vec![
-                            ("Authorization".into(), format!("Bearer {}", token.expose())),
-                            ("Notion-Version".into(), NOTION_VERSION.into()),
-                        ],
-                        body: None,
-                        timeout: DEADLINE,
-                        max_body: crate::net::MAX_BODY,
-                    }
+                    crate::notion::request(token.expose(), "GET", NOTION_ME, None, DEADLINE, crate::net::MAX_BODY)
                 };
                 match self.cfg.net.http(&req) {
                     Ok(r) if id == "linear" => linear_outcome(&r),
@@ -346,7 +339,12 @@ mod tests {
         assert_eq!(rt.integration_json("penpot")["status"], "unknown");
         assert_eq!(rt.integration_json("figma")["status"], "not_configured");
 
-        net.route(LINEAR_URL, 200, &[], r#"{"data":{"viewer":{"name":"G"},"organization":{"name":"Acme"}}}"#);
+        net.route(
+            orch_tasks::linear::URL,
+            200,
+            &[],
+            r#"{"data":{"viewer":{"name":"G"},"organization":{"name":"Acme"}}}"#,
+        );
         let v = rt.integration_secret_set("linear", Secret::new(" lin_api_SECRET ")).unwrap();
         assert_eq!(v["status"], "connected");
         assert_eq!(v["account"], "Acme");
@@ -373,7 +371,7 @@ mod tests {
         assert!(!dump.contains("lin_api_SECRET"), "{dump}");
 
         // A revoked key → needs_auth.
-        net.route(LINEAR_URL, 401, &[], r#"{"errors":[{"extensions":{"code":"AUTHENTICATION_ERROR"}}]}"#);
+        net.route(orch_tasks::linear::URL, 401, &[], r#"{"errors":[{"extensions":{"code":"AUTHENTICATION_ERROR"}}]}"#);
         assert_eq!(rt.integration_test("linear").unwrap()["status"], "needs_auth");
         let v = rt.integration_secret_remove("linear").unwrap();
         assert_eq!((v["status"].as_str(), v["has_secret"].as_bool()), (Some("not_configured"), Some(false)));

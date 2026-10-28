@@ -24,30 +24,51 @@ impl std::fmt::Debug for LinearFactory {
     }
 }
 
-/// The real transport.
+/// A GraphQL request to api.linear.app with the API key (the sync's and the
+/// integration test's).
+pub fn request(token: &str, query: &str, variables: &Value, timeout: Duration, max_body: usize) -> HttpRequest {
+    HttpRequest {
+        method: "POST",
+        url: linear::URL.into(),
+        headers: vec![("Authorization".into(), token.into()), ("Content-Type".into(), "application/json".into())],
+        body: Some(json!({"query": query, "variables": variables}).to_string()),
+        timeout,
+        max_body,
+    }
+}
+
+/// The real transport. The key is read from the Keychain once and kept
+/// (in `token`, shared with the runtime) until the Linear integration's
+/// secret is set or removed.
 pub struct LinearHttp {
     pub net: Arc<dyn Net>,
     pub secrets: Arc<dyn Secrets>,
+    pub token: TokenCache,
 }
 
-impl Graphql for LinearHttp {
-    fn call(&self, query: &str, variables: &Value) -> Result<Value, GqlError> {
-        let token = self
+/// The Linear API key, read once, dropped when the user changes it.
+pub type TokenCache = Arc<std::sync::Mutex<Option<orch_secrets::Secret>>>;
+
+impl LinearHttp {
+    fn token(&self) -> Result<orch_secrets::Secret, GqlError> {
+        let mut t = self.token.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(s) = t.as_ref() {
+            return Ok(s.clone());
+        }
+        let s = self
             .secrets
             .get("linear")
             .map_err(|e| GqlError::Failed(e.to_string()))?
             .ok_or_else(|| GqlError::Unauthorized("no Linear API key: add it in Settings › Integrations".into()))?;
-        let req = HttpRequest {
-            method: "POST",
-            url: linear::URL.into(),
-            headers: vec![
-                ("Authorization".into(), token.expose().into()),
-                ("Content-Type".into(), "application/json".into()),
-            ],
-            body: Some(json!({"query": query, "variables": variables}).to_string()),
-            timeout: Duration::from_secs(30),
-            max_body: crate::net::API_MAX_BODY,
-        };
+        *t = Some(s.clone());
+        Ok(s)
+    }
+}
+
+impl Graphql for LinearHttp {
+    fn call(&self, query: &str, variables: &Value) -> Result<Value, GqlError> {
+        let token = self.token()?;
+        let req = request(token.expose(), query, variables, Duration::from_secs(30), crate::net::API_MAX_BODY);
         let r = self.net.http(&req).map_err(|e| GqlError::Failed(format!("{e:#}")))?;
         linear::parse_answer(r.status, r.header("retry-after"), &r.body)
     }
@@ -57,7 +78,11 @@ impl Runtime {
     pub(crate) fn linear_transport(&self) -> Box<dyn Graphql> {
         match &self.cfg.linear {
             Some(f) => (f.0)(),
-            None => Box::new(LinearHttp { net: self.cfg.net.clone(), secrets: self.cfg.secrets.clone() }),
+            None => Box::new(LinearHttp {
+                net: self.cfg.net.clone(),
+                secrets: self.cfg.secrets.clone(),
+                token: self.linear_token.clone(),
+            }),
         }
     }
 

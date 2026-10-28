@@ -83,6 +83,13 @@ pub struct ModelOverride {
     /// mid-task.
     #[serde(default)]
     pub restore_pending: bool,
+    /// `false`: shadow mode logged it (once) without applying it.
+    #[serde(default = "applied")]
+    pub applied: bool,
+}
+
+fn applied() -> bool {
+    true
 }
 
 impl ModelOverride {

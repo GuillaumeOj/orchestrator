@@ -65,9 +65,7 @@ impl MemoryWatch {
     }
 }
 
-fn round(x: f64) -> f64 {
-    (x * 10.0).round() / 10.0
-}
+use orch_protocol::round1 as round;
 
 /// `com.apple.WebKit.WebContent` → `WebContent`.
 fn short(name: &str) -> &str {

@@ -147,7 +147,7 @@ pub fn measure(shell_pids: &[i32], agent_mb: f64) -> AppMemory {
     let webkit = helpers_with_footprint(me);
     let app_mb = core_mb + webkit.iter().map(|w| w.1).sum::<f64>();
     let shells_mb = shell_pids.iter().filter_map(|p| footprint_mb(*p)).sum();
-    let r = |x: f64| (x * 10.0).round() / 10.0;
+    let r = orch_protocol::round1;
     AppMemory {
         core_mb: r(core_mb),
         webkit,

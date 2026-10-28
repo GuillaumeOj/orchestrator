@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::db::Store;
 use crate::model::Project;
-use crate::util::{from_js, js, opt_u64};
+use crate::util::{from_js, js, opt_u64, scope_key, scope_of};
 
 /// A feature of a project (SPEC §7 Feature): its docs live on
 /// `orch/<slug>/integration`, in the lead's worktree.
@@ -282,15 +282,6 @@ impl Project {
     pub fn backend(&self) -> TaskBackendConfig {
         serde_json::from_value(self.task_backend.clone()).unwrap_or_default()
     }
-}
-
-/// The `scope` column: '' for global, else the project id.
-fn scope_key(s: &Scope) -> String {
-    s.project().unwrap_or_default().to_string()
-}
-
-fn scope_of(key: String) -> Scope {
-    if key.is_empty() { Scope::Global } else { Scope::Project(key) }
 }
 
 /// Global rows plus `project`'s own, a project row shadowing the global one

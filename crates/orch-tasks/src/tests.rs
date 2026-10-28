@@ -427,4 +427,8 @@ fn linear_new_states_and_existing_labels() {
     let out = svc.set_status(t.id, TaskStatus::Review, 3).unwrap();
     assert!(out.remote_error.is_none(), "{:?}", out.remote_error);
     assert_eq!(lin.issue("ENG-1").state, "st-qa");
+    // The states the mapping doesn't name (by type), for the Board.
+    let rep = svc.sync(4).unwrap();
+    assert_eq!(rep.unmapped_states, ["Backlog", "Todo", "In Progress", "Doing it", "Done", "Canceled"]);
+    assert_eq!(rep.summary()["unmapped_states"][0], "Backlog");
 }

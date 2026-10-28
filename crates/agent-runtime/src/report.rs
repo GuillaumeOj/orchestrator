@@ -156,9 +156,7 @@ fn ms(t: Timestamp) -> u64 {
     t.as_millisecond().max(0) as u64
 }
 
-fn round1(x: f64) -> f64 {
-    (x * 10.0).round() / 10.0
-}
+use orch_protocol::round1;
 
 fn round2(x: f64) -> f64 {
     (x * 100.0).round() / 100.0
@@ -211,7 +209,8 @@ pub fn build(i: &Inputs) -> WeeklyReport {
     for s in i.samples.iter().filter(in_week) {
         if let (Some(w), Some(r)) = (s.weekly_pct, s.weekly_resets_at) {
             // A reading of this week (not an agent's stale copy of the last one).
-            if (r - plan.reset_at.as_second()).abs() <= 3600 && last_reading.is_none_or(|(t, _)| s.ts_ms >= t) {
+            let this_week = Timestamp::from_second(r).is_ok_and(|r| governor::same_reset(r, plan.reset_at));
+            if this_week && last_reading.is_none_or(|(t, _)| s.ts_ms >= t) {
                 last_reading = Some((s.ts_ms, w));
             }
         }
@@ -483,14 +482,10 @@ impl Runtime {
         now: Timestamp,
     ) -> Result<WeeklyReport> {
         let start = ms(plan.week_start);
-        let samples: Vec<UsageRecord> = self
-            .db
-            .usage_since(start, Some(orch_store::UsageSource::Statusline))?
-            .into_iter()
-            .filter(|u| u.ts_ms < ms(plan.reset_at))
-            .collect();
+        let end = Some(ms(plan.reset_at));
+        let samples = self.db.usage_between(start, end, Some(orch_store::UsageSource::Statusline))?;
         let actions = self.db.actions_between(plan.week_start, plan.reset_at)?;
-        let forecasts = self.db.forecasts_since(start)?;
+        let forecasts = self.db.forecasts_between(start, end)?;
         let projects: BTreeMap<String, String> =
             self.db.projects(true).unwrap_or_default().into_iter().map(|p| (p.id, p.name)).collect();
         let agents = self.attributions();
