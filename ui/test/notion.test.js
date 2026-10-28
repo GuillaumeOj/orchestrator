@@ -145,7 +145,7 @@ describe('Notion comment in the Inbox', () => {
       },
     };
     app.data = { ...fixture(), inbox: { badge: 1, items: [item] } };
-    replies.inbox_act = 'read';
+    replies.inbox_act = { open: 'url', url: 'https://notion.so/onb#c1' };
     replies.open_url = null;
     const { container, getAllByText } = render(InboxPane);
     expect(getAllByText('Question · Notion', { exact: false }).length).toBeGreaterThan(0);

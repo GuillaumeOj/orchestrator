@@ -38,8 +38,8 @@
     <span class="text">{top.text}</span>
     {#if top.planner}<button class="btn" onclick={() => openSingleton('planner')}>Week planner <Kbd keys="⌘+; g" /></button>{/if}
     {#if top.setup}<button class="btn" onclick={() => openSingleton('setup')}>Set up</button>{/if}
-    {#if top.details}<button class="btn" onclick={() => openSingleton('planner')}>Details</button>{/if}
-    {#if top.later}<button class="btn ghost" onclick={() => (dismissed[top.id] = true)}>Later</button>{/if}
+    {#if top.details}<button class="btn" onclick={() => openSingleton('planner')}>Details <Kbd keys="o" /></button>{/if}
+    {#if top.later}<button class="btn ghost" onclick={() => (dismissed[top.id] = true)}>Later <Kbd keys="esc" /></button>{/if}
     {#if top.pause}<button class="btn ghost" onclick={() => governor('pause_all')}>Pause all</button>{/if}
     {#if banners.length > 1}<span class="muted">+{banners.length - 1}</span>{/if}
     <button class="x" aria-label="Dismiss" onclick={() => (dismissed[top.id] = true)}>×</button>

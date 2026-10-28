@@ -147,7 +147,7 @@ describe('ecosystem helpers', () => {
       { team: 'Full-stack', node: 'ui', role: 'ui' },
       { team: 'Design sprint', node: 'ui', role: 'ui' },
     ];
-    expect(usedByText(used)).toBe('ux, ui in 2 teams');
+    expect(usedByText(used)).toBe('ux, ui · 2 teams');
     expect(usedByRoles(used)).toBe('ux, ui (Full-stack, Design sprint)');
     expect(usedByText([])).toBe('—');
     const list = effectiveServers(
@@ -201,7 +201,10 @@ describe('Settings pane', () => {
     );
     expect(container.textContent).toContain('Not seen yet');
     expect(container.querySelector('nav').textContent).toContain('1');
-    // Paste a Linear key, ⌘⏎: the field clears before the core answers.
+    // The secret field shows on the selected row: select Linear, then paste, ⌘⏎:
+    // the field clears before the core answers.
+    await fireEvent.click(container.querySelector('[data-integration="linear"]'));
+    await tick();
     const input = /** @type {HTMLInputElement} */ (
       container.querySelector('input[placeholder="Paste a Linear personal API key"]')
     );
@@ -270,7 +273,7 @@ describe('Settings pane', () => {
     await waitFor(() => getByText('Pass this secret to the agent.'));
     expect(container.textContent).toContain('FIGMA_TOKEN from Keychain: figma');
     expect(container.textContent).toContain('Figma local exited or refused its credentials: exit 1.');
-    expect(container.textContent).toContain('ui in 1 team');
+    expect(container.textContent).toContain('ui · 1 team');
     const opt = /** @type {HTMLInputElement} */ ([...container.querySelectorAll('.drawer input[type=checkbox]')][0]);
     expect(opt.checked).toBe(false);
     await fireEvent.click(opt);
@@ -295,7 +298,11 @@ describe('Settings pane', () => {
     expect(app.overlay?.kind).toBe('confirm');
     expect(app.overlay.text).toBe('Delete Penpot from the MCP registry?');
     await app.overlay.onYes();
-    await waitFor(() => getByText('Penpot is used by ui (full-stack).'));
+    await waitFor(() =>
+      expect(container.querySelector('[role="alert"]').textContent).toContain(
+        'Penpot is used by ui (full-stack). Remove it from those roles first.',
+      ),
+    );
   });
 
   it('MCP servers: empty registry invites to add one; n opens a new entry', async () => {
@@ -387,7 +394,7 @@ describe('role inspector, Design section and presets (T-7)', () => {
     const { getByText } = render(FeaturePane, { paneId: 'f1' });
     await waitFor(() =>
       getByText(
-        "No designs yet. ui-1 is on 'Welcome frames in Penpot'. Exported frames show here when they're handed off.",
+        'No designs yet. ui-1 is on "Welcome frames in Penpot". Exported frames show here when they\'re handed off.',
       ),
     );
   });
@@ -415,13 +422,13 @@ describe('role inspector, Design section and presets (T-7)', () => {
     replies.artifact_open = null;
     replies.message_send = { ids: [1] };
     app.panes.f1 = { type: 'feature', featureId: 'shop-onb', title: 'onboarding' };
-    const { container, getByText } = render(FeaturePane, { paneId: 'f1' });
+    const { container, getAllByText } = render(FeaturePane, { paneId: 'f1' });
     await waitFor(() => expect(container.querySelectorAll('.tile img')).toHaveLength(2));
     const sec = container.querySelector('[aria-label="Design"]');
     expect(sec.textContent).toContain("On ui-1's branch · not merged");
     expect(sec.textContent).toContain('Too large to preview (7.4 MB · max 5 MB)');
     expect(sec.textContent).toContain("Link only: front-2 can't open it.");
-    expect(getByText('Onboarding / Welcome')).toBeTruthy();
+    expect(getAllByText('Onboarding / Welcome').length).toBeGreaterThan(0);
     // The SVG is an <img> data URL, never inline markup.
     expect(container.querySelector('svg image, .tile svg')).toBeNull();
     expect(container.querySelector('.tile img[alt="welcome-2.svg"]').getAttribute('src')).toMatch(
@@ -778,7 +785,9 @@ describe('role inspector, Design section and presets (T-7)', () => {
     expect(container.querySelector('.row.sel').getAttribute('data-integration')).toBe('notion');
     await fireEvent.keyDown(sec, { key: 't' });
     await waitFor(() =>
-      expect(container.querySelector('[data-integration]:last-child')?.getAttribute('data-integration')).toBe('notion'),
+      expect([...container.querySelectorAll('[data-integration]')].at(-1)?.getAttribute('data-integration')).toBe(
+        'notion',
+      ),
     );
     expect(container.querySelector('.row.sel').getAttribute('data-integration')).toBe('notion');
     await fireEvent.keyDown(sec, { key: 'x' });

@@ -25,7 +25,7 @@
   let syncing = $state(false);
   let menu = $state(false); // the selected card's menu (Open task, Run off-hours, Assign node)
   let offHours = $state(null); // planner_view.off_hours (the allowance and the next window)
-  let offTasks = $state({}); // task id → starts_at, for the tasks scheduled from here
+  let moveMenu = $state(false); // Move to… (m): the five columns, 1–5
   let root;
 
   const tasks = $derived((v?.tasks ?? []).filter((t) => feature === 'all' || t.feature_id === feature));
@@ -76,18 +76,19 @@
     }
   }
 
-  /** Whether a task runs off-hours: the core's flag when it has one, else what was set here. */
-  const isOff = (t) => !!(t?.off_hours ?? offTasks[t?.id]);
+  /** The task, or its run, is marked "Run off-hours" (board_view). */
+  const isOff = (t) => !!t?.off_hours;
 
-  async function toggleOffHours(t) {
+  async function toggleOffHours(t, off = !isOff(t)) {
     menu = false;
     if (!t) return;
     if (!offHoursAllowed(offHours)) return toast(OFF_DISABLED);
-    const off = !isOff(t);
     try {
       const r = await invoke('queue_off_hours', { task: String(t.id), off });
-      offTasks = { ...offTasks, [t.id]: off ? r.starts_at : null };
-      toast(off ? `${handle(t)} runs off-hours · starts ${clock(Date.parse(r.starts_at))}` : `${handle(t)} runs in working hours`);
+      toast(
+        off ? `${handle(t)} runs off-hours · starts ${clock(Date.parse(r.starts_at))}` : `${handle(t)} runs in working hours`,
+        off ? { action: { label: 'Undo', run: () => toggleOffHours(t, false) } } : {},
+      );
       await load();
     } catch (e) {
       toast(errText(e), { kind: 'error' });
@@ -121,6 +122,14 @@
       return;
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (moveMenu) {
+      const n = Number(e.key);
+      if (n >= 1 && n <= COLUMNS.length && selected) update(selected, { status: COLUMNS[n - 1].id });
+      if ((n >= 1 && n <= COLUMNS.length) || e.key === 'Escape') moveMenu = false;
+      return e.preventDefault();
+    }
+    if (menu && e.key === 'm') return ((menu = false), (moveMenu = true), e.preventDefault());
+    if (menu && e.key === 'Enter' && selected?.feature_id) return ((menu = false), openFeature(selected.feature_id), e.preventDefault());
     if (menu && e.key === 'Escape') return ((menu = false), e.preventDefault());
     if (e.key === 'O' || (e.shiftKey && e.key === 'o')) return (toggleOffHours(selected), e.preventDefault());
     if (e.key === ' ' && selected) return ((menu = !menu), e.preventDefault());
@@ -226,7 +235,13 @@
               <div class="menu" role="menu" aria-label="Task menu">
                 <button role="menuitem" onclick={() => ((menu = false), t.feature_id && openFeature(t.feature_id))}>Open task <Kbd keys="⏎" /></button>
                 <button role="menuitem" disabled={!offHoursAllowed(offHours)} title={offHoursAllowed(offHours) ? '' : OFF_DISABLED} onclick={() => toggleOffHours(t)}>{isOff(t) ? 'Run in working hours' : 'Run off-hours'} <Kbd keys="⇧+O" /></button>
+                <button role="menuitem" onclick={() => ((menu = false), (moveMenu = true))}>Move to… <Kbd keys="m" /></button>
                 <button role="menuitem" disabled={!runOf(t)} onclick={() => ((menu = false), (form = { kind: 'assign', task: t, node: t.node ?? '' }))}>Assign node… <Kbd keys="a" /></button>
+              </div>
+            {/if}
+            {#if moveMenu && cur.col === ci && cur.row === ri}
+              <div class="menu" role="menu" aria-label="Move to">
+                {#each COLUMNS as col, i (col.id)}<button role="menuitem" disabled={col.id === t.status} onclick={() => ((moveMenu = false), update(t, { status: col.id }))}>{col.label} <Kbd keys={String(i + 1)} /></button>{/each}
               </div>
               {#if !offHoursAllowed(offHours)}<p class="muted hint">{OFF_DISABLED}</p>{/if}
             {/if}

@@ -27,7 +27,7 @@
   }
 </script>
 
-<div class="lab top"><span>MCP servers</span>
+<div class="lab top"><span>MCP</span>
   <div class="picker">
     {#if servers == null}
       <span class="muted">Loading the registry…</span>
@@ -39,16 +39,16 @@
           <input type="checkbox" checked={refs.includes(s.id)} onchange={() => onsave({ mcp_refs: toggleRef(refs, s.id, servers) })} />
           <span class="sname">{s.name}</span>
           <ConnBadge status={s.status} connector={s.kind === 'connector'} />
-          <span class="muted kind">{s.kind === 'connector' ? 'connector · needs your claude.ai login' : s.kind}</span>
+          <span class="muted kind">{s.kind === 'connector' ? 'claude.ai connector · needs your claude.ai login' : [s.kind, s.command ? [s.command, ...(s.args ?? [])].join(' ') : s.url].filter(Boolean).join(' · ')}</span>
         </label>
       {/each}
     {/if}
     {#if servers && !refs.length}<span class="muted note">No MCP servers. The role only has Claude Code's built-in tools.</span>{/if}
     {#each notes.missing as id (id)}
-      <p class="warn">{'\u{F0026}'} {id} is not in the MCP registry. Add it in <button class="link" onclick={() => openSettings('mcp', null, project)}>Settings › MCP servers</button> or <button class="link" onclick={() => onsave({ mcp_refs: refs.filter((r) => r !== id) })}>remove it here</button>.</p>
+      <p class="box errbox">{'\u{F0159}'} {id} is not in the MCP registry. Add it in <button class="link" onclick={() => openSettings('mcp', null, project)}>Settings › MCP servers</button> or <button class="link" onclick={() => onsave({ mcp_refs: refs.filter((r) => r !== id) })}>remove it here</button>.</p>
     {/each}
     {#each notes.connectors as id (id)}
-      <p class="warn">{'\u{F0026}'} {id} is a claude.ai connector, so this role can't use strict MCP: it will also see your other claude.ai connectors. Strict MCP is turned off for this role.</p>
+      <p class="box warnbox">{'\u{F0026}'} {id} is a claude.ai connector, so this role can't use strict MCP: it will also see your other claude.ai connectors. Strict MCP is turned off for this role.</p>
     {/each}
   </div>
 </div>
@@ -56,6 +56,7 @@
 <div class="lab top"><span>downgrade</span>
   <div class="dg">
     <label class="ck"><input type="checkbox" checked={!!dg} onchange={(e) => setDowngrade(e.currentTarget.checked ? { to: defaultTo, when: 'red' } : null)} /> Use a cheaper model under pressure</label>
+    {#if !dg}<span class="muted note">Off by default. The role keeps {role.model ?? 'its model'} under any pressure.</span>{/if}
     {#if dg}
       <div class="line">
         to
@@ -68,13 +69,27 @@
         </select>
       </div>
       <span class="muted note">Switches at the next task, never mid-task. Loses the prompt cache; the conversation is kept.</span>
-      {#if problem}<p class="err">{problem}</p>{/if}
-      {#if warning}<p class="warn">{'\u{F0026}'} {warning}</p>{/if}
+      {#if problem}<p class="box errbox">{'\u{F0159}'} {problem} Save is disabled.</p>{/if}
+      {#if warning}<p class="box warnbox">{'\u{F0026}'} {warning}</p>{/if}
     {/if}
   </div>
 </div>
 
 <style>
+
+  .box {
+    margin: var(--space-xxs) 0 0;
+    padding: var(--space-xs) var(--space-sm);
+    border: var(--border-width-default) solid;
+    border-radius: var(--radius-sm);
+    font: var(--text-caption);
+  }
+  .errbox {
+    border-color: var(--color-status-error);
+  }
+  .warnbox {
+    border-color: var(--color-pacing-amber);
+  }
   .lab {
     display: grid;
     grid-template-columns: 80px 1fr;
@@ -123,14 +138,6 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-xxs);
-  }
-  .warn,
-  .err {
-    margin: 0;
-    font: var(--text-caption);
-  }
-  .warn {
-    color: var(--color-status-waiting-for-you);
   }
   .link {
     padding: 0;

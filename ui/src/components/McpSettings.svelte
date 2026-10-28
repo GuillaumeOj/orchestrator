@@ -236,7 +236,7 @@
 <section class="mcp" tabindex="0" data-section-focus bind:this={root} onkeydown={onKey} aria-label="MCP servers">
   <header class="h">
     <h2>MCP servers</h2>
-    <span class="muted">{project ? `Global, with ${project}'s overrides` : 'Global'} · roles pick them in the role inspector</span>
+    <span class="muted">Registry of servers that roles pick from. {project ? `Global, with ${project}'s overrides.` : 'Global, with per-project overrides.'}</span>
     <span class="grow"></span>
     <button class="btn" onclick={() => startNew()}>New server <Kbd keys="n" /></button>
   </header>
@@ -270,8 +270,8 @@
         <p class="muted">Loading…</p>
       {/if}
       {#if refused}
-        <div class="box warnbox" role="alert">
-          <b>{refused.name} is used by {usedByRoles(refused.used_by)}.</b> Remove it from those roles first.
+        <div class="box errbox" role="alert">
+          <span aria-hidden="true">{'\u{F0159}'}</span> {refused.name} is used by {usedByRoles(refused.used_by)}. Remove it from those roles first.
           <div class="roles">
             {#each refused.used_by as u (`${u.team}/${u.node}`)}<button class="link" onclick={() => openCanvas(u.team)}>{u.team} › {u.node}</button>{/each}
           </div>
@@ -284,18 +284,17 @@
       <aside class="drawer" aria-label="Edit MCP server">
         <div class="dh">
           <b>{draft.isNew ? 'New MCP server' : s.name}</b>
-          {#if !draft.isNew}<ConnBadge status={s.status} connector={s.kind === 'connector'} busy={busy[s.id]} /><span class="muted when">{checkedAt(s.checked_at_ms, now)}</span>{/if}
+          {#if !draft.isNew}<ConnBadge status={s.status} connector={s.kind === 'connector'} busy={busy[s.id]} /><span class="muted when">{s.status === 'needs_auth' && s.detail ? `${kindLabel(s.kind)} · ${s.detail}` : checkedAt(s.checked_at_ms, now)}</span>{/if}
           <span class="grow"></span>
-          <button class="x" aria-label="Close" onclick={() => (draft = null)}>×</button>
+          <button class="x" aria-label="Close" onclick={() => (draft = null)}><Kbd keys="esc" /></button>
         </div>
         <div class="grid">
           <label><span>id</span><input class="field mono" bind:value={draft.server.id} disabled={!draft.isNew} spellcheck="false" placeholder="penpot" /></label>
           <label><span>name</span><input class="field" bind:value={draft.server.name} placeholder="Penpot" /></label>
-          <label><span>kind</span>
-            <select class="field" bind:value={draft.server.kind}>
-              {#each KINDS as k (k.id)}<option value={k.id}>{k.label}</option>{/each}
-            </select>
-          </label>
+          <div class="kinds" role="radiogroup" aria-label="Kind">
+            <span>kind</span>
+            <span class="seg">{#each KINDS as k (k.id)}<button role="radio" aria-checked={draft.server.kind === k.id} class:on={draft.server.kind === k.id} onclick={() => (draft.server.kind = k.id)}>{k.label}</button>{/each}</span>
+          </div>
           <label><span>design tool</span>
             <select class="field" bind:value={draft.server.design_tool}>
               <option value={null}>—</option><option value="penpot">Penpot</option><option value="figma">Figma</option>
@@ -335,8 +334,8 @@
           <div class="box warnbox">
             <p><b>Pass this secret to the agent.</b> Agents using {s.id || 'this server'} get {secrets.join(', ')} in their MCP config. The agent can read this token and send it to the model, and a prompt injection could make it leak. Prefer an OAuth (http) server, whose tokens Claude Code keeps itself.</p>
             <label class="ck"><input type="checkbox" bind:checked={draft.server.allow_secret_env} /> I understand, pass it to agents</label>
-            {#if !draft.server.allow_secret_env}<p class="muted">Without it, Test and launch fail: {s.name || s.id} uses a Keychain secret in its env, but 'pass it to agents' is off.</p>{/if}
           </div>
+          {#if !draft.server.allow_secret_env}<p class="box errbox"><span aria-hidden="true">{'\u{F0159}'}</span> {s.id || s.name} uses a Keychain secret in its env, but "pass it to agents" is off. Save works; Test and launch fail until you opt in.</p>{/if}
         {/if}
 
         {#if !draft.isNew && (s.status === 'needs_auth' || s.status === 'error')}
@@ -365,6 +364,39 @@
 </section>
 
 <style>
+
+  .kinds {
+    display: grid;
+    grid-template-columns: 88px 1fr;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+  .kinds > span:first-child {
+    color: var(--color-text-muted);
+    font: var(--text-caption);
+  }
+  .seg {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-xs);
+  }
+  .seg button {
+    padding: 0 var(--space-sm);
+    background: none;
+    border: var(--border-width-default) solid var(--color-border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-secondary);
+    font: var(--text-label);
+    cursor: pointer;
+  }
+  .seg button.on {
+    border-color: var(--color-focus);
+    background: var(--color-surface-selected);
+    color: var(--color-text-primary);
+  }
+  .errbox {
+    border-color: var(--color-status-error);
+  }
   .mcp {
     display: flex;
     flex-direction: column;

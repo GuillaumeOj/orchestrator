@@ -88,6 +88,7 @@
   <div class="ah">
     <AgentChip id={a.id} />
     <StatusBadge state={ds} label={notStarted(a) ? 'Not started yet' : null} />
+    {#if a.off_hours}<span class="offh" title="Work you scheduled off-hours (FR-816)">· off-hours</span>{/if}
     {#if a.model_note}
       <span class="secondary down" title="Switched by the Governor ({a.model_note.replace(/^downgraded /, '')}); back to the role's model at the next task once it clears.">↓ {a.model ?? 'default model'} · {a.model_note}</span>
     {:else}
@@ -160,6 +161,10 @@
 </TermHost>
 
 <style>
+
+  .offh {
+    color: var(--color-status-done);
+  }
 
   .down {
     color: var(--color-pacing-amber);

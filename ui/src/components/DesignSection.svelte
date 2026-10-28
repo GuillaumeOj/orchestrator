@@ -30,12 +30,22 @@
   const who = (node) => v.agents?.find((a) => a.node === node)?.id ?? node;
   const roleOfNode = (node) => v.team?.nodes?.find((n) => n.id === node)?.role_id ?? node;
 
+  /** The header's "· previews from the integration branch" (Penpot 04 Design states). */
+  const sub = $derived.by(() => {
+    if (!tiles.length) return '';
+    if (tiles.every(linkOnly)) return 'link only';
+    const imgs = tiles.filter(previewable);
+    if (imgs.some((a) => !previews[a.id] || previews[a.id].state === 'loading')) return 'loading previews';
+    if (imgs.length && imgs.every((a) => notMerged(a, previews[a.id]))) return `from ${who(imgs[0].from_node)}'s branch`;
+    return imgs.some((a) => previews[a.id]?.source === 'integration') ? 'previews from the integration branch' : '';
+  });
+
   const emptyText = $derived.by(() => {
     const design = v.team?.nodes?.find((n) => n.role_id === 'ui') ?? v.team?.nodes?.find((n) => n.role_id === 'ux');
     if (!design) return 'No designs in this feature.';
     const task = v.tasks?.find((t) => t.node === design.id && t.status !== 'done');
     return task
-      ? `No designs yet. ${who(design.id)} is on '${task.title}'. Exported frames show here when they're handed off.`
+      ? `No designs yet. ${who(design.id)} is on "${task.title}". Exported frames show here when they're handed off.`
       : "No designs yet. Exported frames show here when they're handed off.";
   });
 
@@ -97,8 +107,14 @@
     }
   }
 
+  // The overlay covers the pane's body (Penpot 04 Large preview overlay), not the window.
+  let box = $state({ top: 0, left: 0, width: 0, height: 0 });
+
   function showBig(a) {
-    if (a && previewable(a)) big = { id: a.id, fit: true };
+    if (!a || !previewable(a)) return;
+    const r = root?.closest('[data-pane]')?.querySelector('.body')?.getBoundingClientRect();
+    box = r ? { top: r.top, left: r.left, width: r.width, height: r.height } : { top: 0, left: 0, width: window.innerWidth, height: window.innerHeight };
+    big = { id: a.id, fit: true };
   }
 
   /** The caption's "1512 × 982". */
@@ -152,16 +168,14 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <section class="card design" tabindex="0" bind:this={root} onkeydown={onKey} aria-label="Design">
-  <div class="cardh"><b>Design</b><span class="muted">{tiles.length ? `${tiles.length} handed off` : ''}</span><span class="grow"></span><span class="muted"><Kbd keys="d" /> focus · <Kbd keys="Space" /> preview · <Kbd keys="⏎" /> open</span></div>
+  <div class="cardh"><b>Design</b><span class="muted">{tiles.length}{sub ? ` · ${sub}` : ''}</span><span class="grow"></span><span class="muted"><Kbd keys="d" /> focus</span></div>
   {#if !tiles.length}
-    <p class="muted">{emptyText}</p>
+    <p class="muted empty">{emptyText}</p>
   {:else}
     {#each groups as g (g.key)}
       <div class="gh">
-        <AgentChip id={who(g.from)} role={roleOfNode(g.from)} />
-        <span class="muted">→</span>
-        {#if g.to}<AgentChip id={who(g.to)} role={roleOfNode(g.to)} />{:else}<span class="muted">—</span>{/if}
-        <span class="muted">· {g.items.length}</span>
+        <span>{who(g.from)} → {g.to ? who(g.to) : '—'}</span>
+        <span class="muted">· {g.items.length} · handed off {clock(g.latest)}</span>
       </div>
       <div class="grid">
         {#each g.items as a (a.id)}
@@ -176,42 +190,45 @@
                 {:else if p?.state === 'error'}<span class="msg">{previewError(p.error, a, who(a.from_node))}</span>
                 {:else}<span class="skel" aria-busy="true"></span>{/if}
               {:else if linkOnly(a)}
-                <span class="tool"><span class="ticon" aria-hidden="true">{tool.icon}</span>{tool.label}</span>
+                <span class="tool"><span class="ticon" aria-hidden="true">{tool.icon}</span><b>{tool.label}</b><span class="muted">{artifactTitle(a)}</span></span>
               {:else}
                 <span class="msg">{artifactTitle(a)}: no preview</span>
               {/if}
             </div>
             <div class="meta">
-              <span class="title" title={a.uri}>{artifactTitle(a)}</span>
-              {#if notMerged(a, p)}<span class="chip">On {who(a.from_node)}'s branch · not merged</span>{/if}
+              <span class="trow"><span class="title" title={a.uri}>{artifactTitle(a)}</span><span class="grow"></span><span class="muted">{clock(a.created_at_ms)}</span></span>
               {#if a.note}<span class="note">{a.note}</span>{/if}
-              {#if linkOnly(a)}<span class="hint">Link only: {a.to_node ? who(a.to_node) : 'agents'} can't open it. <button class="link" onclick={() => askExport(a)}>Ask {who(a.from_node)} to export</button>{#if isSel} <Kbd keys="x" />{/if}</span>{/if}
-              <span class="foot"><span class="muted">{clock(a.created_at_ms)}</span><span class="grow"></span><button class="link" onclick={() => openArtifact(a)}>Open</button>{#if isSel}<Kbd keys="⏎" />{/if}</span>
+              {#if notMerged(a, p)}<span class="chip">On {who(a.from_node)}'s branch · not merged</span>{/if}
+              {#if linkOnly(a)}<span class="hint">▲ Link only: {a.to_node ? who(a.to_node) : 'agents'} can't open it. <button class="link" onclick={() => askExport(a)}>Ask {who(a.from_node)} to export</button> · x</span>{/if}
+              <span class="foot"><span class="muted">{who(a.from_node)} → {a.to_node ? who(a.to_node) : '—'}</span><span class="grow"></span><button class="link" onclick={() => openArtifact(a)}>Open{linkOnly(a) ? ' ↗' : ''}</button><Kbd keys="⏎" /></span>
             </div>
           </div>
         {/each}
       </div>
     {/each}
+    <p class="muted keys"><Kbd keys="h j k l" /> move · <Kbd keys="⏎" /> open · <Kbd keys="Space" /> preview · <Kbd keys="x" /> ask {who(tiles.find(linkOnly)?.from_node ?? 'ui')} to export (link tiles)</p>
   {/if}
 
   {#if big}
     {@const a = tiles.find((x) => x.id === big.id)}
     {@const p = previews[big.id]}
-    <div class="overlay" role="dialog" aria-modal="true" aria-label="Preview">
+    {@const imgs = tiles.filter(previewable)}
+    <div class="overlay" role="dialog" aria-modal="true" aria-label="Preview" style:top="{box.top}px" style:left="{box.left}px" style:width="{box.width}px" style:height="{box.height}px">
+      <div class="cap">
+        <span><span aria-hidden="true">{'\u{F021F}'}</span> <b>{artifactTitle(a)}</b> {[big.w ? `${big.w} × ${big.h}` : null, p?.bytes != null ? size(p.bytes) : null, p?.source ? (p.source === 'branch' ? `${who(a.from_node)}'s branch` : 'integration branch') : null].filter(Boolean).map((x) => `· ${x}`).join(' ')}{#if p?.mime === 'image/svg+xml'} · SVG shown as an image{/if}</span>
+        <span class="grow"></span>
+        <span class="muted">{imgs.findIndex((x) => x.id === big.id) + 1} / {imgs.length} · {big.fit ? 'Fit' : '100 %'}</span>
+      </div>
       <div class="stage" class:fit={big.fit}>
         {#if p?.state === 'ok'}
           <img src={p.src} alt={artifactTitle(a)} onload={measure} />
         {:else if p?.state === 'error'}
-          <p class="msg">Could not load this preview: {p.error}. Open ⏎ to try Quick Look.</p>
+          <p class="msg">Could not load this preview: {p.error}. <Kbd keys="⏎" /> Open to try Quick Look</p>
         {:else}
           <span class="skel big" aria-busy="true"></span>
         {/if}
       </div>
-      <div class="cap">
-        <span>{[artifactTitle(a), big.w ? `${big.w} × ${big.h}` : null, p?.bytes != null ? size(p.bytes) : null, p?.source ? (p.source === 'branch' ? `${who(a.from_node)}'s branch` : 'integration branch') : null].filter(Boolean).join(' · ')}{#if p?.mime === 'image/svg+xml'} · SVG shown as an image{/if}</span>
-        <span class="grow"></span>
-        <span class="muted"><Kbd keys="0" /> fit · <Kbd keys="1" /> 100 % · <Kbd keys="←" /><Kbd keys="→" /> · <Kbd keys="⏎" /> open · <Kbd keys="esc" /> close</span>
-      </div>
+      <div class="hints"><Kbd keys="0" /> fit <Kbd keys="1" /> 100 % <Kbd keys="←" /> previous <Kbd keys="→" /> next <Kbd keys="⏎" /> open <Kbd keys="esc" /> close</div>
     </div>
   {/if}
 </section>
@@ -334,9 +351,25 @@
     font: inherit;
     cursor: pointer;
   }
+  .trow {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-sm);
+    min-width: 0;
+  }
+  .keys {
+    margin: 0;
+    font: var(--text-caption);
+  }
+  .hints {
+    display: flex;
+    justify-content: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm);
+    font: var(--text-caption);
+  }
   .overlay {
     position: fixed;
-    inset: 0;
     z-index: 50;
     display: flex;
     flex-direction: column;

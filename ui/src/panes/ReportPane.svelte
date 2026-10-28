@@ -199,17 +199,33 @@
           <div class="ch"><b>Past reports</b><span class="grow"></span><span class="muted"><Kbd keys="R" /> list · <Kbd keys="[" /><Kbd keys="]" /> prev/next</span></div>
           {#each showList ? list : list.slice(0, 4) as x (x.id)}
             <button class="past" class:on={x.id === id} onclick={() => go(x.id)}>
-              <span>Week {weekNo(Date.parse(x.week_start))}{x.in_progress ? ' · so far' : ''} · {x.final_weekly_pct == null ? 'no data' : `${Math.round(x.final_weekly_pct)} %`}</span>
+              <span>Week {weekNo(Date.parse(x.week_start))}{x.in_progress ? ' · so far' : ''}&nbsp; {x.final_weekly_pct == null ? 'no data' : `${Math.round(x.final_weekly_pct)} %`}</span>
               <span class="muted">{x.in_progress ? 'now' : dayTime(Date.parse(x.reset_at)).replace(/ \d\d:\d\d$/, '')}</span>
             </button>
           {/each}
         </section>
       </div>
     </div>
+
+    {#if !r.in_progress && r.suggestions?.length}
+      <section class="card sugg">
+        <div class="ch"><b>What to change for week {weekNo(Date.parse(r.reset_at))}</b><span class="muted">suggestions, nothing applied</span></div>
+        <ul>{#each r.suggestions as t (t)}<li>{t}</li>{/each}</ul>
+      </section>
+    {/if}
   {/if}
 </div>
 
 <style>
+
+  .sugg {
+    margin-top: var(--space-md);
+  }
+  .sugg ul {
+    margin: 0;
+    padding-left: var(--space-lg);
+    font: var(--text-body);
+  }
   .report {
     flex: 1;
     min-height: 0;

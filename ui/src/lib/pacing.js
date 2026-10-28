@@ -76,14 +76,10 @@ export function powerChip(power) {
 
 /** Governor log copy for the P3 actions (§5.12). */
 export function downgradeText(k) {
-  const who = k.agent ?? k.agent_id ?? 'an agent';
-  const why = k.why ?? k.when ?? k.state;
+  // Contract §6: { kind: 'downgrade', agent, to, from, why } and { kind: 'restore_model', agent }.
   if (k.kind === 'downgrade')
-    return `Downgraded ${who} ${k.from ?? ''} → ${k.to} at its task boundary${why ? ` (${label(why)})` : ''}`.replace(
-      '  ',
-      ' ',
-    );
-  if (k.kind === 'restore_model') return `Restored ${who} to ${k.to}${why ? ` (${label(why)})` : ''}`;
+    return `Downgraded ${k.agent} ${k.from ? `${k.from} → ` : 'to '}${k.to} at its task boundary (${label(k.why)})${k.from ? ` · back to ${k.from} at its next task once it clears` : ''}`;
+  if (k.kind === 'restore_model') return `Restored ${k.agent} to its role's model`;
   return null;
 }
 
@@ -147,6 +143,19 @@ export const ACTION_LABEL = {
   sprint: 'Sprint mode',
 };
 
+/** Hours spent at a limit: from each hit to its window's reset (overlaps merged). */
+export function lockedHours(hits) {
+  const spans = (hits ?? []).map((h) => [Date.parse(h.ts), Date.parse(h.resets_at)]).sort((a, b) => a[0] - b[0]);
+  let total = 0;
+  let end = -Infinity;
+  for (const [a, b] of spans) {
+    const from = Math.max(a, end);
+    if (b > from) total += b - from;
+    end = Math.max(end, b);
+  }
+  return total / 3600000;
+}
+
 /** The four KPI tiles of the report header. */
 export function kpis(r) {
   const red = (r.states ?? []).find((s) => s.state === 'red')?.minutes ?? 0;
@@ -161,11 +170,11 @@ export function kpis(r) {
       note: `agents ${Math.round(r.totals.agents_pp)} pp · you ${Math.round(r.totals.interactive_pp)} pp · outside ${Math.round(r.totals.outside_pp)} pp`,
     },
     {
-      id: 'limits',
-      label: 'Limit hits',
-      value: String((r.limit_hits ?? []).length),
+      id: 'locked',
+      label: 'Locked out',
+      value: `${Math.round(lockedHours(r.limit_hits))} h`,
       note: (r.limit_hits ?? []).length
-        ? r.limit_hits.map((h) => `${h.window} ${clock(Date.parse(h.ts))}`).join(' · ')
+        ? r.limit_hits.map((h) => `${h.window} hit ${dayHm(Date.parse(h.ts))}`).join(' · ')
         : 'no window hit 100%',
     },
     {
