@@ -1,9 +1,10 @@
 <script>
   // ADR-007 states: glyph shape differs per state and the word is always shown.
-  import { PRESSURE } from '../lib/status.js';
+  // Model windows add `exhausted` (FR-815).
+  import { WINDOW_STATE } from '../lib/pacing.js';
 
   let { state, shadow = false } = $props();
-  const p = $derived(PRESSURE[state] ?? PRESSURE.green);
+  const p = $derived(WINDOW_STATE[state] ?? WINDOW_STATE.green);
 </script>
 
 <span class="pill" style:border-color={p.color} title={shadow ? 'Shadow mode: decisions are logged, not enforced' : ''}>

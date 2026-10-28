@@ -21,12 +21,7 @@ export function visibleItems(items, filterId, pending = []) {
   return items.filter((i) => f.test(i) && !hidden.has(i.id));
 }
 
-export function move(items, selectedId, delta) {
-  if (!items.length) return null;
-  const i = items.findIndex((x) => x.id === selectedId);
-  if (i < 0) return items[0].id;
-  return items[Math.max(0, Math.min(items.length - 1, i + delta))].id;
-}
+export { move } from './select.js';
 
 /** Selection after the selected item leaves the list: the next one, else the previous. */
 export function afterRemoval(items, removedId) {

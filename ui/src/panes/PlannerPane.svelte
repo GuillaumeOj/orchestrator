@@ -11,10 +11,10 @@
   import { onMount } from 'svelte';
   import Kbd from '../components/Kbd.svelte';
   import PressurePill from '../components/PressurePill.svelte';
-  import { app, confirm, governor, openReport, toast } from '../lib/app.svelte.js';
-  import { clock, dayTime, duration, pct, pp, when } from '../lib/format.js';
+  import { app, confirm, governor, openReport, queueOffHours, toast } from '../lib/app.svelte.js';
+  import { clock, dayHm, dayTime, duration, pct, pp, when } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { dayHm, downgradeText, nextOffHours, OFF_DISABLED, offHoursAllowed, WINDOW_STATE, windowLabel, windowQueued } from '../lib/pacing.js';
+  import { downgradeText, nextOffHours, OFF_DISABLED, offHoursAllowed, windowLabel, windowQueued } from '../lib/pacing.js';
   import { PRESSURE, queueReason } from '../lib/status.js';
 
   let v = $state(null);
@@ -53,19 +53,10 @@
   const head0Off = $derived(head0?.reason?.kind === 'scheduled_off_hours');
 
   /** O: the next queued turn to off-hours, or back (queue_off_hours). */
-  async function toggleOffHours(entry = head0, offNow = !head0Off) {
-    if (!entry) return toast('Nothing queued');
+  function toggleOffHours() {
+    if (!head0) return toast('Nothing queued');
     if (!offHoursAllowed(off)) return toast(OFF_DISABLED);
-    try {
-      const r = await invoke('queue_off_hours', { entry: String(entry.id), off: offNow });
-      toast(
-        offNow ? `${entry.agent} runs off-hours · starts ${clock(Date.parse(r.starts_at))}` : `${entry.agent} runs in working hours`,
-        offNow ? { action: { label: 'Undo', run: () => toggleOffHours(entry, false) } } : {},
-      );
-      load();
-    } catch (e) {
-      toast(errText(e), { kind: 'error' });
-    }
+    queueOffHours({ entry: head0.id, off: !head0Off }, head0.agent, load);
   }
   const p = $derived(PRESSURE[s?.state] ?? PRESSURE.green);
   // Chart geometry
@@ -259,8 +250,7 @@
           <div class="mw">
             <span class="muted">Model windows</span>
             {#each windows as mw (mw.name)}
-              {@const st = WINDOW_STATE[mw.state] ?? WINDOW_STATE.green}
-              <div class="mwrow"><b>{windowLabel(mw)} {Math.round(mw.used_pct)} %</b><span class="pill" style:border-color={st.color}><span style:color={st.color}>{st.icon}</span> {st.label}</span><span class="muted">resets {dayHm(Date.parse(mw.resets_at))}</span></div>
+              <div class="mwrow"><b>{windowLabel(mw)} {Math.round(mw.used_pct)} %</b><PressurePill state={mw.state} /><span class="muted">resets {dayHm(Date.parse(mw.resets_at))}</span></div>
               {#if mw.state === 'red' || mw.state === 'exhausted'}<p class="muted">{windowQueued(mw)}{mw.state === 'red' ? '. Roles with a downgrade switch at their next task.' : ''}</p>{/if}
             {/each}
           </div>
@@ -461,11 +451,6 @@
     display: flex;
     align-items: center;
     gap: var(--space-sm);
-  }
-  .pill {
-    padding: 0 var(--space-sm);
-    border: var(--border-width-default) solid;
-    border-radius: var(--radius-full);
   }
   .ideal {
     fill: none;

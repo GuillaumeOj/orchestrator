@@ -6,13 +6,13 @@
   // overrides. Keys: 1–3 backend, j/k mapping rows, ⏎ change a row,
   // r sync, ⌘⏎ save, esc cancel.
   import { onMount } from 'svelte';
+  import ConnBadge from '../components/ConnBadge.svelte';
   import Kbd from '../components/Kbd.svelte';
   import McpSettings from '../components/McpSettings.svelte';
   import { app, openSettings, projects, saveLayout, toast } from '../lib/app.svelte.js';
-  import { connStatus } from '../lib/ecosystem.js';
   import { clock } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { BACKENDS, backendForm, COLUMN_LABEL, mappingRows, mappingToSave, syncLine } from '../lib/linear.js';
+  import { BACKENDS, COLUMN_LABEL, mappingRows, mappingToSave, remoteName, syncLine } from '../lib/linear.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -34,7 +34,7 @@
   let linearInt = $state(null); // the linear integration (status, account)
   let teams = $state(null); // null = loading
   let teamsError = $state(null);
-  let lin = $state({ team: '', project: '', states: null });
+  let lin = $state({ team: '', project: '' });
   let states = $state(null); // linear_states
   let rows = $state([]);
   let rowSel = $state(0);
@@ -44,6 +44,7 @@
   let syncing = $state(false);
   let last = $state(null); // { report, at }
   let syncErr = $state(null);
+  let unmapped = $state([]); // board_sync.unmapped_states: Linear states with no column
   let root = $state(null);
 
   const connected = $derived(linearInt?.status === 'connected');
@@ -60,7 +61,7 @@
       error = null;
       kind = saved.backend?.type ?? 'local';
       notionPage = saved.settings?.notion_parent_page ?? '';
-      if (kind === 'linear') lin = { team: saved.backend.team ?? '', project: saved.backend.project ?? '', states: saved.backend.states ?? null };
+      if (kind === 'linear') lin = { team: saved.backend.team ?? '', project: saved.backend.project ?? '' };
     } catch (e) {
       error = errText(e);
     }
@@ -107,14 +108,14 @@
   }
 
   function setColumn(i, column) {
-    const r = rows[i];
-    const def = states?.states?.find((s) => s.id === r.id)?.default_column;
-    rows = rows.map((x, j) => (j === i ? { ...x, column, isDefault: column === def } : x));
+    rows = rows.map((x, j) => (j === i ? { ...x, column, isDefault: column === x.default_column } : x));
   }
 
   function backendToSave() {
     if (kind === saved?.backend?.type && kind !== 'linear') return saved.backend;
-    return backendForm(kind, { team: lin.team, project: lin.project || null, states: mappingToSave(rows) });
+    if (kind !== 'linear') return { type: kind };
+    const states = mappingToSave(rows);
+    return { type: 'linear', team: lin.team, ...(lin.project ? { project: lin.project } : {}), ...(states ? { states } : {}) };
   }
 
   async function save(migrate = null) {
@@ -147,16 +148,14 @@
       const r = await invoke('board_sync', { project: pid });
       last = { report: r, at: Date.now() };
       syncErr = r.errors?.length ? r.errors : null;
-      toast(`Synced ${name} with ${kind === 'linear' ? 'Linear' : kind === 'github' ? 'GitHub' : 'the local store'} · ${r.pushed ?? 0} pushed`);
+      unmapped = r.unmapped_states ?? [];
+      toast(`Synced ${name} with ${kind === 'local' ? 'the local store' : remoteName(kind)} · ${r.pushed ?? 0} pushed`);
     } catch (e) {
       syncErr = [errText(e)];
     } finally {
       syncing = false;
     }
   }
-
-  /** A Linear state created after the mapping was saved (decisions: keep that wording). */
-  const unmapped = (m) => /isn't mapped/.test(m);
 
   function cancel() {
     ask = null;
@@ -218,8 +217,7 @@
           {#each BACKENDS as b, i (b.id)}<button role="radio" aria-checked={kind === b.id} class:on={kind === b.id} onclick={() => pickBackend(b.id)}><Kbd keys={String(i + 1)} /> {b.label}</button>{/each}
         </div>
         {#if kind === 'linear' && linearInt}
-          {@const st = connStatus(linearInt.status)}
-          <span class="conn"><span style:color={st.color} aria-hidden="true">{st.icon}</span> {st.label}{linearInt.account ? ` · ${linearInt.account}` : ''}</span>
+          <span class="conn"><ConnBadge status={linearInt.status} />{linearInt.account ? ` · ${linearInt.account}` : ''}</span>
         {/if}
       </div>
 
@@ -267,12 +265,13 @@
 
       {#if kind !== 'local'}
         {#if syncErr}
-          {#each syncErr as m (m)}
-            <p class="box errbox">{unmapped(m) ? '▲' : '✕'} {m}{#if unmapped(m)} <button class="btn ghost" onclick={() => root?.querySelector('[data-row] select')?.focus()}>Map it <Kbd keys="⏎" /></button>{/if}</p>
-          {/each}
+          {#each syncErr as m (m)}<p class="box errbox">✕ {m}</p>{/each}
         {/if}
+        {#each unmapped as st (st)}
+          <p class="box warnbox">▲ State "{st}" isn't mapped. <button class="btn ghost" onclick={() => root?.querySelector('[data-row] select')?.focus()}>Map it <Kbd keys="⏎" /></button></p>
+        {/each}
         <div class="box syncbox">
-          <span>{last ? syncLine(last.report, last.at, kind === 'linear' ? 'Linear' : 'GitHub') : 'Not synced from here yet'}</span>
+          <span>{last ? syncLine(last.report, last.at, remoteName(kind)) : 'Not synced from here yet'}</span>
           <span class="muted">· every 5 min while a team runs</span>
           <span class="grow"></span>
           <button class="btn ghost" disabled={syncing || dirty} title={dirty ? 'Save first' : ''} onclick={sync}>{syncing ? 'Syncing…' : 'Sync now'} <Kbd keys="r" /></button>
@@ -310,6 +309,10 @@
 </div>
 
 <style>
+
+  .warnbox {
+    border-color: var(--color-pacing-amber);
+  }
   .ps {
     flex: 1;
     min-height: 0;

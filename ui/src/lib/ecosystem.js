@@ -2,13 +2,13 @@
 // downgrade, design artifacts (p3-design-notes §5). Pure: tested in
 // test/ecosystem.test.js. Secrets never pass through here: the UI only knows
 // `has_secret`.
-import { clock, duration } from './format.js';
+import { ago, clock, dayHm } from './format.js';
 
 /**
  * Integration and MCP server statuses (§5): glyph + label, never color only.
  * Glyphs are Material Design codepoints of FiraCode Nerd Font Mono.
  */
-export const CONN = {
+const CONN = {
   connected: { label: 'Connected', icon: '\u{F05E0}', color: 'var(--color-status-done)' },
   needs_auth: { label: 'Needs auth', icon: '\u{F1983}', color: 'var(--color-status-waiting-for-you)' },
   error: { label: 'Error', icon: '\u{F0159}', color: 'var(--color-status-error)' },
@@ -24,12 +24,14 @@ export function connStatus(status, connector = false) {
 }
 
 /** "checked 14:58 · 2m ago"; after 24 h "checked Tue 14:58". */
-export function checkedAt(ms, now = Date.now(), verb = 'checked') {
+export function checkedAt(ms, now = Date.now()) {
   if (ms == null) return '';
-  if (now - ms >= 86400000) return `${verb} ${clock(ms, ms + 86400000 * 2)}`;
-  const d = now - ms;
-  return `${verb} ${clock(ms, now)} · ${d < 60000 ? 'just now' : `${duration(d)} ago`}`;
+  if (now - ms >= 86400000) return `checked ${dayHm(ms)}`;
+  return `checked ${clock(ms, now)} · ${now - ms < 60000 ? 'just now' : `${ago(ms, now)} ago`}`;
 }
+
+/** An integration or a server that needs the user: it fails, or wants a sign-in. */
+export const needsUser = (status) => status === 'needs_auth' || status === 'error';
 
 /** Copy per integration (§5.2, §5.3). */
 export const INTEGRATION_COPY = {
@@ -68,13 +70,11 @@ export function integrationDetail(it) {
 
 /** Rows needing the user come first (§5.1 "integration disconnected"), then the contract's order. */
 export function sortIntegrations(items) {
-  const bad = (s) => s === 'needs_auth' || s === 'error';
-  return [...items].sort((a, b) => Number(bad(b.status)) - Number(bad(a.status)));
+  return [...items].sort((a, b) => Number(needsUser(b.status)) - Number(needsUser(a.status)));
 }
 
 /** The nav count: integrations that need the user. */
-export const attentionCount = (items) =>
-  (items ?? []).filter((i) => i.status === 'needs_auth' || i.status === 'error').length;
+export const attentionCount = (items) => (items ?? []).filter((i) => needsUser(i.status)).length;
 
 // ---------------------------------------------------------------- MCP registry
 
@@ -87,7 +87,7 @@ export const KINDS = [
 
 export const kindLabel = (k) => KINDS.find((x) => x.id === k)?.label ?? k;
 
-export const KEYCHAIN = 'keychain:';
+const KEYCHAIN = 'keychain:';
 
 /** The Keychain account an env value names, else null. */
 export const keychainAccount = (v) => (String(v ?? '').startsWith(KEYCHAIN) ? String(v).slice(KEYCHAIN.length) : null);
@@ -233,10 +233,14 @@ export function toggleRef(refs, id, servers) {
   });
 }
 
+/** The models a downgrade can pick. */
 export const MODELS = ['opus', 'sonnet', 'haiku'];
 
-/** The model family of a model name ("claude-opus-4" → opus). */
-export const family = (model) => MODELS.find((m) => String(model ?? '').includes(m)) ?? null;
+/** Model families, as the core's estimator names them (governor/src/estimator.rs FAMILIES). */
+const FAMILIES = ['opus', 'sonnet', 'haiku', 'fable'];
+
+/** The family of a bare model id ("claude-opus-4" → opus); model windows carry their own `family`. */
+export const family = (model) => FAMILIES.find((m) => String(model ?? '').includes(m)) ?? null;
 
 /** Downgrade "when" options (§5.5); the window one names the role's model. */
 export function downgradeWhen(model) {
@@ -309,13 +313,6 @@ export const linkOnly = (a) => ['penpot', 'figma', 'url'].includes(artifactTool(
 
 /** Can the core serve a preview (exported image)? */
 export const previewable = (a) => !!a?.meta?.previewable;
-
-/** "214 KB", "7.4 MB". */
-export function size(bytes) {
-  if (bytes == null) return '—';
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
 
 /** Tile copy for a failed preview (§5.6, J12 failure branches). */
 export function previewError(err, a, from = a?.from_node ?? 'the designer') {

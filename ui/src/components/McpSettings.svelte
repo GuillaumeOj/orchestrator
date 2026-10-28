@@ -5,7 +5,7 @@
   // per-entry opt-in (FR-110 tone). Keys: j/k rows, n new, ⏎ edit, t test,
   // x delete; in the drawer ⌘⏎ save, esc close.
   import { onMount } from 'svelte';
-  import { confirm, openCanvas, openUrl, runInPane, toast } from '../lib/app.svelte.js';
+  import { confirm, now30, openCanvas, openUrl, runInPane, toast } from '../lib/app.svelte.js';
   import {
     argsToText,
     blankServer,
@@ -15,6 +15,7 @@
     KINDS,
     keychainAccount,
     kindLabel,
+    needsUser,
     reconnectHint,
     secretEnv,
     serverForSave,
@@ -30,8 +31,9 @@
   import Kbd from './Kbd.svelte';
   import SecretField from './SecretField.svelte';
 
-  /** @type {{ project?: string | null, selected?: string | null }} */
-  let { project = null, selected = null } = $props();
+  /** `initial`: the Settings pane's mcp_registry_view, taken once (no second fetch on open). */
+  /** @type {{ project?: string | null, selected?: string | null, initial?: (() => Promise<any> | null) | null }} */
+  let { project = null, selected = null, initial = null } = $props();
 
   const CONNECTOR_URL = 'https://claude.ai/settings/connectors';
 
@@ -43,7 +45,7 @@
   let refused = $state(null); // { id, used_by }
   let busy = $state({});
   let stored = $state({}); // Keychain account → stored (mcp_secrets_status); never the value
-  let now = $state(Date.now());
+  const now = $derived(now30());
   let root = $state(null);
 
   const servers = $derived(effectiveServers(view, project));
@@ -51,9 +53,9 @@
   const env = $derived(draft ? textToEnv(draft.envText) : {});
   const secrets = $derived(secretEnv(env));
 
-  async function load() {
+  async function load(first = null) {
     try {
-      view = await invoke('mcp_registry_view', { project });
+      view = await (first ?? invoke('mcp_registry_view', { project }));
       error = null;
     } catch (e) {
       error = errText(e);
@@ -127,7 +129,7 @@
 
   function remove(s) {
     if (!s) return;
-    const scope = project && s.scope ? { kind: 'project', id: project } : { kind: 'global' };
+    const scope = scopeOf(s.scope);
     confirm(
       `Delete ${s.name} from the MCP registry?`,
       scope.kind === 'project' ? `The global entry applies to ${project} again.` : 'Roles can no longer reference it.',
@@ -226,9 +228,7 @@
   }
 
   onMount(() => {
-    load().then(() => select(selected));
-    const t = setInterval(() => (now = Date.now()), 30000);
-    return () => clearInterval(t);
+    load(initial?.()).then(() => select(selected));
   });
 </script>
 
@@ -338,7 +338,7 @@
           {#if !draft.server.allow_secret_env}<p class="box errbox"><span aria-hidden="true">{'\u{F0159}'}</span> {s.id || s.name} uses a Keychain secret in its env, but "pass it to agents" is off. Save works; Test and launch fail until you opt in.</p>{/if}
         {/if}
 
-        {#if !draft.isNew && (s.status === 'needs_auth' || s.status === 'error')}
+        {#if !draft.isNew && needsUser(s.status)}
           {@const h = reconnectHint(s)}
           <div class="box warnbox">
             <p>{h.text}</p>

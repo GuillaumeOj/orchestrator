@@ -6,12 +6,13 @@
   // ⌘⏎ submits; esc cancels.
   import { untrack } from 'svelte';
   import { activeAgents, agent, app, contextProject, deleteAgent, deleteFeature, features, openAgent, openFeature, openProject, openSettings, projects, refresh, toast } from '../lib/app.svelte.js';
-  import { connStatus, designTools, effectiveServers, nodeList } from '../lib/ecosystem.js';
+  import { designTools, effectiveServers, kindLabel, nodeList } from '../lib/ecosystem.js';
   import { clock, expandHome, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
   import { runFinished, slugify } from '../lib/teams.js';
+  import ConnBadge from './ConnBadge.svelte';
   import Kbd from './Kbd.svelte';
   import PlanEditor from './PlanEditor.svelte';
 
@@ -313,11 +314,10 @@
       </div>
       <label class="offh" title={offHoursAllowed(offHours) ? '' : OFF_DISABLED}><input type="checkbox" bind:checked={launch.off_hours} disabled={!offHoursAllowed(offHours)} /> Run off-hours{nextOffHours(offHours) ? ` (starts ${clock(nextOffHours(offHours))})` : ''}</label>
       {#each launchTools as d (d.server.id)}
-        {@const st = connStatus(d.server.status, d.server.kind === 'connector')}
         {#if d.server.status === 'needs_auth'}
           <p class="note tools warn">{d.server.name} MCP needs authentication: {nodeList(d.nodes, true)} will fail its tools. <button type="button" class="linkbtn" onclick={() => openSettings('mcp', d.server.id, launch.project_id || null)}>Open Settings</button> <Kbd keys="⌘+," /> · Launch anyway <Kbd keys="⌘+⏎" /></p>
         {:else}
-          <p class="note tools">Design tools: {nodeList(d.nodes)} use <b>{d.server.name}</b> ({d.server.kind === 'connector' ? 'claude.ai connector' : d.server.kind} · <span style:color={st.color} aria-hidden="true">{st.icon}</span> {st.label})</p>
+          <p class="note tools">Design tools: {nodeList(d.nodes)} use <b>{d.server.name}</b> ({kindLabel(d.server.kind)} · <ConnBadge status={d.server.status} connector={d.server.kind === 'connector'} />)</p>
         {/if}
       {/each}
       {#if snap}

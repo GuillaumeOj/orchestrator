@@ -23,12 +23,25 @@ export function duration(ms) {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
+/** "Mon 09:00": a weekday and the time, whatever the day (a reset, a check a day ago). */
+export const dayHm = (ms) => clock(ms, ms + 2 * 86400000);
+
 /** "13:00 (in 2h 05m)" */
 export const when = (ms, now = Date.now()) => (ms == null ? '—' : `${clock(ms, now)} (in ${duration(ms - now)})`);
 
+/** Binary units: 1024 of one is one of the next. */
+const KIB = 1024;
+
 export function mb(v) {
   if (v == null) return '—';
-  return v >= 1024 ? `${(v / 1024).toFixed(1)} GB` : `${Math.round(v)} MB`;
+  return v >= KIB ? `${(v / KIB).toFixed(1)} GB` : `${Math.round(v)} MB`;
+}
+
+/** Bytes: "214 KB", "7.4 MB". */
+export function size(bytes) {
+  if (bytes == null) return '—';
+  if (bytes >= KIB * KIB) return `${(bytes / KIB / KIB).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / KIB))} KB`;
 }
 
 export function ago(ms, now = Date.now()) {

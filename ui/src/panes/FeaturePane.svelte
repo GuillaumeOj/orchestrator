@@ -13,9 +13,9 @@
   import StatusBadge from '../components/StatusBadge.svelte';
   import { agent, app, confirm, openAgent, openBoard, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
   import { isDesign } from '../lib/ecosystem.js';
-  import { ago } from '../lib/format.js';
+  import { ago, dayHm } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { dayHm } from '../lib/pacing.js';
+  import { backendLabel, remoteName } from '../lib/linear.js';
   import { displayState } from '../lib/status.js';
   import { handle, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
 
@@ -60,15 +60,19 @@
     }
   }
 
+  /** Notion status every minute; the parent page and the token only until both are set
+   *  (then Publish can work, and only the status changes). */
   async function loadNotion() {
     if (!v?.feature) return;
     const pid = v.feature.project_id;
+    const ready = notionReady?.ok;
     const [st, ps, iv] = await Promise.all([
       invoke('notion_status', { feature: v.feature.id }).catch(() => null),
-      invoke('project_settings', { project: pid }).catch(() => null),
-      invoke('integrations_view').catch(() => null),
+      ready ? null : invoke('project_settings', { project: pid }).catch(() => null),
+      ready ? null : invoke('integrations_view').catch(() => null),
     ]);
     notion = st;
+    if (ready) return;
     const page = ps?.settings?.notion_parent_page;
     const conn = iv?.items?.find((i) => i.id === 'notion');
     const name = v.project?.name ?? pid;
@@ -77,6 +81,7 @@
         ? { ok: true }
         : { ok: false, why: `Set a Notion parent page in ${name}'s settings, and connect Notion (⌘+,).` };
   }
+
 
   async function publish() {
     if (publishing || !notionReady?.ok) return;
@@ -222,7 +227,7 @@
         <DesignSection bind:this={design} {v} />
 
         <section class="card">
-          <div class="cardh"><b>Tasks</b><span class="muted">{v.project?.backend === 'github' ? 'GitHub Issues' : v.project?.backend === 'linear' ? 'Linear' : 'Local'} · {byStatus('done').length}/{v.tasks.length} done</span><span class="grow"></span><button class="btn ghost" onclick={() => openBoard(v.feature.project_id)}>Open board <Kbd keys="b" /></button></div>
+          <div class="cardh"><b>Tasks</b><span class="muted">{backendLabel(v.project?.backend)} · {byStatus('done').length}/{v.tasks.length} done</span><span class="grow"></span><button class="btn ghost" onclick={() => openBoard(v.feature.project_id)}>Open board <Kbd keys="b" /></button></div>
           <div class="taskcols">
             {#each [['in_progress', 'In progress', 'working'], ['review', 'Review', 'waiting_gate'], ['ready', 'Ready', 'idle'], ['done', 'Done', 'done']] as [s, label, st] (s)}
               {@const list = byStatus(s)}
@@ -231,7 +236,7 @@
                   <div class="colh"><StatusBadge state={st} compact /> {label} <span class="muted">{list.length}</span></div>
                   {#each list as t (t.id)}
                     <div class="task">
-                      <div class="tt"><span class="muted mono">{handle(t)}</span><span class="grow"></span><span class="muted">{t.backend === 'github' ? 'GitHub' : t.backend === 'linear' ? 'Linear' : 'Local'}</span></div>
+                      <div class="tt"><span class="muted mono">{handle(t)}</span><span class="grow"></span><span class="muted">{remoteName(t.backend)}</span></div>
                       <div class="title">{t.title}</div>
                       <div class="tt">
                         {#if t.node}<AgentChip id={t.node} role={v.team?.nodes?.find((n) => n.id === t.node)?.role_id ?? t.node} />{/if}

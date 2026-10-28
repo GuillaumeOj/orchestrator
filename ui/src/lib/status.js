@@ -1,7 +1,7 @@
 // Status vocabulary (SPEC §9.5): one label, one icon and one color per state,
 // used everywhere. Icons are Material Design glyphs of FiraCode Nerd Font Mono
 // (docs/design/README.md).
-import { clock, duration, pp, signed } from './format.js';
+import { clock, dayHm, duration, pp, signed } from './format.js';
 
 export const STATUS = {
   working: { label: 'Working', icon: '\u{F040A}', color: 'var(--color-status-working)' },
@@ -79,6 +79,18 @@ export function roleOf(agentId, role = null, color = null) {
   return { letter: key[0].toUpperCase(), color: `var(--color-role-${n})` };
 }
 
+/** D4: work you scheduled for off-hours (P1's off_hours = outside working hours). */
+export function offHoursReason(startsAt, now = Date.now()) {
+  const t = Date.parse(startsAt);
+  return t > now ? `Off-hours · starts ${clock(t, now)} (in ${duration(t - now)})` : 'Off-hours';
+}
+
+/** FR-815: "opus week in Red · starts after reset Mon 09:00" / "… exhausted · starts Mon 09:00". */
+export function modelWindowReason(model, resetsAt, exhausted) {
+  const at = dayHm(Date.parse(resetsAt));
+  return exhausted ? `${model} week exhausted · starts ${at}` : `${model} week in Red · starts after reset ${at}`;
+}
+
 /** Why a queued agent waits, in words (FR-809 copy). */
 export function queueReason(entry, now = Date.now()) {
   const r = entry?.reason ?? {};
@@ -89,17 +101,10 @@ export function queueReason(entry, now = Date.now()) {
       return 'low priority (Red)';
     case 'off_hours':
       return 'outside working hours';
-    case 'scheduled_off_hours': {
-      // D4: work you scheduled for off-hours (P1's off_hours = outside working hours).
-      const t = Date.parse(r.starts_at);
-      return t > now ? `Off-hours · starts ${clock(t, now)} (in ${duration(t - now)})` : 'Off-hours';
-    }
-    case 'model_window': {
-      const at = clock(Date.parse(r.resets_at), Date.parse(r.resets_at) + 2 * 86400000);
-      return r.exhausted
-        ? `${r.model} week exhausted · starts ${at}`
-        : `${r.model} week in Red · starts after reset ${at}`;
-    }
+    case 'scheduled_off_hours':
+      return offHoursReason(r.starts_at, now);
+    case 'model_window':
+      return modelWindowReason(r.model, r.resets_at, r.exhausted);
     case 'five_hour_guard':
       return '5h guard';
     case 'limit_reached':

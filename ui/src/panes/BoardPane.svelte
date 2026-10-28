@@ -9,9 +9,10 @@
   import AgentChip from '../components/AgentChip.svelte';
   import Kbd from '../components/Kbd.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
-  import { app, openFeature, refresh, toast } from '../lib/app.svelte.js';
+  import { app, openFeature, queueOffHours, refresh, toast } from '../lib/app.svelte.js';
   import { ago, clock } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { backendLabel, remoteName, syncCounts } from '../lib/linear.js';
   import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
   import { blockedBy, COLUMNS, handle, moveCursor, shiftStatus } from '../lib/teams.js';
 
@@ -79,34 +80,19 @@
   /** The task, or its run, is marked "Run off-hours" (board_view). */
   const isOff = (t) => !!t?.off_hours;
 
-  async function toggleOffHours(t, off = !isOff(t)) {
+  function toggleOffHours(t) {
     menu = false;
     if (!t) return;
     if (!offHoursAllowed(offHours)) return toast(OFF_DISABLED);
-    try {
-      const r = await invoke('queue_off_hours', { task: String(t.id), off });
-      toast(
-        off ? `${handle(t)} runs off-hours · starts ${clock(Date.parse(r.starts_at))}` : `${handle(t)} runs in working hours`,
-        off ? { action: { label: 'Undo', run: () => toggleOffHours(t, false) } } : {},
-      );
-      await load();
-    } catch (e) {
-      toast(errText(e), { kind: 'error' });
-    }
+    queueOffHours({ task: t.id, off: !isOff(t) }, handle(t), load);
   }
 
   async function sync() {
     syncing = true;
     try {
       const r = await invoke('board_sync', { project: spec.projectId });
-      const remote = { github: 'GitHub', linear: 'Linear' }[v?.backend];
-      toast(
-        v?.backend === 'linear'
-          ? `Synced ${v.project.name} with Linear · ${r.pushed ?? 0} pushed${(r.pulled ?? (r.imported ?? 0) + (r.updated ?? 0)) ? ` · ${r.pulled ?? (r.imported ?? 0) + (r.updated ?? 0)} pulled` : ''}${r.conflicts ? ` · ${r.conflicts} conflict${r.conflicts === 1 ? '' : 's'} (Linear won)` : ''}`
-          : remote
-            ? `Synced with ${remote} · ${r.imported} new · ${r.updated} updated${r.conflicts ? ` · ${r.conflicts} conflict(s): ${remote}'s version kept` : ''}`
-            : 'Local tasks: nothing to sync',
-      );
+      const remote = remoteName(v?.backend);
+      toast(v?.backend === 'local' ? 'Local tasks: nothing to sync' : `Synced ${v.project.name} with ${remote} · ${syncCounts(r, remote)}`);
       await load();
       await refresh();
     } catch (e) {
@@ -170,7 +156,7 @@
   {:else if v}
     <header class="bh">
       <span class="pname">{v.project.name}</span>
-      <span class="muted">{v.backend === 'github' ? `GitHub Issues${v.repo ? ` · ${v.repo}` : ''} · remote wins on conflict` : v.backend === 'linear' ? `Linear${v.linear_team ? ` · ${v.linear_team}` : ''}${v.last_sync_at_ms ? ` · synced ${clock(v.last_sync_at_ms)}` : ''}` : 'Local tasks'}</span>
+      <span class="muted">{v.backend === 'github' ? `${backendLabel('github')}${v.repo ? ` · ${v.repo}` : ''} · remote wins on conflict` : v.backend === 'linear' ? `${backendLabel('linear')}${v.linear_team ? ` · ${v.linear_team}` : ''}${v.last_sync_at_ms ? ` · synced ${clock(v.last_sync_at_ms)}` : ''}` : 'Local tasks'}</span>
       {#if v.last_sync_error}<span class="err">backend disconnected: {v.last_sync_error}</span>{/if}
       <span class="grow"></span>
       <div class="chips">
@@ -218,9 +204,9 @@
             {@const blocked = c.id === 'ready' ? blockedBy(t, v.tasks) : []}
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
             <div class="task" class:sel={cur.col === ci && cur.row === ri} onclick={() => ((cur = { col: ci, row: ri }), root?.focus())} ondblclick={() => t.feature_id && openFeature(t.feature_id)}>
-              <div class="tt"><span class="muted mono">{handle(t)}</span><span class="grow"></span><span class="muted">{t.backend === 'github' ? 'GitHub' : t.backend === 'linear' ? 'Linear' : 'Local'}</span></div>
+              <div class="tt"><span class="muted mono">{handle(t)}</span><span class="grow"></span><span class="muted">{remoteName(t.backend)}</span></div>
               <div class="title">{t.title}</div>
-              {#if t.remote_won}<span class="won" title="Changed in Linear and in the app since the last sync; the app now shows Linear's.">↓ changed in {t.backend === 'linear' ? 'Linear' : 'GitHub'}</span>{/if}
+              {#if t.remote_won}<span class="won" title="Changed in {remoteName(t.backend)} and in the app since the last sync; the app now shows {remoteName(t.backend)}'s.">↓ changed in {remoteName(t.backend)}</span>{/if}
               {#if isOff(t)}<span class="offtag">☾ Off-hours{nextOffHours(offHours) ? ` · starts ${clock(nextOffHours(offHours))}` : ''}</span>{/if}
               <div class="tt">
                 {#if t.node}<AgentChip id={t.node} role={nodeRole(t)} />{:else}<span class="muted">unassigned</span>{/if}

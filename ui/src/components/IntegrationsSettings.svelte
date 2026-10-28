@@ -4,31 +4,33 @@
   // (from the MCP registry). Rows: j/k move, t test, ⏎ connect / reconnect,
   // x remove the token. A row needing you sorts first.
   import { onMount, tick } from 'svelte';
-  import { confirm, openSettings, runInPane, toast } from '../lib/app.svelte.js';
-  import { checkedAt, INTEGRATION_COPY, integrationDetail, sortIntegrations } from '../lib/ecosystem.js';
+  import { confirm, now30, openSettings, runInPane, toast } from '../lib/app.svelte.js';
+  import { checkedAt, INTEGRATION_COPY, integrationDetail, needsUser, sortIntegrations } from '../lib/ecosystem.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { move } from '../lib/select.js';
   import ConnBadge from './ConnBadge.svelte';
   import Kbd from './Kbd.svelte';
   import SecretField from './SecretField.svelte';
 
-  /** @type {{ onstatus?: (items: any[]) => void }} */
-  let { onstatus = () => {} } = $props();
+  /** `initial`: the Settings pane's integrations_view, taken once (no second fetch on open). */
+  /** @type {{ onstatus?: (items: any[]) => void, initial?: (() => Promise<any> | null) | null }} */
+  let { onstatus = () => {}, initial = null } = $props();
 
   let items = $state(null); // null = loading
   let error = $state(null);
   let selId = $state(null); // by id: rows re-sort when a status changes
   let busy = $state({}); // id → true while a test or a save runs
   let fieldError = $state({}); // id → text under the secret field
-  let now = $state(Date.now());
+  const now = $derived(now30());
   const fields = {};
   let root = $state(null);
 
   const rows = $derived(items ? sortIntegrations(items) : []);
   const cur = $derived(rows.find((r) => r.id === selId) ?? rows[0] ?? null);
 
-  async function load() {
+  async function load(first = null) {
     try {
-      const v = await invoke('integrations_view');
+      const v = await (first ?? invoke('integrations_view'));
       items = v.items;
       selId ??= sortIntegrations(items)[0]?.id ?? null;
       error = null;
@@ -91,6 +93,9 @@
     );
   }
 
+  /** Penpot and Figma come from the MCP registry (their status is their servers'). */
+  const designTool = (it) => it.id === 'penpot' || it.id === 'figma';
+
   /** ⏎: what Connect / Reconnect does per integration (§5.2). */
   async function connect(it) {
     if (!it) return;
@@ -101,11 +106,10 @@
       await tick();
       return fields[it.id]?.focus();
     }
-    if (it.id === 'penpot' || it.id === 'figma') return openSettings('mcp', `design:${it.id}`);
+    if (designTool(it)) return openSettings('mcp', `design:${it.id}`);
   }
 
-  const designTool = (it) => it.id === 'penpot' || it.id === 'figma';
-  const failedOf = (it) => it.has_secret && (it.status === 'needs_auth' || it.status === 'error');
+  const failedOf = (it) => it.has_secret && needsUser(it.status);
   const connectLabel = (it) =>
     designTool(it) ? 'Open MCP servers' : failedOf(it) ? 'Replace' : it.status === 'not_configured' ? 'Connect' : 'Reconnect';
   const lastCheck = $derived(Math.max(0, ...(items ?? []).map((i) => i.checked_at_ms ?? 0)) || null);
@@ -113,9 +117,8 @@
   function onKey(e) {
     if (e.target.closest('input, textarea, select, button') || e.metaKey || e.ctrlKey || e.altKey || !rows.length) return;
     const k = e.key;
-    const i = Math.max(0, rows.indexOf(cur));
-    if (k === 'j' || k === 'ArrowDown') selId = rows[Math.min(rows.length - 1, i + 1)].id;
-    else if (k === 'k' || k === 'ArrowUp') selId = rows[Math.max(0, i - 1)].id;
+    if (k === 'j' || k === 'ArrowDown') selId = move(rows, cur?.id, 1);
+    else if (k === 'k' || k === 'ArrowUp') selId = move(rows, cur?.id, -1);
     else if (k === 't') test(cur);
     else if (k === 'Enter') connect(cur);
     else if (k === 'x') remove(cur);
@@ -124,9 +127,7 @@
   }
 
   onMount(() => {
-    load();
-    const t = setInterval(() => (now = Date.now()), 30000);
-    return () => clearInterval(t);
+    load(initial?.());
   });
 </script>
 
@@ -151,7 +152,7 @@
       <div class="row" class:sel={focused} data-integration={it.id} onclick={() => (selId = it.id)}>
         <div class="top">
           <span class="name"><span class="ico" aria-hidden="true">{{ github: '\u{F02A4}', linear: '\u{F0453}', notion: '\u{F0219}', penpot: '\u{F0431}', figma: '\u{F0431}' }[it.id] ?? ''}</span> {it.name}</span>
-          <ConnBadge status={it.status} busy={busy[it.id]} connector={it.id === 'penpot' || it.id === 'figma'} />
+          <ConnBadge status={it.status} busy={busy[it.id]} connector={designTool(it)} />
           <span class="detail ell">{integrationDetail(it)}</span>
           <span class="grow"></span>
           <span class="muted when">{checkedAt(it.checked_at_ms, now)}</span>
