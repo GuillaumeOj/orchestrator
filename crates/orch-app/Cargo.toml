@@ -25,6 +25,7 @@ orch-store.workspace = true
 orch-git.workspace = true
 orch-team.workspace = true
 orch-tasks.workspace = true
+orch-secrets.workspace = true
 jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true

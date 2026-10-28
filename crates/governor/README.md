@@ -43,6 +43,8 @@ gov.ingest(&UsageSample {
     five_hour: Some(WindowReading { used_pct: 3.0, resets_at: "2026-10-19T12:00:00Z".parse()? }),
     weekly: Some(WindowReading { used_pct: 1.0, resets_at: "2026-10-26T08:00:00Z".parse()? }),
     provenance: Provenance::Observed,
+    model: None,
+    model_windows: vec![],
 });
 
 // Admission point 2: PreToolUse. A Deny ends the turn ("paused by governor").
@@ -355,14 +357,36 @@ reading that passes NFR-9. Each one is listed here as a proposed edit. SPEC and 
     hard cap, or whose allocation is deferred, stops at its next tool call, like Pause all.
     *Edit*: "a running turn stops at its next tool boundary" in FR-811.
 
+## P3 additions (FR-815, FR-816, FR-819)
+
+- **Per-model weekly windows**: `UsageSample.model_windows` (statusline `rate_limits.<name>`
+  beyond `five_hour`/`seven_day`, mapped to a family by name). Each window gets the week's
+  thresholds on its own usage vs the elapsed week (linear) and is Red at
+  `PacingPolicy::model_window_red_pct` (95). Turns whose `TurnRequest.model` (or the agent's
+  last sampled model) is in a Red family wait with `QueueReason::ModelWindow` (critical work
+  excepted); an exhausted window (`model_limit_hit`, ≥ 100 %) holds all non-interactive work of
+  that model. Kept apart from `Window` (which stays `Copy`); `snapshot.model_windows` lists them.
+- **Off-hours scheduling** (decision D4): `set_off_hours(agent, on)` (refused without an
+  off-hours allowance) holds the agent's next work with `QueueReason::ScheduledOffHours
+  { starts_at }` during working blocks; outside them it runs under
+  `PacingPolicy::off_hours_live_cap` (1). The mark goes when the scheduled turn ends.
+  With an off-hours allowance, outside working blocks agents run the state's cap while the week
+  is under plan, `off_hours_live_cap` while it is a little over (Green), and none in Amber or Red
+  (rounding the weighted cap up used to run one agent all night even in Red: pacing-sim exhausted
+  the week with any allowance). A scheduled turn still running when working time starts stops at
+  its next tool call and waits, still marked, for the next window.
+- **Downgrade**: `task_boundary_model(agent, role model, rule, now)` at a task boundary returns
+  the fallback while the rule's condition (`amber`, `red`, `model_window`) holds, logging
+  `downgrade` (undo: `restore_model`, kept until the condition clears) and `restore_model` when it
+  clears. Shadow mode logs only. Carried across restarts with the off-hours marks.
+
 ## Not done yet
 
-- FR-815 per-model weekly windows (S priority): `Window` has room for them.
 - Resume-cost awareness (`prompt_cache.expires_at`, R6): the queue does not prefer warm sessions yet.
-- 5h peak smoothing and per-model estimator weights (deferred by ADR-007).
+- 5h peak smoothing (deferred by ADR-007). Per-model estimator weights are in (FR-814, off by
+  default: `PacingPolicy::per_model_weights`).
 - Pausing a team at its turn boundary (FR-805): the runtime pauses every agent of the team run
   (`pause_agent`; agent-runtime "Teams"); per-agent pause and Pause all
   cover P1b.
 - "Start now" vs "Run now" is the host's call (the Governor does not know whether an agent ever
   ran).
-- The calibration is still not carried across weeks by a restart (ADR-007).

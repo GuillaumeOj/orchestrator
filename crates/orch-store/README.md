@@ -103,6 +103,18 @@ Claude Code's folder name under `~/.claude/projects`.
   that project and leaves it untouched elsewhere; a run records its team's scope (`team_scope`).
   A global team launched from a project that shadows one of its roles snapshots that project's
   role, so its version goes up when launched from projects whose roles differ.
+- **MCP registry and integrations** (migration 5): `mcp_registry` rows are keyed by (scope, id)
+  like roles (a project row overrides the global one in that project), `data` is the
+  `orch_team::mcp::McpServer` definition and the last probe sits in `status`/`detail`/
+  `checked_at_ms` (a changed definition resets it to `unknown`). The migration seeds the `penpot`
+  connector entry once (deleting it sticks). `integrations` holds a status only: secrets live in
+  the Keychain (NFR-3).
+- **Artifact meta** (migration 6): `artifacts.meta` is the parsed hand-off URI
+  (`orch_team::artifact::ArtifactMeta`, JSON), NULL for rows from before P3.
+- **Weekly reports and estimator state** (migration 7): `weekly_reports` (FR-818, never purged);
+  `calibrations` gains `kind` (`fit` or `week`), `week_start_ms` and the estimator `state` (FR-814).
+- **Per-model windows** (migration 8): `usage_samples.model_windows`, JSON `[{name, used_pct,
+  resets_at}]` of a statusline response's extra `rate_limits.<name>` windows (FR-815), NULL when none.
 - **Tasks**: one model over every backend (ADR-004); `depends_on` are local task ids. `delete_project`
   removes the project's features, runs, tasks, messages, artifacts and project-scoped roles and
   teams; events stay.

@@ -106,6 +106,10 @@ pub struct RoleDef {
     /// `mcpServers` entries added to the agent's `--mcp-config` (Penpot, Figma…).
     #[serde(default)]
     pub mcp_servers: Map<String, Value>,
+    /// MCP registry ids (FR-601), resolved at compile time (project override
+    /// > global) into `mcpServers`.
+    #[serde(default)]
+    pub mcp_refs: Vec<String>,
     /// `--strict-mcp-config`: ignore the user's own MCP servers.
     #[serde(default)]
     pub strict_mcp: bool,
@@ -126,6 +130,13 @@ pub struct RoleDef {
     pub budget_priority: Tier,
     #[serde(default = "one")]
     pub version: u32,
+    /// The starter it was installed from (FR-306 starter upgrades).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<StarterOrigin>,
+    /// FR-819: switch to a fallback model at the next task while the week
+    /// (or the model's window) is tight. Off by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downgrade: Option<governor::Downgrade>,
 }
 
 fn worktree() -> String {
@@ -151,6 +162,7 @@ impl RoleDef {
             effort: None,
             tools: Tools::default(),
             mcp_servers: Map::new(),
+            mcp_refs: vec![],
             strict_mcp: false,
             permission_profile: PermissionProfile::Autonomous,
             sandbox_profile: worktree(),
@@ -159,6 +171,8 @@ impl RoleDef {
             subagents_allowed: false,
             budget_priority: Tier::Normal,
             version: 1,
+            origin: None,
+            downgrade: None,
         }
     }
 }
@@ -272,6 +286,22 @@ pub struct Team {
     pub version: u32,
     #[serde(default)]
     pub review: ReviewMode,
+    /// Shown in the presets row of the canvas and the Launch dialog (FR-306).
+    #[serde(default)]
+    pub preset: bool,
+    /// The starter it was installed from (FR-306 starter upgrades).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<StarterOrigin>,
+}
+
+/// Where an installed starter role or team came from: the starter's id, the
+/// starter version installed and the fingerprint of what was installed, so
+/// an unmodified copy can be upgraded in place and a modified one is left alone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StarterOrigin {
+    pub starter: String,
+    pub version: u32,
+    pub fingerprint: String,
 }
 
 impl Team {

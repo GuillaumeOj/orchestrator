@@ -88,7 +88,12 @@
   <div class="ah">
     <AgentChip id={a.id} />
     <StatusBadge state={ds} label={notStarted(a) ? 'Not started yet' : null} />
-    <span class="secondary">{a.model ?? 'default model'}{a.effort ? ` · ${a.effort}` : ''}</span>
+    {#if a.off_hours}<span class="offh" title="Work you scheduled off-hours (FR-816)">· off-hours</span>{/if}
+    {#if a.model_note}
+      <span class="secondary down" title="Switched by the Governor ({a.model_note.replace(/^downgraded /, '')}); back to the role's model at the next task once it clears.">↓ {a.model ?? 'default model'} · {a.model_note}</span>
+    {:else}
+      <span class="secondary">{a.model ?? 'default model'}{a.effort ? ` · ${a.effort}` : ''}</span>
+    {/if}
     <span class="muted">ctx</span><CtxBar value={a.context_pct} />
     <span class="muted">session</span><span>{sessionPp == null ? '—' : `${sessionPp.toFixed(1)} pp`}</span>
     <span class="muted">governor</span><span>{governorText}</span>
@@ -156,6 +161,14 @@
 </TermHost>
 
 <style>
+
+  .offh {
+    color: var(--color-status-done);
+  }
+
+  .down {
+    color: var(--color-pacing-amber);
+  }
   .ah {
     display: flex;
     align-items: center;

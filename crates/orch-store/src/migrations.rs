@@ -433,6 +433,61 @@ ALTER TABLE teams_v3 RENAME TO teams;
     r#"
 ALTER TABLE tasks ADD COLUMN flow TEXT NOT NULL DEFAULT '{}';
 "#,
+    // 5: P3 MCP server registry (global '' and per-project overrides, with
+    // the last FR-604 probe) and integrations (status only: secrets live in
+    // the Keychain, NFR-3). Seeds the `penpot` connector entry once.
+    r#"
+CREATE TABLE mcp_registry (
+    scope TEXT NOT NULL DEFAULT '',
+    id TEXT NOT NULL,
+    data TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    detail TEXT,
+    checked_at_ms INTEGER,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (scope, id)
+);
+
+CREATE TABLE integrations (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    detail TEXT,
+    account TEXT,
+    checked_at_ms INTEGER
+);
+
+INSERT INTO mcp_registry(scope, id, data, updated_at_ms) VALUES ('', 'penpot',
+  '{"id":"penpot","name":"Penpot","kind":"connector","allow_secret_env":false,"connector_name":"claude.ai Penpot","design_tool":"penpot"}',
+  0);
+"#,
+    // 6: P3 design artifacts: what a hand-off URI points at (FR-602), as JSON.
+    r#"
+ALTER TABLE artifacts ADD COLUMN meta TEXT;
+"#,
+    // 7: P3 weekly reports (FR-818, kept: never purged) and the estimator's
+    // state with each calibration (FR-814): `fit` rows on each fit change,
+    // one `week` row per week (the estimator the week started with).
+    r#"
+CREATE TABLE weekly_reports (
+    id TEXT PRIMARY KEY,
+    week_start_ms INTEGER NOT NULL,
+    reset_at_ms INTEGER NOT NULL,
+    final_weekly_pct REAL,
+    data TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX weekly_reports_reset ON weekly_reports(reset_at_ms);
+
+ALTER TABLE calibrations ADD COLUMN kind TEXT NOT NULL DEFAULT 'fit';
+ALTER TABLE calibrations ADD COLUMN week_start_ms INTEGER;
+ALTER TABLE calibrations ADD COLUMN state TEXT;
+CREATE INDEX calibrations_week ON calibrations(kind, week_start_ms);
+"#,
+    // 8: P3 per-model weekly windows of each statusline sample (FR-815), as
+    // JSON `[{name, used_pct, resets_at}]`; NULL when the response had none.
+    r#"
+ALTER TABLE usage_samples ADD COLUMN model_windows TEXT;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

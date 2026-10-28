@@ -10,7 +10,7 @@ The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app 
 | 01 Foundations | Tokens: color, type, spacing, radius, sizing, elevation, rules | Ready for dev |
 | 02 Components | P1 subset of SPEC §9.4 (14 component sets), states as variants. **P2**: Canvas node, Edge (4 types), Task card, Kanban column header, Feature card, Rules panel, Preset card, Minimap, Connect menu / target | P1 Ready for dev · **P2 Ready for dev** |
 | 03 Shell & layouts | Shell at 1512 (docked inspector), 1280 (icon rail + overlay inspector), zoomed pane; 1728 not drawn | Ready for dev |
-| 04 Screens | P1 panes: Overview, Agent pane (+ states), Week planner, Inbox. **P2** (row at y = 2000): Team canvas, Feature, Board, Launch on feature dialog | P1 Ready for dev · **P2 Ready for dev** |
+| 04 Screens | P1 panes: Overview, Agent pane (+ states), Week planner, Inbox. **P2** (row at y = 2000): Team canvas, Feature, Board, Launch on feature dialog. **P3** (row at y = 6000): Settings Integrations and MCP servers, inspector MCP and downgrade, presets, Feature Design and preview, Weekly report, model windows and off-hours, Project settings Linear, Notion publish (+ states) | P1 Ready for dev · **P2 Ready for dev** · **P3 In review** |
 | 05 Keyboard & copy | Global, leader and pane-local shortcut maps (**P2**: Team canvas, Board, Feature rows); P0 conflicts; banner, notification and toast copy; copy rules | P1 Ready for dev · **P2 Ready for dev** |
 | 06 Flows | Storyboards (annotated frames, no clickable prototype): J2 solo session (5 frames), J5 Inbox triage (6), J8 pacing the week (4). **P2**: J3 team on a feature, 5 notes over the 04 frames (y = 4500) | P1 Ready for dev · **P2 Ready for dev** |
 | 07 Explorations | Drafts, not binding | — |
@@ -41,6 +41,15 @@ Exports of the Penpot boards (Dark theme unless noted), refreshed by hand.
 | 04 Feature (P2) | [04-feature.png](img/04-feature.png) |
 | 04 Board (P2) | [04-board.png](img/04-board.png) |
 | 04 Launch on feature (P2) | [04-launch-feature.png](img/04-launch-feature.png) |
+| 04 Settings Integrations (P3) | [04-settings-integrations.png](img/04-settings-integrations.png) |
+| 04 Settings MCP servers (P3) | [04-settings-mcp.png](img/04-settings-mcp.png) · states: [04-settings-states.png](img/04-settings-states.png) |
+| 04 Team canvas inspector MCP (P3) | [04-canvas-inspector-mcp.png](img/04-canvas-inspector-mcp.png) · states: [04-inspector-presets-states.png](img/04-inspector-presets-states.png) |
+| 04 Feature Design (P3) | [04-feature-design.png](img/04-feature-design.png) · states: [04-feature-design-states.png](img/04-feature-design-states.png) |
+| 04 Large preview overlay (P3) | [04-preview-overlay.png](img/04-preview-overlay.png) |
+| 04 Weekly report (P3) | [04-weekly-report.png](img/04-weekly-report.png) · states: [04-weekly-report-states.png](img/04-weekly-report-states.png) |
+| 04 Week planner model windows and off-hours (P3) | [04-week-planner-p3.png](img/04-week-planner-p3.png) · states: [04-off-hours-states.png](img/04-off-hours-states.png) |
+| 04 Project settings Linear (P3) | [04-project-linear.png](img/04-project-linear.png) · states: [04-project-linear-states.png](img/04-project-linear-states.png) |
+| 04 Notion publish states (P3) | [04-notion-states.png](img/04-notion-states.png) |
 | 06 J5 Inbox triage | [1 gate](img/06-j5-1-gate.png) → [2 approved](img/06-j5-2-approved.png) → [3 allowed](img/06-j5-3-allowed.png) → [4 reply](img/06-j5-4-reply.png) → [5 budget ask](img/06-j5-5-budget.png) → [6 clear](img/06-j5-6-clear.png) |
 | 06 J2 Solo session | [1 new session](img/06-j2-1-new-session.png) → [2 running](img/06-j2-2-running.png) → [3 palette](img/06-j2-3-palette.png) → [4 PR gate](img/06-j2-4-pr-gate.png) → [5 PR opened](img/06-j2-5-pr-opened.png) |
 | 06 J8 Pacing the week | [1 plan](img/06-j8-1-plan.png) → [2 run now](img/06-j8-2-run-now.png) → [3 catch-up](img/06-j8-3-catch-up.png) → [4 report](img/06-j8-4-report.png) |

@@ -216,6 +216,60 @@ pub async fn feature_doc(core: CoreState<'_>, feature: String, name: String) -> 
     blocking(core, move |c| c.feature_doc(&feature, &name)).await
 }
 
+// ---- P3 design artifacts and presets (api-contract §3–4)
+
+#[tauri::command]
+pub async fn artifact_preview(core: CoreState<'_>, feature: String, artifact: u64) -> Res<Value> {
+    blocking(core, move |c| c.artifact_preview(&feature, artifact)).await
+}
+
+#[tauri::command]
+pub async fn artifact_open(core: CoreState<'_>, feature: String, artifact: u64) -> Res<()> {
+    blocking(core, move |c| c.artifact_open(&feature, artifact)).await
+}
+
+#[tauri::command]
+pub async fn team_duplicate(
+    core: CoreState<'_>,
+    team: String,
+    from: orch_team::Scope,
+    to: orch_team::Scope,
+    new_id: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| c.team_duplicate(&team, &from, &to, new_id.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn starter_copy(
+    core: CoreState<'_>,
+    starter: String,
+    to: orch_team::Scope,
+    new_id: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| c.starter_copy(&starter, &to, new_id.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn role_duplicate(
+    core: CoreState<'_>,
+    role: String,
+    from: orch_team::Scope,
+    to: orch_team::Scope,
+    new_id: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| c.role_duplicate(&role, &from, &to, new_id.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn team_set_preset(core: CoreState<'_>, team: String, scope: orch_team::Scope, preset: bool) -> Res<Value> {
+    blocking(core, move |c| c.team_set_preset(&team, &scope, preset)).await
+}
+
+#[tauri::command]
+pub async fn preset_update(core: CoreState<'_>, team: String, scope: orch_team::Scope) -> Res<Value> {
+    blocking(core, move |c| c.preset_update(&team, &scope)).await
+}
+
 #[tauri::command]
 pub async fn board_view(core: CoreState<'_>, project: String) -> Res<Value> {
     blocking(core, move |c| c.board_view(&project)).await
@@ -269,6 +323,125 @@ pub async fn project_settings_set(
     form: crate::teams::ProjectSettingsForm,
 ) -> Res<Value> {
     blocking(core, move |c| c.project_settings_set(&project, form)).await
+}
+
+// ---- P3 weekly reports (api-contract §5)
+
+#[tauri::command]
+pub async fn reports_list(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, |c| c.reports_list()).await
+}
+
+#[tauri::command]
+pub async fn report_view(core: CoreState<'_>, id: String) -> Res<Value> {
+    blocking(core, move |c| c.report_view(&id)).await
+}
+
+/// An http(s) link in the default browser (any other scheme is refused).
+#[tauri::command]
+pub async fn open_url(core: CoreState<'_>, url: String) -> Res<()> {
+    blocking(core, move |c| c.open_url(&url)).await
+}
+
+#[tauri::command]
+pub async fn notion_publish(core: CoreState<'_>, feature: String) -> Res<Value> {
+    blocking(core, move |c| c.notion_publish(&feature)).await
+}
+
+#[tauri::command]
+pub async fn notion_status(core: CoreState<'_>, feature: String) -> Res<Value> {
+    blocking(core, move |c| c.notion_status(&feature)).await
+}
+
+#[tauri::command]
+pub async fn linear_teams(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, |c| c.linear_teams()).await
+}
+
+#[tauri::command]
+pub async fn linear_states(core: CoreState<'_>, team: String) -> Res<Value> {
+    blocking(core, move |c| c.linear_states(&team)).await
+}
+
+/// `queue_off_hours`: `entry` and `task` are string ids per the contract
+/// (`"12"`, a task's `"T-12"` too); numbers are accepted as well.
+#[tauri::command]
+pub async fn queue_off_hours(
+    core: CoreState<'_>,
+    entry: Option<crate::ecosystem::IdArg>,
+    task: Option<crate::ecosystem::IdArg>,
+    off: bool,
+) -> Res<Value> {
+    blocking(core, move |c| {
+        let id = |a: Option<crate::ecosystem::IdArg>| a.map(|a| a.parse()).transpose();
+        c.queue_off_hours(id(entry)?, id(task)?, off)
+    })
+    .await
+}
+
+// ---- P3 integrations and the MCP registry (api-contract §1–2)
+
+#[tauri::command]
+pub async fn integrations_view(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, |c| c.integrations_view()).await
+}
+
+/// The secret is wrapped at once and never logged or returned (NFR-3).
+#[tauri::command]
+pub async fn integration_secret_set(core: CoreState<'_>, id: String, secret: String) -> Res<Value> {
+    let secret = orch_secrets::Secret::new(secret);
+    blocking(core, move |c| c.integration_secret_set(&id, secret)).await
+}
+
+#[tauri::command]
+pub async fn integration_secret_remove(core: CoreState<'_>, id: String) -> Res<Value> {
+    blocking(core, move |c| c.integration_secret_remove(&id)).await
+}
+
+#[tauri::command]
+pub async fn integration_test(core: CoreState<'_>, id: String) -> Res<Value> {
+    blocking(core, move |c| c.integration_test(&id)).await
+}
+
+/// The value is wrapped at once and never logged or returned (NFR-3).
+#[tauri::command]
+pub async fn mcp_secret_set(core: CoreState<'_>, account: String, value: String) -> Res<()> {
+    let value = orch_secrets::Secret::new(value);
+    blocking(core, move |c| c.mcp_secret_set(&account, value)).await
+}
+
+#[tauri::command]
+pub async fn mcp_secret_delete(core: CoreState<'_>, account: String) -> Res<()> {
+    blocking(core, move |c| c.mcp_secret_delete(&account)).await
+}
+
+#[tauri::command]
+pub async fn mcp_secrets_status(core: CoreState<'_>, accounts: Vec<String>) -> Res<Value> {
+    blocking(core, move |c| c.mcp_secrets_status(&accounts)).await
+}
+
+#[tauri::command]
+pub async fn mcp_registry_view(core: CoreState<'_>, project: Option<String>) -> Res<Value> {
+    blocking(core, move |c| c.mcp_registry_view(project.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn mcp_server_save(
+    core: CoreState<'_>,
+    server: orch_team::mcp::McpServer,
+    scope: orch_team::Scope,
+) -> Res<Value> {
+    blocking(core, move |c| c.mcp_server_save(server, scope)).await
+}
+
+#[tauri::command]
+pub async fn mcp_server_delete(core: CoreState<'_>, id: String, scope: orch_team::Scope) -> Res<Value> {
+    blocking(core, move |c| c.mcp_server_delete(&id, scope)).await
+}
+
+#[tauri::command]
+pub async fn mcp_server_test(core: CoreState<'_>, id: String, project: Option<String>) -> Res<Value> {
+    blocking(core, move |c| c.mcp_server_test(&id, project.as_deref())).await
 }
 
 #[tauri::command]

@@ -175,6 +175,6 @@ mod tests {
         );
         assert_eq!(get("front"), "reports to lead · asks reviews from ui · can message back, ui");
         assert_eq!(get("ux"), "reports to lead · hands off to ui · can message ui");
-        assert_eq!(get("ui"), "reports to lead · can message front");
+        assert_eq!(get("ui"), "reports to lead · hands off to front · can message front");
     }
 }

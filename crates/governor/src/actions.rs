@@ -109,16 +109,39 @@ pub enum ActionKind {
     },
     /// Interactive and critical work used up the reserve (FR-807).
     ReserveExhausted,
+    /// FR-819: the agent's next task runs on its role's fallback model.
+    Downgrade {
+        agent: AgentId,
+        to: String,
+        /// The role's model it leaves.
+        #[serde(default)]
+        from: Option<String>,
+        /// `amber`, `red` or `model_window`: the role's condition that held.
+        #[serde(default)]
+        why: String,
+    },
+    /// FR-819: back to the role's model at the agent's next task.
+    RestoreModel {
+        agent: AgentId,
+    },
 }
 
 /// What undoing an action does.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Undo {
-    LiftDeferral { allocation: AllocationId },
+    LiftDeferral {
+        allocation: AllocationId,
+    },
     EndSprint,
     ResumeAll,
-    ResumeAgent { agent: AgentId },
+    ResumeAgent {
+        agent: AgentId,
+    },
+    /// The downgraded agent gets its role's model back at its next task.
+    RestoreModel {
+        agent: AgentId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -170,6 +193,8 @@ impl GovernorAction {
             ActionKind::RunNow { .. } => "run_now",
             ActionKind::Alert { .. } => "alert",
             ActionKind::ReserveExhausted => "reserve_exhausted",
+            ActionKind::Downgrade { .. } => "downgrade",
+            ActionKind::RestoreModel { .. } => "restore_model",
         }
     }
 }

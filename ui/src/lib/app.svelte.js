@@ -2,6 +2,7 @@
 // tiling workspace, focus, overlays and the command registry. Terminal objects
 // (xterm.js) live outside the reactive state, in `terms`.
 
+import { clock as clockOf } from './format.js';
 import { due, toastFor, UNDO_MS } from './inbox.js';
 import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
@@ -35,6 +36,19 @@ export const app = $state({
   dock: { open: false, height: 0.3, tabs: [], active: null },
   error: null,
 });
+
+// One clock for relative times ("checked 14:58 · 2m ago"), every 30 s, started on first use.
+const tick = $state({ now: Date.now() });
+let ticking = null;
+
+/** "now" for relative times; reading it in a template re-renders every 30 s. */
+export function now30() {
+  if (!ticking) {
+    ticking = setInterval(() => (tick.now = Date.now()), 30000);
+    ticking.unref?.(); // never keeps a test runner alive
+  }
+  return tick.now;
+}
 
 /** A pane shown in the shell dock rather than the tiling layout. */
 export const inDock = (id) => app.dock.tabs.includes(id);
@@ -103,6 +117,8 @@ function title(spec) {
     default:
       if (spec.type === 'project') return projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId;
       if (spec.type === 'trust') return `trust · ${spec.projectId}`;
+      if (spec.type === 'project-settings')
+        return `${projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId} settings`;
       if (spec.type === 'feature') return features().find((f) => f.id === spec.featureId)?.slug ?? 'feature';
       if (spec.type === 'board')
         return `${projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId} tasks`;
@@ -115,9 +131,14 @@ function title(spec) {
             .pop()
         }`;
       return (
-        { overview: 'All projects', inbox: 'Inbox', planner: 'Week planner', setup: 'Set up Orchestrator' }[
-          spec.type
-        ] ?? spec.type
+        {
+          overview: 'All projects',
+          inbox: 'Inbox',
+          planner: 'Week planner',
+          setup: 'Set up Orchestrator',
+          settings: 'Settings',
+          report: 'Weekly report',
+        }[spec.type] ?? spec.type
       );
   }
 }
@@ -262,6 +283,88 @@ export function openSingleton(type) {
   addPane({ type }, app.layout ? 'tab' : 'right');
 }
 
+/**
+ * P3: Settings (⌘,), one pane, opened straight to a section ('integrations' |
+ * 'mcp' | …) with a server selected (banners, Inbox items, the inspector).
+ */
+export function openSettings(section = null, server = null, projectId = null) {
+  const existing = findPane((s) => s.type === 'settings');
+  if (existing) {
+    if (section) app.panes[existing] = { ...app.panes[existing], section, server, projectId };
+    return focusPane(existing);
+  }
+  addPane({ type: 'settings', section: section ?? 'integrations', server, projectId }, app.layout ? 'tab' : 'right');
+}
+
+/** P3: a project's settings (Task backend, Notion, MCP overrides), one pane per project. */
+export function openProjectSettings(projectId, section = null) {
+  if (!projectId) return toast('No project in focus');
+  const existing = findPane((s) => s.type === 'project-settings' && s.projectId === projectId);
+  if (existing) {
+    if (section) app.panes[existing] = { ...app.panes[existing], section };
+    return focusPane(existing);
+  }
+  addPane({ type: 'project-settings', projectId, section: section ?? 'backend' }, app.layout ? 'tab' : 'right');
+}
+
+/** FR-818: the weekly report ('current' = this week so far), one pane. */
+export function openReport(reportId = 'current') {
+  const existing = findPane((s) => s.type === 'report');
+  if (existing) {
+    app.panes[existing] = { ...app.panes[existing], reportId };
+    return focusPane(existing);
+  }
+  addPane({ type: 'report', reportId }, app.layout ? 'tab' : 'right');
+}
+
+/** A link in the browser (the core runs `open`; only http(s)). */
+export async function openUrl(url) {
+  try {
+    await invoke('open_url', { url });
+  } catch (e) {
+    toast(`Could not open ${url}: ${errText(e)}`, { kind: 'error' });
+  }
+}
+
+/**
+ * Where an Inbox action sends the user (D3): `{open: 'settings', server}`,
+ * `{open: 'pane', run}` or `{open: 'url', url}`. Anything else: nothing.
+ */
+export function routeOpen(r, projectId = null) {
+  if (!r || typeof r !== 'object') return false;
+  if (r.open === 'settings') openSettings('mcp', r.server ?? null, projectId);
+  else if (r.open === 'pane' && r.run) runInPane(r.run, `${r.run}${r.server ? ` · ${r.server}` : ''}`, projectId);
+  else if (r.open === 'url' && r.url) openUrl(r.url);
+  else if (r.open === 'report') openReport(r.report ?? 'current');
+  else return false;
+  return true;
+}
+
+/** An MCP alert's Reconnect / Open Settings: to the core now (no undo window), then routed. */
+export async function alertAct(item, action) {
+  try {
+    const r = await invoke('inbox_act', { item: item.id, action, message: null });
+    if (routeOpen(r, item.payload?.project ?? null) || action !== 'open') return;
+    // A task sync conflict (remote won) only marks the note read: open the Board on the task.
+    if (item.payload?.action === 'task_conflict') openBoard(item.payload.project, item.payload.task);
+  } catch (e) {
+    toast(errText(e), { kind: 'error' });
+  }
+}
+
+/** A command in a shell pane (gh auth login, claude /mcp); the user exits it. */
+export async function runInPane(run, title, projectId = null) {
+  const p = projects().find((x) => x.id === projectId);
+  try {
+    const t = await invoke('term_spawn', {
+      req: { kind: 'shell', project_id: p?.id ?? null, agent_id: null, cwd: p?.path ?? null, run, rows: 30, cols: 100 },
+    });
+    addPane({ type: 'shell', termId: t.id, cwd: t.cwd, projectId: p?.id, title }, 'right');
+  } catch (e) {
+    toast(`Could not run ${run}: ${errText(e)}`, { kind: 'error' });
+  }
+}
+
 /** A project's pane (§4.1): git state, worktrees, PRs, removal (J11). */
 export function openProject(projectId) {
   app.selectedProject = projectId;
@@ -278,12 +381,15 @@ export function openFeature(featureId) {
   addPane({ type: 'feature', featureId, projectId: f?.project_id }, app.layout ? 'tab' : 'right');
 }
 
-/** P2: a project's Board (FR-502), one per project. */
-export function openBoard(projectId) {
+/** P2: a project's Board (FR-502), one per project; `taskId` selects that card. */
+export function openBoard(projectId, taskId = null) {
   if (!projectId) return toast('No project in focus');
   const existing = findPane((s) => s.type === 'board' && s.projectId === projectId);
-  if (existing) return focusPane(existing);
-  addPane({ type: 'board', projectId }, app.layout ? 'tab' : 'right');
+  if (existing) {
+    if (taskId != null) app.panes[existing] = { ...app.panes[existing], taskId };
+    return focusPane(existing);
+  }
+  addPane({ type: 'board', projectId, taskId }, app.layout ? 'tab' : 'right');
 }
 
 /** P2: the Team canvas (FR-301), on a team (or the library when none). */
@@ -520,6 +626,39 @@ export function runNow(a, notStarted) {
   );
 }
 
+/** FR-816: a queued turn to the next off-hours window, or back (D4: you scheduled it). */
+export const runOffHours = (a, off = a.queue_entry?.reason?.kind !== 'scheduled_off_hours') =>
+  queueOffHours({ entry: a.queue_entry.id, off }, a.id, refresh);
+
+/**
+ * FR-816: mark a queued entry or a task for off-hours (or clear it), with
+ * the Penpot 05 toast "deps-1 runs off-hours · starts 18:00 · Undo";
+ * `reload` refreshes the caller's view.
+ */
+export async function queueOffHours({ entry = null, task = null, off }, label, reload = refresh) {
+  const id = entry != null ? { entry: String(entry) } : { task: String(task) };
+  try {
+    const r = await invoke('queue_off_hours', { ...id, off });
+    toast(
+      off ? `${label} runs off-hours · starts ${clockOf(Date.parse(r.starts_at))}` : `${label} runs in working hours`,
+      off ? { action: { label: 'Undo', run: () => queueOffHours({ entry, task, off: false }, label, reload) } } : {},
+    );
+    await reload?.();
+  } catch (e) {
+    toast(errText(e), { kind: 'error' });
+  }
+}
+
+/** FR-505: the feature's docs to Notion (also `N` in the Feature pane). */
+export async function publishNotion(f) {
+  try {
+    const r = await invoke('notion_publish', { feature: f.id });
+    toast(`Published ${r.docs.length} docs to Notion`, { action: { label: 'Open', run: () => openUrl(r.page_url) } });
+  } catch (e) {
+    toast(`Publish failed: ${errText(e)}`, { kind: 'error' });
+  }
+}
+
 /** Drop a queued turn (its message is not delivered). */
 export function cancelQueued(a) {
   confirm(
@@ -659,7 +798,8 @@ async function poll() {
  *  however that happened: a button, the CLI, a project removal. */
 function paneGone(s) {
   if (s.type === 'agent') return !activeAgents().some((a) => a.id === s.agentId);
-  if (s.type === 'project' || s.type === 'board') return !projects().some((p) => p.id === s.projectId);
+  if (s.type === 'project' || s.type === 'board' || s.type === 'project-settings')
+    return !projects().some((p) => p.id === s.projectId);
   // Features never read yet (the core's read failed): nothing is known gone.
   if (s.type === 'feature') return app.data?.features != null && !features().some((f) => f.id === s.featureId);
   return false;
@@ -685,7 +825,21 @@ export function commands() {
     { id: 'inbox', label: 'Open Inbox', run: () => openSingleton('inbox') },
     { id: 'planner', label: 'Open Week planner', run: () => openSingleton('planner') },
     { id: 'setup', label: 'Set up Orchestrator (first run)…', run: () => openSingleton('setup') },
+    { id: 'settings', label: 'Settings', run: () => openSettings() },
+    { id: 'settings.integrations', label: 'Settings: Integrations', run: () => openSettings('integrations') },
+    { id: 'settings.mcp', label: 'Settings: MCP servers', run: () => openSettings('mcp') },
+    ...(contextProject()
+      ? [
+          {
+            id: 'settings.mcp.project',
+            label: `Settings: MCP servers for ${contextProject().name}`,
+            run: () => openSettings('mcp', null, contextProject().id),
+          },
+        ]
+      : []),
     { id: 'plan.edit', label: 'Edit the weekly plan…', run: () => (app.overlay = { kind: 'plan' }) },
+    { id: 'report.current', label: 'Weekly report (this week so far)', run: () => openReport('current') },
+    { id: 'report.list', label: 'Past weekly reports', run: () => openReport('current') },
     { id: 'team.canvas', label: 'Open the Team canvas', run: () => openCanvas() },
     {
       id: 'team.launch',
@@ -758,12 +912,21 @@ export function commands() {
         run: () => openDiff(a.project_id, a.worktree, a.branch),
       },
       { id: 'agent.kitty', label: `Open ${a.id}'s worktree in kitty`, run: () => openInKitty(a.worktree) },
+      a.queue_entry && {
+        id: 'agent.off-hours',
+        label:
+          a.queue_entry.reason?.kind === 'scheduled_off_hours'
+            ? `Run ${a.id} in working hours`
+            : `Run ${a.id} off-hours`,
+        run: () => runOffHours(a),
+      },
     ].filter(Boolean);
     for (const c of agentCmds) c.scope = 'agent';
     list.unshift(...agentCmds);
   }
   for (const f of features()) {
     list.push({ id: `feature.open.${f.id}`, label: `Open feature ${f.slug}`, run: () => openFeature(f.id) });
+    list.push({ id: `feature.notion.${f.id}`, label: `Publish ${f.slug} to Notion`, run: () => publishNotion(f) });
     list.push({
       id: `feature.delete.${f.id}`,
       label: `Delete feature ${f.slug}…`,
@@ -773,6 +936,7 @@ export function commands() {
   for (const p of projects()) {
     list.push({ id: `board.open.${p.id}`, label: `Board: ${p.name}`, run: () => openBoard(p.id) });
     list.push({ id: `project.open.${p.id}`, label: `Open project ${p.name}`, run: () => openProject(p.id) });
+    list.push({ id: `project.settings.${p.id}`, label: `${p.name} settings`, run: () => openProjectSettings(p.id) });
     list.push({
       id: `project.trust.${p.id}`,
       label: `Trust ${p.name} (Claude Code's dialog)…`,
@@ -891,7 +1055,10 @@ export function decide(item, action, message = null) {
   if (app.pending.some((p) => p.item === item.id)) return;
   const text = toastFor(item, action);
   const t = toast(text, { ms: UNDO_MS, undo: true, item: item.id });
-  app.pending = [...app.pending, { item: item.id, action, message, at: Date.now(), toast: t }];
+  app.pending = [
+    ...app.pending,
+    { item: item.id, action, message, at: Date.now(), toast: t, project: item.payload?.project ?? null },
+  ];
 }
 
 export function undoLast() {
@@ -915,7 +1082,8 @@ export async function flushDecisions(now = Date.now()) {
   for (const p of due(app.pending, now)) {
     app.pending = app.pending.filter((x) => x !== p);
     try {
-      await invoke('inbox_act', { item: p.item, action: p.action, message: p.message });
+      const r = await invoke('inbox_act', { item: p.item, action: p.action, message: p.message });
+      routeOpen(r, p.project);
     } catch (e) {
       toast(errText(e), { kind: 'error' });
     }

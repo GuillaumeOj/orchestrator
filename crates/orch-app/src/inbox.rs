@@ -188,6 +188,20 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 actions: vec!["enter", "r", "o"],
                 payload: al.payload.clone(),
             },
+            // FR-505: a comment on a published Notion page (level 3); `open` → the page.
+            ("notion", _) => InboxItem {
+                id: format!("alert-{}", al.id),
+                level: 3,
+                kind: "question".into(),
+                agent_id: None,
+                title,
+                detail: al.payload["text"].as_str().unwrap_or(&al.body).to_string(),
+                preview: None,
+                created_ms: al.created_ms,
+                // `o` opens the page, `r` dismisses (any action but open/reconnect dismisses an alert).
+                actions: vec!["o", "r"],
+                payload: al.payload.clone(),
+            },
             (kind, _) => InboxItem {
                 id: format!("alert-{}", al.id),
                 level: match kind {
@@ -202,8 +216,9 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 detail: al.body.clone(),
                 preview: None,
                 created_ms: al.created_ms,
-                actions: vec!["a", "o"],
-                payload: Value::Null,
+                actions: if al.payload["alert"] == "mcp_needs_auth" { vec!["a", "o", "r"] } else { vec!["a", "o"] },
+                // `{"alert": "mcp_needs_auth", "server", "name", "roles"}` (FR-604).
+                payload: if al.payload.is_object() { al.payload.clone() } else { Value::Null },
             },
         };
         out.push(item);

@@ -78,6 +78,11 @@ pub struct Role {
     /// `mcpServers` entries for `--mcp-config`.
     #[serde(default)]
     pub mcp_servers: serde_json::Map<String, serde_json::Value>,
+    /// MCP registry ids (FR-601), resolved at each spawn (project override >
+    /// global) into `mcp_servers`: a registry edit applies at the next spawn,
+    /// and no resolved secret is ever stored with the agent.
+    #[serde(default)]
+    pub mcp_refs: Vec<String>,
     #[serde(default = "default_network")]
     pub network_allow: Vec<String>,
     /// Extra `permissions.allow` rules.
@@ -96,6 +101,9 @@ pub struct Role {
     /// FR-407: a turn running longer is interrupted (the watchdog) and the user told.
     #[serde(default)]
     pub turn_ceiling_minutes: Option<u32>,
+    /// FR-819: the role's opt-in downgrade (team roles).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downgrade: Option<governor::Downgrade>,
 }
 
 fn default_network() -> Vec<String> {
@@ -114,12 +122,14 @@ impl Role {
             strict_mcp: false,
             setting_sources: None,
             mcp_servers: Default::default(),
+            mcp_refs: vec![],
             network_allow: default_network(),
             allow_rules: vec![],
             deny_rules: vec![],
             extra_write: vec![],
             orch_tools: vec![],
             turn_ceiling_minutes: None,
+            downgrade: None,
         }
     }
 
@@ -136,12 +146,14 @@ impl Role {
             strict_mcp: n.strict_mcp,
             setting_sources: None,
             mcp_servers: n.mcp_servers.clone(),
+            mcp_refs: n.mcp_refs.clone(),
             network_allow: network,
             allow_rules: vec![],
             deny_rules: n.deny_tools.clone(),
             extra_write: vec![],
             orch_tools: n.orch_tools.clone(),
             turn_ceiling_minutes: n.turn_ceiling.minutes.filter(|m| *m > 0),
+            downgrade: n.downgrade.clone(),
         })
     }
 

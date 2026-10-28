@@ -11,11 +11,7 @@ use serde_json::Value;
 
 use crate::db::Store;
 use crate::model::*;
-use crate::util::{from_js, js, json_row, opt_u64, p, tag};
-
-fn ms(t: Timestamp) -> i64 {
-    t.as_millisecond()
-}
+use crate::util::{from_js, js, json_row, ms, opt_u64, p, tag};
 
 const PROJECT_COLS: &str = "id, name, path, default_branch, remotes, worktree_root, task_backend, track_orchestrator_dir, settings, created_at_ms, last_active_at_ms, last_fetch_at_ms, last_fetch_error, archived";
 
@@ -56,7 +52,7 @@ fn row_rule(r: &rusqlite::Row) -> rusqlite::Result<PermissionRule> {
     })
 }
 
-const USAGE_COLS: &str = "id, ts_ms, agent_id, turn_id, model, tokens_in, tokens_out, cache_read, cache_write, cost_estimate, cost_delta, five_hour_pct, five_hour_resets_at, weekly_pct, weekly_resets_at, model_weekly_pct, provenance, source, class, allocation";
+const USAGE_COLS: &str = "id, ts_ms, agent_id, turn_id, model, tokens_in, tokens_out, cache_read, cache_write, cost_estimate, cost_delta, five_hour_pct, five_hour_resets_at, weekly_pct, weekly_resets_at, model_weekly_pct, provenance, source, class, allocation, model_windows";
 
 fn row_usage(r: &rusqlite::Row) -> rusqlite::Result<UsageRecord> {
     let u = |i: usize| opt_u64(r, i);
@@ -82,6 +78,7 @@ fn row_usage(r: &rusqlite::Row) -> rusqlite::Result<UsageRecord> {
         source: crate::untag(&source),
         class: r.get(18)?,
         allocation: r.get(19)?,
+        model_windows: r.get::<_, Option<String>>(20)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
     })
 }
 
@@ -256,7 +253,7 @@ impl Store {
             let o = |v: Option<u64>| v.map(|x| x as i64);
             tx.execute(
                 &format!(
-                    "INSERT INTO usage_samples({}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+                    "INSERT INTO usage_samples({}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
                     &USAGE_COLS[4..]
                 ),
                 params![
@@ -278,7 +275,8 @@ impl Store {
                     u.provenance,
                     u.source.map(|s| s.as_str()).unwrap_or("statusline"),
                     u.class,
-                    u.allocation
+                    u.allocation,
+                    (!u.model_windows.is_empty()).then(|| js(&u.model_windows))
                 ],
             )?;
             Ok(())
@@ -287,12 +285,25 @@ impl Store {
 
     /// Samples with `ts >= since_ms`, oldest first, optionally of one source.
     pub fn usage_since(&self, since_ms: u64, source: Option<UsageSource>) -> Result<Vec<UsageRecord>> {
+        self.usage_between(since_ms, None, source)
+    }
+
+    /// Samples with `from_ms <= ts < to_ms` (no upper bound without `to_ms`),
+    /// oldest first, optionally of one source.
+    pub fn usage_between(
+        &self,
+        from_ms: u64,
+        to_ms: Option<u64>,
+        source: Option<UsageSource>,
+    ) -> Result<Vec<UsageRecord>> {
         self.read(move |c| {
             let mut st = c.prepare(&format!(
-                "SELECT {USAGE_COLS} FROM usage_samples WHERE ts_ms >= ?1 AND (?2 IS NULL OR source = ?2) ORDER BY ts_ms, id"
+                "SELECT {USAGE_COLS} FROM usage_samples WHERE ts_ms >= ?1 AND (?3 IS NULL OR ts_ms < ?3)
+                 AND (?2 IS NULL OR source = ?2) ORDER BY ts_ms, id"
             ))?;
+            let to = to_ms.map(|t| t as i64);
             Ok(st
-                .query_map(params![since_ms as i64, source.map(|s| s.as_str())], row_usage)?
+                .query_map(params![from_ms as i64, source.map(|s| s.as_str()), to], row_usage)?
                 .collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -481,7 +492,7 @@ impl Store {
     }
 
     pub fn add_calibration(&self, c: &Calibration) -> Result<()> {
-        let c = *c;
+        let c = c.clone();
         self.write(move |tx| {
             tx.execute(
                 "INSERT INTO calibrations(ts_ms, cost_per_weekly_pct, confidence, unattributed_rate, data) VALUES (?1,?2,?3,?4,?5)",
@@ -521,10 +532,19 @@ impl Store {
 
     /// Snapshots with `ts >= since_ms`, oldest first (forecast chart, ±10 pp check).
     pub fn forecasts_since(&self, since_ms: u64) -> Result<Vec<ForecastSnapshot>> {
+        self.forecasts_between(since_ms, None)
+    }
+
+    /// Snapshots with `from_ms <= ts < to_ms` (no upper bound without `to_ms`), oldest first.
+    pub fn forecasts_between(&self, from_ms: u64, to_ms: Option<u64>) -> Result<Vec<ForecastSnapshot>> {
         self.read(move |c| {
-            let mut st = c.prepare("SELECT data FROM forecast_snapshots WHERE ts_ms >= ?1 ORDER BY ts_ms, id")?;
+            let mut st = c.prepare(
+                "SELECT data FROM forecast_snapshots WHERE ts_ms >= ?1 AND (?2 IS NULL OR ts_ms < ?2) ORDER BY ts_ms, id",
+            )?;
             Ok(st
-                .query_map([since_ms as i64], |r| from_js::<ForecastSnapshot>(&r.get::<_, String>(0)?))?
+                .query_map(params![from_ms as i64, to_ms.map(|t| t as i64)], |r| {
+                    from_js::<ForecastSnapshot>(&r.get::<_, String>(0)?)
+                })?
                 .collect::<rusqlite::Result<_>>()?)
         })
     }

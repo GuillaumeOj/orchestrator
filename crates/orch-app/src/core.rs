@@ -726,6 +726,29 @@ impl Core {
         }
         if let Some(n) = item.strip_prefix("alert-") {
             let n: u64 = n.parse()?;
+            // An MCP sign-in alert: `open` and `reconnect` say where to go
+            // (decisions D3); it closes once the server is connected again.
+            if matches!(action, "open" | "reconnect") {
+                let payload = rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).map(|i| i.payload.clone()));
+                if let Some(p) = payload.as_ref().filter(|p| p["alert"] == agent_runtime::registry::NEEDS_AUTH_ALERT) {
+                    return self.mcp_alert_action(p, action);
+                }
+                // A Notion comment (FR-505): read once opened; the UI opens the page.
+                if let Some(p) = payload.as_ref().filter(|p| p["source"] == "notion" && action == "open") {
+                    let url = p["page_url"].clone();
+                    rt.store.write(|s| {
+                        let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()));
+                    })?;
+                    return Ok(json!({"open": "url", "url": url}));
+                }
+                // "Weekly report ready" (FR-818): read once opened; the UI opens the report.
+                if let Some(p) = payload.filter(|p| p["digest"] == "weekly_report" && action == "open") {
+                    rt.store.write(|s| {
+                        let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()));
+                    })?;
+                    return Ok(json!({"open": "report", "report": p["report"]}));
+                }
+            }
             rt.store.write(|s| {
                 let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("dismiss".into()));
             })?;
@@ -884,6 +907,20 @@ impl Core {
             usage["snapshot"] = json!(snapshot);
             usage["reset_at_ms"] = json!(reset);
             usage["shadow"] = json!(shadow);
+            // One look at the Governor for every agent's note and off-hours flag.
+            let ids: Vec<String> = agents.iter().map(|a| a["id"].as_str().unwrap_or("").to_string()).collect();
+            let per_agent: Vec<(Option<String>, bool)> = rt.with_governor(|g| {
+                ids.iter()
+                    .map(|id| {
+                        let a = governor::AgentId(id.clone());
+                        (g.model_override(&a).map(|o| o.note()), g.running_off_hours(&a))
+                    })
+                    .collect()
+            });
+            for (a, (note, off)) in agents.iter_mut().zip(per_agent) {
+                a["model_note"] = json!(note);
+                a["off_hours"] = json!(off);
+            }
             (meta, alerts, done) = rt.store.read(store_view);
         }
         let mut git_paths: std::collections::BTreeSet<PathBuf> = projects.iter().map(|p| p.path.clone()).collect();
@@ -916,6 +953,9 @@ impl Core {
             }
         };
         let items = self.inbox_items(&agents, &alerts, &done, ask);
+        // FR-816: the power assertion and the on-battery banner.
+        let (power, banner) = self.rt.as_ref().map(|rt| rt.power_json()).unwrap_or((Value::Null, None));
+        let banners: Vec<Value> = banner.into_iter().collect();
         let setup = self.setup_view(&projects);
         let projects: Vec<Value> = projects
             .iter()
@@ -941,6 +981,8 @@ impl Core {
             "memory": self.memory(agents_mb),
             "memory_watch": self.watch.view(),
             "setup": setup,
+            "power": power,
+            "banners": banners,
         })
     }
 
@@ -1174,6 +1216,15 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
     // Permission prompts: the runtime answers from the stored rules only; the
     // app's broker holds the rest for its Inbox (and the pane's own dialog).
     rc.permission_hold = Duration::ZERO;
+    // Unit tests never read or write the user's Keychain.
+    #[cfg(test)]
+    {
+        rc.secrets = Arc::new(orch_secrets::MemorySecrets::default());
+        // Nor Linear: an in-memory one per backend.
+        rc.linear = Some(agent_runtime::linear::LinearFactory(Arc::new(|| {
+            Box::new(orch_tasks::linear::fake::FakeLinear::default())
+        })));
+    }
     // Helpers next to the app binary (target/<profile>, or Contents/MacOS in a
     // bundle) are copied to <home>/bin, a stable path outside the .app.
     if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
@@ -1335,6 +1386,74 @@ mod tests {
         core_on(&d.join("home"), &repo)
     }
 
+    #[test]
+    fn integrations_registry_and_mcp_alerts() {
+        let d = tempfile::Builder::new().prefix("orchapp").tempdir_in("/tmp").unwrap();
+        let core = test_core(d.path());
+        let v = core.integrations_view().unwrap();
+        assert_eq!(v["items"].as_array().unwrap().len(), 5);
+        assert_eq!(v["items"][1]["status"], "not_configured");
+        // The registry starts with the penpot connector.
+        let reg = core.mcp_registry_view(None).unwrap();
+        assert_eq!(reg["servers"][0]["id"], "penpot");
+        assert_eq!(reg["project_overrides"], json!({}));
+        let s: orch_team::mcp::McpServer = serde_json::from_value(
+            json!({"id": "figma", "name": "Figma", "kind": "http", "url": "https://figma.invalid/mcp", "allow_secret_env": false}),
+        )
+        .unwrap();
+        let scope: orch_team::Scope = serde_json::from_value(json!({"kind": "project", "id": "repo"})).unwrap();
+        assert_eq!(core.mcp_server_save(s, scope.clone()).unwrap()["status"], "unknown");
+        assert_eq!(
+            core.mcp_registry_view(Some("repo")).unwrap()["project_overrides"]["figma"]["url"],
+            "https://figma.invalid/mcp"
+        );
+        assert_eq!(core.mcp_server_delete("figma", scope).unwrap()["deleted"], true);
+        // A needs-auth alert carries its payload; open/reconnect say where to go.
+        let rt = core.runtime().unwrap().clone();
+        let penpot = rt.db.mcp_server(&orch_team::Scope::Global, "penpot").unwrap().unwrap();
+        rt.set_mcp_status(&orch_team::Scope::Global, &penpot, orch_team::mcp::McpStatus::NeedsAuth, Some("x")).unwrap();
+        let items = core.state()["inbox"]["items"].clone();
+        let al = items.as_array().unwrap().iter().find(|i| i["payload"]["alert"] == "mcp_needs_auth").unwrap().clone();
+        assert_eq!((al["level"].as_u64(), al["payload"]["server"].as_str()), (Some(2), Some("penpot")));
+        let id = al["id"].as_str().unwrap();
+        assert_eq!(core.inbox_act(id, "reconnect", None).unwrap()["open"], "url");
+        assert_eq!(core.inbox_act(id, "open", None).unwrap(), json!({"open": "settings", "server": "penpot"}));
+        assert_eq!(core.inbox_act(id, "reject", None).unwrap(), json!("dismissed"));
+        // A project override (http) gets its own reconnect target.
+        let over: orch_team::mcp::McpServer = serde_json::from_value(
+            json!({"id": "penpot", "name": "Penpot", "kind": "http", "url": "https://penpot.invalid/mcp", "allow_secret_env": false}),
+        )
+        .unwrap();
+        let pscope: orch_team::Scope = serde_json::from_value(json!({"kind": "project", "id": "repo"})).unwrap();
+        core.mcp_server_save(over, pscope).unwrap();
+        let pay = |project: Value| json!({"alert": "mcp_needs_auth", "server": "penpot", "project": project});
+        assert_eq!(core.mcp_alert_action(&pay(json!("repo")), "reconnect").unwrap()["run"], "claude /mcp");
+        assert_eq!(core.mcp_alert_action(&pay(Value::Null), "reconnect").unwrap()["open"], "url");
+        core.shutdown();
+    }
+
+    #[test]
+    fn presets_duplicate_and_flags_through_the_core() {
+        let d = tempfile::Builder::new().prefix("orchapp").tempdir_in("/tmp").unwrap();
+        let core = test_core(d.path());
+        let v = core.teams_view(None).unwrap();
+        let fs = v["teams"].as_array().unwrap().iter().find(|t| t["team"]["id"] == "full-stack").unwrap().clone();
+        assert_eq!(
+            (fs["preset"].as_bool(), fs["starter"].as_str(), fs["update_available"].as_bool()),
+            (Some(true), Some("full-stack"), Some(false))
+        );
+        let scope = |v: Value| -> orch_team::Scope { serde_json::from_value(v).unwrap() };
+        let (g, p) = (scope(json!({"kind": "global"})), scope(json!({"kind": "project", "id": "repo"})));
+        let dup = core.team_duplicate("full-stack", &g, &p, Some("shop-team")).unwrap();
+        assert_eq!(dup["team"]["scope"], json!({"kind": "project", "id": "repo"}));
+        assert_eq!(core.team_set_preset("shop-team", &p, true).unwrap()["preset"], true);
+        assert_eq!(core.role_duplicate("ui", &g, &g, None).unwrap()["id"], "ui-copy");
+        assert!(core.preset_update("shop-team", &p).unwrap_err().to_string().contains("not a starter"));
+        assert_eq!(core.preset_update("full-stack", &g).unwrap()["version"], 1, "already current");
+        assert!(core.artifact_preview("nope", 1).is_err());
+        core.shutdown();
+    }
+
     fn record(id: &str, repo: PathBuf) -> agent_runtime::store::AgentRecord {
         agent_runtime::store::AgentRecord {
             id: id.into(),
@@ -1408,6 +1527,7 @@ mod tests {
                 title: "Fix X".into(),
                 brief: "b".into(),
                 base: None,
+                off_hours: false,
             })
             .unwrap();
         let s = core.state();
@@ -1706,6 +1826,57 @@ mod tests {
         core.shutdown();
     }
 
+    /// D8 and the Board on a Linear-backed project (api-contract §7).
+    #[test]
+    fn switching_to_linear_asks_first_then_pushes_open_tasks() {
+        let d = tmp();
+        let core = test_core(d.path());
+        assert_eq!(core.linear_teams().unwrap()["teams"][0]["key"], "ENG");
+        let st = core.linear_states("ENG").unwrap();
+        assert_eq!(st["states"][3]["default_column"], "review");
+        assert_eq!(st["projects"][0]["name"], "Shop");
+        let mk = |title: &str| core.task_create(json!({"project_id": "repo", "title": title})).unwrap();
+        let (a, b) = (mk("Open one"), mk("Done one"));
+        core.task_update(b["id"].as_u64().unwrap(), Some("done"), None, None).unwrap();
+        let form = |migrate: Option<&str>| -> crate::teams::ProjectSettingsForm {
+            serde_json::from_value(json!({"settings": {}, "backend": {"type": "linear", "team": "ENG"},
+                "track_orchestrator_dir": true, "migrate": migrate}))
+            .unwrap()
+        };
+        let r = core.project_settings_set("repo", form(None)).unwrap();
+        assert_eq!(r, json!({"confirm": {"kind": "linear_migrate", "open": 1, "done": 1}}), "nothing saved yet");
+        assert_eq!(core.project_settings("repo").unwrap()["backend"]["type"], "local");
+        assert!(core.project_settings_set("repo", form(Some("maybe"))).is_err());
+        core.project_settings_set("repo", form(Some("push_open"))).unwrap();
+        let v = core.board_view("repo").unwrap();
+        assert_eq!((v["backend"].as_str(), v["linear_team"].as_str()), (Some("linear"), Some("ENG")));
+        assert!(v["last_sync_at_ms"].as_u64().is_some(), "{v}");
+        let task = |id: &Value| v["tasks"].as_array().unwrap().iter().find(|t| t["id"] == *id).unwrap().clone();
+        let (ta, tb) = (task(&a["id"]), task(&b["id"]));
+        assert_eq!((ta["backend"].as_str(), ta["external_id"].as_str()), (Some("linear"), Some("ENG-1")));
+        assert_eq!((ta["remote_won"].as_bool(), ta["off_hours"].as_bool()), (Some(false), Some(false)));
+        assert_eq!((tb["backend"].as_str(), tb["external_id"].as_str()), (Some("local"), None), "done: never pushed");
+        let s = core.board_sync("repo").unwrap();
+        assert_eq!((s["pushed"].as_u64(), s["pulled"].as_u64()), (Some(0), Some(0)));
+        assert!(s["errors"].as_array().unwrap().is_empty());
+        // Another Linear team is a migration too; `leave` keeps the old issues untouched.
+        let other = |migrate: Option<&str>| -> crate::teams::ProjectSettingsForm {
+            serde_json::from_value(json!({"settings": {}, "backend": {"type": "linear", "team": "OPS"},
+                "track_orchestrator_dir": true, "migrate": migrate}))
+            .unwrap()
+        };
+        let r = core.project_settings_set("repo", other(None)).unwrap();
+        assert_eq!(r["confirm"]["kind"], "linear_migrate", "{r}");
+        core.project_settings_set("repo", other(Some("leave"))).unwrap();
+        let v = core.board_view("repo").unwrap();
+        assert_eq!(v["linear_team"], "OPS");
+        let ta = v["tasks"].as_array().unwrap().iter().find(|t| t["id"] == a["id"]).unwrap().clone();
+        assert_eq!(ta["backend"], "local", "not written to ENG's issue any more");
+        // The same team again: no question.
+        assert!(core.project_settings_set("repo", other(None)).unwrap().get("confirm").is_none());
+        core.shutdown();
+    }
+
     #[test]
     fn the_first_plan_keeps_the_week_s_usage() {
         let d = tmp();
@@ -1724,10 +1895,17 @@ mod tests {
         let mut form = core.plan_form().unwrap();
         assert_eq!(form.allocations.len(), 1, "even split over the one project");
         assert_eq!(form.allocations[0].id, "repo");
+        assert_eq!(form.per_model_weights, Some(false), "FR-814 per-model weights: off by default");
         form.reserve_pct = 15.0;
+        form.per_model_weights = Some(true);
         core.set_plan(&form).unwrap();
         let p = core.planner().unwrap();
         assert_eq!(p.reserve_pct, 15.0);
+        assert!(rt.with_governor(|g| g.policy().per_model_weights), "the policy option reaches the Governor");
+        assert_eq!((p.off_hours.allowance_pct, p.off_hours.windows.len()), (0.0, 0), "no allowance: no windows");
+        assert_eq!(core.plan_form().unwrap().per_model_weights, Some(true));
+        assert_eq!(core.reports_list().unwrap()["reports"][0]["id"], "current");
+        assert_eq!(core.report_view("current").unwrap()["in_progress"], true);
         assert!(p.plan_set);
         assert!(
             (p.snapshot.used_central - 30.0).abs() < 2.0,

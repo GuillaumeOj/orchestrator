@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::db::Store;
 use crate::model::Project;
-use crate::util::{from_js, js, opt_u64};
+use crate::util::{from_js, js, opt_u64, scope_key, scope_of};
 
 /// A feature of a project (SPEC §7 Feature): its docs live on
 /// `orch/<slug>/integration`, in the lead's worktree.
@@ -78,7 +78,8 @@ pub struct TaskNote {
 pub struct Task {
     pub id: u64,
     pub project_id: String,
-    /// `local` or `github`.
+    /// `local`, `github` or `linear` (a task left local when the project's
+    /// backend changed keeps `local`, D8).
     pub backend: String,
     #[serde(default)]
     pub external_id: Option<String>,
@@ -213,6 +214,10 @@ pub struct Artifact {
     #[serde(default)]
     pub note: String,
     pub created_at_ms: u64,
+    /// What `uri` points at (FR-602); `None` for rows from before P3 or an
+    /// unrecognised URI.
+    #[serde(default)]
+    pub meta: Option<orch_team::artifact::ArtifactMeta>,
 }
 
 /// Typed view of `projects.settings` (FR-109). Unknown keys are kept.
@@ -229,6 +234,9 @@ pub struct ProjectSettings {
     /// Copy `.env*` into worktrees (FR-110: opt-in, agents will read them).
     #[serde(default)]
     pub copy_env: bool,
+    /// FR-505: the Notion page (URL or id) feature pages are published under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notion_parent_page: Option<String>,
     #[serde(flatten)]
     pub other: serde_json::Map<String, Value>,
 }
@@ -244,6 +252,16 @@ pub enum TaskBackendConfig {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         repo: Option<String>,
     },
+    /// Linear issues of team `team` (its key, e.g. `ENG`), optionally of one
+    /// project (id); `states` maps a workflow state id to a column, over the
+    /// default by state type (FR-501).
+    Linear {
+        team: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        states: std::collections::BTreeMap<String, orch_team::TaskStatus>,
+    },
 }
 
 impl TaskBackendConfig {
@@ -251,6 +269,7 @@ impl TaskBackendConfig {
         match self {
             TaskBackendConfig::Local => "local",
             TaskBackendConfig::Github { .. } => "github",
+            TaskBackendConfig::Linear { .. } => "linear",
         }
     }
 }
@@ -263,15 +282,6 @@ impl Project {
     pub fn backend(&self) -> TaskBackendConfig {
         serde_json::from_value(self.task_backend.clone()).unwrap_or_default()
     }
-}
-
-/// The `scope` column: '' for global, else the project id.
-fn scope_key(s: &Scope) -> String {
-    s.project().unwrap_or_default().to_string()
-}
-
-fn scope_of(key: String) -> Scope {
-    if key.is_empty() { Scope::Global } else { Scope::Project(key) }
 }
 
 /// Global rows plus `project`'s own, a project row shadowing the global one
@@ -373,7 +383,7 @@ fn row_message(r: &rusqlite::Row) -> rusqlite::Result<Message> {
     })
 }
 
-const ARTIFACT_COLS: &str = "id, feature_id, team_run_id, kind, uri, from_node, to_node, note, created_at_ms";
+const ARTIFACT_COLS: &str = "id, feature_id, team_run_id, kind, uri, from_node, to_node, note, created_at_ms, meta";
 
 fn row_artifact(r: &rusqlite::Row) -> rusqlite::Result<Artifact> {
     Ok(Artifact {
@@ -386,6 +396,7 @@ fn row_artifact(r: &rusqlite::Row) -> rusqlite::Result<Artifact> {
         to_node: r.get(6)?,
         note: r.get(7)?,
         created_at_ms: r.get::<_, i64>(8)? as u64,
+        meta: r.get::<_, Option<String>>(9)?.and_then(|s| serde_json::from_str(&s).ok()),
     })
 }
 
@@ -636,7 +647,7 @@ impl Store {
             tx.execute(
                 &format!(
                     "INSERT INTO tasks({TASK_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
-                     ON CONFLICT(id) DO UPDATE SET external_id=excluded.external_id, feature_id=excluded.feature_id,
+                     ON CONFLICT(id) DO UPDATE SET backend=excluded.backend, external_id=excluded.external_id, feature_id=excluded.feature_id,
                        team_run_id=excluded.team_run_id, title=excluded.title, body=excluded.body,
                        status=excluded.status, node=excluded.node, agent_id=excluded.agent_id,
                        depends_on=excluded.depends_on, branch=excluded.branch, pr_url=excluded.pr_url,
@@ -823,8 +834,8 @@ impl Store {
         let a = a.clone();
         self.write(move |tx| {
             tx.execute(
-                "INSERT INTO artifacts(feature_id, team_run_id, kind, uri, from_node, to_node, note, created_at_ms)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                "INSERT INTO artifacts(feature_id, team_run_id, kind, uri, from_node, to_node, note, created_at_ms, meta)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
                 params![
                     a.feature_id,
                     a.team_run_id,
@@ -833,7 +844,8 @@ impl Store {
                     a.from_node,
                     a.to_node,
                     a.note,
-                    a.created_at_ms as i64
+                    a.created_at_ms as i64,
+                    a.meta.as_ref().map(js)
                 ],
             )?;
             Ok(tx.last_insert_rowid() as u64)
@@ -1069,9 +1081,25 @@ mod tests {
             to_node: Some("ui".into()),
             note: String::new(),
             created_at_ms: 3,
+            meta: None,
         })
         .unwrap();
-        assert_eq!(s.artifacts("f1").unwrap().len(), 1);
+        let meta = orch_team::artifact::parse("design/a.png");
+        s.add_artifact(&Artifact {
+            id: 0,
+            feature_id: "f1".into(),
+            team_run_id: Some("r1".into()),
+            kind: "design".into(),
+            uri: "design/a.png".into(),
+            from_node: "ui".into(),
+            to_node: Some("front".into()),
+            note: String::new(),
+            created_at_ms: 4,
+            meta: meta.clone(),
+        })
+        .unwrap();
+        let arts = s.artifacts("f1").unwrap();
+        assert_eq!((arts.len(), &arts[0].meta, &arts[1].meta), (2, &None, &meta));
 
         s.add_run_event(5, "r1", Some("lead-1"), "run.state", serde_json::json!({"to": "spec_gate"}));
         s.add_event(6, Some("lead-1"), "hook.Stop", Value::Null);

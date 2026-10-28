@@ -3,6 +3,7 @@
   // the pressure state in words, the 5h guard chip whenever it holds work, memory.
   import { agents, app, contextAgent, contextProject, openSingleton } from '../lib/app.svelte.js';
   import { clock, mb } from '../lib/format.js';
+  import { powerChip } from '../lib/pacing.js';
   import Kbd from './Kbd.svelte';
   import PressurePill from './PressurePill.svelte';
 
@@ -16,6 +17,7 @@
   const m = $derived(app.data?.memory);
   const fiveReset = $derived(app.data?.usage?.five_hour?.resets_at);
   const watch = $derived(app.data?.memory_watch);
+  const power = $derived(powerChip(app.data?.power));
 </script>
 
 <footer class="status">
@@ -31,6 +33,9 @@
     {#if s.five_hour_guard}
       <span class="guard"><span style:color="var(--color-status-blocked-by-limit)" aria-hidden="true">⊘</span> <b>5h guard</b> cap 1{fiveReset ? ` until ${clock(fiveReset * 1000)}` : ''}</span>
     {/if}
+  {/if}
+  {#if power}
+    <button class="plain chip" class:warn={power.warn} onclick={() => openSingleton('planner')} title="Off-hours work (FR-816)"><span aria-hidden="true">☾</span> {power.text}</button>
   {/if}
   <span class="grow"></span>
   {#if watch?.alert}<span class="memwarn" title="WebKit helper above {watch.warn_mb} MB · logged every minute in {watch.log}"><span aria-hidden="true">⚠</span> {watch.alert}</span>{/if}
@@ -55,6 +60,18 @@
     background: none;
     border: 0;
     padding: 0;
+  }
+  .chip {
+    height: 18px;
+    padding: 0 var(--space-sm);
+    border: var(--border-width-default) solid var(--color-status-done);
+    border-radius: var(--radius-full);
+    color: var(--color-text-secondary);
+    font: var(--text-label);
+    cursor: pointer;
+  }
+  .chip.warn {
+    border-color: var(--color-pacing-amber);
   }
   .guard {
     display: inline-flex;

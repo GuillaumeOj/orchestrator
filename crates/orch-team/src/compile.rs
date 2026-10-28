@@ -10,6 +10,9 @@ use serde_json::{Map, Value};
 use crate::model::{ReviewMode, RoleDef, Team, TurnCeiling};
 use crate::rules;
 
+/// The orchestrator's own MCP server name (tools are `mcp__orch__<tool>`).
+pub const ORCH_SERVER: &str = "orch";
+
 /// Orchestrator MCP tools every team node has.
 pub const COMMON_TOOLS: &[&str] =
     &["commit", "send_message", "inbox", "list_tasks", "handoff", "request_review", "ask_user"];
@@ -91,6 +94,9 @@ pub struct NodeConfig {
     pub permission_mode: String,
     pub strict_mcp: bool,
     pub mcp_servers: Map<String, Value>,
+    /// Registry ids, resolved by the runtime (it has the registry).
+    #[serde(default)]
+    pub mcp_refs: Vec<String>,
     pub network_allow: Vec<String>,
     /// Claude Code tools denied in the generated settings (`permissions.deny`).
     pub deny_tools: Vec<String>,
@@ -99,6 +105,9 @@ pub struct NodeConfig {
     pub tier: Tier,
     pub max_concurrency: u32,
     pub turn_ceiling: TurnCeiling,
+    /// FR-819 (the role's; applied by the runtime at task boundaries).
+    #[serde(default)]
+    pub downgrade: Option<governor::Downgrade>,
 }
 
 pub fn compile_node(team: &Team, node_id: &str, roles: &[RoleDef], f: &FeatureCtx) -> Result<NodeConfig, String> {
@@ -144,6 +153,7 @@ pub fn compile_node(team: &Team, node_id: &str, roles: &[RoleDef], f: &FeatureCt
         permission_mode: o.permission_profile.unwrap_or(role.permission_profile).permission_mode().into(),
         strict_mcp: role.strict_mcp,
         mcp_servers: role.mcp_servers.clone(),
+        mcp_refs: role.mcp_refs.clone(),
         network_allow: role.network_allow.clone(),
         deny_tools: deny,
         orch_tools: tools_for(node.is_lead),
@@ -152,6 +162,7 @@ pub fn compile_node(team: &Team, node_id: &str, roles: &[RoleDef], f: &FeatureCt
         tier: if node.is_lead { Tier::Critical } else { o.budget_priority.unwrap_or(role.budget_priority) },
         max_concurrency: node.max_concurrency.max(1),
         turn_ceiling: role.turn_ceiling,
+        downgrade: role.downgrade.clone(),
     })
 }
 

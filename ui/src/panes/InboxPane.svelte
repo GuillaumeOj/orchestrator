@@ -6,7 +6,7 @@
   // Inbox (FR-707, §9.6, Penpot 04 Inbox and 06 J5): one list in attention-ladder
   // order with a who/what/why preview. Keys: j/k move, a approve, r reject,
   // ⏎ reply, o open the agent pane, e open in nvim, x select (batch), u undo, esc back.
-  import { agent, app, decide, openAgent, openEditor, toast, undoLast } from '../lib/app.svelte.js';
+  import { agent, alertAct, app, decide, openAgent, openEditor, toast, undoLast } from '../lib/app.svelte.js';
   import { ago } from '../lib/format.js';
   import { actionLabels, afterRemoval, FILTERS, gateKind, keyIntent, kindLabel, LEVELS, move, teamQuestion, visibleItems } from '../lib/inbox.js';
   import { invoke } from '../lib/ipc.js';
@@ -76,6 +76,9 @@
         marked = new Set();
         return true;
       }
+      case 'alert':
+        alertAct(item, intent.action);
+        return true;
       case 'reply':
         if ((item.kind === 'question' && !teamQuestion(item)) || item.kind === 'trust') {
           if (item.agent_id) openAgent(item.agent_id);
@@ -226,11 +229,11 @@
           </div>
         {/if}
         <div class="actions">
-          {#if labels.a && sel.actions.includes('a')}<button class="btn primary" onclick={() => apply({ kind: 'decide', action: 'approve' }, sel)}>{labels.a} <Kbd keys="a" /></button>{/if}
+          {#if labels.a && sel.actions.includes('a')}<button class="btn primary" onclick={() => apply(keyIntent('a', sel), sel)}>{labels.a} <Kbd keys="a" /></button>{/if}
           {#if labels.r && sel.actions.includes('r')}<button class="btn danger" onclick={() => apply({ kind: 'decide', action: 'reject' }, sel)}>{labels.r} <Kbd keys="r" /></button>{/if}
           {#if sel.actions.includes('enter')}<button class="btn" onclick={() => apply({ kind: 'reply' }, sel)}>{sel.kind === 'question' && !teamQuestion(sel) ? 'Answer in the pane' : 'Reply'} <Kbd keys="⏎" /></button>{/if}
           {#if sel.kind === 'permission'}<button class="btn ghost" onclick={() => decide(sel, 'in_pane')}>Answer in the pane</button>{/if}
-          {#if sel.actions.includes('o')}<button class="btn ghost" onclick={() => apply({ kind: 'open' }, sel)}>Open <Kbd keys="o" /></button>{/if}
+          {#if sel.actions.includes('o')}<button class="btn ghost" onclick={() => apply(keyIntent('o', sel), sel)}>{labels.o ?? 'Open'} <Kbd keys="o" /></button>{/if}
         </div>
       {:else}
         <p class="muted pad">Nothing selected.</p>

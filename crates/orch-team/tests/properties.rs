@@ -27,6 +27,8 @@ fn arb_team() -> impl Strategy<Value = Team> {
             .collect(),
         edges,
         version: 1,
+        preset: false,
+        origin: None,
     })
 }
 
@@ -89,5 +91,7 @@ fn arb_team_fixed(n: usize) -> Team {
             .collect(),
         edges: vec![],
         version: 1,
+        preset: false,
+        origin: None,
     }
 }

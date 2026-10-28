@@ -34,6 +34,9 @@ use crate::runtime::Runtime;
 use crate::state::AgentState;
 use crate::store::{Admission, AgentRecord, TeamSeat, TurnRow, TurnStatus};
 
+/// Settings key prefix of each project's last task sync (`tasks.last_sync.<project>`).
+pub const LAST_SYNC_KEY: &str = "tasks.last_sync.";
+
 /// What to launch (J3 step 2).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LaunchSpec {
@@ -48,6 +51,9 @@ pub struct LaunchSpec {
     /// Base of the integration branch (default: the project's base branch).
     #[serde(default)]
     pub base: Option<String>,
+    /// FR-816: the run's tasks wait for off-hours ("Run off-hours" at launch).
+    #[serde(default)]
+    pub off_hours: bool,
 }
 
 /// Everything about a run, loaded together.
@@ -176,7 +182,7 @@ impl Runtime {
 
     /// The tasks of `project` over its backend, kept across calls.
     pub fn tasks_for(&self, project: &orch_store::Project) -> TaskService<'_> {
-        self.task_backends.service(&self.db, project, || self.gh_override())
+        self.task_backends.service(&self.db, project, || self.gh_override(), || self.linear_transport())
     }
 
     /// Tests replace `gh` (orch-tasks' `Gh`); `None` = the real one.
@@ -323,6 +329,9 @@ impl Runtime {
             ended_at_ms: None,
         };
         self.db.upsert_run(&run)?;
+        if spec.off_hours {
+            self.mark_off_hours(None, Some(&run.id), true)?;
+        }
         self.run_event(
             &run.id,
             None,
@@ -406,6 +415,8 @@ impl Runtime {
         let id = agent_id_for(&cx.feature.slug, node, n);
         let cfg = orch_team::compile_node(&cx.team, node, &cx.roles, &cx.fctx()).map_err(|e| anyhow!(e))?;
         let role = Role::from_node(&cfg).map_err(|e| anyhow!(e))?;
+        // Refs that can't work refuse the launch now, not at the first spawn.
+        self.resolve_mcp(&role, Some(&cx.project.id), false).map_err(|e| anyhow!("node {node}: {e:#}"))?;
         if self.store.read(|s| s.agents.get(&id).is_some_and(|a| a.tracker.state != AgentState::Archived)) {
             bail!("agent {id} exists");
         }
@@ -698,32 +709,58 @@ impl Runtime {
             if project.backend().kind() == "local" {
                 continue;
             }
-            match self.tasks_for(&project).sync(now_ms()) {
-                Ok(rep) => {
-                    for id in &rep.conflicts {
-                        let handle = self.db.task(*id).ok().flatten().map(|t| t.handle()).unwrap_or_default();
-                        let _ = self.add_item(
-                            None,
-                            "info",
-                            format!(
-                                "{}: task {handle} changed here and on GitHub; GitHub's version was kept",
-                                project.name
-                            ),
-                            json!({"action": "task_conflict", "task": id, "project": project.id}),
-                            0,
-                        );
-                    }
-                    if rep != orch_tasks::SyncReport::default() {
-                        let mut detail = rep.summary();
-                        detail["project"] = json!(project.id);
-                        self.event("-", "tasks_synced", detail);
-                    }
-                }
-                Err(e) => {
-                    self.event("-", "tasks_sync_error", json!({"project": project.id, "error": format!("{e:#}")}))
-                }
-            }
+            let _ = self.sync_tasks(&project);
         }
+    }
+
+    /// Syncs one project's remote backend now (FR-503): conflicts (the
+    /// remote won) become Inbox info items, and the outcome is kept for the
+    /// Board (`last_sync`).
+    pub fn sync_tasks(&self, project: &orch_store::Project) -> Result<orch_tasks::SyncReport> {
+        let remote = match project.backend().kind() {
+            "linear" => "Linear",
+            _ => "GitHub",
+        };
+        let r = self.tasks_for(project).sync(now_ms());
+        let last = match &r {
+            Ok(rep) => {
+                for id in &rep.conflicts {
+                    let handle = self.db.task(*id).ok().flatten().map(|t| t.handle()).unwrap_or_default();
+                    let _ = self.add_item(
+                        None,
+                        "info",
+                        format!(
+                            "{}: task {handle} changed here and on {remote}; {remote}'s version was kept",
+                            project.name
+                        ),
+                        json!({"action": "task_conflict", "task": id, "project": project.id}),
+                        0,
+                    );
+                }
+                // Something moved (the unmapped states are a standing note, not a change).
+                let moved = orch_tasks::SyncReport { unmapped_states: vec![], ..rep.clone() };
+                if moved != orch_tasks::SyncReport::default() {
+                    let mut detail = rep.summary();
+                    detail["project"] = json!(project.id);
+                    self.event("-", "tasks_synced", detail);
+                }
+                json!({"at_ms": now_ms(), "report": rep.summary(), "conflicts": rep.conflicts, "error": null})
+            }
+            Err(e) => {
+                self.event("-", "tasks_sync_error", json!({"project": project.id, "error": format!("{e:#}")}));
+                let mut prev = self.last_sync(&project.id);
+                prev["error"] = json!(format!("{e:#}"));
+                prev
+            }
+        };
+        let _ = self.db.set_setting(&format!("{LAST_SYNC_KEY}{}", project.id), &last);
+        r
+    }
+
+    /// The last sync of a project's remote backend: `{at_ms, report,
+    /// conflicts, error}` (`null` before the first).
+    pub fn last_sync(&self, project_id: &str) -> Value {
+        self.db.setting(&format!("{LAST_SYNC_KEY}{project_id}")).ok().flatten().unwrap_or(json!({}))
     }
 
     // ------------------------------------------------------------ messages
@@ -1142,9 +1179,27 @@ impl Runtime {
                     to_node: Some(to.into()),
                     note: cut(note, 2_000),
                     created_at_ms: now_ms(),
+                    meta: orch_team::artifact::parse(artifact),
                 })?;
-                let body =
-                    format!("{kind} {artifact}{}", if note.is_empty() { String::new() } else { format!(": {note}") });
+                let body = if kind == "design" {
+                    // Spec §3.2: the recipient gets the repo paths of every image exported so far.
+                    let mut exported: Vec<String> = self
+                        .db
+                        .artifacts(&cx.feature.id)?
+                        .iter()
+                        .filter(|a| {
+                            a.kind == "design"
+                                && a.from_node == me
+                                && a.team_run_id.as_deref() == Some(cx.run.id.as_str())
+                        })
+                        .filter_map(|a| crate::artifacts::meta_of(a).and_then(|m| m.path))
+                        .collect();
+                    exported.dedup();
+                    let lead = cx.team.lead().map(|n| n.id.as_str()).unwrap_or("the lead");
+                    crate::artifacts::design_handoff_body(artifact, note, me, lead, &exported)
+                } else {
+                    format!("{kind} {artifact}{}", if note.is_empty() { String::new() } else { format!(": {note}") })
+                };
                 self.post_message(&cx, Sender(me, Some(&rec.id)), to, "handoff", &body, json!({"artifact": id}))?;
                 Ok((format!("Handed {artifact} to {to}."), json!({"artifact": id})))
             }
@@ -1662,6 +1717,40 @@ mod tests {
     }
 
     #[test]
+    fn a_design_handoff_lists_the_exported_images() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        let run = rt
+            .launch(&LaunchSpec {
+                project_id: pid,
+                team_id: "bugfix-squad".into(),
+                slug: "fx".into(),
+                title: "Fix X".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        let lead = "fx-lead-1";
+        let png = ".orchestrator/features/fx/design/a.png";
+        write_commit(&rt, lead, png, "PNG");
+        ok(&rt, lead, "handoff", json!({"artifact": png, "to": "back", "kind": "design", "note": "checkout"}));
+        ok(
+            &rt,
+            lead,
+            "handoff",
+            json!({"artifact": "https://design.penpot.app/#/workspace?file-id=f", "to": "back", "kind": "design"}),
+        );
+        let msgs = rt.db.messages(&run.id, Some(("back", None)), false).unwrap();
+        let bodies: Vec<&str> = msgs.iter().filter(|m| m.kind == "handoff").map(|m| m.body.as_str()).collect();
+        assert!(bodies[0].starts_with(&format!("design {png}: checkout")), "{}", bodies[0]);
+        assert!(bodies[0].contains(&format!("\n- {png}")) && bodies[0].contains("mcp__orch__sync_integration"));
+        assert!(bodies[1].contains("link only") && bodies[1].contains(&format!("- {png}")), "{}", bodies[1]);
+        let arts = rt.db.artifacts(&run.feature_id).unwrap();
+        assert_eq!(arts[0].meta.as_ref().unwrap().path.as_deref(), Some(png));
+        assert_eq!(arts[1].meta.as_ref().unwrap().tool, "penpot");
+        let fv = rt.run_json(&run.id).unwrap();
+        assert_eq!(fv["artifacts"][0]["meta"]["on_integration"], true, "the lead's branch is the integration branch");
+    }
+
+    #[test]
     fn a_reviewer_node_reviews_before_the_lead_merges() {
         let (_d, rt, _rd, _repo, pid) = setup();
         let (roles, team) = orch_team::presets::full_stack_reviewed();
@@ -1702,6 +1791,7 @@ mod tests {
                 title: "Fix X".into(),
                 brief: "Fix the X bug.".into(),
                 base: None,
+                off_hours: false,
             })
             .unwrap();
         write_commit(rt, "fx-lead-1", ".orchestrator/features/fx/spec.md", "# Fix X\n");
@@ -1748,6 +1838,7 @@ mod tests {
                 title: "Fix X".into(),
                 brief: "Fix the X bug.".into(),
                 base: None,
+                off_hours: false,
             })
             .unwrap();
         assert_eq!(run.status, RunState::Spec);
@@ -1902,6 +1993,7 @@ mod tests {
                 title: "Fix X".into(),
                 brief: "Fix the X bug.".into(),
                 base: None,
+                off_hours: false,
             })
             .unwrap();
         let lead = "fx-lead-1";
@@ -1946,6 +2038,7 @@ mod tests {
                 title: "Fix X".into(),
                 brief: "Fix the X bug.".into(),
                 base: None,
+                off_hours: false,
             })
             .unwrap();
         // The feature archived under its active run (an older relaunch).

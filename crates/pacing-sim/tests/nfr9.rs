@@ -212,3 +212,71 @@ fn a_hard_cap_holds_its_allocation_in_a_heavy_week() {
         assert!(r.weekly_exhausted_at.is_none() && !r.limit_hits.iter().any(|h| h.working_hours), "seed {seed}");
     }
 }
+
+/// FR-814: NFR-9 holds with per-model weights on (the default weeks, one
+/// model) and off and on when opus agents cost 2.5× more per pp.
+#[test]
+fn nfr9_with_per_model_weights() {
+    for seed in 1..=8u64 {
+        for (per_model, opus) in [(true, 0.0), (false, 2.5), (true, 2.5)] {
+            let run_at = |demand: f64| {
+                let mut sc = Scenario::synthetic(&SyntheticParams::nfr9(demand, seed));
+                sc.policy.per_model_weights = per_model;
+                sc.model.opus_cost_factor = opus;
+                run(&sc).summary
+            };
+            let tag = format!("seed {seed} per_model {per_model} opus ×{opus}");
+            let s = run_at(130.0);
+            assert!(!s.limit_hits.iter().any(|h| h.working_hours), "{tag}: {:?}", s.limit_hits);
+            assert!(s.weekly_exhausted_at.is_none(), "{tag}: weekly limit at {:?}", s.weekly_exhausted_at);
+            assert!((85.0..=100.0).contains(&s.final_weekly_pct), "{tag}: ended at {:.1} %", s.final_weekly_pct);
+            let s = run_at(60.0);
+            assert_eq!(s.queued, 0, "{tag}: queued {:?}", s.queued_by_reason);
+        }
+    }
+}
+
+/// FR-815: with a `seven_day_opus` window that a third of the agents fill
+/// fast, the Governor holds opus turns at 95 % (reason `model_window`);
+/// NFR-9 still holds and the other models keep working.
+#[test]
+fn nfr9_with_a_model_window() {
+    for seed in 1..=6u64 {
+        let mut sc = Scenario::synthetic(&SyntheticParams::nfr9(130.0, seed));
+        sc.model.opus_window_per_pp = 5.0;
+        let s = run(&sc).summary;
+        let tag = format!("seed {seed}");
+        assert!(!s.limit_hits.iter().any(|h| h.working_hours), "{tag}: {:?}", s.limit_hits);
+        assert!(s.weekly_exhausted_at.is_none(), "{tag}");
+        assert!(s.queued_by_reason.get("model_window").copied().unwrap_or(0) > 0, "{tag}: opus was held");
+        assert!(s.max_opus_window_pct < 100.0 + 3.0, "{tag}: {:.1}", s.max_opus_window_pct);
+        assert!((80.0..=100.0).contains(&s.final_weekly_pct), "{tag}: ended at {:.1} %", s.final_weekly_pct);
+    }
+}
+
+/// FR-816: tasks marked "Run off-hours" run only outside working time (a
+/// turn still running when working time starts stops at its next tool
+/// call), under the off-hours cap, and NFR-9 holds at 130 % demand with an
+/// off-hours allowance (nights run at most `off_hours_live_cap` agents, and
+/// none under pressure). At 60 % demand with an allowance nothing queues.
+#[test]
+fn nfr9_with_off_hours_work() {
+    for seed in 1..=6u64 {
+        let run_at = |demand: f64, share: f64| {
+            let mut sc = Scenario::synthetic(&SyntheticParams::nfr9(demand, seed));
+            sc.off_hours_allowance_pct = 10.0;
+            sc.model.off_hours_share = share;
+            run(&sc).summary
+        };
+        let tag = format!("seed {seed}");
+        let s = run_at(130.0, 0.25);
+        assert!(!s.limit_hits.iter().any(|h| h.working_hours), "{tag}: {:?}", s.limit_hits);
+        assert!(s.weekly_exhausted_at.is_none(), "{tag}: weekly limit at {:?}", s.weekly_exhausted_at);
+        assert!((85.0..=100.0).contains(&s.final_weekly_pct), "{tag}: ended at {:.1} %", s.final_weekly_pct);
+        assert!(s.off_hours_done_pct > 1.0, "{tag}: scheduled work ran");
+        assert_eq!(s.off_hours_in_working_min, 0, "{tag}: scheduled work ran in working time");
+        assert!(s.queued_by_reason.get("scheduled_off_hours").copied().unwrap_or(0) > 0, "{tag}");
+        let s = run_at(60.0, 0.0);
+        assert_eq!(s.queued, 0, "{tag}: queued {:?}", s.queued_by_reason);
+    }
+}

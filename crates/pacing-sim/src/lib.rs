@@ -47,6 +47,34 @@ pub struct SimModel {
     pub self_started_share: f64,
     /// Offer work outside working time (otherwise agents wait for the next block).
     pub offer_off_hours: bool,
+    /// FR-814 per-model weights: a third of the agents run on opus, whose
+    /// cost per weekly pp is this many times the others' (sonnet); 0 = one
+    /// unnamed model for everyone (the samples carry no model).
+    #[serde(default)]
+    pub opus_cost_factor: f64,
+    /// FR-815: the opus agents (a third) also fill a `seven_day_opus` window
+    /// by this many % per weekly pp they use; 0 = no model window.
+    #[serde(default)]
+    pub opus_window_per_pp: f64,
+    /// FR-816: this share of the tasks is marked "Run off-hours" (the plan
+    /// needs an off-hours allowance).
+    #[serde(default)]
+    pub off_hours_share: f64,
+}
+
+impl SimModel {
+    /// The model an agent runs on, and the factor on its cost per pp.
+    fn agent_model(&self, agent: &AgentId) -> (Option<String>, f64) {
+        if self.opus_cost_factor <= 0.0 && self.opus_window_per_pp <= 0.0 {
+            return (None, 1.0);
+        }
+        let h = agent.0.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+        if h % 3 == 0 {
+            (Some("claude-opus-4-1".into()), if self.opus_cost_factor > 0.0 { self.opus_cost_factor } else { 1.0 })
+        } else {
+            (Some("claude-sonnet-4-5".into()), 1.0)
+        }
+    }
 }
 
 impl Default for SimModel {
@@ -60,6 +88,9 @@ impl Default for SimModel {
             turn_pct_max: 0.6,
             self_started_share: 0.15,
             offer_off_hours: false,
+            opus_cost_factor: 0.0,
+            opus_window_per_pp: 0.0,
+            off_hours_share: 0.0,
         }
     }
 }
@@ -448,6 +479,13 @@ pub struct Summary {
     pub true_k: f64,
     pub final_confidence: f64,
     pub final_error_pp: f64,
+    /// FR-815: the opus window's highest true value, and the opus turns that hit it.
+    pub max_opus_window_pct: f64,
+    pub model_window_hits: u64,
+    /// FR-816: minutes scheduled off-hours work ran in working time (must be
+    /// 0), and the pp it did.
+    pub off_hours_in_working_min: u64,
+    pub off_hours_done_pct: f64,
 }
 
 pub struct SimResult {
@@ -483,6 +521,8 @@ struct Stream {
 struct Truth {
     weekly: f64,
     five: f64,
+    /// FR-815: `seven_day_opus`, resets with the week.
+    opus: f64,
     five_reset: Option<Timestamp>,
     forced_until: Option<Timestamp>,
 }
@@ -552,7 +592,11 @@ pub fn run(sc: &Scenario) -> SimResult {
     let mut next_task = 0usize;
     let mut done_pct: BTreeMap<AllocationId, f64> = BTreeMap::new();
     let mut tasks_done: BTreeMap<AllocationId, usize> = BTreeMap::new();
-    let mut truth = Truth { weekly: 0.0, five: 0.0, five_reset: None, forced_until: None };
+    let mut truth = Truth { weekly: 0.0, five: 0.0, opus: 0.0, five_reset: None, forced_until: None };
+    let (mut model_window_hits, mut off_hours_in_working_min, mut off_hours_done_pct) = (0u64, 0u64, 0.0);
+    // FR-816: the tasks marked "Run off-hours" (a deterministic share).
+    let scheduled_task =
+        |t: usize| m.off_hours_share > 0.0 && ((t as u64 * 2654435761) % 1000) as f64 / 1000.0 < m.off_hours_share;
     let mut rows = Vec::new();
     let mut releases = Vec::new();
     let mut limit_hits: Vec<LimitHit> = Vec::new();
@@ -569,6 +613,8 @@ pub fn run(sc: &Scenario) -> SimResult {
         let now = add_min(sc.week_start, minute);
         truth.roll(now);
         let working = curve.weight_at(now) > 0.0;
+        // Inside a working block (with an off-hours allowance, nights weigh > 0 too).
+        let in_work = gov.in_working_time(now);
         let offering = working || m.offer_off_hours;
 
         if forced.take_if(|f| now >= f.at).is_some() {
@@ -594,7 +640,8 @@ pub fn run(sc: &Scenario) -> SimResult {
 
         // Idle streams ask for turns.
         for s in streams.iter_mut() {
-            if s.state != StreamState::Idle || !offering {
+            let scheduled = s.task.is_some_and(|(t, _)| scheduled_task(t));
+            if s.state != StreamState::Idle || !(offering || scheduled) {
                 continue;
             }
             if s.task.is_none() {
@@ -604,6 +651,10 @@ pub fn run(sc: &Scenario) -> SimResult {
                 }
             }
             let Some((t, _)) = s.task else { continue };
+            if scheduled_task(t) {
+                // Marked again before each of its turns, as the runtime does.
+                let _ = gov.set_off_hours(&s.agent, true, now);
+            }
             let spec = &sc.tasks[t];
             let tier = spec.tier.unwrap_or_else(|| alloc_tier(sc, &s.allocation));
             let self_started = s.next_self_started;
@@ -611,6 +662,7 @@ pub fn run(sc: &Scenario) -> SimResult {
                 self_started_turns += 1;
             }
             let mut req = TurnRequest::task(s.agent.clone(), s.allocation.clone(), tier);
+            req.model = m.agent_model(&s.agent).0;
             if self_started {
                 req.kind = TurnKind::Continue;
                 req.self_started = true;
@@ -636,7 +688,7 @@ pub fn run(sc: &Scenario) -> SimResult {
                 }
             }
             if let Some((window, resets)) = truth.exhausted() {
-                limit_hits.push(LimitHit { ts: now, window, working_hours: working });
+                limit_hits.push(LimitHit { ts: now, window, working_hours: in_work });
                 let resp = gov.rate_limit_hit(Some(&agent), window, resets, now);
                 streams[i].state = match resp.entry {
                     Some(e) => StreamState::Waiting(e),
@@ -646,8 +698,27 @@ pub fn run(sc: &Scenario) -> SimResult {
                 apply_releases(&mut streams, &mut gov, released, &mut releases, sc, &mut rng, now);
                 continue;
             }
+            let opus = m.opus_window_per_pp > 0.0 && m.agent_model(&agent).0.is_some_and(|x| x.contains("opus"));
+            if opus && truth.opus >= 100.0 {
+                // The opus weekly limit: only this model stops.
+                model_window_hits += 1;
+                gov.model_limit_hit("seven_day_opus", sc.reset_at, now);
+                streams[i].state = StreamState::Idle;
+                let released = gov.turn_ended(&agent, now);
+                apply_releases(&mut streams, &mut gov, released, &mut releases, sc, &mut rng, now);
+                continue;
+            }
             let burn = m.agent_rate_pct_h / 60.0 * (1.0 + m.rate_jitter * (2.0 * rng.f64() - 1.0));
             truth.spend(burn, m.five_hour_per_weekly_pct, now);
+            if opus {
+                truth.opus += burn * m.opus_window_per_pp;
+            }
+            if streams[i].task.is_some_and(|(t, _)| scheduled_task(t)) {
+                off_hours_done_pct += burn;
+                if gov.in_working_time(now) {
+                    off_hours_in_working_min += 1;
+                }
+            }
             samples.push((agent.clone(), burn));
             let (t, left) = streams[i].task.expect("running with a task");
             let left = left - burn;
@@ -690,23 +761,35 @@ pub fn run(sc: &Scenario) -> SimResult {
 
         // Statusline samples for every API response of this minute.
         let (five, weekly) = truth.reading(sc);
+        let model_windows = if m.opus_window_per_pp > 0.0 {
+            vec![governor::ModelWindowReading {
+                name: "seven_day_opus".into(),
+                used_pct: truth.opus.floor().min(100.0),
+                resets_at: sc.reset_at,
+            }]
+        } else {
+            Vec::new()
+        };
         for (agent, pct) in samples {
+            let (model, factor) = m.agent_model(&agent);
             gov.ingest(&UsageSample {
                 ts: now,
                 agent: Some(agent),
-                cost_delta: pct * m.cost_per_pct,
+                cost_delta: pct * m.cost_per_pct * factor,
                 five_hour: five,
                 weekly,
                 provenance: Provenance::Observed,
+                model,
+                model_windows: model_windows.clone(),
             });
         }
 
         if truth.weekly >= 100.0 && weekly_exhausted_at.is_none() {
             weekly_exhausted_at = Some(now);
-            limit_hits.push(LimitHit { ts: now, window: Window::Weekly, working_hours: working });
+            limit_hits.push(LimitHit { ts: now, window: Window::Weekly, working_hours: in_work });
         }
         max_weekly = max_weekly.max(truth.weekly);
-        if working {
+        if in_work {
             weekly_at_end_of_work = truth.weekly;
         }
 
@@ -755,6 +838,7 @@ pub fn run(sc: &Scenario) -> SimResult {
         self_started_turns,
         done_pct,
         tasks_done,
+        p3: (truth.opus, model_window_hits, off_hours_in_working_min, off_hours_done_pct),
     });
     SimResult { summary, rows, actions: gov.actions().to_vec(), releases }
 }
@@ -830,6 +914,8 @@ struct SummaryInputs<'a> {
     self_started_turns: u64,
     done_pct: BTreeMap<AllocationId, f64>,
     tasks_done: BTreeMap<AllocationId, usize>,
+    /// (max opus window, model window hits, off-hours minutes in working time, off-hours pp).
+    p3: (f64, u64, u64, f64),
 }
 
 fn summarize(i: SummaryInputs<'_>) -> Summary {
@@ -926,6 +1012,10 @@ fn summarize(i: SummaryInputs<'_>) -> Summary {
         true_k: sc.model.cost_per_pct,
         final_confidence: final_snap.calibration.confidence,
         final_error_pp: final_snap.error,
+        max_opus_window_pct: i.p3.0,
+        model_window_hits: i.p3.1,
+        off_hours_in_working_min: i.p3.2,
+        off_hours_done_pct: i.p3.3,
     }
 }
 

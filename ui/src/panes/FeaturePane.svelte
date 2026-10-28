@@ -2,18 +2,22 @@
   // Feature pane (§9.3, Penpot 04 Feature · 1512): the feature's latest team
   // run: docs from the integration branch (rendered), tasks, the team with
   // live states, the timeline (FR-408) with a message box (FR-409), artifacts
-  // and the PR. Keys: e open the doc in nvim, b board, c canvas, p pause /
-  // resume the team, m message.
-  import { onMount } from 'svelte';
+  // and the PR, and the Design section (P3). Keys: e open the doc in nvim, b
+  // board, c canvas, p pause / resume the team, m message, d Design,
+  // N publish / refresh the docs in Notion (FR-505).
+  import { onMount, untrack } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
+  import DesignSection from '../components/DesignSection.svelte';
   import Kbd from '../components/Kbd.svelte';
   import Markdown from '../components/Markdown.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
-  import { agent, app, confirm, openAgent, openBoard, openCanvas, openEditor, refresh, toast } from '../lib/app.svelte.js';
-  import { ago } from '../lib/format.js';
+  import { agent, app, confirm, openAgent, openBoard, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
+  import { isDesign } from '../lib/ecosystem.js';
+  import { ago, dayHm } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { backendLabel, remoteName } from '../lib/linear.js';
   import { displayState } from '../lib/status.js';
-  import { runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
+  import { handle, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -25,6 +29,12 @@
   let msg = $state('');
   let root;
   let msgBox = $state(null);
+  let design = $state(null);
+  // Notion (FR-505): what the core says, and whether Publish can work at all.
+  let notion = $state(null); // notion_status
+  let notionReady = $state(null); // null = unknown; else { ok, why }
+  let publishing = $state(false);
+  let publishError = $state(null);
 
   const run = $derived(v?.run ?? null);
   const paused = $derived(run?.status === 'paused');
@@ -47,6 +57,44 @@
       if (names.length && (!doc.name || !names.includes(doc.name))) await showDoc(names[0]);
     } catch (e) {
       error = errText(e);
+    }
+  }
+
+  /** Notion status every minute; the parent page and the token only until both are set
+   *  (then Publish can work, and only the status changes). */
+  async function loadNotion() {
+    if (!v?.feature) return;
+    const pid = v.feature.project_id;
+    const ready = notionReady?.ok;
+    const [st, ps, iv] = await Promise.all([
+      invoke('notion_status', { feature: v.feature.id }).catch(() => null),
+      ready ? null : invoke('project_settings', { project: pid }).catch(() => null),
+      ready ? null : invoke('integrations_view').catch(() => null),
+    ]);
+    notion = st;
+    if (ready) return;
+    const page = ps?.settings?.notion_parent_page;
+    const conn = iv?.items?.find((i) => i.id === 'notion');
+    const name = v.project?.name ?? pid;
+    notionReady =
+      page && conn?.has_secret
+        ? { ok: true }
+        : { ok: false, why: `Set a Notion parent page in ${name}'s settings, and connect Notion (⌘+,).` };
+  }
+
+
+  async function publish() {
+    if (publishing || !notionReady?.ok) return;
+    publishing = true;
+    publishError = null;
+    try {
+      const r = await invoke('notion_publish', { feature: v.feature.id });
+      notion = { ...(notion ?? {}), page_url: r.page_url, published_at_ms: r.published_at_ms, error: null };
+      toast(`Published ${r.docs.length} docs to Notion`, { action: { label: 'Open', run: () => openUrl(r.page_url) } });
+    } catch (e) {
+      publishError = errText(e);
+    } finally {
+      publishing = false;
     }
   }
 
@@ -109,14 +157,23 @@
     else if (k === 'c' && run) openCanvas(run.team_id, v.feature.project_id);
     else if (k === 'p' && run && !runFinished(run.status)) act(paused ? 'resume' : 'pause');
     else if (k === 'm') msgBox?.focus();
+    else if (k === 'd') design?.focus();
+    else if (k === 'N') publish();
     else return;
     e.preventDefault();
   }
 
+  // Notion: once the feature is known (whichever load brings it), then every minute.
+  const featureKnown = $derived(v?.feature?.id ?? null);
+  $effect(() => {
+    if (featureKnown) untrack(loadNotion);
+  });
+
   onMount(() => {
     load();
     const t = setInterval(load, 4000);
-    return () => clearInterval(t);
+    const n = setInterval(() => featureKnown && !publishing && loadNotion(), 60000);
+    return () => (clearInterval(t), clearInterval(n));
   });
 </script>
 
@@ -132,6 +189,11 @@
       {#if run}<span class="pill" style:color={runStateColor(run.status)} style:border-color={runStateColor(run.status)}>{runStateLabel(run.status)}</span>{/if}
       <span class="muted">{v.team?.name ?? ''}{v.team ? ` v${v.team.version}` : ''} · {'\u{E725}'} {v.feature.integration_worktree ? `orch/${v.feature.slug}/integration` : '—'}{run ? ` · started ${ago(run.started_at_ms)}` : ''}</span>
       <span class="grow"></span>
+      {#if publishing}
+        <span class="muted">◷ Publishing {v.docs.length} doc{v.docs.length === 1 ? '' : 's'}…</span>
+      {:else if notionReady}
+        <button class="btn ghost" disabled={!notionReady.ok} title={notionReady.ok ? '' : notionReady.why} onclick={publish}>{notion?.page_url ? 'Refresh in Notion' : 'Publish to Notion'} <Kbd keys="N" /></button>
+      {/if}
       <button class="btn ghost" onclick={() => openBoard(v.feature.project_id)}>Board <Kbd keys="b" /></button>
       {#if run}<button class="btn ghost" onclick={() => openCanvas(run.team_id, v.feature.project_id)}>Canvas <Kbd keys="c" /></button>{/if}
       {#if run && !runFinished(run.status)}
@@ -140,6 +202,13 @@
       {/if}
       <button class="btn danger" onclick={() => (app.overlay = { kind: 'delete-feature', featureId: v.feature.id })}>Delete…</button>
     </header>
+
+    {#if notionReady && !notionReady.ok && !notion?.page_url}<p class="nline muted">{notionReady.why}</p>{/if}
+    {#if publishError || notion?.error}
+      <p class="nerr">✕ Publish failed: {publishError ?? notion.error}</p>
+    {:else if notion?.page_url}
+      <p class="nline"><span aria-hidden="true">{'\u{F0219}'}</span> Published {notion.published_at_ms ? dayHm(notion.published_at_ms) : ''} · <button class="link" onclick={() => openUrl(notion.page_url)}>Open in Notion ↗</button>{notion.comments_seen ? ` · ${notion.comments_seen} comment${notion.comments_seen === 1 ? '' : 's'}` : ''}</p>
+    {/if}
 
     <div class="cols">
       <div class="left">
@@ -155,8 +224,10 @@
           {/if}
         </section>
 
+        <DesignSection bind:this={design} {v} />
+
         <section class="card">
-          <div class="cardh"><b>Tasks</b><span class="muted">{v.project?.backend === 'github' ? 'GitHub Issues' : 'Local'} · {byStatus('done').length}/{v.tasks.length} done</span><span class="grow"></span><button class="btn ghost" onclick={() => openBoard(v.feature.project_id)}>Open board <Kbd keys="b" /></button></div>
+          <div class="cardh"><b>Tasks</b><span class="muted">{backendLabel(v.project?.backend)} · {byStatus('done').length}/{v.tasks.length} done</span><span class="grow"></span><button class="btn ghost" onclick={() => openBoard(v.feature.project_id)}>Open board <Kbd keys="b" /></button></div>
           <div class="taskcols">
             {#each [['in_progress', 'In progress', 'working'], ['review', 'Review', 'waiting_gate'], ['ready', 'Ready', 'idle'], ['done', 'Done', 'done']] as [s, label, st] (s)}
               {@const list = byStatus(s)}
@@ -165,7 +236,7 @@
                   <div class="colh"><StatusBadge state={st} compact /> {label} <span class="muted">{list.length}</span></div>
                   {#each list as t (t.id)}
                     <div class="task">
-                      <div class="tt"><span class="muted mono">{t.backend === 'github' && t.external_id ? `#${t.external_id}` : `T-${t.id}`}</span><span class="grow"></span><span class="muted">{t.backend === 'github' ? 'GitHub' : 'Local'}</span></div>
+                      <div class="tt"><span class="muted mono">{handle(t)}</span><span class="grow"></span><span class="muted">{remoteName(t.backend)}</span></div>
                       <div class="title">{t.title}</div>
                       <div class="tt">
                         {#if t.node}<AgentChip id={t.node} role={v.team?.nodes?.find((n) => n.id === t.node)?.role_id ?? t.node} />{/if}
@@ -219,9 +290,10 @@
           <div class="cardh"><b>PR and artifacts</b></div>
           {#if run?.pr_url}<div class="arow"><span class="muted">PR</span> <span class="mono">{run.pr_url}</span></div>
           {:else}<p class="muted">No PR yet: the lead asks with request_pr after integration (PR gate).</p>{/if}
-          {#each v.artifacts as a (a.id)}
+          {#each v.artifacts.filter((a) => !isDesign(a)) as a (a.id)}
             <div class="art"><span class="muted">{a.kind}</span> <span class="ell">{a.uri}</span> <span class="muted">({a.from_node}{a.to_node ? ` → ${a.to_node}` : ''})</span></div>
           {/each}
+          {#if v.artifacts.some(isDesign)}<p class="muted nline">Design artifacts moved to the Design section (d).</p>{/if}
         </section>
       </div>
     </div>
@@ -229,6 +301,25 @@
 </div>
 
 <style>
+
+  .nline,
+  .nerr {
+    margin: 0;
+    font: var(--text-caption);
+  }
+  .nerr {
+    padding: var(--space-sm) var(--space-md);
+    border: var(--border-width-default) solid var(--color-status-error);
+    border-radius: var(--radius-sm);
+  }
+  .link {
+    padding: 0;
+    background: none;
+    border: 0;
+    color: var(--color-accent-default);
+    font: inherit;
+    cursor: pointer;
+  }
   .feature {
     flex: 1;
     min-height: 0;

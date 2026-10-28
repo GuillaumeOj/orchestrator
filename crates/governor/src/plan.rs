@@ -41,6 +41,15 @@ pub struct WeeklyPlan {
     pub allocations: Vec<BudgetAllocation>,
 }
 
+/// Two weekly resets this close are the same week (a plan realigned to the
+/// statusline's `resets_at`, FR-802), seconds.
+pub const SAME_RESET_S: i64 = 3600;
+
+/// `a` and `b` are the same weekly reset ([`SAME_RESET_S`]).
+pub fn same_reset(a: Timestamp, b: Timestamp) -> bool {
+    (a.as_second() - b.as_second()).abs() <= SAME_RESET_S
+}
+
 impl WeeklyPlan {
     pub fn allocation(&self, id: &AllocationId) -> Option<&BudgetAllocation> {
         self.allocations.iter().find(|a| &a.id == id)
@@ -177,6 +186,24 @@ pub struct PacingPolicy {
     pub auto_continue: AutoContinue,
     /// Usage alerts, % of the week (FR-817).
     pub alerts_pct: Vec<f64>,
+    /// FR-814: convert each model family's cost with its own `k` (fitted once
+    /// the family has 20 samples this week). Off by default (ADR-007 deferred it).
+    #[serde(default)]
+    pub per_model_weights: bool,
+    /// FR-815: a model window at or above this % is Red (its model's turns wait).
+    #[serde(default = "default_model_window_red_pct")]
+    pub model_window_red_pct: f64,
+    /// FR-816: live agents running work the user scheduled off-hours.
+    #[serde(default = "default_off_hours_live_cap")]
+    pub off_hours_live_cap: u32,
+}
+
+fn default_model_window_red_pct() -> f64 {
+    95.0
+}
+
+fn default_off_hours_live_cap() -> u32 {
+    1
 }
 
 const UNATTRIBUTED_PRIOR_HOURS: f64 = 48.0;
@@ -216,6 +243,9 @@ impl Default for PacingPolicy {
             default_ask_action: AskDefault::Apply,
             auto_continue: AutoContinue::CancelAndReschedule,
             alerts_pct: vec![50.0, 75.0, 90.0],
+            per_model_weights: false,
+            model_window_red_pct: default_model_window_red_pct(),
+            off_hours_live_cap: default_off_hours_live_cap(),
         }
     }
 }

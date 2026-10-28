@@ -254,8 +254,42 @@ compressed bodies get 415.
 - The enforce choice (FR-812) is the kv key `governor.enforce`, written by `set_shadow` (the app,
   `orchd enforce on|off`) and read at every start (`serve --enforce` / `ORCH_ENFORCE` force
   enforcement; the app's earlier `ui.governor.enforce` still counts). Each tick saves the last 50 actions
-  and the queue view; a forecast snapshot every 5 min, the calibration hourly; retention purge
-  daily.
+  and the queue view; a forecast snapshot every 5 min, the estimator on each fit change (at most
+  once a minute, `calibrations` kind `fit`); retention purge daily.
+- **Estimator carry-over (FR-814)**: each plan week stores the estimator it starts with
+  (`calibrations` kind `week`, with the state). At start the Governor restores this week's, then
+  replays the week's samples, so `k`, `u` and the confidence are the live run's. When the app did
+  not run through the reset, the last stored week's estimator is restored on a Governor of that
+  week and its samples replayed first. A week switches when a reading names the next reset
+  (FR-802) or, without one, at the tick after `reset_at`. Per-model weights
+  (`PacingPolicy::per_model_weights`) are set with the plan form (`plan_set`'s `per_model_weights`).
+- **Linear (`linear.rs`) and Notion (`notion.rs`)**: the core is their only client. Linear: the
+  task backend's GraphQL transport (`orch_tasks::linear`) with the Keychain's `linear` key;
+  `sync_tasks` runs a project's sync (background every 5 min for projects with an active run, and
+  `board_sync`), keeps `tasks.last_sync.<project>` and turns conflicts into Inbox info items.
+  Notion (FR-505): `notion_publish` (one page per feature, a child page per doc of the integration
+  branch, refreshed in place), `notion_poll` (comments → level-3 Inbox items, once each; every
+  15 min while the feature has an active run), `notion_status`; state in
+  `notion.feature.<id>`. Both transports are traits with in-memory fakes for tests.
+- **P3 pacing (`pacing.rs`, `power.rs`)**: the statusline's extra `rate_limits.<name>` windows
+  go to the Governor and are stored with the sample (FR-815); a StopFailure whose message names a
+  model ("… Opus limit …") marks that model's window exhausted instead of the 5h/week window.
+  Each turn request carries the model it runs on. At a **task boundary** (a pending `task` turn)
+  a role with `downgrade` asks `task_boundary_model`; an agent running another model is
+  suspended while idle and the pump resumes it with `--model <to>` (`Live.model` records it).
+  **Off-hours** (FR-816): `queue_off_hours(entry | task, off)`; task and run marks (team launch
+  `off_hours`) live in the kv key `governor.off_hours` and re-mark the agent at each decision.
+  `power_tick` (housekeeping; `pmset` read at most once a minute, only while work waits) holds the
+  `PowerAssertion` (real: `caffeinate -s -w <core pid>`, AC only; tests: `FakePower`) while
+  off-hours work waits or runs on AC, releases it otherwise, and on battery raises one Inbox alert
+  per night and the `not_on_ac` banner (`power_json`).
+- **Weekly report (FR-818, `report.rs`)**: at the switch to the next week the ended week's report
+  is built from the stored samples (pp with the week's `k`, per family when per-model weights are
+  on; `cost_usd` is the statusline's API-price estimate, decision D7), the plan's allocations, the
+  logged actions (queue waits pair `queue` and `release`), the forecast snapshots (time per
+  state) and stored in `weekly_reports`, with a level-4 "Weekly report ready" digest in the Inbox.
+  A start after a reset the app missed builds it then. `report_view("current")` builds the
+  current week's on demand (not stored).
 - Transcripts of known agents and registered projects are indexed for search (FTS5) at start,
   then after each turn end (at most once a minute).
 
@@ -312,6 +346,85 @@ new place, the known worktrees are repaired (targeted) and re-locked.
 - **Idle**: "attached" (a terminal attached through `attach`) protects an agent; the UI marks focus
   with `note_user_activity`.
 
+## MCP registry, integrations and auth status (P3: FR-601, FR-604, FR-1202, FR-1203, NFR-3)
+
+- **Registry refs** (`Role.mcp_refs`, from `RoleDef.mcp_refs`) are resolved at **each spawn**
+  (`registry.rs`, project override > global) into the agent's `mcpServers`; the agent record keeps
+  the ids only, so a registry edit applies at the next spawn. A launch checks them too
+  (`add_team_agent`). A **connector** (claude.ai) is never put in `--mcp-config` (Claude Code loads
+  it from the user's login); on a strict-MCP role it turns `--strict-mcp-config` off (it would hide
+  the connector) and `teams_view` lists it under the team's `warnings`.
+- **Secrets** live in the Keychain (`orch-secrets`, `RuntimeConfig.secrets`). An MCP `env` value
+  `keychain:<account>` (Keychain account `mcp:<account>`, set with `mcp_secret_set`, apart from the
+  integrations' tokens) is resolved into that server's entry of `mcp.json` only when the entry's
+  `allow_secret_env` is on; otherwise the spawn (and the launch) is refused. Nothing else of an
+  agent (env, argv, settings, gitconfig) ever carries a token: `no_integration_token_reaches_an_agent`.
+- **Integrations** (`integrations.rs`): GitHub from `gh auth status`; Linear (`POST
+  api.linear.app/graphql`, `{ viewer organization }`) and Notion (`GET api.notion.com/v1/users/me`)
+  with the Keychain token; Penpot and Figma from the registry entries tagged `design_tool`. Only the
+  status is stored (`integrations` table).
+- **Network**: `net.rs` runs `/usr/bin/curl` (system TLS and proxies, no TLS stack in the app) with
+  the headers on **stdin** (`-H @-`), so a token is never on a command line. Tests use `FakeNet`.
+
+### What the probe can see (verified 2026-10-27, Claude Code **2.1.311**, not 2.1.302)
+
+- **OAuth remote servers answer 401 to the core whatever the user's sign-in.** `initialize` without
+  a token to `mcp.linear.app/mcp`, `mcp.notion.com/mcp` and `mcp.figma.com/mcp` all return `401`
+  with `WWW-Authenticate: Bearer … resource_metadata=…`. Claude Code keeps the OAuth token (FR-1206),
+  the app never has it, so the spec's "401/403 → needs_auth" would flag every OAuth server forever.
+  The probe therefore maps a 401/403 **that announces OAuth** (`resource_metadata` or `OAuth` in
+  `WWW-Authenticate`) to `unknown` ("Claude Code keeps the sign-in"), and a 401/403 without it to
+  `needs_auth`. 2xx → `connected`; anything else → `error`.
+- **Claude Code doesn't fail the calls of a server that needs a sign-in: it replaces its tools.**
+  An unauthenticated OAuth server or claude.ai connector shows up as `mcp__<server>__authenticate`
+  (and `__complete_authentication`) instead of its own tools. So the runtime marks a server
+  `needs_auth` when an agent's hook shows a call to one of those (PreToolUse/PostToolUse), or a
+  `PostToolUseFailure` on `mcp__<server>__*` whose error looks like auth (401, 403, unauthorized,
+  token expired, …); a successful `PostToolUse` on one of its tools marks it `connected` (which
+  closes the alert). This is also how a **connector** gets a status (the probe says `unknown`).
+- **Tool names**: a connector "claude.ai Penpot Perso" appears as `mcp__claude_ai_Penpot_Perso__…`
+  (non `[A-Za-z0-9_-]` → `_`). An entry's `connector_name` matches that prefix and longer names
+  ("claude.ai Penpot" matches "claude.ai Penpot Perso"), so the seeded `penpot` entry works with a
+  personal connector name.
+- `claude mcp list` health-checks the user's own servers (and prints their URLs, tokens in query
+  strings included): not used, it would read the user's config and is slow.
+- **stdio**: spawned with its env (Keychain values only with the opt-in), `initialize`, then
+  `notifications/initialized` + `tools/list`, all within 10 s, then killed. An auth-looking error
+  or stderr line → `needs_auth`.
+- **When**: on `mcp_server_test` / `integration_test` (Settings, Test), at each agent spawn (a thread,
+  the refs of that agent, connectors skipped), and every 30 min for the servers of running agents.
+  The background probes skip a server probed in the last 60 s (`PROBE_FRESH_MS`: the agents of a
+  team spawn together) or being probed now; Test always probes.
+- **Inbox**: `needs_auth` raises one alert per server (`{"alert":"mcp_needs_auth","server","name",
+  "roles"}`, level 2), not repeated while one is pending; `connected` (probe or a successful call)
+  closes it. The app answers its `open` / `reconnect` with where to go (decisions D3).
+
+## Design artifacts and presets (P3: FR-602, FR-603, FR-306)
+
+- **Artifacts** (`artifacts.rs`): a hand-off stores what its URI points at (`meta`, parsed by
+  `orch_team::artifact`: Penpot file/page/frame ids, Figma file key and node id, a repo-relative
+  file, another URL); rows from before P3 are parsed when read. `feature_view` adds
+  `on_integration` for files (`git cat-file -e orch/<slug>/integration:<path>` in the project repo).
+- **Previews** read the image with `git cat-file` from the integration branch, else from the
+  sender's own branches (`orch/<slug>/<node>-*`, newest first); never from a worktree on disk.
+  Over 5 MB → `too large`; nowhere → `not found on branch`; not png/jpg/webp/svg → `not previewable`.
+  SVG is returned as data for an `<img>`, never inlined.
+- **Open**: http(s) links with `open`; files with `qlmanage -p`, the integration worktree's copy,
+  else one extracted from the branch into `<app>/previews/`.
+- **Design hand-off message**: `handoff(kind="design")` tells the recipient the repo paths of every
+  image the sender exported in the run, that they arrive through the lead's merge and
+  `sync_integration`, and flags a link-only hand-off (agents can't open it).
+- **Starters** (`presets.rs`): each installed starter records its origin (starter id, version,
+  fingerprint of what was installed). At start, a copy older than `STARTER_VERSION` whose
+  fingerprint is unchanged is replaced in place (its version goes up only if the content changed);
+  a modified one is left alone and `teams_view` shows `update_available`. P2 installs carry no
+  origin and are recognised by the P2 fingerprints (`V1_FINGERPRINTS`). `preset_update` re-copies an
+  unmodified starter and refuses a modified one. Duplicates get `<id>-copy` (then `-2`…), version 1,
+  no origin, not a preset; roles the target scope can't see are copied with the team.
+  The v0.11 auto-mode migration (gated roles move to `autonomous` once, key
+  `roles.auto_mode_v011`) runs after the starter upgrades; a starter moved from gated to
+  autonomous still counts as unmodified.
+
 ## Known gaps
 
 - **Commits from a sandboxed worktree fail** (worked around: the core commits, see above) (measured 2026-10-21, Claude Code 2.1.302): sandboxed
@@ -327,8 +440,6 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   (or message) goes through the normal delivery instead: pasted once the agent is idle after its
   Stop (1.5 s), admitted by the Governor like any app turn.
 - The Week planner UI (FR-802) is not here: `set_plan` takes a confirmed `WeeklyPlan`.
-- Calibration carries over a restart only through this week's replayed samples (a restart in a new
-  week starts from the prior).
 
 ## Tests
 

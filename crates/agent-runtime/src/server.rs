@@ -259,6 +259,7 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
                 title: title.unwrap_or_default(),
                 brief: brief.unwrap_or_default(),
                 base,
+                off_hours: false,
             })
             .map(|r| json!(r)),
         ),
