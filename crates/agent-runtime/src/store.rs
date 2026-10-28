@@ -66,6 +66,16 @@ pub struct TeamSeat {
     pub task: Option<u64>,
 }
 
+impl TurnRow {
+    /// Back to the queue, to be admitted and pasted again (a paste the
+    /// process never started, or a session lost).
+    pub fn requeue(&mut self) {
+        self.status = TurnStatus::Queued;
+        self.admission = Admission::Pending;
+        self.delivered_at_ms = None;
+    }
+}
+
 impl AgentRecord {
     /// Created and never spawned: a team agent waiting for its first turn.
     pub fn never_started(&self) -> bool {

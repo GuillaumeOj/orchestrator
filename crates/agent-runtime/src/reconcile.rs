@@ -410,9 +410,10 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                     in_transcript: seen,
                 });
                 if now == TurnStatus::Queued {
-                    t.admission = Admission::Pending;
+                    t.requeue();
+                } else {
+                    t.status = now;
                 }
-                t.status = now;
             }
         }
 

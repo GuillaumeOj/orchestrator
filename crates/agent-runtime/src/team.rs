@@ -898,14 +898,19 @@ impl Runtime {
     /// this agent's or another's of the node (a message to the node binds to
     /// an agent only at the paste).
     fn undelivered(&self, rec: &AgentRecord) -> Vec<Message> {
-        let carried: Vec<u64> = self.store.read(|s| {
+        let mut msgs: Vec<Message> = self.unread(rec).into_iter().filter(|m| m.delivered_at_ms.is_none()).collect();
+        if msgs.is_empty() {
+            return msgs;
+        }
+        let carried: std::collections::HashSet<u64> = self.store.read(|s| {
             s.turns
                 .iter()
                 .filter(|t| !t.messages.is_empty() && matches!(t.status, TurnStatus::Queued | TurnStatus::Delivering))
                 .flat_map(|t| t.messages.iter().copied())
                 .collect()
         });
-        self.unread(rec).into_iter().filter(|m| m.delivered_at_ms.is_none() && !carried.contains(&m.id)).collect()
+        msgs.retain(|m| !carried.contains(&m.id));
+        msgs
     }
 
     /// The agent's unread messages among `ids` (to remind it at its Stop).

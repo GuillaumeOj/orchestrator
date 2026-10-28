@@ -15,7 +15,7 @@ use crate::compile::SessionMode;
 use crate::inbox::PRIORITY_ALERT;
 use crate::runtime::{Live, Runtime};
 use crate::state::{AgentState, StopIntent};
-use crate::store::{Admission, AgentRecord, TurnStatus};
+use crate::store::{AgentRecord, TurnStatus};
 
 /// A spawn that exits sooner than this did not start (FR-415).
 pub const QUICK_EXIT_MS: u64 = 5_000;
@@ -39,6 +39,18 @@ impl Runtime {
         })
     }
 
+    /// Adds a `startup` item for the spawn `l` (`extra`: how it failed, if it did).
+    fn raise_startup(&self, id: &str, l: &Live, title: String, extra: Value) {
+        let mut payload = json!({
+            "waiting_on": "startup", "mode": if l.resumed { "resume" } else { "new" },
+            "since_ms": l.pty.spawned_at_ms, "tail": tail(&l.pty.output.tail_text()),
+        });
+        if let (Some(p), Value::Object(x)) = (payload.as_object_mut(), extra) {
+            p.extend(x);
+        }
+        let _ = self.add_item(Some(id), "startup", title, payload, PRIORITY_ALERT);
+    }
+
     /// Housekeeping: a live agent still starting past `startup_timeout`, with
     /// no trust dialog (that one is the user's to answer, J0), gets one item
     /// per spawn: one the user dismissed is not raised again.
@@ -47,44 +59,37 @@ impl Runtime {
         for id in self.live_ids() {
             let Some(l) = self.live(&id) else { continue };
             let since = l.pty.spawned_at_ms;
-            let (starting, raised) = self.store.read(|s| {
-                (
-                    s.agents.get(&id).is_some_and(|a| {
-                        a.tracker.state == AgentState::Starting
-                            && !a.trust_dialog
-                            && a.tracker.stop_intent == StopIntent::None
-                    }),
-                    s.inbox.iter().any(|i| {
-                        i.kind == "startup" && i.agent_id.as_deref() == Some(id.as_str()) && i.created_at_ms >= since
-                    }),
-                )
-            });
-            if !starting
-                || raised
-                || l.pty.output.trust_dialog.load(Ordering::Relaxed)
-                || now.saturating_sub(since) < timeout
-                || self.startup_item(&id).is_some()
-            {
+            if now.saturating_sub(since) < timeout || l.pty.output.trust_dialog.load(Ordering::Relaxed) {
                 continue;
             }
-            let payload = json!({
-                "waiting_on": "startup", "mode": if l.resumed { "resume" } else { "new" },
-                "since_ms": since, "tail": tail(&l.pty.output.tail_text()),
+            let due = self.store.read(|s| {
+                let starting = s.agents.get(&id).is_some_and(|a| {
+                    a.tracker.state == AgentState::Starting
+                        && !a.trust_dialog
+                        && a.tracker.stop_intent == StopIntent::None
+                });
+                // An item open from before, or one raised for this spawn (even dismissed).
+                let raised = s.inbox.iter().any(|i| {
+                    i.kind == "startup"
+                        && i.agent_id.as_deref() == Some(id.as_str())
+                        && (i.open() || i.created_at_ms >= since)
+                });
+                starting && !raised
             });
-            let _ = self.add_item(Some(&id), "startup", format!("{id} did not start"), payload, PRIORITY_ALERT);
+            if due {
+                self.raise_startup(&id, &l, format!("{id} did not start"), Value::Null);
+            }
         }
     }
 
     /// SessionStart: the agent started, its `startup` item closes and a
     /// failed start is behind it (a later resume resumes this session).
     pub(crate) fn started(&self, id: &str) {
-        if self.store.read(|s| s.agents.get(id).is_some_and(|a| a.resume_failed)) {
-            let _ = self.store.write(|s| {
-                if let Some(a) = s.agents.get_mut(id) {
-                    a.resume_failed = false;
-                }
-            });
-        }
+        let _ = self.store.write(|s| {
+            if let Some(a) = s.agents.get_mut(id).filter(|a| a.resume_failed) {
+                a.resume_failed = false;
+            }
+        });
         let Some(item) = self.startup_item(id) else { return };
         if let Some(i) = self.close_item(item, InboxStatus::Dismissed, "started", "core") {
             self.outcome(&i, "core", "dismissed");
@@ -95,10 +100,11 @@ impl Runtime {
     /// the boot reconciler does), its team messages un-delivered; one the
     /// transcript shows was delivered.
     pub(crate) fn requeue_unstarted(&self, id: &str) {
-        if !self.store.read(|s| s.turns.iter().any(|t| t.agent_id == id && t.status == TurnStatus::Delivering)) {
-            return;
-        }
-        let Some(session) = self.store.read(|s| s.agents.get(id).map(|a| a.session_id.clone())) else { return };
+        let session = self.store.read(|s| {
+            let pasted = s.turns.iter().any(|t| t.agent_id == id && t.status == TurnStatus::Delivering);
+            s.agents.get(id).filter(|_| pasted).map(|a| a.session_id.clone())
+        });
+        let Some(session) = session else { return };
         let seen = crate::transcript::summarize_session(&self.cfg.projects_root, &session).markers;
         let msgs = self.store.write(|s| {
             let mut msgs = vec![];
@@ -106,19 +112,13 @@ impl Runtime {
                 if seen.contains(&t.id) {
                     t.status = TurnStatus::Delivered;
                 } else {
-                    t.status = TurnStatus::Queued;
-                    t.admission = Admission::Pending;
-                    t.delivered_at_ms = None;
+                    t.requeue();
                     msgs.extend(&t.messages);
                 }
             }
             msgs
         });
-        if let Ok(msgs) = msgs
-            && !msgs.is_empty()
-        {
-            let _ = self.db.undeliver_messages(&msgs);
-        }
+        self.undeliver(msgs);
     }
 
     /// An exit nobody asked for, before SessionStart and within
@@ -129,10 +129,10 @@ impl Runtime {
         if now_ms().saturating_sub(l.pty.spawned_at_ms) >= QUICK_EXIT_MS {
             return;
         }
-        let Some(rec) = self.store.read(|s| s.agents.get(id).cloned()) else { return };
-        let retry = l.resumed && !l.fresh_retry;
-        let why = if retry {
-            if crate::transcript::find(&self.cfg.projects_root, &rec.session_id).is_some() {
+        let Some(session) = self.store.read(|s| s.agents.get(id).map(|a| a.session_id.clone())) else { return };
+        // A resume gets one fresh retry, which starts a new session (not `resumed`).
+        let why = if l.resumed {
+            if crate::transcript::find(&self.cfg.projects_root, &session).is_some() {
                 return; // a session that exists: today's error path, not FR-415
             }
             match self.restart_fresh(id, "resume exited at once with no transcript", "core") {
@@ -142,7 +142,7 @@ impl Runtime {
         } else {
             "exited at once".to_string()
         };
-        let failed = if retry { "resume" } else { "fresh" };
+        let failed = if l.resumed { "resume" } else { "fresh" };
         let _ = self.store.write(|s| {
             if let Some(a) = s.agents.get_mut(id) {
                 a.tracker.state = AgentState::Error;
@@ -151,13 +151,8 @@ impl Runtime {
             }
         });
         if self.startup_item(id).is_none() {
-            let payload = json!({
-                "waiting_on": "startup", "mode": if l.resumed { "resume" } else { "new" },
-                "since_ms": l.pty.spawned_at_ms, "failed": failed, "exit_status": status,
-                "tail": tail(&l.pty.output.tail_text()),
-            });
             let title = if l.resumed { format!("{id} could not resume") } else { format!("{id} could not start") };
-            let _ = self.add_item(Some(id), "startup", title, payload, PRIORITY_ALERT);
+            self.raise_startup(id, l, title, json!({"failed": failed, "exit_status": status}));
         }
     }
 
@@ -206,7 +201,7 @@ impl Runtime {
             self.deliver_kind(id, &brief, TurnKind::Task)?;
         }
         self.event(id, "restarted_fresh", json!({"old_session": old, "new_session": new, "why": why}));
-        self.spawn_with(id, Some(SessionMode::New(new.clone())), true)?;
+        self.spawn(id, Some(SessionMode::New(new.clone())))?;
         Ok(new)
     }
 
@@ -220,9 +215,7 @@ impl Runtime {
             let mut had_brief = false;
             for t in s.turns.iter_mut().filter(|t| t.agent_id == id) {
                 if matches!(t.status, TurnStatus::Delivering | TurnStatus::Delivered) {
-                    t.status = TurnStatus::Queued;
-                    t.admission = Admission::Pending;
-                    t.delivered_at_ms = None;
+                    t.requeue();
                 }
                 had_brief |= t.status == TurnStatus::Queued && !t.command && brief == Some(t.body.as_str());
             }
@@ -252,7 +245,7 @@ pub fn restarted(session: &str) -> Value {
 mod tests {
     use super::*;
     use crate::runtime::tests::test_runtime;
-    use crate::store::TurnRow;
+    use crate::store::{Admission, TurnRow};
 
     fn turn(kind: TurnKind, status: TurnStatus) -> TurnRow {
         let mut t = TurnRow::queued("a1", "x", kind, Admission::Admitted);

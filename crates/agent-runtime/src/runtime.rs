@@ -143,10 +143,9 @@ pub struct Live {
     pub model: Option<String>,
     /// The last paste of a turn (activity for least-recently-active, FR-203).
     pub pasted_at_ms: AtomicU64,
-    /// Started with `--resume` (else a new session): the exit rule of FR-415.
+    /// Started with `--resume` (else a new session, the fresh retry of
+    /// FR-415 included): the exit rule of FR-415.
     pub resumed: bool,
-    /// This spawn is the one fresh retry of a resume that died (FR-415).
-    pub fresh_retry: bool,
 }
 
 impl Live {
@@ -592,6 +591,11 @@ impl Runtime {
             });
             msgs
         });
+        self.undeliver(msgs);
+    }
+
+    /// The team messages of turns taken back are delivered again later.
+    pub(crate) fn undeliver(&self, msgs: Result<Vec<u64>>) {
         if let Ok(msgs) = msgs
             && !msgs.is_empty()
         {
@@ -796,11 +800,6 @@ impl Runtime {
     /// Spawns `claude` for an existing agent: `--session-id` on first start,
     /// `--resume` afterwards (the default when `mode` is `None`).
     pub fn spawn(&self, id: &str, mode: Option<SessionMode>) -> Result<()> {
-        self.spawn_with(id, mode, false)
-    }
-
-    /// [`Runtime::spawn`]; `fresh_retry`: the one fresh start after a resume that died (FR-415).
-    pub(crate) fn spawn_with(&self, id: &str, mode: Option<SessionMode>, fresh_retry: bool) -> Result<()> {
         if self.live_get(id).is_some() {
             bail!("agent {id} is already running");
         }
@@ -879,7 +878,6 @@ impl Runtime {
                 model: role.model.clone(),
                 pasted_at_ms: AtomicU64::new(0),
                 resumed,
-                fresh_retry,
             }),
         );
         self.store.write(|s| {
@@ -901,17 +899,21 @@ impl Runtime {
             if live.get(id).is_some_and(|l| l.pty.pid == pid) { live.remove(id) } else { None }
         };
         // Asked for (suspend, kill, delete) or not, and before SessionStart:
-        // only an unexpected exit of a start is a failed start.
-        let failed_start = self.store.read(|s| {
-            s.agents
-                .get(id)
-                .is_some_and(|a| a.tracker.stop_intent == StopIntent::None && a.tracker.state == AgentState::Starting)
-        });
-        let _ = self.store.write(|s| {
-            if let Some(a) = s.agents.get_mut(id).filter(|a| a.pid == Some(pid)) {
-                a.on_process_gone();
-            }
-        });
+        // only an unexpected exit of a start is a failed start. Read before
+        // `on_process_gone` resets them.
+        let failed_start = self
+            .store
+            .write(|s| {
+                let a = s.agents.get_mut(id)?;
+                let failed = a.tracker.stop_intent == StopIntent::None && a.tracker.state == AgentState::Starting;
+                if a.pid == Some(pid) {
+                    a.on_process_gone();
+                }
+                Some(failed)
+            })
+            .ok()
+            .flatten()
+            .unwrap_or(false);
         // FR-203: a pasted turn the process never started goes back to the
         // queue (not on a late exit of an older process: the turns are a newer one's).
         if gone.is_some() {
@@ -1804,12 +1806,23 @@ impl Runtime {
             self.event("-", "memory_pressure", json!({"raw": raw, "effective": level, "cap": self.live_cap()}));
         }
         self.sync_process_slots();
-        let queued: BTreeMap<String, usize> = self.store.read(|s| {
-            let mut m = BTreeMap::new();
-            for t in s.turns.iter().filter(|t| t.status == TurnStatus::Queued) {
-                *m.entry(t.agent_id.clone()).or_default() += 1;
+        // One pass: queued turns per agent, agents with a pasted turn, and
+        // agents with an open `startup` item (both kept live, FR-203/415).
+        let (queued, delivering, startup_open) = self.store.read(|s| {
+            let mut m: BTreeMap<String, usize> = BTreeMap::new();
+            let mut delivering = std::collections::BTreeSet::new();
+            for t in &s.turns {
+                match t.status {
+                    TurnStatus::Queued => *m.entry(t.agent_id.clone()).or_default() += 1,
+                    TurnStatus::Delivering => {
+                        delivering.insert(t.agent_id.clone());
+                    }
+                    _ => {}
+                }
             }
-            m
+            let startup: std::collections::BTreeSet<String> =
+                s.inbox.iter().filter(|i| i.open() && i.kind == "startup").filter_map(|i| i.agent_id.clone()).collect();
+            (m, delivering, startup)
         });
         // A lead's prompt cache: kept alive until it goes cold (FR-204).
         let warm: BTreeMap<String, u64> = {
@@ -1825,21 +1838,17 @@ impl Runtime {
                 })
                 .collect()
         };
-        let live: Vec<LiveAgent> = self
-            .live
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        // A snapshot: no store lock is taken while holding `live`.
+        let procs: Vec<(String, Arc<Live>)> =
+            self.live.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let live: Vec<LiveAgent> = procs
             .iter()
             .filter_map(|(id, l)| {
-                let (rec, delivering) = self.store.read(|s| {
-                    let delivering = s.turns.iter().any(|t| t.agent_id == *id && t.status == TurnStatus::Delivering);
-                    s.agents.get(id).cloned().map(|r| (r, delivering))
-                })?;
+                let rec = self.store.read(|s| s.agents.get(id).cloned())?;
                 // A stop already under way (a suspend waits up to 5 s for the exit).
                 if rec.tracker.stop_intent != StopIntent::None {
                     return None;
                 }
-                let startup_blocked = self.startup_item(id).is_some();
                 let last = [
                     rec.last_event_at_ms.unwrap_or(0),
                     l.last_user_input_ms.load(Ordering::SeqCst),
@@ -1859,8 +1868,8 @@ impl Runtime {
                     last_activity_ms: last,
                     reserved: reserved_slot(&rec),
                     warm_until_ms: warm.get(id).copied().unwrap_or(0),
-                    delivering,
-                    startup_blocked,
+                    delivering: delivering.contains(id),
+                    startup_blocked: startup_open.contains(id),
                 })
             })
             .collect();
