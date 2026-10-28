@@ -13,6 +13,26 @@ use crate::core::Core;
 /// Where the claude.ai connectors are managed.
 pub const CONNECTOR_SETTINGS_URL: &str = "https://claude.ai/settings/connectors";
 
+/// A numeric id the UI may send as a string (`"12"`, `"T-12"`) or a number.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(untagged)]
+pub enum IdArg {
+    Num(u64),
+    Str(String),
+}
+
+impl IdArg {
+    pub fn parse(&self) -> Result<u64> {
+        match self {
+            IdArg::Num(n) => Ok(*n),
+            IdArg::Str(s) => {
+                let t = s.trim();
+                t.strip_prefix("T-").unwrap_or(t).parse().map_err(|_| anyhow!("invalid id {s:?}"))
+            }
+        }
+    }
+}
+
 /// `open_url`: only http(s) URLs, with a host and no whitespace or control
 /// characters (the URL goes to `/usr/bin/open` as one argument).
 pub fn checked_url(url: &str) -> Result<&str> {
@@ -127,6 +147,15 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ids_come_as_strings_or_numbers() {
+        let p = |v: serde_json::Value| serde_json::from_value::<IdArg>(v).unwrap().parse();
+        assert_eq!(p(json!("12")).unwrap(), 12);
+        assert_eq!(p(json!("T-7")).unwrap(), 7);
+        assert_eq!(p(json!(3)).unwrap(), 3);
+        assert!(p(json!("x")).is_err());
+    }
 
     #[test]
     fn only_http_links_open() {

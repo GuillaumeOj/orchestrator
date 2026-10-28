@@ -104,9 +104,20 @@ impl Runtime {
     /// off-hours has its work scheduled off-hours again (the Governor clears
     /// the mark when a scheduled turn ends).
     pub(crate) fn sync_off_hours(&self, rec: &AgentRecord) {
-        let Some(seat) = &rec.team else { return };
         let m = self.off_hours_marks();
-        if m.runs.contains(&seat.run_id) || seat.task.is_some_and(|t| m.tasks.contains(&t)) {
+        if m.tasks.is_empty() && m.runs.is_empty() {
+            return;
+        }
+        let marked = match &rec.team {
+            Some(seat) => m.runs.contains(&seat.run_id) || seat.task.is_some_and(|t| m.tasks.contains(&t)),
+            // An agent outside a team: a marked open task assigned to it.
+            None => m.tasks.iter().any(|t| {
+                self.db.task(*t).ok().flatten().is_some_and(|t| {
+                    t.agent_id.as_deref() == Some(rec.id.as_str()) && t.status != orch_team::TaskStatus::Done
+                })
+            }),
+        };
+        if marked {
             let agent = AgentId(rec.id.clone());
             let _ = self.governor_act(|g, now| (g.set_off_hours(&agent, true, now), Vec::new()));
         }
@@ -153,7 +164,7 @@ impl Runtime {
     /// running and the Mac is on AC; releases it otherwise. On battery, one
     /// Inbox alert per night. `force` reads the power source now.
     pub fn power_tick(&self, force: bool) {
-        let pending = self.with_governor(|g| g.off_hours_agents().len());
+        let pending = self.with_governor(|g| g.off_hours_pending());
         let held = self.cfg.power.held();
         let mut on_ac = self.house().power.on_ac;
         if pending > 0 {
@@ -180,7 +191,13 @@ impl Runtime {
             self.event("-", "power_assertion", json!({"held": false, "pending": pending, "on_ac": on_ac}));
         }
         if pending > 0 && on_ac == Some(false) {
-            let night = Timestamp::now().to_zoned(governor::jiff::tz::TimeZone::system()).date().to_string();
+            // One per night: an evening and the morning after are the same night.
+            let night = Timestamp::now()
+                .checked_sub(governor::jiff::SignedDuration::from_hours(12))
+                .unwrap_or(Timestamp::now())
+                .to_zoned(governor::jiff::tz::TimeZone::system())
+                .date()
+                .to_string();
             let first = self.house().battery_alerted.as_deref() != Some(night.as_str());
             if first {
                 let body = "Not on AC power\nOff-hours work won't run while the Mac sleeps. Plug it in to keep it awake for the queued work.".to_string();
@@ -339,5 +356,30 @@ mod tests {
         assert!(rt.power_json().1.is_none());
         let tier = rt.with_governor(|g| g.queue().first().map(|q| q.tier));
         assert!(tier.is_none_or(|t| t == Tier::Normal));
+
+        // A task (of an agent outside a team) marked off-hours: every turn of it waits,
+        // and cancelling its queued work lets the assertion go.
+        let mut t = orch_store::Task::new("p", "local", "Long refactor", 1);
+        t.agent_id = Some("a1".into());
+        let tid = rt.db.upsert_task(&t).unwrap();
+        rt.queue_off_hours(None, Some(tid), true).unwrap();
+        for _ in 0..2 {
+            let Verdict::Queue { entry: Some(e), reason, .. } =
+                rt.decide_turn(&rec, TurnKind::Task, TurnOrigin::App, false).effective
+            else {
+                panic!("waits")
+            };
+            assert!(matches!(reason, QueueReason::ScheduledOffHours { .. }), "{reason:?}");
+            rt.power_tick(true);
+            assert!(power.held());
+            rt.cancel(e.0).unwrap();
+            rt.power_tick(true);
+            assert!(!power.held(), "nothing waits once it is cancelled");
+        }
+        // A deleted agent leaves no mark behind.
+        let a1 = AgentId("a1".into());
+        rt.governor_act(|g, now| (g.set_off_hours(&a1, true, now).unwrap(), Vec::new()));
+        rt.governor_forget("a1");
+        rt.with_governor(|g| assert!(g.off_hours_agents().is_empty()));
     }
 }

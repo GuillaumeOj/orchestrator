@@ -79,6 +79,10 @@ pub struct ModelOverride {
     pub since: Timestamp,
     /// The `downgrade` action (undo restores the model at the next task).
     pub action: ActionId,
+    /// Undone: the role's model comes back at the agent's next task, not
+    /// mid-task.
+    #[serde(default)]
+    pub restore_pending: bool,
 }
 
 impl ModelOverride {

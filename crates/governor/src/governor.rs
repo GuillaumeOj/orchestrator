@@ -484,6 +484,8 @@ pub struct Governor {
     /// downgrade until the condition clears).
     downgrades: BTreeMap<AgentId, ModelOverride>,
     restored_models: BTreeSet<AgentId>,
+    /// Shadow mode: agents whose (not applied) downgrade was logged once.
+    shadow_downgrades: BTreeSet<AgentId>,
 }
 
 impl Governor {
@@ -550,6 +552,7 @@ impl Governor {
             off_hours: BTreeSet::new(),
             downgrades: BTreeMap::new(),
             restored_models: BTreeSet::new(),
+            shadow_downgrades: BTreeSet::new(),
             plan,
             policy,
         };
@@ -2066,8 +2069,10 @@ impl Governor {
             Undo::ResumeAll => return Ok(self.resume_all(now)),
             Undo::ResumeAgent { agent } => return Ok(self.resume_agent(&agent, now)),
             Undo::RestoreModel { agent } => {
-                self.downgrades.remove(&agent);
-                self.restored_models.insert(agent);
+                // Never mid-task: the role's model comes back at the next task boundary.
+                if let Some(o) = self.downgrades.get_mut(&agent) {
+                    o.restore_pending = true;
+                }
             }
         }
         if let Some(a) = self.action_mut(id) {
@@ -2236,6 +2241,10 @@ impl Governor {
     pub fn cancel(&mut self, entry: EntryId, now: Timestamp) -> Option<AgentId> {
         let idx = self.queue.iter().position(|e| e.id == entry)?;
         let e = self.queue.remove(idx);
+        // The cancelled work was what waited for off-hours (FR-816).
+        if !self.live.get(&e.agent).is_some_and(|t| t.scheduled) {
+            self.off_hours.remove(&e.agent);
+        }
         self.log(
             now,
             ActionKind::Cancel { entry, agent: e.agent.clone() },
@@ -2549,6 +2558,22 @@ impl Governor {
         &self.off_hours
     }
 
+    /// FR-816: scheduled work that really waits or runs: queued entries of
+    /// marked agents plus scheduled turns running (what the power assertion is for).
+    pub fn off_hours_pending(&self) -> usize {
+        let queued = self.queue.iter().filter(|e| self.off_hours.contains(&e.agent)).count();
+        queued + self.off_hours_running() as usize
+    }
+
+    /// An agent is gone: its off-hours mark and model downgrade go too.
+    pub fn forget_agent(&mut self, agent: &AgentId) {
+        self.off_hours.remove(agent);
+        self.downgrades.remove(agent);
+        self.restored_models.remove(agent);
+        self.shadow_downgrades.remove(agent);
+        self.agent_model.remove(agent);
+    }
+
     /// Scheduled off-hours turns running now.
     pub fn off_hours_running(&self) -> u32 {
         self.live.values().filter(|t| t.scheduled).count() as u32
@@ -2579,8 +2604,17 @@ impl Governor {
                 DowngradeWhen::ModelWindow => self.tight_window(model, now).is_some(),
             },
         );
+        if self.downgrades.get(agent).is_some_and(|o| o.restore_pending) {
+            // The user's undo, applied at this boundary; no new downgrade until the condition clears.
+            self.downgrades.remove(agent);
+            if cond {
+                self.restored_models.insert(agent.clone());
+            }
+            return None;
+        }
         if !cond {
             self.restored_models.remove(agent);
+            self.shadow_downgrades.remove(agent);
             if self.downgrades.remove(agent).is_some() {
                 self.log(
                     now,
@@ -2608,13 +2642,22 @@ impl Governor {
         let effect = format!("this task and the next ones on {} (the prompt cache is lost)", r.to);
         let action = ActionKind::Downgrade { agent: agent.clone(), to: r.to.clone() };
         if self.plan.shadow_mode {
-            self.log(now, action, reason, effect, ActionMode::Shadow, Outcome::Logged, None);
+            // Logged once per episode, not at every look at the boundary.
+            if self.shadow_downgrades.insert(agent.clone()) {
+                self.log(now, action, reason, effect, ActionMode::Shadow, Outcome::Logged, None);
+            }
             return None;
         }
         let undo = Some(Undo::RestoreModel { agent: agent.clone() });
         let id = self.log(now, action, reason, effect, ActionMode::Auto, Outcome::Applied, undo);
-        let o =
-            ModelOverride { to: r.to.clone(), from: model.map(str::to_string), when: r.when, since: now, action: id };
+        let o = ModelOverride {
+            to: r.to.clone(),
+            from: model.map(str::to_string),
+            when: r.when,
+            since: now,
+            action: id,
+            restore_pending: false,
+        };
         self.downgrades.insert(agent.clone(), o);
         self.agent_model.insert(agent.clone(), r.to.clone());
         Some(r.to.clone())

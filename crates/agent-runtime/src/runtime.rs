@@ -1467,6 +1467,7 @@ impl Runtime {
             }
             let mut releases = g.resume_agent(&agent, now);
             releases.extend(g.turn_ended(&agent, now));
+            g.forget_agent(&agent);
             ((), releases)
         });
     }
@@ -2258,6 +2259,9 @@ fn restore_governor(
     db.save_policy(POLICY_ID, &policy)?;
     let mut plan = match db.active_plan()? {
         Some(p) if p.reset_at > now && p.week_start <= now => p,
+        // The app did not run through the reset: the last plan rolled
+        // forward by whole weeks keeps the real reset time (as `tick` does).
+        Some(p) if p.reset_at <= now => roll_forward(p, now),
         _ => (cfg.default_plan)(now, shadow),
     };
     plan.shadow_mode = shadow;
@@ -2318,6 +2322,18 @@ fn restore_governor(
         }
     })?;
     Ok((gov, released))
+}
+
+/// `p` moved by whole weeks to the week that holds `now`.
+fn roll_forward(mut p: WeeklyPlan, now: Timestamp) -> WeeklyPlan {
+    let week = 168 * 3600;
+    let behind = now.as_second() - p.reset_at.as_second();
+    let n = behind.div_euclid(week) + 1;
+    let shift = governor::jiff::SignedDuration::from_secs(n * week);
+    p.week_start = p.reset_at.checked_add(shift - governor::jiff::SignedDuration::from_secs(week)).unwrap_or(now);
+    p.reset_at = p.reset_at.checked_add(shift).unwrap_or(now);
+    p.id = format!("week-{}", p.week_start.as_second());
+    p
 }
 
 /// The week's statusline samples, oldest first, with their stored rows.
@@ -2969,6 +2985,15 @@ pub(crate) mod tests {
         p
     }
 
+    /// [`last_week_plan`] with its reset 5 h earlier than the default plan's.
+    fn odd_last_week_plan(now: Timestamp, shadow: bool) -> WeeklyPlan {
+        let mut p = last_week_plan(now, shadow);
+        p.week_start = p.week_start.checked_sub(5.hours()).unwrap();
+        p.reset_at = p.reset_at.checked_sub(5.hours()).unwrap();
+        p.id = format!("week-{}", p.week_start.as_second());
+        p
+    }
+
     /// FR-814 and FR-818 through the runtime: the estimator a week starts
     /// with is stored, so a restart mid-week and a restart after a reset the
     /// app did not run through both get the live run's calibration back; the
@@ -3051,33 +3076,51 @@ pub(crate) mod tests {
         assert_eq!(reports(&rt).len(), 2, "no second report of the same week");
         drop(rt);
 
-        // The app stopped in week 1 and starts again in week 2: the estimator
-        // is rebuilt from week 1's, and week 1's report is made at start.
+        // The app stopped in week 1 (whose reset is not the default plan's:
+        // 5 h earlier) and starts again in week 2. Week 1 was never switched
+        // away from live, so this restart rebuilds the estimator from week
+        // 1's, rolls the plan forward to the real reset, and makes week 1's
+        // report at start.
         let b = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
-        {
-            let rt = Runtime::new(cfg(b.path(), last_week_plan)).unwrap();
+        let plan1 = {
+            let rt = Runtime::new(cfg(b.path(), odd_last_week_plan)).unwrap();
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(b.path()))).unwrap();
-            for m in &s1 {
+            let plan1 = rt.gov().plan().clone();
+            for m in &week(&plan1, 0.0) {
                 rt.on_status(m);
             }
-            rt.tick();
             rt.db.flush().unwrap();
+            plan1
+        };
+        let next_start = plan1.reset_at;
+        {
+            let db = orch_store::Store::open(&AppPaths::new(b.path().join("app")).db_file()).unwrap();
+            assert!(db.week_estimator(next_start).unwrap().is_none(), "no stored base for week 2: the rebuild runs");
+            assert!(db.reports().unwrap().is_empty());
         }
         let rt = Runtime::new(cfg(b.path(), test_plan)).unwrap();
         rt.db.flush().unwrap();
-        // (That runtime's week 1 started when it did, a few ms after `w1`.)
+        let plan2 = rt.gov().plan().clone();
+        assert_eq!(
+            (plan2.week_start, plan2.reset_at.as_second()),
+            (next_start, plan1.reset_at.as_second() + 168 * 3600),
+            "the last plan rolled forward, not the default week"
+        );
         let list = rt.reports_list().unwrap();
         assert_eq!(list["reports"].as_array().unwrap().len(), 2, "week 1's report, made at start: {list}");
-        assert_eq!(list["reports"][1]["in_progress"], false);
+        assert_eq!(list["reports"][1]["id"], json!(plan1.id));
+        let ms_iso = |t: Timestamp| Timestamp::from_millisecond(t.as_millisecond()).unwrap().to_string();
+        assert_eq!(list["reports"][1]["reset_at"], json!(ms_iso(plan1.reset_at)), "the real reset");
+        assert!(rt.db.week_estimator(next_start).unwrap().is_some(), "the rebuilt base is stored");
         // Its agents' processes ended with the old core: their cost counts from 0 again.
-        for m in &week(&w2, 0.0) {
+        for m in &week(&plan2, 0.0) {
             rt.on_status(m);
         }
         close(&k(&rt), &live, "restart across the reset");
 
         // Without the carry-over, week 2 alone gives another fit.
-        let mut cold = Governor::new(w2.clone(), governor::PacingPolicy::default(), w2.week_start).unwrap();
-        for (u, smp) in week_samples(&rt.db, w2.week_start, None).unwrap() {
+        let mut cold = Governor::new(plan2.clone(), governor::PacingPolicy::default(), plan2.week_start).unwrap();
+        for (u, smp) in week_samples(&rt.db, plan2.week_start, None).unwrap() {
             let class = u.class.as_deref().and_then(orch_store::untag).unwrap_or(governor::CostClass::Interactive);
             cold.replay(&smp, class, None);
         }

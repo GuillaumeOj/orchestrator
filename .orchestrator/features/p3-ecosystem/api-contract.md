@@ -173,6 +173,9 @@ agents[].model_note: string | null;           // "downgraded (Red)" while a down
 | `governor_act` (P1) | `action: 'undo'` on a `downgrade` action restores the model at the next task boundary | unchanged |
 
 Notes (back, T-8):
+- `queue_off_hours` takes `entry` / `task` as strings (`"12"`; a task's `"T-12"` too); numbers are accepted as well.
+- Undoing a `downgrade` keeps the current task on the fallback model; the role's model comes back at the agent's next task (`restore_model` is not logged for an undo). In shadow mode a downgrade is logged once per episode.
+- `power.off_hours_pending` counts real work: queued entries of marked agents plus scheduled turns running; a cancelled entry or a deleted agent drops its mark. The on-battery alert is once per night (an evening and the morning after are one night).
 - `queue_off_hours` is refused with `"the plan has no off-hours allowance: set one in the Week planner first"` when the plan's `off_hours_allowance_pct` is 0 (the off-hours cap is active only with an allowance, spec §3.7). With `entry`, the mark lasts for that entry's turn; with `task`, for every turn of the task; clearing an entry also clears its agent's task mark. `starts_at` is RFC 3339 (now when already outside working time).
 - While scheduled off-hours work runs and the off-hours cap is full, its reason is the P1 `{ kind: 'live_cap', state, cap }`.
 - `queue[].reason` model window: `exhausted: false` = Red (≥ 95 % or the week's Red rule on that window; critical work still runs), `true` = used up (≥ 100 % or a model-specific rate limit).

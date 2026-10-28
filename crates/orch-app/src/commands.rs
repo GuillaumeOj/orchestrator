@@ -353,9 +353,20 @@ pub async fn linear_states(core: CoreState<'_>, team: String) -> Res<Value> {
     blocking(core, move |c| c.linear_states(&team)).await
 }
 
+/// `queue_off_hours`: `entry` and `task` are string ids per the contract
+/// (`"12"`, a task's `"T-12"` too); numbers are accepted as well.
 #[tauri::command]
-pub async fn queue_off_hours(core: CoreState<'_>, entry: Option<u64>, task: Option<u64>, off: bool) -> Res<Value> {
-    blocking(core, move |c| c.queue_off_hours(entry, task, off)).await
+pub async fn queue_off_hours(
+    core: CoreState<'_>,
+    entry: Option<crate::ecosystem::IdArg>,
+    task: Option<crate::ecosystem::IdArg>,
+    off: bool,
+) -> Res<Value> {
+    blocking(core, move |c| {
+        let id = |a: Option<crate::ecosystem::IdArg>| a.map(|a| a.parse()).transpose();
+        c.queue_off_hours(id(entry)?, id(task)?, off)
+    })
+    .await
 }
 
 // ---- P3 integrations and the MCP registry (api-contract §1–2)

@@ -64,10 +64,13 @@ fn downgrade_switches_to_sonnet_at_the_next_task_and_undo_restores() {
     let d = g.request_turn(with_model("A-1", "A", Tier::High, "sonnet"), at(61));
     assert_eq!(d.effective, Verdict::Admit, "the downgraded task runs");
     let a = g.actions().iter().rev().find(|a| a.kind_name() == "downgrade").unwrap().clone();
-    // Undo: the role's model at the next task, and no new downgrade while the window stays tight.
+    // Undo: never mid-task. The current task keeps sonnet; the next one gets the role's model,
+    // and no new downgrade comes while the window stays tight.
     g.undo(a.id, at(62)).unwrap();
-    assert!(g.model_override(&agent).is_none());
+    assert_eq!(g.model_override(&agent).map(|o| (o.to.as_str(), o.restore_pending)), Some(("sonnet", true)));
     assert_eq!(g.task_boundary_model(&agent, Some("opus"), Some(&rule), at(63)), None);
+    assert!(g.model_override(&agent).is_none());
+    assert_eq!(g.task_boundary_model(&agent, Some("opus"), Some(&rule), at(64)), None);
     // The window resets: the condition clears and a later squeeze downgrades again.
     let mut g2 = governor();
     opus_window(&mut g2, 60, 95.0);
@@ -121,4 +124,43 @@ fn work_scheduled_off_hours_waits_for_its_window_then_runs_under_its_cap() {
     // Kept across a restart.
     let c = g.carry();
     assert_eq!(c.off_hours, vec![a2]);
+}
+
+#[test]
+fn shadow_mode_logs_a_downgrade_once_and_forgetting_an_agent_clears_its_marks() {
+    let mut p = plan();
+    p.shadow_mode = true;
+    p.off_hours_allowance_pct = 10.0;
+    let mut g = Governor::new(p, policy(), start()).unwrap();
+    opus_window(&mut g, 60, 95.0);
+    let rule = Downgrade { to: "sonnet".into(), when: DowngradeWhen::ModelWindow };
+    let agent = AgentId::from("A-1");
+    for m in 0..20 {
+        assert_eq!(g.task_boundary_model(&agent, Some("opus"), Some(&rule), at(61 + m)), None, "shadow: not applied");
+    }
+    assert_eq!(count(&g, "downgrade"), 1, "logged once, not at every pump");
+    // The condition clears, then comes back: one more entry.
+    opus_window(&mut g, 90, 5.0);
+    g.task_boundary_model(&agent, Some("opus"), Some(&rule), at(91));
+    opus_window(&mut g, 92, 96.0);
+    g.task_boundary_model(&agent, Some("opus"), Some(&rule), at(93));
+    assert_eq!(count(&g, "downgrade"), 2);
+
+    // Off-hours marks: real work only, cleared on cancel and on forget.
+    let mut p = plan();
+    p.off_hours_allowance_pct = 10.0;
+    let mut g = Governor::new(p, policy(), start()).unwrap();
+    let noon = at(hours(3.0));
+    g.set_off_hours(&agent, true, noon).unwrap();
+    assert_eq!(g.off_hours_pending(), 0, "a mark with no work waiting holds nothing");
+    let Verdict::Queue { entry: Some(e), .. } = g.request_turn(task("A-1", "A", Tier::High), noon).effective else {
+        panic!("waits for off-hours")
+    };
+    assert_eq!(g.off_hours_pending(), 1);
+    g.cancel(e, noon);
+    assert_eq!((g.off_hours_pending(), g.off_hours_agents().len()), (0, 0), "cancelled: the mark goes");
+    let b = AgentId::from("B-1");
+    g.set_off_hours(&b, true, noon).unwrap();
+    g.forget_agent(&b);
+    assert!(g.off_hours_agents().is_empty());
 }
