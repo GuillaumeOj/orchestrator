@@ -20,7 +20,10 @@ import {
   usedByRoles,
   usedByText,
 } from '../src/lib/ecosystem.js';
+import { keyIntent as keyIntentOf } from '../src/lib/inbox.js';
 import { fixture } from './fixture.js';
+
+const UNDO_LATER = Date.now() + 60000;
 
 const calls = [];
 const replies = {};
@@ -38,6 +41,10 @@ vi.mock('../src/lib/ipc.js', () => ({
 const { default: SettingsPane } = await import('../src/panes/SettingsPane.svelte');
 const { default: FeaturePane } = await import('../src/panes/FeaturePane.svelte');
 const { default: TeamCanvasPane } = await import('../src/panes/TeamCanvasPane.svelte');
+const { default: DesignSection } = await import('../src/components/DesignSection.svelte');
+const { default: InboxPane } = await import('../src/panes/InboxPane.svelte');
+const { default: Dialogs } = await import('../src/components/Dialogs.svelte');
+const { flushDecisions } = await import('../src/lib/app.svelte.js');
 
 const integ = (id, name, over = {}) => ({
   id,
@@ -66,6 +73,17 @@ const server = (id, over = {}) => ({
   used_by: [],
   ...over,
 });
+
+/** Where a secret shows in the DOM: field values, attributes, text. */
+function leaks(root, secret) {
+  const out = [];
+  for (const el of root.querySelectorAll('input, textarea'))
+    if (/** @type {HTMLInputElement} */ (el).value.includes(secret)) out.push('input value');
+  for (const el of root.querySelectorAll('*'))
+    for (const a of el.attributes) if (a.value.includes(secret)) out.push(`attribute ${a.name}`);
+  if (root.textContent.includes(secret)) out.push('text');
+  return out;
+}
 
 describe('ecosystem helpers', () => {
   it('statuses read as glyph + label; a connector never seen says so', () => {
@@ -190,16 +208,18 @@ describe('Settings pane', () => {
     expect(input.type).toBe('password');
     await fireEvent.input(input, { target: { value: 'lin_api_SECRET1234' } });
     expect(container.textContent).toContain('1234'); // the last 4, only while typing
+    expect(leaks(container, 'SECRET')).toEqual(['input value']); // the check sees a typed value
     await fireEvent.keyDown(input, { key: 'Enter', metaKey: true });
     await tick();
-    expect(input.value ?? '').toBe('');
-    expect(container.innerHTML).not.toContain('SECRET');
+    expect(input.value).toBe('');
+    expect(leaks(container, 'SECRET')).toEqual([]);
     release();
     await waitFor(() => expect(app.toasts.at(-1)?.text).toBe('Linear token stored in Keychain'));
     await waitFor(() =>
       expect(container.querySelector('[data-integration="linear"]').textContent).toContain('Stored in Keychain'),
     );
-    expect(container.innerHTML).not.toContain('lin_api');
+    expect(leaks(container, 'lin_api')).toEqual([]);
+    expect(app.toasts.map((t) => t.text).join(' ')).not.toContain('lin_api');
   });
 
   it('integrations keys: j moves, t tests, x asks before removing the token', async () => {
@@ -596,8 +616,239 @@ describe('role inspector, Design section and presets (T-7)', () => {
     await waitFor(() =>
       expect(calls.some(([c, a]) => c === 'team_set_preset' && a.team === 'mine' && a.preset)).toBe(true),
     );
-    await fireEvent.click(lib.querySelectorAll('.pacts .link')[0]);
+    await fireEvent.click([...lib.querySelectorAll('.pacts .link')].find((b) => b.textContent === 'Launch'));
     expect(app.overlay).toEqual({ kind: 'launch', teamId: 'full-stack', projectId: 'shop-api' });
     app.overlay = null;
+  });
+
+  it('Design section: selection follows the tile, previews refetch after the merge and retry errors', async () => {
+    let fail = true;
+    replies.artifact_preview = (a) =>
+      fail && a.artifact === 2
+        ? Promise.reject('not found on branch')
+        : {
+            mime: 'image/png',
+            data_b64: 'AAAA',
+            bytes: 2048,
+            source: a.artifact === 1 && !merged ? 'branch' : 'integration',
+          };
+    replies.artifact_open = null;
+    let merged = false;
+    const one = file(1, 'welcome-1.png', {
+      meta: { tool: 'file', path: 'd/welcome-1.png', previewable: true, on_integration: false },
+    });
+    const v1 = featureView([one, file(2, 'welcome-2.png')]);
+    const { container, rerender } = render(DesignSection, { v: v1 });
+    await waitFor(() =>
+      expect(container.textContent).toContain("Not found on ui-1's branch or the integration branch."),
+    );
+    expect(container.textContent).toContain("On ui-1's branch · not merged");
+    const sec = container.querySelector('[aria-label="Design"]');
+    await fireEvent.keyDown(sec, { key: 'l' });
+    expect(container.querySelector('.tile.sel').getAttribute('data-artifact')).toBe('2');
+    // The next poll: a newer group comes first, the file got committed and merged.
+    fail = false;
+    merged = true;
+    const ux = art(9, 'https://www.figma.com/design/k/x?node-id=1-2', {
+      from_node: 'ux',
+      to_node: 'ui',
+      created_at_ms: Date.now(),
+    });
+    const merged1 = { ...one, meta: { ...one.meta, on_integration: true } };
+    await rerender({ v: featureView([merged1, file(2, 'welcome-2.png'), ux]) });
+    await waitFor(() => expect(container.querySelectorAll('.tile img')).toHaveLength(2));
+    expect(container.querySelector('.tile.sel').getAttribute('data-artifact')).toBe('2');
+    expect(container.textContent).not.toContain('not merged');
+    expect(calls.filter(([c, a]) => c === 'artifact_preview' && a.artifact === 1)).toHaveLength(2);
+    // ⏎ on a focused button is the button's own: the section does not open too.
+    const openBtn = [...container.querySelectorAll('.tile.sel .link')].find((b) => b.textContent === 'Open');
+    await fireEvent.keyDown(openBtn, { key: 'Enter' });
+    expect(calls.some(([c]) => c === 'artifact_open')).toBe(false);
+    await fireEvent.keyDown(sec, { key: 'Enter' });
+    await waitFor(() => expect(calls.some(([c, a]) => c === 'artifact_open' && a.artifact === 2)).toBe(true));
+  });
+
+  it('MCP needs-auth Inbox item: a reconnects and o opens Settings at once, routed by the core', async () => {
+    const item = {
+      id: 'alert-7',
+      level: 2,
+      kind: 'alert',
+      agent_id: null,
+      title: 'Penpot MCP needs authentication',
+      detail: 'ux-1 and ui-1 use it',
+      preview: null,
+      created_ms: Date.now(),
+      actions: ['a', 'o', 'r'],
+      payload: { alert: 'mcp_needs_auth', server: 'penpot', name: 'Penpot', project: 'shop-api' },
+    };
+    app.data = { ...fixture(), inbox: { badge: 1, items: [item] } };
+    app.panes = {};
+    app.layout = null;
+    app.pending = [];
+    replies.inbox_act = (a) =>
+      a.action === 'reconnect'
+        ? { open: 'url', url: 'https://claude.ai/settings/connectors', server: 'penpot' }
+        : a.action === 'open'
+          ? { open: 'settings', server: 'penpot' }
+          : 'dismissed';
+    replies.open_url = null;
+    replies.integrations_view = { items: [] };
+    replies.mcp_registry_view = { servers: [], project_overrides: {} };
+    const { container, getAllByText } = render(InboxPane);
+    expect(getAllByText('Reconnect', { exact: false }).length).toBeGreaterThan(0);
+    const root = container.querySelector('[data-pane-focus]');
+    await fireEvent.keyDown(root, { key: 'a' });
+    await waitFor(() =>
+      expect(calls.some(([c, a]) => c === 'open_url' && a.url === 'https://claude.ai/settings/connectors')).toBe(true),
+    );
+    expect(calls.find(([c]) => c === 'inbox_act')[1]).toEqual({ item: 'alert-7', action: 'reconnect', message: null });
+    expect(app.pending).toHaveLength(0); // no undo window: nothing was decided
+    await fireEvent.keyDown(root, { key: 'o' });
+    await waitFor(() => expect(Object.values(app.panes).some((p) => p.type === 'settings')).toBe(true));
+    expect(Object.values(app.panes).find((p) => p.type === 'settings')).toMatchObject({
+      section: 'mcp',
+      server: 'penpot',
+      projectId: 'shop-api',
+    });
+    // An http server's reconnect: a pane running claude /mcp, from a flushed decision too.
+    replies.inbox_act = { open: 'pane', run: 'claude /mcp', server: 'figma' };
+    replies.term_spawn = { id: 4, cwd: '/dev/shop-api' };
+    app.pending = [{ item: 'alert-7', action: 'reconnect', message: null, at: 0, toast: 'x', project: 'shop-api' }];
+    await flushDecisions(UNDO_LATER);
+    await waitFor(() => expect(calls.some(([c, a]) => c === 'term_spawn' && a.req.run === 'claude /mcp')).toBe(true));
+    // r dismisses through the undo window, as before.
+    expect(keyIntentOf('r', item)).toEqual({ kind: 'decide', action: 'reject' });
+    app.panes = {};
+    app.layout = null;
+    app.pending = [];
+  });
+
+  it('MCP env Keychain values: status from the core, stored with mcp_secret_set, removed with mcp_secret_delete', async () => {
+    replies.mcp_registry_view = {
+      servers: [
+        server('figma-local', { name: 'Figma local', env: { FIGMA_TOKEN: 'keychain:figma', OTHER: 'keychain:other' } }),
+      ],
+      project_overrides: {},
+    };
+    replies.integrations_view = { items: [] };
+    replies.mcp_secrets_status = { figma: true, other: false };
+    replies.mcp_secret_delete = null;
+    replies.mcp_secret_set = null;
+    app.panes.s1 = { type: 'settings', section: 'mcp', server: 'figma-local', title: 'Settings' };
+    const { container } = render(SettingsPane, { paneId: 's1' });
+    await waitFor(() => expect(container.querySelectorAll('.kc')).toHaveLength(2));
+    await waitFor(() => expect(container.querySelectorAll('.kc')[0].textContent).toContain('Stored in Keychain'));
+    expect(calls.find(([c]) => c === 'mcp_secrets_status')[1]).toEqual({ accounts: ['figma', 'other'] });
+    const [figma, other] = container.querySelectorAll('.kc');
+    expect(other.querySelector('input[type=password]')).toBeTruthy();
+    // Store "other".
+    const input = /** @type {HTMLInputElement} */ (other.querySelector('input[type=password]'));
+    await fireEvent.input(input, { target: { value: 'tok-123456' } });
+    await fireEvent.keyDown(input, { key: 'Enter', metaKey: true });
+    await waitFor(() =>
+      expect(calls.some(([c, a]) => c === 'mcp_secret_set' && a.account === 'other' && a.value === 'tok-123456')).toBe(
+        true,
+      ),
+    );
+    expect(leaks(container, 'tok-123456')).toEqual([]);
+    // Remove "figma": asks, then deletes; the field is empty again.
+    await fireEvent.click([...figma.querySelectorAll('button')].find((b) => b.textContent === 'Remove'));
+    expect(app.overlay).toMatchObject({ kind: 'confirm', text: 'Remove figma from the Keychain?' });
+    await app.overlay.onYes();
+    app.overlay = null;
+    expect(calls.some(([c, a]) => c === 'mcp_secret_delete' && a.account === 'figma')).toBe(true);
+    await tick();
+    expect(container.querySelectorAll('.kc')[0].querySelector('input[type=password]')).toBeTruthy();
+    expect(calls.some(([c]) => c === 'integration_secret_set')).toBe(false);
+  });
+
+  it('integrations: the selection stays on its row when a test re-sorts the list', async () => {
+    replies.integrations_view = {
+      items: [
+        integ('github', 'GitHub', { status: 'connected' }),
+        integ('linear', 'Linear'),
+        integ('notion', 'Notion', { has_secret: true, status: 'needs_auth' }),
+      ],
+    };
+    replies.integration_test = (a) => integ(a.id, 'Notion', { has_secret: true, status: 'connected' });
+    app.panes.s1 = { type: 'settings', section: 'integrations', title: 'Settings' };
+    const { container, getByText } = render(SettingsPane, { paneId: 's1' });
+    await waitFor(() => getByText('Needs auth'));
+    const sec = container.querySelector('[aria-label="Integrations"]');
+    expect(container.querySelector('.row.sel').getAttribute('data-integration')).toBe('notion');
+    await fireEvent.keyDown(sec, { key: 't' });
+    await waitFor(() =>
+      expect(container.querySelector('[data-integration]:last-child')?.getAttribute('data-integration')).toBe('notion'),
+    );
+    expect(container.querySelector('.row.sel').getAttribute('data-integration')).toBe('notion');
+    await fireEvent.keyDown(sec, { key: 'x' });
+    expect(app.overlay).toMatchObject({ text: 'Remove the Notion token from the Keychain?' });
+    app.overlay = null;
+  });
+
+  it('launch dialog: the Design tools line, and its needs-auth warning', async () => {
+    const roles = [role('lead', 'Lead'), role('ui', 'UI', { mcp_refs: ['penpot'] })];
+    replies.teams_view = { teams: [{ team: canvasTeam, issues: [], rules: [] }], roles };
+    replies.mcp_registry_view = {
+      servers: [server('penpot', { name: 'Penpot', kind: 'connector', design_tool: 'penpot', status: 'unknown' })],
+      project_overrides: {},
+    };
+    app.overlay = { kind: 'launch', teamId: 'full-stack', projectId: 'shop-api' };
+    const { container } = render(Dialogs);
+    await waitFor(() =>
+      expect(container.textContent).toMatch(/Design tools: ui use Penpot \(claude\.ai connector · \S* ?Not seen yet\)/),
+    );
+    cleanup();
+    replies.mcp_registry_view = {
+      servers: [server('penpot', { name: 'Penpot', kind: 'connector', design_tool: 'penpot', status: 'needs_auth' })],
+      project_overrides: {},
+    };
+    app.overlay = { kind: 'launch', teamId: 'full-stack', projectId: 'shop-api' };
+    const r2 = render(Dialogs);
+    await waitFor(() =>
+      expect(r2.container.textContent).toContain('Penpot MCP needs authentication: ui will fail its tools.'),
+    );
+    expect(r2.container.textContent).toContain('Launch anyway');
+    app.overlay = null;
+  });
+
+  it('a starter is read-only: the first edit asks where to save a copy; Get the new starter copies it', async () => {
+    canvasReplies([role('lead', 'Lead'), role('ui', 'UI')]);
+    replies.team_duplicate = (a) => ({
+      team: { ...canvasTeam, id: 'full-stack-copy', name: 'Full-stack (copy)', scope: a.to },
+      roles_copied: [],
+    });
+    replies.team_save = (a) => ({ team: { ...a.team, version: 2 }, issues: [] });
+    replies.starter_copy = (a) => ({ team: { ...canvasTeam, id: `${a.starter}-v4` } });
+    app.panes.c1 = { type: 'canvas', teamId: 'full-stack', projectId: 'shop-api', title: 'Team' };
+    const { container, getByText } = render(TeamCanvasPane, { paneId: 'c1' });
+    await waitFor(() => getByText('Lead', { selector: '.muted', exact: false }));
+    const pane = container.querySelector('.canvas-pane');
+    await fireEvent.keyDown(pane, { key: '=' }); // auto-layout: an edit
+    await tick();
+    expect(container.querySelector('[aria-label="Starter"]').textContent).toContain(
+      'Starters are templates. Your changes will be saved as a copy in shop-api.',
+    );
+    expect(calls.some(([c]) => c === 'team_save')).toBe(false);
+    await fireEvent.keyDown(pane, { key: 'Enter' });
+    await waitFor(() =>
+      expect(calls.some(([c, a]) => c === 'team_duplicate' && a.team === 'full-stack' && a.to.id === 'shop-api')).toBe(
+        true,
+      ),
+    );
+    await waitFor(
+      () => expect(calls.some(([c, a]) => c === 'team_save' && a.team.id === 'full-stack-copy')).toBe(true),
+      {
+        timeout: 2000,
+      },
+    );
+    await fireEvent.keyDown(pane, { key: 'R', shiftKey: true });
+    await tick();
+    await fireEvent.click(getByText('Get the new starter'));
+    await waitFor(() =>
+      expect(calls.some(([c, a]) => c === 'starter_copy' && a.starter === 'full-stack' && a.to.kind === 'global')).toBe(
+        true,
+      ),
+    );
   });
 });

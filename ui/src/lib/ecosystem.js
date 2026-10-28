@@ -313,9 +313,8 @@ export function size(bytes) {
 }
 
 /** Tile copy for a failed preview (§5.6, J12 failure branches). */
-export function previewError(err, a) {
+export function previewError(err, a, from = a?.from_node ?? 'the designer') {
   const e = String(err ?? '');
-  const from = a?.from_node ?? 'the designer';
   if (/too large/i.test(e)) {
     const m = e.match(/([\d.]+)\s*MB/);
     return `Too large to preview (${m ? `${m[1]} MB · ` : ''}max 5 MB)`;
@@ -330,3 +329,23 @@ export function notMerged(a, preview = null) {
   if (preview?.source === 'branch') return true;
   return a?.meta?.tool === 'file' && a?.meta?.on_integration === false;
 }
+
+/**
+ * The Launch dialog's Design tools line (J12 · 1): each design-tool server
+ * the team's roles use, with the nodes using it.
+ */
+export function designTools(team, roles, servers) {
+  const out = [];
+  for (const s of servers ?? []) {
+    if (!s.design_tool) continue;
+    const nodes = (team?.nodes ?? [])
+      .filter((n) => (roles ?? []).find((r) => r.id === n.role_id)?.mcp_refs?.includes(s.id))
+      .map((n) => n.id);
+    if (nodes.length) out.push({ server: s, nodes });
+  }
+  return out;
+}
+
+/** "ux, ui" / "ux and ui" (the warning reads as a sentence). */
+export const nodeList = (nodes, and = false) =>
+  and && nodes.length > 1 ? `${nodes.slice(0, -1).join(', ')} and ${nodes.at(-1)}` : nodes.join(', ');

@@ -5,7 +5,8 @@
   // (FR-202: killed, checked, hidden; worktrees on request), confirmations.
   // ⌘⏎ submits; esc cancels.
   import { untrack } from 'svelte';
-  import { activeAgents, agent, app, contextProject, deleteAgent, deleteFeature, features, openAgent, openFeature, openProject, projects, refresh, toast } from '../lib/app.svelte.js';
+  import { activeAgents, agent, app, contextProject, deleteAgent, deleteFeature, features, openAgent, openFeature, openProject, openSettings, projects, refresh, toast } from '../lib/app.svelte.js';
+  import { connStatus, designTools, effectiveServers, nodeList } from '../lib/ecosystem.js';
   import { expandHome, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { PRESSURE } from '../lib/status.js';
@@ -29,6 +30,7 @@
   // Launch on feature
   let launch = $state({ project_id: '', team_id: '', existing: '', slug: '', title: '', brief: '', base: '' });
   let teamsView = $state(null);
+  let registry = $state([]); // MCP servers the project sees (the Design tools line)
   /** The teams seen from `project_id` (its own and the global ones). A team
    *  that isn't among them, or an existing feature of another project, is
    *  dropped from the form. */
@@ -41,6 +43,9 @@
         if (!v.teams.some((t) => t.team.id === launch.team_id)) launch.team_id = v.teams[0]?.team.id ?? '';
       })
       .catch((e) => (error = errText(e)));
+    invoke('mcp_registry_view', { project: project_id || null })
+      .then((r) => launch.project_id === project_id && (registry = effectiveServers(r, project_id || null)))
+      .catch(() => (registry = []));
   }
   function setLaunchProject(project_id) {
     launch.project_id = project_id;
@@ -59,6 +64,7 @@
     });
   });
   const launchTeam = $derived(teamsView?.teams.find((t) => t.team.id === launch.team_id));
+  const launchTools = $derived(designTools(launchTeam?.team, teamsView?.roles, registry));
   const free = $derived(features().filter((f) => f.project_id === launch.project_id && (!f.run || runFinished(f.run.status))));
   const launchSlug = $derived(launch.existing ? (free.find((f) => f.id === launch.existing)?.slug ?? '') : launch.slug || slugify(launch.title));
 
@@ -300,6 +306,14 @@
         <span>• The lead drafts spec.md (and ux-brief.md, api-contract.md) in <span class="mono">.orchestrator/features/{launchSlug || '…'}/</span>, then asks for the Spec gate.</span>
         <span>• Specialists start after the gate, as the Governor and the live-agent cap allow.</span>
       </div>
+      {#each launchTools as d (d.server.id)}
+        {@const st = connStatus(d.server.status, d.server.kind === 'connector')}
+        {#if d.server.status === 'needs_auth'}
+          <p class="note tools warn">{d.server.name} MCP needs authentication: {nodeList(d.nodes, true)} will fail its tools. <button type="button" class="linkbtn" onclick={() => openSettings('mcp', d.server.id, launch.project_id || null)}>Open Settings</button> <Kbd keys="⌘+," /> · Launch anyway <Kbd keys="⌘+⏎" /></p>
+        {:else}
+          <p class="note tools">Design tools: {nodeList(d.nodes)} use <b>{d.server.name}</b> ({d.server.kind === 'connector' ? 'claude.ai connector' : d.server.kind} · <span style:color={st.color} aria-hidden="true">{st.icon}</span> {st.label})</p>
+        {/if}
+      {/each}
       {#if snap}
         <p class="note"><span style:color={PRESSURE[snap.state]?.color}>{PRESSURE[snap.state]?.icon}</span> Governor {PRESSURE[snap.state]?.label}{app.data?.usage?.shadow ? ' (shadow mode)' : ''} · {live}/{snap.live_cap} live: the lead {live >= snap.live_cap ? 'queues for a live slot' : 'starts when its first turn is admitted'}.</p>
       {/if}
@@ -453,6 +467,17 @@
     padding: var(--space-sm);
     background: var(--color-surface-raised);
     border-radius: var(--radius-sm);
+  }
+  .tools.warn {
+    border-left: var(--border-width-focus) solid var(--color-status-waiting-for-you);
+  }
+  .linkbtn {
+    padding: 0;
+    background: none;
+    border: 0;
+    color: var(--color-accent-default);
+    font: inherit;
+    cursor: pointer;
   }
   .err {
     white-space: pre-wrap;

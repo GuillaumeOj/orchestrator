@@ -5,7 +5,7 @@
   // per-entry opt-in (FR-110 tone). Keys: j/k rows, n new, ⏎ edit, t test,
   // x delete; in the drawer ⌘⏎ save, esc close.
   import { onMount } from 'svelte';
-  import { confirm, openCanvas, runInPane, toast } from '../lib/app.svelte.js';
+  import { confirm, openCanvas, openUrl, runInPane, toast } from '../lib/app.svelte.js';
   import {
     argsToText,
     blankServer,
@@ -42,7 +42,7 @@
   let problem = $state(null);
   let refused = $state(null); // { id, used_by }
   let busy = $state({});
-  let stored = $state({}); // Keychain accounts stored in this session
+  let stored = $state({}); // Keychain account → stored (mcp_secrets_status); never the value
   let now = $state(Date.now());
   let root = $state(null);
 
@@ -153,20 +153,56 @@
   /** Reconnect per kind (D3): a pane with claude /mcp, or the connector settings. */
   async function reconnect(s) {
     if (s.kind === 'http' || s.kind === 'sse') return runInPane('claude /mcp', `claude /mcp · ${s.name}`, project);
-    if (s.kind === 'connector') {
-      await navigator.clipboard?.writeText(CONNECTOR_URL).catch(() => {});
-      toast(`Copied ${CONNECTOR_URL}: open it in your browser to reconnect ${s.connector_name || s.name}`, { ms: 10000 });
+    if (s.kind === 'connector') return openUrl(CONNECTOR_URL);
+  }
+
+  // ---- Keychain values for `keychain:<account>` env refs (their own
+  // namespace, apart from the integrations' tokens). Only stored / empty
+  // comes back from the core.
+  const accounts = $derived(Object.values(env).map(keychainAccount).filter((a) => a != null));
+  const accountsKey = $derived([...new Set(accounts)].sort().join('\n'));
+
+  async function loadSecrets(list) {
+    if (!list.length) return;
+    try {
+      const r = await invoke('mcp_secrets_status', { accounts: list });
+      stored = { ...stored, ...r };
+    } catch {
+      // Unknown: the fields read as empty; Save still works.
     }
   }
 
-  async function storeSecret(account, secret) {
+  $effect(() => {
+    const list = accountsKey ? accountsKey.split('\n') : [];
+    const t = setTimeout(() => loadSecrets(list), 300);
+    return () => clearTimeout(t);
+  });
+
+  async function storeSecret(account, value) {
     try {
-      await invoke('integration_secret_set', { id: account, secret });
+      await invoke('mcp_secret_set', { account, value });
       stored = { ...stored, [account]: true };
       toast(`${account} stored in Keychain`);
     } catch (e) {
       toast(`${account}: ${errText(e)}. Nothing was stored.`, { kind: 'error' });
     }
+  }
+
+  function removeSecret(account) {
+    confirm(
+      `Remove ${account} from the Keychain?`,
+      'Servers that use it fail to start until you store a value again.',
+      async () => {
+        try {
+          await invoke('mcp_secret_delete', { account });
+          stored = { ...stored, [account]: false };
+          toast(`${account} removed from Keychain`);
+        } catch (e) {
+          toast(`${account}: ${errText(e)}`, { kind: 'error' });
+        }
+      },
+      'Remove',
+    );
   }
 
   function onKey(e) {
@@ -177,7 +213,7 @@
       root?.focus();
       return;
     }
-    if (e.target.closest('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.target.closest('input, textarea, select, button') || e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key;
     if (k === 'j' || k === 'ArrowDown') sel = Math.min(servers.length - 1, sel + 1);
     else if (k === 'k' || k === 'ArrowUp') sel = Math.max(0, sel - 1);
@@ -285,7 +321,7 @@
             {#if account != null}
               <div class="kc">
                 <span class="chip"><span aria-hidden="true">{'\u{F033E}'}</span> {k} from Keychain: {account}</span>
-                <SecretField stored={!!stored[account]} placeholder="Paste the value to store as {account}" onsave={(val) => storeSecret(account, val)} onremove={() => {}} />
+                <SecretField stored={!!stored[account]} placeholder="Paste the value to store as {account}" onsave={(val) => storeSecret(account, val)} onremove={() => removeSecret(account)} />
               </div>
             {/if}
           {/each}

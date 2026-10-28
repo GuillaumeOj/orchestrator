@@ -270,13 +270,45 @@ export function openSingleton(type) {
  * P3: Settings (⌘,), one pane, opened straight to a section ('integrations' |
  * 'mcp' | …) with a server selected (banners, Inbox items, the inspector).
  */
-export function openSettings(section = null, server = null) {
+export function openSettings(section = null, server = null, projectId = null) {
   const existing = findPane((s) => s.type === 'settings');
   if (existing) {
-    if (section) app.panes[existing] = { ...app.panes[existing], section, server };
+    if (section) app.panes[existing] = { ...app.panes[existing], section, server, projectId };
     return focusPane(existing);
   }
-  addPane({ type: 'settings', section: section ?? 'integrations', server }, app.layout ? 'tab' : 'right');
+  addPane({ type: 'settings', section: section ?? 'integrations', server, projectId }, app.layout ? 'tab' : 'right');
+}
+
+/** A link in the browser (the core runs `open`; only http(s)). */
+export async function openUrl(url) {
+  try {
+    await invoke('open_url', { url });
+  } catch (e) {
+    toast(`Could not open ${url}: ${errText(e)}`, { kind: 'error' });
+  }
+}
+
+/**
+ * Where an Inbox action sends the user (D3): `{open: 'settings', server}`,
+ * `{open: 'pane', run}` or `{open: 'url', url}`. Anything else: nothing.
+ */
+export function routeOpen(r, projectId = null) {
+  if (!r || typeof r !== 'object') return false;
+  if (r.open === 'settings') openSettings('mcp', r.server ?? null, projectId);
+  else if (r.open === 'pane' && r.run) runInPane(r.run, `${r.run}${r.server ? ` · ${r.server}` : ''}`, projectId);
+  else if (r.open === 'url' && r.url) openUrl(r.url);
+  else return false;
+  return true;
+}
+
+/** An MCP alert's Reconnect / Open Settings: to the core now (no undo window), then routed. */
+export async function alertAct(item, action) {
+  try {
+    const r = await invoke('inbox_act', { item: item.id, action, message: null });
+    routeOpen(r, item.payload?.project ?? null);
+  } catch (e) {
+    toast(errText(e), { kind: 'error' });
+  }
 }
 
 /** A command in a shell pane (gh auth login, claude /mcp); the user exits it. */
@@ -718,6 +750,15 @@ export function commands() {
     { id: 'settings', label: 'Settings', run: () => openSettings() },
     { id: 'settings.integrations', label: 'Settings: Integrations', run: () => openSettings('integrations') },
     { id: 'settings.mcp', label: 'Settings: MCP servers', run: () => openSettings('mcp') },
+    ...(contextProject()
+      ? [
+          {
+            id: 'settings.mcp.project',
+            label: `Settings: MCP servers for ${contextProject().name}`,
+            run: () => openSettings('mcp', null, contextProject().id),
+          },
+        ]
+      : []),
     { id: 'plan.edit', label: 'Edit the weekly plan…', run: () => (app.overlay = { kind: 'plan' }) },
     { id: 'team.canvas', label: 'Open the Team canvas', run: () => openCanvas() },
     {
@@ -924,7 +965,10 @@ export function decide(item, action, message = null) {
   if (app.pending.some((p) => p.item === item.id)) return;
   const text = toastFor(item, action);
   const t = toast(text, { ms: UNDO_MS, undo: true, item: item.id });
-  app.pending = [...app.pending, { item: item.id, action, message, at: Date.now(), toast: t }];
+  app.pending = [
+    ...app.pending,
+    { item: item.id, action, message, at: Date.now(), toast: t, project: item.payload?.project ?? null },
+  ];
 }
 
 export function undoLast() {
@@ -948,7 +992,8 @@ export async function flushDecisions(now = Date.now()) {
   for (const p of due(app.pending, now)) {
     app.pending = app.pending.filter((x) => x !== p);
     try {
-      await invoke('inbox_act', { item: p.item, action: p.action, message: p.message });
+      const r = await invoke('inbox_act', { item: p.item, action: p.action, message: p.message });
+      routeOpen(r, p.project);
     } catch (e) {
       toast(errText(e), { kind: 'error' });
     }

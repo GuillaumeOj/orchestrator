@@ -81,9 +81,14 @@
     mode = null;
   }
 
-  /** One edit: recorded for undo, then saved. */
+  /** One edit: recorded for undo, then saved. A starter is a template: the
+   *  first edit asks where to save a copy instead (p3-design-notes §5.8). */
   function edit(next) {
     if (!next || next === team) return;
+    if (saved?.starter && status === 'saved') {
+      mode = { kind: 'starter', next };
+      return;
+    }
     history.push($state.snapshot(team));
     team = next;
     scheduleSave();
@@ -234,6 +239,35 @@
     }
   }
 
+  /** The starter edit, applied to a copy in `to` ('project' | 'global'). */
+  async function copyStarter(to) {
+    const next = mode?.kind === 'starter' ? mode.next : null;
+    mode = null;
+    const target = to === 'project' && project ? { kind: 'project', id: project } : { kind: 'global' };
+    try {
+      const r = await invoke('team_duplicate', { team: team.id, from: scopeOf(team), to: target, newId: null });
+      await load();
+      open(view.teams.find((x) => x.team.id === r.team.id) ?? { team: r.team, issues: [], rules: [] });
+      if (next) edit({ ...next, id: r.team.id, name: r.team.name, scope: r.team.scope, version: r.team.version });
+      toast(`Saved your changes as ${r.team.name} in ${target.kind === 'project' ? projectName : 'global'}`);
+    } catch (e) {
+      toast(`Copy: ${errText(e)}`, { kind: 'error' });
+    }
+  }
+
+  /** "Update available": a fresh copy of the app's starter, to compare with the edited one. */
+  async function getNewStarter(t) {
+    try {
+      const r = await invoke('starter_copy', { starter: t.starter, to: scopeOf(t.team), newId: null });
+      await load();
+      const v = view.teams.find((x) => x.team.id === r.team.id);
+      if (v) open(v);
+      toast(`Copied the new ${t.team.name} starter as ${r.team.id}`);
+    } catch (e) {
+      toast(`New starter: ${errText(e)}`, { kind: 'error' });
+    }
+  }
+
   function launchPreset(t) {
     mode = null;
     app.overlay = { kind: 'launch', teamId: t.id, projectId: project };
@@ -281,6 +315,12 @@
       if (k === 'Escape') return ((mode = null), handled());
       const d = Number(k);
       if (d >= 1 && d <= roles.length) return (addRole(roles[d - 1].id), handled());
+      return handled();
+    }
+    if (mode?.kind === 'starter') {
+      if (k === 'Enter' && project) copyStarter('project');
+      else if (k === 'g' || (k === 'Enter' && !project)) copyStarter('global');
+      else if (k === 'Escape') mode = null;
       return handled();
     }
     if (mode?.kind === 'dup') {
@@ -371,8 +411,15 @@
   }
   function up() {
     if (drag?.kind === 'node' && drag.moved) {
-      history.push(drag.before);
-      scheduleSave();
+      if (saved?.starter && status === 'saved') {
+        // A starter's node moved: ask where to copy it, and put the starter back.
+        const next = $state.snapshot(team);
+        team = drag.before;
+        mode = { kind: 'starter', next };
+      } else {
+        history.push(drag.before);
+        scheduleSave();
+      }
     }
     drag = null;
   }
@@ -518,12 +565,13 @@
             {#each view?.teams ?? [] as t (t.team.id)}
               <div class="preset" class:on={team?.id === t.team.id}>
                 <button class="popen" onclick={() => open(t)}>
-                  <span class="pname">{t.team.name}{#if t.preset}<span class="tag">{t.starter ? 'Starter' : 'Preset'}</span>{/if}{#if t.update_available}<span class="tag upd">Update available</span>{/if}</span>
+                  <span class="pname">{t.team.name}{#if t.preset}<span class="tag">{t.starter ? 'Starter · read-only' : 'Preset'}</span>{/if}{#if t.update_available}<span class="tag upd">Update available</span>{/if}</span>
                   <span class="roles">{#each t.team.nodes as n (n.id)}<AgentChip id={n.id} role={n.role_id} compact />{/each}</span>
                   <span class="muted">v{t.team.version} · {t.team.scope?.kind === 'project' ? t.team.scope.id : 'global'}{t.issues.length ? ` · ${t.issues.length} issue(s)` : ''}</span>
                 </button>
                 {#if t.update_available}<span class="muted upline">The {t.team.name} starter changed in this version. Your copy was edited, so it wasn't updated. Duplicate the new starter to compare.</span>{/if}
                 <div class="pacts">
+                  {#if t.update_available && t.starter}<button class="link" onclick={() => getNewStarter(t)}>Get the new starter</button>{/if}
                   <button class="link" onclick={() => launchPreset(t.team)}>Launch</button>
                   <button class="link" onclick={() => (mode = { kind: 'dup', what: { kind: 'team', team: t.team } })}>Duplicate</button>
                   {#if !t.starter}<button class="link" onclick={() => setPreset(t.team, !t.preset)}>{t.preset ? 'Remove from presets' : 'Save as preset'}</button>{/if}
@@ -532,6 +580,14 @@
             {/each}
           </div>
           <button class="btn ghost" onclick={newTeam}>New team</button>
+        </div>
+      {:else if mode?.kind === 'starter'}
+        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Starter">
+          <b>{team?.name} is a starter</b>
+          <span>Starters are templates. Your changes will be saved as a copy{project ? ` in ${projectName}` : ' in global'}.</span>
+          {#if project}<button class="opt" onclick={() => copyStarter('project')}><Kbd keys="⏎" /> copy in {projectName}</button>{/if}
+          <button class="opt" onclick={() => copyStarter('global')}><Kbd keys={project ? 'g' : '⏎'} /> copy in global</button>
+          <span class="muted">esc cancel (the starter is left as it is)</span>
         </div>
       {:else if mode?.kind === 'dup'}
         {@const w = mode.what}
@@ -579,7 +635,7 @@
               {#each ['strict', 'gated', 'autonomous'] as v (v)}<option value={v}>{v}</option>{/each}
             </select>
           </label>
-          <RoleMcp {role} servers={registry} isLead={node.is_lead} onsave={saveRole} />
+          <RoleMcp {role} servers={registry} isLead={node.is_lead} {project} onsave={saveRole} />
           <label><span>max live</span><input class="field" type="number" min="1" max="9" value={node.max_concurrency} disabled={node.is_lead} onchange={(e) => edit(C.updateNode(team, node.id, { max_concurrency: Math.max(1, Number(e.currentTarget.value) || 1) }))} /></label>
           <label><span>budget</span>
             <select class="field" value={role.budget_priority} onchange={(e) => saveRole({ budget_priority: e.currentTarget.value })}>

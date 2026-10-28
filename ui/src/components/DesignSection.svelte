@@ -18,13 +18,13 @@
   let { v } = $props();
 
   let previews = $state({}); // artifact id → { state: 'loading' | 'ok' | 'error', src?, mime?, bytes?, source?, error? }
-  let sel = $state(0);
+  let selId = $state(null); // by id: the poll may add or reorder tiles
   let big = $state(null); // { id, fit: boolean, w?, h? }
   let root = $state(null);
 
   const groups = $derived(designGroups(v.artifacts));
   const tiles = $derived(groups.flatMap((g) => g.items));
-  const cur = $derived(tiles[sel] ?? null);
+  const cur = $derived(tiles.find((a) => a.id === selId) ?? tiles[0] ?? null);
   const featureId = $derived(v.feature.id);
   /** A node's agent id in this run ("ui" → "onboarding-ui-1"), else the node. */
   const who = (node) => v.agents?.find((a) => a.node === node)?.id ?? node;
@@ -39,19 +39,35 @@
       : "No designs yet. Exported frames show here when they're handed off.";
   });
 
+  /** What a preview depends on: the file moves to the integration branch at the merge. */
+  const previewKey = (a) => `${a.id}:${a.meta?.on_integration ?? ''}:${a.meta?.path ?? a.uri}`;
+  const inflight = new Set();
+
+  /**
+   * Fetches a tile's preview when it has none, when its source may have
+   * changed (merged since), or after an error (retried on each poll: the
+   * designer may commit the file later). What is shown stays until the new
+   * answer arrives.
+   */
   async function loadPreview(a) {
-    if (!previewable(a) || previews[a.id]?.state === 'ok' || previews[a.id]?.state === 'loading') return;
-    previews = { ...previews, [a.id]: { state: 'loading' } };
+    if (!previewable(a)) return;
+    const key = previewKey(a);
+    const have = previews[a.id];
+    if (inflight.has(a.id) || (have && have.key === key && have.state !== 'error')) return;
+    inflight.add(a.id);
+    if (!have) previews = { ...previews, [a.id]: { state: 'loading', key } };
     try {
       const r = await invoke('artifact_preview', { feature: featureId, artifact: a.id });
       // SVG too: only ever as an <img> data URL, never inlined into the DOM.
-      previews = { ...previews, [a.id]: { state: 'ok', src: `data:${r.mime};base64,${r.data_b64}`, mime: r.mime, bytes: r.bytes, source: r.source } };
+      previews = { ...previews, [a.id]: { state: 'ok', key, src: `data:${r.mime};base64,${r.data_b64}`, mime: r.mime, bytes: r.bytes, source: r.source } };
     } catch (e) {
-      previews = { ...previews, [a.id]: { state: 'error', error: errText(e) } };
+      previews = { ...previews, [a.id]: { state: 'error', key, error: errText(e) } };
+    } finally {
+      inflight.delete(a.id);
     }
   }
 
-  // Each tile's preview once (the pane's poll replaces `v` every few seconds).
+  // On every poll (the pane replaces `v` every few seconds); loadPreview skips what is current.
   $effect(() => {
     const list = tiles;
     untrack(() => {
@@ -101,6 +117,8 @@
   function onKey(e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key;
+    // A focused button (Open, Ask to export) handles its own ⏎ and Space.
+    if ((k === 'Enter' || k === ' ') && e.target.closest?.('button')) return;
     if (big) {
       const a = tiles.find((x) => x.id === big.id);
       if (k === ' ' || k === 'Escape') big = null;
@@ -115,8 +133,9 @@
       return;
     }
     if (!tiles.length) return;
-    if (k === 'l' || k === 'ArrowRight' || k === 'j' || k === 'ArrowDown') sel = Math.min(tiles.length - 1, sel + 1);
-    else if (k === 'h' || k === 'ArrowLeft' || k === 'k' || k === 'ArrowUp') sel = Math.max(0, sel - 1);
+    const i = Math.max(0, tiles.indexOf(cur));
+    if (k === 'l' || k === 'ArrowRight' || k === 'j' || k === 'ArrowDown') selId = tiles[Math.min(tiles.length - 1, i + 1)].id;
+    else if (k === 'h' || k === 'ArrowLeft' || k === 'k' || k === 'ArrowUp') selId = tiles[Math.max(0, i - 1)].id;
     else if (k === 'Enter') openArtifact(cur);
     else if (k === ' ') showBig(cur);
     else if (k === 'x') askExport(cur);
@@ -146,15 +165,15 @@
       </div>
       <div class="grid">
         {#each g.items as a (a.id)}
-          {@const i = tiles.indexOf(a)}
+          {@const isSel = a === cur}
           {@const p = previews[a.id]}
           {@const tool = TOOL[artifactTool(a)]}
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-          <div class="tile" class:sel={i === sel} data-artifact={a.id} onclick={() => (sel = i)} ondblclick={() => showBig(a)}>
+          <div class="tile" class:sel={isSel} data-artifact={a.id} onclick={() => (selId = a.id)} ondblclick={() => showBig(a)}>
             <div class="thumb">
               {#if previewable(a)}
                 {#if p?.state === 'ok'}<img src={p.src} alt={artifactTitle(a)} loading="lazy" />
-                {:else if p?.state === 'error'}<span class="msg">{previewError(p.error, a)}</span>
+                {:else if p?.state === 'error'}<span class="msg">{previewError(p.error, a, who(a.from_node))}</span>
                 {:else}<span class="skel" aria-busy="true"></span>{/if}
               {:else if linkOnly(a)}
                 <span class="tool"><span class="ticon" aria-hidden="true">{tool.icon}</span>{tool.label}</span>
@@ -166,8 +185,8 @@
               <span class="title" title={a.uri}>{artifactTitle(a)}</span>
               {#if notMerged(a, p)}<span class="chip">On {who(a.from_node)}'s branch · not merged</span>{/if}
               {#if a.note}<span class="note">{a.note}</span>{/if}
-              {#if linkOnly(a)}<span class="hint">Link only: {a.to_node ? who(a.to_node) : 'agents'} can't open it. <button class="link" onclick={() => askExport(a)}>Ask {who(a.from_node)} to export</button>{#if i === sel} <Kbd keys="x" />{/if}</span>{/if}
-              <span class="foot"><span class="muted">{clock(a.created_at_ms)}</span><span class="grow"></span><button class="link" onclick={() => openArtifact(a)}>Open</button>{#if i === sel}<Kbd keys="⏎" />{/if}</span>
+              {#if linkOnly(a)}<span class="hint">Link only: {a.to_node ? who(a.to_node) : 'agents'} can't open it. <button class="link" onclick={() => askExport(a)}>Ask {who(a.from_node)} to export</button>{#if isSel} <Kbd keys="x" />{/if}</span>{/if}
+              <span class="foot"><span class="muted">{clock(a.created_at_ms)}</span><span class="grow"></span><button class="link" onclick={() => openArtifact(a)}>Open</button>{#if isSel}<Kbd keys="⏎" />{/if}</span>
             </div>
           </div>
         {/each}

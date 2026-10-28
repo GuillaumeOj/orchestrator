@@ -16,7 +16,7 @@
 
   let items = $state(null); // null = loading
   let error = $state(null);
-  let sel = $state(0);
+  let selId = $state(null); // by id: rows re-sort when a status changes
   let busy = $state({}); // id → true while a test or a save runs
   let fieldError = $state({}); // id → text under the secret field
   let now = $state(Date.now());
@@ -24,12 +24,13 @@
   let root = $state(null);
 
   const rows = $derived(items ? sortIntegrations(items) : []);
-  const cur = $derived(rows[sel] ?? null);
+  const cur = $derived(rows.find((r) => r.id === selId) ?? rows[0] ?? null);
 
   async function load() {
     try {
       const v = await invoke('integrations_view');
       items = v.items;
+      selId ??= sortIntegrations(items)[0]?.id ?? null;
       error = null;
       onstatus(items);
     } catch (e) {
@@ -101,10 +102,11 @@
   const connectLabel = (it) => (it.status === 'not_configured' ? 'Connect' : 'Reconnect');
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || !rows.length) return;
+    if (e.target.closest('input, textarea, select, button') || e.metaKey || e.ctrlKey || e.altKey || !rows.length) return;
     const k = e.key;
-    if (k === 'j' || k === 'ArrowDown') sel = Math.min(rows.length - 1, sel + 1);
-    else if (k === 'k' || k === 'ArrowUp') sel = Math.max(0, sel - 1);
+    const i = Math.max(0, rows.indexOf(cur));
+    if (k === 'j' || k === 'ArrowDown') selId = rows[Math.min(rows.length - 1, i + 1)].id;
+    else if (k === 'k' || k === 'ArrowUp') selId = rows[Math.max(0, i - 1)].id;
     else if (k === 't') test(cur);
     else if (k === 'Enter') connect(cur);
     else if (k === 'x') remove(cur);
@@ -131,11 +133,11 @@
       <div class="row skel" aria-busy="true"><span class="name">{n}</span><span class="skelbar"></span></div>
     {/each}
   {:else}
-    {#each rows as it, i (it.id)}
-      {@const focused = i === sel}
+    {#each rows as it (it.id)}
+      {@const focused = it === cur}
       {@const failed = it.has_secret && (it.status === 'needs_auth' || it.status === 'error')}
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-      <div class="row" class:sel={focused} data-integration={it.id} onclick={() => (sel = i)}>
+      <div class="row" class:sel={focused} data-integration={it.id} onclick={() => (selId = it.id)}>
         <div class="top">
           <span class="name">{it.name}</span>
           <ConnBadge status={it.status} busy={busy[it.id]} connector={it.id === 'penpot' || it.id === 'figma'} />
