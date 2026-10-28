@@ -18,6 +18,9 @@ pub struct HttpRequest {
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
     pub timeout: Duration,
+    /// Most bytes of the answer kept: [`MAX_BODY`] for probes, [`API_MAX_BODY`]
+    /// for API answers that must parse whole (Linear pages, Notion lists).
+    pub max_body: usize,
 }
 
 impl std::fmt::Debug for HttpRequest {
@@ -59,8 +62,10 @@ pub trait Net: Send + Sync + std::fmt::Debug {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemNet;
 
-/// Most bytes of a response body kept.
-const MAX_BODY: usize = 256 * 1024;
+/// Most bytes of a response body kept (probes, token tests).
+pub const MAX_BODY: usize = 256 * 1024;
+/// Most bytes of an API answer kept: a cut answer would not parse.
+pub const API_MAX_BODY: usize = 32 * 1024 * 1024;
 
 impl Net for SystemNet {
     fn http(&self, req: &HttpRequest) -> Result<HttpResponse> {
@@ -93,7 +98,7 @@ impl Net for SystemNet {
         if !out.status.success() && !timed_out {
             bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
         }
-        let mut r = parse_curl_output(&out.stdout);
+        let mut r = parse_curl_output_max(&out.stdout, req.max_body);
         r.timed_out = timed_out;
         if r.status == 0 {
             bail!("no answer from {}", host_of(&req.url));
@@ -145,7 +150,12 @@ impl Drop for BodyFile {
 /// `-D - -o -`: header blocks (a proxy's `200 Connection Established` comes
 /// first), then the body.
 pub fn parse_curl_output(raw: &[u8]) -> HttpResponse {
-    let text = String::from_utf8_lossy(&raw[..raw.len().min(MAX_BODY)]).into_owned();
+    parse_curl_output_max(raw, MAX_BODY)
+}
+
+/// [`parse_curl_output`] keeping at most `max` bytes.
+pub fn parse_curl_output_max(raw: &[u8], max: usize) -> HttpResponse {
+    let text = String::from_utf8_lossy(&raw[..raw.len().min(max)]).into_owned();
     let mut rest = text.as_str();
     let mut r = HttpResponse::default();
     while rest.starts_with("HTTP/") {
@@ -221,6 +231,20 @@ pub(crate) mod fake {
 mod tests {
     use super::*;
 
+    /// A Linear page or Notion list over 256 KB parses whole with the API cap.
+    #[test]
+    fn api_answers_are_not_cut() {
+        let body = format!("{{\"data\":\"{}\"}}", "x".repeat(1024 * 1024));
+        let raw = format!("HTTP/2 200 \r\ncontent-type: application/json\r\n\r\n{body}");
+        let cut = parse_curl_output(raw.as_bytes());
+        assert!(serde_json::from_str::<serde_json::Value>(&cut.body).is_err(), "the probe cap cuts it");
+        let whole = parse_curl_output_max(raw.as_bytes(), API_MAX_BODY);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&whole.body).unwrap()["data"].as_str().unwrap().len(),
+            1024 * 1024
+        );
+    }
+
     #[test]
     fn curl_output_with_a_proxy_block() {
         let raw = b"HTTP/1.1 200 Connection Established\r\n\r\nHTTP/2 401 \r\nwww-authenticate: Bearer realm=\"OAuth\"\r\nContent-Type: application/json\r\n\r\n{\"error\":1}";
@@ -242,6 +266,7 @@ mod tests {
             headers: vec![("Authorization".into(), "Bearer s3cret".into())],
             body: None,
             timeout: Duration::from_secs(1),
+            max_body: MAX_BODY,
         };
         let d = format!("{r:?}");
         assert!(d.contains("Authorization") && !d.contains("s3cret"), "{d}");
@@ -266,6 +291,7 @@ mod tests {
             headers: vec![("X".into(), "a\nHost: evil".into())],
             body: None,
             timeout: Duration::from_secs(1),
+            max_body: MAX_BODY,
         };
         assert!(SystemNet.http(&r).unwrap_err().to_string().contains("invalid header"));
     }

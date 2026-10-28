@@ -370,9 +370,11 @@ reading that passes NFR-9. Each one is listed here as a proposed edit. SPEC and 
   off-hours allowance) holds the agent's next work with `QueueReason::ScheduledOffHours
   { starts_at }` during working blocks; outside them it runs under
   `PacingPolicy::off_hours_live_cap` (1). The mark goes when the scheduled turn ends.
-  With an off-hours allowance, every autonomous agent outside working blocks runs under that cap,
-  and none while the week is Amber or Red (rounding the weighted cap up used to run one agent
-  all night even in Red: pacing-sim exhausted the week with any allowance).
+  With an off-hours allowance, outside working blocks agents run the state's cap while the week
+  is under plan, `off_hours_live_cap` while it is a little over (Green), and none in Amber or Red
+  (rounding the weighted cap up used to run one agent all night even in Red: pacing-sim exhausted
+  the week with any allowance). A scheduled turn still running when working time starts stops at
+  its next tool call and waits, still marked, for the next window.
 - **Downgrade**: `task_boundary_model(agent, role model, rule, now)` at a task boundary returns
   the fallback while the rule's condition (`amber`, `red`, `model_window`) holds, logging
   `downgrade` (undo: `restore_model`, kept until the condition clears) and `restore_model` when it

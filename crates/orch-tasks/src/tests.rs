@@ -387,3 +387,44 @@ fn linear_state_mapping_per_project() {
     svc.create(t).unwrap();
     assert_eq!(lin.issue("ENG-1").state, "st-progress");
 }
+
+/// Review fixes (T-9): a state added in Linear later still syncs (its
+/// column from its type) and is found for writing after one more read of
+/// the team; an existing `orch` label anywhere in the workspace is reused.
+#[test]
+fn linear_new_states_and_existing_labels() {
+    use crate::linear::LinearIssues;
+    use crate::linear::fake::FakeLinear;
+    let (_d, s, p) = setup(json!({"type": "linear", "team": "ENG"}));
+    let lin = FakeLinear::default();
+    {
+        // 60 labels, the `orch` one last (a team listing would stop at 50).
+        let mut w = lin.0.lock().unwrap();
+        for i in 0..59 {
+            w.labels.push((format!("lbl-x{i}"), format!("area-{i}")));
+        }
+        w.labels.push(("lbl-orch".into(), "orch".into()));
+    }
+    let mapping = [("st-review".to_string(), TaskStatus::InProgress), ("st-qa".to_string(), TaskStatus::Review)]
+        .into_iter()
+        .collect();
+    let svc =
+        TaskService::with_remote(&s, &p, "linear", Arc::new(LinearIssues::new(lin.clone(), "ENG", None, mapping)));
+    let t = svc.create(Task::new("", "", "x", 1)).unwrap();
+    assert!(t.remote_error.is_none(), "{:?}", t.remote_error);
+    let t = t.value;
+    assert!(!lin.0.lock().unwrap().labels_created.contains(&"orch".to_string()), "the existing label is used");
+    assert_eq!(lin.issue("ENG-1").labels, ["lbl-orch"]);
+
+    // "QA" appears in Linear and the issue moves there: the sync reads it by type.
+    lin.0.lock().unwrap().extra_states.push(("st-qa".into(), "QA".into(), "started".into(), 3.5));
+    lin.0.lock().unwrap().extra_states.push(("st-new".into(), "Doing it".into(), "started".into(), 3.6));
+    lin.edit("ENG-1", |i| i.state = "st-new".into());
+    let rep = svc.sync(2).unwrap();
+    assert_eq!(rep.updated, [t.id]);
+    assert_eq!(s.task(t.id).unwrap().unwrap().status, TaskStatus::InProgress);
+    // Review is mapped to the new "QA" state: found after one more read of the team.
+    let out = svc.set_status(t.id, TaskStatus::Review, 3).unwrap();
+    assert!(out.remote_error.is_none(), "{:?}", out.remote_error);
+    assert_eq!(lin.issue("ENG-1").state, "st-qa");
+}

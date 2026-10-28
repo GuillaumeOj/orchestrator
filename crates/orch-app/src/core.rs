@@ -1853,6 +1853,21 @@ mod tests {
         let s = core.board_sync("repo").unwrap();
         assert_eq!((s["pushed"].as_u64(), s["pulled"].as_u64()), (Some(0), Some(0)));
         assert!(s["errors"].as_array().unwrap().is_empty());
+        // Another Linear team is a migration too; `leave` keeps the old issues untouched.
+        let other = |migrate: Option<&str>| -> crate::teams::ProjectSettingsForm {
+            serde_json::from_value(json!({"settings": {}, "backend": {"type": "linear", "team": "OPS"},
+                "track_orchestrator_dir": true, "migrate": migrate}))
+            .unwrap()
+        };
+        let r = core.project_settings_set("repo", other(None)).unwrap();
+        assert_eq!(r["confirm"]["kind"], "linear_migrate", "{r}");
+        core.project_settings_set("repo", other(Some("leave"))).unwrap();
+        let v = core.board_view("repo").unwrap();
+        assert_eq!(v["linear_team"], "OPS");
+        let ta = v["tasks"].as_array().unwrap().iter().find(|t| t["id"] == a["id"]).unwrap().clone();
+        assert_eq!(ta["backend"], "local", "not written to ENG's issue any more");
+        // The same team again: no question.
+        assert!(core.project_settings_set("repo", other(None)).unwrap().get("confirm").is_none());
         core.shutdown();
     }
 

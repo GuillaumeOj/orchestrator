@@ -271,8 +271,19 @@ impl Core {
     pub fn project_settings_set(&self, project_id: &str, f: ProjectSettingsForm) -> Result<Value> {
         let rt = self.runtime()?;
         let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
-        let to_linear = f.backend.kind() == "linear" && p.backend().kind() != "linear";
+        let old = p.backend();
+        // A change to Linear, or to another Linear team or project (D8).
+        let to_linear = match (&old, &f.backend) {
+            (
+                TaskBackendConfig::Linear { team: a, project: pa, .. },
+                TaskBackendConfig::Linear { team: b, project: pb, .. },
+            ) => a != b || pa != pb,
+            (_, TaskBackendConfig::Linear { .. }) => true,
+            _ => false,
+        };
+        let relink = to_linear && old.kind() == "linear";
         let mut push = vec![];
+        let mut detach = vec![];
         if to_linear {
             let tasks = rt.db.tasks(Some(project_id), None, None)?;
             let (open, done): (Vec<_>, Vec<_>) =
@@ -284,13 +295,25 @@ impl Core {
                             json!({"confirm": {"kind": "linear_migrate", "open": open.len(), "done": done.len()}}),
                         );
                     }
-                    Some("push_open") => push = open,
-                    Some("leave") => {}
+                    Some("push_open") => {
+                        push = open;
+                        detach = done;
+                    }
+                    Some("leave") => detach = open.into_iter().chain(done).collect(),
                     Some(other) => bail!("migrate {other:?}: use push_open or leave"),
                 }
             }
         }
         rt.db.set_project_settings(project_id, &f.settings, &f.backend, f.track_orchestrator_dir)?;
+        // From one Linear team or project to another: the old issues are not
+        // the new team's, so the tasks not pushed stay local (never written
+        // to the old issues again).
+        if relink {
+            for mut t in detach.into_iter().filter(|t| t.backend == "linear") {
+                t.backend = "local".into();
+                rt.db.upsert_task(&t)?;
+            }
+        }
         if !push.is_empty() {
             for mut t in push {
                 (t.backend, t.external_id, t.remote_updated_at) = ("linear".into(), None, None);

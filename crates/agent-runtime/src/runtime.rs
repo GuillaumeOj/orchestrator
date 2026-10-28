@@ -171,6 +171,10 @@ pub struct Runtime {
     pub(crate) task_backends: orch_tasks::Backends,
     /// The starter roles and presets were checked this run.
     pub(crate) presets_checked: std::sync::atomic::AtomicBool,
+    /// FR-505: one Notion publish or poll per feature at a time, and the
+    /// background poll pass running.
+    pub(crate) notion_locks: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
+    pub(crate) notion_polling: std::sync::atomic::AtomicBool,
 }
 
 /// Clocks and flags of the periodic work (`tick`, `housekeeping`).
@@ -406,6 +410,8 @@ impl Runtime {
             teaming: std::sync::atomic::AtomicBool::new(false),
             task_backends: orch_tasks::Backends::default(),
             presets_checked: std::sync::atomic::AtomicBool::new(false),
+            notion_locks: Mutex::new(BTreeMap::new()),
+            notion_polling: std::sync::atomic::AtomicBool::new(false),
         });
         rt.handle_releases(released);
         rt.backfill_report(now);

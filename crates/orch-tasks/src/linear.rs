@@ -10,7 +10,7 @@
 //! backend for a while (Retry-After, else 60 s doubling up to an hour).
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow, bail};
 use orch_team::TaskStatus;
@@ -131,7 +131,7 @@ struct TeamInfo {
     projects: Vec<ProjectRef>,
 }
 
-const FIELDS: &str = "id identifier title description updatedAt state { id } labels { nodes { id name } } \
+const FIELDS: &str = "id identifier title description updatedAt state { id name type } labels { nodes { id name } } \
                       inverseRelations { nodes { id type issue { id identifier } } }";
 
 /// `linear_teams`: the workspace's teams.
@@ -150,7 +150,7 @@ pub fn teams(gql: &dyn Graphql) -> Result<Vec<TeamRef>> {
 /// `linear_states`: a team's workflow states (with their default column)
 /// and its projects.
 pub fn team_states(gql: &dyn Graphql, key: &str) -> Result<(Vec<State>, Vec<ProjectRef>)> {
-    let t = team_info(gql, key)?.0;
+    let t = team_info(gql, key)?;
     Ok((t.states, t.projects))
 }
 
@@ -165,9 +165,13 @@ fn key(v: &Value) -> String {
 }
 
 const TEAM_QUERY: &str = "query OrchTeam($key: String!) { teams(filter: { key: { eq: $key } }) { nodes { id key name \
-    states { nodes { id name type position } } labels { nodes { id name } } projects(first: 100) { nodes { id name } } } } }";
+    states(first: 100) { nodes { id name type position } } projects(first: 100) { nodes { id name } } } } }";
 
-fn team_info(gql: &dyn Graphql, key: &str) -> Result<(TeamInfo, Vec<(String, String)>)> {
+/// Labels by name, over the workspace and every team (a team-scoped
+/// listing returns 50 at most, and the `orch` label may be a workspace one).
+const LABEL_QUERY: &str = "query OrchLabelFind($name: String!) { issueLabels(first: 50, filter: { name: { eq: $name } })     { nodes { id name team { id } } } }";
+
+fn team_info(gql: &dyn Graphql, key: &str) -> Result<TeamInfo> {
     let d = gql.call(TEAM_QUERY, &json!({"key": key})).map_err(|e| anyhow!("{e}"))?;
     let t = d["teams"]["nodes"].as_array().and_then(|a| a.first()).ok_or_else(|| anyhow!("no Linear team {key}"))?;
     let mut states: Vec<State> = t["states"]["nodes"]
@@ -186,14 +190,13 @@ fn team_info(gql: &dyn Graphql, key: &str) -> Result<(TeamInfo, Vec<(String, Str
         })
         .collect();
     states.sort_by(|a, b| a.position.total_cmp(&b.position));
-    let labels = t["labels"]["nodes"].as_array().into_iter().flatten().map(|l| (s(&l["name"]), s(&l["id"]))).collect();
     let projects = t["projects"]["nodes"]
         .as_array()
         .into_iter()
         .flatten()
         .map(|p| ProjectRef { id: s(&p["id"]), name: s(&p["name"]) })
         .collect();
-    Ok((TeamInfo { id: s(&t["id"]), states, projects }, labels))
+    Ok(TeamInfo { id: s(&t["id"]), states, projects })
 }
 
 fn now_ms() -> u64 {
@@ -207,7 +210,9 @@ pub struct LinearIssues<T: Graphql> {
     project: Option<String>,
     /// State id → column, overriding the default by type (per project).
     mapping: BTreeMap<String, TaskStatus>,
-    team: OnceLock<TeamInfo>,
+    /// The team's id, states and projects; fetched again once when a state
+    /// is missing (added in Linear after the fetch).
+    team: Mutex<Option<Arc<TeamInfo>>>,
     labels: Mutex<HashMap<String, String>>,
     /// (no call before this ms, the current back-off in s).
     backoff: Mutex<(u64, u64)>,
@@ -220,7 +225,7 @@ impl<T: Graphql> LinearIssues<T> {
             team_key: team_key.to_string(),
             project,
             mapping,
-            team: OnceLock::new(),
+            team: Mutex::new(None),
             labels: Mutex::new(HashMap::new()),
             backoff: Mutex::new((0, 0)),
         }
@@ -256,50 +261,64 @@ impl<T: Graphql> LinearIssues<T> {
         b.0.saturating_sub(now_ms()).div_ceil(1000)
     }
 
-    fn team(&self) -> Result<&TeamInfo> {
-        if let Some(t) = self.team.get() {
+    fn team(&self) -> Result<Arc<TeamInfo>> {
+        if let Some(t) = self.team.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             return Ok(t);
         }
-        let d = self.call(TEAM_QUERY, json!({"key": self.team_key}))?;
-        let t = d["teams"]["nodes"]
-            .as_array()
-            .and_then(|a| a.first())
-            .ok_or_else(|| anyhow!("no Linear team {}", self.team_key))?
-            .clone();
-        let data = json!({"teams": {"nodes": [t]}});
-        let (info, labels) = team_info(&Fixed(data), &self.team_key)?;
-        self.labels.lock().unwrap_or_else(|e| e.into_inner()).extend(labels);
-        Ok(self.team.get_or_init(|| info))
+        self.refresh_team()
     }
 
-    fn column(&self, state_id: &str) -> Result<TaskStatus> {
-        if let Some(c) = self.mapping.get(state_id) {
-            return Ok(*c);
+    fn refresh_team(&self) -> Result<Arc<TeamInfo>> {
+        let d = self.call(TEAM_QUERY, json!({"key": self.team_key}))?;
+        let info = Arc::new(team_info(&Fixed(d), &self.team_key)?);
+        *self.team.lock().unwrap_or_else(|e| e.into_inner()) = Some(info.clone());
+        Ok(info)
+    }
+
+    /// An issue's column: the project's mapping, else the state's type (an
+    /// issue answer carries its state's name and type, so a state added in
+    /// Linear after the mapping was saved still has its column).
+    fn column(&self, state: &Value) -> TaskStatus {
+        if let Some(c) = self.mapping.get(&s(&state["id"])) {
+            return *c;
         }
-        let t = self.team()?;
-        t.states
-            .iter()
-            .find(|s| s.id == state_id)
-            .map(|s| s.default_column)
-            .ok_or_else(|| anyhow!("Linear state {state_id} isn't mapped: map it in the project settings"))
+        default_column(&s(&state["type"]), &s(&state["name"]))
     }
 
     fn state_for(&self, col: TaskStatus) -> Result<String> {
-        let t = self.team()?;
-        t.states
-            .iter()
-            .find(|s| self.mapping.get(&s.id).copied().unwrap_or(s.default_column) == col)
-            .map(|s| s.id.clone())
+        let find = |t: &TeamInfo| {
+            t.states
+                .iter()
+                .find(|s| self.mapping.get(&s.id).copied().unwrap_or(s.default_column) == col)
+                .map(|s| s.id.clone())
+        };
+        if let Some(id) = find(self.team()?.as_ref()) {
+            return Ok(id);
+        }
+        // Maybe added since the team was read: read it once more.
+        find(self.refresh_team()?.as_ref())
             .ok_or_else(|| anyhow!("no Linear state of team {} maps to {}", self.team_key, col.as_str()))
     }
 
-    /// A label id by name, created in the team when missing.
+    /// A label id by name: cached, else found over the workspace and the
+    /// team, else created in the team.
     fn label(&self, name: &str) -> Result<String> {
-        self.team()?;
         if let Some(id) = self.labels.lock().unwrap_or_else(|e| e.into_inner()).get(name) {
             return Ok(id.clone());
         }
         let team_id = self.team()?.id.clone();
+        let d = self.call(LABEL_QUERY, json!({"name": name}))?;
+        let found = d["issueLabels"]["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|l| l["name"] == name)
+            .find(|l| l["team"].is_null() || l["team"]["id"] == team_id.as_str())
+            .map(|l| s(&l["id"]));
+        if let Some(id) = found.filter(|i| !i.is_empty()) {
+            self.labels.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), id.clone());
+            return Ok(id);
+        }
         let d = self.call(
             "mutation OrchLabelCreate($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { success issueLabel { id name } } }",
             json!({"input": {"name": name, "teamId": team_id}}),
@@ -326,7 +345,7 @@ impl<T: Graphql> LinearIssues<T> {
             number: key(v),
             title: s(&v["title"]),
             body: s(&v["description"]),
-            status: self.column(&s(&v["state"]["id"]))?,
+            status: self.column(&v["state"]),
             node: labels.iter().find_map(|l| l.strip_prefix(NODE_PREFIX)).map(str::to_string),
             blocked_by,
             other_labels: labels.into_iter().filter(|l| l != LABEL && !l.starts_with("orch:")).collect(),
@@ -466,7 +485,7 @@ impl<T: Graphql> LinearIssues<T> {
         for _ in 0..50 {
             let d = self.call(
                 &format!(
-                    "query OrchIssues($filter: IssueFilter, $after: String) {{ issues(first: 100, after: $after, filter: $filter) {{ nodes {{ {FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }}"
+                    "query OrchIssues($filter: IssueFilter, $after: String) {{ issues(first: 25, after: $after, filter: $filter) {{ nodes {{ {FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }}"
                 ),
                 json!({"filter": filter, "after": after}),
             )?;
@@ -532,6 +551,10 @@ pub mod fake {
         /// The next calls answer `RATELIMITED`.
         pub rate_limited: u32,
         pub calls: Vec<String>,
+        /// States added in Linear after the team was first read: (id, name, type, position).
+        pub extra_states: Vec<(String, String, String, f64)>,
+        /// Label creations (a second `orch` would be a bug).
+        pub labels_created: Vec<String>,
     }
 
     #[derive(Clone, Default)]
@@ -575,6 +598,16 @@ pub mod fake {
         rest.split(['(', ' ', '{']).next().unwrap_or("")
     }
 
+    fn state_of(w: &World, id: &str) -> Value {
+        STATES
+            .iter()
+            .map(|(i, n, t, _)| (i.to_string(), n.to_string(), t.to_string()))
+            .chain(w.extra_states.iter().map(|(i, n, t, _)| (i.clone(), n.clone(), t.clone())))
+            .find(|(i, _, _)| i == id)
+            .map(|(i, n, t)| json!({"id": i, "name": n, "type": t}))
+            .unwrap_or(json!({"id": id}))
+    }
+
     fn render(w: &World, i: &FakeIssue) -> Value {
         let labels: Vec<Value> = i
             .labels
@@ -589,7 +622,7 @@ pub mod fake {
             .map(|r| json!({"id": r.0, "type": "blocks", "issue": {"id": format!("uuid-{}", r.1), "identifier": r.1}}))
             .collect();
         json!({"id": format!("uuid-{}", i.id), "identifier": i.id, "title": i.title, "description": i.description,
-               "updatedAt": format!("2026-10-28T00:00:{:02}.000Z", i.updated), "state": {"id": i.state},
+               "updatedAt": format!("2026-10-28T00:00:{:02}.000Z", i.updated), "state": state_of(w, &i.state),
                "labels": {"nodes": labels}, "inverseRelations": {"nodes": inv}})
     }
 
@@ -614,15 +647,31 @@ pub mod fake {
                     let states: Vec<Value> = super::fake::STATES
                         .iter()
                         .map(|(id, n, t, p)| json!({"id": id, "name": n, "type": t, "position": p}))
+                        .chain(
+                            w.extra_states
+                                .iter()
+                                .map(|(id, n, t, p)| json!({"id": id, "name": n, "type": t, "position": p})),
+                        )
                         .collect();
-                    let labels: Vec<Value> = w.labels.iter().map(|(id, n)| json!({"id": id, "name": n})).collect();
                     json!({"teams": {"nodes": [{"id": "team-1", "key": "ENG", "name": "Engineering",
-                        "states": {"nodes": states}, "labels": {"nodes": labels},
+                        "states": {"nodes": states},
                         "projects": {"nodes": [{"id": "proj-1", "name": "Shop"}]}}]}})
+                }
+                "OrchLabelFind" => {
+                    // Workspace labels have no team; the fake's are all workspace ones.
+                    let nodes: Vec<Value> = w
+                        .labels
+                        .iter()
+                        .filter(|(_, n)| *n == s(&v["name"]))
+                        .map(|(id, n)| json!({"id": id, "name": n, "team": null}))
+                        .collect();
+                    json!({"issueLabels": {"nodes": nodes}})
                 }
                 "OrchLabelCreate" => {
                     let id = format!("lbl-{}", w.labels.len() + 1);
                     w.labels.push((id.clone(), s(&v["input"]["name"])));
+                    let name = s(&v["input"]["name"]);
+                    w.labels_created.push(name);
                     json!({"issueLabelCreate": {"success": true, "issueLabel": {"id": id, "name": s(&v["input"]["name"])}}})
                 }
                 "OrchIssueCreate" => {

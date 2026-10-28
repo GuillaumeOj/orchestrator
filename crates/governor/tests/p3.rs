@@ -169,3 +169,29 @@ fn shadow_mode_logs_a_downgrade_once_and_forgetting_an_agent_clears_its_marks() 
     g.forget_agent(&b);
     assert!(g.off_hours_agents().is_empty());
 }
+
+/// A scheduled turn still running when working time starts stops at its
+/// next tool call and waits for the next off-hours window, still marked.
+#[test]
+fn scheduled_work_stops_when_working_time_starts() {
+    let mut p = plan();
+    p.off_hours_allowance_pct = 10.0;
+    let mut g = Governor::new(p, policy(), start()).unwrap();
+    let a1 = AgentId::from("A-1");
+    let night = at(hours(23.5)); // Tue 08:30 Paris
+    g.tick(night);
+    g.set_off_hours(&a1, true, night).unwrap();
+    assert_eq!(g.request_turn(task("A-1", "A", Tier::High), night).effective, Verdict::Admit);
+    assert_eq!(g.tool_call(&tool("A-1"), at(hours(23.9))).effective, Verdict::Admit, "08:54: still off-hours");
+    let nine = at(hours(24.0) + 1);
+    let d = g.tool_call(&tool("A-1"), nine);
+    let evening = at(hours(34.0)); // Tue 19:00
+    assert_eq!(
+        d.effective,
+        Verdict::Deny {
+            reason: DenyReason::PausedByGovernor { cause: QueueReason::ScheduledOffHours { starts_at: evening } }
+        }
+    );
+    assert!(g.off_hours_agents().contains(&a1), "still scheduled off-hours");
+    assert_eq!(g.queue()[0].reason, QueueReason::ScheduledOffHours { starts_at: evening });
+}
