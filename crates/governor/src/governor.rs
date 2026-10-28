@@ -486,8 +486,6 @@ pub struct Governor {
     /// downgrade until the condition clears).
     downgrades: BTreeMap<AgentId, ModelOverride>,
     restored_models: BTreeSet<AgentId>,
-    /// Shadow mode: agents whose (not applied) downgrade was logged once.
-    shadow_downgrades: BTreeSet<AgentId>,
 }
 
 impl Governor {
@@ -554,7 +552,6 @@ impl Governor {
             off_hours: BTreeSet::new(),
             downgrades: BTreeMap::new(),
             restored_models: BTreeSet::new(),
-            shadow_downgrades: BTreeSet::new(),
             plan,
             policy,
         };
@@ -2343,7 +2340,12 @@ impl Governor {
             queue: self.queue.iter().map(QueueEntry::persistent).collect(),
             live: self.live.iter().map(|(agent, t)| LiveRecord { agent: agent.clone(), turn: t.clone() }).collect(),
             off_hours: self.off_hours.iter().cloned().collect(),
-            downgrades: self.downgrades.iter().map(|(a, o)| (a.clone(), o.clone())).collect(),
+            downgrades: self
+                .downgrades
+                .iter()
+                .filter(|(_, o)| o.applied)
+                .map(|(a, o)| (a.clone(), o.clone()))
+                .collect(),
             restored_models: self.restored_models.iter().cloned().collect(),
             model_limits: self.model_limits.iter().map(|(n, t)| (n.clone(), *t)).collect(),
         }
@@ -2603,7 +2605,6 @@ impl Governor {
         self.off_hours.remove(agent);
         self.downgrades.remove(agent);
         self.restored_models.remove(agent);
-        self.shadow_downgrades.remove(agent);
         self.agent_model.remove(agent);
     }
 
@@ -2619,7 +2620,7 @@ impl Governor {
 
     /// The downgrade in force for an agent (FR-819).
     pub fn model_override(&self, agent: &AgentId) -> Option<&ModelOverride> {
-        self.downgrades.get(agent)
+        self.downgrades.get(agent).filter(|o| o.applied)
     }
 
     /// FR-819, at an agent's task boundary (its next turn is a new task):
@@ -2652,8 +2653,7 @@ impl Governor {
         }
         if !cond {
             self.restored_models.remove(agent);
-            self.shadow_downgrades.remove(agent);
-            if self.downgrades.remove(agent).is_some() {
+            if self.downgrades.remove(agent).is_some_and(|o| o.applied) {
                 self.log(
                     now,
                     ActionKind::RestoreModel { agent: agent.clone() },
@@ -2669,8 +2669,11 @@ impl Governor {
         if self.restored_models.contains(agent) {
             return None;
         }
-        if let Some(o) = self.downgrades.get(agent) {
-            return Some(o.to.clone());
+        match self.downgrades.get(agent) {
+            Some(o) if o.applied => return Some(o.to.clone()),
+            // Shadow mode logged it already (once per episode).
+            Some(_) if self.plan.shadow_mode => return None,
+            _ => {}
         }
         let r = rule?;
         let reason = match r.when {
@@ -2684,15 +2687,14 @@ impl Governor {
             from: model.map(str::to_string),
             why: orch_when(r.when).into(),
         };
-        if self.plan.shadow_mode {
-            // Logged once per episode, not at every look at the boundary.
-            if self.shadow_downgrades.insert(agent.clone()) {
-                self.log(now, action, reason, effect, ActionMode::Shadow, Outcome::Logged, None);
-            }
-            return None;
-        }
-        let undo = Some(Undo::RestoreModel { agent: agent.clone() });
-        let id = self.log(now, action, reason, effect, ActionMode::Auto, Outcome::Applied, undo);
+        // Shadow mode logs it (once per episode: kept, not applied) and applies nothing.
+        let applied = !self.plan.shadow_mode;
+        let id = if applied {
+            let undo = Some(Undo::RestoreModel { agent: agent.clone() });
+            self.log(now, action, reason, effect, ActionMode::Auto, Outcome::Applied, undo)
+        } else {
+            self.log(now, action, reason, effect, ActionMode::Shadow, Outcome::Logged, None)
+        };
         let o = ModelOverride {
             to: r.to.clone(),
             from: model.map(str::to_string),
@@ -2700,8 +2702,12 @@ impl Governor {
             since: now,
             action: id,
             restore_pending: false,
+            applied,
         };
         self.downgrades.insert(agent.clone(), o);
+        if !applied {
+            return None;
+        }
         self.agent_model.insert(agent.clone(), r.to.clone());
         Some(r.to.clone())
     }

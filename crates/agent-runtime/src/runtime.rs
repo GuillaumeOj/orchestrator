@@ -1494,24 +1494,24 @@ impl Runtime {
         let g = self.usage.lock().unwrap_or_else(|e| e.into_inner()).ingest(&m.agent_id, m.ts_ms, &sample);
         if let Some(g) = g {
             self.event(&m.agent_id, "usage_sample", serde_json::to_value(&g).unwrap_or(Value::Null));
-            let mut gov = self.gov();
-            let class = gov.cost_class(&g);
             let allocation = self.store.read(|s| s.agents.get(&m.agent_id).map(|a| a.allocation.clone()));
-            self.db.add_usage(usage_record(&g, &sample, class, allocation));
-            let mut ended = None;
-            // FR-802: the plan week is aligned to the real weekly reset.
-            if let Some(w) = g.weekly {
-                if !governor::same_reset(w.resets_at, gov.plan().reset_at) && w.resets_at > g.ts {
-                    let mut plan = gov.plan().clone();
-                    plan.reset_at = w.resets_at;
-                    plan.week_start = w.resets_at.checked_sub(168.hours()).unwrap_or(w.resets_at);
-                    plan.id = format!("week-{}", plan.week_start.as_second());
-                    ended = self.switch_week(&mut gov, plan, g.ts).ok().flatten();
-                }
-            }
-            gov.ingest(&g);
-            drop(gov);
-            self.report_ended(ended, g.ts);
+            let _ = self.advance_week(
+                g.ts,
+                |gov| {
+                    let class = gov.cost_class(&g);
+                    self.db.add_usage(usage_record(&g, &sample, class, allocation));
+                    // FR-802: the plan week is aligned to the real weekly reset.
+                    let w = g.weekly.filter(|w| !governor::same_reset(w.resets_at, gov.plan().reset_at))?;
+                    (w.resets_at > g.ts).then(|| {
+                        let mut plan = gov.plan().clone();
+                        plan.reset_at = w.resets_at;
+                        plan.week_start = w.resets_at.checked_sub(168.hours()).unwrap_or(w.resets_at);
+                        plan.id = format!("week-{}", plan.week_start.as_second());
+                        plan
+                    })
+                },
+                |gov| gov.ingest(&g),
+            );
         }
     }
 
@@ -1522,24 +1522,20 @@ impl Runtime {
     /// calibration.
     pub fn tick(&self) {
         let now = Timestamp::now();
-        let ended = {
-            // The week ended with no reading of the next one yet: the next
-            // plan week starts at the reset (a later reading realigns it).
-            let mut g = self.gov();
-            if now >= g.plan().reset_at {
+        // The week ended with no reading of the next one yet: the next plan
+        // week starts at the reset (a later reading realigns it).
+        let next = |g: &mut Governor| {
+            (now >= g.plan().reset_at).then(|| {
                 let mut next = g.plan().clone();
                 next.week_start = next.reset_at;
                 next.reset_at = next.reset_at.checked_add(168.hours()).unwrap_or(next.reset_at);
                 next.id = format!("week-{}", next.week_start.as_second());
-                self.switch_week(&mut g, next, now)
-                    .inspect_err(|e| self.event("-", "week_switch_failed", json!(e.to_string())))
-                    .ok()
-                    .flatten()
-            } else {
-                None
-            }
+                next
+            })
         };
-        self.report_ended(ended, now);
+        if let Err(e) = self.advance_week(now, next, |_| {}) {
+            self.event("-", "week_switch_failed", json!(e.to_string()));
+        }
         self.governor_act(|g, now| ((), g.tick(now)));
         self.reserve_alert();
         let (actions, queue, plan_id, snap, calib, est, week_start) = {
@@ -1587,13 +1583,40 @@ impl Runtime {
         }
     }
 
+    /// Under the Governor's lock: `next` says which plan to move to (if any),
+    /// the switch happens, then `after` runs (also when the switch failed).
+    /// With the lock released, the week that ended gets its report (FR-818;
+    /// it reads a whole week of the store).
+    pub(crate) fn advance_week(
+        &self,
+        now: Timestamp,
+        next: impl FnOnce(&mut Governor) -> Option<WeeklyPlan>,
+        after: impl FnOnce(&mut Governor),
+    ) -> Result<()> {
+        let (switched, ended) = {
+            let mut gov = self.gov();
+            let switched = match next(&mut gov) {
+                Some(plan) => self.switch_week(&mut gov, plan, now),
+                None => Ok(None),
+            };
+            after(&mut gov);
+            let ended = switched.as_ref().ok().cloned().flatten();
+            (switched.map(|_| ()), ended)
+        };
+        if let Some((plan, calib)) = ended {
+            if let Err(e) = self.finish_week(&plan, &calib, now) {
+                self.event("-", "weekly_report_failed", json!(e.to_string()));
+            }
+        }
+        switched
+    }
+
     /// Moves the Governor to `plan` and stores it. A new plan week stores
     /// the estimator it starts with (FR-814: a restart restores it and
     /// replays the week). Returns the week that ended, if one did, with its
-    /// calibration: the caller hands it to [`Runtime::report_ended`] once
-    /// the Governor's lock is released (the report reads a whole week of the
-    /// store). A plan realigned within its week (FR-802) ends none.
-    pub(crate) fn switch_week(
+    /// calibration (for [`Runtime::advance_week`]'s report). A plan realigned
+    /// within its week (FR-802) ends none.
+    fn switch_week(
         &self,
         gov: &mut Governor,
         plan: WeeklyPlan,
@@ -1618,14 +1641,6 @@ impl Runtime {
             self.db.save_estimator("week", plan.week_start, &base.calibrator.snapshot(now), &base)?;
         }
         Ok(ended.then_some((old, calib)))
-    }
-
-    /// The report of a week [`Runtime::switch_week`] ended (FR-818).
-    pub(crate) fn report_ended(&self, ended: Option<(WeeklyPlan, governor::Calibration)>, now: Timestamp) {
-        let Some((plan, calib)) = ended else { return };
-        if let Err(e) = self.finish_week(&plan, &calib, now) {
-            self.event("-", "weekly_report_failed", json!(e.to_string()));
-        }
     }
 
     /// True the first time `key` is seen (one watchdog alert per turn).
@@ -1667,10 +1682,7 @@ impl Runtime {
 
     /// The Week planner's confirmed plan (FR-802): replaces the current one.
     pub fn set_plan(&self, plan: WeeklyPlan) -> Result<()> {
-        let now = Timestamp::now();
-        let ended = self.switch_week(&mut self.gov(), plan, now)?;
-        self.report_ended(ended, now);
-        Ok(())
+        self.advance_week(Timestamp::now(), |_| Some(plan), |_| {})
     }
 
     /// Changes the stored pacing policy (the Week planner's options). It

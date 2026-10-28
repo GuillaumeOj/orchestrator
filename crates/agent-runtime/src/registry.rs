@@ -102,6 +102,20 @@ pub fn resolve_secret_env(servers: &mut Map<String, Value>, allowed: &[String], 
     Ok(())
 }
 
+/// The check of [`resolve_secret_env`] without reading the Keychain: a
+/// `keychain:` env value is allowed only on the servers in `allowed`.
+pub fn check_secret_env(servers: &Map<String, Value>, allowed: &[String]) -> Result<()> {
+    for (name, entry) in servers {
+        let Some(env) = entry.get("env").and_then(Value::as_object) else { continue };
+        for (k, v) in env {
+            if v.as_str().and_then(keychain_account).is_some() && !allowed.iter().any(|a| a == name) {
+                bail!("mcp server `{name}`: {k} reads a Keychain secret, which is not allowed for this server");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The env of a stdio probe: the entry's, its Keychain values resolved when allowed.
 fn probe_env(s: &McpServer, secrets: &dyn Secrets) -> Result<Vec<(String, String)>> {
     let mut out = Vec::new();
@@ -372,13 +386,7 @@ impl Runtime {
             resolve_secret_env(&mut out.mcp_servers, &allowed, self.secrets())?;
         } else {
             // Same refusal, without reading the Keychain.
-            let mut probe = out.mcp_servers.clone();
-            let none = orch_secrets::MemorySecrets::default();
-            if let Err(e) = resolve_secret_env(&mut probe, &allowed, &none)
-                && !e.to_string().contains("no Keychain secret")
-            {
-                return Err(e);
-            }
+            check_secret_env(&out.mcp_servers, &allowed)?;
         }
         Ok(out)
     }

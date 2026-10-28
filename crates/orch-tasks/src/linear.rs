@@ -252,6 +252,17 @@ impl<T: Graphql> LinearIssues<T> {
         }
     }
 
+    /// The team's state names (as last read) that the project's mapping does
+    /// not name; empty when the project has no mapping (all by type).
+    pub fn unmapped_states(&self) -> Vec<String> {
+        if self.mapping.is_empty() {
+            return Vec::new();
+        }
+        let t = self.team.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        t.map(|t| t.states.iter().filter(|s| !self.mapping.contains_key(&s.id)).map(|s| s.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
     /// Seconds until calls resume after a rate limit (0 = now).
     pub fn backoff_s(&self) -> u64 {
         let b = self.backoff.lock().unwrap_or_else(|e| e.into_inner());

@@ -40,6 +40,8 @@ pub struct SyncReport {
     /// Changed on both sides since the last sync: the remote won (FR-503).
     pub conflicts: Vec<u64>,
     pub errors: Vec<String>,
+    /// Remote states the project's mapping does not name (Linear).
+    pub unmapped_states: Vec<String>,
 }
 
 impl SyncReport {
@@ -47,7 +49,8 @@ impl SyncReport {
     pub fn summary(&self) -> serde_json::Value {
         let pulled = self.imported.len() + self.updated.len() + self.conflicts.len();
         serde_json::json!({"pushed": self.pushed.len(), "pulled": pulled, "imported": self.imported.len(),
-                           "updated": self.updated.len(), "conflicts": self.conflicts.len(), "errors": self.errors})
+                           "updated": self.updated.len(), "conflicts": self.conflicts.len(), "errors": self.errors,
+                           "unmapped_states": self.unmapped_states})
     }
 }
 
@@ -60,6 +63,11 @@ pub trait Remote: Send + Sync {
     fn update_issue(&self, id: &str, w: &IssueWrite) -> Result<Issue>;
     fn get_issue(&self, id: &str) -> Result<Issue>;
     fn add_comment(&self, id: &str, text: &str) -> Result<()>;
+    /// Remote states the project's own mapping does not name (they get the
+    /// column of their type); empty without a mapping.
+    fn unmapped_states(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 impl<G: Gh> Remote for GithubIssues<G> {
@@ -96,6 +104,9 @@ impl<T: Graphql> Remote for LinearIssues<T> {
     }
     fn add_comment(&self, id: &str, text: &str) -> Result<()> {
         self.comment(id, text)
+    }
+    fn unmapped_states(&self) -> Vec<String> {
+        self.unmapped_states()
     }
 }
 
@@ -364,6 +375,7 @@ impl<'a> TaskService<'a> {
                 },
             }
         }
+        rep.unmapped_states = gh.unmapped_states();
         for (id, issue) in adopted {
             if issue.blocked_by.is_empty() {
                 continue;
