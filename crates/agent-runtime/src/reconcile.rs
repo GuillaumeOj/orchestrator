@@ -476,6 +476,7 @@ mod tests {
             flag: None,
             trust_dialog: false,
             team: None,
+            resume_failed: false,
         }
     }
 

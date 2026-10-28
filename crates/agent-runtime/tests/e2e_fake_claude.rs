@@ -239,6 +239,7 @@ fn memory_pressure_lowers_the_live_cap_and_queued_work_waits_for_a_slot() {
     let core = Core::start("orchmp", move |c| {
         c.base_cap = 2;
         c.memory = m2;
+        c.pressure_filter = agent_runtime::resources::PressureFilter::new(0, 0);
     });
     core.start_agent("old");
     std::thread::sleep(Duration::from_millis(300));
@@ -269,6 +270,7 @@ fn the_memory_cap_is_checked_at_spawn_and_run_now_overrides_it() {
     let core = Core::start("orchsp", move |c| {
         c.base_cap = 2;
         c.memory = m2;
+        c.pressure_filter = agent_runtime::resources::PressureFilter::new(0, 0);
     });
     core.start_agent("old");
     std::thread::sleep(Duration::from_millis(300));
@@ -358,6 +360,107 @@ fn an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry() {
     assert_eq!(audit(), [format!("rule:{}", rule.id), "expired".into(), "user".into(), "user".into()]);
     let one_shot = request(&core.sock, CtlRequest::Audit { agent_id: Some("a".into()), limit: Some(1) }).unwrap().data;
     assert_eq!(one_shot[0]["detail"]["one_shot"], true, "{one_shot}");
+}
+
+/// FR-415 (acceptance 4): no SessionStart → a `startup` item with the PTY
+/// tail; a resume that dies at once with no transcript restarts fresh once;
+/// a fresh start that dies too is the user's (agent in error, no loop).
+#[test]
+fn starts_that_never_happen_reach_the_inbox_or_restart_fresh_once() {
+    use agent_runtime::store::InboxStatus;
+    let core = Core::start("orchsu", |c| c.startup_timeout = Duration::from_secs(2));
+    let startup = || core.rt.inbox().into_iter().find(|i| i.kind == "startup");
+    let spawns = |id: &str| {
+        core.rt.db.flush().unwrap();
+        core.rt.db.events(0, Some(id), Some("spawned"), 50).unwrap().len()
+    };
+
+    // Stuck before SessionStart: one item, with what the pane shows.
+    git(&core.repo, &["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "x"]);
+    std::fs::write(core.repo.join(".fake-no-session-start"), "").unwrap();
+    git(&core.repo, &["add", ".fake-no-session-start"]);
+    git(&core.repo, &["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-q", "-m", "stuck"]);
+    let spec = AgentSpec { agent_id: "stuck".into(), repo: core.repo.display().to_string(), ..Default::default() };
+    assert!(request(&core.sock, CtlRequest::Start { spec: Box::new(spec) }).unwrap().ok);
+    wait_for("startup item", 30, || startup().is_some());
+    let item = startup().unwrap();
+    assert_eq!((item.agent_id.as_deref(), item.payload["mode"].as_str()), (Some("stuck"), Some("new")));
+    assert!(item.payload["tail"].as_str().unwrap().contains("a dialog nobody answers"), "{}", item.payload);
+    std::thread::sleep(Duration::from_secs(6));
+    assert_eq!(core.rt.inbox().iter().filter(|i| i.kind == "startup").count(), 1, "one item, not one per pass");
+    assert_eq!(core.state_of("stuck"), "starting", "not suspended while the card is open");
+    assert!(request(&core.sock, CtlRequest::Kill { agent_id: "stuck".into() }).unwrap().ok);
+    core.rt.decide(item.id, orch_protocol::InboxDecision::Dismiss, None, None).unwrap();
+    git(&core.repo, &["rm", "-q", ".fake-no-session-start"]);
+    git(&core.repo, &["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-q", "-m", "unstuck"]);
+
+    // A resume with no transcript that exits at once: a fresh session, once.
+    core.start_agent("a");
+    let wt = PathBuf::from(agent(&core.sock, "a")["worktree"].as_str().unwrap());
+    let sid = agent(&core.sock, "a")["session_id"].as_str().unwrap().to_string();
+    assert!(request(&core.sock, CtlRequest::Suspend { agent_id: "a".into() }).unwrap().ok);
+    wait_for("suspended", 10, || core.state_of("a") == "suspended");
+    std::fs::write(wt.join(".fake-resume-dies"), "").unwrap();
+    request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "after the resume".into() }).unwrap();
+    wait_for("fresh session did the turn", 30, || {
+        agent(&core.sock, "a")["turns"].as_u64() == Some(2) && core.state_of("a") == "idle"
+    });
+    assert_ne!(agent(&core.sock, "a")["session_id"].as_str().unwrap(), sid);
+    core.rt.db.flush().unwrap();
+    let fresh = core.rt.db.events(0, Some("a"), Some("restarted_fresh"), 5).unwrap();
+    assert_eq!(fresh.len(), 1);
+    assert_eq!(fresh[0].detail["old_session"], sid.as_str());
+    assert!(startup().is_none());
+
+    // A fresh start that dies too: the user's, with no third attempt.
+    std::fs::write(wt.join(".fake-start-dies"), "").unwrap();
+    assert!(request(&core.sock, CtlRequest::Suspend { agent_id: "a".into() }).unwrap().ok);
+    wait_for("suspended again", 10, || core.state_of("a") == "suspended");
+    let before = spawns("a");
+    request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "again".into() }).unwrap();
+    wait_for("failed start item", 30, || startup().is_some_and(|i| i.payload.get("failed").is_some()));
+    let failed = startup().unwrap();
+    assert_eq!((failed.payload["failed"].as_str(), failed.status), (Some("fresh"), InboxStatus::Pending));
+    assert!(failed.payload["tail"].as_str().unwrap().contains("no conversation found"));
+    assert_eq!(core.state_of("a"), "error");
+    std::thread::sleep(Duration::from_secs(6));
+    assert_eq!(spawns("a"), before + 2, "the resume and one fresh start, no loop");
+}
+
+/// FR-203 (acceptance 5): a probe flapping warn↔normal leaves the cap alone,
+/// and an agent with a pasted, not started turn is never suspended.
+#[test]
+fn a_flapping_probe_keeps_the_cap_and_a_pasted_turn_is_never_suspended() {
+    let mem = Arc::new(agent_runtime::resources::FixedMemory::new(PressureLevel::Normal));
+    let m2 = mem.clone();
+    let core = Core::start("orchfl", move |c| {
+        c.base_cap = 2;
+        c.memory = m2;
+        c.idle_suspend = Some(Duration::from_secs(1));
+    });
+    core.start_agent("a");
+    for i in 0..8 {
+        mem.set(if i % 2 == 0 { PressureLevel::Warn } else { PressureLevel::Normal });
+        std::thread::sleep(Duration::from_millis(1_500));
+        assert_eq!(core.rt.live_cap(), 2, "the cap holds while the probe flaps");
+    }
+    // A pasted turn the fake never starts (a SLOW one hangs before its Stop,
+    // so mark one Delivering by hand): neither idleness nor pressure stops it.
+    core.rt
+        .store
+        .write(|s| {
+            let mut t = agent_runtime::store::TurnRow::queued(
+                "a",
+                "pasted",
+                governor::TurnKind::Message,
+                agent_runtime::store::Admission::Admitted,
+            );
+            t.status = agent_runtime::store::TurnStatus::Delivering;
+            s.turns.push(t);
+        })
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(8));
+    assert_ne!(core.state_of("a"), "suspended");
 }
 
 /// J3 end to end with the fake claude: launch, the lead starts when the

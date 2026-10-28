@@ -48,6 +48,10 @@ pub struct AgentRecord {
     /// Set for an agent of a team run (P2); `None` for a solo session.
     #[serde(default)]
     pub team: Option<TeamSeat>,
+    /// Its last start failed at once, even fresh (FR-415): a resume should
+    /// start a fresh session ([`crate::runtime::Runtime::restart_fresh`]).
+    #[serde(default)]
+    pub resume_failed: bool,
 }
 
 /// Where a team agent sits: its run, its node and its current task.

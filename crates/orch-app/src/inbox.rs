@@ -144,6 +144,29 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
         let title = al.body.lines().next().unwrap_or("").to_string();
         let s = |k: &str| al.payload.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         let item = match (al.kind.as_str(), s("action").as_str()) {
+            // A start that never happened (FR-415): open the pane, restart fresh, or dismiss.
+            ("startup", _) => {
+                let mut actions = vec!["o", "restart_fresh", "x"];
+                if al.payload.get("failed").is_some_and(Value::is_string) {
+                    actions.push("delete");
+                }
+                InboxItem {
+                    id: ui_id("startup", al.id),
+                    level: 2,
+                    kind: "startup".into(),
+                    agent_id: al.agent_id.clone(),
+                    title,
+                    detail: match al.payload.get("failed").and_then(Value::as_str) {
+                        Some(f) => format!("Its {f} start exited at once (status {})", al.payload["exit_status"]),
+                        None => "No SessionStart yet: a prompt or dialog may be waiting in its pane".into(),
+                    },
+                    preview: Some(last_lines(&s("tail"), 8)).filter(|t| !t.is_empty()),
+                    created_ms: al.created_ms,
+                    actions,
+                    payload: al.payload.clone(),
+                    status: "open",
+                }
+            }
             // A permission prompt (FR-705), held for the Inbox or parked.
             ("permission", _) => {
                 let p = &al.payload;
@@ -297,6 +320,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
 pub fn ui_id(kind: &str, id: u64) -> String {
     match kind {
         "permission" => format!("inbox-{id}"),
+        "startup" => format!("startup-{id}"),
         "gate" => format!("gate-{id}"),
         "question" => format!("q-{id}"),
         _ => format!("alert-{id}"),
@@ -444,6 +468,30 @@ mod tests {
         assert_eq!((items[2].kind.as_str(), items[2].detail.as_str()), ("question", "Keep v1?"));
         assert_eq!((items[4].level, items[4].kind.as_str()), (4, "info"));
         assert_eq!(badge(&items), 4);
+    }
+
+    #[test]
+    fn startup_cards_offer_a_fresh_restart_and_delete_once_failed() {
+        let st = |id, payload| Alert {
+            id,
+            kind: "startup".into(),
+            agent_id: Some("a1".into()),
+            body: "a1 did not start".into(),
+            created_ms: id,
+            payload,
+            parked: false,
+        };
+        let alerts = [
+            st(1, serde_json::json!({"waiting_on": "startup", "mode": "new", "tail": "x\nAccept the terms?\n"})),
+            st(2, serde_json::json!({"waiting_on": "startup", "failed": "fresh", "exit_status": 1, "tail": ""})),
+        ];
+        let items = build(&Inputs { alerts: &alerts, ..Default::default() });
+        assert_eq!((items[0].id.as_str(), items[0].level, items[0].kind.as_str()), ("startup-1", 2, "startup"));
+        assert_eq!(items[0].actions, ["o", "restart_fresh", "x"]);
+        assert_eq!(items[0].preview.as_deref(), Some("x\nAccept the terms?"));
+        assert_eq!(items[1].actions, ["o", "restart_fresh", "x", "delete"]);
+        assert!(items[1].detail.contains("fresh start exited at once"));
+        assert_eq!(ui_id("startup", 2), "startup-2");
     }
 
     #[test]

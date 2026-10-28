@@ -78,6 +78,78 @@ pub fn effective_cap(base: u32, level: PressureLevel) -> u32 {
     }
 }
 
+/// FR-203 hysteresis (D4): a higher level takes effect once the raw level has
+/// stayed at or above it for [`RAISE_AFTER_MS`], a lower one once it has
+/// stayed at or below it for [`LOWER_AFTER_MS`], so a flapping probe never
+/// moves the cap. Pure: fed every housekeeping sample.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PressureFilter {
+    pub effective: PressureLevel,
+    raise_after_ms: u64,
+    lower_after_ms: u64,
+    /// Per level (Normal, Warn, Critical): since when the raw level has been at or above it.
+    at_or_above_since: [Option<u64>; 3],
+    /// Per level: since when the raw level has been at or below it.
+    at_or_below_since: [Option<u64>; 3],
+}
+
+pub const RAISE_AFTER_MS: u64 = 60_000;
+pub const LOWER_AFTER_MS: u64 = 120_000;
+
+const LEVELS: [PressureLevel; 3] = [PressureLevel::Normal, PressureLevel::Warn, PressureLevel::Critical];
+
+impl Default for PressureFilter {
+    fn default() -> Self {
+        PressureFilter::new(RAISE_AFTER_MS, LOWER_AFTER_MS)
+    }
+}
+
+impl PressureFilter {
+    /// With other dwell times (tests; zero = follow the probe at once).
+    pub fn new(raise_after_ms: u64, lower_after_ms: u64) -> Self {
+        PressureFilter {
+            effective: PressureLevel::Normal,
+            raise_after_ms,
+            lower_after_ms,
+            at_or_above_since: [None; 3],
+            at_or_below_since: [None; 3],
+        }
+    }
+
+    /// One sample of the raw level; the new effective level when it changed.
+    pub fn feed(&mut self, raw: PressureLevel, now_ms: u64) -> Option<PressureLevel> {
+        for (i, l) in LEVELS.iter().enumerate() {
+            let above = &mut self.at_or_above_since[i];
+            if raw >= *l {
+                above.get_or_insert(now_ms);
+            } else {
+                *above = None;
+            }
+            let below = &mut self.at_or_below_since[i];
+            if raw <= *l {
+                below.get_or_insert(now_ms);
+            } else {
+                *below = None;
+            }
+        }
+        let held = |since: Option<u64>, ms: u64| since.is_some_and(|t| now_ms.saturating_sub(t) >= ms);
+        let up = LEVELS
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(i, l)| **l > self.effective && held(self.at_or_above_since[*i], self.raise_after_ms));
+        let down = || {
+            LEVELS
+                .iter()
+                .enumerate()
+                .find(|(i, l)| **l < self.effective && held(self.at_or_below_since[*i], self.lower_after_ms))
+        };
+        let next = up.or_else(down).map(|(_, l)| *l)?;
+        self.effective = next;
+        Some(next)
+    }
+}
+
 /// What the runtime knows about one live agent for the cap and idle rules.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiveAgent {
@@ -93,12 +165,21 @@ pub struct LiveAgent {
     /// Its prompt cache is warm until then (ms): a reserved agent is kept
     /// that long even when idle, so the next report costs almost nothing.
     pub warm_until_ms: u64,
+    /// A turn pasted and not started yet (FR-203: not idle, whatever the state says).
+    pub delivering: bool,
+    /// An open `startup` item: the user may be about to open its pane (FR-415).
+    pub startup_blocked: bool,
 }
 
 impl LiveAgent {
     /// Nothing would be lost by stopping it now (resumable by id).
     pub fn suspendable(&self) -> bool {
-        self.idle && self.background_tasks == 0 && self.queued_turns == 0 && !self.attached
+        self.idle
+            && self.background_tasks == 0
+            && self.queued_turns == 0
+            && !self.attached
+            && !self.delivering
+            && !self.startup_blocked
     }
 }
 
@@ -150,7 +231,59 @@ mod tests {
             last_activity_ms: last,
             reserved: false,
             warm_until_ms: 0,
+            delivering: false,
+            startup_blocked: false,
         }
+    }
+
+    /// Feeds `level(t)` every 5 s from 0 to `until_ms`; the changes seen.
+    fn run(f: &mut PressureFilter, until_ms: u64, level: impl Fn(u64) -> PressureLevel) -> Vec<(u64, PressureLevel)> {
+        (0..=until_ms / 5_000).map(|i| i * 5_000).filter_map(|t| f.feed(level(t), t).map(|l| (t, l))).collect()
+    }
+
+    #[test]
+    fn a_flapping_probe_never_moves_the_cap() {
+        use PressureLevel::*;
+        let mut f = PressureFilter::default();
+        let flap = |t: u64| if (t / 5_000) % 2 == 0 { Warn } else { Normal };
+        assert!(run(&mut f, 10 * 60_000, flap).is_empty(), "10 min of warn↔normal every 5 s");
+        // Warn held 60 s: one change up; normal held 120 s: one change back.
+        let mut f = PressureFilter::default();
+        assert_eq!(run(&mut f, 120_000, |_| Warn), [(60_000, Warn)]);
+        let start = 1_000_000;
+        let ch: Vec<_> =
+            (0..=40).map(|i| start + i * 5_000).filter_map(|t| f.feed(Normal, t).map(|l| (t, l))).collect();
+        assert_eq!(ch, [(start + 120_000, Normal)]);
+    }
+
+    #[test]
+    fn critical_and_spikes_respect_the_dwell() {
+        use PressureLevel::*;
+        // Critical for 60 s goes straight to critical (the highest level held).
+        let mut f = PressureFilter::default();
+        assert_eq!(run(&mut f, 60_000, |_| Critical), [(60_000, Critical)]);
+        // Critical → warn needs 120 s at warn or below.
+        let ch: Vec<_> =
+            (0..=30).map(|i| 100_000 + i * 5_000).filter_map(|t| f.feed(Warn, t).map(|l| (t, l))).collect();
+        assert_eq!(ch, [(220_000, Warn)]);
+        // A 30 s spike to critical while at warn changes nothing.
+        let ch: Vec<_> = (0..=30)
+            .map(|i| 400_000 + i * 5_000)
+            .filter_map(|t| f.feed(if (400_000..430_000).contains(&t) { Critical } else { Warn }, t).map(|l| (t, l)))
+            .collect();
+        assert!(ch.is_empty(), "{ch:?}");
+    }
+
+    #[test]
+    fn a_pasted_turn_or_a_startup_card_is_not_suspendable() {
+        let mut x = a("x", true, 0);
+        assert!(x.suspendable());
+        x.delivering = true;
+        assert!(!x.suspendable());
+        assert!(to_suspend(&[x.clone()], 0, Some(1), 1_000_000).is_empty(), "neither idle nor pressure");
+        x.delivering = false;
+        x.startup_blocked = true;
+        assert!(to_suspend(&[x], 0, Some(1), 1_000_000).is_empty());
     }
 
     #[test]

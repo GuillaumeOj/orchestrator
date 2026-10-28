@@ -572,6 +572,12 @@ impl Core {
         })
     }
 
+    /// FR-415: the agent again as a fresh session with its brief (agent menu, `startup` item).
+    pub fn restart_fresh(&self, id: &str) -> Result<Value> {
+        let session = self.runtime()?.restart_fresh(id, "restarted fresh by the user", "user")?;
+        Ok(agent_runtime::startup::restarted(&session))
+    }
+
     /// FR-202: kill (checked) and hide the agent, its worktree on request.
     pub fn agent_delete(&self, id: &str, remove_worktree: bool, confirm_discard: bool) -> Result<Value> {
         self.runtime()?.delete_agent(id, remove_worktree, confirm_discard)
@@ -693,6 +699,25 @@ impl Core {
             };
             let r = rt.decide(n, decision, scope, message.filter(|m| !m.trim().is_empty()))?;
             return Ok(json!({"ok": true, "effect": r["effect"], "result": r}));
+        }
+        // A start that never happened (FR-415).
+        if let Some(n) = item.strip_prefix("startup-") {
+            let n: u64 = n.parse()?;
+            let agent = rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).and_then(|i| i.agent_id.clone()));
+            let agent = agent.ok_or_else(|| anyhow!("no startup item {n}"))?;
+            return match action {
+                "restart_fresh" => self.restart_fresh(&agent),
+                "dismiss" => {
+                    rt.decide(n, InboxDecision::Dismiss, None, None)?;
+                    Ok(json!({"ok": true, "effect": "dismissed"}))
+                }
+                "delete" => {
+                    rt.decide(n, InboxDecision::Dismiss, None, None)?;
+                    let r = self.agent_delete(&agent, false, false)?;
+                    Ok(json!({"ok": true, "effect": "dismissed", "result": r}))
+                }
+                other => bail!("{other} does not apply to {item}"),
+            };
         }
         if let Some(n) = item.strip_prefix("alert-") {
             let n: u64 = n.parse()?;
@@ -1439,6 +1464,7 @@ mod tests {
             flag: None,
             trust_dialog: false,
             team: None,
+            resume_failed: false,
         }
     }
 

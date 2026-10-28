@@ -110,6 +110,7 @@ pub fn run() {
             commands::editor_open,
             commands::open_in_kitty,
             commands::inbox_act,
+            commands::restart_fresh,
             commands::gate_detail,
             commands::teams_view,
             commands::team_save,

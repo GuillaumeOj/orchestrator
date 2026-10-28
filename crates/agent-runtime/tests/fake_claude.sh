@@ -3,12 +3,24 @@
 # way Claude Code does, one turn per pasted line. Test fixture only.
 if [ "$1" = "--version" ]; then echo "2.1.302 (Claude Code)"; exit 0; fi
 SID=""
+RESUMED=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --session-id|--resume) SID="$2"; shift ;;
+    --session-id) SID="$2"; shift ;;
+    --resume) SID="$2"; RESUMED=1; shift ;;
   esac
   shift
 done
+# Test sentinels in the worktree (FR-415): a start that dies at once, a
+# resume that dies at once, a start stuck before SessionStart.
+if [ -f .fake-start-dies ] || { [ -n "$RESUMED" ] && [ -f .fake-resume-dies ]; }; then
+  echo "FAKE CLAUDE: no conversation found with session ID: $SID"
+  exit 1
+fi
+if [ -f .fake-no-session-start ]; then
+  echo "FAKE CLAUDE: a dialog nobody answers"
+  while true; do sleep 1; done
+fi
 ROOT=$(dirname "$ORCH_SOCK")
 HOOK="$ROOT/bin/orch-hook"
 STATUS="$ROOT/bin/orch-status"
