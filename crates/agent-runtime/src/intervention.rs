@@ -23,7 +23,8 @@ pub struct Wait {
 }
 
 /// `bytes` with the terminal's own replies taken out: what is left was typed.
-pub fn typed(bytes: &[u8]) -> Vec<u8> {
+#[cfg(test)]
+fn typed(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
@@ -39,8 +40,8 @@ pub fn typed(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Whether anything in `bytes` was typed (not a terminal reply); [`typed`]
-/// without building the result, for every keystroke.
+/// Whether anything in `bytes` was typed (not a terminal reply), checked on
+/// every keystroke without building anything.
 pub fn is_typing(bytes: &[u8]) -> bool {
     let mut i = 0;
     while i < bytes.len() {
@@ -91,35 +92,59 @@ fn reply_len(b: &[u8]) -> Option<usize> {
     is_reply.then_some(end + 1)
 }
 
+/// The causes an open Inbox item can be, in FR-1311 priority order.
+const ITEM_CAUSES: [&str; 5] = ["permission", "question", "gate", "parked", "startup"];
+
+/// What an open item of the agent makes it wait on, if anything.
+fn item_cause(i: &orch_store::InboxItem) -> Option<&'static str> {
+    match (i.kind.as_str(), i.status) {
+        (_, orch_store::InboxStatus::Parked) => Some("parked"),
+        ("permission", orch_store::InboxStatus::Pending) => Some("permission"),
+        ("question", orch_store::InboxStatus::Pending) => Some("question"),
+        ("gate", orch_store::InboxStatus::Pending) => Some("gate"),
+        ("startup", _) if i.open() => Some("startup"),
+        _ => None,
+    }
+}
+
 /// What `id` waits on now, if anything (FR-1311 priority order).
 pub(crate) fn wait_of(s: &StateFile, id: &str) -> Option<Wait> {
     let rec = s.agents.get(id)?;
-    let mine = || s.inbox.iter().filter(|i| i.agent_id.as_deref() == Some(id));
-    let from = |cause, i: &orch_store::InboxItem| Some(Wait { cause, item: Some(i.id), since_ms: i.created_at_ms });
-    for kind in ["permission", "question", "gate"] {
-        if let Some(i) = mine().find(|i| i.kind == kind && i.pending()) {
-            return from(kind, i);
-        }
-    }
-    if let Some(i) = mine().find(|i| i.status == orch_store::InboxStatus::Parked) {
-        return from("parked", i);
-    }
-    if let Some(i) = mine().find(|i| i.kind == "startup" && i.open()) {
-        return from("startup", i);
+    // One pass over the Inbox: the item of the highest-priority cause.
+    let rank = |c: &str| ITEM_CAUSES.iter().position(|x| *x == c).unwrap_or(usize::MAX);
+    let item = s
+        .inbox
+        .iter()
+        .filter(|i| i.agent_id.as_deref() == Some(id))
+        .filter_map(|i| item_cause(i).map(|c| (c, i)))
+        .min_by_key(|(c, i)| (rank(c), i.created_at_ms));
+    if let Some((cause, i)) = item {
+        return Some(Wait { cause, item: Some(i.id), since_ms: i.created_at_ms });
     }
     let last = rec.last_event_at_ms.unwrap_or(rec.created_at_ms);
     if rec.trust_dialog {
         return Some(Wait { cause: "trust", item: None, since_ms: last });
     }
     // A working agent is not waiting on its next turn: typing into it is no intervention.
-    let working = rec.tracker.state == AgentState::Working;
-    let turn = |st: TurnStatus| {
-        s.turns.iter().filter(|t| !working && t.agent_id == id && t.status == st).min_by_key(|t| t.created_at_ms)
-    };
-    if let Some(t) = turn(TurnStatus::Delivering) {
+    if rec.tracker.state == AgentState::Working {
+        return None;
+    }
+    // One pass over the turns: the oldest pasted one, else the oldest queued one.
+    let (mut pasted, mut queued) = (None::<&crate::store::TurnRow>, None::<&crate::store::TurnRow>);
+    for t in s.turns.iter().filter(|t| t.agent_id == id) {
+        let slot = match t.status {
+            TurnStatus::Delivering => &mut pasted,
+            TurnStatus::Queued => &mut queued,
+            _ => continue,
+        };
+        if slot.is_none_or(|o| t.created_at_ms < o.created_at_ms) {
+            *slot = Some(t);
+        }
+    }
+    if let Some(t) = pasted {
         return Some(Wait { cause: "delivering", item: None, since_ms: t.delivered_at_ms.unwrap_or(t.created_at_ms) });
     }
-    if let Some(t) = turn(TurnStatus::Queued) {
+    if let Some(t) = queued {
         return Some(Wait { cause: "queued", item: None, since_ms: t.created_at_ms });
     }
     let open_task = rec.team.as_ref().is_some_and(|seat| seat.task.is_some());
@@ -227,7 +252,7 @@ mod tests {
         rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.state = AgentState::Working).unwrap();
         assert_eq!(rt.store.read(|s| wait_of(s, "a1")), None, "working");
         rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.state = AgentState::Idle).unwrap();
-        let startup = rt.add_item(Some("a1"), "startup", "a1 did not start".into(), json!({}), 10).unwrap();
+        rt.add_item(Some("a1"), "startup", "a1 did not start".into(), json!({}), 10).unwrap();
         assert_eq!(rt.store.read(|s| wait_of(s, "a1")).unwrap().cause, "startup");
         let q = rt.add_item(Some("a1"), "question", "q".into(), json!({}), 30).unwrap();
         let p = rt.add_item(Some("a1"), "permission", "p".into(), json!({}), 30).unwrap();
@@ -237,7 +262,6 @@ mod tests {
         assert_eq!(rt.store.read(|s| wait_of(s, "a1")).unwrap().cause, "question", "question before parked");
         rt.decide(q, orch_protocol::InboxDecision::Dismiss, None, None).unwrap();
         assert_eq!(rt.store.read(|s| wait_of(s, "a1")).unwrap().cause, "parked");
-        let _ = startup;
     }
 
     #[test]

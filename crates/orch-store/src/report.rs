@@ -5,11 +5,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::db::Store;
+use crate::events::detail;
 
 /// The 2026-10-27 team run the P4.0 exit run is compared with (brief 2026-10-28).
 pub const BASELINE: Baseline =
@@ -81,20 +82,15 @@ pub struct RunReport {
     pub until_ms: u64,
 }
 
-/// `--permission-mode <m>` in a spawn's args.
-fn permission_mode(args: &Value) -> String {
-    let a: Vec<&str> = args.as_array().map(|v| v.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+/// `--permission-mode <m>` in a spawn's args (`default` with none, or no spawn).
+fn permission_mode(args: Option<&Value>) -> String {
+    let a: Vec<&str> =
+        args.and_then(Value::as_array).map(|v| v.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     a.windows(2).find(|w| w[0] == "--permission-mode").map(|w| w[1].to_string()).unwrap_or_else(|| "default".into())
 }
 
-/// An event's detail, read from its blob file when it was stored outside the row.
-fn detail(text: &str) -> Value {
-    let d: Value = serde_json::from_str(text).unwrap_or(Value::Null);
-    match d.get("blob").and_then(Value::as_str) {
-        Some(p) => std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null),
-        None => d,
-    }
-}
+/// The Inbox kinds whose open time is time spent waiting on the user.
+const WAITS: [&str; 4] = ["permission", "question", "gate", "startup"];
 
 fn hours(ms: u64) -> String {
     format!("{:.1} h", ms as f64 / 3_600_000.0)
@@ -184,7 +180,6 @@ impl Store {
             })?;
             for row in rows {
                 let (agent, kind, text) = row?;
-                let d = detail(&text);
                 if kind == "memory_pressure" {
                     rep.pressure_changes += 1;
                     continue;
@@ -192,6 +187,12 @@ impl Store {
                 if !mine(&agent) {
                     continue;
                 }
+                if kind == "restarted_fresh" {
+                    rep.restarted_fresh += 1;
+                    continue;
+                }
+                // Parsed only for the events that are counted by their detail.
+                let d = detail(&text);
                 let s = |k: &str| d.get(k).and_then(Value::as_str).unwrap_or("?").to_string();
                 match kind.as_str() {
                     "PermissionRequest" => {
@@ -202,31 +203,25 @@ impl Store {
                         rep.interventions.total += 1;
                         bump(&mut rep.interventions.by_cause, &s("waited_on"));
                     }
-                    "restarted_fresh" => rep.restarted_fresh += 1,
                     "auto_suspend" if d["why"] == "memory_pressure" => rep.pressure_suspends += 1,
                     _ => {}
                 }
             }
-            // How each agent runs: its last spawn up to `until`, in the range or before it.
-            let mut spawned: BTreeMap<String, Value> = BTreeMap::new();
+            // How each agent runs: its last spawn up to `until`, in the range or
+            // before it (one indexed row per agent).
             let mut st = c.prepare(
-                "SELECT agent_id, detail FROM events WHERE kind='spawned' AND ts_ms < ?1 AND agent_id IS NOT NULL
-                 ORDER BY ts_ms, id",
+                "SELECT detail FROM events WHERE agent_id=?1 AND ts_ms < ?2 AND kind='spawned'
+                 ORDER BY ts_ms DESC, id DESC LIMIT 1",
             )?;
-            for row in st.query_map([until as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
-                let (agent, text) = row?;
-                if ids.contains(agent.as_str()) {
-                    spawned.insert(agent, detail(&text)["args"].clone());
-                }
-            }
-            rep.agents = agents
-                .iter()
-                .map(|(id, role)| ReportAgent {
+            for (id, role) in &agents {
+                let last: Option<String> = st.query_row(params![id, until as i64], |r| r.get(0)).optional()?;
+                let args = last.map(|t| detail(&t)["args"].clone());
+                rep.agents.push(ReportAgent {
                     id: id.clone(),
                     role: role.clone(),
-                    permission_mode: spawned.get(id).map(permission_mode).unwrap_or_else(|| "default".into()),
-                })
-                .collect();
+                    permission_mode: permission_mode(args.as_ref()),
+                });
+            }
 
             // Who answered each permission prompt (a decision that reached nobody,
             // `failed`, left the item open: its real decider comes later).
@@ -234,7 +229,9 @@ impl Store {
                 "SELECT agent_id, actor FROM audit_log
                  WHERE action='permission' AND decision <> 'failed' AND ts_ms >= ?1 AND ts_ms < ?2",
             )?;
-            for row in st.query_map(params![since as i64, until as i64], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)))? {
+            for row in st.query_map(params![since as i64, until as i64], |r| {
+                Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?))
+            })? {
                 let (agent, actor) = row?;
                 if mine(&agent) {
                     bump(&mut rep.prompts.by_decider, &actor);
@@ -242,17 +239,17 @@ impl Store {
             }
 
             // Waiting on the user, and starts that were blocked.
-            const WAITS: [&str; 4] = ["permission", "question", "gate", "startup"];
             let mut waits = |kind: &str, created: u64, end: u64| {
                 rep.waiting_ms += end.min(until).saturating_sub(created);
                 if kind == "startup" {
                     rep.startup_blocked += 1;
                 }
             };
-            let mut st = c.prepare(
+            let kinds = WAITS.map(|k| format!("'{k}'")).join(", ");
+            let mut st = c.prepare(&format!(
                 "SELECT id, agent_id, kind, created_at_ms, decided_at_ms FROM inbox_items
-                 WHERE kind IN ('permission', 'question', 'gate', 'startup') AND created_at_ms >= ?1 AND created_at_ms < ?2",
-            )?;
+                 WHERE kind IN ({kinds}) AND created_at_ms >= ?1 AND created_at_ms < ?2"
+            ))?;
             let rows = st.query_map(params![since as i64, until as i64], |r| {
                 Ok((
                     r.get::<_, i64>(0)? as u64,
@@ -276,14 +273,19 @@ impl Store {
             let mut st = c.prepare(
                 "SELECT agent_id, detail FROM events WHERE kind='inbox_outcome' AND ts_ms >= ?1 ORDER BY ts_ms, id",
             )?;
-            for row in st.query_map(params![since as i64], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)))? {
+            for row in
+                st.query_map(params![since as i64], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)))?
+            {
                 let (agent, d) = row?;
+                if !mine(&agent) {
+                    continue;
+                }
                 let d: Value = serde_json::from_str(&d).unwrap_or(Value::Null);
                 let (Some(item), Some(kind)) = (d["item"].as_u64(), d["kind"].as_str()) else { continue };
                 let created = d["created_at_ms"].as_u64().unwrap_or(0);
                 // A park or a failed delivery left it open.
                 let reopened = matches!(d["effect"].as_str(), Some("parked" | "failed"));
-                if have.contains(&item) || !mine(&agent) || !WAITS.contains(&kind) || reopened || created < since || created >= until {
+                if have.contains(&item) || !WAITS.contains(&kind) || reopened || created < since || created >= until {
                     continue;
                 }
                 closed.insert(item, (kind.to_string(), created, d["at_ms"].as_u64().unwrap_or(created)));
