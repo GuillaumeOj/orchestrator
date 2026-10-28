@@ -125,19 +125,28 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
 
 ## Inbox and permissions (FR-705, FR-707–709)
 
-- **PermissionRequest**: the store's rules decide first (`deny` > `ask` > `allow`, scopes project /
-  role / agent, syntax `Tool`, `Tool(exact)`, `Tool(prefix:*)`, `Tool(dir/**)`, `mcp__x__*`). With no
-  deciding rule (or `ask`), an Inbox item `permission` (priority 30, payload: tool, input,
-  `always_pattern`, project, role) is created and the hook is **held** (a `gate` hold row with the
-  item id) for `permission_hold` (default 300 s, always 1 s inside orch-hook's deadline). Approve →
-  `allow`; Reject → `deny` "the user denied this in the Inbox"; Reply → `deny` with the user's words;
-  Always allow → `allow` + a scoped rule (default project) created from `always_pattern`. Esc in the
-  pane (EOF on the hook connection) closes the item as `interrupted`; no answer in time closes it as
-  `expired` and returns **no decision**. The CLI shows its own dialog in the pane while the hook is
-  held, so the user may answer there: the call's next hook (PostToolUse, PostToolUseFailure,
-  PermissionDenied) or the end of the turn closes the item as "answered in the pane" and ends the
-  hold. An embedding UI with its own prompt broker (orch-app) sets `permission_hold` to zero: the
-  rules still answer, everything else goes to its broker.
+- **PermissionRequest**: a one-shot allow (below) answers first, then the store's rules (`deny` >
+  `ask` > `allow`, scopes project / role / agent, syntax `Tool`, `Tool(exact)`, `Tool(prefix:*)`,
+  `Tool(dir/**)`, `mcp__x__*`). With no deciding rule (or `ask`), an Inbox item `permission`
+  (priority 30, payload: `tool`, `tool_input`, `cwd`, `tool_use_id`, `summary`, `description`,
+  `ask_rule`, `always`, project, role) is created and the hook is **held** (a `gate` hold row with the
+  item id) for `permission_hold` (default 300 s, setting `permissions.hold_secs`, always 2 s inside
+  orch-hook's deadline; MCP `ask` rules use the same budget). Approve → `allow`; Reject → `deny` "the
+  user denied this in the Inbox"; Reply → `deny` with the user's words; Always allow → `allow` + a
+  scoped rule (default project) created from `always`. The CLI shows its own dialog in the pane while
+  the hook is held: the call's next hook (PostToolUse, PostToolUseFailure, PermissionDenied) or the
+  end of the turn closes the item as "answered in the pane"; Esc in the pane (EOF on the hook
+  connection) closes it as `interrupted`. Both are decided by `pane`.
+- **Parking** (FR-705): no answer in time → the hook denies with "ORCH: awaiting the user's approval.
+  Stop here; …", the item and its hold become `parked` (still open), and at the turn's Stop the agent
+  is suspended (unless it has a reserved slot, or other work); queued work does not resume it.
+  Approve / Always allow → a **one-shot allow** (agent + tool + canonical `tool_input`, consumed on
+  first match, 1 h) and the user turn "ORCH: approved: retry the call <tool> <summary>"; Reject →
+  "ORCH: denied: <tool> <summary>. <reason>". A restart parks a still-held prompt (`restarted: true`);
+  a legacy hold with no item becomes a `restart_gate` gate (Approve → "ORCH: approved: proceed").
+- **Who decided** (FR-709): every answer is one audit row whose actor is `user`, `pane`, `rule:<id>`,
+  `expired` or `core`, the item keeps `decided_by`, and an `inbox_outcome` event `{item, kind, tool,
+  decided_by, effect, created_at_ms, at_ms}` is recorded (and given to `set_outcome_sink`).
 - `decide(item, InboxDecision, scope, message)` is logged in the audit log before it acts. Alerts
   are dismissed; a Reply to a non-permission item becomes a turn for the agent.
 - **PR gate**: `request_pr` (orch-mcp) creates a `gate` item (one pending per agent). Approve →

@@ -34,7 +34,8 @@ db.flush()?;                                                    // everything qu
 | Project | `projects` | `upsert_project`, `project`, `project_by_path`, `projects(with_archived)`, `touch_project`, `record_fetch`, `delete_project` |
 | Worktree | `worktrees` | runtime-owned (below); `worktree(path)`, `worktrees_of(repo)`, `upsert_worktree_tx(tx, row)` |
 | Agent, Turn, (holds) | `agents`, `turns`, `holds` | runtime-owned: `load_runtime`, `sync_runtime(RuntimeDiff)`, `runtime_is_empty` |
-| InboxItem | `inbox_items` | runtime-owned; `inbox_item(id)`, `inbox_pending()` (read only) |
+| InboxItem | `inbox_items` | runtime-owned; `inbox_item(id)`, `inbox_pending()` (read only); `decided_by` (FR-709) |
+| one-shot allow | `one_shot_allows` | `add_one_shot`, `take_one_shot` (FR-705: one exact call of one agent) |
 | PermissionRule | `permission_rules` | `add_rule`, `revoke_rule` (row kept), `rules()` (active) |
 | UsageSample | `usage_samples` | `add_usage` (detached), `usage_since(ms, source)`, `usage_totals(ms)` |
 | WeeklyPlan, BudgetAllocation | `weekly_plans`, `budget_allocations` | `save_plan(plan, PlanStatus)`, `active_plan`, `previous_plan(before)` |

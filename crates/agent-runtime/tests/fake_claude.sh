@@ -58,6 +58,17 @@ while IFS= read -r line; do
   hook "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"prompt\":\"$prompt\"}"
   out=$(hook "{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo hi\"},\"tool_use_id\":\"tu$n\"}")
   echo "PRE[$n]:$out"
+  # A pasted "PERMIT <cmd>" (or the core's "retry the call Bash <cmd>") asks
+  # for a permission the way Claude Code's dialog would.
+  permit=""
+  case "$raw" in
+    *'retry the call Bash '*) permit=$(printf '%s' "$raw" | sed 's/.*retry the call Bash //') ;;
+    *PERMIT*) permit=$(printf '%s' "$raw" | sed 's/.*PERMIT //') ;;
+  esac
+  if [ -n "$permit" ]; then
+    out=$(hook "{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$permit\"},\"tool_use_id\":\"tp$n\",\"cwd\":\"$PWD\"}")
+    echo "PERM[$n]:$out"
+  fi
   case "$prompt" in
     *SLOW*) sleep 30 ;;
     *COMMIT*) echo "work $n" > "work-$n.txt"; echo "MCP[$n]:$(mcp_commit "fake commit $n")" ;;

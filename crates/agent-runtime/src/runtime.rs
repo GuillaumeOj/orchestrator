@@ -2243,7 +2243,7 @@ impl Runtime {
             .collect();
         json!({
             "agents": agents,
-            "inbox": s.inbox.iter().filter(|i| i.pending()).collect::<Vec<_>>(),
+            "inbox": s.inbox.iter().filter(|i| i.open()).collect::<Vec<_>>(),
             "turns": s.turns.iter().rev().take(20).collect::<Vec<_>>(),
             "warnings": self.warnings,
             "live_cap": {"base": self.cfg.base_cap, "effective": self.live_cap(), "pressure": self.house().pressure},

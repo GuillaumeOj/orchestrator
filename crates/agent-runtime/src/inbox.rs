@@ -1075,6 +1075,63 @@ mod tests {
         assert_eq!(rt.store.read(|s| s.turns.last().unwrap().body.clone()), "ORCH: rejected: wrong branch");
     }
 
+    /// Acceptance 8: a held permission and a held gate when the core restarts
+    /// come back with their payloads, and deciding them works.
+    #[test]
+    fn held_prompts_come_back_after_a_restart_and_work() {
+        let (_d, rt) = test_runtime(true);
+        let perm = rt
+            .store
+            .write(|s| {
+                let a = s.agents.get_mut("a1").unwrap();
+                a.tracker.state = AgentState::WaitingForYou;
+                let payload = json!({"tool": "Bash", "tool_input": {"command": "pnpm add zod"}, "summary": "pnpm add zod",
+                                     "cwd": "/w", "tool_use_id": "tu9"});
+                let perm = s.add_inbox_item(Some("a1"), "permission", "a1: Bash: pnpm add zod".into(), payload, 30);
+                for (id, item, summary) in [("h1", Some(perm), "Bash: pnpm add zod"), ("h2", None, "git push")] {
+                    s.holds.push(HoldRow {
+                        id: id.into(),
+                        agent_id: "a1".into(),
+                        tool_use_id: None,
+                        kind: HoldKind::Gate,
+                        status: HoldStatus::Held,
+                        summary: summary.into(),
+                        created_at_ms: 0,
+                        inbox_id: item,
+                    });
+                }
+                perm
+            })
+            .unwrap();
+        let report = rt.recover(true).unwrap();
+        assert!(report.holds.iter().any(|(h, now)| h == "h1" && now.contains("parked")), "{:?}", report.holds);
+        assert!(report.holds.iter().any(|(h, now)| h == "h2" && now.contains("restart gate")), "{:?}", report.holds);
+        let items = rt.inbox();
+        let p = items.iter().find(|i| i.id == perm).unwrap();
+        assert_eq!(
+            (p.status, p.payload["tool_input"]["command"].as_str()),
+            (InboxStatus::Parked, Some("pnpm add zod"))
+        );
+        assert_eq!(p.payload["restarted"], true);
+        let g = items.iter().find(|i| i.kind == "gate").unwrap();
+        assert_eq!(
+            (g.payload["action"].as_str(), g.payload["detail"].as_str()),
+            (Some("restart_gate"), Some("git push"))
+        );
+        assert_eq!(actors(&rt), ["core"], "the reconciler parked it");
+        // Both decisions have their normal effect.
+        assert_eq!(rt.decide(perm, InboxDecision::Approve, None, None).unwrap()["effect"], "resumed");
+        rt.decide(g.id, InboxDecision::Approve, None, None).unwrap();
+        let bodies: Vec<String> = rt.store.read(|s| s.turns.iter().map(|t| t.body.clone()).collect());
+        assert!(bodies.contains(&"ORCH: approved: retry the call Bash pnpm add zod".to_string()), "{bodies:?}");
+        assert!(bodies.contains(&"ORCH: approved: proceed".to_string()), "{bodies:?}");
+        assert_eq!(behavior(&rt.on_hook(&perm_input("pnpm add zod"), None)).as_deref(), Some("allow"));
+    }
+
+    fn perm_input(cmd: &str) -> orch_protocol::HookMsg {
+        hook("PermissionRequest", json!({"tool_name": "Bash", "tool_input": {"command": cmd}, "tool_use_id": "tu2"}))
+    }
+
     #[test]
     fn alerts_are_dismissed_and_replies_become_turns() {
         let (_d, rt) = test_runtime(true);

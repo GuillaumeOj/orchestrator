@@ -303,6 +303,63 @@ fn idle_agents_are_suspended_and_resume_on_new_work() {
     wait_for("resumed turn", 20, || agent(&core.sock, "a")["turns"].as_u64() == Some(2));
 }
 
+/// FR-705/709 (acceptance 2, 3): a rule answers at once; a prompt nobody
+/// answers parks the agent (suspended, its card intact); Allow resumes it and
+/// the retried call runs without a second prompt. The audit names each decider.
+#[test]
+fn an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry() {
+    use agent_runtime::store::InboxStatus;
+    use orch_protocol::InboxDecision;
+    let core = Core::start("orchpk", |c| c.permission_hold = Duration::from_secs(2));
+    core.start_agent("a");
+    let audit = || {
+        let a = request(&core.sock, CtlRequest::Audit { agent_id: Some("a".into()), limit: None }).unwrap().data;
+        a.as_array().unwrap().iter().rev().map(|e| e["actor"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>()
+    };
+    let screen = || {
+        request(&core.sock, CtlRequest::Read { agent_id: "a".into() }).unwrap().data.as_str().unwrap_or("").to_string()
+    };
+
+    // A rule answers at once.
+    let rule = core
+        .rt
+        .add_rule(orch_store::RuleScope::Agent, "a", "Bash(cargo test:*)", orch_store::RuleEffect::Allow, None)
+        .unwrap();
+    request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "PERMIT cargo test -q".into() }).unwrap();
+    wait_for("rule turn", 15, || agent(&core.sock, "a")["turns"] == 2 && core.state_of("a") == "idle");
+    let perm2 = screen().lines().find(|l| l.contains("PERM[2]:")).map(str::to_string).unwrap_or_default();
+    assert!(perm2.contains(r#""behavior":"allow""#), "{}", screen());
+    assert!(core.rt.inbox().is_empty());
+
+    // Nobody answers within the hold: denied, parked, suspended.
+    request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "PERMIT pnpm add zod".into() }).unwrap();
+    wait_for("parked and suspended", 30, || core.state_of("a") == "suspended");
+    let item = core.rt.inbox().into_iter().find(|i| i.kind == "permission").expect("the card stays");
+    assert_eq!(item.status, InboxStatus::Parked);
+    assert_eq!(item.payload["tool_input"]["command"], "pnpm add zod");
+    assert!(item.payload["cwd"].as_str().is_some_and(|c| c.ends_with("solo/a")), "{}", item.payload);
+    assert_eq!(item.payload["tool_use_id"], "tp3");
+    // Queued work does not wake a parked agent.
+    request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "other work".into() }).unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(core.state_of("a"), "suspended");
+
+    // Allow: resumed with the retry, which runs without a second prompt.
+    let r = request(
+        &core.sock,
+        CtlRequest::Decide { item_id: item.id, decision: InboxDecision::Approve, scope: None, message: None },
+    )
+    .unwrap();
+    assert!(r.ok, "{r:?}");
+    wait_for("retried", 30, || screen().contains("retry the call Bash pnpm add zod") && core.state_of("a") == "idle");
+    wait_for("other work too", 30, || agent(&core.sock, "a")["queued_turns"] == 0 && core.state_of("a") == "idle");
+    assert!(core.rt.inbox().is_empty(), "no second prompt");
+    // The rule, the expiry, the user's Allow, and the retry on their one-shot allow.
+    assert_eq!(audit(), [format!("rule:{}", rule.id), "expired".into(), "user".into(), "user".into()]);
+    let one_shot = request(&core.sock, CtlRequest::Audit { agent_id: Some("a".into()), limit: Some(1) }).unwrap().data;
+    assert_eq!(one_shot[0]["detail"]["one_shot"], true, "{one_shot}");
+}
+
 /// J3 end to end with the fake claude: launch, the lead starts when the
 /// Governor admits it, spec gate, a task dispatched to a new specialist in its
 /// own worktree, a message, report, merge, then the PR gate.

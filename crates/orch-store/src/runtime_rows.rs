@@ -344,11 +344,11 @@ impl Store {
         })
     }
 
-    /// Pending items in attention-ladder order (priority, then oldest first).
+    /// Open (pending or parked) items in attention-ladder order (priority, then oldest first).
     pub fn inbox_pending(&self) -> Result<Vec<InboxItem>> {
         self.read(|c| {
             let mut st = c.prepare(&format!(
-                "SELECT {INBOX_COLS} FROM inbox_items WHERE status='pending' ORDER BY priority DESC, created_at_ms, id"
+                "SELECT {INBOX_COLS} FROM inbox_items WHERE status IN ('pending', 'parked') ORDER BY priority DESC, created_at_ms, id"
             ))?;
             Ok(st.query_map([], row_inbox)?.collect::<rusqlite::Result<_>>()?)
         })
