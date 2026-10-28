@@ -8,8 +8,8 @@
   // close, ←/→ previous / next, 0 fit, 1 100 %, ⏎ open.
   import { untrack } from 'svelte';
   import { toast } from '../lib/app.svelte.js';
-  import { artifactTitle, artifactTool, designGroups, linkOnly, notMerged, previewable, previewError, size, TOOL } from '../lib/ecosystem.js';
-  import { clock } from '../lib/format.js';
+  import { artifactTitle, artifactTool, designGroups, linkOnly, notMerged, previewable, previewError, TOOL } from '../lib/ecosystem.js';
+  import { clock, size } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import AgentChip from './AgentChip.svelte';
   import Kbd from './Kbd.svelte';

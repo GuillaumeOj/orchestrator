@@ -7,10 +7,11 @@
   // e copy as markdown, ⏎ plan next week, esc back to the Week planner.
   import { onMount, untrack } from 'svelte';
   import Kbd from '../components/Kbd.svelte';
+  import PressurePill from '../components/PressurePill.svelte';
   import { app, openSingleton, saveLayout, toast } from '../lib/app.svelte.js';
-  import { dayTime } from '../lib/format.js';
+  import { dayHm, dayTime } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { ACTION_LABEL, API_TIP, dayHm, delta, kpis, minutes, noData, reportMarkdown, stateBar, TABS, usd, WINDOW_STATE, weekNo } from '../lib/pacing.js';
+  import { ACTION_LABEL, API_TIP, delta, kpis, minutes, noData, reportMarkdown, stateBar, TABS, usd, weekNo } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
 
   let { paneId } = $props();
@@ -190,7 +191,7 @@
             <div class="ch"><b>Model windows</b><span class="muted">peak this week</span></div>
             {#each r.model_windows as w (w.name)}
               {@const st = w.peak_pct >= 100 ? 'exhausted' : w.peak_pct >= 95 ? 'red' : w.peak_pct >= 85 ? 'amber' : 'green'}
-              <div class="kv"><span>{w.family} week {Math.round(w.peak_pct)} %</span><span class="pill" style:border-color={WINDOW_STATE[st].color}><span style:color={WINDOW_STATE[st].color}>{WINDOW_STATE[st].icon}</span> {WINDOW_STATE[st].label}</span></div>
+              <div class="kv"><span>{w.family} week {Math.round(w.peak_pct)} %</span><PressurePill state={st} /></div>
             {/each}
           </section>
         {/if}
@@ -379,11 +380,6 @@
     grid-template-columns: 1fr auto auto;
     gap: var(--space-md);
     align-items: center;
-  }
-  .pill {
-    padding: 0 var(--space-sm);
-    border: var(--border-width-default) solid;
-    border-radius: var(--radius-full);
   }
   .past {
     display: flex;

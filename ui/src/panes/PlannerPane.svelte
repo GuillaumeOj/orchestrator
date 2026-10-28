@@ -12,9 +12,9 @@
   import Kbd from '../components/Kbd.svelte';
   import PressurePill from '../components/PressurePill.svelte';
   import { app, confirm, governor, openReport, toast } from '../lib/app.svelte.js';
-  import { clock, dayTime, duration, pct, pp, when } from '../lib/format.js';
+  import { clock, dayHm, dayTime, duration, pct, pp, when } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { dayHm, downgradeText, nextOffHours, OFF_DISABLED, offHoursAllowed, WINDOW_STATE, windowLabel, windowQueued } from '../lib/pacing.js';
+  import { downgradeText, nextOffHours, OFF_DISABLED, offHoursAllowed, windowLabel, windowQueued } from '../lib/pacing.js';
   import { PRESSURE, queueReason } from '../lib/status.js';
 
   let v = $state(null);
@@ -259,8 +259,7 @@
           <div class="mw">
             <span class="muted">Model windows</span>
             {#each windows as mw (mw.name)}
-              {@const st = WINDOW_STATE[mw.state] ?? WINDOW_STATE.green}
-              <div class="mwrow"><b>{windowLabel(mw)} {Math.round(mw.used_pct)} %</b><span class="pill" style:border-color={st.color}><span style:color={st.color}>{st.icon}</span> {st.label}</span><span class="muted">resets {dayHm(Date.parse(mw.resets_at))}</span></div>
+              <div class="mwrow"><b>{windowLabel(mw)} {Math.round(mw.used_pct)} %</b><PressurePill state={mw.state} /><span class="muted">resets {dayHm(Date.parse(mw.resets_at))}</span></div>
               {#if mw.state === 'red' || mw.state === 'exhausted'}<p class="muted">{windowQueued(mw)}{mw.state === 'red' ? '. Roles with a downgrade switch at their next task.' : ''}</p>{/if}
             {/each}
           </div>
@@ -461,11 +460,6 @@
     display: flex;
     align-items: center;
     gap: var(--space-sm);
-  }
-  .pill {
-    padding: 0 var(--space-sm);
-    border: var(--border-width-default) solid;
-    border-radius: var(--radius-full);
   }
   .ideal {
     fill: none;

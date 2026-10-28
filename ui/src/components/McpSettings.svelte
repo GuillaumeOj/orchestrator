@@ -15,6 +15,7 @@
     KINDS,
     keychainAccount,
     kindLabel,
+    needsUser,
     reconnectHint,
     secretEnv,
     serverForSave,
@@ -127,7 +128,7 @@
 
   function remove(s) {
     if (!s) return;
-    const scope = project && s.scope ? { kind: 'project', id: project } : { kind: 'global' };
+    const scope = scopeOf(s.scope);
     confirm(
       `Delete ${s.name} from the MCP registry?`,
       scope.kind === 'project' ? `The global entry applies to ${project} again.` : 'Roles can no longer reference it.',
@@ -338,7 +339,7 @@
           {#if !draft.server.allow_secret_env}<p class="box errbox"><span aria-hidden="true">{'\u{F0159}'}</span> {s.id || s.name} uses a Keychain secret in its env, but "pass it to agents" is off. Save works; Test and launch fail until you opt in.</p>{/if}
         {/if}
 
-        {#if !draft.isNew && (s.status === 'needs_auth' || s.status === 'error')}
+        {#if !draft.isNew && needsUser(s.status)}
           {@const h = reconnectHint(s)}
           <div class="box warnbox">
             <p>{h.text}</p>

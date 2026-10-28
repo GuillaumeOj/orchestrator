@@ -5,7 +5,7 @@
   // x remove the token. A row needing you sorts first.
   import { onMount, tick } from 'svelte';
   import { confirm, openSettings, runInPane, toast } from '../lib/app.svelte.js';
-  import { checkedAt, INTEGRATION_COPY, integrationDetail, sortIntegrations } from '../lib/ecosystem.js';
+  import { checkedAt, INTEGRATION_COPY, integrationDetail, needsUser, sortIntegrations } from '../lib/ecosystem.js';
   import { errText, invoke } from '../lib/ipc.js';
   import ConnBadge from './ConnBadge.svelte';
   import Kbd from './Kbd.svelte';
@@ -91,6 +91,9 @@
     );
   }
 
+  /** Penpot and Figma come from the MCP registry (their status is their servers'). */
+  const designTool = (it) => it.id === 'penpot' || it.id === 'figma';
+
   /** ⏎: what Connect / Reconnect does per integration (§5.2). */
   async function connect(it) {
     if (!it) return;
@@ -101,11 +104,10 @@
       await tick();
       return fields[it.id]?.focus();
     }
-    if (it.id === 'penpot' || it.id === 'figma') return openSettings('mcp', `design:${it.id}`);
+    if (designTool(it)) return openSettings('mcp', `design:${it.id}`);
   }
 
-  const designTool = (it) => it.id === 'penpot' || it.id === 'figma';
-  const failedOf = (it) => it.has_secret && (it.status === 'needs_auth' || it.status === 'error');
+  const failedOf = (it) => it.has_secret && needsUser(it.status);
   const connectLabel = (it) =>
     designTool(it) ? 'Open MCP servers' : failedOf(it) ? 'Replace' : it.status === 'not_configured' ? 'Connect' : 'Reconnect';
   const lastCheck = $derived(Math.max(0, ...(items ?? []).map((i) => i.checked_at_ms ?? 0)) || null);
@@ -151,7 +153,7 @@
       <div class="row" class:sel={focused} data-integration={it.id} onclick={() => (selId = it.id)}>
         <div class="top">
           <span class="name"><span class="ico" aria-hidden="true">{{ github: '\u{F02A4}', linear: '\u{F0453}', notion: '\u{F0219}', penpot: '\u{F0431}', figma: '\u{F0431}' }[it.id] ?? ''}</span> {it.name}</span>
-          <ConnBadge status={it.status} busy={busy[it.id]} connector={it.id === 'penpot' || it.id === 'figma'} />
+          <ConnBadge status={it.status} busy={busy[it.id]} connector={designTool(it)} />
           <span class="detail ell">{integrationDetail(it)}</span>
           <span class="grow"></span>
           <span class="muted when">{checkedAt(it.checked_at_ms, now)}</span>

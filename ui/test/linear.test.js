@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/lib/app.svelte.js';
-import { backendForm, mappingRows, mappingToSave, syncLine } from '../src/lib/linear.js';
+import { mappingRows, mappingToSave, syncLine } from '../src/lib/linear.js';
 import { handle } from '../src/lib/teams.js';
 import { fixture } from './fixture.js';
 
@@ -42,16 +42,12 @@ describe('linear helpers', () => {
     expect(mappingToSave(rows)).toEqual({ s4: 'in_progress' });
     expect(mappingToSave(mappingRows(STATES))).toBe(undefined);
     const at = new Date(2026, 9, 21, 15, 4).getTime();
-    expect(syncLine({ pushed: 7, imported: 0, updated: 2, conflicts: 1 }, at)).toBe(
+    expect(syncLine({ pushed: 7, pulled: 2, imported: 0, updated: 1, conflicts: 1 }, at)).toBe(
       'Last sync 15:04: 7 pushed · 2 pulled · 1 conflict (Linear won)',
     );
-    expect(syncLine({ pushed: 7, imported: 0, updated: 0, conflicts: 0 }, at)).toBe(
+    expect(syncLine({ pushed: 7, pulled: 0, imported: 0, updated: 0, conflicts: 0 }, at)).toBe(
       'Last sync 15:04: 7 pushed · 0 pulled · 0 conflicts',
     );
-    expect(backendForm('linear', { team: 'ENG', project: null, states: undefined })).toEqual({
-      type: 'linear',
-      team: 'ENG',
-    });
     expect(handle({ id: 3, backend: 'linear', external_id: 'ENG-142' })).toBe('ENG-142');
   });
 });
@@ -165,15 +161,19 @@ describe('project settings › Task backend', () => {
       imported: 0,
       updated: 0,
       pushed: 0,
+      pulled: 0,
       conflicts: 0,
-      errors: ['ENG-150: state "QA" isn\'t mapped.'],
+      errors: ['Linear rate limit: retrying in 60 s'],
+      unmapped_states: ['QA'],
     };
     app.panes.p1 = { type: 'project-settings', projectId: 'shop-api', section: 'backend', title: 'shop-api settings' };
     const { container, getByText } = render(ProjectSettingsPane, { paneId: 'p1' });
     await waitFor(() => expect(container.querySelectorAll('.mrow')).toHaveLength(6));
     await fireEvent.click(getByText('Sync now', { exact: false }));
-    await waitFor(() => getByText('ENG-150: state "QA" isn\'t mapped.', { exact: false }));
-    expect(getByText('Map it', { exact: false })).toBeTruthy();
+    await waitFor(() => getByText('State "QA" isn\'t mapped.', { exact: false }));
+    expect(getByText('✕ Linear rate limit: retrying in 60 s')).toBeTruthy();
+    await fireEvent.click(getByText('Map it', { exact: false }));
+    expect(document.activeElement).toBe(container.querySelector('[data-row] select'));
   });
 
   it('board on Linear: the header, the ENG ids and the remote-won marker', async () => {

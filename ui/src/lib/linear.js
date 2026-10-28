@@ -1,26 +1,36 @@
-// Project settings › Task backend: Linear (FR-501, FR-503; p3-design-notes
-// §5.13, J13 · 3–5). Pure: tested in test/linear.test.js.
+// Task backends in the UI, and Project settings › Task backend: Linear
+// (FR-501, FR-503; p3-design-notes §5.13, J13 · 3–5). Pure: tested in
+// test/linear.test.js.
 import { clock } from './format.js';
+import { COLUMNS } from './teams.js';
 
+/** `label` names the backend (the segmented control, headers); `remote` is
+ *  the short name in sentences and on cards ("changed in GitHub"). */
 export const BACKENDS = [
-  { id: 'local', label: 'Local' },
-  { id: 'github', label: 'GitHub Issues' },
-  { id: 'linear', label: 'Linear' },
+  { id: 'local', label: 'Local', remote: 'Local' },
+  { id: 'github', label: 'GitHub Issues', remote: 'GitHub' },
+  { id: 'linear', label: 'Linear', remote: 'Linear' },
 ];
 
-export const COLUMN_LABEL = {
-  backlog: 'Backlog',
-  ready: 'Ready',
-  in_progress: 'In progress',
-  review: 'Review',
-  done: 'Done',
-};
+const backendOf = (id) => BACKENDS.find((b) => b.id === id) ?? BACKENDS[0];
+export const backendLabel = (id) => backendOf(id).label;
+export const remoteName = (id) => backendOf(id).remote;
+
+/** Board column labels by id. */
+export const COLUMN_LABEL = Object.fromEntries(COLUMNS.map((c) => [c.id, c.label]));
 
 /** The mapping rows: each Linear state with its column (saved, else its default). */
 export function mappingRows(states, saved = {}) {
   return (states ?? []).map((s) => {
     const column = saved?.[s.id] ?? s.default_column;
-    return { id: s.id, name: s.name, type: s.type, column, isDefault: column === s.default_column };
+    return {
+      id: s.id,
+      name: s.name,
+      type: s.type,
+      default_column: s.default_column,
+      column,
+      isDefault: column === s.default_column,
+    };
   });
 }
 
@@ -31,21 +41,13 @@ export function mappingToSave(rows) {
   return Object.keys(out).length ? out : undefined;
 }
 
-/** "Last sync 15:04: 7 pushed · 2 pulled · 1 conflict (Linear won)". */
-export function syncLine(r, atMs, remote = 'Linear') {
-  if (!r) return null;
-  const pulled = r.pulled ?? (r.imported ?? 0) + (r.updated ?? 0);
+/** "7 pushed · 2 pulled · 1 conflict (Linear won)" from a board_sync answer. */
+export function syncCounts(r, remote = 'Linear') {
   const c = r.conflicts ?? 0;
-  return `Last sync ${clock(atMs, atMs)}: ${r.pushed ?? 0} pushed · ${pulled} pulled · ${c} conflict${c === 1 ? '' : 's'}${c ? ` (${remote} won)` : ''}`;
+  return `${r.pushed ?? 0} pushed · ${r.pulled ?? 0} pulled · ${c} conflict${c === 1 ? '' : 's'}${c ? ` (${remote} won)` : ''}`;
 }
 
-/** The saved backend for the form. */
-export function backendForm(kind, linear) {
-  if (kind !== 'linear') return { type: kind };
-  return {
-    type: 'linear',
-    team: linear.team,
-    ...(linear.project ? { project: linear.project } : {}),
-    ...(linear.states ? { states: linear.states } : {}),
-  };
+/** "Last sync 15:04: 7 pushed · 2 pulled · 1 conflict (Linear won)". */
+export function syncLine(r, atMs, remote = 'Linear') {
+  return r ? `Last sync ${clock(atMs, atMs)}: ${syncCounts(r, remote)}` : null;
 }

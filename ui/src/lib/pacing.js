@@ -2,7 +2,8 @@
 // model windows, off-hours, the weekly report and the downgrade log copy.
 // Pure: tested in test/pacing.test.js. Usage is pp of the week; $ appears
 // only as the muted "≈ API $" column (D7).
-import { clock, dayTime, duration } from './format.js';
+import { clock, dayHm, dayTime, pp } from './format.js';
+import { modelWindowReason, PRESSURE } from './status.js';
 
 /** ISO week number of a date (the report's "Week 43"). */
 export function weekNo(ms) {
@@ -18,23 +19,17 @@ export function weekNo(ms) {
 /** "opus week" from a window name ("seven_day_opus") and its family. */
 export const windowLabel = (w) => `${w.family ?? w.name} week`;
 
-/** The pill state of a model window: exhausted reads as its own label. */
+/** The pressure states, plus a model window used up (exhausted reads as its own label). */
 export const WINDOW_STATE = {
-  green: { label: 'Green', icon: '●', color: 'var(--color-pacing-green)' },
-  amber: { label: 'Amber', icon: '▲', color: 'var(--color-pacing-amber)' },
-  red: { label: 'Red', icon: '■', color: 'var(--color-pacing-red)' },
+  ...PRESSURE,
   exhausted: { label: 'Exhausted', icon: '⊘', color: 'var(--color-status-blocked-by-limit)' },
 };
 
-/** "Mon 09:00": a reset within the week. */
-export const dayHm = (ms) => clock(ms, ms + 2 * 86400000);
-
 /** "Queued: opus week in Red · starts after reset Mon 09:00" (§5.10). */
 export function windowQueued(w) {
-  const at = dayHm(Date.parse(w.resets_at));
-  return w.state === 'exhausted'
-    ? `Queued: ${windowLabel(w)} exhausted · starts ${at} · or set a downgrade for this role`
-    : `Queued: ${windowLabel(w)} in Red · starts after reset ${at}`;
+  const exhausted = w.state === 'exhausted';
+  const why = modelWindowReason(w.family ?? w.name, w.resets_at, exhausted);
+  return `Queued: ${why}${exhausted ? ' · or set a downgrade for this role' : ''}`;
 }
 
 /** Windows that hold work (title bar compact: "· opus 92 %"). */
@@ -56,14 +51,6 @@ export const offHoursAllowed = (off) => (off?.allowance_pct ?? 0) > 0;
 
 export const OFF_DISABLED = 'Off-hours allowance is 0 % this week. Set it in the plan (e).';
 
-/** "Off-hours · starts 18:00 (in 7h)" (D4/D5: the time comes from starts_at). */
-export function offHoursReason(startsAt, now = Date.now()) {
-  const t = Date.parse(startsAt);
-  return t > now
-    ? `Off-hours · starts ${clock(t, now)} (in ${duration(t - now)})`
-    : 'Off-hours · running in the window';
-}
-
 /** The status bar's power chip (§5.11); null when nothing is pending. */
 export function powerChip(power) {
   const n = power?.off_hours_pending ?? 0;
@@ -83,8 +70,7 @@ export function downgradeText(k) {
   return null;
 }
 
-const label = (s) =>
-  ({ red: 'Red', amber: 'Amber', green: 'Green', model_window: 'model window', catch_up: 'Catch-up' })[s] ?? s;
+const label = (s) => (s === 'model_window' ? 'model window' : (PRESSURE[s]?.label ?? s));
 
 // ---------------------------------------------------------------- weekly report
 
@@ -104,7 +90,7 @@ export const usd = (row) => (row.key === 'outside' || row.cost_usd == null ? '�
 export function delta(d) {
   if (d == null) return { text: '—', glyph: '' };
   const r = Math.round(d);
-  return { text: `${r > 0 ? '+' : r < 0 ? '−' : ''}${Math.abs(r)} pp`, glyph: r > 0 ? '▲' : r < 0 ? '▼' : '' };
+  return { text: r ? pp(r) : '0 pp', glyph: r > 0 ? '▲' : r < 0 ? '▼' : '' };
 }
 
 export const minutes = (m) =>
