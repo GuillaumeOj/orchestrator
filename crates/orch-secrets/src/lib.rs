@@ -18,6 +18,23 @@ pub fn keychain_ref(value: &str) -> Option<&str> {
     value.strip_prefix(KEYCHAIN_PREFIX).map(str::trim).filter(|a| !a.is_empty())
 }
 
+/// MCP env secrets live in their own namespace (account `mcp:<account>`), so
+/// `keychain:linear` in a server's env never reads or overwrites the Linear
+/// integration's token (account `linear`).
+pub const MCP_NAMESPACE: &str = "mcp:";
+
+/// The Keychain account of an MCP env secret named `<account>`.
+pub fn mcp_account(account: &str) -> String {
+    format!("{MCP_NAMESPACE}{account}")
+}
+
+/// An account name as the user gives it (no namespace).
+pub fn valid_account(account: &str) -> bool {
+    !account.is_empty()
+        && account.len() <= 64
+        && account.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+}
+
 /// A secret value. Its `Debug` and `Display` never show it, so it can't end
 /// up in a log line or an error by accident; [`Secret::expose`] is the one way in.
 #[derive(Clone, PartialEq, Eq)]
@@ -56,10 +73,7 @@ pub trait Secrets: Send + Sync + fmt::Debug {
 }
 
 fn check_account(account: &str) -> Result<()> {
-    if account.is_empty()
-        || account.len() > 64
-        || !account.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
-    {
+    if !valid_account(account.strip_prefix(MCP_NAMESPACE).unwrap_or(account)) {
         bail!("invalid secret account {account:?} (a-z, 0-9, - _ ., up to 64)");
     }
     Ok(())
@@ -129,6 +143,16 @@ impl Secrets for MemorySecrets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_secrets_have_their_own_namespace() {
+        let m = MemorySecrets::default();
+        m.set("linear", &Secret::new("integration")).unwrap();
+        m.set(&mcp_account("linear"), &Secret::new("mcp")).unwrap();
+        assert_eq!(m.get("linear").unwrap().unwrap().expose(), "integration");
+        assert_eq!(m.get("mcp:linear").unwrap().unwrap().expose(), "mcp");
+        assert!(m.get("mcp:").is_err() && m.get("x:linear").is_err() && m.get("mcp:a:b").is_err());
+    }
 
     #[test]
     fn secrets_never_print() {

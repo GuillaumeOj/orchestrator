@@ -133,6 +133,10 @@ pub struct RoleDef {
     /// The starter it was installed from (FR-306 starter upgrades).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<StarterOrigin>,
+    /// FR-819: switch to a fallback model at the next task while the week
+    /// (or the model's window) is tight. Off by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downgrade: Option<governor::Downgrade>,
 }
 
 fn worktree() -> String {
@@ -168,6 +172,7 @@ impl RoleDef {
             budget_priority: Tier::Normal,
             version: 1,
             origin: None,
+            downgrade: None,
         }
     }
 }

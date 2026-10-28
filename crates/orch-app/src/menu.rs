@@ -10,8 +10,9 @@ use tauri::{AppHandle, Runtime};
 /// `(id, label, accelerator)`.
 pub type Item = (&'static str, &'static str, &'static str);
 
-/// The app's own items, by submenu.
+/// The app's own items, by submenu ("Orchestrator" items go in the app menu).
 pub const ITEMS: &[(&str, &[Item])] = &[
+    ("Orchestrator", &[("settings", "Settings…", "CmdOrCtrl+,")]),
     (
         "File",
         &[
@@ -45,8 +46,15 @@ pub const ITEMS: &[(&str, &[Item])] = &[
 ];
 
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
-    let app_menu = SubmenuBuilder::new(app, "Orchestrator")
+    let mut app_menu = SubmenuBuilder::new(app, "Orchestrator")
         .item(&PredefinedMenuItem::about(app, Some("About Orchestrator"), None)?)
+        .separator();
+    for (_, items) in ITEMS.iter().filter(|(t, _)| *t == "Orchestrator") {
+        for (id, label, accel) in *items {
+            app_menu = app_menu.item(&MenuItemBuilder::with_id(*id, *label).accelerator(*accel).build(app)?);
+        }
+    }
+    let app_menu = app_menu
         .separator()
         .item(&PredefinedMenuItem::hide(app, None)?)
         .item(&PredefinedMenuItem::hide_others(app, None)?)
@@ -66,7 +74,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .build()?;
     let menu = Menu::new(app)?;
     menu.append(&app_menu)?;
-    for (title, items) in ITEMS {
+    for (title, items) in ITEMS.iter().filter(|(t, _)| *t != "Orchestrator") {
         let mut sub = SubmenuBuilder::new(app, *title);
         for (id, label, accel) in *items {
             sub = sub.item(&MenuItemBuilder::with_id(*id, *label).accelerator(*accel).build(app)?);
@@ -93,7 +101,12 @@ mod tests {
         let all: Vec<(&str, &str)> = ITEMS.iter().flat_map(|(_, i)| i.iter().map(|(id, _, a)| (*id, *a))).collect();
         let by_accel = |a: &str| all.iter().find(|(_, x)| *x == a).map(|(id, _)| *id);
         assert_eq!(by_accel("CmdOrCtrl+W"), Some("pane.close"), "⌘W closes a pane, not the window");
-        for (chord, id) in [("CmdOrCtrl+K", "palette"), ("CmdOrCtrl+P", "jump"), ("CmdOrCtrl+Shift+I", "inbox")] {
+        for (chord, id) in [
+            ("CmdOrCtrl+K", "palette"),
+            ("CmdOrCtrl+P", "jump"),
+            ("CmdOrCtrl+Shift+I", "inbox"),
+            ("CmdOrCtrl+,", "settings"),
+        ] {
             assert_eq!(by_accel(chord), Some(id));
         }
         let mut accels: Vec<&str> = all.iter().map(|(_, a)| *a).collect();

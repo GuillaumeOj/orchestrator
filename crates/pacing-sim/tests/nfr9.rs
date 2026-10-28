@@ -235,3 +235,41 @@ fn nfr9_with_per_model_weights() {
         }
     }
 }
+
+/// FR-815: with a `seven_day_opus` window that a third of the agents fill
+/// fast, the Governor holds opus turns at 95 % (reason `model_window`);
+/// NFR-9 still holds and the other models keep working.
+#[test]
+fn nfr9_with_a_model_window() {
+    for seed in 1..=6u64 {
+        let mut sc = Scenario::synthetic(&SyntheticParams::nfr9(130.0, seed));
+        sc.model.opus_window_per_pp = 5.0;
+        let s = run(&sc).summary;
+        let tag = format!("seed {seed}");
+        assert!(!s.limit_hits.iter().any(|h| h.working_hours), "{tag}: {:?}", s.limit_hits);
+        assert!(s.weekly_exhausted_at.is_none(), "{tag}");
+        assert!(s.queued_by_reason.get("model_window").copied().unwrap_or(0) > 0, "{tag}: opus was held");
+        assert!(s.max_opus_window_pct < 100.0 + 3.0, "{tag}: {:.1}", s.max_opus_window_pct);
+        assert!((80.0..=100.0).contains(&s.final_weekly_pct), "{tag}: ended at {:.1} %", s.final_weekly_pct);
+    }
+}
+
+/// FR-816: tasks marked "Run off-hours" start only outside working time,
+/// under the off-hours cap, and NFR-9 holds with an off-hours allowance
+/// (nights run at most `off_hours_live_cap` agents, and none under pressure).
+#[test]
+fn nfr9_with_off_hours_work() {
+    for seed in 1..=6u64 {
+        let mut sc = Scenario::synthetic(&SyntheticParams::nfr9(110.0, seed));
+        sc.off_hours_allowance_pct = 10.0;
+        sc.model.off_hours_share = 0.25;
+        let s = run(&sc).summary;
+        let tag = format!("seed {seed}");
+        assert!(!s.limit_hits.iter().any(|h| h.working_hours), "{tag}: {:?}", s.limit_hits);
+        assert!(s.weekly_exhausted_at.is_none(), "{tag}");
+        assert!(s.off_hours_done_pct > 1.0, "{tag}: scheduled work ran");
+        // Admitted only off-hours; a turn admitted before the morning may run into it.
+        assert!(s.off_hours_in_working_min < 60, "{tag}: {} min in working time", s.off_hours_in_working_min);
+        assert!(s.queued_by_reason.get("scheduled_off_hours").copied().unwrap_or(0) > 0, "{tag}");
+    }
+}

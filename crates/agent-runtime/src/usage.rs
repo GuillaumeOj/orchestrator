@@ -38,6 +38,9 @@ pub struct AgentUsage {
     /// Last render that carried a new response.
     pub last_response_ms: Option<u64>,
     pub responses: u64,
+    /// The last per-model windows reported (FR-815).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub model_windows: Vec<(String, WindowSample)>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -88,9 +91,11 @@ impl UsageCollector {
         let cost = s.total_cost_usd.unwrap_or(0.0);
         let rl = s.rate_limits.unwrap_or_default();
         let prev = a.rate_limits.unwrap_or_default();
-        let readings_changed = !same(rl.five_hour, prev.five_hour) || !same(rl.seven_day, prev.seven_day);
+        let models_changed = !s.model_windows.is_empty() && s.model_windows != a.model_windows;
+        let readings_changed =
+            !same(rl.five_hour, prev.five_hour) || !same(rl.seven_day, prev.seven_day) || models_changed;
         let cost_changed = (cost - a.total_cost_usd).abs() > 1e-12;
-        if rl.is_empty() && cost == 0.0 {
+        if rl.is_empty() && s.model_windows.is_empty() && cost == 0.0 {
             // Before the first response of a session: nothing observed yet.
             if new_session {
                 a.total_cost_usd = 0.0;
@@ -106,6 +111,9 @@ impl UsageCollector {
         if !rl.is_empty() {
             a.rate_limits = Some(rl);
         }
+        if !s.model_windows.is_empty() {
+            a.model_windows = s.model_windows.clone();
+        }
         a.last_response_ms = Some(ts_ms);
         a.responses += 1;
         Some(UsageSample {
@@ -117,6 +125,17 @@ impl UsageCollector {
             provenance: Provenance::Observed,
             // The session's model, for per-model weights (FR-814).
             model: a.model.clone(),
+            model_windows: s
+                .model_windows
+                .iter()
+                .filter_map(|(name, w)| {
+                    Some(governor::ModelWindowReading {
+                        name: name.clone(),
+                        used_pct: w.used_percentage,
+                        resets_at: Timestamp::from_second(w.resets_at).ok()?,
+                    })
+                })
+                .collect(),
         })
     }
 
@@ -154,6 +173,34 @@ impl UsageCollector {
             return Some((governor::Window::FiveHour, w.resets_at));
         }
         rl.seven_day.filter(|w| w.used_percentage >= 100.0).map(|w| (governor::Window::Weekly, w.resets_at))
+    }
+
+    /// FR-815: the per-model window a rate limit hit, when the agent's last
+    /// response shows one used up, or the CLI's message names a model
+    /// ("… Opus limit …"): `(window name, resets_at)`.
+    pub fn exhausted_model_window(&self, agent_id: &str, message: Option<&str>) -> Option<(String, i64)> {
+        if self.exhausted_window(agent_id).is_some() {
+            return None; // the 5h or weekly window: a plan limit for every model
+        }
+        let a = self.agents.get(agent_id)?;
+        let mine = governor::family_index(a.model.as_deref());
+        let other = governor::FAMILIES.len() - 1;
+        let same = |name: &str| mine != other && governor::family_index(Some(name)) == mine;
+        if let Some((n, w)) = a.model_windows.iter().find(|(n, w)| w.used_percentage >= 100.0 && same(n)) {
+            return Some((n.clone(), w.resets_at));
+        }
+        let m = message?.to_ascii_lowercase();
+        if !m.contains("limit") {
+            return None;
+        }
+        let fam = governor::FAMILIES[..4].iter().find(|f| m.contains(*f))?;
+        // The message names the agent's own model (when it is known).
+        if a.model.is_some() && !same(fam) {
+            return None;
+        }
+        let named = a.model_windows.iter().find(|(n, _)| n.contains(fam));
+        let resets = named.map(|(_, w)| w.resets_at).or(a.rate_limits?.seven_day.map(|w| w.resets_at))?;
+        Some((named.map_or_else(|| format!("seven_day_{fam}"), |(n, _)| n.clone()), resets))
     }
 }
 
@@ -249,5 +296,32 @@ mod tests {
         let snap = gov.snapshot(g.ts);
         assert!(snap.used >= 3.0 && snap.used < 4.0, "{}", snap.used);
         assert_eq!(snap.provenance, Provenance::Observed);
+    }
+
+    /// FR-815: a model window only explains a rate limit of an agent on that
+    /// model, and the 5h/weekly windows come first.
+    #[test]
+    fn a_model_limit_is_the_agents_own_model_s() {
+        let mut c = UsageCollector::new();
+        let p = |model: &str, five: f64, opus: f64| {
+            s(json!({"session_id": "s", "model": {"id": model}, "cost": {"total_cost_usd": five + opus},
+                "rate_limits": {"five_hour": {"used_percentage": five, "resets_at": 1792489800},
+                    "seven_day": {"used_percentage": 50, "resets_at": 1792983600},
+                    "seven_day_opus": {"used_percentage": opus, "resets_at": 1792983600}}}))
+        };
+        c.ingest("op", 1, &p("claude-opus-4-1", 40.0, 100.0));
+        assert_eq!(c.exhausted_model_window("op", None), Some(("seven_day_opus".into(), 1792983600)));
+        c.ingest("so", 1, &p("claude-sonnet-4-5", 40.0, 100.0));
+        assert_eq!(c.exhausted_model_window("so", None), None, "opus's window is not a sonnet limit");
+        assert_eq!(c.exhausted_model_window("so", Some("You've hit your Opus limit")), None);
+        c.ingest("so2", 1, &p("claude-sonnet-4-5", 100.0, 100.0));
+        assert_eq!(c.exhausted_model_window("so2", None), None, "the 5h window is the global limit");
+        c.ingest("op2", 1, &p("claude-opus-4-1", 100.0, 100.0));
+        assert_eq!(c.exhausted_model_window("op2", None), None, "5h first, for every model");
+        c.ingest("op3", 1, &p("claude-opus-4-1", 10.0, 90.0));
+        assert_eq!(
+            c.exhausted_model_window("op3", Some("Opus weekly limit reached")),
+            Some(("seven_day_opus".into(), 1792983600))
+        );
     }
 }

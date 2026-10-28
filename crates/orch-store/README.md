@@ -113,6 +113,8 @@ Claude Code's folder name under `~/.claude/projects`.
   (`orch_team::artifact::ArtifactMeta`, JSON), NULL for rows from before P3.
 - **Weekly reports and estimator state** (migration 7): `weekly_reports` (FR-818, never purged);
   `calibrations` gains `kind` (`fit` or `week`), `week_start_ms` and the estimator `state` (FR-814).
+- **Per-model windows** (migration 8): `usage_samples.model_windows`, JSON `[{name, used_pct,
+  resets_at}]` of a statusline response's extra `rate_limits.<name>` windows (FR-815), NULL when none.
 - **Tasks**: one model over every backend (ADR-004); `depends_on` are local task ids. `delete_project`
   removes the project's features, runs, tasks, messages, artifacts and project-scoped roles and
   teams; events stay.

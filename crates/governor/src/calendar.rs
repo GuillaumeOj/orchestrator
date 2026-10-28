@@ -23,7 +23,7 @@ impl Day {
     pub const WEEKDAYS: [Day; 5] = [Day::Mon, Day::Tue, Day::Wed, Day::Thu, Day::Fri];
     pub const ALL: [Day; 7] = [Day::Mon, Day::Tue, Day::Wed, Day::Thu, Day::Fri, Day::Sat, Day::Sun];
 
-    fn matches(self, w: Weekday) -> bool {
+    pub fn matches(self, w: Weekday) -> bool {
         let d = match w {
             Weekday::Monday => Day::Mon,
             Weekday::Tuesday => Day::Tue,

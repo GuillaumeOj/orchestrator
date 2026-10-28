@@ -3,7 +3,7 @@
 //! Thin over the runtime (`agent_runtime::team`, `team_admin`); the views are
 //! polled by their panes like the Week planner.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use orch_store::{ProjectSettings, TaskBackendConfig};
 use orch_team::Scope;
 use serde::Deserialize;
@@ -17,6 +17,9 @@ pub struct ProjectSettingsForm {
     pub settings: ProjectSettings,
     pub backend: TaskBackendConfig,
     pub track_orchestrator_dir: bool,
+    /// D8, switching to Linear with tasks: `push_open` or `leave`.
+    #[serde(default)]
+    pub migrate: Option<String>,
 }
 
 /// Every feature with its latest run, for the sidebar (Projects → Features
@@ -118,6 +121,11 @@ impl Core {
         self.runtime()?.team_duplicate(team, from, to, new_id)
     }
 
+    /// The shipped starter, copied into `to` (not the installed, maybe edited one).
+    pub fn starter_copy(&self, starter: &str, to: &Scope, new_id: Option<&str>) -> Result<Value> {
+        self.runtime()?.starter_copy(starter, to, new_id)
+    }
+
     pub fn role_duplicate(&self, role: &str, from: &Scope, to: &Scope, new_id: Option<&str>) -> Result<Value> {
         Ok(json!(self.runtime()?.role_duplicate(role, from, to, new_id)?))
     }
@@ -159,12 +167,36 @@ impl Core {
             })
             .collect();
         let backend = p.backend();
+        let last = rt.last_sync(project_id);
+        let won: Vec<u64> = last["conflicts"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
+        let marks = rt.off_hours_marks();
+        let tasks: Vec<Value> = rt
+            .db
+            .tasks(Some(project_id), None, None)?
+            .into_iter()
+            .map(|t| {
+                let off = marks.tasks.contains(&t.id) || t.team_run_id.as_ref().is_some_and(|r| marks.runs.contains(r));
+                let mut v = json!(t);
+                v["remote_won"] = json!(won.contains(&t.id));
+                v["off_hours"] = json!(off);
+                v
+            })
+            .collect();
         Ok(json!({
             "project": {"id": p.id, "name": p.name},
             "backend": backend.kind(),
-            "repo": match &backend { TaskBackendConfig::Github { repo } => json!(repo), TaskBackendConfig::Local => Value::Null },
-            "last_sync_error": self.sync_errors.lock().ok().and_then(|m| m.get(project_id).cloned()),
-            "tasks": rt.db.tasks(Some(project_id), None, None)?,
+            "repo": match &backend { TaskBackendConfig::Github { repo } => json!(repo), _ => Value::Null },
+            "linear_team": match &backend { TaskBackendConfig::Linear { team, .. } => json!(team), _ => Value::Null },
+            "last_sync_at_ms": last["at_ms"],
+            "last_sync": last.get("report").cloned().unwrap_or(Value::Null),
+            "last_sync_error": self
+                .sync_errors
+                .lock()
+                .ok()
+                .and_then(|m| m.get(project_id).cloned())
+                .map(Value::from)
+                .unwrap_or_else(|| last["error"].clone()),
+            "tasks": tasks,
             "features": features.iter().map(|f| json!({"id": f.id, "slug": f.slug})).collect::<Vec<_>>(),
             "runs": runs,
         }))
@@ -174,7 +206,7 @@ impl Core {
     pub fn board_sync(&self, project_id: &str) -> Result<Value> {
         let rt = self.runtime()?;
         let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
-        let r = rt.tasks_for(&p).sync(orch_store::now_ms());
+        let r = rt.sync_tasks(&p);
         if let Ok(mut m) = self.sync_errors.lock() {
             match &r {
                 Ok(_) => m.remove(project_id),
@@ -231,10 +263,56 @@ impl Core {
         )
     }
 
+    /// D8: switching **to** Linear a project that has tasks needs `migrate`:
+    /// without it nothing is saved and the answer is `{confirm: {kind:
+    /// "linear_migrate", open, done}}`. `push_open` gives the open tasks to
+    /// Linear (created at the sync that follows); `leave` keeps every task
+    /// local and unsynced. Done tasks are never pushed.
     pub fn project_settings_set(&self, project_id: &str, f: ProjectSettingsForm) -> Result<Value> {
         let rt = self.runtime()?;
+        let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
+        let to_linear = f.backend.kind() == "linear" && p.backend().kind() != "linear";
+        let mut push = vec![];
+        if to_linear {
+            let tasks = rt.db.tasks(Some(project_id), None, None)?;
+            let (open, done): (Vec<_>, Vec<_>) =
+                tasks.into_iter().partition(|t| t.status != orch_team::TaskStatus::Done);
+            if !open.is_empty() || !done.is_empty() {
+                match f.migrate.as_deref() {
+                    None => {
+                        return Ok(
+                            json!({"confirm": {"kind": "linear_migrate", "open": open.len(), "done": done.len()}}),
+                        );
+                    }
+                    Some("push_open") => push = open,
+                    Some("leave") => {}
+                    Some(other) => bail!("migrate {other:?}: use push_open or leave"),
+                }
+            }
+        }
         rt.db.set_project_settings(project_id, &f.settings, &f.backend, f.track_orchestrator_dir)?;
+        if !push.is_empty() {
+            for mut t in push {
+                (t.backend, t.external_id, t.remote_updated_at) = ("linear".into(), None, None);
+                rt.db.upsert_task(&t)?;
+            }
+            let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
+            if let Err(e) = rt.sync_tasks(&p) {
+                // Kept for the next sync; the Board shows the error.
+                if let Ok(mut m) = self.sync_errors.lock() {
+                    m.insert(project_id.to_string(), format!("{e:#}"));
+                }
+            }
+        }
         self.project_settings(project_id)
+    }
+
+    pub fn linear_teams(&self) -> Result<Value> {
+        self.runtime()?.linear_teams()
+    }
+
+    pub fn linear_states(&self, team: &str) -> Result<Value> {
+        self.runtime()?.linear_states(team)
     }
 }
 

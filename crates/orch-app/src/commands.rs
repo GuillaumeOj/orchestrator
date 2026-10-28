@@ -240,6 +240,16 @@ pub async fn team_duplicate(
 }
 
 #[tauri::command]
+pub async fn starter_copy(
+    core: CoreState<'_>,
+    starter: String,
+    to: orch_team::Scope,
+    new_id: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| c.starter_copy(&starter, &to, new_id.as_deref())).await
+}
+
+#[tauri::command]
 pub async fn role_duplicate(
     core: CoreState<'_>,
     role: String,
@@ -315,6 +325,60 @@ pub async fn project_settings_set(
     blocking(core, move |c| c.project_settings_set(&project, form)).await
 }
 
+// ---- P3 weekly reports (api-contract §5)
+
+#[tauri::command]
+pub async fn reports_list(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, |c| c.reports_list()).await
+}
+
+#[tauri::command]
+pub async fn report_view(core: CoreState<'_>, id: String) -> Res<Value> {
+    blocking(core, move |c| c.report_view(&id)).await
+}
+
+/// An http(s) link in the default browser (any other scheme is refused).
+#[tauri::command]
+pub async fn open_url(core: CoreState<'_>, url: String) -> Res<()> {
+    blocking(core, move |c| c.open_url(&url)).await
+}
+
+#[tauri::command]
+pub async fn notion_publish(core: CoreState<'_>, feature: String) -> Res<Value> {
+    blocking(core, move |c| c.notion_publish(&feature)).await
+}
+
+#[tauri::command]
+pub async fn notion_status(core: CoreState<'_>, feature: String) -> Res<Value> {
+    blocking(core, move |c| c.notion_status(&feature)).await
+}
+
+#[tauri::command]
+pub async fn linear_teams(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, |c| c.linear_teams()).await
+}
+
+#[tauri::command]
+pub async fn linear_states(core: CoreState<'_>, team: String) -> Res<Value> {
+    blocking(core, move |c| c.linear_states(&team)).await
+}
+
+/// `queue_off_hours`: `entry` and `task` are string ids per the contract
+/// (`"12"`, a task's `"T-12"` too); numbers are accepted as well.
+#[tauri::command]
+pub async fn queue_off_hours(
+    core: CoreState<'_>,
+    entry: Option<crate::ecosystem::IdArg>,
+    task: Option<crate::ecosystem::IdArg>,
+    off: bool,
+) -> Res<Value> {
+    blocking(core, move |c| {
+        let id = |a: Option<crate::ecosystem::IdArg>| a.map(|a| a.parse()).transpose();
+        c.queue_off_hours(id(entry)?, id(task)?, off)
+    })
+    .await
+}
+
 // ---- P3 integrations and the MCP registry (api-contract §1–2)
 
 #[tauri::command]
@@ -337,6 +401,23 @@ pub async fn integration_secret_remove(core: CoreState<'_>, id: String) -> Res<V
 #[tauri::command]
 pub async fn integration_test(core: CoreState<'_>, id: String) -> Res<Value> {
     blocking(core, move |c| c.integration_test(&id)).await
+}
+
+/// The value is wrapped at once and never logged or returned (NFR-3).
+#[tauri::command]
+pub async fn mcp_secret_set(core: CoreState<'_>, account: String, value: String) -> Res<()> {
+    let value = orch_secrets::Secret::new(value);
+    blocking(core, move |c| c.mcp_secret_set(&account, value)).await
+}
+
+#[tauri::command]
+pub async fn mcp_secret_delete(core: CoreState<'_>, account: String) -> Res<()> {
+    blocking(core, move |c| c.mcp_secret_delete(&account)).await
+}
+
+#[tauri::command]
+pub async fn mcp_secrets_status(core: CoreState<'_>, accounts: Vec<String>) -> Res<Value> {
+    blocking(core, move |c| c.mcp_secrets_status(&accounts)).await
 }
 
 #[tauri::command]

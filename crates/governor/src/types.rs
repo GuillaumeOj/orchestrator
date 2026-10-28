@@ -133,6 +133,9 @@ pub struct UsageSample {
     /// The model the cost was spent on (FR-814 per-model weights), when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Per-model weekly windows of the response (FR-815), e.g. `seven_day_opus`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_windows: Vec<crate::models::ModelWindowReading>,
 }
 
 impl UsageSample {
@@ -146,6 +149,7 @@ impl UsageSample {
             weekly: None,
             provenance: Provenance::Observed,
             model: None,
+            model_windows: Vec::new(),
         }
     }
 }

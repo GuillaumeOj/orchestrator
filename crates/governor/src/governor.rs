@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::actions::{ActionKind, ActionMode, Ask, GovernorAction, Outcome, Undo};
 use crate::calendar::{CalendarError, Curve};
 use crate::estimator::{Calibration, Calibrator, FAMILIES, FamilyCalibrator, ModelK, Observation, family_index};
+use crate::models::{Downgrade, DowngradeWhen, ModelOverride, ModelWindow, ModelWindowState};
 use crate::plan::{AskDefault, AutoContinue, PacingPolicy, WeeklyPlan};
 use crate::pressure::{PressureInputs, PressureState, StateMachine};
 use crate::queue::{QueueEntry, QueueReason, TurnCeiling, TurnKind, release_cmp};
@@ -38,6 +39,9 @@ pub struct TurnRequest {
     /// which waits for a process slot under memory pressure (FR-203).
     #[serde(default)]
     pub needs_spawn: bool,
+    /// The model the turn runs on (FR-815: a tight model window holds it).
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 impl TurnRequest {
@@ -51,6 +55,7 @@ impl TurnRequest {
             self_started: false,
             ceiling: None,
             needs_spawn: false,
+            model: None,
         }
     }
 }
@@ -183,6 +188,9 @@ pub struct ForecastSnapshot {
     /// Interactive and critical usage this week, pp.
     pub interactive_used: f64,
     pub calibration: Calibration,
+    /// Per-model weekly windows seen (FR-815); empty when never seen.
+    #[serde(default)]
+    pub model_windows: Vec<ModelWindow>,
 }
 
 /// The estimator's state (FR-814): what the host persists to carry the
@@ -233,6 +241,17 @@ pub struct Carry {
     /// host drops them (the reconciler resumes those agents through the queue).
     #[serde(default)]
     pub live: Vec<LiveRecord>,
+    /// Agents whose work waits for off-hours (FR-816).
+    #[serde(default)]
+    pub off_hours: Vec<AgentId>,
+    /// Downgrades in force (FR-819) and agents the user restored.
+    #[serde(default)]
+    pub downgrades: Vec<(AgentId, ModelOverride)>,
+    #[serde(default)]
+    pub restored_models: Vec<AgentId>,
+    /// Model windows marked exhausted by a rate limit, until their reset.
+    #[serde(default)]
+    pub model_limits: Vec<(String, Timestamp)>,
 }
 
 /// A running turn, as [`Carry`] keeps it.
@@ -262,6 +281,8 @@ pub enum GovernorError {
     NoWorkingTimeToday,
     /// No working time is left after today to borrow from.
     NothingToBorrow,
+    /// Off-hours work needs an off-hours allowance in the plan (FR-816).
+    NoOffHoursAllowance,
 }
 
 impl std::fmt::Display for GovernorError {
@@ -274,6 +295,9 @@ impl std::fmt::Display for GovernorError {
             GovernorError::NotPending(a) => write!(f, "action {a} is not a pending ask"),
             GovernorError::NoWorkingTimeToday => write!(f, "no working time left today"),
             GovernorError::NothingToBorrow => write!(f, "no working time left this week to borrow from"),
+            GovernorError::NoOffHoursAllowance => {
+                write!(f, "the plan has no off-hours allowance: set one in the Week planner first")
+            }
         }
     }
 }
@@ -321,6 +345,9 @@ pub struct LiveTurn {
     cost: f64,
     #[serde(default)]
     ceiling: Option<TurnCeiling>,
+    /// Work the user scheduled off-hours (FR-816).
+    #[serde(default)]
+    scheduled: bool,
 }
 
 impl LiveTurn {
@@ -360,6 +387,8 @@ struct Metrics {
     w_projected: f64,
     hours_left: f64,
     weight_now: f64,
+    /// Inside a working block (else off-hours, weighted only by the allowance).
+    in_work: bool,
     /// Total W per weighted hour: the measured burn, completed by the
     /// on-plan pace while the measurement is young.
     burn: f64,
@@ -445,6 +474,20 @@ pub struct Governor {
     reserve_alerted: bool,
     last_cap: Option<u32>,
     stats: Stats,
+    /// FR-815: the latest reading of each model window (seen at, reading).
+    model_obs: BTreeMap<String, (Timestamp, WindowReading)>,
+    /// Model windows a rate limit marked exhausted, until their reset.
+    model_limits: BTreeMap<String, Timestamp>,
+    /// Each agent's current model (turn requests, samples).
+    agent_model: BTreeMap<AgentId, String>,
+    /// FR-816: agents whose next work the user scheduled off-hours.
+    off_hours: BTreeSet<AgentId>,
+    /// FR-819: downgrades in force, and agents the user restored (no new
+    /// downgrade until the condition clears).
+    downgrades: BTreeMap<AgentId, ModelOverride>,
+    restored_models: BTreeSet<AgentId>,
+    /// Shadow mode: agents whose (not applied) downgrade was logged once.
+    shadow_downgrades: BTreeSet<AgentId>,
 }
 
 impl Governor {
@@ -505,6 +548,13 @@ impl Governor {
             reserve_alerted: false,
             last_cap: None,
             stats: Stats::default(),
+            model_obs: BTreeMap::new(),
+            model_limits: BTreeMap::new(),
+            agent_model: BTreeMap::new(),
+            off_hours: BTreeSet::new(),
+            downgrades: BTreeMap::new(),
+            restored_models: BTreeSet::new(),
+            shadow_downgrades: BTreeSet::new(),
             plan,
             policy,
         };
@@ -818,6 +868,7 @@ impl Governor {
             w_projected,
             hours_left,
             weight_now: self.curve.weight_at(now),
+            in_work: self.in_working_time(now),
             burn,
             f,
             f_projected,
@@ -836,10 +887,25 @@ impl Governor {
 
     fn cap(&self, m: &Metrics) -> u32 {
         let caps = &self.policy.live_caps;
-        let mut cap = if m.weight_now <= 0.0 { caps.off_hours } else { caps.for_state(self.sm.state) };
+        let mut cap = if m.weight_now <= 0.0 {
+            caps.off_hours
+        } else if !m.in_work {
+            // FR-816: off-hours under an allowance run at most the off-hours
+            // cap, and only while the week is on or under plan; an hour of
+            // the allowance weighs a fraction of a working hour, so rounding
+            // the cap up would run an agent all night even in Red.
+            match self.sm.state {
+                PressureState::Green | PressureState::CatchUp => {
+                    caps.for_state(self.sm.state).min(self.policy.off_hours_live_cap)
+                }
+                _ => 0,
+            }
+        } else {
+            caps.for_state(self.sm.state)
+        };
         // An hour that counts half gets half the agents (rounded up), so the
         // pace follows the curve without waiting for the error to build up.
-        if self.policy.scale_caps_by_weight && m.weight_now > 0.0 && m.weight_now < 1.0 {
+        if self.policy.scale_caps_by_weight && m.in_work && m.weight_now > 0.0 && m.weight_now < 1.0 {
             cap = ((cap as f64) * m.weight_now).ceil() as u32;
         }
         if self.guard5 {
@@ -880,6 +946,7 @@ impl Governor {
             reserve_left: m.reserve_left,
             interactive_used: self.reserve_cost / m.k,
             calibration: self.calibration(now),
+            model_windows: self.model_windows(now),
         }
     }
 
@@ -953,7 +1020,20 @@ impl Governor {
     }
 
     fn observe_sample(&mut self, s: &UsageSample) {
+        if let (Some(agent), Some(model)) = (&s.agent, &s.model) {
+            self.agent_model.insert(agent.clone(), model.clone());
+        }
         if s.provenance == Provenance::Observed {
+            for r in &s.model_windows {
+                if !r.used_pct.is_finite() || r.resets_at <= s.ts {
+                    continue;
+                }
+                let newer = self.model_obs.get(&r.name).is_none_or(|(ts, _)| s.ts >= *ts);
+                if newer {
+                    let reading = WindowReading { used_pct: r.used_pct, resets_at: r.resets_at };
+                    self.model_obs.insert(r.name.clone(), (s.ts, reading));
+                }
+            }
             if let Some(r) = s.weekly {
                 self.observe(Window::Weekly, s.ts, r);
             }
@@ -1130,6 +1210,12 @@ impl Governor {
         if needs_spawn {
             self.memory_check()?;
         }
+        if let Some(r) = self.model_window_hold(agent, tier, now) {
+            return Err(r);
+        }
+        if let Some(r) = self.off_hours_hold(agent, now) {
+            return Err(r);
+        }
         if tier == Tier::Critical {
             return Ok(());
         }
@@ -1188,6 +1274,9 @@ impl Governor {
     /// Admission point 1: a turn wants to start.
     pub fn request_turn(&mut self, req: TurnRequest, now: Timestamp) -> Decision {
         self.agent_alloc.insert(req.agent.clone(), req.allocation.clone());
+        if let Some(m) = &req.model {
+            self.agent_model.insert(req.agent.clone(), m.clone());
+        }
         if self.live.contains_key(&req.agent) {
             self.end_turn(&req.agent, now);
         }
@@ -1396,13 +1485,19 @@ impl Governor {
         class: CostClass,
         now: Timestamp,
     ) {
-        let turn = LiveTurn { allocation: allocation.clone(), tier, class, started_at: now, cost: 0.0, ceiling };
+        let scheduled = class != CostClass::Interactive && self.off_hours.contains(agent);
+        let turn =
+            LiveTurn { allocation: allocation.clone(), tier, class, started_at: now, cost: 0.0, ceiling, scheduled };
         self.live.insert(agent.clone(), turn);
     }
 
     fn end_turn(&mut self, agent: &AgentId, now: Timestamp) -> Option<LiveTurn> {
         let t = self.live.remove(agent)?;
         self.ended.insert(agent.clone(), (t.class, now));
+        if t.scheduled {
+            // The scheduled work ran (FR-816); a task marked off-hours is marked again by the host.
+            self.off_hours.remove(agent);
+        }
         if t.class != CostClass::Interactive {
             let minutes = hours_between(t.started_at, now) * 60.0;
             if minutes > 0.0 {
@@ -1652,6 +1747,8 @@ impl Governor {
                 let by_aging = add_hours(e.enqueued_at, steps * self.policy.aging_hours);
                 Some(by_curve.map_or(by_aging, |t| t.min(by_aging)).max(now))
             }
+            QueueReason::ScheduledOffHours { starts_at } => Some((*starts_at).max(now)),
+            QueueReason::ModelWindow { resets_at, .. } => Some(*resets_at),
             // `check` never returns these; `refresh_queue` estimates slot waits itself.
             QueueReason::OffHours | QueueReason::LiveCap { .. } | QueueReason::BehindQueue => None,
         }
@@ -1989,6 +2086,12 @@ impl Governor {
             }
             Undo::ResumeAll => return Ok(self.resume_all(now)),
             Undo::ResumeAgent { agent } => return Ok(self.resume_agent(&agent, now)),
+            Undo::RestoreModel { agent } => {
+                // Never mid-task: the role's model comes back at the next task boundary.
+                if let Some(o) = self.downgrades.get_mut(&agent) {
+                    o.restore_pending = true;
+                }
+            }
         }
         if let Some(a) = self.action_mut(id) {
             a.undone_at = Some(now);
@@ -2156,6 +2259,10 @@ impl Governor {
     pub fn cancel(&mut self, entry: EntryId, now: Timestamp) -> Option<AgentId> {
         let idx = self.queue.iter().position(|e| e.id == entry)?;
         let e = self.queue.remove(idx);
+        // The cancelled work was what waited for off-hours (FR-816).
+        if !self.live.get(&e.agent).is_some_and(|t| t.scheduled) {
+            self.off_hours.remove(&e.agent);
+        }
         self.log(
             now,
             ActionKind::Cancel { entry, agent: e.agent.clone() },
@@ -2225,6 +2332,10 @@ impl Governor {
             limits: self.limits.iter().map(|(w, t)| (*w, *t)).collect(),
             queue: self.queue.iter().map(QueueEntry::persistent).collect(),
             live: self.live.iter().map(|(agent, t)| LiveRecord { agent: agent.clone(), turn: t.clone() }).collect(),
+            off_hours: self.off_hours.iter().cloned().collect(),
+            downgrades: self.downgrades.iter().map(|(a, o)| (a.clone(), o.clone())).collect(),
+            restored_models: self.restored_models.iter().cloned().collect(),
+            model_limits: self.model_limits.iter().map(|(n, t)| (n.clone(), *t)).collect(),
         }
     }
 
@@ -2272,6 +2383,28 @@ impl Governor {
                 }
             }
         }
+        self.off_hours.extend(c.off_hours);
+        self.restored_models.extend(c.restored_models);
+        for (name, until) in c.model_limits {
+            if until > now {
+                self.model_limits.insert(name, until);
+            }
+        }
+        for (agent, o) in c.downgrades {
+            if self.downgrades.contains_key(&agent) {
+                continue;
+            }
+            let effect = format!("next tasks on {}", o.to);
+            let action = ActionKind::Downgrade {
+                agent: agent.clone(),
+                to: o.to.clone(),
+                from: o.from.clone(),
+                why: orch_when(o.when).into(),
+            };
+            let undo = Some(Undo::RestoreModel { agent: agent.clone() });
+            let id = self.log(now, action, RESTORED.into(), effect, ActionMode::Auto, Outcome::Applied, undo);
+            self.downgrades.insert(agent, ModelOverride { action: id, ..o });
+        }
         for r in c.live {
             if self.live.contains_key(&r.agent) {
                 continue;
@@ -2291,6 +2424,276 @@ impl Governor {
             self.queue.push(e);
         }
         self.release_and_refresh(now)
+    }
+
+    // ------------------------------------------------ P3: model windows, off-hours, downgrade
+
+    /// The per-model weekly windows seen and still running (FR-815). Each has
+    /// the week's thresholds on its own usage vs the elapsed week, and is Red
+    /// at `model_window_red_pct`.
+    pub fn model_windows(&self, now: Timestamp) -> Vec<ModelWindow> {
+        let th = &self.policy.thresholds;
+        let mut out: Vec<ModelWindow> = self
+            .model_obs
+            .iter()
+            .filter(|(_, (_, r))| r.resets_at > now)
+            .map(|(name, (_, r))| {
+                let limited = self.model_limits.get(name).is_some_and(|u| *u > now);
+                let start = add_hours(r.resets_at, -168.0);
+                let frac = (hours_between(start, now) / 168.0).clamp(0.0, 1.0);
+                let error = r.used_pct - frac * 100.0;
+                let projected = if frac >= 0.05 { r.used_pct / frac } else { r.used_pct };
+                let state = if limited || r.used_pct >= 100.0 {
+                    ModelWindowState::Exhausted
+                } else if r.used_pct >= self.policy.model_window_red_pct
+                    || (error >= th.red_enter && projected > 100.0 - th.red_projection_enter_pp)
+                {
+                    ModelWindowState::Red
+                } else if error >= th.amber_enter {
+                    ModelWindowState::Amber
+                } else {
+                    ModelWindowState::Green
+                };
+                ModelWindow {
+                    name: name.clone(),
+                    family: FAMILIES[family_index(Some(name))].into(),
+                    used_pct: r.used_pct,
+                    resets_at: r.resets_at,
+                    state,
+                }
+            })
+            .collect();
+        // A rate limit named a model whose window was never read.
+        for (name, until) in self.model_limits.iter().filter(|(n, u)| **u > now && !self.model_obs.contains_key(*n)) {
+            out.push(ModelWindow {
+                name: name.clone(),
+                family: FAMILIES[family_index(Some(name))].into(),
+                used_pct: 100.0,
+                resets_at: *until,
+                state: ModelWindowState::Exhausted,
+            });
+        }
+        out
+    }
+
+    /// A StopFailure `rate_limit` whose message names a model (FR-815): that
+    /// model's window is exhausted until `resets_at`.
+    pub fn model_limit_hit(&mut self, name: &str, resets_at: Timestamp, now: Timestamp) {
+        if resets_at > now {
+            self.model_limits.insert(name.to_string(), resets_at);
+            self.refresh_queue(now);
+        }
+    }
+
+    /// The tightest window of a model family, when one is Red or exhausted.
+    fn tight_window(&self, model: Option<&str>, now: Timestamp) -> Option<ModelWindow> {
+        let fam = family_index(model);
+        if fam == FAMILIES.len() - 1 {
+            return None; // `other`: no window names it
+        }
+        self.model_windows(now)
+            .into_iter()
+            .filter(|w| w.family == FAMILIES[fam] && w.state.tight())
+            .max_by_key(|w| w.state)
+    }
+
+    /// FR-815: turns of a model whose window is Red wait (critical work
+    /// excepted); an exhausted window holds all non-interactive work of it.
+    fn model_window_hold(&self, agent: &AgentId, tier: Tier, now: Timestamp) -> Option<QueueReason> {
+        let w = self.tight_window(self.agent_model.get(agent).map(String::as_str), now)?;
+        let exhausted = w.state == ModelWindowState::Exhausted;
+        (exhausted || tier != Tier::Critical).then_some(QueueReason::ModelWindow {
+            model: w.family,
+            resets_at: w.resets_at,
+            exhausted,
+        })
+    }
+
+    /// FR-816: scheduled work waits for off-hours, then runs under its own cap.
+    fn off_hours_hold(&self, agent: &AgentId, now: Timestamp) -> Option<QueueReason> {
+        if !self.off_hours.contains(agent) {
+            return None;
+        }
+        if self.in_working_time(now) {
+            return Some(QueueReason::ScheduledOffHours { starts_at: self.next_off_hours(now) });
+        }
+        let running = self.live.iter().filter(|(a, t)| t.scheduled && *a != agent).count() as u32;
+        let cap = self.policy.off_hours_live_cap;
+        (running >= cap).then_some(QueueReason::LiveCap { state: self.sm.state, cap })
+    }
+
+    /// `t` is inside a working block of the plan's calendar (not a holiday).
+    pub fn in_working_time(&self, t: Timestamp) -> bool {
+        let z = t.to_zoned(self.tz.clone());
+        if self.plan.calendar.holidays.contains(&z.date()) {
+            return false;
+        }
+        let time = z.time();
+        self.plan
+            .calendar
+            .blocks
+            .iter()
+            .any(|b| b.weight > 0.0 && b.day.matches(z.weekday()) && b.start <= time && time < b.end)
+    }
+
+    /// The start of the next off-hours window (`now` when outside working time).
+    pub fn next_off_hours(&self, now: Timestamp) -> Timestamp {
+        let mut t = now;
+        for _ in 0..64 {
+            if !self.in_working_time(t) {
+                return t;
+            }
+            let z = t.to_zoned(self.tz.clone());
+            let end = self
+                .plan
+                .calendar
+                .blocks
+                .iter()
+                .filter(|b| b.day.matches(z.weekday()) && b.start <= z.time() && z.time() < b.end)
+                .map(|b| b.end)
+                .max();
+            let next = end.and_then(|e| z.date().to_datetime(e).to_zoned(self.tz.clone()).ok()).map(|z| z.timestamp());
+            t = match next {
+                Some(n) if n > t => n,
+                _ => add_minutes(t, 1),
+            };
+        }
+        t
+    }
+
+    /// Schedule (or unschedule) an agent's next work for off-hours (FR-816).
+    /// Returns when it may start.
+    pub fn set_off_hours(&mut self, agent: &AgentId, on: bool, now: Timestamp) -> Result<Timestamp, GovernorError> {
+        if on {
+            if self.plan.off_hours_allowance_pct <= 0.0 {
+                return Err(GovernorError::NoOffHoursAllowance);
+            }
+            self.off_hours.insert(agent.clone());
+        } else {
+            self.off_hours.remove(agent);
+        }
+        self.refresh_queue(now);
+        Ok(self.next_off_hours(now))
+    }
+
+    /// Agents with work scheduled off-hours.
+    pub fn off_hours_agents(&self) -> &BTreeSet<AgentId> {
+        &self.off_hours
+    }
+
+    /// FR-816: scheduled work that really waits or runs: queued entries of
+    /// marked agents plus scheduled turns running (what the power assertion is for).
+    pub fn off_hours_pending(&self) -> usize {
+        let queued = self.queue.iter().filter(|e| self.off_hours.contains(&e.agent)).count();
+        queued + self.off_hours_running() as usize
+    }
+
+    /// An agent is gone: its off-hours mark and model downgrade go too.
+    pub fn forget_agent(&mut self, agent: &AgentId) {
+        self.off_hours.remove(agent);
+        self.downgrades.remove(agent);
+        self.restored_models.remove(agent);
+        self.shadow_downgrades.remove(agent);
+        self.agent_model.remove(agent);
+    }
+
+    /// The agent is running work the user scheduled off-hours.
+    pub fn running_off_hours(&self, agent: &AgentId) -> bool {
+        self.live.get(agent).is_some_and(|t| t.scheduled)
+    }
+
+    /// Scheduled off-hours turns running now.
+    pub fn off_hours_running(&self) -> u32 {
+        self.live.values().filter(|t| t.scheduled).count() as u32
+    }
+
+    /// The downgrade in force for an agent (FR-819).
+    pub fn model_override(&self, agent: &AgentId) -> Option<&ModelOverride> {
+        self.downgrades.get(agent)
+    }
+
+    /// FR-819, at an agent's task boundary (its next turn is a new task):
+    /// the model this task runs on, `None` for the role's own. A downgrade
+    /// starts when the role's condition holds and ends when it clears; the
+    /// user's undo keeps the role's model until the condition clears. Shadow
+    /// mode logs the downgrade without applying it.
+    pub fn task_boundary_model(
+        &mut self,
+        agent: &AgentId,
+        model: Option<&str>,
+        rule: Option<&Downgrade>,
+        now: Timestamp,
+    ) -> Option<String> {
+        let state = self.sm.state;
+        let cond = rule.filter(|r| family_index(Some(&r.to)) != family_index(model) || model.is_none()).is_some_and(
+            |r| match r.when {
+                DowngradeWhen::Amber => matches!(state, PressureState::Amber | PressureState::Red),
+                DowngradeWhen::Red => state == PressureState::Red,
+                DowngradeWhen::ModelWindow => self.tight_window(model, now).is_some(),
+            },
+        );
+        if self.downgrades.get(agent).is_some_and(|o| o.restore_pending) {
+            // The user's undo, applied at this boundary; no new downgrade until the condition clears.
+            self.downgrades.remove(agent);
+            if cond {
+                self.restored_models.insert(agent.clone());
+            }
+            return None;
+        }
+        if !cond {
+            self.restored_models.remove(agent);
+            self.shadow_downgrades.remove(agent);
+            if self.downgrades.remove(agent).is_some() {
+                self.log(
+                    now,
+                    ActionKind::RestoreModel { agent: agent.clone() },
+                    "the downgrade's condition cleared".into(),
+                    format!("next tasks on {}", model.unwrap_or("the role's model")),
+                    ActionMode::Auto,
+                    Outcome::Applied,
+                    None,
+                );
+            }
+            return None;
+        }
+        if self.restored_models.contains(agent) {
+            return None;
+        }
+        if let Some(o) = self.downgrades.get(agent) {
+            return Some(o.to.clone());
+        }
+        let r = rule?;
+        let reason = match r.when {
+            DowngradeWhen::ModelWindow => format!("the {} window is tight", FAMILIES[family_index(model)]),
+            w => format!("the week is {}", w.label()),
+        };
+        let effect = format!("this task and the next ones on {} (the prompt cache is lost)", r.to);
+        let action = ActionKind::Downgrade {
+            agent: agent.clone(),
+            to: r.to.clone(),
+            from: model.map(str::to_string),
+            why: orch_when(r.when).into(),
+        };
+        if self.plan.shadow_mode {
+            // Logged once per episode, not at every look at the boundary.
+            if self.shadow_downgrades.insert(agent.clone()) {
+                self.log(now, action, reason, effect, ActionMode::Shadow, Outcome::Logged, None);
+            }
+            return None;
+        }
+        let undo = Some(Undo::RestoreModel { agent: agent.clone() });
+        let id = self.log(now, action, reason, effect, ActionMode::Auto, Outcome::Applied, undo);
+        let o = ModelOverride {
+            to: r.to.clone(),
+            from: model.map(str::to_string),
+            when: r.when,
+            since: now,
+            action: id,
+            restore_pending: false,
+        };
+        self.downgrades.insert(agent.clone(), o);
+        self.agent_model.insert(agent.clone(), r.to.clone());
+        Some(r.to.clone())
     }
 
     /// What the Governor would do next.
@@ -2351,6 +2754,15 @@ fn run_now_cost(e: &QueueEntry) -> String {
     }
 }
 
+/// A downgrade condition as the contract names it.
+fn orch_when(w: DowngradeWhen) -> &'static str {
+    match w {
+        DowngradeWhen::Amber => "amber",
+        DowngradeWhen::Red => "red",
+        DowngradeWhen::ModelWindow => "model_window",
+    }
+}
+
 fn reason_key(r: &QueueReason) -> &'static str {
     match r {
         QueueReason::LiveCap { .. } => "live_cap",
@@ -2364,5 +2776,7 @@ fn reason_key(r: &QueueReason) -> &'static str {
         QueueReason::PausedAgent => "paused_agent",
         QueueReason::MemoryPressure { .. } => "memory_pressure",
         QueueReason::BehindQueue => "behind_queue",
+        QueueReason::ScheduledOffHours { .. } => "scheduled_off_hours",
+        QueueReason::ModelWindow { .. } => "model_window",
     }
 }

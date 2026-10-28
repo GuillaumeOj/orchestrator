@@ -105,6 +105,9 @@ pub struct NodeConfig {
     pub tier: Tier,
     pub max_concurrency: u32,
     pub turn_ceiling: TurnCeiling,
+    /// FR-819 (the role's; applied by the runtime at task boundaries).
+    #[serde(default)]
+    pub downgrade: Option<governor::Downgrade>,
 }
 
 pub fn compile_node(team: &Team, node_id: &str, roles: &[RoleDef], f: &FeatureCtx) -> Result<NodeConfig, String> {
@@ -159,6 +162,7 @@ pub fn compile_node(team: &Team, node_id: &str, roles: &[RoleDef], f: &FeatureCt
         tier: if node.is_lead { Tier::Critical } else { o.budget_priority.unwrap_or(role.budget_priority) },
         max_concurrency: node.max_concurrency.max(1),
         turn_ceiling: role.turn_ceiling,
+        downgrade: role.downgrade.clone(),
     })
 }
 

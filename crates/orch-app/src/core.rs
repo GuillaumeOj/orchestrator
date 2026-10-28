@@ -730,8 +730,23 @@ impl Core {
             // (decisions D3); it closes once the server is connected again.
             if matches!(action, "open" | "reconnect") {
                 let payload = rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).map(|i| i.payload.clone()));
-                if let Some(p) = payload.filter(|p| p["alert"] == agent_runtime::registry::NEEDS_AUTH_ALERT) {
-                    return self.mcp_alert_action(&p, action);
+                if let Some(p) = payload.as_ref().filter(|p| p["alert"] == agent_runtime::registry::NEEDS_AUTH_ALERT) {
+                    return self.mcp_alert_action(p, action);
+                }
+                // A Notion comment (FR-505): read once opened; the UI opens the page.
+                if let Some(p) = payload.as_ref().filter(|p| p["source"] == "notion" && action == "open") {
+                    let url = p["page_url"].clone();
+                    rt.store.write(|s| {
+                        let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()));
+                    })?;
+                    return Ok(json!({"open": "url", "url": url}));
+                }
+                // "Weekly report ready" (FR-818): read once opened; the UI opens the report.
+                if let Some(p) = payload.filter(|p| p["digest"] == "weekly_report" && action == "open") {
+                    rt.store.write(|s| {
+                        let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()));
+                    })?;
+                    return Ok(json!({"open": "report", "report": p["report"]}));
                 }
             }
             rt.store.write(|s| {
@@ -892,6 +907,14 @@ impl Core {
             usage["snapshot"] = json!(snapshot);
             usage["reset_at_ms"] = json!(reset);
             usage["shadow"] = json!(shadow);
+            let running_off: std::collections::BTreeSet<String> = rt.with_governor(|g| {
+                g.off_hours_agents().iter().filter(|a| g.running_off_hours(a)).map(|a| a.0.clone()).collect()
+            });
+            for a in agents.iter_mut() {
+                let id = a["id"].as_str().unwrap_or("").to_string();
+                a["model_note"] = json!(rt.model_note(&id));
+                a["off_hours"] = json!(running_off.contains(&id));
+            }
             (meta, alerts, done) = rt.store.read(store_view);
         }
         let mut git_paths: std::collections::BTreeSet<PathBuf> = projects.iter().map(|p| p.path.clone()).collect();
@@ -924,6 +947,9 @@ impl Core {
             }
         };
         let items = self.inbox_items(&agents, &alerts, &done, ask);
+        // FR-816: the power assertion and the on-battery banner.
+        let (power, banner) = self.rt.as_ref().map(|rt| rt.power_json()).unwrap_or((Value::Null, None));
+        let banners: Vec<Value> = banner.into_iter().collect();
         let setup = self.setup_view(&projects);
         let projects: Vec<Value> = projects
             .iter()
@@ -949,6 +975,8 @@ impl Core {
             "memory": self.memory(agents_mb),
             "memory_watch": self.watch.view(),
             "setup": setup,
+            "power": power,
+            "banners": banners,
         })
     }
 
@@ -1186,6 +1214,10 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
     #[cfg(test)]
     {
         rc.secrets = Arc::new(orch_secrets::MemorySecrets::default());
+        // Nor Linear: an in-memory one per backend.
+        rc.linear = Some(agent_runtime::linear::LinearFactory(Arc::new(|| {
+            Box::new(orch_tasks::linear::fake::FakeLinear::default())
+        })));
     }
     // Helpers next to the app binary (target/<profile>, or Contents/MacOS in a
     // bundle) are copied to <home>/bin, a stable path outside the .app.
@@ -1489,6 +1521,7 @@ mod tests {
                 title: "Fix X".into(),
                 brief: "b".into(),
                 base: None,
+                off_hours: false,
             })
             .unwrap();
         let s = core.state();
@@ -1787,6 +1820,42 @@ mod tests {
         core.shutdown();
     }
 
+    /// D8 and the Board on a Linear-backed project (api-contract §7).
+    #[test]
+    fn switching_to_linear_asks_first_then_pushes_open_tasks() {
+        let d = tmp();
+        let core = test_core(d.path());
+        assert_eq!(core.linear_teams().unwrap()["teams"][0]["key"], "ENG");
+        let st = core.linear_states("ENG").unwrap();
+        assert_eq!(st["states"][3]["default_column"], "review");
+        assert_eq!(st["projects"][0]["name"], "Shop");
+        let mk = |title: &str| core.task_create(json!({"project_id": "repo", "title": title})).unwrap();
+        let (a, b) = (mk("Open one"), mk("Done one"));
+        core.task_update(b["id"].as_u64().unwrap(), Some("done"), None, None).unwrap();
+        let form = |migrate: Option<&str>| -> crate::teams::ProjectSettingsForm {
+            serde_json::from_value(json!({"settings": {}, "backend": {"type": "linear", "team": "ENG"},
+                "track_orchestrator_dir": true, "migrate": migrate}))
+            .unwrap()
+        };
+        let r = core.project_settings_set("repo", form(None)).unwrap();
+        assert_eq!(r, json!({"confirm": {"kind": "linear_migrate", "open": 1, "done": 1}}), "nothing saved yet");
+        assert_eq!(core.project_settings("repo").unwrap()["backend"]["type"], "local");
+        assert!(core.project_settings_set("repo", form(Some("maybe"))).is_err());
+        core.project_settings_set("repo", form(Some("push_open"))).unwrap();
+        let v = core.board_view("repo").unwrap();
+        assert_eq!((v["backend"].as_str(), v["linear_team"].as_str()), (Some("linear"), Some("ENG")));
+        assert!(v["last_sync_at_ms"].as_u64().is_some(), "{v}");
+        let task = |id: &Value| v["tasks"].as_array().unwrap().iter().find(|t| t["id"] == *id).unwrap().clone();
+        let (ta, tb) = (task(&a["id"]), task(&b["id"]));
+        assert_eq!((ta["backend"].as_str(), ta["external_id"].as_str()), (Some("linear"), Some("ENG-1")));
+        assert_eq!((ta["remote_won"].as_bool(), ta["off_hours"].as_bool()), (Some(false), Some(false)));
+        assert_eq!((tb["backend"].as_str(), tb["external_id"].as_str()), (Some("local"), None), "done: never pushed");
+        let s = core.board_sync("repo").unwrap();
+        assert_eq!((s["pushed"].as_u64(), s["pulled"].as_u64()), (Some(0), Some(0)));
+        assert!(s["errors"].as_array().unwrap().is_empty());
+        core.shutdown();
+    }
+
     #[test]
     fn the_first_plan_keeps_the_week_s_usage() {
         let d = tmp();
@@ -1805,10 +1874,17 @@ mod tests {
         let mut form = core.plan_form().unwrap();
         assert_eq!(form.allocations.len(), 1, "even split over the one project");
         assert_eq!(form.allocations[0].id, "repo");
+        assert_eq!(form.per_model_weights, Some(false), "FR-814 per-model weights: off by default");
         form.reserve_pct = 15.0;
+        form.per_model_weights = Some(true);
         core.set_plan(&form).unwrap();
         let p = core.planner().unwrap();
         assert_eq!(p.reserve_pct, 15.0);
+        assert!(rt.with_governor(|g| g.policy().per_model_weights), "the policy option reaches the Governor");
+        assert_eq!((p.off_hours.allowance_pct, p.off_hours.windows.len()), (0.0, 0), "no allowance: no windows");
+        assert_eq!(core.plan_form().unwrap().per_model_weights, Some(true));
+        assert_eq!(core.reports_list().unwrap()["reports"][0]["id"], "current");
+        assert_eq!(core.report_view("current").unwrap()["in_progress"], true);
         assert!(p.plan_set);
         assert!(
             (p.snapshot.used_central - 30.0).abs() < 2.0,

@@ -2,7 +2,9 @@
 
 Integration tokens in the macOS login Keychain (NFR-3, FR-1203): generic
 passwords under the service `Orchestrator`, one account per integration
-(`linear`, `notion`) or per MCP `env` reference (`keychain:<account>`).
+(`linear`, `notion`) and, in their own namespace, one per MCP `env` reference
+(`keychain:<account>` reads the account `mcp:<account>`, so it never touches an
+integration's token).
 
 - Secrets are never written to the database, logs, events, argv, an agent's
   environment or its per-agent files. The one exception is an MCP registry

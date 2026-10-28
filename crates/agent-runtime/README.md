@@ -254,8 +254,42 @@ compressed bodies get 415.
 - The enforce choice (FR-812) is the kv key `governor.enforce`, written by `set_shadow` (the app,
   `orchd enforce on|off`) and read at every start (`serve --enforce` / `ORCH_ENFORCE` force
   enforcement; the app's earlier `ui.governor.enforce` still counts). Each tick saves the last 50 actions
-  and the queue view; a forecast snapshot every 5 min, the calibration hourly; retention purge
-  daily.
+  and the queue view; a forecast snapshot every 5 min, the estimator on each fit change (at most
+  once a minute, `calibrations` kind `fit`); retention purge daily.
+- **Estimator carry-over (FR-814)**: each plan week stores the estimator it starts with
+  (`calibrations` kind `week`, with the state). At start the Governor restores this week's, then
+  replays the week's samples, so `k`, `u` and the confidence are the live run's. When the app did
+  not run through the reset, the last stored week's estimator is restored on a Governor of that
+  week and its samples replayed first. A week switches when a reading names the next reset
+  (FR-802) or, without one, at the tick after `reset_at`. Per-model weights
+  (`PacingPolicy::per_model_weights`) are set with the plan form (`plan_set`'s `per_model_weights`).
+- **Linear (`linear.rs`) and Notion (`notion.rs`)**: the core is their only client. Linear: the
+  task backend's GraphQL transport (`orch_tasks::linear`) with the Keychain's `linear` key;
+  `sync_tasks` runs a project's sync (background every 5 min for projects with an active run, and
+  `board_sync`), keeps `tasks.last_sync.<project>` and turns conflicts into Inbox info items.
+  Notion (FR-505): `notion_publish` (one page per feature, a child page per doc of the integration
+  branch, refreshed in place), `notion_poll` (comments → level-3 Inbox items, once each; every
+  15 min while the feature has an active run), `notion_status`; state in
+  `notion.feature.<id>`. Both transports are traits with in-memory fakes for tests.
+- **P3 pacing (`pacing.rs`, `power.rs`)**: the statusline's extra `rate_limits.<name>` windows
+  go to the Governor and are stored with the sample (FR-815); a StopFailure whose message names a
+  model ("… Opus limit …") marks that model's window exhausted instead of the 5h/week window.
+  Each turn request carries the model it runs on. At a **task boundary** (a pending `task` turn)
+  a role with `downgrade` asks `task_boundary_model`; an agent running another model is
+  suspended while idle and the pump resumes it with `--model <to>` (`Live.model` records it).
+  **Off-hours** (FR-816): `queue_off_hours(entry | task, off)`; task and run marks (team launch
+  `off_hours`) live in the kv key `governor.off_hours` and re-mark the agent at each decision.
+  `power_tick` (housekeeping; `pmset` read at most once a minute, only while work waits) holds the
+  `PowerAssertion` (real: `caffeinate -s -w <core pid>`, AC only; tests: `FakePower`) while
+  off-hours work waits or runs on AC, releases it otherwise, and on battery raises one Inbox alert
+  per night and the `not_on_ac` banner (`power_json`).
+- **Weekly report (FR-818, `report.rs`)**: at the switch to the next week the ended week's report
+  is built from the stored samples (pp with the week's `k`, per family when per-model weights are
+  on; `cost_usd` is the statusline's API-price estimate, decision D7), the plan's allocations, the
+  logged actions (queue waits pair `queue` and `release`), the forecast snapshots (time per
+  state) and stored in `weekly_reports`, with a level-4 "Weekly report ready" digest in the Inbox.
+  A start after a reset the app missed builds it then. `report_view("current")` builds the
+  current week's on demand (not stored).
 - Transcripts of known agents and registered projects are indexed for search (FTS5) at start,
   then after each turn end (at most once a minute).
 
@@ -321,7 +355,8 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   it from the user's login); on a strict-MCP role it turns `--strict-mcp-config` off (it would hide
   the connector) and `teams_view` lists it under the team's `warnings`.
 - **Secrets** live in the Keychain (`orch-secrets`, `RuntimeConfig.secrets`). An MCP `env` value
-  `keychain:<account>` is resolved into that server's entry of `mcp.json` only when the entry's
+  `keychain:<account>` (Keychain account `mcp:<account>`, set with `mcp_secret_set`, apart from the
+  integrations' tokens) is resolved into that server's entry of `mcp.json` only when the entry's
   `allow_secret_env` is on; otherwise the spawn (and the launch) is refused. Nothing else of an
   agent (env, argv, settings, gitconfig) ever carries a token: `no_integration_token_reaches_an_agent`.
 - **Integrations** (`integrations.rs`): GitHub from `gh auth status`; Linear (`POST
@@ -403,8 +438,6 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   (or message) goes through the normal delivery instead: pasted once the agent is idle after its
   Stop (1.5 s), admitted by the Governor like any app turn.
 - The Week planner UI (FR-802) is not here: `set_plan` takes a confirmed `WeeklyPlan`.
-- Calibration carries over a restart only through this week's replayed samples (a restart in a new
-  week starts from the prior).
 
 ## Tests
 

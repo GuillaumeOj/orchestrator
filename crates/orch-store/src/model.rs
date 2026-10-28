@@ -287,6 +287,8 @@ pub struct UsageRecord {
     /// `interactive`), so the week can be replayed after a restart.
     pub class: Option<String>,
     pub allocation: Option<String>,
+    /// Per-model weekly windows of the response (FR-815), statusline rows.
+    pub model_windows: Vec<governor::ModelWindowReading>,
 }
 
 /// OTLP token and cost totals of one agent (`None` = unattributed).

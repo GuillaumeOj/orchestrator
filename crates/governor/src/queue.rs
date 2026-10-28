@@ -49,6 +49,17 @@ pub enum QueueReason {
     },
     /// Waiting behind other queued work picked first by fair queuing.
     BehindQueue,
+    /// The user scheduled this work off-hours (FR-816, decision D4): it waits
+    /// for the next off-hours window.
+    ScheduledOffHours {
+        starts_at: Timestamp,
+    },
+    /// The weekly window of the agent's model is Red or exhausted (FR-815).
+    ModelWindow {
+        model: String,
+        resets_at: Timestamp,
+        exhausted: bool,
+    },
 }
 
 impl std::fmt::Display for QueueReason {
@@ -65,6 +76,9 @@ impl std::fmt::Display for QueueReason {
             QueueReason::PausedAgent => write!(f, "agent paused by the user"),
             QueueReason::MemoryPressure { cap } => write!(f, "memory pressure: {cap} live agents allowed"),
             QueueReason::BehindQueue => write!(f, "waiting behind higher-priority work"),
+            QueueReason::ScheduledOffHours { starts_at } => write!(f, "scheduled off-hours (from {starts_at})"),
+            QueueReason::ModelWindow { model, exhausted: true, .. } => write!(f, "model window: {model} limit reached"),
+            QueueReason::ModelWindow { model, .. } => write!(f, "model window: {model} weekly limit nearly used"),
         }
     }
 }

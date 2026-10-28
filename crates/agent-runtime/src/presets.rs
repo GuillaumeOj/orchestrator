@@ -228,6 +228,56 @@ impl Runtime {
         Ok(json!({"team": t, "roles_copied": copied}))
     }
 
+    /// A copy of a starter exactly as the app ships it (not the installed,
+    /// maybe edited copy) into `to`, as `new_id` or `<starter>-new`, version
+    /// 1, not a preset. Its roles: one visible in `to` that says the same as
+    /// the shipped one is used as is; a missing one is copied into `to`; an
+    /// edited one is copied in as `<role>-<team id>` and the nodes use that.
+    pub fn starter_copy(&self, starter: &str, to: &Scope, new_id: Option<&str>) -> Result<Value> {
+        let (roles, team) = orch_team::presets::all()
+            .into_iter()
+            .find(|(_, t)| t.id == starter)
+            .ok_or_else(|| anyhow!("no starter {starter}"))?;
+        let id = match new_id.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(id) if self.db.team(to, id)?.is_some() => bail!("a team {id} already exists there"),
+            Some(id) => id.to_string(),
+            None => free_id(&format!("{starter}-new"), |id| Ok(self.db.team(to, id)?.is_some()))?,
+        };
+        if !valid_slug(&id) {
+            bail!("invalid team id {id:?}");
+        }
+        let visible = self.db.roles(to.project())?;
+        let mut renamed: std::collections::BTreeMap<String, String> = Default::default();
+        let mut copied = vec![];
+        for r in team.used_roles(&roles) {
+            let rid = match visible.iter().find(|v| v.id == r.id) {
+                Some(v) if role_fingerprint(v) == role_fingerprint(&r) => continue,
+                Some(_) => {
+                    let taken = |x: &str| Ok(visible.iter().any(|v| v.id == x) || self.db.role(to, x)?.is_some());
+                    free_id(&format!("{}-{id}", r.id), taken)?
+                }
+                None => r.id.clone(),
+            };
+            let mut c = r.clone();
+            (c.id, c.scope, c.version, c.origin) = (rid.clone(), to.clone(), 1, None);
+            self.db.upsert_role(&c, now_ms())?;
+            if rid != r.id {
+                renamed.insert(r.id.clone(), rid.clone());
+            }
+            copied.push(rid);
+        }
+        let mut t = team;
+        for n in &mut t.nodes {
+            if let Some(nid) = renamed.get(&n.role_id) {
+                n.role_id = nid.clone();
+            }
+        }
+        t.id = id;
+        (t.scope, t.version, t.preset, t.origin) = (to.clone(), 1, false, None);
+        self.db.save_team(&t, &self.db.roles(to.project())?, now_ms())?;
+        Ok(json!({"team": t, "roles_copied": copied}))
+    }
+
     /// FR-306 duplicate of one role (`new_id` or `<id>-copy`, version 1).
     pub fn role_duplicate(&self, role_id: &str, from: &Scope, to: &Scope, new_id: Option<&str>) -> Result<RoleDef> {
         let src = self.db.role(from, role_id)?.ok_or_else(|| anyhow!("no role {role_id}"))?;
@@ -310,6 +360,41 @@ mod tests {
         for t in &teams {
             assert_eq!(Some(team_fingerprint(t)), v1_origin("team", &t.id).map(|o| o.fingerprint), "{}", t.id);
         }
+    }
+
+    #[test]
+    fn starter_copy_is_the_shipped_starter_even_after_edits() {
+        let (_d, rt) = test_runtime(true);
+        rt.install_presets().unwrap();
+        // The user edited the installed ui role and the Design sprint team.
+        let mut ui = rt.db.role(&Scope::Global, "ui").unwrap().unwrap();
+        ui.prompt = "my own prompt".into();
+        rt.db.upsert_role(&ui, 1).unwrap();
+        let mut ds = rt.db.team(&Scope::Global, "design-sprint").unwrap().unwrap();
+        ds.nodes[0].position = (5.0, 5.0);
+        rt.db.save_team(&ds, &rt.db.roles(None).unwrap(), 1).unwrap();
+
+        let v = rt.starter_copy("design-sprint", &Scope::Global, None).unwrap();
+        let t: Team = serde_json::from_value(v["team"].clone()).unwrap();
+        assert_eq!((t.id.as_str(), t.version, t.preset, t.origin.is_none()), ("design-sprint-new", 1, false, true));
+        let (shipped_roles, shipped) =
+            orch_team::presets::all().into_iter().find(|(_, t)| t.id == "design-sprint").unwrap();
+        assert_eq!(t.nodes.iter().find(|n| n.id == shipped.nodes[0].id).unwrap().position, shipped.nodes[0].position);
+        // The edited ui role is not used: the shipped one comes in under a new id.
+        assert_eq!(v["roles_copied"], json!(["ui-design-sprint-new"]));
+        let node_ui = t.nodes.iter().find(|n| n.role_id.starts_with("ui")).unwrap();
+        assert_eq!(node_ui.role_id, "ui-design-sprint-new");
+        let copy = rt.db.role(&Scope::Global, "ui-design-sprint-new").unwrap().unwrap();
+        let shipped_ui = shipped_roles.iter().find(|r| r.id == "ui").unwrap();
+        assert_eq!(copy.prompt, shipped_ui.prompt);
+        assert_eq!(rt.db.role(&Scope::Global, "ui").unwrap().unwrap().prompt, "my own prompt", "left alone");
+
+        // Into a project, with an id; the same id twice is refused.
+        let p = Scope::Project("shop".into());
+        let v = rt.starter_copy("solo-dev", &p, Some("mine")).unwrap();
+        assert_eq!((v["team"]["id"].as_str(), v["roles_copied"].as_array().map(Vec::len)), (Some("mine"), Some(0)));
+        assert!(rt.starter_copy("solo-dev", &p, Some("mine")).is_err());
+        assert!(rt.starter_copy("nope", &p, None).is_err());
     }
 
     #[test]

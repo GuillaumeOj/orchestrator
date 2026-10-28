@@ -41,6 +41,10 @@ pub struct StatusSample {
     pub prompt_cache_expires_at: Option<i64>,
     pub prompt_cache_ttl: Option<String>,
     pub recache_tokens_if_cold: Option<u64>,
+    /// `rate_limits.<name>` windows beyond `five_hour` and `seven_day` (e.g.
+    /// `seven_day_opus`): per-model weekly limits (FR-815), by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_windows: Vec<(String, WindowSample)>,
 }
 
 impl StatusSample {
@@ -56,6 +60,16 @@ impl StatusSample {
             })
         };
         let rl = RateLimits { five_hour: window("five_hour"), seven_day: window("seven_day") };
+        let model_windows = v
+            .pointer("/rate_limits")
+            .and_then(Value::as_object)
+            .map(|o| {
+                o.keys()
+                    .filter(|k| *k != "five_hour" && *k != "seven_day")
+                    .filter_map(|k| Some((k.clone(), window(k)?)))
+                    .collect()
+            })
+            .unwrap_or_default();
         let model = match v.get("model") {
             Some(Value::String(m)) => Some(m.clone()),
             Some(m) => m.get("id").or_else(|| m.get("display_name")).and_then(Value::as_str).map(str::to_string),
@@ -72,6 +86,7 @@ impl StatusSample {
             prompt_cache_expires_at: i("/prompt_cache/expires_at"),
             prompt_cache_ttl: s("/prompt_cache/ttl"),
             recache_tokens_if_cold: v.pointer("/prompt_cache/recache_tokens_if_cold").and_then(Value::as_u64),
+            model_windows,
         }
     }
 }
@@ -96,6 +111,17 @@ mod tests {
         assert_eq!(s.total_cost_usd, Some(0.0137));
         assert_eq!(s.prompt_cache_expires_at, Some(1792267440));
         assert_eq!(s.context_used_pct, Some(7.0));
+    }
+
+    #[test]
+    fn extra_windows_are_model_windows() {
+        let s = StatusSample::parse(&json!({"rate_limits":{"seven_day":{"used_percentage":40,"resets_at":9},
+            "seven_day_opus":{"used_percentage":95,"resets_at":9},"weird":{"x":1}}}));
+        assert_eq!(
+            s.model_windows,
+            vec![("seven_day_opus".to_string(), WindowSample { used_percentage: 95.0, resets_at: 9 })]
+        );
+        assert!(StatusSample::parse(&json!({})).model_windows.is_empty());
     }
 
     #[test]

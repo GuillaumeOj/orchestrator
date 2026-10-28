@@ -42,6 +42,7 @@ fn samples(from: Timestamp, resets_at: Timestamp, hours: i64, seed: u64) -> Vec<
             weekly: Some(WindowReading { used_pct: w.floor().min(99.0), resets_at }),
             provenance: Provenance::Observed,
             model: Some(if opus { "claude-opus-4-1" } else { "claude-sonnet-4-5" }.into()),
+            model_windows: Vec::new(),
         });
     }
     out
