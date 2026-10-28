@@ -222,6 +222,7 @@ mod tests {
             version: 1,
             preset: false,
             origin: None,
+            review: Default::default(),
         }
     }
 

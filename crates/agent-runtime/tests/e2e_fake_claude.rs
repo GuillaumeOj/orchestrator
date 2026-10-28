@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use agent_runtime::paths::AppPaths;
 use agent_runtime::resources::PressureLevel;
-use agent_runtime::runtime::{Runtime, RuntimeConfig};
+use agent_runtime::runtime::{Runtime, RuntimeConfig, test_plan};
 use agent_runtime::server::{self, request};
 use orch_protocol::{AgentSpec, CtlRequest, bus};
 use serde_json::Value;
@@ -46,6 +46,7 @@ fn start_deliver_suspend_resume_kill_with_fake_claude() {
 
     let mut cfg = RuntimeConfig::new(paths.clone());
     cfg.claude = fake;
+    cfg.default_plan = test_plan;
     cfg.projects_root = root.path().join("projects");
     cfg.hold = Duration::from_secs(1);
     let rt = Runtime::new(cfg).unwrap();
@@ -193,6 +194,7 @@ impl Core {
         git(&repo, &["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "init"]);
         let mut cfg = RuntimeConfig::new(paths.clone());
         cfg.claude = fake;
+        cfg.default_plan = test_plan;
         cfg.projects_root = root.path().join("projects");
         cfg.hold = Duration::from_secs(1);
         cfg.idle_suspend = None;
@@ -391,7 +393,18 @@ fn a_team_run_end_to_end_with_fake_claude() {
     // Work, report, merge.
     std::fs::write(back_wt.join("api.rs"), "fn api() {}\n").unwrap();
     call(back, r#"ORCHTOOL commit {"message":"add api.rs"}"#);
+    // The team reviews itself first: the core types the review commands as is,
+    // each its own turn, then asks for the report again.
     call(back, r#"ORCHTOOL report_done {"summary":"api.rs added"}"#);
+    let s = request(&sock, CtlRequest::State).unwrap().data;
+    let commands: Vec<&Value> =
+        s["turns"].as_array().unwrap().iter().filter(|t| t["agent_id"] == back && t["command"] == true).collect();
+    assert_eq!(commands.len(), 2, "{s}");
+    assert!(commands.iter().all(|t| t["status"] == "done"), "each command ran as its own turn: {commands:?}");
+    let out = screen(back);
+    assert!(out.contains("DONE") && out.contains("/simplify"), "{out}");
+    assert!(out.contains("your self-review is done"), "{out}");
+    call(back, r#"ORCHTOOL report_done {"summary":"api.rs added","review":{"fixed":["typo"],"unfixed":[]}}"#);
     let tasks = request(&sock, CtlRequest::Tasks { project_id: None, run_id: Some(run.clone()) }).unwrap().data;
     let task = tasks[0]["id"].as_u64().unwrap();
     assert_eq!(tasks[0]["status"], "review", "{}", screen(back));

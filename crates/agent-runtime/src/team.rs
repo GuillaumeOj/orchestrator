@@ -113,15 +113,15 @@ pub fn watchdog_check(a: &AgentRecord, now: u64) -> Option<(Watch, u64)> {
 }
 
 /// Longest message body kept (the rest is cut).
-const MAX_BODY: usize = 8_000;
+pub(crate) const MAX_BODY: usize = 8_000;
 /// Longest text injected at a tool call.
 const MAX_INJECT: usize = 1_500;
 
-fn cut(s: &str, n: usize) -> String {
+pub(crate) fn cut(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n).collect::<String>()) }
 }
 
-fn str_arg<'a>(args: &'a Value, k: &str) -> Option<&'a str> {
+pub(crate) fn str_arg<'a>(args: &'a Value, k: &str) -> Option<&'a str> {
     args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
 }
 
@@ -161,7 +161,7 @@ impl Runtime {
         })
     }
 
-    fn lead_of(&self, cx: &RunCtx) -> Option<AgentRecord> {
+    pub(crate) fn lead_of(&self, cx: &RunCtx) -> Option<AgentRecord> {
         let lead = cx.team.lead()?.id.clone();
         self.run_agents(&cx.run.id).into_iter().find(|a| a.team.as_ref().is_some_and(|t| t.node == lead))
     }
@@ -264,7 +264,8 @@ impl Runtime {
                 if !self.db.runs(Some(&f.id), true)?.is_empty() {
                     bail!("feature {} already has a running team", f.slug);
                 }
-                f
+                // A deleted feature launched again comes back.
+                Feature { archived: false, ..f }
             }
             None => {
                 let base = spec
@@ -449,12 +450,26 @@ impl Runtime {
         Ok(rec)
     }
 
+    /// Queues a turn carrying team messages: they are read when it ends.
+    pub(crate) fn deliver_messages_turn(&self, id: &str, text: &str, messages: Vec<u64>) -> Result<String> {
+        let mut turn = TurnRow::queued(id, text, TurnKind::Message, Admission::Pending);
+        turn.messages = messages;
+        self.deliver_row(turn)
+    }
+
     /// Queues a turn of `kind` (delivered when the Governor admits it).
     pub(crate) fn deliver_kind(&self, id: &str, text: &str, kind: TurnKind) -> Result<String> {
-        if !self.store.read(|s| s.agents.contains_key(id)) {
-            bail!("no agent {id}");
+        self.deliver_row(TurnRow::queued(id, text, kind, Admission::Pending))
+    }
+
+    /// Queues `turn` as it is: the delivery loop never sees it half made.
+    pub(crate) fn deliver_row(&self, turn: TurnRow) -> Result<String> {
+        let id = turn.agent_id.as_str();
+        match self.store.read(|s| s.agents.get(id).map(|a| a.tracker.state)) {
+            None => bail!("no agent {id}"),
+            Some(AgentState::Archived) => bail!("agent {id} is deleted"),
+            Some(_) => {}
         }
-        let turn = TurnRow::queued(id, text, kind, Admission::Pending);
         let tid = turn.id.clone();
         self.store.write(|s| s.turns.push(turn))?;
         Ok(tid)
@@ -475,14 +490,41 @@ impl Runtime {
                     continue;
                 }
             };
+            // A deleted feature has no running team: a run left active under
+            // it (a relaunch that didn't un-archive) would spawn seats nobody
+            // sees and block every new launch on the slug.
+            if cx.feature.archived {
+                if let Err(e) = self.end_run(&run.id, "feature deleted") {
+                    self.run_event(&run.id, None, "team_error", json!(format!("{e:#}")));
+                }
+                continue;
+            }
             if let Err(e) = self.dispatch(&cx) {
                 self.run_event(&run.id, None, "dispatch_error", json!(format!("{e:#}")));
             }
+            self.supervise(&cx, now_ms());
             self.deliver_messages(&cx);
             if let Err(e) = self.progress(&cx) {
                 self.run_event(&run.id, None, "team_error", json!(format!("{e:#}")));
             }
         }
+    }
+
+    /// A team agent's role is compiled again from its node at each start,
+    /// so role edits and what the team compiles in later (tools, tier, the
+    /// permission mode) reach agents created before them. On any error the
+    /// role it has is kept.
+    pub(crate) fn refresh_team_role(&self, id: &str) {
+        let Some(seat) = self.store.read(|s| s.agents.get(id).and_then(|a| a.team.clone())) else { return };
+        let Ok(cx) = self.run_ctx(&seat.run_id) else { return };
+        let Ok(cfg) = orch_team::compile_node(&cx.team, &seat.node, &cx.roles, &cx.fctx()) else { return };
+        let Ok(role) = Role::from_node(&cfg) else { return };
+        let _ = self.store.write(|s| {
+            if let Some(a) = s.agents.get_mut(id) {
+                a.role = role;
+                a.tier = cfg.tier;
+            }
+        });
     }
 
     fn task_turn(&self, cx: &RunCtx, t: &Task, rec: &AgentRecord, branch: &str) -> String {
@@ -493,8 +535,15 @@ impl Runtime {
         } else {
             format!("\nIt builds on: {}.", t.depends_on.iter().map(|d| format!("T-{d}")).collect::<Vec<_>>().join(", "))
         };
+        let next = if t.flow.plan_first && !t.flow.plan_approved {
+            format!(
+                "Plan first: read what you need, then send your plan with mcp__orch__submit_plan and end your turn. Edits are refused until `{up}` approves it."
+            )
+        } else {
+            format!("When it is done, tested and committed, call mcp__orch__report_done for `{up}`.")
+        };
         format!(
-            "ORCH: task {} (id {}): {}\n\n{}{deps}\n\nWork in your worktree on {}. When it is done, tested and committed, call mcp__orch__report_done for `{up}`.",
+            "ORCH: task {} (id {}): {}\n\n{}{deps}\n\nWork in your worktree on {}. {next}",
             t.handle(),
             t.id,
             t.title,
@@ -728,20 +777,7 @@ impl Runtime {
         };
         let mut ids = vec![];
         for r in recipients {
-            ids.push(self.db.add_message(&Message {
-                id: 0,
-                team_run_id: cx.run.id.clone(),
-                from_node: from_node.into(),
-                from_agent: from_agent.map(str::to_string),
-                to_node: to_node.clone(),
-                to_agent: r,
-                kind: kind.into(),
-                body: body.clone(),
-                r#ref: r#ref.clone(),
-                created_at_ms: now_ms(),
-                delivered_at_ms: None,
-                read_at_ms: None,
-            })?);
+            ids.push(self.add_run_message(cx, from_node, from_agent, &to_node, r, kind, &body, r#ref.clone())?);
         }
         self.run_event(
             &cx.run.id,
@@ -752,7 +788,37 @@ impl Runtime {
         Ok(ids)
     }
 
-    fn render_messages(msgs: &[Message], max: usize) -> String {
+    /// Stores one message of the run (no rules checked: callers do, or it is
+    /// the orchestrator's own).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn add_run_message(
+        &self,
+        cx: &RunCtx,
+        from_node: &str,
+        from_agent: Option<&str>,
+        to_node: &str,
+        to_agent: Option<String>,
+        kind: &str,
+        body: &str,
+        r#ref: Value,
+    ) -> Result<u64> {
+        self.db.add_message(&Message {
+            id: 0,
+            team_run_id: cx.run.id.clone(),
+            from_node: from_node.into(),
+            from_agent: from_agent.map(str::to_string),
+            to_node: to_node.into(),
+            to_agent,
+            kind: kind.into(),
+            body: cut(body, MAX_BODY),
+            r#ref,
+            created_at_ms: now_ms(),
+            delivered_at_ms: None,
+            read_at_ms: None,
+        })
+    }
+
+    pub(crate) fn render_messages(msgs: &[Message], max: usize) -> String {
         let mut s = String::new();
         for m in msgs {
             let who = m.from_agent.clone().unwrap_or_else(|| m.from_node.clone());
@@ -769,9 +835,27 @@ impl Runtime {
         s
     }
 
-    fn undelivered(&self, rec: &AgentRecord) -> Vec<Message> {
+    fn unread(&self, rec: &AgentRecord) -> Vec<Message> {
         let Some(seat) = &rec.team else { return vec![] };
         self.db.messages(&seat.run_id, Some((&seat.node, Some(&rec.id))), true).unwrap_or_default()
+    }
+
+    fn undelivered(&self, rec: &AgentRecord) -> Vec<Message> {
+        self.unread(rec).into_iter().filter(|m| m.delivered_at_ms.is_none()).collect()
+    }
+
+    /// The agent's unread messages among `ids` (to remind it at its Stop).
+    pub(crate) fn unread_of(&self, rec: &AgentRecord, ids: &[u64]) -> Vec<Message> {
+        self.unread(rec).into_iter().filter(|m| ids.contains(&m.id)).collect()
+    }
+
+    /// A task of this run, by id.
+    pub(crate) fn run_task(&self, cx: &RunCtx, id: u64) -> Result<Task> {
+        let t = self.db.task(id)?.ok_or_else(|| anyhow!("no task {id}"))?;
+        if t.team_run_id.as_deref() != Some(&cx.run.id) {
+            bail!("task {id} is not part of this feature");
+        }
+        Ok(t)
     }
 
     /// FR-403 for a busy agent: its new messages, as PostToolUse context.
@@ -781,7 +865,9 @@ impl Runtime {
             return None;
         }
         let ids: Vec<u64> = msgs.iter().map(|m| m.id).collect();
-        let _ = self.db.mark_messages(&ids, Some(&rec.id), now_ms());
+        let _ = self.db.deliver_messages(&ids, &rec.id, now_ms());
+        // Read when this turn ends; its Stop reminds the agent of them first.
+        self.note_injected(&rec.id, &ids);
         Some(format!("ORCH: {} new message(s):{}", msgs.len(), Self::render_messages(&msgs, MAX_INJECT)))
     }
 
@@ -806,9 +892,9 @@ impl Runtime {
                 msgs.len(),
                 Self::render_messages(&msgs, MAX_BODY)
             );
-            if self.deliver_kind(&rec.id, &text, TurnKind::Message).is_ok() {
-                let ids: Vec<u64> = msgs.iter().map(|m| m.id).collect();
-                let _ = self.db.mark_messages(&ids, Some(&rec.id), now_ms());
+            let ids: Vec<u64> = msgs.iter().map(|m| m.id).collect();
+            if self.deliver_messages_turn(&rec.id, &text, ids.clone()).is_ok() {
+                let _ = self.db.deliver_messages(&ids, &rec.id, now_ms());
             }
         }
     }
@@ -840,14 +926,65 @@ impl Runtime {
     /// Stops the team: every agent is suspended (sessions kept) and the run
     /// ends as failed ("stopped by the user"). Worktrees stay.
     pub fn run_stop(&self, run_id: &str) -> Result<TeamRun> {
-        let run = self.set_run_state(run_id, RunState::Failed, "stopped by the user")?;
+        self.end_run(run_id, "stopped by the user")
+    }
+
+    /// Ends a run as failed for `why`: its agents' queued turns are dropped
+    /// and the live ones suspended (sessions and worktrees kept), so nothing
+    /// keeps working for a run nobody drives.
+    fn end_run(&self, run_id: &str, why: &str) -> Result<TeamRun> {
+        let run = self.set_run_state(run_id, RunState::Failed, why)?;
         for a in self.run_agents(run_id) {
-            let _ = self.store.write(|s| s.turns.retain(|t| !(t.agent_id == a.id && t.status == TurnStatus::Queued)));
+            self.drop_queued_turns(&a.id);
             if self.live(&a.id).is_some() {
                 let _ = self.suspend(&a.id);
             }
         }
         Ok(run)
+    }
+
+    /// Deletes a feature: its runs end as failed ("deleted by the user"), every
+    /// agent of the feature is deleted (killed, checked, archived), then the
+    /// feature is archived. With `remove_worktrees`, the agents' worktrees and
+    /// the integration worktree go too (unmerged work needs `discard`). Stops
+    /// at the first agent whose kill can't be verified: the feature stays.
+    pub fn delete_feature(&self, feature_id: &str, remove_worktrees: bool, discard: bool) -> Result<Value> {
+        let mut f = self.db.feature(feature_id)?.ok_or_else(|| anyhow!("no feature {feature_id}"))?;
+        // First the runs, so the team tick starts no new seat meanwhile.
+        for run in self.db.runs(Some(feature_id), true)? {
+            self.set_run_state(&run.id, RunState::Failed, "deleted by the user")?;
+        }
+        let recs: Vec<(String, std::path::PathBuf)> = self.store.read(|s| {
+            s.agents
+                .values()
+                .filter(|a| a.team.as_ref().is_some_and(|t| t.feature_id == feature_id))
+                .filter(|a| a.tracker.state != AgentState::Archived)
+                .map(|a| (a.id.clone(), crate::paths::real(&a.worktree)))
+                .collect()
+        });
+        let mut agents = vec![];
+        for (id, _) in &recs {
+            agents.push(self.delete_agent(id, false, false)?);
+        }
+        // Then each worktree once, now that none of the feature's agents
+        // holds it (the lead shares the integration worktree).
+        let mut worktrees = vec![];
+        if remove_worktrees {
+            let mut paths: Vec<std::path::PathBuf> = recs.into_iter().map(|(_, wt)| wt).collect();
+            paths.extend(f.integration_worktree.as_deref().map(crate::paths::real));
+            paths.sort();
+            paths.dedup();
+            for wt in paths {
+                let mut r = self.remove_worktree_report(&f.project_id, &wt, discard);
+                r["path"] = json!(wt);
+                worktrees.push(r);
+            }
+        }
+        f.archived = true;
+        self.db.upsert_feature(&f)?;
+        let out = json!({"deleted": f.slug, "agents": agents, "worktrees": worktrees});
+        self.db.audit("user", None, "feature_deleted", Some(&f.slug), "ok", out.clone())?;
+        Ok(out)
     }
 
     /// Gives a task to another node (FR-406). Its current agent is freed.
@@ -928,6 +1065,13 @@ impl Runtime {
         let is_lead = cx.team.is_lead(&seat.node);
         let me = seat.node.as_str();
         match tool {
+            "submit_plan" | "decide_plan" | "submit_review" => self.flow_tool(&cx, rec, me, is_lead, tool, args),
+            "team_status" | "nudge" | "resume_agent" => {
+                if !is_lead {
+                    bail!("only the lead manages the team");
+                }
+                self.lead_tool(&cx, tool, args)
+            }
             "send_message" => {
                 let to = str_arg(args, "to").ok_or_else(|| anyhow!("`to` is required"))?;
                 let body = str_arg(args, "body").ok_or_else(|| anyhow!("`body` is required"))?;
@@ -1060,14 +1204,7 @@ impl Runtime {
                     .map(|s| cut(s, 200))
                     .take(8)
                     .collect();
-                let id = self.add_item(
-                    Some(&rec.id),
-                    "question",
-                    format!("{}: {}", rec.id, cut(q, 300)),
-                    json!({"action": "ask_user", "question": cut(q, 4_000), "options": options, "run": cx.run.id}),
-                    crate::inbox::PRIORITY_GATE,
-                )?;
-                self.run_event(&cx.run.id, Some(&rec.id), "asked_user", json!({"item": id, "question": cut(q, 300)}));
+                let id = self.question_item(rec, q, options, "ask_user", str_arg(args, "kind") != Some("fyi"))?;
                 Ok((
                     "Asked the user; the answer comes as a new turn. Continue with other work or end your turn.".into(),
                     json!({"item": id}),
@@ -1116,6 +1253,7 @@ impl Runtime {
                 t.status = status;
                 t.feature_id = Some(cx.feature.id.clone());
                 t.team_run_id = Some(cx.run.id.clone());
+                t.flow.plan_first = args.get("plan_first").and_then(Value::as_bool).unwrap_or(false);
                 let out = self.tasks_of(&cx).create(t)?;
                 let t = out.value;
                 self.run_event(
@@ -1132,10 +1270,7 @@ impl Runtime {
             }
             "update_task" => {
                 let id = args.get("id").and_then(Value::as_u64).ok_or_else(|| anyhow!("`id` is required"))?;
-                let mut t = self.db.task(id)?.ok_or_else(|| anyhow!("no task {id}"))?;
-                if t.team_run_id.as_deref() != Some(&cx.run.id) {
-                    bail!("task {id} is not part of this feature");
-                }
+                let mut t = self.run_task(&cx, id)?;
                 if !is_lead && t.node.as_deref() != Some(me) {
                     bail!("you can only update your own tasks");
                 }
@@ -1144,6 +1279,12 @@ impl Runtime {
                         bail!("only the lead reassigns tasks");
                     }
                     t = self.reassign_task(id, node)?;
+                }
+                if let Some(p) = args.get("plan_first").and_then(Value::as_bool) {
+                    if !is_lead {
+                        bail!("only the lead asks for a plan first");
+                    }
+                    t.flow.plan_first = p;
                 }
                 if let Some(s) = str_arg(args, "status") {
                     let s: TaskStatus = s.parse().map_err(|e: String| anyhow!(e))?;
@@ -1178,6 +1319,9 @@ impl Runtime {
                 if !st.trim().is_empty() {
                     bail!("you have uncommitted changes: commit them with mcp__orch__commit first");
                 }
+                if let Some(text) = self.review_first(&cx, rec, me, &mut t, args)? {
+                    return Ok((text, Value::Null));
+                }
                 self.apply_status(&mut t, TaskStatus::Review);
                 let svc = self.tasks_of(&cx);
                 svc.update(t.clone(), now_ms())?;
@@ -1189,7 +1333,12 @@ impl Runtime {
                     Sender(me, Some(&rec.id)),
                     &up,
                     "report",
-                    &format!("task id {id} ({}) is done on {branch}: {}", t.title, cut(summary, 2_000)),
+                    &format!(
+                        "task id {id} ({}) is done on {branch}: {}{}",
+                        t.title,
+                        cut(summary, 2_000),
+                        t.flow.review.as_ref().map(crate::flow::render_review).unwrap_or_default()
+                    ),
                     json!({"task": id, "branch": branch}),
                 )?;
                 self.run_event(&cx.run.id, Some(&rec.id), "task.reported", json!({"task": id}));
@@ -1230,6 +1379,20 @@ impl Runtime {
                 let prefix = format!("orch/{}/", cx.feature.slug);
                 if !branch.starts_with(&prefix) || branch == cx.feature.integration_branch() {
                     bail!("only branches of this feature ({prefix}<node>-<n>) can be merged here");
+                }
+                // The review gate holds without `task` too: a branch whose task
+                // is under review is not merged.
+                let gated: Vec<Task> = match args.get("task").and_then(Value::as_u64) {
+                    Some(id) => self.db.task(id)?.into_iter().collect(),
+                    None => self
+                        .db
+                        .tasks(None, None, Some(&cx.run.id))?
+                        .into_iter()
+                        .filter(|t| t.branch.as_deref() == Some(branch) && t.flow.reviewing)
+                        .collect(),
+                };
+                if let Some(why) = gated.iter().find_map(|t| self.review_missing(&cx, t)) {
+                    bail!("{why}");
                 }
                 let r = orch_git::commit::merge_into_worktree(
                     &rec.worktree,
@@ -1374,7 +1537,7 @@ impl Runtime {
         };
         match (r, agent) {
             (Ok(text), Some(a)) => {
-                let _ = self.deliver_kind(a, &text, TurnKind::Continue);
+                let _ = self.deliver_user(a, &text);
             }
             (Err(e), _) => self.event("-", "team_error", json!({"run": run_id, "error": e.to_string()})),
             _ => {}
@@ -1553,6 +1716,82 @@ mod tests {
     }
 
     #[test]
+    fn a_reviewer_node_reviews_before_the_lead_merges() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        let (roles, team) = orch_team::presets::full_stack_reviewed();
+        for r in &roles {
+            rt.db.upsert_role(r, 1).unwrap();
+        }
+        rt.db.save_team(&team, &roles, 1).unwrap();
+        approved_with(&rt, &pid, "full-stack-reviewed");
+        let (lead, back, rev) = ("fx-lead-1", "fx-back-1", "fx-review-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        write_commit(&rt, back, "api.rs", "fn api() {}");
+        let t = rt.store.read(|s| s.agents[back].team.as_ref().unwrap().task.unwrap());
+        assert!(ok(&rt, back, "report_done", json!({"summary": "api added"})).contains("review reviews"));
+        assert!(call(&rt, lead, "merge", json!({"branch": "orch/fx/back-1", "task": t})).1.contains("being reviewed"));
+        rt.team_tick();
+        assert!(queued(&rt, rev)[0].contains("submit_review"), "the reviewer starts with its review task");
+        ok(&rt, rev, "submit_review", json!({"task": t, "findings": ["api.rs:1 no test"], "summary": "one gap"}));
+        assert_eq!(rt.db.task(t).unwrap().unwrap().status, TaskStatus::Review);
+        let lrec = rt.store.read(|s| s.agents[lead].clone());
+        let report = rt.inject_messages(&lrec).unwrap();
+        assert!(report.contains("Reviewed by review: one gap") && report.contains("api.rs:1 no test"), "{report}");
+        assert!(queued(&rt, back).iter().any(|b| b.contains("api.rs:1 no test")), "the owner sees the findings");
+        assert!(ok(&rt, lead, "merge", json!({"branch": "orch/fx/back-1", "task": t})).contains("is done"));
+    }
+
+    /// A launched feature past its spec gate.
+    fn approved(rt: &Runtime, pid: &str) -> TeamRun {
+        approved_with(rt, pid, "bugfix-squad")
+    }
+
+    fn approved_with(rt: &Runtime, pid: &str, team: &str) -> TeamRun {
+        let run = rt
+            .launch(&LaunchSpec {
+                project_id: pid.into(),
+                team_id: team.into(),
+                slug: "fx".into(),
+                title: "Fix X".into(),
+                brief: "Fix the X bug.".into(),
+                base: None,
+            })
+            .unwrap();
+        write_commit(rt, "fx-lead-1", ".orchestrator/features/fx/spec.md", "# Fix X\n");
+        ok(rt, "fx-lead-1", "request_spec_approval", json!({"summary": "s"}));
+        let gate = rt.store.read(|s| s.inbox.iter().find(|i| i.pending() && i.kind == "gate").cloned().unwrap());
+        rt.decide(gate.id, InboxDecision::Approve, None, None).unwrap();
+        run
+    }
+
+    #[test]
+    fn a_plan_first_task_is_planned_then_approved_before_any_edit() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back", "plan_first": true}));
+        rt.team_tick();
+        assert!(queued(&rt, back)[0].contains("mcp__orch__submit_plan"));
+        let rec = || rt.store.read(|s| s.agents[back].clone());
+        let edit = |rt: &Runtime| rt.plan_lock(&rec(), "Edit");
+        assert!(edit(&rt).is_some(), "no edit before a plan");
+        assert!(call(&rt, back, "commit", json!({"message": "x"})).1.contains("plan-first"));
+        assert!(rt.plan_lock(&rec(), "Read").is_none());
+        ok(&rt, back, "submit_plan", json!({"plan": "add api.rs; test it"}));
+        let lrec = rt.store.read(|s| s.agents[lead].clone());
+        assert!(rt.inject_messages(&lrec).unwrap().contains("add api.rs; test it"));
+        let task = rec().team.unwrap().task.unwrap();
+        ok(&rt, lead, "decide_plan", json!({"task": task, "approve": false, "note": "also docs"}));
+        assert!(queued(&rt, back).iter().any(|b| b.contains("needs changes: also docs")));
+        assert!(edit(&rt).is_some());
+        ok(&rt, back, "submit_plan", json!({"plan": "api.rs, docs, tests"}));
+        ok(&rt, lead, "decide_plan", json!({"task": task, "approve": true}));
+        assert!(queued(&rt, back).iter().any(|b| b.contains("is approved")));
+        assert!(edit(&rt).is_none(), "edits allowed once approved");
+    }
+
+    #[test]
     fn a_feature_goes_from_launch_through_both_gates() {
         let (_d, rt, _rd, _repo, pid) = setup();
         let run = rt
@@ -1651,9 +1890,22 @@ mod tests {
         std::fs::write(brec.worktree.join("api.rs"), "fn api() {}").unwrap();
         assert!(call(&rt, back, "report_done", json!({"summary": "s"})).1.contains("uncommitted"));
         ok(&rt, back, "commit", json!({"message": "add api.rs"}));
-        ok(&rt, back, "report_done", json!({"summary": "api.rs added, tested"}));
+        // Self-review first (the team's default): the commands, then the report.
+        assert!(
+            ok(&rt, back, "report_done", json!({"summary": "api.rs added, tested"})).contains("review your branch")
+        );
+        assert_eq!(rt.db.task(t1.id).unwrap().unwrap().status, TaskStatus::InProgress);
+        let q = queued(&rt, back);
+        assert_eq!(q[q.len() - 3..][..2], *crate::flow::SELF_REVIEW);
+        assert!(
+            call(&rt, lead, "merge", json!({"branch": "orch/fx/back-1", "task": t1.id})).1.contains("being reviewed")
+        );
+        assert!(call(&rt, back, "report_done", json!({"summary": "again"})).1.contains("pass `review`"));
+        let review = json!({"fixed": ["a typo"], "unfixed": [{"finding": "no index on x", "reason": "out of scope"}]});
+        ok(&rt, back, "report_done", json!({"summary": "api.rs added, tested", "review": review}));
         assert_eq!(rt.db.task(t1.id).unwrap().unwrap().status, TaskStatus::Review);
-        assert!(rt.inject_messages(&lrec).unwrap().contains("report from fx-back-1"));
+        let report = rt.inject_messages(&lrec).unwrap();
+        assert!(report.contains("report from fx-back-1") && report.contains("LEFT: no index on x"), "{report}");
         assert!(call(&rt, lead, "merge", json!({"branch": "main"})).1.contains("only branches of this feature"));
         assert!(ok(&rt, lead, "merge", json!({"branch": "orch/fx/back-1", "task": t1.id})).contains("is done"));
         assert!(lrec.worktree.join("api.rs").is_file());
@@ -1666,6 +1918,7 @@ mod tests {
         ok(&rt, front, "sync_integration", json!({}));
         write_commit(&rt, front, "ui.rs", "fn ui() {}");
         ok(&rt, front, "report_done", json!({"summary": "ui done"}));
+        ok(&rt, front, "report_done", json!({"summary": "ui done", "review": {"fixed": [], "unfixed": []}}));
         let t2 = rt.db.tasks(None, None, Some(&run.id)).unwrap().into_iter().find(|t| t.title == "UI").unwrap();
         ok(&rt, lead, "merge", json!({"branch": "orch/fx/front-1", "task": t2.id}));
         rt.team_tick();
@@ -1690,6 +1943,88 @@ mod tests {
         for k in ["run.launched", "task.created", "task.assigned", "message", "git.merge", "task.done", "run.state"] {
             assert!(ev.iter().any(|e| e.kind == k), "timeline has {k}");
         }
+    }
+
+    #[test]
+    fn deleting_a_feature_ends_its_run_and_hides_it_and_its_agents() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        let run = rt
+            .launch(&LaunchSpec {
+                project_id: pid.clone(),
+                team_id: "bugfix-squad".into(),
+                slug: "fx".into(),
+                title: "Fix X".into(),
+                brief: "Fix the X bug.".into(),
+                base: None,
+            })
+            .unwrap();
+        let lead = "fx-lead-1";
+        let wt = rt.store.read(|s| s.agents[lead].worktree.clone());
+        let out = rt.delete_feature(&run.feature_id, true, true).unwrap();
+        assert_eq!(out["agents"].as_array().unwrap().len(), 1, "{out}");
+        assert_eq!(state(&rt, &run.id), RunState::Failed);
+        assert_eq!(rt.store.read(|s| s.agents[lead].tracker.state), AgentState::Archived);
+        assert!(queued(&rt, lead).is_empty());
+        assert!(rt.db.features(Some(&pid)).unwrap().is_empty());
+        assert!(!wt.exists(), "integration worktree removed");
+        // The lead's worktree is the integration one: removed once, reported once.
+        let wts = out["worktrees"].as_array().unwrap();
+        assert_eq!(wts.len(), 1, "{out}");
+        assert_eq!(wts[0]["worktree_removed"], true, "{out}");
+        // The tick starts nothing for a deleted feature.
+        let before = rt.store.read(|s| s.agents.len());
+        rt.team_tick();
+        assert_eq!(rt.store.read(|s| s.agents.len()), before);
+        // The slug can be launched again, and the feature comes back.
+        let again = rt
+            .launch(&LaunchSpec {
+                project_id: pid.clone(),
+                team_id: "bugfix-squad".into(),
+                slug: "fx".into(),
+                title: "Again".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(again.feature_id, run.feature_id);
+        assert_eq!(rt.db.features(Some(&pid)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_run_left_active_under_a_deleted_feature_ends_on_the_tick() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        let run = rt
+            .launch(&LaunchSpec {
+                project_id: pid.clone(),
+                team_id: "bugfix-squad".into(),
+                slug: "fx".into(),
+                title: "Fix X".into(),
+                brief: "Fix the X bug.".into(),
+                base: None,
+            })
+            .unwrap();
+        // The feature archived under its active run (an older relaunch).
+        let mut f = rt.db.feature(&run.feature_id).unwrap().unwrap();
+        f.archived = true;
+        rt.db.upsert_feature(&f).unwrap();
+        let lead = "fx-lead-1";
+        assert!(!queued(&rt, lead).is_empty(), "the brief waits for the lead");
+        let before = rt.store.read(|s| s.agents.len());
+        rt.team_tick();
+        assert_eq!(state(&rt, &run.id), RunState::Failed);
+        assert_eq!(rt.store.read(|s| s.agents.len()), before, "no seat spawned");
+        // Stopped like run_stop: nothing left to work for the ended run.
+        assert!(queued(&rt, lead).is_empty(), "queued turns dropped");
+        assert!(rt.live(lead).is_none(), "lead not live");
+        // The slug is free again, and the feature comes back.
+        rt.launch(&LaunchSpec {
+            project_id: pid.clone(),
+            team_id: "bugfix-squad".into(),
+            slug: "fx".into(),
+            title: "Again".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(rt.db.features(Some(&pid)).unwrap().len(), 1);
     }
 
     #[test]

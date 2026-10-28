@@ -10,6 +10,7 @@ pub mod inbox;
 pub mod kitty;
 pub mod memory;
 pub mod menu;
+pub mod notify;
 pub mod permissions;
 pub mod planner;
 pub mod services;
@@ -71,9 +72,11 @@ pub fn run() {
     let core = core::Core::start(cfg);
     let app = tauri::Builder::default()
         .manage(core.clone())
+        .plugin(tauri_plugin_notification::init())
         .menu(menu::build)
         .setup(|app| {
             devctl::start(app.handle().clone());
+            notify::start(app.handle().clone());
             Ok(())
         })
         .on_menu_event(|app, ev| {
@@ -91,6 +94,7 @@ pub fn run() {
             commands::agent_write,
             commands::agent_resize,
             commands::agent_action,
+            commands::agent_delete,
             commands::term_spawn,
             commands::term_read,
             commands::term_write,
@@ -113,6 +117,7 @@ pub fn run() {
             commands::task_create,
             commands::task_update,
             commands::run_act,
+            commands::feature_delete,
             commands::message_send,
             commands::project_settings,
             commands::project_settings_set,

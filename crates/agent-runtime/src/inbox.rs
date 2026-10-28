@@ -387,22 +387,31 @@ impl Runtime {
                 if let Some(a) = &item.agent_id {
                     self.pr_declined(a);
                     let why = message.map(|m| format!(" They said: {m}")).unwrap_or_default();
-                    let _ = self.deliver(a, &format!("ORCH: the user declined your pull request request.{why}"));
+                    let _ = self.deliver_user(a, &format!("ORCH: the user declined your pull request request.{why}"));
                 }
             }
             // The agent was told the answer comes as a turn: say there is none.
             ("question", "ask_user", InboxDecision::Dismiss) => {
                 if let Some(a) = &item.agent_id {
-                    let _ = self.deliver_kind(
+                    let _ = self.deliver_user(
                         a,
                         "ORCH: the user dismissed your question without answering. Decide yourself, or ask your team.",
-                        governor::TurnKind::Continue,
                     );
+                }
+            }
+            ("question", _, InboxDecision::Reply) => {
+                if let (Some(a), Some(m)) = (&item.agent_id, message) {
+                    let q = item.payload.get("question").and_then(Value::as_str).unwrap_or(&item.body);
+                    let text = format!(
+                        "ORCH: the user answered your question.\nQuestion: {}\nAnswer: {m}",
+                        crate::team::cut(q, 600)
+                    );
+                    result["turn"] = json!(self.deliver_user(a, &text)?);
                 }
             }
             (k, _, InboxDecision::Reply) if k != "permission" => {
                 if let (Some(a), Some(m)) = (&item.agent_id, message) {
-                    result["turn"] = json!(self.deliver(a, m)?);
+                    result["turn"] = json!(self.deliver_user(a, m)?);
                 }
             }
             _ => {}
@@ -474,7 +483,7 @@ impl Runtime {
         self.event(agent.as_deref().unwrap_or("-"), "pr", json!({"item": item, "ok": r.is_ok()}));
         if let Some(a) = agent {
             self.pr_opened(&a, r.as_ref().ok().map(String::as_str));
-            let _ = self.deliver(&a, &msg);
+            let _ = self.deliver_user(&a, &msg);
         }
     }
 }
@@ -583,7 +592,7 @@ mod tests {
             .collect();
         let wins = hs.into_iter().map(|h| h.join().unwrap()).filter(|ok| *ok).count();
         assert_eq!(wins, 1, "exactly one decision acts");
-        assert_eq!(rt.store.read(|s| s.turns.iter().filter(|t| t.body == "yes").count()), 1);
+        assert_eq!(rt.store.read(|s| s.turns.iter().filter(|t| t.body.ends_with("Answer: yes")).count()), 1);
         // An item sent to the Inbox by an `ask` rule can be approved, not always-allowed.
         rt.db.add_rule(RuleScope::Role, "solo", "Bash(make:*)", RuleEffect::Ask, None).unwrap();
         let rt2 = rt.clone();
@@ -656,7 +665,9 @@ mod tests {
         rt.decide(a, InboxDecision::Dismiss, None, None).unwrap();
         let r = rt.decide(q, InboxDecision::Reply, None, Some("use sqlite")).unwrap();
         assert!(r["turn"].is_string());
-        assert!(rt.store.read(|s| s.turns.iter().any(|t| t.body == "use sqlite")));
+        let body = rt.store.read(|s| s.turns[0].body.clone());
+        assert!(body.contains("Question: which db?") && body.ends_with("Answer: use sqlite"), "{body}");
+        assert_eq!(rt.store.read(|s| s.turns[0].kind), governor::TurnKind::User);
         assert!(rt.inbox().is_empty());
     }
 

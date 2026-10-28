@@ -115,6 +115,16 @@ pub struct WorktreeInfo {
 
 /// Every worktree git knows plus every app row, with orphans flagged.
 pub fn worktrees(repo: &Path, rows: &[WorktreeRow], default_base: &str) -> Result<Vec<WorktreeInfo>> {
+    collect(repo, rows, default_base, None)
+}
+
+/// [`worktrees`] for the one at `path` (canonical): git is asked about it alone.
+pub fn worktree(repo: &Path, path: &Path, rows: &[WorktreeRow], default_base: &str) -> Result<Option<WorktreeInfo>> {
+    Ok(collect(repo, rows, default_base, Some(path))?.pop())
+}
+
+fn collect(repo: &Path, rows: &[WorktreeRow], default_base: &str, only: Option<&Path>) -> Result<Vec<WorktreeInfo>> {
+    let wanted = |p: &Path| only.is_none_or(|o| o == p);
     let main = real(repo);
     let root = worktree::worktree_root(repo);
     let git_wts = worktree::list(repo)?;
@@ -124,6 +134,9 @@ pub fn worktrees(repo: &Path, rows: &[WorktreeRow], default_base: &str) -> Resul
     let git_paths: Vec<PathBuf> = git_wts.iter().map(|w| real(&w.path)).collect();
     let mut out = vec![];
     for (w, p) in git_wts.iter().zip(git_paths.iter().cloned()) {
+        if !wanted(&p) {
+            continue;
+        }
         let row = live_rows.iter().find(|(rp, _)| *rp == p).map(|(_, r)| (*r).clone());
         let verdict = if p == main {
             WorktreeVerdict::Main
@@ -139,7 +152,7 @@ pub fn worktrees(repo: &Path, rows: &[WorktreeRow], default_base: &str) -> Resul
         out.push(describe(repo, w, p, verdict, row, default_base));
     }
     for (p, r) in live_rows {
-        if !git_paths.contains(&p) {
+        if wanted(&p) && !git_paths.contains(&p) {
             out.push(WorktreeInfo {
                 path: p,
                 branch: Some(r.branch.clone()),

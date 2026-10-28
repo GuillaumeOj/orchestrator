@@ -159,6 +159,13 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
             ok_or(rt.suspend(&agent_id).map(|l| json!({"suspended": agent_id, "log": l})))
         }
         CtlRequest::Kill { agent_id } => ok_or(rt.kill(&agent_id).map(|l| json!({"killed": agent_id, "log": l}))),
+        CtlRequest::DeletePlan { agent_id } => ok_or(rt.delete_plan(&agent_id)),
+        CtlRequest::DeleteAgent { agent_id, remove_worktree, confirm_discard } => {
+            ok_or(rt.delete_agent(&agent_id, remove_worktree, confirm_discard))
+        }
+        CtlRequest::DeleteFeature { feature_id, remove_worktrees, discard } => {
+            ok_or(rt.delete_feature(&feature_id, remove_worktrees, discard))
+        }
         CtlRequest::Interrupt { agent_id } => ok_or(rt.interrupt(&agent_id).map(|_| json!("esc sent"))),
         CtlRequest::Deliver { agent_id, text } => ok_or(rt.deliver(&agent_id, &text).map(|t| json!({"turn": t}))),
         CtlRequest::Resize { agent_id, rows, cols } => ok_or(rt.resize(&agent_id, rows, cols).map(|_| json!("ok"))),

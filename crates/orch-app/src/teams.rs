@@ -20,29 +20,45 @@ pub struct ProjectSettingsForm {
 }
 
 /// Every feature with its latest run, for the sidebar (Projects → Features
-/// → agents), the palette and ⌘P.
-pub fn features(rt: &agent_runtime::runtime::Runtime) -> Vec<Value> {
-    // Polled with the app state: three queries in all, not two per feature.
+/// → agents), the palette and ⌘P. A deleted (archived) feature is listed,
+/// flagged `archived`, while one of its agents is not deleted: its team is
+/// never hidden. An error is not "no features": the UI would hide every
+/// feature and close their panes for that poll.
+pub fn features(rt: &agent_runtime::runtime::Runtime) -> Result<Vec<Value>> {
+    // Polled with the app state: three queries in all, not two per feature,
+    // plus one per deleted feature whose team has agents left.
     let mut latest: std::collections::BTreeMap<String, orch_store::TeamRun> = std::collections::BTreeMap::new();
-    for r in rt.db.runs(None, false).unwrap_or_default() {
+    for r in rt.db.runs(None, false)? {
         latest.entry(r.feature_id.clone()).or_insert(r); // newest first
     }
-    let counts = rt.db.task_counts_by_run().unwrap_or_default();
-    rt.db
-        .features(None)
-        .unwrap_or_default()
+    let counts = rt.db.task_counts_by_run()?;
+    let mut list = rt.db.features(None)?;
+    let mut seated: std::collections::BTreeSet<String> = rt.store.read(|s| {
+        s.agents
+            .values()
+            .filter(|a| a.tracker.state != agent_runtime::state::AgentState::Archived)
+            .filter_map(|a| a.team.as_ref().map(|t| t.feature_id.clone()))
+            .collect()
+    });
+    for f in &list {
+        seated.remove(&f.id);
+    }
+    for id in seated {
+        list.extend(rt.db.feature(&id)?);
+    }
+    Ok(list
         .into_iter()
         .map(|f| {
             let run = latest.remove(&f.id);
             let (done, total) = run.as_ref().and_then(|r| counts.get(&r.id).copied()).unwrap_or_default();
             json!({
                 "id": f.id, "project_id": f.project_id, "slug": f.slug, "title": f.title,
-                "branch": f.integration_branch(),
+                "branch": f.integration_branch(), "archived": f.archived,
                 "run": run.as_ref().map(|r| json!({"id": r.id, "status": r.status, "team_id": r.team_id, "pr_url": r.pr_url})),
                 "tasks": {"done": done, "total": total},
             })
         })
-        .collect()
+        .collect())
 }
 
 impl Core {

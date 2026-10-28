@@ -11,7 +11,9 @@ export const CHORDS = {
   'cmd+n': 'project.add',
   'cmd+t': 'session.new',
   'cmd+w': 'pane.close',
+  'cmd+shift+t': 'pane.reopen',
   'cmd+shift+i': 'inbox',
+  'cmd+j': 'dock.toggle',
   ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`cmd+${n}`, `pane.focus.${n}`])),
 };
 
@@ -25,6 +27,8 @@ export const LEADER = {
   l: 'focus.right',
   z: 'pane.zoom',
   t: 'shell.new',
+  ']': 'dock.next',
+  '[': 'dock.prev',
   e: 'editor.open',
   w: 'agent.next-waiting',
   p: 'agent.pause',

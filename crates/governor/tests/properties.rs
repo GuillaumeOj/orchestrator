@@ -14,7 +14,7 @@ use proptest::prelude::*;
 
 fn calendar_strategy() -> impl Strategy<Value = WorkingCalendar> {
     prop::collection::vec((0usize..7, 0i8..12, 1i8..12, 1u8..=4), 1..8).prop_map(|blocks| {
-        let days = [Day::Mon, Day::Tue, Day::Wed, Day::Thu, Day::Fri, Day::Sat, Day::Sun];
+        let days = Day::ALL;
         let mut used: BTreeSet<usize> = BTreeSet::new();
         let blocks = blocks
             .into_iter()

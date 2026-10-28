@@ -55,6 +55,8 @@ pub struct CoreConfig {
     /// Run the J10 reconciler at start (resumes agents that were working).
     pub recover: bool,
     pub enforce: bool,
+    /// The plan of a week with none stored (tests: `test_plan`, any date).
+    pub default_plan: fn(governor::jiff::Timestamp, bool) -> governor::WeeklyPlan,
 }
 
 impl CoreConfig {
@@ -72,6 +74,7 @@ impl CoreConfig {
             projects: var("ORCH_PROJECTS").map(|v| v.split(':').map(PathBuf::from).collect()).unwrap_or_default(),
             recover: var("ORCH_NO_RECOVER").is_none(),
             enforce: var("ORCH_ENFORCE").is_some(),
+            default_plan: agent_runtime::runtime::default_plan,
         }
     }
 }
@@ -557,6 +560,10 @@ impl Core {
         let tx = match w.get(id) {
             Some(tx) => tx.clone(),
             None => {
+                // Writers of agents no longer running (stopped, killed,
+                // deleted) end here: dropping the sender ends the thread.
+                let live = rt.live_ids();
+                w.retain(|a, _| live.contains(a));
                 let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
                 let agent = id.to_string();
                 std::thread::Builder::new().name(format!("agent-{id}-in")).spawn(move || {
@@ -582,21 +589,28 @@ impl Core {
                 json!("esc sent")
             }
             "suspend" => json!(rt.suspend(id)?),
-            "kill" => {
-                // Ends the agent's input thread; a later resume starts a new one.
-                self.agent_input.lock_ok().remove(id);
-                json!(rt.kill(id)?)
-            }
+            "kill" => json!(rt.kill(id)?),
+            "delete_plan" => rt.delete_plan(id)?,
             "resume" => {
                 rt.resume(id, message)?;
                 json!("resumed")
             }
-            "deliver" => json!(rt.deliver(id, message.ok_or_else(|| anyhow!("no message"))?)?),
+            "deliver" => json!(rt.deliver_user(id, message.ok_or_else(|| anyhow!("no message"))?)?),
             // FR-805/811: the Governor holds this agent's autonomous work (until unpause).
             "pause" => json!(rt.pause_agent(id)?),
             "unpause" => json!(rt.resume_agent(id)),
             other => bail!("unknown agent action {other}"),
         })
+    }
+
+    /// FR-202: kill (checked) and hide the agent, its worktree on request.
+    pub fn agent_delete(&self, id: &str, remove_worktree: bool, confirm_discard: bool) -> Result<Value> {
+        self.runtime()?.delete_agent(id, remove_worktree, confirm_discard)
+    }
+
+    /// Ends the feature's runs, deletes its agents, archives it.
+    pub fn feature_delete(&self, feature_id: &str, remove_worktrees: bool, discard: bool) -> Result<Value> {
+        self.runtime()?.delete_feature(feature_id, remove_worktrees, discard)
     }
 
     // ------------------------------------------------------------ terminals
@@ -749,7 +763,13 @@ impl Core {
         if let Some(a) = item.strip_prefix("wait-").or_else(|| item.strip_prefix("error-")) {
             if action == "reply" {
                 let m = message.ok_or_else(|| anyhow!("empty reply"))?;
-                return self.agent_action(a, if rt.live(a).is_some() { "deliver" } else { "resume" }, Some(m));
+                // It comes after the prompt in the pane is answered: say what it answers.
+                let text = if item.starts_with("wait-") {
+                    format!("ORCH: the user answered from the Inbox while a prompt was open in your pane: {m}")
+                } else {
+                    m.to_string()
+                };
+                return self.agent_action(a, if rt.live(a).is_some() { "deliver" } else { "resume" }, Some(&text));
             }
             if action == "reject" && item.starts_with("error-") {
                 return self.agent_action(a, "resume", None);
@@ -826,6 +846,15 @@ impl Core {
         m.value.clone()
     }
 
+    /// The Inbox alone (no git, no usage): what the notifier watches, also
+    /// while the window is hidden and the UI does not poll.
+    pub fn attention(&self) -> Vec<inbox::InboxItem> {
+        let Some(rt) = &self.rt else { return vec![] };
+        let agents = rt.state_json()["agents"].as_array().cloned().unwrap_or_default();
+        let (_, alerts, done) = rt.store.read(store_view);
+        self.inbox_items(&agents, &alerts, &done, None)
+    }
+
     /// Everything the shell shows, polled by the UI about once a second.
     pub fn state(&self) -> Value {
         let projects = self.projects();
@@ -886,6 +915,14 @@ impl Core {
             a["paused"] = json!(paused.contains(&id));
             a["attached"] = json!(readers.contains(&id));
         }
+        // `null` when the read failed: the UI keeps the features it has.
+        let features = match self.rt.as_deref().map(crate::teams::features).transpose() {
+            Ok(f) => json!(f.unwrap_or_default()),
+            Err(e) => {
+                warnings.push(json!(format!("features not read: {e:#}")));
+                Value::Null
+            }
+        };
         let items = self.inbox_items(&agents, &alerts, &done, ask);
         let setup = self.setup_view(&projects);
         let projects: Vec<Value> = projects
@@ -908,7 +945,7 @@ impl Core {
             "queue": queue,
             "inbox": {"items": items, "badge": inbox::badge(&items)},
             "permissions": self.broker.list(),
-            "features": self.rt.as_deref().map(crate::teams::features).unwrap_or_default(),
+            "features": features,
             "memory": self.memory(agents_mb),
             "memory_watch": self.watch.view(),
             "setup": setup,
@@ -1141,6 +1178,7 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
     // FR-812: shadow mode unless ORCH_ENFORCE; the runtime then applies the
     // user's stored choice (`governor.enforce`, also set by `orchd enforce`).
     rc.shadow = !cfg.enforce;
+    rc.default_plan = cfg.default_plan;
     // Permission prompts: the runtime answers from the stored rules only; the
     // app's broker holds the rest for its Inbox (and the pane's own dialog).
     rc.permission_hold = Duration::ZERO;
@@ -1307,14 +1345,7 @@ mod tests {
             &repo,
             &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"],
         );
-        Core::start(CoreConfig {
-            home: d.join("home"),
-            claude: Some(d.join("no-claude")),
-            kitty_conf: d.join("kitty.conf"),
-            projects: vec![repo],
-            recover: false,
-            enforce: false,
-        })
+        core_on(&d.join("home"), &repo)
     }
 
     #[test]
@@ -1508,6 +1539,18 @@ mod tests {
         core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).unwrap();
         assert_eq!(core.state()["features"][0]["run"]["status"], "planning");
         assert!(core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).is_err(), "decided once");
+        // A feature archived under its team stays listed, flagged, while one
+        // of its agents is not deleted; it goes once none is left.
+        let mut fr = rt.db.feature(&fid).unwrap().unwrap();
+        fr.archived = true;
+        rt.db.upsert_feature(&fr).unwrap();
+        let s = core.state();
+        assert_eq!(
+            (s["features"][0]["id"].as_str(), s["features"][0]["archived"].as_bool()),
+            (Some(&*fid), Some(true))
+        );
+        rt.delete_agent("fx-lead-1", false, false).unwrap();
+        assert!(core.state()["features"].as_array().unwrap().is_empty());
         core.shutdown();
     }
 
@@ -1590,14 +1633,7 @@ mod tests {
         git(&main, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
         let nested = main.join(".claude/worktrees/feat");
         git(&main, &["worktree", "add", "-q", "-b", "feat", nested.to_str().unwrap()]);
-        let core = Core::start(CoreConfig {
-            home: d.path().join("home"),
-            claude: Some(d.path().join("no-claude")),
-            kitty_conf: d.path().join("kitty.conf"),
-            projects: vec![nested],
-            recover: false,
-            enforce: false,
-        });
+        let core = core_on(&d.path().join("home"), &nested);
         // The runtime records the main checkout as the agent's repo (FR-105).
         let main = main.canonicalize().unwrap();
         core.runtime().unwrap().store.write(|s| s.agents.insert("a1".into(), record("a1", main.clone()))).unwrap();
@@ -1656,6 +1692,7 @@ mod tests {
     }
 
     /// Starts a core on `home` with `repo` registered (the restart tests reuse the home).
+    /// A core on `home` with `repo` registered, on the test plan (any date).
     fn core_on(home: &Path, repo: &Path) -> Arc<Core> {
         Core::start(CoreConfig {
             home: home.to_path_buf(),
@@ -1664,6 +1701,7 @@ mod tests {
             projects: vec![repo.to_path_buf()],
             recover: false,
             enforce: false,
+            default_plan: agent_runtime::runtime::test_plan,
         })
     }
 
@@ -1672,9 +1710,9 @@ mod tests {
         let d = tmp();
         let core = test_core(d.path());
         let rt = core.runtime().unwrap().clone();
-        let (week_start, reset) = rt.with_governor(|g| (g.plan().week_start, g.plan().reset_at));
+        let reset = rt.with_governor(|g| g.plan().reset_at);
         // An observed weekly reading earlier this week, as the statusline stores it.
-        let t0 = (Timestamp::now().as_millisecond() - 60_000).max(week_start.as_millisecond() + 1) as u64;
+        let t0 = (Timestamp::now().as_millisecond() - 60_000) as u64;
         rt.db.add_usage(orch_store::UsageRecord {
             ts_ms: t0,
             weekly_pct: Some(42.0),
@@ -1731,8 +1769,10 @@ mod tests {
         let pauses = rt.db.actions(50).unwrap().iter().filter(|a| a.kind_name() == "pause_all").count();
         assert_eq!(pauses, 2, "the first start's pause row is kept next to the re-applied one");
         core.governor_act("resume_all", None).unwrap();
+        // A sprint needs working time left today and in the week: the test
+        // plan (`test_plan`) has both at any date and hour.
         let sprint = rt.governor_act(|g, now| (g.start_sprint(5.0, now), vec![]));
-        assert!(sprint.is_ok());
+        assert!(sprint.is_ok(), "{sprint:?}");
         // A sprint carries over a switch, both ways (it used to be refused).
         core.set_enforce(false).unwrap();
         assert!(rt.with_governor(|g| g.sprint().is_some()), "sprint carried over");

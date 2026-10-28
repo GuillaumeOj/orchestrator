@@ -384,6 +384,9 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   origin and are recognised by the P2 fingerprints (`V1_FINGERPRINTS`). `preset_update` re-copies an
   unmodified starter and refuses a modified one. Duplicates get `<id>-copy` (then `-2`…), version 1,
   no origin, not a preset; roles the target scope can't see are copied with the team.
+  The v0.11 auto-mode migration (gated roles move to `autonomous` once, key
+  `roles.auto_mode_v011`) runs after the starter upgrades; a starter moved from gated to
+  autonomous still counts as unmodified.
 
 ## Known gaps
 

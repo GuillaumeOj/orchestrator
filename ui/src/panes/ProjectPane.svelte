@@ -7,7 +7,7 @@
   import { onMount } from 'svelte';
   import Kbd from '../components/Kbd.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
-  import { agents, app, closePane, confirm, openAgent, openDiff, openShell, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
+  import { activeAgents, app, closePane, confirm, openAgent, openDiff, openShell, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
   import { ago, dayTime, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { displayState } from '../lib/status.js';
@@ -15,7 +15,7 @@
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
   const p = $derived(projects().find((x) => x.id === spec?.projectId));
-  const list = $derived(agents().filter((a) => a.project_id === p?.id && a.state !== 'archived'));
+  const list = $derived(activeAgents().filter((a) => a.project_id === p?.id));
   const home = $derived(app.data?.core?.user_home ?? '');
   const short = (path) => shortPath(path, home);
 
@@ -310,11 +310,6 @@
     display: flex;
     gap: var(--space-md);
     flex-wrap: wrap;
-  }
-  .check {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
   }
   .warn {
     color: var(--color-status-queued);

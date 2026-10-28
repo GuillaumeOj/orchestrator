@@ -12,6 +12,7 @@ fn arb_team() -> impl Strategy<Value = Team> {
         id: "t".into(),
         name: "t".into(),
         scope: Scope::Global,
+        review: Default::default(),
         nodes: IDS[..n]
             .iter()
             .enumerate()
@@ -75,6 +76,7 @@ fn arb_team_fixed(n: usize) -> Team {
         id: "t".into(),
         name: "t".into(),
         scope: Scope::Global,
+        review: Default::default(),
         nodes: IDS[..n]
             .iter()
             .enumerate()

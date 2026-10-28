@@ -7,7 +7,7 @@
   // current tool, elapsed time, context, usage, governor status and memory;
   // grouped by project or by state. Keys (pane-local): j/k move, ⏎ open,
   // i interrupt, s suspend, r resume, K kill (asks first), p pause.
-  import { agentAction, agents, app, cancelQueued, confirm, openAgent, projects, run, runNow } from '../lib/app.svelte.js';
+  import { activeAgents, agentAction, app, cancelQueued, confirm, openAgent, projects, run, runNow } from '../lib/app.svelte.js';
   import { duration, mb } from '../lib/format.js';
   import { displayState, notStarted, queueReason, runCost, STATUS, sessionPp } from '../lib/status.js';
 
@@ -26,7 +26,7 @@
     { id: 'queued', label: 'Queued', test: (a) => !!a.queue_entry || a.state === 'created' },
     { id: 'suspended', label: 'Suspended', test: (a) => displayState(a) === 'suspended' },
   ];
-  const list = $derived(agents().filter((a) => a.state !== 'archived'));
+  const list = $derived(activeAgents());
   const shown = $derived(list.filter(FILTERS.find((f) => f.id === filter).test));
   const groups = $derived.by(() => {
     if (groupBy === 'state') {

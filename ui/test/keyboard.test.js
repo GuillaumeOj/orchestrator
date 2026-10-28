@@ -22,7 +22,7 @@ describe('keyboard contract §9.7', () => {
   });
 
   it('unknown ⌘ keys never reach the PTY; Edit menu chords stay native', () => {
-    expect(classify(key('j', { meta: true, code: 'KeyJ' }), { terminal: true }).kind).toBe('swallow');
+    expect(classify(key('u', { meta: true, code: 'KeyU' }), { terminal: true }).kind).toBe('swallow');
     expect(classify(key('c', { meta: true, code: 'KeyC' }), { terminal: true }).kind).toBe('native');
     expect(classify(key('v', { meta: true, code: 'KeyV' }), { terminal: true }).kind).toBe('native');
   });

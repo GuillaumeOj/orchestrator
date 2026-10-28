@@ -38,9 +38,11 @@ to empty, so older roles and imported teams load unchanged; raw `mcp_servers` ke
 
 ## Starters, presets and design artifacts (P3, FR-306, FR-602)
 
-- `presets::STARTER_VERSION` (2 = P3) and `role_fingerprint` / `team_fingerprint`: FNV-1a of the
+- `presets::STARTER_VERSION` (2 = P3 design hand-offs, 3 = v0.11 auto mode, reviewer `submit_review`,
+  Full-stack with a reviewer) and `role_fingerprint` / `team_fingerprint`: FNV-1a of the
   canonical JSON, without scope, version, preset flag or origin, and without default values, so
-  fields added later don't change it. `V1_FINGERPRINTS` are the P2 starters'.
+  fields added later don't change it (nor the default review mode). `V1_FINGERPRINTS` are the P2
+  starters'.
 - v2 starters: UX and UI use the `penpot` registry entry and carry the design hand-off convention
   (`DESIGN_EXPORTS`: export frames under the feature's `design/`, commit, hand off the repo path
   with `kind="design"`); the lead orders frontend after the design task; Full-stack has

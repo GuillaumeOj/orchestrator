@@ -2012,6 +2012,19 @@ impl Governor {
         id
     }
 
+    /// The agent's process was started outside a release (the user's Resume,
+    /// a restart): its queued entry no longer waits for a process slot, or it
+    /// would wait for the slot the agent now holds itself. Returns the turns
+    /// that may now be released.
+    pub fn spawned(&mut self, agent: &AgentId, now: Timestamp) -> Vec<Release> {
+        let mut changed = false;
+        for e in self.queue.iter_mut().filter(|e| e.agent == *agent && e.needs_spawn) {
+            e.needs_spawn = false;
+            changed = true;
+        }
+        if changed { self.release_and_refresh(now) } else { Vec::new() }
+    }
+
     /// The host's live `claude` processes and the memory cap on them (FR-203).
     /// Returns the turns released into freed slots.
     pub fn set_process_slots(&mut self, live: u32, cap: u32, now: Timestamp) -> Vec<Release> {

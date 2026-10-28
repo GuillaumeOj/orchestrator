@@ -99,6 +99,26 @@ pub enum CtlRequest {
     Kill {
         agent_id: String,
     },
+    /// The delete dialog: the agent's worktree and who else uses it.
+    DeletePlan {
+        agent_id: String,
+    },
+    /// FR-202 archive: kill (checked), hide the agent, optionally remove its worktree.
+    DeleteAgent {
+        agent_id: String,
+        #[serde(default)]
+        remove_worktree: bool,
+        #[serde(default)]
+        confirm_discard: bool,
+    },
+    /// Stop the feature's runs, delete its agents, archive it.
+    DeleteFeature {
+        feature_id: String,
+        #[serde(default)]
+        remove_worktrees: bool,
+        #[serde(default)]
+        discard: bool,
+    },
     /// Esc to the PTY.
     Interrupt {
         agent_id: String,

@@ -167,6 +167,37 @@ pub fn kill_tree(pgids: &[i32], pids: &[i32], grace: Duration) -> Vec<String> {
     log
 }
 
+/// FR-207 kill, checked: kills what `find_agent_procs` finds (plus `extra`
+/// groups and pids, the live process the core already knows), waits up to
+/// `settle` for them to go (signal 0, no process spawned), then scans the
+/// table once more, which also catches a fork made meanwhile. Returns the
+/// signal log and the survivors (empty when the kill is verified). Zombies
+/// are dead: they only wait for their parent to reap them.
+pub fn kill_verified(
+    table: &dyn ProcessTable,
+    m: &AgentMatch,
+    extra_pgids: &[i32],
+    extra_pids: &[i32],
+    grace: Duration,
+    settle: Duration,
+) -> (Vec<String>, Vec<Found>) {
+    let scan = || -> Vec<Found> {
+        find_agent_procs(&table.snapshot(), m).into_iter().filter(|f| !f.proc.stat.starts_with('Z')).collect()
+    };
+    let found = scan();
+    let mut pgids: Vec<i32> =
+        found.iter().map(|f| f.proc.pgid).chain(extra_pgids.iter().copied()).filter(|g| *g > 1).collect();
+    pgids.sort();
+    pgids.dedup();
+    let pids: Vec<i32> = found.iter().map(|f| f.proc.pid).chain(extra_pids.iter().copied()).collect();
+    let log = kill_tree(&pgids, &pids, grace);
+    let end = Instant::now() + settle;
+    while Instant::now() < end && (pids.iter().any(|p| alive(*p)) || pgids.iter().any(|g| group_alive(*g))) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    (log, scan())
+}
+
 /// phys_footprint in MB (NFR-1b: not RSS), from `proc_pid_rusage`, the
 /// figure `footprint -p` reports, without spawning a process.
 pub fn footprint_mb(pid: i32) -> Option<f64> {
@@ -183,7 +214,7 @@ pub fn footprint_mb(pid: i32) -> Option<f64> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn p(pid: i32, pgid: i32, tty: &str, cmd: &str, cwd: Option<&str>) -> ProcInfo {
@@ -215,14 +246,12 @@ mod tests {
         assert_eq!(f[2].how, ["cwd"]);
     }
 
-    #[test]
-    fn kills_a_detached_child_found_by_cwd() {
-        let d = tempfile::tempdir().unwrap();
-        let wt = crate::paths::real(d.path());
-        // A detached, tty-less sleeper in its own session, like a Bash tool `cmd &`.
+    /// `/bin/sh -c script` in `cwd`, detached (its own session, no tty) like
+    /// a Bash tool `cmd &`.
+    pub(crate) fn spawn_detached(cwd: &Path, script: &str) -> std::process::Child {
         use std::os::unix::process::CommandExt;
         let mut cmd = std::process::Command::new("/bin/sh");
-        cmd.arg("-c").arg("exec sleep 30").current_dir(&wt);
+        cmd.arg("-c").arg(script).current_dir(cwd);
         // SAFETY: setsid in the child before exec, as Claude's Bash tool does.
         unsafe {
             cmd.pre_exec(|| {
@@ -230,7 +259,15 @@ mod tests {
                 Ok(())
             });
         }
-        let child = cmd.spawn().unwrap();
+        cmd.spawn().unwrap()
+    }
+
+    #[test]
+    fn kills_a_detached_child_found_by_cwd() {
+        let d = tempfile::tempdir().unwrap();
+        let wt = crate::paths::real(d.path());
+        // A detached, tty-less sleeper in its own session, like a Bash tool `cmd &`.
+        let child = spawn_detached(&wt, "exec sleep 30");
         let pid = child.id() as i32;
         std::thread::sleep(Duration::from_millis(200));
         let snap = SystemProcs.snapshot();
@@ -245,6 +282,51 @@ mod tests {
         let mut child = child;
         let _ = child.wait();
         assert!(!alive(pid));
+    }
+
+    #[test]
+    fn kill_verified_leaves_nothing_in_the_worktree() {
+        let d = tempfile::tempdir().unwrap();
+        let wt = crate::paths::real(d.path());
+        // A shell that leaves a detached `sleep &` behind, like a Bash tool call.
+        let mut child = spawn_detached(&wt, "sleep 300 & sleep 300");
+        std::thread::sleep(Duration::from_millis(300));
+        let me = std::process::id() as i32;
+        let m = AgentMatch { pgid: None, agent_dir: Path::new("/nonexistent"), worktree: &wt, exclude: &[me] };
+        assert!(find_agent_procs(&SystemProcs.snapshot(), &m).len() >= 2);
+        // Reap the direct child so it doesn't linger as a zombie of the test.
+        let reaper = std::thread::spawn(move || child.wait());
+        let (log, left) = kill_verified(&SystemProcs, &m, &[], &[], Duration::from_secs(2), Duration::from_secs(2));
+        assert!(log.iter().any(|l| l.contains("SIGTERM")), "{log:?}");
+        assert!(left.is_empty(), "{left:?}");
+        let _ = reaper.join();
+    }
+
+    #[test]
+    fn kill_verified_reports_what_it_cannot_kill() {
+        // A fake table that always shows the process: the kill can't be verified.
+        struct Stuck;
+        impl ProcessTable for Stuck {
+            fn snapshot(&self) -> Vec<ProcInfo> {
+                vec![ProcInfo {
+                    pid: i32::MAX - 1,
+                    ppid: 1,
+                    pgid: i32::MAX - 1,
+                    stat: "S".into(),
+                    tty: "??".into(),
+                    cmd: "sleep 300".into(),
+                    cwd: Some(PathBuf::from("/w/solo/a1")),
+                }]
+            }
+        }
+        let m = AgentMatch {
+            pgid: None,
+            agent_dir: Path::new("/app/agents/a1"),
+            worktree: Path::new("/w/solo/a1"),
+            exclude: &[],
+        };
+        let (_, left) = kill_verified(&Stuck, &m, &[], &[], Duration::from_millis(10), Duration::from_millis(10));
+        assert_eq!(left.len(), 1);
     }
 
     #[test]

@@ -3,11 +3,13 @@
 use governor::Tier;
 use serde_json::Value;
 
-use crate::model::{AgentNode, Edge, EdgeKind, RoleDef, RoleOverrides, Scope, Team};
+use crate::model::{AgentNode, Edge, EdgeKind, ReviewMode, RoleDef, RoleOverrides, Scope, Team};
 
 /// The starters' version: bumped whenever a starter role or team changes, so
-/// installed unmodified copies are upgraded in place (FR-306). 1 = P2.
-pub const STARTER_VERSION: u32 = 2;
+/// installed unmodified copies are upgraded in place (FR-306). 1 = P2,
+/// 2 = P3 design hand-offs, 3 = auto mode by default, the reviewer's
+/// `submit_review` and the reviewed full-stack preset (v0.11).
+pub const STARTER_VERSION: u32 = 3;
 
 /// JSON without the values a new field with a serde default would add
 /// (`null`, `false`, `0`, `""`, `[]`, `{}`), so a fingerprint survives
@@ -64,10 +66,18 @@ pub fn role_fingerprint(r: &RoleDef) -> String {
 }
 
 /// What a team says, without where it lives, its version, preset flag or origin.
+/// The default review mode is left out, like a default added later: teams
+/// saved before it existed read back with it.
 pub fn team_fingerprint(t: &Team) -> String {
     let mut t = t.clone();
     (t.version, t.scope, t.preset, t.origin) = (0, Scope::Global, false, None);
-    fingerprint(serde_json::to_value(&t).unwrap_or(Value::Null))
+    let mut v = serde_json::to_value(&t).unwrap_or(Value::Null);
+    if t.review == ReviewMode::default()
+        && let Value::Object(m) = &mut v
+    {
+        m.remove("review");
+    }
+    fingerprint(v)
 }
 
 fn role(id: &str, name: &str, color: u8, prompt: &str, tier: Tier) -> RoleDef {
@@ -160,8 +170,8 @@ pub fn starter_roles() -> Vec<RoleDef> {
             "reviewer",
             "Reviewer",
             7,
-            "You are the reviewer. You review the branches you are asked to review and reply with concrete findings; \
-             you do not change them yourself.",
+            "You are the reviewer. You review the branches you are asked to review and send concrete findings \
+             (file:line, the problem, the fix) with mcp__orch__submit_review; you do not change them yourself.",
             Tier::Normal,
         ),
     ]
@@ -188,6 +198,7 @@ fn team(id: &str, name: &str, nodes: Vec<AgentNode>, edges: Vec<Edge>) -> Team {
         version: 1,
         preset: true,
         origin: None,
+        review: Default::default(),
     }
 }
 
@@ -226,6 +237,24 @@ pub fn full_stack() -> (Vec<RoleDef>, Team) {
     ))
 }
 
+/// The full-stack team with a reviewer node: every task is reviewed by it
+/// before the lead merges (review mode `node`, ADR-010).
+pub fn full_stack_reviewed() -> (Vec<RoleDef>, Team) {
+    use EdgeKind::*;
+    let (_, mut t) = full_stack();
+    t.id = "full-stack-reviewed".into();
+    t.name = "Full-stack team with a reviewer".into();
+    t.review = crate::model::ReviewMode::Node;
+    t.nodes.push(node("review", "reviewer", 800.0, 240.0, false));
+    // The reviewer node reviews everyone (front no longer asks ui).
+    t.edges.retain(|e| e.kind != Reviews);
+    for n in ["back", "front", "ui", "ux"] {
+        t.edges.push(Edge::new(n, "review", Reviews));
+    }
+    t.edges.push(Edge::new("review", "lead", ReportsTo));
+    with_roles(t)
+}
+
 pub fn bugfix_squad() -> (Vec<RoleDef>, Team) {
     use EdgeKind::*;
     with_roles(team(
@@ -261,7 +290,7 @@ pub fn design_sprint() -> (Vec<RoleDef>, Team) {
 
 /// Every starter preset, in library order.
 pub fn all() -> Vec<(Vec<RoleDef>, Team)> {
-    vec![solo_dev(), full_stack(), bugfix_squad(), design_sprint()]
+    vec![solo_dev(), full_stack(), full_stack_reviewed(), bugfix_squad(), design_sprint()]
 }
 
 #[cfg(test)]
@@ -286,10 +315,16 @@ mod tests {
         assert_ne!(role_fingerprint(ui), role_fingerprint(&ui2));
         // Starters that didn't change since P2 keep their v1 fingerprint.
         let v1 = |k: &str| V1_FINGERPRINTS.iter().find(|(id, _)| *id == k).unwrap().1;
-        let backend = starter_roles().into_iter().find(|r| r.id == "backend").unwrap();
+        let mut backend = starter_roles().into_iter().find(|r| r.id == "backend").unwrap();
+        assert_ne!(role_fingerprint(&backend), v1("role:backend"), "auto mode by default in v3");
+        backend.permission_profile = crate::PermissionProfile::Gated;
         assert_eq!(role_fingerprint(&backend), v1("role:backend"));
         assert_ne!(role_fingerprint(ui), v1("role:ui"), "the UI prompt changed in v2");
         assert_ne!(team_fingerprint(&t), v1("team:full-stack"), "D2 edge");
+        assert_eq!(team_fingerprint(&bugfix_squad().1), v1("team:bugfix-squad"), "default review mode left out");
+        t2 = t.clone();
+        t2.review = ReviewMode::Node;
+        assert_ne!(team_fingerprint(&t), team_fingerprint(&t2));
     }
 
     #[test]

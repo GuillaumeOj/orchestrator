@@ -31,8 +31,13 @@ export const app = $state({
   selectedProject: null,
   theme: null, // null = system, 'dark' | 'light' (user choice)
   kittyTheme: false, // derive surface, text and accent from kitty.conf (§9.1); a user choice wins
+  // Shells live in one dock under the panes, one tab each (not in `layout`).
+  dock: { open: false, height: 0.3, tabs: [], active: null },
   error: null,
 });
+
+/** A pane shown in the shell dock rather than the tiling layout. */
+export const inDock = (id) => app.dock.tabs.includes(id);
 
 /** xterm.js panes by pane id (not reactive). */
 export const terms = new Map();
@@ -45,8 +50,11 @@ const newPaneId = () => `p${nextPane++}`;
 export const wide = () => app.width >= breakpoint.md;
 export const agents = () => app.data?.agents ?? [];
 export const agent = (id) => agents().find((a) => a.id === id);
+/** Agents not deleted (archived ones stay in the snapshot for history). */
+export const activeAgents = () => agents().filter((a) => a.state !== 'archived');
 export const projects = () => app.data?.projects ?? [];
-/** Features with their latest team run (P2). */
+/** Features with their latest team run (P2). `null` in a snapshot when the
+ *  core could not read them: the poll then keeps the previous list. */
 export const features = () => app.data?.features ?? [];
 export const focusedSpec = () => app.panes[app.focused];
 export const isTerminal = (spec) => ['agent', 'shell', 'editor'].includes(spec?.type);
@@ -82,12 +90,14 @@ function title(spec) {
   switch (spec.type) {
     case 'agent':
       return spec.agentId;
-    case 'shell':
-      return `zsh · ${
+    case 'shell': {
+      const dir =
         String(spec.cwd ?? '')
           .split('/')
-          .slice(-1)[0] || '~'
-      }`;
+          .slice(-1)[0] || '~';
+      const where = spec.agentId ?? projects().find((p) => p.id === spec.projectId)?.name;
+      return where && where !== dir ? `${where} · ${dir}` : `zsh · ${dir}`;
+    }
     case 'editor':
       return `nvim · ${spec.file ? spec.file.split('/').pop() : (spec.projectId ?? '')}`;
     default:
@@ -126,9 +136,40 @@ export function addPane(spec, how = 'right') {
   return id;
 }
 
+/** Adds a shell to the dock, as its active tab, and opens the dock. */
+export function addDockPane(spec) {
+  const id = newPaneId();
+  app.panes[id] = { ...spec, title: spec.title ?? title(spec) };
+  app.dock.tabs = [...app.dock.tabs, id];
+  app.dock.open = true;
+  focusPane(id);
+  saveLayout();
+  return id;
+}
+
+/** ⌘J: shows or hides the dock (a new shell when it has none). */
+export function toggleDock() {
+  if (!app.dock.tabs.length) return openShell();
+  app.dock.open = !app.dock.open;
+  if (app.dock.open) focusPane(app.dock.active ?? app.dock.tabs[0]);
+  else if (inDock(app.focused)) focusPane(L.visible(app.layout)[0]);
+  saveLayout();
+}
+
+/** Next or previous dock tab (`d` = 1 or -1). */
+export function cycleDock(d) {
+  const tabs = app.dock.tabs;
+  if (!tabs.length) return;
+  const i = tabs.indexOf(app.dock.active);
+  focusPane(tabs[(i + d + tabs.length) % tabs.length]);
+}
+
 export function focusPane(id) {
   if (!app.panes[id]) return;
-  app.layout = L.activate(app.layout, id);
+  if (inDock(id)) {
+    app.dock.active = id;
+    app.dock.open = true;
+  } else app.layout = L.activate(app.layout, id);
   app.focused = id;
   const s = app.panes[id];
   if (s.agentId) app.selectedAgent = s.agentId;
@@ -151,11 +192,63 @@ export function closePane(id = app.focused) {
   terms.get(id)?.dispose();
   terms.delete(id);
   delete app.panes[id];
-  app.layout = L.remove(app.layout, id);
+  if (inDock(id)) {
+    const i = app.dock.tabs.indexOf(id);
+    app.dock.tabs = app.dock.tabs.filter((t) => t !== id);
+    if (app.dock.active === id) app.dock.active = app.dock.tabs[Math.min(i, app.dock.tabs.length - 1)] ?? null;
+    if (!app.dock.tabs.length) app.dock.open = false;
+    if (app.focused === id) app.focused = app.dock.active ?? L.visible(app.layout)[0] ?? null;
+  } else app.layout = L.remove(app.layout, id);
   if (app.zoomed === id) app.zoomed = null;
   if (app.focused === id) app.focused = L.visible(app.layout)[0] ?? null;
   if (app.focused) focusPane(app.focused);
   saveLayout();
+}
+
+/** Panes the user closed, newest last, for Reopen closed pane (⌘⇧T). A
+ *  pane that closes itself (a shell exits, Setup is done, its agent or
+ *  feature is gone) goes through `closePane` and is not offered back. */
+const closed = [];
+const CLOSED_MAX = 20;
+
+/** ⌘W, a tab's ×, a pane's close: the pane can be reopened. */
+export function closePaneByUser(id = app.focused) {
+  if (!id || !app.panes[id]) return;
+  closed.push({ spec: app.panes[id], docked: inDock(id) });
+  if (closed.length > CLOSED_MAX) closed.shift();
+  closePane(id);
+}
+
+/** Reopens the last closed pane whose agent, feature or project still
+ *  exists, as a restart restores it (a terminal as a shell in its cwd). */
+export async function reopenClosed() {
+  for (let c = closed.pop(); c; c = closed.pop()) {
+    const { spec, docked } = c;
+    if (paneGone(spec)) continue;
+    const open = findPane((s) => s.type === spec.type && PANE_KEYS.every((k) => s[k] === spec[k]));
+    if (open) return focusPane(open);
+    const s = await revive(spec);
+    if (!s) continue;
+    if (docked) return addDockPane(s);
+    return addPane(s, isTerminal(s) || !app.layout ? 'right' : 'tab');
+  }
+  toast('No closed pane to reopen');
+}
+
+/** What a pane is about: two panes with these equal show the same thing. */
+const PANE_KEYS = ['agentId', 'featureId', 'projectId', 'teamId', 'path'];
+
+/** A saved pane spec made live: shells and editors restart as a shell in
+ *  their cwd; `null` when the shell does not start. */
+async function revive(s) {
+  if (s.type !== 'shell' && s.type !== 'editor') return s;
+  try {
+    const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
+    const spec = { ...s, type: 'shell', termId: t.id, cwd: t.cwd };
+    return { ...spec, title: title(spec) };
+  } catch {
+    return null;
+  }
 }
 
 export function findPane(pred) {
@@ -254,13 +347,16 @@ const spawnShell = ({ projectId, agentId, cwd }) =>
     },
   });
 
+/** A shell: a dock tab by default, a pane with `how` ('right' | 'below').
+ *  `agentId: null` = no agent (undefined = the one in focus). */
 export async function openShell(opts = {}) {
-  const a = contextAgent();
-  const p = contextProject();
-  const how = opts.how ?? 'below';
+  const projectId = opts.projectId ?? contextProject()?.id;
+  const agentId = opts.agentId ?? contextAgent()?.id;
   try {
-    const t = await spawnShell({ projectId: opts.projectId ?? p?.id, agentId: opts.agentId ?? a?.id, cwd: opts.cwd });
-    addPane({ type: 'shell', termId: t.id, cwd: t.cwd, projectId: p?.id, agentId: a?.id }, how);
+    const t = await spawnShell({ projectId, agentId, cwd: opts.cwd });
+    const spec = { type: 'shell', termId: t.id, cwd: t.cwd, projectId, agentId };
+    if (opts.how) addPane(spec, opts.how);
+    else addDockPane(spec);
   } catch (e) {
     toast(`Could not open a shell: ${errText(e)}`, { kind: 'error' });
   }
@@ -313,8 +409,14 @@ export function termFor(paneId, hooks) {
 
 export function focusDirection(dir) {
   if (!app.focused) return;
+  // The dock is below every pane: down from the bottom row, up back out.
+  if (inDock(app.focused)) {
+    if (dir === 'up') focusPane(L.visible(app.layout).at(-1));
+    return;
+  }
   const n = L.neighbor(app.layout, app.focused, dir);
   if (n) focusPane(n);
+  else if (dir === 'down' && app.dock.open && app.dock.active) focusPane(app.dock.active);
 }
 
 export function focusNumber(n) {
@@ -356,11 +458,41 @@ export async function agentAction(id, action, message = null) {
       pause: 'Paused',
       unpause: 'Unpaused',
     }[action];
-    toast(`${verb ?? action} · ${id}`);
+    // A kill is checked: the core scans again and fails if anything survived.
+    toast(`${verb ?? action} · ${id}${action === 'kill' ? ' · no process left' : ''}`);
     await refresh();
   } catch (e) {
     toast(`${id}: ${errText(e)}`, { kind: 'error' });
   }
+}
+
+/** FR-202: kill (checked) and hide the agent; its worktree on request. Its
+ *  panes close on the refresh (see `prunePanes`). */
+export async function deleteAgent(id, removeWorktree, confirmDiscard) {
+  const r = await invoke('agent_delete', { id, removeWorktree, confirmDiscard });
+  const w = r.worktree;
+  const note = !w
+    ? ''
+    : w.error || w.kept
+      ? ` · worktree kept: ${w.error ?? w.kept}`
+      : w.worktree_removed
+        ? ` · worktree removed${w.branch_deleted ? ' with its branch' : ''}`
+        : '';
+  toast(`Deleted ${id} · no process left${note}`, w?.error ? { kind: 'error' } : {});
+  await refresh();
+  return r;
+}
+
+/** Ends the feature's runs, deletes its agents, hides the feature. */
+export async function deleteFeature(featureId, removeWorktrees, discard) {
+  const r = await invoke('feature_delete', { feature: featureId, removeWorktrees, discard });
+  const kept = r.worktrees.filter((w) => w.error || w.kept).length;
+  toast(
+    `Deleted ${r.deleted} · ${r.agents.length} agent(s), no process left${kept ? ` · ${kept} worktree(s) kept` : ''}`,
+    kept ? { kind: 'error' } : {},
+  );
+  await refresh();
+  return r;
 }
 
 export async function governor(action, arg = null) {
@@ -439,6 +571,7 @@ export function saveLayout() {
         inspector: app.inspector,
         theme: app.theme,
         kittyTheme: app.kittyTheme,
+        dock: $state.snapshot(app.dock),
       },
     }).catch(() => {});
   }, 400);
@@ -458,29 +591,34 @@ export async function restoreLayout() {
     if (!app.data?.setup?.done) openSingleton('setup');
     return;
   }
-  const ids = L.allPanes(saved.layout);
+  const docked = saved.dock?.tabs ?? [];
+  const ids = [...L.allPanes(saved.layout), ...docked];
   for (const id of ids) nextPane = Math.max(nextPane, Number(id.slice(1)) + 1);
   const panes = {};
-  for (const id of ids) {
-    const s = saved.panes[id];
-    if (!s) continue;
-    if (s.type === 'agent' && !agent(s.agentId)) continue;
-    if (s.type === 'project' && !projects().some((p) => p.id === s.projectId)) continue;
-    if (s.type === 'board' && !projects().some((p) => p.id === s.projectId)) continue;
-    if (s.type === 'feature' && !features().some((f) => f.id === s.featureId)) continue;
-    if (s.type === 'shell' || s.type === 'editor') {
-      try {
-        const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
-        panes[id] = { ...s, type: 'shell', termId: t.id, cwd: t.cwd, title: title({ type: 'shell', cwd: t.cwd }) };
-      } catch {
-        // The shell did not start: the pane is dropped from the restored layout.
-      }
-    } else panes[id] = s;
-  }
+  // Shells and editors restart in parallel; one that does not start is dropped.
+  await Promise.all(
+    ids.map(async (id) => {
+      const s = saved.panes[id];
+      if (!s || paneGone(s)) return;
+      // A shell that does not start is dropped from the restored layout.
+      const live = await revive(s);
+      if (live) panes[id] = live;
+    }),
+  );
   app.panes = panes;
+  const tabs = docked.filter((id) => panes[id]);
+  app.dock = {
+    open: !!saved.dock?.open && tabs.length > 0,
+    height: saved.dock?.height ?? 0.3,
+    tabs,
+    active: tabs.includes(saved.dock?.active) ? saved.dock.active : (tabs[0] ?? null),
+  };
   app.layout = L.reid(L.prune(saved.layout, (id) => !!panes[id]));
   if (!app.layout) addPane({ type: 'overview' });
-  else focusPane(panes[saved.focused] ? saved.focused : L.visible(app.layout)[0]);
+  else
+    focusPane(
+      panes[saved.focused] && (!inDock(saved.focused) || app.dock.open) ? saved.focused : L.visible(app.layout)[0],
+    );
   if (!app.data?.setup?.done) openSingleton('setup');
 }
 
@@ -507,11 +645,29 @@ export function refresh() {
 
 async function poll() {
   try {
-    app.data = new Snapshot(await invoke('app_state'));
+    const data = await invoke('app_state');
+    data.features ??= app.data?.features ?? null;
+    app.data = new Snapshot(data);
     app.error = null;
+    prunePanes();
   } catch (e) {
     app.error = errText(e);
   }
+}
+
+/** A pane whose agent, feature or project is gone (deleted or archived),
+ *  however that happened: a button, the CLI, a project removal. */
+function paneGone(s) {
+  if (s.type === 'agent') return !activeAgents().some((a) => a.id === s.agentId);
+  if (s.type === 'project' || s.type === 'board') return !projects().some((p) => p.id === s.projectId);
+  // Features never read yet (the core's read failed): nothing is known gone.
+  if (s.type === 'feature') return app.data?.features != null && !features().some((f) => f.id === s.featureId);
+  return false;
+}
+
+function prunePanes() {
+  for (const [id, s] of Object.entries(app.panes)) if (paneGone(s)) closePane(id);
+  if (app.selectedAgent && !activeAgents().some((a) => a.id === app.selectedAgent)) app.selectedAgent = null;
 }
 
 // ---------------------------------------------------------------- commands
@@ -537,12 +693,16 @@ export function commands() {
       run: () => (app.overlay = { kind: 'launch', projectId: contextProject()?.id ?? null }),
     },
     { id: 'board.open', label: 'Open the Board of the focused project', run: () => openBoard(contextProject()?.id) },
-    { id: 'shell.new', label: 'New shell pane', run: () => openShell() },
+    { id: 'shell.new', label: 'New shell (dock)', run: () => openShell() },
+    { id: 'dock.toggle', label: 'Show or hide the shell dock', run: () => toggleDock() },
+    { id: 'dock.next', label: 'Next shell tab', run: () => cycleDock(1) },
+    { id: 'dock.prev', label: 'Previous shell tab', run: () => cycleDock(-1) },
     { id: 'editor.open', label: 'Open editor (nvim)', run: () => openEditor() },
     { id: 'pane.split.right', label: 'Split right (shell)', run: () => openShell({ how: 'right' }) },
     { id: 'pane.split.below', label: 'Split below (shell)', run: () => openShell({ how: 'below' }) },
     { id: 'pane.zoom', label: 'Zoom / restore the focused pane', run: toggleZoom },
-    { id: 'pane.close', label: 'Close pane', run: () => closePane() },
+    { id: 'pane.close', label: 'Close pane', run: () => closePaneByUser() },
+    { id: 'pane.reopen', label: 'Reopen closed pane', run: reopenClosed },
     { id: 'sidebar', label: 'Toggle sidebar', run: () => ((app.sidebar = !app.sidebar), saveLayout()) },
     {
       id: 'inspector',
@@ -565,6 +725,8 @@ export function commands() {
     { id: 'theme.light', label: 'Theme: Light', run: () => setTheme('light') },
     { id: 'theme.kitty', label: 'Theme: derive from kitty.conf', run: () => setKittyTheme(true) },
     { id: 'theme.system', label: 'Theme: follow the system', run: () => setTheme(null) },
+    { id: 'notify.desktop', label: 'Notifications: desktop on/off', run: () => toggleNotify('desktop') },
+    { id: 'notify.sound', label: 'Notifications: sound on/off', run: () => toggleNotify('sound') },
   ];
   if (a) {
     const live = a.live;
@@ -584,6 +746,11 @@ export function commands() {
             'Kill',
           ),
       },
+      {
+        id: 'agent.delete',
+        label: `Delete ${a.id}…`,
+        run: () => (app.overlay = { kind: 'delete-agent', agentId: a.id }),
+      },
       { id: 'agent.shell', label: `Shell in ${a.id}'s worktree`, run: () => openShell({ agentId: a.id }) },
       {
         id: 'agent.diff',
@@ -597,6 +764,11 @@ export function commands() {
   }
   for (const f of features()) {
     list.push({ id: `feature.open.${f.id}`, label: `Open feature ${f.slug}`, run: () => openFeature(f.id) });
+    list.push({
+      id: `feature.delete.${f.id}`,
+      label: `Delete feature ${f.slug}…`,
+      run: () => (app.overlay = { kind: 'delete-feature', featureId: f.id }),
+    });
   }
   for (const p of projects()) {
     list.push({ id: `board.open.${p.id}`, label: `Board: ${p.name}`, run: () => openBoard(p.id) });
@@ -657,6 +829,15 @@ export function applyTheme() {
     kittyVars = Object.keys(derived.vars);
   }
   return app.theme ? 'user' : derived ? 'kitty' : 'system';
+}
+
+/** Desktop notifications and their sound (both on by default), read by the core's notifier. */
+export async function toggleNotify(key) {
+  const cur = (await invoke('settings_get', { key: 'notifications' }).catch(() => null)) ?? {};
+  const next = { desktop: true, sound: true, ...cur };
+  next[key] = !next[key];
+  await invoke('settings_set', { key: 'notifications', value: next }).catch(() => {});
+  toast(`${key === 'desktop' ? 'Desktop notifications' : 'Notification sound'} ${next[key] ? 'on' : 'off'}`);
 }
 
 /** An explicit choice (dark, light, or null = system) ends the kitty-derived theme. */

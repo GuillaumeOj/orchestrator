@@ -251,3 +251,24 @@ impl Runtime {
         self.post_message(&cx, crate::team::Sender(rules::USER, None), to, "message", body, Value::Null)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::runtime::tests::test_runtime;
+    use orch_team::{PermissionProfile, RoleDef, Scope};
+
+    #[test]
+    fn gated_roles_move_to_auto_mode_once() {
+        let (_d, rt) = test_runtime(true);
+        let mut r = RoleDef::new("mine", "Mine");
+        r.permission_profile = PermissionProfile::Gated;
+        rt.db.upsert_role(&r, 1).unwrap();
+        rt.install_presets().unwrap();
+        let get = || rt.db.role(&Scope::Global, "mine").unwrap().unwrap().permission_profile;
+        assert_eq!(get(), PermissionProfile::Autonomous);
+        // Set back to gated by the user: it stays.
+        rt.db.upsert_role(&r, 2).unwrap();
+        rt.install_presets().unwrap();
+        assert_eq!(get(), PermissionProfile::Gated);
+    }
+}

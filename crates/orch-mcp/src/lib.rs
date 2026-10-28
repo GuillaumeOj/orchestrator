@@ -90,7 +90,7 @@ pub fn tools() -> Value {
         ),
         tool(
             "inbox",
-            "Read the messages sent to you (and mark them read). Call it when an ORCH: note says you have new messages.",
+            "List your unread messages (and mark them read). New messages already reach you by themselves, as a turn or as an ORCH: note: call this only to read them again or to see older ones with `all`.",
             json!({"all": {"type": "boolean", "description": "Also list messages already read."}}),
             &[],
         ),
@@ -114,8 +114,12 @@ pub fn tools() -> Value {
         ),
         tool(
             "ask_user",
-            "Ask the user a question when your team can't answer it. Returns at once; the answer arrives later as a new turn.",
-            json!({"question": s("The question."), "options": {"type": "array", "items": {"type": "string"}, "description": "Suggested answers."}}),
+            "Ask the user a question when your team can't answer it: the only way to reach the user (a question written in your reply is not read). Returns at once; the answer arrives later as a new turn.",
+            json!({
+                "question": s("The question, with the context the user needs to answer it."),
+                "options": {"type": "array", "items": {"type": "string"}, "description": "Suggested answers."},
+                "kind": s("decision (default: the user is notified) or fyi (shown in the Inbox, no notification).")
+            }),
             &["question"],
         ),
         tool(
@@ -126,14 +130,15 @@ pub fn tools() -> Value {
                 "body": s("What to do, and how to know it is done."),
                 "node": s("The node that does it."),
                 "depends_on": {"type": "array", "items": {"type": "integer"}, "description": "Ids of tasks that must be done first."},
-                "status": s("ready (default) or backlog.")
+                "status": s("ready (default) or backlog."),
+                "plan_first": {"type": "boolean", "description": "The owner sends you a plan (submit_plan) and may not edit until you approve it (decide_plan). For large or unclear tasks, or ones that touch a shared contract."}
             }),
             &["title", "node"],
         ),
         tool(
             "update_task",
             "Change a task's status (backlog, ready, in_progress, review, done) or add a note. Specialists only update their own tasks.",
-            json!({"id": {"type": "integer"}, "status": s("New status."), "notes": s("A note added to the task."), "node": s("Reassign to this node (lead only).")}),
+            json!({"id": {"type": "integer"}, "status": s("New status."), "notes": s("A note added to the task."), "node": s("Reassign to this node (lead only)."), "plan_first": {"type": "boolean", "description": "Ask for a plan before any edit (lead only)."}}),
             &["id"],
         ),
         tool(
@@ -150,15 +155,66 @@ pub fn tools() -> Value {
         ),
         tool(
             "report_done",
-            "Report your current task done to the node you report to (it moves to review). Commit everything first.",
-            json!({"summary": s("What you did and how it was tested."), "task": {"type": "integer", "description": "Task id; default: your current task."}}),
+            "Report your current task done to the node you report to (it moves to review). Commit everything first. When the orchestrator had you review your own branch, call it again with `review`.",
+            json!({
+                "summary": s("What you did and how it was tested."),
+                "task": {"type": "integer", "description": "Task id; default: your current task."},
+                "review": {
+                    "type": "object",
+                    "description": "After your self-review: what you fixed, and each finding you left with why.",
+                    "properties": {
+                        "fixed": {"type": "array", "items": {"type": "string"}},
+                        "unfixed": {"type": "array", "items": {"type": "object", "properties": {"finding": {"type": "string"}, "reason": {"type": "string"}}, "required": ["finding"]}}
+                    }
+                }
+            }),
             &["summary"],
+        ),
+        tool(
+            "team_status",
+            "The state of every member of your team: running, idle, waiting for the user, suspended or queued (and why), with its task.",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "nudge",
+            "Tell a member of your team what to do next (by agent or node id). It gets it as its next turn: use it to unblock a member that stopped, to answer what it asked, or to send a review back.",
+            json!({"agent": s("Agent or node id."), "text": s("What it should do.")}),
+            &["agent", "text"],
+        ),
+        tool(
+            "resume_agent",
+            "Restart a suspended or failed member of your team (by agent or node id) so it carries on with its task. It starts when the orchestrator admits it.",
+            json!({"agent": s("Agent or node id.")}),
+            &["agent"],
+        ),
+        tool(
+            "decide_plan",
+            "Approve the plan a member sent for a plan-first task (its edits are then allowed), or send it back with what to change.",
+            json!({"task": {"type": "integer"}, "approve": {"type": "boolean"}, "note": s("What to change, or what to keep in mind.")}),
+            &["task", "approve"],
         ),
         tool(
             "sync_integration",
             "Merge the latest integration branch into your branch. On a conflict the merge stays in progress: fix the conflicted files, then call commit.",
             json!({}),
             &[],
+        ),
+        tool(
+            "submit_plan",
+            "Send your plan for a plan-first task to the node you report to. Returns at once: end your turn; the decision comes as a new turn.",
+            json!({"plan": s("What you will change, file by file, and how you will test it."), "task": {"type": "integer", "description": "Task id; default: your current task."}}),
+            &["plan"],
+        ),
+        tool(
+            "submit_review",
+            "Send the findings of a review you were asked for. They go to the branch's owner and to the lead.",
+            json!({
+                "task": {"type": "integer"},
+                "findings": {"type": "array", "items": {"type": "string"}, "description": "One finding each: file:line, the problem, the fix. Empty when the branch is fine."},
+                "summary": s("Your verdict in a sentence.")
+            }),
+            &["task", "findings"],
         ),
     ])
 }

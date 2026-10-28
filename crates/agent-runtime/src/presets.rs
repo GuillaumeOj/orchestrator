@@ -11,7 +11,7 @@
 use anyhow::{Result, anyhow, bail};
 use orch_protocol::now_ms;
 use orch_team::presets::{STARTER_VERSION, V1_FINGERPRINTS, role_fingerprint, team_fingerprint};
-use orch_team::{RoleDef, Scope, StarterOrigin, Team, valid_slug};
+use orch_team::{PermissionProfile, RoleDef, Scope, StarterOrigin, Team, valid_slug};
 use serde_json::{Value, json};
 
 use crate::runtime::Runtime;
@@ -37,8 +37,16 @@ fn unmodified_team(t: &Team) -> bool {
     t.origin.as_ref().is_some_and(|o| o.fingerprint == team_fingerprint(t))
 }
 
+/// A role the v0.11 auto-mode migration (or the user) moved from `gated` to
+/// `autonomous` still counts as unmodified: that is the new default.
 fn unmodified_role(r: &RoleDef) -> bool {
-    r.origin.as_ref().is_some_and(|o| o.fingerprint == role_fingerprint(r))
+    let Some(o) = r.origin.as_ref() else { return false };
+    if o.fingerprint == role_fingerprint(r) {
+        return true;
+    }
+    let mut gated = r.clone();
+    gated.permission_profile = PermissionProfile::Gated;
+    r.permission_profile == PermissionProfile::Autonomous && o.fingerprint == role_fingerprint(&gated)
 }
 
 fn with_origin_role(mut r: RoleDef) -> RoleDef {
@@ -97,6 +105,7 @@ impl Runtime {
                 }
             }
         }
+        n += self.migrate_auto_mode(now)?;
         let roles = self.db.roles(None)?;
         for (_, t) in orch_team::presets::all() {
             match self.db.team(&Scope::Global, &t.id)? {
@@ -123,6 +132,33 @@ impl Runtime {
                 }
             }
         }
+        Ok(n)
+    }
+
+    /// Once (v0.11): roles saved with the old default, `gated` (accept-edits,
+    /// which stops on most commands), move to `autonomous` (auto mode), the
+    /// new default. A role set to gated afterwards stays so. Runs after the
+    /// starter upgrades, and a starter it moves still counts as unmodified.
+    fn migrate_auto_mode(&self, now: u64) -> Result<usize> {
+        const KEY: &str = "roles.auto_mode_v011";
+        if self.db.setting(KEY)?.is_some() {
+            return Ok(0);
+        }
+        let mut n = 0;
+        let projects = self.db.projects(false)?;
+        let scopes = std::iter::once(None).chain(projects.iter().map(|p| Some(p.id.as_str())));
+        for scope in scopes {
+            for mut r in self.db.roles(scope)? {
+                if r.permission_profile == PermissionProfile::Gated {
+                    r.permission_profile = PermissionProfile::Autonomous;
+                    self.db.upsert_role(&r, now)?;
+                    n += 1;
+                }
+            }
+        }
+        // Team agents already created get it at their next start (their
+        // role is compiled again then).
+        self.db.set_setting(KEY, &json!(now))?;
         Ok(n)
     }
 
@@ -239,6 +275,12 @@ mod tests {
     fn p2_starters() -> (Vec<RoleDef>, Vec<Team>) {
         let mut roles = orch_team::presets::starter_roles();
         for r in roles.iter_mut() {
+            r.permission_profile = PermissionProfile::Gated;
+            if r.id == "reviewer" {
+                r.prompt = "You are the reviewer. You review the branches you are asked to review and reply with \
+                            concrete findings; you do not change them yourself."
+                    .into();
+            }
             if r.id == "ui" || r.id == "ux" {
                 r.mcp_refs.clear();
                 r.prompt = r.prompt.split("\n\nDesign hand-offs").next().unwrap().to_string();
@@ -249,6 +291,7 @@ mod tests {
         }
         let teams = orch_team::presets::all()
             .into_iter()
+            .filter(|(_, t)| t.id != "full-stack-reviewed")
             .map(|(_, mut t)| {
                 t.edges.retain(|e| !(e.from == "ui" && e.to == "front"));
                 t.preset = false;
@@ -272,7 +315,7 @@ mod tests {
     #[test]
     fn fresh_install_records_origins() {
         let (_d, rt) = test_runtime(true);
-        assert_eq!(rt.install_presets().unwrap(), 10);
+        assert_eq!(rt.install_presets().unwrap(), 11);
         assert_eq!(rt.install_presets().unwrap(), 0, "idempotent");
         let t = rt.db.team(&Scope::Global, "full-stack").unwrap().unwrap();
         assert_eq!(preset_fields(&t), (true, Some("full-stack".into()), false));
@@ -298,8 +341,8 @@ mod tests {
         let backend = rt.db.role(&Scope::Global, "backend").unwrap().unwrap();
         assert_eq!(
             (backend.version, backend.origin.unwrap().version),
-            (1, STARTER_VERSION),
-            "same content, new origin"
+            (2, STARTER_VERSION),
+            "upgraded: auto mode is the v3 default"
         );
 
         let ds = rt.db.team(&Scope::Global, "design-sprint").unwrap().unwrap();
@@ -318,6 +361,27 @@ mod tests {
         fs2.origin = None;
         rt.save_team(fs2).unwrap();
         assert!(rt.db.team(&Scope::Global, "full-stack").unwrap().unwrap().origin.is_some());
+    }
+
+    #[test]
+    fn p2_starters_already_in_auto_mode_still_upgrade() {
+        // A v0.11 install: main's migration moved the P2 starters to auto mode.
+        let (_d, rt) = test_runtime(true);
+        let (mut roles, teams) = p2_starters();
+        for r in roles.iter_mut() {
+            r.permission_profile = PermissionProfile::Autonomous;
+        }
+        install_p2(&rt, &roles, &teams);
+        rt.db.set_setting("roles.auto_mode_v011", &json!(1)).unwrap();
+        rt.install_presets().unwrap();
+        let ui = rt.db.role(&Scope::Global, "ui").unwrap().unwrap();
+        assert_eq!((ui.version, ui.mcp_refs.as_slice()), (2, ["penpot".to_string()].as_slice()));
+        let backend = rt.db.role(&Scope::Global, "backend").unwrap().unwrap();
+        assert_eq!((backend.version, backend.permission_profile), (1, PermissionProfile::Autonomous));
+        assert_eq!(backend.origin.unwrap().version, STARTER_VERSION);
+        let fs = rt.db.team(&Scope::Global, "full-stack").unwrap().unwrap();
+        assert_eq!(preset_fields(&fs), (true, Some("full-stack".into()), false));
+        assert!(rt.db.team(&Scope::Global, "full-stack-reviewed").unwrap().unwrap().preset);
     }
 
     #[test]

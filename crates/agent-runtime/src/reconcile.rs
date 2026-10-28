@@ -375,6 +375,9 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
             let seen = tr.markers.contains(&t.id);
             let now = match t.status {
                 TurnStatus::Delivering | TurnStatus::Delivered | TurnStatus::Queued if seen => TurnStatus::Delivered,
+                // A slash command has no marker in the transcript: one its hook
+                // saw start ran, and is not typed again.
+                TurnStatus::Delivered if t.command => TurnStatus::Delivered,
                 TurnStatus::Delivering | TurnStatus::Delivered => TurnStatus::Queued,
                 other => other,
             };

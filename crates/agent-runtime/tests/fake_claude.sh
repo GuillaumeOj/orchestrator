@@ -71,7 +71,13 @@ while IFS= read -r line; do
   [ -n "$post" ] && echo "POST[$n]:$post"
   cost="0.0$n"
   status $((10 + n)) "$cost"
-  hook "{\"hook_event_name\":\"Stop\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"background_tasks\":[]}"
+  stop=$(hook "{\"hook_event_name\":\"Stop\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"background_tasks\":[]}")
+  # A blocked Stop keeps the turn going once, like Claude Code.
+  case "$stop" in
+    *'"block"'*)
+      echo "BLOCK[$n]:$stop"
+      hook "{\"hook_event_name\":\"Stop\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"stop_hook_active\":true,\"background_tasks\":[]}" ;;
+  esac
   echo "DONE[$n] $prompt"
 done
 hook "{\"hook_event_name\":\"SessionEnd\",\"session_id\":\"$SID\",\"reason\":\"other\"}"

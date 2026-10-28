@@ -26,14 +26,17 @@ impl Scope {
 }
 
 /// Permission profile of a role (FR-706). Mapped to `--permission-mode`:
-/// strict → `manual`, gated → `acceptEdits` (the default: edits and commands
-/// run freely inside the worktree sandbox, FR-701), autonomous → `auto`.
+/// strict → `manual`, gated → `acceptEdits`, autonomous → `auto` (the
+/// default: Claude Code's classifier lets routine commands run and stops
+/// only risky ones; the worktree sandbox (FR-701) and the core-only push,
+/// merge and PR gates hold either way, and an agent stopped on a prompt
+/// would stall its team).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionProfile {
     Strict,
-    #[default]
     Gated,
+    #[default]
     Autonomous,
 }
 
@@ -157,7 +160,7 @@ impl RoleDef {
             mcp_servers: Map::new(),
             mcp_refs: vec![],
             strict_mcp: false,
-            permission_profile: PermissionProfile::Gated,
+            permission_profile: PermissionProfile::Autonomous,
             sandbox_profile: worktree(),
             network_allow: vec![],
             turn_ceiling: TurnCeiling::default(),
@@ -248,6 +251,21 @@ impl Edge {
     }
 }
 
+/// How a task is reviewed before the lead merges it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReviewMode {
+    /// The owner runs `/code-review` (with fixes) then `/simplify` on its
+    /// branch, and reports what it fixed and what it left to the lead.
+    #[default]
+    #[serde(rename = "self")]
+    SelfReview,
+    /// The node a `reviews` edge points to reviews the branch.
+    Node,
+    /// The lead reviews (as before).
+    None,
+}
+
 /// A graph of Roles, authored on the canvas (SPEC §7 Team).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Team {
@@ -261,6 +279,8 @@ pub struct Team {
     pub edges: Vec<Edge>,
     #[serde(default = "one")]
     pub version: u32,
+    #[serde(default)]
+    pub review: ReviewMode,
     /// Shown in the presets row of the canvas and the Launch dialog (FR-306).
     #[serde(default)]
     pub preset: bool,

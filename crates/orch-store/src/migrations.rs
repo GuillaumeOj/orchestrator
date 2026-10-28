@@ -429,7 +429,11 @@ INSERT INTO teams_v3 SELECT COALESCE(project_id, ''), id, name, version, data, u
 DROP TABLE teams;
 ALTER TABLE teams_v3 RENAME TO teams;
 "#,
-    // 4: P3 MCP server registry (global '' and per-project overrides, with
+    // 4: the core's own workflow state of a task (plan first, review).
+    r#"
+ALTER TABLE tasks ADD COLUMN flow TEXT NOT NULL DEFAULT '{}';
+"#,
+    // 5: P3 MCP server registry (global '' and per-project overrides, with
     // the last FR-604 probe) and integrations (status only: secrets live in
     // the Keychain, NFR-3). Seeds the `penpot` connector entry once.
     r#"
@@ -456,7 +460,7 @@ INSERT INTO mcp_registry(scope, id, data, updated_at_ms) VALUES ('', 'penpot',
   '{"id":"penpot","name":"Penpot","kind":"connector","allow_secret_env":false,"connector_name":"claude.ai Penpot","design_tool":"penpot"}',
   0);
 "#,
-    // 5: P3 design artifacts: what a hand-off URI points at (FR-602), as JSON.
+    // 6: P3 design artifacts: what a hand-off URI points at (FR-602), as JSON.
     r#"
 ALTER TABLE artifacts ADD COLUMN meta TEXT;
 "#,
