@@ -177,6 +177,8 @@ pub struct Runtime {
     pub(crate) notion_polling: std::sync::atomic::AtomicBool,
     /// The Linear API key, read once (cleared when the user changes it).
     pub(crate) linear_token: crate::linear::TokenCache,
+    /// FR-604: (project, server) probes running in the background.
+    pub(crate) probing: Mutex<std::collections::BTreeSet<(Option<String>, String)>>,
 }
 
 /// Clocks and flags of the periodic work (`tick`, `housekeeping`).
@@ -220,6 +222,8 @@ pub(crate) struct House {
     pub(crate) battery_alerted: Option<String>,
     /// FR-505: last look for Notion pages due a comment poll.
     pub(crate) last_notion_ms: u64,
+    /// FR-816: the off-hours marks of tasks and runs (the store's, cached).
+    pub(crate) off_hours_marks: Option<crate::pacing::OffHoursMarks>,
 }
 
 /// A team lead (the node that merges): outside the process cap. Not the
@@ -415,6 +419,7 @@ impl Runtime {
             notion_locks: Mutex::new(BTreeMap::new()),
             notion_polling: std::sync::atomic::AtomicBool::new(false),
             linear_token: Default::default(),
+            probing: Default::default(),
         });
         rt.handle_releases(released);
         rt.backfill_report(now);
@@ -2389,9 +2394,8 @@ fn week_samples(
 ) -> Result<Vec<(orch_store::UsageRecord, governor::UsageSample)>> {
     let to_ms = to.map(|t| t.as_millisecond().max(0) as u64);
     Ok(db
-        .usage_since(from.as_millisecond().max(0) as u64, Some(orch_store::UsageSource::Statusline))?
+        .usage_between(from.as_millisecond().max(0) as u64, to_ms, Some(orch_store::UsageSource::Statusline))?
         .into_iter()
-        .filter(|u| to_ms.is_none_or(|t| u.ts_ms < t))
         .filter_map(|u| governor_sample(&u).map(|s| (u, s)))
         .collect())
 }

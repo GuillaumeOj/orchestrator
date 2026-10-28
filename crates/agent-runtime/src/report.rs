@@ -482,14 +482,10 @@ impl Runtime {
         now: Timestamp,
     ) -> Result<WeeklyReport> {
         let start = ms(plan.week_start);
-        let samples: Vec<UsageRecord> = self
-            .db
-            .usage_since(start, Some(orch_store::UsageSource::Statusline))?
-            .into_iter()
-            .filter(|u| u.ts_ms < ms(plan.reset_at))
-            .collect();
+        let end = Some(ms(plan.reset_at));
+        let samples = self.db.usage_between(start, end, Some(orch_store::UsageSource::Statusline))?;
         let actions = self.db.actions_between(plan.week_start, plan.reset_at)?;
-        let forecasts = self.db.forecasts_since(start)?;
+        let forecasts = self.db.forecasts_between(start, end)?;
         let projects: BTreeMap<String, String> =
             self.db.projects(true).unwrap_or_default().into_iter().map(|p| (p.id, p.name)).collect();
         let agents = self.attributions();

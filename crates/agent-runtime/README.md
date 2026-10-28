@@ -393,6 +393,8 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   or stderr line → `needs_auth`.
 - **When**: on `mcp_server_test` / `integration_test` (Settings, Test), at each agent spawn (a thread,
   the refs of that agent, connectors skipped), and every 30 min for the servers of running agents.
+  The background probes skip a server probed in the last 60 s (`PROBE_FRESH_MS`: the agents of a
+  team spawn together) or being probed now; Test always probes.
 - **Inbox**: `needs_auth` raises one alert per server (`{"alert":"mcp_needs_auth","server","name",
   "roles"}`, level 2), not repeated while one is pending; `connected` (probe or a successful call)
   closes it. The app answers its `open` / `reconnect` with where to go (decisions D3).

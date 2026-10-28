@@ -2623,6 +2623,45 @@ impl Governor {
         self.downgrades.get(agent).filter(|o| o.applied)
     }
 
+    /// The role's downgrade condition holds now (and its fallback is another model).
+    fn downgrade_cond(&self, model: Option<&str>, rule: Option<&Downgrade>, now: Timestamp) -> bool {
+        let state = self.sm.state;
+        rule.filter(|r| family_index(Some(&r.to)) != family_index(model) || model.is_none()).is_some_and(|r| {
+            match r.when {
+                DowngradeWhen::Amber => matches!(state, PressureState::Amber | PressureState::Red),
+                DowngradeWhen::Red => state == PressureState::Red,
+                DowngradeWhen::ModelWindow => self.tight_window(model, now).is_some(),
+            }
+        })
+    }
+
+    /// What [`Governor::task_boundary_model`] would answer, when it would
+    /// change nothing (no downgrade to start, end or restore, nothing to log);
+    /// `None` when it would. Lets a host look without taking a write.
+    pub fn task_boundary_settled(
+        &self,
+        agent: &AgentId,
+        model: Option<&str>,
+        rule: Option<&Downgrade>,
+        now: Timestamp,
+    ) -> Option<Option<String>> {
+        let o = self.downgrades.get(agent);
+        if o.is_some_and(|o| o.restore_pending) {
+            return None;
+        }
+        if !self.downgrade_cond(model, rule, now) {
+            return (o.is_none() && !self.restored_models.contains(agent)).then_some(None);
+        }
+        if self.restored_models.contains(agent) {
+            return Some(None);
+        }
+        match o {
+            Some(o) if o.applied => Some(Some(o.to.clone())),
+            Some(_) if self.plan.shadow_mode => Some(None),
+            _ => None,
+        }
+    }
+
     /// FR-819, at an agent's task boundary (its next turn is a new task):
     /// the model this task runs on, `None` for the role's own. A downgrade
     /// starts when the role's condition holds and ends when it clears; the
@@ -2635,14 +2674,7 @@ impl Governor {
         rule: Option<&Downgrade>,
         now: Timestamp,
     ) -> Option<String> {
-        let state = self.sm.state;
-        let cond = rule.filter(|r| family_index(Some(&r.to)) != family_index(model) || model.is_none()).is_some_and(
-            |r| match r.when {
-                DowngradeWhen::Amber => matches!(state, PressureState::Amber | PressureState::Red),
-                DowngradeWhen::Red => state == PressureState::Red,
-                DowngradeWhen::ModelWindow => self.tight_window(model, now).is_some(),
-            },
-        );
+        let cond = self.downgrade_cond(model, rule, now);
         if self.downgrades.get(agent).is_some_and(|o| o.restore_pending) {
             // The user's undo, applied at this boundary; no new downgrade until the condition clears.
             self.downgrades.remove(agent);

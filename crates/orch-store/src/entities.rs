@@ -285,12 +285,25 @@ impl Store {
 
     /// Samples with `ts >= since_ms`, oldest first, optionally of one source.
     pub fn usage_since(&self, since_ms: u64, source: Option<UsageSource>) -> Result<Vec<UsageRecord>> {
+        self.usage_between(since_ms, None, source)
+    }
+
+    /// Samples with `from_ms <= ts < to_ms` (no upper bound without `to_ms`),
+    /// oldest first, optionally of one source.
+    pub fn usage_between(
+        &self,
+        from_ms: u64,
+        to_ms: Option<u64>,
+        source: Option<UsageSource>,
+    ) -> Result<Vec<UsageRecord>> {
         self.read(move |c| {
             let mut st = c.prepare(&format!(
-                "SELECT {USAGE_COLS} FROM usage_samples WHERE ts_ms >= ?1 AND (?2 IS NULL OR source = ?2) ORDER BY ts_ms, id"
+                "SELECT {USAGE_COLS} FROM usage_samples WHERE ts_ms >= ?1 AND (?3 IS NULL OR ts_ms < ?3)
+                 AND (?2 IS NULL OR source = ?2) ORDER BY ts_ms, id"
             ))?;
+            let to = to_ms.map(|t| t as i64);
             Ok(st
-                .query_map(params![since_ms as i64, source.map(|s| s.as_str())], row_usage)?
+                .query_map(params![from_ms as i64, source.map(|s| s.as_str()), to], row_usage)?
                 .collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -519,10 +532,19 @@ impl Store {
 
     /// Snapshots with `ts >= since_ms`, oldest first (forecast chart, ±10 pp check).
     pub fn forecasts_since(&self, since_ms: u64) -> Result<Vec<ForecastSnapshot>> {
+        self.forecasts_between(since_ms, None)
+    }
+
+    /// Snapshots with `from_ms <= ts < to_ms` (no upper bound without `to_ms`), oldest first.
+    pub fn forecasts_between(&self, from_ms: u64, to_ms: Option<u64>) -> Result<Vec<ForecastSnapshot>> {
         self.read(move |c| {
-            let mut st = c.prepare("SELECT data FROM forecast_snapshots WHERE ts_ms >= ?1 ORDER BY ts_ms, id")?;
+            let mut st = c.prepare(
+                "SELECT data FROM forecast_snapshots WHERE ts_ms >= ?1 AND (?2 IS NULL OR ts_ms < ?2) ORDER BY ts_ms, id",
+            )?;
             Ok(st
-                .query_map([since_ms as i64], |r| from_js::<ForecastSnapshot>(&r.get::<_, String>(0)?))?
+                .query_map(params![from_ms as i64, to_ms.map(|t| t as i64)], |r| {
+                    from_js::<ForecastSnapshot>(&r.get::<_, String>(0)?)
+                })?
                 .collect::<rusqlite::Result<_>>()?)
         })
     }

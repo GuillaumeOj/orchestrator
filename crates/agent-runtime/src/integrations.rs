@@ -10,7 +10,8 @@ use anyhow::{Result, anyhow, bail};
 use orch_protocol::now_ms;
 use orch_secrets::Secret;
 use orch_store::IntegrationRow;
-use orch_team::mcp::{DesignTool, McpStatus};
+use orch_team::Scope;
+use orch_team::mcp::{DesignTool, McpServer, McpStatus};
 use serde_json::{Value, json};
 
 use crate::net::{HttpResponse, host_of};
@@ -116,6 +117,28 @@ pub fn notion_outcome(r: &HttpResponse) -> Outcome {
     }
 }
 
+/// Penpot and Figma: the registry servers tagged with the tool, in any scope.
+fn design_tool_row(id: &str, tool: DesignTool, all: &[(Scope, McpServer)]) -> IntegrationRow {
+    let servers: Vec<&McpServer> = all.iter().map(|(_, s)| s).filter(|s| s.design_tool == Some(tool)).collect();
+    let pick = [McpStatus::NeedsAuth, McpStatus::Error, McpStatus::Connected, McpStatus::Checking];
+    let status = if servers.is_empty() {
+        McpStatus::NotConfigured
+    } else {
+        pick.into_iter().find(|p| servers.iter().any(|s| s.status == *p)).unwrap_or(McpStatus::Unknown)
+    };
+    let mut names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
+    // Listed by scope first: the same name in two scopes is not adjacent.
+    names.sort_unstable();
+    names.dedup();
+    IntegrationRow {
+        id: id.into(),
+        status,
+        detail: (!names.is_empty()).then(|| format!("MCP: {}", names.join(", "))),
+        account: None,
+        checked_at_ms: servers.iter().filter_map(|s| s.checked_at_ms).max(),
+    }
+}
+
 impl Runtime {
     /// An integration's secret changed: transports read it again.
     fn forget_tokens(&self, id: &str) {
@@ -124,23 +147,27 @@ impl Runtime {
         }
     }
 
-    fn integration_row(&self, id: &str) -> IntegrationRow {
-        self.db.integrations().unwrap_or_default().into_iter().find(|r| r.id == id).unwrap_or(IntegrationRow {
-            id: id.into(),
-            status: McpStatus::Unknown,
-            detail: None,
-            account: None,
-            checked_at_ms: None,
-        })
-    }
-
     /// api-contract §1 `Integration`.
     pub fn integration_json(&self, id: &str) -> Value {
+        let rows = self.db.integrations().unwrap_or_default();
+        let servers = if design_tool(id).is_some() { self.db.mcp_servers_all().unwrap_or_default() } else { vec![] };
+        self.integration_json_from(id, &rows, &servers)
+    }
+
+    /// [`Runtime::integration_json`] from the integrations table and the
+    /// registry, read once by the caller.
+    fn integration_json_from(&self, id: &str, rows: &[IntegrationRow], servers: &[(Scope, McpServer)]) -> Value {
         let needs = needs_secret(id);
         let has_secret = needs && self.secrets().has(&secret_account(id));
         let row = match design_tool(id) {
-            Some(tool) => self.design_tool_row(id, tool),
-            None => self.integration_row(id),
+            Some(tool) => design_tool_row(id, tool, servers),
+            None => rows.iter().find(|r| r.id == id).cloned().unwrap_or(IntegrationRow {
+                id: id.into(),
+                status: McpStatus::Unknown,
+                detail: None,
+                account: None,
+                checked_at_ms: None,
+            }),
         };
         // No token, nothing to test: not configured, whatever was stored.
         let (status, detail) =
@@ -152,37 +179,10 @@ impl Runtime {
         })
     }
 
-    /// Penpot and Figma: the registry servers tagged with the tool, in any scope.
-    fn design_tool_row(&self, id: &str, tool: DesignTool) -> IntegrationRow {
-        let servers: Vec<_> = self
-            .db
-            .mcp_servers_all()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|(_, s)| s.design_tool == Some(tool))
-            .map(|(_, s)| s)
-            .collect();
-        let pick = [McpStatus::NeedsAuth, McpStatus::Error, McpStatus::Connected, McpStatus::Checking];
-        let status = if servers.is_empty() {
-            McpStatus::NotConfigured
-        } else {
-            pick.into_iter().find(|p| servers.iter().any(|s| s.status == *p)).unwrap_or(McpStatus::Unknown)
-        };
-        let mut names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
-        // Listed by scope first: the same name in two scopes is not adjacent.
-        names.sort_unstable();
-        names.dedup();
-        IntegrationRow {
-            id: id.into(),
-            status,
-            detail: (!names.is_empty()).then(|| format!("MCP: {}", names.join(", "))),
-            account: None,
-            checked_at_ms: servers.iter().filter_map(|s| s.checked_at_ms).max(),
-        }
-    }
-
     pub fn integrations_json(&self) -> Value {
-        json!({"items": IDS.iter().map(|id| self.integration_json(id)).collect::<Vec<_>>()})
+        let rows = self.db.integrations().unwrap_or_default();
+        let servers = self.db.mcp_servers_all().unwrap_or_default();
+        json!({"items": IDS.iter().map(|id| self.integration_json_from(id, &rows, &servers)).collect::<Vec<_>>()})
     }
 
     /// Stores a token in the Keychain (never anywhere else), then tests it.

@@ -34,6 +34,9 @@ pub const STDIO_DEADLINE: Duration = Duration::from_secs(10);
 pub const HTTP_DEADLINE: Duration = Duration::from_secs(10);
 /// Servers used by running agents are probed again this often.
 pub const PROBE_EVERY_MS: u64 = 30 * 60 * 1000;
+/// A server probed this recently is not probed again in the background (the
+/// agents of a team spawn together); Test always probes.
+pub const PROBE_FRESH_MS: u64 = 60 * 1000;
 /// The Inbox alert payload's `alert`.
 pub const NEEDS_AUTH_ALERT: &str = "mcp_needs_auth";
 
@@ -396,8 +399,9 @@ impl Runtime {
     pub fn mcp_registry_json(&self, project: Option<&str>) -> Result<Value> {
         let reg = self.db.mcp_registry(project)?;
         let (roles, teams) = (self.db.roles_all()?, self.db.teams_all()?);
+        let overrides = self.project_overrides()?;
         let fill = |mut s: McpServer, scope: &Scope| {
-            s.used_by = used_by(&self.db, &roles, &teams, &s.id, scope);
+            s.used_by = used_by(&overrides, &roles, &teams, &s.id, scope);
             s
         };
         let servers: Vec<McpServer> = reg.global.values().cloned().map(|s| fill(s, &Scope::Global)).collect();
@@ -416,7 +420,7 @@ impl Runtime {
     /// One entry with its usage.
     fn server_json(&self, scope: &Scope, id: &str) -> Result<McpServer> {
         let mut s = self.db.mcp_server(scope, id)?.ok_or_else(|| anyhow!("no MCP server {id}"))?;
-        s.used_by = used_by(&self.db, &self.db.roles_all()?, &self.db.teams_all()?, id, scope);
+        s.used_by = used_by(&self.project_overrides()?, &self.db.roles_all()?, &self.db.teams_all()?, id, scope);
         Ok(s)
     }
 
@@ -438,7 +442,7 @@ impl Runtime {
             bail!("no MCP server {id}");
         }
         let falls_back = scope.project().is_some() && self.db.mcp_server(&Scope::Global, id)?.is_some();
-        let used = used_by(&self.db, &self.db.roles_all()?, &self.db.teams_all()?, id, scope);
+        let used = used_by(&self.project_overrides()?, &self.db.roles_all()?, &self.db.teams_all()?, id, scope);
         if !falls_back && !used.is_empty() {
             return Ok(json!({"deleted": false, "used_by": used}));
         }
@@ -449,27 +453,57 @@ impl Runtime {
 
     /// Probes `id` as `project` sees it and records the outcome.
     pub fn mcp_server_test(&self, id: &str, project: Option<&str>) -> Result<McpServer> {
+        let scope = self.probe_server(id, project)?;
+        self.server_json(&scope, id)
+    }
+
+    /// FR-604: probes one server now and records its status; returns its scope.
+    fn probe_server(&self, id: &str, project: Option<&str>) -> Result<Scope> {
         let reg = self.db.mcp_registry(project)?;
         let s = reg.get(id).ok_or_else(|| anyhow!("no MCP server {id}"))?.clone();
         let scope = scope_in(&reg, project, id);
         let (status, detail) = probe(&s, self.secrets(), self.cfg.net.as_ref());
         self.set_mcp_status(&scope, &s, status, detail.as_deref())?;
-        self.server_json(&scope, id)
+        Ok(scope)
+    }
+
+    /// Every project override, by (project, id), for [`used_by`].
+    fn project_overrides(&self) -> Result<Overrides> {
+        Ok(self
+            .db
+            .mcp_servers_all()?
+            .into_iter()
+            .filter_map(|(scope, s)| Some((scope.project()?.to_string(), s.id)))
+            .collect())
     }
 
     /// Probes the servers of `refs` on a thread (at spawn, and every 30 min
-    /// while used). Connectors are skipped: nothing to probe.
+    /// while used). Connectors are skipped (nothing to probe), and so are
+    /// servers probed less than [`PROBE_FRESH_MS`] ago or being probed now
+    /// (several agents of a team spawn together).
     pub(crate) fn probe_in_background(&self, project: Option<String>, refs: Vec<String>) {
         let Some(me) = self.me.upgrade() else { return };
         let Ok(reg) = self.db.mcp_registry(project.as_deref()) else { return };
-        let todo: Vec<String> =
-            refs.into_iter().filter(|id| reg.get(id).is_some_and(|s| s.kind != McpKind::Connector)).collect();
+        let now = now_ms();
+        let todo: Vec<String> = {
+            let mut busy = self.probing.lock().unwrap_or_else(|e| e.into_inner());
+            refs.into_iter()
+                .filter(|id| {
+                    reg.get(id).is_some_and(|s| {
+                        s.kind != McpKind::Connector
+                            && s.checked_at_ms.is_none_or(|t| now.saturating_sub(t) >= PROBE_FRESH_MS)
+                    })
+                })
+                .filter(|id| busy.insert((project.clone(), id.clone())))
+                .collect()
+        };
         if todo.is_empty() {
             return;
         }
         std::thread::spawn(move || {
             for id in todo {
-                let _ = me.mcp_server_test(&id, project.as_deref());
+                let _ = me.probe_server(&id, project.as_deref());
+                me.probing.lock().unwrap_or_else(|e| e.into_inner()).remove(&(project.clone(), id));
             }
         });
     }
@@ -597,11 +631,11 @@ impl Runtime {
 
 /// The role nodes that resolve `id` to the entry in `scope`: a global entry
 /// is used where no project override shadows it.
-fn used_by(db: &orch_store::Store, roles: &[RoleDef], teams: &[Team], id: &str, scope: &Scope) -> Vec<UsedBy> {
-    let overridden = |p: Option<&str>| match p {
-        Some(p) => db.mcp_server(&Scope::Project(p.into()), id).ok().flatten().is_some(),
-        None => false,
-    };
+/// `(project, id)` of every project override of a registry entry.
+type Overrides = std::collections::HashSet<(String, String)>;
+
+fn used_by(overrides: &Overrides, roles: &[RoleDef], teams: &[Team], id: &str, scope: &Scope) -> Vec<UsedBy> {
+    let overridden = |p: Option<&str>| p.is_some_and(|p| overrides.contains(&(p.to_string(), id.to_string())));
     let reaches = |p: Option<&str>| match scope {
         Scope::Global => !overridden(p),
         Scope::Project(sp) => p == Some(sp.as_str()),

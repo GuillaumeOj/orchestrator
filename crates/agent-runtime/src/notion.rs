@@ -136,7 +136,7 @@ pub struct Published {
     pub published_at_ms: Option<u64>,
     /// Comment ids already turned into Inbox items.
     #[serde(default)]
-    pub comments_seen: Vec<String>,
+    pub comments_seen: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub last_poll_ms: u64,
     pub error: Option<String>,
@@ -535,7 +535,7 @@ impl Runtime {
                 }
                 for cm in &list {
                     let Some(id) = cm["id"].as_str() else { continue };
-                    if p.comments_seen.iter().any(|s| s == id) {
+                    if p.comments_seen.contains(id) {
                         continue;
                     }
                     let payload = comment_payload(cm, &url);
@@ -545,7 +545,7 @@ impl Runtime {
                         payload["text"].as_str().unwrap_or("")
                     );
                     self.store.write(|s| s.add_inbox_item(None, "notion", body, payload, 0))?;
-                    p.comments_seen.push(id.to_string());
+                    p.comments_seen.insert(id.to_string());
                     new += 1;
                 }
             }
