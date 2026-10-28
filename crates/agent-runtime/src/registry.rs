@@ -593,7 +593,7 @@ impl Runtime {
         }
         let _ = self.store.write(|st| {
             for i in open {
-                let _ = st.close_inbox(i, InboxStatus::Dismissed, Some(why.into()));
+                let _ = st.close_inbox(i, InboxStatus::Dismissed, Some(why.into()), "core");
             }
         });
     }
@@ -879,7 +879,7 @@ pub(crate) mod tests {
         assert_eq!(status("linear").status, McpStatus::NeedsAuth);
         let alert = rt.inbox().into_iter().find(|i| i.payload["server"] == "linear").unwrap();
         assert_eq!(alert.payload["project"], Value::Null, "the global entry");
-        rt.store.write(|st| st.close_inbox(alert.id, InboxStatus::Dismissed, None).map(|_| ()).ok()).unwrap();
+        rt.store.write(|st| st.close_inbox(alert.id, InboxStatus::Dismissed, None, "core").map(|_| ()).ok()).unwrap();
         assert_eq!(rt.mcp_server_test("linear", None).unwrap().status, McpStatus::NeedsAuth);
         assert!(rt.inbox().iter().all(|i| i.payload["server"] != "linear"), "the probe raised nothing");
         // A never-observed server takes the probe's answer.

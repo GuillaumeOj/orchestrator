@@ -11,7 +11,6 @@ pub mod kitty;
 pub mod memory;
 pub mod menu;
 pub mod notify;
-pub mod permissions;
 pub mod planner;
 pub mod services;
 pub mod setup;
@@ -70,13 +69,21 @@ pub fn run() {
     let cfg = core::CoreConfig::from_env();
     bundle_environment(&cfg);
     let core = core::Core::start(cfg);
+    let decided = core.clone();
     let app = tauri::Builder::default()
         .manage(core.clone())
         .plugin(tauri_plugin_notification::init())
         .menu(menu::build)
-        .setup(|app| {
+        .setup(move |app| {
             devctl::start(app.handle().clone());
             notify::start(app.handle().clone());
+            // api-contract §3: a decided item's toast (and card drop).
+            if let Ok(rt) = decided.runtime() {
+                let h = app.handle().clone();
+                rt.set_outcome_sink(Arc::new(move |v| {
+                    let _ = h.emit("inbox_outcome", inbox::outcome_event(v));
+                }));
+            }
             Ok(())
         })
         .on_menu_event(|app, ev| {

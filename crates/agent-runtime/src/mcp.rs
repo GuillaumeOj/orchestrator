@@ -3,16 +3,14 @@
 //! a `deny` rule refuses, an `ask` rule holds the call for an Inbox
 //! decision, otherwise (`allow` or no rule: the P1 default) it runs.
 
-use std::os::unix::net::UnixStream;
-use std::time::Duration;
-
 use anyhow::{Result, anyhow, bail};
 use orch_git::commit::{CommitRequest, CommitResult};
 use orch_protocol::{McpMsg, now_ms};
 use orch_store::RuleEffect;
 use serde_json::{Value, json};
+use std::os::unix::net::UnixStream;
 
-use crate::inbox::{Waited, allows, reply};
+use crate::inbox::{Call, PARKED_MESSAGE, Waited, allows, reply};
 use crate::permissions;
 use crate::runtime::Runtime;
 use crate::store::AgentRecord;
@@ -31,32 +29,42 @@ impl Runtime {
         if !rec.role.may_call(&m.tool) {
             return (true, format!("{} is not one of your tools", m.tool), Value::Null);
         }
-        // Rules first (deny > ask > allow), for every orchestrator tool.
-        let rules = self.db.rules().unwrap_or_default();
-        let subject = self.subject(&rec);
+        // A one-shot allow (an approved parked call), then the rules
+        // (deny > ask > allow), for every orchestrator tool. Each answer is
+        // audited (FR-709).
+        let call = Call {
+            tool: tool.clone(),
+            input: m.arguments.clone(),
+            tool_use_id: None,
+            cwd: Some(rec.worktree.display().to_string()),
+        };
         let mut actor = format!("agent:{}", rec.id);
-        if let Some(rule) = permissions::evaluate(&rules, &subject, &tool, &m.arguments) {
-            match rule.effect {
-                RuleEffect::Deny => {
-                    let _ = self.db.audit(
-                        &format!("rule:{}", rule.id),
-                        Some(&rec.id),
-                        &m.tool,
-                        None,
-                        "deny",
-                        m.arguments.clone(),
-                    );
-                    return (
-                        true,
-                        format!("Denied by the user's rule {} ({}). Do not retry.", rule.id, rule.pattern),
-                        Value::Null,
-                    );
+        if self.one_shot(&rec, &call) {
+            actor = "user".into();
+        } else {
+            let rules = self.db.rules().unwrap_or_default();
+            let subject = self.subject(&rec);
+            if let Some(rule) = permissions::evaluate(&rules, &subject, &tool, &m.arguments) {
+                let rule_actor = format!("rule:{}", rule.id);
+                let detail = call.detail(None, Some(rule));
+                match rule.effect {
+                    RuleEffect::Deny => {
+                        let _ = self.db.audit(&rule_actor, Some(&rec.id), &m.tool, Some(&tool), "deny", detail);
+                        return (
+                            true,
+                            format!("Denied by the user's rule {} ({}). Do not retry.", rule.id, rule.pattern),
+                            Value::Null,
+                        );
+                    }
+                    RuleEffect::Ask => match self.ask_user(&rec, &call, rule.id, m.deadline_ms, conn) {
+                        Ok(()) => actor = "user".into(),
+                        Err(e) => return (true, format!("{e:#}"), Value::Null),
+                    },
+                    RuleEffect::Allow => {
+                        let _ = self.db.audit(&rule_actor, Some(&rec.id), &m.tool, Some(&tool), "allow", detail);
+                        actor = rule_actor;
+                    }
                 }
-                RuleEffect::Ask => match self.ask_user(&rec, &tool, &m.arguments, rule.id, m.deadline_ms, conn) {
-                    Ok(()) => actor = "user".into(),
-                    Err(e) => return (true, format!("{e:#}"), Value::Null),
-                },
-                RuleEffect::Allow => actor = format!("rule:{}", rule.id),
             }
         }
         if m.tool == "commit"
@@ -89,26 +97,26 @@ impl Runtime {
         }
     }
 
-    /// Holds a tool call for an Inbox decision (the `ask` rule `ask_rule`).
+    /// Holds a tool call for an Inbox decision (the `ask` rule `ask_rule`),
+    /// as long as a PermissionRequest is held; parked when nobody answers.
     fn ask_user(
         &self,
         rec: &AgentRecord,
-        tool: &str,
-        args: &Value,
+        call: &Call,
         ask_rule: u64,
         deadline_ms: u64,
         conn: Option<&UnixStream>,
     ) -> Result<()> {
         let subject = self.subject(rec);
-        let budget = Duration::from_millis(deadline_ms.saturating_sub(2_000))
-            .min(self.cfg.permission_hold.max(Duration::from_secs(1)));
-        match self.hold_for_decision(rec, tool, args, None, &subject, Some(ask_rule), budget, conn) {
+        let budget = self.hold_budget(deadline_ms);
+        match self.hold_for_decision(rec, call, &subject, Some(ask_rule), budget, conn) {
             Waited::Decided(i) if allows(&i) => Ok(()),
             Waited::Decided(i) => {
                 let why = reply(&i).map(|m| format!(" They said: {m}")).unwrap_or_default();
                 bail!("The user declined this.{why}")
             }
-            Waited::Interrupted => bail!("Interrupted by the user."),
+            Waited::Parked => bail!("{PARKED_MESSAGE}"),
+            Waited::InPane | Waited::Interrupted => bail!("Interrupted by the user."),
             Waited::Expired => {
                 bail!("The user did not answer in time. Nothing was done; continue with other work or end your turn.")
             }
@@ -231,6 +239,46 @@ mod tests {
         let (err, text, _) = h.join().unwrap();
         assert!(!err, "{text}");
         assert_eq!(rt.db.audit_log(Some("a1"), 1).unwrap()[0].actor, "user");
+    }
+
+    #[test]
+    fn an_unanswered_ask_parks_with_the_permission_budget_and_allow_retries_once() {
+        let (_d, rt) = test_runtime(true);
+        let (_r, _repo, wt) = with_worktree(&rt);
+        rt.db.add_rule(RuleScope::Role, "solo", "mcp__orch__commit", RuleEffect::Ask, None).unwrap();
+        std::fs::write(wt.join("d.txt"), "d").unwrap();
+        // 540 s of hook deadline: the hold is the 300 ms test budget, not 1 s.
+        let t0 = std::time::Instant::now();
+        let m = McpMsg {
+            agent_id: "a1".into(),
+            tool: "commit".into(),
+            arguments: json!({"message": "add d"}),
+            deadline_ms: 540_000,
+        };
+        let (err, text, _) = rt.on_mcp(&m, None);
+        assert!(t0.elapsed() < std::time::Duration::from_millis(900), "{:?}", t0.elapsed());
+        assert!(err && text == crate::inbox::PARKED_MESSAGE, "{text}");
+        let item = rt.inbox().into_iter().next().unwrap();
+        assert_eq!(item.status, orch_store::InboxStatus::Parked);
+        assert_eq!(item.payload["cwd"], json!(rt.store.read(|s| s.agents["a1"].worktree.display().to_string())));
+        rt.decide(item.id, InboxDecision::Approve, None, None).unwrap();
+        let (err, text, _) = rt.on_mcp(&m, None);
+        assert!(!err, "{text}");
+        let log = rt.db.audit_log(Some("a1"), 10).unwrap();
+        assert_eq!((log[0].action.as_str(), log[0].actor.as_str()), ("commit", "user"));
+        assert_eq!(log[1].detail["one_shot"], true);
+    }
+
+    #[test]
+    fn mcp_rule_answers_are_audited_on_every_tool() {
+        let (_d, rt) = test_runtime(true);
+        rt.store.write(|s| s.agents.get_mut("a1").unwrap().role.orch_tools = vec!["inbox".into()]).unwrap();
+        let rule = rt.db.add_rule(RuleScope::Role, "solo", "mcp__orch__inbox", RuleEffect::Allow, None).unwrap();
+        let _ = call(&rt, "inbox", json!({}));
+        let log = rt.db.audit_log(Some("a1"), 5).unwrap();
+        let e = log.iter().find(|e| e.action == "inbox").expect("audited");
+        assert_eq!((e.actor.clone(), e.decision.as_str()), (format!("rule:{}", rule.id), "allow"));
+        assert_eq!(e.detail["rule"]["pattern"], "mcp__orch__inbox");
     }
 
     #[test]

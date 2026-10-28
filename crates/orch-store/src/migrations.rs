@@ -488,6 +488,23 @@ CREATE INDEX calibrations_week ON calibrations(kind, week_start_ms);
     r#"
 ALTER TABLE usage_samples ADD COLUMN model_windows TEXT;
 "#,
+    // 9 (P4.0): who closed an Inbox item (FR-709), and the one-shot allows a
+    // parked permission's approval adds (FR-705): one exact call of one agent.
+    r#"
+ALTER TABLE inbox_items ADD COLUMN decided_by TEXT;
+
+CREATE TABLE one_shot_allows (
+    id INTEGER PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    tool_input TEXT NOT NULL,
+    item_id INTEGER,
+    created_at_ms INTEGER NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    consumed_at_ms INTEGER
+);
+CREATE INDEX one_shot_allows_agent ON one_shot_allows(agent_id, tool);
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {
@@ -554,5 +571,35 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn migration_5_keeps_old_inbox_rows_readable() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("m.db");
+        {
+            let mut c = Connection::open(&p).unwrap();
+            for sql in &MIGRATIONS[..4] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.pragma_update(None, "user_version", 4).unwrap();
+            c.execute_batch(
+                "INSERT INTO inbox_items(id, kind, body, payload, priority, status, created_at_ms, decided_at_ms, decision)
+                   VALUES (1, 'permission', 'a1: ls', '{\"always_pattern\":\"Bash(ls)\"}', 30, 'pending', 1, NULL, NULL),
+                          (2, 'gate', 'g', 'null', 20, 'decided', 1, 2, 'approve');",
+            )
+            .unwrap();
+            migrate(&mut c).unwrap();
+        }
+        let s = crate::Store::open(&p).unwrap();
+        let (a, b) = (s.inbox_item(1).unwrap().unwrap(), s.inbox_item(2).unwrap().unwrap());
+        assert_eq!((a.status, a.decided_by.as_deref()), (crate::InboxStatus::Pending, None));
+        assert_eq!(a.payload["always_pattern"], "Bash(ls)");
+        assert_eq!(
+            (b.status, b.decision.as_deref(), b.decided_by),
+            (crate::InboxStatus::Decided, Some("approve"), None)
+        );
+        assert_eq!(crate::InboxStatus::parse("parked"), crate::InboxStatus::Parked);
+        assert_eq!(crate::InboxStatus::Parked.as_str(), "parked");
     }
 }

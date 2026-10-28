@@ -39,7 +39,10 @@ pub struct Event {
 pub struct AuditEntry {
     pub id: u64,
     pub ts_ms: u64,
-    /// `user`, `core`, `rule:<id>`, `governor`…
+    /// Who decided (FR-709): `user` (Inbox card or app action), `pane` (Claude
+    /// Code's own dialog, or Esc in the pane), `rule:<id>`, `expired` (hold
+    /// deadline reached: parked), `core` (closed by the reconciler after a
+    /// restart), `agent:<id>`, `governor`. `overwatch` is reserved (P4.4).
     pub actor: String,
     pub agent_id: Option<String>,
     /// `permission`, `commit`, `gate`, `rule_added`, `rule_revoked`, `push`, `pr`…

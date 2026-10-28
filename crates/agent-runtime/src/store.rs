@@ -176,6 +176,8 @@ pub enum HoldStatus {
     Denied,
     /// The hook's connection closed (Esc in the pane, or a core restart).
     Interrupted,
+    /// The hold expired: the hook denied, the item waits parked (FR-705).
+    Parked,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -231,30 +233,45 @@ impl StateFile {
         }
         keep_last(&mut self.turns, |t| matches!(t.status, TurnStatus::Done | TurnStatus::Cancelled));
         keep_last(&mut self.holds, |h| h.status != HoldStatus::Held);
-        keep_last(&mut self.inbox, |i| !i.pending());
+        keep_last(&mut self.inbox, |i| !i.open());
     }
 
     pub fn add_inbox(&mut self, agent_id: Option<&str>, kind: &str, body: String) -> u64 {
         self.add_inbox_item(agent_id, kind, body, Value::Null, 0)
     }
 
-    /// Closes a pending Inbox item: the one place an item leaves `pending`, so
-    /// it is claimed once. `Err` carries the status it already had.
+    /// Closes an open (pending or parked) Inbox item: the one place an item
+    /// is closed, so it is claimed once. `decided_by` is the decider
+    /// (FR-709). `Err` carries the status it already had.
     pub fn close_inbox(
         &mut self,
         id: u64,
         status: InboxStatus,
         decision: Option<String>,
+        decided_by: &str,
     ) -> Result<&mut InboxItem, InboxStatus> {
         match self.inbox.iter_mut().find(|i| i.id == id) {
-            Some(i) if i.pending() => {
+            Some(i) if i.open() => {
                 i.status = status;
                 i.decided_at_ms = Some(orch_protocol::now_ms());
                 i.decision = decision;
+                i.decided_by = Some(decided_by.to_string());
                 Ok(i)
             }
             Some(i) => Err(i.status),
             None => Err(InboxStatus::Dismissed),
+        }
+    }
+
+    /// Parks a pending item (its hold expired, FR-705): still open, payload
+    /// intact. False when it was no longer pending (decided meanwhile).
+    pub fn park_inbox(&mut self, id: u64) -> bool {
+        match self.inbox.iter_mut().find(|i| i.id == id && i.pending()) {
+            Some(i) => {
+                i.status = InboxStatus::Parked;
+                true
+            }
+            None => false,
         }
     }
 

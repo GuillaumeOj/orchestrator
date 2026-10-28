@@ -6,6 +6,7 @@ mod entities;
 mod events;
 mod migrations;
 mod model;
+mod one_shot;
 mod reports;
 mod runtime_rows;
 mod teams;

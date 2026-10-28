@@ -64,7 +64,8 @@ pub struct RuntimeConfig {
     pub rows: u16,
     pub cols: u16,
     /// FR-705: how long a PermissionRequest waits for an Inbox decision
-    /// before the CLI's own dialog takes over in the pane. Zero = straight to the pane.
+    /// before it is denied and parked (the `permissions.hold_secs` setting
+    /// overrides it). Zero = straight to the pane.
     pub permission_hold: Duration,
     /// FR-204: suspend an idle agent after this long (`None` = never).
     pub idle_suspend: Option<Duration>,
@@ -179,6 +180,8 @@ pub struct Runtime {
     pub(crate) linear_token: crate::linear::TokenCache,
     /// FR-604: (project, server) probes running in the background.
     pub(crate) probing: Mutex<std::collections::BTreeSet<(Option<String>, String)>>,
+    /// Told of every Inbox outcome ([`Runtime::set_outcome_sink`]).
+    pub(crate) outcome_sink: Mutex<Option<crate::inbox::OutcomeSink>>,
 }
 
 /// Clocks and flags of the periodic work (`tick`, `housekeeping`).
@@ -420,6 +423,7 @@ impl Runtime {
             notion_polling: std::sync::atomic::AtomicBool::new(false),
             linear_token: Default::default(),
             probing: Default::default(),
+            outcome_sink: Mutex::new(None),
         });
         rt.handle_releases(released);
         rt.backfill_report(now);
@@ -699,6 +703,7 @@ impl Runtime {
         })?;
         if apply {
             self.event("-", "reconciled", serde_json::to_value(&report).unwrap_or(Value::Null));
+            self.parked_at_restart(&report.parked);
             for id in report.to_resume() {
                 if let Err(e) = self.spawn(&id, None) {
                     self.event(&id, "resume_failed", json!(e.to_string()));
@@ -1196,6 +1201,9 @@ impl Runtime {
         }
         // FR-604: the agents' calls to registry servers tell their auth status.
         self.observe_mcp_call(&rec, &m.event, &p);
+        if matches!(m.event, HookEvent::Stop | HookEvent::StopFailure) {
+            self.suspend_if_parked(id);
+        }
         match m.event {
             HookEvent::PreToolUse => self
                 .plan_lock(&rec, p.tool_name.as_deref().unwrap_or(""))
@@ -2016,7 +2024,10 @@ impl Runtime {
             // A team agent that never ran starts the same way (with its own
             // session id) once its first turn is admitted.
             let never_started = rec.never_started();
-            let suspended = (rec.tracker.state == AgentState::Suspended || never_started) && rec.flag.is_none();
+            // FR-705: parked on the user's decision, only their own words resume it.
+            let parked = turn.kind != TurnKind::User && self.is_parked(&rec.id);
+            let suspended =
+                (rec.tracker.state == AgentState::Suspended || never_started) && rec.flag.is_none() && !parked;
             if suspended && turn.admission == Admission::Pending {
                 self.sync_process_slots();
             }
@@ -2574,9 +2585,10 @@ pub(crate) mod tests {
         rt.on_hook(&hook("Stop", json!({})), None);
         rt.on_hook(&hook("UserPromptSubmit", json!({"prompt_id": "p2", "prompt": "typed by me"})), None);
         assert!(rt.on_hook(&hook("PreToolUse", json!({"prompt_id": "p2", "tool_name": "Bash"})), None).is_none());
-        // Permission prompts are left to the pane (no decision).
-        assert!(rt.on_hook(&hook("PermissionRequest", json!({"prompt_id": "p2"})), None).is_none());
-        assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::WaitingForYou);
+        // A permission nobody answers is denied and parked (FR-705): the turn goes on to its end.
+        let out = rt.on_hook(&hook("PermissionRequest", json!({"prompt_id": "p2"})), None).expect("parked");
+        assert_eq!(out.0["hookSpecificOutput"]["decision"]["message"], crate::inbox::PARKED_MESSAGE);
+        assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::Working);
     }
 
     #[test]

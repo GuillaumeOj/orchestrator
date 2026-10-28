@@ -9,11 +9,10 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::permissions::PendingPermission;
-
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct InboxItem {
-    /// Stable across refreshes: `perm-3`, `gate-5`, `q-6`, `wait-a1`, `alert-7`, `ask-12`, `info-<turn>`.
+    /// Stable across refreshes and restarts: `inbox-3` (a permission, the store's
+    /// id), `gate-5`, `q-6`, `wait-a1`, `alert-7`, `ask-12`, `info-<turn>`.
     pub id: String,
     pub level: u8,
     /// permission / gate / question / trust / error / alert / budget / info
@@ -31,6 +30,9 @@ pub struct InboxItem {
     /// `title`, `body`, `branch`, `base`; `ask_user` with `question`, `options`).
     #[serde(skip_serializing_if = "Value::is_null")]
     pub payload: Value,
+    /// `open`, or `parked`: a permission whose hold expired; the agent's turn
+    /// ended and it resumes on the answer (FR-705).
+    pub status: &'static str,
 }
 
 /// What the Inbox needs to know about an agent.
@@ -54,6 +56,8 @@ pub struct Alert {
     pub body: String,
     pub created_ms: u64,
     pub payload: Value,
+    /// A permission whose hold expired (FR-705).
+    pub parked: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -76,7 +80,6 @@ pub struct Done {
 
 #[derive(Default)]
 pub struct Inputs<'a> {
-    pub permissions: &'a [PendingPermission],
     pub agents: &'a [AgentFacts],
     pub alerts: &'a [Alert],
     pub ask: Option<Ask>,
@@ -90,22 +93,9 @@ fn last_lines(s: &str, n: usize) -> String {
 
 pub fn build(i: &Inputs) -> Vec<InboxItem> {
     let mut out = vec![];
-    for p in i.permissions {
-        out.push(InboxItem {
-            id: p.id.clone(),
-            level: 1,
-            kind: "permission".into(),
-            agent_id: Some(p.agent_id.clone()),
-            title: format!("{}: {}", p.tool, p.description.clone().unwrap_or_else(|| p.summary.clone())),
-            detail: format!("{} asks to run {}", p.agent_id, p.tool),
-            preview: Some(p.summary.clone()),
-            created_ms: p.created_ms,
-            actions: vec!["a", "r", "enter", "o", "e"],
-            payload: Value::Null,
-        });
-    }
     for a in i.agents {
-        let held = i.permissions.iter().any(|p| p.agent_id == a.id);
+        // Its prompt is a permission card already (held or parked): not listed twice.
+        let held = i.alerts.iter().any(|al| al.kind == "permission" && al.agent_id.as_deref() == Some(a.id.as_str()));
         if a.trust_dialog {
             out.push(InboxItem {
                 id: format!("trust-{}", a.id),
@@ -118,6 +108,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 created_ms: a.since_ms,
                 actions: vec!["o"],
                 payload: Value::Null,
+                status: "open",
             });
         } else if a.state == "waiting_for_you" && !held {
             out.push(InboxItem {
@@ -131,6 +122,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 created_ms: a.since_ms,
                 actions: vec!["enter", "o"],
                 payload: Value::Null,
+                status: "open",
             });
         } else if a.state == "error" {
             out.push(InboxItem {
@@ -144,6 +136,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 created_ms: a.since_ms,
                 actions: vec!["o", "r"],
                 payload: Value::Null,
+                status: "open",
             });
         }
     }
@@ -151,6 +144,37 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
         let title = al.body.lines().next().unwrap_or("").to_string();
         let s = |k: &str| al.payload.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         let item = match (al.kind.as_str(), s("action").as_str()) {
+            // A permission prompt (FR-705), held for the Inbox or parked.
+            ("permission", _) => {
+                let p = &al.payload;
+                let tool = s("tool");
+                let summary = Some(s("summary")).filter(|v| !v.is_empty()).unwrap_or_else(|| al.body.clone());
+                let agent = al.agent_id.clone().unwrap_or_default();
+                let mut actions = vec!["a", "r", "enter", "o"];
+                if !al.parked {
+                    actions.push("in_pane");
+                }
+                if p.get("always").is_some_and(|v| v.is_string()) && p.get("ask_rule").is_none_or(Value::is_null) {
+                    actions.push("always");
+                }
+                InboxItem {
+                    id: format!("inbox-{}", al.id),
+                    level: 1,
+                    kind: "permission".into(),
+                    agent_id: al.agent_id.clone(),
+                    title: format!("{tool}: {}", p.get("description").and_then(Value::as_str).unwrap_or(&summary)),
+                    detail: if al.parked {
+                        format!("{agent} stopped and resumes on your answer ({tool})")
+                    } else {
+                        format!("{agent} asks to run {tool}")
+                    },
+                    preview: Some(summary),
+                    created_ms: al.created_ms,
+                    actions,
+                    payload: al.payload.clone(),
+                    status: if al.parked { "parked" } else { "open" },
+                }
+            }
             // Gates (FR-704): decided through the runtime, which acts on them.
             ("gate", action) => InboxItem {
                 id: format!("gate-{}", al.id),
@@ -164,16 +188,21 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                         s("branch")
                     ),
                     "push_pr" => format!("Push {} and open a pull request into {}", s("branch"), s("base")),
+                    "restart_gate" => {
+                        format!("Still waiting when the core restarted: {}. Approve to let it proceed", s("detail"))
+                    }
                     _ => al.body.clone(),
                 },
                 preview: match action {
                     "spec_approval" => Some(s("summary")),
                     "push_pr" => Some(s("body")).filter(|b| !b.is_empty()),
+                    "restart_gate" => Some(s("detail")).filter(|d| !d.is_empty()),
                     _ => None,
                 },
                 created_ms: al.created_ms,
-                actions: vec!["a", "r", "enter", "o"],
+                actions: if action == "restart_gate" { vec!["a", "r", "o"] } else { vec!["a", "r", "enter", "o"] },
                 payload: al.payload.clone(),
+                status: "open",
             },
             // A team agent's question (`ask_user`): the reply becomes its next turn.
             ("question", _) => InboxItem {
@@ -187,6 +216,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 created_ms: al.created_ms,
                 actions: vec!["enter", "r", "o"],
                 payload: al.payload.clone(),
+                status: "open",
             },
             // FR-505: a comment on a published Notion page (level 3); `open` → the page.
             ("notion", _) => InboxItem {
@@ -201,6 +231,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 // `o` opens the page, `r` dismisses (any action but open/reconnect dismisses an alert).
                 actions: vec!["o", "r"],
                 payload: al.payload.clone(),
+                status: "open",
             },
             (kind, _) => InboxItem {
                 id: format!("alert-{}", al.id),
@@ -219,6 +250,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 actions: if al.payload["alert"] == "mcp_needs_auth" { vec!["a", "o", "r"] } else { vec!["a", "o"] },
                 // `{"alert": "mcp_needs_auth", "server", "name", "roles"}` (FR-604).
                 payload: if al.payload.is_object() { al.payload.clone() } else { Value::Null },
+                status: "open",
             },
         };
         out.push(item);
@@ -239,6 +271,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
             created_ms: a.created_ms,
             actions: vec!["a", "r"],
             payload: Value::Null,
+            status: "open",
         });
     }
     for d in i.done {
@@ -253,10 +286,31 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
             created_ms: d.at_ms,
             actions: vec!["o"],
             payload: Value::Null,
+            status: "open",
         });
     }
     out.sort_by(|a, b| a.level.cmp(&b.level).then(a.created_ms.cmp(&b.created_ms)).then(a.id.cmp(&b.id)));
     out
+}
+
+/// The listed id of a store Inbox item (as [`build`] names it).
+pub fn ui_id(kind: &str, id: u64) -> String {
+    match kind {
+        "permission" => format!("inbox-{id}"),
+        "gate" => format!("gate-{id}"),
+        "question" => format!("q-{id}"),
+        _ => format!("alert-{id}"),
+    }
+}
+
+/// An `inbox_outcome` event for the UI (api-contract §3): the runtime's
+/// outcome with the item's listed id.
+pub fn outcome_event(v: &Value) -> Value {
+    let kind = v["kind"].as_str().unwrap_or("");
+    serde_json::json!({
+        "item": ui_id(kind, v["item"].as_u64().unwrap_or(0)),
+        "decided_by": v["decided_by"], "effect": v["effect"], "at_ms": v["at_ms"],
+    })
 }
 
 /// The badge counts levels 1–3 (§9.6); level 4 stays in the digest.
@@ -274,15 +328,6 @@ mod tests {
 
     #[test]
     fn ladder_order_and_badge() {
-        let perm = PendingPermission {
-            id: "perm-1".into(),
-            agent_id: "front-1".into(),
-            tool: "Bash".into(),
-            summary: "pnpm add x".into(),
-            description: Some("Add the SDK".into()),
-            created_ms: 50,
-            tool_use_id: None,
-        };
         let agents = [
             agent("front-1", "waiting_for_you", 40), // held for the Inbox: not listed twice
             agent("solo", "waiting_for_you", 10),
@@ -296,11 +341,17 @@ mod tests {
             body: body.into(),
             created_ms,
             payload: Value::Null,
+            parked: false,
         };
-        let alerts = [alert(7, "alert", "x: API error", 1), alert(8, "budget", "reserve used up", 0)];
+        let perm = Alert {
+            agent_id: Some("front-1".into()),
+            payload: serde_json::json!({"tool": "Bash", "summary": "pnpm add x", "description": "Add the SDK",
+                                        "tool_input": {"command": "pnpm add x"}, "always": "Bash(pnpm add x)"}),
+            ..alert(1, "permission", "front-1: Bash: pnpm add x", 50)
+        };
+        let alerts = [perm, alert(7, "alert", "x: API error", 1), alert(8, "budget", "reserve used up", 0)];
         let done = [Done { turn_id: "t1".into(), agent_id: "back-1".into(), body: "go".into(), at_ms: 0 }];
         let items = build(&Inputs {
-            permissions: std::slice::from_ref(&perm),
             agents: &agents,
             alerts: &alerts,
             ask: Some(Ask {
@@ -314,10 +365,41 @@ mod tests {
             done: &done,
         });
         let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
-        assert_eq!(ids, ["wait-solo", "perm-1", "alert-7", "error-ci-1", "alert-8", "ask-12", "info-t1"]);
+        assert_eq!(ids, ["wait-solo", "inbox-1", "alert-7", "error-ci-1", "alert-8", "ask-12", "info-t1"]);
         assert_eq!((items[4].level, items[4].kind.as_str()), (3, "alert"), "a budget warning, dismissed like an alert");
         assert_eq!(badge(&items), 6);
         assert_eq!(items[1].preview.as_deref(), Some("pnpm add x"));
+        assert_eq!(items[1].title, "Bash: Add the SDK");
+        assert_eq!((items[1].status, items[1].payload["tool_input"]["command"].as_str()), ("open", Some("pnpm add x")));
+        assert_eq!(items[1].actions, ["a", "r", "enter", "o", "in_pane", "always"]);
+    }
+
+    #[test]
+    fn a_parked_permission_has_no_pane_answer_and_no_wait_card() {
+        let perm = |id, parked, payload| Alert {
+            id,
+            kind: "permission".into(),
+            agent_id: Some("a1".into()),
+            body: "a1: Bash: ls".into(),
+            created_ms: id,
+            payload,
+            parked,
+        };
+        let ask = serde_json::json!({"tool": "Bash", "summary": "ls", "ask_rule": 3, "always": null});
+        let alerts = [
+            perm(1, true, serde_json::json!({"tool": "Bash", "summary": "ls", "always": "Bash(ls)"})),
+            perm(2, false, ask),
+        ];
+        let items =
+            build(&Inputs { agents: &[agent("a1", "waiting_for_you", 0)], alerts: &alerts, ..Default::default() });
+        let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["inbox-1", "inbox-2"], "no wait-a1 card");
+        assert_eq!((items[0].status, items[0].actions.clone()), ("parked", vec!["a", "r", "enter", "o", "always"]));
+        assert!(items[0].detail.contains("resumes on your answer"));
+        assert_eq!(items[1].actions, ["a", "r", "enter", "o", "in_pane"], "an ask rule sent it: no always");
+        let ev = outcome_event(&serde_json::json!({"item": 2, "kind": "permission", "decided_by": "pane",
+                                                   "effect": "in_pane", "at_ms": 5}));
+        assert_eq!(ev, serde_json::json!({"item": "inbox-2", "decided_by": "pane", "effect": "in_pane", "at_ms": 5}));
     }
 
     #[test]
@@ -329,9 +411,15 @@ mod tests {
             body: format!("item {id}"),
             created_ms: id,
             payload,
+            parked: false,
         };
         let alerts = [
             mk(3, "info", Value::Null),
+            mk(
+                7,
+                "gate",
+                serde_json::json!({"action": "restart_gate", "agent": "fx-lead-1", "detail": "git push", "restarted": true}),
+            ),
             mk(
                 4,
                 "gate",
@@ -346,14 +434,16 @@ mod tests {
         ];
         let items = build(&Inputs { alerts: &alerts, ..Default::default() });
         let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
-        assert_eq!(ids, ["gate-4", "gate-5", "q-6", "alert-3"]);
+        assert_eq!(ids, ["gate-4", "gate-5", "q-6", "gate-7", "alert-3"]);
+        assert!(items[3].detail.contains("git push") && !items[3].detail.contains("Spec gate"));
+        assert_eq!(items[3].actions, ["a", "r", "o"]);
         assert_eq!((items[0].level, items[0].kind.as_str()), (1, "gate"));
         assert!(items[0].detail.contains("orch/fx/integration") && items[0].detail.contains("main"));
         assert_eq!(items[1].preview.as_deref(), Some("two tasks"));
         assert_eq!(items[1].payload["docs"][0], "spec.md");
         assert_eq!((items[2].kind.as_str(), items[2].detail.as_str()), ("question", "Keep v1?"));
-        assert_eq!((items[3].level, items[3].kind.as_str()), (4, "info"));
-        assert_eq!(badge(&items), 3);
+        assert_eq!((items[4].level, items[4].kind.as_str()), (4, "info"));
+        assert_eq!(badge(&items), 4);
     }
 
     #[test]

@@ -94,12 +94,12 @@ pub fn upsert_worktree(tx: &Tx, w: &WorktreeRow) -> rusqlite::Result<usize> {
 
 pub(crate) fn upsert_inbox(tx: &Tx, i: &InboxItem) -> rusqlite::Result<usize> {
     tx.execute(
-        "INSERT INTO inbox_items(id, kind, agent_id, project_id, body, payload, priority, status, stale, created_at_ms, decided_at_ms, decision)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+        "INSERT INTO inbox_items(id, kind, agent_id, project_id, body, payload, priority, status, stale, created_at_ms, decided_at_ms, decision, decided_by)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
          ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, agent_id=excluded.agent_id, project_id=excluded.project_id,
            body=excluded.body, payload=excluded.payload, priority=excluded.priority, status=excluded.status,
            stale=excluded.stale, created_at_ms=excluded.created_at_ms, decided_at_ms=excluded.decided_at_ms,
-           decision=excluded.decision",
+           decision=excluded.decision, decided_by=excluded.decided_by",
         params![
             i.id as i64,
             i.kind,
@@ -112,7 +112,8 @@ pub(crate) fn upsert_inbox(tx: &Tx, i: &InboxItem) -> rusqlite::Result<usize> {
             i.stale,
             i.created_at_ms as i64,
             i.decided_at_ms.map(|v| v as i64),
-            i.decision
+            i.decision,
+            i.decided_by
         ],
     )
 }
@@ -143,12 +144,12 @@ pub(crate) fn row_inbox(r: &rusqlite::Row) -> rusqlite::Result<InboxItem> {
         created_at_ms: r.get::<_, i64>(9)? as u64,
         decided_at_ms: opt_u64(r, 10)?,
         decision: r.get(11)?,
+        decided_by: r.get(12)?,
     })
 }
 
 pub(crate) const WORKTREE_COLS: &str = "path, repo, branch, base, agent_id, state, created_at_ms";
-pub(crate) const INBOX_COLS: &str =
-    "id, kind, agent_id, project_id, body, payload, priority, status, stale, created_at_ms, decided_at_ms, decision";
+pub(crate) const INBOX_COLS: &str = "id, kind, agent_id, project_id, body, payload, priority, status, stale, created_at_ms, decided_at_ms, decision, decided_by";
 
 fn load(c: &Connection) -> Result<RuntimeRows> {
     let parse = |s: String| serde_json::from_str::<Value>(&s).unwrap_or(Value::Null);

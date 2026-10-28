@@ -150,7 +150,7 @@ impl Runtime {
         let _ = self.store.write(|s| {
             let open: Vec<u64> = s.inbox.iter().filter(|i| pane_question(i)).map(|i| i.id).collect();
             for id in open {
-                let _ = s.close_inbox(id, orch_store::InboxStatus::Decided, Some("answered in pane".into()));
+                let _ = s.close_inbox(id, orch_store::InboxStatus::Decided, Some("answered in pane".into()), "pane");
             }
         });
     }
