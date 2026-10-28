@@ -180,7 +180,7 @@ describe('inbox triage', () => {
     expect(pendingToast(p, 'approve')).toBe('Allowing once · back-1 · pnpm add zod');
     expect(pendingToast(p, 'reject')).toBe('Denying · back-1 · pnpm add zod');
     expect(pendingToast(p, 'always')).toBe('Always allowing · back-1 · pnpm add zod');
-    for (const action of ['approve', 'reject', 'reply', 'always', 'in_pane', 'restart_fresh']) {
+    for (const action of ['approve', 'reject', 'reply', 'always', 'restart_fresh']) {
       expect(pendingToast(p, action)).not.toMatch(/sent|Reply/);
     }
     expect(effectToast(p, 'approve', 'allowed')).toBe('Allowed · back-1 resumed');
@@ -189,7 +189,6 @@ describe('inbox triage', () => {
     expect(effectToast(p, 'always', 'allowed')).toBe('Always allowed · Bash(pnpm add:*) · back-1 resumed');
     expect(effectToast(p, 'reject', 'denied', 'use npm')).toBe('Denied · reason sent · back-1');
     expect(effectToast(p, 'reject', 'denied')).toBe('Denied · back-1');
-    expect(effectToast(p, 'in_pane', 'in_pane')).toBe('Answer in the pane · back-1');
   });
 
   it('startup: label, actions and toasts', () => {

@@ -185,7 +185,7 @@ const what = (item) => (item.preview ? ` · ${item.preview.split('\n')[0].slice(
  *  what happened (the core has not answered yet). */
 export function pendingToast(item, action) {
   if (item.kind === 'permission') {
-    const verb = { approve: 'Allowing once', always: 'Always allowing', in_pane: 'Handing over to the pane' }[action];
+    const verb = { approve: 'Allowing once', always: 'Always allowing' }[action];
     return `${verb ?? 'Denying'}${who(item)}${what(item)}`;
   }
   if (item.kind === 'startup') {
@@ -213,7 +213,6 @@ export function effectToast(item, action, effect, message = null) {
   const agent = item.agent_id ?? 'the agent';
   const after = AGENT_EFFECT[effect] ? ` · ${agent} ${AGENT_EFFECT[effect]}` : who(item);
   if (item.kind === 'permission') {
-    if (effect === 'in_pane') return `Answer in the pane${who(item)}`;
     // A held prompt answered (`allowed`): the agent carries on, as a resumed one does.
     const goes = effect === 'allowed' ? ` · ${agent} resumed` : after;
     if (action === 'always') return `Always allowed${item.payload?.always ? ` · ${item.payload.always}` : ''}${goes}`;

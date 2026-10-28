@@ -26,11 +26,13 @@
   const snap = $derived(app.data?.usage?.snapshot);
   const sessionPp = $derived(ppOf(a, snap));
   // Its permission prompt (held or parked): the Inbox's own item, not a second list.
-  // "Answer in the pane" only hides the strip: the dialog is in the PTY below.
+  // "Answer in the pane" only hides the strip while the dialog is in the PTY below:
+  // once the hold parks (no more `in_pane`), the dialog is gone and the strip is back.
   let handedOver = $state(null);
   const perm = $derived(
     visibleItems(app.data?.inbox?.items ?? [], 'all', app.pending).find(
-      (i) => i.kind === 'permission' && i.agent_id === a?.id && i.id !== handedOver,
+      (i) =>
+        i.kind === 'permission' && i.agent_id === a?.id && !(i.id === handedOver && i.actions.includes('in_pane')),
     ),
   );
   const permLabels = $derived(actionLabels(perm));

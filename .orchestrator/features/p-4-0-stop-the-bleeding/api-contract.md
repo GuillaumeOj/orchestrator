@@ -35,7 +35,7 @@ Level 2. `title`: `"<agent> did not start"` or `"<agent> could not resume"`.
              "failed": "resume" | "fresh",   // absent for "no SessionStart in 30 s"
              "exit_status": 1, "tail": "…ANSI-stripped PTY tail…" }
 ```
-`actions`: `["o","restart_fresh","x"]` (+ `"delete"` when `failed` is set). `preview` = last lines of `tail`.
+`actions`: `["o","restart_fresh","dismiss"]` (+ `"delete"` when `failed` is set). `preview` = last lines of `tail`.
 
 ### `kind: "gate"` after a restart
 Original gates keep their payload and gain `restarted: true`. Legacy holds: `payload.action = "restart_gate"`, `{agent, detail}`; actions `["a","r","o"]`. `gate_detail` returns `{ action: "restart_gate", detail }` for it (no error).
