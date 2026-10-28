@@ -387,6 +387,8 @@ struct Metrics {
     w_projected: f64,
     hours_left: f64,
     weight_now: f64,
+    /// Inside a working block (else off-hours, weighted only by the allowance).
+    in_work: bool,
     /// Total W per weighted hour: the measured burn, completed by the
     /// on-plan pace while the measurement is young.
     burn: f64,
@@ -866,6 +868,7 @@ impl Governor {
             w_projected,
             hours_left,
             weight_now: self.curve.weight_at(now),
+            in_work: self.in_working_time(now),
             burn,
             f,
             f_projected,
@@ -884,10 +887,25 @@ impl Governor {
 
     fn cap(&self, m: &Metrics) -> u32 {
         let caps = &self.policy.live_caps;
-        let mut cap = if m.weight_now <= 0.0 { caps.off_hours } else { caps.for_state(self.sm.state) };
+        let mut cap = if m.weight_now <= 0.0 {
+            caps.off_hours
+        } else if !m.in_work {
+            // FR-816: off-hours under an allowance run at most the off-hours
+            // cap, and only while the week is on or under plan; an hour of
+            // the allowance weighs a fraction of a working hour, so rounding
+            // the cap up would run an agent all night even in Red.
+            match self.sm.state {
+                PressureState::Green | PressureState::CatchUp => {
+                    caps.for_state(self.sm.state).min(self.policy.off_hours_live_cap)
+                }
+                _ => 0,
+            }
+        } else {
+            caps.for_state(self.sm.state)
+        };
         // An hour that counts half gets half the agents (rounded up), so the
         // pace follows the curve without waiting for the error to build up.
-        if self.policy.scale_caps_by_weight && m.weight_now > 0.0 && m.weight_now < 1.0 {
+        if self.policy.scale_caps_by_weight && m.in_work && m.weight_now > 0.0 && m.weight_now < 1.0 {
             cap = ((cap as f64) * m.weight_now).ceil() as u32;
         }
         if self.guard5 {
