@@ -1073,42 +1073,55 @@ export function decide(item, action, message = null) {
 }
 
 export function undoLast() {
-  const last = app.pending[app.pending.length - 1];
+  const last = app.pending.filter((p) => !p.sent).at(-1);
   if (!last) return false;
-  app.pending = app.pending.slice(0, -1);
+  app.pending = app.pending.filter((x) => x !== last);
   dismissToast(last.toast);
   toast('Undone');
   return true;
 }
 
+/** Drops an item's decision still in its undo window (one already sent stays). */
 export function undoItem(itemId) {
-  const p = app.pending.find((x) => x.item === itemId);
+  const p = app.pending.find((x) => x.item === itemId && !x.sent);
   if (!p) return;
   app.pending = app.pending.filter((x) => x !== p);
   dismissToast(p.toast);
 }
 
-/** Sends the decisions whose undo window is over. Called by the app's clock. */
+/** Sends the decisions whose undo window is over. Called by the app's clock,
+ *  which may tick again while a slow act (a restart, a kill) is in flight: the
+ *  batch is marked sent at once so no tick sends it twice, and its cards stay
+ *  hidden until the core answered and the state was read again. */
 export async function flushDecisions(now = Date.now()) {
-  for (const p of due(app.pending, now)) {
-    app.pending = app.pending.filter((x) => x !== p);
-    try {
-      const r = await invoke('inbox_act', { item: p.item, action: p.action, message: p.message });
-      if (!routeOpen(r, p.project)) toast(effectToast(p.card, p.action, r?.effect, p.message));
-    } catch (e) {
-      toast(errText(e), { kind: 'error' });
-    }
-    refresh();
-  }
+  const batch = due(app.pending, now);
+  if (!batch.length) return;
+  for (const p of batch) p.sent = true;
+  const acts = await Promise.allSettled(
+    batch.map((p) => invoke('inbox_act', { item: p.item, action: p.action, message: p.message })),
+  );
+  batch.forEach((p, i) => {
+    const r = acts[i];
+    if (r.status === 'rejected') toast(errText(r.reason), { kind: 'error' });
+    else if (!routeOpen(r.value, p.project)) toast(effectToast(p.card, p.action, r.value?.effect, p.message));
+  });
+  // A poll in flight read the state before these acts: read it again after it.
+  await refreshing;
+  await refresh();
+  app.pending = app.pending.filter((x) => !batch.includes(x));
 }
 
 /** An `inbox_outcome` event (api-contract §3): a toast when someone else
- *  decided (the pane, a rule, the hold's expiry), and the card goes. */
+ *  decided (the pane, a rule, the hold's expiry), and the card goes, with a
+ *  decision of ours still in its undo window (it would only fail). A parked
+ *  item stays open: a pending answer to it still applies. */
 export function onOutcome(outcome) {
   const item = app.data?.inbox?.items?.find((i) => i.id === outcome?.item);
   const text = outcomeToast(item, outcome);
   if (text) toast(text);
-  refresh();
+  if (outcome?.effect !== 'parked') undoItem(outcome?.item);
+  // The user's own decisions: flushDecisions reads the state again already.
+  if (outcome?.decided_by !== 'user') refresh();
 }
 
 /** FR-415: the agent again as a fresh session with its brief (agent menu). */

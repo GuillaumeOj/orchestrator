@@ -5,7 +5,7 @@ import PacingIndicator from '../src/components/PacingIndicator.svelte';
 import Sidebar from '../src/components/Sidebar.svelte';
 import StatusBadge from '../src/components/StatusBadge.svelte';
 import StatusBar from '../src/components/StatusBar.svelte';
-import { app } from '../src/lib/app.svelte.js';
+import { app, decide, onOutcome } from '../src/lib/app.svelte.js';
 import InboxPane from '../src/panes/InboxPane.svelte';
 import { fixture } from './fixture.js';
 
@@ -96,6 +96,26 @@ describe('components', () => {
     expect(container.querySelector('.parked')).toBeNull();
   });
 
+  it('an outcome decided elsewhere drops our pending decision, a parked one keeps it', () => {
+    const perm = fixture().inbox.items[0];
+    decide(perm, 'approve');
+    onOutcome({ item: perm.id, decided_by: 'expired', effect: 'parked', at_ms: 0 });
+    expect(app.pending).toHaveLength(1);
+    onOutcome({ item: perm.id, decided_by: 'pane', effect: 'in_pane', at_ms: 0 });
+    expect(app.pending).toHaveLength(0);
+    expect(app.toasts.at(-1).text).toBe('Answered in the pane · front-1');
+  });
+
+  it('"Answer in the pane" opens the pane and decides nothing', async () => {
+    const { container } = render(InboxPane);
+    const b = [...detail(container).querySelectorAll('.actions button')].find(
+      (x) => x.textContent === 'Answer in the pane',
+    );
+    await fireEvent.click(b);
+    expect(app.pending).toHaveLength(0);
+    expect(Object.values(app.panes)).toMatchObject([{ type: 'agent', agentId: 'front-1' }]);
+  });
+
   it('parked permission: the Parked marker, no "Answer in the pane", Always allow only when offered', () => {
     const perm = fixture().inbox.items[0];
     withItems({
@@ -128,7 +148,7 @@ describe('components', () => {
       payload: { waiting_on: 'startup', mode: 'resume', since_ms: 0, failed: 'resume', exit_status: 1, tail },
     });
     const { container } = render(InboxPane);
-    expect(container.querySelector('.item.sel').textContent).toContain('Did not start');
+    expect(container.querySelector('.item.sel').textContent).toContain('Startup');
     expect(detail(container).querySelector('pre.mono').textContent).toBe(tail.split('\n').slice(-12).join('\n'));
     expect(buttons(container)).toEqual(['Restart fresh', 'Dismiss', 'Delete', 'Open pane o']);
     await fireEvent.click(

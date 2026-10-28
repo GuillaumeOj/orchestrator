@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { baseName } from '../src/lib/format.js';
 import {
   actionLabels,
   afterRemoval,
   collapse,
-  cwdName,
   due,
   effectToast,
   gateKind,
@@ -68,6 +68,10 @@ describe('inbox triage', () => {
       { item: 'b', at: 1000 },
     ];
     expect(due(p, UNDO_MS).map((x) => x.item)).toEqual(['a']);
+    // Sent (its act in flight): never due again, whatever the clock says.
+    expect(due([{ item: 'a', at: 0, sent: true }], UNDO_MS * 2)).toEqual([]);
+    expect(pendingToast({ id: 'error-x', kind: 'error', agent_id: 'x' }, 'reject')).toBe('Resuming · x');
+    expect(effectToast({ id: 'error-x', kind: 'error', agent_id: 'x' }, 'reject', 'resumed')).toBe('Resumed · x');
   });
 
   it('gates and team questions (P2)', () => {
@@ -106,7 +110,7 @@ describe('inbox triage', () => {
     expect(keyIntent('a', spec)).toEqual({ kind: 'decide', action: 'approve' });
     expect(keyIntent('a', q)).toBe(null);
     expect(pendingToast(spec, 'approve')).toBe('Approving the spec gate · fx-lead-1');
-    expect(effectToast(spec, 'approve', 'allowed')).toBe('Spec gate approved · fx-lead-1 resumed');
+    expect(effectToast(spec, 'approve', 'allowed')).toBe('Spec gate approved · fx-lead-1');
     expect(effectToast(spec, 'reply', 'delivered')).toBe('Spec gate sent back with your notes · fx-lead-1 told');
     expect(effectToast(pr, 'reject', 'denied')).toBe('PR gate rejected · fx-lead-1');
     expect(pendingToast(q, 'reply')).toBe('Sending your reply · fx-back-1');
@@ -162,7 +166,8 @@ describe('inbox triage', () => {
     expect([parked(open), parked(held)]).toEqual([false, true]);
     expect(keyIntent('enter', held)).toEqual({ kind: 'reply' });
     expect(keyIntent('a', held)).toEqual({ kind: 'decide', action: 'approve' });
-    expect(cwdName(open.payload.cwd)).toBe('back-1');
+    expect(baseName(open.payload.cwd)).toBe('back-1');
+    expect(baseName('/')).toBe('/');
     expect(inputText({ command: 'ls\n-la', description: 'List' })).toBe('ls\n-la');
     expect(inputText({ file_path: '/a', content: 'x' })).toBe('file_path: /a\ncontent: x');
     expect(inputText({ todos: [1] })).toBe('todos: [\n  1\n]');
@@ -193,7 +198,7 @@ describe('inbox triage', () => {
       actions: ['o', 'restart_fresh', 'dismiss', 'delete'],
       payload: { ...s.payload, failed: 'fresh' },
     });
-    expect(kindLabel(s)).toBe('Did not start');
+    expect(kindLabel(s)).toBe('Startup');
     expect(actionLabels(failed)).toEqual({
       o: 'Open pane',
       restart_fresh: 'Restart fresh',

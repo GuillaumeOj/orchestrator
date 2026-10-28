@@ -62,6 +62,12 @@ export function shortPath(path, home) {
   return home && (p === home || p.startsWith(`${home}/`)) ? `~${p.slice(home.length)}` : p;
 }
 
+/** A path's last folder or file name ("/w/feat/back-1/" → "back-1"); "/" stays "/". */
+export function baseName(path) {
+  const p = String(path ?? '');
+  return p.replace(/\/+$/, '').split('/').pop() || p;
+}
+
 /** "~/dev/app" → "<home>/dev/app" (the core wants absolute paths). */
 export const expandHome = (path, home) =>
   String(path)

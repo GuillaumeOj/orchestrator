@@ -7,7 +7,7 @@
   // Inbox (FR-707, §9.6, Penpot 04 Inbox and 06 J5): one list in attention-ladder
   // order with a who/what/why preview. Keys: j/k move, a approve, r reject,
   // ⏎ reply, o open the agent pane, e open in nvim, x select (batch), u undo, esc back.
-  import { agent, alertAct, app, decide, openAgent, openEditor, toast, undoLast } from '../lib/app.svelte.js';
+  import { agent, alertAct, app, confirm, decide, openAgent, openEditor, toast, undoLast } from '../lib/app.svelte.js';
   import { ago } from '../lib/format.js';
   import {
     actionLabels,
@@ -118,9 +118,17 @@
   }
 
   // A keyless action (Always allow, Restart fresh…): the next item is selected, as for a/r.
+  // "Answer in the pane" only opens it: the dialog waits there, the core decides nothing.
+  // Delete asks first: it kills the agent and hides it (its worktree stays; the
+  // agent menu's Delete… is the one that can remove it).
   function act(item, action) {
-    selected = afterRemoval(items, item.id);
-    decide(item, action);
+    if (action === 'in_pane') return item.agent_id && openAgent(item.agent_id);
+    const go = () => {
+      selected = afterRemoval(items, item.id);
+      decide(item, action);
+    };
+    if (action === 'delete') confirm(`Delete ${item.agent_id}?`, 'Kills it and removes it from the app; its worktree stays.', go, 'Delete');
+    else go();
   }
 
   function onKey(e) {
@@ -168,7 +176,7 @@
           <div class="item" class:sel={sel?.id === it.id} class:marked={marked.has(it.id)} role="option" tabindex="-1" aria-selected={sel?.id === it.id} onclick={() => (selected = it.id)}>
             <div class="top">
               <StatusBadge state={KIND[it.kind]?.state ?? 'idle'} compact />
-              <span class="muted">{kindLabel(it)}{parked(it) ? ' · parked' : ''}{restarted(it) && !parked(it) ? ' · after restart' : ''}</span>
+              <span class="muted">{kindLabel(it)}{parked(it) ? ' · parked' : ''}{restarted(it) ? ' · after restart' : ''}</span>
               {#if it.agent_id}<AgentChip id={it.agent_id} />{:else}<span class="secondary">Governor</span>{/if}
               <span class="grow"></span>
               <span class="muted">{ago(it.created_ms)}</span>
@@ -249,7 +257,7 @@
           {@const tail = tailLines(sel.payload?.tail) || sel.preview}
           {#if tail}<pre class="mono preview">{tail}</pre>{/if}
         {:else if sel.preview}<pre class="mono preview">{sel.preview}</pre>{/if}
-        {#if restarted(sel) && !parked(sel)}
+        {#if restarted(sel)}
           <p class="muted note">After restart: this was still waiting when the core restarted. Your answer reaches {sel.agent_id ?? 'the agent'} as a turn.</p>
         {/if}
         {#if gateKind(sel) === 'spec'}

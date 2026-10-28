@@ -12,7 +12,7 @@
   import TermHost from '../components/TermHost.svelte';
   import { agent, agentAction, app, cancelQueued, confirm, decide, mountTerm, openEditor, runNow, toast } from '../lib/app.svelte.js';
   import { ago, clock, duration } from '../lib/format.js';
-  import { actionLabels } from '../lib/inbox.js';
+  import { actionLabels, visibleItems } from '../lib/inbox.js';
   import { errText } from '../lib/ipc.js';
   import { cacheState, displayState, notStarted, sessionPp as ppOf, queueReason, runCost } from '../lib/status.js';
 
@@ -26,9 +26,11 @@
   const snap = $derived(app.data?.usage?.snapshot);
   const sessionPp = $derived(ppOf(a, snap));
   // Its permission prompt (held or parked): the Inbox's own item, not a second list.
+  // "Answer in the pane" only hides the strip: the dialog is in the PTY below.
+  let handedOver = $state(null);
   const perm = $derived(
-    (app.data?.inbox?.items ?? []).find(
-      (i) => i.kind === 'permission' && i.agent_id === a?.id && !app.pending.some((p) => p.item === i.id),
+    visibleItems(app.data?.inbox?.items ?? [], 'all', app.pending).find(
+      (i) => i.kind === 'permission' && i.agent_id === a?.id && i.id !== handedOver,
     ),
   );
   const permLabels = $derived(actionLabels(perm));
@@ -114,7 +116,7 @@
         <button class="btn primary" onclick={() => decide(perm, 'approve')}>{permLabels.a}</button>
         <button class="btn danger" onclick={() => decide(perm, 'reject')}>{permLabels.r}</button>
         {#if perm.actions.includes('always')}<button class="btn" title={perm.payload?.always} onclick={() => decide(perm, 'always')}>{permLabels.always}</button>{/if}
-        {#if perm.actions.includes('in_pane')}<button class="btn ghost" onclick={() => decide(perm, 'in_pane')} title="Shows Claude Code's own dialog">{permLabels.in_pane}</button>{/if}
+        {#if perm.actions.includes('in_pane')}<button class="btn ghost" onclick={() => (handedOver = perm.id)} title="Shows Claude Code's own dialog">{permLabels.in_pane}</button>{/if}
       </div>
       <PermissionCall item={perm} />
     </div>

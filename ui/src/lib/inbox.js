@@ -90,9 +90,10 @@ export function teamQuestion(item) {
   return item?.kind === 'question' && item.payload?.action === 'ask_user';
 }
 
-/** Came back after a core restart (api-contract §1): the card says so. */
+/** Came back after a core restart (api-contract §1): the card says so, unless
+ *  it is parked (a parked card says that instead). */
 export function restarted(item) {
-  return item?.payload?.restarted === true;
+  return item?.payload?.restarted === true && !parked(item);
 }
 
 /** A permission whose hold expired: the agent stopped and resumes on the answer. */
@@ -109,7 +110,7 @@ export function kindLabel(item) {
   return (
     {
       permission: 'Permission',
-      startup: 'Did not start',
+      startup: 'Startup',
       question: 'Waiting for you',
       trust: 'Trust dialog',
       error: 'Error',
@@ -177,16 +178,6 @@ export function tailLines(text, n = 12) {
   return lines.slice(-n).join('\n');
 }
 
-/** A worktree path shortened to its folder name (the full path goes on hover). */
-export function cwdName(cwd) {
-  return (
-    String(cwd ?? '')
-      .replace(/\/+$/, '')
-      .split('/')
-      .pop() ?? ''
-  );
-}
-
 const who = (item) => (item.agent_id ? ` · ${item.agent_id}` : '');
 const what = (item) => (item.preview ? ` · ${item.preview.split('\n')[0].slice(0, 40)}` : '');
 
@@ -203,6 +194,7 @@ export function pendingToast(item, action) {
   if (mcpAlert(item)) return `Dismissing · ${item.payload.name ?? item.payload.server}`;
   if (item.payload?.source === 'notion' && action === 'reject') return `Dismissing · ${item.title}`;
   if (item.kind === 'budget') return `${action === 'approve' ? 'Applying' : 'Skipping'} · ${item.title}`;
+  if (item.kind === 'error') return `Resuming${who(item)}`; // its one action, r = Resume
   if (item.kind === 'alert' || item.kind === 'info' || (teamQuestion(item) && action === 'reject')) {
     return `Dismissing${who(item)}`;
   }
@@ -214,7 +206,7 @@ export function pendingToast(item, action) {
 }
 
 // What the agent got, by `effect` (api-contract §2).
-const AGENT_EFFECT = { resumed: 'resumed', allowed: 'resumed', delivered: 'told', queued: 'queued' };
+const AGENT_EFFECT = { resumed: 'resumed', delivered: 'told', queued: 'queued' };
 
 /** Toast once the core answered `inbox_act` with `{ effect }`: the effect, said plainly. */
 export function effectToast(item, action, effect, message = null) {
@@ -222,8 +214,10 @@ export function effectToast(item, action, effect, message = null) {
   const after = AGENT_EFFECT[effect] ? ` · ${agent} ${AGENT_EFFECT[effect]}` : who(item);
   if (item.kind === 'permission') {
     if (effect === 'in_pane') return `Answer in the pane${who(item)}`;
-    if (action === 'always') return `Always allowed${item.payload?.always ? ` · ${item.payload.always}` : ''}${after}`;
-    if (action === 'approve') return `Allowed${after}`;
+    // A held prompt answered (`allowed`): the agent carries on, as a resumed one does.
+    const goes = effect === 'allowed' ? ` · ${agent} resumed` : after;
+    if (action === 'always') return `Always allowed${item.payload?.always ? ` · ${item.payload.always}` : ''}${goes}`;
+    if (action === 'approve') return `Allowed${goes}`;
     return message?.trim() ? `Denied · reason sent${who(item)}` : `Denied${who(item)}`;
   }
   if (item.kind === 'startup') {
@@ -233,6 +227,7 @@ export function effectToast(item, action, effect, message = null) {
   if (item.kind === 'budget') return action === 'approve' ? `Applied · ${item.title}` : `Skipped · ${item.title}`;
   if (mcpAlert(item)) return `Dismissed until it fails again · ${item.payload.name ?? item.payload.server}`;
   if (item.payload?.source === 'notion' && action === 'reject') return `Dismissed · ${item.title}`;
+  if (item.kind === 'error') return `Resumed${who(item)}`;
   if (effect === 'dismissed' || item.kind === 'alert' || item.kind === 'info') return `Dismissed${who(item)}`;
   const g = gateKind(item);
   if (g) {
@@ -240,11 +235,7 @@ export function effectToast(item, action, effect, message = null) {
     return `${GATE_LABEL[g]} ${action === 'approve' ? 'approved' : 'rejected'}${after}`;
   }
   if (action === 'reply') {
-    return effect === 'queued'
-      ? `Reply queued · ${agent}`
-      : effect === 'resumed'
-        ? `Reply sent · ${agent} resumed`
-        : `Reply sent${who(item)}`;
+    return effect === 'queued' ? `Reply queued · ${agent}` : `Reply sent${effect === 'resumed' ? after : who(item)}`;
   }
   return `${action === 'approve' ? 'Approved' : 'Rejected'}${after}`;
 }
@@ -256,15 +247,15 @@ export function outcomeToast(item, outcome) {
   const by = outcome?.decided_by ?? '';
   if (by === 'user') return null;
   const agent = item?.agent_id ?? 'an agent';
-  if (outcome.effect === 'parked') return `Parked · ${agent} stopped and resumes on your answer`;
-  if (outcome.effect === 'restarted') return `Restarted fresh · ${agent}`;
+  if (outcome?.effect === 'parked') return `Parked · ${agent} stopped and resumes on your answer`;
+  if (outcome?.effect === 'restarted') return `Restarted fresh · ${agent}`;
   if (by === 'pane') return `Answered in the pane · ${agent}`;
   if (by.startsWith('rule:'))
-    return `${outcome.effect === 'denied' ? 'Denied' : 'Allowed'} by rule ${by.slice(5)} · ${agent}`;
+    return `${outcome?.effect === 'denied' ? 'Denied' : 'Allowed'} by rule ${by.slice(5)} · ${agent}`;
   return null;
 }
 
 /** Due pending decisions (their undo window passed). */
 export function due(pending, now) {
-  return pending.filter((p) => now - p.at >= UNDO_MS);
+  return pending.filter((p) => !p.sent && now - p.at >= UNDO_MS);
 }
