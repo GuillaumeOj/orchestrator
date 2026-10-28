@@ -168,6 +168,24 @@ impl Runtime {
         self.outcome(item, actor, effect);
     }
 
+    /// Closes every open (pending or parked) item of `agent` as the core's,
+    /// with `why` as the decision (the agent was deleted or archived).
+    pub(crate) fn close_items_of(&self, agent: &str, why: &str) {
+        let closed = self
+            .store
+            .write(|s| {
+                let ids: Vec<u64> =
+                    s.inbox.iter().filter(|i| i.open() && i.agent_id.as_deref() == Some(agent)).map(|i| i.id).collect();
+                ids.into_iter()
+                    .filter_map(|id| s.close_inbox(id, InboxStatus::Dismissed, Some(why.into()), "core").ok().cloned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for i in closed {
+            self.closed_by(&i, "core", why, "dismissed");
+        }
+    }
+
     pub(crate) fn add_item(
         &self,
         agent: Option<&str>,
@@ -1215,6 +1233,32 @@ mod tests {
 
     fn perm_input(cmd: &str) -> orch_protocol::HookMsg {
         hook("PermissionRequest", json!({"tool_name": "Bash", "tool_input": {"command": cmd}, "tool_use_id": "tu2"}))
+    }
+
+    /// A deleted agent leaves no card nobody can act on (and no waiting time).
+    #[test]
+    fn deleting_an_agent_closes_its_open_items() {
+        let (_d, rt) = test_runtime(true);
+        rt.on_hook(&perm("ls"), None); // parked
+        let q = rt.add_item(Some("a1"), "question", "q".into(), json!({}), 30).unwrap();
+        let other = rt.store.write(|s| s.add_inbox(Some("a2"), "alert", "x".into())).unwrap();
+        rt.delete_agent("a1", false, false).unwrap();
+        let items = rt.store.read(|s| s.inbox.clone());
+        for i in items.iter().filter(|i| i.agent_id.as_deref() == Some("a1")) {
+            assert_eq!(
+                (i.status, i.decision.as_deref(), i.decided_by.as_deref()),
+                (InboxStatus::Dismissed, Some("agent deleted"), Some("core")),
+                "{i:?}"
+            );
+        }
+        assert!(items.iter().any(|i| i.id == q));
+        assert!(items.iter().find(|i| i.id == other).unwrap().pending(), "another agent's item stays");
+        assert!(rt.inbox().iter().all(|i| i.agent_id.as_deref() != Some("a1")));
+        let log = rt.db.audit_log(Some("a1"), 20).unwrap();
+        assert_eq!(log.iter().filter(|e| e.actor == "core" && e.decision == "agent deleted").count(), 2);
+        let effects: Vec<Value> =
+            outcomes(&rt).into_iter().filter(|o| o["decided_by"] == "core").map(|o| o["effect"].clone()).collect();
+        assert_eq!(effects, [json!("dismissed"), json!("dismissed")]);
     }
 
     #[test]
