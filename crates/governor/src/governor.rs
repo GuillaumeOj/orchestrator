@@ -2395,7 +2395,12 @@ impl Governor {
                 continue;
             }
             let effect = format!("next tasks on {}", o.to);
-            let action = ActionKind::Downgrade { agent: agent.clone(), to: o.to.clone() };
+            let action = ActionKind::Downgrade {
+                agent: agent.clone(),
+                to: o.to.clone(),
+                from: o.from.clone(),
+                why: orch_when(o.when).into(),
+            };
             let undo = Some(Undo::RestoreModel { agent: agent.clone() });
             let id = self.log(now, action, RESTORED.into(), effect, ActionMode::Auto, Outcome::Applied, undo);
             self.downgrades.insert(agent, ModelOverride { action: id, ..o });
@@ -2592,6 +2597,11 @@ impl Governor {
         self.agent_model.remove(agent);
     }
 
+    /// The agent is running work the user scheduled off-hours.
+    pub fn running_off_hours(&self, agent: &AgentId) -> bool {
+        self.live.get(agent).is_some_and(|t| t.scheduled)
+    }
+
     /// Scheduled off-hours turns running now.
     pub fn off_hours_running(&self) -> u32 {
         self.live.values().filter(|t| t.scheduled).count() as u32
@@ -2658,7 +2668,12 @@ impl Governor {
             w => format!("the week is {}", w.label()),
         };
         let effect = format!("this task and the next ones on {} (the prompt cache is lost)", r.to);
-        let action = ActionKind::Downgrade { agent: agent.clone(), to: r.to.clone() };
+        let action = ActionKind::Downgrade {
+            agent: agent.clone(),
+            to: r.to.clone(),
+            from: model.map(str::to_string),
+            why: orch_when(r.when).into(),
+        };
         if self.plan.shadow_mode {
             // Logged once per episode, not at every look at the boundary.
             if self.shadow_downgrades.insert(agent.clone()) {
@@ -2736,6 +2751,15 @@ fn run_now_cost(e: &QueueEntry) -> String {
             format!("≈ +{f:.0} % of the 5h window (+{:.1} pp of the week)", e.estimated_cost_pct)
         }
         _ => format!("≈ +{:.1} pp", e.estimated_cost_pct),
+    }
+}
+
+/// A downgrade condition as the contract names it.
+fn orch_when(w: DowngradeWhen) -> &'static str {
+    match w {
+        DowngradeWhen::Amber => "amber",
+        DowngradeWhen::Red => "red",
+        DowngradeWhen::ModelWindow => "model_window",
     }
 }
 

@@ -107,6 +107,9 @@ pub struct WeeklyReport {
     pub alerts: Vec<AlertLine>,
     pub limit_hits: Vec<LimitHit>,
     pub model_windows: Vec<ModelWindowPeak>,
+    /// "What to change for next week": plain sentences from the numbers above.
+    #[serde(default)]
+    pub suggestions: Vec<String>,
 }
 
 /// Where an agent's usage goes.
@@ -322,7 +325,7 @@ pub fn build(i: &Inputs) -> WeeklyReport {
         counts.into_iter().map(|(k, (count, undone))| ActionCount { kind: k.into(), count, undone }).collect();
     actions.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.kind.cmp(&b.kind)));
 
-    WeeklyReport {
+    let mut r = WeeklyReport {
         id: plan.id.clone(),
         week_start: plan.week_start,
         reset_at: plan.reset_at,
@@ -348,7 +351,68 @@ pub fn build(i: &Inputs) -> WeeklyReport {
             .into_iter()
             .map(|(name, peak)| ModelWindowPeak { family: family(Some(&name)).into(), name, peak_pct: peak })
             .collect(),
+        suggestions: vec![],
+    };
+    r.suggestions = suggestions(&r);
+    r
+}
+
+/// Rules of thumb over a report (pp first; never dollars).
+pub fn suggestions(r: &WeeklyReport) -> Vec<String> {
+    let mut out = vec![];
+    let t = &r.totals;
+    for a in &r.allocations {
+        let waited = a.queued_p50_min.is_some_and(|m| m >= 30.0);
+        if a.delta_pp <= -5.0 && waited {
+            out.push(format!(
+                "Raise {}'s weight: it used {:.1} of {:.1} planned pp and its work waited {:.0} min (median).",
+                a.target,
+                a.used_pp,
+                a.planned_pp,
+                a.queued_p50_min.unwrap_or(0.0)
+            ));
+        } else if a.delta_pp >= 5.0 {
+            out.push(format!(
+                "{} used {:.1} pp over its plan: lower its weight or give it a hard cap.",
+                a.target, a.delta_pp
+            ));
+        }
     }
+    if t.interactive_pp > t.reserve_pct + 2.0 {
+        out.push(format!(
+            "Your own work used {:.1} pp, more than the {:.0} % reserve: raise the reserve.",
+            t.interactive_pp, t.reserve_pct
+        ));
+    }
+    if t.outside_pp >= 15.0 {
+        out.push(format!(
+            "{:.0} pp of the week was used outside the app (claude.ai, other sessions): plan for it with a larger reserve.",
+            t.outside_pp
+        ));
+    }
+    let red: f64 = r.states.iter().filter(|s| s.state == PressureState::Red).map(|s| s.minutes).sum();
+    if red >= 600.0 {
+        out.push(format!(
+            "The week spent {:.0} h in Red: lower some weights, or schedule long work off-hours.",
+            red / 60.0
+        ));
+    }
+    for w in r.model_windows.iter().filter(|w| w.peak_pct >= 90.0) {
+        out.push(format!(
+            "The {} window peaked at {:.0} %: give long-running roles a downgrade to a lighter model.",
+            w.family, w.peak_pct
+        ));
+    }
+    if r.limit_hits.iter().any(|h| h.window == "weekly") {
+        out.push("The weekly limit was reached: lower the agents' share or the weights.".into());
+    }
+    if !r.in_progress && t.weekly_pct > 0.0 && t.weekly_pct < 60.0 {
+        out.push(format!(
+            "Only {:.0} % of the week was used: there is room for more agent work (higher live caps or weights).",
+            t.weekly_pct
+        ));
+    }
+    out
 }
 
 /// Minutes each queued turn waited, per allocation: a `queue` action paired
@@ -668,6 +732,9 @@ mod tests {
         assert_eq!(r.limit_hits[0].window, "five_hour");
         let pause = r.actions.iter().find(|a| a.kind == "pause_all").unwrap();
         assert_eq!((pause.count, pause.undone), (1, 1));
+        // Under 60 % of the week and an allocation 65 pp under plan that waited an hour.
+        assert!(r.suggestions.iter().any(|x| x.starts_with("Raise shop's weight")), "{:?}", r.suggestions);
+        assert!(r.suggestions.iter().any(|x| x.starts_with("Only 10 %")), "{:?}", r.suggestions);
 
         // Per-model weights: opus converts with its own k.
         let mut pm = BTreeMap::new();

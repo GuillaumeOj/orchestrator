@@ -64,6 +64,11 @@ fn downgrade_switches_to_sonnet_at_the_next_task_and_undo_restores() {
     let d = g.request_turn(with_model("A-1", "A", Tier::High, "sonnet"), at(61));
     assert_eq!(d.effective, Verdict::Admit, "the downgraded task runs");
     let a = g.actions().iter().rev().find(|a| a.kind_name() == "downgrade").unwrap().clone();
+    let v = serde_json::to_value(&a.action).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({"kind": "downgrade", "agent": "A-1", "to": "sonnet", "from": "opus", "why": "model_window"})
+    );
     // Undo: never mid-task. The current task keeps sonnet; the next one gets the role's model,
     // and no new downgrade comes while the window stays tight.
     g.undo(a.id, at(62)).unwrap();

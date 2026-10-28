@@ -907,9 +907,13 @@ impl Core {
             usage["snapshot"] = json!(snapshot);
             usage["reset_at_ms"] = json!(reset);
             usage["shadow"] = json!(shadow);
+            let running_off: std::collections::BTreeSet<String> = rt.with_governor(|g| {
+                g.off_hours_agents().iter().filter(|a| g.running_off_hours(a)).map(|a| a.0.clone()).collect()
+            });
             for a in agents.iter_mut() {
                 let id = a["id"].as_str().unwrap_or("").to_string();
                 a["model_note"] = json!(rt.model_note(&id));
+                a["off_hours"] = json!(running_off.contains(&id));
             }
             (meta, alerts, done) = rt.store.read(store_view);
         }
@@ -1877,6 +1881,7 @@ mod tests {
         let p = core.planner().unwrap();
         assert_eq!(p.reserve_pct, 15.0);
         assert!(rt.with_governor(|g| g.policy().per_model_weights), "the policy option reaches the Governor");
+        assert_eq!((p.off_hours.allowance_pct, p.off_hours.windows.len()), (0.0, 0), "no allowance: no windows");
         assert_eq!(core.plan_form().unwrap().per_model_weights, Some(true));
         assert_eq!(core.reports_list().unwrap()["reports"][0]["id"], "current");
         assert_eq!(core.report_view("current").unwrap()["in_progress"], true);

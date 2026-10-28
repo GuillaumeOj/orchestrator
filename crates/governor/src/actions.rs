@@ -113,6 +113,12 @@ pub enum ActionKind {
     Downgrade {
         agent: AgentId,
         to: String,
+        /// The role's model it leaves.
+        #[serde(default)]
+        from: Option<String>,
+        /// `amber`, `red` or `model_window`: the role's condition that held.
+        #[serde(default)]
+        why: String,
     },
     /// FR-819: back to the role's model at the agent's next task.
     RestoreModel {

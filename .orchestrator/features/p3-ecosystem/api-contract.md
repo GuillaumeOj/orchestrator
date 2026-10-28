@@ -139,6 +139,7 @@ type WeeklyReport = {
   alerts: { ts: string, text: string }[];
   limit_hits: { window: string, ts: string, resets_at: string }[];
   model_windows: { name: string, family: ModelFamily, peak_pct: number }[];
+  suggestions: string[];        // "What to change for next week": plain sentences (pp, never $); [] when nothing stands out
 };
 ```
 Inbox: `{"kind":"info","digest":"weekly_report","report":id}` (level 4); `open` → planner report view. `inbox_act(item, 'open')` on it marks it read and returns `{ open: 'report', report: id }`.
@@ -151,9 +152,11 @@ Inbox: `{"kind":"info","digest":"weekly_report","report":id}` (level 4); `open` 
 ```ts
 snapshot.model_windows: { name: string, family: ModelFamily, used_pct: number, resets_at: string, state: 'green' | 'amber' | 'red' | 'exhausted' }[];   // [] when never seen
 snapshot.calibration: { … P1 fields, per_model?: Record<ModelFamily, { k: number, samples: number }> };
-off_hours: { windows: { start: string, end: string }[], live_cap: number, queued: number, running: number };
+off_hours: { allowance_pct: number, windows: { start: string, end: string }[] /* [] when allowance_pct is 0 */, live_cap: number, queued: number, running: number };
 queue[].reason: … P1 reasons (incl. 'off_hours' = outside working hours, unchanged) | { kind: 'scheduled_off_hours', starts_at: string } /* D4 */ | { kind: 'model_window', model: ModelFamily, resets_at: string, exhausted: boolean };
 actions[].kind: … | 'downgrade' | 'restore_model';
+// a downgrade action: { kind: 'downgrade', agent: string, to: string, from: string | null, why: 'amber' | 'red' | 'model_window' }
+// (plus the P1 action fields: reason, expected_effect, mode, outcome, undo…); restore_model: { kind: 'restore_model', agent }
 ```
 
 `app_state` (P1) gains:
@@ -162,6 +165,7 @@ actions[].kind: … | 'downgrade' | 'restore_model';
 power: { on_ac: boolean | null, assertion_held: boolean, off_hours_pending: number };
 banners: … | { kind: 'not_on_ac' };
 agents[].model_note: string | null;           // "downgraded (Red)" while a downgrade is active
+agents[].off_hours: boolean;                  // running work the user scheduled off-hours now
 ```
 
 | Command | Args | Returns |
@@ -218,7 +222,7 @@ Project settings gain `notion_parent_page?: string` (a page URL or id; the page 
 Back (T-11) notes:
 - `notion_publish` makes one page per feature (titled with the feature's title) under the parent page, with an intro paragraph and one child page per doc of `.orchestrator/features/<slug>/` on the integration branch (`spec.md` first). Publishing again refreshes the same pages (their blocks are replaced). Errors: `"set the project's Notion parent page in its settings first"`, `"feature <slug> has no docs on its integration branch"`, `"no Notion token: add it in Settings › Integrations"`, `"Notion: not found (…); share the page with the integration"`, `"Notion: not authorized (…)"`, `"Notion rate limit reached: try again later"`.
 - Markdown → blocks: headings 1–3, paragraphs, bulleted/numbered lists, fenced code (with its language when Notion knows it), tables, inline links and `code`; anything else (HTML, quotes, rules) as a plain code block.
-- Comments are read every 15 min while the feature has an active run, and on demand by `notion_status` (at most once a minute). The Inbox item is level 3, `kind: 'question'`, actions `open` (→ `inbox_act` returns `{ open: 'url', url: page_url }` and marks it read) and dismiss. `author` is the commenter's name when Notion gives it, else their user id.
+- Comments are read every 15 min while the feature has an active run, and on demand by `notion_status` (at most once a minute). The Inbox item is level 3, `kind: 'question'`, actions `["o", "r"]`: `open` (→ `inbox_act` returns `{ open: 'url', url: page_url }` and marks it read) and `reject` = dismiss. `author` is the commenter's name when Notion gives it, else their user id.
 - `notion_status.error` is the last publish or poll error (`null` when it worked).
 
 ## 9. Settings pane

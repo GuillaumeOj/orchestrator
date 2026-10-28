@@ -127,6 +127,9 @@ pub struct OffHoursWindow {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct OffHoursView {
+    /// The plan's off-hours allowance, % of the week (0 = no off-hours work).
+    pub allowance_pct: f64,
+    /// The off-hours windows of the week; empty without an allowance.
     pub windows: Vec<OffHoursWindow>,
     pub live_cap: u32,
     pub queued: usize,
@@ -288,7 +291,8 @@ pub fn build(
         first_run_ms: None,
         plan_set: false,
         off_hours: OffHoursView {
-            windows: off_hours_windows(gov),
+            allowance_pct: plan.off_hours_allowance_pct,
+            windows: if plan.off_hours_allowance_pct > 0.0 { off_hours_windows(gov) } else { vec![] },
             live_cap: gov.policy().off_hours_live_cap,
             queued: gov.queue().iter().filter(|q| gov.off_hours_agents().contains(&q.agent)).count(),
             running: gov.off_hours_running(),

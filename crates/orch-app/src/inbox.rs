@@ -198,7 +198,8 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 detail: al.payload["text"].as_str().unwrap_or(&al.body).to_string(),
                 preview: None,
                 created_ms: al.created_ms,
-                actions: vec!["o", "a"],
+                // `o` opens the page, `r` dismisses (any action but open/reconnect dismisses an alert).
+                actions: vec!["o", "r"],
                 payload: al.payload.clone(),
             },
             (kind, _) => InboxItem {
