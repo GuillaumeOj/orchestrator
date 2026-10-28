@@ -37,6 +37,14 @@
   async function load() {
     try {
       v = await invoke('board_view', { project: spec.projectId });
+      // Opened on a task (an Inbox conflict note): select its card once.
+      if (spec.taskId != null) {
+        const want = String(spec.taskId);
+        feature = 'all';
+        const ci = COLUMNS.findIndex((c) => v.tasks.some((t) => t.status === c.id && String(t.id) === want));
+        if (ci >= 0) cur = { col: ci, row: v.tasks.filter((t) => t.status === COLUMNS[ci].id).findIndex((t) => String(t.id) === want) };
+        app.panes[paneId] = { ...app.panes[paneId], taskId: null };
+      }
       error = null;
     } catch (e) {
       error = errText(e);
@@ -93,7 +101,7 @@
       const remote = { github: 'GitHub', linear: 'Linear' }[v?.backend];
       toast(
         v?.backend === 'linear'
-          ? `Synced ${v.project.name} with Linear · ${r.pushed ?? 0} pushed${r.imported || r.updated ? ` · ${(r.imported ?? 0) + (r.updated ?? 0)} pulled` : ''}${r.conflicts ? ` · ${r.conflicts} conflict${r.conflicts === 1 ? '' : 's'} (Linear won)` : ''}`
+          ? `Synced ${v.project.name} with Linear · ${r.pushed ?? 0} pushed${(r.pulled ?? (r.imported ?? 0) + (r.updated ?? 0)) ? ` · ${r.pulled ?? (r.imported ?? 0) + (r.updated ?? 0)} pulled` : ''}${r.conflicts ? ` · ${r.conflicts} conflict${r.conflicts === 1 ? '' : 's'} (Linear won)` : ''}`
           : remote
             ? `Synced with ${remote} · ${r.imported} new · ${r.updated} updated${r.conflicts ? ` · ${r.conflicts} conflict(s): ${remote}'s version kept` : ''}`
             : 'Local tasks: nothing to sync',

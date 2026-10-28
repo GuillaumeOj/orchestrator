@@ -41,8 +41,9 @@
   const off = $derived(v?.off_hours ?? null);
   const offStart = $derived(off ? nextOffHours(off, v.now_ms) : null);
   /** One "off-hours" label per day: the first band starting that day. */
+  // No allowance: nights are not off-hours for the Governor, so nothing is hatched.
   const offBands = $derived(
-    (off?.windows ?? []).map((w, i, all) => {
+    (offHoursAllowed(off) ? (off?.windows ?? []) : []).map((w, i, all) => {
       const a = Date.parse(w.start);
       const day = new Date(a).toDateString();
       return { a, b: Date.parse(w.end), label: all.findIndex((x) => new Date(Date.parse(x.start)).toDateString() === day) === i };
@@ -212,7 +213,7 @@
     <div class="grid">
       <section class="card week" bind:clientWidth={w}>
         <div class="ch">
-          <b>Week</b><span class="muted">working hours shaded{off?.windows?.length ? ' · off-hours hatched' : ''}</span>
+          <b>Week</b><span class="muted">working hours shaded{offHoursAllowed(off) ? ' · off-hours hatched' : ''}</span>
           <span class="grow"></span>
           <span class="leg"><i class="l actual"></i>agents</span>
           <span class="leg"><i class="l ideal"></i>ideal</span>

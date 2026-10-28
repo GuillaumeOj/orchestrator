@@ -11,7 +11,7 @@
   import { app, openSettings, projects, saveLayout, toast } from '../lib/app.svelte.js';
   import { connStatus } from '../lib/ecosystem.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { BACKENDS, backendForm, COLUMN_LABEL, mappingRows, mappingToSave, migrateAsk, syncLine } from '../lib/linear.js';
+  import { BACKENDS, backendForm, COLUMN_LABEL, mappingRows, mappingToSave, syncLine } from '../lib/linear.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -63,6 +63,10 @@
     } catch (e) {
       error = errText(e);
     }
+    // The last sync, from the Board's view (kept by the core across restarts).
+    const bv = await invoke('board_view', { project: pid }).catch(() => null);
+    if (bv?.last_sync && bv.last_sync_at_ms) last = { report: bv.last_sync, at: bv.last_sync_at_ms };
+    if (bv?.last_sync_error) syncErr = [bv.last_sync_error];
     const iv = await invoke('integrations_view').catch(() => null);
     linearInt = iv?.items?.find((i) => i.id === 'linear') ?? null;
     if (kind === 'linear') loadTeams();
@@ -118,21 +122,25 @@
     busy = true;
     try {
       const settings = { ...saved.settings, notion_parent_page: notionPage.trim() || undefined };
-      const args = { project: pid, form: { settings, backend: backendToSave(), track_orchestrator_dir: saved.track_orchestrator_dir } };
-      saved = await invoke('project_settings_set', migrate ? { ...args, migrate } : args);
+      const form = { settings, backend: backendToSave(), track_orchestrator_dir: saved.track_orchestrator_dir };
+      const r = await invoke('project_settings_set', { project: pid, form: migrate ? { ...form, migrate } : form });
+      // D8: switching to Linear with tasks: nothing is saved until you choose.
+      if (r?.confirm?.kind === 'linear_migrate') {
+        ask = { open: r.confirm.open, done: r.confirm.done };
+        return;
+      }
+      saved = r;
       ask = null;
       toast(`Saved ${name}'s settings`);
     } catch (e) {
-      const m = migrateAsk(errText(e));
-      if (m && !migrate) ask = m;
-      else toast(errText(e), { kind: 'error' });
+      toast(errText(e), { kind: 'error' });
     } finally {
       busy = false;
     }
   }
 
   async function sync() {
-    if (syncing) return;
+    if (syncing || dirty) return;
     syncing = true;
     try {
       const r = await invoke('board_sync', { project: pid });
@@ -168,14 +176,16 @@
       return e.preventDefault();
     }
     if (e.metaKey && e.key === 'Enter') return (e.preventDefault(), save());
-    if (e.target.closest('input, textarea, select, button') || e.metaKey || e.ctrlKey || e.altKey) return;
+    // Section keys work after a click on a segment or a button; not while typing or picking.
+    if (e.target.closest('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
     if (section.id !== 'backend') return;
     const k = e.key;
+    if ((k === 'Enter' || k === ' ') && e.target.closest('button')) return;
     if (k >= '1' && k <= '3') pickBackend(BACKENDS[Number(k) - 1].id);
     else if (k === 'j' || k === 'ArrowDown') rowSel = Math.min(rows.length - 1, rowSel + 1);
     else if (k === 'k' || k === 'ArrowUp') rowSel = Math.max(0, rowSel - 1);
     else if (k === 'Enter') root?.querySelector(`[data-row="${rowSel}"] select`)?.focus();
-    else if (k === 'r') sync();
+    else if (k === 'r' && !dirty) sync();
     else if (k === 'Escape') cancel();
     else return;
     e.preventDefault();

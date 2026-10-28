@@ -5,7 +5,7 @@
   // and the PR, and the Design section (P3). Keys: e open the doc in nvim, b
   // board, c canvas, p pause / resume the team, m message, d Design,
   // N publish / refresh the docs in Notion (FR-505).
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
   import DesignSection from '../components/DesignSection.svelte';
   import Kbd from '../components/Kbd.svelte';
@@ -158,10 +158,17 @@
     e.preventDefault();
   }
 
+  // Notion: once the feature is known (whichever load brings it), then every minute.
+  const featureKnown = $derived(v?.feature?.id ?? null);
+  $effect(() => {
+    if (featureKnown) untrack(loadNotion);
+  });
+
   onMount(() => {
-    load().then(loadNotion);
+    load();
     const t = setInterval(load, 4000);
-    return () => clearInterval(t);
+    const n = setInterval(() => featureKnown && !publishing && loadNotion(), 60000);
+    return () => (clearInterval(t), clearInterval(n));
   });
 </script>
 

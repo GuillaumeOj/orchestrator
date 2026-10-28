@@ -41,7 +41,9 @@ export const mcpAlert = (item) => item?.kind === 'alert' && item.payload?.alert 
 
 /** Weekly report digest, Notion comment, Linear sync note: `o` goes through the core. */
 export const coreOpens = (item) =>
-  item?.payload?.digest === 'weekly_report' || item?.payload?.source === 'notion' || item?.payload?.source === 'linear';
+  item?.payload?.digest === 'weekly_report' ||
+  item?.payload?.source === 'notion' ||
+  item?.payload?.action === 'task_conflict';
 
 /** What a key does on the selected item (null: not handled). */
 export function keyIntent(key, item) {
@@ -145,6 +147,7 @@ export function toastFor(item, action) {
     return `${g} ${action === 'approve' ? 'approved' : 'rejected'}${who}`;
   }
   if (teamQuestion(item) && action === 'reject') return `Dismissed${who}`;
+  if (item.payload?.source === 'notion' && action === 'reject') return `Dismissed · ${item.title}`;
   if (action === 'reply') return `Reply sent${who}`;
   return `${action === 'approve' ? 'Approved' : 'Rejected'}${who}`;
 }

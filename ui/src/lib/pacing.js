@@ -44,14 +44,15 @@ export const hotWindows = (windows) => (windows ?? []).filter((w) => w.state ===
 
 /** The next off-hours window start after `now` (ms), else null. */
 export function nextOffHours(off, now = Date.now()) {
+  if (!offHoursAllowed(off)) return null;
   const starts = (off?.windows ?? []).map((w) => Date.parse(w.start)).filter((t) => t > now);
   const inside = (off?.windows ?? []).some((w) => Date.parse(w.start) <= now && Date.parse(w.end) > now);
   if (inside) return now;
   return starts.length ? Math.min(...starts) : null;
 }
 
-/** Off-hours scheduling is possible only with an allowance (windows exist). */
-export const offHoursAllowed = (off) => (off?.windows ?? []).length > 0;
+/** Off-hours scheduling needs this week's allowance (plan `off_hours_allowance_pct` > 0). */
+export const offHoursAllowed = (off) => (off?.allowance_pct ?? 0) > 0;
 
 export const OFF_DISABLED = 'Off-hours allowance is 0 % this week. Set it in the plan (e).';
 

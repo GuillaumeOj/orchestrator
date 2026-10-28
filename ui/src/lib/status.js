@@ -80,7 +80,7 @@ export function roleOf(agentId, role = null, color = null) {
 }
 
 /** Why a queued agent waits, in words (FR-809 copy). */
-export function queueReason(entry) {
+export function queueReason(entry, now = Date.now()) {
   const r = entry?.reason ?? {};
   switch (r.kind) {
     case 'live_cap':
@@ -92,7 +92,7 @@ export function queueReason(entry) {
     case 'scheduled_off_hours': {
       // D4: work you scheduled for off-hours (P1's off_hours = outside working hours).
       const t = Date.parse(r.starts_at);
-      return t > Date.now() ? `Off-hours · starts ${clock(t)} (in ${duration(t - Date.now())})` : 'Off-hours';
+      return t > now ? `Off-hours · starts ${clock(t, now)} (in ${duration(t - now)})` : 'Off-hours';
     }
     case 'model_window': {
       const at = clock(Date.parse(r.resets_at), Date.parse(r.resets_at) + 2 * 86400000);

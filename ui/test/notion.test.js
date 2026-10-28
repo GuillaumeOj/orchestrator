@@ -127,7 +127,7 @@ describe('Notion publish', () => {
 describe('Notion comment in the Inbox', () => {
   it('reads Question · Notion; o opens the page (no reply in the app)', async () => {
     const item = {
-      id: 'info-9',
+      id: 'alert-9',
       level: 3,
       kind: 'question',
       agent_id: null,
@@ -155,6 +155,43 @@ describe('Notion comment in the Inbox', () => {
     await waitFor(() =>
       expect(calls.some(([c, a]) => c === 'open_url' && a.url === 'https://notion.so/onb#c1')).toBe(true),
     );
-    expect(calls.find(([c]) => c === 'inbox_act')[1]).toEqual({ item: 'info-9', action: 'open', message: null });
+    expect(calls.find(([c]) => c === 'inbox_act')[1]).toEqual({ item: 'alert-9', action: 'open', message: null });
+    // r dismisses, as on the other alerts (through the undo window).
+    await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: 'r' });
+    expect(app.pending.at(-1)).toMatchObject({ item: 'alert-9', action: 'reject' });
+    expect(app.toasts.at(-1).text).toBe('Dismissed · Comment on onboarding · spec.md');
+    app.pending = [];
+  });
+
+  it('a task conflict note opens the Board on the task', async () => {
+    const item = {
+      id: 'alert-12',
+      level: 4,
+      kind: 'info',
+      agent_id: null,
+      title: "ENG-140 changed in Linear: kept Linear's version",
+      detail: null,
+      preview: null,
+      created_ms: Date.now(),
+      actions: ['o', 'r'],
+      payload: { action: 'task_conflict', task: 40, project: 'shop-api' },
+    };
+    app.data = { ...fixture(), inbox: { badge: 1, items: [item] } };
+    app.layout = null;
+    replies.inbox_act = 'read';
+    replies.board_view = {
+      project: { id: 'shop-api', name: 'shop-api' },
+      backend: 'linear',
+      tasks: [],
+      features: [],
+      runs: [],
+    };
+    const { container } = render(InboxPane);
+    await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: 'o' });
+    await waitFor(() =>
+      expect(
+        Object.values(app.panes).some((p) => p.type === 'board' && p.projectId === 'shop-api' && p.taskId === 40),
+      ).toBe(true),
+    );
   });
 });

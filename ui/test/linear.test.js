@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/lib/app.svelte.js';
-import { backendForm, mappingRows, mappingToSave, migrateAsk, syncLine } from '../src/lib/linear.js';
+import { backendForm, mappingRows, mappingToSave, syncLine } from '../src/lib/linear.js';
 import { handle } from '../src/lib/teams.js';
 import { fixture } from './fixture.js';
 
@@ -48,8 +48,6 @@ describe('linear helpers', () => {
     expect(syncLine({ pushed: 7, imported: 0, updated: 0, conflicts: 0 }, at)).toBe(
       'Last sync 15:04: 7 pushed · 0 pulled · 0 conflicts',
     );
-    expect(migrateAsk('switching to Linear needs migrate: 7 open tasks, 12 done tasks')).toEqual({ open: 7, done: 12 });
-    expect(migrateAsk('no project x')).toBe(null);
     expect(backendForm('linear', { team: 'ENG', project: null, states: undefined })).toEqual({
       type: 'linear',
       team: 'ENG',
@@ -109,11 +107,10 @@ describe('project settings › Task backend', () => {
       ],
     };
     replies.linear_states = { states: STATES, projects: [{ id: 'p1', name: 'Checkout' }] };
+    // D8 as the core answers it: nothing saved, a confirm with the counts, until form.migrate.
     replies.project_settings_set = (a) =>
-      a.migrate
-        ? settings(a.form.backend)
-        : Promise.reject('switching shop-api to Linear needs migrate: 7 open tasks, 12 done tasks');
-    replies.board_sync = { imported: 0, updated: 0, pushed: 7, conflicts: 0, errors: [] };
+      a.form.migrate ? settings(a.form.backend) : { confirm: { kind: 'linear_migrate', open: 7, done: 12 } };
+    replies.board_sync = { imported: 0, updated: 0, pushed: 7, pulled: 0, conflicts: 0, errors: [] };
     app.panes.p1 = { type: 'project-settings', projectId: 'shop-api', section: 'backend', title: 'shop-api settings' };
     const { container, getByText } = render(ProjectSettingsPane, { paneId: 'p1' });
     await waitFor(() => getByText(/Where shop-api's Board lives/));
@@ -143,7 +140,8 @@ describe('project settings › Task backend', () => {
         calls.some(
           ([c, a]) =>
             c === 'project_settings_set' &&
-            a.migrate === 'push_open' &&
+            a.form.migrate === 'push_open' &&
+            a.migrate === undefined &&
             a.form.backend.type === 'linear' &&
             a.form.backend.team === 'ENG' &&
             a.form.backend.states.s3 === 'review',
@@ -208,7 +206,7 @@ describe('project settings › Task backend', () => {
       features: [],
       runs: [],
     };
-    replies.board_sync = { imported: 0, updated: 1, pushed: 7, conflicts: 1, errors: [] };
+    replies.board_sync = { imported: 0, updated: 0, pushed: 7, pulled: 1, conflicts: 1, errors: [] };
     app.panes.b1 = { type: 'board', projectId: 'shop', title: 'shop tasks' };
     const { container, getByText } = render(BoardPane, { paneId: 'b1' });
     await waitFor(() => getByText('ENG-142'));

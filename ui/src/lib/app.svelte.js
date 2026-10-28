@@ -332,8 +332,10 @@ export async function alertAct(item, action) {
   try {
     const r = await invoke('inbox_act', { item: item.id, action, message: null });
     // A Notion comment links its page even when the core only marks it read.
-    if (!routeOpen(r, item.payload?.project ?? null) && action === 'open' && item.payload?.page_url)
-      openUrl(item.payload.page_url);
+    if (routeOpen(r, item.payload?.project ?? null) || action !== 'open') return;
+    // A Notion comment links its page; a Linear/GitHub conflict note opens the Board on the task.
+    if (item.payload?.page_url) openUrl(item.payload.page_url);
+    else if (item.payload?.action === 'task_conflict') openBoard(item.payload.project, item.payload.task);
   } catch (e) {
     toast(errText(e), { kind: 'error' });
   }
@@ -368,12 +370,15 @@ export function openFeature(featureId) {
   addPane({ type: 'feature', featureId, projectId: f?.project_id }, app.layout ? 'tab' : 'right');
 }
 
-/** P2: a project's Board (FR-502), one per project. */
-export function openBoard(projectId) {
+/** P2: a project's Board (FR-502), one per project; `taskId` selects that card. */
+export function openBoard(projectId, taskId = null) {
   if (!projectId) return toast('No project in focus');
   const existing = findPane((s) => s.type === 'board' && s.projectId === projectId);
-  if (existing) return focusPane(existing);
-  addPane({ type: 'board', projectId }, app.layout ? 'tab' : 'right');
+  if (existing) {
+    if (taskId != null) app.panes[existing] = { ...app.panes[existing], taskId };
+    return focusPane(existing);
+  }
+  addPane({ type: 'board', projectId, taskId }, app.layout ? 'tab' : 'right');
 }
 
 /** P2: the Team canvas (FR-301), on a team (or the library when none). */

@@ -5,7 +5,7 @@
   // model windows and the past reports. The current week reads "so far".
   // Keys: 1–4 breakdown, R reports list, [ ] previous / next report,
   // e copy as markdown, ⏎ plan next week, esc back to the Week planner.
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import Kbd from '../components/Kbd.svelte';
   import { app, openSingleton, saveLayout, toast } from '../lib/app.svelte.js';
   import { dayTime } from '../lib/format.js';
@@ -49,7 +49,6 @@
     app.panes[paneId] = { ...app.panes[paneId], reportId };
     saveLayout();
     showList = false;
-    load();
   }
 
   async function copyMarkdown() {
@@ -79,8 +78,13 @@
 
   const stateLabel = (s) => PRESSURE[s]?.label ?? s;
 
+  // Opening another report in this pane (Inbox digest, palette) reloads it.
+  $effect(() => {
+    id;
+    untrack(load);
+  });
+
   onMount(() => {
-    load();
     // The current week moves on: refresh it now and then.
     const t = setInterval(() => id === 'current' && load(), 60000);
     return () => clearInterval(t);
@@ -100,7 +104,7 @@
       {#if estimated}<span class="tag est">≈ estimated</span>{/if}
       <span class="grow"></span>
       <button class="btn ghost" onclick={copyMarkdown}>Copy as markdown <Kbd keys="e" /></button>
-      <button class="btn primary" onclick={() => (app.overlay = { kind: 'plan' })}>Plan week {week + 1} <Kbd keys="⏎" /></button>
+      <button class="btn primary" onclick={() => (app.overlay = { kind: 'plan' })}>Plan week {weekNo(Date.parse(r.reset_at))} <Kbd keys="⏎" /></button>
     </header>
     {#if estimated}<p class="warnbox">▲ Estimated: fewer than 20 usage samples this week; pp per row are approximate.</p>{/if}
 
@@ -185,7 +189,7 @@
           <section class="card">
             <div class="ch"><b>Model windows</b><span class="muted">peak this week</span></div>
             {#each r.model_windows as w (w.name)}
-              {@const st = w.peak_pct >= 100 ? 'exhausted' : w.peak_pct >= 90 ? 'red' : w.peak_pct >= 75 ? 'amber' : 'green'}
+              {@const st = w.peak_pct >= 100 ? 'exhausted' : w.peak_pct >= 95 ? 'red' : w.peak_pct >= 85 ? 'amber' : 'green'}
               <div class="kv"><span>{w.family} week {Math.round(w.peak_pct)} %</span><span class="pill" style:border-color={WINDOW_STATE[st].color}><span style:color={WINDOW_STATE[st].color}>{WINDOW_STATE[st].icon}</span> {WINDOW_STATE[st].label}</span></div>
             {/each}
           </section>

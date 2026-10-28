@@ -142,13 +142,14 @@ describe('pacing helpers', () => {
       'opus week in Red · starts after reset Mon 09:00',
     );
     expect(queueReason({ reason: { kind: 'off_hours' } })).toBe('outside working hours');
-    expect(queueReason({ reason: { kind: 'scheduled_off_hours', starts_at: iso(Date.now() + 7 * 3600000) } })).toMatch(
-      /^Off-hours · starts \d\d:\d\d \(in [67]h \d\dm\)$/,
+    expect(queueReason({ reason: { kind: 'scheduled_off_hours', starts_at: iso(at(21, 18)) } }, at(21, 11))).toBe(
+      'Off-hours · starts 18:00 (in 7h 00m)',
     );
-    const off = { windows: [{ start: iso(at(21, 18)), end: iso(at(22, 8)) }] };
+    const off = { allowance_pct: 10, windows: [{ start: iso(at(21, 18)), end: iso(at(22, 8)) }] };
+    expect(nextOffHours({ ...off, allowance_pct: 0 }, at(21, 11))).toBe(null);
     expect(nextOffHours(off, at(21, 11))).toBe(at(21, 18));
     expect(nextOffHours(off, at(21, 20))).toBe(at(21, 20));
-    expect(nextOffHours({ windows: [] }, at(21, 11))).toBe(null);
+    expect(nextOffHours({ allowance_pct: 10, windows: [] }, at(21, 11))).toBe(null);
     expect(powerChip({ on_ac: true, assertion_held: true, off_hours_pending: 3 })).toEqual({
       text: 'Keeping awake · 3 off-hours',
       warn: false,
@@ -308,6 +309,7 @@ describe('planner, banner, status bar, board', () => {
     first_run_ms: null,
     plan_set: true,
     off_hours: {
+      allowance_pct: 10,
       windows: [{ start: iso(now + 3600000), end: iso(now + 15 * 3600000) }],
       live_cap: 1,
       queued: 3,
@@ -339,7 +341,15 @@ describe('planner, banner, status bar, board', () => {
   });
 
   it('planner: no allowance disables Run off-hours', async () => {
-    replies.planner_view = planner({ off_hours: { windows: [], live_cap: 0, queued: 0, running: 0 } });
+    replies.planner_view = planner({
+      off_hours: {
+        allowance_pct: 0,
+        windows: [{ start: iso(now + 3600000), end: iso(now + 15 * 3600000) }],
+        live_cap: 0,
+        queued: 0,
+        running: 0,
+      },
+    });
     const { container, getByText } = render(PlannerPane);
     await waitFor(() => getByText('Run off-hours', { exact: false }));
     const b = [...container.querySelectorAll('button')].find((x) => x.textContent.includes('Run off-hours'));
