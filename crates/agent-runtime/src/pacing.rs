@@ -76,7 +76,7 @@ impl Runtime {
         true
     }
 
-    fn off_hours_marks(&self) -> OffHoursMarks {
+    pub fn off_hours_marks(&self) -> OffHoursMarks {
         self.db.setting(OFF_HOURS_KEY).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
     }
 

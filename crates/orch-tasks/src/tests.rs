@@ -256,10 +256,15 @@ fn backends_keep_one_github_backend_per_project() {
     let backends = Backends::default();
     let service = |p: &Project| {
         let (gh, made) = (gh.clone(), made.clone());
-        backends.service(&s, p, move || {
-            *made.lock().unwrap() += 1;
-            Some(Box::new(gh) as Box<dyn Gh>)
-        })
+        backends.service(
+            &s,
+            p,
+            move || {
+                *made.lock().unwrap() += 1;
+                Some(Box::new(gh) as Box<dyn Gh>)
+            },
+            || Box::new(linear::Unconfigured),
+        )
     };
     service(&p).create(Task::new("", "", "One", 1)).unwrap();
     let after_first = gh.0.lock().unwrap().calls;
@@ -274,4 +279,111 @@ fn backends_keep_one_github_backend_per_project() {
     // Local projects need no backend.
     p.task_backend = json!({"type": "local"});
     assert_eq!(service(&p).kind(), "local");
+}
+
+/// Spec §6 item 4 on a Linear-backed project (FR-501, FR-503): app changes
+/// reach Linear (issue, state, node label, `blocks` relation, comment),
+/// Linear changes come back, and on a conflict the remote wins.
+#[test]
+fn linear_two_way_sync_and_the_remote_wins() {
+    use crate::linear::fake::FakeLinear;
+    use crate::linear::{LinearIssues, Unconfigured};
+    let (_d, s, p) = setup(json!({"type": "linear", "team": "ENG"}));
+    let lin = FakeLinear::default();
+    let remote: Arc<dyn Remote> = Arc::new(LinearIssues::new(lin.clone(), "ENG", None, Default::default()));
+    let svc = TaskService::with_remote(&s, &p, "linear", remote.clone());
+    let a = svc.create(Task::new("", "", "Session endpoint", 1)).unwrap();
+    assert!(a.remote_error.is_none(), "{:?}", a.remote_error);
+    let a = a.value;
+    assert_eq!((a.backend.as_str(), a.external_id.as_deref()), ("linear", Some("ENG-1")));
+    assert_eq!((a.status, lin.issue("ENG-1").state.as_str()), (TaskStatus::Ready, "st-todo"));
+    let mut b = Task::new("", "", "Form", 1);
+    (b.depends_on, b.node, b.status) = (vec![a.id], Some("front".into()), TaskStatus::Ready);
+    let b = svc.create(b).unwrap().value;
+    assert_eq!(lin.issue("ENG-2").state, "st-todo");
+    assert_eq!(lin.blockers("ENG-2"), ["ENG-1"]);
+    let names = |id: &str| -> Vec<String> {
+        let w = lin.0.lock().unwrap();
+        let i = w.issues.iter().find(|i| i.id == id).unwrap();
+        i.labels.iter().filter_map(|l| w.labels.iter().find(|(x, _)| x == l).map(|(_, n)| n.clone())).collect()
+    };
+    assert_eq!(names("ENG-2"), ["orch", "orch:node:front"]);
+    // Moving a task in the app moves the issue; labels added in Linear stay.
+    lin.0.lock().unwrap().labels.push(("lbl-bug".into(), "bug".into()));
+    lin.edit("ENG-2", |i| i.labels.push("lbl-bug".into()));
+    svc.sync(2).unwrap();
+    svc.set_status(b.id, TaskStatus::Review, 3).unwrap();
+    assert_eq!(lin.issue("ENG-2").state, "st-review");
+    assert!(names("ENG-2").contains(&"bug".to_string()));
+    svc.note(b.id, "front", "ready for review", 4).unwrap();
+    assert_eq!(lin.0.lock().unwrap().comments, [("ENG-2".to_string(), "**front**: ready for review".to_string())]);
+    assert_eq!(svc.sync(5).unwrap(), SyncReport::default(), "nothing changed remotely");
+
+    // Changed in Linear: it comes back.
+    lin.edit("ENG-1", |i| {
+        i.title = "Session endpoint v2".into();
+        i.state = "st-progress".into();
+    });
+    let rep = svc.sync(6).unwrap();
+    assert_eq!(rep.updated, [a.id]);
+    let a2 = s.task(a.id).unwrap().unwrap();
+    assert_eq!((a2.title.as_str(), a2.status), ("Session endpoint v2", TaskStatus::InProgress));
+
+    // Changed on both sides (the app's change failed to reach Linear): Linear wins.
+    lin.0.lock().unwrap().rate_limited = 1;
+    let out = svc.set_status(a.id, TaskStatus::Done, 7).unwrap();
+    assert!(out.remote_error.unwrap().contains("rate limit"));
+    lin.edit("ENG-1", |i| i.state = "st-review".into());
+    // The back-off holds the next sync off; once it is over, the remote wins.
+    assert!(svc.sync(8).is_err());
+    let fresh: Arc<dyn Remote> = Arc::new(LinearIssues::new(lin.clone(), "ENG", None, Default::default()));
+    let svc = TaskService::with_remote(&s, &p, "linear", fresh);
+    let rep = svc.sync(9).unwrap();
+    assert_eq!(rep.conflicts, [a.id]);
+    assert_eq!(s.task(a.id).unwrap().unwrap().status, TaskStatus::Review);
+    assert_eq!(rep.summary()["pulled"], 1);
+
+    // An issue made in Linear with the orch label is imported, its blocker resolved.
+    {
+        let mut w = lin.0.lock().unwrap();
+        let orch = w.labels.iter().find(|(_, n)| n == "orch").unwrap().0.clone();
+        w.issues.push(crate::linear::fake::FakeIssue {
+            id: "ENG-9".into(),
+            title: "From Linear".into(),
+            description: "d".into(),
+            state: "st-todo".into(),
+            labels: vec![orch],
+            updated: 99,
+        });
+        w.relations.push(("rel-9".into(), "ENG-2".into(), "ENG-9".into()));
+    }
+    let rep = svc.sync(10).unwrap();
+    let t = s.task(rep.imported[0]).unwrap().unwrap();
+    assert_eq!((t.status, t.depends_on.clone(), t.backend.as_str()), (TaskStatus::Ready, vec![b.id], "linear"));
+
+    // A task left local (D8 "leave") is never pushed.
+    let mut l = Task::new("p1", "local", "Old local task", 1);
+    l.id = s.upsert_task(&l).unwrap();
+    let before = lin.0.lock().unwrap().issues.len();
+    svc.set_status(l.id, TaskStatus::InProgress, 11).unwrap();
+    svc.sync(12).unwrap();
+    assert_eq!(lin.0.lock().unwrap().issues.len(), before);
+    let _ = Unconfigured;
+}
+
+/// A custom mapping sends a column to the mapped state.
+#[test]
+fn linear_state_mapping_per_project() {
+    use crate::linear::LinearIssues;
+    use crate::linear::fake::FakeLinear;
+    let (_d, s, p) = setup(json!({"type": "linear", "team": "ENG"}));
+    let lin = FakeLinear::default();
+    // "In Progress" is the team's review column here; "Todo" stays Ready.
+    let mapping = [("st-progress".to_string(), TaskStatus::Review)].into_iter().collect();
+    let svc =
+        TaskService::with_remote(&s, &p, "linear", Arc::new(LinearIssues::new(lin.clone(), "ENG", None, mapping)));
+    let mut t = Task::new("", "", "x", 1);
+    t.status = TaskStatus::Review;
+    svc.create(t).unwrap();
+    assert_eq!(lin.issue("ENG-1").state, "st-progress");
 }

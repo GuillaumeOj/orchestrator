@@ -78,7 +78,8 @@ pub struct TaskNote {
 pub struct Task {
     pub id: u64,
     pub project_id: String,
-    /// `local` or `github`.
+    /// `local`, `github` or `linear` (a task left local when the project's
+    /// backend changed keeps `local`, D8).
     pub backend: String,
     #[serde(default)]
     pub external_id: Option<String>,
@@ -248,6 +249,16 @@ pub enum TaskBackendConfig {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         repo: Option<String>,
     },
+    /// Linear issues of team `team` (its key, e.g. `ENG`), optionally of one
+    /// project (id); `states` maps a workflow state id to a column, over the
+    /// default by state type (FR-501).
+    Linear {
+        team: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        states: std::collections::BTreeMap<String, orch_team::TaskStatus>,
+    },
 }
 
 impl TaskBackendConfig {
@@ -255,6 +266,7 @@ impl TaskBackendConfig {
         match self {
             TaskBackendConfig::Local => "local",
             TaskBackendConfig::Github { .. } => "github",
+            TaskBackendConfig::Linear { .. } => "linear",
         }
     }
 }
@@ -641,7 +653,7 @@ impl Store {
             tx.execute(
                 &format!(
                     "INSERT INTO tasks({TASK_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
-                     ON CONFLICT(id) DO UPDATE SET external_id=excluded.external_id, feature_id=excluded.feature_id,
+                     ON CONFLICT(id) DO UPDATE SET backend=excluded.backend, external_id=excluded.external_id, feature_id=excluded.feature_id,
                        team_run_id=excluded.team_run_id, title=excluded.title, body=excluded.body,
                        status=excluded.status, node=excluded.node, agent_id=excluded.agent_id,
                        depends_on=excluded.depends_on, branch=excluded.branch, pr_url=excluded.pr_url,

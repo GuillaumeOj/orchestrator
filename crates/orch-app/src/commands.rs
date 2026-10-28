@@ -344,6 +344,16 @@ pub async fn open_url(core: CoreState<'_>, url: String) -> Res<()> {
 }
 
 #[tauri::command]
+pub async fn linear_teams(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, |c| c.linear_teams()).await
+}
+
+#[tauri::command]
+pub async fn linear_states(core: CoreState<'_>, team: String) -> Res<Value> {
+    blocking(core, move |c| c.linear_states(&team)).await
+}
+
+#[tauri::command]
 pub async fn queue_off_hours(core: CoreState<'_>, entry: Option<u64>, task: Option<u64>, off: bool) -> Res<Value> {
     blocking(core, move |c| c.queue_off_hours(entry, task, off)).await
 }

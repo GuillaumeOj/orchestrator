@@ -195,9 +195,13 @@ Notes (back, T-8):
 | `linear_teams` | — | `{ teams: { id, key, name }[] }` (needs the `linear` integration) |
 | `linear_states` | `team: string` | `{ states: { id, name, type, default_column }[], projects: { id, name }[] }` |
 
-D8: `project_settings_set` with a change **to** Linear on a project that has tasks takes `migrate: 'push_open' | 'leave'` (required then; refused without it, with the counts in the error so the UI can ask). `push_open` creates the open tasks as Linear issues; `leave` keeps them local and unsynced (their `backend` stays the old one). Done tasks are never pushed.
+D8: `project_settings_set` (P2 form, plus `migrate?: 'push_open' | 'leave'`) with a change **to** Linear on a project that has tasks needs `migrate`. Without it **nothing is saved** and the command *succeeds* with `{ confirm: { kind: 'linear_migrate', open: number, done: number } }` (no error text to parse); otherwise it returns the usual `project_settings` answer. `push_open` gives the open tasks to Linear (created at the sync it runs at once); `leave` keeps them local and unsynced (their `backend` stays `local`/`github`). Done tasks are never pushed. Any other `migrate` value is an error.
 
-`board_sync` (P2) returns the same `SyncReport` for every backend; conflicts (remote won) also create an Inbox info item.
+`board_sync` (P2) returns, for every backend, `{ pushed: number, pulled: number, imported: number, updated: number, conflicts: number, errors: string[] }` (`pulled` = imported + updated + conflicts). Conflicts (remote won) also create an Inbox info item (`{"action":"task_conflict","task":id,"project":id}`). A background sync runs every 5 min for projects with an active run.
+
+`board_view` (P2) gains: `linear_team: string | null` (the team key), `last_sync_at_ms: number | null`, `last_sync: <the board_sync shape> | null`, `last_sync_error` (also from background syncs), and per task `remote_won: boolean` (the last sync kept the remote's version of it), `off_hours: boolean` (the task, or its run, is marked "Run off-hours"). For Linear, `tasks[].external_id` is the issue identifier (`"ENG-142"`), and `backend` is `'linear'` (a task left out by D8 keeps its old `backend`).
+
+Back (T-9) notes: the transport is GraphQL at api.linear.app, core only; the API key is the Keychain's `linear` account, sent in a header on curl's stdin; the body goes through a 0600 temp file. A 429 or a `RATELIMITED` answer pauses that project's Linear calls (Retry-After, else 60 s doubling to 1 h); the sync then fails with `"Linear rate limit: retrying in N s"`. A Linear state added after the mapping was saved gets its column from its type; `"Linear state <id> isn't mapped: map it in the project settings"` only shows for an unknown state id.
 
 ## 8. Notion (FR-505, C)
 

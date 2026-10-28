@@ -34,6 +34,9 @@ use crate::runtime::Runtime;
 use crate::state::AgentState;
 use crate::store::{Admission, AgentRecord, TeamSeat, TurnRow, TurnStatus};
 
+/// Settings key prefix of each project's last task sync (`tasks.last_sync.<project>`).
+pub const LAST_SYNC_KEY: &str = "tasks.last_sync.";
+
 /// What to launch (J3 step 2).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LaunchSpec {
@@ -179,7 +182,7 @@ impl Runtime {
 
     /// The tasks of `project` over its backend, kept across calls.
     pub fn tasks_for(&self, project: &orch_store::Project) -> TaskService<'_> {
-        self.task_backends.service(&self.db, project, || self.gh_override())
+        self.task_backends.service(&self.db, project, || self.gh_override(), || self.linear_transport())
     }
 
     /// Tests replace `gh` (orch-tasks' `Gh`); `None` = the real one.
@@ -706,32 +709,56 @@ impl Runtime {
             if project.backend().kind() == "local" {
                 continue;
             }
-            match self.tasks_for(&project).sync(now_ms()) {
-                Ok(rep) => {
-                    for id in &rep.conflicts {
-                        let handle = self.db.task(*id).ok().flatten().map(|t| t.handle()).unwrap_or_default();
-                        let _ = self.add_item(
-                            None,
-                            "info",
-                            format!(
-                                "{}: task {handle} changed here and on GitHub; GitHub's version was kept",
-                                project.name
-                            ),
-                            json!({"action": "task_conflict", "task": id, "project": project.id}),
-                            0,
-                        );
-                    }
-                    if rep != orch_tasks::SyncReport::default() {
-                        let mut detail = rep.summary();
-                        detail["project"] = json!(project.id);
-                        self.event("-", "tasks_synced", detail);
-                    }
-                }
-                Err(e) => {
-                    self.event("-", "tasks_sync_error", json!({"project": project.id, "error": format!("{e:#}")}))
-                }
-            }
+            let _ = self.sync_tasks(&project);
         }
+    }
+
+    /// Syncs one project's remote backend now (FR-503): conflicts (the
+    /// remote won) become Inbox info items, and the outcome is kept for the
+    /// Board (`last_sync`).
+    pub fn sync_tasks(&self, project: &orch_store::Project) -> Result<orch_tasks::SyncReport> {
+        let remote = match project.backend().kind() {
+            "linear" => "Linear",
+            _ => "GitHub",
+        };
+        let r = self.tasks_for(project).sync(now_ms());
+        let last = match &r {
+            Ok(rep) => {
+                for id in &rep.conflicts {
+                    let handle = self.db.task(*id).ok().flatten().map(|t| t.handle()).unwrap_or_default();
+                    let _ = self.add_item(
+                        None,
+                        "info",
+                        format!(
+                            "{}: task {handle} changed here and on {remote}; {remote}'s version was kept",
+                            project.name
+                        ),
+                        json!({"action": "task_conflict", "task": id, "project": project.id}),
+                        0,
+                    );
+                }
+                if rep != &orch_tasks::SyncReport::default() {
+                    let mut detail = rep.summary();
+                    detail["project"] = json!(project.id);
+                    self.event("-", "tasks_synced", detail);
+                }
+                json!({"at_ms": now_ms(), "report": rep.summary(), "conflicts": rep.conflicts, "error": null})
+            }
+            Err(e) => {
+                self.event("-", "tasks_sync_error", json!({"project": project.id, "error": format!("{e:#}")}));
+                let mut prev = self.last_sync(&project.id);
+                prev["error"] = json!(format!("{e:#}"));
+                prev
+            }
+        };
+        let _ = self.db.set_setting(&format!("{LAST_SYNC_KEY}{}", project.id), &last);
+        r
+    }
+
+    /// The last sync of a project's remote backend: `{at_ms, report,
+    /// conflicts, error}` (`null` before the first).
+    pub fn last_sync(&self, project_id: &str) -> Value {
+        self.db.setting(&format!("{LAST_SYNC_KEY}{project_id}")).ok().flatten().unwrap_or(json!({}))
     }
 
     // ------------------------------------------------------------ messages

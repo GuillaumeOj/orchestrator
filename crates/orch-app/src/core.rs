@@ -1202,6 +1202,10 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
     #[cfg(test)]
     {
         rc.secrets = Arc::new(orch_secrets::MemorySecrets::default());
+        // Nor Linear: an in-memory one per backend.
+        rc.linear = Some(agent_runtime::linear::LinearFactory(Arc::new(|| {
+            Box::new(orch_tasks::linear::fake::FakeLinear::default())
+        })));
     }
     // Helpers next to the app binary (target/<profile>, or Contents/MacOS in a
     // bundle) are copied to <home>/bin, a stable path outside the .app.
@@ -1801,6 +1805,42 @@ mod tests {
         assert!(!core.planner().unwrap().shadow, "kept");
         core.set_enforce(false).unwrap();
         assert!(core.planner().unwrap().shadow);
+        core.shutdown();
+    }
+
+    /// D8 and the Board on a Linear-backed project (api-contract §7).
+    #[test]
+    fn switching_to_linear_asks_first_then_pushes_open_tasks() {
+        let d = tmp();
+        let core = test_core(d.path());
+        assert_eq!(core.linear_teams().unwrap()["teams"][0]["key"], "ENG");
+        let st = core.linear_states("ENG").unwrap();
+        assert_eq!(st["states"][3]["default_column"], "review");
+        assert_eq!(st["projects"][0]["name"], "Shop");
+        let mk = |title: &str| core.task_create(json!({"project_id": "repo", "title": title})).unwrap();
+        let (a, b) = (mk("Open one"), mk("Done one"));
+        core.task_update(b["id"].as_u64().unwrap(), Some("done"), None, None).unwrap();
+        let form = |migrate: Option<&str>| -> crate::teams::ProjectSettingsForm {
+            serde_json::from_value(json!({"settings": {}, "backend": {"type": "linear", "team": "ENG"},
+                "track_orchestrator_dir": true, "migrate": migrate}))
+            .unwrap()
+        };
+        let r = core.project_settings_set("repo", form(None)).unwrap();
+        assert_eq!(r, json!({"confirm": {"kind": "linear_migrate", "open": 1, "done": 1}}), "nothing saved yet");
+        assert_eq!(core.project_settings("repo").unwrap()["backend"]["type"], "local");
+        assert!(core.project_settings_set("repo", form(Some("maybe"))).is_err());
+        core.project_settings_set("repo", form(Some("push_open"))).unwrap();
+        let v = core.board_view("repo").unwrap();
+        assert_eq!((v["backend"].as_str(), v["linear_team"].as_str()), (Some("linear"), Some("ENG")));
+        assert!(v["last_sync_at_ms"].as_u64().is_some(), "{v}");
+        let task = |id: &Value| v["tasks"].as_array().unwrap().iter().find(|t| t["id"] == *id).unwrap().clone();
+        let (ta, tb) = (task(&a["id"]), task(&b["id"]));
+        assert_eq!((ta["backend"].as_str(), ta["external_id"].as_str()), (Some("linear"), Some("ENG-1")));
+        assert_eq!((ta["remote_won"].as_bool(), ta["off_hours"].as_bool()), (Some(false), Some(false)));
+        assert_eq!((tb["backend"].as_str(), tb["external_id"].as_str()), (Some("local"), None), "done: never pushed");
+        let s = core.board_sync("repo").unwrap();
+        assert_eq!((s["pushed"].as_u64(), s["pulled"].as_u64()), (Some(0), Some(0)));
+        assert!(s["errors"].as_array().unwrap().is_empty());
         core.shutdown();
     }
 

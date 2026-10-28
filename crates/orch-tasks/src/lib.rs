@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod github;
+pub mod linear;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -11,6 +12,7 @@ use orch_store::{Project, Store, Task, TaskBackendConfig, TaskNote};
 use orch_team::TaskStatus;
 
 use crate::github::{Gh, GhCli, GithubIssues, Issue, IssueWrite};
+use crate::linear::{Graphql, LinearIssues};
 
 impl Gh for Box<dyn Gh> {
     fn run(&self, args: &[String]) -> Result<String> {
@@ -43,59 +45,126 @@ pub struct SyncReport {
 impl SyncReport {
     /// Counts for the UI and the event log.
     pub fn summary(&self) -> serde_json::Value {
-        serde_json::json!({"imported": self.imported.len(), "updated": self.updated.len(), "pushed": self.pushed.len(),
-                           "conflicts": self.conflicts.len(), "errors": self.errors})
+        let pulled = self.imported.len() + self.updated.len() + self.conflicts.len();
+        serde_json::json!({"pushed": self.pushed.len(), "pulled": pulled, "imported": self.imported.len(),
+                           "updated": self.updated.len(), "conflicts": self.conflicts.len(), "errors": self.errors})
     }
 }
 
-enum Backend {
-    Local,
-    Github(Arc<GithubIssues<Box<dyn Gh>>>),
+/// A remote task backend (GitHub Issues, Linear): the issue operations the
+/// sync needs. `Issue.number` is the remote's id.
+pub trait Remote: Send + Sync {
+    fn list_issues(&self) -> Result<Vec<Issue>>;
+    fn create_issue(&self, w: &IssueWrite) -> Result<Issue>;
+    /// Replaces the managed fields; labels the app does not manage are kept.
+    fn update_issue(&self, id: &str, w: &IssueWrite) -> Result<Issue>;
+    fn get_issue(&self, id: &str) -> Result<Issue>;
+    fn add_comment(&self, id: &str, text: &str) -> Result<()>;
 }
 
-type GithubBackend = Arc<GithubIssues<Box<dyn Gh>>>;
+impl<G: Gh> Remote for GithubIssues<G> {
+    fn list_issues(&self) -> Result<Vec<Issue>> {
+        self.list()
+    }
+    fn create_issue(&self, w: &IssueWrite) -> Result<Issue> {
+        self.create(w)
+    }
+    fn update_issue(&self, id: &str, w: &IssueWrite) -> Result<Issue> {
+        let keep = self.get(id)?.other_labels;
+        self.update(id, w, &keep)
+    }
+    fn get_issue(&self, id: &str) -> Result<Issue> {
+        self.get(id)
+    }
+    fn add_comment(&self, id: &str, text: &str) -> Result<()> {
+        self.comment(id, text)
+    }
+}
 
-fn github(project: &Project, repo: Option<String>, gh: Option<Box<dyn Gh>>) -> GithubBackend {
+impl<T: Graphql> Remote for LinearIssues<T> {
+    fn list_issues(&self) -> Result<Vec<Issue>> {
+        self.list()
+    }
+    fn create_issue(&self, w: &IssueWrite) -> Result<Issue> {
+        self.create(w)
+    }
+    fn update_issue(&self, id: &str, w: &IssueWrite) -> Result<Issue> {
+        self.update(id, w)
+    }
+    fn get_issue(&self, id: &str) -> Result<Issue> {
+        self.get(id)
+    }
+    fn add_comment(&self, id: &str, text: &str) -> Result<()> {
+        self.comment(id, text)
+    }
+}
+
+#[derive(Clone)]
+enum Backend {
+    Local,
+    Remote(&'static str, Arc<dyn Remote>),
+}
+
+fn github(project: &Project, repo: Option<String>, gh: Option<Box<dyn Gh>>) -> Arc<dyn Remote> {
     Arc::new(GithubIssues::new(gh.unwrap_or_else(|| Box::new(GhCli::new(project.path.clone()))), repo))
 }
 
-/// One backend per project, kept across calls: a GitHub backend resolves
-/// its repository and creates its labels once, not on every task write. A
-/// project whose backend setting or checkout changes gets a new one.
+fn remote(
+    project: &Project,
+    gh: impl FnOnce() -> Option<Box<dyn Gh>>,
+    linear: impl FnOnce() -> Box<dyn Graphql>,
+) -> Backend {
+    match project.backend() {
+        TaskBackendConfig::Local => Backend::Local,
+        TaskBackendConfig::Github { repo } => Backend::Remote("github", github(project, repo, gh())),
+        TaskBackendConfig::Linear { team, project: lp, states } => {
+            Backend::Remote("linear", Arc::new(LinearIssues::new(linear(), &team, lp, states)))
+        }
+    }
+}
+
+/// One backend per project, kept across calls: a remote backend resolves
+/// its repository or team and its labels once, not on every task write, and
+/// keeps its rate-limit back-off. A project whose backend setting or
+/// checkout changes gets a new one.
 #[derive(Default)]
 pub struct Backends {
-    by_project: Mutex<HashMap<String, (TaskBackendConfig, PathBuf, GithubBackend)>>,
+    by_project: Mutex<HashMap<String, (TaskBackendConfig, PathBuf, Backend)>>,
 }
 
 impl Backends {
     /// The tasks of `project`. `gh` makes the `gh` runner when a GitHub
-    /// backend is created (`None` = the real `gh`).
+    /// backend is created (`None` = the real `gh`); `linear` the GraphQL
+    /// transport of a Linear one.
     pub fn service<'a>(
         &self,
         store: &'a Store,
         project: &Project,
         gh: impl FnOnce() -> Option<Box<dyn Gh>>,
+        linear: impl FnOnce() -> Box<dyn Graphql>,
     ) -> TaskService<'a> {
         let cfg = project.backend();
-        let TaskBackendConfig::Github { repo } = &cfg else {
+        if cfg == TaskBackendConfig::Local {
             return TaskService { store, project: project.clone(), backend: Backend::Local };
-        };
+        }
         let mut m = self.by_project.lock().unwrap_or_else(|e| e.into_inner());
-        let gh = match m.get(&project.id) {
+        let backend = match m.get(&project.id) {
             Some((c, path, b)) if *c == cfg && *path == project.path => b.clone(),
             _ => {
-                let b = github(project, repo.clone(), gh());
+                let b = remote(project, gh, linear);
                 m.insert(project.id.clone(), (cfg.clone(), project.path.clone(), b.clone()));
                 b
             }
         };
-        TaskService { store, project: project.clone(), backend: Backend::Github(gh) }
+        TaskService { store, project: project.clone(), backend }
     }
 }
 
 /// The tasks of one project over its backend (ADR-004). Every task is
-/// mirrored in the store; with GitHub, writes go through to the issue at once
-/// and [`TaskService::sync`] brings remote changes back.
+/// mirrored in the store; with a remote, writes go through to the issue at
+/// once and [`TaskService::sync`] brings remote changes back. A task whose
+/// `backend` is not the project's (left out when the backend changed, D8)
+/// stays local and is never pushed.
 pub struct TaskService<'a> {
     store: &'a Store,
     project: Project,
@@ -105,17 +174,27 @@ pub struct TaskService<'a> {
 impl<'a> TaskService<'a> {
     /// `gh` replaces the real `gh` (tests).
     pub fn new(store: &'a Store, project: &Project, gh: Option<Box<dyn Gh>>) -> TaskService<'a> {
-        let backend = match project.backend() {
-            TaskBackendConfig::Local => Backend::Local,
-            TaskBackendConfig::Github { repo } => Backend::Github(github(project, repo, gh)),
-        };
+        let backend = remote(project, || gh, || Box::new(linear::Unconfigured));
         TaskService { store, project: project.clone(), backend }
+    }
+
+    /// Over a given remote (tests, and a Linear transport chosen by the caller).
+    pub fn with_remote(store: &'a Store, project: &Project, kind: &'static str, r: Arc<dyn Remote>) -> TaskService<'a> {
+        TaskService { store, project: project.clone(), backend: Backend::Remote(kind, r) }
     }
 
     pub fn kind(&self) -> &'static str {
         match self.backend {
             Backend::Local => "local",
-            Backend::Github(_) => "github",
+            Backend::Remote(k, _) => k,
+        }
+    }
+
+    /// The remote of a task the project's backend owns.
+    fn remote_of(&self, t: &Task) -> Option<&Arc<dyn Remote>> {
+        match &self.backend {
+            Backend::Remote(k, r) if t.backend == *k => Some(r),
+            _ => None,
         }
     }
 
@@ -140,14 +219,11 @@ impl<'a> TaskService<'a> {
     }
 
     /// Pushes `t` to the remote (create or update) and records what it said.
-    fn push(&self, gh: &GithubIssues<Box<dyn Gh>>, t: &mut Task) -> Result<()> {
+    fn push(&self, gh: &dyn Remote, t: &mut Task) -> Result<()> {
         let w = self.write_of(t);
         let issue = match &t.external_id {
-            None => gh.create(&w)?,
-            Some(n) => {
-                let keep = gh.get(n)?.other_labels;
-                gh.update(n, &w, &keep)?
-            }
+            None => gh.create_issue(&w)?,
+            Some(n) => gh.update_issue(n, &w)?,
         };
         t.external_id = Some(issue.number);
         t.remote_updated_at = Some(issue.updated_at);
@@ -155,12 +231,14 @@ impl<'a> TaskService<'a> {
     }
 
     fn save_and_push(&self, mut t: Task) -> Result<Outcome<Task>> {
-        t.backend = self.kind().into();
+        if t.id == 0 || t.backend.is_empty() {
+            t.backend = self.kind().into();
+        }
         t.project_id = self.project.id.clone();
         t.id = self.store.upsert_task(&t)?;
         let mut remote_error = None;
-        if let Backend::Github(gh) = &self.backend {
-            match self.push(gh, &mut t) {
+        if let Some(gh) = self.remote_of(&t).cloned() {
+            match self.push(gh.as_ref(), &mut t) {
                 Ok(()) => {}
                 Err(e) => {
                     Self::mark_pending(&mut t);
@@ -204,14 +282,14 @@ impl<'a> TaskService<'a> {
         t.updated_at_ms = now_ms;
         self.store.upsert_task(&t)?;
         let mut remote_error = None;
-        if let (Backend::Github(gh), Some(n)) = (&self.backend, t.external_id.clone()) {
-            match gh.comment(&n, &format!("**{by}**: {text}")) {
+        if let (Some(gh), Some(n)) = (self.remote_of(&t).cloned(), t.external_id.clone()) {
+            match gh.add_comment(&n, &format!("**{by}**: {text}")) {
                 Err(e) => remote_error = Some(format!("{e:#}")),
                 // A comment moves the issue's updatedAt: record it, or the next
                 // sync takes our own comment for a remote change (and a later
                 // pending change for a conflict).
                 Ok(()) if Self::pending(&t).is_none() => {
-                    if let Ok(issue) = gh.get(&n) {
+                    if let Ok(issue) = gh.get_issue(&n) {
                         t.remote_updated_at = Some(issue.updated_at);
                         self.store.upsert_task(&t)?;
                     }
@@ -228,12 +306,13 @@ impl<'a> TaskService<'a> {
     /// changed too: then **the remote wins** and the task is listed in
     /// `conflicts` (the caller tells the user).
     pub fn sync(&self, now_ms: u64) -> Result<SyncReport> {
-        let Backend::Github(gh) = &self.backend else { return Ok(SyncReport::default()) };
+        let Backend::Remote(kind, gh) = &self.backend else { return Ok(SyncReport::default()) };
+        let (kind, gh) = (*kind, gh.as_ref());
         let mut rep = SyncReport::default();
-        let issues = gh.list()?;
+        let issues = gh.list_issues()?;
         let local = self.store.tasks(Some(&self.project.id), None, None)?;
         // Local tasks the remote never got.
-        for t in local.iter().filter(|t| t.backend == "github" && t.external_id.is_none()) {
+        for t in local.iter().filter(|t| t.backend == kind && t.external_id.is_none()) {
             let mut t = t.clone();
             match self.push(gh, &mut t) {
                 Ok(()) => {
@@ -247,9 +326,9 @@ impl<'a> TaskService<'a> {
         // in this pass: resolved again once every issue is in the store.
         let mut adopted: Vec<(u64, &Issue)> = Vec::new();
         for issue in &issues {
-            match self.store.task_by_external(&self.project.id, "github", &issue.number)? {
+            match self.store.task_by_external(&self.project.id, kind, &issue.number)? {
                 None => {
-                    let mut t = Task::new(&self.project.id, "github", &issue.title, now_ms);
+                    let mut t = Task::new(&self.project.id, kind, &issue.title, now_ms);
                     t.external_id = Some(issue.number.clone());
                     self.adopt(&mut t, issue);
                     t.id = self.store.upsert_task(&t)?;
@@ -313,7 +392,7 @@ impl<'a> TaskService<'a> {
         issue
             .blocked_by
             .iter()
-            .filter_map(|n| self.store.task_by_external(&self.project.id, "github", n).ok().flatten())
+            .filter_map(|n| self.store.task_by_external(&self.project.id, self.kind(), n).ok().flatten())
             .map(|d| d.id)
             .collect()
     }

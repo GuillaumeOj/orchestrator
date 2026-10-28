@@ -87,6 +87,8 @@ pub struct RuntimeConfig {
     pub default_plan: fn(Timestamp, bool) -> WeeklyPlan,
     /// FR-816: keeps the Mac awake on AC while off-hours work waits or runs.
     pub power: Arc<dyn crate::power::PowerAssertion>,
+    /// Replaces the Linear GraphQL transport (tests).
+    pub linear: Option<crate::linear::LinearFactory>,
 }
 
 impl RuntimeConfig {
@@ -115,6 +117,7 @@ impl RuntimeConfig {
             net: Arc::new(crate::net::SystemNet),
             default_plan,
             power: Arc::new(crate::power::Caffeinate::default()),
+            linear: None,
         }
     }
 }
