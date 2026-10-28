@@ -331,7 +331,9 @@ export function routeOpen(r, projectId = null) {
 export async function alertAct(item, action) {
   try {
     const r = await invoke('inbox_act', { item: item.id, action, message: null });
-    routeOpen(r, item.payload?.project ?? null);
+    // A Notion comment links its page even when the core only marks it read.
+    if (!routeOpen(r, item.payload?.project ?? null) && action === 'open' && item.payload?.page_url)
+      openUrl(item.payload.page_url);
   } catch (e) {
     toast(errText(e), { kind: 'error' });
   }
@@ -622,6 +624,16 @@ export async function runOffHours(a) {
   }
 }
 
+/** FR-505: the feature's docs to Notion (also `N` in the Feature pane). */
+export async function publishNotion(f) {
+  try {
+    const r = await invoke('notion_publish', { feature: f.id });
+    toast(`Published ${r.docs.length} docs to Notion`, { action: { label: 'Open', run: () => openUrl(r.page_url) } });
+  } catch (e) {
+    toast(`Publish failed: ${errText(e)}`, { kind: 'error' });
+  }
+}
+
 /** Drop a queued turn (its message is not delivered). */
 export function cancelQueued(a) {
   confirm(
@@ -889,6 +901,7 @@ export function commands() {
   }
   for (const f of features()) {
     list.push({ id: `feature.open.${f.id}`, label: `Open feature ${f.slug}`, run: () => openFeature(f.id) });
+    list.push({ id: `feature.notion.${f.id}`, label: `Publish ${f.slug} to Notion`, run: () => publishNotion(f) });
     list.push({
       id: `feature.delete.${f.id}`,
       label: `Delete feature ${f.slug}…`,

@@ -95,6 +95,7 @@ export function kindLabel(item) {
   const g = gateKind(item);
   if (g) return g === 'pr' ? 'PR gate' : 'Spec gate';
   if (teamQuestion(item)) return 'Question';
+  if (item?.payload?.source === 'notion') return 'Question · Notion';
   return (
     {
       permission: 'Permission',
@@ -111,6 +112,7 @@ export function kindLabel(item) {
 /** Labels for an item's a/r keys (component copy, Penpot 02 Inbox item). */
 export function actionLabels(item) {
   if (teamQuestion(item)) return { r: 'Dismiss' };
+  if (item?.payload?.source === 'notion') return { r: 'Dismiss', o: 'Open in Notion ↗' };
   switch (item?.kind) {
     case 'gate':
       return gateKind(item) === 'pr'
