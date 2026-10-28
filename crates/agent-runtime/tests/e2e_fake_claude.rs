@@ -355,6 +355,9 @@ fn an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry() {
     assert!(r.ok, "{r:?}");
     wait_for("retried", 30, || screen().contains("retry the call Bash pnpm add zod") && core.state_of("a") == "idle");
     wait_for("other work too", 30, || agent(&core.sock, "a")["queued_turns"] == 0 && core.state_of("a") == "idle");
+    // The pasted retry shows (and the agent reads idle) before its turn
+    // submits: wait for the retried call's own permission answer.
+    wait_for("retry answered", 30, || audit().len() >= 4);
     assert!(core.rt.inbox().is_empty(), "no second prompt");
     // The rule, the expiry, the user's Allow, and the retry on their one-shot allow.
     assert_eq!(audit(), [format!("rule:{}", rule.id), "expired".into(), "user".into(), "user".into()]);
