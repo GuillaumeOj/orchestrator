@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use agent_runtime::paths::AppPaths;
 use agent_runtime::resources::PressureLevel;
-use agent_runtime::runtime::{Runtime, RuntimeConfig};
+use agent_runtime::runtime::{Runtime, RuntimeConfig, test_plan};
 use agent_runtime::server::{self, request};
 use orch_protocol::{AgentSpec, CtlRequest, bus};
 use serde_json::Value;
@@ -46,6 +46,7 @@ fn start_deliver_suspend_resume_kill_with_fake_claude() {
 
     let mut cfg = RuntimeConfig::new(paths.clone());
     cfg.claude = fake;
+    cfg.default_plan = test_plan;
     cfg.projects_root = root.path().join("projects");
     cfg.hold = Duration::from_secs(1);
     let rt = Runtime::new(cfg).unwrap();
@@ -193,6 +194,7 @@ impl Core {
         git(&repo, &["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "init"]);
         let mut cfg = RuntimeConfig::new(paths.clone());
         cfg.claude = fake;
+        cfg.default_plan = test_plan;
         cfg.projects_root = root.path().join("projects");
         cfg.hold = Duration::from_secs(1);
         cfg.idle_suspend = None;

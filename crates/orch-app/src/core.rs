@@ -55,6 +55,8 @@ pub struct CoreConfig {
     /// Run the J10 reconciler at start (resumes agents that were working).
     pub recover: bool,
     pub enforce: bool,
+    /// The plan of a week with none stored (tests: `test_plan`, any date).
+    pub default_plan: fn(governor::jiff::Timestamp, bool) -> governor::WeeklyPlan,
 }
 
 impl CoreConfig {
@@ -72,6 +74,7 @@ impl CoreConfig {
             projects: var("ORCH_PROJECTS").map(|v| v.split(':').map(PathBuf::from).collect()).unwrap_or_default(),
             recover: var("ORCH_NO_RECOVER").is_none(),
             enforce: var("ORCH_ENFORCE").is_some(),
+            default_plan: agent_runtime::runtime::default_plan,
         }
     }
 }
@@ -1167,6 +1170,7 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
     // FR-812: shadow mode unless ORCH_ENFORCE; the runtime then applies the
     // user's stored choice (`governor.enforce`, also set by `orchd enforce`).
     rc.shadow = !cfg.enforce;
+    rc.default_plan = cfg.default_plan;
     // Permission prompts: the runtime answers from the stored rules only; the
     // app's broker holds the rest for its Inbox (and the pane's own dialog).
     rc.permission_hold = Duration::ZERO;
@@ -1335,6 +1339,7 @@ mod tests {
             projects: vec![repo],
             recover: false,
             enforce: false,
+            default_plan: agent_runtime::runtime::test_plan,
         })
     }
 
@@ -1562,6 +1567,7 @@ mod tests {
             projects: vec![nested],
             recover: false,
             enforce: false,
+            default_plan: agent_runtime::runtime::test_plan,
         });
         // The runtime records the main checkout as the agent's repo (FR-105).
         let main = main.canonicalize().unwrap();
@@ -1629,6 +1635,7 @@ mod tests {
             projects: vec![repo.to_path_buf()],
             recover: false,
             enforce: false,
+            default_plan: agent_runtime::runtime::test_plan,
         })
     }
 
@@ -1696,21 +1703,9 @@ mod tests {
         let pauses = rt.db.actions(50).unwrap().iter().filter(|a| a.kind_name() == "pause_all").count();
         assert_eq!(pauses, 2, "the first start's pause row is kept next to the re-applied one");
         core.governor_act("resume_all", None).unwrap();
-        // A sprint needs working time left today: a calendar of every hour of
-        // every day, so the test passes at any time (CI runs at night too).
-        use governor::{Day, WorkBlock, jiff::civil::time};
-        let mut plan = rt.with_governor(|g| g.plan().clone());
-        let days = [Day::Mon, Day::Tue, Day::Wed, Day::Thu, Day::Fri, Day::Sat, Day::Sun];
-        plan.calendar.blocks =
-            days.map(|day| WorkBlock { day, start: time(0, 0, 0, 0), end: time(23, 59, 59, 0), weight: 1.0 }).into();
-        rt.replan(plan).unwrap();
-        let mut sprint = rt.governor_act(|g, now| (g.start_sprint(5.0, now), vec![]));
-        if sprint == Err(governor::GovernorError::NoWorkingTimeToday) {
-            // The last second of the day (blocks end at 23:59:59): the next
-            // one is a new day with all its hours.
-            std::thread::sleep(std::time::Duration::from_millis(1100));
-            sprint = rt.governor_act(|g, now| (g.start_sprint(5.0, now), vec![]));
-        }
+        // A sprint needs working time left today and in the week: the test
+        // plan (`test_plan`) has both at any date and hour.
+        let sprint = rt.governor_act(|g, now| (g.start_sprint(5.0, now), vec![]));
         assert!(sprint.is_ok(), "{sprint:?}");
         // A sprint carries over a switch, both ways (it used to be refused).
         core.set_enforce(false).unwrap();

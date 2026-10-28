@@ -78,6 +78,9 @@ pub struct RuntimeConfig {
     pub conditions: Arc<dyn orch_git::fetch::Conditions>,
     /// Replaces `gh` for the GitHub task backend (tests).
     pub gh: Option<crate::team::GhFactory>,
+    /// The plan of a week with none stored ([`default_plan`]; tests use
+    /// [`test_plan`], which holds at any date, hour and time zone).
+    pub default_plan: fn(Timestamp, bool) -> WeeklyPlan,
 }
 
 impl RuntimeConfig {
@@ -102,6 +105,7 @@ impl RuntimeConfig {
             fetch: orch_git::fetch::FetchPolicy::default(),
             conditions: Arc::new(orch_git::fetch::SystemConditions),
             gh: None,
+            default_plan,
         }
     }
 }
@@ -256,6 +260,36 @@ pub fn default_plan(now: Timestamp, shadow: bool) -> WeeklyPlan {
             hard_cap_pct: None,
         }],
     }
+}
+
+/// A plan for tests that no date can break: the week runs from three days
+/// before `now` to four days after, every hour of every day is working time,
+/// and the time zone is the fixed offset where `now` is between 12:00 and
+/// 13:00. No test starts near the end of a day or of the week, whatever the
+/// date, the hour, the system time zone or a DST change.
+pub fn test_plan(now: Timestamp, shadow: bool) -> WeeklyPlan {
+    use governor::jiff::civil::time;
+    let utc_hour = now.to_zoned(TimeZone::UTC).hour() as i32;
+    // Etc/GMT names count west as positive: Etc/GMT-5 is UTC+5.
+    let tz_name = match 12 - utc_hour {
+        0 => "Etc/UTC".to_string(),
+        h if h > 0 => format!("Etc/GMT-{h}"),
+        h => format!("Etc/GMT+{}", -h),
+    };
+    use governor::Day::*;
+    let days = [Mon, Tue, Wed, Thu, Fri, Sat, Sun];
+    let mut plan = default_plan(now, shadow);
+    plan.week_start = now.checked_sub(72.hours()).unwrap_or(now);
+    plan.reset_at = now.checked_add(96.hours()).unwrap_or(now);
+    plan.id = format!("week-{}", plan.week_start.as_second());
+    plan.calendar = WorkingCalendar {
+        time_zone: tz_name,
+        blocks: days
+            .map(|day| governor::WorkBlock { day, start: time(0, 0, 0, 0), end: time(23, 59, 59, 0), weight: 1.0 })
+            .into(),
+        holidays: Vec::new(),
+    };
+    plan
 }
 
 fn verdict_kind(v: &Verdict) -> AdmissionVerdict {
@@ -2104,7 +2138,7 @@ fn restore_governor(
     db.save_policy(POLICY_ID, &policy)?;
     let mut plan = match db.active_plan()? {
         Some(p) if p.reset_at > now && p.week_start <= now => p,
-        _ => default_plan(now, shadow),
+        _ => (cfg.default_plan)(now, shadow),
     };
     plan.shadow_mode = shadow;
     db.save_plan(&plan, orch_store::PlanStatus::Active)?;
@@ -2227,6 +2261,7 @@ pub(crate) mod tests {
         cfg.idle_suspend = None;
         cfg.memory = Arc::new(crate::resources::FixedMemory::new(PressureLevel::Normal));
         cfg.projects_root = d.join("projects");
+        cfg.default_plan = test_plan;
         cfg
     }
 
@@ -2731,6 +2766,30 @@ pub(crate) mod tests {
         assert!(p.week_start <= now && now < p.reset_at);
         assert_eq!(p.reset_at.as_second() - p.week_start.as_second(), 7 * 24 * 3600);
         assert!(p.shadow_mode);
+    }
+
+    #[test]
+    fn the_test_plan_holds_at_any_date_and_hour() {
+        // Every hour of every weekday (a 5 h step is prime to 24 and 168),
+        // and the last instant before each, over leap years, year ends and
+        // DST changes: a sprint can start, with most of the day and the week
+        // left.
+        let from: Timestamp = "2024-01-01T00:00:00Z".parse().unwrap();
+        for step in 0..(3 * 365 * 24 / 5) {
+            let hour = from.checked_add((step * 5).hours()).unwrap();
+            for now in [hour, hour.checked_add(3_599_900.milliseconds()).unwrap()] {
+                let p = test_plan(now, false);
+                assert!(
+                    p.week_start.checked_add(72.hours()).unwrap() <= now
+                        && now.checked_add(96.hours()).unwrap() <= p.reset_at
+                );
+                let mut g = Governor::new(p, governor::PacingPolicy::default(), now).unwrap();
+                let tz = TimeZone::get(&g.plan().calendar.time_zone).unwrap();
+                let end = g.curve().end_of_working_day(now, &tz).unwrap();
+                assert!(end.as_second() - now.as_second() >= 11 * 3600 - 1, "{now}: the day ends at {end}");
+                assert!(g.start_sprint(5.0, now).is_ok(), "{now}");
+            }
+        }
     }
 
     #[test]
