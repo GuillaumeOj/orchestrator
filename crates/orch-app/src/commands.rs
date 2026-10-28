@@ -344,6 +344,16 @@ pub async fn open_url(core: CoreState<'_>, url: String) -> Res<()> {
 }
 
 #[tauri::command]
+pub async fn notion_publish(core: CoreState<'_>, feature: String) -> Res<Value> {
+    blocking(core, move |c| c.notion_publish(&feature)).await
+}
+
+#[tauri::command]
+pub async fn notion_status(core: CoreState<'_>, feature: String) -> Res<Value> {
+    blocking(core, move |c| c.notion_status(&feature)).await
+}
+
+#[tauri::command]
 pub async fn linear_teams(core: CoreState<'_>) -> Res<Value> {
     blocking(core, |c| c.linear_teams()).await
 }

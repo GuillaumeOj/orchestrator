@@ -213,7 +213,13 @@ Back (T-9) notes: the transport is GraphQL at api.linear.app, core only; the API
 | `notion_publish` | `feature: string` | `{ page_url: string, published_at_ms: number, docs: string[] }` |
 | `notion_status` | `feature` | `{ page_url: string \| null, published_at_ms: number \| null, comments_seen: number, error: string \| null }` |
 
-Project settings gain `notion_parent_page?: string`. Notion comments → Inbox `{"kind":"question","source":"notion","page_url":…,"author":…,"text":…}` with action `open`.
+Project settings gain `notion_parent_page?: string` (a page URL or id; the page must be shared with the Notion integration). Notion comments → Inbox `{"kind":"question","source":"notion","page_url":…,"author":…,"text":…,"comment":id}` with action `open`.
+
+Back (T-11) notes:
+- `notion_publish` makes one page per feature (titled with the feature's title) under the parent page, with an intro paragraph and one child page per doc of `.orchestrator/features/<slug>/` on the integration branch (`spec.md` first). Publishing again refreshes the same pages (their blocks are replaced). Errors: `"set the project's Notion parent page in its settings first"`, `"feature <slug> has no docs on its integration branch"`, `"no Notion token: add it in Settings › Integrations"`, `"Notion: not found (…); share the page with the integration"`, `"Notion: not authorized (…)"`, `"Notion rate limit reached: try again later"`.
+- Markdown → blocks: headings 1–3, paragraphs, bulleted/numbered lists, fenced code (with its language when Notion knows it), tables, inline links and `code`; anything else (HTML, quotes, rules) as a plain code block.
+- Comments are read every 15 min while the feature has an active run, and on demand by `notion_status` (at most once a minute). The Inbox item is level 3, `kind: 'question'`, actions `open` (→ `inbox_act` returns `{ open: 'url', url: page_url }` and marks it read) and dismiss. `author` is the commenter's name when Notion gives it, else their user id.
+- `notion_status.error` is the last publish or poll error (`null` when it worked).
 
 ## 9. Settings pane
 

@@ -89,6 +89,8 @@ pub struct RuntimeConfig {
     pub power: Arc<dyn crate::power::PowerAssertion>,
     /// Replaces the Linear GraphQL transport (tests).
     pub linear: Option<crate::linear::LinearFactory>,
+    /// Replaces the Notion transport (tests).
+    pub notion: Option<crate::notion::NotionFactory>,
 }
 
 impl RuntimeConfig {
@@ -118,6 +120,7 @@ impl RuntimeConfig {
             default_plan,
             power: Arc::new(crate::power::Caffeinate::default()),
             linear: None,
+            notion: None,
         }
     }
 }
@@ -209,6 +212,8 @@ pub(crate) struct House {
     pub(crate) last_power_ms: u64,
     pub(crate) power: crate::pacing::PowerState,
     pub(crate) battery_alerted: Option<String>,
+    /// FR-505: last look for Notion pages due a comment poll.
+    pub(crate) last_notion_ms: u64,
 }
 
 /// A team lead (the node that merges): outside the process cap. Not the
@@ -1695,6 +1700,7 @@ impl Runtime {
             self.probe_used_servers();
         }
         self.power_tick(false);
+        self.notion_tick();
         let level = self.cfg.memory.level();
         let changed = {
             let mut h = self.house();

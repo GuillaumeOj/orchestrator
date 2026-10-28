@@ -127,6 +127,8 @@ pub fn run() {
             commands::queue_off_hours,
             commands::open_url,
             commands::linear_teams,
+            commands::notion_publish,
+            commands::notion_status,
             commands::linear_states,
             commands::artifact_preview,
             commands::artifact_open,

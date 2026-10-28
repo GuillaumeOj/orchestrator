@@ -70,6 +70,16 @@ impl Core {
         self.runtime()?.report_view(id)
     }
 
+    /// `notion_publish` (FR-505): `{ page_url, published_at_ms, docs }`.
+    pub fn notion_publish(&self, feature: &str) -> Result<Value> {
+        self.runtime()?.notion_publish(feature)
+    }
+
+    /// `notion_status`: `{ page_url, published_at_ms, comments_seen, error }`.
+    pub fn notion_status(&self, feature: &str) -> Result<Value> {
+        self.runtime()?.notion_status(feature)
+    }
+
     /// `queue_off_hours` (FR-816, D4): `{ starts_at }`.
     pub fn queue_off_hours(&self, entry: Option<u64>, task: Option<u64>, off: bool) -> Result<Value> {
         let t = self.runtime()?.queue_off_hours(entry, task, off)?;

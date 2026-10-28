@@ -733,6 +733,14 @@ impl Core {
                 if let Some(p) = payload.as_ref().filter(|p| p["alert"] == agent_runtime::registry::NEEDS_AUTH_ALERT) {
                     return self.mcp_alert_action(p, action);
                 }
+                // A Notion comment (FR-505): read once opened; the UI opens the page.
+                if let Some(p) = payload.as_ref().filter(|p| p["source"] == "notion" && action == "open") {
+                    let url = p["page_url"].clone();
+                    rt.store.write(|s| {
+                        let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()));
+                    })?;
+                    return Ok(json!({"open": "url", "url": url}));
+                }
                 // "Weekly report ready" (FR-818): read once opened; the UI opens the report.
                 if let Some(p) = payload.filter(|p| p["digest"] == "weekly_report" && action == "open") {
                     rt.store.write(|s| {

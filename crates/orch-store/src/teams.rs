@@ -234,6 +234,9 @@ pub struct ProjectSettings {
     /// Copy `.env*` into worktrees (FR-110: opt-in, agents will read them).
     #[serde(default)]
     pub copy_env: bool,
+    /// FR-505: the Notion page (URL or id) feature pages are published under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notion_parent_page: Option<String>,
     #[serde(flatten)]
     pub other: serde_json::Map<String, Value>,
 }

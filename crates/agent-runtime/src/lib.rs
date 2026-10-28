@@ -10,6 +10,7 @@ pub mod integrations;
 pub mod linear;
 pub mod mcp;
 pub mod net;
+pub mod notion;
 pub mod otlp;
 pub mod pacing;
 pub mod paths;

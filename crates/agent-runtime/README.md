@@ -263,6 +263,14 @@ compressed bodies get 415.
   week and its samples replayed first. A week switches when a reading names the next reset
   (FR-802) or, without one, at the tick after `reset_at`. Per-model weights
   (`PacingPolicy::per_model_weights`) are set with the plan form (`plan_set`'s `per_model_weights`).
+- **Linear (`linear.rs`) and Notion (`notion.rs`)**: the core is their only client. Linear: the
+  task backend's GraphQL transport (`orch_tasks::linear`) with the Keychain's `linear` key;
+  `sync_tasks` runs a project's sync (background every 5 min for projects with an active run, and
+  `board_sync`), keeps `tasks.last_sync.<project>` and turns conflicts into Inbox info items.
+  Notion (FR-505): `notion_publish` (one page per feature, a child page per doc of the integration
+  branch, refreshed in place), `notion_poll` (comments → level-3 Inbox items, once each; every
+  15 min while the feature has an active run), `notion_status`; state in
+  `notion.feature.<id>`. Both transports are traits with in-memory fakes for tests.
 - **P3 pacing (`pacing.rs`, `power.rs`)**: the statusline's extra `rate_limits.<name>` windows
   go to the Governor and are stored with the sample (FR-815); a StopFailure whose message names a
   model ("… Opus limit …") marks that model's window exhausted instead of the 5h/week window.

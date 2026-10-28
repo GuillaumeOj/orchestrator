@@ -188,6 +188,19 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                 actions: vec!["enter", "r", "o"],
                 payload: al.payload.clone(),
             },
+            // FR-505: a comment on a published Notion page (level 3); `open` → the page.
+            ("notion", _) => InboxItem {
+                id: format!("alert-{}", al.id),
+                level: 3,
+                kind: "question".into(),
+                agent_id: None,
+                title,
+                detail: al.payload["text"].as_str().unwrap_or(&al.body).to_string(),
+                preview: None,
+                created_ms: al.created_ms,
+                actions: vec!["o", "a"],
+                payload: al.payload.clone(),
+            },
             (kind, _) => InboxItem {
                 id: format!("alert-{}", al.id),
                 level: match kind {
