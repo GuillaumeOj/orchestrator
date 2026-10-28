@@ -78,6 +78,9 @@ pub struct RuntimeConfig {
     pub conditions: Arc<dyn orch_git::fetch::Conditions>,
     /// Replaces `gh` for the GitHub task backend (tests).
     pub gh: Option<crate::team::GhFactory>,
+    /// The plan of a week with none stored ([`default_plan`]; tests use
+    /// [`test_plan`], which holds at any date, hour and time zone).
+    pub default_plan: fn(Timestamp, bool) -> WeeklyPlan,
 }
 
 impl RuntimeConfig {
@@ -102,6 +105,7 @@ impl RuntimeConfig {
             fetch: orch_git::fetch::FetchPolicy::default(),
             conditions: Arc::new(orch_git::fetch::SystemConditions),
             gh: None,
+            default_plan,
         }
     }
 }
@@ -256,6 +260,25 @@ pub fn default_plan(now: Timestamp, shadow: bool) -> WeeklyPlan {
             hard_cap_pct: None,
         }],
     }
+}
+
+/// For tests: a plan no date can break. The week runs from three days
+/// before `now` to four days after, every hour is working time, and the
+/// zone is the fixed offset where `now` is between 12:00 and 13:00: no test
+/// starts near the end of a day or of the week, whatever the date, the
+/// system time zone or a DST change.
+#[doc(hidden)]
+pub fn test_plan(now: Timestamp, shadow: bool) -> WeeklyPlan {
+    use governor::jiff::civil::time;
+    let utc_hour = now.to_zoned(TimeZone::UTC).hour();
+    // Etc/GMT counts west as positive: Etc/GMT-5 is UTC+5.
+    let tz_name = format!("Etc/GMT{:+}", utc_hour - 12);
+    let mut plan = default_plan(now, shadow);
+    plan.week_start = now.checked_sub(72.hours()).unwrap_or(now);
+    plan.reset_at = now.checked_add(96.hours()).unwrap_or(now);
+    plan.id = format!("week-{}", plan.week_start.as_second());
+    plan.calendar = WorkingCalendar::every_day(&tz_name, time(0, 0, 0, 0), time(23, 59, 59, 0));
+    plan
 }
 
 fn verdict_kind(v: &Verdict) -> AdmissionVerdict {
@@ -2104,7 +2127,7 @@ fn restore_governor(
     db.save_policy(POLICY_ID, &policy)?;
     let mut plan = match db.active_plan()? {
         Some(p) if p.reset_at > now && p.week_start <= now => p,
-        _ => default_plan(now, shadow),
+        _ => (cfg.default_plan)(now, shadow),
     };
     plan.shadow_mode = shadow;
     db.save_plan(&plan, orch_store::PlanStatus::Active)?;
@@ -2227,6 +2250,7 @@ pub(crate) mod tests {
         cfg.idle_suspend = None;
         cfg.memory = Arc::new(crate::resources::FixedMemory::new(PressureLevel::Normal));
         cfg.projects_root = d.join("projects");
+        cfg.default_plan = test_plan;
         cfg
     }
 
@@ -2365,9 +2389,6 @@ pub(crate) mod tests {
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
             // An app turn (admitted by the Governor before delivery: autonomous), two responses.
             let rec = rt.store.read(|s| s.agents["a1"].clone());
-            // Off-hours allowed, so the turn is admitted at any time of day.
-            let plan = rt.gov().plan().clone();
-            rt.replan(WeeklyPlan { off_hours_allowance_pct: 10.0, ..plan }).unwrap();
             assert!(rt.decide_turn(&rec, TurnKind::Message, TurnOrigin::App, false).effective.is_admit());
             rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "[t:0123abcd] go"})), None);
             for (cost, pct) in [(0.5, 30), (1.5, 32)] {
@@ -2408,8 +2429,6 @@ pub(crate) mod tests {
         let entry = {
             let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
-            let plan = rt.gov().plan().clone();
-            rt.replan(WeeklyPlan { off_hours_allowance_pct: 10.0, ..plan }).unwrap();
             rt.pause_agent("a1").unwrap();
             rt.pause_all();
             rt.deliver("a1", "later").unwrap();
@@ -2440,8 +2459,6 @@ pub(crate) mod tests {
         {
             let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
-            let plan = rt.gov().plan().clone();
-            rt.replan(WeeklyPlan { off_hours_allowance_pct: 10.0, ..plan }).unwrap();
             // An app turn is running.
             let rec = rt.store.read(|s| s.agents["a1"].clone());
             assert!(rt.decide_turn(&rec, TurnKind::Message, TurnOrigin::App, false).effective.is_admit());
@@ -2731,6 +2748,26 @@ pub(crate) mod tests {
         assert!(p.week_start <= now && now < p.reset_at);
         assert_eq!(p.reset_at.as_second() - p.week_start.as_second(), 7 * 24 * 3600);
         assert!(p.shadow_mode);
+    }
+
+    #[test]
+    fn the_test_plan_holds_at_any_hour() {
+        // The plan depends on the UTC hour only: each hour and the last
+        // instant before the next, on a few dates (a leap day, a year end, a
+        // DST change in Europe): a sprint can start with most of the day left.
+        for day in ["2024-02-29", "2026-03-29", "2026-10-25", "2026-12-31"] {
+            let midnight: Timestamp = format!("{day}T00:00:00Z").parse().unwrap();
+            for h in 0..24 {
+                let hour = midnight.checked_add(h.hours()).unwrap();
+                for now in [hour, hour.checked_add(3_599_900.milliseconds()).unwrap()] {
+                    let mut g = Governor::new(test_plan(now, false), governor::PacingPolicy::default(), now).unwrap();
+                    let tz = TimeZone::get(&g.plan().calendar.time_zone).unwrap();
+                    let end = g.curve().end_of_working_day(now, &tz).unwrap();
+                    assert!(end.as_second() - now.as_second() >= 11 * 3600 - 1, "{now}: the day ends at {end}");
+                    assert!(g.start_sprint(5.0, now).is_ok(), "{now}");
+                }
+            }
+        }
     }
 
     #[test]

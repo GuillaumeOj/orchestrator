@@ -2,7 +2,7 @@
   // The shell dock (§9.2): every shell in one panel under the panes, one tab
   // each, so shells never crowd the agents. ⌘J shows or hides it; hidden
   // shells keep running and keep their buffers (§9.1 principle 6).
-  import { app, closePane, focusPane, openShell, saveLayout } from '../lib/app.svelte.js';
+  import { app, closePaneByUser, focusPane, openShell, saveLayout } from '../lib/app.svelte.js';
   import TermPaneView from '../panes/TermPaneView.svelte';
   import Kbd from './Kbd.svelte';
 
@@ -50,7 +50,7 @@
     {#each app.dock.tabs as t (t)}
       <div class="tab" class:on={t === app.dock.active} class:focused={t === app.focused} role="tab" aria-selected={t === app.dock.active}>
         <button class="label" onclick={() => focusPane(t)}>{app.panes[t]?.title ?? t}</button>
-        <button class="x" aria-label="Close shell" onclick={() => closePane(t)}>×</button>
+        <button class="x" aria-label="Close shell" onclick={() => closePaneByUser(t)}>×</button>
       </div>
     {/each}
     <button class="add" aria-label="New shell" onclick={() => openShell()}>+</button>

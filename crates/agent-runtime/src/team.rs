@@ -488,6 +488,15 @@ impl Runtime {
                     continue;
                 }
             };
+            // A deleted feature has no running team: a run left active under
+            // it (a relaunch that didn't un-archive) would spawn seats nobody
+            // sees and block every new launch on the slug.
+            if cx.feature.archived {
+                if let Err(e) = self.end_run(&run.id, "feature deleted") {
+                    self.run_event(&run.id, None, "team_error", json!(format!("{e:#}")));
+                }
+                continue;
+            }
             if let Err(e) = self.dispatch(&cx) {
                 self.run_event(&run.id, None, "dispatch_error", json!(format!("{e:#}")));
             }
@@ -915,7 +924,14 @@ impl Runtime {
     /// Stops the team: every agent is suspended (sessions kept) and the run
     /// ends as failed ("stopped by the user"). Worktrees stay.
     pub fn run_stop(&self, run_id: &str) -> Result<TeamRun> {
-        let run = self.set_run_state(run_id, RunState::Failed, "stopped by the user")?;
+        self.end_run(run_id, "stopped by the user")
+    }
+
+    /// Ends a run as failed for `why`: its agents' queued turns are dropped
+    /// and the live ones suspended (sessions and worktrees kept), so nothing
+    /// keeps working for a run nobody drives.
+    fn end_run(&self, run_id: &str, why: &str) -> Result<TeamRun> {
+        let run = self.set_run_state(run_id, RunState::Failed, why)?;
         for a in self.run_agents(run_id) {
             self.drop_queued_turns(&a.id);
             if self.live(&a.id).is_some() {
@@ -1916,6 +1932,44 @@ mod tests {
             })
             .unwrap();
         assert_eq!(again.feature_id, run.feature_id);
+        assert_eq!(rt.db.features(Some(&pid)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_run_left_active_under_a_deleted_feature_ends_on_the_tick() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        let run = rt
+            .launch(&LaunchSpec {
+                project_id: pid.clone(),
+                team_id: "bugfix-squad".into(),
+                slug: "fx".into(),
+                title: "Fix X".into(),
+                brief: "Fix the X bug.".into(),
+                base: None,
+            })
+            .unwrap();
+        // The feature archived under its active run (an older relaunch).
+        let mut f = rt.db.feature(&run.feature_id).unwrap().unwrap();
+        f.archived = true;
+        rt.db.upsert_feature(&f).unwrap();
+        let lead = "fx-lead-1";
+        assert!(!queued(&rt, lead).is_empty(), "the brief waits for the lead");
+        let before = rt.store.read(|s| s.agents.len());
+        rt.team_tick();
+        assert_eq!(state(&rt, &run.id), RunState::Failed);
+        assert_eq!(rt.store.read(|s| s.agents.len()), before, "no seat spawned");
+        // Stopped like run_stop: nothing left to work for the ended run.
+        assert!(queued(&rt, lead).is_empty(), "queued turns dropped");
+        assert!(rt.live(lead).is_none(), "lead not live");
+        // The slug is free again, and the feature comes back.
+        rt.launch(&LaunchSpec {
+            project_id: pid.clone(),
+            team_id: "bugfix-squad".into(),
+            slug: "fx".into(),
+            title: "Again".into(),
+            ..Default::default()
+        })
+        .unwrap();
         assert_eq!(rt.db.features(Some(&pid)).unwrap().len(), 1);
     }
 

@@ -580,7 +580,7 @@ The Inbox badge counts levels 1–3; level 4 stays in the digest. Do-Not-Disturb
 - **Shift+Enter** in agent panes sends `ESC CR`, so it adds a newline in Claude Code instead of submitting (P0).
 - **⌘⏎ submits a dialog**: the chord handler passes it to the dialog even when focus is not in a text field.
 - The app ships its own macOS menu, so system items (Close Window ⌘W, Hide ⌘H, Minimize ⌘M) don't take chords this contract uses.
-- **Global ⌘ shortcuts**: ⌘K palette, ⌘P jump, ⌘B sidebar, ⌘I inspector, ⌘N new project, ⌘T new session, ⌘1…9 focus pane, ⌘W close pane, ⌘⇧I Inbox.
+- **Global ⌘ shortcuts**: ⌘K palette, ⌘P jump, ⌘B sidebar, ⌘I inspector, ⌘N new project, ⌘T new session, ⌘1…9 focus pane, ⌘W close pane, ⌘⇧T reopen the last closed pane, ⌘⇧I Inbox.
 - **Leader + key**: `s`/`v` split horizontally/vertically, `h j k l` move focus, `z` zoom, `t` new shell, `e` open editor, `w` next waiting agent, `p` pause/resume the focused agent, `o` Overview, `g` Week planner.
 - **Notation** (Penpot, docs, UI): one key-hint container per shortcut; `+` joins keys pressed together (`⌘+⇧+I`), a space separates the steps of a sequence (`⌘+; z` = leader, then `z`).
 - **Pane-local single keys** when the pane has focus and is not a terminal: Inbox (FR-707, plus `e` open in nvim), Overview (`⏎` open, `i` interrupt, `p` pause, `s` suspend, `r` resume, `⇧K` kill (asks first; `k` moves up), FR-903), Week planner (`S` sprint mode, `P` pause all, `e` edit plan, `u` undo the selected log entry), canvas (FR-302). The full map is on Penpot page `05`.

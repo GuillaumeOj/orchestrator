@@ -53,7 +53,8 @@ export const agent = (id) => agents().find((a) => a.id === id);
 /** Agents not deleted (archived ones stay in the snapshot for history). */
 export const activeAgents = () => agents().filter((a) => a.state !== 'archived');
 export const projects = () => app.data?.projects ?? [];
-/** Features with their latest team run (P2). */
+/** Features with their latest team run (P2). `null` in a snapshot when the
+ *  core could not read them: the poll then keeps the previous list. */
 export const features = () => app.data?.features ?? [];
 export const focusedSpec = () => app.panes[app.focused];
 export const isTerminal = (spec) => ['agent', 'shell', 'editor'].includes(spec?.type);
@@ -204,6 +205,52 @@ export function closePane(id = app.focused) {
   saveLayout();
 }
 
+/** Panes the user closed, newest last, for Reopen closed pane (⌘⇧T). A
+ *  pane that closes itself (a shell exits, Setup is done, its agent or
+ *  feature is gone) goes through `closePane` and is not offered back. */
+const closed = [];
+const CLOSED_MAX = 20;
+
+/** ⌘W, a tab's ×, a pane's close: the pane can be reopened. */
+export function closePaneByUser(id = app.focused) {
+  if (!id || !app.panes[id]) return;
+  closed.push({ spec: app.panes[id], docked: inDock(id) });
+  if (closed.length > CLOSED_MAX) closed.shift();
+  closePane(id);
+}
+
+/** Reopens the last closed pane whose agent, feature or project still
+ *  exists, as a restart restores it (a terminal as a shell in its cwd). */
+export async function reopenClosed() {
+  for (let c = closed.pop(); c; c = closed.pop()) {
+    const { spec, docked } = c;
+    if (paneGone(spec)) continue;
+    const open = findPane((s) => s.type === spec.type && PANE_KEYS.every((k) => s[k] === spec[k]));
+    if (open) return focusPane(open);
+    const s = await revive(spec);
+    if (!s) continue;
+    if (docked) return addDockPane(s);
+    return addPane(s, isTerminal(s) || !app.layout ? 'right' : 'tab');
+  }
+  toast('No closed pane to reopen');
+}
+
+/** What a pane is about: two panes with these equal show the same thing. */
+const PANE_KEYS = ['agentId', 'featureId', 'projectId', 'teamId', 'path'];
+
+/** A saved pane spec made live: shells and editors restart as a shell in
+ *  their cwd; `null` when the shell does not start. */
+async function revive(s) {
+  if (s.type !== 'shell' && s.type !== 'editor') return s;
+  try {
+    const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
+    const spec = { ...s, type: 'shell', termId: t.id, cwd: t.cwd };
+    return { ...spec, title: title(spec) };
+  } catch {
+    return null;
+  }
+}
+
 export function findPane(pred) {
   return Object.entries(app.panes).find(([, s]) => pred(s))?.[0];
 }
@@ -300,7 +347,8 @@ const spawnShell = ({ projectId, agentId, cwd }) =>
     },
   });
 
-/** A shell: a dock tab by default, a pane with `how` ('right' | 'below'). */
+/** A shell: a dock tab by default, a pane with `how` ('right' | 'below').
+ *  `agentId: null` = no agent (undefined = the one in focus). */
 export async function openShell(opts = {}) {
   const projectId = opts.projectId ?? contextProject()?.id;
   const agentId = opts.agentId ?? contextAgent()?.id;
@@ -552,17 +600,9 @@ export async function restoreLayout() {
     ids.map(async (id) => {
       const s = saved.panes[id];
       if (!s || paneGone(s)) return;
-      if (s.type !== 'shell' && s.type !== 'editor') {
-        panes[id] = s;
-        return;
-      }
-      try {
-        const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
-        const spec = { ...s, type: 'shell', termId: t.id, cwd: t.cwd };
-        panes[id] = { ...spec, title: title(spec) };
-      } catch {
-        // The shell did not start: the pane is dropped from the restored layout.
-      }
+      // A shell that does not start is dropped from the restored layout.
+      const live = await revive(s);
+      if (live) panes[id] = live;
     }),
   );
   app.panes = panes;
@@ -605,7 +645,9 @@ export function refresh() {
 
 async function poll() {
   try {
-    app.data = new Snapshot(await invoke('app_state'));
+    const data = await invoke('app_state');
+    data.features ??= app.data?.features ?? null;
+    app.data = new Snapshot(data);
     app.error = null;
     prunePanes();
   } catch (e) {
@@ -618,7 +660,8 @@ async function poll() {
 function paneGone(s) {
   if (s.type === 'agent') return !activeAgents().some((a) => a.id === s.agentId);
   if (s.type === 'project' || s.type === 'board') return !projects().some((p) => p.id === s.projectId);
-  if (s.type === 'feature') return !features().some((f) => f.id === s.featureId);
+  // Features never read yet (the core's read failed): nothing is known gone.
+  if (s.type === 'feature') return app.data?.features != null && !features().some((f) => f.id === s.featureId);
   return false;
 }
 
@@ -658,7 +701,8 @@ export function commands() {
     { id: 'pane.split.right', label: 'Split right (shell)', run: () => openShell({ how: 'right' }) },
     { id: 'pane.split.below', label: 'Split below (shell)', run: () => openShell({ how: 'below' }) },
     { id: 'pane.zoom', label: 'Zoom / restore the focused pane', run: toggleZoom },
-    { id: 'pane.close', label: 'Close pane', run: () => closePane() },
+    { id: 'pane.close', label: 'Close pane', run: () => closePaneByUser() },
+    { id: 'pane.reopen', label: 'Reopen closed pane', run: reopenClosed },
     { id: 'sidebar', label: 'Toggle sidebar', run: () => ((app.sidebar = !app.sidebar), saveLayout()) },
     {
       id: 'inspector',

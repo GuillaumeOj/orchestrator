@@ -1,5 +1,5 @@
 <script>
-  import { app, closePane, focusPane, saveLayout } from '../lib/app.svelte.js';
+  import { app, closePaneByUser, focusPane, saveLayout } from '../lib/app.svelte.js';
   import * as L from '../lib/layout.js';
   import Node from './Node.svelte';
   import PaneFrame from './PaneFrame.svelte';
@@ -61,7 +61,7 @@
         {#each node.tabs as t (t)}
           <div class="tab" class:on={t === node.active} role="tab" aria-selected={t === node.active}>
             <button class="label" onclick={() => focusPane(t)}>{app.panes[t]?.title ?? t}</button>
-            <button class="x" aria-label="Close tab" onclick={() => closePane(t)}>×</button>
+            <button class="x" aria-label="Close tab" onclick={() => closePaneByUser(t)}>×</button>
           </div>
         {/each}
       </div>

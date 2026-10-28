@@ -21,6 +21,7 @@ pub enum Day {
 
 impl Day {
     pub const WEEKDAYS: [Day; 5] = [Day::Mon, Day::Tue, Day::Wed, Day::Thu, Day::Fri];
+    pub const ALL: [Day; 7] = [Day::Mon, Day::Tue, Day::Wed, Day::Thu, Day::Fri, Day::Sat, Day::Sun];
 
     fn matches(self, w: Weekday) -> bool {
         let d = match w {
@@ -66,9 +67,18 @@ pub struct WorkingCalendar {
 impl WorkingCalendar {
     /// Same hours on Monday to Friday, weight 1.
     pub fn weekdays(time_zone: &str, start: Time, end: Time) -> Self {
+        Self::on(&Day::WEEKDAYS, time_zone, start, end)
+    }
+
+    /// Same hours on every day of the week, weight 1.
+    pub fn every_day(time_zone: &str, start: Time, end: Time) -> Self {
+        Self::on(&Day::ALL, time_zone, start, end)
+    }
+
+    fn on(days: &[Day], time_zone: &str, start: Time, end: Time) -> Self {
         WorkingCalendar {
             time_zone: time_zone.to_owned(),
-            blocks: Day::WEEKDAYS.iter().map(|&day| WorkBlock { day, start, end, weight: 1.0 }).collect(),
+            blocks: days.iter().map(|&day| WorkBlock { day, start, end, weight: 1.0 }).collect(),
             holidays: Vec::new(),
         }
     }
