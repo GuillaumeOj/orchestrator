@@ -201,4 +201,10 @@ Project settings gain `notion_parent_page?: string`. Notion comments → Inbox `
 
 ## 9. Settings pane
 
-The Settings pane reads `settings_get`/`settings_set` (P1) for the existing keys and the views above for Integrations and MCP servers. No other new command.
+The Settings pane reads `settings_get`/`settings_set` (P1) for the existing keys and the views above for Integrations and MCP servers.
+
+| Command | Args | Returns |
+|---|---|---|
+| `open_url` | `url: string` | `()`: opens an `http(s)://` link in the default browser; any other scheme (or a URL with whitespace / no host) is refused with `"only http and https links can be opened"`. Used for the connector reconnect (D3). |
+
+Menu: **Orchestrator › Settings…** (`CmdOrCtrl+,`) emits the `menu` event with id `settings` (like the other menu items); the UI opens the Settings pane.

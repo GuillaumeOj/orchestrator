@@ -13,7 +13,33 @@ use crate::core::Core;
 /// Where the claude.ai connectors are managed.
 pub const CONNECTOR_SETTINGS_URL: &str = "https://claude.ai/settings/connectors";
 
+/// `open_url`: only http(s) URLs, with a host and no whitespace or control
+/// characters (the URL goes to `/usr/bin/open` as one argument).
+pub fn checked_url(url: &str) -> Result<&str> {
+    let u = url.trim();
+    let rest = u.strip_prefix("https://").or_else(|| u.strip_prefix("http://"));
+    let ok = rest.is_some_and(|r| {
+        let host = r.split(['/', '?', '#']).next().unwrap_or("");
+        !host.is_empty() && !host.starts_with('-')
+    }) && !u.chars().any(|c| c.is_whitespace() || c.is_control());
+    if !ok {
+        return Err(anyhow!("only http and https links can be opened"));
+    }
+    Ok(u)
+}
+
 impl Core {
+    /// `open_url`: an http(s) link in the default browser (D3: the claude.ai
+    /// connector settings for a connector's reconnect).
+    pub fn open_url(&self, url: &str) -> Result<()> {
+        let u = checked_url(url)?;
+        let st = std::process::Command::new("/usr/bin/open").arg(u).status()?;
+        if !st.success() {
+            return Err(anyhow!("open exited with {st}"));
+        }
+        Ok(())
+    }
+
     /// `reports_list` (api-contract §5, FR-818).
     pub fn reports_list(&self) -> Result<Value> {
         self.runtime()?.reports_list()
@@ -82,5 +108,31 @@ impl Core {
             Some(McpKind::Connector) => json!({"open": "url", "url": CONNECTOR_SETTINGS_URL, "server": id}),
             _ => settings,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_http_links_open() {
+        assert_eq!(
+            checked_url(" https://claude.ai/settings/connectors ").unwrap(),
+            "https://claude.ai/settings/connectors"
+        );
+        assert!(checked_url("http://localhost:3000/x?y=1").is_ok());
+        for bad in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "https://",
+            "-a Terminal",
+            "https://a b",
+            "https://-x",
+            "/Applications/X.app",
+            "HTTPS://x",
+        ] {
+            assert!(checked_url(bad).is_err(), "{bad}");
+        }
     }
 }
