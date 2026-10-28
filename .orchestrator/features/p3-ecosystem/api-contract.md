@@ -33,7 +33,7 @@ type Integration = {
   account: string | null;         // workspace / user name when known
 };
 ```
-The secret is sent once in `integration_secret_set` and never returned. The core never logs the args of that command.
+The secret is sent once in `integration_secret_set` and never returned. An `id` that is not an integration is an MCP env account: it is stored under `mcp:<id>` (as `mcp_secret_set` does), is not tested, and gets no `integrations` row. The core never logs the args of that command.
 
 ## 2. MCP registry and auth status (FR-1202, FR-604, FR-601)
 

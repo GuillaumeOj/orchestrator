@@ -41,6 +41,12 @@ pub fn needs_secret(id: &str) -> bool {
     !matches!(id, "github" | "penpot" | "figma")
 }
 
+/// The Keychain account holding `id`'s secret: an integration's own id, or
+/// `mcp:<id>` for any other id (an MCP env secret, see [`Runtime::mcp_secret_set`]).
+fn secret_account(id: &str) -> String {
+    if IDS.contains(&id) { id.to_string() } else { orch_secrets::mcp_account(id) }
+}
+
 fn design_tool(id: &str) -> Option<DesignTool> {
     match id {
         "penpot" => Some(DesignTool::Penpot),
@@ -121,7 +127,7 @@ impl Runtime {
     /// api-contract §1 `Integration`.
     pub fn integration_json(&self, id: &str) -> Value {
         let needs = needs_secret(id);
-        let has_secret = needs && self.secrets().has(id);
+        let has_secret = needs && self.secrets().has(&secret_account(id));
         let row = match design_tool(id) {
             Some(tool) => self.design_tool_row(id, tool),
             None => self.integration_row(id),
@@ -171,7 +177,8 @@ impl Runtime {
 
     /// Stores a token in the Keychain (never anywhere else), then tests it.
     /// An id that is not an integration is a Keychain account for MCP env
-    /// values (`keychain:<id>`): stored, nothing to test.
+    /// values (`keychain:<id>`): stored under `mcp:<id>`, where the env
+    /// resolution reads it, with nothing to test.
     pub fn integration_secret_set(&self, id: &str, secret: Secret) -> Result<Value> {
         if !needs_secret(id) {
             bail!("{} doesn't take a token here", name_of(id));
@@ -180,6 +187,10 @@ impl Runtime {
             bail!("the token is empty");
         }
         let secret = Secret::new(secret.expose().trim());
+        if !IDS.contains(&id) {
+            self.mcp_secret_set(id, secret)?;
+            return Ok(self.integration_json(id));
+        }
         self.secrets().set(id, &secret)?;
         self.event("-", "integration_secret_set", json!({"id": id}));
         if IDS.contains(&id) { self.integration_test(id) } else { Ok(self.integration_json(id)) }
@@ -188,6 +199,10 @@ impl Runtime {
     pub fn integration_secret_remove(&self, id: &str) -> Result<Value> {
         if !needs_secret(id) {
             bail!("{} has no token here", name_of(id));
+        }
+        if !IDS.contains(&id) {
+            self.mcp_secret_delete(id)?;
+            return Ok(self.integration_json(id));
         }
         self.secrets().remove(id)?;
         self.db.set_integration(&IntegrationRow {
@@ -371,8 +386,16 @@ mod tests {
         let v = rt.integration_test("notion").unwrap();
         assert_eq!(v["status"], "error");
         assert!(v["detail"].as_str().unwrap().contains("api.notion.com"));
-        // An MCP env account: stored, not tested.
+        // An MCP env account: stored under `mcp:` (where `keychain:figma-token`
+        // in a server's env is read), not tested, no integrations row.
         assert_eq!(rt.integration_secret_set("figma-token", Secret::new("f")).unwrap()["has_secret"], true);
+        assert_eq!(rt.secrets().get("mcp:figma-token").unwrap().unwrap().expose(), "f");
+        assert!(rt.secrets().get("figma-token").unwrap().is_none());
+        assert_eq!(rt.mcp_secrets_status(&["figma-token".into()])["figma-token"], true);
+        assert!(rt.integration_secret_set("bad name", Secret::new("f")).is_err());
+        assert_eq!(rt.integration_secret_remove("figma-token").unwrap()["has_secret"], false);
+        assert!(rt.secrets().get("mcp:figma-token").unwrap().is_none());
+        assert!(rt.db.integrations().unwrap().iter().all(|r| r.id != "figma-token"));
     }
 
     #[test]
