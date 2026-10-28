@@ -312,6 +312,10 @@ pub fn role_issues(role: &RoleDef, reg: &Registry) -> Vec<McpIssue> {
             _ => {}
         }
     }
+    // FR-819: never on Lead or Reviewer starters; the inspector warns.
+    if role.downgrade.is_some() && (role.id.contains("lead") || role.id.contains("review")) {
+        push("model downgrade on a lead or reviewer role".into(), true);
+    }
     out
 }
 
@@ -400,6 +404,17 @@ mod tests {
         assert_eq!(
             texts,
             [("connector `penpot` with strict MCP", true), ("mcp ref `ghost` not in the registry", false)]
+        );
+        let mut lead = RoleDef::new("lead", "Lead");
+        lead.downgrade = Some(governor::Downgrade { to: "sonnet".into(), when: governor::DowngradeWhen::Red });
+        let issues = role_issues(&lead, &reg);
+        assert_eq!(issues[0].text, "model downgrade on a lead or reviewer role");
+        // It round-trips through the role's JSON (role_save, teams_view).
+        let back: RoleDef = serde_json::from_value(serde_json::to_value(&lead).unwrap()).unwrap();
+        assert_eq!(back.downgrade, lead.downgrade);
+        assert_eq!(
+            serde_json::to_value(&lead).unwrap()["downgrade"],
+            serde_json::json!({"to": "sonnet", "when": "red"})
         );
     }
 

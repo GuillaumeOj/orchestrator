@@ -721,6 +721,7 @@ pub fn run(sc: &Scenario) -> SimResult {
                 weekly,
                 provenance: Provenance::Observed,
                 model,
+                model_windows: Vec::new(),
             });
         }
 

@@ -24,6 +24,12 @@ impl Core {
         self.runtime()?.report_view(id)
     }
 
+    /// `queue_off_hours` (FR-816, D4): `{ starts_at }`.
+    pub fn queue_off_hours(&self, entry: Option<u64>, task: Option<u64>, off: bool) -> Result<Value> {
+        let t = self.runtime()?.queue_off_hours(entry, task, off)?;
+        Ok(json!({"starts_at": t.to_string()}))
+    }
+
     pub fn integrations_view(&self) -> Result<Value> {
         Ok(self.runtime()?.integrations_json())
     }

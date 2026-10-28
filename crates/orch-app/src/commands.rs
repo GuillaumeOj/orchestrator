@@ -327,6 +327,11 @@ pub async fn report_view(core: CoreState<'_>, id: String) -> Res<Value> {
     blocking(core, move |c| c.report_view(&id)).await
 }
 
+#[tauri::command]
+pub async fn queue_off_hours(core: CoreState<'_>, entry: Option<u64>, task: Option<u64>, off: bool) -> Res<Value> {
+    blocking(core, move |c| c.queue_off_hours(entry, task, off)).await
+}
+
 // ---- P3 integrations and the MCP registry (api-contract §1–2)
 
 #[tauri::command]

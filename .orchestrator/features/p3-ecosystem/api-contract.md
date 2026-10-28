@@ -163,6 +163,16 @@ agents[].model_note: string | null;           // "downgraded (Red)" while a down
 | `plan_form` (P1) | — | the form, with `per_model_weights: boolean` (and `off_hours_live_cap`) from the pacing policy |
 | `governor_act` (P1) | `action: 'undo'` on a `downgrade` action restores the model at the next task boundary | unchanged |
 
+Notes (back, T-8):
+- `queue_off_hours` is refused with `"the plan has no off-hours allowance: set one in the Week planner first"` when the plan's `off_hours_allowance_pct` is 0 (the off-hours cap is active only with an allowance, spec §3.7). With `entry`, the mark lasts for that entry's turn; with `task`, for every turn of the task; clearing an entry also clears its agent's task mark. `starts_at` is RFC 3339 (now when already outside working time).
+- While scheduled off-hours work runs and the off-hours cap is full, its reason is the P1 `{ kind: 'live_cap', state, cap }`.
+- `queue[].reason` model window: `exhausted: false` = Red (≥ 95 % or the week's Red rule on that window; critical work still runs), `true` = used up (≥ 100 % or a model-specific rate limit).
+- `team_launch` `form.off_hours` marks every task of the run.
+- `app_state.banners` is a new array (only `{ kind: 'not_on_ac' }` from the core for now); `power.on_ac` is `null` until off-hours work first waits (the power source is read only then).
+- `agents[].model_note` is `null` without a downgrade.
+- `RoleDef.downgrade` round-trips through `role_save` / `teams_view` as `{ to, when }` (absent when off); `teams_view` roles get the warning issue `"model downgrade on a lead or reviewer role"`.
+- `snapshot.model_windows[]` and `off_hours.windows[]` use RFC 3339 times (`resets_at`, `start`, `end`).
+
 ## 7. Task backend: Linear (FR-501, FR-503)
 
 `project_settings` / `project_settings_set` (P2): `task_backend` accepts

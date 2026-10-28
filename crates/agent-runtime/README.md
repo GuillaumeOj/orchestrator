@@ -263,6 +263,18 @@ compressed bodies get 415.
   week and its samples replayed first. A week switches when a reading names the next reset
   (FR-802) or, without one, at the tick after `reset_at`. Per-model weights
   (`PacingPolicy::per_model_weights`) are set with the plan form (`plan_set`'s `per_model_weights`).
+- **P3 pacing (`pacing.rs`, `power.rs`)**: the statusline's extra `rate_limits.<name>` windows
+  go to the Governor and are stored with the sample (FR-815); a StopFailure whose message names a
+  model ("… Opus limit …") marks that model's window exhausted instead of the 5h/week window.
+  Each turn request carries the model it runs on. At a **task boundary** (a pending `task` turn)
+  a role with `downgrade` asks `task_boundary_model`; an agent running another model is
+  suspended while idle and the pump resumes it with `--model <to>` (`Live.model` records it).
+  **Off-hours** (FR-816): `queue_off_hours(entry | task, off)`; task and run marks (team launch
+  `off_hours`) live in the kv key `governor.off_hours` and re-mark the agent at each decision.
+  `power_tick` (housekeeping; `pmset` read at most once a minute, only while work waits) holds the
+  `PowerAssertion` (real: `caffeinate -s -w <core pid>`, AC only; tests: `FakePower`) while
+  off-hours work waits or runs on AC, releases it otherwise, and on battery raises one Inbox alert
+  per night and the `not_on_ac` banner (`power_json`).
 - **Weekly report (FR-818, `report.rs`)**: at the switch to the next week the ended week's report
   is built from the stored samples (pp with the week's `k`, per family when per-model weights are
   on; `cost_usd` is the statusline's API-price estimate, decision D7), the plan's allocations, the

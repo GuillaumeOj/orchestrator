@@ -899,6 +899,10 @@ impl Core {
             usage["snapshot"] = json!(snapshot);
             usage["reset_at_ms"] = json!(reset);
             usage["shadow"] = json!(shadow);
+            for a in agents.iter_mut() {
+                let id = a["id"].as_str().unwrap_or("").to_string();
+                a["model_note"] = json!(rt.model_note(&id));
+            }
             (meta, alerts, done) = rt.store.read(store_view);
         }
         let mut git_paths: std::collections::BTreeSet<PathBuf> = projects.iter().map(|p| p.path.clone()).collect();
@@ -931,6 +935,9 @@ impl Core {
             }
         };
         let items = self.inbox_items(&agents, &alerts, &done, ask);
+        // FR-816: the power assertion and the on-battery banner.
+        let (power, banner) = self.rt.as_ref().map(|rt| rt.power_json()).unwrap_or((Value::Null, None));
+        let banners: Vec<Value> = banner.into_iter().collect();
         let setup = self.setup_view(&projects);
         let projects: Vec<Value> = projects
             .iter()
@@ -956,6 +963,8 @@ impl Core {
             "memory": self.memory(agents_mb),
             "memory_watch": self.watch.view(),
             "setup": setup,
+            "power": power,
+            "banners": banners,
         })
     }
 
@@ -1496,6 +1505,7 @@ mod tests {
                 title: "Fix X".into(),
                 brief: "b".into(),
                 base: None,
+                off_hours: false,
             })
             .unwrap();
         let s = core.state();

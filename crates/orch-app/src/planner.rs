@@ -115,6 +115,47 @@ pub struct PlannerView {
     pub first_run_ms: Option<i64>,
     /// The user confirmed a plan (otherwise the default one is shown).
     pub plan_set: bool,
+    /// FR-816: off-hours windows of the week and the work scheduled in them.
+    pub off_hours: OffHoursView,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OffHoursWindow {
+    pub start: Timestamp,
+    pub end: Timestamp,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OffHoursView {
+    pub windows: Vec<OffHoursWindow>,
+    pub live_cap: u32,
+    pub queued: usize,
+    pub running: u32,
+}
+
+/// The week's time outside working blocks, at 15-minute resolution.
+fn off_hours_windows(gov: &Governor) -> Vec<OffHoursWindow> {
+    let plan = gov.plan();
+    let (start, end) = (plan.week_start, plan.reset_at);
+    let step = governor::jiff::SignedDuration::from_mins(15);
+    let mut out = vec![];
+    let mut open: Option<Timestamp> = None;
+    let mut t = start;
+    while t < end {
+        match (gov.in_working_time(t), open) {
+            (false, None) => open = Some(t),
+            (true, Some(s)) => {
+                out.push(OffHoursWindow { start: s, end: t });
+                open = None;
+            }
+            _ => {}
+        }
+        t = t.checked_add(step).unwrap_or(end);
+    }
+    if let Some(s) = open {
+        out.push(OffHoursWindow { start: s, end });
+    }
+    out
 }
 
 fn ms(t: Timestamp) -> i64 {
@@ -246,6 +287,12 @@ pub fn build(
         five_hour_resets_at_ms: five_hour_resets_at.map(ms),
         first_run_ms: None,
         plan_set: false,
+        off_hours: OffHoursView {
+            windows: off_hours_windows(gov),
+            live_cap: gov.policy().off_hours_live_cap,
+            queued: gov.queue().iter().filter(|q| gov.off_hours_agents().contains(&q.agent)).count(),
+            running: gov.off_hours_running(),
+        },
     }
 }
 
@@ -277,6 +324,7 @@ mod tests {
             weekly: Some(WindowReading { used_pct: 30.0, resets_at: reset }),
             provenance: Provenance::Observed,
             model: None,
+            model_windows: Vec::new(),
         });
         (g, now)
     }

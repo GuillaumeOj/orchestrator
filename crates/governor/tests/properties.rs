@@ -172,6 +172,7 @@ fn replay(events: &[(i64, Ev)], shadow: bool) -> Result<Vec<GovernorAction>, Tes
                     weekly: Some(WindowReading { used_pct: w.floor(), resets_at: reset() }),
                     provenance: Provenance::Observed,
                     model: None,
+                    model_windows: Vec::new(),
                 });
             }
             Ev::Limit { agent } => {

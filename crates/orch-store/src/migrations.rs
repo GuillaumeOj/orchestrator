@@ -483,6 +483,11 @@ ALTER TABLE calibrations ADD COLUMN week_start_ms INTEGER;
 ALTER TABLE calibrations ADD COLUMN state TEXT;
 CREATE INDEX calibrations_week ON calibrations(kind, week_start_ms);
 "#,
+    // 8: P3 per-model weekly windows of each statusline sample (FR-815), as
+    // JSON `[{name, used_pct, resets_at}]`; NULL when the response had none.
+    r#"
+ALTER TABLE usage_samples ADD COLUMN model_windows TEXT;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

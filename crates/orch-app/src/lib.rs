@@ -124,6 +124,7 @@ pub fn run() {
             commands::planner_view,
             commands::reports_list,
             commands::report_view,
+            commands::queue_off_hours,
             commands::artifact_preview,
             commands::artifact_open,
             commands::team_duplicate,

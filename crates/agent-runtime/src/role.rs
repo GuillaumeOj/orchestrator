@@ -101,6 +101,9 @@ pub struct Role {
     /// FR-407: a turn running longer is interrupted (the watchdog) and the user told.
     #[serde(default)]
     pub turn_ceiling_minutes: Option<u32>,
+    /// FR-819: the role's opt-in downgrade (team roles).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downgrade: Option<governor::Downgrade>,
 }
 
 fn default_network() -> Vec<String> {
@@ -126,6 +129,7 @@ impl Role {
             extra_write: vec![],
             orch_tools: vec![],
             turn_ceiling_minutes: None,
+            downgrade: None,
         }
     }
 
@@ -149,6 +153,7 @@ impl Role {
             extra_write: vec![],
             orch_tools: n.orch_tools.clone(),
             turn_ceiling_minutes: n.turn_ceiling.minutes.filter(|m| *m > 0),
+            downgrade: n.downgrade.clone(),
         })
     }
 

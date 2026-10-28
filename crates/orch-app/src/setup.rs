@@ -151,6 +151,9 @@ pub struct PlanForm {
     /// (`PacingPolicy::per_model_weights`). Absent = unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_model_weights: Option<bool>,
+    /// FR-816: live agents for work scheduled off-hours (`PacingPolicy::off_hours_live_cap`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub off_hours_live_cap: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -228,6 +231,7 @@ impl PlanForm {
             off_hours_allowance_pct: plan.off_hours_allowance_pct,
             allocations,
             per_model_weights: None,
+            off_hours_live_cap: None,
         }
     }
 
@@ -331,6 +335,7 @@ impl Core {
         Ok(rt.with_governor(|g| {
             let mut f = PlanForm::from_plan(g.plan(), &projects);
             f.per_model_weights = Some(g.policy().per_model_weights);
+            f.off_hours_live_cap = Some(g.policy().off_hours_live_cap);
             f
         }))
     }
@@ -340,8 +345,18 @@ impl Core {
         let rt = self.runtime()?;
         let plan = form.apply(&rt.with_governor(|g| g.plan().clone()))?;
         // Pacing options live in the policy; the replan below rebuilds the Governor with it.
-        if let Some(on) = form.per_model_weights {
-            rt.update_policy(|p| p.per_model_weights = on)?;
+        if let Some(cap) = form.off_hours_live_cap.filter(|c| *c > 20) {
+            bail!("off-hours live cap {cap}: use 0–20");
+        }
+        if form.per_model_weights.is_some() || form.off_hours_live_cap.is_some() {
+            rt.update_policy(|p| {
+                if let Some(on) = form.per_model_weights {
+                    p.per_model_weights = on;
+                }
+                if let Some(cap) = form.off_hours_live_cap {
+                    p.off_hours_live_cap = cap;
+                }
+            })?;
         }
         rt.replan(plan)?;
         self.settings.set(PLAN_KEY, json!(orch_protocol::now_ms()))?;

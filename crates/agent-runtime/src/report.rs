@@ -204,13 +204,17 @@ pub fn build(i: &Inputs) -> WeeklyReport {
     let (mut agents_pp, mut interactive_pp) = (0.0, 0.0);
     let mut alloc_used: BTreeMap<String, f64> = BTreeMap::new();
     let mut last_reading: Option<(u64, f64)> = None;
-    let peaks: BTreeMap<String, f64> = BTreeMap::new();
+    let mut peaks: BTreeMap<String, f64> = BTreeMap::new();
     for s in i.samples.iter().filter(in_week) {
         if let (Some(w), Some(r)) = (s.weekly_pct, s.weekly_resets_at) {
             // A reading of this week (not an agent's stale copy of the last one).
             if (r - plan.reset_at.as_second()).abs() <= 3600 && last_reading.is_none_or(|(t, _)| s.ts_ms >= t) {
                 last_reading = Some((s.ts_ms, w));
             }
+        }
+        for mw in &s.model_windows {
+            let p = peaks.entry(mw.name.clone()).or_insert(0.0);
+            *p = p.max(mw.used_pct);
         }
         let Some(agent) = &s.agent_id else { continue };
         let cost = s.cost_delta.unwrap_or(0.0).max(0.0);

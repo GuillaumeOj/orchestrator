@@ -48,6 +48,9 @@ pub struct LaunchSpec {
     /// Base of the integration branch (default: the project's base branch).
     #[serde(default)]
     pub base: Option<String>,
+    /// FR-816: the run's tasks wait for off-hours ("Run off-hours" at launch).
+    #[serde(default)]
+    pub off_hours: bool,
 }
 
 /// Everything about a run, loaded together.
@@ -323,6 +326,9 @@ impl Runtime {
             ended_at_ms: None,
         };
         self.db.upsert_run(&run)?;
+        if spec.off_hours {
+            self.mark_off_hours(None, Some(&run.id), true)?;
+        }
         self.run_event(
             &run.id,
             None,
@@ -1756,6 +1762,7 @@ mod tests {
                 title: "Fix X".into(),
                 brief: "Fix the X bug.".into(),
                 base: None,
+                off_hours: false,
             })
             .unwrap();
         write_commit(rt, "fx-lead-1", ".orchestrator/features/fx/spec.md", "# Fix X\n");
@@ -1802,6 +1809,7 @@ mod tests {
                 title: "Fix X".into(),
                 brief: "Fix the X bug.".into(),
                 base: None,
+                off_hours: false,
             })
             .unwrap();
         assert_eq!(run.status, RunState::Spec);
@@ -1956,6 +1964,7 @@ mod tests {
                 title: "Fix X".into(),
                 brief: "Fix the X bug.".into(),
                 base: None,
+                off_hours: false,
             })
             .unwrap();
         let lead = "fx-lead-1";
@@ -2000,6 +2009,7 @@ mod tests {
                 title: "Fix X".into(),
                 brief: "Fix the X bug.".into(),
                 base: None,
+                off_hours: false,
             })
             .unwrap();
         // The feature archived under its active run (an older relaunch).

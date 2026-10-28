@@ -85,6 +85,8 @@ pub struct RuntimeConfig {
     /// The plan of a week with none stored ([`default_plan`]; tests use
     /// [`test_plan`], which holds at any date, hour and time zone).
     pub default_plan: fn(Timestamp, bool) -> WeeklyPlan,
+    /// FR-816: keeps the Mac awake on AC while off-hours work waits or runs.
+    pub power: Arc<dyn crate::power::PowerAssertion>,
 }
 
 impl RuntimeConfig {
@@ -112,6 +114,7 @@ impl RuntimeConfig {
             secrets: Arc::new(orch_secrets::Keychain),
             net: Arc::new(crate::net::SystemNet),
             default_plan,
+            power: Arc::new(crate::power::Caffeinate::default()),
         }
     }
 }
@@ -122,6 +125,8 @@ pub struct Live {
     /// 0 = input not allowed yet (before SessionStart + 1.5 s, or during a turn).
     pub ready_at_ms: AtomicU64,
     pub last_user_input_ms: AtomicU64,
+    /// The `--model` it was started with (FR-819 switches at a task boundary).
+    pub model: Option<String>,
 }
 
 impl Live {
@@ -164,7 +169,7 @@ pub struct Runtime {
 
 /// Clocks and flags of the periodic work (`tick`, `housekeeping`).
 #[derive(Default)]
-struct House {
+pub(crate) struct House {
     last_forecast_ms: u64,
     last_calibration_ms: u64,
     /// The fit last stored (FR-814: a row on each fit change).
@@ -196,6 +201,11 @@ struct House {
     asked: std::collections::BTreeSet<String>,
     /// Stuck team members already told to their lead, by run.
     supervised: BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// FR-816: last read of the power source, what it said, and the night
+    /// the on-battery alert went out.
+    pub(crate) last_power_ms: u64,
+    pub(crate) power: crate::pacing::PowerState,
+    pub(crate) battery_alerted: Option<String>,
 }
 
 /// A team lead (the node that merges): outside the process cap. Not the
@@ -617,7 +627,17 @@ impl Runtime {
     }
 
     /// Admission point 1: asks the Governor and logs the decision.
-    fn decide_turn(&self, rec: &AgentRecord, kind: TurnKind, origin: TurnOrigin, needs_spawn: bool) -> Decision {
+    pub(crate) fn decide_turn(
+        &self,
+        rec: &AgentRecord,
+        kind: TurnKind,
+        origin: TurnOrigin,
+        needs_spawn: bool,
+    ) -> Decision {
+        if origin != TurnOrigin::User {
+            self.sync_off_hours(rec);
+        }
+        let model = self.turn_model(rec);
         let req = TurnRequest {
             agent: AgentId(rec.id.clone()),
             allocation: rec.allocation.clone().into(),
@@ -627,6 +647,7 @@ impl Runtime {
             self_started: origin == TurnOrigin::SelfStarted,
             ceiling: None,
             needs_spawn,
+            model,
         };
         let ar = AdmissionRequest {
             agent_id: rec.id.clone(),
@@ -775,7 +796,9 @@ impl Runtime {
         // Registry refs and opted-in Keychain env values, for this spawn's
         // files only (FR-601, NFR-3); a ref that can't work refuses the spawn.
         let project = self.agent_project(&rec);
-        let role = self.resolve_mcp(&rec.role, project.as_deref(), true)?;
+        let mut role = self.resolve_mcp(&rec.role, project.as_deref(), true)?;
+        // FR-819: a downgrade in force runs the agent on its fallback model.
+        role.model = self.turn_model(&rec);
         let compiled = compile(&role, &ctx);
         compiled.write()?;
         self.probe_in_background(project, rec.role.mcp_refs.clone());
@@ -800,7 +823,12 @@ impl Runtime {
         let _ = pid_cell.set(pid);
         self.live.lock().unwrap_or_else(|e| e.into_inner()).insert(
             id.into(),
-            Arc::new(Live { pty, ready_at_ms: AtomicU64::new(0), last_user_input_ms: AtomicU64::new(0) }),
+            Arc::new(Live {
+                pty,
+                ready_at_ms: AtomicU64::new(0),
+                last_user_input_ms: AtomicU64::new(0),
+                model: role.model.clone(),
+            }),
         );
         self.store.write(|s| {
             if let Some(a) = s.agents.get_mut(id) {
@@ -1227,6 +1255,25 @@ impl Runtime {
                 self.handle_releases(releases);
             }
             Effect::RateLimited { message } => {
+                let model_limit =
+                    self.usage.lock().unwrap_or_else(|e| e.into_inner()).exhausted_model_window(id, message.as_deref());
+                if let Some((name, resets)) = model_limit {
+                    // A per-model weekly limit (FR-815): only that model's turns wait.
+                    let now_ts = Timestamp::now();
+                    let resets_at = Timestamp::from_second(resets).unwrap_or(now_ts);
+                    let releases = {
+                        let mut g = self.gov();
+                        g.model_limit_hit(&name, resets_at, now_ts);
+                        g.turn_ended(&AgentId(id.into()), now_ts)
+                    };
+                    self.handle_releases(releases);
+                    self.event(
+                        id,
+                        "rate_limited",
+                        json!({"model_window": name, "resets_at": resets, "message": message}),
+                    );
+                    return;
+                }
                 let (window, resets) = self
                     .usage
                     .lock()
@@ -1575,7 +1622,7 @@ impl Runtime {
         self.house().index_all = true;
     }
 
-    fn house(&self) -> std::sync::MutexGuard<'_, House> {
+    pub(crate) fn house(&self) -> std::sync::MutexGuard<'_, House> {
         self.house.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -1643,6 +1690,7 @@ impl Runtime {
         if due(&mut self.house().last_mcp_probe_ms, now, crate::registry::PROBE_EVERY_MS) {
             self.probe_used_servers();
         }
+        self.power_tick(false);
         let level = self.cfg.memory.level();
         let changed = {
             let mut h = self.house();
@@ -1888,6 +1936,10 @@ impl Runtime {
         now: u64,
         entries: &std::collections::BTreeSet<u64>,
     ) -> Result<()> {
+        // FR-819: a new task is where the model may change (never mid-turn).
+        if turn.kind == TurnKind::Task && turn.admission == Admission::Pending && self.task_boundary(rec) {
+            return Ok(());
+        }
         if let Admission::Waiting(e) = turn.admission
             && !entries.contains(&e)
         {
@@ -2322,6 +2374,7 @@ fn governor_sample(u: &orch_store::UsageRecord) -> Option<governor::UsageSample>
         weekly: reading(u.weekly_pct, u.weekly_resets_at),
         provenance: orch_store::untag(&u.provenance).unwrap_or(governor::Provenance::Observed),
         model: u.model.clone(),
+        model_windows: u.model_windows.clone(),
     })
 }
 
@@ -2347,6 +2400,7 @@ fn usage_record(
         source: Some(orch_store::UsageSource::Statusline),
         class: Some(tag(&class)),
         allocation,
+        model_windows: g.model_windows.clone(),
         ..Default::default()
     }
 }
@@ -2382,6 +2436,7 @@ pub(crate) mod tests {
         cfg.memory = Arc::new(crate::resources::FixedMemory::new(PressureLevel::Normal));
         cfg.projects_root = d.join("projects");
         cfg.default_plan = test_plan;
+        cfg.power = Arc::new(crate::power::FakePower::default());
         cfg
     }
 
