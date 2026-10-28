@@ -331,11 +331,9 @@ export function routeOpen(r, projectId = null) {
 export async function alertAct(item, action) {
   try {
     const r = await invoke('inbox_act', { item: item.id, action, message: null });
-    // A Notion comment links its page even when the core only marks it read.
     if (routeOpen(r, item.payload?.project ?? null) || action !== 'open') return;
-    // A Notion comment links its page; a Linear/GitHub conflict note opens the Board on the task.
-    if (item.payload?.page_url) openUrl(item.payload.page_url);
-    else if (item.payload?.action === 'task_conflict') openBoard(item.payload.project, item.payload.task);
+    // A task sync conflict (remote won) only marks the note read: open the Board on the task.
+    if (item.payload?.action === 'task_conflict') openBoard(item.payload.project, item.payload.task);
   } catch (e) {
     toast(errText(e), { kind: 'error' });
   }
@@ -616,12 +614,13 @@ export function runNow(a, notStarted) {
 }
 
 /** FR-816: a queued turn to the next off-hours window, or back (D4: you scheduled it). */
-export async function runOffHours(a) {
-  const off = a.queue_entry?.reason?.kind !== 'scheduled_off_hours';
+export async function runOffHours(a, off = a.queue_entry?.reason?.kind !== 'scheduled_off_hours') {
   try {
-    const r = await invoke('queue_off_hours', { entry: a.queue_entry.id, off });
+    const r = await invoke('queue_off_hours', { entry: String(a.queue_entry.id), off });
+    // Penpot 05: "deps-1 runs off-hours · starts 18:00 · Undo".
     toast(
       off ? `${a.id} runs off-hours · starts ${clockOf(Date.parse(r.starts_at))}` : `${a.id} runs in working hours`,
+      off ? { action: { label: 'Undo', run: () => runOffHours(a, false) } } : {},
     );
     await refresh();
   } catch (e) {

@@ -119,7 +119,7 @@ describe('pacing helpers', () => {
       ['catch_up', 2],
     ]);
     const k = kpis(report());
-    expect(k.map((x) => x.value)).toEqual(['93%', '0', '31 h', '13']);
+    expect(k.map((x) => x.value)).toEqual(['93%', '0 h', '31 h', '13']);
     expect(k[3].note).toBe('2 overrides by you · 1 undone');
     expect(noData(report({ totals: { ...report().totals, weekly_pct: 0 }, by_project: [], allocations: [] }))).toBe(
       true,
@@ -160,11 +160,9 @@ describe('pacing helpers', () => {
     });
     expect(powerChip({ on_ac: true, off_hours_pending: 0 })).toBe(null);
     expect(downgradeText({ kind: 'downgrade', agent: 'front-2', from: 'opus', to: 'sonnet', why: 'red' })).toBe(
-      'Downgraded front-2 opus → sonnet at its task boundary (Red)',
+      'Downgraded front-2 opus → sonnet at its task boundary (Red) · back to opus at its next task once it clears',
     );
-    expect(downgradeText({ kind: 'restore_model', agent: 'front-2', to: 'opus', why: 'green' })).toBe(
-      'Restored front-2 to opus (Green)',
-    );
+    expect(downgradeText({ kind: 'restore_model', agent: 'front-2' })).toBe("Restored front-2 to its role's model");
   });
 });
 
@@ -376,7 +374,9 @@ describe('planner, banner, status bar, board', () => {
   });
 
   it('board: ⇧O runs the card off-hours; space opens its menu', async () => {
-    replies.board_view = {
+    // The core marks the task (board_view.tasks[].off_hours) once queue_off_hours ran.
+    let marked = false;
+    const board = () => ({
       project: { id: 'shop', name: 'shop-api' },
       backend: 'local',
       repo: null,
@@ -399,23 +399,43 @@ describe('planner, banner, status bar, board', () => {
           notes: [],
           created_at_ms: 1,
           updated_at_ms: 1,
+          off_hours: marked,
         },
       ],
       features: [],
       runs: [],
-    };
+    });
+    replies.board_view = board;
     replies.planner_view = planner();
-    replies.queue_off_hours = { starts_at: iso(now + 3600000) };
+    replies.queue_off_hours = (a) => ((marked = a.off), { starts_at: iso(now + 3600000) });
     app.panes.b1 = { type: 'board', projectId: 'shop', title: 'shop tasks' };
     const { container, getByText } = render(BoardPane, { paneId: 'b1' });
     await waitFor(() => getByText('Payment intent endpoint'));
-    const board = container.querySelector('.board');
-    await fireEvent.keyDown(board, { key: ' ' });
+    const el = container.querySelector('.board');
+    await fireEvent.keyDown(el, { key: ' ' });
     await tick();
-    expect(container.querySelector('[aria-label="Task menu"]').textContent).toContain('Run off-hours');
-    await fireEvent.keyDown(board, { key: 'O', shiftKey: true });
+    const menu = container.querySelector('[aria-label="Task menu"]').textContent;
+    for (const item of ['Open task', 'Run off-hours', 'Move to…', 'Assign node…']) expect(menu).toContain(item);
+    await fireEvent.keyDown(el, { key: 'O', shiftKey: true });
     await waitFor(() => expect(calls.some(([c, a]) => c === 'queue_off_hours' && a.task === '14' && a.off)).toBe(true));
     await waitFor(() => expect(container.textContent).toContain('☾ Off-hours'));
+    // The toast undoes it (Penpot 05: "… runs off-hours · starts 18:00 · Undo").
+    const t = app.toasts.at(-1);
+    expect(t.text).toMatch(/^T-14 runs off-hours · starts \d\d:\d\d$/);
+    t.action.run();
+    await waitFor(() =>
+      expect(calls.some(([c, a]) => c === 'queue_off_hours' && a.task === '14' && a.off === false)).toBe(true),
+    );
+    // space, m, 4: Move to… Review.
+    replies.task_update = {};
+    await fireEvent.keyDown(el, { key: ' ' });
+    await fireEvent.keyDown(el, { key: 'm' });
+    await tick();
+    expect(container.querySelector('[aria-label="Move to"]')).toBeTruthy();
+    await fireEvent.keyDown(el, { key: '4' });
+    await waitFor(() =>
+      expect(calls.some(([c, a]) => c === 'task_update' && a.id === 14 && a.status === 'review')).toBe(true),
+    );
   });
 
   it("a starter role's edit asks where to save a copy, then the node uses the copy", async () => {

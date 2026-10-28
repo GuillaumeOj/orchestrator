@@ -53,12 +53,15 @@
   const head0Off = $derived(head0?.reason?.kind === 'scheduled_off_hours');
 
   /** O: the next queued turn to off-hours, or back (queue_off_hours). */
-  async function toggleOffHours() {
-    if (!head0) return toast('Nothing queued');
+  async function toggleOffHours(entry = head0, offNow = !head0Off) {
+    if (!entry) return toast('Nothing queued');
     if (!offHoursAllowed(off)) return toast(OFF_DISABLED);
     try {
-      const r = await invoke('queue_off_hours', { entry: head0.id, off: !head0Off });
-      toast(head0Off ? `${head0.agent} runs in working hours` : `${head0.agent} runs off-hours · starts ${clock(Date.parse(r.starts_at))}`);
+      const r = await invoke('queue_off_hours', { entry: String(entry.id), off: offNow });
+      toast(
+        offNow ? `${entry.agent} runs off-hours · starts ${clock(Date.parse(r.starts_at))}` : `${entry.agent} runs in working hours`,
+        offNow ? { action: { label: 'Undo', run: () => toggleOffHours(entry, false) } } : {},
+      );
       load();
     } catch (e) {
       toast(errText(e), { kind: 'error' });
@@ -297,7 +300,7 @@
         <div class="ch"><b>Next action</b><span class="muted">preview</span></div>
         {#if v.queue.length}
           <p>Next release: <b>{v.queue[0].agent}</b> ({v.queue[0].tier}) · {queueReason(v.queue[0])}{v.queue[0].estimated_start ? ` · ≈ ${clock(Date.parse(v.queue[0].estimated_start))}` : ''}</p>
-          <div class="row"><button class="btn ghost" disabled={!offHoursAllowed(off)} title={offHoursAllowed(off) ? '' : OFF_DISABLED} onclick={toggleOffHours}>{head0Off ? 'Run in working hours' : 'Run off-hours'} <Kbd keys="O" /></button></div>
+          <div class="row"><button class="btn ghost" disabled={!offHoursAllowed(off)} title={offHoursAllowed(off) ? '' : OFF_DISABLED} onclick={() => toggleOffHours()}>{head0Off ? 'Run in working hours' : 'Run off-hours'} <Kbd keys="O" /></button></div>
         {:else}
           <p class="muted">Nothing queued.</p>
         {/if}

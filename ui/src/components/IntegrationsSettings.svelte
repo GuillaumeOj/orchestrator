@@ -3,7 +3,7 @@
   // GitHub (gh), Linear and Notion (a token in the Keychain), Penpot and Figma
   // (from the MCP registry). Rows: j/k move, t test, ⏎ connect / reconnect,
   // x remove the token. A row needing you sorts first.
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { confirm, openSettings, runInPane, toast } from '../lib/app.svelte.js';
   import { checkedAt, INTEGRATION_COPY, integrationDetail, sortIntegrations } from '../lib/ecosystem.js';
   import { errText, invoke } from '../lib/ipc.js';
@@ -92,14 +92,23 @@
   }
 
   /** ⏎: what Connect / Reconnect does per integration (§5.2). */
-  function connect(it) {
+  async function connect(it) {
     if (!it) return;
     if (it.id === 'github') return runInPane('gh auth login', 'gh auth login');
-    if (it.needs_secret) return fields[it.id]?.focus();
+    if (it.needs_secret) {
+      // The secret field shows on the selected row only.
+      selId = it.id;
+      await tick();
+      return fields[it.id]?.focus();
+    }
     if (it.id === 'penpot' || it.id === 'figma') return openSettings('mcp', `design:${it.id}`);
   }
 
-  const connectLabel = (it) => (it.status === 'not_configured' ? 'Connect' : 'Reconnect');
+  const designTool = (it) => it.id === 'penpot' || it.id === 'figma';
+  const failedOf = (it) => it.has_secret && (it.status === 'needs_auth' || it.status === 'error');
+  const connectLabel = (it) =>
+    designTool(it) ? 'Open MCP servers' : failedOf(it) ? 'Replace' : it.status === 'not_configured' ? 'Connect' : 'Reconnect';
+  const lastCheck = $derived(Math.max(0, ...(items ?? []).map((i) => i.checked_at_ms ?? 0)) || null);
 
   function onKey(e) {
     if (e.target.closest('input, textarea, select, button') || e.metaKey || e.ctrlKey || e.altKey || !rows.length) return;
@@ -125,7 +134,9 @@
 <section class="ints" tabindex="0" data-section-focus bind:this={root} onkeydown={onKey} aria-label="Integrations">
   <header class="h">
     <h2>Integrations</h2>
-    <span class="muted">{items == null ? 'Checking integrations…' : 'Tokens live in the macOS Keychain; agents never see them.'}</span>
+    <span class="muted">{items == null ? 'Checking integrations…' : 'Services the core talks to. Tokens live in the macOS Keychain; agents never see them.'}</span>
+    <span class="grow"></span>
+    {#if lastCheck}<span class="muted when">{checkedAt(lastCheck, now)}</span>{/if}
   </header>
   {#if error}<p class="err">Could not read the integrations: {error}</p>{/if}
   {#if items == null}
@@ -135,20 +146,20 @@
   {:else}
     {#each rows as it (it.id)}
       {@const focused = it === cur}
-      {@const failed = it.has_secret && (it.status === 'needs_auth' || it.status === 'error')}
+      {@const failed = failedOf(it)}
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
       <div class="row" class:sel={focused} data-integration={it.id} onclick={() => (selId = it.id)}>
         <div class="top">
-          <span class="name">{it.name}</span>
+          <span class="name"><span class="ico" aria-hidden="true">{{ github: '\u{F02A4}', linear: '\u{F0453}', notion: '\u{F0219}', penpot: '\u{F0431}', figma: '\u{F0431}' }[it.id] ?? ''}</span> {it.name}</span>
           <ConnBadge status={it.status} busy={busy[it.id]} connector={it.id === 'penpot' || it.id === 'figma'} />
           <span class="detail ell">{integrationDetail(it)}</span>
           <span class="grow"></span>
           <span class="muted when">{checkedAt(it.checked_at_ms, now)}</span>
-          <button class="btn ghost" disabled={busy[it.id] || (it.needs_secret && !it.has_secret)} onclick={() => test(it)}>{busy[it.id] ? 'Testing…' : 'Test'}{#if focused}<Kbd keys="t" />{/if}</button>
-          <button class="btn ghost" onclick={() => connect(it)}>{connectLabel(it)}{#if focused}<Kbd keys="⏎" />{/if}</button>
-          {#if it.needs_secret && it.has_secret}<button class="btn ghost" onclick={() => remove(it)}>Remove{#if focused}<Kbd keys="x" />{/if}</button>{/if}
+          {#if it.status !== 'not_configured'}<button class="btn ghost" disabled={busy[it.id]} onclick={() => test(it)}>{busy[it.id] ? 'Testing…' : 'Test'} <Kbd keys="t" /></button>{/if}
+          <button class="btn ghost" onclick={() => connect(it)}>{connectLabel(it)} <Kbd keys="⏎" /></button>
+          {#if it.needs_secret && it.has_secret}<button class="btn ghost" onclick={() => remove(it)}>Remove <Kbd keys="x" /></button>{/if}
         </div>
-        {#if it.needs_secret}
+        {#if it.needs_secret && focused}
           <div class="secretline">
             <SecretField bind:this={fields[it.id]} stored={it.has_secret} placeholder={INTEGRATION_COPY[it.id]?.placeholder ?? `Paste a ${it.name} token`} error={fieldError[it.id]} onsave={(v) => saveSecret(it, v)} onremove={() => remove(it)} />
             {#if failed}<p class="err">{'\u{F0159}'} {it.name} rejected the {INTEGRATION_COPY[it.id]?.secret ?? 'token'}{it.detail ? ` (${it.detail})` : ''}. Paste a new {INTEGRATION_COPY[it.id]?.secret ?? 'token'} with Replace.</p>
@@ -157,10 +168,19 @@
         {/if}
       </div>
     {/each}
+    <p class="muted hints"><Kbd keys="j" /><Kbd keys="k" /> rows · <Kbd keys="t" /> test · <Kbd keys="⏎" /> connect · <Kbd keys="x" /> remove · <Kbd keys="esc" /> back to sections</p>
   {/if}
 </section>
 
 <style>
+
+  .hints {
+    margin: var(--space-sm) 0 0;
+    font: var(--text-caption);
+  }
+  .ico {
+    color: var(--color-text-muted);
+  }
   .ints {
     display: flex;
     flex-direction: column;

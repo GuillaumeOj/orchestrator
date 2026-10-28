@@ -56,7 +56,12 @@ export const INTEGRATION_COPY = {
 /** The detail line of an integration row. */
 export function integrationDetail(it) {
   if (it.status === 'not_configured' && !it.detail) return INTEGRATION_COPY[it.id]?.off ?? '';
-  const parts = [it.account, it.detail].filter(Boolean);
+  // A rejected token says what to do (§5.2 error copy).
+  const why =
+    it.status === 'needs_auth' && it.needs_secret && it.detail
+      ? `${it.detail}: the key was revoked or is wrong`
+      : it.detail;
+  const parts = [it.account, why].filter(Boolean);
   if (it.id === 'github' && it.status === 'connected') return ['via gh', ...parts].join(' · ');
   return parts.join(' · ');
 }
@@ -120,12 +125,12 @@ export const textToArgs = (text) =>
     .map((s) => s.trim())
     .filter(Boolean);
 
-/** "ux, ui in 2 teams" (§5.4 Used by); the tooltip lists team › node. */
+/** "ux, ui · 2 teams" (Penpot 04 Settings · MCP servers, Used by); the tooltip lists team › node. */
 export function usedByText(used) {
   if (!used?.length) return '—';
   const roles = [...new Set(used.map((u) => u.node))];
   const teams = new Set(used.map((u) => u.team)).size;
-  return `${roles.join(', ')} in ${teams} team${teams === 1 ? '' : 's'}`;
+  return `${roles.join(', ')} · ${teams} team${teams === 1 ? '' : 's'}`;
 }
 
 export const usedByTitle = (used) => (used ?? []).map((u) => `${u.team} › ${u.node}`).join('\n');
@@ -319,7 +324,8 @@ export function previewError(err, a, from = a?.from_node ?? 'the designer') {
     const m = e.match(/([\d.]+)\s*MB/);
     return `Too large to preview (${m ? `${m[1]} MB · ` : ''}max 5 MB)`;
   }
-  if (/not found/i.test(e)) return `Not found on ${from}'s branch or the integration branch.`;
+  if (/not found/i.test(e))
+    return `Not found on ${from}'s branch or the integration branch. ${from} may not have committed it yet.`;
   if (/not previewable/i.test(e)) return `${artifactTitle(a)}: no preview`;
   return `Could not load this preview: ${e}`;
 }

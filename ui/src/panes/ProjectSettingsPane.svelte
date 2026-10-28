@@ -10,6 +10,7 @@
   import McpSettings from '../components/McpSettings.svelte';
   import { app, openSettings, projects, saveLayout, toast } from '../lib/app.svelte.js';
   import { connStatus } from '../lib/ecosystem.js';
+  import { clock } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { BACKENDS, backendForm, COLUMN_LABEL, mappingRows, mappingToSave, syncLine } from '../lib/linear.js';
 
@@ -66,7 +67,7 @@
     // The last sync, from the Board's view (kept by the core across restarts).
     const bv = await invoke('board_view', { project: pid }).catch(() => null);
     if (bv?.last_sync && bv.last_sync_at_ms) last = { report: bv.last_sync, at: bv.last_sync_at_ms };
-    if (bv?.last_sync_error) syncErr = [bv.last_sync_error];
+    if (bv?.last_sync_error) syncErr = [`Last sync ${bv.last_sync_at_ms ? `${clock(bv.last_sync_at_ms)} ` : ''}failed: ${bv.last_sync_error}`];
     const iv = await invoke('integrations_view').catch(() => null);
     linearInt = iv?.items?.find((i) => i.id === 'linear') ?? null;
     if (kind === 'linear') loadTeams();
@@ -272,7 +273,7 @@
         {/if}
         <div class="box syncbox">
           <span>{last ? syncLine(last.report, last.at, kind === 'linear' ? 'Linear' : 'GitHub') : 'Not synced from here yet'}</span>
-          <span class="muted">· every 2 min while the app runs</span>
+          <span class="muted">· every 5 min while a team runs</span>
           <span class="grow"></span>
           <button class="btn ghost" disabled={syncing || dirty} title={dirty ? 'Save first' : ''} onclick={sync}>{syncing ? 'Syncing…' : 'Sync now'} <Kbd keys="r" /></button>
         </div>

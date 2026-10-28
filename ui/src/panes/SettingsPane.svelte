@@ -27,11 +27,12 @@
   const section = $derived(SECTIONS.find((s) => s.id === spec?.section) ?? SECTIONS[1]);
   // The nav's attention count, refreshed by the Integrations section and on open.
   let needs = $state(0);
+  let mcpNeeds = $state(0); // servers that need auth or fail
   let nav = $state(null);
   let body = $state(null);
 
   function pick(id, into = false) {
-    app.panes[paneId] = { ...app.panes[paneId], section: id, server: null };
+    app.panes[paneId] = { ...app.panes[paneId], section: id, server: null, title: SECTIONS.find((s) => s.id === id)?.label ?? 'Settings' };
     saveLayout();
     if (into) queueMicrotask(() => body?.querySelector('[data-section-focus]')?.focus());
   }
@@ -54,8 +55,13 @@
   }
 
   onMount(async () => {
-    const v = await invoke('integrations_view').catch(() => null);
+    const [v, m] = await Promise.all([
+      invoke('integrations_view').catch(() => null),
+      invoke('mcp_registry_view', { project: spec?.projectId ?? null }).catch(() => null),
+    ]);
     if (v) needs = attentionCount(v.items);
+    if (m) mcpNeeds = attentionCount(m.servers);
+    if (app.panes[paneId] && app.panes[paneId].title !== section.label) app.panes[paneId] = { ...app.panes[paneId], title: section.label };
   });
 </script>
 
@@ -66,11 +72,12 @@
     {#each SECTIONS as s (s.id)}
       <button class="sec" class:on={s.id === section.id} aria-current={s.id === section.id ? 'page' : undefined} onclick={() => pick(s.id)} tabindex="-1">
         <span class="grow">{s.label}</span>
-        {#if s.id === 'integrations' && needs}<span class="warn" title="{needs} need you"><span aria-hidden="true">{'\u{F0026}'}</span> {needs}</span>{/if}
+        {#if s.id === 'integrations' && needs}<span class="warn err" title="{needs} need you"><span aria-hidden="true">{'\u{F0159}'}</span> {needs}</span>{/if}
+        {#if s.id === 'mcp' && mcpNeeds}<span class="warn" title="{mcpNeeds} need you"><span aria-hidden="true">{'\u{F1983}'}</span> {mcpNeeds}</span>{/if}
       </button>
     {/each}
     <span class="grow"></span>
-    <span class="muted hints"><Kbd keys="j" /><Kbd keys="k" /> move · <Kbd keys="⏎" /> enter · <Kbd keys="esc" /> back</span>
+    <span class="muted hints"><Kbd keys="j" /><Kbd keys="k" /> sections · <Kbd keys="⏎" /> enter</span>
   </nav>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="body" bind:this={body} onkeydown={onBodyKey}>

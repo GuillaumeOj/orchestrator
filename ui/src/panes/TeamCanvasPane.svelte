@@ -615,8 +615,8 @@
         {@const w = mode.what}
         <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Duplicate">
           <b>Duplicate {w?.kind === 'role' ? `role ${w.role.id}` : (w?.team?.name ?? 'team')}</b>
-          <button class="opt" onclick={() => duplicate('global', w)}><Kbd keys="1" /> to global</button>
-          <button class="opt" disabled={!project} onclick={() => duplicate('project', w)}><Kbd keys="2" /> to {projectName ?? 'a project (open the canvas from one)'}</button>
+          <button class="opt" onclick={() => duplicate('global', w)}>Duplicate to global <Kbd keys="D" /><Kbd keys="1" /></button>
+          <button class="opt" disabled={!project} onclick={() => duplicate('project', w)}>Duplicate to {projectName ?? 'a project (open the canvas from one)'} <Kbd keys="D" /><Kbd keys="2" /></button>
           <span class="muted">A copy at version 1, as &lt;id&gt;-copy · esc cancel</span>
         </div>
       {:else if mode?.kind === 'import'}

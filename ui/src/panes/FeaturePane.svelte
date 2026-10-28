@@ -288,6 +288,7 @@
           {#each v.artifacts.filter((a) => !isDesign(a)) as a (a.id)}
             <div class="art"><span class="muted">{a.kind}</span> <span class="ell">{a.uri}</span> <span class="muted">({a.from_node}{a.to_node ? ` → ${a.to_node}` : ''})</span></div>
           {/each}
+          {#if v.artifacts.some(isDesign)}<p class="muted nline">Design artifacts moved to the Design section (d).</p>{/if}
         </section>
       </div>
     </div>
