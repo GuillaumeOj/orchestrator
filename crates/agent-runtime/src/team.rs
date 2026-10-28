@@ -894,12 +894,14 @@ impl Runtime {
     }
 
     /// Unread messages not handed over yet: not delivered (pasted or given
-    /// as context), and not carried by a turn still waiting for its paste.
+    /// as context), and not carried by a turn still waiting for its paste,
+    /// this agent's or another's of the node (a message to the node binds to
+    /// an agent only at the paste).
     fn undelivered(&self, rec: &AgentRecord) -> Vec<Message> {
         let carried: Vec<u64> = self.store.read(|s| {
             s.turns
                 .iter()
-                .filter(|t| t.agent_id == rec.id && matches!(t.status, TurnStatus::Queued | TurnStatus::Delivering))
+                .filter(|t| !t.messages.is_empty() && matches!(t.status, TurnStatus::Queued | TurnStatus::Delivering))
                 .flat_map(|t| t.messages.iter().copied())
                 .collect()
         });

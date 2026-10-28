@@ -182,7 +182,13 @@ impl Runtime {
     }
 
     /// Closes an open item; the closed item, or `None` if it was already closed.
-    fn close_item(&self, id: u64, status: InboxStatus, decision: &str, decided_by: &str) -> Option<InboxItem> {
+    pub(crate) fn close_item(
+        &self,
+        id: u64,
+        status: InboxStatus,
+        decision: &str,
+        decided_by: &str,
+    ) -> Option<InboxItem> {
         self.store.write(|s| s.close_inbox(id, status, Some(decision.into()), decided_by).ok().cloned()).ok().flatten()
     }
 

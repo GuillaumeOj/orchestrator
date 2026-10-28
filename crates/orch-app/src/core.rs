@@ -711,9 +711,10 @@ impl Core {
                     rt.decide(n, InboxDecision::Dismiss, None, None)?;
                     Ok(json!({"ok": true, "effect": "dismissed"}))
                 }
+                // Deleted first: a kill that fails leaves the card to try again.
                 "delete" => {
-                    rt.decide(n, InboxDecision::Dismiss, None, None)?;
                     let r = self.agent_delete(&agent, false, false)?;
+                    let _ = rt.decide(n, InboxDecision::Dismiss, None, None);
                     Ok(json!({"ok": true, "effect": "dismissed", "result": r}))
                 }
                 other => bail!("{other} does not apply to {item}"),

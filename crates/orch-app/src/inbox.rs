@@ -146,7 +146,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
         let item = match (al.kind.as_str(), s("action").as_str()) {
             // A start that never happened (FR-415): open the pane, restart fresh, or dismiss.
             ("startup", _) => {
-                let mut actions = vec!["o", "restart_fresh", "x"];
+                let mut actions = vec!["o", "restart_fresh", "dismiss"];
                 if al.payload.get("failed").is_some_and(Value::is_string) {
                     actions.push("delete");
                 }
@@ -157,7 +157,10 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
                     agent_id: al.agent_id.clone(),
                     title,
                     detail: match al.payload.get("failed").and_then(Value::as_str) {
-                        Some(f) => format!("Its {f} start exited at once (status {})", al.payload["exit_status"]),
+                        Some(f) => match al.payload.get("exit_status").and_then(Value::as_u64) {
+                            Some(st) => format!("Its {f} start exited at once (status {st})"),
+                            None => format!("Its {f} start exited at once"),
+                        },
                         None => "No SessionStart yet: a prompt or dialog may be waiting in its pane".into(),
                     },
                     preview: Some(last_lines(&s("tail"), 8)).filter(|t| !t.is_empty()),
@@ -487,9 +490,9 @@ mod tests {
         ];
         let items = build(&Inputs { alerts: &alerts, ..Default::default() });
         assert_eq!((items[0].id.as_str(), items[0].level, items[0].kind.as_str()), ("startup-1", 2, "startup"));
-        assert_eq!(items[0].actions, ["o", "restart_fresh", "x"]);
+        assert_eq!(items[0].actions, ["o", "restart_fresh", "dismiss"]);
         assert_eq!(items[0].preview.as_deref(), Some("x\nAccept the terms?"));
-        assert_eq!(items[1].actions, ["o", "restart_fresh", "x", "delete"]);
+        assert_eq!(items[1].actions, ["o", "restart_fresh", "dismiss", "delete"]);
         assert!(items[1].detail.contains("fresh start exited at once"));
         assert_eq!(ui_id("startup", 2), "startup-2");
     }

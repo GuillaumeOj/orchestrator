@@ -69,7 +69,8 @@ impl MemoryProbe for FixedMemory {
 }
 
 /// FR-203: the base cap under normal pressure, one less on warn (at least 1),
-/// 1 on critical. It recovers as soon as the pressure ends.
+/// 1 on critical, for the level [`PressureFilter`] holds (it recovers once
+/// the pressure has stayed lower for [`LOWER_AFTER_MS`]).
 pub fn effective_cap(base: u32, level: PressureLevel) -> u32 {
     match level {
         PressureLevel::Normal => base.max(1),

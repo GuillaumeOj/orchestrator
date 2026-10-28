@@ -900,20 +900,28 @@ impl Runtime {
             let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
             if live.get(id).is_some_and(|l| l.pty.pid == pid) { live.remove(id) } else { None }
         };
-        // Asked for (suspend, kill, delete) or not: only an unexpected exit is a failed start.
-        let intent = self.store.read(|s| s.agents.get(id).map(|a| a.tracker.stop_intent));
+        // Asked for (suspend, kill, delete) or not, and before SessionStart:
+        // only an unexpected exit of a start is a failed start.
+        let failed_start = self.store.read(|s| {
+            s.agents
+                .get(id)
+                .is_some_and(|a| a.tracker.stop_intent == StopIntent::None && a.tracker.state == AgentState::Starting)
+        });
         let _ = self.store.write(|s| {
             if let Some(a) = s.agents.get_mut(id).filter(|a| a.pid == Some(pid)) {
                 a.on_process_gone();
             }
         });
-        // FR-203: a pasted turn the process never started goes back to the queue.
-        self.requeue_unstarted(id);
+        // FR-203: a pasted turn the process never started goes back to the
+        // queue (not on a late exit of an older process: the turns are a newer one's).
+        if gone.is_some() {
+            self.requeue_unstarted(id);
+        }
         let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
         self.handle_releases(releases);
         self.event(id, "exited", json!({"status": status}));
         if let Some(l) = gone
-            && intent == Some(StopIntent::None)
+            && failed_start
         {
             self.check_quick_exit(id, &l, status);
         }
@@ -1823,17 +1831,15 @@ impl Runtime {
             .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter_map(|(id, l)| {
-                let rec = self.store.read(|s| s.agents.get(id).cloned())?;
+                let (rec, delivering) = self.store.read(|s| {
+                    let delivering = s.turns.iter().any(|t| t.agent_id == *id && t.status == TurnStatus::Delivering);
+                    s.agents.get(id).cloned().map(|r| (r, delivering))
+                })?;
                 // A stop already under way (a suspend waits up to 5 s for the exit).
                 if rec.tracker.stop_intent != StopIntent::None {
                     return None;
                 }
-                let (delivering, startup_blocked) = self.store.read(|s| {
-                    (
-                        s.turns.iter().any(|t| t.agent_id == *id && t.status == TurnStatus::Delivering),
-                        s.inbox.iter().any(|i| i.open() && i.kind == "startup" && i.agent_id.as_deref() == Some(id)),
-                    )
-                });
+                let startup_blocked = self.startup_item(id).is_some();
                 let last = [
                     rec.last_event_at_ms.unwrap_or(0),
                     l.last_user_input_ms.load(Ordering::SeqCst),

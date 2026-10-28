@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 use crate::compile::SessionMode;
 use crate::inbox::PRIORITY_ALERT;
 use crate::runtime::{Live, Runtime};
-use crate::state::AgentState;
-use crate::store::{Admission, TurnStatus};
+use crate::state::{AgentState, StopIntent};
+use crate::store::{Admission, AgentRecord, TurnStatus};
 
 /// A spawn that exits sooner than this did not start (FR-415).
 pub const QUICK_EXIT_MS: u64 = 5_000;
@@ -33,43 +33,60 @@ fn tail(s: &str) -> String {
 
 impl Runtime {
     /// The agent's open `startup` item, if any.
-    fn startup_item(&self, id: &str) -> Option<u64> {
+    pub(crate) fn startup_item(&self, id: &str) -> Option<u64> {
         self.store.read(|s| {
             s.inbox.iter().find(|i| i.open() && i.kind == "startup" && i.agent_id.as_deref() == Some(id)).map(|i| i.id)
         })
     }
 
     /// Housekeeping: a live agent still starting past `startup_timeout`, with
-    /// no trust dialog (that one is the user's to answer, J0), gets one item.
+    /// no trust dialog (that one is the user's to answer, J0), gets one item
+    /// per spawn: one the user dismissed is not raised again.
     pub(crate) fn watch_startups(&self, now: u64) {
         let timeout = self.cfg.startup_timeout.as_millis() as u64;
         for id in self.live_ids() {
             let Some(l) = self.live(&id) else { continue };
-            let starting = self.store.read(|s| {
-                s.agents.get(&id).is_some_and(|a| a.tracker.state == AgentState::Starting && !a.trust_dialog)
+            let since = l.pty.spawned_at_ms;
+            let (starting, raised) = self.store.read(|s| {
+                (
+                    s.agents.get(&id).is_some_and(|a| {
+                        a.tracker.state == AgentState::Starting
+                            && !a.trust_dialog
+                            && a.tracker.stop_intent == StopIntent::None
+                    }),
+                    s.inbox.iter().any(|i| {
+                        i.kind == "startup" && i.agent_id.as_deref() == Some(id.as_str()) && i.created_at_ms >= since
+                    }),
+                )
             });
             if !starting
+                || raised
                 || l.pty.output.trust_dialog.load(Ordering::Relaxed)
-                || now.saturating_sub(l.pty.spawned_at_ms) < timeout
+                || now.saturating_sub(since) < timeout
                 || self.startup_item(&id).is_some()
             {
                 continue;
             }
             let payload = json!({
                 "waiting_on": "startup", "mode": if l.resumed { "resume" } else { "new" },
-                "since_ms": l.pty.spawned_at_ms, "tail": tail(&l.pty.output.tail_text()),
+                "since_ms": since, "tail": tail(&l.pty.output.tail_text()),
             });
             let _ = self.add_item(Some(&id), "startup", format!("{id} did not start"), payload, PRIORITY_ALERT);
         }
     }
 
-    /// SessionStart: the agent started, its `startup` item closes.
+    /// SessionStart: the agent started, its `startup` item closes and a
+    /// failed start is behind it (a later resume resumes this session).
     pub(crate) fn started(&self, id: &str) {
+        if self.store.read(|s| s.agents.get(id).is_some_and(|a| a.resume_failed)) {
+            let _ = self.store.write(|s| {
+                if let Some(a) = s.agents.get_mut(id) {
+                    a.resume_failed = false;
+                }
+            });
+        }
         let Some(item) = self.startup_item(id) else { return };
-        let closed = self
-            .store
-            .write(|s| s.close_inbox(item, InboxStatus::Dismissed, Some("started".into()), "core").ok().cloned());
-        if let Ok(Some(i)) = closed {
+        if let Some(i) = self.close_item(item, InboxStatus::Dismissed, "started", "core") {
             self.outcome(&i, "core", "dismissed");
         }
     }
@@ -104,18 +121,18 @@ impl Runtime {
         }
     }
 
-    /// An exit nobody asked for, within [`QUICK_EXIT_MS`] of the spawn: a
-    /// resume with no transcript restarts fresh once; otherwise (a fresh or
-    /// new start that died too) the user gets a `startup` item and the agent
-    /// is in error, with no retry loop.
+    /// An exit nobody asked for, before SessionStart and within
+    /// [`QUICK_EXIT_MS`] of the spawn: a resume with no transcript restarts
+    /// fresh once; otherwise (a fresh or new start that died too) the user
+    /// gets a `startup` item and the agent is in error, with no retry loop.
     pub(crate) fn check_quick_exit(&self, id: &str, l: &Live, status: Option<u32>) {
         if now_ms().saturating_sub(l.pty.spawned_at_ms) >= QUICK_EXIT_MS {
             return;
         }
         let Some(rec) = self.store.read(|s| s.agents.get(id).cloned()) else { return };
-        let no_transcript = crate::transcript::find(&self.cfg.projects_root, &rec.session_id).is_none();
-        let why = if l.resumed && !l.fresh_retry {
-            if !no_transcript {
+        let retry = l.resumed && !l.fresh_retry;
+        let why = if retry {
+            if crate::transcript::find(&self.cfg.projects_root, &rec.session_id).is_some() {
                 return; // a session that exists: today's error path, not FR-415
             }
             match self.restart_fresh(id, "resume exited at once with no transcript", "core") {
@@ -125,7 +142,7 @@ impl Runtime {
         } else {
             "exited at once".to_string()
         };
-        let failed = if l.resumed && !l.fresh_retry { "resume" } else { "fresh" };
+        let failed = if retry { "resume" } else { "fresh" };
         let _ = self.store.write(|s| {
             if let Some(a) = s.agents.get_mut(id) {
                 a.tracker.state = AgentState::Error;
@@ -139,7 +156,8 @@ impl Runtime {
                 "since_ms": l.pty.spawned_at_ms, "failed": failed, "exit_status": status,
                 "tail": tail(&l.pty.output.tail_text()),
             });
-            let _ = self.add_item(Some(id), "startup", format!("{id} could not resume"), payload, PRIORITY_ALERT);
+            let title = if l.resumed { format!("{id} could not resume") } else { format!("{id} could not start") };
+            let _ = self.add_item(Some(id), "startup", title, payload, PRIORITY_ALERT);
         }
     }
 
@@ -153,19 +171,37 @@ impl Runtime {
         if rec.tracker.state == AgentState::Archived {
             bail!("agent {id} is deleted");
         }
+        // Flagged until the spawn: the delivery loop must not resume the
+        // agent meanwhile (a resume of the new, empty session dies at once).
+        // A failure leaves the flag saying why.
+        let flag = |msg: String| {
+            self.store.write(|s| {
+                if let Some(a) = s.agents.get_mut(id) {
+                    a.flag = Some(msg);
+                }
+            })
+        };
+        flag(format!("{id}: restarting as a fresh session"))?;
+        let r = self.restart_fresh_flagged(id, &rec, why, by);
+        if let Err(e) = &r {
+            let _ = flag(format!("{id}: could not restart fresh: {e:#}"));
+        }
+        r
+    }
+
+    /// [`Runtime::restart_fresh`] once the agent is flagged; the spawn clears the flag.
+    fn restart_fresh_flagged(&self, id: &str, rec: &AgentRecord, why: &str, by: &str) -> Result<String> {
         if self.live(id).is_some() {
             self.suspend(id)?;
         }
-        let (old, new, had_brief) = self.fresh_session(id)?;
-        if let Some(item) = self.startup_item(id) {
-            let closed = self
-                .store
-                .write(|s| s.close_inbox(item, InboxStatus::Decided, Some("restart_fresh".into()), by).ok().cloned());
-            if let Ok(Some(i)) = closed {
-                self.outcome(&i, by, "restarted");
-            }
+        let brief = self.brief_turn(rec);
+        let (old, new, had_brief) = self.fresh_session(id, brief.as_deref())?;
+        if let Some(item) = self.startup_item(id)
+            && let Some(i) = self.close_item(item, InboxStatus::Decided, "restart_fresh", by)
+        {
+            self.outcome(&i, by, "restarted");
         }
-        if !had_brief && let Some(brief) = self.brief_turn(&rec) {
+        if !had_brief && let Some(brief) = brief {
             // Queued before the spawn: the paste goes out once the session is ready.
             self.deliver_kind(id, &brief, TurnKind::Task)?;
         }
@@ -176,8 +212,9 @@ impl Runtime {
 
     /// The store side of [`Runtime::restart_fresh`]: a new session id, the
     /// unstarted turns (pasted, or started in the lost session) queued again.
-    /// Returns `(old, new, a brief/task turn is among the queued ones)`.
-    pub(crate) fn fresh_session(&self, id: &str) -> Result<(String, String, bool)> {
+    /// Returns `(old, new, a queued turn is the brief)`; the flag set by the
+    /// caller stays until the spawn.
+    pub(crate) fn fresh_session(&self, id: &str, brief: Option<&str>) -> Result<(String, String, bool)> {
         let new = uuid::Uuid::new_v4().to_string();
         self.store.write(|s| {
             let mut had_brief = false;
@@ -187,12 +224,11 @@ impl Runtime {
                     t.admission = Admission::Pending;
                     t.delivered_at_ms = None;
                 }
-                had_brief |= t.status == TurnStatus::Queued && t.kind == TurnKind::Task;
+                had_brief |= t.status == TurnStatus::Queued && !t.command && brief == Some(t.body.as_str());
             }
             let a = s.agents.get_mut(id).expect("checked by the caller");
             let old = std::mem::replace(&mut a.session_id, new.clone());
             a.resume_failed = false;
-            a.flag = None;
             a.tracker.last_error = None;
             if a.tracker.state == AgentState::Error {
                 a.tracker.state = AgentState::Suspended;
@@ -237,7 +273,7 @@ mod tests {
                 a.tracker.state = AgentState::Error;
             })
             .unwrap();
-        let (old, new, had_brief) = rt.fresh_session("a1").unwrap();
+        let (old, new, had_brief) = rt.fresh_session("a1", Some("x")).unwrap();
         assert_eq!(old, "s");
         assert_ne!(new, old);
         assert!(had_brief, "the brief is re-queued, not rebuilt");
@@ -246,9 +282,8 @@ mod tests {
         assert_eq!(st[2].0, TurnStatus::Done, "a finished turn stays done");
         let a = rt.store.read(|s| s.agents["a1"].clone());
         assert_eq!((a.session_id, a.resume_failed, a.tracker.state), (new, false, AgentState::Suspended));
-        // No task turn left: the caller rebuilds the brief (once).
-        rt.store.write(|s| s.turns.retain(|t| t.kind != TurnKind::Task)).unwrap();
-        assert!(!rt.fresh_session("a1").unwrap().2);
+        // No turn is the brief: the caller rebuilds it (once).
+        assert!(!rt.fresh_session("a1", Some("another brief")).unwrap().2);
     }
 
     #[test]

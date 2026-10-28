@@ -439,13 +439,9 @@ fn a_flapping_probe_keeps_the_cap_and_a_pasted_turn_is_never_suspended() {
         c.idle_suspend = Some(Duration::from_secs(1));
     });
     core.start_agent("a");
-    for i in 0..8 {
-        mem.set(if i % 2 == 0 { PressureLevel::Warn } else { PressureLevel::Normal });
-        std::thread::sleep(Duration::from_millis(1_500));
-        assert_eq!(core.rt.live_cap(), 2, "the cap holds while the probe flaps");
-    }
     // A pasted turn the fake never starts (a SLOW one hangs before its Stop,
     // so mark one Delivering by hand): neither idleness nor pressure stops it.
+    // Marked first: idle for 1 s, the agent would be suspended during the flapping.
     core.rt
         .store
         .write(|s| {
@@ -459,7 +455,11 @@ fn a_flapping_probe_keeps_the_cap_and_a_pasted_turn_is_never_suspended() {
             s.turns.push(t);
         })
         .unwrap();
-    std::thread::sleep(Duration::from_secs(8));
+    for i in 0..8 {
+        mem.set(if i % 2 == 0 { PressureLevel::Warn } else { PressureLevel::Normal });
+        std::thread::sleep(Duration::from_millis(1_500));
+        assert_eq!(core.rt.live_cap(), 2, "the cap holds while the probe flaps");
+    }
     assert_ne!(core.state_of("a"), "suspended");
 }
 
