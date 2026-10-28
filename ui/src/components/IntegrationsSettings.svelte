@@ -4,31 +4,33 @@
   // (from the MCP registry). Rows: j/k move, t test, ⏎ connect / reconnect,
   // x remove the token. A row needing you sorts first.
   import { onMount, tick } from 'svelte';
-  import { confirm, openSettings, runInPane, toast } from '../lib/app.svelte.js';
+  import { confirm, now30, openSettings, runInPane, toast } from '../lib/app.svelte.js';
   import { checkedAt, INTEGRATION_COPY, integrationDetail, needsUser, sortIntegrations } from '../lib/ecosystem.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { move } from '../lib/select.js';
   import ConnBadge from './ConnBadge.svelte';
   import Kbd from './Kbd.svelte';
   import SecretField from './SecretField.svelte';
 
-  /** @type {{ onstatus?: (items: any[]) => void }} */
-  let { onstatus = () => {} } = $props();
+  /** `initial`: the Settings pane's integrations_view, taken once (no second fetch on open). */
+  /** @type {{ onstatus?: (items: any[]) => void, initial?: (() => Promise<any> | null) | null }} */
+  let { onstatus = () => {}, initial = null } = $props();
 
   let items = $state(null); // null = loading
   let error = $state(null);
   let selId = $state(null); // by id: rows re-sort when a status changes
   let busy = $state({}); // id → true while a test or a save runs
   let fieldError = $state({}); // id → text under the secret field
-  let now = $state(Date.now());
+  const now = $derived(now30());
   const fields = {};
   let root = $state(null);
 
   const rows = $derived(items ? sortIntegrations(items) : []);
   const cur = $derived(rows.find((r) => r.id === selId) ?? rows[0] ?? null);
 
-  async function load() {
+  async function load(first = null) {
     try {
-      const v = await invoke('integrations_view');
+      const v = await (first ?? invoke('integrations_view'));
       items = v.items;
       selId ??= sortIntegrations(items)[0]?.id ?? null;
       error = null;
@@ -115,9 +117,8 @@
   function onKey(e) {
     if (e.target.closest('input, textarea, select, button') || e.metaKey || e.ctrlKey || e.altKey || !rows.length) return;
     const k = e.key;
-    const i = Math.max(0, rows.indexOf(cur));
-    if (k === 'j' || k === 'ArrowDown') selId = rows[Math.min(rows.length - 1, i + 1)].id;
-    else if (k === 'k' || k === 'ArrowUp') selId = rows[Math.max(0, i - 1)].id;
+    if (k === 'j' || k === 'ArrowDown') selId = move(rows, cur?.id, 1);
+    else if (k === 'k' || k === 'ArrowUp') selId = move(rows, cur?.id, -1);
     else if (k === 't') test(cur);
     else if (k === 'Enter') connect(cur);
     else if (k === 'x') remove(cur);
@@ -126,9 +127,7 @@
   }
 
   onMount(() => {
-    load();
-    const t = setInterval(() => (now = Date.now()), 30000);
-    return () => clearInterval(t);
+    load(initial?.());
   });
 </script>
 

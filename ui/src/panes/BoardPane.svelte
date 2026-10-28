@@ -9,7 +9,7 @@
   import AgentChip from '../components/AgentChip.svelte';
   import Kbd from '../components/Kbd.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
-  import { app, openFeature, refresh, toast } from '../lib/app.svelte.js';
+  import { app, openFeature, queueOffHours, refresh, toast } from '../lib/app.svelte.js';
   import { ago, clock } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { backendLabel, remoteName, syncCounts } from '../lib/linear.js';
@@ -80,20 +80,11 @@
   /** The task, or its run, is marked "Run off-hours" (board_view). */
   const isOff = (t) => !!t?.off_hours;
 
-  async function toggleOffHours(t, off = !isOff(t)) {
+  function toggleOffHours(t) {
     menu = false;
     if (!t) return;
     if (!offHoursAllowed(offHours)) return toast(OFF_DISABLED);
-    try {
-      const r = await invoke('queue_off_hours', { task: String(t.id), off });
-      toast(
-        off ? `${handle(t)} runs off-hours · starts ${clock(Date.parse(r.starts_at))}` : `${handle(t)} runs in working hours`,
-        off ? { action: { label: 'Undo', run: () => toggleOffHours(t, false) } } : {},
-      );
-      await load();
-    } catch (e) {
-      toast(errText(e), { kind: 'error' });
-    }
+    queueOffHours({ task: t.id, off: !isOff(t) }, handle(t), load);
   }
 
   async function sync() {

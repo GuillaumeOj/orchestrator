@@ -11,7 +11,7 @@
   import { onMount } from 'svelte';
   import Kbd from '../components/Kbd.svelte';
   import PressurePill from '../components/PressurePill.svelte';
-  import { app, confirm, governor, openReport, toast } from '../lib/app.svelte.js';
+  import { app, confirm, governor, openReport, queueOffHours, toast } from '../lib/app.svelte.js';
   import { clock, dayHm, dayTime, duration, pct, pp, when } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { downgradeText, nextOffHours, OFF_DISABLED, offHoursAllowed, windowLabel, windowQueued } from '../lib/pacing.js';
@@ -53,19 +53,10 @@
   const head0Off = $derived(head0?.reason?.kind === 'scheduled_off_hours');
 
   /** O: the next queued turn to off-hours, or back (queue_off_hours). */
-  async function toggleOffHours(entry = head0, offNow = !head0Off) {
-    if (!entry) return toast('Nothing queued');
+  function toggleOffHours() {
+    if (!head0) return toast('Nothing queued');
     if (!offHoursAllowed(off)) return toast(OFF_DISABLED);
-    try {
-      const r = await invoke('queue_off_hours', { entry: String(entry.id), off: offNow });
-      toast(
-        offNow ? `${entry.agent} runs off-hours · starts ${clock(Date.parse(r.starts_at))}` : `${entry.agent} runs in working hours`,
-        offNow ? { action: { label: 'Undo', run: () => toggleOffHours(entry, false) } } : {},
-      );
-      load();
-    } catch (e) {
-      toast(errText(e), { kind: 'error' });
-    }
+    queueOffHours({ entry: head0.id, off: !head0Off }, head0.agent, load);
   }
   const p = $derived(PRESSURE[s?.state] ?? PRESSURE.green);
   // Chart geometry

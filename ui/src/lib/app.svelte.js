@@ -37,6 +37,19 @@ export const app = $state({
   error: null,
 });
 
+// One clock for relative times ("checked 14:58 · 2m ago"), every 30 s, started on first use.
+const tick = $state({ now: Date.now() });
+let ticking = null;
+
+/** "now" for relative times; reading it in a template re-renders every 30 s. */
+export function now30() {
+  if (!ticking) {
+    ticking = setInterval(() => (tick.now = Date.now()), 30000);
+    ticking.unref?.(); // never keeps a test runner alive
+  }
+  return tick.now;
+}
+
 /** A pane shown in the shell dock rather than the tiling layout. */
 export const inDock = (id) => app.dock.tabs.includes(id);
 
@@ -614,15 +627,23 @@ export function runNow(a, notStarted) {
 }
 
 /** FR-816: a queued turn to the next off-hours window, or back (D4: you scheduled it). */
-export async function runOffHours(a, off = a.queue_entry?.reason?.kind !== 'scheduled_off_hours') {
+export const runOffHours = (a, off = a.queue_entry?.reason?.kind !== 'scheduled_off_hours') =>
+  queueOffHours({ entry: a.queue_entry.id, off }, a.id, refresh);
+
+/**
+ * FR-816: mark a queued entry or a task for off-hours (or clear it), with
+ * the Penpot 05 toast "deps-1 runs off-hours · starts 18:00 · Undo";
+ * `reload` refreshes the caller's view.
+ */
+export async function queueOffHours({ entry = null, task = null, off }, label, reload = refresh) {
+  const id = entry != null ? { entry: String(entry) } : { task: String(task) };
   try {
-    const r = await invoke('queue_off_hours', { entry: String(a.queue_entry.id), off });
-    // Penpot 05: "deps-1 runs off-hours · starts 18:00 · Undo".
+    const r = await invoke('queue_off_hours', { ...id, off });
     toast(
-      off ? `${a.id} runs off-hours · starts ${clockOf(Date.parse(r.starts_at))}` : `${a.id} runs in working hours`,
-      off ? { action: { label: 'Undo', run: () => runOffHours(a, false) } } : {},
+      off ? `${label} runs off-hours · starts ${clockOf(Date.parse(r.starts_at))}` : `${label} runs in working hours`,
+      off ? { action: { label: 'Undo', run: () => queueOffHours({ entry, task, off: false }, label, reload) } } : {},
     );
-    await refresh();
+    await reload?.();
   } catch (e) {
     toast(errText(e), { kind: 'error' });
   }

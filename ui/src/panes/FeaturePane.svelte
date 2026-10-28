@@ -60,15 +60,19 @@
     }
   }
 
+  /** Notion status every minute; the parent page and the token only until both are set
+   *  (then Publish can work, and only the status changes). */
   async function loadNotion() {
     if (!v?.feature) return;
     const pid = v.feature.project_id;
+    const ready = notionReady?.ok;
     const [st, ps, iv] = await Promise.all([
       invoke('notion_status', { feature: v.feature.id }).catch(() => null),
-      invoke('project_settings', { project: pid }).catch(() => null),
-      invoke('integrations_view').catch(() => null),
+      ready ? null : invoke('project_settings', { project: pid }).catch(() => null),
+      ready ? null : invoke('integrations_view').catch(() => null),
     ]);
     notion = st;
+    if (ready) return;
     const page = ps?.settings?.notion_parent_page;
     const conn = iv?.items?.find((i) => i.id === 'notion');
     const name = v.project?.name ?? pid;
@@ -77,6 +81,7 @@
         ? { ok: true }
         : { ok: false, why: `Set a Notion parent page in ${name}'s settings, and connect Notion (⌘+,).` };
   }
+
 
   async function publish() {
     if (publishing || !notionReady?.ok) return;

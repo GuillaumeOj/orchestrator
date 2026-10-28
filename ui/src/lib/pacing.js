@@ -2,7 +2,7 @@
 // model windows, off-hours, the weekly report and the downgrade log copy.
 // Pure: tested in test/pacing.test.js. Usage is pp of the week; $ appears
 // only as the muted "≈ API $" column (D7).
-import { clock, dayHm, dayTime, pp } from './format.js';
+import { dayHm, dayTime, pp } from './format.js';
 import { modelWindowReason, PRESSURE } from './status.js';
 
 /** ISO week number of a date (the report's "Week 43"). */

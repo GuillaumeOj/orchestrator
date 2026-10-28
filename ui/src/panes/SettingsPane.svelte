@@ -3,13 +3,14 @@
   // section on the right. P3 builds Integrations and MCP servers; the other
   // sections say where their values are edited today. Keys: j/k sections,
   // ⏎ into the section, esc back to the list.
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import IntegrationsSettings from '../components/IntegrationsSettings.svelte';
   import Kbd from '../components/Kbd.svelte';
   import McpSettings from '../components/McpSettings.svelte';
   import { app, saveLayout } from '../lib/app.svelte.js';
   import { attentionCount } from '../lib/ecosystem.js';
   import { invoke } from '../lib/ipc.js';
+  import { move } from '../lib/select.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -39,9 +40,8 @@
 
   function onNavKey(e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    const i = SECTIONS.indexOf(section);
-    if (e.key === 'j' || e.key === 'ArrowDown') pick(SECTIONS[Math.min(SECTIONS.length - 1, i + 1)].id);
-    else if (e.key === 'k' || e.key === 'ArrowUp') pick(SECTIONS[Math.max(0, i - 1)].id);
+    if (e.key === 'j' || e.key === 'ArrowDown') pick(move(SECTIONS, section.id, 1));
+    else if (e.key === 'k' || e.key === 'ArrowUp') pick(move(SECTIONS, section.id, -1));
     else if (e.key === 'Enter') pick(section.id, true);
     else return;
     e.preventDefault();
@@ -54,11 +54,24 @@
     }
   }
 
+  // One fetch of each view on open: the nav counts read them, and so does the
+  // section shown first (handed over once; later loads are the section's own).
+  const once = (p) => () => {
+    const x = p;
+    p = null;
+    return x;
+  };
+  const intsP = invoke('integrations_view');
+  const mcpP = invoke('mcp_registry_view', { project: untrack(() => spec?.projectId ?? null) });
+  const firstInts = once(intsP);
+  const firstMcp = once(mcpP);
+
   onMount(async () => {
-    const [v, m] = await Promise.all([
-      invoke('integrations_view').catch(() => null),
-      invoke('mcp_registry_view', { project: spec?.projectId ?? null }).catch(() => null),
-    ]);
+    // The first section has mounted (children mount first) and took its view;
+    // a section opened later fetches its own, fresh.
+    firstInts();
+    firstMcp();
+    const [v, m] = await Promise.all([intsP.catch(() => null), mcpP.catch(() => null)]);
     if (v) needs = attentionCount(v.items);
     if (m) mcpNeeds = attentionCount(m.servers);
     if (app.panes[paneId] && app.panes[paneId].title !== section.label) app.panes[paneId] = { ...app.panes[paneId], title: section.label };
@@ -82,9 +95,9 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="body" bind:this={body} onkeydown={onBodyKey}>
     {#if section.id === 'integrations'}
-      <IntegrationsSettings onstatus={(items) => (needs = attentionCount(items))} />
+      <IntegrationsSettings initial={firstInts} onstatus={(items) => (needs = attentionCount(items))} />
     {:else if section.id === 'mcp'}
-      {#key spec?.server}<McpSettings project={spec?.projectId ?? null} selected={spec?.server ?? null} />{/key}
+      {#key spec?.server}<McpSettings project={spec?.projectId ?? null} selected={spec?.server ?? null} initial={firstMcp} />{/key}
     {:else}
       <section class="later">
         <h2>{section.label}</h2>

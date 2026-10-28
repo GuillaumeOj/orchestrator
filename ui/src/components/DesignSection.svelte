@@ -11,7 +11,7 @@
   import { artifactTitle, artifactTool, designGroups, linkOnly, notMerged, previewable, previewError, TOOL } from '../lib/ecosystem.js';
   import { clock, size } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import AgentChip from './AgentChip.svelte';
+  import { move } from '../lib/select.js';
   import Kbd from './Kbd.svelte';
 
   /** @type {{ v: any }} */
@@ -28,7 +28,6 @@
   const featureId = $derived(v.feature.id);
   /** A node's agent id in this run ("ui" → "onboarding-ui-1"), else the node. */
   const who = (node) => v.agents?.find((a) => a.node === node)?.id ?? node;
-  const roleOfNode = (node) => v.team?.nodes?.find((n) => n.id === node)?.role_id ?? node;
 
   /** The header's "· previews from the integration branch" (Penpot 04 Design states). */
   const sub = $derived.by(() => {
@@ -149,9 +148,8 @@
       return;
     }
     if (!tiles.length) return;
-    const i = Math.max(0, tiles.indexOf(cur));
-    if (k === 'l' || k === 'ArrowRight' || k === 'j' || k === 'ArrowDown') selId = tiles[Math.min(tiles.length - 1, i + 1)].id;
-    else if (k === 'h' || k === 'ArrowLeft' || k === 'k' || k === 'ArrowUp') selId = tiles[Math.max(0, i - 1)].id;
+    if (k === 'l' || k === 'ArrowRight' || k === 'j' || k === 'ArrowDown') selId = move(tiles, cur?.id, 1);
+    else if (k === 'h' || k === 'ArrowLeft' || k === 'k' || k === 'ArrowUp') selId = move(tiles, cur?.id, -1);
     else if (k === 'Enter') openArtifact(cur);
     else if (k === ' ') showBig(cur);
     else if (k === 'x') askExport(cur);

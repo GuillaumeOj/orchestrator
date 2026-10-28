@@ -5,7 +5,7 @@
   // per-entry opt-in (FR-110 tone). Keys: j/k rows, n new, ⏎ edit, t test,
   // x delete; in the drawer ⌘⏎ save, esc close.
   import { onMount } from 'svelte';
-  import { confirm, openCanvas, openUrl, runInPane, toast } from '../lib/app.svelte.js';
+  import { confirm, now30, openCanvas, openUrl, runInPane, toast } from '../lib/app.svelte.js';
   import {
     argsToText,
     blankServer,
@@ -31,8 +31,9 @@
   import Kbd from './Kbd.svelte';
   import SecretField from './SecretField.svelte';
 
-  /** @type {{ project?: string | null, selected?: string | null }} */
-  let { project = null, selected = null } = $props();
+  /** `initial`: the Settings pane's mcp_registry_view, taken once (no second fetch on open). */
+  /** @type {{ project?: string | null, selected?: string | null, initial?: (() => Promise<any> | null) | null }} */
+  let { project = null, selected = null, initial = null } = $props();
 
   const CONNECTOR_URL = 'https://claude.ai/settings/connectors';
 
@@ -44,7 +45,7 @@
   let refused = $state(null); // { id, used_by }
   let busy = $state({});
   let stored = $state({}); // Keychain account → stored (mcp_secrets_status); never the value
-  let now = $state(Date.now());
+  const now = $derived(now30());
   let root = $state(null);
 
   const servers = $derived(effectiveServers(view, project));
@@ -52,9 +53,9 @@
   const env = $derived(draft ? textToEnv(draft.envText) : {});
   const secrets = $derived(secretEnv(env));
 
-  async function load() {
+  async function load(first = null) {
     try {
-      view = await invoke('mcp_registry_view', { project });
+      view = await (first ?? invoke('mcp_registry_view', { project }));
       error = null;
     } catch (e) {
       error = errText(e);
@@ -227,9 +228,7 @@
   }
 
   onMount(() => {
-    load().then(() => select(selected));
-    const t = setInterval(() => (now = Date.now()), 30000);
-    return () => clearInterval(t);
+    load(initial?.()).then(() => select(selected));
   });
 </script>
 
