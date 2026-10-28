@@ -254,8 +254,22 @@ compressed bodies get 415.
 - The enforce choice (FR-812) is the kv key `governor.enforce`, written by `set_shadow` (the app,
   `orchd enforce on|off`) and read at every start (`serve --enforce` / `ORCH_ENFORCE` force
   enforcement; the app's earlier `ui.governor.enforce` still counts). Each tick saves the last 50 actions
-  and the queue view; a forecast snapshot every 5 min, the calibration hourly; retention purge
-  daily.
+  and the queue view; a forecast snapshot every 5 min, the estimator on each fit change (at most
+  once a minute, `calibrations` kind `fit`); retention purge daily.
+- **Estimator carry-over (FR-814)**: each plan week stores the estimator it starts with
+  (`calibrations` kind `week`, with the state). At start the Governor restores this week's, then
+  replays the week's samples, so `k`, `u` and the confidence are the live run's. When the app did
+  not run through the reset, the last stored week's estimator is restored on a Governor of that
+  week and its samples replayed first. A week switches when a reading names the next reset
+  (FR-802) or, without one, at the tick after `reset_at`. Per-model weights
+  (`PacingPolicy::per_model_weights`) are set with the plan form (`plan_set`'s `per_model_weights`).
+- **Weekly report (FR-818, `report.rs`)**: at the switch to the next week the ended week's report
+  is built from the stored samples (pp with the week's `k`, per family when per-model weights are
+  on; `cost_usd` is the statusline's API-price estimate, decision D7), the plan's allocations, the
+  logged actions (queue waits pair `queue` and `release`), the forecast snapshots (time per
+  state) and stored in `weekly_reports`, with a level-4 "Weekly report ready" digest in the Inbox.
+  A start after a reset the app missed builds it then. `report_view("current")` builds the
+  current week's on demand (not stored).
 - Transcripts of known agents and registered projects are indexed for search (FTS5) at start,
   then after each turn end (at most once a minute).
 
@@ -403,8 +417,6 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   (or message) goes through the normal delivery instead: pasted once the agent is idle after its
   Stop (1.5 s), admitted by the Governor like any app turn.
 - The Week planner UI (FR-802) is not here: `set_plan` takes a confirmed `WeeklyPlan`.
-- Calibration carries over a restart only through this week's replayed samples (a restart in a new
-  week starts from the prior).
 
 ## Tests
 

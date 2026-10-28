@@ -1,5 +1,6 @@
-//! P3 integrations and the MCP registry in the app (api-contract §1–2):
-//! thin over the runtime (`agent_runtime::integrations`, `registry`).
+//! P3 integrations, the MCP registry and weekly reports in the app
+//! (api-contract §1–2, §5): thin over the runtime (`agent_runtime::integrations`,
+//! `registry`, `report`).
 
 use anyhow::{Result, anyhow};
 use orch_secrets::Secret;
@@ -13,6 +14,16 @@ use crate::core::Core;
 pub const CONNECTOR_SETTINGS_URL: &str = "https://claude.ai/settings/connectors";
 
 impl Core {
+    /// `reports_list` (api-contract §5, FR-818).
+    pub fn reports_list(&self) -> Result<Value> {
+        self.runtime()?.reports_list()
+    }
+
+    /// `report_view`: a stored week's report, or `current`.
+    pub fn report_view(&self, id: &str) -> Result<Value> {
+        self.runtime()?.report_view(id)
+    }
+
     pub fn integrations_view(&self) -> Result<Value> {
         Ok(self.runtime()?.integrations_json())
     }

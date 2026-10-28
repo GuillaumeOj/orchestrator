@@ -132,7 +132,8 @@ type WeeklyReport = {
   model_windows: { name: string, family: ModelFamily, peak_pct: number }[];
 };
 ```
-Inbox: `{"kind":"info","digest":"weekly_report","report":id}` (level 4); `open` → planner report view.
+Inbox: `{"kind":"info","digest":"weekly_report","report":id}` (level 4); `open` → planner report view. `inbox_act(item, 'open')` on it marks it read and returns `{ open: 'report', report: id }`.
+`reports_list` lists the current week first (`id: 'current'`, `in_progress: true`, `final_weekly_pct` = W now), then the stored weeks newest first. Rows (`by_*`) include an `outside` row ("outside the app") when the weekly reading counts more than the app's own samples; `share` is 0–1 of the week's total. Times (`week_start`, `reset_at`, `ts`) are RFC 3339.
 
 ## 6. Pacing additions (FR-814, FR-815, FR-816, FR-819)
 
@@ -158,7 +159,8 @@ agents[].model_note: string | null;           // "downgraded (Red)" while a down
 |---|---|---|
 | `queue_off_hours` | `entry?: string, task?: string, off: boolean` | `{ starts_at: string }` — mark a queued entry or a task (its next turn) for off-hours, or clear it |
 | `team_launch` (P2) | `form.off_hours?: boolean` | unchanged |
-| `plan_set` (P1) | `form.off_hours_live_cap?: number` | unchanged |
+| `plan_set` (P1) | `form.off_hours_live_cap?: number`, `form.per_model_weights?: boolean` (FR-814; absent = unchanged) | unchanged |
+| `plan_form` (P1) | — | the form, with `per_model_weights: boolean` (and `off_hours_live_cap`) from the pacing policy |
 | `governor_act` (P1) | `action: 'undo'` on a `downgrade` action restores the model at the next task boundary | unchanged |
 
 ## 7. Task backend: Linear (FR-501, FR-503)

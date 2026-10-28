@@ -147,6 +147,10 @@ pub struct PlanForm {
     #[serde(default)]
     pub off_hours_allowance_pct: f64,
     pub allocations: Vec<AllocationForm>,
+    /// FR-814: convert each model family's cost with its own fitted `k`
+    /// (`PacingPolicy::per_model_weights`). Absent = unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_model_weights: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -223,6 +227,7 @@ impl PlanForm {
             reserve_pct: plan.reserve_pct,
             off_hours_allowance_pct: plan.off_hours_allowance_pct,
             allocations,
+            per_model_weights: None,
         }
     }
 
@@ -323,13 +328,21 @@ impl Core {
     pub fn plan_form(&self) -> Result<PlanForm> {
         let rt = self.runtime()?;
         let projects = self.projects();
-        Ok(rt.with_governor(|g| PlanForm::from_plan(g.plan(), &projects)))
+        Ok(rt.with_governor(|g| {
+            let mut f = PlanForm::from_plan(g.plan(), &projects);
+            f.per_model_weights = Some(g.policy().per_model_weights);
+            f
+        }))
     }
 
     /// J0 step 4 / the planner's Edit plan: the plan of the current week.
     pub fn set_plan(&self, form: &PlanForm) -> Result<()> {
         let rt = self.runtime()?;
         let plan = form.apply(&rt.with_governor(|g| g.plan().clone()))?;
+        // Pacing options live in the policy; the replan below rebuilds the Governor with it.
+        if let Some(on) = form.per_model_weights {
+            rt.update_policy(|p| p.per_model_weights = on)?;
+        }
         rt.replan(plan)?;
         self.settings.set(PLAN_KEY, json!(orch_protocol::now_ms()))?;
         Ok(())

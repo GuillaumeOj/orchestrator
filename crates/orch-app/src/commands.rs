@@ -315,6 +315,18 @@ pub async fn project_settings_set(
     blocking(core, move |c| c.project_settings_set(&project, form)).await
 }
 
+// ---- P3 weekly reports (api-contract §5)
+
+#[tauri::command]
+pub async fn reports_list(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, |c| c.reports_list()).await
+}
+
+#[tauri::command]
+pub async fn report_view(core: CoreState<'_>, id: String) -> Res<Value> {
+    blocking(core, move |c| c.report_view(&id)).await
+}
+
 // ---- P3 integrations and the MCP registry (api-contract §1–2)
 
 #[tauri::command]

@@ -20,6 +20,7 @@ pub mod pty;
 pub mod questions;
 pub mod reconcile;
 pub mod registry;
+pub mod report;
 pub mod resources;
 pub mod role;
 pub mod runtime;

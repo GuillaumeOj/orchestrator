@@ -122,6 +122,8 @@ pub fn run() {
             commands::project_settings,
             commands::project_settings_set,
             commands::planner_view,
+            commands::reports_list,
+            commands::report_view,
             commands::artifact_preview,
             commands::artifact_open,
             commands::team_duplicate,

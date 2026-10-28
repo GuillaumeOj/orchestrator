@@ -167,6 +167,8 @@ pub struct Runtime {
 struct House {
     last_forecast_ms: u64,
     last_calibration_ms: u64,
+    /// The fit last stored (FR-814: a row on each fit change).
+    last_fit: Option<governor::Calibrator>,
     last_purge_ms: u64,
     last_index_ms: u64,
     pressure: PressureLevel,
@@ -212,7 +214,8 @@ fn due(last: &mut u64, now: u64, every: u64) -> bool {
 }
 
 pub const FORECAST_EVERY_MS: u64 = 5 * 60 * 1000;
-pub const CALIBRATION_EVERY_MS: u64 = 60 * 60 * 1000;
+/// FR-814: the estimator is stored on each fit change, at most this often.
+pub const CALIBRATION_EVERY_MS: u64 = 60 * 1000;
 pub const PURGE_EVERY_MS: u64 = 24 * 3600 * 1000;
 pub const INDEX_EVERY_MS: u64 = 60 * 1000;
 /// FR-503: how often remote task backends (GitHub) are synced.
@@ -387,6 +390,7 @@ impl Runtime {
             presets_checked: std::sync::atomic::AtomicBool::new(false),
         });
         rt.handle_releases(released);
+        rt.backfill_report(now);
         Ok(rt)
     }
 
@@ -1437,9 +1441,7 @@ impl Runtime {
                     plan.reset_at = w.resets_at;
                     plan.week_start = w.resets_at.checked_sub(168.hours()).unwrap_or(w.resets_at);
                     plan.id = format!("week-{}", plan.week_start.as_second());
-                    if gov.new_week(plan.clone(), g.ts).is_ok() {
-                        let _ = self.db.save_plan(&plan, orch_store::PlanStatus::Active);
-                    }
+                    let _ = self.switch_week(&mut gov, plan, g.ts);
                 }
             }
             gov.ingest(&g);
@@ -1453,9 +1455,23 @@ impl Runtime {
     /// calibration.
     pub fn tick(&self) {
         let now = Timestamp::now();
+        {
+            // The week ended with no reading of the next one yet: the next
+            // plan week starts at the reset (a later reading realigns it).
+            let mut g = self.gov();
+            if now >= g.plan().reset_at {
+                let mut next = g.plan().clone();
+                next.week_start = next.reset_at;
+                next.reset_at = next.reset_at.checked_add(168.hours()).unwrap_or(next.reset_at);
+                next.id = format!("week-{}", next.week_start.as_second());
+                if let Err(e) = self.switch_week(&mut g, next, now) {
+                    self.event("-", "week_switch_failed", json!(e.to_string()));
+                }
+            }
+        }
         self.governor_act(|g, now| ((), g.tick(now)));
         self.reserve_alert();
-        let (actions, queue, plan_id, snap, calib) = {
+        let (actions, queue, plan_id, snap, calib, est, week_start) = {
             let g = self.gov();
             let n = g.actions().len();
             (
@@ -1464,6 +1480,8 @@ impl Runtime {
                 g.plan().id.clone(),
                 g.snapshot(now),
                 g.calibration(now),
+                g.estimator(),
+                g.plan().week_start,
             )
         };
         // Written only when they changed (outcomes and undo change after the fact).
@@ -1484,17 +1502,49 @@ impl Runtime {
         let ms = now_ms();
         let (do_forecast, do_calib) = {
             let mut h = self.house();
+            let fit_changed = h.last_fit.as_ref() != Some(&est.calibrator);
             (
                 due(&mut h.last_forecast_ms, ms, FORECAST_EVERY_MS),
-                due(&mut h.last_calibration_ms, ms, CALIBRATION_EVERY_MS),
+                fit_changed && due(&mut h.last_calibration_ms, ms, CALIBRATION_EVERY_MS),
             )
         };
         if do_forecast {
             let _ = self.db.add_forecast(&snap);
         }
-        if do_calib {
-            let _ = self.db.add_calibration(&calib);
+        if do_calib && self.db.save_estimator("fit", week_start, &calib, &est).is_ok() {
+            self.house().last_fit = Some(est.calibrator);
         }
+    }
+
+    /// Moves the Governor to `plan` and stores it. A new plan week stores
+    /// the estimator it starts with (FR-814: a restart restores it and
+    /// replays the week); a week that ended gets its report (FR-818). A plan
+    /// realigned within its week (FR-802) is neither.
+    pub(crate) fn switch_week(&self, gov: &mut Governor, plan: WeeklyPlan, now: Timestamp) -> Result<()> {
+        let old = gov.plan().clone();
+        let ended = plan.week_start.as_second() >= old.reset_at.as_second() - 3600;
+        let calib = gov.calibration(now);
+        if ended {
+            // The week's last actions, for its report.
+            let n = gov.actions().len();
+            let _ = self.db.save_actions(
+                self.boot_ms.load(Ordering::SeqCst),
+                &old.id,
+                &gov.actions()[n.saturating_sub(200)..],
+            );
+        }
+        gov.new_week(plan.clone(), now).map_err(|e| anyhow!("{e:?}"))?;
+        self.db.save_plan(&plan, orch_store::PlanStatus::Active)?;
+        if gov.plan().week_start != old.week_start {
+            let base = gov.week_estimator().clone();
+            self.db.save_estimator("week", plan.week_start, &base.calibrator.snapshot(now), &base)?;
+        }
+        if ended {
+            if let Err(e) = self.finish_week(&old, &calib, now) {
+                self.event("-", "weekly_report_failed", json!(e.to_string()));
+            }
+        }
+        Ok(())
     }
 
     /// True the first time `key` is seen (one watchdog alert per turn).
@@ -1536,8 +1586,16 @@ impl Runtime {
 
     /// The Week planner's confirmed plan (FR-802): replaces the current one.
     pub fn set_plan(&self, plan: WeeklyPlan) -> Result<()> {
-        self.gov().new_week(plan.clone(), Timestamp::now()).map_err(|e| anyhow!("{e:?}"))?;
-        self.db.save_plan(&plan, orch_store::PlanStatus::Active)
+        let mut g = self.gov();
+        self.switch_week(&mut g, plan, Timestamp::now())
+    }
+
+    /// Changes the stored pacing policy (the Week planner's options). It
+    /// applies at the next Governor rebuild ([`Runtime::replan`]).
+    pub fn update_policy(&self, f: impl FnOnce(&mut governor::PacingPolicy)) -> Result<()> {
+        let mut p = self.db.policy(POLICY_ID)?.unwrap_or_default();
+        f(&mut p);
+        self.db.save_policy(POLICY_ID, &p)
     }
 
     /// A plan edited during its week (the first plan, J0; shadow mode on or
@@ -2150,19 +2208,26 @@ fn restore_governor(
     plan.shadow_mode = shadow;
     db.save_plan(&plan, orch_store::PlanStatus::Active)?;
     let start = plan.week_start;
-    let since = start.as_millisecond().max(0) as u64;
-    let samples: Vec<_> = db
-        .usage_since(since, Some(orch_store::UsageSource::Statusline))?
-        .into_iter()
-        .filter_map(|u| governor_sample(&u).map(|s| (u, s)))
-        .collect();
+    let samples = week_samples(db, start, None)?;
     // Created when the app first saw this week, as the live Governor was: it
     // trusts W = 0 before the week's first reading only if that was at the
     // reset (FR-814). Either way the reset anchors the calibration.
     let seen_from = samples.first().map_or(now, |(_, s)| s.ts).clamp(start, now.max(start));
-    let mut gov = Governor::new(plan, policy, seen_from).map_err(|e| anyhow!("{e:?}"))?;
+    let mut gov = Governor::new(plan.clone(), policy.clone(), seen_from).map_err(|e| anyhow!("{e:?}"))?;
     let allocs: BTreeMap<String, String> =
         store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.allocation.clone())).collect());
+    // FR-814: the estimator the week started with, then the week replayed,
+    // gives the live run's calibration back.
+    match db.week_estimator(start)? {
+        Some(e) => gov.restore_estimator(e),
+        None => {
+            if let Some(e) = rebuild_estimator(db, &plan, &policy, &allocs)? {
+                gov.restore_estimator(e);
+            }
+            let base = gov.week_estimator().clone();
+            db.save_estimator("week", start, &base.calibrator.snapshot(seen_from), &base)?;
+        }
+    }
     for (u, sample) in samples {
         let class = u.class.as_deref().and_then(orch_store::untag).unwrap_or(governor::CostClass::Interactive);
         let alloc = u.allocation.clone().or_else(|| u.agent_id.as_ref().and_then(|a| allocs.get(a).cloned()));
@@ -2198,6 +2263,49 @@ fn restore_governor(
         }
     })?;
     Ok((gov, released))
+}
+
+/// The week's statusline samples, oldest first, with their stored rows.
+fn week_samples(
+    db: &orch_store::Store,
+    from: Timestamp,
+    to: Option<Timestamp>,
+) -> Result<Vec<(orch_store::UsageRecord, governor::UsageSample)>> {
+    let to_ms = to.map(|t| t.as_millisecond().max(0) as u64);
+    Ok(db
+        .usage_since(from.as_millisecond().max(0) as u64, Some(orch_store::UsageSource::Statusline))?
+        .into_iter()
+        .filter(|u| to_ms.is_none_or(|t| u.ts_ms < t))
+        .filter_map(|u| governor_sample(&u).map(|s| (u, s)))
+        .collect())
+}
+
+/// FR-814, a start after a reset the app did not see run through: the
+/// estimator of the last week stored, with that week's samples replayed on
+/// it, is what the live run would have carried into this week.
+fn rebuild_estimator(
+    db: &orch_store::Store,
+    plan: &WeeklyPlan,
+    policy: &governor::PacingPolicy,
+    allocs: &BTreeMap<String, String>,
+) -> Result<Option<governor::EstimatorState>> {
+    let Some((prev_start, base)) = db.week_estimator_before(plan.week_start)? else { return Ok(None) };
+    let prev_reset = prev_start.checked_add(168.hours()).unwrap_or(plan.week_start).min(plan.week_start);
+    let prev_plan = WeeklyPlan {
+        id: format!("week-{}", prev_start.as_second()),
+        week_start: prev_start,
+        reset_at: prev_reset,
+        ..plan.clone()
+    };
+    let samples = week_samples(db, prev_start, Some(prev_reset))?;
+    let Ok(mut prev) = Governor::new(prev_plan, policy.clone(), prev_start) else { return Ok(Some(base)) };
+    prev.restore_estimator(base);
+    for (u, sample) in samples {
+        let class = u.class.as_deref().and_then(orch_store::untag).unwrap_or(governor::CostClass::Interactive);
+        let alloc = u.allocation.clone().or_else(|| u.agent_id.as_ref().and_then(|a| allocs.get(a).cloned()));
+        prev.replay(&sample, class, alloc.map(Into::into));
+    }
+    Ok(Some(prev.estimator()))
 }
 
 fn reading(pct: Option<f64>, resets: Option<i64>) -> Option<governor::WindowReading> {
@@ -2791,6 +2899,131 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// For [`estimator_and_report_carry_across_restarts_and_the_reset`]: the
+    /// week before [`test_plan`]'s.
+    fn last_week_plan(now: Timestamp, shadow: bool) -> WeeklyPlan {
+        let mut p = test_plan(now, shadow);
+        p.week_start = p.week_start.checked_sub(168.hours()).unwrap();
+        p.reset_at = p.reset_at.checked_sub(168.hours()).unwrap();
+        p.id = format!("week-{}", p.week_start.as_second());
+        p
+    }
+
+    /// FR-814 and FR-818 through the runtime: the estimator a week starts
+    /// with is stored, so a restart mid-week and a restart after a reset the
+    /// app did not run through both get the live run's calibration back; the
+    /// week that ended gets its report, at the reset or at the next start.
+    #[test]
+    fn estimator_and_report_carry_across_restarts_and_the_reset() {
+        let t0 = Timestamp::now();
+        let (w1, w2) = (last_week_plan(t0, false), test_plan(t0, false));
+        let at =
+            |t: Timestamp, h: f64| t.checked_add(governor::jiff::SignedDuration::from_secs_f64(h * 3600.0)).unwrap();
+        // Truth: 10 cost per weekly pp, plus 0.05 pp per sample outside the app.
+        // One response every 30 min for 60 h of each week.
+        let week = |p: &WeeklyPlan, cost0: f64| -> Vec<StatusMsg> {
+            let (mut cost, mut w) = (cost0, 0.0);
+            (0..120)
+                .map(|i| {
+                    let dc = 1.0 + (i % 5) as f64;
+                    cost += dc;
+                    w += dc / 10.0 + 0.05;
+                    StatusMsg {
+                        agent_id: "a1".into(),
+                        ts_ms: at(p.week_start, 1.0 + i as f64 * 0.5).as_millisecond() as u64,
+                        payload: json!({"session_id": "s", "model": {"id": "claude-sonnet-4-5"}, "cost": {"total_cost_usd": cost},
+                            "rate_limits": {"seven_day": {"used_percentage": w.floor(), "resets_at": p.reset_at.as_second()}}}),
+                    }
+                })
+                .collect()
+        };
+        let (s1, s2) = (week(&w1, 0.0), week(&w2, 360.0)); // one session: its cost keeps adding up
+        let cfg = |d: &Path, plan: fn(Timestamp, bool) -> WeeklyPlan| RuntimeConfig {
+            default_plan: plan,
+            ..test_cfg(d, false)
+        };
+        let k = |rt: &Runtime| rt.gov().calibration(t0);
+        let close = |a: &governor::Calibration, b: &governor::Calibration, what: &str| {
+            let c = |x: f64, y: f64| (x - y).abs() <= 1e-6 * x.abs().max(1.0);
+            assert!(
+                c(a.cost_per_weekly_pct, b.cost_per_weekly_pct)
+                    && c(a.unattributed_rate, b.unattributed_rate)
+                    && c(a.confidence, b.confidence),
+                "{what}:\n{a:?}\n{b:?}"
+            );
+        };
+        let reports = |rt: &Runtime| -> Vec<String> {
+            rt.reports_list().unwrap()["reports"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_str().unwrap().to_string())
+                .collect()
+        };
+
+        // Live: week 1, then the reset (the first reading of week 2), then week 2.
+        let a = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let live = {
+            let rt = Runtime::new(cfg(a.path(), last_week_plan)).unwrap();
+            rt.store.write(|s| s.agents.insert("a1".into(), test_agent(a.path()))).unwrap();
+            for m in s1.iter().chain(&s2) {
+                rt.on_status(m);
+            }
+            assert_eq!(rt.gov().plan().week_start.as_second(), w2.week_start.as_second(), "switched at the reset");
+            rt.tick();
+            rt.db.flush().unwrap();
+            assert_eq!(reports(&rt), ["current".to_string(), w1.id.clone()], "the ended week's report is stored");
+            let r = rt.report_view(&w1.id).unwrap();
+            assert_eq!(r["in_progress"], false);
+            assert!(r["totals"]["weekly_pct"].as_f64().unwrap() > 30.0, "{r}");
+            assert_eq!(r["by_model"][0]["key"], "sonnet", "{r}");
+            let digest = rt.store.read(|s| s.inbox.iter().any(|i| i.payload["digest"] == "weekly_report"));
+            assert!(digest, "a Weekly report ready digest");
+            assert_eq!(rt.report_view("current").unwrap()["in_progress"], true);
+            let k = k(&rt);
+            assert!(k.confidence > 0.5 && (k.cost_per_weekly_pct - 10.0).abs() < 3.0, "{k:?}");
+            k
+        };
+
+        // Restart mid-week 2: the week's stored estimator, the week replayed.
+        let rt = Runtime::new(cfg(a.path(), test_plan)).unwrap();
+        close(&k(&rt), &live, "restart mid-week");
+        assert_eq!(reports(&rt).len(), 2, "no second report of the same week");
+        drop(rt);
+
+        // The app stopped in week 1 and starts again in week 2: the estimator
+        // is rebuilt from week 1's, and week 1's report is made at start.
+        let b = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        {
+            let rt = Runtime::new(cfg(b.path(), last_week_plan)).unwrap();
+            rt.store.write(|s| s.agents.insert("a1".into(), test_agent(b.path()))).unwrap();
+            for m in &s1 {
+                rt.on_status(m);
+            }
+            rt.tick();
+            rt.db.flush().unwrap();
+        }
+        let rt = Runtime::new(cfg(b.path(), test_plan)).unwrap();
+        rt.db.flush().unwrap();
+        // (That runtime's week 1 started when it did, a few ms after `w1`.)
+        let list = rt.reports_list().unwrap();
+        assert_eq!(list["reports"].as_array().unwrap().len(), 2, "week 1's report, made at start: {list}");
+        assert_eq!(list["reports"][1]["in_progress"], false);
+        // Its agents' processes ended with the old core: their cost counts from 0 again.
+        for m in &week(&w2, 0.0) {
+            rt.on_status(m);
+        }
+        close(&k(&rt), &live, "restart across the reset");
+
+        // Without the carry-over, week 2 alone gives another fit.
+        let mut cold = Governor::new(w2.clone(), governor::PacingPolicy::default(), w2.week_start).unwrap();
+        for (u, smp) in week_samples(&rt.db, w2.week_start, None).unwrap() {
+            let class = u.class.as_deref().and_then(orch_store::untag).unwrap_or(governor::CostClass::Interactive);
+            cold.replay(&smp, class, None);
+        }
+        assert!((cold.calibration(t0).confidence - live.confidence).abs() > 1e-3, "{:?}", cold.calibration(t0));
     }
 
     #[test]

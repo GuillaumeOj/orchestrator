@@ -360,10 +360,10 @@ reading that passes NFR-9. Each one is listed here as a proposed edit. SPEC and 
 
 - FR-815 per-model weekly windows (S priority): `Window` has room for them.
 - Resume-cost awareness (`prompt_cache.expires_at`, R6): the queue does not prefer warm sessions yet.
-- 5h peak smoothing and per-model estimator weights (deferred by ADR-007).
+- 5h peak smoothing (deferred by ADR-007). Per-model estimator weights are in (FR-814, off by
+  default: `PacingPolicy::per_model_weights`).
 - Pausing a team at its turn boundary (FR-805): the runtime pauses every agent of the team run
   (`pause_agent`; agent-runtime "Teams"); per-agent pause and Pause all
   cover P1b.
 - "Start now" vs "Run now" is the host's call (the Governor does not know whether an agent ever
   ran).
-- The calibration is still not carried across weeks by a restart (ADR-007).

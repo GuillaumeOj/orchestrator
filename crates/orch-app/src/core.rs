@@ -730,8 +730,15 @@ impl Core {
             // (decisions D3); it closes once the server is connected again.
             if matches!(action, "open" | "reconnect") {
                 let payload = rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).map(|i| i.payload.clone()));
-                if let Some(p) = payload.filter(|p| p["alert"] == agent_runtime::registry::NEEDS_AUTH_ALERT) {
-                    return self.mcp_alert_action(&p, action);
+                if let Some(p) = payload.as_ref().filter(|p| p["alert"] == agent_runtime::registry::NEEDS_AUTH_ALERT) {
+                    return self.mcp_alert_action(p, action);
+                }
+                // "Weekly report ready" (FR-818): read once opened; the UI opens the report.
+                if let Some(p) = payload.filter(|p| p["digest"] == "weekly_report" && action == "open") {
+                    rt.store.write(|s| {
+                        let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()));
+                    })?;
+                    return Ok(json!({"open": "report", "report": p["report"]}));
                 }
             }
             rt.store.write(|s| {
@@ -1805,10 +1812,16 @@ mod tests {
         let mut form = core.plan_form().unwrap();
         assert_eq!(form.allocations.len(), 1, "even split over the one project");
         assert_eq!(form.allocations[0].id, "repo");
+        assert_eq!(form.per_model_weights, Some(false), "FR-814 per-model weights: off by default");
         form.reserve_pct = 15.0;
+        form.per_model_weights = Some(true);
         core.set_plan(&form).unwrap();
         let p = core.planner().unwrap();
         assert_eq!(p.reserve_pct, 15.0);
+        assert!(rt.with_governor(|g| g.policy().per_model_weights), "the policy option reaches the Governor");
+        assert_eq!(core.plan_form().unwrap().per_model_weights, Some(true));
+        assert_eq!(core.reports_list().unwrap()["reports"][0]["id"], "current");
+        assert_eq!(core.report_view("current").unwrap()["in_progress"], true);
         assert!(p.plan_set);
         assert!(
             (p.snapshot.used_central - 30.0).abs() < 2.0,
