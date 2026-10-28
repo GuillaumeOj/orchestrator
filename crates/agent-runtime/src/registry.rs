@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use orch_protocol::{HookEvent, HookPayload, now_ms};
-use orch_secrets::Secrets;
+use orch_secrets::{Secret, Secrets};
 use orch_team::mcp::{McpKind, McpServer, McpStatus, Registry, UsedBy, keychain_account};
 use orch_team::{RoleDef, Scope, Team};
 use serde_json::{Map, Value, json};
@@ -93,7 +93,9 @@ pub fn resolve_secret_env(servers: &mut Map<String, Value>, allowed: &[String], 
             if !allowed.iter().any(|a| a == name) {
                 bail!("mcp server `{name}`: {k} reads a Keychain secret, which is not allowed for this server");
             }
-            let s = secrets.get(acct)?.ok_or_else(|| anyhow!("mcp server `{name}`: no Keychain secret `{acct}`"))?;
+            let s = secrets
+                .get(&orch_secrets::mcp_account(acct))?
+                .ok_or_else(|| anyhow!("mcp server `{name}`: no Keychain secret `{acct}`"))?;
             *v = Value::String(s.expose().to_string());
         }
     }
@@ -107,7 +109,9 @@ fn probe_env(s: &McpServer, secrets: &dyn Secrets) -> Result<Vec<(String, String
         match keychain_account(v) {
             Some(_) if !s.allow_secret_env => bail!("{k} reads a Keychain secret without the opt-in"),
             Some(acct) => {
-                let sec = secrets.get(acct)?.ok_or_else(|| anyhow!("no Keychain secret `{acct}`"))?;
+                let sec = secrets
+                    .get(&orch_secrets::mcp_account(acct))?
+                    .ok_or_else(|| anyhow!("no Keychain secret `{acct}`"))?;
                 out.push((k.clone(), sec.expose().to_string()));
             }
             None => out.push((k.clone(), v.clone())),
@@ -295,6 +299,42 @@ fn role_for<'a>(roles: &'a [RoleDef], team: &Team, role_id: &str) -> Option<&'a 
 impl Runtime {
     pub fn secrets(&self) -> &dyn Secrets {
         self.cfg.secrets.as_ref()
+    }
+
+    /// An MCP env secret (`keychain:<account>` in a server's env), stored in
+    /// the Keychain under `mcp:<account>`, apart from the integrations' tokens.
+    /// The value is never logged or returned.
+    pub fn mcp_secret_set(&self, account: &str, value: Secret) -> Result<()> {
+        if !orch_secrets::valid_account(account) {
+            bail!("invalid account {account:?} (a-z, 0-9, - _ ., up to 64)");
+        }
+        if value.expose().is_empty() {
+            bail!("empty value");
+        }
+        self.secrets().set(&orch_secrets::mcp_account(account), &value)?;
+        self.event("-", "mcp_secret_set", json!({"account": account}));
+        Ok(())
+    }
+
+    pub fn mcp_secret_delete(&self, account: &str) -> Result<()> {
+        if !orch_secrets::valid_account(account) {
+            bail!("invalid account {account:?}");
+        }
+        self.secrets().remove(&orch_secrets::mcp_account(account))?;
+        self.event("-", "mcp_secret_deleted", json!({"account": account}));
+        Ok(())
+    }
+
+    /// Which MCP env secrets are stored (never their values); an invalid name is `false`.
+    pub fn mcp_secrets_status(&self, accounts: &[String]) -> Value {
+        let m: serde_json::Map<String, Value> = accounts
+            .iter()
+            .map(|a| {
+                let has = orch_secrets::valid_account(a) && self.secrets().has(&orch_secrets::mcp_account(a));
+                (a.clone(), json!(has))
+            })
+            .collect();
+        Value::Object(m)
     }
 
     /// The project an agent works in.
@@ -642,7 +682,7 @@ pub(crate) mod tests {
             r#"read l; [ "$TOKEN" = s3cret ] && echo '{"jsonrpc":"2.0","id":1,"result":{}}'; read l; read l; echo '{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}'"#,
         );
         env.env.insert("TOKEN".into(), "keychain:tok".into());
-        let secrets = MemorySecrets::with(&[("tok", "s3cret")]);
+        let secrets = MemorySecrets::with(&[("mcp:tok", "s3cret"), ("tok", "integration")]);
         let net = FakeNet::default();
         assert_eq!(probe(&env, &secrets, &net).0, McpStatus::Error, "no opt-in");
         env.allow_secret_env = true;
@@ -650,8 +690,28 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn mcp_secrets_are_set_listed_and_deleted_apart_from_integration_tokens() {
+        let (_d, rt) = crate::runtime::tests::test_runtime(true);
+        rt.secrets().set("linear", &Secret::new("integration_token")).unwrap();
+        rt.mcp_secret_set("linear", Secret::new("mcp_token")).unwrap();
+        assert_eq!(rt.secrets().get("linear").unwrap().unwrap().expose(), "integration_token", "not overwritten");
+        let st = rt.mcp_secrets_status(&["linear".into(), "other".into(), "bad:name".into()]);
+        assert_eq!(st, json!({"linear": true, "other": false, "bad:name": false}));
+        assert!(rt.mcp_secret_set("bad:name", Secret::new("x")).is_err());
+        assert!(rt.mcp_secret_set("empty", Secret::new("")).is_err());
+        rt.db.flush().unwrap();
+        let events = rt.db.events(0, None, Some("mcp_secret"), 50).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(!format!("{events:?}").contains("mcp_token"), "the value is never logged");
+        rt.mcp_secret_delete("linear").unwrap();
+        assert_eq!(rt.mcp_secrets_status(&["linear".into()]), json!({"linear": false}));
+        assert!(rt.secrets().get("linear").unwrap().is_some(), "the integration's token stays");
+    }
+
+    #[test]
     fn secret_env_is_resolved_only_where_allowed() {
-        let secrets = MemorySecrets::with(&[("linear", "lin_123")]);
+        // `keychain:linear` reads the MCP namespace, never the Linear integration's token.
+        let secrets = MemorySecrets::with(&[("mcp:linear", "lin_123"), ("linear", "integration_token")]);
         let mut servers: Map<String, Value> = serde_json::from_value(json!({
             "a": {"type": "stdio", "command": "x", "env": {"K": "keychain:linear", "P": "plain"}},
             "b": {"type": "stdio", "command": "y"},
@@ -839,7 +899,7 @@ pub(crate) mod tests {
         let (d, rt) = test_runtime(true);
         rt.secrets().set("linear", &Secret::new("lin_api_LEAK")).unwrap();
         rt.secrets().set("notion", &Secret::new("ntn_LEAK")).unwrap();
-        rt.secrets().set("figma-pat", &Secret::new("figd_OPTIN")).unwrap();
+        rt.mcp_secret_set("figma-pat", Secret::new("figd_OPTIN")).unwrap();
         let mut local = McpServer::new("figma-local", "Figma (local)", McpKind::Stdio);
         local.command = Some("figma-mcp".into());
         local.env.insert("FIGMA_TOKEN".into(), "keychain:figma-pat".into());
@@ -879,7 +939,7 @@ pub(crate) mod tests {
     #[test]
     fn spawned_role_resolves_refs_and_refuses_secrets_without_opt_in() {
         let (_d, rt) = test_runtime(true);
-        rt.secrets().set("linear", &Secret::new("lin_123")).unwrap();
+        rt.mcp_secret_set("linear", Secret::new("lin_123")).unwrap();
         let mut s = McpServer::new("linear-mcp", "Linear MCP", McpKind::Stdio);
         s.command = Some("npx".into());
         s.env.insert("LINEAR_API_KEY".into(), "keychain:linear".into());

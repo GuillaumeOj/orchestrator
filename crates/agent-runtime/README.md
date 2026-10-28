@@ -347,7 +347,8 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   it from the user's login); on a strict-MCP role it turns `--strict-mcp-config` off (it would hide
   the connector) and `teams_view` lists it under the team's `warnings`.
 - **Secrets** live in the Keychain (`orch-secrets`, `RuntimeConfig.secrets`). An MCP `env` value
-  `keychain:<account>` is resolved into that server's entry of `mcp.json` only when the entry's
+  `keychain:<account>` (Keychain account `mcp:<account>`, set with `mcp_secret_set`, apart from the
+  integrations' tokens) is resolved into that server's entry of `mcp.json` only when the entry's
   `allow_secret_env` is on; otherwise the spawn (and the launch) is refused. Nothing else of an
   agent (env, argv, settings, gitconfig) ever carries a token: `no_integration_token_reaches_an_agent`.
 - **Integrations** (`integrations.rs`): GitHub from `gh auth status`; Linear (`POST

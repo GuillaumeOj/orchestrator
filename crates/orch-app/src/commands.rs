@@ -240,6 +240,16 @@ pub async fn team_duplicate(
 }
 
 #[tauri::command]
+pub async fn starter_copy(
+    core: CoreState<'_>,
+    starter: String,
+    to: orch_team::Scope,
+    new_id: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| c.starter_copy(&starter, &to, new_id.as_deref())).await
+}
+
+#[tauri::command]
 pub async fn role_duplicate(
     core: CoreState<'_>,
     role: String,
@@ -360,6 +370,23 @@ pub async fn integration_secret_remove(core: CoreState<'_>, id: String) -> Res<V
 #[tauri::command]
 pub async fn integration_test(core: CoreState<'_>, id: String) -> Res<Value> {
     blocking(core, move |c| c.integration_test(&id)).await
+}
+
+/// The value is wrapped at once and never logged or returned (NFR-3).
+#[tauri::command]
+pub async fn mcp_secret_set(core: CoreState<'_>, account: String, value: String) -> Res<()> {
+    let value = orch_secrets::Secret::new(value);
+    blocking(core, move |c| c.mcp_secret_set(&account, value)).await
+}
+
+#[tauri::command]
+pub async fn mcp_secret_delete(core: CoreState<'_>, account: String) -> Res<()> {
+    blocking(core, move |c| c.mcp_secret_delete(&account)).await
+}
+
+#[tauri::command]
+pub async fn mcp_secrets_status(core: CoreState<'_>, accounts: Vec<String>) -> Res<Value> {
+    blocking(core, move |c| c.mcp_secrets_status(&accounts)).await
 }
 
 #[tauri::command]

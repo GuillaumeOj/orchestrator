@@ -56,6 +56,19 @@ impl Core {
         Ok(json!({"starts_at": t.to_string()}))
     }
 
+    /// An MCP env secret, Keychain account `mcp:<account>`; never logged or returned.
+    pub fn mcp_secret_set(&self, account: &str, value: Secret) -> Result<()> {
+        self.runtime()?.mcp_secret_set(account, value)
+    }
+
+    pub fn mcp_secret_delete(&self, account: &str) -> Result<()> {
+        self.runtime()?.mcp_secret_delete(account)
+    }
+
+    pub fn mcp_secrets_status(&self, accounts: &[String]) -> Result<Value> {
+        Ok(self.runtime()?.mcp_secrets_status(accounts))
+    }
+
     pub fn integrations_view(&self) -> Result<Value> {
         Ok(self.runtime()?.integrations_json())
     }

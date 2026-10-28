@@ -51,7 +51,7 @@ type McpServer = {
   kind: 'stdio' | 'http' | 'sse' | 'connector';
   command?: string; args?: string[];           // stdio
   url?: string;                                // http / sse
-  env?: Record<string, string>;                // values may be "keychain:<account>"
+  env?: Record<string, string>;                // values may be "keychain:<account>" (Keychain account "mcp:<account>")
   allow_secret_env: boolean;                   // the FR-110-style opt-in; false → keychain refs are refused at compile
   connector_name?: string;                     // connector: the claude.ai connector's display name
   design_tool?: 'penpot' | 'figma' | null;
@@ -59,6 +59,14 @@ type McpServer = {
   used_by: { team: string, node: string, role: string }[];  // filled by the view
 };
 ```
+
+MCP env secrets (`keychain:<account>` values) live in their own Keychain namespace, account `mcp:<account>`, apart from the integrations' tokens (`linear`, `notion`):
+
+| Command | Args | Returns |
+|---|---|---|
+| `mcp_secret_set` | `account: string, value: string` | `()` — stored under `mcp:<account>`; the value is never logged or returned. `account`: a-z, 0-9, `-_.`, ≤ 64; an empty value is refused |
+| `mcp_secret_delete` | `account: string` | `()` (deleting a missing one is fine) |
+| `mcp_secrets_status` | `accounts: string[]` | `Record<account, boolean>` (stored or not; an invalid name is `false`) |
 
 Roles (P2 `role_save` / `teams_view`, extended, back-compatible):
 
@@ -94,7 +102,7 @@ type Artifact = {
 
 | Command | Args | Returns |
 |---|---|---|
-| `artifact_preview` | `feature: string, artifact: number` | `{ mime: string, data_b64: string, bytes: number, source: 'integration' \| 'branch' }` or error `"too large"`, `"not found on branch"`, `"not previewable"` |
+| `artifact_preview` | `feature: string, artifact: number` | `{ mime: string, data_b64: string, bytes: number, source: 'integration' \| 'branch' }` or error `"too large (<size> MB)"` (one decimal, MiB; cap 5 MB), `"not found on branch"`, `"not previewable"` |
 | `artifact_open` | `feature, artifact` | `()` — links open in the browser, files in Quick Look (`qlmanage -p`) from the integration worktree |
 
 Limits: 5 MB per preview; SVG is returned as data for an `<img src="data:image/svg+xml;base64,…">` only (never inlined into the DOM).
@@ -104,6 +112,7 @@ Limits: 5 MB per preview; SVG is returned as data for an `<img src="data:image/s
 | Command | Args | Returns |
 |---|---|---|
 | `team_duplicate` | `team: string, from: Scope, to: Scope, newId?: string` | `{ team, roles_copied: string[] }` |
+| `starter_copy` | `starter: string` (starter preset id), `to: Scope`, `newId?: string \| null` | `{ team, roles_copied: string[] }`: the starter as the app ships it (not the installed, maybe edited copy), id `newId` or `<starter>-new`, version 1, not a preset. A role visible in `to` that differs from the shipped one is copied in as `<role>-<team id>` and the nodes use it; a missing role is copied under its own id. |
 | `role_duplicate` | `role: string, from: Scope, to: Scope, newId?: string` | `RoleDef` |
 | `team_set_preset` | `team: string, scope: Scope, preset: boolean` | `Team` |
 | `preset_update` | `team: string, scope: Scope` | `Team` (re-copies an unmodified starter; refused if modified) |

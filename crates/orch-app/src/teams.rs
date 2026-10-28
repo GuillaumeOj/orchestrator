@@ -118,6 +118,11 @@ impl Core {
         self.runtime()?.team_duplicate(team, from, to, new_id)
     }
 
+    /// The shipped starter, copied into `to` (not the installed, maybe edited one).
+    pub fn starter_copy(&self, starter: &str, to: &Scope, new_id: Option<&str>) -> Result<Value> {
+        self.runtime()?.starter_copy(starter, to, new_id)
+    }
+
     pub fn role_duplicate(&self, role: &str, from: &Scope, to: &Scope, new_id: Option<&str>) -> Result<Value> {
         Ok(json!(self.runtime()?.role_duplicate(role, from, to, new_id)?))
     }

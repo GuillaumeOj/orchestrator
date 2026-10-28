@@ -121,7 +121,7 @@ impl Runtime {
     }
 
     /// FR-603: an exported image's bytes, from the integration branch, else
-    /// the designer's branch. Errors: "not previewable", "too large", "not
+    /// the designer's branch. Errors: "not previewable", "too large (<size> MB)", "not
     /// found on branch".
     pub fn artifact_preview(&self, feature_id: &str, artifact: u64) -> Result<Value> {
         let (f, a) = self.feature_and_artifact(feature_id, artifact)?;
@@ -134,7 +134,7 @@ impl Runtime {
             let Ok(size) = orch_git::git::git(&repo, &["cat-file", "-s", &spec]) else { continue };
             let size: u64 = size.trim().parse().unwrap_or(u64::MAX);
             if size > MAX_PREVIEW_BYTES {
-                bail!("too large");
+                bail!("too large ({:.1} MB)", size as f64 / (1024.0 * 1024.0));
             }
             let bytes = orch_git::git::git_bytes(&repo, &["cat-file", "blob", &spec])?;
             return Ok(json!({"mime": mime, "data_b64": base64(&bytes), "bytes": bytes.len(), "source": source}));
@@ -280,7 +280,7 @@ mod tests {
         let pb = rt.artifact_preview("f1", b).unwrap();
         assert_eq!((pb["mime"].as_str(), pb["source"].as_str()), (Some("image/svg+xml"), Some("branch")));
         let err = |id| rt.artifact_preview("f1", id).unwrap_err().to_string();
-        assert_eq!(err(big), "too large");
+        assert_eq!(err(big), "too large (5.0 MB)");
         assert_eq!(err(gone), "not found on branch");
         assert_eq!(err(link), "not previewable");
         assert_eq!(err(doc), "not previewable");
