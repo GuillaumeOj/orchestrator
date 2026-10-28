@@ -13,14 +13,14 @@ use orch_store::IntegrationRow;
 use orch_team::mcp::{DesignTool, McpStatus};
 use serde_json::{Value, json};
 
-use crate::net::{HttpRequest, HttpResponse, host_of};
+use crate::net::{HttpResponse, host_of};
 use crate::runtime::Runtime;
 
 /// The integrations, in display order.
 pub const IDS: &[&str] = &["github", "linear", "notion", "penpot", "figma"];
 
-pub const LINEAR_URL: &str = "https://api.linear.app/graphql";
-pub const NOTION_URL: &str = "https://api.notion.com/v1/users/me";
+/// The Notion integration test's call (the bot user).
+pub const NOTION_ME: &str = "/v1/users/me";
 pub const NOTION_VERSION: &str = "2022-06-28";
 const DEADLINE: Duration = Duration::from_secs(15);
 
@@ -81,9 +81,12 @@ pub fn gh_account(text: &str) -> Option<String> {
 /// Linear's GraphQL answer to `{ viewer { name } organization { name } }`.
 pub fn linear_outcome(r: &HttpResponse) -> Outcome {
     let v: Value = serde_json::from_str(&r.body).unwrap_or(Value::Null);
-    let auth_error =
-        v["errors"].as_array().is_some_and(|es| es.iter().any(|e| e["extensions"]["code"] == "AUTHENTICATION_ERROR"));
-    if r.status == 401 || r.status == 403 || auth_error {
+    // The sync's own classification of an auth failure.
+    let auth_error = matches!(
+        orch_tasks::linear::parse_answer(r.status, None, &r.body),
+        Err(orch_tasks::linear::GqlError::Unauthorized(_))
+    );
+    if auth_error {
         return (McpStatus::NeedsAuth, Some(format!("{} from api.linear.app", r.status)), None);
     }
     if r.status == 200
@@ -114,6 +117,13 @@ pub fn notion_outcome(r: &HttpResponse) -> Outcome {
 }
 
 impl Runtime {
+    /// An integration's secret changed: transports read it again.
+    fn forget_tokens(&self, id: &str) {
+        if id == "linear" {
+            *self.linear_token.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+
     fn integration_row(&self, id: &str) -> IntegrationRow {
         self.db.integrations().unwrap_or_default().into_iter().find(|r| r.id == id).unwrap_or(IntegrationRow {
             id: id.into(),
@@ -192,6 +202,7 @@ impl Runtime {
             return Ok(self.integration_json(id));
         }
         self.secrets().set(id, &secret)?;
+        self.forget_tokens(id);
         self.event("-", "integration_secret_set", json!({"id": id}));
         if IDS.contains(&id) { self.integration_test(id) } else { Ok(self.integration_json(id)) }
     }
@@ -205,6 +216,7 @@ impl Runtime {
             return Ok(self.integration_json(id));
         }
         self.secrets().remove(id)?;
+        self.forget_tokens(id);
         self.db.set_integration(&IntegrationRow {
             id: id.into(),
             status: McpStatus::NotConfigured,
@@ -253,29 +265,10 @@ impl Runtime {
                     return Ok(self.integration_json(id));
                 };
                 let req = if id == "linear" {
-                    HttpRequest {
-                        method: "POST",
-                        url: LINEAR_URL.into(),
-                        headers: vec![
-                            ("Authorization".into(), token.expose().into()),
-                            ("Content-Type".into(), "application/json".into()),
-                        ],
-                        body: Some(json!({"query": "{ viewer { name } organization { name } }"}).to_string()),
-                        timeout: DEADLINE,
-                        max_body: crate::net::MAX_BODY,
-                    }
+                    let q = "{ viewer { name } organization { name } }";
+                    crate::linear::request(token.expose(), q, &Value::Null, DEADLINE, crate::net::MAX_BODY)
                 } else {
-                    HttpRequest {
-                        method: "GET",
-                        url: NOTION_URL.into(),
-                        headers: vec![
-                            ("Authorization".into(), format!("Bearer {}", token.expose())),
-                            ("Notion-Version".into(), NOTION_VERSION.into()),
-                        ],
-                        body: None,
-                        timeout: DEADLINE,
-                        max_body: crate::net::MAX_BODY,
-                    }
+                    crate::notion::request(token.expose(), "GET", NOTION_ME, None, DEADLINE, crate::net::MAX_BODY)
                 };
                 match self.cfg.net.http(&req) {
                     Ok(r) if id == "linear" => linear_outcome(&r),
@@ -346,7 +339,12 @@ mod tests {
         assert_eq!(rt.integration_json("penpot")["status"], "unknown");
         assert_eq!(rt.integration_json("figma")["status"], "not_configured");
 
-        net.route(LINEAR_URL, 200, &[], r#"{"data":{"viewer":{"name":"G"},"organization":{"name":"Acme"}}}"#);
+        net.route(
+            orch_tasks::linear::URL,
+            200,
+            &[],
+            r#"{"data":{"viewer":{"name":"G"},"organization":{"name":"Acme"}}}"#,
+        );
         let v = rt.integration_secret_set("linear", Secret::new(" lin_api_SECRET ")).unwrap();
         assert_eq!(v["status"], "connected");
         assert_eq!(v["account"], "Acme");
@@ -373,7 +371,7 @@ mod tests {
         assert!(!dump.contains("lin_api_SECRET"), "{dump}");
 
         // A revoked key → needs_auth.
-        net.route(LINEAR_URL, 401, &[], r#"{"errors":[{"extensions":{"code":"AUTHENTICATION_ERROR"}}]}"#);
+        net.route(orch_tasks::linear::URL, 401, &[], r#"{"errors":[{"extensions":{"code":"AUTHENTICATION_ERROR"}}]}"#);
         assert_eq!(rt.integration_test("linear").unwrap()["status"], "needs_auth");
         let v = rt.integration_secret_remove("linear").unwrap();
         assert_eq!((v["status"].as_str(), v["has_secret"].as_bool()), (Some("not_configured"), Some(false)));

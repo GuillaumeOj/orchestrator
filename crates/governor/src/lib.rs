@@ -18,7 +18,10 @@ pub use governor::{
     LiveRecord, LiveTurn, NextActionPreview, Release, SprintRecord, Stats, ToolCallRequest, TurnRequest, Verdict,
 };
 pub use models::{Downgrade, DowngradeWhen, ModelOverride, ModelWindow, ModelWindowReading, ModelWindowState};
-pub use plan::{AskDefault, AutoContinue, BudgetAllocation, LiveCaps, PacingPolicy, Thresholds, WeeklyPlan};
+pub use plan::{
+    AskDefault, AutoContinue, BudgetAllocation, LiveCaps, PacingPolicy, SAME_RESET_S, Thresholds, WeeklyPlan,
+    same_reset,
+};
 pub use pressure::{PressureInputs, PressureState, StateMachine};
 pub use queue::{QueueEntry, QueueReason, TurnCeiling, TurnKind};
 pub use types::{ActionId, AgentId, AllocationId, EntryId, Provenance, Tier, UsageSample, Window, WindowReading};

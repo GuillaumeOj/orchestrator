@@ -53,31 +53,47 @@ impl std::fmt::Debug for NotionFactory {
     }
 }
 
-/// The real transport.
+/// A request to api.notion.com with the integration token (the publish's
+/// and the integration test's).
+pub fn request(
+    token: &str,
+    method: &'static str,
+    path: &str,
+    body: Option<&Value>,
+    timeout: Duration,
+    max_body: usize,
+) -> HttpRequest {
+    let mut headers =
+        vec![("Authorization".into(), format!("Bearer {token}")), ("Notion-Version".into(), NOTION_VERSION.into())];
+    if body.is_some() {
+        headers.push(("Content-Type".into(), "application/json".into()));
+    }
+    HttpRequest { method, url: format!("{API}{path}"), headers, body: body.map(Value::to_string), timeout, max_body }
+}
+
+/// The real transport: one per operation (a publish, a poll), which reads
+/// the token from the Keychain once.
 pub struct NotionHttp {
     pub net: Arc<dyn Net>,
     pub secrets: Arc<dyn Secrets>,
+    pub token: std::sync::OnceLock<orch_secrets::Secret>,
+}
+
+impl NotionHttp {
+    fn token(&self) -> Result<&orch_secrets::Secret> {
+        if let Some(t) = self.token.get() {
+            return Ok(t);
+        }
+        let t =
+            self.secrets.get("notion")?.ok_or_else(|| anyhow!("no Notion token: add it in Settings › Integrations"))?;
+        Ok(self.token.get_or_init(|| t))
+    }
 }
 
 impl NotionApi for NotionHttp {
     fn call(&self, method: &'static str, path: &str, body: Option<&Value>) -> Result<Value> {
-        let token =
-            self.secrets.get("notion")?.ok_or_else(|| anyhow!("no Notion token: add it in Settings › Integrations"))?;
-        let mut headers = vec![
-            ("Authorization".into(), format!("Bearer {}", token.expose())),
-            ("Notion-Version".into(), NOTION_VERSION.into()),
-        ];
-        if body.is_some() {
-            headers.push(("Content-Type".into(), "application/json".into()));
-        }
-        let req = HttpRequest {
-            method,
-            url: format!("{API}{path}"),
-            headers,
-            body: body.map(Value::to_string),
-            timeout: Duration::from_secs(30),
-            max_body: crate::net::API_MAX_BODY,
-        };
+        let req =
+            request(self.token()?.expose(), method, path, body, Duration::from_secs(30), crate::net::API_MAX_BODY);
         let r = http_with_retry(self.net.as_ref(), &req, std::thread::sleep)?;
         let v: Value = serde_json::from_str(&r.body).unwrap_or(Value::Null);
         if !(200..300).contains(&r.status) {
@@ -397,7 +413,11 @@ impl Runtime {
     pub(crate) fn notion_api(&self) -> Box<dyn NotionApi> {
         match &self.cfg.notion {
             Some(f) => (f.0)(),
-            None => Box::new(NotionHttp { net: self.cfg.net.clone(), secrets: self.cfg.secrets.clone() }),
+            None => Box::new(NotionHttp {
+                net: self.cfg.net.clone(),
+                secrets: self.cfg.secrets.clone(),
+                token: std::sync::OnceLock::new(),
+            }),
         }
     }
 

@@ -175,6 +175,8 @@ pub struct Runtime {
     /// background poll pass running.
     pub(crate) notion_locks: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     pub(crate) notion_polling: std::sync::atomic::AtomicBool,
+    /// The Linear API key, read once (cleared when the user changes it).
+    pub(crate) linear_token: crate::linear::TokenCache,
 }
 
 /// Clocks and flags of the periodic work (`tick`, `housekeeping`).
@@ -412,6 +414,7 @@ impl Runtime {
             presets_checked: std::sync::atomic::AtomicBool::new(false),
             notion_locks: Mutex::new(BTreeMap::new()),
             notion_polling: std::sync::atomic::AtomicBool::new(false),
+            linear_token: Default::default(),
         });
         rt.handle_releases(released);
         rt.backfill_report(now);
@@ -1498,8 +1501,7 @@ impl Runtime {
             let mut ended = None;
             // FR-802: the plan week is aligned to the real weekly reset.
             if let Some(w) = g.weekly {
-                let off = (w.resets_at.as_second() - gov.plan().reset_at.as_second()).abs();
-                if off > 3600 && w.resets_at > g.ts {
+                if !governor::same_reset(w.resets_at, gov.plan().reset_at) && w.resets_at > g.ts {
                     let mut plan = gov.plan().clone();
                     plan.reset_at = w.resets_at;
                     plan.week_start = w.resets_at.checked_sub(168.hours()).unwrap_or(w.resets_at);
@@ -1598,7 +1600,7 @@ impl Runtime {
         now: Timestamp,
     ) -> Result<Option<(WeeklyPlan, governor::Calibration)>> {
         let old = gov.plan().clone();
-        let ended = plan.week_start.as_second() >= old.reset_at.as_second() - 3600;
+        let ended = plan.week_start.as_second() >= old.reset_at.as_second() - governor::SAME_RESET_S;
         let calib = gov.calibration(now);
         if ended {
             // The week's last actions, for its report.
@@ -3082,14 +3084,16 @@ pub(crate) mod tests {
         let live = {
             let rt = Runtime::new(cfg(a.path(), last_week_plan)).unwrap();
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(a.path()))).unwrap();
+            // Made a moment after `w1`: its id can be a second later.
+            let week1_id = rt.gov().plan().id.clone();
             for m in s1.iter().chain(&s2) {
                 rt.on_status(m);
             }
             assert_eq!(rt.gov().plan().week_start.as_second(), w2.week_start.as_second(), "switched at the reset");
             rt.tick();
             rt.db.flush().unwrap();
-            assert_eq!(reports(&rt), ["current".to_string(), w1.id.clone()], "the ended week's report is stored");
-            let r = rt.report_view(&w1.id).unwrap();
+            assert_eq!(reports(&rt), ["current".to_string(), week1_id.clone()], "the ended week's report is stored");
+            let r = rt.report_view(&week1_id).unwrap();
             assert_eq!(r["in_progress"], false);
             assert!(r["totals"]["weekly_pct"].as_f64().unwrap() > 30.0, "{r}");
             assert_eq!(r["by_model"][0]["key"], "sonnet", "{r}");

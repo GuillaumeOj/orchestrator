@@ -11,11 +11,7 @@ use serde_json::Value;
 
 use crate::db::Store;
 use crate::model::*;
-use crate::util::{from_js, js, json_row, opt_u64, p, tag};
-
-fn ms(t: Timestamp) -> i64 {
-    t.as_millisecond()
-}
+use crate::util::{from_js, js, json_row, ms, opt_u64, p, tag};
 
 const PROJECT_COLS: &str = "id, name, path, default_branch, remotes, worktree_root, task_backend, track_orchestrator_dir, settings, created_at_ms, last_active_at_ms, last_fetch_at_ms, last_fetch_error, archived";
 

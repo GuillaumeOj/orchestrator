@@ -145,6 +145,11 @@ pub enum Reply {
     },
 }
 
+/// `x` rounded to one decimal (MB, pp and % in the views).
+pub fn round1(x: f64) -> f64 {
+    (x * 10.0).round() / 10.0
+}
+
 /// Milliseconds since the Unix epoch.
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)

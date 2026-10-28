@@ -156,9 +156,7 @@ fn ms(t: Timestamp) -> u64 {
     t.as_millisecond().max(0) as u64
 }
 
-fn round1(x: f64) -> f64 {
-    (x * 10.0).round() / 10.0
-}
+use orch_protocol::round1;
 
 fn round2(x: f64) -> f64 {
     (x * 100.0).round() / 100.0
@@ -211,7 +209,8 @@ pub fn build(i: &Inputs) -> WeeklyReport {
     for s in i.samples.iter().filter(in_week) {
         if let (Some(w), Some(r)) = (s.weekly_pct, s.weekly_resets_at) {
             // A reading of this week (not an agent's stale copy of the last one).
-            if (r - plan.reset_at.as_second()).abs() <= 3600 && last_reading.is_none_or(|(t, _)| s.ts_ms >= t) {
+            let this_week = Timestamp::from_second(r).is_ok_and(|r| governor::same_reset(r, plan.reset_at));
+            if this_week && last_reading.is_none_or(|(t, _)| s.ts_ms >= t) {
                 last_reading = Some((s.ts_ms, w));
             }
         }

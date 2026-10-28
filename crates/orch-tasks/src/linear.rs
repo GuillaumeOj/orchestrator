@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow, bail};
+use orch_store::now_ms;
 use orch_team::TaskStatus;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -197,10 +198,6 @@ fn team_info(gql: &dyn Graphql, key: &str) -> Result<TeamInfo> {
         .map(|p| ProjectRef { id: s(&p["id"]), name: s(&p["name"]) })
         .collect();
     Ok(TeamInfo { id: s(&t["id"]), states, projects })
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 /// The managed issues of one Linear team (and project).
