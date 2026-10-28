@@ -349,6 +349,7 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
         // item comes back as a restart gate; Governor holds are requeued.
         let mut fresh_gates = vec![];
         for h in st.holds.iter_mut().filter(|h| h.agent_id == id && h.status == HoldStatus::Held) {
+            h.status = HoldStatus::Interrupted;
             let now = match (h.kind, h.inbox_id) {
                 (HoldKind::Gate, Some(item)) => match st.inbox.iter_mut().find(|i| i.id == item && i.pending()) {
                     Some(i) => {
@@ -361,20 +362,13 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                         )
                     }
                     // Decided (or parked) just before the core died: nothing waits on this hold.
-                    None => {
-                        h.status = HoldStatus::Interrupted;
-                        format!("Inbox item {item} already closed or parked")
-                    }
+                    None => format!("Inbox item {item} already closed or parked"),
                 },
                 (HoldKind::Gate, None) => {
-                    h.status = HoldStatus::Interrupted;
                     fresh_gates.push(h.summary.clone());
                     "back in the Inbox as a restart gate".to_string()
                 }
-                (HoldKind::Governor, _) => {
-                    h.status = HoldStatus::Interrupted;
-                    "requeued".to_string()
-                }
+                (HoldKind::Governor, _) => "requeued".to_string(),
             };
             report.holds.push((h.id.clone(), now));
         }

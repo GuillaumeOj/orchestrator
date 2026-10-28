@@ -2025,9 +2025,9 @@ impl Runtime {
             // session id) once its first turn is admitted.
             let never_started = rec.never_started();
             // FR-705: parked on the user's decision, only their own words resume it.
-            let parked = turn.kind != TurnKind::User && self.is_parked(&rec.id);
-            let suspended =
-                (rec.tracker.state == AgentState::Suspended || never_started) && rec.flag.is_none() && !parked;
+            let suspended = (rec.tracker.state == AgentState::Suspended || never_started)
+                && rec.flag.is_none()
+                && (turn.kind == TurnKind::User || !self.is_parked(&rec.id));
             if suspended && turn.admission == Admission::Pending {
                 self.sync_process_slots();
             }

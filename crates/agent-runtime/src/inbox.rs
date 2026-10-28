@@ -101,10 +101,7 @@ impl Call {
 fn brief(tool: &str, input: &Value) -> (String, Option<String>) {
     let notebook = input.get("notebook_path").and_then(Value::as_str).map(str::to_string);
     let main = permissions::primary_input(tool, input).or(notebook);
-    let mut main = main.unwrap_or_else(|| tool.to_string());
-    if main.chars().count() > 200 {
-        main = main.chars().take(199).collect::<String>() + "…";
-    }
+    let main = crate::team::cut(&main.unwrap_or_else(|| tool.to_string()), 199);
     (main, input.get("description").and_then(Value::as_str).map(str::to_string))
 }
 
@@ -138,24 +135,36 @@ impl Runtime {
     /// An item was decided or parked: the `inbox_outcome` event (the run
     /// report's deciders and waiting time) and the UI's toast.
     pub(crate) fn outcome(&self, item: &InboxItem, decided_by: &str, effect: &str) {
-        let v = json!({
+        self.outcome_with(item, decided_by, effect, None);
+    }
+
+    fn outcome_with(&self, item: &InboxItem, decided_by: &str, effect: &str, error: Option<&str>) {
+        let mut v = json!({
             "item": item.id, "kind": item.kind, "tool": item.payload.get("tool"), "decided_by": decided_by,
             "effect": effect, "created_at_ms": item.created_at_ms, "at_ms": now_ms(),
         });
-        self.event(item.agent_id.as_deref().unwrap_or("-"), "inbox_outcome", v.clone());
+        if let Some(e) = error {
+            v["error"] = json!(e);
+        }
         let sink = self.outcome_sink.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(f) = sink {
             f(&v);
         }
+        self.event(item.agent_id.as_deref().unwrap_or("-"), "inbox_outcome", v);
     }
 
     /// Audits (FR-709) and reports an item a decider other than the user's
     /// `decide` closed or parked.
     fn closed_by(&self, item: &InboxItem, actor: &str, decision: &str, effect: &str) {
-        let detail = json!({"item": item.id, "tool": item.payload.get("tool"), "tool_input": tool_input(item),
-                            "tool_use_id": item.payload.get("tool_use_id")});
-        let tool = item.payload.get("tool").and_then(Value::as_str);
-        let _ = self.db.audit(actor, item.agent_id.as_deref(), &item.kind, tool, decision, detail);
+        let s = |k: &str| item.payload.get(k).and_then(Value::as_str).map(str::to_string);
+        let call = Call {
+            tool: s("tool").unwrap_or_default(),
+            input: tool_input(item),
+            tool_use_id: s("tool_use_id"),
+            cwd: None,
+        };
+        let detail = call.detail(Some(item.id), None);
+        let _ = self.db.audit(actor, item.agent_id.as_deref(), &item.kind, Some(&call.tool), decision, detail);
         self.outcome(item, actor, effect);
     }
 
@@ -214,12 +223,15 @@ impl Runtime {
     pub(crate) fn wait_decision(&self, id: u64, budget: Duration, conn: Option<&UnixStream>) -> Option<Waited> {
         let end = Instant::now() + budget;
         loop {
-            let Some(item) = self.store.read(|s| s.inbox.iter().find(|i| i.id == id).cloned()) else {
+            let Some(status) = self.store.read(|s| s.inbox.iter().find(|i| i.id == id).map(|i| i.status)) else {
                 return Some(Waited::Expired);
             };
-            match item.status {
+            match status {
                 InboxStatus::Pending => {}
-                InboxStatus::Decided => return Some(Waited::Decided(Box::new(item))),
+                InboxStatus::Decided => {
+                    let item = self.store.read(|s| s.inbox.iter().find(|i| i.id == id).cloned());
+                    return Some(item.map_or(Waited::Expired, |i| Waited::Decided(Box::new(i))));
+                }
                 InboxStatus::Dismissed => return Some(Waited::InPane),
                 InboxStatus::Interrupted => return Some(Waited::Interrupted),
                 InboxStatus::Parked => return Some(Waited::Parked),
@@ -506,8 +518,28 @@ impl Runtime {
     }
 
     /// How a turn the core queued for `agent` reaches it.
-    fn delivered_effect(&self, agent: &str) -> &'static str {
+    pub fn delivered_effect(&self, agent: &str) -> &'static str {
         if self.live(agent).is_some() { "delivered" } else { "resumed" }
+    }
+
+    /// Tells `agent` the user's decision as a user turn (`result.turn`); the effect.
+    fn tell(&self, agent: &str, text: &str, result: &mut Value) -> Result<&'static str> {
+        let effect = self.delivered_effect(agent);
+        result["turn"] = json!(self.deliver_user(agent, text)?);
+        Ok(effect)
+    }
+
+    /// Reopens a parked item whose decision could not reach its agent.
+    fn unclaim_parked(&self, id: u64) {
+        let _ = self.store.write(|s| {
+            if let Some(i) = s.inbox.iter_mut().find(|i| i.id == id) {
+                i.status = InboxStatus::Parked;
+                (i.decided_at_ms, i.decision, i.decided_by) = (None, None, None);
+                if let Some(p) = i.payload.as_object_mut() {
+                    p.remove("reply");
+                }
+            }
+        });
     }
 
     /// The user's decision on an Inbox item. The item is claimed atomically
@@ -581,6 +613,7 @@ impl Runtime {
             result["rule"] = json!(self.add_rule(sc, &sid, &pattern, RuleEffect::Allow, Some(id))?);
         }
         let allowed = matches!(decision, InboxDecision::Approve | InboxDecision::AlwaysAllow);
+        let why = message.filter(|m| !m.trim().is_empty()).unwrap_or("The user said no.");
         let mut effect = match decision {
             InboxDecision::Dismiss => "dismissed",
             _ if allowed => "allowed",
@@ -596,28 +629,40 @@ impl Runtime {
                 if let Some(a) = agent {
                     let tool = target.as_deref().unwrap_or("?");
                     let summary = item.payload.get("summary").and_then(Value::as_str).unwrap_or("");
-                    let text = if allowed {
+                    let told = if allowed {
                         let until = now_ms() + ONE_SHOT_TTL_MS;
-                        self.db.add_one_shot(a, tool, &tool_input(&item), Some(id), until)?;
-                        format!("ORCH: approved: retry the call {tool} {summary}")
+                        self.db.add_one_shot(a, tool, &tool_input(&item), Some(id), until).and_then(|_| {
+                            self.tell(a, &format!("ORCH: approved: retry the call {tool} {summary}"), &mut result)
+                        })
                     } else {
-                        let why = message.filter(|m| !m.trim().is_empty()).unwrap_or("The user said no.");
-                        format!("ORCH: denied: {tool} {summary}. {why}")
+                        self.tell(a, &format!("ORCH: denied: {tool} {summary}. {why}"), &mut result)
                     };
-                    effect = self.delivered_effect(a);
-                    result["turn"] = json!(self.deliver_user(a, &text)?);
+                    match told {
+                        Ok(e) => effect = e,
+                        // Nobody was told: the agent still waits, so the item does too.
+                        Err(e) => {
+                            self.unclaim_parked(id);
+                            let err = format!("{e:#}");
+                            let _ = self.db.audit(
+                                "user",
+                                Some(a),
+                                &item.kind,
+                                Some(tool),
+                                "failed",
+                                json!({"item": id, "tool": tool, "tool_input": tool_input(&item),
+                                       "tool_use_id": item.payload.get("tool_use_id"), "error": err}),
+                            );
+                            self.outcome_with(&item, "user", "failed", Some(&err));
+                            return Err(e);
+                        }
+                    }
                 }
             }
             ("gate", "restart_gate", _) => {
                 if let Some(a) = agent {
-                    let text = if allowed {
-                        "ORCH: approved: proceed".to_string()
-                    } else {
-                        let why = message.filter(|m| !m.trim().is_empty()).unwrap_or("The user said no.");
-                        format!("ORCH: rejected: {why}")
-                    };
-                    effect = self.delivered_effect(a);
-                    result["turn"] = json!(self.deliver_user(a, &text)?);
+                    let text =
+                        if allowed { "ORCH: approved: proceed".to_string() } else { format!("ORCH: rejected: {why}") };
+                    effect = self.tell(a, &text, &mut result)?;
                 }
             }
             ("gate", "push_pr", InboxDecision::Approve) => {
@@ -657,14 +702,12 @@ impl Runtime {
                         "ORCH: the user answered your question.\nQuestion: {}\nAnswer: {m}",
                         crate::team::cut(q, 600)
                     );
-                    result["turn"] = json!(self.deliver_user(a, &text)?);
-                    effect = self.delivered_effect(a);
+                    effect = self.tell(a, &text, &mut result)?;
                 }
             }
             (k, _, InboxDecision::Reply) if k != "permission" => {
                 if let (Some(a), Some(m)) = (agent, message) {
-                    result["turn"] = json!(self.deliver_user(a, m)?);
-                    effect = self.delivered_effect(a);
+                    effect = self.tell(a, m, &mut result)?;
                 }
             }
             _ => {}
@@ -933,6 +976,35 @@ mod tests {
         rt.decide(id, InboxDecision::AlwaysAllow, Some("agent"), None).unwrap();
         assert_eq!(rt.db.rules().unwrap()[0].pattern, "Bash(make)");
         assert_eq!(rt.store.read(|s| s.turns.last().unwrap().body.clone()), "ORCH: approved: retry the call Bash make");
+    }
+
+    #[test]
+    fn a_parked_decision_that_cannot_reach_its_agent_stays_parked() {
+        let (_d, rt) = test_runtime(true);
+        let id = rt
+            .store
+            .write(|s| {
+                let payload = json!({"tool": "Bash", "tool_input": {"command": "ls"}, "summary": "ls"});
+                let id =
+                    s.add_inbox_item(Some("gone"), "permission", "gone: Bash: ls".into(), payload, PRIORITY_BLOCKING);
+                assert!(s.park_inbox(id));
+                id
+            })
+            .unwrap();
+        let e = rt.decide(id, InboxDecision::Approve, None, Some("ok")).unwrap_err();
+        assert!(e.to_string().contains("no agent gone"), "{e}");
+        let i = item(&rt, id);
+        assert_eq!((i.status, i.decided_by.as_deref(), i.decision.as_deref()), (InboxStatus::Parked, None, None));
+        assert!(i.payload.get("reply").is_none());
+        rt.db.write(|_| Ok(())).unwrap();
+        let ev = rt.db.events(0, None, Some("inbox_outcome"), 5).unwrap();
+        assert_eq!(
+            (ev[0].detail["effect"].as_str(), ev[0].detail["decided_by"].as_str()),
+            (Some("failed"), Some("user"))
+        );
+        // Still decidable once the agent can be told.
+        rt.store.write(|s| s.inbox.iter_mut().find(|i| i.id == id).unwrap().agent_id = Some("a1".into())).unwrap();
+        assert_eq!(rt.decide(id, InboxDecision::Reject, None, None).unwrap()["effect"], "resumed");
     }
 
     #[test]

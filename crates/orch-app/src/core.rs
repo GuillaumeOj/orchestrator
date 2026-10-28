@@ -755,7 +755,8 @@ impl Core {
                 } else {
                     m.to_string()
                 };
-                let (how, effect) = if rt.live(a).is_some() { ("deliver", "delivered") } else { ("resume", "resumed") };
+                let effect = rt.delivered_effect(a);
+                let how = if effect == "delivered" { "deliver" } else { "resume" };
                 let r = self.agent_action(a, how, Some(&text))?;
                 return Ok(json!({"ok": true, "effect": effect, "result": r}));
             }

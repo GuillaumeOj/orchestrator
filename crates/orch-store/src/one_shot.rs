@@ -46,6 +46,19 @@ impl Store {
     pub fn take_one_shot(&self, agent_id: &str, tool: &str, input: &Value) -> Result<Option<Option<u64>>> {
         let (agent, tool, input) = (agent_id.to_string(), tool.to_string(), canonical(input));
         let now = crate::now_ms() as i64;
+        // Checked on every permission prompt: no write transaction unless one matches.
+        let any = self.read(|c| {
+            Ok(c.query_row(
+                "SELECT 1 FROM one_shot_allows WHERE agent_id=?1 AND consumed_at_ms IS NULL AND expires_at_ms > ?2 LIMIT 1",
+                params![agent, now],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+        })?;
+        if !any {
+            return Ok(None);
+        }
         self.write(move |tx| {
             let hit: Option<(i64, Option<i64>)> = tx
                 .query_row(
