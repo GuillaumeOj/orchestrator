@@ -2,14 +2,16 @@
   // Feature pane (§9.3, Penpot 04 Feature · 1512): the feature's latest team
   // run: docs from the integration branch (rendered), tasks, the team with
   // live states, the timeline (FR-408) with a message box (FR-409), artifacts
-  // and the PR. Keys: e open the doc in nvim, b board, c canvas, p pause /
-  // resume the team, m message.
+  // and the PR, and the Design section (P3). Keys: e open the doc in nvim, b
+  // board, c canvas, p pause / resume the team, m message, d Design.
   import { onMount } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
+  import DesignSection from '../components/DesignSection.svelte';
   import Kbd from '../components/Kbd.svelte';
   import Markdown from '../components/Markdown.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import { agent, app, confirm, openAgent, openBoard, openCanvas, openEditor, refresh, toast } from '../lib/app.svelte.js';
+  import { isDesign } from '../lib/ecosystem.js';
   import { ago } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { displayState } from '../lib/status.js';
@@ -25,6 +27,7 @@
   let msg = $state('');
   let root;
   let msgBox = $state(null);
+  let design = $state(null);
 
   const run = $derived(v?.run ?? null);
   const paused = $derived(run?.status === 'paused');
@@ -109,6 +112,7 @@
     else if (k === 'c' && run) openCanvas(run.team_id, v.feature.project_id);
     else if (k === 'p' && run && !runFinished(run.status)) act(paused ? 'resume' : 'pause');
     else if (k === 'm') msgBox?.focus();
+    else if (k === 'd') design?.focus();
     else return;
     e.preventDefault();
   }
@@ -154,6 +158,8 @@
             <p class="muted">No docs yet: the lead writes them in the spec step.</p>
           {/if}
         </section>
+
+        <DesignSection bind:this={design} {v} />
 
         <section class="card">
           <div class="cardh"><b>Tasks</b><span class="muted">{v.project?.backend === 'github' ? 'GitHub Issues' : 'Local'} · {byStatus('done').length}/{v.tasks.length} done</span><span class="grow"></span><button class="btn ghost" onclick={() => openBoard(v.feature.project_id)}>Open board <Kbd keys="b" /></button></div>
@@ -219,7 +225,7 @@
           <div class="cardh"><b>PR and artifacts</b></div>
           {#if run?.pr_url}<div class="arow"><span class="muted">PR</span> <span class="mono">{run.pr_url}</span></div>
           {:else}<p class="muted">No PR yet: the lead asks with request_pr after integration (PR gate).</p>{/if}
-          {#each v.artifacts as a (a.id)}
+          {#each v.artifacts.filter((a) => !isDesign(a)) as a (a.id)}
             <div class="art"><span class="muted">{a.kind}</span> <span class="ell">{a.uri}</span> <span class="muted">({a.from_node}{a.to_node ? ` → ${a.to_node}` : ''})</span></div>
           {/each}
         </section>

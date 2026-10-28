@@ -194,7 +194,8 @@ describe('P2 panes', () => {
     await waitFor(() => getByText('Spec gate'));
     await waitFor(() => expect(container.querySelector('.rendered b')?.textContent).toBe('plan'));
     expect(getAllByText(/Spec → Spec gate/).length).toBeGreaterThan(0);
-    expect(getByText('penpot://drawer')).toBeTruthy();
+    // A design artifact moved to the Design section (P3): a Penpot link tile.
+    expect(container.querySelector('[aria-label="Design"]').textContent).toContain('Link only');
     const input = container.querySelector('input[placeholder^="Message"]');
     await fireEvent.input(input, { target: { value: 'Keep v1' } });
     await fireEvent.keyDown(input, { key: 'Enter' });

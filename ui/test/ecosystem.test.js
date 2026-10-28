@@ -36,6 +36,8 @@ vi.mock('../src/lib/ipc.js', () => ({
 }));
 
 const { default: SettingsPane } = await import('../src/panes/SettingsPane.svelte');
+const { default: FeaturePane } = await import('../src/panes/FeaturePane.svelte');
+const { default: TeamCanvasPane } = await import('../src/panes/TeamCanvasPane.svelte');
 
 const integ = (id, name, over = {}) => ({
   id,
@@ -297,5 +299,305 @@ describe('Settings pane', () => {
     await tick();
     expect(app.panes.s1.section).toBe('terminal');
     expect(getByText(/Not designed yet/)).toBeTruthy();
+  });
+});
+
+describe('role inspector, Design section and presets (T-7)', () => {
+  beforeEach(() => {
+    cleanup();
+    calls.length = 0;
+    for (const k of Object.keys(replies)) delete replies[k];
+    app.data = fixture();
+    app.toasts = [];
+    app.overlay = null;
+  });
+
+  const art = (id, uri, over = {}) => ({
+    id,
+    feature_id: 'shop-onb',
+    team_run_id: 'run-1',
+    kind: 'design',
+    uri,
+    from_node: 'ui',
+    to_node: 'front',
+    note: '',
+    created_at_ms: new Date(2026, 9, 21, 13, 12).getTime() + id,
+    meta: null,
+    ...over,
+  });
+  const file = (id, name, over = {}) =>
+    art(id, `.orchestrator/features/onboarding/design/${name}`, {
+      meta: {
+        tool: 'file',
+        path: `.orchestrator/features/onboarding/design/${name}`,
+        previewable: true,
+        on_integration: true,
+      },
+      ...over,
+    });
+
+  const featureView = (artifacts) => ({
+    feature: { id: 'shop-onb', project_id: 'shop', slug: 'onboarding', integration_worktree: '/w/onb' },
+    run: { id: 'run-1', team_id: 'full-stack', status: 'executing', started_at_ms: Date.now() - 60000, pr_url: null },
+    team: {
+      name: 'Full-stack',
+      version: 3,
+      nodes: [
+        { id: 'lead', role_id: 'lead', is_lead: true },
+        { id: 'ui', role_id: 'ui', is_lead: false },
+        { id: 'front', role_id: 'frontend', is_lead: false },
+      ],
+    },
+    project: { id: 'shop', name: 'shop-api', backend: 'local' },
+    agents: [
+      { id: 'ui-1', node: 'ui', state: 'idle' },
+      { id: 'front-2', node: 'front', state: 'idle' },
+    ],
+    tasks: [
+      { id: 2, title: 'Welcome frames in Penpot', status: 'in_progress', node: 'ui', depends_on: [], backend: 'local' },
+    ],
+    docs: [],
+    artifacts,
+    timeline: [],
+  });
+
+  it('Design section: no designs yet names who is drawing', async () => {
+    replies.feature_view = featureView([]);
+    app.panes.f1 = { type: 'feature', featureId: 'shop-onb', title: 'onboarding' };
+    const { getByText } = render(FeaturePane, { paneId: 'f1' });
+    await waitFor(() =>
+      getByText(
+        "No designs yet. ui-1 is on 'Welcome frames in Penpot'. Exported frames show here when they're handed off.",
+      ),
+    );
+  });
+
+  it('Design section: previews, not merged, too large, link only; keys open, preview and ask to export', async () => {
+    replies.feature_view = featureView([
+      file(1, 'welcome-1.png', { note: 'Step 1' }),
+      file(2, 'welcome-2.svg', {
+        meta: { tool: 'file', path: 'x/welcome-2.svg', previewable: true, on_integration: false },
+      }),
+      file(3, 'welcome-3.png'),
+      art(4, 'https://design.penpot.app/#/workspace?file-id=f&page-id=p', {
+        meta: { tool: 'penpot', title: 'Onboarding / Welcome', previewable: false },
+      }),
+    ]);
+    replies.artifact_preview = (a) =>
+      a.artifact === 3
+        ? Promise.reject('too large (7.4 MB)')
+        : {
+            mime: a.artifact === 2 ? 'image/svg+xml' : 'image/png',
+            data_b64: 'AAAA',
+            bytes: 219000,
+            source: a.artifact === 2 ? 'branch' : 'integration',
+          };
+    replies.artifact_open = null;
+    replies.message_send = { ids: [1] };
+    app.panes.f1 = { type: 'feature', featureId: 'shop-onb', title: 'onboarding' };
+    const { container, getByText } = render(FeaturePane, { paneId: 'f1' });
+    await waitFor(() => expect(container.querySelectorAll('.tile img')).toHaveLength(2));
+    const sec = container.querySelector('[aria-label="Design"]');
+    expect(sec.textContent).toContain("On ui-1's branch · not merged");
+    expect(sec.textContent).toContain('Too large to preview (7.4 MB · max 5 MB)');
+    expect(sec.textContent).toContain("Link only: front-2 can't open it.");
+    expect(getByText('Onboarding / Welcome')).toBeTruthy();
+    // The SVG is an <img> data URL, never inline markup.
+    expect(container.querySelector('svg image, .tile svg')).toBeNull();
+    expect(container.querySelector('.tile img[alt="welcome-2.svg"]').getAttribute('src')).toMatch(
+      /^data:image\/svg\+xml;base64,/,
+    );
+    // d focuses the section; ⏎ opens the first, Space previews it.
+    await fireEvent.keyDown(container.querySelector('.feature'), { key: 'd' });
+    expect(document.activeElement).toBe(sec);
+    await fireEvent.keyDown(sec, { key: 'Enter' });
+    await waitFor(() => expect(calls.some(([c, a]) => c === 'artifact_open' && a.artifact === 1)).toBe(true));
+    await fireEvent.keyDown(sec, { key: ' ' });
+    await tick();
+    expect(container.querySelector('[aria-label="Preview"]').textContent).toContain(
+      'welcome-1.png · 214 KB · integration branch',
+    );
+    await fireEvent.keyDown(sec, { key: 'ArrowRight' });
+    await tick();
+    expect(container.querySelector('[aria-label="Preview"]').textContent).toContain('SVG shown as an image');
+    await fireEvent.keyDown(sec, { key: 'Escape' });
+    await tick();
+    expect(container.querySelector('[aria-label="Preview"]')).toBeNull();
+    // l l l to the Penpot link, x asks ui to export it.
+    for (let i = 0; i < 3; i++) await fireEvent.keyDown(sec, { key: 'l' });
+    await fireEvent.keyDown(sec, { key: 'x' });
+    await waitFor(() =>
+      expect(
+        calls.some(([c, a]) => c === 'message_send' && a.to === 'ui' && /export "Onboarding \/ Welcome"/.test(a.body)),
+      ).toBe(true),
+    );
+  });
+
+  const role = (id, name, over = {}) => ({
+    id,
+    name,
+    scope: { kind: 'global' },
+    color: null,
+    model: 'opus',
+    effort: null,
+    tools: { edit: true, bash: true, web: false },
+    subagents_allowed: false,
+    permission_profile: 'autonomous',
+    budget_priority: 'normal',
+    prompt: '',
+    version: 1,
+    mcp_refs: [],
+    strict_mcp: true,
+    downgrade: null,
+    issues: [],
+    ...over,
+  });
+  const canvasTeam = {
+    id: 'full-stack',
+    name: 'Full-stack',
+    scope: { kind: 'global' },
+    version: 3,
+    nodes: [
+      { id: 'lead', role_id: 'lead', overrides: {}, position: [0, 0], max_concurrency: 1, is_lead: true },
+      { id: 'ui', role_id: 'ui', overrides: {}, position: [0, 200], max_concurrency: 1, is_lead: false },
+    ],
+    edges: [{ from: 'ui', to: 'lead', kind: 'reports-to' }],
+  };
+
+  function canvasReplies(roles) {
+    replies.teams_view = () => ({
+      teams: [
+        {
+          team: canvasTeam,
+          issues: [],
+          warnings: [],
+          rules: [],
+          preset: true,
+          starter: 'full-stack',
+          update_available: true,
+        },
+        {
+          team: { ...canvasTeam, id: 'mine', name: 'Mine', version: 1 },
+          issues: [],
+          rules: [],
+          preset: false,
+          starter: null,
+          update_available: false,
+        },
+      ],
+      roles,
+    });
+    replies.mcp_registry_view = {
+      servers: [
+        server('penpot', { name: 'Penpot', kind: 'connector', design_tool: 'penpot', status: 'unknown' }),
+        server('figma', { name: 'Figma', kind: 'http', status: 'needs_auth' }),
+      ],
+      project_overrides: {},
+    };
+    // The core keeps what was saved (the next teams_view shows it).
+    replies.role_save = (a) => {
+      roles.splice(
+        roles.findIndex((r) => r.id === a.role.id),
+        1,
+        a.role,
+      );
+      return a.role;
+    };
+  }
+
+  it('role inspector: MCP picker with statuses, connector + strict warning, downgrade field', async () => {
+    const ui = role('ui', 'UI', { mcp_refs: ['penpot', 'gone'] });
+    canvasReplies([role('lead', 'Lead'), ui]);
+    app.panes.c1 = { type: 'canvas', teamId: 'full-stack', title: 'Team' };
+    const { container, getByText } = render(TeamCanvasPane, { paneId: 'c1' });
+    await waitFor(() => getByText('Lead', { selector: '.muted', exact: false }));
+    const pane = container.querySelector('.canvas-pane');
+    await fireEvent.keyDown(pane, { key: 'j' }); // lead → ui
+    await waitFor(() => getByText(/is a claude.ai connector, so this role can't use strict MCP/));
+    const insp = container.querySelector('[aria-label="Role inspector"]');
+    expect(insp.textContent).toContain('Not seen yet');
+    expect(insp.textContent).toContain('Needs auth');
+    expect(insp.textContent).toContain('connector · needs your claude.ai login');
+    expect(insp.textContent).toContain('gone is not in the MCP registry.');
+    // Tick Figma: saved by registry order.
+    const figma = [...insp.querySelectorAll('.srv')]
+      .find((l) => l.textContent.includes('Figma'))
+      .querySelector('input');
+    await fireEvent.click(figma);
+    await waitFor(() =>
+      expect(
+        calls.some(
+          ([c, a]) => c === 'role_save' && a.role.id === 'ui' && a.role.mcp_refs.join() === 'penpot,figma,gone',
+        ),
+      ).toBe(true),
+    );
+    // Downgrade on: opus → sonnet when Red, saved; picking opus (the role's own) is refused.
+    const dg = [...insp.querySelectorAll('input[type=checkbox]')].find((i) =>
+      i.parentElement.textContent.includes('cheaper model'),
+    );
+    await fireEvent.click(dg);
+    await waitFor(() =>
+      expect(
+        calls.some(
+          ([c, a]) => c === 'role_save' && a.role.downgrade?.to === 'sonnet' && a.role.downgrade.when === 'red',
+        ),
+      ).toBe(true),
+    );
+    expect(insp.textContent).toContain('Switches at the next task, never mid-task.');
+    const to = /** @type {HTMLSelectElement} */ (insp.querySelector('select[aria-label="Downgrade to"]'));
+    const n = calls.length;
+    to.value = 'opus';
+    await fireEvent.change(to);
+    expect(insp.textContent).toContain("Pick a model other than the role's (opus).");
+    expect(calls.slice(n).some(([c]) => c === 'role_save')).toBe(false);
+    expect(insp.textContent).toContain('opus window in Red');
+  });
+
+  it('role inspector: a downgrade on the lead warns', async () => {
+    canvasReplies([role('lead', 'Lead', { downgrade: { to: 'sonnet', when: 'amber' } }), role('ui', 'UI')]);
+    app.panes.c1 = { type: 'canvas', teamId: 'full-stack', title: 'Team' };
+    const { getByText } = render(TeamCanvasPane, { paneId: 'c1' });
+    await waitFor(() => getByText(/This role is the team's lead. A downgraded lead plans and reviews/));
+    expect(getByText("No MCP servers. The role only has Claude Code's built-in tools.")).toBeTruthy();
+  });
+
+  it('presets: the library marks starters and updates, D 2 duplicates into the project, Launch opens the dialog', async () => {
+    canvasReplies([role('lead', 'Lead'), role('ui', 'UI')]);
+    replies.team_duplicate = (a) => ({
+      team: { ...canvasTeam, id: 'full-stack-copy', name: 'Full-stack (copy)', scope: a.to },
+      roles_copied: [],
+    });
+    replies.team_set_preset = (a) => ({ ...canvasTeam, id: a.team, preset: a.preset });
+    app.panes.c1 = { type: 'canvas', teamId: 'full-stack', projectId: 'shop-api', title: 'Team' };
+    const { container, getByText } = render(TeamCanvasPane, { paneId: 'c1' });
+    await waitFor(() => getByText('Lead', { selector: '.muted', exact: false }));
+    const pane = container.querySelector('.canvas-pane');
+    await fireEvent.keyDown(pane, { key: 'Escape' }); // nothing selected: D is about the team
+    await fireEvent.keyDown(pane, { key: 'D', shiftKey: true });
+    await tick();
+    expect(container.querySelector('[aria-label="Duplicate"]').textContent).toContain('to shop-api');
+    await fireEvent.keyDown(pane, { key: '2' });
+    await waitFor(() =>
+      expect(
+        calls.some(
+          ([c, a]) =>
+            c === 'team_duplicate' && a.team === 'full-stack' && a.to.kind === 'project' && a.to.id === 'shop-api',
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() => expect(app.toasts.at(-1)?.text).toBe('Duplicated Full-stack to shop-api'));
+    await fireEvent.keyDown(pane, { key: 'R', shiftKey: true });
+    await tick();
+    const lib = container.querySelector('[aria-label="Library"]');
+    expect(lib.textContent).toContain('Starter');
+    expect(lib.textContent).toContain('Update available');
+    expect(lib.textContent).toContain("Your copy was edited, so it wasn't updated.");
+    await fireEvent.click(getByText('Save as preset'));
+    await waitFor(() =>
+      expect(calls.some(([c, a]) => c === 'team_set_preset' && a.team === 'mine' && a.preset)).toBe(true),
+    );
+    await fireEvent.click(lib.querySelectorAll('.pacts .link')[0]);
+    expect(app.overlay).toEqual({ kind: 'launch', teamId: 'full-stack', projectId: 'shop-api' });
+    app.overlay = null;
   });
 });
