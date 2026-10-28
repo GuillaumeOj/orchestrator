@@ -7,8 +7,9 @@
   import { untrack } from 'svelte';
   import { activeAgents, agent, app, contextProject, deleteAgent, deleteFeature, features, openAgent, openFeature, openProject, openSettings, projects, refresh, toast } from '../lib/app.svelte.js';
   import { connStatus, designTools, effectiveServers, nodeList } from '../lib/ecosystem.js';
-  import { expandHome, shortPath } from '../lib/format.js';
+  import { clock, expandHome, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
   import { runFinished, slugify } from '../lib/teams.js';
   import Kbd from './Kbd.svelte';
@@ -28,7 +29,8 @@
   let roles = $state([]);
   let roleId = $state('');
   // Launch on feature
-  let launch = $state({ project_id: '', team_id: '', existing: '', slug: '', title: '', brief: '', base: '' });
+  let launch = $state({ project_id: '', team_id: '', existing: '', slug: '', title: '', brief: '', base: '', off_hours: false });
+  let offHours = $state(null); // planner_view.off_hours: the next window for "Run off-hours"
   let teamsView = $state(null);
   let registry = $state([]); // MCP servers the project sees (the Design tools line)
   /** The teams seen from `project_id` (its own and the global ones). A team
@@ -59,7 +61,10 @@
     if (ov?.kind !== 'launch') return;
     untrack(() => {
       const project_id = ov.projectId ?? contextProject()?.id ?? '';
-      launch = { project_id, team_id: ov.teamId ?? '', existing: '', slug: '', title: '', brief: '', base: '' };
+      launch = { project_id, team_id: ov.teamId ?? '', existing: '', slug: '', title: '', brief: '', base: '', off_hours: false };
+      invoke('planner_view')
+        .then((pv) => (offHours = pv.off_hours ?? null))
+        .catch(() => (offHours = null));
       loadTeams(project_id);
     });
   });
@@ -74,7 +79,7 @@
     error = null;
     try {
       const run = await invoke('team_launch', {
-        form: { project_id: launch.project_id, team_id: launch.team_id, slug: launchSlug, title: launch.title, brief: launch.brief, base: launch.base || null },
+        form: { project_id: launch.project_id, team_id: launch.team_id, slug: launchSlug, title: launch.title, brief: launch.brief, base: launch.base || null, off_hours: launch.off_hours || undefined },
       });
       close();
       await refresh();
@@ -306,6 +311,7 @@
         <span>• The lead drafts spec.md (and ux-brief.md, api-contract.md) in <span class="mono">.orchestrator/features/{launchSlug || '…'}/</span>, then asks for the Spec gate.</span>
         <span>• Specialists start after the gate, as the Governor and the live-agent cap allow.</span>
       </div>
+      <label class="offh" title={offHoursAllowed(offHours) ? '' : OFF_DISABLED}><input type="checkbox" bind:checked={launch.off_hours} disabled={!offHoursAllowed(offHours)} /> Run off-hours{nextOffHours(offHours) ? ` (starts ${clock(nextOffHours(offHours))})` : ''}</label>
       {#each launchTools as d (d.server.id)}
         {@const st = connStatus(d.server.status, d.server.kind === 'connector')}
         {#if d.server.status === 'needs_auth'}
@@ -467,6 +473,12 @@
     padding: var(--space-sm);
     background: var(--color-surface-raised);
     border-radius: var(--radius-sm);
+  }
+  .offh {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-xs);
   }
   .tools.warn {
     border-left: var(--border-width-focus) solid var(--color-status-waiting-for-you);

@@ -191,6 +191,12 @@
 
   async function saveRole(patch) {
     if (!role) return;
+    // A starter role is a template too: ask where to save a copy (§5.8).
+    if (role.origin && role.scope?.kind !== 'project') {
+      mode = { kind: 'starter', role: $state.snapshot(role), node: node?.id, rolePatch: patch };
+      root?.focus();
+      return;
+    }
     try {
       await invoke('role_save', { role: { ...$state.snapshot(role), ...patch } });
       await load();
@@ -241,15 +247,31 @@
 
   /** The starter edit, applied to a copy in `to` ('project' | 'global'). */
   async function copyStarter(to) {
-    const next = mode?.kind === 'starter' ? mode.next : null;
+    const m = mode?.kind === 'starter' ? mode : null;
+    const next = m?.next ?? null;
     mode = null;
     const target = to === 'project' && project ? { kind: 'project', id: project } : { kind: 'global' };
+    const where = target.kind === 'project' ? projectName : 'global';
+    if (m?.rolePatch) return copyStarterRole(m, target, where);
     try {
       const r = await invoke('team_duplicate', { team: team.id, from: scopeOf(team), to: target, newId: null });
       await load();
       open(view.teams.find((x) => x.team.id === r.team.id) ?? { team: r.team, issues: [], rules: [] });
       if (next) edit({ ...next, id: r.team.id, name: r.team.name, scope: r.team.scope, version: r.team.version });
       toast(`Saved your changes as ${r.team.name} in ${target.kind === 'project' ? projectName : 'global'}`);
+    } catch (e) {
+      toast(`Copy: ${errText(e)}`, { kind: 'error' });
+    }
+  }
+
+  /** A starter role's edit, saved on a copy that the node then uses. */
+  async function copyStarterRole(m, target, where) {
+    try {
+      const copy = await invoke('role_duplicate', { role: m.role.id, from: m.role.scope ?? { kind: 'global' }, to: target, newId: null });
+      await invoke('role_save', { role: { ...copy, ...m.rolePatch } });
+      await load();
+      toast(`Saved your changes as role ${copy.id} in ${where}`);
+      if (m.node) edit(C.updateNode(team, m.node, { role_id: copy.id }));
     } catch (e) {
       toast(`Copy: ${errText(e)}`, { kind: 'error' });
     }
@@ -583,10 +605,10 @@
         </div>
       {:else if mode?.kind === 'starter'}
         <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Starter">
-          <b>{team?.name} is a starter</b>
-          <span>Starters are templates. Your changes will be saved as a copy{project ? ` in ${projectName}` : ' in global'}.</span>
-          {#if project}<button class="opt" onclick={() => copyStarter('project')}><Kbd keys="⏎" /> copy in {projectName}</button>{/if}
-          <button class="opt" onclick={() => copyStarter('global')}><Kbd keys={project ? 'g' : '⏎'} /> copy in global</button>
+          <b>Starter · read-only</b>
+          <span>{mode.rolePatch ? `Role ${mode.role.name}` : team?.name} is a starter. Starters are templates. Your changes will be saved as a copy.</span>
+          {#if project}<button class="opt" onclick={() => copyStarter('project')}><Kbd keys="⏎" /> Save in {projectName}</button>{/if}
+          <button class="opt" onclick={() => copyStarter('global')}><Kbd keys={project ? 'g' : '⏎'} /> Global</button>
           <span class="muted">esc cancel (the starter is left as it is)</span>
         </div>
       {:else if mode?.kind === 'dup'}

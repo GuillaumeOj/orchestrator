@@ -2,6 +2,7 @@
 // tiling workspace, focus, overlays and the command registry. Terminal objects
 // (xterm.js) live outside the reactive state, in `terms`.
 
+import { clock as clockOf } from './format.js';
 import { due, toastFor, UNDO_MS } from './inbox.js';
 import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
@@ -121,6 +122,7 @@ function title(spec) {
           planner: 'Week planner',
           setup: 'Set up Orchestrator',
           settings: 'Settings',
+          report: 'Weekly report',
         }[spec.type] ?? spec.type
       );
   }
@@ -279,6 +281,16 @@ export function openSettings(section = null, server = null, projectId = null) {
   addPane({ type: 'settings', section: section ?? 'integrations', server, projectId }, app.layout ? 'tab' : 'right');
 }
 
+/** FR-818: the weekly report ('current' = this week so far), one pane. */
+export function openReport(reportId = 'current') {
+  const existing = findPane((s) => s.type === 'report');
+  if (existing) {
+    app.panes[existing] = { ...app.panes[existing], reportId };
+    return focusPane(existing);
+  }
+  addPane({ type: 'report', reportId }, app.layout ? 'tab' : 'right');
+}
+
 /** A link in the browser (the core runs `open`; only http(s)). */
 export async function openUrl(url) {
   try {
@@ -297,6 +309,7 @@ export function routeOpen(r, projectId = null) {
   if (r.open === 'settings') openSettings('mcp', r.server ?? null, projectId);
   else if (r.open === 'pane' && r.run) runInPane(r.run, `${r.run}${r.server ? ` · ${r.server}` : ''}`, projectId);
   else if (r.open === 'url' && r.url) openUrl(r.url);
+  else if (r.open === 'report') openReport(r.report ?? 'current');
   else return false;
   return true;
 }
@@ -582,6 +595,20 @@ export function runNow(a, notStarted) {
   );
 }
 
+/** FR-816: a queued turn to the next off-hours window, or back (D4: you scheduled it). */
+export async function runOffHours(a) {
+  const off = a.queue_entry?.reason?.kind !== 'scheduled_off_hours';
+  try {
+    const r = await invoke('queue_off_hours', { entry: a.queue_entry.id, off });
+    toast(
+      off ? `${a.id} runs off-hours · starts ${clockOf(Date.parse(r.starts_at))}` : `${a.id} runs in working hours`,
+    );
+    await refresh();
+  } catch (e) {
+    toast(errText(e), { kind: 'error' });
+  }
+}
+
 /** Drop a queued turn (its message is not delivered). */
 export function cancelQueued(a) {
   confirm(
@@ -760,6 +787,8 @@ export function commands() {
         ]
       : []),
     { id: 'plan.edit', label: 'Edit the weekly plan…', run: () => (app.overlay = { kind: 'plan' }) },
+    { id: 'report.current', label: 'Weekly report (this week so far)', run: () => openReport('current') },
+    { id: 'report.list', label: 'Past weekly reports', run: () => openReport('current') },
     { id: 'team.canvas', label: 'Open the Team canvas', run: () => openCanvas() },
     {
       id: 'team.launch',
@@ -832,6 +861,14 @@ export function commands() {
         run: () => openDiff(a.project_id, a.worktree, a.branch),
       },
       { id: 'agent.kitty', label: `Open ${a.id}'s worktree in kitty`, run: () => openInKitty(a.worktree) },
+      a.queue_entry && {
+        id: 'agent.off-hours',
+        label:
+          a.queue_entry.reason?.kind === 'scheduled_off_hours'
+            ? `Run ${a.id} in working hours`
+            : `Run ${a.id} off-hours`,
+        run: () => runOffHours(a),
+      },
     ].filter(Boolean);
     for (const c of agentCmds) c.scope = 'agent';
     list.unshift(...agentCmds);

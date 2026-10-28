@@ -39,11 +39,17 @@ export function afterRemoval(items, removedId) {
 /** An MCP server that needs sign-in (FR-604): a Reconnect, Open Settings, Dismiss item (D3). */
 export const mcpAlert = (item) => item?.kind === 'alert' && item.payload?.alert === 'mcp_needs_auth';
 
+/** Weekly report digest, Notion comment, Linear sync note: `o` goes through the core. */
+export const coreOpens = (item) =>
+  item?.payload?.digest === 'weekly_report' || item?.payload?.source === 'notion' || item?.payload?.source === 'linear';
+
 /** What a key does on the selected item (null: not handled). */
 export function keyIntent(key, item) {
   // a Reconnect and o Open Settings go to the core at once (no undo: nothing is decided).
   if (mcpAlert(item) && (key === 'a' || key === 'o'))
     return { kind: 'alert', action: key === 'a' ? 'reconnect' : 'open' };
+  // P3 items whose `o` the core answers with where to go (a report, a page, a task).
+  if (key === 'o' && item?.actions?.includes('o') && coreOpens(item)) return { kind: 'alert', action: 'open' };
   switch (key) {
     case 'j':
     case 'arrowdown':

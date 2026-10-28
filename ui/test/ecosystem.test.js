@@ -827,7 +827,7 @@ describe('role inspector, Design section and presets (T-7)', () => {
     await fireEvent.keyDown(pane, { key: '=' }); // auto-layout: an edit
     await tick();
     expect(container.querySelector('[aria-label="Starter"]').textContent).toContain(
-      'Starters are templates. Your changes will be saved as a copy in shop-api.',
+      'Starters are templates. Your changes will be saved as a copy.',
     );
     expect(calls.some(([c]) => c === 'team_save')).toBe(false);
     await fireEvent.keyDown(pane, { key: 'Enter' });

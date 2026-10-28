@@ -4,6 +4,7 @@
   // refer to the agents. Bars: fill = agents used, 2 px tick = plan.
   import { app, openSingleton } from '../lib/app.svelte.js';
   import { clock, pct, signed, when } from '../lib/format.js';
+  import { hotWindows } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
   import Kbd from './Kbd.svelte';
   import PressurePill from './PressurePill.svelte';
@@ -14,6 +15,8 @@
   const est = $derived(s?.provenance === 'estimated' ? '≈' : '');
   const p = $derived(PRESSURE[s?.state] ?? PRESSURE.green);
   const five = $derived(u?.five_hour?.used_pct ?? s?.five_hour);
+  // FR-815: a model window shows here only when it holds work (Red or exhausted).
+  const hot = $derived(hotWindows(s?.model_windows));
 </script>
 
 {#if s}
@@ -29,6 +32,7 @@
     <span class="bar" style:width="24px"><i style:width="{Math.min(100, five ?? 0)}%"></i></span>
     <span class="muted">·</span>
     <span class="muted">resets {clock(u.reset_at_ms, 0)}</span>
+    {#each hot as w (w.name)}<span class="hot">· {w.family} {Math.round(w.used_pct)} %</span>{/each}
   </button>
   {#if open}
     <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
@@ -52,6 +56,10 @@
 {/if}
 
 <style>
+
+  .hot {
+    color: var(--color-pacing-red);
+  }
   .ind {
     display: inline-flex;
     align-items: center;
