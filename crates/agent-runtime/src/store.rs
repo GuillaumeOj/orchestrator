@@ -52,6 +52,10 @@ pub struct AgentRecord {
     /// start a fresh session ([`crate::runtime::Runtime::restart_fresh`]).
     #[serde(default)]
     pub resume_failed: bool,
+    /// Its next spawn starts its (already rotated) session as new, through
+    /// the delivery loop like any resume (FR-415 from the lead, FR-411).
+    #[serde(default)]
+    pub start_fresh: bool,
 }
 
 /// Where a team agent sits: its run, its node and its current task.
@@ -88,6 +92,7 @@ impl AgentRecord {
         self.pgid = Some(pgid);
         self.spawns += 1;
         self.flag = None;
+        self.start_fresh = false;
         self.trust_dialog = false;
         self.tracker.state = crate::state::AgentState::Starting;
         self.tracker.stop_intent = crate::state::StopIntent::None;

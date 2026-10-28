@@ -189,8 +189,46 @@ impl Runtime {
         if self.live(id).is_some() {
             self.suspend(id)?;
         }
+        let new = self.prepare_fresh(id, rec, why, by)?;
+        self.spawn(id, Some(SessionMode::New(new.clone())))?;
+        Ok(new)
+    }
+
+    /// The lead's `resume_agent` after a failed start: the same fresh session,
+    /// started by the delivery loop once a turn is admitted, so Pause all,
+    /// the plan limits and the memory cap hold it like any resume (FR-411).
+    pub fn queue_fresh_restart(&self, id: &str, why: &str) -> Result<String> {
+        let Some(rec) = self.store.read(|s| s.agents.get(id).cloned()) else { bail!("no agent {id}") };
+        if rec.tracker.state == AgentState::Archived {
+            bail!("agent {id} is deleted");
+        }
+        if self.live(id).is_some() {
+            bail!("agent {id} is running");
+        }
+        let new = self.prepare_fresh(id, &rec, why, "core")?;
+        self.store.write(|s| {
+            if let Some(a) = s.agents.get_mut(id) {
+                a.start_fresh = true;
+                a.flag = None;
+            }
+        })?;
+        if !self.store.read(|s| s.turns.iter().any(|t| t.agent_id == id && t.status == TurnStatus::Queued)) {
+            self.deliver_kind(
+                id,
+                "ORCH: your lead restarted you as a fresh session. Carry on with your task, or report where you are.",
+                TurnKind::Continue,
+            )?;
+        }
+        Ok(new)
+    }
+
+    /// The shared part of a fresh restart: a new session, the unstarted turns
+    /// queued again (their messages un-delivered), the `startup` item closed
+    /// by `by`, and the brief once. The new session id.
+    fn prepare_fresh(&self, id: &str, rec: &AgentRecord, why: &str, by: &str) -> Result<String> {
         let brief = self.brief_turn(rec);
-        let (old, new, had_brief) = self.fresh_session(id, brief.as_deref())?;
+        let (old, new, had_brief, msgs) = self.fresh_session(id, brief.as_deref())?;
+        self.undeliver(Ok(msgs));
         if let Some(item) = self.startup_item(id)
             && let Some(i) = self.close_item(item, InboxStatus::Decided, "restart_fresh", by)
         {
@@ -201,21 +239,21 @@ impl Runtime {
             self.deliver_kind(id, &brief, TurnKind::Task)?;
         }
         self.event(id, "restarted_fresh", json!({"old_session": old, "new_session": new, "why": why}));
-        self.spawn(id, Some(SessionMode::New(new.clone())))?;
         Ok(new)
     }
 
     /// The store side of [`Runtime::restart_fresh`]: a new session id, the
     /// unstarted turns (pasted, or started in the lost session) queued again.
-    /// Returns `(old, new, a queued turn is the brief)`; the flag set by the
-    /// caller stays until the spawn.
-    pub(crate) fn fresh_session(&self, id: &str, brief: Option<&str>) -> Result<(String, String, bool)> {
+    /// Returns `(old, new, a queued turn is the brief, the re-queued turns'
+    /// messages)`; the flag set by the caller stays until the spawn.
+    pub(crate) fn fresh_session(&self, id: &str, brief: Option<&str>) -> Result<(String, String, bool, Vec<u64>)> {
         let new = uuid::Uuid::new_v4().to_string();
         self.store.write(|s| {
-            let mut had_brief = false;
+            let (mut had_brief, mut msgs) = (false, vec![]);
             for t in s.turns.iter_mut().filter(|t| t.agent_id == id) {
                 if matches!(t.status, TurnStatus::Delivering | TurnStatus::Delivered) {
                     t.requeue();
+                    msgs.extend(&t.messages);
                 }
                 had_brief |= t.status == TurnStatus::Queued && !t.command && brief == Some(t.body.as_str());
             }
@@ -226,7 +264,7 @@ impl Runtime {
             if a.tracker.state == AgentState::Error {
                 a.tracker.state = AgentState::Suspended;
             }
-            (old, new.clone(), had_brief)
+            (old, new.clone(), had_brief, msgs)
         })
     }
 
@@ -266,7 +304,7 @@ mod tests {
                 a.tracker.state = AgentState::Error;
             })
             .unwrap();
-        let (old, new, had_brief) = rt.fresh_session("a1", Some("x")).unwrap();
+        let (old, new, had_brief, _) = rt.fresh_session("a1", Some("x")).unwrap();
         assert_eq!(old, "s");
         assert_ne!(new, old);
         assert!(had_brief, "the brief is re-queued, not rebuilt");
@@ -277,6 +315,33 @@ mod tests {
         assert_eq!((a.session_id, a.resume_failed, a.tracker.state), (new, false, AgentState::Suspended));
         // No turn is the brief: the caller rebuilds it (once).
         assert!(!rt.fresh_session("a1", Some("another brief")).unwrap().2);
+    }
+
+    /// FR-411: the lead's fresh restart is queued, not spawned: under Pause
+    /// all it waits in the Governor's queue like any resume.
+    #[test]
+    fn a_lead_fresh_restart_waits_for_admission() {
+        let (_d, rt) = test_runtime(false);
+        rt.store
+            .write(|s| {
+                let a = s.agents.get_mut("a1").unwrap();
+                a.resume_failed = true;
+                a.tracker.state = AgentState::Error;
+            })
+            .unwrap();
+        rt.pause_all();
+        let new = rt.queue_fresh_restart("a1", "test").unwrap();
+        let a = rt.store.read(|s| s.agents["a1"].clone());
+        assert_eq!((a.session_id.as_str(), a.start_fresh, a.resume_failed), (new.as_str(), true, false));
+        assert_eq!(a.tracker.state, AgentState::Suspended);
+        let t = rt.store.read(|s| s.turns.last().cloned().unwrap());
+        assert_eq!((t.status, t.kind), (TurnStatus::Queued, TurnKind::Continue));
+        rt.pump();
+        assert!(rt.live("a1").is_none(), "not spawned past Pause all");
+        let t = rt.store.read(|s| s.turns.last().cloned().unwrap());
+        assert!(matches!(t.admission, Admission::Waiting(_)), "{:?}", t.admission);
+        assert!(rt.store.read(|s| s.agents["a1"].flag.is_none()));
+        assert!(rt.queue_fresh_restart("ghost", "x").is_err());
     }
 
     #[test]

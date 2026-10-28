@@ -462,6 +462,7 @@ impl Runtime {
                 task: None,
             }),
             resume_failed: false,
+            start_fresh: false,
         };
         self.store.write(|s| s.agents.insert(id.clone(), rec.clone()))?;
         // Bind the worktree row to its agent.

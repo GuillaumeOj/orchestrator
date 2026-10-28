@@ -784,6 +784,7 @@ impl Runtime {
             trust_dialog: false,
             team: None,
             resume_failed: false,
+            start_fresh: false,
         };
         self.store.write(|s| s.agents.insert(rec.id.clone(), rec.clone()))?;
         // Every agent belongs to a registered project (J1); starting one marks it active (FR-103).
@@ -2109,7 +2110,9 @@ impl Runtime {
                     })?;
                     return Ok(());
                 }
-                if let Err(e) = self.spawn(&rec.id, never_started.then(|| SessionMode::New(rec.session_id.clone()))) {
+                // A first start, or a fresh session queued by the lead (FR-415).
+                let new = never_started || rec.start_fresh;
+                if let Err(e) = self.spawn(&rec.id, new.then(|| SessionMode::New(rec.session_id.clone()))) {
                     // Flag it so the next pump doesn't retry every 200 ms.
                     let msg = format!("{}: could not resume: {e:#}", rec.id);
                     self.store.write(|s| {
@@ -2609,6 +2612,7 @@ pub(crate) mod tests {
             trust_dialog: false,
             team: None,
             resume_failed: false,
+            start_fresh: false,
         }
     }
 

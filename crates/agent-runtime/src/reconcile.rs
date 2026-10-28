@@ -478,6 +478,7 @@ mod tests {
             trust_dialog: false,
             team: None,
             resume_failed: false,
+            start_fresh: false,
         }
     }
 
