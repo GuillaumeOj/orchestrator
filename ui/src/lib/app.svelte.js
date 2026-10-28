@@ -115,9 +115,13 @@ function title(spec) {
             .pop()
         }`;
       return (
-        { overview: 'All projects', inbox: 'Inbox', planner: 'Week planner', setup: 'Set up Orchestrator' }[
-          spec.type
-        ] ?? spec.type
+        {
+          overview: 'All projects',
+          inbox: 'Inbox',
+          planner: 'Week planner',
+          setup: 'Set up Orchestrator',
+          settings: 'Settings',
+        }[spec.type] ?? spec.type
       );
   }
 }
@@ -260,6 +264,32 @@ export function openSingleton(type) {
   const existing = findPane((s) => s.type === type);
   if (existing) return focusPane(existing);
   addPane({ type }, app.layout ? 'tab' : 'right');
+}
+
+/**
+ * P3: Settings (⌘,), one pane, opened straight to a section ('integrations' |
+ * 'mcp' | …) with a server selected (banners, Inbox items, the inspector).
+ */
+export function openSettings(section = null, server = null) {
+  const existing = findPane((s) => s.type === 'settings');
+  if (existing) {
+    if (section) app.panes[existing] = { ...app.panes[existing], section, server };
+    return focusPane(existing);
+  }
+  addPane({ type: 'settings', section: section ?? 'integrations', server }, app.layout ? 'tab' : 'right');
+}
+
+/** A command in a shell pane (gh auth login, claude /mcp); the user exits it. */
+export async function runInPane(run, title, projectId = null) {
+  const p = projects().find((x) => x.id === projectId);
+  try {
+    const t = await invoke('term_spawn', {
+      req: { kind: 'shell', project_id: p?.id ?? null, agent_id: null, cwd: p?.path ?? null, run, rows: 30, cols: 100 },
+    });
+    addPane({ type: 'shell', termId: t.id, cwd: t.cwd, projectId: p?.id, title }, 'right');
+  } catch (e) {
+    toast(`Could not run ${run}: ${errText(e)}`, { kind: 'error' });
+  }
 }
 
 /** A project's pane (§4.1): git state, worktrees, PRs, removal (J11). */
@@ -685,6 +715,9 @@ export function commands() {
     { id: 'inbox', label: 'Open Inbox', run: () => openSingleton('inbox') },
     { id: 'planner', label: 'Open Week planner', run: () => openSingleton('planner') },
     { id: 'setup', label: 'Set up Orchestrator (first run)…', run: () => openSingleton('setup') },
+    { id: 'settings', label: 'Settings', run: () => openSettings() },
+    { id: 'settings.integrations', label: 'Settings: Integrations', run: () => openSettings('integrations') },
+    { id: 'settings.mcp', label: 'Settings: MCP servers', run: () => openSettings('mcp') },
     { id: 'plan.edit', label: 'Edit the weekly plan…', run: () => (app.overlay = { kind: 'plan' }) },
     { id: 'team.canvas', label: 'Open the Team canvas', run: () => openCanvas() },
     {
