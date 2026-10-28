@@ -2,12 +2,14 @@
   // Team canvas (FR-301–308, Penpot 04 Team canvas · 1512): the builder, the
   // role inspector and the Rules panel. Mouse optional (§9.1): n add, hjkl /
   // arrows select, ⇧+hjkl move, c connect (target number, then edge type 1–4),
-  // ⏎ inspect, x delete, = auto-layout, u undo, ⌃r redo, ⇧R library (roles and teams), ⌘⏎ launch.
+  // ⏎ inspect, x delete, = auto-layout, u undo, ⌃r redo, ⇧R library (roles and teams), ⌘⏎ launch,
+  // D duplicate the selected role (the team when none), then 1 global / 2 project (FR-306).
   // Every edit saves (debounced); the core validates and versions the team.
   import { onMount } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
   import Kbd from '../components/Kbd.svelte';
-  import { app, saveLayout, toast } from '../lib/app.svelte.js';
+  import RoleMcp from '../components/RoleMcp.svelte';
+  import { app, projects, saveLayout, toast } from '../lib/app.svelte.js';
   import * as C from '../lib/canvas.js';
   import { errText, invoke } from '../lib/ipc.js';
 
@@ -21,6 +23,7 @@
   let mode = $state(null); // null | { kind: 'connect', from, to? } | { kind: 'add' } | { kind: 'library' } | { kind: 'import', text }
   let status = $state('saved'); // saved | saving | unsaved | error
   let serverIssues = $state([]);
+  let registry = $state(null); // MCP servers this scope sees (FR-601)
   let pan = $state({ x: 40, y: 40 });
   let zoom = $state(1);
   let root;
@@ -38,6 +41,16 @@
   const lines = $derived(status === 'saved' ? (saved?.rules ?? []) : []);
   const targets = $derived(mode?.kind === 'connect' && team ? C.targets(team, mode.from) : []);
   const project = $derived(spec?.projectId ?? null);
+
+  async function loadRegistry() {
+    try {
+      const r = await invoke('mcp_registry_view', { project });
+      const over = r.project_overrides ?? {};
+      registry = [...r.servers.map((s) => over[s.id] ?? s), ...Object.values(over).filter((o) => !r.servers.some((s) => s.id === o.id))];
+    } catch {
+      registry = [];
+    }
+  }
 
   async function load() {
     try {
@@ -68,9 +81,14 @@
     mode = null;
   }
 
-  /** One edit: recorded for undo, then saved. */
+  /** One edit: recorded for undo, then saved. A starter is a template: the
+   *  first edit asks where to save a copy instead (p3-design-notes §5.8). */
   function edit(next) {
     if (!next || next === team) return;
+    if (saved?.starter && status === 'saved') {
+      mode = { kind: 'starter', next };
+      return;
+    }
     history.push($state.snapshot(team));
     team = next;
     scheduleSave();
@@ -173,12 +191,108 @@
 
   async function saveRole(patch) {
     if (!role) return;
+    // A starter role is a template too: ask where to save a copy (§5.8).
+    if (role.origin && role.scope?.kind !== 'project') {
+      mode = { kind: 'starter', role: $state.snapshot(role), node: node?.id, rolePatch: patch };
+      root?.focus();
+      return;
+    }
     try {
       await invoke('role_save', { role: { ...$state.snapshot(role), ...patch } });
       await load();
     } catch (e) {
       toast(`Role: ${errText(e)}`, { kind: 'error' });
     }
+  }
+
+  // ---- presets (FR-306): duplicate a team or role, save as preset, launch
+  const scopeOf = (t) => t?.scope ?? { kind: 'global' };
+  const projectName = $derived(project ? (projects().find((p) => p.id === project)?.name ?? project) : null);
+
+  /** D then 1 (global) or 2 (this project): the selected role, else the team. */
+  async function duplicate(to, what = null) {
+    mode = null;
+    const target = to === 'project' ? (project ? { kind: 'project', id: project } : null) : { kind: 'global' };
+    if (!target) return toast('Open the canvas from a project to duplicate into it');
+    const where = target.kind === 'project' ? projectName : 'global';
+    try {
+      if (what?.kind === 'role' || (!what && role)) {
+        const r = what?.role ?? role;
+        await invoke('role_duplicate', { role: r.id, from: r.scope ?? { kind: 'global' }, to: target, newId: null });
+        toast(`Duplicated role ${r.id} to ${where}`);
+        await load();
+        return;
+      }
+      const t = what?.team ?? team;
+      if (!t) return;
+      const r = await invoke('team_duplicate', { team: t.id, from: scopeOf(t), to: target, newId: null });
+      await load();
+      const v = view.teams.find((x) => x.team.id === r.team.id);
+      if (v) open(v);
+      toast(`Duplicated ${t.name} to ${where}`);
+    } catch (e) {
+      toast(`Duplicate: ${errText(e)}`, { kind: 'error' });
+    }
+  }
+
+  async function setPreset(t, preset) {
+    try {
+      await invoke('team_set_preset', { team: t.id, scope: scopeOf(t), preset });
+      toast(preset ? `Saved ${t.name} as a preset` : `Removed ${t.name} from presets`);
+      await load();
+    } catch (e) {
+      toast(`Preset: ${errText(e)}`, { kind: 'error' });
+    }
+  }
+
+  /** The starter edit, applied to a copy in `to` ('project' | 'global'). */
+  async function copyStarter(to) {
+    const m = mode?.kind === 'starter' ? mode : null;
+    const next = m?.next ?? null;
+    mode = null;
+    const target = to === 'project' && project ? { kind: 'project', id: project } : { kind: 'global' };
+    const where = target.kind === 'project' ? projectName : 'global';
+    if (m?.rolePatch) return copyStarterRole(m, target, where);
+    try {
+      const r = await invoke('team_duplicate', { team: team.id, from: scopeOf(team), to: target, newId: null });
+      await load();
+      open(view.teams.find((x) => x.team.id === r.team.id) ?? { team: r.team, issues: [], rules: [] });
+      if (next) edit({ ...next, id: r.team.id, name: r.team.name, scope: r.team.scope, version: r.team.version });
+      toast(`Saved your changes as ${r.team.name} in ${target.kind === 'project' ? projectName : 'global'}`);
+    } catch (e) {
+      toast(`Copy: ${errText(e)}`, { kind: 'error' });
+    }
+  }
+
+  /** A starter role's edit, saved on a copy that the node then uses. */
+  async function copyStarterRole(m, target, where) {
+    try {
+      const copy = await invoke('role_duplicate', { role: m.role.id, from: m.role.scope ?? { kind: 'global' }, to: target, newId: null });
+      await invoke('role_save', { role: { ...copy, ...m.rolePatch } });
+      await load();
+      toast(`Saved your changes as role ${copy.id} in ${where}`);
+      if (m.node) edit(C.updateNode(team, m.node, { role_id: copy.id }));
+    } catch (e) {
+      toast(`Copy: ${errText(e)}`, { kind: 'error' });
+    }
+  }
+
+  /** "Update available": a fresh copy of the app's starter, to compare with the edited one. */
+  async function getNewStarter(t) {
+    try {
+      const r = await invoke('starter_copy', { starter: t.starter, to: scopeOf(t.team), newId: null });
+      await load();
+      const v = view.teams.find((x) => x.team.id === r.team.id);
+      if (v) open(v);
+      toast(`Copied the new ${t.team.name} starter as ${r.team.id}`);
+    } catch (e) {
+      toast(`New starter: ${errText(e)}`, { kind: 'error' });
+    }
+  }
+
+  function launchPreset(t) {
+    mode = null;
+    app.overlay = { kind: 'launch', teamId: t.id, projectId: project };
   }
 
   /** x: the selected edge, else the selected node (and its edges). */
@@ -225,6 +339,18 @@
       if (d >= 1 && d <= roles.length) return (addRole(roles[d - 1].id), handled());
       return handled();
     }
+    if (mode?.kind === 'starter') {
+      if (k === 'Enter' && project) copyStarter('project');
+      else if (k === 'g' || (k === 'Enter' && !project)) copyStarter('global');
+      else if (k === 'Escape') mode = null;
+      return handled();
+    }
+    if (mode?.kind === 'dup') {
+      if (k === '1') duplicate('global', mode.what);
+      else if (k === '2') duplicate('project', mode.what);
+      else if (k === 'Escape') mode = null;
+      return handled();
+    }
     if (mode?.kind === 'library' && k === 'Escape') return ((mode = null), handled());
     const dirs = { h: 'left', arrowleft: 'left', l: 'right', arrowright: 'right', k: 'up', arrowup: 'up', j: 'down', arrowdown: 'down' };
     const dir = dirs[k.toLowerCase()];
@@ -261,6 +387,9 @@
         return handled();
       case 'R':
         mode = mode?.kind === 'library' ? null : { kind: 'library' };
+        return handled();
+      case 'D':
+        mode = { kind: 'dup', what: role ? { kind: 'role', role } : { kind: 'team', team } };
         return handled();
       case 'Escape':
         sel = null;
@@ -304,8 +433,15 @@
   }
   function up() {
     if (drag?.kind === 'node' && drag.moved) {
-      history.push(drag.before);
-      scheduleSave();
+      if (saved?.starter && status === 'saved') {
+        // A starter's node moved: ask where to copy it, and put the starter back.
+        const next = $state.snapshot(team);
+        team = drag.before;
+        mode = { kind: 'starter', next };
+      } else {
+        history.push(drag.before);
+        scheduleSave();
+      }
     }
     drag = null;
   }
@@ -345,6 +481,7 @@
 
   onMount(() => {
     load();
+    loadRegistry();
     const t = setInterval(() => status === 'saved' && load(), 15000);
     return () => (clearInterval(t), clearTimeout(saveTimer));
   });
@@ -416,7 +553,7 @@
           </svg>
         {/if}
         <div class="hints">
-          <span><Kbd keys="n" /> add</span><span><Kbd keys="c" /> connect</span><span><Kbd keys="⏎" /> inspect</span><span><Kbd keys="=" /> auto-layout</span><span><Kbd keys="x" /> delete</span><span><Kbd keys="u" /> undo</span><span><Kbd keys="⌃+r" /> redo</span>
+          <span><Kbd keys="n" /> add</span><span><Kbd keys="c" /> connect</span><span><Kbd keys="⏎" /> inspect</span><span><Kbd keys="=" /> auto-layout</span><span><Kbd keys="x" /> delete</span><span><Kbd keys="u" /> undo</span><span><Kbd keys="⇧+D" /> duplicate</span><span><Kbd keys="⌃+r" /> redo</span>
         </div>
       {:else}
         <div class="empty">
@@ -448,14 +585,39 @@
           <b>Library</b>
           <div class="presets">
             {#each view?.teams ?? [] as t (t.team.id)}
-              <button class="preset" class:on={team?.id === t.team.id} onclick={() => open(t)}>
-                <span class="pname">{t.team.name}</span>
-                <span class="roles">{#each t.team.nodes as n (n.id)}<AgentChip id={n.id} role={n.role_id} compact />{/each}</span>
-                <span class="muted">v{t.team.version}{t.issues.length ? ` · ${t.issues.length} issue(s)` : ''}</span>
-              </button>
+              <div class="preset" class:on={team?.id === t.team.id}>
+                <button class="popen" onclick={() => open(t)}>
+                  <span class="pname">{t.team.name}{#if t.preset}<span class="tag">{t.starter ? 'Starter · read-only' : 'Preset'}</span>{/if}{#if t.update_available}<span class="tag upd">Update available</span>{/if}</span>
+                  <span class="roles">{#each t.team.nodes as n (n.id)}<AgentChip id={n.id} role={n.role_id} compact />{/each}</span>
+                  <span class="muted">v{t.team.version} · {t.team.scope?.kind === 'project' ? t.team.scope.id : 'global'}{t.issues.length ? ` · ${t.issues.length} issue(s)` : ''}</span>
+                </button>
+                {#if t.update_available}<span class="muted upline">The {t.team.name} starter changed in this version. Your copy was edited, so it wasn't updated. Duplicate the new starter to compare.</span>{/if}
+                <div class="pacts">
+                  {#if t.update_available && t.starter}<button class="link" onclick={() => getNewStarter(t)}>Get the new starter</button>{/if}
+                  <button class="link" onclick={() => launchPreset(t.team)}>Launch</button>
+                  <button class="link" onclick={() => (mode = { kind: 'dup', what: { kind: 'team', team: t.team } })}>Duplicate</button>
+                  {#if !t.starter}<button class="link" onclick={() => setPreset(t.team, !t.preset)}>{t.preset ? 'Remove from presets' : 'Save as preset'}</button>{/if}
+                </div>
+              </div>
             {/each}
           </div>
           <button class="btn ghost" onclick={newTeam}>New team</button>
+        </div>
+      {:else if mode?.kind === 'starter'}
+        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Starter">
+          <b>Starter · read-only</b>
+          <span>{mode.rolePatch ? `Role ${mode.role.name}` : team?.name} is a starter. Starters are templates. Your changes will be saved as a copy.</span>
+          {#if project}<button class="opt" onclick={() => copyStarter('project')}><Kbd keys="⏎" /> Save in {projectName}</button>{/if}
+          <button class="opt" onclick={() => copyStarter('global')}><Kbd keys={project ? 'g' : '⏎'} /> Global</button>
+          <span class="muted">esc cancel (the starter is left as it is)</span>
+        </div>
+      {:else if mode?.kind === 'dup'}
+        {@const w = mode.what}
+        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Duplicate">
+          <b>Duplicate {w?.kind === 'role' ? `role ${w.role.id}` : (w?.team?.name ?? 'team')}</b>
+          <button class="opt" onclick={() => duplicate('global', w)}><Kbd keys="1" /> to global</button>
+          <button class="opt" disabled={!project} onclick={() => duplicate('project', w)}><Kbd keys="2" /> to {projectName ?? 'a project (open the canvas from one)'}</button>
+          <span class="muted">A copy at version 1, as &lt;id&gt;-copy · esc cancel</span>
         </div>
       {:else if mode?.kind === 'import'}
         <div class="menu lib" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Import a team">
@@ -495,6 +657,7 @@
               {#each ['strict', 'gated', 'autonomous'] as v (v)}<option value={v}>{v}</option>{/each}
             </select>
           </label>
+          <RoleMcp {role} servers={registry} isLead={node.is_lead} {project} onsave={saveRole} />
           <label><span>max live</span><input class="field" type="number" min="1" max="9" value={node.max_concurrency} disabled={node.is_lead} onchange={(e) => edit(C.updateNode(team, node.id, { max_concurrency: Math.max(1, Number(e.currentTarget.value) || 1) }))} /></label>
           <label><span>budget</span>
             <select class="field" value={role.budget_priority} onchange={(e) => saveRole({ budget_priority: e.currentTarget.value })}>
@@ -736,7 +899,47 @@
     background: var(--color-surface-selected);
   }
   .pname {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
     font: var(--text-body-strong);
+  }
+  .popen {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-xxs);
+    padding: 0;
+    background: none;
+    border: 0;
+    color: var(--color-text-primary);
+    text-align: left;
+    cursor: pointer;
+  }
+  .tag {
+    padding: 0 var(--space-xs);
+    border: var(--border-width-default) solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-secondary);
+    font: var(--text-caption);
+  }
+  .tag.upd {
+    border-color: var(--color-status-waiting-for-you);
+  }
+  .upline {
+    font: var(--text-caption);
+  }
+  .pacts {
+    display: flex;
+    gap: var(--space-md);
+  }
+  .link {
+    padding: 0;
+    background: none;
+    border: 0;
+    color: var(--color-accent-default);
+    font: var(--text-caption);
+    cursor: pointer;
   }
   .roles {
     display: flex;

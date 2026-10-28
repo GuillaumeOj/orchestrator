@@ -1,7 +1,7 @@
 // Status vocabulary (SPEC §9.5): one label, one icon and one color per state,
 // used everywhere. Icons are Material Design glyphs of FiraCode Nerd Font Mono
 // (docs/design/README.md).
-import { pp, signed } from './format.js';
+import { clock, duration, pp, signed } from './format.js';
 
 export const STATUS = {
   working: { label: 'Working', icon: '\u{F040A}', color: 'var(--color-status-working)' },
@@ -80,7 +80,7 @@ export function roleOf(agentId, role = null, color = null) {
 }
 
 /** Why a queued agent waits, in words (FR-809 copy). */
-export function queueReason(entry) {
+export function queueReason(entry, now = Date.now()) {
   const r = entry?.reason ?? {};
   switch (r.kind) {
     case 'live_cap':
@@ -89,6 +89,17 @@ export function queueReason(entry) {
       return 'low priority (Red)';
     case 'off_hours':
       return 'outside working hours';
+    case 'scheduled_off_hours': {
+      // D4: work you scheduled for off-hours (P1's off_hours = outside working hours).
+      const t = Date.parse(r.starts_at);
+      return t > now ? `Off-hours · starts ${clock(t, now)} (in ${duration(t - now)})` : 'Off-hours';
+    }
+    case 'model_window': {
+      const at = clock(Date.parse(r.resets_at), Date.parse(r.resets_at) + 2 * 86400000);
+      return r.exhausted
+        ? `${r.model} week exhausted · starts ${at}`
+        : `${r.model} week in Red · starts after reset ${at}`;
+    }
     case 'five_hour_guard':
       return '5h guard';
     case 'limit_reached':

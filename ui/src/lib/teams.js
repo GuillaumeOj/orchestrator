@@ -129,8 +129,13 @@ export function shiftStatus(status, delta) {
   return i < 0 || j < 0 || j >= COLUMNS.length ? null : COLUMNS[j].id;
 }
 
-/** A task's handle: `#12` for a GitHub issue, `T-3` locally. */
-export const handle = (t) => (t.backend === 'github' && t.external_id ? `#${t.external_id}` : `T-${t.id}`);
+/** A task's handle: `#12` for a GitHub issue, `ENG-142` for a Linear one, `T-3` locally. */
+export const handle = (t) =>
+  t.backend === 'github' && t.external_id
+    ? `#${t.external_id}`
+    : t.backend === 'linear' && t.external_id
+      ? t.external_id
+      : `T-${t.id}`;
 
 /** Dependencies of a task not done yet (FR-404). */
 export function blockedBy(task, tasks) {

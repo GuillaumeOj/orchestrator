@@ -21,6 +21,11 @@
     const s = u?.snapshot;
     if (s?.state === 'red' && !u?.shadow)
       out.push({ id: 'red', color: 'var(--color-pacing-red)', title: `Governor in Red: week +${Math.round(s.error)} pp over plan.`, text: `Live autonomous agents capped to ${s.live_cap}; ${s.queued} queued.`, planner: true, pause: true });
+    // FR-816: off-hours work waits while the Mac is on battery (one banner, D6).
+    if ((d.banners ?? []).some((b) => b.kind === 'not_on_ac')) {
+      const n = d.power?.off_hours_pending ?? 0;
+      out.push({ id: 'ac', color: 'var(--color-pacing-amber)', title: 'Off-hours work needs AC power.', text: `${n} off-hours task${n === 1 ? '' : 's'} won't run while the Mac sleeps. Plug in to keep it awake, or they wait for the next off-hours window.`, details: true, later: true });
+    }
     for (const w of d.warnings ?? []) out.push({ id: `w:${w}`, color: 'var(--color-status-queued)', title: 'Check:', text: w });
     return out.filter((b) => !dismissed[b.id]);
   });
@@ -33,6 +38,8 @@
     <span class="text">{top.text}</span>
     {#if top.planner}<button class="btn" onclick={() => openSingleton('planner')}>Week planner <Kbd keys="⌘+; g" /></button>{/if}
     {#if top.setup}<button class="btn" onclick={() => openSingleton('setup')}>Set up</button>{/if}
+    {#if top.details}<button class="btn" onclick={() => openSingleton('planner')}>Details</button>{/if}
+    {#if top.later}<button class="btn ghost" onclick={() => (dismissed[top.id] = true)}>Later</button>{/if}
     {#if top.pause}<button class="btn ghost" onclick={() => governor('pause_all')}>Pause all</button>{/if}
     {#if banners.length > 1}<span class="muted">+{banners.length - 1}</span>{/if}
     <button class="x" aria-label="Dismiss" onclick={() => (dismissed[top.id] = true)}>×</button>

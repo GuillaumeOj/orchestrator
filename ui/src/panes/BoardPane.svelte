@@ -2,14 +2,17 @@
   // Board (FR-502, Penpot 04 Board · 1512): a project's tasks in five columns,
   // the same over every backend (Local, GitHub Issues). Keys: h/l column, j/k
   // card, ⇧h/⇧l move the card to the previous / next status, ⏎ open its
-  // feature, a assign to a node, n new task, r sync with the backend.
+  // feature, a assign to a node, n new task, r sync with the backend, ⇧O run
+  // the card off-hours (or back in working hours), space the card menu (P3).
+  // Linear-backed boards mark the cards where Linear's change won (FR-503).
   import { onMount } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
   import Kbd from '../components/Kbd.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import { app, openFeature, refresh, toast } from '../lib/app.svelte.js';
-  import { ago } from '../lib/format.js';
+  import { ago, clock } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
   import { blockedBy, COLUMNS, handle, moveCursor, shiftStatus } from '../lib/teams.js';
 
   let { paneId } = $props();
@@ -20,6 +23,9 @@
   let cur = $state({ col: 1, row: 0 });
   let form = $state(null); // { title, node, run_id, body } for n; { task, node } for a
   let syncing = $state(false);
+  let menu = $state(false); // the selected card's menu (Open task, Run off-hours, Assign node)
+  let offHours = $state(null); // planner_view.off_hours (the allowance and the next window)
+  let offTasks = $state({}); // task id → starts_at, for the tasks scheduled from here
   let root;
 
   const tasks = $derived((v?.tasks ?? []).filter((t) => feature === 'all' || t.feature_id === feature));
@@ -31,6 +37,14 @@
   async function load() {
     try {
       v = await invoke('board_view', { project: spec.projectId });
+      // Opened on a task (an Inbox conflict note): select its card once.
+      if (spec.taskId != null) {
+        const want = String(spec.taskId);
+        feature = 'all';
+        const ci = COLUMNS.findIndex((c) => v.tasks.some((t) => t.status === c.id && String(t.id) === want));
+        if (ci >= 0) cur = { col: ci, row: v.tasks.filter((t) => t.status === COLUMNS[ci].id).findIndex((t) => String(t.id) === want) };
+        app.panes[paneId] = { ...app.panes[paneId], taskId: null };
+      }
       error = null;
     } catch (e) {
       error = errText(e);
@@ -62,14 +76,35 @@
     }
   }
 
+  /** Whether a task runs off-hours: the core's flag when it has one, else what was set here. */
+  const isOff = (t) => !!(t?.off_hours ?? offTasks[t?.id]);
+
+  async function toggleOffHours(t) {
+    menu = false;
+    if (!t) return;
+    if (!offHoursAllowed(offHours)) return toast(OFF_DISABLED);
+    const off = !isOff(t);
+    try {
+      const r = await invoke('queue_off_hours', { task: String(t.id), off });
+      offTasks = { ...offTasks, [t.id]: off ? r.starts_at : null };
+      toast(off ? `${handle(t)} runs off-hours · starts ${clock(Date.parse(r.starts_at))}` : `${handle(t)} runs in working hours`);
+      await load();
+    } catch (e) {
+      toast(errText(e), { kind: 'error' });
+    }
+  }
+
   async function sync() {
     syncing = true;
     try {
       const r = await invoke('board_sync', { project: spec.projectId });
+      const remote = { github: 'GitHub', linear: 'Linear' }[v?.backend];
       toast(
-        v?.backend === 'github'
-          ? `Synced with GitHub · ${r.imported} new · ${r.updated} updated${r.conflicts ? ` · ${r.conflicts} conflict(s): GitHub's version kept` : ''}`
-          : 'Local tasks: nothing to sync',
+        v?.backend === 'linear'
+          ? `Synced ${v.project.name} with Linear · ${r.pushed ?? 0} pushed${(r.pulled ?? (r.imported ?? 0) + (r.updated ?? 0)) ? ` · ${r.pulled ?? (r.imported ?? 0) + (r.updated ?? 0)} pulled` : ''}${r.conflicts ? ` · ${r.conflicts} conflict${r.conflicts === 1 ? '' : 's'} (Linear won)` : ''}`
+          : remote
+            ? `Synced with ${remote} · ${r.imported} new · ${r.updated} updated${r.conflicts ? ` · ${r.conflicts} conflict(s): ${remote}'s version kept` : ''}`
+            : 'Local tasks: nothing to sync',
       );
       await load();
       await refresh();
@@ -86,6 +121,9 @@
       return;
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (menu && e.key === 'Escape') return ((menu = false), e.preventDefault());
+    if (e.key === 'O' || (e.shiftKey && e.key === 'o')) return (toggleOffHours(selected), e.preventDefault());
+    if (e.key === ' ' && selected) return ((menu = !menu), e.preventDefault());
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     const arrows = { ArrowLeft: 'h', ArrowRight: 'l', ArrowUp: 'k', ArrowDown: 'j' };
     const key = arrows[k] ?? k;
@@ -108,6 +146,9 @@
 
   onMount(() => {
     load();
+    invoke('planner_view')
+      .then((pv) => (offHours = pv?.off_hours ?? null))
+      .catch(() => {});
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
   });
@@ -120,7 +161,7 @@
   {:else if v}
     <header class="bh">
       <span class="pname">{v.project.name}</span>
-      <span class="muted">{v.backend === 'github' ? `GitHub Issues${v.repo ? ` · ${v.repo}` : ''} · remote wins on conflict` : 'Local tasks'}</span>
+      <span class="muted">{v.backend === 'github' ? `GitHub Issues${v.repo ? ` · ${v.repo}` : ''} · remote wins on conflict` : v.backend === 'linear' ? `Linear${v.linear_team ? ` · ${v.linear_team}` : ''}${v.last_sync_at_ms ? ` · synced ${clock(v.last_sync_at_ms)}` : ''}` : 'Local tasks'}</span>
       {#if v.last_sync_error}<span class="err">backend disconnected: {v.last_sync_error}</span>{/if}
       <span class="grow"></span>
       <div class="chips">
@@ -168,8 +209,10 @@
             {@const blocked = c.id === 'ready' ? blockedBy(t, v.tasks) : []}
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
             <div class="task" class:sel={cur.col === ci && cur.row === ri} onclick={() => ((cur = { col: ci, row: ri }), root?.focus())} ondblclick={() => t.feature_id && openFeature(t.feature_id)}>
-              <div class="tt"><span class="muted mono">{handle(t)}</span><span class="grow"></span><span class="muted">{t.backend === 'github' ? 'GitHub' : 'Local'}</span></div>
+              <div class="tt"><span class="muted mono">{handle(t)}</span><span class="grow"></span><span class="muted">{t.backend === 'github' ? 'GitHub' : t.backend === 'linear' ? 'Linear' : 'Local'}</span></div>
               <div class="title">{t.title}</div>
+              {#if t.remote_won}<span class="won" title="Changed in Linear and in the app since the last sync; the app now shows Linear's.">↓ changed in {t.backend === 'linear' ? 'Linear' : 'GitHub'}</span>{/if}
+              {#if isOff(t)}<span class="offtag">☾ Off-hours{nextOffHours(offHours) ? ` · starts ${clock(nextOffHours(offHours))}` : ''}</span>{/if}
               <div class="tt">
                 {#if t.node}<AgentChip id={t.node} role={nodeRole(t)} />{:else}<span class="muted">unassigned</span>{/if}
                 <span class="grow"></span>
@@ -179,6 +222,14 @@
                 {:else}<span class="muted">—</span>{/if}
               </div>
             </div>
+            {#if menu && cur.col === ci && cur.row === ri}
+              <div class="menu" role="menu" aria-label="Task menu">
+                <button role="menuitem" onclick={() => ((menu = false), t.feature_id && openFeature(t.feature_id))}>Open task <Kbd keys="⏎" /></button>
+                <button role="menuitem" disabled={!offHoursAllowed(offHours)} title={offHoursAllowed(offHours) ? '' : OFF_DISABLED} onclick={() => toggleOffHours(t)}>{isOff(t) ? 'Run in working hours' : 'Run off-hours'} <Kbd keys="⇧+O" /></button>
+                <button role="menuitem" disabled={!runOf(t)} onclick={() => ((menu = false), (form = { kind: 'assign', task: t, node: t.node ?? '' }))}>Assign node… <Kbd keys="a" /></button>
+              </div>
+              {#if !offHoursAllowed(offHours)}<p class="muted hint">{OFF_DISABLED}</p>{/if}
+            {/if}
           {:else}
             <p class="muted hint">{c.id === 'ready' ? 'Tasks whose dependencies are done start by themselves.' : 'Nothing here.'}</p>
           {/each}
@@ -186,7 +237,7 @@
       {/each}
     </div>
     <footer class="keys">
-      <span><Kbd keys="h/l" /> column</span><span><Kbd keys="j/k" /> card</span><span><Kbd keys="⇧+h/l" /> move card</span><span><Kbd keys="⏎" /> open</span><span><Kbd keys="a" /> assign</span><span><Kbd keys="n" /> new</span><span><Kbd keys="r" /> sync</span>
+      <span><Kbd keys="h/l" /> column</span><span><Kbd keys="j/k" /> card</span><span><Kbd keys="⇧+h/l" /> move card</span><span><Kbd keys="⏎" /> open</span><span><Kbd keys="a" /> assign</span><span><Kbd keys="n" /> new</span><span><Kbd keys="r" /> sync</span><span><Kbd keys="space" /> menu</span><span><Kbd keys="⇧+O" /> off-hours</span>
       {#if selected}<span class="grow"></span><span class="muted">{handle(selected)} · updated {ago(selected.updated_at_ms)}</span>{/if}
     </footer>
   {:else}
@@ -195,6 +246,41 @@
 </div>
 
 <style>
+
+  .won {
+    color: var(--color-status-waiting-for-you);
+    font: var(--text-caption);
+  }
+  .offtag {
+    color: var(--color-status-done);
+    font: var(--text-caption);
+  }
+  .menu {
+    display: flex;
+    flex-direction: column;
+    padding: var(--space-xs);
+    background: var(--color-surface-raised);
+    border: var(--border-width-default) solid var(--color-border-strong);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-overlay);
+  }
+  .menu button {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-md);
+    padding: var(--space-xs) var(--space-sm);
+    background: none;
+    border: 0;
+    border-radius: var(--radius-sm);
+    color: var(--color-text-primary);
+    font: var(--text-label);
+    text-align: left;
+    cursor: pointer;
+  }
+  .menu button:disabled {
+    color: var(--color-text-disabled);
+    cursor: default;
+  }
   .board {
     flex: 1;
     min-height: 0;

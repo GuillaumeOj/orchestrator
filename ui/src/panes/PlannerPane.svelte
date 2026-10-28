@@ -5,13 +5,16 @@
   // The actual line and the log cover the whole plan week across restarts.
   // Shadow mode (FR-812) for the first week, then the user may enforce.
   // Keys: S sprint mode, P pause all, u undo the selected log entry, a/r answer
-  // the ask, e edit the plan.
+  // the ask, e edit the plan, R the weekly report, O run the next queued turn
+  // off-hours (or back in working hours). P3: model windows, off-hours bands.
+  // the downgrade entries (FR-815, 816, 818, 819).
   import { onMount } from 'svelte';
   import Kbd from '../components/Kbd.svelte';
   import PressurePill from '../components/PressurePill.svelte';
-  import { app, confirm, governor, toast } from '../lib/app.svelte.js';
+  import { app, confirm, governor, openReport, toast } from '../lib/app.svelte.js';
   import { clock, dayTime, duration, pct, pp, when } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { dayHm, downgradeText, nextOffHours, OFF_DISABLED, offHoursAllowed, WINDOW_STATE, windowLabel, windowQueued } from '../lib/pacing.js';
   import { PRESSURE, queueReason } from '../lib/status.js';
 
   let v = $state(null);
@@ -34,6 +37,33 @@
   });
 
   const s = $derived(v?.snapshot);
+  const windows = $derived(s?.model_windows ?? []);
+  const off = $derived(v?.off_hours ?? null);
+  const offStart = $derived(off ? nextOffHours(off, v.now_ms) : null);
+  /** One "off-hours" label per day: the first band starting that day. */
+  // No allowance: nights are not off-hours for the Governor, so nothing is hatched.
+  const offBands = $derived(
+    (offHoursAllowed(off) ? (off?.windows ?? []) : []).map((w, i, all) => {
+      const a = Date.parse(w.start);
+      const day = new Date(a).toDateString();
+      return { a, b: Date.parse(w.end), label: all.findIndex((x) => new Date(Date.parse(x.start)).toDateString() === day) === i };
+    }),
+  );
+  const head0 = $derived(v?.queue?.[0] ?? null);
+  const head0Off = $derived(head0?.reason?.kind === 'scheduled_off_hours');
+
+  /** O: the next queued turn to off-hours, or back (queue_off_hours). */
+  async function toggleOffHours() {
+    if (!head0) return toast('Nothing queued');
+    if (!offHoursAllowed(off)) return toast(OFF_DISABLED);
+    try {
+      const r = await invoke('queue_off_hours', { entry: head0.id, off: !head0Off });
+      toast(head0Off ? `${head0.agent} runs in working hours` : `${head0.agent} runs off-hours · starts ${clock(Date.parse(r.starts_at))}`);
+      load();
+    } catch (e) {
+      toast(errText(e), { kind: 'error' });
+    }
+  }
   const p = $derived(PRESSURE[s?.state] ?? PRESSURE.green);
   // Chart geometry
   const H = 220;
@@ -84,6 +114,8 @@
     const a = entry.action.action;
     const k = a.kind;
     if (k === 'state_change') return PRESSURE[a.to]?.icon ?? '●';
+    if (k === 'downgrade') return '↓';
+    if (k === 'restore_model') return '↑';
     return { five_hour_guard: '⧗', pause_all: '‖', resume_all: '▶', limit_reached: '⊘', alert: '!', defer_after_reset: '▲' }[k] ?? '·';
   }
 
@@ -102,6 +134,9 @@
         return `run now: ${k.agent}`;
       case 'defer_after_reset':
         return `defer ${k.allocation} until the reset`;
+      case 'downgrade':
+      case 'restore_model':
+        return downgradeText(k);
       case 'sprint':
         return `sprint +${k.extra_pp} pp until ${clock(Date.parse(k.until))}`;
       default:
@@ -144,6 +179,8 @@
     if (k === 'a' && v?.pending_ask) return act(() => answerAsk(true));
     if (k === 'r' && v?.pending_ask) return act(() => answerAsk(false));
     if (k === 'e') return act(() => (app.overlay = { kind: 'plan' }));
+    if (k === 'R') return act(() => openReport('current'));
+    if (k === 'O') return act(toggleOffHours);
   }
 </script>
 
@@ -169,13 +206,14 @@
       {/if}
       <button class="btn" onclick={sprint}>Sprint mode <Kbd keys="S" /></button>
       <button class="btn danger" onclick={() => governor('pause_all').then(load)}>Pause all <Kbd keys="P" /></button>
+      <button class="btn ghost" onclick={() => openReport('current')}>Weekly report <Kbd keys="R" /></button>
       <button class="btn ghost" onclick={() => (app.overlay = { kind: 'plan' })}>{v.plan_set ? 'Edit plan' : 'Set this week’s plan'} <Kbd keys="e" /></button>
     </div>
 
     <div class="grid">
       <section class="card week" bind:clientWidth={w}>
         <div class="ch">
-          <b>Week</b><span class="muted">working hours shaded</span>
+          <b>Week</b><span class="muted">working hours shaded{offHoursAllowed(off) ? ' · off-hours hatched' : ''}</span>
           <span class="grow"></span>
           <span class="leg"><i class="l actual"></i>agents</span>
           <span class="leg"><i class="l ideal"></i>ideal</span>
@@ -183,7 +221,13 @@
           <span class="leg"><i class="l gov"></i>w/ governor</span>
         </div>
         <svg width={w - 2} height={H} role="img" aria-label="Agents' usage against the ideal curve">
+          <defs><pattern id="offhatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" class="hatch" /></pattern></defs>
           {#each v.working as [a, b] (a)}<rect x={x(a)} y={pad.t} width={Math.max(1, x(b) - x(a))} height={H - pad.t - pad.b} class="work" />{/each}
+          {#each offBands as o (o.a)}
+            <rect x={x(o.a)} y={pad.t} width={Math.max(1, x(Math.min(o.b, v.reset_at_ms)) - x(o.a))} height={H - pad.t - pad.b} class="off" />
+            {#if o.label}<text x={x(o.a) + 4} y={H - pad.b - 6} class="ax">off-hours</text>{/if}
+          {/each}
+          {#if off?.queued && offStart}<text x={Math.min(x(offStart) + 4, w - 80)} y={y(30)} class="tag okq">☾ {off.queued} queued</text>{/if}
           <rect x={pad.l} y={y(100)} width={w - pad.l - pad.r} height={Math.max(0, y(reserveTop) - y(100))} class="reserve" />
           {#each [0, 25, 50, 75, 100] as g (g)}
             <line x1={pad.l} x2={w - pad.r} y1={y(g)} y2={y(g)} class="grid-l" /><text x={pad.l - 6} y={y(g) + 4} class="ax" text-anchor="end">{g}%</text>
@@ -208,6 +252,16 @@
         <p>
           {#if s.five_hour_projected != null}Projected {pct(s.five_hour_projected)} at the reset{s.five_hour_guard ? ' (> 85%) → 5h guard on: live cap 1 until the reset. Interactive and critical work stay admitted.' : '.'}{:else}No 5h reading yet: it arrives with the first response.{/if}
         </p>
+        {#if windows.length}
+          <div class="mw">
+            <span class="muted">Model windows</span>
+            {#each windows as mw (mw.name)}
+              {@const st = WINDOW_STATE[mw.state] ?? WINDOW_STATE.green}
+              <div class="mwrow"><b>{windowLabel(mw)} {Math.round(mw.used_pct)} %</b><span class="pill" style:border-color={st.color}><span style:color={st.color}>{st.icon}</span> {st.label}</span><span class="muted">resets {dayHm(Date.parse(mw.resets_at))}</span></div>
+              {#if mw.state === 'red' || mw.state === 'exhausted'}<p class="muted">{windowQueued(mw)}{mw.state === 'red' ? '. Roles with a downgrade switch at their next task.' : ''}</p>{/if}
+            {/each}
+          </div>
+        {/if}
         <dl>
           <dt>Interactive</dt><dd>{s.interactive_used.toFixed(1)} pp of the week</dd>
           <dt>Live</dt><dd>{s.live_autonomous}/{s.live_cap} autonomous</dd>
@@ -243,6 +297,7 @@
         <div class="ch"><b>Next action</b><span class="muted">preview</span></div>
         {#if v.queue.length}
           <p>Next release: <b>{v.queue[0].agent}</b> ({v.queue[0].tier}) · {queueReason(v.queue[0])}{v.queue[0].estimated_start ? ` · ≈ ${clock(Date.parse(v.queue[0].estimated_start))}` : ''}</p>
+          <div class="row"><button class="btn ghost" disabled={!offHoursAllowed(off)} title={offHoursAllowed(off) ? '' : OFF_DISABLED} onclick={toggleOffHours}>{head0Off ? 'Run in working hours' : 'Run off-hours'} <Kbd keys="O" /></button></div>
         {:else}
           <p class="muted">Nothing queued.</p>
         {/if}
@@ -377,6 +432,37 @@
   }
   .tag.warn {
     fill: var(--color-pacing-red);
+  }
+  .tag.okq {
+    fill: var(--color-status-done);
+  }
+  .off {
+    fill: url(#offhatch);
+  }
+  .hatch {
+    stroke: var(--color-border-subtle);
+    stroke-width: 2;
+  }
+  .mw {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+    padding-top: var(--space-sm);
+    border-top: var(--border-width-default) solid var(--color-border-subtle);
+  }
+  .mw p {
+    margin: 0;
+    font: var(--text-caption);
+  }
+  .mwrow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+  .pill {
+    padding: 0 var(--space-sm);
+    border: var(--border-width-default) solid;
+    border-radius: var(--radius-full);
   }
   .ideal {
     fill: none;

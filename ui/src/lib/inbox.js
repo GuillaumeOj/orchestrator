@@ -36,8 +36,22 @@ export function afterRemoval(items, removedId) {
   return rest[Math.min(Math.max(i, 0), rest.length - 1)].id;
 }
 
+/** An MCP server that needs sign-in (FR-604): a Reconnect, Open Settings, Dismiss item (D3). */
+export const mcpAlert = (item) => item?.kind === 'alert' && item.payload?.alert === 'mcp_needs_auth';
+
+/** Weekly report digest, Notion comment, Linear sync note: `o` goes through the core. */
+export const coreOpens = (item) =>
+  item?.payload?.digest === 'weekly_report' ||
+  item?.payload?.source === 'notion' ||
+  item?.payload?.action === 'task_conflict';
+
 /** What a key does on the selected item (null: not handled). */
 export function keyIntent(key, item) {
+  // a Reconnect and o Open Settings go to the core at once (no undo: nothing is decided).
+  if (mcpAlert(item) && (key === 'a' || key === 'o'))
+    return { kind: 'alert', action: key === 'a' ? 'reconnect' : 'open' };
+  // P3 items whose `o` the core answers with where to go (a report, a page, a task).
+  if (key === 'o' && item?.actions?.includes('o') && coreOpens(item)) return { kind: 'alert', action: 'open' };
   switch (key) {
     case 'j':
     case 'arrowdown':
@@ -83,6 +97,7 @@ export function kindLabel(item) {
   const g = gateKind(item);
   if (g) return g === 'pr' ? 'PR gate' : 'Spec gate';
   if (teamQuestion(item)) return 'Question';
+  if (item?.payload?.source === 'notion') return 'Question · Notion';
   return (
     {
       permission: 'Permission',
@@ -99,6 +114,7 @@ export function kindLabel(item) {
 /** Labels for an item's a/r keys (component copy, Penpot 02 Inbox item). */
 export function actionLabels(item) {
   if (teamQuestion(item)) return { r: 'Dismiss' };
+  if (item?.payload?.source === 'notion') return { r: 'Dismiss', o: 'Open in Notion ↗' };
   switch (item?.kind) {
     case 'gate':
       return gateKind(item) === 'pr'
@@ -109,7 +125,7 @@ export function actionLabels(item) {
     case 'budget':
       return { a: 'Apply', r: 'Skip' };
     case 'alert':
-      return { a: 'Dismiss' };
+      return mcpAlert(item) ? { a: 'Reconnect', r: 'Dismiss', o: 'Open Settings' } : { a: 'Dismiss' };
     case 'error':
       return { r: 'Resume' };
     default:
@@ -123,6 +139,7 @@ export function toastFor(item, action) {
   const what = item.preview ? ` · ${item.preview.split('\n')[0].slice(0, 40)}` : '';
   if (item.kind === 'permission') return action === 'approve' ? `Allowed once${who}${what}` : `Denied${who}${what}`;
   if (item.kind === 'budget') return action === 'approve' ? `Applied · ${item.title}` : `Skipped · ${item.title}`;
+  if (mcpAlert(item)) return `Dismissed until it fails again · ${item.payload.name ?? item.payload.server}`;
   if (item.kind === 'alert' || item.kind === 'info') return `Dismissed${who}`;
   if (item.kind === 'gate') {
     const g = gateKind(item) === 'pr' ? 'PR gate' : 'Spec gate';
@@ -130,6 +147,7 @@ export function toastFor(item, action) {
     return `${g} ${action === 'approve' ? 'approved' : 'rejected'}${who}`;
   }
   if (teamQuestion(item) && action === 'reject') return `Dismissed${who}`;
+  if (item.payload?.source === 'notion' && action === 'reject') return `Dismissed · ${item.title}`;
   if (action === 'reply') return `Reply sent${who}`;
   return `${action === 'approve' ? 'Approved' : 'Rejected'}${who}`;
 }
