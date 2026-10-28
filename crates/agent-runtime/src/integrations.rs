@@ -55,13 +55,17 @@ type Outcome = (McpStatus, Option<String>, Option<String>);
 /// `gh auth status` output → the account it is logged in as.
 pub fn gh_account(text: &str) -> Option<String> {
     for line in text.lines() {
+        if !line.contains("Logged in to") {
+            continue;
+        }
+        // A marker that is not there (a login like `myaccount` holds "account ")
+        // moves on to the next one, never ends the search.
         for marker in [" account ", "Logged in to github.com as "] {
-            if line.contains("Logged in to") && line.contains(marker.trim_start()) {
-                let after = line.split(marker).nth(1)?;
-                let name = after.split_whitespace().next()?.trim_matches(|c: char| !c.is_alphanumeric() && c != '-');
-                if !name.is_empty() {
-                    return Some(name.to_string());
-                }
+            let Some(after) = line.split_once(marker).map(|(_, a)| a) else { continue };
+            let Some(word) = after.split_whitespace().next() else { continue };
+            let name = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '-');
+            if !name.is_empty() {
+                return Some(name.to_string());
             }
         }
     }
@@ -149,6 +153,8 @@ impl Runtime {
             pick.into_iter().find(|p| servers.iter().any(|s| s.status == *p)).unwrap_or(McpStatus::Unknown)
         };
         let mut names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
+        // Listed by scope first: the same name in two scopes is not adjacent.
+        names.sort_unstable();
         names.dedup();
         IntegrationRow {
             id: id.into(),
@@ -288,6 +294,8 @@ mod tests {
         assert_eq!(gh_account(new).as_deref(), Some("GuillaumeOj"));
         let old = "github.com\n  ✓ Logged in to github.com as octo-cat (oauth_token)\n";
         assert_eq!(gh_account(old).as_deref(), Some("octo-cat"));
+        let holds_marker = "  ✓ Logged in to github.com as myaccount (oauth_token)\n";
+        assert_eq!(gh_account(holds_marker).as_deref(), Some("myaccount"));
         assert_eq!(gh_account("You are not logged into any GitHub hosts."), None);
     }
 

@@ -9,15 +9,6 @@ use anyhow::{Context, Result, bail};
 /// The Keychain service every secret of the app is stored under.
 pub const SERVICE: &str = "Orchestrator";
 
-/// The prefix of an MCP `env` value that names a Keychain account
-/// (`keychain:<account>`), resolved at compile time only after the entry's opt-in.
-pub const KEYCHAIN_PREFIX: &str = "keychain:";
-
-/// `keychain:<account>` → `<account>`; `None` for a plain value.
-pub fn keychain_ref(value: &str) -> Option<&str> {
-    value.strip_prefix(KEYCHAIN_PREFIX).map(str::trim).filter(|a| !a.is_empty())
-}
-
 /// MCP env secrets live in their own namespace (account `mcp:<account>`), so
 /// `keychain:linear` in a server's env never reads or overwrites the Linear
 /// integration's token (account `linear`).
@@ -159,13 +150,6 @@ mod tests {
         let s = Secret::new("lin_api_123");
         assert_eq!(format!("{s:?} {s}"), "Secret(<redacted>) <redacted>");
         assert_eq!(s.expose(), "lin_api_123");
-    }
-
-    #[test]
-    fn keychain_refs() {
-        assert_eq!(keychain_ref("keychain:linear"), Some("linear"));
-        assert_eq!(keychain_ref("keychain:"), None);
-        assert_eq!(keychain_ref("plain"), None);
     }
 
     #[test]

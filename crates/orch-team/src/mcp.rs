@@ -9,8 +9,15 @@ use serde_json::{Map, Value, json};
 
 use crate::model::RoleDef;
 
-/// The `env` value prefix naming a Keychain account (orch-secrets `KEYCHAIN_PREFIX`).
+/// The `env` value prefix naming a Keychain account (`keychain:<account>`),
+/// resolved at spawn only after the entry's opt-in (Keychain account `mcp:<account>`).
 pub const KEYCHAIN_PREFIX: &str = "keychain:";
+
+/// A Keychain account name as orch-secrets takes it (`valid_account`):
+/// a-z, 0-9, `-`, `_`, `.`, up to 64.
+fn valid_keychain_account(a: &str) -> bool {
+    !a.is_empty() && a.len() <= 64 && a.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -171,8 +178,9 @@ impl McpServer {
             if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                 return Err(format!("invalid env name {k:?}"));
             }
-            if v.starts_with(KEYCHAIN_PREFIX) && keychain_account(v).is_none() {
-                return Err(format!("{k}: `keychain:` needs an account name"));
+            if v.starts_with(KEYCHAIN_PREFIX) && !keychain_account(v).is_some_and(valid_keychain_account) {
+                // Else every spawn of a role using it would fail on the Keychain read.
+                return Err(format!("{k}: `keychain:` needs an account name (a-z, 0-9, - _ ., up to 64)"));
             }
         }
         Ok(())

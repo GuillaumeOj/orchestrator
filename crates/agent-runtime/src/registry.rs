@@ -217,15 +217,20 @@ pub fn probe_stdio(s: &McpServer, env: &[(String, String)], deadline: Duration) 
             }
         }
     });
+    // The last stderr line, kept as it comes: a process the server started
+    // (`npx`, `uvx`) may outlive the kill below and hold the pipe open, so
+    // the reader is never joined, only waited for a moment.
     let err_pipe = child.stderr.take();
-    let err_tail = std::thread::spawn(move || {
-        let mut tail = String::new();
+    let tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let (err_done, err_done_rx) = mpsc::channel::<()>();
+    let tail_w = tail.clone();
+    std::thread::spawn(move || {
         if let Some(e) = err_pipe {
             for line in BufReader::new(e).lines().map_while(Result::ok) {
-                tail = line;
+                *tail_w.lock().unwrap_or_else(|e| e.into_inner()) = line;
             }
         }
-        tail
+        let _ = err_done.send(());
     });
     let mut stdin = child.stdin.take();
     let mut send =
@@ -273,7 +278,8 @@ pub fn probe_stdio(s: &McpServer, env: &[(String, String)], deadline: Duration) 
     match result {
         Ok(n) => (McpStatus::Connected, Some(format!("{n} tool(s)"))),
         Err(e) => {
-            let tail = err_tail.join().unwrap_or_default();
+            let _ = err_done_rx.recv_timeout(Duration::from_secs(1));
+            let tail = tail.lock().unwrap_or_else(|e| e.into_inner()).clone();
             let text = if tail.trim().is_empty() { e } else { format!("{e}: {}", tail.trim()) };
             let status = if looks_like_auth(&text) { McpStatus::NeedsAuth } else { McpStatus::Error };
             (status, Some(text.chars().take(300).collect()))
@@ -524,6 +530,8 @@ impl Runtime {
             .filter(|r| r.mcp_refs.contains(&s.id))
             .map(|r| r.id)
             .collect();
+        // Listed by scope first: the same role id of two scopes is not adjacent.
+        roles.sort();
         roles.dedup();
         let body = format!(
             "MCP server {} needs you to sign in again{}",

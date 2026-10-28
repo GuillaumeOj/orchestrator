@@ -101,8 +101,9 @@ pub fn http_with_retry(net: &dyn Net, req: &HttpRequest, sleep: impl Fn(Duration
         if r.status != 429 {
             break;
         }
-        let wait = r.header("retry-after").and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(1.0);
-        sleep(Duration::from_secs_f64(wait.max(0.0)).min(MAX_RETRY_WAIT));
+        let wait = r.header("retry-after").and_then(|s| s.trim().parse::<f64>().ok()).filter(|w| w.is_finite());
+        // Clamped before the conversion: `from_secs_f64` panics on a huge value.
+        sleep(Duration::from_secs_f64(wait.unwrap_or(1.0).clamp(0.0, MAX_RETRY_WAIT.as_secs_f64())));
         r = net.http(req)?;
     }
     Ok(r)
@@ -228,7 +229,10 @@ fn code_block(code: &str, lang: &str) -> Value {
         l if KNOWN.contains(&l) => l,
         _ => "plain text",
     };
-    json!({"object": "block", "type": "code", "code": {"rich_text": text(code, None, false), "language": lang}})
+    // At most 100 runs per block, like the others: past that the code is cut.
+    let mut rt = text(code, None, false);
+    rt.truncate(MAX_RUNS);
+    json!({"object": "block", "type": "code", "code": {"rich_text": rt, "language": lang}})
 }
 
 fn table(rows: &[Vec<String>]) -> Value {
@@ -327,14 +331,23 @@ fn title_props(title: &str) -> Value {
     json!({"title": {"title": text(title, None, false)}})
 }
 
-/// Replaces a page's blocks with `children`.
+/// Replaces a page's blocks with `children`. Its child pages (the feature
+/// page's docs are `child_page` blocks of it) stay: deleting one would
+/// archive that doc's page.
 fn replace_children(api: &dyn NotionApi, page: &str, children: &[Value]) -> Result<()> {
     let mut cursor: Option<String> = None;
     let mut old = vec![];
     for _ in 0..100 {
         let q = cursor.as_deref().map(|c| format!("&start_cursor={c}")).unwrap_or_default();
         let r = api.call("GET", &format!("/v1/blocks/{page}/children?page_size=100{q}"), None)?;
-        old.extend(r["results"].as_array().into_iter().flatten().filter_map(|b| b["id"].as_str().map(str::to_string)));
+        old.extend(
+            r["results"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|b| !matches!(b["type"].as_str(), Some("child_page" | "child_database")))
+                .filter_map(|b| b["id"].as_str().map(str::to_string)),
+        );
         if r["has_more"] != true {
             break;
         }
@@ -428,7 +441,7 @@ impl Runtime {
         let mut p = self.published(feature_id);
         let r = (|| -> Result<()> {
             let intro = blocks(&format!(
-                "Published by Orchestrator from the integration branch of **{}**. Comment on these pages \
+                "Published by Orchestrator from the integration branch of `{}`. Comment on these pages \
                  (page comments, at the top of a page): they come back to the app's Inbox.",
                 f.slug
             ));
@@ -548,10 +561,10 @@ impl Runtime {
             }
             h.last_notion_ms = now;
         }
+        let Some(me) = self.me.upgrade() else { return };
         if self.notion_polling.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return; // the last pass still runs
         }
-        let Some(me) = self.me.upgrade() else { return };
         std::thread::spawn(move || {
             me.notion_poll_due(now);
             me.notion_polling.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -635,13 +648,25 @@ pub mod fake {
                 }
                 ("GET", ["", "v1", "blocks", id, "children", ..]) => {
                     let bl = w.pages.get(*id).map(|p| p.2.clone()).unwrap_or_default();
-                    let results: Vec<Value> = (0..bl.len()).map(|i| json!({"id": format!("{id}:b{i}")})).collect();
+                    let mut results: Vec<Value> =
+                        (0..bl.len()).map(|i| json!({"id": format!("{id}:b{i}"), "type": "paragraph"})).collect();
+                    // Its child pages are blocks of it too, as in Notion.
+                    results.extend(
+                        w.pages.iter().filter(|(_, p)| p.0 == *id).map(|(c, _)| json!({"id": c, "type": "child_page"})),
+                    );
                     Ok(json!({"results": results, "has_more": false}))
                 }
                 ("DELETE", ["", "v1", "blocks", bid]) => {
-                    let (page, _) = bid.split_once(":b").unwrap_or((bid, ""));
-                    if let Some(p) = w.pages.get_mut(page) {
-                        p.2.pop();
+                    match bid.split_once(":b") {
+                        Some((page, _)) => {
+                            if let Some(p) = w.pages.get_mut(page) {
+                                p.2.pop();
+                            }
+                        }
+                        // A child page block: the page is archived.
+                        None => {
+                            w.pages.remove(*bid);
+                        }
                     }
                     Ok(json!({}))
                 }

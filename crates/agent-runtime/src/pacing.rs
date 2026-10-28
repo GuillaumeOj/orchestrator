@@ -70,7 +70,12 @@ impl Runtime {
             let from = l.model.clone();
             match self.suspend(&rec.id) {
                 Ok(_) => self.event(&rec.id, "model_switch", json!({"from": from, "to": want})),
-                Err(e) => self.event(&rec.id, "model_switch_failed", json!(e.to_string())),
+                Err(e) => {
+                    // The task runs on the current model rather than wait for
+                    // a switch that keeps failing (and log it at every pump).
+                    self.event(&rec.id, "model_switch_failed", json!(e.to_string()));
+                    return false;
+                }
             }
         }
         true

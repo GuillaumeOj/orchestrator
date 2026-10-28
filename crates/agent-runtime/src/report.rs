@@ -267,7 +267,7 @@ pub fn build(i: &Inputs) -> WeeklyReport {
     // Plan vs actual: each allocation's share of the agents' budget by now.
     let budget = (100.0 - plan.reserve_pct).max(0.0) * i.plan_fraction.clamp(0.0, 1.0);
     let weights: f64 = plan.allocations.iter().map(|a| a.weight).sum::<f64>().max(1e-9);
-    let waits = queue_waits(i.actions, i.agents, i.samples);
+    let waits = queue_waits(i.actions, i.samples);
     let allocations = plan
         .allocations
         .iter()
@@ -418,12 +418,7 @@ pub fn suggestions(r: &WeeklyReport) -> Vec<String> {
 /// Minutes each queued turn waited, per allocation: a `queue` action paired
 /// with the `release` of the same entry (ids restart at each boot, so the
 /// latest queue of that entry and agent before the release).
-fn queue_waits(
-    actions: &[GovernorAction],
-    agents: &BTreeMap<String, Attribution>,
-    samples: &[UsageRecord],
-) -> BTreeMap<String, Vec<f64>> {
-    let _ = agents;
+fn queue_waits(actions: &[GovernorAction], samples: &[UsageRecord]) -> BTreeMap<String, Vec<f64>> {
     // The allocation of an agent: from its samples (agents may be gone).
     let mut alloc_of: BTreeMap<&str, &str> = BTreeMap::new();
     for s in samples {
