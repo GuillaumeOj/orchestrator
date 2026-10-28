@@ -2,16 +2,18 @@
   // Agent pane (§9.3, Penpot 04 Agent pane + states): the real `claude` in a PTY,
   // with a header (role, state, model, context, session usage, governor) and a
   // strip for the states that need words (queued, suspended, limit, error, a
-  // permission prompt held for the Inbox). The PTY itself is left untouched.
+  // permission prompt held or parked for the Inbox). The PTY itself is left untouched.
   import { onMount } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
   import CtxBar from '../components/CtxBar.svelte';
   import Kbd from '../components/Kbd.svelte';
+  import PermissionCall from '../components/PermissionCall.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import TermHost from '../components/TermHost.svelte';
-  import { agent, agentAction, app, cancelQueued, confirm, mountTerm, openEditor, runNow, toast } from '../lib/app.svelte.js';
+  import { agent, agentAction, app, cancelQueued, confirm, decide, mountTerm, openEditor, runNow, toast } from '../lib/app.svelte.js';
   import { ago, clock, duration } from '../lib/format.js';
-  import { errText, invoke } from '../lib/ipc.js';
+  import { actionLabels } from '../lib/inbox.js';
+  import { errText } from '../lib/ipc.js';
   import { cacheState, displayState, notStarted, sessionPp as ppOf, queueReason, runCost } from '../lib/status.js';
 
   let { paneId } = $props();
@@ -23,7 +25,13 @@
   const ds = $derived(a ? displayState(a) : 'idle');
   const snap = $derived(app.data?.usage?.snapshot);
   const sessionPp = $derived(ppOf(a, snap));
-  const perm = $derived((app.data?.permissions ?? []).find((p) => p.agent_id === a?.id));
+  // Its permission prompt (held or parked): the Inbox's own item, not a second list.
+  const perm = $derived(
+    (app.data?.inbox?.items ?? []).find(
+      (i) => i.kind === 'permission' && i.agent_id === a?.id && !app.pending.some((p) => p.item === i.id),
+    ),
+  );
+  const permLabels = $derived(actionLabels(perm));
   const liveCount = $derived((app.data?.agents ?? []).filter((x) => x.live).length);
   const queuePos = $derived.by(() => {
     const q = app.data?.queue ?? [];
@@ -43,16 +51,6 @@
   function ordinal(n) {
     if (!n) return '';
     return `${n}${['th', 'st', 'nd', 'rd'][n % 100 > 10 && n % 100 < 14 ? 0 : n % 10] ?? 'th'}`;
-  }
-
-  async function answer(action) {
-    if (!perm) return;
-    try {
-      await invoke('inbox_act', { item: perm.id, action, message: null });
-      toast(action === 'approve' ? `Allowed once · ${a.id} · ${perm.summary.slice(0, 40)}` : action === 'reject' ? `Denied · ${a.id}` : `Answer in the pane · ${a.id}`);
-    } catch (e) {
-      toast(errText(e), { kind: 'error' });
-    }
   }
 
   function attachIfLive() {
@@ -108,13 +106,17 @@
   </div>
 
   {#if perm}
-    <div class="strip warn">
-      <span class="icon" style:color="var(--color-status-waiting-for-you)" aria-hidden="true">{'\u{F0005}'}</span>
-      <span><b>Waiting for you</b> for {ago(perm.created_ms)} · {perm.tool}: <span class="mono">{perm.summary}</span> · also in the Inbox</span>
-      <span class="grow"></span>
-      <button class="btn primary" onclick={() => answer('approve')}>Allow once</button>
-      <button class="btn danger" onclick={() => answer('reject')}>Deny</button>
-      <button class="btn ghost" onclick={() => answer('in_pane')} title="Shows Claude Code's own dialog (for 'don't ask again')">Answer in the pane</button>
+    <div class="strip warn perm">
+      <div class="row">
+        <span class="icon" style:color="var(--color-status-waiting-for-you)" aria-hidden="true">{'\u{F0005}'}</span>
+        <span><b>Waiting for you</b> for {ago(perm.created_ms)} · {perm.title} · also in the Inbox</span>
+        <span class="grow"></span>
+        <button class="btn primary" onclick={() => decide(perm, 'approve')}>{permLabels.a}</button>
+        <button class="btn danger" onclick={() => decide(perm, 'reject')}>{permLabels.r}</button>
+        {#if perm.actions.includes('always')}<button class="btn" title={perm.payload?.always} onclick={() => decide(perm, 'always')}>{permLabels.always}</button>{/if}
+        {#if perm.actions.includes('in_pane')}<button class="btn ghost" onclick={() => decide(perm, 'in_pane')} title="Shows Claude Code's own dialog">{permLabels.in_pane}</button>{/if}
+      </div>
+      <PermissionCall item={perm} />
     </div>
   {:else if a.trust_dialog}
     <div class="strip warn"><span class="icon" style:color="var(--color-status-waiting-for-you)">{'\u{F0005}'}</span> Claude Code asks to trust this folder. Answer it below: the app never does.</div>
@@ -192,6 +194,17 @@
   }
   .strip.warn {
     box-shadow: inset 3px 0 0 var(--color-status-waiting-for-you);
+  }
+  .strip.perm {
+    flex-direction: column;
+    align-items: stretch;
+    padding-block: var(--space-sm);
+  }
+  .strip .row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-sm);
   }
   .ended {
     position: absolute;

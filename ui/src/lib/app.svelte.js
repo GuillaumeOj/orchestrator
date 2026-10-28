@@ -3,7 +3,7 @@
 // (xterm.js) live outside the reactive state, in `terms`.
 
 import { clock as clockOf } from './format.js';
-import { due, toastFor, UNDO_MS } from './inbox.js';
+import { due, effectToast, outcomeToast, pendingToast, UNDO_MS } from './inbox.js';
 import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
@@ -27,7 +27,7 @@ export const app = $state({
   width: typeof window !== 'undefined' ? window.innerWidth : 1512,
   overlay: null, // { kind: 'palette' | 'jump' | 'new-session' | 'add-project' | 'confirm', … }
   toasts: [],
-  pending: [], // Inbox decisions in their undo window: { item, action, message, at, toast }
+  pending: [], // Inbox decisions in their undo window: { item, card, action, message, at, toast }
   selectedAgent: null,
   selectedProject: null,
   theme: null, // null = system, 'dark' | 'light' (user choice)
@@ -901,6 +901,17 @@ export function commands() {
           ),
       },
       {
+        id: 'agent.restart-fresh',
+        label: `Restart ${a.id} fresh…`,
+        run: () =>
+          confirm(
+            `Restart ${a.id} fresh?`,
+            'Its current session is left; a new one starts with its brief and task.',
+            () => restartFresh(a.id),
+            'Restart fresh',
+          ),
+      },
+      {
         id: 'agent.delete',
         label: `Delete ${a.id}…`,
         run: () => (app.overlay = { kind: 'delete-agent', agentId: a.id }),
@@ -1050,14 +1061,14 @@ export function jumpTargets() {
 
 // ---------------------------------------------------------------- inbox decisions
 
-/** Records a decision; it reaches the core when its 5 s undo window ends (FR-707 `u`). */
+/** Records a decision; it reaches the core when its 5 s undo window ends (FR-707 `u`).
+ *  Its toast says what will be sent; the effect is said once the core answers. */
 export function decide(item, action, message = null) {
   if (app.pending.some((p) => p.item === item.id)) return;
-  const text = toastFor(item, action);
-  const t = toast(text, { ms: UNDO_MS, undo: true, item: item.id });
+  const t = toast(pendingToast(item, action), { ms: UNDO_MS, undo: true, item: item.id });
   app.pending = [
     ...app.pending,
-    { item: item.id, action, message, at: Date.now(), toast: t, project: item.payload?.project ?? null },
+    { item: item.id, card: item, action, message, at: Date.now(), toast: t, project: item.payload?.project ?? null },
   ];
 }
 
@@ -1083,9 +1094,30 @@ export async function flushDecisions(now = Date.now()) {
     app.pending = app.pending.filter((x) => x !== p);
     try {
       const r = await invoke('inbox_act', { item: p.item, action: p.action, message: p.message });
-      routeOpen(r, p.project);
+      if (!routeOpen(r, p.project)) toast(effectToast(p.card, p.action, r?.effect, p.message));
     } catch (e) {
       toast(errText(e), { kind: 'error' });
     }
+    refresh();
+  }
+}
+
+/** An `inbox_outcome` event (api-contract §3): a toast when someone else
+ *  decided (the pane, a rule, the hold's expiry), and the card goes. */
+export function onOutcome(outcome) {
+  const item = app.data?.inbox?.items?.find((i) => i.id === outcome?.item);
+  const text = outcomeToast(item, outcome);
+  if (text) toast(text);
+  refresh();
+}
+
+/** FR-415: the agent again as a fresh session with its brief (agent menu). */
+export async function restartFresh(id) {
+  try {
+    await invoke('restart_fresh', { agent: id });
+    toast(`Restarted fresh · ${id}`);
+    await refresh();
+  } catch (e) {
+    toast(`${id}: ${errText(e)}`, { kind: 'error' });
   }
 }

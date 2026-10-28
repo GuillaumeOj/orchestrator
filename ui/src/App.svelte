@@ -14,7 +14,7 @@
   import TitleBar from './components/TitleBar.svelte';
   import Toasts from './components/Toasts.svelte';
   import Workspace from './components/Workspace.svelte';
-  import { app, applyTheme, flushDecisions, focusedSpec, isTerminal, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
+  import { app, applyTheme, flushDecisions, focusedSpec, isTerminal, onOutcome, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
   import { startDev } from './lib/dev.js';
   import { loadUiFont, prepareKitty } from './lib/fonts.js';
   import { inTauri, invoke, listen } from './lib/ipc.js';
@@ -75,6 +75,7 @@
     let decisions;
     const onVisible = () => !document.hidden && refresh();
     let unlisten = () => {};
+    let unlistenOutcome = () => {};
     (async () => {
       const [kitty] = await Promise.all([invoke('kitty_config').catch(() => null), loadUiFont().catch(() => [])]);
       if (kitty) app.kitty = await prepareKitty(kitty).catch(() => kitty);
@@ -97,12 +98,14 @@
         if (lastKeyCommand.id === ev.payload && Date.now() - lastKeyCommand.at < 400) return;
         run(ev.payload);
       });
+      unlistenOutcome = await listen('inbox_outcome', (ev) => onOutcome(ev.payload));
     })();
     return () => {
       clearTimeout(poll);
       clearInterval(decisions);
       document.removeEventListener('visibilitychange', onVisible);
       unlisten();
+      unlistenOutcome();
       window.removeEventListener('resize', onResize);
       window.removeEventListener('keydown', onKeyDown, true);
     };

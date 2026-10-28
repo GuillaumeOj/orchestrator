@@ -2,13 +2,28 @@
   import AgentChip from '../components/AgentChip.svelte';
   import Kbd from '../components/Kbd.svelte';
   import Markdown from '../components/Markdown.svelte';
+  import PermissionCall from '../components/PermissionCall.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   // Inbox (FR-707, §9.6, Penpot 04 Inbox and 06 J5): one list in attention-ladder
   // order with a who/what/why preview. Keys: j/k move, a approve, r reject,
   // ⏎ reply, o open the agent pane, e open in nvim, x select (batch), u undo, esc back.
   import { agent, alertAct, app, decide, openAgent, openEditor, toast, undoLast } from '../lib/app.svelte.js';
   import { ago } from '../lib/format.js';
-  import { actionLabels, afterRemoval, FILTERS, gateKind, keyIntent, kindLabel, LEVELS, move, teamQuestion, visibleItems } from '../lib/inbox.js';
+  import {
+    actionLabels,
+    afterRemoval,
+    FILTERS,
+    gateKind,
+    keyIntent,
+    kindLabel,
+    LEVELS,
+    move,
+    parked,
+    restarted,
+    tailLines,
+    teamQuestion,
+    visibleItems,
+  } from '../lib/inbox.js';
   import { invoke } from '../lib/ipc.js';
   import { displayState } from '../lib/status.js';
 
@@ -27,6 +42,7 @@
 
   const KIND = {
     permission: { state: 'waiting_for_you' },
+    startup: { state: 'error' },
     gate: { state: 'waiting_gate' },
     question: { state: 'waiting_for_you' },
     trust: { state: 'waiting_for_you' },
@@ -36,11 +52,18 @@
     info: { state: 'done' },
   };
 
-  // A gate's preview (the spec docs, or the PR's changed files), loaded once per item.
+  // Actions with no key: buttons in the detail only (api-contract §1).
+  const BUTTONS = ['always', 'in_pane', 'restart_fresh', 'dismiss', 'delete'];
+
+  // ⏎'s label: a plain question is answered in the pane, a permission denied with a message.
+  const enterLabel = (it) => actionLabels(it).enter ?? (it.kind === 'question' && !teamQuestion(it) ? 'Answer in the pane' : 'Reply');
+
+  // A gate's preview (the spec docs, or the PR's changed files), loaded once per
+  // item. Other gates (a hold back after a restart) carry their text.
   let gate = $state(null); // { id, data?, error?, doc }
   $effect(() => {
     const it = sel;
-    if (it?.kind !== 'gate' || gate?.id === it.id) return;
+    if (it?.kind !== 'gate' || gateKind(it) === 'other' || gate?.id === it.id) return;
     gate = { id: it.id, data: null, error: null, doc: 0 };
     invoke('gate_detail', { item: it.id })
       .then((d) => {
@@ -94,6 +117,12 @@
     return false;
   }
 
+  // A keyless action (Always allow, Restart fresh…): the next item is selected, as for a/r.
+  function act(item, action) {
+    selected = afterRemoval(items, item.id);
+    decide(item, action);
+  }
+
   function onKey(e) {
     if (reply || e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.target.closest('input, textarea')) return;
@@ -139,7 +168,7 @@
           <div class="item" class:sel={sel?.id === it.id} class:marked={marked.has(it.id)} role="option" tabindex="-1" aria-selected={sel?.id === it.id} onclick={() => (selected = it.id)}>
             <div class="top">
               <StatusBadge state={KIND[it.kind]?.state ?? 'idle'} compact />
-              <span class="muted">{kindLabel(it)}</span>
+              <span class="muted">{kindLabel(it)}{parked(it) ? ' · parked' : ''}{restarted(it) && !parked(it) ? ' · after restart' : ''}</span>
               {#if it.agent_id}<AgentChip id={it.agent_id} />{:else}<span class="secondary">Governor</span>{/if}
               <span class="grow"></span>
               <span class="muted">{ago(it.created_ms)}</span>
@@ -150,8 +179,8 @@
               <div class="acts">
                 {#if labels.a && it.actions.includes('a')}<span><Kbd keys="a" /> {labels.a}</span>{/if}
                 {#if labels.r && it.actions.includes('r')}<span><Kbd keys="r" /> {labels.r}</span>{/if}
-                {#if it.actions.includes('enter')}<span><Kbd keys="⏎" /> {it.kind === 'question' && !teamQuestion(it) ? 'Answer in the pane' : 'Reply'}</span>{/if}
-                {#if it.actions.includes('o')}<span><Kbd keys="o" /> Open</span>{/if}
+                {#if it.actions.includes('enter')}<span><Kbd keys="⏎" /> {enterLabel(it)}</span>{/if}
+                {#if it.actions.includes('o')}<span><Kbd keys="o" /> {labels.o ?? 'Open'}</span>{/if}
               </div>
             {/if}
           </div>
@@ -178,7 +207,9 @@
           <dt>Why</dt><dd>{sel.detail}</dd>
         </dl>
         {#if sel.kind === 'gate'}
-          {#if gate?.error}
+          {#if gateKind(sel) === 'other'}
+            <pre class="mono preview">{sel.payload?.detail || sel.preview || sel.title}</pre>
+          {:else if gate?.error}
             <p class="muted">Could not load the gate's details: {gate.error}</p>
           {:else if !gate?.data}
             <p class="muted">Loading…</p>
@@ -212,14 +243,29 @@
               {#each sel.payload.options as o (o)}<button class="btn ghost" onclick={() => decide(sel, 'reply', o)}>{o}</button>{/each}
             </div>
           {/if}
+        {:else if sel.kind === 'permission'}
+          <PermissionCall item={sel} />
+        {:else if sel.kind === 'startup'}
+          {@const tail = tailLines(sel.payload?.tail) || sel.preview}
+          {#if tail}<pre class="mono preview">{tail}</pre>{/if}
         {:else if sel.preview}<pre class="mono preview">{sel.preview}</pre>{/if}
+        {#if restarted(sel) && !parked(sel)}
+          <p class="muted note">After restart: this was still waiting when the core restarted. Your answer reaches {sel.agent_id ?? 'the agent'} as a turn.</p>
+        {/if}
         {#if gateKind(sel) === 'spec'}
           <p class="muted note">Approving lets the lead create the tasks and the team start. Send back (or reply) with what to change: the lead revises and asks again.</p>
         {:else if gateKind(sel) === 'pr'}
           <p class="muted note">Approving pushes the branch with your credentials and opens the pull request with gh; agents never push.</p>
         {/if}
         {#if sel.kind === 'permission'}
-          <p class="muted note">Allowing answers Claude Code's permission prompt for this one call (no "always allow" rule). Deny with a reply to tell Claude what to do instead; "Answer in the pane" shows its own dialog.</p>
+          <p class="muted note">
+            {parked(sel) ? 'Allowing lets this one call run when the agent retries it.' : "Allowing answers Claude Code's permission prompt for this one call."}
+            Deny with a message to tell Claude what to do instead.
+            {#if sel.actions.includes('always')}"Always allow" adds the rule <span class="mono">{sel.payload.always}</span>.{/if}
+            {#if sel.actions.includes('in_pane')}"Answer in the pane" shows its own dialog.{/if}
+          </p>
+        {:else if sel.kind === 'startup'}
+          <p class="muted note">Open the pane to answer what it shows, or restart it fresh: a new session with its brief and task.</p>
         {/if}
         {#if reply}
           <div class="reply">
@@ -231,8 +277,17 @@
         <div class="actions">
           {#if labels.a && sel.actions.includes('a')}<button class="btn primary" onclick={() => apply(keyIntent('a', sel), sel)}>{labels.a} <Kbd keys="a" /></button>{/if}
           {#if labels.r && sel.actions.includes('r')}<button class="btn danger" onclick={() => apply({ kind: 'decide', action: 'reject' }, sel)}>{labels.r} <Kbd keys="r" /></button>{/if}
-          {#if sel.actions.includes('enter')}<button class="btn" onclick={() => apply({ kind: 'reply' }, sel)}>{sel.kind === 'question' && !teamQuestion(sel) ? 'Answer in the pane' : 'Reply'} <Kbd keys="⏎" /></button>{/if}
-          {#if sel.kind === 'permission'}<button class="btn ghost" onclick={() => decide(sel, 'in_pane')}>Answer in the pane</button>{/if}
+          {#if sel.actions.includes('enter')}<button class="btn" onclick={() => apply({ kind: 'reply' }, sel)}>{enterLabel(sel)} <Kbd keys="⏎" /></button>{/if}
+          {#each BUTTONS.filter((b) => sel.actions.includes(b) && labels[b]) as b (b)}
+            <button
+              class="btn"
+              class:primary={b === 'restart_fresh'}
+              class:danger={b === 'delete'}
+              class:ghost={b === 'in_pane' || b === 'dismiss'}
+              title={b === 'always' ? sel.payload?.always : null}
+              onclick={() => act(sel, b)}>{labels[b]}</button
+            >
+          {/each}
           {#if sel.actions.includes('o')}<button class="btn ghost" onclick={() => apply(keyIntent('o', sel), sel)}>{labels.o ?? 'Open'} <Kbd keys="o" /></button>{/if}
         </div>
       {:else}

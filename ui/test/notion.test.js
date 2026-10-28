@@ -159,7 +159,7 @@ describe('Notion comment in the Inbox', () => {
     // r dismisses, as on the other alerts (through the undo window).
     await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: 'r' });
     expect(app.pending.at(-1)).toMatchObject({ item: 'alert-9', action: 'reject' });
-    expect(app.toasts.at(-1).text).toBe('Dismissed · Comment on onboarding · spec.md');
+    expect(app.toasts.at(-1).text).toBe('Dismissing · Comment on onboarding · spec.md');
     app.pending = [];
   });
 
