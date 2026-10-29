@@ -143,6 +143,33 @@ pub struct AgentAttention {
     /// when it first saw this `(level, kind, ref)` (D7).
     #[serde(skip)]
     pub since_stored: bool,
+    /// The Governor's queue entry, for status `queued` and `not_started`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue: Option<QueueInfo>,
+}
+
+/// An agent's place in the Governor's queue (P4.2 api-contract §1.2).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct QueueInfo {
+    /// What `governor_act` run_now / cancel take.
+    pub entry: u64,
+    /// 1-based in the release order.
+    pub position: usize,
+    pub tier: governor::Tier,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta_ms: Option<u64>,
+    pub run_now: RunNow,
+}
+
+/// FR-809: what starting it now costs, in each window.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RunNow {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub week_pp: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub five_hour_pp: Option<f64>,
+    /// The window that holds it.
+    pub binds: Window,
 }
 
 impl AgentAttention {
@@ -177,10 +204,35 @@ pub struct RunAttention {
     pub phase: RunState,
     pub phase_since_ms: u64,
     pub level: Level,
+    /// Lead first, then the team's node order, then agent id.
     pub members: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocker: Option<Blocker>,
     pub counts: Counts,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lead: Option<String>,
+    pub started_ms: u64,
+    pub tasks: TaskCounts,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr: Option<RunPr>,
+}
+
+/// A run's tasks by status. Disjoint, except `blocked`: the not-done tasks
+/// with an unmet dependency.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct TaskCounts {
+    pub total: u32,
+    pub done: u32,
+    pub in_progress: u32,
+    pub review: u32,
+    pub blocked: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RunPr {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number: Option<u64>,
 }
 
 /// The numbers every surface shows and none computes (spec §3.1 Counts).
@@ -243,6 +295,8 @@ pub struct RunFacts {
     pub feature: String,
     /// When the run entered its phase (its last `run.state` event, else its start).
     pub phase_since_ms: u64,
+    /// The team's node ids in canvas order (members sort by it).
+    pub nodes: Vec<String>,
 }
 
 /// What the Governor says beyond its queue: usage limits ("5h window full ·
@@ -1017,6 +1071,10 @@ impl<'a> Ctx<'a> {
         };
         let seat = a.team.as_ref();
         let since = found.since;
+        let queue = matches!(found.status, Status::Queued | Status::NotStarted)
+            .then(|| self.entries.get(a.id.as_str()))
+            .flatten()
+            .map(|(pos, e)| queue_info(*pos, e));
         let mut rec = AgentAttention {
             agent: a.id.clone(),
             project: seat.map(|t| t.project_id.clone()).or_else(|| self.i.projects.get(&a.repo).cloned()),
@@ -1031,9 +1089,29 @@ impl<'a> Ctx<'a> {
             live: live && s != AgentState::Archived,
             since_ms: 0,
             since_stored: since.is_some(),
+            queue,
         };
         rec.set_since(since.unwrap_or(0));
         rec
+    }
+}
+
+/// Rounded as the UI shows it, so a drifting estimate is not a record change.
+fn tenth(x: f64) -> f64 {
+    (x * 10.0).round() / 10.0
+}
+
+fn queue_info(position: usize, e: &QueueEntry) -> QueueInfo {
+    QueueInfo {
+        entry: e.id.0,
+        position,
+        tier: e.tier,
+        eta_ms: e.estimated_start.map(|t| t.as_millisecond().max(0) as u64),
+        run_now: RunNow {
+            week_pp: Some(tenth(e.estimated_cost_pct)),
+            five_hour_pp: e.estimated_cost_5h_pct.map(tenth),
+            binds: e.binding,
+        },
     }
 }
 
@@ -1048,8 +1126,29 @@ pub fn blocker(members: &[&AgentAttention]) -> Option<Blocker> {
     })
 }
 
-/// The run's record from its members' records.
-fn run_record(r: &RunFacts, members: &[&AgentAttention]) -> RunAttention {
+fn task_counts(tasks: &[&Task]) -> TaskCounts {
+    let by_id: BTreeMap<u64, &Task> = tasks.iter().map(|t| (t.id, *t)).collect();
+    let done = |d: &str| d.parse::<u64>().ok().and_then(|id| by_id.get(&id)).is_some_and(|t| t.status == TaskStatus::Done);
+    let mut c = TaskCounts { total: tasks.len() as u32, ..Default::default() };
+    for t in tasks {
+        match t.status {
+            TaskStatus::Done => c.done += 1,
+            TaskStatus::InProgress => c.in_progress += 1,
+            TaskStatus::Review => c.review += 1,
+            TaskStatus::Backlog | TaskStatus::Ready => {}
+        }
+        if t.status != TaskStatus::Done {
+            let deps: Vec<String> = t.depends_on.iter().map(u64::to_string).collect();
+            if !orch_team::run::blocked_by(&deps, done).is_empty() {
+                c.blocked += 1;
+            }
+        }
+    }
+    c
+}
+
+/// The run's record from its members' records, its lead's agent id and its tasks.
+fn run_record(r: &RunFacts, members: &[&AgentAttention], lead: Option<&str>, tasks: &[&Task]) -> RunAttention {
     let mut counts = Counts::default();
     for m in members {
         counts.add(m);
@@ -1059,6 +1158,11 @@ fn run_record(r: &RunFacts, members: &[&AgentAttention]) -> RunAttention {
         level = level.max(Level::NeedsYou);
     }
     let blocker = blocker(members);
+    let mut ordered: Vec<&AgentAttention> = members.to_vec();
+    ordered.sort_by_key(|m| {
+        let node = m.node.as_deref().and_then(|n| r.nodes.iter().position(|x| x == n));
+        (Some(m.agent.as_str()) != lead, node.unwrap_or(usize::MAX), m.agent.clone())
+    });
     RunAttention {
         run: r.run.id.clone(),
         feature: r.feature.clone(),
@@ -1066,9 +1170,16 @@ fn run_record(r: &RunFacts, members: &[&AgentAttention]) -> RunAttention {
         phase: r.run.status,
         phase_since_ms: r.phase_since_ms,
         level,
-        members: members.iter().map(|m| m.agent.clone()).collect(),
+        members: ordered.iter().map(|m| m.agent.clone()).collect(),
         blocker,
         counts,
+        lead: lead.map(str::to_string),
+        started_ms: r.run.started_at_ms,
+        tasks: task_counts(tasks),
+        pr: r.run.pr_url.as_ref().map(|url| RunPr {
+            url: url.clone(),
+            number: orch_store::pr_number_from_url(url),
+        }),
     }
 }
 
@@ -1109,7 +1220,14 @@ pub fn compute(i: &Inputs, now_ms: u64) -> World {
         .map(|r| {
             let members: Vec<&AgentAttention> =
                 agents.values().filter(|a| a.run.as_deref() == Some(r.run.id.as_str())).collect();
-            let mut rec = run_record(r, &members);
+            let lead = i
+                .agents
+                .values()
+                .find(|a| is_lead(a) && a.team.as_ref().is_some_and(|t| t.run_id == r.run.id))
+                .map(|a| a.id.as_str());
+            let run_tasks: Vec<&Task> =
+                i.tasks.iter().filter(|t| t.team_run_id.as_deref() == Some(r.run.id.as_str())).collect();
+            let mut rec = run_record(r, &members, lead, &run_tasks);
             rec.counts.decisions = members.iter().map(|m| by_agent.get(m.agent.as_str()).copied().unwrap_or(0)).sum();
             (r.run.id.clone(), rec)
         })
