@@ -275,7 +275,7 @@
                 <div class="trow" onclick={() => openAgent(a.id)} title="Open {a.id}">
                   <AgentChip id={a.id} role={roleOfAgent(a.id)} compact />
                   <span class="name ell">{shortName(a.id)}</span>
-                  <span class="act muted ell">{a.tool ? `${a.tool}` : a.task ? `task T-${a.task}` : ''}{a.flag ? ` · ${a.flag}` : ''}</span>
+                  <span class="act muted ell">{a.tool ? a.tool : a.task ? `task T-${a.task}` : ''}{a.flag ? ` · ${a.flag}` : ''}</span>
                   <span class="st"><StatusBadge state={live ? displayState(live) : a.state} trailing /></span>
                 </div>
               {/each}
