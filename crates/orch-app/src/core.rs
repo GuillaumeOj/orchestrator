@@ -1621,7 +1621,7 @@ mod tests {
             |d: &Value, id: &str| d["actions"].as_array().unwrap().iter().any(|a| a["id"].as_str() == Some(id));
         let mut item = None;
         for _ in 0..50 {
-            if let Some(i) = open().first().cloned() {
+            if let Some(i) = open().into_iter().next() {
                 item = Some(i);
                 break;
             }
@@ -1655,7 +1655,7 @@ mod tests {
             (d["behavior"].as_str(), d["message"].as_str()),
             (Some("deny"), Some(agent_runtime::inbox::PARKED_MESSAGE))
         );
-        let parked = open().first().cloned().expect("the parked prompt stays in the Inbox");
+        let parked = open().into_iter().next().expect("the parked prompt stays in the Inbox");
         assert_eq!(
             (parked["lifecycle"]["state"].as_str(), parked["context"][0]["input"]["command"].as_str()),
             (Some("parked"), Some("pnpm add y"))
