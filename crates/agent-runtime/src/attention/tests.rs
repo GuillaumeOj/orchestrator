@@ -123,6 +123,8 @@ impl Fx {
                 project: "shop".into(),
                 feature: "checkout".into(),
                 phase_since_ms: NOW - 30 * MIN,
+                nodes: vec!["lead".into(), "back".into(), "front".into()],
+                held_in: None,
             });
         }
     }
@@ -702,7 +704,7 @@ fn run_record_level_blocker_and_counts() {
     let w = f.world();
     let r = &w.runs["run-1"];
     assert_eq!((r.level, r.phase, r.phase_since_ms), (Level::NeedsYou, RunState::Executing, NOW - 30 * MIN));
-    assert_eq!(r.members, ["back-1", "front-1", "lead-1"]);
+    assert_eq!(r.members, ["lead-1", "back-1", "front-1"]);
     let b = r.blocker.as_ref().unwrap();
     assert_eq!(
         (b.agent.as_str(), b.waiting_on.kind, b.reason.as_str()),
@@ -869,4 +871,114 @@ fn compute_bench_30_agents_10_runs() {
     let limit =
         if cfg!(debug_assertions) { std::time::Duration::from_millis(10) } else { std::time::Duration::from_millis(1) };
     assert!(per < limit, "{per:?}");
+}
+
+#[test]
+fn run_record_lead_members_tasks_and_pr() {
+    let mut f = Fx::default();
+    f.member("front-1", "front", AgentState::Working, Some(3));
+    f.member("back-1", "back", AgentState::Working, Some(2));
+    f.member("zed-1", "extra", AgentState::Idle, None);
+    f.lead(AgentState::Idle);
+    f.task(1, "back", TaskStatus::Done, &[]);
+    f.task(2, "back", TaskStatus::InProgress, &[1]);
+    f.task(3, "front", TaskStatus::Review, &[]);
+    f.task(4, "front", TaskStatus::Ready, &[2]);
+    f.task(5, "front", TaskStatus::Backlog, &[1]);
+    let w = f.world();
+    let r = &w.runs["run-1"];
+    assert_eq!(r.lead.as_deref(), Some("lead-1"));
+    assert_eq!(r.started_ms, NOW - 120 * MIN);
+    assert_eq!(r.members, ["lead-1", "back-1", "front-1", "zed-1"], "lead, node order, then the rest");
+    assert_eq!(r.tasks, TaskCounts { total: 5, done: 1, in_progress: 1, review: 1, blocked: 1 });
+    assert_eq!(r.pr, None);
+    f.runs[0].run.pr_url = s("https://github.com/o/r/pull/12");
+    assert_eq!(
+        f.world().runs["run-1"].pr,
+        Some(RunPr { url: "https://github.com/o/r/pull/12".into(), number: Some(12) })
+    );
+    f.runs[0].run.pr_url = s("https://example.com/merge/7");
+    let v = serde_json::to_value(&f.world().runs["run-1"]).unwrap();
+    assert_eq!(v["pr"], json!({"url": "https://example.com/merge/7"}));
+    assert_eq!(v["tasks"], json!({"total": 5, "done": 1, "in_progress": 1, "review": 1, "blocked": 1}));
+}
+
+#[test]
+fn a_run_without_a_lead_has_no_lead_field() {
+    let mut f = Fx::default();
+    f.member("back-1", "back", AgentState::Working, None);
+    let v = serde_json::to_value(&f.world().runs["run-1"]).unwrap();
+    assert!(v.get("lead").is_none());
+}
+
+#[test]
+fn queue_field_on_queued_and_not_started_agents() {
+    let mut f = Fx::default();
+    f.agent("x", AgentState::Idle);
+    f.agent("a", AgentState::Idle);
+    f.entry("x", QueueReason::BehindQueue, None);
+    f.entry("a", QueueReason::LiveCap { state: PressureState::Green, cap: 3 }, Some(54));
+    f.queue[1].estimated_cost_pct = 2.14;
+    let q = f.rec("a").queue.unwrap();
+    assert_eq!((q.entry, q.position, q.tier, q.eta_ms), (2, 2, Tier::Normal, Some(NOW + 54 * MIN)));
+    assert_eq!((q.run_now.week_pp, q.run_now.five_hour_pp, q.run_now.binds), (Some(2.1), None, Window::Weekly));
+    assert_eq!(f.rec("x").queue.unwrap().eta_ms, None);
+    // Not started, with an entry.
+    f.agent("n", AgentState::Created);
+    f.entry("n", QueueReason::BehindQueue, None);
+    let n = f.rec("n");
+    assert_eq!(n.status, Status::NotStarted);
+    assert_eq!(n.queue.unwrap().entry, 3);
+    // Not started, no entry: nothing to act on.
+    f.agent("c", AgentState::Created);
+    assert_eq!(f.rec("c").queue, None);
+    // The 5h guard holds it: the cost is shown in the 5h window.
+    f.agent("g", AgentState::Idle);
+    f.entry("g", QueueReason::FiveHourGuard, None);
+    f.queue[3].binding = Window::FiveHour;
+    f.queue[3].estimated_cost_5h_pct = Some(6.0);
+    let g = f.rec("g").queue.unwrap();
+    assert_eq!((g.run_now.five_hour_pp, g.run_now.binds), (Some(6.0), Window::FiveHour));
+    let v = serde_json::to_value(f.rec("g")).unwrap();
+    assert_eq!(v["queue"]["run_now"]["binds"], "five_hour");
+    assert_eq!(v["queue"]["tier"], "normal");
+    // Paused: no queue field.
+    f.agent("p", AgentState::Idle);
+    f.entry("p", QueueReason::PausedAgent, None);
+    let p = f.rec("p");
+    assert_eq!(p.status, Status::Paused);
+    assert_eq!(p.queue, None);
+    assert!(serde_json::to_value(&p).unwrap().get("queue").is_none());
+}
+
+#[test]
+fn held_in_walks_back_past_paused_and_deferred() {
+    use RunState::*;
+    // Newest first: executing → paused → deferred (paused while deferred is not a move).
+    let moves = [(Paused, Deferred), (Executing, Paused), (Planning, Executing)];
+    assert_eq!(held_in(Deferred, &moves), Some(Executing));
+    assert_eq!(held_in(Paused, &moves[1..]), Some(Executing));
+    assert_eq!(held_in(Failed, &[(Integrating, Failed)]), Some(Integrating));
+    assert_eq!(held_in(Executing, &moves), None, "only held and failed phases");
+    assert_eq!(held_in(Paused, &[]), None, "no event, no step");
+}
+
+#[test]
+fn a_paused_run_has_held_in_and_a_deferred_one_until() {
+    let mut f = Fx::default();
+    f.member("back-1", "back", AgentState::Idle, None);
+    f.gov.week_resets_ms = Some(NOW + 3 * 60 * MIN);
+    f.phase(RunState::Paused);
+    f.runs[0].held_in = Some(RunState::Executing);
+    let r = f.world().runs["run-1"].clone();
+    assert_eq!((r.held_in, r.until_ms), (Some(RunState::Executing), None));
+    f.phase(RunState::Deferred);
+    let v = serde_json::to_value(&f.world().runs["run-1"]).unwrap();
+    assert_eq!((v["held_in"].clone(), v["until_ms"].clone()), (json!("executing"), json!(NOW + 3 * 60 * MIN)));
+    f.gov.week_resets_ms = None;
+    assert!(serde_json::to_value(&f.world().runs["run-1"]).unwrap().get("until_ms").is_none());
+    // Other phases carry neither.
+    f.phase(RunState::Executing);
+    let v = serde_json::to_value(&f.world().runs["run-1"]).unwrap();
+    assert!(v.get("held_in").is_none() && v.get("until_ms").is_none());
 }
