@@ -48,7 +48,7 @@
 { "needs_you": 2, "decisions": 2, "running": 2, "waiting": 1, "queued": 2, "idle": 0, "error": 0,
   "live": 4, "live_cap": 3, "done_today": 5 }
 ```
-`decisions` = open decisions of levels 1–3 waiting on the user (the title badge). `queued` = agents at level `queued` (queue entries + not started + paused). `live` excludes archived agents. `live_cap` is global only (absent per project/run).
+`decisions` = open decisions of levels 1–3 waiting on the user (the title badge). `queued` = agents at level `queued` only (no double count: an agent with a Governor ask is at needs_you). `live` excludes archived agents. `live_cap` is global only (absent per project/run).
 
 ## 2. Decisions
 
@@ -64,7 +64,7 @@
   "title": "Bash · pnpm add zod",
   "summary": "Add zod",             // one line, may be empty
   "context": [ /* blocks, §2.2, in display order */ ],
-  "actions": [ { "id": "approve", "label": "Allow", "key": "a" },
+  "actions": [ { "id": "approve", "label": "Allow once", "key": "a" },
                { "id": "reject",  "label": "Deny",  "key": "r" },
                { "id": "reply",   "label": "Deny with message", "key": "enter" },
                { "id": "open",    "label": "Open pane", "key": "o" } ],
@@ -73,6 +73,7 @@
     "decided_by": "user",           // user | pane | rule:<id> | expired | core | policy | overwatch — from decided on
     "decided_at_ms": 0, "sent_at_ms": 0,
     "effect": "resumed",            // allowed | denied | delivered | resumed | queued | pr_opened | restarted | dismissed
+                                    // | applied | skipped | deleted
     "effect_detail": "≈14:20",      // ETA for queued, URL for pr_opened
     "effect_at_ms": 0,
     "error": "push rejected: …",    // failed only
@@ -164,14 +165,14 @@ Emitted at most every 200 ms (pump), only when something changed; the 30 s tick 
 | Kind | Action ids |
 |---|---|
 | permission | approve, reject, reply, always (when offered), in_pane (open hook only), open |
-| question | answer (`message` = text or the chosen option labels joined by `\n`), reply, open |
+| question | answer (`message` = text or the chosen option labels joined by `\n`), reply, reject (team question: dismiss), open |
 | gate spec / pr / restart | approve, reject, reply, open |
 | startup | restart_fresh, dismiss, delete (after a failed fresh restart), open |
 | ask | approve (run now), reject (keep queued), open |
 | budget | approve, reject |
 | trust, wait | open |
-| error / alert | open, dismiss, restart_fresh (spawn/startup errors) |
-| notion | reply, dismiss |
+| error / alert | open, dismiss, resume (agent error), restart_fresh (spawn/startup errors), reconnect + open_settings (MCP needs auth) |
+| notion | reply, dismiss, open (the page) |
 
 ## 5. ctl / orchd (no UI)
 - `CtlRequest::Now` → the `now_snapshot` body. `orchd now [--json] [--run <id>]`: one line per agent `agent  level/status  reason  since`, then one per run `run  phase  level  blocker`.
