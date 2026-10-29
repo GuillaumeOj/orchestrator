@@ -462,12 +462,12 @@
     align-items: flex-start;
     font: var(--text-caption);
   }
-  .evtime,
-  .ev :global(.chip) {
+  .evtime {
     flex: none;
     white-space: nowrap;
   }
   .evt {
+    flex: 1;
     min-width: 0;
     color: var(--color-text-secondary);
     overflow-wrap: anywhere;
