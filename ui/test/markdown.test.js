@@ -264,6 +264,11 @@ describe('lazy table after a quote', () => {
 
   it('leaves a lazy row indented as code alone, and counts `\\\\|` as a cell edge', () => {
     expect(kids(tree('> q\n    | a | b |\n|---|---|\n| 1 | 2 |'))).toEqual(['blockquote']);
+    expect(kids(tree('> q\n\t| a | b |\n|---|---|\n| 1 | 2 |'))).toEqual(['blockquote']);
+    expect(kids(tree('> q\n \t| a | b |\n|---|---|'))).toEqual(['blockquote']);
+    // A delimiter row indented 4+ columns can't make a table: the rows stay lazy.
+    expect(kids(tree('> q\n| a | b |\n        ---|---'))).toEqual(['blockquote']);
+    expect(kids(tree('> q\n| a | b |\n\t---|---'))).toEqual(['blockquote']);
     expect(kids(tree('> q\n| a \\\\| b |\n|---|---|'))).toEqual(['blockquote', 'table']);
   });
 

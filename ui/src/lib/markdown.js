@@ -23,7 +23,8 @@ export function parse(md) {
 }
 
 const QUOTE_LINE = /^ {0,3}>/;
-const DELIMITER_ROW = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*\r?$/;
+// At most 3 spaces before the first `|` or `-`: indented 4+ columns, it isn't a delimiter row.
+const DELIMITER_ROW = /^ {0,3}(?:\|[ \t]*)?:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*\r?$/;
 /** A `|` not escaped by an odd run of `\`. */
 const CELL_EDGE = /(?<!(?:^|[^\\])(?:\\\\)*\\)\|/;
 
@@ -58,8 +59,8 @@ function unlazyTables(md, root) {
     .flatMap((line, i) =>
       lazy.has(i) &&
       QUOTE_LINE.test(lines[i - 1]) &&
-      // 4+ spaces would turn the row into indented code once it isn't lazy.
-      /^ {0,3}[^ >]/.test(line) &&
+      // 4+ columns (spaces or a tab) would turn the row into indented code once it isn't lazy.
+      /^ {0,3}[^ \t>]/.test(line) &&
       line.includes('|') &&
       lines[i + 1]?.includes('|') &&
       DELIMITER_ROW.test(lines[i + 1]) &&
