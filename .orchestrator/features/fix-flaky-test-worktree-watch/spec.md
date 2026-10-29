@@ -1,38 +1,28 @@
-# Fix Flaky Test Worktree Watch · Feature spec
+# Fix Flaky Tests · Feature spec
 
-> Feature `fix-flaky-test-worktree-watch` · Integration branch `orch/fix-flaky-test-worktree-watch/integration` · Core test only (no UI, no API change, no design pass)
+> Feature `fix-flaky-test-worktree-watch` · Integration branch `orch/fix-flaky-test-worktree-watch/integration` · Core only (no UI, no API change, no design pass)
 
 ## 1. Problem
 
-CI fails now and then on:
+Three tests fail now and then on `main` CI (macOS):
 
-```
-worktree_watch::tests::one_topic_per_change_two_per_burst_none_for_ignored
-panicked at crates/agent-runtime/src/worktree_watch.rs:222:9:
-assertion `left == right` failed: ignored paths raise nothing
-  left: 1
- right: 0
-```
+| Part | Test | Failure |
+|---|---|---|
+| A | `worktree_watch::tests::one_topic_per_change_two_per_burst_none_for_ignored` | `worktree_watch.rs:222` `ignored paths raise nothing`, left 1, right 0 |
+| B | `an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry` (`tests/e2e_fake_claude.rs`) | `e2e_fake_claude.rs:30` `timed out waiting for retried` |
+| C | `otlp::tests::http_server_keepalive_chunked_and_rejections` | `otlp.rs:341` `post(rx.addr, "/v1/logs", …).starts_with("HTTP/1.1 200")` failed |
 
-A second flaky test on `main` was added to this feature (Part B, §8):
+**Goal:** each passes every time on a loaded macOS runner and still checks what it was written to check. A and B are test bugs. **C is a real product bug** (the OTLP receiver), and the test caught it.
 
-```
-an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry
-panicked at crates/agent-runtime/tests/e2e_fake_claude.rs:30:5:
-timed out waiting for retried
-```
+## 2. Base branch
 
-Part A below (§2-§6) is the worktree-watch test; Part B (§8) is this one.
+`worktree_watch.rs` (Part A) came with p4.1, which is now on `origin/main` (7d8107d, PR #18). This integration branch was cut from the older local `main` (68ea76d), which lacks it. **Before any task starts, this integration branch must be brought up to `origin/main` (≥ 7d8107d).** Then all three parts are fixed against today's `main`, and task branches cut from or synced with integration have every file. The lead cannot merge `main` in (`merge` only takes this feature's branches), so this is done by the orchestrator or the user.
 
-**Goal (Part A):** the test passes every time on a loaded macOS CI runner and still proves what it was written for: ignored paths raise no topic, one write raises one topic, a burst raises at most two.
+## 3. Part A: worktree watch (FSEvents)
 
-## 2. Where the code is (base-branch caveat)
+### Cause
 
-`crates/agent-runtime/src/worktree_watch.rs` is **not on `main`** (neither local `main` 68ea76d, the base of this integration branch, nor `origin/main` 9daeb83). It was added by T-33 on feature **p-4-1-one-now** and exists only on `orch/p-4-1-one-now/{integration,back-1,front-1}`. The failing CI run is that feature's branch / PR. The fix has to land on a branch that has the file: see §6.
-
-## 3. Cause
-
-The test (lines 214-234 on `orch/p-4-1-one-now/integration`):
+The test (`worktree_watch.rs:214-234`):
 
 ```rust
 let (_d, root) = tmp();                                 // creates the temp dir
@@ -51,7 +41,7 @@ The production filter is right (`what_counts` covers `target/…` → ignored). 
 
 Both are correct product behaviour (one extra diff refetch is harmless); the test is what assumes a perfectly quiet stream.
 
-## 4. Scope
+### Scope
 
 Test-side fix in `worktree_watch.rs` (`mod tests`), plus at most a small, behaviour-neutral refactor of `start` if the test needs to see the raw paths:
 
@@ -64,35 +54,14 @@ Test-side fix in `worktree_watch.rs` (`mod tests`), plus at most a small, behavi
 
 Out of scope: the diff pane, the `now` pump, other tests.
 
-## 5. Acceptance
+### Acceptance
 
 1. `cargo test -p agent-runtime worktree_watch` passes.
 2. The FSEvents test passes **50 times in a row** under load (e.g. `for i in $(seq 50); do cargo test -p agent-runtime worktree_watch::tests::one_topic -- --exact … || break; done` while another `cargo test` runs in parallel). Note: the test needs the FSEvents service, which an agent sandbox may not have (the test comment says so). If the owner cannot run it, the report says so and gives the exact command; the lead or the user runs it.
 3. Regression check: temporarily removing `"target"` from `IGNORED_DIRS` makes the "ignored" assertion fail (the test still detects a real bug).
 4. `cargo clippy -p agent-runtime --all-targets` and `cargo fmt --check` are clean.
 
-## 6. Base branch (decision for the user)
-
-Because the file only exists on `orch/p-4-1-one-now/*`, the change cannot be made on this integration branch as it stands. Options:
-
-- **A (recommended):** merge `orch/p-4-1-one-now/integration` into this integration branch first, do the fix here, and open this PR **after** p4.1's PR lands on `main` (then its diff is only the test fix). Or stack it on p4.1's PR.
-- **B:** hand the fix to the p-4-1-one-now team so it ships inside the p4.1 PR whose CI is failing; this feature is closed without a PR.
-- **C:** wait until p4.1 is merged into `main`, sync this integration branch, then do the fix.
-
-## 7. Tasks
-
-| Task | Owner | Notes |
-|---|---|---|
-| T-1 Make the FSEvents worktree-watch test deterministic (Part A) | back | `crates/agent-runtime/src/worktree_watch.rs` tests (+ optional sink refactor of `start`). Starts once §6 is decided. |
-| T-2 The e2e permission test stops losing screen output (Part B) | back | `crates/agent-runtime/tests/e2e_fake_claude.rs` only. On `main`: no base-branch issue, can start right away. |
-
-No frontend work: `front` reviews both changes. T-1 and T-2 touch different files, so they don't conflict.
-
-## 8. Part B: `an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry`
-
-### Where
-
-`crates/agent-runtime/tests/e2e_fake_claude.rs:312`, on `main` (same code on this branch, `origin/main` and p4.1).
+## 4. Part B: e2e permission retry
 
 ### Cause
 
@@ -119,3 +88,41 @@ There's a smaller form of the same issue: a single `Read` can return half a line
 2. `an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry` passes **30 times in a row** under parallel load (e.g. run the whole `e2e_fake_claude` file in a loop while another `cargo test` runs). If the sandbox blocks it (PTYs, socket), the report says so and gives the command.
 3. A note in the report on why the fix is right: show (by reasoning or a temporary `sleep` in a local experiment) that a poll reading the text while the agent is busy no longer loses it.
 4. `cargo clippy -p agent-runtime --all-targets` and `cargo fmt --check` are clean.
+
+## 5. Part C: OTLP receiver (product bug)
+
+### Cause
+
+`OtlpReceiver::start` (`otlp.rs:125`) makes the **listener** non-blocking so the accept loop can poll `stop`. On macOS (BSD `accept(2)`), **an accepted socket inherits the listener's `O_NONBLOCK`** (Linux's `accept` does not, which is why it looks random). `serve_conn` (`otlp.rs:238`) only calls `set_read_timeout(IDLE_KEEPALIVE)`, which does nothing on a non-blocking socket. So every read in `read_request` returns `WouldBlock` as soon as the bytes it needs have not arrived yet. That `Err` becomes `400 Bad Request` and the connection is closed.
+
+- **The test:** `post()` connects, then writes. The accept loop wakes every 100 ms. Usually the whole request is already buffered when the connection is accepted, so it passes. If the accept (or the first `read_line`) runs between `connect` and the end of the `write`, the server answers 400, and line 341 fails. The keep-alive half has the same race: the second request may not have arrived when the server goes back to read.
+- **In the app:** Claude Code's OTLP exporter keeps connections alive. After each request, the next `read_line` on the idle connection gets `WouldBlock` at once, so the receiver sends an unsolicited `400` and closes. Keep-alive and the 10 s idle timeout don't work, and a request arriving in pieces (a large log batch over several TCP segments) can be rejected and its usage samples lost.
+
+I could not reproduce this here: the lead's sandbox can't bind local ports. The cause comes from the code plus BSD semantics, and it matches the symptom (a non-200 on the first `post`). The owner confirms it (acceptance 2).
+
+### Scope
+
+- `serve_conn` puts the accepted stream back in blocking mode (`set_nonblocking(false)`) before setting the read timeout. If that call fails, the connection is dropped. This is the product fix, a couple of lines in `otlp.rs`. No other behaviour change.
+- **Regression tests** that fail deterministically on macOS without the fix:
+  - a client that connects, waits (e.g. 200-300 ms), then sends a request, and gets `200`;
+  - a request whose body is written in two parts with a pause between them, and gets `200`;
+  - on one keep-alive connection: a request, a pause (e.g. 300 ms, well under `IDLE_KEEPALIVE`), a second request, and two `200`s with no stray `400`.
+- The existing test keeps its checks; failure messages print the actual response (today it is a bare `assert!` that hides it).
+- `otlp.rs:127` is the only `set_nonblocking(true)` listener in `crates/` on `origin/main` (checked), so no other site needs the fix.
+
+### Acceptance
+
+1. `cargo test -p agent-runtime otlp` passes.
+2. The new regression tests **fail** with the fix reverted and pass with it (on macOS). The report shows both runs. If the agent sandbox blocks local port binding, the report says so and gives the exact command; the lead or the user runs it.
+3. The OTLP tests pass 50 times in a row under parallel load.
+4. `cargo clippy -p agent-runtime --all-targets` and `cargo fmt --check` are clean.
+
+## 6. Tasks
+
+| Task | Owner | Files | Notes |
+|---|---|---|---|
+| T-1 Worktree-watch test settles and checks only the ignored path (A) | back | `crates/agent-runtime/src/worktree_watch.rs` (tests, optional sink refactor of `start`) | |
+| T-2 E2E screen helpers stop losing drained output (B) | back | `crates/agent-runtime/tests/e2e_fake_claude.rs` | |
+| T-3 OTLP receiver serves accepted connections in blocking mode (C) | back | `crates/agent-runtime/src/otlp.rs`  | product fix + regression tests |
+
+All three start once integration is on `origin/main` (§2). They touch different files, so they don't conflict. `back` takes them in the order T-3 (product bug), T-2, T-1. `front` reviews each one. Several checks need real FSEvents, PTYs or local ports, which an agent sandbox may block. When that happens the report gives the exact loop command and the lead or the user runs it before the PR.
