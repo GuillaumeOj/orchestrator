@@ -45,13 +45,6 @@ pub fn counts(root: &Path, git_dir: Option<&Path>, path: &Path) -> bool {
     !all.into_iter().any(|p| IGNORED_DIRS.contains(&p))
 }
 
-/// The git dir of a linked worktree (`.git` is a file: `gitdir: <path>`).
-fn linked_git_dir(root: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(root.join(".git")).ok()?;
-    let dir = PathBuf::from(text.strip_prefix("gitdir:")?.trim());
-    Some(if dir.is_absolute() { dir } else { root.join(dir) })
-}
-
 /// One live watcher: dropping it stops the FS watch and its thread.
 pub struct WorktreeWatch {
     _watcher: notify::RecommendedWatcher,
@@ -61,7 +54,8 @@ impl WorktreeWatch {
     /// Watches `root` (canonical) and calls `emit` at most once per
     /// `debounce`, then once more after the last change of a burst.
     pub fn start(root: PathBuf, debounce: Duration, emit: impl Fn() + Send + 'static) -> Result<WorktreeWatch> {
-        let git_dir = linked_git_dir(&root).and_then(|d| d.canonicalize().ok());
+        // A linked worktree's git dir (its `.git` is a `gitdir:` file), canonical.
+        let git_dir = orch_git::repair::check_links(&root).gitdir;
         let (tx, rx) = channel::<()>();
         let (r, g) = (root.clone(), git_dir.clone());
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -71,10 +65,13 @@ impl WorktreeWatch {
                 let _ = tx.send(());
             }
         })?;
-        watcher.watch(&root, RecursiveMode::Recursive)?;
+        // One batch: FSEvents restarts its stream once, not once per path.
+        let mut paths = watcher.paths_mut();
+        paths.add(&root, RecursiveMode::Recursive)?;
         if let Some(g) = &git_dir {
-            watcher.watch(g, RecursiveMode::NonRecursive)?;
+            paths.add(g, RecursiveMode::NonRecursive)?;
         }
+        paths.commit()?;
         // The sender lives in the watcher: dropping the watcher ends the thread.
         std::thread::Builder::new().name("orch-wt-watch".into()).spawn(move || debounce_loop(&rx, debounce, emit))?;
         Ok(WorktreeWatch { _watcher: watcher })
@@ -105,7 +102,9 @@ fn debounce_loop(rx: &Receiver<()>, debounce: Duration, emit: impl Fn()) {
     }
 }
 
-/// The watched worktrees and how many panes watch each.
+/// The watched worktrees, keyed by the path the panes passed (their topic,
+/// and what `unwatch_worktree` gets back even once the folder is gone), and
+/// how many panes watch each.
 #[derive(Default)]
 pub struct Watches(Mutex<BTreeMap<PathBuf, (usize, WorktreeWatch)>>);
 
@@ -115,14 +114,14 @@ impl Runtime {
     fn known_worktree(&self, path: &Path) -> Result<PathBuf> {
         let p = path.canonicalize().map_err(|e| anyhow!("{}: {e}", path.display()))?;
         let canon = |q: &Path| q.canonicalize().ok();
-        let projects = self.db.projects(false)?;
-        let registered = |repo: &Path| {
-            projects.iter().any(|pr| canon(&pr.path).is_some_and(|c| c == canon(repo).unwrap_or_default()))
-        };
-        let known = projects.iter().any(|pr| canon(&pr.path).as_deref() == Some(&p))
-            || self
-                .store
-                .read(|s| s.worktrees.values().any(|w| canon(&w.path).as_deref() == Some(&p) && registered(&w.repo)));
+        let projects: Vec<PathBuf> = self.db.projects(false)?.iter().filter_map(|pr| canon(&pr.path)).collect();
+        // Only the paths under the store lock; the syscalls run after it.
+        let worktrees: Vec<(PathBuf, PathBuf)> =
+            self.store.read(|s| s.worktrees.values().map(|w| (w.path.clone(), w.repo.clone())).collect());
+        let known = projects.contains(&p)
+            || worktrees
+                .iter()
+                .any(|(wt, repo)| canon(wt).as_ref() == Some(&p) && canon(repo).is_some_and(|r| projects.contains(&r)));
         if !known {
             bail!("{} is not a worktree of a registered project", path.display());
         }
@@ -132,39 +131,45 @@ impl Runtime {
     /// `watch_worktree`: a Diff pane opened on `path`. The first one starts
     /// the watcher; the topic is `worktree:<path>` as the pane asked it.
     pub fn watch_worktree(&self, path: &Path) -> Result<()> {
-        let canon = self.known_worktree(path)?;
-        let mut w = self.watches.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((n, _)) = w.get_mut(&canon) {
-            *n += 1;
+        let key = path.to_path_buf();
+        if self.bump_watch(&key) {
             return Ok(());
         }
+        let canon = self.known_worktree(path)?;
         let me = self.me.clone();
-        let shown = path.to_path_buf();
-        let watch = WorktreeWatch::start(canon.clone(), DEBOUNCE, move || {
+        let shown = key.clone();
+        // Started outside the lock (a recursive watch can take a while); a
+        // pane that raced us in meanwhile keeps its watcher, ours drops.
+        let watch = WorktreeWatch::start(canon, DEBOUNCE, move || {
             if let Some(rt) = me.upgrade() {
                 rt.touch_worktree(&shown);
             }
         })?;
-        w.insert(canon, (1, watch));
+        let mut w = self.watches.0.lock().unwrap_or_else(|e| e.into_inner());
+        w.entry(key).and_modify(|(n, _)| *n += 1).or_insert((1, watch));
         Ok(())
+    }
+
+    /// One more pane on an already watched `path`.
+    fn bump_watch(&self, path: &Path) -> bool {
+        let mut w = self.watches.0.lock().unwrap_or_else(|e| e.into_inner());
+        w.get_mut(path).map(|(n, _)| *n += 1).is_some()
     }
 
     /// `unwatch_worktree`: a Diff pane closed; the last one stops the watcher.
     pub fn unwatch_worktree(&self, path: &Path) {
-        let Ok(canon) = path.canonicalize() else { return };
         let mut w = self.watches.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((n, _)) = w.get_mut(&canon) {
+        if let Some((n, _)) = w.get_mut(path) {
             *n -= 1;
             if *n == 0 {
-                w.remove(&canon);
+                w.remove(path);
             }
         }
     }
 
     /// How many panes watch `path` (tests, diagnostics).
     pub fn watchers_of(&self, path: &Path) -> usize {
-        let Ok(canon) = path.canonicalize() else { return 0 };
-        self.watches.0.lock().unwrap_or_else(|e| e.into_inner()).get(&canon).map_or(0, |(n, _)| *n)
+        self.watches.0.lock().unwrap_or_else(|e| e.into_inner()).get(path).map_or(0, |(n, _)| *n)
     }
 
     /// Stops every watcher (shutdown).
@@ -289,6 +294,13 @@ mod tests {
         rt.unwatch_worktree(&repo);
         assert_eq!(rt.watchers_of(&repo), 0, "the last pane stops it");
         rt.unwatch_worktree(&repo); // one too many: harmless
+        // A pane still open on a worktree that was removed: closing it stops the watcher.
+        let (_t, gone) = orch_git::fixtures::scratch_repo();
+        orch_git::project::register(&rt.db, &gone).unwrap();
+        rt.watch_worktree(&gone).unwrap();
+        std::fs::remove_dir_all(&gone).unwrap();
+        rt.unwatch_worktree(&gone);
+        assert_eq!(rt.watchers_of(&gone), 0, "no watcher leaks on a removed worktree");
     }
 
     /// Through the runtime (real FSEvents, like the test above): a write in a
