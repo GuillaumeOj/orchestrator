@@ -139,11 +139,19 @@ describe('timeline', () => {
     const many = ['a', 'b', 'c', 'd', 'e'].map((name) => ({ name, workflow: null }));
     expect(t('pr.status', { number: 1, ci: { to: 'error', failed_jobs: many } })).toBe('PR #1 CI failed (a, b, c, +2)');
   });
+  it('uses the event base', () => {
+    expect(t('pr.status', { number: 12, base: 'develop', position: { to: 'behind', behind: 3 } })).toBe(
+      'PR #12 behind develop by 3',
+    );
+    expect(t('git.rebase', { onto: 'origin/develop', base: 'develop', base_commits: 1, branches_moved: [] })).toBe(
+      'rebased the feature onto develop (1 new commit from develop)',
+    );
+  });
   it('rebase', () => {
-    expect(t('git.rebase', { onto: 'main', base_commits: 3, branches_moved: [] })).toBe(
+    expect(t('git.rebase', { base: 'main', base_commits: 3, branches_moved: [] })).toBe(
       'rebased the feature onto main (3 new commits from main)',
     );
-    expect(t('git.rebase', { onto: 'main', base_commits: 3, branches_moved: ['a', 'b'] })).toBe(
+    expect(t('git.rebase', { base: 'main', base_commits: 3, branches_moved: ['a', 'b'] })).toBe(
       'rebased the feature onto main (3 new commits from main) · moved 2 branches',
     );
   });

@@ -88,8 +88,8 @@ function prStatusText(d) {
   }
   if (d.position) {
     const { to, behind } = d.position;
-    if (to === 'behind') parts.push(`behind main by ${behind}`);
-    else if (to === 'conflicts') parts.push('conflicts with main');
+    if (to === 'behind') parts.push(`behind ${d.base ?? 'main'} by ${behind}`);
+    else if (to === 'conflicts') parts.push(`conflicts with ${d.base ?? 'main'}`);
     else if (to === 'up_to_date') parts.push('up to date');
   }
   return `PR #${d.number}${parts.length ? ` ${parts.join(' · ')}` : ''}`;
@@ -133,8 +133,9 @@ export function timelineText(e) {
         : 'synced integration';
     case 'git.rebase': {
       const n = d.base_commits ?? 0;
+      const base = d.base ?? 'main';
       const moved = d.branches_moved?.length ?? 0;
-      return `rebased the feature onto ${d.onto ?? 'main'} (${n} new commit${n === 1 ? '' : 's'} from ${d.onto ?? 'main'})${moved ? ` · moved ${moved} branch${moved === 1 ? '' : 'es'}` : ''}`;
+      return `rebased the feature onto ${base} (${n} new commit${n === 1 ? '' : 's'} from ${base})${moved ? ` · moved ${moved} branch${moved === 1 ? '' : 'es'}` : ''}`;
     }
     case 'pr.opened':
       return `opened PR #${d.number}`;
