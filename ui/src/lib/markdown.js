@@ -1,93 +1,227 @@
-// A small markdown reader for feature docs (spec.md, ux-brief.md…) in the
-// Inbox spec gate and the Feature pane. It returns blocks and inline spans
-// that components render as elements: no HTML is ever injected, so text an
-// agent wrote can't add markup or scripts. Links show their text only.
+// Markdown for feature docs, gate bodies and team questions (specs-rendering
+// §3.1–3.3, D1): text → an mdast syntax tree (CommonMark + GFM + front-matter),
+// never HTML. Markdown.svelte renders the tree as elements, so text an agent
+// wrote can't add markup or scripts. Code gets a token list from lowlight, also
+// rendered as elements.
+import { common, createLowlight } from 'lowlight';
+import { fromMarkdown } from 'mdast-util-from-markdown';
+import { frontmatterFromMarkdown } from 'mdast-util-frontmatter';
+import { gfmFromMarkdown } from 'mdast-util-gfm';
+import { frontmatter } from 'micromark-extension-frontmatter';
+import { gfm } from 'micromark-extension-gfm';
 
-/** @typedef {{ t: 'text' | 'b' | 'i' | 'code', s: string }} Span */
-/**
- * `h` (level, spans), `p` / `quote` (spans), `ul` / `ol` (items), `code` (text), `hr`.
- * @typedef {{ type: string, level?: number, spans?: Span[], items?: { spans: Span[], checked: boolean | null }[], text?: string }} Block
- */
-
-/** Inline spans: `code`, **bold**, *italic* / _italic_, [text](url) → text. */
-export function inline(text) {
-  /** @type {Span[]} */
-  const out = [];
-  // `_` emphasis only at word edges: snake_case names in specs stay as written.
-  const re =
-    /(`[^`]+`)|(\*\*[^*]+\*\*|(?<!\w)__[^_]+__(?!\w))|(\*[^*\s][^*]*\*|(?<!\w)_[^_\s][^_]*_(?!\w))|(\[[^\]]+\]\([^)]*\))/g;
-  let last = 0;
-  for (const m of text.matchAll(re)) {
-    const s = m[0];
-    if (m.index > last) out.push({ t: 'text', s: text.slice(last, m.index) });
-    if (m[1]) out.push({ t: 'code', s: s.slice(1, -1) });
-    else if (m[2]) out.push({ t: 'b', s: s.slice(2, -2) });
-    else if (m[3]) out.push({ t: 'i', s: s.slice(1, -1) });
-    else out.push({ t: 'text', s: s.slice(1, s.indexOf('](')) });
-    last = m.index + s.length;
-  }
-  if (last < text.length) out.push({ t: 'text', s: text.slice(last) });
-  return out;
+/** The mdast tree of `md`. */
+export function parse(md) {
+  return fromMarkdown(String(md ?? ''), {
+    extensions: [gfm(), frontmatter(['yaml'])],
+    mdastExtensions: [gfmFromMarkdown(), frontmatterFromMarkdown(['yaml'])],
+  });
 }
 
-/** @returns {Block[]} */
-export function parse(md) {
-  /** @type {Block[]} */
-  const blocks = [];
-  const lines = String(md ?? '')
-    .replace(/\r\n?/g, '\n')
-    .split('\n');
-  let para = [];
-  let quote = [];
-  const flush = () => {
-    if (para.length) blocks.push({ type: 'p', spans: inline(para.join(' ')) });
-    if (quote.length) blocks.push({ type: 'quote', spans: inline(quote.join(' ')) });
-    para = [];
-    quote = [];
-  };
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (/^\s*```/.test(line)) {
-      flush();
-      const code = [];
-      while (++i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i]);
-      blocks.push({ type: 'code', text: code.join('\n') });
-      continue;
+/** The plain text of a node (heading slugs, image alts). */
+export function toText(n) {
+  if (!n) return '';
+  if (typeof n.value === 'string' && n.type !== 'html') return n.value;
+  if (n.type === 'image' || n.type === 'imageReference') return n.alt ?? '';
+  return (n.children ?? []).map(toText).join('');
+}
+
+/** GitHub's heading anchor: lowercase, punctuation dropped, spaces → `-`. */
+export function slug(text) {
+  return String(text)
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, '')
+    .replace(/ /g, '-');
+}
+
+function walk(n, fn) {
+  fn(n);
+  for (const c of n.children ?? []) walk(c, fn);
+}
+
+const ALERTS = { NOTE: 'note', TIP: 'tip', IMPORTANT: 'important', WARNING: 'warning', CAUTION: 'caution' };
+
+/** `> [!NOTE]` (GitHub alerts): the kind on `data.alert`, the marker dropped. */
+function markAlert(q) {
+  const p = q.children[0];
+  const t = p?.type === 'paragraph' ? p.children[0] : null;
+  const m = t?.type === 'text' ? /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(?:\n|$)/.exec(t.value) : null;
+  if (!m) return;
+  q.data = { ...q.data, alert: ALERTS[m[1]] };
+  t.value = t.value.slice(m[0].length);
+  if (!t.value) p.children.shift();
+  if (p.children[0]?.type === 'break') p.children.shift();
+  if (!p.children.length) q.children.shift();
+}
+
+/**
+ * The tree plus what rendering needs from the whole doc: link definitions,
+ * footnotes in the order they are first referenced (numbered from 1), unique
+ * heading slugs on `data.slug`, footnote ref ids on `data.refId`.
+ */
+export function prepare(md) {
+  const root = parse(md);
+  const defs = new Map();
+  const notes = new Map();
+  const order = [];
+  const slugs = new Map();
+  const refs = new Map();
+  walk(root, (n) => {
+    if (n.type === 'definition') defs.has(n.identifier) || defs.set(n.identifier, n);
+    else if (n.type === 'footnoteDefinition') notes.has(n.identifier) || notes.set(n.identifier, n);
+    else if (n.type === 'blockquote') markAlert(n);
+  });
+  walk(root, (n) => {
+    if (n.type === 'heading') {
+      const base = slug(toText(n));
+      const k = slugs.get(base) ?? 0;
+      slugs.set(base, k + 1);
+      n.data = { ...n.data, slug: k ? `${base}-${k}` : base };
+    } else if (n.type === 'footnoteReference' && notes.has(n.identifier)) {
+      if (!order.includes(n.identifier)) order.push(n.identifier);
+      const num = order.indexOf(n.identifier) + 1;
+      const k = (refs.get(num) ?? 0) + 1;
+      refs.set(num, k);
+      n.data = { ...n.data, num, refId: k === 1 ? `fnref:${num}` : `fnref:${num}-${k}` };
     }
-    const h = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
-    if (h) {
-      flush();
-      blocks.push({ type: 'h', level: h[1].length, spans: inline(h[2]) });
-      continue;
-    }
-    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
-      flush();
-      blocks.push({ type: 'hr' });
-      continue;
-    }
-    const li = /^\s*(?:([-*+])|(\d+)[.)])\s+(?:\[([ xX])\]\s+)?(.*)$/.exec(line);
-    if (li) {
-      flush();
-      const type = li[2] ? 'ol' : 'ul';
-      const item = { spans: inline(li[4]), checked: li[3] === undefined ? null : li[3] !== ' ' };
-      const prev = blocks[blocks.length - 1];
-      if (prev && prev.type === type) prev.items.push(item);
-      else blocks.push({ type, items: [item] });
-      continue;
-    }
-    const q = /^\s*>\s?(.*)$/.exec(line);
-    if (q) {
-      if (para.length) flush();
-      quote.push(q[1]);
-      continue;
-    }
-    if (!line.trim()) {
-      flush();
-      continue;
-    }
-    if (quote.length) flush();
-    para.push(line.trim());
+  });
+  const footnotes = order.map((id, i) => ({ num: i + 1, node: notes.get(id) }));
+  return { root, defs, footnotes };
+}
+
+/**
+ * What a link target does (§3.6):
+ * - `external`: http(s) / mailto, opened in the browser;
+ * - `anchor`: `#heading` in the same doc;
+ * - `doc`: a sibling `.md` of the feature (only when the view can switch docs);
+ * - `repo`: another relative path, shown but not clickable (D4);
+ * - `text`: any other scheme (`javascript:`, `file:`…), plain text.
+ */
+export function linkKind(url, canSwitchDoc = false) {
+  const u = String(url ?? '').trim();
+  if (/^(https?:\/\/|mailto:)/i.test(u)) return { kind: 'external', url: u };
+  if (u.startsWith('#')) return { kind: 'anchor', anchor: safeDecode(u.slice(1)) };
+  if (/^[a-z][a-z0-9+.-]*:/i.test(u) || u.startsWith('//') || !u) return { kind: 'text' };
+  const [path, hash = ''] = u.split('#');
+  const name = safeDecode(path.replace(/^\.\//, '').replace(/\?.*$/, ''));
+  if (canSwitchDoc && /^[^/\\]+\.md$/i.test(name)) return { kind: 'doc', name, anchor: safeDecode(hash) || null };
+  return { kind: 'repo', path: u };
+}
+
+function safeDecode(s) {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
   }
-  flush();
-  return blocks;
+}
+
+/** Front-matter lines as key/value pairs, or null when it isn't flat `key: value`. */
+export function frontPairs(yaml) {
+  const lines = String(yaml ?? '')
+    .split('\n')
+    .filter((l) => l.trim());
+  const pairs = lines.map((l) => /^([\w.-]+):[ \t]*(.*)$/.exec(l));
+  return pairs.length && pairs.every(Boolean) ? pairs.map((m) => [m[1], m[2]]) : null;
+}
+
+// ---------------------------------------------------------------- code
+
+const lowlight = createLowlight(common);
+lowlight.registerAlias({ xml: ['svelte', 'vue'] });
+
+/** Above these, a block renders plain to keep the pane responsive (§3.3). */
+export const HL_MAX_LINES = 2000;
+export const HL_MAX_BYTES = 100_000;
+
+/**
+ * highlight.js scopes → `--color-syntax-*` tokens (ux-brief §2), the one
+ * place they map. A sub-scope (`title.function`) is tried before its scope.
+ */
+const SYNTAX = {
+  keyword: 'keyword',
+  doctag: 'keyword',
+  bullet: 'keyword',
+  'selector-tag': 'keyword',
+  string: 'string',
+  regexp: 'string',
+  link: 'string',
+  char: 'constant',
+  number: 'number',
+  comment: 'comment',
+  quote: 'comment',
+  title: 'function',
+  'title.function': 'function',
+  'title.class': 'type',
+  'title.class.inherited': 'type',
+  section: 'function',
+  type: 'type',
+  built_in: 'type',
+  class: 'type',
+  variable: 'variable',
+  'variable.language': 'keyword',
+  'template-variable': 'variable',
+  subst: 'variable',
+  params: 'variable',
+  property: 'attr',
+  literal: 'constant',
+  symbol: 'constant',
+  attr: 'attr',
+  attribute: 'attr',
+  'selector-attr': 'attr',
+  'selector-class': 'attr',
+  'selector-id': 'attr',
+  'selector-pseudo': 'attr',
+  tag: 'tag',
+  name: 'tag',
+  meta: 'meta',
+  'meta.keyword': 'meta',
+  'meta.string': 'string',
+  addition: 'addition',
+  deletion: 'deletion',
+  punctuation: 'punctuation',
+  operator: 'punctuation',
+};
+
+function syntaxOf(el) {
+  const cls = el.properties?.className ?? [];
+  const scope = cls.find((c) => c.startsWith('hljs-'))?.slice(5);
+  if (!scope) return null;
+  const subs = cls.filter((c) => !c.startsWith('hljs-')).map((c) => c.replace(/_+$/, ''));
+  for (let i = subs.length; i >= 0; i--) {
+    const t = SYNTAX[[scope, ...subs.slice(0, i)].join('.')];
+    if (t) return t;
+  }
+  return null;
+}
+
+/** The fence's language as lowlight knows it, or null (no guessing: highlightAuto is off). */
+export function codeLang(lang) {
+  const l = String(lang ?? '')
+    .trim()
+    .toLowerCase();
+  return l && lowlight.registered(l) ? l : null;
+}
+
+/**
+ * `code` as a flat list of `{ t, v }` runs (`t` = a syntax token or null), or
+ * null when it renders plain: unknown language, or a very long block.
+ */
+export function highlight(code, lang) {
+  const l = codeLang(lang);
+  const s = String(code ?? '');
+  if (!l || s.length > HL_MAX_BYTES || s.split('\n').length > HL_MAX_LINES) return null;
+  const runs = [];
+  const push = (t, v) => {
+    const last = runs[runs.length - 1];
+    if (last && last.t === t) last.v += v;
+    else runs.push({ t, v });
+  };
+  const visit = (n, t) => {
+    if (n.type === 'text') push(t, n.value);
+    else for (const c of n.children ?? []) visit(c, n.type === 'element' ? (syntaxOf(n) ?? t) : t);
+  };
+  visit(lowlight.highlight(l, s), null);
+  return runs;
 }

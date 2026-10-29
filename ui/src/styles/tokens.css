@@ -99,6 +99,22 @@
   --color-role-6: #7dcfff;
   --color-role-7: #e0af68;
   --color-role-8: #9d7cd8;
+  --color-syntax-keyword: #bb9af7;
+  --color-syntax-string: #9ece6a;
+  --color-syntax-number: #ff9e64;
+  --color-syntax-comment: #8e96bf;
+  --color-syntax-function: #7aa2f7;
+  --color-syntax-type: #2ac3de;
+  --color-syntax-variable: #f7768e;
+  --color-syntax-constant: #ff9e64;
+  --color-syntax-attr: #e0af68;
+  --color-syntax-tag: #f7768e;
+  --color-syntax-meta: #7dcfff;
+  --color-syntax-addition: #9ece6a;
+  --color-syntax-deletion: #f7768e;
+  --color-syntax-addition-bg: #9ece6a26;
+  --color-syntax-deletion-bg: #f7768e26;
+  --color-syntax-punctuation: #a9b1d6;
   --shadow-overlay: 0 8px 24px 0 #00000080;
 }
 
@@ -140,6 +156,22 @@
   --color-role-6: #007197;
   --color-role-7: #8c6c3e;
   --color-role-8: #7847bd;
+  --color-syntax-keyword: #8635ee;
+  --color-syntax-string: #547036;
+  --color-syntax-number: #9f5300;
+  --color-syntax-comment: #495178;
+  --color-syntax-function: #2e7de9;
+  --color-syntax-type: #157180;
+  --color-syntax-variable: #ce0a43;
+  --color-syntax-constant: #9f5300;
+  --color-syntax-attr: #806239;
+  --color-syntax-tag: #ce0a43;
+  --color-syntax-meta: #006f94;
+  --color-syntax-addition: #547036;
+  --color-syntax-deletion: #ce0a43;
+  --color-syntax-addition-bg: #58753926;
+  --color-syntax-deletion-bg: #f52a651f;
+  --color-syntax-punctuation: #3b4a80;
   --shadow-overlay: 0 8px 24px 0 #3760bf33;
 }
 
@@ -182,6 +214,22 @@
     --color-role-6: #007197;
     --color-role-7: #8c6c3e;
     --color-role-8: #7847bd;
+    --color-syntax-keyword: #8635ee;
+    --color-syntax-string: #547036;
+    --color-syntax-number: #9f5300;
+    --color-syntax-comment: #495178;
+    --color-syntax-function: #2e7de9;
+    --color-syntax-type: #157180;
+    --color-syntax-variable: #ce0a43;
+    --color-syntax-constant: #9f5300;
+    --color-syntax-attr: #806239;
+    --color-syntax-tag: #ce0a43;
+    --color-syntax-meta: #006f94;
+    --color-syntax-addition: #547036;
+    --color-syntax-deletion: #ce0a43;
+    --color-syntax-addition-bg: #58753926;
+    --color-syntax-deletion-bg: #f52a651f;
+    --color-syntax-punctuation: #3b4a80;
     --shadow-overlay: 0 8px 24px 0 #3760bf33;
   }
 }

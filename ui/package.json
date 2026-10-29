@@ -21,7 +21,13 @@
     "@xterm/addon-ligatures": "0.10.0",
     "@xterm/addon-unicode11": "0.9.0",
     "@xterm/addon-webgl": "0.19.0",
-    "@xterm/xterm": "6.0.0"
+    "@xterm/xterm": "6.0.0",
+    "lowlight": "3.3.0",
+    "mdast-util-from-markdown": "2.1.0",
+    "mdast-util-frontmatter": "2.0.1",
+    "mdast-util-gfm": "3.1.0",
+    "micromark-extension-frontmatter": "2.0.0",
+    "micromark-extension-gfm": "3.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.3",

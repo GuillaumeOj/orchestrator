@@ -74,6 +74,13 @@
       });
   });
 
+  /** A link to a sibling doc in the spec gate switches the doc tab. */
+  function openGateDoc(name) {
+    const i = gate?.data?.docs?.findIndex((d) => d.name === name) ?? -1;
+    if (i >= 0) gate = { ...gate, doc: i };
+    else toast(`No doc named ${name} in this gate`, { kind: 'error' });
+  }
+
   function apply(intent, item) {
     if (!intent) return false;
     switch (intent.kind) {
@@ -216,7 +223,7 @@
         </dl>
         {#if sel.kind === 'gate'}
           {#if gateKind(sel) === 'other'}
-            <pre class="mono preview">{sel.payload?.detail || sel.preview || sel.title}</pre>
+            <div class="rendered"><Markdown text={sel.payload?.detail || sel.preview || sel.title} /></div>
           {:else if gate?.error}
             <p class="muted">Could not load the gate's details: {gate.error}</p>
           {:else if !gate?.data}
@@ -230,7 +237,7 @@
               <span class="grow"></span>
               <span class="muted">{gate.data.docs.length} file{gate.data.docs.length === 1 ? '' : 's'}</span>
             </div>
-            {#if gate.data.docs[gate.doc]}<div class="rendered"><Markdown text={gate.data.docs[gate.doc].text} /></div>{/if}
+            {#if gate.data.docs[gate.doc]}<div class="rendered"><Markdown text={gate.data.docs[gate.doc].text} feature={gate.data.feature_id ?? null} ondoc={openGateDoc} /></div>{/if}
           {:else}
             <dl>
               <dt>Branch</dt><dd class="mono">{gate.data.branch} → {gate.data.base}</dd>
@@ -245,7 +252,7 @@
             </div>
           {/if}
         {:else if teamQuestion(sel)}
-          <pre class="mono preview">{sel.payload.question}</pre>
+          <div class="rendered"><Markdown text={sel.payload.question} /></div>
           {#if sel.payload.options?.length}
             <div class="opts">
               {#each sel.payload.options as o (o)}<button class="btn ghost" onclick={() => decide(sel, 'reply', o)}>{o}</button>{/each}
