@@ -712,9 +712,7 @@ impl Core {
                 "reject" | "reply" => InboxDecision::Reject,
                 "always" => InboxDecision::AlwaysAllow,
                 // A failed or stale permission leaves the Inbox (an open one is answered).
-                "dismiss" if rt.store.read(|s| s.inbox.iter().any(|i| i.id == n && !i.open())) => {
-                    InboxDecision::Dismiss
-                }
+                "dismiss" if open.is_some_and(|s| s.ended()) => InboxDecision::Dismiss,
                 // The dialog is in the pane while the hook is held: nothing to decide here.
                 "in_pane" if open == Some(agent_runtime::store::InboxStatus::Pending) => {
                     return Ok(json!({"ok": true, "effect": "in_pane", "lifecycle": rt.lifecycle(n)}));
@@ -786,7 +784,7 @@ impl Core {
             let question = item.starts_with("q-");
             // An open gate is approved or rejected: a dismissal would tell
             // nobody (the agent waits on its PR, the run on its spec).
-            let ended = || rt.store.read(|s| s.inbox.iter().any(|i| i.id == n && !i.open()));
+            let ended = || rt.store.read(|s| s.inbox.iter().any(|i| i.id == n && i.ended()));
             let decision = match action {
                 "approve" => InboxDecision::Approve,
                 "reject" if question => InboxDecision::Dismiss,

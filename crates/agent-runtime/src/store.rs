@@ -365,27 +365,6 @@ struct Data {
     /// What the database holds (the diff base), so a failed write is retried
     /// with the next one.
     saved: StateFile,
-    /// The Inbox as last versioned: unlike `saved`, not reset by a failed
-    /// write, so the next write still bumps what it changes.
-    versioned: Vec<InboxItem>,
-}
-
-/// Every Inbox item this write changed since `base` gets `version` +1 (a
-/// new one at least 1): a client keeps the newest of two pushes of a
-/// decision. Says whether the Inbox changed.
-fn bump_versions(base: &[InboxItem], inbox: &mut [InboxItem]) -> bool {
-    if base == inbox {
-        return false;
-    }
-    let before: BTreeMap<u64, &InboxItem> = base.iter().map(|i| (i.id, i)).collect();
-    for i in inbox.iter_mut() {
-        match before.get(&i.id) {
-            Some(old) if **old == *i => {}
-            Some(old) => i.version = old.version + 1,
-            None => i.version = i.version.max(1),
-        }
-    }
-    true
 }
 
 // ------------------------------------------------------------ row mapping
@@ -540,7 +519,7 @@ impl Store {
             std::fs::rename(j, j.with_extension("json.imported"))?;
         }
         let state = from_rows(db.load_runtime()?)?;
-        let data = Data { saved: state.clone(), versioned: state.inbox.clone(), state };
+        let data = Data { saved: state.clone(), state };
         Ok(Store { db: Some(db), data: Mutex::new(data), changed: Default::default() })
     }
 
@@ -548,7 +527,7 @@ impl Store {
     pub fn in_memory(data: StateFile) -> Store {
         Store {
             db: None,
-            data: Mutex::new(Data { state: data, saved: StateFile::default(), versioned: vec![] }),
+            data: Mutex::new(Data { state: data, saved: StateFile::default() }),
             changed: Default::default(),
         }
     }
@@ -578,12 +557,20 @@ impl Store {
             let mut g = self.data.lock().unwrap_or_else(|e| e.into_inner());
             let r = f(&mut g.state);
             g.state.prune();
-            let Data { state, versioned, .. } = &mut *g;
-            if bump_versions(versioned, &mut state.inbox) {
-                *versioned = state.inbox.clone();
-            }
             let mut pending = None;
-            let d = diff(&g.saved, &g.state);
+            let mut d = diff(&g.saved, &g.state);
+            // Every Inbox row this write changed: version +1 (a client keeps
+            // the newest push). After a failed write every row counts as
+            // changed: an extra bump, never a missed one.
+            if !d.inbox.is_empty() {
+                let ids: std::collections::BTreeSet<u64> = d.inbox.iter().map(|i| i.id).collect();
+                for i in g.state.inbox.iter_mut().filter(|i| ids.contains(&i.id)) {
+                    i.version += 1;
+                }
+                for row in &mut d.inbox {
+                    row.version += 1;
+                }
+            }
             if !d.is_empty() {
                 self.changed.lock().unwrap_or_else(|e| e.into_inner()).merge(Changed::of(&d));
                 if let Some(db) = &self.db {

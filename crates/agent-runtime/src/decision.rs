@@ -488,7 +488,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
         summary,
         context,
         // A failed or stale decision can only be dismissed (or opened).
-        actions: if matches!(i.status, InboxStatus::Failed | InboxStatus::Stale) {
+        actions: if i.ended() {
             let mut a = vec![DISMISS];
             a.extend(actions.into_iter().filter(|a| a.id == "open"));
             a

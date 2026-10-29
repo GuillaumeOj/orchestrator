@@ -105,6 +105,11 @@ pub enum InboxStatus {
 }
 
 impl InboxStatus {
+    /// Failed or stale: only a dismissal closes it ([`InboxItem::ended`]).
+    pub fn ended(self) -> bool {
+        matches!(self, InboxStatus::Failed | InboxStatus::Stale)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             InboxStatus::Pending => "pending",
@@ -229,6 +234,11 @@ impl InboxItem {
     /// Still waiting on the user: pending, or parked (FR-705).
     pub fn open(&self) -> bool {
         matches!(self.status, InboxStatus::Pending | InboxStatus::Parked)
+    }
+
+    /// Failed or stale: it waits on nobody, and only a dismissal closes it.
+    pub fn ended(&self) -> bool {
+        self.status.ended()
     }
 }
 

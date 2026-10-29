@@ -719,7 +719,7 @@ impl Runtime {
             .ok_or_else(|| anyhow!("no Inbox item {id}"))?;
         if !item.open() {
             // A failed or stale decision leaves the Inbox only this way.
-            if decision == InboxDecision::Dismiss && matches!(item.status, InboxStatus::Failed | InboxStatus::Stale) {
+            if decision == InboxDecision::Dismiss && item.ended() {
                 return self.dismiss_ended(&item);
             }
             bail!("Inbox item {id} is already {:?}", item.status);
@@ -936,30 +936,17 @@ impl Runtime {
     fn dismiss_ended(&self, item: &InboxItem) -> Result<Value> {
         let id = item.id;
         let now = now_ms();
-        let ok = self.store.write(|s| {
-            let Some(i) =
-                s.inbox.iter_mut().find(|i| i.id == id && matches!(i.status, InboxStatus::Failed | InboxStatus::Stale))
-            else {
-                return false;
-            };
+        let claimed = self.store.write(|s| {
+            let Some(i) = s.inbox.iter_mut().find(|i| i.id == id && i.ended()) else { return false };
             i.status = InboxStatus::Dismissed;
             (i.decision, i.decided_by, i.decided_at_ms) = (Some("dismiss".into()), Some("user".into()), Some(now));
-            (i.effect, i.effect_detail, i.effect_at_ms) = (Some("dismissed".into()), None, Some(now));
             true
         })?;
-        if !ok {
+        if !claimed {
             bail!("Inbox item {id} is no longer failed or stale");
         }
-        let target = item.payload.get("tool").and_then(Value::as_str);
-        self.db.audit(
-            "user",
-            item.agent_id.as_deref(),
-            &item.kind,
-            target,
-            "dismiss",
-            json!({"item": id, "was": item.status.as_str()}),
-        )?;
-        self.outcome(item, "user", "dismissed");
+        self.advance(id, Stage::Effect("dismissed", None));
+        self.closed_by(item, "user", "dismiss", "dismissed");
         Ok(
             json!({"item": id, "decision": "dismiss", "decided_by": "user", "effect": "dismissed", "lifecycle": self.lifecycle(id)}),
         )

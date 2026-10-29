@@ -143,23 +143,29 @@ fn decision_delta(
     now: u64,
     rev: u64,
 ) -> (Vec<Decision>, Vec<String>) {
+    let mut upsert = vec![];
     for (k, d) in new.iter_mut() {
+        let stored = d.lifecycle.version;
         let Some(prev) = old.get(k) else {
             if d.synthesized {
                 d.lifecycle.version = rev;
             }
+            upsert.push(d.clone());
             continue;
         };
-        let stored = d.lifecycle.version;
+        // Compared with the version it was pushed at: did anything else change?
         d.lifecycle.version = prev.lifecycle.version;
-        if prev != d {
-            d.lifecycle.version = if d.synthesized { rev } else { stored.max(prev.lifecycle.version + 1) };
-        } else if !d.synthesized {
-            d.lifecycle.version = stored.max(prev.lifecycle.version);
+        let changed = prev != d;
+        d.lifecycle.version = match (d.synthesized, changed) {
+            (true, true) => rev,
+            (true, false) => prev.lifecycle.version,
+            (false, true) => stored.max(prev.lifecycle.version + 1),
+            (false, false) => stored.max(prev.lifecycle.version),
+        };
+        if changed || d.lifecycle.version != prev.lifecycle.version {
+            upsert.push(d.clone());
         }
     }
-    let mut upsert: Vec<Decision> =
-        new.iter().filter(|(k, v)| old.get(*k) != Some(*v)).map(|(_, v)| v.clone()).collect();
     let mut closed = vec![];
     for (k, o) in old.iter().filter(|(_, d)| d.is_open()) {
         match new.get(k) {
