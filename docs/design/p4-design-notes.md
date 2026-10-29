@@ -4,6 +4,8 @@ UX pass for P4.1 (One now), 2026-10-29, by `ux` for `ui` and `front`. Sources: [
 
 P4.1 adds no screen and changes no layout. These notes give the copy the core writes (`reason`, decision `title`, outcome `text`), the copy the UI writes (labels, markers, toasts), and the states each existing surface must show. `ui` draws the components of ux-brief §3 from them (§9 below lists what each component must cover).
 
+The P4.2 part (Mission control) is in [p4-2-design-notes.md](p4-2-design-notes.md).
+
 Copy rules carry over from P1/P3: sentence case, no exclamation marks, name the agent and the project, pp for usage, local 24 h times, and **every number says what it is** (principle 11).
 
 ---
