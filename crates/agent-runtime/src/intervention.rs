@@ -107,6 +107,18 @@ fn item_cause(i: &orch_store::InboxItem) -> Option<&'static str> {
     }
 }
 
+/// The attention kind of a wait cause, when no published record shows it:
+/// `waited_on` always holds a kind, never a cause.
+fn cause_kind(cause: &str) -> &'static str {
+    match cause {
+        "permission" | "question" | "gate" | "parked" | "trust" => "user",
+        "startup" => "startup",
+        "idle_with_task" => "agent",
+        // Queued, or pasted and not started yet: the core's delivery holds it.
+        _ => "governor",
+    }
+}
+
 /// What `id` waits on now, if anything (FR-1311 priority order).
 pub(crate) fn wait_of(s: &StateFile, id: &str) -> Option<Wait> {
     let rec = s.agents.get(id)?;
@@ -190,10 +202,22 @@ impl Runtime {
             }
             h.interventions.insert(id.to_string(), wait.clone());
         }
-        // The last published record (at most one pump old): no recompute on the keystroke path.
-        let kind = self.attention_of(id).and_then(|r| r.waiting_on).map(|w| w.kind.as_str());
+        // The last published record, when it shows this wait. Typed right
+        // after the prompt appeared, it may be one pump behind: publish once
+        // (once per episode, after the dedupe above), then read it again.
+        let shows = |r: &crate::attention::AgentAttention| {
+            r.waiting_on.as_ref().is_some_and(|w| {
+                wait.item.is_none_or(|n| w.r#ref.as_deref().is_some_and(|x| x.ends_with(&format!("-{n}"))))
+            })
+        };
+        let mut record = self.attention_of(id).filter(shows);
+        if record.is_none() {
+            self.now_pump(true);
+            record = self.attention_of(id).filter(shows);
+        }
+        let kind = record.and_then(|r| r.waiting_on).map_or_else(|| cause_kind(wait.cause), |w| w.kind.as_str());
         let detail = json!({
-            "waited_on": kind.unwrap_or(wait.cause), "cause": wait.cause, "item": wait.item, "since_ms": wait.since_ms,
+            "waited_on": kind, "cause": wait.cause, "item": wait.item, "since_ms": wait.since_ms,
             "waited_ms": now_ms().saturating_sub(wait.since_ms), "team_run_id": run,
         });
         match &run {
@@ -268,6 +292,23 @@ mod tests {
     }
 
     #[test]
+    fn waited_on_is_always_a_kind() {
+        for (cause, kind) in [
+            ("permission", "user"),
+            ("question", "user"),
+            ("gate", "user"),
+            ("parked", "user"),
+            ("trust", "user"),
+            ("startup", "startup"),
+            ("queued", "governor"),
+            ("delivering", "governor"),
+            ("idle_with_task", "agent"),
+        ] {
+            assert_eq!(cause_kind(cause), kind, "{cause}");
+        }
+    }
+
+    #[test]
     fn one_event_per_wait_episode() {
         let (_d, rt) = test_runtime(true);
         let count = || {
@@ -277,8 +318,8 @@ mod tests {
         // Not live in the unit runtime: drive the bookkeeping directly.
         rt.note_intervention("a1");
         assert!(count().is_empty(), "nothing waited on: typing records nothing");
+        // Typed before any publish (the prompt just appeared): still the record's kind.
         let p = rt.add_item(Some("a1"), "permission", "p".into(), json!({}), 30).unwrap();
-        rt.now_pump(false);
         rt.note_intervention("a1");
         rt.note_intervention("a1");
         let ev = count();
