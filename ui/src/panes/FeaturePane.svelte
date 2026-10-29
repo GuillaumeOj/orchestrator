@@ -275,7 +275,7 @@
                 <div class="trow" onclick={() => openAgent(a.id)} title="Open {a.id}">
                   <AgentChip id={a.id} role={roleOfAgent(a.id)} compact />
                   <span class="name ell">{shortName(a.id)}</span>
-                  <span class="act muted ell">{a.tool ? a.tool : a.task ? `task T-${a.task}` : ''}{a.flag ? ` · ${a.flag}` : ''}</span>
+                  <span class="act muted ell">{a.tool || (a.task ? `task T-${a.task}` : '')}{a.flag ? ` · ${a.flag}` : ''}</span>
                   <span class="st"><StatusBadge state={live ? displayState(live) : a.state} trailing /></span>
                 </div>
               {/each}
@@ -477,6 +477,7 @@
   .trow .name {
     max-width: 24ch;
   }
+  /* Added to the column gap: 16px name → activity and before the status, 8px mark → name. */
   .trow .act,
   .trow .st {
     margin-left: var(--space-sm);
