@@ -56,7 +56,6 @@ impl Throttle {
 /// One live watcher: dropping it stops the FS watch.
 struct Watch {
     panes: usize,
-    topic: String,
     throttle: Throttle,
     _watcher: notify::RecommendedWatcher,
 }
@@ -68,9 +67,8 @@ fn start(root: &Path, dirty: Arc<AtomicBool>) -> Result<notify::RecommendedWatch
     let git_dir = linked.clone().unwrap_or_else(|| root.join(".git"));
     let r = root.to_path_buf();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if let Ok(ev) = res
-            && ev.paths.iter().any(|p| counts(&r, &git_dir, p))
-        {
+        // An error (events dropped, say) may hide a change: refetch to be sure.
+        if res.map_or(true, |ev| ev.paths.iter().any(|p| counts(&r, &git_dir, p))) {
             dirty.store(true, Ordering::SeqCst);
         }
     })?;
@@ -109,52 +107,49 @@ impl Runtime {
     /// `watch_worktree`: a Diff pane opened on `path`. The first one starts
     /// the watcher; the topic is `worktree:<path>` as the pane asked it.
     pub fn watch_worktree(&self, path: &Path) -> Result<()> {
-        if let Some(w) = self.watches().get_mut(path) {
-            w.panes += 1;
+        // Under the lock throughout (an FSEvents recursive watch starts at
+        // once): a pane closed while this one starts finds it counted, so no
+        // watcher outlives its panes.
+        let mut w = self.watches();
+        if let Some(e) = w.get_mut(path) {
+            e.panes += 1;
             return Ok(());
         }
         let root = self.known_worktree(path)?;
         let throttle = Throttle::default();
-        // Started outside the lock (a recursive watch can take a while); a
-        // pane that raced us in meanwhile keeps its watcher, ours drops.
         let watcher = start(&root, throttle.dirty.clone())?;
-        let topic = orch_protocol::Topic::Worktree(path.display().to_string()).to_string();
-        self.watches().entry(path.to_path_buf()).and_modify(|w| w.panes += 1).or_insert(Watch {
-            panes: 1,
-            topic,
-            throttle,
-            _watcher: watcher,
-        });
+        w.insert(path.to_path_buf(), Watch { panes: 1, throttle, _watcher: watcher });
         Ok(())
     }
 
     /// `unwatch_worktree`: a Diff pane closed; the last one stops the watcher.
     pub fn unwatch_worktree(&self, path: &Path) {
-        let mut w = self.watches();
-        if let Some(e) = w.get_mut(path) {
+        let gone = {
+            let mut w = self.watches();
+            let Some(e) = w.get_mut(path) else { return };
             e.panes -= 1;
-            if e.panes == 0 {
-                w.remove(path);
+            if e.panes > 0 {
+                return;
             }
-        }
+            w.remove(path)
+        };
+        drop(gone); // stops the FS watch outside the lock
     }
 
     /// On the pump: the topics of the watched worktrees that changed.
     pub(crate) fn flush_watches(&self) {
         let now = Instant::now();
-        let due: Vec<String> = self
-            .watches()
-            .values_mut()
-            .filter_map(|w| w.throttle.due(now, DEBOUNCE).then(|| w.topic.clone()))
-            .collect();
-        for t in due {
-            self.touch(t);
+        let due: Vec<PathBuf> =
+            self.watches().iter_mut().filter_map(|(p, w)| w.throttle.due(now, DEBOUNCE).then(|| p.clone())).collect();
+        for p in due {
+            self.touch_worktree(&p);
         }
     }
 
     /// Stops every watcher (shutdown).
     pub(crate) fn unwatch_all(&self) {
-        self.watches().clear();
+        let all = std::mem::take(&mut *self.watches());
+        drop(all); // stops the FS watches outside the lock
     }
 }
 
