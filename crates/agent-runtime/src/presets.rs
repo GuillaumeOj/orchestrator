@@ -321,14 +321,19 @@ mod tests {
         }
     }
 
+    /// Undoes the v4 models (the lead's Opus is older).
+    fn without_v4_model(r: &mut RoleDef) {
+        if r.id != "lead" {
+            r.model = None;
+        }
+    }
+
     /// What P2 shipped, rebuilt: today's starters with the v2 changes undone.
     fn p2_starters() -> (Vec<RoleDef>, Vec<Team>) {
         let mut roles = orch_team::presets::starter_roles();
         for r in roles.iter_mut() {
             r.permission_profile = PermissionProfile::Gated;
-            if r.id != "lead" {
-                r.model = None; // the v4 models
-            }
+            without_v4_model(r);
             if r.id == "reviewer" {
                 r.prompt = "You are the reviewer. You review the branches you are asked to review and reply with \
                             concrete findings; you do not change them yourself."
@@ -454,9 +459,7 @@ mod tests {
     /// The v3 starters: today's, without the v4 models.
     fn v3_roles() -> Vec<RoleDef> {
         let mut roles = orch_team::presets::starter_roles();
-        for r in roles.iter_mut().filter(|r| r.id != "lead") {
-            r.model = None;
-        }
+        roles.iter_mut().for_each(without_v4_model);
         roles
     }
 
