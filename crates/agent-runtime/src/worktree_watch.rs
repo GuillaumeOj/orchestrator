@@ -62,15 +62,24 @@ struct Watch {
 
 /// Watches `root` (canonical): every change that [`counts`] sets `dirty`.
 fn start(root: &Path, dirty: Arc<AtomicBool>) -> Result<notify::RecommendedWatcher> {
+    watch(root, move |_| dirty.store(true, Ordering::SeqCst))
+}
+
+/// Watches `root` (canonical): `on_change` gets what raised a change, the
+/// path that [`counts`] or the error (events dropped, say).
+fn watch(root: &Path, on_change: impl Fn(&dyn std::fmt::Debug) + Send + 'static) -> Result<notify::RecommendedWatcher> {
     // A linked worktree's git dir (its `.git` is a `gitdir:` file), else its own `.git`.
     let linked = orch_git::repair::check_links(root).gitdir;
     let git_dir = linked.clone().unwrap_or_else(|| root.join(".git"));
     let r = root.to_path_buf();
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        // An error (events dropped, say) may hide a change: refetch to be sure.
-        if res.map_or(true, |ev| ev.paths.iter().any(|p| counts(&r, &git_dir, p))) {
-            dirty.store(true, Ordering::SeqCst);
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
+        Ok(ev) => {
+            if let Some(p) = ev.paths.iter().find(|p| counts(&r, &git_dir, p)) {
+                on_change(p);
+            }
         }
+        // An error may hide a change: refetch to be sure.
+        Err(e) => on_change(&e),
     })?;
     // One batch: FSEvents restarts its stream once, not once per path.
     let mut paths = watcher.paths_mut();
@@ -208,6 +217,23 @@ mod tests {
         assert!(!main("/repo/.git/objects/ab/cdef") && !main("/repo/.git/index.lock"));
     }
 
+    /// Waits until the stream has been quiet for 500 ms (bounded), clearing
+    /// `dirty` and the recorded `fired`: events of the setup or of the phase
+    /// before must not count for the next one.
+    fn settle(t: &mut Throttle, fired: &Mutex<Vec<String>>) {
+        let end = Instant::now() + Duration::from_secs(5);
+        loop {
+            t.dirty.store(false, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(500));
+            if !t.dirty.load(Ordering::SeqCst) {
+                break;
+            }
+            assert!(Instant::now() < end, "the stream never went quiet: {:?}", fired.lock().unwrap());
+        }
+        fired.lock().unwrap().clear();
+        t.last = None;
+    }
+
     /// Real FSEvents (macOS CI): a sandbox without the FSEvents service gets
     /// no events, so this one runs outside it.
     #[test]
@@ -215,22 +241,38 @@ mod tests {
         let (_d, root) = tmp();
         std::fs::create_dir_all(root.join("target")).unwrap();
         let mut t = Throttle::default();
-        let _w = start(&root, t.dirty.clone()).unwrap();
-        std::thread::sleep(Duration::from_millis(300));
-        // An ignored path: nothing.
+        let fired = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (dirty, sink) = (t.dirty.clone(), fired.clone());
+        let _w = watch(&root, move |what| {
+            sink.lock().unwrap().push(format!("{what:?}"));
+            dirty.store(true, Ordering::SeqCst);
+        })
+        .unwrap();
+        let fired_now = || format!("{:?}", fired.lock().unwrap());
+        // Late events of the setup (the temp dir itself, a rescan) are not the test's.
+        settle(&mut t, &fired);
+        // An ignored path: it raises nothing (a stray event elsewhere is tolerated).
         std::fs::write(root.join("target/out.o"), "x").unwrap();
-        assert_eq!(pump_for(&mut t, Duration::from_millis(1600)), 0, "ignored paths raise nothing");
+        pump_for(&mut t, Duration::from_millis(1600));
+        let ignored = format!("{}/target", root.display());
+        assert!(
+            !fired.lock().unwrap().iter().any(|p| p.contains(&ignored)),
+            "ignored paths raise nothing: {}",
+            fired_now()
+        );
         // One write: one topic within ~1.5 s.
+        settle(&mut t, &fired);
         std::fs::write(root.join("a.txt"), "a").unwrap();
-        assert_eq!(pump_for(&mut t, Duration::from_millis(1500)), 1);
-        std::thread::sleep(Duration::from_millis(1100));
+        let one = pump_for(&mut t, Duration::from_millis(1500));
+        assert_eq!(one, 1, "fired: {}", fired_now());
+        settle(&mut t, &fired);
         // 50 writes in 200 ms: at most 2 (the leading one and the trailing one).
         for i in 0..50 {
             std::fs::write(root.join(format!("b{i}.txt")), "b").unwrap();
             std::thread::sleep(Duration::from_millis(4));
         }
         let burst = pump_for(&mut t, Duration::from_millis(2500));
-        assert!((1..=2).contains(&burst), "{burst}");
+        assert!((1..=2).contains(&burst), "{burst}, fired: {}", fired_now());
     }
 
     #[test]

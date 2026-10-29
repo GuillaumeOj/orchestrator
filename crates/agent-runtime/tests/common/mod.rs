@@ -48,3 +48,19 @@ pub fn agent(sock: &Path, id: &str) -> Value {
     let s = request(sock, CtlRequest::State).unwrap().data;
     s["agents"].as_array().unwrap().iter().find(|a| a["id"] == id).cloned().unwrap_or(Value::Null)
 }
+
+/// Per-agent pane output accumulated across reads. `Read` drains the pane, so a poll that sees
+/// text while another condition still fails would otherwise lose it for every later poll.
+#[derive(Default)]
+pub struct Screens(std::cell::RefCell<std::collections::HashMap<String, String>>);
+
+impl Screens {
+    /// Everything the agent printed so far (this call drains what is new and appends it).
+    pub fn read(&self, sock: &Path, agent_id: &str) -> String {
+        let fresh = request(sock, CtlRequest::Read { agent_id: agent_id.into() }).unwrap().data;
+        let mut seen = self.0.borrow_mut();
+        let all = seen.entry(agent_id.to_string()).or_default();
+        all.push_str(fresh.as_str().unwrap_or(""));
+        all.clone()
+    }
+}

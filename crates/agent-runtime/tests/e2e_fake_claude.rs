@@ -17,7 +17,7 @@ use orch_protocol::{AgentSpec, CtlRequest, bus};
 use serde_json::Value;
 
 mod common;
-use common::{agent, git, helper_bins, short_tempdir};
+use common::{Screens, agent, git, helper_bins, short_tempdir};
 
 fn wait_for(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(secs);
@@ -318,9 +318,8 @@ fn an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry() {
         let a = request(&core.sock, CtlRequest::Audit { agent_id: Some("a".into()), limit: None }).unwrap().data;
         a.as_array().unwrap().iter().rev().map(|e| e["actor"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>()
     };
-    let screen = || {
-        request(&core.sock, CtlRequest::Read { agent_id: "a".into() }).unwrap().data.as_str().unwrap_or("").to_string()
-    };
+    let screens = Screens::default();
+    let screen = || screens.read(&core.sock, "a");
 
     // A rule answers at once.
     let rule = core
@@ -567,9 +566,8 @@ fn a_team_run_end_to_end_with_fake_claude() {
             done && settled(agent_id)
         });
     };
-    let screen = |agent_id: &str| {
-        request(&sock, CtlRequest::Read { agent_id: agent_id.into() }).unwrap().data.as_str().unwrap_or("").to_string()
-    };
+    let screens = Screens::default();
+    let screen = |agent_id: &str| screens.read(&sock, agent_id);
     let run_state =
         |run: &str| request(&sock, CtlRequest::Run { run_id: run.into() }).unwrap().data["run"]["status"].clone();
     let p = request(&sock, CtlRequest::ProjectAdd { path: core.repo.display().to_string() }).unwrap();
