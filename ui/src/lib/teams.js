@@ -52,6 +52,8 @@ export const TL_FILTERS = [
   { id: 'run', label: 'Run' },
 ];
 
+const RUN_KINDS = new Set(['run.state', 'run.launched', 'run.team_changed', 'agent.added', 'agent.fresh_session']);
+
 const FAMILY = (k) =>
   k === 'message' || k === 'asked_user'
     ? 'messages'
@@ -59,11 +61,7 @@ const FAMILY = (k) =>
       ? 'tasks'
       : k.startsWith('git.')
         ? 'git'
-        : k === 'run.state' ||
-            k === 'run.launched' ||
-            k === 'agent.added' ||
-            k === 'agent.fresh_session' ||
-            k === 'run.team_changed'
+        : RUN_KINDS.has(k)
           ? 'run'
           : 'other';
 
