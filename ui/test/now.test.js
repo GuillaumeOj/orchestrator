@@ -122,11 +122,15 @@ describe('now store', () => {
     }
   });
 
-  it('a decision closed while its last upsert is still open is gone (a synthesized one has no final lifecycle)', () => {
-    // inbox-1 is open in the snapshot; the core closes it without a final upsert.
-    applyNow({ rev: 6, decisions: { upsert: [], closed: ['inbox-1'] }, topics: [] });
-    expect(app.now.decisions['inbox-1']).toBeUndefined();
+  it('a closed decision keeps its final upsert (T-35: same event); an older version is ignored', () => {
+    const v = (state, version) => ({ ...decision('inbox-1', state), lifecycle: { state, version } });
+    applyNow({ rev: 6, decisions: { upsert: [v('sent', 3)], closed: [] }, topics: [] });
+    applyNow({ rev: 7, decisions: { upsert: [v('effect', 4)], closed: ['inbox-1'] }, topics: [] });
+    expect(app.now.decisions['inbox-1'].lifecycle).toEqual({ state: 'effect', version: 4 });
     expect(openDecisions()).toEqual([]);
+    // A push computed before the last one (version 3) arrives late: ignored.
+    applyNow({ rev: 8, decisions: { upsert: [v('sent', 3)], closed: [] }, topics: [] });
+    expect(app.now.decisions['inbox-1'].lifecycle.state).toBe('effect');
   });
 
   it('a missed rev reads the snapshot again; an old rev is ignored', async () => {

@@ -6,7 +6,7 @@
 
 import { app, decisionGone, decisionPushed } from './app.svelte.js';
 import { waited } from './format.js';
-import { isOpen } from './inbox.js';
+import { isOpen, version } from './inbox.js';
 import { invoke, listen } from './ipc.js';
 import { STATUS } from './status.js';
 
@@ -73,19 +73,17 @@ export function applyNow(ev) {
     for (const id of at.removed?.runs ?? []) delete n.runs[id];
     for (const d of ev.decisions?.upsert ?? []) {
       const prev = n.decisions[d.id];
+      // Not newer than what we hold (an older push, after the inbox_act answer): ignored.
+      if (prev && d.lifecycle?.version != null && version(d) <= version(prev)) continue;
       n.decisions[d.id] = d;
       closedAt.delete(d.id);
       decisionPushed(prev, d);
     }
-    // A closed decision keeps its last upsert (the final lifecycle) for a while.
-    // One whose last upsert still waits on the user is gone with no final
-    // lifecycle (a synthesized wait-/error- decision, a deleted item): dropped.
+    // A closed decision keeps its final upsert (T-35: it comes in the same event) for a while.
     const nowMs = Date.now();
     for (const id of ev.decisions?.closed ?? []) {
-      const d = n.decisions[id];
-      decisionGone(id, d);
-      if (isOpen(d)) delete n.decisions[id];
-      else closedAt.set(id, nowMs);
+      decisionGone(id);
+      closedAt.set(id, nowMs);
     }
     for (const [id, t] of closedAt)
       if (nowMs - t > CLOSED_MS) {

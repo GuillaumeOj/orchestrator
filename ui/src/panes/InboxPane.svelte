@@ -71,8 +71,6 @@
   const options = $derived(blockOf(sel, 'options'));
   // Answer ⏎ is enabled when every question has a choice (notes §7 row 4).
   const answered = $derived(!!options && options.questions.every((_, i) => choices[i]?.length));
-  // A stale or failed decision: Dismiss and, failed, the kind's actions again (notes §7 rows 19–20).
-  const live = $derived(sel?.lifecycle?.state !== 'stale');
 
   // A new selection starts with no choices (by id: a push re-upserting the
   // same decision keeps them); the waiting-on chip's link selects one.
@@ -123,7 +121,7 @@
         // x-marked decisions take a/r together when each has that action; a
         // keyless button (Always allow, Restart fresh, Dismiss) is for its own decision.
         const key = d.actions?.find((x) => x.id === intent.action)?.key;
-        const targets = key && marked.size ? items.filter((i) => marked.has(i.id) && i.lifecycle?.state !== 'stale' && actionByKey(i, key)?.id === intent.action) : [d];
+        const targets = key && marked.size ? items.filter((i) => marked.has(i.id) && actionByKey(i, key)?.id === intent.action) : [d];
         for (const t of targets) send(t, intent.action);
         marked = new Set();
         return true;
@@ -180,8 +178,8 @@
       return;
     }
     const intent = keyIntent(key, sel);
-    // A stale decision takes no action but Dismiss (its buttons say so too).
-    if (!live && intent && !NAV.has(intent.kind)) return;
+    // A digest row is selected: a, r, ⏎ are not for the decision above it.
+    if (outcome && intent && !NAV.has(intent.kind)) return e.preventDefault();
     if (apply(intent, sel)) e.preventDefault();
   }
   const NAV = new Set(['move', 'mark', 'undo', 'editor']);
@@ -267,7 +265,7 @@
         <p class="muted pad-sm">{doneToday ? `All caught up · ${doneToday} done today` : 'Nothing done yet today.'}</p>
       {/each}
     </div>
-    <div class="detail" class:muted={sel && !live}>
+    <div class="detail" class:muted={sel?.lifecycle?.state === 'stale'}>
       {#if sel}
         {@const k = decisionKind(sel)}
         <div class="dh">
@@ -293,8 +291,8 @@
           </div>
         {/if}
         <div class="actions">
-          {#if live}
-            {#each sel.actions.filter((x) => x.key) as x (x.id)}
+          <!-- The core's actions; a failed or stale decision lists Dismiss (T-35, notes §7 rows 19–20). -->
+          {#each sel.actions.filter((x) => x.key) as x (x.id)}
               <button
                 class="btn"
                 class:primary={x.key === 'a' || (x.id === 'answer' && answered)}
@@ -314,9 +312,6 @@
                 onclick={() => act(sel, x.id)}>{x.label}</button
               >
             {/each}
-          {:else}
-            <button class="btn ghost" onclick={() => act(sel, 'dismiss')}>Dismiss</button>
-          {/if}
         </div>
       {:else}
         <p class="muted pad">Nothing selected.</p>

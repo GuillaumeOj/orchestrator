@@ -268,20 +268,74 @@ describe('toasts: never before sent, the effect when the core pushes it', () => 
     expect(app.toasts).toHaveLength(2);
   });
 
-  it('a synthesized decision closed with no final push toasts the effect inbox_act answered', async () => {
+  it('a synthesized answer: its version-0 lifecycle waits for the final upsert, which toasts once', async () => {
     const wait = decision({
       id: 'wait-front-1',
       kind: 'wait',
       subject: { agent: 'front-1' },
+      lifecycle: { state: 'open', version: 5 },
       actions: [act('reply', 'Reply', 'enter')],
     });
     app.now = nowOf(app.data, { decisions: [wait] });
-    replies.inbox_act = { ok: true, effect: 'delivered', lifecycle: { state: 'sent' } };
+    replies.inbox_act = { ok: true, lifecycle: { state: 'sent', version: 0 } };
     decide(wait, 'reply', 'yes, go on');
     await flushDecisions(Date.now() + UNDO_MS);
+    expect(app.now.decisions['wait-front-1'].lifecycle.state).toBe('open'); // version 0: left to the push
     expect(app.toasts).toHaveLength(1);
-    applyNow({ rev: 2, decisions: { upsert: [], closed: ['wait-front-1'] }, topics: [] });
+    const final = { ...wait, lifecycle: { state: 'effect', effect: 'delivered', decided_by: 'user', version: 9 } };
+    applyNow({ rev: 2, decisions: { upsert: [final], closed: ['wait-front-1'] }, topics: [] });
     expect(app.toasts.at(-1).text).toBe('Answer delivered · front-1 reads it next');
+    // The same push again (older or equal version): no second toast.
+    applyNow({
+      rev: 3,
+      decisions: { upsert: [{ ...final, lifecycle: { ...final.lifecycle, state: 'sent', version: 8 } }], closed: [] },
+      topics: [],
+    });
+    applyNow({ rev: 4, decisions: { upsert: [final], closed: [] }, topics: [] });
+    expect(app.toasts).toHaveLength(2);
+    expect(app.now.decisions['wait-front-1'].lifecycle.state).toBe('effect');
+  });
+
+  it('an inbox_act answer older than the push already held is ignored', async () => {
+    const perm = permDecision({ lifecycle: { state: 'open', version: 2 } });
+    app.now = nowOf(app.data, { decisions: [perm] });
+    replies.inbox_act = () => {
+      // The effect is pushed before the answer comes back.
+      push(2, { ...perm, lifecycle: { state: 'effect', decided_by: 'user', effect: 'allowed', version: 4 } });
+      return { ok: true, lifecycle: { state: 'sent', version: 3 } };
+    };
+    decide(perm, 'approve');
+    await flushDecisions(Date.now() + UNDO_MS);
+    expect(app.now.decisions['perm-1'].lifecycle).toMatchObject({ state: 'effect', version: 4 });
+    expect(app.toasts.map((t) => t.text).filter((t) => t.startsWith('Allowed'))).toEqual(['Allowed · front-1 resumed']);
+  });
+
+  it('a failed PR gate: Dismiss from its actions, then the dismissed toast', async () => {
+    const gate = decision({
+      id: 'gate-6',
+      kind: 'gate',
+      gate: 'pr',
+      subject: { agent: 'lead-1', feature: 'checkout' },
+      title: 'PR gate · checkout',
+      lifecycle: { state: 'failed', error: 'push rejected: non-fast-forward', version: 4 },
+      actions: [act('dismiss', 'Dismiss'), act('open', 'Open pane', 'o')],
+    });
+    app.now = nowOf(app.data, { decisions: [gate] });
+    const { container: c } = render(InboxPane);
+    expect(c.querySelector('.detail [data-state="failed"]').textContent).toContain(
+      'Failed · push rejected: non-fast-forward',
+    );
+    const dismiss = [...c.querySelectorAll('.detail .actions button')].find((b) => b.textContent.trim() === 'Dismiss');
+    await fireEvent.click(dismiss);
+    expect(app.pending[0]).toMatchObject({ item: 'gate-6', action: 'dismiss' });
+    expect(app.toasts.at(-1).text).toBe('Dismissing · PR gate · checkout');
+    replies.inbox_act = {
+      ok: true,
+      lifecycle: { state: 'dismissed', effect: 'dismissed', decided_by: 'user', version: 5 },
+    };
+    await flushDecisions(Date.now() + UNDO_MS);
+    expect(calls.find(([cmd]) => cmd === 'inbox_act')[1]).toEqual({ item: 'gate-6', action: 'dismiss', message: null });
+    expect(app.toasts.at(-1).text).toBe('Dismissed · PR gate · checkout');
   });
 
   it('Always allow names the rule; a failure stays until dismissed and opens the decision', async () => {
@@ -417,6 +471,19 @@ describe('outcome digest (level 4)', () => {
     const icons = [...c.querySelectorAll('.list [role=option][title] .icon')];
     expect(icons[0].getAttribute('style')).toContain('--color-phase-failed');
     expect(icons[1].classList.contains('muted')).toBe(true);
+  });
+
+  it('with a digest row selected, a/r/⏎ do not act on the decision above it', async () => {
+    app.now = nowOf(app.data, { outcomes: outcomes().slice(0, 1) });
+    const { container: c } = render(InboxPane);
+    await fireEvent.click(c.querySelector('.list [role=option][title]'));
+    const root = c.querySelector('[data-pane-focus]');
+    for (const key of ['a', 'r', 'Enter']) await fireEvent.keyDown(root, { key });
+    expect(app.pending).toEqual([]);
+    // j/k go back to the decisions: a acts again.
+    await fireEvent.keyDown(root, { key: 'k' });
+    await fireEvent.keyDown(root, { key: 'a' });
+    expect(app.pending).toHaveLength(1);
   });
 
   it('empty: "Nothing done yet today."', () => {

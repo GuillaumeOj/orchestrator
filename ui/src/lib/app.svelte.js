@@ -4,7 +4,7 @@
 // registry. Terminal objects (xterm.js) live outside the reactive state, in `terms`.
 
 import { clock as clockOf } from './format.js';
-import { decisionToast, due, effectText, isOpen, pendingToast, UNDO_MS } from './inbox.js';
+import { decisionToast, due, isOpen, pendingToast, UNDO_MS, version } from './inbox.js';
 import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
@@ -1141,8 +1141,6 @@ export async function flushDecisions(now = Date.now()) {
     p.sent = true;
     mine.set(p.item, { action: p.action, message: p.message });
   }
-  // The decision as sent: a `now` push that changed it meanwhile is newer than the answer.
-  const sent = batch.map((p) => app.now.decisions[p.item]);
   const acts = await Promise.allSettled(
     batch.map((p) => invoke('inbox_act', { item: p.item, action: p.action, message: p.message })),
   );
@@ -1153,13 +1151,13 @@ export async function flushDecisions(now = Date.now()) {
       toast(errText(r.reason), { kind: 'error' });
       return;
     }
-    // The effect it answered with: the toast if the decision closes with no final push.
-    if (mine.has(p.item)) mine.set(p.item, { ...mine.get(p.item), effect: r.value?.effect });
+    // The answer's lifecycle counts as a push when newer than what we hold: a
+    // synchronous effect (Allow once on a held hook, Dismiss, Delete) toasts now.
+    // A synthesized answer has version 0: its push carries the lifecycle.
     const d = app.now.decisions[p.item];
-    if (d && d === sent[i] && r.value?.lifecycle) {
-      // The answer's lifecycle counts as a push: a synchronous effect (Allow
-      // once on a held hook, Dismiss, Delete) toasts now, not never.
-      const next = { ...d, lifecycle: r.value.lifecycle };
+    const lc = r.value?.lifecycle;
+    if (d && lc && (lc.version == null || lc.version > version(d))) {
+      const next = { ...d, lifecycle: lc };
       app.now.decisions[p.item] = next;
       decisionPushed(d, next);
     }
@@ -1191,17 +1189,11 @@ export function decisionPushed(prev, d) {
   else toast(text);
 }
 
-/** A decision left the open list. One closed with no final lifecycle (a
- *  synthesized wait-/error- decision, a deleted item): ours still in its undo
- *  window would only fail; one we sent toasts the effect inbox_act answered
- *  with, since no push will carry it. */
-export function decisionGone(id, d) {
+/** A decision left the open list (its final upsert came first, T-35): ours
+ *  still in its undo window would only fail, and what we sent is forgotten. */
+export function decisionGone(id) {
   undoItem(id);
-  const m = mine.get(id);
   mine.delete(id);
-  // `mine` only holds what has not settled yet (decisionPushed drops the rest).
-  if (m?.effect && d)
-    toast(effectText({ ...d, lifecycle: { state: 'effect', decided_by: 'user', effect: m.effect } }, m));
 }
 
 /** FR-415: the agent again as a fresh session with its brief (agent menu). */
