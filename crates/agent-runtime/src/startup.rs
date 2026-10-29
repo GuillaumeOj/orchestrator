@@ -249,7 +249,6 @@ impl Runtime {
     /// Returns `(old, new, a queued turn is the brief, the re-queued turns'
     /// messages)`; the flag set by the caller stays until the spawn.
     pub(crate) fn fresh_session(&self, id: &str, brief: Option<&str>) -> Result<(String, String, bool, Vec<u64>)> {
-        let new = uuid::Uuid::new_v4().to_string();
         self.store.write(|s| {
             let (mut had_brief, mut msgs) = (false, vec![]);
             for t in s.turns.iter_mut().filter(|t| t.agent_id == id) {
@@ -260,51 +259,43 @@ impl Runtime {
                 had_brief |= t.status == TurnStatus::Queued && !t.command && brief == Some(t.body.as_str());
             }
             let a = s.agents.get_mut(id).expect("checked by the caller");
-            let old = std::mem::replace(&mut a.session_id, new.clone());
-            a.resume_failed = false;
-            a.tracker.last_error = None;
-            if a.tracker.state == AgentState::Error {
-                a.tracker.state = AgentState::Suspended;
-            }
-            (old, new.clone(), had_brief, msgs)
+            let old = a.new_session();
+            (old, a.session_id.clone(), had_brief, msgs)
         })
     }
 
     /// A team agent starts its next task in a new session: a new session id
     /// and `start_fresh`, written together, so the delivery loop spawns it
-    /// with `--session-id`. Unlike [`Runtime::restart_fresh`] nothing is
-    /// re-queued and no failure is recorded. The caller suspends it first and
-    /// only rotates a quiet agent; the lead is never rotated. The new session id.
-    pub(crate) fn rotate_for_task(&self, id: &str, task: &Task, node: &str) -> Result<String> {
-        if self.live(id).is_some() {
-            bail!("agent {id} is running");
+    /// with `--session-id`. A live (idle) agent is suspended first. Unlike
+    /// [`Runtime::restart_fresh`] nothing is re-queued and no failure is
+    /// recorded. The caller only rotates a quiet agent; the lead is never
+    /// rotated. A session already rotated and not used yet (an assignment
+    /// that failed after it) is kept, without new events.
+    pub(crate) fn rotate_for_task(&self, id: &str, task: &Task) -> Result<()> {
+        if self.store.read(|s| s.agents.get(id).is_some_and(|a| a.start_fresh)) {
+            return Ok(());
         }
-        let new = uuid::Uuid::new_v4().to_string();
-        let (old, run) = self.store.write(|s| {
+        if self.live(id).is_some() {
+            self.suspend(id)?;
+        }
+        let (old, new, seat) = self.store.write(|s| {
             let Some(a) = s.agents.get_mut(id) else { bail!("no agent {id}") };
-            let Some(run) = a.team.as_ref().map(|t| t.run_id.clone()) else { bail!("agent {id} is not in a team") };
+            let Some(seat) = a.team.clone() else { bail!("agent {id} is not in a team") };
             if reserved_slot(a) {
                 bail!("the lead keeps its session");
             }
-            let old = std::mem::replace(&mut a.session_id, new.clone());
+            let old = a.new_session();
             a.start_fresh = true;
-            a.resume_failed = false;
-            // The delivery loop only spawns a suspended agent: one in error
-            // would hold its new task forever (as `fresh_session` does).
-            a.tracker.last_error = None;
-            if a.tracker.state == AgentState::Error {
-                a.tracker.state = AgentState::Suspended;
-            }
-            Ok((old, run))
+            Ok((old, a.session_id.clone(), seat))
         })??;
         self.event(id, "fresh_session", json!({"old_session": old, "new_session": new, "task": task.id}));
         self.run_event(
-            &run,
+            &seat.run_id,
             Some(id),
             "agent.fresh_session",
-            json!({"node": node, "task": task.id, "title": task.title}),
+            json!({"node": seat.node, "task": task.id, "title": task.title}),
         );
-        Ok(new)
+        Ok(())
     }
 
     /// Whether an agent's last start failed in a way only a fresh session fixes.

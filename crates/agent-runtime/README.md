@@ -190,8 +190,8 @@ through `orch-tasks` (Local or GitHub Issues, FR-501–503).
   the first dispatch; `Executing → Integrating` when every task is Done (the lead is told to check
   and ask for the PR).
 - **Session per task**: a free agent that has already run starts each new task in a **fresh
-  session** (same agent, worktree, branch and role). Only a quiet agent is rotated: idle or stopped,
-  with no turn queued, being pasted or running (a nudge, the end of its `report_done` turn);
+  session** (same agent, worktree, branch and role). Only a quiet agent is rotated: idle (nothing in the
+  background, pane closed) or stopped, with no turn queued, being pasted or running (a nudge, the end of its `report_done` turn);
   otherwise the task stays Ready for a later tick, and no new seat opens while a free agent is
   busy. A live idle agent is suspended first, inline (SIGTERM, bounded by the stop's grace and its
   wait for the exit callback); the tick never waits on a busy one. `rotate_for_task` writes the

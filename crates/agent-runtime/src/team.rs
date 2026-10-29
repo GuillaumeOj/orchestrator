@@ -557,24 +557,24 @@ impl Runtime {
     }
 
     /// A free agent that has run may start a task in a fresh session only
-    /// when quiet: idle or stopped, and no turn of its own queued, being
-    /// pasted or running (a nudge, the end of its `report_done` turn). A
-    /// stopped agent runs nothing: a turn left `Delivered` by a process that
-    /// died mid-turn never ends, so only its queued turns count.
+    /// when quiet. Live: idle, nothing in the background (a dev server would
+    /// die with it), its pane closed, no stop under way, and no turn of its
+    /// own queued, being pasted or running (a nudge, the end of its
+    /// `report_done` turn). Stopped: suspended or in error with nothing
+    /// queued; a turn left `Delivered` by a process that died mid-turn never ends.
     fn quiet_for_task(&self, rec: &AgentRecord) -> bool {
-        let live = self.live(&rec.id).is_some();
-        let state = if live {
-            // Its background tasks (a dev server…) would die with the process.
-            rec.tracker.state == AgentState::Idle && rec.tracker.background_tasks == 0
-        } else {
-            matches!(rec.tracker.state, AgentState::Suspended | AgentState::Error)
+        let Some(l) = self.live(&rec.id) else {
+            return matches!(rec.tracker.state, AgentState::Suspended | AgentState::Error)
+                && !self.has_queued_turn(&rec.id);
         };
-        state
+        rec.tracker.state == AgentState::Idle
+            && rec.tracker.background_tasks == 0
+            && rec.tracker.stop_intent == crate::state::StopIntent::None
+            && !l.pty.output.is_attached()
             && !self.store.read(|s| {
                 s.turns.iter().any(|t| {
-                    t.agent_id == rec.id
-                        && (t.status == TurnStatus::Queued
-                            || live && matches!(t.status, TurnStatus::Delivering | TurnStatus::Delivered))
+                    matches!(t.status, TurnStatus::Queued | TurnStatus::Delivering | TurnStatus::Delivered)
+                        && t.agent_id == rec.id
                 })
             })
     }
@@ -597,25 +597,21 @@ impl Runtime {
             format!("When it is done, tested and committed, call mcp__orch__report_done for `{up}`.")
         };
         // By their `agent_id`, which Review and Done keep (`apply_status`
-        // clears it only for Ready and Backlog).
-        let mut earlier: Vec<Task> = self
+        // clears it only for Ready and Backlog); `tasks` is ordered by id.
+        let earlier: Vec<String> = self
             .db
             .tasks(None, None, Some(&cx.run.id))
             .unwrap_or_default()
             .into_iter()
             .filter(|e| e.id != t.id && e.agent_id.as_deref() == Some(rec.id.as_str()))
+            .map(|e| format!("{} ({})", e.handle(), e.status.label().to_lowercase()))
             .collect();
-        earlier.sort_by_key(|t| t.id);
         let earlier = if earlier.is_empty() {
             String::new()
         } else {
             format!(
                 "\nEarlier on this branch: {}. Their work is in git log; follow-ups on them may still reach you.",
-                earlier
-                    .iter()
-                    .map(|t| format!("{} ({})", t.handle(), t.status.label().to_lowercase()))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                earlier.join(", ")
             )
         };
         format!(
@@ -673,22 +669,14 @@ impl Runtime {
                 }
                 None => continue,
             };
-            // A session rotated on an earlier tick whose assignment failed is
-            // still unused: rotating it again would only repeat the events.
-            if !rec.never_started() && !rec.start_fresh {
-                // Only an idle process is stopped here (SIGTERM, bounded by
-                // the stop's grace and its wait for the exit callback): the
-                // tick never waits on a busy agent.
-                if self.live(&rec.id).is_some()
-                    && let Err(e) = self.suspend(&rec.id)
-                {
-                    self.event(&rec.id, "fresh_session_failed", json!({"task": t.id, "error": format!("{e:#}")}));
-                    continue;
-                }
-                if let Err(e) = self.rotate_for_task(&rec.id, t, node) {
-                    self.event(&rec.id, "fresh_session_failed", json!({"task": t.id, "error": format!("{e:#}")}));
-                    continue;
-                }
+            // A live idle agent is suspended inline (SIGTERM, bounded by the
+            // stop's grace and its wait for the exit callback): the tick never
+            // waits on a busy agent.
+            if !rec.never_started()
+                && let Err(e) = self.rotate_for_task(&rec.id, t)
+            {
+                self.event(&rec.id, "fresh_session_failed", json!({"task": t.id, "error": format!("{e:#}")}));
+                continue;
             }
             self.store.write(|s| {
                 if let Some(a) = s.agents.get_mut(&rec.id)
