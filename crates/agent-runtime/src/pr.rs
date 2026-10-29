@@ -29,10 +29,7 @@ const FETCH_DEADLINE: Duration = Duration::from_secs(120);
 
 /// The watcher's own clock: when each run last fetched. Held for a whole
 /// check, so two checks of the PRs never interleave (tick, refresh, push).
-#[derive(Default)]
-pub(crate) struct PrWatch {
-    fetched_ms: BTreeMap<String, u64>,
-}
+pub(crate) type PrWatch = BTreeMap<String, u64>;
 
 /// What changed between two checks of a PR (see [`pr_changes`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -203,14 +200,17 @@ impl Runtime {
             }
         };
         let branch = feature.integration_branch();
-        if force_fetch || watch.fetched_ms.get(run_id).is_none_or(|t| now.saturating_sub(*t) >= FETCH_BASE_EVERY_MS) {
+        if force_fetch || watch.get(run_id).is_none_or(|t| now.saturating_sub(*t) >= FETCH_BASE_EVERY_MS) {
             // A failed fetch leaves the last counts (or `unknown`); tried again when due.
             let _ = gh::fetch_branches(&wt, &[&view.base, &branch], FETCH_DEADLINE);
-            watch.fetched_ms.insert(run_id.to_string(), now);
+            watch.insert(run_id.to_string(), now);
         }
         let base_ref = format!("origin/{}", view.base);
         let base_sha = gh::rev_sha(&wt, &base_ref);
-        let counts = base_sha.as_ref().and_then(|_| gh::left_right(&wt, &base_ref, &view.head_sha).ok());
+        let counts = base_sha
+            .as_ref()
+            .and_then(|_| orch_git::cleanup::try_ahead_behind(&wt, &view.head_sha, &base_ref))
+            .map(|(ahead, behind)| (behind, ahead));
         let pushed_sha = pushed.or_else(|| old.as_ref().and_then(|o| o.pushed_sha.clone()));
         let new = PrStatus {
             state: view.state.clone(),
@@ -218,14 +218,14 @@ impl Runtime {
             base: view.base.clone(),
             ci: view.ci.clone(),
             position: gh::position(&view.mergeable, &view.merge_state, counts, base_sha),
-            unpushed: gh::commits_since(&wt, &view.head_sha).map_or(0, |c| c.len() as u32),
-            rewritten: pushed_sha.as_deref().is_some_and(|p| !gh::head_contains(&wt, p)),
+            unpushed: orch_git::cleanup::try_ahead_behind(&wt, "HEAD", &view.head_sha).map_or(0, |(a, _)| a),
+            rewritten: pushed_sha.as_deref().is_some_and(|p| !orch_git::cleanup::is_merged(&wt, p, "HEAD")),
             pushed_sha,
             checked_at_ms: now,
             error: None,
         };
         if new.state != "open" {
-            watch.fetched_ms.remove(run_id);
+            watch.remove(run_id);
         }
         // Only the PR columns: a pause or stop made while `gh` and the fetch ran stays.
         self.db.set_run_pr(run_id, &new, Some(&view.url).filter(|u| !u.is_empty()).map(String::as_str))?;
@@ -248,33 +248,36 @@ impl Runtime {
         for c in changes {
             match c {
                 PrChange::Merged | PrChange::Closed => {
-                    let merged = *c == PrChange::Merged;
-                    let (to, why, kind) = if merged {
-                        (RunState::Done, "pull request merged", "pr_merged")
+                    let (to, why, what, lead) = if *c == PrChange::Merged {
+                        (RunState::Done, "pull request merged", "merged", "The feature is done; end your turn.")
                     } else {
-                        (RunState::Integrating, "pull request closed", "pr_closed")
+                        (
+                            RunState::Integrating,
+                            "pull request closed",
+                            "closed",
+                            "The run is back to integrating. Ask the user what they want with mcp__orch__ask_user; \
+                             mcp__orch__request_pr opens a new pull request.",
+                        )
                     };
                     if let Err(e) = self.advance_run(&run.id, to, why) {
                         self.run_event(&run.id, None, "team_error", json!(format!("{e:#}")));
                     }
-                    self.run_event(&run.id, None, if merged { "pr.merged" } else { "pr.closed" }, json!({"number": n}));
+                    self.run_event(&run.id, None, &format!("pr.{what}"), json!({"number": n}));
                     self.withdraw_pr_updates(&run.id, why);
-                    let title = format!("Feature {} {}", feature.slug, if merged { "merged" } else { "PR closed" });
+                    let title = if what == "merged" {
+                        format!("Feature {} merged", feature.slug)
+                    } else {
+                        format!("Feature {} PR closed", feature.slug)
+                    };
                     let _ = self.add_item(
                         None,
                         "info",
                         title,
-                        json!({"action": kind, "run": run.id, "feature": feature.id, "pr_number": n, "url": url}),
+                        json!({"action": format!("pr_{what}"), "run": run.id, "feature": feature.id, "pr_number": n, "url": url}),
                         PRIORITY_ALERT,
                     );
-                    tell.push(if merged {
-                        format!("ORCH: PR #{n} was merged. The feature is done; end your turn.")
-                    } else {
-                        format!(
-                            "ORCH: PR #{n} was closed without being merged; the run is back to integrating. Ask the \
-                             user what they want with mcp__orch__ask_user; mcp__orch__request_pr opens a new pull request."
-                        )
-                    });
+                    let how = if what == "merged" { "merged" } else { "closed without being merged" };
+                    tell.push(format!("ORCH: PR #{n} was {how}. {lead}"));
                 }
                 PrChange::Ci { from, to, failed } => {
                     let mut ci = json!({"from": from, "to": to});
@@ -365,12 +368,13 @@ impl Runtime {
     /// commits to that PR (no new PR). `title` / `body` are ignored.
     pub(crate) fn request_pr_update(&self, rec: &AgentRecord, run: &TeamRun) -> Result<String> {
         let n = run.pr_number.ok_or_else(|| anyhow!("this run has no pull request"))?;
-        let pr = run.pr.as_ref().ok_or_else(|| anyhow!("PR #{n} was not checked yet: try again in a minute"))?;
-        let branch = orch_git::git(&rec.worktree, &["symbolic-ref", "--short", "HEAD"])?.trim().to_string();
-        let lease = pr.pushed_sha.clone().unwrap_or_else(|| pr.head_sha.clone());
-        if lease.is_empty() {
-            bail!("PR #{n} could not be checked yet: try again in a minute");
-        }
+        let pr = run.pr.as_ref();
+        let lease = pr
+            .and_then(|p| p.pushed_sha.clone().or_else(|| Some(p.head_sha.clone())))
+            .filter(|l| !l.is_empty())
+            .ok_or_else(|| anyhow!("PR #{n} was not checked yet: try again in a minute"))?;
+        let base = pr.map(|p| p.base.clone()).unwrap_or_default();
+        let branch = orch_git::worktree::current_branch(&rec.worktree)?;
         // The head the user approves is the one pushed (not what the branch holds by then).
         let head = gh::rev_sha(&rec.worktree, "HEAD").ok_or_else(|| anyhow!("{branch} has no commit"))?;
         let commits = gh::commits_since(&rec.worktree, &lease)?;
@@ -385,7 +389,7 @@ impl Runtime {
             json!({"action": "push_pr_update", "run": run.id, "branch": branch, "pr_number": n, "url": url,
                    "commits": commits.iter().map(|(sha, subject)| json!({"sha": sha, "subject": subject})).collect::<Vec<_>>(),
                    // The rebase and its force push come with `rebase_base`.
-                   "force": false, "lease_sha": lease, "head": head, "base": pr.base, "worktree": rec.worktree}),
+                   "force": false, "lease_sha": lease, "head": head, "base": base, "worktree": rec.worktree}),
             PRIORITY_GATE,
         )?;
         self.db.audit(
@@ -687,7 +691,7 @@ mod tests {
         rt.pr_tick(t0 + MIN);
         assert_eq!(told(rt, "ORCH: CI fails on PR #12: ci / test (failure, https://ci/test)"), 1);
         rt.pr_tick(t0 + 2 * MIN);
-        *rt.pr_watch.lock().unwrap() = PrWatch::default();
+        rt.pr_watch.lock().unwrap().clear();
         rt.pr_tick(t0 + 3 * MIN);
         assert_eq!(told(rt, "CI fails"), 1, "the stored status is compared: nothing repeated");
         let st = events(&fx, "pr.status");

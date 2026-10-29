@@ -14,7 +14,7 @@ use serde_json::Value;
 pub use orch_store::pr_number_from_url;
 use orch_store::{CiJob, CiSummary, PrPosition};
 
-use crate::git::{git, git_deadline, git_ok, run_with_deadline};
+use crate::git::{git, git_deadline, run_with_deadline};
 
 const GH_DEADLINE: Duration = Duration::from_secs(30);
 
@@ -100,7 +100,7 @@ fn job_finished(state: &str) -> bool {
 /// Sort group: failed jobs first, then running, waiting, the rest.
 fn job_group(state: &str) -> u8 {
     match state {
-        s if FAILED.contains(&s) => 0,
+        s if job_failed(s) => 0,
         "in_progress" => 1,
         s if !job_finished(s) => 2,
         _ => 3,
@@ -144,7 +144,7 @@ pub fn summarize_jobs(v: &Value) -> CiSummary {
     let paged = v.get("totalCount").and_then(Value::as_u64).unwrap_or(0) as u32;
     let total = paged.max(jobs.len() as u32);
     let done = jobs.iter().filter(|j| job_finished(&j.state)).count() as u32;
-    let overall = if jobs.iter().any(|j| FAILED.contains(&j.state.as_str())) {
+    let overall = if jobs.iter().any(|j| job_failed(&j.state)) {
         "error"
     } else if jobs.iter().any(|j| j.state == "in_progress") {
         "running"
@@ -163,7 +163,6 @@ pub fn summarize_jobs(v: &Value) -> CiSummary {
 /// One PR as `gh pr view` reports it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PrView {
-    pub number: u64,
     pub url: String,
     /// `open` / `merged` / `closed`.
     pub state: String,
@@ -181,9 +180,10 @@ pub const PR_VIEW_FIELDS: &str = "number,url,state,headRefOid,baseRefName,mergea
 pub fn parse_pr_view(json: &str) -> Result<PrView> {
     let p: Value = serde_json::from_str(json).context("gh pr view: not JSON")?;
     let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    let number = p.get("number").and_then(Value::as_u64).context("gh pr view: no number")?;
+    if p.get("number").and_then(Value::as_u64).is_none() {
+        bail!("gh pr view: no PR in {json:.200}");
+    }
     Ok(PrView {
-        number,
         url: s("url"),
         state: s("state").to_ascii_lowercase(),
         head_sha: s("headRefOid"),
@@ -243,18 +243,6 @@ pub fn fetch_branches(dir: &Path, branches: &[&str], deadline: Duration) -> Resu
 pub fn rev_sha(dir: &Path, rev: &str) -> Option<String> {
     let out = git(dir, &["rev-parse", "--verify", "--quiet", &format!("{rev}^{{commit}}")]).ok()?;
     Some(out.trim().to_string()).filter(|s| !s.is_empty())
-}
-
-/// `(behind, ahead)`: commits of `base` not in `head`, and of `head` not in `base`.
-pub fn left_right(dir: &Path, base: &str, head: &str) -> Result<(u32, u32)> {
-    let out = git(dir, &["rev-list", "--left-right", "--count", &format!("{base}...{head}")])?;
-    let mut n = out.split_whitespace().map(|x| x.parse::<u32>().unwrap_or(0));
-    Ok((n.next().unwrap_or(0), n.next().unwrap_or(0)))
-}
-
-/// `HEAD` contains `sha` (false when `sha` is unknown here: a rebase rewrote it).
-pub fn head_contains(dir: &Path, sha: &str) -> bool {
-    git_ok(dir, &["merge-base", "--is-ancestor", sha, "HEAD"])
 }
 
 /// The commits of `HEAD` not in `sha`, newest first: `(sha, subject)`.
@@ -478,7 +466,7 @@ mod tests {
         let json = r#"{"number":12,"url":"https://github.com/o/r/pull/12","state":"MERGED","headRefOid":"abc",
             "baseRefName":"main","mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN","statusCheckRollup":[]}"#;
         let p = parse_pr_view(json).unwrap();
-        assert_eq!((p.number, p.state.as_str(), p.head_sha.as_str(), p.base.as_str()), (12, "merged", "abc", "main"));
+        assert_eq!((p.state.as_str(), p.head_sha.as_str(), p.base.as_str()), ("merged", "abc", "main"));
         assert_eq!(p.ci.overall, "none");
         assert_eq!(parse_pr_view(&json.replace("MERGED", "CLOSED")).unwrap().state, "closed");
         assert!(parse_pr_view("{}").is_err() && parse_pr_view("nope").is_err());
@@ -512,15 +500,14 @@ mod tests {
         let head = rev_sha(&wt, "HEAD").unwrap();
         commit_file(&wt, "b.txt", "b", "feat b");
         assert_eq!(commits_since(&wt, &head).unwrap().iter().map(|c| c.1.as_str()).collect::<Vec<_>>(), ["feat b"]);
-        assert!(head_contains(&wt, &head) && !head_contains(&wt, "0123456789abcdef0123456789abcdef01234567"));
         // main moves on the remote.
         let other = d.path().join("other");
         g(d.path(), &["clone", "-q", bare.to_str().unwrap(), other.to_str().unwrap()]);
         commit_file(&other, "m.txt", "m", "main moves");
         g(&other, &["push", "-q", "origin", "main"]);
-        assert_eq!(left_right(&wt, "origin/main", &head).unwrap(), (0, 1));
+        assert_eq!(crate::cleanup::try_ahead_behind(&wt, &head, "origin/main"), Some((1, 0)));
         fetch_branches(&wt, &["main"], Duration::from_secs(30)).unwrap();
-        assert_eq!(left_right(&wt, "origin/main", &head).unwrap(), (1, 1));
+        assert_eq!(crate::cleanup::try_ahead_behind(&wt, &head, "origin/main"), Some((1, 1)));
         assert_eq!(rev_sha(&wt, "origin/main"), rev_sha(&other, "HEAD"));
         assert!(fetch_branches(&wt, &["main", "--upload-pack=x"], Duration::from_secs(5)).is_err());
         assert_eq!(rev_sha(&wt, "origin/nope"), None);

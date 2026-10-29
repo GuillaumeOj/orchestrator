@@ -133,7 +133,12 @@ pub fn toplevel(path: &Path) -> Result<PathBuf> {
 
 /// The checked-out branch, `main` when HEAD is detached or unreadable.
 pub fn default_branch(repo: &Path) -> String {
-    git(repo, &["symbolic-ref", "--short", "HEAD"]).map(|s| s.trim().to_string()).unwrap_or_else(|_| "main".into())
+    current_branch(repo).unwrap_or_else(|_| "main".into())
+}
+
+/// The checked-out branch (an error when HEAD is detached).
+pub fn current_branch(repo: &Path) -> Result<String> {
+    Ok(git(repo, &["symbolic-ref", "--short", "HEAD"])?.trim().to_string())
 }
 
 pub fn branch_exists(repo: &Path, branch: &str) -> bool {

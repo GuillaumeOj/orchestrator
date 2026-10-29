@@ -1002,7 +1002,7 @@ impl Runtime {
         let body = args.get("body").and_then(Value::as_str).unwrap_or("").chars().take(20_000).collect::<String>();
         let draft = args.get("draft").and_then(Value::as_bool).unwrap_or(false);
         let row = self.store.read(|s| s.worktrees.get(&rec.worktree).cloned());
-        let branch = orch_git::git(&rec.worktree, &["symbolic-ref", "--short", "HEAD"])?.trim().to_string();
+        let branch = orch_git::worktree::current_branch(&rec.worktree)?;
         let base = row.map(|r| r.base).unwrap_or_else(|| "main".into());
         let head = orch_git::git(&rec.worktree, &["rev-parse", "HEAD"])?.trim().to_string();
         let id = self.add_item(
