@@ -1605,7 +1605,7 @@ impl Runtime {
         let sample = StatusSample::parse(&m.payload);
         let g = self.usage.lock().unwrap_or_else(|e| e.into_inner()).ingest(&m.agent_id, m.ts_ms, &sample);
         if let Some(g) = g {
-            self.touch("usage");
+            self.touch(orch_protocol::Topic::Usage);
             self.event(&m.agent_id, "usage_sample", serde_json::to_value(&g).unwrap_or(Value::Null));
             let allocation = self.store.read(|s| s.agents.get(&m.agent_id).map(|a| a.allocation.clone()));
             let _ = self.advance_week(

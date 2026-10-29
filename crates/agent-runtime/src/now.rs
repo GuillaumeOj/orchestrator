@@ -233,7 +233,7 @@ impl Runtime {
 
     /// Files in `worktree` changed (an edit, a commit, a merge): its Diff pane refetches.
     pub fn touch_worktree(&self, worktree: &std::path::Path) {
-        self.touch(format!("worktree:{}", worktree.display()));
+        self.touch(orch_protocol::Topic::Worktree(worktree.display().to_string()));
     }
 
     /// The open decisions last published, oldest first (the notifier's).
@@ -310,11 +310,11 @@ impl Runtime {
         }
         topics.extend(db_topics);
         if changed.inbox {
-            topics.insert("inbox".into());
+            topics.insert(orch_protocol::Topic::Inbox.into());
         }
         if queue_moved && !first {
-            topics.insert("queue".into());
-            topics.insert("planner".into());
+            topics.insert(orch_protocol::Topic::Queue.into());
+            topics.insert(orch_protocol::Topic::Planner.into());
         }
         let live: BTreeSet<String> = self.live_ids().into_iter().collect();
         // Open items, and those closed recently or still being delivered
@@ -324,7 +324,8 @@ impl Runtime {
             let keep = |i: &&orch_store::InboxItem| {
                 i.open()
                     || matches!(i.status, orch_store::InboxStatus::Decided | orch_store::InboxStatus::Sent)
-                    || [i.decided_at_ms, i.sent_at_ms, i.effect_at_ms].into_iter().flatten().max().unwrap_or(0) >= recent
+                    || [i.decided_at_ms, i.sent_at_ms, i.effect_at_ms].into_iter().flatten().max().unwrap_or(0)
+                        >= recent
             };
             (s.agents.clone(), s.inbox.iter().filter(keep).cloned().collect())
         });
@@ -387,7 +388,7 @@ impl Runtime {
         // An agent's raw row changes on every hook (last_event_at_ms): the
         // shell refetches only when what it shows (the record) changed.
         if changed.agents && old.agents != world.agents {
-            topics.insert("agents".into());
+            topics.insert(orch_protocol::Topic::Agents.into());
         }
         let decisions: BTreeMap<String, Decision> = decisions.into_iter().map(|d| (d.id.clone(), d)).collect();
         let (upsert, closed) = decision_delta(&state.decisions, &decisions);
@@ -631,11 +632,15 @@ mod tests {
         let (_d, rt) = test_runtime(true);
         let got = collect(&rt);
         rt.now_pump(false);
-        let q = rt.add_item(Some("a1"), "question", "a1: which db?".into(), json!({"question": "which db?"}), 20).unwrap();
+        let q =
+            rt.add_item(Some("a1"), "question", "a1: which db?".into(), json!({"question": "which db?"}), 20).unwrap();
         rt.now_pump(false);
         let ev = got.lock().unwrap().last().cloned().unwrap();
         let up = &ev["decisions"]["upsert"];
-        assert_eq!((up[0]["id"].as_str(), up[0]["lifecycle"]["state"].as_str()), (Some(format!("q-{q}").as_str()), Some("open")));
+        assert_eq!(
+            (up[0]["id"].as_str(), up[0]["lifecycle"]["state"].as_str()),
+            (Some(format!("q-{q}").as_str()), Some("open"))
+        );
         assert_eq!(ev["counts"]["global"]["decisions"], 1);
         assert_eq!(ev["decisions"]["closed"], json!([]));
         // Answered: it leaves the open list, its last upsert says sent.
@@ -668,7 +673,9 @@ mod tests {
         // Clear: seen in the snapshot, still counted.
         rt.digest_seen(&id).unwrap();
         let snap = rt.now_snapshot();
-        assert_eq!((snap["outcomes"][0]["seen"].as_bool(), snap["counts"]["global"]["done_today"].as_u64()), (Some(true), Some(1)));
+        assert_eq!(
+            (snap["outcomes"][0]["seen"].as_bool(), snap["counts"]["global"]["done_today"].as_u64()),
+            (Some(true), Some(1))
+        );
     }
 }
-

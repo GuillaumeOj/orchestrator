@@ -97,7 +97,7 @@ impl Store {
         let run_id = run_id.map(str::to_string);
         let agent_id = agent_id.map(str::to_string);
         if run_id.is_some() {
-            self.note(["report"]);
+            self.note([orch_protocol::Topic::Report]);
         }
         let kind = kind.to_string();
         let blob_dir = self.blob_dir();

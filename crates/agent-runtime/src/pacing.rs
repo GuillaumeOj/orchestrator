@@ -235,8 +235,8 @@ impl Runtime {
         let power = PowerState { on_ac, assertion_held: self.cfg.power.held(), off_hours_pending: pending };
         let changed = std::mem::replace(&mut self.house().power, power.clone()) != power;
         if changed {
-            self.touch("power");
-            self.touch("banners");
+            self.touch(orch_protocol::Topic::Power);
+            self.touch(orch_protocol::Topic::Banners);
         }
     }
 

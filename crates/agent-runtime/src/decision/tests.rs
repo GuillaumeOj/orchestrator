@@ -140,8 +140,11 @@ fn a_question_with_several_questions_lists_them_all() {
     assert_eq!(d.title, "Which auth provider? · 2 questions");
     assert_eq!(types(&d), ["markdown", "options", "last_message"]);
     let qs = &d.context[1]["questions"];
-    assert_eq!(qs[1], json!({"question": "Which db?", "header": "DB", "multi": true,
-                             "options": [{"label": "pg", "description": null}, {"label": "sqlite", "description": null}]}));
+    assert_eq!(
+        qs[1],
+        json!({"question": "Which db?", "header": "DB", "multi": true,
+                             "options": [{"label": "pg", "description": null}, {"label": "sqlite", "description": null}]})
+    );
     assert_eq!(qs[0]["options"][0]["description"], "hosted");
     assert_eq!(action_ids(&d), ["answer", "reject", "open"]);
     // `ask_user` with options: one question.
@@ -196,7 +199,10 @@ fn startup_alerts_budget_and_notion() {
     assert_eq!(action_ids(&d), ["restart_fresh", "dismiss", "open"]);
     f.items[0].payload = json!({"failed": "fresh", "exit_status": 1});
     let d = f.one("startup-1");
-    assert_eq!(d.context[0], json!({"type": "error", "text": "restarted fresh, failed again", "detail": "exit status 1"}));
+    assert_eq!(
+        d.context[0],
+        json!({"type": "error", "text": "restarted fresh, failed again", "detail": "exit status 1"})
+    );
     assert!(action_ids(&d).contains(&"delete"), "delete once a fresh start failed");
 
     f.agent("back-1", AgentState::Error);
@@ -206,17 +212,28 @@ fn startup_alerts_budget_and_notion() {
     assert_eq!(types(&d), ["error"]);
     f.item(None, "alert", "Not on AC power\nOff-hours work won't run.", json!({"alert": "on_battery", "queued": 3}));
     let d = f.one("alert-3");
-    assert_eq!((d.title.as_str(), d.summary.as_str(), types(&d)), ("Not on AC power", "Off-hours work won't run.", vec!["markdown"]));
+    assert_eq!(
+        (d.title.as_str(), d.summary.as_str(), types(&d)),
+        ("Not on AC power", "Off-hours work won't run.", vec!["markdown"])
+    );
     f.item(None, "alert", "Penpot needs sign-in", json!({"alert": crate::registry::NEEDS_AUTH_ALERT}));
     assert_eq!(action_ids(&f.one("alert-4")), ["reconnect", "dismiss", "open_settings"]);
-    f.item(None, "budget", "The reserve for your own work is used up\nAgents are squeezed harder.", json!({"reason": "Reserve used up"}));
+    f.item(
+        None,
+        "budget",
+        "The reserve for your own work is used up\nAgents are squeezed harder.",
+        json!({"reason": "Reserve used up"}),
+    );
     let d = f.one("alert-5");
     assert_eq!((d.kind, d.level, d.title.as_str()), ("budget", 3, "Reserve used up"));
     assert_eq!(action_ids(&d), ["approve", "reject"]);
     f.item(None, "notion", "comment", json!({"source": "notion", "text": "Looks good", "author": "Ann",
                                               "page_url": "https://notion.so/p", "feature": "checkout", "doc": "spec.md"}));
     let d = f.one("alert-6");
-    assert_eq!((d.kind, d.title.as_str(), d.summary.as_str()), ("notion", "Comment on checkout · spec.md", "Ann: Looks good"));
+    assert_eq!(
+        (d.kind, d.title.as_str(), d.summary.as_str()),
+        ("notion", "Comment on checkout · spec.md", "Ann: Looks good")
+    );
     assert_eq!(d.context[0]["source"], "https://notion.so/p");
 }
 
@@ -279,7 +296,19 @@ fn every_kind_serializes_with_subject_blocks_and_lifecycle() {
     f.agent("t", AgentState::Idle).trust_dialog = true;
     for d in f.build() {
         let v = serde_json::to_value(&d).unwrap();
-        for k in ["id", "kind", "level", "subject", "title", "summary", "context", "actions", "lifecycle", "waits_on", "created_ms"] {
+        for k in [
+            "id",
+            "kind",
+            "level",
+            "subject",
+            "title",
+            "summary",
+            "context",
+            "actions",
+            "lifecycle",
+            "waits_on",
+            "created_ms",
+        ] {
             assert!(v.get(k).is_some(), "{} has no {k}: {v}", d.id);
         }
         assert!(v["subject"]["agent"].is_string(), "{v}");

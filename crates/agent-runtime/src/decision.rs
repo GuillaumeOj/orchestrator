@@ -239,7 +239,8 @@ fn subject_of(cx: &Ctx, agent: Option<&str>, project: Option<&str>) -> Value {
     let rec = agent.and_then(|a| cx.agents.get(a));
     let seat = rec.and_then(|r| r.team.as_ref());
     let feature = seat.and_then(|t| cx.runs.iter().find(|f| f.run.id == t.run_id)).map(|f| f.feature.as_str());
-    let project = rec.filter(|r| r.team.is_none()).and_then(|r| cx.projects.get(&r.repo)).map(String::as_str).or(project);
+    let project =
+        rec.filter(|r| r.team.is_none()).and_then(|r| cx.projects.get(&r.repo)).map(String::as_str).or(project);
     subject(agent, rec, feature, project)
 }
 
@@ -355,7 +356,11 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             format!("Still waiting after a restart · {who}"),
             cut(s(p, "detail"), 120),
             vec![markdown(s(p, "detail"), None)],
-            vec![act("approve", "Approve", Some("a")), act("reject", "Reject", Some("r")), act("open", "Open", Some("o"))],
+            vec![
+                act("approve", "Approve", Some("a")),
+                act("reject", "Reject", Some("r")),
+                act("open", "Open", Some("o")),
+            ],
         ),
         ("gate", _) => {
             let feature = if s(p, "feature").is_empty() { "the feature" } else { s(p, "feature") };
@@ -404,7 +409,9 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             let reason = if s(p, "reason").is_empty() { first_line.as_str() } else { s(p, "reason") };
             let mut ctx = vec![markdown(&i.body, None)];
             if p.get("cost_week_pp").is_some() || p.get("cost_5h_pp").is_some() {
-                ctx.push(json!({"type": "cost", "week_pp": p.get("cost_week_pp"), "five_hour_pp": p.get("cost_5h_pp")}));
+                ctx.push(
+                    json!({"type": "cost", "week_pp": p.get("cost_week_pp"), "five_hour_pp": p.get("cost_5h_pp")}),
+                );
             }
             if let Some(d) = p.get("deadline_ms").and_then(Value::as_u64) {
                 ctx.push(json!({"type": "countdown", "default": p.get("default"), "deadline_ms": d}));
@@ -583,7 +590,11 @@ pub fn build(cx: &Ctx) -> Vec<Decision> {
             None => cut(&k.reason, 80),
         };
         let default = if k.default_apply { "approve" } else { "reject" };
-        let summary = format!("{} · default: {} at the deadline", k.effect, if k.default_apply { "run now" } else { "keep queued" });
+        let summary = format!(
+            "{} · default: {} at the deadline",
+            k.effect,
+            if k.default_apply { "run now" } else { "keep queued" }
+        );
         let ctx = vec![
             markdown(&format!("{}\n\n{}", k.reason, k.effect), None),
             json!({"type": "cost", "week_pp": k.cost_pp}),
@@ -597,7 +608,11 @@ pub fn build(cx: &Ctx) -> Vec<Decision> {
             title,
             summary,
             ctx,
-            vec![act("approve", "Run now", Some("a")), act("reject", "Keep queued", Some("r")), act("open", "Open", Some("o"))],
+            vec![
+                act("approve", "Run now", Some("a")),
+                act("reject", "Keep queued", Some("r")),
+                act("open", "Open", Some("o")),
+            ],
             k.created_ms,
             json!({"action": k.id, "cost": k.cost_pp, "default": default, "deadline_ms": k.deadline_ms}),
         ));

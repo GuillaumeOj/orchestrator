@@ -57,7 +57,10 @@ fn tool_input(item: &InboxItem) -> Value {
 /// Pushes a branch and opens its PR (worktree, base, branch, title, body,
 /// draft): the PR's URL. The real one uses git and `gh`.
 #[derive(Clone)]
-pub struct PrOpener(pub Arc<dyn Fn(&std::path::Path, &str, &str, &str, &str, bool) -> Result<String> + Send + Sync>);
+pub struct PrOpener(pub Arc<OpenPr>);
+
+/// (worktree, base, branch, title, body, draft) → the PR's URL.
+pub type OpenPr = dyn Fn(&std::path::Path, &str, &str, &str, &str, bool) -> Result<String> + Send + Sync;
 
 impl std::fmt::Debug for PrOpener {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -334,7 +337,8 @@ impl Runtime {
 
     /// An item's lifecycle now (`inbox_act`'s answer).
     pub fn lifecycle(&self, id: u64) -> Value {
-        self.store.read(|s| s.inbox.iter().find(|i| i.id == id).map(|i| json!(crate::decision::Lifecycle::of(i))))
+        self.store
+            .read(|s| s.inbox.iter().find(|i| i.id == id).map(|i| json!(crate::decision::Lifecycle::of(i))))
             .unwrap_or(Value::Null)
     }
 
@@ -1548,7 +1552,8 @@ mod tests {
     #[test]
     fn a_question_is_sent_then_resumed_and_a_pane_answer_makes_it_stale() {
         let (_d, rt) = test_runtime(true);
-        let q = rt.add_item(Some("a1"), "question", "a1: which db?".into(), json!({"question": "which db?"}), 20).unwrap();
+        let q =
+            rt.add_item(Some("a1"), "question", "a1: which db?".into(), json!({"question": "which db?"}), 20).unwrap();
         let r = rt.decide(q, InboxDecision::Reply, None, Some("sqlite")).unwrap();
         assert_eq!(r["lifecycle"]["state"], "sent");
         rt.answers_resumed("a1");
@@ -1577,4 +1582,3 @@ mod tests {
         assert_eq!(lc(&rt, a), ("dismissed".into(), Some("dismissed".into()), None));
     }
 }
-

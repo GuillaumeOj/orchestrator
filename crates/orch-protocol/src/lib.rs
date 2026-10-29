@@ -5,6 +5,7 @@ pub mod ctl;
 pub mod hook;
 pub mod spool;
 pub mod status;
+pub mod topic;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,7 @@ pub use ctl::{AgentSpec, CtlReply, CtlRequest, InboxDecision, WorktreeKindSpec};
 pub use hook::{HookEvent, HookOutput, HookPayload, PermissionBehavior, ToolDecision};
 pub use spool::SpoolRecord;
 pub use status::{RateLimits, StatusSample, WindowSample};
+pub use topic::Topic;
 
 /// Version of the bus protocol. A peer that sees another version answers
 /// [`Reply::Error`] and the helpers fall back as if the core were down.

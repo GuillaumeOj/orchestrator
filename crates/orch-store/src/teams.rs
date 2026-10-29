@@ -532,7 +532,11 @@ impl Store {
 
     pub fn upsert_feature(&self, f: &Feature) -> Result<()> {
         let f = f.clone();
-        let topics = vec!["features".to_string(), format!("feature:{}", f.id), format!("project:{}", f.project_id)];
+        let topics = vec![
+            orch_protocol::Topic::Features,
+            orch_protocol::Topic::Feature(f.id.clone()),
+            orch_protocol::Topic::Project(f.project_id.clone()),
+        ];
         self.write_touching(topics, move |tx| {
             tx.execute(
                 &format!(
@@ -594,7 +598,11 @@ impl Store {
 
     pub fn upsert_run(&self, run: &TeamRun) -> Result<()> {
         let run = run.clone();
-        let topics = vec!["features".to_string(), "teams".to_string(), format!("feature:{}", run.feature_id)];
+        let topics = vec![
+            orch_protocol::Topic::Features,
+            orch_protocol::Topic::Teams,
+            orch_protocol::Topic::Feature(run.feature_id.clone()),
+        ];
         self.write_touching(topics, move |tx| {
             tx.execute(
                 &format!(
@@ -644,8 +652,8 @@ impl Store {
     /// Inserts a task (`id == 0`) or updates it; returns its id.
     pub fn upsert_task(&self, t: &Task) -> Result<u64> {
         let t = t.clone();
-        let mut topics = vec![format!("board:{}", t.project_id)];
-        topics.extend(t.feature_id.iter().map(|f| format!("feature:{f}")));
+        let mut topics = vec![orch_protocol::Topic::Board(t.project_id.clone())];
+        topics.extend(t.feature_id.iter().map(|f| orch_protocol::Topic::Feature(f.clone())));
         self.write_touching(topics, move |tx| {
             let id = if t.id == 0 { None } else { Some(t.id as i64) };
             tx.execute(
@@ -760,7 +768,7 @@ impl Store {
                 .optional()?;
             Ok((id, feature))
         })?;
-        self.touch(std::iter::once("teams".to_string()).chain(feature.map(|f| format!("feature:{f}"))));
+        self.touch(std::iter::once(orch_protocol::Topic::Teams).chain(feature.map(orch_protocol::Topic::Feature)));
         Ok(id)
     }
 
@@ -797,7 +805,7 @@ impl Store {
     /// Runs `sql` once per message id (`?1`), the same `args` after it.
     fn each_message(&self, ids: &[u64], sql: &'static str, args: Vec<rusqlite::types::Value>) -> Result<()> {
         let ids = ids.to_vec();
-        let topics = vec!["teams".to_string()];
+        let topics = vec![orch_protocol::Topic::Teams];
         self.write_touching(topics, move |tx| {
             let mut st = tx.prepare_cached(sql)?;
             for id in ids {
@@ -839,7 +847,7 @@ impl Store {
     pub fn mark_messages(&self, ids: &[u64], agent_id: Option<&str>, at_ms: u64) -> Result<()> {
         let ids = ids.to_vec();
         let agent = agent_id.map(str::to_string);
-        let topics = vec!["teams".to_string()];
+        let topics = vec![orch_protocol::Topic::Teams];
         self.write_touching(topics, move |tx| {
             for id in ids {
                 tx.execute(
@@ -858,7 +866,7 @@ impl Store {
 
     pub fn add_artifact(&self, a: &Artifact) -> Result<u64> {
         let a = a.clone();
-        let topics = vec![format!("feature:{}", a.feature_id)];
+        let topics = vec![orch_protocol::Topic::Feature(a.feature_id.clone())];
         self.write_touching(topics, move |tx| {
             tx.execute(
                 "INSERT INTO artifacts(feature_id, team_run_id, kind, uri, from_node, to_node, note, created_at_ms, meta)
@@ -903,7 +911,7 @@ impl Store {
         {
             bail!("GitHub repository must be owner/name, got {r:?}");
         }
-        let topics = [format!("project:{id}"), format!("board:{id}")];
+        let topics = [orch_protocol::Topic::Project(id.to_string()), orch_protocol::Topic::Board(id.to_string())];
         let (id, s, b) = (id.to_string(), js(settings), js(backend));
         let n = self.write(move |tx| {
             Ok(tx.execute(

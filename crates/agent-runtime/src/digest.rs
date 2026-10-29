@@ -66,7 +66,11 @@ fn phase(s: &str) -> String {
 
 /// "https://…/pull/12" → "#12".
 fn pr_number(url: &str) -> String {
-    url.rsplit('/').next().filter(|n| n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty()).map(|n| format!(" #{n}")).unwrap_or_default()
+    url.rsplit('/')
+        .next()
+        .filter(|n| n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty())
+        .map(|n| format!(" #{n}"))
+        .unwrap_or_default()
 }
 
 /// The outcome of one event, if it is one. `seen_up_to`: today's watermark.
@@ -98,7 +102,8 @@ pub fn outcome(ev: &Event, run: Option<&str>, names: &Names, seen_up_to: u64, tz
                 return None;
             }
             let branch = s("branch");
-            let into = d.get("into").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| "integration".into());
+            let into =
+                d.get("into").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| "integration".into());
             extra.insert("branch".into(), json!(branch));
             extra.insert("into".into(), json!(into));
             ("merge_done", format!("Merged {} into {}", tail(&branch), tail(&into)))
@@ -240,7 +245,7 @@ impl Runtime {
             self.db.set_setting(&key, &json!(n))?;
         }
         self.mark_seen(n);
-        self.touch("inbox");
+        self.touch(orch_protocol::Topic::Inbox);
         Ok(())
     }
 }
@@ -267,12 +272,29 @@ mod tests {
         let run = Some("run-1");
         let out = |e: Event, r: Option<&str>| outcome(&e, r, &n, 3, &tz);
         let t = out(ev(1, "task.done", Some("back-1"), json!({"task": 4})), run).unwrap();
-        assert_eq!((t.kind, t.text.as_str(), t.feature.as_deref(), t.project.as_deref()), ("task_done", "T-4 done · checkout API", Some("checkout"), Some("shop")));
+        assert_eq!(
+            (t.kind, t.text.as_str(), t.feature.as_deref(), t.project.as_deref()),
+            ("task_done", "T-4 done · checkout API", Some("checkout"), Some("shop"))
+        );
         assert_eq!((t.id.as_str(), t.seen), ("ev-1", true));
-        let m = out(ev(2, "git.merge", Some("lead-1"), json!({"branch": "orch/checkout/back-1", "result": {"outcome": "merged", "sha": "a"}})), run).unwrap();
+        let m = out(
+            ev(
+                2,
+                "git.merge",
+                Some("lead-1"),
+                json!({"branch": "orch/checkout/back-1", "result": {"outcome": "merged", "sha": "a"}}),
+            ),
+            run,
+        )
+        .unwrap();
         assert_eq!((m.kind, m.text.as_str()), ("merge_done", "Merged back-1 into integration"));
-        for result in [json!({"outcome": "conflict", "files": []}), json!({"outcome": "up_to_date"}), json!({"error": "x"})] {
-            assert!(out(ev(2, "git.merge", None, json!({"branch": "b", "result": result})), run).is_none(), "not a merge");
+        for result in
+            [json!({"outcome": "conflict", "files": []}), json!({"outcome": "up_to_date"}), json!({"error": "x"})]
+        {
+            assert!(
+                out(ev(2, "git.merge", None, json!({"branch": "b", "result": result})), run).is_none(),
+                "not a merge"
+            );
         }
         let p = out(ev(5, "run.state", None, json!({"from": "planning", "to": "executing"})), run).unwrap();
         assert_eq!((p.kind, p.text.as_str(), p.seen), ("run_phase", "checkout: planning → executing", false));
@@ -280,18 +302,35 @@ mod tests {
         assert_eq!(g.text, "checkout: spec → spec gate");
         let d = out(ev(6, "run.state", None, json!({"from": "pr_gate", "to": "done"})), run).unwrap();
         assert_eq!((d.kind, d.text.as_str()), ("run_done", "checkout done"));
-        let pr = out(ev(7, "run.pr_opened", Some("lead-1"), json!({"url": "https://github.com/o/r/pull/12"})), run).unwrap();
+        let pr =
+            out(ev(7, "run.pr_opened", Some("lead-1"), json!({"url": "https://github.com/o/r/pull/12"})), run).unwrap();
         assert_eq!((pr.kind, pr.text.as_str()), ("pr_opened", "PR opened · checkout #12 ↗"));
         assert_eq!(pr.extra["url"], "https://github.com/o/r/pull/12");
         let solo = out(ev(8, "run.pr_opened", Some("fix-feed"), json!({"url": "https://x/pull/3"})), None).unwrap();
         assert_eq!(solo.text, "PR opened · blog › fix-feed #3 ↗");
-        let turn = out(ev(9, "turn.done", Some("fix-feed"), json!({"summary": "\nFixed the feed pagination\nand more"})), None).unwrap();
+        let turn = out(
+            ev(9, "turn.done", Some("fix-feed"), json!({"summary": "\nFixed the feed pagination\nand more"})),
+            None,
+        )
+        .unwrap();
         assert_eq!((turn.kind, turn.text.as_str()), ("turn_done", "blog › fix-feed: Fixed the feed pagination"));
         // 2026-10-26 00:00 UTC is in ISO week 44.
         let w = out(ev(10, "weekly_report", None, json!({"report": "week-1792972800"})), None).unwrap();
         assert_eq!((w.kind, w.text.as_str()), ("report_ready", "Weekly report for week 44 is ready"));
-        let c = out(ev(11, "task.sync_conflict", None, json!({"task": 9, "handle": "ENG-140", "remote": "Linear", "project": "shop"})), None).unwrap();
-        assert_eq!((c.kind, c.text.as_str(), c.project.as_deref()), ("sync_conflict", "ENG-140 changed here and in Linear: kept Linear's", Some("shop")));
+        let c = out(
+            ev(
+                11,
+                "task.sync_conflict",
+                None,
+                json!({"task": 9, "handle": "ENG-140", "remote": "Linear", "project": "shop"}),
+            ),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            (c.kind, c.text.as_str(), c.project.as_deref()),
+            ("sync_conflict", "ENG-140 changed here and in Linear: kept Linear's", Some("shop"))
+        );
         assert!(out(ev(12, "hook.Stop", None, json!({})), None).is_none());
         let v = serde_json::to_value(&pr).unwrap();
         assert_eq!(v["url"], "https://github.com/o/r/pull/12", "kind fields are flat");

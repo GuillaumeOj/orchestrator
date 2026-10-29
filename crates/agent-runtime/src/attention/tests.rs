@@ -318,7 +318,16 @@ fn rule_2_needs_you_by_kind() {
     assert_eq!(f.rec("w").reason, "a prompt in its pane");
     // The Governor's ask about an agent.
     f.agent("k", AgentState::Idle);
-    f.ask = Some(AskFacts { id: 7, agent: s("k"), created_ms: NOW - MIN, cost_pp: Some(2.14), reason: "x".into(), effect: String::new(), deadline_ms: NOW, default_apply: false });
+    f.ask = Some(AskFacts {
+        id: 7,
+        agent: s("k"),
+        created_ms: NOW - MIN,
+        cost_pp: Some(2.14),
+        reason: "x".into(),
+        effect: String::new(),
+        deadline_ms: NOW,
+        default_apply: false,
+    });
     assert_eq!(
         shape(&f.rec("k")),
         (
@@ -336,7 +345,16 @@ fn rule_2_ranks_permission_question_gate_ask_trust_prompt_oldest_first() {
     let mut f = Fx::default();
     f.agent("a", AgentState::WaitingForYou).trust_dialog = true;
     assert_eq!(shape(&f.rec("a")).3, s("trust-a"), "trust beats the pane prompt");
-    f.ask = Some(AskFacts { id: 1, agent: s("a"), created_ms: NOW, cost_pp: None, reason: "Run a now?".into(), effect: String::new(), deadline_ms: NOW, default_apply: false });
+    f.ask = Some(AskFacts {
+        id: 1,
+        agent: s("a"),
+        created_ms: NOW,
+        cost_pp: None,
+        reason: "Run a now?".into(),
+        effect: String::new(),
+        deadline_ms: NOW,
+        default_apply: false,
+    });
     assert_eq!(shape(&f.rec("a")).3, s("ask-1"), "ask beats trust");
     let g = f.item("a", "gate", json!({"action": "spec_approval"}), 1);
     assert_eq!(shape(&f.rec("a")).3, Some(format!("gate-{g}")), "gate beats ask");
@@ -727,7 +745,16 @@ fn counts_agree_for_the_demo_fixture() {
     // Decisions without an agent count globally; the Governor ask too.
     f.inbox.push(InboxItem::new(50, "budget", None, "reserve used up".into()));
     f.inbox.push(InboxItem::new(51, "info", None, "digest".into()));
-    f.ask = Some(AskFacts { id: 1, agent: None, created_ms: NOW, cost_pp: None, reason: "x".into(), effect: String::new(), deadline_ms: NOW, default_apply: false });
+    f.ask = Some(AskFacts {
+        id: 1,
+        agent: None,
+        created_ms: NOW,
+        cost_pp: None,
+        reason: "x".into(),
+        effect: String::new(),
+        deadline_ms: NOW,
+        default_apply: false,
+    });
     let w = f.world();
     assert_eq!((w.counts.global.decisions, w.counts.projects["blog"].decisions), (4, 2));
     // Synthesized decisions: a pane prompt with no item, an agent in error.

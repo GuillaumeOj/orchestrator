@@ -236,14 +236,14 @@ impl Core {
                 let c = setup::check_claude(&claude);
                 *core2.claude.lock_ok() = Some(c);
                 if let Some(rt) = &core2.rt {
-                    rt.touch("setup");
+                    rt.touch(orch_protocol::Topic::Setup);
                 }
             });
         }
         let rt2 = core.rt.clone();
         crate::watch::start(core.watch.clone(), core.paths.root.join("logs"), core.stop.clone(), move || {
             if let Some(rt) = &rt2 {
-                rt.touch("memory");
+                rt.touch(orch_protocol::Topic::Memory);
             }
         });
         if let Some(rt) = &core.rt {
@@ -687,7 +687,8 @@ impl Core {
     pub fn inbox_act(&self, item: &str, action: &str, message: Option<&str>) -> Result<Value> {
         let rt = self.runtime()?;
         let message = message.filter(|m| !m.trim().is_empty());
-        let done = |n: u64, r: Value| json!({"ok": true, "effect": r["effect"], "lifecycle": rt.lifecycle(n), "result": r});
+        let done =
+            |n: u64, r: Value| json!({"ok": true, "effect": r["effect"], "lifecycle": rt.lifecycle(n), "result": r});
         // A permission prompt, held or parked (FR-705): the runtime decides,
         // audits and acts (the hook answers, or the agent is told).
         if let Some(n) = item.strip_prefix("inbox-") {
@@ -734,7 +735,8 @@ impl Core {
         }
         if let Some(n) = item.strip_prefix("alert-") {
             let n: u64 = n.parse()?;
-            let found = rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).map(|i| (i.kind.clone(), i.payload.clone())));
+            let found =
+                rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).map(|i| (i.kind.clone(), i.payload.clone())));
             let (kind, payload) = found.ok_or_else(|| anyhow!("no item {n}"))?;
             // An MCP sign-in alert: `open` and `reconnect` say where to go
             // (decisions D3); it closes once the server is connected again.
@@ -793,11 +795,15 @@ impl Core {
                 let effect = rt.delivered_effect(a);
                 let how = if effect == "delivered" { "deliver" } else { "resume" };
                 let r = self.agent_action(a, how, Some(&text))?;
-                return Ok(json!({"ok": true, "effect": effect, "lifecycle": {"state": "sent", "decided_by": "user"}, "result": r}));
+                return Ok(
+                    json!({"ok": true, "effect": effect, "lifecycle": {"state": "sent", "decided_by": "user"}, "result": r}),
+                );
             }
             if matches!(action, "resume" | "reject") && item.starts_with("error-") {
                 let r = self.agent_action(a, "resume", None)?;
-                return Ok(json!({"ok": true, "effect": "resumed", "lifecycle": {"state": "sent", "decided_by": "user"}, "result": r}));
+                return Ok(
+                    json!({"ok": true, "effect": "resumed", "lifecycle": {"state": "sent", "decided_by": "user"}, "result": r}),
+                );
             }
         }
         bail!("{action} does not apply to {item}")
@@ -872,13 +878,7 @@ impl Core {
                 let now = Timestamp::now();
                 let paused = g.paused_agents().iter().map(|a| a.0.clone()).collect();
                 let plan = g.plan();
-                (
-                    g.queue().to_vec(),
-                    g.snapshot(now),
-                    plan.reset_at.as_millisecond(),
-                    plan.shadow_mode,
-                    paused,
-                )
+                (g.queue().to_vec(), g.snapshot(now), plan.reset_at.as_millisecond(), plan.shadow_mode, paused)
             });
             usage["live_cap"] = json!(snapshot.live_cap);
             usage["snapshot"] = json!(snapshot);
@@ -1340,13 +1340,14 @@ mod tests {
         let rt = core.runtime().unwrap().clone();
         let penpot = rt.db.mcp_server(&orch_team::Scope::Global, "penpot").unwrap().unwrap();
         rt.set_mcp_status(&orch_team::Scope::Global, &penpot, orch_team::mcp::McpStatus::NeedsAuth, Some("x")).unwrap();
-        let items = core.state()["inbox"]["items"].clone();
-        let al = items.as_array().unwrap().iter().find(|i| i["payload"]["alert"] == "mcp_needs_auth").unwrap().clone();
+        let items = decisions(&core);
+        let al = items.iter().find(|i| i["payload"]["alert"] == "mcp_needs_auth").unwrap().clone();
         assert_eq!((al["level"].as_u64(), al["payload"]["server"].as_str()), (Some(2), Some("penpot")));
         let id = al["id"].as_str().unwrap();
         assert_eq!(core.inbox_act(id, "reconnect", None).unwrap()["open"], "url");
-        assert_eq!(core.inbox_act(id, "open", None).unwrap(), json!({"open": "settings", "server": "penpot"}));
-        assert_eq!(core.inbox_act(id, "reject", None).unwrap(), json!({"ok": true, "effect": "dismissed"}));
+        assert_eq!(core.inbox_act(id, "open_settings", None).unwrap(), json!({"open": "settings", "server": "penpot"}));
+        let r = core.inbox_act(id, "dismiss", None).unwrap();
+        assert_eq!((r["effect"].as_str(), r["lifecycle"]["state"].as_str()), (Some("dismissed"), Some("dismissed")));
         // A project override (http) gets its own reconnect target.
         let over: orch_team::mcp::McpServer = serde_json::from_value(
             json!({"id": "penpot", "name": "Penpot", "kind": "http", "url": "https://penpot.invalid/mcp", "allow_secret_env": false}),
@@ -1412,6 +1413,13 @@ mod tests {
         tempfile::Builder::new().prefix("orchapp").tempdir_in(orch_protocol::test_tmp()).unwrap()
     }
 
+    /// The decisions of the `now` snapshot, recomputed.
+    fn decisions(core: &Core) -> Vec<Value> {
+        let rt = core.runtime().unwrap();
+        rt.now_pump(true);
+        rt.now_snapshot()["decisions"].as_array().cloned().unwrap_or_default()
+    }
+
     #[test]
     fn state_has_the_shell_s_inputs() {
         let d = tmp();
@@ -1420,7 +1428,7 @@ mod tests {
         let s = core.state();
         assert_eq!(s["core"]["ok"], true);
         assert_eq!(s["projects"][0]["id"], "repo");
-        assert_eq!(s["inbox"]["badge"], 0);
+        assert!(s.get("inbox").is_none(), "decisions come from the now push");
         assert!(s["usage"]["snapshot"]["state"].is_string(), "{}", s["usage"]);
         assert!(s["usage"]["governor"].is_null() && s["usage"]["agents"].is_null(), "dropped from the poll");
         assert!(s["memory"]["core_mb"].as_f64().unwrap() > 0.0);
@@ -1503,12 +1511,12 @@ mod tests {
             })
             .unwrap();
         rt.set_run_state(run["id"].as_str().unwrap(), orch_team::RunState::SpecGate, "test").unwrap();
-        let items = core.state()["inbox"]["items"].clone();
-        let gate = items.as_array().unwrap().iter().find(|i| i["kind"] == "gate").unwrap().clone();
-        assert_eq!(gate["level"], 1);
+        let gate = decisions(&core).into_iter().find(|i| i["kind"] == "gate").unwrap();
+        assert_eq!((gate["level"].as_u64(), gate["gate"].as_str()), (Some(1), Some("spec")));
         // The spec gate names its feature, so the docs' images can be read.
         assert_eq!(core.gate_detail(gate["id"].as_str().unwrap()).unwrap()["feature_id"], json!(fid));
-        core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).unwrap();
+        let r = core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).unwrap();
+        assert_eq!(r["lifecycle"]["state"], "sent", "the lead is told");
         assert_eq!(core.state()["features"][0]["run"]["status"], "planning");
         assert!(core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).is_err(), "decided once");
         // A feature archived under its team stays listed, flagged, while one

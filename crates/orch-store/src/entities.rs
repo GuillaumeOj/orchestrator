@@ -87,7 +87,7 @@ impl Store {
 
     pub fn upsert_project(&self, pr: &Project) -> Result<()> {
         let pr = pr.clone();
-        let topics = [format!("project:{}", pr.id), format!("board:{}", pr.id)];
+        let topics = [orch_protocol::Topic::Project(pr.id.clone()), orch_protocol::Topic::Board(pr.id.clone())];
         self.write_touching(topics, move |tx| {
             tx.execute(
                 &format!(
@@ -171,7 +171,12 @@ impl Store {
     /// transcript index. Events, usage and the audit log are kept (history).
     pub fn delete_project(&self, id: &str) -> Result<()> {
         let id = id.to_string();
-        let topics = ["features".to_string(), "teams".to_string(), format!("project:{id}"), format!("board:{id}")];
+        let topics = [
+            orch_protocol::Topic::Features,
+            orch_protocol::Topic::Teams,
+            orch_protocol::Topic::Project(id.to_string()),
+            orch_protocol::Topic::Board(id.to_string()),
+        ];
         self.write_touching(topics, move |tx| {
             let path: Option<String> =
                 tx.query_row("SELECT path FROM projects WHERE id=?1", [&id], |r| r.get(0)).optional()?;

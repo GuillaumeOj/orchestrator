@@ -636,8 +636,14 @@ mod tests {
         }
         let s = crate::Store::open(&p).unwrap();
         let (a, b) = (s.inbox_item(1).unwrap().unwrap(), s.inbox_item(2).unwrap().unwrap());
-        assert_eq!((a.status, a.subject.clone(), a.thread.clone()), (crate::InboxStatus::Parked, serde_json::Value::Null, None));
-        assert_eq!((b.status, b.decided_by.as_deref(), b.effect.clone()), (crate::InboxStatus::Decided, Some("user"), None));
+        assert_eq!(
+            (a.status, a.subject.clone(), a.thread.clone()),
+            (crate::InboxStatus::Parked, serde_json::Value::Null, None)
+        );
+        assert_eq!(
+            (b.status, b.decided_by.as_deref(), b.effect.clone()),
+            (crate::InboxStatus::Decided, Some("user"), None)
+        );
         // New rows keep their lifecycle.
         let mut c = b.clone();
         c.id = 3;
@@ -647,7 +653,10 @@ mod tests {
         c.effect = Some("pr_opened".into());
         c.effect_detail = Some("https://x/pull/1".into());
         c.sent_at_ms = Some(5);
-        s.sync_runtime_begin(crate::RuntimeDiff { inbox: vec![c.clone()], ..Default::default() }).unwrap().wait().unwrap();
+        s.sync_runtime_begin(crate::RuntimeDiff { inbox: vec![c.clone()], ..Default::default() })
+            .unwrap()
+            .wait()
+            .unwrap();
         assert_eq!(s.inbox_item(3).unwrap().unwrap(), c);
         for st in ["sent", "effect", "failed", "stale"] {
             assert_eq!(crate::InboxStatus::parse(st).as_str(), st);

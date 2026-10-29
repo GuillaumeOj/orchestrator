@@ -342,9 +342,15 @@ mod tests {
         assert!(!call(&rt, "commit", json!({"message": "a"})).0);
         assert!(!call(&rt, "request_pr", json!({"title": "Add a", "body": "Because."})).0);
         let gate = gate_item(&rt);
-        assert_eq!(gate.payload["diff"], json!({"files": [{"path": "a.txt", "added": 2, "removed": 0}], "added": 2, "removed": 0}));
+        assert_eq!(
+            gate.payload["diff"],
+            json!({"files": [{"path": "a.txt", "added": 2, "removed": 0}], "added": 2, "removed": 0})
+        );
         assert!(gate.payload["head"].as_str().is_some_and(|h| h.len() == 40));
-        assert_eq!(rt.decision_patch(gate.id, Some("a.txt")).unwrap().lines().filter(|l| l.starts_with('+')).count(), 3);
+        assert_eq!(
+            rt.decision_patch(gate.id, Some("a.txt")).unwrap().lines().filter(|l| l.starts_with('+')).count(),
+            3
+        );
         let r = rt.decide(gate.id, InboxDecision::Approve, None, None).unwrap();
         assert_eq!(r["lifecycle"]["state"], "sent", "the push started");
         let lc = wait_state(&rt, gate.id, "effect");
@@ -357,7 +363,8 @@ mod tests {
 
     #[test]
     fn a_failed_push_is_failed_and_a_moved_branch_is_stale() {
-        let fail = crate::inbox::PrOpener(std::sync::Arc::new(|_, _, _, _, _, _| Err(anyhow::anyhow!("push rejected"))));
+        let fail =
+            crate::inbox::PrOpener(std::sync::Arc::new(|_, _, _, _, _, _| Err(anyhow::anyhow!("push rejected"))));
         let (_d, rt) = with_opener(fail);
         let (_r, _repo, wt) = with_worktree(&rt);
         std::fs::write(wt.join("a.txt"), "a").unwrap();
@@ -378,4 +385,3 @@ mod tests {
         assert!(rt.store.read(|s| s.turns.iter().any(|t| t.agent_id == "a1" && t.body.contains("PR gate stale"))));
     }
 }
-
