@@ -347,7 +347,8 @@ pub fn rebase_continue(worktree_path: &Path, gitconfig: Option<&Path>) -> Result
         bail!("no rebase in progress in this worktree");
     }
     let gd = insp.gitdir.clone().unwrap_or_default();
-    let from = rebase_file(&gd, "orig-head").ok_or_else(|| anyhow::anyhow!("the rebase in progress has no orig-head"))?;
+    let from =
+        rebase_file(&gd, "orig-head").ok_or_else(|| anyhow::anyhow!("the rebase in progress has no orig-head"))?;
     let g = |args: &[&str]| rebase_git(&wt, gitconfig, args);
     g(&["add", "-A", "--", "."]).context("git add")?;
     match g(&["rebase", "--continue"]) {
@@ -491,7 +492,11 @@ mod tests {
         let RebaseOutcome::Rebased { from, to } = r else { panic!("{r:?}") };
         assert_eq!((from, to.clone()), (before, head(&integ)));
         assert!(tgit(&integ, &["merge-base", "--is-ancestor", "main", "HEAD"]).is_empty());
-        assert_eq!(tgit(&integ, &["rev-list", "--merges", "--count", "main..HEAD"]).trim(), "1", "the task merge is kept");
+        assert_eq!(
+            tgit(&integ, &["rev-list", "--merges", "--count", "main..HEAD"]).trim(),
+            "1",
+            "the task merge is kept"
+        );
         assert!(integ.join("api.rs").is_file() && integ.join("m.txt").is_file());
         assert_eq!(rebase_worktree(&integ, "main", Some(&gc)).unwrap(), RebaseOutcome::UpToDate);
         // The specialist's branch, all merged, moves to the new head.

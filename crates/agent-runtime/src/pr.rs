@@ -251,7 +251,7 @@ impl Runtime {
     fn pr_apply(&self, run: &TeamRun, feature: &Feature, n: u64, changes: &[PrChange]) {
         let base = run.pr.as_ref().map(|p| p.base.clone()).unwrap_or_else(|| feature.base.clone());
         let url = run.pr_url.clone().unwrap_or_default();
-        let mut status = json!({"number": n});
+        let mut status = json!({"number": n, "base": base});
         let mut tell: Vec<String> = vec![];
         for c in changes {
             match c {
@@ -425,8 +425,8 @@ impl Runtime {
         let branch = orch_git::worktree::current_branch(wt)?;
         // The head the user approves is the one pushed (not what the branch holds by then).
         let head = gh::rev_sha(wt, "HEAD").ok_or_else(|| anyhow!("{branch} has no commit"))?;
-        // Someone else pushed to the PR: its commits must already be here or
-        // in the base (GitHub's "Update branch"), or the user decides.
+        // Someone else pushed to the PR: its commits (not the app's) must
+        // already be here or in the base (GitHub's "Update branch"), or the user decides.
         let pushed = pr.pushed_sha.clone().unwrap_or_else(|| pr.head_sha.clone());
         let mut foreign_replaced = 0;
         if pr.head_sha != pushed {
@@ -435,7 +435,17 @@ impl Runtime {
             }
             let foreign = orch_git::git(
                 wt,
-                &["log", "--max-count=50", "--format=%h %s", &pr.head_sha, "^HEAD", &format!("^{base_ref}"), "--"],
+                &[
+                    "log",
+                    "--no-merges",
+                    "--max-count=50",
+                    "--format=%h %s",
+                    &pr.head_sha,
+                    "^HEAD",
+                    &format!("^{pushed}"),
+                    &format!("^{base_ref}"),
+                    "--",
+                ],
             )?;
             if !foreign.trim().is_empty() {
                 bail!(
@@ -444,7 +454,14 @@ impl Runtime {
                     foreign.trim()
                 );
             }
-            foreign_replaced = orch_git::cleanup::try_ahead_behind(wt, &pr.head_sha, "HEAD").map_or(0, |(a, _)| a);
+            // What the push replaces: the commits pushed outside the app that are not in the base.
+            foreign_replaced = orch_git::git(
+                wt,
+                &["rev-list", "--count", &pr.head_sha, &format!("^{pushed}"), &format!("^{base_ref}"), "--"],
+            )?
+            .trim()
+            .parse::<u32>()
+            .unwrap_or(0);
         }
         // The lease is the PR head as last seen: what the app pushed, or
         // foreign commits already in the base (checked above).
@@ -972,6 +989,207 @@ mod tests {
             (RunState::PrOpen, Some(13), Some("https://github.com/o/r/pull/13"))
         );
         assert_eq!(r.pr.unwrap().state, "open");
+    }
+
+    fn commit_as(rt: &Runtime, agent: &str, file: &str, body: &str) {
+        let wt = rt.store.read(|s| s.agents[agent].worktree.clone());
+        std::fs::write(wt.join(file), body).unwrap();
+        ok(rt, agent, "commit", json!({"message": format!("edit {file}")}));
+    }
+
+    fn head_of(rt: &Runtime, agent: &str) -> String {
+        let wt = rt.store.read(|s| s.agents[agent].worktree.clone());
+        g(&wt, &["rev-parse", "HEAD"]).trim().to_string()
+    }
+
+    fn origin_head(fx: &Fx) -> String {
+        g(&fx.hub.lock().unwrap().origin, &["rev-parse", "orch/fx/integration"]).trim().to_string()
+    }
+
+    /// Someone else pushes to the PR branch from `fx.other`: a commit, or with
+    /// `merge_base` GitHub's "Update branch" (a merge of origin/main).
+    fn foreign_push(fx: &Fx, merge_base: bool) {
+        let o = &fx.other;
+        let id = ["-c", "user.name=O", "-c", "user.email=o@example.invalid"];
+        g(o, &["fetch", "-q", "origin"]);
+        g(o, &["checkout", "-q", "-B", "pr", "origin/orch/fx/integration"]);
+        if merge_base {
+            g(o, &[&id[..], &["merge", "-q", "--no-ff", "-m", "Merge main into the PR", "origin/main"]].concat());
+        } else {
+            std::fs::write(o.join("theirs.txt"), "theirs").unwrap();
+            g(o, &["add", "theirs.txt"]);
+            g(o, &[&id[..], &["commit", "-q", "-m", "their fix"]].concat());
+        }
+        g(o, &["push", "-q", "origin", "pr:orch/fx/integration"]);
+        g(o, &["checkout", "-q", "main"]);
+    }
+
+    /// The `back` task: started, committed, reported and merged by the lead.
+    fn back_task_merged(rt: &Runtime) {
+        let back = "fx-back-1";
+        ok(rt, LEAD, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        commit_as(rt, back, "api.rs", "fn api() {}");
+        let t = rt.store.read(|s| s.agents[back].team.as_ref().unwrap().task.unwrap());
+        assert!(call(rt, LEAD, "rebase_base", json!({})).1.contains("still open: T-"), "a task in progress");
+        ok(rt, back, "report_done", json!({"summary": "api"}));
+        ok(rt, back, "report_done", json!({"summary": "api", "review": {"fixed": [], "unfixed": []}}));
+        ok(rt, LEAD, "merge", json!({"branch": "orch/fx/back-1", "task": t}));
+    }
+
+    fn approve(rt: &Runtime) -> orch_store::InboxItem {
+        let gate = pending_gate(rt).unwrap();
+        rt.decide(gate.id, InboxDecision::Approve, None, None).unwrap();
+        gate
+    }
+
+    #[test]
+    fn rebase_base_moves_the_branches_and_the_pr_is_force_pushed_with_its_lease() {
+        let fx = integrating();
+        let rt = &fx.rt;
+        open(&fx);
+        back_task_merged(rt);
+        assert!(call(rt, "fx-back-1", "rebase_base", json!({})).1.contains("not one of your tools"));
+        main_moves(&fx, "m1.txt");
+        // An update gate waiting: no rebase under it.
+        ok(rt, LEAD, "request_pr", json!({}));
+        assert!(call(rt, LEAD, "rebase_base", json!({})).1.contains("waiting for the user"));
+        rt.decide(pending_gate(rt).unwrap().id, InboxDecision::Reject, None, None).unwrap();
+
+        let from = head_of(rt, LEAD);
+        let text = ok(rt, LEAD, "rebase_base", json!({}));
+        assert!(
+            text.contains("Rebased orch/fx/integration onto origin/main") && text.contains("moved orch/fx/back-1"),
+            "{text}"
+        );
+        let wt = rt.store.read(|s| s.agents[LEAD].worktree.clone());
+        let to = head_of(rt, LEAD);
+        assert!(orch_git::cleanup::is_merged(&wt, "origin/main", "HEAD") && wt.join("api.rs").is_file());
+        assert_eq!(head_of(rt, "fx-back-1"), to, "the merged specialist branch follows");
+        let ev = events(&fx, "git.rebase");
+        assert_eq!(
+            ev[0],
+            json!({"from": from, "to": to, "onto": "origin/main", "base": "main", "base_commits": 1,
+                   "branches_moved": ["orch/fx/back-1"]})
+        );
+        assert!(rt.db.audit_log(Some(LEAD), 50).unwrap().iter().any(|a| a.action == "rebase" && a.decision == "ok"));
+        assert!(ok(rt, LEAD, "rebase_base", json!({})).contains("nothing to rebase"));
+        wait("the PR checked after the rebase", || run(&fx).pr.is_some_and(|p| p.rewritten));
+
+        // The update is a force push with the lease on what the app pushed.
+        let pushed = run(&fx).pr.unwrap().pushed_sha.unwrap();
+        ok(rt, LEAD, "request_pr", json!({}));
+        let gate = approve(rt);
+        assert_eq!(gate.body, format!("{LEAD}: force-push PR #12 rebased onto main"));
+        assert_eq!((gate.payload["force"].clone(), gate.payload["lease_sha"].clone()), (json!(true), json!(pushed)));
+        assert_eq!(gate.payload["foreign_replaced"], 0);
+        let subjects: Vec<&str> =
+            gate.payload["commits"].as_array().unwrap().iter().map(|c| c["subject"].as_str().unwrap()).collect();
+        assert!(subjects.contains(&"Merge orch/fx/back-1") && subjects.contains(&"spec"), "{subjects:?}");
+        wait("the force push", || !events(&fx, "pr.pushed").is_empty());
+        assert_eq!(origin_head(&fx), to);
+        assert_eq!(events(&fx, "pr.pushed")[0]["force"], true);
+        let audit = rt.db.audit_log(Some(LEAD), 50).unwrap();
+        assert!(audit.iter().any(|a| a.action == "pr_update" && a.decision == "ok" && a.detail["force"] == true));
+        wait("checked again", || run(&fx).pr.is_some_and(|p| !p.rewritten && p.pushed_sha.as_deref() == Some(&to)));
+        assert_eq!(run(&fx).status, RunState::PrOpen);
+    }
+
+    #[test]
+    fn a_conflicting_rebase_continues_through_commit_and_a_moved_remote_refuses_the_force_push() {
+        let fx = integrating();
+        let rt = &fx.rt;
+        open(&fx);
+        commit_as(rt, LEAD, "shared.txt", "lead");
+        commit_file(&fx.other, "shared.txt", "main", "main edits shared");
+        g(&fx.other, &["push", "-q", "origin", "main"]);
+        let before = head_of(rt, LEAD);
+        let text = ok(rt, LEAD, "rebase_base", json!({}));
+        assert!(text.contains("Conflicts in shared.txt (commit 2 of 2)"), "{text}");
+        assert!(call(rt, LEAD, "request_pr", json!({})).1.contains("rebase is in progress"));
+        assert!(ok(rt, LEAD, "rebase_base", json!({"abort": true})).contains("Aborted"));
+        assert_eq!(head_of(rt, LEAD), before);
+        assert!(events(&fx, "git.rebase").is_empty(), "nothing moved on an abort");
+
+        ok(rt, LEAD, "rebase_base", json!({}));
+        let wt = rt.store.read(|s| s.agents[LEAD].worktree.clone());
+        std::fs::write(wt.join("shared.txt"), "main + lead").unwrap();
+        let text = ok(rt, LEAD, "commit", json!({"message": "resolve"}));
+        assert!(text.starts_with("Rebased orch/fx/integration onto origin/main"), "{text}");
+        assert_eq!(events(&fx, "git.rebase").len(), 1);
+        assert!(
+            rt.db.audit_log(Some(LEAD), 50).unwrap().iter().any(|a| a.action == "rebase" && a.decision == "conflict")
+        );
+        wait("the PR checked after the rebase", || run(&fx).pr.is_some_and(|p| p.rewritten));
+
+        // Asked, then someone pushes to the PR before the user approves: the lease refuses.
+        ok(rt, LEAD, "request_pr", json!({}));
+        foreign_push(&fx, false);
+        let theirs = origin_head(&fx);
+        approve(rt);
+        wait("the refusal told", || told(rt, "the force push to PR #12 was refused") == 1);
+        assert_eq!(origin_head(&fx), theirs, "their commit is kept");
+        let audit = rt.db.audit_log(Some(LEAD), 50).unwrap();
+        assert!(audit.iter().any(|a| a.action == "pr_update" && a.decision == "failed" && a.detail["force"] == true));
+        assert_eq!(run(&fx).status, RunState::PrOpen);
+        // Their commit is not here nor in main: the lead must ask the user.
+        rt.pr_refresh("fx").unwrap();
+        let (err, text) = call(rt, LEAD, "request_pr", json!({}));
+        assert!(err && text.contains("pushed outside the app") && text.contains("their fix"), "{text}");
+        assert!(text.contains("mcp__orch__ask_user"));
+    }
+
+    #[test]
+    fn an_update_branch_merge_is_replaced_by_the_rebase() {
+        let fx = integrating();
+        let rt = &fx.rt;
+        open(&fx);
+        main_moves(&fx, "m1.txt");
+        foreign_push(&fx, true);
+        let merge = origin_head(&fx);
+        rt.pr_refresh("fx").unwrap();
+        let pr = run(&fx).pr.unwrap();
+        assert_eq!(pr.head_sha, merge);
+        assert_ne!(pr.pushed_sha.as_deref(), Some(merge.as_str()));
+        ok(rt, LEAD, "rebase_base", json!({}));
+        wait("checked", || run(&fx).pr.is_some_and(|p| p.rewritten));
+        ok(rt, LEAD, "request_pr", json!({}));
+        let gate = approve(rt);
+        assert_eq!(
+            (
+                gate.payload["force"].clone(),
+                gate.payload["lease_sha"].clone(),
+                gate.payload["foreign_replaced"].clone()
+            ),
+            (json!(true), json!(merge), json!(1))
+        );
+        wait("the force push", || !events(&fx, "pr.pushed").is_empty());
+        assert_eq!(origin_head(&fx), head_of(rt, LEAD));
+    }
+
+    #[test]
+    fn a_pr_url_without_a_number_is_looked_up_or_sends_the_run_back() {
+        let fx = integrating();
+        let rt = &fx.rt;
+        fx.hub.lock().unwrap().no_url = true;
+        open(&fx);
+        assert_eq!(
+            (run(&fx).pr_number, run(&fx).pr_url.as_deref()),
+            (Some(12), Some("https://github.com/o/r/pull/12"))
+        );
+
+        let fx = integrating();
+        let rt2 = &fx.rt;
+        {
+            let mut h = fx.hub.lock().unwrap();
+            (h.no_url, h.no_lookup) = (true, true);
+        }
+        ok(rt2, LEAD, "request_pr", json!({"title": "Fix X"}));
+        rt2.decide(pending_gate(rt2).unwrap().id, InboxDecision::Approve, None, None).unwrap();
+        wait("the run back to integrating", || run(&fx).status == RunState::Integrating);
+        assert_eq!(told(rt2, "its number could not be read"), 1);
+        assert_eq!(run(&fx).pr_number, None);
+        let _ = rt;
     }
 
     fn st(ci: &str, pos: &str, base_sha: &str, head: &str) -> PrStatus {

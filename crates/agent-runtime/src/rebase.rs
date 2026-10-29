@@ -95,8 +95,14 @@ impl Runtime {
         if !moved.is_empty() {
             detail["branches_moved"] = json!(moved);
         }
-        let _ =
-            self.db.audit(&format!("agent:{}", rec.id), Some(&rec.id), "rebase", Some(&integ), decision, detail.clone());
+        let _ = self.db.audit(
+            &format!("agent:{}", rec.id),
+            Some(&rec.id),
+            "rebase",
+            Some(&integ),
+            decision,
+            detail.clone(),
+        );
         let text = match r? {
             RebaseOutcome::Rebased { to, .. } => format!(
                 "Rebased {integ} onto {base} ({}){}. Run the tests, then call mcp__orch__request_pr to push.",
@@ -156,7 +162,8 @@ impl Runtime {
             &cx.run.id,
             Some(&lead.id),
             "git.rebase",
-            json!({"from": from, "to": to, "onto": onto, "base_commits": base_commits, "branches_moved": moved}),
+            json!({"from": from, "to": to, "onto": onto, "base": cx.feature.base, "base_commits": base_commits,
+                   "branches_moved": moved}),
         );
         drop(guard);
         if effective(&cx.run) == RunState::PrOpen

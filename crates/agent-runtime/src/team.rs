@@ -631,7 +631,8 @@ impl Runtime {
     }
 
     fn dispatch(&self, cx: &RunCtx) -> Result<()> {
-        if !matches!(cx.run.status, RunState::Planning | RunState::Executing | RunState::Integrating) {
+        // Every state the lead may create tasks in (a PR's fixes too).
+        if !cx.run.status.tasks_allowed() {
             return Ok(());
         }
         let tasks = self.db.tasks(None, None, Some(&cx.run.id))?;

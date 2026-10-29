@@ -570,7 +570,10 @@ mod tests {
         g(&wt, &["push", "-q", "origin", "feat"]);
         let pushed = rev_sha(&wt, "HEAD").unwrap();
         // Rewritten locally (amended): a plain push is refused, the lease one goes.
-        g(&wt, &["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "--amend", "-m", "feat a'"]);
+        g(
+            &wt,
+            &["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "--amend", "-m", "feat a'"],
+        );
         let new = rev_sha(&wt, "HEAD").unwrap();
         assert!(push_rev(&wt, "origin", &new, "feat").is_err(), "not a fast-forward");
         push_with_lease(&wt, "origin", &new, "feat", &pushed).unwrap();
@@ -580,7 +583,10 @@ mod tests {
         g(d.path(), &["clone", "-q", "-b", "feat", bare.to_str().unwrap(), other.to_str().unwrap()]);
         commit_file(&other, "b.txt", "b", "someone else");
         g(&other, &["push", "-q", "origin", "feat"]);
-        g(&wt, &["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "--amend", "-m", "feat a''"]);
+        g(
+            &wt,
+            &["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "--amend", "-m", "feat a''"],
+        );
         let newer = rev_sha(&wt, "HEAD").unwrap();
         assert!(push_with_lease(&wt, "origin", &newer, "feat", &new).is_err(), "the remote moved");
         assert_ne!(g(&bare, &["rev-parse", "feat"]).trim(), newer);

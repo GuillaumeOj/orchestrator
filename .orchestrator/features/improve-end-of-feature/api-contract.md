@@ -56,9 +56,9 @@ Same as ctl request `PrRefresh { feature }` → `orchd pr refresh <feature>`.
 | kind | detail |
 |---|---|
 | `pr.opened` | `{ number, url }` |
-| `pr.status` | `{ number, ci?: {from, to, failed_jobs?: [{name, workflow}]}, position?: {from, to, behind} }` (only the parts that changed; `ci` only on changes to or from `error` / `ok`) |
+| `pr.status` | `{ number, base, ci?: {from, to, failed_jobs?: [{name, workflow}]}, position?: {from, to, behind} }` (only the parts that changed; `ci` only on changes to or from `error` / `ok`) |
 | `pr.pushed` | `{ number, commits, force }` |
-| `git.rebase` | `{ from, to, onto, base_commits, branches_moved: [branch] }` (`base_commits`: commits of `onto` newly under the feature) |
+| `git.rebase` | `{ from, to, onto, base, base_commits, branches_moved: [branch] }` (`onto` = `origin/<base>`; `base_commits`: commits of `onto` newly under the feature) |
 | `pr.merged` | `{ number }` |
 | `pr.closed` | `{ number }` |
 
@@ -66,7 +66,7 @@ Same as ctl request `PrRefresh { feature }` → `orchd pr refresh <feature>`.
 
 ## 5. Inbox
 
-- New gate action `push_pr_update` (kind `gate`): `payload { action: "push_pr_update", run, branch, pr_number, url, commits: [{sha, subject}], force, lease_sha, base, worktree }` (`lease_sha` = `pr.pushed_sha`). The run stays `pr_open` on approve, reject or a failed push. Actions as other gates: approve / reject (with a message). The card shows the PR number, the commit subjects, and when `force` a clear "rewrites the PR's history (rebased onto <base>, force-with-lease)" line.
+- New gate action `push_pr_update` (kind `gate`): `payload { action: "push_pr_update", run, branch, pr_number, url, commits: [{sha, subject}], force, lease_sha, foreign_replaced, head, base, worktree }` (`lease_sha` = the PR head the app last saw: `pr.pushed_sha`, or `pr.head_sha` when someone else pushed only commits already in `<base>` (GitHub's "Update branch"); `foreign_replaced` = how many of those commits pushed outside the app the push replaces, 0 otherwise: the card then says "replaces N commits pushed outside the app (already in <base>)"; `head` = the commit pushed). When the PR holds commits pushed outside the app that are neither in the branch nor in `<base>`, no gate is created: `request_pr` is refused and the lead told to ask the user. The run stays `pr_open` on approve, reject or a failed push. Actions as other gates: approve / reject (with a message). The card shows the PR number, the commit subjects, and when `force` a clear "rewrites the PR's history (rebased onto <base>, force-with-lease)" line.
 - Info items `pr_merged` / `pr_closed` (level 4, no action but dismiss): `payload { run, feature, pr_number, url }`.
 
 ## 6. Orchestrator MCP (agents)

@@ -225,8 +225,19 @@ through `orch-tasks` (Local or GitHub Issues, FR-501–503).
   turn to the lead; merged → `done`, closed → `integrating` (lead told, an `info` Inbox item, a
   pending update gate withdrawn). A gh failure keeps the status with `error`. `pr_refresh(feature)`
   checks now. `request_pr` in `pr_open` → a `push_pr_update` gate (new commits since `pushed_sha`;
-  refused when there are none); approved → fast-forward push, audit `pr_update`, `pr.pushed`, an
-  immediate check, the lead told. The run stays `pr_open` throughout.
+  refused when there are none, or while a rebase is in progress); approved → push of the approved
+  head (fast-forward, or after a rebase `--force-with-lease` on the PR head the gate saw: a remote
+  that moved refuses it), audit `pr_update`, `pr.pushed`, an immediate check, the lead told. Commits
+  pushed outside the app and already in the base (GitHub's "Update branch") are replaced
+  (`foreign_replaced`); others refuse the request and the lead asks the user. A `gh pr create` URL
+  with no number is looked up (`gh pr view <branch>`), else the run goes back to `integrating`. The
+  run stays `pr_open` throughout; a merge moves it to `done` even while paused.
+- **Rebase** (`rebase`): the lead's `rebase_base` (integrating or pr_open; no PR or update gate
+  pending; every task done, or ready with no branch) fetches `origin/<base>` and rebases the
+  integration branch (`--rebase-merges`); a conflict stops it, the lead's `commit` continues it,
+  `abort` restores it. Once done, under the PR watcher's guard: each specialist branch of the run
+  whose head is in the old integration head is reset to the new one (clean worktree only; else its
+  owner is told to sync), `git.rebase` on the timeline, audit `rebase`, and the open PR checked.
 - **Controls** (FR-406): `run_pause` (run `paused`, every member paused in the Governor; new members
   of a paused run start paused), `run_resume`, `run_stop` (queued turns dropped, live members
   suspended, run `failed` "stopped by the user"), `reassign_task`, `add_node` (a new team version,
