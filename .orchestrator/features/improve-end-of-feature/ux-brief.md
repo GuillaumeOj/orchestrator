@@ -75,12 +75,13 @@ The states to draw. `PR #12` is always first; `checked …` + refresh always las
 
 | # | State | Data | Line |
 |---|---|---|---|
-| 1 | **No PR** | `pr_number` null | unchanged: `No PR yet: the lead asks with request_pr after integration (PR gate).` (muted) |
+| 1 | **No PR** | `pr_url` null | unchanged: `No PR yet: the lead asks with request_pr after integration (PR gate).` (muted) |
+| 1b | **Legacy PR** | `pr_url` set, `pr_number` null (a run done before this change, or a URL the core could not parse) | `PR #<n>` with the number parsed from `pr_url` (else the URL itself, truncated), as a link; nothing else (no CI, no refresh): the PR is not watched. |
 | 2 | **Checking** (before the first check) | `pr_number` set, `pr` null | `PR #12` `checking…` (muted, with the refresh icon spinning, not clickable) |
 | 3 | **CI waiting** | overall `waiting`, 0/6 | `PR #12` `● 0/6` (grey) `up to date` … `checked just now` `⟳` |
 | 4 | **CI running** | overall `running`, 2/6 | `PR #12` `● 2/6` (yellow) `up to date` … |
 | 5 | **CI green** | overall `ok`, 6/6 | `PR #12` `● 6/6` (green) `up to date` … |
-| 6 | **CI red** (tooltip open) | overall `error`, 5/6 | `PR #12` `● 5/6` (red) `up to date` … + the job list (§1.5) |
+| 6 | **CI red** (tooltip open) | overall `error`, 4/6 | `PR #12` `● 4/6` (red) `up to date` … + the job list (§1.5) |
 | 7 | **No checks** | overall `none` | `PR #12` `● no checks` (grey) `up to date` … |
 | 8 | **Behind** | `behind`, 3 | `PR #12` `● 6/6` `↓3 behind main` (orange) … |
 | 9 | **Conflicts** | `conflicts` | `PR #12` `● 6/6` `conflicts` (red) … |
@@ -99,24 +100,24 @@ A paused / deferred run whose `resume_status` is `pr_open` shows the line as in 
 A popover anchored under the CI item, left-aligned to the dot. It holds links, so it is a real popover, not a native `title`.
 
 ```
-┌────────────────────────────────────────────┐
-│ CI · 5 of 6 finished · 1 failed            │  header: text.label; counts per state family
-├────────────────────────────────────────────┤
-│ ● ci / test                     failed     │  red dot
-│ ● ci / e2e                      running    │  yellow dot
-│ ● deploy-preview                queued     │  grey dot
-│ ● ci / lint                     passed     │  green dot
-│ ● ci / build                    passed     │
-│ ● ci / docs                     skipped    │  green dot, state word muted
-├────────────────────────────────────────────┤
-│ Open checks on GitHub ↗                    │  footer: link to <pr_url>/checks
-└────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ CI · 4 of 6 finished · 1 failed · 1 running · 1 waiting  │  header: text.label; counts per state family
+├──────────────────────────────────────────────────────────┤
+│ ● ci / test                                       failed │  red dot
+│ ● ci / e2e                                       running │  yellow dot
+│ ● deploy-preview                                  queued │  grey dot
+│ ● ci / lint                                       passed │  green dot
+│ ● ci / build                                      passed │
+│ ● ci / docs                                      skipped │  green dot, state word muted
+├──────────────────────────────────────────────────────────┤
+│ Open checks on GitHub ↗                                  │  footer: link to <pr_url>/checks
+└──────────────────────────────────────────────────────────┘
 ```
 
 - **Header**: `CI · <done> of <total> finished`, then the non-zero counts among `· N failed` (all error states), `· N running`, `· N waiting` (every not-started state). All green: `CI · 6 of 6 finished · all passed`. No checks: the popover shows `No CI checks on this PR.` and the footer only.
 - **Row**: dot (same rule as §1.2 per job) · name · state word right-aligned (`text.caption`, the dot's color for error / running, muted otherwise). The name is `<workflow> / <name>` with the workflow in muted text; no workflow → the name alone.
 - **Order**: the core's order (errors, running, waiting, the rest, each by name). The UI does not re-sort.
-- **Link**: a row with `url` is a link (opens the job in the browser, hover = `bg-highlight`); a row without `url` is plain text, no hover.
+- **Link**: a row with `url` is a link (opens the job in the browser, hover = `color.surface.raised`); a row without `url` is plain text, no hover.
 - **Size**: width 320px (min) to 400px (max); rows 24px. **Overflow**: past 12 rows the list scrolls (max height 12 rows = 288px) with header and footer fixed. A name too long for the row truncates with an ellipsis at the end; the state word never truncates; the full `workflow / name` is the row's tooltip.
 - **Cap**: the core sends at most 100 jobs. When `total > jobs.length` the footer reads `+N more on GitHub ↗` instead of `Open checks on GitHub ↗`.
 
@@ -146,7 +147,7 @@ A popover anchored under the CI item, left-aligned to the dot. It holds links, s
 
 ### 1.6 Behaviour at the card's min width (truncation order)
 
-The right column is fixed at 440px, so the line has **408px** (card padding `space.lg` × 2). The worst case (`PR #123 ● 12/14 ↓12 behind main ↑12 to push rebased checked 59m ago ⟳`) does not fit. Items give way in this order, each step only when the previous is not enough:
+The right column is fixed at 440px, so the line has **406px** (card padding `space.lg` × 2 and the 1px border × 2). The worst case (`PR #123 ● 12/14 ↓12 behind main ↑12 to push rebased checked 59m ago ⟳`) does not fit. Items give way in this order, each step only when the previous is not enough:
 
 1. `checked 2m ago` → `2m ago` (the full text moves to the refresh button's tooltip: `Refresh PR status · checked 14:58`).
 2. `2m ago` hides.
