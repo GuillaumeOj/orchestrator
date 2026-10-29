@@ -1,14 +1,15 @@
 //! Worktree file watchers (P4.1 acceptance 6): an open Diff pane refreshes
 //! when files change in its worktree, whoever changed them (an agent, the
 //! user's editor or shell). One recursive FSEvents watcher per watched
-//! worktree, ref-counted, raising the `worktree:<path>` topic at most once a
-//! second, with a trailing one. Build output, dependencies and git's object
-//! store are ignored; the worktree's HEAD and index count.
+//! worktree, ref-counted; a change marks it dirty and the 200 ms pump raises
+//! the `worktree:<path>` topic, at once and then at most once a second (a
+//! burst ends with a trailing one). Build output, dependencies and git's
+//! internals are ignored; the worktree's HEAD and index count.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
@@ -17,112 +18,89 @@ use notify::{RecursiveMode, Watcher};
 use crate::runtime::Runtime;
 
 /// At most one topic per worktree this often (a trailing one follows).
-pub const DEBOUNCE: Duration = Duration::from_secs(1);
+const DEBOUNCE: Duration = Duration::from_secs(1);
 
 /// Directories whose changes never refresh a diff.
 const IGNORED_DIRS: [&str; 2] = ["target", "node_modules"];
 
-/// Whether a change at `path` (inside the watched worktree `root`, or in its
-/// git dir `git_dir`) refreshes the diff.
-pub fn counts(root: &Path, git_dir: Option<&Path>, path: &Path) -> bool {
-    if let Some(g) = git_dir
-        && let Ok(rel) = path.strip_prefix(g)
-    {
+/// Whether a change at `path` refreshes the diff of the worktree `root`
+/// whose git dir is `git_dir` (`<root>/.git`, or a linked worktree's own).
+fn counts(root: &Path, git_dir: &Path, path: &Path) -> bool {
+    if let Ok(rel) = path.strip_prefix(git_dir) {
         // The git dir: only what moves the diff (a checkout, a commit, staging).
         return matches!(rel.to_str(), Some("HEAD" | "index"));
     }
     let Ok(rel) = path.strip_prefix(root) else { return false };
-    let mut parts = rel.components().filter_map(|c| match c {
-        Component::Normal(s) => s.to_str(),
-        _ => None,
-    });
-    let Some(first) = parts.next() else { return true };
-    if first == ".git" {
-        // A main checkout's own git dir.
-        return matches!(parts.next(), Some("HEAD" | "index")) && parts.next().is_none();
-    }
-    let all = std::iter::once(first).chain(parts);
-    !all.into_iter().any(|p| IGNORED_DIRS.contains(&p))
+    !rel.components()
+        .any(|c| matches!(c, Component::Normal(s) if s.to_str().is_some_and(|s| IGNORED_DIRS.contains(&s))))
 }
 
-/// One live watcher: dropping it stops the FS watch and its thread.
-pub struct WorktreeWatch {
+/// Raises a topic at once, then at most once per `every`: the pump asks.
+#[derive(Default)]
+struct Throttle {
+    dirty: Arc<AtomicBool>,
+    last: Option<Instant>,
+}
+
+impl Throttle {
+    /// A change is waiting and the last topic is old enough: raise one now.
+    fn due(&mut self, now: Instant, every: Duration) -> bool {
+        if self.last.is_some_and(|t| now.duration_since(t) < every) || !self.dirty.swap(false, Ordering::SeqCst) {
+            return false;
+        }
+        self.last = Some(now);
+        true
+    }
+}
+
+/// One live watcher: dropping it stops the FS watch.
+struct Watch {
+    panes: usize,
+    topic: String,
+    throttle: Throttle,
     _watcher: notify::RecommendedWatcher,
 }
 
-impl WorktreeWatch {
-    /// Watches `root` (canonical) and calls `emit` at most once per
-    /// `debounce`, then once more after the last change of a burst.
-    pub fn start(root: PathBuf, debounce: Duration, emit: impl Fn() + Send + 'static) -> Result<WorktreeWatch> {
-        // A linked worktree's git dir (its `.git` is a `gitdir:` file), canonical.
-        let git_dir = orch_git::repair::check_links(&root).gitdir;
-        let (tx, rx) = channel::<()>();
-        let (r, g) = (root.clone(), git_dir.clone());
-        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if let Ok(ev) = res
-                && ev.paths.iter().any(|p| counts(&r, g.as_deref(), p))
-            {
-                let _ = tx.send(());
-            }
-        })?;
-        // One batch: FSEvents restarts its stream once, not once per path.
-        let mut paths = watcher.paths_mut();
-        paths.add(&root, RecursiveMode::Recursive)?;
-        if let Some(g) = &git_dir {
-            paths.add(g, RecursiveMode::NonRecursive)?;
+/// Watches `root` (canonical): every change that [`counts`] sets `dirty`.
+fn start(root: &Path, dirty: Arc<AtomicBool>) -> Result<notify::RecommendedWatcher> {
+    // A linked worktree's git dir (its `.git` is a `gitdir:` file), else its own `.git`.
+    let linked = orch_git::repair::check_links(root).gitdir;
+    let git_dir = linked.clone().unwrap_or_else(|| root.join(".git"));
+    let r = root.to_path_buf();
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(ev) = res
+            && ev.paths.iter().any(|p| counts(&r, &git_dir, p))
+        {
+            dirty.store(true, Ordering::SeqCst);
         }
-        paths.commit()?;
-        // The sender lives in the watcher: dropping the watcher ends the thread.
-        std::thread::Builder::new().name("orch-wt-watch".into()).spawn(move || debounce_loop(&rx, debounce, emit))?;
-        Ok(WorktreeWatch { _watcher: watcher })
+    })?;
+    // One batch: FSEvents restarts its stream once, not once per path.
+    let mut paths = watcher.paths_mut();
+    paths.add(root, RecursiveMode::Recursive)?;
+    if let Some(g) = &linked {
+        paths.add(g, RecursiveMode::NonRecursive)?;
     }
-}
-
-/// Calls `emit` for the changes `rx` receives: at once for the first, then
-/// at most once per `debounce`, with a trailing call after the last change
-/// of a burst. Returns when the sender is gone.
-fn debounce_loop(rx: &Receiver<()>, debounce: Duration, emit: impl Fn()) {
-    let mut last: Option<Instant> = None;
-    let mut pending = false;
-    loop {
-        let wait = match (pending, last) {
-            (true, Some(t)) => debounce.saturating_sub(t.elapsed()),
-            _ => Duration::from_secs(3600),
-        };
-        match rx.recv_timeout(wait) {
-            Ok(()) => pending = true,
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return,
-        }
-        if pending && last.is_none_or(|t| t.elapsed() >= debounce) {
-            emit();
-            last = Some(Instant::now());
-            pending = false;
-        }
-    }
+    paths.commit()?;
+    Ok(watcher)
 }
 
 /// The watched worktrees, keyed by the path the panes passed (their topic,
-/// and what `unwatch_worktree` gets back even once the folder is gone), and
-/// how many panes watch each.
+/// and what `unwatch_worktree` gets back even once the folder is gone).
 #[derive(Default)]
-pub struct Watches(Mutex<BTreeMap<PathBuf, (usize, WorktreeWatch)>>);
+pub struct Watches(Mutex<BTreeMap<PathBuf, Watch>>);
 
 impl Runtime {
+    fn watches(&self) -> std::sync::MutexGuard<'_, BTreeMap<PathBuf, Watch>> {
+        self.watches.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// A worktree the app knows: a registered project's main checkout, or a
-    /// worktree of one. Anything else is refused (no arbitrary watching).
+    /// worktree of one (git's, whoever made it). Anything else is refused.
     fn known_worktree(&self, path: &Path) -> Result<PathBuf> {
         let p = path.canonicalize().map_err(|e| anyhow!("{}: {e}", path.display()))?;
-        let canon = |q: &Path| q.canonicalize().ok();
-        let projects: Vec<PathBuf> = self.db.projects(false)?.iter().filter_map(|pr| canon(&pr.path)).collect();
-        // Only the paths under the store lock; the syscalls run after it.
-        let worktrees: Vec<(PathBuf, PathBuf)> =
-            self.store.read(|s| s.worktrees.values().map(|w| (w.path.clone(), w.repo.clone())).collect());
-        let known = projects.contains(&p)
-            || worktrees
-                .iter()
-                .any(|(wt, repo)| canon(wt).as_ref() == Some(&p) && canon(repo).is_some_and(|r| projects.contains(&r)));
-        if !known {
+        // Projects are stored at their real main checkout (`project::register`).
+        let main = orch_git::worktree::main_checkout(&p).unwrap_or_else(|_| p.clone());
+        if self.db.project_by_path(&main)?.is_none() {
             bail!("{} is not a worktree of a registered project", path.display());
         }
         Ok(p)
@@ -131,67 +109,58 @@ impl Runtime {
     /// `watch_worktree`: a Diff pane opened on `path`. The first one starts
     /// the watcher; the topic is `worktree:<path>` as the pane asked it.
     pub fn watch_worktree(&self, path: &Path) -> Result<()> {
-        let key = path.to_path_buf();
-        if self.bump_watch(&key) {
+        if let Some(w) = self.watches().get_mut(path) {
+            w.panes += 1;
             return Ok(());
         }
-        let canon = self.known_worktree(path)?;
-        let me = self.me.clone();
-        let shown = key.clone();
+        let root = self.known_worktree(path)?;
+        let throttle = Throttle::default();
         // Started outside the lock (a recursive watch can take a while); a
         // pane that raced us in meanwhile keeps its watcher, ours drops.
-        let watch = WorktreeWatch::start(canon, DEBOUNCE, move || {
-            if let Some(rt) = me.upgrade() {
-                rt.touch_worktree(&shown);
-            }
-        })?;
-        let mut w = self.watches.0.lock().unwrap_or_else(|e| e.into_inner());
-        w.entry(key).and_modify(|(n, _)| *n += 1).or_insert((1, watch));
+        let watcher = start(&root, throttle.dirty.clone())?;
+        let topic = orch_protocol::Topic::Worktree(path.display().to_string()).to_string();
+        self.watches().entry(path.to_path_buf()).and_modify(|w| w.panes += 1).or_insert(Watch {
+            panes: 1,
+            topic,
+            throttle,
+            _watcher: watcher,
+        });
         Ok(())
-    }
-
-    /// One more pane on an already watched `path`.
-    fn bump_watch(&self, path: &Path) -> bool {
-        let mut w = self.watches.0.lock().unwrap_or_else(|e| e.into_inner());
-        w.get_mut(path).map(|(n, _)| *n += 1).is_some()
     }
 
     /// `unwatch_worktree`: a Diff pane closed; the last one stops the watcher.
     pub fn unwatch_worktree(&self, path: &Path) {
-        let mut w = self.watches.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((n, _)) = w.get_mut(path) {
-            *n -= 1;
-            if *n == 0 {
+        let mut w = self.watches();
+        if let Some(e) = w.get_mut(path) {
+            e.panes -= 1;
+            if e.panes == 0 {
                 w.remove(path);
             }
         }
     }
 
-    /// How many panes watch `path` (tests, diagnostics).
-    pub fn watchers_of(&self, path: &Path) -> usize {
-        self.watches.0.lock().unwrap_or_else(|e| e.into_inner()).get(path).map_or(0, |(n, _)| *n)
+    /// On the pump: the topics of the watched worktrees that changed.
+    pub(crate) fn flush_watches(&self) {
+        let now = Instant::now();
+        let due: Vec<String> = self
+            .watches()
+            .values_mut()
+            .filter_map(|w| w.throttle.due(now, DEBOUNCE).then(|| w.topic.clone()))
+            .collect();
+        for t in due {
+            self.touch(t);
+        }
     }
 
     /// Stops every watcher (shutdown).
     pub(crate) fn unwatch_all(&self) {
-        self.watches.0.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.watches().clear();
     }
-}
-
-/// Counts emits, for tests.
-#[cfg(test)]
-fn counter() -> (std::sync::Arc<std::sync::atomic::AtomicUsize>, impl Fn() + Send + 'static) {
-    let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let m = n.clone();
-    (n, move || {
-        m.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering;
 
     fn tmp() -> (tempfile::TempDir, PathBuf) {
         let d = tempfile::Builder::new().prefix("orchwt").tempdir_in(orch_protocol::test_tmp()).unwrap();
@@ -199,39 +168,38 @@ mod tests {
         (d, p)
     }
 
-    /// FSEvents delivers with some latency; settle before counting.
-    fn settle() {
-        std::thread::sleep(Duration::from_millis(1600));
+    fn panes(rt: &Runtime, path: &Path) -> usize {
+        rt.watches().get(path).map_or(0, |w| w.panes)
+    }
+
+    /// The pump, every 50 ms for `d`: how many topics `t` raised.
+    fn pump_for(t: &mut Throttle, d: Duration) -> usize {
+        let (end, mut n) = (Instant::now() + d, 0);
+        while Instant::now() < end {
+            n += usize::from(t.due(Instant::now(), DEBOUNCE));
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        n
     }
 
     #[test]
-    fn the_debounce_sends_one_then_at_most_one_more_per_second() {
-        let (n, emit) = counter();
-        let (tx, rx) = channel::<()>();
-        let debounce = Duration::from_millis(300);
-        let t = std::thread::spawn(move || debounce_loop(&rx, debounce, emit));
-        tx.send(()).unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        assert_eq!(n.load(Ordering::SeqCst), 1, "the first change at once");
-        // A burst inside the window: one trailing call after it.
-        for _ in 0..50 {
-            tx.send(()).unwrap();
-        }
-        std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(n.load(Ordering::SeqCst), 1, "held back");
-        std::thread::sleep(Duration::from_millis(400));
-        assert_eq!(n.load(Ordering::SeqCst), 2, "the trailing one");
-        std::thread::sleep(Duration::from_millis(400));
-        assert_eq!(n.load(Ordering::SeqCst), 2, "nothing more without changes");
-        drop(tx);
-        t.join().unwrap();
+    fn a_topic_at_once_then_at_most_one_per_second() {
+        let mut t = Throttle::default();
+        let t0 = Instant::now();
+        assert!(!t.due(t0, DEBOUNCE), "nothing changed");
+        t.dirty.store(true, Ordering::SeqCst);
+        assert!(t.due(t0, DEBOUNCE), "the first change at once");
+        t.dirty.store(true, Ordering::SeqCst);
+        assert!(!t.due(t0 + Duration::from_millis(200), DEBOUNCE), "held back inside the second");
+        assert!(t.due(t0 + Duration::from_millis(1000), DEBOUNCE), "the trailing one");
+        assert!(!t.due(t0 + Duration::from_millis(3000), DEBOUNCE), "nothing more without changes");
     }
 
     #[test]
     fn what_counts() {
         let root = Path::new("/w/back-1");
         let git = Path::new("/repo/.git/worktrees/back-1");
-        let c = |p: &str| counts(root, Some(git), Path::new(p));
+        let c = |p: &str| counts(root, git, Path::new(p));
         assert!(c("/w/back-1/src/a.rs"));
         assert!(c("/w/back-1"));
         assert!(!c("/w/back-1/target/debug/x"));
@@ -240,7 +208,7 @@ mod tests {
         assert!(c("/repo/.git/worktrees/back-1/HEAD"));
         assert!(c("/repo/.git/worktrees/back-1/index"));
         assert!(!c("/repo/.git/worktrees/back-1/logs/HEAD"));
-        let main = |p: &str| counts(Path::new("/repo"), None, Path::new(p));
+        let main = |p: &str| counts(Path::new("/repo"), Path::new("/repo/.git"), Path::new(p));
         assert!(main("/repo/.git/HEAD") && main("/repo/.git/index"));
         assert!(!main("/repo/.git/objects/ab/cdef") && !main("/repo/.git/index.lock"));
     }
@@ -251,30 +219,22 @@ mod tests {
     fn one_topic_per_change_two_per_burst_none_for_ignored() {
         let (_d, root) = tmp();
         std::fs::create_dir_all(root.join("target")).unwrap();
-        let (n, emit) = counter();
-        let _w = WorktreeWatch::start(root.clone(), DEBOUNCE, emit).unwrap();
+        let mut t = Throttle::default();
+        let _w = start(&root, t.dirty.clone()).unwrap();
         std::thread::sleep(Duration::from_millis(300));
         // An ignored path: nothing.
         std::fs::write(root.join("target/out.o"), "x").unwrap();
-        settle();
-        assert_eq!(n.load(Ordering::SeqCst), 0, "ignored paths raise nothing");
+        assert_eq!(pump_for(&mut t, Duration::from_millis(1600)), 0, "ignored paths raise nothing");
         // One write: one topic within ~1.5 s.
         std::fs::write(root.join("a.txt"), "a").unwrap();
-        let t = Instant::now();
-        while n.load(Ordering::SeqCst) == 0 && t.elapsed() < Duration::from_secs(3) {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(n.load(Ordering::SeqCst), 1);
-        assert!(t.elapsed() < Duration::from_millis(1500), "{:?}", t.elapsed());
-        settle();
+        assert_eq!(pump_for(&mut t, Duration::from_millis(1500)), 1);
+        std::thread::sleep(Duration::from_millis(1100));
         // 50 writes in 200 ms: at most 2 (the leading one and the trailing one).
-        let before = n.load(Ordering::SeqCst);
         for i in 0..50 {
             std::fs::write(root.join(format!("b{i}.txt")), "b").unwrap();
             std::thread::sleep(Duration::from_millis(4));
         }
-        settle();
-        let burst = n.load(Ordering::SeqCst) - before;
+        let burst = pump_for(&mut t, Duration::from_millis(2500));
         assert!((1..=2).contains(&burst), "{burst}");
     }
 
@@ -288,19 +248,21 @@ mod tests {
         orch_git::project::register(&rt.db, &repo).unwrap();
         rt.watch_worktree(&repo).unwrap();
         rt.watch_worktree(&repo).unwrap();
-        assert_eq!(rt.watchers_of(&repo), 2);
+        assert_eq!(panes(&rt, &repo), 2);
         rt.unwatch_worktree(&repo);
-        assert_eq!(rt.watchers_of(&repo), 1);
+        assert_eq!(panes(&rt, &repo), 1);
         rt.unwatch_worktree(&repo);
-        assert_eq!(rt.watchers_of(&repo), 0, "the last pane stops it");
+        assert_eq!(panes(&rt, &repo), 0, "the last pane stops it");
         rt.unwatch_worktree(&repo); // one too many: harmless
+        // A worktree git made outside the app is still the project's.
+        let wt = repo.parent().unwrap().join("by-hand");
+        orch_git::git(&repo, &["worktree", "add", "-q", "-b", "by-hand", wt.to_str().unwrap()]).unwrap();
+        rt.watch_worktree(&wt).unwrap();
+        assert_eq!(panes(&rt, &wt), 1);
         // A pane still open on a worktree that was removed: closing it stops the watcher.
-        let (_t, gone) = orch_git::fixtures::scratch_repo();
-        orch_git::project::register(&rt.db, &gone).unwrap();
-        rt.watch_worktree(&gone).unwrap();
-        std::fs::remove_dir_all(&gone).unwrap();
-        rt.unwatch_worktree(&gone);
-        assert_eq!(rt.watchers_of(&gone), 0, "no watcher leaks on a removed worktree");
+        std::fs::remove_dir_all(&wt).unwrap();
+        rt.unwatch_worktree(&wt);
+        assert_eq!(panes(&rt, &wt), 0, "no watcher leaks on a removed worktree");
     }
 
     /// Through the runtime (real FSEvents, like the test above): a write in a
@@ -308,9 +270,9 @@ mod tests {
     #[test]
     fn a_write_in_a_watched_worktree_is_a_now_topic() {
         let (_d, rt) = crate::runtime::tests::test_runtime(true);
-        let got = std::sync::Arc::new(Mutex::new(vec![]));
+        let got = Arc::new(Mutex::new(vec![]));
         let g = got.clone();
-        rt.subscribe_now(std::sync::Arc::new(move |v| g.lock().unwrap().push(v.clone())));
+        rt.subscribe_now(Arc::new(move |v| g.lock().unwrap().push(v.clone())));
         let (_s, repo) = orch_git::fixtures::scratch_repo();
         orch_git::project::register(&rt.db, &repo).unwrap();
         rt.now_pump(false);
@@ -323,11 +285,11 @@ mod tests {
             got.lock().unwrap().iter().any(|e| e["topics"].as_array().is_some_and(|a| a.iter().any(|x| x == &topic)))
         };
         while !seen() && t.elapsed() < Duration::from_secs(3) {
-            rt.now_pump(false);
+            rt.pump();
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(seen(), "{topic}");
         rt.shutdown();
-        assert_eq!(rt.watchers_of(&repo), 0, "nothing left after shutdown");
+        assert_eq!(panes(&rt, &repo), 0, "nothing left after shutdown");
     }
 }

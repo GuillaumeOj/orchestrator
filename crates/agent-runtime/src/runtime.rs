@@ -2085,6 +2085,7 @@ impl Runtime {
                 self.event(&rec.id, "delivery_error", json!(e.to_string()));
             }
         }
+        self.flush_watches();
         self.now_pump(false);
     }
 
