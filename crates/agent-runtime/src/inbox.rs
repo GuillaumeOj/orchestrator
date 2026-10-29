@@ -1616,6 +1616,13 @@ mod tests {
         assert_eq!(lc(&rt, a), ("dismissed".into(), Some("dismissed".into()), None));
     }
 
+    /// The lifecycle of question `id` as last pushed (the `now` snapshot).
+    fn pushed_lifecycle(rt: &Runtime, id: u64) -> Value {
+        let snap = rt.now_snapshot();
+        let d = snap["decisions"].as_array().unwrap().iter().find(|d| d["id"] == format!("q-{id}")).cloned();
+        d.unwrap()["lifecycle"].clone()
+    }
+
     fn version(rt: &Runtime, id: u64) -> u64 {
         rt.lifecycle(id)["version"].as_u64().unwrap()
     }
@@ -1647,23 +1654,14 @@ mod tests {
             .write(|s| s.inbox.iter_mut().find(|i| i.id == q).unwrap().subject = json!({"agent": "a1", "x": 2}))
             .unwrap();
         rt.now_pump(false);
-        let pushed = rt.now_snapshot()["decisions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|d| d["id"] == format!("q-{q}"))
-            .unwrap()["lifecycle"]["version"]
-            .as_u64()
-            .unwrap();
+        let pushed = pushed_lifecycle(&rt, q)["version"].as_u64().unwrap();
         rt.advance(q, Stage::Effect("delivered", None));
         let answered = version(&rt, q);
         assert!(answered > pushed, "the answer is never older than the push held");
         // The lifecycle moves again before the next push: that push outranks the answer.
         rt.advance(q, Stage::Effect("resumed", None));
         rt.now_pump(false);
-        let d =
-            rt.now_snapshot()["decisions"].as_array().unwrap().iter().find(|d| d["id"] == format!("q-{q}")).cloned();
-        let lc = &d.unwrap()["lifecycle"];
+        let lc = &pushed_lifecycle(&rt, q);
         assert_eq!(lc["effect"], "resumed");
         assert!(lc["version"].as_u64().unwrap() > answered, "a newer lifecycle is never dropped as old");
     }
