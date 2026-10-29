@@ -45,14 +45,28 @@ impl History {
         }
     }
 
-    /// At most `max` points, evenly thinned (the chart is a few hundred px wide).
-    pub fn thinned(&self, max: usize) -> Vec<HistoryPoint> {
-        let n = self.points.len();
+    /// Index of the first point at or after `since_ms`: the points kept from
+    /// last week until the next push after the reset are skipped.
+    fn first_from(&self, since_ms: i64) -> usize {
+        self.points.partition_point(|p| p.t_ms < since_ms)
+    }
+
+    /// The points from `since_ms` on, at most `max` of them, evenly thinned
+    /// (the chart is a few hundred px wide).
+    pub fn thinned(&self, max: usize, since_ms: i64) -> Vec<HistoryPoint> {
+        let s = self.first_from(since_ms);
+        let n = self.points.len() - s;
         if n <= max || max < 2 {
-            return self.points.iter().copied().collect();
+            return self.points.range(s..).copied().collect();
         }
         let step = (n - 1) as f64 / (max - 1) as f64;
-        (0..max).map(|i| self.points[((i as f64 * step).round() as usize).min(n - 1)]).collect()
+        (0..max).map(|i| self.points[s + ((i as f64 * step).round() as usize).min(n - 1)]).collect()
+    }
+
+    /// The latest point at or before `t_ms`, from `since_ms` on.
+    fn latest_at(&self, t_ms: i64, since_ms: i64) -> Option<&HistoryPoint> {
+        let i = self.points.partition_point(|p| p.t_ms <= t_ms);
+        (i > self.first_from(since_ms)).then(|| &self.points[i - 1])
     }
 }
 
@@ -223,39 +237,34 @@ pub fn build(
     let other_now = snap.plan - snap.ideal;
     let other_growth = snap.unattributed_forecast - snap.unattributed_so_far;
     let wall_left = curve.wall_hours_left(now).max(1e-9);
-    let raw = &history.points;
     let points = times
         .into_iter()
         .map(|t| {
             let ideal = curve.fraction(t) * budget;
-            let wall_done = ((wall_left - curve.wall_hours_left(t)) / wall_left).min(1.0);
-            let plan_total = if t < now {
+            if t < now {
                 // You + outside the app as the raw samples of this week saw it at `t`.
-                let i = raw.partition_point(|p| p.t_ms <= ms(t));
-                let other = i
-                    .checked_sub(1)
-                    .map(|i| raw[i])
-                    .filter(|p| p.t_ms >= ms(start))
-                    .map_or(0.0, |p| (p.used - p.governed).max(0.0));
-                ideal + other
-            } else {
-                ideal + other_now + other_growth * wall_done
-            };
-            let (forecast_total, with_governor_total) = if t >= now {
-                // Both close linearly with the working hours left (the wall
-                // hours once none are left, e.g. after the week's last block).
-                let done = if h_left_now > 1e-9 {
-                    ((curve.hours_at(t) - h_now) / h_left_now).clamp(0.0, 1.0)
-                } else {
-                    wall_done.clamp(0.0, 1.0)
+                let other = history.latest_at(ms(t), ms(start)).map_or(0.0, |p| (p.used - p.governed).max(0.0));
+                return CurvePoint {
+                    t_ms: ms(t),
+                    plan_total: ideal + other,
+                    forecast_total: None,
+                    with_governor_total: None,
                 };
-                let fc = (snap.used + (snap.projected - snap.used) * done).min(110.0);
-                let wg = plan_total + snap.error * (1.0 - done);
-                (Some(fc), Some(wg.max(snap.used)))
-            } else {
-                (None, None)
-            };
-            CurvePoint { t_ms: ms(t), plan_total, forecast_total, with_governor_total }
+            }
+            let wall_done = ((wall_left - curve.wall_hours_left(t)) / wall_left).min(1.0);
+            let plan_total = ideal + other_now + other_growth * wall_done;
+            // Both close linearly with the working hours left (the wall hours
+            // once none are left, e.g. after the week's last block).
+            let done =
+                if h_left_now > 1e-9 { ((curve.hours_at(t) - h_now) / h_left_now).clamp(0.0, 1.0) } else { wall_done };
+            let fc = (snap.used + (snap.projected - snap.used) * done).min(110.0);
+            let wg = plan_total + snap.error * (1.0 - done);
+            CurvePoint {
+                t_ms: ms(t),
+                plan_total,
+                forecast_total: Some(fc),
+                with_governor_total: Some(wg.max(snap.used)),
+            }
         })
         .collect();
 
@@ -347,9 +356,7 @@ pub fn build(
     }
 }
 
-/// The week's usage so far: the thinned history of this week (the in-memory
-/// history keeps last week's samples until the next push after the reset), a
-/// last point at `now` from the snapshot, then a running max on W and G with
+/// The week's usage so far: the thinned history of this week, a last point at `now` from the snapshot, then a running max on W and G with
 /// `G ≤ W` (W only grows in a week; a dip is an estimate corrected, not usage
 /// given back).
 fn actual(
@@ -358,8 +365,8 @@ fn actual(
     week_start: Timestamp,
     now: Timestamp,
 ) -> Vec<HistoryPoint> {
-    let mut out = history.thinned(400);
-    out.retain(|p| p.t_ms >= ms(week_start) && p.t_ms < ms(now));
+    let mut out = history.thinned(400, ms(week_start));
+    out.retain(|p| p.t_ms < ms(now));
     out.push(HistoryPoint { t_ms: ms(now), used: snap.used, governed: snap.governed, five_hour: snap.five_hour });
     let (mut used, mut governed) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
     for p in &mut out {
@@ -408,6 +415,13 @@ mod tests {
         (a - b).abs() < 1e-6
     }
 
+    /// At the reset the forecast ends on `snapshot.projected` and w/ governor on the plan line.
+    fn assert_closes_at_the_reset(v: &PlannerView) {
+        let (s, last) = (&v.snapshot, v.curve.last().unwrap());
+        assert!(close(last.forecast_total.unwrap(), s.projected.min(110.0)), "{last:?}");
+        assert!(close(last.with_governor_total.unwrap(), s.used.max(last.plan_total)), "{last:?}");
+    }
+
     #[test]
     fn curve_matches_the_snapshot_at_now() {
         let (g, now) = gov();
@@ -420,14 +434,9 @@ mod tests {
         assert!(close(at_now.forecast_total.unwrap(), s.used));
         assert!(close(at_now.with_governor_total.unwrap(), s.used.max(s.plan + s.error)));
         let first = v.curve.first().unwrap();
-        assert!(first.plan_total.abs() < 1e-9 && first.forecast_total.is_none() && first.with_governor_total.is_none());
-        let last = v.curve.last().unwrap();
-        assert!(close(last.forecast_total.unwrap(), s.projected.min(110.0)));
-        assert!(
-            close(last.with_governor_total.unwrap(), s.used.max(last.plan_total)),
-            "the error is closed by the reset"
-        );
-        assert!(last.plan_total >= at_now.plan_total);
+        assert!(close(first.plan_total, 0.0) && first.forecast_total.is_none() && first.with_governor_total.is_none());
+        assert_closes_at_the_reset(&v);
+        assert!(v.curve.last().unwrap().plan_total >= at_now.plan_total);
         assert!(!v.working.is_empty() && v.working.len() <= 7);
         assert_eq!(v.allocations.len(), 1);
         assert_eq!(v.actual.len(), 1, "the now point replaces the sample at now");
@@ -503,10 +512,7 @@ mod tests {
             model_windows: Vec::new(),
         });
         let v = build(&g, now, &History::default(), &[], None, &|_| 0);
-        let s = &v.snapshot;
-        let last = v.curve.last().unwrap();
-        assert!(close(last.forecast_total.unwrap(), s.projected.min(110.0)));
-        assert!(close(last.with_governor_total.unwrap(), s.used.max(last.plan_total)), "{last:?}");
+        assert_closes_at_the_reset(&v);
     }
 
     #[test]
@@ -517,7 +523,7 @@ mod tests {
         }
         h.push(HistoryPoint { t_ms: 5, used: 0.0, governed: 0.0, five_hour: None }, 0);
         assert_eq!(h.points.len(), 1000, "out of order point dropped");
-        let t = h.thinned(100);
+        let t = h.thinned(100, 0);
         assert_eq!(t.len(), 100);
         assert_eq!(t.first().unwrap().t_ms, 0);
         assert_eq!(t.last().unwrap().t_ms, 999 * 60_000);
