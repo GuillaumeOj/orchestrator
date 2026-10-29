@@ -73,8 +73,47 @@ export function linksAcrossRows(rows, y) {
     .filter((l) => l.start.row <= y && l.end.row >= y);
 }
 
+/** `localStorage['orch.termDebug'] = '1'` logs fits and PTY resizes to the console. */
+function debug(...args) {
+  try {
+    if (localStorage.getItem('orch.termDebug') === '1') console.debug('[term]', ...args);
+  } catch {
+    /* no storage */
+  }
+}
+
+/** How long after start a PTY spawned at a guessed size gets its nudge (ms). */
+export const NUDGE_MS = 300;
+
 /**
- * source: { kind: 'agent', id } | { kind: 'term', id }
+ * xterm.js has no public event for a cell size change that leaves the box
+ * alone (lineHeight, a font resolved late, a re-measure after a resize): listen
+ * to its render and char size services, private API, guarded. Returns the
+ * listeners to dispose, none when the internals are not there.
+ */
+function onCellChange(term, cb) {
+  const core = /** @type {any} */ (term)._core;
+  const subs = [];
+  try {
+    const dims = core?._renderService?.onDimensionsChange?.(cb);
+    if (dims) subs.push(dims);
+    const chars = core?._charSizeService?.onCharSizeChange?.(cb);
+    if (chars) subs.push(chars);
+  } catch {
+    /* another xterm.js version */
+  }
+  return subs;
+}
+
+/** The device cell size (it does not vary with rows and cols, the css one does). */
+function cellKey(term) {
+  const cell = /** @type {any} */ (term)._core?._renderService?.dimensions?.device?.cell;
+  return cell ? `${cell.width}x${cell.height}` : '';
+}
+
+/**
+ * source: { kind: 'agent', id } | { kind: 'term', id, spawn?: { rows, cols } }
+ *   (`spawn`: the size the PTY was started at, before the pane could fit it)
  * hooks:  { onKey(e) -> bool, onExit(), onOpenPath(file, line), onFocus() }
  */
 export class TermPane {
@@ -105,7 +144,9 @@ export class TermPane {
     this.term.attachCustomKeyEventHandler((e) => this.hooks.onKey?.(e) !== false);
     this.term.onData((d) => this.write(d));
     this.term.onBinary((d) => this.write(d));
-    this.term.onResize(({ cols, rows }) => this.resizePty(rows, cols));
+    this.term.onResize(() => this.syncPty());
+    /** The size the PTY was last told (null: not told yet). */
+    this.ptySize = null;
     if (kitty?.copy_on_select) {
       this.term.onSelectionChange(() => {
         const s = this.term.getSelection();
@@ -145,12 +186,26 @@ export class TermPane {
       this.opened = true;
       this.applyLineHeight();
       this.host.addEventListener('focusin', () => this.hooks.onFocus?.());
+      this.cell = cellKey(this.term);
+      this.cellSubs = onCellChange(this.term, () => {
+        const key = cellKey(this.term);
+        if (key === this.cell) return;
+        debug(this.source.id, 'cell', this.cell, '→', key);
+        this.cell = key;
+        this.scheduleFit();
+      });
     }
     this.fitNow();
     this.term.refresh(0, this.term.rows - 1);
+    // The box or the cell metrics can still settle after this first fit.
+    cancelAnimationFrame(this.settleFrame);
+    this.settleFrame = requestAnimationFrame(() => this.fitNow());
+    document.fonts?.ready.then(() => !this.disposed && this.fitNow());
   }
 
   unmount() {
+    cancelAnimationFrame(this.settleFrame);
+    clearTimeout(this.fitTimer);
     this.host.remove();
   }
 
@@ -173,8 +228,15 @@ export class TermPane {
     const now = Date.now();
     this.fits = (this.fits ?? []).filter((f) => now - f.at < 1000);
     const key = `${d.cols}x${d.rows}`;
-    if (this.fits.filter((f) => f.key === key).length >= 2) return;
+    if (this.fits.filter((f) => f.key === key).length >= 2) return debug(this.source.id, 'flip guard', key);
     this.fits.push({ key, at: now });
+    debug(
+      this.source.id,
+      'fit',
+      `${this.term.cols}x${this.term.rows} → ${key}`,
+      this.host.offsetWidth,
+      this.host.offsetHeight,
+    );
     try {
       this.term.resize(Math.max(2, d.cols), Math.max(1, d.rows));
     } catch {
@@ -194,13 +256,21 @@ export class TermPane {
     this.starting = true;
     try {
       // The core also nudges the agent's size so its idle TUI redraws for this pane.
-      if (this.source.kind === 'agent')
-        this.reader = await invoke('agent_attach', { id: this.source.id, rows: this.term.rows, cols: this.term.cols });
+      if (this.source.kind === 'agent') {
+        const size = { rows: this.term.rows, cols: this.term.cols };
+        this.reader = await invoke('agent_attach', { id: this.source.id, ...size });
+        this.ptySize = size;
+      }
     } finally {
       this.starting = false;
     }
+    if (this.disposed) return;
     this.alive = true;
-    if (this.source.kind === 'term') this.resizePty(this.term.rows, this.term.cols);
+    // A fit during the attach was not sent: send the size now if it changed.
+    this.syncPty();
+    const spawn = this.source.kind === 'term' ? this.source.spawn : null;
+    if (spawn && (spawn.rows !== this.term.rows || spawn.cols !== this.term.cols))
+      this.nudgeTimer = setTimeout(() => this.nudge(), NUDGE_MS);
     this.pull();
   }
 
@@ -224,9 +294,32 @@ export class TermPane {
     invoke(this.cmd.write, { id: this.source.id, data: d }).catch(() => {});
   }
 
-  resizePty(rows, cols) {
-    if (!this.alive) return;
+  /** Tells the PTY the xterm's size, once per change. */
+  syncPty() {
+    const { rows, cols } = this.term;
+    if (!this.alive) return debug(this.source.id, 'pty not started', `${cols}x${rows}`);
+    if (this.ptySize?.rows === rows && this.ptySize?.cols === cols) return;
+    this.ptySize = { rows, cols };
+    debug(this.source.id, 'pty', `${cols}x${rows}`);
     invoke(this.cmd.resize, { id: this.source.id, rows, cols }).catch(() => {});
+  }
+
+  /**
+   * A program that read the spawn size before the first resize, and set its
+   * SIGWINCH handler after it, keeps drawing at the spawn size. Telling the PTY
+   * the same size again sends no SIGWINCH (TIOCSWINSZ with an unchanged size
+   * signals nothing), so: one row less, then the real size, a change it redraws for.
+   */
+  nudge() {
+    if (!this.alive || this.term.rows < 2) return;
+    const { rows, cols } = this.term;
+    debug(this.source.id, 'nudge', `${cols}x${rows}`);
+    invoke(this.cmd.resize, { id: this.source.id, rows: rows - 1, cols })
+      .catch(() => {})
+      .finally(() => {
+        this.ptySize = null;
+        this.syncPty();
+      });
   }
 
   focus() {
@@ -236,6 +329,10 @@ export class TermPane {
   dispose() {
     this.disposed = true;
     this.alive = false;
+    cancelAnimationFrame(this.settleFrame);
+    clearTimeout(this.fitTimer);
+    clearTimeout(this.nudgeTimer);
+    for (const s of this.cellSubs ?? []) s.dispose();
     if (this.source.kind === 'agent')
       invoke('agent_detach', { id: this.source.id, reader: this.reader ?? 0 }).catch(() => {});
     else invoke('term_kill', { id: this.source.id }).catch(() => {});

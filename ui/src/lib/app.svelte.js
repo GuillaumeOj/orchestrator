@@ -260,13 +260,18 @@ export async function reopenClosed() {
 /** What a pane is about: two panes with these equal show the same thing. */
 const PANE_KEYS = ['agentId', 'featureId', 'projectId', 'teamId', 'path'];
 
+/** The sizes a PTY is spawned at, before its pane exists to fit it: the pane
+ *  sends its real size once mounted (and nudges the program, see TermPane.nudge). */
+const SHELL_SIZE = { rows: 24, cols: 80 };
+const RUN_SIZE = { rows: 30, cols: 100 };
+
 /** A saved pane spec made live: shells and editors restart as a shell in
  *  their cwd; `null` when the shell does not start. */
 async function revive(s) {
   if (s.type !== 'shell' && s.type !== 'editor') return s;
   try {
     const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
-    const spec = { ...s, type: 'shell', termId: t.id, cwd: t.cwd };
+    const spec = { ...s, type: 'shell', termId: t.id, spawn: SHELL_SIZE, cwd: t.cwd };
     return { ...spec, title: title(spec) };
   } catch {
     return null;
@@ -358,9 +363,9 @@ export async function runInPane(run, title, projectId = null) {
   const p = projects().find((x) => x.id === projectId);
   try {
     const t = await invoke('term_spawn', {
-      req: { kind: 'shell', project_id: p?.id ?? null, agent_id: null, cwd: p?.path ?? null, run, rows: 30, cols: 100 },
+      req: { kind: 'shell', project_id: p?.id ?? null, agent_id: null, cwd: p?.path ?? null, run, ...RUN_SIZE },
     });
-    addPane({ type: 'shell', termId: t.id, cwd: t.cwd, projectId: p?.id, title }, 'right');
+    addPane({ type: 'shell', termId: t.id, spawn: RUN_SIZE, cwd: t.cwd, projectId: p?.id, title }, 'right');
   } catch (e) {
     toast(`Could not run ${run}: ${errText(e)}`, { kind: 'error' });
   }
@@ -420,9 +425,12 @@ export async function openTrust(projectId) {
   try {
     const run = await invoke('trust_command');
     const t = await invoke('term_spawn', {
-      req: { kind: 'shell', project_id: p.id, agent_id: null, cwd: p.path, run, rows: 30, cols: 100 },
+      req: { kind: 'shell', project_id: p.id, agent_id: null, cwd: p.path, run, ...RUN_SIZE },
     });
-    addPane({ type: 'shell', termId: t.id, cwd: t.cwd, projectId: p.id, title: `trust · ${p.name}` }, 'right');
+    addPane(
+      { type: 'shell', termId: t.id, spawn: RUN_SIZE, cwd: t.cwd, projectId: p.id, title: `trust · ${p.name}` },
+      'right',
+    );
     toast(`Answer "Yes, I trust this folder" in the pane, then /exit · ${p.name}`, { ms: 10000 });
   } catch (e) {
     toast(`Could not start claude: ${errText(e)}`, { kind: 'error' });
@@ -449,8 +457,7 @@ const spawnShell = ({ projectId, agentId, cwd }) =>
       agent_id: agentId ?? null,
       cwd: cwd ?? null,
       run: null,
-      rows: 24,
-      cols: 80,
+      ...SHELL_SIZE,
     },
   });
 
@@ -461,7 +468,7 @@ export async function openShell(opts = {}) {
   const agentId = opts.agentId ?? contextAgent()?.id;
   try {
     const t = await spawnShell({ projectId, agentId, cwd: opts.cwd });
-    const spec = { type: 'shell', termId: t.id, cwd: t.cwd, projectId, agentId };
+    const spec = { type: 'shell', termId: t.id, spawn: SHELL_SIZE, cwd: t.cwd, projectId, agentId };
     if (opts.how) addPane(spec, opts.how);
     else addDockPane(spec);
   } catch (e) {
@@ -479,8 +486,7 @@ export async function openEditor(file = null, line = null, opts = {}) {
       agentId: a?.id ?? null,
       file,
       line,
-      rows: 30,
-      cols: 100,
+      ...RUN_SIZE,
     });
     if (r.reused) {
       const pane = findPane((s) => s.type === 'editor' && s.projectId === p?.id);
@@ -492,7 +498,7 @@ export async function openEditor(file = null, line = null, opts = {}) {
       );
       return;
     }
-    addPane({ type: 'editor', termId: r.term.id, cwd: r.term.cwd, projectId: p?.id, file }, 'right');
+    addPane({ type: 'editor', termId: r.term.id, spawn: RUN_SIZE, cwd: r.term.cwd, projectId: p?.id, file }, 'right');
   } catch (e) {
     toast(`Could not open the editor: ${errText(e)}`, { kind: 'error' });
   }
@@ -506,7 +512,7 @@ export function termFor(paneId, hooks) {
     return t;
   }
   const s = app.panes[paneId];
-  const source = s.type === 'agent' ? { kind: 'agent', id: s.agentId } : { kind: 'term', id: s.termId };
+  const source = s.type === 'agent' ? { kind: 'agent', id: s.agentId } : { kind: 'term', id: s.termId, spawn: s.spawn };
   t = new TermPane(source, app.kitty, hooks);
   terms.set(paneId, t);
   return t;
@@ -700,7 +706,9 @@ let saveTimer = null;
 export function saveLayout() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    const panes = Object.fromEntries(Object.entries(app.panes).map(([id, s]) => [id, { ...s, termId: undefined }]));
+    const panes = Object.fromEntries(
+      Object.entries(app.panes).map(([id, s]) => [id, { ...s, termId: undefined, spawn: undefined }]),
+    );
     invoke('settings_set', {
       key: 'layout',
       value: {
