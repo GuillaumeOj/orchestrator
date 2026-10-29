@@ -20,7 +20,7 @@
     "ref": "inbox-42",              // decision id (user) · agent id (agent, governor) · "T-2" (task) · window (limit) · tool (external)
     "since_ms": 1761730000000
   },
-  "reason": "permission: Bash pnpm add zod",
+  "reason": "permission: Bash pnpm add zod",   // never repeats the status label, no duration (UI appends since); clock times allowed
   "activity": "Edit src/feed.ts",   // running only
   "live": true,
   "since_ms": 1761730000000         // when this level + wait began
@@ -121,13 +121,16 @@
 
 ### 2.4 Outcomes (level 4)
 ```jsonc
-{ "id": "ev-9812", "kind": "task_done",  "at_ms": 0, "project": "shop-api", "run": "run-12", "agent": "back-1",
-  "text": "T-4 done · checkout API", "task": 4 }
+{ "id": "ev-9812", "kind": "task_done",  "at_ms": 0, "project": "shop-api", "feature": "checkout", "run": "run-12",
+  "agent": "back-1", "text": "T-4 done · checkout API", "task": 4 }
+// every outcome has core-written `text` (patterns: docs/design/p4-design-notes.md §5) and `feature` when it has a run
 { "kind": "merge_done", "branch": "orch/checkout/back-1", "into": "orch/checkout/integration", … }
 { "kind": "pr_opened",  "url": "https://github.com/…/pull/12", … }
 { "kind": "run_phase",  "from": "planning", "to": "executing", … }
 { "kind": "run_done",   … }
 { "kind": "turn_done",  "text": "Fixed the feed pagination and added a test", … }   // solo sessions only
+{ "kind": "report_ready", "report": "2026-W44", … }      // was the weekly-report info item
+{ "kind": "sync_conflict", "task": 4, "backend": "linear", … }  // was the task-sync conflict info item
 ```
 `seen: bool` per outcome (today's watermark).
 

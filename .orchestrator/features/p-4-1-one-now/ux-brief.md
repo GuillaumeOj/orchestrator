@@ -8,6 +8,8 @@
 - **Nothing claims before it happens**: a toast or marker shows *sent* only after the core sent, and the effect only when it happened.
 
 ## 2. Copy — the `reason` strings (core-written; UX owns the wording)
+
+> **Superseded by `docs/design/p4-design-notes.md` §0 and §2 (T-23)**: the reason never repeats the status label (the surface shows the badge before it) and carries no duration (the UI appends `since`); clock times stay. The table below is the first draft.
 | waiting_on.kind | Pattern | Examples |
 |---|---|---|
 | user | `<what>: <subject>` | "permission: Bash pnpm add zod" · "question: which auth provider?" · "spec gate · checkout" · "PR gate · checkout" · "trust dialog in its pane" · "a prompt in its pane" · "Run now? ≈ +2 pp" |
