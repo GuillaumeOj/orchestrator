@@ -11,7 +11,7 @@
 //! `http/json` without compression).
 
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -173,8 +173,15 @@ struct Request {
 
 fn read_request(r: &mut BufReader<TcpStream>) -> Result<Option<Request>> {
     let mut line = String::new();
-    if r.read_line(&mut line)? == 0 {
-        return Ok(None);
+    // An idle keep-alive connection that times out between requests is closed quietly: nothing
+    // was asked, so there is nothing to answer 400 to.
+    match r.read_line(&mut line) {
+        Ok(0) => return Ok(None),
+        Ok(_) => {}
+        Err(e) if line.is_empty() && matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+            return Ok(None);
+        }
+        Err(e) => return Err(e.into()),
     }
     let mut parts = line.split_whitespace();
     let (method, path) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
@@ -402,9 +409,7 @@ mod tests {
 
     #[test]
     fn http_server_keepalive_chunked_and_rejections() {
-        let got: Arc<Mutex<Vec<ApiRequest>>> = Arc::default();
-        let g2 = got.clone();
-        let rx = OtlpReceiver::start(0, Arc::new(move |v| g2.lock().unwrap().extend(v))).unwrap();
+        let (rx, got) = start_counting();
         assert!(rx.endpoint().starts_with("http://127.0.0.1:"));
         let body = logs_body().to_string();
         assert_status(&post(rx.addr, "/v1/logs", &body, ""), 200);
