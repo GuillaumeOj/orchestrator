@@ -41,7 +41,7 @@ PR #12   ● 4/6   ↓3 behind main   ↑2 to push   rebased            checked 
 | **To push** | `pr.state == open` and `unpushed > 0` | quiet text | `↑2 to push` (1: `↑1 to push`). Tooltip: `2 commits on the integration branch not in the PR yet. The lead asks a push gate with request_pr.` |
 | **Rebased** | `pr.state == open` and `rewritten` | attention-colored text | `rebased`. Tooltip: `The branch was rebased onto main. The next push replaces the PR's history (force-with-lease).` |
 | **State badge** | `pr.state != open` | replaces CI, position, to push, rebased | `merged` (`status.done`) · `closed` (muted). |
-| **Checked** | `pr` set | quiet, `text.caption` | `checked 2m ago` · `checked just now` (< 1 min) · `checked Tue 14:58` (> 24 h). Uses `ago()`: `2m`, `1h 05m`. Tooltip: the clock time (`checked 14:58`). |
+| **Checked** | `pr` set | quiet, `text.caption` | `checked 2m ago` · `checked just now` (< 1 min) · `checked Tue 14:58` (> 24 h). Same thresholds and helpers as `checkedAt()` (`ui/src/lib/ecosystem.js`: `ago()`, `dayHm()` from `format.js`), without its clock part, which goes to the tooltip. Tooltip: the clock time (`checked 14:58`). |
 | **Refresh** | `pr.state == open` (and while checking) | 16px icon button (󰑐 refresh glyph), ghost | Tooltip / label `Refresh PR status`. |
 
 ### 1.2 CI dot rule (user decision)
@@ -246,6 +246,6 @@ Families for the timeline filters: `pr.*` → **Git** (with `git.rebase`).
 
 ## 6. States to draw (UI checklist)
 
-PR line (card at 440px): 2 checking · 3 grey `0/6` · 4 yellow `2/6` · 5 green `6/6` · 6 red `5/6` **with the tooltip open** (6 jobs) · the tooltip at overflow (20 jobs, scrolled) · 7 no checks · 8 behind · 9 conflicts · 10 unknown · 11 ↑ to push · 12 rebased (+ behind + to push) · 13 stale · 15 merged · 16 closed · the worst case truncated (§1.6).
+PR line (card at 440px): 1b legacy PR · 2 checking · 3 grey `0/6` · 4 yellow `2/6` · 5 green `6/6` · 6 red `4/6` **with the tooltip open** (6 jobs) · the tooltip at overflow (20 jobs, scrolled) · 7 no checks · 8 behind · 9 conflicts · 10 unknown · 11 ↑ to push · 12 rebased (+ behind + to push) · 13 stale · 15 merged · 16 closed · the worst case truncated (§1.6).
 Run state badge `PR open` (sidebar row, Feature pane header).
 Update gate card: list card normal + force (with the `force-push` tag), detail normal, detail force-push.
