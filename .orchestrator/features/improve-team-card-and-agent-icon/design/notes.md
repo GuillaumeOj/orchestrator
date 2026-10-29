@@ -25,7 +25,9 @@ Row, left to right: **mark · name · activity · status (label, then icon)**.
 
 ### Layout (code)
 
-The agent list is one grid, and each row is a subgrid, so the columns line up across rows:
+The agent list is one grid, and each row is a subgrid, so the columns line up across rows.
+
+Use a new class for the agent rows (`.trow` below), not `.arow`: in `FeaturePane.svelte`, `.arow` is also the PR row of the "PR and artifacts" card and sits in the shared flex rule (`.fh, .cardh, .tt, .arow, …`). Restyling `.arow` would turn the PR row into a subgrid with no grid parent (label and URL stacked in one column) and give it a hover highlight and pointer cursor although it is not clickable.
 
 ```css
 .agents {                       /* wraps the rows, inside .card */
@@ -34,29 +36,33 @@ The agent list is one grid, and each row is a subgrid, so the columns line up ac
   column-gap: var(--space-sm);  /* 8px: mark → name, as in the timeline */
   row-gap: 0;
 }
-.arow {
+.trow {
   grid-column: 1 / -1;
   display: grid;
   grid-template-columns: subgrid;
   align-items: center;
-  height: var(--size-row);              /* 28px: same row pitch as today (20 + 8 gap) */
+  height: var(--size-row);              /* 28px (today: 22px badge + 8px gap = 30px pitch) */
   padding: 0 var(--space-xs);           /* 4px hover inset */
   margin: 0 calc(-1 * var(--space-xs)); /* text stays on the card's 16px content edge */
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
-.arow:hover { background: var(--color-surface-raised); }
-.arow .name { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.arow .act  { margin-left: var(--space-sm); }  /* 8 + 8 = 16px name → activity */
-.arow .st   { margin-left: var(--space-sm); justify-self: end; } /* 16px min activity → status */
+.trow:hover { background: var(--color-surface-raised); }
+.trow .name { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trow .act  { margin-left: var(--space-sm); }  /* 8 + 8 = 16px name → activity */
+.trow .st   { margin-left: var(--space-sm); }  /* 16px min activity → status; the max-content track ends on the card edge */
 ```
+
+`.st` is a plain `<span class="st">` wrapping `<StatusBadge trailing />`: `StatusBadge` takes no `class` prop, so a class written on the component itself is dropped.
 
 | Column | Content | Width rule |
 |---|---|---|
 | 1 mark | `<AgentChip compact>` (14×16) | fixed, never shrinks |
-| 2 name | agent id, `--color-text-primary` | as wide as the longest name in the card, capped at **24ch**, ellipsis. Full id in the row tooltip (`Open <id>`) |
+| 2 name | the agent id **without the feature slug prefix** (`<node>-<n>`, e.g. `back-1`), `--color-text-primary` | as wide as the longest name in the card, capped at **24ch**, ellipsis. Full id in the row tooltip (`Open <id>`) |
 | 3 activity | today's text (tool, else `task T-n`, plus ` · flag`), `.muted`, one line, ellipsis | takes what is left, **shrinks first** |
-| 4 status | `StatusBadge` label then icon | `max-content`, right-aligned on the card's content edge, never wraps |
+| 4 status | `<span class="st"><StatusBadge trailing /></span>`: label then icon | `max-content`, right-aligned on the card's content edge, never wraps |
+
+- Name: agent ids are `<feature-slug>-<node>-<n>` (`agent_id_for`, `crates/agent-runtime/src/team.rs`), e.g. `improve-team-card-and-agent-icon-back-1`. Showing the full id under a 24ch cap would cut every row to the same `improve-team-card-and-ag…`. Strip the `<v.feature.slug>-` prefix (the Sidebar already labels agents by node, `AgentChip name={a.team.node}`); the drawn names (`lead`, `back-1`, `front-12`) are these short names.
 
 - Gaps: mark → name **8 px** (`--space-sm`). Name → activity **16 px**, activity → status at least **16 px** (`--space-lg`, from column gap plus cell margin).
 - Width pressure: activity (`minmax(0,1fr)`) gives up space first, then name (`minmax(0,max-content)`, min 0 because of `overflow: hidden`). Mark and status never shrink.
