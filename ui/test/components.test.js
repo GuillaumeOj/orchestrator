@@ -235,3 +235,15 @@ describe('diff pane', () => {
     expect(container.textContent).toMatch(/not in Tauri/);
   });
 });
+
+describe('Markdown', () => {
+  it('renders a table after a quote, not inside it, when its rows lack `>`', async () => {
+    const { default: Markdown } = await import('../src/components/Markdown.svelte');
+    const { container } = render(Markdown, { text: '> The table below.\n| a | b |\n|---|---|\n| 1 | 2 |' });
+    const quote = container.querySelector('blockquote');
+    const table = container.querySelector('table');
+    expect(quote.textContent).not.toContain('|');
+    expect(quote.querySelector('table')).toBeNull();
+    expect(quote.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
