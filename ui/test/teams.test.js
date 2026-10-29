@@ -194,6 +194,8 @@ describe('P2 panes', () => {
     await waitFor(() => getByText('Spec gate'));
     await waitFor(() => expect(container.querySelector('.rendered b')?.textContent).toBe('plan'));
     expect(getAllByText(/Spec → Spec gate/).length).toBeGreaterThan(0);
+    // The time never shrinks, so "10:42 AM" never wraps before AM/PM.
+    expect(container.querySelector('.ev > span')?.classList.contains('evtime')).toBe(true);
     // A design artifact moved to the Design section (P3): a Penpot link tile.
     expect(container.querySelector('[aria-label="Design"]').textContent).toContain('Link only');
     const input = container.querySelector('input[placeholder^="Message"]');
