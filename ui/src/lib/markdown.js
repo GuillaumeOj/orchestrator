@@ -46,9 +46,9 @@ const ALERTS = { NOTE: 'note', TIP: 'tip', IMPORTANT: 'important', WARNING: 'war
 function markAlert(q) {
   const p = q.children[0];
   const t = p?.type === 'paragraph' ? p.children[0] : null;
-  const m = t?.type === 'text' ? /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(?:\n|$)/.exec(t.value) : null;
+  const m = t?.type === 'text' ? /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(?:\n|$)/i.exec(t.value) : null;
   if (!m) return;
-  q.data = { ...q.data, alert: ALERTS[m[1]] };
+  q.data = { ...q.data, alert: ALERTS[m[1].toUpperCase()] };
   t.value = t.value.slice(m[0].length);
   if (!t.value) p.children.shift();
   if (p.children[0]?.type === 'break') p.children.shift();
@@ -66,6 +66,7 @@ export function prepare(md) {
   const notes = new Map();
   const order = [];
   const slugs = new Map();
+  const used = new Set();
   const refs = new Map();
   walk(root, (n) => {
     if (n.type === 'definition') defs.has(n.identifier) || defs.set(n.identifier, n);
@@ -74,10 +75,14 @@ export function prepare(md) {
   });
   walk(root, (n) => {
     if (n.type === 'heading') {
+      // As github-slugger: skip suffixes another heading already took (`Foo`, `Foo`, `Foo 1`).
       const base = slug(toText(n));
-      const k = slugs.get(base) ?? 0;
+      let k = slugs.get(base) ?? 0;
+      let s = k ? `${base}-${k}` : base;
+      while (used.has(s)) s = `${base}-${++k}`;
       slugs.set(base, k + 1);
-      n.data = { ...n.data, slug: k ? `${base}-${k}` : base };
+      used.add(s);
+      n.data = { ...n.data, slug: s };
     } else if (n.type === 'footnoteReference' && notes.has(n.identifier)) {
       if (!order.includes(n.identifier)) order.push(n.identifier);
       const num = order.indexOf(n.identifier) + 1;
@@ -100,6 +105,9 @@ export function prepare(md) {
  */
 export function linkKind(url, canSwitchDoc = false) {
   const u = String(url ?? '').trim();
+  // Browsers drop tabs/newlines and leading controls when reading an href, so
+  // `java&#9;script:` would become `javascript:`: a link with one is text.
+  if ([...u].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f)) return { kind: 'text' };
   if (/^(https?:\/\/|mailto:)/i.test(u)) return { kind: 'external', url: u };
   if (u.startsWith('#')) return { kind: 'anchor', anchor: safeDecode(u.slice(1)) };
   if (/^[a-z][a-z0-9+.-]*:/i.test(u) || u.startsWith('//') || !u) return { kind: 'text' };

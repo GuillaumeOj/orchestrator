@@ -44,6 +44,12 @@
     scrollTo(id);
   }
 
+  // A remote image inside a link (`[![CI](badge.svg)](…/actions)`) is the link's
+  // content: let the click reach the link instead of also opening the image.
+  function openChip(e, url) {
+    if (!e.currentTarget.closest('a')) openUrl(url);
+  }
+
   const imageUrl = (n) => (n.type === 'imageReference' ? (doc.defs.get(n.identifier)?.url ?? '') : n.url);
 </script>
 
@@ -98,7 +104,8 @@
           <tbody>
             {#each n.children.slice(1) as row, r (r)}
               <tr>
-                {#each row.children as c, j (j)}<td style:text-align={n.align?.[j] ?? undefined}>{@render inlines(c.children)}</td>{/each}
+                <!-- As GitHub: every row has the header's cells (short rows padded, extra cells dropped). -->
+                {#each n.children[0].children as _, j (j)}<td style:text-align={n.align?.[j] ?? undefined}>{@render inlines(row.children[j]?.children ?? [])}</td>{/each}
               </tr>
             {/each}
           </tbody>
@@ -137,7 +144,7 @@
 <!-- Images (feature_asset, the large preview) land with the next task: for now the
      remote chip (D2: never fetched) and the "not available" line. -->
 {#snippet image(url, alt)}
-  {#if /^https?:\/\//i.test(url)}<button class="chip" title={url} onclick={() => openUrl(url)}>🖼 {alt || 'image'} ↗</button>{:else if !/^data:/i.test(url)}<span class="imgerr">image: {alt || url} (not available here)</span>{/if}
+  {#if /^https?:\/\//i.test(url)}<button class="chip" title={url} onclick={(e) => openChip(e, url)}>🖼 {alt || 'image'} ↗</button>{:else if !/^data:/i.test(url)}<span class="imgerr">image: {alt || url} (not available here)</span>{/if}
 {/snippet}
 
 <div class="md" bind:this={root}>
@@ -146,7 +153,8 @@
       <ol>
         {#each doc.footnotes as f (f.num)}
           <li id="{prefix}fn:{f.num}">
-            {@render blocks(f.node.children, true)}
+            <!-- One paragraph stays inline with ↩; several keep their <p>s, else they run together. -->
+            {@render blocks(f.node.children, f.node.children.length === 1)}
             <a class="back" href="#{prefix}fnref:{f.num}" aria-label="Back to the reference" onclick={(e) => jump(e, `fnref:${f.num}`)}>↩</a>
           </li>
         {/each}
@@ -303,9 +311,10 @@
   li > :global(:is(ul, ol)) {
     margin-top: var(--space-xxs);
   }
+  /* Task items are flex (no marker); a plain item in the same list keeps its bullet. */
   ul.tasks {
-    list-style: none;
     padding-left: var(--space-sm);
+    list-style-position: inside;
   }
   li.task {
     display: flex;

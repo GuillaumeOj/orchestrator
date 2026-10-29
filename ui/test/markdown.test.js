@@ -113,6 +113,8 @@ describe('markdown parser', () => {
     expect(slug('2. Code & colors')).toBe('2-code--colors');
     const { root } = /** @type {any} */ (prepare('# Scope\n\n## Scope\n\n## `api` · v2'));
     expect(root.children.map((h) => h.data.slug)).toEqual(['scope', 'scope-1', 'api--v2']);
+    const taken = /** @type {any} */ (prepare('# Foo\n\n# Foo\n\n# Foo 1'));
+    expect(taken.root.children.map((h) => h.data.slug)).toEqual(['foo', 'foo-1', 'foo-1-1']);
   });
 
   it('numbers footnotes by first reference', () => {
@@ -134,6 +136,9 @@ describe('markdown parser', () => {
     expect(linkKind('api-contract.md', true)).toEqual({ kind: 'doc', name: 'api-contract.md', anchor: null });
     expect(linkKind('api-contract.md').kind).toBe('repo');
     expect(linkKind('../../../docs/SPEC.md', true)).toEqual({ kind: 'repo', path: '../../../docs/SPEC.md' });
+    // A browser drops tabs and leading controls from an href: never a `javascript:` in disguise.
+    expect(linkKind('java\tscript:alert(1);x.md', true).kind).toBe('text');
+    expect(linkKind('\u0001javascript:alert(1);x.md', true).kind).toBe('text');
   });
 
   it('reads flat front-matter as pairs', () => {
@@ -272,6 +277,21 @@ describe('Markdown renderer', () => {
     expect(container.textContent).not.toContain('data:');
   });
 
+  it('lets a badge inside a link open the link only', async () => {
+    const { getByText } = render(Markdown, { text: '[![CI](https://x.example/b.svg)](https://x.example/ci)' });
+    await fireEvent.click(getByText('🖼 CI ↗'));
+    expect(openUrl).toHaveBeenCalledTimes(1);
+    expect(openUrl).toHaveBeenCalledWith('https://x.example/ci');
+  });
+
+  it('pads short table rows and keeps footnote paragraphs apart', () => {
+    const { container } = render(Markdown, {
+      text: '| a | b | c |\n|---|---|---|\n| 1 |\n\nx[^1]\n\n[^1]: First.\n\n    Second.',
+    });
+    expect(container.querySelectorAll('tbody td').length).toBe(3);
+    expect([...container.querySelectorAll('.footnotes li p')].map((p) => p.textContent)).toEqual(['First.', 'Second.']);
+  });
+
   it('shows raw HTML as muted text, except <br>', () => {
     const { container } = render(Markdown, { text: 'a<br>b <span>c</span>\n\n<div>\nblock\n</div>' });
     expect(container.querySelector('p br')).not.toBeNull();
@@ -289,6 +309,8 @@ describe('Markdown renderer', () => {
     expect(q.querySelector('.alert-title').textContent).toBe('Warning');
     expect(q.textContent).not.toContain('[!WARNING]');
     expect(q.textContent).toContain('Mind the gap.');
+    const lower = render(Markdown, { text: '> [!note]\n> Lower case.' }).container;
+    expect(lower.querySelector('blockquote.alert.note .alert-title').textContent).toBe('Note');
   });
 
   it('never renders HTML from the text', () => {
