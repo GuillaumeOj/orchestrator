@@ -10,12 +10,14 @@ Copy rules carry over from P1/P3: sentence case, no exclamation marks, name the 
 
 ## 0. Findings for lead
 
+All findings are accepted: F1–F7 as D11/D12 (4eec296), F8–F12 as D13 (6c8f895).
+
 | # | Finding | Proposal | Owner |
 |---|---|---|---|
 | F1 | The brief's examples put the state word in `reason` ("Queued · …", "Not started · …", "Paused by you", "Waiting · penpot …", "Starting · 12 s"). Every surface also shows the status badge next to the reason, so the agent header would read "Queued · Queued · live cap 3/3". | **The reason never repeats the status label.** The core writes only what the agent waits on; the surface puts the badge label before it. The composed line is exactly SPEC §9.5's "Shown as" column: "Queued · live cap 3/3 · 2nd in line · ≈14:20". Text without a badge (`orchd now`, macOS notifications, tooltips) prints `<status label> · <reason>`. §1.1 has the rule, §2 the strings. | lead → back |
 | F2 | Some examples put a duration in `reason` ("→ back-1 · message · 12 min", "Waiting · penpot execute_code · 7 min", "Starting · 12 s"), and the UI also appends `since`. That gives two durations, and the one in `reason` goes stale between two 30 s ticks. | **No duration in `reason`.** The UI appends the duration from `waiting_on.since_ms` (else `since_ms`) with the 30 s relative clock. Clock times (≈14:20, resets 16:00) stay in `reason`. Fixed numbers are fine too ("after 30 s"). | lead → back |
 | F3 | `run_phase`, `run_done` and `merge_done` outcomes have no `text`, and the contract has no `feature` on an outcome. The digest row "checkout: planning → executing" needs the feature name, and runs done earlier today may not be in `runs`. | Add an optional `text` to **every** outcome, written by the core with the patterns in §5, plus an optional `feature`. The row renders `text` and needs no lookup. This is additive, so the contract allows it. | lead → back |
-| F4 | Two P3 level-4 items have no home once `info-<turn>` items and level 4 move to outcomes: the weekly report digest (`payload.digest = weekly_report`, P3 J8 · 4) and the Linear/GitHub sync conflict (`action = task_conflict`). Neither is a contract outcome kind, and `info` is not a decision kind. | Two outcome kinds: `report_ready {report}` (`report` = "2026-W44": "Weekly report for week 44 is ready", `o` opens it) and `sync_conflict {task, backend}` ("ENG-140 changed here and in Linear: kept Linear's", `o` opens the task). Accepted as D12. | lead → back |
+| F4 | Two P3 level-4 items have no home once `info-<turn>` items and level 4 move to outcomes: the weekly report digest (`payload.digest = weekly_report`, P3 J8 · 4) and the Linear/GitHub sync conflict (`action = task_conflict`). Neither is a contract outcome kind, and `info` is not a decision kind. | Two outcome kinds: `report_ready {report}` (`report` = "2026-W44": "Weekly report for week 44 is ready", `o` opens it) and `sync_conflict {task, backend}` ("ENG-140 changed here and in Linear: kept Linear's", `o` opens the task). | lead → back |
 | F5 | `status.js` has no `not_started` entry, and `tokens.json` has no `color.status.not-started`. The record's `status` can be `not_started`. | `ui` adds the token and the icon (label "Not started yet"). It must differ from Queued: no process yet, so a hollow glyph is better than the queued hourglass. | ui |
 | F6 | The **Start now / Run now** cost ("≈ +1 pp") is not in the record. The current strip reads it from `queue_entry`. | No contract change: the cost is an action detail, not attention state. The strip keeps reading `app_state.agents[].queue_entry` for the button (raw data stays for details, contract §3.2). A queued or not-started record's `reason` carries no cost. A Governor **ask** is different: it is a decision, its payload has the cost, and its needs_you reason says it (§2.1). | front (note only) |
 | F7 | The digest **Clear** action needs a key. | `c` in the Inbox when the digest is focused (free in the Inbox map: a r ⏎ o e x u j k). Palette: "Clear today's digest". front checks for conflicts. | front |
@@ -41,7 +43,7 @@ Copy rules carry over from P1/P3: sentence case, no exclamation marks, name the 
 - **Full** (agent header, Inspector): label + reason + since. The `ref` is a link: a decision opens its Inbox detail, an agent focuses that agent, a task opens its Board card.
 
 ### 1.2 Counts
-Each figure has a word after it, never a bare number in parentheses:
+Each figure carries its label, never a bare number in parentheses:
 
 | Where | Copy | Source |
 |---|---|---|
