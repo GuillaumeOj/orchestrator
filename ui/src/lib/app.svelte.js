@@ -4,7 +4,7 @@
 // registry. Terminal objects (xterm.js) live outside the reactive state, in `terms`.
 
 import { clock as clockOf } from './format.js';
-import { decisionToast, due, effectText, pendingToast, UNDO_MS } from './inbox.js';
+import { decisionToast, due, effectText, isOpen, pendingToast, UNDO_MS } from './inbox.js';
 import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
@@ -1154,8 +1154,7 @@ export async function flushDecisions(now = Date.now()) {
       return;
     }
     // The effect it answered with: the toast if the decision closes with no final push.
-    const m = mine.get(p.item);
-    if (m) m.effect = r.value?.effect;
+    if (mine.has(p.item)) mine.set(p.item, { ...mine.get(p.item), effect: r.value?.effect });
     const d = app.now.decisions[p.item];
     if (d && d === sent[i] && r.value?.lifecycle) {
       // The answer's lifecycle counts as a push: a synchronous effect (Allow
@@ -1181,7 +1180,7 @@ const SETTLED = new Set(['effect', 'failed', 'dismissed', 'stale', 'interrupted'
 export function decisionPushed(prev, d) {
   const state = d.lifecycle?.state;
   if (state === prev?.lifecycle?.state) return;
-  if (state !== 'open' && state !== 'parked') undoItem(d.id);
+  if (!isOpen(d)) undoItem(d.id);
   const text = decisionToast(d, mine.get(d.id));
   if (SETTLED.has(state)) mine.delete(d.id);
   if (!text) return;
@@ -1200,7 +1199,8 @@ export function decisionGone(id, d) {
   undoItem(id);
   const m = mine.get(id);
   mine.delete(id);
-  if (m?.effect && d && !SETTLED.has(d.lifecycle?.state))
+  // `mine` only holds what has not settled yet (decisionPushed drops the rest).
+  if (m?.effect && d)
     toast(effectText({ ...d, lifecycle: { state: 'effect', decided_by: 'user', effect: m.effect } }, m));
 }
 

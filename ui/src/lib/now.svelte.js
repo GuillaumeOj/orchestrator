@@ -6,6 +6,7 @@
 
 import { app, decisionGone, decisionPushed } from './app.svelte.js';
 import { waited } from './format.js';
+import { isOpen } from './inbox.js';
 import { invoke, listen } from './ipc.js';
 import { STATUS } from './status.js';
 
@@ -196,8 +197,6 @@ export async function clearDigest(list = digest()) {
   const upTo = evNo(top.id);
   app.now.outcomes = app.now.outcomes.map((o) => (evNo(o.id) <= upTo ? { ...o, seen: true } : o));
 }
-
-const isOpen = (d) => d?.lifecycle?.state === 'open' || d?.lifecycle?.state === 'parked';
 
 /** Decisions still waiting on the user (open or parked), in no order. */
 export const openDecisions = () => Object.values(app.now.decisions).filter(isOpen);

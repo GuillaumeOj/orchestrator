@@ -39,6 +39,8 @@ export function afterRemoval(items, removedId) {
 
 export const agentOf = (d) => d?.subject?.agent ?? null;
 export const parked = (d) => d?.lifecycle?.state === 'parked';
+/** Still waiting on the user: open or parked. */
+export const isOpen = (d) => d?.lifecycle?.state === 'open' || parked(d);
 /** Came back after a core restart: the card says so, unless it is parked. */
 export const restarted = (d) => d?.payload?.restarted === true && !parked(d);
 /** An MCP server that needs sign-in (FR-604): Reconnect, Open Settings, Dismiss. */
@@ -190,6 +192,8 @@ const BY = {
 };
 /** "by you", "by rule git-safe" (notes §3.4). */
 const byText = (by) => (by?.startsWith('rule:') ? `by rule ${by.slice(5)}` : (BY[by] ?? ''));
+/** "Decided by you", or "Decided" alone when who is unknown. */
+const byLine = (verb, by) => [verb, byText(by)].filter(Boolean).join(' ');
 
 /** "PR opened · checkout #12 ↗". */
 function prOpened(d, url) {
@@ -293,7 +297,7 @@ export function marker(d, pending = null, now = Date.now()) {
     case 'parked':
       return { state: 'parked', text: `Parked · ${agent} stopped; resumes on your answer` };
     case 'decided':
-      return { state: 'decided', text: `${['Decided', byText(lc.decided_by)].filter(Boolean).join(' ')} · sending` };
+      return { state: 'decided', text: `${byLine('Decided', lc.decided_by)} · sending` };
     case 'sent':
       if (d.kind === 'gate' && d.gate === 'pr')
         return { state: 'sent', text: `Pushing ${d.payload?.branch ?? 'the branch'}…` };
@@ -309,7 +313,7 @@ export function marker(d, pending = null, now = Date.now()) {
     case 'dismissed':
       return {
         state: 'dismissed',
-        text: `${['Dismissed', byText(lc.decided_by)].filter(Boolean).join(' ')}${at(lc.decided_at_ms)}`,
+        text: `${byLine('Dismissed', lc.decided_by)}${at(lc.decided_at_ms)}`,
       };
     case 'interrupted':
       return { state: 'interrupted', text: `Interrupted · ${agent} stopped before it was answered` };
