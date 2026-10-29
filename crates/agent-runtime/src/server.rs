@@ -181,6 +181,7 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         CtlRequest::AnswerAsk { action, accept } => ok_or(rt.answer_ask(action, accept).map(|_| json!("answered"))),
         CtlRequest::Enforce { on } => ok_or(rt.set_shadow(!on).map(|_| json!({"enforced": on}))),
         CtlRequest::State => CtlReply::ok(rt.state_json()),
+        CtlRequest::Now => CtlReply::ok(rt.now_snapshot()),
         CtlRequest::Usage => CtlReply::ok(rt.usage_json()),
         CtlRequest::Governor => CtlReply::ok(rt.governor_json()),
         CtlRequest::Inbox => CtlReply::ok(json!(rt.inbox())),

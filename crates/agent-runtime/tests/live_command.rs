@@ -79,7 +79,7 @@ fn a_typed_slash_command_is_the_apps_turn() {
         git(&repo, &["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-qm", "orchping command"]);
     }
     let repo = std::fs::canonicalize(&repo).unwrap();
-    let root = tempfile::Builder::new().prefix("orchcmd").tempdir_in("/tmp").unwrap();
+    let root = tempfile::Builder::new().prefix("orchcmd").tempdir_in(orch_protocol::test_tmp()).unwrap();
     let paths = AppPaths::new(root.path().join("app"));
     agent_runtime::preflight::install_helpers(&helper_bins(), &paths.bin_dir()).unwrap();
     let rt = Runtime::new(RuntimeConfig::new(paths.clone())).unwrap();

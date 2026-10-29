@@ -1387,7 +1387,7 @@ mod tests {
 
     #[test]
     fn integrations_registry_and_mcp_alerts() {
-        let d = tempfile::Builder::new().prefix("orchapp").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchapp").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let core = test_core(d.path());
         let v = core.integrations_view().unwrap();
         assert_eq!(v["items"].as_array().unwrap().len(), 5);
@@ -1433,7 +1433,7 @@ mod tests {
 
     #[test]
     fn presets_duplicate_and_flags_through_the_core() {
-        let d = tempfile::Builder::new().prefix("orchapp").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchapp").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let core = test_core(d.path());
         let v = core.teams_view(None).unwrap();
         let fs = v["teams"].as_array().unwrap().iter().find(|t| t["team"]["id"] == "full-stack").unwrap().clone();
@@ -1480,7 +1480,7 @@ mod tests {
 
     fn tmp() -> tempfile::TempDir {
         // Short path: the socket must fit in 104 bytes.
-        tempfile::Builder::new().prefix("orchapp").tempdir_in("/tmp").unwrap()
+        tempfile::Builder::new().prefix("orchapp").tempdir_in(orch_protocol::test_tmp()).unwrap()
     }
 
     #[test]

@@ -281,7 +281,7 @@ mod tests {
     /// switches to sonnet at its next task and runs.
     #[test]
     fn a_tight_opus_window_queues_opus_and_downgrades_at_the_next_task() {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
         let rule = Downgrade { to: "sonnet".into(), when: DowngradeWhen::ModelWindow };
         agent(&rt, d.path(), "a1", "opus", None);
@@ -324,7 +324,7 @@ mod tests {
     /// on battery (banner, one alert) and once nothing waits.
     #[test]
     fn off_hours_work_waits_and_holds_the_power_assertion_on_ac() {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let power = Arc::new(FakePower::default());
         let battery = Arc::new(Battery::default());
         let mut cfg = test_cfg(d.path(), false);

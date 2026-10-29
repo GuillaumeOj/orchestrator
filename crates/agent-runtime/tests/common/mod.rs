@@ -40,7 +40,7 @@ pub fn git(dir: &Path, args: &[&str]) -> String {
 
 /// A short temp dir under /tmp: socket paths must stay under 104 bytes.
 pub fn short_tempdir(prefix: &str) -> tempfile::TempDir {
-    tempfile::Builder::new().prefix(prefix).tempdir_in("/tmp").unwrap()
+    tempfile::Builder::new().prefix(prefix).tempdir_in(orch_protocol::test_tmp()).unwrap()
 }
 
 /// One agent's entry in the core's `state`.

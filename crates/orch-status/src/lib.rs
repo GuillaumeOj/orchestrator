@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn forwards_then_chains_to_the_user_command() {
-        let d = tempfile::Builder::new().prefix("os").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("os").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let sock = d.path().join("c.sock");
         let l = bus::bind_listener(&sock).unwrap();
         let core = std::thread::spawn(move || {

@@ -773,7 +773,7 @@ mod tests {
     /// publish again (same pages, refreshed), comments come back once.
     #[test]
     fn publish_refresh_and_comments_to_the_inbox() {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let fake = fake::FakeNotion::default();
         let mut cfg = crate::runtime::tests::test_cfg(d.path(), true);
         let f2 = fake.clone();
@@ -913,7 +913,7 @@ mod tests {
     /// at the same time make each comment's Inbox item once.
     #[test]
     fn comments_pages_failed_appends_and_concurrency() {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let fake = fake::FakeNotion::default();
         let mut cfg = crate::runtime::tests::test_cfg(d.path(), true);
         let f2 = fake.clone();

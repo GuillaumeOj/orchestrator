@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn core_down_is_a_tool_error_not_a_crash() {
-        let d = tempfile::Builder::new().prefix("om").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("om").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let env = McpEnv {
             agent_id: Some("a1".into()),
             socket: Some(d.path().join("core.sock")),
@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn forwards_to_the_core() {
-        let d = tempfile::Builder::new().prefix("om").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("om").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let sock = d.path().join("core.sock");
         let l = orch_protocol::bind_listener(&sock).unwrap();
         let t = std::thread::spawn(move || {

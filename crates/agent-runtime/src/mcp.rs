@@ -91,6 +91,9 @@ impl Runtime {
             // The team tools (the role's own; `may_call` checked it above).
             _ => self.team_tool(&rec, &m.tool, &m.arguments),
         };
+        if r.is_ok() && matches!(m.tool.as_str(), "commit" | "merge" | "sync_integration") {
+            self.touch(format!("worktree:{}", rec.worktree.display()));
+        }
         match r {
             Ok((text, data)) => (false, text, data),
             Err(e) => (true, format!("{e:#}"), Value::Null),

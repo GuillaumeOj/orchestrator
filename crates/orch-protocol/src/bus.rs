@@ -176,7 +176,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn short_dir() -> tempfile::TempDir {
-        tempfile::Builder::new().prefix("ob").tempdir_in("/tmp").unwrap()
+        tempfile::Builder::new().prefix("ob").tempdir_in(crate::test_tmp()).unwrap()
     }
 
     #[test]

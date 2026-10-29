@@ -70,7 +70,7 @@ fn kill_9_mid_turn_then_restart_resumes_without_double_delivery() {
         .status()
         .unwrap();
     assert!(st.success());
-    let root = tempfile::Builder::new().prefix("orchkr").tempdir_in("/tmp").unwrap();
+    let root = tempfile::Builder::new().prefix("orchkr").tempdir_in(orch_protocol::test_tmp()).unwrap();
     let home = root.path().join("h");
     let _guard = Guard(root.path().to_path_buf());
     let st = Command::new(orchd()).arg("--home").arg(&home).arg("install-helpers").status().unwrap();

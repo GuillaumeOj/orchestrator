@@ -52,6 +52,25 @@ pub enum Status {
     Done,
 }
 
+impl Status {
+    /// The §9.5 badge label (text with no badge prints `<label> · <reason>`).
+    pub fn label_of(key: &str) -> &'static str {
+        match key {
+            "working" => "Working",
+            "waiting_for_you" => "Waiting for you",
+            "waiting_gate" => "At gate",
+            "queued" => "Queued",
+            "not_started" => "Not started yet",
+            "paused" => "Paused",
+            "blocked_by_limit" => "Blocked by limit",
+            "suspended" => "Suspended",
+            "error" => "Error",
+            "done" => "Done",
+            _ => "Idle",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitKind {
