@@ -649,6 +649,15 @@ impl Governor {
         &self.queue
     }
 
+    /// The queue in release order (tier, then allocation service, then FIFO):
+    /// an entry's position is its index here.
+    pub fn release_order(&self) -> Vec<EntryId> {
+        let service = self.service();
+        let mut order: Vec<&QueueEntry> = self.queue.iter().collect();
+        order.sort_by(|a, b| release_cmp(a, b, &service));
+        order.into_iter().map(|e| e.id).collect()
+    }
+
     pub fn actions(&self) -> &[GovernorAction] {
         &self.actions
     }

@@ -96,6 +96,9 @@ impl Store {
     fn add_event_in(&self, run_id: Option<&str>, ts_ms: u64, agent_id: Option<&str>, kind: &str, detail: Value) {
         let run_id = run_id.map(str::to_string);
         let agent_id = agent_id.map(str::to_string);
+        if run_id.is_some() {
+            self.note(["report"]);
+        }
         let kind = kind.to_string();
         let blob_dir = self.blob_dir();
         self.write_detached(move |tx| {
