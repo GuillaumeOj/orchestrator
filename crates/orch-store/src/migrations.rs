@@ -524,6 +524,11 @@ ALTER TABLE inbox_items ADD COLUMN stale_why TEXT;
     r#"
 ALTER TABLE inbox_items ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
 "#,
+    // 12: a team run's PR (number and last status as JSON) while it is open.
+    r#"
+ALTER TABLE team_runs ADD COLUMN pr_number INTEGER;
+ALTER TABLE team_runs ADD COLUMN pr_status TEXT;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

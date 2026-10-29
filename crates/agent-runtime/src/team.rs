@@ -327,6 +327,8 @@ impl Runtime {
             pr_url: None,
             started_at_ms: now,
             ended_at_ms: None,
+            pr_number: None,
+            pr: None,
         };
         self.db.upsert_run(&run)?;
         if spec.off_hours {
@@ -1686,8 +1688,10 @@ impl Runtime {
         match url {
             Some(u) => {
                 run.pr_url = Some(u.to_string());
+                run.pr_number = orch_git::gh::pr_number_from_url(u);
+                run.pr = None;
                 let _ = self.db.upsert_run(&run);
-                let _ = self.advance_run(&run.id, RunState::Done, "pull request opened");
+                let _ = self.advance_run(&run.id, RunState::PrOpen, "pull request opened");
             }
             None => {
                 let _ = self.advance_run(&run.id, RunState::Integrating, "pull request failed");
