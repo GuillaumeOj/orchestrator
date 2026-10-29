@@ -15,7 +15,7 @@ use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
 use crate::core::Core;
-use crate::inbox::InboxItem;
+use agent_runtime::decision::Decision;
 
 pub const SETTINGS_KEY: &str = "notifications";
 
@@ -26,8 +26,8 @@ pub struct Note {
     pub body: String,
 }
 
-fn notifies(i: &InboxItem) -> bool {
-    i.level <= 2 && i.payload.get("notify").and_then(Value::as_bool) != Some(false)
+fn notifies(d: &Decision) -> bool {
+    d.level <= 2 && d.payload.get("notify").and_then(Value::as_bool) != Some(false)
 }
 
 /// Remembers the items already notified; the first poll only learns them
@@ -39,18 +39,18 @@ pub struct Watch {
 }
 
 impl Watch {
-    pub fn poll(&mut self, items: &[InboxItem]) -> Option<Note> {
-        let items: Vec<&InboxItem> = items.iter().filter(|i| notifies(i)).collect();
-        let fresh: Vec<&InboxItem> = items.iter().copied().filter(|i| !self.seen.contains(&i.id)).collect();
+    pub fn poll(&mut self, items: &[Decision]) -> Option<Note> {
+        let items: Vec<&Decision> = items.iter().filter(|i| notifies(i)).collect();
+        let fresh: Vec<&Decision> = items.iter().copied().filter(|i| !self.seen.contains(&i.id)).collect();
         self.seen = items.iter().map(|i| i.id.clone()).collect();
         if !std::mem::replace(&mut self.started, true) {
             return None;
         }
         match fresh.as_slice() {
             [] => None,
-            [one] => Some(Note { title: one.title.clone(), body: one.detail.chars().take(240).collect() }),
+            [one] => Some(Note { title: one.title.clone(), body: one.summary.chars().take(240).collect() }),
             many => {
-                let agents: BTreeSet<&str> = many.iter().filter_map(|i| i.agent_id.as_deref()).collect();
+                let agents: BTreeSet<&str> = many.iter().filter_map(|i| i.agent.as_deref()).collect();
                 let title = match agents.len() {
                     0 | 1 => format!("{} items need you", many.len()),
                     n => format!("{n} agents need you"),
@@ -132,19 +132,24 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn item(id: &str, level: u8, agent: &str) -> InboxItem {
-        InboxItem {
+    fn item(id: &str, level: u8, agent: &str) -> Decision {
+        Decision {
             id: id.into(),
+            kind: "question",
+            gate: None,
             level,
-            kind: "question".into(),
-            agent_id: Some(agent.into()),
+            subject: json!({"agent": agent}),
             title: format!("{agent} asks"),
-            detail: "which db?".into(),
-            preview: None,
-            created_ms: 0,
+            summary: "which db?".into(),
+            context: vec![],
             actions: vec![],
+            lifecycle: Default::default(),
+            thread: None,
+            thread_prev: None,
+            waits_on: "user",
+            created_ms: 0,
+            agent: Some(agent.into()),
             payload: json!({}),
-            status: "open",
         }
     }
 

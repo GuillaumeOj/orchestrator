@@ -1270,7 +1270,7 @@ impl Runtime {
                     .map(|s| cut(s, 200))
                     .take(8)
                     .collect();
-                let id = self.question_item(rec, q, options, "ask_user", str_arg(args, "kind") != Some("fyi"))?;
+                let id = self.question_item(rec, q, options, "ask_user", str_arg(args, "kind") != Some("fyi"), None)?;
                 Ok((
                     "Asked the user; the answer comes as a new turn. Continue with other work or end your turn.".into(),
                     json!({"item": id}),
@@ -1570,7 +1570,8 @@ impl Runtime {
                     format!("Spec gate · {}: {}", cx.feature.slug, cut(summary, 200)),
                     json!({"action": "spec_approval", "run": cx.run.id, "feature": cx.feature.slug, "feature_id": cx.feature.id,
                            "summary": cut(summary, 4_000), "docs": docs, "worktree": rec.worktree,
-                           "branch": cx.feature.integration_branch()}),
+                           "branch": cx.feature.integration_branch(),
+                           "doc_lines": doc_lines(&rec.worktree, &FeatureCtx::docs_dir(&cx.fctx()), &docs)}),
                     crate::inbox::PRIORITY_GATE,
                 )?;
                 self.advance_run(&cx.run.id, RunState::SpecGate, "spec gate asked")?;
@@ -1689,6 +1690,19 @@ fn feature_docs_dir(worktree: &Path, slug: &str) -> Result<std::path::PathBuf> {
 }
 
 /// The markdown files in the feature's docs folder of a worktree.
+/// `[{path, lines}]` of the feature's docs (the spec gate's `docs` block).
+fn doc_lines(worktree: &Path, dir: &str, docs: &[String]) -> Value {
+    let files: Vec<Value> = docs
+        .iter()
+        .map(|d| {
+            let path = format!("{dir}/{d}");
+            let lines = std::fs::read_to_string(worktree.join(&path)).map(|t| t.lines().count()).unwrap_or(0);
+            json!({"path": path, "lines": lines})
+        })
+        .collect();
+    json!(files)
+}
+
 pub fn feature_docs(worktree: &Path, slug: &str) -> Vec<String> {
     let mut v: Vec<String> = feature_docs_dir(worktree, slug)
         .and_then(|dir| Ok(std::fs::read_dir(dir)?))

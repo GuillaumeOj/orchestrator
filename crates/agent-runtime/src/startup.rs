@@ -92,6 +92,7 @@ impl Runtime {
         });
         let Some(item) = self.startup_item(id) else { return };
         if let Some(i) = self.close_item(item, InboxStatus::Dismissed, "started", "core") {
+            self.advance(i.id, crate::inbox::Stage::Effect("dismissed", None));
             self.outcome(&i, "core", "dismissed");
         }
     }
@@ -232,6 +233,7 @@ impl Runtime {
         if let Some(item) = self.startup_item(id)
             && let Some(i) = self.close_item(item, InboxStatus::Decided, "restart_fresh", by)
         {
+            self.advance(i.id, crate::inbox::Stage::Effect("restarted", None));
             self.outcome(&i, by, "restarted");
         }
         if !had_brief && let Some(brief) = brief {

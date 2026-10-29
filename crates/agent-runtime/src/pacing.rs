@@ -226,7 +226,8 @@ impl Runtime {
             let first = self.house().battery_alerted.as_deref() != Some(night.as_str());
             if first {
                 let body = "Not on AC power\nOff-hours work won't run while the Mac sleeps. Plug it in to keep it awake for the queued work.".to_string();
-                if self.store.write(|s| s.add_inbox(None, "alert", body)).is_ok() {
+                let payload = json!({"alert": "on_battery", "on_battery": true, "queued": pending});
+                if self.add_item(None, "alert", body, payload, 0).is_ok() {
                     self.house().battery_alerted = Some(night);
                 }
             }

@@ -64,7 +64,7 @@ pub struct Lifecycle {
 }
 
 impl Lifecycle {
-    fn of(i: &InboxItem) -> Lifecycle {
+    pub fn of(i: &InboxItem) -> Lifecycle {
         let state = match i.status {
             InboxStatus::Pending => "open",
             InboxStatus::Parked => "parked",
@@ -208,30 +208,22 @@ fn last_message(p: &Value) -> Option<Value> {
     Some(json!({"type": "last_message", "text": text, "at_ms": lm.get("at_ms").and_then(Value::as_u64).unwrap_or(0)}))
 }
 
-/// `{agent, role, node, project, feature, run, task}` of an agent (absent parts left out).
-fn subject_of(cx: &Ctx, agent: Option<&str>, project: Option<&str>) -> Value {
+/// `{agent, role, node, project, feature, run, task}` (absent parts left
+/// out): the agent's seat, its feature's slug, else the project.
+pub fn subject(agent: Option<&str>, rec: Option<&AgentRecord>, feature: Option<&str>, project: Option<&str>) -> Value {
     let mut v = serde_json::Map::new();
-    let rec = agent.and_then(|a| cx.agents.get(a));
     if let Some(a) = agent {
         v.insert("agent".into(), json!(a));
     }
     if let Some(r) = rec {
         v.insert("role".into(), json!(r.role.name));
-        match &r.team {
-            Some(t) => {
-                v.insert("node".into(), json!(t.node));
-                v.insert("project".into(), json!(t.project_id));
-                let feature = cx.runs.iter().find(|f| f.run.id == t.run_id).map(|f| f.feature.clone());
-                v.insert("feature".into(), json!(feature.unwrap_or_else(|| t.feature_id.clone())));
-                v.insert("run".into(), json!(t.run_id));
-                if let Some(task) = t.task {
-                    v.insert("task".into(), json!(task));
-                }
-            }
-            None => {
-                if let Some(p) = cx.projects.get(&r.repo) {
-                    v.insert("project".into(), json!(p));
-                }
+        if let Some(t) = &r.team {
+            v.insert("node".into(), json!(t.node));
+            v.insert("project".into(), json!(t.project_id));
+            v.insert("feature".into(), json!(feature.unwrap_or(&t.feature_id)));
+            v.insert("run".into(), json!(t.run_id));
+            if let Some(task) = t.task {
+                v.insert("task".into(), json!(task));
             }
         }
     }
@@ -243,8 +235,16 @@ fn subject_of(cx: &Ctx, agent: Option<&str>, project: Option<&str>) -> Value {
     Value::Object(v)
 }
 
-/// The run id, else the agent id.
-fn thread_of(subject: &Value) -> Option<String> {
+fn subject_of(cx: &Ctx, agent: Option<&str>, project: Option<&str>) -> Value {
+    let rec = agent.and_then(|a| cx.agents.get(a));
+    let seat = rec.and_then(|r| r.team.as_ref());
+    let feature = seat.and_then(|t| cx.runs.iter().find(|f| f.run.id == t.run_id)).map(|f| f.feature.as_str());
+    let project = rec.filter(|r| r.team.is_none()).and_then(|r| cx.projects.get(&r.repo)).map(String::as_str).or(project);
+    subject(agent, rec, feature, project)
+}
+
+/// The run id, else the agent id: a decision's thread.
+pub fn thread_of(subject: &Value) -> Option<String> {
     subject.get("run").or_else(|| subject.get("agent")).and_then(Value::as_str).map(str::to_string)
 }
 
@@ -425,11 +425,8 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
                 None => cut(text, 100),
             };
             let ctx = vec![markdown(text, p.get("page_url").and_then(Value::as_str))];
-            let actions = vec![
-                act("reply", "Reply", Some("enter")),
-                act("dismiss", "Dismiss", Some("r")),
-                act("open", "Open in Notion ↗", Some("o")),
-            ];
+            // No reply from the app yet (the page's thread is answered in Notion).
+            let actions = vec![act("dismiss", "Dismiss", Some("r")), act("open", "Open in Notion ↗", Some("o"))];
             (title, summary, ctx, actions)
         }
         _ => {

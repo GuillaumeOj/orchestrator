@@ -539,7 +539,8 @@ impl Runtime {
         let body = format!(
             "The reserve for your own work is used up\n{reason}. Interactive work is never blocked; agents are squeezed harder until the reset."
         );
-        if self.store.write(|s| s.add_inbox(None, "budget", body)).is_ok() {
+        let payload = json!({"reason": reason});
+        if self.add_item(None, "budget", body, payload, 0).is_ok() {
             let _ = self.db.set_setting(RESERVE_ALERT_KEY, &json!(week));
             self.house().reserve_alerted = Some(Some(week));
         }
@@ -1325,6 +1326,7 @@ impl Runtime {
             }
             Effect::TurnStarted { origin, markers } => {
                 self.end_wait_episode(id);
+                self.answers_resumed(id);
                 self.mark_delivered(id, &markers, Some(now));
                 if let Some(l) = &live {
                     l.ready_at_ms.store(0, Ordering::SeqCst);
@@ -1418,9 +1420,7 @@ impl Runtime {
             Effect::Failed { error } => {
                 // `alert: api_error` puts the agent in error (attention rule 1).
                 let payload = json!({"alert": "api_error", "error": error});
-                let _ = self
-                    .store
-                    .write(|s| s.add_inbox_item(Some(id), "alert", format!("{id}: API error {error}"), payload, 0));
+                let _ = self.add_item(Some(id), "alert", format!("{id}: API error {error}"), payload, 0);
                 let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
                 self.handle_releases(releases);
             }
@@ -2049,10 +2049,17 @@ impl Runtime {
                     if let Some(a) = s.agents.get_mut(&id) {
                         a.trust_dialog = seen;
                     }
-                    if seen {
-                        s.add_inbox(Some(&id), "alert", format!("{id}: Claude Code asks to trust this folder. Attach and answer it yourself (the app never does)."));
-                    }
                 });
+                if seen {
+                    let tail = l.pty.output.tail_text();
+                    let _ = self.add_item(
+                        Some(&id),
+                        "alert",
+                        format!("{id}: Claude Code asks to trust this folder. Attach and answer it yourself (the app never does)."),
+                        json!({"alert": "trust", "tail": tail}),
+                        0,
+                    );
+                }
             }
         }
         let queued: Vec<(AgentRecord, TurnRow)> = self.store.read(|s| {
@@ -2101,6 +2108,17 @@ impl Runtime {
                     t.admission = admission;
                 }
             });
+        }
+        // An answer sent to the agent now waits in the Governor's queue.
+        if let Verdict::Queue { estimated_start, .. } = &d.effective
+            && matches!(admission, Admission::Waiting(_))
+        {
+            let now = now_ms();
+            let eta = estimated_start.map(|t| {
+                let tz = governor::jiff::tz::TimeZone::system();
+                format!("≈{}", crate::attention::clock(t.as_millisecond().max(0) as u64, now, &tz))
+            });
+            self.answers_queued(&rec.id, eta);
         }
         admission == Admission::Admitted
     }
@@ -2175,7 +2193,8 @@ impl Runtime {
                         if let Some(a) = s.agents.get_mut(&rec.id) {
                             a.flag = Some(msg.clone());
                         }
-                        let payload = json!({"alert": "spawn_failed", "error": format!("{e:#}")});
+                        let payload = json!({"alert": "spawn_failed", "error": format!("{e:#}"),
+                                             "cmd": self.cfg.claude.display().to_string()});
                         s.add_inbox_item(Some(&rec.id), "alert", msg, payload, 0);
                     })?;
                     return Err(e);

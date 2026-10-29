@@ -97,6 +97,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app_state,
             commands::now_snapshot,
+            commands::decision_patch,
+            commands::digest_seen,
             commands::kitty_config,
             commands::font_files,
             commands::read_font,

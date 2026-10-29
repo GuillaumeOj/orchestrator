@@ -180,6 +180,22 @@ pub async fn restart_fresh(core: CoreState<'_>, agent: String) -> Res<Value> {
     blocking(core, move |c| c.restart_fresh(&agent)).await
 }
 
+/// The PR gate's patch, whole or one file (api-contract §3.2).
+#[tauri::command]
+pub async fn decision_patch(core: CoreState<'_>, id: String, path: Option<String>) -> Res<String> {
+    blocking(core, move |c| {
+        let n: u64 = id.strip_prefix("gate-").unwrap_or(&id).parse()?;
+        c.runtime()?.decision_patch(n, path.as_deref())
+    })
+    .await
+}
+
+/// Today's outcomes up to `up_to` leave the digest (`done_today` keeps them).
+#[tauri::command]
+pub async fn digest_seen(core: CoreState<'_>, up_to: String) -> Res<()> {
+    blocking(core, move |c| c.runtime()?.digest_seen(&up_to)).await
+}
+
 #[tauri::command]
 pub async fn inbox_act(core: CoreState<'_>, item: String, action: String, message: Option<String>) -> Res<Value> {
     blocking(core, move |c| c.inbox_act(&item, &action, message.as_deref())).await

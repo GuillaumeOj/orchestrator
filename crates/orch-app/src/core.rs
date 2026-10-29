@@ -26,7 +26,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::editor;
-use crate::inbox::{self, AgentFacts, Alert, Ask, Done};
 use crate::kitty::{self, KittyImport};
 use crate::memory::{self, AppMemory};
 use crate::planner::{self, History, HistoryPoint, PlannerView};
@@ -682,8 +681,13 @@ impl Core {
 
     // ------------------------------------------------------------ inbox
 
+    /// The user's action on a decision (api-contract §4): `{ok, lifecycle}`,
+    /// the state after the call (usually decided or sent; the effect comes
+    /// in the `now` event), plus `effect` as in P4.0.
     pub fn inbox_act(&self, item: &str, action: &str, message: Option<&str>) -> Result<Value> {
         let rt = self.runtime()?;
+        let message = message.filter(|m| !m.trim().is_empty());
+        let done = |n: u64, r: Value| json!({"ok": true, "effect": r["effect"], "lifecycle": rt.lifecycle(n), "result": r});
         // A permission prompt, held or parked (FR-705): the runtime decides,
         // audits and acts (the hook answers, or the agent is told).
         if let Some(n) = item.strip_prefix("inbox-") {
@@ -695,17 +699,17 @@ impl Core {
             let scope = (action == "always").then_some(if in_project { "project" } else { "agent" });
             let decision = match action {
                 "approve" => InboxDecision::Approve,
-                "reject" => InboxDecision::Reject,
+                "reject" | "reply" => InboxDecision::Reject,
                 "always" => InboxDecision::AlwaysAllow,
                 // The dialog is in the pane while the hook is held: nothing to decide here.
                 "in_pane" if open == Some(agent_runtime::store::InboxStatus::Pending) => {
-                    return Ok(json!({"ok": true, "effect": "in_pane"}));
+                    return Ok(json!({"ok": true, "effect": "in_pane", "lifecycle": rt.lifecycle(n)}));
                 }
                 "in_pane" => bail!("the prompt is no longer in the pane"),
                 other => bail!("{other} does not apply to a permission"),
             };
-            let r = rt.decide(n, decision, scope, message.filter(|m| !m.trim().is_empty()))?;
-            return Ok(json!({"ok": true, "effect": r["effect"], "result": r}));
+            let r = rt.decide(n, decision, scope, message)?;
+            return Ok(done(n, r));
         }
         // A start that never happened (FR-415).
         if let Some(n) = item.strip_prefix("startup-") {
@@ -713,73 +717,69 @@ impl Core {
             let agent = rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).and_then(|i| i.agent_id.clone()));
             let agent = agent.ok_or_else(|| anyhow!("no startup item {n}"))?;
             return match action {
-                "restart_fresh" => self.restart_fresh(&agent),
-                "dismiss" => {
-                    rt.decide(n, InboxDecision::Dismiss, None, None)?;
-                    Ok(json!({"ok": true, "effect": "dismissed"}))
+                "restart_fresh" => {
+                    let r = self.restart_fresh(&agent)?;
+                    Ok(json!({"ok": true, "effect": "restarted", "lifecycle": rt.lifecycle(n), "result": r}))
                 }
+                "dismiss" => Ok(done(n, rt.decide(n, InboxDecision::Dismiss, None, None)?)),
                 // Deleted first: a kill that fails leaves the card to try again.
                 "delete" => {
                     let r = self.agent_delete(&agent, false, false)?;
                     let _ = rt.decide(n, InboxDecision::Dismiss, None, None);
-                    Ok(json!({"ok": true, "effect": "dismissed", "result": r}))
+                    rt.advance(n, agent_runtime::inbox::Stage::Effect("deleted", None));
+                    Ok(json!({"ok": true, "effect": "deleted", "lifecycle": rt.lifecycle(n), "result": r}))
                 }
                 other => bail!("{other} does not apply to {item}"),
             };
         }
         if let Some(n) = item.strip_prefix("alert-") {
             let n: u64 = n.parse()?;
+            let found = rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).map(|i| (i.kind.clone(), i.payload.clone())));
+            let (kind, payload) = found.ok_or_else(|| anyhow!("no item {n}"))?;
             // An MCP sign-in alert: `open` and `reconnect` say where to go
             // (decisions D3); it closes once the server is connected again.
-            if matches!(action, "open" | "reconnect") {
-                let payload = rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).map(|i| i.payload.clone()));
-                if let Some(p) = payload.as_ref().filter(|p| p["alert"] == agent_runtime::registry::NEEDS_AUTH_ALERT) {
-                    return self.mcp_alert_action(p, action);
-                }
-                // A Notion comment (FR-505): read once opened; the UI opens the page.
-                if let Some(p) = payload.as_ref().filter(|p| p["source"] == "notion" && action == "open") {
-                    let url = p["page_url"].clone();
-                    rt.store.write(|s| {
-                        let _ =
-                            s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()), "user");
-                    })?;
-                    return Ok(json!({"open": "url", "url": url}));
-                }
-                // "Weekly report ready" (FR-818): read once opened; the UI opens the report.
-                if let Some(p) = payload.filter(|p| p["digest"] == "weekly_report" && action == "open") {
-                    rt.store.write(|s| {
-                        let _ =
-                            s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()), "user");
-                    })?;
-                    return Ok(json!({"open": "report", "report": p["report"]}));
-                }
+            if payload["alert"] == agent_runtime::registry::NEEDS_AUTH_ALERT
+                && matches!(action, "open" | "open_settings" | "reconnect")
+            {
+                return self.mcp_alert_action(&payload, if action == "reconnect" { "reconnect" } else { "open" });
             }
-            rt.store.write(|s| {
-                let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("dismiss".into()), "user");
-            })?;
-            return Ok(json!({"ok": true, "effect": "dismissed"}));
+            // A Notion comment (FR-505): read once opened; the UI opens the page.
+            if (kind == "notion" || payload["source"] == "notion") && action == "open" {
+                rt.decide(n, InboxDecision::Dismiss, None, None)?;
+                return Ok(json!({"open": "url", "url": payload["page_url"], "lifecycle": rt.lifecycle(n)}));
+            }
+            // A budget item: applied or skipped (FR-807).
+            if kind == "budget" && matches!(action, "approve" | "reject") {
+                let d = if action == "approve" { InboxDecision::Approve } else { InboxDecision::Reject };
+                return Ok(done(n, rt.decide(n, d, None, None)?));
+            }
+            return Ok(done(n, rt.decide(n, InboxDecision::Dismiss, None, None)?));
         }
         // Gates and team questions: the runtime decides (audited) and acts
         // (spec gate → the run moves on; PR gate → push + PR; reply → a turn).
         if let Some(n) = item.strip_prefix("gate-").or_else(|| item.strip_prefix("q-")) {
             let n: u64 = n.parse()?;
+            let question = item.starts_with("q-");
             let decision = match action {
                 "approve" => InboxDecision::Approve,
-                "reject" if item.starts_with("q-") => InboxDecision::Dismiss,
+                "reject" | "dismiss" if question => InboxDecision::Dismiss,
                 "reject" => InboxDecision::Reject,
-                "reply" => InboxDecision::Reply,
+                "reply" | "answer" => InboxDecision::Reply,
                 other => bail!("{other} does not apply to {item}"),
             };
-            if decision == InboxDecision::Reply && message.is_none_or(|m| m.trim().is_empty()) {
+            if decision == InboxDecision::Reply && message.is_none() {
                 bail!("empty reply");
             }
-            let r = rt.decide(n, decision, None, message)?;
-            return Ok(json!({"ok": true, "effect": r["effect"], "result": r}));
+            return Ok(done(n, rt.decide(n, decision, None, message)?));
         }
+        // The Governor's ask (FR-810): synthesized, so its lifecycle is the answer.
         if let Some(n) = item.strip_prefix("ask-") {
             let id = governor::ActionId(n.parse()?);
-            rt.answer_ask(id.0, action == "approve")?;
-            return Ok(json!({"ok": true, "effect": if action == "approve" { "allowed" } else { "denied" }}));
+            let apply = action == "approve";
+            rt.answer_ask(id.0, apply)?;
+            let effect = if apply { "applied" } else { "skipped" };
+            return Ok(json!({"ok": true, "effect": effect,
+                             "lifecycle": {"state": "effect", "decided_by": "user", "effect": effect}}));
         }
         if let Some(a) = item.strip_prefix("wait-").or_else(|| item.strip_prefix("error-")) {
             if action == "reply" {
@@ -793,42 +793,14 @@ impl Core {
                 let effect = rt.delivered_effect(a);
                 let how = if effect == "delivered" { "deliver" } else { "resume" };
                 let r = self.agent_action(a, how, Some(&text))?;
-                return Ok(json!({"ok": true, "effect": effect, "result": r}));
+                return Ok(json!({"ok": true, "effect": effect, "lifecycle": {"state": "sent", "decided_by": "user"}, "result": r}));
             }
-            if action == "reject" && item.starts_with("error-") {
+            if matches!(action, "resume" | "reject") && item.starts_with("error-") {
                 let r = self.agent_action(a, "resume", None)?;
-                return Ok(json!({"ok": true, "effect": "resumed", "result": r}));
+                return Ok(json!({"ok": true, "effect": "resumed", "lifecycle": {"state": "sent", "decided_by": "user"}, "result": r}));
             }
         }
         bail!("{action} does not apply to {item}")
-    }
-
-    fn inbox_items(
-        &self,
-        agents: &[Value],
-        alerts: &[Alert],
-        done: &[Done],
-        ask: Option<Ask>,
-    ) -> Vec<inbox::InboxItem> {
-        let Some(rt) = &self.rt else { return vec![] };
-        let facts: Vec<AgentFacts> = agents
-            .iter()
-            .filter_map(|a| {
-                let id = a["id"].as_str()?.to_string();
-                let state = a["state"].as_str().unwrap_or("").to_string();
-                let interesting = state == "waiting_for_you" || state == "error" || a["trust_dialog"] == true;
-                let tail = interesting.then(|| rt.live(&id).map(|l| l.pty.output.tail_text())).flatten();
-                Some(AgentFacts {
-                    since_ms: a["last_event_at_ms"].as_u64().unwrap_or(0),
-                    trust_dialog: a["trust_dialog"] == true,
-                    last_error: a["last_error"].as_str().map(str::to_string),
-                    tail,
-                    id,
-                    state,
-                })
-            })
-            .collect();
-        inbox::build(&inbox::Inputs { agents: &facts, alerts, ask, done })
     }
 
     // ------------------------------------------------------------ views
@@ -871,13 +843,10 @@ impl Core {
         m.value.clone()
     }
 
-    /// The Inbox alone (no git, no usage): what the notifier watches, also
-    /// while the window is hidden and the UI does not poll.
-    pub fn attention(&self) -> Vec<inbox::InboxItem> {
-        let Some(rt) = &self.rt else { return vec![] };
-        let agents = rt.state_json()["agents"].as_array().cloned().unwrap_or_default();
-        let (_, alerts, done) = rt.store.read(store_view);
-        self.inbox_items(&agents, &alerts, &done, None)
+    /// The open decisions (no git, no usage): what the notifier reads, also
+    /// while the window is hidden.
+    pub fn attention(&self) -> Vec<agent_runtime::decision::Decision> {
+        self.rt.as_ref().map(|rt| rt.open_decisions()).unwrap_or_default()
     }
 
     /// Everything the shell shows, polled by the UI about once a second.
@@ -885,8 +854,7 @@ impl Core {
         let projects = self.projects();
         let mut agents = vec![];
         let mut warnings: Vec<Value> = self.warnings.lock_ok().iter().map(|w| json!(w)).collect();
-        let (mut usage, mut queue, mut meta, mut alerts, mut done, mut ask) =
-            (Value::Null, vec![], BTreeMap::new(), vec![], vec![], None);
+        let (mut usage, mut queue, mut meta) = (Value::Null, vec![], BTreeMap::new());
         // Agents paused one by one (FR-805/811): idle ones have no queue entry.
         let mut paused = std::collections::BTreeSet::new();
         if let Some(rt) = &self.rt {
@@ -900,7 +868,7 @@ impl Core {
                 u.remove("governor");
             }
             let (snapshot, reset, shadow);
-            (queue, snapshot, reset, shadow, ask, paused) = rt.with_governor(|g| {
+            (queue, snapshot, reset, shadow, paused) = rt.with_governor(|g| {
                 let now = Timestamp::now();
                 let paused = g.paused_agents().iter().map(|a| a.0.clone()).collect();
                 let plan = g.plan();
@@ -909,7 +877,6 @@ impl Core {
                     g.snapshot(now),
                     plan.reset_at.as_millisecond(),
                     plan.shadow_mode,
-                    pending_ask(g, now),
                     paused,
                 )
             });
@@ -931,7 +898,7 @@ impl Core {
                 a["model_note"] = json!(note);
                 a["off_hours"] = json!(off);
             }
-            (meta, alerts, done) = rt.store.read(store_view);
+            meta = rt.store.read(store_view);
         }
         let mut git_paths: std::collections::BTreeSet<PathBuf> = projects.iter().map(|p| p.path.clone()).collect();
         git_paths.extend(meta.values().map(|m: &AgentMeta| m.worktree.clone()));
@@ -962,7 +929,6 @@ impl Core {
                 Value::Null
             }
         };
-        let items = self.inbox_items(&agents, &alerts, &done, ask);
         // FR-816: the power assertion and the on-battery banner.
         let (power, banner) = self.rt.as_ref().map(|rt| rt.power_json()).unwrap_or((Value::Null, None));
         let banners: Vec<Value> = banner.into_iter().collect();
@@ -985,7 +951,6 @@ impl Core {
             "agents": agents,
             "usage": usage,
             "queue": queue,
-            "inbox": {"items": items, "badge": inbox::badge(&items)},
             "features": features,
             "memory": self.memory(agents_mb),
             "memory_watch": self.watch.view(),
@@ -1306,25 +1271,9 @@ fn past_week(rt: &Runtime, started: Timestamp) -> (History, Vec<governor::Govern
     (h, actions)
 }
 
-/// The Governor's pending "ask" (FR-810), as an Inbox item.
-fn pending_ask(g: &governor::Governor, now: Timestamp) -> Option<Ask> {
-    let (id, _) = g.next_action_preview(now).pending_ask?;
-    let a = g.action(id)?;
-    let ask = a.ask.as_ref()?;
-    Some(Ask {
-        id: id.0,
-        reason: a.reason.clone(),
-        effect: a.expected_effect.clone(),
-        created_ms: a.ts.as_millisecond() as u64,
-        deadline_ms: ask.deadline.as_millisecond(),
-        default_apply: matches!(ask.default, governor::AskDefault::Apply),
-    })
-}
-
-/// One pass over the store: agent metadata, pending alerts, the last finished turns.
-fn store_view(s: &agent_runtime::store::StateFile) -> (BTreeMap<String, AgentMeta>, Vec<Alert>, Vec<Done>) {
-    let meta = s
-        .agents
+/// Agent metadata, in one pass over the store.
+fn store_view(s: &agent_runtime::store::StateFile) -> BTreeMap<String, AgentMeta> {
+    s.agents
         .values()
         .map(|a| {
             let m = AgentMeta {
@@ -1336,35 +1285,7 @@ fn store_view(s: &agent_runtime::store::StateFile) -> (BTreeMap<String, AgentMet
             };
             (a.id.clone(), m)
         })
-        .collect();
-    let alerts = s
-        .inbox
-        .iter()
-        .filter(|i| i.open())
-        .map(|i| Alert {
-            id: i.id,
-            kind: i.kind.clone(),
-            agent_id: i.agent_id.clone(),
-            body: i.body.clone(),
-            created_ms: i.created_at_ms,
-            payload: i.payload.clone(),
-            parked: i.status == agent_runtime::store::InboxStatus::Parked,
-        })
-        .collect();
-    let done = s
-        .turns
-        .iter()
-        .rev()
-        .filter(|t| t.status == agent_runtime::store::TurnStatus::Done)
-        .take(10)
-        .map(|t| Done {
-            turn_id: t.id.clone(),
-            agent_id: t.agent_id.clone(),
-            body: t.body.clone(),
-            at_ms: t.delivered_at_ms.unwrap_or(t.created_at_ms),
-        })
-        .collect();
-    (meta, alerts, done)
+        .collect()
 }
 
 fn accept_loop(listener: UnixListener, core: std::sync::Weak<Core>, stop: Arc<AtomicBool>) {

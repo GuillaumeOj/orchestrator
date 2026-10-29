@@ -76,13 +76,15 @@ impl Runtime {
         options: Vec<String>,
         via: &str,
         notify: bool,
+        questions: Option<&Value>,
     ) -> anyhow::Result<u64> {
         let run = rec.team.as_ref().map(|s| s.run_id.clone());
         let id = self.add_item(
             Some(&rec.id),
             "question",
             format!("{}: {}", rec.id, cut(last_paragraph(question), 300)),
-            json!({"action": "ask_user", "question": cut(question, 4_000), "options": options, "run": run, "via": via, "notify": notify}),
+            json!({"action": "ask_user", "question": cut(question, 4_000), "options": options, "run": run, "via": via, "notify": notify,
+                   "questions": questions}),
             PRIORITY_GATE,
         )?;
         self.mark_asked(&rec.id);
@@ -107,7 +109,9 @@ impl Runtime {
         if text.trim().is_empty() {
             return None;
         }
-        self.question_item(rec, &text, options, "AskUserQuestion", true).ok()?;
+        // Every question with its header and options: the card's `options` block.
+        let questions = p.tool_input.as_ref().and_then(|i| i.get("questions")).filter(|q| q.is_array());
+        self.question_item(rec, &text, options, "AskUserQuestion", true, questions).ok()?;
         Some(HookOutput::pre_tool_use(
             ToolDecision::Deny,
             "ORCH: forwarded to the user through the Inbox; the answer arrives as a new turn. Continue with other work or end your turn.",
@@ -131,7 +135,7 @@ impl Runtime {
                 "ORCH: your turn ends on a question for the user, but nobody reads this pane. If it is for the user, call mcp__orch__ask_user with the question (and its options), then end your turn. If it is for your team, use mcp__orch__send_message. If it was not a question, just end your turn.",
             );
         }
-        let _ = self.question_item(rec, text, vec![], "pane", true);
+        let _ = self.question_item(rec, text, vec![], "pane", true, None);
         None
     }
 
@@ -147,12 +151,24 @@ impl Runtime {
         if !self.store.read(|s| s.inbox.iter().any(pane_question)) {
             return;
         }
-        let _ = self.store.write(|s| {
-            let open: Vec<u64> = s.inbox.iter().filter(|i| pane_question(i)).map(|i| i.id).collect();
-            for id in open {
-                let _ = s.close_inbox(id, orch_store::InboxStatus::Decided, Some("answered in pane".into()), "pane");
-            }
-        });
+        let closed = self
+            .store
+            .write(|s| {
+                let open: Vec<u64> = s.inbox.iter().filter(|i| pane_question(i)).map(|i| i.id).collect();
+                open.into_iter()
+                    .filter_map(|id| {
+                        s.close_inbox(id, orch_store::InboxStatus::Decided, Some("answered in pane".into()), "pane")
+                            .ok()
+                            .cloned()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        // Decided by the pane (FR-709), and stale: the agent moved on.
+        for i in closed {
+            let _ = self.db.audit("pane", Some(agent), &i.kind, None, "answered in pane", json!({"item": i.id}));
+            self.advance(i.id, crate::inbox::Stage::Stale("answered in the pane"));
+        }
     }
 }
 
