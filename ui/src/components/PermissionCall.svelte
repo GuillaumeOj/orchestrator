@@ -1,32 +1,27 @@
 <script>
-  // A permission prompt's call (FR-705, ux-brief touch points 1–2), in the Inbox
-  // detail and the agent pane strip: the Parked marker, the tool, the cwd (its
-  // worktree name, the full path on hover) and the full input, collapsed past 6 lines.
-  import { baseName } from '../lib/format.js';
-  import { collapse, inputText, parked } from '../lib/inbox.js';
-  import StatusBadge from './StatusBadge.svelte';
+  // A `tool_call` block (FR-705, notes §3.3): "<tool> in <worktree name>" (the
+  // full cwd on hover) and the input in mono, collapsed past 6 lines. In the
+  // Inbox detail and the agent pane's permission strip.
+  import { baseName, plural } from '../lib/format.js';
+  import { collapse, inputText } from '../lib/inbox.js';
 
-  let { item } = $props();
-  let openFor = $state(null); // the item shown in full
-  const p = $derived(item?.payload ?? {});
-  const text = $derived(inputText(p.tool_input));
-  const cut = $derived(openFor === item?.id ? { text, more: 0 } : collapse(text));
+  let { block } = $props();
+  let open = $state(false);
+  const text = $derived(inputText(block?.input));
+  const shown = $derived(collapse(text, open ? Infinity : 6));
 </script>
 
 <div class="perm">
-  {#if parked(item)}
-    <div class="parked"><StatusBadge state="suspended" label="Parked" /> <span class="secondary">the agent stopped and resumes on your answer</span></div>
-  {/if}
-  <div class="call">
-    <span class="mono">{p.tool ?? '?'}</span>
-    {#if p.cwd}<span class="muted">in</span> <span class="mono" title={p.cwd}>{baseName(p.cwd)}</span>{/if}
+  <div class="call bh">
+    <span class="mono">{block?.tool ?? '?'}</span>
+    {#if block?.cwd}<span class="muted">in</span> <span class="mono" title={block.cwd}>{baseName(block.cwd)}</span>{/if}
   </div>
   {#if text}
-    <pre class="mono input">{cut.text}</pre>
-    {#if cut.more}
-      <button class="btn ghost more" onclick={() => (openFor = item.id)}>Show all · {cut.more} more line{cut.more === 1 ? '' : 's'}</button>
-    {:else if openFor === item?.id}
-      <button class="btn ghost more" onclick={() => (openFor = null)}>Show less</button>
+    <pre class="mono input">{shown.text}</pre>
+    {#if shown.more}
+      <button class="link more" onclick={() => (open = true)}>Show {plural(shown.more, 'more line')}</button>
+    {:else if open}
+      <button class="link more" onclick={() => (open = false)}>Show less</button>
     {/if}
   {/if}
 </div>
@@ -38,7 +33,6 @@
     gap: var(--space-sm);
     min-width: 0;
   }
-  .parked,
   .call {
     display: flex;
     align-items: center;
@@ -47,10 +41,6 @@
   }
   .input {
     margin: 0;
-    padding: var(--space-md);
-    background: var(--color-surface-chrome);
-    border: var(--border-width-default) solid var(--color-border-subtle);
-    border-radius: var(--radius-sm);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     user-select: text;

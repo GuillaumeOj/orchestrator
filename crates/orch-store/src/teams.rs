@@ -532,7 +532,12 @@ impl Store {
 
     pub fn upsert_feature(&self, f: &Feature) -> Result<()> {
         let f = f.clone();
-        self.write(move |tx| {
+        let topics = vec![
+            orch_protocol::Topic::Features,
+            orch_protocol::Topic::Feature(f.id.clone()),
+            orch_protocol::Topic::Project(f.project_id.clone()),
+        ];
+        self.write_touching(topics, move |tx| {
             tx.execute(
                 &format!(
                     "INSERT INTO features({FEATURE_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
@@ -593,7 +598,12 @@ impl Store {
 
     pub fn upsert_run(&self, run: &TeamRun) -> Result<()> {
         let run = run.clone();
-        self.write(move |tx| {
+        let topics = vec![
+            orch_protocol::Topic::Features,
+            orch_protocol::Topic::Teams,
+            orch_protocol::Topic::Feature(run.feature_id.clone()),
+        ];
+        self.write_touching(topics, move |tx| {
             tx.execute(
                 &format!(
                     "INSERT INTO team_runs({RUN_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
@@ -642,7 +652,9 @@ impl Store {
     /// Inserts a task (`id == 0`) or updates it; returns its id.
     pub fn upsert_task(&self, t: &Task) -> Result<u64> {
         let t = t.clone();
-        self.write(move |tx| {
+        let mut topics = vec![orch_protocol::Topic::Board(t.project_id.clone())];
+        topics.extend(t.feature_id.iter().map(|f| orch_protocol::Topic::Feature(f.clone())));
+        self.write_touching(topics, move |tx| {
             let id = if t.id == 0 { None } else { Some(t.id as i64) };
             tx.execute(
                 &format!(
@@ -731,7 +743,7 @@ impl Store {
 
     pub fn add_message(&self, m: &Message) -> Result<u64> {
         let m = m.clone();
-        self.write(move |tx| {
+        let (id, feature) = self.write(move |tx| {
             tx.execute(
                 "INSERT INTO messages(team_run_id, from_node, from_agent, to_node, to_agent, kind, body, ref,
                    created_at_ms, delivered_at_ms, read_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
@@ -749,8 +761,15 @@ impl Store {
                     m.read_at_ms.map(|v| v as i64)
                 ],
             )?;
-            Ok(tx.last_insert_rowid() as u64)
-        })
+            let id = tx.last_insert_rowid() as u64;
+            // The feature pane shows the run's messages.
+            let feature: Option<String> = tx
+                .query_row("SELECT feature_id FROM team_runs WHERE id=?1", [&m.team_run_id], |r| r.get(0))
+                .optional()?;
+            Ok((id, feature))
+        })?;
+        self.touch(std::iter::once(orch_protocol::Topic::Teams).chain(feature.map(orch_protocol::Topic::Feature)));
+        Ok(id)
     }
 
     /// Messages of a run, oldest first: for one node (and its agent: rows for
@@ -770,10 +789,24 @@ impl Store {
         })
     }
 
+    /// A run's last `n` messages, oldest first.
+    pub fn recent_messages(&self, run_id: &str, n: usize) -> Result<Vec<Message>> {
+        let run = run_id.to_string();
+        self.read(move |c| {
+            let mut st =
+                c.prepare(&format!("SELECT {MSG_COLS} FROM messages WHERE team_run_id=?1 ORDER BY id DESC LIMIT ?2"))?;
+            let mut v: Vec<Message> =
+                st.query_map(params![run, n as i64], row_message)?.collect::<rusqlite::Result<_>>()?;
+            v.reverse();
+            Ok(v)
+        })
+    }
+
     /// Runs `sql` once per message id (`?1`), the same `args` after it.
     fn each_message(&self, ids: &[u64], sql: &'static str, args: Vec<rusqlite::types::Value>) -> Result<()> {
         let ids = ids.to_vec();
-        self.write(move |tx| {
+        let topics = vec![orch_protocol::Topic::Teams];
+        self.write_touching(topics, move |tx| {
             let mut st = tx.prepare_cached(sql)?;
             for id in ids {
                 let all = std::iter::once(rusqlite::types::Value::Integer(id as i64)).chain(args.iter().cloned());
@@ -814,7 +847,8 @@ impl Store {
     pub fn mark_messages(&self, ids: &[u64], agent_id: Option<&str>, at_ms: u64) -> Result<()> {
         let ids = ids.to_vec();
         let agent = agent_id.map(str::to_string);
-        self.write(move |tx| {
+        let topics = vec![orch_protocol::Topic::Teams];
+        self.write_touching(topics, move |tx| {
             for id in ids {
                 tx.execute(
                     "UPDATE messages SET to_agent=coalesce(to_agent, ?2),
@@ -832,7 +866,8 @@ impl Store {
 
     pub fn add_artifact(&self, a: &Artifact) -> Result<u64> {
         let a = a.clone();
-        self.write(move |tx| {
+        let topics = vec![orch_protocol::Topic::Feature(a.feature_id.clone())];
+        self.write_touching(topics, move |tx| {
             tx.execute(
                 "INSERT INTO artifacts(feature_id, team_run_id, kind, uri, from_node, to_node, note, created_at_ms, meta)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
@@ -876,6 +911,7 @@ impl Store {
         {
             bail!("GitHub repository must be owner/name, got {r:?}");
         }
+        let topics = [orch_protocol::Topic::Project(id.to_string()), orch_protocol::Topic::Board(id.to_string())];
         let (id, s, b) = (id.to_string(), js(settings), js(backend));
         let n = self.write(move |tx| {
             Ok(tx.execute(
@@ -886,6 +922,7 @@ impl Store {
         if n == 0 {
             return Err(anyhow!("no such project"));
         }
+        self.note(topics);
         Ok(())
     }
 

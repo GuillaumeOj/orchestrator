@@ -1,20 +1,23 @@
-// The app's state: what the core reports (polled about once a second), the
-// tiling workspace, focus, overlays and the command registry. Terminal objects
-// (xterm.js) live outside the reactive state, in `terms`.
+// The app's state: what the core reports (`app_state`, read on its `now`
+// topics; attention records, decisions and counts in `app.now`, see
+// now.svelte.js), the tiling workspace, focus, overlays and the command
+// registry. Terminal objects (xterm.js) live outside the reactive state, in `terms`.
 
 import { clock as clockOf } from './format.js';
-import { due, effectToast, outcomeToast, pendingToast, UNDO_MS } from './inbox.js';
+import { decisionToast, due, isOpen, older, pendingToast, UNDO_MS, version } from './inbox.js';
 import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
 import * as L from './layout.js';
-import { displayState, runCost } from './status.js';
+import { clearDigest, needsYou, statusOf } from './now.svelte.js';
+import { runCost, STATUS } from './status.js';
 import { runStateLabel } from './teams.js';
 import { TermPane } from './term.js';
 import { breakpoint } from './tokens.js';
 
 export const app = $state({
   data: null, // app_state
+  now: { rev: 0, agents: {}, runs: {}, decisions: {}, outcomes: [], counts: { global: {}, projects: {} } }, // now.svelte.js
   kitty: null,
   layout: null,
   panes: {}, // paneId → { type, agentId?, termId?, projectId?, cwd?, title }
@@ -29,6 +32,7 @@ export const app = $state({
   toasts: [],
   pending: [], // Inbox decisions in their undo window: { item, card, action, message, at, toast }
   selectedAgent: null,
+  inboxFocus: null, // a decision id the Inbox selects when it opens (the waiting-on chip's link)
   selectedProject: null,
   theme: null, // null = system, 'dark' | 'light' (user choice)
   themeRev: 0, // bumped when the applied theme may have changed (diagrams redraw)
@@ -71,6 +75,8 @@ export const projects = () => app.data?.projects ?? [];
 /** Features with their latest team run (P2). `null` in a snapshot when the
  *  core could not read them: the poll then keeps the previous list. */
 export const features = () => app.data?.features ?? [];
+/** A feature by its project and slug (a decision's or an outcome's subject). */
+export const featureBySlug = (projectId, slug) => features().find((f) => f.project_id === projectId && f.slug === slug);
 export const focusedSpec = () => app.panes[app.focused];
 export const isTerminal = (spec) => ['agent', 'shell', 'editor'].includes(spec?.type);
 
@@ -289,6 +295,12 @@ export function openSingleton(type) {
   addPane({ type }, app.layout ? 'tab' : 'right');
 }
 
+/** The Inbox with this decision selected (a waiting-on chip's ref). */
+export function openInbox(decisionId = null) {
+  app.inboxFocus = decisionId;
+  openSingleton('inbox');
+}
+
 /**
  * P3: Settings (⌘,), one pane, opened straight to a section ('integrations' |
  * 'mcp' | …) with a server selected (banners, Inbox items, the inspector).
@@ -346,13 +358,11 @@ export function routeOpen(r, projectId = null) {
   return true;
 }
 
-/** An MCP alert's Reconnect / Open Settings: to the core now (no undo window), then routed. */
-export async function alertAct(item, action) {
+/** An action the core answers at once (no undo window): Open (a Notion page, a
+ *  report…), an MCP Reconnect or Open Settings; then routed where it says. */
+export async function coreAct(d, action) {
   try {
-    const r = await invoke('inbox_act', { item: item.id, action, message: null });
-    if (routeOpen(r, item.payload?.project ?? null) || action !== 'open') return;
-    // A task sync conflict (remote won) only marks the note read: open the Board on the task.
-    if (item.payload?.action === 'task_conflict') openBoard(item.payload.project, item.payload.task);
+    routeOpen(await invoke('inbox_act', { item: d.id, action, message: null }), d.subject?.project ?? null);
   } catch (e) {
     toast(errText(e), { kind: 'error' });
   }
@@ -546,15 +556,13 @@ export function toggleZoom() {
   focusPane(app.focused);
 }
 
-/** Leader w: the next agent waiting for you, by waiting time (attention ladder level 1). */
+/** Leader w: the next agent that needs you, longest waiting first (attention ladder level 1). */
 export function nextWaiting() {
-  const waiting = agents()
-    .filter((a) => a.state === 'waiting_for_you' || a.trust_dialog)
-    .sort((x, y) => (x.last_event_at_ms ?? 0) - (y.last_event_at_ms ?? 0));
+  const waiting = needsYou();
   if (!waiting.length) return toast('No agent is waiting for you');
   const cur = contextAgent()?.id;
-  const i = waiting.findIndex((a) => a.id === cur);
-  openAgent(waiting[(i + 1) % waiting.length].id);
+  const i = waiting.findIndex((r) => r.agent === cur);
+  openAgent(waiting[(i + 1) % waiting.length].agent);
 }
 
 // ---------------------------------------------------------------- agent actions
@@ -622,14 +630,14 @@ export function openInKitty(cwd) {
   invoke('open_in_kitty', { cwd }).catch((e) => toast(errText(e), { kind: 'error' }));
 }
 
-/** Run a queued turn now, after the user confirms its cost in both windows (FR-809). */
-export function runNow(a, notStarted) {
+/** Run a queued turn now (`fresh`: start a not-started agent), after the user confirms its cost in both windows (FR-809). */
+export function runNow(a, fresh) {
   const cost = runCost(a.queue_entry, true);
   confirm(
-    `${notStarted ? 'Start' : 'Run'} ${a.id} now?`,
+    `${fresh ? 'Start' : 'Run'} ${a.id} now?`,
     `≈ ${cost}. It runs above the live cap for one turn and is logged as your override.`,
     () => governor('run_now', a.queue_entry.id),
-    notStarted ? 'Start now' : 'Run now',
+    fresh ? 'Start now' : 'Run now',
   );
 }
 
@@ -770,10 +778,10 @@ export async function restoreLayout() {
   if (!app.data?.setup?.done) openSingleton('setup');
 }
 
-// ---------------------------------------------------------------- polling
+// ---------------------------------------------------------------- app_state
 
 /**
- * The poll's payload, replaced whole every second and never edited: a class
+ * `app_state`'s payload, replaced whole on each read and never edited: a class
  * instance is not turned into a deep reactive proxy, so Svelte only tracks
  * `app.data` itself instead of wrapping the whole tree each time.
  */
@@ -785,13 +793,13 @@ class Snapshot {
 
 let refreshing = null;
 
-/** One poll at a time: a call made while one is in flight waits for that one. */
+/** One read at a time: a call made while one is in flight waits for that one. */
 export function refresh() {
-  refreshing ??= poll().finally(() => (refreshing = null));
+  refreshing ??= readState().finally(() => (refreshing = null));
   return refreshing;
 }
 
-async function poll() {
+async function readState() {
   try {
     const data = await invoke('app_state');
     data.features ??= app.data?.features ?? null;
@@ -832,6 +840,11 @@ export function commands() {
     { id: 'project.add', label: 'Add project…', run: () => (app.overlay = { kind: 'add-project' }) },
     { id: 'overview', label: 'Open Overview', run: () => openSingleton('overview') },
     { id: 'inbox', label: 'Open Inbox', run: () => openSingleton('inbox') },
+    {
+      id: 'inbox.clear-digest',
+      label: "Clear today's digest",
+      run: () => clearDigest().catch((e) => toast(errText(e), { kind: 'error' })),
+    },
     { id: 'planner', label: 'Open Week planner', run: () => openSingleton('planner') },
     { id: 'setup', label: 'Set up Orchestrator (first run)…', run: () => openSingleton('setup') },
     { id: 'settings', label: 'Settings', run: () => openSettings() },
@@ -1066,9 +1079,16 @@ export function jumpTargets() {
       run: () => openFeature(f.id),
     });
   }
-  for (const a of agents()) {
+  // Agents that need you first, longest waiting first; then the rest as listed.
+  const first = new Map(needsYou().map((r, i) => [r.agent, i]));
+  const rank = (a) => first.get(a.id) ?? first.size;
+  for (const a of [...agents()].sort((x, y) => rank(x) - rank(y))) {
     const p = projects().find((x) => x.id === a.project_id);
-    out.push({ label: `${p?.name ?? ''} › ${a.id}`, detail: displayState(a), run: () => openAgent(a.id) });
+    out.push({
+      label: `${p?.name ?? ''} › ${a.id}`,
+      detail: STATUS[statusOf(a.id)].label,
+      run: () => openAgent(a.id),
+    });
   }
   for (const [id, s] of Object.entries(app.panes))
     out.push({ label: `pane: ${s.title}`, detail: s.type, run: () => focusPane(id) });
@@ -1078,13 +1098,13 @@ export function jumpTargets() {
 // ---------------------------------------------------------------- inbox decisions
 
 /** Records a decision; it reaches the core when its 5 s undo window ends (FR-707 `u`).
- *  Its toast says what will be sent; the effect is said once the core answers. */
-export function decide(item, action, message = null) {
-  if (app.pending.some((p) => p.item === item.id)) return;
-  const t = toast(pendingToast(item, action), { ms: UNDO_MS, undo: true, item: item.id });
+ *  Its toast says what will be sent; the effect is said when the core pushes it. */
+export function decide(d, action, message = null) {
+  if (app.pending.some((p) => p.item === d.id)) return;
+  const t = toast(pendingToast(d, action), { ms: UNDO_MS, undo: true, item: d.id });
   app.pending = [
     ...app.pending,
-    { item: item.id, card: item, action, message, at: Date.now(), toast: t, project: item.payload?.project ?? null },
+    { item: d.id, action, message, at: Date.now(), toast: t, project: d.subject?.project ?? null },
   ];
 }
 
@@ -1105,39 +1125,80 @@ export function undoItem(itemId) {
   dismissToast(p.toast);
 }
 
+// What this window sent, by decision id, until its effect is pushed: the
+// effect's toast names the action ("Always allowed · <rule>", "reason sent").
+const mine = new Map();
+
 /** Sends the decisions whose undo window is over. Called by the app's clock,
  *  which may tick again while a slow act (a restart, a kill) is in flight: the
  *  batch is marked sent at once so no tick sends it twice, and its cards stay
- *  hidden until the core answered and the state was read again. */
+ *  hidden until the core answered with their lifecycle. No toast here: the
+ *  effect comes with the `now` push (notes §4), never before `sent`. */
 export async function flushDecisions(now = Date.now()) {
   const batch = due(app.pending, now);
   if (!batch.length) return;
-  for (const p of batch) p.sent = true;
+  for (const p of batch) {
+    p.sent = true;
+    mine.set(p.item, { action: p.action, message: p.message });
+  }
+  // The decision as sent: an answer with no version is newer only than that card.
+  const sent = batch.map((p) => app.now.decisions[p.item]);
   const acts = await Promise.allSettled(
     batch.map((p) => invoke('inbox_act', { item: p.item, action: p.action, message: p.message })),
   );
   batch.forEach((p, i) => {
     const r = acts[i];
-    if (r.status === 'rejected') toast(errText(r.reason), { kind: 'error' });
-    else if (!routeOpen(r.value, p.project)) toast(effectToast(p.card, p.action, r.value?.effect, p.message));
+    if (r.status === 'rejected') {
+      mine.delete(p.item);
+      toast(errText(r.reason), { kind: 'error' });
+      return;
+    }
+    // The answer's lifecycle counts as a push unless older than what we hold: a
+    // synchronous effect (Allow once on a held hook, Dismiss, Delete) toasts now.
+    // A versionless answer (synthesized cards; until inbox_act returns pushed
+    // versions) only holds while no push replaced the card during the await.
+    const d = app.now.decisions[p.item];
+    const pushedMeanwhile = d !== sent[i];
+    let lc = r.value?.lifecycle;
+    if (lc && !lc.version) lc = pushedMeanwhile ? null : { ...lc, version: version(d) };
+    if (d && lc && !older(lc, d)) {
+      const next = { ...d, lifecycle: lc };
+      app.now.decisions[p.item] = next;
+      decisionPushed(d, next);
+    }
+    routeOpen(r.value, p.project);
   });
-  // A poll in flight read the state before these acts: read it again after it.
-  await refreshing;
-  await refresh();
   app.pending = app.pending.filter((x) => !batch.includes(x));
 }
 
-/** An `inbox_outcome` event (api-contract §3): a toast when someone else
- *  decided (the pane, a rule, the hold's expiry), and the card goes, with a
- *  decision of ours still in its undo window (it would only fail). A parked
- *  item stays open: a pending answer to it still applies. */
-export function onOutcome(outcome) {
-  const item = app.data?.inbox?.items?.find((i) => i.id === outcome?.item);
-  const text = outcomeToast(item, outcome);
-  if (text) toast(text);
-  if (outcome?.effect !== 'parked') undoItem(outcome?.item);
-  // The user's own decisions: flushDecisions reads the state again already.
-  if (outcome?.decided_by !== 'user') refresh();
+// Lifecycle states after which a decision is no longer waiting on its answer.
+const SETTLED = new Set(['effect', 'failed', 'dismissed', 'stale', 'interrupted']);
+
+/**
+ * A decision's lifecycle push (`now.decisions`): the effect's toast (notes §4),
+ * once, when the state moves to effect, dismissed, failed or parked. A decision taken
+ * elsewhere (the pane, a rule, the hold's expiry) drops ours still in its undo
+ * window; a parked one stays open, so a pending answer to it still applies.
+ */
+export function decisionPushed(prev, d) {
+  const state = d.lifecycle?.state;
+  if (state === prev?.lifecycle?.state) return;
+  if (!isOpen(d)) undoItem(d.id);
+  const text = decisionToast(d, mine.get(d.id));
+  if (SETTLED.has(state)) mine.delete(d.id);
+  if (!text) return;
+  if (state === 'failed')
+    toast(text, { kind: 'error', sticky: true, action: { label: 'Open', run: () => openInbox(d.id) } });
+  else if (d.lifecycle.effect === 'pr_opened' && d.lifecycle.effect_detail)
+    toast(text, { action: { label: 'Open PR', run: () => openUrl(d.lifecycle.effect_detail) } });
+  else toast(text);
+}
+
+/** A decision left the open list (its final upsert came first, T-35): ours
+ *  still in its undo window would only fail, and what we sent is forgotten. */
+export function decisionGone(id) {
+  undoItem(id);
+  mine.delete(id);
 }
 
 /** FR-415: the agent again as a fresh session with its brief (agent menu). */

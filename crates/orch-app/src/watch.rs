@@ -43,14 +43,15 @@ impl MemoryWatch {
         self.view.lock_ok().clone()
     }
 
-    /// Records one reading; returns the log line and whether the alert just started.
+    /// Records one reading; returns the log line, whether the alert just
+    /// started, and whether it started or ended.
     pub fn record(
         &self,
         at_ms: u64,
         core_mb: f64,
         helpers: &[(String, f64)],
         warn_mb: f64,
-    ) -> (serde_json::Value, bool) {
+    ) -> (serde_json::Value, bool, bool) {
         let mut v = self.view.lock_ok();
         let was = v.alert.is_some();
         v.warn_mb = warn_mb;
@@ -61,7 +62,8 @@ impl MemoryWatch {
             .reduce(|a, b| format!("{a}, {b}"));
         let h: serde_json::Map<String, serde_json::Value> =
             helpers.iter().map(|(n, mb)| (short(n).to_string(), json!(round(*mb)))).collect();
-        (json!({"ts_ms": at_ms, "core_mb": round(core_mb), "helpers": h, "alert": v.alert}), !was && v.alert.is_some())
+        let now = v.alert.is_some();
+        (json!({"ts_ms": at_ms, "core_mb": round(core_mb), "helpers": h, "alert": v.alert}), !was && now, was != now)
     }
 }
 
@@ -86,7 +88,8 @@ fn append(log: &Path, line: &serde_json::Value) {
 }
 
 /// The watch thread: a reading now (once WebKit has started) and every minute.
-pub fn start(watch: Arc<MemoryWatch>, log_dir: PathBuf, stop: Arc<AtomicBool>) {
+/// `changed` is called when the alert starts or ends (the `memory` topic).
+pub fn start(watch: Arc<MemoryWatch>, log_dir: PathBuf, stop: Arc<AtomicBool>, changed: impl Fn() + Send + 'static) {
     let _ = std::fs::create_dir_all(&log_dir);
     let log = log_dir.join("memory.log");
     watch.view.lock_ok().log = log.clone();
@@ -96,8 +99,11 @@ pub fn start(watch: Arc<MemoryWatch>, log_dir: PathBuf, stop: Arc<AtomicBool>) {
             if std::time::Instant::now() >= next {
                 let core = agent_runtime::procs::footprint_mb(std::process::id() as i32).unwrap_or(0.0);
                 let warn = warn_mb();
-                let (line, started) = watch.record(orch_protocol::now_ms(), core, &memory::webkit_now(), warn);
+                let (line, started, flipped) = watch.record(orch_protocol::now_ms(), core, &memory::webkit_now(), warn);
                 append(&log, &line);
+                if flipped {
+                    changed();
+                }
                 if started {
                     let alert = line["alert"].as_str().unwrap_or("");
                     eprintln!("orchestrator: memory watch: {alert} above {warn} MB (see {})", log.display());
@@ -118,15 +124,15 @@ mod tests {
         let w = MemoryWatch::default();
         let wc = "com.apple.WebKit.WebContent".to_string();
         let gpu = "com.apple.WebKit.GPU".to_string();
-        let (line, started) = w.record(1, 30.0, &[(wc.clone(), 120.0), (gpu.clone(), 80.0)], 600.0);
+        let (line, started, _) = w.record(1, 30.0, &[(wc.clone(), 120.0), (gpu.clone(), 80.0)], 600.0);
         assert_eq!(line["helpers"]["WebContent"], 120.0);
         assert!(!started && w.view().alert.is_none());
-        let (_, started) = w.record(2, 30.0, &[(wc.clone(), 2800.0), (gpu.clone(), 90.0)], 600.0);
+        let (_, started, _) = w.record(2, 30.0, &[(wc.clone(), 2800.0), (gpu.clone(), 90.0)], 600.0);
         assert!(started);
         assert_eq!(w.view().alert.as_deref(), Some("WebContent 2800 MB"));
-        let (_, started) = w.record(3, 30.0, &[(wc.clone(), 2900.0), (gpu.clone(), 90.0)], 600.0);
-        assert!(!started, "reported once");
-        w.record(4, 30.0, &[(wc, 130.0), (gpu, 85.0)], 600.0);
+        let (_, started, flipped) = w.record(3, 30.0, &[(wc.clone(), 2900.0), (gpu.clone(), 90.0)], 600.0);
+        assert!(!started && !flipped, "reported once");
+        assert!(w.record(4, 30.0, &[(wc, 130.0), (gpu, 85.0)], 600.0).2, "ended");
         assert!(w.view().alert.is_none(), "cleared once back under");
     }
 

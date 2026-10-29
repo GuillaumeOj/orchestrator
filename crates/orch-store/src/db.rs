@@ -87,6 +87,10 @@ struct Inner {
     tx: Mutex<Option<SyncSender<Job>>>,
     reader: Mutex<Connection>,
     writer: Mutex<Option<JoinHandle<()>>>,
+    /// Bumped by every write to the team tables ([`Store::touch`]).
+    changes: std::sync::atomic::AtomicU64,
+    /// What changed since the last [`Store::take_topics`] (P4.1 `now` topics).
+    topics: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl Drop for Inner {
@@ -142,6 +146,8 @@ impl Store {
                 tx: Mutex::new(Some(tx)),
                 reader: Mutex::new(reader),
                 writer: Mutex::new(Some(writer)),
+                changes: Default::default(),
+                topics: Default::default(),
             }),
         })
     }
@@ -203,6 +209,41 @@ impl Store {
     /// Waits until every write queued before this call is committed.
     pub fn flush(&self) -> Result<()> {
         self.write(|_| Ok(()))
+    }
+
+    /// [`Store::write`], then [`Store::touch`] with `topics` once committed:
+    /// every write to the team tables goes through here.
+    pub fn write_touching<R, F, S>(&self, topics: impl IntoIterator<Item = S>, f: F) -> Result<R>
+    where
+        R: Send + 'static,
+        F: FnOnce(&Tx) -> Result<R> + Send + 'static,
+        S: Into<String>,
+    {
+        let r = self.write(f)?;
+        self.touch(topics);
+        Ok(r)
+    }
+
+    /// Notes a change of the team data (runs, tasks, features, messages)
+    /// with the `now` topics it invalidates.
+    pub fn touch<S: Into<String>>(&self, topics: impl IntoIterator<Item = S>) {
+        self.inner.changes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.note(topics);
+    }
+
+    /// Adds `now` topics without counting a team-data change (events, settings).
+    pub fn note<S: Into<String>>(&self, topics: impl IntoIterator<Item = S>) {
+        self.inner.topics.lock().unwrap_or_else(|e| e.into_inner()).extend(topics.into_iter().map(Into::into));
+    }
+
+    /// How many team-data changes so far: a reader re-reads when it moved.
+    pub fn changes(&self) -> u64 {
+        self.inner.changes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The topics noted since the last call.
+    pub fn take_topics(&self) -> std::collections::BTreeSet<String> {
+        std::mem::take(&mut *self.inner.topics.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Runs `f` on the reader connection (sees every committed write).

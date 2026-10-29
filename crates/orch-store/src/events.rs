@@ -5,11 +5,14 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::db::Store;
+
+/// An event with its team run, if any.
+pub type RunEvent = (Event, Option<String>);
 
 /// `SELECT id, ts_ms, agent_id, kind, detail` → [`Event`].
 fn row_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
@@ -96,6 +99,9 @@ impl Store {
     fn add_event_in(&self, run_id: Option<&str>, ts_ms: u64, agent_id: Option<&str>, kind: &str, detail: Value) {
         let run_id = run_id.map(str::to_string);
         let agent_id = agent_id.map(str::to_string);
+        if run_id.is_some() {
+            self.note([orch_protocol::Topic::Report]);
+        }
         let kind = kind.to_string();
         let blob_dir = self.blob_dir();
         self.write_detached(move |tx| {
@@ -136,6 +142,37 @@ impl Store {
         })
     }
 
+    /// Events of these exact kinds since `since_ms` with an id above
+    /// `after`, oldest first, each with its team run (the outcome digest),
+    /// and the last event id written: the next read starts there, so rows of
+    /// other kinds are never scanned twice. The day's first read starts at
+    /// its first event (the `events_ts` index), not at the table's start.
+    pub fn events_of_kinds(&self, since_ms: u64, after: u64, kinds: &[&str]) -> Result<(Vec<RunEvent>, u64)> {
+        let kinds: Vec<String> = kinds.iter().map(|k| k.to_string()).collect();
+        self.read(move |c| {
+            let last: i64 = c.query_row("SELECT coalesce(max(id), 0) FROM events", [], |r| r.get(0))?;
+            let first: i64 =
+                c.query_row("SELECT coalesce(min(id), 0) FROM events WHERE ts_ms >= ?1", [since_ms as i64], |r| {
+                    r.get(0)
+                })?;
+            let from = (after as i64).max(first - 1);
+            let marks = vec!["?"; kinds.len()].join(",");
+            let sql = format!(
+                "SELECT id, ts_ms, agent_id, kind, detail, team_run_id FROM events
+                 WHERE id > ? AND id <= ? AND ts_ms >= ? AND kind IN ({marks}) ORDER BY id"
+            );
+            let args = [from, last, since_ms as i64]
+                .into_iter()
+                .map(rusqlite::types::Value::Integer)
+                .chain(kinds.into_iter().map(rusqlite::types::Value::Text));
+            let mut st = c.prepare(&sql)?;
+            let rows = st
+                .query_map(rusqlite::params_from_iter(args), |r| Ok((row_event(r)?, r.get(5)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok((rows, (last as u64).max(after)))
+        })
+    }
+
     /// A team run's timeline (FR-408), newest first.
     pub fn run_events(&self, run_id: &str, limit: usize) -> Result<Vec<Event>> {
         let run = run_id.to_string();
@@ -145,6 +182,20 @@ impl Store {
                  ORDER BY ts_ms DESC, id DESC LIMIT ?2",
             )?;
             Ok(st.query_map(params![run, limit as i64], row_event)?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// A team run's latest event of `kind` (however many came after it).
+    pub fn last_run_event(&self, run_id: &str, kind: &str) -> Result<Option<Event>> {
+        let (run, kind) = (run_id.to_string(), kind.to_string());
+        self.read(move |c| {
+            Ok(c.query_row(
+                "SELECT id, ts_ms, agent_id, kind, detail FROM events WHERE team_run_id=?1 AND kind=?2
+                 ORDER BY ts_ms DESC, id DESC LIMIT 1",
+                params![run, kind],
+                row_event,
+            )
+            .optional()?)
         })
     }
 
@@ -271,5 +322,28 @@ mod tests {
         let log = s.audit_log(Some("a1"), 10).unwrap();
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].decision, "allow");
+    }
+
+    #[test]
+    fn events_of_kinds_and_the_last_event_of_a_kind() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(&d.path().join("orch.db")).unwrap();
+        let now = 100 * DAY_MS;
+        s.add_event(now - 3 * DAY_MS, None, "task.done", json!({}));
+        s.add_event(now - 1, None, "task.done", json!({}));
+        s.add_event(now, None, "git.merge", json!({}));
+        s.add_run_event(now - 2, "r1", None, "run.state", json!({"to": "spec"}));
+        s.add_run_event(now - 1, "r1", None, "run.state", json!({"to": "planning"}));
+        s.add_run_event(now, "r1", None, "message", json!({}));
+        s.flush().unwrap();
+        assert_eq!(s.last_run_event("r1", "run.state").unwrap().unwrap().detail["to"], "planning");
+        assert!(s.last_run_event("r2", "run.state").unwrap().is_none());
+        let (evs, last) = s.events_of_kinds(now - DAY_MS, 0, &["task.done", "run.state"]).unwrap();
+        assert_eq!(last, 6, "the last event read, of any kind");
+        let shape: Vec<(&str, Option<&str>)> = evs.iter().map(|(e, r)| (e.kind.as_str(), r.as_deref())).collect();
+        assert_eq!(shape, [("task.done", None), ("run.state", Some("r1")), ("run.state", Some("r1"))]);
+        let after = evs[1].0.id;
+        assert_eq!(s.events_of_kinds(now - DAY_MS, after, &["run.state"]).unwrap().0.len(), 1);
+        assert!(s.events_of_kinds(now - DAY_MS, last, &["run.state"]).unwrap().0.is_empty(), "nothing read twice");
     }
 }

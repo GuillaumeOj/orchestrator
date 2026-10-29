@@ -201,7 +201,9 @@ impl Store {
                     }
                     "pane_intervention" => {
                         rep.interventions.total += 1;
-                        bump(&mut rep.interventions.by_cause, &s("waited_on"));
+                        // P4.1: `cause` is the finer cause, `waited_on` the attention kind.
+                        let cause = d.get("cause").and_then(Value::as_str).map(str::to_string);
+                        bump(&mut rep.interventions.by_cause, &cause.unwrap_or_else(|| s("waited_on")));
                     }
                     "auto_suspend" if d["why"] == "memory_pressure" => rep.pressure_suspends += 1,
                     _ => {}

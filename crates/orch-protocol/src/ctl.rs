@@ -178,6 +178,8 @@ pub enum CtlRequest {
     State,
     Usage,
     Governor,
+    /// P4.1: the attention world (`now_snapshot`).
+    Now,
     /// Pull transport: everything buffered for this agent since the last read.
     Read {
         agent_id: String,

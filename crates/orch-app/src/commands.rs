@@ -45,6 +45,12 @@ pub async fn app_state(core: CoreState<'_>) -> Res<Value> {
     blocking(core, |c| Ok(c.state())).await
 }
 
+/// P4.1: the attention world, at the `now` event's last rev (api-contract §3.2).
+#[tauri::command]
+pub async fn now_snapshot(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, |c| Ok(c.runtime()?.now_snapshot())).await
+}
+
 #[tauri::command]
 pub fn kitty_config(core: CoreState) -> KittyImport {
     core.kitty.lock_ok().clone()
@@ -172,6 +178,39 @@ pub async fn open_in_kitty(core: CoreState<'_>, cwd: PathBuf) -> Res<()> {
 #[tauri::command]
 pub async fn restart_fresh(core: CoreState<'_>, agent: String) -> Res<Value> {
     blocking(core, move |c| c.restart_fresh(&agent)).await
+}
+
+/// A Diff pane opened on `path`: its `worktree:<path>` topic follows file
+/// changes (ref-counted; a registered project's worktree only).
+#[tauri::command]
+pub async fn watch_worktree(core: CoreState<'_>, path: String) -> Res<()> {
+    blocking(core, move |c| c.runtime()?.watch_worktree(std::path::Path::new(&path))).await
+}
+
+/// The Diff pane on `path` closed.
+#[tauri::command]
+pub async fn unwatch_worktree(core: CoreState<'_>, path: String) -> Res<()> {
+    blocking(core, move |c| {
+        c.runtime()?.unwatch_worktree(std::path::Path::new(&path));
+        Ok(())
+    })
+    .await
+}
+
+/// The PR gate's patch, whole or one file (api-contract §3.2).
+#[tauri::command]
+pub async fn decision_patch(core: CoreState<'_>, id: String, path: Option<String>) -> Res<String> {
+    blocking(core, move |c| {
+        let n: u64 = id.strip_prefix("gate-").unwrap_or(&id).parse()?;
+        c.runtime()?.decision_patch(n, path.as_deref())
+    })
+    .await
+}
+
+/// Today's outcomes up to `up_to` leave the digest (`done_today` keeps them).
+#[tauri::command]
+pub async fn digest_seen(core: CoreState<'_>, up_to: String) -> Res<()> {
+    blocking(core, move |c| c.runtime()?.digest_seen(&up_to)).await
 }
 
 #[tauri::command]

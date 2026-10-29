@@ -39,6 +39,7 @@ usage: orchd [--home DIR] <command> [args]
   report [--run <id>] [--since <iso>] [--until <iso>] [--json] [--baseline]
                                 the run report: prompts by tool and decider, pane interventions, waiting
   state | usage | governor      print JSON
+  now [--json] [--run <id>]     agents (level/status, reason, since), then runs (phase, level, blocker)
   stop                          shut the core down (suspends agents)
 
   projects                      registered projects with git status
@@ -252,6 +253,22 @@ fn run() -> Result<()> {
                 _ => CtlRequest::Governor,
             };
             print(request(&sock, req)?)
+        }
+        "now" => {
+            let json = a.flag("--json");
+            let run = a.opt("--run")?;
+            a.done()?;
+            let r = request(&sock, CtlRequest::Now)?;
+            if !r.ok {
+                return print(r);
+            }
+            let snap = agent_runtime::now::only_run(r.data, run.as_deref());
+            if json {
+                println!("{}", serde_json::to_string_pretty(&snap)?);
+            } else {
+                print!("{}", agent_runtime::now::render(&snap, orch_protocol::now_ms()));
+            }
+            Ok(())
         }
         "pause-all" | "resume-all" => {
             a.done()?;

@@ -2,16 +2,17 @@
 //! tells it when a member is stuck, and gives it `team_status`, `nudge` and
 //! `resume_agent` to act. Permission prompts stay the user's (ADR-009).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use anyhow::{Result, anyhow, bail};
 use orch_protocol::now_ms;
 
 use serde_json::{Value, json};
 
+use crate::attention::{Level, Status};
 use crate::runtime::Runtime;
 use crate::state::AgentState;
-use crate::store::{AgentRecord, TurnStatus};
+use crate::store::AgentRecord;
 use crate::team::{RunCtx, str_arg};
 
 /// A permission prompt nobody answered this long is worth the lead's note.
@@ -19,70 +20,59 @@ pub const WAITING_FOR_USER_MS: u64 = 3 * 60 * 1000;
 /// Work queued (or a task idle) this long.
 pub const STUCK_MS: u64 = 10 * 60 * 1000;
 
-/// One member's state as the lead sees it.
+/// One member's state as the lead sees it: its attention record (P4.1).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MemberStatus {
     pub agent: String,
     pub node: String,
     pub state: AgentState,
     pub task: Option<u64>,
-    /// Since when it is in this state (last hook event), ms.
+    pub level: Level,
+    pub status: Status,
+    /// The record's reason (what it waits on), may be empty.
+    pub reason: String,
+    /// Since when it is at this level and wait, ms.
     pub since_ms: u64,
-    /// Oldest queued turn, ms.
-    pub queued_since_ms: Option<u64>,
-    /// Why the Governor holds it, when it does.
-    pub queue_reason: Option<String>,
 }
 
 impl MemberStatus {
-    /// What is wrong, with the start of the episode (one note each).
+    /// What is wrong, with the start of the episode (one note each). A
+    /// member waiting on another agent or a task is waiting, not stuck.
     pub fn stuck(&self, now: u64) -> Option<(&'static str, u64, String)> {
-        let mins = |t: u64| now.saturating_sub(t) / 60_000;
+        let mins = crate::now::duration(now.saturating_sub(self.since_ms));
+        let waited = |ms: u64| now.saturating_sub(self.since_ms) >= ms;
         let who = &self.agent;
-        match self.state {
-            AgentState::WaitingForYou if now.saturating_sub(self.since_ms) >= WAITING_FOR_USER_MS => {
-                return Some((
-                    "waiting_for_user",
-                    self.since_ms,
-                    format!("{who} has waited {} min for the user to answer a permission prompt", mins(self.since_ms)),
-                ));
+        let why = if self.reason.is_empty() { String::new() } else { format!(" ({})", self.reason) };
+        let what = match self.level {
+            Level::NeedsYou if waited(WAITING_FOR_USER_MS) => {
+                ("waiting_for_user", format!("{who} has waited {mins} for the user{why}"))
             }
-            AgentState::Error => {
-                return Some(("error", self.since_ms, format!("{who} is in error; resume it or reassign its task")));
+            Level::Error => ("error", format!("{who} is in error{why}; resume it or reassign its task")),
+            // A pause is the user's choice, not a stuck member.
+            Level::Queued if self.status != Status::Paused && waited(STUCK_MS) => {
+                ("queued", format!("{who} has had work waiting for {mins}{why}"))
             }
-            AgentState::Idle
-                if self.task.is_some()
-                    && self.queued_since_ms.is_none()
-                    && now.saturating_sub(self.since_ms) >= STUCK_MS =>
-            {
-                return Some((
-                    "idle_with_task",
-                    self.since_ms,
-                    format!(
-                        "{who} has been idle for {} min with task T-{} not reported done",
-                        mins(self.since_ms),
-                        self.task.unwrap_or_default()
-                    ),
-                ));
-            }
-            // A long turn with work behind it is busy, not stuck (the
-            // watchdog watches long turns).
-            AgentState::Working => return None,
-            _ => {}
-        }
-        let q = self.queued_since_ms.filter(|t| now.saturating_sub(*t) >= STUCK_MS)?;
-        let why = self.queue_reason.as_deref().map(|r| format!(" ({r})")).unwrap_or_default();
-        Some(("queued", q, format!("{who} has had work waiting for {} min{why}", mins(q))))
+            Level::Idle if self.task.is_some() && waited(STUCK_MS) => (
+                "idle_with_task",
+                format!(
+                    "{who} has been idle for {mins} with task T-{} not reported done",
+                    self.task.unwrap_or_default()
+                ),
+            ),
+            _ => return None,
+        };
+        Some((what.0, self.since_ms, what.1))
     }
 
     fn line(&self, now: u64) -> String {
         let task = self.task.map(|t| format!(" · T-{t}")).unwrap_or_default();
-        let queued = match (self.queued_since_ms, &self.queue_reason) {
-            (Some(t), Some(r)) => format!(" · queued {} min: {r}", now.saturating_sub(t) / 60_000),
-            (Some(t), None) => format!(" · work queued {} min", now.saturating_sub(t) / 60_000),
-            _ => String::new(),
+        let label = self.status.label();
+        let reason = if self.reason.is_empty() {
+            String::new()
+        } else {
+            format!(" · {} · {}", self.reason, crate::now::duration(now.saturating_sub(self.since_ms)))
         };
-        format!("- {} (`{}`): {}{task}{queued}", self.agent, self.node, self.state.label())
+        format!("- {} (`{}`): {label}{reason}{task}", self.agent, self.node)
     }
 }
 
@@ -93,17 +83,7 @@ impl Runtime {
     }
 
     fn members_of(&self, cx: &RunCtx, agents: &[AgentRecord]) -> Vec<MemberStatus> {
-        let ids: BTreeSet<&str> = agents.iter().map(|a| a.id.as_str()).collect();
-        // Turns are kept in queue order: the first one seen is the oldest.
-        let queued: BTreeMap<String, u64> = self.store.read(|s| {
-            let mut m: BTreeMap<String, u64> = BTreeMap::new();
-            for t in s.turns.iter().filter(|t| t.status == TurnStatus::Queued && ids.contains(t.agent_id.as_str())) {
-                m.entry(t.agent_id.clone()).or_insert(t.created_at_ms);
-            }
-            m
-        });
-        let reasons: BTreeMap<String, String> =
-            self.with_governor(|g| g.queue().iter().map(|e| (e.agent.0.clone(), e.reason.to_string())).collect());
+        self.now_pump(false);
         agents
             .iter()
             .filter_map(|a| {
@@ -111,14 +91,16 @@ impl Runtime {
                 if cx.team.is_lead(&seat.node) {
                     return None;
                 }
+                let r = self.attention_of(&a.id)?;
                 Some(MemberStatus {
                     agent: a.id.clone(),
                     node: seat.node.clone(),
                     state: a.tracker.state,
                     task: seat.task,
-                    since_ms: a.last_event_at_ms.unwrap_or(a.created_at_ms),
-                    queued_since_ms: queued.get(&a.id).copied(),
-                    queue_reason: reasons.get(&a.id).cloned(),
+                    level: r.level,
+                    status: r.status,
+                    reason: r.reason,
+                    since_ms: r.waiting_on.map(|w| w.since_ms).unwrap_or(r.since_ms),
                 })
             })
             .collect()
@@ -169,7 +151,10 @@ impl Runtime {
                 let lines: Vec<String> = ms.iter().map(|m| m.line(now)).collect();
                 let data: Vec<Value> = ms
                     .iter()
-                    .map(|m| json!({"agent": m.agent, "node": m.node, "state": m.state, "task": m.task, "queue_reason": m.queue_reason}))
+                    .map(|m| {
+                        json!({"agent": m.agent, "node": m.node, "state": m.state, "task": m.task,
+                        "queue_reason": (m.level == Level::Queued).then_some(&m.reason), "reason": m.reason})
+                    })
                     .collect();
                 Ok((lines.join("\n"), json!(data)))
             }
@@ -218,33 +203,39 @@ impl Runtime {
 mod tests {
     use super::*;
 
-    fn m(state: AgentState) -> MemberStatus {
+    fn m(level: Level) -> MemberStatus {
         MemberStatus {
             agent: "f-back-1".into(),
             node: "back".into(),
-            state,
+            state: AgentState::Idle,
             task: Some(2),
+            level,
+            status: Status::Idle,
+            reason: String::new(),
             since_ms: 0,
-            queued_since_ms: None,
-            queue_reason: None,
         }
     }
 
     #[test]
     fn what_counts_as_stuck() {
         let now = 60 * 60_000;
-        assert!(m(AgentState::Working).stuck(now).is_none());
-        assert_eq!(m(AgentState::WaitingForYou).stuck(now).unwrap().0, "waiting_for_user");
-        assert!(m(AgentState::WaitingForYou).stuck(WAITING_FOR_USER_MS - 1).is_none());
-        assert_eq!(m(AgentState::Idle).stuck(now).unwrap().0, "idle_with_task");
-        let queued = MemberStatus {
-            queued_since_ms: Some(0),
-            queue_reason: Some("memory pressure".into()),
-            ..m(AgentState::Suspended)
-        };
+        assert!(m(Level::Running).stuck(now).is_none());
+        let (what, _, line) =
+            MemberStatus { reason: "permission: Bash ls".into(), ..m(Level::NeedsYou) }.stuck(now).unwrap();
+        assert_eq!(
+            (what, line.as_str()),
+            ("waiting_for_user", "f-back-1 has waited 1 h 00 min for the user (permission: Bash ls)")
+        );
+        assert!(m(Level::NeedsYou).stuck(WAITING_FOR_USER_MS - 1).is_none());
+        assert_eq!(m(Level::Idle).stuck(now).unwrap().0, "idle_with_task");
+        assert_eq!(m(Level::Error).stuck(0).unwrap().0, "error");
+        let queued = MemberStatus { reason: "memory pressure · live cap 2/2".into(), ..m(Level::Queued) };
         let (what, since, line) = queued.stuck(now).unwrap();
         assert_eq!((what, since), ("queued", 0));
         assert!(line.contains("memory pressure"));
-        assert!(MemberStatus { task: None, ..m(AgentState::Idle) }.stuck(now).is_none());
+        assert!(MemberStatus { task: None, ..m(Level::Idle) }.stuck(now).is_none());
+        // Waiting on another agent or a task is not stuck.
+        assert!(m(Level::Waiting).stuck(now).is_none());
+        assert!(MemberStatus { status: Status::Paused, ..m(Level::Queued) }.stuck(now).is_none(), "paused by the user");
     }
 }

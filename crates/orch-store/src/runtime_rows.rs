@@ -94,12 +94,16 @@ pub fn upsert_worktree(tx: &Tx, w: &WorktreeRow) -> rusqlite::Result<usize> {
 
 pub(crate) fn upsert_inbox(tx: &Tx, i: &InboxItem) -> rusqlite::Result<usize> {
     tx.execute(
-        "INSERT INTO inbox_items(id, kind, agent_id, project_id, body, payload, priority, status, stale, created_at_ms, decided_at_ms, decision, decided_by)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+        "INSERT INTO inbox_items(id, kind, agent_id, project_id, body, payload, priority, status, stale, created_at_ms, decided_at_ms, decision, decided_by,
+           subject, thread, sent_at_ms, effect, effect_detail, effect_at_ms, error, stale_why, version)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
          ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, agent_id=excluded.agent_id, project_id=excluded.project_id,
            body=excluded.body, payload=excluded.payload, priority=excluded.priority, status=excluded.status,
            stale=excluded.stale, created_at_ms=excluded.created_at_ms, decided_at_ms=excluded.decided_at_ms,
-           decision=excluded.decision, decided_by=excluded.decided_by",
+           decision=excluded.decision, decided_by=excluded.decided_by, subject=excluded.subject, thread=excluded.thread,
+           sent_at_ms=excluded.sent_at_ms, effect=excluded.effect, effect_detail=excluded.effect_detail,
+           effect_at_ms=excluded.effect_at_ms, error=excluded.error, stale_why=excluded.stale_why,
+           version=excluded.version",
         params![
             i.id as i64,
             i.kind,
@@ -113,7 +117,16 @@ pub(crate) fn upsert_inbox(tx: &Tx, i: &InboxItem) -> rusqlite::Result<usize> {
             i.created_at_ms as i64,
             i.decided_at_ms.map(|v| v as i64),
             i.decision,
-            i.decided_by
+            i.decided_by,
+            (!i.subject.is_null()).then(|| js(&i.subject)),
+            i.thread,
+            i.sent_at_ms.map(|v| v as i64),
+            i.effect,
+            i.effect_detail,
+            i.effect_at_ms.map(|v| v as i64),
+            i.error,
+            i.stale_why,
+            i.version as i64
         ],
     )
 }
@@ -145,11 +158,20 @@ pub(crate) fn row_inbox(r: &rusqlite::Row) -> rusqlite::Result<InboxItem> {
         decided_at_ms: opt_u64(r, 10)?,
         decision: r.get(11)?,
         decided_by: r.get(12)?,
+        subject: r.get::<_, Option<String>>(13)?.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null),
+        thread: r.get(14)?,
+        sent_at_ms: opt_u64(r, 15)?,
+        effect: r.get(16)?,
+        effect_detail: r.get(17)?,
+        effect_at_ms: opt_u64(r, 18)?,
+        error: r.get(19)?,
+        stale_why: r.get(20)?,
+        version: r.get::<_, i64>(21)? as u64,
     })
 }
 
 pub(crate) const WORKTREE_COLS: &str = "path, repo, branch, base, agent_id, state, created_at_ms";
-pub(crate) const INBOX_COLS: &str = "id, kind, agent_id, project_id, body, payload, priority, status, stale, created_at_ms, decided_at_ms, decision, decided_by";
+pub(crate) const INBOX_COLS: &str = "id, kind, agent_id, project_id, body, payload, priority, status, stale, created_at_ms, decided_at_ms, decision, decided_by, subject, thread, sent_at_ms, effect, effect_detail, effect_at_ms, error, stale_why, version";
 
 fn load(c: &Connection) -> Result<RuntimeRows> {
     let parse = |s: String| serde_json::from_str::<Value>(&s).unwrap_or(Value::Null);

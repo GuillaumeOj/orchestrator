@@ -484,10 +484,65 @@ fn typing_into_a_waiting_pane_is_one_intervention_and_focus_is_none() {
     core.rt.pane_input("a", b"y").unwrap();
     let ev = events();
     assert_eq!(ev.len(), 1, "one per wait episode");
-    assert_eq!(ev[0].detail["waited_on"], "permission");
+    assert_eq!(
+        (ev[0].detail["waited_on"].as_str(), ev[0].detail["cause"].as_str()),
+        (Some("user"), Some("permission"))
+    );
     let item = core.rt.inbox().into_iter().find(|i| i.kind == "permission").unwrap();
     assert_eq!(ev[0].detail["item"], item.id);
     core.rt.decide(item.id, orch_protocol::InboxDecision::Approve, None, None).unwrap();
+}
+
+/// P4.1: a permission prompt moves the agent's record to needs_you, the
+/// answer back to running, one `now` event each, with a gapless rev.
+#[test]
+fn a_permission_prompt_goes_needs_you_then_running_one_now_event_each() {
+    let core = Core::start("orchnow", |c| c.permission_hold = Duration::from_secs(30));
+    core.start_agent("a");
+    let got: Arc<std::sync::Mutex<Vec<serde_json::Value>>> = Default::default();
+    {
+        let g = got.clone();
+        core.rt.subscribe_now(Arc::new(move |v| g.lock().unwrap().push(v.clone())));
+    }
+    // A record of `a` in an event: (rev, level, status).
+    let mine = || {
+        got.lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| {
+                let r = e["attention"]["agents"].as_array()?.iter().find(|r| r["agent"] == "a")?.clone();
+                Some((e["rev"].as_u64().unwrap(), r))
+            })
+            .collect::<Vec<_>>()
+    };
+    let level_is = |l: &str| mine().last().is_some_and(|(_, r)| r["level"] == l);
+    // SLOW keeps the turn running after the answer (the fake sleeps 30 s).
+    request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "PERMIT pnpm add zod SLOW".into() }).unwrap();
+    wait_for("needs you", 15, || level_is("needs_you"));
+    let item = core.rt.inbox().into_iter().find(|i| i.kind == "permission").unwrap();
+    let (_, rec) = mine().into_iter().find(|(_, r)| r["level"] == "needs_you").unwrap();
+    assert_eq!(rec["status"], "waiting_for_you");
+    assert_eq!(rec["waiting_on"]["kind"], "user");
+    assert_eq!(rec["waiting_on"]["ref"], format!("inbox-{}", item.id));
+    assert_eq!(rec["reason"], "permission: Bash pnpm add zod SLOW");
+    assert_eq!(rec["waiting_on"]["since_ms"], item.created_at_ms);
+    core.rt.decide(item.id, orch_protocol::InboxDecision::Approve, None, None).unwrap();
+    wait_for("running", 15, || level_is("running"));
+    std::thread::sleep(Duration::from_millis(600));
+    let levels: Vec<String> = mine().iter().map(|(_, r)| r["level"].as_str().unwrap().to_string()).collect();
+    let at = levels.iter().position(|l| l == "needs_you").unwrap();
+    assert_eq!(levels[at..], ["needs_you", "running"], "one event each: {levels:?}");
+    assert!(levels[..at].iter().all(|l| l == "running" || l == "idle"), "{levels:?}");
+    // Every event's rev is the previous one + 1.
+    let revs: Vec<u64> = got.lock().unwrap().iter().map(|e| e["rev"].as_u64().unwrap()).collect();
+    assert!(revs.windows(2).all(|w| w[1] == w[0] + 1), "{revs:?}");
+    // The snapshot agrees with the last event.
+    let snap = request(&core.sock, CtlRequest::Now).unwrap().data;
+    assert_eq!(snap["rev"], *revs.last().unwrap());
+    let a = snap["agents"].as_array().unwrap().iter().find(|r| r["agent"] == "a").unwrap().clone();
+    assert_eq!(a["level"], "running");
+    assert_eq!(snap["counts"]["global"]["needs_you"], 0);
+    let _ = core.rt.interrupt("a");
 }
 
 /// J3 end to end with the fake claude: launch, the lead starts when the

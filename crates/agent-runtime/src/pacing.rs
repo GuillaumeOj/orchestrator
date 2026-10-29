@@ -226,13 +226,18 @@ impl Runtime {
             let first = self.house().battery_alerted.as_deref() != Some(night.as_str());
             if first {
                 let body = "Not on AC power\nOff-hours work won't run while the Mac sleeps. Plug it in to keep it awake for the queued work.".to_string();
-                if self.store.write(|s| s.add_inbox(None, "alert", body)).is_ok() {
+                let payload = json!({"alert": "on_battery", "on_battery": true, "queued": pending});
+                if self.add_item(None, "alert", body, payload, 0).is_ok() {
                     self.house().battery_alerted = Some(night);
                 }
             }
         }
-        let mut h = self.house();
-        h.power = PowerState { on_ac, assertion_held: self.cfg.power.held(), off_hours_pending: pending };
+        let power = PowerState { on_ac, assertion_held: self.cfg.power.held(), off_hours_pending: pending };
+        let changed = std::mem::replace(&mut self.house().power, power.clone()) != power;
+        if changed {
+            self.touch(orch_protocol::Topic::Power);
+            self.touch(orch_protocol::Topic::Banners);
+        }
     }
 
     /// `app_state.power`, and the `not_on_ac` banner while off-hours work waits on battery.
@@ -281,7 +286,7 @@ mod tests {
     /// switches to sonnet at its next task and runs.
     #[test]
     fn a_tight_opus_window_queues_opus_and_downgrades_at_the_next_task() {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
         let rule = Downgrade { to: "sonnet".into(), when: DowngradeWhen::ModelWindow };
         agent(&rt, d.path(), "a1", "opus", None);
@@ -324,7 +329,7 @@ mod tests {
     /// on battery (banner, one alert) and once nothing waits.
     #[test]
     fn off_hours_work_waits_and_holds_the_power_assertion_on_ac() {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let power = Arc::new(FakePower::default());
         let battery = Arc::new(Battery::default());
         let mut cfg = test_cfg(d.path(), false);

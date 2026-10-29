@@ -138,7 +138,7 @@ mod tests {
     use std::os::unix::net::UnixListener;
 
     fn short_dir() -> tempfile::TempDir {
-        tempfile::Builder::new().prefix("oh").tempdir_in("/tmp").unwrap()
+        tempfile::Builder::new().prefix("oh").tempdir_in(orch_protocol::test_tmp()).unwrap()
     }
 
     fn env(dir: &Path, deadline_ms: u64) -> HookEnv {

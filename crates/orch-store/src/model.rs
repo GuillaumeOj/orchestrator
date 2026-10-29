@@ -93,9 +93,23 @@ pub enum InboxStatus {
     /// Still open: a permission whose hold expired; the agent's turn ended
     /// and it resumes on the answer (FR-705).
     Parked,
+    /// P4.1 lifecycle: the core delivered the answer (hook replied, turn
+    /// pasted or queued, push started); `effect` follows.
+    Sent,
+    /// What the answer did (`effect`, `effect_detail`).
+    Effect,
+    /// Acting on the answer failed (`error`).
+    Failed,
+    /// Its context moved on (`stale_why`).
+    Stale,
 }
 
 impl InboxStatus {
+    /// Failed or stale: only a dismissal closes it ([`InboxItem::ended`]).
+    pub fn ended(self) -> bool {
+        matches!(self, InboxStatus::Failed | InboxStatus::Stale)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             InboxStatus::Pending => "pending",
@@ -104,6 +118,10 @@ impl InboxStatus {
             InboxStatus::Interrupted => "interrupted",
             InboxStatus::Dismissed => "dismissed",
             InboxStatus::Parked => "parked",
+            InboxStatus::Sent => "sent",
+            InboxStatus::Effect => "effect",
+            InboxStatus::Failed => "failed",
+            InboxStatus::Stale => "stale",
         }
     }
 
@@ -114,6 +132,10 @@ impl InboxStatus {
             "interrupted" => InboxStatus::Interrupted,
             "dismissed" => InboxStatus::Dismissed,
             "parked" => InboxStatus::Parked,
+            "sent" => InboxStatus::Sent,
+            "effect" => InboxStatus::Effect,
+            "failed" => InboxStatus::Failed,
+            "stale" => InboxStatus::Stale,
             _ => InboxStatus::Pending,
         }
     }
@@ -149,6 +171,32 @@ pub struct InboxItem {
     /// Who closed it (FR-709): `user`, `pane`, `rule:<id>`, `expired`, `core`.
     #[serde(default)]
     pub decided_by: Option<String>,
+    /// P4.1 (migration 10): who and what it is about (`{agent, role, node,
+    /// project, feature, run, task}`); null on older rows.
+    #[serde(default)]
+    pub subject: serde_json::Value,
+    /// The run id, else the agent id (older rows: none, read as the agent).
+    #[serde(default)]
+    pub thread: Option<String>,
+    #[serde(default)]
+    pub sent_at_ms: Option<u64>,
+    /// `allowed`, `denied`, `delivered`, `resumed`, `queued`, `pr_opened`,
+    /// `restarted`, `dismissed`, `applied`, `skipped`, `deleted`.
+    #[serde(default)]
+    pub effect: Option<String>,
+    /// The ETA of `queued`, the URL of `pr_opened`.
+    #[serde(default)]
+    pub effect_detail: Option<String>,
+    #[serde(default)]
+    pub effect_at_ms: Option<u64>,
+    /// Why it failed.
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub stale_why: Option<String>,
+    /// +1 on every write of the row (migration 11): the newest push wins.
+    #[serde(default)]
+    pub version: u64,
 }
 
 impl InboxItem {
@@ -167,6 +215,15 @@ impl InboxItem {
             decided_at_ms: None,
             decision: None,
             decided_by: None,
+            subject: serde_json::Value::Null,
+            thread: None,
+            sent_at_ms: None,
+            effect: None,
+            effect_detail: None,
+            effect_at_ms: None,
+            error: None,
+            stale_why: None,
+            version: 0,
         }
     }
 
@@ -177,6 +234,11 @@ impl InboxItem {
     /// Still waiting on the user: pending, or parked (FR-705).
     pub fn open(&self) -> bool {
         matches!(self.status, InboxStatus::Pending | InboxStatus::Parked)
+    }
+
+    /// Failed or stale: it waits on nobody, and only a dismissal closes it.
+    pub fn ended(&self) -> bool {
+        self.status.ended()
     }
 }
 

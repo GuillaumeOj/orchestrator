@@ -1,8 +1,11 @@
 #![doc = include_str!("../README.md")]
 
 pub mod artifacts;
+pub mod attention;
 pub mod compile;
+pub mod decision;
 pub mod delivery;
+pub mod digest;
 pub mod env;
 pub mod flow;
 pub mod inbox;
@@ -12,6 +15,7 @@ pub mod linear;
 pub mod mcp;
 pub mod net;
 pub mod notion;
+pub mod now;
 pub mod otlp;
 pub mod pacing;
 pub mod paths;
@@ -40,3 +44,4 @@ pub mod team_admin;
 pub mod transcript;
 pub mod usage;
 pub mod worktree;
+pub mod worktree_watch;

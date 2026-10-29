@@ -14,12 +14,20 @@
   import TitleBar from './components/TitleBar.svelte';
   import Toasts from './components/Toasts.svelte';
   import Workspace from './components/Workspace.svelte';
-  import { app, applyTheme, flushDecisions, focusedSpec, isTerminal, onOutcome, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
+  import { app, applyTheme, flushDecisions, focusedSpec, isTerminal, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
   import { startDev } from './lib/dev.js';
   import { loadUiFont, prepareKitty } from './lib/fonts.js';
   import { inTauri, invoke, listen } from './lib/ipc.js';
   import { classify } from './lib/keyboard.js';
+  import { connectNow, onTopics } from './lib/now.svelte.js';
 
+  // The `now` topics app_state answers for (its non-attention data): the
+  // projects list and the git state of projects and worktrees too.
+  const STATE_TOPICS = ['agents', 'queue', 'usage', 'memory', 'power', 'banners', 'setup', 'features', 'teams'];
+  // Git state (project:, worktree:) changes with every file a watched worktree
+  // writes (T-33): read for it at most every 10 s, the rest at once.
+  const gitTopic = (t) => t.startsWith('project:') || t.startsWith('worktree:');
+  const GIT_EVERY = 10000;
   let ready = $state(false);
   let lastKeyCommand = { id: null, at: 0 };
   const isNav = (k) => k === 'palette' || k === 'jump';
@@ -71,41 +79,37 @@
     const onResize = () => (app.width = window.innerWidth);
     window.addEventListener('resize', onResize);
     window.addEventListener('keydown', onKeyDown, true);
-    let poll;
     let decisions;
-    const onVisible = () => !document.hidden && refresh();
     let unlisten = () => {};
-    let unlistenOutcome = () => {};
+    let stopNow = () => {};
+    let stopState = () => {};
     (async () => {
       const [kitty] = await Promise.all([invoke('kitty_config').catch(() => null), loadUiFont().catch(() => [])]);
       if (kitty) app.kitty = await prepareKitty(kitty).catch(() => kitty);
-      await refresh();
+      // app_state is read on its topics (spec §3.2), never on a timer (and right below).
+      const stopTopics = onTopics(STATE_TOPICS, refresh, { now: false });
+      const stopGit = onTopics(gitTopic, refresh, { now: false, focus: false, every: GIT_EVERY });
+      stopState = () => (stopTopics(), stopGit());
+      // Attention from the `now` push, resynced on a rev gap and when the window shows again.
+      const [, stop] = await Promise.all([refresh(), connectNow()]);
+      stopNow = stop;
       await restoreLayout();
       applyTheme();
       ready = true;
       startDev();
-      // One poll at a time (a git refresh can take longer than a second);
-      // none while the window is hidden.
-      const tick = async () => {
-        if (!document.hidden) await refresh();
-        poll = setTimeout(tick, 1000);
-      };
-      tick();
+      // The undo window's flush: sends due decisions, fetches nothing.
       decisions = setInterval(flushDecisions, 1000);
-      document.addEventListener('visibilitychange', onVisible);
       unlisten = await listen('menu', (ev) => {
         // A chord handled by the webview may also fire its menu item: once is enough.
         if (lastKeyCommand.id === ev.payload && Date.now() - lastKeyCommand.at < 400) return;
         run(ev.payload);
       });
-      unlistenOutcome = await listen('inbox_outcome', (ev) => onOutcome(ev.payload));
     })();
     return () => {
-      clearTimeout(poll);
       clearInterval(decisions);
-      document.removeEventListener('visibilitychange', onVisible);
+      stopState();
+      stopNow();
       unlisten();
-      unlistenOutcome();
       window.removeEventListener('resize', onResize);
       window.removeEventListener('keydown', onKeyDown, true);
     };

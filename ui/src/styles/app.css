@@ -58,6 +58,20 @@ textarea {
 .err {
   color: var(--color-status-error);
 }
+/* A text action (context blocks, digest): accent, no box. */
+.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-accent-default);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.link:hover,
+.link:focus-visible {
+  text-decoration: underline;
+}
 
 /* A bordered section of a pane (Week planner, Project, Setup). */
 .card {

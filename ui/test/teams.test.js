@@ -17,7 +17,7 @@ import {
   timelineFilter,
   timelineText,
 } from '../src/lib/teams.js';
-import { fixture } from './fixture.js';
+import { fixture, nowOf } from './fixture.js';
 
 const calls = [];
 const replies = {};
@@ -149,6 +149,21 @@ describe('P2 panes', () => {
   });
 
   it('the feature pane shows the run, the rendered doc, the team and the timeline', async () => {
+    // The phase pill is the core's run record (P4.1).
+    app.now = nowOf(fixture(), {
+      runs: {
+        'run-1': {
+          run: 'run-1',
+          feature: 'fx',
+          project: 'shop',
+          phase: 'spec_gate',
+          phase_since_ms: Date.now(),
+          level: 'needs_you',
+          members: [],
+          counts: {},
+        },
+      },
+    });
     replies.feature_view = {
       feature: {
         id: 'shop-fx',

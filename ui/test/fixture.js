@@ -82,45 +82,137 @@ export function fixture() {
       },
     },
     queue: [],
-    inbox: {
-      badge: 2,
-      items: [
-        {
-          id: 'perm-1',
-          level: 1,
-          kind: 'permission',
-          status: 'open',
-          agent_id: 'front-1',
-          title: 'Bash: Add the Stripe client SDK',
-          detail: 'front-1 asks to run Bash',
-          preview: 'pnpm add @stripe/stripe-js',
-          created_ms: now - 240000,
-          actions: ['a', 'r', 'enter', 'o', 'in_pane', 'always'],
-          payload: {
-            tool: 'Bash',
-            tool_input: { command: 'pnpm add @stripe/stripe-js', description: 'Add the Stripe client SDK' },
-            cwd: '/Users/me/dev/shop-web.worktrees/front-1',
-            tool_use_id: 'toolu_1',
-            summary: 'pnpm add @stripe/stripe-js',
-            description: 'Add the Stripe client SDK',
-            ask_rule: null,
-            always: 'Bash(pnpm add:*)',
-          },
-        },
-        {
-          id: 'ask-7',
-          level: 3,
-          kind: 'budget',
-          agent_id: null,
-          title: 'Defer "infra" until after the weekly reset',
-          detail: 'saves ≈ 6 pp',
-          preview: null,
-          created_ms: now - 60000,
-          actions: ['a', 'r'],
-        },
-      ],
-    },
     memory: { app_mb: 96, agents_mb: 792, shells_mb: 10, total_mb: 898, system_mb: 8192 },
     terms: [],
+  };
+}
+
+const act = (id, label, key) => (key ? { id, label, key } : { id, label });
+
+/** A Decision (api-contract §2) as back's T-22 builds it; `over` replaces fields. */
+export function decision(over = {}) {
+  return {
+    id: 'inbox-1',
+    kind: 'permission',
+    level: 1,
+    subject: {},
+    title: '',
+    summary: '',
+    context: [],
+    actions: [],
+    lifecycle: { state: 'open' },
+    thread: 'x',
+    waits_on: 'user',
+    created_ms: Date.now() - 60000,
+    payload: {},
+    ...over,
+  };
+}
+
+/** front-1's permission prompt, open (the design scenario). */
+export const permDecision = (over = {}) =>
+  decision({
+    id: 'perm-1',
+    subject: { agent: 'front-1', role: 'Frontend', project: 'shop-api' },
+    title: 'Bash · pnpm add @stripe/stripe-js',
+    summary: 'Add the Stripe client SDK',
+    context: [
+      {
+        type: 'tool_call',
+        tool: 'Bash',
+        input: { command: 'pnpm add @stripe/stripe-js', description: 'Add the Stripe client SDK' },
+        cwd: '/Users/me/dev/shop-web.worktrees/front-1',
+      },
+    ],
+    actions: [
+      act('approve', 'Allow once', 'a'),
+      act('reject', 'Deny', 'r'),
+      act('reply', 'Deny with message', 'enter'),
+      act('always', 'Always allow'),
+      act('in_pane', 'Answer in the pane'),
+      act('open', 'Open pane', 'o'),
+    ],
+    thread: 'front-1',
+    created_ms: Date.now() - 240000,
+    payload: { always: 'Bash(pnpm add:*)' },
+    ...over,
+  });
+
+/** A budget ask (level 3, no agent). */
+export const budgetDecision = (over = {}) =>
+  decision({
+    id: 'ask-7',
+    kind: 'budget',
+    level: 3,
+    title: 'Defer "infra" until after the weekly reset',
+    summary: 'saves ≈ 6 pp',
+    context: [
+      { type: 'markdown', text: 'Defer infra' },
+      { type: 'cost', week_pp: 6 },
+    ],
+    actions: [act('approve', 'Apply', 'a'), act('reject', 'Skip', 'r')],
+    thread: 'governor',
+    ...over,
+  });
+
+export { act };
+
+/** Counts (api-contract §1): zeros but for `o`. */
+export const countsOf = (o = {}) => ({
+  needs_you: 0,
+  decisions: 0,
+  running: 0,
+  waiting: 0,
+  queued: 0,
+  idle: 0,
+  error: 0,
+  live: 0,
+  done_today: 0,
+  ...o,
+});
+
+const LEVEL_OF = {
+  working: 'running',
+  waiting_for_you: 'needs_you',
+  waiting_gate: 'needs_you',
+  queued: 'queued',
+  not_started: 'queued',
+  paused: 'queued',
+  blocked_by_limit: 'waiting',
+  error: 'error',
+  done: 'done',
+};
+
+/** An attention record (api-contract §1); `status` sets the level unless given. */
+export function rec(agent, status, more = {}) {
+  return {
+    agent,
+    level: LEVEL_OF[status] ?? 'idle',
+    status,
+    reason: '',
+    live: status !== 'suspended',
+    since_ms: Date.now() - 60000,
+    ...more,
+  };
+}
+
+/** `app.now` for an app_state fixture: one record per agent, and `decisions`
+ *  (the design scenario's permission and budget ask by default); other keys replace `app.now`'s.
+ *  @param {any} d
+ *  @param {{ decisions?: any[], [key: string]: any }} [opts] */
+export function nowOf(d, { decisions = [permDecision(), budgetDecision()], ...more } = {}) {
+  const agents = (d.agents ?? []).map((a) => rec(a.id, a.state, { project: a.project_id, live: !!a.live }));
+  const open = decisions.filter((x) => x.level < 4).length;
+  return {
+    rev: 1,
+    agents: Object.fromEntries(agents.map((r) => [r.agent, r])),
+    runs: {},
+    decisions: Object.fromEntries(decisions.map((x) => [x.id, x])),
+    outcomes: [],
+    counts: {
+      global: { needs_you: 0, decisions: open, live: agents.filter((r) => r.live).length, queued: 0 },
+      projects: {},
+    },
+    ...more,
   };
 }

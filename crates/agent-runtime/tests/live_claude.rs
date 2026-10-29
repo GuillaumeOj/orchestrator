@@ -88,7 +88,7 @@ fn live_haiku_end_to_end() {
             std::fs::canonicalize(&r).unwrap()
         }
     };
-    let root = tempfile::Builder::new().prefix("orchlive").tempdir_in("/tmp").unwrap();
+    let root = tempfile::Builder::new().prefix("orchlive").tempdir_in(orch_protocol::test_tmp()).unwrap();
     let paths = AppPaths::new(root.path().join("app"));
     agent_runtime::preflight::install_helpers(&helper_bins(), &paths.bin_dir()).unwrap();
     let mut cfg = RuntimeConfig::new(paths.clone());

@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use orch_protocol::{HookPayload, spool};
 use serde::Serialize;
+use serde_json::json;
 
 use crate::paths::{AppPaths, real};
 use crate::procs::{AgentMatch, Found, ProcessTable, find_agent_procs};
@@ -160,7 +161,8 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                         repo.display()
                     );
                     if !st.inbox.iter().any(|i| i.pending() && i.body == msg) {
-                        st.add_inbox(None, "alert", msg.clone());
+                        let payload = json!({"alert": "worktree", "worktree": repo, "problem": "project_missing"});
+                        st.add_inbox_item(None, "alert", msg.clone(), payload, 0);
                         report.inbox.push(msg);
                     }
                     "project missing".to_string()
@@ -177,7 +179,9 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                             Ok(r) => {
                                 let msg =
                                     format!("Worktree {} could not be repaired: {:?}", row.path.display(), r.failed);
-                                st.add_inbox(row.agent_id.as_deref(), "alert", msg.clone());
+                                let payload = json!({"alert": "worktree", "worktree": row.path, "problem": "repair_failed",
+                                                     "files": r.failed.iter().map(|f| format!("{f:?}")).collect::<Vec<_>>()});
+                                st.add_inbox_item(row.agent_id.as_deref(), "alert", msg.clone(), payload, 0);
                                 report.inbox.push(msg);
                                 "repair failed".to_string()
                             }
@@ -192,7 +196,8 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                         "Worktree {} is missing from git (moved or removed outside the app)",
                         row.path.display()
                     );
-                    st.add_inbox(row.agent_id.as_deref(), "alert", msg.clone());
+                    let payload = json!({"alert": "worktree", "worktree": row.path, "problem": "missing"});
+                    st.add_inbox_item(row.agent_id.as_deref(), "alert", msg.clone(), payload, 0);
                     report.inbox.push(msg);
                     "missing".to_string()
                 }
@@ -339,7 +344,8 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
         }
         if let Decision::Flag(why) = &decision {
             let msg = format!("{id}: work in progress after a restart: {why}");
-            st.add_inbox(Some(&id), "alert", msg.clone());
+            let payload = json!({"alert": "worktree", "worktree": st.agents.get(&id).map(|r| r.worktree.clone()), "problem": "work_in_progress", "why": why});
+            st.add_inbox_item(Some(&id), "alert", msg.clone(), payload, 0);
             report.inbox.push(msg);
         }
 
@@ -479,6 +485,7 @@ mod tests {
             team: None,
             resume_failed: false,
             start_fresh: false,
+            spawned_at_ms: None,
         }
     }
 

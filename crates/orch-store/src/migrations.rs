@@ -505,6 +505,25 @@ CREATE TABLE one_shot_allows (
 );
 CREATE INDEX one_shot_allows_agent ON one_shot_allows(agent_id, tool);
 "#,
+    // 10 (P4.1): an Inbox item is a Decision (FR-1303): its subject, thread
+    // and lifecycle after the decision (sent, effect, failed, stale). Older
+    // rows read with no subject and their agent as thread.
+    r#"
+ALTER TABLE inbox_items ADD COLUMN subject TEXT;
+ALTER TABLE inbox_items ADD COLUMN thread TEXT;
+ALTER TABLE inbox_items ADD COLUMN sent_at_ms INTEGER;
+ALTER TABLE inbox_items ADD COLUMN effect TEXT;
+ALTER TABLE inbox_items ADD COLUMN effect_detail TEXT;
+ALTER TABLE inbox_items ADD COLUMN effect_at_ms INTEGER;
+ALTER TABLE inbox_items ADD COLUMN error TEXT;
+ALTER TABLE inbox_items ADD COLUMN stale_why TEXT;
+"#,
+    // 11 (P4.1, T-35): a decision's version, +1 on every write of its row,
+    // so a client keeps the newest of two pushes. A separate migration: a
+    // database that already ran 10 gets it too.
+    r#"
+ALTER TABLE inbox_items ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {
@@ -601,5 +620,52 @@ mod tests {
         );
         assert_eq!(crate::InboxStatus::parse("parked"), crate::InboxStatus::Parked);
         assert_eq!(crate::InboxStatus::Parked.as_str(), "parked");
+    }
+
+    #[test]
+    fn migration_10_keeps_p4_0_inbox_rows_readable() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("m.db");
+        {
+            let mut c = Connection::open(&p).unwrap();
+            for sql in &MIGRATIONS[..9] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.pragma_update(None, "user_version", 9).unwrap();
+            c.execute_batch(
+                "INSERT INTO inbox_items(id, kind, agent_id, body, payload, priority, status, created_at_ms, decided_at_ms, decision, decided_by)
+                   VALUES (1, 'permission', 'a1', 'a1: ls', '{\"tool\":\"Bash\"}', 30, 'parked', 1, NULL, NULL, NULL),
+                          (2, 'question', 'a1', 'q', 'null', 20, 'decided', 1, 2, 'reply', 'user');",
+            )
+            .unwrap();
+            migrate(&mut c).unwrap();
+        }
+        let s = crate::Store::open(&p).unwrap();
+        let (a, b) = (s.inbox_item(1).unwrap().unwrap(), s.inbox_item(2).unwrap().unwrap());
+        assert_eq!(
+            (a.status, a.subject.clone(), a.thread.clone()),
+            (crate::InboxStatus::Parked, serde_json::Value::Null, None)
+        );
+        assert_eq!(
+            (b.status, b.decided_by.as_deref(), b.effect.clone()),
+            (crate::InboxStatus::Decided, Some("user"), None)
+        );
+        // New rows keep their lifecycle.
+        let mut c = b.clone();
+        c.id = 3;
+        c.status = crate::InboxStatus::Effect;
+        c.subject = serde_json::json!({"agent": "a1"});
+        c.thread = Some("run-1".into());
+        c.effect = Some("pr_opened".into());
+        c.effect_detail = Some("https://x/pull/1".into());
+        c.sent_at_ms = Some(5);
+        s.sync_runtime_begin(crate::RuntimeDiff { inbox: vec![c.clone()], ..Default::default() })
+            .unwrap()
+            .wait()
+            .unwrap();
+        assert_eq!(s.inbox_item(3).unwrap().unwrap(), c);
+        for st in ["sent", "effect", "failed", "stale"] {
+            assert_eq!(crate::InboxStatus::parse(st).as_str(), st);
+        }
     }
 }

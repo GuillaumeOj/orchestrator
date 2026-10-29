@@ -56,6 +56,9 @@ pub struct AgentRecord {
     /// the delivery loop like any resume (FR-415 from the lead, FR-411).
     #[serde(default)]
     pub start_fresh: bool,
+    /// When its current process was spawned (ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_at_ms: Option<u64>,
 }
 
 /// Where a team agent sits: its run, its node and its current task.
@@ -91,6 +94,7 @@ impl AgentRecord {
         self.pid = Some(pid);
         self.pgid = Some(pgid);
         self.spawns += 1;
+        self.spawned_at_ms = Some(orch_protocol::now_ms());
         self.flag = None;
         self.start_fresh = false;
         self.trust_dialog = false;
@@ -317,6 +321,43 @@ impl StateFile {
 pub struct Store {
     db: Option<orch_store::Store>,
     data: Mutex<Data>,
+    /// What writes changed since the last [`Store::take_changed`] (P4.1's
+    /// publisher recomputes attention only then; reads never set it).
+    changed: Mutex<Changed>,
+}
+
+/// Which parts of the state writes changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Changed {
+    pub agents: bool,
+    pub inbox: bool,
+    /// Turns, holds, worktrees.
+    pub other: bool,
+}
+
+impl Changed {
+    pub fn any(self) -> bool {
+        self.agents || self.inbox || self.other
+    }
+
+    fn of(d: &RuntimeDiff) -> Changed {
+        Changed {
+            agents: !d.agents.is_empty() || !d.agents_deleted.is_empty(),
+            inbox: !d.inbox.is_empty() || !d.inbox_deleted.is_empty(),
+            other: !(d.turns.is_empty()
+                && d.turns_deleted.is_empty()
+                && d.holds.is_empty()
+                && d.holds_deleted.is_empty()
+                && d.worktrees.is_empty()
+                && d.worktrees_deleted.is_empty()),
+        }
+    }
+
+    fn merge(&mut self, o: Changed) {
+        self.agents |= o.agents;
+        self.inbox |= o.inbox;
+        self.other |= o.other;
+    }
 }
 
 struct Data {
@@ -478,17 +519,27 @@ impl Store {
             std::fs::rename(j, j.with_extension("json.imported"))?;
         }
         let state = from_rows(db.load_runtime()?)?;
-        Ok(Store { db: Some(db), data: Mutex::new(Data { saved: state.clone(), state }) })
+        let data = Data { saved: state.clone(), state };
+        Ok(Store { db: Some(db), data: Mutex::new(data), changed: Default::default() })
     }
 
     /// Not persisted (tests).
     pub fn in_memory(data: StateFile) -> Store {
-        Store { db: None, data: Mutex::new(Data { state: data, saved: StateFile::default() }) }
+        Store {
+            db: None,
+            data: Mutex::new(Data { state: data, saved: StateFile::default() }),
+            changed: Default::default(),
+        }
     }
 
     /// The database behind this store, if any.
     pub fn db(&self) -> Option<&orch_store::Store> {
         self.db.as_ref()
+    }
+
+    /// What writes changed since the last call.
+    pub fn take_changed(&self) -> Changed {
+        std::mem::take(&mut *self.changed.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     pub fn read<R>(&self, f: impl FnOnce(&StateFile) -> R) -> R {
@@ -507,12 +558,25 @@ impl Store {
             let r = f(&mut g.state);
             g.state.prune();
             let mut pending = None;
-            if let Some(db) = &self.db {
-                let d = diff(&g.saved, &g.state);
-                if !d.is_empty() {
-                    pending = Some(db.sync_runtime_begin(d).context("saving the runtime state")?);
-                    g.saved = g.state.clone();
+            let mut d = diff(&g.saved, &g.state);
+            // Every Inbox row this write changed: version +1 (a client keeps
+            // the newest push). After a failed write every row counts as
+            // changed: an extra bump, never a missed one.
+            if !d.inbox.is_empty() {
+                let ids: std::collections::BTreeSet<u64> = d.inbox.iter().map(|i| i.id).collect();
+                for i in g.state.inbox.iter_mut().filter(|i| ids.contains(&i.id)) {
+                    i.version += 1;
                 }
+                for row in &mut d.inbox {
+                    row.version += 1;
+                }
+            }
+            if !d.is_empty() {
+                self.changed.lock().unwrap_or_else(|e| e.into_inner()).merge(Changed::of(&d));
+                if let Some(db) = &self.db {
+                    pending = Some(db.sync_runtime_begin(d).context("saving the runtime state")?);
+                }
+                g.saved = g.state.clone();
             }
             (r, pending)
         };

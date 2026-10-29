@@ -2,10 +2,11 @@
   // Title bar (§9.2): palette entry, the two-window pacing indicator, the Inbox
   // badge. The window's traffic lights sit over its left edge (titleBarStyle Overlay).
   import { app, openSingleton } from '../lib/app.svelte.js';
+  import { counts } from '../lib/now.svelte.js';
   import Kbd from './Kbd.svelte';
   import PacingIndicator from './PacingIndicator.svelte';
 
-  const badge = $derived(app.data?.inbox?.badge ?? 0);
+  const badge = $derived(counts().decisions);
 </script>
 
 <header class="title" data-tauri-drag-region>

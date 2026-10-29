@@ -44,6 +44,20 @@ export function size(bytes) {
   return `${Math.max(1, Math.round(bytes / KIB))} KB`;
 }
 
+/** "1 file", "3 files". */
+export const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** How long a wait has held (P4.1 notes §1.1): "just now", "3 min", "1 h 5 min", "2 d". */
+export function waited(ms, now = Date.now()) {
+  if (ms == null) return '';
+  const m = Math.floor((now - ms) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return m % 60 ? `${h} h ${m % 60} min` : `${h} h`;
+  return `${Math.floor(h / 24)} d`;
+}
+
 export function ago(ms, now = Date.now()) {
   if (!ms) return '';
   return duration(now - ms);

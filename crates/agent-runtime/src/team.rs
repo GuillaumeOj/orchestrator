@@ -463,6 +463,7 @@ impl Runtime {
             }),
             resume_failed: false,
             start_fresh: false,
+            spawned_at_ms: None,
         };
         self.store.write(|s| s.agents.insert(id.clone(), rec.clone()))?;
         // Bind the worktree row to its agent.
@@ -743,17 +744,13 @@ impl Runtime {
         let r = self.tasks_for(project).sync(now_ms());
         let last = match &r {
             Ok(rep) => {
+                // An outcome of the digest (D12), not an Inbox item.
                 for id in &rep.conflicts {
                     let handle = self.db.task(*id).ok().flatten().map(|t| t.handle()).unwrap_or_default();
-                    let _ = self.add_item(
-                        None,
-                        "info",
-                        format!(
-                            "{}: task {handle} changed here and on {remote}; {remote}'s version was kept",
-                            project.name
-                        ),
-                        json!({"action": "task_conflict", "task": id, "project": project.id}),
-                        0,
+                    self.event(
+                        "-",
+                        "task.sync_conflict",
+                        json!({"task": id, "handle": handle, "remote": remote, "project": project.id}),
                     );
                 }
                 // Something moved (the unmapped states are a standing note, not a change).
@@ -1273,7 +1270,7 @@ impl Runtime {
                     .map(|s| cut(s, 200))
                     .take(8)
                     .collect();
-                let id = self.question_item(rec, q, options, "ask_user", str_arg(args, "kind") != Some("fyi"))?;
+                let id = self.question_item(rec, q, options, "ask_user", str_arg(args, "kind") != Some("fyi"), None)?;
                 Ok((
                     "Asked the user; the answer comes as a new turn. Continue with other work or end your turn.".into(),
                     json!({"item": id}),
@@ -1425,6 +1422,7 @@ impl Runtime {
                     self.agent_gitconfig(&rec.id).as_deref(),
                     false,
                 )?;
+                self.touch_worktree(&rec.worktree);
                 self.run_event(&cx.run.id, Some(&rec.id), "git.sync", json!(r));
                 let _ =
                     self.db.audit(&format!("agent:{}", rec.id), Some(&rec.id), "merge", Some(&integ), "ok", json!(r));
@@ -1482,7 +1480,13 @@ impl Runtime {
                     decision,
                     detail.clone(),
                 );
-                self.run_event(&cx.run.id, Some(&rec.id), "git.merge", json!({"branch": branch, "result": detail}));
+                self.run_event(
+                    &cx.run.id,
+                    Some(&rec.id),
+                    "git.merge",
+                    json!({"branch": branch, "into": cx.feature.integration_branch(), "result": detail}),
+                );
+                self.touch_worktree(&rec.worktree);
                 let r = r?;
                 let task = args.get("task").and_then(Value::as_u64).map(|id| self.db.task(id)).transpose()?.flatten();
                 if let Some(t) = &task
@@ -1566,7 +1570,8 @@ impl Runtime {
                     format!("Spec gate · {}: {}", cx.feature.slug, cut(summary, 200)),
                     json!({"action": "spec_approval", "run": cx.run.id, "feature": cx.feature.slug, "feature_id": cx.feature.id,
                            "summary": cut(summary, 4_000), "docs": docs, "worktree": rec.worktree,
-                           "branch": cx.feature.integration_branch()}),
+                           "branch": cx.feature.integration_branch(),
+                           "doc_lines": doc_lines(&rec.worktree, &FeatureCtx::docs_dir(&cx.fctx()), &docs)}),
                     crate::inbox::PRIORITY_GATE,
                 )?;
                 self.advance_run(&cx.run.id, RunState::SpecGate, "spec gate asked")?;
@@ -1681,6 +1686,19 @@ fn feature_docs_dir(worktree: &Path, slug: &str) -> Result<std::path::PathBuf> {
         bail!("outside the feature folder");
     }
     Ok(dir)
+}
+
+/// `[{path, lines}]` of the feature's docs (the spec gate's `docs` block).
+fn doc_lines(worktree: &Path, dir: &str, docs: &[String]) -> Value {
+    let files: Vec<Value> = docs
+        .iter()
+        .map(|d| {
+            let path = format!("{}/{d}", dir.trim_end_matches('/'));
+            let lines = std::fs::read_to_string(worktree.join(&path)).map(|t| t.lines().count()).unwrap_or(0);
+            json!({"path": path, "lines": lines})
+        })
+        .collect();
+    json!(files)
 }
 
 /// The markdown files in the feature's docs folder of a worktree.
@@ -1998,6 +2016,8 @@ mod tests {
         assert_eq!(gate.payload["action"], "spec_approval");
         assert_eq!(gate.payload["docs"], json!(["spec.md"]));
         assert_eq!(gate.payload["feature_id"], json!(run.feature_id), "for the docs' images");
+        assert_eq!(gate.payload["doc_lines"], json!([{"path": ".orchestrator/features/fx/spec.md", "lines": 1}]));
+        assert_eq!((gate.subject["feature"].as_str(), gate.thread.as_deref()), (Some("fx"), Some(run.id.as_str())));
         // Sent back once, then approved.
         rt.decide(gate.id, InboxDecision::Reply, None, Some("name the files")).unwrap();
         assert_eq!(state(&rt, &run.id), RunState::Spec);
@@ -2007,6 +2027,11 @@ mod tests {
         rt.decide(gate.id, InboxDecision::Approve, None, None).unwrap();
         assert_eq!(state(&rt, &run.id), RunState::Planning);
         assert!(queued(&rt, lead).iter().any(|b| b.contains("approved: proceed")));
+        // P4.1 lifecycle: decided → sent (the lead is told) → resumed at its turn.
+        let lc = |id| rt.lifecycle(id);
+        assert_eq!((lc(gate.id)["state"].as_str(), lc(gate.id)["decided_by"].as_str()), (Some("sent"), Some("user")));
+        rt.answers_resumed(lead);
+        assert_eq!((lc(gate.id)["state"].as_str(), lc(gate.id)["effect"].as_str()), (Some("effect"), Some("resumed")));
 
         // Tasks with a dependency (FR-404).
         let t1: Task = serde_json::from_value(

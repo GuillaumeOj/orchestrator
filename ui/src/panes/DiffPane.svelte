@@ -8,6 +8,7 @@
   import { app, confirm, openEditor, toast } from '../lib/app.svelte.js';
   import { lineKind, patchByFile, STATUS_WORD } from '../lib/diff.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { onTopics } from '../lib/now.svelte.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -25,23 +26,25 @@
   const totals = $derived({ added: files.reduce((n, f) => n + (f.added ?? 0), 0), deleted: files.reduce((n, f) => n + (f.deleted ?? 0), 0) });
   const canPr = $derived(!!d?.branch && d.branch !== d.against);
 
-  let loading = false;
   async function load() {
-    if (loading) return; // a slow git must not stack up polls
-    loading = true;
     try {
       d = await invoke('worktree_diff', { project: spec.projectId, path: spec.path });
       err = null;
     } catch (e) {
       err = errText(e);
-    } finally {
-      loading = false;
     }
   }
+  // Refetched when a file in the worktree changed (an agent's edit, a commit, a
+  // merge, or any edit while this pane watches it: T-33's `watch_worktree`, a
+  // no-op on a core without it); onTopics keeps a slow git from stacking loads up.
   onMount(() => {
-    load();
-    const t = setInterval(load, 15000);
-    return () => clearInterval(t);
+    const path = spec.path;
+    invoke('watch_worktree', { path }).catch(() => {});
+    const stop = onTopics([`worktree:${path}`], load);
+    return () => {
+      stop();
+      invoke('unwatch_worktree', { path }).catch(() => {});
+    };
   });
 
   function move(delta) {

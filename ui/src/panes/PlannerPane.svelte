@@ -14,6 +14,7 @@
   import { app, confirm, governor, openReport, queueOffHours, toast } from '../lib/app.svelte.js';
   import { clock, dayHm, dayTime, duration, pct, pp, when } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { onTopics } from '../lib/now.svelte.js';
   import { downgradeText, nextOffHours, OFF_DISABLED, offHoursAllowed, windowLabel, windowQueued } from '../lib/pacing.js';
   import { PRESSURE, queueReason } from '../lib/status.js';
 
@@ -30,11 +31,8 @@
       err = errText(e);
     }
   }
-  onMount(() => {
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  });
+  // Refetched when the queue, the plan or the usage changed (no poll).
+  onMount(() => onTopics(['planner', 'queue', 'usage'], load));
 
   const s = $derived(v?.snapshot);
   const windows = $derived(s?.model_windows ?? []);

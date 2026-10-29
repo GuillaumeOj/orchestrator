@@ -84,6 +84,8 @@ pub struct RuntimeConfig {
     pub conditions: Arc<dyn orch_git::fetch::Conditions>,
     /// Replaces `gh` for the GitHub task backend (tests).
     pub gh: Option<crate::team::GhFactory>,
+    /// Replaces the PR gate's push + `gh pr create` (tests): the PR's URL.
+    pub open_pr: Option<crate::inbox::PrOpener>,
     /// Integration tokens and MCP env secrets (NFR-3): the Keychain.
     pub secrets: Arc<dyn orch_secrets::Secrets>,
     /// The core's own network calls (MCP probes, token tests).
@@ -123,6 +125,7 @@ impl RuntimeConfig {
             fetch: orch_git::fetch::FetchPolicy::default(),
             conditions: Arc::new(orch_git::fetch::SystemConditions),
             gh: None,
+            open_pr: None,
             secrets: Arc::new(orch_secrets::Keychain),
             net: Arc::new(crate::net::SystemNet),
             default_plan,
@@ -186,6 +189,10 @@ pub struct Runtime {
     pub(crate) probing: Mutex<std::collections::BTreeSet<(Option<String>, String)>>,
     /// Told of every Inbox outcome ([`Runtime::set_outcome_sink`]).
     pub(crate) outcome_sink: Mutex<Option<crate::inbox::OutcomeSink>>,
+    /// The `now` publisher (P4.1): last world sent, rev, sinks.
+    pub(crate) now: crate::now::Now,
+    /// Worktrees open in a Diff pane, watched for the `worktree:<path>` topic.
+    pub(crate) watches: crate::worktree_watch::Watches,
 }
 
 /// Clocks and flags of the periodic work (`tick`, `housekeeping`).
@@ -458,6 +465,8 @@ impl Runtime {
             linear_token: Default::default(),
             probing: Default::default(),
             outcome_sink: Mutex::new(None),
+            now: Default::default(),
+            watches: Default::default(),
         });
         rt.handle_releases(released);
         rt.backfill_report(now);
@@ -536,7 +545,8 @@ impl Runtime {
         let body = format!(
             "The reserve for your own work is used up\n{reason}. Interactive work is never blocked; agents are squeezed harder until the reset."
         );
-        if self.store.write(|s| s.add_inbox(None, "budget", body)).is_ok() {
+        let payload = json!({"reason": reason});
+        if self.add_item(None, "budget", body, payload, 0).is_ok() {
             let _ = self.db.set_setting(RESERVE_ALERT_KEY, &json!(week));
             self.house().reserve_alerted = Some(Some(week));
         }
@@ -805,6 +815,7 @@ impl Runtime {
             team: None,
             resume_failed: false,
             start_fresh: false,
+            spawned_at_ms: None,
         };
         self.store.write(|s| s.agents.insert(rec.id.clone(), rec.clone()))?;
         // Every agent belongs to a registered project (J1); starting one marks it active (FR-103).
@@ -1160,6 +1171,7 @@ impl Runtime {
             let _ = self.suspend(&id);
         }
         self.otlp.lock().unwrap_or_else(|e| e.into_inner()).take();
+        self.unwatch_all();
         let _ = self.db.flush();
     }
 
@@ -1248,8 +1260,21 @@ impl Runtime {
             .write(|s| {
                 let a = s.agents.get_mut(id)?;
                 let effects = state::apply(&mut a.tracker, &m.event, &p);
+                let now = now_ms();
+                // The call's start and short input: the record's activity, and
+                // an MCP call running long is an external wait (P4.1).
+                if m.event == HookEvent::PreToolUse {
+                    let tool = p.tool_name.as_deref().unwrap_or("");
+                    let input = p.tool_input.as_ref().unwrap_or(&Value::Null);
+                    a.tracker.tool_started_ms = Some(now);
+                    a.tracker.tool_brief =
+                        crate::inbox::main_arg(tool, input).map(|b| crate::attention::copy::cut(&b, 60));
+                } else if a.tracker.current_tool.is_none() {
+                    a.tracker.tool_started_ms = None;
+                    a.tracker.tool_brief = None;
+                }
                 a.last_event = Some(m.event.to_string());
-                a.last_event_at_ms = Some(now_ms());
+                a.last_event_at_ms = Some(now);
                 Some((a.tracker.clone(), effects))
             })
             .ok()
@@ -1260,6 +1285,20 @@ impl Runtime {
         }
         // FR-604: the agents' calls to registry servers tell their auth status.
         self.observe_mcp_call(&rec, &m.event, &p);
+        // A pane showing this worktree (the Diff) refetches.
+        if m.event == HookEvent::PostToolUse
+            && matches!(p.tool_name.as_deref(), Some("Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "Bash"))
+        {
+            self.touch_worktree(&rec.worktree);
+        }
+        // A solo session's finished turn is an outcome of the digest (D8):
+        // its last assistant message, not the prompt it was sent.
+        if m.event == HookEvent::Stop
+            && rec.team.is_none()
+            && let Some(msg) = p.last_assistant_message.as_deref().filter(|t| !t.trim().is_empty())
+        {
+            self.event(id, "turn.done", json!({"summary": crate::team::cut(msg, 280)}));
+        }
         if matches!(m.event, HookEvent::Stop | HookEvent::StopFailure) {
             self.suspend_if_parked(id);
         }
@@ -1294,6 +1333,7 @@ impl Runtime {
             }
             Effect::TurnStarted { origin, markers } => {
                 self.end_wait_episode(id);
+                self.answers_resumed(id);
                 self.mark_delivered(id, &markers, Some(now));
                 if let Some(l) = &live {
                     l.ready_at_ms.store(0, Ordering::SeqCst);
@@ -1385,7 +1425,9 @@ impl Runtime {
                 }
             }
             Effect::Failed { error } => {
-                let _ = self.store.write(|s| s.add_inbox(Some(id), "alert", format!("{id}: API error {error}")));
+                // `alert: api_error` puts the agent in error (attention rule 1).
+                let payload = json!({"alert": "api_error", "error": error});
+                let _ = self.add_item(Some(id), "alert", format!("{id}: API error {error}"), payload, 0);
                 let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
                 self.handle_releases(releases);
             }
@@ -1567,6 +1609,7 @@ impl Runtime {
         let sample = StatusSample::parse(&m.payload);
         let g = self.usage.lock().unwrap_or_else(|e| e.into_inner()).ingest(&m.agent_id, m.ts_ms, &sample);
         if let Some(g) = g {
+            self.touch(orch_protocol::Topic::Usage);
             self.event(&m.agent_id, "usage_sample", serde_json::to_value(&g).unwrap_or(Value::Null));
             let allocation = self.store.read(|s| s.agents.get(&m.agent_id).map(|a| a.allocation.clone()));
             let _ = self.advance_week(
@@ -1655,6 +1698,8 @@ impl Runtime {
         if do_calib && self.db.save_estimator("fit", week_start, &calib, &est).is_ok() {
             self.house().last_fit = Some(est.calibrator);
         }
+        // Time-based reasons and waits ("≈14:20", an MCP call past 5 min).
+        self.now_pump(true);
     }
 
     /// Under the Governor's lock: `next` says which plan to move to (if any),
@@ -2011,10 +2056,9 @@ impl Runtime {
                     if let Some(a) = s.agents.get_mut(&id) {
                         a.trust_dialog = seen;
                     }
-                    if seen {
-                        s.add_inbox(Some(&id), "alert", format!("{id}: Claude Code asks to trust this folder. Attach and answer it yourself (the app never does)."));
-                    }
                 });
+                // The Inbox card is synthesized from `trust_dialog` (D6): nothing stored.
+                self.event(&id, "trust_dialog", json!({"seen": seen}));
             }
         }
         let queued: Vec<(AgentRecord, TurnRow)> = self.store.read(|s| {
@@ -2041,6 +2085,8 @@ impl Runtime {
                 self.event(&rec.id, "delivery_error", json!(e.to_string()));
             }
         }
+        self.flush_watches();
+        self.now_pump(false);
     }
 
     fn admit_turn(&self, rec: &AgentRecord, turn: &TurnRow, needs_spawn: bool) -> bool {
@@ -2062,6 +2108,17 @@ impl Runtime {
                     t.admission = admission;
                 }
             });
+        }
+        // An answer sent to the agent now waits in the Governor's queue.
+        if let Verdict::Queue { estimated_start, .. } = &d.effective
+            && matches!(admission, Admission::Waiting(_))
+        {
+            let now = now_ms();
+            let eta = estimated_start.map(|t| {
+                let tz = governor::jiff::tz::TimeZone::system();
+                format!("≈{}", crate::attention::clock(t.as_millisecond().max(0) as u64, now, &tz))
+            });
+            self.answers_queued(&rec.id, eta);
         }
         admission == Admission::Admitted
     }
@@ -2136,7 +2193,9 @@ impl Runtime {
                         if let Some(a) = s.agents.get_mut(&rec.id) {
                             a.flag = Some(msg.clone());
                         }
-                        s.add_inbox(Some(&rec.id), "alert", msg);
+                        let payload = json!({"alert": "spawn_failed", "error": format!("{e:#}"),
+                                             "cmd": self.cfg.claude.display().to_string()});
+                        s.add_inbox_item(Some(&rec.id), "alert", msg, payload, 0);
                     })?;
                     return Err(e);
                 }
@@ -2336,8 +2395,13 @@ impl Runtime {
         })
     }
 
+    /// The latest reading of each window, across agents.
+    pub(crate) fn usage_view(&self) -> crate::usage::UsageView {
+        self.usage.lock().unwrap_or_else(|e| e.into_inner()).view()
+    }
+
     pub fn usage_json(&self) -> Value {
-        let view = self.usage.lock().unwrap_or_else(|e| e.into_inner()).view();
+        let view = self.usage_view();
         let snap = self.gov().snapshot(Timestamp::now());
         json!({
             "five_hour": view.five_hour,
@@ -2605,7 +2669,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn test_runtime(shadow: bool) -> (tempfile::TempDir, Arc<Runtime>) {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let rt = Runtime::new(test_cfg(d.path(), shadow)).unwrap();
         rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
         (d, rt)
@@ -2632,6 +2696,7 @@ pub(crate) mod tests {
             team: None,
             resume_failed: false,
             start_fresh: false,
+            spawned_at_ms: None,
         }
     }
 
@@ -2755,7 +2820,7 @@ pub(crate) mod tests {
 
     #[test]
     fn restart_rebuilds_the_governor_from_stored_samples() {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let reset = (now_ms() / 1000) as i64 + 3 * 24 * 3600;
         let (live, plan_id) = {
             let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
@@ -2796,7 +2861,7 @@ pub(crate) mod tests {
 
     #[test]
     fn pauses_and_waiting_turns_survive_a_replan_and_a_restart() {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let waiting =
             |rt: &Runtime| rt.store.read(|s| s.turns.iter().find(|t| t.agent_id == "a1").map(|t| t.admission));
         let entry = {
@@ -2828,7 +2893,7 @@ pub(crate) mod tests {
 
     #[test]
     fn replan_keeps_running_turns_and_restart_keeps_held_work() {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         {
             let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
@@ -2864,7 +2929,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_enforce_choice_is_kept_across_restarts() {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         {
             let rt = Runtime::new(test_cfg(d.path(), true)).unwrap();
             assert!(rt.gov().plan().shadow_mode);
@@ -3215,7 +3280,7 @@ pub(crate) mod tests {
         };
 
         // Live: week 1, then the reset (the first reading of week 2), then week 2.
-        let a = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let a = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let live = {
             let rt = Runtime::new(cfg(a.path(), last_week_plan)).unwrap();
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(a.path()))).unwrap();
@@ -3232,8 +3297,8 @@ pub(crate) mod tests {
             assert_eq!(r["in_progress"], false);
             assert!(r["totals"]["weekly_pct"].as_f64().unwrap() > 30.0, "{r}");
             assert_eq!(r["by_model"][0]["key"], "sonnet", "{r}");
-            let digest = rt.store.read(|s| s.inbox.iter().any(|i| i.payload["digest"] == "weekly_report"));
-            assert!(digest, "a Weekly report ready digest");
+            let digest = rt.db.events(0, None, Some("weekly_report"), 5).unwrap();
+            assert_eq!(digest[0].detail["report"], week1_id.as_str(), "a report_ready outcome");
             assert_eq!(rt.report_view("current").unwrap()["in_progress"], true);
             let k = k(&rt);
             assert!(k.confidence > 0.5 && (k.cost_per_weekly_pct - 10.0).abs() < 3.0, "{k:?}");
@@ -3251,7 +3316,7 @@ pub(crate) mod tests {
         // away from live, so this restart rebuilds the estimator from week
         // 1's, rolls the plan forward to the real reset, and makes week 1's
         // report at start.
-        let b = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let b = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let plan1 = {
             let rt = Runtime::new(cfg(b.path(), odd_last_week_plan)).unwrap();
             rt.store.write(|s| s.agents.insert("a1".into(), test_agent(b.path()))).unwrap();

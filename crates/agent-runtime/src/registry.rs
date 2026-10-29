@@ -538,6 +538,7 @@ impl Runtime {
         self.db.set_mcp_status(scope, &s.id, kept, detail, now_ms())?;
         if kept != s.status {
             self.event("-", "mcp_status", json!({"server": s.id, "status": kept, "detail": detail}));
+            self.touch(orch_protocol::Topic::Integrations);
         }
         let project = scope.project();
         match status {
@@ -912,7 +913,7 @@ pub(crate) mod tests {
 
     /// A test runtime whose network is a [`FakeNet`].
     pub(crate) fn test_runtime_net() -> (tempfile::TempDir, Arc<Runtime>, Arc<FakeNet>) {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let fake = Arc::new(FakeNet::default());
         let mut cfg = crate::runtime::tests::test_cfg(d.path(), true);
         cfg.net = fake.clone();

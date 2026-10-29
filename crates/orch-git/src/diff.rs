@@ -50,7 +50,10 @@ fn parse_name_status_z(out: &str) -> Vec<(String, Option<String>, String)> {
     v
 }
 
-fn parse_numstat_z(out: &str) -> BTreeMap<String, (Option<u32>, Option<u32>)> {
+/// Per path: lines added and deleted (`None` for a binary file).
+pub type Numstat = BTreeMap<String, (Option<u32>, Option<u32>)>;
+
+fn parse_numstat_z(out: &str) -> Numstat {
     let mut m = BTreeMap::new();
     let mut it = out.split('\0');
     while let Some(rec) = it.next() {
@@ -69,6 +72,12 @@ fn parse_numstat_z(out: &str) -> BTreeMap<String, (Option<u32>, Option<u32>)> {
         m.insert(path, (a.parse().ok(), d.parse().ok()));
     }
     m
+}
+
+/// Lines added and deleted per file of `range` (`base...branch`), by the
+/// new path of a rename; `None` for a binary file.
+pub fn numstat(worktree: &Path, range: &str) -> Result<Numstat> {
+    Ok(parse_numstat_z(&crate::git::git(worktree, &["diff", "--numstat", "-z", range])?))
 }
 
 /// `against` is a branch or commit; the diff runs from its merge base with

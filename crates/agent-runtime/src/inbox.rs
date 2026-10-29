@@ -50,8 +50,32 @@ pub fn reply(item: &InboxItem) -> Option<&str> {
 }
 
 /// A permission item's `tool_input` (`input` in rows from before P4.0).
-fn tool_input(item: &InboxItem) -> Value {
+pub(crate) fn tool_input(item: &InboxItem) -> Value {
     item.payload.get("tool_input").or_else(|| item.payload.get("input")).cloned().unwrap_or(Value::Null)
+}
+
+/// Pushes a branch and opens its PR (worktree, base, branch, title, body,
+/// draft): the PR's URL. The real one uses git and `gh`.
+#[derive(Clone)]
+pub struct PrOpener(pub Arc<OpenPr>);
+
+/// (worktree, base, branch, title, body, draft) → the PR's URL.
+pub type OpenPr = dyn Fn(&std::path::Path, &str, &str, &str, &str, bool) -> Result<String> + Send + Sync;
+
+impl std::fmt::Debug for PrOpener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PrOpener")
+    }
+}
+
+/// A step of a decision's lifecycle after `decided` (spec §3.3).
+pub enum Stage {
+    /// The core delivered the answer (hook replied, turn pasted or queued, push started).
+    Sent,
+    /// What it did, with its detail (ETA, URL).
+    Effect(&'static str, Option<String>),
+    Failed(String),
+    Stale(&'static str),
 }
 
 /// How a wait for a decision ended.
@@ -97,12 +121,35 @@ impl Call {
     }
 }
 
+/// The call's main argument (the command, the path, the notebook), if any.
+pub(crate) fn main_arg(tool: &str, input: &Value) -> Option<String> {
+    let notebook = input.get("notebook_path").and_then(Value::as_str).map(str::to_string);
+    permissions::primary_input(tool, input).or(notebook)
+}
+
 /// The call's main argument as the dialog shows it, and its description.
 fn brief(tool: &str, input: &Value) -> (String, Option<String>) {
-    let notebook = input.get("notebook_path").and_then(Value::as_str).map(str::to_string);
-    let main = permissions::primary_input(tool, input).or(notebook);
-    let main = crate::team::cut(&main.unwrap_or_else(|| tool.to_string()), 199);
+    let main = crate::team::cut(&main_arg(tool, input).unwrap_or_else(|| tool.to_string()), 199);
     (main, input.get("description").and_then(Value::as_str).map(str::to_string))
+}
+
+/// `{files: [{path, added, removed}], added, removed}` of `base...branch`,
+/// computed once when the PR gate is raised (binary files count 0 lines).
+pub(crate) fn diff_summary(wt: &std::path::Path, base: &str, branch: &str) -> Value {
+    let Ok(files) = orch_git::diff::numstat(wt, &format!("{base}...{branch}")) else { return Value::Null };
+    let (added, removed) = files.values().fold((0, 0), |(a, r), (x, y)| (a + x.unwrap_or(0), r + y.unwrap_or(0)));
+    let files: Vec<Value> = files
+        .iter()
+        .map(|(path, (a, r))| json!({"path": path, "added": a.unwrap_or(0), "removed": r.unwrap_or(0)}))
+        .collect();
+    json!({"files": files, "added": added, "removed": removed})
+}
+
+/// The PR gate's patch is cut past this (the gate preview's limit).
+const PATCH_MAX: usize = 2 << 20;
+
+fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(12)]
 }
 
 /// An open permission item of `agent` waits parked.
@@ -182,6 +229,7 @@ impl Runtime {
             })
             .unwrap_or_default();
         for i in closed {
+            self.advance(i.id, Stage::Effect("dismissed", None));
             self.closed_by(&i, "core", why, "dismissed");
         }
     }
@@ -194,9 +242,97 @@ impl Runtime {
         payload: Value,
         priority: i64,
     ) -> Result<u64> {
-        let id = self.store.write(|s| s.add_inbox_item(agent, kind, body, payload, priority))?;
+        let subject = self.subject_now(agent, payload.get("project").and_then(Value::as_str));
+        let thread = crate::decision::thread_of(&subject);
+        let id = self.store.write(|s| {
+            let id = s.add_inbox_item(agent, kind, body, payload, priority);
+            if let Some(i) = s.inbox.iter_mut().find(|i| i.id == id) {
+                (i.subject, i.thread) = (subject, thread);
+            }
+            id
+        })?;
         self.event(agent.unwrap_or("-"), "inbox_added", json!({"id": id, "kind": kind}));
         Ok(id)
+    }
+
+    /// Who and what a new decision is about, as it stands now (stored with it).
+    fn subject_now(&self, agent: Option<&str>, project: Option<&str>) -> Value {
+        let rec = agent.and_then(|a| self.store.read(|s| s.agents.get(a).cloned()));
+        let feature = rec
+            .as_ref()
+            .and_then(|r| r.team.as_ref())
+            .and_then(|t| self.db.feature(&t.feature_id).ok().flatten())
+            .map(|f| f.slug);
+        let project = rec.as_ref().and_then(|r| self.agent_project(r)).or_else(|| project.map(str::to_string));
+        crate::decision::subject(agent, rec.as_ref(), feature.as_deref(), project.as_deref())
+    }
+
+    /// Moves a decided item on in its lifecycle (P4.1, FR-1303); each step
+    /// reaches the `now` push.
+    pub fn advance(&self, id: u64, stage: Stage) {
+        self.advance_where(|i| i.id == id, stage);
+    }
+
+    /// [`Runtime::advance`] for every item `which` selects, in one write.
+    fn advance_where(&self, which: impl Fn(&InboxItem) -> bool, stage: Stage) {
+        let now = now_ms();
+        let _ = self.store.write(|s| {
+            for i in s.inbox.iter_mut().filter(|i| which(i)) {
+                match &stage {
+                    Stage::Sent => {
+                        i.status = InboxStatus::Sent;
+                        i.sent_at_ms = Some(now);
+                    }
+                    Stage::Effect(effect, detail) => {
+                        // A dismissal keeps its status: its effect says so too.
+                        if i.status != InboxStatus::Dismissed {
+                            i.status = InboxStatus::Effect;
+                        }
+                        i.sent_at_ms.get_or_insert(now);
+                        (i.effect, i.effect_detail, i.effect_at_ms) =
+                            (Some((*effect).into()), detail.clone(), Some(now));
+                    }
+                    Stage::Failed(error) => {
+                        i.status = InboxStatus::Failed;
+                        (i.error, i.effect_at_ms) = (Some(error.clone()), Some(now));
+                    }
+                    Stage::Stale(why) => {
+                        i.status = InboxStatus::Stale;
+                        i.stale_why = Some((*why).into());
+                        i.decided_at_ms.get_or_insert(now);
+                    }
+                }
+            }
+        });
+    }
+
+    /// `agent` started a turn: the answers delivered to it (sent, or queued
+    /// by the Governor) took effect. A parked permission still undecided is
+    /// not touched.
+    pub(crate) fn answers_resumed(&self, agent: &str) {
+        let waiting = |i: &InboxItem| {
+            i.agent_id.as_deref() == Some(agent)
+                && (i.status == InboxStatus::Sent
+                    || (i.status == InboxStatus::Effect && i.effect.as_deref() == Some("queued")))
+        };
+        // Every turn start passes here: the store is written only when one waits.
+        if self.store.read(|s| s.inbox.iter().any(waiting)) {
+            self.advance_where(waiting, Stage::Effect("resumed", None));
+        }
+    }
+
+    /// The Governor queued `agent`'s next turn: answers sent to it wait with an ETA.
+    pub(crate) fn answers_queued(&self, agent: &str, eta: Option<String>) {
+        let sent = |i: &InboxItem| i.agent_id.as_deref() == Some(agent) && i.status == InboxStatus::Sent;
+        if self.store.read(|s| s.inbox.iter().any(sent)) {
+            self.advance_where(sent, Stage::Effect("queued", eta));
+        }
+    }
+
+    /// An item's lifecycle now (`inbox_act`'s answer), with a version that
+    /// outranks every push the client holds ([`Runtime::answered_lifecycle`]).
+    pub fn lifecycle(&self, id: u64) -> Value {
+        self.answered_lifecycle(id).map_or(Value::Null, |lc| json!(lc))
     }
 
     /// Closes an open item; the closed item, or `None` if it was already closed.
@@ -252,14 +388,14 @@ impl Runtime {
             };
             match status {
                 InboxStatus::Pending => {}
-                InboxStatus::Decided => {
+                InboxStatus::Decided | InboxStatus::Sent | InboxStatus::Effect | InboxStatus::Failed => {
                     let item = self.store.read(|s| s.inbox.iter().find(|i| i.id == id).cloned());
                     return Some(item.map_or(Waited::Expired, |i| Waited::Decided(Box::new(i))));
                 }
                 InboxStatus::Dismissed => return Some(Waited::InPane),
                 InboxStatus::Interrupted => return Some(Waited::Interrupted),
                 InboxStatus::Parked => return Some(Waited::Parked),
-                InboxStatus::Expired => return Some(Waited::Expired),
+                InboxStatus::Expired | InboxStatus::Stale => return Some(Waited::Expired),
             }
             if Instant::now() >= end {
                 return None;
@@ -581,6 +717,10 @@ impl Runtime {
             .read(|s| s.inbox.iter().find(|i| i.id == id).cloned())
             .ok_or_else(|| anyhow!("no Inbox item {id}"))?;
         if !item.open() {
+            // A failed or stale decision leaves the Inbox only this way.
+            if decision == InboxDecision::Dismiss && item.ended() {
+                return self.dismiss_ended(&item);
+            }
             bail!("Inbox item {id} is already {:?}", item.status);
         }
         // Checked before claiming: an always-allow that can't become a rule is refused whole.
@@ -644,7 +784,9 @@ impl Runtime {
             InboxDecision::Reply if item.kind != "permission" => "delivered",
             _ => "denied",
         };
-        // Kind-specific follow-ups that don't wait on a held hook.
+        // Kind-specific follow-ups that don't wait on a held hook. `sent`: the
+        // answer went to the agent (a turn) or the push started; its effect follows.
+        let mut sent = false;
         let action = item.payload.get("action").and_then(Value::as_str).unwrap_or("");
         let agent = item.agent_id.as_deref();
         match (item.kind.as_str(), action, decision) {
@@ -662,7 +804,10 @@ impl Runtime {
                         self.tell(a, &format!("ORCH: denied: {tool} {summary}. {why}"), &mut result)
                     };
                     match told {
-                        Ok(e) => effect = e,
+                        Ok(e) => {
+                            effect = e;
+                            sent = true;
+                        }
                         // Nobody was told: the agent still waits, so the item does too.
                         Err(e) => {
                             self.unclaim_parked(id);
@@ -687,20 +832,46 @@ impl Runtime {
                     let text =
                         if allowed { "ORCH: approved: proceed".to_string() } else { format!("ORCH: rejected: {why}") };
                     effect = self.tell(a, &text, &mut result)?;
+                    sent = true;
                 }
             }
             ("gate", "push_pr", InboxDecision::Approve) => {
+                // The user approves the commits they saw: a branch that moved
+                // since is not pushed (the agent asks again).
+                if let Some(why) = self.pr_branch_moved(&item.payload) {
+                    self.advance(id, Stage::Stale("the branch moved"));
+                    if let Some(a) = agent {
+                        let _ = self.deliver_user(
+                            a,
+                            "ORCH: PR gate stale: the branch moved since you asked; call request_pr again.",
+                        );
+                    }
+                    result["effect"] = json!("stale");
+                    result["stale_why"] = json!(why);
+                    result["lifecycle"] = self.lifecycle(id);
+                    self.outcome(&item, "user", "stale");
+                    return Ok(result);
+                }
+                // Sent before the push starts: `open_pr` may end (pr_opened or
+                // failed) before this call returns, and must not be overwritten.
+                self.advance(id, Stage::Sent);
                 if let Some(me) = self.me.upgrade() {
                     let payload = item.payload.clone();
                     std::thread::spawn(move || me.open_pr(id, &payload));
                 }
                 result["pr"] = json!("pushing and opening the PR");
+                result["effect"] = json!(effect);
+                result["lifecycle"] = self.lifecycle(id);
+                self.outcome(&item, "user", effect);
+                return Ok(result);
             }
             ("gate", "spec_approval", InboxDecision::Approve | InboxDecision::AlwaysAllow) => {
                 self.spec_decided(&item.payload, agent, true, None);
+                sent = agent.is_some();
             }
             ("gate", "spec_approval", InboxDecision::Reject | InboxDecision::Reply) => {
                 self.spec_decided(&item.payload, agent, false, message);
+                sent = agent.is_some();
             }
             ("gate", "push_pr", InboxDecision::Reject | InboxDecision::Reply) => {
                 if let Some(a) = agent {
@@ -708,6 +879,7 @@ impl Runtime {
                     let why = message.map(|m| format!(" They said: {m}")).unwrap_or_default();
                     let _ = self.deliver_user(a, &format!("ORCH: the user declined your pull request request.{why}"));
                     effect = self.delivered_effect(a);
+                    sent = true;
                 }
             }
             // The agent was told the answer comes as a turn: say there is none.
@@ -727,18 +899,56 @@ impl Runtime {
                         crate::team::cut(q, 600)
                     );
                     effect = self.tell(a, &text, &mut result)?;
+                    sent = true;
                 }
             }
             (k, _, InboxDecision::Reply) if k != "permission" => {
                 if let (Some(a), Some(m)) = (agent, message) {
                     effect = self.tell(a, m, &mut result)?;
+                    sent = true;
                 }
             }
             _ => {}
         }
+        // The lifecycle (spec §3.3): a budget item applies or skips, a
+        // dismissal is its own effect, an answer sent to the agent waits for
+        // its turn ([`Runtime::answers_resumed`]), a held hook's answer is done.
+        let stage = if item.kind == "budget" {
+            effect = if allowed { "applied" } else { "skipped" };
+            Stage::Effect(effect, None)
+        } else if decision == InboxDecision::Dismiss {
+            Stage::Effect("dismissed", None)
+        } else if sent {
+            Stage::Sent
+        } else {
+            Stage::Effect(effect, None)
+        };
+        self.advance(id, stage);
         result["effect"] = json!(effect);
+        result["lifecycle"] = self.lifecycle(id);
         self.outcome(&item, "user", effect);
         Ok(result)
+    }
+
+    /// Dismisses a failed or stale decision (the user's, audited): the
+    /// lifecycle ends `dismissed`.
+    fn dismiss_ended(&self, item: &InboxItem) -> Result<Value> {
+        let id = item.id;
+        let now = now_ms();
+        let claimed = self.store.write(|s| {
+            let Some(i) = s.inbox.iter_mut().find(|i| i.id == id && i.ended()) else { return false };
+            i.status = InboxStatus::Dismissed;
+            (i.decision, i.decided_by, i.decided_at_ms) = (Some("dismiss".into()), Some("user".into()), Some(now));
+            true
+        })?;
+        if !claimed {
+            bail!("Inbox item {id} is no longer failed or stale");
+        }
+        self.advance(id, Stage::Effect("dismissed", None));
+        self.closed_by(item, "user", "dismiss", "dismissed");
+        Ok(
+            json!({"item": id, "decision": "dismiss", "decided_by": "user", "effect": "dismissed", "lifecycle": self.lifecycle(id)}),
+        )
     }
 
     /// `request_pr` from orch-mcp: an Inbox gate (the agent can't push).
@@ -750,6 +960,7 @@ impl Runtime {
         let row = self.store.read(|s| s.worktrees.get(&rec.worktree).cloned());
         let branch = orch_git::git(&rec.worktree, &["symbolic-ref", "--short", "HEAD"])?.trim().to_string();
         let base = row.map(|r| r.base).unwrap_or_else(|| "main".into());
+        let head = orch_git::git(&rec.worktree, &["rev-parse", "HEAD"])?.trim().to_string();
         if self.store.read(|s| {
             s.inbox.iter().any(|i| {
                 i.pending()
@@ -764,7 +975,7 @@ impl Runtime {
             "gate",
             format!("{}: open a PR \"{title}\" ({branch} → {base})", rec.id),
             json!({"action": "push_pr", "branch": branch, "base": base, "title": title, "body": body, "draft": draft,
-                   "worktree": rec.worktree}),
+                   "worktree": rec.worktree, "head": head, "diff": diff_summary(&rec.worktree, &base, &branch)}),
             PRIORITY_GATE,
         )?;
         self.db.audit(
@@ -780,6 +991,39 @@ impl Runtime {
         ))
     }
 
+    /// `decision_patch`: the PR gate's patch (`base...branch`), whole or one file.
+    pub fn decision_patch(&self, id: u64, path: Option<&str>) -> Result<String> {
+        let p = self
+            .store
+            .read(|s| s.inbox.iter().find(|i| i.id == id && i.kind == "gate").map(|i| i.payload.clone()))
+            .ok_or_else(|| anyhow!("no gate {id}"))?;
+        if p.get("action").and_then(Value::as_str) != Some("push_pr") {
+            bail!("gate {id} has no patch");
+        }
+        let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let range = format!("{}...{}", s("base"), s("branch"));
+        let mut args = vec!["diff", range.as_str()];
+        if let Some(f) = path {
+            args.extend(["--", f]);
+        }
+        let mut patch = orch_git::git(std::path::Path::new(&s("worktree")), &args)?;
+        if patch.len() > PATCH_MAX {
+            let cut = (0..=PATCH_MAX).rev().find(|i| patch.is_char_boundary(*i)).unwrap_or(0);
+            patch.truncate(cut);
+            patch.push_str("\n… (patch truncated)\n");
+        }
+        Ok(patch)
+    }
+
+    /// The PR gate's branch is no longer at the commit the user was shown.
+    fn pr_branch_moved(&self, p: &Value) -> Option<String> {
+        let head = p.get("head").and_then(Value::as_str)?;
+        let wt = std::path::PathBuf::from(p.get("worktree").and_then(Value::as_str)?);
+        let branch = p.get("branch").and_then(Value::as_str)?;
+        let now = orch_git::git(&wt, &["rev-parse", branch]).ok()?.trim().to_string();
+        (now != head).then(|| format!("{branch} is at {} now, not {}", short(&now), short(head)))
+    }
+
     /// After the PR gate is approved: push with the user's credentials, open
     /// the PR, tell the agent (ADR-009: only the app pushes).
     fn open_pr(&self, item: u64, p: &Value) {
@@ -787,9 +1031,12 @@ impl Runtime {
         let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         let wt = std::path::PathBuf::from(s("worktree"));
         let (branch, base) = (s("branch"), s("base"));
-        let r = orch_git::gh::push(&wt, "origin", &branch).and_then(|_| {
-            orch_git::gh::create_pr(&wt, &base, &branch, &s("title"), &s("body"), p["draft"].as_bool().unwrap_or(false))
-        });
+        let draft = p["draft"].as_bool().unwrap_or(false);
+        let r = match &self.cfg.open_pr {
+            Some(f) => (f.0)(&wt, &base, &branch, &s("title"), &s("body"), draft),
+            None => orch_git::gh::push(&wt, "origin", &branch)
+                .and_then(|_| orch_git::gh::create_pr(&wt, &base, &branch, &s("title"), &s("body"), draft)),
+        };
         let (decision, msg) = match &r {
             Ok(url) => ("ok", format!("ORCH: the user approved; the orchestrator pushed {branch} and opened {url}")),
             Err(e) => ("failed", format!("ORCH: the user approved, but pushing or opening the PR failed: {e:#}")),
@@ -803,7 +1050,18 @@ impl Runtime {
             json!({"item": item, "result": r.as_ref().map_err(|e| e.to_string())}),
         );
         self.event(agent.as_deref().unwrap_or("-"), "pr", json!({"item": item, "ok": r.is_ok()}));
+        match &r {
+            Ok(url) => self.advance(item, Stage::Effect("pr_opened", Some(url.clone()))),
+            Err(e) => self.advance(item, Stage::Failed(format!("{e:#}"))),
+        }
         if let Some(a) = agent {
+            // The digest's pr_opened outcome, on the run's timeline when it has one.
+            if let Ok(url) = &r {
+                match self.store.read(|s| s.agents.get(&a).and_then(|r| r.team.as_ref().map(|t| t.run_id.clone()))) {
+                    Some(run) => self.run_event(&run, Some(&a), "run.pr_opened", json!({"url": url})),
+                    None => self.event(&a, "run.pr_opened", json!({"url": url})),
+                }
+            }
             self.pr_opened(&a, r.as_ref().ok().map(String::as_str));
             let _ = self.deliver_user(&a, &msg);
         }
@@ -1284,5 +1542,180 @@ mod tests {
             let subject = self.subject(&rec);
             self.permission_request_with(&rec, &Call::from_hook(&p), &subject, None, hold, None)
         }
+    }
+
+    // ------------------------------------------------------------ P4.1 lifecycle
+
+    fn lc(rt: &Runtime, id: u64) -> (String, Option<String>, Option<String>) {
+        let v = rt.lifecycle(id);
+        let s = |k: &str| v[k].as_str().map(str::to_string);
+        (s("state").unwrap_or_default(), s("effect"), s("effect_detail"))
+    }
+
+    #[test]
+    fn a_held_permission_ends_allowed_or_denied() {
+        let (_d, rt) = test_runtime(true);
+        let p = rt.add_item(Some("a1"), "permission", "a1: Bash: ls".into(), json!({"tool": "Bash"}), 30).unwrap();
+        let r = rt.decide(p, InboxDecision::Approve, None, None).unwrap();
+        assert_eq!(lc(&rt, p), ("effect".into(), Some("allowed".into()), None));
+        assert_eq!(r["lifecycle"]["effect"], "allowed");
+        let q = rt.add_item(Some("a1"), "permission", "a1: Bash: rm".into(), json!({"tool": "Bash"}), 30).unwrap();
+        rt.decide(q, InboxDecision::Reject, None, Some("no")).unwrap();
+        assert_eq!(lc(&rt, q).1.as_deref(), Some("denied"));
+        // The subject and thread are stored with the item.
+        let i = item(&rt, p);
+        assert_eq!((i.subject["agent"].as_str(), i.thread.as_deref()), (Some("a1"), Some("a1")));
+    }
+
+    #[test]
+    fn a_parked_permission_is_sent_then_queued_then_resumed() {
+        let (_d, rt) = test_runtime(true);
+        let payload = json!({"tool": "Bash", "tool_input": {"command": "pnpm add zod"}, "summary": "pnpm add zod"});
+        let p = rt.add_item(Some("a1"), "permission", "a1: Bash".into(), payload.clone(), 30).unwrap();
+        let other = rt.add_item(Some("a1"), "permission", "a1: Bash 2".into(), payload, 30).unwrap();
+        rt.store.write(|s| assert!(s.park_inbox(p) && s.park_inbox(other))).unwrap();
+        rt.decide(p, InboxDecision::Approve, None, None).unwrap();
+        assert_eq!(lc(&rt, p).0, "sent", "the agent was told");
+        rt.answers_queued("a1", Some("≈14:20".into()));
+        assert_eq!(lc(&rt, p), ("effect".into(), Some("queued".into()), Some("≈14:20".into())));
+        rt.answers_resumed("a1");
+        assert_eq!(lc(&rt, p).1.as_deref(), Some("resumed"));
+        assert_eq!(lc(&rt, other).0, "parked", "an undecided parked permission is left alone");
+    }
+
+    #[test]
+    fn a_question_is_sent_then_resumed_and_a_pane_answer_makes_it_stale() {
+        let (_d, rt) = test_runtime(true);
+        let q =
+            rt.add_item(Some("a1"), "question", "a1: which db?".into(), json!({"question": "which db?"}), 20).unwrap();
+        let r = rt.decide(q, InboxDecision::Reply, None, Some("sqlite")).unwrap();
+        assert_eq!(r["lifecycle"]["state"], "sent");
+        rt.answers_resumed("a1");
+        assert_eq!(lc(&rt, q).1.as_deref(), Some("resumed"));
+        // A question left in the pane, answered there.
+        let rec = rt.store.read(|s| s.agents["a1"].clone());
+        let pq = rt.question_item(&rec, "Shall I go on?", vec![], "pane", true, None).unwrap();
+        rt.close_pane_questions("a1");
+        let i = item(&rt, pq);
+        assert_eq!((lc(&rt, pq).0.as_str(), i.stale_why.as_deref()), ("stale", Some("answered in the pane")));
+        assert_eq!(i.decided_by.as_deref(), Some("pane"));
+        assert!(actors(&rt).contains(&"pane".to_string()), "audited as the pane's");
+    }
+
+    #[test]
+    fn budget_items_apply_or_skip_and_dismissals_say_so() {
+        let (_d, rt) = test_runtime(true);
+        let b = rt.add_item(None, "budget", "Reserve used up".into(), json!({"reason": "r"}), 0).unwrap();
+        rt.decide(b, InboxDecision::Approve, None, None).unwrap();
+        assert_eq!(lc(&rt, b).1.as_deref(), Some("applied"));
+        let c = rt.add_item(None, "budget", "Reserve used up".into(), json!({"reason": "r"}), 0).unwrap();
+        let r = rt.decide(c, InboxDecision::Reject, None, None).unwrap();
+        assert_eq!((lc(&rt, c).1.as_deref(), r["effect"].as_str()), (Some("skipped"), Some("skipped")));
+        let a = rt.add_item(Some("a1"), "alert", "a1: x".into(), json!({}), 0).unwrap();
+        rt.decide(a, InboxDecision::Dismiss, None, None).unwrap();
+        assert_eq!(lc(&rt, a), ("dismissed".into(), Some("dismissed".into()), None));
+    }
+
+    /// The lifecycle of question `id` as last pushed (the `now` snapshot).
+    fn pushed_lifecycle(rt: &Runtime, id: u64) -> Value {
+        let snap = rt.now_snapshot();
+        let d = snap["decisions"].as_array().unwrap().iter().find(|d| d["id"] == format!("q-{id}")).cloned();
+        d.unwrap()["lifecycle"].clone()
+    }
+
+    fn version(rt: &Runtime, id: u64) -> u64 {
+        rt.lifecycle(id)["version"].as_u64().unwrap()
+    }
+
+    #[test]
+    fn the_version_grows_on_every_transition() {
+        let (_d, rt) = test_runtime(true);
+        let q =
+            rt.add_item(Some("a1"), "question", "a1: which db?".into(), json!({"question": "which db?"}), 20).unwrap();
+        let v0 = version(&rt, q);
+        assert!(v0 >= 1);
+        let r = rt.decide(q, InboxDecision::Reply, None, Some("sqlite")).unwrap();
+        let v1 = r["lifecycle"]["version"].as_u64().unwrap();
+        assert!(v1 > v0, "decided then sent: {v0} → {v1}");
+        rt.answers_resumed("a1");
+        let v2 = version(&rt, q);
+        assert!(v2 > v1, "effect: {v1} → {v2}");
+        // A write that changes nothing of the item keeps it.
+        rt.store.write(|_| ()).unwrap();
+        assert_eq!(version(&rt, q), v2);
+        // A push that ran ahead (what it shows changed, not its lifecycle):
+        // the next answer still outranks it.
+        rt.now_pump(true);
+        rt.store
+            .write(|s| s.inbox.iter_mut().find(|i| i.id == q).unwrap().subject = json!({"agent": "a1", "x": 1}))
+            .unwrap();
+        rt.now_pump(false);
+        rt.store
+            .write(|s| s.inbox.iter_mut().find(|i| i.id == q).unwrap().subject = json!({"agent": "a1", "x": 2}))
+            .unwrap();
+        rt.now_pump(false);
+        let pushed = pushed_lifecycle(&rt, q)["version"].as_u64().unwrap();
+        rt.advance(q, Stage::Effect("delivered", None));
+        let answered = version(&rt, q);
+        assert!(answered > pushed, "the answer is never older than the push held");
+        // The lifecycle moves again before the next push: that push outranks the answer.
+        rt.advance(q, Stage::Effect("resumed", None));
+        rt.now_pump(false);
+        let lc = &pushed_lifecycle(&rt, q);
+        assert_eq!(lc["effect"], "resumed");
+        assert!(lc["version"].as_u64().unwrap() > answered, "a newer lifecycle is never dropped as old");
+    }
+
+    #[test]
+    fn a_failed_or_stale_decision_can_be_dismissed() {
+        let (_d, rt) = test_runtime(true);
+        // A PR gate whose push failed.
+        let g = rt.add_item(Some("a1"), "gate", "a1: PR".into(), json!({"action": "push_pr"}), 20).unwrap();
+        rt.store
+            .write(|s| {
+                let _ = s.close_inbox(g, InboxStatus::Decided, Some("approve".into()), "user");
+            })
+            .unwrap();
+        rt.advance(g, Stage::Failed("push rejected".into()));
+        let before = version(&rt, g);
+        let r = rt.decide(g, InboxDecision::Dismiss, None, None).unwrap();
+        let lc = &r["lifecycle"];
+        assert_eq!(
+            (lc["state"].as_str(), lc["effect"].as_str(), lc["decided_by"].as_str()),
+            (Some("dismissed"), Some("dismissed"), Some("user"))
+        );
+        assert_eq!(lc["error"], "push rejected", "kept for the record");
+        assert!(lc["version"].as_u64().unwrap() > before);
+        assert!(actors(&rt).contains(&"user".to_string()), "audited");
+        // A stale permission.
+        let p = rt.add_item(Some("a1"), "permission", "a1: Bash".into(), json!({"tool": "Bash"}), 30).unwrap();
+        rt.store
+            .write(|s| {
+                let _ = s.close_inbox(p, InboxStatus::Decided, None, "pane");
+            })
+            .unwrap();
+        rt.advance(p, Stage::Stale("the agent moved on"));
+        rt.decide(p, InboxDecision::Dismiss, None, None).unwrap();
+        assert_eq!(lc_state(&rt, p), "dismissed");
+        // Nothing else applies to an ended decision, and a dismissed one stays dismissed.
+        assert!(rt.decide(p, InboxDecision::Dismiss, None, None).is_err());
+        // The builder offers dismiss on failed and stale decisions.
+        let it = item(&rt, g);
+        let mut failed = it.clone();
+        failed.status = InboxStatus::Failed;
+        let d = crate::decision::build(&crate::decision::Ctx {
+            items: &[failed],
+            agents: &Default::default(),
+            tails: &Default::default(),
+            ask: None,
+            runs: &[],
+            projects: &Default::default(),
+            startup_timeout_ms: 30_000,
+        });
+        assert_eq!(d[0].actions.iter().map(|a| a.id).collect::<Vec<_>>(), ["dismiss", "open"]);
+    }
+
+    fn lc_state(rt: &Runtime, id: u64) -> String {
+        rt.lifecycle(id)["state"].as_str().unwrap_or("").to_string()
     }
 }
