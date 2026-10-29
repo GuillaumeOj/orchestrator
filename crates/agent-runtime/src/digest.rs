@@ -185,13 +185,18 @@ impl Runtime {
     pub fn outcomes_since(&self, after: u64) -> Vec<Outcome> {
         let tz = TimeZone::system();
         let (midnight, date) = today(orch_protocol::now_ms(), &tz);
+        self.outcomes_of_day(midnight, &date, after, &tz).0
+    }
+
+    /// The outcomes of the day starting at `midnight` (`date`) after event
+    /// `after`, and the last event id read (outcome or not: a merge that
+    /// conflicted is not read again).
+    pub(crate) fn outcomes_of_day(&self, midnight: u64, date: &str, after: u64, tz: &TimeZone) -> (Vec<Outcome>, u64) {
         let evs = self.db.events_of_kinds(midnight, after, &KINDS).unwrap_or_default();
-        if evs.is_empty() {
-            return vec![];
-        }
-        let seen = self.digest_watermark(&date);
+        let Some(last) = evs.last().map(|(e, _)| e.id) else { return (vec![], after) };
+        let seen = self.digest_watermark(date);
         let names = self.names(&evs);
-        evs.iter().filter_map(|(e, r)| outcome(e, r.as_deref(), &names, seen, &tz)).collect()
+        (evs.iter().filter_map(|(e, r)| outcome(e, r.as_deref(), &names, seen, tz)).collect(), last)
     }
 
     /// The runs, agents' projects and tasks these events name.

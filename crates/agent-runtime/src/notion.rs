@@ -518,8 +518,11 @@ impl Runtime {
         let url = p.page_url.clone().unwrap_or_default();
         let mut new = 0;
         let pages: Vec<String> = std::iter::once(root).chain(p.docs.values().cloned()).collect();
+        // The decision's title names them: "Comment on <feature> · <doc>".
+        let slug = self.db.feature(feature_id).ok().flatten().map(|f| f.slug).unwrap_or_else(|| feature_id.into());
         let r = (|| -> Result<()> {
             for page in &pages {
+                let doc = p.docs.iter().find(|(_, id)| *id == page).map(|(name, _)| name.clone());
                 // Page comments only (the discussion at the top of a page):
                 // reading every block's would cost a request per block.
                 let mut list = vec![];
@@ -538,7 +541,11 @@ impl Runtime {
                     if p.comments_seen.contains(id) {
                         continue;
                     }
-                    let payload = comment_payload(cm, &url);
+                    let mut payload = comment_payload(cm, &url);
+                    payload["feature"] = json!(slug);
+                    if let Some(d) = &doc {
+                        payload["doc"] = json!(d);
+                    }
                     let body = format!(
                         "Notion comment from {}\n{}",
                         payload["author"].as_str().unwrap_or(""),

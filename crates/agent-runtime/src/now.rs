@@ -238,6 +238,11 @@ impl Runtime {
 
     /// The open decisions last published, oldest first (the notifier's).
     pub fn open_decisions(&self) -> Vec<Decision> {
+        // Before the first computation there is nothing cached: compute, so
+        // the notifier learns what is there at start (no burst later).
+        if lock(&self.now.state).last.is_none() {
+            self.now_pump(true);
+        }
         let st = lock(&self.now.state);
         let mut v: Vec<Decision> = st.decisions.values().filter(|d| d.waits_on == "user").cloned().collect();
         v.sort_by_key(|d| (d.level, d.created_ms));
@@ -317,13 +322,21 @@ impl Runtime {
             topics.insert(orch_protocol::Topic::Planner.into());
         }
         let live: BTreeSet<String> = self.live_ids().into_iter().collect();
-        // Open items, and those closed recently or still being delivered
-        // (`now_snapshot` keeps them 10 min); older ones (up to KEEP_FINISHED) never count.
+        // Open items, and those closed recently or still being delivered to
+        // an agent that is still there (`now_snapshot` keeps them 10 min);
+        // older ones (P4.0's decided rows, up to KEEP_FINISHED) never show.
         let recent = now.saturating_sub(decision::RECENT_MS);
         let (agents, items): (_, Vec<_>) = self.store.read(|s| {
+            let delivering = |i: &orch_store::InboxItem| {
+                i.status == orch_store::InboxStatus::Sent
+                    && i.agent_id
+                        .as_deref()
+                        .and_then(|a| s.agents.get(a))
+                        .is_some_and(|a| a.tracker.state != AgentState::Archived)
+            };
             let keep = |i: &&orch_store::InboxItem| {
                 i.open()
-                    || matches!(i.status, orch_store::InboxStatus::Decided | orch_store::InboxStatus::Sent)
+                    || delivering(i)
                     || [i.decided_at_ms, i.sent_at_ms, i.effect_at_ms].into_iter().flatten().max().unwrap_or(0)
                         >= recent
             };
@@ -345,21 +358,20 @@ impl Runtime {
             runs: &st.team.runs,
             projects: &st.team.projects,
         });
-        // Today's outcomes: the new ones since the last read (all on a new day).
-        let (_, day) = crate::digest::today(now, &jiff::tz::TimeZone::system());
+        // Today's outcomes: the new ones since the last read (all on a new
+        // day), read for the same day the cache is keyed by.
+        let tz = jiff::tz::TimeZone::system();
+        let (midnight, day) = crate::digest::today(now, &tz);
         if st.outcomes_day != day {
             st.outcomes = vec![];
             st.outcomes_after = 0;
             st.outcomes_day = day;
         }
-        let new_outcomes = self.outcomes_since(st.outcomes_after);
-        if let Some(last) = new_outcomes.last() {
-            st.outcomes_after = last.id.trim_start_matches("ev-").parse().unwrap_or(st.outcomes_after);
-        }
+        let (new_outcomes, last_read) = self.outcomes_of_day(midnight, &st.outcomes_day, st.outcomes_after, &tz);
+        st.outcomes_after = last_read;
         st.outcomes.extend(new_outcomes.iter().cloned());
         let done_today = st.outcomes.len() as u32;
         let paused = &queue_now.1;
-        let tz = jiff::tz::TimeZone::system();
         let mut world = attention::compute(
             &attention::Inputs {
                 agents: &agents,
@@ -394,7 +406,7 @@ impl Runtime {
         let (upsert, closed) = decision_delta(&state.decisions, &decisions);
         let mut event = delta(state.rev + 1, &old, &world, &topics);
         if event.is_none() && (!upsert.is_empty() || !closed.is_empty() || !new_outcomes.is_empty()) {
-            event = delta(state.rev + 1, &old, &world, &BTreeSet::new()).or_else(|| Some(empty_event(state.rev + 1)));
+            event = Some(empty_event(state.rev + 1));
         }
         if let Some(e) = &mut event {
             e["decisions"] = json!({"upsert": upsert, "closed": closed});

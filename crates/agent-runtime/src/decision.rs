@@ -617,7 +617,12 @@ pub fn build(cx: &Ctx) -> Vec<Decision> {
             json!({"action": k.id, "cost": k.cost_pp, "default": default, "deadline_ms": k.deadline_ms}),
         ));
     }
-    out.extend(cx.items.iter().filter(|i| i.kind != "info").map(|i| stored(cx, i)));
+    // The trust dialog's stored alert is the synthesized `trust` card while the dialog is up: one card, one count.
+    let trusting = |i: &InboxItem| {
+        i.payload.get("alert").and_then(Value::as_str) == Some("trust")
+            && i.agent_id.as_deref().and_then(|a| cx.agents.get(a)).is_some_and(|a| a.trust_dialog)
+    };
+    out.extend(cx.items.iter().filter(|i| i.kind != "info" && !trusting(i)).map(|i| stored(cx, i)));
     out.sort_by(|a, b| (a.created_ms, &a.id).cmp(&(b.created_ms, &b.id)));
     let mut last: BTreeMap<String, String> = BTreeMap::new();
     for d in &mut out {

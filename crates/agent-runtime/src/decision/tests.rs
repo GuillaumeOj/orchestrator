@@ -262,6 +262,9 @@ fn synthesized_trust_wait_error_and_ask() {
     assert!(ids.contains(&"trust-t") && ids.contains(&"wait-w") && ids.contains(&"error-e") && ids.contains(&"ask-7"));
     assert!(!ids.contains(&"wait-held"), "its prompt is a permission card already");
     assert!(!ids.contains(&"wait-t"), "the trust dialog wins over waiting");
+    f.item(Some("t"), "alert", "t: trust this folder", json!({"alert": "trust", "tail": "x"}));
+    let n = f.build().iter().filter(|d| d.agent.as_deref() == Some("t")).count();
+    assert_eq!(n, 1, "one card for one trust dialog");
     let t = f.one("trust-t");
     assert_eq!((t.kind, types(&t)), ("trust", vec!["pty_tail"]));
     assert_eq!(t.subject, json!({"agent": "t", "role": "solo", "project": "blog"}));

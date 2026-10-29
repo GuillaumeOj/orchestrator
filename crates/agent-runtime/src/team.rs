@@ -1689,7 +1689,6 @@ fn feature_docs_dir(worktree: &Path, slug: &str) -> Result<std::path::PathBuf> {
     Ok(dir)
 }
 
-/// The markdown files in the feature's docs folder of a worktree.
 /// `[{path, lines}]` of the feature's docs (the spec gate's `docs` block).
 fn doc_lines(worktree: &Path, dir: &str, docs: &[String]) -> Value {
     let files: Vec<Value> = docs
@@ -1703,6 +1702,7 @@ fn doc_lines(worktree: &Path, dir: &str, docs: &[String]) -> Value {
     json!(files)
 }
 
+/// The markdown files in the feature's docs folder of a worktree.
 pub fn feature_docs(worktree: &Path, slug: &str) -> Vec<String> {
     let mut v: Vec<String> = feature_docs_dir(worktree, slug)
         .and_then(|dir| Ok(std::fs::read_dir(dir)?))

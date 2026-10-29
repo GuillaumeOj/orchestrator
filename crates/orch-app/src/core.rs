@@ -735,9 +735,18 @@ impl Core {
         }
         if let Some(n) = item.strip_prefix("alert-") {
             let n: u64 = n.parse()?;
-            let found =
-                rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).map(|i| (i.kind.clone(), i.payload.clone())));
-            let (kind, payload) = found.ok_or_else(|| anyhow!("no item {n}"))?;
+            let found = rt.store.read(|s| {
+                s.inbox.iter().find(|i| i.id == n).map(|i| (i.kind.clone(), i.payload.clone(), i.agent_id.clone()))
+            });
+            let (kind, payload, agent) = found.ok_or_else(|| anyhow!("no item {n}"))?;
+            // An agent that could not resume (`spawn_failed`): restarted fresh, then closed.
+            if action == "restart_fresh" {
+                let agent = agent.ok_or_else(|| anyhow!("{item} has no agent"))?;
+                let r = self.restart_fresh(&agent)?;
+                let _ = rt.decide(n, InboxDecision::Dismiss, None, None);
+                rt.advance(n, agent_runtime::inbox::Stage::Effect("restarted", None));
+                return Ok(json!({"ok": true, "effect": "restarted", "lifecycle": rt.lifecycle(n), "result": r}));
+            }
             // An MCP sign-in alert: `open` and `reconnect` say where to go
             // (decisions D3); it closes once the server is connected again.
             if payload["alert"] == agent_runtime::registry::NEEDS_AUTH_ALERT
@@ -777,7 +786,11 @@ impl Core {
         // The Governor's ask (FR-810): synthesized, so its lifecycle is the answer.
         if let Some(n) = item.strip_prefix("ask-") {
             let id = governor::ActionId(n.parse()?);
-            let apply = action == "approve";
+            let apply = match action {
+                "approve" => true,
+                "reject" => false,
+                other => bail!("{other} does not apply to {item}"),
+            };
             rt.answer_ask(id.0, apply)?;
             let effect = if apply { "applied" } else { "skipped" };
             return Ok(json!({"ok": true, "effect": effect,

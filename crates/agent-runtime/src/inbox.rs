@@ -854,12 +854,18 @@ impl Runtime {
                     self.outcome(&item, "user", "stale");
                     return Ok(result);
                 }
+                // Sent before the push starts: `open_pr` may end (pr_opened or
+                // failed) before this call returns, and must not be overwritten.
+                self.advance(id, Stage::Sent);
                 if let Some(me) = self.me.upgrade() {
                     let payload = item.payload.clone();
                     std::thread::spawn(move || me.open_pr(id, &payload));
                 }
                 result["pr"] = json!("pushing and opening the PR");
-                sent = true;
+                result["effect"] = json!(effect);
+                result["lifecycle"] = self.lifecycle(id);
+                self.outcome(&item, "user", effect);
+                return Ok(result);
             }
             ("gate", "spec_approval", InboxDecision::Approve | InboxDecision::AlwaysAllow) => {
                 self.spec_decided(&item.payload, agent, true, None);
