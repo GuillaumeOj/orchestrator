@@ -362,33 +362,29 @@ pub fn push(worktree: &Path, remote: &str, branch: &str) -> Result<()> {
 /// Pushes the commit `rev` to `<remote>`'s `branch` (a fast-forward): what
 /// was approved, not whatever the branch holds by then. **Gated** like [`push`].
 pub fn push_rev(worktree: &Path, remote: &str, rev: &str, branch: &str) -> Result<()> {
-    if remote.starts_with('-') || rev.starts_with('-') || branch.starts_with('-') || rev.is_empty() {
-        bail!("invalid remote, commit or branch");
-    }
-    git_deadline(worktree, &["push", remote, &format!("{rev}:refs/heads/{branch}")], Duration::from_secs(120))?;
-    Ok(())
+    push_to(worktree, remote, rev, branch, None)
 }
 
 /// Force-pushes the commit `rev` to `<remote>`'s `branch` **only while the
 /// remote branch is still at `lease`** (`--force-with-lease`, never a bare
 /// `--force`): someone else's push since makes it fail. **Gated** like [`push`].
 pub fn push_with_lease(worktree: &Path, remote: &str, rev: &str, branch: &str, lease: &str) -> Result<()> {
+    if !crate::git::valid_sha(lease) {
+        bail!("invalid lease {lease:?}: a commit sha");
+    }
+    push_to(worktree, remote, rev, branch, Some(lease))
+}
+
+fn push_to(worktree: &Path, remote: &str, rev: &str, branch: &str, lease: Option<&str>) -> Result<()> {
     if remote.starts_with('-') || rev.starts_with('-') || branch.starts_with('-') || rev.is_empty() {
         bail!("invalid remote, commit or branch");
     }
-    if lease.len() < 7 || !lease.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!("invalid lease {lease:?}: a commit sha");
-    }
-    git_deadline(
-        worktree,
-        &[
-            "push",
-            &format!("--force-with-lease=refs/heads/{branch}:{lease}"),
-            remote,
-            &format!("{rev}:refs/heads/{branch}"),
-        ],
-        Duration::from_secs(120),
-    )?;
+    let lease = lease.map(|l| format!("--force-with-lease=refs/heads/{branch}:{l}"));
+    let refspec = format!("{rev}:refs/heads/{branch}");
+    let mut args = vec!["push"];
+    args.extend(lease.as_deref());
+    args.extend([remote, refspec.as_str()]);
+    git_deadline(worktree, &args, Duration::from_secs(120))?;
     Ok(())
 }
 

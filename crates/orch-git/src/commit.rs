@@ -128,6 +128,10 @@ pub fn commit_in_worktree(worktree_path: &Path, req: &CommitRequest, gitconfig: 
     validate(req)?;
     let wt = real(worktree_path);
     let insp = linked_worktree(&wt, "commit")?;
+    if rebasing(&insp) {
+        // Continued by `rebase_continue` (the agent's `commit` tool routes there).
+        bail!("a rebase is in progress in this worktree: continue or abort it first");
+    }
     let paths: Vec<String> = req.paths.clone().unwrap_or_default();
     let mut add = git_cmd(&wt, gitconfig);
     add.args(["add", "-A", "--"]);
@@ -217,12 +221,7 @@ pub fn merge_into_worktree(
             .to_string();
     let head = g(&["rev-parse", "HEAD"])?.trim().to_string();
     if let Err(e) = g(&["merge", "--no-ff", "--no-verify", "--no-edit", "-m", message, &target]) {
-        let files: Vec<String> = g(&["diff", "--name-only", "--diff-filter=U", "-z"])
-            .unwrap_or_default()
-            .split('\0')
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect();
+        let files = conflicted_files(&wt, gitconfig);
         if files.is_empty() {
             let _ = g(&["merge", "--abort"]);
             return Err(e.context("git merge"));
@@ -260,13 +259,22 @@ pub fn rebasing(insp: &worktree::Inspection) -> bool {
     insp.in_progress.iter().any(|m| m == "rebase-merge" || m == "rebase-apply")
 }
 
-/// [`rebasing`] for `worktree` with one `git rev-parse` (no status scan),
-/// for checks on every call (`commit`, `request_pr`).
+/// [`rebasing`] for `worktree` from its `.git` file, with no git process:
+/// cheap enough for every `commit` and team tick.
 pub fn rebase_in_progress(worktree_path: &Path) -> bool {
-    crate::git::git(worktree_path, &["rev-parse", "--absolute-git-dir"]).is_ok_and(|gd| {
-        let gd = Path::new(gd.trim());
-        gd.join("rebase-merge").exists() || gd.join("rebase-apply").exists()
-    })
+    let dotgit = worktree_path.join(".git");
+    let gitdir = match std::fs::read_to_string(&dotgit) {
+        Ok(s) => s.trim().strip_prefix("gitdir:").map(|p| worktree_path.join(p.trim())),
+        Err(_) => Some(dotgit).filter(|d| d.is_dir()),
+    };
+    gitdir.is_some_and(|gd| worktree::rebase_dir(&gd))
+}
+
+/// The conflicted (unmerged) paths of a stopped merge or rebase.
+fn conflicted_files(wt: &Path, gitconfig: Option<&Path>) -> Vec<String> {
+    let mut c = git_cmd(wt, gitconfig);
+    c.args(["diff", "--name-only", "--diff-filter=U", "-z"]);
+    run(c, None).unwrap_or_default().split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect()
 }
 
 /// git for a rebase: as [`git_cmd`], with no editor (messages kept, no todo edit).
@@ -291,12 +299,7 @@ fn rebase_stopped(wt: &Path, gitconfig: Option<&Path>, err: anyhow::Error) -> Re
     if !rebasing(&insp) {
         return Err(err.context("git rebase"));
     }
-    let files: Vec<String> = rebase_git(wt, gitconfig, &["diff", "--name-only", "--diff-filter=U", "-z"])
-        .unwrap_or_default()
-        .split('\0')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
+    let files = conflicted_files(wt, gitconfig);
     if files.is_empty() {
         rebase_git(wt, gitconfig, &["rebase", "--abort"]).context("git rebase --abort")?;
         return Err(err.context("git rebase (aborted)"));
@@ -360,23 +363,20 @@ pub fn rebase_continue(worktree_path: &Path, gitconfig: Option<&Path>) -> Result
         rebase_file(&gd, "orig-head").ok_or_else(|| anyhow::anyhow!("the rebase in progress has no orig-head"))?;
     let g = |args: &[&str]| rebase_git(&wt, gitconfig, args);
     // `add -A` would mark a file still holding conflict markers resolved.
-    let marked: Vec<String> = g(&["diff", "--name-only", "--diff-filter=U", "-z"])
-        .unwrap_or_default()
-        .split('\0')
+    let marked: Vec<String> = conflicted_files(&wt, gitconfig)
+        .into_iter()
         .filter(|f| {
-            !f.is_empty()
-                && std::fs::read(wt.join(f)).is_ok_and(|b| {
-                    String::from_utf8_lossy(&b).lines().any(|l| l.starts_with("<<<<<<< ") || l.starts_with(">>>>>>> "))
-                })
+            std::fs::read(wt.join(f)).is_ok_and(|b| {
+                String::from_utf8_lossy(&b).lines().any(|l| l.starts_with("<<<<<<< ") || l.starts_with(">>>>>>> "))
+            })
         })
-        .map(str::to_string)
         .collect();
     if !marked.is_empty() {
         bail!("conflict markers are still in {}: resolve them, then commit again", marked.join(", "));
     }
     g(&["add", "-A", "--", "."]).context("git add")?;
     match g(&["rebase", "--continue"]) {
-        Ok(_) if !rebasing(&worktree::inspect(&wt)) => {
+        Ok(_) if !worktree::rebase_dir(&gd) => {
             Ok(RebaseOutcome::Rebased { from, to: g(&["rev-parse", "HEAD"])?.trim().to_string() })
         }
         Ok(_) => rebase_stopped(&wt, gitconfig, anyhow::anyhow!("the rebase stopped")),

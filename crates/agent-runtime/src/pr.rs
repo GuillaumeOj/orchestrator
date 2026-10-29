@@ -25,7 +25,7 @@ use crate::team::effective;
 pub const PR_EVERY: Duration = Duration::from_secs(60);
 /// The base and PR head are fetched at most this often per run.
 const FETCH_BASE_EVERY_MS: u64 = 5 * 60 * 1000;
-const FETCH_DEADLINE: Duration = Duration::from_secs(120);
+pub(crate) const FETCH_DEADLINE: Duration = Duration::from_secs(120);
 
 /// The watcher's own clock: when each run last fetched. Held for a whole
 /// check, so two checks of the PRs never interleave (tick, refresh, push).
@@ -269,9 +269,9 @@ impl Runtime {
                     };
                     // A merge is not held back by a pause: the run is done (spec §3.3).
                     let moved = if to == RunState::Done {
-                        self.set_run_state(&run.id, to, why).map(|_| ())
+                        self.set_run_state(&run.id, to, why)
                     } else {
-                        self.advance_run(&run.id, to, why).map(|_| ())
+                        self.advance_run(&run.id, to, why)
                     };
                     if let Err(e) = moved {
                         self.run_event(&run.id, None, "team_error", json!(format!("{e:#}")));
@@ -420,7 +420,7 @@ impl Runtime {
             .pr
             .as_ref()
             // A checked head: a commit sha (it becomes the lease and git arguments).
-            .filter(|p| p.head_sha.len() >= 7 && p.head_sha.chars().all(|c| c.is_ascii_hexdigit()))
+            .filter(|p| orch_git::git::valid_sha(&p.head_sha))
             .ok_or_else(|| anyhow!("PR #{n} was not checked yet: try again in a minute"))?;
         let base_ref = format!("origin/{}", pr.base);
         let branch = orch_git::worktree::current_branch(wt)?;
@@ -431,9 +431,11 @@ impl Runtime {
         let pushed = pr.pushed_sha.clone().unwrap_or_else(|| pr.head_sha.clone());
         let mut foreign_replaced = 0;
         if pr.head_sha != pushed {
-            if gh::rev_sha(wt, &pr.head_sha).is_none() {
-                // The watcher fetches every few minutes: fetch the PR (and its base) now.
-                let _watch = self.pr_watch.lock().unwrap_or_else(|e| e.into_inner());
+            // The watcher fetches every few minutes: fetch the PR (and its base)
+            // now, unless a check is fetching already (then it lands soon).
+            if gh::rev_sha(wt, &pr.head_sha).is_none()
+                && let Ok(_watch) = self.pr_watch.try_lock()
+            {
                 let _ = gh::fetch_branches(wt, &[&pr.base, &branch], FETCH_DEADLINE);
             }
             if gh::rev_sha(wt, &pr.head_sha).is_none() {

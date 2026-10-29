@@ -82,6 +82,11 @@ pub fn real(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
+/// A commit sha (abbreviated or full): safe as a git argument and a lease.
+pub fn valid_sha(s: &str) -> bool {
+    (7..=64).contains(&s.len()) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// Agent ids and slugs end up in paths, branch names and env values.
 pub fn valid_id(s: &str) -> bool {
     !s.is_empty()

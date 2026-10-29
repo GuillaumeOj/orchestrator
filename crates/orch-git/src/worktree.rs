@@ -230,7 +230,7 @@ pub fn others(repo: &Path, except: &Path) -> Vec<PathBuf> {
 pub struct Inspection {
     pub exists: bool,
     pub gitdir: Option<PathBuf>,
-    /// `MERGE_HEAD`, `REBASE_HEAD`, `rebase-merge`, `rebase-apply`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`.
+    /// `MERGE_HEAD`, `rebase-merge`, `rebase-apply`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`.
     pub in_progress: Vec<String>,
     pub index_lock: bool,
     pub unmerged: usize,
@@ -238,8 +238,15 @@ pub struct Inspection {
     pub error: Option<String>,
 }
 
+/// `REBASE_HEAD` is not one: git leaves it behind a finished rebase (the
+/// rebase dirs say whether one runs).
 pub const IN_PROGRESS_MARKERS: &[&str] =
-    &["MERGE_HEAD", "REBASE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD"];
+    &["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD"];
+
+/// A rebase is in progress in the worktree whose gitdir is `gitdir`.
+pub fn rebase_dir(gitdir: &Path) -> bool {
+    gitdir.join("rebase-merge").exists() || gitdir.join("rebase-apply").exists()
+}
 
 pub fn inspect(path: &Path) -> Inspection {
     let mut i = Inspection { exists: path.is_dir(), ..Default::default() };
@@ -254,13 +261,7 @@ pub fn inspect(path: &Path) -> Inspection {
         }
     };
     // The `locked` marker file lives in the gitdir too: it is not "in progress".
-    // git leaves `REBASE_HEAD` behind a finished rebase: it counts only beside a rebase dir.
-    let rebase_dir = gd.join("rebase-merge").exists() || gd.join("rebase-apply").exists();
-    i.in_progress = IN_PROGRESS_MARKERS
-        .iter()
-        .filter(|m| gd.join(m).exists() && (**m != "REBASE_HEAD" || rebase_dir))
-        .map(|m| m.to_string())
-        .collect();
+    i.in_progress = IN_PROGRESS_MARKERS.iter().filter(|m| gd.join(m).exists()).map(|m| m.to_string()).collect();
     i.index_lock = gd.join("index.lock").exists();
     i.gitdir = Some(gd);
     if let Ok(u) = git(path, &["ls-files", "-u"]) {

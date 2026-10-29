@@ -10,11 +10,10 @@ use orch_git::gh;
 use orch_team::{RunState, TaskStatus};
 use serde_json::{Value, json};
 
+use crate::pr::FETCH_DEADLINE;
 use crate::runtime::Runtime;
 use crate::store::AgentRecord;
 use crate::team::{RunCtx, effective};
-
-const FETCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl Runtime {
     /// `rebase_base {abort?}` (lead only; checked by the caller).
@@ -133,7 +132,7 @@ impl Runtime {
         let guard = self.pr_watch.lock().unwrap_or_else(|e| e.into_inner());
         let prefix = format!("orch/{}/", cx.feature.slug);
         let integ = cx.feature.integration_branch();
-        let mut moved = vec![];
+        let (mut moved, mut to_sync) = (vec![], vec![]);
         for a in self.run_agents(&cx.run.id).into_iter().filter(|a| a.id != lead.id) {
             let branch = self.branch_of(&a);
             // Only this run's specialist branches, never the integration branch.
@@ -142,20 +141,13 @@ impl Runtime {
             }
             let merged = gh::rev_sha(&lead.worktree, &format!("refs/heads/{branch}"))
                 .is_some_and(|h| orch_git::cleanup::is_merged(&lead.worktree, &h, from));
-            let checked_out = orch_git::worktree::current_branch(&a.worktree).is_ok_and(|b| b == branch);
-            let reset = merged
-                && checked_out
-                && commit::reset_worktree(&a.worktree, &branch, to, self.agent_gitconfig(&a.id).as_deref()).is_ok();
-            if reset {
+            // `reset_worktree` refuses a worktree on any other branch, or not clean.
+            if merged
+                && commit::reset_worktree(&a.worktree, &branch, to, self.agent_gitconfig(&a.id).as_deref()).is_ok()
+            {
                 moved.push(branch);
             } else {
-                let _ = self.deliver_kind(
-                    &a.id,
-                    &format!(
-                        "ORCH: {integ} was rebased onto {onto}. Call mcp__orch__sync_integration before your next task."
-                    ),
-                    TurnKind::Continue,
-                );
+                to_sync.push(a.id);
             }
         }
         let base_commits = orch_git::cleanup::ahead_behind(&lead.worktree, onto, from).0;
@@ -167,6 +159,15 @@ impl Runtime {
                    "branches_moved": moved}),
         );
         drop(guard);
+        for id in to_sync {
+            let _ = self.deliver_kind(
+                &id,
+                &format!(
+                    "ORCH: {integ} was rebased onto {onto}. Call mcp__orch__sync_integration before your next task."
+                ),
+                TurnKind::Continue,
+            );
+        }
         if effective(&cx.run) == RunState::PrOpen
             && let Some(me) = self.me.upgrade()
         {
