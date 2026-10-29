@@ -358,7 +358,6 @@
   .fh,
   .cardh,
   .tt,
-  .arow,
   .ev,
   .msg,
   .colh {
