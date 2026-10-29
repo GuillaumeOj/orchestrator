@@ -200,6 +200,28 @@ describe('TermPane sizing', () => {
     t.dispose();
   });
 
+  it('nudges when the grid leaves the spawn size only after start (first fit skipped)', async () => {
+    h.dims = undefined; // no cell metrics at mount: xterm stays at 80x24, the spawn size
+    const t = mounted({ kind: 'term', id: 1, spawn: { rows: 24, cols: 80 } });
+    t.start();
+    h.dims = { cols: 100, rows: 30 };
+    vi.advanceTimersByTime(20); // the settle frame fits
+    await vi.advanceTimersByTimeAsync(NUDGE_MS);
+    expect(resizes()).toEqual(['80x24', '100x30', '100x29', '100x30']);
+    t.dispose();
+  });
+
+  it('detaches the real reader of an agent disposed while its attach was pending', async () => {
+    const t = mounted({ kind: 'agent', id: 'a1' });
+    const started = t.start();
+    t.dispose();
+    h.attach();
+    await started;
+    const detaches = h.calls.filter((c) => c.cmd === 'agent_detach').map((c) => c.reader);
+    expect(detaches).toEqual([0, 7]);
+    expect(h.calls.some((c) => c.cmd === 'agent_read')).toBe(false);
+  });
+
   it('leaves nothing to fire on a disposed pane', async () => {
     const t = mounted({ kind: 'term', id: 1, spawn: { rows: 24, cols: 80 } });
     t.start();

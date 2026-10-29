@@ -264,13 +264,18 @@ export class TermPane {
     } finally {
       this.starting = false;
     }
-    if (this.disposed) return;
+    if (this.disposed) {
+      // dispose() detached reader 0 while the attach was pending: detach the real one.
+      if (this.source.kind === 'agent')
+        invoke('agent_detach', { id: this.source.id, reader: this.reader ?? 0 }).catch(() => {});
+      return;
+    }
     this.alive = true;
     // A fit during the attach was not sent: send the size now if it changed.
     this.syncPty();
-    const spawn = this.source.kind === 'term' ? this.source.spawn : null;
-    if (spawn && (spawn.rows !== this.term.rows || spawn.cols !== this.term.cols))
-      this.nudgeTimer = setTimeout(() => this.nudge(), NUDGE_MS);
+    // Decided when it fires: the settle refits after mount can still move the
+    // grid off the spawn size (a first fit skipped leaves xterm at 80x24).
+    if (this.source.kind === 'term' && this.source.spawn) this.nudgeTimer = setTimeout(() => this.nudge(), NUDGE_MS);
     this.pull();
   }
 
@@ -313,6 +318,8 @@ export class TermPane {
   nudge() {
     if (!this.alive || this.term.rows < 2) return;
     const { rows, cols } = this.term;
+    const spawn = this.source.spawn;
+    if (spawn && spawn.rows === rows && spawn.cols === cols) return;
     debug(this.source.id, 'nudge', `${cols}x${rows}`);
     invoke(this.cmd.resize, { id: this.source.id, rows: rows - 1, cols })
       .catch(() => {})
