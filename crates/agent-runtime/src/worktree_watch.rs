@@ -107,15 +107,15 @@ impl Runtime {
     /// `watch_worktree`: a Diff pane opened on `path`. The first one starts
     /// the watcher; the topic is `worktree:<path>` as the pane asked it.
     pub fn watch_worktree(&self, path: &Path) -> Result<()> {
-        // Under the lock throughout (an FSEvents recursive watch starts at
-        // once): a pane closed while this one starts finds it counted, so no
-        // watcher outlives its panes.
+        // The check (a git call, a DB read) needs no lock. From the lookup to
+        // the insert the lock is held (an FSEvents recursive watch starts at
+        // once): a pane closed meanwhile finds this one counted.
+        let root = self.known_worktree(path)?;
         let mut w = self.watches();
         if let Some(e) = w.get_mut(path) {
             e.panes += 1;
             return Ok(());
         }
-        let root = self.known_worktree(path)?;
         let throttle = Throttle::default();
         let watcher = start(&root, throttle.dirty.clone())?;
         w.insert(path.to_path_buf(), Watch { panes: 1, throttle, _watcher: watcher });
