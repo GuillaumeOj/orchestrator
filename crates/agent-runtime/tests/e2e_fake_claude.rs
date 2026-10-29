@@ -17,7 +17,7 @@ use orch_protocol::{AgentSpec, CtlRequest, bus};
 use serde_json::Value;
 
 mod common;
-use common::{agent, git, helper_bins, short_tempdir};
+use common::{Screens, agent, git, helper_bins, short_tempdir};
 
 fn wait_for(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(secs);
@@ -320,13 +320,8 @@ fn an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry() {
     };
     // Read drains the pane, so keep everything drained so far: a poll that
     // sees the text while another condition still fails must not lose it.
-    let seen = std::cell::RefCell::new(String::new());
-    let screen = || {
-        let fresh = request(&core.sock, CtlRequest::Read { agent_id: "a".into() }).unwrap().data;
-        let mut seen = seen.borrow_mut();
-        seen.push_str(fresh.as_str().unwrap_or(""));
-        seen.clone()
-    };
+    let screens = Screens::default();
+    let screen = || screens.read(&core.sock, "a");
 
     // A rule answers at once.
     let rule = core
@@ -574,14 +569,8 @@ fn a_team_run_end_to_end_with_fake_claude() {
         });
     };
     // Read drains the pane: accumulate per agent so no output is lost between polls.
-    let seen = std::cell::RefCell::new(std::collections::HashMap::<String, String>::new());
-    let screen = |agent_id: &str| {
-        let fresh = request(&sock, CtlRequest::Read { agent_id: agent_id.into() }).unwrap().data;
-        let mut seen = seen.borrow_mut();
-        let all = seen.entry(agent_id.to_string()).or_default();
-        all.push_str(fresh.as_str().unwrap_or(""));
-        all.clone()
-    };
+    let screens = Screens::default();
+    let screen = |agent_id: &str| screens.read(&sock, agent_id);
     let run_state =
         |run: &str| request(&sock, CtlRequest::Run { run_id: run.into() }).unwrap().data["run"]["status"].clone();
     let p = request(&sock, CtlRequest::ProjectAdd { path: core.repo.display().to_string() }).unwrap();

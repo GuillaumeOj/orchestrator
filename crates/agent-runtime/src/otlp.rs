@@ -407,6 +407,18 @@ mod tests {
         assert_eq!(got.lock().unwrap().len(), 2);
     }
 
+    // The quiet close itself: a read that times out before any byte of a request is `Ok(None)`,
+    // not an error (which `serve_conn` would answer with a stray 400).
+    #[test]
+    fn idle_read_timeout_between_requests_is_a_quiet_close() {
+        let l = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let _client = TcpStream::connect(l.local_addr().unwrap()).unwrap();
+        let (s, _) = l.accept().unwrap();
+        s.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        let mut r = BufReader::new(s);
+        assert!(read_request(&mut r).unwrap().is_none());
+    }
+
     #[test]
     fn http_server_keepalive_chunked_and_rejections() {
         let (rx, got) = start_counting();
