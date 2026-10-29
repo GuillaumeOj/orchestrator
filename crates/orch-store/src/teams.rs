@@ -69,6 +69,12 @@ pub struct TeamRun {
     pub pr: Option<PrStatus>,
 }
 
+/// The PR number at the end of a PR URL (`…/pull/12`).
+pub fn pr_number_from_url(url: &str) -> Option<u64> {
+    let (_, n) = url.trim().trim_end_matches('/').rsplit_once("/pull/")?;
+    n.parse().ok()
+}
+
 /// A run's PR as the watcher last saw it (state, CI, position against its base).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PrStatus {
@@ -78,13 +84,13 @@ pub struct PrStatus {
     pub base: String,
     pub ci: CiSummary,
     pub position: PrPosition,
+    /// The PR head the app itself last pushed (the force-with-lease lease).
+    #[serde(default)]
+    pub pushed_sha: Option<String>,
     /// Local integration commits not in `head_sha`.
     pub unpushed: u32,
-    /// The local branch does not contain `head_sha` (rebased).
+    /// The local branch does not contain `pushed_sha` (rebased).
     pub rewritten: bool,
-    /// `origin/<base>` when `position` was computed (behind is told once per base head).
-    #[serde(default)]
-    pub base_sha: Option<String>,
     pub checked_at_ms: u64,
     /// The last check failed: the rest is the last good status.
     #[serde(default)]
@@ -120,6 +126,9 @@ pub struct PrPosition {
     pub status: String,
     pub behind: u32,
     pub ahead: u32,
+    /// The `origin/<base>` head they were counted against (behind is told once per base head).
+    #[serde(default)]
+    pub base_sha: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -393,7 +402,9 @@ fn row_run(r: &rusqlite::Row) -> rusqlite::Result<TeamRun> {
         started_at_ms: r.get::<_, i64>(7)? as u64,
         ended_at_ms: opt_u64(r, 8)?,
         team_scope: scope_of(r.get(9)?),
-        pr_number: opt_u64(r, 10)?,
+        // Runs done before the PR number was stored: read from the URL.
+        pr_number: opt_u64(r, 10)?
+            .or_else(|| r.get::<_, Option<String>>(6).ok().flatten().and_then(|u| pr_number_from_url(&u))),
         pr: r.get::<_, Option<String>>(11)?.map(|s| from_js(&s)).transpose()?,
     })
 }
@@ -1132,12 +1143,17 @@ mod tests {
                 overall: "error".into(),
                 done: 1,
                 total: 2,
-                jobs: vec![CiJob { name: "test".into(), workflow: Some("ci".into()), state: "failure".into(), url: None }],
+                jobs: vec![CiJob {
+                    name: "test".into(),
+                    workflow: Some("ci".into()),
+                    state: "failure".into(),
+                    url: None,
+                }],
             },
-            position: PrPosition { status: "behind".into(), behind: 2, ahead: 3 },
+            position: PrPosition { status: "behind".into(), behind: 2, ahead: 3, base_sha: Some("def".into()) },
+            pushed_sha: Some("abc".into()),
             unpushed: 1,
             rewritten: false,
-            base_sha: Some("def".into()),
             checked_at_ms: 9,
             error: None,
         });

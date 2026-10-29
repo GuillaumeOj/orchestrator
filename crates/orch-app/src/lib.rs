@@ -172,6 +172,7 @@ pub fn run() {
             commands::project_clone,
             commands::project_detail,
             commands::project_fetch,
+            commands::pr_refresh,
             commands::worktree_remove,
             commands::worktree_diff,
             commands::worktree_create_pr,

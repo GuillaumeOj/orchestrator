@@ -13,7 +13,7 @@ use are protected ([agent-runtime `projects`](../agent-runtime/README.md)).
 | `worktree` | layout and naming, `ensure`/`complete` (add + lock + row, idempotent), `lock`, `list`, `inspect`, `others`, `common_dir`, `main_checkout`, `default_branch`, `WorktreeLedger` | FR-105 |
 | `cleanup` | `branches(repo, base)`, `worktrees(repo, rows, base)` with verdicts (ok / missing / unknown / prunable / main / external), `is_merged`, `remove_worktree`, `delete_branch` | FR-104 |
 | `diff` | `diff(worktree, against, max_bytes) -> Diff`: from the merge base to the working tree, untracked included, per-file status and counts, patch (bounded) | FR-107 |
-| `gh` | `prs(repo)` with CI rollup, `runs(repo, branch)`, `available`; **gated** `push`, `create_pr` | FR-106, ADR-009 |
+| `gh` | `prs(repo)` with CI rollup, `runs(repo, branch)`, `available`; one PR: `pr_view`, `summarize_jobs` (CI jobs, `done/total`, the dot), `position`, `fetch_branches`, `left_right`, `commits_since`; **gated** `push`, `create_pr` | FR-106, ADR-009 |
 | `repair` | `check_links(wt)`, `plan_relocation(old, new, rows)`, `repair(repo, worktrees)` (targeted `git worktree repair` + re-lock) | J10, ADR-003 |
 | `commit` | `commit_in_worktree(wt, CommitRequest, gitconfig) -> CommitResult`, `validate` | FR-702 gap, R10 |
 | `fixtures` | (feature `fixtures`) `scratch_repo`, `commit_file`, `MemLedger`, `git` | tests |

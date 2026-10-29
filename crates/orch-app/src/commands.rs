@@ -535,6 +535,12 @@ pub async fn project_fetch(core: CoreState<'_>, id: String) -> Res<Value> {
     blocking(core, move |c| c.project_fetch(&id)).await
 }
 
+/// Checks a feature's PR now (it can wait on `gh` and a fetch: off the UI thread).
+#[tauri::command]
+pub async fn pr_refresh(core: CoreState<'_>, feature: String) -> Res<Value> {
+    blocking(core, move |c| c.pr_refresh(&feature)).await
+}
+
 #[tauri::command]
 pub async fn worktree_remove(
     core: CoreState<'_>,

@@ -216,8 +216,17 @@ through `orch-tasks` (Local or GitHub Issues, FR-501–503).
   sync; with `task`, the task → Done), `sync_integration` (specialist; a conflict is left in
   progress and the agent's `commit` concludes it).
 - **Gates**: spec approve → `planning` and "ORCH: approved: proceed…"; reject/reply → `spec` with
-  the user's words. A lead's `request_pr` → `pr_gate`; approved and opened → `done` with the PR
-  URL; declined or failed → `integrating`.
+  the user's words. A lead's `request_pr` → `pr_gate`; approved and opened → `pr_open` with the PR
+  URL and number; declined or failed → `integrating`.
+- **Open PR** (`pr`): `pr_tick` (fetch thread, every 60 s; none offline or on battery below 20 %)
+  runs `gh pr view` per `pr_open` run, fetches the base and PR head at most every 5 min, and stores
+  `run.pr` (state, CI jobs, position, `pushed_sha`, unpushed, rewritten). Changes against the stored
+  status (so a restart repeats nothing): CI → error, behind on a new base head, conflicts → one ORCH
+  turn to the lead; merged → `done`, closed → `integrating` (lead told, an `info` Inbox item, a
+  pending update gate withdrawn). A gh failure keeps the status with `error`. `pr_refresh(feature)`
+  checks now. `request_pr` in `pr_open` → a `push_pr_update` gate (new commits since `pushed_sha`;
+  refused when there are none); approved → fast-forward push, audit `pr_update`, `pr.pushed`, an
+  immediate check, the lead told. The run stays `pr_open` throughout.
 - **Controls** (FR-406): `run_pause` (run `paused`, every member paused in the Governor; new members
   of a paused run start paused), `run_resume`, `run_stop` (queued turns dropped, live members
   suspended, run `failed` "stopped by the user"), `reassign_task`, `add_node` (a new team version,

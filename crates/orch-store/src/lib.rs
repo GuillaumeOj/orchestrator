@@ -24,7 +24,8 @@ pub use reports::ReportRow;
 pub use runtime_rows::upsert_worktree as upsert_worktree_tx;
 pub use runtime_rows::{AgentRow, HoldRowDb, RuntimeDiff, RuntimeRows, TurnRowDb};
 pub use teams::{
-    Artifact, CiJob, CiSummary, Feature, PrPosition, PrStatus, Message, ProjectSettings, Task, TaskBackendConfig, TaskFlow, TaskNote, TeamRun,
+    Artifact, CiJob, CiSummary, Feature, Message, PrPosition, PrStatus, ProjectSettings, Task, TaskBackendConfig,
+    TaskFlow, TaskNote, TeamRun, pr_number_from_url,
 };
 pub use transcripts::{IndexStats, SearchHit, TranscriptFile, encode_project_dir, extract_text};
 pub use util::{tag, untag};

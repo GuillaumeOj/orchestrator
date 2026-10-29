@@ -218,11 +218,16 @@ impl Runtime {
     /// Closes every open (pending or parked) item of `agent` as the core's,
     /// with `why` as the decision (the agent was deleted or archived).
     pub(crate) fn close_items_of(&self, agent: &str, why: &str) {
+        self.close_items_where(|i| i.agent_id.as_deref() == Some(agent), why);
+    }
+
+    /// Closes every open item that `pick` selects as the core's, with `why`
+    /// as the decision.
+    pub(crate) fn close_items_where(&self, pick: impl Fn(&InboxItem) -> bool, why: &str) {
         let closed = self
             .store
             .write(|s| {
-                let ids: Vec<u64> =
-                    s.inbox.iter().filter(|i| i.open() && i.agent_id.as_deref() == Some(agent)).map(|i| i.id).collect();
+                let ids: Vec<u64> = s.inbox.iter().filter(|i| i.open() && pick(i)).map(|i| i.id).collect();
                 ids.into_iter()
                     .filter_map(|id| s.close_inbox(id, InboxStatus::Dismissed, Some(why.into()), "core").ok().cloned())
                     .collect::<Vec<_>>()
@@ -875,6 +880,22 @@ impl Runtime {
                 self.outcome(&item, "user", effect);
                 return Ok(result);
             }
+            ("gate", "push_pr_update", InboxDecision::Approve) => {
+                if let Some(me) = self.me.upgrade() {
+                    let payload = item.payload.clone();
+                    std::thread::spawn(move || me.push_pr_update(id, &payload));
+                }
+                result["pr"] = json!("pushing to the PR");
+            }
+            ("gate", "push_pr_update", InboxDecision::Reject | InboxDecision::Reply) => {
+                // The PR stays open as it is: the run does not move.
+                if let Some(a) = agent {
+                    let n = item.payload.get("pr_number").and_then(Value::as_u64).unwrap_or(0);
+                    let why = message.map(|m| format!(" They said: {m}")).unwrap_or_default();
+                    let _ = self.deliver_user(a, &format!("ORCH: the user declined pushing to PR #{n}.{why}"));
+                    effect = self.delivered_effect(a);
+                }
+            }
             ("gate", "spec_approval", InboxDecision::Approve | InboxDecision::AlwaysAllow) => {
                 self.spec_decided(&item.payload, agent, true, None);
                 sent = agent.is_some();
@@ -963,6 +984,19 @@ impl Runtime {
 
     /// `request_pr` from orch-mcp: an Inbox gate (the agent can't push).
     pub(crate) fn request_pr(&self, rec: &AgentRecord, args: &Value) -> Result<String> {
+        if self.store.read(|s| {
+            s.inbox.iter().any(|i| {
+                i.pending()
+                    && matches!(i.payload.get("action").and_then(Value::as_str), Some("push_pr" | "push_pr_update"))
+                    && i.agent_id.as_deref() == Some(&rec.id)
+            })
+        }) {
+            bail!("a pull request request is already waiting for the user");
+        }
+        // The PR is open: push the new commits to it rather than open another.
+        if let Some(run) = self.open_pr_run(rec) {
+            return self.request_pr_update(rec, &run);
+        }
         let title = args.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
         let title = title.ok_or_else(|| anyhow!("title is required"))?.chars().take(256).collect::<String>();
         let body = args.get("body").and_then(Value::as_str).unwrap_or("").chars().take(20_000).collect::<String>();
@@ -971,15 +1005,6 @@ impl Runtime {
         let branch = orch_git::git(&rec.worktree, &["symbolic-ref", "--short", "HEAD"])?.trim().to_string();
         let base = row.map(|r| r.base).unwrap_or_else(|| "main".into());
         let head = orch_git::git(&rec.worktree, &["rev-parse", "HEAD"])?.trim().to_string();
-        if self.store.read(|s| {
-            s.inbox.iter().any(|i| {
-                i.pending()
-                    && i.payload.get("action") == Some(&json!("push_pr"))
-                    && i.agent_id.as_deref() == Some(&rec.id)
-            })
-        }) {
-            bail!("a pull request request is already waiting for the user");
-        }
         let id = self.add_item(
             Some(&rec.id),
             "gate",
@@ -1036,7 +1061,7 @@ impl Runtime {
 
     /// After the PR gate is approved: push with the user's credentials, open
     /// the PR, tell the agent (ADR-009: only the app pushes).
-    fn open_pr(&self, item: u64, p: &Value) {
+    pub(crate) fn open_pr(&self, item: u64, p: &Value) {
         let agent = self.store.read(|s| s.inbox.iter().find(|i| i.id == item).and_then(|i| i.agent_id.clone()));
         let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         let wt = std::path::PathBuf::from(s("worktree"));
@@ -1045,7 +1070,7 @@ impl Runtime {
         let r = match &self.cfg.open_pr {
             Some(f) => (f.0)(&wt, &base, &branch, &s("title"), &s("body"), draft),
             None => orch_git::gh::push(&wt, "origin", &branch)
-                .and_then(|_| orch_git::gh::create_pr(&wt, &base, &branch, &s("title"), &s("body"), draft)),
+                .and_then(|_| self.gh_create_pr(&wt, &base, &branch, &s("title"), &s("body"), draft)),
         };
         let (decision, msg) = match &r {
             Ok(url) => ("ok", format!("ORCH: the user approved; the orchestrator pushed {branch} and opened {url}")),
@@ -1072,8 +1097,8 @@ impl Runtime {
                     None => self.event(&a, "run.pr_opened", json!({"url": url})),
                 }
             }
-            self.pr_opened(&a, r.as_ref().ok().map(String::as_str));
             let _ = self.deliver_user(&a, &msg);
+            self.pr_opened(&a, r.as_ref().ok().map(String::as_str), orch_git::gh::rev_sha(&wt, &branch));
         }
     }
 }

@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub use orch_store::pr_number_from_url;
 use orch_store::{CiJob, CiSummary, PrPosition};
 
 use crate::git::{git, git_deadline, git_ok, run_with_deadline};
@@ -87,6 +88,11 @@ const PASSED: &[&str] = &["success", "neutral", "skipped"];
 /// The most jobs kept on a PR status.
 const MAX_JOBS: usize = 100;
 
+/// A finished job that failed (the CI dot is red).
+pub fn job_failed(state: &str) -> bool {
+    FAILED.contains(&state)
+}
+
 fn job_finished(state: &str) -> bool {
     FAILED.contains(&state) || PASSED.contains(&state)
 }
@@ -131,14 +137,18 @@ fn job(c: &Value) -> CiJob {
 /// whatever their outcome; `overall` is the dot's color, `error` before
 /// `running` before `waiting` before `ok`, `none` with no job.
 pub fn summarize_jobs(v: &Value) -> CiSummary {
-    let mut jobs: Vec<CiJob> = v.as_array().into_iter().flatten().map(job).collect();
-    let total = jobs.len() as u32;
+    // `gh` flattens the rollup into an array; a paged GraphQL one is
+    // `{totalCount, nodes | contexts}`: `total` counts every job then.
+    let list = v.as_array().or_else(|| v.get("nodes").or_else(|| v.get("contexts")).and_then(Value::as_array));
+    let mut jobs: Vec<CiJob> = list.into_iter().flatten().map(job).collect();
+    let paged = v.get("totalCount").and_then(Value::as_u64).unwrap_or(0) as u32;
+    let total = paged.max(jobs.len() as u32);
     let done = jobs.iter().filter(|j| job_finished(&j.state)).count() as u32;
     let overall = if jobs.iter().any(|j| FAILED.contains(&j.state.as_str())) {
         "error"
     } else if jobs.iter().any(|j| j.state == "in_progress") {
         "running"
-    } else if done < total {
+    } else if done < jobs.len() as u32 || total > jobs.len() as u32 {
         "waiting"
     } else if total > 0 {
         "ok"
@@ -195,16 +205,15 @@ pub fn pr_view(dir: &Path, number: u64) -> Result<PrView> {
     parse_pr_view(&gh(dir, &args.iter().map(String::as_str).collect::<Vec<_>>())?)
 }
 
-/// The PR number at the end of a PR URL (`…/pull/12`).
-pub fn pr_number_from_url(url: &str) -> Option<u64> {
-    let (_, n) = url.trim().trim_end_matches('/').rsplit_once("/pull/")?;
-    n.parse().ok()
-}
-
 /// The PR head against its base (spec §3.2): `conflicts` when GitHub says so,
 /// `unknown` while it computes mergeability or without the local counts
 /// (`(behind, ahead)`, `None` when the base was never fetched).
-pub fn position(mergeable: &str, merge_state: &str, counts: Option<(u32, u32)>) -> PrPosition {
+pub fn position(
+    mergeable: &str,
+    merge_state: &str,
+    counts: Option<(u32, u32)>,
+    base_sha: Option<String>,
+) -> PrPosition {
     let (behind, ahead) = counts.unwrap_or((0, 0));
     let status = if mergeable == "CONFLICTING" || merge_state == "DIRTY" {
         "conflicts"
@@ -215,15 +224,18 @@ pub fn position(mergeable: &str, merge_state: &str, counts: Option<(u32, u32)>) 
     } else {
         "up_to_date"
     };
-    PrPosition { status: status.into(), behind, ahead }
+    PrPosition { status: status.into(), behind, ahead, base_sha }
 }
 
-/// `git fetch origin <base>` (updates `origin/<base>`), with a deadline.
-pub fn fetch_base(dir: &Path, base: &str, deadline: Duration) -> Result<()> {
-    if base.is_empty() || base.starts_with('-') {
-        bail!("invalid base branch {base:?}");
+/// `git fetch origin <branch>…` (updates `origin/<branch>`: the PR's base and
+/// head, so both are local for the counts), with a deadline.
+pub fn fetch_branches(dir: &Path, branches: &[&str], deadline: Duration) -> Result<()> {
+    if branches.iter().any(|b| b.is_empty() || b.starts_with('-')) {
+        bail!("invalid branch in {branches:?}");
     }
-    git_deadline(dir, &["fetch", "--quiet", "--no-write-fetch-head", "origin", base], deadline)?;
+    let mut args = vec!["fetch", "--quiet", "--no-write-fetch-head", "origin"];
+    args.extend_from_slice(branches);
+    git_deadline(dir, &args, deadline)?;
     Ok(())
 }
 
@@ -248,11 +260,7 @@ pub fn head_contains(dir: &Path, sha: &str) -> bool {
 /// The commits of `HEAD` not in `sha`, newest first: `(sha, subject)`.
 pub fn commits_since(dir: &Path, sha: &str) -> Result<Vec<(String, String)>> {
     let out = git(dir, &["log", "--max-count=200", "--format=%H%x1f%s", &format!("{sha}..HEAD")])?;
-    Ok(out
-        .lines()
-        .filter_map(|l| l.split_once('\x1f'))
-        .map(|(h, s)| (h.to_string(), s.to_string()))
-        .collect())
+    Ok(out.lines().filter_map(|l| l.split_once('\x1f')).map(|(h, s)| (h.to_string(), s.to_string())).collect())
 }
 
 pub fn parse_pr_list(json: &str) -> Result<Vec<PullRequest>> {
@@ -410,18 +418,34 @@ mod tests {
         assert_eq!(o(serde_json::json!([])), "none");
         assert_eq!(o(Value::Null), "none");
         for bad in ["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"] {
-            assert_eq!(o(serde_json::json!([run("a", "COMPLETED", bad), run("b", "IN_PROGRESS", "")])), "error", "{bad}");
+            assert_eq!(
+                o(serde_json::json!([run("a", "COMPLETED", bad), run("b", "IN_PROGRESS", "")])),
+                "error",
+                "{bad}"
+            );
         }
         assert_eq!(o(serde_json::json!([{"context": "c", "state": "ERROR"}])), "error");
         assert_eq!(o(serde_json::json!([run("a", "IN_PROGRESS", ""), run("b", "QUEUED", "")])), "running");
         for wait in ["QUEUED", "WAITING", "REQUESTED", "PENDING"] {
-            assert_eq!(o(serde_json::json!([run("a", wait, ""), run("b", "COMPLETED", "SUCCESS")])), "waiting", "{wait}");
+            assert_eq!(
+                o(serde_json::json!([run("a", wait, ""), run("b", "COMPLETED", "SUCCESS")])),
+                "waiting",
+                "{wait}"
+            );
         }
         assert_eq!(o(serde_json::json!([{"context": "c", "state": "EXPECTED"}])), "waiting");
         assert_eq!(
-            o(serde_json::json!([run("a", "COMPLETED", "SUCCESS"), run("b", "COMPLETED", "NEUTRAL"), run("c", "COMPLETED", "SKIPPED")])),
+            o(serde_json::json!([
+                run("a", "COMPLETED", "SUCCESS"),
+                run("b", "COMPLETED", "NEUTRAL"),
+                run("c", "COMPLETED", "SKIPPED")
+            ])),
             "ok"
         );
+        assert_eq!(o(serde_json::json!([run("a", "COMPLETED", "SURPRISE")])), "waiting", "unknown: never ok");
+        let paged =
+            summarize_jobs(&serde_json::json!({"totalCount": 120, "nodes": [run("a", "COMPLETED", "SUCCESS")]}));
+        assert_eq!((paged.overall.as_str(), paged.done, paged.total, paged.jobs.len()), ("waiting", 1, 120, 1));
         let many: Vec<Value> = (0..150).map(|i| run(&format!("j{i:03}"), "COMPLETED", "SUCCESS")).collect();
         let c = summarize_jobs(&Value::Array(many));
         assert_eq!((c.total, c.done, c.jobs.len()), (150, 150, 100));
@@ -439,7 +463,7 @@ mod tests {
         assert_eq!(pr_view_args(7)[..3], ["pr", "view", "7"]);
 
         let pos = |m: &str, ms: &str, c| {
-            let p = position(m, ms, c);
+            let p = position(m, ms, c, None);
             (p.status, p.behind, p.ahead)
         };
         assert_eq!(pos("CONFLICTING", "DIRTY", Some((2, 3))), ("conflicts".into(), 2, 3));
@@ -473,10 +497,10 @@ mod tests {
         commit_file(&other, "m.txt", "m", "main moves");
         g(&other, &["push", "-q", "origin", "main"]);
         assert_eq!(left_right(&wt, "origin/main", &head).unwrap(), (0, 1));
-        fetch_base(&wt, "main", Duration::from_secs(30)).unwrap();
+        fetch_branches(&wt, &["main"], Duration::from_secs(30)).unwrap();
         assert_eq!(left_right(&wt, "origin/main", &head).unwrap(), (1, 1));
         assert_eq!(rev_sha(&wt, "origin/main"), rev_sha(&other, "HEAD"));
-        assert!(fetch_base(&wt, "--upload-pack=x", Duration::from_secs(5)).is_err());
+        assert!(fetch_branches(&wt, &["main", "--upload-pack=x"], Duration::from_secs(5)).is_err());
         assert_eq!(rev_sha(&wt, "origin/nope"), None);
     }
 

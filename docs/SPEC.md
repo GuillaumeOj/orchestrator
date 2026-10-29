@@ -410,7 +410,7 @@ flowchart LR
 ### 6.2 Agent lifecycle
 `created (queued, no process: "Not started yet") → (governor admits, or the user presses Start now) → working ⇄ waiting_for_you | waiting_gate | queued | paused | blocked_by_limit → idle → suspended (process stopped, resumable) → archived`, plus `error` and `killed`. `paused` holds the agent at a turn boundary with its process alive until Resume. A Stop with a non-empty `background_tasks` is **not idle**: background work is still running and will start a new turn by itself. The mapping to UI labels is in §9.5.
 
-Team run: `draft → spec → spec_gate → planning → executing → integrating → pr_gate → done`, plus `paused`, `deferred` and `failed`.
+Team run: `draft → spec → spec_gate → planning → executing → integrating → pr_gate → pr_open → done`, plus `paused`, `deferred` and `failed`. `pr_open`: the PR is open and watched (state, CI, position against its base); the team fixes what it needs and the user approves each update push. `done` = the PR was merged; a PR closed without merge goes back to `integrating`.
 
 ### 6.3 How an agent is configured (compiled from its Role)
 For each agent the core writes a per-agent directory in app data and launches `claude` in the worktree. Flags verified in P0 (Claude Code 2.1.302):
@@ -591,7 +591,7 @@ Opening a row's session shows its Claude Code pane over the board, as a tab (Esc
 | Editor | nvim | — |
 | Diff | Worktree diff | no changes, conflict |
 | Project | Branches/worktrees, features, settings | not a git repo, dirty, conflicts |
-| Feature | Docs (rendered, open in nvim), tasks, team timeline, design artifacts, PR | draft, spec gate, executing, PR gate, done |
+| Feature | Docs (rendered, open in nvim), tasks, team timeline, design artifacts, PR (`PR #n`, CI dot and `done/total` jobs, position against the base) | draft, spec gate, executing, PR gate, PR open, done |
 | Board | Tasks over any backend | backend disconnected |
 | Team canvas | Builder + Rules panel | invalid (inline errors), unsaved |
 | Week planner | Ideal vs actual (week and 5h), allocations, forecast, policy, governor log, next-action preview | no plan yet, shadow mode, Green/Amber/Red/Catch-up, estimated (low confidence) |

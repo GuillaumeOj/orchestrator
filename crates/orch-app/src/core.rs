@@ -1075,6 +1075,11 @@ impl Core {
         Ok(json!(out))
     }
 
+    /// Checks the PR of a feature's latest team run now; the updated run.
+    pub fn pr_refresh(&self, feature: &str) -> Result<Value> {
+        Ok(json!(self.runtime()?.pr_refresh(feature)?))
+    }
+
     /// FR-104: one worktree of the app's sibling folder; unmerged work needs `discard`.
     pub fn worktree_remove(&self, project: &str, path: &Path, delete_branch: bool, discard: bool) -> Result<Value> {
         Ok(json!(self.runtime()?.remove_worktree(project, path, delete_branch, discard)?))

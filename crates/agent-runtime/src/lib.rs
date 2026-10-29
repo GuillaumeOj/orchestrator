@@ -21,6 +21,7 @@ pub mod pacing;
 pub mod paths;
 pub mod permissions;
 pub mod power;
+pub mod pr;
 pub mod preflight;
 pub mod presets;
 pub mod procs;

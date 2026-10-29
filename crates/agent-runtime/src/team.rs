@@ -1681,39 +1681,24 @@ impl Runtime {
         }
     }
 
-    /// A team lead's PR gate was approved and the PR opened (or failed).
-    pub(crate) fn pr_opened(&self, agent: &str, url: Option<&str>) {
-        let Some(seat) = self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.clone())) else { return };
-        let Ok(Some(mut run)) = self.db.run(&seat.run_id) else { return };
-        match url {
-            Some(u) => {
-                run.pr_url = Some(u.to_string());
-                run.pr_number = orch_git::gh::pr_number_from_url(u);
-                run.pr = None;
-                let _ = self.db.upsert_run(&run);
-                let _ = self.advance_run(&run.id, RunState::PrOpen, "pull request opened");
-            }
-            None => {
-                let _ = self.advance_run(&run.id, RunState::Integrating, "pull request failed");
-            }
-        }
-    }
-
     /// A team agent's `request_pr` is refused before the run can reach its PR
     /// gate (a PR opened from the spec step would leave the run behind).
     pub(crate) fn pr_allowed(&self, rec: &AgentRecord) -> Result<()> {
         let Some(seat) = &rec.team else { return Ok(()) };
         let run = self.db.run(&seat.run_id)?.ok_or_else(|| anyhow!("no team run {}", seat.run_id))?;
         let eff = effective(&run);
-        if eff != RunState::PrGate && !eff.can_go(RunState::PrGate) {
+        if !matches!(eff, RunState::PrGate | RunState::PrOpen) && !eff.can_go(RunState::PrGate) {
             bail!("the pull request comes once the tasks are merged (this run is {})", eff.label());
         }
         Ok(())
     }
 
-    /// A team lead asked for the PR: the run is at its PR gate.
+    /// A team lead asked for the PR: the run is at its PR gate (an update
+    /// of an open PR leaves the run `pr_open`).
     pub(crate) fn pr_requested(&self, agent: &str) {
-        if let Some(seat) = self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.clone())) {
+        if let Some(seat) = self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.clone()))
+            && self.db.run(&seat.run_id).ok().flatten().is_some_and(|r| effective(&r) != RunState::PrOpen)
+        {
             let _ = self.advance_run(&seat.run_id, RunState::PrGate, "pull request asked");
         }
     }
