@@ -9,6 +9,7 @@
   import AgentChip from '../components/AgentChip.svelte';
   import DesignSection from '../components/DesignSection.svelte';
   import Kbd from '../components/Kbd.svelte';
+  import TaskModelChip from '../components/TaskModelChip.svelte';
   import Markdown from '../components/Markdown.svelte';
   import PrLine from '../components/PrLine.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
@@ -257,7 +258,7 @@
                   {#each list as t (t.id)}
                     <div class="task">
                       <div class="tt"><span class="muted mono">{handle(t)}</span><span class="grow"></span><span class="muted">{remoteName(t.backend)}</span></div>
-                      <div class="title">{t.title}</div>
+                      <div class="title">{t.title} <TaskModelChip task={t} /></div>
                       <div class="tt">
                         {#if t.node}<AgentChip id={t.node} role={v.team?.nodes?.find((n) => n.id === t.node)?.role_id ?? t.node} />{/if}
                         <span class="grow"></span>

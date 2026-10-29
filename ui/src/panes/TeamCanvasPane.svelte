@@ -649,7 +649,7 @@
             </select>
           </label>
           <label><span>model</span>
-            <select class="field" value={customRole ? 'custom' : C.modelOption(role.model)} onchange={(e) => ((customRole = e.currentTarget.value === 'custom'), saveRole({ model: C.modelValue(e.currentTarget.value, role.model ?? '') }))}>
+            <select class="field" value={customRole ? 'custom' : C.modelOption(role.model)} onchange={(e) => ((customRole = e.currentTarget.value === 'custom'), !customRole && saveRole({ model: C.modelValue(e.currentTarget.value) }))}>
               <option value="">default (Claude Code's)</option>
               {#each C.MODEL_ALIASES as v (v)}<option value={v}>{v}</option>{/each}
               <option value="custom">custom…</option>
@@ -659,7 +659,7 @@
             <input class="field mono" aria-label="Custom model" placeholder="claude-…" value={role.model ?? ''} onchange={(e) => saveRole({ model: C.modelValue('custom', e.currentTarget.value) })} />
           {/if}
           <label><span>node model</span>
-            <select class="field" value={customNode ? 'custom' : C.modelOption(node.overrides?.model)} onchange={(e) => ((customNode = e.currentTarget.value === 'custom'), edit(C.setNodeModel(team, node.id, C.modelValue(e.currentTarget.value, node.overrides?.model ?? ''))))}>
+            <select class="field" value={customNode ? 'custom' : C.modelOption(node.overrides?.model)} onchange={(e) => ((customNode = e.currentTarget.value === 'custom'), !customNode && edit(C.setNodeModel(team, node.id, C.modelValue(e.currentTarget.value))))}>
               <option value="">{role.model ? `role: ${role.model}` : "default (Claude Code's)"}</option>
               {#each C.MODEL_ALIASES as v (v)}<option value={v}>{v}</option>{/each}
               <option value="custom">custom…</option>
