@@ -234,6 +234,19 @@ pub struct GovFacts {
     pub five_hour_pct: Option<f64>,
 }
 
+/// The Governor's pending ask.
+#[derive(Clone, Debug)]
+pub struct AskFacts {
+    pub id: u64,
+    /// The agent it is about (a queued turn it would run), if any.
+    pub agent: Option<String>,
+    pub created_ms: u64,
+    /// Running it now costs this, pp of the week.
+    pub cost_pp: Option<f64>,
+    /// The action's reason, when it names no cost.
+    pub reason: String,
+}
+
 /// What `compute` reads. The runtime gathers it under its locks, then lets go.
 pub struct Inputs<'a> {
     pub agents: &'a BTreeMap<String, AgentRecord>,
@@ -244,8 +257,8 @@ pub struct Inputs<'a> {
     pub queue: &'a [QueueEntry],
     /// Agents paused one by one (FR-805).
     pub paused: &'a BTreeSet<String>,
-    /// The Governor has an ask pending (a level-3 decision).
-    pub ask: bool,
+    /// The Governor's pending ask (a level-3 decision), if any.
+    pub ask: Option<&'a AskFacts>,
     pub gov: &'a GovFacts,
     pub runs: &'a [RunFacts],
     /// The tasks of `runs`.
@@ -319,6 +332,12 @@ pub mod copy {
     }
     pub fn restart_gate(detail: &str) -> String {
         format!("restart gate · {}", cut(detail, 40))
+    }
+    pub fn ask(cost_pp: Option<f64>, reason: &str) -> String {
+        match cost_pp {
+            Some(c) => format!("run now? ≈ +{c:.1} pp of the week"),
+            None => cut(reason, 60),
+        }
     }
     pub const TRUST: &str = "trust dialog in its pane";
     pub const PANE_PROMPT: &str = "a prompt in its pane";
@@ -632,7 +651,7 @@ impl<'a> Ctx<'a> {
         })
     }
 
-    /// Rule 2: needs you. Ranked permission > question > gate > trust > pane prompt, oldest first.
+    /// Rule 2: needs you. Ranked permission > question > gate > ask > trust > pane prompt, oldest first.
     fn needs_you(&self, a: &AgentRecord) -> Option<Found> {
         let rank = |it: &InboxItem| match it.kind.as_str() {
             "permission" => Some(0),
@@ -674,6 +693,12 @@ impl<'a> Ctx<'a> {
             return Some(
                 Found::new(Level::NeedsYou, status, reason, Some(it.created_at_ms))
                     .wait(WaitKind::User, Some(decision_id(&it.kind, it.id))),
+            );
+        }
+        if let Some(ask) = self.i.ask.filter(|k| k.agent.as_deref() == Some(a.id.as_str())) {
+            return Some(
+                Found::new(Level::NeedsYou, Status::WaitingForYou, copy::ask(ask.cost_pp, &ask.reason), Some(ask.created_ms))
+                    .wait(WaitKind::User, Some(format!("ask-{}", ask.id))),
             );
         }
         let last = a.last_event_at_ms.or(Some(a.created_at_ms));
@@ -1015,8 +1040,11 @@ pub fn compute(i: &Inputs, now_ms: u64) -> World {
             *by_agent.entry(a.id.as_str()).or_default() += 1;
         }
     }
-    if i.ask {
+    if let Some(ask) = i.ask {
         counts.global.decisions += 1;
+        if let Some(a) = ask.agent.as_deref().filter(|a| agents.contains_key(*a)) {
+            *by_agent.entry(a).or_default() += 1;
+        }
     }
     for (id, n) in &by_agent {
         if let Some(p) = agents.get(*id).and_then(|a| a.project.clone()) {
