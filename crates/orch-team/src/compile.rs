@@ -217,7 +217,7 @@ fn lead_protocol(team: &Team, f: &FeatureCtx) -> String {
          not done: you are told when CI fails or the PR falls behind or conflicts with its base. Fix it: tasks as \
          usual for CI; mcp__orch__rebase_base (once every task is merged) when it is behind or conflicts. Then \
          mcp__orch__request_pr again to push. The feature is done when the PR is merged.\n\
-         Specialists run a lighter model than you: give a hard task, or one that failed a review round, \
+         Most specialists run a lighter model than you: give a hard task, or one that failed a review round, \
          `model: \"opus\"` in mcp__orch__create_task (or mcp__orch__update_task before it is sent back), and a \
          mechanical task on an Opus node (re-exporting UI frames, say) `model: \"sonnet\"`.\n\
          You keep the team moving so the user only talks to you: settle what you can yourself, and send the user \

@@ -135,8 +135,10 @@ pub(crate) fn str_arg<'a>(args: &'a Value, k: &str) -> Option<&'a str> {
 /// `Some(None)` when empty (no task model), else the trimmed model.
 fn model_arg(args: &Value) -> Result<Option<Option<String>>> {
     let Some(m) = args.get("model").and_then(Value::as_str).map(str::trim) else { return Ok(None) };
-    if m.chars().any(char::is_whitespace) || m.chars().count() > 64 {
-        bail!("`model` is an alias (opus, sonnet, haiku, fable) or a model id: no spaces, 64 characters at most");
+    if m.chars().any(char::is_whitespace) || m.chars().count() > 64 || m.starts_with('-') {
+        bail!(
+            "`model` is an alias (opus, sonnet, haiku, fable) or a model id: no spaces, no leading dash, 64 characters at most"
+        );
     }
     Ok(Some(Some(m.to_string()).filter(|m| !m.is_empty())))
 }
@@ -1162,8 +1164,14 @@ impl Runtime {
             }
         });
         // The next task, even this one sent back, is a model boundary again.
+        // (Only if the process still runs for this task: the seat may already be on the next one.)
         if let Some(l) = self.live(agent) {
-            l.task.store(0, std::sync::atomic::Ordering::Relaxed);
+            let _ = l.task.compare_exchange(
+                task,
+                0,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
     }
 
@@ -1425,6 +1433,8 @@ impl Runtime {
                 if !is_lead && t.node.as_deref() != Some(me) {
                     bail!("you can only update your own tasks");
                 }
+                // Validated before any change (a reassignment below is written at once).
+                let model = model_arg(args)?;
                 if let Some(node) = str_arg(args, "node") {
                     if !is_lead {
                         bail!("only the lead reassigns tasks");
@@ -1437,7 +1447,7 @@ impl Runtime {
                     }
                     t.flow.plan_first = p;
                 }
-                if let Some(m) = model_arg(args)? {
+                if let Some(m) = model {
                     if !is_lead {
                         bail!("only the lead sets a task's model");
                     }
