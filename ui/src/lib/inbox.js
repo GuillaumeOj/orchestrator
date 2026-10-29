@@ -258,3 +258,41 @@ export function outcomeToast(item, outcome) {
 export function due(pending, now) {
   return pending.filter((p) => !p.sent && now - p.at >= UNDO_MS);
 }
+
+// P4.1: the Inbox reads Decisions (api-contract §2) from `app.now`; until F2
+// renders them, this maps one onto the P4.0 item the pane's detail reads.
+const LEGACY_KIND = { wait: 'question', ask: 'budget', trust: 'question', notion: 'question' };
+const LEGACY_KEY = {
+  approve: 'a',
+  reject: 'r',
+  reply: 'enter',
+  answer: 'enter',
+  open: 'o',
+  resume: 'r',
+  reconnect: 'a',
+  open_settings: 'o',
+};
+
+const blockText = (b) => (b?.type === 'tool_call' ? inputText(b.input) : (b?.text ?? null));
+
+/** A Decision as a P4.0 Inbox item (agent_id, detail, preview, status, key actions). */
+export function legacyItem(d) {
+  const kind = LEGACY_KIND[d.kind] ?? d.kind;
+  const payload = { ...d.payload };
+  if (d.kind === 'gate') payload.action ??= { spec: 'spec_approval', pr: 'push_pr' }[d.gate];
+  if (d.kind === 'notion') payload.source ??= 'notion';
+  const item = {
+    ...d,
+    decision: d,
+    kind,
+    payload,
+    agent_id: d.subject?.agent ?? null,
+    detail: d.summary,
+    status: d.lifecycle?.state,
+  };
+  item.preview = blockText(d.context?.[0]);
+  // A dismiss: `r` on an MCP or Notion card, `a` on a plain alert, its own id on a startup card.
+  const dismiss = mcpAlert(item) || d.kind === 'notion' ? 'r' : kind === 'alert' ? 'a' : 'dismiss';
+  item.actions = (d.actions ?? []).map((a) => (a.id === 'dismiss' ? dismiss : (LEGACY_KEY[a.id] ?? a.id)));
+  return item;
+}

@@ -8,6 +8,7 @@ export const STATUS = {
   waiting_for_you: { label: 'Waiting for you', icon: '\u{F0005}', color: 'var(--color-status-waiting-for-you)' },
   waiting_gate: { label: 'At gate', icon: '\u{F0565}', color: 'var(--color-status-at-gate)' },
   queued: { label: 'Queued', icon: '\u{F051F}', color: 'var(--color-status-queued)' },
+  not_started: { label: 'Not started yet', icon: '\u{F0150}', color: 'var(--color-status-not-started)' },
   paused: { label: 'Paused', icon: '\u{F03E4}', color: 'var(--color-status-paused)' },
   blocked_by_limit: { label: 'Blocked by limit', icon: '\u{F073A}', color: 'var(--color-status-blocked-by-limit)' },
   idle: { label: 'Idle', icon: '\u{F0766}', color: 'var(--color-status-idle)' },
@@ -16,36 +17,40 @@ export const STATUS = {
   done: { label: 'Done', icon: '\u{F012C}', color: 'var(--color-status-done)' },
 };
 
-/**
- * The §9.5 state of an agent row from the runtime's internal state. The
- * runtime has a few states the vocabulary doesn't name: `starting` (before
- * SessionStart) reads Working, `created` reads Queued ("Not started yet"),
- * `killed` reads Suspended (its session can be resumed), `archived` Done.
- * A queued turn held by Pause all, and an agent paused on its own, read Paused.
- */
-export function displayState(agent) {
-  const s = agent?.state;
-  const held = agent?.queue_entry?.reason?.kind;
-  if (held === 'paused_all' || held === 'paused_agent') return 'paused';
-  // A pause never hides what needs the user (a prompt, a gate, an error) or a running turn.
-  if (agent?.paused && !['working', 'starting', 'waiting_for_you', 'waiting_gate', 'error'].includes(s))
-    return 'paused';
-  switch (s) {
-    case 'starting':
-      return 'working';
-    case 'created':
-      return 'queued';
-    case 'killed':
-      return 'suspended';
-    case 'archived':
-      return 'done';
-    default:
-      return STATUS[s] ? s : 'idle';
-  }
-}
+// Attention levels (api-contract §1, P4.1 palettes): shapes, not glyphs.
+export const LEVEL = {
+  needs_you: { label: 'Needs you', icon: '●', color: 'var(--color-attention-needs-you)' },
+  error: { label: 'Error', icon: '◆', color: 'var(--color-attention-error)' },
+  running: { label: 'Running', icon: '▲', color: 'var(--color-attention-running)' },
+  waiting: { label: 'Waiting', icon: '◐', color: 'var(--color-attention-waiting)' },
+  queued: { label: 'Queued', icon: '□', color: 'var(--color-attention-queued)' },
+  idle: { label: 'Idle', icon: '▭', color: 'var(--color-attention-idle)' },
+  done: { label: 'Done', icon: '■', color: 'var(--color-attention-done)' },
+};
 
-/** Not started yet: queued with no `claude` process (§9.5, FR-809). */
-export const notStarted = (agent) => agent?.state === 'created' || (displayState(agent) === 'queued' && !agent?.live);
+// Decision kinds (Inbox list): their own palette, not a borrowed agent state.
+const DECISION = {
+  permission: { label: 'Permission', icon: '\u{F0BC5}' },
+  question: { label: 'Question', icon: '\u{F0186}' },
+  'gate-spec': { label: 'Spec gate', icon: '\u{F1187}' },
+  'gate-pr': { label: 'PR gate', icon: '\u{F14CF}' },
+  'gate-restart': { label: 'Gate', icon: '\u{F0709}' },
+  startup: { label: 'Startup', icon: '\u{F0425}' },
+  ask: { label: 'Ask', icon: '\u{F140C}' },
+  budget: { label: 'Budget', icon: '\u{F0BDD}' },
+  trust: { label: 'Trust dialog', icon: '\u{F0CCC}' },
+  wait: { label: 'Waiting for you', icon: '\u{F07B7}' },
+  alert: { label: 'Alert', icon: '\u{F11CF}' },
+  error: { label: 'Error', icon: '\u{F11CF}' },
+  notion: { label: 'Notion', icon: '\u{F0C12}' },
+};
+
+/** A decision's kind entry: icon, label and its `color.decision.*` token (a gate by its flavour). */
+export function decisionKind(d) {
+  const key = d?.kind === 'gate' ? `gate-${d.gate ?? 'restart'}` : d?.kind;
+  const k = DECISION[key] ?? DECISION.alert;
+  return { ...k, color: `var(--color-decision-${DECISION[key] ? key : 'alert'})` };
+}
 
 export const PRESSURE = {
   green: { label: 'Green', icon: '●', color: 'var(--color-pacing-green)' },

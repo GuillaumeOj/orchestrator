@@ -1,8 +1,9 @@
 <script>
   // Status bar (§9.2): git state of the focused project, live/queued agents with
   // the pressure state in words, the 5h guard chip whenever it holds work, memory.
-  import { agents, app, contextAgent, contextProject, openSingleton } from '../lib/app.svelte.js';
+  import { app, contextAgent, contextProject, openSingleton } from '../lib/app.svelte.js';
   import { clock, mb } from '../lib/format.js';
+  import { counts } from '../lib/now.svelte.js';
   import { powerChip } from '../lib/pacing.js';
   import Kbd from './Kbd.svelte';
   import PressurePill from './PressurePill.svelte';
@@ -12,8 +13,7 @@
   const git = $derived(a?.git ?? p?.git);
   const branch = $derived(a?.branch || git?.branch);
   const s = $derived(app.data?.usage?.snapshot);
-  const live = $derived(agents().filter((x) => x.live).length);
-  const queued = $derived((app.data?.queue ?? []).length);
+  const c = $derived(counts());
   const m = $derived(app.data?.memory);
   const fiveReset = $derived(app.data?.usage?.five_hour?.resets_at);
   const watch = $derived(app.data?.memory_watch);
@@ -26,8 +26,8 @@
     {#if git}<span>↑{git.ahead} ↓{git.behind}</span><span>±{git.dirty}</span>{/if}
     <span class="muted">·</span>
   {/if}
-  <span><span style:color="var(--color-status-working)" aria-hidden="true">▶</span> {live} live</span>
-  <span><span style:color="var(--color-status-queued)" aria-hidden="true">⧗</span> {queued} queued</span>
+  <span class="live"><span style:color="var(--color-attention-running)" aria-hidden="true">▲</span> {c.live} live{c.live_cap != null ? ` / cap ${c.live_cap}` : ''}</span>
+  <span class="queued"><span style:color="var(--color-attention-queued)" aria-hidden="true">□</span> queued {c.queued}</span>
   {#if s}
     <button class="plain" onclick={() => openSingleton('planner')}><PressurePill state={s.state} shadow={app.data?.usage?.shadow} /></button>
     {#if s.five_hour_guard}

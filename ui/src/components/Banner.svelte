@@ -3,6 +3,7 @@
   // the rest collapse to "+n". Error banners: a 4 px left bar in the status color.
   import { app, governor, openSingleton } from '../lib/app.svelte.js';
   import { when } from '../lib/format.js';
+  import { counts } from '../lib/now.svelte.js';
   import Kbd from './Kbd.svelte';
 
   let dismissed = $state({});
@@ -19,8 +20,9 @@
     else if (u?.five_hour?.used_pct >= 100)
       out.push({ id: '5h', color: 'var(--color-status-blocked-by-limit)', title: '5-hour limit reached.', text: `Agents are blocked until ${when(u.five_hour.resets_at * 1000)}. Interactive sessions resume first.`, planner: true });
     const s = u?.snapshot;
+    const tally = counts();
     if (s?.state === 'red' && !u?.shadow)
-      out.push({ id: 'red', color: 'var(--color-pacing-red)', title: `Governor in Red: week +${Math.round(s.error)} pp over plan.`, text: `Live autonomous agents capped to ${s.live_cap}; ${s.queued} queued.`, planner: true, pause: true });
+      out.push({ id: 'red', color: 'var(--color-pacing-red)', title: `Governor in Red: week +${Math.round(s.error)} pp over plan.`, text: `Live autonomous agents capped to ${tally.live_cap ?? s.live_cap}; queued ${tally.queued}.`, planner: true, pause: true });
     // FR-816: off-hours work waits while the Mac is on battery (one banner, D6).
     if ((d.banners ?? []).some((b) => b.kind === 'not_on_ac')) {
       const n = d.power?.off_hours_pending ?? 0;

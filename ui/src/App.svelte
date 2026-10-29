@@ -19,7 +19,10 @@
   import { loadUiFont, prepareKitty } from './lib/fonts.js';
   import { inTauri, invoke, listen } from './lib/ipc.js';
   import { classify } from './lib/keyboard.js';
+  import { connectNow, onTopics } from './lib/now.svelte.js';
 
+  // The `now` topics app_state answers for (its non-attention data).
+  const STATE_TOPICS = ['agents', 'queue', 'usage', 'memory', 'power', 'banners', 'setup', 'features', 'teams'];
   let ready = $state(false);
   let lastKeyCommand = { id: null, at: 0 };
   const isNav = (k) => k === 'palette' || k === 'jump';
@@ -71,28 +74,25 @@
     const onResize = () => (app.width = window.innerWidth);
     window.addEventListener('resize', onResize);
     window.addEventListener('keydown', onKeyDown, true);
-    let poll;
     let decisions;
-    const onVisible = () => !document.hidden && refresh();
     let unlisten = () => {};
     let unlistenOutcome = () => {};
+    let stopNow = () => {};
+    let stopState = () => {};
     (async () => {
       const [kitty] = await Promise.all([invoke('kitty_config').catch(() => null), loadUiFont().catch(() => [])]);
       if (kitty) app.kitty = await prepareKitty(kitty).catch(() => kitty);
-      await refresh();
+      // app_state is read on its topics (spec §3.2), never on a timer; this reads it now.
+      stopState = onTopics(STATE_TOPICS, refresh);
+      // Attention from the `now` push, resynced on a rev gap and when the window shows again.
+      const [, stop] = await Promise.all([refresh(), connectNow()]);
+      stopNow = stop;
       await restoreLayout();
       applyTheme();
       ready = true;
       startDev();
-      // One poll at a time (a git refresh can take longer than a second);
-      // none while the window is hidden.
-      const tick = async () => {
-        if (!document.hidden) await refresh();
-        poll = setTimeout(tick, 1000);
-      };
-      tick();
+      // The undo window's flush: sends due decisions, fetches nothing.
       decisions = setInterval(flushDecisions, 1000);
-      document.addEventListener('visibilitychange', onVisible);
       unlisten = await listen('menu', (ev) => {
         // A chord handled by the webview may also fire its menu item: once is enough.
         if (lastKeyCommand.id === ev.payload && Date.now() - lastKeyCommand.at < 400) return;
@@ -101,9 +101,9 @@
       unlistenOutcome = await listen('inbox_outcome', (ev) => onOutcome(ev.payload));
     })();
     return () => {
-      clearTimeout(poll);
       clearInterval(decisions);
-      document.removeEventListener('visibilitychange', onVisible);
+      stopState();
+      stopNow();
       unlisten();
       unlistenOutcome();
       window.removeEventListener('resize', onResize);

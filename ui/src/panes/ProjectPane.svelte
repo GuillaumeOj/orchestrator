@@ -10,7 +10,7 @@
   import { activeAgents, app, closePane, confirm, openAgent, openDiff, openProjectSettings, openShell, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
   import { ago, dayTime, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { displayState } from '../lib/status.js';
+  import { attention, onTopics } from '../lib/now.svelte.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -34,12 +34,8 @@
       err = errText(e);
     }
   }
-  onMount(() => {
-    load();
-    // git per worktree and branch: not more often than the user can read it.
-    const t = setInterval(load, 60000);
-    return () => clearInterval(t);
-  });
+  // Refetched when the core says the project changed (no poll).
+  onMount(() => onTopics([`project:${spec.projectId}`], load));
 
   /** Runs an action; then reloads the detail and the app state unless `reload` is false. */
   async function act(label, fn, reload = true) {
@@ -161,7 +157,7 @@
     <section class="card">
       <div class="ch"><b>Sessions</b><span class="muted">{list.length}</span></div>
       {#each list as a (a.id)}
-        <button class="row" onclick={() => openAgent(a.id)}><StatusBadge state={displayState(a)} compact /> <b>{a.id}</b> <span class="muted">{a.branch ?? ''}</span></button>
+        <button class="row" onclick={() => openAgent(a.id)}><StatusBadge state={attention(a.id)?.status ?? 'idle'} compact /> <b>{a.id}</b> <span class="muted">{a.branch ?? ''}</span></button>
       {:else}
         <p class="muted">No session. <button class="btn ghost" onclick={() => (app.overlay = { kind: 'new-session' })}>New session <Kbd keys="⌘+T" /></button></p>
       {/each}

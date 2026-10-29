@@ -2,14 +2,17 @@
   import AgentChip from '../components/AgentChip.svelte';
   import CtxBar from '../components/CtxBar.svelte';
   import Kbd from '../components/Kbd.svelte';
+  import Reason from '../components/Reason.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
-  // Overview (§9.3, FR-901/903, Penpot 04 Overview): every agent with live state,
-  // current tool, elapsed time, context, usage, governor status and memory;
-  // grouped by project or by state. Keys (pane-local): j/k move, ⏎ open,
+  // Overview (§9.3, FR-901/903, Penpot 04 Overview): every agent with its
+  // attention record (status, reason, since), elapsed time, context, usage,
+  // governor reason and memory; grouped by project or by state. Chips and
+  // totals are the core's counts. Keys (pane-local): j/k move, ⏎ open,
   // i interrupt, s suspend, r resume, K kill (asks first), p pause.
   import { activeAgents, agentAction, app, cancelQueued, confirm, openAgent, projects, run, runNow } from '../lib/app.svelte.js';
   import { duration, mb } from '../lib/format.js';
-  import { displayState, notStarted, queueReason, runCost, STATUS, sessionPp } from '../lib/status.js';
+  import { attention, counts } from '../lib/now.svelte.js';
+  import { runCost, STATUS, sessionPp } from '../lib/status.js';
 
   let { paneId } = $props();
   let groupBy = $state('project');
@@ -17,21 +20,23 @@
   let selected = $state(null);
   let collapsed = $state({});
 
-  const queue = $derived(app.data?.queue ?? []);
-  const needYou = (a) => a.state === 'waiting_for_you' || a.trust_dialog || a.state === 'waiting_gate';
+  const status = (a) => attention(a.id)?.status ?? 'idle';
+  const level = (a) => attention(a.id)?.level;
+  const c = $derived(counts());
+  // `count`: the core's number where it has one (it agrees with every surface).
   const FILTERS = [
     { id: 'all', label: 'All', test: () => true },
-    { id: 'need', label: 'Need you', test: needYou },
-    { id: 'live', label: 'Live', test: (a) => a.live },
-    { id: 'queued', label: 'Queued', test: (a) => !!a.queue_entry || a.state === 'created' },
-    { id: 'suspended', label: 'Suspended', test: (a) => displayState(a) === 'suspended' },
+    { id: 'need', label: 'Need you', test: (a) => level(a) === 'needs_you', count: 'needs_you' },
+    { id: 'live', label: 'Live', test: (a) => !!attention(a.id)?.live, count: 'live' },
+    { id: 'queued', label: 'Queued', test: (a) => level(a) === 'queued', count: 'queued' },
+    { id: 'suspended', label: 'Suspended', test: (a) => status(a) === 'suspended' },
   ];
   const list = $derived(activeAgents());
   const shown = $derived(list.filter(FILTERS.find((f) => f.id === filter).test));
   const groups = $derived.by(() => {
     if (groupBy === 'state') {
       return Object.keys(STATUS)
-        .map((s) => ({ id: s, title: STATUS[s].label, rows: shown.filter((a) => displayState(a) === s) }))
+        .map((s) => ({ id: s, title: STATUS[s].label, rows: shown.filter((a) => status(a) === s) }))
         .filter((g) => g.rows.length);
     }
     const out = projects().map((p) => ({ id: p.id, title: p.name, project: p, rows: shown.filter((a) => a.project_id === p.id) }));
@@ -40,32 +45,8 @@
     return out;
   });
   const flat = $derived(groups.flatMap((g) => (collapsed[g.id] ? [] : g.rows)));
-  const totals = $derived({
-    n: list.length,
-    live: list.filter((a) => a.live).length,
-    queued: queue.length,
-    suspended: list.filter((a) => displayState(a) === 'suspended').length,
-    need: list.filter(needYou).length,
-    claude: list.reduce((s, a) => s + (a.memory_mb ?? 0), 0),
-  });
-
-  function doing(a) {
-    if (a.trust_dialog) return 'Asks to trust this folder';
-    if (a.current_tool) return `${a.current_tool}`;
-    if (a.queue_entry) return `${notStarted(a) ? 'Not started' : 'Queued'} · ${queueReason(a.queue_entry)}`;
-    if (!a.live) return a.state === 'error' ? `Error: ${a.last_error ?? 'exited'}` : 'Suspended · resumes on demand';
-    return a.last_event ? `last: ${a.last_event}` : '';
-  }
-
-  function governor(a) {
-    if (a.queue_entry) {
-      const i = queue.findIndex((e) => e.agent === a.id);
-      return `queued ${i + 1} (${a.queue_entry.tier})`;
-    }
-    if (a.state === 'waiting_for_you') return 'interactive';
-    if (a.live) return 'admitted';
-    return '—';
-  }
+  const suspended = $derived(list.filter((a) => status(a) === 'suspended').length);
+  const claudeMb = $derived(list.reduce((s, a) => s + (a.memory_mb ?? 0), 0));
 
   function usage(a) {
     const v = sessionPp(a, app.data?.usage?.snapshot);
@@ -110,7 +91,7 @@
       <button class:on={groupBy === 'state'} role="radio" aria-checked={groupBy === 'state'} onclick={() => (groupBy = 'state')}>State</button>
     </div>
     {#each FILTERS as f (f.id)}
-      <button class="filter-chip" class:on={filter === f.id} onclick={() => (filter = f.id)}>{f.label} {list.filter(f.test).length}</button>
+      <button class="filter-chip" class:on={filter === f.id} onclick={() => (filter = f.id)}>{f.label} {f.count ? c[f.count] : list.filter(f.test).length}</button>
     {/each}
     <span class="grow"></span>
     <span class="keys"><Kbd keys="⏎" /> open <Kbd keys="i" /> interrupt <Kbd keys="p" /> pause <Kbd keys="s" /> suspend <Kbd keys="r" /> resume <Kbd keys="⇧+K" /> kill</span>
@@ -132,20 +113,22 @@
           </tr>
           {#if !collapsed[g.id]}
             {#each g.rows as a (a.id)}
+              {@const rec = attention(a.id)}
+              {@const fresh = rec?.status === 'not_started'}
               <tr class:sel={selected === a.id} onclick={() => (selected = a.id)} ondblclick={() => openAgent(a.id)}>
-                <td><StatusBadge state={displayState(a)} label={notStarted(a) ? 'Queued' : null} /></td>
+                <td><StatusBadge state={rec?.status ?? 'idle'} /></td>
                 <td><AgentChip id={a.id} /></td>
                 <td class="doing">
-                  {doing(a)}
+                  <Reason {rec} />
                   {#if a.queue_entry}
-                    <button class="btn" onclick={(e) => (e.stopPropagation(), runNow(a, notStarted(a)))}>{notStarted(a) ? 'Start now' : 'Run now'} ≈ {runCost(a.queue_entry)}</button>
+                    <button class="btn" onclick={(e) => (e.stopPropagation(), runNow(a, fresh))}>{fresh ? 'Start now' : 'Run now'} ≈ {runCost(a.queue_entry)}</button>
                     <button class="btn ghost" onclick={(e) => (e.stopPropagation(), cancelQueued(a))} title="Drop the queued turn">Cancel</button>
                   {/if}
                 </td>
                 <td>{duration(Date.now() - (a.created_at_ms ?? a.last_event_at_ms ?? Date.now()))}</td>
                 <td><CtxBar value={a.context_pct} /></td>
                 <td>{usage(a)}</td>
-                <td>{governor(a)}</td>
+                <td class="gov">{rec?.waiting_on?.kind === 'governor' ? rec.reason : '—'}</td>
                 <td class="r">{a.memory_mb ? mb(a.memory_mb) : '—'}</td>
               </tr>
             {:else}
@@ -169,9 +152,9 @@
     </table>
   </div>
   <div class="foot">
-    <span>{totals.n} agents · {totals.live} live · {totals.queued} queued · {totals.suspended} suspended · {totals.need} waiting for you</span>
+    <span class="totals">{list.length} agents · {c.live} live{c.live_cap != null ? ` / cap ${c.live_cap}` : ''} · queued {c.queued} · {suspended} suspended · {c.needs_you} need you</span>
     <span class="grow"></span>
-    <span class="muted">claude processes {mb(totals.claude)} · app {mb(app.data?.memory?.app_mb)} · warn at 2.5 GB</span>
+    <span class="muted">claude processes {mb(claudeMb)} · app {mb(app.data?.memory?.app_mb)} · warn at 2.5 GB</span>
   </div>
 </div>
 

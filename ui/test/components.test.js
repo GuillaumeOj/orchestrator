@@ -7,10 +7,11 @@ import StatusBadge from '../src/components/StatusBadge.svelte';
 import StatusBar from '../src/components/StatusBar.svelte';
 import { app, decide, onOutcome } from '../src/lib/app.svelte.js';
 import InboxPane from '../src/panes/InboxPane.svelte';
-import { fixture } from './fixture.js';
+import { fixture, nowOf } from './fixture.js';
 
 beforeEach(() => {
   app.data = fixture();
+  app.now = nowOf(app.data);
   app.pending = [];
   app.toasts = [];
   app.panes = {};
@@ -114,6 +115,7 @@ describe('components', () => {
     const d = fixture();
     d.inbox.items = [...extra, ...d.inbox.items];
     app.data = d;
+    app.now = nowOf(d);
   };
   const detail = (container) => container.querySelector('.detail');
   const buttons = (container) =>
@@ -187,7 +189,7 @@ describe('components', () => {
       title: 'back-1 could not resume',
       detail: 'Its resume start exited at once (status 1)',
       preview: 'line 20',
-      created_ms: Date.now(),
+      created_ms: Date.now() - 600000, // oldest first: selected
       actions: ['o', 'restart_fresh', 'dismiss', 'delete'],
       payload: { waiting_on: 'startup', mode: 'resume', since_ms: 0, failed: 'resume', exit_status: 1, tail },
     });
@@ -212,7 +214,7 @@ describe('components', () => {
       title: 'back-1 waits for a decision',
       detail: 'Still waiting when the core restarted: run the migration. Approve to let it proceed',
       preview: 'run the migration',
-      created_ms: Date.now(),
+      created_ms: Date.now() - 600000, // oldest first: selected
       actions: ['a', 'r', 'o'],
       payload: { action: 'restart_gate', agent: 'back-1', detail: 'run the migration', restarted: true },
     });

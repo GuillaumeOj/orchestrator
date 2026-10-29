@@ -2,14 +2,17 @@
   // Inspector (§9.2): the selection's details. Docked at ≥ 1512 px, overlay below.
   import { agentAction, app, confirm, contextAgent, openDiff, openInKitty, openShell, projects } from '../lib/app.svelte.js';
   import { clock, mb, pct, shortPath, tokens } from '../lib/format.js';
-  import { cacheState, displayState, queueReason, sessionPp } from '../lib/status.js';
+  import { attention } from '../lib/now.svelte.js';
+  import { cacheState, sessionPp } from '../lib/status.js';
   import AgentChip from './AgentChip.svelte';
   import Kbd from './Kbd.svelte';
+  import Reason from './Reason.svelte';
   import StatusBadge from './StatusBadge.svelte';
 
   let { overlay = false } = $props();
   const a = $derived(contextAgent());
   const p = $derived(projects().find((x) => x.id === a?.project_id));
+  const rec = $derived(a ? attention(a.id) : null);
   const pp = $derived(sessionPp(a, app.data?.usage?.snapshot));
   const cache = $derived(cacheState(a, clock));
   const home = $derived(app.data?.core?.user_home ?? '');
@@ -19,7 +22,8 @@
 <aside class="insp" class:overlay aria-label="Inspector">
   <div class="head"><span class="muted">Inspector</span>{#if overlay}<button class="x" onclick={() => (app.inspector = false)}><Kbd keys="esc" /></button>{:else}<Kbd keys="⌘+I" />{/if}</div>
   {#if a}
-    <div class="who"><AgentChip id={a.id} /><StatusBadge state={displayState(a)} /></div>
+    <div class="who"><AgentChip id={a.id} /><StatusBadge state={rec?.status ?? 'idle'} /></div>
+    {#if rec?.reason || rec?.activity}<div class="why"><span class="muted">{rec.waiting_on ? `Waiting on ${rec.waiting_on.kind}` : 'Doing'}</span> <Reason {rec} /></div>{/if}
     <dl>
       <dt>Project</dt><dd>{p?.name ?? '—'}</dd>
       <dt>Branch</dt><dd>{a.branch || '—'}</dd>
@@ -28,7 +32,7 @@
       <dt>Context</dt><dd>{pct(a.context_pct)}{cache ? ` · cache ${cache}` : ''}</dd>
       <dt>Usage</dt><dd>{pp == null ? '—' : `${pp.toFixed(1)} pp this session`} · {a.turns ?? 0} turns</dd>
       {#if a.otel_week}<dt>This week</dt><dd>{tokens(a.otel_week.tokens_in + a.otel_week.cache_read + a.otel_week.cache_write)} in · {tokens(a.otel_week.tokens_out)} out · ≈ ${a.otel_week.cost.toFixed(2)}</dd>{/if}
-      <dt>Governor</dt><dd>{a.queue_entry ? `Queued · ${queueReason(a.queue_entry)}` : a.live ? 'Admitted' : '—'}</dd>
+      <dt>Governor</dt><dd>{rec?.waiting_on?.kind === 'governor' ? rec.reason : '—'}</dd>
       <dt>Memory</dt><dd>{a.memory_mb ? mb(a.memory_mb) : '—'}</dd>
       <dt>Session</dt><dd class="wrap mono">{a.session_id}</dd>
       {#if a.git}<dt>Changes</dt><dd>±{a.git.dirty} · ↑{a.git.ahead} ↓{a.git.behind}</dd>{/if}
@@ -90,6 +94,11 @@
     display: flex;
     gap: var(--space-sm);
     align-items: center;
+  }
+  .why {
+    display: flex;
+    gap: var(--space-xs);
+    min-width: 0;
   }
   dl {
     display: grid;

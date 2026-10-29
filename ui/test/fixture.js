@@ -82,6 +82,8 @@ export function fixture() {
       },
     },
     queue: [],
+    // P4.0-shaped Inbox items: app_state no longer has them; `nowOf` turns
+    // them into the core's Decisions (api-contract §2) in `app.now`.
     inbox: {
       badge: 2,
       items: [
@@ -122,5 +124,73 @@ export function fixture() {
     },
     memory: { app_mb: 96, agents_mb: 792, shells_mb: 10, total_mb: 898, system_mb: 8192 },
     terms: [],
+  };
+}
+
+// P4.0 item keys → Decision action ids (the inverse of inbox.js legacyItem).
+const ACTION = { a: 'approve', r: 'reject', enter: 'reply', o: 'open' };
+const GATE = { spec_approval: 'spec', push_pr: 'pr', restart_gate: 'restart' };
+
+/** A P4.0 Inbox item as the core's Decision. */
+export function decisionOf(i) {
+  return {
+    id: i.id,
+    kind: i.kind,
+    ...(i.kind === 'gate' ? { gate: GATE[i.payload?.action] ?? 'restart' } : {}),
+    level: i.level,
+    subject: i.agent_id ? { agent: i.agent_id } : {},
+    title: i.title,
+    summary: i.detail ?? '',
+    context: i.preview ? [{ type: 'markdown', text: i.preview }] : [],
+    actions: i.actions.map((k) => (ACTION[k] ? { id: ACTION[k], key: k } : { id: k })),
+    lifecycle: { state: i.status === 'parked' ? 'parked' : 'open' },
+    thread: i.agent_id ?? 'governor',
+    waits_on: 'user',
+    created_ms: i.created_ms,
+    payload: i.payload ?? {},
+  };
+}
+
+const LEVEL_OF = {
+  working: 'running',
+  waiting_for_you: 'needs_you',
+  waiting_gate: 'needs_you',
+  queued: 'queued',
+  not_started: 'queued',
+  paused: 'queued',
+  blocked_by_limit: 'waiting',
+  error: 'error',
+  done: 'done',
+};
+
+/** An attention record (api-contract §1); `status` sets the level unless given. */
+export function rec(agent, status, more = {}) {
+  return {
+    agent,
+    level: LEVEL_OF[status] ?? 'idle',
+    status,
+    reason: '',
+    live: status !== 'suspended',
+    since_ms: Date.now() - 60000,
+    ...more,
+  };
+}
+
+/** `app.now` for an app_state fixture: its items as Decisions, one record per agent. */
+export function nowOf(d, more = {}) {
+  const decisions = (d.inbox?.items ?? []).map(decisionOf);
+  const agents = (d.agents ?? []).map((a) => rec(a.id, a.state, { project: a.project_id, live: !!a.live }));
+  const open = decisions.filter((x) => x.level < 4).length;
+  return {
+    rev: 1,
+    agents: Object.fromEntries(agents.map((r) => [r.agent, r])),
+    runs: {},
+    decisions: Object.fromEntries(decisions.map((x) => [x.id, x])),
+    outcomes: [],
+    counts: {
+      global: { needs_you: 0, decisions: open, live: agents.filter((r) => r.live).length, queued: 0 },
+      projects: {},
+    },
+    ...more,
   };
 }

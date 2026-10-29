@@ -8,6 +8,7 @@
   import { app, confirm, openEditor, toast } from '../lib/app.svelte.js';
   import { lineKind, patchByFile, STATUS_WORD } from '../lib/diff.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { onTopics } from '../lib/now.svelte.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -27,7 +28,7 @@
 
   let loading = false;
   async function load() {
-    if (loading) return; // a slow git must not stack up polls
+    if (loading) return; // a slow git must not stack up loads
     loading = true;
     try {
       d = await invoke('worktree_diff', { project: spec.projectId, path: spec.path });
@@ -38,11 +39,8 @@
       loading = false;
     }
   }
-  onMount(() => {
-    load();
-    const t = setInterval(load, 15000);
-    return () => clearInterval(t);
-  });
+  // Refetched when a file in the worktree changed (an agent's edit, a commit, a merge).
+  onMount(() => onTopics([`worktree:${spec.path}`], load));
 
   function move(delta) {
     if (!files.length) return;

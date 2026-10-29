@@ -4,7 +4,7 @@
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/lib/app.svelte.js';
-import { fixture } from './fixture.js';
+import { fixture, nowOf } from './fixture.js';
 
 const calls = [];
 const replies = {};
@@ -145,6 +145,7 @@ describe('Notion comment in the Inbox', () => {
       },
     };
     app.data = { ...fixture(), inbox: { badge: 1, items: [item] } };
+    app.now = nowOf(app.data);
     replies.inbox_act = { open: 'url', url: 'https://notion.so/onb#c1' };
     replies.open_url = null;
     const { container, getAllByText } = render(InboxPane);
@@ -177,6 +178,7 @@ describe('Notion comment in the Inbox', () => {
       payload: { action: 'task_conflict', task: 40, project: 'shop-api' },
     };
     app.data = { ...fixture(), inbox: { badge: 1, items: [item] } };
+    app.now = nowOf(app.data);
     app.layout = null;
     replies.inbox_act = 'read';
     replies.board_view = {

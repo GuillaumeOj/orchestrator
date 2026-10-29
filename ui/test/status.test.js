@@ -1,31 +1,36 @@
 import { describe, expect, it } from 'vitest';
 import { duration, mb, pp, when } from '../src/lib/format.js';
 import { filter, score } from '../src/lib/fuzzy.js';
-import { displayState, notStarted, queueReason, roleOf, runCost, STATUS } from '../src/lib/status.js';
+import { decisionKind, LEVEL, queueReason, roleOf, runCost, STATUS } from '../src/lib/status.js';
 
 describe('status vocabulary §9.5', () => {
-  it('maps every runtime state onto the vocabulary', () => {
+  it('has one entry per status the core writes, not_started included', () => {
     for (const s of [
-      'created',
-      'starting',
       'working',
       'waiting_for_you',
       'waiting_gate',
       'queued',
+      'not_started',
+      'paused',
       'blocked_by_limit',
       'idle',
       'suspended',
-      'archived',
       'error',
-      'killed',
-    ]) {
-      expect(STATUS[displayState({ state: s })]).toBeTruthy();
-    }
-    expect(displayState({ state: 'starting' })).toBe('working');
-    expect(displayState({ state: 'killed' })).toBe('suspended');
-    expect(displayState({ state: 'idle', queue_entry: { reason: { kind: 'paused_all' } } })).toBe('paused');
-    expect(notStarted({ state: 'created' })).toBe(true);
-    expect(Object.keys(STATUS)).toHaveLength(10);
+      'done',
+    ])
+      expect(STATUS[s]?.label).toBeTruthy();
+    expect(STATUS.not_started.label).toBe('Not started yet');
+    expect(Object.keys(LEVEL)).toEqual(['needs_you', 'error', 'running', 'waiting', 'queued', 'idle', 'done']);
+  });
+
+  it('decision kinds have their own palette entry (a gate by its flavour)', () => {
+    expect(decisionKind({ kind: 'permission' }).color).toBe('var(--color-decision-permission)');
+    expect(decisionKind({ kind: 'gate', gate: 'pr' })).toMatchObject({
+      label: 'PR gate',
+      color: 'var(--color-decision-gate-pr)',
+    });
+    expect(decisionKind({ kind: 'error' }).color).toBe('var(--color-decision-error)');
+    expect(decisionKind({ kind: 'mystery' }).color).toBe('var(--color-decision-alert)');
   });
 
   it('roles and queue reasons', () => {
@@ -33,12 +38,6 @@ describe('status vocabulary §9.5', () => {
     expect(roleOf('fix-tax').letter).toBe('S');
     expect(queueReason({ reason: { kind: 'live_cap', cap: 1, state: 'red' } })).toBe('live-agent cap 1 (red)');
     expect(queueReason({ reason: { kind: 'memory_pressure', cap: 1 } })).toBe('memory pressure (1 live)');
-  });
-
-  it('paused agents read Paused, except while the user has them working', () => {
-    expect(displayState({ state: 'idle', queue_entry: { reason: { kind: 'paused_agent' } } })).toBe('paused');
-    expect(displayState({ state: 'idle', paused: true })).toBe('paused');
-    expect(displayState({ state: 'working', paused: true })).toBe('working');
   });
 
   it('Run now costs the window that holds the entry (FR-809)', () => {

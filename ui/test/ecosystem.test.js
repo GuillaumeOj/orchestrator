@@ -21,7 +21,7 @@ import {
   usedByText,
 } from '../src/lib/ecosystem.js';
 import { keyIntent as keyIntentOf } from '../src/lib/inbox.js';
-import { fixture } from './fixture.js';
+import { fixture, nowOf } from './fixture.js';
 
 const UNDO_LATER = Date.now() + 60000;
 
@@ -689,6 +689,7 @@ describe('role inspector, Design section and presets (T-7)', () => {
       payload: { alert: 'mcp_needs_auth', server: 'penpot', name: 'Penpot', project: 'shop-api' },
     };
     app.data = { ...fixture(), inbox: { badge: 1, items: [item] } };
+    app.now = nowOf(app.data);
     app.panes = {};
     app.layout = null;
     app.pending = [];

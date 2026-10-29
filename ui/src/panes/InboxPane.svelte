@@ -17,6 +17,7 @@
     keyIntent,
     kindLabel,
     LEVELS,
+    legacyItem,
     move,
     parked,
     restarted,
@@ -25,7 +26,8 @@
     visibleItems,
   } from '../lib/inbox.js';
   import { invoke } from '../lib/ipc.js';
-  import { displayState } from '../lib/status.js';
+  import { attention, openDecisions } from '../lib/now.svelte.js';
+  import { decisionKind } from '../lib/status.js';
 
   let filter = $state('all');
   let selected = $state(null);
@@ -33,7 +35,8 @@
   let reply = $state(null); // { item, text }
   let root;
 
-  const all = $derived(app.data?.inbox?.items ?? []);
+  // P4.1: Decisions from the core's `now`, read as P4.0 items until F2 renders them.
+  const all = $derived(openDecisions().map(legacyItem));
   const items = $derived(visibleItems(all, filter, app.pending));
   const sel = $derived(items.find((i) => i.id === selected) ?? items[0] ?? null);
   const levels = $derived([1, 2, 3, 4].map((l) => ({ l, rows: items.filter((i) => i.level === l) })).filter((g) => g.rows.length));
@@ -179,10 +182,11 @@
       {#each levels as g (g.l)}
         <div class="lh"><span>{g.l} · {LEVELS[g.l]} {g.rows.length}</span><span class="muted">{g.l === 4 ? 'digest, silent' : g.l === 3 ? 'default applies on timeout' : 'oldest first'}</span></div>
         {#each g.rows as it (it.id)}
+          {@const k = decisionKind(it.decision)}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <div class="item" class:sel={sel?.id === it.id} class:marked={marked.has(it.id)} role="option" tabindex="-1" aria-selected={sel?.id === it.id} onclick={() => (selected = it.id)}>
             <div class="top">
-              <StatusBadge state={KIND[it.kind]?.state ?? 'idle'} compact />
+              <span class="kind" style:color={k.color} title={k.label} aria-hidden="true">{k.icon}</span>
               <span class="muted">{kindLabel(it)}{parked(it) ? ' · parked' : ''}{restarted(it) ? ' · after restart' : ''}</span>
               {#if it.agent_id}<AgentChip id={it.agent_id} />{:else}<span class="secondary">Governor</span>{/if}
               <span class="grow"></span>
@@ -212,7 +216,7 @@
         <div class="dh">
           <StatusBadge state={KIND[sel.kind]?.state ?? 'idle'} compact />
           <b>{kindLabel(sel)} · {sel.agent_id ?? 'Governor'}</b>
-          {#if a}<StatusBadge state={displayState(a)} />{/if}
+          {#if a}<StatusBadge state={attention(a.id)?.status ?? 'idle'} />{/if}
           <span class="grow"></span>
           <span class="muted">waiting {ago(sel.created_ms)}</span>
         </div>
@@ -356,6 +360,10 @@
   }
   .item.marked {
     box-shadow: inset 3px 0 0 var(--color-accent-default);
+  }
+  .kind {
+    width: var(--size-icon);
+    text-align: center;
   }
   .top,
   .acts {

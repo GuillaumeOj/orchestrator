@@ -1,8 +1,8 @@
 <script>
   // Icon rail below 1512 px (§9.2): one mark per project with a count badge when
-  // agents need you; hover or focus opens the project summary (Penpot 03 rail hover).
+  // agents need you (the project's `needs_you` count); hover or focus opens the project summary (Penpot 03 rail hover).
   import { activeAgents, openAgent, projects } from '../lib/app.svelte.js';
-  import { displayState } from '../lib/status.js';
+  import { attention, counts } from '../lib/now.svelte.js';
   import AgentChip from './AgentChip.svelte';
   import StatusBadge from './StatusBadge.svelte';
 
@@ -10,7 +10,7 @@
   const rows = $derived(
     projects().map((p) => {
       const list = activeAgents().filter((a) => a.project_id === p.id);
-      return { p, list, need: list.filter((a) => a.state === 'waiting_for_you' || a.trust_dialog).length };
+      return { p, list, need: counts({ project: p.id }).needs_you };
     }),
   );
 </script>
@@ -21,13 +21,13 @@
       <button class="mark" onfocus={() => (hover = p.id)} onblur={() => (hover = null)} onclick={() => list[0] && openAgent(list[0].id)} aria-label={p.name}>
         {p.name[0]?.toUpperCase()}
       </button>
-      {#if need}<span class="count">{need}</span>{/if}
+      {#if need}<span class="count" title="{need} need you">{need}</span>{/if}
       {#if hover === p.id}
         <div class="pop">
           <b>{p.name}</b>
           <span class="muted">{p.git?.branch ?? ''}{p.git?.dirty ? ` · ±${p.git.dirty}` : ''}</span>
           {#each list as a (a.id)}
-            <button class="row" onclick={() => openAgent(a.id)}><StatusBadge state={displayState(a)} compact /><AgentChip id={a.id} /></button>
+            <button class="row" onclick={() => openAgent(a.id)}><StatusBadge state={attention(a.id)?.status ?? 'idle'} compact /><AgentChip id={a.id} /></button>
           {:else}<span class="muted">No sessions</span>{/each}
         </div>
       {/if}

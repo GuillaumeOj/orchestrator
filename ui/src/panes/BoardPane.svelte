@@ -13,6 +13,7 @@
   import { ago, clock } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { backendLabel, remoteName, syncCounts } from '../lib/linear.js';
+  import { onTopics } from '../lib/now.svelte.js';
   import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
   import { blockedBy, COLUMNS, handle, moveCursor, shiftStatus } from '../lib/teams.js';
 
@@ -140,12 +141,11 @@
   }
 
   onMount(() => {
-    load();
     invoke('planner_view')
       .then((pv) => (offHours = pv?.off_hours ?? null))
       .catch(() => {});
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
+    // Refetched when the core says this project's board changed (no poll).
+    return onTopics([`board:${spec.projectId}`], load);
   });
 </script>
 

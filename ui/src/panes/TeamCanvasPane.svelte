@@ -12,6 +12,7 @@
   import { app, projects, saveLayout, toast } from '../lib/app.svelte.js';
   import * as C from '../lib/canvas.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { onTopics } from '../lib/now.svelte.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -482,8 +483,9 @@
   onMount(() => {
     load();
     loadRegistry();
-    const t = setInterval(() => status === 'saved' && load(), 15000);
-    return () => (clearInterval(t), clearTimeout(saveTimer));
+    // Refetched when the teams changed, unless edits here are unsaved.
+    const stop = onTopics(['teams'], () => status === 'saved' && load(), { now: false });
+    return () => (stop(), clearTimeout(saveTimer));
   });
 </script>
 

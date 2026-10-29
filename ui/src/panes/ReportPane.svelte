@@ -11,6 +11,7 @@
   import { app, openSingleton, saveLayout, toast } from '../lib/app.svelte.js';
   import { dayHm, dayTime } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { onTopics } from '../lib/now.svelte.js';
   import { ACTION_LABEL, API_TIP, delta, kpis, minutes, noData, reportMarkdown, stateBar, TABS, usd, weekNo } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
 
@@ -85,11 +86,8 @@
     untrack(load);
   });
 
-  onMount(() => {
-    // The current week moves on: refresh it now and then.
-    const t = setInterval(() => id === 'current' && load(), 60000);
-    return () => clearInterval(t);
-  });
+  // The current week moves on: refetched when the core says the report changed.
+  onMount(() => onTopics(['report'], () => id === 'current' && load(), { now: false }));
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->

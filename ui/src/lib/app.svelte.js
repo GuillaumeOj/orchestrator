@@ -1,20 +1,23 @@
-// The app's state: what the core reports (polled about once a second), the
-// tiling workspace, focus, overlays and the command registry. Terminal objects
-// (xterm.js) live outside the reactive state, in `terms`.
+// The app's state: what the core reports (`app_state`, read on its `now`
+// topics; attention records, decisions and counts in `app.now`, see
+// now.svelte.js), the tiling workspace, focus, overlays and the command
+// registry. Terminal objects (xterm.js) live outside the reactive state, in `terms`.
 
 import { clock as clockOf } from './format.js';
-import { due, effectToast, outcomeToast, pendingToast, UNDO_MS } from './inbox.js';
+import { due, effectToast, legacyItem, outcomeToast, pendingToast, UNDO_MS } from './inbox.js';
 import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
 import * as L from './layout.js';
-import { displayState, runCost } from './status.js';
+import { needsYou } from './now.svelte.js';
+import { runCost, STATUS } from './status.js';
 import { runStateLabel } from './teams.js';
 import { TermPane } from './term.js';
 import { breakpoint } from './tokens.js';
 
 export const app = $state({
   data: null, // app_state
+  now: { rev: 0, agents: {}, runs: {}, decisions: {}, outcomes: [], counts: { global: {}, projects: {} } }, // now.svelte.js
   kitty: null,
   layout: null,
   panes: {}, // paneId → { type, agentId?, termId?, projectId?, cwd?, title }
@@ -546,15 +549,13 @@ export function toggleZoom() {
   focusPane(app.focused);
 }
 
-/** Leader w: the next agent waiting for you, by waiting time (attention ladder level 1). */
+/** Leader w: the next agent that needs you, longest waiting first (attention ladder level 1). */
 export function nextWaiting() {
-  const waiting = agents()
-    .filter((a) => a.state === 'waiting_for_you' || a.trust_dialog)
-    .sort((x, y) => (x.last_event_at_ms ?? 0) - (y.last_event_at_ms ?? 0));
+  const waiting = needsYou();
   if (!waiting.length) return toast('No agent is waiting for you');
   const cur = contextAgent()?.id;
-  const i = waiting.findIndex((a) => a.id === cur);
-  openAgent(waiting[(i + 1) % waiting.length].id);
+  const i = waiting.findIndex((r) => r.agent === cur);
+  openAgent(waiting[(i + 1) % waiting.length].agent);
 }
 
 // ---------------------------------------------------------------- agent actions
@@ -622,14 +623,14 @@ export function openInKitty(cwd) {
   invoke('open_in_kitty', { cwd }).catch((e) => toast(errText(e), { kind: 'error' }));
 }
 
-/** Run a queued turn now, after the user confirms its cost in both windows (FR-809). */
-export function runNow(a, notStarted) {
+/** Run a queued turn now (`fresh`: start a not-started agent), after the user confirms its cost in both windows (FR-809). */
+export function runNow(a, fresh) {
   const cost = runCost(a.queue_entry, true);
   confirm(
-    `${notStarted ? 'Start' : 'Run'} ${a.id} now?`,
+    `${fresh ? 'Start' : 'Run'} ${a.id} now?`,
     `≈ ${cost}. It runs above the live cap for one turn and is logged as your override.`,
     () => governor('run_now', a.queue_entry.id),
-    notStarted ? 'Start now' : 'Run now',
+    fresh ? 'Start now' : 'Run now',
   );
 }
 
@@ -770,10 +771,10 @@ export async function restoreLayout() {
   if (!app.data?.setup?.done) openSingleton('setup');
 }
 
-// ---------------------------------------------------------------- polling
+// ---------------------------------------------------------------- app_state
 
 /**
- * The poll's payload, replaced whole every second and never edited: a class
+ * `app_state`'s payload, replaced whole on each read and never edited: a class
  * instance is not turned into a deep reactive proxy, so Svelte only tracks
  * `app.data` itself instead of wrapping the whole tree each time.
  */
@@ -785,13 +786,13 @@ class Snapshot {
 
 let refreshing = null;
 
-/** One poll at a time: a call made while one is in flight waits for that one. */
+/** One read at a time: a call made while one is in flight waits for that one. */
 export function refresh() {
-  refreshing ??= poll().finally(() => (refreshing = null));
+  refreshing ??= readState().finally(() => (refreshing = null));
   return refreshing;
 }
 
-async function poll() {
+async function readState() {
   try {
     const data = await invoke('app_state');
     data.features ??= app.data?.features ?? null;
@@ -1066,9 +1067,17 @@ export function jumpTargets() {
       run: () => openFeature(f.id),
     });
   }
-  for (const a of agents()) {
+  // Agents that need you first, longest waiting first; then the rest as listed.
+  const first = needsYou().map((r) => r.agent);
+  const rank = (a) => (first.includes(a.id) ? first.indexOf(a.id) : first.length);
+  for (const a of [...agents()].sort((x, y) => rank(x) - rank(y))) {
     const p = projects().find((x) => x.id === a.project_id);
-    out.push({ label: `${p?.name ?? ''} › ${a.id}`, detail: displayState(a), run: () => openAgent(a.id) });
+    const r = app.now.agents[a.id];
+    out.push({
+      label: `${p?.name ?? ''} › ${a.id}`,
+      detail: STATUS[r?.status]?.label ?? '',
+      run: () => openAgent(a.id),
+    });
   }
   for (const [id, s] of Object.entries(app.panes))
     out.push({ label: `pane: ${s.title}`, detail: s.type, run: () => focusPane(id) });
@@ -1108,7 +1117,8 @@ export function undoItem(itemId) {
 /** Sends the decisions whose undo window is over. Called by the app's clock,
  *  which may tick again while a slow act (a restart, a kill) is in flight: the
  *  batch is marked sent at once so no tick sends it twice, and its cards stay
- *  hidden until the core answered and the state was read again. */
+ *  hidden until the core answered with their lifecycle (the `now` push brings
+ *  what follows). */
 export async function flushDecisions(now = Date.now()) {
   const batch = due(app.pending, now);
   if (!batch.length) return;
@@ -1119,11 +1129,12 @@ export async function flushDecisions(now = Date.now()) {
   batch.forEach((p, i) => {
     const r = acts[i];
     if (r.status === 'rejected') toast(errText(r.reason), { kind: 'error' });
-    else if (!routeOpen(r.value, p.project)) toast(effectToast(p.card, p.action, r.value?.effect, p.message));
+    else {
+      const d = app.now.decisions[p.item];
+      if (d && r.value?.lifecycle) app.now.decisions[p.item] = { ...d, lifecycle: r.value.lifecycle };
+      if (!routeOpen(r.value, p.project)) toast(effectToast(p.card, p.action, r.value?.effect, p.message));
+    }
   });
-  // A poll in flight read the state before these acts: read it again after it.
-  await refreshing;
-  await refresh();
   app.pending = app.pending.filter((x) => !batch.includes(x));
 }
 
@@ -1132,12 +1143,10 @@ export async function flushDecisions(now = Date.now()) {
  *  decision of ours still in its undo window (it would only fail). A parked
  *  item stays open: a pending answer to it still applies. */
 export function onOutcome(outcome) {
-  const item = app.data?.inbox?.items?.find((i) => i.id === outcome?.item);
-  const text = outcomeToast(item, outcome);
+  const d = app.now.decisions[outcome?.item];
+  const text = outcomeToast(d && legacyItem(d), outcome);
   if (text) toast(text);
   if (outcome?.effect !== 'parked') undoItem(outcome?.item);
-  // The user's own decisions: flushDecisions reads the state again already.
-  if (outcome?.decided_by !== 'user') refresh();
 }
 
 /** FR-415: the agent again as a fresh session with its brief (agent menu). */

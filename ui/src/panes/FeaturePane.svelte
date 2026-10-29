@@ -11,12 +11,12 @@
   import Kbd from '../components/Kbd.svelte';
   import Markdown from '../components/Markdown.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
-  import { agent, app, confirm, openAgent, openBoard, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
+  import { app, confirm, openAgent, openBoard, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
   import { isDesign } from '../lib/ecosystem.js';
   import { ago, dayHm } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { backendLabel, remoteName } from '../lib/linear.js';
-  import { displayState } from '../lib/status.js';
+  import { attention, onTopics, runAttention } from '../lib/now.svelte.js';
   import { handle, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
 
   let { paneId } = $props();
@@ -38,10 +38,13 @@
 
   const run = $derived(v?.run ?? null);
   const paused = $derived(run?.status === 'paused');
+  // The run's phase as the core's run record has it.
+  const rr = $derived(run ? runAttention(run.id) : null);
+  const phase = $derived(rr?.phase ?? run?.status);
   const byStatus = (s) => (v?.tasks ?? []).filter((t) => t.status === s);
   const events = $derived((v?.timeline ?? []).filter(timelineFilter(tl)).slice(0, 60));
   const lead = $derived(v?.team?.nodes?.find((n) => n.is_lead)?.id ?? 'lead');
-  /** An agent's role from the run's own team (the poll may not list a new agent yet). */
+  /** An agent's role from the run's own team (app_state may not list a new agent yet). */
   const roleOfAgent = (id) => {
     const node = v?.agents?.find((a) => a.id === id)?.node;
     return v?.team?.nodes?.find((n) => n.id === node)?.role_id ?? null;
@@ -180,11 +183,13 @@
     if (featureKnown) untrack(loadNotion);
   });
 
+  // Refetched when the core says the feature or its team changed (no poll);
+  // the Notion status when an integration changed.
   onMount(() => {
-    load();
-    const t = setInterval(load, 4000);
-    const n = setInterval(() => featureKnown && !publishing && loadNotion(), 60000);
-    return () => (clearInterval(t), clearInterval(n));
+    const id = spec.featureId;
+    const stop = onTopics([`feature:${id}`, 'features', 'teams'], load);
+    const stopNotion = onTopics(['integrations', `feature:${id}`], () => featureKnown && !publishing && loadNotion());
+    return () => (stop(), stopNotion());
   });
 </script>
 
@@ -197,7 +202,7 @@
   {:else}
     <header class="fh">
       <span class="slug">{v.feature.slug}</span>
-      {#if run}<span class="pill" style:color={runStateColor(run.status)} style:border-color={runStateColor(run.status)}>{runStateLabel(run.status)}</span>{/if}
+      {#if run}<span class="pill" style:color={runStateColor(phase)} style:border-color={runStateColor(phase)} title={rr ? `since ${ago(rr.phase_since_ms)}` : null}>{runStateLabel(phase)}</span>{/if}
       <span class="muted">{v.team?.name ?? ''}{v.team ? ` v${v.team.version}` : ''} · {'\u{E725}'} {v.feature.integration_worktree ? `orch/${v.feature.slug}/integration` : '—'}{run ? ` · started ${ago(run.started_at_ms)}` : ''}</span>
       <span class="grow"></span>
       {#if publishing}
@@ -270,13 +275,13 @@
           {#if v.agents.length}
             <div class="agents">
               {#each v.agents as a (a.id)}
-                {@const live = agent(a.id)}
+                {@const rec = attention(a.id)}
                 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                 <div class="trow" onclick={() => openAgent(a.id)} title="Open {a.id}">
                   <AgentChip id={a.id} role={roleOfAgent(a.id)} compact />
                   <span class="name ell">{shortName(a.id)}</span>
                   <span class="act muted ell">{a.tool || (a.task ? `task T-${a.task}` : '')}{a.flag ? ` · ${a.flag}` : ''}</span>
-                  <span class="st"><StatusBadge state={live ? displayState(live) : a.state} trailing /></span>
+                  <span class="st"><StatusBadge state={rec?.status ?? 'idle'} trailing /></span>
                 </div>
               {/each}
             </div>
