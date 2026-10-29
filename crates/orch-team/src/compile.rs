@@ -308,6 +308,9 @@ mod tests {
         assert!(back.deny_tools.contains(&"WebFetch".to_string()));
         assert!(back.prompt.contains("You are node `back`"));
         assert!(back.prompt.contains("summary for `lead`"));
+        assert_eq!(back.model.as_deref(), Some("sonnet"), "coding agents default to Sonnet");
+        assert_eq!(compile_node(&t, "ux", &roles, &ctx()).unwrap().model.as_deref(), Some("sonnet"));
+        assert_eq!(compile_node(&t, "ui", &roles, &ctx()).unwrap().model.as_deref(), Some("opus"));
     }
 
     #[test]
