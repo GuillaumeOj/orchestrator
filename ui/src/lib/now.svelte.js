@@ -4,7 +4,7 @@
 // derive nothing. Pane views are invalidated by the event's topics: a pane
 // refetches its view when its topic arrives, on mount and on window focus.
 
-import { app, decisionPushed } from './app.svelte.js';
+import { app, decisionGone, decisionPushed } from './app.svelte.js';
 import { waited } from './format.js';
 import { invoke, listen } from './ipc.js';
 import { STATUS } from './status.js';
@@ -77,8 +77,15 @@ export function applyNow(ev) {
       decisionPushed(prev, d);
     }
     // A closed decision keeps its last upsert (the final lifecycle) for a while.
+    // One whose last upsert still waits on the user is gone with no final
+    // lifecycle (a synthesized wait-/error- decision, a deleted item): dropped.
     const nowMs = Date.now();
-    for (const id of ev.decisions?.closed ?? []) closedAt.set(id, nowMs);
+    for (const id of ev.decisions?.closed ?? []) {
+      const d = n.decisions[id];
+      decisionGone(id, d);
+      if (isOpen(d)) delete n.decisions[id];
+      else closedAt.set(id, nowMs);
+    }
     for (const [id, t] of closedAt)
       if (nowMs - t > CLOSED_MS) {
         delete n.decisions[id];
@@ -190,9 +197,10 @@ export async function clearDigest(list = digest()) {
   app.now.outcomes = app.now.outcomes.map((o) => (evNo(o.id) <= upTo ? { ...o, seen: true } : o));
 }
 
+const isOpen = (d) => d?.lifecycle?.state === 'open' || d?.lifecycle?.state === 'parked';
+
 /** Decisions still waiting on the user (open or parked), in no order. */
-export const openDecisions = () =>
-  Object.values(app.now.decisions).filter((d) => d.lifecycle?.state === 'open' || d.lifecycle?.state === 'parked');
+export const openDecisions = () => Object.values(app.now.decisions).filter(isOpen);
 
 // ---------------------------------------------------------------- topics
 

@@ -122,6 +122,13 @@ describe('now store', () => {
     }
   });
 
+  it('a decision closed while its last upsert is still open is gone (a synthesized one has no final lifecycle)', () => {
+    // inbox-1 is open in the snapshot; the core closes it without a final upsert.
+    applyNow({ rev: 6, decisions: { upsert: [], closed: ['inbox-1'] }, topics: [] });
+    expect(app.now.decisions['inbox-1']).toBeUndefined();
+    expect(openDecisions()).toEqual([]);
+  });
+
   it('a missed rev reads the snapshot again; an old rev is ignored', async () => {
     applyNow({ rev: 4, attention: { agents: [rec('x', 'idle')] }, topics: [] });
     expect(attention('x')).toBeNull();

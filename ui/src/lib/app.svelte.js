@@ -4,7 +4,7 @@
 // registry. Terminal objects (xterm.js) live outside the reactive state, in `terms`.
 
 import { clock as clockOf } from './format.js';
-import { decisionToast, due, pendingToast, UNDO_MS } from './inbox.js';
+import { decisionToast, due, effectText, pendingToast, UNDO_MS } from './inbox.js';
 import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
@@ -1153,6 +1153,9 @@ export async function flushDecisions(now = Date.now()) {
       toast(errText(r.reason), { kind: 'error' });
       return;
     }
+    // The effect it answered with: the toast if the decision closes with no final push.
+    const m = mine.get(p.item);
+    if (m) m.effect = r.value?.effect;
     const d = app.now.decisions[p.item];
     if (d && d === sent[i] && r.value?.lifecycle) {
       // The answer's lifecycle counts as a push: a synchronous effect (Allow
@@ -1187,6 +1190,18 @@ export function decisionPushed(prev, d) {
   else if (d.lifecycle.effect === 'pr_opened' && d.lifecycle.effect_detail)
     toast(text, { action: { label: 'Open PR', run: () => openUrl(d.lifecycle.effect_detail) } });
   else toast(text);
+}
+
+/** A decision left the open list. One closed with no final lifecycle (a
+ *  synthesized wait-/error- decision, a deleted item): ours still in its undo
+ *  window would only fail; one we sent toasts the effect inbox_act answered
+ *  with, since no push will carry it. */
+export function decisionGone(id, d) {
+  undoItem(id);
+  const m = mine.get(id);
+  mine.delete(id);
+  if (m?.effect && d && !SETTLED.has(d.lifecycle?.state))
+    toast(effectText({ ...d, lifecycle: { state: 'effect', decided_by: 'user', effect: m.effect } }, m));
 }
 
 /** FR-415: the agent again as a fresh session with its brief (agent menu). */

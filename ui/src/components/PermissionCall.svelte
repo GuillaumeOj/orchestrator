@@ -2,7 +2,7 @@
   // A `tool_call` block (FR-705, notes §3.3): "<tool> in <worktree name>" (the
   // full cwd on hover) and the input in mono, collapsed past 6 lines. In the
   // Inbox detail and the agent pane's permission strip.
-  import { baseName } from '../lib/format.js';
+  import { baseName, plural } from '../lib/format.js';
   import { collapse, inputText } from '../lib/inbox.js';
 
   let { block } = $props();
@@ -19,7 +19,7 @@
   {#if text}
     <pre class="mono input">{shown.text}</pre>
     {#if shown.more}
-      <button class="link more" onclick={() => (open = true)}>Show {shown.more} more line{shown.more === 1 ? '' : 's'}</button>
+      <button class="link more" onclick={() => (open = true)}>Show {plural(shown.more, 'more line')}</button>
     {:else if open}
       <button class="link more" onclick={() => (open = false)}>Show less</button>
     {/if}

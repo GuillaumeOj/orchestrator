@@ -44,9 +44,9 @@ export const restarted = (d) => d?.payload?.restarted === true && !parked(d);
 /** An MCP server that needs sign-in (FR-604): Reconnect, Open Settings, Dismiss. */
 const mcpAlert = (d) => d?.kind === 'alert' && d.payload?.alert === 'mcp_needs_auth';
 export const actionByKey = (d, key) => d?.actions?.find((a) => a.key === key) ?? null;
-/** Actions with no key: buttons in the detail only. */
 /** A decision's context block of that type, if any. */
 export const blockOf = (d, type) => d?.context?.find((b) => b.type === type) ?? null;
+/** Actions with no key: buttons in the detail only. */
 export const keyless = (d) => (d?.actions ?? []).filter((a) => !a.key);
 /** Kind label (notes §3.2), from the decision-kind palette. */
 export const kindLabel = (d) => decisionKind(d).label;
@@ -147,6 +147,8 @@ const GATE_WORD = { spec: 'spec gate', pr: 'PR gate', restart: 'gate' };
 /** What will be sent while a decision waits out its undo window ("Allowing
  *  once"): the marker's text, and the start of the undo toast. */
 export function pendingVerb(d, action) {
+  // Dismiss (a stale decision's only action) is never a deny, a reject or a skip.
+  if (action === 'dismiss') return 'Dismissing';
   switch (d.kind) {
     case 'permission':
       return { approve: 'Allowing once', always: 'Always allowing' }[action] ?? 'Denying';
@@ -196,6 +198,11 @@ function prOpened(d, url) {
   return `PR opened${name ? ` · ${name}` : ''}${n ? ` #${n}` : ''} ↗`;
 }
 
+// A spec gate's answer: decided in another window, the effect alone does not say which.
+const specAnswer = (action) =>
+  ({ approve: 'Spec approved', reject: 'Spec sent back', reply: 'Spec sent back with your notes' })[action] ??
+  'Spec gate answered';
+
 /**
  * The effect, said plainly (notes §4), from the decision's lifecycle. `mine`:
  * the action and message this window sent, when it did (else read from the
@@ -221,9 +228,7 @@ export function effectText(d, mine = {}) {
       if (d.kind === 'ask') return `Running now · ${agent}`;
       if (d.kind === 'error') return `Resumed · ${agent}`;
       if (d.kind === 'gate') {
-        if (d.gate === 'spec')
-          // Decided in another window: the effect alone does not say which answer it was.
-          return `${{ approve: 'Spec approved', reject: 'Spec sent back', reply: 'Spec sent back with your notes' }[action] ?? 'Spec gate answered'} · ${agent} resumed`;
+        if (d.gate === 'spec') return `${specAnswer(action)} · ${agent} resumed`;
         if (d.gate === 'pr') return `PR gate sent back · ${agent} resumed`;
         return `${action === 'reject' ? 'Rejected' : 'Approved'} · ${agent} resumed`;
       }
@@ -232,7 +237,7 @@ export function effectText(d, mine = {}) {
       return `Answer delivered · ${agent} reads it next`;
     case 'queued':
       if (d.kind === 'ask') return `Kept queued · ${agent}${eta}`;
-      if (d.kind === 'gate' && d.gate === 'spec') return `Spec approved · ${agent}${eta}`;
+      if (d.kind === 'gate' && d.gate === 'spec') return `${specAnswer(action)} · ${agent}${eta}`;
       return `Answer queued · ${agent}${eta}`;
     case 'pr_opened':
       return prOpened(d, lc.effect_detail);
@@ -241,10 +246,11 @@ export function effectText(d, mine = {}) {
     case 'dismissed':
       if (mcpAlert(d)) return `Dismissed until it fails again · ${d.payload?.name ?? d.payload?.server ?? ''}`;
       return `Dismissed · ${cut(d.title, 40)}`;
+    // The Governor's ask is answered at once with applied / skipped.
     case 'applied':
-      return `Applied · ${d.title}`;
+      return d.kind === 'ask' ? `Running now · ${agent}` : `Applied · ${d.title}`;
     case 'skipped':
-      return `Skipped · ${d.title}`;
+      return d.kind === 'ask' ? `Kept queued · ${agent}${eta}` : `Skipped · ${d.title}`;
     case 'deleted':
       return `Deleted · ${agent}`;
     default:
@@ -301,7 +307,10 @@ export function marker(d, pending = null, now = Date.now()) {
     case 'stale':
       return { state: 'stale', text: `Stale · ${lc.stale_why ?? 'the context changed'}` };
     case 'dismissed':
-      return { state: 'dismissed', text: `Dismissed ${byText(lc.decided_by)}${at(lc.decided_at_ms)}` };
+      return {
+        state: 'dismissed',
+        text: `${['Dismissed', byText(lc.decided_by)].filter(Boolean).join(' ')}${at(lc.decided_at_ms)}`,
+      };
     case 'interrupted':
       return { state: 'interrupted', text: `Interrupted · ${agent} stopped before it was answered` };
     default:

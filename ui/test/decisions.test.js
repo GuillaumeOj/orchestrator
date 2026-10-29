@@ -268,6 +268,22 @@ describe('toasts: never before sent, the effect when the core pushes it', () => 
     expect(app.toasts).toHaveLength(2);
   });
 
+  it('a synthesized decision closed with no final push toasts the effect inbox_act answered', async () => {
+    const wait = decision({
+      id: 'wait-front-1',
+      kind: 'wait',
+      subject: { agent: 'front-1' },
+      actions: [act('reply', 'Reply', 'enter')],
+    });
+    app.now = nowOf(app.data, { decisions: [wait] });
+    replies.inbox_act = { ok: true, effect: 'delivered', lifecycle: { state: 'sent' } };
+    decide(wait, 'reply', 'yes, go on');
+    await flushDecisions(Date.now() + UNDO_MS);
+    expect(app.toasts).toHaveLength(1);
+    applyNow({ rev: 2, decisions: { upsert: [], closed: ['wait-front-1'] }, topics: [] });
+    expect(app.toasts.at(-1).text).toBe('Answer delivered · front-1 reads it next');
+  });
+
   it('Always allow names the rule; a failure stays until dismissed and opens the decision', async () => {
     const perm = permDecision();
     app.now = nowOf(app.data, { decisions: [perm] });

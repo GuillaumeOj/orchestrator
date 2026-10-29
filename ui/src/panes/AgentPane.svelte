@@ -116,7 +116,7 @@
         {/each}
       </div>
       {#if parked(perm)}<LifecycleMarker decision={perm} />{/if}
-      <PermissionCall block={blockOf(perm, 'tool_call')} />
+      {#key perm.id}<PermissionCall block={blockOf(perm, 'tool_call')} />{/key}
     </div>
   {:else if rec?.level === 'needs_you'}
     <div class="strip warn"><span class="icon" style:color={STATUS[ds].color}>{STATUS[ds].icon}</span> <b>{STATUS[ds].label}</b> <WaitingChip {rec} /> · {inPane ? 'answer it in the pane below: the app never does' : 'answer it in the Inbox'}</div>

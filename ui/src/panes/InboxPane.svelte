@@ -25,7 +25,7 @@
     toast,
     undoLast,
   } from '../lib/app.svelte.js';
-  import { ago } from '../lib/format.js';
+  import { ago, plural } from '../lib/format.js';
   import {
     actionByKey,
     afterRemoval,
@@ -84,6 +84,7 @@
   $effect(() => {
     if (app.inboxFocus) {
       selected = app.inboxFocus;
+      filter = 'all'; // a filter that hides it would select another
       outcome = null;
       app.inboxFocus = null;
     }
@@ -119,9 +120,10 @@
         if (!undoLast()) toast('Nothing to undo');
         return true;
       case 'decide': {
-        // x-marked decisions take a/r together when each has that action.
+        // x-marked decisions take a/r together when each has that action; a
+        // keyless button (Always allow, Restart fresh, Dismiss) is for its own decision.
         const key = d.actions?.find((x) => x.id === intent.action)?.key;
-        const targets = marked.size ? items.filter((i) => marked.has(i.id) && i.lifecycle?.state !== 'stale' && actionByKey(i, key)?.id === intent.action) : [d];
+        const targets = key && marked.size ? items.filter((i) => marked.has(i.id) && i.lifecycle?.state !== 'stale' && actionByKey(i, key)?.id === intent.action) : [d];
         for (const t of targets) send(t, intent.action);
         marked = new Set();
         return true;
@@ -256,7 +258,7 @@
         </div>
       {/if}
       <div class="lh digest">
-        <span>4 · Today{outcomes.length ? ` · ${outcomes.length} outcome${outcomes.length === 1 ? '' : 's'}` : ''}</span>
+        <span>4 · Today{outcomes.length ? ` · ${plural(outcomes.length, 'outcome')}` : ''}</span>
         {#if outcomes.length}<button class="link" onclick={clear}>Clear <Kbd keys="c" /></button>{/if}
       </div>
       {#each outcomes as o (o.id)}
