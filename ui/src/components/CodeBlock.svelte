@@ -10,7 +10,11 @@
   // Plain text until lib/highlight.js has loaded (once, on the first block with a language).
   let hl = $state(null);
   $effect(() => {
-    if (lang && !hl) loadHighlight().then((m) => (hl = m));
+    if (lang && !hl)
+      loadHighlight().then(
+        (m) => (hl = m),
+        () => {}, // the chunk didn't load: the block stays plain
+      );
   });
   const runs = $derived(hl ? hl.highlight(code, lang) : null);
 

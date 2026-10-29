@@ -26,10 +26,13 @@
     return () => (live = false);
   });
 
+  // While it is open, keys stop here: the pane's own shortcuts (esc, a gate's
+  // approve…) don't act on what the overlay hides.
   function onKey(e) {
-    if (!big || e.key !== 'Escape') return;
+    if (!big) return;
+    e.stopPropagation();
+    if (e.key !== 'Escape') return;
     e.preventDefault();
-    e.stopPropagation(); // the pane's own esc stays put
     big = false;
   }
 </script>

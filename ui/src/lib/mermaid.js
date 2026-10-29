@@ -5,6 +5,7 @@
 // Loaded lazily (markdown.js loadMermaid): only when a doc has a diagram.
 import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
+import { luminance, parseHex } from './kittytheme.js';
 
 let seq = 0;
 
@@ -39,7 +40,7 @@ export function themeFromTokens(root = document.documentElement) {
   const v = (name) => css.getPropertyValue(name).trim();
   const bg = v('--color-surface-pane');
   return {
-    darkMode: luminance(bg) < 0.5,
+    darkMode: isDark(bg),
     background: bg,
     fontFamily: v('--font-family-ui'),
     primaryColor: v('--color-surface-raised'),
@@ -60,32 +61,42 @@ export function themeFromTokens(root = document.documentElement) {
   };
 }
 
-/** Relative luminance (0–1) of a `#rgb`/`#rrggbb` color; dark when unknown. */
-function luminance(hex) {
-  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})/i.exec(hex);
-  if (!m) return 0;
-  const h = m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1];
-  const [r, g, b] = [0, 2, 4].map((i) => Number.parseInt(h.slice(i, i + 2), 16) / 255);
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+/** Dark when the surface is (the kitty theme's rule, lib/kittytheme.js); dark when unknown. */
+function isDark(color) {
+  const rgb = parseHex(color);
+  return !rgb || luminance(rgb) < 0.179;
 }
 
-/** A `url(…)` that isn't a fragment of the diagram itself (`url(#arrowhead)`). */
-const OUTSIDE_URL = /url\(\s*['"]?\s*(?!#)|@import/i;
+/**
+ * CSS that loads something from outside the diagram: a `url(…)` that isn't a
+ * fragment of the diagram itself (`url(#arrowhead)`, `url("#a")`), an
+ * `image-set(…)` (takes bare strings) or an `@import`. CSS escapes are decoded
+ * first: `\75 rl(` is `url(`.
+ */
+const OUTSIDE_URL = /url\(\s*(?!['"]?\s*#)|image-set\(|@import/i;
+const loadsOutside = (css) =>
+  OUTSIDE_URL.test(
+    css.replace(/\\([0-9a-f]{1,6})\s?|\\([^\n])/gi, (_, hex, ch) =>
+      hex ? String.fromCodePoint(Math.min(Number.parseInt(hex, 16), 0x10ffff)) : ch,
+    ),
+  );
 
-DOMPurify.addHook('uponSanitizeElement', (node, data) => {
-  if (data.tagName === 'style' && OUTSIDE_URL.test(node.textContent ?? '')) node.textContent = '';
+// Its own instance: the hooks must not reach Mermaid's (shared) DOMPurify.
+const purify = DOMPurify(window);
+purify.addHook('uponSanitizeElement', (node, data) => {
+  if (data.tagName === 'style' && loadsOutside(node.textContent ?? '')) node.textContent = '';
 });
-DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
+purify.addHook('uponSanitizeAttribute', (_node, data) => {
   const name = data.attrName.toLowerCase();
   const value = String(data.attrValue ?? '').trim();
   // Links stay inside the diagram: only `#fragment` targets.
   if ((name === 'href' || name === 'xlink:href') && !value.startsWith('#')) data.keepAttr = false;
-  else if (OUTSIDE_URL.test(value)) data.keepAttr = false;
+  else if (loadsOutside(value)) data.keepAttr = false;
 });
 
 /** Mermaid's SVG made safe to insert: SVG elements only, no script, handlers, HTML or outside links. */
 export function sanitizeSvg(svg) {
-  return DOMPurify.sanitize(svg, {
+  return purify.sanitize(svg, {
     USE_PROFILES: { svg: true, svgFilters: true },
     ADD_TAGS: ['style'],
     FORBID_TAGS: ['foreignObject', 'script', 'a', 'image'],

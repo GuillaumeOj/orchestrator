@@ -1,4 +1,5 @@
 import { fireEvent, getQueriesForElement, render } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../src/lib/app.svelte.js', () => ({ openUrl: vi.fn(), toast: vi.fn() }));
@@ -12,7 +13,9 @@ const { openUrl, toast } = await import('../src/lib/app.svelte.js');
 const { invoke } = await import('../src/lib/ipc.js');
 const { default: mermaid } = await import('mermaid');
 const { default: Markdown } = await import('../src/components/Markdown.svelte');
-const { frontPairs, imageTarget, linkKind, parse, prepare, slug } = await import('../src/lib/markdown.js');
+const { frontPairs, imageTarget, linkKind, loadHighlight, parse, prepare, slug } = await import(
+  '../src/lib/markdown.js'
+);
 const { HL_MAX_LINES, highlight } = await import('../src/lib/highlight.js');
 const { sanitizeSvg } = await import('../src/lib/mermaid.js');
 
@@ -203,7 +206,9 @@ describe('Markdown renderer', () => {
 
   it('renders unknown languages as plain code', async () => {
     const { container } = render(Markdown, { text: '```nope\nx\n```\n\n```\ny\n```' });
-    await new Promise((ok) => setTimeout(ok, 20));
+    // The highlighter has loaded (the block with a language asked for it): still no colors.
+    await loadHighlight();
+    await tick();
     expect(container.querySelectorAll('pre code')).toHaveLength(2);
     expect(container.querySelector('[class^="hl-"]')).toBeNull();
   });
@@ -442,6 +447,16 @@ describe('Mermaid diagrams', () => {
       '<svg><g onclick="x()"><use href="#a"></use><use href="https://e.example/s.svg#a"></use></g></svg>',
     );
     expect(out).not.toContain('onclick');
+    expect(out).not.toContain('e.example');
+  });
+
+  it('keeps quoted fragment refs, drops image-set and CSS-escaped urls', () => {
+    const out = sanitizeSvg(
+      '<svg><path marker-end=\'url("#arrow")\'></path>' +
+        '<rect style=\'background:image-set("https://e.example/p.png" 1x)\'></rect>' +
+        '<style>svg{background:\\75 rl(https://e.example/t.png)} .a{fill:red}</style></svg>',
+    );
+    expect(out).toContain('marker-end="url(&quot;#arrow&quot;)"');
     expect(out).not.toContain('e.example');
   });
 });
