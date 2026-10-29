@@ -1,10 +1,11 @@
 <script>
   // Sidebar (§9.2): Projects → Features → agents; solo sessions under their
   // project. The only navigation tree. Badges are the core's attention
-  // records; a feature's count is its run's `needs_you`, its label the run's phase.
+  // records; a feature's count is its run's `needs_you`, its label the run's phase
+  // (a finished run has no record: its own status).
   import { activeAgents, app, features, openAgent, openFeature, openProject, projects } from '../lib/app.svelte.js';
   import { pct } from '../lib/format.js';
-  import { counts, featureRun, statusOf } from '../lib/now.svelte.js';
+  import { featureRun, runPhase, statusOf } from '../lib/now.svelte.js';
   import { runStateLabel } from '../lib/teams.js';
   import AgentChip from './AgentChip.svelte';
   import Kbd from './Kbd.svelte';
@@ -55,14 +56,14 @@
           <ul role="group">
             {#each feats as { f, list: fl } (f.id)}
               {@const k = `f:${f.id}`}
-              {@const r = featureRun(f)}
-              {@const n = r ? counts({ run: r.run }).needs_you : 0}
+              {@const n = featureRun(f)?.counts?.needs_you ?? 0}
+              {@const phase = runPhase(f.run)}
               <li role="treeitem" aria-selected={focusedFeature === f.id} aria-expanded={!collapsed[k]}>
-                <button data-row class="row feature" class:selected={focusedFeature === f.id} onclick={() => openFeature(f.id)} title="{f.archived ? 'Deleted, agents left · ' : ''}{f.branch} · {r ? runStateLabel(r.phase) : 'no run'}">
+                <button data-row class="row feature" class:selected={focusedFeature === f.id} onclick={() => openFeature(f.id)} title="{f.archived ? 'Deleted, agents left · ' : ''}{f.branch} · {phase ? runStateLabel(phase) : 'no run'}">
                   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                   <span class="caret" aria-hidden="true" onclick={(e) => (e.stopPropagation(), (collapsed[k] = !collapsed[k]))}>{collapsed[k] ? '▸' : '▾'}</span>
                   <span class="name">{f.slug}</span>
-                  {#if n}<span class="badge" aria-label="{n} need you" title="{n} need you">{n}</span>{:else if f.archived}<span class="meta">deleted</span>{:else if r}<span class="meta">{runStateLabel(r.phase)}</span>{/if}
+                  {#if n}<span class="badge" aria-label="{n} need you" title="{n} need you">{n}</span>{:else if f.archived}<span class="meta">deleted</span>{:else if phase}<span class="meta">{runStateLabel(phase)}</span>{/if}
                 </button>
                 {#if !collapsed[k]}
                   <ul role="group">

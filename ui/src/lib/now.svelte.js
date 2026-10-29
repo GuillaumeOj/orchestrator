@@ -40,22 +40,29 @@ function setSnapshot(s) {
 }
 
 let loading = null;
+// The newest rev an event carried that the copy could not apply (a gap).
+let missed = 0;
 
-/** One snapshot read at a time; a call made meanwhile waits for that one. */
+/** One snapshot read at a time; a call made meanwhile waits for that one.
+ *  A gap event newer than the snapshot it got (sent while it was read) reads once more. */
 export function loadNow() {
   loading ??= invoke('now_snapshot')
     .then(setSnapshot)
     .catch(() => {})
-    .finally(() => (loading = null));
+    .finally(() => {
+      loading = null;
+      const again = missed > app.now.rev;
+      missed = 0;
+      if (again) loadNow();
+    });
   return loading;
 }
 
-/** A `now` event: its deltas, or a resync when a rev was missed. Then its topics. */
+/** A `now` event: its deltas, or a resync when a rev was missed. Then its
+ *  topics (an old rev's too: what a pane shows is not in the snapshot). */
 export function applyNow(ev) {
   const n = app.now;
-  if (ev.rev <= n.rev) return;
-  if (ev.rev !== n.rev + 1) loadNow();
-  else {
+  if (ev.rev === n.rev + 1) {
     const at = ev.attention ?? {};
     for (const r of at.agents ?? []) n.agents[r.agent] = r;
     for (const r of at.runs ?? []) n.runs[r.run] = r;
@@ -76,6 +83,9 @@ export function applyNow(ev) {
     if (ev.outcomes?.length) n.outcomes = [...n.outcomes, ...ev.outcomes];
     if (ev.counts) n.counts = ev.counts;
     n.rev = ev.rev;
+  } else if (ev.rev > n.rev) {
+    missed = Math.max(missed, ev.rev);
+    loadNow();
   }
   dispatch(ev.topics ?? []);
 }
@@ -115,6 +125,8 @@ export const governorReason = (rec) => (rec?.waiting_on?.kind === 'governor' ? r
 export const runAttention = (runId) => app.now.runs[runId] ?? null;
 /** The run record of a feature's current run. */
 export const featureRun = (f) => (f.run ? runAttention(f.run.id) : null);
+/** A run's phase: its record's, else (a finished run has no record) the run's own status. */
+export const runPhase = (run) => (run ? (runAttention(run.id)?.phase ?? run.status ?? null) : null);
 
 /** Counts: global (no scope), `{ project }` or `{ run }`; zeros when the core has none. */
 export function counts(scope = null) {
@@ -158,17 +170,32 @@ function dispatch(topics) {
  * false: the caller loads itself), when a topic it matches arrives (a list of
  * topics, or a predicate) and when the window comes back (unless `focus` is
  * false). Coalesced: at most one load in flight, and one more after it when a
- * topic arrived meanwhile. Returns the cleanup.
+ * topic arrived meanwhile; with `every`, at most one load per `every` ms.
+ * Nothing loads after the cleanup. Returns the cleanup.
  */
-export function onTopics(match, load, { now = true, focus = true } = {}) {
+export function onTopics(match, load, { now = true, focus = true, every = 0 } = {}) {
   const test = typeof match === 'function' ? match : (t) => match.includes(t);
   let inFlight = null;
   let again = false;
+  let stopped = false;
+  let startedAt = -Infinity;
+  let timer = null;
   const run = () => {
-    if (inFlight) {
-      again = true;
-      return inFlight;
+    if (stopped) return Promise.resolve();
+    if (inFlight || timer) {
+      again ||= !timer;
+      return inFlight ?? Promise.resolve();
     }
+    // `every`: at most one load per `every` ms; a topic sooner loads at the end of it.
+    const wait = startedAt + every - Date.now();
+    if (wait > 0) {
+      timer = setTimeout(() => {
+        timer = null;
+        run();
+      }, wait);
+      return Promise.resolve();
+    }
+    startedAt = Date.now();
     inFlight = Promise.resolve()
       .then(load)
       .catch(() => {})
@@ -184,5 +211,9 @@ export function onTopics(match, load, { now = true, focus = true } = {}) {
   const sub = { match: test, run, focus };
   subs.add(sub);
   if (now) run();
-  return () => subs.delete(sub);
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+    subs.delete(sub);
+  };
 }

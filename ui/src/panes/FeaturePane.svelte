@@ -16,7 +16,7 @@
   import { ago, dayHm } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { backendLabel, remoteName } from '../lib/linear.js';
-  import { onTopics, runAttention, statusOf } from '../lib/now.svelte.js';
+  import { onTopics, runAttention, runPhase, statusOf } from '../lib/now.svelte.js';
   import { handle, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
 
   let { paneId } = $props();
@@ -38,8 +38,9 @@
 
   const run = $derived(v?.run ?? null);
   const paused = $derived(run?.status === 'paused');
-  // The run's phase as the core's run record has it.
+  // The run's phase as the core's run record has it (a finished run has none: its status).
   const rr = $derived(run ? runAttention(run.id) : null);
+  const phase = $derived(runPhase(run));
 
   const byStatus = (s) => (v?.tasks ?? []).filter((t) => t.status === s);
   const events = $derived((v?.timeline ?? []).filter(timelineFilter(tl)).slice(0, 60));
@@ -68,7 +69,7 @@
     }
   }
 
-  /** Notion status every minute; the parent page and the token only until both are set
+  /** Notion status; the parent page and the token only until both are set
    *  (then Publish can work, and only the status changes). */
   async function loadNotion() {
     if (!v?.feature) return;
@@ -177,18 +178,20 @@
     e.preventDefault();
   }
 
-  // Notion: once the feature is known (whichever load brings it), then every minute.
+  // Notion: once the feature is known (whichever load brings it), then on its topics.
   const featureKnown = $derived(v?.feature?.id ?? null);
   $effect(() => {
     if (featureKnown) untrack(loadNotion);
   });
 
   // Refetched when the core says the feature or its team changed (no poll);
-  // the Notion status when an integration changed.
+  // the Notion status when an integration or the project's settings (its
+  // parent page) changed.
   onMount(() => {
     const id = spec.featureId;
     const stop = onTopics([`feature:${id}`, 'features', 'teams'], load);
-    const stopNotion = onTopics(['integrations', `feature:${id}`], () => featureKnown && !publishing && loadNotion(), { focus: false });
+    const notionTopic = (t) => t === 'integrations' || t === `feature:${id}` || (!!v?.feature && t === `project:${v.feature.project_id}`);
+    const stopNotion = onTopics(notionTopic, () => featureKnown && !publishing && loadNotion(), { focus: false });
     return () => (stop(), stopNotion());
   });
 </script>
@@ -202,7 +205,7 @@
   {:else}
     <header class="fh">
       <span class="slug">{v.feature.slug}</span>
-      {#if rr}<span class="pill" style:color={runStateColor(rr.phase)} style:border-color={runStateColor(rr.phase)} title="since {ago(rr.phase_since_ms)}">{runStateLabel(rr.phase)}</span>{/if}
+      {#if phase}<span class="pill" style:color={runStateColor(phase)} style:border-color={runStateColor(phase)} title={rr ? `since ${ago(rr.phase_since_ms)}` : null}>{runStateLabel(phase)}</span>{/if}
       <span class="muted">{v.team?.name ?? ''}{v.team ? ` v${v.team.version}` : ''} · {'\u{E725}'} {v.feature.integration_worktree ? `orch/${v.feature.slug}/integration` : '—'}{run ? ` · started ${ago(run.started_at_ms)}` : ''}</span>
       <span class="grow"></span>
       {#if publishing}

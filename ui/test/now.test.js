@@ -28,6 +28,7 @@ const {
   onTopics,
   openDecisions,
   runAttention,
+  runPhase,
   since,
 } = await import('../src/lib/now.svelte.js');
 
@@ -133,6 +134,33 @@ describe('now store', () => {
     expect(app.now.decisions).toEqual({});
   });
 
+  it('a gap event sent while the snapshot was read (newer than it) reads it once more', async () => {
+    snapshot = { ...snapshot, rev: 7 };
+    applyNow({ rev: 7, topics: [] }); // a gap from 5: a read starts (it answers rev 7)
+    snapshot = { ...snapshot, rev: 8 };
+    applyNow({ rev: 8, topics: [] }); // sent before that read answered
+    expect(calls.map(([c]) => c)).toEqual(['now_snapshot']);
+    await tick();
+    await tick();
+    expect(calls.map(([c]) => c)).toEqual(['now_snapshot', 'now_snapshot']);
+    expect(app.now.rev).toBe(8);
+  });
+
+  it('an old rev still tells the panes what to refetch', async () => {
+    const load = vi.fn(async () => {});
+    const stop = onTopics(['board:shop'], load, { now: false });
+    applyNow({ rev: 5, topics: ['board:shop'] });
+    await tick();
+    expect(load).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it('a finished run (no record) reads its own status', () => {
+    expect(runPhase({ id: 'run-1', status: 'executing' })).toBe('executing');
+    expect(runPhase({ id: 'run-old', status: 'done' })).toBe('done');
+    expect(runPhase(null)).toBeNull();
+  });
+
   it('needs_you agents in waiting order (leader w, palette jump)', () => {
     applyNow({
       rev: 6,
@@ -201,6 +229,38 @@ describe('topics', () => {
     applyNow({ rev: 8, topics: ['board:shop'] });
     await tick();
     expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('no load after the cleanup, even one coalesced while a load was in flight', async () => {
+    /** @type {(v?: unknown) => void} */
+    let release = () => {};
+    const load = vi.fn(() => new Promise((r) => (release = r)));
+    const stop = onTopics(['report'], load);
+    applyNow({ rev: 6, topics: ['report'] });
+    stop();
+    release();
+    await tick();
+    await tick();
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it('every: at most one load per period, a topic sooner loads at its end', async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const load = vi.fn(async () => {});
+      const stop = onTopics(['report'], load, { every: 60000 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(load).toHaveBeenCalledTimes(1);
+      applyNow({ rev: 6, topics: ['report'] });
+      applyNow({ rev: 7, topics: ['report'] });
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(load).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(30000);
+      expect(load).toHaveBeenCalledTimes(2);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('coalesces: one load in flight, one more after it however many topics came', async () => {

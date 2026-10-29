@@ -21,8 +21,10 @@
   import { classify } from './lib/keyboard.js';
   import { connectNow, onTopics } from './lib/now.svelte.js';
 
-  // The `now` topics app_state answers for (its non-attention data).
+  // The `now` topics app_state answers for (its non-attention data): the
+  // projects list and the git state of projects and worktrees too.
   const STATE_TOPICS = ['agents', 'queue', 'usage', 'memory', 'power', 'banners', 'setup', 'features', 'teams'];
+  const stateTopic = (t) => STATE_TOPICS.includes(t) || t.startsWith('project:') || t.startsWith('worktree:');
   let ready = $state(false);
   let lastKeyCommand = { id: null, at: 0 };
   const isNav = (k) => k === 'palette' || k === 'jump';
@@ -83,7 +85,7 @@
       const [kitty] = await Promise.all([invoke('kitty_config').catch(() => null), loadUiFont().catch(() => [])]);
       if (kitty) app.kitty = await prepareKitty(kitty).catch(() => kitty);
       // app_state is read on its topics (spec §3.2), never on a timer (and right below).
-      stopState = onTopics(STATE_TOPICS, refresh, { now: false });
+      stopState = onTopics(stateTopic, refresh, { now: false });
       // Attention from the `now` push, resynced on a rev gap and when the window shows again.
       const [, stop] = await Promise.all([refresh(), connectNow()]);
       stopNow = stop;

@@ -28,6 +28,9 @@
   const rec = $derived(a ? attention(a.id) : null);
   const ds = $derived(statusOf(spec?.agentId));
   const fresh = $derived(ds === 'not_started');
+  // Answered in the PTY (a trust dialog, a prompt in the pane); a gate, a team
+  // question or the Governor's ask is answered in the Inbox.
+  const inPane = $derived(/^(trust|wait)-/.test(rec?.waiting_on?.ref ?? ''));
   const snap = $derived(app.data?.usage?.snapshot);
   const sessionPp = $derived(ppOf(a, snap));
   // Its permission prompt (held or parked): the Inbox's own item, not a second list.
@@ -112,7 +115,7 @@
       <PermissionCall item={perm} />
     </div>
   {:else if rec?.level === 'needs_you'}
-    <div class="strip warn"><span class="icon" style:color={STATUS[ds].color}>{STATUS[ds].icon}</span> <b>{STATUS[ds].label}</b> <Reason {rec} /> · answer it in the pane below: the app never does</div>
+    <div class="strip warn"><span class="icon" style:color={STATUS[ds].color}>{STATUS[ds].icon}</span> <b>{STATUS[ds].label}</b> <Reason {rec} /> · {inPane ? 'answer it in the pane below: the app never does' : 'answer it in the Inbox'}</div>
   {:else if rec?.level === 'queued'}
     <div class="strip">
       <span class="icon" style:color={STATUS[ds].color}>{STATUS[ds].icon}</span>
@@ -131,7 +134,7 @@
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
     <div class="strip" tabindex="0" onkeydown={onStripKey} role="group">
       <span class="icon" style:color="var(--color-status-error)">{'\u{F0159}'}</span>
-      <span>Error: {rec?.reason || 'exited with an error'} · session saved</span>
+      <span>{rec?.reason ? `Error: ${rec.reason}` : 'Exited with an error'} · session saved</span>
       <span class="grow"></span>
       <button class="btn" onclick={() => agentAction(a.id, 'resume')}>Resume <Kbd keys="⏎" /></button>
       <button class="btn danger" onclick={() => (app.overlay = { kind: 'delete-agent', agentId: a.id })}>Delete…</button>

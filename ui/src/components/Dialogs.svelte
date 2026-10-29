@@ -173,7 +173,11 @@
 
   const project = $derived(projects().find((p) => p.id === form.project_id));
   const snap = $derived(app.data?.usage?.snapshot);
-  const c = $derived(counts());
+  // The core's counts; its cap until the `now` snapshot is read (the Governor's).
+  const c = $derived.by(() => {
+    const n = counts();
+    return { ...n, live_cap: n.live_cap ?? snap?.live_cap };
+  });
 
   function close() {
     app.overlay = null;

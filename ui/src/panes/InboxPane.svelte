@@ -43,18 +43,6 @@
   const labels = $derived(actionLabels(sel));
   const a = $derived(sel?.agent_id ? agent(sel.agent_id) : null);
 
-  const KIND = {
-    permission: { state: 'waiting_for_you' },
-    startup: { state: 'error' },
-    gate: { state: 'waiting_gate' },
-    question: { state: 'waiting_for_you' },
-    trust: { state: 'waiting_for_you' },
-    error: { state: 'error' },
-    alert: { state: 'error' },
-    budget: { state: 'queued' },
-    info: { state: 'done' },
-  };
-
   // Actions with no key: buttons in the detail only (api-contract §1).
   const BUTTONS = ['always', 'in_pane', 'restart_fresh', 'dismiss', 'delete'];
 
@@ -213,8 +201,9 @@
     </div>
     <div class="detail">
       {#if sel}
+        {@const k = decisionKind(sel.decision)}
         <div class="dh">
-          <StatusBadge state={KIND[sel.kind]?.state ?? 'idle'} compact />
+          <span class="kind" style:color={k.color} title={k.label} aria-hidden="true">{k.icon}</span>
           <b>{kindLabel(sel)} · {sel.agent_id ?? 'Governor'}</b>
           {#if a}<StatusBadge state={statusOf(a.id)} />{/if}
           <span class="grow"></span>

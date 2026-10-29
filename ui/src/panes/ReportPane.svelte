@@ -86,8 +86,9 @@
     untrack(load);
   });
 
-  // The current week moves on: refetched when the core says the report changed.
-  onMount(() => onTopics(['report'], () => id === 'current' && load(), { now: false }));
+  // The current week moves on: refetched when the core says the report changed
+  // (any run event does), at most once a minute (the whole week is read again).
+  onMount(() => onTopics(['report'], () => id === 'current' && load(), { now: false, every: 60000 }));
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->

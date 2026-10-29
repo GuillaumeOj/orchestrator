@@ -1068,8 +1068,8 @@ export function jumpTargets() {
     });
   }
   // Agents that need you first, longest waiting first; then the rest as listed.
-  const first = needsYou().map((r) => r.agent);
-  const rank = (a) => (first.includes(a.id) ? first.indexOf(a.id) : first.length);
+  const first = new Map(needsYou().map((r, i) => [r.agent, i]));
+  const rank = (a) => first.get(a.id) ?? first.size;
   for (const a of [...agents()].sort((x, y) => rank(x) - rank(y))) {
     const p = projects().find((x) => x.id === a.project_id);
     out.push({
@@ -1122,6 +1122,8 @@ export async function flushDecisions(now = Date.now()) {
   const batch = due(app.pending, now);
   if (!batch.length) return;
   for (const p of batch) p.sent = true;
+  // The decision as sent: a `now` push that changed it meanwhile is newer than the answer.
+  const sent = batch.map((p) => app.now.decisions[p.item]);
   const acts = await Promise.allSettled(
     batch.map((p) => invoke('inbox_act', { item: p.item, action: p.action, message: p.message })),
   );
@@ -1130,7 +1132,7 @@ export async function flushDecisions(now = Date.now()) {
     if (r.status === 'rejected') toast(errText(r.reason), { kind: 'error' });
     else {
       const d = app.now.decisions[p.item];
-      if (d && r.value?.lifecycle) app.now.decisions[p.item] = { ...d, lifecycle: r.value.lifecycle };
+      if (d && d === sent[i] && r.value?.lifecycle) app.now.decisions[p.item] = { ...d, lifecycle: r.value.lifecycle };
       if (!routeOpen(r.value, p.project)) toast(effectToast(p.card, p.action, r.value?.effect, p.message));
     }
   });
