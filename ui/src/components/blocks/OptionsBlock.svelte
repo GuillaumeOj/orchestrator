@@ -71,7 +71,7 @@
   .glyph.on {
     color: var(--color-accent-default);
   }
-  .opt:focus-within .glyph {
+  .opt:has(.sr:focus-visible) .glyph {
     outline: var(--border-width-focus) solid var(--color-accent-default);
     border-radius: var(--radius-sm);
   }
