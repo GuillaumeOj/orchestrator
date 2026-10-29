@@ -34,6 +34,10 @@
     flex: none;
     border: var(--border-width-default) solid;
     border-radius: var(--radius-sm);
+    /* FiraCode's ascent/descent put the capital 0.045em (0.5px at 11px)
+       above the line box's center: 1px of top padding lowers the content
+       box's center by 0.5px (one device pixel on Retina). */
+    padding-top: 1px;
     font: var(--text-caption);
   }
   .name {

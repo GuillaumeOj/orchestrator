@@ -173,7 +173,10 @@ describe('P2 panes', () => {
         ],
       },
       project: { id: 'shop', name: 'shop-api', backend: 'local' },
-      agents: [{ id: 'fx-lead-1', node: 'lead', state: 'idle', task: null, tool: null, flag: null }],
+      agents: [
+        { id: 'fx-lead-1', node: 'lead', state: 'idle', task: null, tool: null, flag: null },
+        { id: 'fx-back-1', node: 'back', state: 'working', task: 1, tool: null, flag: 'slow' },
+      ],
       tasks: [task(1, 'in_progress')],
       docs: ['spec.md'],
       artifacts: [{ id: 1, kind: 'design', uri: 'penpot://drawer', from_node: 'ux', to_node: 'ui' }],
@@ -198,6 +201,24 @@ describe('P2 panes', () => {
     expect(container.querySelector('.ev > span')?.classList.contains('evtime')).toBe(true);
     // The compact agent chip next to it never shrinks either.
     expect(container.querySelector('.ev .chip')?.classList.contains('compact')).toBe(true);
+    // Team card: a table row per agent, mark · short name · activity · status (label then icon).
+    const rows = [...container.querySelectorAll('.agents > .trow')];
+    expect(rows.length).toBe(2);
+    const cells = (r) => [...r.children].map((c) => c.className.split(' ')[0]);
+    expect(cells(rows[1])).toEqual(['chip', 'name', 'act', 'st']);
+    expect(rows[1].getAttribute('title')).toBe('Open fx-back-1');
+    expect(rows[1].querySelector('.chip').classList.contains('compact')).toBe(true);
+    expect(rows[1].querySelector('.name').textContent).toBe('back-1');
+    expect(rows[1].querySelector('.act').textContent).toBe('task T-1 · slow');
+    const badge = rows[1].querySelector('.st .badge');
+    expect(badge.classList.contains('trailing')).toBe(true);
+    expect([...badge.children].map((c) => c.className.split(' ')[0])).toEqual(['label', 'icon']);
+    // No activity: the empty cell stays, so the status keeps its column.
+    expect(cells(rows[0])).toEqual(['chip', 'name', 'act', 'st']);
+    expect(rows[0].querySelector('.act').textContent).toBe('');
+    expect(rows[0].querySelector('.name').textContent).toBe('lead-1');
+    await fireEvent.click(rows[1]);
+    expect(Object.values(app.panes).some((p) => p.type === 'agent' && p.agentId === 'fx-back-1')).toBe(true);
     // A design artifact moved to the Design section (P3): a Penpot link tile.
     expect(container.querySelector('[aria-label="Design"]').textContent).toContain('Link only');
     const input = container.querySelector('input[placeholder^="Message"]');
