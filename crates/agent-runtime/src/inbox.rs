@@ -329,21 +329,10 @@ impl Runtime {
         }
     }
 
-    /// An item's lifecycle now (`inbox_act`'s answer).
-    /// With the version the next push will carry for it (the row's,
-    /// raised past the last one pushed), so a client never sees an answer
-    /// as older than a push it already holds.
+    /// An item's lifecycle now (`inbox_act`'s answer), with a version that
+    /// outranks every push the client holds ([`Runtime::answered_lifecycle`]).
     pub fn lifecycle(&self, id: u64) -> Value {
-        let Some((mut lc, key)) = self.store.read(|s| {
-            s.inbox
-                .iter()
-                .find(|i| i.id == id)
-                .map(|i| (crate::decision::Lifecycle::of(i), crate::decision::decision_id(&i.kind, i.id)))
-        }) else {
-            return Value::Null;
-        };
-        lc.version = self.next_pushed_version(&key, &lc);
-        json!(lc)
+        self.answered_lifecycle(id).map_or(Value::Null, |lc| json!(lc))
     }
 
     /// Closes an open item; the closed item, or `None` if it was already closed.
@@ -1667,7 +1656,16 @@ mod tests {
             .as_u64()
             .unwrap();
         rt.advance(q, Stage::Effect("delivered", None));
-        assert!(version(&rt, q) > pushed, "the answer is never older than the push held");
+        let answered = version(&rt, q);
+        assert!(answered > pushed, "the answer is never older than the push held");
+        // The lifecycle moves again before the next push: that push outranks the answer.
+        rt.advance(q, Stage::Effect("resumed", None));
+        rt.now_pump(false);
+        let d =
+            rt.now_snapshot()["decisions"].as_array().unwrap().iter().find(|d| d["id"] == format!("q-{q}")).cloned();
+        let lc = &d.unwrap()["lifecycle"];
+        assert_eq!(lc["effect"], "resumed");
+        assert!(lc["version"].as_u64().unwrap() > answered, "a newer lifecycle is never dropped as old");
     }
 
     #[test]

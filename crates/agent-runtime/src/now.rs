@@ -331,14 +331,30 @@ impl Runtime {
         }
     }
 
-    /// The version a stored decision's next push carries with lifecycle
-    /// `lc` (as `decision_delta` sets it): the row's, raised past the last
-    /// one pushed when the lifecycle moved since.
-    pub(crate) fn next_pushed_version(&self, id: &str, lc: &decision::Lifecycle) -> u64 {
-        let st = lock(&self.now.state);
-        let Some(p) = st.decisions.get(id).map(|d| &d.lifecycle) else { return lc.version };
-        let same = decision::Lifecycle { version: p.version, ..lc.clone() } == *p;
-        if same { lc.version.max(p.version) } else { lc.version.max(p.version + 1) }
+    /// An item's lifecycle now, for `inbox_act`'s answer: the row's version,
+    /// raised past the last one pushed when the lifecycle moved since, so the
+    /// answer is never older than a push the client holds. Read under the
+    /// publisher's lock (as `now_pump` reads), so no push lands between the
+    /// read and the comparison. A raised version is kept as the pushed one:
+    /// the next push of any other lifecycle outranks the answer
+    /// (`decision_delta` goes past it).
+    pub(crate) fn answered_lifecycle(&self, id: u64) -> Option<decision::Lifecycle> {
+        let mut st = lock(&self.now.state);
+        let (mut lc, key) = self.store.read(|s| {
+            s.inbox
+                .iter()
+                .find(|i| i.id == id)
+                .map(|i| (decision::Lifecycle::of(i), decision::decision_id(&i.kind, i.id)))
+        })?;
+        if let Some(p) = st.decisions.get_mut(&key).map(|d| &mut d.lifecycle) {
+            if (decision::Lifecycle { version: p.version, ..lc.clone() }) == *p {
+                lc.version = lc.version.max(p.version);
+            } else {
+                lc.version = lc.version.max(p.version + 1);
+                p.version = lc.version;
+            }
+        }
+        Some(lc)
     }
 
     /// The user answered a synthesized card (`ask-7`, `wait-a1`, `error-a1`)
