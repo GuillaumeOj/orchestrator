@@ -10,12 +10,15 @@ import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { frontmatter } from 'micromark-extension-frontmatter';
 import { gfm } from 'micromark-extension-gfm';
 
+// Stateless across parses: built once.
+const OPTIONS = {
+  extensions: [gfm(), frontmatter(['yaml'])],
+  mdastExtensions: [gfmFromMarkdown(), frontmatterFromMarkdown(['yaml'])],
+};
+
 /** The mdast tree of `md`. */
 export function parse(md) {
-  return fromMarkdown(String(md ?? ''), {
-    extensions: [gfm(), frontmatter(['yaml'])],
-    mdastExtensions: [gfmFromMarkdown(), frontmatterFromMarkdown(['yaml'])],
-  });
+  return fromMarkdown(String(md ?? ''), OPTIONS);
 }
 
 /** The plain text of a node (heading slugs, image alts). */
@@ -40,15 +43,13 @@ function walk(n, fn) {
   for (const c of n.children ?? []) walk(c, fn);
 }
 
-const ALERTS = { NOTE: 'note', TIP: 'tip', IMPORTANT: 'important', WARNING: 'warning', CAUTION: 'caution' };
-
 /** `> [!NOTE]` (GitHub alerts): the kind on `data.alert`, the marker dropped. */
 function markAlert(q) {
   const p = q.children[0];
   const t = p?.type === 'paragraph' ? p.children[0] : null;
   const m = t?.type === 'text' ? /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(?:\n|$)/i.exec(t.value) : null;
   if (!m) return;
-  q.data = { ...q.data, alert: ALERTS[m[1].toUpperCase()] };
+  q.data = { ...q.data, alert: m[1].toLowerCase() };
   t.value = t.value.slice(m[0].length);
   if (!t.value) p.children.shift();
   if (p.children[0]?.type === 'break') p.children.shift();
@@ -64,7 +65,7 @@ export function prepare(md) {
   const root = parse(md);
   const defs = new Map();
   const notes = new Map();
-  const order = [];
+  const nums = new Map(); // footnote id → number, in first-reference order
   const slugs = new Map();
   const used = new Set();
   const refs = new Map();
@@ -84,14 +85,14 @@ export function prepare(md) {
       used.add(s);
       n.data = { ...n.data, slug: s };
     } else if (n.type === 'footnoteReference' && notes.has(n.identifier)) {
-      if (!order.includes(n.identifier)) order.push(n.identifier);
-      const num = order.indexOf(n.identifier) + 1;
+      if (!nums.has(n.identifier)) nums.set(n.identifier, nums.size + 1);
+      const num = nums.get(n.identifier);
       const k = (refs.get(num) ?? 0) + 1;
       refs.set(num, k);
       n.data = { ...n.data, num, refId: k === 1 ? `fnref:${num}` : `fnref:${num}-${k}` };
     }
   });
-  const footnotes = order.map((id, i) => ({ num: i + 1, node: notes.get(id) }));
+  const footnotes = [...nums].map(([id, num]) => ({ num, node: notes.get(id) }));
   return { root, defs, footnotes };
 }
 
@@ -103,11 +104,14 @@ export function prepare(md) {
  * - `repo`: another relative path, shown but not clickable (D4);
  * - `text`: any other scheme (`javascript:`, `file:`…), plain text.
  */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point.
+const CONTROL = /[\x00-\x1f\x7f]/;
+
 export function linkKind(url, canSwitchDoc = false) {
   const u = String(url ?? '').trim();
   // Browsers drop tabs/newlines and leading controls when reading an href, so
   // `java&#9;script:` would become `javascript:`: a link with one is text.
-  if ([...u].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f)) return { kind: 'text' };
+  if (CONTROL.test(u)) return { kind: 'text' };
   if (/^(https?:\/\/|mailto:)/i.test(u)) return { kind: 'external', url: u };
   if (u.startsWith('#')) return { kind: 'anchor', anchor: safeDecode(u.slice(1)) };
   if (/^[a-z][a-z0-9+.-]*:/i.test(u) || u.startsWith('//') || !u) return { kind: 'text' };
@@ -160,9 +164,7 @@ const SYNTAX = {
   comment: 'comment',
   quote: 'comment',
   title: 'function',
-  'title.function': 'function',
   'title.class': 'type',
-  'title.class.inherited': 'type',
   section: 'function',
   type: 'type',
   built_in: 'type',
@@ -184,7 +186,6 @@ const SYNTAX = {
   tag: 'tag',
   name: 'tag',
   meta: 'meta',
-  'meta.keyword': 'meta',
   'meta.string': 'string',
   addition: 'addition',
   deletion: 'deletion',
@@ -192,8 +193,17 @@ const SYNTAX = {
   operator: 'punctuation',
 };
 
+// A few dozen distinct class lists cover a whole block: resolve each once.
+const syntaxCache = new Map();
+
 function syntaxOf(el) {
   const cls = el.properties?.className ?? [];
+  const key = cls.join(' ');
+  if (!syntaxCache.has(key)) syntaxCache.set(key, resolveSyntax(cls));
+  return syntaxCache.get(key);
+}
+
+function resolveSyntax(cls) {
   const scope = cls.find((c) => c.startsWith('hljs-'))?.slice(5);
   if (!scope) return null;
   const subs = cls.filter((c) => !c.startsWith('hljs-')).map((c) => c.replace(/_+$/, ''));
@@ -212,6 +222,12 @@ export function codeLang(lang) {
   return l && lowlight.registered(l) ? l : null;
 }
 
+function tooManyLines(s) {
+  let lines = 1;
+  for (let i = s.indexOf('\n'); i !== -1; i = s.indexOf('\n', i + 1)) if (++lines > HL_MAX_LINES) return true;
+  return false;
+}
+
 /**
  * `code` as a flat list of `{ t, v }` runs (`t` = a syntax token or null), or
  * null when it renders plain: unknown language, or a very long block.
@@ -219,7 +235,7 @@ export function codeLang(lang) {
 export function highlight(code, lang) {
   const l = codeLang(lang);
   const s = String(code ?? '');
-  if (!l || s.length > HL_MAX_BYTES || s.split('\n').length > HL_MAX_LINES) return null;
+  if (!l || s.length > HL_MAX_BYTES || tooManyLines(s)) return null;
   const runs = [];
   const push = (t, v) => {
     const last = runs[runs.length - 1];

@@ -4,6 +4,7 @@
   // HTML shows as muted text, except <br>. `feature` is for relative images
   // (next: feature_asset); `ondoc(name, anchor)` opens a sibling .md doc,
   // without it such links are plain text.
+  import { tick } from 'svelte';
   import { openUrl } from '../lib/app.svelte.js';
   import { frontPairs, linkKind, prepare } from '../lib/markdown.js';
   import CodeBlock from './CodeBlock.svelte';
@@ -12,16 +13,14 @@
   let { text = '', feature = null, ondoc = null } = $props();
   const doc = $derived(prepare(text));
   // Heading and footnote ids are prefixed per instance: two docs on screen don't clash.
-  const prefix = `md${Math.random().toString(36).slice(2, 8)}-`;
-  let root;
+  const uid = $props.id();
+  const prefix = `${uid}-`;
 
-  const BR = /^<br\s*\/?>$/i;
-  const ALERT_TITLE = { note: 'Note', tip: 'Tip', important: 'Important', warning: 'Warning', caution: 'Caution' };
+  const BR = /^\s*<br\s*\/?>\s*$/i;
 
+  /** Ids (slugs, `fn:1`) are lowercase. */
   function scrollTo(id) {
-    if (!id) return;
-    const el = document.getElementById(prefix + id) ?? document.getElementById(prefix + String(id).toLowerCase());
-    if (el && root?.contains(el)) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    if (id) document.getElementById(prefix + String(id).toLowerCase())?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
 
   function follow(e, k) {
@@ -35,19 +34,13 @@
     await ondoc?.(k.name, k.anchor);
     if (!k.anchor) return;
     // The view switches the text on this same instance: scroll once it rendered.
-    await Promise.resolve();
-    requestAnimationFrame(() => scrollTo(k.anchor));
+    await tick();
+    scrollTo(k.anchor);
   }
 
   function jump(e, id) {
     e.preventDefault();
     scrollTo(id);
-  }
-
-  // A remote image inside a link (`[![CI](badge.svg)](…/actions)`) is the link's
-  // content: let the click reach the link instead of also opening the image.
-  function openChip(e, url) {
-    if (!e.currentTarget.closest('a')) openUrl(url);
   }
 
   const imageUrl = (n) => (n.type === 'imageReference' ? (doc.defs.get(n.identifier)?.url ?? '') : n.url);
@@ -66,14 +59,14 @@
     <hr />
   {:else if n.type === 'blockquote'}
     <blockquote class={n.data?.alert ? `alert ${n.data.alert}` : undefined}>
-      {#if n.data?.alert}<p class="alert-title">{ALERT_TITLE[n.data.alert]}</p>{/if}
+      {#if n.data?.alert}<p class="alert-title">{n.data.alert[0].toUpperCase() + n.data.alert.slice(1)}</p>{/if}
       {@render blocks(n.children)}
     </blockquote>
   {:else if n.type === 'list'}
     {@const loose = n.spread || n.children.some((li) => li.spread)}
     <svelte:element
       this={n.ordered ? 'ol' : 'ul'}
-      start={n.ordered && n.start != null && n.start !== 1 ? n.start : undefined}
+      start={n.start === 1 ? null : n.start}
       class:tasks={n.children.some((li) => li.checked != null)}
     >
       {#each n.children as li, j (j)}
@@ -91,13 +84,13 @@
     <!-- `mermaid` fences render as code until the diagram renderer lands. -->
     <CodeBlock code={n.value} lang={n.lang} />
   {:else if n.type === 'html'}
-    {#if BR.test(n.value.trim())}<br />{:else}<div class="raw">{n.value}</div>{/if}
+    {#if BR.test(n.value)}<br />{:else}<div class="raw">{n.value}</div>{/if}
   {:else if n.type === 'table'}
     <div class="table">
       <table>
         <thead>
           <tr>
-            {#each n.children[0]?.children ?? [] as c, j (j)}<th style:text-align={n.align?.[j] ?? undefined}>{@render inlines(c.children)}</th>{/each}
+            {#each n.children[0]?.children ?? [] as c, j (j)}<th style:text-align={n.align?.[j]}>{@render inlines(c.children)}</th>{/each}
           </tr>
         </thead>
         {#if n.children.length > 1}
@@ -105,7 +98,7 @@
             {#each n.children.slice(1) as row, r (r)}
               <tr>
                 <!-- As GitHub: every row has the header's cells (short rows padded, extra cells dropped). -->
-                {#each n.children[0].children as _, j (j)}<td style:text-align={n.align?.[j] ?? undefined}>{@render inlines(row.children[j]?.children ?? [])}</td>{/each}
+                {#each n.children[0].children as _, j (j)}<td style:text-align={n.align?.[j]}>{@render inlines(row.children[j]?.children ?? [])}</td>{/each}
               </tr>
             {/each}
           </tbody>
@@ -130,24 +123,26 @@
   {/if}
 {/snippet}
 
-{#snippet inlines(list)}{#each list as n, i (i)}{@render inline(n)}{/each}{/snippet}
+{#snippet inlines(list, inLink = false)}{#each list as n, i (i)}{@render inline(n, inLink)}{/each}{/snippet}
 
-{#snippet inline(n)}
-  {#if n.type === 'text'}{n.value}{:else if n.type === 'strong'}<strong>{@render inlines(n.children)}</strong>{:else if n.type === 'emphasis'}<em>{@render inlines(n.children)}</em>{:else if n.type === 'delete'}<del>{@render inlines(n.children)}</del>{:else if n.type === 'inlineCode'}<code>{n.value}</code>{:else if n.type === 'break'}<br />{:else if n.type === 'html'}{#if BR.test(n.value.trim())}<br />{:else}<code class="raw">{n.value}</code>{/if}{:else if n.type === 'link'}{@render link(n.url, n.title, n.children)}{:else if n.type === 'linkReference'}{@const d = doc.defs.get(n.identifier)}{#if d}{@render link(d.url, d.title, n.children)}{:else}{@render inlines(n.children)}{/if}{:else if n.type === 'image' || n.type === 'imageReference'}{@render image(imageUrl(n), n.alt ?? '')}{:else if n.type === 'footnoteReference'}{#if n.data?.num}<sup class="fnref"><a href="#{prefix}fn:{n.data.num}" id="{prefix}{n.data.refId}" onclick={(e) => jump(e, `fn:${n.data.num}`)}>{n.data.num}</a></sup>{:else}[^{n.label ?? n.identifier}]{/if}{:else if n.children}{@render inlines(n.children)}{:else if n.value}{n.value}{/if}
+{#snippet inline(n, inLink)}
+  {#if n.type === 'text'}{n.value}{:else if n.type === 'strong'}<strong>{@render inlines(n.children, inLink)}</strong>{:else if n.type === 'emphasis'}<em>{@render inlines(n.children, inLink)}</em>{:else if n.type === 'delete'}<del>{@render inlines(n.children, inLink)}</del>{:else if n.type === 'inlineCode'}<code>{n.value}</code>{:else if n.type === 'break'}<br />{:else if n.type === 'html'}{#if BR.test(n.value)}<br />{:else}<code class="raw">{n.value}</code>{/if}{:else if n.type === 'link'}{@render link(n.url, n.title, n.children)}{:else if n.type === 'linkReference'}{@const d = doc.defs.get(n.identifier)}{#if d}{@render link(d.url, d.title, n.children)}{:else}{@render inlines(n.children)}{/if}{:else if n.type === 'image' || n.type === 'imageReference'}{@render image(imageUrl(n), n.alt ?? '', inLink)}{:else if n.type === 'footnoteReference'}{#if n.data?.num}<sup class="fnref"><a href="#{prefix}fn:{n.data.num}" id="{prefix}{n.data.refId}" onclick={(e) => jump(e, `fn:${n.data.num}`)}>{n.data.num}</a></sup>{:else}[^{n.label ?? n.identifier}]{/if}{:else if n.children}{@render inlines(n.children, inLink)}{:else if n.value}{n.value}{/if}
 {/snippet}
 
 {#snippet link(url, title, children)}
   {@const k = linkKind(url, !!ondoc)}
-  {#if k.kind === 'external'}<a class="ext" href={k.url} title={title ?? undefined} onclick={(e) => follow(e, k)}>{@render inlines(children)}<span class="arrow" aria-hidden="true">↗</span></a>{:else if k.kind === 'anchor' || k.kind === 'doc'}<a href={url} title={title ?? undefined} onclick={(e) => follow(e, k)}>{@render inlines(children)}</a>{:else if k.kind === 'repo'}<span class="repo" title={k.path}>{@render inlines(children)}</span>{:else}<span title={title ?? undefined}>{@render inlines(children)}</span>{/if}
+  <!-- hrefs come from the classified target, never the raw string. -->
+  {#if k.kind === 'external'}<a class="ext" href={k.url} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}<span class="arrow" aria-hidden="true">↗</span></a>{:else if k.kind === 'anchor' || k.kind === 'doc'}<a href={k.kind === 'anchor' ? `#${k.anchor}` : k.name} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}</a>{:else if k.kind === 'repo'}<span class="repo" title={k.path}>{@render inlines(children)}</span>{:else}<span {title}>{@render inlines(children)}</span>{/if}
 {/snippet}
 
 <!-- Images (feature_asset, the large preview) land with the next task: for now the
      remote chip (D2: never fetched) and the "not available" line. -->
-{#snippet image(url, alt)}
-  {#if /^https?:\/\//i.test(url)}<button class="chip" title={url} onclick={(e) => openChip(e, url)}>🖼 {alt || 'image'} ↗</button>{:else if !/^data:/i.test(url)}<span class="imgerr">image: {alt || url} (not available here)</span>{/if}
+<!-- Inside a link the chip is the link's content (`[![CI](badge.svg)](…)`): not a second control. -->
+{#snippet image(url, alt, inLink)}
+  {#if /^https?:\/\//i.test(url)}{#if inLink}<span class="chip">🖼 {alt || 'image'}</span>{:else}<button class="chip" title={url} onclick={() => openUrl(url)}>🖼 {alt || 'image'} ↗</button>{/if}{:else if !/^data:/i.test(url)}<span class="imgerr">image: {alt || url} (not available here)</span>{/if}
 {/snippet}
 
-<div class="md" bind:this={root}>
+<div class="md">
   {@render blocks(doc.root.children)}{#if doc.footnotes.length}
     <section class="footnotes" aria-label="Footnotes">
       <ol>
@@ -260,36 +255,25 @@
   }
   .alert-title {
     font: var(--text-body-strong);
+    color: var(--alert);
+  }
+  .alert {
+    border-left-color: var(--alert);
   }
   .alert.note {
-    border-left-color: var(--color-accent-default);
+    --alert: var(--color-accent-default);
   }
   .alert.tip {
-    border-left-color: var(--color-status-done);
+    --alert: var(--color-status-done);
   }
   .alert.important {
-    border-left-color: var(--color-status-at-gate);
+    --alert: var(--color-status-at-gate);
   }
   .alert.warning {
-    border-left-color: var(--color-status-waiting-for-you);
+    --alert: var(--color-status-waiting-for-you);
   }
   .alert.caution {
-    border-left-color: var(--color-status-error);
-  }
-  .alert.note .alert-title {
-    color: var(--color-accent-default);
-  }
-  .alert.tip .alert-title {
-    color: var(--color-status-done);
-  }
-  .alert.important .alert-title {
-    color: var(--color-status-at-gate);
-  }
-  .alert.warning .alert-title {
-    color: var(--color-status-waiting-for-you);
-  }
-  .alert.caution .alert-title {
-    color: var(--color-status-error);
+    --alert: var(--color-status-error);
   }
   ul,
   ol {
@@ -377,7 +361,6 @@
   }
   .front dd {
     margin: 0;
-    color: var(--color-text-secondary);
   }
   sup.fnref {
     font-size: 0.75em;
@@ -387,9 +370,6 @@
     padding-top: var(--space-sm);
     font: var(--text-caption);
     border-top: var(--border-width-default) solid var(--color-border-subtle);
-  }
-  .footnotes ol {
-    gap: var(--space-xxs);
   }
   .back {
     margin-left: var(--space-xxs);

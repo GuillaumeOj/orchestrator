@@ -45,7 +45,6 @@
   .copy {
     opacity: 0;
     padding: 0 var(--space-xs);
-    font: var(--text-caption);
     color: var(--color-text-secondary);
     background: var(--color-surface-raised);
     border: var(--border-width-default) solid var(--color-border-subtle);

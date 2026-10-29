@@ -278,8 +278,11 @@ describe('Markdown renderer', () => {
   });
 
   it('lets a badge inside a link open the link only', async () => {
-    const { getByText } = render(Markdown, { text: '[![CI](https://x.example/b.svg)](https://x.example/ci)' });
-    await fireEvent.click(getByText('🖼 CI ↗'));
+    const { container, getByText } = render(Markdown, {
+      text: '[![CI](https://x.example/b.svg)](https://x.example/ci)',
+    });
+    expect(container.querySelector('a button')).toBeNull();
+    await fireEvent.click(getByText('🖼 CI'));
     expect(openUrl).toHaveBeenCalledTimes(1);
     expect(openUrl).toHaveBeenCalledWith('https://x.example/ci');
   });
