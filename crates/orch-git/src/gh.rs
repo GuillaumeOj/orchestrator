@@ -350,13 +350,35 @@ pub fn push(worktree: &Path, remote: &str, branch: &str) -> Result<()> {
     Ok(())
 }
 
+/// Pushes the commit `rev` to `<remote>`'s `branch` (a fast-forward): what
+/// was approved, not whatever the branch holds by then. **Gated** like [`push`].
+pub fn push_rev(worktree: &Path, remote: &str, rev: &str, branch: &str) -> Result<()> {
+    if remote.starts_with('-') || rev.starts_with('-') || branch.starts_with('-') || rev.is_empty() {
+        bail!("invalid remote, commit or branch");
+    }
+    git_deadline(worktree, &["push", remote, &format!("{rev}:refs/heads/{branch}")], Duration::from_secs(120))?;
+    Ok(())
+}
+
+/// The `gh` arguments of [`create_pr`].
+pub fn create_pr_args(base: &str, head: &str, title: &str, body: &str, draft: bool) -> Vec<String> {
+    let mut args =
+        ["pr", "create", "--base", base, "--head", head, "--title", title, "--body", body].map(str::to_string).to_vec();
+    if draft {
+        args.push("--draft".into());
+    }
+    args
+}
+
+/// The PR URL in `gh pr create`'s output (its last line).
+pub fn created_pr_url(out: &str) -> String {
+    out.trim().lines().last().unwrap_or("").to_string()
+}
+
 /// Opens a PR and returns its URL. **Gated** like [`push`].
 pub fn create_pr(worktree: &Path, base: &str, head: &str, title: &str, body: &str, draft: bool) -> Result<String> {
-    let mut args = vec!["pr", "create", "--base", base, "--head", head, "--title", title, "--body", body];
-    if draft {
-        args.push("--draft");
-    }
-    Ok(gh(worktree, &args)?.trim().lines().last().unwrap_or("").to_string())
+    let args = create_pr_args(base, head, title, body, draft);
+    Ok(created_pr_url(&gh(worktree, &args.iter().map(String::as_str).collect::<Vec<_>>())?))
 }
 
 #[cfg(test)]

@@ -57,6 +57,8 @@ pub enum PrChange {
 /// The changes from `old` (the stored status) to `new`. Comparing with what
 /// is stored makes a restart repeat nothing.
 pub fn pr_changes(old: Option<&PrStatus>, new: &PrStatus) -> Vec<PrChange> {
+    // A status stored only from a failed first check was never seen.
+    let old = old.filter(|o| !o.state.is_empty());
     let old_state = old.map_or("open", |o| o.state.as_str());
     if new.state != "open" {
         return match (new.state.as_str(), new.state == old_state) {
@@ -81,9 +83,12 @@ pub fn pr_changes(old: Option<&PrStatus>, new: &PrStatus) -> Vec<PrChange> {
     let from = old.map_or("unknown", |o| o.position.status.as_str());
     let to = new.position.status.as_str();
     let new_base = old.is_none_or(|o| o.position.base_sha != new.position.base_sha);
+    // `unknown` (GitHub recomputing mergeability) between two `behind` on the
+    // same base head is not news: its counts still say behind.
+    let was_behind = from == "behind" || (from == "unknown" && old.is_some_and(|o| o.position.behind > 0));
     let tell = match to {
         "conflicts" => from != "conflicts",
-        "behind" => from != "behind" || new_base,
+        "behind" => !was_behind || new_base,
         _ => false,
     };
     if tell || (from != to && from != "unknown" && to != "unknown") {
@@ -103,8 +108,8 @@ impl Runtime {
 
     /// `gh pr view` in `dir`; tests replace `gh` through `cfg.gh`.
     fn gh_pr_view(&self, dir: &Path, number: u64) -> Result<PrView> {
-        match self.cfg.gh.as_ref() {
-            Some(f) => gh::parse_pr_view(&(f.0)().run(&gh::pr_view_args(number))?),
+        match self.gh_override() {
+            Some(g) => gh::parse_pr_view(&g.run(&gh::pr_view_args(number))?),
             None => gh::pr_view(dir, number),
         }
     }
@@ -119,16 +124,8 @@ impl Runtime {
         body: &str,
         draft: bool,
     ) -> Result<String> {
-        match self.cfg.gh.as_ref() {
-            Some(f) => {
-                let mut args = ["pr", "create", "--base", base, "--head", head, "--title", title, "--body", body]
-                    .map(str::to_string)
-                    .to_vec();
-                if draft {
-                    args.push("--draft".into());
-                }
-                Ok((f.0)().run(&args)?.trim().lines().last().unwrap_or("").to_string())
-            }
+        match self.gh_override() {
+            Some(g) => Ok(gh::created_pr_url(&g.run(&gh::create_pr_args(base, head, title, body, draft))?)),
             None => gh::create_pr(dir, base, head, title, body, draft),
         }
     }
@@ -200,8 +197,8 @@ impl Runtime {
                 st.error = Some(format!("{e:#}"));
                 st.checked_at_ms = now;
                 st.pushed_sha = pushed.or(st.pushed_sha);
+                self.db.set_run_pr(run_id, &st, None)?;
                 run.pr = Some(st);
-                self.db.upsert_run(&run)?;
                 return Ok(run);
             }
         };
@@ -227,14 +224,18 @@ impl Runtime {
             checked_at_ms: now,
             error: None,
         };
-        let changes = pr_changes(old.as_ref(), &new);
-        run.pr = Some(new);
-        if run.pr_url.as_deref().is_none_or(str::is_empty) && !view.url.is_empty() {
-            run.pr_url = Some(view.url.clone());
+        if new.state != "open" {
+            watch.fetched_ms.remove(run_id);
         }
-        self.db.upsert_run(&run)?;
+        // Only the PR columns: a pause or stop made while `gh` and the fetch ran stays.
+        self.db.set_run_pr(run_id, &new, Some(&view.url).filter(|u| !u.is_empty()).map(String::as_str))?;
         drop(watch);
-        self.pr_apply(&run, &feature, n, &changes);
+        let run = self.db.run(run_id)?.ok_or_else(|| anyhow!("no team run {run_id}"))?;
+        // A refresh of a run no longer `pr_open` (done, failed, back to
+        // integrating) stores the status but moves and tells nothing.
+        if effective(&run) == RunState::PrOpen {
+            self.pr_apply(&run, &feature, n, &pr_changes(old.as_ref(), &new));
+        }
         Ok(self.db.run(run_id)?.unwrap_or(run))
     }
 
@@ -332,13 +333,14 @@ impl Runtime {
     }
 
     /// The PR gate was approved and the PR opened (`url`), or it failed. The
-    /// run is `pr_open` with the PR's number, and its status is checked at once.
-    pub(crate) fn pr_opened(&self, agent: &str, url: Option<&str>, pushed: Option<String>) {
-        let Some(seat) = self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.clone())) else { return };
-        let Ok(Some(mut run)) = self.db.run(&seat.run_id) else { return };
+    /// run is `pr_open` with the PR's number; the run to check at once
+    /// ([`Runtime::pr_check_now`], once the lead is told).
+    pub(crate) fn pr_opened(&self, agent: &str, url: Option<&str>) -> Option<String> {
+        let seat = self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.clone()))?;
+        let mut run = self.db.run(&seat.run_id).ok()??;
         let Some(u) = url else {
             let _ = self.advance_run(&run.id, RunState::Integrating, "pull request failed");
-            return;
+            return None;
         };
         run.pr_url = Some(u.to_string());
         run.pr_number = gh::pr_number_from_url(u);
@@ -347,10 +349,13 @@ impl Runtime {
         let _ = self.db.upsert_run(&run);
         let _ = self.advance_run(&run.id, RunState::PrOpen, "pull request opened");
         self.run_event(&run.id, None, "pr.opened", json!({"number": run.pr_number, "url": u}));
-        if run.pr_number.is_some()
-            && let Err(e) = self.pr_check(&run.id, true, now_ms(), pushed)
-        {
-            self.run_event(&run.id, None, "pr.error", json!(format!("{e:#}")));
+        run.pr_number.map(|_| run.id)
+    }
+
+    /// Checks a run's PR now (just opened or pushed to: `pushed` is the head the app pushed).
+    pub(crate) fn pr_check_now(&self, run_id: &str, pushed: Option<String>) {
+        if let Err(e) = self.pr_check(run_id, true, now_ms(), pushed) {
+            self.run_event(run_id, None, "pr.error", json!(format!("{e:#}")));
         }
     }
 
@@ -363,6 +368,11 @@ impl Runtime {
         let pr = run.pr.as_ref().ok_or_else(|| anyhow!("PR #{n} was not checked yet: try again in a minute"))?;
         let branch = orch_git::git(&rec.worktree, &["symbolic-ref", "--short", "HEAD"])?.trim().to_string();
         let lease = pr.pushed_sha.clone().unwrap_or_else(|| pr.head_sha.clone());
+        if lease.is_empty() {
+            bail!("PR #{n} could not be checked yet: try again in a minute");
+        }
+        // The head the user approves is the one pushed (not what the branch holds by then).
+        let head = gh::rev_sha(&rec.worktree, "HEAD").ok_or_else(|| anyhow!("{branch} has no commit"))?;
         let commits = gh::commits_since(&rec.worktree, &lease)?;
         if commits.is_empty() {
             bail!("nothing to push: {branch} has no commit that PR #{n} lacks");
@@ -375,7 +385,7 @@ impl Runtime {
             json!({"action": "push_pr_update", "run": run.id, "branch": branch, "pr_number": n, "url": url,
                    "commits": commits.iter().map(|(sha, subject)| json!({"sha": sha, "subject": subject})).collect::<Vec<_>>(),
                    // The rebase and its force push come with `rebase_base`.
-                   "force": false, "lease_sha": lease, "base": pr.base, "worktree": rec.worktree}),
+                   "force": false, "lease_sha": lease, "head": head, "base": pr.base, "worktree": rec.worktree}),
             PRIORITY_GATE,
         )?;
         self.db.audit(
@@ -400,7 +410,8 @@ impl Runtime {
         let (wt, branch, run_id) = (PathBuf::from(s("worktree")), s("branch"), s("run"));
         let n = p["pr_number"].as_u64().unwrap_or(0);
         let commits = p["commits"].as_array().map_or(0, Vec::len);
-        let r = gh::push(&wt, "origin", &branch);
+        let head = s("head");
+        let r = gh::push_rev(&wt, "origin", &head, &branch);
         let _ = self.db.audit(
             "core",
             agent.as_deref(),
@@ -413,9 +424,6 @@ impl Runtime {
         let msg = match &r {
             Ok(()) => {
                 self.run_event(&run_id, None, "pr.pushed", json!({"number": n, "commits": commits, "force": false}));
-                if let Err(e) = self.pr_check(&run_id, true, now_ms(), gh::rev_sha(&wt, &branch)) {
-                    self.run_event(&run_id, None, "pr.error", json!(format!("{e:#}")));
-                }
                 format!(
                     "ORCH: the user approved; pushed {commits} commit(s) to PR #{n}. CI restarts; you will be told the result."
                 )
@@ -424,6 +432,9 @@ impl Runtime {
         };
         if let Some(a) = agent {
             let _ = self.deliver_user(&a, &msg);
+        }
+        if r.is_ok() {
+            self.pr_check_now(&run_id, Some(head));
         }
     }
 
@@ -762,9 +773,14 @@ mod tests {
         assert_eq!(told(rt, "ORCH: the user declined pushing to PR #12. They said: later"), 1);
         ok(rt, LEAD, "request_pr", json!({}));
         rt.decide(pending_gate(rt).unwrap().id, InboxDecision::Approve, None, None).unwrap();
-        wait("the update pushed", || !events(&fx, "pr.pushed").is_empty() && told(rt, "pushed 1 commit(s)") == 1);
         let wt = rt.store.read(|s| s.agents[LEAD].worktree.clone());
         let local = g(&wt, &["rev-parse", "HEAD"]).trim().to_string();
+        // The lead is told, then the PR is checked.
+        wait("the update pushed", || {
+            !events(&fx, "pr.pushed").is_empty()
+                && told(rt, "pushed 1 commit(s)") == 1
+                && run(&fx).pr.unwrap().pushed_sha.as_deref() == Some(local.as_str())
+        });
         assert_eq!(g(&fx.hub.lock().unwrap().origin, &["rev-parse", "orch/fx/integration"]).trim(), local);
         let r = run(&fx);
         let pr = r.pr.unwrap();
@@ -811,6 +827,14 @@ mod tests {
         let r = run(&fx);
         assert!(r.status == RunState::Done && r.ended_at_ms.is_some());
         assert!(call(rt, LEAD, "create_task", json!({"title": "x", "node": "back"})).0, "the team tools refuse work");
+        // A refresh of the done run (its status forgotten, as a run from before) stores, tells nothing.
+        let mut r = run(&fx);
+        r.pr = None;
+        rt.db.upsert_run(&r).unwrap();
+        rt.pr_refresh("fx").unwrap();
+        assert_eq!(told(rt, "was merged"), 1);
+        assert_eq!(rt.store.read(|s| s.inbox.iter().filter(|i| i.kind == "info").count()), 1);
+        assert_eq!(run(&fx).pr.unwrap().state, "merged");
     }
 
     #[test]
@@ -880,6 +904,10 @@ mod tests {
         assert!(told(pr_changes(Some(&a), &behind)));
         assert!(!told(pr_changes(Some(&behind), &behind)));
         assert!(told(pr_changes(Some(&behind), &st("waiting", "behind", "b2", "h1"))));
+        let computing = st("waiting", "unknown", "b1", "h1");
+        assert!(!told(pr_changes(Some(&computing), &behind)), "behind, unknown, behind on one base head: told once");
+        let never_seen = PrStatus { error: Some("502".into()), ..Default::default() };
+        assert_eq!(pr_changes(Some(&never_seen), &a), pr_changes(None, &a), "a failed first check was never seen");
         assert!(told(pr_changes(Some(&behind), &st("waiting", "conflicts", "b1", "h1"))));
         assert!(
             !told(pr_changes(Some(&behind), &a)) && !pr_changes(Some(&behind), &a).is_empty(),

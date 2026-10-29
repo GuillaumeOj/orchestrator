@@ -1066,6 +1066,8 @@ impl Runtime {
         let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         let wt = std::path::PathBuf::from(s("worktree"));
         let (branch, base) = (s("branch"), s("base"));
+        // Read before the push: a commit landing after it is not taken as pushed.
+        let pushed = orch_git::gh::rev_sha(&wt, &branch);
         let draft = p["draft"].as_bool().unwrap_or(false);
         let r = match &self.cfg.open_pr {
             Some(f) => (f.0)(&wt, &base, &branch, &s("title"), &s("body"), draft),
@@ -1097,8 +1099,13 @@ impl Runtime {
                     None => self.event(&a, "run.pr_opened", json!({"url": url})),
                 }
             }
+            // The run moves first, then the lead is told, then the first check
+            // (whose news, CI already red, comes after "opened").
+            let check = self.pr_opened(&a, r.as_ref().ok().map(String::as_str));
             let _ = self.deliver_user(&a, &msg);
-            self.pr_opened(&a, r.as_ref().ok().map(String::as_str), orch_git::gh::rev_sha(&wt, &branch));
+            if let Some(run_id) = check {
+                self.pr_check_now(&run_id, pushed);
+            }
         }
     }
 }

@@ -702,6 +702,22 @@ impl Store {
         })
     }
 
+    /// Stores a run's PR status (and its URL when it had none) without
+    /// touching its state: a check that waited on the network never undoes a
+    /// move made meanwhile (a pause, a stop).
+    pub fn set_run_pr(&self, id: &str, pr: &PrStatus, url: Option<&str>) -> Result<()> {
+        let (id, pr, url) = (id.to_string(), js(pr), url.map(str::to_string));
+        self.write(move |tx| {
+            tx.execute(
+                "UPDATE team_runs SET pr_status=?2,
+                   pr_url=CASE WHEN pr_url IS NULL OR pr_url='' THEN COALESCE(?3, pr_url) ELSE pr_url END
+                 WHERE id=?1",
+                params![id, pr, url],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn run(&self, id: &str) -> Result<Option<TeamRun>> {
         let id = id.to_string();
         self.read(move |c| {

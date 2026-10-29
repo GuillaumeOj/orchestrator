@@ -186,7 +186,7 @@ impl Runtime {
     }
 
     /// Tests replace `gh` (orch-tasks' `Gh`); `None` = the real one.
-    fn gh_override(&self) -> Option<Box<dyn orch_tasks::github::Gh>> {
+    pub(crate) fn gh_override(&self) -> Option<Box<dyn orch_tasks::github::Gh>> {
         self.cfg.gh.as_ref().map(|f| (f.0)())
     }
 
