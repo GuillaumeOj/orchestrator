@@ -16,60 +16,58 @@ const OPTIONS = {
 
 /** The mdast tree of `md`. */
 export function parse(md) {
-  return fromMarkdown(unlazyTables(String(md ?? '')), OPTIONS);
+  const src = String(md ?? '');
+  const root = fromMarkdown(src, OPTIONS);
+  const fixed = unlazyTables(src, root);
+  return fixed === src ? root : fromMarkdown(fixed, OPTIONS);
 }
 
 const QUOTE_LINE = /^ {0,3}>/;
-/** Quote and list markers before a line's content (`> - `, `1. > `…). */
-const CONTAINERS = /^(?:[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])(?=[ \t])))*[ \t]*/;
-const FENCE = /^(`{3,}|~{3,})(.*)$/;
 const DELIMITER_ROW = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*\r?$/;
+/** A `|` not escaped by an odd run of `\`. */
+const CELL_EDGE = /(?<!(?:^|[^\\])(?:\\\\)*\\)\|/;
 
-/** The cells of a table row: split on `|` not escaped by an odd run of `\`, outer pipes dropped. */
+/** The number of cells in a table row, outer pipes dropped. */
 function cellCount(line) {
-  const cells = line.trim().split(/(?<!(?:^|[^\\])(?:\\\\)*\\)\|/);
+  const cells = line.trim().split(CELL_EDGE);
   if (cells[0].trim() === '') cells.shift();
   if (cells.length && cells.at(-1).trim() === '') cells.pop();
   return cells.length;
 }
 
 /**
- * A blank line before each table whose rows lack `>` right after a quote
- * (fix-md-rendering-quoted-tables §3). micromark never starts a table on a
- * lazy continuation line, so the rows would join the quote's paragraph as text;
- * the author meant a table after the quote. Fenced code is left alone.
+ * `md` with a blank line before each table whose rows lack `>` right after a
+ * quote (fix-md-rendering-quoted-tables §3). micromark never starts a table on
+ * a lazy continuation line, so the rows join the quote's paragraph as text;
+ * the author meant a table after the quote. Only lines of a quoted paragraph
+ * in `root` (the first parse) are candidates: code, HTML and the rest are
+ * settled by the parser, not guessed here.
  */
-function unlazyTables(md) {
+function unlazyTables(md, root) {
+  if (!md.includes('|')) return md;
+  const lazy = new Set(); // 0-based lines after the first of a quoted paragraph
+  walk(root, (n) => {
+    if (n.type !== 'blockquote') return;
+    for (const p of n.children)
+      if (p.type === 'paragraph' && p.position)
+        for (let l = p.position.start.line; l < p.position.end.line; l++) lazy.add(l);
+  });
+  if (!lazy.size) return md;
   const lines = md.split('\n');
-  const out = [];
-  let fence = null; // the open fence: its marker (``` / ~~~…) and quote depth
-  lines.forEach((line, i) => {
-    const prefix = CONTAINERS.exec(line)[0];
-    const depth = prefix.split('>').length - 1;
-    const m = FENCE.exec(line.slice(prefix.length));
-    // A quoted fence ends with its quote; a deeper `> ```` is the fence's content.
-    if (fence && depth < fence.depth) fence = null;
-    if (fence) {
-      // A closing fence: the same character, at least as long, nothing after it.
-      if (m && depth === fence.depth && m[1].startsWith(fence.marker) && !m[2].trim()) fence = null;
-    } else if (m && !(m[1][0] === '`' && m[2].includes('`'))) {
-      // (A backtick in a ``` info string makes the line inline code, not a fence.)
-      fence = { marker: m[1], depth };
-    } else if (
-      i > 0 &&
+  return lines
+    .flatMap((line, i) =>
+      lazy.has(i) &&
       QUOTE_LINE.test(lines[i - 1]) &&
       // 4+ spaces would turn the row into indented code once it isn't lazy.
       /^ {0,3}[^ >]/.test(line) &&
       line.includes('|') &&
-      DELIMITER_ROW.test(lines[i + 1] ?? '') &&
-      lines[i + 1].includes('|') &&
+      lines[i + 1]?.includes('|') &&
+      DELIMITER_ROW.test(lines[i + 1]) &&
       cellCount(line) === cellCount(lines[i + 1])
-    ) {
-      out.push('');
-    }
-    out.push(line);
-  });
-  return out.length === lines.length ? md : out.join('\n');
+        ? ['', line]
+        : [line],
+    )
+    .join('\n');
 }
 
 /** The plain text of a node (heading slugs). */

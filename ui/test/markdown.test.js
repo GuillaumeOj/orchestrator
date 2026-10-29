@@ -189,12 +189,12 @@ describe('lazy table after a quote', () => {
 | ci | \`ci: <check>\` | \`ci: lint\` |
 | none | — | — |`;
 
-  /** The top-level node types. */
-  const top = (md) => tree(md).children.map((n) => n.type);
+  /** The types of a node's children. */
+  const kids = (n) => n.children.map((c) => c.type);
 
   it('renders the brief as a quote, then a 3-column table with 8 body rows', () => {
     const root = tree(BRIEF);
-    expect(root.children.map((n) => n.type)).toEqual(['blockquote', 'table']);
+    expect(kids(root)).toEqual(['blockquote', 'table']);
     expect(types(root.children[0])).not.toContain('table');
     const [head, ...body] = root.children[1].children;
     expect(head.children).toHaveLength(3);
@@ -206,19 +206,20 @@ describe('lazy table after a quote', () => {
 
   it('keeps a table with `>` on every row inside the quote', () => {
     const root = tree('> text\n> | a | b |\n> |---|---|\n> | 1 | 2 |');
-    expect(root.children.map((n) => n.type)).toEqual(['blockquote']);
-    expect(root.children[0].children.map((n) => n.type)).toEqual(['paragraph', 'table']);
+    expect(kids(root)).toEqual(['blockquote']);
+    expect(kids(root.children[0])).toEqual(['paragraph', 'table']);
   });
 
   it('leaves plain lazy text in the quote paragraph', () => {
     const root = tree('> text\nmore text');
-    expect(root.children.map((n) => n.type)).toEqual(['blockquote']);
+    expect(kids(root)).toEqual(['blockquote']);
     expect(root.children[0].children[0].children[0].value).toBe('text\nmore text');
   });
 
   it('leaves a `|` line without a delimiter row as lazy text', () => {
-    expect(top('> text\n| not | a table')).toEqual(['blockquote']);
-    expect(types(tree('> text\n| not | a table'))).not.toContain('table');
+    const root = tree('> text\n| not | a table');
+    expect(kids(root)).toEqual(['blockquote']);
+    expect(types(root)).not.toContain('table');
     // A delimiter row with another cell count isn't a table either.
     expect(types(tree('> text\n| a | b |\n|---|'))).not.toContain('table');
   });
@@ -242,12 +243,14 @@ describe('lazy table after a quote', () => {
     const listed = tree('- ```\n  > x\n  | a | b |\n  |---|---|\n  ```');
     expect(listed.children[0].children[0].children[0]).toMatchObject({ type: 'code', value: body });
     // ``` with a backtick after it is inline code, not a fence.
-    expect(top(`\`\`\`inline\`\`\` is code.\n\n\`\`\`\n${body}\n\`\`\``).at(-1)).toBe('code');
-    expect(tree(`\`\`\`inline\`\`\` is code.\n\n\`\`\`\n${body}\n\`\`\``).children[1].value).toBe(body);
+    expect(tree(`\`\`\`inline\`\`\` is code.\n\n\`\`\`\n${body}\n\`\`\``).children.at(-1)).toMatchObject({
+      type: 'code',
+      value: body,
+    });
   });
 
   it('still fixes a lazy table after a quoted fence closed by its quote', () => {
-    expect(top('> ```\n> code\n\ntext\n\n> quote\n| a | b |\n|---|---|')).toEqual([
+    expect(kids(tree('> ```\n> code\n\ntext\n\n> quote\n| a | b |\n|---|---|'))).toEqual([
       'blockquote',
       'paragraph',
       'blockquote',
@@ -255,18 +258,22 @@ describe('lazy table after a quote', () => {
     ]);
   });
 
+  it('leaves a `>` line inside an HTML block alone', () => {
+    expect(kids(tree('<div>\n> x\n| a | b |\n|---|---|\n</div>'))).toEqual(['html']);
+  });
+
   it('leaves a lazy row indented as code alone, and counts `\\\\|` as a cell edge', () => {
-    expect(top('> q\n    | a | b |\n|---|---|\n| 1 | 2 |')).toEqual(['blockquote']);
-    expect(top('> q\n| a \\\\| b |\n|---|---|')).toEqual(['blockquote', 'table']);
+    expect(kids(tree('> q\n    | a | b |\n|---|---|\n| 1 | 2 |'))).toEqual(['blockquote']);
+    expect(kids(tree('> q\n| a \\\\| b |\n|---|---|'))).toEqual(['blockquote', 'table']);
   });
 
   it('ends nested quotes and alerts before the table; the alert stays an alert', () => {
     const nested = tree('>> text\n| a | b |\n|---|---|\n| 1 | 2 |');
-    expect(nested.children.map((n) => n.type)).toEqual(['blockquote', 'table']);
+    expect(kids(nested)).toEqual(['blockquote', 'table']);
     expect(nested.children[0].children[0].type).toBe('blockquote');
 
     const root = /** @type {any} */ (prepare('> [!NOTE]\n> Read this.\n| a | b |\n|---|---|\n| 1 | 2 |').root);
-    expect(root.children.map((n) => n.type)).toEqual(['blockquote', 'table']);
+    expect(kids(root)).toEqual(['blockquote', 'table']);
     expect(root.children[0].data).toMatchObject({ alert: 'note' });
     expect(root.children[0].children[0].children[0].value).toBe('Read this.');
   });
