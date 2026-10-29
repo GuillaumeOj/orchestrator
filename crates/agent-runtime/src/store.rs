@@ -89,6 +89,18 @@ impl AgentRecord {
         self.tracker.state == crate::state::AgentState::Created && self.spawns == 0
     }
 
+    /// A new session id (the old one is returned), with its start failures
+    /// forgotten: an agent in error is suspended again, so the delivery loop
+    /// spawns it.
+    pub fn new_session(&mut self) -> String {
+        self.resume_failed = false;
+        self.tracker.last_error = None;
+        if self.tracker.state == crate::state::AgentState::Error {
+            self.tracker.state = crate::state::AgentState::Suspended;
+        }
+        std::mem::replace(&mut self.session_id, uuid::Uuid::new_v4().to_string())
+    }
+
     /// A new `claude` process was spawned for this agent.
     pub fn on_spawned(&mut self, pid: i32, pgid: i32) {
         self.pid = Some(pid);

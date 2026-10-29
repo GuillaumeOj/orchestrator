@@ -52,6 +52,8 @@ export const TL_FILTERS = [
   { id: 'run', label: 'Run' },
 ];
 
+const RUN_KINDS = new Set(['run.state', 'run.launched', 'run.team_changed', 'agent.added', 'agent.fresh_session']);
+
 const FAMILY = (k) =>
   k === 'message' || k === 'asked_user'
     ? 'messages'
@@ -59,7 +61,7 @@ const FAMILY = (k) =>
       ? 'tasks'
       : k.startsWith('git.')
         ? 'git'
-        : k === 'run.state' || k === 'run.launched' || k === 'agent.added' || k === 'run.team_changed'
+        : RUN_KINDS.has(k)
           ? 'run'
           : 'other';
 
@@ -82,6 +84,8 @@ export function timelineText(e) {
       return `launched ${d.team} v${d.version} on ${d.feature}`;
     case 'agent.added':
       return `${d.node} joined on ${d.branch}`;
+    case 'agent.fresh_session':
+      return `T-${d.task} starts in a fresh session`;
     case 'task.created':
       return `created T-${d.task}: ${d.title}${d.node ? ` → ${d.node}` : ''}${d.by === 'user' ? ' (you)' : ''}`;
     case 'task.assigned':

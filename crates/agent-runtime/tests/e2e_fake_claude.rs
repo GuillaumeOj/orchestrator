@@ -652,6 +652,31 @@ fn a_team_run_end_to_end_with_fake_claude() {
     assert_eq!(tasks[0]["status"], "review", "{}", screen(back));
     call(lead, &format!(r#"ORCHTOOL merge {{"branch":"orch/fx/back-1","task":{task}}}"#));
     assert!(lead_wt.join("api.rs").is_file(), "{}", screen(lead));
+    // A second task for back: the same agent, started in a fresh session.
+    let old_session = agent(&sock, back)["session_id"].as_str().unwrap().to_string();
+    call(lead, r#"ORCHTOOL create_task {"title":"Docs","node":"back","body":"add docs.md"}"#);
+    wait_for("back's second task", 30, || {
+        let a = agent(&sock, back);
+        a["session_id"] != old_session.as_str() && settled(back) && screen(back).contains("Earlier on this branch")
+    });
+    let new_session = agent(&sock, back)["session_id"].as_str().unwrap().to_string();
+    let spawns = request(
+        &sock,
+        CtlRequest::Events { agent_id: Some(back.into()), kind: Some("spawned".into()), since_ms: None, limit: None },
+    )
+    .unwrap()
+    .data;
+    let args: Vec<&str> = spawns[0]["detail"]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+    let at = args.iter().position(|a| *a == "--session-id").expect("a new session");
+    assert_eq!(args[at + 1], new_session, "{args:?}");
+    assert!(!args.contains(&"--resume"), "{args:?}");
+    std::fs::write(back_wt.join("docs.md"), "# Docs\n").unwrap();
+    call(back, r#"ORCHTOOL commit {"message":"add docs.md"}"#);
+    call(back, r#"ORCHTOOL report_done {"summary":"docs added"}"#);
+    call(back, r#"ORCHTOOL report_done {"summary":"docs added","review":{"fixed":[],"unfixed":[]}}"#);
+    let tasks = request(&sock, CtlRequest::Tasks { project_id: None, run_id: Some(run.clone()) }).unwrap().data;
+    let docs = tasks.as_array().unwrap().iter().find(|t| t["title"] == "Docs").unwrap()["id"].as_u64().unwrap();
+    call(lead, &format!(r#"ORCHTOOL merge {{"branch":"orch/fx/back-1","task":{docs}}}"#));
     wait_for("integrating", 20, || run_state(&run) == "integrating");
     call(lead, r#"ORCHTOOL request_pr {"title":"Fix X"}"#);
     assert_eq!(run_state(&run), "pr_gate", "{}", screen(lead));
