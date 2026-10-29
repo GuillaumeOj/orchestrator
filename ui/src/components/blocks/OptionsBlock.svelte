@@ -20,13 +20,17 @@
     </legend>
     <div class="text"><b>{q.question}</b></div>
     {#each q.options as o (o.label)}
+      {@const on = (choices[qi] ?? []).includes(o.label)}
       <label class="opt">
         <input
+          class="sr"
           type={q.multi ? 'checkbox' : 'radio'}
           name="{name}-{qi}"
-          checked={(choices[qi] ?? []).includes(o.label)}
+          checked={on}
           onchange={(e) => pick(qi, o.label, q.multi, e.currentTarget.checked)}
         />
+        <!-- The board's radiobox / checkbox glyphs; the native input stays for keyboard and a11y. -->
+        <span class="glyph" class:on aria-hidden="true">{q.multi ? (on ? '\u{F0132}' : '\u{F0131}') : on ? '\u{F043E}' : '\u{F043D}'}</span>
         <span>{o.label}{#if o.description}<span class="muted"> — {o.description}</span>{/if}</span>
       </label>
     {/each}
@@ -54,7 +58,21 @@
     gap: var(--space-sm);
     cursor: pointer;
   }
-  .opt input {
-    accent-color: var(--color-accent-default);
+  .sr {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .glyph {
+    color: var(--color-text-muted);
+  }
+  .glyph.on {
+    color: var(--color-accent-default);
+  }
+  .opt:focus-within .glyph {
+    outline: var(--border-width-focus) solid var(--color-accent-default);
+    border-radius: var(--radius-sm);
   }
 </style>

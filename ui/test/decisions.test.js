@@ -193,7 +193,7 @@ describe('context blocks: one component per type, in order', () => {
     expect(answer.disabled).toBe(true);
     const pick = (label) =>
       fireEvent.click(
-        [...opts.querySelectorAll('label')].find((l) => l.textContent.trim().startsWith(label)).querySelector('input'),
+        [...opts.querySelectorAll('label')].find((l) => l.textContent.includes(label)).querySelector('input'),
       );
     await pick('Clerk');
     await pick('Card');
@@ -388,6 +388,37 @@ describe('outcome digest (level 4)', () => {
     expect(getByText('All caught up · 6 done today')).toBeTruthy();
   });
 
+  it('a failed run is the one marked outcome', () => {
+    const now = Date.now();
+    app.now = nowOf(app.data, {
+      decisions: [],
+      outcomes: [
+        {
+          id: 'ev-1',
+          kind: 'run_phase',
+          from: 'integrating',
+          to: 'failed',
+          at_ms: now,
+          text: 'checkout: integrating → failed',
+          seen: false,
+        },
+        {
+          id: 'ev-2',
+          kind: 'run_phase',
+          from: 'planning',
+          to: 'executing',
+          at_ms: now - 1,
+          text: 'checkout: planning → executing',
+          seen: false,
+        },
+      ],
+    });
+    const { container: c } = render(InboxPane);
+    const icons = [...c.querySelectorAll('.list [role=option][title] .icon')];
+    expect(icons[0].getAttribute('style')).toContain('--color-phase-failed');
+    expect(icons[1].classList.contains('muted')).toBe(true);
+  });
+
   it('empty: "Nothing done yet today."', () => {
     app.now = nowOf(app.data, { decisions: [] });
     const { container: c } = render(InboxPane);
@@ -417,6 +448,17 @@ describe('waiting-on chip', () => {
     expect(text(c2)).toMatch(/→ back-1 · review of T-4 just now$/);
     await fireEvent.click(c2.querySelector('.link'));
     expect(Object.values(app.panes).some((p) => p.type === 'agent' && p.agentId === 'back-1')).toBe(true);
+  });
+
+  it('only the ref is the link when the reason names it', () => {
+    const r = rec('front-1', 'idle', {
+      level: 'waiting',
+      reason: '→ lead-1 · review of T-4',
+      waiting_on: { kind: 'agent', ref: 'lead-1', since_ms: Date.now() },
+    });
+    const { container: c } = render(WaitingChip, { rec: r });
+    expect(c.querySelector('.link').textContent).toBe('lead-1');
+    expect(text(c.querySelector('.reason'))).toBe('→ lead-1 · review of T-4');
   });
 
   it('running shows its activity and no since', () => {

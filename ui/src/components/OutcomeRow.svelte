@@ -8,11 +8,13 @@
 
   /** @type {{ outcome: any, selected?: boolean, onselect?: () => void }} */
   let { outcome, selected = false, onselect = () => {} } = $props();
+  const failed = $derived(outcome.kind === 'run_phase' && outcome.to === 'failed');
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <div class="row" class:sel={selected} role="option" tabindex="-1" aria-selected={selected} onclick={onselect} title={outcome.text}>
-  <span class="icon muted" aria-hidden="true">{OUTCOME[outcome.kind] ?? OUTCOME.task_done}</span>
+  <!-- A run that failed is the one outcome marked (Penpot outcome row specimen). -->
+  <span class="icon" class:muted={!failed} style:color={failed ? 'var(--color-phase-failed)' : null} aria-hidden="true">{OUTCOME[outcome.kind] ?? OUTCOME.task_done}</span>
   <span class="text">
     {#if outcome.url}<button class="link" onclick={(e) => (e.stopPropagation(), openUrl(outcome.url))}>{outcome.text}</button>{:else}{outcome.text}{/if}{#if outcome.kind === 'task_done' && outcome.agent}{' '}<span class="muted">({outcome.agent})</span>{/if}
   </span>

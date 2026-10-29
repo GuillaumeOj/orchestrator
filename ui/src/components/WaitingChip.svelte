@@ -30,13 +30,19 @@
         return null;
     }
   });
+  // Only the ref is the link when the reason names it ("→ lead-1 · review of
+  // T-4"); else the whole reason is.
+  const at = $derived(go && ref ? (text ?? '').indexOf(ref) : -1);
   const title = $derived(waitLine(rec, now));
 </script>
 
 {#if text}
   <span class="chip" class:compact {title}>
     {#if kind}<span class="icon muted" aria-hidden="true">{WAITING_ON[kind]}</span>{/if}
-    {#if go}<button class="link reason" onclick={(e) => (e.stopPropagation(), go())}>{text}</button>{:else}<span class="reason">{text}</span>{/if}
+    {#if go && at >= 0}
+      <span class="reason">{text.slice(0, at)}<button class="link" onclick={(e) => (e.stopPropagation(), go())}>{ref}</button>{text.slice(at + ref.length)}</span>
+    {:else if go}<button class="link reason" onclick={(e) => (e.stopPropagation(), go())}>{text}</button>
+    {:else}<span class="reason">{text}</span>{/if}
     {#if when}<span class="since muted">{compact ? '' : '· '}{when}</span>{/if}
   </span>
 {/if}
@@ -56,10 +62,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: inherit;
-  }
-  button.reason {
-    text-decoration: underline;
-    color: var(--color-accent-default);
   }
   .since {
     flex: none;
