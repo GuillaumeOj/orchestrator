@@ -566,6 +566,7 @@ mod tests {
 
     /// The run's events of `kind`, oldest first.
     fn events(fx: &Fx, kind: &str) -> Vec<Value> {
+        fx.rt.db.flush().unwrap(); // events are written in the background
         let mut v: Vec<Value> = fx
             .rt
             .db

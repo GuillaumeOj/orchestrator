@@ -1159,6 +1159,11 @@ mod tests {
         });
         s.upsert_run(&run).unwrap();
         assert_eq!(s.run("r1").unwrap().unwrap(), run, "the PR status round-trips");
+        let mut legacy = run.clone();
+        (legacy.id, legacy.status, legacy.pr_number, legacy.pr) = ("r0".into(), RunState::Done, None, None);
+        legacy.pr_url = Some("https://github.com/o/r/pull/7".into());
+        s.upsert_run(&legacy).unwrap();
+        assert_eq!(s.run("r0").unwrap().unwrap().pr_number, Some(7), "a run from before: the number from its URL");
         run.status = RunState::Paused;
         run.resume_status = Some(RunState::Spec);
         s.upsert_run(&run).unwrap();
