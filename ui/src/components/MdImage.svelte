@@ -26,26 +26,31 @@
     return () => (live = false);
   });
 
-  // While it is open, keys stop here: the pane's own shortcuts (esc, a gate's
-  // approve…) don't act on what the overlay hides.
+  // While it is open (and only then), keys stop here: the pane's own shortcuts
+  // (esc, a gate's approve…) don't act on what the overlay hides.
   function onKey(e) {
-    if (!big) return;
     e.stopPropagation();
     if (e.key !== 'Escape') return;
     e.preventDefault();
     big = false;
   }
+  $effect(() => {
+    if (!big) return;
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  });
+  const label = $derived(alt || 'image');
 </script>
 
-<svelte:window onkeydowncapture={onKey} />
+{#snippet pic(src)}<img class="pic" {src} {alt} />{/snippet}
 
 {#if target.kind === 'remote'}
-  {#if inLink}<span class="chip">🖼 {alt || 'image'}</span>{:else}<button class="chip" title={target.url} onclick={() => openUrl(target.url)}>🖼 {alt || 'image'} ↗</button>{/if}
+  {#if inLink}<span class="chip">🖼 {label}</span>{:else}<button class="chip" title={target.url} onclick={() => openUrl(target.url)}>🖼 {label} ↗</button>{/if}
 {:else if target.kind === 'data'}
-  <img class="pic" src={target.url} {alt} />
+  {@render pic(target.url)}
 {:else if target.kind === 'asset' && feature}
   {#if img.state === 'ok'}
-    {#if inLink}<img class="pic" src={img.src} {alt} />{:else}<button class="open" aria-label="Open {alt || 'the image'} large" onclick={() => (big = true)}><img class="pic" src={img.src} {alt} /></button>{/if}
+    {#if inLink}{@render pic(img.src)}{:else}<button class="open" aria-label="Open {alt || 'the image'} large" onclick={() => (big = true)}>{@render pic(img.src)}</button>{/if}
   {:else if img.state === 'error'}
     <span class="imgerr">image: {alt || target.path} ({img.error})</span>
   {:else}
@@ -57,9 +62,9 @@
 
 {#if big && img.state === 'ok'}
   <!-- The whole overlay closes it: one control, esc as well (onKey). -->
-  <button class="overlay" aria-label="Close the large {alt || 'image'}" onclick={() => (big = false)}>
+  <button class="overlay" aria-label="Close the large {label}" onclick={() => (big = false)}>
     <img src={img.src} {alt} />
-    <span class="hint">{alt}{alt ? ' · ' : ''}esc or click to close</span>
+    <span class="caption">{alt}{alt ? ' · ' : ''}esc or click to close</span>
   </button>
 {/if}
 
@@ -123,7 +128,7 @@
     flex: 0 1 auto;
     object-fit: contain;
   }
-  .hint {
+  .caption {
     font: var(--text-caption);
     color: var(--color-text-muted);
   }

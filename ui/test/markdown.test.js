@@ -2,7 +2,7 @@ import { fireEvent, getQueriesForElement, render } from '@testing-library/svelte
 import { tick } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../src/lib/app.svelte.js', () => ({ openUrl: vi.fn(), toast: vi.fn() }));
+vi.mock('../src/lib/app.svelte.js', () => ({ app: { themeRev: 0 }, openUrl: vi.fn(), toast: vi.fn() }));
 vi.mock('../src/lib/ipc.js', () => ({
   invoke: vi.fn(),
   errText: (e) => (typeof e === 'string' ? e : (e?.message ?? String(e))),
@@ -404,10 +404,17 @@ describe('Mermaid diagrams', () => {
     ok('<svg id="m" viewBox="0 0 10 10"><g class="node"><rect width="5" height="5"></rect><text>A</text></g></svg>');
     const { container } = render(Markdown, { text: '```mermaid\ngraph TD; A-->B\n```' });
     await vi.waitFor(() => expect(container.querySelector('.diagram svg')).not.toBeNull());
-    expect(mermaid.render).toHaveBeenCalledWith(expect.any(String), 'graph TD; A-->B');
+    expect(mermaid.render).toHaveBeenCalledWith(expect.any(String), 'graph TD; A-->B', expect.any(HTMLElement));
     expect(mermaid.initialize).toHaveBeenCalledWith(
-      expect.objectContaining({ securityLevel: 'strict', theme: 'base' }),
+      expect.objectContaining({
+        securityLevel: 'strict',
+        theme: 'base',
+        // `%%{init}%%` directives can't bring their own CSS or theme.
+        secure: expect.arrayContaining(['themeCSS', 'themeVariables', 'theme']),
+      }),
     );
+    // Mermaid's scratch node is gone.
+    expect(document.body.querySelector('div[hidden]')).toBeNull();
     expect(container.querySelector('.diagram text').textContent).toBe('A');
     expect(container.querySelector('pre')).toBeNull();
   });

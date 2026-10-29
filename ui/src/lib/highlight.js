@@ -9,7 +9,7 @@ lowlight.registerAlias({ xml: ['svelte', 'vue'] });
 
 /** Above these, a block renders plain to keep the pane responsive (§3.3). */
 export const HL_MAX_LINES = 2000;
-export const HL_MAX_BYTES = 100_000;
+const HL_MAX_BYTES = 100_000;
 
 /**
  * highlight.js scopes → `--color-syntax-*` tokens (ux-brief §2), the one
@@ -79,7 +79,7 @@ function resolveSyntax(cls) {
 }
 
 /** The fence's language as lowlight knows it, or null (no guessing: highlightAuto is off). */
-export function codeLang(lang) {
+function codeLang(lang) {
   const l = String(lang ?? '')
     .trim()
     .toLowerCase();

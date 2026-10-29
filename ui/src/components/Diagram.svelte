@@ -3,7 +3,7 @@
   // (loaded on first use) draws it in the app's theme and redraws when the
   // theme changes. The SVG is sanitized by lib/mermaid.js before insertion:
   // the renderer's one {@html}. An invalid diagram shows its source and the error.
-  import { onMount } from 'svelte';
+  import { app } from '../lib/app.svelte.js';
   import { errText } from '../lib/ipc.js';
   import { loadMermaid } from '../lib/markdown.js';
   import CodeBlock from './CodeBlock.svelte';
@@ -11,24 +11,10 @@
   let { source = '' } = $props();
   /** @type {{ state: 'loading' | 'ok' | 'error', svg?: string, error?: string }} */
   let out = $state({ state: 'loading' });
-  let themeKey = $state(0);
-
-  // The theme lives on <html> (data-theme, kitty-derived variables) or follows the system.
-  onMount(() => {
-    const bump = () => themeKey++;
-    const obs = new MutationObserver(bump);
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'style'] });
-    const mq = window.matchMedia?.('(prefers-color-scheme: dark)');
-    mq?.addEventListener?.('change', bump);
-    return () => {
-      obs.disconnect();
-      mq?.removeEventListener?.('change', bump);
-    };
-  });
 
   $effect(() => {
     const src = source;
-    themeKey;
+    app.themeRev; // redraw when the theme changes
     let live = true;
     loadMermaid()
       .then((m) => m.renderDiagram(src))
@@ -72,9 +58,9 @@
     flex-direction: column;
     gap: var(--space-xxs);
   }
+  /* Color from the global .err. */
   .err {
     margin: 0;
     font: var(--text-caption);
-    color: var(--color-status-error);
   }
 </style>

@@ -4,11 +4,11 @@
   // label and a Copy button that copies the raw text.
   import { toast } from '../lib/app.svelte.js';
   import { errText } from '../lib/ipc.js';
-  import { loadHighlight } from '../lib/markdown.js';
+  import { highlighter, loadHighlight } from '../lib/markdown.js';
 
   let { code = '', lang = null } = $props();
   // Plain text until lib/highlight.js has loaded (once, on the first block with a language).
-  let hl = $state(null);
+  let hl = $state(highlighter());
   $effect(() => {
     if (lang && !hl)
       loadHighlight().then(

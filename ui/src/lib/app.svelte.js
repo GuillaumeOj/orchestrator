@@ -31,6 +31,7 @@ export const app = $state({
   selectedAgent: null,
   selectedProject: null,
   theme: null, // null = system, 'dark' | 'light' (user choice)
+  themeRev: 0, // bumped when the applied theme may have changed (diagrams redraw)
   kittyTheme: false, // derive surface, text and accent from kitty.conf (§9.1); a user choice wins
   // Shells live in one dock under the panes, one tab each (not in `layout`).
   dock: { open: false, height: 0.3, tabs: [], active: null },
@@ -1003,8 +1004,15 @@ export function applyTheme() {
     for (const [k, v] of Object.entries(derived.vars)) root.style.setProperty(k, v);
     kittyVars = Object.keys(derived.vars);
   }
+  app.themeRev++;
   return app.theme ? 'user' : derived ? 'kitty' : 'system';
 }
+
+// Following the system, the scheme can change under the app.
+if (typeof window !== 'undefined')
+  window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
+    if (!app.theme) app.themeRev++;
+  });
 
 /** Desktop notifications and their sound (both on by default), read by the core's notifier. */
 export async function toggleNotify(key) {

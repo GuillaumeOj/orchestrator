@@ -5,7 +5,7 @@
 // Loaded lazily (markdown.js loadMermaid): only when a doc has a diagram.
 import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
-import { luminance, parseHex } from './kittytheme.js';
+import { isDarkSurface, parseHex } from './kittytheme.js';
 
 let seq = 0;
 
@@ -31,12 +31,16 @@ const NATURAL_SIZE = Object.fromEntries(
   ].map((d) => [d, { useMaxWidth: false }]),
 );
 
+// Directives in the source (`%%{init: …}%%`) can't restyle the diagram: no CSS of theirs, the app's theme.
+const SECURE = ['secure', 'securityLevel', 'startOnLoad', 'maxTextSize', 'suppressErrorRendering', 'maxEdges'];
+const LOCKED = [...SECURE, 'theme', 'themeVariables', 'themeCSS', 'fontFamily', 'htmlLabels', 'flowchart'];
+
 /**
  * Mermaid's `base` theme from the app's tokens (ux-brief §5), read from the
  * live CSS variables so the user's theme (dark, light, kitty-derived) applies.
  */
-export function themeFromTokens(root = document.documentElement) {
-  const css = getComputedStyle(root);
+function themeFromTokens() {
+  const css = getComputedStyle(document.documentElement);
   const v = (name) => css.getPropertyValue(name).trim();
   const bg = v('--color-surface-pane');
   return {
@@ -61,10 +65,10 @@ export function themeFromTokens(root = document.documentElement) {
   };
 }
 
-/** Dark when the surface is (the kitty theme's rule, lib/kittytheme.js); dark when unknown. */
+/** The app's own dark/light rule (lib/kittytheme.js); dark when unknown. */
 function isDark(color) {
   const rgb = parseHex(color);
-  return !rgb || luminance(rgb) < 0.179;
+  return !rgb || isDarkSurface(rgb);
 }
 
 /**
@@ -75,6 +79,8 @@ function isDark(color) {
  */
 const OUTSIDE_URL = /url\(\s*(?!['"]?\s*#)|image-set\(|@import/i;
 const loadsOutside = (css) =>
+  // Every case needs a `(` or an `@`: most attributes (paths, transforms…) skip the decoding.
+  /[(@]/.test(css) &&
   OUTSIDE_URL.test(
     css.replace(/\\([0-9a-f]{1,6})\s?|\\([^\n])/gi, (_, hex, ch) =>
       hex ? String.fromCodePoint(Math.min(Number.parseInt(hex, 16), 0x10ffff)) : ch,
@@ -108,11 +114,17 @@ export function sanitizeSvg(svg) {
  * Renders `source` to sanitized SVG markup; throws Mermaid's error (the caller
  * shows the source and the message, never Mermaid's error drawing).
  */
-export async function renderDiagram(source, theme = themeFromTokens()) {
-  const id = `mmd-${++seq}`;
+let configured = null; // the theme mermaid was last initialized with
+
+function configure() {
+  const theme = themeFromTokens();
+  const key = JSON.stringify(theme);
+  if (key === configured) return;
+  configured = key;
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: 'strict',
+    secure: LOCKED,
     theme: 'base',
     themeVariables: theme,
     fontFamily: theme.fontFamily,
@@ -121,12 +133,18 @@ export async function renderDiagram(source, theme = themeFromTokens()) {
     ...NATURAL_SIZE,
     flowchart: { htmlLabels: false, useMaxWidth: false },
   });
+}
+
+export async function renderDiagram(source) {
+  configure();
+  // Mermaid draws in a scratch node: ours, emptied whatever it leaves behind.
+  const scratch = document.createElement('div');
+  scratch.hidden = true;
+  document.body.append(scratch);
   try {
-    const { svg } = await mermaid.render(id, source);
+    const { svg } = await mermaid.render(`mmd-${++seq}`, source, scratch);
     return sanitizeSvg(svg);
   } finally {
-    // Mermaid draws in a temporary node of <body>; it can stay behind on an error.
-    document.getElementById(id)?.remove();
-    document.getElementById(`d${id}`)?.remove();
+    scratch.remove();
   }
 }

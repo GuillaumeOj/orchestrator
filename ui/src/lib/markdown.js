@@ -19,8 +19,8 @@ export function parse(md) {
   return fromMarkdown(String(md ?? ''), OPTIONS);
 }
 
-/** The plain text of a node (heading slugs, image alts). */
-export function toText(n) {
+/** The plain text of a node (heading slugs). */
+function toText(n) {
   if (!n) return '';
   if (typeof n.value === 'string' && n.type !== 'html') return n.value;
   if (n.type === 'image' || n.type === 'imageReference') return n.alt ?? '';
@@ -94,6 +94,13 @@ export function prepare(md) {
   return { root, defs, footnotes };
 }
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point.
+const CONTROL = /[\x00-\x1f\x7f]/;
+/** `javascript:`, `file:`, `//host`…: a scheme (or another host) of its own. */
+const SCHEME = /^([a-z][a-z0-9+.-]*:|\/\/)/i;
+/** `./a.md`, `././a.md` → `a.md`. */
+const DOT_SLASH = /^(\.\/)+/;
+
 /**
  * What a link target does (§3.6):
  * - `external`: http(s) / mailto, opened in the browser;
@@ -102,9 +109,6 @@ export function prepare(md) {
  * - `repo`: another relative path, shown but not clickable (D4);
  * - `text`: any other scheme (`javascript:`, `file:`…), plain text.
  */
-// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point.
-const CONTROL = /[\x00-\x1f\x7f]/;
-
 export function linkKind(url, canSwitchDoc = false) {
   const u = String(url ?? '').trim();
   // Browsers drop tabs/newlines and leading controls when reading an href, so
@@ -112,9 +116,9 @@ export function linkKind(url, canSwitchDoc = false) {
   if (CONTROL.test(u)) return { kind: 'text' };
   if (/^(https?:\/\/|mailto:)/i.test(u)) return { kind: 'external', url: u };
   if (u.startsWith('#')) return { kind: 'anchor', anchor: safeDecode(u.slice(1)) };
-  if (/^[a-z][a-z0-9+.-]*:/i.test(u) || u.startsWith('//') || !u) return { kind: 'text' };
+  if (SCHEME.test(u) || !u) return { kind: 'text' };
   const [path, hash = ''] = u.split('#');
-  const name = safeDecode(path.replace(/^\.\//, '').replace(/\?.*$/, ''));
+  const name = safeDecode(path.replace(DOT_SLASH, '').replace(/\?.*$/, ''));
   if (canSwitchDoc && /^[^/\\]+\.md$/i.test(name)) return { kind: 'doc', name, anchor: safeDecode(hash) || null };
   return { kind: 'repo', path: u };
 }
@@ -136,8 +140,8 @@ export function imageTarget(url) {
     return /^data:image\/(png|jpe?g|gif|webp);base64,[a-z0-9+/=]*$/i.test(u)
       ? { kind: 'data', url: u }
       : { kind: 'dropped' };
-  if (/^[a-z][a-z0-9+.-]*:/i.test(u) || u.startsWith('//')) return { kind: 'other' };
-  const path = safeDecode(u.replace(/[?#].*$/, '')).replace(/^(\.\/)+/, '');
+  if (SCHEME.test(u)) return { kind: 'other' };
+  const path = safeDecode(u.replace(/[?#].*$/, '')).replace(DOT_SLASH, '');
   return path ? { kind: 'asset', path } : { kind: 'other' };
 }
 
@@ -162,9 +166,9 @@ export function frontPairs(yaml) {
 
 // Highlighting (lowlight) and diagrams (mermaid) are big: imported on first use
 // only, so the app's start bundle doesn't carry them.
-let highlighter = null;
-let diagrams = null;
-/** @returns {Promise<typeof import('./highlight.js')>} */
-export const loadHighlight = () => (highlighter ??= import('./highlight.js'));
-/** @returns {Promise<typeof import('./mermaid.js')>} */
-export const loadMermaid = () => (diagrams ??= import('./mermaid.js'));
+/** @type {typeof import('./highlight.js') | null} */
+let hlModule = null;
+/** The highlighter once loaded (blocks mounted later highlight on their first render), else null. */
+export const highlighter = () => hlModule;
+export const loadHighlight = () => import('./highlight.js').then((m) => (hlModule = m));
+export const loadMermaid = () => import('./mermaid.js');
