@@ -115,6 +115,8 @@ impl Fx {
                     status: phase,
                     resume_status: None,
                     pr_url: None,
+                    pr_number: None,
+                    pr: None,
                     started_at_ms: NOW - 120 * MIN,
                     ended_at_ms: None,
                 },
