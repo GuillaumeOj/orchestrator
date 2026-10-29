@@ -83,6 +83,8 @@ pub struct Report {
     pub turns: Vec<TurnReport>,
     pub holds: Vec<(String, String)>,
     pub inbox: Vec<String>,
+    /// Permission items parked because their hook died with the core.
+    pub parked: Vec<u64>,
 }
 
 impl Report {
@@ -264,8 +266,11 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
 
         // 6. Transcript.
         let tr: Summary = transcript::summarize_session(env.projects_root, &rec.session_id);
-        let open_gate =
-            st.holds.iter().any(|h| h.agent_id == id && h.status == HoldStatus::Held && h.kind == HoldKind::Gate);
+        let open_gate = st
+            .holds
+            .iter()
+            .find(|h| h.agent_id == id && h.status == HoldStatus::Held && h.kind == HoldKind::Gate)
+            .map(|h| h.inbox_id.is_some());
         let busy = matches!(
             state_before,
             AgentState::Working
@@ -284,8 +289,12 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
             Decision::Suspend("was suspended".into())
         } else if !insp.in_progress.is_empty() {
             Decision::Flag(format!("{} in worktree, {} unmerged path(s)", insp.in_progress.join("/"), insp.unmerged))
-        } else if open_gate {
-            Decision::Suspend("gate still open: back in the Inbox".into())
+        } else if let Some(permission) = open_gate {
+            Decision::Suspend(if permission {
+                "permission prompt parked in the Inbox: resumes on the answer".into()
+            } else {
+                "gate still open: back in the Inbox as a restart gate".into()
+            })
         } else if rec.tracker.background_tasks > 0 {
             Decision::Resume(format!(
                 "{} background task(s) were running at the last Stop",
@@ -335,37 +344,46 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
         }
 
         // 7. Holds open when the core died were answered by orch-hook (deny).
-        // A hold waiting on its own Inbox item (a permission prompt) closes
-        // that item as interrupted: the agent already got the deny.
-        let mut closed_items = vec![];
+        // A permission prompt's item stays open, parked with its payload
+        // (FR-705): the agent resumes on the answer. A legacy hold with no
+        // item comes back as a restart gate; Governor holds are requeued.
         let mut fresh_gates = vec![];
         for h in st.holds.iter_mut().filter(|h| h.agent_id == id && h.status == HoldStatus::Held) {
             h.status = HoldStatus::Interrupted;
             let now = match (h.kind, h.inbox_id) {
-                (HoldKind::Gate, Some(item)) => {
-                    closed_items.push(item);
-                    format!("Inbox item {item} closed: the agent was denied while the core was down")
-                }
+                (HoldKind::Gate, Some(item)) => match st.inbox.iter_mut().find(|i| i.id == item && i.pending()) {
+                    Some(i) => {
+                        h.status = HoldStatus::Parked;
+                        i.status = orch_store::InboxStatus::Parked;
+                        i.payload["restarted"] = serde_json::json!(true);
+                        report.parked.push(item);
+                        format!(
+                            "Inbox item {item} parked: the agent was denied while the core was down and resumes on the answer"
+                        )
+                    }
+                    // Decided (or parked) just before the core died: nothing waits on this hold.
+                    None => format!("Inbox item {item} already closed or parked"),
+                },
                 (HoldKind::Gate, None) => {
                     fresh_gates.push(h.summary.clone());
-                    "gate pending in the Inbox".to_string()
+                    "back in the Inbox as a restart gate".to_string()
                 }
                 (HoldKind::Governor, _) => "requeued".to_string(),
             };
             report.holds.push((h.id.clone(), now));
         }
-        for item in closed_items {
-            let _ = st.close_inbox(
-                item,
-                orch_store::InboxStatus::Interrupted,
-                Some("core restarted: denied by orch-hook".into()),
-            );
+        // Gates and questions still open come back as they were, marked.
+        for i in st.inbox.iter_mut().filter(|i| {
+            i.agent_id.as_deref() == Some(id.as_str()) && i.pending() && matches!(i.kind.as_str(), "gate" | "question")
+        }) {
+            i.payload["restarted"] = serde_json::json!(true);
         }
-        let gates = fresh_gates;
-        for g in gates {
+        for g in fresh_gates {
             let msg = format!("{id}: gate still pending after a restart: {g}");
-            if !st.inbox.iter().any(|i| i.pending() && i.body == msg) {
-                st.add_inbox(Some(&id), "gate", msg.clone());
+            if !st.inbox.iter().any(|i| i.open() && i.body == msg) {
+                let payload =
+                    serde_json::json!({"action": "restart_gate", "agent": id, "detail": g, "restarted": true});
+                st.add_inbox_item(Some(&id), "gate", msg.clone(), payload, crate::inbox::PRIORITY_GATE);
                 report.inbox.push(msg);
             }
         }
@@ -392,9 +410,10 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                     in_transcript: seen,
                 });
                 if now == TurnStatus::Queued {
-                    t.admission = Admission::Pending;
+                    t.requeue();
+                } else {
+                    t.status = now;
                 }
-                t.status = now;
             }
         }
 
@@ -458,6 +477,8 @@ mod tests {
             flag: None,
             trust_dialog: false,
             team: None,
+            resume_failed: false,
+            start_fresh: false,
         }
     }
 
@@ -614,7 +635,7 @@ mod tests {
         let d = |id: &str| r.agents.iter().find(|a| a.id == id).unwrap().decision.clone();
         assert!(matches!(d("idle"), Decision::Suspend(_)), "{:?}", d("idle"));
         assert!(matches!(d("tool"), Decision::Resume(_)), "{:?}", d("tool"));
-        assert!(matches!(d("gate"), Decision::Suspend(ref s) if s.contains("gate")), "{:?}", d("gate"));
+        assert!(matches!(d("gate"), Decision::Suspend(ref s) if s.contains("restart gate")), "{:?}", d("gate"));
         assert!(matches!(d("merge"), Decision::Flag(ref s) if s.contains("MERGE_HEAD")), "{:?}", d("merge"));
         assert!(matches!(d("orphan"), Decision::Suspend(_)), "{:?}", d("orphan"));
         assert!(matches!(d("bg"), Decision::Resume(ref s) if s.contains("background")), "{:?}", d("bg"));
@@ -646,7 +667,13 @@ mod tests {
         assert_eq!(resumes, ["bg", "tool"]);
         // 7. Gate back in the Inbox, hold interrupted; merge flagged.
         let s = w.store.read(|s| s.clone());
-        assert!(s.inbox.iter().any(|i| i.kind == "gate" && i.body.contains("git status")));
+        // A legacy hold (no item of its own) comes back as a restart gate with a payload.
+        let g = s.inbox.iter().find(|i| i.kind == "gate" && i.body.contains("git status")).unwrap();
+        assert_eq!(
+            g.payload,
+            serde_json::json!({"action": "restart_gate", "agent": "gate", "detail": "git status", "restarted": true})
+        );
+        assert_eq!(g.priority, crate::inbox::PRIORITY_GATE);
         assert!(s.inbox.iter().any(|i| i.kind == "alert" && i.body.contains("MERGE_HEAD")));
         assert_eq!(s.holds[0].status, HoldStatus::Interrupted);
         assert_eq!(s.agents["merge"].tracker.state, AgentState::Error);
@@ -792,7 +819,7 @@ mod tests {
     }
 
     #[test]
-    fn waiting_turns_keep_their_entry_and_permission_items_close() {
+    fn waiting_turns_keep_their_entry_and_permission_items_park() {
         let (_d, repo) = scratch_repo();
         let app = tempfile::tempdir().unwrap();
         let paths = AppPaths::new(app.path());
@@ -803,7 +830,15 @@ mod tests {
             .write(|s| {
                 s.agents.insert("a".into(), agent("a", &repo, &row.path, AgentState::WaitingForYou));
                 s.turns.push(TurnRow::queued("a", "later", governor::TurnKind::Message, Admission::Waiting(7)));
-                let item = s.add_inbox_item(Some("a"), "permission", "a: Bash: ls".into(), serde_json::Value::Null, 30);
+                let payload = serde_json::json!({"tool": "Bash", "tool_input": {"command": "ls"}, "summary": "ls"});
+                let item = s.add_inbox_item(Some("a"), "permission", "a: Bash: ls".into(), payload, 30);
+                s.add_inbox_item(
+                    Some("a"),
+                    "gate",
+                    "a: open a PR".into(),
+                    serde_json::json!({"action": "push_pr"}),
+                    20,
+                );
                 s.holds.push(HoldRow {
                     id: "h".into(),
                     agent_id: "a".into(),
@@ -819,8 +854,20 @@ mod tests {
         let r = run(&store, &paths, &app.path().join("none"));
         let st = store.read(|s| s.clone());
         assert_eq!(st.turns[0].admission, Admission::Waiting(7), "the core restores the entry or asks again");
-        assert_eq!(st.inbox[0].status, orch_store::InboxStatus::Interrupted);
-        assert_eq!(st.inbox.iter().filter(|i| i.pending()).count(), 0, "no duplicate gate item");
-        assert!(r.holds[0].1.contains("closed"));
+        // The permission comes back parked with its payload; the gate as it was, marked.
+        let (perm, gate) = (&st.inbox[0], &st.inbox[1]);
+        assert_eq!(perm.status, orch_store::InboxStatus::Parked);
+        assert_eq!(
+            (perm.payload["tool_input"]["command"].as_str(), perm.payload["restarted"].as_bool()),
+            (Some("ls"), Some(true))
+        );
+        assert_eq!((gate.status, gate.payload["action"].as_str()), (orch_store::InboxStatus::Pending, Some("push_pr")));
+        assert_eq!(gate.payload["restarted"], true);
+        assert_eq!(st.inbox.len(), 2, "no restart gate for a hold with its own item");
+        assert_eq!(st.holds[0].status, HoldStatus::Parked);
+        assert_eq!(r.parked, [perm.id]);
+        assert!(r.holds[0].1.contains("parked"), "{}", r.holds[0].1);
+        let a = r.agents.iter().find(|a| a.id == "a").unwrap();
+        assert!(matches!(&a.decision, Decision::Suspend(why) if why.contains("parked")), "{:?}", a.decision);
     }
 }

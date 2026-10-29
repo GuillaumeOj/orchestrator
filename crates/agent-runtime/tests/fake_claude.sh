@@ -3,12 +3,24 @@
 # way Claude Code does, one turn per pasted line. Test fixture only.
 if [ "$1" = "--version" ]; then echo "2.1.302 (Claude Code)"; exit 0; fi
 SID=""
+RESUMED=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --session-id|--resume) SID="$2"; shift ;;
+    --session-id) SID="$2"; shift ;;
+    --resume) SID="$2"; RESUMED=1; shift ;;
   esac
   shift
 done
+# Test sentinels in the worktree (FR-415): a start that dies at once, a
+# resume that dies at once, a start stuck before SessionStart.
+if [ -f .fake-start-dies ] || { [ -n "$RESUMED" ] && [ -f .fake-resume-dies ]; }; then
+  echo "FAKE CLAUDE: no conversation found with session ID: $SID"
+  exit 1
+fi
+if [ -f .fake-no-session-start ]; then
+  echo "FAKE CLAUDE: a dialog nobody answers"
+  while true; do sleep 1; done
+fi
 ROOT=$(dirname "$ORCH_SOCK")
 HOOK="$ROOT/bin/orch-hook"
 STATUS="$ROOT/bin/orch-status"
@@ -58,6 +70,17 @@ while IFS= read -r line; do
   hook "{\"hook_event_name\":\"UserPromptSubmit\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"prompt\":\"$prompt\"}"
   out=$(hook "{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo hi\"},\"tool_use_id\":\"tu$n\"}")
   echo "PRE[$n]:$out"
+  # A pasted "PERMIT <cmd>" (or the core's "retry the call Bash <cmd>") asks
+  # for a permission the way Claude Code's dialog would.
+  permit=""
+  case "$raw" in
+    *'retry the call Bash '*) permit=$(printf '%s' "$raw" | sed 's/.*retry the call Bash //') ;;
+    *PERMIT*) permit=$(printf '%s' "$raw" | sed 's/.*PERMIT //') ;;
+  esac
+  if [ -n "$permit" ]; then
+    out=$(hook "{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$permit\"},\"tool_use_id\":\"tp$n\",\"cwd\":\"$PWD\"}")
+    echo "PERM[$n]:$out"
+  fi
   case "$prompt" in
     *SLOW*) sleep 30 ;;
     *COMMIT*) echo "work $n" > "work-$n.txt"; echo "MCP[$n]:$(mcp_commit "fake commit $n")" ;;

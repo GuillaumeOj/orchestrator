@@ -8,6 +8,8 @@ publish.workspace = true
 
 [dependencies]
 agent-runtime.workspace = true
+jiff.workspace = true
+orch-store.workspace = true
 orch-protocol.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

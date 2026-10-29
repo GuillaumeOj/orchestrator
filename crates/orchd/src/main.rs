@@ -36,6 +36,8 @@ usage: orchd [--home DIR] <command> [args]
   run-now <entry> | cancel <entry>        a queued entry (ids in `governor`): run it past the caps, or drop it
   undo <action> | sprint [pp] | answer-ask <action> apply|skip
   enforce on|off                shadow mode off (enforce) or back on (FR-812)
+  report [--run <id>] [--since <iso>] [--until <iso>] [--json] [--baseline]
+                                the run report: prompts by tool and decider, pane interventions, waiting
   state | usage | governor      print JSON
   stop                          shut the core down (suspends agents)
 
@@ -134,6 +136,15 @@ impl Args {
         }
         Ok(())
     }
+}
+
+/// `2026-10-27T09:00:00Z` (or a date, at midnight UTC) as ms since the epoch.
+fn iso_ms(s: &str) -> Result<u64> {
+    let t: jiff::Timestamp = match s.parse() {
+        Ok(t) => t,
+        Err(_) => format!("{s}T00:00:00Z").parse().with_context(|| format!("not an ISO time: {s}"))?,
+    };
+    Ok(t.as_millisecond().max(0) as u64)
 }
 
 fn run() -> Result<()> {
@@ -388,6 +399,20 @@ fn run() -> Result<()> {
             let agent_id = if a.0.is_empty() { None } else { Some(a.next("agent")?) };
             a.done()?;
             print(request(&sock, CtlRequest::Audit { agent_id, limit: None })?)
+        }
+        "report" => {
+            let team_run_id = a.opt("--run")?;
+            let since_ms = a.opt("--since")?.map(|t| iso_ms(&t)).transpose()?;
+            let until_ms = a.opt("--until")?.map(|t| iso_ms(&t)).transpose()?;
+            let (json, baseline) = (a.flag("--json"), a.flag("--baseline"));
+            a.done()?;
+            let r = request(&sock, CtlRequest::RunReport { team_run_id, since_ms, until_ms })?;
+            if json || !r.ok {
+                return print(r);
+            }
+            let report: orch_store::RunReport = serde_json::from_value(r.data)?;
+            print!("{}", report.render(baseline));
+            Ok(())
         }
         "events" => {
             let agent_id = a.opt("--agent")?;
@@ -702,4 +727,16 @@ fn attach(sock: &std::path::Path, agent_id: &str) -> Result<()> {
     drop(raw);
     eprint!("\r\n[detached from {agent_id}]\r\n");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_times_parse_as_iso() {
+        assert_eq!(iso_ms("1970-01-01T00:00:01Z").unwrap(), 1_000);
+        assert_eq!(iso_ms("1970-01-02").unwrap(), 86_400_000);
+        assert!(iso_ms("yesterday").is_err());
+    }
 }

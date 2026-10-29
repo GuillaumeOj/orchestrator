@@ -356,7 +356,14 @@ impl Runtime {
     fn start_lead(&self, cx: &RunCtx, lead: &str, row: &orch_store::WorktreeRow) -> Result<()> {
         let feature = &cx.feature;
         let rec = self.add_team_agent(cx, lead, self.free_agent_number(&feature.slug, lead)?, row)?;
-        let brief = format!(
+        self.deliver_kind(&rec.id, &Self::lead_brief(cx), TurnKind::Task)?;
+        Ok(())
+    }
+
+    /// A lead's first turn: the user's brief and what to do with it.
+    fn lead_brief(cx: &RunCtx) -> String {
+        let feature = &cx.feature;
+        format!(
             "ORCH: you lead the team on feature {} ({}). Brief from the user:\n\n{}\n\nFollow your protocol: write the docs in {}, commit them, then call mcp__orch__request_spec_approval.",
             feature.title,
             feature.slug,
@@ -366,9 +373,19 @@ impl Runtime {
                 &feature.brief
             },
             cx.fctx().docs_dir()
-        );
-        self.deliver_kind(&rec.id, &brief, TurnKind::Task)?;
-        Ok(())
+        )
+    }
+
+    /// The turn that briefs a team agent again after a fresh restart (FR-415):
+    /// its seat's task, or the feature brief for a lead. `None` for a solo agent.
+    pub(crate) fn brief_turn(&self, rec: &AgentRecord) -> Option<String> {
+        let seat = rec.team.as_ref()?;
+        let cx = self.run_ctx(&seat.run_id).ok()?;
+        match seat.task.and_then(|t| self.db.task(t).ok().flatten()) {
+            Some(task) => Some(self.task_turn(&cx, &task, rec, &self.branch_of(rec))),
+            None if crate::runtime::reserved_slot(rec) => Some(Self::lead_brief(&cx)),
+            None => None,
+        }
     }
 
     /// The first `n` with no agent `<slug>-<node>-<n>` yet (archived ones
@@ -444,6 +461,8 @@ impl Runtime {
                 project_id: cx.project.id.clone(),
                 task: None,
             }),
+            resume_failed: false,
+            start_fresh: false,
         };
         self.store.write(|s| s.agents.insert(id.clone(), rec.clone()))?;
         // Bind the worktree row to its agent.
@@ -875,8 +894,24 @@ impl Runtime {
         self.db.messages(&seat.run_id, Some((&seat.node, Some(&rec.id))), true).unwrap_or_default()
     }
 
+    /// Unread messages not handed over yet: not delivered (pasted or given
+    /// as context), and not carried by a turn still waiting for its paste,
+    /// this agent's or another's of the node (a message to the node binds to
+    /// an agent only at the paste).
     fn undelivered(&self, rec: &AgentRecord) -> Vec<Message> {
-        self.unread(rec).into_iter().filter(|m| m.delivered_at_ms.is_none()).collect()
+        let mut msgs: Vec<Message> = self.unread(rec).into_iter().filter(|m| m.delivered_at_ms.is_none()).collect();
+        if msgs.is_empty() {
+            return msgs;
+        }
+        let carried: std::collections::HashSet<u64> = self.store.read(|s| {
+            s.turns
+                .iter()
+                .filter(|t| !t.messages.is_empty() && matches!(t.status, TurnStatus::Queued | TurnStatus::Delivering))
+                .flat_map(|t| t.messages.iter().copied())
+                .collect()
+        });
+        msgs.retain(|m| !carried.contains(&m.id));
+        msgs
     }
 
     /// The agent's unread messages among `ids` (to remind it at its Stop).
@@ -927,10 +962,9 @@ impl Runtime {
                 msgs.len(),
                 Self::render_messages(&msgs, MAX_BODY)
             );
+            // Marked delivered when this turn is pasted (FR-206), not now.
             let ids: Vec<u64> = msgs.iter().map(|m| m.id).collect();
-            if self.deliver_messages_turn(&rec.id, &text, ids.clone()).is_ok() {
-                let _ = self.db.deliver_messages(&ids, &rec.id, now_ms());
-            }
+            let _ = self.deliver_messages_turn(&rec.id, &text, ids);
         }
     }
 
@@ -1799,6 +1833,38 @@ mod tests {
         let gate = rt.store.read(|s| s.inbox.iter().find(|i| i.pending() && i.kind == "gate").cloned().unwrap());
         rt.decide(gate.id, InboxDecision::Approve, None, None).unwrap();
         run
+    }
+
+    /// FR-206: a message waiting in a queued turn is not delivered yet, and
+    /// not queued a second time.
+    #[test]
+    fn a_queued_message_has_no_delivered_at_and_is_queued_once() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        let run = approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        // The lead ran and is idle with nothing queued.
+        rt.store
+            .write(|s| {
+                for t in s.turns.iter_mut().filter(|t| t.agent_id == lead) {
+                    t.status = TurnStatus::Done;
+                }
+                let a = s.agents.get_mut(lead).unwrap();
+                a.spawns = 1;
+                a.tracker.state = AgentState::Idle;
+            })
+            .unwrap();
+        ok(&rt, back, "send_message", json!({"to": "lead", "body": "a question"}));
+        rt.team_tick();
+        rt.team_tick();
+        let carrying: Vec<TurnRow> = rt
+            .store
+            .read(|s| s.turns.iter().filter(|t| t.agent_id == lead && !t.messages.is_empty()).cloned().collect());
+        assert_eq!(carrying.len(), 1, "queued once");
+        let msgs = rt.db.messages(&run.id, Some(("lead", Some(lead))), true).unwrap();
+        let m = msgs.iter().find(|m| carrying[0].messages.contains(&m.id)).unwrap();
+        assert_eq!(m.delivered_at_ms, None, "delivered only when its turn is pasted");
     }
 
     #[test]

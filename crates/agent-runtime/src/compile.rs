@@ -198,6 +198,9 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
     deny.push(format!("Edit({}/**)", rule_path(&ctx.app_root)));
     deny.extend(role.deny_rules.iter().cloned());
     let mut allow = role.allow_rules.clone();
+    // FR-206: long turns are files in the agent's own `messages/` (outside
+    // the worktree): reading them must not prompt. Nothing else of the app root.
+    allow.push(format!("Read({}/**)", rule_path(&ctx.agent_dir.join("messages"))));
     let tools = role.tools();
     allow.extend(tools.iter().map(|t| format!("mcp__{ORCH_MCP_SERVER}__{t}")));
 
@@ -511,6 +514,26 @@ pub(crate) mod tests {
         assert_eq!(denies, [main.join(".env"), main.join("README.md"), main.join("src")]);
         // A git dir outside the checkout: deny the checkout as a whole.
         assert_eq!(main_read_denies(&main, Path::new("/elsewhere/.git")), vec![main]);
+    }
+
+    /// FR-206 (acceptance 1): the agent reads its own long turns without a
+    /// prompt, and no allow rule reaches the state or another agent's folder.
+    #[test]
+    fn the_agent_reads_its_own_messages_and_nothing_else_of_the_app() {
+        let mut cx = ctx(SessionMode::New("u".into()));
+        cx.app_root = "/Users/u/Library/Application Support/Orchestrator".into();
+        cx.agent_dir = cx.app_root.join("agents/a1");
+        let (roles, team) = orch_team::presets::full_stack();
+        let f = orch_team::FeatureCtx { slug: "f".into(), title: "F".into(), base: "main".into() };
+        let back = Role::from_node(&orch_team::compile_node(&team, "back", &roles, &f).unwrap()).unwrap();
+        for role in [Role::solo(), back] {
+            let allow = strs(&compile(&role, &cx).settings["permissions"]["allow"]);
+            let want = "Read(//Users/u/Library/Application Support/Orchestrator/agents/a1/messages/**)";
+            assert!(allow.iter().any(|a| a == want), "{allow:?}");
+            let app: Vec<&String> = allow.iter().filter(|a| a.contains("Orchestrator")).collect();
+            assert_eq!(app, [want], "only its own messages folder");
+            assert!(!allow.iter().any(|a| a.contains("/state") || a.contains("agents/a2")));
+        }
     }
 
     #[test]

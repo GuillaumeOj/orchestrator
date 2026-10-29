@@ -22,6 +22,16 @@ fn row_event(r: &rusqlite::Row) -> rusqlite::Result<Event> {
     })
 }
 
+/// An event's detail as stored text, read from its blob file when it was
+/// stored outside the row (the reader of what [`Store::add_event`] writes).
+pub(crate) fn detail(text: &str) -> Value {
+    let d: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+    match d.get("blob").and_then(Value::as_str) {
+        Some(p) => std::fs::read_to_string(p).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null),
+        None => d,
+    }
+}
+
 /// Details larger than this go to a file in [`Store::blob_dir`] (NFR-8).
 pub const BLOB_THRESHOLD: usize = 64 * 1024;
 
@@ -39,7 +49,10 @@ pub struct Event {
 pub struct AuditEntry {
     pub id: u64,
     pub ts_ms: u64,
-    /// `user`, `core`, `rule:<id>`, `governor`…
+    /// Who decided (FR-709): `user` (Inbox card or app action), `pane` (Claude
+    /// Code's own dialog, or Esc in the pane), `rule:<id>`, `expired` (hold
+    /// deadline reached: parked), `core` (closed by the reconciler after a
+    /// restart), `agent:<id>`, `governor`. `overwatch` is reserved (P4.4).
     pub actor: String,
     pub agent_id: Option<String>,
     /// `permission`, `commit`, `gate`, `rule_added`, `rule_revoked`, `push`, `pr`…

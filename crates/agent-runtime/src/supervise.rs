@@ -184,6 +184,16 @@ impl Runtime {
                 if self.live(&m.agent).is_some() {
                     bail!("{} is running ({}): nudge it instead", m.agent, m.state.label());
                 }
+                // Its last start died at once even fresh, or its resume has no
+                // session to resume (FR-415): a fresh session with its brief.
+                // Queued, not spawned: the Governor admits it like any resume (FR-411).
+                if self.resume_failed(&m.agent) {
+                    let session = self.queue_fresh_restart(&m.agent, "resumed by its lead after a failed start")?;
+                    return Ok((
+                        format!("{} restarts as a fresh session with its brief when admitted.", m.agent),
+                        json!({"session_id": session}),
+                    ));
+                }
                 // A failed resume flags the agent, and the delivery loop never
                 // starts a flagged one: the lead's resume is a new attempt.
                 self.store.write(|s| {

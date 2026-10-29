@@ -200,10 +200,11 @@ impl Runtime {
         candidates.into_iter().filter(|(_, w)| real(w) == wt).map(|(id, _)| id).collect()
     }
 
-    /// Hides an agent for good (FR-202): archived, its queued turns dropped
-    /// and the Governor told to forget it, so no release ever comes for it.
-    /// Its process must already be stopped.
-    pub(crate) fn archive_agent(&self, id: &str) -> Result<()> {
+    /// Hides an agent for good (FR-202): archived, its queued turns dropped,
+    /// its open Inbox items closed (`why`: nobody could act on them, and they
+    /// would count as waiting), and the Governor told to forget it, so no
+    /// release ever comes for it. Its process must already be stopped.
+    pub(crate) fn archive_agent(&self, id: &str, why: &str) -> Result<()> {
         self.store.write(|s| {
             if let Some(a) = s.agents.get_mut(id) {
                 a.tracker.state = AgentState::Archived;
@@ -214,6 +215,7 @@ impl Runtime {
             }
         })?;
         self.drop_queued_turns(id);
+        self.close_items_of(id, why);
         self.governor_forget(id);
         Ok(())
     }
@@ -229,7 +231,7 @@ impl Runtime {
         // Always through kill, even for a suspended, crashed or killed agent:
         // its scan finds leftovers of an earlier run of the app.
         let log = self.kill(id)?;
-        self.archive_agent(id)?;
+        self.archive_agent(id, "agent deleted")?;
         let worktree = if !remove_worktree {
             Value::Null
         } else {
@@ -278,7 +280,7 @@ impl Runtime {
             if self.live(&a.id).is_some() {
                 let _ = self.suspend(&a.id);
             }
-            self.archive_agent(&a.id)?;
+            self.archive_agent(&a.id, "agent archived")?;
         }
         let report = project::remove(&self.db, &self.store, id, choices)?;
         if choices.history == project::History::Delete {

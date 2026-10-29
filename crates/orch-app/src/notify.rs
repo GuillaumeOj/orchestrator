@@ -111,6 +111,7 @@ mod tests {
             created_ms: 0,
             actions: vec![],
             payload: json!({}),
+            status: "open",
         }
     }
 

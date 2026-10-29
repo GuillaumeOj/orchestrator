@@ -6,7 +6,6 @@
 use crate::LockOk;
 use std::collections::BTreeMap;
 use std::io::BufReader;
-use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,8 +20,7 @@ use governor::jiff::Timestamp;
 use orch_git::git::real;
 use orch_protocol::bus;
 use orch_protocol::{
-    AgentSpec, CtlReply, CtlRequest, Envelope, HookEvent, HookPayload, InboxDecision, Msg, PROTOCOL_VERSION, Reply,
-    ReplyEnvelope, now_ms,
+    AgentSpec, CtlReply, CtlRequest, Envelope, InboxDecision, Msg, PROTOCOL_VERSION, Reply, ReplyEnvelope, now_ms,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -31,7 +29,6 @@ use crate::editor;
 use crate::inbox::{self, AgentFacts, Alert, Ask, Done};
 use crate::kitty::{self, KittyImport};
 use crate::memory::{self, AppMemory};
-use crate::permissions::{Answer, PermissionBroker};
 use crate::planner::{self, History, HistoryPoint, PlannerView};
 use crate::services::{self, GitSummary, Project, Settings};
 use crate::setup::{self, ClaudeCheck};
@@ -84,7 +81,6 @@ pub struct Core {
     rt: Option<Arc<Runtime>>,
     /// Why agents are unavailable (another core owns the socket, no claude…).
     pub core_error: Option<String>,
-    pub broker: Arc<PermissionBroker>,
     /// The store: the runtime's, or the app's own when the runtime is not up.
     pub db: orch_store::Store,
     pub settings: Settings,
@@ -212,7 +208,6 @@ impl Core {
             paths,
             rt,
             core_error,
-            broker: Arc::new(PermissionBroker::default()),
             db,
             settings,
             terms: Terms::default(),
@@ -391,35 +386,9 @@ impl Core {
             });
         }
         match env.msg {
-            Msg::Hook(m) if m.event == HookEvent::PermissionRequest => {
-                // The state machine first (Waiting for you); an unknown agent fails closed.
-                if let Some(out) = rt.on_hook(&m, None) {
-                    return reply(Reply::Hook { output: Some(out) });
-                }
-                let p = HookPayload::parse(&m.payload);
-                let id = self.broker.open(&m.agent_id, &p, now_ms());
-                // Answer before orch-hook's own deadline; then the pane's dialog shows.
-                let hold = Duration::from_millis(m.deadline_ms.saturating_sub(2_000).max(1_000));
-                let outcome =
-                    self.broker.wait(&id, Instant::now() + hold, Duration::from_millis(250), || peer_closed(&s));
-                reply(Reply::Hook { output: PermissionBroker::hook_output(&outcome) });
-            }
+            // PermissionRequest included: the runtime holds it as a store
+            // Inbox item, and parks it when nobody answers in time (FR-705).
             Msg::Hook(m) => {
-                // A prompt held for the Inbox but answered in the pane: this call's
-                // next hook, or the turn's end, closes it.
-                let call_done = matches!(
-                    m.event,
-                    HookEvent::PostToolUse | HookEvent::PostToolUseFailure | HookEvent::PermissionDenied
-                );
-                let turn_done = matches!(
-                    m.event,
-                    HookEvent::Stop | HookEvent::StopFailure | HookEvent::UserPromptSubmit | HookEvent::SessionEnd
-                );
-                if call_done || turn_done {
-                    let p = HookPayload::parse(&m.payload);
-                    let tool_use = if call_done { p.tool_use_id.as_deref() } else { None };
-                    self.broker.answered_in_pane(&m.agent_id, tool_use);
-                }
                 let output = rt.on_hook(&m, Some(&s));
                 reply(Reply::Hook { output });
             }
@@ -569,9 +538,8 @@ impl Core {
                 std::thread::Builder::new().name(format!("agent-{id}-in")).spawn(move || {
                     for b in rx {
                         // The process may have been resumed: look it up each time.
-                        if let Some(l) = rt.live(&agent) {
-                            let _ = l.user_input(&b);
-                        }
+                        // FR-1311: typing (not terminal replies) may be a pane intervention.
+                        let _ = rt.pane_input(&agent, &b);
                     }
                 })?;
                 w.insert(id.to_string(), tx.clone());
@@ -601,6 +569,12 @@ impl Core {
             "unpause" => json!(rt.resume_agent(id)),
             other => bail!("unknown agent action {other}"),
         })
+    }
+
+    /// FR-415: the agent again as a fresh session with its brief (agent menu, `startup` item).
+    pub fn restart_fresh(&self, id: &str) -> Result<Value> {
+        let session = self.runtime()?.restart_fresh(id, "restarted fresh by the user", "user")?;
+        Ok(agent_runtime::startup::restarted(&session))
     }
 
     /// FR-202: kill (checked) and hide the agent, its worktree on request.
@@ -702,27 +676,48 @@ impl Core {
 
     pub fn inbox_act(&self, item: &str, action: &str, message: Option<&str>) -> Result<Value> {
         let rt = self.runtime()?;
-        if item.starts_with("perm-") {
-            let agent = self.broker.list().into_iter().find(|p| p.id == item).map(|p| p.agent_id);
-            let answer = match action {
-                "approve" => Answer::Allow,
-                "reject" => Answer::Deny { message: message.map(str::to_string) },
-                "in_pane" => Answer::InPane,
+        // A permission prompt, held or parked (FR-705): the runtime decides,
+        // audits and acts (the hook answers, or the agent is told).
+        if let Some(n) = item.strip_prefix("inbox-") {
+            let n: u64 = n.parse()?;
+            let found = rt.store.read(|st| st.inbox.iter().find(|i| i.id == n).map(|i| (i.status, i.payload.clone())));
+            let open = found.as_ref().map(|(st, _)| *st);
+            // "Always allow" for the agent's project, or for the agent itself when it has none.
+            let in_project = found.is_some_and(|(_, p)| p.get("project_id").is_some_and(Value::is_string));
+            let scope = (action == "always").then_some(if in_project { "project" } else { "agent" });
+            let decision = match action {
+                "approve" => InboxDecision::Approve,
+                "reject" => InboxDecision::Reject,
+                "always" => InboxDecision::AlwaysAllow,
+                // The dialog is in the pane while the hook is held: nothing to decide here.
+                "in_pane" if open == Some(agent_runtime::store::InboxStatus::Pending) => {
+                    return Ok(json!({"ok": true, "effect": "in_pane"}));
+                }
+                "in_pane" => bail!("the prompt is no longer in the pane"),
                 other => bail!("{other} does not apply to a permission"),
             };
-            if !self.broker.answer(item, answer) {
-                bail!("this permission prompt is no longer open");
-            }
-            // Allowed or denied, the tool call goes on; answering in the pane
-            // leaves the CLI's dialog up.
-            if let (Some(a), false) = (agent, action == "in_pane") {
-                // The answer is already on its way to the hook: a failure here
-                // only delays the state until the agent's next hook.
-                if let Err(err) = rt.permission_answered(&a) {
-                    eprintln!("orchestrator: {a}: {err:#}");
+            let r = rt.decide(n, decision, scope, message.filter(|m| !m.trim().is_empty()))?;
+            return Ok(json!({"ok": true, "effect": r["effect"], "result": r}));
+        }
+        // A start that never happened (FR-415).
+        if let Some(n) = item.strip_prefix("startup-") {
+            let n: u64 = n.parse()?;
+            let agent = rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).and_then(|i| i.agent_id.clone()));
+            let agent = agent.ok_or_else(|| anyhow!("no startup item {n}"))?;
+            return match action {
+                "restart_fresh" => self.restart_fresh(&agent),
+                "dismiss" => {
+                    rt.decide(n, InboxDecision::Dismiss, None, None)?;
+                    Ok(json!({"ok": true, "effect": "dismissed"}))
                 }
-            }
-            return Ok(json!("answered"));
+                // Deleted first: a kill that fails leaves the card to try again.
+                "delete" => {
+                    let r = self.agent_delete(&agent, false, false)?;
+                    let _ = rt.decide(n, InboxDecision::Dismiss, None, None);
+                    Ok(json!({"ok": true, "effect": "dismissed", "result": r}))
+                }
+                other => bail!("{other} does not apply to {item}"),
+            };
         }
         if let Some(n) = item.strip_prefix("alert-") {
             let n: u64 = n.parse()?;
@@ -737,22 +732,24 @@ impl Core {
                 if let Some(p) = payload.as_ref().filter(|p| p["source"] == "notion" && action == "open") {
                     let url = p["page_url"].clone();
                     rt.store.write(|s| {
-                        let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()));
+                        let _ =
+                            s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()), "user");
                     })?;
                     return Ok(json!({"open": "url", "url": url}));
                 }
                 // "Weekly report ready" (FR-818): read once opened; the UI opens the report.
                 if let Some(p) = payload.filter(|p| p["digest"] == "weekly_report" && action == "open") {
                     rt.store.write(|s| {
-                        let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()));
+                        let _ =
+                            s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("open".into()), "user");
                     })?;
                     return Ok(json!({"open": "report", "report": p["report"]}));
                 }
             }
             rt.store.write(|s| {
-                let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("dismiss".into()));
+                let _ = s.close_inbox(n, agent_runtime::store::InboxStatus::Dismissed, Some("dismiss".into()), "user");
             })?;
-            return Ok(json!("dismissed"));
+            return Ok(json!({"ok": true, "effect": "dismissed"}));
         }
         // Gates and team questions: the runtime decides (audited) and acts
         // (spec gate → the run moves on; PR gate → push + PR; reply → a turn).
@@ -768,12 +765,13 @@ impl Core {
             if decision == InboxDecision::Reply && message.is_none_or(|m| m.trim().is_empty()) {
                 bail!("empty reply");
             }
-            return rt.decide(n, decision, None, message);
+            let r = rt.decide(n, decision, None, message)?;
+            return Ok(json!({"ok": true, "effect": r["effect"], "result": r}));
         }
         if let Some(n) = item.strip_prefix("ask-") {
             let id = governor::ActionId(n.parse()?);
             rt.answer_ask(id.0, action == "approve")?;
-            return Ok(json!("answered"));
+            return Ok(json!({"ok": true, "effect": if action == "approve" { "allowed" } else { "denied" }}));
         }
         if let Some(a) = item.strip_prefix("wait-").or_else(|| item.strip_prefix("error-")) {
             if action == "reply" {
@@ -784,10 +782,14 @@ impl Core {
                 } else {
                     m.to_string()
                 };
-                return self.agent_action(a, if rt.live(a).is_some() { "deliver" } else { "resume" }, Some(&text));
+                let effect = rt.delivered_effect(a);
+                let how = if effect == "delivered" { "deliver" } else { "resume" };
+                let r = self.agent_action(a, how, Some(&text))?;
+                return Ok(json!({"ok": true, "effect": effect, "result": r}));
             }
             if action == "reject" && item.starts_with("error-") {
-                return self.agent_action(a, "resume", None);
+                let r = self.agent_action(a, "resume", None)?;
+                return Ok(json!({"ok": true, "effect": "resumed", "result": r}));
             }
         }
         bail!("{action} does not apply to {item}")
@@ -818,7 +820,7 @@ impl Core {
                 })
             })
             .collect();
-        inbox::build(&inbox::Inputs { permissions: &self.broker.list(), agents: &facts, alerts, ask, done })
+        inbox::build(&inbox::Inputs { agents: &facts, alerts, ask, done })
     }
 
     // ------------------------------------------------------------ views
@@ -976,7 +978,6 @@ impl Core {
             "usage": usage,
             "queue": queue,
             "inbox": {"items": items, "badge": inbox::badge(&items)},
-            "permissions": self.broker.list(),
             "features": features,
             "memory": self.memory(agents_mb),
             "memory_watch": self.watch.view(),
@@ -1137,6 +1138,8 @@ impl Core {
                 Ok(json!({"action": "push_pr", "title": s("title"), "body": s("body"), "branch": s("branch"),
                           "base": s("base"), "files": d.files, "truncated": d.truncated}))
             }
+            // A hold the core found still open at a restart (no payload of its own).
+            "restart_gate" => Ok(json!({"action": "restart_gate", "detail": s("detail")})),
             other => bail!("unknown gate {other:?}"),
         }
     }
@@ -1213,9 +1216,6 @@ fn start_runtime(cfg: &CoreConfig, paths: &AppPaths, warnings: &mut Vec<String>)
     // user's stored choice (`governor.enforce`, also set by `orchd enforce`).
     rc.shadow = !cfg.enforce;
     rc.default_plan = cfg.default_plan;
-    // Permission prompts: the runtime answers from the stored rules only; the
-    // app's broker holds the rest for its Inbox (and the pane's own dialog).
-    rc.permission_hold = Duration::ZERO;
     // Unit tests never read or write the user's Keychain.
     #[cfg(test)]
     {
@@ -1326,7 +1326,7 @@ fn store_view(s: &agent_runtime::store::StateFile) -> (BTreeMap<String, AgentMet
     let alerts = s
         .inbox
         .iter()
-        .filter(|i| i.pending())
+        .filter(|i| i.open())
         .map(|i| Alert {
             id: i.id,
             kind: i.kind.clone(),
@@ -1334,6 +1334,7 @@ fn store_view(s: &agent_runtime::store::StateFile) -> (BTreeMap<String, AgentMet
             body: i.body.clone(),
             created_ms: i.created_at_ms,
             payload: i.payload.clone(),
+            parked: i.status == agent_runtime::store::InboxStatus::Parked,
         })
         .collect();
     let done = s
@@ -1361,14 +1362,6 @@ fn accept_loop(listener: UnixListener, core: std::sync::Weak<Core>, stop: Arc<At
         let Some(c) = core.upgrade() else { break };
         std::thread::spawn(move || c.handle_conn(s));
     }
-}
-
-/// True when orch-hook closed its end (Esc in the pane kills it).
-fn peer_closed(s: &UnixStream) -> bool {
-    let mut b = [0u8; 1];
-    // SAFETY: a non-blocking peek into a local buffer.
-    let n = unsafe { libc::recv(s.as_raw_fd(), b.as_mut_ptr().cast(), 1, libc::MSG_PEEK | libc::MSG_DONTWAIT) };
-    n == 0
 }
 
 #[cfg(test)]
@@ -1418,7 +1411,7 @@ mod tests {
         let id = al["id"].as_str().unwrap();
         assert_eq!(core.inbox_act(id, "reconnect", None).unwrap()["open"], "url");
         assert_eq!(core.inbox_act(id, "open", None).unwrap(), json!({"open": "settings", "server": "penpot"}));
-        assert_eq!(core.inbox_act(id, "reject", None).unwrap(), json!("dismissed"));
+        assert_eq!(core.inbox_act(id, "reject", None).unwrap(), json!({"ok": true, "effect": "dismissed"}));
         // A project override (http) gets its own reconnect target.
         let over: orch_team::mcp::McpServer = serde_json::from_value(
             json!({"id": "penpot", "name": "Penpot", "kind": "http", "url": "https://penpot.invalid/mcp", "allow_secret_env": false}),
@@ -1473,6 +1466,8 @@ mod tests {
             flag: None,
             trust_dialog: false,
             team: None,
+            resume_failed: false,
+            start_fresh: false,
         }
     }
 
@@ -1613,20 +1608,26 @@ mod tests {
         rt.store.write(|s| s.agents.insert("a1".into(), record("a1", d.path().join("repo")))).unwrap();
         // What orch-hook sends, on the real socket.
         let sock = core.paths.socket();
-        let hook = std::thread::spawn(move || {
+        let ask = move |cmd: &str, deadline_ms: u64| {
             let s = bus::connect(&sock, Duration::from_secs(1)).unwrap();
             let msg = Envelope::new(Msg::Hook(orch_protocol::HookMsg {
                 agent_id: "a1".into(),
-                event: HookEvent::PermissionRequest,
+                event: orch_protocol::HookEvent::PermissionRequest,
                 ts_ms: now_ms(),
-                deadline_ms: 30_000,
+                deadline_ms,
                 payload: json!({"hook_event_name": "PermissionRequest", "session_id": "s",
-                    "tool_name": "Bash", "tool_input": {"command": "pnpm add x"}}),
+                    "tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": "/w"}),
             }));
             bus::write_line(&mut &s, &msg).unwrap();
             let r: ReplyEnvelope = bus::read_line(&mut BufReader::new(&s)).unwrap();
             r
-        });
+        };
+        let behavior = |r: ReplyEnvelope| match r.reply {
+            Reply::Hook { output: Some(o) } => o.0["hookSpecificOutput"]["decision"].clone(),
+            other => panic!("{other:?}"),
+        };
+        let ask2 = ask.clone();
+        let hook = std::thread::spawn(move || ask2("pnpm add x", 30_000));
         let mut item = None;
         for _ in 0..50 {
             let s = core.state();
@@ -1638,17 +1639,38 @@ mod tests {
         }
         let item = item.expect("the prompt reached the Inbox");
         assert_eq!(item["kind"], "permission");
+        assert!(item["id"].as_str().unwrap().starts_with("inbox-"), "the store's item: {item}");
         assert_eq!(item["preview"], "pnpm add x");
+        assert_eq!((item["payload"]["cwd"].as_str(), item["status"].as_str()), (Some("/w"), Some("open")));
+        assert!(core.state().get("permissions").is_none(), "no second list");
         assert_eq!(core.state()["agents"][0]["state"], "waiting_for_you");
-        core.inbox_act(item["id"].as_str().unwrap(), "approve", None).unwrap();
-        let r = hook.join().unwrap();
-        match r.reply {
-            Reply::Hook { output: Some(o) } => assert_eq!(o.0["hookSpecificOutput"]["decision"]["behavior"], "allow"),
-            other => panic!("{other:?}"),
-        }
+        let id = item["id"].as_str().unwrap().to_string();
+        assert_eq!(core.inbox_act(&id, "in_pane", None).unwrap()["effect"], "in_pane");
+        assert_eq!(core.inbox_act(&id, "approve", None).unwrap()["effect"], "allowed");
+        assert_eq!(behavior(hook.join().unwrap())["behavior"], "allow");
         // Answered: not shown again as "waiting for you" while the next hook is on its way.
         assert_eq!(core.state()["inbox"]["badge"], 0);
-        assert!(core.inbox_act(item["id"].as_str().unwrap(), "approve", None).is_err());
+        assert!(core.inbox_act(&id, "approve", None).is_err());
+
+        // Nobody answers within the hold (here 2.5 s of deadline − 2 s): denied and parked.
+        let d = behavior(ask("pnpm add y", 2_500));
+        assert_eq!(
+            (d["behavior"].as_str(), d["message"].as_str()),
+            (Some("deny"), Some(agent_runtime::inbox::PARKED_MESSAGE))
+        );
+        let parked = core.state()["inbox"]["items"][0].clone();
+        assert_eq!(
+            (parked["status"].as_str(), parked["payload"]["tool_input"]["command"].as_str()),
+            (Some("parked"), Some("pnpm add y"))
+        );
+        assert!(!parked["actions"].as_array().unwrap().contains(&json!("in_pane")));
+        assert!(core.inbox_act(parked["id"].as_str().unwrap(), "in_pane", None).is_err());
+        let r = core.inbox_act(parked["id"].as_str().unwrap(), "approve", None).unwrap();
+        assert_eq!(r["effect"], "resumed");
+        // The retry runs without a second prompt.
+        assert_eq!(behavior(ask("pnpm add y", 30_000))["behavior"], "allow");
+        let actors: Vec<String> = rt.db.audit_log(Some("a1"), 10).unwrap().into_iter().rev().map(|e| e.actor).collect();
+        assert_eq!(actors, ["user", "expired", "user", "user"]);
         core.shutdown();
     }
 

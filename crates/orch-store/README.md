@@ -34,7 +34,8 @@ db.flush()?;                                                    // everything qu
 | Project | `projects` | `upsert_project`, `project`, `project_by_path`, `projects(with_archived)`, `touch_project`, `record_fetch`, `delete_project` |
 | Worktree | `worktrees` | runtime-owned (below); `worktree(path)`, `worktrees_of(repo)`, `upsert_worktree_tx(tx, row)` |
 | Agent, Turn, (holds) | `agents`, `turns`, `holds` | runtime-owned: `load_runtime`, `sync_runtime(RuntimeDiff)`, `runtime_is_empty` |
-| InboxItem | `inbox_items` | runtime-owned; `inbox_item(id)`, `inbox_pending()` (read only) |
+| InboxItem | `inbox_items` | runtime-owned; `inbox_item(id)`, `inbox_pending()` (read only); `decided_by` (FR-709) |
+| one-shot allow | `one_shot_allows` | `add_one_shot`, `take_one_shot` (FR-705: one exact call of one agent) |
 | PermissionRule | `permission_rules` | `add_rule`, `revoke_rule` (row kept), `rules()` (active) |
 | UsageSample | `usage_samples` | `add_usage` (detached), `usage_since(ms, source)`, `usage_totals(ms)` |
 | WeeklyPlan, BudgetAllocation | `weekly_plans`, `budget_allocations` | `save_plan(plan, PlanStatus)`, `active_plan`, `previous_plan(before)` |
@@ -46,6 +47,7 @@ db.flush()?;                                                    // everything qu
 | Terminal | `terminals` | `upsert_terminal`, `delete_terminal`, `terminals` |
 | (events) | `events` | `add_event(ts, agent, kind, detail)` (detached), `events(since, agent, kind_prefix, limit)` |
 | (audit, FR-709) | `audit_log` | `audit(actor, agent, action, target, decision, detail)` (waits), `audit_log(agent, limit)` |
+| (run report, D7) | events + `audit_log` + `inbox_items` | `run_report(ReportQuery, now)` → `RunReport` (`render(baseline)`), `BASELINE` |
 | (settings) | `kv` | `set_setting`, `setting` |
 | Role (P2) | `roles` | `upsert_role(role, at)`, `role(scope, id)`, `roles(project)` (global + that project's, which shadow), `archive_role(scope, id)` |
 | Team, AgentNode, Edge (P2) | `teams`, `team_versions` | `save_team(team, roles, at)` (also snapshots the version with the roles it uses, FR-308), `team(scope, id)`, `team_in(project, id)` (its own, else the global one), `teams(project)`, `team_version(scope, id, v)`, `archive_team(scope, id)` |

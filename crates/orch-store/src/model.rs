@@ -90,6 +90,9 @@ pub enum InboxStatus {
     /// The hook's connection closed (Esc in the pane) or the core restarted.
     Interrupted,
     Dismissed,
+    /// Still open: a permission whose hold expired; the agent's turn ended
+    /// and it resumes on the answer (FR-705).
+    Parked,
 }
 
 impl InboxStatus {
@@ -100,6 +103,7 @@ impl InboxStatus {
             InboxStatus::Expired => "expired",
             InboxStatus::Interrupted => "interrupted",
             InboxStatus::Dismissed => "dismissed",
+            InboxStatus::Parked => "parked",
         }
     }
 
@@ -109,6 +113,7 @@ impl InboxStatus {
             "expired" => InboxStatus::Expired,
             "interrupted" => InboxStatus::Interrupted,
             "dismissed" => InboxStatus::Dismissed,
+            "parked" => InboxStatus::Parked,
             _ => InboxStatus::Pending,
         }
     }
@@ -141,6 +146,9 @@ pub struct InboxItem {
     /// `allow` / `deny` / `always_allow` / reply text…
     #[serde(default)]
     pub decision: Option<String>,
+    /// Who closed it (FR-709): `user`, `pane`, `rule:<id>`, `expired`, `core`.
+    #[serde(default)]
+    pub decided_by: Option<String>,
 }
 
 impl InboxItem {
@@ -158,11 +166,17 @@ impl InboxItem {
             created_at_ms: crate::now_ms(),
             decided_at_ms: None,
             decision: None,
+            decided_by: None,
         }
     }
 
     pub fn pending(&self) -> bool {
         self.status == InboxStatus::Pending
+    }
+
+    /// Still waiting on the user: pending, or parked (FR-705).
+    pub fn open(&self) -> bool {
+        matches!(self.status, InboxStatus::Pending | InboxStatus::Parked)
     }
 }
 

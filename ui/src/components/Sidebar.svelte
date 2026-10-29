@@ -1,7 +1,7 @@
 <script>
   // Sidebar (§9.2): Projects → Features → agents; solo sessions under their
   // project. The only navigation tree. A feature's badge counts its agents
-  // that need you (waiting for you or at a gate).
+  // that need you (waiting for you, at a gate, a permission prompt or a failed start).
   import { activeAgents, app, features, openAgent, openFeature, openProject, projects } from '../lib/app.svelte.js';
   import { pct } from '../lib/format.js';
   import { displayState } from '../lib/status.js';
@@ -25,11 +25,13 @@
     }),
   );
   const focusedFeature = $derived(app.panes[app.focused]?.type === 'feature' ? app.panes[app.focused].featureId : null);
-  // Waiting for you, plus open gates and questions of these agents (a lead at
-  // its spec gate is idle: the gate is in the Inbox).
+  // Waiting for you, plus the open gates, questions, permission prompts (held
+  // or parked) and failed starts of these agents (a lead at its spec gate is
+  // idle: the gate is in the Inbox).
+  const NEEDS_YOU = new Set(['gate', 'question', 'permission', 'startup']);
   const needsYou = (list) => {
     const ids = new Set(list.map((a) => a.id));
-    const items = (app.data?.inbox?.items ?? []).filter((i) => ids.has(i.agent_id) && (i.kind === 'gate' || i.kind === 'question'));
+    const items = (app.data?.inbox?.items ?? []).filter((i) => ids.has(i.agent_id) && NEEDS_YOU.has(i.kind));
     const waiting = list.filter((a) => displayState(a) === 'waiting_for_you' && !items.some((i) => i.agent_id === a.id));
     return items.length + waiting.length;
   };

@@ -76,26 +76,41 @@ export function keyIntent(key, item) {
   }
 }
 
-/** A gate's flavour: `spec` (spec approval) or `pr` (push + pull request). */
+/** A gate's flavour: `spec` (spec approval), `pr` (push + pull request), or
+ *  `other` (a legacy hold back after a restart, or an action this UI doesn't know). */
 export function gateKind(item) {
   if (item?.kind !== 'gate') return null;
-  return item.payload?.action === 'push_pr' ? 'pr' : 'spec';
+  return { spec_approval: 'spec', push_pr: 'pr' }[item.payload?.action] ?? 'other';
 }
+
+const GATE_LABEL = { spec: 'Spec gate', pr: 'PR gate', other: 'Gate' };
 
 /** A team agent's question (ask_user): answered here, its reply becomes a turn. */
 export function teamQuestion(item) {
   return item?.kind === 'question' && item.payload?.action === 'ask_user';
 }
 
+/** Came back after a core restart (api-contract §1): the card says so, unless
+ *  it is parked (a parked card says that instead). */
+export function restarted(item) {
+  return item?.payload?.restarted === true && !parked(item);
+}
+
+/** A permission whose hold expired: the agent stopped and resumes on the answer. */
+export function parked(item) {
+  return item?.status === 'parked';
+}
+
 /** Kind label in the list and the detail header. */
 export function kindLabel(item) {
   const g = gateKind(item);
-  if (g) return g === 'pr' ? 'PR gate' : 'Spec gate';
+  if (g) return GATE_LABEL[g];
   if (teamQuestion(item)) return 'Question';
   if (item?.payload?.source === 'notion') return 'Question · Notion';
   return (
     {
       permission: 'Permission',
+      startup: 'Startup',
       question: 'Waiting for you',
       trust: 'Trust dialog',
       error: 'Error',
@@ -106,17 +121,27 @@ export function kindLabel(item) {
   );
 }
 
-/** Labels for an item's a/r keys (component copy, Penpot 02 Inbox item). */
+/** Labels for an item's actions (component copy, Penpot 02 Inbox item), keyed by action. */
 export function actionLabels(item) {
   if (teamQuestion(item)) return { r: 'Dismiss' };
   if (item?.payload?.source === 'notion') return { r: 'Dismiss', o: 'Open in Notion ↗' };
   switch (item?.kind) {
-    case 'gate':
-      return gateKind(item) === 'pr'
-        ? { a: 'Approve: push + open PR', r: 'Reject' }
-        : { a: 'Approve spec', r: 'Send back' };
+    case 'gate': {
+      const g = gateKind(item);
+      if (g === 'pr') return { a: 'Approve: push + open PR', r: 'Reject' };
+      if (g === 'spec') return { a: 'Approve spec', r: 'Send back' };
+      return { a: 'Approve', r: 'Reject' };
+    }
     case 'permission':
-      return { a: 'Allow once', r: 'Deny' };
+      return {
+        a: 'Allow once',
+        r: 'Deny',
+        enter: 'Deny with message',
+        always: 'Always allow',
+        in_pane: 'Answer in the pane',
+      };
+    case 'startup':
+      return { o: 'Open pane', restart_fresh: 'Restart fresh', dismiss: 'Dismiss', delete: 'Delete' };
     case 'budget':
       return { a: 'Apply', r: 'Skip' };
     case 'alert':
@@ -128,26 +153,108 @@ export function actionLabels(item) {
   }
 }
 
-/** Toast copy after a decision (Penpot 05: past tense plus the object). */
-export function toastFor(item, action) {
-  const who = item.agent_id ? ` · ${item.agent_id}` : '';
-  const what = item.preview ? ` · ${item.preview.split('\n')[0].slice(0, 40)}` : '';
-  if (item.kind === 'permission') return action === 'approve' ? `Allowed once${who}${what}` : `Denied${who}${what}`;
+/** A tool call's input as text: a lone string field (a Bash command, a path) as is,
+ *  else one `key: value` per field. The description is the card's title already. */
+export function inputText(input) {
+  if (input == null) return '';
+  if (typeof input !== 'object') return String(input);
+  const fields = Object.entries(input).filter(([k]) => k !== 'description');
+  if (fields.length === 1 && typeof fields[0][1] === 'string') return fields[0][1];
+  return fields.map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v, null, 2)}`).join('\n');
+}
+
+/** Text cut to its first `n` lines; `more` = the lines left out. */
+export function collapse(text, n = 6) {
+  const lines = String(text ?? '').split('\n');
+  return lines.length <= n ? { text, more: 0 } : { text: lines.slice(0, n).join('\n'), more: lines.length - n };
+}
+
+/** The last `n` non-blank lines of a PTY tail (a startup card's preview). */
+export function tailLines(text, n = 12) {
+  const lines = String(text ?? '')
+    .split('\n')
+    .map((l) => l.trimEnd())
+    .filter((l) => l.trim());
+  return lines.slice(-n).join('\n');
+}
+
+const who = (item) => (item.agent_id ? ` · ${item.agent_id}` : '');
+const what = (item) => (item.preview ? ` · ${item.preview.split('\n')[0].slice(0, 40)}` : '');
+
+/** Toast while a decision waits out its undo window: what will be sent, not
+ *  what happened (the core has not answered yet). */
+export function pendingToast(item, action) {
+  if (item.kind === 'permission') {
+    const verb = { approve: 'Allowing once', always: 'Always allowing' }[action];
+    return `${verb ?? 'Denying'}${who(item)}${what(item)}`;
+  }
+  if (item.kind === 'startup') {
+    return `${{ restart_fresh: 'Restarting fresh', delete: 'Deleting' }[action] ?? 'Dismissing'}${who(item)}`;
+  }
+  if (mcpAlert(item)) return `Dismissing · ${item.payload.name ?? item.payload.server}`;
+  if (item.payload?.source === 'notion' && action === 'reject') return `Dismissing · ${item.title}`;
+  if (item.kind === 'budget') return `${action === 'approve' ? 'Applying' : 'Skipping'} · ${item.title}`;
+  if (item.kind === 'error') return `Resuming${who(item)}`; // its one action, r = Resume
+  if (item.kind === 'alert' || item.kind === 'info' || (teamQuestion(item) && action === 'reject')) {
+    return `Dismissing${who(item)}`;
+  }
+  const g = gateKind(item);
+  const obj = g ? ` the ${GATE_LABEL[g].toLowerCase()}` : '';
+  if (action === 'reply')
+    return g ? `Sending${obj} back with your notes${who(item)}` : `Sending your reply${who(item)}`;
+  return `${action === 'approve' ? 'Approving' : 'Rejecting'}${obj}${who(item)}`;
+}
+
+// What the agent got, by `effect` (api-contract §2).
+const AGENT_EFFECT = { resumed: 'resumed', delivered: 'told', queued: 'queued' };
+
+/** Toast once the core answered `inbox_act` with `{ effect }`: the effect, said plainly. */
+export function effectToast(item, action, effect, message = null) {
+  const agent = item.agent_id ?? 'the agent';
+  const after = AGENT_EFFECT[effect] ? ` · ${agent} ${AGENT_EFFECT[effect]}` : who(item);
+  if (item.kind === 'permission') {
+    // A held prompt answered (`allowed`): the agent carries on, as a resumed one does.
+    const goes = effect === 'allowed' ? ` · ${agent} resumed` : after;
+    if (action === 'always') return `Always allowed${item.payload?.always ? ` · ${item.payload.always}` : ''}${goes}`;
+    if (action === 'approve') return `Allowed${goes}`;
+    return message?.trim() ? `Denied · reason sent${who(item)}` : `Denied${who(item)}`;
+  }
+  if (item.kind === 'startup') {
+    if (effect === 'restarted') return `Restarted fresh${who(item)}`;
+    return `${action === 'delete' ? 'Deleted' : 'Dismissed'}${who(item)}`;
+  }
   if (item.kind === 'budget') return action === 'approve' ? `Applied · ${item.title}` : `Skipped · ${item.title}`;
   if (mcpAlert(item)) return `Dismissed until it fails again · ${item.payload.name ?? item.payload.server}`;
-  if (item.kind === 'alert' || item.kind === 'info') return `Dismissed${who}`;
-  if (item.kind === 'gate') {
-    const g = gateKind(item) === 'pr' ? 'PR gate' : 'Spec gate';
-    if (action === 'reply') return `${g} sent back with your notes${who}`;
-    return `${g} ${action === 'approve' ? 'approved' : 'rejected'}${who}`;
-  }
-  if (teamQuestion(item) && action === 'reject') return `Dismissed${who}`;
   if (item.payload?.source === 'notion' && action === 'reject') return `Dismissed · ${item.title}`;
-  if (action === 'reply') return `Reply sent${who}`;
-  return `${action === 'approve' ? 'Approved' : 'Rejected'}${who}`;
+  if (item.kind === 'error') return `Resumed${who(item)}`;
+  if (effect === 'dismissed' || item.kind === 'alert' || item.kind === 'info') return `Dismissed${who(item)}`;
+  const g = gateKind(item);
+  if (g) {
+    if (action === 'reply') return `${GATE_LABEL[g]} sent back with your notes${after}`;
+    return `${GATE_LABEL[g]} ${action === 'approve' ? 'approved' : 'rejected'}${after}`;
+  }
+  if (action === 'reply') {
+    return effect === 'queued' ? `Reply queued · ${agent}` : `Reply sent${effect === 'resumed' ? after : who(item)}`;
+  }
+  return `${action === 'approve' ? 'Approved' : 'Rejected'}${after}`;
+}
+
+/** Toast for an `inbox_outcome` event decided elsewhere (the pane, a rule, the
+ *  hold's expiry, the core); null for the user's own decisions (their
+ *  `inbox_act` answer has its toast) and outcomes worth no words. */
+export function outcomeToast(item, outcome) {
+  const by = outcome?.decided_by ?? '';
+  if (by === 'user') return null;
+  const agent = item?.agent_id ?? 'an agent';
+  if (outcome?.effect === 'parked') return `Parked · ${agent} stopped and resumes on your answer`;
+  if (outcome?.effect === 'restarted') return `Restarted fresh · ${agent}`;
+  if (by === 'pane') return `Answered in the pane · ${agent}`;
+  if (by.startsWith('rule:'))
+    return `${outcome?.effect === 'denied' ? 'Denied' : 'Allowed'} by rule ${by.slice(5)} · ${agent}`;
+  return null;
 }
 
 /** Due pending decisions (their undo window passed). */
 export function due(pending, now) {
-  return pending.filter((p) => now - p.at >= UNDO_MS);
+  return pending.filter((p) => !p.sent && now - p.at >= UNDO_MS);
 }

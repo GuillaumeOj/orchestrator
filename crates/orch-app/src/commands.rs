@@ -170,6 +170,11 @@ pub async fn open_in_kitty(core: CoreState<'_>, cwd: PathBuf) -> Res<()> {
 // ---------------------------------------------------------------- inbox, governor
 
 #[tauri::command]
+pub async fn restart_fresh(core: CoreState<'_>, agent: String) -> Res<Value> {
+    blocking(core, move |c| c.restart_fresh(&agent)).await
+}
+
+#[tauri::command]
 pub async fn inbox_act(core: CoreState<'_>, item: String, action: String, message: Option<String>) -> Res<Value> {
     blocking(core, move |c| c.inbox_act(&item, &action, message.as_deref())).await
 }
