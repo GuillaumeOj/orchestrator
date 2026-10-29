@@ -1155,12 +1155,12 @@ export async function flushDecisions(now = Date.now()) {
     }
     // The answer's lifecycle counts as a push unless older than what we hold: a
     // synchronous effect (Allow once on a held hook, Dismiss, Delete) toasts now.
-    // A synthesized answer has version 0 (an older core's none): applied with the
-    // version held while the card is still the one sent, so it stays out of the
-    // open list and the core's next push wins; a push meanwhile is newer than it.
+    // A versionless answer (synthesized cards; until inbox_act returns pushed
+    // versions) only holds while no push replaced the card during the await.
     const d = app.now.decisions[p.item];
+    const pushedMeanwhile = d !== sent[i];
     let lc = r.value?.lifecycle;
-    if (lc && !lc.version) lc = d === sent[i] ? { ...lc, version: version(d) } : null;
+    if (lc && !lc.version) lc = pushedMeanwhile ? null : { ...lc, version: version(d) };
     if (d && lc && !older(lc, d)) {
       const next = { ...d, lifecycle: lc };
       app.now.decisions[p.item] = next;
