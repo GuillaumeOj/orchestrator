@@ -9,7 +9,7 @@
   const r = $derived(roleOf(id, role ?? agent(id)?.role ?? null, color));
 </script>
 
-<span class="chip">
+<span class="chip" class:compact>
   <span class="mark" style:color={r.color} style:border-color={r.color}>{r.letter}</span>
   {#if !compact}<span class="name">{name ?? id}</span>{/if}
 </span>
@@ -20,6 +20,10 @@
     align-items: center;
     gap: var(--space-xs);
     min-width: 0;
+  }
+  /* A compact chip is one fixed-width mark: it never shrinks in a flex row. */
+  .chip.compact {
+    flex: none;
   }
   .mark {
     display: inline-flex;

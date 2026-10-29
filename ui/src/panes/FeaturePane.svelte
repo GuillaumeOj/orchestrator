@@ -272,7 +272,7 @@
           <div class="chips">{#each TL_FILTERS as f (f.id)}<button class="chip" class:on={tl === f.id} onclick={() => (tl = f.id)}>{f.label}</button>{/each}</div>
           <div class="events">
             {#each events as e (e.id)}
-              <div class="ev"><span class="mono muted">{new Date(e.ts_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>{#if e.agent_id}<AgentChip id={e.agent_id} role={roleOfAgent(e.agent_id)} compact />{/if}<span class="evt">{timelineText(e)}</span></div>
+              <div class="ev"><span class="evtime mono muted">{new Date(e.ts_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>{#if e.agent_id}<AgentChip id={e.agent_id} role={roleOfAgent(e.agent_id)} compact />{/if}<span class="evt">{timelineText(e)}</span></div>
             {:else}<span class="muted">Nothing yet.</span>{/each}
           </div>
           {#if run && !runFinished(run.status)}
@@ -462,8 +462,15 @@
     align-items: flex-start;
     font: var(--text-caption);
   }
+  .evtime {
+    flex: none;
+    white-space: nowrap;
+  }
   .evt {
+    flex: 1;
+    min-width: 0;
     color: var(--color-text-secondary);
+    overflow-wrap: anywhere;
   }
   .to {
     width: 9em;
