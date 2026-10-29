@@ -151,7 +151,8 @@ export function lineState(run) {
   // Not watched yet (a PR open, first check coming) vs. never watched (a run done before this change).
   if (!pr)
     return (run.status === 'pr_open' || run.resume_status === 'pr_open') && run.pr_number ? 'checking' : 'legacy';
-  return pr.state === 'open' ? 'open' : pr.state;
+  // A first check that failed leaves a status with no state yet (`error` set): shown as open and stale.
+  return pr.state === 'merged' || pr.state === 'closed' ? pr.state : 'open';
 }
 
 /** Toast when a refresh fails (the contract has no offline code: the core's text is shown). */

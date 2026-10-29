@@ -96,6 +96,7 @@ describe('position, push, checked', () => {
     expect(lineState({ pr_url: 'u', pr_number: 12, pr: null, status: 'done' })).toBe('legacy');
     expect(lineState({ pr_url: 'u', pr_number: 12, pr: { state: 'merged' } })).toBe('merged');
     expect(lineState({ pr_url: 'u', pr_number: 12, pr: { state: 'open' } })).toBe('open');
+    expect(lineState({ pr_url: 'u', pr_number: 12, pr: { state: '', error: '502' } })).toBe('open');
   });
 });
 

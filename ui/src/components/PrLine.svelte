@@ -60,6 +60,7 @@
   let timer;
   let ciBtn = $state(null);
   let pop = $state(null);
+  let wrap = $state(null);
   const clear = () => clearTimeout(timer);
   const hoverIn = () => {
     clear();
@@ -76,7 +77,7 @@
     // Opened from the keyboard (detail 0): focus goes to the first row.
     if (shown && e.detail === 0) {
       await tick();
-      pop?.querySelector('a, .row')?.focus();
+      (pop?.querySelector('a') ?? pop)?.focus();
     }
   }
   function close(focus = true) {
@@ -84,7 +85,9 @@
     shown = pinned = false;
     if (focus) ciBtn?.focus();
   }
+  // Keys act from the button as well as from inside the popover (a click leaves focus on the button).
   function popKey(e) {
+    if (!shown || !pop) return;
     const rows = [...pop.querySelectorAll('a')];
     const i = rows.indexOf(document.activeElement);
     if (e.key === 'Escape') {
@@ -95,6 +98,10 @@
       e.preventDefault();
       rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))]?.focus();
     }
+  }
+  // A pinned popover closes on a press outside it.
+  function outside(e) {
+    if (pinned && wrap && !wrap.contains(e.target)) close(false);
   }
   function popFocusOut(e) {
     if (pinned && !e.currentTarget.contains(e.relatedTarget) && e.relatedTarget !== ciBtn) close(false);
@@ -129,6 +136,8 @@
   const ERRG = '\u{F0026}';
 </script>
 
+<svelte:window onpointerdown={outside} />
+
 {#if st === 'none'}
   <p class="muted nline">No PR yet: the lead asks with request_pr after integration (PR gate).</p>
 {:else}
@@ -138,7 +147,7 @@
     {#if st === 'checking'}
       <span class="muted cap">checking…</span>
     {:else if open}
-      <span class="ci" role="presentation" onmouseenter={hoverIn} onmouseleave={hoverOut}>
+      <span class="ci" role="presentation" bind:this={wrap} onmouseenter={hoverIn} onmouseleave={hoverOut} onkeydown={popKey}>
         <button
           class="cibtn"
           bind:this={ciBtn}
@@ -152,7 +161,7 @@
         </button>
         {#if shown}
           <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-          <div class="pop" id="ci-{run.id}" role="dialog" aria-label="CI jobs for PR #{number}" tabindex="-1" bind:this={pop} onkeydown={popKey} onfocusout={popFocusOut}>
+          <div class="pop" id="ci-{run.id}" role="dialog" aria-label="CI jobs for PR #{number}" tabindex="-1" bind:this={pop} onfocusout={popFocusOut}>
             <div class="ph cap">{ciHeader(pr.ci)}</div>
             {#if pr.ci?.jobs?.length}
               <div class="rows">

@@ -84,6 +84,7 @@ function prStatusText(d) {
       const more = jobs.length > 3 ? `, +${jobs.length - 3}` : '';
       parts.push(`CI failed${jobs.length ? ` (${shown}${more})` : ''}`);
     } else if (d.ci.to === 'ok') parts.push('CI ok');
+    else parts.push(d.ci.to === 'running' ? 'CI running' : 'CI waiting');
   }
   if (d.position) {
     const { to, behind } = d.position;
