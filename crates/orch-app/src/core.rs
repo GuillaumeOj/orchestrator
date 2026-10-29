@@ -1602,20 +1602,23 @@ mod tests {
         };
         let ask2 = ask.clone();
         let hook = std::thread::spawn(move || ask2("pnpm add x", 30_000));
-        // The open decisions of the `now` snapshot (recomputed), and the badge.
+        // The open permission cards of the `now` snapshot (recomputed), and the
+        // badge. Permission cards only: between the hook's WaitingForYou and
+        // its stored item, the agent shows a synthesized `wait-a1` card.
         let open = || -> Vec<Value> {
             decisions(&core)
                 .into_iter()
-                .filter(|d| matches!(d["lifecycle"]["state"].as_str(), Some("open" | "parked")))
+                .filter(|d| {
+                    d["kind"] == "permission" && matches!(d["lifecycle"]["state"].as_str(), Some("open" | "parked"))
+                })
                 .collect()
         };
         let badge = || {
             rt.now_pump(true);
             rt.now_snapshot()["counts"]["global"]["decisions"].clone()
         };
-        let action_ids = |d: &Value| -> Vec<String> {
-            d["actions"].as_array().unwrap().iter().filter_map(|a| a["id"].as_str().map(str::to_string)).collect()
-        };
+        let has_action =
+            |d: &Value, id: &str| d["actions"].as_array().unwrap().iter().any(|a| a["id"].as_str() == Some(id));
         let mut item = None;
         for _ in 0..50 {
             if let Some(i) = open().first().cloned() {
@@ -1625,15 +1628,15 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         let item = item.expect("the prompt reached the Inbox");
-        assert_eq!(item["kind"], "permission");
         assert!(item["id"].as_str().unwrap().starts_with("inbox-"), "the store's item: {item}");
+        assert_eq!(item["title"], "Bash · pnpm add x");
         let call = &item["context"][0];
         assert_eq!(
             (call["type"].as_str(), call["input"]["command"].as_str(), call["cwd"].as_str()),
             (Some("tool_call"), Some("pnpm add x"), Some("/w"))
         );
         assert_eq!(item["lifecycle"]["state"], "open");
-        assert!(action_ids(&item).contains(&"in_pane".to_string()), "held: it can be answered in the pane");
+        assert!(has_action(&item, "in_pane"), "held: it can be answered in the pane");
         assert_eq!(badge(), 1);
         assert!(core.state().get("permissions").is_none(), "no second list");
         assert!(core.state().get("inbox").is_none(), "decisions come from the now push");
@@ -1657,7 +1660,7 @@ mod tests {
             (parked["lifecycle"]["state"].as_str(), parked["context"][0]["input"]["command"].as_str()),
             (Some("parked"), Some("pnpm add y"))
         );
-        assert!(!action_ids(&parked).contains(&"in_pane".to_string()), "parked: no pane answer");
+        assert!(!has_action(&parked, "in_pane"), "parked: no pane answer");
         assert!(core.inbox_act(parked["id"].as_str().unwrap(), "in_pane", None).is_err());
         let r = core.inbox_act(parked["id"].as_str().unwrap(), "approve", None).unwrap();
         assert_eq!(r["effect"], "resumed");
