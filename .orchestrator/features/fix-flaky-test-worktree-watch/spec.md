@@ -14,7 +14,17 @@ assertion `left == right` failed: ignored paths raise nothing
  right: 0
 ```
 
-**Goal:** the test passes every time on a loaded macOS CI runner and still proves what it was written for: ignored paths raise no topic, one write raises one topic, a burst raises at most two.
+A second flaky test on `main` was added to this feature (Part B, §8):
+
+```
+an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry
+panicked at crates/agent-runtime/tests/e2e_fake_claude.rs:30:5:
+timed out waiting for retried
+```
+
+Part A below (§2-§6) is the worktree-watch test; Part B (§8) is this one.
+
+**Goal (Part A):** the test passes every time on a loaded macOS CI runner and still proves what it was written for: ignored paths raise no topic, one write raises one topic, a burst raises at most two.
 
 ## 2. Where the code is (base-branch caveat)
 
@@ -73,6 +83,39 @@ Because the file only exists on `orch/p-4-1-one-now/*`, the change cannot be mad
 
 | Task | Owner | Notes |
 |---|---|---|
-| T-1 Make the FSEvents worktree-watch test deterministic | back | `crates/agent-runtime/src/worktree_watch.rs` tests (+ optional sink refactor of `start`) |
+| T-1 Make the FSEvents worktree-watch test deterministic (Part A) | back | `crates/agent-runtime/src/worktree_watch.rs` tests (+ optional sink refactor of `start`). Starts once §6 is decided. |
+| T-2 The e2e permission test stops losing screen output (Part B) | back | `crates/agent-runtime/tests/e2e_fake_claude.rs` only. On `main`: no base-branch issue, can start right away. |
 
-No frontend work: `front` reviews the change.
+No frontend work: `front` reviews both changes. T-1 and T-2 touch different files, so they don't conflict.
+
+## 8. Part B: `an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry`
+
+### Where
+
+`crates/agent-runtime/tests/e2e_fake_claude.rs:312`, on `main` (same code on this branch, `origin/main` and p4.1).
+
+### Cause
+
+`CtlRequest::Read` → `Runtime::read_output` → `PtyOutput::read` (`pty.rs:109`) **drains** the buffer: it returns "everything buffered since the last read", and that output is gone afterwards. The test's `screen()` helper calls it on each poll, and the failing wait is:
+
+```rust
+wait_for("retried", 30, || screen().contains("retry the call Bash pnpm add zod") && core.state_of("a") == "idle");
+```
+
+After Allow, the core pastes `ORCH: approved: retry the call Bash pnpm add zod` (`inbox.rs:659`), and fake_claude echoes it and runs the turn (PreToolUse, PermissionRequest, PostToolUse, Stop). The queued `other work` turn follows. If one 100 ms poll reads the retry text while the agent is still busy (the retry turn or `other work` is running), the `&&` is false, the text has already been drained, and no later poll can ever see it. The wait then times out after 30 s. Whether the poll lands in that window is pure timing, which explains the flake.
+
+There's a smaller form of the same issue: a single `Read` can return half a line (the PTY gives chunks), so `contains` on one chunk can miss text that spans two reads.
+
+### Scope
+
+- The test's screen helper(s) **accumulate** output: each call appends what `Read` returned to a buffer kept for the test (per agent for the helper at ~line 515), and checks and assertion messages use the accumulated text. A helper that reads the newest text since a mark is fine too, if a check needs only new output.
+- `wait_for("retried", …)` checks the retry text on the accumulated screen; the idle condition stays.
+- Same treatment for the other `screen` helper in this file (the feature-run test, ~line 515: `screen(lead).contains(…)` waits and asserts), so a split chunk or an earlier drain can't make it flaky. Assertion messages that print `screen()` print the accumulated text, not a fresh (usually empty) drain.
+- Test code only. No change to `PtyOutput::read`'s draining (the app's pane relies on it), the core or `fake_claude.sh`.
+
+### Acceptance
+
+1. `cargo test -p agent-runtime --test e2e_fake_claude` passes.
+2. `an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry` passes **30 times in a row** under parallel load (e.g. run the whole `e2e_fake_claude` file in a loop while another `cargo test` runs). If the sandbox blocks it (PTYs, socket), the report says so and gives the command.
+3. A note in the report on why the fix is right: show (by reasoning or a temporary `sleep` in a local experiment) that a poll reading the text while the agent is busy no longer loses it.
+4. `cargo clippy -p agent-runtime --all-targets` and `cargo fmt --check` are clean.
