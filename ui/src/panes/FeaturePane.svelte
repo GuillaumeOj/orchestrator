@@ -9,10 +9,10 @@
   import AgentChip from '../components/AgentChip.svelte';
   import DesignSection from '../components/DesignSection.svelte';
   import Kbd from '../components/Kbd.svelte';
-  import TaskModelChip from '../components/TaskModelChip.svelte';
   import Markdown from '../components/Markdown.svelte';
   import PrLine from '../components/PrLine.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
+  import TaskModelChip from '../components/TaskModelChip.svelte';
   import { app, confirm, openAgent, openBoard, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
   import { isDesign } from '../lib/ecosystem.js';
   import { ago, dayHm } from '../lib/format.js';
