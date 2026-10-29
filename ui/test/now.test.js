@@ -133,6 +133,12 @@ describe('now store', () => {
     expect(app.now.decisions['inbox-1'].lifecycle.state).toBe('effect');
   });
 
+  it('a decision closed while its last upsert is still open is gone (an older core: no final upsert)', () => {
+    applyNow({ rev: 6, decisions: { upsert: [], closed: ['inbox-1'] }, topics: [] });
+    expect(app.now.decisions['inbox-1']).toBeUndefined();
+    expect(openDecisions()).toEqual([]);
+  });
+
   it('a missed rev reads the snapshot again; an old rev is ignored', async () => {
     applyNow({ rev: 4, attention: { agents: [rec('x', 'idle')] }, topics: [] });
     expect(attention('x')).toBeNull();

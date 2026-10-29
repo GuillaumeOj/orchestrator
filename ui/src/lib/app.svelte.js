@@ -1141,6 +1141,8 @@ export async function flushDecisions(now = Date.now()) {
     p.sent = true;
     mine.set(p.item, { action: p.action, message: p.message });
   }
+  // The decision as sent: an answer with no version is newer only than that card.
+  const sent = batch.map((p) => app.now.decisions[p.item]);
   const acts = await Promise.allSettled(
     batch.map((p) => invoke('inbox_act', { item: p.item, action: p.action, message: p.message })),
   );
@@ -1153,11 +1155,12 @@ export async function flushDecisions(now = Date.now()) {
     }
     // The answer's lifecycle counts as a push unless older than what we hold: a
     // synchronous effect (Allow once on a held hook, Dismiss, Delete) toasts now.
-    // A synthesized answer has version 0: applied with the version held, so the
-    // card stays out of the open list and the core's push still wins.
+    // A synthesized answer has version 0 (an older core's none): applied with the
+    // version held while the card is still the one sent, so it stays out of the
+    // open list and the core's next push wins; a push meanwhile is newer than it.
     const d = app.now.decisions[p.item];
     let lc = r.value?.lifecycle;
-    if (lc?.version === 0) lc = { ...lc, version: version(d) };
+    if (lc && !lc.version) lc = d === sent[i] ? { ...lc, version: version(d) } : null;
     if (d && lc && !older(lc, d)) {
       const next = { ...d, lifecycle: lc };
       app.now.decisions[p.item] = next;

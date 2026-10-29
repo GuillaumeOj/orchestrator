@@ -297,6 +297,26 @@ describe('toasts: never before sent, the effect when the core pushes it', () => 
     expect(app.now.decisions['wait-front-1'].lifecycle.state).toBe('effect');
   });
 
+  it('a synthesized answer (version 0) after its final push came is ignored: the effect stays', async () => {
+    const wait = decision({
+      id: 'wait-front-1',
+      kind: 'wait',
+      subject: { agent: 'front-1' },
+      lifecycle: { state: 'open', version: 5 },
+      actions: [act('reply', 'Reply', 'enter')],
+    });
+    app.now = nowOf(app.data, { decisions: [wait] });
+    const final = { ...wait, lifecycle: { state: 'effect', effect: 'delivered', decided_by: 'user', version: 9 } };
+    replies.inbox_act = () => {
+      applyNow({ rev: 2, decisions: { upsert: [final], closed: ['wait-front-1'] }, topics: [] });
+      return { ok: true, lifecycle: { state: 'sent', version: 0 } };
+    };
+    decide(wait, 'reply', 'yes, go on');
+    await flushDecisions(Date.now() + UNDO_MS);
+    expect(app.now.decisions['wait-front-1'].lifecycle).toMatchObject({ state: 'effect', version: 9 });
+    expect(app.toasts.at(-1).text).toBe('Answer delivered · front-1 reads it next');
+  });
+
   it('an inbox_act answer older than the push already held is ignored', async () => {
     const perm = permDecision({ lifecycle: { state: 'open', version: 2 } });
     app.now = nowOf(app.data, { decisions: [perm] });
