@@ -748,12 +748,22 @@ impl Runtime {
         let status = if decision == InboxDecision::Dismiss { InboxStatus::Dismissed } else { InboxStatus::Decided };
         let claimed = self.store.write(|s| {
             let was = s.inbox.iter().find(|i| i.id == id).map(|i| i.status);
-            s.close_inbox(id, status, Some(word.clone()), "user").map(|i| {
+            let closed = s.close_inbox(id, status, Some(word.clone()), "user").map(|i| {
                 if let Some(m) = message {
                     i.payload["reply"] = json!(m);
                 }
                 was
-            })
+            });
+            // In the same write as the close: between the two, the stale
+            // wait would read as a pane prompt of its own.
+            if closed.is_ok() && item.kind == "permission" {
+                if let Some(a) = item.agent_id.as_deref().and_then(|a| s.agents.get_mut(a)) {
+                    if a.tracker.state == AgentState::WaitingForYou {
+                        a.tracker.state = AgentState::Working;
+                    }
+                }
+            }
+            closed
         })?;
         match claimed {
             Err(now) => bail!("Inbox item {id} is already {now:?}"),
