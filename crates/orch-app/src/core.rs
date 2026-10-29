@@ -711,8 +711,10 @@ impl Core {
                 "approve" => InboxDecision::Approve,
                 "reject" | "reply" => InboxDecision::Reject,
                 "always" => InboxDecision::AlwaysAllow,
-                // A failed or stale permission leaves the Inbox.
-                "dismiss" => InboxDecision::Dismiss,
+                // A failed or stale permission leaves the Inbox (an open one is answered).
+                "dismiss" if rt.store.read(|s| s.inbox.iter().any(|i| i.id == n && !i.open())) => {
+                    InboxDecision::Dismiss
+                }
                 // The dialog is in the pane while the hook is held: nothing to decide here.
                 "in_pane" if open == Some(agent_runtime::store::InboxStatus::Pending) => {
                     return Ok(json!({"ok": true, "effect": "in_pane", "lifecycle": rt.lifecycle(n)}));
@@ -782,11 +784,14 @@ impl Core {
         if let Some(n) = item.strip_prefix("gate-").or_else(|| item.strip_prefix("q-")) {
             let n: u64 = n.parse()?;
             let question = item.starts_with("q-");
+            // An open gate is approved or rejected: a dismissal would tell
+            // nobody (the agent waits on its PR, the run on its spec).
+            let ended = || rt.store.read(|s| s.inbox.iter().any(|i| i.id == n && !i.open()));
             let decision = match action {
                 "approve" => InboxDecision::Approve,
                 "reject" if question => InboxDecision::Dismiss,
-                // Any gate or question; a failed PR gate leaves the Inbox this way.
-                "dismiss" => InboxDecision::Dismiss,
+                // Any question; a failed or stale gate leaves the Inbox this way.
+                "dismiss" if question || ended() => InboxDecision::Dismiss,
                 "reject" => InboxDecision::Reject,
                 "reply" | "answer" => InboxDecision::Reply,
                 other => bail!("{other} does not apply to {item}"),
@@ -806,6 +811,7 @@ impl Core {
             };
             rt.answer_ask(id.0, apply)?;
             let effect = if apply { "applied" } else { "skipped" };
+            rt.synth_answered(item, effect);
             return Ok(json!({"ok": true, "effect": effect,
                              "lifecycle": by_user("effect", Some(effect))}));
         }
@@ -821,10 +827,12 @@ impl Core {
                 let effect = rt.delivered_effect(a);
                 let how = if effect == "delivered" { "deliver" } else { "resume" };
                 let r = self.agent_action(a, how, Some(&text))?;
+                rt.synth_answered(item, effect);
                 return Ok(json!({"ok": true, "effect": effect, "lifecycle": by_user("sent", None), "result": r}));
             }
             if matches!(action, "resume" | "reject") && item.starts_with("error-") {
                 let r = self.agent_action(a, "resume", None)?;
+                rt.synth_answered(item, "resumed");
                 return Ok(json!({"ok": true, "effect": "resumed", "lifecycle": by_user("sent", None), "result": r}));
             }
         }

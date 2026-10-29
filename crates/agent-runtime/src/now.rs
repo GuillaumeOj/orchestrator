@@ -70,6 +70,9 @@ pub struct Now {
     topics: Mutex<BTreeSet<String>>,
     /// One computation at a time, so `rev` follows the order events are sent.
     turn: Mutex<()>,
+    /// Synthesized cards answered from the Inbox (ask, pane prompt, error):
+    /// their final upsert says so instead of `dismissed`.
+    answers: Mutex<BTreeMap<String, &'static str>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -124,19 +127,35 @@ fn delta(
 /// Decisions new or changed since `old`, and the ids that left the open
 /// list. Each one that leaves gets a last upsert with its final lifecycle
 /// (api-contract §3.1): a stored one has it already; one that vanished (a
-/// synthesized card whose state cleared, a removed row) ends `dismissed` by
-/// the pane (trust dialog, pane prompt) or the core. A synthesized card has
-/// no row: its version moves here, when it changes.
+/// synthesized card whose state cleared, a removed row) ends with the
+/// user's answer when it was answered from the Inbox (`answers`), else
+/// `dismissed` by the pane (trust dialog, pane prompt) or the core.
+///
+/// Versions only grow while what is pushed changes: a stored decision keeps
+/// its row's version, raised past the last one pushed when it shows
+/// something new (its subject, title…); a synthesized one (no row) takes the
+/// `rev` of the event that changed it, so a card back under the same id
+/// (`wait-a1`) outranks its last close.
 fn decision_delta(
     old: &BTreeMap<String, Decision>,
     new: &mut BTreeMap<String, Decision>,
+    answers: &mut BTreeMap<String, &'static str>,
     now: u64,
+    rev: u64,
 ) -> (Vec<Decision>, Vec<String>) {
-    for (k, d) in new.iter_mut().filter(|(_, d)| d.synthesized) {
-        let prev = old.get(k);
-        d.lifecycle.version = prev.map_or(0, |o| o.lifecycle.version);
-        if prev != Some(&*d) {
-            d.lifecycle.version += 1;
+    for (k, d) in new.iter_mut() {
+        let Some(prev) = old.get(k) else {
+            if d.synthesized {
+                d.lifecycle.version = rev;
+            }
+            continue;
+        };
+        let stored = d.lifecycle.version;
+        d.lifecycle.version = prev.lifecycle.version;
+        if prev != d {
+            d.lifecycle.version = if d.synthesized { rev } else { stored.max(prev.lifecycle.version + 1) };
+        } else if !d.synthesized {
+            d.lifecycle.version = stored.max(prev.lifecycle.version);
         }
     }
     let mut upsert: Vec<Decision> =
@@ -147,15 +166,19 @@ fn decision_delta(
             Some(d) if d.is_open() => continue,
             Some(_) => {} // its upsert above carries the final lifecycle
             None => {
-                let by = if matches!(o.kind, "trust" | "wait") { "pane" } else { "core" };
+                let (state, by, effect) = match answers.remove(k) {
+                    Some(effect) => ("effect", "user", effect),
+                    None if matches!(o.kind, "trust" | "wait") => ("dismissed", "pane", "dismissed"),
+                    None => ("dismissed", "core", "dismissed"),
+                };
                 let mut last = o.clone();
                 last.lifecycle = decision::Lifecycle {
-                    state: "dismissed",
+                    state,
                     decided_by: Some(by.into()),
                     decided_at_ms: Some(now),
-                    effect: Some("dismissed".into()),
+                    effect: Some(effect.into()),
                     effect_at_ms: Some(now),
-                    version: o.lifecycle.version + 1,
+                    version: if o.synthesized { rev } else { o.lifecycle.version + 1 },
                     ..o.lifecycle.clone()
                 };
                 last.waits_on = "core";
@@ -164,6 +187,8 @@ fn decision_delta(
         }
         closed.push(k.clone());
     }
+    // An answer whose card is gone (or never came) is not kept.
+    answers.retain(|k, _| new.contains_key(k));
     (upsert, closed)
 }
 
@@ -298,6 +323,12 @@ impl Runtime {
             let id: u64 = o.id.trim_start_matches("ev-").parse().unwrap_or(u64::MAX);
             o.seen |= id <= up_to;
         }
+    }
+
+    /// The user answered a synthesized card (`ask-7`, `wait-a1`, `error-a1`)
+    /// from the Inbox: when it clears, its last upsert carries `effect`.
+    pub fn synth_answered(&self, id: &str, effect: &'static str) {
+        lock(&self.now.answers).insert(id.to_string(), effect);
     }
 
     /// The agent's last published record.
@@ -447,7 +478,9 @@ impl Runtime {
             topics.insert(orch_protocol::Topic::Agents.into());
         }
         let mut decisions: BTreeMap<String, Decision> = decisions.into_iter().map(|d| (d.id.clone(), d)).collect();
-        let (upsert, closed) = decision_delta(&state.decisions, &mut decisions, now);
+        let mut answers = lock(&self.now.answers);
+        let (upsert, closed) = decision_delta(&state.decisions, &mut decisions, &mut answers, now, state.rev + 1);
+        drop(answers);
         let event = delta(state.rev + 1, &old, &world, (&upsert, &closed), &new_outcomes, &topics);
         state.decisions = decisions;
         state.last = Some(world);
@@ -757,7 +790,14 @@ mod tests {
             (lc["state"].as_str(), lc["effect"].as_str(), lc["decided_by"].as_str()),
             (Some("dismissed"), Some("dismissed"), Some("pane"))
         );
-        assert!(lc["version"].as_u64().unwrap() > v_open, "{lc}");
+        let v_closed = lc["version"].as_u64().unwrap();
+        assert!(v_closed > v_open, "{lc}");
+        // The same prompt id comes back: it outranks its last close.
+        set_state(AgentState::WaitingForYou);
+        rt.now_pump(false);
+        assert!(last("wait-a1").0.unwrap()["lifecycle"]["version"].as_u64().unwrap() > v_closed);
+        set_state(AgentState::Working);
+        rt.now_pump(false);
         // An agent in error, resumed: closed by the core.
         set_state(AgentState::Error);
         rt.now_pump(false);
@@ -765,9 +805,29 @@ mod tests {
         rt.now_pump(false);
         let (up, closed) = last("error-a1");
         assert!(closed && up.unwrap()["lifecycle"]["decided_by"] == "core");
+        // One answered from the Inbox: its last upsert carries the user's answer.
+        set_state(AgentState::Error);
+        rt.now_pump(false);
+        rt.synth_answered("error-a1", "resumed");
+        set_state(AgentState::Idle);
+        rt.now_pump(false);
+        let lc = last("error-a1").0.unwrap()["lifecycle"].clone();
+        assert_eq!(
+            (lc["state"].as_str(), lc["effect"].as_str(), lc["decided_by"].as_str()),
+            (Some("effect"), Some("resumed"), Some("user"))
+        );
         // A stored item closed elsewhere (the pane, the registry): dismissed, by whoever closed it.
         let q = rt.add_item(Some("a1"), "question", "a1: q?".into(), json!({"question": "q?"}), 20).unwrap();
         rt.now_pump(false);
+        // What it shows changes (its subject): its pushed version grows.
+        let v_q = last(&format!("q-{q}")).0.unwrap()["lifecycle"]["version"].as_u64().unwrap();
+        rt.store
+            .write(|s| {
+                s.inbox.iter_mut().find(|i| i.id == q).unwrap().subject = json!({"agent": "a1", "project": "p2"})
+            })
+            .unwrap();
+        rt.now_pump(false);
+        assert!(last(&format!("q-{q}")).0.unwrap()["lifecycle"]["version"].as_u64().unwrap() > v_q);
         rt.store
             .write(|s| {
                 let _ = s.close_inbox(q, orch_store::InboxStatus::Dismissed, Some("in_pane".into()), "pane");

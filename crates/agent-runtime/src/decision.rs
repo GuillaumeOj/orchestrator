@@ -405,7 +405,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             let detail = p.get("exit_status").and_then(Value::as_u64).map(|n| format!("exit status {n}"));
             let mut ctx = vec![error_block(&why, detail.as_deref())];
             ctx.extend(pty_tail(s(p, "tail")));
-            let mut actions = vec![act("restart_fresh", "Restart fresh", None), act("dismiss", "Dismiss", None)];
+            let mut actions = vec![act("restart_fresh", "Restart fresh", None), DISMISS];
             if failed.is_some() {
                 actions.push(act("delete", "Delete", None));
             }
