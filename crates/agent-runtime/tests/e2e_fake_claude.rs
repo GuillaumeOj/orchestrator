@@ -318,8 +318,6 @@ fn an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry() {
         let a = request(&core.sock, CtlRequest::Audit { agent_id: Some("a".into()), limit: None }).unwrap().data;
         a.as_array().unwrap().iter().rev().map(|e| e["actor"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>()
     };
-    // Read drains the pane, so keep everything drained so far: a poll that
-    // sees the text while another condition still fails must not lose it.
     let screens = Screens::default();
     let screen = || screens.read(&core.sock, "a");
 
@@ -568,7 +566,6 @@ fn a_team_run_end_to_end_with_fake_claude() {
             done && settled(agent_id)
         });
     };
-    // Read drains the pane: accumulate per agent so no output is lost between polls.
     let screens = Screens::default();
     let screen = |agent_id: &str| screens.read(&sock, agent_id);
     let run_state =
