@@ -218,7 +218,7 @@ describe('components', () => {
     });
     const { container } = render(InboxPane);
     expect(container.textContent).not.toContain('Spec gate');
-    expect(detail(container).querySelector('pre.mono').textContent).toBe('run the migration');
+    expect(detail(container).querySelector('.rendered .md').textContent).toBe('run the migration');
     expect(detail(container).textContent).toContain('After restart');
     expect(buttons(container)).toEqual(['Approve a', 'Reject r', 'Open o']);
   });

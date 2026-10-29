@@ -221,6 +221,11 @@ pub async fn feature_doc(core: CoreState<'_>, feature: String, name: String) -> 
     blocking(core, move |c| c.feature_doc(&feature, &name)).await
 }
 
+#[tauri::command]
+pub async fn feature_asset(core: CoreState<'_>, feature: String, path: String) -> Res<Value> {
+    blocking(core, move |c| c.feature_asset(&feature, &path)).await
+}
+
 // ---- P3 design artifacts and presets (api-contract §3–4)
 
 #[tauri::command]
@@ -342,7 +347,7 @@ pub async fn report_view(core: CoreState<'_>, id: String) -> Res<Value> {
     blocking(core, move |c| c.report_view(&id)).await
 }
 
-/// An http(s) link in the default browser (any other scheme is refused).
+/// An http(s) or mailto link in the default app (any other scheme is refused).
 #[tauri::command]
 pub async fn open_url(core: CoreState<'_>, url: String) -> Res<()> {
     blocking(core, move |c| c.open_url(&url)).await

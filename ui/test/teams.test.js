@@ -192,7 +192,7 @@ describe('P2 panes', () => {
     app.panes.f1 = { type: 'feature', featureId: 'shop-fx', title: 'fx' };
     const { container, getByText, getAllByText } = render(FeaturePane, { paneId: 'f1' });
     await waitFor(() => getByText('Spec gate'));
-    await waitFor(() => expect(container.querySelector('.rendered b')?.textContent).toBe('plan'));
+    await waitFor(() => expect(container.querySelector('.rendered strong')?.textContent).toBe('plan'));
     expect(getAllByText(/Spec → Spec gate/).length).toBeGreaterThan(0);
     // The time never shrinks, so "10:42 AM" never wraps before AM/PM.
     expect(container.querySelector('.ev > span')?.classList.contains('evtime')).toBe(true);

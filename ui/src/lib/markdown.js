@@ -1,93 +1,174 @@
-// A small markdown reader for feature docs (spec.md, ux-brief.md…) in the
-// Inbox spec gate and the Feature pane. It returns blocks and inline spans
-// that components render as elements: no HTML is ever injected, so text an
-// agent wrote can't add markup or scripts. Links show their text only.
+// Markdown for feature docs, gate bodies and team questions (specs-rendering
+// §3.1–3.3, D1): text → an mdast syntax tree (CommonMark + GFM + front-matter),
+// never HTML. Markdown.svelte renders the tree as elements, so text an agent
+// wrote can't add markup or scripts.
+import { fromMarkdown } from 'mdast-util-from-markdown';
+import { frontmatterFromMarkdown } from 'mdast-util-frontmatter';
+import { gfmFromMarkdown } from 'mdast-util-gfm';
+import { frontmatter } from 'micromark-extension-frontmatter';
+import { gfm } from 'micromark-extension-gfm';
 
-/** @typedef {{ t: 'text' | 'b' | 'i' | 'code', s: string }} Span */
-/**
- * `h` (level, spans), `p` / `quote` (spans), `ul` / `ol` (items), `code` (text), `hr`.
- * @typedef {{ type: string, level?: number, spans?: Span[], items?: { spans: Span[], checked: boolean | null }[], text?: string }} Block
- */
+// Stateless across parses: built once.
+const OPTIONS = {
+  extensions: [gfm(), frontmatter(['yaml'])],
+  mdastExtensions: [gfmFromMarkdown(), frontmatterFromMarkdown(['yaml'])],
+};
 
-/** Inline spans: `code`, **bold**, *italic* / _italic_, [text](url) → text. */
-export function inline(text) {
-  /** @type {Span[]} */
-  const out = [];
-  // `_` emphasis only at word edges: snake_case names in specs stay as written.
-  const re =
-    /(`[^`]+`)|(\*\*[^*]+\*\*|(?<!\w)__[^_]+__(?!\w))|(\*[^*\s][^*]*\*|(?<!\w)_[^_\s][^_]*_(?!\w))|(\[[^\]]+\]\([^)]*\))/g;
-  let last = 0;
-  for (const m of text.matchAll(re)) {
-    const s = m[0];
-    if (m.index > last) out.push({ t: 'text', s: text.slice(last, m.index) });
-    if (m[1]) out.push({ t: 'code', s: s.slice(1, -1) });
-    else if (m[2]) out.push({ t: 'b', s: s.slice(2, -2) });
-    else if (m[3]) out.push({ t: 'i', s: s.slice(1, -1) });
-    else out.push({ t: 'text', s: s.slice(1, s.indexOf('](')) });
-    last = m.index + s.length;
-  }
-  if (last < text.length) out.push({ t: 'text', s: text.slice(last) });
-  return out;
-}
-
-/** @returns {Block[]} */
+/** The mdast tree of `md`. */
 export function parse(md) {
-  /** @type {Block[]} */
-  const blocks = [];
-  const lines = String(md ?? '')
-    .replace(/\r\n?/g, '\n')
-    .split('\n');
-  let para = [];
-  let quote = [];
-  const flush = () => {
-    if (para.length) blocks.push({ type: 'p', spans: inline(para.join(' ')) });
-    if (quote.length) blocks.push({ type: 'quote', spans: inline(quote.join(' ')) });
-    para = [];
-    quote = [];
-  };
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (/^\s*```/.test(line)) {
-      flush();
-      const code = [];
-      while (++i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i]);
-      blocks.push({ type: 'code', text: code.join('\n') });
-      continue;
-    }
-    const h = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
-    if (h) {
-      flush();
-      blocks.push({ type: 'h', level: h[1].length, spans: inline(h[2]) });
-      continue;
-    }
-    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
-      flush();
-      blocks.push({ type: 'hr' });
-      continue;
-    }
-    const li = /^\s*(?:([-*+])|(\d+)[.)])\s+(?:\[([ xX])\]\s+)?(.*)$/.exec(line);
-    if (li) {
-      flush();
-      const type = li[2] ? 'ol' : 'ul';
-      const item = { spans: inline(li[4]), checked: li[3] === undefined ? null : li[3] !== ' ' };
-      const prev = blocks[blocks.length - 1];
-      if (prev && prev.type === type) prev.items.push(item);
-      else blocks.push({ type, items: [item] });
-      continue;
-    }
-    const q = /^\s*>\s?(.*)$/.exec(line);
-    if (q) {
-      if (para.length) flush();
-      quote.push(q[1]);
-      continue;
-    }
-    if (!line.trim()) {
-      flush();
-      continue;
-    }
-    if (quote.length) flush();
-    para.push(line.trim());
-  }
-  flush();
-  return blocks;
+  return fromMarkdown(String(md ?? ''), OPTIONS);
 }
+
+/** The plain text of a node (heading slugs). */
+function toText(n) {
+  if (!n) return '';
+  if (typeof n.value === 'string' && n.type !== 'html') return n.value;
+  if (n.type === 'image' || n.type === 'imageReference') return n.alt ?? '';
+  return (n.children ?? []).map(toText).join('');
+}
+
+/** GitHub's heading anchor: lowercase, punctuation dropped, spaces → `-`. */
+export function slug(text) {
+  return String(text)
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, '')
+    .replace(/ /g, '-');
+}
+
+function walk(n, fn) {
+  fn(n);
+  for (const c of n.children ?? []) walk(c, fn);
+}
+
+/** `> [!NOTE]` (GitHub alerts): the kind on `data.alert`, the marker dropped. */
+function markAlert(q) {
+  const p = q.children[0];
+  const t = p?.type === 'paragraph' ? p.children[0] : null;
+  const m = t?.type === 'text' ? /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*(?:\n|$)/i.exec(t.value) : null;
+  if (!m) return;
+  q.data = { ...q.data, alert: m[1].toLowerCase() };
+  t.value = t.value.slice(m[0].length);
+  if (!t.value) p.children.shift();
+  if (p.children[0]?.type === 'break') p.children.shift();
+  if (!p.children.length) q.children.shift();
+}
+
+/**
+ * The tree plus what rendering needs from the whole doc: link definitions,
+ * footnotes in the order they are first referenced (numbered from 1), unique
+ * heading slugs on `data.slug`, footnote ref ids on `data.refId`.
+ */
+export function prepare(md) {
+  const root = parse(md);
+  const defs = new Map();
+  const notes = new Map();
+  const nums = new Map(); // footnote id → number, in first-reference order
+  const slugs = new Map();
+  const used = new Set();
+  const refs = new Map();
+  walk(root, (n) => {
+    if (n.type === 'definition') defs.has(n.identifier) || defs.set(n.identifier, n);
+    else if (n.type === 'footnoteDefinition') notes.has(n.identifier) || notes.set(n.identifier, n);
+    else if (n.type === 'blockquote') markAlert(n);
+  });
+  walk(root, (n) => {
+    if (n.type === 'heading') {
+      // As github-slugger: skip suffixes another heading already took (`Foo`, `Foo`, `Foo 1`).
+      const base = slug(toText(n));
+      let k = slugs.get(base) ?? 0;
+      let s = k ? `${base}-${k}` : base;
+      while (used.has(s)) s = `${base}-${++k}`;
+      slugs.set(base, k + 1);
+      used.add(s);
+      n.data = { ...n.data, slug: s };
+    } else if (n.type === 'footnoteReference' && notes.has(n.identifier)) {
+      if (!nums.has(n.identifier)) nums.set(n.identifier, nums.size + 1);
+      const num = nums.get(n.identifier);
+      const k = (refs.get(num) ?? 0) + 1;
+      refs.set(num, k);
+      n.data = { ...n.data, num, refId: k === 1 ? `fnref:${num}` : `fnref:${num}-${k}` };
+    }
+  });
+  const footnotes = [...nums].map(([id, num]) => ({ num, node: notes.get(id) }));
+  return { root, defs, footnotes };
+}
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point.
+const CONTROL = /[\x00-\x1f\x7f]/;
+/** `javascript:`, `file:`, `//host`…: a scheme (or another host) of its own. */
+const SCHEME = /^([a-z][a-z0-9+.-]*:|\/\/)/i;
+/** `./a.md`, `././a.md` → `a.md`. */
+const DOT_SLASH = /^(\.\/)+/;
+
+/**
+ * What a link target does (§3.6):
+ * - `external`: http(s) / mailto, opened in the browser;
+ * - `anchor`: `#heading` in the same doc;
+ * - `doc`: a sibling `.md` of the feature (only when the view can switch docs);
+ * - `repo`: another relative path, shown but not clickable (D4);
+ * - `text`: any other scheme (`javascript:`, `file:`…), plain text.
+ */
+export function linkKind(url, canSwitchDoc = false) {
+  const u = String(url ?? '').trim();
+  // Browsers drop tabs/newlines and leading controls when reading an href, so
+  // `java&#9;script:` would become `javascript:`: a link with one is text.
+  if (CONTROL.test(u)) return { kind: 'text' };
+  if (/^(https?:\/\/|mailto:)/i.test(u)) return { kind: 'external', url: u };
+  if (u.startsWith('#')) return { kind: 'anchor', anchor: safeDecode(u.slice(1)) };
+  if (SCHEME.test(u) || !u) return { kind: 'text' };
+  const [path, hash = ''] = u.split('#');
+  const name = safeDecode(path.replace(DOT_SLASH, '').replace(/\?.*$/, ''));
+  if (canSwitchDoc && /^[^/\\]+\.md$/i.test(name)) return { kind: 'doc', name, anchor: safeDecode(hash) || null };
+  return { kind: 'repo', path: u };
+}
+
+/**
+ * Where an image comes from (§3.5):
+ * - `remote`: http(s), never fetched (D2), a chip opening the browser;
+ * - `data`: an inline raster image (`data:image/png;base64,…`);
+ * - `dropped`: any other `data:` URL, not shown;
+ * - `asset`: a path in the feature's docs folder, for feature_asset (`#`/`?`
+ *   suffix stripped, percent-decoded, a leading `./` dropped);
+ * - `other`: any other scheme, not available.
+ */
+export function imageTarget(url) {
+  const u = String(url ?? '').trim();
+  if (!u || CONTROL.test(u)) return { kind: 'other' };
+  if (/^https?:\/\//i.test(u)) return { kind: 'remote', url: u };
+  if (/^data:/i.test(u))
+    return /^data:image\/(png|jpe?g|gif|webp);base64,[a-z0-9+/=]*$/i.test(u)
+      ? { kind: 'data', url: u }
+      : { kind: 'dropped' };
+  if (SCHEME.test(u)) return { kind: 'other' };
+  const path = safeDecode(u.replace(/[?#].*$/, '')).replace(DOT_SLASH, '');
+  return path ? { kind: 'asset', path } : { kind: 'other' };
+}
+
+function safeDecode(s) {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
+/** Front-matter lines as key/value pairs, or null when it isn't flat `key: value`. */
+export function frontPairs(yaml) {
+  const lines = String(yaml ?? '')
+    .split('\n')
+    .filter((l) => l.trim());
+  const pairs = lines.map((l) => /^([\w.-]+):[ \t]*(.*)$/.exec(l));
+  return pairs.length && pairs.every(Boolean) ? pairs.map((m) => [m[1], m[2]]) : null;
+}
+
+// ---------------------------------------------------------------- lazy parts
+
+// Highlighting (lowlight) and diagrams (mermaid) are big: imported on first use
+// only, so the app's start bundle doesn't carry them.
+/** @type {typeof import('./highlight.js') | null} */
+let hlModule = null;
+/** The highlighter once loaded (blocks mounted later highlight on their first render), else null. */
+export const highlighter = () => hlModule;
+export const loadHighlight = () => import('./highlight.js').then((m) => (hlModule = m));
+export const loadMermaid = () => import('./mermaid.js');

@@ -120,6 +120,7 @@ pub fn run() {
             commands::team_launch,
             commands::feature_view,
             commands::feature_doc,
+            commands::feature_asset,
             commands::board_view,
             commands::board_sync,
             commands::task_create,

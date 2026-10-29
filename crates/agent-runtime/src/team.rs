@@ -1564,7 +1564,7 @@ impl Runtime {
                     Some(&rec.id),
                     "gate",
                     format!("Spec gate · {}: {}", cx.feature.slug, cut(summary, 200)),
-                    json!({"action": "spec_approval", "run": cx.run.id, "feature": cx.feature.slug,
+                    json!({"action": "spec_approval", "run": cx.run.id, "feature": cx.feature.slug, "feature_id": cx.feature.id,
                            "summary": cut(summary, 4_000), "docs": docs, "worktree": rec.worktree,
                            "branch": cx.feature.integration_branch()}),
                     crate::inbox::PRIORITY_GATE,
@@ -1671,10 +1671,22 @@ impl Runtime {
     }
 }
 
+/// The docs folder of a feature in a worktree, canonical. Refused when it
+/// (or `.orchestrator`) is a symlink out of the worktree: every read below
+/// is confined to it.
+fn feature_docs_dir(worktree: &Path, slug: &str) -> Result<std::path::PathBuf> {
+    let dir = worktree.join(".orchestrator").join("features").join(slug);
+    let (Ok(dir), Ok(top)) = (dir.canonicalize(), worktree.canonicalize()) else { bail!("not found") };
+    if !dir.starts_with(&top) {
+        bail!("outside the feature folder");
+    }
+    Ok(dir)
+}
+
 /// The markdown files in the feature's docs folder of a worktree.
 pub fn feature_docs(worktree: &Path, slug: &str) -> Vec<String> {
-    let dir = worktree.join(".orchestrator").join("features").join(slug);
-    let mut v: Vec<String> = std::fs::read_dir(&dir)
+    let mut v: Vec<String> = feature_docs_dir(worktree, slug)
+        .and_then(|dir| Ok(std::fs::read_dir(dir)?))
         .into_iter()
         .flatten()
         .flatten()
@@ -1691,9 +1703,58 @@ pub fn read_feature_doc(worktree: &Path, slug: &str, name: &str) -> Result<Strin
     if name.contains('/') || name.contains("..") || !name.ends_with(".md") {
         bail!("invalid doc name {name:?}");
     }
-    let p = worktree.join(".orchestrator").join("features").join(slug).join(name);
+    let p = feature_docs_dir(worktree, slug).with_context(|| format!("docs of {slug}"))?.join(name);
     let text = std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?;
     Ok(cut(&text, 200_000))
+}
+
+/// An image a feature doc points at (`design/home.png`), read from the docs
+/// folder of a worktree as `{mime, data_b64, bytes}`. Refuses anything that
+/// leaves the folder (`..`, absolute, a symlink to outside it), a symlink
+/// as the file itself, a non-image and a file over `MAX_PREVIEW_BYTES`.
+pub fn read_feature_asset(worktree: &Path, slug: &str, path: &str) -> Result<Value> {
+    use crate::artifacts::{MAX_PREVIEW_BYTES, base64, too_large};
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::path::Component;
+    let not_found = || anyhow!("not found");
+    // A leading `./` is a `CurDir` component.
+    let rel = Path::new(path);
+    if !rel.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
+        bail!("outside the feature folder");
+    }
+    let mime = orch_team::artifact::doc_image_mime(path).ok_or_else(|| anyhow!("not an image"))?;
+    let dir = feature_docs_dir(worktree, slug)?;
+    let p = dir.join(rel);
+    if std::fs::symlink_metadata(&p).map_err(|_| not_found())?.file_type().is_symlink() {
+        bail!("outside the feature folder");
+    }
+    let real = p.canonicalize().map_err(|_| not_found())?;
+    if !real.starts_with(&dir) {
+        bail!("outside the feature folder");
+    }
+    // The checks above are on the path; the read is on a handle that can't
+    // follow a symlink swapped in as the file since (a directory above it
+    // swapped in between is not caught), re-checked and capped (the worktree
+    // is the agents' to change while we read).
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&real)
+        .map_err(|_| not_found())?;
+    let meta = file.metadata().map_err(|_| not_found())?;
+    if !meta.is_file() {
+        return Err(not_found());
+    }
+    if meta.len() > MAX_PREVIEW_BYTES {
+        return Err(too_large(meta.len()));
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_PREVIEW_BYTES + 1).read_to_end(&mut bytes).map_err(|_| not_found())?;
+    if bytes.len() as u64 > MAX_PREVIEW_BYTES {
+        return Err(too_large(bytes.len() as u64));
+    }
+    Ok(json!({"mime": mime, "data_b64": base64(&bytes), "bytes": bytes.len()}))
 }
 
 #[cfg(test)]
@@ -1936,6 +1997,7 @@ mod tests {
         let gate = rt.store.read(|s| s.inbox.iter().find(|i| i.pending() && i.kind == "gate").cloned().unwrap());
         assert_eq!(gate.payload["action"], "spec_approval");
         assert_eq!(gate.payload["docs"], json!(["spec.md"]));
+        assert_eq!(gate.payload["feature_id"], json!(run.feature_id), "for the docs' images");
         // Sent back once, then approved.
         rt.decide(gate.id, InboxDecision::Reply, None, Some("name the files")).unwrap();
         assert_eq!(state(&rt, &run.id), RunState::Spec);
@@ -2170,5 +2232,46 @@ mod tests {
         for bad in ["../x.md", "a/b.md", "spec.txt"] {
             assert!(read_feature_doc(d.path(), "f", bad).is_err());
         }
+    }
+
+    #[test]
+    fn assets_are_images_confined_to_the_feature_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join(".orchestrator/features/f");
+        std::fs::create_dir_all(dir.join("design")).unwrap();
+        std::fs::write(dir.join("design/home.png"), b"\x89PNG").unwrap();
+        std::fs::write(dir.join("flow.SVG"), "<svg/>").unwrap();
+        std::fs::write(dir.join("notes.txt"), "x").unwrap();
+        std::fs::write(d.path().join("secret.png"), b"s").unwrap();
+        let big = vec![0u8; crate::artifacts::MAX_PREVIEW_BYTES as usize + 1];
+        std::fs::write(dir.join("big.png"), big).unwrap();
+        std::os::unix::fs::symlink(d.path().join("secret.png"), dir.join("link.png")).unwrap();
+        std::os::unix::fs::symlink(d.path(), dir.join("up")).unwrap();
+        let get = |p: &str| read_feature_asset(d.path(), "f", p);
+        let err = |p: &str| get(p).unwrap_err().to_string();
+
+        for p in ["design/home.png", "./design/home.png"] {
+            assert_eq!(get(p).unwrap(), json!({"mime": "image/png", "data_b64": "iVBORw==", "bytes": 4}), "{p}");
+        }
+        assert_eq!(get("flow.SVG").unwrap()["mime"], "image/svg+xml");
+        for p in ["../../../secret.png", "design/../../x.png", "/etc/x.png", "link.png", "up/secret.png"] {
+            assert_eq!(err(p), "outside the feature folder", "{p}");
+        }
+        assert_eq!(err("notes.txt"), "not an image");
+        assert_eq!(err("design/missing.png"), "not found");
+        assert_eq!(err("design"), "not an image");
+        assert_eq!(err("big.png"), "too large (5.0 MB)");
+
+        // A feature folder symlinked out of the worktree confines nothing.
+        let out = d.path().join("elsewhere");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("x.png"), b"x").unwrap();
+        std::fs::write(out.join("spec.md"), "# S").unwrap();
+        let wt = d.path().join("wt");
+        std::fs::create_dir_all(wt.join(".orchestrator/features")).unwrap();
+        std::os::unix::fs::symlink(&out, wt.join(".orchestrator/features/g")).unwrap();
+        assert_eq!(read_feature_asset(&wt, "g", "x.png").unwrap_err().to_string(), "outside the feature folder");
+        assert!(feature_docs(&wt, "g").is_empty());
+        assert!(read_feature_doc(&wt, "g", "spec.md").is_err());
     }
 }

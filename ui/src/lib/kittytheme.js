@@ -43,11 +43,14 @@ const MIN_MUTED = 3; // muted text, accent
  * kitty theme (xterm.js option names: background, foreground, cursor, blue…),
  * or null when the palette is missing or fails the contrast check.
  */
+/** A surface where white and black give equal contrast or better for white: a dark scheme. */
+export const isDarkSurface = (rgb) => luminance(rgb) < 0.179;
+
 export function deriveKittyTheme(t) {
   const bg = parseHex(t?.background);
   const fg = parseHex(t?.foreground);
   if (!bg || !fg) return null;
-  const dark = luminance(bg) < 0.179; // where white and black give the surface equal contrast
+  const dark = isDarkSurface(bg);
   /** @type {[number, number, number]} */
   const toward = dark ? [255, 255, 255] : [0, 0, 0];
   // Accent: the cursor color if it is its own color (often it is just the foreground),

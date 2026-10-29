@@ -1123,15 +1123,21 @@ impl Core {
         let wt = PathBuf::from(s("worktree"));
         match s("action").as_str() {
             "spec_approval" => {
-                let docs: Vec<Value> = agent_runtime::team::feature_docs(&wt, &s("feature"))
+                let slug = s("feature");
+                let docs: Vec<Value> = agent_runtime::team::feature_docs(&wt, &slug)
                     .into_iter()
                     .map(|name| {
-                        let text = agent_runtime::team::read_feature_doc(&wt, &s("feature"), &name)
+                        let text = agent_runtime::team::read_feature_doc(&wt, &slug, &name)
                             .unwrap_or_else(|e| format!("({e:#})"));
                         json!({"name": name, "text": text})
                     })
                     .collect();
-                Ok(json!({"action": "spec_approval", "summary": s("summary"), "docs": docs}))
+                // For the docs' images (`feature_asset`); a gate from before it
+                // names only its run, which names the feature.
+                let feature_id = Some(s("feature_id"))
+                    .filter(|f| !f.is_empty())
+                    .or_else(|| rt.db.run(&s("run")).ok().flatten().map(|r| r.feature_id));
+                Ok(json!({"action": "spec_approval", "summary": s("summary"), "docs": docs, "feature_id": feature_id}))
             }
             "push_pr" => {
                 let d = orch_git::diff::diff(&wt, &s("base"), DIFF_PATCH_MAX)?;
@@ -1561,7 +1567,7 @@ mod tests {
                     Some("fx-lead-1"),
                     "gate",
                     "Spec gate · fx".into(),
-                    json!({"action": "spec_approval", "run": run["id"], "summary": "s"}),
+                    json!({"action": "spec_approval", "run": run["id"], "feature": "fx", "feature_id": fid, "summary": "s"}),
                     20,
                 )
             })
@@ -1570,6 +1576,8 @@ mod tests {
         let items = core.state()["inbox"]["items"].clone();
         let gate = items.as_array().unwrap().iter().find(|i| i["kind"] == "gate").unwrap().clone();
         assert_eq!(gate["level"], 1);
+        // The spec gate names its feature, so the docs' images can be read.
+        assert_eq!(core.gate_detail(gate["id"].as_str().unwrap()).unwrap()["feature_id"], json!(fid));
         core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).unwrap();
         assert_eq!(core.state()["features"][0]["run"]["status"], "planning");
         assert!(core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).is_err(), "decided once");

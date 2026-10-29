@@ -106,6 +106,12 @@
     }
   }
 
+  /** A link to a sibling doc (`api-contract.md#…`) switches the tab. */
+  function openSibling(name) {
+    if (v.docs.includes(name)) return showDoc(name);
+    toast(`No doc named ${name} in this feature`, { kind: 'error' });
+  }
+
   async function act(action) {
     try {
       await invoke('run_act', { run: run.id, action });
@@ -218,7 +224,7 @@
             <div class="tabs" role="tablist">
               {#each v.docs as d (d)}<button class="tab" class:on={doc.name === d} role="tab" aria-selected={doc.name === d} onclick={() => showDoc(d)}>{d}</button>{/each}
             </div>
-            <div class="rendered"><Markdown text={doc.text} /></div>
+            <div class="rendered"><Markdown text={doc.text} feature={spec.featureId} ondoc={openSibling} /></div>
           {:else}
             <p class="muted">No docs yet: the lead writes them in the spec step.</p>
           {/if}
@@ -405,7 +411,7 @@
   }
   .rendered {
     padding: var(--space-md) var(--space-lg);
-    background: var(--color-surface-chrome);
+    border: var(--border-width-default) solid var(--color-border-subtle);
     border-radius: var(--radius-sm);
     max-height: 50vh;
     overflow: auto;
