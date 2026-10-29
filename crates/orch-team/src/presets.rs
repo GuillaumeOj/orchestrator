@@ -302,18 +302,16 @@ mod tests {
 
     #[test]
     fn starter_models() {
-        let models: Vec<_> = starter_roles().into_iter().map(|r| (r.id, r.model)).collect();
-        let m = |id: &str| models.iter().find(|(i, _)| i == id).unwrap().1.as_deref().map(str::to_owned);
-        for (id, model) in [
+        let models: Vec<_> = starter_roles().into_iter().map(|r| (r.id, r.model.unwrap_or_default())).collect();
+        let expected = [
             ("lead", "opus"),
             ("backend", "sonnet"),
             ("frontend", "sonnet"),
-            ("ux", "sonnet"),
             ("ui", "opus"),
+            ("ux", "sonnet"),
             ("reviewer", "opus"),
-        ] {
-            assert_eq!(m(id).as_deref(), Some(model), "{id}");
-        }
+        ];
+        assert_eq!(models, expected.map(|(id, m)| (id.to_string(), m.to_string())));
     }
 
     #[test]
