@@ -29,7 +29,7 @@ Gains one field:
   "feature_id": "<feature id>" }
 ```
 
-`feature_id` is the id of the feature whose docs are listed (the payload carries the slug; back resolves the id). `null` when it can't be resolved; the gate then renders images as `image: <alt> (not available here)`.
+`feature_id` is the id of the feature whose docs are listed: `request_spec_approval` stores it in the gate payload and `gate_detail` returns it. It is `null` for a spec gate created before this change; the gate then renders images as `image: <alt> (not available here)`.
 
 ## 3. `Markdown.svelte` props (front-internal, listed for the views that use it)
 
