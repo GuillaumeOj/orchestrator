@@ -982,15 +982,21 @@ impl Runtime {
         )
     }
 
-    /// `request_pr` from orch-mcp: an Inbox gate (the agent can't push).
-    pub(crate) fn request_pr(&self, rec: &AgentRecord, args: &Value) -> Result<String> {
-        if self.store.read(|s| {
+    /// A PR or update gate is waiting for the user: asked by `agent`, or for the run `run`.
+    pub(crate) fn pending_pr_gate(&self, agent: &str, run: Option<&str>) -> bool {
+        self.store.read(|s| {
             s.inbox.iter().any(|i| {
                 i.pending()
                     && matches!(i.payload.get("action").and_then(Value::as_str), Some("push_pr" | "push_pr_update"))
-                    && i.agent_id.as_deref() == Some(&rec.id)
+                    && (i.agent_id.as_deref() == Some(agent)
+                        || run.is_some_and(|r| i.payload.get("run").and_then(Value::as_str) == Some(r)))
             })
-        }) {
+        })
+    }
+
+    /// `request_pr` from orch-mcp: an Inbox gate (the agent can't push).
+    pub(crate) fn request_pr(&self, rec: &AgentRecord, args: &Value) -> Result<String> {
+        if self.pending_pr_gate(&rec.id, None) {
             bail!("a pull request request is already waiting for the user");
         }
         // The PR is open: push the new commits to it rather than open another.

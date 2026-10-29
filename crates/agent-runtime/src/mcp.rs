@@ -74,9 +74,7 @@ impl Runtime {
         }
         let r = match m.tool.as_str() {
             // While `rebase_base` stopped on a conflict, `commit` continues it.
-            "commit" if orch_git::commit::rebasing(&orch_git::worktree::inspect(&rec.worktree)) => {
-                self.rebase_continue_for(&rec)
-            }
+            "commit" if orch_git::commit::rebase_in_progress(&rec.worktree) => self.rebase_continue_for(&rec),
             "commit" => self.commit_args(&rec, &m.arguments, &actor).map(|c| {
                 let text = format!(
                     "Committed {} on {}: {} ({} file(s): {}).",

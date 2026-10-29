@@ -260,6 +260,15 @@ pub fn rebasing(insp: &worktree::Inspection) -> bool {
     insp.in_progress.iter().any(|m| m == "rebase-merge" || m == "rebase-apply")
 }
 
+/// [`rebasing`] for `worktree` with one `git rev-parse` (no status scan),
+/// for checks on every call (`commit`, `request_pr`).
+pub fn rebase_in_progress(worktree_path: &Path) -> bool {
+    crate::git::git(worktree_path, &["rev-parse", "--absolute-git-dir"]).is_ok_and(|gd| {
+        let gd = Path::new(gd.trim());
+        gd.join("rebase-merge").exists() || gd.join("rebase-apply").exists()
+    })
+}
+
 /// git for a rebase: as [`git_cmd`], with no editor (messages kept, no todo edit).
 fn rebase_git(wt: &Path, gitconfig: Option<&Path>, args: &[&str]) -> Result<String> {
     let mut c = git_cmd(wt, gitconfig);
@@ -350,6 +359,21 @@ pub fn rebase_continue(worktree_path: &Path, gitconfig: Option<&Path>) -> Result
     let from =
         rebase_file(&gd, "orig-head").ok_or_else(|| anyhow::anyhow!("the rebase in progress has no orig-head"))?;
     let g = |args: &[&str]| rebase_git(&wt, gitconfig, args);
+    // `add -A` would mark a file still holding conflict markers resolved.
+    let marked: Vec<String> = g(&["diff", "--name-only", "--diff-filter=U", "-z"])
+        .unwrap_or_default()
+        .split('\0')
+        .filter(|f| {
+            !f.is_empty()
+                && std::fs::read(wt.join(f)).is_ok_and(|b| {
+                    String::from_utf8_lossy(&b).lines().any(|l| l.starts_with("<<<<<<< ") || l.starts_with(">>>>>>> "))
+                })
+        })
+        .map(str::to_string)
+        .collect();
+    if !marked.is_empty() {
+        bail!("conflict markers are still in {}: resolve them, then commit again", marked.join(", "));
+    }
     g(&["add", "-A", "--", "."]).context("git add")?;
     match g(&["rebase", "--continue"]) {
         Ok(_) if !rebasing(&worktree::inspect(&wt)) => {
@@ -370,15 +394,20 @@ pub fn rebase_abort(worktree_path: &Path, gitconfig: Option<&Path>) -> Result<Re
     Ok(RebaseOutcome::Aborted)
 }
 
-/// Moves the branch checked out in `worktree` (linked, clean, nothing in
-/// progress) to `rev` (`reset --hard`): a specialist branch after its
-/// feature's integration branch was rebased.
-pub fn reset_worktree(worktree_path: &Path, rev: &str, gitconfig: Option<&Path>) -> Result<()> {
+/// Moves `branch`, checked out in `worktree` (linked, clean, nothing in
+/// progress), to `rev` (`reset --hard`): a specialist branch after its
+/// feature's integration branch was rebased. Refused when the worktree is
+/// on any other branch.
+pub fn reset_worktree(worktree_path: &Path, branch: &str, rev: &str, gitconfig: Option<&Path>) -> Result<()> {
     valid_rev(rev)?;
     let wt = real(worktree_path);
     let insp = linked_worktree(&wt, "reset")?;
     if !insp.in_progress.is_empty() || insp.dirty > 0 {
         bail!("the worktree is not clean");
+    }
+    let on = rebase_git(&wt, gitconfig, &["symbolic-ref", "--quiet", "HEAD"]).unwrap_or_default();
+    if branch.is_empty() || on.trim() != format!("refs/heads/{branch}") {
+        bail!("the worktree is not on {branch}");
     }
     rebase_git(&wt, gitconfig, &["reset", "--hard", "--quiet", "--end-of-options", rev]).context("git reset")?;
     Ok(())
@@ -500,11 +529,16 @@ mod tests {
         assert!(integ.join("api.rs").is_file() && integ.join("m.txt").is_file());
         assert_eq!(rebase_worktree(&integ, "main", Some(&gc)).unwrap(), RebaseOutcome::UpToDate);
         // The specialist's branch, all merged, moves to the new head.
-        reset_worktree(&back, &to, Some(&gc)).unwrap();
+        reset_worktree(&back, "orch/f/back-1", &to, Some(&gc)).unwrap();
         assert_eq!(head(&back), to);
         std::fs::write(back.join("wip.txt"), "x").unwrap();
-        assert!(reset_worktree(&back, &to, Some(&gc)).unwrap_err().to_string().contains("not clean"));
-        assert!(reset_worktree(&back, "--hard", Some(&gc)).is_err());
+        assert!(reset_worktree(&back, "orch/f/back-1", &to, Some(&gc)).unwrap_err().to_string().contains("not clean"));
+        assert!(reset_worktree(&back, "orch/f/back-1", "--hard", Some(&gc)).is_err());
+        std::fs::remove_file(back.join("wip.txt")).unwrap();
+        assert!(
+            reset_worktree(&back, "orch/f/integration", &to, Some(&gc)).unwrap_err().to_string().contains("not on"),
+            "only the branch checked out"
+        );
     }
 
     #[test]
@@ -518,6 +552,10 @@ mod tests {
         assert_eq!(rebase_worktree(&integ, "main", Some(&gc)).unwrap(), conflict(1));
         assert!(rebasing(&worktree::inspect(&integ)));
         assert!(rebase_worktree(&integ, "main", Some(&gc)).unwrap_err().to_string().contains("in progress"));
+        assert!(rebase_in_progress(&integ));
+        let e = rebase_continue(&integ, Some(&gc)).unwrap_err().to_string();
+        assert!(e.contains("conflict markers are still in shared.txt"), "{e}");
+        assert!(rebasing(&worktree::inspect(&integ)), "still stopped, nothing staged");
         std::fs::write(integ.join("shared.txt"), "main + lead 1").unwrap();
         assert_eq!(rebase_continue(&integ, Some(&gc)).unwrap(), conflict(2));
         std::fs::write(integ.join("shared.txt"), "main + lead 2").unwrap();

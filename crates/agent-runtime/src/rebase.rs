@@ -28,14 +28,7 @@ impl Runtime {
         if !matches!(state, RunState::Integrating | RunState::PrOpen) {
             bail!("the base is brought in while integrating or once the PR is open (this run is {})", state.label());
         }
-        if self.store.read(|s| {
-            s.inbox.iter().any(|i| {
-                i.pending()
-                    && matches!(i.payload.get("action").and_then(Value::as_str), Some("push_pr" | "push_pr_update"))
-                    && (i.agent_id.as_deref() == Some(&rec.id)
-                        || i.payload.get("run").and_then(Value::as_str) == Some(&cx.run.id))
-            })
-        }) {
+        if self.pending_pr_gate(&rec.id, Some(&cx.run.id)) {
             bail!("a pull request or update request is waiting for the user: the rebase would change what it pushes");
         }
         // A task in progress would be built on the old history.
@@ -53,16 +46,27 @@ impl Runtime {
             bail!("every task must be merged first; still open: {}", busy.join(", "));
         }
         let base = &cx.feature.base;
-        gh::fetch_branches(&rec.worktree, &[base], FETCH_DEADLINE)
-            .map_err(|e| anyhow!("fetching origin/{base} failed: {e:#}"))?;
+        {
+            // Not beside the PR watcher's own fetch in the same repo (ref locks).
+            let _watch = self.pr_watch.lock().unwrap_or_else(|e| e.into_inner());
+            gh::fetch_branches(&rec.worktree, &[base], FETCH_DEADLINE)
+                .map_err(|e| anyhow!("fetching origin/{base} failed: {e:#}"))?;
+        }
         let r = commit::rebase_worktree(&rec.worktree, &format!("origin/{base}"), gitconfig.as_deref());
         self.rebase_reply(cx, rec, r)
     }
 
     /// The lead's `commit` while its rebase is in progress: continues it.
+    /// Any other agent's rebase (not one `rebase_base` started) is only
+    /// continued: it never moves the run's branches.
     pub(crate) fn rebase_continue_for(&self, rec: &AgentRecord) -> Result<(String, Value)> {
+        // Loaded before the rebase moves: a failure here leaves it untouched.
+        let lead_cx = match rec.team.as_ref() {
+            Some(seat) => Some(self.run_ctx(&seat.run_id)?).filter(|cx| cx.team.is_lead(&seat.node)),
+            None => None,
+        };
         let r = commit::rebase_continue(&rec.worktree, self.agent_gitconfig(&rec.id).as_deref());
-        match rec.team.as_ref().map(|s| self.run_ctx(&s.run_id)).transpose()? {
+        match lead_cx {
             Some(cx) => self.rebase_reply(&cx, rec, r),
             None => {
                 let r = r?;
@@ -141,7 +145,7 @@ impl Runtime {
             let checked_out = orch_git::worktree::current_branch(&a.worktree).is_ok_and(|b| b == branch);
             let reset = merged
                 && checked_out
-                && commit::reset_worktree(&a.worktree, to, self.agent_gitconfig(&a.id).as_deref()).is_ok();
+                && commit::reset_worktree(&a.worktree, &branch, to, self.agent_gitconfig(&a.id).as_deref()).is_ok();
             if reset {
                 moved.push(branch);
             } else {
@@ -154,10 +158,7 @@ impl Runtime {
                 );
             }
         }
-        let base_commits = orch_git::git(&lead.worktree, &["rev-list", "--count", &format!("{from}..{onto}")])
-            .ok()
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .unwrap_or(0);
+        let base_commits = orch_git::cleanup::ahead_behind(&lead.worktree, onto, from).0;
         self.run_event(
             &cx.run.id,
             Some(&lead.id),

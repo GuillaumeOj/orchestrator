@@ -636,6 +636,13 @@ impl Runtime {
             return Ok(());
         }
         let tasks = self.db.tasks(None, None, Some(&cx.run.id))?;
+        // A task started while the lead's rebase is stopped on a conflict
+        // would sync the old history: wait until it is done or aborted.
+        if tasks.iter().any(|t| t.status == TaskStatus::Ready && t.agent_id.is_none())
+            && cx.feature.integration_worktree.as_deref().is_some_and(orch_git::commit::rebase_in_progress)
+        {
+            return Ok(());
+        }
         let done = |id: u64| tasks.iter().any(|t| t.id == id && t.status == TaskStatus::Done);
         let mut started = 0;
         for t in tasks.iter().filter(|t| t.status == TaskStatus::Ready && t.agent_id.is_none()) {

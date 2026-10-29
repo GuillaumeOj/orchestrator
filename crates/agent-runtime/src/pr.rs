@@ -411,7 +411,7 @@ impl Runtime {
     pub(crate) fn request_pr_update(&self, rec: &AgentRecord, run: &TeamRun) -> Result<String> {
         let n = run.pr_number.ok_or_else(|| anyhow!("this run has no pull request"))?;
         let wt = &rec.worktree;
-        if orch_git::commit::rebasing(&orch_git::worktree::inspect(wt)) {
+        if orch_git::commit::rebase_in_progress(wt) {
             bail!(
                 "a rebase is in progress: finish it with mcp__orch__commit (or abort it with mcp__orch__rebase_base) first"
             );
@@ -419,7 +419,8 @@ impl Runtime {
         let pr = run
             .pr
             .as_ref()
-            .filter(|p| !p.head_sha.is_empty())
+            // A checked head: a commit sha (it becomes the lease and git arguments).
+            .filter(|p| p.head_sha.len() >= 7 && p.head_sha.chars().all(|c| c.is_ascii_hexdigit()))
             .ok_or_else(|| anyhow!("PR #{n} was not checked yet: try again in a minute"))?;
         let base_ref = format!("origin/{}", pr.base);
         let branch = orch_git::worktree::current_branch(wt)?;
@@ -431,7 +432,12 @@ impl Runtime {
         let mut foreign_replaced = 0;
         if pr.head_sha != pushed {
             if gh::rev_sha(wt, &pr.head_sha).is_none() {
-                bail!("PR #{n} has commits pushed outside the app that are not fetched yet: try again in a minute");
+                // The watcher fetches every few minutes: fetch the PR (and its base) now.
+                let _watch = self.pr_watch.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = gh::fetch_branches(wt, &[&pr.base, &branch], FETCH_DEADLINE);
+            }
+            if gh::rev_sha(wt, &pr.head_sha).is_none() {
+                bail!("PR #{n} has commits pushed outside the app that could not be fetched: try again in a minute");
             }
             let foreign = orch_git::git(
                 wt,
@@ -538,7 +544,8 @@ impl Runtime {
                     "ORCH: the user approved; pushed {commits} commit(s) to PR #{n}. CI restarts; you will be told the result."
                 )
             }
-            Err(e) if force => format!(
+            // The lease refused (git says "stale info"); any other failure is not "the PR moved".
+            Err(e) if force && format!("{e:#}").contains("stale info") => format!(
                 "ORCH: the user approved, but the force push to PR #{n} was refused: the PR moved since it was \
                  asked (someone pushed to it). Nothing was pushed. Run mcp__orch__request_pr again once the PR is \
                  checked ({e:#})."
@@ -1106,6 +1113,10 @@ mod tests {
         let before = head_of(rt, LEAD);
         let text = ok(rt, LEAD, "rebase_base", json!({}));
         assert!(text.contains("Conflicts in shared.txt (commit 2 of 2)"), "{text}");
+        // No task starts on the old history while the rebase is stopped.
+        ok(rt, LEAD, "create_task", json!({"title": "Later", "node": "back"}));
+        rt.team_tick();
+        assert!(rt.store.read(|s| !s.agents.contains_key("fx-back-1")), "dispatch waits for the rebase");
         assert!(call(rt, LEAD, "request_pr", json!({})).1.contains("rebase is in progress"));
         assert!(ok(rt, LEAD, "rebase_base", json!({"abort": true})).contains("Aborted"));
         assert_eq!(head_of(rt, LEAD), before);
