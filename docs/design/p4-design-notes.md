@@ -15,10 +15,15 @@ Copy rules carry over from P1/P3: sentence case, no exclamation marks, name the 
 | F1 | The brief's examples put the state word in `reason` ("Queued · …", "Not started · …", "Paused by you", "Waiting · penpot …", "Starting · 12 s"). Every surface also shows the status badge next to the reason, so the agent header would read "Queued · Queued · live cap 3/3". | **The reason never repeats the status label.** The core writes only what the agent waits on; the surface puts the badge label before it. The composed line is exactly SPEC §9.5's "Shown as" column: "Queued · live cap 3/3 · 2nd in line · ≈14:20". Text without a badge (`orchd now`, macOS notifications, tooltips) prints `<status label> · <reason>`. §1.1 has the rule, §2 the strings. | lead → back |
 | F2 | Some examples put a duration in `reason` ("→ back-1 · message · 12 min", "Waiting · penpot execute_code · 7 min", "Starting · 12 s"), and the UI also appends `since`. That gives two durations, and the one in `reason` goes stale between two 30 s ticks. | **No duration in `reason`.** The UI appends the duration from `waiting_on.since_ms` (else `since_ms`) with the 30 s relative clock. Clock times (≈14:20, resets 16:00) stay in `reason`. Fixed numbers are fine too ("after 30 s"). | lead → back |
 | F3 | `run_phase`, `run_done` and `merge_done` outcomes have no `text`, and the contract has no `feature` on an outcome. The digest row "checkout: planning → executing" needs the feature name, and runs done earlier today may not be in `runs`. | Add an optional `text` to **every** outcome, written by the core with the patterns in §5, plus an optional `feature`. The row renders `text` and needs no lookup. This is additive, so the contract allows it. | lead → back |
-| F4 | Two P3 level-4 items have no home once `info-<turn>` items and level 4 move to outcomes: the weekly report digest (`payload.digest = weekly_report`, P3 J8 · 4) and the Linear/GitHub sync conflict (`action = task_conflict`). Neither is a contract outcome kind, and `info` is not a decision kind. | Two outcome kinds: `report_ready {week}` ("Weekly report for week 43 is ready", `o` opens it) and `sync_conflict {task, remote}` ("ENG-140 changed here and in Linear: kept Linear's", `o` opens the task). Or keep them as level-4 `alert` decisions. Either way they must not disappear. | lead → back |
+| F4 | Two P3 level-4 items have no home once `info-<turn>` items and level 4 move to outcomes: the weekly report digest (`payload.digest = weekly_report`, P3 J8 · 4) and the Linear/GitHub sync conflict (`action = task_conflict`). Neither is a contract outcome kind, and `info` is not a decision kind. | Two outcome kinds: `report_ready {report}` (`report` = "2026-W44": "Weekly report for week 44 is ready", `o` opens it) and `sync_conflict {task, backend}` ("ENG-140 changed here and in Linear: kept Linear's", `o` opens the task). Accepted as D12. | lead → back |
 | F5 | `status.js` has no `not_started` entry, and `tokens.json` has no `color.status.not-started`. The record's `status` can be `not_started`. | `ui` adds the token and the icon (label "Not started yet"). It must differ from Queued: no process yet, so a hollow glyph is better than the queued hourglass. | ui |
-| F6 | The **Start now / Run now** cost ("≈ +1 pp") is not in the record. The current strip reads it from `queue_entry`. | No contract change: the cost is an action detail, not attention state. The strip keeps reading `app_state.agents[].queue_entry` for the button (raw data stays for details, contract §3.2). The record's `reason` carries no cost. | front (note only) |
+| F6 | The **Start now / Run now** cost ("≈ +1 pp") is not in the record. The current strip reads it from `queue_entry`. | No contract change: the cost is an action detail, not attention state. The strip keeps reading `app_state.agents[].queue_entry` for the button (raw data stays for details, contract §3.2). A queued or not-started record's `reason` carries no cost. A Governor **ask** is different: it is a decision, its payload has the cost, and its needs_you reason says it (§2.1). | front (note only) |
 | F7 | The digest **Clear** action needs a key. | `c` in the Inbox when the digest is focused (free in the Inbox map: a r ⏎ o e x u j k). Palette: "Clear today's digest". front checks for conflicts. | front |
+| F8 | Contract §2.1 `effect` has no value for a budget answer or a startup Delete, and §4 only toasts on `effect`/`failed`, so "Applied · …", "Skipped · …" and "Deleted · front-1" would never show. | Add `applied`, `skipped`, `deleted` to `effect` (additive). | lead → back |
+| F9 | Contract §4 drops P4.0 actions the Inbox ships today (`inbox.js` `actionLabels`/`keyIntent`): error `Resume r`, MCP alert `Reconnect a` and `Open Settings o` (`reconnect`, `open`), team question `Dismiss r` (`reject`), Notion `Open in Notion ↗`. §6 row 17 and §7 rows 3, 14, 15 use them. The contract's example label "Allow" is also "Allow once" in P4.0. | Add `resume` (error), `reconnect` + `reject` (MCP alert), `reject` (question), `open` (notion) to §4, and use "Allow once". | lead → back |
+| F10 | Spec §3.1 Counts says `queued` = Governor queue length + not-started + paused. A Governor ask's agent is in the queue but at needs_you (rule 2 wins), and paused and most not-started agents also hold a queue entry, so that sum double-counts and disagrees with "agents at level queued". | Define `queued` only as "agents at level queued" (as contract §1 does) and drop the sum. | lead |
+| F11 | Spec §3.1 run record and §3.5 use `run_id`, `feature_id`, `project_id`; contract §1 (final names) uses `run`, `feature`, `project`. Spec §3.1 rules 4–6 and rule 7 still hold the superseded reason examples ("Paused by you", "Starting · 12 s", "· 12 min"). | Align the spec on the contract's names and on D11. | lead |
+| F12 | Three `QueueReason` strings of §2.2 need data the reason does not carry: `HardCap` (no allocation name, used or cap pp), `FiveHourGuard` (no F reading), `DeferredUntilReset` (no reset time). | back adds the fields to the variants (or reads them from the Governor snapshot when it writes the reason); else the part is left out ("checkout cap reached", "5h guard", "deferred to the weekly reset"). | lead → back |
 
 ---
 
@@ -74,11 +79,11 @@ Each figure has a word after it, never a bare number in parentheses:
 | waiting · agent · Lead on members | `→ <a>, <b> · T-<n>, T-<m>`, then `+<k> more` past 2 | "Idle · → back-1, front-1 · T-3, T-4 · 40 min" |
 | waiting · task | `blocked by T-<n> (<owner>, <task status>)` | "Idle · blocked by T-2 (back-1, in progress) · 25 min" |
 | waiting · limit | `<window> full · resets <time>` | "Blocked by limit · 5h window full · resets 16:00 · 18 min" |
-| waiting · startup | `starting` | "Working · starting · just now" |
+| waiting · startup | `starting · times out after 30 s` | "Working · starting · times out after 30 s · just now" (the 30 s relative clock can't count seconds; the fixed limit says how long it may take) |
 | waiting · external | `waiting on <server> <tool>` | "Working · waiting on penpot execute_code · 7 min" |
 | queued · governor | §2.2 | "Queued · live cap 3/3 · 2nd in line · ≈14:20 · 6 min" |
 | queued · not started | §2.2 with no position | "Not started yet · live cap 3/3 · ≈14:20 · 2 min" |
-| queued · paused | `by you` / `Pause all` | "Paused · by you · 1 h 05 min" · "Paused · Pause all · 10 min" |
+| queued · paused | `by you` / `Pause all` | "Paused · by you · 1 h 5 min" · "Paused · Pause all · 10 min" |
 | error | `<the error's one line>` | "Error · API error 529 (overloaded) · 2 min" |
 | error · startup | `no session after 30 s` · `<mode> start exited (status <n>)` · `restarted fresh, failed again` | "Error · resumed start exited (status 1) · 1 min" |
 | idle | no reason (empty) | "Idle" |
@@ -118,7 +123,7 @@ Pattern: `<reason>[ · <position>][ · ≈<estimated start>]`
 | `ModelWindow {exhausted: false}` | `<model> week in Red · starts after reset <time>` | "Queued · opus week in Red · starts after reset Mon 09:00" |
 | `ModelWindow {exhausted: true}` | `<model> week full · starts <time>` | "Queued · opus week full · starts Mon 09:00" |
 
-Changes from the shipped copy (`status.js` `queueReason`): "live-agent cap 3 (red)" becomes "live cap 1/1 (Red)", so the cap is shown against the live count. "low priority (Red)" becomes "Red · low priority waits". "paused (p resumes)" becomes "Paused · by you", and the `p` hint moves to the strip's action. P3's "opus week exhausted" becomes "opus week full", which matches "5h window full". `<live>` is the global live count (`counts.live`), and `<F>` is the 5h reading the guard used.
+Changes from the shipped copy (`status.js` `queueReason`): "live-agent cap 3 (red)" becomes "live cap 1/1 (Red)", so the cap is shown against the live count. "low priority (Red)" becomes "Red · low priority waits". "paused (p resumes)" becomes "Paused · by you", and the `p` hint moves to the strip's action. P3's "opus week exhausted" becomes "opus week full", which matches "5h window full". `<live>` is the Governor's live autonomous count (snapshot `live_autonomous`, what the cap is compared to), not `counts.live`, which also counts interactive sessions. `<F>` is the 5h reading the guard used (F12).
 
 A **not-started** agent uses the same reason with no position: "Not started yet · live cap 3/3 · ≈14:20". An agent created with no queue entry yet reads "Not started yet · waiting for a slot".
 
@@ -136,7 +141,7 @@ A **not-started** agent uses the same reason with no position: "Not started yet 
 
 | Kind | Kind label | Title pattern | Example title · summary |
 |---|---|---|---|
-| permission | Permission | `<tool> · <description or short input>` | "Bash · pnpm add zod" · "Add zod" |
+| permission | Permission | `<tool> · <short input>`; summary = the call's description | "Bash · pnpm add zod" · "Add zod" |
 | permission (parked) | Permission · parked | same | "Bash · pnpm add zod" · "back-1 stopped; it resumes on your answer" |
 | question (ask_user, 1 question) | Question | `<the question, ≤ 80>` | "Which auth provider?" · "" |
 | question (AskUserQuestion, n) | Question | `<first question, ≤ 60> · <n> questions` | "Which auth provider? · 3 questions" · "" |
@@ -239,13 +244,13 @@ The row is the kind icon, the core's `text` (F3), the agent for task outcomes, a
 | Kind | `text` pattern | Example row |
 |---|---|---|
 | task_done | `T-<n> done · <title>` | "T-4 done · checkout API (back-1) · 14:02" |
-| merge_done | `Merged <branch tail> into <into tail>` | "Merged back-1 into integration · 14:10" (`orch/checkout/back-1` → "back-1", into `main` → "Merged checkout into main") |
-| pr_opened | `PR opened · <feature> #<n> ↗` | "PR opened · checkout #12 ↗ · 15:30" |
+| merge_done | `Merged <branch tail> into <into tail>` | "Merged back-1 into integration · 14:10" (`orch/checkout/back-1` → "back-1"; an integration branch merged into `main` names its feature: "Merged checkout into main") |
+| pr_opened | `PR opened · <feature> #<n> ↗`; solo: `PR opened · <project> › <agent> #<n> ↗` | "PR opened · checkout #12 ↗ · 15:30" |
 | run_phase | `<feature>: <from> → <to>` (phase labels, lower case) | "checkout: planning → executing · 11:40" |
 | run_done | `<feature> done` | "checkout done · 16:05" |
 | turn_done (solo) | `<project> › <agent>: <summary first line>` | "blog › fix-feed: Fixed the feed pagination and added a test · 13:20" |
-| report_ready (F4) | `Weekly report for week <n> is ready` | — |
-| sync_conflict (F4) | `<task> changed here and in <remote>: kept <remote>'s` | — |
+| report_ready (F4) | `Weekly report for week <n> is ready` (`<n>` from `report`, "2026-W44" → 44) | "Weekly report for week 44 is ready · 09:00" |
+| sync_conflict (F4) | `<task> changed here and in <backend>: kept <backend>'s` (backend label: Linear, GitHub) | "ENG-140 changed here and in Linear: kept Linear's · 10:12" |
 
 A run moving to `failed` is a run_phase row: "checkout: integrating → failed".
 
@@ -263,26 +268,26 @@ The fixture is Thu 29 Oct 14:00, shop-api › checkout `executing`, live cap 3 (
 |---|---|---|---|---|---|---|
 | 1 | needs_you · user · waiting_for_you (permission) | status icon + "back-1" + "2 min"; tooltip compact; feature badge counts it ("1 needs you") | counts in `needs_you`; dot needs_you | badge Waiting for you · "permission: Bash pnpm add zod" · "2 min" | full chip; strip: permission card (P4.0) with Allow / Deny | Status: Waiting for you · Waiting on: **decision** "Bash · pnpm add zod" (link) · since 13:58 (2 min) |
 | 2 | needs_you · user · waiting_for_you (parked) | as 1, "22 min" | as 1 | "permission (parked): Bash pnpm add zod" · "22 min" | strip: "Parked · back-1 stopped; resumes on your answer" + Allow / Deny | as 1, marker "parked" |
-| 3 | needs_you · user · waiting_gate (spec gate, Lead) | lead-1 row; feature badge "1 needs you"; run label "spec gate" | as 1 | badge At gate · "spec gate · checkout" · "12 min" | full chip; strip: "Spec gate · checkout · Open in Inbox o" | Waiting on: decision "Spec gate · checkout" |
+| 3 | needs_you · user · waiting_gate (spec gate, Lead) | lead-1 row; feature badge "1 needs you"; run label "Spec gate" | as 1 | badge At gate · "spec gate · checkout" · "12 min" | full chip; strip: "Spec gate · checkout · Open in Inbox o" | Waiting on: decision "Spec gate · checkout" |
 | 4 | needs_you · user · waiting_for_you (pane prompt) | as 1 | as 1 | "a prompt in its pane" · "6 min" | strip: "A prompt below · answer it in the pane" | Waiting on: its pane |
 | 5 | running · — · working | status icon, no duration | counts in running; dot running only if nothing higher | badge Working · "Edit src/feed.ts" | badge + activity; no strip | Status: Working · Doing: Edit src/feed.ts |
 | 6 | waiting · agent · idle | "front-1" + "3 min"; tooltip "→ lead-1 · review of T-4 · 3 min" | counts in waiting | badge Idle · "→ lead-1 · review of T-4" · "3 min" | full chip; ref "lead-1" focuses it; no strip | Waiting on: **agent** lead-1 · review of T-4 · since 13:57 |
 | 7 | waiting · task · idle | "ux-1" + "25 min" | counts in waiting | "blocked by T-2 (back-1, in progress)" · "25 min" | full chip; ref "T-2" opens the card | Waiting on: **task** T-2 (back-1, in progress) |
 | 8 | waiting · limit · blocked_by_limit | status icon + "18 min" | counts in waiting | badge Blocked by limit · "5h window full · resets 16:00" · "18 min" | strip: "5h window full · resets 16:00 · the CLI's auto-continue was cancelled" | Waiting on: **limit** 5h window · resets 16:00 |
-| 9 | waiting · startup · working | status icon + "just now" | counts in waiting | badge Working · "starting" · "just now" | strip: none until 30 s; then the startup error (row 15) | Waiting on: **startup** · since 13:59:50 |
+| 9 | waiting · startup · working | status icon + "just now" | counts in waiting | badge Working · "starting · times out after 30 s" · "just now" | strip: none until 30 s; then the startup error (row 18) | Waiting on: **startup** · since 13:59:50 |
 | 10 | waiting · external · working (≥ 5 min) | status icon + "7 min" | counts in waiting | badge Working · "waiting on penpot execute_code" · "7 min" | full chip; strip: "penpot execute_code has run 7 min · it may wait on a browser tab · Open pane o" | Waiting on: **external** penpot execute_code · since 13:53 |
 | 11 | queued · governor · queued | "back-2" + "6 min" | counts in queued | badge Queued · "live cap 3/3 · 2nd in line · ≈14:20" · "6 min" | strip: same line + "Run now ≈ +2.1 pp ⏎" · "Run off-hours O" | Waiting on: **Governor** · live cap 3/3 · 2nd in line · ≈14:20 |
-| 12 | queued · governor · not_started | "ui-1" + "2 min", not-started icon | counts in queued | badge Not started yet · "live cap 3/3 · ≈14:20" | strip: "Not started yet · live cap 3/3 · ≈14:20" + "Start now ≈ +1.0 pp ⏎" | Status: Not started yet · Waiting on: Governor |
-| 13 | queued · governor · paused | "deps-1", paused icon + "1 h 05 min" | counts in queued | badge Paused · "by you" / "Pause all" | strip: "Paused · by you · Resume p" / "Paused · Pause all · Resume all ⇧P" | Status: Paused · Waiting on: you (Resume) |
+| 12 | queued · governor · not_started | "ui-1" + "2 min", not-started icon | counts in queued | badge Not started yet · "live cap 3/3 · ≈14:20" · "2 min" | strip: "Not started yet · live cap 3/3 · ≈14:20" + "Start now ≈ +1.0 pp ⏎" | Status: Not started yet · Waiting on: Governor |
+| 13 | queued · governor · paused | "deps-1", paused icon + "1 h 5 min" | counts in queued | badge Paused · "by you" / "Pause all" · "1 h 5 min" | strip: "Paused · by you · Resume p" / "Paused · Pause all · Resume all ⇧P" | Status: Paused · Waiting on: you (Resume) |
 | 14 | idle · — · idle | status icon | not counted in the dot | badge Idle, no reason | no strip | Status: Idle |
 | 15 | idle · — · suspended | suspended icon | — | badge Suspended | strip: "Suspended to save memory · resumes on demand" | Status: Suspended |
 | 16 | done · — · done | done icon, muted row | — | badge Done | no strip | Status: Done · Task: T-4 done |
 | 17 | error · — · error | error icon + "2 min" | dot error (highest) | badge Error · "API error 529 (overloaded)" · "2 min" | strip: error line + "Resume r" · "Open in Inbox o" | Status: Error · the line · since |
-| 18 | error · startup · error | as 17 | as 17 | badge Error · "no session after 30 s" | strip: startup card (P4.0): "Restart fresh" · "Dismiss" · "Open pane" | Waiting on: **startup** · decision link |
+| 18 | error · startup · error | as 17 | as 17 | badge Error · "no session after 30 s" · "1 min" | strip: startup card (P4.0): "Restart fresh" · "Dismiss" · "Open pane" | Waiting on: **startup** · decision link |
 
 **Rail dot rule**: the project's dot takes the highest level among its agents, in the order error > needs_you > running > waiting > queued (idle and done show no dot). The number next to it is `needs_you` only, hidden at 0. The dot has a shape per level as well as a color (principle 8: never color alone).
 
-**Sidebar run label**: the phase label from the run record ("executing"). The feature badge is `counts.needs_you` of the run.
+**Sidebar run label**: the phase label (§5) from the run record ("Executing"). Only the run_phase outcome `text` writes phases in lower case. The feature badge is `counts.needs_you` of the run.
 
 ### 6.1 Status bar
 
@@ -316,7 +321,7 @@ The fixture is Thu 29 Oct 14:00, shop-api › checkout `executing`, live cap 3 (
 | 14 | error / alert · open | open | error · pty_tail, or markdown | Open o · Dismiss · Restart fresh (spawn, startup) |
 | 15 | notion · open | open | markdown (source = page link) | Reply · Dismiss r · Open in Notion ↗ |
 | 16 | decided → sent | "Allowing once · Undo u" → "Sent to back-1 · 14:02" | unchanged, actions disabled | none |
-| 17 | sent → effect | "Allowed · back-1 resumed · 14:02"; the card leaves the open list ~10 min later (kept in the snapshot) | unchanged | none |
+| 17 | sent → effect | "Allowed · back-1 resumed · 14:02"; the card leaves the open list at once (`closed` in the `now` event) and `now_snapshot` keeps it 10 min | unchanged | none |
 | 18 | PR gate sent → effect | "Pushing orch/checkout/integration…" → "PR opened · checkout #12 ↗ · 15:30" | unchanged | Open PR o |
 | 19 | failed | "Failed · push rejected: non-fast-forward" (error color) | unchanged | the kind's actions again (retry by deciding again) · Dismiss |
 | 20 | stale | "Stale · the agent moved on" (muted) | unchanged, muted | Dismiss |
@@ -328,12 +333,12 @@ The fixture is Thu 29 Oct 14:00, shop-api › checkout `executing`, live cap 3 (
 
 ## 8. Fixture for the cross-surface test (spec §6 · 1)
 
-1 permission (back-1), 1 question (front-1), 1 queued (back-2), 1 not started (ui-1), 2 running (lead-1, ux-1). Every surface must show:
+Live cap 4 (Green). 1 permission (back-1), 1 question (front-1), 1 queued (back-2, "live cap 4/4"), 1 not started (ui-1), 2 running (lead-1, ux-1). Every surface must show:
 - Title badge "2" (decisions)
 - Sidebar "2 need you" on checkout
 - Rail "2" on shop-api with the needs_you dot
-- Overview footer "2 need you · 2 running · 0 waiting · 2 queued · 0 error · 4 live / cap 3"
-- Status bar "▶ 4 live / cap 3 · ⧗ 2 queued"
+- Overview footer "2 need you · 2 running · 0 waiting · 2 queued · 0 error · 4 live / cap 4"
+- Status bar "▶ 4 live / cap 4 · ⧗ 2 queued"
 - Inbox "Blocking 2"
 
 The 4 live are back-1, front-1, lead-1 and ux-1: needs_you agents keep their process.
