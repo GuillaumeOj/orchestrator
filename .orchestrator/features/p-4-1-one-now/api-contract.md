@@ -78,7 +78,7 @@
     "effect_at_ms": 0,
     "error": "push rejected: …",    // failed only
     "stale_why": "the agent moved on",
-    "version": 3                    // +1 on every lifecycle write (also in inbox_act's answer): keep the highest, ignore an upsert or answer with version ≤ the one held
+    "version": 3                    // +1 on every lifecycle write (also in inbox_act's answer): keep the highest: ignore an upsert or answer with a lower version; an equal version replaces the card's fields without a second toast (the core re-pushes display changes at the same version)
   },
   "thread": "run-12",               // run id, else agent id
   "thread_prev": "inbox-37",        // previous decision in the thread, if any
