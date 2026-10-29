@@ -56,6 +56,7 @@ function plannerView(over = {}) {
       used: 20,
       governed: 12,
       ideal: 15,
+      plan: 23,
       error: -3,
       eta: null,
       five_hour: 30,
@@ -71,10 +72,13 @@ function plannerView(over = {}) {
       unattributed_forecast: 4,
     },
     curve: [
-      { t_ms: ws, ideal: 0, forecast: null, with_governor: null },
-      { t_ms: now, ideal: 15, forecast: 12, with_governor: 12 },
+      { t_ms: ws, plan_total: 0, forecast_total: null, with_governor_total: null },
+      { t_ms: now, plan_total: 20, forecast_total: 20, with_governor_total: 20 },
     ],
-    actual: [{ t_ms: ws + 3600000, used: 2, governed: 1, five_hour: null }],
+    actual: [
+      { t_ms: ws + 3600000, used: 2, governed: 1, five_hour: null },
+      { t_ms: now, used: 20, governed: 12, five_hour: 30 },
+    ],
     working: [],
     allocations: [],
     queue: [],
@@ -323,6 +327,21 @@ describe('week planner', () => {
     expect(t).toContain('Shadow mode · day 3 of 7');
     expect(t).not.toContain('Enforce…');
     expect(t).toContain('Edit plan');
+  });
+
+  it('draws the week usage: legend and the now tag', async () => {
+    replies.planner_view = plannerView();
+    const { container } = render(PlannerPane);
+    await waitFor(() => expect(text(container)).toContain('Week used'));
+    const t = text(container);
+    for (const l of ['Week used', 'Agents', 'Plan', 'Forecast', 'W/ governor']) expect(t).toContain(l);
+    expect(t).toMatch(/now \d\d:\d\d · week 20% \(plan 23%, .*3 pp\) · agents 12%/);
+    expect(t).toContain('reserve 10% for you');
+    const d = (c) => container.querySelector(`svg path.${c}`).getAttribute('d');
+    expect(d('actual')).toMatch(/^M.*L/);
+    expect(d('agents')).not.toBe(d('fill'));
+    expect(d('ideal')).toMatch(/^M.*L/);
+    expect(container.querySelector('svg').getAttribute('aria-label')).toBe('Week usage so far against the plan');
   });
 
   it('offers to enforce once the shadow week is over, and to go back', async () => {
