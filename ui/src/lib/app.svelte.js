@@ -271,7 +271,7 @@ async function revive(s) {
   if (s.type !== 'shell' && s.type !== 'editor') return s;
   try {
     const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
-    const spec = { ...s, type: 'shell', termId: t.id, spawn: SHELL_SIZE, cwd: t.cwd };
+    const spec = { ...s, type: 'shell', termId: t.id, spawn: t.spawn, cwd: t.cwd };
     return { ...spec, title: title(spec) };
   } catch {
     return null;
@@ -362,10 +362,8 @@ export async function alertAct(item, action) {
 export async function runInPane(run, title, projectId = null) {
   const p = projects().find((x) => x.id === projectId);
   try {
-    const t = await invoke('term_spawn', {
-      req: { kind: 'shell', project_id: p?.id ?? null, agent_id: null, cwd: p?.path ?? null, run, ...RUN_SIZE },
-    });
-    addPane({ type: 'shell', termId: t.id, spawn: RUN_SIZE, cwd: t.cwd, projectId: p?.id, title }, 'right');
+    const t = await spawnShell({ projectId: p?.id, agentId: null, cwd: p?.path, run });
+    addPane({ type: 'shell', termId: t.id, spawn: t.spawn, cwd: t.cwd, projectId: p?.id, title }, 'right');
   } catch (e) {
     toast(`Could not run ${run}: ${errText(e)}`, { kind: 'error' });
   }
@@ -424,11 +422,9 @@ export async function openTrust(projectId) {
   if (!p) return;
   try {
     const run = await invoke('trust_command');
-    const t = await invoke('term_spawn', {
-      req: { kind: 'shell', project_id: p.id, agent_id: null, cwd: p.path, run, ...RUN_SIZE },
-    });
+    const t = await spawnShell({ projectId: p.id, agentId: null, cwd: p.path, run });
     addPane(
-      { type: 'shell', termId: t.id, spawn: RUN_SIZE, cwd: t.cwd, projectId: p.id, title: `trust · ${p.name}` },
+      { type: 'shell', termId: t.id, spawn: t.spawn, cwd: t.cwd, projectId: p.id, title: `trust · ${p.name}` },
       'right',
     );
     toast(`Answer "Yes, I trust this folder" in the pane, then /exit · ${p.name}`, { ms: 10000 });
@@ -446,20 +442,24 @@ export function openAgent(agentId) {
 }
 
 /**
- * A login shell PTY in the core; the pane fits it once mounted.
- * @param {{ projectId?: string, agentId?: string, cwd?: string }} req
+ * A login shell PTY in the core (running `run` when given); the pane fits it
+ * once mounted. Returns the term with the size it was spawned at.
+ * @param {{ projectId?: string, agentId?: string, cwd?: string, run?: string }} req
  */
-const spawnShell = ({ projectId, agentId, cwd }) =>
-  invoke('term_spawn', {
+async function spawnShell({ projectId, agentId, cwd, run }) {
+  const spawn = run ? RUN_SIZE : SHELL_SIZE;
+  const t = await invoke('term_spawn', {
     req: {
       kind: 'shell',
       project_id: projectId ?? null,
       agent_id: agentId ?? null,
       cwd: cwd ?? null,
-      run: null,
-      ...SHELL_SIZE,
+      run: run ?? null,
+      ...spawn,
     },
   });
+  return { ...t, spawn };
+}
 
 /** A shell: a dock tab by default, a pane with `how` ('right' | 'below').
  *  `agentId: null` = no agent (undefined = the one in focus). */
@@ -468,7 +468,7 @@ export async function openShell(opts = {}) {
   const agentId = opts.agentId ?? contextAgent()?.id;
   try {
     const t = await spawnShell({ projectId, agentId, cwd: opts.cwd });
-    const spec = { type: 'shell', termId: t.id, spawn: SHELL_SIZE, cwd: t.cwd, projectId, agentId };
+    const spec = { type: 'shell', termId: t.id, spawn: t.spawn, cwd: t.cwd, projectId, agentId };
     if (opts.how) addPane(spec, opts.how);
     else addDockPane(spec);
   } catch (e) {

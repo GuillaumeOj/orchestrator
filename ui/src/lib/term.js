@@ -194,19 +194,23 @@ export class TermPane {
         this.cell = key;
         this.scheduleFit();
       });
+      document.fonts?.ready.then(() => !this.disposed && this.fitNow());
     }
     this.fitNow();
     this.term.refresh(0, this.term.rows - 1);
     // The box or the cell metrics can still settle after this first fit.
     cancelAnimationFrame(this.settleFrame);
     this.settleFrame = requestAnimationFrame(() => this.fitNow());
-    document.fonts?.ready.then(() => !this.disposed && this.fitNow());
   }
 
   unmount() {
     cancelAnimationFrame(this.settleFrame);
     clearTimeout(this.fitTimer);
     this.host.remove();
+  }
+
+  detach() {
+    invoke('agent_detach', { id: this.source.id, reader: this.reader ?? 0 }).catch(() => {});
   }
 
   /** kitty's cell height from CoreText vs the one xterm.js measured (lineHeight 1). */
@@ -266,8 +270,7 @@ export class TermPane {
     }
     if (this.disposed) {
       // dispose() detached reader 0 while the attach was pending: detach the real one.
-      if (this.source.kind === 'agent')
-        invoke('agent_detach', { id: this.source.id, reader: this.reader ?? 0 }).catch(() => {});
+      if (this.source.kind === 'agent') this.detach();
       return;
     }
     this.alive = true;
@@ -318,15 +321,13 @@ export class TermPane {
   nudge() {
     if (!this.alive || this.term.rows < 2) return;
     const { rows, cols } = this.term;
-    const spawn = this.source.spawn;
-    if (spawn && spawn.rows === rows && spawn.cols === cols) return;
+    const { spawn } = this.source;
+    if (spawn.rows === rows && spawn.cols === cols) return;
     debug(this.source.id, 'nudge', `${cols}x${rows}`);
-    invoke(this.cmd.resize, { id: this.source.id, rows: rows - 1, cols })
+    this.ptySize = { rows: rows - 1, cols };
+    invoke(this.cmd.resize, { id: this.source.id, ...this.ptySize })
       .catch(() => {})
-      .finally(() => {
-        this.ptySize = null;
-        this.syncPty();
-      });
+      .finally(() => this.syncPty());
   }
 
   focus() {
@@ -336,14 +337,11 @@ export class TermPane {
   dispose() {
     this.disposed = true;
     this.alive = false;
-    cancelAnimationFrame(this.settleFrame);
-    clearTimeout(this.fitTimer);
     clearTimeout(this.nudgeTimer);
     for (const s of this.cellSubs ?? []) s.dispose();
-    if (this.source.kind === 'agent')
-      invoke('agent_detach', { id: this.source.id, reader: this.reader ?? 0 }).catch(() => {});
+    if (this.source.kind === 'agent') this.detach();
     else invoke('term_kill', { id: this.source.id }).catch(() => {});
     this.term.dispose();
-    this.host.remove();
+    this.unmount();
   }
 }
