@@ -19,56 +19,42 @@ export function parse(md) {
   const src = String(md ?? '');
   const root = fromMarkdown(src, OPTIONS);
   const fixed = unlazyTables(src, root);
-  return fixed === src ? root : fromMarkdown(fixed, OPTIONS);
+  return fixed === undefined ? root : fromMarkdown(fixed, OPTIONS);
 }
 
 const QUOTE_LINE = /^ {0,3}>/;
-// At most 3 spaces before the first `|` or `-`: indented 4+ columns, it isn't a delimiter row.
-const DELIMITER_ROW = /^ {0,3}(?:\|[ \t]*)?:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*\r?$/;
-/** A `|` not escaped by an odd run of `\`. */
-const CELL_EDGE = /(?<!(?:^|[^\\])(?:\\\\)*\\)\|/;
 
-/** The number of cells in a table row, outer pipes dropped. */
-function cellCount(line) {
-  const cells = line.trim().split(CELL_EDGE);
-  if (cells[0].trim() === '') cells.shift();
-  if (cells.length && cells.at(-1).trim() === '') cells.pop();
-  return cells.length;
+/** Whether `head` and `delimiter` alone parse as a table: GFM's rules, not a copy of them. */
+function startsTable(head, delimiter) {
+  return (
+    delimiter?.includes('|') &&
+    head.includes('|') &&
+    fromMarkdown(`${head}\n${delimiter}`, OPTIONS).children[0]?.type === 'table'
+  );
 }
 
 /**
  * `md` with a blank line before each table whose rows lack `>` right after a
- * quote (fix-md-rendering-quoted-tables §3). micromark never starts a table on
- * a lazy continuation line, so the rows join the quote's paragraph as text;
- * the author meant a table after the quote. Only lines of a quoted paragraph
- * in `root` (the first parse) are candidates: code, HTML and the rest are
- * settled by the parser, not guessed here.
+ * quote (fix-md-rendering-quoted-tables §3), or undefined when there is none.
+ * micromark never starts a table on a lazy continuation line, so the rows join
+ * the quote's paragraph as text; the author meant a table after the quote.
+ * Only lines of a quoted paragraph in `root` (the first parse) are candidates:
+ * code, HTML and the rest are settled by the parser, not guessed here.
  */
 function unlazyTables(md, root) {
-  if (!md.includes('|')) return md;
-  const lazy = new Set(); // 0-based lines after the first of a quoted paragraph
+  if (!md.includes('|')) return undefined;
+  const lazy = []; // 0-based lines after the first of a quoted paragraph
   walk(root, (n) => {
     if (n.type !== 'blockquote') return;
     for (const p of n.children)
-      if (p.type === 'paragraph' && p.position)
-        for (let l = p.position.start.line; l < p.position.end.line; l++) lazy.add(l);
+      if (p.type === 'paragraph') for (let l = p.position.start.line; l < p.position.end.line; l++) lazy.push(l);
   });
-  if (!lazy.size) return md;
+  if (!lazy.length) return undefined;
   const lines = md.split('\n');
-  return lines
-    .flatMap((line, i) =>
-      lazy.has(i) &&
-      QUOTE_LINE.test(lines[i - 1]) &&
-      // 4+ columns (spaces or a tab) would turn the row into indented code once it isn't lazy.
-      /^ {0,3}[^ \t>]/.test(line) &&
-      line.includes('|') &&
-      lines[i + 1]?.includes('|') &&
-      DELIMITER_ROW.test(lines[i + 1]) &&
-      cellCount(line) === cellCount(lines[i + 1])
-        ? ['', line]
-        : [line],
-    )
-    .join('\n');
+  const starts = lazy.filter((i) => QUOTE_LINE.test(lines[i - 1]) && startsTable(lines[i], lines[i + 1]));
+  if (!starts.length) return undefined;
+  for (const i of starts.sort((a, b) => b - a)) lines.splice(i, 0, '');
+  return lines.join('\n');
 }
 
 /** The plain text of a node (heading slugs). */
