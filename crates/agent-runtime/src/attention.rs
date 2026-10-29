@@ -54,6 +54,23 @@ pub enum Status {
 
 impl Status {
     /// The §9.5 badge label (text with no badge prints `<label> · <reason>`).
+    pub fn label(self) -> &'static str {
+        match self {
+            Status::Working => "Working",
+            Status::WaitingForYou => "Waiting for you",
+            Status::WaitingGate => "At gate",
+            Status::Queued => "Queued",
+            Status::NotStarted => "Not started yet",
+            Status::Paused => "Paused",
+            Status::BlockedByLimit => "Blocked by limit",
+            Status::Idle => "Idle",
+            Status::Suspended => "Suspended",
+            Status::Error => "Error",
+            Status::Done => "Done",
+        }
+    }
+
+    /// [`Status::label`] of a serialized key.
     pub fn label_of(key: &str) -> &'static str {
         match key {
             "working" => "Working",

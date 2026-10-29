@@ -175,7 +175,8 @@ impl Runtime {
 
     /// One `pane_intervention` per wait episode: the same wait (cause and
     /// item; its start may move with the agent's events) typed into again
-    /// records nothing more.
+    /// records nothing more. `waited_on` is the agent's attention record's
+    /// wait kind (P4.1), `cause` the finer cause of [`wait_of`].
     fn note_intervention(&self, id: &str) {
         let Some((wait, run)) = self.store.read(|s| {
             wait_of(s, id).map(|w| (w, s.agents.get(id).and_then(|a| a.team.as_ref().map(|t| t.run_id.clone()))))
@@ -189,8 +190,10 @@ impl Runtime {
             }
             h.interventions.insert(id.to_string(), wait.clone());
         }
+        self.now_pump(false);
+        let kind = self.attention_of(id).and_then(|r| r.waiting_on).map(|w| w.kind.as_str());
         let detail = json!({
-            "waited_on": wait.cause, "item": wait.item, "since_ms": wait.since_ms,
+            "waited_on": kind.unwrap_or(wait.cause), "cause": wait.cause, "item": wait.item, "since_ms": wait.since_ms,
             "waited_ms": now_ms().saturating_sub(wait.since_ms), "team_run_id": run,
         });
         match &run {
@@ -279,7 +282,8 @@ mod tests {
         rt.note_intervention("a1");
         let ev = count();
         assert_eq!(ev.len(), 1, "one per episode");
-        assert_eq!((ev[0].detail["waited_on"].as_str(), ev[0].detail["item"].as_u64()), (Some("permission"), Some(p)));
+        let d = &ev[0].detail;
+        assert_eq!((d["waited_on"].as_str(), d["cause"].as_str(), d["item"].as_u64()), (Some("user"), Some("permission"), Some(p)));
         // A turn starts: a later wait on the same thing is a new episode.
         rt.end_wait_episode("a1");
         rt.note_intervention("a1");
