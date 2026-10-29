@@ -124,6 +124,7 @@ impl Fx {
                 feature: "checkout".into(),
                 phase_since_ms: NOW - 30 * MIN,
                 nodes: vec!["lead".into(), "back".into(), "front".into()],
+                held_in: None,
             });
         }
     }
@@ -948,4 +949,36 @@ fn queue_field_on_queued_and_not_started_agents() {
     assert_eq!(p.status, Status::Paused);
     assert_eq!(p.queue, None);
     assert!(serde_json::to_value(&p).unwrap().get("queue").is_none());
+}
+
+#[test]
+fn held_in_walks_back_past_paused_and_deferred() {
+    use RunState::*;
+    // Newest first: executing → paused → deferred (paused while deferred is not a move).
+    let moves = [(Paused, Deferred), (Executing, Paused), (Planning, Executing)];
+    assert_eq!(held_in(Deferred, &moves), Some(Executing));
+    assert_eq!(held_in(Paused, &moves[1..]), Some(Executing));
+    assert_eq!(held_in(Failed, &[(Integrating, Failed)]), Some(Integrating));
+    assert_eq!(held_in(Executing, &moves), None, "only held and failed phases");
+    assert_eq!(held_in(Paused, &[]), None, "no event, no step");
+}
+
+#[test]
+fn a_paused_run_has_held_in_and_a_deferred_one_until() {
+    let mut f = Fx::default();
+    f.member("back-1", "back", AgentState::Idle, None);
+    f.gov.week_resets_ms = Some(NOW + 3 * 60 * MIN);
+    f.phase(RunState::Paused);
+    f.runs[0].held_in = Some(RunState::Executing);
+    let r = f.world().runs["run-1"].clone();
+    assert_eq!((r.held_in, r.until_ms), (Some(RunState::Executing), None));
+    f.phase(RunState::Deferred);
+    let v = serde_json::to_value(&f.world().runs["run-1"]).unwrap();
+    assert_eq!((v["held_in"].clone(), v["until_ms"].clone()), (json!("executing"), json!(NOW + 3 * 60 * MIN)));
+    f.gov.week_resets_ms = None;
+    assert!(serde_json::to_value(&f.world().runs["run-1"]).unwrap().get("until_ms").is_none());
+    // Other phases carry neither.
+    f.phase(RunState::Executing);
+    let v = serde_json::to_value(&f.world().runs["run-1"]).unwrap();
+    assert!(v.get("held_in").is_none() && v.get("until_ms").is_none());
 }

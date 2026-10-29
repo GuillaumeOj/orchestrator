@@ -618,7 +618,23 @@ impl Runtime {
                 .flatten()
                 .map(|t| t.nodes.into_iter().map(|n| n.id).collect())
                 .unwrap_or_default();
+            let moves: Vec<_> = if matches!(
+                run.status,
+                orch_team::RunState::Paused | orch_team::RunState::Deferred | orch_team::RunState::Failed
+            ) {
+                let state = |v: &Value| serde_json::from_value(v.clone()).ok();
+                self.db
+                    .run_events(&run.id, 200)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|e| e.kind == "run.state" && e.detail.get("while").is_none())
+                    .filter_map(|e| Some((state(&e.detail["from"])?, state(&e.detail["to"])?)))
+                    .collect()
+            } else {
+                vec![]
+            };
             c.runs.push(RunFacts {
+                held_in: attention::held_in(run.status, &moves),
                 nodes,
                 project: feature.as_ref().map(|f| f.project_id.clone()).unwrap_or_default(),
                 feature: feature.as_ref().map(|f| f.slug.clone()).unwrap_or_else(|| run.feature_id.clone()),

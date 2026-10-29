@@ -215,6 +215,12 @@ pub struct RunAttention {
     pub tasks: TaskCounts,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr: Option<RunPr>,
+    /// Paused, deferred or failed only: the step the run left.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held_in: Option<RunState>,
+    /// Deferred only: when it resumes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until_ms: Option<u64>,
 }
 
 /// A run's tasks by status. Disjoint, except `blocked`: the not-done tasks
@@ -297,6 +303,28 @@ pub struct RunFacts {
     pub phase_since_ms: u64,
     /// The team's node ids in canvas order (members sort by it).
     pub nodes: Vec<String>,
+    /// The step a paused, deferred or failed run left ([`held_in`]).
+    pub held_in: Option<RunState>,
+}
+
+/// The step a `status` run left: the `from` of the `run.state` move that
+/// entered it, walking back past paused and deferred. `moves` are the
+/// run's `(from, to)` moves, newest first.
+pub fn held_in(status: RunState, moves: &[(RunState, RunState)]) -> Option<RunState> {
+    if !matches!(status, RunState::Paused | RunState::Deferred | RunState::Failed) {
+        return None;
+    }
+    let mut at = status;
+    let mut rest = moves;
+    loop {
+        let n = rest.iter().position(|(_, to)| *to == at)?;
+        let from = rest[n].0;
+        if !from.held() {
+            return Some(from);
+        }
+        at = from;
+        rest = &rest[n + 1..];
+    }
 }
 
 /// What the Governor says beyond its queue: usage limits ("5h window full ·
@@ -1128,7 +1156,8 @@ pub fn blocker(members: &[&AgentAttention]) -> Option<Blocker> {
 
 fn task_counts(tasks: &[&Task]) -> TaskCounts {
     let by_id: BTreeMap<u64, &Task> = tasks.iter().map(|t| (t.id, *t)).collect();
-    let done = |d: &str| d.parse::<u64>().ok().and_then(|id| by_id.get(&id)).is_some_and(|t| t.status == TaskStatus::Done);
+    let done =
+        |d: &str| d.parse::<u64>().ok().and_then(|id| by_id.get(&id)).is_some_and(|t| t.status == TaskStatus::Done);
     let mut c = TaskCounts { total: tasks.len() as u32, ..Default::default() };
     for t in tasks {
         match t.status {
@@ -1148,7 +1177,13 @@ fn task_counts(tasks: &[&Task]) -> TaskCounts {
 }
 
 /// The run's record from its members' records, its lead's agent id and its tasks.
-fn run_record(r: &RunFacts, members: &[&AgentAttention], lead: Option<&str>, tasks: &[&Task]) -> RunAttention {
+fn run_record(
+    r: &RunFacts,
+    members: &[&AgentAttention],
+    lead: Option<&str>,
+    tasks: &[&Task],
+    gov: &GovFacts,
+) -> RunAttention {
     let mut counts = Counts::default();
     for m in members {
         counts.add(m);
@@ -1176,10 +1211,9 @@ fn run_record(r: &RunFacts, members: &[&AgentAttention], lead: Option<&str>, tas
         lead: lead.map(str::to_string),
         started_ms: r.run.started_at_ms,
         tasks: task_counts(tasks),
-        pr: r.run.pr_url.as_ref().map(|url| RunPr {
-            url: url.clone(),
-            number: orch_store::pr_number_from_url(url),
-        }),
+        pr: r.run.pr_url.as_ref().map(|url| RunPr { url: url.clone(), number: orch_store::pr_number_from_url(url) }),
+        held_in: r.held_in.filter(|_| matches!(r.run.status, RunState::Paused | RunState::Deferred | RunState::Failed)),
+        until_ms: (r.run.status == RunState::Deferred).then_some(gov.week_resets_ms).flatten(),
     }
 }
 
@@ -1227,7 +1261,7 @@ pub fn compute(i: &Inputs, now_ms: u64) -> World {
                 .map(|a| a.id.as_str());
             let run_tasks: Vec<&Task> =
                 i.tasks.iter().filter(|t| t.team_run_id.as_deref() == Some(r.run.id.as_str())).collect();
-            let mut rec = run_record(r, &members, lead, &run_tasks);
+            let mut rec = run_record(r, &members, lead, &run_tasks, i.gov);
             rec.counts.decisions = members.iter().map(|m| by_agent.get(m.agent.as_str()).copied().unwrap_or(0)).sum();
             (r.run.id.clone(), rec)
         })
