@@ -1134,10 +1134,8 @@ impl Core {
                     .collect();
                 // For the docs' images (`feature_asset`); a gate from before it
                 // names only its run, which names the feature.
-                let feature_id = p
-                    .get("feature_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
+                let feature_id = Some(s("feature_id"))
+                    .filter(|f| !f.is_empty())
                     .or_else(|| rt.db.run(&s("run")).ok().flatten().map(|r| r.feature_id));
                 Ok(json!({"action": "spec_approval", "summary": s("summary"), "docs": docs, "feature_id": feature_id}))
             }

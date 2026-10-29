@@ -38,13 +38,12 @@ impl IdArg {
 /// goes to `/usr/bin/open` as one argument).
 pub fn checked_url(url: &str) -> Result<&str> {
     let u = url.trim();
-    let target = match u.strip_prefix("mailto:") {
-        Some(r) => Some(r.split('?').next().unwrap_or("")),
-        None => u
-            .strip_prefix("https://")
-            .or_else(|| u.strip_prefix("http://"))
-            .map(|r| r.split(['/', '?', '#']).next().unwrap_or("")),
-    };
+    // The host, or the mailto address.
+    let target = u
+        .strip_prefix("mailto:")
+        .or_else(|| u.strip_prefix("https://"))
+        .or_else(|| u.strip_prefix("http://"))
+        .and_then(|r| r.split(['/', '?', '#']).next());
     let ok = target.is_some_and(|t| !t.is_empty() && !t.starts_with('-'))
         && !u.chars().any(|c| c.is_whitespace() || c.is_control());
     if !ok {

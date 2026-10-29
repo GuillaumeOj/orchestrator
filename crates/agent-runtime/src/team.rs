@@ -1671,15 +1671,22 @@ impl Runtime {
     }
 }
 
-/// The docs folder of a feature in a worktree.
-fn feature_docs_dir(worktree: &Path, slug: &str) -> std::path::PathBuf {
-    worktree.join(".orchestrator").join("features").join(slug)
+/// The docs folder of a feature in a worktree, canonical. Refused when it
+/// (or `.orchestrator`) is a symlink out of the worktree: every read below
+/// is confined to it.
+fn feature_docs_dir(worktree: &Path, slug: &str) -> Result<std::path::PathBuf> {
+    let dir = worktree.join(".orchestrator").join("features").join(slug);
+    let (Ok(dir), Ok(top)) = (dir.canonicalize(), worktree.canonicalize()) else { bail!("not found") };
+    if !dir.starts_with(&top) {
+        bail!("outside the feature folder");
+    }
+    Ok(dir)
 }
 
 /// The markdown files in the feature's docs folder of a worktree.
 pub fn feature_docs(worktree: &Path, slug: &str) -> Vec<String> {
-    let dir = feature_docs_dir(worktree, slug);
-    let mut v: Vec<String> = std::fs::read_dir(&dir)
+    let mut v: Vec<String> = feature_docs_dir(worktree, slug)
+        .and_then(|dir| Ok(std::fs::read_dir(dir)?))
         .into_iter()
         .flatten()
         .flatten()
@@ -1696,7 +1703,7 @@ pub fn read_feature_doc(worktree: &Path, slug: &str, name: &str) -> Result<Strin
     if name.contains('/') || name.contains("..") || !name.ends_with(".md") {
         bail!("invalid doc name {name:?}");
     }
-    let p = feature_docs_dir(worktree, slug).join(name);
+    let p = feature_docs_dir(worktree, slug).with_context(|| format!("docs of {slug}"))?.join(name);
     let text = std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?;
     Ok(cut(&text, 200_000))
 }
@@ -1717,17 +1724,13 @@ pub fn read_feature_asset(worktree: &Path, slug: &str, path: &str) -> Result<Val
         bail!("outside the feature folder");
     }
     let mime = orch_team::artifact::doc_image_mime(path).ok_or_else(|| anyhow!("not an image"))?;
-    let dir = feature_docs_dir(worktree, slug);
+    let dir = feature_docs_dir(worktree, slug)?;
     let p = dir.join(rel);
     if std::fs::symlink_metadata(&p).map_err(|_| not_found())?.file_type().is_symlink() {
         bail!("outside the feature folder");
     }
-    let (Ok(real), Ok(root), Ok(top)) = (p.canonicalize(), dir.canonicalize(), worktree.canonicalize()) else {
-        return Err(not_found());
-    };
-    // The folder itself (or `.orchestrator`) symlinked out of the worktree
-    // would move the confinement with it.
-    if !real.starts_with(&root) || !root.starts_with(&top) {
+    let real = p.canonicalize().map_err(|_| not_found())?;
+    if !real.starts_with(&dir) {
         bail!("outside the feature folder");
     }
     // The checks above are on the path; the read is on a handle that can't
@@ -2263,9 +2266,12 @@ mod tests {
         let out = d.path().join("elsewhere");
         std::fs::create_dir_all(&out).unwrap();
         std::fs::write(out.join("x.png"), b"x").unwrap();
+        std::fs::write(out.join("spec.md"), "# S").unwrap();
         let wt = d.path().join("wt");
         std::fs::create_dir_all(wt.join(".orchestrator/features")).unwrap();
         std::os::unix::fs::symlink(&out, wt.join(".orchestrator/features/g")).unwrap();
         assert_eq!(read_feature_asset(&wt, "g", "x.png").unwrap_err().to_string(), "outside the feature folder");
+        assert!(feature_docs(&wt, "g").is_empty());
+        assert!(read_feature_doc(&wt, "g", "spec.md").is_err());
     }
 }
