@@ -643,8 +643,10 @@
               {#each roles as r (r.id)}<option value={r.id}>{r.name}</option>{/each}
             </select>
           </label>
-          <ModelSelect label="model" value={role.model} onsave={(model) => saveRole({ model })} />
-          <ModelSelect label="node model" value={node.overrides?.model} emptyLabel={role.model ? `role: ${role.model}` : undefined} onsave={(model) => edit(C.setNodeModel(team, node.id, model))} />
+          {#key `${node.id}:${node.role_id}`}
+            <ModelSelect label="model" value={role.model} onsave={(model) => saveRole({ model })} />
+            <ModelSelect label="node model" value={node.overrides?.model} emptyLabel={role.model ? `role: ${role.model}` : undefined} onsave={(model) => edit(C.setNodeModel(team, node.id, model))} />
+          {/key}
           <label><span>effort</span>
             <select class="field" value={role.effort ?? ''} onchange={(e) => saveRole({ effort: e.currentTarget.value || null })}>
               {#each ['', 'low', 'medium', 'high'] as v (v)}<option value={v}>{v || 'default'}</option>{/each}
