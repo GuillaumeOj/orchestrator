@@ -347,7 +347,7 @@ pub async fn report_view(core: CoreState<'_>, id: String) -> Res<Value> {
     blocking(core, move |c| c.report_view(&id)).await
 }
 
-/// An http(s) link in the default browser (any other scheme is refused).
+/// An http(s) or mailto link in the default app (any other scheme is refused).
 #[tauri::command]
 pub async fn open_url(core: CoreState<'_>, url: String) -> Res<()> {
     blocking(core, move |c| c.open_url(&url)).await

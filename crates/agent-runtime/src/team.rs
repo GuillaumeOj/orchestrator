@@ -1722,12 +1722,17 @@ pub fn read_feature_asset(worktree: &Path, slug: &str, path: &str) -> Result<Val
     if std::fs::symlink_metadata(&p).map_err(|_| not_found())?.file_type().is_symlink() {
         bail!("outside the feature folder");
     }
-    let (Ok(real), Ok(root)) = (p.canonicalize(), dir.canonicalize()) else { return Err(not_found()) };
-    if !real.starts_with(&root) {
+    let (Ok(real), Ok(root), Ok(top)) = (p.canonicalize(), dir.canonicalize(), worktree.canonicalize()) else {
+        return Err(not_found());
+    };
+    // The folder itself (or `.orchestrator`) symlinked out of the worktree
+    // would move the confinement with it.
+    if !real.starts_with(&root) || !root.starts_with(&top) {
         bail!("outside the feature folder");
     }
     // The checks above are on the path; the read is on a handle that can't
-    // follow a symlink swapped in since, re-checked and capped (the worktree
+    // follow a symlink swapped in as the file since (a directory above it
+    // swapped in between is not caught), re-checked and capped (the worktree
     // is the agents' to change while we read).
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -2253,5 +2258,14 @@ mod tests {
         assert_eq!(err("design/missing.png"), "not found");
         assert_eq!(err("design"), "not an image");
         assert_eq!(err("big.png"), "too large (5.0 MB)");
+
+        // A feature folder symlinked out of the worktree confines nothing.
+        let out = d.path().join("elsewhere");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("x.png"), b"x").unwrap();
+        let wt = d.path().join("wt");
+        std::fs::create_dir_all(wt.join(".orchestrator/features")).unwrap();
+        std::os::unix::fs::symlink(&out, wt.join(".orchestrator/features/g")).unwrap();
+        assert_eq!(read_feature_asset(&wt, "g", "x.png").unwrap_err().to_string(), "outside the feature folder");
     }
 }

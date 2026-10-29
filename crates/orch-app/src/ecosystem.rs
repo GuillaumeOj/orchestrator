@@ -39,7 +39,7 @@ impl IdArg {
 pub fn checked_url(url: &str) -> Result<&str> {
     let u = url.trim();
     let target = match u.strip_prefix("mailto:") {
-        Some(addr) => Some(addr),
+        Some(r) => Some(r.split('?').next().unwrap_or("")),
         None => u
             .strip_prefix("https://")
             .or_else(|| u.strip_prefix("http://"))
@@ -54,8 +54,8 @@ pub fn checked_url(url: &str) -> Result<&str> {
 }
 
 impl Core {
-    /// `open_url`: an http(s) link in the default browser (D3: the claude.ai
-    /// connector settings for a connector's reconnect).
+    /// `open_url`: an http(s) or mailto link in the default app (D3: the
+    /// claude.ai connector settings for a connector's reconnect; links in docs).
     pub fn open_url(&self, url: &str) -> Result<()> {
         let u = checked_url(url)?;
         let st = std::process::Command::new("/usr/bin/open").arg(u).status()?;
@@ -190,6 +190,7 @@ mod tests {
             "/Applications/X.app",
             "HTTPS://x",
             "mailto:",
+            "mailto:?subject=Hi",
             "mailto:-x",
             "mailto:a@b.co\u{7}",
             "mailto:a@b.co\nx",

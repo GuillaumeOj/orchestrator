@@ -48,7 +48,7 @@ pub fn image_mime(path: &str) -> Option<&'static str> {
 /// The MIME type of an image a feature doc can show: the previewable ones
 /// and GIF (not previewed in the Design section).
 pub fn doc_image_mime(path: &str) -> Option<&'static str> {
-    image_mime(path).or_else(|| path.to_ascii_lowercase().ends_with(".gif").then_some("image/gif"))
+    image_mime(path).or_else(|| path.rsplit_once('.')?.1.eq_ignore_ascii_case("gif").then_some("image/gif"))
 }
 
 fn percent_decode(s: &str) -> String {

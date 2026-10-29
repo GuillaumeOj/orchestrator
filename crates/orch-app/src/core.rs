@@ -1132,10 +1132,14 @@ impl Core {
                         json!({"name": name, "text": text})
                     })
                     .collect();
-                // For the docs' images (`feature_asset`); a gate from before it has none.
-                Ok(
-                    json!({"action": "spec_approval", "summary": s("summary"), "docs": docs, "feature_id": p.get("feature_id")}),
-                )
+                // For the docs' images (`feature_asset`); a gate from before it
+                // names only its run, which names the feature.
+                let feature_id = p
+                    .get("feature_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| rt.db.run(&s("run")).ok().flatten().map(|r| r.feature_id));
+                Ok(json!({"action": "spec_approval", "summary": s("summary"), "docs": docs, "feature_id": feature_id}))
             }
             "push_pr" => {
                 let d = orch_git::diff::diff(&wt, &s("base"), DIFF_PATCH_MAX)?;
