@@ -144,6 +144,9 @@ pub struct Live {
     pub last_user_input_ms: AtomicU64,
     /// The `--model` it was started with (FR-819 switches at a task boundary).
     pub model: Option<String>,
+    /// The task `model` was chosen for (0 = none): a task keeps its model
+    /// between its turns, only a new task is a boundary.
+    pub task: AtomicU64,
     /// The last paste of a turn (activity for least-recently-active, FR-203).
     pub pasted_at_ms: AtomicU64,
     /// Started with `--resume` (else a new session, the fresh retry of
@@ -911,6 +914,7 @@ impl Runtime {
                 ready_at_ms: AtomicU64::new(0),
                 last_user_input_ms: AtomicU64::new(0),
                 model: role.model.clone(),
+                task: AtomicU64::new(rec.team.as_ref().and_then(|t| t.task).unwrap_or(0)),
                 pasted_at_ms: AtomicU64::new(0),
                 resumed,
             }),
@@ -2676,6 +2680,34 @@ pub(crate) mod tests {
         let rt = Runtime::new(test_cfg(d.path(), shadow)).unwrap();
         rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
         (d, rt)
+    }
+
+    /// A live process (a shell that sleeps) standing for `id` on `model`.
+    pub(crate) fn insert_test_live(rt: &Runtime, id: &str, model: Option<&str>, task: u64, dir: &Path) {
+        let cfg = crate::compile::Compiled {
+            agent_dir: dir.into(),
+            settings_path: Default::default(),
+            mcp_path: Default::default(),
+            gitconfig_path: Default::default(),
+            settings: Value::Null,
+            mcp: Value::Null,
+            gitconfig: String::new(),
+            program: "/bin/sleep".into(),
+            args: vec!["60".into()],
+            env: [("PATH".to_string(), "/usr/bin:/bin".to_string())].into(),
+            cwd: dir.into(),
+        };
+        let pty = PtyProcess::spawn(&cfg, 24, 80, None, Box::new(|_| {})).unwrap();
+        let live = Live {
+            pty,
+            ready_at_ms: AtomicU64::new(0),
+            last_user_input_ms: AtomicU64::new(0),
+            model: model.map(Into::into),
+            task: AtomicU64::new(task),
+            pasted_at_ms: AtomicU64::new(0),
+            resumed: false,
+        };
+        rt.live.lock().unwrap().insert(id.into(), Arc::new(live));
     }
 
     pub(crate) fn test_agent(dir: &Path) -> AgentRecord {

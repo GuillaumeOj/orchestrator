@@ -4,6 +4,7 @@
 //! for it on AC.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::Ordering;
 
 use anyhow::{Result, anyhow, bail};
 use governor::AgentId;
@@ -12,7 +13,7 @@ use orch_protocol::now_ms;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::runtime::Runtime;
+use crate::runtime::{Live, Runtime};
 use crate::state::AgentState;
 use crate::store::AgentRecord;
 
@@ -37,11 +38,39 @@ pub struct PowerState {
     pub off_hours_pending: usize,
 }
 
+/// The task an agent's seat works on.
+fn seat_task(rec: &AgentRecord) -> Option<u64> {
+    rec.team.as_ref()?.task
+}
+
+/// The process already runs the seat's task: it keeps its model between the
+/// turns of a task (a switch costs the prompt cache).
+fn keeps_model(rec: &AgentRecord, live: &Live) -> bool {
+    seat_task(rec).is_some_and(|t| live.task.load(Ordering::Relaxed) == t)
+}
+
 impl Runtime {
-    /// The model an agent's next turn runs on: a downgrade in force, else its role's.
+    /// The model an agent's next turn runs on. A task keeps the model its
+    /// process runs on between its turns (a switch only happens at a task
+    /// boundary); else [`Runtime::wanted_model`].
     pub(crate) fn turn_model(&self, rec: &AgentRecord) -> Option<String> {
-        let o = self.with_governor(|g| g.model_override(&AgentId(rec.id.clone())).map(|o| o.to.clone()));
-        o.or_else(|| rec.role.model.clone())
+        match self.live(&rec.id) {
+            Some(l) if keeps_model(rec, &l) => l.model.clone(),
+            _ => self.wanted_model(rec),
+        }
+    }
+
+    /// The model a new task of the agent should run on: the task's own, else
+    /// the downgrade in force (FR-819), else the node's or role's.
+    fn wanted_model(&self, rec: &AgentRecord) -> Option<String> {
+        self.task_model(rec)
+            .or_else(|| self.with_governor(|g| g.model_override(&AgentId(rec.id.clone())).map(|o| o.to.clone())))
+            .or_else(|| rec.role.model.clone())
+    }
+
+    /// The model the lead set on the agent's current task.
+    fn task_model(&self, rec: &AgentRecord) -> Option<String> {
+        self.db.task(seat_task(rec)?).ok().flatten()?.flow.model
     }
 
     /// The agent header's note while a downgrade is in force ("downgraded (Red)").
@@ -49,32 +78,48 @@ impl Runtime {
         self.with_governor(|g| g.model_override(&AgentId(id.into())).map(|o| o.note()))
     }
 
-    /// FR-819 at a task boundary (the agent's next turn is a new task): the
-    /// Governor decides the model of the task; an agent running another one
-    /// is suspended while idle (never mid-turn) and resumed with `--model`
-    /// by the pump. True while the switch is under way (the task waits).
+    /// A task boundary (the agent's next turn is a new task, FR-819): where
+    /// the model may change, never mid-turn and never between the turns of
+    /// one task (that would throw the prompt cache away). The model of the
+    /// task is its own (`flow.model`), else the Governor's downgrade, else
+    /// the node's. An agent running another one is suspended while idle and
+    /// resumed with `--model` by the pump. True while the switch is under way
+    /// (the task waits).
     pub(crate) fn task_boundary(&self, rec: &AgentRecord) -> bool {
         let agent = AgentId(rec.id.clone());
-        let rule = rec.role.downgrade.as_ref();
-        if rule.is_none() && self.with_governor(|g| g.model_override(&agent).is_none()) {
+        let task = seat_task(rec);
+        let live = self.live(&rec.id);
+        if live.as_ref().is_some_and(|l| keeps_model(rec, l)) {
             return false;
         }
-        let model = rec.role.model.as_deref();
-        // A look first: the write (and its carry save) only when something changes.
-        let settled = self.with_governor(|g| g.task_boundary_settled(&agent, model, rule, Timestamp::now()));
-        let want = match settled {
-            Some(m) => m,
-            None => self.governor_act(|g, now| (g.task_boundary_model(&agent, model, rule, now), Vec::new())),
-        }
-        .or_else(|| rec.role.model.clone());
-        let Some(l) = self.live(&rec.id) else { return false };
+        let rule = rec.role.downgrade.as_ref();
+        // An explicit task model wins over a downgrade, which is not asked.
+        let (want, why) = if let Some(m) = self.task_model(rec) {
+            (Some(m), "task")
+        } else if rule.is_none() && self.with_governor(|g| g.model_override(&agent).is_none()) {
+            (rec.role.model.clone(), "restore")
+        } else {
+            let model = rec.role.model.as_deref();
+            // A look first: the write (and its carry save) only when something changes.
+            let settled = self.with_governor(|g| g.task_boundary_settled(&agent, model, rule, Timestamp::now()));
+            let down = match settled {
+                Some(m) => m,
+                None => self.governor_act(|g, now| (g.task_boundary_model(&agent, model, rule, now), Vec::new())),
+            };
+            match down {
+                Some(m) => (Some(m), "downgrade"),
+                None => (rec.role.model.clone(), "restore"),
+            }
+        };
+        let Some(l) = live else { return false };
         if l.model == want {
+            l.task.store(task.unwrap_or(0), Ordering::Relaxed);
             return false;
         }
         if rec.tracker.state == AgentState::Idle {
             let from = l.model.clone();
             match self.suspend(&rec.id) {
-                Ok(_) => self.event(&rec.id, "model_switch", json!({"from": from, "to": want})),
+                Ok(_) => self.event(&rec.id, "model_switch", json!({"from": from, "to": want, "why": why})),
                 Err(e) => {
                     // The task runs on the current model rather than wait for
                     // a switch that keeps failing (and log it at every pump).
@@ -258,7 +303,7 @@ mod tests {
 
     use super::*;
     use crate::power::{FakePower, PowerAssertion};
-    use crate::runtime::tests::{test_agent, test_cfg};
+    use crate::runtime::tests::{insert_test_live, test_agent, test_cfg};
     use crate::state::TurnOrigin;
 
     #[derive(Debug, Default)]
@@ -322,6 +367,107 @@ mod tests {
         assert_eq!(d2.effective, Verdict::Admit, "the task runs on sonnet");
         assert!(rt.with_governor(|g| g.actions().iter().any(|a| a.kind_name() == "downgrade")));
         assert_eq!(rt.model_note("a1"), None);
+    }
+
+    /// A team seat of `a2` working on task `id`, whose model is `model`.
+    fn seat_on(rt: &Runtime, agent: &str, id: u64, model: Option<&str>) {
+        let mut t = orch_store::Task::new("p", "", "T", 1);
+        t.id = id;
+        t.flow.model = model.map(Into::into);
+        rt.db.upsert_task(&t).unwrap();
+        rt.store
+            .write(|s| {
+                s.agents.get_mut(agent).unwrap().team = Some(crate::store::TeamSeat {
+                    run_id: "r".into(),
+                    node: "back".into(),
+                    feature_id: "f".into(),
+                    project_id: "p".into(),
+                    task: Some(id),
+                })
+            })
+            .unwrap();
+    }
+
+    fn rec(rt: &Runtime, id: &str) -> AgentRecord {
+        rt.store.read(|s| s.agents[id].clone())
+    }
+
+    fn switches(rt: &Runtime) -> Vec<Value> {
+        rt.db.flush().unwrap();
+        rt.db.events(0, Some("a1"), Some("model_switch"), 10).unwrap().into_iter().rev().map(|e| e.detail).collect()
+    }
+
+    /// Spec §2.2: a task with a model runs on it (the agent is suspended
+    /// while idle and resumed with `--model`); the next task without one
+    /// goes back to the role's model.
+    #[test]
+    fn a_task_model_switches_at_the_task_boundary_and_back_at_the_next_task() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        agent(&rt, d.path(), "a1", "sonnet", None);
+        seat_on(&rt, "a1", 1, Some("opus"));
+        insert_test_live(&rt, "a1", Some("sonnet"), 0, d.path());
+        assert_eq!(rt.turn_model(&rec(&rt, "a1")).as_deref(), Some("opus"), "the spawn after the switch");
+
+        assert!(rt.task_boundary(&rec(&rt, "a1")), "waits for the switch");
+        assert_eq!(switches(&rt), vec![json!({"from": "sonnet", "to": "opus", "why": "task"})]);
+
+        // The process resumed with opus for task 1; the next task has no model.
+        insert_test_live(&rt, "a1", Some("opus"), 1, d.path());
+        seat_on(&rt, "a1", 2, None);
+        assert_eq!(rt.turn_model(&rec(&rt, "a1")).as_deref(), Some("sonnet"));
+        assert!(rt.task_boundary(&rec(&rt, "a1")));
+        assert_eq!(switches(&rt)[1], json!({"from": "opus", "to": "sonnet", "why": "restore"}));
+    }
+
+    /// An explicit task model wins over a downgrade in force.
+    #[test]
+    fn a_task_model_wins_over_a_downgrade() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        let rule = Downgrade { to: "sonnet".into(), when: DowngradeWhen::ModelWindow };
+        agent(&rt, d.path(), "a1", "opus", Some(rule));
+        let reset = rt.with_governor(|g| g.plan().reset_at.as_second());
+        rt.on_status(&StatusMsg {
+            agent_id: "a1".into(),
+            ts_ms: now_ms(),
+            payload: json!({"session_id": "s", "model": {"id": "claude-opus-4-1"}, "cost": {"total_cost_usd": 0.5},
+                "rate_limits": {"seven_day": {"used_percentage": 40, "resets_at": reset},
+                    "seven_day_opus": {"used_percentage": 95, "resets_at": reset}}}),
+        });
+        // No task model: the downgrade applies at the boundary.
+        seat_on(&rt, "a1", 1, None);
+        rt.task_boundary(&rec(&rt, "a1"));
+        assert_eq!(rt.turn_model(&rec(&rt, "a1")).as_deref(), Some("sonnet"));
+        assert!(rt.model_note("a1").is_some());
+        // The next task asks for opus: it gets it, the downgrade stays in force.
+        seat_on(&rt, "a1", 2, Some("opus"));
+        assert_eq!(rt.turn_model(&rec(&rt, "a1")).as_deref(), Some("opus"));
+        seat_on(&rt, "a1", 3, Some("haiku"));
+        assert_eq!(rt.turn_model(&rec(&rt, "a1")).as_deref(), Some("haiku"));
+        assert!(rt.model_note("a1").is_some());
+    }
+
+    /// A task already running keeps its model between its turns: a change by
+    /// `update_task` applies to its next run (a new boundary) only.
+    #[test]
+    fn a_running_task_keeps_its_model_between_its_turns() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        agent(&rt, d.path(), "a1", "sonnet", None);
+        seat_on(&rt, "a1", 1, None);
+        insert_test_live(&rt, "a1", Some("sonnet"), 1, d.path());
+        // The lead changes the model of the running task.
+        seat_on(&rt, "a1", 1, Some("opus"));
+        let r = rec(&rt, "a1");
+        assert!(!rt.task_boundary(&r), "its self-review turn does not switch");
+        assert_eq!(rt.turn_model(&r).as_deref(), Some("sonnet"));
+        assert_eq!(switches(&rt), Vec::<Value>::new());
+        // Sent back after a merge: the seat was freed, the task is new again.
+        rt.free_seat("a1", 1);
+        seat_on(&rt, "a1", 1, Some("opus"));
+        assert_eq!(rt.turn_model(&rec(&rt, "a1")).as_deref(), Some("opus"));
+        assert!(rt.task_boundary(&rec(&rt, "a1")));
     }
 
     /// Spec §6 item 8: a queued entry marked "Run off-hours" waits for its

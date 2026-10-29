@@ -131,6 +131,18 @@ pub(crate) fn str_arg<'a>(args: &'a Value, k: &str) -> Option<&'a str> {
     args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
 }
 
+/// The `model` argument of `create_task` / `update_task`: `None` when absent,
+/// `Some(None)` when empty (no task model), else the trimmed model.
+fn model_arg(args: &Value) -> Result<Option<Option<String>>> {
+    let Some(m) = args.get("model").and_then(Value::as_str).map(str::trim) else { return Ok(None) };
+    if m.chars().any(char::is_whitespace) || m.chars().count() > 64 || m.starts_with('-') {
+        bail!(
+            "`model` is an alias (opus, sonnet, haiku, fable) or a model id: no spaces, no leading dash, 64 characters at most"
+        );
+    }
+    Ok(Some(Some(m.to_string()).filter(|m| !m.is_empty())))
+}
+
 pub fn agent_id_for(slug: &str, node: &str, n: u32) -> String {
     format!("{slug}-{node}-{n}")
 }
@@ -1151,6 +1163,16 @@ impl Runtime {
                 seat.task = None;
             }
         });
+        // The next task, even this one sent back, is a model boundary again.
+        // (Only if the process still runs for this task: the seat may already be on the next one.)
+        if let Some(l) = self.live(agent) {
+            let _ = l.task.compare_exchange(
+                task,
+                0,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
     }
 
     /// Adds a node to a running team (FR-406): the team gets a new version,
@@ -1380,6 +1402,7 @@ impl Runtime {
                         _ => bail!("a new task is ready or backlog"),
                     },
                 };
+                let model = model_arg(args)?.flatten();
                 let mut t = Task::new(&cx.project.id, "", title, now_ms());
                 t.title = cut(title, 200);
                 t.body = cut(str_arg(args, "body").unwrap_or(""), MAX_BODY);
@@ -1389,6 +1412,7 @@ impl Runtime {
                 t.feature_id = Some(cx.feature.id.clone());
                 t.team_run_id = Some(cx.run.id.clone());
                 t.flow.plan_first = args.get("plan_first").and_then(Value::as_bool).unwrap_or(false);
+                t.flow.model = model;
                 let out = self.tasks_of(&cx).create(t)?;
                 let t = out.value;
                 self.run_event(
@@ -1409,6 +1433,8 @@ impl Runtime {
                 if !is_lead && t.node.as_deref() != Some(me) {
                     bail!("you can only update your own tasks");
                 }
+                // Validated before any change (a reassignment below is written at once).
+                let model = model_arg(args)?;
                 if let Some(node) = str_arg(args, "node") {
                     if !is_lead {
                         bail!("only the lead reassigns tasks");
@@ -1420,6 +1446,12 @@ impl Runtime {
                         bail!("only the lead asks for a plan first");
                     }
                     t.flow.plan_first = p;
+                }
+                if let Some(m) = model {
+                    if !is_lead {
+                        bail!("only the lead sets a task's model");
+                    }
+                    t.flow.model = m;
                 }
                 if let Some(s) = str_arg(args, "status") {
                     let s: TaskStatus = s.parse().map_err(|e: String| anyhow!(e))?;
@@ -2032,6 +2064,41 @@ mod tests {
         ok(&rt, lead, "decide_plan", json!({"task": task, "approve": true}));
         assert!(queued(&rt, back).iter().any(|b| b.contains("is approved")));
         assert!(edit(&rt).is_none(), "edits allowed once approved");
+    }
+
+    #[test]
+    fn a_task_model_is_stored_changed_cleared_and_validated() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        let model = |id: u64| rt.db.task(id).unwrap().unwrap().flow.model;
+        let create = |args: Value| call(&rt, lead, "create_task", args);
+        let t = |m: &str| json!({"title": "API", "node": "back", "model": m});
+        let (err, text) = create(t("  opus "));
+        assert!(!err, "{text}");
+        let made = rt.db.tasks(None, None, None).unwrap();
+        let a = made.iter().find(|t| t.flow.model.is_some()).expect("stored, trimmed").id;
+        assert_eq!(model(a).as_deref(), Some("opus"));
+        let (err, text) = create(t("claude opus"));
+        assert!(err && text.contains("no spaces"), "{text}");
+        let (err, _) = create(t(&"x".repeat(65)));
+        assert!(err, "too long");
+        // Empty at creation means none.
+        let (err, text) = create(t(""));
+        assert!(!err, "{text}");
+        let none = rt.db.tasks(None, None, None).unwrap().iter().map(|t| t.id).max().unwrap();
+        assert_eq!(model(none), None);
+
+        ok(&rt, lead, "update_task", json!({"id": a, "model": "sonnet"}));
+        assert_eq!(model(a).as_deref(), Some("sonnet"));
+        let (err, text) = call(&rt, lead, "update_task", json!({"id": a, "model": "a b"}));
+        assert!(err && text.contains("no spaces"), "{text}");
+        assert_eq!(model(a).as_deref(), Some("sonnet"), "a refused update changes nothing");
+        rt.team_tick();
+        let (err, text) = call(&rt, back, "update_task", json!({"id": a, "model": "opus"}));
+        assert!(err && text.contains("only the lead"), "{text}");
+        ok(&rt, lead, "update_task", json!({"id": a, "model": ""}));
+        assert_eq!(model(a), None, "cleared");
     }
 
     #[test]
