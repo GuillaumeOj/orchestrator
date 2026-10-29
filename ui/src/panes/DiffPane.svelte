@@ -26,20 +26,16 @@
   const totals = $derived({ added: files.reduce((n, f) => n + (f.added ?? 0), 0), deleted: files.reduce((n, f) => n + (f.deleted ?? 0), 0) });
   const canPr = $derived(!!d?.branch && d.branch !== d.against);
 
-  let loading = false;
   async function load() {
-    if (loading) return; // a slow git must not stack up loads
-    loading = true;
     try {
       d = await invoke('worktree_diff', { project: spec.projectId, path: spec.path });
       err = null;
     } catch (e) {
       err = errText(e);
-    } finally {
-      loading = false;
     }
   }
-  // Refetched when a file in the worktree changed (an agent's edit, a commit, a merge).
+  // Refetched when a file in the worktree changed (an agent's edit, a commit, a
+  // merge); onTopics keeps a slow git from stacking loads up.
   onMount(() => onTopics([`worktree:${spec.path}`], load));
 
   function move(delta) {

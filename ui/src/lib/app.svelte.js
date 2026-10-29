@@ -9,7 +9,7 @@ import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
 import * as L from './layout.js';
-import { needsYou } from './now.svelte.js';
+import { needsYou, statusOf } from './now.svelte.js';
 import { runCost, STATUS } from './status.js';
 import { runStateLabel } from './teams.js';
 import { TermPane } from './term.js';
@@ -1072,10 +1072,9 @@ export function jumpTargets() {
   const rank = (a) => (first.includes(a.id) ? first.indexOf(a.id) : first.length);
   for (const a of [...agents()].sort((x, y) => rank(x) - rank(y))) {
     const p = projects().find((x) => x.id === a.project_id);
-    const r = app.now.agents[a.id];
     out.push({
       label: `${p?.name ?? ''} › ${a.id}`,
-      detail: STATUS[r?.status]?.label ?? '',
+      detail: STATUS[statusOf(a.id)].label,
       run: () => openAgent(a.id),
     });
   }

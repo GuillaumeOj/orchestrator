@@ -11,7 +11,7 @@
   // i interrupt, s suspend, r resume, K kill (asks first), p pause.
   import { activeAgents, agentAction, app, cancelQueued, confirm, openAgent, projects, run, runNow } from '../lib/app.svelte.js';
   import { duration, mb } from '../lib/format.js';
-  import { attention, counts } from '../lib/now.svelte.js';
+  import { attention, counts, governorReason, liveText, statusOf } from '../lib/now.svelte.js';
   import { runCost, STATUS, sessionPp } from '../lib/status.js';
 
   let { paneId } = $props();
@@ -20,7 +20,6 @@
   let selected = $state(null);
   let collapsed = $state({});
 
-  const status = (a) => attention(a.id)?.status ?? 'idle';
   const level = (a) => attention(a.id)?.level;
   const c = $derived(counts());
   // `count`: the core's number where it has one (it agrees with every surface).
@@ -29,14 +28,14 @@
     { id: 'need', label: 'Need you', test: (a) => level(a) === 'needs_you', count: 'needs_you' },
     { id: 'live', label: 'Live', test: (a) => !!attention(a.id)?.live, count: 'live' },
     { id: 'queued', label: 'Queued', test: (a) => level(a) === 'queued', count: 'queued' },
-    { id: 'suspended', label: 'Suspended', test: (a) => status(a) === 'suspended' },
+    { id: 'suspended', label: 'Suspended', test: (a) => statusOf(a.id) === 'suspended' },
   ];
   const list = $derived(activeAgents());
   const shown = $derived(list.filter(FILTERS.find((f) => f.id === filter).test));
   const groups = $derived.by(() => {
     if (groupBy === 'state') {
       return Object.keys(STATUS)
-        .map((s) => ({ id: s, title: STATUS[s].label, rows: shown.filter((a) => status(a) === s) }))
+        .map((s) => ({ id: s, title: STATUS[s].label, rows: shown.filter((a) => statusOf(a.id) === s) }))
         .filter((g) => g.rows.length);
     }
     const out = projects().map((p) => ({ id: p.id, title: p.name, project: p, rows: shown.filter((a) => a.project_id === p.id) }));
@@ -45,7 +44,7 @@
     return out;
   });
   const flat = $derived(groups.flatMap((g) => (collapsed[g.id] ? [] : g.rows)));
-  const suspended = $derived(list.filter((a) => status(a) === 'suspended').length);
+  const suspended = $derived(list.filter((a) => statusOf(a.id) === 'suspended').length);
   const claudeMb = $derived(list.reduce((s, a) => s + (a.memory_mb ?? 0), 0));
 
   function usage(a) {
@@ -116,7 +115,7 @@
               {@const rec = attention(a.id)}
               {@const fresh = rec?.status === 'not_started'}
               <tr class:sel={selected === a.id} onclick={() => (selected = a.id)} ondblclick={() => openAgent(a.id)}>
-                <td><StatusBadge state={rec?.status ?? 'idle'} /></td>
+                <td><StatusBadge state={statusOf(a.id)} /></td>
                 <td><AgentChip id={a.id} /></td>
                 <td class="doing">
                   <Reason {rec} />
@@ -128,7 +127,7 @@
                 <td>{duration(Date.now() - (a.created_at_ms ?? a.last_event_at_ms ?? Date.now()))}</td>
                 <td><CtxBar value={a.context_pct} /></td>
                 <td>{usage(a)}</td>
-                <td class="gov">{rec?.waiting_on?.kind === 'governor' ? rec.reason : '—'}</td>
+                <td class="gov">{governorReason(rec)}</td>
                 <td class="r">{a.memory_mb ? mb(a.memory_mb) : '—'}</td>
               </tr>
             {:else}
@@ -152,7 +151,7 @@
     </table>
   </div>
   <div class="foot">
-    <span class="totals">{list.length} agents · {c.live} live{c.live_cap != null ? ` / cap ${c.live_cap}` : ''} · queued {c.queued} · {suspended} suspended · {c.needs_you} need you</span>
+    <span class="totals">{list.length} agents · {liveText(c)} · queued {c.queued} · {suspended} suspended · {c.needs_you} need you</span>
     <span class="grow"></span>
     <span class="muted">claude processes {mb(claudeMb)} · app {mb(app.data?.memory?.app_mb)} · warn at 2.5 GB</span>
   </div>

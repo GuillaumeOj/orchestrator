@@ -27,7 +27,7 @@ const closedAt = new Map(); // decision id → when an event closed it
 const byKey = (list, key) => Object.fromEntries((list ?? []).map((r) => [r[key], r]));
 
 /** Replaces the copy with a snapshot (closed decisions not in it are dropped). */
-export function setSnapshot(s) {
+function setSnapshot(s) {
   closedAt.clear();
   app.now = {
     rev: s?.rev ?? 0,
@@ -35,7 +35,7 @@ export function setSnapshot(s) {
     runs: byKey(s?.runs, 'run'),
     decisions: byKey(s?.decisions, 'id'),
     outcomes: s?.outcomes ?? [],
-    counts: s?.counts ?? { global: { ...ZERO }, projects: {} },
+    counts: s?.counts ?? { global: {}, projects: {} },
   };
 }
 
@@ -80,22 +80,27 @@ export function applyNow(ev) {
   dispatch(ev.topics ?? []);
 }
 
-/**
- * Subscribes to the `now` event and reads the snapshot. A window shown again
- * reads a fresh snapshot (pushes may have been missed) and refetches every
- * subscribed view. Returns the cleanup.
- */
+// Showing the window fires both `visibilitychange` and `focus`: one refetch.
+const REFOCUS_MS = 1000;
+let refocusedAt = 0;
+
+/** The window is back: a fresh snapshot (pushes may have been missed) and every view refetched. */
+function refocus() {
+  if (document.hidden || Date.now() - refocusedAt < REFOCUS_MS) return;
+  refocusedAt = Date.now();
+  loadNow();
+  for (const s of subs) if (s.focus) s.run();
+}
+
+/** Subscribes to the `now` event and the window coming back, and reads the snapshot. Returns the cleanup. */
 export async function connectNow() {
-  const onVisible = () => {
-    if (document.hidden) return;
-    loadNow();
-    for (const s of subs) s.run();
-  };
-  document.addEventListener('visibilitychange', onVisible);
+  document.addEventListener('visibilitychange', refocus);
+  window.addEventListener('focus', refocus);
   const unlisten = await listen('now', (ev) => applyNow(ev.payload));
   await loadNow();
   return () => {
-    document.removeEventListener('visibilitychange', onVisible);
+    document.removeEventListener('visibilitychange', refocus);
+    window.removeEventListener('focus', refocus);
     unlisten();
   };
 }
@@ -103,12 +108,13 @@ export async function connectNow() {
 // ---------------------------------------------------------------- accessors
 
 export const attention = (agentId) => app.now.agents[agentId] ?? null;
+/** The agent's status (§9.5 badge key); `idle` for an agent the core has no record of. */
+export const statusOf = (agentId) => attention(agentId)?.status ?? 'idle';
+/** The Governor's reason for a queued agent, else '—'. */
+export const governorReason = (rec) => (rec?.waiting_on?.kind === 'governor' ? rec.reason : '—');
 export const runAttention = (runId) => app.now.runs[runId] ?? null;
-/** The run record of a feature: by its run id, else by slug in its project. */
-export const featureRun = (f) =>
-  Object.values(app.now.runs).find((r) =>
-    f.run?.id != null ? r.run === f.run.id : r.feature === f.slug && r.project === f.project_id,
-  ) ?? null;
+/** The run record of a feature's current run. */
+export const featureRun = (f) => (f.run ? runAttention(f.run.id) : null);
 
 /** Counts: global (no scope), `{ project }` or `{ run }`; zeros when the core has none. */
 export function counts(scope = null) {
@@ -119,6 +125,9 @@ export function counts(scope = null) {
       : app.now.counts.global;
   return { ...ZERO, ...c };
 }
+
+/** "5 live / cap 4" (ux-brief §1: every number says what it is). */
+export const liveText = (c) => `${c.live} live${c.live_cap != null ? ` / cap ${c.live_cap}` : ''}`;
 
 /** When the record's wait (else its level) began. */
 export const since = (rec) => rec?.waiting_on?.since_ms ?? rec?.since_ms ?? null;
@@ -147,11 +156,11 @@ function dispatch(topics) {
 /**
  * Keeps a view current without polling: `load` runs now (unless `now` is
  * false: the caller loads itself), when a topic it matches arrives (a list of
- * topics, or a predicate) and on window focus. Coalesced: at most one load in
- * flight, and one more after it when a topic arrived meanwhile. Returns the
- * cleanup.
+ * topics, or a predicate) and when the window comes back (unless `focus` is
+ * false). Coalesced: at most one load in flight, and one more after it when a
+ * topic arrived meanwhile. Returns the cleanup.
  */
-export function onTopics(match, load, { now = true } = {}) {
+export function onTopics(match, load, { now = true, focus = true } = {}) {
   const test = typeof match === 'function' ? match : (t) => match.includes(t);
   let inFlight = null;
   let again = false;
@@ -172,13 +181,8 @@ export function onTopics(match, load, { now = true } = {}) {
       });
     return inFlight;
   };
-  const sub = { match: test, run };
+  const sub = { match: test, run, focus };
   subs.add(sub);
-  const onFocus = () => run();
-  if (typeof window !== 'undefined') window.addEventListener('focus', onFocus);
   if (now) run();
-  return () => {
-    subs.delete(sub);
-    if (typeof window !== 'undefined') window.removeEventListener('focus', onFocus);
-  };
+  return () => subs.delete(sub);
 }

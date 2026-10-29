@@ -16,7 +16,7 @@
   import { ago, dayHm } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { backendLabel, remoteName } from '../lib/linear.js';
-  import { attention, onTopics, runAttention } from '../lib/now.svelte.js';
+  import { onTopics, runAttention, statusOf } from '../lib/now.svelte.js';
   import { handle, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
 
   let { paneId } = $props();
@@ -40,7 +40,7 @@
   const paused = $derived(run?.status === 'paused');
   // The run's phase as the core's run record has it.
   const rr = $derived(run ? runAttention(run.id) : null);
-  const phase = $derived(rr?.phase ?? run?.status);
+
   const byStatus = (s) => (v?.tasks ?? []).filter((t) => t.status === s);
   const events = $derived((v?.timeline ?? []).filter(timelineFilter(tl)).slice(0, 60));
   const lead = $derived(v?.team?.nodes?.find((n) => n.is_lead)?.id ?? 'lead');
@@ -188,7 +188,7 @@
   onMount(() => {
     const id = spec.featureId;
     const stop = onTopics([`feature:${id}`, 'features', 'teams'], load);
-    const stopNotion = onTopics(['integrations', `feature:${id}`], () => featureKnown && !publishing && loadNotion());
+    const stopNotion = onTopics(['integrations', `feature:${id}`], () => featureKnown && !publishing && loadNotion(), { focus: false });
     return () => (stop(), stopNotion());
   });
 </script>
@@ -202,7 +202,7 @@
   {:else}
     <header class="fh">
       <span class="slug">{v.feature.slug}</span>
-      {#if run}<span class="pill" style:color={runStateColor(phase)} style:border-color={runStateColor(phase)} title={rr ? `since ${ago(rr.phase_since_ms)}` : null}>{runStateLabel(phase)}</span>{/if}
+      {#if rr}<span class="pill" style:color={runStateColor(rr.phase)} style:border-color={runStateColor(rr.phase)} title="since {ago(rr.phase_since_ms)}">{runStateLabel(rr.phase)}</span>{/if}
       <span class="muted">{v.team?.name ?? ''}{v.team ? ` v${v.team.version}` : ''} · {'\u{E725}'} {v.feature.integration_worktree ? `orch/${v.feature.slug}/integration` : '—'}{run ? ` · started ${ago(run.started_at_ms)}` : ''}</span>
       <span class="grow"></span>
       {#if publishing}
@@ -275,13 +275,12 @@
           {#if v.agents.length}
             <div class="agents">
               {#each v.agents as a (a.id)}
-                {@const rec = attention(a.id)}
                 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                 <div class="trow" onclick={() => openAgent(a.id)} title="Open {a.id}">
                   <AgentChip id={a.id} role={roleOfAgent(a.id)} compact />
                   <span class="name ell">{shortName(a.id)}</span>
                   <span class="act muted ell">{a.tool || (a.task ? `task T-${a.task}` : '')}{a.flag ? ` · ${a.flag}` : ''}</span>
-                  <span class="st"><StatusBadge state={rec?.status ?? 'idle'} trailing /></span>
+                  <span class="st"><StatusBadge state={statusOf(a.id)} trailing /></span>
                 </div>
               {/each}
             </div>

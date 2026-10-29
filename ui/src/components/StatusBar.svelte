@@ -3,7 +3,7 @@
   // the pressure state in words, the 5h guard chip whenever it holds work, memory.
   import { app, contextAgent, contextProject, openSingleton } from '../lib/app.svelte.js';
   import { clock, mb } from '../lib/format.js';
-  import { counts } from '../lib/now.svelte.js';
+  import { counts, liveText } from '../lib/now.svelte.js';
   import { powerChip } from '../lib/pacing.js';
   import Kbd from './Kbd.svelte';
   import PressurePill from './PressurePill.svelte';
@@ -26,7 +26,7 @@
     {#if git}<span>↑{git.ahead} ↓{git.behind}</span><span>±{git.dirty}</span>{/if}
     <span class="muted">·</span>
   {/if}
-  <span class="live"><span style:color="var(--color-attention-running)" aria-hidden="true">▲</span> {c.live} live{c.live_cap != null ? ` / cap ${c.live_cap}` : ''}</span>
+  <span class="live"><span style:color="var(--color-attention-running)" aria-hidden="true">▲</span> {liveText(c)}</span>
   <span class="queued"><span style:color="var(--color-attention-queued)" aria-hidden="true">□</span> queued {c.queued}</span>
   {#if s}
     <button class="plain" onclick={() => openSingleton('planner')}><PressurePill state={s.state} shadow={app.data?.usage?.shadow} /></button>

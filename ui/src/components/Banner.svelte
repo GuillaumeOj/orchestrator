@@ -22,7 +22,7 @@
     const s = u?.snapshot;
     const tally = counts();
     if (s?.state === 'red' && !u?.shadow)
-      out.push({ id: 'red', color: 'var(--color-pacing-red)', title: `Governor in Red: week +${Math.round(s.error)} pp over plan.`, text: `Live autonomous agents capped to ${tally.live_cap ?? s.live_cap}; queued ${tally.queued}.`, planner: true, pause: true });
+      out.push({ id: 'red', color: 'var(--color-pacing-red)', title: `Governor in Red: week +${Math.round(s.error)} pp over plan.`, text: `Live autonomous agents capped to ${tally.live_cap}; queued ${tally.queued}.`, planner: true, pause: true });
     // FR-816: off-hours work waits while the Mac is on battery (one banner, D6).
     if ((d.banners ?? []).some((b) => b.kind === 'not_on_ac')) {
       const n = d.power?.off_hours_pending ?? 0;

@@ -9,7 +9,7 @@
   import { designTools, effectiveServers, kindLabel, nodeList } from '../lib/ecosystem.js';
   import { clock, expandHome, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { counts } from '../lib/now.svelte.js';
+  import { counts, liveText } from '../lib/now.svelte.js';
   import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
   import { runFinished, slugify } from '../lib/teams.js';
@@ -173,8 +173,7 @@
 
   const project = $derived(projects().find((p) => p.id === form.project_id));
   const snap = $derived(app.data?.usage?.snapshot);
-  const live = $derived(counts().live);
-  const liveCap = $derived(counts().live_cap ?? snap?.live_cap);
+  const c = $derived(counts());
 
   function close() {
     app.overlay = null;
@@ -269,7 +268,7 @@
         </label>
       </div>
       {#if snap}
-        <p class="note"><span style:color={PRESSURE[snap.state]?.color}>{PRESSURE[snap.state]?.icon}</span> Governor {PRESSURE[snap.state]?.label}{app.data?.usage?.shadow ? ' (shadow mode)' : ''} · {live} live / cap {liveCap} · your own typing is never blocked; app-delivered turns go through the Governor.</p>
+        <p class="note"><span style:color={PRESSURE[snap.state]?.color}>{PRESSURE[snap.state]?.icon}</span> Governor {PRESSURE[snap.state]?.label}{app.data?.usage?.shadow ? ' (shadow mode)' : ''} · {liveText(c)} · your own typing is never blocked; app-delivered turns go through the Governor.</p>
       {/if}
       {#if error}<p class="err">{error}</p>{/if}
       <div class="foot">
@@ -323,7 +322,7 @@
         {/if}
       {/each}
       {#if snap}
-        <p class="note"><span style:color={PRESSURE[snap.state]?.color}>{PRESSURE[snap.state]?.icon}</span> Governor {PRESSURE[snap.state]?.label}{app.data?.usage?.shadow ? ' (shadow mode)' : ''} · {live} live / cap {liveCap}: the lead {live >= liveCap ? 'queues for a live slot' : 'starts when its first turn is admitted'}.</p>
+        <p class="note"><span style:color={PRESSURE[snap.state]?.color}>{PRESSURE[snap.state]?.icon}</span> Governor {PRESSURE[snap.state]?.label}{app.data?.usage?.shadow ? ' (shadow mode)' : ''} · {liveText(c)}: the lead {c.live >= c.live_cap ? 'queues for a live slot' : 'starts when its first turn is admitted'}.</p>
       {/if}
       {#if error}<p class="err">{error}</p>{/if}
       <div class="foot">

@@ -151,6 +151,20 @@ export function decisionOf(i) {
   };
 }
 
+/** Counts (api-contract §1): zeros but for `o`. */
+export const countsOf = (o = {}) => ({
+  needs_you: 0,
+  decisions: 0,
+  running: 0,
+  waiting: 0,
+  queued: 0,
+  idle: 0,
+  error: 0,
+  live: 0,
+  done_today: 0,
+  ...o,
+});
+
 const LEVEL_OF = {
   working: 'running',
   waiting_for_you: 'needs_you',

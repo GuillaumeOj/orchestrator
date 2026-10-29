@@ -16,7 +16,7 @@
   import { ago, clock, duration } from '../lib/format.js';
   import { actionLabels, legacyItem, visibleItems } from '../lib/inbox.js';
   import { errText } from '../lib/ipc.js';
-  import { attention, openDecisions } from '../lib/now.svelte.js';
+  import { attention, openDecisions, statusOf } from '../lib/now.svelte.js';
   import { cacheState, sessionPp as ppOf, runCost, STATUS } from '../lib/status.js';
 
   let { paneId } = $props();
@@ -26,7 +26,7 @@
   const spec = $derived(app.panes[paneId]);
   const a = $derived(agent(spec?.agentId));
   const rec = $derived(a ? attention(a.id) : null);
-  const ds = $derived(rec?.status ?? 'idle');
+  const ds = $derived(statusOf(spec?.agentId));
   const fresh = $derived(ds === 'not_started');
   const snap = $derived(app.data?.usage?.snapshot);
   const sessionPp = $derived(ppOf(a, snap));
@@ -35,10 +35,13 @@
   // once the hold parks (no more `in_pane`), the dialog is gone and the strip is back.
   let handedOver = $state(null);
   const perm = $derived(
-    visibleItems(openDecisions().map(legacyItem), 'all', app.pending).find(
-      (i) =>
-        i.kind === 'permission' && i.agent_id === a?.id && !(i.id === handedOver && i.actions.includes('in_pane')),
-    ),
+    visibleItems(
+      openDecisions()
+        .filter((d) => d.kind === 'permission' && d.subject?.agent === a?.id)
+        .map(legacyItem),
+      'all',
+      app.pending,
+    ).find((i) => !(i.id === handedOver && i.actions.includes('in_pane'))),
   );
   const permLabels = $derived(actionLabels(perm));
   const cache = $derived(cacheState(a, clock));

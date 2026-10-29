@@ -8,7 +8,7 @@
 import { render } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/lib/app.svelte.js';
-import { decisionOf, fixture, rec } from './fixture.js';
+import { countsOf, decisionOf, fixture, rec } from './fixture.js';
 
 vi.mock('../src/lib/ipc.js', () => ({
   inTauri: false,
@@ -123,18 +123,7 @@ function world() {
     rec('fresh-1', 'not_started', { project: 'blog', live: false, reason: 'live cap 4/4 · 1st in line', ...gov }),
     rec('run-2', 'working', { project: 'blog', activity: 'Edit src/feed.ts' }),
   ];
-  const C = (o) => ({
-    needs_you: 0,
-    decisions: 0,
-    running: 0,
-    waiting: 0,
-    queued: 0,
-    idle: 0,
-    error: 0,
-    live: 0,
-    done_today: 0,
-    ...o,
-  });
+  const C = countsOf;
   const shop = C({ needs_you: 2, decisions: 2, running: 1, waiting: 1, live: 4 });
   app.data = d;
   app.now = {

@@ -2,7 +2,7 @@
   // Icon rail below 1512 px (§9.2): one mark per project with a count badge when
   // agents need you (the project's `needs_you` count); hover or focus opens the project summary (Penpot 03 rail hover).
   import { activeAgents, openAgent, projects } from '../lib/app.svelte.js';
-  import { attention, counts } from '../lib/now.svelte.js';
+  import { counts, statusOf } from '../lib/now.svelte.js';
   import AgentChip from './AgentChip.svelte';
   import StatusBadge from './StatusBadge.svelte';
 
@@ -27,7 +27,7 @@
           <b>{p.name}</b>
           <span class="muted">{p.git?.branch ?? ''}{p.git?.dirty ? ` · ±${p.git.dirty}` : ''}</span>
           {#each list as a (a.id)}
-            <button class="row" onclick={() => openAgent(a.id)}><StatusBadge state={attention(a.id)?.status ?? 'idle'} compact /><AgentChip id={a.id} /></button>
+            <button class="row" onclick={() => openAgent(a.id)}><StatusBadge state={statusOf(a.id)} compact /><AgentChip id={a.id} /></button>
           {:else}<span class="muted">No sessions</span>{/each}
         </div>
       {/if}

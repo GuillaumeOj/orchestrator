@@ -47,9 +47,9 @@ const DECISION = {
 
 /** A decision's kind entry: icon, label and its `color.decision.*` token (a gate by its flavour). */
 export function decisionKind(d) {
-  const key = d?.kind === 'gate' ? `gate-${d.gate ?? 'restart'}` : d?.kind;
-  const k = DECISION[key] ?? DECISION.alert;
-  return { ...k, color: `var(--color-decision-${DECISION[key] ? key : 'alert'})` };
+  const want = d?.kind === 'gate' ? `gate-${d.gate ?? 'restart'}` : d?.kind;
+  const key = DECISION[want] ? want : 'alert';
+  return { ...DECISION[key], color: `var(--color-decision-${key})` };
 }
 
 export const PRESSURE = {

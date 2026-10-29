@@ -3,7 +3,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/lib/app.svelte.js';
-import { rec } from './fixture.js';
+import { countsOf, rec } from './fixture.js';
 
 const calls = [];
 let snapshot = null;
@@ -32,17 +32,7 @@ const {
 } = await import('../src/lib/now.svelte.js');
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
-const C = (n) => ({
-  needs_you: n,
-  decisions: n,
-  running: 0,
-  waiting: 0,
-  queued: 0,
-  idle: 0,
-  error: 0,
-  live: 1,
-  done_today: 0,
-});
+const C = (n) => countsOf({ needs_you: n, decisions: n, live: 1 });
 const decision = (id, state = 'open', more = {}) => ({
   id,
   kind: 'permission',
@@ -85,8 +75,8 @@ describe('now store', () => {
     expect(app.now.rev).toBe(5);
     expect(attention('back-1').status).toBe('waiting_for_you');
     expect(runAttention('run-1').phase).toBe('executing');
-    expect(featureRun({ slug: 'checkout', project_id: 'shop' }).run).toBe('run-1');
-    expect(featureRun({ slug: 'x', project_id: 'shop', run: { id: 'run-1' } }).run).toBe('run-1');
+    expect(featureRun({ slug: 'checkout', run: { id: 'run-1' } }).run).toBe('run-1');
+    expect(featureRun({ slug: 'checkout', run: null })).toBeNull();
     expect(counts()).toMatchObject({ needs_you: 1, live_cap: 3 });
     expect(counts({ project: 'shop' }).needs_you).toBe(1);
     expect(counts({ project: 'nope' })).toMatchObject({ needs_you: 0, queued: 0, live: 0 });
@@ -156,31 +146,47 @@ describe('now store', () => {
 });
 
 describe('connectNow', () => {
-  it('a window shown again reads the snapshot and refetches the views', async () => {
+  it('the window back (visibilitychange and focus together): one snapshot, one refetch per view', async () => {
+    vi.useFakeTimers({ now: 5_000_000, toFake: ['Date'] });
     const stop = await connectNow();
     const load = vi.fn(async () => {});
+    const notion = vi.fn(async () => {});
     const stopView = onTopics(['report'], load, { now: false });
-    calls.length = 0;
-    snapshot = { ...snapshot, rev: 12 };
-    Object.defineProperty(document, 'hidden', { value: false, configurable: true });
-    document.dispatchEvent(new Event('visibilitychange'));
-    await tick();
-    expect(calls.map(([c]) => c)).toEqual(['now_snapshot']);
-    expect(app.now.rev).toBe(12);
-    expect(load).toHaveBeenCalledTimes(1);
-    // Hidden: nothing is read.
-    Object.defineProperty(document, 'hidden', { value: true, configurable: true });
-    document.dispatchEvent(new Event('visibilitychange'));
-    await tick();
-    expect(calls).toHaveLength(1);
-    stop();
-    stopView();
-    Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+    const stopNotion = onTopics(['integrations'], notion, { now: false, focus: false });
+    try {
+      calls.length = 0;
+      snapshot = { ...snapshot, rev: 12 };
+      Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('focus'));
+      await tick();
+      expect(calls.map(([c]) => c)).toEqual(['now_snapshot']);
+      expect(app.now.rev).toBe(12);
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(notion).not.toHaveBeenCalled();
+      // Later, hidden: nothing is read.
+      vi.setSystemTime(5_010_000);
+      Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      await tick();
+      expect(calls).toHaveLength(1);
+      // Focused again: read again.
+      Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+      window.dispatchEvent(new Event('focus'));
+      await tick();
+      expect(calls).toHaveLength(2);
+      expect(load).toHaveBeenCalledTimes(2);
+    } finally {
+      stop();
+      stopView();
+      stopNotion();
+      vi.useRealTimers();
+    }
   });
 });
 
 describe('topics', () => {
-  it('loads on subscribe, on its topic, on focus; never on other topics', async () => {
+  it('loads on subscribe and on its topic; never on other topics', async () => {
     const load = vi.fn(async () => {});
     const stop = onTopics(['board:shop'], load);
     await tick();
@@ -191,14 +197,10 @@ describe('topics', () => {
     applyNow({ rev: 7, topics: ['board:shop'] });
     await tick();
     expect(load).toHaveBeenCalledTimes(2);
-    window.dispatchEvent(new Event('focus'));
-    await tick();
-    expect(load).toHaveBeenCalledTimes(3);
     stop();
     applyNow({ rev: 8, topics: ['board:shop'] });
-    window.dispatchEvent(new Event('focus'));
     await tick();
-    expect(load).toHaveBeenCalledTimes(3);
+    expect(load).toHaveBeenCalledTimes(2);
   });
 
   it('coalesces: one load in flight, one more after it however many topics came', async () => {

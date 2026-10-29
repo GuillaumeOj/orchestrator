@@ -82,8 +82,8 @@
     (async () => {
       const [kitty] = await Promise.all([invoke('kitty_config').catch(() => null), loadUiFont().catch(() => [])]);
       if (kitty) app.kitty = await prepareKitty(kitty).catch(() => kitty);
-      // app_state is read on its topics (spec §3.2), never on a timer; this reads it now.
-      stopState = onTopics(STATE_TOPICS, refresh);
+      // app_state is read on its topics (spec §3.2), never on a timer (and right below).
+      stopState = onTopics(STATE_TOPICS, refresh, { now: false });
       // Attention from the `now` push, resynced on a rev gap and when the window shows again.
       const [, stop] = await Promise.all([refresh(), connectNow()]);
       stopNow = stop;

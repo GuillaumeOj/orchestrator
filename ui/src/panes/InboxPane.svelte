@@ -26,7 +26,7 @@
     visibleItems,
   } from '../lib/inbox.js';
   import { invoke } from '../lib/ipc.js';
-  import { attention, openDecisions } from '../lib/now.svelte.js';
+  import { openDecisions, statusOf } from '../lib/now.svelte.js';
   import { decisionKind } from '../lib/status.js';
 
   let filter = $state('all');
@@ -216,7 +216,7 @@
         <div class="dh">
           <StatusBadge state={KIND[sel.kind]?.state ?? 'idle'} compact />
           <b>{kindLabel(sel)} · {sel.agent_id ?? 'Governor'}</b>
-          {#if a}<StatusBadge state={attention(a.id)?.status ?? 'idle'} />{/if}
+          {#if a}<StatusBadge state={statusOf(a.id)} />{/if}
           <span class="grow"></span>
           <span class="muted">waiting {ago(sel.created_ms)}</span>
         </div>
