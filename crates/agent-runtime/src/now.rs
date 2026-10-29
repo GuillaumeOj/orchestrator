@@ -245,10 +245,12 @@ impl Runtime {
         let mut topics = std::mem::take(&mut *lock(&self.now.topics));
         let team_changes = self.db.changes();
         let db_topics = self.db.take_topics();
-        let (queue, paused, ask, gov) = self.governor_facts();
+        // The queue as it is (cheap): what tells it moved.
+        let queue_now = self.with_governor(|g| {
+            (g.queue().to_vec(), g.paused_agents().iter().map(|a| a.0.clone()).collect::<BTreeSet<_>>())
+        });
         let now = now_ms();
         let mut st = lock(&self.now.state);
-        let queue_now = (queue, paused);
         let queue_moved = st.queue.as_ref() != Some(&queue_now);
         let team_moved = st.team.changes != Some(team_changes);
         let first = st.last.is_none();
@@ -291,14 +293,15 @@ impl Runtime {
             let (agents, inbox) = self.store.read(|s| (s.agents.clone(), s.inbox.clone()));
             (agents, inbox, live)
         };
-        let (queue, paused) = &queue_now;
+        let (queue, ask, gov) = self.governor_facts();
+        let paused = &queue_now.1;
         let tz = jiff::tz::TimeZone::system();
         let mut world = attention::compute(
             &attention::Inputs {
                 agents: &agents,
                 inbox: &inbox,
                 live: &live,
-                queue,
+                queue: &queue,
                 paused,
                 ask: ask.as_ref(),
                 gov: &gov,
@@ -328,16 +331,15 @@ impl Runtime {
         }
     }
 
-    /// The Governor's queue (release order), paused agents, pending ask and
-    /// the facts reasons need; one look under its lock.
-    fn governor_facts(&self) -> (Vec<QueueEntry>, BTreeSet<String>, Option<AskFacts>, GovFacts) {
+    /// The Governor's queue (release order), pending ask and the facts
+    /// reasons need; one look under its lock.
+    fn governor_facts(&self) -> (Vec<QueueEntry>, Option<AskFacts>, GovFacts) {
         let view = self.usage_view();
         let now = jiff::Timestamp::now();
         self.with_governor(|g| {
             let by_id: BTreeMap<_, _> = g.queue().iter().map(|e| (e.id, e)).collect();
             let queue: Vec<QueueEntry> =
                 g.release_order().iter().filter_map(|id| by_id.get(id).map(|e| (*e).clone())).collect();
-            let paused = g.paused_agents().iter().map(|a| a.0.clone()).collect();
             let ask = g.next_action_preview(now).pending_ask.and_then(|(id, _)| {
                 let a = g.action(id)?;
                 let agent =
@@ -375,7 +377,7 @@ impl Runtime {
                 week_resets_ms: Some(plan.reset_at.as_millisecond().max(0) as u64),
                 five_hour_pct: view.five_hour.as_ref().map(|r| r.used_pct),
             };
-            (queue, paused, ask, gov)
+            (queue, ask, gov)
         })
     }
 
