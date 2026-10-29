@@ -14,6 +14,19 @@ export function weekNo(ms) {
   return Math.ceil(((t.getTime() - Date.UTC(t.getUTCFullYear(), 0, 1)) / 86400000 + 1) / 7);
 }
 
+// ---------------------------------------------------------------- week bar
+
+const clamp = (x, hi) => Math.min(hi, Math.max(0, x ?? 0));
+
+/** The week bar's stacked fill (% of the bar): outside app, you, then the agents up to
+ * the total W, edges cumulative and clamped to min(100, W); the tick is the total plan. */
+export function weekSegments(s) {
+  const end = clamp(s.used, 100);
+  const a = clamp(s.unattributed_so_far, end);
+  const b = clamp(a + clamp(s.interactive_used, 100), end);
+  return { outside: a, you: b - a, agents: end - b, tick: clamp(s.plan, 100) };
+}
+
 // ---------------------------------------------------------------- model windows
 
 /** "opus week" from a window name ("seven_day_opus") and its family. */

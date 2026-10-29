@@ -1,10 +1,11 @@
 <script>
   // Two-window indicator (J8 step 2, Penpot 02 "Pacing indicator"): "Week" is the
   // total the plan reports, "agents" the governed share; the plan and the pp delta
-  // refer to the agents. Bars: fill = agents used, 2 px tick = plan.
+  // refer to the agents. Week bars: fill = total W stacked outside app / you /
+  // agents (spec fix-week-and-daily-limit), 2 px tick = the total plan.
   import { app, openSingleton } from '../lib/app.svelte.js';
   import { clock, pct, signed, when } from '../lib/format.js';
-  import { hotWindows } from '../lib/pacing.js';
+  import { hotWindows, weekSegments } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
   import Kbd from './Kbd.svelte';
   import PressurePill from './PressurePill.svelte';
@@ -17,7 +18,23 @@
   const five = $derived(u?.five_hour?.used_pct ?? s?.five_hour);
   // FR-815: a model window shows here only when it holds work (Red or exhausted).
   const hot = $derived(hotWindows(s?.model_windows));
+  const seg = $derived(s && weekSegments(s));
+  const weekLabel = $derived(
+    s &&
+      `Week ${est}${Math.round(s.used)}%: agents ${Math.round(s.governed)}%, you ${Math.round(s.interactive_used)}%, outside app ${Math.round(s.unattributed_so_far)}%; plan ${Math.round(s.plan)}%`,
+  );
 </script>
+
+{#snippet weekBar(cls, width)}
+  <span class="bar {cls}" style:width={width} role="img" aria-label={weekLabel} title={weekLabel}>
+    <span class="fill">
+      {#if seg.outside > 0}<span data-seg="outside" class="outside" style:width="{seg.outside}%"></span>{/if}
+      {#if seg.you > 0}<span data-seg="you" class="you" style:width="{seg.you}%"></span>{/if}
+      {#if seg.agents > 0}<span data-seg="agents" style:width="{seg.agents}%" style:background={p.color}></span>{/if}
+    </span>
+    <em style:left="{seg.tick}%"></em>
+  </span>
+{/snippet}
 
 {#if s}
   <button class="ind" onclick={() => (open = !open)} aria-expanded={open} aria-label="Usage pacing">
@@ -26,7 +43,7 @@
     <span>agents {Math.round(s.governed)}%</span>
     <span class="muted">·</span>
     <span>plan {Math.round(s.ideal)}% ({signed(s.error)})</span>
-    <span class="bar" style:width="40px"><i style:width="{Math.min(100, s.governed)}%" style:background={p.color}></i><em style:left="{Math.min(100, s.ideal)}%"></em></span>
+    {@render weekBar('', '40px')}
     <span class="muted">·</span>
     <b>5h {pct(five)}</b>
     <span class="bar" style:width="24px"><i style:width="{Math.min(100, five ?? 0)}%"></i></span>
@@ -40,8 +57,10 @@
     <div class="pop" role="dialog" aria-label="Usage pacing">
       <div class="row"><b>Usage pacing</b><PressurePill state={s.state} shadow={u.shadow} /></div>
       <div class="row"><span>Week {est}{Math.round(s.used)}%</span><span>agents {Math.round(s.governed)}% · plan {Math.round(s.ideal)}% ({signed(s.error)})</span></div>
-      <span class="bar wide"><i style:width="{Math.min(100, s.governed)}%" style:background={p.color}></i><em style:left="{Math.min(100, s.ideal)}%"></em></span>
-      <div class="muted">you {Math.round(s.interactive_used)}% · outside app {Math.round(s.unattributed_so_far)}% · projected {Math.round(s.projected)}% at the reset</div>
+      {@render weekBar('wide')}
+      <div class="muted">
+        <span class="sw" style:background={p.color}></span>agents {Math.round(s.governed)}% · <span class="sw you"></span>you {Math.round(s.interactive_used)}% · <span class="sw outside"></span>outside app {Math.round(s.unattributed_so_far)}% · projected {Math.round(s.projected)}% at the reset
+      </div>
       <div class="row"><span>5h window</span><span>{five == null ? 'no reading yet' : `${Math.round(five)}% used`}</span></div>
       <span class="bar wide"><i style:width="{Math.min(100, five ?? 0)}%"></i></span>
       <div class="muted">
@@ -80,6 +99,28 @@
     bottom: 0;
     width: 2px;
     background: var(--color-text-primary);
+  }
+  .fill {
+    position: absolute;
+    inset: 0;
+    display: flex;
+  }
+  .fill > span {
+    flex: none;
+  }
+  .outside {
+    background: var(--color-text-disabled);
+  }
+  .you {
+    background: var(--color-text-secondary);
+  }
+  .sw {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: var(--space-xs);
+    border-radius: var(--radius-sm);
+    vertical-align: middle;
   }
   .bar.wide {
     width: 100%;
