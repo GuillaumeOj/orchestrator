@@ -138,6 +138,12 @@
 
 <svelte:window onpointerdown={outside} />
 
+{#snippet jobCells(j)}
+  <span class="dot" style:background={jobColor(j.state)} aria-hidden="true"></span>
+  <span class="jn ell">{#if j.workflow}<span class="muted">{j.workflow} / </span>{/if}{j.name}</span>
+  <span class="cap jw" style:color={jobWordColor(j.state)}>{jobWord(j.state)}</span>
+{/snippet}
+
 {#if st === 'none'}
   <p class="muted nline">No PR yet: the lead asks with request_pr after integration (PR gate).</p>
 {:else}
@@ -168,15 +174,11 @@
                 {#each pr.ci.jobs as j, i (i)}
                   {#if j.url}
                     <a class="row" href={j.url} aria-label={jobLabel(j)} title={jobName(j)} onclick={(e) => (e.preventDefault(), openUrl(j.url))}>
-                      <span class="dot" style:background={jobColor(j.state)} aria-hidden="true"></span>
-                      <span class="jn ell">{#if j.workflow}<span class="muted">{j.workflow} / </span>{/if}{j.name}</span>
-                      <span class="cap jw" style:color={jobWordColor(j.state)}>{jobWord(j.state)}</span>
+                      {@render jobCells(j)}
                     </a>
                   {:else}
                     <div class="row plain" aria-label={jobLabel(j)} title={jobName(j)}>
-                      <span class="dot" style:background={jobColor(j.state)} aria-hidden="true"></span>
-                      <span class="jn ell">{#if j.workflow}<span class="muted">{j.workflow} / </span>{/if}{j.name}</span>
-                      <span class="cap jw" style:color={jobWordColor(j.state)}>{jobWord(j.state)}</span>
+                      {@render jobCells(j)}
                     </div>
                   {/if}
                 {/each}
