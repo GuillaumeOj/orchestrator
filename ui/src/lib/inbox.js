@@ -41,6 +41,11 @@ export const agentOf = (d) => d?.subject?.agent ?? null;
 export const parked = (d) => d?.lifecycle?.state === 'parked';
 /** The lifecycle's version (api-contract §2.1): +1 per write; a lower one is old. */
 export const version = (d) => d?.lifecycle?.version ?? 0;
+/** A lifecycle older than the decision held (a late push or answer): ignored. One
+ *  at the same version is taken (the core re-pushes it with fresh actions); one
+ *  with no version (an older core) too. */
+export const older = (lc, held) => lc?.version != null && lc.version < version(held);
+export const stale = (d) => d?.lifecycle?.state === 'stale';
 /** Still waiting on the user: open or parked. */
 export const isOpen = (d) => d?.lifecycle?.state === 'open' || parked(d);
 /** Came back after a core restart: the card says so, unless it is parked. */

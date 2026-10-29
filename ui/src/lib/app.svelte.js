@@ -4,7 +4,7 @@
 // registry. Terminal objects (xterm.js) live outside the reactive state, in `terms`.
 
 import { clock as clockOf } from './format.js';
-import { decisionToast, due, isOpen, pendingToast, UNDO_MS, version } from './inbox.js';
+import { decisionToast, due, isOpen, older, pendingToast, UNDO_MS, version } from './inbox.js';
 import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
@@ -1156,9 +1156,10 @@ export async function flushDecisions(now = Date.now()) {
     // A synthesized answer has version 0: applied with the version held, so the
     // card stays out of the open list and the core's push still wins.
     const d = app.now.decisions[p.item];
-    const lc = r.value?.lifecycle;
-    if (d && lc && (lc.version == null || lc.version === 0 || lc.version >= version(d))) {
-      const next = { ...d, lifecycle: lc.version === 0 ? { ...lc, version: version(d) } : lc };
+    let lc = r.value?.lifecycle;
+    if (lc?.version === 0) lc = { ...lc, version: version(d) };
+    if (d && lc && !older(lc, d)) {
+      const next = { ...d, lifecycle: lc };
       app.now.decisions[p.item] = next;
       decisionPushed(d, next);
     }

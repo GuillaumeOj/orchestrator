@@ -6,7 +6,7 @@
 
 import { app, decisionGone, decisionPushed } from './app.svelte.js';
 import { waited } from './format.js';
-import { isOpen, version } from './inbox.js';
+import { isOpen, older } from './inbox.js';
 import { invoke, listen } from './ipc.js';
 import { STATUS } from './status.js';
 
@@ -75,7 +75,7 @@ export function applyNow(ev) {
       const prev = n.decisions[d.id];
       // Older than what we hold (a late push): ignored. An equal one is taken: after
       // an inbox_act answer we hold its lifecycle on the old card (actions, context).
-      if (prev && d.lifecycle?.version != null && version(d) < version(prev)) continue;
+      if (prev && older(d.lifecycle, prev)) continue;
       n.decisions[d.id] = d;
       closedAt.delete(d.id);
       decisionPushed(prev, d);

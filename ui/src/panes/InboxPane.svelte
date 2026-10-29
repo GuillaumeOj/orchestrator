@@ -40,6 +40,7 @@
     move,
     parked,
     restarted,
+    stale,
     subjectLine,
     visibleItems,
   } from '../lib/inbox.js';
@@ -232,7 +233,7 @@
         {#each g.rows as it (it.id)}
           {@const k = decisionKind(it)}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <div class="item" class:sel={sel?.id === it.id} class:marked={marked.has(it.id)} class:stale={it.lifecycle?.state === 'stale'} role="option" tabindex="-1" aria-selected={sel?.id === it.id} onclick={() => ((selected = it.id), (outcome = null))}>
+          <div class="item" class:sel={sel?.id === it.id} class:marked={marked.has(it.id)} class:stale={stale(it)} role="option" tabindex="-1" aria-selected={sel?.id === it.id} onclick={() => ((selected = it.id), (outcome = null))}>
             <div class="top">
               <span class="kind" style:color={k.color} title={k.label} aria-hidden="true">{k.icon}</span>
               <span class="muted">{k.label}{parked(it) ? ' · parked' : ''}{restarted(it) ? ' · after restart' : ''}</span>
@@ -266,7 +267,7 @@
         <p class="muted pad-sm">{doneToday ? `All caught up · ${doneToday} done today` : 'Nothing done yet today.'}</p>
       {/each}
     </div>
-    <div class="detail" class:muted={sel?.lifecycle?.state === 'stale'}>
+    <div class="detail" class:muted={stale(sel)}>
       {#if sel}
         {@const k = decisionKind(sel)}
         <div class="dh">
