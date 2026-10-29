@@ -41,6 +41,50 @@ describe('components', () => {
     expect(t).toContain('5h 61%');
   });
 
+  it('week bars stack outside / you / agents up to the total, tick at the plan', async () => {
+    const { container } = render(PacingIndicator);
+    await fireEvent.click(container.querySelector('.ind'));
+    const bars = [...container.querySelectorAll('[role="img"]')];
+    expect(bars).toHaveLength(2); // the compact strip and the popover bar
+    for (const bar of bars) {
+      const widths = [...bar.querySelectorAll('span[data-seg]')].map((/** @type {HTMLElement} */ e) => [
+        e.dataset.seg,
+        e.style.width,
+      ]);
+      expect(widths).toEqual([
+        ['outside', '4%'],
+        ['you', '5%'],
+        ['agents', '47%'],
+      ]);
+      expect(bar.querySelector('em').style.left).toBe('min(47%, 100% - 2px)');
+      expect(bar.getAttribute('aria-label')).toBe('Week 56%: agents 47%, you 5%, outside app 4%; plan 47%');
+    }
+    const legend = container.querySelector('.pop').textContent.replace(/\s+/g, ' ');
+    expect(legend).toContain('agents 47% · you 5% · outside app 4% · projected 98% at the reset');
+  });
+
+  it('week bar "you" is the segment, not interactive_used (critical work stays with the agents)', async () => {
+    const d = fixture();
+    d.usage.snapshot.interactive_used = 8; // 5 interactive + 3 critical, already in governed 47
+    app.data = d;
+    const { container } = render(PacingIndicator);
+    await fireEvent.click(container.querySelector('.ind'));
+    const bar = container.querySelector('.pop [role="img"]');
+    expect(/** @type {HTMLElement} */ (bar.querySelector('span[data-seg="you"]')).style.width).toBe('5%');
+    expect(bar.getAttribute('aria-label')).toBe('Week 56%: agents 47%, you 5%, outside app 4%; plan 47%');
+    expect(container.querySelector('.pop').textContent).toContain('you 5% ·');
+  });
+
+  it('week bar without you or outside usage: agents only', () => {
+    const d = fixture();
+    Object.assign(d.usage.snapshot, { used: 47, interactive_used: 0, unattributed_so_far: 0, plan: 38 });
+    app.data = d;
+    const { container } = render(PacingIndicator);
+    const bar = container.querySelector('[role="img"]');
+    expect([...bar.querySelectorAll('span[data-seg]')].map((e) => e.getAttribute('data-seg'))).toEqual(['agents']);
+    expect(bar.querySelector('em').style.left).toBe('min(38%, 100% - 2px)');
+  });
+
   it('status bar shows the 5h guard and memory', () => {
     const { container } = render(StatusBar);
     const t = container.textContent.replace(/\s+/g, ' ');

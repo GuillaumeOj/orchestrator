@@ -17,6 +17,7 @@ import {
   stateBar,
   usd,
   weekNo,
+  weekSegments,
   windowQueued,
 } from '../src/lib/pacing.js';
 import { queueReason } from '../src/lib/status.js';
@@ -163,6 +164,36 @@ describe('pacing helpers', () => {
       'Downgraded front-2 opus → sonnet at its task boundary (Red) · back to opus at its next task once it clears',
     );
     expect(downgradeText({ kind: 'restore_model', agent: 'front-2' })).toBe("Restored front-2 to its role's model");
+  });
+
+  it('week bar segments: outside, you, agents up to W, tick at the total plan', () => {
+    const s = fixture().usage.snapshot;
+    expect(weekSegments(s)).toEqual({ outside: 4, you: 5, agents: 47, tick: 47 });
+    // Clamped: the fill never passes 100 %, and ends at min(100, W).
+    expect(weekSegments({ ...s, used: 120, governed: 111, plan: 130 })).toEqual({
+      outside: 4,
+      you: 5,
+      agents: 91,
+      tick: 100,
+    });
+    // Parts past W: outside and you are cut at W, agents get nothing.
+    expect(weekSegments({ ...s, used: 6, governed: 0 })).toEqual({
+      outside: 4,
+      you: 2,
+      agents: 0,
+      tick: 47,
+    });
+    expect(weekSegments({ ...s, used: 3, governed: 0 })).toMatchObject({ outside: 3, you: 0, agents: 0 });
+    // No you, no outside: agents only, the tick at plan (= ideal).
+    expect(weekSegments({ ...s, used: 47, unattributed_so_far: 0, plan: 38 })).toEqual({
+      outside: 0,
+      you: 0,
+      agents: 47,
+      tick: 38,
+    });
+    // Critical work is in interactive_used but stays in the agents' share: the agents
+    // segment is G, the you segment only the interactive rest.
+    expect(weekSegments({ ...s, interactive_used: 8 })).toEqual(weekSegments(s));
   });
 });
 

@@ -1,10 +1,11 @@
 <script>
   // Two-window indicator (J8 step 2, Penpot 02 "Pacing indicator"): "Week" is the
   // total the plan reports, "agents" the governed share; the plan and the pp delta
-  // refer to the agents. Bars: fill = agents used, 2 px tick = plan.
+  // refer to the agents. Week bars: fill = total W stacked outside app / you /
+  // agents (spec fix-week-and-daily-limit), 2 px tick = the total plan.
   import { app, openSingleton } from '../lib/app.svelte.js';
   import { clock, pct, signed, when } from '../lib/format.js';
-  import { hotWindows } from '../lib/pacing.js';
+  import { hotWindows, weekSegments } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
   import Kbd from './Kbd.svelte';
   import PressurePill from './PressurePill.svelte';
@@ -17,16 +18,34 @@
   const five = $derived(u?.five_hour?.used_pct ?? s?.five_hour);
   // FR-815: a model window shows here only when it holds work (Red or exhausted).
   const hot = $derived(hotWindows(s?.model_windows));
+  const seg = $derived(s && weekSegments(s));
+  // "you" is the segment (W − outside − G), not interactive_used: that one also holds
+  // critical work, which G (agents) already counts, so the text agrees with the bar.
+  const weekLabel = $derived(
+    s &&
+      `Week ${est}${Math.round(s.used)}%: agents ${Math.round(s.governed)}%, you ${Math.round(seg.you)}%, outside app ${Math.round(s.unattributed_so_far)}%; plan ${Math.round(s.plan)}%`,
+  );
 </script>
 
+{#snippet weekBar(cls)}
+  <span class="bar {cls}" role="img" aria-label={weekLabel} title={weekLabel}>
+    <span class="fill">
+      {#each ['outside', 'you', 'agents'] as k (k)}
+        {#if seg[k] > 0}<span data-seg={k} class={k} style:width="{seg[k]}%" style:background={k === 'agents' ? p.color : undefined}></span>{/if}
+      {/each}
+    </span>
+    <em style:left="min({seg.tick}%, 100% - 2px)"></em>
+  </span>
+{/snippet}
+
 {#if s}
-  <button class="ind" onclick={() => (open = !open)} aria-expanded={open} aria-label="Usage pacing">
+  <button class="ind" onclick={() => (open = !open)} aria-expanded={open} aria-label="Usage pacing: {weekLabel}">
     <span style:color={p.color} aria-hidden="true">{p.icon}</span>
     <b>Week {est}{Math.round(s.used)}%</b>
     <span>agents {Math.round(s.governed)}%</span>
     <span class="muted">·</span>
     <span>plan {Math.round(s.ideal)}% ({signed(s.error)})</span>
-    <span class="bar" style:width="40px"><i style:width="{Math.min(100, s.governed)}%" style:background={p.color}></i><em style:left="{Math.min(100, s.ideal)}%"></em></span>
+    {@render weekBar('strip')}
     <span class="muted">·</span>
     <b>5h {pct(five)}</b>
     <span class="bar" style:width="24px"><i style:width="{Math.min(100, five ?? 0)}%"></i></span>
@@ -40,8 +59,10 @@
     <div class="pop" role="dialog" aria-label="Usage pacing">
       <div class="row"><b>Usage pacing</b><PressurePill state={s.state} shadow={u.shadow} /></div>
       <div class="row"><span>Week {est}{Math.round(s.used)}%</span><span>agents {Math.round(s.governed)}% · plan {Math.round(s.ideal)}% ({signed(s.error)})</span></div>
-      <span class="bar wide"><i style:width="{Math.min(100, s.governed)}%" style:background={p.color}></i><em style:left="{Math.min(100, s.ideal)}%"></em></span>
-      <div class="muted">you {Math.round(s.interactive_used)}% · outside app {Math.round(s.unattributed_so_far)}% · projected {Math.round(s.projected)}% at the reset</div>
+      {@render weekBar('wide')}
+      <div class="muted">
+        <span class="sw" style:background={p.color}></span>agents {Math.round(s.governed)}% · <span class="sw you"></span>you {Math.round(seg.you)}% · <span class="sw outside"></span>outside app {Math.round(s.unattributed_so_far)}% · projected {Math.round(s.projected)}% at the reset
+      </div>
       <div class="row"><span>5h window</span><span>{five == null ? 'no reading yet' : `${Math.round(five)}% used`}</span></div>
       <span class="bar wide"><i style:width="{Math.min(100, five ?? 0)}%"></i></span>
       <div class="muted">
@@ -80,6 +101,35 @@
     bottom: 0;
     width: 2px;
     background: var(--color-text-primary);
+  }
+  .bar.strip {
+    width: 40px;
+  }
+  .fill {
+    position: absolute;
+    inset: 0;
+    display: flex;
+  }
+  .fill > span {
+    flex: none;
+  }
+  /* A 1 px gap of track between segments, inside the next one so widths stay exact. */
+  .fill > span + span {
+    box-shadow: inset 1px 0 0 var(--color-border-subtle);
+  }
+  .outside {
+    background: var(--color-text-muted);
+  }
+  .you {
+    background: var(--color-text-secondary);
+  }
+  .sw {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: var(--space-xs);
+    border-radius: var(--radius-sm);
+    vertical-align: middle;
   }
   .bar.wide {
     width: 100%;
