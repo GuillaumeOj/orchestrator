@@ -337,6 +337,10 @@ describe('week planner', () => {
     for (const l of ['Week used', 'Agents', 'Plan', 'Forecast', 'W/ governor']) expect(t).toContain(l);
     expect(t).toMatch(/now \d\d:\d\d · week 20% \(plan 23%, .*3 pp\) · agents 12%/);
     expect(t).toContain('reserve 10% for you');
+    const d = (c) => container.querySelector(`svg path.${c}`).getAttribute('d');
+    expect(d('actual')).toMatch(/^M.*L/);
+    expect(d('agents')).not.toBe(d('fill'));
+    expect(d('ideal')).toMatch(/^M.*L/);
     expect(container.querySelector('svg').getAttribute('aria-label')).toBe('Week usage so far against the plan');
   });
 

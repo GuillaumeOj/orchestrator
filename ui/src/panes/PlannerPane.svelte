@@ -70,10 +70,12 @@
   const withGov = $derived(v ? path(v.curve.filter((c) => c.with_governor_total != null).map((c) => [c.t_ms, c.with_governor_total])) : '');
   const area = (pts) => (pts.length ? `${path(pts)}L${x(pts.at(-1)[0])},${y(0)}L${x(pts[0][0])},${y(0)}Z` : '');
   // `actual` already ends at now (the view appends the snapshot's point).
-  const usedPts = $derived(v ? v.actual.map((h) => [h.t_ms, h.used]) : []);
+  // Both series start at 0 on the week start, so a lone point still draws a line.
+  const series = (key) => (v ? [[v.week_start_ms, 0], ...v.actual.map((h) => [h.t_ms, h[key]])] : []);
+  const usedPts = $derived(series('used'));
   const used = $derived(path(usedPts));
   const usedFill = $derived(area(usedPts));
-  const agentsFill = $derived(v ? area(v.actual.map((h) => [h.t_ms, h.governed])) : '');
+  const agentsFill = $derived(area(series('governed')));
   const days = $derived(v ? Array.from({ length: 7 }, (_, i) => v.week_start_ms + i * 86400000) : []);
   const emptyAt = $derived(s?.eta ? Date.parse(s.eta) : null);
   const reserveTop = $derived(v ? 100 - v.reserve_pct : 90);
@@ -213,7 +215,7 @@
           <b>Week</b><span class="muted">working hours shaded{offHoursAllowed(off) ? ' · off-hours hatched' : ''}</span>
           <span class="grow"></span>
           <span class="leg"><i class="l actual"></i>Week used</span>
-          <span class="leg"><i class="l agents"></i>Agents</span>
+          <span class="leg"><i class="l sw-agents"></i>Agents</span>
           <span class="leg"><i class="l ideal"></i>Plan</span>
           <span class="leg"><i class="l fc"></i>Forecast</span>
           <span class="leg"><i class="l gov"></i>W/ governor</span>
@@ -394,7 +396,7 @@
   .l.actual {
     border-color: var(--color-pacing-red);
   }
-  .l.agents {
+  .l.sw-agents {
     height: 8px;
     border: 0;
     background: var(--color-accent-default);
