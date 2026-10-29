@@ -33,17 +33,22 @@ impl IdArg {
     }
 }
 
-/// `open_url`: only http(s) URLs, with a host and no whitespace or control
-/// characters (the URL goes to `/usr/bin/open` as one argument).
+/// `open_url`: only http(s) URLs with a host, or `mailto:` with an address
+/// (spec links in docs), and no whitespace or control characters (the URL
+/// goes to `/usr/bin/open` as one argument).
 pub fn checked_url(url: &str) -> Result<&str> {
     let u = url.trim();
-    let rest = u.strip_prefix("https://").or_else(|| u.strip_prefix("http://"));
-    let ok = rest.is_some_and(|r| {
-        let host = r.split(['/', '?', '#']).next().unwrap_or("");
-        !host.is_empty() && !host.starts_with('-')
-    }) && !u.chars().any(|c| c.is_whitespace() || c.is_control());
+    let target = match u.strip_prefix("mailto:") {
+        Some(addr) => Some(addr),
+        None => u
+            .strip_prefix("https://")
+            .or_else(|| u.strip_prefix("http://"))
+            .map(|r| r.split(['/', '?', '#']).next().unwrap_or("")),
+    };
+    let ok = target.is_some_and(|t| !t.is_empty() && !t.starts_with('-'))
+        && !u.chars().any(|c| c.is_whitespace() || c.is_control());
     if !ok {
-        return Err(anyhow!("only http and https links can be opened"));
+        return Err(anyhow!("only http, https and mailto links can be opened"));
     }
     Ok(u)
 }
@@ -168,12 +173,13 @@ mod tests {
     }
 
     #[test]
-    fn only_http_links_open() {
+    fn only_http_and_mailto_links_open() {
         assert_eq!(
             checked_url(" https://claude.ai/settings/connectors ").unwrap(),
             "https://claude.ai/settings/connectors"
         );
         assert!(checked_url("http://localhost:3000/x?y=1").is_ok());
+        assert_eq!(checked_url("mailto:a@b.co?subject=Hi").unwrap(), "mailto:a@b.co?subject=Hi");
         for bad in [
             "file:///etc/passwd",
             "javascript:alert(1)",
@@ -183,6 +189,12 @@ mod tests {
             "https://-x",
             "/Applications/X.app",
             "HTTPS://x",
+            "mailto:",
+            "mailto:-x",
+            "mailto:a@b.co\u{7}",
+            "mailto:a@b.co\nx",
+            "mailto:a b@c.co",
+            "data:text/html,x",
         ] {
             assert!(checked_url(bad).is_err(), "{bad}");
         }
