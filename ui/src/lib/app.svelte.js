@@ -1151,13 +1151,14 @@ export async function flushDecisions(now = Date.now()) {
       toast(errText(r.reason), { kind: 'error' });
       return;
     }
-    // The answer's lifecycle counts as a push when newer than what we hold: a
+    // The answer's lifecycle counts as a push unless older than what we hold: a
     // synchronous effect (Allow once on a held hook, Dismiss, Delete) toasts now.
-    // A synthesized answer has version 0: its push carries the lifecycle.
+    // A synthesized answer has version 0: applied with the version held, so the
+    // card stays out of the open list and the core's push still wins.
     const d = app.now.decisions[p.item];
     const lc = r.value?.lifecycle;
-    if (d && lc && (lc.version == null || lc.version > version(d))) {
-      const next = { ...d, lifecycle: lc };
+    if (d && lc && (lc.version == null || lc.version === 0 || lc.version >= version(d))) {
+      const next = { ...d, lifecycle: lc.version === 0 ? { ...lc, version: version(d) } : lc };
       app.now.decisions[p.item] = next;
       decisionPushed(d, next);
     }

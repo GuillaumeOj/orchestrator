@@ -280,7 +280,8 @@ describe('toasts: never before sent, the effect when the core pushes it', () => 
     replies.inbox_act = { ok: true, lifecycle: { state: 'sent', version: 0 } };
     decide(wait, 'reply', 'yes, go on');
     await flushDecisions(Date.now() + UNDO_MS);
-    expect(app.now.decisions['wait-front-1'].lifecycle.state).toBe('open'); // version 0: left to the push
+    // Version 0: applied with the version held (the card leaves the open list), the push still wins.
+    expect(app.now.decisions['wait-front-1'].lifecycle).toEqual({ state: 'sent', version: 5 });
     expect(app.toasts).toHaveLength(1);
     const final = { ...wait, lifecycle: { state: 'effect', effect: 'delivered', decided_by: 'user', version: 9 } };
     applyNow({ rev: 2, decisions: { upsert: [final], closed: ['wait-front-1'] }, topics: [] });
@@ -308,6 +309,19 @@ describe('toasts: never before sent, the effect when the core pushes it', () => 
     await flushDecisions(Date.now() + UNDO_MS);
     expect(app.now.decisions['perm-1'].lifecycle).toMatchObject({ state: 'effect', version: 4 });
     expect(app.toasts.map((t) => t.text).filter((t) => t.startsWith('Allowed'))).toEqual(['Allowed · front-1 resumed']);
+  });
+
+  it('a push at the inbox_act answer’s version brings the rest of the card (a failed one: Dismiss)', async () => {
+    const perm = permDecision({ lifecycle: { state: 'open', version: 2 } });
+    app.now = nowOf(app.data, { decisions: [perm] });
+    const failed = { state: 'failed', decided_by: 'user', error: 'hook gone', version: 3 };
+    replies.inbox_act = { ok: true, lifecycle: failed };
+    decide(perm, 'approve');
+    await flushDecisions(Date.now() + UNDO_MS);
+    const errors = app.toasts.filter((t) => t.kind === 'error').length;
+    push(2, { ...perm, lifecycle: failed, actions: [act('dismiss', 'Dismiss')] });
+    expect(app.now.decisions['perm-1'].actions.map((a) => a.id)).toEqual(['dismiss']);
+    expect(app.toasts.filter((t) => t.kind === 'error')).toHaveLength(errors); // no second toast
   });
 
   it('a failed PR gate: Dismiss from its actions, then the dismissed toast', async () => {
@@ -483,6 +497,16 @@ describe('outcome digest (level 4)', () => {
     // j/k go back to the decisions: a acts again.
     await fireEvent.keyDown(root, { key: 'k' });
     await fireEvent.keyDown(root, { key: 'a' });
+    expect(app.pending).toHaveLength(1);
+  });
+
+  it('a selected digest row that left the digest no longer blocks a/r/⏎', async () => {
+    app.now = nowOf(app.data, { outcomes: outcomes().slice(0, 1) });
+    const { container: c } = render(InboxPane);
+    await fireEvent.click(c.querySelector('.list [role=option][title]'));
+    app.now.outcomes = [];
+    flushSync();
+    await fireEvent.keyDown(c.querySelector('[data-pane-focus]'), { key: 'a' });
     expect(app.pending).toHaveLength(1);
   });
 

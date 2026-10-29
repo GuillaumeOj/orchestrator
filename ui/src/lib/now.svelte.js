@@ -73,8 +73,9 @@ export function applyNow(ev) {
     for (const id of at.removed?.runs ?? []) delete n.runs[id];
     for (const d of ev.decisions?.upsert ?? []) {
       const prev = n.decisions[d.id];
-      // Not newer than what we hold (an older push, after the inbox_act answer): ignored.
-      if (prev && d.lifecycle?.version != null && version(d) <= version(prev)) continue;
+      // Older than what we hold (a late push): ignored. An equal one is taken: after
+      // an inbox_act answer we hold its lifecycle on the old card (actions, context).
+      if (prev && d.lifecycle?.version != null && version(d) < version(prev)) continue;
       n.decisions[d.id] = d;
       closedAt.delete(d.id);
       decisionPushed(prev, d);
@@ -83,7 +84,9 @@ export function applyNow(ev) {
     const nowMs = Date.now();
     for (const id of ev.decisions?.closed ?? []) {
       decisionGone(id);
-      closedAt.set(id, nowMs);
+      // Closed with no final upsert (an older core): it no longer waits on anyone.
+      if (isOpen(n.decisions[id])) delete n.decisions[id];
+      else closedAt.set(id, nowMs);
     }
     for (const [id, t] of closedAt)
       if (nowMs - t > CLOSED_MS) {

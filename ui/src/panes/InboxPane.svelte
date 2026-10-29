@@ -171,18 +171,19 @@
       clear();
       return;
     }
-    const o = key === 'o' && outcome ? outcomes.find((x) => x.id === outcome) : null;
-    if (o) {
+    // The selected digest row, while it is still listed (a push or a Clear elsewhere drops it).
+    const o = outcome ? outcomes.find((x) => x.id === outcome) : null;
+    if (o && key === 'o') {
       e.preventDefault();
       openOutcome(o);
       return;
     }
     const intent = keyIntent(key, sel);
-    // A digest row is selected: a, r, ⏎ are not for the decision above it.
-    if (outcome && intent && !NAV.has(intent.kind)) return e.preventDefault();
+    // A digest row is selected: a, r, ⏎, x and e are not for the decision above it.
+    if (o && intent && !NAV.has(intent.kind)) return e.preventDefault();
     if (apply(intent, sel)) e.preventDefault();
   }
-  const NAV = new Set(['move', 'mark', 'undo', 'editor']);
+  const NAV = new Set(['move', 'undo']);
 
   const clear = () => {
     outcome = null;
@@ -293,25 +294,25 @@
         <div class="actions">
           <!-- The core's actions; a failed or stale decision lists Dismiss (T-35, notes §7 rows 19–20). -->
           {#each sel.actions.filter((x) => x.key) as x (x.id)}
-              <button
-                class="btn"
-                class:primary={x.key === 'a' || (x.id === 'answer' && answered)}
-                class:danger={x.key === 'r' && x.id === 'reject'}
-                class:ghost={x.key === 'o'}
-                disabled={x.id === 'answer' && options && !answered}
-                onclick={() => apply(keyIntent(x.key, sel), sel)}>{x.label} <Kbd keys={x.key === 'enter' ? '⏎' : x.key} /></button
-              >
-            {/each}
-            {#each keyless(sel) as x (x.id)}
-              <button
-                class="btn"
-                class:primary={x.id === 'restart_fresh'}
-                class:danger={x.id === 'delete'}
-                class:ghost={x.id === 'in_pane' || x.id === 'dismiss'}
-                title={x.id === 'always' ? sel.payload?.always : null}
-                onclick={() => act(sel, x.id)}>{x.label}</button
-              >
-            {/each}
+            <button
+              class="btn"
+              class:primary={x.key === 'a' || (x.id === 'answer' && answered)}
+              class:danger={x.key === 'r' && x.id === 'reject'}
+              class:ghost={x.key === 'o'}
+              disabled={x.id === 'answer' && options && !answered}
+              onclick={() => apply(keyIntent(x.key, sel), sel)}>{x.label} <Kbd keys={x.key === 'enter' ? '⏎' : x.key} /></button
+            >
+          {/each}
+          {#each keyless(sel) as x (x.id)}
+            <button
+              class="btn"
+              class:primary={x.id === 'restart_fresh'}
+              class:danger={x.id === 'delete'}
+              class:ghost={x.id === 'in_pane' || x.id === 'dismiss'}
+              title={x.id === 'always' ? sel.payload?.always : null}
+              onclick={() => act(sel, x.id)}>{x.label}</button
+            >
+          {/each}
         </div>
       {:else}
         <p class="muted pad">Nothing selected.</p>

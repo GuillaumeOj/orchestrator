@@ -39,7 +39,7 @@ export function afterRemoval(items, removedId) {
 
 export const agentOf = (d) => d?.subject?.agent ?? null;
 export const parked = (d) => d?.lifecycle?.state === 'parked';
-/** The lifecycle's version (api-contract §2.1): +1 per write; a lower or equal one is old. */
+/** The lifecycle's version (api-contract §2.1): +1 per write; a lower one is old. */
 export const version = (d) => d?.lifecycle?.version ?? 0;
 /** Still waiting on the user: open or parked. */
 export const isOpen = (d) => d?.lifecycle?.state === 'open' || parked(d);
