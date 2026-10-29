@@ -54,6 +54,17 @@ fn tool_input(item: &InboxItem) -> Value {
     item.payload.get("tool_input").or_else(|| item.payload.get("input")).cloned().unwrap_or(Value::Null)
 }
 
+/// Pushes a branch and opens its PR (worktree, base, branch, title, body,
+/// draft): the PR's URL. The real one uses git and `gh`.
+#[derive(Clone)]
+pub struct PrOpener(pub Arc<dyn Fn(&std::path::Path, &str, &str, &str, &str, bool) -> Result<String> + Send + Sync>);
+
+impl std::fmt::Debug for PrOpener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PrOpener")
+    }
+}
+
 /// A step of a decision's lifecycle after `decided` (spec §3.3).
 pub enum Stage {
     /// The core delivered the answer (hook replied, turn pasted or queued, push started).
@@ -985,9 +996,12 @@ impl Runtime {
         let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         let wt = std::path::PathBuf::from(s("worktree"));
         let (branch, base) = (s("branch"), s("base"));
-        let r = orch_git::gh::push(&wt, "origin", &branch).and_then(|_| {
-            orch_git::gh::create_pr(&wt, &base, &branch, &s("title"), &s("body"), p["draft"].as_bool().unwrap_or(false))
-        });
+        let draft = p["draft"].as_bool().unwrap_or(false);
+        let r = match &self.cfg.open_pr {
+            Some(f) => (f.0)(&wt, &base, &branch, &s("title"), &s("body"), draft),
+            None => orch_git::gh::push(&wt, "origin", &branch)
+                .and_then(|_| orch_git::gh::create_pr(&wt, &base, &branch, &s("title"), &s("body"), draft)),
+        };
         let (decision, msg) = match &r {
             Ok(url) => ("ok", format!("ORCH: the user approved; the orchestrator pushed {branch} and opened {url}")),
             Err(e) => ("failed", format!("ORCH: the user approved, but pushing or opening the PR failed: {e:#}")),
@@ -1491,4 +1505,76 @@ mod tests {
             self.permission_request_with(&rec, &Call::from_hook(&p), &subject, None, hold, None)
         }
     }
+
+    // ------------------------------------------------------------ P4.1 lifecycle
+
+    fn lc(rt: &Runtime, id: u64) -> (String, Option<String>, Option<String>) {
+        let v = rt.lifecycle(id);
+        let s = |k: &str| v[k].as_str().map(str::to_string);
+        (s("state").unwrap_or_default(), s("effect"), s("effect_detail"))
+    }
+
+    #[test]
+    fn a_held_permission_ends_allowed_or_denied() {
+        let (_d, rt) = test_runtime(true);
+        let p = rt.add_item(Some("a1"), "permission", "a1: Bash: ls".into(), json!({"tool": "Bash"}), 30).unwrap();
+        let r = rt.decide(p, InboxDecision::Approve, None, None).unwrap();
+        assert_eq!(lc(&rt, p), ("effect".into(), Some("allowed".into()), None));
+        assert_eq!(r["lifecycle"]["effect"], "allowed");
+        let q = rt.add_item(Some("a1"), "permission", "a1: Bash: rm".into(), json!({"tool": "Bash"}), 30).unwrap();
+        rt.decide(q, InboxDecision::Reject, None, Some("no")).unwrap();
+        assert_eq!(lc(&rt, q).1.as_deref(), Some("denied"));
+        // The subject and thread are stored with the item.
+        let i = item(&rt, p);
+        assert_eq!((i.subject["agent"].as_str(), i.thread.as_deref()), (Some("a1"), Some("a1")));
+    }
+
+    #[test]
+    fn a_parked_permission_is_sent_then_queued_then_resumed() {
+        let (_d, rt) = test_runtime(true);
+        let payload = json!({"tool": "Bash", "tool_input": {"command": "pnpm add zod"}, "summary": "pnpm add zod"});
+        let p = rt.add_item(Some("a1"), "permission", "a1: Bash".into(), payload.clone(), 30).unwrap();
+        let other = rt.add_item(Some("a1"), "permission", "a1: Bash 2".into(), payload, 30).unwrap();
+        rt.store.write(|s| assert!(s.park_inbox(p) && s.park_inbox(other))).unwrap();
+        rt.decide(p, InboxDecision::Approve, None, None).unwrap();
+        assert_eq!(lc(&rt, p).0, "sent", "the agent was told");
+        rt.answers_queued("a1", Some("≈14:20".into()));
+        assert_eq!(lc(&rt, p), ("effect".into(), Some("queued".into()), Some("≈14:20".into())));
+        rt.answers_resumed("a1");
+        assert_eq!(lc(&rt, p).1.as_deref(), Some("resumed"));
+        assert_eq!(lc(&rt, other).0, "parked", "an undecided parked permission is left alone");
+    }
+
+    #[test]
+    fn a_question_is_sent_then_resumed_and_a_pane_answer_makes_it_stale() {
+        let (_d, rt) = test_runtime(true);
+        let q = rt.add_item(Some("a1"), "question", "a1: which db?".into(), json!({"question": "which db?"}), 20).unwrap();
+        let r = rt.decide(q, InboxDecision::Reply, None, Some("sqlite")).unwrap();
+        assert_eq!(r["lifecycle"]["state"], "sent");
+        rt.answers_resumed("a1");
+        assert_eq!(lc(&rt, q).1.as_deref(), Some("resumed"));
+        // A question left in the pane, answered there.
+        let rec = rt.store.read(|s| s.agents["a1"].clone());
+        let pq = rt.question_item(&rec, "Shall I go on?", vec![], "pane", true, None).unwrap();
+        rt.close_pane_questions("a1");
+        let i = item(&rt, pq);
+        assert_eq!((lc(&rt, pq).0.as_str(), i.stale_why.as_deref()), ("stale", Some("answered in the pane")));
+        assert_eq!(i.decided_by.as_deref(), Some("pane"));
+        assert!(actors(&rt).contains(&"pane".to_string()), "audited as the pane's");
+    }
+
+    #[test]
+    fn budget_items_apply_or_skip_and_dismissals_say_so() {
+        let (_d, rt) = test_runtime(true);
+        let b = rt.add_item(None, "budget", "Reserve used up".into(), json!({"reason": "r"}), 0).unwrap();
+        rt.decide(b, InboxDecision::Approve, None, None).unwrap();
+        assert_eq!(lc(&rt, b).1.as_deref(), Some("applied"));
+        let c = rt.add_item(None, "budget", "Reserve used up".into(), json!({"reason": "r"}), 0).unwrap();
+        let r = rt.decide(c, InboxDecision::Reject, None, None).unwrap();
+        assert_eq!((lc(&rt, c).1.as_deref(), r["effect"].as_str()), (Some("skipped"), Some("skipped")));
+        let a = rt.add_item(Some("a1"), "alert", "a1: x".into(), json!({}), 0).unwrap();
+        rt.decide(a, InboxDecision::Dismiss, None, None).unwrap();
+        assert_eq!(lc(&rt, a), ("dismissed".into(), Some("dismissed".into()), None));
+    }
 }
+

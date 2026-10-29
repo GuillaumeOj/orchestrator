@@ -84,6 +84,8 @@ pub struct RuntimeConfig {
     pub conditions: Arc<dyn orch_git::fetch::Conditions>,
     /// Replaces `gh` for the GitHub task backend (tests).
     pub gh: Option<crate::team::GhFactory>,
+    /// Replaces the PR gate's push + `gh pr create` (tests): the PR's URL.
+    pub open_pr: Option<crate::inbox::PrOpener>,
     /// Integration tokens and MCP env secrets (NFR-3): the Keychain.
     pub secrets: Arc<dyn orch_secrets::Secrets>,
     /// The core's own network calls (MCP probes, token tests).
@@ -123,6 +125,7 @@ impl RuntimeConfig {
             fetch: orch_git::fetch::FetchPolicy::default(),
             conditions: Arc::new(orch_git::fetch::SystemConditions),
             gh: None,
+            open_pr: None,
             secrets: Arc::new(orch_secrets::Keychain),
             net: Arc::new(crate::net::SystemNet),
             default_plan,

@@ -1695,7 +1695,7 @@ fn doc_lines(worktree: &Path, dir: &str, docs: &[String]) -> Value {
     let files: Vec<Value> = docs
         .iter()
         .map(|d| {
-            let path = format!("{dir}/{d}");
+            let path = format!("{}/{d}", dir.trim_end_matches('/'));
             let lines = std::fs::read_to_string(worktree.join(&path)).map(|t| t.lines().count()).unwrap_or(0);
             json!({"path": path, "lines": lines})
         })
@@ -2017,6 +2017,8 @@ mod tests {
         assert_eq!(gate.payload["action"], "spec_approval");
         assert_eq!(gate.payload["docs"], json!(["spec.md"]));
         assert_eq!(gate.payload["feature_id"], json!(run.feature_id), "for the docs' images");
+        assert_eq!(gate.payload["doc_lines"], json!([{"path": ".orchestrator/features/fx/spec.md", "lines": 1}]));
+        assert_eq!((gate.subject["feature"].as_str(), gate.thread.as_deref()), (Some("fx"), Some(run.id.as_str())));
         // Sent back once, then approved.
         rt.decide(gate.id, InboxDecision::Reply, None, Some("name the files")).unwrap();
         assert_eq!(state(&rt, &run.id), RunState::Spec);
@@ -2026,6 +2028,11 @@ mod tests {
         rt.decide(gate.id, InboxDecision::Approve, None, None).unwrap();
         assert_eq!(state(&rt, &run.id), RunState::Planning);
         assert!(queued(&rt, lead).iter().any(|b| b.contains("approved: proceed")));
+        // P4.1 lifecycle: decided → sent (the lead is told) → resumed at its turn.
+        let lc = |id| rt.lifecycle(id);
+        assert_eq!((lc(gate.id)["state"].as_str(), lc(gate.id)["decided_by"].as_str()), (Some("sent"), Some("user")));
+        rt.answers_resumed(lead);
+        assert_eq!((lc(gate.id)["state"].as_str(), lc(gate.id)["effect"].as_str()), (Some("effect"), Some("resumed")));
 
         // Tasks with a dependency (FR-404).
         let t1: Task = serde_json::from_value(

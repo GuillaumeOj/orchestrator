@@ -306,4 +306,76 @@ mod tests {
         );
         assert!(unknown.0);
     }
+
+    /// A runtime whose PR gate opens PRs with `open` instead of git and gh.
+    fn with_opener(open: crate::inbox::PrOpener) -> (tempfile::TempDir, std::sync::Arc<Runtime>) {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
+        let mut cfg = crate::runtime::tests::test_cfg(d.path(), true);
+        cfg.open_pr = Some(open);
+        let rt = Runtime::new(cfg).unwrap();
+        rt.store.write(|s| s.agents.insert("a1".into(), crate::runtime::tests::test_agent(d.path()))).unwrap();
+        (d, rt)
+    }
+
+    fn gate_item(rt: &Runtime) -> orch_store::InboxItem {
+        rt.store.read(|s| s.inbox.iter().rev().find(|i| i.kind == "gate").cloned().unwrap())
+    }
+
+    fn wait_state(rt: &Runtime, id: u64, state: &str) -> Value {
+        for _ in 0..200 {
+            let lc = rt.lifecycle(id);
+            if lc["state"] == state {
+                return lc;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("{id} never reached {state}: {}", rt.lifecycle(id));
+    }
+
+    #[test]
+    fn the_pr_gate_has_its_diff_and_ends_pr_opened_or_failed() {
+        let url = "https://github.com/o/r/pull/12";
+        let ok = crate::inbox::PrOpener(std::sync::Arc::new(move |_, _, _, _, _, _| Ok(url.to_string())));
+        let (_d, rt) = with_opener(ok);
+        let (_r, _repo, wt) = with_worktree(&rt);
+        std::fs::write(wt.join("a.txt"), "one\ntwo\n").unwrap();
+        assert!(!call(&rt, "commit", json!({"message": "a"})).0);
+        assert!(!call(&rt, "request_pr", json!({"title": "Add a", "body": "Because."})).0);
+        let gate = gate_item(&rt);
+        assert_eq!(gate.payload["diff"], json!({"files": [{"path": "a.txt", "added": 2, "removed": 0}], "added": 2, "removed": 0}));
+        assert!(gate.payload["head"].as_str().is_some_and(|h| h.len() == 40));
+        assert_eq!(rt.decision_patch(gate.id, Some("a.txt")).unwrap().lines().filter(|l| l.starts_with('+')).count(), 3);
+        let r = rt.decide(gate.id, InboxDecision::Approve, None, None).unwrap();
+        assert_eq!(r["lifecycle"]["state"], "sent", "the push started");
+        let lc = wait_state(&rt, gate.id, "effect");
+        assert_eq!((lc["effect"].as_str(), lc["effect_detail"].as_str()), (Some("pr_opened"), Some(url)));
+        // A solo PR is an outcome of the digest.
+        rt.db.flush().unwrap();
+        let out = rt.outcomes_since(0);
+        assert!(out.iter().any(|o| o.kind == "pr_opened" && o.extra["url"] == url), "{out:?}");
+    }
+
+    #[test]
+    fn a_failed_push_is_failed_and_a_moved_branch_is_stale() {
+        let fail = crate::inbox::PrOpener(std::sync::Arc::new(|_, _, _, _, _, _| Err(anyhow::anyhow!("push rejected"))));
+        let (_d, rt) = with_opener(fail);
+        let (_r, _repo, wt) = with_worktree(&rt);
+        std::fs::write(wt.join("a.txt"), "a").unwrap();
+        call(&rt, "commit", json!({"message": "a"}));
+        call(&rt, "request_pr", json!({"title": "A"}));
+        let gate = gate_item(&rt);
+        rt.decide(gate.id, InboxDecision::Approve, None, None).unwrap();
+        let lc = wait_state(&rt, gate.id, "failed");
+        assert_eq!(lc["error"], "push rejected");
+        // The branch moves after the request: approving is refused, stale, and the agent asks again.
+        call(&rt, "request_pr", json!({"title": "B"}));
+        let gate = gate_item(&rt);
+        std::fs::write(wt.join("b.txt"), "b").unwrap();
+        call(&rt, "commit", json!({"message": "b"}));
+        let r = rt.decide(gate.id, InboxDecision::Approve, None, None).unwrap();
+        assert_eq!(r["effect"], "stale");
+        assert_eq!(wait_state(&rt, gate.id, "stale")["stale_why"], "the branch moved");
+        assert!(rt.store.read(|s| s.turns.iter().any(|t| t.agent_id == "a1" && t.body.contains("PR gate stale"))));
+    }
 }
+

@@ -625,4 +625,50 @@ mod tests {
         assert_eq!(ev["rev"], 2);
         assert_eq!(ev["topics"], json!(["board:p1", "feature:f9"]));
     }
+
+    #[test]
+    fn decisions_and_outcomes_ride_the_now_event() {
+        let (_d, rt) = test_runtime(true);
+        let got = collect(&rt);
+        rt.now_pump(false);
+        let q = rt.add_item(Some("a1"), "question", "a1: which db?".into(), json!({"question": "which db?"}), 20).unwrap();
+        rt.now_pump(false);
+        let ev = got.lock().unwrap().last().cloned().unwrap();
+        let up = &ev["decisions"]["upsert"];
+        assert_eq!((up[0]["id"].as_str(), up[0]["lifecycle"]["state"].as_str()), (Some(format!("q-{q}").as_str()), Some("open")));
+        assert_eq!(ev["counts"]["global"]["decisions"], 1);
+        assert_eq!(ev["decisions"]["closed"], json!([]));
+        // Answered: it leaves the open list, its last upsert says sent.
+        rt.decide(q, orch_protocol::InboxDecision::Reply, None, Some("sqlite")).unwrap();
+        rt.now_pump(false);
+        let ev = got.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(ev["decisions"]["closed"], json!([format!("q-{q}")]));
+        assert_eq!(ev["decisions"]["upsert"][0]["lifecycle"]["state"], "sent");
+        assert_eq!(ev["counts"]["global"]["decisions"], 0);
+        // Its effect comes in the next push; the snapshot keeps it (closed < 10 min).
+        rt.answers_resumed("a1");
+        rt.now_pump(false);
+        let ev = got.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(ev["decisions"]["upsert"][0]["lifecycle"]["effect"], "resumed");
+        assert_eq!(ev["decisions"]["closed"], json!([]));
+        let snap = rt.now_snapshot();
+        assert_eq!(snap["decisions"][0]["lifecycle"]["effect"], "resumed");
+        // A new outcome is pushed once and counts in done_today.
+        rt.event("a1", "turn.done", json!({"summary": "Fixed the feed"}));
+        rt.db.flush().unwrap();
+        rt.touch("x");
+        rt.now_pump(false);
+        let ev = got.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(ev["outcomes"][0]["kind"], "turn_done");
+        assert_eq!(ev["counts"]["global"]["done_today"], 1);
+        let id = ev["outcomes"][0]["id"].as_str().unwrap().to_string();
+        rt.touch("y");
+        rt.now_pump(false);
+        assert_eq!(got.lock().unwrap().last().unwrap()["outcomes"], json!([]), "pushed once");
+        // Clear: seen in the snapshot, still counted.
+        rt.digest_seen(&id).unwrap();
+        let snap = rt.now_snapshot();
+        assert_eq!((snap["outcomes"][0]["seen"].as_bool(), snap["counts"]["global"]["done_today"].as_u64()), (Some(true), Some(1)));
+    }
 }
+
