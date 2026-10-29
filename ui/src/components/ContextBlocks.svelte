@@ -34,7 +34,7 @@
         <OptionsBlock {block} name={decision.id} bind:choices />
       {:else if BLOCKS[block.type]}
         {@const Block = BLOCKS[block.type]}
-        <Block {block} id={decision.id} subject={decision.subject} kind={decision.kind} />
+        <Block {block} {decision} />
       {/if}
     </section>
   {/each}

@@ -15,6 +15,7 @@
     confirm,
     coreAct,
     decide,
+    featureBySlug,
     openAgent,
     openBoard,
     openEditor,
@@ -30,10 +31,11 @@
     afterRemoval,
     agentOf,
     answerText,
+    blockOf,
     FILTERS,
+    intentFor,
     keyIntent,
     keyless,
-    kindLabel,
     LEVELS,
     move,
     parked,
@@ -66,7 +68,7 @@
   const levels = $derived([1, 2, 3].map((l) => ({ l, rows: items.filter((i) => i.level === l) })).filter((g) => g.rows.length));
   const outcomes = $derived(digest());
   const doneToday = $derived(counts().done_today);
-  const options = $derived(sel?.context?.find((b) => b.type === 'options'));
+  const options = $derived(blockOf(sel, 'options'));
   // Answer ⏎ is enabled when every question has a choice (notes §7 row 4).
   const answered = $derived(!!options && options.questions.every((_, i) => choices[i]?.length));
   // A stale or failed decision: Dismiss and, failed, the kind's actions again (notes §7 rows 19–20).
@@ -93,7 +95,7 @@
     if (o.kind === 'report_ready') return openReport(o.report ?? 'current');
     if (o.task != null && o.project) return openBoard(o.project, o.task);
     if (o.run && o.feature) {
-      const f = app.data?.features?.find((x) => x.project_id === o.project && x.slug === o.feature);
+      const f = featureBySlug(o.project, o.feature);
       if (f) return openFeature(f.id);
     }
     if (o.agent) openAgent(o.agent);
@@ -155,11 +157,9 @@
   // A keyless action (Always allow, Restart fresh, Delete…). Delete asks first:
   // it kills the agent and hides it (its worktree stays).
   function act(d, id) {
-    const intent = { in_pane: { kind: 'pane' } }[id] ?? { kind: 'decide', action: id };
     if (id === 'delete')
       return confirm(`Delete ${agentOf(d)}?`, 'Kills it and removes it from the app; its worktree stays.', () => send(d, id), 'Delete');
-    if (intent.kind === 'pane') return apply(intent, d);
-    send(d, id);
+    apply(intentFor(d, id), d);
   }
 
   function onKey(e) {
@@ -270,7 +270,7 @@
         {@const k = decisionKind(sel)}
         <div class="dh">
           <span class="kind" style:color={k.color} aria-hidden="true">{k.icon}</span>
-          <span>{kindLabel(sel)}</span>
+          <span>{k.label}</span>
           <span class="secondary subject">{subjectLine(sel)}</span>
           <span class="grow"></span>
           {#if agentOf(sel)}<StatusBadge state={statusOf(agentOf(sel))} />{/if}

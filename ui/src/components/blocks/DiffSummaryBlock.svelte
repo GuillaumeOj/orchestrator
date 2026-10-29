@@ -3,18 +3,19 @@
   // lines", per file a 10-segment bar (scaled to the largest file) and its
   // counts ("−0" left out), "Show n more files" past 12, and the patch on
   // demand (`decision_patch`): "Loading patch…", or why it failed. No spinner.
+  import { lineKind } from '../../lib/diff.js';
+  import { plural } from '../../lib/format.js';
   import { errText, invoke } from '../../lib/ipc.js';
 
-  let { block, id } = $props();
+  let { block, decision } = $props();
   const FILES = 12;
   const SEGMENTS = 10;
   let all = $state(false);
-  let patch = $state(null); // null | { loading } | { text } | { error }
+  let patch = $state(null); // null | { loading } | { lines } | { error }
 
   const files = $derived(block.files ?? []);
   const shown = $derived(all ? files : files.slice(0, FILES));
   const max = $derived(Math.max(1, ...files.map((f) => f.added + f.removed)));
-  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
   /** The file's bar: added then removed segments, scaled; the rest empty. */
   function bar(f) {
@@ -26,12 +27,12 @@
   async function showPatch() {
     patch = { loading: true };
     try {
-      patch = { text: await invoke('decision_patch', { id, path: null }) };
+      const text = await invoke('decision_patch', { id: decision.id, path: null });
+      patch = { lines: text.split('\n') };
     } catch (e) {
       patch = { error: errText(e) };
     }
   }
-  const lineClass = (l) => (l.startsWith('+') && !l.startsWith('+++') ? 'add' : l.startsWith('-') && !l.startsWith('---') ? 'del' : '');
 </script>
 
 <div class="bh">{plural(files.length, 'file')} changed · +{block.added} −{block.removed} lines</div>
@@ -43,8 +44,8 @@
   </div>
 {/each}
 {#if !all && files.length > FILES}<button class="link" onclick={() => (all = true)}>Show {plural(files.length - FILES, 'more file')}</button>{/if}
-{#if patch?.text != null}
-  <pre class="mono patch">{#each patch.text.split('\n') as l, i (i)}<span class={lineClass(l)}>{l}</span>{'\n'}{/each}</pre>
+{#if patch?.lines}
+  <pre class="mono patch">{#each patch.lines as l, i (i)}<span class={lineKind(l)}>{l}</span>{'\n'}{/each}</pre>
   <button class="link" onclick={() => (patch = null)}>Hide patch</button>
 {:else if patch?.loading}
   <span class="muted">Loading patch…</span>
@@ -97,6 +98,10 @@
   .removed,
   .patch .del {
     color: var(--color-diff-removed);
+  }
+  .patch .hunk,
+  .patch .meta {
+    color: var(--color-text-secondary);
   }
   .patch {
     margin: 0;

@@ -15,7 +15,7 @@
   import WaitingChip from '../components/WaitingChip.svelte';
   import { agent, agentAction, app, cancelQueued, confirm, decide, mountTerm, openEditor, runNow, toast } from '../lib/app.svelte.js';
   import { ago, clock, duration } from '../lib/format.js';
-  import { agentOf, parked, visibleItems } from '../lib/inbox.js';
+  import { agentOf, blockOf, parked, visibleItems } from '../lib/inbox.js';
   import { errText } from '../lib/ipc.js';
   import { attention, openDecisions, statusOf } from '../lib/now.svelte.js';
   import { cacheState, sessionPp as ppOf, runCost, STATUS } from '../lib/status.js';
@@ -116,7 +116,7 @@
         {/each}
       </div>
       {#if parked(perm)}<LifecycleMarker decision={perm} />{/if}
-      <PermissionCall block={perm.context?.find((b) => b.type === 'tool_call')} />
+      <PermissionCall block={blockOf(perm, 'tool_call')} />
     </div>
   {:else if rec?.level === 'needs_you'}
     <div class="strip warn"><span class="icon" style:color={STATUS[ds].color}>{STATUS[ds].icon}</span> <b>{STATUS[ds].label}</b> <WaitingChip {rec} /> · {inPane ? 'answer it in the pane below: the app never does' : 'answer it in the Inbox'}</div>

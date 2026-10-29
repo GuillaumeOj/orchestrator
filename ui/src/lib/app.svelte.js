@@ -75,6 +75,8 @@ export const projects = () => app.data?.projects ?? [];
 /** Features with their latest team run (P2). `null` in a snapshot when the
  *  core could not read them: the poll then keeps the previous list. */
 export const features = () => app.data?.features ?? [];
+/** A feature by its project and slug (a decision's or an outcome's subject). */
+export const featureBySlug = (projectId, slug) => features().find((f) => f.project_id === projectId && f.slug === slug);
 export const focusedSpec = () => app.panes[app.focused];
 export const isTerminal = (spec) => ['agent', 'shell', 'editor'].includes(spec?.type);
 

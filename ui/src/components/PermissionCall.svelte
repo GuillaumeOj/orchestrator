@@ -8,7 +8,7 @@
   let { block } = $props();
   let open = $state(false);
   const text = $derived(inputText(block?.input));
-  const shown = $derived(open ? { text, more: 0 } : collapse(text));
+  const shown = $derived(collapse(text, open ? Infinity : 6));
 </script>
 
 <div class="perm">

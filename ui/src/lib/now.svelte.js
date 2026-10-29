@@ -84,7 +84,8 @@ export function applyNow(ev) {
         delete n.decisions[id];
         closedAt.delete(id);
       }
-    if (ev.outcomes?.length) n.outcomes = [...n.outcomes, ...ev.outcomes];
+    // Outcomes: today's unseen ones only (a long session would keep every day's).
+    if (ev.outcomes?.length) n.outcomes = [...digest(), ...ev.outcomes];
     if (ev.counts) n.counts = ev.counts;
     n.rev = ev.rev;
   } else if (ev.rev > n.rev) {
@@ -189,11 +190,9 @@ export async function clearDigest(list = digest()) {
   app.now.outcomes = app.now.outcomes.map((o) => (evNo(o.id) <= upTo ? { ...o, seen: true } : o));
 }
 
-/** Decisions still waiting on the user (open or parked). */
+/** Decisions still waiting on the user (open or parked), in no order. */
 export const openDecisions = () =>
-  Object.values(app.now.decisions)
-    .filter((d) => d.lifecycle?.state === 'open' || d.lifecycle?.state === 'parked')
-    .sort((x, y) => x.level - y.level || x.created_ms - y.created_ms);
+  Object.values(app.now.decisions).filter((d) => d.lifecycle?.state === 'open' || d.lifecycle?.state === 'parked');
 
 // ---------------------------------------------------------------- topics
 

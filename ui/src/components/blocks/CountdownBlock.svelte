@@ -5,10 +5,10 @@
   import { now30 } from '../../lib/app.svelte.js';
   import { duration } from '../../lib/format.js';
 
-  let { block, kind = null } = $props();
+  let { block, decision } = $props();
   const left = $derived(block.deadline_ms - Math.max(now30(), Date.now()));
   // The default's verb: an ask keeps the agent queued, a budget skips.
-  const verb = $derived(block.default !== 'reject' ? 'Applies' : kind === 'ask' ? 'Keeps queued' : 'Skips');
+  const verb = $derived(block.default !== 'reject' ? 'Applies' : decision?.kind === 'ask' ? 'Keeps queued' : 'Skips');
 </script>
 
 <div class="cd">

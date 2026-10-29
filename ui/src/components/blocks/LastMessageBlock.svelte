@@ -6,7 +6,7 @@
 
   let { block } = $props();
   let open = $state(false);
-  const shown = $derived(open ? { text: block.text, more: 0 } : collapse(block.text ?? ''));
+  const shown = $derived(collapse(block.text ?? '', open ? Infinity : 6));
 </script>
 
 <div class="bh">Last message{block.at_ms ? ` · ${clock(block.at_ms)}` : ''}</div>

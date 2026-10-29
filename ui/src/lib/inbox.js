@@ -42,9 +42,11 @@ export const parked = (d) => d?.lifecycle?.state === 'parked';
 /** Came back after a core restart: the card says so, unless it is parked. */
 export const restarted = (d) => d?.payload?.restarted === true && !parked(d);
 /** An MCP server that needs sign-in (FR-604): Reconnect, Open Settings, Dismiss. */
-export const mcpAlert = (d) => d?.kind === 'alert' && d.payload?.alert === 'mcp_needs_auth';
+const mcpAlert = (d) => d?.kind === 'alert' && d.payload?.alert === 'mcp_needs_auth';
 export const actionByKey = (d, key) => d?.actions?.find((a) => a.key === key) ?? null;
 /** Actions with no key: buttons in the detail only. */
+/** A decision's context block of that type, if any. */
+export const blockOf = (d, type) => d?.context?.find((b) => b.type === type) ?? null;
 export const keyless = (d) => (d?.actions ?? []).filter((a) => !a.key);
 /** Kind label (notes §3.2), from the decision-kind palette. */
 export const kindLabel = (d) => decisionKind(d).label;
@@ -135,37 +137,45 @@ export const answerText = (choices) => choices.map((c) => c.join(', ')).join('\n
 // ---------------------------------------------------------------- copy
 
 const who = (d) => (agentOf(d) ? ` · ${agentOf(d)}` : '');
-const toolCall = (d) => d?.context?.find((b) => b.type === 'tool_call');
+const toolCall = (d) => blockOf(d, 'tool_call');
 const what = (d) => {
   const t = inputText(toolCall(d)?.input);
   return t ? ` · ${t.split('\n')[0].slice(0, 40)}` : '';
 };
 const GATE_WORD = { spec: 'spec gate', pr: 'PR gate', restart: 'gate' };
 
-/** Toast and marker while a decision waits out its undo window: what will be
- *  sent, not what happened (the core has not answered yet). */
-export function pendingToast(d, action) {
+/** What will be sent while a decision waits out its undo window ("Allowing
+ *  once"): the marker's text, and the start of the undo toast. */
+export function pendingVerb(d, action) {
   switch (d.kind) {
     case 'permission':
-      return `${{ approve: 'Allowing once', always: 'Always allowing' }[action] ?? 'Denying'}${who(d)}${what(d)}`;
+      return { approve: 'Allowing once', always: 'Always allowing' }[action] ?? 'Denying';
     case 'startup':
-      return `${{ restart_fresh: 'Restarting fresh', delete: 'Deleting' }[action] ?? 'Dismissing'}${who(d)}`;
+      return { restart_fresh: 'Restarting fresh', delete: 'Deleting' }[action] ?? 'Dismissing';
     case 'budget':
-      return `${action === 'approve' ? 'Applying' : 'Skipping'} · ${d.title}`;
+      return action === 'approve' ? 'Applying' : 'Skipping';
     case 'ask':
-      return action === 'approve' ? `Running now${who(d)}` : `Keeping queued${who(d)}`;
+      return action === 'approve' ? 'Running now' : 'Keeping queued';
     case 'error':
-      if (action === 'resume') return `Resuming${who(d)}`;
-      if (action === 'restart_fresh') return `Restarting fresh${who(d)}`;
+      if (action === 'resume') return 'Resuming';
+      if (action === 'restart_fresh') return 'Restarting fresh';
       break; // Dismiss: as any other kind's
     case 'gate': {
       const obj = ` the ${GATE_WORD[d.gate] ?? 'gate'}`;
-      if (action === 'reply') return `Sending${obj} back with your notes${who(d)}`;
-      return `${action === 'approve' ? 'Approving' : 'Rejecting'}${obj}${who(d)}`;
+      if (action === 'reply') return `Sending${obj} back with your notes`;
+      return `${action === 'approve' ? 'Approving' : 'Rejecting'}${obj}`;
     }
   }
-  if (action === 'dismiss' || action === 'reject') return `Dismissing · ${cut(d.title, 40)}`;
-  return `Sending your answer${who(d)}`;
+  return action === 'dismiss' || action === 'reject' ? 'Dismissing' : 'Sending your answer';
+}
+
+/** The undo toast: what will be sent, not what happened (the core has not answered yet). */
+export function pendingToast(d, action) {
+  const verb = pendingVerb(d, action);
+  if (d.kind === 'permission') return `${verb}${who(d)}${what(d)}`;
+  if (d.kind === 'budget') return `${verb} · ${d.title}`;
+  if (verb === 'Dismissing' && d.kind !== 'startup') return `${verb} · ${cut(d.title, 40)}`;
+  return `${verb}${who(d)}`;
 }
 
 const BY = {
@@ -177,7 +187,7 @@ const BY = {
   overwatch: 'by the Overwatch',
 };
 /** "by you", "by rule git-safe" (notes §3.4). */
-export const byText = (by) => (by?.startsWith('rule:') ? `by rule ${by.slice(5)}` : (BY[by] ?? ''));
+const byText = (by) => (by?.startsWith('rule:') ? `by rule ${by.slice(5)}` : (BY[by] ?? ''));
 
 /** "PR opened · checkout #12 ↗". */
 function prOpened(d, url) {
@@ -272,13 +282,12 @@ export function marker(d, pending = null, now = Date.now()) {
   const lc = d.lifecycle ?? {};
   const agent = agentOf(d) ?? 'the agent';
   const at = (ms) => (ms ? ` · ${clock(ms, now)}` : '');
-  if (pending && !pending.sent)
-    return { state: 'decided', text: `${pendingToast(d, pending.action).split(' · ')[0]} · Undo u` };
+  if (pending && !pending.sent) return { state: 'decided', text: `${pendingVerb(d, pending.action)} · Undo u` };
   switch (lc.state) {
     case 'parked':
       return { state: 'parked', text: `Parked · ${agent} stopped; resumes on your answer` };
     case 'decided':
-      return { state: 'decided', text: `Decided ${byText(lc.decided_by)} · sending`.replace('  ', ' ') };
+      return { state: 'decided', text: `${['Decided', byText(lc.decided_by)].filter(Boolean).join(' ')} · sending` };
     case 'sent':
       if (d.kind === 'gate' && d.gate === 'pr')
         return { state: 'sent', text: `Pushing ${d.payload?.branch ?? 'the branch'}…` };
