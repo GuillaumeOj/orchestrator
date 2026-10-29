@@ -89,6 +89,10 @@ describe('team helpers', () => {
     expect(timelineFilter('git')(ev('git.merge', {}))).toBe(true);
     expect(timelineFilter('tasks')(ev('message', {}))).toBe(false);
     expect(timelineFilter('gates')(ev('run.state', { from: 'spec', to: 'spec_gate' }))).toBe(true);
+    const fresh = ev('agent.fresh_session', { node: 'back', task: 3, title: 'Add the usage endpoint' });
+    expect(timelineText(fresh)).toBe('T-3 starts in a fresh session');
+    expect(timelineFilter('run')(fresh)).toBe(true);
+    expect(timelineFilter('tasks')(fresh)).toBe(false);
   });
 
   it('role marks come from the role when known', () => {

@@ -59,7 +59,11 @@ const FAMILY = (k) =>
       ? 'tasks'
       : k.startsWith('git.')
         ? 'git'
-        : k === 'run.state' || k === 'run.launched' || k === 'agent.added' || k === 'run.team_changed'
+        : k === 'run.state' ||
+            k === 'run.launched' ||
+            k === 'agent.added' ||
+            k === 'agent.fresh_session' ||
+            k === 'run.team_changed'
           ? 'run'
           : 'other';
 
@@ -82,6 +86,8 @@ export function timelineText(e) {
       return `launched ${d.team} v${d.version} on ${d.feature}`;
     case 'agent.added':
       return `${d.node} joined on ${d.branch}`;
+    case 'agent.fresh_session':
+      return `T-${d.task} starts in a fresh session`;
     case 'task.created':
       return `created T-${d.task}: ${d.title}${d.node ? ` → ${d.node}` : ''}${d.by === 'user' ? ' (you)' : ''}`;
     case 'task.assigned':
