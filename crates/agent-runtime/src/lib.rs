@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod artifacts;
+pub mod attention;
 pub mod compile;
 pub mod delivery;
 pub mod env;

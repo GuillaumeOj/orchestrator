@@ -805,6 +805,7 @@ impl Runtime {
             team: None,
             resume_failed: false,
             start_fresh: false,
+            spawned_at_ms: None,
         };
         self.store.write(|s| s.agents.insert(rec.id.clone(), rec.clone()))?;
         // Every agent belongs to a registered project (J1); starting one marks it active (FR-103).
@@ -2632,6 +2633,7 @@ pub(crate) mod tests {
             team: None,
             resume_failed: false,
             start_fresh: false,
+            spawned_at_ms: None,
         }
     }
 

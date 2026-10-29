@@ -1474,6 +1474,7 @@ mod tests {
             team: None,
             resume_failed: false,
             start_fresh: false,
+            spawned_at_ms: None,
         }
     }
 

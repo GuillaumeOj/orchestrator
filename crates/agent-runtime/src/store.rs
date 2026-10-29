@@ -56,6 +56,9 @@ pub struct AgentRecord {
     /// the delivery loop like any resume (FR-415 from the lead, FR-411).
     #[serde(default)]
     pub start_fresh: bool,
+    /// When its current process was spawned (ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_at_ms: Option<u64>,
 }
 
 /// Where a team agent sits: its run, its node and its current task.
@@ -91,6 +94,7 @@ impl AgentRecord {
         self.pid = Some(pid);
         self.pgid = Some(pgid);
         self.spawns += 1;
+        self.spawned_at_ms = Some(orch_protocol::now_ms());
         self.flag = None;
         self.start_fresh = false;
         self.trust_dialog = false;

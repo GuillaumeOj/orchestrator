@@ -100,6 +100,13 @@ pub struct Tracker {
     /// When the running turn started (ms; set by the runtime, for the watchdog, FR-407).
     #[serde(default)]
     pub turn_started_ms: Option<u64>,
+    /// When the current tool call started (ms; set by the runtime): an MCP
+    /// call running long is a wait on something outside (P4.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_started_ms: Option<u64>,
+    /// The current call's main argument, short ("cargo test", a path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_brief: Option<String>,
     /// Messages queued by the CLI during a turn (same prompt_id).
     pub queued_messages: u32,
     pub turns: u32,
