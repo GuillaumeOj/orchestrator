@@ -59,12 +59,13 @@ impl History {
 #[derive(Clone, Debug, Serialize)]
 pub struct CurvePoint {
     pub t_ms: i64,
-    /// The agents' ideal curve, % of the week.
-    pub ideal: f64,
-    /// G projected at the current burn (t ≥ now only).
-    pub forecast: Option<f64>,
-    /// G if the Governor closes today's error by the reset (an estimate).
-    pub with_governor: Option<f64>,
+    /// Where W should be: the agents' ideal curve + your usage + outside-app
+    /// usage (so far, then its forecast). `snapshot.plan` at now.
+    pub plan_total: f64,
+    /// W projected at the current burn, to `snapshot.projected` at the reset (t ≥ now only).
+    pub forecast_total: Option<f64>,
+    /// W if the Governor closes today's error by the reset (an estimate, t ≥ now only).
+    pub with_governor_total: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -216,21 +217,32 @@ pub fn build(
         times.sort();
         times.dedup();
     }
+    let other_now = snap.interactive_used + snap.unattributed_so_far;
+    let other_growth = snap.unattributed_forecast - snap.unattributed_so_far;
+    let wall_left = curve.wall_hours_left(now).max(1e-9);
     let points = times
         .into_iter()
         .map(|t| {
             let ideal = curve.fraction(t) * budget;
-            let (forecast, with_governor) = if t >= now {
-                let dh = curve.hours_at(t) - h_now;
-                let fc = (snap.governed + snap.burn_pct_per_hour * dh).min(110.0);
-                // The error shrinks linearly with the working hours left.
-                let left = (1.0 - dh / h_left_now).clamp(0.0, 1.0);
-                let wg = ideal + snap.error * left;
-                (Some(fc), Some(wg.max(snap.governed)))
+            let plan_total = if t < now {
+                // You + outside the app as the raw samples saw it at `t`.
+                let raw = &history.points;
+                let i = raw.partition_point(|p| p.t_ms <= ms(t));
+                ideal + i.checked_sub(1).map_or(0.0, |i| (raw[i].used - raw[i].governed).max(0.0))
+            } else {
+                let wall = wall_left - curve.wall_hours_left(t);
+                ideal + other_now + other_growth * (wall / wall_left).min(1.0)
+            };
+            let (forecast_total, with_governor_total) = if t >= now {
+                // Both close linearly with the working hours left.
+                let done = ((curve.hours_at(t) - h_now) / h_left_now).clamp(0.0, 1.0);
+                let fc = (snap.used + (snap.projected - snap.used) * done).min(110.0);
+                let wg = plan_total + snap.error * (1.0 - done);
+                (Some(fc), Some(wg.max(snap.used)))
             } else {
                 (None, None)
             };
-            CurvePoint { t_ms: ms(t), ideal, forecast, with_governor }
+            CurvePoint { t_ms: ms(t), plan_total, forecast_total, with_governor_total }
         })
         .collect();
 
@@ -299,9 +311,9 @@ pub fn build(
         now_ms: ms(now),
         shadow: plan.shadow_mode,
         reserve_pct: plan.reserve_pct,
+        actual: actual(history, &snap, now),
         snapshot: snap,
         curve: points,
-        actual: history.thinned(400),
         working,
         allocations,
         queue,
@@ -320,6 +332,25 @@ pub fn build(
             running: gov.off_hours_running(),
         },
     }
+}
+
+/// The week's usage so far: the thinned history, a last point at `now` from
+/// the snapshot, then a running max on W and G with `G ≤ W` (W only grows in
+/// a week; a dip is an estimate corrected, not usage given back).
+fn actual(history: &History, snap: &governor::ForecastSnapshot, now: Timestamp) -> Vec<HistoryPoint> {
+    let mut out = history.thinned(400);
+    while out.last().is_some_and(|p| p.t_ms >= ms(now)) {
+        out.pop();
+    }
+    out.push(HistoryPoint { t_ms: ms(now), used: snap.used, governed: snap.governed, five_hour: snap.five_hour });
+    let (mut used, mut governed) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for p in &mut out {
+        used = used.max(p.used);
+        governed = governed.max(p.governed);
+        p.used = used;
+        p.governed = governed.min(used);
+    }
+    out
 }
 
 /// The title bar's pressure state in words (§9.5 copy).
@@ -355,21 +386,72 @@ mod tests {
         (g, now)
     }
 
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
     #[test]
     fn curve_matches_the_snapshot_at_now() {
         let (g, now) = gov();
         let mut h = History::default();
         h.push(HistoryPoint { t_ms: ms(now), used: 30.0, governed: 30.0, five_hour: Some(20.0) }, 0);
         let v = build(&g, now, &h, &[], None, &|_| 0);
+        let s = &v.snapshot;
         let at_now = v.curve.iter().find(|p| p.t_ms == ms(now)).unwrap();
-        assert!((at_now.ideal - v.snapshot.ideal).abs() < 1e-6, "{} vs {}", at_now.ideal, v.snapshot.ideal);
-        assert!((at_now.forecast.unwrap() - v.snapshot.governed).abs() < 1e-6);
-        assert!(v.curve.first().unwrap().ideal.abs() < 1e-9 && v.curve.first().unwrap().forecast.is_none());
+        assert!(close(at_now.plan_total, s.plan), "{} vs {}", at_now.plan_total, s.plan);
+        assert!(close(at_now.forecast_total.unwrap(), s.used));
+        assert!(close(at_now.with_governor_total.unwrap(), s.used.max(s.plan + s.error)));
+        let first = v.curve.first().unwrap();
+        assert!(first.plan_total.abs() < 1e-9 && first.forecast_total.is_none() && first.with_governor_total.is_none());
         let last = v.curve.last().unwrap();
-        assert!((last.with_governor.unwrap() - last.ideal).abs() < 1e-6, "the error is closed by the reset");
+        assert!(close(last.forecast_total.unwrap(), s.projected.min(110.0)));
+        assert!(
+            close(last.with_governor_total.unwrap(), s.used.max(last.plan_total)),
+            "the error is closed by the reset"
+        );
+        assert!(last.plan_total >= at_now.plan_total);
         assert!(!v.working.is_empty() && v.working.len() <= 7);
         assert_eq!(v.allocations.len(), 1);
-        assert_eq!(v.actual.len(), 1);
+        assert_eq!(v.actual.len(), 1, "the now point replaces the sample at now");
+        assert_eq!(
+            v.actual[0],
+            HistoryPoint { t_ms: ms(now), used: s.used, governed: s.governed, five_hour: s.five_hour }
+        );
+    }
+
+    #[test]
+    fn dipping_history_draws_a_line_that_only_goes_up() {
+        let (g, now) = gov();
+        let mut h = History::default();
+        let t0 = ms(g.plan().week_start);
+        for (i, (used, governed)) in
+            [(30.0, 20.0), (34.0, 25.0), (31.0, 18.0), (36.0, 26.0), (35.0, 40.0)].into_iter().enumerate()
+        {
+            h.push(HistoryPoint { t_ms: t0 + i as i64 * 3_600_000, used, governed, five_hour: None }, 0);
+        }
+        let v = build(&g, now, &h, &[], None, &|_| 0);
+        let a = &v.actual;
+        assert_eq!(a.len(), 6);
+        assert_eq!(a.last().unwrap().t_ms, ms(now));
+        for w in a.windows(2) {
+            assert!(w[1].used >= w[0].used && w[1].governed >= w[0].governed, "{w:?}");
+        }
+        assert!(a.iter().all(|p| p.governed <= p.used), "{a:?}");
+        assert_eq!(a[2].used, 34.0);
+        assert_eq!(a[2].governed, 25.0);
+        assert_eq!(a[4].governed, 36.0, "clamped to W");
+        // Past plan points use the raw samples' other share (latest at or before t).
+        let at = |t: i64| v.curve.iter().find(|p| p.t_ms == t).unwrap();
+        let ideal_at = |t: i64| {
+            g.curve().fraction(Timestamp::from_millisecond(t).unwrap())
+                * (100.0 - g.plan().reserve_pct - v.snapshot.unattributed_forecast).max(0.0)
+        };
+        let t2 = t0 + 2 * 3_600_000;
+        assert!(close(at(t2).plan_total, ideal_at(t2) + 13.0), "{}", at(t2).plan_total);
+        let t4 = t0 + 4 * 3_600_000;
+        assert!(close(at(t4).plan_total, ideal_at(t4)), "a negative other share counts as 0");
+        // The store's history is not changed.
+        assert_eq!(h.points[2].used, 31.0);
     }
 
     #[test]
