@@ -13,7 +13,7 @@ use orch_protocol::now_ms;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::runtime::Runtime;
+use crate::runtime::{Live, Runtime};
 use crate::state::AgentState;
 use crate::store::AgentRecord;
 
@@ -43,17 +43,21 @@ fn seat_task(rec: &AgentRecord) -> Option<u64> {
     rec.team.as_ref()?.task
 }
 
+/// The process already runs the seat's task: it keeps its model between the
+/// turns of a task (a switch costs the prompt cache).
+fn keeps_model(rec: &AgentRecord, live: &Live) -> bool {
+    seat_task(rec).is_some_and(|t| live.task.load(Ordering::Relaxed) == t)
+}
+
 impl Runtime {
     /// The model an agent's next turn runs on. A task keeps the model its
     /// process runs on between its turns (a switch only happens at a task
     /// boundary); else [`Runtime::wanted_model`].
     pub(crate) fn turn_model(&self, rec: &AgentRecord) -> Option<String> {
-        if let (Some(t), Some(l)) = (seat_task(rec), self.live(&rec.id))
-            && l.task.load(Ordering::Relaxed) == t
-        {
-            return l.model.clone();
+        match self.live(&rec.id) {
+            Some(l) if keeps_model(rec, &l) => l.model.clone(),
+            _ => self.wanted_model(rec),
         }
-        self.wanted_model(rec)
     }
 
     /// The model a new task of the agent should run on: the task's own, else
@@ -85,9 +89,7 @@ impl Runtime {
         let agent = AgentId(rec.id.clone());
         let task = seat_task(rec);
         let live = self.live(&rec.id);
-        if let (Some(t), Some(l)) = (task, &live)
-            && l.task.load(Ordering::Relaxed) == t
-        {
+        if live.as_ref().is_some_and(|l| keeps_model(rec, l)) {
             return false;
         }
         let rule = rec.role.downgrade.as_ref();
