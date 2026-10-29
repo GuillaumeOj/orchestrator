@@ -48,7 +48,7 @@ Use a new class for the agent rows (`.trow` below), not `.arow`: in `FeaturePane
   cursor: pointer;
 }
 .trow:hover { background: var(--color-surface-raised); }
-.trow .name { max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trow .name { max-width: 24ch; }               /* <span class="name ell">: FeaturePane's .ell does the ellipsis */
 .trow .act  { margin-left: var(--space-sm); }  /* 8 + 8 = 16px name → activity */
 .trow .st   { margin-left: var(--space-sm); }  /* 16px min activity → status; the max-content track ends on the card edge */
 ```
@@ -59,7 +59,7 @@ Use a new class for the agent rows (`.trow` below), not `.arow`: in `FeaturePane
 |---|---|---|
 | 1 mark | `<AgentChip compact>` (14×16) | fixed, never shrinks |
 | 2 name | the agent id **without the feature slug prefix** (`<node>-<n>`, e.g. `back-1`), `--color-text-primary` | as wide as the longest name in the card, capped at **24ch**, ellipsis. Full id in the row tooltip (`Open <id>`) |
-| 3 activity | today's text (tool, else `task T-n`, plus ` · flag`), `.muted`, one line, ellipsis | takes what is left, **shrinks first** |
+| 3 activity | today's `<span class="muted ell">` unchanged (tool, else `task T-n`, plus ` · flag`), plus the `act` class | takes what is left, **shrinks first** |
 | 4 status | `<span class="st"><StatusBadge trailing /></span>`: label then icon | `max-content`, right-aligned on the card's content edge, never wraps |
 
 - Name: agent ids are `<feature-slug>-<node>-<n>` (`agent_id_for`, `crates/agent-runtime/src/team.rs`), e.g. `improve-team-card-and-agent-icon-back-1`. Showing the full id under a 24ch cap would cut every row to the same `improve-team-card-and-ag…`. Strip the `<v.feature.slug>-` prefix (the Sidebar already labels agents by node, `AgentChip name={a.team.node}`); the drawn names (`lead`, `back-1`, `front-12`) are these short names.
