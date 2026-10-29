@@ -174,6 +174,78 @@ describe('markdown parser', () => {
   });
 });
 
+// fix-md-rendering-quoted-tables §4: a table right after a quote, rows without `>`.
+describe('lazy table after a quote', () => {
+  // p-4-1-one-now/ux-brief.md §2, shape kept: a quote, then the table without a blank line.
+  const BRIEF = `> **Superseded by [§2.1](#21-the-pattern)**: \`waiting_on\` is one line now. The table below is the first draft.
+| waiting_on.kind | Pattern | Examples |
+|---|---|---|
+| user | \`<what>: <subject>\` | \`review: T-12\` |
+| gate | \`<gate>: <subject>\` | \`spec gate: checkout\` |
+| review | \`review: <branch>\` | [example](https://x.example) |
+| merge | \`merge: <branch>\` | \`merge: front-1\` |
+| task | \`task: <id>\` | \`task: T-3\` |
+| message | \`<node>: <topic>\` | \`lead: scope\` |
+| ci | \`ci: <check>\` | \`ci: lint\` |
+| none | — | — |`;
+
+  /** The top-level node types. */
+  const top = (md) => tree(md).children.map((n) => n.type);
+
+  it('renders the brief as a quote, then a 3-column table with 8 body rows', () => {
+    const root = tree(BRIEF);
+    expect(root.children.map((n) => n.type)).toEqual(['blockquote', 'table']);
+    expect(types(root.children[0])).not.toContain('table');
+    const [head, ...body] = root.children[1].children;
+    expect(head.children).toHaveLength(3);
+    expect(body).toHaveLength(8);
+    expect(body.every((r) => r.children.length === 3)).toBe(true);
+    expect(body[0].children[1].children[0]).toMatchObject({ type: 'inlineCode', value: '<what>: <subject>' });
+    expect(body[2].children[2].children[0]).toMatchObject({ type: 'link', url: 'https://x.example' });
+  });
+
+  it('keeps a table with `>` on every row inside the quote', () => {
+    const root = tree('> text\n> | a | b |\n> |---|---|\n> | 1 | 2 |');
+    expect(root.children.map((n) => n.type)).toEqual(['blockquote']);
+    expect(root.children[0].children.map((n) => n.type)).toEqual(['paragraph', 'table']);
+  });
+
+  it('leaves plain lazy text in the quote paragraph', () => {
+    const root = tree('> text\nmore text');
+    expect(root.children.map((n) => n.type)).toEqual(['blockquote']);
+    expect(root.children[0].children[0].children[0].value).toBe('text\nmore text');
+  });
+
+  it('leaves a `|` line without a delimiter row as lazy text', () => {
+    expect(top('> text\n| not | a table')).toEqual(['blockquote']);
+    expect(types(tree('> text\n| not | a table'))).not.toContain('table');
+    // A delimiter row with another cell count isn't a table either.
+    expect(types(tree('> text\n| a | b |\n|---|'))).not.toContain('table');
+  });
+
+  it('leaves fenced code verbatim, quoted or not', () => {
+    const body = '> x\n| a | b |\n|---|---|';
+    for (const fence of ['```', '~~~~']) {
+      const root = tree(`${fence}\n${body}\n${fence}`);
+      expect(root.children).toHaveLength(1);
+      expect(root.children[0]).toMatchObject({ type: 'code', value: body });
+    }
+    const quoted = tree('> ```\n> > x\n> | a | b |\n> |---|---|\n> ```');
+    expect(quoted.children[0].children[0]).toMatchObject({ type: 'code', value: '> x\n| a | b |\n|---|---|' });
+  });
+
+  it('ends nested quotes and alerts before the table; the alert stays an alert', () => {
+    const nested = tree('>> text\n| a | b |\n|---|---|\n| 1 | 2 |');
+    expect(nested.children.map((n) => n.type)).toEqual(['blockquote', 'table']);
+    expect(nested.children[0].children[0].type).toBe('blockquote');
+
+    const root = /** @type {any} */ (prepare('> [!NOTE]\n> Read this.\n| a | b |\n|---|---|\n| 1 | 2 |').root);
+    expect(root.children.map((n) => n.type)).toEqual(['blockquote', 'table']);
+    expect(root.children[0].data).toMatchObject({ alert: 'note' });
+    expect(root.children[0].children[0].children[0].value).toBe('Read this.');
+  });
+});
+
 describe('Markdown renderer', () => {
   it('renders a table with header cells and column alignment', () => {
     const { container } = render(Markdown, { text: '| a | b | c |\n|:--|:-:|--:|\n| x \\| y | `z` | 3 |' });

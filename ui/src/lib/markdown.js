@@ -16,7 +16,54 @@ const OPTIONS = {
 
 /** The mdast tree of `md`. */
 export function parse(md) {
-  return fromMarkdown(String(md ?? ''), OPTIONS);
+  return fromMarkdown(unlazyTables(String(md ?? '')), OPTIONS);
+}
+
+const QUOTE_LINE = /^ {0,3}>/;
+const QUOTE_MARKS = /^(?: {0,3}>[ \t]?)*/;
+const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+const DELIMITER_ROW = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*\r?$/;
+
+/** The cells of a table row: split on unescaped `|`, outer pipes dropped. */
+function cellCount(line) {
+  const cells = line.trim().split(/(?<!\\)\|/);
+  if (cells[0].trim() === '') cells.shift();
+  if (cells.length && cells.at(-1).trim() === '') cells.pop();
+  return cells.length;
+}
+
+/**
+ * A blank line before each table whose rows lack `>` right after a quote
+ * (fix-md-rendering-quoted-tables §3). micromark never starts a table on a
+ * lazy continuation line, so the rows would join the quote's paragraph as text;
+ * the author meant a table after the quote. Fenced code is left alone.
+ */
+function unlazyTables(md) {
+  const lines = md.split('\n');
+  const out = [];
+  let fence = null; // the open fence's marker (``` / ~~~…), quoted or not
+  lines.forEach((line, i) => {
+    const bare = line.replace(QUOTE_MARKS, '');
+    const m = FENCE.exec(bare);
+    if (fence) {
+      // A closing fence: the same character, at least as long, nothing after it.
+      if (m && m[1][0] === fence[0] && m[1].length >= fence.length && !bare.slice(m[0].length).trim()) fence = null;
+    } else if (m) {
+      fence = m[1];
+    } else if (
+      i > 0 &&
+      QUOTE_LINE.test(lines[i - 1]) &&
+      !QUOTE_LINE.test(line) &&
+      line.includes('|') &&
+      DELIMITER_ROW.test(lines[i + 1] ?? '') &&
+      lines[i + 1].includes('|') &&
+      cellCount(line) === cellCount(lines[i + 1])
+    ) {
+      out.push('');
+    }
+    out.push(line);
+  });
+  return out.length === lines.length ? md : out.join('\n');
 }
 
 /** The plain text of a node (heading slugs). */
