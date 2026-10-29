@@ -318,8 +318,14 @@ fn an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry() {
         let a = request(&core.sock, CtlRequest::Audit { agent_id: Some("a".into()), limit: None }).unwrap().data;
         a.as_array().unwrap().iter().rev().map(|e| e["actor"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>()
     };
+    // Read drains the pane, so keep everything drained so far: a poll that
+    // sees the text while another condition still fails must not lose it.
+    let seen = std::cell::RefCell::new(String::new());
     let screen = || {
-        request(&core.sock, CtlRequest::Read { agent_id: "a".into() }).unwrap().data.as_str().unwrap_or("").to_string()
+        let fresh = request(&core.sock, CtlRequest::Read { agent_id: "a".into() }).unwrap().data;
+        let mut seen = seen.borrow_mut();
+        seen.push_str(fresh.as_str().unwrap_or(""));
+        seen.clone()
     };
 
     // A rule answers at once.
@@ -567,8 +573,14 @@ fn a_team_run_end_to_end_with_fake_claude() {
             done && settled(agent_id)
         });
     };
+    // Read drains the pane: accumulate per agent so no output is lost between polls.
+    let seen = std::cell::RefCell::new(std::collections::HashMap::<String, String>::new());
     let screen = |agent_id: &str| {
-        request(&sock, CtlRequest::Read { agent_id: agent_id.into() }).unwrap().data.as_str().unwrap_or("").to_string()
+        let fresh = request(&sock, CtlRequest::Read { agent_id: agent_id.into() }).unwrap().data;
+        let mut seen = seen.borrow_mut();
+        let all = seen.entry(agent_id.to_string()).or_default();
+        all.push_str(fresh.as_str().unwrap_or(""));
+        all.clone()
     };
     let run_state =
         |run: &str| request(&sock, CtlRequest::Run { run_id: run.into() }).unwrap().data["run"]["status"].clone();
