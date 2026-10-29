@@ -293,16 +293,16 @@ export function openSingleton(type) {
   addPane({ type }, app.layout ? 'tab' : 'right');
 }
 
-/**
- * P3: Settings (⌘,), one pane, opened straight to a section ('integrations' |
- * 'mcp' | …) with a server selected (banners, Inbox items, the inspector).
- */
 /** The Inbox with this decision selected (a waiting-on chip's ref). */
 export function openInbox(decisionId = null) {
   app.inboxFocus = decisionId;
   openSingleton('inbox');
 }
 
+/**
+ * P3: Settings (⌘,), one pane, opened straight to a section ('integrations' |
+ * 'mcp' | …) with a server selected (banners, Inbox items, the inspector).
+ */
 export function openSettings(section = null, server = null, projectId = null) {
   const existing = findPane((s) => s.type === 'settings');
   if (existing) {
@@ -1152,15 +1152,24 @@ export async function flushDecisions(now = Date.now()) {
       return;
     }
     const d = app.now.decisions[p.item];
-    if (d && d === sent[i] && r.value?.lifecycle) app.now.decisions[p.item] = { ...d, lifecycle: r.value.lifecycle };
+    if (d && d === sent[i] && r.value?.lifecycle) {
+      // The answer's lifecycle counts as a push: a synchronous effect (Allow
+      // once on a held hook, Dismiss, Delete) toasts now, not never.
+      const next = { ...d, lifecycle: r.value.lifecycle };
+      app.now.decisions[p.item] = next;
+      decisionPushed(d, next);
+    }
     routeOpen(r.value, p.project);
   });
   app.pending = app.pending.filter((x) => !batch.includes(x));
 }
 
+// Lifecycle states after which a decision is no longer waiting on its answer.
+const SETTLED = new Set(['effect', 'failed', 'dismissed', 'stale', 'interrupted']);
+
 /**
  * A decision's lifecycle push (`now.decisions`): the effect's toast (notes §4),
- * once, when the state moves to effect, failed or parked. A decision taken
+ * once, when the state moves to effect, dismissed, failed or parked. A decision taken
  * elsewhere (the pane, a rule, the hold's expiry) drops ours still in its undo
  * window; a parked one stays open, so a pending answer to it still applies.
  */
@@ -1169,7 +1178,7 @@ export function decisionPushed(prev, d) {
   if (state === prev?.lifecycle?.state) return;
   if (state !== 'open' && state !== 'parked') undoItem(d.id);
   const text = decisionToast(d, mine.get(d.id));
-  if (state === 'effect' || state === 'failed') mine.delete(d.id);
+  if (SETTLED.has(state)) mine.delete(d.id);
   if (!text) return;
   if (state === 'failed')
     toast(text, { kind: 'error', sticky: true, action: { label: 'Open', run: () => openInbox(d.id) } });

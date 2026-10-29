@@ -155,7 +155,9 @@ export function pendingToast(d, action) {
     case 'ask':
       return action === 'approve' ? `Running now${who(d)}` : `Keeping queued${who(d)}`;
     case 'error':
-      return action === 'resume' ? `Resuming${who(d)}` : `Restarting fresh${who(d)}`;
+      if (action === 'resume') return `Resuming${who(d)}`;
+      if (action === 'restart_fresh') return `Restarting fresh${who(d)}`;
+      break; // Dismiss: as any other kind's
     case 'gate': {
       const obj = ` the ${GATE_WORD[d.gate] ?? 'gate'}`;
       if (action === 'reply') return `Sending${obj} back with your notes${who(d)}`;
@@ -210,7 +212,8 @@ export function effectText(d, mine = {}) {
       if (d.kind === 'error') return `Resumed · ${agent}`;
       if (d.kind === 'gate') {
         if (d.gate === 'spec')
-          return `${action === 'approve' ? 'Spec approved' : 'Spec sent back with your notes'} · ${agent} resumed`;
+          // Decided in another window: the effect alone does not say which answer it was.
+          return `${{ approve: 'Spec approved', reject: 'Spec sent back', reply: 'Spec sent back with your notes' }[action] ?? 'Spec gate answered'} · ${agent} resumed`;
         if (d.gate === 'pr') return `PR gate sent back · ${agent} resumed`;
         return `${action === 'reject' ? 'Rejected' : 'Approved'} · ${agent} resumed`;
       }
@@ -240,8 +243,8 @@ export function effectText(d, mine = {}) {
 }
 
 /**
- * The toast for a lifecycle push (notes §4): only for effect, failed and
- * parked, never before the core sent. `mine` = what this window decided (its
+ * The toast for a lifecycle push (notes §4): only for effect, dismissed,
+ * failed and parked, never before the core sent. `mine` = what this window decided (its
  * own toast says the effect); someone else's decision toasts only as P4.0 did:
  * the pane, a rule, the hold's expiry, a fresh restart by the app.
  */
@@ -249,7 +252,9 @@ export function decisionToast(d, mine = null) {
   const lc = d?.lifecycle ?? {};
   const agent = agentOf(d) ?? 'an agent';
   if (lc.state === 'parked') return `Parked · ${agent} stopped and resumes on your answer`;
-  if (lc.state !== 'effect' && lc.state !== 'failed') return null;
+  // A dismissal (Dismiss, Delete, an alert's Restart fresh, answered in the
+  // pane) keeps the `dismissed` state; its effect says what happened.
+  if (lc.state !== 'effect' && lc.state !== 'failed' && lc.state !== 'dismissed') return null;
   if (mine || lc.decided_by === 'user' || lc.state === 'failed') return effectText(d, mine ?? {});
   const by = lc.decided_by ?? '';
   if (lc.effect === 'restarted') return `Restarted fresh · ${agent}`;

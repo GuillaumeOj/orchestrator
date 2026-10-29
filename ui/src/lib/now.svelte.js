@@ -145,12 +145,18 @@ export function counts(scope = null) {
 /** "1 needs you", "2 need you" (notes §1.2: every number says what it is). */
 export const needYouText = (n) => `${n} need${n === 1 ? 's' : ''} you`;
 
+const SINCE_LEVELS = new Set(['needs_you', 'waiting', 'queued', 'error']);
+
+/** What the record says (notes §1.1): a running agent's activity, else the core's reason. */
+export const waitWhat = (rec) =>
+  rec?.level === 'running' && !rec.waiting_on ? rec.activity || rec.reason : rec?.reason;
+/** How long it has held, for the levels that show since; else ''. */
+export const waitSince = (rec, now = Date.now()) => (SINCE_LEVELS.has(rec?.level) ? waited(since(rec), now) : '');
+
 /** The waiting-on line without a badge (tooltips, notes F1): "<status> · <reason> · <since>". */
 export function waitLine(rec, now = Date.now()) {
   if (!rec) return '';
-  const what = rec.level === 'running' && !rec.waiting_on ? rec.activity : rec.reason;
-  const when = ['needs_you', 'waiting', 'queued', 'error'].includes(rec.level) ? waited(since(rec), now) : '';
-  return [STATUS[rec.status]?.label, what, when].filter(Boolean).join(' · ');
+  return [STATUS[rec.status]?.label, waitWhat(rec), waitSince(rec, now)].filter(Boolean).join(' · ');
 }
 
 /** "5 live / cap 4" (ux-brief §1: every number says what it is). */

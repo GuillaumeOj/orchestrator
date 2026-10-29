@@ -133,7 +133,7 @@ describe('context blocks: one component per type, in order', () => {
     expect(text(block(c, 'last_message'))).toBe('Last message Done.');
     expect(block(c, 'pty_tail').querySelector('pre').textContent.split('\n')).toHaveLength(12);
     expect(text(block(c, 'cost'))).toBe('Cost ≈ +2.1 pp of the week · +6 % of the 5h window');
-    expect(text(block(c, 'countdown'))).toMatch(/Keeps queued in 1[78]m$/);
+    expect(text(block(c, 'countdown'))).toMatch(/Skips in 1[78]m$/);
     expect(text(block(c, 'error'))).toBe('Error push rejected Show detail');
   });
 
@@ -157,6 +157,16 @@ describe('context blocks: one component per type, in order', () => {
     await waitFor(() =>
       expect(text(block(c, 'diff_summary'))).toContain('Could not load the patch: git diff exited (status 128)'),
     );
+  });
+
+  it('countdown: an ask keeps the agent queued', () => {
+    const { container: c } = render(ContextBlocks, {
+      decision: decision({
+        kind: 'ask',
+        context: [{ type: 'countdown', default: 'reject', deadline_ms: Date.now() + 18 * MIN + 1000 }],
+      }),
+    });
+    expect(text(block(c, 'countdown'))).toMatch(/Keeps queued in 18m$/);
   });
 
   it('countdown past its deadline applies the default', () => {
@@ -275,6 +285,19 @@ describe('toasts: never before sent, the effect when the core pushes it', () => 
     });
     app.toasts.at(-1).action.run();
     expect(app.inboxFocus).toBe('gate-6');
+  });
+
+  it('an effect in the inbox_act answer itself toasts once, and its later push does not again', async () => {
+    const perm = permDecision();
+    app.now = nowOf(app.data, { decisions: [perm] });
+    const done = { state: 'effect', decided_by: 'user', effect: 'allowed' };
+    replies.inbox_act = { ok: true, lifecycle: done, effect: 'allowed' };
+    decide(perm, 'approve');
+    await flushDecisions(Date.now() + UNDO_MS);
+    expect(app.toasts.at(-1).text).toBe('Allowed · front-1 resumed');
+    const n = app.toasts.length;
+    push(app.now.rev + 1, { ...perm, lifecycle: done });
+    expect(app.toasts).toHaveLength(n);
   });
 
   it('a PR opened toasts with its link', () => {

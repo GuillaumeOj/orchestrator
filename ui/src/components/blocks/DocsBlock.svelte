@@ -3,12 +3,13 @@
   // count; a path opens it in nvim (in the feature's integration worktree).
   import { features, openEditor } from '../../lib/app.svelte.js';
 
-  let { block, subject = {} } = $props();
+  let { block, subject } = $props();
+  const s = $derived(subject ?? {});
   const files = $derived(block.files ?? []);
   const wt = $derived(
-    features().find((f) => f.project_id === subject.project && f.slug === subject.feature)?.integration_worktree ?? null,
+    features().find((f) => f.project_id === s.project && f.slug === s.feature)?.integration_worktree ?? null,
   );
-  const open = (path) => openEditor(wt ? `${wt}/${path}` : path, null, { projectId: subject.project, agentId: subject.agent });
+  const open = (path) => openEditor(wt ? `${wt}/${path}` : path, null, { projectId: s.project, agentId: s.agent });
 </script>
 
 <div class="bh">Docs · {files.length} file{files.length === 1 ? '' : 's'}</div>

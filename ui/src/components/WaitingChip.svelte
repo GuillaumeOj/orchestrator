@@ -6,16 +6,15 @@
   // Compact (Overview row, tooltips): the reason truncates, since never does;
   // the full text is on hover. The status badge sits before it, on the surface.
   import { now30, openAgent, openBoard, openInbox } from '../lib/app.svelte.js';
-  import { waited } from '../lib/format.js';
-  import { since, waitLine } from '../lib/now.svelte.js';
+  import { waitLine, waitSince, waitWhat } from '../lib/now.svelte.js';
   import { WAITING_ON } from '../lib/status.js';
 
   let { rec, compact = false } = $props();
   const running = $derived(rec?.level === 'running' && !rec?.waiting_on);
-  const text = $derived(running ? rec?.activity : rec?.reason);
+  const text = $derived(waitWhat(rec));
   const kind = $derived(running ? 'running' : rec?.waiting_on?.kind);
-  const showSince = $derived(['needs_you', 'waiting', 'queued', 'error'].includes(rec?.level));
-  const when = $derived(showSince ? waited(since(rec), Math.max(now30(), Date.now())) : '');
+  const now = $derived(Math.max(now30(), Date.now()));
+  const when = $derived(waitSince(rec, now));
   const ref = $derived(rec?.waiting_on?.ref ?? null);
   // What clicking the reason opens (notes §1.1), when its ref names something.
   const go = $derived.by(() => {
@@ -31,7 +30,7 @@
         return null;
     }
   });
-  const title = $derived(waitLine(rec, Math.max(now30(), Date.now())));
+  const title = $derived(waitLine(rec, now));
 </script>
 
 {#if text}

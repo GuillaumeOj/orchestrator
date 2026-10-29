@@ -72,14 +72,17 @@
   // A stale or failed decision: Dismiss and, failed, the kind's actions again (notes §7 rows 19–20).
   const live = $derived(sel?.lifecycle?.state !== 'stale');
 
-  // A new selection starts with no choices; the waiting-on chip's link selects one.
+  // A new selection starts with no choices (by id: a push re-upserting the
+  // same decision keeps them); the waiting-on chip's link selects one.
+  const selId = $derived(sel?.id ?? null);
   $effect(() => {
-    sel?.id;
+    selId;
     choices = [];
   });
   $effect(() => {
     if (app.inboxFocus) {
       selected = app.inboxFocus;
+      outcome = null;
       app.inboxFocus = null;
     }
   });
@@ -115,8 +118,8 @@
         return true;
       case 'decide': {
         // x-marked decisions take a/r together when each has that action.
-        const key = intent.action === 'approve' ? 'a' : 'r';
-        const targets = marked.size ? items.filter((i) => marked.has(i.id) && actionByKey(i, key)?.id === intent.action) : [d];
+        const key = d.actions?.find((x) => x.id === intent.action)?.key;
+        const targets = marked.size ? items.filter((i) => marked.has(i.id) && i.lifecycle?.state !== 'stale' && actionByKey(i, key)?.id === intent.action) : [d];
         for (const t of targets) send(t, intent.action);
         marked = new Set();
         return true;
@@ -168,15 +171,23 @@
       clear();
       return;
     }
-    if (key === 'o' && outcome) {
-      const o = outcomes.find((x) => x.id === outcome);
-      if (o) (e.preventDefault(), openOutcome(o));
+    const o = key === 'o' && outcome ? outcomes.find((x) => x.id === outcome) : null;
+    if (o) {
+      e.preventDefault();
+      openOutcome(o);
       return;
     }
-    if (apply(keyIntent(key, sel), sel)) e.preventDefault();
+    const intent = keyIntent(key, sel);
+    // A stale decision takes no action but Dismiss (its buttons say so too).
+    if (!live && intent && !NAV.has(intent.kind)) return;
+    if (apply(intent, sel)) e.preventDefault();
   }
+  const NAV = new Set(['move', 'mark', 'undo', 'editor']);
 
-  const clear = () => clearDigest(outcomes).catch((err) => toast(errText(err), { kind: 'error' }));
+  const clear = () => {
+    outcome = null;
+    return clearDigest(outcomes).catch((err) => toast(errText(err), { kind: 'error' }));
+  };
 
   function sendReply(e) {
     if (e.key === 'Escape') {

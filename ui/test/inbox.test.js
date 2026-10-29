@@ -159,6 +159,10 @@ describe('toasts: what will be sent, then the pushed effect (notes §4)', () => 
     expect(pendingToast(spec, 'approve')).toBe('Approving the spec gate · lead-1');
     expect(pendingToast(spec, 'reply')).toBe('Sending the spec gate back with your notes · lead-1');
     expect(pendingToast(budgetDecision(), 'reject')).toBe('Skipping · Defer "infra" until after the weekly reset');
+    const err = decision({ kind: 'error', title: 'Spawn failed', subject: { agent: 'ui-1' } });
+    expect(pendingToast(err, 'resume')).toBe('Resuming · ui-1');
+    expect(pendingToast(err, 'restart_fresh')).toBe('Restarting fresh · ui-1');
+    expect(pendingToast(err, 'dismiss')).toBe('Dismissing · Spawn failed');
     for (const a of ['approve', 'reject', 'reply', 'always'])
       expect(pendingToast(p, a)).not.toMatch(/Allowed|Denied|resumed/);
   });
@@ -210,6 +214,14 @@ describe('toasts: what will be sent, then the pushed effect (notes §4)', () => 
       'Denied by rule git-safe · front-1',
     );
     expect(decisionToast(lc(p, { state: 'effect', decided_by: 'core', effect: 'dismissed' }))).toBe(null);
+    // A dismissal keeps its `dismissed` state (the core's advance): it toasts as an effect.
+    expect(decisionToast(lc(p, { state: 'dismissed', decided_by: 'pane', effect: 'in_pane' }))).toBe(
+      'Answered in the pane · front-1',
+    );
+    expect(
+      decisionToast(lc(mcp, { state: 'dismissed', decided_by: 'user', effect: 'dismissed' }), { action: 'dismiss' }),
+    ).toBe('Dismissed until it fails again · Penpot');
+    expect(decisionToast(lc(p, { state: 'dismissed', decided_by: 'core', effect: 'dismissed' }))).toBe(null);
   });
 });
 
