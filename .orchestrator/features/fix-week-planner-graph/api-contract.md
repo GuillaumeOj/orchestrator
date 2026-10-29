@@ -4,7 +4,7 @@
 
 Notation (all from `gov.snapshot(now)` = `s` and `gov.curve()` = `c`, as `build` has them today):
 - `ideal(t) = c.fraction(t) × budget` (unchanged, the agents' ideal curve)
-- `other_now = s.interactive_used + s.unattributed_so_far` (= `s.plan − s.ideal`)
+- `other_now = s.plan − s.ideal` (your usage + outside-app usage as the Governor counts them; not `s.interactive_used + s.unattributed_so_far`, since `interactive_used` also holds critical work, which stays in G)
 - `h_now = c.hours_at(now)`, `h_left = max(c.hours_left(now), 1e-9)` (weighted hours)
 - `wall_left = max(c.wall_hours_left(now), 1e-9)`, `wall(t) = wall hours from now to t`
 
@@ -27,6 +27,8 @@ Same sampling as today (hourly from week start to reset, plus `now`). Fields:
 | `plan_total` | `f64` | `t ≤ now`: `ideal(t) + other(t)`, where `other(t) = max(0, used − governed)` of the latest **raw** history sample at or before `t` (0 before the first sample; `other_now` at `now`). `t > now`: `ideal(t) + other_now + (s.unattributed_forecast − s.unattributed_so_far) × min(1, wall(t) / wall_left)`. At `now` it equals `s.plan` (± float). |
 | `forecast_total` | `Option<f64>` | `t ≥ now`: `min(110, s.used + (s.projected − s.used) × clamp((c.hours_at(t) − h_now) / h_left, 0, 1))`; else `None`. |
 | `with_governor_total` | `Option<f64>` | `t ≥ now`: `max(s.used, plan_total(t) + s.error × (1 − clamp((c.hours_at(t) − h_now) / h_left, 0, 1)))`; else `None`. |
+
+When no working hours are left (`c.hours_left(now) ≈ 0`, e.g. a weekend after the last block), both `clamp(…)` fractions use the wall hours instead: `min(1, wall(t) / wall_left)`, so the forecast still ends at `s.projected` and w/ governor on the plan line.
 
 `ideal`, `forecast`, `with_governor` (agents-only basis) are removed from `CurvePoint` if no other reader is found (`grep` the UI and crates); if one is, keep them and say so in the report.
 

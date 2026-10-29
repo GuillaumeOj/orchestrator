@@ -203,7 +203,7 @@ pub fn build(
     let budget = (100.0 - plan.reserve_pct - snap.unattributed_forecast).max(0.0);
     let (start, end) = (plan.week_start, plan.reset_at);
     let h_now = curve.hours_at(now);
-    let h_left_now = curve.hours_left(now).max(1e-9);
+    let h_left_now = curve.hours_left(now);
     let ideal_now = curve.fraction(now) * budget;
     let mut times: Vec<Timestamp> = vec![];
     let mut t = start;
@@ -217,25 +217,38 @@ pub fn build(
         times.sort();
         times.dedup();
     }
-    let other_now = snap.interactive_used + snap.unattributed_so_far;
+    // You + outside the app now, exactly as the Governor counts it in `plan`
+    // (`snapshot.interactive_used` also holds critical work, which is the
+    // agents' own and stays in G).
+    let other_now = snap.plan - snap.ideal;
     let other_growth = snap.unattributed_forecast - snap.unattributed_so_far;
     let wall_left = curve.wall_hours_left(now).max(1e-9);
+    let raw = &history.points;
     let points = times
         .into_iter()
         .map(|t| {
             let ideal = curve.fraction(t) * budget;
+            let wall_done = ((wall_left - curve.wall_hours_left(t)) / wall_left).min(1.0);
             let plan_total = if t < now {
-                // You + outside the app as the raw samples saw it at `t`.
-                let raw = &history.points;
+                // You + outside the app as the raw samples of this week saw it at `t`.
                 let i = raw.partition_point(|p| p.t_ms <= ms(t));
-                ideal + i.checked_sub(1).map_or(0.0, |i| (raw[i].used - raw[i].governed).max(0.0))
+                let other = i
+                    .checked_sub(1)
+                    .map(|i| raw[i])
+                    .filter(|p| p.t_ms >= ms(start))
+                    .map_or(0.0, |p| (p.used - p.governed).max(0.0));
+                ideal + other
             } else {
-                let wall = wall_left - curve.wall_hours_left(t);
-                ideal + other_now + other_growth * (wall / wall_left).min(1.0)
+                ideal + other_now + other_growth * wall_done
             };
             let (forecast_total, with_governor_total) = if t >= now {
-                // Both close linearly with the working hours left.
-                let done = ((curve.hours_at(t) - h_now) / h_left_now).clamp(0.0, 1.0);
+                // Both close linearly with the working hours left (the wall
+                // hours once none are left, e.g. after the week's last block).
+                let done = if h_left_now > 1e-9 {
+                    ((curve.hours_at(t) - h_now) / h_left_now).clamp(0.0, 1.0)
+                } else {
+                    wall_done.clamp(0.0, 1.0)
+                };
                 let fc = (snap.used + (snap.projected - snap.used) * done).min(110.0);
                 let wg = plan_total + snap.error * (1.0 - done);
                 (Some(fc), Some(wg.max(snap.used)))
@@ -311,7 +324,7 @@ pub fn build(
         now_ms: ms(now),
         shadow: plan.shadow_mode,
         reserve_pct: plan.reserve_pct,
-        actual: actual(history, &snap, now),
+        actual: actual(history, &snap, start, now),
         snapshot: snap,
         curve: points,
         working,
@@ -334,14 +347,19 @@ pub fn build(
     }
 }
 
-/// The week's usage so far: the thinned history, a last point at `now` from
-/// the snapshot, then a running max on W and G with `G ≤ W` (W only grows in
-/// a week; a dip is an estimate corrected, not usage given back).
-fn actual(history: &History, snap: &governor::ForecastSnapshot, now: Timestamp) -> Vec<HistoryPoint> {
+/// The week's usage so far: the thinned history of this week (the in-memory
+/// history keeps last week's samples until the next push after the reset), a
+/// last point at `now` from the snapshot, then a running max on W and G with
+/// `G ≤ W` (W only grows in a week; a dip is an estimate corrected, not usage
+/// given back).
+fn actual(
+    history: &History,
+    snap: &governor::ForecastSnapshot,
+    week_start: Timestamp,
+    now: Timestamp,
+) -> Vec<HistoryPoint> {
     let mut out = history.thinned(400);
-    while out.last().is_some_and(|p| p.t_ms >= ms(now)) {
-        out.pop();
-    }
+    out.retain(|p| p.t_ms >= ms(week_start) && p.t_ms < ms(now));
     out.push(HistoryPoint { t_ms: ms(now), used: snap.used, governed: snap.governed, five_hour: snap.five_hour });
     let (mut used, mut governed) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
     for p in &mut out {
@@ -452,6 +470,43 @@ mod tests {
         assert!(close(at(t4).plan_total, ideal_at(t4)), "a negative other share counts as 0");
         // The store's history is not changed.
         assert_eq!(h.points[2].used, 31.0);
+    }
+
+    #[test]
+    fn last_week_s_samples_are_not_drawn() {
+        let (g, now) = gov();
+        let mut h = History::default();
+        let t0 = ms(g.plan().week_start);
+        h.push(HistoryPoint { t_ms: t0 - 60_000, used: 95.0, governed: 10.0, five_hour: None }, 0);
+        h.push(HistoryPoint { t_ms: t0 + 3_600_000, used: 5.0, governed: 4.0, five_hour: None }, 0);
+        let v = build(&g, now, &h, &[], None, &|_| 0);
+        assert!(v.actual.iter().all(|p| p.t_ms >= t0 && p.used < 95.0), "{:?}", v.actual);
+        assert!(close(v.curve[0].plan_total, 0.0), "no other share before this week's first sample");
+    }
+
+    #[test]
+    fn the_lines_close_at_the_reset_after_the_last_working_block() {
+        // A Saturday: the default calendar (weekdays 9–19) has no working hours left.
+        let now: Timestamp = "2026-10-24T12:00:00Z".parse().unwrap();
+        let mut g =
+            Governor::new(agent_runtime::runtime::default_plan(now, true), PacingPolicy::default(), now).unwrap();
+        assert!(g.curve().hours_left(now) < 1e-9);
+        let reset = g.plan().reset_at;
+        g.ingest(&UsageSample {
+            ts: now,
+            agent: None,
+            cost_delta: 0.0,
+            five_hour: None,
+            weekly: Some(WindowReading { used_pct: 30.0, resets_at: reset }),
+            provenance: Provenance::Observed,
+            model: None,
+            model_windows: Vec::new(),
+        });
+        let v = build(&g, now, &History::default(), &[], None, &|_| 0);
+        let s = &v.snapshot;
+        let last = v.curve.last().unwrap();
+        assert!(close(last.forecast_total.unwrap(), s.projected.min(110.0)));
+        assert!(close(last.with_governor_total.unwrap(), s.used.max(last.plan_total)), "{last:?}");
     }
 
     #[test]
