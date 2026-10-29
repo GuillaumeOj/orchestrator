@@ -321,13 +321,7 @@ pub fn build(i: &Inputs) -> Vec<InboxItem> {
 
 /// The listed id of a store Inbox item (as [`build`] names it).
 pub fn ui_id(kind: &str, id: u64) -> String {
-    match kind {
-        "permission" => format!("inbox-{id}"),
-        "startup" => format!("startup-{id}"),
-        "gate" => format!("gate-{id}"),
-        "question" => format!("q-{id}"),
-        _ => format!("alert-{id}"),
-    }
+    agent_runtime::attention::decision_id(kind, id)
 }
 
 /// An `inbox_outcome` event for the UI (api-contract §3): the runtime's

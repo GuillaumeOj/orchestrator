@@ -1259,8 +1259,8 @@ impl Runtime {
                     let tool = p.tool_name.as_deref().unwrap_or("");
                     let input = p.tool_input.clone().unwrap_or(Value::Null);
                     a.tracker.tool_started_ms = Some(now);
-                    a.tracker.tool_brief = crate::permissions::primary_input(tool, &input)
-                        .map(|b| crate::attention::copy::cut(&b, 60));
+                    a.tracker.tool_brief =
+                        crate::permissions::primary_input(tool, &input).map(|b| crate::attention::copy::cut(&b, 60));
                 } else if a.tracker.current_tool.is_none() {
                     a.tracker.tool_started_ms = None;
                     a.tracker.tool_brief = None;

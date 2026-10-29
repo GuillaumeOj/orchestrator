@@ -45,6 +45,12 @@ pub async fn app_state(core: CoreState<'_>) -> Res<Value> {
     blocking(core, |c| Ok(c.state())).await
 }
 
+/// P4.1: the attention world, at the `now` event's last rev (api-contract §3.2).
+#[tauri::command]
+pub async fn now_snapshot(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, |c| Ok(c.runtime()?.now_snapshot())).await
+}
+
 #[tauri::command]
 pub fn kitty_config(core: CoreState) -> KittyImport {
     core.kitty.lock_ok().clone()

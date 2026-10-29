@@ -283,7 +283,10 @@ mod tests {
         let ev = count();
         assert_eq!(ev.len(), 1, "one per episode");
         let d = &ev[0].detail;
-        assert_eq!((d["waited_on"].as_str(), d["cause"].as_str(), d["item"].as_u64()), (Some("user"), Some("permission"), Some(p)));
+        assert_eq!(
+            (d["waited_on"].as_str(), d["cause"].as_str(), d["item"].as_u64()),
+            (Some("user"), Some("permission"), Some(p))
+        );
         // A turn starts: a later wait on the same thing is a new episode.
         rt.end_wait_episode("a1");
         rt.note_intervention("a1");

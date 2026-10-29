@@ -75,7 +75,13 @@ pub fn delta(rev: u64, old: &World, new: &World, topics: &BTreeSet<String>) -> O
     let (agents, agents_gone) = changed(&old.agents, &new.agents);
     let (runs, runs_gone) = changed(&old.runs, &new.runs);
     let counts = (old.counts != new.counts).then_some(&new.counts);
-    if agents.is_empty() && agents_gone.is_empty() && runs.is_empty() && runs_gone.is_empty() && counts.is_none() && topics.is_empty() {
+    if agents.is_empty()
+        && agents_gone.is_empty()
+        && runs.is_empty()
+        && runs_gone.is_empty()
+        && counts.is_none()
+        && topics.is_empty()
+    {
         return None;
     }
     let mut v = json!({
@@ -154,7 +160,12 @@ pub fn render(snap: &Value, now_ms: u64) -> String {
             (None, None) => label.to_string(),
         };
         let since = a["waiting_on"]["since_ms"].as_u64().or(a["since_ms"].as_u64()).unwrap_or(now_ms);
-        rows.push([s(&a["agent"]), format!("{}/{}", s(&a["level"]), s(&a["status"])), what, duration(now_ms.saturating_sub(since))]);
+        rows.push([
+            s(&a["agent"]),
+            format!("{}/{}", s(&a["level"]), s(&a["status"])),
+            what,
+            duration(now_ms.saturating_sub(since)),
+        ]);
     }
     let mut out = table(&rows);
     let mut runs: Vec<[String; 4]> = vec![];
@@ -178,7 +189,8 @@ fn table(rows: &[[String; 4]]) -> String {
     rows.iter()
         .map(|r| {
             let pad = |t: &str, n: usize| format!("{t}{}", " ".repeat(n - t.chars().count()));
-            format!("{}  {}  {}  {}", pad(&r[0], w0), pad(&r[1], w1), pad(&r[2], w2), r[3]).trim_end().to_string() + "\n"
+            format!("{}  {}  {}  {}", pad(&r[0], w0), pad(&r[1], w1), pad(&r[2], w2), r[3]).trim_end().to_string()
+                + "\n"
         })
         .collect()
 }
@@ -240,7 +252,14 @@ impl Runtime {
         let queue_moved = st.queue.as_ref() != Some(&queue_now);
         let team_moved = st.team.changes != Some(team_changes);
         let first = st.last.is_none();
-        if !(force || first || changed.any() || queue_moved || team_moved || !topics.is_empty() || !db_topics.is_empty()) {
+        if !(force
+            || first
+            || changed.any()
+            || queue_moved
+            || team_moved
+            || !topics.is_empty()
+            || !db_topics.is_empty())
+        {
             return;
         }
         if team_moved || force {
@@ -316,13 +335,24 @@ impl Runtime {
         let now = jiff::Timestamp::now();
         self.with_governor(|g| {
             let by_id: BTreeMap<_, _> = g.queue().iter().map(|e| (e.id, e)).collect();
-            let queue: Vec<QueueEntry> = g.release_order().iter().filter_map(|id| by_id.get(id).map(|e| (*e).clone())).collect();
+            let queue: Vec<QueueEntry> =
+                g.release_order().iter().filter_map(|id| by_id.get(id).map(|e| (*e).clone())).collect();
             let paused = g.paused_agents().iter().map(|a| a.0.clone()).collect();
             let ask = g.next_action_preview(now).pending_ask.and_then(|(id, _)| {
                 let a = g.action(id)?;
-                let agent = serde_json::to_value(&a.action).ok()?.get("agent").and_then(Value::as_str).map(str::to_string);
-                let cost_pp = agent.as_deref().and_then(|ag| g.queue().iter().find(|e| e.agent.0 == ag)).map(|e| e.estimated_cost_pct);
-                Some(AskFacts { id: id.0, agent, created_ms: a.ts.as_millisecond().max(0) as u64, cost_pp, reason: a.reason.clone() })
+                let agent =
+                    serde_json::to_value(&a.action).ok()?.get("agent").and_then(Value::as_str).map(str::to_string);
+                let cost_pp = agent
+                    .as_deref()
+                    .and_then(|ag| g.queue().iter().find(|e| e.agent.0 == ag))
+                    .map(|e| e.estimated_cost_pct);
+                Some(AskFacts {
+                    id: id.0,
+                    agent,
+                    created_ms: a.ts.as_millisecond().max(0) as u64,
+                    cost_pp,
+                    reason: a.reason.clone(),
+                })
             });
             let plan = g.plan();
             let hard_caps = plan
@@ -391,10 +421,16 @@ impl Runtime {
     /// Outcomes since local midnight: tasks done and merges.
     // TODO(T-22): the outcome digest's own count (merges ok only, PRs, run phases, solo turns).
     fn done_today(&self) -> u32 {
-        let midnight = jiff::Zoned::now().start_of_day().map(|z| z.timestamp().as_millisecond().max(0) as u64).unwrap_or(0);
+        let midnight =
+            jiff::Zoned::now().start_of_day().map(|z| z.timestamp().as_millisecond().max(0) as u64).unwrap_or(0);
         ["task.done", "git.merge"]
             .iter()
-            .map(|k| self.db.events(midnight, None, Some(k), 1000).map(|v| v.iter().filter(|e| e.kind == *k).count()).unwrap_or(0))
+            .map(|k| {
+                self.db
+                    .events(midnight, None, Some(k), 1000)
+                    .map(|v| v.iter().filter(|e| e.kind == *k).count())
+                    .unwrap_or(0)
+            })
             .sum::<usize>() as u32
     }
 }
@@ -506,7 +542,10 @@ mod tests {
         );
         let one = only_run(snap, Some("run-1"));
         assert_eq!(one["agents"].as_array().unwrap().len(), 1);
-        assert_eq!([duration(0), duration(72 * 60_000), duration(3 * 1440 * 60_000)], ["just now", "1 h 12 min", "3 d"]);
+        assert_eq!(
+            [duration(0), duration(72 * 60_000), duration(3 * 1440 * 60_000)],
+            ["just now", "1 h 12 min", "3 d"]
+        );
     }
 
     #[test]

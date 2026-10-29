@@ -236,9 +236,17 @@ impl Core {
             std::thread::spawn(move || {
                 let c = setup::check_claude(&claude);
                 *core2.claude.lock_ok() = Some(c);
+                if let Some(rt) = &core2.rt {
+                    rt.touch("setup");
+                }
             });
         }
-        crate::watch::start(core.watch.clone(), core.paths.root.join("logs"), core.stop.clone());
+        let rt2 = core.rt.clone();
+        crate::watch::start(core.watch.clone(), core.paths.root.join("logs"), core.stop.clone(), move || {
+            if let Some(rt) = &rt2 {
+                rt.touch("memory");
+            }
+        });
         if let Some(rt) = &core.rt {
             if let Err(e) = core.serve() {
                 eprintln!("orchestrator: bus server failed: {e:#}");

@@ -538,6 +538,7 @@ impl Runtime {
         self.db.set_mcp_status(scope, &s.id, kept, detail, now_ms())?;
         if kept != s.status {
             self.event("-", "mcp_status", json!({"server": s.id, "status": kept, "detail": detail}));
+            self.touch("integrations");
         }
         let project = scope.project();
         match status {

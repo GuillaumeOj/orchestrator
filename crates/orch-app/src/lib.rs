@@ -76,12 +76,17 @@ pub fn run() {
         .menu(menu::build)
         .setup(move |app| {
             devctl::start(app.handle().clone());
-            notify::start(app.handle().clone());
+            notify::start(app.handle().clone(), decided.clone());
             // api-contract §3: a decided item's toast (and card drop).
             if let Ok(rt) = decided.runtime() {
                 let h = app.handle().clone();
                 rt.set_outcome_sink(Arc::new(move |v| {
                     let _ = h.emit("inbox_outcome", inbox::outcome_event(v));
+                }));
+                // P4.1: the one state push (api-contract §3.1).
+                let h = app.handle().clone();
+                rt.subscribe_now(Arc::new(move |v| {
+                    let _ = h.emit("now", v);
                 }));
             }
             Ok(())
@@ -91,6 +96,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app_state,
+            commands::now_snapshot,
             commands::kitty_config,
             commands::font_files,
             commands::read_font,

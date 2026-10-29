@@ -86,7 +86,8 @@ fn append(log: &Path, line: &serde_json::Value) {
 }
 
 /// The watch thread: a reading now (once WebKit has started) and every minute.
-pub fn start(watch: Arc<MemoryWatch>, log_dir: PathBuf, stop: Arc<AtomicBool>) {
+/// `changed` is called when the alert starts or ends (the `memory` topic).
+pub fn start(watch: Arc<MemoryWatch>, log_dir: PathBuf, stop: Arc<AtomicBool>, changed: impl Fn() + Send + 'static) {
     let _ = std::fs::create_dir_all(&log_dir);
     let log = log_dir.join("memory.log");
     watch.view.lock_ok().log = log.clone();
@@ -96,8 +97,12 @@ pub fn start(watch: Arc<MemoryWatch>, log_dir: PathBuf, stop: Arc<AtomicBool>) {
             if std::time::Instant::now() >= next {
                 let core = agent_runtime::procs::footprint_mb(std::process::id() as i32).unwrap_or(0.0);
                 let warn = warn_mb();
+                let had = watch.view().alert.is_some();
                 let (line, started) = watch.record(orch_protocol::now_ms(), core, &memory::webkit_now(), warn);
                 append(&log, &line);
+                if had != line["alert"].is_string() {
+                    changed();
+                }
                 if started {
                     let alert = line["alert"].as_str().unwrap_or("");
                     eprintln!("orchestrator: memory watch: {alert} above {warn} MB (see {})", log.display());

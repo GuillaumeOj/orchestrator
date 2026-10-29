@@ -231,8 +231,12 @@ impl Runtime {
                 }
             }
         }
-        let mut h = self.house();
-        h.power = PowerState { on_ac, assertion_held: self.cfg.power.held(), off_hours_pending: pending };
+        let power = PowerState { on_ac, assertion_held: self.cfg.power.held(), off_hours_pending: pending };
+        let changed = std::mem::replace(&mut self.house().power, power.clone()) != power;
+        if changed {
+            self.touch("power");
+            self.touch("banners");
+        }
     }
 
     /// `app_state.power`, and the `not_on_ac` banner while off-hours work waits on battery.

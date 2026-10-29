@@ -473,7 +473,9 @@ pub mod copy {
             QueueReason::PausedAgent => PAUSED_BY_YOU.into(),
             QueueReason::MemoryPressure { cap } => format!("memory pressure · live cap {live}/{cap}"),
             QueueReason::BehindQueue => "behind higher-priority work".into(),
-            QueueReason::ScheduledOffHours { starts_at } => return (format!("off-hours · starts {}", at(starts_at)), true),
+            QueueReason::ScheduledOffHours { starts_at } => {
+                return (format!("off-hours · starts {}", at(starts_at)), true);
+            }
             QueueReason::ModelWindow { model, resets_at, exhausted: true } => {
                 return (format!("{model} week full · starts {}", at(resets_at)), true);
             }
@@ -631,7 +633,9 @@ impl<'a> Ctx<'a> {
             .values()
             .filter_map(|a| a.team.as_ref().map(|t| ((t.run_id.as_str(), t.node.as_str()), a.id.as_str())))
             .collect();
-        let live_count = i.agents.values().filter(|a| a.tracker.state != AgentState::Archived && i.live.contains(&a.id)).count() as u32;
+        let live_count =
+            i.agents.values().filter(|a| a.tracker.state != AgentState::Archived && i.live.contains(&a.id)).count()
+                as u32;
         Ctx {
             i,
             now,
@@ -696,11 +700,21 @@ impl<'a> Ctx<'a> {
             _ => None,
         };
         let items = self.items(&a.id);
-        if let Some(it) = items.iter().filter_map(|it| rank(it).map(|r| (r, *it))).min_by_key(|(r, it)| (*r, it.created_at_ms)).map(|(_, it)| it) {
+        if let Some(it) = items
+            .iter()
+            .filter_map(|it| rank(it).map(|r| (r, *it)))
+            .min_by_key(|(r, it)| (*r, it.created_at_ms))
+            .map(|(_, it)| it)
+        {
             let s = |k: &str| it.payload.get(k).and_then(Value::as_str).unwrap_or("");
             let (status, reason) = match it.kind.as_str() {
                 "permission" => {
-                    let input = it.payload.get("tool_input").or_else(|| it.payload.get("input")).cloned().unwrap_or(Value::Null);
+                    let input = it
+                        .payload
+                        .get("tool_input")
+                        .or_else(|| it.payload.get("input"))
+                        .cloned()
+                        .unwrap_or(Value::Null);
                     let short = crate::permissions::primary_input(s("tool"), &input).unwrap_or_default();
                     let tool = copy::tool(s("tool"), Some(&short));
                     let (tool, input) = tool.split_once(' ').unwrap_or((&tool, ""));
@@ -733,8 +747,13 @@ impl<'a> Ctx<'a> {
         }
         if let Some(ask) = self.i.ask.filter(|k| k.agent.as_deref() == Some(a.id.as_str())) {
             return Some(
-                Found::new(Level::NeedsYou, Status::WaitingForYou, copy::ask(ask.cost_pp, &ask.reason), Some(ask.created_ms))
-                    .wait(WaitKind::User, Some(format!("ask-{}", ask.id))),
+                Found::new(
+                    Level::NeedsYou,
+                    Status::WaitingForYou,
+                    copy::ask(ask.cost_pp, &ask.reason),
+                    Some(ask.created_ms),
+                )
+                .wait(WaitKind::User, Some(format!("ask-{}", ask.id))),
             );
         }
         let last = a.last_event_at_ms.or(Some(a.created_at_ms));
@@ -763,8 +782,13 @@ impl<'a> Ctx<'a> {
                 Window::FiveHour => "five_hour",
                 Window::Weekly => "weekly",
             });
-            Found::new(Level::Waiting, Status::BlockedByLimit, copy::limit(l.exhausted, resets.map(|t| self.clock(t)).as_deref()), a.last_event_at_ms)
-                .wait(WaitKind::Limit, window.map(str::to_string))
+            Found::new(
+                Level::Waiting,
+                Status::BlockedByLimit,
+                copy::limit(l.exhausted, resets.map(|t| self.clock(t)).as_deref()),
+                a.last_event_at_ms,
+            )
+            .wait(WaitKind::Limit, window.map(str::to_string))
         })
     }
 
@@ -799,7 +823,11 @@ impl<'a> Ctx<'a> {
         }
         let busy = matches!(
             s,
-            AgentState::Working | AgentState::Starting | AgentState::WaitingForYou | AgentState::WaitingGate | AgentState::Error
+            AgentState::Working
+                | AgentState::Starting
+                | AgentState::WaitingForYou
+                | AgentState::WaitingGate
+                | AgentState::Error
         );
         if self.i.paused.contains(&a.id) && !busy {
             return Some(governor(Status::Paused, copy::PAUSED_BY_YOU.into(), None));
@@ -807,7 +835,8 @@ impl<'a> Ctx<'a> {
         if s == AgentState::Created {
             return Some(governor(Status::NotStarted, copy::WAITING_FOR_SLOT.into(), Some(a.created_at_ms)));
         }
-        (s == AgentState::Queued).then(|| governor(Status::Queued, "behind higher-priority work".into(), a.last_event_at_ms))
+        (s == AgentState::Queued)
+            .then(|| governor(Status::Queued, "behind higher-priority work".into(), a.last_event_at_ms))
     }
 
     /// Rules 5 and 6: starting, running, or waiting on an external tool.
@@ -816,7 +845,15 @@ impl<'a> Ctx<'a> {
         if t.state == AgentState::Starting && live {
             let spawned = a.spawned_at_ms.unwrap_or(a.created_at_ms);
             if self.now.saturating_sub(spawned) < self.i.startup_timeout_ms {
-                return Some(Found::new(Level::Waiting, Status::Working, copy::starting(self.i.startup_timeout_ms / 1000), Some(spawned)).wait(WaitKind::Startup, None));
+                return Some(
+                    Found::new(
+                        Level::Waiting,
+                        Status::Working,
+                        copy::starting(self.i.startup_timeout_ms / 1000),
+                        Some(spawned),
+                    )
+                    .wait(WaitKind::Startup, None),
+                );
             }
         }
         if !matches!(t.state, AgentState::Working | AgentState::Starting | AgentState::Queued) {
@@ -826,7 +863,10 @@ impl<'a> Ctx<'a> {
             && let Some((server, name)) = crate::registry::mcp_tool(tool)
             && self.now.saturating_sub(at) >= EXTERNAL_AFTER_MS
         {
-            return Some(Found::new(Level::Waiting, Status::Working, copy::external(server, name), Some(at)).wait(WaitKind::External, Some(tool.clone())));
+            return Some(
+                Found::new(Level::Waiting, Status::Working, copy::external(server, name), Some(at))
+                    .wait(WaitKind::External, Some(tool.clone())),
+            );
         }
         Some(Found::new(Level::Running, Status::Working, "", t.turn_started_ms.or(a.spawned_at_ms)))
     }
@@ -842,7 +882,11 @@ impl<'a> Ctx<'a> {
     /// The node `to` has answered `m` (sent it anything after it).
     fn answered(&self, m: &Message, my_node: &str) -> bool {
         self.i.messages.iter().any(|r| {
-            r.team_run_id == m.team_run_id && r.from_node == m.to_node && r.to_node == my_node && r.created_at_ms >= m.created_at_ms && r.id != m.id
+            r.team_run_id == m.team_run_id
+                && r.from_node == m.to_node
+                && r.to_node == my_node
+                && r.created_at_ms >= m.created_at_ms
+                && r.id != m.id
         })
     }
 
@@ -896,7 +940,10 @@ impl<'a> Ctx<'a> {
             if !working.is_empty() {
                 let mut agents: Vec<String> = vec![];
                 for t in &working {
-                    let who = t.agent_id.clone().unwrap_or_else(|| self.agent_of(&run.run.id, t.node.as_deref().unwrap_or("?")));
+                    let who = t
+                        .agent_id
+                        .clone()
+                        .unwrap_or_else(|| self.agent_of(&run.run.id, t.node.as_deref().unwrap_or("?")));
                     if !agents.contains(&who) {
                         agents.push(who);
                     }
@@ -911,7 +958,11 @@ impl<'a> Ctx<'a> {
     }
 
     fn lead_of(&self, run: &str) -> Option<String> {
-        self.i.agents.values().find(|a| a.team.as_ref().is_some_and(|t| t.run_id == run) && is_lead(a)).map(|a| a.id.clone())
+        self.i
+            .agents
+            .values()
+            .find(|a| a.team.as_ref().is_some_and(|t| t.run_id == run) && is_lead(a))
+            .map(|a| a.id.clone())
     }
 
     /// The tasks of `a`'s node in its run, by id.
@@ -921,7 +972,9 @@ impl<'a> Ctx<'a> {
             .i
             .tasks
             .iter()
-            .filter(|t| t.team_run_id.as_deref() == Some(seat.run_id.as_str()) && t.node.as_deref() == Some(seat.node.as_str()))
+            .filter(|t| {
+                t.team_run_id.as_deref() == Some(seat.run_id.as_str()) && t.node.as_deref() == Some(seat.node.as_str())
+            })
             .collect();
         v.sort_by_key(|t| t.id);
         v
@@ -939,7 +992,9 @@ impl<'a> Ctx<'a> {
         }
         let next = tasks.iter().find(|t| matches!(t.status, TaskStatus::Ready | TaskStatus::Backlog))?;
         let deps: Vec<String> = next.depends_on.iter().map(u64::to_string).collect();
-        let done = |d: &str| d.parse::<u64>().ok().and_then(|id| self.tasks.get(&id)).is_some_and(|t| t.status == TaskStatus::Done);
+        let done = |d: &str| {
+            d.parse::<u64>().ok().and_then(|id| self.tasks.get(&id)).is_some_and(|t| t.status == TaskStatus::Done)
+        };
         let blocked = orch_team::run::blocked_by(&deps, done);
         let first: u64 = blocked.first()?.parse().ok()?;
         let (handle, owner, status) = match self.tasks.get(&first) {
@@ -951,8 +1006,13 @@ impl<'a> Ctx<'a> {
             None => (format!("T-{first}"), "?".into(), "unknown"),
         };
         Some(
-            Found::new(Level::Waiting, Status::Idle, copy::blocked_by(&handle, &owner, status), Some(next.updated_at_ms))
-                .wait(WaitKind::Task, Some(handle)),
+            Found::new(
+                Level::Waiting,
+                Status::Idle,
+                copy::blocked_by(&handle, &owner, status),
+                Some(next.updated_at_ms),
+            )
+            .wait(WaitKind::Task, Some(handle)),
         )
     }
 
@@ -983,9 +1043,15 @@ impl<'a> Ctx<'a> {
                 .or_else(|| self.limit(a))
                 .or_else(|| self.queued(a, live))
                 .or_else(|| self.running(a, live))
-                .or_else(|| at_rest(s).then(|| self.on_agent(a).or_else(|| self.on_task(a)).or_else(|| self.done(a))).flatten())
+                .or_else(|| {
+                    at_rest(s).then(|| self.on_agent(a).or_else(|| self.on_task(a)).or_else(|| self.done(a))).flatten()
+                })
                 .unwrap_or_else(|| {
-                    let status = if matches!(s, AgentState::Suspended | AgentState::Killed) { Status::Suspended } else { Status::Idle };
+                    let status = if matches!(s, AgentState::Suspended | AgentState::Killed) {
+                        Status::Suspended
+                    } else {
+                        Status::Idle
+                    };
                     Found::new(Level::Idle, status, "", a.last_event_at_ms)
                 })
         };
@@ -1094,7 +1160,8 @@ pub fn compute(i: &Inputs, now_ms: u64) -> World {
         .runs
         .iter()
         .map(|r| {
-            let members: Vec<&AgentAttention> = agents.values().filter(|a| a.run.as_deref() == Some(r.run.id.as_str())).collect();
+            let members: Vec<&AgentAttention> =
+                agents.values().filter(|a| a.run.as_deref() == Some(r.run.id.as_str())).collect();
             let mut rec = run_record(r, &members);
             rec.counts.decisions = members.iter().map(|m| by_agent.get(m.agent.as_str()).copied().unwrap_or(0)).sum();
             (r.run.id.clone(), rec)

@@ -524,7 +524,11 @@ impl Store {
 
     /// Not persisted (tests).
     pub fn in_memory(data: StateFile) -> Store {
-        Store { db: None, data: Mutex::new(Data { state: data, saved: StateFile::default() }), changed: Default::default() }
+        Store {
+            db: None,
+            data: Mutex::new(Data { state: data, saved: StateFile::default() }),
+            changed: Default::default(),
+        }
     }
 
     /// The database behind this store, if any.

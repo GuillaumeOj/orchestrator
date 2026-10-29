@@ -912,6 +912,7 @@ impl Store {
         {
             bail!("GitHub repository must be owner/name, got {r:?}");
         }
+        let topics = [format!("project:{id}"), format!("board:{id}")];
         let (id, s, b) = (id.to_string(), js(settings), js(backend));
         let n = self.write(move |tx| {
             Ok(tx.execute(
@@ -922,6 +923,7 @@ impl Store {
         if n == 0 {
             return Err(anyhow!("no such project"));
         }
+        self.note(topics);
         Ok(())
     }
 

@@ -207,7 +207,13 @@ fn rule_1_error() {
     let id = f.item("b", "startup", json!({}), 2);
     assert_eq!(
         shape(&f.rec("b")),
-        (Level::Error, Status::Error, Some(WaitKind::Startup), Some(decision_id("startup", id)), "no session after 30 s".into())
+        (
+            Level::Error,
+            Status::Error,
+            Some(WaitKind::Startup),
+            Some(decision_id("startup", id)),
+            "no session after 30 s".into()
+        )
     );
     f.agent("c", AgentState::Idle);
     f.item("c", "startup", json!({"failed": "resumed", "exit_status": 1}), 1);
@@ -281,7 +287,13 @@ fn rule_2_needs_you_by_kind() {
     let g = f.item("lead-1", "gate", json!({"action": "spec_approval"}), 12);
     assert_eq!(
         shape(&f.rec("lead-1")),
-        (Level::NeedsYou, Status::WaitingGate, Some(WaitKind::User), Some(format!("gate-{g}")), "spec gate · checkout".into())
+        (
+            Level::NeedsYou,
+            Status::WaitingGate,
+            Some(WaitKind::User),
+            Some(format!("gate-{g}")),
+            "spec gate · checkout".into()
+        )
     );
     f.inbox.last_mut().unwrap().payload = json!({"action": "push_pr"});
     assert_eq!(f.rec("lead-1").reason, "PR gate · checkout");
@@ -299,7 +311,13 @@ fn rule_2_needs_you_by_kind() {
     f.ask = Some(AskFacts { id: 7, agent: s("k"), created_ms: NOW - MIN, cost_pp: Some(2.14), reason: "x".into() });
     assert_eq!(
         shape(&f.rec("k")),
-        (Level::NeedsYou, Status::WaitingForYou, Some(WaitKind::User), s("ask-7"), "run now? ≈ +2.1 pp of the week".into())
+        (
+            Level::NeedsYou,
+            Status::WaitingForYou,
+            Some(WaitKind::User),
+            s("ask-7"),
+            "run now? ≈ +2.1 pp of the week".into()
+        )
     );
 }
 
@@ -324,15 +342,31 @@ fn rule_2_ranks_permission_question_gate_ask_trust_prompt_oldest_first() {
 
 #[test]
 fn rule_3_limit() {
-    let mut f = Fx::default();
-    f.gov = GovFacts { exhausted: Some(Window::FiveHour), five_hour_resets_ms: Some(NOW + 6 * 60 * MIN + 33 * MIN + 20_000), ..Default::default() };
+    let mut f = Fx {
+        gov: GovFacts {
+            exhausted: Some(Window::FiveHour),
+            five_hour_resets_ms: Some(NOW + 6 * 60 * MIN + 33 * MIN + 20_000),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
     f.agent("a", AgentState::BlockedByLimit);
     assert_eq!(
         shape(&f.rec("a")),
-        (Level::Waiting, Status::BlockedByLimit, Some(WaitKind::Limit), s("five_hour"), "5h window full · resets 16:00".into())
+        (
+            Level::Waiting,
+            Status::BlockedByLimit,
+            Some(WaitKind::Limit),
+            s("five_hour"),
+            "5h window full · resets 16:00".into()
+        )
     );
     // The weekly reset, five days away: the weekday.
-    f.gov = GovFacts { exhausted: Some(Window::Weekly), week_resets_ms: Some(NOW + 5 * 24 * 60 * MIN - 26 * MIN), ..Default::default() };
+    f.gov = GovFacts {
+        exhausted: Some(Window::Weekly),
+        week_resets_ms: Some(NOW + 5 * 24 * 60 * MIN - 26 * MIN),
+        ..Default::default()
+    };
     assert_eq!(f.rec("a").reason, "week full · resets Mon 09:00");
 }
 
@@ -376,7 +410,10 @@ fn rule_4_paused_and_reasons_with_their_own_time() {
     // Paused with no queued work.
     f.queue.clear();
     f.paused.insert("a".into());
-    assert_eq!((f.rec("a").level, f.rec("a").status, f.rec("a").reason), (Level::Queued, Status::Paused, "by you".into()));
+    assert_eq!(
+        (f.rec("a").level, f.rec("a").status, f.rec("a").reason),
+        (Level::Queued, Status::Paused, "by you".into())
+    );
     // A pause never hides a running turn.
     f.agents.get_mut("a").unwrap().tracker.state = AgentState::Working;
     assert_eq!(f.rec("a").level, Level::Running);
@@ -385,7 +422,11 @@ fn rule_4_paused_and_reasons_with_their_own_time() {
     f.agents.get_mut("a").unwrap().tracker.state = AgentState::Idle;
     f.entry("a", QueueReason::ScheduledOffHours { starts_at: ts(NOW + 9 * 60 * MIN - 26 * MIN) }, Some(5));
     assert_eq!(f.rec("a").reason, "off-hours · starts 18:00");
-    f.queue[0].reason = QueueReason::ModelWindow { model: "opus".into(), resets_at: ts(NOW + 5 * 24 * 60 * MIN - 26 * MIN), exhausted: true };
+    f.queue[0].reason = QueueReason::ModelWindow {
+        model: "opus".into(),
+        resets_at: ts(NOW + 5 * 24 * 60 * MIN - 26 * MIN),
+        exhausted: true,
+    };
     assert_eq!(f.rec("a").reason, "opus week full · starts Mon 09:00");
     f.queue[0].reason = QueueReason::HardCap;
     f.gov.hard_caps.insert("default".into(), (12.0, 12.0));
@@ -414,7 +455,10 @@ fn rule_5_startup_then_rule_6_running() {
     a.tracker.current_tool = s("Bash");
     a.tracker.tool_brief = s("cargo test");
     let r = f.rec("w");
-    assert_eq!((r.level, r.status, r.waiting_on.clone(), r.reason.as_str()), (Level::Running, Status::Working, None, ""));
+    assert_eq!(
+        (r.level, r.status, r.waiting_on.clone(), r.reason.as_str()),
+        (Level::Running, Status::Working, None, "")
+    );
     assert_eq!((r.activity.as_deref(), r.since_ms), (Some("Bash cargo test"), NOW - 3 * MIN));
     f.agents.get_mut("w").unwrap().tracker.current_tool = None;
     assert_eq!(f.rec("w").activity.as_deref(), Some("writing"));
@@ -431,7 +475,13 @@ fn rule_6_a_long_mcp_call_is_an_external_wait() {
     f.agents.get_mut("a").unwrap().tracker.tool_started_ms = Some(NOW - 7 * MIN);
     assert_eq!(
         shape(&f.rec("a")),
-        (Level::Waiting, Status::Working, Some(WaitKind::External), s("mcp__penpot__execute_code"), "waiting on penpot execute_code".into())
+        (
+            Level::Waiting,
+            Status::Working,
+            Some(WaitKind::External),
+            s("mcp__penpot__execute_code"),
+            "waiting on penpot execute_code".into()
+        )
     );
     assert_eq!(f.rec("a").since_ms, NOW - 7 * MIN);
     // The orchestrator's own tools are not external.
@@ -471,7 +521,10 @@ fn rule_7_review_plan_message_lead() {
     // A lead with tasks in progress: → the members working them.
     f.tasks[1].agent_id = s("front-1");
     let r = f.rec("lead-1");
-    assert_eq!(shape(&r), (Level::Waiting, Status::Idle, Some(WaitKind::Agent), s("back-1"), "→ back-1, front-1 · T-4, T-5".into()));
+    assert_eq!(
+        shape(&r),
+        (Level::Waiting, Status::Idle, Some(WaitKind::Agent), s("back-1"), "→ back-1, front-1 · T-4, T-5".into())
+    );
 }
 
 #[test]
@@ -582,9 +635,10 @@ fn precedence_between_adjacent_rules() {
 #[test]
 fn needs_you_iff_waiting_on_user() {
     let mut f = Fx::default();
-    for (i, st) in [AgentState::WaitingForYou, AgentState::Idle, AgentState::Working, AgentState::Error, AgentState::Created]
-        .into_iter()
-        .enumerate()
+    for (i, st) in
+        [AgentState::WaitingForYou, AgentState::Idle, AgentState::Working, AgentState::Error, AgentState::Created]
+            .into_iter()
+            .enumerate()
     {
         f.agent(&format!("a{i}"), st);
     }
@@ -592,7 +646,11 @@ fn needs_you_iff_waiting_on_user() {
     f.item("a3", "startup", json!({}), 1);
     f.agent("t", AgentState::Idle).trust_dialog = true;
     for r in f.world().agents.values() {
-        assert_eq!(r.level == Level::NeedsYou, r.waiting_on.as_ref().is_some_and(|w| w.kind == WaitKind::User), "{r:?}");
+        assert_eq!(
+            r.level == Level::NeedsYou,
+            r.waiting_on.as_ref().is_some_and(|w| w.kind == WaitKind::User),
+            "{r:?}"
+        );
         if r.level == Level::Running || r.level == Level::Idle || r.level == Level::Done {
             assert!(r.waiting_on.is_none(), "{r:?}");
         }
@@ -615,9 +673,15 @@ fn run_record_level_blocker_and_counts() {
     assert_eq!((r.level, r.phase, r.phase_since_ms), (Level::NeedsYou, RunState::Executing, NOW - 30 * MIN));
     assert_eq!(r.members, ["back-1", "front-1", "lead-1"]);
     let b = r.blocker.as_ref().unwrap();
-    assert_eq!((b.agent.as_str(), b.waiting_on.kind, b.reason.as_str()), ("front-1", WaitKind::User, "permission: Bash pnpm add zod"));
+    assert_eq!(
+        (b.agent.as_str(), b.waiting_on.kind, b.reason.as_str()),
+        ("front-1", WaitKind::User, "permission: Bash pnpm add zod")
+    );
     assert_eq!(b.waiting_on.r#ref, Some(format!("inbox-{p}")));
-    assert_eq!((r.counts.needs_you, r.counts.decisions, r.counts.running, r.counts.waiting, r.counts.live), (1, 1, 1, 1, 3));
+    assert_eq!(
+        (r.counts.needs_you, r.counts.decisions, r.counts.running, r.counts.waiting, r.counts.live),
+        (1, 1, 1, 1, 3)
+    );
     assert_eq!(r.counts.live_cap, None);
     // A wait inside the run is no blocker; a gate phase makes the run need you.
     f.inbox.clear();
@@ -674,7 +738,20 @@ fn clock_times_and_positions() {
     let fixed = TimeZone::fixed(jiff::tz::offset(9));
     assert_eq!(clock(NOW, NOW, &fixed), "18:26");
     let pos: Vec<String> = [1, 2, 3, 4, 11, 12, 13, 21, 22].iter().map(|n| copy::position(*n)).collect();
-    assert_eq!(pos, ["next", "2nd in line", "3rd in line", "4th in line", "11th in line", "12th in line", "13th in line", "21st in line", "22nd in line"]);
+    assert_eq!(
+        pos,
+        [
+            "next",
+            "2nd in line",
+            "3rd in line",
+            "4th in line",
+            "11th in line",
+            "12th in line",
+            "13th in line",
+            "21st in line",
+            "22nd in line"
+        ]
+    );
     assert_eq!(copy::cut("  \nabcdef", 4), "abc…");
 }
 
@@ -720,7 +797,13 @@ fn compute_bench_30_agents_10_runs() {
         let id = format!("a{n}");
         let state = [AgentState::Working, AgentState::Idle, AgentState::WaitingForYou][n as usize % 3];
         let a = f.agent(&id, state);
-        a.team = Some(TeamSeat { run_id: format!("run-{}", n % 10), node: format!("n{}", n % 3), feature_id: "f1".into(), project_id: "shop".into(), task: Some(n) });
+        a.team = Some(TeamSeat {
+            run_id: format!("run-{}", n % 10),
+            node: format!("n{}", n % 3),
+            feature_id: "f1".into(),
+            project_id: "shop".into(),
+            task: Some(n),
+        });
         let run = format!("run-{}", n % 10);
         let t = f.task(n, &format!("n{}", n % 3), TaskStatus::InProgress, &[n.saturating_sub(1)]);
         t.team_run_id = Some(run.clone());
@@ -743,6 +826,7 @@ fn compute_bench_30_agents_10_runs() {
     }
     let per = t.elapsed() / n;
     println!("attention::compute, 30 agents + 10 runs: {per:?} per call");
-    let limit = if cfg!(debug_assertions) { std::time::Duration::from_millis(10) } else { std::time::Duration::from_millis(1) };
+    let limit =
+        if cfg!(debug_assertions) { std::time::Duration::from_millis(10) } else { std::time::Duration::from_millis(1) };
     assert!(per < limit, "{per:?}");
 }

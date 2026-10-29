@@ -9,8 +9,8 @@ use orch_protocol::now_ms;
 
 use serde_json::{Value, json};
 
-use crate::runtime::Runtime;
 use crate::attention::{Level, Status};
+use crate::runtime::Runtime;
 use crate::state::AgentState;
 use crate::store::AgentRecord;
 use crate::team::{RunCtx, str_arg};
@@ -51,7 +51,10 @@ impl MemberStatus {
             Level::Queued if waited(STUCK_MS) => ("queued", format!("{who} has had work waiting for {mins} min{why}")),
             Level::Idle if self.task.is_some() && waited(STUCK_MS) => (
                 "idle_with_task",
-                format!("{who} has been idle for {mins} min with task T-{} not reported done", self.task.unwrap_or_default()),
+                format!(
+                    "{who} has been idle for {mins} min with task T-{} not reported done",
+                    self.task.unwrap_or_default()
+                ),
             ),
             _ => return None,
         };
@@ -145,8 +148,10 @@ impl Runtime {
                 let lines: Vec<String> = ms.iter().map(|m| m.line(now)).collect();
                 let data: Vec<Value> = ms
                     .iter()
-                    .map(|m| json!({"agent": m.agent, "node": m.node, "state": m.state, "task": m.task,
-                        "queue_reason": (m.level == Level::Queued).then_some(&m.reason), "reason": m.reason}))
+                    .map(|m| {
+                        json!({"agent": m.agent, "node": m.node, "state": m.state, "task": m.task,
+                        "queue_reason": (m.level == Level::Queued).then_some(&m.reason), "reason": m.reason})
+                    })
                     .collect();
                 Ok((lines.join("\n"), json!(data)))
             }
@@ -212,8 +217,12 @@ mod tests {
     fn what_counts_as_stuck() {
         let now = 60 * 60_000;
         assert!(m(Level::Running).stuck(now).is_none());
-        let (what, _, line) = MemberStatus { reason: "permission: Bash ls".into(), ..m(Level::NeedsYou) }.stuck(now).unwrap();
-        assert_eq!((what, line.as_str()), ("waiting_for_user", "f-back-1 has waited 60 min for the user (permission: Bash ls)"));
+        let (what, _, line) =
+            MemberStatus { reason: "permission: Bash ls".into(), ..m(Level::NeedsYou) }.stuck(now).unwrap();
+        assert_eq!(
+            (what, line.as_str()),
+            ("waiting_for_user", "f-back-1 has waited 60 min for the user (permission: Bash ls)")
+        );
         assert!(m(Level::NeedsYou).stuck(WAITING_FOR_USER_MS - 1).is_none());
         assert_eq!(m(Level::Idle).stuck(now).unwrap().0, "idle_with_task");
         assert_eq!(m(Level::Error).stuck(0).unwrap().0, "error");

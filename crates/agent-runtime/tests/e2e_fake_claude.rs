@@ -484,7 +484,10 @@ fn typing_into_a_waiting_pane_is_one_intervention_and_focus_is_none() {
     core.rt.pane_input("a", b"y").unwrap();
     let ev = events();
     assert_eq!(ev.len(), 1, "one per wait episode");
-    assert_eq!((ev[0].detail["waited_on"].as_str(), ev[0].detail["cause"].as_str()), (Some("user"), Some("permission")));
+    assert_eq!(
+        (ev[0].detail["waited_on"].as_str(), ev[0].detail["cause"].as_str()),
+        (Some("user"), Some("permission"))
+    );
     let item = core.rt.inbox().into_iter().find(|i| i.kind == "permission").unwrap();
     assert_eq!(ev[0].detail["item"], item.id);
     core.rt.decide(item.id, orch_protocol::InboxDecision::Approve, None, None).unwrap();

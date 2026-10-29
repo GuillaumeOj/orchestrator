@@ -155,6 +155,13 @@ pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
+/// Where tests make their homes: a short path (socket paths are limited to
+/// 104 bytes), `$ORCH_TEST_TMP` when set (a sandbox that can't write
+/// `/tmp`), else `/tmp`.
+pub fn test_tmp() -> std::path::PathBuf {
+    std::env::var_os("ORCH_TEST_TMP").map(Into::into).unwrap_or_else(|| "/tmp".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,11 +201,4 @@ mod tests {
         let back: Reply = serde_json::from_str(&s).unwrap();
         assert_eq!(back, r);
     }
-}
-
-/// Where tests make their homes: a short path (socket paths are limited to
-/// 104 bytes), `$ORCH_TEST_TMP` when set (a sandbox that can't write
-/// `/tmp`), else `/tmp`.
-pub fn test_tmp() -> std::path::PathBuf {
-    std::env::var_os("ORCH_TEST_TMP").map(Into::into).unwrap_or_else(|| "/tmp".into())
 }
