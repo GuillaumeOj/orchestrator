@@ -560,15 +560,10 @@ impl Store {
             let d = diff(&g.saved, &g.state);
             if !d.is_empty() {
                 self.changed.lock().unwrap_or_else(|e| e.into_inner()).merge(Changed::of(&d));
-            }
-            if self.db.is_none() {
-                g.saved = g.state.clone();
-            }
-            if let Some(db) = &self.db {
-                if !d.is_empty() {
+                if let Some(db) = &self.db {
                     pending = Some(db.sync_runtime_begin(d).context("saving the runtime state")?);
-                    g.saved = g.state.clone();
                 }
+                g.saved = g.state.clone();
             }
             (r, pending)
         };

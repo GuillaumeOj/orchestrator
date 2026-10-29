@@ -87,7 +87,8 @@ impl Store {
 
     pub fn upsert_project(&self, pr: &Project) -> Result<()> {
         let pr = pr.clone();
-        self.write(move |tx| {
+        let topics = [format!("project:{}", pr.id), format!("board:{}", pr.id)];
+        let r = self.write(move |tx| {
             tx.execute(
                 &format!(
                     "INSERT INTO projects({PROJECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
@@ -116,7 +117,12 @@ impl Store {
                 ],
             )?;
             Ok(())
-        })
+        });
+        // The `now` publisher maps agents to projects by path.
+        if r.is_ok() {
+            self.touch(topics);
+        }
+        r
     }
 
     pub fn project(&self, id: &str) -> Result<Option<Project>> {
@@ -170,7 +176,8 @@ impl Store {
     /// transcript index. Events, usage and the audit log are kept (history).
     pub fn delete_project(&self, id: &str) -> Result<()> {
         let id = id.to_string();
-        self.write(move |tx| {
+        let topics = ["features".to_string(), "teams".to_string(), format!("project:{id}"), format!("board:{id}")];
+        let r = self.write(move |tx| {
             let path: Option<String> =
                 tx.query_row("SELECT path FROM projects WHERE id=?1", [&id], |r| r.get(0)).optional()?;
             let Some(path) = path else { return Ok(()) };
@@ -182,7 +189,11 @@ impl Store {
             Store::delete_project_teams(tx, &id)?;
             tx.execute("DELETE FROM projects WHERE id=?1", [&id])?;
             Ok(())
-        })
+        });
+        if r.is_ok() {
+            self.touch(topics);
+        }
+        r
     }
 
     // ------------------------------------------------------------ permission rules

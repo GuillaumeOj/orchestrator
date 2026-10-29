@@ -48,7 +48,10 @@ impl MemberStatus {
                 ("waiting_for_user", format!("{who} has waited {mins} min for the user{why}"))
             }
             Level::Error => ("error", format!("{who} is in error{why}; resume it or reassign its task")),
-            Level::Queued if waited(STUCK_MS) => ("queued", format!("{who} has had work waiting for {mins} min{why}")),
+            // A pause is the user's choice, not a stuck member.
+            Level::Queued if self.status != Status::Paused && waited(STUCK_MS) => {
+                ("queued", format!("{who} has had work waiting for {mins} min{why}"))
+            }
             Level::Idle if self.task.is_some() && waited(STUCK_MS) => (
                 "idle_with_task",
                 format!(
@@ -233,5 +236,6 @@ mod tests {
         assert!(MemberStatus { task: None, ..m(Level::Idle) }.stuck(now).is_none());
         // Waiting on another agent or a task is not stuck.
         assert!(m(Level::Waiting).stuck(now).is_none());
+        assert!(MemberStatus { status: Status::Paused, ..m(Level::Queued) }.stuck(now).is_none(), "paused by the user");
     }
 }

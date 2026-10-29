@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -148,6 +148,20 @@ impl Store {
                  ORDER BY ts_ms DESC, id DESC LIMIT ?2",
             )?;
             Ok(st.query_map(params![run, limit as i64], row_event)?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// A team run's latest event of `kind` (however many came after it).
+    pub fn last_run_event(&self, run_id: &str, kind: &str) -> Result<Option<Event>> {
+        let (run, kind) = (run_id.to_string(), kind.to_string());
+        self.read(move |c| {
+            Ok(c.query_row(
+                "SELECT id, ts_ms, agent_id, kind, detail FROM events WHERE team_run_id=?1 AND kind=?2
+                 ORDER BY ts_ms DESC, id DESC LIMIT 1",
+                params![run, kind],
+                row_event,
+            )
+            .optional()?)
         })
     }
 

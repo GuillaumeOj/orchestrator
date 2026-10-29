@@ -190,7 +190,7 @@ impl Runtime {
             }
             h.interventions.insert(id.to_string(), wait.clone());
         }
-        self.now_pump(false);
+        // The last published record (at most one pump old): no recompute on the keystroke path.
         let kind = self.attention_of(id).and_then(|r| r.waiting_on).map(|w| w.kind.as_str());
         let detail = json!({
             "waited_on": kind.unwrap_or(wait.cause), "cause": wait.cause, "item": wait.item, "since_ms": wait.since_ms,
@@ -278,6 +278,7 @@ mod tests {
         rt.note_intervention("a1");
         assert!(count().is_empty(), "nothing waited on: typing records nothing");
         let p = rt.add_item(Some("a1"), "permission", "p".into(), json!({}), 30).unwrap();
+        rt.now_pump(false);
         rt.note_intervention("a1");
         rt.note_intervention("a1");
         let ev = count();

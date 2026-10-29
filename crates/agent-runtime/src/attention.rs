@@ -36,7 +36,7 @@ pub enum Level {
 }
 
 /// The §9.5 badge (replaces the UI's `displayState()`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
     Working,
@@ -70,21 +70,9 @@ impl Status {
         }
     }
 
-    /// [`Status::label`] of a serialized key.
+    /// [`Status::label`] of a serialized key ("Idle" for an unknown one).
     pub fn label_of(key: &str) -> &'static str {
-        match key {
-            "working" => "Working",
-            "waiting_for_you" => "Waiting for you",
-            "waiting_gate" => "At gate",
-            "queued" => "Queued",
-            "not_started" => "Not started yet",
-            "paused" => "Paused",
-            "blocked_by_limit" => "Blocked by limit",
-            "suspended" => "Suspended",
-            "error" => "Error",
-            "done" => "Done",
-            _ => "Idle",
-        }
+        serde_json::from_value(Value::String(key.to_string())).map_or("Idle", Status::label)
     }
 }
 
@@ -709,13 +697,9 @@ impl<'a> Ctx<'a> {
             let s = |k: &str| it.payload.get(k).and_then(Value::as_str).unwrap_or("");
             let (status, reason) = match it.kind.as_str() {
                 "permission" => {
-                    let input = it
-                        .payload
-                        .get("tool_input")
-                        .or_else(|| it.payload.get("input"))
-                        .cloned()
-                        .unwrap_or(Value::Null);
-                    let short = crate::permissions::primary_input(s("tool"), &input).unwrap_or_default();
+                    let input =
+                        it.payload.get("tool_input").or_else(|| it.payload.get("input")).unwrap_or(&Value::Null);
+                    let short = crate::permissions::primary_input(s("tool"), input).unwrap_or_default();
                     let tool = copy::tool(s("tool"), Some(&short));
                     let (tool, input) = tool.split_once(' ').unwrap_or((&tool, ""));
                     (Status::WaitingForYou, copy::permission(tool, input, it.status == InboxStatus::Parked))
@@ -856,7 +840,8 @@ impl<'a> Ctx<'a> {
                 );
             }
         }
-        if !matches!(t.state, AgentState::Working | AgentState::Starting | AgentState::Queued) {
+        // A `Queued` agent never gets here: rule 4 always takes it.
+        if !matches!(t.state, AgentState::Working | AgentState::Starting) {
             return None;
         }
         if let (Some(tool), Some(at)) = (&t.current_tool, t.tool_started_ms)
@@ -1077,6 +1062,17 @@ impl<'a> Ctx<'a> {
     }
 }
 
+/// A run's blocker: its highest, oldest member wait on something outside the
+/// run. The publisher picks it again once every `since_ms` is known (D7).
+pub fn blocker(members: &[&AgentAttention]) -> Option<Blocker> {
+    let mut ranked: Vec<&&AgentAttention> = members.iter().collect();
+    ranked.sort_by_key(|m| (std::cmp::Reverse(m.level), m.since_ms, m.agent.clone()));
+    ranked.iter().find_map(|m| {
+        let w = m.waiting_on.as_ref().filter(|w| w.kind.external_to_run())?;
+        Some(Blocker { agent: m.agent.clone(), waiting_on: w.clone(), reason: m.reason.clone() })
+    })
+}
+
 /// The run's record from its members' records.
 fn run_record(r: &RunFacts, members: &[&AgentAttention]) -> RunAttention {
     let mut counts = Counts::default();
@@ -1087,12 +1083,7 @@ fn run_record(r: &RunFacts, members: &[&AgentAttention]) -> RunAttention {
     if matches!(r.run.status, RunState::SpecGate | RunState::PrGate) {
         level = level.max(Level::NeedsYou);
     }
-    let mut ranked: Vec<&&AgentAttention> = members.iter().collect();
-    ranked.sort_by_key(|m| (std::cmp::Reverse(m.level), m.since_ms, m.agent.clone()));
-    let blocker = ranked.iter().find_map(|m| {
-        let w = m.waiting_on.as_ref().filter(|w| w.kind.external_to_run())?;
-        Some(Blocker { agent: m.agent.clone(), waiting_on: w.clone(), reason: m.reason.clone() })
-    });
+    let blocker = blocker(members);
     RunAttention {
         run: r.run.id.clone(),
         feature: r.feature.clone(),

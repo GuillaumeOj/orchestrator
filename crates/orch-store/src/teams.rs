@@ -791,6 +791,19 @@ impl Store {
         })
     }
 
+    /// A run's last `n` messages, oldest first.
+    pub fn recent_messages(&self, run_id: &str, n: usize) -> Result<Vec<Message>> {
+        let run = run_id.to_string();
+        self.read(move |c| {
+            let mut st =
+                c.prepare(&format!("SELECT {MSG_COLS} FROM messages WHERE team_run_id=?1 ORDER BY id DESC LIMIT ?2"))?;
+            let mut v: Vec<Message> =
+                st.query_map(params![run, n as i64], row_message)?.collect::<rusqlite::Result<_>>()?;
+            v.reverse();
+            Ok(v)
+        })
+    }
+
     /// Runs `sql` once per message id (`?1`), the same `args` after it.
     fn each_message(&self, ids: &[u64], sql: &'static str, args: Vec<rusqlite::types::Value>) -> Result<()> {
         let ids = ids.to_vec();

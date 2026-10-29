@@ -12,7 +12,7 @@ use governor::{QueueEntry, Window};
 use orch_protocol::now_ms;
 use serde_json::{Value, json};
 
-use crate::attention::{self, AgentAttention, AllCounts, AskFacts, GovFacts, Level, RunFacts, WaitKind, World};
+use crate::attention::{self, AgentAttention, AskFacts, GovFacts, Level, RunFacts, WaitKind, World};
 use crate::runtime::Runtime;
 
 /// Called with every `now` event (api-contract §3.1).
@@ -23,6 +23,9 @@ const MESSAGES_PER_RUN: usize = 200;
 
 /// What a wait episode is: a new one restarts the remembered `since`.
 type Episode = (Level, Option<WaitKind>, Option<String>);
+
+/// What tells the Governor moved: its queue, paused agents and pending ask.
+type GovSeen = (Vec<QueueEntry>, BTreeSet<String>, Option<governor::ActionId>);
 
 /// The team data `compute` reads, re-read only when the store's team data
 /// changed (or on the tick).
@@ -44,8 +47,8 @@ struct State {
     /// When each agent's current episode was first seen (D7).
     firsts: BTreeMap<String, (Episode, u64)>,
     team: TeamCache,
-    /// The Governor's queue and paused set last seen.
-    queue: Option<(Vec<QueueEntry>, BTreeSet<String>)>,
+    /// The Governor's queue, paused set and pending ask last seen.
+    queue: Option<GovSeen>,
 }
 
 /// The publisher's state, on the runtime.
@@ -113,14 +116,11 @@ fn remember_since(world: &mut World, firsts: &mut BTreeMap<String, (Episode, u64
         }
         firsts.insert(id.clone(), (ep, a.since_ms));
     }
-    // A run's blocker carries its member's wait.
+    // The blocker is picked again now every member's `since` is known: the
+    // oldest wait wins, and it carries its member's wait.
     for r in world.runs.values_mut() {
-        if let Some(b) = &mut r.blocker
-            && let Some(a) = world.agents.get(&b.agent)
-            && let Some(w) = &a.waiting_on
-        {
-            b.waiting_on = w.clone();
-        }
+        let members: Vec<&AgentAttention> = r.members.iter().filter_map(|m| world.agents.get(m)).collect();
+        r.blocker = attention::blocker(&members);
     }
 }
 
@@ -195,10 +195,6 @@ fn table(rows: &[[String; 4]]) -> String {
         .collect()
 }
 
-fn counts_json(c: &AllCounts) -> Value {
-    json!(c)
-}
-
 impl Runtime {
     /// Calls `f` with every `now` event from now on (the app's Tauri event,
     /// the desktop notifier).
@@ -229,7 +225,7 @@ impl Runtime {
             "rev": st.rev,
             "agents": w.agents.values().collect::<Vec<_>>(),
             "runs": w.runs.values().collect::<Vec<_>>(),
-            "counts": counts_json(&w.counts),
+            "counts": w.counts,
             // TODO(T-22): open decisions (and those closed in the last 10 min), today's outcomes.
             "decisions": [],
             "outcomes": [],
@@ -245,9 +241,10 @@ impl Runtime {
         let mut topics = std::mem::take(&mut *lock(&self.now.topics));
         let team_changes = self.db.changes();
         let db_topics = self.db.take_topics();
-        // The queue as it is (cheap): what tells it moved.
-        let queue_now = self.with_governor(|g| {
-            (g.queue().to_vec(), g.paused_agents().iter().map(|a| a.0.clone()).collect::<BTreeSet<_>>())
+        // The queue as it is (cheap): what tells it moved. An answered ask
+        // moves nothing else.
+        let queue_now: GovSeen = self.with_governor(|g| {
+            (g.queue().to_vec(), g.paused_agents().iter().map(|a| a.0.clone()).collect(), g.pending_ask())
         });
         let now = now_ms();
         let mut st = lock(&self.now.state);
@@ -277,9 +274,6 @@ impl Runtime {
                     topics.insert(t);
                 }
             }
-        }
-        if changed.agents {
-            topics.insert("agents".into());
         }
         if changed.inbox {
             topics.insert("inbox".into());
@@ -320,6 +314,11 @@ impl Runtime {
         remember_since(&mut world, &mut state.firsts, now);
         state.queue = Some(queue_now);
         let old = state.last.take().unwrap_or_default();
+        // An agent's raw row changes on every hook (last_event_at_ms): the
+        // shell refetches only when what it shows (the record) changed.
+        if changed.agents && old.agents != world.agents {
+            topics.insert("agents".into());
+        }
         let event = delta(state.rev + 1, &old, &world, &topics);
         state.last = Some(world);
         let Some(event) = event else { return };
@@ -335,13 +334,12 @@ impl Runtime {
     /// reasons need; one look under its lock.
     fn governor_facts(&self) -> (Vec<QueueEntry>, Option<AskFacts>, GovFacts) {
         let view = self.usage_view();
-        let now = jiff::Timestamp::now();
         self.with_governor(|g| {
             let by_id: BTreeMap<_, _> = g.queue().iter().map(|e| (e.id, e)).collect();
             let queue: Vec<QueueEntry> =
                 g.release_order().iter().filter_map(|id| by_id.get(id).map(|e| (*e).clone())).collect();
-            let ask = g.next_action_preview(now).pending_ask.and_then(|(id, _)| {
-                let a = g.action(id)?;
+            let ask = g.pending_ask().and_then(|id| {
+                let a = g.action(id).filter(|a| a.ask.is_some())?;
                 let agent =
                     serde_json::to_value(&a.action).ok()?.get("agent").and_then(Value::as_str).map(str::to_string);
                 let cost_pp = agent
@@ -399,15 +397,13 @@ impl Runtime {
             let feature = self.db.feature(&run.feature_id).ok().flatten();
             let phase_since_ms = self
                 .db
-                .run_events(&run.id, 100)
-                .unwrap_or_default()
-                .iter()
-                .find(|e| e.kind == "run.state")
+                .last_run_event(&run.id, "run.state")
+                .ok()
+                .flatten()
                 .map(|e| e.ts_ms)
                 .unwrap_or(run.started_at_ms);
             c.tasks.extend(self.db.tasks(None, None, Some(&run.id)).unwrap_or_default());
-            let msgs = self.db.messages(&run.id, None, false).unwrap_or_default();
-            c.messages.extend(msgs.into_iter().rev().take(MESSAGES_PER_RUN).rev());
+            c.messages.extend(self.db.recent_messages(&run.id, MESSAGES_PER_RUN).unwrap_or_default());
             c.runs.push(RunFacts {
                 project: feature.as_ref().map(|f| f.project_id.clone()).unwrap_or_default(),
                 feature: feature.as_ref().map(|f| f.slug.clone()).unwrap_or_else(|| run.feature_id.clone()),

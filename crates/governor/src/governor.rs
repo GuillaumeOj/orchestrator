@@ -658,6 +658,11 @@ impl Governor {
         order.into_iter().map(|e| e.id).collect()
     }
 
+    /// The ask waiting on the user's answer, if any.
+    pub fn pending_ask(&self) -> Option<ActionId> {
+        self.pending_ask
+    }
+
     pub fn actions(&self) -> &[GovernorAction] {
         &self.actions
     }
