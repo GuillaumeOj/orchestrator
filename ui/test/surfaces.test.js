@@ -8,7 +8,7 @@
 import { render } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/lib/app.svelte.js';
-import { countsOf, decisionOf, fixture, rec } from './fixture.js';
+import { act, countsOf, decision, fixture, permDecision, rec } from './fixture.js';
 
 vi.mock('../src/lib/ipc.js', () => ({
   inTauri: false,
@@ -81,21 +81,20 @@ function world() {
     raw('run-2', 'blog'),
   ];
   d.queue = []; // the raw queue is empty: queued comes from the counts
-  const perm = { ...d.inbox.items[0], id: 'inbox-1', agent_id: 'perm-1', created_ms: now - 4 * MIN };
-  const ask = {
+  const perm = permDecision({
+    id: 'inbox-1',
+    subject: { agent: 'perm-1', project: 'shop' },
+    created_ms: now - 4 * MIN,
+  });
+  const ask = decision({
     id: 'inbox-2',
-    level: 1,
     kind: 'question',
-    status: 'open',
-    agent_id: 'ask-1',
+    subject: { agent: 'ask-1', project: 'shop' },
     title: 'Which auth provider?',
-    detail: '',
-    preview: 'Which auth provider?',
     created_ms: now - 2 * MIN,
-    actions: ['enter', 'r', 'o'],
-    payload: { action: 'ask_user' },
-  };
-  d.inbox = undefined;
+    context: [{ type: 'markdown', text: 'Which auth provider?' }],
+    actions: [act('answer', 'Answer', 'enter'), act('reject', 'Dismiss', 'r'), act('open', 'Open pane', 'o')],
+  });
   const user = (ref, since) => ({ waiting_on: { kind: 'user', ref, since_ms: since } });
   const gov = { waiting_on: { kind: 'governor', ref: 'x', since_ms: now - 5 * MIN } };
   const agents = [
@@ -141,7 +140,7 @@ function world() {
         counts: shop,
       },
     },
-    decisions: Object.fromEntries([perm, ask].map((i) => [i.id, decisionOf(i)])),
+    decisions: Object.fromEntries([perm, ask].map((x) => [x.id, x])),
     outcomes: [],
     counts: {
       global: C({ needs_you: 2, decisions: 2, running: 2, waiting: 1, queued: 2, live: 5, live_cap: 4 }),
@@ -203,7 +202,7 @@ describe('every surface shows the same numbers (spec §6.1)', () => {
 
 describe('surfaces render the record: status, reason, since', () => {
   it('a wait on another agent reads the same in the Overview, the agent pane and the Inspector', () => {
-    const want = /→ lead · review of T-4 · 3m/;
+    const want = /→ lead · review of T-4 (· )?3 min/;
     const ov = render(OverviewPane, { paneId: 'ov' }).container;
     expect(text(ov)).toMatch(want);
     openPane({ type: 'agent', agentId: 'rev-1' });
@@ -218,7 +217,7 @@ describe('surfaces render the record: status, reason, since', () => {
     openPane({ type: 'agent', agentId: 'fresh-1' });
     const pane = render(AgentPane, { paneId: 'p1' }).container;
     expect(text(pane.querySelector('.ah'))).toContain('Not started yet');
-    expect(text(pane.querySelector('.strip'))).toMatch(/Not started yet live cap 4\/4 · 1st in line · 5m/);
+    expect(text(pane.querySelector('.strip'))).toMatch(/Not started yet\s*\S*\s*live cap 4\/4 · 1st in line · 5 min/);
     expect(text(pane.querySelector('.strip'))).toContain('Start now');
     const ov = render(OverviewPane, { paneId: 'ov' }).container;
     const row = [...ov.querySelectorAll('tbody tr')].find((r) => r.textContent.includes('fresh-1'));

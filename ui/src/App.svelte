@@ -14,7 +14,7 @@
   import TitleBar from './components/TitleBar.svelte';
   import Toasts from './components/Toasts.svelte';
   import Workspace from './components/Workspace.svelte';
-  import { app, applyTheme, flushDecisions, focusedSpec, isTerminal, onOutcome, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
+  import { app, applyTheme, flushDecisions, focusedSpec, isTerminal, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
   import { startDev } from './lib/dev.js';
   import { loadUiFont, prepareKitty } from './lib/fonts.js';
   import { inTauri, invoke, listen } from './lib/ipc.js';
@@ -78,7 +78,6 @@
     window.addEventListener('keydown', onKeyDown, true);
     let decisions;
     let unlisten = () => {};
-    let unlistenOutcome = () => {};
     let stopNow = () => {};
     let stopState = () => {};
     (async () => {
@@ -100,14 +99,12 @@
         if (lastKeyCommand.id === ev.payload && Date.now() - lastKeyCommand.at < 400) return;
         run(ev.payload);
       });
-      unlistenOutcome = await listen('inbox_outcome', (ev) => onOutcome(ev.payload));
     })();
     return () => {
       clearInterval(decisions);
       stopState();
       stopNow();
       unlisten();
-      unlistenOutcome();
       window.removeEventListener('resize', onResize);
       window.removeEventListener('keydown', onKeyDown, true);
     };

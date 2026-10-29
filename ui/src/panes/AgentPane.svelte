@@ -8,13 +8,14 @@
   import AgentChip from '../components/AgentChip.svelte';
   import CtxBar from '../components/CtxBar.svelte';
   import Kbd from '../components/Kbd.svelte';
+  import LifecycleMarker from '../components/LifecycleMarker.svelte';
   import PermissionCall from '../components/PermissionCall.svelte';
-  import Reason from '../components/Reason.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import TermHost from '../components/TermHost.svelte';
+  import WaitingChip from '../components/WaitingChip.svelte';
   import { agent, agentAction, app, cancelQueued, confirm, decide, mountTerm, openEditor, runNow, toast } from '../lib/app.svelte.js';
   import { ago, clock, duration } from '../lib/format.js';
-  import { actionLabels, legacyItem, visibleItems } from '../lib/inbox.js';
+  import { agentOf, parked, visibleItems } from '../lib/inbox.js';
   import { errText } from '../lib/ipc.js';
   import { attention, openDecisions, statusOf } from '../lib/now.svelte.js';
   import { cacheState, sessionPp as ppOf, runCost, STATUS } from '../lib/status.js';
@@ -39,14 +40,13 @@
   let handedOver = $state(null);
   const perm = $derived(
     visibleItems(
-      openDecisions()
-        .filter((d) => d.kind === 'permission' && d.subject?.agent === a?.id)
-        .map(legacyItem),
+      openDecisions().filter((d) => d.kind === 'permission' && agentOf(d) === a?.id),
       'all',
       app.pending,
-    ).find((i) => !(i.id === handedOver && i.actions.includes('in_pane'))),
+    ).find((d) => !(d.id === handedOver && d.actions.some((x) => x.id === 'in_pane'))),
   );
-  const permLabels = $derived(actionLabels(perm));
+  // The strip's buttons: the decision's own actions, Deny with message and Open aside (the pane is here).
+  const permActions = $derived((perm?.actions ?? []).filter((x) => x.id !== 'reply' && x.id !== 'open'));
   const cache = $derived(cacheState(a, clock));
 
   function attachIfLive() {
@@ -82,7 +82,7 @@
   <div class="ah">
     <AgentChip id={a.id} />
     <StatusBadge state={ds} />
-    <Reason {rec} />
+    <WaitingChip {rec} />
     {#if a.off_hours}<span class="offh" title="Work you scheduled off-hours (FR-816)">· off-hours</span>{/if}
     {#if a.model_note}
       <span class="secondary down" title="Switched by the Governor ({a.model_note.replace(/^downgraded /, '')}); back to the role's model at the next task once it clears.">↓ {a.model ?? 'default model'} · {a.model_note}</span>
@@ -107,19 +107,23 @@
         <span class="icon" style:color="var(--color-status-waiting-for-you)" aria-hidden="true">{'\u{F0005}'}</span>
         <span><b>Waiting for you</b> for {ago(perm.created_ms)} · {perm.title} · also in the Inbox</span>
         <span class="grow"></span>
-        <button class="btn primary" onclick={() => decide(perm, 'approve')}>{permLabels.a}</button>
-        <button class="btn danger" onclick={() => decide(perm, 'reject')}>{permLabels.r}</button>
-        {#if perm.actions.includes('always')}<button class="btn" title={perm.payload?.always} onclick={() => decide(perm, 'always')}>{permLabels.always}</button>{/if}
-        {#if perm.actions.includes('in_pane')}<button class="btn ghost" onclick={() => (handedOver = perm.id)} title="Shows Claude Code's own dialog">{permLabels.in_pane}</button>{/if}
+        {#each permActions as x (x.id)}
+          {#if x.id === 'in_pane'}
+            <button class="btn ghost" onclick={() => (handedOver = perm.id)} title="Shows Claude Code's own dialog">{x.label}</button>
+          {:else}
+            <button class="btn" class:primary={x.id === 'approve'} class:danger={x.id === 'reject'} title={x.id === 'always' ? perm.payload?.always : null} onclick={() => decide(perm, x.id)}>{x.label}</button>
+          {/if}
+        {/each}
       </div>
-      <PermissionCall item={perm} />
+      {#if parked(perm)}<LifecycleMarker decision={perm} />{/if}
+      <PermissionCall block={perm.context?.find((b) => b.type === 'tool_call')} />
     </div>
   {:else if rec?.level === 'needs_you'}
-    <div class="strip warn"><span class="icon" style:color={STATUS[ds].color}>{STATUS[ds].icon}</span> <b>{STATUS[ds].label}</b> <Reason {rec} /> · {inPane ? 'answer it in the pane below: the app never does' : 'answer it in the Inbox'}</div>
+    <div class="strip warn"><span class="icon" style:color={STATUS[ds].color}>{STATUS[ds].icon}</span> <b>{STATUS[ds].label}</b> <WaitingChip {rec} /> · {inPane ? 'answer it in the pane below: the app never does' : 'answer it in the Inbox'}</div>
   {:else if rec?.level === 'queued'}
     <div class="strip">
       <span class="icon" style:color={STATUS[ds].color}>{STATUS[ds].icon}</span>
-      <b>{STATUS[ds].label}</b> <Reason {rec} />
+      <b>{STATUS[ds].label}</b> <WaitingChip {rec} />
       <span class="grow"></span>
       {#if a.queue_entry}
         <button class="btn ghost" onclick={() => cancelQueued(a)} title="Drop the queued turn">Cancel</button>
@@ -129,7 +133,7 @@
       {/if}
     </div>
   {:else if ds === 'blocked_by_limit'}
-    <div class="strip"><span class="icon" style:color="var(--color-status-blocked-by-limit)">{'\u{F073A}'}</span> <b>Blocked by limit</b> <Reason {rec} /> · resumes at the reset (CLI auto-continue cancelled)</div>
+    <div class="strip"><span class="icon" style:color="var(--color-status-blocked-by-limit)">{'\u{F073A}'}</span> <b>Blocked by limit</b> <WaitingChip {rec} /> · resumes at the reset (CLI auto-continue cancelled)</div>
   {:else if ds === 'error'}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
     <div class="strip" tabindex="0" onkeydown={onStripKey} role="group">

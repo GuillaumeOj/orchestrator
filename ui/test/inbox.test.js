@@ -1,248 +1,241 @@
+// Inbox helpers over Decisions (P4.1, api-contract §2; copy: p4-design-notes §3–§4).
 import { describe, expect, it } from 'vitest';
-import { baseName } from '../src/lib/format.js';
+import { baseName, waited } from '../src/lib/format.js';
 import {
-  actionLabels,
   afterRemoval,
+  answerText,
   collapse,
+  decisionToast,
   due,
-  effectToast,
-  gateKind,
+  effectText,
   inputText,
   keyIntent,
   kindLabel,
+  marker,
   move,
-  outcomeToast,
-  parked,
   pendingToast,
-  restarted,
+  subjectLine,
   tailLines,
-  teamQuestion,
   UNDO_MS,
   visibleItems,
 } from '../src/lib/inbox.js';
+import { act, budgetDecision, decision, permDecision } from './fixture.js';
 
-const items = [
-  {
-    id: 'perm-1',
-    level: 1,
-    kind: 'permission',
-    agent_id: 'front-1',
-    preview: 'pnpm add x',
-    actions: ['a', 'r', 'enter', 'o', 'e'],
-  },
-  { id: 'wait-solo', level: 1, kind: 'question', agent_id: 'solo', actions: ['enter', 'o'] },
-  { id: 'ask-3', level: 3, kind: 'budget', title: 'Defer infra', actions: ['a', 'r'] },
-  { id: 'info-t', level: 4, kind: 'info', actions: ['o'] },
-];
+const T = new Date(2026, 9, 29, 14, 0).getTime();
+const at = (h, m) => new Date(2026, 9, 29, h, m).getTime();
+const lc = (d, lifecycle) => ({ ...d, lifecycle });
+const spec = decision({
+  id: 'gate-5',
+  kind: 'gate',
+  gate: 'spec',
+  subject: { agent: 'lead-1', role: 'Lead', project: 'shop-api', feature: 'checkout' },
+  title: 'Spec gate · checkout',
+  actions: [
+    act('approve', 'Approve spec', 'a'),
+    act('reject', 'Send back', 'r'),
+    act('reply', 'Send back with notes', 'enter'),
+    act('open', 'Open pane', 'o'),
+  ],
+});
+const pr = {
+  ...spec,
+  id: 'gate-6',
+  gate: 'pr',
+  title: 'PR gate · checkout',
+  payload: { branch: 'orch/checkout/integration' },
+};
+const question = decision({
+  id: 'q-2',
+  kind: 'question',
+  subject: { agent: 'front-1' },
+  actions: [act('answer', 'Answer', 'enter'), act('reject', 'Dismiss', 'r'), act('open', 'Open pane', 'o')],
+});
+const notion = decision({
+  id: 'alert-9',
+  kind: 'notion',
+  level: 2,
+  actions: [act('dismiss', 'Dismiss', 'r'), act('open', 'Open in Notion ↗', 'o')],
+});
+const mcp = decision({
+  id: 'alert-3',
+  kind: 'alert',
+  level: 2,
+  payload: { alert: 'mcp_needs_auth', name: 'Penpot' },
+  actions: [
+    act('reconnect', 'Reconnect', 'a'),
+    act('dismiss', 'Dismiss', 'r'),
+    act('open_settings', 'Open Settings', 'o'),
+  ],
+});
 
 describe('inbox triage', () => {
-  it('filters and hides decisions in their undo window', () => {
-    expect(visibleItems(items, 'blocking').map((i) => i.id)).toEqual(['perm-1', 'wait-solo']);
-    expect(visibleItems(items, 'all', [{ item: 'perm-1' }]).map((i) => i.id)).toEqual(['wait-solo', 'ask-3', 'info-t']);
+  const list = [permDecision(), question, budgetDecision()];
+
+  it('filters by level and hides decisions in their undo window', () => {
+    expect(visibleItems(list, 'blocking').map((d) => d.id)).toEqual(['perm-1', 'q-2']);
+    expect(visibleItems(list, 'budget').map((d) => d.id)).toEqual(['ask-7']);
+    expect(visibleItems(list, 'all', [{ item: 'perm-1' }]).map((d) => d.id)).toEqual(['q-2', 'ask-7']);
   });
 
   it('j/k move and selection survives removal', () => {
-    expect(move(items, 'perm-1', 1)).toBe('wait-solo');
-    expect(move(items, 'perm-1', -1)).toBe('perm-1');
-    expect(move(items, 'missing', 1)).toBe('perm-1');
-    expect(afterRemoval(items, 'info-t')).toBe('ask-3');
-    expect(afterRemoval(items, 'perm-1')).toBe('wait-solo');
-    expect(afterRemoval([items[0]], 'perm-1')).toBe(null);
+    expect(move(list, 'perm-1', 1)).toBe('q-2');
+    expect(afterRemoval(list, 'perm-1')).toBe('q-2');
+    expect(afterRemoval(list, 'ask-7')).toBe('q-2');
+    expect(afterRemoval([list[0]], 'perm-1')).toBe(null);
   });
 
-  it('keys apply only where the item supports them', () => {
-    expect(keyIntent('a', items[0])).toEqual({ kind: 'decide', action: 'approve' });
-    expect(keyIntent('r', items[0])).toEqual({ kind: 'decide', action: 'reject' });
-    expect(keyIntent('a', items[1])).toBe(null);
-    expect(keyIntent('enter', items[1])).toEqual({ kind: 'reply' });
-    expect(keyIntent('e', items[0])).toEqual({ kind: 'editor' });
+  it('a/r/⏎/o run the action that has the key; core-answered ones go at once', () => {
+    const p = permDecision();
+    expect(keyIntent('a', p)).toEqual({ kind: 'decide', action: 'approve' });
+    expect(keyIntent('r', p)).toEqual({ kind: 'decide', action: 'reject' });
+    expect(keyIntent('enter', p)).toEqual({ kind: 'reply' });
+    expect(keyIntent('o', p)).toEqual({ kind: 'pane' });
+    expect(keyIntent('e', p)).toEqual({ kind: 'editor' });
+    expect(keyIntent('a', question)).toBe(null);
+    expect(keyIntent('enter', question)).toEqual({ kind: 'answer' });
+    expect(keyIntent('o', notion)).toEqual({ kind: 'core', action: 'open' });
+    expect(keyIntent('r', notion)).toEqual({ kind: 'decide', action: 'dismiss' });
+    expect(keyIntent('a', mcp)).toEqual({ kind: 'core', action: 'reconnect' });
+    expect(keyIntent('o', mcp)).toEqual({ kind: 'core', action: 'open_settings' });
+    expect(keyIntent('e', budgetDecision())).toBe(null);
     expect(keyIntent('j', null)).toEqual({ kind: 'move', delta: 1 });
   });
 
-  it('copy and the undo window', () => {
-    expect(pendingToast(items[0], 'approve')).toBe('Allowing once · front-1 · pnpm add x');
-    expect(pendingToast(items[2], 'reject')).toBe('Skipping · Defer infra');
-    expect(effectToast(items[2], 'reject', 'denied')).toBe('Skipped · Defer infra');
-    const p = [
-      { item: 'a', at: 0 },
-      { item: 'b', at: 1000 },
-    ];
-    expect(due(p, UNDO_MS).map((x) => x.item)).toEqual(['a']);
-    // Sent (its act in flight): never due again, whatever the clock says.
-    expect(due([{ item: 'a', at: 0, sent: true }], UNDO_MS * 2)).toEqual([]);
-    expect(pendingToast({ id: 'error-x', kind: 'error', agent_id: 'x' }, 'reject')).toBe('Resuming · x');
-    expect(effectToast({ id: 'error-x', kind: 'error', agent_id: 'x' }, 'reject', 'resumed')).toBe('Resumed · x');
-  });
-
-  it('gates and team questions (P2)', () => {
-    const spec = {
-      id: 'gate-5',
-      kind: 'gate',
-      agent_id: 'fx-lead-1',
-      payload: { action: 'spec_approval' },
-      actions: ['a', 'r', 'enter', 'o'],
-    };
-    const pr = {
-      id: 'gate-6',
-      kind: 'gate',
-      agent_id: 'fx-lead-1',
-      payload: { action: 'push_pr' },
-      actions: ['a', 'r', 'enter', 'o'],
-    };
-    const q = {
-      id: 'q-7',
-      kind: 'question',
-      agent_id: 'fx-back-1',
-      payload: { action: 'ask_user', question: 'Keep v1?' },
-      actions: ['enter', 'r', 'o'],
-    };
-    expect([gateKind(spec), gateKind(pr), gateKind(q)]).toEqual(['spec', 'pr', null]);
-    expect([kindLabel(spec), kindLabel(pr), kindLabel(q), kindLabel(items[1])]).toEqual([
+  it('subject line and kind labels (notes §3.1–3.2)', () => {
+    expect(
+      subjectLine(
+        decision({ subject: { agent: 'back-1', role: 'Backend', project: 'shop-api', feature: 'checkout', task: 4 } }),
+      ),
+    ).toBe('back-1 · Backend · shop-api › checkout · T-4');
+    expect(subjectLine(decision({ subject: { agent: 'fix-feed', project: 'blog' } }))).toBe('fix-feed · blog');
+    expect(subjectLine(budgetDecision())).toBe('');
+    expect([spec, pr, question, budgetDecision(), notion].map(kindLabel)).toEqual([
       'Spec gate',
       'PR gate',
       'Question',
-      'Waiting for you',
+      'Budget',
+      'Notion comment',
     ]);
-    expect(actionLabels(spec)).toEqual({ a: 'Approve spec', r: 'Send back' });
-    expect(actionLabels(pr).a).toBe('Approve: push + open PR');
-    expect(actionLabels(q)).toEqual({ r: 'Dismiss' });
-    expect(teamQuestion(q) && !teamQuestion(items[1])).toBe(true);
-    expect(keyIntent('a', spec)).toEqual({ kind: 'decide', action: 'approve' });
-    expect(keyIntent('a', q)).toBe(null);
-    expect(pendingToast(spec, 'approve')).toBe('Approving the spec gate · fx-lead-1');
-    expect(effectToast(spec, 'approve', 'allowed')).toBe('Spec gate approved · fx-lead-1');
-    expect(effectToast(spec, 'reply', 'delivered')).toBe('Spec gate sent back with your notes · fx-lead-1 told');
-    expect(effectToast(pr, 'reject', 'denied')).toBe('PR gate rejected · fx-lead-1');
-    expect(pendingToast(q, 'reply')).toBe('Sending your reply · fx-back-1');
-    expect(effectToast(q, 'reply', 'queued')).toBe('Reply queued · fx-back-1');
-    expect(effectToast(q, 'reject', 'dismissed')).toBe('Dismissed · fx-back-1');
+    expect(kindLabel(decision({ kind: 'gate', gate: 'restart' }))).toBe('Restart gate');
+    expect(kindLabel(decision({ kind: 'ask' }))).toBe('Run now?');
   });
 
-  const perm = (over = {}) => ({
-    id: 'inbox-4',
-    level: 1,
-    kind: 'permission',
-    status: 'open',
-    agent_id: 'back-1',
-    preview: 'pnpm add zod',
-    actions: ['a', 'r', 'enter', 'o', 'in_pane', 'always'],
-    payload: {
-      tool: 'Bash',
-      tool_input: { command: 'pnpm add zod' },
-      cwd: '/w/feat/back-1/',
-      always: 'Bash(pnpm add:*)',
-    },
-    ...over,
+  it('an answer: the chosen labels per question, one line each', () => {
+    expect(answerText([['Clerk'], ['Card', 'Apple Pay']])).toBe('Clerk\nCard, Apple Pay');
   });
-  const startup = (over = {}) => ({
-    id: 'startup-2',
-    level: 2,
-    kind: 'startup',
-    status: 'open',
-    agent_id: 'back-1',
-    actions: ['o', 'restart_fresh', 'dismiss'],
-    payload: { waiting_on: 'startup', mode: 'new', since_ms: 0, tail: 'a\n\nb\n' },
-    ...over,
-  });
-  const restartGate = {
-    id: 'gate-3',
-    kind: 'gate',
-    agent_id: 'back-1',
-    actions: ['a', 'r', 'o'],
-    payload: { action: 'restart_gate', agent: 'back-1', detail: 'run it', restarted: true },
-  };
 
-  it('permission: labels, keys, parked', () => {
-    const open = perm();
-    const held = perm({ status: 'parked', actions: ['a', 'r', 'enter', 'o'] });
-    expect(kindLabel(open)).toBe('Permission');
-    expect(actionLabels(open)).toMatchObject({
-      a: 'Allow once',
-      r: 'Deny',
-      enter: 'Deny with message',
-      always: 'Always allow',
-      in_pane: 'Answer in the pane',
-    });
-    expect([parked(open), parked(held)]).toEqual([false, true]);
-    expect(keyIntent('enter', held)).toEqual({ kind: 'reply' });
-    expect(keyIntent('a', held)).toEqual({ kind: 'decide', action: 'approve' });
-    expect(baseName(open.payload.cwd)).toBe('back-1');
-    expect(baseName('/')).toBe('/');
+  it('text helpers and the undo window', () => {
+    expect(baseName('/w/feat/back-1/')).toBe('back-1');
     expect(inputText({ command: 'ls\n-la', description: 'List' })).toBe('ls\n-la');
     expect(inputText({ file_path: '/a', content: 'x' })).toBe('file_path: /a\ncontent: x');
-    expect(inputText({ todos: [1] })).toBe('todos: [\n  1\n]');
-    expect(collapse('1\n2\n3', 6)).toEqual({ text: '1\n2\n3', more: 0 });
     expect(collapse('1\n2\n3\n4\n5\n6\n7\n8', 6)).toEqual({ text: '1\n2\n3\n4\n5\n6', more: 2 });
+    expect(tailLines('a\n\nb\n')).toBe('a\nb');
+    expect(
+      due(
+        [
+          { item: 'a', at: 0 },
+          { item: 'b', at: 1000 },
+        ],
+        UNDO_MS,
+      ).map((x) => x.item),
+    ).toEqual(['a']);
+    expect(due([{ item: 'a', at: 0, sent: true }], UNDO_MS * 2)).toEqual([]);
+    expect([
+      waited(T - 20000, T),
+      waited(T - 3 * 60000, T),
+      waited(T - 65 * 60000, T),
+      waited(T - 50 * 3600000, T),
+    ]).toEqual(['just now', '3 min', '1 h 5 min', '2 d']);
+  });
+});
+
+describe('toasts: what will be sent, then the pushed effect (notes §4)', () => {
+  const p = permDecision();
+  const effect = (d, effect, more = {}) => lc(d, { state: 'effect', decided_by: 'user', effect, ...more });
+
+  it('pending (the undo window) names the action, never the effect', () => {
+    expect(pendingToast(p, 'approve')).toBe('Allowing once · front-1 · pnpm add @stripe/stripe-js');
+    expect(pendingToast(p, 'always')).toBe('Always allowing · front-1 · pnpm add @stripe/stripe-js');
+    expect(pendingToast(spec, 'approve')).toBe('Approving the spec gate · lead-1');
+    expect(pendingToast(spec, 'reply')).toBe('Sending the spec gate back with your notes · lead-1');
+    expect(pendingToast(budgetDecision(), 'reject')).toBe('Skipping · Defer "infra" until after the weekly reset');
+    for (const a of ['approve', 'reject', 'reply', 'always'])
+      expect(pendingToast(p, a)).not.toMatch(/Allowed|Denied|resumed/);
   });
 
-  it('permission toasts: pending, then the effect the core answered', () => {
-    const p = perm();
-    expect(pendingToast(p, 'approve')).toBe('Allowing once · back-1 · pnpm add zod');
-    expect(pendingToast(p, 'reject')).toBe('Denying · back-1 · pnpm add zod');
-    expect(pendingToast(p, 'always')).toBe('Always allowing · back-1 · pnpm add zod');
-    for (const action of ['approve', 'reject', 'reply', 'always', 'restart_fresh']) {
-      expect(pendingToast(p, action)).not.toMatch(/sent|Reply/);
-    }
-    expect(effectToast(p, 'approve', 'allowed')).toBe('Allowed · back-1 resumed');
-    expect(effectToast(perm({ status: 'parked' }), 'approve', 'resumed')).toBe('Allowed · back-1 resumed');
-    expect(effectToast(perm({ status: 'parked' }), 'approve', 'queued')).toBe('Allowed · back-1 queued');
-    expect(effectToast(p, 'always', 'allowed')).toBe('Always allowed · Bash(pnpm add:*) · back-1 resumed');
-    expect(effectToast(p, 'reject', 'denied', 'use npm')).toBe('Denied · reason sent · back-1');
-    expect(effectToast(p, 'reject', 'denied')).toBe('Denied · back-1');
+  it('the effect, by kind and action', () => {
+    expect(effectText(effect(p, 'allowed'), { action: 'approve' })).toBe('Allowed · front-1 resumed');
+    expect(effectText(effect(p, 'allowed'), { action: 'always' })).toBe(
+      'Always allowed · Bash(pnpm add:*) · front-1 resumed',
+    );
+    expect(effectText(effect(p, 'denied'), { action: 'reject' })).toBe('Denied · front-1');
+    expect(effectText(effect(p, 'denied'), { action: 'reply', message: 'use npm' })).toBe(
+      'Denied · reason sent to front-1',
+    );
+    expect(effectText(effect(question, 'resumed'))).toBe('Answer sent · front-1 resumed');
+    expect(effectText(effect(question, 'delivered'))).toBe('Answer delivered · front-1 reads it next');
+    expect(effectText(effect(question, 'queued', { effect_detail: '≈14:20' }))).toBe(
+      'Answer queued · front-1 starts ≈14:20',
+    );
+    expect(effectText(effect(spec, 'resumed'), { action: 'approve' })).toBe('Spec approved · lead-1 resumed');
+    expect(effectText(effect(spec, 'resumed'), { action: 'reply' })).toBe(
+      'Spec sent back with your notes · lead-1 resumed',
+    );
+    expect(effectText(effect(pr, 'pr_opened', { effect_detail: 'https://github.com/o/shop/pull/12' }))).toBe(
+      'PR opened · checkout #12 ↗',
+    );
+    expect(effectText(effect(budgetDecision(), 'applied'))).toBe(
+      'Applied · Defer "infra" until after the weekly reset',
+    );
+    expect(effectText(effect(mcp, 'dismissed'))).toBe('Dismissed until it fails again · Penpot');
+    expect(effectText(effect(decision({ kind: 'startup', subject: { agent: 'ui-1' } }), 'deleted'))).toBe(
+      'Deleted · ui-1',
+    );
+    expect(effectText(lc(pr, { state: 'failed', error: 'push rejected: non-fast-forward' }))).toBe(
+      'Failed: push rejected: non-fast-forward',
+    );
   });
 
-  it('startup: label, actions and toasts', () => {
-    const s = startup();
-    const failed = startup({
-      actions: ['o', 'restart_fresh', 'dismiss', 'delete'],
-      payload: { ...s.payload, failed: 'fresh' },
-    });
-    expect(kindLabel(s)).toBe('Startup');
-    expect(actionLabels(failed)).toEqual({
-      o: 'Open pane',
-      restart_fresh: 'Restart fresh',
-      dismiss: 'Dismiss',
-      delete: 'Delete',
-    });
-    expect(keyIntent('o', s)).toEqual({ kind: 'open' });
-    expect(keyIntent('a', s)).toBe(null);
-    expect(keyIntent('r', s)).toBe(null);
-    expect(tailLines(s.payload.tail)).toBe('a\nb');
-    expect(tailLines(Array.from({ length: 15 }, (_, i) => i).join('\n'), 12).split('\n')).toHaveLength(12);
-    expect(pendingToast(s, 'restart_fresh')).toBe('Restarting fresh · back-1');
-    expect(effectToast(s, 'restart_fresh', 'restarted')).toBe('Restarted fresh · back-1');
-    expect(effectToast(s, 'dismiss', 'dismissed')).toBe('Dismissed · back-1');
-    expect(effectToast(failed, 'delete', 'dismissed')).toBe('Deleted · back-1');
+  it('only effect, failed and parked toast; someone else decided only as P4.0 did', () => {
+    expect(decisionToast(lc(p, { state: 'decided', decided_by: 'user' }), { action: 'approve' })).toBe(null);
+    expect(decisionToast(lc(p, { state: 'sent', decided_by: 'user' }), { action: 'approve' })).toBe(null);
+    expect(decisionToast(effect(p, 'allowed'), { action: 'approve' })).toBe('Allowed · front-1 resumed');
+    expect(decisionToast(lc(p, { state: 'parked', decided_by: 'expired' }))).toBe(
+      'Parked · front-1 stopped and resumes on your answer',
+    );
+    expect(decisionToast(lc(p, { state: 'effect', decided_by: 'pane', effect: 'allowed' }))).toBe(
+      'Answered in the pane · front-1',
+    );
+    expect(decisionToast(lc(p, { state: 'effect', decided_by: 'rule:git-safe', effect: 'denied' }))).toBe(
+      'Denied by rule git-safe · front-1',
+    );
+    expect(decisionToast(lc(p, { state: 'effect', decided_by: 'core', effect: 'dismissed' }))).toBe(null);
   });
+});
 
-  it('restart gate and unknown gate actions are not spec gates', () => {
-    const unknown = { ...restartGate, payload: { action: 'new_thing' } };
-    expect([gateKind(restartGate), gateKind(unknown)]).toEqual(['other', 'other']);
-    expect([kindLabel(restartGate), kindLabel(unknown)]).toEqual(['Gate', 'Gate']);
-    expect(actionLabels(restartGate)).toEqual({ a: 'Approve', r: 'Reject' });
-    expect(restarted(restartGate) && !restarted(unknown)).toBe(true);
-    expect(keyIntent('enter', restartGate)).toBe(null);
-    expect(pendingToast(restartGate, 'approve')).toBe('Approving the gate · back-1');
-    expect(effectToast(restartGate, 'approve', 'delivered')).toBe('Gate approved · back-1 told');
-    expect(effectToast(restartGate, 'reject', 'queued')).toBe('Gate rejected · back-1 queued');
-  });
+describe('lifecycle marker: every state (notes §3.4)', () => {
+  const p = permDecision({ created_ms: T - 4 * 60000 });
+  const m = (d, pending = null) => marker(d, pending, T);
 
-  it('outcome events decided elsewhere', () => {
-    const p = perm();
-    expect(outcomeToast(p, { item: p.id, decided_by: 'user', effect: 'allowed' })).toBe(null);
-    expect(outcomeToast(p, { item: p.id, decided_by: 'expired', effect: 'parked' })).toBe(
-      'Parked · back-1 stopped and resumes on your answer',
+  it('reads each state from the lifecycle only', () => {
+    expect(m(p)).toEqual({ state: 'open', text: 'Waiting for you · 4 min' });
+    expect(m(p, { action: 'approve' }).text).toBe('Allowing once · Undo u');
+    expect(m(lc(p, { state: 'parked' })).text).toBe('Parked · front-1 stopped; resumes on your answer');
+    expect(m(lc(p, { state: 'decided', decided_by: 'rule:git-safe' })).text).toBe('Decided by rule git-safe · sending');
+    expect(m(lc(p, { state: 'sent', sent_at_ms: at(14, 2) })).text).toBe('Sent to front-1 · 14:02');
+    expect(m(lc(pr, { state: 'sent' })).text).toBe('Pushing orch/checkout/integration…');
+    expect(m(lc(p, { state: 'effect', decided_by: 'user', effect: 'allowed', effect_at_ms: at(14, 2) })).text).toBe(
+      'Allowed · front-1 resumed · 14:02',
     );
-    expect(outcomeToast(p, { item: p.id, decided_by: 'pane', effect: 'in_pane' })).toBe(
-      'Answered in the pane · back-1',
+    const opened = m(
+      lc(pr, { state: 'effect', effect: 'pr_opened', effect_detail: 'https://x/pull/12', effect_at_ms: at(15, 30) }),
     );
-    expect(outcomeToast(p, { item: p.id, decided_by: 'rule:7', effect: 'allowed' })).toBe('Allowed by rule 7 · back-1');
-    expect(outcomeToast(startup(), { item: 'startup-2', decided_by: 'core', effect: 'restarted' })).toBe(
-      'Restarted fresh · back-1',
+    expect(opened).toEqual({ state: 'effect', text: 'PR opened · checkout #12 ↗ · 15:30', url: 'https://x/pull/12' });
+    expect(m(lc(p, { state: 'failed', error: 'push rejected' })).text).toBe('Failed · push rejected');
+    expect(m(lc(p, { state: 'stale', stale_why: 'the agent moved on' })).text).toBe('Stale · the agent moved on');
+    expect(m(lc(p, { state: 'dismissed', decided_by: 'user', decided_at_ms: at(14, 5) })).text).toBe(
+      'Dismissed by you · 14:05',
     );
-    expect(outcomeToast(startup(), { item: 'startup-2', decided_by: 'core', effect: 'dismissed' })).toBe(null);
-    expect(outcomeToast(undefined, { item: 'inbox-9', decided_by: 'expired', effect: 'parked' })).toBe(
-      'Parked · an agent stopped and resumes on your answer',
-    );
+    expect(m(lc(p, { state: 'interrupted' })).text).toBe('Interrupted · front-1 stopped before it was answered');
   });
 });

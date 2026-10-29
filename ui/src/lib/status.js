@@ -34,15 +34,15 @@ const DECISION = {
   question: { label: 'Question', icon: '\u{F0186}' },
   'gate-spec': { label: 'Spec gate', icon: '\u{F1187}' },
   'gate-pr': { label: 'PR gate', icon: '\u{F14CF}' },
-  'gate-restart': { label: 'Gate', icon: '\u{F0709}' },
+  'gate-restart': { label: 'Restart gate', icon: '\u{F0709}' },
   startup: { label: 'Startup', icon: '\u{F0425}' },
-  ask: { label: 'Ask', icon: '\u{F140C}' },
+  ask: { label: 'Run now?', icon: '\u{F140C}' },
   budget: { label: 'Budget', icon: '\u{F0BDD}' },
   trust: { label: 'Trust dialog', icon: '\u{F0CCC}' },
-  wait: { label: 'Waiting for you', icon: '\u{F07B7}' },
+  wait: { label: 'Prompt in pane', icon: '\u{F07B7}' },
   alert: { label: 'Alert', icon: '\u{F11CF}' },
   error: { label: 'Error', icon: '\u{F11CF}' },
-  notion: { label: 'Notion', icon: '\u{F0C12}' },
+  notion: { label: 'Notion comment', icon: '\u{F0C12}' },
 };
 
 /** A decision's kind entry: icon, label and its `color.decision.*` token (a gate by its flavour). */
@@ -51,6 +51,43 @@ export function decisionKind(d) {
   const key = DECISION[want] ? want : 'alert';
   return { ...DECISION[key], color: `var(--color-decision-${key})` };
 }
+
+// Decision lifecycle (the marker): icon and color.lifecycle.<state>.
+export const LIFECYCLE = {
+  open: { icon: '\u{F009F}', color: 'var(--color-lifecycle-open)' },
+  parked: { icon: '\u{F1592}', color: 'var(--color-lifecycle-parked)' },
+  decided: { icon: '\u{F1164}', color: 'var(--color-lifecycle-decided)' },
+  sent: { icon: '\u{F1165}', color: 'var(--color-lifecycle-sent)' },
+  effect: { icon: '\u{F05E1}', color: 'var(--color-lifecycle-effect)' },
+  failed: { icon: '\u{F05D6}', color: 'var(--color-lifecycle-failed)' },
+  stale: { icon: '\u{F05CE}', color: 'var(--color-lifecycle-stale)' },
+  dismissed: { icon: '\u{F015A}', color: 'var(--color-lifecycle-dismissed)' },
+  interrupted: { icon: '\u{F033A}', color: 'var(--color-lifecycle-interrupted)' },
+};
+
+// Waiting-on kind icons (the chip, text.muted); `running` = the activity icon.
+export const WAITING_ON = {
+  user: '\u{F0B51}',
+  agent: '\u{F06A9}',
+  task: '\u{F0756}',
+  governor: '\u{F05D1}',
+  limit: '\u{F029A}',
+  startup: '\u{F14DF}',
+  external: '\u{F109B}',
+  running: '\u{F018D}',
+};
+
+// Outcome kind icons (the digest, text.muted).
+export const OUTCOME = {
+  task_done: '\u{F08A8}',
+  merge_done: '\u{F0F5C}',
+  pr_opened: '\u{F14CA}',
+  run_phase: '\u{F0D3D}',
+  run_done: '\u{F023D}',
+  turn_done: '\u{F173E}',
+  report_ready: '\u{F1029}',
+  sync_conflict: '\u{F04E7}',
+};
 
 export const PRESSURE = {
   green: { label: 'Green', icon: '●', color: 'var(--color-pacing-green)' },

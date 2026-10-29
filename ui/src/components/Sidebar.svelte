@@ -5,7 +5,7 @@
   // (a finished run has no record: its own status).
   import { activeAgents, app, features, openAgent, openFeature, openProject, projects } from '../lib/app.svelte.js';
   import { pct } from '../lib/format.js';
-  import { featureRun, runPhase, statusOf } from '../lib/now.svelte.js';
+  import { attention, featureRun, needYouText, runPhase, statusOf, waitLine } from '../lib/now.svelte.js';
   import { runStateLabel } from '../lib/teams.js';
   import AgentChip from './AgentChip.svelte';
   import Kbd from './Kbd.svelte';
@@ -63,13 +63,13 @@
                   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                   <span class="caret" aria-hidden="true" onclick={(e) => (e.stopPropagation(), (collapsed[k] = !collapsed[k]))}>{collapsed[k] ? '▸' : '▾'}</span>
                   <span class="name">{f.slug}</span>
-                  {#if n}<span class="badge" aria-label="{n} need you" title="{n} need you">{n}</span>{:else if f.archived}<span class="meta">deleted</span>{:else if phase}<span class="meta">{runStateLabel(phase)}</span>{/if}
+                  {#if n}<span class="badge" aria-label={needYouText(n)} title={needYouText(n)}>{n}</span>{:else if f.archived}<span class="meta">deleted</span>{:else if phase}<span class="meta">{runStateLabel(phase)}</span>{/if}
                 </button>
                 {#if !collapsed[k]}
                   <ul role="group">
                     {#each fl as a (a.id)}
                       <li role="treeitem" aria-selected={focusedAgent === a.id}>
-                        <button data-row class="row agent team" class:selected={focusedAgent === a.id} onclick={() => openAgent(a.id)}>
+                        <button data-row class="row agent team" class:selected={focusedAgent === a.id} onclick={() => openAgent(a.id)} title={waitLine(attention(a.id))}>
                           <StatusBadge state={statusOf(a.id)} compact />
                           <AgentChip id={a.id} name={a.team.node} />
                           <span class="meta">{a.context_pct == null && a.live ? '' : pct(a.context_pct)}</span>
@@ -82,7 +82,7 @@
             {/each}
             {#each list as a (a.id)}
               <li role="treeitem" aria-selected={focusedAgent === a.id}>
-                <button data-row class="row agent" class:selected={focusedAgent === a.id} onclick={() => openAgent(a.id)}>
+                <button data-row class="row agent" class:selected={focusedAgent === a.id} onclick={() => openAgent(a.id)} title={waitLine(attention(a.id))}>
                   <StatusBadge state={statusOf(a.id)} compact />
                   <AgentChip id={a.id} />
                   <span class="meta">{a.context_pct == null && a.live ? '' : pct(a.context_pct)}</span>

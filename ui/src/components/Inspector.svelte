@@ -6,8 +6,8 @@
   import { cacheState, sessionPp } from '../lib/status.js';
   import AgentChip from './AgentChip.svelte';
   import Kbd from './Kbd.svelte';
-  import Reason from './Reason.svelte';
   import StatusBadge from './StatusBadge.svelte';
+  import WaitingChip from './WaitingChip.svelte';
 
   let { overlay = false } = $props();
   const a = $derived(contextAgent());
@@ -23,7 +23,7 @@
   <div class="head"><span class="muted">Inspector</span>{#if overlay}<button class="x" onclick={() => (app.inspector = false)}><Kbd keys="esc" /></button>{:else}<Kbd keys="⌘+I" />{/if}</div>
   {#if a}
     <div class="who"><AgentChip id={a.id} /><StatusBadge state={statusOf(a.id)} /></div>
-    {#if rec?.reason || rec?.activity}<div class="why"><span class="muted">{rec.waiting_on ? `Waiting on ${rec.waiting_on.kind}` : 'Doing'}</span> <Reason {rec} /></div>{/if}
+    {#if rec?.reason || rec?.activity}<div class="why"><span class="muted">{rec.waiting_on ? `Waiting on ${rec.waiting_on.kind}` : 'Doing'}</span> <WaitingChip {rec} /></div>{/if}
     <dl>
       <dt>Project</dt><dd>{p?.name ?? '—'}</dd>
       <dt>Branch</dt><dd>{a.branch || '—'}</dd>

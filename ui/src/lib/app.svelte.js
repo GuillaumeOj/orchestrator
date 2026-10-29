@@ -4,12 +4,12 @@
 // registry. Terminal objects (xterm.js) live outside the reactive state, in `terms`.
 
 import { clock as clockOf } from './format.js';
-import { due, effectToast, legacyItem, outcomeToast, pendingToast, UNDO_MS } from './inbox.js';
+import { decisionToast, due, pendingToast, UNDO_MS } from './inbox.js';
 import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
 import * as L from './layout.js';
-import { needsYou, statusOf } from './now.svelte.js';
+import { clearDigest, needsYou, statusOf } from './now.svelte.js';
 import { runCost, STATUS } from './status.js';
 import { runStateLabel } from './teams.js';
 import { TermPane } from './term.js';
@@ -32,6 +32,7 @@ export const app = $state({
   toasts: [],
   pending: [], // Inbox decisions in their undo window: { item, card, action, message, at, toast }
   selectedAgent: null,
+  inboxFocus: null, // a decision id the Inbox selects when it opens (the waiting-on chip's link)
   selectedProject: null,
   theme: null, // null = system, 'dark' | 'light' (user choice)
   themeRev: 0, // bumped when the applied theme may have changed (diagrams redraw)
@@ -296,6 +297,12 @@ export function openSingleton(type) {
  * P3: Settings (⌘,), one pane, opened straight to a section ('integrations' |
  * 'mcp' | …) with a server selected (banners, Inbox items, the inspector).
  */
+/** The Inbox with this decision selected (a waiting-on chip's ref). */
+export function openInbox(decisionId = null) {
+  app.inboxFocus = decisionId;
+  openSingleton('inbox');
+}
+
 export function openSettings(section = null, server = null, projectId = null) {
   const existing = findPane((s) => s.type === 'settings');
   if (existing) {
@@ -349,13 +356,11 @@ export function routeOpen(r, projectId = null) {
   return true;
 }
 
-/** An MCP alert's Reconnect / Open Settings: to the core now (no undo window), then routed. */
-export async function alertAct(item, action) {
+/** An action the core answers at once (no undo window): Open (a Notion page, a
+ *  report…), an MCP Reconnect or Open Settings; then routed where it says. */
+export async function coreAct(d, action) {
   try {
-    const r = await invoke('inbox_act', { item: item.id, action, message: null });
-    if (routeOpen(r, item.payload?.project ?? null) || action !== 'open') return;
-    // A task sync conflict (remote won) only marks the note read: open the Board on the task.
-    if (item.payload?.action === 'task_conflict') openBoard(item.payload.project, item.payload.task);
+    routeOpen(await invoke('inbox_act', { item: d.id, action, message: null }), d.subject?.project ?? null);
   } catch (e) {
     toast(errText(e), { kind: 'error' });
   }
@@ -833,6 +838,11 @@ export function commands() {
     { id: 'project.add', label: 'Add project…', run: () => (app.overlay = { kind: 'add-project' }) },
     { id: 'overview', label: 'Open Overview', run: () => openSingleton('overview') },
     { id: 'inbox', label: 'Open Inbox', run: () => openSingleton('inbox') },
+    {
+      id: 'inbox.clear-digest',
+      label: "Clear today's digest",
+      run: () => clearDigest().catch((e) => toast(errText(e), { kind: 'error' })),
+    },
     { id: 'planner', label: 'Open Week planner', run: () => openSingleton('planner') },
     { id: 'setup', label: 'Set up Orchestrator (first run)…', run: () => openSingleton('setup') },
     { id: 'settings', label: 'Settings', run: () => openSettings() },
@@ -1086,13 +1096,13 @@ export function jumpTargets() {
 // ---------------------------------------------------------------- inbox decisions
 
 /** Records a decision; it reaches the core when its 5 s undo window ends (FR-707 `u`).
- *  Its toast says what will be sent; the effect is said once the core answers. */
-export function decide(item, action, message = null) {
-  if (app.pending.some((p) => p.item === item.id)) return;
-  const t = toast(pendingToast(item, action), { ms: UNDO_MS, undo: true, item: item.id });
+ *  Its toast says what will be sent; the effect is said when the core pushes it. */
+export function decide(d, action, message = null) {
+  if (app.pending.some((p) => p.item === d.id)) return;
+  const t = toast(pendingToast(d, action), { ms: UNDO_MS, undo: true, item: d.id });
   app.pending = [
     ...app.pending,
-    { item: item.id, card: item, action, message, at: Date.now(), toast: t, project: item.payload?.project ?? null },
+    { item: d.id, action, message, at: Date.now(), toast: t, project: d.subject?.project ?? null },
   ];
 }
 
@@ -1113,15 +1123,22 @@ export function undoItem(itemId) {
   dismissToast(p.toast);
 }
 
+// What this window sent, by decision id, until its effect is pushed: the
+// effect's toast names the action ("Always allowed · <rule>", "reason sent").
+const mine = new Map();
+
 /** Sends the decisions whose undo window is over. Called by the app's clock,
  *  which may tick again while a slow act (a restart, a kill) is in flight: the
  *  batch is marked sent at once so no tick sends it twice, and its cards stay
- *  hidden until the core answered with their lifecycle (the `now` push brings
- *  what follows). */
+ *  hidden until the core answered with their lifecycle. No toast here: the
+ *  effect comes with the `now` push (notes §4), never before `sent`. */
 export async function flushDecisions(now = Date.now()) {
   const batch = due(app.pending, now);
   if (!batch.length) return;
-  for (const p of batch) p.sent = true;
+  for (const p of batch) {
+    p.sent = true;
+    mine.set(p.item, { action: p.action, message: p.message });
+  }
   // The decision as sent: a `now` push that changed it meanwhile is newer than the answer.
   const sent = batch.map((p) => app.now.decisions[p.item]);
   const acts = await Promise.allSettled(
@@ -1129,25 +1146,36 @@ export async function flushDecisions(now = Date.now()) {
   );
   batch.forEach((p, i) => {
     const r = acts[i];
-    if (r.status === 'rejected') toast(errText(r.reason), { kind: 'error' });
-    else {
-      const d = app.now.decisions[p.item];
-      if (d && d === sent[i] && r.value?.lifecycle) app.now.decisions[p.item] = { ...d, lifecycle: r.value.lifecycle };
-      if (!routeOpen(r.value, p.project)) toast(effectToast(p.card, p.action, r.value?.effect, p.message));
+    if (r.status === 'rejected') {
+      mine.delete(p.item);
+      toast(errText(r.reason), { kind: 'error' });
+      return;
     }
+    const d = app.now.decisions[p.item];
+    if (d && d === sent[i] && r.value?.lifecycle) app.now.decisions[p.item] = { ...d, lifecycle: r.value.lifecycle };
+    routeOpen(r.value, p.project);
   });
   app.pending = app.pending.filter((x) => !batch.includes(x));
 }
 
-/** An `inbox_outcome` event (api-contract §3): a toast when someone else
- *  decided (the pane, a rule, the hold's expiry), and the card goes, with a
- *  decision of ours still in its undo window (it would only fail). A parked
- *  item stays open: a pending answer to it still applies. */
-export function onOutcome(outcome) {
-  const d = app.now.decisions[outcome?.item];
-  const text = outcomeToast(d && legacyItem(d), outcome);
-  if (text) toast(text);
-  if (outcome?.effect !== 'parked') undoItem(outcome?.item);
+/**
+ * A decision's lifecycle push (`now.decisions`): the effect's toast (notes §4),
+ * once, when the state moves to effect, failed or parked. A decision taken
+ * elsewhere (the pane, a rule, the hold's expiry) drops ours still in its undo
+ * window; a parked one stays open, so a pending answer to it still applies.
+ */
+export function decisionPushed(prev, d) {
+  const state = d.lifecycle?.state;
+  if (state === prev?.lifecycle?.state) return;
+  if (state !== 'open' && state !== 'parked') undoItem(d.id);
+  const text = decisionToast(d, mine.get(d.id));
+  if (state === 'effect' || state === 'failed') mine.delete(d.id);
+  if (!text) return;
+  if (state === 'failed')
+    toast(text, { kind: 'error', sticky: true, action: { label: 'Open', run: () => openInbox(d.id) } });
+  else if (d.lifecycle.effect === 'pr_opened' && d.lifecycle.effect_detail)
+    toast(text, { action: { label: 'Open PR', run: () => openUrl(d.lifecycle.effect_detail) } });
+  else toast(text);
 }
 
 /** FR-415: the agent again as a fresh session with its brief (agent menu). */

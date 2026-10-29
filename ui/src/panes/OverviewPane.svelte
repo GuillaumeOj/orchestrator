@@ -2,8 +2,8 @@
   import AgentChip from '../components/AgentChip.svelte';
   import CtxBar from '../components/CtxBar.svelte';
   import Kbd from '../components/Kbd.svelte';
-  import Reason from '../components/Reason.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
+  import WaitingChip from '../components/WaitingChip.svelte';
   // Overview (§9.3, FR-901/903, Penpot 04 Overview): every agent with its
   // attention record (status, reason, since), elapsed time, context, usage,
   // governor reason and memory; grouped by project or by state. Chips and
@@ -11,7 +11,7 @@
   // i interrupt, s suspend, r resume, K kill (asks first), p pause.
   import { activeAgents, agentAction, app, cancelQueued, confirm, openAgent, projects, run, runNow } from '../lib/app.svelte.js';
   import { duration, mb } from '../lib/format.js';
-  import { attention, counts, governorReason, liveText, statusOf } from '../lib/now.svelte.js';
+  import { attention, counts, governorReason, liveText, needYouText, statusOf } from '../lib/now.svelte.js';
   import { runCost, STATUS, sessionPp } from '../lib/status.js';
 
   let { paneId } = $props();
@@ -118,7 +118,7 @@
                 <td><StatusBadge state={statusOf(a.id)} /></td>
                 <td><AgentChip id={a.id} /></td>
                 <td class="doing">
-                  <Reason {rec} />
+                  <WaitingChip {rec} compact />
                   {#if a.queue_entry}
                     <button class="btn" onclick={(e) => (e.stopPropagation(), runNow(a, fresh))}>{fresh ? 'Start now' : 'Run now'} ≈ {runCost(a.queue_entry)}</button>
                     <button class="btn ghost" onclick={(e) => (e.stopPropagation(), cancelQueued(a))} title="Drop the queued turn">Cancel</button>
@@ -151,7 +151,7 @@
     </table>
   </div>
   <div class="foot">
-    <span class="totals">{list.length} agents · {liveText(c)} · queued {c.queued} · {suspended} suspended · {c.needs_you} need you</span>
+    <span class="totals">{list.length} agents · {liveText(c)} · queued {c.queued} · {suspended} suspended · {needYouText(c.needs_you)}</span>
     <span class="grow"></span>
     <span class="muted">claude processes {mb(claudeMb)} · app {mb(app.data?.memory?.app_mb)} · warn at 2.5 GB</span>
   </div>

@@ -4,8 +4,10 @@
 // derive nothing. Pane views are invalidated by the event's topics: a pane
 // refetches its view when its topic arrives, on mount and on window focus.
 
-import { app } from './app.svelte.js';
+import { app, decisionPushed } from './app.svelte.js';
+import { waited } from './format.js';
 import { invoke, listen } from './ipc.js';
+import { STATUS } from './status.js';
 
 const ZERO = {
   needs_you: 0,
@@ -69,8 +71,10 @@ export function applyNow(ev) {
     for (const id of at.removed?.agents ?? []) delete n.agents[id];
     for (const id of at.removed?.runs ?? []) delete n.runs[id];
     for (const d of ev.decisions?.upsert ?? []) {
+      const prev = n.decisions[d.id];
       n.decisions[d.id] = d;
       closedAt.delete(d.id);
+      decisionPushed(prev, d);
     }
     // A closed decision keeps its last upsert (the final lifecycle) for a while.
     const nowMs = Date.now();
@@ -138,6 +142,17 @@ export function counts(scope = null) {
   return { ...ZERO, ...c };
 }
 
+/** "1 needs you", "2 need you" (notes §1.2: every number says what it is). */
+export const needYouText = (n) => `${n} need${n === 1 ? 's' : ''} you`;
+
+/** The waiting-on line without a badge (tooltips, notes F1): "<status> · <reason> · <since>". */
+export function waitLine(rec, now = Date.now()) {
+  if (!rec) return '';
+  const what = rec.level === 'running' && !rec.waiting_on ? rec.activity : rec.reason;
+  const when = ['needs_you', 'waiting', 'queued', 'error'].includes(rec.level) ? waited(since(rec), now) : '';
+  return [STATUS[rec.status]?.label, what, when].filter(Boolean).join(' · ');
+}
+
 /** "5 live / cap 4" (ux-brief §1: every number says what it is). */
 export const liveText = (c) => `${c.live} live${c.live_cap != null ? ` / cap ${c.live_cap}` : ''}`;
 
@@ -149,6 +164,24 @@ export const needsYou = () =>
   Object.values(app.now.agents)
     .filter((r) => r.level === 'needs_you')
     .sort((x, y) => since(x) - since(y));
+
+const startOfDay = (now = Date.now()) => new Date(now).setHours(0, 0, 0, 0);
+
+/** Today's outcomes not yet cleared, newest first (the Inbox digest, level 4). */
+export const digest = (now = Date.now()) =>
+  app.now.outcomes.filter((o) => !o.seen && o.at_ms >= startOfDay(now)).sort((x, y) => y.at_ms - x.at_ms);
+
+const evNo = (id) => Number(String(id).replace(/^ev-/, '')) || 0;
+
+/** Clear (c): today's outcomes up to the newest shown are seen (`digest_seen`);
+ *  they still count in done_today. */
+export async function clearDigest(list = digest()) {
+  if (!list.length) return;
+  const top = list.reduce((m, o) => (evNo(o.id) > evNo(m.id) ? o : m));
+  await invoke('digest_seen', { upTo: top.id });
+  const upTo = evNo(top.id);
+  app.now.outcomes = app.now.outcomes.map((o) => (evNo(o.id) <= upTo ? { ...o, seen: true } : o));
+}
 
 /** Decisions still waiting on the user (open or parked). */
 export const openDecisions = () =>

@@ -82,74 +82,80 @@ export function fixture() {
       },
     },
     queue: [],
-    // P4.0-shaped Inbox items: app_state no longer has them; `nowOf` turns
-    // them into the core's Decisions (api-contract §2) in `app.now`.
-    inbox: {
-      badge: 2,
-      items: [
-        {
-          id: 'perm-1',
-          level: 1,
-          kind: 'permission',
-          status: 'open',
-          agent_id: 'front-1',
-          title: 'Bash: Add the Stripe client SDK',
-          detail: 'front-1 asks to run Bash',
-          preview: 'pnpm add @stripe/stripe-js',
-          created_ms: now - 240000,
-          actions: ['a', 'r', 'enter', 'o', 'in_pane', 'always'],
-          payload: {
-            tool: 'Bash',
-            tool_input: { command: 'pnpm add @stripe/stripe-js', description: 'Add the Stripe client SDK' },
-            cwd: '/Users/me/dev/shop-web.worktrees/front-1',
-            tool_use_id: 'toolu_1',
-            summary: 'pnpm add @stripe/stripe-js',
-            description: 'Add the Stripe client SDK',
-            ask_rule: null,
-            always: 'Bash(pnpm add:*)',
-          },
-        },
-        {
-          id: 'ask-7',
-          level: 3,
-          kind: 'budget',
-          agent_id: null,
-          title: 'Defer "infra" until after the weekly reset',
-          detail: 'saves ≈ 6 pp',
-          preview: null,
-          created_ms: now - 60000,
-          actions: ['a', 'r'],
-        },
-      ],
-    },
     memory: { app_mb: 96, agents_mb: 792, shells_mb: 10, total_mb: 898, system_mb: 8192 },
     terms: [],
   };
 }
 
-// P4.0 item keys → Decision action ids (the inverse of inbox.js legacyItem).
-const ACTION = { a: 'approve', r: 'reject', enter: 'reply', o: 'open' };
-const GATE = { spec_approval: 'spec', push_pr: 'pr', restart_gate: 'restart' };
+const act = (id, label, key) => (key ? { id, label, key } : { id, label });
 
-/** A P4.0 Inbox item as the core's Decision. */
-export function decisionOf(i) {
+/** A Decision (api-contract §2) as back's T-22 builds it; `over` replaces fields. */
+export function decision(over = {}) {
   return {
-    id: i.id,
-    kind: i.kind,
-    ...(i.kind === 'gate' ? { gate: GATE[i.payload?.action] ?? 'restart' } : {}),
-    level: i.level,
-    subject: i.agent_id ? { agent: i.agent_id } : {},
-    title: i.title,
-    summary: i.detail ?? '',
-    context: i.preview ? [{ type: 'markdown', text: i.preview }] : [],
-    actions: i.actions.map((k) => (ACTION[k] ? { id: ACTION[k], key: k } : { id: k })),
-    lifecycle: { state: i.status === 'parked' ? 'parked' : 'open' },
-    thread: i.agent_id ?? 'governor',
+    id: 'inbox-1',
+    kind: 'permission',
+    level: 1,
+    subject: {},
+    title: '',
+    summary: '',
+    context: [],
+    actions: [],
+    lifecycle: { state: 'open' },
+    thread: 'x',
     waits_on: 'user',
-    created_ms: i.created_ms,
-    payload: i.payload ?? {},
+    created_ms: Date.now() - 60000,
+    payload: {},
+    ...over,
   };
 }
+
+/** front-1's permission prompt, open (the design scenario). */
+export const permDecision = (over = {}) =>
+  decision({
+    id: 'perm-1',
+    subject: { agent: 'front-1', role: 'Frontend', project: 'shop-api' },
+    title: 'Bash · pnpm add @stripe/stripe-js',
+    summary: 'Add the Stripe client SDK',
+    context: [
+      {
+        type: 'tool_call',
+        tool: 'Bash',
+        input: { command: 'pnpm add @stripe/stripe-js', description: 'Add the Stripe client SDK' },
+        cwd: '/Users/me/dev/shop-web.worktrees/front-1',
+      },
+    ],
+    actions: [
+      act('approve', 'Allow once', 'a'),
+      act('reject', 'Deny', 'r'),
+      act('reply', 'Deny with message', 'enter'),
+      act('always', 'Always allow'),
+      act('in_pane', 'Answer in the pane'),
+      act('open', 'Open pane', 'o'),
+    ],
+    thread: 'front-1',
+    created_ms: Date.now() - 240000,
+    payload: { always: 'Bash(pnpm add:*)' },
+    ...over,
+  });
+
+/** A budget ask (level 3, no agent). */
+export const budgetDecision = (over = {}) =>
+  decision({
+    id: 'ask-7',
+    kind: 'budget',
+    level: 3,
+    title: 'Defer "infra" until after the weekly reset',
+    summary: 'saves ≈ 6 pp',
+    context: [
+      { type: 'markdown', text: 'Defer infra' },
+      { type: 'cost', week_pp: 6 },
+    ],
+    actions: [act('approve', 'Apply', 'a'), act('reject', 'Skip', 'r')],
+    thread: 'governor',
+    ...over,
+  });
+
+export { act };
 
 /** Counts (api-contract §1): zeros but for `o`. */
 export const countsOf = (o = {}) => ({
@@ -190,9 +196,11 @@ export function rec(agent, status, more = {}) {
   };
 }
 
-/** `app.now` for an app_state fixture: its items as Decisions, one record per agent. */
-export function nowOf(d, more = {}) {
-  const decisions = (d.inbox?.items ?? []).map(decisionOf);
+/** `app.now` for an app_state fixture: one record per agent, and `decisions`
+ *  (the design scenario's permission and budget ask by default); other keys replace `app.now`'s.
+ *  @param {any} d
+ *  @param {{ decisions?: any[], [key: string]: any }} [opts] */
+export function nowOf(d, { decisions = [permDecision(), budgetDecision()], ...more } = {}) {
   const agents = (d.agents ?? []).map((a) => rec(a.id, a.state, { project: a.project_id, live: !!a.live }));
   const open = decisions.filter((x) => x.level < 4).length;
   return {

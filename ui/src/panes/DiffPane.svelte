@@ -35,8 +35,17 @@
     }
   }
   // Refetched when a file in the worktree changed (an agent's edit, a commit, a
-  // merge); onTopics keeps a slow git from stacking loads up.
-  onMount(() => onTopics([`worktree:${spec.path}`], load));
+  // merge, or any edit while this pane watches it: T-33's `watch_worktree`, a
+  // no-op on a core without it); onTopics keeps a slow git from stacking loads up.
+  onMount(() => {
+    const path = spec.path;
+    invoke('watch_worktree', { path }).catch(() => {});
+    const stop = onTopics([`worktree:${path}`], load);
+    return () => {
+      stop();
+      invoke('unwatch_worktree', { path }).catch(() => {});
+    };
+  });
 
   function move(delta) {
     if (!files.length) return;

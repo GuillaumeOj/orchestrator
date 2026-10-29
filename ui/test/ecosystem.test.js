@@ -21,7 +21,7 @@ import {
   usedByText,
 } from '../src/lib/ecosystem.js';
 import { keyIntent as keyIntentOf } from '../src/lib/inbox.js';
-import { fixture, nowOf } from './fixture.js';
+import { act, decision, fixture, nowOf } from './fixture.js';
 
 const UNDO_LATER = Date.now() + 60000;
 
@@ -676,27 +676,30 @@ describe('role inspector, Design section and presets (T-7)', () => {
   });
 
   it('MCP needs-auth Inbox item: a reconnects and o opens Settings at once, routed by the core', async () => {
-    const item = {
+    const item = decision({
       id: 'alert-7',
-      level: 2,
       kind: 'alert',
-      agent_id: null,
+      level: 2,
+      subject: { project: 'shop-api' },
       title: 'Penpot MCP needs authentication',
-      detail: 'ux-1 and ui-1 use it',
-      preview: null,
+      summary: 'ux-1 and ui-1 use it',
       created_ms: Date.now(),
-      actions: ['a', 'o', 'r'],
+      actions: [
+        act('reconnect', 'Reconnect', 'a'),
+        act('dismiss', 'Dismiss', 'r'),
+        act('open_settings', 'Open Settings', 'o'),
+      ],
       payload: { alert: 'mcp_needs_auth', server: 'penpot', name: 'Penpot', project: 'shop-api' },
-    };
-    app.data = { ...fixture(), inbox: { badge: 1, items: [item] } };
-    app.now = nowOf(app.data);
+    });
+    app.data = fixture();
+    app.now = nowOf(app.data, { decisions: [item] });
     app.panes = {};
     app.layout = null;
     app.pending = [];
     replies.inbox_act = (a) =>
       a.action === 'reconnect'
         ? { open: 'url', url: 'https://claude.ai/settings/connectors', server: 'penpot' }
-        : a.action === 'open'
+        : a.action === 'open_settings'
           ? { open: 'settings', server: 'penpot' }
           : 'dismissed';
     replies.open_url = null;
@@ -725,7 +728,7 @@ describe('role inspector, Design section and presets (T-7)', () => {
     await flushDecisions(UNDO_LATER);
     await waitFor(() => expect(calls.some(([c, a]) => c === 'term_spawn' && a.req.run === 'claude /mcp')).toBe(true));
     // r dismisses through the undo window, as before.
-    expect(keyIntentOf('r', item)).toEqual({ kind: 'decide', action: 'reject' });
+    expect(keyIntentOf('r', item)).toEqual({ kind: 'decide', action: 'dismiss' });
     app.panes = {};
     app.layout = null;
     app.pending = [];

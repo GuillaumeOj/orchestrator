@@ -4,7 +4,7 @@
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/lib/app.svelte.js';
-import { fixture, nowOf } from './fixture.js';
+import { act, decision, fixture, nowOf } from './fixture.js';
 
 const calls = [];
 const replies = {};
@@ -125,32 +125,28 @@ describe('Notion publish', () => {
 });
 
 describe('Notion comment in the Inbox', () => {
-  it('reads Question · Notion; o opens the page (no reply in the app)', async () => {
-    const item = {
+  it('reads Notion comment; o opens the page through the core (no reply in the app)', async () => {
+    const d = decision({
       id: 'alert-9',
-      level: 3,
-      kind: 'question',
-      agent_id: null,
+      kind: 'notion',
+      level: 2,
+      subject: { project: 'shop-api', feature: 'onboarding' },
       title: 'Comment on onboarding · spec.md',
-      detail: 'Camille: "Should the third welcome screen be skippable?"',
-      preview: null,
+      summary: 'Camille: "Should the third welcome screen be skippable?"',
       created_ms: Date.now(),
-      actions: ['o', 'r'],
-      payload: {
-        kind: 'question',
-        source: 'notion',
-        page_url: 'https://notion.so/onb#c1',
-        author: 'Camille',
-        text: '…',
-      },
-    };
-    app.data = { ...fixture(), inbox: { badge: 1, items: [item] } };
-    app.now = nowOf(app.data);
+      context: [
+        { type: 'markdown', text: 'Should the third welcome screen be skippable?', source: 'https://notion.so/onb#c1' },
+      ],
+      actions: [act('dismiss', 'Dismiss', 'r'), act('open', 'Open in Notion ↗', 'o')],
+    });
+    app.data = fixture();
+    app.now = nowOf(app.data, { decisions: [d] });
     replies.inbox_act = { open: 'url', url: 'https://notion.so/onb#c1' };
     replies.open_url = null;
     const { container, getAllByText } = render(InboxPane);
-    expect(getAllByText('Question · Notion', { exact: false }).length).toBeGreaterThan(0);
+    expect(getAllByText('Notion comment', { exact: false }).length).toBeGreaterThan(0);
     expect(container.textContent).toContain('Open in Notion ↗');
+    expect(container.textContent).toContain('From notion.so/onb#c1 ↗');
     expect(container.textContent).not.toContain('Reply');
     await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: 'o' });
     await waitFor(() =>
@@ -159,28 +155,28 @@ describe('Notion comment in the Inbox', () => {
     expect(calls.find(([c]) => c === 'inbox_act')[1]).toEqual({ item: 'alert-9', action: 'open', message: null });
     // r dismisses, as on the other alerts (through the undo window).
     await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: 'r' });
-    expect(app.pending.at(-1)).toMatchObject({ item: 'alert-9', action: 'reject' });
+    expect(app.pending.at(-1)).toMatchObject({ item: 'alert-9', action: 'dismiss' });
     expect(app.toasts.at(-1).text).toBe('Dismissing · Comment on onboarding · spec.md');
     app.pending = [];
   });
 
-  it('a task conflict note opens the Board on the task', async () => {
-    const item = {
-      id: 'alert-12',
-      level: 4,
-      kind: 'info',
-      agent_id: null,
-      title: "ENG-140 changed in Linear: kept Linear's version",
-      detail: null,
-      preview: null,
-      created_ms: Date.now(),
-      actions: ['o', 'r'],
-      payload: { action: 'task_conflict', task: 40, project: 'shop-api' },
-    };
-    app.data = { ...fixture(), inbox: { badge: 1, items: [item] } };
-    app.now = nowOf(app.data);
+  it('a task sync conflict is a digest outcome: o opens the Board on the task', async () => {
+    app.data = fixture();
+    app.now = nowOf(app.data, {
+      decisions: [],
+      outcomes: [
+        {
+          id: 'ev-3',
+          kind: 'sync_conflict',
+          at_ms: Date.now(),
+          project: 'shop-api',
+          task: 40,
+          text: "ENG-140 changed here and in Linear: kept Linear's",
+          seen: false,
+        },
+      ],
+    });
     app.layout = null;
-    replies.inbox_act = 'read';
     replies.board_view = {
       project: { id: 'shop-api', name: 'shop-api' },
       backend: 'linear',
@@ -189,6 +185,7 @@ describe('Notion comment in the Inbox', () => {
       runs: [],
     };
     const { container } = render(InboxPane);
+    await fireEvent.click(container.querySelector('[role="option"][title^="ENG-140"]'));
     await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: 'o' });
     await waitFor(() =>
       expect(
