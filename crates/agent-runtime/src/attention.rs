@@ -1034,10 +1034,7 @@ impl<'a> Ctx<'a> {
         }
         let next = tasks.iter().find(|t| matches!(t.status, TaskStatus::Ready | TaskStatus::Backlog))?;
         let deps: Vec<String> = next.depends_on.iter().map(u64::to_string).collect();
-        let done = |d: &str| {
-            d.parse::<u64>().ok().and_then(|id| self.tasks.get(&id)).is_some_and(|t| t.status == TaskStatus::Done)
-        };
-        let blocked = orch_team::run::blocked_by(&deps, done);
+        let blocked = orch_team::run::blocked_by(&deps, |d| dep_done(&self.tasks, d));
         let first: u64 = blocked.first()?.parse().ok()?;
         let (handle, owner, status) = match self.tasks.get(&first) {
             Some(t) => (
@@ -1154,10 +1151,13 @@ pub fn blocker(members: &[&AgentAttention]) -> Option<Blocker> {
     })
 }
 
+/// Whether the task a `depends_on` entry names is done.
+fn dep_done(tasks: &BTreeMap<u64, &Task>, d: &str) -> bool {
+    d.parse::<u64>().ok().and_then(|id| tasks.get(&id)).is_some_and(|t| t.status == TaskStatus::Done)
+}
+
 fn task_counts(tasks: &[&Task]) -> TaskCounts {
     let by_id: BTreeMap<u64, &Task> = tasks.iter().map(|t| (t.id, *t)).collect();
-    let done =
-        |d: &str| d.parse::<u64>().ok().and_then(|id| by_id.get(&id)).is_some_and(|t| t.status == TaskStatus::Done);
     let mut c = TaskCounts { total: tasks.len() as u32, ..Default::default() };
     for t in tasks {
         match t.status {
@@ -1168,7 +1168,7 @@ fn task_counts(tasks: &[&Task]) -> TaskCounts {
         }
         if t.status != TaskStatus::Done {
             let deps: Vec<String> = t.depends_on.iter().map(u64::to_string).collect();
-            if !orch_team::run::blocked_by(&deps, done).is_empty() {
+            if !orch_team::run::blocked_by(&deps, |d| dep_done(&by_id, d)).is_empty() {
                 c.blocked += 1;
             }
         }
