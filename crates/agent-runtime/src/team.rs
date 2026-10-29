@@ -1624,7 +1624,6 @@ impl Runtime {
         let Ok(Some(mut run)) = self.db.run(&seat.run_id) else { return };
         match url {
             Some(u) => {
-                self.run_event(&run.id, Some(agent), "run.pr_opened", json!({"url": u}));
                 run.pr_url = Some(u.to_string());
                 let _ = self.db.upsert_run(&run);
                 let _ = self.advance_run(&run.id, RunState::Done, "pull request opened");

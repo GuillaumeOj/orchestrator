@@ -50,10 +50,15 @@ struct State {
     queue: Option<GovSeen>,
     /// The decisions last sent (open ones and those closed recently), by id.
     decisions: BTreeMap<String, Decision>,
-    /// Today's outcomes (the local date), and the last event id read.
-    outcomes: Vec<Outcome>,
-    outcomes_day: String,
-    outcomes_after: u64,
+    outcomes: OutcomeCache,
+}
+
+/// Today's outcomes (the local date), and the last event id read.
+#[derive(Default)]
+struct OutcomeCache {
+    day: String,
+    after: u64,
+    list: Vec<Outcome>,
 }
 
 /// The publisher's state, on the runtime.
@@ -78,25 +83,36 @@ fn changed<'a, T: PartialEq>(old: &BTreeMap<String, T>, new: &'a BTreeMap<String
     (upsert, removed)
 }
 
-/// The `now` event from `old` to `new` with `topics`; `None` when nothing changed.
-pub fn delta(rev: u64, old: &World, new: &World, topics: &BTreeSet<String>) -> Option<Value> {
+/// The `now` event from `old` to `new`, with the decisions that changed
+/// or closed, new outcomes and `topics`; `None` when nothing changed.
+fn delta(
+    rev: u64,
+    old: &World,
+    new: &World,
+    (upsert, closed): (&[Decision], &[String]),
+    outcomes: &[Outcome],
+    topics: &BTreeSet<String>,
+) -> Option<Value> {
     let (agents, agents_gone) = changed(&old.agents, &new.agents);
     let (runs, runs_gone) = changed(&old.runs, &new.runs);
     let counts = (old.counts != new.counts).then_some(&new.counts);
-    if agents.is_empty()
+    let nothing = agents.is_empty()
         && agents_gone.is_empty()
         && runs.is_empty()
         && runs_gone.is_empty()
         && counts.is_none()
-        && topics.is_empty()
-    {
+        && upsert.is_empty()
+        && closed.is_empty()
+        && outcomes.is_empty()
+        && topics.is_empty();
+    if nothing {
         return None;
     }
     let mut v = json!({
         "rev": rev,
         "attention": {"agents": agents, "runs": runs, "removed": {"agents": agents_gone, "runs": runs_gone}},
-        "decisions": {"upsert": [], "closed": []},
-        "outcomes": [],
+        "decisions": {"upsert": upsert, "closed": closed},
+        "outcomes": outcomes,
         "topics": topics,
     });
     if let Some(c) = counts {
@@ -105,20 +121,14 @@ pub fn delta(rev: u64, old: &World, new: &World, topics: &BTreeSet<String>) -> O
     Some(v)
 }
 
-/// An event with nothing but its rev (decisions or outcomes fill it).
-fn empty_event(rev: u64) -> Value {
-    json!({"rev": rev, "attention": {"agents": [], "runs": [], "removed": {"agents": [], "runs": []}},
-           "decisions": {"upsert": [], "closed": []}, "outcomes": [], "topics": []})
-}
-
 /// Decisions new or changed since `old`, and the ids that left the open
 /// list (their last upsert carries the final lifecycle).
 fn decision_delta(old: &BTreeMap<String, Decision>, new: &BTreeMap<String, Decision>) -> (Vec<Decision>, Vec<String>) {
     let upsert = new.iter().filter(|(k, v)| old.get(*k) != Some(*v)).map(|(_, v)| v.clone()).collect();
     let closed = old
         .iter()
-        .filter(|(_, d)| d.waits_on == "user")
-        .filter(|(k, _)| new.get(*k).is_none_or(|d| d.waits_on != "user"))
+        .filter(|(_, d)| d.is_open())
+        .filter(|(k, _)| new.get(*k).is_none_or(|d| !d.is_open()))
         .map(|(k, _)| k.clone())
         .collect();
     (upsert, closed)
@@ -244,14 +254,14 @@ impl Runtime {
             self.now_pump(true);
         }
         let st = lock(&self.now.state);
-        let mut v: Vec<Decision> = st.decisions.values().filter(|d| d.waits_on == "user").cloned().collect();
+        let mut v: Vec<Decision> = st.decisions.values().filter(|d| d.is_open()).cloned().collect();
         v.sort_by_key(|d| (d.level, d.created_ms));
         v
     }
 
     /// `digest_seen` moved today's watermark: the cached outcomes follow.
     pub(crate) fn mark_seen(&self, up_to: u64) {
-        for o in lock(&self.now.state).outcomes.iter_mut() {
+        for o in lock(&self.now.state).outcomes.list.iter_mut() {
             let id: u64 = o.id.trim_start_matches("ev-").parse().unwrap_or(u64::MAX);
             o.seen |= id <= up_to;
         }
@@ -277,7 +287,7 @@ impl Runtime {
             "runs": w.runs.values().collect::<Vec<_>>(),
             "counts": w.counts,
             "decisions": st.decisions.values().collect::<Vec<_>>(),
-            "outcomes": st.outcomes,
+            "outcomes": st.outcomes.list,
         })
     }
 
@@ -342,7 +352,6 @@ impl Runtime {
             };
             (s.agents.clone(), s.inbox.iter().filter(keep).cloned().collect())
         });
-        let inbox: Vec<orch_store::InboxItem> = items.iter().filter(|i| i.open()).cloned().collect();
         let (queue, ask, gov) = self.governor_facts();
         // The PTY tail of a synthesized card (trust dialog, a prompt in the pane, an error).
         let tails: BTreeMap<String, String> = agents
@@ -357,25 +366,27 @@ impl Runtime {
             ask: ask.as_ref(),
             runs: &st.team.runs,
             projects: &st.team.projects,
+            startup_timeout_ms: self.cfg.startup_timeout.as_millis() as u64,
         });
         // Today's outcomes: the new ones since the last read (all on a new
         // day), read for the same day the cache is keyed by.
         let tz = jiff::tz::TimeZone::system();
         let (midnight, day) = crate::digest::today(now, &tz);
-        if st.outcomes_day != day {
-            st.outcomes = vec![];
-            st.outcomes_after = 0;
-            st.outcomes_day = day;
+        if st.outcomes.day != day {
+            st.outcomes = OutcomeCache { day, ..Default::default() };
         }
-        let (new_outcomes, last_read) = self.outcomes_of_day(midnight, &st.outcomes_day, st.outcomes_after, &tz);
-        st.outcomes_after = last_read;
-        st.outcomes.extend(new_outcomes.iter().cloned());
-        let done_today = st.outcomes.len() as u32;
+        let runs: BTreeMap<String, (String, String)> =
+            st.team.runs.iter().map(|r| (r.run.id.clone(), (r.feature.clone(), r.project.clone()))).collect();
+        let (new_outcomes, last_read) =
+            self.outcomes_of_day(midnight, &st.outcomes.day, st.outcomes.after, &tz, &runs, &st.team.projects);
+        st.outcomes.after = last_read;
+        st.outcomes.list.extend(new_outcomes.iter().cloned());
+        let done_today = st.outcomes.list.len() as u32;
         let paused = &queue_now.1;
         let mut world = attention::compute(
             &attention::Inputs {
                 agents: &agents,
-                inbox: &inbox,
+                inbox: &items,
                 live: &live,
                 queue: &queue,
                 paused,
@@ -404,14 +415,7 @@ impl Runtime {
         }
         let decisions: BTreeMap<String, Decision> = decisions.into_iter().map(|d| (d.id.clone(), d)).collect();
         let (upsert, closed) = decision_delta(&state.decisions, &decisions);
-        let mut event = delta(state.rev + 1, &old, &world, &topics);
-        if event.is_none() && (!upsert.is_empty() || !closed.is_empty() || !new_outcomes.is_empty()) {
-            event = Some(empty_event(state.rev + 1));
-        }
-        if let Some(e) = &mut event {
-            e["decisions"] = json!({"upsert": upsert, "closed": closed});
-            e["outcomes"] = json!(new_outcomes);
-        }
+        let event = delta(state.rev + 1, &old, &world, (&upsert, &closed), &new_outcomes, &topics);
         state.decisions = decisions;
         state.last = Some(world);
         let Some(event) = event else { return };

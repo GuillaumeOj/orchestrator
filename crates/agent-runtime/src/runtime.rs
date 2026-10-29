@@ -1293,7 +1293,7 @@ impl Runtime {
             && rec.team.is_none()
             && let Some(msg) = p.last_assistant_message.as_deref().filter(|t| !t.trim().is_empty())
         {
-            self.event(id, "turn.done", json!({"summary": msg.chars().take(280).collect::<String>()}));
+            self.event(id, "turn.done", json!({"summary": crate::team::cut(msg, 280)}));
         }
         if matches!(m.event, HookEvent::Stop | HookEvent::StopFailure) {
             self.suspend_if_parked(id);
@@ -2053,16 +2053,8 @@ impl Runtime {
                         a.trust_dialog = seen;
                     }
                 });
-                if seen {
-                    let tail = l.pty.output.tail_text();
-                    let _ = self.add_item(
-                        Some(&id),
-                        "alert",
-                        format!("{id}: Claude Code asks to trust this folder. Attach and answer it yourself (the app never does)."),
-                        json!({"alert": "trust", "tail": tail}),
-                        0,
-                    );
-                }
+                // The Inbox card is synthesized from `trust_dialog` (D6): nothing stored.
+                self.event(&id, "trust_dialog", json!({"seen": seen}));
             }
         }
         let queued: Vec<(AgentRecord, TurnRow)> = self.store.read(|s| {

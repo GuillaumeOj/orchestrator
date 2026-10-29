@@ -40,6 +40,7 @@ impl Fx {
             ask: self.ask.as_ref(),
             runs: &self.runs,
             projects: &self.projects,
+            startup_timeout_ms: 30_000,
         });
         compute(
             &Inputs {

@@ -687,8 +687,17 @@ impl Core {
     pub fn inbox_act(&self, item: &str, action: &str, message: Option<&str>) -> Result<Value> {
         let rt = self.runtime()?;
         let message = message.filter(|m| !m.trim().is_empty());
-        let done =
-            |n: u64, r: Value| json!({"ok": true, "effect": r["effect"], "lifecycle": rt.lifecycle(n), "result": r});
+        // `decide` returns the lifecycle after the call.
+        let done = |r: Value| json!({"ok": true, "effect": r["effect"], "lifecycle": r["lifecycle"], "result": r});
+        // A synthesized decision (no stored row): its lifecycle is the answer.
+        let by_user = |state: &'static str, effect: Option<&str>| {
+            json!(agent_runtime::decision::Lifecycle {
+                state,
+                decided_by: Some("user".into()),
+                effect: effect.map(str::to_string),
+                ..Default::default()
+            })
+        };
         // A permission prompt, held or parked (FR-705): the runtime decides,
         // audits and acts (the hook answers, or the agent is told).
         if let Some(n) = item.strip_prefix("inbox-") {
@@ -710,7 +719,7 @@ impl Core {
                 other => bail!("{other} does not apply to a permission"),
             };
             let r = rt.decide(n, decision, scope, message)?;
-            return Ok(done(n, r));
+            return Ok(done(r));
         }
         // A start that never happened (FR-415).
         if let Some(n) = item.strip_prefix("startup-") {
@@ -722,7 +731,7 @@ impl Core {
                     let r = self.restart_fresh(&agent)?;
                     Ok(json!({"ok": true, "effect": "restarted", "lifecycle": rt.lifecycle(n), "result": r}))
                 }
-                "dismiss" => Ok(done(n, rt.decide(n, InboxDecision::Dismiss, None, None)?)),
+                "dismiss" => Ok(done(rt.decide(n, InboxDecision::Dismiss, None, None)?)),
                 // Deleted first: a kill that fails leaves the card to try again.
                 "delete" => {
                     let r = self.agent_delete(&agent, false, false)?;
@@ -762,9 +771,9 @@ impl Core {
             // A budget item: applied or skipped (FR-807).
             if kind == "budget" && matches!(action, "approve" | "reject") {
                 let d = if action == "approve" { InboxDecision::Approve } else { InboxDecision::Reject };
-                return Ok(done(n, rt.decide(n, d, None, None)?));
+                return Ok(done(rt.decide(n, d, None, None)?));
             }
-            return Ok(done(n, rt.decide(n, InboxDecision::Dismiss, None, None)?));
+            return Ok(done(rt.decide(n, InboxDecision::Dismiss, None, None)?));
         }
         // Gates and team questions: the runtime decides (audited) and acts
         // (spec gate → the run moves on; PR gate → push + PR; reply → a turn).
@@ -781,7 +790,7 @@ impl Core {
             if decision == InboxDecision::Reply && message.is_none() {
                 bail!("empty reply");
             }
-            return Ok(done(n, rt.decide(n, decision, None, message)?));
+            return Ok(done(rt.decide(n, decision, None, message)?));
         }
         // The Governor's ask (FR-810): synthesized, so its lifecycle is the answer.
         if let Some(n) = item.strip_prefix("ask-") {
@@ -794,7 +803,7 @@ impl Core {
             rt.answer_ask(id.0, apply)?;
             let effect = if apply { "applied" } else { "skipped" };
             return Ok(json!({"ok": true, "effect": effect,
-                             "lifecycle": {"state": "effect", "decided_by": "user", "effect": effect}}));
+                             "lifecycle": by_user("effect", Some(effect))}));
         }
         if let Some(a) = item.strip_prefix("wait-").or_else(|| item.strip_prefix("error-")) {
             if action == "reply" {
@@ -808,15 +817,11 @@ impl Core {
                 let effect = rt.delivered_effect(a);
                 let how = if effect == "delivered" { "deliver" } else { "resume" };
                 let r = self.agent_action(a, how, Some(&text))?;
-                return Ok(
-                    json!({"ok": true, "effect": effect, "lifecycle": {"state": "sent", "decided_by": "user"}, "result": r}),
-                );
+                return Ok(json!({"ok": true, "effect": effect, "lifecycle": by_user("sent", None), "result": r}));
             }
             if matches!(action, "resume" | "reject") && item.starts_with("error-") {
                 let r = self.agent_action(a, "resume", None)?;
-                return Ok(
-                    json!({"ok": true, "effect": "resumed", "lifecycle": {"state": "sent", "decided_by": "user"}, "result": r}),
-                );
+                return Ok(json!({"ok": true, "effect": "resumed", "lifecycle": by_user("sent", None), "result": r}));
             }
         }
         bail!("{action} does not apply to {item}")

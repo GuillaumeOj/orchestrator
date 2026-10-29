@@ -133,7 +133,9 @@ pub fn outcome(ev: &Event, run: Option<&str>, names: &Names, seen_up_to: u64, tz
         }
         "turn.done" => {
             let summary = s("summary");
-            let line = summary.lines().find(|l| !l.trim().is_empty()).unwrap_or("finished a turn").trim().to_string();
+            let line = Some(crate::attention::copy::cut(&summary, 200))
+                .filter(|l| !l.is_empty())
+                .unwrap_or_else(|| "finished a turn".into());
             let who = agent.clone().unwrap_or_default();
             ("turn_done", format!("{} › {who}: {line}", project.as_deref().unwrap_or("?")))
         }
@@ -181,27 +183,45 @@ pub fn today(now_ms: u64, tz: &TimeZone) -> (u64, String) {
 }
 
 impl Runtime {
-    /// Today's outcomes after event `after`, oldest first.
+    /// Today's outcomes after event `after` (tests).
+    #[cfg(test)]
     pub fn outcomes_since(&self, after: u64) -> Vec<Outcome> {
         let tz = TimeZone::system();
         let (midnight, date) = today(orch_protocol::now_ms(), &tz);
-        self.outcomes_of_day(midnight, &date, after, &tz).0
+        let paths = self.db.projects(false).unwrap_or_default().into_iter().map(|p| (p.path, p.id)).collect();
+        self.outcomes_of_day(midnight, &date, after, &tz, &BTreeMap::new(), &paths).0
     }
 
     /// The outcomes of the day starting at `midnight` (`date`) after event
-    /// `after`, and the last event id read (outcome or not: a merge that
-    /// conflicted is not read again).
-    pub(crate) fn outcomes_of_day(&self, midnight: u64, date: &str, after: u64, tz: &TimeZone) -> (Vec<Outcome>, u64) {
-        let evs = self.db.events_of_kinds(midnight, after, &KINDS).unwrap_or_default();
-        let Some(last) = evs.last().map(|(e, _)| e.id) else { return (vec![], after) };
+    /// `after`, and the last event id read (any kind: nothing is read twice).
+    /// `runs` (run → feature slug, project) and `paths` (main checkout →
+    /// project) are the `now` publisher's; the store is asked only for the rest.
+    pub(crate) fn outcomes_of_day(
+        &self,
+        midnight: u64,
+        date: &str,
+        after: u64,
+        tz: &TimeZone,
+        runs: &BTreeMap<String, (String, String)>,
+        paths: &BTreeMap<std::path::PathBuf, String>,
+    ) -> (Vec<Outcome>, u64) {
+        let Ok((evs, last)) = self.db.events_of_kinds(midnight, after, &KINDS) else { return (vec![], after) };
+        if evs.is_empty() {
+            return (vec![], last);
+        }
         let seen = self.digest_watermark(date);
-        let names = self.names(&evs);
+        let names = self.names(&evs, runs, paths);
         (evs.iter().filter_map(|(e, r)| outcome(e, r.as_deref(), &names, seen, tz)).collect(), last)
     }
 
     /// The runs, agents' projects and tasks these events name.
-    fn names(&self, evs: &[(Event, Option<String>)]) -> Names {
-        let mut n = Names::default();
+    fn names(
+        &self,
+        evs: &[(Event, Option<String>)],
+        runs: &BTreeMap<String, (String, String)>,
+        paths: &BTreeMap<std::path::PathBuf, String>,
+    ) -> Names {
+        let mut n = Names { runs: runs.clone(), ..Default::default() };
         for (e, run) in evs {
             if let Some(r) = run.as_deref().filter(|r| !n.runs.contains_key(*r))
                 && let Ok(Some(tr)) = self.db.run(r)
@@ -216,18 +236,17 @@ impl Runtime {
                 );
             }
             if let Some(id) = (e.kind == "task.done").then(|| e.detail["task"].as_u64()).flatten()
+                && !n.tasks.contains_key(&id)
                 && let Ok(Some(t)) = self.db.task(id)
             {
                 n.tasks.insert(id, (t.handle(), t.title));
             }
         }
-        let projects: BTreeMap<std::path::PathBuf, String> =
-            self.db.projects(true).unwrap_or_default().into_iter().map(|p| (p.path, p.id)).collect();
         n.projects = self.store.read(|s| {
             s.agents
                 .values()
                 .filter_map(|a| {
-                    let p = a.team.as_ref().map(|t| t.project_id.clone()).or_else(|| projects.get(&a.repo).cloned())?;
+                    let p = a.team.as_ref().map(|t| t.project_id.clone()).or_else(|| paths.get(&a.repo).cloned())?;
                     Some((a.id.clone(), p))
                 })
                 .collect()

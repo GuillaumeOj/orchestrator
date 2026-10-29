@@ -37,9 +37,11 @@ pub struct Action {
     pub key: Option<&'static str>,
 }
 
-fn act(id: &'static str, label: &'static str, key: Option<&'static str>) -> Action {
+const fn act(id: &'static str, label: &'static str, key: Option<&'static str>) -> Action {
     Action { id, label, key }
 }
+
+const OPEN_PANE: Action = act("open", "Open pane", Some("o"));
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Lifecycle {
@@ -67,14 +69,8 @@ impl Lifecycle {
     pub fn of(i: &InboxItem) -> Lifecycle {
         let state = match i.status {
             InboxStatus::Pending => "open",
-            InboxStatus::Parked => "parked",
-            InboxStatus::Decided | InboxStatus::Expired => "decided",
-            InboxStatus::Sent => "sent",
-            InboxStatus::Effect => "effect",
-            InboxStatus::Failed => "failed",
-            InboxStatus::Stale => "stale",
-            InboxStatus::Dismissed => "dismissed",
-            InboxStatus::Interrupted => "interrupted",
+            InboxStatus::Expired => "decided",
+            s => s.as_str(),
         };
         Lifecycle {
             state,
@@ -124,9 +120,14 @@ pub struct Decision {
 }
 
 impl Decision {
-    /// Open and waiting on the user, levels 1–3: the title badge counts it.
+    /// Still waiting on the user (open or parked).
+    pub fn is_open(&self) -> bool {
+        matches!(self.lifecycle.state, "open" | "parked")
+    }
+
+    /// Open, levels 1–3: the title badge counts it.
     pub fn counts(&self) -> bool {
-        matches!(self.lifecycle.state, "open" | "parked") && self.level <= 3
+        self.is_open() && self.level <= 3
     }
 }
 
@@ -140,6 +141,8 @@ pub struct Ctx<'a> {
     pub ask: Option<&'a AskFacts>,
     pub runs: &'a [RunFacts],
     pub projects: &'a BTreeMap<PathBuf, String>,
+    /// The startup timeout (the startup card says it).
+    pub startup_timeout_ms: u64,
 }
 
 /// The last `n` non-blank lines.
@@ -288,7 +291,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
     let (title, summary, context, actions): (String, String, Vec<Value>, Vec<Action>) = match (kind, gate) {
         ("permission", _) => {
             let tool = s(p, "tool");
-            let input = p.get("tool_input").or_else(|| p.get("input")).cloned().unwrap_or(Value::Null);
+            let input = crate::inbox::tool_input(i);
             let short = crate::inbox::main_arg(tool, &input).unwrap_or_default();
             let desc = s(p, "description");
             let title = format!("{tool} · {}", if desc.is_empty() { cut(&short, 60) } else { cut(desc, 60) });
@@ -308,7 +311,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             if i.status == InboxStatus::Pending {
                 actions.push(act("in_pane", "Answer in the pane", None));
             }
-            actions.push(act("open", "Open pane", Some("o")));
+            actions.push(OPEN_PANE);
             let block = json!({"type": "tool_call", "tool": tool, "input": input, "cwd": p.get("cwd")});
             (title, summary, vec![block], actions)
         }
@@ -319,16 +322,12 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             let mut ctx = vec![markdown(q, None)];
             ctx.extend(options_block(p));
             ctx.extend(last_message(p));
-            let actions = vec![
-                act("answer", "Answer", Some("enter")),
-                act("reject", "Dismiss", Some("r")),
-                act("open", "Open pane", Some("o")),
-            ];
+            let actions = vec![act("answer", "Answer", Some("enter")), act("reject", "Dismiss", Some("r")), OPEN_PANE];
             (title, String::new(), ctx, actions)
         }
         ("gate", Some("pr")) => {
             let feature = subject_of(cx, agent, None).get("feature").and_then(Value::as_str).map(str::to_string);
-            let title = format!("PR gate · {}", feature.as_deref().unwrap_or(s(p, "branch")));
+            let title = crate::attention::copy::pr_gate(feature.as_deref().unwrap_or(s(p, "branch")));
             let diff = p.get("diff").cloned().unwrap_or(Value::Null);
             let files = diff.get("files").and_then(Value::as_array).map_or(0, Vec::len);
             let summary = format!(
@@ -348,7 +347,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
                 act("approve", "Approve: push + open PR", Some("a")),
                 act("reject", "Reject", Some("r")),
                 act("reply", "Reply", Some("enter")),
-                act("open", "Open pane", Some("o")),
+                OPEN_PANE,
             ];
             (title, summary, ctx, actions)
         }
@@ -381,7 +380,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
                 act("approve", "Approve spec", Some("a")),
                 act("reject", "Send back", Some("r")),
                 act("reply", "Send back with notes", Some("enter")),
-                act("open", "Open pane", Some("o")),
+                OPEN_PANE,
             ];
             (format!("Spec gate · {feature}"), cut(summary, 120), ctx, actions)
         }
@@ -392,7 +391,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
                 Some(mode) => (format!("{who} did not start"), crate::attention::copy::start_exited(mode, None)),
                 None => (
                     format!("{who} did not start"),
-                    "No session after 30 s: a dialog may be waiting in its pane".to_string(),
+                    format!("No session after {} s: a dialog may be waiting in its pane", cx.startup_timeout_ms / 1000),
                 ),
             };
             let detail = p.get("exit_status").and_then(Value::as_u64).map(|n| format!("exit status {n}"));
@@ -402,7 +401,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             if failed.is_some() {
                 actions.push(act("delete", "Delete", None));
             }
-            actions.push(act("open", "Open pane", Some("o")));
+            actions.push(OPEN_PANE);
             (title, why, ctx, actions)
         }
         ("budget", _) => {
@@ -442,8 +441,6 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             let mut ctx = vec![];
             if is_error {
                 ctx.push(error_block(&body_line, p.get("error").and_then(Value::as_str)));
-                ctx.extend(pty_tail(s(p, "tail")));
-            } else if source == "trust" {
                 ctx.extend(pty_tail(s(p, "tail")));
             } else {
                 ctx.push(markdown(&i.body, None));
@@ -536,9 +533,12 @@ pub fn build(cx: &Ctx) -> Vec<Decision> {
     let mut out = vec![];
     for a in cx.agents.values() {
         let since = a.last_event_at_ms.unwrap_or(a.created_at_ms);
-        let tail = cx.tails.get(&a.id).map(String::as_str).unwrap_or("");
-        let held = cx.items.iter().any(|i| i.open() && i.kind == "permission" && i.agent_id.as_deref() == Some(&a.id));
-        let open = act("open", "Open pane", Some("o"));
+        let tail = last_lines(cx.tails.get(&a.id).map(String::as_str).unwrap_or(""), 12);
+        let tail_block = || (!tail.is_empty()).then(|| json!({"type": "pty_tail", "text": tail}));
+        let open = OPEN_PANE;
+        // Its prompt is a permission card already (held or parked): not listed twice.
+        let held =
+            || cx.items.iter().any(|i| i.open() && i.kind == "permission" && i.agent_id.as_deref() == Some(&a.id));
         if a.trust_dialog {
             out.push(synth(
                 cx,
@@ -547,12 +547,12 @@ pub fn build(cx: &Ctx) -> Vec<Decision> {
                 Some(&a.id),
                 "Claude Code asks to trust this folder".into(),
                 format!("Answer it in {}'s pane: the app never does", a.id),
-                pty_tail(tail).into_iter().collect(),
+                tail_block().into_iter().collect(),
                 vec![open],
                 since,
-                json!({"tail": last_lines(tail, 12)}),
+                json!({"tail": tail}),
             ));
-        } else if a.tracker.state == AgentState::WaitingForYou && !held {
+        } else if a.tracker.state == AgentState::WaitingForYou && !held() {
             out.push(synth(
                 cx,
                 format!("wait-{}", a.id),
@@ -560,26 +560,26 @@ pub fn build(cx: &Ctx) -> Vec<Decision> {
                 Some(&a.id),
                 format!("A prompt in {}'s pane", a.id),
                 String::new(),
-                pty_tail(tail).into_iter().collect(),
+                tail_block().into_iter().collect(),
                 vec![act("reply", "Reply", Some("enter")), open],
                 since,
-                json!({"tail": last_lines(tail, 12)}),
+                json!({"tail": tail}),
             ));
         } else if a.tracker.state == AgentState::Error {
             let error = a.tracker.last_error.clone().unwrap_or_else(|| "Its session is saved; resume it.".into());
             let mut ctx = vec![error_block(&error, None)];
-            ctx.extend(pty_tail(tail));
+            ctx.extend(tail_block());
             out.push(synth(
                 cx,
                 format!("error-{}", a.id),
                 "error",
                 Some(&a.id),
-                format!("{} stopped with an error", a.id),
+                format!("{} {}", a.id, crate::attention::copy::STOPPED_WITH_ERROR),
                 cut(&error, 120),
                 ctx,
                 vec![act("resume", "Resume", Some("r")), open],
                 since,
-                json!({"error": error, "tail": last_lines(tail, 12)}),
+                json!({"error": error, "tail": tail}),
             ));
         }
     }
@@ -617,12 +617,7 @@ pub fn build(cx: &Ctx) -> Vec<Decision> {
             json!({"action": k.id, "cost": k.cost_pp, "default": default, "deadline_ms": k.deadline_ms}),
         ));
     }
-    // The trust dialog's stored alert is the synthesized `trust` card while the dialog is up: one card, one count.
-    let trusting = |i: &InboxItem| {
-        i.payload.get("alert").and_then(Value::as_str) == Some("trust")
-            && i.agent_id.as_deref().and_then(|a| cx.agents.get(a)).is_some_and(|a| a.trust_dialog)
-    };
-    out.extend(cx.items.iter().filter(|i| i.kind != "info" && !trusting(i)).map(|i| stored(cx, i)));
+    out.extend(cx.items.iter().filter(|i| i.kind != "info").map(|i| stored(cx, i)));
     out.sort_by(|a, b| (a.created_ms, &a.id).cmp(&(b.created_ms, &b.id)));
     let mut last: BTreeMap<String, String> = BTreeMap::new();
     for d in &mut out {

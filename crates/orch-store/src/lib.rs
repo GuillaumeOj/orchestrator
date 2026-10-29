@@ -16,7 +16,7 @@ mod util;
 
 pub use db::{Pending, Store, Tx};
 pub use ecosystem::IntegrationRow;
-pub use events::{AuditEntry, Event, Retention};
+pub use events::{AuditEntry, Event, Retention, RunEvent};
 pub use migrations::SCHEMA_VERSION;
 pub use model::*;
 pub use report::{BASELINE, Baseline, Interventions, Prompts, ReportAgent, ReportQuery, RunReport};

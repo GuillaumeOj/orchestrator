@@ -50,7 +50,7 @@ pub fn reply(item: &InboxItem) -> Option<&str> {
 }
 
 /// A permission item's `tool_input` (`input` in rows from before P4.0).
-fn tool_input(item: &InboxItem) -> Value {
+pub(crate) fn tool_input(item: &InboxItem) -> Value {
     item.payload.get("tool_input").or_else(|| item.payload.get("input")).cloned().unwrap_or(Value::Null)
 }
 
@@ -136,18 +136,17 @@ fn brief(tool: &str, input: &Value) -> (String, Option<String>) {
 /// `{files: [{path, added, removed}], added, removed}` of `base...branch`,
 /// computed once when the PR gate is raised (binary files count 0 lines).
 pub(crate) fn diff_summary(wt: &std::path::Path, base: &str, branch: &str) -> Value {
-    let Ok(out) = orch_git::git(wt, &["diff", "--numstat", &format!("{base}...{branch}")]) else { return Value::Null };
-    let (mut added, mut removed, mut files) = (0u64, 0u64, vec![]);
-    for line in out.lines() {
-        let mut f = line.splitn(3, '\t');
-        let (Some(a), Some(r), Some(path)) = (f.next(), f.next(), f.next()) else { continue };
-        let (a, r) = (a.parse::<u64>().unwrap_or(0), r.parse::<u64>().unwrap_or(0));
-        added += a;
-        removed += r;
-        files.push(json!({"path": path, "added": a, "removed": r}));
-    }
+    let Ok(files) = orch_git::diff::numstat(wt, &format!("{base}...{branch}")) else { return Value::Null };
+    let (added, removed) = files.values().fold((0, 0), |(a, r), (x, y)| (a + x.unwrap_or(0), r + y.unwrap_or(0)));
+    let files: Vec<Value> = files
+        .iter()
+        .map(|(path, (a, r))| json!({"path": path, "added": a.unwrap_or(0), "removed": r.unwrap_or(0)}))
+        .collect();
     json!({"files": files, "added": added, "removed": removed})
 }
+
+/// The PR gate's patch is cut past this (the gate preview's limit).
+const PATCH_MAX: usize = 2 << 20;
 
 fn short(sha: &str) -> &str {
     &sha[..sha.len().min(12)]
@@ -264,40 +263,44 @@ impl Runtime {
             .and_then(|r| r.team.as_ref())
             .and_then(|t| self.db.feature(&t.feature_id).ok().flatten())
             .map(|f| f.slug);
-        let project = match &rec {
-            Some(r) if r.team.is_none() => self.db.project_by_path(&r.repo).ok().flatten().map(|p| p.id),
-            _ => project.map(str::to_string),
-        };
+        let project = rec.as_ref().and_then(|r| self.agent_project(r)).or_else(|| project.map(str::to_string));
         crate::decision::subject(agent, rec.as_ref(), feature.as_deref(), project.as_deref())
     }
 
     /// Moves a decided item on in its lifecycle (P4.1, FR-1303); each step
     /// reaches the `now` push.
     pub fn advance(&self, id: u64, stage: Stage) {
+        self.advance_where(|i| i.id == id, stage);
+    }
+
+    /// [`Runtime::advance`] for every item `which` selects, in one write.
+    fn advance_where(&self, which: impl Fn(&InboxItem) -> bool, stage: Stage) {
         let now = now_ms();
         let _ = self.store.write(|s| {
-            let Some(i) = s.inbox.iter_mut().find(|i| i.id == id) else { return };
-            match stage {
-                Stage::Sent => {
-                    i.status = InboxStatus::Sent;
-                    i.sent_at_ms = Some(now);
-                }
-                Stage::Effect(effect, detail) => {
-                    // A dismissal keeps its status: its effect says so too.
-                    if i.status != InboxStatus::Dismissed {
-                        i.status = InboxStatus::Effect;
+            for i in s.inbox.iter_mut().filter(|i| which(i)) {
+                match &stage {
+                    Stage::Sent => {
+                        i.status = InboxStatus::Sent;
+                        i.sent_at_ms = Some(now);
                     }
-                    i.sent_at_ms.get_or_insert(now);
-                    (i.effect, i.effect_detail, i.effect_at_ms) = (Some(effect.into()), detail, Some(now));
-                }
-                Stage::Failed(error) => {
-                    i.status = InboxStatus::Failed;
-                    (i.error, i.effect_at_ms) = (Some(error), Some(now));
-                }
-                Stage::Stale(why) => {
-                    i.status = InboxStatus::Stale;
-                    i.stale_why = Some(why.into());
-                    i.decided_at_ms.get_or_insert(now);
+                    Stage::Effect(effect, detail) => {
+                        // A dismissal keeps its status: its effect says so too.
+                        if i.status != InboxStatus::Dismissed {
+                            i.status = InboxStatus::Effect;
+                        }
+                        i.sent_at_ms.get_or_insert(now);
+                        (i.effect, i.effect_detail, i.effect_at_ms) =
+                            (Some((*effect).into()), detail.clone(), Some(now));
+                    }
+                    Stage::Failed(error) => {
+                        i.status = InboxStatus::Failed;
+                        (i.error, i.effect_at_ms) = (Some(error.clone()), Some(now));
+                    }
+                    Stage::Stale(why) => {
+                        i.status = InboxStatus::Stale;
+                        i.stale_why = Some((*why).into());
+                        i.decided_at_ms.get_or_insert(now);
+                    }
                 }
             }
         });
@@ -312,26 +315,17 @@ impl Runtime {
                 && (i.status == InboxStatus::Sent
                     || (i.status == InboxStatus::Effect && i.effect.as_deref() == Some("queued")))
         };
-        if !self.store.read(|s| s.inbox.iter().any(waiting)) {
-            return;
-        }
-        let ids: Vec<u64> = self.store.read(|s| s.inbox.iter().filter(|i| waiting(i)).map(|i| i.id).collect());
-        for id in ids {
-            self.advance(id, Stage::Effect("resumed", None));
+        // Every turn start passes here: the store is written only when one waits.
+        if self.store.read(|s| s.inbox.iter().any(waiting)) {
+            self.advance_where(waiting, Stage::Effect("resumed", None));
         }
     }
 
     /// The Governor queued `agent`'s next turn: answers sent to it wait with an ETA.
     pub(crate) fn answers_queued(&self, agent: &str, eta: Option<String>) {
-        let ids: Vec<u64> = self.store.read(|s| {
-            s.inbox
-                .iter()
-                .filter(|i| i.agent_id.as_deref() == Some(agent) && i.status == InboxStatus::Sent)
-                .map(|i| i.id)
-                .collect()
-        });
-        for id in ids {
-            self.advance(id, Stage::Effect("queued", eta.clone()));
+        let sent = |i: &InboxItem| i.agent_id.as_deref() == Some(agent) && i.status == InboxStatus::Sent;
+        if self.store.read(|s| s.inbox.iter().any(sent)) {
+            self.advance_where(sent, Stage::Effect("queued", eta));
         }
     }
 
@@ -851,6 +845,7 @@ impl Runtime {
                     }
                     result["effect"] = json!("stale");
                     result["stale_why"] = json!(why);
+                    result["lifecycle"] = self.lifecycle(id);
                     self.outcome(&item, "user", "stale");
                     return Ok(result);
                 }
@@ -987,7 +982,13 @@ impl Runtime {
         if let Some(f) = path {
             args.extend(["--", f]);
         }
-        orch_git::git(std::path::Path::new(&s("worktree")), &args)
+        let mut patch = orch_git::git(std::path::Path::new(&s("worktree")), &args)?;
+        if patch.len() > PATCH_MAX {
+            let cut = (0..=PATCH_MAX).rev().find(|i| patch.is_char_boundary(*i)).unwrap_or(0);
+            patch.truncate(cut);
+            patch.push_str("\n… (patch truncated)\n");
+        }
+        Ok(patch)
     }
 
     /// The PR gate's branch is no longer at the commit the user was shown.
@@ -1030,9 +1031,12 @@ impl Runtime {
             Err(e) => self.advance(item, Stage::Failed(format!("{e:#}"))),
         }
         if let Some(a) = agent {
-            let solo = self.store.read(|s| s.agents.get(&a).is_some_and(|r| r.team.is_none()));
-            if let (true, Ok(url)) = (solo, &r) {
-                self.event(&a, "run.pr_opened", json!({"url": url}));
+            // The digest's pr_opened outcome, on the run's timeline when it has one.
+            if let Ok(url) = &r {
+                match self.store.read(|s| s.agents.get(&a).and_then(|r| r.team.as_ref().map(|t| t.run_id.clone()))) {
+                    Some(run) => self.run_event(&run, Some(&a), "run.pr_opened", json!({"url": url})),
+                    None => self.event(&a, "run.pr_opened", json!({"url": url})),
+                }
             }
             self.pr_opened(&a, r.as_ref().ok().map(String::as_str));
             let _ = self.deliver_user(&a, &msg);
