@@ -113,3 +113,29 @@ describe('team canvas model', () => {
     expect(h.past).toHaveLength(2);
   });
 });
+
+describe('model select mapping', () => {
+  it('maps stored values to options', () => {
+    expect(C.modelOption(null)).toBe('');
+    expect(C.modelOption('')).toBe('');
+    expect(C.modelOption('opus')).toBe('opus');
+    expect(C.modelOption('claude-opus-4-1')).toBe('custom');
+    expect(C.modelOption('mystery')).toBe('custom');
+  });
+
+  it('maps options back to saved values', () => {
+    expect(C.modelValue('')).toBeNull();
+    expect(C.modelValue('sonnet', 'x')).toBe('sonnet');
+    expect(C.modelValue('custom', '  claude-x  ')).toBe('claude-x');
+    expect(C.modelValue('custom', '   ')).toBeNull();
+  });
+
+  it('sets and clears a node override', () => {
+    let t = empty();
+    [t] = C.addNode(t, 'lead');
+    t = C.setNodeModel(t, 'lead', 'haiku');
+    expect(t.nodes[0].overrides.model).toBe('haiku');
+    t = C.setNodeModel(t, 'lead', null);
+    expect('model' in t.nodes[0].overrides).toBe(false);
+  });
+});

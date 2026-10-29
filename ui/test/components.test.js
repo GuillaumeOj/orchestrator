@@ -5,6 +5,7 @@ import PacingIndicator from '../src/components/PacingIndicator.svelte';
 import Sidebar from '../src/components/Sidebar.svelte';
 import StatusBadge from '../src/components/StatusBadge.svelte';
 import StatusBar from '../src/components/StatusBar.svelte';
+import TaskModelChip from '../src/components/TaskModelChip.svelte';
 import { app, decide, decisionPushed } from '../src/lib/app.svelte.js';
 import InboxPane from '../src/panes/InboxPane.svelte';
 import { act, budgetDecision, decision, fixture, nowOf, permDecision } from './fixture.js';
@@ -268,5 +269,16 @@ describe('Markdown', () => {
     expect(quote.textContent).not.toContain('|');
     expect(quote.querySelector('table')).toBeNull();
     expect(quote.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe('task model chip', () => {
+  it('shows the model with a tooltip, and nothing when unset', () => {
+    const on = render(TaskModelChip, { task: { flow: { model: 'opus' } } });
+    const chip = on.getByText('opus');
+    expect(chip.getAttribute('title')).toBe('Runs on opus (set by the lead)');
+    on.unmount();
+    const off = render(TaskModelChip, { task: { flow: {} } });
+    expect(off.container.querySelector('.chip')).toBeNull();
   });
 });
