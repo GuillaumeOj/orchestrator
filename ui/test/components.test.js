@@ -63,6 +63,18 @@ describe('components', () => {
     expect(legend).toContain('agents 47% · you 5% · outside app 4% · projected 98% at the reset');
   });
 
+  it('week bar "you" is the segment, not interactive_used (critical work stays with the agents)', async () => {
+    const d = fixture();
+    d.usage.snapshot.interactive_used = 8; // 5 interactive + 3 critical, already in governed 47
+    app.data = d;
+    const { container } = render(PacingIndicator);
+    await fireEvent.click(container.querySelector('.ind'));
+    const bar = container.querySelector('.pop [role="img"]');
+    expect(/** @type {HTMLElement} */ (bar.querySelector('span[data-seg="you"]')).style.width).toBe('5%');
+    expect(bar.getAttribute('aria-label')).toBe('Week 56%: agents 47%, you 5%, outside app 4%; plan 47%');
+    expect(container.querySelector('.pop').textContent).toContain('you 5% ·');
+  });
+
   it('week bar without you or outside usage: agents only', () => {
     const d = fixture();
     Object.assign(d.usage.snapshot, { used: 47, interactive_used: 0, unattributed_so_far: 0, plan: 38 });

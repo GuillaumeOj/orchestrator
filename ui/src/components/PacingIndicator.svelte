@@ -19,9 +19,11 @@
   // FR-815: a model window shows here only when it holds work (Red or exhausted).
   const hot = $derived(hotWindows(s?.model_windows));
   const seg = $derived(s && weekSegments(s));
+  // "you" is the segment (W − outside − G), not interactive_used: that one also holds
+  // critical work, which G (agents) already counts, so the text agrees with the bar.
   const weekLabel = $derived(
     s &&
-      `Week ${est}${Math.round(s.used)}%: agents ${Math.round(s.governed)}%, you ${Math.round(s.interactive_used)}%, outside app ${Math.round(s.unattributed_so_far)}%; plan ${Math.round(s.plan)}%`,
+      `Week ${est}${Math.round(s.used)}%: agents ${Math.round(s.governed)}%, you ${Math.round(seg.you)}%, outside app ${Math.round(s.unattributed_so_far)}%; plan ${Math.round(s.plan)}%`,
   );
 </script>
 
@@ -59,7 +61,7 @@
       <div class="row"><span>Week {est}{Math.round(s.used)}%</span><span>agents {Math.round(s.governed)}% · plan {Math.round(s.ideal)}% ({signed(s.error)})</span></div>
       {@render weekBar('wide')}
       <div class="muted">
-        <span class="sw" style:background={p.color}></span>agents {Math.round(s.governed)}% · <span class="sw you"></span>you {Math.round(s.interactive_used)}% · <span class="sw outside"></span>outside app {Math.round(s.unattributed_so_far)}% · projected {Math.round(s.projected)}% at the reset
+        <span class="sw" style:background={p.color}></span>agents {Math.round(s.governed)}% · <span class="sw you"></span>you {Math.round(seg.you)}% · <span class="sw outside"></span>outside app {Math.round(s.unattributed_so_far)}% · projected {Math.round(s.projected)}% at the reset
       </div>
       <div class="row"><span>5h window</span><span>{five == null ? 'no reading yet' : `${Math.round(five)}% used`}</span></div>
       <span class="bar wide"><i style:width="{Math.min(100, five ?? 0)}%"></i></span>
@@ -111,8 +113,12 @@
   .fill > span {
     flex: none;
   }
+  /* A 1 px gap of track between segments, inside the next one so widths stay exact. */
+  .fill > span + span {
+    box-shadow: inset 1px 0 0 var(--color-border-subtle);
+  }
   .outside {
-    background: var(--color-text-disabled);
+    background: var(--color-text-muted);
   }
   .you {
     background: var(--color-text-secondary);
