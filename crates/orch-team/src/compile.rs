@@ -217,6 +217,9 @@ fn lead_protocol(team: &Team, f: &FeatureCtx) -> String {
          not done: you are told when CI fails or the PR falls behind or conflicts with its base. Fix it: tasks as \
          usual for CI; mcp__orch__rebase_base (once every task is merged) when it is behind or conflicts. Then \
          mcp__orch__request_pr again to push. The feature is done when the PR is merged.\n\
+         Specialists run a lighter model than you: give a hard task, or one that failed a review round, \
+         `model: \"opus\"` in mcp__orch__create_task (or mcp__orch__update_task before it is sent back), and a \
+         mechanical task on an Opus node (re-exporting UI frames, say) `model: \"sonnet\"`.\n\
          You keep the team moving so the user only talks to you: settle what you can yourself, and send the user \
          only real decisions (product, scope, security, money) with mcp__orch__ask_user. Never ask the user a \
          question in plain text at the end of a turn: nobody reads it there. You never push and never merge with \
@@ -295,6 +298,7 @@ mod tests {
         assert!(lead.prompt.contains("mcp__orch__request_spec_approval"));
         assert!(lead.prompt.contains("orch/checkout-v2/integration"));
         assert!(lead.prompt.contains("back, front, ui, ux"));
+        assert!(lead.prompt.contains("`model: \"opus\"`") && lead.prompt.contains("`model: \"sonnet\"`"));
 
         let back = compile_node(&t, "back", &roles, &ctx()).unwrap();
         assert!(!back.is_lead);

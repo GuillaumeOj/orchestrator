@@ -318,9 +318,18 @@ compressed bodies get 415.
 - **P3 pacing (`pacing.rs`, `power.rs`)**: the statusline's extra `rate_limits.<name>` windows
   go to the Governor and are stored with the sample (FR-815); a StopFailure whose message names a
   model ("… Opus limit …") marks that model's window exhausted instead of the 5h/week window.
-  Each turn request carries the model it runs on. At a **task boundary** (a pending `task` turn)
-  a role with `downgrade` asks `task_boundary_model`; an agent running another model is
-  suspended while idle and the pump resumes it with `--model <to>` (`Live.model` records it).
+  Each turn request carries the model it runs on. At a **task boundary** (a pending `task` turn
+  whose seat task differs from `Live.task`, the task `Live.model` was chosen for) the model of the
+  task is, in order: the task's own `flow.model` (set by the lead with `create_task` /
+  `update_task`, validated by `model_arg`: trimmed, `""` = none, no spaces, 64 chars at most), the
+  downgrade in force (a role with `downgrade` asks `task_boundary_model`; an explicit task model
+  wins, and the Governor is not asked then), then the node's or role's model. An agent running
+  another model is suspended while idle and the pump resumes it with `--model <to>`; the
+  `model_switch` event carries `{from, to, why}` with `why` = `task`, `downgrade` or `restore`
+  (back to the role's model at the next task without one). A task keeps its model between its
+  turns (self-review included: no prompt-cache loss), so an `update_task` model on a running
+  task applies to its next run (`free_seat` resets `Live.task`). The FR-815 hold on a Red model
+  window is unchanged.
   **Off-hours** (FR-816): `queue_off_hours(entry | task, off)`; task and run marks (team launch
   `off_hours`) live in the kv key `governor.off_hours` and re-mark the agent at each decision.
   `power_tick` (housekeeping; `pmset` read at most once a minute, only while work waits) holds the
@@ -465,6 +474,10 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   origin and are recognised by the P2 fingerprints (`V1_FINGERPRINTS`). `preset_update` re-copies an
   unmodified starter and refuses a modified one. Duplicates get `<id>-copy` (then `-2`…), version 1,
   no origin, not a preset; roles the target scope can't see are copied with the team.
+  Version 4 gives the backend, frontend and UX roles `sonnet` (UI and the reviewer stay on `opus`,
+  as does the lead): an unmodified v3 copy upgrades in place (its role version goes up only when
+  the content changed), a modified one is left alone. The lead can still pass a per-task `model`
+  (see P3 pacing).
   The v0.11 auto-mode migration (gated roles move to `autonomous` once, key
   `roles.auto_mode_v011`) runs after the starter upgrades; a starter moved from gated to
   autonomous still counts as unmodified.

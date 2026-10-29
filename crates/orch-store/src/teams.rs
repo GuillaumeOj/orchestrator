@@ -204,6 +204,10 @@ pub struct TaskFlow {
     /// On a reviewer's own task: the task it reviews.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviews: Option<u64>,
+    /// Run this task on this model (an alias or a model id) instead of the
+    /// node's. Never synced to a task backend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 impl Task {
@@ -1045,6 +1049,17 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let s = Store::open(&d.path().join("o.db")).unwrap();
         (d, s)
+    }
+
+    #[test]
+    fn a_task_model_is_stored_in_the_flow_and_omitted_when_none() {
+        let (_d, s) = store();
+        let mut t = Task::new("p", "", "T", 1);
+        assert_eq!(serde_json::to_value(&t.flow).unwrap().get("model"), None);
+        t.flow.model = Some("opus".into());
+        let id = s.upsert_task(&t).unwrap();
+        assert_eq!(s.task(id).unwrap().unwrap().flow.model.as_deref(), Some("opus"));
+        assert_eq!(serde_json::to_value(&t.flow).unwrap()["model"], "opus");
     }
 
     #[test]
