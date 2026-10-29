@@ -15,6 +15,11 @@ use crate::runtime::Runtime;
 /// FR-603: the largest image a preview returns.
 pub const MAX_PREVIEW_BYTES: u64 = 5 * 1024 * 1024;
 
+/// The error for an image over `MAX_PREVIEW_BYTES`.
+pub fn too_large(bytes: u64) -> anyhow::Error {
+    anyhow!("too large ({:.1} MB)", bytes as f64 / (1024.0 * 1024.0))
+}
+
 /// Standard base64 (RFC 4648, padded).
 pub fn base64(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -134,7 +139,7 @@ impl Runtime {
             let Ok(size) = orch_git::git::git(&repo, &["cat-file", "-s", &spec]) else { continue };
             let size: u64 = size.trim().parse().unwrap_or(u64::MAX);
             if size > MAX_PREVIEW_BYTES {
-                bail!("too large ({:.1} MB)", size as f64 / (1024.0 * 1024.0));
+                return Err(too_large(size));
             }
             let bytes = orch_git::git::git_bytes(&repo, &["cat-file", "blob", &spec])?;
             return Ok(json!({"mime": mime, "data_b64": base64(&bytes), "bytes": bytes.len(), "source": source}));

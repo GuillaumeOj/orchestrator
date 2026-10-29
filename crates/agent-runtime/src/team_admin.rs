@@ -159,17 +159,22 @@ impl Runtime {
 
     /// One feature doc from the integration worktree (rendered by the UI).
     pub fn feature_doc(&self, feature_id: &str, name: &str) -> Result<String> {
-        let f = self.db.feature(feature_id)?.ok_or_else(|| anyhow!("no feature {feature_id}"))?;
-        let wt = f.integration_worktree.ok_or_else(|| anyhow!("feature {} has no integration worktree", f.slug))?;
-        read_feature_doc(&wt, &f.slug, name)
+        let (wt, slug) = self.integration_worktree(feature_id)?;
+        read_feature_doc(&wt, &slug, name)
     }
 
     /// An image a feature doc points at, from the integration worktree
     /// (`{mime, data_b64, bytes}`).
     pub fn feature_asset(&self, feature_id: &str, path: &str) -> Result<Value> {
+        let (wt, slug) = self.integration_worktree(feature_id)?;
+        read_feature_asset(&wt, &slug, path)
+    }
+
+    /// A feature's integration worktree and slug.
+    fn integration_worktree(&self, feature_id: &str) -> Result<(std::path::PathBuf, String)> {
         let f = self.db.feature(feature_id)?.ok_or_else(|| anyhow!("no feature {feature_id}"))?;
         let wt = f.integration_worktree.ok_or_else(|| anyhow!("feature {} has no integration worktree", f.slug))?;
-        read_feature_asset(&wt, &f.slug, path)
+        Ok((wt, f.slug))
     }
 
     pub fn run_act(&self, run_id: &str, action: &str) -> Result<Value> {

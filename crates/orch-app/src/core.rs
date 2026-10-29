@@ -1123,24 +1123,19 @@ impl Core {
         let wt = PathBuf::from(s("worktree"));
         match s("action").as_str() {
             "spec_approval" => {
-                let docs: Vec<Value> = agent_runtime::team::feature_docs(&wt, &s("feature"))
+                let slug = s("feature");
+                let docs: Vec<Value> = agent_runtime::team::feature_docs(&wt, &slug)
                     .into_iter()
                     .map(|name| {
-                        let text = agent_runtime::team::read_feature_doc(&wt, &s("feature"), &name)
+                        let text = agent_runtime::team::read_feature_doc(&wt, &slug, &name)
                             .unwrap_or_else(|e| format!("({e:#})"));
                         json!({"name": name, "text": text})
                     })
                     .collect();
-                // For the docs' images (`feature_asset`): the run's feature, if it is this slug.
-                let feature_id = rt
-                    .db
-                    .run(&s("run"))
-                    .ok()
-                    .flatten()
-                    .and_then(|r| rt.db.feature(&r.feature_id).ok().flatten())
-                    .filter(|f| f.slug == s("feature"))
-                    .map(|f| f.id);
-                Ok(json!({"action": "spec_approval", "summary": s("summary"), "docs": docs, "feature_id": feature_id}))
+                // For the docs' images (`feature_asset`); a gate from before it has none.
+                Ok(
+                    json!({"action": "spec_approval", "summary": s("summary"), "docs": docs, "feature_id": p.get("feature_id")}),
+                )
             }
             "push_pr" => {
                 let d = orch_git::diff::diff(&wt, &s("base"), DIFF_PATCH_MAX)?;
@@ -1570,7 +1565,7 @@ mod tests {
                     Some("fx-lead-1"),
                     "gate",
                     "Spec gate · fx".into(),
-                    json!({"action": "spec_approval", "run": run["id"], "feature": "fx", "summary": "s"}),
+                    json!({"action": "spec_approval", "run": run["id"], "feature": "fx", "feature_id": fid, "summary": "s"}),
                     20,
                 )
             })

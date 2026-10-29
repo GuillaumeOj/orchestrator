@@ -45,6 +45,12 @@ pub fn image_mime(path: &str) -> Option<&'static str> {
     PREVIEWABLE.iter().find(|(e, _)| *e == ext).map(|(_, m)| *m)
 }
 
+/// The MIME type of an image a feature doc can show: the previewable ones
+/// and GIF (not previewed in the Design section).
+pub fn doc_image_mime(path: &str) -> Option<&'static str> {
+    image_mime(path).or_else(|| path.to_ascii_lowercase().ends_with(".gif").then_some("image/gif"))
+}
+
 fn percent_decode(s: &str) -> String {
     let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
     let b = s.as_bytes();
@@ -241,6 +247,9 @@ mod tests {
         assert_eq!((m.tool.as_str(), m.title.as_deref()), ("url", Some("example.com")));
         assert_eq!(image_mime("a/b.JPG"), Some("image/jpeg"));
         assert_eq!(image_mime("a/b.gif"), None);
+        assert_eq!(doc_image_mime("a/b.GIF"), Some("image/gif"));
+        assert_eq!(doc_image_mime("a/b.svg"), Some("image/svg+xml"));
+        assert_eq!(doc_image_mime("a/b.txt"), None);
     }
 
     #[test]

@@ -1564,7 +1564,7 @@ impl Runtime {
                     Some(&rec.id),
                     "gate",
                     format!("Spec gate · {}: {}", cx.feature.slug, cut(summary, 200)),
-                    json!({"action": "spec_approval", "run": cx.run.id, "feature": cx.feature.slug,
+                    json!({"action": "spec_approval", "run": cx.run.id, "feature": cx.feature.slug, "feature_id": cx.feature.id,
                            "summary": cut(summary, 4_000), "docs": docs, "worktree": rec.worktree,
                            "branch": cx.feature.integration_branch()}),
                     crate::inbox::PRIORITY_GATE,
@@ -1706,32 +1706,23 @@ pub fn read_feature_doc(worktree: &Path, slug: &str, name: &str) -> Result<Strin
 /// leaves the folder (`..`, absolute, a symlink to outside it), a symlink
 /// as the file itself, a non-image and a file over `MAX_PREVIEW_BYTES`.
 pub fn read_feature_asset(worktree: &Path, slug: &str, path: &str) -> Result<Value> {
-    use crate::artifacts::{MAX_PREVIEW_BYTES, base64};
+    use crate::artifacts::{MAX_PREVIEW_BYTES, base64, too_large};
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     use std::path::Component;
-    let too_large = |n: u64| anyhow!("too large ({:.1} MB)", n as f64 / (1024.0 * 1024.0));
-    let rel = Path::new(path.strip_prefix("./").unwrap_or(path));
+    let not_found = || anyhow!("not found");
+    // A leading `./` is a `CurDir` component.
+    let rel = Path::new(path);
     if !rel.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
         bail!("outside the feature folder");
     }
-    let ext = rel.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    // GIF is shown in docs but not in the Design section's previews.
-    let mime = match ext.as_str() {
-        "gif" => Some("image/gif"),
-        e => orch_team::artifact::PREVIEWABLE.iter().find(|(x, _)| *x == e).map(|(_, m)| *m),
-    }
-    .ok_or_else(|| anyhow!("not an image"))?;
+    let mime = orch_team::artifact::doc_image_mime(path).ok_or_else(|| anyhow!("not an image"))?;
     let dir = feature_docs_dir(worktree, slug);
     let p = dir.join(rel);
-    let meta = std::fs::symlink_metadata(&p).map_err(|_| anyhow!("not found"))?;
-    if meta.file_type().is_symlink() {
+    if std::fs::symlink_metadata(&p).map_err(|_| not_found())?.file_type().is_symlink() {
         bail!("outside the feature folder");
     }
-    if !meta.is_file() {
-        bail!("not found");
-    }
-    let (Ok(real), Ok(root)) = (p.canonicalize(), dir.canonicalize()) else { bail!("not found") };
+    let (Ok(real), Ok(root)) = (p.canonicalize(), dir.canonicalize()) else { return Err(not_found()) };
     if !real.starts_with(&root) {
         bail!("outside the feature folder");
     }
@@ -1742,16 +1733,16 @@ pub fn read_feature_asset(worktree: &Path, slug: &str, path: &str) -> Result<Val
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(&real)
-        .map_err(|_| anyhow!("not found"))?;
-    let meta = file.metadata().map_err(|_| anyhow!("not found"))?;
+        .map_err(|_| not_found())?;
+    let meta = file.metadata().map_err(|_| not_found())?;
     if !meta.is_file() {
-        bail!("not found");
+        return Err(not_found());
     }
     if meta.len() > MAX_PREVIEW_BYTES {
         return Err(too_large(meta.len()));
     }
     let mut bytes = Vec::with_capacity(meta.len() as usize);
-    file.take(MAX_PREVIEW_BYTES + 1).read_to_end(&mut bytes).map_err(|_| anyhow!("not found"))?;
+    file.take(MAX_PREVIEW_BYTES + 1).read_to_end(&mut bytes).map_err(|_| not_found())?;
     if bytes.len() as u64 > MAX_PREVIEW_BYTES {
         return Err(too_large(bytes.len() as u64));
     }
@@ -1998,6 +1989,7 @@ mod tests {
         let gate = rt.store.read(|s| s.inbox.iter().find(|i| i.pending() && i.kind == "gate").cloned().unwrap());
         assert_eq!(gate.payload["action"], "spec_approval");
         assert_eq!(gate.payload["docs"], json!(["spec.md"]));
+        assert_eq!(gate.payload["feature_id"], json!(run.feature_id), "for the docs' images");
         // Sent back once, then approved.
         rt.decide(gate.id, InboxDecision::Reply, None, Some("name the files")).unwrap();
         assert_eq!(state(&rt, &run.id), RunState::Spec);
