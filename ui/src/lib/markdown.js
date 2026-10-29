@@ -20,13 +20,14 @@ export function parse(md) {
 }
 
 const QUOTE_LINE = /^ {0,3}>/;
-const QUOTE_MARKS = /^(?: {0,3}>[ \t]?)*/;
-const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+/** Quote and list markers before a line's content (`> - `, `1. > `…). */
+const CONTAINERS = /^(?:[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])(?=[ \t])))*[ \t]*/;
+const FENCE = /^(`{3,}|~{3,})(.*)$/;
 const DELIMITER_ROW = /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*\r?$/;
 
-/** The cells of a table row: split on unescaped `|`, outer pipes dropped. */
+/** The cells of a table row: split on `|` not escaped by an odd run of `\`, outer pipes dropped. */
 function cellCount(line) {
-  const cells = line.trim().split(/(?<!\\)\|/);
+  const cells = line.trim().split(/(?<!(?:^|[^\\])(?:\\\\)*\\)\|/);
   if (cells[0].trim() === '') cells.shift();
   if (cells.length && cells.at(-1).trim() === '') cells.pop();
   return cells.length;
@@ -41,19 +42,24 @@ function cellCount(line) {
 function unlazyTables(md) {
   const lines = md.split('\n');
   const out = [];
-  let fence = null; // the open fence's marker (``` / ~~~…), quoted or not
+  let fence = null; // the open fence: its marker (``` / ~~~…) and quote depth
   lines.forEach((line, i) => {
-    const bare = line.replace(QUOTE_MARKS, '');
-    const m = FENCE.exec(bare);
+    const prefix = CONTAINERS.exec(line)[0];
+    const depth = prefix.split('>').length - 1;
+    const m = FENCE.exec(line.slice(prefix.length));
+    // A quoted fence ends with its quote; a deeper `> ```` is the fence's content.
+    if (fence && depth < fence.depth) fence = null;
     if (fence) {
       // A closing fence: the same character, at least as long, nothing after it.
-      if (m && m[1][0] === fence[0] && m[1].length >= fence.length && !bare.slice(m[0].length).trim()) fence = null;
-    } else if (m) {
-      fence = m[1];
+      if (m && depth === fence.depth && m[1].startsWith(fence.marker) && !m[2].trim()) fence = null;
+    } else if (m && !(m[1][0] === '`' && m[2].includes('`'))) {
+      // (A backtick in a ``` info string makes the line inline code, not a fence.)
+      fence = { marker: m[1], depth };
     } else if (
       i > 0 &&
       QUOTE_LINE.test(lines[i - 1]) &&
-      !QUOTE_LINE.test(line) &&
+      // 4+ spaces would turn the row into indented code once it isn't lazy.
+      /^ {0,3}[^ >]/.test(line) &&
       line.includes('|') &&
       DELIMITER_ROW.test(lines[i + 1] ?? '') &&
       lines[i + 1].includes('|') &&

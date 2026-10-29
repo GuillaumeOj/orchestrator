@@ -232,6 +232,32 @@ describe('lazy table after a quote', () => {
     }
     const quoted = tree('> ```\n> > x\n> | a | b |\n> |---|---|\n> ```');
     expect(quoted.children[0].children[0]).toMatchObject({ type: 'code', value: '> x\n| a | b |\n|---|---|' });
+    // A quoted fence line inside an unquoted fence is content, not its close.
+    const shown = '> ```\n> x\n| a | b |\n|---|---|';
+    expect(tree(`\`\`\`md\n${shown}\n\`\`\``).children[0]).toMatchObject({ type: 'code', value: shown });
+    // A quoted fence ends with its quote: the next fence is a new block.
+    const after = tree(`> \`\`\`\n> code\n\n\`\`\`\n${body}\n\`\`\``);
+    expect(after.children[1]).toMatchObject({ type: 'code', value: body });
+    // A fence in a list item.
+    const listed = tree('- ```\n  > x\n  | a | b |\n  |---|---|\n  ```');
+    expect(listed.children[0].children[0].children[0]).toMatchObject({ type: 'code', value: body });
+    // ``` with a backtick after it is inline code, not a fence.
+    expect(top(`\`\`\`inline\`\`\` is code.\n\n\`\`\`\n${body}\n\`\`\``).at(-1)).toBe('code');
+    expect(tree(`\`\`\`inline\`\`\` is code.\n\n\`\`\`\n${body}\n\`\`\``).children[1].value).toBe(body);
+  });
+
+  it('still fixes a lazy table after a quoted fence closed by its quote', () => {
+    expect(top('> ```\n> code\n\ntext\n\n> quote\n| a | b |\n|---|---|')).toEqual([
+      'blockquote',
+      'paragraph',
+      'blockquote',
+      'table',
+    ]);
+  });
+
+  it('leaves a lazy row indented as code alone, and counts `\\\\|` as a cell edge', () => {
+    expect(top('> q\n    | a | b |\n|---|---|\n| 1 | 2 |')).toEqual(['blockquote']);
+    expect(top('> q\n| a \\\\| b |\n|---|---|')).toEqual(['blockquote', 'table']);
   });
 
   it('ends nested quotes and alerts before the table; the alert stays an alert', () => {
