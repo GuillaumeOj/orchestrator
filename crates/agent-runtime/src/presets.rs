@@ -467,11 +467,11 @@ mod tests {
     fn unmodified_v3_roles_upgrade_to_v4_modified_ones_do_not() {
         let (_d, rt) = test_runtime(true);
         for mut r in v3_roles() {
+            let fingerprint = role_fingerprint(&r);
             if r.id == "frontend" {
                 r.prompt = "my own prompt".into(); // the user's edit, after install
             }
-            let fp = role_fingerprint(&v3_roles().into_iter().find(|v| v.id == r.id).unwrap());
-            r.origin = Some(StarterOrigin { starter: r.id.clone(), version: 3, fingerprint: fp });
+            r.origin = Some(StarterOrigin { starter: r.id.clone(), version: 3, fingerprint });
             rt.db.upsert_role(&r, 1).unwrap();
         }
         rt.install_presets().unwrap();
