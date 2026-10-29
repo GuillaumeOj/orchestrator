@@ -221,6 +221,11 @@ pub async fn feature_doc(core: CoreState<'_>, feature: String, name: String) -> 
     blocking(core, move |c| c.feature_doc(&feature, &name)).await
 }
 
+#[tauri::command]
+pub async fn feature_asset(core: CoreState<'_>, feature: String, path: String) -> Res<Value> {
+    blocking(core, move |c| c.feature_asset(&feature, &path)).await
+}
+
 // ---- P3 design artifacts and presets (api-contract §3–4)
 
 #[tauri::command]

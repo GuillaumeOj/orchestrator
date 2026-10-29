@@ -142,6 +142,10 @@ impl Core {
         self.runtime()?.feature_doc(feature_id, name)
     }
 
+    pub fn feature_asset(&self, feature_id: &str, path: &str) -> Result<Value> {
+        self.runtime()?.feature_asset(feature_id, path)
+    }
+
     /// The Board (FR-502): a project's tasks in one model whatever the
     /// backend, with the nodes each active run can assign to.
     pub fn board_view(&self, project_id: &str) -> Result<Value> {

@@ -9,7 +9,7 @@ use orch_team::{RoleDef, TaskStatus, Team, mcp, rules};
 use serde_json::{Value, json};
 
 use crate::runtime::Runtime;
-use crate::team::{feature_docs, read_feature_doc};
+use crate::team::{feature_docs, read_feature_asset, read_feature_doc};
 
 /// A team's validation issues for the canvas: the node each is about, and
 /// its text (FR-305).
@@ -162,6 +162,14 @@ impl Runtime {
         let f = self.db.feature(feature_id)?.ok_or_else(|| anyhow!("no feature {feature_id}"))?;
         let wt = f.integration_worktree.ok_or_else(|| anyhow!("feature {} has no integration worktree", f.slug))?;
         read_feature_doc(&wt, &f.slug, name)
+    }
+
+    /// An image a feature doc points at, from the integration worktree
+    /// (`{mime, data_b64, bytes}`).
+    pub fn feature_asset(&self, feature_id: &str, path: &str) -> Result<Value> {
+        let f = self.db.feature(feature_id)?.ok_or_else(|| anyhow!("no feature {feature_id}"))?;
+        let wt = f.integration_worktree.ok_or_else(|| anyhow!("feature {} has no integration worktree", f.slug))?;
+        read_feature_asset(&wt, &f.slug, path)
     }
 
     pub fn run_act(&self, run_id: &str, action: &str) -> Result<Value> {

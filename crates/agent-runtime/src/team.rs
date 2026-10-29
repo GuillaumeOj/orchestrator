@@ -1696,6 +1696,44 @@ pub fn read_feature_doc(worktree: &Path, slug: &str, name: &str) -> Result<Strin
     Ok(cut(&text, 200_000))
 }
 
+/// An image a feature doc points at (`design/home.png`), read from the docs
+/// folder of a worktree as `{mime, data_b64, bytes}`. Refuses anything that
+/// leaves the folder (`..`, absolute, a symlink anywhere on the way), a
+/// non-image and a file over `MAX_PREVIEW_BYTES`.
+pub fn read_feature_asset(worktree: &Path, slug: &str, path: &str) -> Result<Value> {
+    use crate::artifacts::{MAX_PREVIEW_BYTES, base64};
+    use std::path::Component;
+    let rel = Path::new(path.strip_prefix("./").unwrap_or(path));
+    if !rel.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
+        bail!("outside the feature folder");
+    }
+    let ext = rel.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    // GIF is shown in docs but not in the Design section's previews.
+    let mime = match ext.as_str() {
+        "gif" => Some("image/gif"),
+        _ => orch_team::artifact::image_mime(path),
+    }
+    .ok_or_else(|| anyhow!("not an image"))?;
+    let dir = worktree.join(".orchestrator").join("features").join(slug);
+    let p = dir.join(rel);
+    let meta = std::fs::symlink_metadata(&p).map_err(|_| anyhow!("not found"))?;
+    if meta.file_type().is_symlink() {
+        bail!("outside the feature folder");
+    }
+    if !meta.is_file() {
+        bail!("not found");
+    }
+    let (Ok(real), Ok(root)) = (p.canonicalize(), dir.canonicalize()) else { bail!("not found") };
+    if !real.starts_with(&root) {
+        bail!("outside the feature folder");
+    }
+    if meta.len() > MAX_PREVIEW_BYTES {
+        bail!("too large ({:.1} MB)", meta.len() as f64 / (1024.0 * 1024.0));
+    }
+    let bytes = std::fs::read(&real).map_err(|_| anyhow!("not found"))?;
+    Ok(json!({"mime": mime, "data_b64": base64(&bytes), "bytes": bytes.len()}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2170,5 +2208,34 @@ mod tests {
         for bad in ["../x.md", "a/b.md", "spec.txt"] {
             assert!(read_feature_doc(d.path(), "f", bad).is_err());
         }
+    }
+
+    #[test]
+    fn assets_are_images_confined_to_the_feature_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join(".orchestrator/features/f");
+        std::fs::create_dir_all(dir.join("design")).unwrap();
+        std::fs::write(dir.join("design/home.png"), b"\x89PNG").unwrap();
+        std::fs::write(dir.join("flow.SVG"), "<svg/>").unwrap();
+        std::fs::write(dir.join("notes.txt"), "x").unwrap();
+        std::fs::write(d.path().join("secret.png"), b"s").unwrap();
+        let big = vec![0u8; crate::artifacts::MAX_PREVIEW_BYTES as usize + 1];
+        std::fs::write(dir.join("big.png"), big).unwrap();
+        std::os::unix::fs::symlink(d.path().join("secret.png"), dir.join("link.png")).unwrap();
+        std::os::unix::fs::symlink(d.path(), dir.join("up")).unwrap();
+        let get = |p: &str| read_feature_asset(d.path(), "f", p);
+        let err = |p: &str| get(p).unwrap_err().to_string();
+
+        for p in ["design/home.png", "./design/home.png"] {
+            assert_eq!(get(p).unwrap(), json!({"mime": "image/png", "data_b64": "iVBORw==", "bytes": 4}), "{p}");
+        }
+        assert_eq!(get("flow.SVG").unwrap()["mime"], "image/svg+xml");
+        for p in ["../../../secret.png", "design/../../x.png", "/etc/x.png", "link.png", "up/secret.png"] {
+            assert_eq!(err(p), "outside the feature folder", "{p}");
+        }
+        assert_eq!(err("notes.txt"), "not an image");
+        assert_eq!(err("design/missing.png"), "not found");
+        assert_eq!(err("design"), "not an image");
+        assert_eq!(err("big.png"), "too large (5.0 MB)");
     }
 }

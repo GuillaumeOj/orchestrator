@@ -1131,7 +1131,16 @@ impl Core {
                         json!({"name": name, "text": text})
                     })
                     .collect();
-                Ok(json!({"action": "spec_approval", "summary": s("summary"), "docs": docs}))
+                // For the docs' images (`feature_asset`): the run's feature, if it is this slug.
+                let feature_id = rt
+                    .db
+                    .run(&s("run"))
+                    .ok()
+                    .flatten()
+                    .and_then(|r| rt.db.feature(&r.feature_id).ok().flatten())
+                    .filter(|f| f.slug == s("feature"))
+                    .map(|f| f.id);
+                Ok(json!({"action": "spec_approval", "summary": s("summary"), "docs": docs, "feature_id": feature_id}))
             }
             "push_pr" => {
                 let d = orch_git::diff::diff(&wt, &s("base"), DIFF_PATCH_MAX)?;
@@ -1561,7 +1570,7 @@ mod tests {
                     Some("fx-lead-1"),
                     "gate",
                     "Spec gate · fx".into(),
-                    json!({"action": "spec_approval", "run": run["id"], "summary": "s"}),
+                    json!({"action": "spec_approval", "run": run["id"], "feature": "fx", "summary": "s"}),
                     20,
                 )
             })
@@ -1570,6 +1579,8 @@ mod tests {
         let items = core.state()["inbox"]["items"].clone();
         let gate = items.as_array().unwrap().iter().find(|i| i["kind"] == "gate").unwrap().clone();
         assert_eq!(gate["level"], 1);
+        // The spec gate names its feature, so the docs' images can be read.
+        assert_eq!(core.gate_detail(gate["id"].as_str().unwrap()).unwrap()["feature_id"], json!(fid));
         core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).unwrap();
         assert_eq!(core.state()["features"][0]["run"]["status"], "planning");
         assert!(core.inbox_act(gate["id"].as_str().unwrap(), "approve", None).is_err(), "decided once");
