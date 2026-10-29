@@ -25,10 +25,10 @@ The core already sends everything in `app.data.usage.snapshot`
 |---|---|
 | `used` | total week usage W, % |
 | `unattributed_so_far` | outside the app so far, pp |
-| `interactive_used` | the user's own (interactive) usage, pp |
-| `governed` | agents: `max(0, W − interactive_used − unattributed_so_far)` |
+| `interactive_used` | the reserve draw: interactive plus critical work, pp (critical stays in `governed`, so the "you" segment is `W − outside − governed`) |
+| `governed` | agents: `max(0, W − interactive-only − unattributed_so_far)` |
 | `ideal` | the agents' curve now |
-| `plan` | where W should be now: `ideal + interactive_used + unattributed_so_far` |
+| `plan` | where W should be now: `ideal + interactive-only + unattributed_so_far` |
 | `error` | `governed − ideal` = `W − plan`, pp |
 
 ## Change

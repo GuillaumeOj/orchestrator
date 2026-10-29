@@ -170,9 +170,14 @@ describe('pacing helpers', () => {
     const s = fixture().usage.snapshot;
     expect(weekSegments(s)).toEqual({ outside: 4, you: 5, agents: 47, tick: 47 });
     // Clamped: the fill never passes 100 %, and ends at min(100, W).
-    expect(weekSegments({ ...s, used: 120, plan: 130 })).toEqual({ outside: 4, you: 5, agents: 91, tick: 100 });
+    expect(weekSegments({ ...s, used: 120, governed: 111, plan: 130 })).toEqual({
+      outside: 4,
+      you: 5,
+      agents: 91,
+      tick: 100,
+    });
     // Parts past W: outside and you are cut at W, agents get nothing.
-    expect(weekSegments({ ...s, used: 6, unattributed_so_far: 4, interactive_used: 5 })).toEqual({
+    expect(weekSegments({ ...s, used: 6, governed: 0, unattributed_so_far: 4, interactive_used: 5 })).toEqual({
       outside: 4,
       you: 2,
       agents: 0,
@@ -185,6 +190,13 @@ describe('pacing helpers', () => {
       you: 0,
       agents: 47,
       tick: 38,
+    });
+    // Critical work is in interactive_used but stays in the agents' share: the agents
+    // segment is G, the you segment only the interactive rest.
+    expect(weekSegments({ ...s, used: 56, governed: 47, interactive_used: 8, unattributed_so_far: 4 })).toMatchObject({
+      outside: 4,
+      you: 5,
+      agents: 47,
     });
   });
 });

@@ -32,12 +32,12 @@
       {#if seg.you > 0}<span data-seg="you" class="you" style:width="{seg.you}%"></span>{/if}
       {#if seg.agents > 0}<span data-seg="agents" style:width="{seg.agents}%" style:background={p.color}></span>{/if}
     </span>
-    <em style:left="{seg.tick}%"></em>
+    <em style:left="min({seg.tick}%, 100% - 2px)"></em>
   </span>
 {/snippet}
 
 {#if s}
-  <button class="ind" onclick={() => (open = !open)} aria-expanded={open} aria-label="Usage pacing">
+  <button class="ind" onclick={() => (open = !open)} aria-expanded={open} aria-label="Usage pacing: {weekLabel}">
     <span style:color={p.color} aria-hidden="true">{p.icon}</span>
     <b>Week {est}{Math.round(s.used)}%</b>
     <span>agents {Math.round(s.governed)}%</span>

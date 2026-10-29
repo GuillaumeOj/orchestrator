@@ -56,7 +56,7 @@ describe('components', () => {
         ['you', '5%'],
         ['agents', '47%'],
       ]);
-      expect(bar.querySelector('em').style.left).toBe('47%');
+      expect(bar.querySelector('em').style.left).toBe('min(47%, 100% - 2px)');
       expect(bar.getAttribute('aria-label')).toBe('Week 56%: agents 47%, you 5%, outside app 4%; plan 47%');
     }
     const legend = container.querySelector('.pop').textContent.replace(/\s+/g, ' ');
@@ -70,7 +70,7 @@ describe('components', () => {
     const { container } = render(PacingIndicator);
     const bar = container.querySelector('[role="img"]');
     expect([...bar.querySelectorAll('span[data-seg]')].map((e) => e.getAttribute('data-seg'))).toEqual(['agents']);
-    expect(bar.querySelector('em').style.left).toBe('38%');
+    expect(bar.querySelector('em').style.left).toBe('min(38%, 100% - 2px)');
   });
 
   it('status bar shows the 5h guard and memory', () => {
