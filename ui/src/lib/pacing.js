@@ -21,11 +21,12 @@ const clamp = (x, hi) => Math.min(hi, Math.max(0, x ?? 0));
 /** The week bar's stacked fill (% of the bar): outside app, you, then the agents up to
  * the total W, edges cumulative and clamped to min(100, W); the tick is the total plan.
  * "You" is `W − outside − governed`, not `interactive_used`: the latter also holds
- * critical work, which the core keeps in the agents' share G. */
+ * critical work, which the core keeps in the agents' share G (the snapshot has no
+ * interactive-only field yet). */
 export function weekSegments(s) {
   const end = clamp(s.used, 100);
   const a = clamp(s.unattributed_so_far, end);
-  const b = clamp(a + clamp(s.used - s.unattributed_so_far - s.governed, 100), end);
+  const b = clamp(a + Math.max(0, s.used - s.unattributed_so_far - s.governed), end);
   return { outside: a, you: b - a, agents: end - b, tick: clamp(s.plan, 100) };
 }
 

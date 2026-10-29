@@ -177,15 +177,15 @@ describe('pacing helpers', () => {
       tick: 100,
     });
     // Parts past W: outside and you are cut at W, agents get nothing.
-    expect(weekSegments({ ...s, used: 6, governed: 0, unattributed_so_far: 4, interactive_used: 5 })).toEqual({
+    expect(weekSegments({ ...s, used: 6, governed: 0 })).toEqual({
       outside: 4,
       you: 2,
       agents: 0,
       tick: 47,
     });
-    expect(weekSegments({ ...s, used: 3, unattributed_so_far: 4 })).toMatchObject({ outside: 3, you: 0, agents: 0 });
+    expect(weekSegments({ ...s, used: 3, governed: 0 })).toMatchObject({ outside: 3, you: 0, agents: 0 });
     // No you, no outside: agents only, the tick at plan (= ideal).
-    expect(weekSegments({ ...s, used: 47, interactive_used: 0, unattributed_so_far: 0, plan: 38, ideal: 38 })).toEqual({
+    expect(weekSegments({ ...s, used: 47, unattributed_so_far: 0, plan: 38 })).toEqual({
       outside: 0,
       you: 0,
       agents: 47,
@@ -193,11 +193,7 @@ describe('pacing helpers', () => {
     });
     // Critical work is in interactive_used but stays in the agents' share: the agents
     // segment is G, the you segment only the interactive rest.
-    expect(weekSegments({ ...s, used: 56, governed: 47, interactive_used: 8, unattributed_so_far: 4 })).toMatchObject({
-      outside: 4,
-      you: 5,
-      agents: 47,
-    });
+    expect(weekSegments({ ...s, interactive_used: 8 })).toEqual(weekSegments(s));
   });
 });
 

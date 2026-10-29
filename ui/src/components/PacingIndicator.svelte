@@ -25,12 +25,12 @@
   );
 </script>
 
-{#snippet weekBar(cls, width)}
-  <span class="bar {cls}" style:width={width} role="img" aria-label={weekLabel} title={weekLabel}>
+{#snippet weekBar(cls)}
+  <span class="bar {cls}" role="img" aria-label={weekLabel} title={weekLabel}>
     <span class="fill">
-      {#if seg.outside > 0}<span data-seg="outside" class="outside" style:width="{seg.outside}%"></span>{/if}
-      {#if seg.you > 0}<span data-seg="you" class="you" style:width="{seg.you}%"></span>{/if}
-      {#if seg.agents > 0}<span data-seg="agents" style:width="{seg.agents}%" style:background={p.color}></span>{/if}
+      {#each ['outside', 'you', 'agents'] as k (k)}
+        {#if seg[k] > 0}<span data-seg={k} class={k} style:width="{seg[k]}%" style:background={k === 'agents' ? p.color : undefined}></span>{/if}
+      {/each}
     </span>
     <em style:left="min({seg.tick}%, 100% - 2px)"></em>
   </span>
@@ -43,7 +43,7 @@
     <span>agents {Math.round(s.governed)}%</span>
     <span class="muted">·</span>
     <span>plan {Math.round(s.ideal)}% ({signed(s.error)})</span>
-    {@render weekBar('', '40px')}
+    {@render weekBar('strip')}
     <span class="muted">·</span>
     <b>5h {pct(five)}</b>
     <span class="bar" style:width="24px"><i style:width="{Math.min(100, five ?? 0)}%"></i></span>
@@ -99,6 +99,9 @@
     bottom: 0;
     width: 2px;
     background: var(--color-text-primary);
+  }
+  .bar.strip {
+    width: 40px;
   }
   .fill {
     position: absolute;
