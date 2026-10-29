@@ -243,8 +243,8 @@ describe('surfaces render the record: status, reason, since', () => {
   it('feature pane: members from the records, phase from the run record', async () => {
     openPane({ type: 'feature', featureId: 'f-co' });
     const { container } = render(FeaturePane, { paneId: 'p1' });
-    await vi.waitFor(() => expect(container.querySelectorAll('.arow')).toHaveLength(4));
-    const rows = [...container.querySelectorAll('.arow')].map((r) => [
+    await vi.waitFor(() => expect(container.querySelectorAll('.trow')).toHaveLength(4));
+    const rows = [...container.querySelectorAll('.trow')].map((r) => [
       r.textContent.match(/perm-1|ask-1|run-1a|rev-1/)?.[0],
       r.querySelector('.badge').getAttribute('title'),
     ]);
