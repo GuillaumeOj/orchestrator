@@ -18,7 +18,11 @@
   "tasks": { "total": 7, "done": 3, "in_progress": 2, "review": 1, "blocked": 1 },
                                                   // blocked = not done, with an unmet depends_on (orch_team::run::blocked_by)
                                                   // counts are disjoint except `blocked` (a subset of the not-done ones)
-  "pr": { "url": "https://github.com/o/r/pull/12", "number": 12 }   // once run.pr_url is set; number parsed from the URL when it ends in /pull/<n>
+  "pr": { "url": "https://github.com/o/r/pull/12", "number": 12 },  // once run.pr_url is set; number parsed from the URL when it ends in /pull/<n>
+  // new (D12, ux F8): for phase paused | deferred | failed only
+  "held_in": "executing",                         // the step the run left: `from` of the run.state event that entered this phase,
+                                                  // walking back past paused/deferred; absent if no such event
+  "until_ms": 1761548400000                       // deferred only: when it resumes (the stored deferral time, else the weekly reset); absent if unknown
 }
 ```
 A change in task counts or `pr` is a record change (pushed in `now.attention.runs`). Task writes already set the `teams` / `features` topics; they must also mark attention dirty.
@@ -43,7 +47,7 @@ A change in task counts or `pr` is a record change (pushed in `now.attention.run
   }
 }
 ```
-The UI shows `run_now` in the window named by `binds` and both in the confirmation (FR-809). `runCost(queue_entry)` in `status.js` and the UI's use of `app_state.agents[].queue_entry` for Mission control go; `entry` is what `governor_act { action: "run_now" | "cancel", arg: entry }` takes (unchanged commands).
+`queue` is present **only when the agent has a Governor queue entry**, so `entry` is always set when `queue` is (D13, ux F9); a not-started agent with no entry has no `queue` field and its row shows no Start now / Cancel (`r` resume still applies). The UI shows `run_now` in the window named by `binds` and both in the confirmation (FR-809). `runCost(queue_entry)` in `status.js` and the UI's use of `app_state.agents[].queue_entry` for Mission control go; `entry` is what `governor_act { action: "run_now" | "cancel", arg: entry }` takes (unchanged commands).
 
 ## 2. Commands
 No new command. Used by Mission control:
