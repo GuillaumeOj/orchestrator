@@ -98,6 +98,8 @@ pub fn run() {
             commands::app_state,
             commands::now_snapshot,
             commands::decision_patch,
+            commands::watch_worktree,
+            commands::unwatch_worktree,
             commands::digest_seen,
             commands::kitty_config,
             commands::font_files,

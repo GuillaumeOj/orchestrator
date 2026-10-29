@@ -180,6 +180,23 @@ pub async fn restart_fresh(core: CoreState<'_>, agent: String) -> Res<Value> {
     blocking(core, move |c| c.restart_fresh(&agent)).await
 }
 
+/// A Diff pane opened on `path`: its `worktree:<path>` topic follows file
+/// changes (ref-counted; a registered project's worktree only).
+#[tauri::command]
+pub async fn watch_worktree(core: CoreState<'_>, path: String) -> Res<()> {
+    blocking(core, move |c| c.runtime()?.watch_worktree(std::path::Path::new(&path))).await
+}
+
+/// The Diff pane on `path` closed.
+#[tauri::command]
+pub async fn unwatch_worktree(core: CoreState<'_>, path: String) -> Res<()> {
+    blocking(core, move |c| {
+        c.runtime()?.unwatch_worktree(std::path::Path::new(&path));
+        Ok(())
+    })
+    .await
+}
+
 /// The PR gate's patch, whole or one file (api-contract §3.2).
 #[tauri::command]
 pub async fn decision_patch(core: CoreState<'_>, id: String, path: Option<String>) -> Res<String> {

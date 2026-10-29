@@ -25,4 +25,6 @@ libc = "0.2"
 socket2 = { version = "0.6", features = ["all"] }
 portable-pty = "0.9"
 uuid = { version = "1", features = ["v4"] }
+# FSEvents on macOS: the worktree watcher (P4.1 `worktree:<path>` topic).
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 tempfile = "3"

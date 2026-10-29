@@ -44,3 +44,4 @@ pub mod team_admin;
 pub mod transcript;
 pub mod usage;
 pub mod worktree;
+pub mod worktree_watch;

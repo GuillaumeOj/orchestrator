@@ -191,6 +191,8 @@ pub struct Runtime {
     pub(crate) outcome_sink: Mutex<Option<crate::inbox::OutcomeSink>>,
     /// The `now` publisher (P4.1): last world sent, rev, sinks.
     pub(crate) now: crate::now::Now,
+    /// Worktrees open in a Diff pane, watched for the `worktree:<path>` topic.
+    pub(crate) watches: crate::worktree_watch::Watches,
 }
 
 /// Clocks and flags of the periodic work (`tick`, `housekeeping`).
@@ -464,6 +466,7 @@ impl Runtime {
             probing: Default::default(),
             outcome_sink: Mutex::new(None),
             now: Default::default(),
+            watches: Default::default(),
         });
         rt.handle_releases(released);
         rt.backfill_report(now);
@@ -1168,6 +1171,7 @@ impl Runtime {
             let _ = self.suspend(&id);
         }
         self.otlp.lock().unwrap_or_else(|e| e.into_inner()).take();
+        self.unwatch_all();
         let _ = self.db.flush();
     }
 
