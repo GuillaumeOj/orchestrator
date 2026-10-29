@@ -3,7 +3,9 @@
 pub mod artifacts;
 pub mod attention;
 pub mod compile;
+pub mod decision;
 pub mod delivery;
+pub mod digest;
 pub mod env;
 pub mod flow;
 pub mod inbox;

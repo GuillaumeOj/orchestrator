@@ -256,14 +256,14 @@ impl Runtime {
             };
             match status {
                 InboxStatus::Pending => {}
-                InboxStatus::Decided => {
+                InboxStatus::Decided | InboxStatus::Sent | InboxStatus::Effect | InboxStatus::Failed => {
                     let item = self.store.read(|s| s.inbox.iter().find(|i| i.id == id).cloned());
                     return Some(item.map_or(Waited::Expired, |i| Waited::Decided(Box::new(i))));
                 }
                 InboxStatus::Dismissed => return Some(Waited::InPane),
                 InboxStatus::Interrupted => return Some(Waited::Interrupted),
                 InboxStatus::Parked => return Some(Waited::Parked),
-                InboxStatus::Expired => return Some(Waited::Expired),
+                InboxStatus::Expired | InboxStatus::Stale => return Some(Waited::Expired),
             }
             if Instant::now() >= end {
                 return None;
@@ -808,6 +808,10 @@ impl Runtime {
         );
         self.event(agent.as_deref().unwrap_or("-"), "pr", json!({"item": item, "ok": r.is_ok()}));
         if let Some(a) = agent {
+            let solo = self.store.read(|s| s.agents.get(&a).is_some_and(|r| r.team.is_none()));
+            if let (true, Ok(url)) = (solo, &r) {
+                self.event(&a, "run.pr_opened", json!({"url": url}));
+            }
             self.pr_opened(&a, r.as_ref().ok().map(String::as_str));
             let _ = self.deliver_user(&a, &msg);
         }

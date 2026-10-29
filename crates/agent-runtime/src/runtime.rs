@@ -1283,6 +1283,14 @@ impl Runtime {
         {
             self.touch_worktree(&rec.worktree);
         }
+        // A solo session's finished turn is an outcome of the digest (D8):
+        // its last assistant message, not the prompt it was sent.
+        if m.event == HookEvent::Stop
+            && rec.team.is_none()
+            && let Some(msg) = p.last_assistant_message.as_deref().filter(|t| !t.trim().is_empty())
+        {
+            self.event(id, "turn.done", json!({"summary": msg.chars().take(280).collect::<String>()}));
+        }
         if matches!(m.event, HookEvent::Stop | HookEvent::StopFailure) {
             self.suspend_if_parked(id);
         }
@@ -3270,8 +3278,8 @@ pub(crate) mod tests {
             assert_eq!(r["in_progress"], false);
             assert!(r["totals"]["weekly_pct"].as_f64().unwrap() > 30.0, "{r}");
             assert_eq!(r["by_model"][0]["key"], "sonnet", "{r}");
-            let digest = rt.store.read(|s| s.inbox.iter().any(|i| i.payload["digest"] == "weekly_report"));
-            assert!(digest, "a Weekly report ready digest");
+            let digest = rt.db.events(0, None, Some("weekly_report"), 5).unwrap();
+            assert_eq!(digest[0].detail["report"], week1_id.as_str(), "a report_ready outcome");
             assert_eq!(rt.report_view("current").unwrap()["in_progress"], true);
             let k = k(&rt);
             assert!(k.confidence > 0.5 && (k.cost_per_weekly_pct - 10.0).abs() < 3.0, "{k:?}");

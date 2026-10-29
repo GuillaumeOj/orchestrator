@@ -744,17 +744,13 @@ impl Runtime {
         let r = self.tasks_for(project).sync(now_ms());
         let last = match &r {
             Ok(rep) => {
+                // An outcome of the digest (D12), not an Inbox item.
                 for id in &rep.conflicts {
                     let handle = self.db.task(*id).ok().flatten().map(|t| t.handle()).unwrap_or_default();
-                    let _ = self.add_item(
-                        None,
-                        "info",
-                        format!(
-                            "{}: task {handle} changed here and on {remote}; {remote}'s version was kept",
-                            project.name
-                        ),
-                        json!({"action": "task_conflict", "task": id, "project": project.id}),
-                        0,
+                    self.event(
+                        "-",
+                        "task.sync_conflict",
+                        json!({"task": id, "handle": handle, "remote": remote, "project": project.id}),
                     );
                 }
                 // Something moved (the unmapped states are a standing note, not a change).
@@ -1484,7 +1480,12 @@ impl Runtime {
                     decision,
                     detail.clone(),
                 );
-                self.run_event(&cx.run.id, Some(&rec.id), "git.merge", json!({"branch": branch, "result": detail}));
+                self.run_event(
+                    &cx.run.id,
+                    Some(&rec.id),
+                    "git.merge",
+                    json!({"branch": branch, "into": cx.feature.integration_branch(), "result": detail}),
+                );
                 self.touch_worktree(&rec.worktree);
                 let r = r?;
                 let task = args.get("task").and_then(Value::as_u64).map(|id| self.db.task(id)).transpose()?.flatten();
@@ -1622,6 +1623,7 @@ impl Runtime {
         let Ok(Some(mut run)) = self.db.run(&seat.run_id) else { return };
         match url {
             Some(u) => {
+                self.run_event(&run.id, Some(agent), "run.pr_opened", json!({"url": u}));
                 run.pr_url = Some(u.to_string());
                 let _ = self.db.upsert_run(&run);
                 let _ = self.advance_run(&run.id, RunState::Done, "pull request opened");

@@ -445,11 +445,6 @@ fn queue_waits(actions: &[GovernorAction], samples: &[UsageRecord]) -> BTreeMap<
     out
 }
 
-/// The Inbox payload of a "Weekly report ready" digest item (level 4).
-pub fn inbox_payload(id: &str) -> Value {
-    json!({"kind": "info", "digest": "weekly_report", "report": id})
-}
-
 impl Runtime {
     /// Who each agent of the store is, for attribution.
     fn attributions(&self) -> BTreeMap<String, Attribution> {
@@ -522,8 +517,8 @@ impl Runtime {
             "Weekly report ready\nThe week ended at {:.0} % (agents {:.1} pp, you {:.1} pp, outside the app {:.1} pp).",
             r.totals.weekly_pct, r.totals.agents_pp, r.totals.interactive_pp, r.totals.outside_pp
         );
-        self.store.write(|s| s.add_inbox_item(None, "info", body, inbox_payload(&r.id), 0))?;
-        self.event("-", "weekly_report", json!({"report": r.id}));
+        // The digest's `report_ready` outcome (D12): the event is enough.
+        self.event("-", "weekly_report", json!({"report": r.id, "summary": body}));
         Ok(())
     }
 

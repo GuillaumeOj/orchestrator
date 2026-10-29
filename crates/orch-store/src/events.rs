@@ -139,19 +139,28 @@ impl Store {
         })
     }
 
-    /// A team run's timeline (FR-408), newest first.
-    /// How many events of these exact kinds since `since_ms`.
-    pub fn count_events(&self, since_ms: u64, kinds: &[&str]) -> Result<u64> {
+    /// Events of these exact kinds since `since_ms` with an id above
+    /// `after`, oldest first, each with its team run (the outcome digest).
+    pub fn events_of_kinds(&self, since_ms: u64, after: u64, kinds: &[&str]) -> Result<Vec<(Event, Option<String>)>> {
         let kinds: Vec<String> = kinds.iter().map(|k| k.to_string()).collect();
         self.read(move |c| {
             let marks = vec!["?"; kinds.len()].join(",");
-            let sql = format!("SELECT count(*) FROM events WHERE ts_ms >= ? AND kind IN ({marks})");
-            let args = std::iter::once(rusqlite::types::Value::Integer(since_ms as i64))
+            let sql = format!(
+                "SELECT id, ts_ms, agent_id, kind, detail, team_run_id FROM events
+                 WHERE ts_ms >= ? AND id > ? AND kind IN ({marks}) ORDER BY id"
+            );
+            let args = [since_ms as i64, after as i64]
+                .into_iter()
+                .map(rusqlite::types::Value::Integer)
                 .chain(kinds.into_iter().map(rusqlite::types::Value::Text));
-            Ok(c.query_row(&sql, rusqlite::params_from_iter(args), |r| r.get::<_, i64>(0))? as u64)
+            let mut st = c.prepare(&sql)?;
+            Ok(st
+                .query_map(rusqlite::params_from_iter(args), |r| Ok((row_event(r)?, r.get(5)?)))?
+                .collect::<rusqlite::Result<_>>()?)
         })
     }
 
+    /// A team run's timeline (FR-408), newest first.
     pub fn run_events(&self, run_id: &str, limit: usize) -> Result<Vec<Event>> {
         let run = run_id.to_string();
         self.read(move |c| {
@@ -303,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn counts_and_the_last_event_of_a_kind() {
+    fn events_of_kinds_and_the_last_event_of_a_kind() {
         let d = tempfile::tempdir().unwrap();
         let s = Store::open(&d.path().join("orch.db")).unwrap();
         let now = 100 * DAY_MS;
@@ -314,9 +323,12 @@ mod tests {
         s.add_run_event(now - 1, "r1", None, "run.state", json!({"to": "planning"}));
         s.add_run_event(now, "r1", None, "message", json!({}));
         s.flush().unwrap();
-        assert_eq!(s.count_events(now - DAY_MS, &["task.done", "git.merge"]).unwrap(), 2);
-        assert_eq!(s.count_events(now - DAY_MS, &["task"]).unwrap(), 0, "exact kinds, no prefix");
         assert_eq!(s.last_run_event("r1", "run.state").unwrap().unwrap().detail["to"], "planning");
         assert!(s.last_run_event("r2", "run.state").unwrap().is_none());
+        let evs = s.events_of_kinds(now - DAY_MS, 0, &["task.done", "run.state"]).unwrap();
+        let shape: Vec<(&str, Option<&str>)> = evs.iter().map(|(e, r)| (e.kind.as_str(), r.as_deref())).collect();
+        assert_eq!(shape, [("task.done", None), ("run.state", Some("r1")), ("run.state", Some("r1"))]);
+        let after = evs[1].0.id;
+        assert_eq!(s.events_of_kinds(now - DAY_MS, after, &["run.state"]).unwrap().len(), 1);
     }
 }

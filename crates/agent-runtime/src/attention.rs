@@ -272,6 +272,10 @@ pub struct AskFacts {
     pub cost_pp: Option<f64>,
     /// The action's reason, when it names no cost.
     pub reason: String,
+    /// What it does, and what happens at the deadline.
+    pub effect: String,
+    pub deadline_ms: u64,
+    pub default_apply: bool,
 }
 
 /// What `compute` reads. The runtime gathers it under its locks, then lets go.
@@ -299,29 +303,11 @@ pub struct Inputs<'a> {
     pub done_today: u32,
     /// Local time for clock times ("≈14:20", "resets Mon 09:00").
     pub tz: &'a TimeZone,
+    /// The decisions now ([`crate::decision::build`]): `counts.decisions`.
+    pub decisions: &'a [crate::decision::Decision],
 }
 
-/// The listed id of a store item (the Inbox's, P4.0): `inbox-3`, `gate-5`…
-pub fn decision_id(kind: &str, id: u64) -> String {
-    match kind {
-        "permission" => format!("inbox-{id}"),
-        "startup" => format!("startup-{id}"),
-        "gate" => format!("gate-{id}"),
-        "question" => format!("q-{id}"),
-        _ => format!("alert-{id}"),
-    }
-}
-
-/// An open store item's decision level (1 blocking, 2 errors, 3 budget, 4 info).
-// TODO(T-22): B2 moves this into the core's Decision builder; mirrors orch-app inbox.rs `build` until then.
-fn item_level(i: &InboxItem) -> u8 {
-    match i.kind.as_str() {
-        "permission" | "gate" | "question" => 1,
-        "notion" | "budget" => 3,
-        "info" => 4,
-        _ => 2,
-    }
-}
+pub use crate::decision::decision_id;
 
 /// An open item that puts its agent in error (spec rule 1, D3).
 fn error_item(i: &InboxItem) -> bool {
@@ -1097,35 +1083,17 @@ pub fn compute(i: &Inputs, now_ms: u64) -> World {
             counts.projects.entry(p.clone()).or_default().add(a);
         }
     }
-    // Open decisions of levels 1–3: stored items, then the synthesized ones
-    // (trust dialog, a prompt only in the pane, an agent in error, the ask).
-    // TODO(T-22): counted by the Decision builder once B2 lands; this mirrors orch-app inbox.rs.
+    // Open decisions of levels 1–3, as the Decision builder lists them.
     let mut by_agent: BTreeMap<&str, u32> = BTreeMap::new();
-    for it in i.inbox.iter().filter(|it| it.open() && item_level(it) <= 3) {
+    for d in i.decisions.iter().filter(|d| d.counts()) {
         counts.global.decisions += 1;
-        match it.agent_id.as_deref() {
+        match d.agent.as_deref() {
             Some(a) if agents.contains_key(a) => *by_agent.entry(a).or_default() += 1,
             _ => {
-                if let Some(p) = &it.project_id {
-                    counts.projects.entry(p.clone()).or_default().decisions += 1;
+                if let Some(p) = d.subject.get("project").and_then(Value::as_str) {
+                    counts.projects.entry(p.to_string()).or_default().decisions += 1;
                 }
             }
-        }
-    }
-    for a in i.agents.values() {
-        let held = cx.items(&a.id).iter().any(|it| it.kind == "permission");
-        let synthesized = a.trust_dialog
-            || (a.tracker.state == AgentState::WaitingForYou && !held)
-            || a.tracker.state == AgentState::Error;
-        if synthesized {
-            counts.global.decisions += 1;
-            *by_agent.entry(a.id.as_str()).or_default() += 1;
-        }
-    }
-    if let Some(ask) = i.ask {
-        counts.global.decisions += 1;
-        if let Some(a) = ask.agent.as_deref().filter(|a| agents.contains_key(*a)) {
-            *by_agent.entry(a).or_default() += 1;
         }
     }
     for (id, n) in &by_agent {
