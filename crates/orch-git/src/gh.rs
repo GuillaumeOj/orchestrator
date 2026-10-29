@@ -194,6 +194,27 @@ pub fn parse_pr_view(json: &str) -> Result<PrView> {
     })
 }
 
+/// The `gh` arguments of [`pr_lookup`].
+pub fn pr_lookup_args(branch: &str) -> Vec<String> {
+    ["pr", "view", branch, "--json", "number,url"].map(str::to_string).to_vec()
+}
+
+/// `(number, url)` from `gh pr view <branch> --json number,url`.
+pub fn parse_pr_lookup(json: &str) -> Result<(u64, String)> {
+    let p: Value = serde_json::from_str(json).context("gh pr view: not JSON")?;
+    let n = p.get("number").and_then(Value::as_u64).context("gh pr view: no PR number")?;
+    Ok((n, p.get("url").and_then(Value::as_str).unwrap_or("").to_string()))
+}
+
+/// The open PR of `branch` (its number and URL), from a checkout of its repo.
+pub fn pr_lookup(dir: &Path, branch: &str) -> Result<(u64, String)> {
+    if branch.starts_with('-') {
+        bail!("invalid branch {branch:?}");
+    }
+    let args = pr_lookup_args(branch);
+    parse_pr_lookup(&gh(dir, &args.iter().map(String::as_str).collect::<Vec<_>>())?)
+}
+
 /// The `gh` arguments of [`pr_view`].
 pub fn pr_view_args(number: u64) -> Vec<String> {
     ["pr", "view", &number.to_string(), "--json", PR_VIEW_FIELDS].map(str::to_string).to_vec()
@@ -345,6 +366,29 @@ pub fn push_rev(worktree: &Path, remote: &str, rev: &str, branch: &str) -> Resul
         bail!("invalid remote, commit or branch");
     }
     git_deadline(worktree, &["push", remote, &format!("{rev}:refs/heads/{branch}")], Duration::from_secs(120))?;
+    Ok(())
+}
+
+/// Force-pushes the commit `rev` to `<remote>`'s `branch` **only while the
+/// remote branch is still at `lease`** (`--force-with-lease`, never a bare
+/// `--force`): someone else's push since makes it fail. **Gated** like [`push`].
+pub fn push_with_lease(worktree: &Path, remote: &str, rev: &str, branch: &str, lease: &str) -> Result<()> {
+    if remote.starts_with('-') || rev.starts_with('-') || branch.starts_with('-') || rev.is_empty() {
+        bail!("invalid remote, commit or branch");
+    }
+    if lease.len() < 7 || !lease.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("invalid lease {lease:?}: a commit sha");
+    }
+    git_deadline(
+        worktree,
+        &[
+            "push",
+            &format!("--force-with-lease=refs/heads/{branch}:{lease}"),
+            remote,
+            &format!("{rev}:refs/heads/{branch}"),
+        ],
+        Duration::from_secs(120),
+    )?;
     Ok(())
 }
 
@@ -511,6 +555,37 @@ mod tests {
         assert_eq!(rev_sha(&wt, "origin/main"), rev_sha(&other, "HEAD"));
         assert!(fetch_branches(&wt, &["main", "--upload-pack=x"], Duration::from_secs(5)).is_err());
         assert_eq!(rev_sha(&wt, "origin/nope"), None);
+    }
+
+    #[test]
+    fn a_force_push_holds_only_its_lease() {
+        use crate::fixtures::{commit_file, git as g, scratch_repo};
+        let (d, src) = scratch_repo();
+        let bare = d.path().join("origin.git");
+        g(d.path(), &["clone", "-q", "--bare", src.to_str().unwrap(), bare.to_str().unwrap()]);
+        let wt = d.path().join("wt");
+        g(d.path(), &["clone", "-q", bare.to_str().unwrap(), wt.to_str().unwrap()]);
+        g(&wt, &["checkout", "-qb", "feat"]);
+        commit_file(&wt, "a.txt", "a", "feat a");
+        g(&wt, &["push", "-q", "origin", "feat"]);
+        let pushed = rev_sha(&wt, "HEAD").unwrap();
+        // Rewritten locally (amended): a plain push is refused, the lease one goes.
+        g(&wt, &["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "--amend", "-m", "feat a'"]);
+        let new = rev_sha(&wt, "HEAD").unwrap();
+        assert!(push_rev(&wt, "origin", &new, "feat").is_err(), "not a fast-forward");
+        push_with_lease(&wt, "origin", &new, "feat", &pushed).unwrap();
+        assert_eq!(g(&bare, &["rev-parse", "feat"]).trim(), new);
+        // Someone pushes to the branch: the next lease (on what the app pushed) is refused.
+        let other = d.path().join("other");
+        g(d.path(), &["clone", "-q", "-b", "feat", bare.to_str().unwrap(), other.to_str().unwrap()]);
+        commit_file(&other, "b.txt", "b", "someone else");
+        g(&other, &["push", "-q", "origin", "feat"]);
+        g(&wt, &["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "--amend", "-m", "feat a''"]);
+        let newer = rev_sha(&wt, "HEAD").unwrap();
+        assert!(push_with_lease(&wt, "origin", &newer, "feat", &new).is_err(), "the remote moved");
+        assert_ne!(g(&bare, &["rev-parse", "feat"]).trim(), newer);
+        assert!(push_with_lease(&wt, "origin", &newer, "feat", "--force").is_err());
+        assert!(push_with_lease(&wt, "--receive-pack=x", &newer, "feat", &new).is_err());
     }
 
     #[test]

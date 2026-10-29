@@ -254,7 +254,13 @@ pub fn inspect(path: &Path) -> Inspection {
         }
     };
     // The `locked` marker file lives in the gitdir too: it is not "in progress".
-    i.in_progress = IN_PROGRESS_MARKERS.iter().filter(|m| gd.join(m).exists()).map(|m| m.to_string()).collect();
+    // git leaves `REBASE_HEAD` behind a finished rebase: it counts only beside a rebase dir.
+    let rebase_dir = gd.join("rebase-merge").exists() || gd.join("rebase-apply").exists();
+    i.in_progress = IN_PROGRESS_MARKERS
+        .iter()
+        .filter(|m| gd.join(m).exists() && (**m != "REBASE_HEAD" || rebase_dir))
+        .map(|m| m.to_string())
+        .collect();
     i.index_lock = gd.join("index.lock").exists();
     i.gitdir = Some(gd);
     if let Ok(u) = git(path, &["ls-files", "-u"]) {

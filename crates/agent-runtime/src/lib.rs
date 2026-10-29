@@ -28,6 +28,7 @@ pub mod procs;
 pub mod projects;
 pub mod pty;
 pub mod questions;
+pub mod rebase;
 pub mod reconcile;
 pub mod registry;
 pub mod report;

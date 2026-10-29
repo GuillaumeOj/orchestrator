@@ -111,6 +111,14 @@ impl Runtime {
         }
     }
 
+    /// `gh pr view <branch>`: the number and URL of its PR.
+    fn gh_pr_lookup(&self, dir: &Path, branch: &str) -> Result<(u64, String)> {
+        match self.gh_override() {
+            Some(g) => gh::parse_pr_lookup(&g.run(&gh::pr_lookup_args(branch))?),
+            None => gh::pr_lookup(dir, branch),
+        }
+    }
+
     /// `gh pr create`; its URL. Tests replace `gh` through `cfg.gh`.
     pub(crate) fn gh_create_pr(
         &self,
@@ -259,7 +267,13 @@ impl Runtime {
                              mcp__orch__request_pr opens a new pull request.",
                         )
                     };
-                    if let Err(e) = self.advance_run(&run.id, to, why) {
+                    // A merge is not held back by a pause: the run is done (spec §3.3).
+                    let moved = if to == RunState::Done {
+                        self.set_run_state(&run.id, to, why).map(|_| ())
+                    } else {
+                        self.advance_run(&run.id, to, why).map(|_| ())
+                    };
+                    if let Err(e) = moved {
                         self.run_event(&run.id, None, "team_error", json!(format!("{e:#}")));
                     }
                     self.run_event(&run.id, None, &format!("pr.{what}"), json!({"number": n}));
@@ -345,14 +359,41 @@ impl Runtime {
             let _ = self.advance_run(&run.id, RunState::Integrating, "pull request failed");
             return None;
         };
-        run.pr_url = Some(u.to_string());
-        run.pr_number = gh::pr_number_from_url(u);
+        // `gh pr create` printed no `…/pull/N`: ask GitHub for the branch's PR.
+        let (number, url) = match gh::pr_number_from_url(u) {
+            Some(n) => (n, u.to_string()),
+            None => {
+                let feature = self.db.feature(&run.feature_id).ok().flatten();
+                let found = feature.as_ref().and_then(|f| {
+                    let wt = f.integration_worktree.clone()?;
+                    self.gh_pr_lookup(&wt, &f.integration_branch()).ok()
+                });
+                match found {
+                    Some((n, url)) => (n, if url.is_empty() { u.to_string() } else { url }),
+                    None => {
+                        let _ = self.advance_run(&run.id, RunState::Integrating, "pull request number unknown");
+                        let _ = self.deliver_user(
+                            agent,
+                            &format!(
+                                "ORCH: the pull request was opened ({u}) but its number could not be read, so it \
+                                 can't be followed; the run is back to integrating. Check it on GitHub and ask the \
+                                 user what to do with mcp__orch__ask_user."
+                            ),
+                        );
+                        return None;
+                    }
+                }
+            }
+        };
+        let u = url.as_str();
+        run.pr_url = Some(url.clone());
+        run.pr_number = Some(number);
         // A new PR (after one was closed): the old one's status goes.
         run.pr = None;
         let _ = self.db.upsert_run(&run);
         let _ = self.advance_run(&run.id, RunState::PrOpen, "pull request opened");
-        self.run_event(&run.id, None, "pr.opened", json!({"number": run.pr_number, "url": u}));
-        run.pr_number.map(|_| run.id)
+        self.run_event(&run.id, None, "pr.opened", json!({"number": number, "url": u}));
+        Some(run.id)
     }
 
     /// Checks a run's PR now (just opened or pushed to: `pushed` is the head the app pushed).
@@ -365,31 +406,68 @@ impl Runtime {
     // ------------------------------------------------------------ update push
 
     /// `request_pr` on a run whose PR is open: a gate to push the new
-    /// commits to that PR (no new PR). `title` / `body` are ignored.
+    /// commits to that PR (no new PR), a force push with lease when the
+    /// branch was rebased. `title` / `body` are ignored.
     pub(crate) fn request_pr_update(&self, rec: &AgentRecord, run: &TeamRun) -> Result<String> {
         let n = run.pr_number.ok_or_else(|| anyhow!("this run has no pull request"))?;
-        let pr = run.pr.as_ref();
-        let lease = pr
-            .and_then(|p| p.pushed_sha.clone().or_else(|| Some(p.head_sha.clone())))
-            .filter(|l| !l.is_empty())
+        let wt = &rec.worktree;
+        if orch_git::commit::rebasing(&orch_git::worktree::inspect(wt)) {
+            bail!(
+                "a rebase is in progress: finish it with mcp__orch__commit (or abort it with mcp__orch__rebase_base) first"
+            );
+        }
+        let pr = run
+            .pr
+            .as_ref()
+            .filter(|p| !p.head_sha.is_empty())
             .ok_or_else(|| anyhow!("PR #{n} was not checked yet: try again in a minute"))?;
-        let base = pr.map(|p| p.base.clone()).unwrap_or_default();
-        let branch = orch_git::worktree::current_branch(&rec.worktree)?;
+        let base_ref = format!("origin/{}", pr.base);
+        let branch = orch_git::worktree::current_branch(wt)?;
         // The head the user approves is the one pushed (not what the branch holds by then).
-        let head = gh::rev_sha(&rec.worktree, "HEAD").ok_or_else(|| anyhow!("{branch} has no commit"))?;
-        let commits = gh::commits_since(&rec.worktree, &lease)?;
-        if commits.is_empty() {
+        let head = gh::rev_sha(wt, "HEAD").ok_or_else(|| anyhow!("{branch} has no commit"))?;
+        // Someone else pushed to the PR: its commits must already be here or
+        // in the base (GitHub's "Update branch"), or the user decides.
+        let pushed = pr.pushed_sha.clone().unwrap_or_else(|| pr.head_sha.clone());
+        let mut foreign_replaced = 0;
+        if pr.head_sha != pushed {
+            if gh::rev_sha(wt, &pr.head_sha).is_none() {
+                bail!("PR #{n} has commits pushed outside the app that are not fetched yet: try again in a minute");
+            }
+            let foreign = orch_git::git(
+                wt,
+                &["log", "--max-count=50", "--format=%h %s", &pr.head_sha, "^HEAD", &format!("^{base_ref}"), "--"],
+            )?;
+            if !foreign.trim().is_empty() {
+                bail!(
+                    "PR #{n} has commits pushed outside the app that {branch} lacks:\n{}\nAsk the user what to do with \
+                     mcp__orch__ask_user (list these commits): pushing would drop them.",
+                    foreign.trim()
+                );
+            }
+            foreign_replaced = orch_git::cleanup::try_ahead_behind(wt, &pr.head_sha, "HEAD").map_or(0, |(a, _)| a);
+        }
+        // The lease is the PR head as last seen: what the app pushed, or
+        // foreign commits already in the base (checked above).
+        let lease = pr.head_sha.clone();
+        let force = !orch_git::cleanup::is_merged(wt, &lease, "HEAD");
+        let commits = gh::commits_since(wt, if force { &base_ref } else { &lease })?;
+        if commits.is_empty() || head == lease {
             bail!("nothing to push: {branch} has no commit that PR #{n} lacks");
         }
+        let title = if force {
+            format!("{}: force-push PR #{n} rebased onto {}", rec.id, pr.base)
+        } else {
+            format!("{}: push {} commit(s) to PR #{n} ({branch})", rec.id, commits.len())
+        };
         let url = run.pr_url.clone().unwrap_or_default();
         let id = self.add_item(
             Some(&rec.id),
             "gate",
-            format!("{}: push {} commit(s) to PR #{n} ({branch})", rec.id, commits.len()),
+            title,
             json!({"action": "push_pr_update", "run": run.id, "branch": branch, "pr_number": n, "url": url,
                    "commits": commits.iter().map(|(sha, subject)| json!({"sha": sha, "subject": subject})).collect::<Vec<_>>(),
-                   // The rebase and its force push come with `rebase_base`.
-                   "force": false, "lease_sha": lease, "head": head, "base": base, "worktree": rec.worktree}),
+                   "force": force, "lease_sha": lease, "foreign_replaced": foreign_replaced, "head": head,
+                   "base": pr.base, "worktree": wt}),
             PRIORITY_GATE,
         )?;
         self.db.audit(
@@ -398,11 +476,16 @@ impl Runtime {
             "pr_update_requested",
             Some(&branch),
             "pending",
-            json!({"item": id, "pr_number": n, "commits": commits.len()}),
+            json!({"item": id, "pr_number": n, "commits": commits.len(), "force": force,
+                   "foreign_replaced": foreign_replaced}),
         )?;
+        let what = if force {
+            format!("force-push {branch} (rebased onto {}) to PR #{n}", pr.base)
+        } else {
+            format!("push {} commit(s) of {branch} to PR #{n}", commits.len())
+        };
         Ok(format!(
-            "Requested: Inbox item {id} asks the user to push {} commit(s) of {branch} to PR #{n}. You will be told the result; there is nothing else to do for it now.",
-            commits.len()
+            "Requested: Inbox item {id} asks the user to {what}. You will be told the result; there is nothing else to do for it now."
         ))
     }
 
@@ -414,24 +497,35 @@ impl Runtime {
         let (wt, branch, run_id) = (PathBuf::from(s("worktree")), s("branch"), s("run"));
         let n = p["pr_number"].as_u64().unwrap_or(0);
         let commits = p["commits"].as_array().map_or(0, Vec::len);
-        let head = s("head");
-        let r = gh::push_rev(&wt, "origin", &head, &branch);
+        let (head, force) = (s("head"), p["force"].as_bool().unwrap_or(false));
+        // A rebased branch replaces the PR's history only while the PR is
+        // still at the head the user saw (never a bare --force).
+        let r = if force {
+            gh::push_with_lease(&wt, "origin", &head, &branch, &s("lease_sha"))
+        } else {
+            gh::push_rev(&wt, "origin", &head, &branch)
+        };
         let _ = self.db.audit(
             "core",
             agent.as_deref(),
             "pr_update",
             Some(&branch),
             if r.is_ok() { "ok" } else { "failed" },
-            json!({"item": item, "pr_number": n, "commits": commits, "force": false,
+            json!({"item": item, "pr_number": n, "commits": commits, "force": force,
                    "result": r.as_ref().map_err(|e| format!("{e:#}"))}),
         );
         let msg = match &r {
             Ok(()) => {
-                self.run_event(&run_id, None, "pr.pushed", json!({"number": n, "commits": commits, "force": false}));
+                self.run_event(&run_id, None, "pr.pushed", json!({"number": n, "commits": commits, "force": force}));
                 format!(
                     "ORCH: the user approved; pushed {commits} commit(s) to PR #{n}. CI restarts; you will be told the result."
                 )
             }
+            Err(e) if force => format!(
+                "ORCH: the user approved, but the force push to PR #{n} was refused: the PR moved since it was \
+                 asked (someone pushed to it). Nothing was pushed. Run mcp__orch__request_pr again once the PR is \
+                 checked ({e:#})."
+            ),
             Err(e) => format!("ORCH: the user approved, but pushing to PR #{n} failed: {e:#}"),
         };
         if let Some(a) = agent {
@@ -474,6 +568,10 @@ mod tests {
         fail: bool,
         created: u64,
         views: u32,
+        /// `gh pr create` prints no `…/pull/N`.
+        no_url: bool,
+        /// `gh pr view <branch>` finds no PR.
+        no_lookup: bool,
     }
 
     struct FakeGh(Arc<Mutex<Hub>>);
@@ -484,7 +582,17 @@ mod tests {
             match (args[0].as_str(), args[1].as_str()) {
                 ("pr", "create") => {
                     h.created += 1;
+                    if h.no_url {
+                        return Ok("Creating pull request…\n".into());
+                    }
                     Ok(format!("Creating…\nhttps://github.com/o/r/pull/{}\n", 11 + h.created))
+                }
+                ("pr", "view") if args[2].parse::<u64>().is_err() => {
+                    if h.no_lookup {
+                        bail!("no pull requests found for branch {:?}", args[2]);
+                    }
+                    let n = 11 + h.created;
+                    Ok(json!({"number": n, "url": format!("https://github.com/o/r/pull/{n}")}).to_string())
                 }
                 ("pr", "view") => {
                     h.views += 1;
@@ -613,6 +721,8 @@ mod tests {
             fail: false,
             created: 0,
             views: 0,
+            no_url: false,
+            no_lookup: false,
         }));
         let mut cfg = test_cfg(d.path(), false);
         let h = hub.clone();
@@ -814,7 +924,8 @@ mod tests {
         rt.pr_tick(t0 + MIN);
         rt.pr_tick(t0 + 2 * MIN);
         let r = run(&fx);
-        assert_eq!((r.status, r.resume_status), (RunState::Paused, Some(RunState::Done)));
+        assert_eq!((r.status, r.resume_status), (RunState::Done, None), "a pause does not hold the merge back");
+        assert!(r.ended_at_ms.is_some());
         assert_eq!(told(rt, "ORCH: PR #12 was merged. The feature is done; end your turn."), 1);
         assert!(
             rt.store.read(|s| !s.inbox.iter().any(|i| i.id == gate.id && i.pending())),
@@ -827,9 +938,7 @@ mod tests {
             ("Feature fx merged", json!("pr_merged"), json!(12))
         );
         assert_eq!(events(&fx, "pr.merged"), [json!({"number": 12})]);
-        rt.run_resume(&fx.run).unwrap();
-        let r = run(&fx);
-        assert!(r.status == RunState::Done && r.ended_at_ms.is_some());
+        assert!(rt.run_resume(&fx.run).is_err(), "nothing to resume");
         assert!(call(rt, LEAD, "create_task", json!({"title": "x", "node": "back"})).0, "the team tools refuse work");
         // A refresh of the done run (its status forgotten, as a run from before) stores, tells nothing.
         let mut r = run(&fx);

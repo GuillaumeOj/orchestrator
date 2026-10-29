@@ -399,7 +399,7 @@ impl Runtime {
     }
 
     /// The branch an agent works on, as its worktree row records it.
-    fn branch_of(&self, rec: &AgentRecord) -> String {
+    pub(crate) fn branch_of(&self, rec: &AgentRecord) -> String {
         self.store.read(|s| s.worktrees.get(&rec.worktree).map(|w| w.branch.clone())).unwrap_or_default()
     }
 
@@ -1500,6 +1500,12 @@ impl Runtime {
                     },
                     json!(r),
                 ))
+            }
+            "rebase_base" => {
+                if !is_lead {
+                    bail!("only the lead rebases the integration branch");
+                }
+                self.rebase_base(&cx, rec, args)
             }
             "merge" => {
                 if !is_lead {

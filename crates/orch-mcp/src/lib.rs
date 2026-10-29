@@ -69,7 +69,7 @@ pub fn tools() -> Value {
     Value::Array(vec![
         tool(
             "commit",
-            "Commit changes in your worktree. Use this instead of `git commit`: the sandbox blocks git from writing the repository. Stages the given paths (or every change when `paths` is omitted, like `git add -A`) and commits them on your branch. Hooks do not run. It never pushes. During a merge started by sync_integration, it concludes the merge.",
+            "Commit changes in your worktree. Use this instead of `git commit`: the sandbox blocks git from writing the repository. Stages the given paths (or every change when `paths` is omitted, like `git add -A`) and commits them on your branch. Hooks do not run. It never pushes. During a merge started by sync_integration, it concludes the merge. During a rebase started by rebase_base, it stages every change and continues the rebase (the message is not used), and returns the next outcome: another conflict or done.",
             json!({
                 "message": s("The commit message (first line = summary)."),
                 "paths": {"type": "array", "items": {"type": "string"}, "description": "Paths relative to the worktree root. Omit to commit everything."}
@@ -152,6 +152,12 @@ pub fn tools() -> Value {
             "Merge a branch of this feature (e.g. orch/<feature>/back-1) into the integration branch, in your worktree. On a conflict nothing is merged and the branch's owner is told to sync and fix.",
             json!({"branch": s("The branch to merge."), "task": {"type": "integer", "description": "The task it completes (set to done)."}}),
             &["branch"],
+        ),
+        tool(
+            "rebase_base",
+            "Bring the base branch in: fetch origin/<base> and rebase the integration branch onto it (task merges are kept). Only once every task is merged, and with no PR or update request waiting for the user. On a conflict the rebase stops: fix the files, then call commit to continue; `abort` gives up and restores the branch. Then run the tests and call request_pr to push.",
+            json!({"abort": {"type": "boolean", "description": "Abort the rebase in progress and restore the branch."}}),
+            &[],
         ),
         tool(
             "report_done",

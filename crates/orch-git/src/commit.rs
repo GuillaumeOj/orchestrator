@@ -236,6 +236,153 @@ pub fn merge_into_worktree(
     Ok(if sha == head { MergeOutcome::UpToDate } else { MergeOutcome::Merged { sha } })
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum RebaseOutcome {
+    /// The branch now sits on top of `onto`: `from` = its head before.
+    Rebased {
+        from: String,
+        to: String,
+    },
+    UpToDate,
+    /// The rebase stopped on commit `step` of `of`; `files` are conflicted.
+    /// Left in progress: fix, then [`rebase_continue`] (or [`rebase_abort`]).
+    Conflict {
+        files: Vec<String>,
+        step: u32,
+        of: u32,
+    },
+    Aborted,
+}
+
+/// A rebase is in progress in the worktree `insp` describes.
+pub fn rebasing(insp: &worktree::Inspection) -> bool {
+    insp.in_progress.iter().any(|m| m == "rebase-merge" || m == "rebase-apply")
+}
+
+/// git for a rebase: as [`git_cmd`], with no editor (messages kept, no todo edit).
+fn rebase_git(wt: &Path, gitconfig: Option<&Path>, args: &[&str]) -> Result<String> {
+    let mut c = git_cmd(wt, gitconfig);
+    c.env("GIT_EDITOR", "true").env("GIT_SEQUENCE_EDITOR", "true").args(args);
+    run(c, None)
+}
+
+fn rebase_file(gitdir: &Path, name: &str) -> Option<String> {
+    ["rebase-merge", "rebase-apply"]
+        .iter()
+        .find_map(|d| std::fs::read_to_string(gitdir.join(d).join(name)).ok())
+        .map(|s| s.trim().to_string())
+}
+
+/// After `git rebase` (or `--continue`) failed with `err`: a stop on
+/// conflicts is left for the agent; anything else is aborted (never a
+/// half-rebased worktree on an error) and `err` returned.
+fn rebase_stopped(wt: &Path, gitconfig: Option<&Path>, err: anyhow::Error) -> Result<RebaseOutcome> {
+    let insp = worktree::inspect(wt);
+    if !rebasing(&insp) {
+        return Err(err.context("git rebase"));
+    }
+    let files: Vec<String> = rebase_git(wt, gitconfig, &["diff", "--name-only", "--diff-filter=U", "-z"])
+        .unwrap_or_default()
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if files.is_empty() {
+        rebase_git(wt, gitconfig, &["rebase", "--abort"]).context("git rebase --abort")?;
+        return Err(err.context("git rebase (aborted)"));
+    }
+    // `--rebase-merges` todo lists hold label/reset lines too: count the commits only.
+    let gd = insp.gitdir.unwrap_or_default();
+    let commits = |n: &str| {
+        rebase_file(&gd, n).map_or(0, |s| {
+            s.lines().filter(|l| matches!(l.split_whitespace().next(), Some("pick" | "p" | "merge" | "m"))).count()
+                as u32
+        })
+    };
+    let step = commits("done");
+    Ok(RebaseOutcome::Conflict { files, step, of: step + commits("git-rebase-todo") })
+}
+
+fn valid_rev(rev: &str) -> Result<()> {
+    if rev.is_empty() || rev.starts_with('-') || rev.contains("..") || rev.contains('\0') {
+        bail!("invalid revision {rev:?}");
+    }
+    Ok(())
+}
+
+/// Rebases the branch checked out in `worktree` (a linked worktree, clean,
+/// nothing in progress) onto `onto` (`--rebase-merges`: the task merges are
+/// kept), outside the sandbox with the safety of [`commit_in_worktree`].
+pub fn rebase_worktree(worktree_path: &Path, onto: &str, gitconfig: Option<&Path>) -> Result<RebaseOutcome> {
+    valid_rev(onto)?;
+    let wt = real(worktree_path);
+    let insp = linked_worktree(&wt, "rebase")?;
+    if !insp.in_progress.is_empty() {
+        bail!("a {} is already in progress in this worktree", insp.in_progress.join("/"));
+    }
+    if insp.dirty > 0 {
+        bail!("the worktree has uncommitted changes: commit them first");
+    }
+    let g = |args: &[&str]| rebase_git(&wt, gitconfig, args);
+    let target = g(&["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{onto}^{{commit}}")])
+        .with_context(|| format!("no {onto}"))?
+        .trim()
+        .to_string();
+    let from = g(&["rev-parse", "HEAD"])?.trim().to_string();
+    if g(&["merge-base", "--is-ancestor", &target, "HEAD"]).is_ok() {
+        return Ok(RebaseOutcome::UpToDate);
+    }
+    match g(&["rebase", "--no-autosquash", "--rebase-merges", "--no-verify", "--quiet", &target]) {
+        Ok(_) => Ok(RebaseOutcome::Rebased { from, to: g(&["rev-parse", "HEAD"])?.trim().to_string() }),
+        Err(e) => rebase_stopped(&wt, gitconfig, e),
+    }
+}
+
+/// Stages everything and continues the rebase in progress: the next stop or the end.
+pub fn rebase_continue(worktree_path: &Path, gitconfig: Option<&Path>) -> Result<RebaseOutcome> {
+    let wt = real(worktree_path);
+    let insp = linked_worktree(&wt, "continue a rebase")?;
+    if !rebasing(&insp) {
+        bail!("no rebase in progress in this worktree");
+    }
+    let gd = insp.gitdir.clone().unwrap_or_default();
+    let from = rebase_file(&gd, "orig-head").ok_or_else(|| anyhow::anyhow!("the rebase in progress has no orig-head"))?;
+    let g = |args: &[&str]| rebase_git(&wt, gitconfig, args);
+    g(&["add", "-A", "--", "."]).context("git add")?;
+    match g(&["rebase", "--continue"]) {
+        Ok(_) if !rebasing(&worktree::inspect(&wt)) => {
+            Ok(RebaseOutcome::Rebased { from, to: g(&["rev-parse", "HEAD"])?.trim().to_string() })
+        }
+        Ok(_) => rebase_stopped(&wt, gitconfig, anyhow::anyhow!("the rebase stopped")),
+        Err(e) => rebase_stopped(&wt, gitconfig, e),
+    }
+}
+
+/// Aborts the rebase in progress: the branch is back where it was.
+pub fn rebase_abort(worktree_path: &Path, gitconfig: Option<&Path>) -> Result<RebaseOutcome> {
+    let wt = real(worktree_path);
+    if !rebasing(&linked_worktree(&wt, "abort a rebase")?) {
+        bail!("no rebase in progress in this worktree");
+    }
+    rebase_git(&wt, gitconfig, &["rebase", "--abort"]).context("git rebase --abort")?;
+    Ok(RebaseOutcome::Aborted)
+}
+
+/// Moves the branch checked out in `worktree` (linked, clean, nothing in
+/// progress) to `rev` (`reset --hard`): a specialist branch after its
+/// feature's integration branch was rebased.
+pub fn reset_worktree(worktree_path: &Path, rev: &str, gitconfig: Option<&Path>) -> Result<()> {
+    valid_rev(rev)?;
+    let wt = real(worktree_path);
+    let insp = linked_worktree(&wt, "reset")?;
+    if !insp.in_progress.is_empty() || insp.dirty > 0 {
+        bail!("the worktree is not clean");
+    }
+    rebase_git(&wt, gitconfig, &["reset", "--hard", "--quiet", "--end-of-options", rev]).context("git reset")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +448,97 @@ mod tests {
         );
     }
     use orch_protocol::WorktreeKindSpec;
+
+    /// The repo, an integration worktree and a specialist one of feature `f`, and a gitconfig.
+    fn feature() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
+        let (d, repo) = scratch_repo();
+        let led = MemLedger::default();
+        let integ = worktree::ensure(&led, &repo, &WorktreeKindSpec::Integration { feature: "f".into() }, None, None)
+            .unwrap()
+            .path;
+        let back = worktree::ensure(
+            &led,
+            &repo,
+            &WorktreeKindSpec::Team { feature: "f".into(), role: "back".into(), n: 1 },
+            Some("orch/f/integration"),
+            None,
+        )
+        .unwrap()
+        .path;
+        let gc = d.path().join("gitconfig");
+        std::fs::write(&gc, "[user]\n\tname = Agent\n\temail = a@example.invalid\n").unwrap();
+        (d, repo, integ, back, gc)
+    }
+
+    fn edit(wt: &Path, f: &str, body: &str, gc: &Path) {
+        std::fs::write(wt.join(f), body).unwrap();
+        commit_in_worktree(wt, &CommitRequest { message: format!("edit {f}"), paths: None }, Some(gc)).unwrap();
+    }
+
+    fn head(wt: &Path) -> String {
+        tgit(wt, &["rev-parse", "HEAD"]).trim().to_string()
+    }
+
+    #[test]
+    fn rebases_onto_the_base_keeping_the_task_merges() {
+        let (_d, repo, integ, back, gc) = feature();
+        edit(&integ, "spec.md", "spec", &gc);
+        edit(&back, "api.rs", "fn api() {}", &gc);
+        merge_into_worktree(&integ, "orch/f/back-1", "Merge back-1", Some(&gc), true).unwrap();
+        crate::fixtures::commit_file(&repo, "m.txt", "m", "main moves");
+        let before = head(&integ);
+        let r = rebase_worktree(&integ, "main", Some(&gc)).unwrap();
+        let RebaseOutcome::Rebased { from, to } = r else { panic!("{r:?}") };
+        assert_eq!((from, to.clone()), (before, head(&integ)));
+        assert!(tgit(&integ, &["merge-base", "--is-ancestor", "main", "HEAD"]).is_empty());
+        assert_eq!(tgit(&integ, &["rev-list", "--merges", "--count", "main..HEAD"]).trim(), "1", "the task merge is kept");
+        assert!(integ.join("api.rs").is_file() && integ.join("m.txt").is_file());
+        assert_eq!(rebase_worktree(&integ, "main", Some(&gc)).unwrap(), RebaseOutcome::UpToDate);
+        // The specialist's branch, all merged, moves to the new head.
+        reset_worktree(&back, &to, Some(&gc)).unwrap();
+        assert_eq!(head(&back), to);
+        std::fs::write(back.join("wip.txt"), "x").unwrap();
+        assert!(reset_worktree(&back, &to, Some(&gc)).unwrap_err().to_string().contains("not clean"));
+        assert!(reset_worktree(&back, "--hard", Some(&gc)).is_err());
+    }
+
+    #[test]
+    fn a_conflicting_rebase_stops_continues_and_aborts() {
+        let (_d, repo, integ, _back, gc) = feature();
+        edit(&integ, "shared.txt", "lead 1", &gc);
+        edit(&integ, "shared.txt", "lead 2", &gc);
+        crate::fixtures::commit_file(&repo, "shared.txt", "main", "main edits shared");
+        let before = head(&integ);
+        let conflict = |step| RebaseOutcome::Conflict { files: vec!["shared.txt".into()], step, of: 2 };
+        assert_eq!(rebase_worktree(&integ, "main", Some(&gc)).unwrap(), conflict(1));
+        assert!(rebasing(&worktree::inspect(&integ)));
+        assert!(rebase_worktree(&integ, "main", Some(&gc)).unwrap_err().to_string().contains("in progress"));
+        std::fs::write(integ.join("shared.txt"), "main + lead 1").unwrap();
+        assert_eq!(rebase_continue(&integ, Some(&gc)).unwrap(), conflict(2));
+        std::fs::write(integ.join("shared.txt"), "main + lead 2").unwrap();
+        let r = rebase_continue(&integ, Some(&gc)).unwrap();
+        assert!(matches!(&r, RebaseOutcome::Rebased { from, .. } if *from == before), "{r:?}");
+        assert!(worktree::inspect(&integ).in_progress.is_empty(), "a stale REBASE_HEAD is not in progress");
+        assert_eq!(std::fs::read_to_string(integ.join("shared.txt")).unwrap(), "main + lead 2");
+        assert_eq!(tgit(&integ, &["rev-list", "--count", "main..HEAD"]).trim(), "2");
+        assert!(rebase_continue(&integ, Some(&gc)).unwrap_err().to_string().contains("no rebase"));
+
+        // Abort: the branch is back where it was.
+        crate::fixtures::commit_file(&repo, "shared.txt", "main again", "main edits shared again");
+        let before = head(&integ);
+        assert!(matches!(rebase_worktree(&integ, "main", Some(&gc)).unwrap(), RebaseOutcome::Conflict { .. }));
+        assert_eq!(rebase_abort(&integ, Some(&gc)).unwrap(), RebaseOutcome::Aborted);
+        assert_eq!(head(&integ), before);
+        assert!(worktree::inspect(&integ).in_progress.is_empty());
+        assert!(rebase_abort(&integ, Some(&gc)).is_err());
+
+        // Refusals.
+        assert!(rebase_worktree(&integ, "--exec=x", Some(&gc)).is_err());
+        assert!(rebase_worktree(&integ, "nope", Some(&gc)).is_err());
+        assert!(rebase_worktree(&repo, "main", Some(&gc)).is_err(), "never the main checkout");
+        std::fs::write(integ.join("dirty.txt"), "x").unwrap();
+        assert!(rebase_worktree(&integ, "main", Some(&gc)).unwrap_err().to_string().contains("uncommitted"));
+    }
 
     fn setup() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
         let (d, repo) = scratch_repo();
