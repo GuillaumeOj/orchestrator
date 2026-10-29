@@ -35,6 +35,8 @@ Rule, applied in `parse()` before micromark runs, as a line pre-pass:
 - A blank line is inserted before each lazy table start. Nothing else changes.
 - Lines inside fenced code blocks (``` or ~~~, quoted or not) are never touched.
 
+As built (T-34): candidates are the lines of quoted paragraphs in a first parse, so code, HTML and the rest are settled by the parser. The two conditions "looks like a table row" and "delimiter row with as many cells" are decided by micromark itself: the line and the next one must parse as a table on their own. That avoids a hand-written copy of GFM's rules, so it also handles indentation and tabs correctly. The doc is re-parsed only when a blank line is inserted. Not covered: a quote opened on a list line (`- > q`) followed by a lazy table.
+
 Out of scope: other lazy constructs (a lazy list or heading already ends a quote in CommonMark), and editing `p-4-1-one-now/ux-brief.md` (the renderer must cope with docs agents write).
 
 ## 4. Acceptance
