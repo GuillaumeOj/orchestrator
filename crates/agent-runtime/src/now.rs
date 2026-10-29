@@ -12,7 +12,7 @@ use governor::{QueueEntry, Window};
 use orch_protocol::now_ms;
 use serde_json::{Value, json};
 
-use crate::attention::{self, AgentAttention, AskFacts, GovFacts, Level, RunFacts, WaitKind, World};
+use crate::attention::{self, AgentAttention, AskFacts, Episode, GovFacts, RunFacts, World};
 use crate::runtime::Runtime;
 
 /// Called with every `now` event (api-contract §3.1).
@@ -20,9 +20,6 @@ pub type NowSink = Arc<dyn Fn(&Value) + Send + Sync>;
 
 /// How many messages of a run are read for the agent-on-agent waits.
 const MESSAGES_PER_RUN: usize = 200;
-
-/// What a wait episode is: a new one restarts the remembered `since`.
-type Episode = (Level, Option<WaitKind>, Option<String>);
 
 /// What tells the Governor moved: its queue, paused agents and pending ask.
 type GovSeen = (Vec<QueueEntry>, BTreeSet<String>, Option<governor::ActionId>);
@@ -208,6 +205,11 @@ impl Runtime {
         lock(&self.now.topics).insert(topic.into());
     }
 
+    /// Files in `worktree` changed (an edit, a commit, a merge): its Diff pane refetches.
+    pub fn touch_worktree(&self, worktree: &std::path::Path) {
+        self.touch(format!("worktree:{}", worktree.display()));
+    }
+
     /// The agent's last published record.
     pub fn attention_of(&self, id: &str) -> Option<AgentAttention> {
         lock(&self.now.state).last.as_ref()?.agents.get(id).cloned()
@@ -220,7 +222,8 @@ impl Runtime {
             self.now_pump(true);
         }
         let st = lock(&self.now.state);
-        let w = st.last.clone().unwrap_or_default();
+        let empty = World::default();
+        let w = st.last.as_ref().unwrap_or(&empty);
         json!({
             "rev": st.rev,
             "agents": w.agents.values().collect::<Vec<_>>(),
@@ -261,20 +264,13 @@ impl Runtime {
         {
             return;
         }
-        if team_moved || force {
+        if team_moved {
             st.team = self.team_cache(team_changes);
+        } else if force {
+            // The day may have turned; the rest moves only with team writes.
+            st.team.done_today = self.done_today();
         }
-        for t in db_topics {
-            // Messages name their run: the pane that shows them is the feature's.
-            match t.strip_prefix("run:") {
-                Some(run) => topics.extend(
-                    st.team.runs.iter().filter(|r| r.run.id == run).map(|r| format!("feature:{}", r.run.feature_id)),
-                ),
-                None => {
-                    topics.insert(t);
-                }
-            }
-        }
+        topics.extend(db_topics);
         if changed.inbox {
             topics.insert("inbox".into());
         }
@@ -282,11 +278,10 @@ impl Runtime {
             topics.insert("queue".into());
             topics.insert("planner".into());
         }
-        let (agents, inbox, live) = {
-            let live: BTreeSet<String> = self.live_ids().into_iter().collect();
-            let (agents, inbox) = self.store.read(|s| (s.agents.clone(), s.inbox.clone()));
-            (agents, inbox, live)
-        };
+        let live: BTreeSet<String> = self.live_ids().into_iter().collect();
+        // Open items only: closed ones (up to KEEP_FINISHED) never count.
+        let (agents, inbox): (_, Vec<_>) =
+            self.store.read(|s| (s.agents.clone(), s.inbox.iter().filter(|i| i.open()).cloned().collect()));
         let (queue, ask, gov) = self.governor_facts();
         let paused = &queue_now.1;
         let tz = jiff::tz::TimeZone::system();
@@ -340,8 +335,7 @@ impl Runtime {
                 g.release_order().iter().filter_map(|id| by_id.get(id).map(|e| (*e).clone())).collect();
             let ask = g.pending_ask().and_then(|id| {
                 let a = g.action(id).filter(|a| a.ask.is_some())?;
-                let agent =
-                    serde_json::to_value(&a.action).ok()?.get("agent").and_then(Value::as_str).map(str::to_string);
+                let agent = a.action.agent().map(|a| a.0.clone());
                 let cost_pp = agent
                     .as_deref()
                     .and_then(|ag| g.queue().iter().find(|e| e.agent.0 == ag))
@@ -421,15 +415,7 @@ impl Runtime {
     fn done_today(&self) -> u32 {
         let midnight =
             jiff::Zoned::now().start_of_day().map(|z| z.timestamp().as_millisecond().max(0) as u64).unwrap_or(0);
-        ["task.done", "git.merge"]
-            .iter()
-            .map(|k| {
-                self.db
-                    .events(midnight, None, Some(k), 1000)
-                    .map(|v| v.iter().filter(|e| e.kind == *k).count())
-                    .unwrap_or(0)
-            })
-            .sum::<usize>() as u32
+        self.db.count_events(midnight, &["task.done", "git.merge"]).unwrap_or(0) as u32
     }
 }
 

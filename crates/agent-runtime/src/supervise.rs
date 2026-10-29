@@ -39,23 +39,23 @@ impl MemberStatus {
     /// What is wrong, with the start of the episode (one note each). A
     /// member waiting on another agent or a task is waiting, not stuck.
     pub fn stuck(&self, now: u64) -> Option<(&'static str, u64, String)> {
-        let mins = now.saturating_sub(self.since_ms) / 60_000;
+        let mins = crate::now::duration(now.saturating_sub(self.since_ms));
         let waited = |ms: u64| now.saturating_sub(self.since_ms) >= ms;
         let who = &self.agent;
         let why = if self.reason.is_empty() { String::new() } else { format!(" ({})", self.reason) };
         let what = match self.level {
             Level::NeedsYou if waited(WAITING_FOR_USER_MS) => {
-                ("waiting_for_user", format!("{who} has waited {mins} min for the user{why}"))
+                ("waiting_for_user", format!("{who} has waited {mins} for the user{why}"))
             }
             Level::Error => ("error", format!("{who} is in error{why}; resume it or reassign its task")),
             // A pause is the user's choice, not a stuck member.
             Level::Queued if self.status != Status::Paused && waited(STUCK_MS) => {
-                ("queued", format!("{who} has had work waiting for {mins} min{why}"))
+                ("queued", format!("{who} has had work waiting for {mins}{why}"))
             }
             Level::Idle if self.task.is_some() && waited(STUCK_MS) => (
                 "idle_with_task",
                 format!(
-                    "{who} has been idle for {mins} min with task T-{} not reported done",
+                    "{who} has been idle for {mins} with task T-{} not reported done",
                     self.task.unwrap_or_default()
                 ),
             ),
@@ -70,7 +70,7 @@ impl MemberStatus {
         let reason = if self.reason.is_empty() {
             String::new()
         } else {
-            format!(" · {} · {} min", self.reason, now.saturating_sub(self.since_ms) / 60_000)
+            format!(" · {} · {}", self.reason, crate::now::duration(now.saturating_sub(self.since_ms)))
         };
         format!("- {} (`{}`): {label}{reason}{task}", self.agent, self.node)
     }
@@ -224,7 +224,7 @@ mod tests {
             MemberStatus { reason: "permission: Bash ls".into(), ..m(Level::NeedsYou) }.stuck(now).unwrap();
         assert_eq!(
             (what, line.as_str()),
-            ("waiting_for_user", "f-back-1 has waited 60 min for the user (permission: Bash ls)")
+            ("waiting_for_user", "f-back-1 has waited 1 h 00 min for the user (permission: Bash ls)")
         );
         assert!(m(Level::NeedsYou).stuck(WAITING_FOR_USER_MS - 1).is_none());
         assert_eq!(m(Level::Idle).stuck(now).unwrap().0, "idle_with_task");

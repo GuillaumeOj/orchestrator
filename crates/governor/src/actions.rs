@@ -126,6 +126,27 @@ pub enum ActionKind {
     },
 }
 
+impl ActionKind {
+    /// The agent the action is about, if one.
+    pub fn agent(&self) -> Option<&AgentId> {
+        use ActionKind::*;
+        match self {
+            Queue { agent, .. }
+            | Release { agent, .. }
+            | HoldToolCall { agent, .. }
+            | Watchdog { agent, .. }
+            | CancelAutoContinue { agent, .. }
+            | PauseAgent { agent, .. }
+            | ResumeAgent { agent, .. }
+            | Cancel { agent, .. }
+            | RunNow { agent, .. }
+            | Downgrade { agent, .. }
+            | RestoreModel { agent, .. } => Some(agent),
+            _ => None,
+        }
+    }
+}
+
 /// What undoing an action does.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

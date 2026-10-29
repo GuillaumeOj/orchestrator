@@ -91,9 +91,6 @@ impl Runtime {
             // The team tools (the role's own; `may_call` checked it above).
             _ => self.team_tool(&rec, &m.tool, &m.arguments),
         };
-        if r.is_ok() && matches!(m.tool.as_str(), "commit" | "merge" | "sync_integration") {
-            self.touch(format!("worktree:{}", rec.worktree.display()));
-        }
         match r {
             Ok((text, data)) => (false, text, data),
             Err(e) => (true, format!("{e:#}"), Value::Null),
@@ -142,6 +139,9 @@ impl Runtime {
         };
         let _ = self.db.audit(actor, Some(agent_id), "commit", rec.worktree.to_str(), decision, detail.clone());
         self.event(agent_id, "commit", detail);
+        if r.is_ok() {
+            self.touch_worktree(&rec.worktree);
+        }
         if let Ok(Some(p)) = self.db.project_by_path(&rec.repo) {
             let _ = self.db.touch_project(&p.id, now_ms());
         }

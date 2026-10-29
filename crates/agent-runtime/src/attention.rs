@@ -115,6 +115,9 @@ pub struct WaitingOn {
     pub since_ms: u64,
 }
 
+/// What identifies a wait episode: `(level, kind, ref)`.
+pub type Episode = (Level, Option<WaitKind>, Option<String>);
+
 /// One agent's record (api-contract §1).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct AgentAttention {
@@ -144,7 +147,7 @@ pub struct AgentAttention {
 
 impl AgentAttention {
     /// What identifies a wait episode: a new one restarts `since`.
-    pub fn episode(&self) -> (Level, Option<WaitKind>, Option<String>) {
+    pub fn episode(&self) -> Episode {
         let w = self.waiting_on.as_ref();
         (self.level, w.map(|w| w.kind), w.and_then(|w| w.r#ref.clone()))
     }
@@ -417,6 +420,7 @@ pub mod copy {
         }
     }
     pub const WRITING: &str = "writing";
+    pub const BEHIND_QUEUE: &str = "behind higher-priority work";
 
     /// p4-design-notes §2.2: `<reason>[ · <position>][ · ≈<eta>]`. The
     /// position is left out for a not-started agent; reasons with their own
@@ -460,7 +464,7 @@ pub mod copy {
             QueueReason::PausedAll => PAUSE_ALL.into(),
             QueueReason::PausedAgent => PAUSED_BY_YOU.into(),
             QueueReason::MemoryPressure { cap } => format!("memory pressure · live cap {live}/{cap}"),
-            QueueReason::BehindQueue => "behind higher-priority work".into(),
+            QueueReason::BehindQueue => BEHIND_QUEUE.into(),
             QueueReason::ScheduledOffHours { starts_at } => {
                 return (format!("off-hours · starts {}", at(starts_at)), true);
             }
@@ -513,14 +517,9 @@ pub mod copy {
         }
     }
 
-    pub fn task_status(s: TaskStatus) -> &'static str {
-        match s {
-            TaskStatus::Backlog => "backlog",
-            TaskStatus::Ready => "ready",
-            TaskStatus::InProgress => "in progress",
-            TaskStatus::Review => "review",
-            TaskStatus::Done => "done",
-        }
+    /// "in progress": the task palette's word, lowercase.
+    pub fn task_status(s: TaskStatus) -> String {
+        s.label().to_lowercase()
     }
 
     /// A tool and its short input: "Bash cargo test", "Edit src/feed.ts",
@@ -538,11 +537,7 @@ pub mod copy {
     /// The first line, at most `n` characters ("…" when cut).
     pub fn cut(s: &str, n: usize) -> String {
         let line = s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
-        if line.chars().count() <= n {
-            line.to_string()
-        } else {
-            format!("{}…", line.chars().take(n.saturating_sub(1)).collect::<String>())
-        }
+        if line.chars().count() <= n { line.to_string() } else { crate::team::cut(line, n.saturating_sub(1)) }
     }
 }
 
@@ -589,7 +584,6 @@ struct Ctx<'a> {
     tasks: BTreeMap<u64, &'a Task>,
     /// Agents by (run, node).
     seats: BTreeMap<(&'a str, &'a str), &'a str>,
-    live_count: u32,
 }
 
 fn is_lead(a: &AgentRecord) -> bool {
@@ -621,9 +615,6 @@ impl<'a> Ctx<'a> {
             .values()
             .filter_map(|a| a.team.as_ref().map(|t| ((t.run_id.as_str(), t.node.as_str()), a.id.as_str())))
             .collect();
-        let live_count =
-            i.agents.values().filter(|a| a.tracker.state != AgentState::Archived && i.live.contains(&a.id)).count()
-                as u32;
         Ctx {
             i,
             now,
@@ -632,7 +623,6 @@ impl<'a> Ctx<'a> {
             runs: i.runs.iter().map(|r| (r.run.id.as_str(), r)).collect(),
             tasks: i.tasks.iter().map(|t| (t.id, t)).collect(),
             seats,
-            live_count,
         }
     }
 
@@ -699,7 +689,7 @@ impl<'a> Ctx<'a> {
                 "permission" => {
                     let input =
                         it.payload.get("tool_input").or_else(|| it.payload.get("input")).unwrap_or(&Value::Null);
-                    let short = crate::permissions::primary_input(s("tool"), input).unwrap_or_default();
+                    let short = crate::inbox::main_arg(s("tool"), input).unwrap_or_default();
                     let tool = copy::tool(s("tool"), Some(&short));
                     let (tool, input) = tool.split_once(' ').unwrap_or((&tool, ""));
                     (Status::WaitingForYou, copy::permission(tool, input, it.status == InboxStatus::Parked))
@@ -819,8 +809,7 @@ impl<'a> Ctx<'a> {
         if s == AgentState::Created {
             return Some(governor(Status::NotStarted, copy::WAITING_FOR_SLOT.into(), Some(a.created_at_ms)));
         }
-        (s == AgentState::Queued)
-            .then(|| governor(Status::Queued, "behind higher-priority work".into(), a.last_event_at_ms))
+        (s == AgentState::Queued).then(|| governor(Status::Queued, copy::BEHIND_QUEUE.into(), a.last_event_at_ms))
     }
 
     /// Rules 5 and 6: starting, running, or waiting on an external tool.
@@ -988,13 +977,13 @@ impl<'a> Ctx<'a> {
                 t.agent_id.clone().unwrap_or_else(|| self.agent_of(&seat.run_id, t.node.as_deref().unwrap_or("?"))),
                 copy::task_status(t.status),
             ),
-            None => (format!("T-{first}"), "?".into(), "unknown"),
+            None => (format!("T-{first}"), "?".into(), "unknown".into()),
         };
         Some(
             Found::new(
                 Level::Waiting,
                 Status::Idle,
-                copy::blocked_by(&handle, &owner, status),
+                copy::blocked_by(&handle, &owner, &status),
                 Some(next.updated_at_ms),
             )
             .wait(WaitKind::Task, Some(handle)),
@@ -1144,7 +1133,6 @@ pub fn compute(i: &Inputs, now_ms: u64) -> World {
             counts.projects.entry(p).or_default().decisions += n;
         }
     }
-    counts.global.live = cx.live_count;
     counts.global.live_cap = Some(i.live_cap);
     counts.global.done_today = i.done_today;
     let runs = i

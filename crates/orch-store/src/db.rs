@@ -211,6 +211,19 @@ impl Store {
         self.write(|_| Ok(()))
     }
 
+    /// [`Store::write`], then [`Store::touch`] with `topics` once committed:
+    /// every write to the team tables goes through here.
+    pub fn write_touching<R, F, S>(&self, topics: impl IntoIterator<Item = S>, f: F) -> Result<R>
+    where
+        R: Send + 'static,
+        F: FnOnce(&Tx) -> Result<R> + Send + 'static,
+        S: Into<String>,
+    {
+        let r = self.write(f)?;
+        self.touch(topics);
+        Ok(r)
+    }
+
     /// Notes a change of the team data (runs, tasks, features, messages)
     /// with the `now` topics it invalidates.
     pub fn touch<S: Into<String>>(&self, topics: impl IntoIterator<Item = S>) {

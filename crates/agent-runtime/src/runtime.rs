@@ -1260,7 +1260,7 @@ impl Runtime {
                     let input = p.tool_input.as_ref().unwrap_or(&Value::Null);
                     a.tracker.tool_started_ms = Some(now);
                     a.tracker.tool_brief =
-                        crate::permissions::primary_input(tool, input).map(|b| crate::attention::copy::cut(&b, 60));
+                        crate::inbox::main_arg(tool, input).map(|b| crate::attention::copy::cut(&b, 60));
                 } else if a.tracker.current_tool.is_none() {
                     a.tracker.tool_started_ms = None;
                     a.tracker.tool_brief = None;
@@ -1281,7 +1281,7 @@ impl Runtime {
         if m.event == HookEvent::PostToolUse
             && matches!(p.tool_name.as_deref(), Some("Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "Bash"))
         {
-            self.touch(format!("worktree:{}", rec.worktree.display()));
+            self.touch_worktree(&rec.worktree);
         }
         if matches!(m.event, HookEvent::Stop | HookEvent::StopFailure) {
             self.suspend_if_parked(id);
@@ -1408,7 +1408,11 @@ impl Runtime {
                 }
             }
             Effect::Failed { error } => {
-                let _ = self.store.write(|s| s.add_inbox(Some(id), "alert", format!("{id}: API error {error}")));
+                // `alert: api_error` puts the agent in error (attention rule 1).
+                let payload = json!({"alert": "api_error", "error": error});
+                let _ = self
+                    .store
+                    .write(|s| s.add_inbox_item(Some(id), "alert", format!("{id}: API error {error}"), payload, 0));
                 let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
                 self.handle_releases(releases);
             }
@@ -2163,7 +2167,8 @@ impl Runtime {
                         if let Some(a) = s.agents.get_mut(&rec.id) {
                             a.flag = Some(msg.clone());
                         }
-                        s.add_inbox(Some(&rec.id), "alert", msg);
+                        let payload = json!({"alert": "spawn_failed", "error": format!("{e:#}")});
+                        s.add_inbox_item(Some(&rec.id), "alert", msg, payload, 0);
                     })?;
                     return Err(e);
                 }

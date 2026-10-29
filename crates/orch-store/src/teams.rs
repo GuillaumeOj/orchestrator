@@ -533,7 +533,7 @@ impl Store {
     pub fn upsert_feature(&self, f: &Feature) -> Result<()> {
         let f = f.clone();
         let topics = vec!["features".to_string(), format!("feature:{}", f.id), format!("project:{}", f.project_id)];
-        let r = self.write(move |tx| {
+        self.write_touching(topics, move |tx| {
             tx.execute(
                 &format!(
                     "INSERT INTO features({FEATURE_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
@@ -555,11 +555,7 @@ impl Store {
                 ],
             )?;
             Ok(())
-        });
-        if r.is_ok() {
-            self.touch(topics);
-        }
-        r
+        })
     }
 
     pub fn feature(&self, id: &str) -> Result<Option<Feature>> {
@@ -599,7 +595,7 @@ impl Store {
     pub fn upsert_run(&self, run: &TeamRun) -> Result<()> {
         let run = run.clone();
         let topics = vec!["features".to_string(), "teams".to_string(), format!("feature:{}", run.feature_id)];
-        let r = self.write(move |tx| {
+        self.write_touching(topics, move |tx| {
             tx.execute(
                 &format!(
                     "INSERT INTO team_runs({RUN_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
@@ -620,11 +616,7 @@ impl Store {
                 ],
             )?;
             Ok(())
-        });
-        if r.is_ok() {
-            self.touch(topics);
-        }
-        r
+        })
     }
 
     pub fn run(&self, id: &str) -> Result<Option<TeamRun>> {
@@ -654,7 +646,7 @@ impl Store {
         let t = t.clone();
         let mut topics = vec![format!("board:{}", t.project_id)];
         topics.extend(t.feature_id.iter().map(|f| format!("feature:{f}")));
-        let r = self.write(move |tx| {
+        self.write_touching(topics, move |tx| {
             let id = if t.id == 0 { None } else { Some(t.id as i64) };
             tx.execute(
                 &format!(
@@ -692,11 +684,7 @@ impl Store {
                 Some(i) => i as u64,
                 None => tx.last_insert_rowid() as u64,
             })
-        });
-        if r.is_ok() {
-            self.touch(topics);
-        }
-        r
+        })
     }
 
     pub fn task(&self, id: u64) -> Result<Option<Task>> {
@@ -747,8 +735,7 @@ impl Store {
 
     pub fn add_message(&self, m: &Message) -> Result<u64> {
         let m = m.clone();
-        let topics = vec!["teams".to_string(), format!("run:{}", m.team_run_id)];
-        let r = self.write(move |tx| {
+        let (id, feature) = self.write(move |tx| {
             tx.execute(
                 "INSERT INTO messages(team_run_id, from_node, from_agent, to_node, to_agent, kind, body, ref,
                    created_at_ms, delivered_at_ms, read_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
@@ -766,12 +753,15 @@ impl Store {
                     m.read_at_ms.map(|v| v as i64)
                 ],
             )?;
-            Ok(tx.last_insert_rowid() as u64)
-        });
-        if r.is_ok() {
-            self.touch(topics);
-        }
-        r
+            let id = tx.last_insert_rowid() as u64;
+            // The feature pane shows the run's messages.
+            let feature: Option<String> = tx
+                .query_row("SELECT feature_id FROM team_runs WHERE id=?1", [&m.team_run_id], |r| r.get(0))
+                .optional()?;
+            Ok((id, feature))
+        })?;
+        self.touch(std::iter::once("teams".to_string()).chain(feature.map(|f| format!("feature:{f}"))));
+        Ok(id)
     }
 
     /// Messages of a run, oldest first: for one node (and its agent: rows for
@@ -808,18 +798,14 @@ impl Store {
     fn each_message(&self, ids: &[u64], sql: &'static str, args: Vec<rusqlite::types::Value>) -> Result<()> {
         let ids = ids.to_vec();
         let topics = vec!["teams".to_string()];
-        let r = self.write(move |tx| {
+        self.write_touching(topics, move |tx| {
             let mut st = tx.prepare_cached(sql)?;
             for id in ids {
                 let all = std::iter::once(rusqlite::types::Value::Integer(id as i64)).chain(args.iter().cloned());
                 st.execute(rusqlite::params_from_iter(all))?;
             }
             Ok(())
-        });
-        if r.is_ok() {
-            self.touch(topics);
-        }
-        r
+        })
     }
 
     /// Marks messages delivered (handed to the agent, not yet acted on) and
@@ -854,7 +840,7 @@ impl Store {
         let ids = ids.to_vec();
         let agent = agent_id.map(str::to_string);
         let topics = vec!["teams".to_string()];
-        let r = self.write(move |tx| {
+        self.write_touching(topics, move |tx| {
             for id in ids {
                 tx.execute(
                     "UPDATE messages SET to_agent=coalesce(to_agent, ?2),
@@ -865,11 +851,7 @@ impl Store {
                 )?;
             }
             Ok(())
-        });
-        if r.is_ok() {
-            self.touch(topics);
-        }
-        r
+        })
     }
 
     // ------------------------------------------------------------ artifacts
@@ -877,7 +859,7 @@ impl Store {
     pub fn add_artifact(&self, a: &Artifact) -> Result<u64> {
         let a = a.clone();
         let topics = vec![format!("feature:{}", a.feature_id)];
-        let r = self.write(move |tx| {
+        self.write_touching(topics, move |tx| {
             tx.execute(
                 "INSERT INTO artifacts(feature_id, team_run_id, kind, uri, from_node, to_node, note, created_at_ms, meta)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
@@ -894,11 +876,7 @@ impl Store {
                 ],
             )?;
             Ok(tx.last_insert_rowid() as u64)
-        });
-        if r.is_ok() {
-            self.touch(topics);
-        }
-        r
+        })
     }
 
     pub fn artifacts(&self, feature_id: &str) -> Result<Vec<Artifact>> {

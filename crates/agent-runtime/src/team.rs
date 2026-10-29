@@ -1426,6 +1426,7 @@ impl Runtime {
                     self.agent_gitconfig(&rec.id).as_deref(),
                     false,
                 )?;
+                self.touch_worktree(&rec.worktree);
                 self.run_event(&cx.run.id, Some(&rec.id), "git.sync", json!(r));
                 let _ =
                     self.db.audit(&format!("agent:{}", rec.id), Some(&rec.id), "merge", Some(&integ), "ok", json!(r));
@@ -1484,6 +1485,7 @@ impl Runtime {
                     detail.clone(),
                 );
                 self.run_event(&cx.run.id, Some(&rec.id), "git.merge", json!({"branch": branch, "result": detail}));
+                self.touch_worktree(&rec.worktree);
                 let r = r?;
                 let task = args.get("task").and_then(Value::as_u64).map(|id| self.db.task(id)).transpose()?.flatten();
                 if let Some(t) = &task

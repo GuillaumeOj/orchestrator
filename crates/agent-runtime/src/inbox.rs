@@ -97,11 +97,15 @@ impl Call {
     }
 }
 
+/// The call's main argument (the command, the path, the notebook), if any.
+pub(crate) fn main_arg(tool: &str, input: &Value) -> Option<String> {
+    let notebook = input.get("notebook_path").and_then(Value::as_str).map(str::to_string);
+    permissions::primary_input(tool, input).or(notebook)
+}
+
 /// The call's main argument as the dialog shows it, and its description.
 fn brief(tool: &str, input: &Value) -> (String, Option<String>) {
-    let notebook = input.get("notebook_path").and_then(Value::as_str).map(str::to_string);
-    let main = permissions::primary_input(tool, input).or(notebook);
-    let main = crate::team::cut(&main.unwrap_or_else(|| tool.to_string()), 199);
+    let main = crate::team::cut(&main_arg(tool, input).unwrap_or_else(|| tool.to_string()), 199);
     (main, input.get("description").and_then(Value::as_str).map(str::to_string))
 }
 

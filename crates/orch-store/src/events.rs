@@ -140,6 +140,18 @@ impl Store {
     }
 
     /// A team run's timeline (FR-408), newest first.
+    /// How many events of these exact kinds since `since_ms`.
+    pub fn count_events(&self, since_ms: u64, kinds: &[&str]) -> Result<u64> {
+        let kinds: Vec<String> = kinds.iter().map(|k| k.to_string()).collect();
+        self.read(move |c| {
+            let marks = vec!["?"; kinds.len()].join(",");
+            let sql = format!("SELECT count(*) FROM events WHERE ts_ms >= ? AND kind IN ({marks})");
+            let args = std::iter::once(rusqlite::types::Value::Integer(since_ms as i64))
+                .chain(kinds.into_iter().map(rusqlite::types::Value::Text));
+            Ok(c.query_row(&sql, rusqlite::params_from_iter(args), |r| r.get::<_, i64>(0))? as u64)
+        })
+    }
+
     pub fn run_events(&self, run_id: &str, limit: usize) -> Result<Vec<Event>> {
         let run = run_id.to_string();
         self.read(move |c| {
@@ -288,5 +300,23 @@ mod tests {
         let log = s.audit_log(Some("a1"), 10).unwrap();
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].decision, "allow");
+    }
+
+    #[test]
+    fn counts_and_the_last_event_of_a_kind() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(&d.path().join("orch.db")).unwrap();
+        let now = 100 * DAY_MS;
+        s.add_event(now - 3 * DAY_MS, None, "task.done", json!({}));
+        s.add_event(now - 1, None, "task.done", json!({}));
+        s.add_event(now, None, "git.merge", json!({}));
+        s.add_run_event(now - 2, "r1", None, "run.state", json!({"to": "spec"}));
+        s.add_run_event(now - 1, "r1", None, "run.state", json!({"to": "planning"}));
+        s.add_run_event(now, "r1", None, "message", json!({}));
+        s.flush().unwrap();
+        assert_eq!(s.count_events(now - DAY_MS, &["task.done", "git.merge"]).unwrap(), 2);
+        assert_eq!(s.count_events(now - DAY_MS, &["task"]).unwrap(), 0, "exact kinds, no prefix");
+        assert_eq!(s.last_run_event("r1", "run.state").unwrap().unwrap().detail["to"], "planning");
+        assert!(s.last_run_event("r2", "run.state").unwrap().is_none());
     }
 }
