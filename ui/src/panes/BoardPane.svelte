@@ -9,6 +9,7 @@
   import AgentChip from '../components/AgentChip.svelte';
   import Kbd from '../components/Kbd.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
+  import TaskModelChip from '../components/TaskModelChip.svelte';
   import { app, openFeature, queueOffHours, refresh, toast } from '../lib/app.svelte.js';
   import { ago, clock } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
@@ -205,7 +206,7 @@
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
             <div class="task" class:sel={cur.col === ci && cur.row === ri} onclick={() => ((cur = { col: ci, row: ri }), root?.focus())} ondblclick={() => t.feature_id && openFeature(t.feature_id)}>
               <div class="tt"><span class="muted mono">{handle(t)}</span><span class="grow"></span><span class="muted">{remoteName(t.backend)}</span></div>
-              <div class="title">{t.title}</div>
+              <div class="title">{t.title} <TaskModelChip task={t} /></div>
               {#if t.remote_won}<span class="won" title="Changed in {remoteName(t.backend)} and in the app since the last sync; the app now shows {remoteName(t.backend)}'s.">↓ changed in {remoteName(t.backend)}</span>{/if}
               {#if isOff(t)}<span class="offtag">☾ Off-hours{nextOffHours(offHours) ? ` · starts ${clock(nextOffHours(offHours))}` : ''}</span>{/if}
               <div class="tt">

@@ -39,7 +39,8 @@ to empty, so older roles and imported teams load unchanged; raw `mcp_servers` ke
 ## Starters, presets and design artifacts (P3, FR-306, FR-602)
 
 - `presets::STARTER_VERSION` (2 = P3 design hand-offs, 3 = v0.11 auto mode, reviewer `submit_review`,
-  Full-stack with a reviewer) and `role_fingerprint` / `team_fingerprint`: FNV-1a of the
+  Full-stack with a reviewer, 4 = Sonnet for backend, frontend and UX, Opus for UI and the reviewer)
+  and `role_fingerprint` / `team_fingerprint`: FNV-1a of the
   canonical JSON, without scope, version, preset flag or origin, and without default values, so
   fields added later don't change it (nor the default review mode). `V1_FINGERPRINTS` are the P2
   starters'.

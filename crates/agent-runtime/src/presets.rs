@@ -321,11 +321,19 @@ mod tests {
         }
     }
 
+    /// Undoes the v4 models (the lead's Opus is older).
+    fn without_v4_model(r: &mut RoleDef) {
+        if r.id != "lead" {
+            r.model = None;
+        }
+    }
+
     /// What P2 shipped, rebuilt: today's starters with the v2 changes undone.
     fn p2_starters() -> (Vec<RoleDef>, Vec<Team>) {
         let mut roles = orch_team::presets::starter_roles();
         for r in roles.iter_mut() {
             r.permission_profile = PermissionProfile::Gated;
+            without_v4_model(r);
             if r.id == "reviewer" {
                 r.prompt = "You are the reviewer. You review the branches you are asked to review and reply with \
                             concrete findings; you do not change them yourself."
@@ -448,6 +456,37 @@ mod tests {
         assert!(rt.db.team(&Scope::Global, "full-stack").unwrap().unwrap().origin.is_some());
     }
 
+    /// The v3 starters: today's, without the v4 models.
+    fn v3_roles() -> Vec<RoleDef> {
+        let mut roles = orch_team::presets::starter_roles();
+        roles.iter_mut().for_each(without_v4_model);
+        roles
+    }
+
+    #[test]
+    fn unmodified_v3_roles_upgrade_to_v4_modified_ones_do_not() {
+        let (_d, rt) = test_runtime(true);
+        for mut r in v3_roles() {
+            let fingerprint = role_fingerprint(&r);
+            if r.id == "frontend" {
+                r.prompt = "my own prompt".into(); // the user's edit, after install
+            }
+            r.origin = Some(StarterOrigin { starter: r.id.clone(), version: 3, fingerprint });
+            rt.db.upsert_role(&r, 1).unwrap();
+        }
+        rt.install_presets().unwrap();
+        let get = |id: &str| rt.db.role(&Scope::Global, id).unwrap().unwrap();
+        let (backend, ui, lead) = (get("backend"), get("ui"), get("lead"));
+        assert_eq!(
+            (backend.model.as_deref(), backend.version, backend.origin.unwrap().version),
+            (Some("sonnet"), 2, 4)
+        );
+        assert_eq!(ui.model.as_deref(), Some("opus"));
+        assert_eq!(lead.version, 1, "lead unchanged: the version only goes up on a content change");
+        let fe = get("frontend");
+        assert_eq!((fe.model, fe.prompt.as_str(), fe.origin.unwrap().version), (None, "my own prompt", 3));
+    }
+
     #[test]
     fn p2_starters_already_in_auto_mode_still_upgrade() {
         // A v0.11 install: main's migration moved the P2 starters to auto mode.
@@ -462,7 +501,11 @@ mod tests {
         let ui = rt.db.role(&Scope::Global, "ui").unwrap().unwrap();
         assert_eq!((ui.version, ui.mcp_refs.as_slice()), (2, ["penpot".to_string()].as_slice()));
         let backend = rt.db.role(&Scope::Global, "backend").unwrap().unwrap();
-        assert_eq!((backend.version, backend.permission_profile), (1, PermissionProfile::Autonomous));
+        assert_eq!(
+            (backend.version, backend.permission_profile),
+            (2, PermissionProfile::Autonomous),
+            "the v4 model arrived"
+        );
         assert_eq!(backend.origin.unwrap().version, STARTER_VERSION);
         let fs = rt.db.team(&Scope::Global, "full-stack").unwrap().unwrap();
         assert_eq!(preset_fields(&fs), (true, Some("full-stack".into()), false));

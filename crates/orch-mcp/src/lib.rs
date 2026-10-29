@@ -131,14 +131,15 @@ pub fn tools() -> Value {
                 "node": s("The node that does it."),
                 "depends_on": {"type": "array", "items": {"type": "integer"}, "description": "Ids of tasks that must be done first."},
                 "status": s("ready (default) or backlog."),
-                "plan_first": {"type": "boolean", "description": "The owner sends you a plan (submit_plan) and may not edit until you approve it (decide_plan). For large or unclear tasks, or ones that touch a shared contract."}
+                "plan_first": {"type": "boolean", "description": "The owner sends you a plan (submit_plan) and may not edit until you approve it (decide_plan). For large or unclear tasks, or ones that touch a shared contract."},
+                "model": {"type": "string", "description": "Run this task on this model (alias `opus`, `sonnet`, `haiku`, `fable`, or a model id) instead of the node's. For a hard task, or one that failed a review round."}
             }),
             &["title", "node"],
         ),
         tool(
             "update_task",
             "Change a task's status (backlog, ready, in_progress, review, done) or add a note. Specialists only update their own tasks.",
-            json!({"id": {"type": "integer"}, "status": s("New status."), "notes": s("A note added to the task."), "node": s("Reassign to this node (lead only)."), "plan_first": {"type": "boolean", "description": "Ask for a plan before any edit (lead only)."}}),
+            json!({"id": {"type": "integer"}, "status": s("New status."), "notes": s("A note added to the task."), "node": s("Reassign to this node (lead only)."), "plan_first": {"type": "boolean", "description": "Ask for a plan before any edit (lead only)."}, "model": s("Run this task on this model instead of the node's (lead only; \"\" clears it). Takes effect at the owner's next task boundary: a task already running keeps its model.")}),
             &["id"],
         ),
         tool(

@@ -280,3 +280,30 @@ export class History {
     return this.future.pop();
   }
 }
+
+export const MODEL_ALIASES = ['opus', 'sonnet', 'haiku', 'fable'];
+
+/** The model select's option for a stored value: '' (default), an alias, or 'custom'. */
+export function modelOption(value) {
+  if (value == null || value === '') return '';
+  return MODEL_ALIASES.includes(value) ? value : 'custom';
+}
+
+/** The value to save from the select's option and the custom text: null for default or empty custom. */
+export function modelValue(option, text = '') {
+  if (option === '') return null;
+  if (option === 'custom') return text.trim() || null;
+  return option;
+}
+
+/** A node with its model override set (null clears the key). */
+export function setNodeModel(team, id, model) {
+  const t = clone(team);
+  const n = t.nodes.find((x) => x.id === id);
+  if (n) {
+    n.overrides = { ...n.overrides };
+    if (model == null) delete n.overrides.model;
+    else n.overrides.model = model;
+  }
+  return t;
+}

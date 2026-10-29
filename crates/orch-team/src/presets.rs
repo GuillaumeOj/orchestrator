@@ -8,8 +8,9 @@ use crate::model::{AgentNode, Edge, EdgeKind, ReviewMode, RoleDef, RoleOverrides
 /// The starters' version: bumped whenever a starter role or team changes, so
 /// installed unmodified copies are upgraded in place (FR-306). 1 = P2,
 /// 2 = P3 design hand-offs, 3 = auto mode by default, the reviewer's
-/// `submit_review` and the reviewed full-stack preset (v0.11).
-pub const STARTER_VERSION: u32 = 3;
+/// `submit_review` and the reviewed full-stack preset (v0.11), 4 = Sonnet for
+/// backend, frontend and UX, Opus for UI and the reviewer (improve-plan-usage).
+pub const STARTER_VERSION: u32 = 4;
 
 /// JSON without the values a new field with a serde default would add
 /// (`null`, `false`, `0`, `""`, `[]`, `{}`), so a fingerprint survives
@@ -137,6 +138,7 @@ pub fn starter_roles() -> Vec<RoleDef> {
     ui.prompt = format!("{}\n\n{DESIGN_EXPORTS}", ui.prompt);
     ui.tools.web = true;
     ui.mcp_refs = vec!["penpot".into()];
+    ui.model = Some("opus".into());
     let mut ux = role(
         "ux",
         "UX",
@@ -147,34 +149,34 @@ pub fn starter_roles() -> Vec<RoleDef> {
     ux.prompt = format!("{}\n\n{DESIGN_EXPORTS}", ux.prompt);
     ux.tools.web = true;
     ux.mcp_refs = vec!["penpot".into()];
-    vec![
-        lead,
-        role(
-            "backend",
-            "Backend",
-            2,
-            "You are the backend engineer. You implement the server side of your tasks, with tests.",
-            Tier::Normal,
-        ),
-        role(
-            "frontend",
-            "Frontend",
-            3,
-            "You are the frontend engineer. You implement the client side of your tasks, with tests, from the API \
-             contract and the design hand-offs.",
-            Tier::Normal,
-        ),
-        ui,
-        ux,
-        role(
-            "reviewer",
-            "Reviewer",
-            7,
-            "You are the reviewer. You review the branches you are asked to review and send concrete findings \
-             (file:line, the problem, the fix) with mcp__orch__submit_review; you do not change them yourself.",
-            Tier::Normal,
-        ),
-    ]
+    ux.model = Some("sonnet".into());
+    let mut backend = role(
+        "backend",
+        "Backend",
+        2,
+        "You are the backend engineer. You implement the server side of your tasks, with tests.",
+        Tier::Normal,
+    );
+    backend.model = Some("sonnet".into());
+    let mut frontend = role(
+        "frontend",
+        "Frontend",
+        3,
+        "You are the frontend engineer. You implement the client side of your tasks, with tests, from the API \
+         contract and the design hand-offs.",
+        Tier::Normal,
+    );
+    frontend.model = Some("sonnet".into());
+    let mut reviewer = role(
+        "reviewer",
+        "Reviewer",
+        7,
+        "You are the reviewer. You review the branches you are asked to review and send concrete findings \
+         (file:line, the problem, the fix) with mcp__orch__submit_review; you do not change them yourself.",
+        Tier::Normal,
+    );
+    reviewer.model = Some("opus".into());
+    vec![lead, backend, frontend, ui, ux, reviewer]
 }
 
 fn node(id: &str, role: &str, x: f64, y: f64, lead: bool) -> AgentNode {
@@ -299,6 +301,20 @@ mod tests {
     use crate::validate::validate;
 
     #[test]
+    fn starter_models() {
+        let models: Vec<_> = starter_roles().into_iter().map(|r| (r.id, r.model.unwrap_or_default())).collect();
+        let expected = [
+            ("lead", "opus"),
+            ("backend", "sonnet"),
+            ("frontend", "sonnet"),
+            ("ui", "opus"),
+            ("ux", "sonnet"),
+            ("reviewer", "opus"),
+        ];
+        assert_eq!(models, expected.map(|(id, m)| (id.to_string(), m.to_string())));
+    }
+
+    #[test]
     fn fingerprints_ignore_place_version_origin_and_new_defaults() {
         let (roles, t) = full_stack();
         let mut t2 = t.clone();
@@ -318,6 +334,8 @@ mod tests {
         let mut backend = starter_roles().into_iter().find(|r| r.id == "backend").unwrap();
         assert_ne!(role_fingerprint(&backend), v1("role:backend"), "auto mode by default in v3");
         backend.permission_profile = crate::PermissionProfile::Gated;
+        assert_ne!(role_fingerprint(&backend), v1("role:backend"), "Sonnet by default in v4");
+        backend.model = None;
         assert_eq!(role_fingerprint(&backend), v1("role:backend"));
         assert_ne!(role_fingerprint(ui), v1("role:ui"), "the UI prompt changed in v2");
         assert_ne!(team_fingerprint(&t), v1("team:full-stack"), "D2 edge");
