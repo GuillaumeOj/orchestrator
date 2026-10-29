@@ -289,6 +289,12 @@ impl Runtime {
             let old = std::mem::replace(&mut a.session_id, new.clone());
             a.start_fresh = true;
             a.resume_failed = false;
+            // The delivery loop only spawns a suspended agent: one in error
+            // would hold its new task forever (as `fresh_session` does).
+            a.tracker.last_error = None;
+            if a.tracker.state == AgentState::Error {
+                a.tracker.state = AgentState::Suspended;
+            }
             Ok((old, run))
         })??;
         self.event(id, "fresh_session", json!({"old_session": old, "new_session": new, "task": task.id}));

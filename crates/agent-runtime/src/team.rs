@@ -558,13 +558,23 @@ impl Runtime {
 
     /// A free agent that has run may start a task in a fresh session only
     /// when quiet: idle or stopped, and no turn of its own queued, being
-    /// pasted or running (a nudge, the end of its `report_done` turn).
+    /// pasted or running (a nudge, the end of its `report_done` turn). A
+    /// stopped agent runs nothing: a turn left `Delivered` by a process that
+    /// died mid-turn never ends, so only its queued turns count.
     fn quiet_for_task(&self, rec: &AgentRecord) -> bool {
-        matches!(rec.tracker.state, AgentState::Idle | AgentState::Suspended | AgentState::Error | AgentState::Killed)
+        let live = self.live(&rec.id).is_some();
+        let state = if live {
+            // Its background tasks (a dev server…) would die with the process.
+            rec.tracker.state == AgentState::Idle && rec.tracker.background_tasks == 0
+        } else {
+            matches!(rec.tracker.state, AgentState::Suspended | AgentState::Error)
+        };
+        state
             && !self.store.read(|s| {
                 s.turns.iter().any(|t| {
                     t.agent_id == rec.id
-                        && matches!(t.status, TurnStatus::Queued | TurnStatus::Delivering | TurnStatus::Delivered)
+                        && (t.status == TurnStatus::Queued
+                            || live && matches!(t.status, TurnStatus::Delivering | TurnStatus::Delivered))
                 })
             })
     }
@@ -663,7 +673,9 @@ impl Runtime {
                 }
                 None => continue,
             };
-            if !rec.never_started() {
+            // A session rotated on an earlier tick whose assignment failed is
+            // still unused: rotating it again would only repeat the events.
+            if !rec.never_started() && !rec.start_fresh {
                 // Only an idle process is stopped here (SIGTERM, bounded by
                 // the stop's grace and its wait for the exit callback): the
                 // tick never waits on a busy agent.
@@ -2245,13 +2257,23 @@ mod tests {
         assert!(rt.store.read(|s| !s.agents.contains_key("fx-back-2")), "the seat is reused, not doubled");
         assert_eq!(rt.store.read(|s| s.agents[back].session_id.clone()), first.session_id);
 
-        // Quiet: T-2 goes to the same agent in a new session.
+        // Quiet: T-2 goes to the same agent in a new session. Its process died
+        // mid-turn (in error, the nudge left delivered): that turn never ends
+        // and does not hold the task, and the agent is left resumable.
         finish_turns(&rt);
+        rt.store
+            .write(|s| {
+                s.agents.get_mut(back).unwrap().tracker.state = AgentState::Error;
+                let nudge = s.turns.iter_mut().rev().find(|t| t.agent_id == back).unwrap();
+                nudge.status = TurnStatus::Delivered;
+            })
+            .unwrap();
         rt.team_tick();
         let a = rt.store.read(|s| s.agents[back].clone());
         assert_eq!(a.team.as_ref().unwrap().task, Some(t2.id));
         assert_ne!(a.session_id, first.session_id);
         assert!(a.start_fresh);
+        assert_eq!(a.tracker.state, AgentState::Suspended, "the delivery loop spawns a suspended agent only");
         assert_eq!(rt.db.task(t2.id).unwrap().unwrap().status, TaskStatus::InProgress);
         let q = queued(&rt, back);
         assert_eq!(q.len(), 1);
