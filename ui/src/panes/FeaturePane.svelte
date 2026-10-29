@@ -46,6 +46,11 @@
     const node = v?.agents?.find((a) => a.id === id)?.node;
     return v?.team?.nodes?.find((n) => n.id === node)?.role_id ?? null;
   };
+  /** The agent id without the `<feature-slug>-` prefix (`back-1`); the full id stays in the tooltip. */
+  const shortName = (id) => {
+    const prefix = `${v?.feature?.slug}-`;
+    return id.startsWith(prefix) ? id.slice(prefix.length) : id;
+  };
 
   async function load() {
     try {
@@ -262,15 +267,20 @@
       <div class="right">
         <section class="card">
           <div class="cardh"><b>Team</b><span class="muted">{v.agents.length} agent{v.agents.length === 1 ? '' : 's'}</span></div>
-          {#each v.agents as a (a.id)}
-            {@const live = agent(a.id)}
-            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-            <div class="arow" onclick={() => openAgent(a.id)} title="Open {a.id}">
-              <AgentChip id={a.id} role={roleOfAgent(a.id)} />
-              <StatusBadge state={live ? displayState(live) : a.state} />
-              <span class="muted ell">{a.tool ? `${a.tool}` : a.task ? `task T-${a.task}` : ''}{a.flag ? ` · ${a.flag}` : ''}</span>
+          {#if v.agents.length}
+            <div class="agents">
+              {#each v.agents as a (a.id)}
+                {@const live = agent(a.id)}
+                <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+                <div class="trow" onclick={() => openAgent(a.id)} title="Open {a.id}">
+                  <AgentChip id={a.id} role={roleOfAgent(a.id)} compact />
+                  <span class="name ell">{shortName(a.id)}</span>
+                  <span class="act muted ell">{a.tool ? `${a.tool}` : a.task ? `task T-${a.task}` : ''}{a.flag ? ` · ${a.flag}` : ''}</span>
+                  <span class="st"><StatusBadge state={live ? displayState(live) : a.state} trailing /></span>
+                </div>
+              {/each}
             </div>
-          {:else}<p class="muted">No agent yet.</p>{/each}
+          {:else}<p class="muted">No agent yet.</p>{/if}
         </section>
 
         <section class="card tl">
@@ -444,8 +454,32 @@
     color: var(--color-status-queued);
     font: var(--text-caption);
   }
-  .arow {
+  /* Team card: one grid, a subgrid per row, so the columns line up. */
+  .agents {
+    display: grid;
+    grid-template-columns: auto minmax(0, max-content) minmax(0, 1fr) max-content;
+    column-gap: var(--space-sm);
+  }
+  .trow {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: subgrid;
+    align-items: center;
+    height: var(--size-row);
+    padding: 0 var(--space-xs);
+    margin: 0 calc(-1 * var(--space-xs));
+    border-radius: var(--radius-sm);
     cursor: pointer;
+  }
+  .trow:hover {
+    background: var(--color-surface-raised);
+  }
+  .trow .name {
+    max-width: 24ch;
+  }
+  .trow .act,
+  .trow .st {
+    margin-left: var(--space-sm);
   }
   .ell {
     overflow: hidden;
