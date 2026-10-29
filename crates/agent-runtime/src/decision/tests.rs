@@ -112,7 +112,7 @@ fn lifecycle_states_and_the_badge() {
     f.items[0].status = InboxStatus::Effect;
     f.items[0].effect = Some("resumed".into());
     let v = serde_json::to_value(&f.one("q-1").lifecycle).unwrap();
-    assert_eq!(v, json!({"state": "effect", "decided_by": "user", "sent_at_ms": 5, "effect": "resumed"}));
+    assert_eq!(v, json!({"state": "effect", "decided_by": "user", "sent_at_ms": 5, "effect": "resumed", "version": 0}));
     f.items[0].status = InboxStatus::Stale;
     f.items[0].stale_why = Some("answered in the pane".into());
     assert_eq!(f.one("q-1").lifecycle.stale_why.as_deref(), Some("answered in the pane"));

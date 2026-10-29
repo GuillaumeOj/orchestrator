@@ -189,6 +189,9 @@ pub struct InboxItem {
     pub error: Option<String>,
     #[serde(default)]
     pub stale_why: Option<String>,
+    /// +1 on every write of the row (migration 11): the newest push wins.
+    #[serde(default)]
+    pub version: u64,
 }
 
 impl InboxItem {
@@ -215,6 +218,7 @@ impl InboxItem {
             effect_at_ms: None,
             error: None,
             stale_why: None,
+            version: 0,
         }
     }
 

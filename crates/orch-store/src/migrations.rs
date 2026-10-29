@@ -518,6 +518,12 @@ ALTER TABLE inbox_items ADD COLUMN effect_at_ms INTEGER;
 ALTER TABLE inbox_items ADD COLUMN error TEXT;
 ALTER TABLE inbox_items ADD COLUMN stale_why TEXT;
 "#,
+    // 11 (P4.1, T-35): a decision's version, +1 on every write of its row,
+    // so a client keeps the newest of two pushes. A separate migration: a
+    // database that already ran 10 gets it too.
+    r#"
+ALTER TABLE inbox_items ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

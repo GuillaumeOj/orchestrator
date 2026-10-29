@@ -367,6 +367,19 @@ struct Data {
     saved: StateFile,
 }
 
+/// Every Inbox item this write changed gets `version` +1 (a new one at
+/// least 1): a client keeps the newest of two pushes of a decision.
+fn bump_versions(saved: &StateFile, state: &mut StateFile) {
+    let before: BTreeMap<u64, &InboxItem> = saved.inbox.iter().map(|i| (i.id, i)).collect();
+    for i in state.inbox.iter_mut() {
+        match before.get(&i.id) {
+            Some(old) if **old == *i => {}
+            Some(old) => i.version = old.version + 1,
+            None => i.version = i.version.max(1),
+        }
+    }
+}
+
 // ------------------------------------------------------------ row mapping
 
 use orch_store::tag;
@@ -556,6 +569,8 @@ impl Store {
             let mut g = self.data.lock().unwrap_or_else(|e| e.into_inner());
             let r = f(&mut g.state);
             g.state.prune();
+            let Data { state, saved } = &mut *g;
+            bump_versions(saved, state);
             let mut pending = None;
             let d = diff(&g.saved, &g.state);
             if !d.is_empty() {

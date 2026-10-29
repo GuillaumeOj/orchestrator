@@ -149,6 +149,7 @@ mod tests {
             waits_on: "user",
             created_ms: 0,
             agent: Some(agent.into()),
+            synthesized: false,
             payload: json!({}),
         }
     }

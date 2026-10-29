@@ -122,15 +122,48 @@ fn delta(
 }
 
 /// Decisions new or changed since `old`, and the ids that left the open
-/// list (their last upsert carries the final lifecycle).
-fn decision_delta(old: &BTreeMap<String, Decision>, new: &BTreeMap<String, Decision>) -> (Vec<Decision>, Vec<String>) {
-    let upsert = new.iter().filter(|(k, v)| old.get(*k) != Some(*v)).map(|(_, v)| v.clone()).collect();
-    let closed = old
-        .iter()
-        .filter(|(_, d)| d.is_open())
-        .filter(|(k, _)| new.get(*k).is_none_or(|d| !d.is_open()))
-        .map(|(k, _)| k.clone())
-        .collect();
+/// list. Each one that leaves gets a last upsert with its final lifecycle
+/// (api-contract §3.1): a stored one has it already; one that vanished (a
+/// synthesized card whose state cleared, a removed row) ends `dismissed` by
+/// the pane (trust dialog, pane prompt) or the core. A synthesized card has
+/// no row: its version moves here, when it changes.
+fn decision_delta(
+    old: &BTreeMap<String, Decision>,
+    new: &mut BTreeMap<String, Decision>,
+    now: u64,
+) -> (Vec<Decision>, Vec<String>) {
+    for (k, d) in new.iter_mut().filter(|(_, d)| d.synthesized) {
+        let prev = old.get(k);
+        d.lifecycle.version = prev.map_or(0, |o| o.lifecycle.version);
+        if prev != Some(&*d) {
+            d.lifecycle.version += 1;
+        }
+    }
+    let mut upsert: Vec<Decision> =
+        new.iter().filter(|(k, v)| old.get(*k) != Some(*v)).map(|(_, v)| v.clone()).collect();
+    let mut closed = vec![];
+    for (k, o) in old.iter().filter(|(_, d)| d.is_open()) {
+        match new.get(k) {
+            Some(d) if d.is_open() => continue,
+            Some(_) => {} // its upsert above carries the final lifecycle
+            None => {
+                let by = if matches!(o.kind, "trust" | "wait") { "pane" } else { "core" };
+                let mut last = o.clone();
+                last.lifecycle = decision::Lifecycle {
+                    state: "dismissed",
+                    decided_by: Some(by.into()),
+                    decided_at_ms: Some(now),
+                    effect: Some("dismissed".into()),
+                    effect_at_ms: Some(now),
+                    version: o.lifecycle.version + 1,
+                    ..o.lifecycle.clone()
+                };
+                last.waits_on = "core";
+                upsert.push(last);
+            }
+        }
+        closed.push(k.clone());
+    }
     (upsert, closed)
 }
 
@@ -413,8 +446,8 @@ impl Runtime {
         if changed.agents && old.agents != world.agents {
             topics.insert(orch_protocol::Topic::Agents.into());
         }
-        let decisions: BTreeMap<String, Decision> = decisions.into_iter().map(|d| (d.id.clone(), d)).collect();
-        let (upsert, closed) = decision_delta(&state.decisions, &decisions);
+        let mut decisions: BTreeMap<String, Decision> = decisions.into_iter().map(|d| (d.id.clone(), d)).collect();
+        let (upsert, closed) = decision_delta(&state.decisions, &mut decisions, now);
         let event = delta(state.rev + 1, &old, &world, (&upsert, &closed), &new_outcomes, &topics);
         state.decisions = decisions;
         state.last = Some(world);
@@ -693,5 +726,73 @@ mod tests {
             (snap["outcomes"][0]["seen"].as_bool(), snap["counts"]["global"]["done_today"].as_u64()),
             (Some(true), Some(1))
         );
+    }
+
+    /// Every decision that leaves the open list: one last upsert with its
+    /// final lifecycle, then its id in `closed`.
+    #[test]
+    fn every_close_ends_with_a_final_upsert_then_closed() {
+        let (_d, rt) = test_runtime(true);
+        let got = collect(&rt);
+        let set_state =
+            |st: AgentState| rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.state = st).unwrap();
+        // The last event: (final upsert of `id`, closed has `id`).
+        let last = |id: &str| {
+            let ev = got.lock().unwrap().last().cloned().unwrap();
+            let up = ev["decisions"]["upsert"].as_array().unwrap().iter().find(|d| d["id"] == id).cloned();
+            let closed = ev["decisions"]["closed"].as_array().unwrap().iter().any(|c| c == id);
+            (up, closed)
+        };
+        rt.now_pump(false);
+        // A prompt in the pane, answered there: the synthesized card vanishes, by the pane.
+        set_state(AgentState::WaitingForYou);
+        rt.now_pump(false);
+        let v_open = last("wait-a1").0.unwrap()["lifecycle"]["version"].as_u64().unwrap();
+        set_state(AgentState::Working);
+        rt.now_pump(false);
+        let (up, closed) = last("wait-a1");
+        let lc = up.unwrap()["lifecycle"].clone();
+        assert!(closed);
+        assert_eq!(
+            (lc["state"].as_str(), lc["effect"].as_str(), lc["decided_by"].as_str()),
+            (Some("dismissed"), Some("dismissed"), Some("pane"))
+        );
+        assert!(lc["version"].as_u64().unwrap() > v_open, "{lc}");
+        // An agent in error, resumed: closed by the core.
+        set_state(AgentState::Error);
+        rt.now_pump(false);
+        set_state(AgentState::Idle);
+        rt.now_pump(false);
+        let (up, closed) = last("error-a1");
+        assert!(closed && up.unwrap()["lifecycle"]["decided_by"] == "core");
+        // A stored item closed elsewhere (the pane, the registry): dismissed, by whoever closed it.
+        let q = rt.add_item(Some("a1"), "question", "a1: q?".into(), json!({"question": "q?"}), 20).unwrap();
+        rt.now_pump(false);
+        rt.store
+            .write(|s| {
+                let _ = s.close_inbox(q, orch_store::InboxStatus::Dismissed, Some("in_pane".into()), "pane");
+            })
+            .unwrap();
+        rt.now_pump(false);
+        let (up, closed) = last(&format!("q-{q}"));
+        let lc = up.unwrap()["lifecycle"].clone();
+        assert!(closed);
+        assert_eq!(
+            (lc["state"].as_str(), lc["effect"].as_str(), lc["decided_by"].as_str()),
+            (Some("dismissed"), Some("dismissed"), Some("pane"))
+        );
+        // A row removed while open (an agent deleted): dismissed by the core.
+        let a = rt.add_item(Some("a1"), "alert", "a1: x".into(), json!({}), 0).unwrap();
+        rt.now_pump(false);
+        rt.store.write(|s| s.inbox.retain(|i| i.id != a)).unwrap();
+        rt.now_pump(false);
+        let (up, closed) = last(&format!("alert-{a}"));
+        assert!(closed && up.unwrap()["lifecycle"]["state"] == "dismissed");
+        // Every event: a closed id always has its upsert in the same event.
+        for ev in got.lock().unwrap().iter() {
+            for c in ev["decisions"]["closed"].as_array().unwrap() {
+                assert!(ev["decisions"]["upsert"].as_array().unwrap().iter().any(|d| &d["id"] == c), "{ev}");
+            }
+        }
     }
 }

@@ -42,6 +42,7 @@ const fn act(id: &'static str, label: &'static str, key: Option<&'static str>) -
 }
 
 const OPEN_PANE: Action = act("open", "Open pane", Some("o"));
+const DISMISS: Action = act("dismiss", "Dismiss", None);
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Lifecycle {
@@ -63,6 +64,8 @@ pub struct Lifecycle {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stale_why: Option<String>,
+    /// +1 on every lifecycle write: a client keeps the newest push.
+    pub version: u64,
 }
 
 impl Lifecycle {
@@ -77,11 +80,13 @@ impl Lifecycle {
             decided_by: i.decided_by.clone(),
             decided_at_ms: i.decided_at_ms,
             sent_at_ms: i.sent_at_ms,
-            effect: i.effect.clone(),
+            // A dismissal says so as its effect (closed in the pane, by the core…).
+            effect: i.effect.clone().or_else(|| (i.status == InboxStatus::Dismissed).then(|| "dismissed".into())),
             effect_detail: i.effect_detail.clone(),
             effect_at_ms: i.effect_at_ms,
             error: i.error.clone(),
             stale_why: i.stale_why.clone(),
+            version: i.version,
         }
     }
 
@@ -116,6 +121,9 @@ pub struct Decision {
     /// The store's agent, for routing (`subject.agent` too).
     #[serde(skip)]
     pub agent: Option<String>,
+    /// Built from live state, no stored row (trust, wait, error, ask).
+    #[serde(skip)]
+    pub synthesized: bool,
     pub payload: Value,
 }
 
@@ -479,13 +487,21 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
         title,
         summary,
         context,
-        actions,
+        // A failed or stale decision can only be dismissed (or opened).
+        actions: if matches!(i.status, InboxStatus::Failed | InboxStatus::Stale) {
+            let mut a = vec![DISMISS];
+            a.extend(actions.into_iter().filter(|a| a.id == "open"));
+            a
+        } else {
+            actions
+        },
         lifecycle: Lifecycle::of(i),
         thread,
         thread_prev: None,
         waits_on: if open { "user" } else { "core" },
         created_ms: i.created_at_ms,
         agent: i.agent_id.clone(),
+        synthesized: false,
         subject,
         payload: p.clone(),
     }
@@ -522,6 +538,7 @@ fn synth(
         waits_on: "user",
         created_ms,
         agent: agent.map(str::to_string),
+        synthesized: true,
         payload,
     }
 }

@@ -711,6 +711,8 @@ impl Core {
                 "approve" => InboxDecision::Approve,
                 "reject" | "reply" => InboxDecision::Reject,
                 "always" => InboxDecision::AlwaysAllow,
+                // A failed or stale permission leaves the Inbox.
+                "dismiss" => InboxDecision::Dismiss,
                 // The dialog is in the pane while the hook is held: nothing to decide here.
                 "in_pane" if open == Some(agent_runtime::store::InboxStatus::Pending) => {
                     return Ok(json!({"ok": true, "effect": "in_pane", "lifecycle": rt.lifecycle(n)}));
@@ -782,7 +784,9 @@ impl Core {
             let question = item.starts_with("q-");
             let decision = match action {
                 "approve" => InboxDecision::Approve,
-                "reject" | "dismiss" if question => InboxDecision::Dismiss,
+                "reject" if question => InboxDecision::Dismiss,
+                // Any gate or question; a failed PR gate leaves the Inbox this way.
+                "dismiss" => InboxDecision::Dismiss,
                 "reject" => InboxDecision::Reject,
                 "reply" | "answer" => InboxDecision::Reply,
                 other => bail!("{other} does not apply to {item}"),

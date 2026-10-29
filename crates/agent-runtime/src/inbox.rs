@@ -718,6 +718,10 @@ impl Runtime {
             .read(|s| s.inbox.iter().find(|i| i.id == id).cloned())
             .ok_or_else(|| anyhow!("no Inbox item {id}"))?;
         if !item.open() {
+            // A failed or stale decision leaves the Inbox only this way.
+            if decision == InboxDecision::Dismiss && matches!(item.status, InboxStatus::Failed | InboxStatus::Stale) {
+                return self.dismiss_ended(&item);
+            }
             bail!("Inbox item {id} is already {:?}", item.status);
         }
         // Checked before claiming: an always-allow that can't become a rule is refused whole.
@@ -925,6 +929,40 @@ impl Runtime {
         result["lifecycle"] = self.lifecycle(id);
         self.outcome(&item, "user", effect);
         Ok(result)
+    }
+
+    /// Dismisses a failed or stale decision (the user's, audited): the
+    /// lifecycle ends `dismissed`.
+    fn dismiss_ended(&self, item: &InboxItem) -> Result<Value> {
+        let id = item.id;
+        let now = now_ms();
+        let ok = self.store.write(|s| {
+            let Some(i) =
+                s.inbox.iter_mut().find(|i| i.id == id && matches!(i.status, InboxStatus::Failed | InboxStatus::Stale))
+            else {
+                return false;
+            };
+            i.status = InboxStatus::Dismissed;
+            (i.decision, i.decided_by, i.decided_at_ms) = (Some("dismiss".into()), Some("user".into()), Some(now));
+            (i.effect, i.effect_detail, i.effect_at_ms) = (Some("dismissed".into()), None, Some(now));
+            true
+        })?;
+        if !ok {
+            bail!("Inbox item {id} is no longer failed or stale");
+        }
+        let target = item.payload.get("tool").and_then(Value::as_str);
+        self.db.audit(
+            "user",
+            item.agent_id.as_deref(),
+            &item.kind,
+            target,
+            "dismiss",
+            json!({"item": id, "was": item.status.as_str()}),
+        )?;
+        self.outcome(item, "user", "dismissed");
+        Ok(
+            json!({"item": id, "decision": "dismiss", "decided_by": "user", "effect": "dismissed", "lifecycle": self.lifecycle(id)}),
+        )
     }
 
     /// `request_pr` from orch-mcp: an Inbox gate (the agent can't push).
@@ -1590,5 +1628,80 @@ mod tests {
         let a = rt.add_item(Some("a1"), "alert", "a1: x".into(), json!({}), 0).unwrap();
         rt.decide(a, InboxDecision::Dismiss, None, None).unwrap();
         assert_eq!(lc(&rt, a), ("dismissed".into(), Some("dismissed".into()), None));
+    }
+
+    fn version(rt: &Runtime, id: u64) -> u64 {
+        rt.lifecycle(id)["version"].as_u64().unwrap()
+    }
+
+    #[test]
+    fn the_version_grows_on_every_transition() {
+        let (_d, rt) = test_runtime(true);
+        let q =
+            rt.add_item(Some("a1"), "question", "a1: which db?".into(), json!({"question": "which db?"}), 20).unwrap();
+        let v0 = version(&rt, q);
+        assert!(v0 >= 1);
+        let r = rt.decide(q, InboxDecision::Reply, None, Some("sqlite")).unwrap();
+        let v1 = r["lifecycle"]["version"].as_u64().unwrap();
+        assert!(v1 > v0, "decided then sent: {v0} → {v1}");
+        rt.answers_resumed("a1");
+        let v2 = version(&rt, q);
+        assert!(v2 > v1, "effect: {v1} → {v2}");
+        // A write that changes nothing of the item keeps it.
+        rt.store.write(|_| ()).unwrap();
+        assert_eq!(version(&rt, q), v2);
+    }
+
+    #[test]
+    fn a_failed_or_stale_decision_can_be_dismissed() {
+        let (_d, rt) = test_runtime(true);
+        // A PR gate whose push failed.
+        let g = rt.add_item(Some("a1"), "gate", "a1: PR".into(), json!({"action": "push_pr"}), 20).unwrap();
+        rt.store
+            .write(|s| {
+                let _ = s.close_inbox(g, InboxStatus::Decided, Some("approve".into()), "user");
+            })
+            .unwrap();
+        rt.advance(g, Stage::Failed("push rejected".into()));
+        let before = version(&rt, g);
+        let r = rt.decide(g, InboxDecision::Dismiss, None, None).unwrap();
+        let lc = &r["lifecycle"];
+        assert_eq!(
+            (lc["state"].as_str(), lc["effect"].as_str(), lc["decided_by"].as_str()),
+            (Some("dismissed"), Some("dismissed"), Some("user"))
+        );
+        assert_eq!(lc["error"], "push rejected", "kept for the record");
+        assert!(lc["version"].as_u64().unwrap() > before);
+        assert!(actors(&rt).contains(&"user".to_string()), "audited");
+        // A stale permission.
+        let p = rt.add_item(Some("a1"), "permission", "a1: Bash".into(), json!({"tool": "Bash"}), 30).unwrap();
+        rt.store
+            .write(|s| {
+                let _ = s.close_inbox(p, InboxStatus::Decided, None, "pane");
+            })
+            .unwrap();
+        rt.advance(p, Stage::Stale("the agent moved on"));
+        rt.decide(p, InboxDecision::Dismiss, None, None).unwrap();
+        assert_eq!(lc_state(&rt, p), "dismissed");
+        // Nothing else applies to an ended decision, and a dismissed one stays dismissed.
+        assert!(rt.decide(p, InboxDecision::Dismiss, None, None).is_err());
+        // The builder offers dismiss on failed and stale decisions.
+        let it = item(&rt, g);
+        let mut failed = it.clone();
+        failed.status = InboxStatus::Failed;
+        let d = crate::decision::build(&crate::decision::Ctx {
+            items: &[failed],
+            agents: &Default::default(),
+            tails: &Default::default(),
+            ask: None,
+            runs: &[],
+            projects: &Default::default(),
+            startup_timeout_ms: 30_000,
+        });
+        assert_eq!(d[0].actions.iter().map(|a| a.id).collect::<Vec<_>>(), ["dismiss", "open"]);
+    }
+
+    fn lc_state(rt: &Runtime, id: u64) -> String {
+        rt.lifecycle(id)["state"].as_str().unwrap_or("").to_string()
     }
 }
