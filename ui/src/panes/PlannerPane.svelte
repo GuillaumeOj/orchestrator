@@ -1,8 +1,10 @@
 <script>
   // Week planner (§9.3, FR-802–804, FR-809, Penpot 04 Week planner): read-only
-  // forecast from the Governor. Ideal vs actual vs forecast for the week and the
-  // 5h window, allocations, next-action preview and the governor log with undo.
-  // The actual line and the log cover the whole plan week across restarts.
+  // forecast from the Governor. The week's usage so far (line, with the agents'
+  // part filled inside it) against the plan, forecast and w/ governor lines, all
+  // in % of the weekly limit; plus the 5h window, allocations, next-action preview
+  // and the governor log with undo. The used line (it ends at now) and the log
+  // cover the whole plan week across restarts.
   // Shadow mode (FR-812) for the first week, then the user may enforce.
   // Keys: S sprint mode, P pause all, u undo the selected log entry, a/r answer
   // the ask, e edit the plan, R the weekly report, O run the next queued turn
@@ -63,15 +65,20 @@
   const x = (t) => pad.l + ((t - v.week_start_ms) / (v.reset_at_ms - v.week_start_ms)) * (w - pad.l - pad.r);
   const y = (val) => pad.t + (1 - Math.min(Math.max(val, 0), 110) / 100) * (H - pad.t - pad.b);
   const path = (pts) => pts.map((q, i) => `${i ? 'L' : 'M'}${x(q[0]).toFixed(1)},${y(q[1]).toFixed(1)}`).join('');
-  const ideal = $derived(v ? path(v.curve.map((c) => [c.t_ms, c.ideal])) : '');
-  const forecast = $derived(v ? path(v.curve.filter((c) => c.forecast != null).map((c) => [c.t_ms, c.forecast])) : '');
-  const withGov = $derived(v ? path(v.curve.filter((c) => c.with_governor != null).map((c) => [c.t_ms, c.with_governor])) : '');
-  const actualPts = $derived(v ? [...v.actual.map((h) => [h.t_ms, h.governed]), [v.now_ms, s.governed]] : []);
-  const actual = $derived(v ? path(actualPts) : '');
-  const actualFill = $derived(v && actualPts.length ? `${path(actualPts)}L${x(actualPts.at(-1)[0])},${y(0)}L${x(actualPts[0][0])},${y(0)}Z` : '');
+  const plan = $derived(v ? path(v.curve.map((c) => [c.t_ms, c.plan_total])) : '');
+  const forecast = $derived(v ? path(v.curve.filter((c) => c.forecast_total != null).map((c) => [c.t_ms, c.forecast_total])) : '');
+  const withGov = $derived(v ? path(v.curve.filter((c) => c.with_governor_total != null).map((c) => [c.t_ms, c.with_governor_total])) : '');
+  const area = (pts) => (pts.length ? `${path(pts)}L${x(pts.at(-1)[0])},${y(0)}L${x(pts[0][0])},${y(0)}Z` : '');
+  // `actual` already ends at now (the view appends the snapshot's point).
+  // Both series start at 0 on the week start, so a lone point still draws a line.
+  const series = (key) => (v ? [[v.week_start_ms, 0], ...v.actual.map((h) => [h.t_ms, h[key]])] : []);
+  const usedPts = $derived(series('used'));
+  const used = $derived(path(usedPts));
+  const usedFill = $derived(area(usedPts));
+  const agentsFill = $derived(area(series('governed')));
   const days = $derived(v ? Array.from({ length: 7 }, (_, i) => v.week_start_ms + i * 86400000) : []);
   const emptyAt = $derived(s?.eta ? Date.parse(s.eta) : null);
-  const reserveTop = $derived(v ? 100 - v.reserve_pct - (s?.unattributed_forecast ?? 0) : 90);
+  const reserveTop = $derived(v ? 100 - v.reserve_pct : 90);
   const WEEK_MS = 7 * 86400000;
   // Day n of the shadow week (FR-812), counted from the first start.
   const shadowDay = $derived(v?.first_run_ms ? Math.floor((v.now_ms - v.first_run_ms) / 86400000) + 1 : null);
@@ -207,12 +214,13 @@
         <div class="ch">
           <b>Week</b><span class="muted">working hours shaded{offHoursAllowed(off) ? ' · off-hours hatched' : ''}</span>
           <span class="grow"></span>
-          <span class="leg"><i class="l actual"></i>agents</span>
-          <span class="leg"><i class="l ideal"></i>ideal</span>
-          <span class="leg"><i class="l fc"></i>forecast</span>
-          <span class="leg"><i class="l gov"></i>w/ governor</span>
+          <span class="leg"><i class="l actual"></i>Week used</span>
+          <span class="leg"><i class="l sw-agents"></i>Agents</span>
+          <span class="leg"><i class="l ideal"></i>Plan</span>
+          <span class="leg"><i class="l fc"></i>Forecast</span>
+          <span class="leg"><i class="l gov"></i>W/ governor</span>
         </div>
-        <svg width={w - 2} height={H} role="img" aria-label="Agents' usage against the ideal curve">
+        <svg width={w - 2} height={H} role="img" aria-label="Week usage so far against the plan">
           <defs><pattern id="offhatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" class="hatch" /></pattern></defs>
           {#each v.working as [a, b] (a)}<rect x={x(a)} y={pad.t} width={Math.max(1, x(b) - x(a))} height={H - pad.t - pad.b} class="work" />{/each}
           {#each offBands as o (o.a)}
@@ -225,15 +233,16 @@
             <line x1={pad.l} x2={w - pad.r} y1={y(g)} y2={y(g)} class="grid-l" /><text x={pad.l - 6} y={y(g) + 4} class="ax" text-anchor="end">{g}%</text>
           {/each}
           {#each days as d (d)}<text x={x(d) + 4} y={H - 6} class="ax">{new Date(d).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })}</text>{/each}
-          <path d={actualFill} class="fill" />
-          <path d={ideal} class="ideal" />
+          <path d={usedFill} class="fill" />
+          <path d={agentsFill} class="agents" />
+          <path d={plan} class="ideal" />
           <path d={withGov} class="gov" />
           <path d={forecast} class="fc" />
-          <path d={actual} class="actual" />
+          <path d={used} class="actual" />
           <line x1={x(v.now_ms)} x2={x(v.now_ms)} y1={pad.t} y2={H - pad.b} class="now" />
-          <text x={x(v.now_ms) + 6} y={y(s.governed) - 8} class="tag">now {clock(v.now_ms)} · agents {Math.round(s.governed)}% (plan {Math.round(s.ideal)}%, {pp(s.error)}) · total {Math.round(s.used)}%</text>
+          <text x={x(v.now_ms) + 6} y={y(s.used) - 8} class="tag">now {clock(v.now_ms)} · week {Math.round(s.used)}% (plan {Math.round(s.plan)}%, {pp(s.error)}) · agents {Math.round(s.governed)}%</text>
           {#if emptyAt && emptyAt < v.reset_at_ms}<text x={Math.min(x(emptyAt), w - 180)} y={y(100) - 2} class="tag warn">⚠ empty {clock(emptyAt)} at this rate</text>{/if}
-          <text x={w - pad.r - 4} y={y(reserveTop) - 4} class="ax" text-anchor="end">reserve {v.reserve_pct}% + outside app {Math.round(s.unattributed_forecast)}%</text>
+          <text x={w - pad.r - 4} y={y(reserveTop) - 4} class="ax" text-anchor="end">reserve {v.reserve_pct}% for you</text>
         </svg>
       </section>
 
@@ -387,6 +396,12 @@
   .l.actual {
     border-color: var(--color-pacing-red);
   }
+  .l.sw-agents {
+    height: 8px;
+    border: 0;
+    background: var(--color-accent-default);
+    opacity: 0.2;
+  }
   .l.ideal {
     border-color: var(--color-text-secondary);
     border-top-style: dashed;
@@ -464,6 +479,10 @@
   .fill {
     fill: var(--color-pacing-red);
     opacity: 0.15;
+  }
+  .agents {
+    fill: var(--color-accent-default);
+    opacity: 0.2;
   }
   .fc {
     fill: none;
