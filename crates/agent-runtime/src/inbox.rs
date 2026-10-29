@@ -330,10 +330,20 @@ impl Runtime {
     }
 
     /// An item's lifecycle now (`inbox_act`'s answer).
+    /// With the version the next push will carry for it (the row's,
+    /// raised past the last one pushed), so a client never sees an answer
+    /// as older than a push it already holds.
     pub fn lifecycle(&self, id: u64) -> Value {
-        self.store
-            .read(|s| s.inbox.iter().find(|i| i.id == id).map(|i| json!(crate::decision::Lifecycle::of(i))))
-            .unwrap_or(Value::Null)
+        let Some((mut lc, key)) = self.store.read(|s| {
+            s.inbox
+                .iter()
+                .find(|i| i.id == id)
+                .map(|i| (crate::decision::Lifecycle::of(i), crate::decision::decision_id(&i.kind, i.id)))
+        }) else {
+            return Value::Null;
+        };
+        lc.version = self.next_pushed_version(&key, &lc);
+        json!(lc)
     }
 
     /// Closes an open item; the closed item, or `None` if it was already closed.
@@ -1637,6 +1647,27 @@ mod tests {
         // A write that changes nothing of the item keeps it.
         rt.store.write(|_| ()).unwrap();
         assert_eq!(version(&rt, q), v2);
+        // A push that ran ahead (what it shows changed, not its lifecycle):
+        // the next answer still outranks it.
+        rt.now_pump(true);
+        rt.store
+            .write(|s| s.inbox.iter_mut().find(|i| i.id == q).unwrap().subject = json!({"agent": "a1", "x": 1}))
+            .unwrap();
+        rt.now_pump(false);
+        rt.store
+            .write(|s| s.inbox.iter_mut().find(|i| i.id == q).unwrap().subject = json!({"agent": "a1", "x": 2}))
+            .unwrap();
+        rt.now_pump(false);
+        let pushed = rt.now_snapshot()["decisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == format!("q-{q}"))
+            .unwrap()["lifecycle"]["version"]
+            .as_u64()
+            .unwrap();
+        rt.advance(q, Stage::Effect("delivered", None));
+        assert!(version(&rt, q) > pushed, "the answer is never older than the push held");
     }
 
     #[test]

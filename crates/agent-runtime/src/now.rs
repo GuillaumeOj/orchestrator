@@ -331,6 +331,16 @@ impl Runtime {
         }
     }
 
+    /// The version a stored decision's next push carries with lifecycle
+    /// `lc` (as `decision_delta` sets it): the row's, raised past the last
+    /// one pushed when the lifecycle moved since.
+    pub(crate) fn next_pushed_version(&self, id: &str, lc: &decision::Lifecycle) -> u64 {
+        let st = lock(&self.now.state);
+        let Some(p) = st.decisions.get(id).map(|d| &d.lifecycle) else { return lc.version };
+        let same = decision::Lifecycle { version: p.version, ..lc.clone() } == *p;
+        if same { lc.version.max(p.version) } else { lc.version.max(p.version + 1) }
+    }
+
     /// The user answered a synthesized card (`ask-7`, `wait-a1`, `error-a1`)
     /// from the Inbox: when it clears, its last upsert carries `effect`.
     pub fn synth_answered(&self, id: &str, effect: &'static str) {
