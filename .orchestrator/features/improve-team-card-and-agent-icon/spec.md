@@ -23,7 +23,7 @@
 ### 3.2 Team card: a table of agents
 Each row, left to right:
 1. **Mark** (the role square).
-2. **Agent name**, with the timeline's gap between mark and name (`--space-sm`, 8 px; today the chip uses 4 px).
+2. **Agent name**, with the timeline's gap between mark and name (`--space-sm`, 8 px; today the chip uses 4 px). The name is the agent id **without the `<feature-slug>-` prefix** (`back-1`, not `improve-team-card-and-agent-icon-back-1`), as the Sidebar already shows agents by node; the full id stays in the row's `Open <id>` tooltip.
 3. **Current activity** (today's last column: tool, else `task T-n`, plus ` · flag`), moved right after the name.
 4. **Status**, pushed to the far right of the card: **label first, then the icon** (`Working ⟳`), same label, icon and color as today's `StatusBadge`.
 
@@ -47,7 +47,7 @@ Out of scope: other agent lists (Sidebar, Overview, Board, Canvas), the status v
 
 | Task | Owner | Depends on | Notes |
 |---|---|---|---|
-| T-1 Penpot: center the role mark letter, redesign the Team card row | ui | — | 02 Components role mark, 04 Screens Feature Team card; export PNGs to the feature's `design/` folder |
-| T-2 Code: mark centering + Team card table | front | T-1 | `AgentChip.svelte`, `StatusBadge.svelte` (label-then-icon option, existing callers unchanged), `FeaturePane.svelte`, tests |
+| T-37 Penpot: center the role mark letter, redesign the Team card row | ui | — | 02 Components role mark, 04 Screens Feature Team card; export PNGs to the feature's `design/` folder |
+| T-38 Code: mark centering + Team card table | front | T-37 | `AgentChip.svelte`, `StatusBadge.svelte` (label-then-icon option, existing callers unchanged), `FeaturePane.svelte`, tests |
 
 `ux`: no separate task; the interaction rules are settled in [ux-brief.md](ux-brief.md) (the user's brief fixes the order). `back`: no work (no data change: the row uses the same `v.agents` fields). `front` asks `ui` for a visual review before reporting done.

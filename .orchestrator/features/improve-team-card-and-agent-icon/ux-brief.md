@@ -14,10 +14,11 @@ Order: **mark · name · activity · status (label, then icon)**.
 │ [L]  lead                    review T-2      Working ⟳ │
 │ [B]  back-1                  Bash · tests    At gate ⏸ │
 │ [F]  front-12                                   Idle ○ │
-│ [U]  a-very-long-agent-na…   task T-1           Done ✓ │
+│ [U]  a-very-long-agent-name  task T-1           Done ✓ │
 └────────────────────────────────────────────────────────┘
 ```
 - Mark → name gap: `--space-sm` (8 px), as in the timeline.
+- Name: agent id without the `<feature-slug>-` prefix (`back-1`); full id in the tooltip.
 - Columns: name column as wide as the longest name (cap ≈ 24 ch, ellipsis + tooltip), activity column starts at one x, status column right-aligned on the card edge.
 - Activity is secondary text (muted), one line, ellipsis; it shrinks first. Empty activity → empty cell.
 - Status: label then icon, same colors/icons as the StatusBadge vocabulary (§9.5). UI decides whether it keeps the badge's raised background; keep it consistent with other status displays.
