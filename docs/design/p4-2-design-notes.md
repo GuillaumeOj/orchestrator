@@ -16,7 +16,9 @@ This file is the "P4.2" part of the P4 notes; it passed ~200 lines, so it is a f
 | F4 | **No keyboard way out of a taken-over session except leader `o`** (D5). A keyboard-only user who takes over to answer a prompt has `⌘+; o`. That works, but nothing on screen says so once the watch strip is gone. | Take-over keeps a thin strip (§5.2): "Typing in back-1 · ⌘+; o Mission control". Costs one 24 px line, removes the dead end. `ui` draws it; the brief's "hint in the header" becomes this strip. |
 | F5 | **Queued members are counted twice on purpose** (chip in the run row and a row in Queued, spec §3.2). A run with 1 queued member and nothing else shows "Queued · 1 agent" and a chip with the same wait. | Fine, but the chip of a queued member shows only "queued ≈14:20" (no reason), and its Queued row carries the reason. The Queued row names its run: "ui-1 · shop-api › checkout". Keeps the lane the whole queue without repeating the sentence. |
 | F6 | **The fixture has an empty Waiting on lane**: front-1 → back-1 is a member's wait, so it lives in the run row (D4). The Waiting on lane would show nothing in the demo. | Lanes with 0 rows are **hidden**, except Needs you ("Nothing needs you", so the absence is visible). The demo then shows Needs you, Running, Queued, Done today. Acceptance §6.1 already lists no Waiting on row. |
-| F7 | **Shell at 1512 when the chat column exists** (ux-brief §2.1): the proposal in the brief holds, with the widths computed in §4. | Inspector overlays the chat column's slot below 1728, ⌘I toggles; docked ≥ 1728. In P4.2 code (no chat) it stays docked at ≥ 1512 as today. Needs a SPEC §9.6 edit when P4.3 lands: "Inspector (⌘I): docked at ≥ 1728 px, overlay below" (today: 1512). |
+| F7 | **Shell at 1512 when the chat column exists** (ux-brief §2.1): the proposal in the brief holds, with the widths computed in §4. | Inspector overlays the chat column's slot below 1728, ⌘I toggles; docked ≥ 1728. In P4.2 code (no chat) it stays docked at ≥ 1512 as today. Needs a SPEC §9.2 edit (the Inspector bullet) when P4.3 lands: "Inspector (⌘I): docked at ≥ 1728 px, overlay below" (today: 1512). |
+| F8 | **Paused, deferred and failed runs lose their step.** §1.2 marks "the step the run paused in", but the run record carries one `phase` (`paused`, `deferred`, `failed`) and the contract adds no prior state or deferral time (`RunState` documents that the caller remembers the state it resumes into). | Back adds optional `held_in` (the step left) to `RunAttention`, and `until_ms` for `deferred`; without them the stepper shows no current step and the text reads "paused · 40 min". |
+| F9 | **Not-started agents may have no queue entry.** api-contract §1.2 gives `queue.entry` for `not_started` but says `position` is absent for "not started, no entry". Start now and Cancel take `entry`. | Back guarantees `entry` whenever `queue` is present; otherwise Start now and Cancel are hidden for that row. |
 
 ---
 
@@ -43,7 +45,7 @@ Six steps, in this order and these labels: **Draft · Spec · Planning · Execut
 
 | Record `phase` | Current step | Mark on the current step | Text next to the stepper |
 |---|---|---|---|
-| draft · spec · planning · executing · integrating · pr | that step | none | "executing · 2 h" (phase label lower case + since) |
+| draft · spec · planning · executing · integrating · pr_open (step "PR") | that step | none | "executing · 2 h" (phase label lower case + since) |
 | spec_gate | Spec | "at gate" | "spec gate · 12 min" |
 | pr_gate | PR | "at gate" | "PR gate · 3 min" |
 | paused | the step the run paused in | "paused" | "paused · executing · 40 min" |
@@ -67,7 +69,7 @@ shop-api › checkout   [Draft ✓][Spec ✓][Planning ✓][Executing ●][Integ
 | Tasks | "3/7 tasks done" (0 total: "no tasks yet"). Extras in the Inspector, not the row. |
 | PR | "PR #12 ↗" (no number parsed: "PR ↗"), with the CI dot from `PrLine`; absent until `pr` |
 | Blocker line | `blocker: <agent> · <reason> · <since>` using the core's composed reason (P4.1 §2). Absent when the run has no blocker. Run at `error` level: `blocker:` becomes `error:`. |
-| Member chip | status icon + name + short wait. Short wait = the reason's first clause + since, cut to 28 chars with "…": running "lead-1 · Edit src/feed.ts", permission "back-1 · permission · 2 min", agent wait "front-1 → back-1 · 12 min", task wait "ux-1 · blocked by T-2 · 25 min", limit "back-1 · 5h full · resets 16:00", queued "ui-1 · queued ≈14:20" (F5), not started "ui-1 · not started", paused "back-1 · paused", error "back-1 · error · 2 min", idle "ux-1 · idle", suspended "ux-1 · suspended", done "back-1 · done". |
+| Member chip | status icon + name + short wait. Short wait = the reason's first clause + since, cut to 32 chars with "…": running "lead-1 · Edit src/feed.ts", permission "back-1 · permission · 2 min", agent wait "front-1 → back-1 · 12 min", task wait "ux-1 · blocked by T-2 · 25 min", limit "back-1 · 5h full · resets 16:00", queued "ui-1 · queued ≈14:20" (F5), not started "ui-1 · not started", paused "back-1 · paused", error "back-1 · error · 2 min", idle "ux-1 · idle", suspended "ux-1 · suspended", done "back-1 · done". |
 | Chip order | lead first, then the core's order. Selected chip (`h/l`): filled outline + the key hint "⏎ open back-1" in the toolbar hints. Default target is the blocker's agent (D6); the row shows it selected. |
 | Overflow | past 6 chips: "+3 more" chip, `l` steps through the hidden ones and swaps them in. |
 
@@ -78,7 +80,7 @@ shop-api › checkout   [Draft ✓][Spec ✓][Planning ✓][Executing ●][Integ
 ### 1.5 Queue row
 
 ```
-infra-1 · infra › deps     Queued · live cap 2/2 · 1st in line · ≈14:20 · 6 min     [Run now ≈ +2.1 pp week]  [Cancel]
+infra-1 · infra › deps     Queued · live cap 2/2 · next · ≈14:20 · 6 min     [Run now ≈ +2.1 pp week]  [Cancel]
 ```
 - **Reason** is the record's `reason` (P4.1 §2.2); the badge label comes first (P4.1 F1). Position is in the reason ("2nd in line"); `queue.position` is not repeated. Paused agents: "Paused · by you · 1 h 5 min" with **Resume r** in place of Run now. Not started: "Not started yet · live cap 3/3 · ≈14:20 · 2 min" with **Start now**.
 - **Tier**: shown only as a muted tag when not `normal` ("low", "high", "critical"), tooltip "Allocation tier: low". It is not in the reason (P4.1 §2.2).
@@ -98,7 +100,7 @@ Same strings as P4.1 §2.1/§6; this lists the badge, the extra action shown on 
 | PR gate | At gate · PR gate · checkout · 3 min | same |
 | restart gate | At gate · restart gate · git status not clean · 1 min | same |
 | Governor ask | Waiting for you · run now? ≈ +2.1 pp of the week · 1 min | same |
-| trust / pane prompt | Waiting for you · trust dialog in its pane · 30 s / a prompt in its pane · 6 min | "Take over ⏎" (the answer is in the pane) |
+| trust / pane prompt | Waiting for you · trust dialog in its pane · 30 s / a prompt in its pane · 6 min | "Open session ⏎" (watch mode, then ⏎ again to take over; the answer is in the pane) |
 | parked | Waiting for you · permission (parked): … · 22 min | same as permission |
 | error | Error · API error 529 (overloaded) · 2 min | "Resume r" · "Open in Inbox d" |
 | startup error | Error · no session after 30 s · 1 min | "Open in Inbox d" |
@@ -107,12 +109,12 @@ Errors sort after the blocking ones (D3) and the badge is the error one (never c
 
 ### 1.7 Outcome lines (Done today)
 
-The P4.1 §5 `text` plus the time on the right; **seen and unseen look the same**. Two additions for Mission control: the PR link is part of the row ("PR opened · blog #12 ↗ · 15:30", `o` opens the PR), and a run's outcomes are not grouped. Examples from the fixture:
+The P4.1 §5 `text` plus the time on the right; **seen and unseen look the same**. Two additions for Mission control: the PR link is part of the row ("PR opened · blog › fix-feed #12 ↗ · 12:30", `o` opens the PR), and a run's outcomes are not grouped. Examples from the fixture:
 
 ```
-T-3 done · checkout API (back-1) · 14:02
-Merged back-1 into integration · 14:10
-PR opened · blog #12 ↗ · 15:30
+T-3 done · checkout API (back-1) · 13:02
+Merged back-1 into integration · 13:10
+PR opened · blog › fix-feed #12 ↗ · 12:30
 checkout: planning → executing · 11:40
 ```
 `o` on an outcome: PR → opens the link; task_done / merge_done → focuses the run's row; run_phase / run_done → the run; turn_done → the agent; report_ready → the report; sync_conflict → the task. Empty: "Nothing done yet today."
@@ -156,7 +158,7 @@ Opened by `n` or the button. Dialog (⌘⏎ submits, Esc cancels), title **"Run 
 
 ```
 Run infra-1 now?
-It is queued: live cap 2/2 · 1st in line · ≈14:20.
+It is queued: live cap 2/2 · next · ≈14:20.
 Running it now costs ≈ +2.1 pp of the week and ≈ +6 pp of the 5h window.
 The week holds it: that is the window this is counted against.
                                          [Keep queued]   [Run now ≈ +2.1 pp week]
@@ -201,7 +203,7 @@ Fixture: ux-brief §4, Thu 29 Oct 14:00. "Hint" = what the toolbar's key hints s
 | 9 | Run row | details open (`space`) | one line per member below the chips (§1.8) | space closes |
 | 10 | Solo row | running | "blog › fix-feed · Working · Edit src/feed.ts" | ⏎ open · i p s ⇧K |
 | 11 | Solo row | waits (user / agent / limit / task / external) | badge + reason + since in the lane the level says | ⏎ open · d for decisions |
-| 12 | Queue row | queued (`queue.position`) | §1.5 with "Run now ≈ +2.1 pp week" | n · Cancel (click, or ⌫ asks) |
+| 12 | Queue row | queued (`queue.position`) | §1.5 with "Run now ≈ +2.1 pp week" | n · Cancel (click, or ⌫; both ask for a run member only) |
 | 13 | Queue row | not started | "Not started yet…" + "Start now"; no position | n |
 | 14 | Queue row | paused | "Paused · by you" + "Resume" (no cost, no ETA) | r |
 | 15 | Queue row | `run_now` missing | button "Run now" without cost | n confirms without the cost lines |
@@ -237,14 +239,14 @@ Selection rule (also for the Inspector): selection moves with `j/k` across rows;
 
 | Key | Action | On |
 |---|---|---|
-| `j` `k` / ↓ ↑ | Move row (across lanes, skipping headers and collapsed lanes) | any |
+| `j` `k` / ↓ ↑ | Move row (across lanes; an open lane's header is skipped, a collapsed lane is one stop: `⏎` or `space` expands it) | any |
 | `h` `l` / ← → | Move between member chips (the target agent) | run row |
 | `⏎` | Open the target's session (watch mode); on the "Show all" button expands; on the no-session line opens it | row |
 | `space` | Row details | row |
 | `i` | Interrupt the target | agent with a live turn |
 | `p` | Pause / resume the target | any agent |
 | `s` | Suspend | idle or waiting agent |
-| `r` | Resume | paused / suspended |
+| `r` | Resume | paused / suspended / error |
 | `⇧K` | Kill (asks first) | agent |
 | `d` | Open the row's decision (Inbox; card in P4.3) | row with a decision |
 | `n` | Run now / Start now (confirms with the cost, §1.12) | queue row |
@@ -333,8 +335,8 @@ Five frames, one per SPEC J12 step, 1512 × 982 each, with a caption under the f
 
 | # | Frame | What is drawn | Annotations (callouts) | Key sequence |
 |---|---|---|---|---|
-| 1 | **Morning line** · 08:30 | The chat's first entry: morning line "Good morning. 2 runs in progress, 1 decision waiting, week 38 % against 35 % planned." Mission control: Needs you · 1 run, Running · 1 session, Queued · 1 agent. Overwatch status "awake". | ① "The core starts the day's session with its briefing" ② "One line: runs, decisions, week against plan" ③ "Mission control already shows the same numbers: one state" | none: the app opens on Mission control. `⌘⇧I` if the user wants the waiting card. |
-| 2 | **The day, settled** · 11:40 | Chat: two collapsed lines ("▸ allowed back-1: cargo add serde · policy installs", "▸ answered front-1 from api-contract.md §2 ↗ citation"), one restart line ("▸ restarted ui-1: first session never started"), then two open cards: **spec gate · checkout** with the Overwatch annotation "scope matches the brief" and **permission: WebFetch registry.internal** (out of policy) with "Overwatch recommends: deny, not in the allow list". Mission control: run row at "spec gate" (at gate mark). | ① "Routine prompts settle themselves: one line each, expand to see, undo while it still means something" ② "The Overwatch leaves the user only what policy can't settle: each card with its recommendation" ③ "Level 1 notifies; collapsed lines never do" ④ "Run row shows the same gate: the Needs you row and the card are one decision" | `⌘⇧I` focus the oldest open card · `a` approve spec · `j` next card · `r` reject the network call · `u` undo within 5 s (shown on the toast). |
+| 1 | **Morning line** · 08:30 | The chat's first entry: morning line "Good morning. 1 run in progress, 1 decision waiting, week 38 % against 35 % planned." Mission control: Needs you · 1 run, Running · 1 session, Queued · 1 agent. Overwatch status "awake". | ① "The core starts the day's session with its briefing" ② "One line: runs, decisions, week against plan" ③ "Mission control already shows the same numbers: one state" | none: the app opens on Mission control. `⌘⇧I` if the user wants the waiting card. |
+| 2 | **The day, settled** · 11:10 | Chat: two collapsed lines ("▸ allowed back-1: cargo add serde · policy installs", "▸ answered front-1 from api-contract.md §2 ↗ citation"), one restart line ("▸ restarted ui-1: first session never started"), then two open cards: **spec gate · checkout** with the Overwatch annotation "scope matches the brief" and **permission: WebFetch registry.internal** (out of policy) with "Overwatch recommends: deny, not in the allow list". Mission control: run row at "spec gate" (at gate mark). | ① "Routine prompts settle themselves: one line each, expand to see, undo while it still means something" ② "The Overwatch leaves the user only what policy can't settle: each card with its recommendation" ③ "Level 1 notifies; collapsed lines never do" ④ "Run row shows the same gate: the Needs you row and the card are one decision" | `⌘⇧I` focus the oldest open card · `a` approve spec · `j` next card · `r` reject the network call · `u` undo within 5 s (shown on the toast). |
 | 3 | **Ask why** · 14:05 | User message "why is checkout slow today?" in the chat input, then the Overwatch answer: "checkout waited 52 min today: 38 min on the live cap (2/2) behind infra/deps, 14 min on back-1's permission." with a small list citing the attention records and the Governor log ("Governor log 11:02–11:40 ↗"). Status "working" then "awake". | ① "Ask in words: ⌘L focuses the input, ⏎ sends" ② "Answers are built from the attention records and the Governor's log, with links" ③ "Overwatch status: asleep → waking → working → awake" ④ "Cards still work if the Overwatch is down" | `⌘L` · type · `⏎` · `Esc` returns focus to the board. |
 | 4 | **Third time, a rule** · 15:20 | Rule proposal card: "You allowed Bash `pnpm add` in shop-api three times. Add a rule: allow `pnpm add *` in shop-api?" with the three earlier decisions as links, the rule text in mono, buttons **Add rule a** · **Not now r** · **Edit ⏎**. After adding: marker "Added to shop-api policy · 15:21" and the next matching prompt as a collapsed line "▸ allowed back-1: pnpm add zod · rule from 15:21". | ① "Proposed after the third identical answer, never before" ② "One key adds it to the project's policy" ③ "The next matching call is a collapsed line: no card, no notification" ④ "Undo removes the rule" | `⌘⇧I` · `a` add rule (or click) · `u` undo within 5 s. |
 | 5 | **Watch, don't open** · 16:00 | Mission control with back-1's row selected; then the session tab in watch mode with the strip "Watching back-1 · ⏎ take over · Esc back"; third mini-frame taken over with the strip "Typing in back-1 · ⌘+; o Mission control". Inspector (overlay at 1512) shows the agent. | ① "No pane needed: the row says what it waits on and since when" ② "A click on the row opens the session over the board" ③ "Watching does not take the keyboard; ⏎ does" ④ "Esc returns; the tab stays open" ⑤ "Leader o comes back from a take-over" | `j` to the row · `l` to a chip · `⏎` watch · `Esc` back · `⏎` `⏎` take over · `⌘+; o` Mission control. A click on the row replaces `j l ⏎`. |
@@ -400,7 +402,7 @@ Pattern: `▸ <verb> <agent>: <short input or title ≤ 48> · <by>` with verb f
 Header "Rule proposal"; text "You allowed `pnpm add *` in shop-api 3 times. Add a rule: allow it in shop-api?"; the three earlier decisions as links; the rule in mono (`Bash(pnpm add:*)`, scope: project shop-api); actions **Add rule a** · **Not now r** · **Edit rule ⏎** (edit opens the policy text). States: open; added ("Added to shop-api policy · 15:21", muted, Undo u 5 s); declined ("Not now. Asking again after 3 more.", muted). Never more than one proposal open per rule.
 
 ### 8.6 Morning line and Overwatch status
-- **Morning line** (core): "Good morning. 2 runs in progress, 1 decision waiting, week 38 % against 35 % planned." Parts left out at zero ("No runs in progress."). One line, no card, first entry of the day; older days are searchable (FR-1305).
+- **Morning line** (core): "Good morning. 1 run in progress, 1 decision waiting, week 38 % against 35 % planned." Parts left out at zero ("No runs in progress."). One line, no card, first entry of the day; older days are searchable (FR-1305).
 - **Outcome digest entry**: P4.1 §5 rows grouped as "Today · 5 outcomes · Clear c" at the end of the thread.
 - **Overwatch status** (chat header, right of "Overwatch"): **Asleep** (muted: "asleep · wakes on the next event"), **Waking** ("waking…"), **Working** ("working · 2 events"), **Down** (warning: "Overwatch is down · cards still work", with "Restart" button). In every state the cards and their keys work: the status never disables an action.
 - **Chat input**: placeholder "Ask the Overwatch…" (⌘L); sending while asleep shows "waking…"; down: the input stays enabled, the message is kept, "Sent when the Overwatch is back".
