@@ -236,6 +236,11 @@ fn respond(w: &mut TcpStream, code: u16, reason: &str, body: &str) -> std::io::R
 }
 
 fn serve_conn(s: TcpStream, sink: &Sink, requests: &AtomicU64, stop: &AtomicBool) {
+    // The listener is non-blocking and BSD accept(2) hands that flag to the accepted socket;
+    // the read timeout below is a no-op on a non-blocking socket.
+    if s.set_nonblocking(false).is_err() {
+        return;
+    }
     let _ = s.set_read_timeout(Some(IDLE_KEEPALIVE));
     let Ok(mut w) = s.try_clone() else { return };
     let mut r = BufReader::new(s);
@@ -331,6 +336,70 @@ mod tests {
         out
     }
 
+    fn assert_status(out: &str, code: u16) {
+        assert!(out.starts_with(&format!("HTTP/1.1 {code}")), "expected {code}, got: {out:?}");
+    }
+
+    fn start_counting() -> (OtlpReceiver, Arc<Mutex<Vec<ApiRequest>>>) {
+        let got: Arc<Mutex<Vec<ApiRequest>>> = Arc::default();
+        let g2 = got.clone();
+        let rx = OtlpReceiver::start(0, Arc::new(move |v| g2.lock().unwrap().extend(v))).unwrap();
+        (rx, got)
+    }
+
+    fn logs_request(body: &str, extra: &str) -> String {
+        format!(
+            "POST /v1/logs HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    // Accepted sockets must be blocking even though the listener is not: a request whose
+    // bytes arrive after the accept must wait, not fail with WouldBlock (-> 400).
+    #[test]
+    fn accepted_connection_waits_for_late_request() {
+        let (rx, got) = start_counting();
+        let mut s = TcpStream::connect(rx.addr).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let req = logs_request(&logs_body().to_string(), "Connection: close\r\n");
+        s.write_all(req.as_bytes()).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        assert_status(&out, 200);
+        assert_eq!(got.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn body_arriving_in_two_parts_is_accepted() {
+        let (rx, got) = start_counting();
+        let mut s = TcpStream::connect(rx.addr).unwrap();
+        let req = logs_request(&logs_body().to_string(), "Connection: close\r\n");
+        let (a, b) = req.split_at(req.len() - 40);
+        s.write_all(a.as_bytes()).unwrap();
+        s.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        s.write_all(b.as_bytes()).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        assert_status(&out, 200);
+        assert_eq!(got.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn idle_keepalive_connection_gets_no_stray_400() {
+        let (rx, got) = start_counting();
+        let body = logs_body().to_string();
+        let mut s = TcpStream::connect(rx.addr).unwrap();
+        s.write_all(logs_request(&body, "").as_bytes()).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        s.write_all(logs_request(&body, "Connection: close\r\n").as_bytes()).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        assert_eq!(out.matches("HTTP/1.1 200").count(), 2, "{out}");
+        assert!(!out.contains("HTTP/1.1 400"), "{out}");
+        assert_eq!(got.lock().unwrap().len(), 2);
+    }
+
     #[test]
     fn http_server_keepalive_chunked_and_rejections() {
         let got: Arc<Mutex<Vec<ApiRequest>>> = Arc::default();
@@ -338,10 +407,10 @@ mod tests {
         let rx = OtlpReceiver::start(0, Arc::new(move |v| g2.lock().unwrap().extend(v))).unwrap();
         assert!(rx.endpoint().starts_with("http://127.0.0.1:"));
         let body = logs_body().to_string();
-        assert!(post(rx.addr, "/v1/logs", &body, "").starts_with("HTTP/1.1 200"));
-        assert!(post(rx.addr, "/v1/metrics", "{}", "").starts_with("HTTP/1.1 200"));
-        assert!(post(rx.addr, "/v1/logs", "{}", "Content-Encoding: gzip\r\n").starts_with("HTTP/1.1 415"));
-        assert!(post(rx.addr, "/nope", "{}", "").starts_with("HTTP/1.1 404"));
+        assert_status(&post(rx.addr, "/v1/logs", &body, ""), 200);
+        assert_status(&post(rx.addr, "/v1/metrics", "{}", ""), 200);
+        assert_status(&post(rx.addr, "/v1/logs", "{}", "Content-Encoding: gzip\r\n"), 415);
+        assert_status(&post(rx.addr, "/nope", "{}", ""), 404);
         // Keep-alive with a chunked body, then a second request on the same connection.
         let mut s = TcpStream::connect(rx.addr).unwrap();
         let (a, b) = body.split_at(body.len() / 2);
