@@ -1671,9 +1671,14 @@ impl Runtime {
     }
 }
 
+/// The docs folder of a feature in a worktree.
+fn feature_docs_dir(worktree: &Path, slug: &str) -> std::path::PathBuf {
+    worktree.join(".orchestrator").join("features").join(slug)
+}
+
 /// The markdown files in the feature's docs folder of a worktree.
 pub fn feature_docs(worktree: &Path, slug: &str) -> Vec<String> {
-    let dir = worktree.join(".orchestrator").join("features").join(slug);
+    let dir = feature_docs_dir(worktree, slug);
     let mut v: Vec<String> = std::fs::read_dir(&dir)
         .into_iter()
         .flatten()
@@ -1691,18 +1696,21 @@ pub fn read_feature_doc(worktree: &Path, slug: &str, name: &str) -> Result<Strin
     if name.contains('/') || name.contains("..") || !name.ends_with(".md") {
         bail!("invalid doc name {name:?}");
     }
-    let p = worktree.join(".orchestrator").join("features").join(slug).join(name);
+    let p = feature_docs_dir(worktree, slug).join(name);
     let text = std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?;
     Ok(cut(&text, 200_000))
 }
 
 /// An image a feature doc points at (`design/home.png`), read from the docs
 /// folder of a worktree as `{mime, data_b64, bytes}`. Refuses anything that
-/// leaves the folder (`..`, absolute, a symlink anywhere on the way), a
-/// non-image and a file over `MAX_PREVIEW_BYTES`.
+/// leaves the folder (`..`, absolute, a symlink to outside it), a symlink
+/// as the file itself, a non-image and a file over `MAX_PREVIEW_BYTES`.
 pub fn read_feature_asset(worktree: &Path, slug: &str, path: &str) -> Result<Value> {
     use crate::artifacts::{MAX_PREVIEW_BYTES, base64};
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
     use std::path::Component;
+    let too_large = |n: u64| anyhow!("too large ({:.1} MB)", n as f64 / (1024.0 * 1024.0));
     let rel = Path::new(path.strip_prefix("./").unwrap_or(path));
     if !rel.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
         bail!("outside the feature folder");
@@ -1711,10 +1719,10 @@ pub fn read_feature_asset(worktree: &Path, slug: &str, path: &str) -> Result<Val
     // GIF is shown in docs but not in the Design section's previews.
     let mime = match ext.as_str() {
         "gif" => Some("image/gif"),
-        _ => orch_team::artifact::image_mime(path),
+        e => orch_team::artifact::PREVIEWABLE.iter().find(|(x, _)| *x == e).map(|(_, m)| *m),
     }
     .ok_or_else(|| anyhow!("not an image"))?;
-    let dir = worktree.join(".orchestrator").join("features").join(slug);
+    let dir = feature_docs_dir(worktree, slug);
     let p = dir.join(rel);
     let meta = std::fs::symlink_metadata(&p).map_err(|_| anyhow!("not found"))?;
     if meta.file_type().is_symlink() {
@@ -1727,10 +1735,26 @@ pub fn read_feature_asset(worktree: &Path, slug: &str, path: &str) -> Result<Val
     if !real.starts_with(&root) {
         bail!("outside the feature folder");
     }
-    if meta.len() > MAX_PREVIEW_BYTES {
-        bail!("too large ({:.1} MB)", meta.len() as f64 / (1024.0 * 1024.0));
+    // The checks above are on the path; the read is on a handle that can't
+    // follow a symlink swapped in since, re-checked and capped (the worktree
+    // is the agents' to change while we read).
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&real)
+        .map_err(|_| anyhow!("not found"))?;
+    let meta = file.metadata().map_err(|_| anyhow!("not found"))?;
+    if !meta.is_file() {
+        bail!("not found");
     }
-    let bytes = std::fs::read(&real).map_err(|_| anyhow!("not found"))?;
+    if meta.len() > MAX_PREVIEW_BYTES {
+        return Err(too_large(meta.len()));
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    file.take(MAX_PREVIEW_BYTES + 1).read_to_end(&mut bytes).map_err(|_| anyhow!("not found"))?;
+    if bytes.len() as u64 > MAX_PREVIEW_BYTES {
+        return Err(too_large(bytes.len() as u64));
+    }
     Ok(json!({"mime": mime, "data_b64": base64(&bytes), "bytes": bytes.len()}))
 }
 
