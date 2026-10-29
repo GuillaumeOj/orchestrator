@@ -392,6 +392,11 @@ mod tests {
         rt.store.read(|s| s.agents[id].clone())
     }
 
+    /// A switch only happens while the agent is idle (never mid-turn).
+    fn idle(rt: &Runtime, id: &str) {
+        rt.store.write(|s| s.agents.get_mut(id).unwrap().tracker.state = AgentState::Idle).unwrap();
+    }
+
     fn switches(rt: &Runtime) -> Vec<Value> {
         rt.db.flush().unwrap();
         rt.db.events(0, Some("a1"), Some("model_switch"), 10).unwrap().into_iter().rev().map(|e| e.detail).collect()
@@ -407,6 +412,7 @@ mod tests {
         agent(&rt, d.path(), "a1", "sonnet", None);
         seat_on(&rt, "a1", 1, Some("opus"));
         insert_test_live(&rt, "a1", Some("sonnet"), 0, d.path());
+        idle(&rt, "a1");
         assert_eq!(rt.turn_model(&rec(&rt, "a1")).as_deref(), Some("opus"), "the spawn after the switch");
 
         assert!(rt.task_boundary(&rec(&rt, "a1")), "waits for the switch");
@@ -415,6 +421,7 @@ mod tests {
         // The process resumed with opus for task 1; the next task has no model.
         insert_test_live(&rt, "a1", Some("opus"), 1, d.path());
         seat_on(&rt, "a1", 2, None);
+        idle(&rt, "a1");
         assert_eq!(rt.turn_model(&rec(&rt, "a1")).as_deref(), Some("sonnet"));
         assert!(rt.task_boundary(&rec(&rt, "a1")));
         assert_eq!(switches(&rt)[1], json!({"from": "opus", "to": "sonnet", "why": "restore"}));
