@@ -556,6 +556,21 @@ impl Runtime {
         });
     }
 
+    /// A free agent that has run may start a task in a fresh session only
+    /// when quiet: idle or stopped, and no turn of its own queued, being
+    /// pasted or running (a nudge, the end of its `report_done` turn).
+    fn quiet_for_task(&self, rec: &AgentRecord) -> bool {
+        matches!(rec.tracker.state, AgentState::Idle | AgentState::Suspended | AgentState::Error | AgentState::Killed)
+            && !self.store.read(|s| {
+                s.turns.iter().any(|t| {
+                    t.agent_id == rec.id
+                        && matches!(t.status, TurnStatus::Queued | TurnStatus::Delivering | TurnStatus::Delivered)
+                })
+            })
+    }
+
+    /// The turn that starts `t`. An agent that worked on earlier tasks of
+    /// this run starts it in a fresh session: the turn lists them.
     fn task_turn(&self, cx: &RunCtx, t: &Task, rec: &AgentRecord, branch: &str) -> String {
         let up = rules::reports_to(&cx.team, &rec.team.as_ref().map(|s| s.node.clone()).unwrap_or_default())
             .unwrap_or_else(|| "the lead".into());
@@ -571,8 +586,30 @@ impl Runtime {
         } else {
             format!("When it is done, tested and committed, call mcp__orch__report_done for `{up}`.")
         };
+        // By their `agent_id`, which Review and Done keep (`apply_status`
+        // clears it only for Ready and Backlog).
+        let mut earlier: Vec<Task> = self
+            .db
+            .tasks(None, None, Some(&cx.run.id))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.id != t.id && e.agent_id.as_deref() == Some(rec.id.as_str()))
+            .collect();
+        earlier.sort_by_key(|t| t.id);
+        let earlier = if earlier.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\nEarlier on this branch: {}. Their work is in git log; follow-ups on them may still reach you.",
+                earlier
+                    .iter()
+                    .map(|t| format!("{} ({})", t.handle(), t.status.label().to_lowercase()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
         format!(
-            "ORCH: task {} (id {}): {}\n\n{}{deps}\n\nWork in your worktree on {}. {next}",
+            "ORCH: task {} (id {}): {}\n\n{}{deps}{earlier}\n\nWork in your worktree on {}. {next}",
             t.handle(),
             t.id,
             t.title,
@@ -603,9 +640,18 @@ impl Runtime {
                 .into_iter()
                 .filter(|a| a.team.as_ref().is_some_and(|s| s.node == node))
                 .collect();
-            let free = agents.iter().find(|a| a.team.as_ref().is_some_and(|s| s.task.is_none()) && a.flag.is_none());
-            let rec = match free {
-                Some(a) => a.clone(),
+            let free: Vec<&AgentRecord> = agents
+                .iter()
+                .filter(|a| a.team.as_ref().is_some_and(|s| s.task.is_none()) && a.flag.is_none())
+                .collect();
+            // A free agent that has run starts the task in a fresh session,
+            // once it is quiet (rotated below). One still busy (right after
+            // `report_done` it is still in that turn) holds the task until a
+            // later tick rather than opening a new seat: the seat is reused.
+            let pick = free.iter().find(|a| a.never_started()).or_else(|| free.iter().find(|a| self.quiet_for_task(a)));
+            let rec = match pick {
+                Some(a) => (*a).clone(),
+                None if !free.is_empty() => continue,
                 None if (agents.len() as u32) < n.max_concurrency.max(1) => {
                     let k = self.free_agent_number(&cx.feature.slug, node)?;
                     let row = self.create_worktree(
@@ -617,6 +663,21 @@ impl Runtime {
                 }
                 None => continue,
             };
+            if !rec.never_started() {
+                // Only an idle process is stopped here (SIGTERM, bounded by
+                // the stop's grace and its wait for the exit callback): the
+                // tick never waits on a busy agent.
+                if self.live(&rec.id).is_some()
+                    && let Err(e) = self.suspend(&rec.id)
+                {
+                    self.event(&rec.id, "fresh_session_failed", json!({"task": t.id, "error": format!("{e:#}")}));
+                    continue;
+                }
+                if let Err(e) = self.rotate_for_task(&rec.id, t, node) {
+                    self.event(&rec.id, "fresh_session_failed", json!({"task": t.id, "error": format!("{e:#}")}));
+                    continue;
+                }
+            }
             self.store.write(|s| {
                 if let Some(a) = s.agents.get_mut(&rec.id)
                     && let Some(seat) = a.team.as_mut()
@@ -2133,6 +2194,75 @@ mod tests {
         for k in ["run.launched", "task.created", "task.assigned", "message", "git.merge", "task.done", "run.state"] {
             assert!(ev.iter().any(|e| e.kind == k), "timeline has {k}");
         }
+    }
+
+    /// Each task a team agent starts after its first runs in a fresh session,
+    /// once the agent is quiet; the first task keeps today's start.
+    #[test]
+    fn a_second_task_starts_the_same_agent_in_a_fresh_session_once_quiet() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        let run = approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        let first = rt.store.read(|s| s.agents[back].clone());
+        let t1 = first.team.as_ref().unwrap().task.unwrap();
+        let q = queued(&rt, back);
+        assert!(q[0].contains("API") && !q[0].contains("Earlier on this branch"), "{}", q[0]);
+        assert!(
+            rt.db.events(0, Some(back), Some("fresh_session"), 5).unwrap().is_empty(),
+            "a first start is not rotated"
+        );
+        assert!(!first.start_fresh);
+
+        // T-1 ran in its session and is reported (self-review included).
+        let finish_turns = |rt: &Runtime| {
+            rt.store
+                .write(|s| {
+                    let a = s.agents.get_mut(back).unwrap();
+                    a.spawns = 1;
+                    a.tracker.state = AgentState::Suspended;
+                    for t in s.turns.iter_mut().filter(|t| t.agent_id == back) {
+                        t.status = TurnStatus::Done;
+                    }
+                })
+                .unwrap()
+        };
+        finish_turns(&rt);
+        write_commit(&rt, back, "api.rs", "fn api() {}");
+        ok(&rt, back, "report_done", json!({"summary": "api"}));
+        ok(&rt, back, "report_done", json!({"summary": "api", "review": {"fixed": [], "unfixed": []}}));
+        assert_eq!(rt.db.task(t1).unwrap().unwrap().status, TaskStatus::Review);
+        ok(&rt, lead, "create_task", json!({"title": "Usage endpoint", "node": "back"}));
+
+        // Suspended but not quiet: a nudge is queued, so T-2 waits, and no new seat opens.
+        finish_turns(&rt);
+        rt.deliver_kind(back, "ORCH: a nudge about T-1", TurnKind::Continue).unwrap();
+        rt.team_tick();
+        let t2 =
+            rt.db.tasks(None, None, Some(&run.id)).unwrap().into_iter().find(|t| t.title == "Usage endpoint").unwrap();
+        assert_eq!(t2.status, TaskStatus::Ready);
+        assert!(rt.store.read(|s| !s.agents.contains_key("fx-back-2")), "the seat is reused, not doubled");
+        assert_eq!(rt.store.read(|s| s.agents[back].session_id.clone()), first.session_id);
+
+        // Quiet: T-2 goes to the same agent in a new session.
+        finish_turns(&rt);
+        rt.team_tick();
+        let a = rt.store.read(|s| s.agents[back].clone());
+        assert_eq!(a.team.as_ref().unwrap().task, Some(t2.id));
+        assert_ne!(a.session_id, first.session_id);
+        assert!(a.start_fresh);
+        assert_eq!(rt.db.task(t2.id).unwrap().unwrap().status, TaskStatus::InProgress);
+        let q = queued(&rt, back);
+        assert_eq!(q.len(), 1);
+        assert!(q[0].contains(&format!("Earlier on this branch: T-{t1} (review).")), "{}", q[0]);
+        let ev = rt.db.events(0, Some(back), Some("fresh_session"), 5).unwrap();
+        assert_eq!(ev[0].detail, json!({"old_session": first.session_id, "new_session": a.session_id, "task": t2.id}));
+        let rev: Vec<_> =
+            rt.db.run_events(&run.id, 100).unwrap().into_iter().filter(|e| e.kind == "agent.fresh_session").collect();
+        assert_eq!(rev.len(), 1);
+        assert_eq!(rev[0].agent_id.as_deref(), Some(back));
+        assert_eq!(rev[0].detail, json!({"node": "back", "task": t2.id, "title": "Usage endpoint"}));
     }
 
     #[test]

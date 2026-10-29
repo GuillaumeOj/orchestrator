@@ -8,12 +8,12 @@ use std::sync::atomic::Ordering;
 use anyhow::{Result, bail};
 use governor::TurnKind;
 use orch_protocol::now_ms;
-use orch_store::InboxStatus;
+use orch_store::{InboxStatus, Task};
 use serde_json::{Value, json};
 
 use crate::compile::SessionMode;
 use crate::inbox::PRIORITY_ALERT;
-use crate::runtime::{Live, Runtime};
+use crate::runtime::{Live, Runtime, reserved_slot};
 use crate::state::{AgentState, StopIntent};
 use crate::store::{AgentRecord, TurnStatus};
 
@@ -268,6 +268,37 @@ impl Runtime {
             }
             (old, new.clone(), had_brief, msgs)
         })
+    }
+
+    /// A team agent starts its next task in a new session: a new session id
+    /// and `start_fresh`, written together, so the delivery loop spawns it
+    /// with `--session-id`. Unlike [`Runtime::restart_fresh`] nothing is
+    /// re-queued and no failure is recorded. The caller suspends it first and
+    /// only rotates a quiet agent; the lead is never rotated. The new session id.
+    pub(crate) fn rotate_for_task(&self, id: &str, task: &Task, node: &str) -> Result<String> {
+        if self.live(id).is_some() {
+            bail!("agent {id} is running");
+        }
+        let new = uuid::Uuid::new_v4().to_string();
+        let (old, run) = self.store.write(|s| {
+            let Some(a) = s.agents.get_mut(id) else { bail!("no agent {id}") };
+            let Some(run) = a.team.as_ref().map(|t| t.run_id.clone()) else { bail!("agent {id} is not in a team") };
+            if reserved_slot(a) {
+                bail!("the lead keeps its session");
+            }
+            let old = std::mem::replace(&mut a.session_id, new.clone());
+            a.start_fresh = true;
+            a.resume_failed = false;
+            Ok((old, run))
+        })??;
+        self.event(id, "fresh_session", json!({"old_session": old, "new_session": new, "task": task.id}));
+        self.run_event(
+            &run,
+            Some(id),
+            "agent.fresh_session",
+            json!({"node": node, "task": task.id, "title": task.title}),
+        );
+        Ok(new)
     }
 
     /// Whether an agent's last start failed in a way only a fresh session fixes.

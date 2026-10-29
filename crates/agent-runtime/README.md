@@ -52,6 +52,8 @@ No UI, no Tauri: [`orchd`](../orchd/README.md) drives it from the command line.
 - **Command line**: `--settings`, `--mcp-config`, `[--strict-mcp-config]`, `[--setting-sources]`,
   `[--model]`, `[--effort]`, `--permission-mode` (always), `--append-system-prompt` (ORCH preamble, then
   the role prompt), `-n <id>`, then `--session-id <uuid>` | `--resume <id>` | `--resume <id> --fork-session`.
+  `--session-id` for a first start, a fresh restart (FR-415) and each new task of a team agent
+  (session per task, below).
   Never `--bare`, `--safe-mode` or `bypassPermissions` (not representable in `PermissionMode`).
 
 ## Environment
@@ -187,6 +189,19 @@ through `orch-tasks` (Local or GitHub Issues, FR-501–503).
   the task turns In progress and the agent gets an `ORCH: task …` turn. `Planning → Executing` at
   the first dispatch; `Executing → Integrating` when every task is Done (the lead is told to check
   and ask for the PR).
+- **Session per task**: a free agent that has already run starts each new task in a **fresh
+  session** (same agent, worktree, branch and role). Only a quiet agent is rotated: idle or stopped,
+  with no turn queued, being pasted or running (a nudge, the end of its `report_done` turn);
+  otherwise the task stays Ready for a later tick, and no new seat opens while a free agent is
+  busy. A live idle agent is suspended first, inline (SIGTERM, bounded by the stop's grace and its
+  wait for the exit callback); the tick never waits on a busy one. `rotate_for_task` writes the
+  new session id and `start_fresh` together, so the delivery loop spawns it with `--session-id
+  <new>`, not `--resume`. Nothing is re-queued and it is not a failed start (unlike
+  `restart_fresh`). The task turn then lists the agent's earlier tasks of the run (`Earlier on this
+  branch: T-1 (done), …`). The lead and never-started agents are never rotated. Events: agent
+  `fresh_session` `{old_session, new_session, task}` and run event `agent.fresh_session`
+  `{node, task, title}` (agent column: the agent id). Messages, nudges and reviews keep going into
+  the current session; the old session's transcript stays indexed.
 - **Messages** (FR-403): `post_message` checks the team rules (`orch_team::rules`), one row per
   agent of the recipient node. A busy agent gets them at its next tool call (PostToolUse
   `additionalContext`, "ORCH: n new message(s): …"); an idle or suspended one as a turn through
@@ -208,7 +223,7 @@ through `orch-tasks` (Local or GitHub Issues, FR-501–503).
   suspended, run `failed` "stopped by the user"), `reassign_task`, `add_node` (a new team version,
   existing nodes kept), and the user's `user_create_task`, `user_update_task`, `user_message`
   (FR-409).
-- **Timeline** (FR-408): `run.*`, `agent.added`, `task.*`, `message`, `git.merge`, `git.sync`,
+- **Timeline** (FR-408): `run.*`, `agent.added`, `agent.fresh_session`, `task.*`, `message`, `git.merge`, `git.sync`,
   `asked_user` events tagged with the run (`events.team_run_id`).
 - **Remote tasks**: every 5 minutes `sync_task_backends` syncs the GitHub backend of projects with
   an active run; a conflict keeps GitHub's version and adds an `info` Inbox item.
