@@ -10,6 +10,7 @@
   import DesignSection from '../components/DesignSection.svelte';
   import Kbd from '../components/Kbd.svelte';
   import Markdown from '../components/Markdown.svelte';
+  import PrLine from '../components/PrLine.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import { app, confirm, openAgent, openBoard, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
   import { isDesign } from '../lib/ecosystem.js';
@@ -311,7 +312,7 @@
 
         <section class="card">
           <div class="cardh"><b>PR and artifacts</b></div>
-          {#if run?.pr_url}<div class="arow"><span class="muted">PR</span> <span class="mono">{run.pr_url}</span></div>
+          {#if run?.pr_url}<PrLine {run} feature={spec.featureId} onrun={(r) => (v = { ...v, run: r })} />
           {:else}<p class="muted">No PR yet: the lead asks with request_pr after integration (PR gate).</p>{/if}
           {#each v.artifacts.filter((a) => !isDesign(a)) as a (a.id)}
             <div class="art"><span class="muted">{a.kind}</span> <span class="ell">{a.uri}</span> <span class="muted">({a.from_node}{a.to_node ? ` → ${a.to_node}` : ''})</span></div>
@@ -357,7 +358,6 @@
   .fh,
   .cardh,
   .tt,
-  .arow,
   .ev,
   .msg,
   .colh {

@@ -186,7 +186,7 @@ impl Runtime {
     }
 
     /// Tests replace `gh` (orch-tasks' `Gh`); `None` = the real one.
-    fn gh_override(&self) -> Option<Box<dyn orch_tasks::github::Gh>> {
+    pub(crate) fn gh_override(&self) -> Option<Box<dyn orch_tasks::github::Gh>> {
         self.cfg.gh.as_ref().map(|f| (f.0)())
     }
 
@@ -327,6 +327,8 @@ impl Runtime {
             pr_url: None,
             started_at_ms: now,
             ended_at_ms: None,
+            pr_number: None,
+            pr: None,
         };
         self.db.upsert_run(&run)?;
         if spec.off_hours {
@@ -397,7 +399,7 @@ impl Runtime {
     }
 
     /// The branch an agent works on, as its worktree row records it.
-    fn branch_of(&self, rec: &AgentRecord) -> String {
+    pub(crate) fn branch_of(&self, rec: &AgentRecord) -> String {
         self.store.read(|s| s.worktrees.get(&rec.worktree).map(|w| w.branch.clone())).unwrap_or_default()
     }
 
@@ -629,7 +631,8 @@ impl Runtime {
     }
 
     fn dispatch(&self, cx: &RunCtx) -> Result<()> {
-        if !matches!(cx.run.status, RunState::Planning | RunState::Executing | RunState::Integrating) {
+        // Every state the lead may create tasks in (a PR's fixes too).
+        if !cx.run.status.tasks_allowed() {
             return Ok(());
         }
         let tasks = self.db.tasks(None, None, Some(&cx.run.id))?;
@@ -640,6 +643,11 @@ impl Runtime {
             let Some(n) = cx.team.node(node) else { continue };
             if n.is_lead || !t.depends_on.iter().all(|d| done(*d)) {
                 continue;
+            }
+            // A task started while the lead's rebase is stopped on a conflict
+            // would sync the old history: none starts until it is done or aborted.
+            if cx.feature.integration_worktree.as_deref().is_some_and(orch_git::commit::rebase_in_progress) {
+                break;
             }
             let agents: Vec<AgentRecord> = self
                 .run_agents(&cx.run.id)
@@ -1499,6 +1507,12 @@ impl Runtime {
                     json!(r),
                 ))
             }
+            "rebase_base" => {
+                if !is_lead {
+                    bail!("only the lead rebases the integration branch");
+                }
+                self.rebase_base(&cx, rec, args)
+            }
             "merge" => {
                 if !is_lead {
                     bail!("only the lead merges into the integration branch");
@@ -1679,37 +1693,24 @@ impl Runtime {
         }
     }
 
-    /// A team lead's PR gate was approved and the PR opened (or failed).
-    pub(crate) fn pr_opened(&self, agent: &str, url: Option<&str>) {
-        let Some(seat) = self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.clone())) else { return };
-        let Ok(Some(mut run)) = self.db.run(&seat.run_id) else { return };
-        match url {
-            Some(u) => {
-                run.pr_url = Some(u.to_string());
-                let _ = self.db.upsert_run(&run);
-                let _ = self.advance_run(&run.id, RunState::Done, "pull request opened");
-            }
-            None => {
-                let _ = self.advance_run(&run.id, RunState::Integrating, "pull request failed");
-            }
-        }
-    }
-
     /// A team agent's `request_pr` is refused before the run can reach its PR
     /// gate (a PR opened from the spec step would leave the run behind).
     pub(crate) fn pr_allowed(&self, rec: &AgentRecord) -> Result<()> {
         let Some(seat) = &rec.team else { return Ok(()) };
         let run = self.db.run(&seat.run_id)?.ok_or_else(|| anyhow!("no team run {}", seat.run_id))?;
         let eff = effective(&run);
-        if eff != RunState::PrGate && !eff.can_go(RunState::PrGate) {
+        if !matches!(eff, RunState::PrGate | RunState::PrOpen) && !eff.can_go(RunState::PrGate) {
             bail!("the pull request comes once the tasks are merged (this run is {})", eff.label());
         }
         Ok(())
     }
 
-    /// A team lead asked for the PR: the run is at its PR gate.
+    /// A team lead asked for the PR: the run is at its PR gate (an update
+    /// of an open PR leaves the run `pr_open`).
     pub(crate) fn pr_requested(&self, agent: &str) {
-        if let Some(seat) = self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.clone())) {
+        if let Some(seat) = self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.clone()))
+            && self.db.run(&seat.run_id).ok().flatten().is_some_and(|r| effective(&r) != RunState::PrOpen)
+        {
             let _ = self.advance_run(&seat.run_id, RunState::PrGate, "pull request asked");
         }
     }

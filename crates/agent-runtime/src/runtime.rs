@@ -193,6 +193,8 @@ pub struct Runtime {
     pub(crate) now: crate::now::Now,
     /// Worktrees open in a Diff pane, watched for the `worktree:<path>` topic.
     pub(crate) watches: crate::worktree_watch::Watches,
+    /// The PR watcher's fetch clock; held for each PR check.
+    pub(crate) pr_watch: Mutex<crate::pr::PrWatch>,
 }
 
 /// Clocks and flags of the periodic work (`tick`, `housekeeping`).
@@ -464,6 +466,7 @@ impl Runtime {
             notion_polling: std::sync::atomic::AtomicBool::new(false),
             linear_token: Default::default(),
             probing: Default::default(),
+            pr_watch: Default::default(),
             outcome_sink: Mutex::new(None),
             now: Default::default(),
             watches: Default::default(),

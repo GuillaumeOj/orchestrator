@@ -19,7 +19,7 @@ turns a compiled node into its `Role`.
 | Who | Tools (`mcp__orch__…`) |
 |---|---|
 | everyone | `commit`, `send_message`, `inbox`, `list_tasks`, `handoff`, `request_review`, `ask_user` |
-| lead | + `create_task`, `update_task`, `request_spec_approval`, `merge`, `request_pr` |
+| lead | + `create_task`, `update_task`, `request_spec_approval`, `merge`, `rebase_base`, `request_pr` |
 | specialists | + `update_task` (own tasks), `report_done`, `sync_integration` |
 | solo session (P1) | `commit`, `request_pr` |
 

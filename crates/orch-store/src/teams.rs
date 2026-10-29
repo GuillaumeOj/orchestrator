@@ -61,6 +61,74 @@ pub struct TeamRun {
     pub started_at_ms: u64,
     #[serde(default)]
     pub ended_at_ms: Option<u64>,
+    /// The open (or last) PR of the run, parsed from `pr_url`.
+    #[serde(default)]
+    pub pr_number: Option<u64>,
+    /// The PR's last status (the watcher's, §3.3); `None` before the first check.
+    #[serde(default)]
+    pub pr: Option<PrStatus>,
+}
+
+/// The PR number at the end of a PR URL (`…/pull/12`).
+pub fn pr_number_from_url(url: &str) -> Option<u64> {
+    let (_, n) = url.trim().trim_end_matches('/').rsplit_once("/pull/")?;
+    n.parse().ok()
+}
+
+/// A run's PR as the watcher last saw it (state, CI, position against its base).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PrStatus {
+    /// `open` / `merged` / `closed`.
+    pub state: String,
+    pub head_sha: String,
+    pub base: String,
+    pub ci: CiSummary,
+    pub position: PrPosition,
+    /// The PR head the app itself last pushed (the force-with-lease lease).
+    #[serde(default)]
+    pub pushed_sha: Option<String>,
+    /// Local integration commits not in `head_sha`.
+    pub unpushed: u32,
+    /// The local branch does not contain `pushed_sha` (rebased).
+    pub rewritten: bool,
+    pub checked_at_ms: u64,
+    /// The last check failed: the rest is the last good status.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// CI of a PR: one job per CheckRun / StatusContext.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CiSummary {
+    /// `ok` / `error` / `running` / `waiting` / `none`.
+    pub overall: String,
+    /// Finished jobs, whatever the outcome.
+    pub done: u32,
+    pub total: u32,
+    pub jobs: Vec<CiJob>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CiJob {
+    pub name: String,
+    #[serde(default)]
+    pub workflow: Option<String>,
+    /// The GitHub state lower-cased (`success`, `failure`, `in_progress`…).
+    pub state: String,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+/// The PR head against `origin/<base>`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PrPosition {
+    /// `up_to_date` / `behind` / `conflicts` / `unknown`.
+    pub status: String,
+    pub behind: u32,
+    pub ahead: u32,
+    /// The `origin/<base>` head they were counted against (behind is told once per base head).
+    #[serde(default)]
+    pub base_sha: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -313,8 +381,8 @@ fn row_feature(r: &rusqlite::Row) -> rusqlite::Result<Feature> {
     })
 }
 
-const RUN_COLS: &str =
-    "id, team_id, team_version, feature_id, status, resume_status, pr_url, started_at_ms, ended_at_ms, team_scope";
+const RUN_COLS: &str = "id, team_id, team_version, feature_id, status, resume_status, pr_url, started_at_ms, ended_at_ms, \
+                        team_scope, pr_number, pr_status";
 
 fn bad(s: String) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, s.into())
@@ -334,6 +402,10 @@ fn row_run(r: &rusqlite::Row) -> rusqlite::Result<TeamRun> {
         started_at_ms: r.get::<_, i64>(7)? as u64,
         ended_at_ms: opt_u64(r, 8)?,
         team_scope: scope_of(r.get(9)?),
+        // Runs done before the PR number was stored: read from the URL.
+        pr_number: opt_u64(r, 10)?
+            .or_else(|| r.get::<_, Option<String>>(6).ok().flatten().and_then(|u| pr_number_from_url(&u))),
+        pr: r.get::<_, Option<String>>(11)?.map(|s| from_js(&s)).transpose()?,
     })
 }
 
@@ -606,9 +678,10 @@ impl Store {
         self.write_touching(topics, move |tx| {
             tx.execute(
                 &format!(
-                    "INSERT INTO team_runs({RUN_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                    "INSERT INTO team_runs({RUN_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
                      ON CONFLICT(id) DO UPDATE SET team_version=excluded.team_version, status=excluded.status,
-                       resume_status=excluded.resume_status, pr_url=excluded.pr_url, ended_at_ms=excluded.ended_at_ms"
+                       resume_status=excluded.resume_status, pr_url=excluded.pr_url, ended_at_ms=excluded.ended_at_ms,
+                       pr_number=excluded.pr_number, pr_status=excluded.pr_status"
                 ),
                 params![
                     run.id,
@@ -620,8 +693,26 @@ impl Store {
                     run.pr_url,
                     run.started_at_ms as i64,
                     run.ended_at_ms.map(|v| v as i64),
-                    scope_key(&run.team_scope)
+                    scope_key(&run.team_scope),
+                    run.pr_number.map(|v| v as i64),
+                    run.pr.as_ref().map(js)
                 ],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Stores a run's PR status (and its URL when it had none) without
+    /// touching its state: a check that waited on the network never undoes a
+    /// move made meanwhile (a pause, a stop).
+    pub fn set_run_pr(&self, id: &str, pr: &PrStatus, url: Option<&str>) -> Result<()> {
+        let (id, pr, url) = (id.to_string(), js(pr), url.map(str::to_string));
+        self.write(move |tx| {
+            tx.execute(
+                "UPDATE team_runs SET pr_status=?2,
+                   pr_url=CASE WHEN pr_url IS NULL OR pr_url='' THEN COALESCE(?3, pr_url) ELSE pr_url END
+                 WHERE id=?1",
+                params![id, pr, url],
             )?;
             Ok(())
         })
@@ -1054,8 +1145,41 @@ mod tests {
             pr_url: None,
             started_at_ms: 1,
             ended_at_ms: None,
+            pr_number: None,
+            pr: None,
         };
         s.upsert_run(&run).unwrap();
+        assert_eq!(s.run("r1").unwrap().unwrap(), run, "no PR yet: None");
+        run.pr_number = Some(12);
+        run.pr = Some(PrStatus {
+            state: "open".into(),
+            head_sha: "abc".into(),
+            base: "main".into(),
+            ci: CiSummary {
+                overall: "error".into(),
+                done: 1,
+                total: 2,
+                jobs: vec![CiJob {
+                    name: "test".into(),
+                    workflow: Some("ci".into()),
+                    state: "failure".into(),
+                    url: None,
+                }],
+            },
+            position: PrPosition { status: "behind".into(), behind: 2, ahead: 3, base_sha: Some("def".into()) },
+            pushed_sha: Some("abc".into()),
+            unpushed: 1,
+            rewritten: false,
+            checked_at_ms: 9,
+            error: None,
+        });
+        s.upsert_run(&run).unwrap();
+        assert_eq!(s.run("r1").unwrap().unwrap(), run, "the PR status round-trips");
+        let mut legacy = run.clone();
+        (legacy.id, legacy.status, legacy.pr_number, legacy.pr) = ("r0".into(), RunState::Done, None, None);
+        legacy.pr_url = Some("https://github.com/o/r/pull/7".into());
+        s.upsert_run(&legacy).unwrap();
+        assert_eq!(s.run("r0").unwrap().unwrap().pr_number, Some(7), "a run from before: the number from its URL");
         run.status = RunState::Paused;
         run.resume_status = Some(RunState::Spec);
         s.upsert_run(&run).unwrap();

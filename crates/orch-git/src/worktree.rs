@@ -133,7 +133,12 @@ pub fn toplevel(path: &Path) -> Result<PathBuf> {
 
 /// The checked-out branch, `main` when HEAD is detached or unreadable.
 pub fn default_branch(repo: &Path) -> String {
-    git(repo, &["symbolic-ref", "--short", "HEAD"]).map(|s| s.trim().to_string()).unwrap_or_else(|_| "main".into())
+    current_branch(repo).unwrap_or_else(|_| "main".into())
+}
+
+/// The checked-out branch (an error when HEAD is detached).
+pub fn current_branch(repo: &Path) -> Result<String> {
+    Ok(git(repo, &["symbolic-ref", "--short", "HEAD"])?.trim().to_string())
 }
 
 pub fn branch_exists(repo: &Path, branch: &str) -> bool {
@@ -225,7 +230,7 @@ pub fn others(repo: &Path, except: &Path) -> Vec<PathBuf> {
 pub struct Inspection {
     pub exists: bool,
     pub gitdir: Option<PathBuf>,
-    /// `MERGE_HEAD`, `REBASE_HEAD`, `rebase-merge`, `rebase-apply`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`.
+    /// `MERGE_HEAD`, `rebase-merge`, `rebase-apply`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`.
     pub in_progress: Vec<String>,
     pub index_lock: bool,
     pub unmerged: usize,
@@ -233,8 +238,15 @@ pub struct Inspection {
     pub error: Option<String>,
 }
 
+/// `REBASE_HEAD` is not one: git leaves it behind a finished rebase (the
+/// rebase dirs say whether one runs).
 pub const IN_PROGRESS_MARKERS: &[&str] =
-    &["MERGE_HEAD", "REBASE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD"];
+    &["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD"];
+
+/// A rebase is in progress in the worktree whose gitdir is `gitdir`.
+pub fn rebase_dir(gitdir: &Path) -> bool {
+    gitdir.join("rebase-merge").exists() || gitdir.join("rebase-apply").exists()
+}
 
 pub fn inspect(path: &Path) -> Inspection {
     let mut i = Inspection { exists: path.is_dir(), ..Default::default() };

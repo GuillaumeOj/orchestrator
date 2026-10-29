@@ -252,6 +252,10 @@ pub enum CtlRequest {
     Fetch {
         project_id: String,
     },
+    /// Checks the PR of a feature's latest team run now (id or slug).
+    PrRefresh {
+        feature: String,
+    },
     Diff {
         worktree: String,
         #[serde(default)]

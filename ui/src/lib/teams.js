@@ -12,6 +12,7 @@ export function runStateColor(s) {
       executing: 'var(--color-status-working)',
       integrating: 'var(--color-status-working)',
       pr_gate: 'var(--color-status-at-gate)',
+      pr_open: 'var(--color-status-working)',
       done: 'var(--color-status-done)',
       paused: 'var(--color-status-paused)',
       deferred: 'var(--color-status-queued)',
@@ -34,6 +35,7 @@ export function runStateLabel(s) {
       executing: 'Executing',
       integrating: 'Integrating',
       pr_gate: 'PR gate',
+      pr_open: 'PR open',
       done: 'Done',
       paused: 'Paused',
       deferred: 'Deferred',
@@ -59,7 +61,7 @@ const FAMILY = (k) =>
     ? 'messages'
     : k.startsWith('task.')
       ? 'tasks'
-      : k.startsWith('git.')
+      : k.startsWith('git.') || k.startsWith('pr.')
         ? 'git'
         : RUN_KINDS.has(k)
           ? 'run'
@@ -70,6 +72,27 @@ export function timelineFilter(id) {
   if (id === 'gates')
     return (e) => e.kind === 'run.state' && /gate/.test(`${e.detail?.to} ${e.detail?.from} ${e.detail?.why}`);
   return (e) => FAMILY(e.kind) === id;
+}
+
+/** `PR #12 CI failed (ci / test, ci / e2e) · behind main by 3`: only the parts that changed. */
+function prStatusText(d) {
+  const parts = [];
+  if (d.ci) {
+    if (d.ci.to === 'error') {
+      const jobs = (d.ci.failed_jobs ?? []).map((j) => (j.workflow ? `${j.workflow} / ${j.name}` : j.name));
+      const shown = jobs.slice(0, 3).join(', ');
+      const more = jobs.length > 3 ? `, +${jobs.length - 3}` : '';
+      parts.push(`CI failed${jobs.length ? ` (${shown}${more})` : ''}`);
+    } else if (d.ci.to === 'ok') parts.push('CI ok');
+    else parts.push(d.ci.to === 'running' ? 'CI running' : 'CI waiting');
+  }
+  if (d.position) {
+    const { to, behind } = d.position;
+    if (to === 'behind') parts.push(`behind ${d.base ?? 'main'} by ${behind}`);
+    else if (to === 'conflicts') parts.push(`conflicts with ${d.base ?? 'main'}`);
+    else if (to === 'up_to_date') parts.push('up to date');
+  }
+  return `PR #${d.number}${parts.length ? ` ${parts.join(' · ')}` : ''}`;
 }
 
 /** One line per timeline event. */
@@ -108,6 +131,26 @@ export function timelineText(e) {
       return d.outcome === 'conflict'
         ? `synced integration: conflicts in ${(d.files ?? []).join(', ')}`
         : 'synced integration';
+    case 'git.rebase': {
+      const n = d.base_commits ?? 0;
+      const base = d.base ?? 'main';
+      const moved = d.branches_moved?.length ?? 0;
+      return `rebased the feature onto ${base} (${n} new commit${n === 1 ? '' : 's'} from ${base})${moved ? ` · moved ${moved} branch${moved === 1 ? '' : 'es'}` : ''}`;
+    }
+    case 'pr.opened':
+      return `opened PR #${d.number}`;
+    case 'pr.status':
+      return prStatusText(d);
+    case 'pr.pushed':
+      return d.force
+        ? `force-pushed PR #${d.number} (rebased)`
+        : `pushed ${d.commits} commit${d.commits === 1 ? '' : 's'} to PR #${d.number}`;
+    case 'pr.merged':
+      return `PR #${d.number} merged`;
+    case 'pr.closed':
+      return `PR #${d.number} closed without merge`;
+    case 'pr.error':
+      return `PR check failed: ${d}`;
     case 'asked_user':
       return `asked you: ${d.question}`;
     case 'run.team_changed':

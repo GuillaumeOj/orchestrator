@@ -47,6 +47,7 @@ usage: orchd [--home DIR] <command> [args]
   project relocate <id> <new-path>        after a repo move: repair worktree links, re-lock
   project remove-plan <id>                J11: worktrees, branches, agents
   project remove <id> --history delete|archive [--discard PATH]... [--keep-merged]
+  pr refresh <feature>          check the PR of a feature's latest team run now (id or slug)
   diff <worktree> [--against BRANCH]
   worktree-rm <project> <path> [--delete-branch] [--discard]
   commit <agent> <message...> [--path P]...   commit in the agent's worktree (same path as orch-mcp)
@@ -348,6 +349,15 @@ fn run() -> Result<()> {
             };
             a.done()?;
             print(request(&sock, req)?)
+        }
+        "pr" => {
+            match a.next("pr subcommand")?.as_str() {
+                "refresh" => {}
+                other => bail!("unknown pr subcommand {other:?}\n\n{USAGE}"),
+            }
+            let feature = a.next("feature")?;
+            a.done()?;
+            print(request(&sock, CtlRequest::PrRefresh { feature })?)
         }
         "diff" => {
             let against = a.opt("--against")?;

@@ -68,13 +68,14 @@ pub fn is_merged(repo: &Path, tip: &str, base: &str) -> bool {
 
 /// (commits on `branch` not in `base`, commits on `base` not in `branch`).
 pub fn ahead_behind(repo: &Path, branch: &str, base: &str) -> (u32, u32) {
-    git(repo, &["rev-list", "--left-right", "--count", &format!("{branch}...{base}")])
-        .ok()
-        .and_then(|s| {
-            let mut it = s.split_whitespace();
-            Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
-        })
-        .unwrap_or((0, 0))
+    try_ahead_behind(repo, branch, base).unwrap_or((0, 0))
+}
+
+/// Like [`ahead_behind`], `None` when a side doesn't resolve.
+pub fn try_ahead_behind(repo: &Path, branch: &str, base: &str) -> Option<(u32, u32)> {
+    let s = git(repo, &["rev-list", "--left-right", "--count", &format!("{branch}...{base}")]).ok()?;
+    let mut it = s.split_whitespace();
+    Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

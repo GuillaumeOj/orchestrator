@@ -17,6 +17,7 @@ pub enum RunState {
     Executing,
     Integrating,
     PrGate,
+    PrOpen,
     Done,
     Paused,
     Deferred,
@@ -24,7 +25,7 @@ pub enum RunState {
 }
 
 impl RunState {
-    pub const ALL: [RunState; 11] = [
+    pub const ALL: [RunState; 12] = [
         RunState::Draft,
         RunState::Spec,
         RunState::SpecGate,
@@ -32,6 +33,7 @@ impl RunState {
         RunState::Executing,
         RunState::Integrating,
         RunState::PrGate,
+        RunState::PrOpen,
         RunState::Done,
         RunState::Paused,
         RunState::Deferred,
@@ -47,6 +49,7 @@ impl RunState {
             RunState::Executing => "executing",
             RunState::Integrating => "integrating",
             RunState::PrGate => "pr_gate",
+            RunState::PrOpen => "pr_open",
             RunState::Done => "done",
             RunState::Paused => "paused",
             RunState::Deferred => "deferred",
@@ -64,6 +67,7 @@ impl RunState {
             RunState::Executing => "Executing",
             RunState::Integrating => "Integrating",
             RunState::PrGate => "PR gate",
+            RunState::PrOpen => "PR open",
             RunState::Done => "Done",
             RunState::Paused => "Paused",
             RunState::Deferred => "Deferred",
@@ -81,10 +85,11 @@ impl RunState {
         matches!(self, RunState::Paused | RunState::Deferred)
     }
 
-    /// The lead may create tasks (FR-401: only after the spec gate). For a
-    /// paused or deferred run, ask the state it resumes into.
+    /// The lead may create tasks (FR-401: only after the spec gate; while the
+    /// PR is open too, to fix it). For a paused or deferred run, ask the state
+    /// it resumes into.
     pub fn tasks_allowed(self) -> bool {
-        matches!(self, RunState::Planning | RunState::Executing | RunState::Integrating)
+        matches!(self, RunState::Planning | RunState::Executing | RunState::Integrating | RunState::PrOpen)
     }
 
     /// Allowed moves. Pause, defer and fail are possible from any unfinished
@@ -114,7 +119,9 @@ impl RunState {
                 | (Integrating, PrGate)
                 | (Executing, PrGate)
                 | (PrGate, Integrating)
-                | (PrGate, Done)
+                | (PrGate, PrOpen)
+                | (PrOpen, Done)
+                | (PrOpen, Integrating)
         )
     }
 }
@@ -195,7 +202,7 @@ mod tests {
     #[test]
     fn happy_path_and_round_trips() {
         use RunState::*;
-        let path = [Draft, Spec, SpecGate, Planning, Executing, Integrating, PrGate, Done];
+        let path = [Draft, Spec, SpecGate, Planning, Executing, Integrating, PrGate, PrOpen, Done];
         for w in path.windows(2) {
             assert!(w[0].can_go(w[1]), "{} → {}", w[0], w[1]);
         }
@@ -209,6 +216,18 @@ mod tests {
             assert_eq!(s.as_str().parse::<RunState>().unwrap(), s);
         }
         assert!(!SpecGate.tasks_allowed() && Planning.tasks_allowed());
+    }
+
+    #[test]
+    fn pr_open_moves() {
+        use RunState::*;
+        assert!(!PrGate.can_go(Done), "done only once the PR is merged");
+        assert!(PrOpen.can_go(Integrating), "a closed PR goes back to integrating");
+        assert!(!PrOpen.finished() && PrOpen.tasks_allowed() && !PrGate.tasks_allowed());
+        assert!(PrOpen.can_go(Paused) && PrOpen.can_go(Deferred) && PrOpen.can_go(Failed));
+        assert!(Paused.can_go(PrOpen) && Paused.can_go(Done));
+        assert!(!PrOpen.can_go(PrGate) && !Integrating.can_go(PrOpen));
+        assert_eq!((PrOpen.as_str(), PrOpen.label()), ("pr_open", "PR open"));
     }
 
     #[test]
