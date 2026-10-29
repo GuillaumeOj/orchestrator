@@ -2,10 +2,19 @@ import { fireEvent, getQueriesForElement, render } from '@testing-library/svelte
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../src/lib/app.svelte.js', () => ({ openUrl: vi.fn(), toast: vi.fn() }));
+vi.mock('../src/lib/ipc.js', () => ({
+  invoke: vi.fn(),
+  errText: (e) => (typeof e === 'string' ? e : (e?.message ?? String(e))),
+}));
+vi.mock('mermaid', () => ({ default: { initialize: vi.fn(), render: vi.fn() } }));
 
 const { openUrl, toast } = await import('../src/lib/app.svelte.js');
+const { invoke } = await import('../src/lib/ipc.js');
+const { default: mermaid } = await import('mermaid');
 const { default: Markdown } = await import('../src/components/Markdown.svelte');
-const { HL_MAX_LINES, frontPairs, highlight, linkKind, parse, prepare, slug } = await import('../src/lib/markdown.js');
+const { frontPairs, imageTarget, linkKind, parse, prepare, slug } = await import('../src/lib/markdown.js');
+const { HL_MAX_LINES, highlight } = await import('../src/lib/highlight.js');
+const { sanitizeSvg } = await import('../src/lib/mermaid.js');
 
 afterEach(() => vi.clearAllMocks());
 
@@ -182,7 +191,9 @@ describe('Markdown renderer', () => {
     const src = 'fn main() {\n    println!("hi");\n}';
     const { container, getByText } = render(Markdown, { text: `\`\`\`rust\n${src}\n\`\`\`` });
     expect(container.querySelector('pre code').textContent).toBe(src);
-    expect(container.querySelector('.hl-keyword').textContent).toBe('fn');
+    // lib/highlight.js loads on the first block with a language.
+    await vi.waitFor(() => expect(container.querySelector('.hl-keyword')?.textContent).toBe('fn'));
+    expect(container.querySelector('pre code').textContent).toBe(src);
     expect(container.querySelector('.hl-string').textContent).toBe('"hi"');
     expect(getByText('rust')).toBeTruthy();
     await fireEvent.click(getByText('Copy'));
@@ -190,8 +201,9 @@ describe('Markdown renderer', () => {
     await vi.waitFor(() => expect(toast).toHaveBeenCalledWith('Copied'));
   });
 
-  it('renders unknown languages and mermaid as plain code', () => {
-    const { container } = render(Markdown, { text: '```mermaid\ngraph TD; A-->B\n```\n\n```nope\nx\n```' });
+  it('renders unknown languages as plain code', async () => {
+    const { container } = render(Markdown, { text: '```nope\nx\n```\n\n```\ny\n```' });
+    await new Promise((ok) => setTimeout(ok, 20));
     expect(container.querySelectorAll('pre code')).toHaveLength(2);
     expect(container.querySelector('[class^="hl-"]')).toBeNull();
   });
@@ -266,7 +278,7 @@ describe('Markdown renderer', () => {
     expect(ha.scrollIntoView).toHaveBeenCalled();
   });
 
-  it('renders images as the remote chip or the not-available line, never an <img>', async () => {
+  it('without a feature: remote chip, not-available line, never a request', async () => {
     const { container, getByText } = render(Markdown, {
       text: '![shot](https://x.example/p.png) ![home](design/home.png) ![x](data:text/html,hi)',
     });
@@ -275,6 +287,41 @@ describe('Markdown renderer', () => {
     expect(openUrl).toHaveBeenCalledWith('https://x.example/p.png');
     expect(container.textContent).toContain('image: home (not available here)');
     expect(container.textContent).not.toContain('data:');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('loads a relative image through feature_asset and opens it large', async () => {
+    vi.mocked(invoke).mockResolvedValue({ mime: 'image/png', data_b64: 'AAAA', bytes: 3 });
+    const { container, getByLabelText } = render(Markdown, {
+      text: '![Home](./design/home%20page.png#frag) ![remote](https://x.example/r.png)',
+      feature: 'f-1',
+    });
+    expect(container.querySelector('.holder').textContent).toBe('Home');
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith('feature_asset', { feature: 'f-1', path: 'design/home page.png' });
+    await vi.waitFor(() => expect(container.querySelector('img.pic')).not.toBeNull());
+    const img = container.querySelector('img.pic');
+    expect(img.getAttribute('src')).toBe('data:image/png;base64,AAAA');
+    expect(img.getAttribute('alt')).toBe('Home');
+    await fireEvent.click(getByLabelText('Open Home large'));
+    expect(container.querySelector('button.overlay img')).not.toBeNull();
+    await fireEvent.keyDown(window, { key: 'Escape' });
+    expect(container.querySelector('.overlay')).toBeNull();
+  });
+
+  it('shows the error line when feature_asset refuses', async () => {
+    vi.mocked(invoke).mockRejectedValue('outside the feature folder');
+    const { container } = render(Markdown, { text: '![x](../../secret.png)', feature: 'f-1' });
+    await vi.waitFor(() => expect(container.textContent).toContain('image: x (outside the feature folder)'));
+    expect(container.querySelector('img')).toBeNull();
+  });
+
+  it('reads image targets', () => {
+    expect(imageTarget('./design/a%20b.png?v=2')).toEqual({ kind: 'asset', path: 'design/a b.png' });
+    expect(imageTarget('https://x.example/a.png').kind).toBe('remote');
+    expect(imageTarget('data:image/png;base64,AAAA').kind).toBe('data');
+    expect(imageTarget('data:image/svg+xml;base64,AAAA').kind).toBe('dropped');
+    expect(imageTarget('file:///etc/a.png').kind).toBe('other');
   });
 
   it('lets a badge inside a link open the link only', async () => {
@@ -342,5 +389,59 @@ describe('Markdown renderer', () => {
     expect(container.querySelector('.chip').textContent).toContain('<img src=x onerror=alert(1)>');
     expect(container.querySelector('.footnotes').textContent).toContain('<img src=x onerror=alert(1)>');
     expect(container.querySelector('strong').textContent).toBe('b');
+  });
+});
+
+describe('Mermaid diagrams', () => {
+  const ok = (svg) => vi.mocked(mermaid.render).mockResolvedValue(/** @type {any} */ ({ svg }));
+
+  it('loads mermaid on a diagram only and inserts its SVG', async () => {
+    ok('<svg id="m" viewBox="0 0 10 10"><g class="node"><rect width="5" height="5"></rect><text>A</text></g></svg>');
+    const { container } = render(Markdown, { text: '```mermaid\ngraph TD; A-->B\n```' });
+    await vi.waitFor(() => expect(container.querySelector('.diagram svg')).not.toBeNull());
+    expect(mermaid.render).toHaveBeenCalledWith(expect.any(String), 'graph TD; A-->B');
+    expect(mermaid.initialize).toHaveBeenCalledWith(
+      expect.objectContaining({ securityLevel: 'strict', theme: 'base' }),
+    );
+    expect(container.querySelector('.diagram text').textContent).toBe('A');
+    expect(container.querySelector('pre')).toBeNull();
+  });
+
+  it('strips script, handlers, HTML and outside links from the SVG', async () => {
+    ok(
+      '<svg onload="alert(1)"><script>alert(2)</script><foreignObject><div onclick="alert(3)">x</div></foreignObject>' +
+        '<a href="javascript:alert(4)"><text>t</text></a><image href="https://evil.example/p.png"></image>' +
+        '<rect onerror="alert(5)" style="fill:url(https://evil.example/t)"></rect><path marker-end="url(#arrow)"></path>' +
+        '<style>@import url(https://evil.example/x.css); .a{fill:red}</style></svg>',
+    );
+    const { container } = render(Markdown, { text: '```mermaid\ngraph TD; A["<script>alert(1)</script>"]\n```' });
+    await vi.waitFor(() => expect(container.querySelector('.diagram svg')).not.toBeNull());
+    const d = container.querySelector('.diagram');
+    expect(d.querySelector('script, foreignObject, div, a, image')).toBeNull();
+    for (const el of d.querySelectorAll('*'))
+      for (const at of el.attributes) {
+        expect(at.name.startsWith('on'), at.name).toBe(false);
+        expect(at.value).not.toMatch(/javascript:|evil\.example/);
+      }
+    expect(d.querySelector('path').getAttribute('marker-end')).toBe('url(#arrow)');
+    expect(d.innerHTML).not.toContain('evil.example');
+  });
+
+  it('shows the source and the error for an invalid diagram', async () => {
+    vi.mocked(mermaid.render).mockRejectedValue(new Error('Parse error on line 1:\nexpecting X'));
+    const { container } = render(Markdown, { text: '```mermaid\ngraph ???\n```' });
+    await vi.waitFor(() =>
+      expect(container.querySelector('.err')?.textContent).toBe('Mermaid: Parse error on line 1:'),
+    );
+    expect(container.querySelector('pre code').textContent).toBe('graph ???');
+    expect(container.querySelector('svg')).toBeNull();
+  });
+
+  it('sanitizes on its own too', () => {
+    const out = sanitizeSvg(
+      '<svg><g onclick="x()"><use href="#a"></use><use href="https://e.example/s.svg#a"></use></g></svg>',
+    );
+    expect(out).not.toContain('onclick');
+    expect(out).not.toContain('e.example');
   });
 });

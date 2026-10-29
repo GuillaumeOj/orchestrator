@@ -1,13 +1,18 @@
 <script>
   // A fenced code block in a Markdown doc (specs-rendering §3.3): syntax
-  // colors from lib/markdown.js runs (elements, never HTML), the language
+  // colors from lib/highlight.js runs (elements, never HTML), the language
   // label and a Copy button that copies the raw text.
   import { toast } from '../lib/app.svelte.js';
   import { errText } from '../lib/ipc.js';
-  import { highlight } from '../lib/markdown.js';
+  import { loadHighlight } from '../lib/markdown.js';
 
   let { code = '', lang = null } = $props();
-  const runs = $derived(highlight(code, lang));
+  // Plain text until lib/highlight.js has loaded (once, on the first block with a language).
+  let hl = $state(null);
+  $effect(() => {
+    if (lang && !hl) loadHighlight().then((m) => (hl = m));
+  });
+  const runs = $derived(hl ? hl.highlight(code, lang) : null);
 
   async function copy() {
     try {

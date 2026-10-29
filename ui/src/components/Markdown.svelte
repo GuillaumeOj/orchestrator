@@ -1,15 +1,16 @@
 <script>
   // Renders Markdown (lib/markdown.js mdast tree) as elements, never {@html}:
   // agent-written text can't inject markup (specs-rendering §3.2, D1). Raw
-  // HTML shows as muted text, except <br>. `feature` is for relative images
-  // (next: feature_asset); `ondoc(name, anchor)` opens a sibling .md doc,
-  // without it such links are plain text.
+  // HTML shows as muted text, except <br>; ```mermaid fences are diagrams.
+  // `feature` enables relative images (feature_asset); `ondoc(name, anchor)`
+  // opens a sibling .md doc, without it such links are plain text.
   import { tick } from 'svelte';
   import { openUrl } from '../lib/app.svelte.js';
   import { frontPairs, linkKind, prepare } from '../lib/markdown.js';
   import CodeBlock from './CodeBlock.svelte';
+  import Diagram from './Diagram.svelte';
+  import MdImage from './MdImage.svelte';
 
-  // biome-ignore lint/correctness/noUnusedVariables: images (feature_asset) land next.
   let { text = '', feature = null, ondoc = null } = $props();
   const doc = $derived(prepare(text));
   // Heading and footnote ids are prefixed per instance: two docs on screen don't clash.
@@ -81,8 +82,7 @@
       {/each}
     </svelte:element>
   {:else if n.type === 'code'}
-    <!-- `mermaid` fences render as code until the diagram renderer lands. -->
-    <CodeBlock code={n.value} lang={n.lang} />
+    {#if n.lang?.toLowerCase() === 'mermaid'}<Diagram source={n.value} />{:else}<CodeBlock code={n.value} lang={n.lang} />{/if}
   {:else if n.type === 'html'}
     {#if BR.test(n.value)}<br />{:else}<div class="raw">{n.value}</div>{/if}
   {:else if n.type === 'table'}
@@ -126,7 +126,7 @@
 {#snippet inlines(list, inLink = false)}{#each list as n, i (i)}{@render inline(n, inLink)}{/each}{/snippet}
 
 {#snippet inline(n, inLink)}
-  {#if n.type === 'text'}{n.value}{:else if n.type === 'strong'}<strong>{@render inlines(n.children, inLink)}</strong>{:else if n.type === 'emphasis'}<em>{@render inlines(n.children, inLink)}</em>{:else if n.type === 'delete'}<del>{@render inlines(n.children, inLink)}</del>{:else if n.type === 'inlineCode'}<code>{n.value}</code>{:else if n.type === 'break'}<br />{:else if n.type === 'html'}{#if BR.test(n.value)}<br />{:else}<code class="raw">{n.value}</code>{/if}{:else if n.type === 'link'}{@render link(n.url, n.title, n.children)}{:else if n.type === 'linkReference'}{@const d = doc.defs.get(n.identifier)}{#if d}{@render link(d.url, d.title, n.children)}{:else}{@render inlines(n.children)}{/if}{:else if n.type === 'image' || n.type === 'imageReference'}{@render image(imageUrl(n), n.alt ?? '', inLink)}{:else if n.type === 'footnoteReference'}{#if n.data?.num}<sup class="fnref"><a href="#{prefix}fn:{n.data.num}" id="{prefix}{n.data.refId}" onclick={(e) => jump(e, `fn:${n.data.num}`)}>{n.data.num}</a></sup>{:else}[^{n.label ?? n.identifier}]{/if}{:else if n.children}{@render inlines(n.children, inLink)}{:else if n.value}{n.value}{/if}
+  {#if n.type === 'text'}{n.value}{:else if n.type === 'strong'}<strong>{@render inlines(n.children, inLink)}</strong>{:else if n.type === 'emphasis'}<em>{@render inlines(n.children, inLink)}</em>{:else if n.type === 'delete'}<del>{@render inlines(n.children, inLink)}</del>{:else if n.type === 'inlineCode'}<code>{n.value}</code>{:else if n.type === 'break'}<br />{:else if n.type === 'html'}{#if BR.test(n.value)}<br />{:else}<code class="raw">{n.value}</code>{/if}{:else if n.type === 'link'}{@render link(n.url, n.title, n.children)}{:else if n.type === 'linkReference'}{@const d = doc.defs.get(n.identifier)}{#if d}{@render link(d.url, d.title, n.children)}{:else}{@render inlines(n.children)}{/if}{:else if n.type === 'image' || n.type === 'imageReference'}<MdImage url={imageUrl(n)} alt={n.alt ?? ''} {feature} {inLink} />{:else if n.type === 'footnoteReference'}{#if n.data?.num}<sup class="fnref"><a href="#{prefix}fn:{n.data.num}" id="{prefix}{n.data.refId}" onclick={(e) => jump(e, `fn:${n.data.num}`)}>{n.data.num}</a></sup>{:else}[^{n.label ?? n.identifier}]{/if}{:else if n.children}{@render inlines(n.children, inLink)}{:else if n.value}{n.value}{/if}
 {/snippet}
 
 {#snippet link(url, title, children)}
@@ -135,12 +135,6 @@
   {#if k.kind === 'external'}<a class="ext" href={k.url} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}<span class="arrow" aria-hidden="true">↗</span></a>{:else if k.kind === 'anchor' || k.kind === 'doc'}<a href={k.kind === 'anchor' ? `#${k.anchor}` : k.name} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}</a>{:else if k.kind === 'repo'}<span class="repo" title={k.path}>{@render inlines(children)}</span>{:else}<span {title}>{@render inlines(children)}</span>{/if}
 {/snippet}
 
-<!-- Images (feature_asset, the large preview) land with the next task: for now the
-     remote chip (D2: never fetched) and the "not available" line. -->
-<!-- Inside a link the chip is the link's content (`[![CI](badge.svg)](…)`): not a second control. -->
-{#snippet image(url, alt, inLink)}
-  {#if /^https?:\/\//i.test(url)}{#if inLink}<span class="chip">🖼 {alt || 'image'}</span>{:else}<button class="chip" title={url} onclick={() => openUrl(url)}>🖼 {alt || 'image'} ↗</button>{/if}{:else if !/^data:/i.test(url)}<span class="imgerr">image: {alt || url} (not available here)</span>{/if}
-{/snippet}
 
 <div class="md">
   {@render blocks(doc.root.children)}{#if doc.footnotes.length}
@@ -373,18 +367,5 @@
   }
   .back {
     margin-left: var(--space-xxs);
-  }
-  .chip {
-    padding: 0 var(--space-sm);
-    font: var(--text-caption);
-    color: var(--color-accent-default);
-    background: var(--color-surface-raised);
-    border: 0;
-    border-radius: var(--radius-full);
-    cursor: pointer;
-  }
-  .imgerr {
-    font: var(--text-caption);
-    color: var(--color-text-muted);
   }
 </style>
