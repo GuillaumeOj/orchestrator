@@ -64,7 +64,12 @@ export function stepper(run) {
   const phase = run?.phase;
   // A finished run: every step done, none current.
   if (phase === 'done')
-    return { steps: STEPS.map((s) => ({ ...s, state: 'done' })), current: -1, mark: null, aria: 'phase: done' };
+    return {
+      steps: STEPS.map((s) => ({ ...s, state: 'done', icon: undefined, color: undefined, mark: null })),
+      current: -1,
+      mark: null,
+      aria: 'phase: done',
+    };
   const held = HELD.has(phase);
   const at = STEP_OF[held ? run?.held_in : phase] ?? -1;
   const mark = held ? phase : phase === 'spec_gate' || phase === 'pr_gate' ? 'at gate' : null;
