@@ -69,6 +69,8 @@ The agent pane as in 04 Screens · `Agent pane · 1512`, minus the workspace pan
 
 ## Decisions beyond the ux-brief
 
+All five accepted by `lead` (T-62).
+
 - Tab max width 200 px with ellipsis (brief says "long name ellipsized", no size).
 - Hover background `color.surface.pane` (existing token, between chrome and raised).
 - Overflow divider (1 px `color.border.subtle`), no fade or counter.
