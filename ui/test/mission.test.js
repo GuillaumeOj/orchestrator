@@ -210,7 +210,12 @@ describe('lanes(): project filter (D8)', () => {
     const c = missionNow(NOW).counts;
     expect(footerText(c, null, ps)).toBe('1 needs you · 2 running · 1 waiting · 2 queued · live cap 3/2');
     expect(footerText(c, ['shop-api', 'blog'], ps)).toBe(
-      '1 needs you · 2 running · 1 waiting · 1 queued · live cap 4/2 · 2 projects of 3',
+      '1 needs you · 2 running · 1 waiting · 1 queued · live cap 3/2 · 2 projects of 3',
+    );
+    // The cap is global: under any filter it reads the global live / cap, never a per-project sum.
+    expect(footerText(c, ['blog'], ps)).toBe('1 running · live cap 3/2');
+    expect(footerText({ ...c, global: { ...c.global, live: 1 } }, ['shop-api', 'infra'], ps)).toBe(
+      '1 needs you · 1 running · 1 waiting · 2 queued · live cap 1/2 · 2 projects of 3',
     );
     expect(footerText(c, null, [])).toBe('No projects');
     expect(hiddenText(c, ['blog', 'infra'], ps)).toBe(

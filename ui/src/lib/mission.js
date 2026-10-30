@@ -458,7 +458,8 @@ function filteredCounts(counts, filter) {
   if (!filter) return { ...counts?.global };
   const sum = Object.fromEntries(COUNT_KEYS.map((k) => [k, 0]));
   for (const id of filter) for (const k of COUNT_KEYS) sum[k] += counts?.projects?.[id]?.[k] ?? 0;
-  return { ...sum, live_cap: counts?.global?.live_cap };
+  // The live cap is global: its figures stay global under a filter.
+  return { ...sum, live: counts?.global?.live, live_cap: counts?.global?.live_cap };
 }
 
 /** "1 needs you · 2 running · 1 queued" from counts, zero parts left out (P4.1 §1.2). */
