@@ -50,9 +50,9 @@ States:
 | State | Background | Label | Other |
 |---|---|---|---|
 | default | `color.surface.chrome` (blends with the dock) | `color.text.secondary` | × `color.text.muted` |
-| hover | `color.surface.pane` | `color.text.primary` | × `color.text.secondary` |
-| active | `color.surface.raised` (joins the body) | `color.text.secondary` | — |
-| active + focused (keyboard in the dock) | `color.surface.raised` | `color.text.primary` | — (as today) |
+| hover | `color.surface.raised` | `color.text.primary` | × `color.text.secondary` |
+| active | `color.surface.pane` (joins the agent header row, same surface as the body) | `color.text.secondary` | — |
+| active + focused (keyboard in the dock) | `color.surface.pane` | `color.text.primary` | — (as today) |
 
 - Status icons drawn: Working `color.status.working`, Waiting for you `color.status.waiting-for-you`, Idle `color.status.idle`, Suspended `color.status.suspended`, Error `color.status.error`. At gate, Queued, Paused, Blocked by limit, Not started yet and Done the same way. No blinking, no count (brief).
 - **Long name**: the tab caps at 200 px; the name ellipsizes, mark, status icon and × never shrink. Shell titles ellipsize the same way. Decision: 200 px keeps ~6 tabs visible at 1280 with the hint group, and fits every `<role>-<n>` short name without cutting.
@@ -74,7 +74,7 @@ The agent pane as in 04 Screens · `Agent pane · 1512`, minus the workspace pan
 All five accepted by `lead` (T-62).
 
 - Tab max width 200 px with ellipsis (brief says "long name ellipsized", no size).
-- Hover background `color.surface.pane` (existing token; between chrome and raised in the dark theme, the lightest of the three in the light theme).
+- Active tab `color.surface.pane`, hover `color.surface.raised` (lead, after T-62 review: the active tab must join the agent body, whose header row is `surface.pane`; `surface.raised` on the active tab left a seam). Supersedes the first "hover = surface.pane" decision.
 - Overflow divider (1 px `color.border.subtle`), no fade or counter.
 - No drag handle when the dock fills the column (states 3 and 4).
 - `ZOOMED` without "n of m".
