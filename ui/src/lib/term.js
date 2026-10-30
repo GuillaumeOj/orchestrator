@@ -213,7 +213,7 @@ export class TermPane {
     clearTimeout(this.redrawTimer);
     // Hidden mid-redraw: the PTY goes back to the real size now, not after the gap.
     if (this.pulse) {
-      if (this.pulse.sent) this.endRedraw();
+      if (this.pulse.timer) this.endRedraw();
       else this.pulse.now = true;
     }
     this.host.remove();
@@ -369,7 +369,6 @@ export class TermPane {
       .catch(() => {})
       .finally(() => {
         if (this.pulse !== pulse) return;
-        pulse.sent = true;
         if (pulse.now) this.endRedraw();
         else pulse.timer = setTimeout(() => this.endRedraw(), REDRAW_GAP_MS);
       });
