@@ -59,3 +59,20 @@ One board **Mission control keys**: the table of N §3.1, leader `⌘+; o`, the 
 
 ## 5. Close
 `00 Cover`: page index and changelog line "P4.2 Part A · In review · 2026-10-29". Export every board as PNG (Dark), then commit, hand off each PNG to `front` with the Penpot board link in the note, and report done.
+
+---
+
+# Part B (T-60): build order
+
+Copy: notes §7 (J12) and §8 (cards), P4.1 §3 (kind labels, titles, blocks, markers) and §4 (effects). Cards are 336 px wide inside the 360 px chat column. Exports are prefixed `p42b-`.
+
+| # | Page · board | Content | Export |
+|---|---|---|---|
+| 1 | 02 · "P4.2 · Decision card" | Card anatomy: header (decision-kind glyph + label in `color.decision.*`, age), title, subject, P4.1 context blocks, Overwatch annotation (muted, prefix "Overwatch:"), actions with keys, P4.1 lifecycle marker. Open cards have a `attention.needs-you` outline; the others `border.subtle`. | `p42b-card-anatomy.png` |
+| 2 | 04 (y = 13000) · "Chat · cards per kind" | Permission, question (1 and n), spec gate, PR gate, restart gate, startup, ask, budget, trust, wait, error / alert, notion (§8.2). | `p42b-cards-kinds.png` |
+| 3 | 04 · "Chat · card lifecycle" | One permission card per state: open, deciding by the Overwatch, parked, sent (undo), effect, failed, stale, dismissed (§8.3). | `p42b-cards-lifecycle.png` |
+| 4 | 04 · "Chat · collapsed lines" | Collapsed, expanded, with undo, undone, undo expired (§8.4). | `p42b-collapsed-lines.png` |
+| 5 | 04 · "Chat · rule proposal" | Open, added (undo 5 s), declined (§8.5). | `p42b-rule-card.png` |
+| 6 | 04 · "Chat · column states" | Morning line, outcome digest entry, chat input (normal, asleep → waking, down), Overwatch status (asleep, waking, working, down), threading under a run, many open cards ("3 more open · j k"). Full 360 × 982 column. | `p42b-chat-states.png` |
+| 7 | 06 (y = 9000) · "J12 · 1–5" | Five 1512 × 982 frames: chat column + Mission control, numbered callouts, the key line, the footer "Interventions this day: 0" (§7). | `p42b-j12-1-morning.png` … `p42b-j12-5-watch.png` |
+| 8 | 00 Cover | P4 gate Part B In review, changelog 1.5. | — |
