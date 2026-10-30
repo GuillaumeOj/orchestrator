@@ -22,6 +22,7 @@ const {
   attention,
   connectNow,
   counts,
+  digest,
   featureRun,
   loadNow,
   needsYou,
@@ -105,6 +106,22 @@ describe('now store', () => {
     expect(openDecisions().map((d) => d.id)).toEqual(['inbox-2']);
     expect(app.now.outcomes).toHaveLength(1);
     expect(calls).toEqual([]);
+  });
+
+  it("keeps today's seen outcomes after a push (Done today, spec §3.7); the digest still shows unseen ones", () => {
+    const at = new Date().setHours(0, 0, 0, 0);
+    app.now.outcomes = [
+      { id: 'ev-1', kind: 'task_done', at_ms: at + 1, text: 'seen', seen: true },
+      { id: 'ev-2', kind: 'task_done', at_ms: at + 2, text: 'unseen', seen: false },
+      { id: 'ev-0', kind: 'task_done', at_ms: at - 1, text: 'yesterday', seen: true },
+    ];
+    applyNow({
+      rev: 6,
+      outcomes: [{ id: 'ev-3', kind: 'run_done', at_ms: at + 3, text: 'new', seen: false }],
+      topics: [],
+    });
+    expect(app.now.outcomes.map((o) => o.id)).toEqual(['ev-1', 'ev-2', 'ev-3']);
+    expect(digest().map((o) => o.id)).toEqual(['ev-3', 'ev-2']);
   });
 
   it('closed decisions go 10 min after they closed, even with no snapshot', () => {

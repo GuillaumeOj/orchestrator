@@ -414,9 +414,9 @@
     <div class="dlg small" role="alertdialog" aria-modal="true" aria-label={o.text} tabindex="-1" onkeydown={(e) => onKey(e, () => (close(), o.onYes()))}>
     <form onsubmit={(e) => (e.preventDefault(), close(), o.onYes())}>
       <h3>{o.text}</h3>
-      <p class="secondary">{o.detail}</p>
+      <p class="secondary detail">{o.detail}</p>
       <div class="foot">
-        <button type="button" class="btn ghost" onclick={close}>Cancel <Kbd keys="esc" /></button>
+        <button type="button" class="btn ghost" onclick={close}>{o.no ?? 'Cancel'} <Kbd keys="esc" /></button>
         <!-- svelte-ignore a11y_autofocus -->
         <button type="submit" class="btn primary" autofocus>{o.yes} <Kbd keys="⏎" /></button>
       </div>
@@ -498,6 +498,9 @@
   }
   .err {
     white-space: pre-wrap;
+  }
+  .detail {
+    white-space: pre-line;
   }
   .foot {
     display: flex;

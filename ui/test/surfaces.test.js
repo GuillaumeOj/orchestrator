@@ -50,7 +50,7 @@ const { default: StatusBar } = await import('../src/components/StatusBar.svelte'
 const { default: Banner } = await import('../src/components/Banner.svelte');
 const { default: TitleBar } = await import('../src/components/TitleBar.svelte');
 const { default: Inspector } = await import('../src/components/Inspector.svelte');
-const { default: OverviewPane } = await import('../src/panes/OverviewPane.svelte');
+const { default: MissionPane } = await import('../src/panes/MissionPane.svelte');
 const { default: InboxPane } = await import('../src/panes/InboxPane.svelte');
 const { default: AgentPane } = await import('../src/panes/AgentPane.svelte');
 const { default: FeaturePane } = await import('../src/panes/FeaturePane.svelte');
@@ -96,6 +96,12 @@ function world() {
     actions: [act('answer', 'Answer', 'enter'), act('reject', 'Dismiss', 'r'), act('open', 'Open pane', 'o')],
   });
   const user = (ref, since) => ({ waiting_on: { kind: 'user', ref, since_ms: since } });
+  const q = (entry, position) => ({
+    entry,
+    position,
+    tier: 'normal',
+    run_now: { week_pp: 1, five_hour_pp: 4, binds: 'week' },
+  });
   const gov = { waiting_on: { kind: 'governor', ref: 'x', since_ms: now - 5 * MIN } };
   const agents = [
     rec('perm-1', 'waiting_for_you', {
@@ -118,8 +124,20 @@ function world() {
       reason: '→ lead · review of T-4',
       waiting_on: { kind: 'agent', ref: 'lead-1', since_ms: now - 3 * MIN },
     }),
-    rec('queued-1', 'queued', { project: 'blog', live: false, reason: 'live cap 4/4 · 2nd in line', ...gov }),
-    rec('fresh-1', 'not_started', { project: 'blog', live: false, reason: 'live cap 4/4 · 1st in line', ...gov }),
+    rec('queued-1', 'queued', {
+      project: 'blog',
+      live: false,
+      reason: 'live cap 4/4 · 2nd in line',
+      ...gov,
+      queue: q(11, 2),
+    }),
+    rec('fresh-1', 'not_started', {
+      project: 'blog',
+      live: false,
+      reason: 'live cap 4/4 · 1st in line',
+      ...gov,
+      queue: q(12, 1),
+    }),
     rec('run-2', 'working', { project: 'blog', activity: 'Edit src/feed.ts' }),
   ];
   const C = countsOf;
@@ -161,7 +179,8 @@ beforeEach(() => {
   app.toasts = [];
   app.panes = {};
   app.focused = null;
-  app.selectedAgent = null;
+  app.selection = null;
+  app.mission = { projects: null };
 });
 
 describe('every surface shows the same numbers (spec §6.1)', () => {
@@ -172,10 +191,9 @@ describe('every surface shows the same numbers (spec §6.1)', () => {
     // Icon rail: the project's needs_you, nothing for the other.
     const rail = render(IconRail).container;
     expect([...rail.querySelectorAll('.count')].map((x) => x.textContent)).toEqual(['2']);
-    // Overview: the chip and the footer.
-    const ov = render(OverviewPane, { paneId: 'ov' }).container;
-    expect(text(ov)).toContain('Need you 2');
-    expect(ov.querySelector('.totals').textContent).toContain('2 need you');
+    // Mission control: the footer (lane headers count rows, D11).
+    const mc = render(MissionPane, { paneId: 'mc' }).container;
+    expect(mc.querySelector('.foot').textContent).toContain('2 need you');
   });
 
   it('decisions 2', () => {
@@ -190,10 +208,8 @@ describe('every surface shows the same numbers (spec §6.1)', () => {
     const bar = render(StatusBar).container;
     expect(bar.querySelector('.live').textContent).toContain('5 live / cap 4');
     expect(bar.querySelector('.queued').textContent).toContain('queued 2');
-    const ov = render(OverviewPane, { paneId: 'ov' }).container;
-    expect(text(ov)).toContain('Live 5');
-    expect(text(ov)).toContain('Queued 2');
-    expect(ov.querySelector('.totals').textContent).toContain('5 live / cap 4 · queued 2');
+    const mc = render(MissionPane, { paneId: 'mc' }).container;
+    expect(mc.querySelector('.foot').textContent).toContain('2 queued · live cap 5/4');
     // The Red banner (the fixture's Governor is in Red).
     const banner = render(Banner).container;
     expect(text(banner)).toContain('queued 2');
@@ -201,10 +217,13 @@ describe('every surface shows the same numbers (spec §6.1)', () => {
 });
 
 describe('surfaces render the record: status, reason, since', () => {
-  it('a wait on another agent reads the same in the Overview, the agent pane and the Inspector', () => {
+  it('a wait on another agent reads the same in Mission control, the agent pane and the Inspector', () => {
     const want = /→ lead · review of T-4 (· )?3 min/;
-    const ov = render(OverviewPane, { paneId: 'ov' }).container;
-    expect(text(ov)).toMatch(want);
+    // Mission control: the member chip's short wait, the full reason on hover (notes §1.3).
+    const mc = render(MissionPane, { paneId: 'mc' }).container;
+    const chip = [...mc.querySelectorAll('.mchip')].find((c) => c.textContent.includes('rev-1'));
+    expect(text(chip)).toContain('→ lead · 3 min');
+    expect(chip.getAttribute('title')).toContain('→ lead · review of T-4');
     openPane({ type: 'agent', agentId: 'rev-1' });
     const pane = render(AgentPane, { paneId: 'p1' }).container;
     expect(text(pane.querySelector('.ah'))).toMatch(want);
@@ -219,12 +238,12 @@ describe('surfaces render the record: status, reason, since', () => {
     expect(text(pane.querySelector('.ah'))).toContain('Not started yet');
     expect(text(pane.querySelector('.strip'))).toMatch(/Not started yet\s*\S*\s*live cap 4\/4 · 1st in line · 5 min/);
     expect(text(pane.querySelector('.strip'))).toContain('Start now');
-    const ov = render(OverviewPane, { paneId: 'ov' }).container;
-    const row = [...ov.querySelectorAll('tbody tr')].find((r) => r.textContent.includes('fresh-1'));
+    const mc = render(MissionPane, { paneId: 'mc' }).container;
+    const row = mc.querySelector('[data-key="queue:fresh-1"]');
     expect(text(row)).toContain('Not started yet');
-    expect(text(row)).toContain('Start now');
-    // The governor column is the record's reason, no index arithmetic.
-    expect(row.querySelector('.gov').textContent).toBe('live cap 4/4 · 1st in line');
+    // The reason is the record's, the cost its `queue` field's (D7).
+    expect(text(row)).toContain('live cap 4/4 · 1st in line');
+    expect(text(row)).toContain('Start now ≈ +1.0 pp week');
   });
 
   it('badges come from the records, not the raw state', () => {

@@ -12,7 +12,7 @@
   import StatusBadge from './StatusBadge.svelte';
 
   let collapsed = $state({});
-  const focusedAgent = $derived(app.panes[app.focused]?.agentId ?? app.selectedAgent);
+  const focusedAgent = $derived(app.panes[app.focused]?.agentId ?? (app.selection?.kind === 'agent' ? app.selection.id : null));
   const byProject = $derived(
     projects().map((p) => {
       const mine = activeAgents().filter((a) => (a.team?.project_id ?? a.project_id) === p.id);
