@@ -39,7 +39,7 @@ Order: the order they were opened (a new tab goes last). No grouping by kind.
 
 ## States to draw
 
-1. Dock with 3 agent tabs (Working, At gate / waiting for you, Idle) and 2 shell tabs, an agent active, a workspace with a project pane above.
+1. Dock with 3 agent tabs (Working, Waiting for you, Idle) and 2 shell tabs, an agent active, a workspace with a project pane above.
 2. Same, a shell tab active.
 3. No workspace pane: the dock fills the work column.
 4. Zoomed dock (⌘; z): fills the column, the tab strip shows a `ZOOMED` tag like the pane header does, and the restore hint `⌘; z restore`.

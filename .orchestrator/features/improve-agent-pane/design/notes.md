@@ -23,8 +23,8 @@ Content of states 1, 2 (ux-brief "States to draw"): tabs in open order `[L] lead
 
 - Under the workspace, full width of the work column (sidebar ↔ inspector). `color.surface.chrome` background, padding `0 space.xs space.xs`.
 - Handle: `space.xs` (4 px) tall on top, `color.border.strong` on hover / focus.
-- Height: 0.45 of the column by default (spec §3.1). In the 1512 frames: work column 919 px tall (title bar 36, status bar 26 excluded) → dock 414 px, workspace above 505 px.
-- Body: `radius.sm` on every corner but the top-left (the active tab sits on it), clip.
+- Height: 0.45 of the column by default (spec §3.1). In the 1512 frames: work column 922 px tall (982 − `size.titlebar` 36 − `size.statusbar` 24) → dock 415 px, workspace above 507 px.
+- Body: `radius.sm` on every corner, clip; the top-left is square only while the first tab is active and the lane is not scrolled (that tab sits on it).
 
 ## Tab strip
 
@@ -40,10 +40,10 @@ Shared by both kinds: height 24, top corners `radius.sm`, font `text.label` (12 
 |---|---|---|
 | lead | role mark: AgentChip mark, 14 × 16, 1 px border in `color.role.n`, letter `text.caption` in `color.role.n` | — |
 | gap | `space.xs` (4 px) between mark, name and status icon | — |
-| label | short name (agent id minus `<feature-slug>-`), `color.text.secondary` | title as today (`zsh · <project>`, `trust · <project>`, the command), `color.text.secondary` |
+| label | short name: the team node (`team.node`, as the sidebar's AgentChip), else the agent id, `color.text.secondary` | title as today (`zsh · <project>`, `trust · <project>`, the command), `color.text.secondary` |
 | status | StatusBadge icon only (compact), `size.icon` (16 px) box, glyph in `color.status.<state>` | — |
 | × | `color.text.muted`; tooltip "Close tab · the agent keeps running" | `color.text.muted`; tooltip "Close shell" |
-| tooltip on the tab | full agent id · status label (e.g. `improve-agent-pane-back-1 · Waiting for you`) | the title |
+| tooltip on the tab | full agent id · the sidebar row's wait line (`waitLine`: status label · what it waits on · since, §9.5), e.g. `improve-agent-pane-back-1 · Waiting for you · permission WebFetch · 2 min` | the title |
 
 States:
 
@@ -54,7 +54,7 @@ States:
 | active | `color.surface.raised` (joins the body) | `color.text.secondary` | — |
 | active + focused (keyboard in the dock) | `color.surface.raised` | `color.text.primary` | — (as today) |
 
-- Status icons drawn: Working `color.status.working`, Waiting for you `color.status.waiting-for-you`, Idle `color.status.idle`, Suspended `color.status.suspended`, Error `color.status.error`. At gate (`color.status.at-gate`) follows the same rule. No blinking, no count (brief).
+- Status icons drawn: Working `color.status.working`, Waiting for you `color.status.waiting-for-you`, Idle `color.status.idle`, Suspended `color.status.suspended`, Error `color.status.error`. At gate, Queued, Paused, Blocked by limit, Not started yet and Done the same way. No blinking, no count (brief).
 - **Long name**: the tab caps at 200 px; the name ellipsizes, mark, status icon and × never shrink. Shell titles ellipsize the same way. Decision: 200 px keeps ~6 tabs visible at 1280 with the hint group, and fits every `<role>-<n>` short name without cutting.
 
 ## Body of an agent tab
@@ -74,7 +74,7 @@ The agent pane as in 04 Screens · `Agent pane · 1512`, minus the workspace pan
 All five accepted by `lead` (T-62).
 
 - Tab max width 200 px with ellipsis (brief says "long name ellipsized", no size).
-- Hover background `color.surface.pane` (existing token, between chrome and raised).
+- Hover background `color.surface.pane` (existing token; between chrome and raised in the dark theme, the lightest of the three in the light theme).
 - Overflow divider (1 px `color.border.subtle`), no fade or counter.
 - No drag handle when the dock fills the column (states 3 and 4).
 - `ZOOMED` without "n of m".
