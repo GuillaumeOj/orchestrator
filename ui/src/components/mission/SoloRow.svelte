@@ -4,7 +4,7 @@
   import StatusBadge from '../StatusBadge.svelte';
   import WaitingChip from '../WaitingChip.svelte';
 
-  let { rec, children } = $props();
+  let { rec } = $props();
 </script>
 
 <div class="l1">
@@ -12,7 +12,6 @@
   <StatusBadge state={rec.status} />
   <span class="why" class:error={rec.level === 'error'}><WaitingChip {rec} compact /></span>
 </div>
-{@render children?.()}
 
 <style>
   .l1 {
