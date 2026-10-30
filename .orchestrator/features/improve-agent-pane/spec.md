@@ -67,8 +67,8 @@ The Overwatch / Mission control (P4.2) and its "session over the board"; the age
 
 | Task | Owner | Depends on | Notes |
 |---|---|---|---|
-| T-1 Penpot: the dock with agent and shell tabs | ui | — | 03 Shell & layouts: dock with mixed tabs (states in ux-brief), dock filling the column, zoomed dock; 02 Components: dock tab (shell, agent + statuses, focused, overflow). Export PNGs to `design/` |
-| T-2 Agent drawn at its real size on every show | front (opus, `plan_first`) | — | Confirm the cause, fix in `term.js` / `mountTerm`; the plan says if the core's `agent_attach` must change (then a back task follows, per api-contract) |
-| T-3 Agents and shells in the bottom dock | front | T-1, T-2 | `app.svelte.js` (open*, focus, zoom, restore migration, default height), `Dock.svelte`, `App.svelte`, `Workspace.svelte`, `ProjectPane.svelte`, tests. Asks `ui` for a visual review |
+| T-62 Penpot: the dock with agent and shell tabs | ui | — | 03 Shell & layouts: dock with mixed tabs (states in ux-brief), dock filling the column, zoomed dock; 02 Components: dock tab (shell, agent + statuses, focused, overflow). Export PNGs to `design/` |
+| T-63 Agent drawn at its real size on every show | front (opus, `plan_first`) | — | Confirm the cause, fix in `term.js` / `mountTerm`; the plan says if the core's `agent_attach` must change (then a back task follows, per api-contract) |
+| T-64 Agents and shells in the bottom dock | front | T-62, T-63 | `app.svelte.js` (open*, focus, zoom, restore migration, default height), `Dock.svelte`, `App.svelte`, `Workspace.svelte`, `ProjectPane.svelte`, tests. Asks `ui` for a visual review |
 
-`ux`: no separate task; the interaction rules are settled in [ux-brief.md](ux-brief.md). `back`: no work unless T-2's plan shows the core must change.
+`ux`: no separate task; the interaction rules are settled in [ux-brief.md](ux-brief.md). `back`: no work unless T-63's plan shows the core must change.
