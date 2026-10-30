@@ -4,7 +4,9 @@ Penpot file **Orchestrator**. Companion of [../ux-brief.md](../ux-brief.md) and 
 
 ## Frames
 
-| Export | Penpot page · frame | Size |
+Not drawn yet: Penpot was unavailable during T-62, so these notes are the build reference for T-64. The frames and PNG exports below come with T-65; until then the names are the plan.
+
+| Export (planned) | Penpot page · frame | Size |
 |---|---|---|
 | `dock-1-agent-active.png` | 03 Shell & layouts · `Dock · 1512 · agent active` | 1512 × 982 |
 | `dock-2-shell-active.png` | 03 Shell & layouts · `Dock · 1512 · shell active` | 1512 × 982 |
