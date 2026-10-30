@@ -33,10 +33,10 @@ A change in task counts or `pr` is a record change (pushed in `now.attention.run
   "agent": "infra-1", "level": "queued", "status": "queued",   // or "not_started"
   "waiting_on": { "kind": "governor", "ref": "infra-1", "since_ms": 0 },
   "reason": "live cap 2/2 · 2nd in line · ≈14:20",             // unchanged (P4.1 copy)
-  // new, for status queued and not_started; absent for paused and every other status
+  // new, only when the agent has a Governor queue entry (status queued or not_started); absent for paused and every other status (D13)
   "queue": {
     "entry": 314,              // the Governor queue entry id: what governor_act run_now / cancel take
-    "position": 2,             // 1-based in the Governor's order; absent if not in the queue order (not started, no entry)
+    "position": 2,             // 1-based in the Governor's order; absent for a not-started agent outside the queue order
     "tier": "low",             // allocation tier: critical | high | normal | low
     "eta_ms": 1761736800000,   // absent when the Governor has no estimate
     "run_now": {               // FR-809: cost of starting it now

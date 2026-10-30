@@ -4,7 +4,7 @@
 
 ## 1. Principles applied (SPEC §9.1)
 - **Nothing requires a pane** (9): every row says what it waits on and since when; opening a session is for watching.
-- **One source of state** (10): rows show the record's `status`, `reason`, `since`, the run's `phase`; lane counts are the core's counts (summed over the filtered projects).
+- **One source of state** (10): rows show the record's `status`, `reason`, `since`, the run's `phase`; lane headers count their rows with a unit (D11); the core's agent counts stay in the footer, status bar and filter popover.
 - **Every number says what it is** (11): "Needs you · 2", "3/7 tasks done", "executing · 2 h", "Run now ≈ +2 pp week", "≈14:20", "2 projects of 4".
 - **Keyboard-first** (1): every row action has a key (spec §3.4); shown as key hints in the toolbar.
 
