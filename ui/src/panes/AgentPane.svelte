@@ -3,7 +3,9 @@
   // with a header (role, status + reason + since from its attention record,
   // model, context, session usage) and a strip for the states that need words
   // (queued or not started, suspended, limit, error, a permission prompt held
-  // or parked for the Inbox). The PTY itself is left untouched.
+  // or parked for the Inbox). The PTY itself is left untouched. Opened over
+  // Mission control it starts in watch mode (D5): the terminal renders but
+  // the strip has the keys, ⏎ or a click takes over, Esc goes back.
   import { onMount } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
   import CtxBar from '../components/CtxBar.svelte';
@@ -13,12 +15,13 @@
   import StatusBadge from '../components/StatusBadge.svelte';
   import TermHost from '../components/TermHost.svelte';
   import WaitingChip from '../components/WaitingChip.svelte';
-  import { agent, agentAction, app, cancelQueued, confirm, decide, mountTerm, openEditor, runNow, toast } from '../lib/app.svelte.js';
+  import { agent, agentAction, app, cancelQueued, confirm, decide, leaveWatch, mountTerm, openEditor, runNow, takeOver, toast } from '../lib/app.svelte.js';
   import { ago, clock, duration } from '../lib/format.js';
   import { agentOf, blockOf, parked, visibleItems } from '../lib/inbox.js';
   import { errText } from '../lib/ipc.js';
+  import { runNowCost } from '../lib/mission.js';
   import { attention, openDecisions, statusOf } from '../lib/now.svelte.js';
-  import { cacheState, sessionPp as ppOf, runCost, STATUS } from '../lib/status.js';
+  import { cacheState, sessionPp as ppOf, STATUS } from '../lib/status.js';
 
   let { paneId } = $props();
   let host = $state();
@@ -48,6 +51,24 @@
   // The strip's buttons: the decision's own actions, Deny with message and Open aside (the pane is here).
   const permActions = $derived((perm?.actions ?? []).filter((x) => x.id !== 'reply' && x.id !== 'open'));
   const cache = $derived(cacheState(a, clock));
+  const watching = $derived(!!spec?.watch);
+  // Opened over Mission control and taken over: the strip says how to go back (notes F4).
+  const overBoard = $derived(!!spec?.over && !!app.panes[spec.over]);
+  const stopped = $derived(!a || rec?.status === 'done' || (ended && !a.live));
+  const name = $derived(spec?.agentId ?? '');
+
+  function onWatchKey(e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key === 'Enter' && !stopped) {
+      e.preventDefault();
+      e.stopPropagation();
+      takeOver(paneId);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      leaveWatch(paneId);
+    }
+  }
 
   function attachIfLive() {
     if (!t || !a?.live || t.alive) return;
@@ -77,6 +98,23 @@
     }
   }
 </script>
+
+{#if watching}
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+  <div class="session watch" tabindex="0" data-pane-focus data-watch role="group" aria-label="Watching {name}" onkeydown={onWatchKey}>
+    <span class="icon" aria-hidden="true">{'\u{F06D0}'}</span>
+    {#if stopped}
+      <span><b class="mono">{name}</b> has stopped</span> · <Kbd keys="esc" /> back
+    {:else}
+      <span>Watching <b class="mono">{name}</b>{rec?.status === 'paused' ? ' (paused)' : ''}</span> · <Kbd keys="⏎" /> take over · <Kbd keys="esc" /> back
+    {/if}
+  </div>
+{:else if overBoard}
+  <div class="session muted">
+    <span class="icon" aria-hidden="true">{'\u{F030C}'}</span>
+    {#if stopped}<span><b class="mono">{name}</b> has stopped</span>{:else}<span>Typing in <b class="mono">{name}</b></span>{/if} · <Kbd keys="⌘+; o" /> Mission control
+  </div>
+{/if}
 
 {#if a}
   <div class="ah">
@@ -125,10 +163,10 @@
       <span class="icon" style:color={STATUS[ds].color}>{STATUS[ds].icon}</span>
       <b>{STATUS[ds].label}</b> <WaitingChip {rec} />
       <span class="grow"></span>
-      {#if a.queue_entry}
-        <button class="btn ghost" onclick={() => cancelQueued(a)} title="Drop the queued turn">Cancel</button>
-        <button class="btn" onclick={() => runNow(a, fresh)}>
-          {fresh ? 'Start now' : 'Run now'} ≈ {runCost(a.queue_entry)} <Kbd keys="⏎" />
+      {#if rec.queue}
+        <button class="btn ghost" onclick={() => cancelQueued(rec)} title="Removes it from the queue; the agent stays as it is">Cancel</button>
+        <button class="btn" onclick={() => runNow(rec)}>
+          {fresh ? 'Start now' : 'Run now'}{runNowCost(rec.queue) ? ` ${runNowCost(rec.queue)}` : ''} <Kbd keys="⏎" />
         </button>
       {/if}
     </div>
@@ -158,7 +196,7 @@
   <div class="strip">This agent no longer exists.</div>
 {/if}
 
-<TermHost bind:host>
+<TermHost bind:host watch={watching} ontakeover={() => !stopped && takeOver(paneId)}>
   {#if a && !a.live && ended}<div class="ended muted">claude exited · {a.label} · {duration(Date.now() - (a.last_event_at_ms ?? Date.now()))} ago</div>{/if}
 </TermHost>
 
@@ -205,6 +243,24 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-sm);
+  }
+  .session {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    height: var(--size-strip);
+    padding: 0 var(--space-sm);
+    border-bottom: var(--border-width-default) solid var(--color-border-subtle);
+    font: var(--text-label);
+    white-space: nowrap;
+    outline: none;
+  }
+  .session.watch {
+    background: var(--color-surface-selected);
+    color: var(--color-text-secondary);
+  }
+  .session.watch b {
+    color: var(--color-text-primary);
   }
   .ended {
     position: absolute;

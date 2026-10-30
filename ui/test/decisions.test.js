@@ -84,7 +84,7 @@ const question = (over = {}) =>
       {
         type: 'last_message',
         text: Array.from({ length: 9 }, (_, i) => `line ${i + 1}`).join('\n'),
-        at_ms: new Date(2026, 9, 29, 14, 2).getTime(),
+        at_ms: new Date().setHours(14, 2, 0, 0),
       },
     ],
     actions: [act('answer', 'Answer', 'enter'), act('reject', 'Dismiss', 'r'), act('open', 'Open pane', 'o')],

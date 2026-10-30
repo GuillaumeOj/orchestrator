@@ -9,8 +9,9 @@ import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
 import * as L from './layout.js';
+import { runNowCost, runNowDialog } from './mission.js';
 import { clearDigest, needsYou, statusOf } from './now.svelte.js';
-import { runCost, STATUS } from './status.js';
+import { STATUS } from './status.js';
 import { runStateLabel } from './teams.js';
 import { TermPane } from './term.js';
 import { breakpoint } from './tokens.js';
@@ -31,7 +32,12 @@ export const app = $state({
   overlay: null, // { kind: 'palette' | 'jump' | 'new-session' | 'add-project' | 'confirm', … }
   toasts: [],
   pending: [], // Inbox decisions in their undo window: { item, card, action, message, at, toast }
-  selectedAgent: null,
+  // What the Inspector shows when no agent pane has focus (D10): set by the
+  // sidebar, the palette and Mission control. { kind: 'agent' | 'run' | 'decision', id }
+  selection: null,
+  // Mission control's project filter (settings key `mission`, D8): null = all.
+  mission: { projects: null },
+  missionFilterOpen: false, // the palette's "Filter Mission control by project"
   inboxFocus: null, // a decision id the Inbox selects when it opens (the waiting-on chip's link)
   selectedProject: null,
   theme: null, // null = system, 'dark' | 'light' (user choice)
@@ -80,10 +86,34 @@ export const featureBySlug = (projectId, slug) => features().find((f) => f.proje
 export const focusedSpec = () => app.panes[app.focused];
 export const isTerminal = (spec) => ['agent', 'shell', 'editor'].includes(spec?.type);
 
-/** The agent the inspector and the palette are about: the focused pane's, else the selection. */
+/** classify()'s context for a keydown on `target` (§9.7). A session in watch
+ *  mode is not a terminal for the keyboard: its strip takes ⏎ and Esc (D5). */
+export function keyContext(target) {
+  const spec = focusedSpec();
+  const inXterm = !!target?.closest?.('.xterm');
+  return {
+    leader: app.leader,
+    terminal: isTerminal(spec) && !spec.watch && inXterm,
+    agent: spec?.type === 'agent',
+    remaps: app.kitty?.key_remaps,
+  };
+}
+
+/** What the Inspector shows: the focused agent pane's agent, else the selection (D10). */
+export function inspected() {
+  const id = focusedSpec()?.agentId;
+  return id ? { kind: 'agent', id } : app.selection;
+}
+
+/** The agent the inspector and the palette are about: the focused pane's, else the selected agent. */
 export function contextAgent() {
-  const s = focusedSpec();
-  return agent(s?.agentId ?? app.selectedAgent);
+  const s = inspected();
+  return s?.kind === 'agent' ? agent(s.id) : null;
+}
+
+/** Selects an agent, a run or a decision for the Inspector. */
+export function select(kind, id) {
+  app.selection = id == null ? null : { kind, id };
 }
 
 export function contextProject() {
@@ -139,7 +169,7 @@ function title(spec) {
         }`;
       return (
         {
-          overview: 'All projects',
+          mission: 'Mission control',
           inbox: 'Inbox',
           planner: 'Week planner',
           setup: 'Set up Orchestrator',
@@ -200,12 +230,13 @@ export function focusPane(id) {
   } else app.layout = L.activate(app.layout, id);
   app.focused = id;
   const s = app.panes[id];
-  if (s.agentId) app.selectedAgent = s.agentId;
+  if (s.agentId) select('agent', s.agentId);
   if (app.zoomed && app.zoomed !== id) app.zoomed = id;
   // Focus whatever is focused when this runs: several calls in a row end on
-  // the last, and each terminal's focusin then matches `app.focused`.
+  // the last, and each terminal's focusin then matches `app.focused`. A
+  // session in watch mode never gets the terminal: its strip has the keys (D5).
   queueMicrotask(() => {
-    const t = terms.get(app.focused);
+    const t = app.panes[app.focused]?.watch ? null : terms.get(app.focused);
     if (t) t.focus();
     else {
       /** @type {HTMLElement | null} */
@@ -288,7 +319,7 @@ export function findPane(pred) {
   return Object.entries(app.panes).find(([, s]) => pred(s))?.[0];
 }
 
-/** Singleton panes (Overview, Inbox, Week planner) open as a tab, or get focus. */
+/** Singleton panes (Mission control, Inbox, Week planner) open as a tab, or get focus. */
 export function openSingleton(type) {
   const existing = findPane((s) => s.type === type);
   if (existing) return focusPane(existing);
@@ -441,6 +472,49 @@ export async function openTrust(projectId) {
   } catch (e) {
     toast(`Could not start claude: ${errText(e)}`, { kind: 'error' });
   }
+}
+
+/** Mission control (leader o, the palette): focused, else opened as a tab. */
+export const openMission = () => openSingleton('mission');
+
+/**
+ * A session over the board (D5, spec §3.3): the agent's pane as a tab in
+ * Mission control's group, in watch mode. One already open anywhere gets
+ * focus, in watch mode again (notes §1.10). Without Mission control: as
+ * `openAgent`.
+ */
+export function openSession(agentId) {
+  const over = findPane((s) => s.type === 'mission');
+  if (!over) return openAgent(agentId);
+  const existing = findPane((s) => s.type === 'agent' && s.agentId === agentId);
+  if (existing) {
+    app.panes[existing].watch = true;
+    // Only a tab in Mission control's own group is "over the board".
+    if (L.leafOf(app.layout, existing) === L.leafOf(app.layout, over)) app.panes[existing].over ??= over;
+    return focusPane(existing);
+  }
+  const id = newPaneId();
+  app.panes[id] = { type: 'agent', agentId, projectId: agent(agentId)?.project_id, watch: true, over, title: agentId };
+  app.layout = L.addTab(app.layout, over, id);
+  app.zoomed = null;
+  focusPane(id);
+  saveLayout();
+  return id;
+}
+
+/** Take-over (⏎ or a click in watch mode): the PTY gets the keyboard. */
+export function takeOver(paneId) {
+  const s = app.panes[paneId];
+  if (!s?.watch) return;
+  s.watch = false;
+  focusPane(paneId);
+}
+
+/** Esc in watch mode: back to the Mission control the session opened over; the tab stays. */
+export function leaveWatch(paneId) {
+  const over = app.panes[paneId]?.over;
+  if (over && app.panes[over]) focusPane(over);
+  else openMission();
 }
 
 export function openAgent(agentId) {
@@ -630,14 +704,23 @@ export function openInKitty(cwd) {
   invoke('open_in_kitty', { cwd }).catch((e) => toast(errText(e), { kind: 'error' }));
 }
 
-/** Run a queued turn now (`fresh`: start a not-started agent), after the user confirms its cost in both windows (FR-809). */
-export function runNow(a, fresh) {
-  const cost = runCost(a.queue_entry, true);
+/** Run a queued turn now, or start a not-started agent, after the user confirms its cost in both windows
+ *  (FR-809, notes §1.12). `rec` is the agent's attention record: its `queue` names the entry (D7). */
+export function runNow(rec) {
+  if (!rec?.queue) return;
+  const d = runNowDialog(rec);
+  const fresh = rec.status === 'not_started';
   confirm(
-    `${fresh ? 'Start' : 'Run'} ${a.id} now?`,
-    `≈ ${cost}. It runs above the live cap for one turn and is logged as your override.`,
-    () => governor('run_now', a.queue_entry.id),
-    fresh ? 'Start now' : 'Run now',
+    d.title,
+    d.detail,
+    () =>
+      queueAct(
+        'run_now',
+        rec,
+        `${fresh ? 'Started' : 'Running now'} · ${rec.agent}${runNowCost(rec.queue) ? ` · ${runNowCost(rec.queue)}` : ''}`,
+      ),
+    d.yes,
+    fresh ? 'Keep waiting' : 'Keep queued',
   );
 }
 
@@ -674,25 +757,39 @@ export async function publishNotion(f) {
   }
 }
 
-/** Drop a queued turn (its message is not delivered). */
-export function cancelQueued(a) {
-  confirm(
-    `Cancel ${a.id}'s queued turn?`,
-    'The waiting message is dropped and logged; the agent keeps its session.',
-    () => governor('cancel', a.queue_entry.id),
-    'Cancel turn',
-  );
+/** A queue entry's Run now or Cancel; the toast only once the core confirms (notes §1.13). */
+async function queueAct(action, rec, done) {
+  try {
+    await invoke('governor_act', { action, arg: rec.queue.entry });
+    toast(done);
+    await refresh();
+  } catch (e) {
+    toast(`Failed: ${errText(e)}`, { kind: 'error' });
+  }
+}
+
+/** Removes the agent's queue entry (notes §1.5), after asking: its waiting turn is dropped. */
+export function cancelQueued(rec) {
+  if (!rec?.queue) return;
+  const go = () => queueAct('cancel', rec, `Removed from the queue · ${rec.agent}`);
+  const run = rec.run ? app.now.runs[rec.run] : null;
+  const detail = run
+    ? `The ${run.feature} run keeps going without it.`
+    : 'Its waiting turn and message are dropped and logged; the agent keeps its session.';
+  confirm(`Cancel ${rec.agent}?`, detail, go, 'Remove from queue', 'Keep it');
 }
 
 /** Mounts the pane's xterm in `host`, fits it on resize; returns the cleanup. */
 export function mountTerm(paneId, host, hooks) {
   const t = termFor(paneId, {
-    onKey: (e) => !e.metaKey,
-    onFocus: () => app.focused !== paneId && focusPane(paneId),
+    // Watch mode: xterm takes no key (D5); a click in it takes over.
+    onKey: (e) => !e.metaKey && !app.panes[paneId]?.watch,
+    // In watch mode only ⏎ or a click takes over (TermHost): Tab into xterm goes back to the strip.
+    onFocus: () => (app.panes[paneId]?.watch || app.focused !== paneId) && focusPane(paneId),
     ...hooks,
   });
   t.mount(host);
-  if (app.focused === paneId) t.focus();
+  if (app.focused === paneId && !app.panes[paneId]?.watch) t.focus();
   const ro = new ResizeObserver(() => t.scheduleFit());
   ro.observe(host);
   return {
@@ -704,8 +801,23 @@ export function mountTerm(paneId, host, hooks) {
   };
 }
 
-export function confirm(text, detail, onYes, yes = 'Confirm') {
-  app.overlay = { kind: 'confirm', text, detail, onYes, yes };
+export function confirm(text, detail, onYes, yes = 'Confirm', no = 'Cancel') {
+  app.overlay = { kind: 'confirm', text, detail, onYes, yes, no };
+}
+
+/** Mission control's project filter from settings (D8). */
+async function loadMission() {
+  const v = await invoke('settings_get', { key: 'mission' }).catch(() => null);
+  // Projects removed since are dropped (the pane drops them too once the list is read).
+  const known = projects().length ? (id) => projects().some((p) => p.id === id) : () => true;
+  const ids = Array.isArray(v?.projects) ? v.projects.filter(known) : [];
+  app.mission = { projects: ids.length ? ids : null };
+}
+
+/** Sets and remembers Mission control's project filter (null = all projects). */
+export function setMissionFilter(projects) {
+  app.mission = { projects };
+  invoke('settings_set', { key: 'mission', value: { projects } }).catch(() => {});
 }
 
 // ---------------------------------------------------------------- persistence
@@ -715,7 +827,10 @@ export function saveLayout() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     const panes = Object.fromEntries(
-      Object.entries(app.panes).map(([id, s]) => [id, { ...s, termId: undefined, spawn: undefined }]),
+      Object.entries(app.panes).map(([id, s]) => [
+        id,
+        { ...s, termId: undefined, spawn: undefined, watch: undefined, over: undefined },
+      ]),
     );
     invoke('settings_set', {
       key: 'layout',
@@ -735,7 +850,7 @@ export function saveLayout() {
 
 /** Restores the saved layout: shells and editors restart in their cwd (NFR-2). */
 export async function restoreLayout() {
-  const saved = await invoke('settings_get', { key: 'layout' }).catch(() => null);
+  const [saved] = await Promise.all([invoke('settings_get', { key: 'layout' }).catch(() => null), loadMission()]);
   if (saved) {
     app.sidebar = saved.sidebar ?? true;
     app.inspector = saved.inspector ?? true;
@@ -743,7 +858,7 @@ export async function restoreLayout() {
     app.kittyTheme = saved.kittyTheme ?? false;
   }
   if (!saved?.layout) {
-    addPane({ type: 'overview' });
+    addPane({ type: 'mission' });
     if (!app.data?.setup?.done) openSingleton('setup');
     return;
   }
@@ -754,8 +869,10 @@ export async function restoreLayout() {
   // Shells and editors restart in parallel; one that does not start is dropped.
   await Promise.all(
     ids.map(async (id) => {
-      const s = saved.panes[id];
+      let s = saved.panes[id];
       if (!s || paneGone(s)) return;
+      // The Overview became Mission control (D9).
+      if (s.type === 'overview') s = { ...s, type: 'mission', title: 'Mission control' };
       // A shell that does not start is dropped from the restored layout.
       const live = await revive(s);
       if (live) panes[id] = live;
@@ -770,7 +887,7 @@ export async function restoreLayout() {
     active: tabs.includes(saved.dock?.active) ? saved.dock.active : (tabs[0] ?? null),
   };
   app.layout = L.reid(L.prune(saved.layout, (id) => !!panes[id]));
-  if (!app.layout) addPane({ type: 'overview' });
+  if (!app.layout) addPane({ type: 'mission' });
   else
     focusPane(
       panes[saved.focused] && (!inDock(saved.focused) || app.dock.open) ? saved.focused : L.visible(app.layout)[0],
@@ -824,7 +941,8 @@ function paneGone(s) {
 
 function prunePanes() {
   for (const [id, s] of Object.entries(app.panes)) if (paneGone(s)) closePane(id);
-  if (app.selectedAgent && !activeAgents().some((a) => a.id === app.selectedAgent)) app.selectedAgent = null;
+  const sel = app.selection;
+  if (sel?.kind === 'agent' && !activeAgents().some((a) => a.id === sel.id)) app.selection = null;
 }
 
 // ---------------------------------------------------------------- commands
@@ -838,7 +956,15 @@ export function commands() {
   const list = [
     { id: 'session.new', label: 'New session…', run: () => (app.overlay = { kind: 'new-session' }) },
     { id: 'project.add', label: 'Add project…', run: () => (app.overlay = { kind: 'add-project' }) },
-    { id: 'overview', label: 'Open Overview', run: () => openSingleton('overview') },
+    { id: 'mission', label: 'Open Mission control', run: openMission },
+    {
+      id: 'mission.filter',
+      label: 'Filter Mission control by project',
+      run: () => {
+        openMission();
+        app.missionFilterOpen = true;
+      },
+    },
     { id: 'inbox', label: 'Open Inbox', run: () => openSingleton('inbox') },
     {
       id: 'inbox.clear-digest',

@@ -14,7 +14,7 @@
   import TitleBar from './components/TitleBar.svelte';
   import Toasts from './components/Toasts.svelte';
   import Workspace from './components/Workspace.svelte';
-  import { app, applyTheme, flushDecisions, focusedSpec, isTerminal, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
+  import { app, applyTheme, flushDecisions, keyContext, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
   import { startDev } from './lib/dev.js';
   import { loadUiFont, prepareKitty } from './lib/fonts.js';
   import { inTauri, invoke, listen } from './lib/ipc.js';
@@ -36,10 +36,9 @@
   // reach xterm.js; everything else goes on to the focused element.
   function onKeyDown(e) {
     if (e.isComposing) return;
-    const spec = focusedSpec();
     const inXterm = !!e.target.closest?.('.xterm');
     const inField = !inXterm && !!e.target.closest?.('input, textarea, select');
-    const r = classify(e, { leader: app.leader, terminal: isTerminal(spec) && inXterm, agent: spec?.type === 'agent', remaps: app.kitty?.key_remaps });
+    const r = classify(e, keyContext(e.target));
     const stop = () => {
       e.preventDefault();
       e.stopPropagation();
@@ -68,7 +67,8 @@
         terms.get(app.focused)?.write(r.bytes);
         return stop();
       default:
-        if (e.key === 'Escape' && app.inspectorOverlay && !inXterm) {
+        // The watch-mode strip's Esc goes back to Mission control; Esc anywhere else closes the overlay.
+        if (e.key === 'Escape' && app.inspectorOverlay && !inXterm && !e.target.closest?.('[data-watch]')) {
           app.inspectorOverlay = false;
           stop();
         }

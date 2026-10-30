@@ -3,7 +3,7 @@
   // (muted), the core's reason, and since. Since shows for needs_you, waiting,
   // queued and error; running shows its activity instead. The ref is a link: a
   // decision opens its Inbox detail, an agent focuses it, a task opens its card.
-  // Compact (Overview row, tooltips): the reason truncates, since never does;
+  // Compact (rows, tooltips): the reason truncates, since never does;
   // the full text is on hover. The status badge sits before it, on the surface.
   import { now30, openAgent, openBoard, openInbox } from '../lib/app.svelte.js';
   import { waitLine, waitSince, waitWhat } from '../lib/now.svelte.js';

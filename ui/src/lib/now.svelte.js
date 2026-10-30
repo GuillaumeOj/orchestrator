@@ -5,7 +5,7 @@
 // refetches its view when its topic arrives, on mount and on window focus.
 
 import { app, decisionGone, decisionPushed } from './app.svelte.js';
-import { waited } from './format.js';
+import { startOfDay, waited } from './format.js';
 import { isOpen, older } from './inbox.js';
 import { invoke, listen } from './ipc.js';
 import { STATUS } from './status.js';
@@ -93,8 +93,9 @@ export function applyNow(ev) {
         delete n.decisions[id];
         closedAt.delete(id);
       }
-    // Outcomes: today's unseen ones only (a long session would keep every day's).
-    if (ev.outcomes?.length) n.outcomes = [...digest(), ...ev.outcomes];
+    // Outcomes: today's, seen or not (Done today and done_today are the same set,
+    // spec §3.7); a long session would keep every day's.
+    if (ev.outcomes?.length) n.outcomes = mergeOutcomes(n.outcomes, ev.outcomes);
     if (ev.counts) n.counts = ev.counts;
     n.rev = ev.rev;
   } else if (ev.rev > n.rev) {
@@ -181,7 +182,12 @@ export const needsYou = () =>
     .filter((r) => r.level === 'needs_you')
     .sort((x, y) => since(x) - since(y));
 
-const startOfDay = (now = Date.now()) => new Date(now).setHours(0, 0, 0, 0);
+/** Today's outcomes after a push: the held ones, replaced by id, plus the new ones. */
+export function mergeOutcomes(held, pushed, now = Date.now()) {
+  const ids = new Set(pushed.map((o) => o.id));
+  const day = startOfDay(now);
+  return [...held.filter((o) => !ids.has(o.id) && o.at_ms >= day), ...pushed];
+}
 
 /** Today's outcomes not yet cleared, newest first (the Inbox digest, level 4). */
 export const digest = (now = Date.now()) =>
