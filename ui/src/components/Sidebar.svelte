@@ -3,7 +3,7 @@
   // project. The only navigation tree. Badges are the core's attention
   // records; a feature's count is its run's `needs_you`, its label the run's phase
   // (a finished run has no record: its own status).
-  import { activeAgents, app, features, openAgent, openFeature, openProject, projects } from '../lib/app.svelte.js';
+  import { activeAgents, app, features, inspected, openAgent, openFeature, openProject, projects } from '../lib/app.svelte.js';
   import { pct } from '../lib/format.js';
   import { attention, featureRun, needYouText, runPhase, statusOf, waitLine } from '../lib/now.svelte.js';
   import { runStateLabel } from '../lib/teams.js';
@@ -12,7 +12,10 @@
   import StatusBadge from './StatusBadge.svelte';
 
   let collapsed = $state({});
-  const focusedAgent = $derived(app.panes[app.focused]?.agentId ?? (app.selection?.kind === 'agent' ? app.selection.id : null));
+  const focusedAgent = $derived.by(() => {
+    const s = inspected();
+    return s?.kind === 'agent' ? s.id : null;
+  });
   const byProject = $derived(
     projects().map((p) => {
       const mine = activeAgents().filter((a) => (a.team?.project_id ?? a.project_id) === p.id);

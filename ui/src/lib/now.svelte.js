@@ -185,7 +185,8 @@ export const needsYou = () =>
 /** Today's outcomes after a push: the held ones, replaced by id, plus the new ones. */
 export function mergeOutcomes(held, pushed, now = Date.now()) {
   const ids = new Set(pushed.map((o) => o.id));
-  return [...held.filter((o) => !ids.has(o.id) && o.at_ms >= startOfDay(now)), ...pushed];
+  const day = startOfDay(now);
+  return [...held.filter((o) => !ids.has(o.id) && o.at_ms >= day), ...pushed];
 }
 
 /** Today's outcomes not yet cleared, newest first (the Inbox digest, level 4). */

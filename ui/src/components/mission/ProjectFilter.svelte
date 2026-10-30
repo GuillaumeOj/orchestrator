@@ -47,11 +47,11 @@
 <div class="pop" role="dialog" aria-label="Filter by project" tabindex="-1" bind:this={el} onkeydown={onKey} onfocusout={(e) => !el.contains(/** @type {Node} */ (e.relatedTarget)) && apply()}>
   <ul role="listbox" aria-multiselectable="true">
     <li role="option" aria-selected={!draft} class:cur={cur === 0}>
-      <label><input type="checkbox" tabindex="-1" checked={!draft} onchange={() => toggle(0)} /> <b>All projects</b></label>
+      <label><input type="checkbox" tabindex="-1" checked={!draft} onchange={(e) => (toggle(0), (e.currentTarget.checked = !draft))} /> <b>All projects</b></label>
     </li>
     {#each projects as p, i (p.id)}
       <li role="option" aria-selected={on(p.id)} class:cur={cur === i + 1}>
-        <label><input type="checkbox" tabindex="-1" checked={on(p.id)} onchange={() => toggle(i + 1)} /> {p.name}</label>
+        <label><input type="checkbox" tabindex="-1" checked={on(p.id)} onchange={(e) => (toggle(i + 1), (e.currentTarget.checked = on(p.id)))} /> {p.name}</label>
         <span class="grow"></span>
         <span class="muted">{countParts({ ...counts?.projects?.[p.id] }).join(' · ')}</span>
       </li>

@@ -5,6 +5,7 @@
   // its one timer is the 30 s relative-time clock. Rows and lanes come from
   // `lanes()` (lib/mission.js); this pane keeps the selection, the open
   // lanes and details, and the keys (notes §3.1).
+  import { untrack } from 'svelte';
   import Kbd from '../components/Kbd.svelte';
   import ProjectFilter from '../components/mission/ProjectFilter.svelte';
   import QueueRow from '../components/mission/QueueRow.svelte';
@@ -13,6 +14,7 @@
   import SoloRow from '../components/mission/SoloRow.svelte';
   import OutcomeRow from '../components/OutcomeRow.svelte';
   import {
+    agent,
     agentAction,
     app,
     cancelQueued,
@@ -29,6 +31,7 @@
     setMissionFilter,
   } from '../lib/app.svelte.js';
   import { mb } from '../lib/format.js';
+  import { isOpen } from '../lib/inbox.js';
   import { allowed, DONE_ROWS, decisionOf, defaultTarget, filterLabel, footerText, hiddenText, hints, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
   import { attention } from '../lib/now.svelte.js';
   import { LEVEL } from '../lib/status.js';
@@ -55,7 +58,7 @@
   // Rows somewhere, by the core's counts (the filter may hide them all).
   const anyWork = $derived.by(() => {
     const c = app.now.counts?.global ?? {};
-    return ['needs_you', 'error', 'running', 'waiting', 'queued', 'idle', 'done_today'].some((k) => c[k]) || Object.keys(app.now.decisions ?? {}).length > 0;
+    return ['needs_you', 'error', 'running', 'waiting', 'queued', 'idle', 'done_today'].some((k) => c[k]) || Object.values(app.now.decisions ?? {}).some(isOpen);
   });
   const stopList = $derived(stops(model, { collapsed, idleOpen, showAll }));
   const index = $derived(rowIndex(model));
@@ -82,6 +85,14 @@
     // the palette or the Inspector while it is not focused stays.
     if (list.length) setSel(list[Math.min(lastAt, list.length - 1)], { quiet: true, inform: app.focused === paneId });
     else selKey = null;
+  });
+
+  // Back in Mission control (Esc from a session, leader o): the Inspector shows its row again (D10).
+  let wasFocused = false;
+  $effect(() => {
+    const on = app.focused === paneId;
+    if (on && !wasFocused && selKey) untrack(() => setSel(selKey, { c: chip, quiet: true }));
+    wasFocused = on;
   });
 
   /** Selects a stop and tells the Inspector (D10) unless `inform` is false; `quiet`: no scroll. */
@@ -140,8 +151,16 @@
     if (o.kind === 'turn_done' && o.agent) return openSession(o.agent);
     if (o.kind === 'report_ready') return openReport(o.report ?? 'current');
     if (o.kind === 'sync_conflict' && o.project) return openBoard(o.project, o.task ?? null);
-    if (o.run && index.has(`run:${o.run}`)) return setSel(`run:${o.run}`);
+    if (o.run && index.has(`run:${o.run}`)) return reveal(`run:${o.run}`);
     if (o.agent) return openSession(o.agent);
+  }
+
+  /** Selects a row, opening its collapsed lane or the Idle line first (else the selection would be repaired away). */
+  function reveal(key) {
+    const lane = model.lanes.find((l) => l.rows.some((r) => r.key === key));
+    if (lane && collapsed[lane.id]) collapsed = { ...collapsed, [lane.id]: false };
+    if (!lane && model.idle?.rows.some((r) => r.key === key)) idleOpen = true;
+    setSel(key);
   }
 
   /** ⏎ / space on a lane line, Show all or the Idle line: expand or collapse. */
@@ -195,7 +214,8 @@
     if (!t || !trec) return;
     const ok = allowed(trec);
     if (k === 'i' && ok.i) return run(() => act(t, 'interrupt'));
-    if (k === 'p') return run(() => act(t, trec.status === 'paused' ? 'unpause' : 'pause'));
+    // A paused agent mid-turn keeps its working status: app_state's flag says it is paused.
+    if (k === 'p') return run(() => act(t, agent(t)?.paused || trec.status === 'paused' ? 'unpause' : 'pause'));
     if (k === 's' && ok.s) return run(() => act(t, 'suspend'));
     if (k === 'r' && ok.r) return run(() => act(t, trec.status === 'paused' ? 'unpause' : 'resume'));
   }
@@ -263,7 +283,7 @@
     {:else if filter && !work(model) && !done && anyWork}
       <div class="empty">
         <h2>Nothing in the {filter.length === 1 ? filterLabel(filter, ps) : `${filter.length} projects`} selected</h2>
-        <button class="linkbtn" onclick={() => (app.missionFilterOpen = true)}>Show all projects <Kbd keys="f" /></button>
+        <button class="linkbtn" onclick={() => setMissionFilter(null)}>Show all projects</button> <span class="muted">or change the filter</span> <Kbd keys="f" />
       </div>
     {:else}
       {#if !work(model)}

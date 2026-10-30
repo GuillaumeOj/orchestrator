@@ -101,7 +101,7 @@
 
 {#if watching}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-  <div class="session watch" tabindex="0" data-pane-focus role="group" aria-label="Watching {name}" onkeydown={onWatchKey}>
+  <div class="session watch" tabindex="0" data-pane-focus data-watch role="group" aria-label="Watching {name}" onkeydown={onWatchKey}>
     <span class="icon" aria-hidden="true">{'\u{F06D0}'}</span>
     {#if stopped}
       <span><b class="mono">{name}</b> has stopped</span> · <Kbd keys="esc" /> back

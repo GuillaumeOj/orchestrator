@@ -141,7 +141,7 @@ const cut = (s, n = 32) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
  */
 export function shortWait(rec, now) {
   if (!rec) return '';
-  const since = waited(sinceOf(rec), now);
+  const since = waited(rec.waiting_on?.since_ms ?? rec.since_ms, now);
   switch (rec.status) {
     case 'not_started':
       return 'not started';
@@ -217,7 +217,7 @@ export function runNowDialog(rec) {
     r.week_pp != null && `≈ +${pp1(r.week_pp)} pp of the week`,
     r.five_hour_pp != null && `≈ +${Math.round(r.five_hour_pp)} pp of the 5h window`,
   ].filter(Boolean);
-  const lines = [`It is ${fresh ? 'not started' : 'queued'}: ${rec.reason}.`];
+  const lines = [`It is ${fresh ? 'not started' : 'queued'}${rec.reason ? `: ${rec.reason}` : ''}.`];
   if (costs.length) {
     lines.push(`${verb === 'Start' ? 'Starting' : 'Running'} it now costs ${costs.join(' and ')}.`);
     lines.push(
@@ -374,7 +374,7 @@ export function lanes(now, filter = null, at = Date.now()) {
 
   const day = startOfDay(at);
   const done = (now?.outcomes ?? [])
-    .filter((o) => o.at_ms >= day && (!o.project || shown(o.project)))
+    .filter((o) => o.at_ms >= day && shown(o.project ?? null))
     .sort((x, y) => y.at_ms - x.at_ms)
     .map((o) =>
       rowOf(o, 'outcome', () => ({ kind: 'outcome', key: `outcome:${o.id}`, outcome: o, project: o.project })),

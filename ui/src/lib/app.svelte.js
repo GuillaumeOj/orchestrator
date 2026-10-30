@@ -485,13 +485,14 @@ export const openMission = () => openSingleton('mission');
  */
 export function openSession(agentId) {
   const over = findPane((s) => s.type === 'mission');
+  if (!over) return openAgent(agentId);
   const existing = findPane((s) => s.type === 'agent' && s.agentId === agentId);
   if (existing) {
     app.panes[existing].watch = true;
-    app.panes[existing].over ??= over;
+    // Only a tab in Mission control's own group is "over the board".
+    if (L.leafOf(app.layout, existing) === L.leafOf(app.layout, over)) app.panes[existing].over ??= over;
     return focusPane(existing);
   }
-  if (!over) return openAgent(agentId);
   const id = newPaneId();
   app.panes[id] = { type: 'agent', agentId, projectId: agent(agentId)?.project_id, watch: true, over, title: agentId };
   app.layout = L.addTab(app.layout, over, id);

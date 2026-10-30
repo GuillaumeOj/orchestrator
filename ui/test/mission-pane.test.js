@@ -332,6 +332,20 @@ describe('review fixes (T-61)', () => {
     other.remove();
   });
 
+  it('"Show all projects" clears the filter (self-review)', async () => {
+    app.now.agents = { 'fix-feed': app.now.agents['fix-feed'] };
+    app.now.runs = {};
+    app.now.outcomes = [];
+    app.now.decisions = {};
+    app.mission = { projects: ['infra'] };
+    const { container: c } = render(MissionPane, { paneId: 'mc' });
+    await settle();
+    fireEvent.click([...c.querySelectorAll('.linkbtn')].find((b) => b.textContent.includes('Show all projects')));
+    await settle();
+    expect(app.mission.projects).toBeNull();
+    expect(row(c, 'agent:fix-feed')).not.toBeNull();
+  });
+
   it('a saved filter drops removed projects', async () => {
     app.mission = { projects: ['gone'] };
     const { container: c } = render(MissionPane, { paneId: 'mc' });
@@ -433,6 +447,24 @@ describe('sessions over the board (spec §3.3, D5)', () => {
     expect(text(pane.querySelector('.session'))).toContain('Typing in back-1');
     A.run('mission');
     expect(app.focused).toBe('mc');
+  });
+
+  it('Esc back from a session: the Inspector shows the highlighted row again (self-review)', async () => {
+    const { id } = await openBack1();
+    expect(app.selection).toEqual({ kind: 'agent', id: 'back-1' });
+    const pane = render(AgentPane, { paneId: id }).container;
+    await settle();
+    key(pane.querySelector('.session.watch'), 'Escape');
+    await settle();
+    expect(app.selection).toEqual({ kind: 'run', id: 'run-12' });
+  });
+
+  it('an agent pane in another split is never "over the board" (self-review)', () => {
+    app.panes.side = { type: 'agent', agentId: 'fix-feed', title: 'fix-feed' };
+    app.layout = L.split(app.layout, 'mc', 'row', 'side');
+    A.openSession('fix-feed');
+    expect(app.panes.side.watch).toBe(true);
+    expect(app.panes.side.over).toBeUndefined();
   });
 
   it('a click in the terminal takes over; Tab into it does not (review)', async () => {
