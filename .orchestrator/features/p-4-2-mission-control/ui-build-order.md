@@ -3,7 +3,7 @@
 How the Part A boards get drawn, in order, from [p4-2-design-notes.md](../../../docs/design/p4-2-design-notes.md) (**N §n** below) with lead's decisions D11–D13. Each step lists what it reuses, what it adds and the PNG it exports to `design/`. Fixture: ux-brief §4, Thu 29 Oct 14:00, Dark theme.
 
 ## 0. Before drawing
-1. Penpot tokens: mirror the tokens added to `docs/design/tokens.json` (commit 344408c) in the Penpot sets: `core` gets `size.chat` 360, `size.centre-min` 640, `size.lane-header` 32, `size.row-dense` 40, `size.chip` → `{size.control-sm}`, `size.strip` 24, `size.stepper-step` 10, `size.stepper-link` 16. `theme/dark` and `theme/light` get `color.stepper.done` → `{color.text.secondary}`, `.todo` → `{color.border.strong}`, `.link` → `{color.border.subtle}`, `.mark` → `{color.text.primary}`. The current step uses the existing `color.phase.*` entry.
+1. Penpot tokens: mirror the tokens added to `docs/design/tokens.json` (commit 344408c) in the Penpot sets: `core` gets `size.chat` 360, `size.centre-min` 640, `size.lane-header` 32, `size.row-dense` 40, `size.chip` → `{size.control-sm}`, `size.strip` 24, `size.stepper-step` 10, `size.stepper-link` 12. `theme/dark` and `theme/light` get `color.stepper.done` → `{color.text.secondary}`, `.todo` → `{color.text.muted}` (≥ 3:1 on raised and selected), `.link` → `{color.border.strong}`, `.mark` → `{color.text.primary}`. The current step uses the existing `color.phase.*` entry.
 2. Read the 02 P4.1 sections (palettes, waiting-on chip, context blocks, lifecycle marker, outcome row, count labels) and the 03 / 04 P1 boards (title bar, sidebar, rail, status bar, Inspector, agent pane, Overview) to get their component ids. New boards are built from instances, never redrawn.
 
 ## 1. Page 02: new components, section "P4.2 · …" after the P4.1 sections
@@ -11,7 +11,7 @@ Each component set has its states as variants. Order: the small parts first, sin
 
 | # | Component | Variants (property = values) | Source |
 |---|---|---|---|
-| 1 | **Phase stepper** | Step = Draft…PR (current step) · Mark = none, at gate, paused, deferred, failed. Steps before current filled `stepper.done`, current `phase.*` with its glyph, after hollow `stepper.todo`, joined by 16 px `stepper.link`. Labels under the dots. The text after it ("executing · 2 h") belongs to the row, not the stepper. | N §1.2 |
+| 1 | **Phase stepper** | Step = Draft…PR (current step) · Mark = none, at gate, paused, deferred, failed. Steps before current filled `stepper.done`, current `phase.*` with its glyph, after hollow `stepper.todo`, joined by 12 px links (`stepper.done` up to the current step, `stepper.link` after). Each label sits right of its dot (compact: dots only + the current label). The text after it ("executing · 2 h") belongs to the row, not the stepper. | N §1.2 |
 | 2 | **Member chip** | Status = working, permission, agent wait, task wait, limit, queued, not started, paused, error, idle, suspended, done · Selected = no, yes · Busy = no, yes (action pending, N §2 #34). Role color bar + status glyph + name + short wait ≤ 32 chars. Plus a "+3 more" chip. | N §1.3 |
 | 3 | **Lane header** | Lane = Needs you, Running, Waiting on, Queued, Done today, Idle · State = open, collapsed, empty (Needs you only: "Nothing needs you"). Counts come from the 02 P4.1 count labels ("Needs you · 1 run · 1 session"). | N §1.1, D11 |
 | 4 | **Run row** | Kind = blocker, running, gate, paused, deferred, failed (error), no PR / no tasks · Selected = no, row, chip · Details = closed, open. Line 1: title, stepper, phase text. Line 2: tasks, PR link + CI dot, blocker / error line. Line 3: chips. | N §1.3, §2 #2–9 |
@@ -23,7 +23,7 @@ Each component set has its states as variants. Order: the small parts first, sin
 
 The outcome row is the P4.1 component (no new component); its PR variant gets the "#12 ↗" link if it lacks one.
 
-Export one PNG per section: `p42-phase-stepper.png`, `p42-member-chip.png`, `p42-lane-header.png`, `p42-run-row.png`, `p42-solo-row.png`, `p42-queue-row.png`, `p42-row-details.png`, `p42-strip.png`.
+Export one PNG per section: `p42-phase-stepper.png`, `p42-member-chip.png`, `p42-lane-header.png`, `p42-run-row.png` (run row + row details), `p42-solo-row.png`, `p42-queue-row.png`, `p42-strip.png` (strip + Needs-you line).
 
 ## 2. Page 03: the new shell (row at y = 3300, after the P1 boards)
 
@@ -36,7 +36,7 @@ Export one PNG per section: `p42-phase-stepper.png`, `p42-member-chip.png`, `p42
 | 5 | **Shell · shell dock open** at 1512 | dock below Mission control, sessions not in the dock (N §6). |
 | 6 | **Layout notes · P4.2** | the width table of N §4 and the docking rule. |
 
-Exports: `p42-shell-1512.png`, `p42-shell-1512-chat.png`, `p42-shell-1728.png`, `p42-shell-1280.png`, `p42-shell-dock.png`.
+Exports: `p42-shell-dock.png` (1512 P4.2 code with the shell dock open; the dock-collapsed frame is `p42-mission-control.png`), `p42-shell-1512-chat.png`, `p42-shell-1728.png`, `p42-shell-1280.png`, `p42-layout-notes.png`.
 
 ## 3. Page 04: Mission control (row at y = 9000, after P3)
 

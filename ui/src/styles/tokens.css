@@ -51,7 +51,7 @@
   --size-chip: 22px;
   --size-strip: 24px;
   --size-stepper-step: 10px;
-  --size-stepper-link: 16px;
+  --size-stepper-link: 12px;
   --breakpoint-sm: 1280px;
   --breakpoint-md: 1512px;
   --breakpoint-lg: 1728px;
@@ -167,8 +167,8 @@
   --color-diff-added: #9ece6a;
   --color-diff-removed: #f7768e;
   --color-stepper-done: #a9b1d6;
-  --color-stepper-todo: #545c7e;
-  --color-stepper-link: #3b4261;
+  --color-stepper-todo: #8e96bf;
+  --color-stepper-link: #545c7e;
   --color-stepper-mark: #c0caf5;
   --shadow-overlay: 0 8px 24px 0 #00000080;
 }
@@ -271,8 +271,8 @@
   --color-diff-added: #547036;
   --color-diff-removed: #ce0a43;
   --color-stepper-done: #3b4a80;
-  --color-stepper-todo: #8990b3;
-  --color-stepper-link: #a8aecb;
+  --color-stepper-todo: #495178;
+  --color-stepper-link: #8990b3;
   --color-stepper-mark: #283e72;
   --shadow-overlay: 0 8px 24px 0 #3760bf33;
 }
@@ -376,8 +376,8 @@
     --color-diff-added: #547036;
     --color-diff-removed: #ce0a43;
     --color-stepper-done: #3b4a80;
-    --color-stepper-todo: #8990b3;
-    --color-stepper-link: #a8aecb;
+    --color-stepper-todo: #495178;
+    --color-stepper-link: #8990b3;
     --color-stepper-mark: #283e72;
     --shadow-overlay: 0 8px 24px 0 #3760bf33;
   }
