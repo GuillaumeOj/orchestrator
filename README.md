@@ -2,7 +2,7 @@
 
 A personal, local-first macOS app to run software projects with AI agents, built around the official **Claude Code CLI**. Manage local projects and their git/remote state, launch solo sessions or canvas-designed teams of specialist agents (lead, backend, frontend, UI, UX) in isolated git worktrees, work with each agent in its real Claude Code session next to a kitty-like terminal and your own nvim, and **pace all agent work so your Claude Max plan lasts the whole week**.
 
-Status: **P1 app in daily use** (SPEC v0.9). It runs real Claude Code agents in panes, projects and git, the Inbox and the Week planner; the Governor runs in **shadow mode** for now (it logs what it would do and holds nothing). Screenshots next to the Penpot design are in [docs/app](docs/app/README.md).
+Status: **P1 app in daily use** (SPEC v0.9). It runs real Claude Code agents in panes, projects and git, the Inbox and the Week planner; the Governor runs in **shadow mode** for now (it logs what it would do and holds nothing). Screenshots next to the design are in [docs/app](docs/app/README.md).
 
 ## Build and run
 
@@ -41,10 +41,10 @@ make ci        # everything CI runs (CI calls these same targets)
   - [ADR-005 Local persistence](docs/adr/005-local-persistence.md)
   - [ADR-006 Terminal & editor](docs/adr/006-terminal-and-editor.md)
   - [ADR-007 Usage pacing: Governor control law](docs/adr/007-usage-pacing-governor.md)
-  - [ADR-008 UI source of truth: Penpot file](docs/adr/008-ui-design-source-of-truth-penpot.md)
+  - [ADR-012 UI source of truth: FigCraft file](docs/adr/012-ui-design-source-of-truth-figcraft.md) (replaces [ADR-008](docs/adr/008-ui-design-source-of-truth-penpot.md), Penpot)
   - [ADR-009 Security: sandbox, credentials, gates](docs/adr/009-security-sandbox-and-gates.md)
   - [ADR-010 Review before merge and command delivery](docs/adr/010-review-pipeline-and-command-delivery.md)
   - [ADR-011 The Overwatch, one attention model, decisions as cards](docs/adr/011-overwatch-and-attention-model.md)
 - [Brief 2026-10-28: from many panes to one Overwatch](docs/brief/2026-10-28-overwatch.md)
-- [Design notes](docs/design/README.md) (Penpot source of truth, tokens)
+- [Design notes](docs/design/README.md) (FigCraft source of truth, tokens)
 - P0 spikes: [Claude Code CLI](docs/spikes/p0-claude-cli.md), [terminal](docs/spikes/p0-terminal.md), [recovery](docs/spikes/p0-recovery.md)

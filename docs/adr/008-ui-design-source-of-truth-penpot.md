@@ -1,6 +1,6 @@
 # ADR-008 — UI design source of truth: a Penpot file
 
-- Status: Proposed · Date: 2026-10-17 · Revised: 2026-10-17 (lighter gate after review)
+- Status: Superseded by [ADR-012](012-ui-design-source-of-truth-figcraft.md) (the design moved from Penpot to FigCraft) · Date: 2026-10-17 · Revised: 2026-10-17 (lighter gate after review)
 
 ## Context
 The app has dense, stateful panes (agents, canvas, pacing). Without a shared visual reference, the UI would drift. The user uses Penpot and has the Penpot MCP set up. The process must stay proportionate for one person.
