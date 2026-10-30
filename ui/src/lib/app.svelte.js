@@ -710,15 +710,11 @@ export function runNow(rec) {
   if (!rec?.queue) return;
   const d = runNowDialog(rec);
   const fresh = rec.status === 'not_started';
+  const cost = runNowCost(rec.queue);
   confirm(
     d.title,
     d.detail,
-    () =>
-      queueAct(
-        'run_now',
-        rec,
-        `${fresh ? 'Started' : 'Running now'} · ${rec.agent}${runNowCost(rec.queue) ? ` · ${runNowCost(rec.queue)}` : ''}`,
-      ),
+    () => queueAct('run_now', rec, `${fresh ? 'Started' : 'Running now'} · ${rec.agent}${cost ? ` · ${cost}` : ''}`),
     d.yes,
     fresh ? 'Keep waiting' : 'Keep queued',
   );

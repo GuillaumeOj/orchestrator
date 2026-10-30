@@ -309,7 +309,8 @@ pub struct RunFacts {
 
 /// The step a `status` run left: the `from` of the `run.state` move that
 /// entered it, walking back past paused and deferred. `moves` are the
-/// run's `(from, to)` moves, newest first.
+/// run's `(from, to)` moves, newest first (a move made while held reads as
+/// `(its to, the hold)`).
 pub fn held_in(status: RunState, moves: &[(RunState, RunState)]) -> Option<RunState> {
     if !matches!(status, RunState::Paused | RunState::Deferred | RunState::Failed) {
         return None;
@@ -1194,7 +1195,7 @@ fn run_record(
     }
     let blocker = blocker(members);
     let mut ordered: Vec<&AgentAttention> = members.to_vec();
-    ordered.sort_by_key(|m| {
+    ordered.sort_by_cached_key(|m| {
         let node = m.node.as_deref().and_then(|n| r.nodes.iter().position(|x| x == n));
         (Some(m.agent.as_str()) != lead, node.unwrap_or(usize::MAX), m.agent.clone())
     });
@@ -1211,7 +1212,10 @@ fn run_record(
         lead: lead.map(str::to_string),
         started_ms: r.run.started_at_ms,
         tasks: task_counts(tasks),
-        pr: r.run.pr_url.as_ref().map(|url| RunPr { url: url.clone(), number: orch_store::pr_number_from_url(url) }),
+        pr: r.run.pr_url.as_ref().map(|url| RunPr {
+            url: url.clone(),
+            number: r.run.pr_number.or_else(|| orch_store::pr_number_from_url(url)),
+        }),
         held_in: r.held_in.filter(|_| matches!(r.run.status, RunState::Paused | RunState::Deferred | RunState::Failed)),
         until_ms: (r.run.status == RunState::Deferred).then_some(gov.week_resets_ms).flatten(),
     }

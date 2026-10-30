@@ -42,7 +42,7 @@ A change in task counts or `pr` is a record change (pushed in `now.attention.run
     "run_now": {               // FR-809: cost of starting it now
       "week_pp": 2.1,
       "five_hour_pp": 6,
-      "binds": "week"          // week | five_hour: the window that holds it (5h guard ⇒ five_hour)
+      "binds": "weekly"        // weekly | five_hour (governor::Window): the window that holds it (5h guard ⇒ five_hour)
     }
   }
 }
