@@ -23,6 +23,9 @@ export function duration(ms) {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
+/** Today's midnight, local time (the day "today" means for outcomes). */
+export const startOfDay = (now = Date.now()) => new Date(now).setHours(0, 0, 0, 0);
+
 /** "Mon 09:00": a weekday and the time, whatever the day (a reset, a check a day ago). */
 export const dayHm = (ms) => clock(ms, ms + 2 * 86400000);
 

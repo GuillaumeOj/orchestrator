@@ -271,7 +271,16 @@ pub fn render(snap: &Value, now_ms: u64) -> String {
             Some(b) => format!("{}: {}", s(&b["agent"]), s(&b["reason"])),
             None => "-".into(),
         };
-        runs.push([format!("{} ({})", s(&r["run"]), s(&r["feature"])), s(&r["phase"]), s(&r["level"]), blocker]);
+        let mut level = s(&r["level"]);
+        if let Some(t) = r.get("tasks") {
+            level = format!("{level}  {}/{} tasks", t["done"], t["total"]);
+        }
+        if let Some(n) = r["pr"]["number"].as_u64() {
+            level = format!("{level}  PR #{n}");
+        } else if r.get("pr").is_some() {
+            level = format!("{level}  PR");
+        }
+        runs.push([format!("{} ({})", s(&r["run"]), s(&r["feature"])), s(&r["phase"]), level, blocker]);
     }
     if !runs.is_empty() {
         out.push('\n');
@@ -602,7 +611,42 @@ impl Runtime {
                 .unwrap_or(run.started_at_ms);
             c.tasks.extend(self.db.tasks(None, None, Some(&run.id)).unwrap_or_default());
             c.messages.extend(self.db.recent_messages(&run.id, MESSAGES_PER_RUN).unwrap_or_default());
+            let nodes = self
+                .db
+                .team(&run.team_scope, &run.team_id)
+                .ok()
+                .flatten()
+                .map(|t| t.nodes.into_iter().map(|n| n.id).collect())
+                .unwrap_or_default();
+            // A paused or deferred run resumes into `resume_status` (it follows
+            // `advance_run` while held); a failed one has only its timeline.
+            let held_in = if run.status.held() && run.resume_status.is_some() {
+                run.resume_status
+            } else if !matches!(
+                run.status,
+                orch_team::RunState::Paused | orch_team::RunState::Deferred | orch_team::RunState::Failed
+            ) {
+                None
+            } else {
+                // A move made while held (`advance_run`) changes the step the hold
+                // left: it reads as entering the hold from its `to`.
+                let state = |v: &Value| serde_json::from_value(v.clone()).ok();
+                let moves: Vec<_> = self
+                    .db
+                    .run_events(&run.id, 200)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|e| e.kind == "run.state")
+                    .filter_map(|e| match e.detail.get("while") {
+                        Some(held) => Some((state(&e.detail["to"])?, state(held)?)),
+                        None => Some((state(&e.detail["from"])?, state(&e.detail["to"])?)),
+                    })
+                    .collect();
+                attention::held_in(run.status, &moves)
+            };
             c.runs.push(RunFacts {
+                held_in,
+                nodes,
                 project: feature.as_ref().map(|f| f.project_id.clone()).unwrap_or_default(),
                 feature: feature.as_ref().map(|f| f.slug.clone()).unwrap_or_else(|| run.feature_id.clone()),
                 phase_since_ms,
@@ -725,6 +769,54 @@ mod tests {
             [duration(0), duration(72 * 60_000), duration(3 * 1440 * 60_000)],
             ["just now", "1 h 12 min", "3 d"]
         );
+    }
+
+    #[test]
+    fn orchd_now_run_lines_show_tasks_and_pr() {
+        let snap = json!({
+            "agents": [],
+            "runs": [{"run": "run-12", "feature": "checkout", "phase": "executing", "level": "needs_you",
+                      "tasks": {"total": 7, "done": 3}, "pr": {"url": "u/pull/12", "number": 12},
+                      "blocker": {"agent": "back-1", "reason": "permission: Bash ls"}}],
+        });
+        assert_eq!(
+            render(&snap, 0),
+            "\nrun-12 (checkout)  executing  needs_you  3/7 tasks  PR #12  back-1: permission: Bash ls\n"
+        );
+    }
+
+    #[test]
+    fn a_task_moving_to_done_is_pushed() {
+        let (_d, rt) = test_runtime(true);
+        let got = collect(&rt);
+        rt.db
+            .upsert_run(&orch_store::TeamRun {
+                id: "run-1".into(),
+                team_id: "t".into(),
+                team_scope: Default::default(),
+                team_version: 1,
+                feature_id: "f1".into(),
+                status: orch_team::RunState::Executing,
+                resume_status: None,
+                pr_url: None,
+                started_at_ms: 1,
+                ended_at_ms: None,
+                pr_number: None,
+                pr: None,
+            })
+            .unwrap();
+        let mut t = orch_store::Task::new("p1", "local", "x", 1);
+        t.team_run_id = Some("run-1".into());
+        t.id = rt.db.upsert_task(&t).unwrap();
+        rt.now_pump(false);
+        let done = |ev: &Value| ev["attention"]["runs"][0]["tasks"]["done"].clone();
+        assert_eq!(done(&got.lock().unwrap().last().cloned().unwrap()), 0);
+        t.status = orch_team::TaskStatus::Done;
+        rt.db.upsert_task(&t).unwrap();
+        rt.now_pump(false);
+        let ev = got.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(done(&ev), 1, "{ev}");
+        assert_eq!(ev["attention"]["runs"][0]["tasks"]["total"], 1);
     }
 
     #[test]
