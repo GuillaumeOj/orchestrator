@@ -628,14 +628,19 @@ impl Runtime {
             ) {
                 None
             } else {
+                // A move made while held (`advance_run`) changes the step the hold
+                // left: it reads as entering the hold from its `to`.
                 let state = |v: &Value| serde_json::from_value(v.clone()).ok();
                 let moves: Vec<_> = self
                     .db
                     .run_events(&run.id, 200)
                     .unwrap_or_default()
                     .iter()
-                    .filter(|e| e.kind == "run.state" && e.detail.get("while").is_none())
-                    .filter_map(|e| Some((state(&e.detail["from"])?, state(&e.detail["to"])?)))
+                    .filter(|e| e.kind == "run.state")
+                    .filter_map(|e| match e.detail.get("while") {
+                        Some(held) => Some((state(&e.detail["to"])?, state(held)?)),
+                        None => Some((state(&e.detail["from"])?, state(&e.detail["to"])?)),
+                    })
                     .collect();
                 attention::held_in(run.status, &moves)
             };

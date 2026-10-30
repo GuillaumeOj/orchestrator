@@ -62,6 +62,9 @@ const PHASE_WORD = {
  */
 export function stepper(run) {
   const phase = run?.phase;
+  // A finished run: every step done, none current.
+  if (phase === 'done')
+    return { steps: STEPS.map((s) => ({ ...s, state: 'done' })), current: -1, mark: null, aria: 'phase: done' };
   const held = HELD.has(phase);
   const at = STEP_OF[held ? run?.held_in : phase] ?? -1;
   const mark = held ? phase : phase === 'spec_gate' || phase === 'pr_gate' ? 'at gate' : null;
@@ -225,8 +228,8 @@ export function runNowDialog(rec) {
         : 'The week holds it: that is the window this is counted against.',
     );
   }
-  // FR-809: held by the cap, it runs above it.
-  if (/cap/.test(rec.reason ?? ''))
+  // FR-809: held by the live cap, it runs above it (not a hard allocation cap: "… cap reached").
+  if (/live cap/.test(rec.reason ?? ''))
     lines.push(costs.length ? 'It runs above the live cap.' : 'Running it now uses a slot above the cap.');
   const cost = runNowCost(rec.queue);
   return { title: `${verb} ${rec.agent} now?`, detail: lines.join('\n'), yes: `${verb} now${cost ? ` ${cost}` : ''}` };
@@ -405,7 +408,7 @@ export const DONE_ROWS = 10;
 /**
  * The j/k stops, in order (notes §3.1): rows of open lanes, one stop for
  * a collapsed lane, the Show all button, the Idle line (always) and its
- * rows when open. `view`: { collapsed: Set|{[id]: bool}, idleOpen, showAll }.
+ * rows when open. `view`: { collapsed: {[id]: bool}, idleOpen, showAll }.
  */
 export function stops(model, view = {}) {
   const collapsed = (id) => !!view.collapsed?.[id];
@@ -446,9 +449,11 @@ export function filterLabel(filter, projects) {
 /** A filter after toggling `id` (notes §1.9): the last project cannot be unchecked; all checked = null. */
 export function toggleProject(filter, id, all) {
   const cur = filter ?? all;
-  const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+  const toggled = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+  // Only known projects count (a removed one left in the filter must not keep the last one unchecked).
+  const next = all.filter((x) => toggled.includes(x));
   if (!next.length) return filter;
-  return all.every((x) => next.includes(x)) ? null : all.filter((x) => next.includes(x));
+  return next.length === all.length ? null : next;
 }
 
 export const COUNT_KEYS = ['needs_you', 'error', 'running', 'waiting', 'queued', 'idle', 'live', 'done_today'];

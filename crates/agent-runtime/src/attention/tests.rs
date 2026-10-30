@@ -959,6 +959,9 @@ fn held_in_walks_back_past_paused_and_deferred() {
     assert_eq!(held_in(Deferred, &moves), Some(Executing));
     assert_eq!(held_in(Paused, &moves[1..]), Some(Executing));
     assert_eq!(held_in(Failed, &[(Integrating, Failed)]), Some(Integrating));
+    // Failed while paused, after an advance made while paused (read as entering the pause from its `to`).
+    let advanced = [(Paused, Failed), (Integrating, Paused), (Executing, Paused), (Planning, Executing)];
+    assert_eq!(held_in(Failed, &advanced), Some(Integrating));
     assert_eq!(held_in(Executing, &moves), None, "only held and failed phases");
     assert_eq!(held_in(Paused, &[]), None, "no event, no step");
 }
