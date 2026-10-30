@@ -2,7 +2,7 @@
 // render of `now`. Pure: tested in test/mission.test.js. Nothing here reads
 // the app state or the clock; the pane passes `now` and the time.
 
-import { clock, dayHm, waited } from './format.js';
+import { clock, dayHm, startOfDay, waited } from './format.js';
 import { agentOf, isOpen } from './inbox.js';
 import { STATUS } from './status.js';
 
@@ -71,9 +71,10 @@ export function stepper(run) {
     state: at < 0 ? 'todo' : i < at ? 'done' : i === at ? 'current' : 'todo',
     ...(i === at ? { icon: look.icon, color: look.color, mark } : {}),
   }));
-  const word = at < 0 ? PHASE_WORD[phase] : STEPS[at].label.toLowerCase();
+  // The step in the phase's words ("PR gate", "PR"); a held run adds how it is held.
+  const word = PHASE_WORD[held ? run?.held_in : phase] ?? phase;
   const aria =
-    at < 0 ? `phase: ${PHASE_WORD[phase] ?? phase}` : `phase ${at + 1} of 6: ${mark ? `${word}, ${mark}` : word}`;
+    at < 0 ? `phase: ${PHASE_WORD[phase] ?? phase}` : `phase ${at + 1} of 6: ${held ? `${word}, ${phase}` : word}`;
   return { steps, current: at, mark, aria };
 }
 
@@ -166,13 +167,26 @@ export function shortWait(rec, now) {
 /** A run row's default target (D6): its blocker's agent, else its lead, else its first member. */
 export const defaultTarget = (run) => run?.blocker?.agent ?? run?.lead ?? run?.members?.[0] ?? null;
 
-/** The agent a row's actions act on: the selected chip, else the default; a solo or queue row's own agent. */
+/** The agent a row's actions act on: the selected chip (an agent id, while still a member), else the
+ *  default; a solo or queue row's own agent. Outcome and decision rows have none (only `o` / `d` act there). */
 export function target(row, chip = null) {
-  if (!row) return null;
-  if (row.kind === 'run') return (chip != null ? row.run.members[chip] : null) ?? defaultTarget(row.run);
-  if (row.kind === 'solo' || row.kind === 'queue') return row.agent.agent;
-  if (row.kind === 'outcome') return row.outcome.agent ?? null;
+  if (row?.kind === 'run') return (chip && row.run.members.includes(chip) ? chip : null) ?? defaultTarget(row.run);
+  if (row?.kind === 'solo' || row?.kind === 'queue') return row.agent.agent;
   return null;
+}
+
+/** What the target's record allows (notes §3.1): interrupt a live turn, suspend an idle or waiting
+ *  agent, resume a paused, suspended or failed one; pause and kill any. */
+export function allowed(rec) {
+  if (!rec) return {};
+  const turn = rec.live && !['idle', 'suspended', 'done', 'paused', 'not_started', 'queued'].includes(rec.status);
+  return {
+    i: !!turn,
+    p: true,
+    s: !!rec.live && ['idle', 'waiting', 'needs_you'].includes(rec.level),
+    r: ['paused', 'suspended', 'error'].includes(rec.status),
+    K: true,
+  };
 }
 
 /** The decision a row opens with `d`: the target's wait on the user, else the run's blocker's. */
@@ -211,7 +225,10 @@ export function runNowDialog(rec) {
         ? 'The 5h window holds it: that is the window this is counted against.'
         : 'The week holds it: that is the window this is counted against.',
     );
-  } else if (/cap/.test(rec.reason ?? '')) lines.push('Running it now uses a slot above the cap.');
+  }
+  // FR-809: held by the cap, it runs above it.
+  if (/cap/.test(rec.reason ?? ''))
+    lines.push(costs.length ? 'It runs above the live cap.' : 'Running it now uses a slot above the cap.');
   const cost = runNowCost(rec.queue);
   return { title: `${verb} ${rec.agent} now?`, detail: lines.join('\n'), yes: `${verb} now${cost ? ` ${cost}` : ''}` };
 }
@@ -249,8 +266,6 @@ const LANE_OF = {
   idle: 'idle',
 };
 
-const startOfDay = (now) => new Date(now).setHours(0, 0, 0, 0);
-
 /** Queued rows: the Governor's order, then not started (no entry), then paused; oldest first within. */
 function queueRank(rec) {
   if (rec.queue?.position != null) return [0, rec.queue.position];
@@ -275,16 +290,20 @@ function rowOf(rec, kind, make, run = null) {
  * count, rows} | null }. Empty lanes are left out except Needs you (D11).
  */
 export function lanes(now, filter = null, at = Date.now()) {
-  const shown = (project) => !filter || filter.includes(project);
+  // A record with no project (a decision about the app) shows under any filter.
+  const shown = (project) => !filter || project == null || filter.includes(project);
   const runs = now?.runs ?? {};
   const agents = Object.values(now?.agents ?? {});
   const rows = { needs_you: [], running: [], waiting: [], queued: [], idle: [] };
   const errorRows = [];
 
+  // Runs that are rows; a member of any other run (done, or at level done) is a solo row.
+  const rowRuns = new Set();
   for (const r of Object.values(runs)) {
-    if (r.phase === 'done' || !shown(r.project)) continue;
     const lane = LANE_OF[r.level];
-    if (!lane) continue;
+    if (r.phase === 'done' || !lane) continue;
+    rowRuns.add(r.run);
+    if (!shown(r.project)) continue;
     const row = rowOf(
       r,
       'run',
@@ -296,9 +315,9 @@ export function lanes(now, filter = null, at = Date.now()) {
   for (const a of agents) {
     if (!shown(a.project)) continue;
     // A member of a run with a record is in that run's row (D4).
-    const solo = !a.run || !runs[a.run];
+    const solo = !a.run || !rowRuns.has(a.run);
     if (a.level === 'queued') {
-      const run = a.run ? (runs[a.run] ?? null) : null;
+      const run = solo ? null : runs[a.run];
       const make = () => ({
         kind: 'queue',
         key: `queue:${a.agent}`,
@@ -339,9 +358,15 @@ export function lanes(now, filter = null, at = Date.now()) {
   rows.queued = [...runRows, ...queueRows];
   rows.idle.sort(oldest);
 
-  // Open decisions with no agent record: one line in Needs you (D3).
+  // Open decisions no Needs-you row stands for (no record, or its agent's row is elsewhere):
+  // one line in Needs you (D3). A run row stands for every member's.
+  const covered = new Set();
+  for (const r of rows.needs_you) {
+    if (r.kind === 'run') for (const m of r.run.members) covered.add(m);
+    else covered.add(r.agent.agent);
+  }
   const loose = Object.values(now?.decisions ?? {})
-    .filter((d) => isOpen(d) && !(agentOf(d) && now.agents?.[agentOf(d)]) && shown(d.subject?.project ?? null))
+    .filter((d) => isOpen(d) && !covered.has(agentOf(d)) && shown(d.subject?.project ?? null))
     .sort((x, y) => (x.created_ms ?? 0) - (y.created_ms ?? 0));
   const needs = [...rows.needs_you];
   if (loose.length)
@@ -482,7 +507,9 @@ export function hints(row, { target: t = null, rec = null, decision = null } = {
     if (rec?.queue) h.push(['n', fresh ? 'start now' : 'run now'], ['⌫', 'cancel']);
     if (rec?.status === 'paused') h.push(['r', 'resume']);
   } else if (t && rec) {
-    h.push(['i p s ⇧K', t]);
+    const ok = allowed(rec);
+    const keys = ['i', 'p', 's', 'r'].filter((k) => ok[k]);
+    h.push([[...keys, '⇧K'].join(' '), t]);
   }
   if (decision) h.push(['d', 'decision']);
   if (row.kind === 'run') {

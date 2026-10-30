@@ -17,6 +17,11 @@
 
   onMount(() => el?.focus());
 
+  /** Applies the choice and closes (the button, ⏎ and Esc refocus the pane; a click away does not). */
+  export function apply(opts = {}) {
+    onapply(draft, opts);
+  }
+
   function toggle(i) {
     if (i === 0) draft = null;
     else draft = toggleProject(draft, ids[i - 1], ids);
@@ -34,12 +39,12 @@
     if (k === 'k' || k === 'ArrowUp') return act(() => (cur = Math.max(0, cur - 1)));
     if (k === ' ') return act(() => toggle(cur));
     if (k === 'a') return act(() => (draft = null));
-    if (k === 'Enter' || k === 'Escape') return act(() => onapply(draft));
+    if (k === 'Enter' || k === 'Escape') return act(() => apply({ refocus: true }));
   }
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="pop" role="dialog" aria-label="Filter by project" tabindex="-1" bind:this={el} onkeydown={onKey} onfocusout={(e) => !el.contains(/** @type {Node} */ (e.relatedTarget)) && onapply(draft)}>
+<div class="pop" role="dialog" aria-label="Filter by project" tabindex="-1" bind:this={el} onkeydown={onKey} onfocusout={(e) => !el.contains(/** @type {Node} */ (e.relatedTarget)) && apply()}>
   <ul role="listbox" aria-multiselectable="true">
     <li role="option" aria-selected={!draft} class:cur={cur === 0}>
       <label><input type="checkbox" tabindex="-1" checked={!draft} onchange={() => toggle(0)} /> <b>All projects</b></label>

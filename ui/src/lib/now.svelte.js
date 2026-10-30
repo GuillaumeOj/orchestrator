@@ -5,7 +5,7 @@
 // refetches its view when its topic arrives, on mount and on window focus.
 
 import { app, decisionGone, decisionPushed } from './app.svelte.js';
-import { waited } from './format.js';
+import { startOfDay, waited } from './format.js';
 import { isOpen, older } from './inbox.js';
 import { invoke, listen } from './ipc.js';
 import { STATUS } from './status.js';
@@ -182,17 +182,11 @@ export const needsYou = () =>
     .filter((r) => r.level === 'needs_you')
     .sort((x, y) => since(x) - since(y));
 
-const startOfDay = (now = Date.now()) => new Date(now).setHours(0, 0, 0, 0);
-
 /** Today's outcomes after a push: the held ones, replaced by id, plus the new ones. */
 export function mergeOutcomes(held, pushed, now = Date.now()) {
   const ids = new Set(pushed.map((o) => o.id));
   return [...held.filter((o) => !ids.has(o.id) && o.at_ms >= startOfDay(now)), ...pushed];
 }
-
-/** Today's outcomes, seen or not, newest first (Mission control's Done today). */
-export const todayOutcomes = (now = Date.now()) =>
-  app.now.outcomes.filter((o) => o.at_ms >= startOfDay(now)).sort((x, y) => y.at_ms - x.at_ms);
 
 /** Today's outcomes not yet cleared, newest first (the Inbox digest, level 4). */
 export const digest = (now = Date.now()) =>

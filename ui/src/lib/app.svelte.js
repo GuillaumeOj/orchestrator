@@ -767,13 +767,15 @@ async function queueAct(action, rec, done) {
   }
 }
 
-/** Removes the agent's queue entry (notes §1.5); a run member's asks first. */
+/** Removes the agent's queue entry (notes §1.5), after asking: its waiting turn is dropped. */
 export function cancelQueued(rec) {
   if (!rec?.queue) return;
   const go = () => queueAct('cancel', rec, `Removed from the queue · ${rec.agent}`);
   const run = rec.run ? app.now.runs[rec.run] : null;
-  if (!run) return go();
-  confirm(`Cancel ${rec.agent}?`, `The ${run.feature} run keeps going without it.`, go, 'Remove from queue', 'Keep it');
+  const detail = run
+    ? `The ${run.feature} run keeps going without it.`
+    : 'Its waiting turn and message are dropped and logged; the agent keeps its session.';
+  confirm(`Cancel ${rec.agent}?`, detail, go, 'Remove from queue', 'Keep it');
 }
 
 /** Mounts the pane's xterm in `host`, fits it on resize; returns the cleanup. */
@@ -781,7 +783,8 @@ export function mountTerm(paneId, host, hooks) {
   const t = termFor(paneId, {
     // Watch mode: xterm takes no key (D5); a click in it takes over.
     onKey: (e) => !e.metaKey && !app.panes[paneId]?.watch,
-    onFocus: () => (app.panes[paneId]?.watch ? takeOver(paneId) : app.focused !== paneId && focusPane(paneId)),
+    // In watch mode only ⏎ or a click takes over (TermHost): Tab into xterm goes back to the strip.
+    onFocus: () => (app.panes[paneId]?.watch || app.focused !== paneId) && focusPane(paneId),
     ...hooks,
   });
   t.mount(host);
@@ -804,7 +807,10 @@ export function confirm(text, detail, onYes, yes = 'Confirm', no = 'Cancel') {
 /** Mission control's project filter from settings (D8). */
 async function loadMission() {
   const v = await invoke('settings_get', { key: 'mission' }).catch(() => null);
-  app.mission = { projects: Array.isArray(v?.projects) && v.projects.length ? v.projects : null };
+  // Projects removed since are dropped (the pane drops them too once the list is read).
+  const known = projects().length ? (id) => projects().some((p) => p.id === id) : () => true;
+  const ids = Array.isArray(v?.projects) ? v.projects.filter(known) : [];
+  app.mission = { projects: ids.length ? ids : null };
 }
 
 /** Sets and remembers Mission control's project filter (null = all projects). */
@@ -820,7 +826,10 @@ export function saveLayout() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     const panes = Object.fromEntries(
-      Object.entries(app.panes).map(([id, s]) => [id, { ...s, termId: undefined, spawn: undefined, watch: undefined }]),
+      Object.entries(app.panes).map(([id, s]) => [
+        id,
+        { ...s, termId: undefined, spawn: undefined, watch: undefined, over: undefined },
+      ]),
     );
     invoke('settings_set', {
       key: 'layout',

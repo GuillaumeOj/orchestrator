@@ -57,7 +57,7 @@
   {#if r.started_ms}
     <section>
       <h4>Started</h4>
-      <div>Started {clock(r.started_ms, now)} · {waited(r.started_ms, now)} ago</div>
+      <div>Started {clock(r.started_ms, now)} · {waited(r.started_ms, now) === 'just now' ? 'just now' : `${waited(r.started_ms, now)} ago`}</div>
     </section>
   {/if}
   <div class="acts">

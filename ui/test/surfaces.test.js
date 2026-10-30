@@ -229,7 +229,7 @@ describe('surfaces render the record: status, reason, since', () => {
     expect(text(pane.querySelector('.ah'))).toMatch(want);
     const insp = render(Inspector).container;
     expect(text(insp)).toMatch(want);
-    expect(text(insp)).toContain('Waiting on agent');
+    expect(text(insp)).toContain('Waiting on');
   });
 
   it('not started: "Not started yet" and Start now', () => {

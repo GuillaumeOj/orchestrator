@@ -29,14 +29,14 @@
     setMissionFilter,
   } from '../lib/app.svelte.js';
   import { mb } from '../lib/format.js';
-  import { DONE_ROWS, decisionOf, defaultTarget, filterLabel, footerText, hiddenText, hints, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
+  import { allowed, DONE_ROWS, decisionOf, defaultTarget, filterLabel, footerText, hiddenText, hints, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
   import { attention } from '../lib/now.svelte.js';
   import { LEVEL } from '../lib/status.js';
 
   let { paneId } = $props();
 
   let selKey = $state(null);
-  let chip = $state(null); // index of the selected member chip of a run row (null: the run)
+  let chip = $state(null); // the agent id of the selected member chip of a run row (null: the run)
   let collapsed = $state({});
   let idleOpen = $state(false);
   let showAll = $state(false);
@@ -45,10 +45,18 @@
   let lastAt = 0; // the selection's last stop index (a row that leaves gives its place to the next)
 
   const now = $derived(Math.max(now30(), Date.now()));
-  const filter = $derived(app.mission.projects);
   const ps = $derived(projects());
+  // A removed project leaves the filter; with none left it shows all.
+  const filter = $derived.by(() => {
+    const f = app.mission.projects?.filter((id) => ps.some((p) => p.id === id));
+    return f?.length ? f : null;
+  });
   const model = $derived(lanes(app.now, filter, now));
-  const all = $derived(filter ? lanes(app.now, null, now) : model);
+  // Rows somewhere, by the core's counts (the filter may hide them all).
+  const anyWork = $derived.by(() => {
+    const c = app.now.counts?.global ?? {};
+    return ['needs_you', 'error', 'running', 'waiting', 'queued', 'idle', 'done_today'].some((k) => c[k]) || Object.keys(app.now.decisions ?? {}).length > 0;
+  });
   const stopList = $derived(stops(model, { collapsed, idleOpen, showAll }));
   const index = $derived(rowIndex(model));
   const row = $derived(index.get(selKey) ?? null);
@@ -70,18 +78,21 @@
       lastAt = list.indexOf(selKey);
       return;
     }
-    if (list.length) setSel(list[Math.min(lastAt, list.length - 1)], { quiet: true });
+    // Only Mission control's own selection is repaired: one made in the sidebar,
+    // the palette or the Inspector while it is not focused stays.
+    if (list.length) setSel(list[Math.min(lastAt, list.length - 1)], { quiet: true, inform: app.focused === paneId });
     else selKey = null;
   });
 
-  /** Selects a stop and tells the Inspector (D10); `quiet`: no scroll. */
-  function setSel(key, { c = null, quiet = false } = {}) {
+  /** Selects a stop and tells the Inspector (D10) unless `inform` is false; `quiet`: no scroll. */
+  function setSel(key, { c = null, quiet = false, inform = true } = {}) {
     selKey = key;
     chip = c;
+    if (!inform) return;
     const r = index.get(key);
     if (r?.kind === 'run') {
       if (c == null) select('run', r.run.run);
-      else select('agent', r.run.members[c]);
+      else select('agent', c);
     } else if (r?.kind === 'solo' || r?.kind === 'queue') select('agent', r.agent.agent);
     else if (r?.kind === 'decisions') select('decision', r.ids[0]);
     else if (r?.kind === 'outcome') {
@@ -103,8 +114,9 @@
     if (row?.kind !== 'run') return;
     const m = row.run.members;
     const def = Math.max(0, m.indexOf(defaultTarget(row.run)));
-    const next = Math.max(0, Math.min(m.length - 1, (chip ?? def) + d));
-    setSel(selKey, { c: next === def ? null : next, quiet: true });
+    const at = chip && m.includes(chip) ? m.indexOf(chip) : def;
+    const next = Math.max(0, Math.min(m.length - 1, at + d));
+    setSel(selKey, { c: next === def ? null : m[next], quiet: true });
   }
 
   const toggle = (obj, k) => ({ ...obj, [k]: !obj[k] });
@@ -157,7 +169,7 @@
       fn();
     };
     // ⇧K kills; k (and a caps-lock K) moves up (notes §3.2).
-    if (k === 'K' && e.shiftKey) return t && trec && run(() => kill(t));
+    if (k === 'K' && e.shiftKey) return t && trec ? run(() => kill(t)) : undefined;
     if (k === 'j' || k === 'ArrowDown') return run(() => move(1));
     if (k === 'k' || k === 'K' || k === 'ArrowUp') return run(() => move(-1));
     if (k === 'h' || k === 'ArrowLeft') return run(() => moveChip(-1));
@@ -181,16 +193,26 @@
       if (k === 'Backspace' && trec?.queue) return run(() => cancelQueued(trec));
     }
     if (!t || !trec) return;
-    if (k === 'i' && trec.live) return run(() => act(t, 'interrupt'));
+    const ok = allowed(trec);
+    if (k === 'i' && ok.i) return run(() => act(t, 'interrupt'));
     if (k === 'p') return run(() => act(t, trec.status === 'paused' ? 'unpause' : 'pause'));
-    if (k === 's' && trec.live) return run(() => act(t, 'suspend'));
-    if (k === 'r' && ['paused', 'suspended', 'error'].includes(trec.status)) return run(() => act(t, trec.status === 'paused' ? 'unpause' : 'resume'));
+    if (k === 's' && ok.s) return run(() => act(t, 'suspend'));
+    if (k === 'r' && ok.r) return run(() => act(t, trec.status === 'paused' ? 'unpause' : 'resume'));
   }
 
-  function applyFilter(next) {
+  /** Closes the popover with its choice; `refocus` (⏎, Esc) gives the keys back to the pane, a
+   *  click elsewhere leaves focus where it went. */
+  function applyFilter(next, { refocus = false } = {}) {
     app.missionFilterOpen = false;
     if (JSON.stringify(next) !== JSON.stringify(filter)) setMissionFilter(next);
-    queueMicrotask(() => /** @type {HTMLElement | null} */ (document.querySelector(`[data-pane="${paneId}"] .mc`))?.focus());
+    if (refocus) queueMicrotask(() => /** @type {HTMLElement | null} */ (document.querySelector(`[data-pane="${paneId}"] .mc`))?.focus());
+  }
+
+  let pf = $state(); // the open ProjectFilter
+
+  function onFilterButton() {
+    if (filterOpen) pf?.apply({ refocus: true });
+    else app.missionFilterOpen = true;
   }
 
   function clickRow(r) {
@@ -200,9 +222,9 @@
   }
 
   function clickChip(r, i) {
-    const def = Math.max(0, r.run.members.indexOf(defaultTarget(r.run)));
-    setSel(r.key, { c: i === def ? null : i, quiet: true });
-    openSession(r.run.members[i]);
+    const id = r.run.members[i];
+    setSel(r.key, { c: id === defaultTarget(r.run) ? null : id, quiet: true });
+    openSession(id);
   }
 
   const ids = (r) => (r.kind === 'run' ? r.run.members : r.kind === 'solo' || r.kind === 'queue' ? [r.agent.agent] : []);
@@ -213,10 +235,11 @@
   <div class="toolbar">
     <b>Mission control</b>
     <span class="fwrap">
-      <button class="fbtn" class:on={!!filter} onclick={() => (app.missionFilterOpen = !filterOpen)} title={hiddenText(app.now.counts, filter, ps) || 'Filter by project'}>
+      <!-- While open, a press on the button keeps focus in the popover: the click closes it once. -->
+      <button class="fbtn" class:on={!!filter} onmousedown={(e) => filterOpen && e.preventDefault()} onclick={onFilterButton} title={hiddenText(app.now.counts, filter, ps) || 'Filter by project'}>
         <span aria-hidden="true">{'\u{F0232}'}</span> {filterLabel(filter, ps)} <Kbd keys="f" />
       </button>
-      {#if filterOpen}<ProjectFilter {filter} projects={ps} counts={app.now.counts} onapply={applyFilter} />{/if}
+      {#if filterOpen}<ProjectFilter bind:this={pf} {filter} projects={ps} counts={app.now.counts} onapply={applyFilter} />{/if}
     </span>
     <span class="grow"></span>
     {#if loaded && ps.length}
@@ -237,7 +260,7 @@
         <p class="secondary">Add a project to see what runs, waits and queues across them.</p>
         <button class="btn primary" onclick={() => (app.overlay = { kind: 'add-project' })}>Add project <Kbd keys="⌘+N" /></button>
       </div>
-    {:else if filter && !work(model) && !done && (work(all) || all.lanes.some((l) => l.id === 'done'))}
+    {:else if filter && !work(model) && !done && anyWork}
       <div class="empty">
         <h2>Nothing in the {filter.length === 1 ? filterLabel(filter, ps) : `${filter.length} projects`} selected</h2>
         <button class="linkbtn" onclick={() => (app.missionFilterOpen = true)}>Show all projects <Kbd keys="f" /></button>
@@ -316,7 +339,7 @@
             {#each model.idle.rows as r (r.key)}
               {@const sel = selKey === r.key}
               <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <div class="row solo" class:sel role="row" tabindex="-1" aria-selected={sel} data-key={r.key} onclick={() => clickRow(r)}>
+              <div class="row {r.kind}" class:sel role="row" tabindex="-1" aria-selected={sel} data-key={r.key} onclick={() => clickRow(r)}>
                 <div role="gridcell" class="cell">
                   {#if r.kind === 'run'}
                     <RunRow run={r.run} {now} target={sel ? t : defaultTarget(r.run)} {busy} onchip={(i) => clickChip(r, i)}>{#if details[r.key]}<RowDetails ids={ids(r)} {now} />{/if}</RunRow>
@@ -333,7 +356,7 @@
   </div>
 
   <div class="foot">
-    <span>{filter && !work(model) && work(all) ? hiddenText(app.now.counts, filter, ps) : footerText(app.now.counts, filter, ps)}</span>
+    <span>{filter && !work(model) && !done && anyWork ? hiddenText(app.now.counts, filter, ps) : footerText(app.now.counts, filter, ps)}</span>
     <span class="grow"></span>
     {#if app.data?.memory}<span class="muted">RAM {mb(app.data.memory.total_mb)} / {mb(app.data.memory.system_mb)}</span>{/if}
   </div>
@@ -447,7 +470,7 @@
   }
   .row.sel {
     background: var(--color-surface-raised);
-    box-shadow: inset 2px 0 0 var(--color-accent-default);
+    box-shadow: inset var(--border-width-focus) 0 0 var(--color-focus);
   }
   .loose {
     display: flex;

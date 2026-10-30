@@ -37,7 +37,9 @@
     cursor: pointer;
   }
   .mchip.selected {
-    border-color: var(--color-accent-default);
+    border-color: var(--color-focus);
+    outline: var(--border-width-focus) solid var(--color-focus);
+    outline-offset: -1px;
     background: var(--color-surface-selected);
   }
   .mchip.busy {

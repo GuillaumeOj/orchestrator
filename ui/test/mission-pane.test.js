@@ -150,6 +150,13 @@ describe('exit criterion (spec §1): one screen answers what runs, waits on what
   it('a pushed change moves the run to Running without a refresh (acceptance §6.6)', async () => {
     const { container: c } = render(MissionPane, { paneId: 'mc' });
     await settle();
+    // Approved in the Inbox: the decision closes, back-1 works, the run runs.
+    delete app.now.decisions['inbox-1'];
+    app.now.agents['back-1'] = rec('back-1', 'working', {
+      project: 'shop-api',
+      run: 'run-12',
+      activity: 'Bash pnpm add zod',
+    });
     app.now.runs['run-12'] = { ...app.now.runs['run-12'], level: 'running', blocker: undefined };
     flushSync();
     expect(text(c.querySelector('section[aria-label="Running"]'))).toContain('checkout');
@@ -250,6 +257,143 @@ describe('keys (spec §3.4)', () => {
   });
 });
 
+describe('review fixes (T-61)', () => {
+  const agentCalls = () => calls.filter((c) => c.cmd === 'agent_action');
+
+  it('the selected chip is an agent id: after a reorder p still acts on it', async () => {
+    const { container: c } = render(MissionPane, { paneId: 'mc' });
+    await settle();
+    const mc = c.querySelector('.mc');
+    key(mc, 'l');
+    await tick();
+    app.now.runs['run-12'] = { ...app.now.runs['run-12'], members: ['lead-1', 'front-1', 'back-1', 'ui-1'] };
+    flushSync();
+    key(mc, 'p');
+    await settle();
+    expect(agentCalls().map((x) => x.args)).toEqual([{ id: 'front-1', action: 'pause', message: null }]);
+  });
+
+  it('agent keys do nothing on an outcome row; ⏎ opens the outcome', async () => {
+    const { container: c } = render(MissionPane, { paneId: 'mc' });
+    await settle();
+    const mc = c.querySelector('.mc');
+    for (let i = 0; i < 4; i++) key(mc, 'j');
+    await tick();
+    expect(row(c, 'outcome:ev-13').getAttribute('aria-selected')).toBe('true');
+    for (const k of ['i', 'p', 's', 'r']) key(mc, k);
+    key(mc, 'K', { shiftKey: true });
+    await settle();
+    expect(agentCalls()).toEqual([]);
+    expect(app.overlay).toBeNull();
+    // A merge outcome selects its run's row.
+    key(mc, 'Enter');
+    await tick();
+    expect(row(c, 'run:run-12').getAttribute('aria-selected')).toBe('true');
+    expect(Object.values(app.panes).some((s) => s.type === 'agent')).toBe(false);
+  });
+
+  it('a selection made elsewhere stays while Mission control is not focused', async () => {
+    app.panes.other = { type: 'inbox', title: 'Inbox' };
+    app.focused = 'other';
+    app.selection = { kind: 'agent', id: 'fix-feed' };
+    render(MissionPane, { paneId: 'mc' });
+    await settle();
+    app.now.agents['lead-1'] = { ...app.now.agents['lead-1'], activity: 'Edit b.ts' };
+    flushSync();
+    await settle();
+    expect(app.selection).toEqual({ kind: 'agent', id: 'fix-feed' });
+  });
+
+  it('the filter button closes an open popover, once', async () => {
+    const { container: c } = render(MissionPane, { paneId: 'mc' });
+    await settle();
+    const btn = c.querySelector('.fbtn');
+    fireEvent.click(btn);
+    await tick();
+    expect(c.querySelector('.pop')).not.toBeNull();
+    fireEvent.mouseDown(btn);
+    fireEvent.click(btn);
+    await tick();
+    expect(c.querySelector('.pop')).toBeNull();
+    expect(app.missionFilterOpen).toBe(false);
+  });
+
+  it('a click away closes the filter without taking focus back', async () => {
+    const { container: c } = render(MissionPane, { paneId: 'mc' });
+    await settle();
+    key(c.querySelector('.mc'), 'f');
+    await tick();
+    const other = document.createElement('input');
+    document.body.appendChild(other);
+    other.focus();
+    await settle();
+    expect(app.missionFilterOpen).toBe(false);
+    expect(document.activeElement).toBe(other);
+    other.remove();
+  });
+
+  it('a saved filter drops removed projects', async () => {
+    app.mission = { projects: ['gone'] };
+    const { container: c } = render(MissionPane, { paneId: 'mc' });
+    await settle();
+    expect(text(c.querySelector('.fbtn'))).toContain('All projects');
+    expect(row(c, 'run:run-12')).not.toBeNull();
+    store.mission = { projects: ['blog', 'gone'] };
+    app.layout = null;
+    app.panes = {};
+    await A.restoreLayout();
+    expect(app.mission.projects).toEqual(['blog']);
+  });
+
+  it('⌫ on a solo queue row asks before dropping its turn', async () => {
+    const { container: c } = render(MissionPane, { paneId: 'mc' });
+    await settle();
+    const mc = c.querySelector('.mc');
+    key(mc, 'j');
+    key(mc, 'j');
+    key(mc, 'Backspace');
+    expect(app.overlay).toMatchObject({ kind: 'confirm', text: 'Cancel infra-1?' });
+    expect(calls.some((x) => x.cmd === 'governor_act')).toBe(false);
+  });
+
+  it('an idle run row is a run row in the Idle line', async () => {
+    app.now.runs['run-12'] = { ...app.now.runs['run-12'], level: 'idle', blocker: undefined };
+    const { container: c } = render(MissionPane, { paneId: 'mc' });
+    await settle();
+    fireEvent.click(c.querySelector('[data-key="lane:idle"] button'));
+    await tick();
+    expect(row(c, 'run:run-12').classList.contains('run')).toBe(true);
+  });
+
+  it('Agent Inspector: Waiting on, Doing, Run, then the details (frame order)', () => {
+    app.selection = { kind: 'agent', id: 'back-1' };
+    const c = render(Inspector).container;
+    expect([...c.querySelectorAll('dt')].map((d) => d.textContent).slice(0, 10)).toEqual([
+      'Waiting on',
+      'Doing',
+      'Run',
+      'Model',
+      'Context',
+      'Usage',
+      'Governor',
+      'Memory',
+      'Worktree',
+      'Project',
+    ]);
+    expect(text(c)).toContain('permission: Bash pnpm add zod');
+    expect(text(c)).toContain('shop-api › checkout · executing');
+    expect(text(c)).toContain('41 % ctx');
+  });
+
+  it('Run Inspector: a run started now reads "just now", not "just now ago"', () => {
+    app.now.runs['run-12'] = { ...app.now.runs['run-12'], started_ms: Date.now() };
+    app.selection = { kind: 'run', id: 'run-12' };
+    const t = text(render(Inspector).container);
+    expect(t).toMatch(/Started \d\d:\d\d · just now/);
+    expect(t).not.toContain('just now ago');
+  });
+});
+
 describe('sessions over the board (spec §3.3, D5)', () => {
   async function openBack1() {
     const { container: c } = render(MissionPane, { paneId: 'mc' });
@@ -291,12 +435,28 @@ describe('sessions over the board (spec §3.3, D5)', () => {
     expect(app.focused).toBe('mc');
   });
 
-  it('a click in the terminal takes over', async () => {
+  it('a click in the terminal takes over; Tab into it does not (review)', async () => {
     const { id } = await openBack1();
-    render(AgentPane, { paneId: id });
+    const pane = render(AgentPane, { paneId: id }).container;
     await settle();
+    // Focus reaching xterm (Tab) goes back to the strip.
     terms.at(-1).hooks.onFocus();
+    await settle();
+    expect(app.panes[id].watch).toBe(true);
+    expect(terms.at(-1).focused).toBe(0);
+    fireEvent.mouseDown(pane.querySelector('.term .host'), { button: 0 });
     expect(app.panes[id].watch).toBe(false);
+  });
+
+  it('the wheel still scrolls in watch mode: nothing covers the terminal (review)', async () => {
+    const { id } = await openBack1();
+    const pane = render(AgentPane, { paneId: id }).container;
+    await settle();
+    const wheel = new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true });
+    pane.querySelector('.term .host').dispatchEvent(wheel);
+    expect(wheel.defaultPrevented).toBe(false);
+    expect(pane.querySelector('.cover')).toBeNull();
+    expect(app.panes[id].watch).toBe(true);
   });
 
   it('a watched tab restores taken over (watch is not saved)', async () => {
@@ -305,7 +465,8 @@ describe('sessions over the board (spec §3.3, D5)', () => {
       const { id } = await openBack1();
       vi.advanceTimersByTime(500);
       expect(store.layout.panes[id].watch).toBeUndefined();
-      expect(store.layout.panes[id].over).toBe('mc');
+      // Nor is `over`: after a restart the "Typing in" strip does not come back (review).
+      expect(store.layout.panes[id].over).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }
