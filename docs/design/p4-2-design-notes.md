@@ -60,7 +60,7 @@ Steps before the current one are filled, after it hollow. Marks are text + icon 
 ```
 shop-api › checkout   [Draft ✓][Spec ✓][Planning ✓][Executing ●][Integrating ○][PR ○]   executing · 2 h
 3/7 tasks done · PR #12 ↗ ●(CI)                      blocker: back-1 · permission: Bash pnpm add zod · 2 min
-[lead-1 ▶ Working] [back-1 ⚠ permission · 2 min] [front-1 ⧗ → back-1 · 12 min] [ui-1 ○ queued ≈14:20]
+[lead-1 ▶ Working] [back-1 ⚠ permission · 2 min] [front-1 ⧗ → back-1 · 12 min] [ui-1 ◷ not started]
 ```
 
 | Part | Copy |
