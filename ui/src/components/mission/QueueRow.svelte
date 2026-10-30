@@ -3,15 +3,13 @@
   // project, the badge and the core's reason, a tier tag when not normal,
   // since, then Run now / Start now with its cost in the binding window (or
   // Resume for a paused one) and Cancel. Everything from the record (D7).
-  import { now30 } from '../../lib/app.svelte.js';
   import { waited } from '../../lib/format.js';
   import { runNowCost } from '../../lib/mission.js';
   import AgentChip from '../AgentChip.svelte';
   import Kbd from '../Kbd.svelte';
   import StatusBadge from '../StatusBadge.svelte';
 
-  let { rec, run = null, onrun = () => {}, oncancel = () => {}, onresume = () => {}, children } = $props();
-  const now = $derived(Math.max(now30(), Date.now()));
+  let { rec, run = null, now, onrun = () => {}, oncancel = () => {}, onresume = () => {} } = $props();
   const fresh = $derived(rec.status === 'not_started');
   const cost = $derived(runNowCost(rec.queue));
   const tier = $derived(rec.queue?.tier && rec.queue.tier !== 'normal' ? rec.queue.tier : null);
@@ -27,12 +25,11 @@
   {#if since}<span class="muted since">{since}</span>{/if}
   {#if rec.queue}
     <button class="btn" tabindex="-1" onclick={(e) => (e.stopPropagation(), onrun())}>{fresh ? 'Start now' : 'Run now'}{cost ? ` ${cost}` : ''} <Kbd keys="n" /></button>
+    <button class="btn ghost" tabindex="-1" title="Removes it from the queue; the agent stays as it is" onclick={(e) => (e.stopPropagation(), oncancel())}>Cancel</button>
   {:else if rec.status === 'paused'}
     <button class="btn" tabindex="-1" onclick={(e) => (e.stopPropagation(), onresume())}>Resume <Kbd keys="r" /></button>
   {/if}
-  {#if rec.queue}<button class="btn ghost" tabindex="-1" title="Removes it from the queue; the agent stays as it is" onclick={(e) => (e.stopPropagation(), oncancel())}>Cancel</button>{/if}
 </div>
-{@render children?.()}
 
 <style>
   .l1 {

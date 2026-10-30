@@ -11,8 +11,8 @@
 
   const MAX_CHIPS = 6;
 
-  /** @type {{ run: any, now: number, target: string | null, busy?: string | null, onchip?: (i: number) => void, children?: import('svelte').Snippet }} */
-  let { run, now, target, busy = null, onchip = () => {}, children } = $props();
+  /** @type {{ run: any, now: number, target: string | null, busy?: string | null, onchip?: (i: number) => void }} */
+  let { run, now, target, busy = null, onchip = () => {} } = $props();
   const b = $derived(run.blocker);
   const error = $derived(run.level === 'error');
   // Past six chips the selected one is swapped in for the sixth (notes §1.3 Overflow).
@@ -46,7 +46,6 @@
   {/each}
   {#if more}<span class="more">+{more} more</span>{/if}
 </div>
-{@render children?.()}
 
 <style>
   .l1,

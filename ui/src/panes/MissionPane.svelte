@@ -30,9 +30,9 @@
     select,
     setMissionFilter,
   } from '../lib/app.svelte.js';
-  import { mb } from '../lib/format.js';
+  import { mb, startOfDay } from '../lib/format.js';
   import { isOpen } from '../lib/inbox.js';
-  import { allowed, DONE_ROWS, decisionOf, defaultTarget, filterLabel, footerText, hiddenText, hints, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
+  import { allowed, COUNT_KEYS, DONE_ROWS, decisionOf, defaultTarget, filterLabel, footerText, hiddenText, hints, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
   import { attention } from '../lib/now.svelte.js';
   import { LEVEL } from '../lib/status.js';
 
@@ -54,11 +54,13 @@
     const f = app.mission.projects?.filter((id) => ps.some((p) => p.id === id));
     return f?.length ? f : null;
   });
-  const model = $derived(lanes(app.now, filter, now));
+  // lanes() needs only the day: the 30 s clock does not rebuild it.
+  const day = $derived(startOfDay(now));
+  const model = $derived(lanes(app.now, filter, day));
   // Rows somewhere, by the core's counts (the filter may hide them all).
   const anyWork = $derived.by(() => {
     const c = app.now.counts?.global ?? {};
-    return ['needs_you', 'error', 'running', 'waiting', 'queued', 'idle', 'done_today'].some((k) => c[k]) || Object.values(app.now.decisions ?? {}).some(isOpen);
+    return COUNT_KEYS.some((k) => k !== 'live' && c[k]) || Object.values(app.now.decisions ?? {}).some(isOpen);
   });
   const stopList = $derived(stops(model, { collapsed, idleOpen, showAll }));
   const index = $derived(rowIndex(model));
@@ -68,9 +70,11 @@
   const dec = $derived(decisionOf(row, trec));
   const hintList = $derived(hints(row, { target: t, rec: trec, decision: dec }));
   const loaded = $derived(app.now.rev > 0);
-  const work = (m) => m.lanes.some((l) => l.id !== 'done' && l.rows.length) || !!m.idle;
+  const work = $derived(model.lanes.some((l) => l.id !== 'done' && l.rows.length) || !!model.idle);
   const moving = $derived(model.lanes.some((l) => l.id !== 'needs_you' && l.id !== 'done') || !!model.idle);
   const done = $derived(model.lanes.find((l) => l.id === 'done'));
+  // A filter hides every row while some exist elsewhere.
+  const filteredOut = $derived(!!filter && !work && !done && anyWork);
   const filterOpen = $derived(app.missionFilterOpen);
 
   // The selection follows its row across lanes (keys are the run or agent);
@@ -207,9 +211,9 @@
       if (row?.kind === 'run' && row.run.pr) return run(() => openUrl(row.run.pr.url));
       return;
     }
-    if (row?.kind === 'queue') {
-      if (k === 'n' && trec?.queue) return run(() => runNow(trec));
-      if (k === 'Backspace' && trec?.queue) return run(() => cancelQueued(trec));
+    if (row?.kind === 'queue' && trec?.queue) {
+      if (k === 'n') return run(() => runNow(trec));
+      if (k === 'Backspace') return run(() => cancelQueued(trec));
     }
     if (!t || !trec) return;
     const ok = allowed(trec);
@@ -250,6 +254,34 @@
   const ids = (r) => (r.kind === 'run' ? r.run.members : r.kind === 'solo' || r.kind === 'queue' ? [r.agent.agent] : []);
 </script>
 
+{#snippet item(r)}
+  {@const sel = selKey === r.key}
+  {#if r.kind === 'outcome'}
+    <div role="row" aria-selected={sel} data-key={r.key}>
+      <div role="gridcell"><OutcomeRow outcome={r.outcome} selected={sel} onselect={() => setSel(r.key)} /></div>
+    </div>
+  {:else}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="row {r.kind}" class:sel class:err={r.kind === 'run' ? r.run.level === 'error' : r.agent?.level === 'error'} role="row" tabindex="-1" aria-selected={sel} data-key={r.key} onclick={() => clickRow(r)}>
+      <div role="gridcell" class="cell">
+        {#if r.kind === 'run'}
+          <RunRow run={r.run} {now} target={sel ? t : defaultTarget(r.run)} {busy} onchip={(i) => clickChip(r, i)} />
+        {:else if r.kind === 'solo'}
+          <SoloRow rec={r.agent} />
+        {:else if r.kind === 'queue'}
+          <QueueRow rec={r.agent} run={r.run} {now} onrun={() => runNow(r.agent)} oncancel={() => cancelQueued(r.agent)} onresume={() => act(r.agent.agent, 'unpause')} />
+        {:else if r.kind === 'decisions'}
+          <div class="loose">
+            <span style:color="var(--color-attention-needs-you)" aria-hidden="true">{LEVEL.needs_you.icon}</span>
+            {looseText(r.count)} · <button class="linkbtn" tabindex="-1" onclick={(e) => (e.stopPropagation(), openInbox(r.ids[0]))}>Open in Inbox</button> <Kbd keys="d" />
+          </div>
+        {/if}
+        {#if details[r.key] && r.kind !== 'decisions'}<RowDetails ids={ids(r)} {now} />{/if}
+      </div>
+    </div>
+  {/if}
+{/snippet}
+
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <div class="mc" tabindex="0" data-pane-focus onkeydown={onKey} role="region" aria-label="Mission control">
   <div class="toolbar">
@@ -280,13 +312,13 @@
         <p class="secondary">Add a project to see what runs, waits and queues across them.</p>
         <button class="btn primary" onclick={() => (app.overlay = { kind: 'add-project' })}>Add project <Kbd keys="⌘+N" /></button>
       </div>
-    {:else if filter && !work(model) && !done && anyWork}
+    {:else if filteredOut}
       <div class="empty">
         <h2>Nothing in the {filter.length === 1 ? filterLabel(filter, ps) : `${filter.length} projects`} selected</h2>
         <button class="linkbtn" onclick={() => setMissionFilter(null)}>Show all projects</button> <span class="muted">or change the filter</span> <Kbd keys="f" />
       </div>
     {:else}
-      {#if !work(model)}
+      {#if !work}
         <div class="empty">
           <h2>Nothing is running</h2>
           <p class="secondary">Start a session or a feature and it shows up here.</p>
@@ -294,7 +326,7 @@
         </div>
       {/if}
       {#each model.lanes as lane (lane.id)}
-        {#if work(model) || lane.id === 'done'}
+        {#if work || lane.id === 'done'}
           {@const shut = !!collapsed[lane.id]}
           {@const shown = lane.id === 'done' && !showAll ? lane.rows.slice(0, DONE_ROWS) : lane.rows}
           <section class="lane" aria-label={lane.label}>
@@ -307,36 +339,7 @@
               </button>
             </h3>
             {#if !shut}
-              {#each shown as r (r.key)}
-                {@const sel = selKey === r.key}
-                {#if r.kind === 'outcome'}
-                  <div role="row" aria-selected={sel} data-key={r.key}>
-                    <div role="gridcell"><OutcomeRow outcome={r.outcome} selected={sel} onselect={() => setSel(r.key)} /></div>
-                  </div>
-                {:else}
-                  <!-- svelte-ignore a11y_click_events_have_key_events -->
-                  <div class="row {r.kind}" class:sel class:err={r.kind === 'run' ? r.run.level === 'error' : r.agent?.level === 'error'} role="row" tabindex="-1" aria-selected={sel} data-key={r.key} onclick={() => clickRow(r)}>
-                    <div role="gridcell" class="cell">
-                      {#if r.kind === 'run'}
-                        <RunRow run={r.run} {now} target={sel ? t : defaultTarget(r.run)} {busy} onchip={(i) => clickChip(r, i)}>
-                          {#if details[r.key]}<RowDetails ids={ids(r)} {now} />{/if}
-                        </RunRow>
-                      {:else if r.kind === 'solo'}
-                        <SoloRow rec={r.agent}>{#if details[r.key]}<RowDetails ids={ids(r)} {now} />{/if}</SoloRow>
-                      {:else if r.kind === 'queue'}
-                        <QueueRow rec={r.agent} run={r.run} onrun={() => runNow(r.agent)} oncancel={() => cancelQueued(r.agent)} onresume={() => act(r.agent.agent, 'unpause')}>
-                          {#if details[r.key]}<RowDetails ids={ids(r)} {now} />{/if}
-                        </QueueRow>
-                      {:else if r.kind === 'decisions'}
-                        <div class="loose">
-                          <span style:color="var(--color-attention-needs-you)" aria-hidden="true">{LEVEL.needs_you.icon}</span>
-                          {looseText(r.count)} · <button class="linkbtn" tabindex="-1" onclick={(e) => (e.stopPropagation(), openInbox(r.ids[0]))}>Open in Inbox</button> <Kbd keys="d" />
-                        </div>
-                      {/if}
-                    </div>
-                  </div>
-                {/if}
-              {/each}
+              {#each shown as r (r.key)}{@render item(r)}{/each}
               {#if lane.id === 'done' && lane.rows.length > DONE_ROWS}
                 <button class="more" class:sel={selKey === 'showall'} data-key="showall" tabindex="-1" onclick={() => (showAll = !showAll)}>{showAll ? 'Show fewer' : `Show all ${lane.rows.length}`} <Kbd keys="⏎" /></button>
               {/if}
@@ -345,7 +348,7 @@
           {#if lane.id === 'needs_you' && lane.rows.length && !moving}<p class="muted still">Nothing else is moving</p>{/if}
         {/if}
       {/each}
-      {#if !work(model) && !done}<p class="muted still">Nothing done yet today.</p>{/if}
+      {#if !work && !done}<p class="muted still">Nothing done yet today.</p>{/if}
       {#if model.idle}
         <section class="lane" aria-label="Idle">
           <h3 class="lh" class:sel={selKey === 'lane:idle'} data-key="lane:idle">
@@ -356,19 +359,7 @@
             </button>
           </h3>
           {#if idleOpen}
-            {#each model.idle.rows as r (r.key)}
-              {@const sel = selKey === r.key}
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <div class="row {r.kind}" class:sel role="row" tabindex="-1" aria-selected={sel} data-key={r.key} onclick={() => clickRow(r)}>
-                <div role="gridcell" class="cell">
-                  {#if r.kind === 'run'}
-                    <RunRow run={r.run} {now} target={sel ? t : defaultTarget(r.run)} {busy} onchip={(i) => clickChip(r, i)}>{#if details[r.key]}<RowDetails ids={ids(r)} {now} />{/if}</RunRow>
-                  {:else}
-                    <SoloRow rec={r.agent}>{#if details[r.key]}<RowDetails ids={ids(r)} {now} />{/if}</SoloRow>
-                  {/if}
-                </div>
-              </div>
-            {/each}
+            {#each model.idle.rows as r (r.key)}{@render item(r)}{/each}
           {/if}
         </section>
       {/if}
@@ -376,7 +367,7 @@
   </div>
 
   <div class="foot">
-    <span>{filter && !work(model) && !done && anyWork ? hiddenText(app.now.counts, filter, ps) : footerText(app.now.counts, filter, ps)}</span>
+    <span>{filteredOut ? hiddenText(app.now.counts, filter, ps) : footerText(app.now.counts, filter, ps)}</span>
     <span class="grow"></span>
     {#if app.data?.memory}<span class="muted">RAM {mb(app.data.memory.total_mb)} / {mb(app.data.memory.system_mb)}</span>{/if}
   </div>

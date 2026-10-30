@@ -2,14 +2,14 @@
 // render of `now`. Pure: tested in test/mission.test.js. Nothing here reads
 // the app state or the clock; the pane passes `now` and the time.
 
-import { clock, dayHm, startOfDay, waited } from './format.js';
+import { clock, dayHm, plural, startOfDay, waited } from './format.js';
 import { agentOf, isOpen } from './inbox.js';
 import { STATUS } from './status.js';
 
 // ---------------------------------------------------------------- phase stepper
 
 /** The six steps (notes §1.2), in order. */
-export const STEPS = [
+const STEPS = [
   { id: 'draft', label: 'Draft' },
   { id: 'spec', label: 'Spec' },
   { id: 'planning', label: 'Planning' },
@@ -23,7 +23,7 @@ const STEP_OF = { draft: 0, spec: 1, spec_gate: 1, planning: 2, executing: 3, in
 const HELD = new Set(['paused', 'deferred', 'failed']);
 
 /** Run phase glyphs and colors (docs/design/README.md, `color.phase.*`). */
-export const PHASE = {
+const PHASE = {
   draft: { icon: '\u{F0CB6}', color: 'var(--color-phase-draft)' },
   spec: { icon: '\u{F09EE}', color: 'var(--color-phase-spec)' },
   spec_gate: { icon: '\u{F0E29}', color: 'var(--color-phase-spec-gate)' },
@@ -114,7 +114,7 @@ export function tasksDetail(t) {
     [t.review, 'in review'],
     [t.blocked, 'blocked'],
   ].filter(([n]) => n);
-  return [`${t.total} task${t.total === 1 ? '' : 's'}`, ...parts.map(([n, w]) => `${n} ${w}`)].join(' · ');
+  return [plural(t.total, 'task'), ...parts.map(([n, w]) => `${n} ${w}`)].join(' · ');
 }
 
 /** "PR #12 ↗" ("PR ↗" without a number). */
@@ -185,7 +185,6 @@ export function allowed(rec) {
     p: true,
     s: !!rec.live && ['idle', 'waiting', 'needs_you'].includes(rec.level),
     r: ['paused', 'suspended', 'error'].includes(rec.status),
-    K: true,
   };
 }
 
@@ -235,7 +234,6 @@ export function runNowDialog(rec) {
 
 // ---------------------------------------------------------------- lanes
 
-const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 const UNIT = { run: 'run', solo: 'session', queue: 'agent', outcome: 'outcome' };
 
 /** A lane header's count: its rows with their unit (D11): "1 run · 1 session", "2 agents". */
@@ -249,7 +247,7 @@ export function rowCount(rows) {
 }
 
 /** The lanes, top to bottom (spec §3.2); `level` gives the header's icon. */
-export const LANES = [
+const LANES = [
   { id: 'needs_you', label: 'Needs you', level: 'needs_you' },
   { id: 'running', label: 'Running', level: 'running' },
   { id: 'waiting', label: 'Waiting on', level: 'waiting' },
@@ -272,6 +270,8 @@ function queueRank(rec) {
   return [rec.status === 'paused' ? 2 : 1, sinceOf(rec)];
 }
 
+const byText = new Intl.Collator().compare;
+
 // A row is kept while its record (and its run) is the same object: a `now`
 // event re-renders only the rows it changed (NFR-1b).
 const rowCache = new WeakMap();
@@ -279,7 +279,9 @@ function rowOf(rec, kind, make, run = null) {
   const hit = rowCache.get(rec)?.[kind];
   if (hit && (hit.run ?? null) === run) return hit;
   const row = make();
-  rowCache.set(rec, { ...rowCache.get(rec), [kind]: row });
+  const slot = rowCache.get(rec) ?? {};
+  slot[kind] = row;
+  rowCache.set(rec, slot);
   return row;
 }
 
@@ -342,18 +344,18 @@ export function lanes(now, filter = null, at = Date.now()) {
     (a.level === 'error' ? errorRows : rows[lane]).push(row);
   }
 
-  const oldest = (x, y) => x.since - y.since || x.key.localeCompare(y.key);
+  const oldest = (x, y) => x.since - y.since || byText(x.key, y.key);
   rows.needs_you.sort(oldest);
   errorRows.sort(oldest);
   rows.needs_you.push(...errorRows);
-  rows.running.sort((x, y) => String(x.project).localeCompare(String(y.project)) || oldest(x, y));
+  rows.running.sort((x, y) => byText(String(x.project), String(y.project)) || oldest(x, y));
   rows.waiting.sort(oldest);
   const runRows = rows.queued.filter((r) => r.kind === 'run').sort(oldest);
   const queueRows = rows.queued
     .filter((r) => r.kind === 'queue')
     .sort((x, y) => {
       const [a, b] = [queueRank(x.agent), queueRank(y.agent)];
-      return a[0] - b[0] || a[1] - b[1] || x.key.localeCompare(y.key);
+      return a[0] - b[0] || a[1] - b[1] || byText(x.key, y.key);
     });
   rows.queued = [...runRows, ...queueRows];
   rows.idle.sort(oldest);
@@ -395,7 +397,7 @@ export function lanes(now, filter = null, at = Date.now()) {
 }
 
 /** "2 decisions not tied to a session" (notes §1.1). */
-export const looseText = (n) => `${n} decision${n === 1 ? '' : 's'} not tied to a session`;
+export const looseText = (n) => `${plural(n, 'decision')} not tied to a session`;
 
 /** Done today shows this many rows, then "Show all n". */
 export const DONE_ROWS = 10;
@@ -406,7 +408,7 @@ export const DONE_ROWS = 10;
  * rows when open. `view`: { collapsed: Set|{[id]: bool}, idleOpen, showAll }.
  */
 export function stops(model, view = {}) {
-  const collapsed = (id) => (view.collapsed instanceof Set ? view.collapsed.has(id) : !!view.collapsed?.[id]);
+  const collapsed = (id) => !!view.collapsed?.[id];
   const out = [];
   for (const l of model.lanes) {
     if (collapsed(l.id)) {
@@ -449,10 +451,10 @@ export function toggleProject(filter, id, all) {
   return all.every((x) => next.includes(x)) ? null : all.filter((x) => next.includes(x));
 }
 
-const COUNT_KEYS = ['needs_you', 'error', 'running', 'waiting', 'queued', 'idle', 'live', 'done_today'];
+export const COUNT_KEYS = ['needs_you', 'error', 'running', 'waiting', 'queued', 'idle', 'live', 'done_today'];
 
 /** The core's per-project counts summed over the filter (D8); the global counts with no filter. */
-export function filteredCounts(counts, filter) {
+function filteredCounts(counts, filter) {
   if (!filter) return { ...counts?.global };
   const sum = Object.fromEntries(COUNT_KEYS.map((k) => [k, 0]));
   for (const id of filter) for (const k of COUNT_KEYS) sum[k] += counts?.projects?.[id]?.[k] ?? 0;
