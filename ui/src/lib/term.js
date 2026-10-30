@@ -84,6 +84,8 @@ function debug(...args) {
 
 /** How long after start a PTY spawned at a guessed size gets its nudge (ms). */
 export const NUDGE_MS = 300;
+/** Between an agent redraw's two resizes: long enough for the TUI to read the first (ms). */
+export const REDRAW_GAP_MS = 80;
 
 /**
  * xterm.js has no public event for a cell size change that leaves the box
@@ -201,11 +203,19 @@ export class TermPane {
     // The box or the cell metrics can still settle after this first fit.
     cancelAnimationFrame(this.settleFrame);
     this.settleFrame = requestAnimationFrame(() => this.fitNow());
+    // Shown again (a tab switch, the dock back): same size, nothing sent otherwise.
+    if (this.alive) this.scheduleRedraw();
   }
 
   unmount() {
     cancelAnimationFrame(this.settleFrame);
     clearTimeout(this.fitTimer);
+    clearTimeout(this.redrawTimer);
+    // Hidden mid-redraw: the PTY goes back to the real size now, not after the gap.
+    if (this.pulse) {
+      if (this.pulse.sent) this.endRedraw();
+      else this.pulse.now = true;
+    }
     this.host.remove();
   }
 
@@ -279,6 +289,7 @@ export class TermPane {
     // Decided when it fires: the settle refits after mount can still move the
     // grid off the spawn size (a first fit skipped leaves xterm at 80x24).
     if (this.source.kind === 'term' && this.source.spawn) this.nudgeTimer = setTimeout(() => this.nudge(), NUDGE_MS);
+    this.scheduleRedraw();
     this.pull();
   }
 
@@ -330,6 +341,43 @@ export class TermPane {
       .finally(() => this.syncPty());
   }
 
+  /**
+   * An agent's TUI redraws only for a size it reads as new (the core's attach
+   * nudge is back to back, a re-show sends nothing): once per show, after the
+   * size settled, one row less then the real size, with a gap between.
+   */
+  scheduleRedraw() {
+    if (this.source.kind !== 'agent') return;
+    clearTimeout(this.redrawTimer);
+    this.redrawTimer = setTimeout(() => this.redraw(), NUDGE_MS);
+  }
+
+  redraw() {
+    if (!this.alive || this.pulse || this.term.rows < 2) return;
+    if (!this.host.isConnected) return debug(this.source.id, 'redraw skipped (hidden)');
+    const { rows, cols } = this.term;
+    debug(this.source.id, 'redraw', `${cols}x${rows - 1}`);
+    const pulse = (this.pulse = {});
+    this.ptySize = { rows: rows - 1, cols };
+    invoke(this.cmd.resize, { id: this.source.id, ...this.ptySize })
+      .catch(() => {})
+      .finally(() => {
+        if (this.pulse !== pulse) return;
+        pulse.sent = true;
+        if (pulse.now) this.endRedraw();
+        else pulse.timer = setTimeout(() => this.endRedraw(), REDRAW_GAP_MS);
+      });
+  }
+
+  /** The redraw's second step: the xterm's size, sent even if `ptySize` already says so. */
+  endRedraw() {
+    clearTimeout(this.pulse?.timer);
+    this.pulse = null;
+    this.ptySize = null;
+    debug(this.source.id, 'redraw end', `${this.term.cols}x${this.term.rows}`);
+    this.syncPty();
+  }
+
   focus() {
     this.term.focus();
   }
@@ -338,6 +386,9 @@ export class TermPane {
     this.disposed = true;
     this.alive = false;
     clearTimeout(this.nudgeTimer);
+    clearTimeout(this.redrawTimer);
+    clearTimeout(this.pulse?.timer);
+    this.pulse = null;
     for (const s of this.cellSubs ?? []) s.dispose();
     if (this.source.kind === 'agent') this.detach();
     else invoke('term_kill', { id: this.source.id }).catch(() => {});

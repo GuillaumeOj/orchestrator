@@ -12,9 +12,12 @@
 | `agent_resize` | `id, rows, cols` | — | A plain PTY resize. |
 | `term_spawn` / `term_resize` / `term_kill` | as today | | Shells. |
 
-## Possible change (only if T-2's plan confirms cause A1)
+## Agent redraw on show (T-63: UI side, no core change)
 
-`agent_attach` guarantees the redraw: the TUI sees a real size change (the `cols-1` step and the final size are not both applied before the program reads the size), e.g. the final resize delayed after the first one. Same signature and return. The UI may then rely on `agent_attach` for the first show, and on a UI-side nudge (`agent_resize` to `rows-1`, then `rows`, with a gap) for a re-show; whichever side owns the nudge, the plan says so and this file is updated before coding.
+Cause confirmed (code reading): `agent_attach`'s `cols-1` / `cols` resizes land back to back, and Node's tty emits `'resize'` only when the size it reads differs from the last one it saw, so a pane at the PTY's previous size (reopen, restore, resume) gets no redraw; a re-shown tab (remount, same size) sends nothing at all.
+
+- `agent_attach` is unchanged (same signature, its `cols-1` / `cols` step kept) but the UI does not rely on it for the redraw.
+- The UI owns the forced redraw on **every show** of an agent (first open, tab switch back, dock shown, resume, restore): `NUDGE_MS` after the show, `agent_resize(rows-1, cols)`, then after a gap (`REDRAW_GAP_MS`) `agent_resize(rows, cols)`. Once per show; none for a pane hidden before it fires; the PTY is never left at `rows-1` (a hide during the gap sends the real size at once).
 
 ## Layout value (UI only, `settings` key `layout`)
 

@@ -86,7 +86,7 @@ vi.mock('@xterm/xterm', () => {
   };
 });
 
-const { NUDGE_MS, TermPane } = await import('../src/lib/term.js');
+const { NUDGE_MS, REDRAW_GAP_MS, TermPane } = await import('../src/lib/term.js');
 
 /** A pane mounted in a connected host with a 800×480 box. */
 function mounted(source) {
@@ -234,5 +234,111 @@ describe('TermPane sizing', () => {
     await vi.advanceTimersByTimeAsync(NUDGE_MS * 2);
     expect(resizes()).toEqual(['100x30']);
     expect(t.term.cols).toBe(100);
+  });
+});
+
+describe('TermPane agent redraw on show', () => {
+  /** An agent attached and alive, its redraw not fired yet. */
+  async function attached() {
+    const t = mounted({ kind: 'agent', id: 'a1' });
+    const started = t.start();
+    h.attach();
+    await started;
+    return t;
+  }
+  const agentResizes = () => resizes('agent_resize');
+
+  it('redraws a first-opened agent once: one row less, then after a gap the real size', async () => {
+    const t = await attached();
+    expect(agentResizes()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(NUDGE_MS);
+    expect(agentResizes()).toEqual(['100x29']);
+    await vi.advanceTimersByTimeAsync(REDRAW_GAP_MS);
+    expect(agentResizes()).toEqual(['100x29', '100x30']);
+    await vi.advanceTimersByTimeAsync(NUDGE_MS * 5);
+    expect(agentResizes()).toHaveLength(2);
+    t.dispose();
+  });
+
+  it('redraws once more on each re-show at the same size', async () => {
+    const t = await attached();
+    await vi.advanceTimersByTimeAsync(NUDGE_MS + REDRAW_GAP_MS);
+    const el = t.host.parentElement;
+    t.unmount();
+    t.mount(el);
+    t.unmount();
+    t.mount(el); // two quick shows: one redraw
+    await vi.advanceTimersByTimeAsync(NUDGE_MS + REDRAW_GAP_MS);
+    expect(agentResizes()).toEqual(['100x29', '100x30', '100x29', '100x30']);
+    // The xterm grid never moved: only the mount fit, the flip guard has nothing more to count.
+    expect(t.term.rows).toBe(30);
+    expect(t.fits.map((f) => f.key)).toEqual(['100x30']);
+    t.dispose();
+  });
+
+  it('does not redraw a pane hidden before the redraw fires', async () => {
+    const t = await attached();
+    t.unmount();
+    await vi.advanceTimersByTimeAsync(NUDGE_MS * 3);
+    expect(agentResizes()).toEqual([]);
+    t.dispose();
+  });
+
+  it('puts the PTY back at the real rows at once when hidden during the gap', async () => {
+    const t = await attached();
+    await vi.advanceTimersByTimeAsync(NUDGE_MS);
+    expect(agentResizes()).toEqual(['100x29']);
+    t.unmount();
+    expect(agentResizes()).toEqual(['100x29', '100x30']);
+    await vi.advanceTimersByTimeAsync(REDRAW_GAP_MS * 3);
+    expect(agentResizes()).toHaveLength(2);
+    t.dispose();
+  });
+
+  it('puts the PTY back when hidden before the first resize resolved', async () => {
+    const t = await attached();
+    vi.advanceTimersByTime(NUDGE_MS); // first step sent, its promise not settled yet
+    t.unmount();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(agentResizes()).toEqual(['100x29', '100x30']);
+    t.dispose();
+  });
+
+  it('sends a fit that lands during the gap, and ends at that size', async () => {
+    const t = await attached();
+    await vi.advanceTimersByTimeAsync(NUDGE_MS);
+    h.dims = { cols: 120, rows: 40 };
+    t.fitNow();
+    await vi.advanceTimersByTimeAsync(REDRAW_GAP_MS);
+    expect(agentResizes()).toEqual(['100x29', '120x40', '120x40']);
+    expect(t.ptySize).toEqual({ rows: 40, cols: 120 });
+    t.dispose();
+  });
+
+  it('sends the second step even when the PTY size already matches the xterm', async () => {
+    const t = await attached();
+    await vi.advanceTimersByTimeAsync(NUDGE_MS);
+    t.ptySize = { rows: 30, cols: 100 };
+    await vi.advanceTimersByTimeAsync(REDRAW_GAP_MS);
+    expect(agentResizes()).toEqual(['100x29', '100x30']);
+    t.dispose();
+  });
+
+  it('skips the second step only when the pane is disposed', async () => {
+    const t = await attached();
+    await vi.advanceTimersByTimeAsync(NUDGE_MS);
+    t.dispose();
+    await vi.advanceTimersByTimeAsync(REDRAW_GAP_MS * 3);
+    expect(agentResizes()).toEqual(['100x29']);
+  });
+
+  it('never redraws a shell', async () => {
+    const t = mounted({ kind: 'term', id: 1 });
+    t.start();
+    t.unmount();
+    t.mount(document.body);
+    await vi.advanceTimersByTimeAsync(NUDGE_MS * 3);
+    expect(resizes()).toEqual(['100x30']);
+    t.dispose();
   });
 });
