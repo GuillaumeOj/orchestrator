@@ -12,12 +12,13 @@ The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app 
 | 03 Shell & layouts | Shell at 1512 (docked inspector), 1280 (icon rail + overlay inspector), zoomed pane; 1728 not drawn in P1. **P4.2** (row at y = 3300): Mission control shell at 1512 (P4.2 code, with the shell dock), 1512 with the chat column (Inspector overlays the chat slot), 1728 (chat + Inspector docked) and 1280 (rail + Inspector overlay) | Ready for dev · **P4.2 In review** |
 | 04.1 Overview & agent pane | P1: Overview, Agent pane (+ states) | P1 Ready for dev |
 | 04.2 Mission control | **P4.2**: Mission control (fixture, row types, filter, row details, states, 1280 density), session watch mode and take-over, Inspector agent / run / decision | **P4.2 Part A In review** |
-| 04.3 Chat column | **P4.2 Part B**: decision cards per kind and lifecycle, collapsed lines, rule proposal, morning line, chat column states | **P4.2 Part B in progress** |
+| 04.3 Chat column | **P4.2 Part B**: decision cards per kind and lifecycle, collapsed lines, rule proposal, morning line, chat column states | **P4.2 Part B In review** |
 | 04.4 Feature & board | **P2**: Team canvas, Feature, Board, Launch on feature dialog. **P3**: inspector MCP and downgrade, presets, Feature Design and preview, Notion publish (+ states) | **P2 Ready for dev** · **P3 In review** |
 | 04.5 Inbox | P1 Inbox, PR update gate states | P1 Ready for dev |
 | 04.6 Planner & reports | P1 Week planner. **P3**: Weekly report, model windows and off-hours (+ states) | P1 Ready for dev · **P3 In review** |
 | 04.7 Settings | **P3**: Settings Integrations and MCP servers (+ states), Project settings Linear (+ states) | **P3 In review** |
 | 05 Keyboard & copy | Global, leader and pane-local shortcut maps (**P2**: Team canvas, Board, Feature rows); P0 conflicts; banner, notification and toast copy; copy rules. **P4.2**: Mission control keys, leader `o`, conflicts | P1 Ready for dev · **P2 Ready for dev** · **P4.2 In review** |
+| 06.1 J12 storyboard | **P4.2 Part B**: J12 in 5 annotated frames (morning line, the day settled, ask why, third time a rule, watch don't open), callouts, keys, "Interventions this day: 0" | **P4.2 Part B In review** |
 | 06 Flows | Storyboards (annotated frames, no clickable prototype): J2 solo session (5 frames), J5 Inbox triage (6), J8 pacing the week (4). **P2**: J3 team on a feature, 5 notes over the 04 frames (y = 4500) | P1 Ready for dev · **P2 Ready for dev** |
 | 07 Explorations | Drafts, not binding | — |
 
@@ -29,7 +30,7 @@ The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app 
 
 **P4.1 (One now, 2026-10-29):** components only, no screen and no layout change (decision D10); the full P4 gate (new shell, Mission control, cards) is due before P4.2. Copy and states: [p4-design-notes.md](p4-design-notes.md).
 
-**P4.2 (Mission control, 2026-10-29):** the P4 gate (SPEC §9.0) is split (decision D1). **Part A** (shell, Mission control, session over the board, Inspector variants, keys) blocks front and is **In review**; **Part B** (chat column cards, collapsed lines, J12 storyboard) follows. Copy, states and keys: [p4-2-design-notes.md](p4-2-design-notes.md). Exports: `.orchestrator/features/p-4-2-mission-control/design/`.
+**P4.2 (Mission control, 2026-10-29):** the P4 gate (SPEC §9.0) is split (decision D1). **Part A** (shell, Mission control, session over the board, Inspector variants, keys) blocks front and is **In review**; **Part B** (cards per kind and lifecycle, collapsed lines, rule proposal and chat column states on 04.3; J12 storyboard on 06.1) is **In review** too. Copy, states and keys: [p4-2-design-notes.md](p4-2-design-notes.md). Exports: `.orchestrator/features/p-4-2-mission-control/design/`.
 
 ## Screenshots
 
@@ -69,6 +70,8 @@ Exports of the Penpot boards (Dark theme unless noted), refreshed by hand.
 | 04 Session over the board (P4.2) | [watch mode](../../.orchestrator/features/p-4-2-mission-control/design/p42-session-watch.png) · [take-over](../../.orchestrator/features/p-4-2-mission-control/design/p42-session-takeover.png) |
 | 04 Inspector agent / run / decision (P4.2) | [Inspector](../../.orchestrator/features/p-4-2-mission-control/design/p42-inspector.png) |
 | 05 Mission control keys (P4.2) | [keys](../../.orchestrator/features/p-4-2-mission-control/design/p42-keys.png) |
+| 02 + 04.3 Chat column (P4.2 Part B) | [card anatomy](../../.orchestrator/features/p-4-2-mission-control/design/p42b-card-anatomy.png) · [cards per kind](../../.orchestrator/features/p-4-2-mission-control/design/p42b-cards-kinds.png) · [card lifecycle](../../.orchestrator/features/p-4-2-mission-control/design/p42b-cards-lifecycle.png) · [collapsed lines](../../.orchestrator/features/p-4-2-mission-control/design/p42b-collapsed-lines.png) · [rule proposal](../../.orchestrator/features/p-4-2-mission-control/design/p42b-rule-card.png) · [chat column states](../../.orchestrator/features/p-4-2-mission-control/design/p42b-chat-states.png) |
+| 06.1 J12 storyboard (P4.2 Part B) | [1 morning](../../.orchestrator/features/p-4-2-mission-control/design/p42b-j12-1-morning.png) · [2 settled](../../.orchestrator/features/p-4-2-mission-control/design/p42b-j12-2-settled.png) · [3 ask why](../../.orchestrator/features/p-4-2-mission-control/design/p42b-j12-3-ask.png) · [4 rule](../../.orchestrator/features/p-4-2-mission-control/design/p42b-j12-4-rule.png) · [5 watch](../../.orchestrator/features/p-4-2-mission-control/design/p42b-j12-5-watch.png) |
 | 06 J5 Inbox triage | [1 gate](img/06-j5-1-gate.png) → [2 approved](img/06-j5-2-approved.png) → [3 allowed](img/06-j5-3-allowed.png) → [4 reply](img/06-j5-4-reply.png) → [5 budget ask](img/06-j5-5-budget.png) → [6 clear](img/06-j5-6-clear.png) |
 | 06 J2 Solo session | [1 new session](img/06-j2-1-new-session.png) → [2 running](img/06-j2-2-running.png) → [3 palette](img/06-j2-3-palette.png) → [4 PR gate](img/06-j2-4-pr-gate.png) → [5 PR opened](img/06-j2-5-pr-opened.png) |
 | 06 J8 Pacing the week | [1 plan](img/06-j8-1-plan.png) → [2 run now](img/06-j8-2-run-now.png) → [3 catch-up](img/06-j8-3-catch-up.png) → [4 report](img/06-j8-4-report.png) |
