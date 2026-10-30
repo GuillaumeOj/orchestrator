@@ -16,6 +16,9 @@ import { runStateLabel } from './teams.js';
 import { TermPane } from './term.js';
 import { breakpoint } from './tokens.js';
 
+/** The dock's share of the work column when nothing is saved: agents need rows. */
+const DOCK_HEIGHT = 0.45;
+
 export const app = $state({
   data: null, // app_state
   now: { rev: 0, agents: {}, runs: {}, decisions: {}, outcomes: [], counts: { global: {}, projects: {} } }, // now.svelte.js
@@ -43,8 +46,9 @@ export const app = $state({
   theme: null, // null = system, 'dark' | 'light' (user choice)
   themeRev: 0, // bumped when the applied theme may have changed (diagrams redraw)
   kittyTheme: false, // derive surface, text and accent from kitty.conf (§9.1); a user choice wins
-  // Shells live in one dock under the panes, one tab each (not in `layout`).
-  dock: { open: false, height: 0.3, tabs: [], active: null },
+  // Agents and shells live in one dock under the panes, one tab each (not in
+  // `layout`). `v: 2` marks a height saved under the 0.45 default.
+  dock: { open: false, height: DOCK_HEIGHT, tabs: [], active: null, v: 2 },
   error: null,
 });
 
@@ -61,8 +65,12 @@ export function now30() {
   return tick.now;
 }
 
-/** A pane shown in the shell dock rather than the tiling layout. */
+/** A pane shown in the dock rather than the tiling layout. */
 export const inDock = (id) => app.dock.tabs.includes(id);
+
+/** The dock takes the whole work column: no workspace pane, or a zoomed dock tab. */
+export const dockFills = () =>
+  app.dock.open && app.dock.tabs.length > 0 && (!app.layout || (!!app.zoomed && inDock(app.zoomed)));
 
 /** xterm.js panes by pane id (not reactive). */
 export const terms = new Map();
@@ -194,7 +202,7 @@ export function addPane(spec, how = 'right') {
   return id;
 }
 
-/** Adds a shell to the dock, as its active tab, and opens the dock. */
+/** Adds a shell or an agent to the dock, as its active tab, and opens the dock. */
 export function addDockPane(spec) {
   const id = newPaneId();
   app.panes[id] = { ...spec, title: spec.title ?? title(spec) };
@@ -210,7 +218,10 @@ export function toggleDock() {
   if (!app.dock.tabs.length) return openShell();
   app.dock.open = !app.dock.open;
   if (app.dock.open) focusPane(app.dock.active ?? app.dock.tabs[0]);
-  else if (inDock(app.focused)) focusPane(L.visible(app.layout)[0]);
+  else {
+    if (inDock(app.zoomed)) app.zoomed = null;
+    if (inDock(app.focused)) focusPane(L.visible(app.layout)[0]);
+  }
   saveLayout();
 }
 
@@ -231,7 +242,8 @@ export function focusPane(id) {
   app.focused = id;
   const s = app.panes[id];
   if (s.agentId) select('agent', s.agentId);
-  if (app.zoomed && app.zoomed !== id) app.zoomed = id;
+  // Zoom follows the focus inside its side (workspace or dock), and ends when the other side is focused.
+  if (app.zoomed && app.zoomed !== id) app.zoomed = inDock(app.zoomed) === inDock(id) ? id : null;
   // Focus whatever is focused when this runs: several calls in a row end on
   // the last, and each terminal's focusin then matches `app.focused`. A
   // session in watch mode never gets the terminal: its strip has the keys (D5).
@@ -399,12 +411,12 @@ export async function coreAct(d, action) {
   }
 }
 
-/** A command in a shell pane (gh auth login, claude /mcp); the user exits it. */
+/** A command in a dock shell (gh auth login, claude /mcp); the user exits it. */
 export async function runInPane(run, title, projectId = null) {
   const p = projects().find((x) => x.id === projectId);
   try {
     const t = await spawnShell({ projectId: p?.id, agentId: null, cwd: p?.path, run });
-    addPane({ type: 'shell', termId: t.id, spawn: t.spawn, cwd: t.cwd, projectId: p?.id, title }, 'right');
+    addDockPane({ type: 'shell', termId: t.id, spawn: t.spawn, cwd: t.cwd, projectId: p?.id, title });
   } catch (e) {
     toast(`Could not run ${run}: ${errText(e)}`, { kind: 'error' });
   }
@@ -464,10 +476,14 @@ export async function openTrust(projectId) {
   try {
     const run = await invoke('trust_command');
     const t = await spawnShell({ projectId: p.id, agentId: null, cwd: p.path, run });
-    addPane(
-      { type: 'shell', termId: t.id, spawn: t.spawn, cwd: t.cwd, projectId: p.id, title: `trust · ${p.name}` },
-      'right',
-    );
+    addDockPane({
+      type: 'shell',
+      termId: t.id,
+      spawn: t.spawn,
+      cwd: t.cwd,
+      projectId: p.id,
+      title: `trust · ${p.name}`,
+    });
     toast(`Answer "Yes, I trust this folder" in the pane, then /exit · ${p.name}`, { ms: 10000 });
   } catch (e) {
     toast(`Could not start claude: ${errText(e)}`, { kind: 'error' });
@@ -517,12 +533,11 @@ export function leaveWatch(paneId) {
   else openMission();
 }
 
+/** An agent: a tab of the dock, focused (its tab is focused when it is open). */
 export function openAgent(agentId) {
   const existing = findPane((s) => s.type === 'agent' && s.agentId === agentId);
   if (existing) return focusPane(existing);
-  const a = agent(agentId);
-  const n = L.visible(app.layout).length;
-  addPane({ type: 'agent', agentId, projectId: a?.project_id }, n >= 3 ? 'tab' : 'right');
+  addDockPane({ type: 'agent', agentId, projectId: agent(agentId)?.project_id });
 }
 
 /**
@@ -853,12 +868,16 @@ export async function restoreLayout() {
     app.theme = saved.theme ?? null;
     app.kittyTheme = saved.kittyTheme ?? false;
   }
-  if (!saved?.layout) {
+  // A dock with tabs and no workspace pane is a layout too.
+  if (!saved?.layout && !saved?.dock?.tabs?.length) {
     addPane({ type: 'mission' });
     if (!app.data?.setup?.done) openSingleton('setup');
     return;
   }
-  const docked = saved.dock?.tabs ?? [];
+  // Agents saved in the workspace move to the dock, after the saved dock tabs.
+  // A session over Mission control (`over`) stays in its group.
+  const migrated = L.allPanes(saved.layout).filter((id) => saved.panes[id]?.type === 'agent' && !saved.panes[id].over);
+  const docked = [...(saved.dock?.tabs ?? []), ...migrated];
   const ids = [...L.allPanes(saved.layout), ...docked];
   for (const id of ids) nextPane = Math.max(nextPane, Number(id.slice(1)) + 1);
   const panes = {};
@@ -876,17 +895,26 @@ export async function restoreLayout() {
   );
   app.panes = panes;
   const tabs = docked.filter((id) => panes[id]);
+  const landed = migrated.some((id) => panes[id]);
+  // The focused agent that moved is the active tab; else the saved one.
+  const active = panes[saved.focused] && migrated.includes(saved.focused) ? saved.focused : saved.dock?.active;
+  // A height saved before the 0.45 default (no `v`) is the old 0.3 default: moved once.
+  const height = saved.dock?.height;
   app.dock = {
-    open: !!saved.dock?.open && tabs.length > 0,
-    height: saved.dock?.height ?? 0.3,
+    open: (!!saved.dock?.open || landed) && tabs.length > 0,
+    height: saved.dock?.v === 2 ? (height ?? DOCK_HEIGHT) : !height || height === 0.3 ? DOCK_HEIGHT : height,
     tabs,
-    active: tabs.includes(saved.dock?.active) ? saved.dock.active : (tabs[0] ?? null),
+    active: tabs.includes(active) ? active : (tabs[0] ?? null),
+    v: 2,
   };
-  app.layout = L.reid(L.prune(saved.layout, (id) => !!panes[id]));
-  if (!app.layout) addPane({ type: 'mission' });
+  app.layout = L.reid(L.prune(saved.layout, (id) => !!panes[id] && !migrated.includes(id)));
+  // Mission control only when both the workspace and the dock are empty.
+  if (!app.layout && !tabs.length) addPane({ type: 'mission' });
   else
     focusPane(
-      panes[saved.focused] && (!inDock(saved.focused) || app.dock.open) ? saved.focused : L.visible(app.layout)[0],
+      panes[saved.focused] && (!inDock(saved.focused) || app.dock.open)
+        ? saved.focused
+        : (L.visible(app.layout)[0] ?? app.dock.active),
     );
   if (!app.data?.setup?.done) openSingleton('setup');
 }
@@ -992,9 +1020,9 @@ export function commands() {
     },
     { id: 'board.open', label: 'Open the Board of the focused project', run: () => openBoard(contextProject()?.id) },
     { id: 'shell.new', label: 'New shell (dock)', run: () => openShell() },
-    { id: 'dock.toggle', label: 'Show or hide the shell dock', run: () => toggleDock() },
-    { id: 'dock.next', label: 'Next shell tab', run: () => cycleDock(1) },
-    { id: 'dock.prev', label: 'Previous shell tab', run: () => cycleDock(-1) },
+    { id: 'dock.toggle', label: 'Show or hide the dock', run: () => toggleDock() },
+    { id: 'dock.next', label: 'Next dock tab', run: () => cycleDock(1) },
+    { id: 'dock.prev', label: 'Previous dock tab', run: () => cycleDock(-1) },
     { id: 'editor.open', label: 'Open editor (nvim)', run: () => openEditor() },
     { id: 'pane.split.right', label: 'Split right (shell)', run: () => openShell({ how: 'right' }) },
     { id: 'pane.split.below', label: 'Split below (shell)', run: () => openShell({ how: 'below' }) },

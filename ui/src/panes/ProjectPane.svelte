@@ -131,7 +131,7 @@
       <span class="secondary mono">{short(p.path)}</span>
       <span class="grow"></span>
       <button class="btn" onclick={fetchNow} disabled={!!busy}>{busy === 'fetch' ? 'Fetching…' : 'Fetch'} <Kbd keys="f" /></button>
-      <button class="btn ghost" onclick={() => openShell({ projectId: p.id, cwd: p.path, how: 'right' })}>Shell</button>
+      <button class="btn ghost" onclick={() => openShell({ projectId: p.id, cwd: p.path })}>Shell</button>
       <button class="btn ghost" onclick={() => openDiff(p.id, p.path, d?.status?.branch)}>Diff</button>
       <button class="btn ghost" onclick={() => openProjectSettings(p.id)}>Settings</button>
       <button class="btn danger" onclick={startRemoval}>Remove project… <Kbd keys="x" /></button>
