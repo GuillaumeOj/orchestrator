@@ -34,7 +34,7 @@ Orchestrator is a **personal, local-first macOS app** for running software proje
 | G6 | Monitor usage live and **pace all work against the 5h and weekly limits**. | No hard limit lockout during working hours; ≥ 85 % of the weekly allowance used by reset. |
 | G7 | Integrate with the developer's PM/design stack: GitHub, Linear, Notion, Figma, Penpot. | Tasks and design links flow without copy/paste. |
 | G8 | Keep the runtime replaceable (other agent CLIs later). | Provider interface with one implementation (Claude Code CLI). Priority: **C**. |
-| G9 | A designed, consistent UI with a Penpot file as its source of truth. | P1 screens designed before they are built. |
+| G9 | A designed, consistent UI with a FigCraft file as its source of truth. | P1 screens designed before they are built. |
 | G10 | **One interface**: the user drives all work from Mission control and the Overwatch chat, never from inside an agent's session. | A team run with **0 pane interventions** (FR-1311); every decision answerable from a card. |
 
 ### 1.2 Non-goals (for now)
@@ -512,9 +512,9 @@ trait Provider {
 
 ## 9. User interface
 
-### 9.0 Penpot file: the UI source of truth
-The UI is **designed in Penpot before it is built** (ADR-008), with a gate sized for one person.
-- **File**: `Orchestrator — UI`, linked from `docs/design/README.md`.
+### 9.0 FigCraft file: the UI source of truth
+The UI is **designed in FigCraft before it is built** (ADR-012, which replaces ADR-008), with a gate sized for one person.
+- **File**: `docs/design/Orchestrator.figcraft` (Git LFS), described in `docs/design/README.md`. It was moved from the Penpot file `Orchestrator`.
 - **Pages**:
   | Page | Content |
   |---|---|
@@ -526,9 +526,9 @@ The UI is **designed in Penpot before it is built** (ADR-008), with a gate sized
   | `05 Keyboard & copy` | The full shortcut map (global, leader and pane-local keys of §9.7) with conflict notes; banner, notification and toast copy. |
   | `06 Flows` | Storyboards of **J2, J5 and J8** only: annotated frame sequences with the key sequence of each step (no clickable prototypes). |
   | `07 Explorations` | Drafts, not binding. |
-- **Tokens pipeline**: Penpot tokens are exported as W3C design-token JSON, converted to CSS variables with Style Dictionary (a script in the repo), and a CI check fails on drift. Code uses tokens only.
-- **Process**: new screens are designed first. Small changes may be made in code and **backported to Penpot in the same PR**. UI/UX agents can work on the file through the Penpot MCP.
-- **Gate**: Foundations, Shell and the P1 screens (Overview, agent pane, Week planner, Inbox) must be in Penpot before P1 UI work starts. **P4 gate** (v0.12): the new shell (board + chat column), Mission control, every decision card kind with its lifecycle states, the collapsed Overwatch lines and the session overlay must be in Penpot (pages `03`, `04`, and a `06` storyboard of J12) before P4.2 UI work starts.
+- **Tokens pipeline**: The FigCraft variables (Primitives and Theme collections) are exported as W3C design-token JSON, converted to CSS variables with Style Dictionary (a script in the repo), and a CI check fails on drift. Code uses tokens only.
+- **Process**: new screens are designed first. Small changes may be made in code and **backported to the FigCraft file in the same PR**. UI/UX agents can work on the file through the FigCraft MCP.
+- **Gate**: Foundations, Shell and the P1 screens (Overview, agent pane, Week planner, Inbox) must be in the FigCraft file before P1 UI work starts. **P4 gate** (v0.12): the new shell (board + chat column), Mission control, every decision card kind with its lifecycle states, the collapsed Overwatch lines and the session overlay must be in the FigCraft file (pages `03`, `04`, and a `06` storyboard of J12) before P4.2 UI work starts.
 
 ### 9.1 Design principles
 1. **Keyboard-first**: every action is in the command palette (⌘K) and has a shortcut (§9.7). The mouse is optional, including on the canvas.
@@ -659,12 +659,12 @@ From P4.3 (v0.12) the ladder applies to **cards in the Overwatch chat** instead 
 - The app ships its own macOS menu, so system items (Close Window ⌘W, Hide ⌘H, Minimize ⌘M) don't take chords this contract uses.
 - **Global ⌘ shortcuts**: ⌘K palette, ⌘P jump, ⌘B sidebar, ⌘I inspector, ⌘N new project, ⌘T new session, ⌘1…9 focus pane, ⌘W close pane, ⌘⇧T reopen the last closed pane, ⌘⇧I Inbox.
 - **Leader + key**: `s`/`v` split horizontally/vertically, `h j k l` move focus, `z` zoom, `t` new shell, `e` open editor, `w` next waiting agent, `p` pause/resume the focused agent, `o` Overview, `g` Week planner.
-- **Notation** (Penpot, docs, UI): one key-hint container per shortcut; `+` joins keys pressed together (`⌘+⇧+I`), a space separates the steps of a sequence (`⌘+; z` = leader, then `z`).
+- **Notation** (FigCraft, docs, UI): one key-hint container per shortcut; `+` joins keys pressed together (`⌘+⇧+I`), a space separates the steps of a sequence (`⌘+; z` = leader, then `z`).
 - **Pane-local single keys** when the pane has focus and is not a terminal: Inbox (FR-707, plus `e` open in nvim), Overview (`⏎` open, `i` interrupt, `p` pause, `s` suspend, `r` resume, `⇧K` kill (asks first; `k` moves up), FR-903), Week planner (`S` sprint mode, `P` pause all, `e` edit plan, `u` undo the selected log entry), canvas (FR-302). The full map is on Penpot page `05`.
 - **From P4** (v0.12): ⌘⇧I focuses the chat on the oldest open card (cards take the FR-707 keys; `j/k` move between open cards, skipping collapsed lines); ⌘L focuses the chat input; leader `o` opens Mission control; in Mission control, `j/k` move rows, `⏎` opens the session over the board (Esc returns), `i`/`p`/`s`/`r`/`⇧K` act on the **selected** row, `f` filters by project.
 - **Known limits** (P0): xterm.js has no kitty keyboard protocol, so `Ctrl-I` = Tab, `Ctrl-M` = Enter and `Ctrl-[` = Esc as in legacy terminals, and `Ctrl-/`, `Ctrl-.`, `Ctrl-;` and every `Ctrl-Shift-<letter>` send nothing. These are recorded on Penpot page `05`. Not yet tested with physical keys: ⌘-chords against the menu, dead keys and IME composition (R9).
 
-### 9.8 Wireframes (low-fi, starting points for Penpot)
+### 9.8 Wireframes (low-fi, starting points for the FigCraft file)
 
 **Week planner**
 ```
@@ -732,7 +732,7 @@ From P4.3 (v0.12) the ladder applies to **cards in the Overwatch chat** instead 
 | **P3 — Ecosystem** | Linear, Notion, Penpot/Figma design flow (4.6), presets, weekly report, estimator, per-model limits, off-hours scheduling, optional model downgrade. | Design → code flow on a real feature. |
 | **P4.0 — Stop the bleeding** (v0.12) | Read allow on the agent's `messages/` folder and `delivered_at` at paste (FR-206); expired holds park the agent (FR-705); never-started sessions recovered (FR-415); memory-cap hysteresis and no pressure-suspend of a pasted turn (FR-203); who decided each permission (FR-709); Notification events stored with their type; `pane_intervention` events (FR-1311); the restart gate gets a payload. | A real team run **in auto mode**, with prompts by tool and pane interventions counted against the 2026-10-27 baseline (29 prompts, 6 interventions, ~5 h of agent time waiting). |
 | **P4.1 — One "now"** | Attention records in the core, pushed on change (FR-1301); Decisions keep their payload and lifecycle (FR-1303); outcome digest; every existing surface renders attention (sidebar, rail, Overview, agent header, Inspector, status bar). | Every "needs you", live and queued count agrees across surfaces; no per-pane polling left. |
-| **P4.2 — Mission control** | Penpot pass (§9.0 P4 gate), then Mission control replaces the Overview (FR-1302); sessions open over the board; the Inspector follows the selection. | "What is running, waiting on what, queued why, done today" answered on one screen. |
-| **P4.3 — Chat & cards** | Penpot pass, then the chat column (FR-1305), cards for every decision kind with their context and lifecycle (FR-1304); the Inbox pane is removed; notification clicks open the card. | Every Inbox interaction available from a card; no decision needs the pane. |
+| **P4.2 — Mission control** | Design pass (§9.0 P4 gate), then Mission control replaces the Overview (FR-1302); sessions open over the board; the Inspector follows the selection. | "What is running, waiting on what, queued why, done today" answered on one screen. |
+| **P4.3 — Chat & cards** | Design pass, then the chat column (FR-1305), cards for every decision kind with their context and lifecycle (FR-1304); the Inbox pane is removed; notification clicks open the card. | Every Inbox interaction available from a card; no decision needs the pane. |
 | **P4.4 — The Overwatch** | The Overwatch role, its tools and wake scheduler (FR-1306–1307); the policy file and learned rules (FR-1308); questions and unsticking (FR-1309); oversight lines (FR-1310). | A team run where the user only uses Mission control and the chat: 0 pane interventions. |
 | **P4.5 — Intake** | Intake source per project and the *Ready to start* lane (FR-1312). | A week's work started from intake items only. |

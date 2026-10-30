@@ -1,6 +1,6 @@
 # Design
 
-The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app (file id `65d5ee1e-9774-8045-8008-d16813b441c7`). See [ADR-008](../adr/008-ui-design-source-of-truth-penpot.md) and [SPEC §9](../SPEC.md).
+The UI source of truth is the FigCraft file [`Orchestrator.figcraft`](Orchestrator.figcraft), stored with Git LFS (`git lfs pull` to fetch it). It replaces the Penpot file **Orchestrator**, which it was moved from; the pages are the same, except that the empty `07 Explorations` page was not carried over. Pages `04.1` to `04.7` split the old `04 Screens` page, `04.3` holds the chat column and `06.1` the J12 storyboard. See [ADR-012](../adr/012-ui-design-source-of-truth-figcraft.md) and [SPEC §9](../SPEC.md).
 
 ## Pages
 
@@ -34,7 +34,7 @@ The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app 
 
 ## Screenshots
 
-Exports of the Penpot boards (Dark theme unless noted), refreshed by hand.
+Exports of the boards (Dark theme unless noted), taken from the Penpot file before the move to FigCraft and refreshed by hand.
 
 | Page | Image |
 |---|---|
@@ -80,7 +80,7 @@ All screens use one scenario: Wednesday 21 Oct 11:00, Governor in Red (+9 pp), l
 
 ## Tokens
 
-[`tokens.json`](tokens.json) is a snapshot of the Penpot tokens in W3C design-token form (`$type` / `$value`, references as `{token.name}`).
+[`tokens.json`](tokens.json) is a snapshot of the design tokens (the FigCraft variables, Primitives and Theme) in W3C design-token form (`$type` / `$value`, references as `{token.name}`).
 - **Sets**:
   - `core`: palettes, font families, sizes and weights, typography composites, spacing, radius, border widths, opacity, sizing, breakpoints.
   - `theme/dark`: semantic colors and shadow, from Tokyo Night Storm (the user's kitty theme).
@@ -118,6 +118,6 @@ All screens use one scenario: Wednesday 21 Oct 11:00, Governor in Red (+9 pp), l
   | Outcome kind (digest, `text.muted`) | task_done clipboard-check-outline F08A8 · merge_done merge F0F5C · pr_opened source-branch-plus F14CA · run_phase transit-connection-variant F0D3D · run_done flag-outline F023D · turn_done message-reply-text-outline F173E · report_ready file-chart-outline F1029 · sync_conflict sync-alert F04E7 |
   | Context blocks | radiobox F043D / F043E, checkbox F0131 / F0132, countdown timer-outline F051B; status bar paused all pause-octagon-outline F03E8 |
 
-Pipeline (to build in P1): Penpot token export → this JSON → Style Dictionary → CSS variables, with a CI check that fails when the code and the export drift. Until that exists, refresh `tokens.json` by hand after token changes in Penpot.
+Pipeline (to build in P1): FigCraft variable export (`variable.export`) → this JSON → Style Dictionary → CSS variables, with a CI check that fails when the code and the export drift. Until that exists, refresh `tokens.json` by hand after variable changes in the FigCraft file.
 
 **Contrast**: `text.primary` is ≥ 7:1 and `text.secondary` / `text.muted` are ≥ 4.5:1 on `surface.pane`, `surface.chrome` and `surface.raised` in both themes. Status, pacing and P4.1 palette colors (icons, glyphs, dots, pill outlines) are ≥ 3:1 on `surface.raised` and `surface.selected` in both themes (WCAG 1.4.11); the label always carries the meaning too. The `*-aa` palette entries adjust Tokyo Night values that fell short: storm `muted-aa`, `dark5-aa`, `red1-aa`, `suspended-aa`; day `fg-aa`, `fg-dark-aa`, `muted-aa` and the status/pacing `*-aa` entries (cyan, orange, magenta, yellow, red, red1, green, blue, blue1, teal, dark5, suspended). `text.disabled` is exempt.

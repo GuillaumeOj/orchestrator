@@ -73,7 +73,7 @@ A permission hold that reaches its deadline no longer falls back to the pane: th
 - **Keeping the Inbox pane next to the chat.** Two places for the same decision; the user chose one.
 
 ## Consequences
-- The UI loses the Inbox and Overview panes and gains Mission control, the chat column and card components (Penpot pass first, ADR-008).
+- The UI loses the Inbox and Overview panes and gains Mission control, the chat column and card components (design pass first, ADR-012).
 - The core gains: the attention model and a push channel; Decision objects with context blocks and lifecycle (migration of `inbox_items`); the chat log; the policy file and its loader; the Overwatch role, its tools and its wake scheduler.
 - One more Claude session in the budget: its usage is attributed to "overwatch" in the weekly plan (critical tier, drawn from the reserve).
 - Risks: wrong auto-answers (mitigated by the hard-deny list, citations, undo, and audit); wake latency on a cold cache (a permission hold waits up to the Overwatch's deadline, default 60 s, then the card stays for the user); the Overwatch itself getting stuck (it has no permission prompts of its own: read-only tools and orchestrator tools only; a failed wake leaves cards for the user).
