@@ -33,7 +33,7 @@ export const LEADER = {
   e: 'editor.open',
   w: 'agent.next-waiting',
   p: 'agent.pause',
-  o: 'overview',
+  o: 'mission',
   g: 'planner',
 };
 

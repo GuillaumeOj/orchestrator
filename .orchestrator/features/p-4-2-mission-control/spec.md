@@ -34,7 +34,7 @@ Both parts are in this phase and both are reviewed by the user (`00 Cover` In re
 ### 3.2 Mission control replaces the Overview — FR-1302 (M)
 A new pane type `mission` (`MissionPane.svelte`); `OverviewPane.svelte` is deleted. It is the home pane: a fresh layout opens it, leader `o` and the palette ("Open Mission control") focus it, and a saved layout's `overview` pane is restored as `mission`.
 
-**Lanes**, top to bottom, each with its header and a count that says what it counts ("Needs you · 2"), from one pure function `lanes(now, filter)` in `ui/src/lib/mission.js` (unit-tested):
+**Lanes**, top to bottom, each with its header and a count of its **rows** with a unit ("Needs you · 1 run · 1 session", "Queued · 2 agents", "Done today · 4 outcomes"; D11); empty lanes are hidden except Needs you ("Nothing needs you"), from one pure function `lanes(now, filter)` in `ui/src/lib/mission.js` (unit-tested):
 
 | Lane | Rows | Order |
 |---|---|---|
@@ -54,7 +54,7 @@ Below the lanes, a collapsed line **Idle · n sessions** (solo agents at `idle`,
 
 **Row details** (`space` or a click on the row's disclosure): the FR-901 columns kept from the Overview, one line per agent of the row: activity, elapsed, ctx %, usage this session (pp), Governor, memory. The footer keeps the Overview's totals and memory line (counts from the core).
 
-**Per-project filter** (from the first version): `f` or the toolbar opens a multi-select of projects (All, or one or several); remembered in settings key `mission` (`{projects: [ids] | null}`); lane counts follow the filter (summed per-project counts, never recounted from rows where the core has a number). A filter that hides rows says so in the toolbar ("2 projects of 4").
+**Per-project filter** (from the first version): `f` or the toolbar opens a multi-select of projects (All, or one or several); remembered in settings key `mission` (`{projects: [ids] | null}`); rows follow the filter, so lane counts do too; the filter popover, footer and status bar show the core's per-project agent counts (D11). A filter that hides rows says so in the toolbar ("2 projects of 4").
 
 **Empty states**: no projects (→ J0: Add project); nothing running (New session); everything waiting on you (Needs you only, with "Nothing else is moving").
 
@@ -73,8 +73,8 @@ Pane-local, when Mission control has focus: `j/k` move rows (across lanes, skipp
 - **Decision**: kind, title, subject, its context blocks (P4.1 `ContextBlocks`), lifecycle marker, Open in Inbox.
 
 ### 3.6 Core additions (S) — api-contract §1
-- **Run record**: `lead` (agent id), members ordered lead first then by node order, `tasks {total, done, in_progress, review, blocked}`, `pr? {url, number?}` once `run.pr_url` is set, `started_ms`.
-- **Agent record, queued**: `queue? {position?, tier, eta_ms?, run_now {week_pp?, five_hour_pp?, binds}}` for statuses `queued`, `not_started` (no position for paused). `position` is 1-based in the Governor's order.
+- **Run record**: `lead` (agent id), members ordered lead first then by node order, `tasks {total, done, in_progress, review, blocked}`, `pr? {url, number?}` once `run.pr_url` is set, `started_ms`, and for paused / deferred / failed runs `held_in` and (deferred) `until_ms` (D12).
+- **Agent record, queued**: `queue? {entry, position?, tier, eta_ms?, run_now {week_pp?, five_hour_pp?, binds}}`, present only when the agent has a Governor queue entry (statuses `queued`, `not_started`; never for paused) (D13). `position` is 1-based in the Governor's order.
 - Both are pushed with the record (a change in progress or ETA is a record change). `orchd now` prints the task progress on run lines.
 
 ### 3.7 Done today keeps seen outcomes (S, front)
@@ -91,7 +91,7 @@ The store keeps today's outcomes after a push whether seen or not (the Inbox dig
 - **One source of state**: Mission control reads `app.now` (and `app.data` only for an agent's raw details: ctx %, memory, model); it never calls a view command and has no timer except the 30 s relative-time clock.
 - **Performance (NFR-1b)**: 50 agents + 10 runs render in < 16 ms per `now` event (test with a fixture); lanes are plain lists (no virtualization below 200 rows).
 - **Accessibility**: rows are a `grid` with `aria-selected`; lane headers are headings; the phase stepper has a text equivalent ("phase 4 of 6: executing"); colour is never the only signal.
-- **Tests**: `make ci` green. Core: run record `lead`, member order, task counts, `pr`; queued `queue` field (position, ETA, binding window) for a queue entry, a not-started agent, a 5h-guard hold. UI: `lanes()` table tests (every level, error in Needs you, idle line, done not a row, whole queue incl. run members, filter by one / several projects, counts from the core), keyboard (`j/k` across lanes, `h/l` chips, `⏎` opens a tab in Mission control's group, Esc in watch mode returns, keys reach the PTY after take-over), filter persisted and restored, a saved `overview` pane restored as `mission`, Inspector for run and decision, the exit-criterion test (§1). Tests hold at any date, hour and time zone.
+- **Tests**: `make ci` green. Core: run record `lead`, member order, task counts, `pr`; queued `queue` field (position, ETA, binding window) for a queue entry, a not-started agent, a 5h-guard hold. UI: `lanes()` table tests (every level, error in Needs you, idle line, done not a row, whole queue incl. run members, filter by one / several projects, lane counts = rows with their unit, empty lanes hidden except Needs you), keyboard (`j/k` across lanes, `h/l` chips, `⏎` opens a tab in Mission control's group, Esc in watch mode returns, keys reach the PTY after take-over), filter persisted and restored, a saved `overview` pane restored as `mission`, Inspector for run and decision, the exit-criterion test (§1). Tests hold at any date, hour and time zone.
 
 ## 6. Acceptance (demo at the PR gate)
 1. With a team run (lead running, back-1 at a permission, front-1 waiting on back-1), a solo session running, one queued agent (live cap), one not-started agent, and outcomes today: Mission control shows the run in Needs you with its stepper at executing, its blocker "back-1 · permission: Bash …", its chips; the solo row in Running with its activity; both queued agents with reason, ETA and Run now cost; Done today with the PR link.

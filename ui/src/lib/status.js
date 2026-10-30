@@ -1,7 +1,7 @@
 // Status vocabulary (SPEC §9.5): one label, one icon and one color per state,
 // used everywhere. Icons are Material Design glyphs of FiraCode Nerd Font Mono
 // (docs/design/README.md).
-import { clock, dayHm, duration, pp, signed } from './format.js';
+import { clock, dayHm, duration } from './format.js';
 
 export const STATUS = {
   working: { label: 'Working', icon: '\u{F040A}', color: 'var(--color-status-working)' },
@@ -166,19 +166,6 @@ export function queueReason(entry, now = Date.now()) {
     default:
       return 'queued';
   }
-}
-
-/**
- * Run now's cost in the window that holds the entry (FR-809): % of the 5h
- * window under the 5h guard, pp of the week otherwise. `both` adds the other.
- */
-export function runCost(entry, both = false) {
-  const week = pp(entry?.estimated_cost_pct ?? 0, 1);
-  const f = entry?.estimated_cost_5h_pct;
-  if (f == null) return week;
-  const five = `${signed(f)} %`;
-  if (entry?.binding === 'five_hour') return both ? `${five} of the 5h window (${week} of the week)` : `${five} 5h`;
-  return both ? `${week} of the week (${five} of the 5h window)` : week;
 }
 
 /** The agent's session usage in pp of the week (cost / cost per weekly %). */

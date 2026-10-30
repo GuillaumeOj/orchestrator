@@ -1,57 +1,24 @@
 <script>
-  // Inspector (§9.2): the selection's details. Docked at ≥ 1512 px, overlay below.
-  import { agentAction, app, confirm, contextAgent, openDiff, openInKitty, openShell, projects } from '../lib/app.svelte.js';
-  import { clock, mb, pct, shortPath, tokens } from '../lib/format.js';
-  import { attention, governorReason, statusOf } from '../lib/now.svelte.js';
-  import { cacheState, sessionPp } from '../lib/status.js';
-  import AgentChip from './AgentChip.svelte';
+  // Inspector (§9.2, notes p4-2 §5): what is inspected (D10): the focused
+  // agent pane's agent, else the selection (an agent, a run or a decision).
+  // Docked at ≥ 1512 px, overlay below.
+  import { app, inspected } from '../lib/app.svelte.js';
+  import AgentInspector from './inspector/AgentInspector.svelte';
+  import DecisionInspector from './inspector/DecisionInspector.svelte';
+  import RunInspector from './inspector/RunInspector.svelte';
   import Kbd from './Kbd.svelte';
-  import StatusBadge from './StatusBadge.svelte';
-  import WaitingChip from './WaitingChip.svelte';
 
   let { overlay = false } = $props();
-  const a = $derived(contextAgent());
-  const p = $derived(projects().find((x) => x.id === a?.project_id));
-  const rec = $derived(a ? attention(a.id) : null);
-  const pp = $derived(sessionPp(a, app.data?.usage?.snapshot));
-  const cache = $derived(cacheState(a, clock));
-  const home = $derived(app.data?.core?.user_home ?? '');
-  const short = (path) => shortPath(path, home);
+  const s = $derived(inspected());
 </script>
 
 <aside class="insp" class:overlay aria-label="Inspector">
-  <div class="head"><span class="muted">Inspector</span>{#if overlay}<button class="x" onclick={() => (app.inspector = false)}><Kbd keys="esc" /></button>{:else}<Kbd keys="⌘+I" />{/if}</div>
-  {#if a}
-    <div class="who"><AgentChip id={a.id} /><StatusBadge state={statusOf(a.id)} /></div>
-    {#if rec?.reason || rec?.activity}<div class="why"><span class="muted">{rec.waiting_on ? `Waiting on ${rec.waiting_on.kind}` : 'Doing'}</span> <WaitingChip {rec} /></div>{/if}
-    <dl>
-      <dt>Project</dt><dd>{p?.name ?? '—'}</dd>
-      <dt>Branch</dt><dd>{a.branch || '—'}</dd>
-      <dt>Worktree</dt><dd class="wrap">{short(a.worktree)}</dd>
-      <dt>Model</dt><dd>{a.model ?? 'default'}{a.effort ? ` · effort ${a.effort}` : ''}</dd>
-      <dt>Context</dt><dd>{pct(a.context_pct)}{cache ? ` · cache ${cache}` : ''}</dd>
-      <dt>Usage</dt><dd>{pp == null ? '—' : `${pp.toFixed(1)} pp this session`} · {a.turns ?? 0} turns</dd>
-      {#if a.otel_week}<dt>This week</dt><dd>{tokens(a.otel_week.tokens_in + a.otel_week.cache_read + a.otel_week.cache_write)} in · {tokens(a.otel_week.tokens_out)} out · ≈ ${a.otel_week.cost.toFixed(2)}</dd>{/if}
-      <dt>Governor</dt><dd>{governorReason(rec)}</dd>
-      <dt>Memory</dt><dd>{a.memory_mb ? mb(a.memory_mb) : '—'}</dd>
-      <dt>Session</dt><dd class="wrap mono">{a.session_id}</dd>
-      {#if a.git}<dt>Changes</dt><dd>±{a.git.dirty} · ↑{a.git.ahead} ↓{a.git.behind}</dd>{/if}
-    </dl>
-    <div class="acts">
-      {#if a.live}
-        <button class="btn" onclick={() => agentAction(a.id, 'interrupt')}>Interrupt <Kbd keys="esc" /></button>
-        <button class="btn" onclick={() => agentAction(a.id, 'suspend')}>Suspend <Kbd keys="s" /></button>
-      {:else}
-        <button class="btn" onclick={() => agentAction(a.id, 'resume')}>Resume <Kbd keys="r" /></button>
-      {/if}
-      <button class="btn danger" onclick={() => confirm(`Kill ${a.id}?`, 'SIGTERM to its group and to leftover processes in its worktree, SIGKILL after 5 s.', () => agentAction(a.id, 'kill'), 'Kill')}>Kill <Kbd keys="⇧+K" /></button>
-      <button class="btn danger" onclick={() => (app.overlay = { kind: 'delete-agent', agentId: a.id })}>Delete…</button>
-      <button class="btn ghost" onclick={() => openShell({ agentId: a.id })}>Shell here <Kbd keys="⌘+; t" /></button>
-      <button class="btn ghost" onclick={() => openDiff(a.project_id, a.worktree, a.branch)}>Diff</button>
-      <button class="btn ghost" onclick={() => openInKitty(a.worktree)}>Open in kitty</button>
-    </div>
+  <div class="head"><span class="muted">Inspector{s ? ` · ${s.kind}` : ''}</span>{#if overlay}<button class="x" onclick={() => (app.inspector = false)}><Kbd keys="esc" /></button>{:else}<Kbd keys="⌘+I" />{/if}</div>
+  {#if s?.kind === 'agent'}{#key s.id}<AgentInspector id={s.id} />{/key}
+  {:else if s?.kind === 'run'}{#key s.id}<RunInspector id={s.id} />{/key}
+  {:else if s?.kind === 'decision'}{#key s.id}<DecisionInspector id={s.id} />{/key}
   {:else}
-    <p class="muted">Select an agent in the sidebar or the Overview.</p>
+    <p class="muted">Select an agent in the sidebar or a row in Mission control.</p>
   {/if}
 </aside>
 
@@ -89,37 +56,5 @@
     background: none;
     border: 0;
     padding: 0;
-  }
-  .who {
-    display: flex;
-    gap: var(--space-sm);
-    align-items: center;
-  }
-  .why {
-    display: flex;
-    gap: var(--space-xs);
-    min-width: 0;
-  }
-  dl {
-    display: grid;
-    grid-template-columns: 84px 1fr;
-    gap: var(--space-sm) var(--space-md);
-    margin: 0;
-    padding-bottom: var(--space-md);
-    border-bottom: var(--border-width-default) solid var(--color-border-subtle);
-  }
-  dt {
-    color: var(--color-text-muted);
-  }
-  dd {
-    margin: 0;
-  }
-  .wrap {
-    overflow-wrap: anywhere;
-  }
-  .acts {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-sm);
   }
 </style>

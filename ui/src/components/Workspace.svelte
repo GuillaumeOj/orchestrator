@@ -16,7 +16,7 @@
     <div class="empty">
       <p class="muted">No pane open.</p>
       <p><button class="btn" onclick={() => (app.overlay = { kind: 'new-session' })}>New session <Kbd keys="⌘+T" /></button></p>
-      <p class="muted">Overview <Kbd keys="⌘+; o" /> · Week planner <Kbd keys="⌘+; g" /> · Shell <Kbd keys="⌘+; t" /></p>
+      <p class="muted">Mission control <Kbd keys="⌘+; o" /> · Week planner <Kbd keys="⌘+; g" /> · Shell <Kbd keys="⌘+; t" /></p>
     </div>
   {/if}
 </main>
