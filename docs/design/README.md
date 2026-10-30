@@ -15,6 +15,8 @@ The UI source of truth is the Penpot file **Orchestrator** on design.penpot.app 
 | 06 Flows | Storyboards (annotated frames, no clickable prototype): J2 solo session (5 frames), J5 Inbox triage (6), J8 pacing the week (4). **P2**: J3 team on a feature, 5 notes over the 04 frames (y = 4500) | P1 Ready for dev · **P2 Ready for dev** |
 | 07 Explorations | Drafts, not binding | — |
 
+**Page 04 split (2026-10-30):** page 04 Screens is split by screen type into 04.1 Overview & agent pane, 04.2 Mission control, 04.3 Chat column (P4.2 Part B), 04.4 Feature & board, 04.5 Inbox, 04.6 Planner & reports, 04.7 Settings. Why: with every screen from P1 to P4.2 on one page, the Penpot MCP plugin froze for minutes on each edit. ADR-008 and SPEC §9.0 still say "04 Screens"; read that as the 04.x pages. Board names and export file names are unchanged.
+
 **P1 gate:** before P1 UI work starts, 01, 03 and the P1 panes in 04 (Overview, Agent pane, Week planner, Inbox) are marked ready for dev on `00 Cover`. Reviewed by Guillaume on 2026-10-26: all pages are **Ready for dev** and the P1 design gate is passed. Open questions and spec gaps from the design pass: [p1-design-notes.md](p1-design-notes.md).
 
 **P2 gate:** before P2 UI work starts (Team canvas, Feature, Board, Launch dialog, P2 keys), the P2 additions on 02, 04, 05 and 06 are marked Ready for dev on `00 Cover`. Status 2026-10-27: **approved as designed by Guillaume; the P2 gate is passed**. The spec and PR gate Inbox items were already designed in P1 (04 Inbox, J2 · 4), so P2 adds no gate screen.
