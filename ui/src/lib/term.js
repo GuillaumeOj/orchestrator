@@ -344,7 +344,7 @@ export class TermPane {
   /**
    * An agent's TUI redraws only for a size it reads as new (the core's attach
    * nudge is back to back, a re-show sends nothing): once per show, after the
-   * size settled, one row less then the real size, with a gap between.
+   * size settled, one row less, then the real size, with a gap between.
    */
   scheduleRedraw() {
     if (this.source.kind !== 'agent') return;
@@ -353,7 +353,13 @@ export class TermPane {
   }
 
   redraw() {
-    if (!this.alive || this.pulse || this.term.rows < 2) return;
+    if (!this.alive || this.term.rows < 2) return;
+    // An earlier show's pulse, hidden before its first resize came back: this
+    // show's redraw waits for it instead of being dropped.
+    if (this.pulse) {
+      if (this.pulse.now) this.scheduleRedraw();
+      return;
+    }
     if (!this.host.isConnected) return debug(this.source.id, 'redraw skipped (hidden)');
     const { rows, cols } = this.term;
     debug(this.source.id, 'redraw', `${cols}x${rows - 1}`);

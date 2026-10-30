@@ -9,6 +9,8 @@ const h = vi.hoisted(() => ({
   dims: { cols: 100, rows: 30 },
   /** Resolves agent_attach when the test says so. */
   attach: null,
+  /** Unanswered agent_resize calls (null: answered at once). */
+  held: null,
   terms: [],
 }));
 
@@ -17,6 +19,7 @@ vi.mock('../src/lib/ipc.js', () => ({
     h.calls.push({ cmd, ...args });
     if (cmd === 'agent_attach') return new Promise((res) => (h.attach = () => res(7)));
     if (cmd.endsWith('_read')) return new Promise(() => {});
+    if (cmd === 'agent_resize' && h.held) return new Promise((res) => h.held.push(res));
     return Promise.resolve(null);
   },
 }));
@@ -105,6 +108,7 @@ beforeEach(() => {
   h.calls = [];
   h.dims = { cols: 100, rows: 30 };
   h.terms = [];
+  h.held = null;
   vi.useFakeTimers();
 });
 
@@ -284,6 +288,17 @@ describe('TermPane agent redraw on show', () => {
     t.dispose();
   });
 
+  it('does not redraw an agent whose attach resolved while it was hidden', async () => {
+    const t = mounted({ kind: 'agent', id: 'a1' });
+    const started = t.start();
+    t.unmount();
+    h.attach();
+    await started;
+    await vi.advanceTimersByTimeAsync(NUDGE_MS * 3);
+    expect(agentResizes()).toEqual([]);
+    t.dispose();
+  });
+
   it('puts the PTY back at the real rows at once when hidden during the gap', async () => {
     const t = await attached();
     await vi.advanceTimersByTimeAsync(NUDGE_MS);
@@ -301,6 +316,24 @@ describe('TermPane agent redraw on show', () => {
     t.unmount();
     await vi.advanceTimersByTimeAsync(0);
     expect(agentResizes()).toEqual(['100x29', '100x30']);
+    t.dispose();
+  });
+
+  it('still redraws a re-show that comes while the hidden show first resize is pending', async () => {
+    const t = await attached();
+    h.held = []; // agent_resize answers only when the test says so
+    vi.advanceTimersByTime(NUDGE_MS); // first step sent, not answered
+    const el = t.host.parentElement;
+    t.unmount();
+    t.mount(el);
+    await vi.advanceTimersByTimeAsync(NUDGE_MS); // the re-show's redraw meets the old pulse
+    expect(agentResizes()).toEqual(['100x29']);
+    for (const res of h.held.splice(0)) res(null);
+    h.held = null;
+    await vi.advanceTimersByTimeAsync(0); // the old pulse ends at the real size
+    expect(agentResizes()).toEqual(['100x29', '100x30']);
+    await vi.advanceTimersByTimeAsync(NUDGE_MS + REDRAW_GAP_MS);
+    expect(agentResizes()).toEqual(['100x29', '100x30', '100x29', '100x30']);
     t.dispose();
   });
 
