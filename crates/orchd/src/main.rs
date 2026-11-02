@@ -279,7 +279,8 @@ fn run() -> Result<()> {
             let search = a.opt("--search")?;
             a.done()?;
             let entries: Vec<serde_json::Value> = match (search, day) {
-                (Some(query), _) => {
+                (Some(_), Some(_)) => bail!("chat: --day and --search go alone (search covers every day)"),
+                (Some(query), None) => {
                     let r = request(&sock, CtlRequest::ChatSearch { query, limit: None })?;
                     if !r.ok {
                         return print(r);

@@ -84,11 +84,15 @@ impl Serialize for ChatEntry {
             }
         }
         // The card goes with the line: an open entry renders from `now.decisions`.
+        // A "left open" entry (carried on to a later day) keeps its snapshot:
+        // its decision may have closed and left `now` since.
         if let Some(line) = &self.line {
             m.serialize_entry("line", line)?;
-            if let Some(card) = &self.card {
-                m.serialize_entry("card", card)?;
-            }
+        }
+        if (self.line.is_some() || self.continued_to.is_some())
+            && let Some(card) = &self.card
+        {
+            m.serialize_entry("card", card)?;
         }
         for (k, v) in [("continued_from", self.continued_from), ("continued_to", self.continued_to)] {
             if let Some(n) = v {

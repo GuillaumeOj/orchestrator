@@ -112,7 +112,7 @@ pub fn line_of(d: &Decision, rule: Option<&PermissionRule>, prior: Option<&Value
     let (mut by, rule_id) = by_of(lc.decided_by.as_deref());
     let (mut verb, mut state) = (verb(d), lc.state);
     let was_parked = prior.and_then(|c| c["lifecycle"]["state"].as_str()) == Some("parked");
-    if d.synthesized && by != "you" {
+    if d.synthesized && !matches!(by, "you" | "overwatch") {
         let deadline = d.payload.get("deadline_ms").and_then(Value::as_u64);
         match deadline {
             Some(t) if d.kind == "ask" && lc.decided_at_ms.unwrap_or(now) >= t => {
@@ -271,14 +271,16 @@ impl Runtime {
             }
             // A card still open from an earlier day carries on in a new entry
             // of today's thread, after the morning line (ux F1); the old one
-            // keeps no line ("left open").
+            // keeps no line ("left open"). Same `at_ms` as the morning line:
+            // the id orders them after it, and before the cards first listed
+            // in this computation.
             for (id, e) in cs.open.iter_mut() {
                 if e.day == x.day || !is_open(id) {
                     continue;
                 }
                 let next = ChatEntry {
                     day: x.day.into(),
-                    at_ms: x.now + 1,
+                    at_ms: x.now,
                     author: e.author.clone(),
                     kind: e.kind.clone(),
                     thread: e.thread.clone(),
@@ -298,13 +300,15 @@ impl Runtime {
         // title), not pushed (the card renders from `now.decisions`).
         for (id, e) in cs.open.iter_mut() {
             let Some(d) = x.decisions.get(id).filter(|d| d.is_open()) else { continue };
-            let shown = |c: Option<&Value>| {
-                c.map(|c| (c["lifecycle"]["state"].clone(), c["title"].clone(), c["summary"].clone()))
-            };
-            let card = card_of(d);
-            if shown(e.card.as_ref()) != shown(Some(&card)) {
+            // Compared on the decision itself: the card is built only when it moved.
+            let same = e.card.as_ref().is_some_and(|c| {
+                c["lifecycle"]["state"].as_str() == Some(d.lifecycle.state)
+                    && c["title"].as_str() == Some(d.title.as_str())
+                    && c["summary"].as_str() == Some(d.summary.as_str())
+            });
+            if !same {
                 let mut next = e.clone();
-                next.card = Some(card);
+                next.card = Some(card_of(d));
                 if let Ok(w) = self.db.chat_update(&next) {
                     *e = w;
                 }
