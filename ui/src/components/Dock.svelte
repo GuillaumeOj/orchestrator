@@ -118,7 +118,7 @@
         {/if}
       {/each}
     </div>
-    <span class="sep" class:on={overflow}></span>
+    {#if overflow}<span class="sep"></span>{/if}
     <button class="add" aria-label="New shell" title="New shell" onclick={() => openShell()}>+</button>
     <span class="grow"></span>
     {#if zoomed}
@@ -185,9 +185,6 @@
     width: 1px;
     height: 12px;
     flex: none;
-    background: transparent;
-  }
-  .sep.on {
     background: var(--color-border-subtle);
   }
   .tab {
@@ -217,6 +214,10 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* The badge's own title is the status label: the tab's tooltip (id · wait line) wins. */
+  .tab :global(.badge) {
+    pointer-events: none;
   }
   .tab:hover .label,
   .tab.focused .label {
