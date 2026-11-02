@@ -966,15 +966,25 @@ function prunePanes() {
 // ---------------------------------------------------------------- updates
 
 const TOASTED_KEY = 'ui.update_toasted';
+let toasted = null; // the last version toasted (persisted under TOASTED_KEY)
+let toastedLoad = null;
 
 /** The core pushed a new `update` object: keep it in `app.data`, toast a staged version once. */
 export async function applyUpdate(u) {
   if (!u) return;
   if (app.data) app.data = new Snapshot({ ...app.data, update: u });
-  const last = await invoke('settings_get', { key: TOASTED_KEY }).catch(() => null);
-  const text = readyToast(u, last);
+  if (u.state !== 'ready' || !u.available) return;
+  // The persisted version is read once; the check-and-record below has no await between
+  // them, so the startup call and an `update` event for the same version toast once.
+  toastedLoad ??= invoke('settings_get', { key: TOASTED_KEY }).then(
+    (v) => (toasted = v),
+    () => null,
+  );
+  await toastedLoad;
+  const text = readyToast(u, toasted);
   if (!text) return;
-  invoke('settings_set', { key: TOASTED_KEY, value: u.available.version }).catch(() => {});
+  toasted = u.available.version;
+  invoke('settings_set', { key: TOASTED_KEY, value: toasted }).catch(() => {});
   toast(text, { ms: 12000, action: { label: 'Restart now', run: restartToUpdate } });
 }
 
