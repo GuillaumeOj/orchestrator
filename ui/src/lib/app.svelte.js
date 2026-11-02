@@ -220,7 +220,12 @@ export function toggleDock() {
   if (app.dock.open) focusPane(app.dock.active ?? app.dock.tabs[0]);
   else {
     if (inDock(app.zoomed)) app.zoomed = null;
-    if (inDock(app.focused)) focusPane(L.visible(app.layout)[0]);
+    if (inDock(app.focused)) {
+      // No workspace pane to hand the focus to: nothing is focused, not a hidden tab.
+      const next = L.visible(app.layout)[0];
+      if (next) focusPane(next);
+      else app.focused = null;
+    }
   }
   saveLayout();
 }
@@ -271,7 +276,7 @@ export function closePane(id = app.focused) {
     if (app.focused === id) app.focused = app.dock.active ?? L.visible(app.layout)[0] ?? null;
   } else app.layout = L.remove(app.layout, id);
   if (app.zoomed === id) app.zoomed = null;
-  if (app.focused === id) app.focused = L.visible(app.layout)[0] ?? null;
+  if (app.focused === id) app.focused = L.visible(app.layout)[0] ?? (app.dock.open ? app.dock.active : null);
   if (app.focused) focusPane(app.focused);
   saveLayout();
 }
