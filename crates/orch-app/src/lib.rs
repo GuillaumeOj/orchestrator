@@ -62,7 +62,24 @@ fn bundle_environment(cfg: &core::CoreConfig) {
         // SAFETY: called first in `run`, before any other thread starts.
         unsafe { std::env::set_var("PATH", path) };
     }
-    eprintln!("orchestrator {} started (pid {})", env!("CARGO_PKG_VERSION"), std::process::id());
+}
+
+/// What this build is (api-contract §2). The sha and channel are baked in at compile time
+/// by `scripts/app.sh`; the version comes from Tauri's package info (the bundle version,
+/// `0.1.<n>` in CI), so callers pass it in.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BuildInfo {
+    pub version: String,
+    pub sha: String,
+    pub channel: String,
+}
+
+pub fn build_info(version: &str) -> BuildInfo {
+    BuildInfo {
+        version: version.to_string(),
+        sha: option_env!("ORCH_BUILD_SHA").unwrap_or("").to_string(),
+        channel: option_env!("ORCH_BUILD_CHANNEL").filter(|c| !c.is_empty()).unwrap_or("local").to_string(),
+    }
 }
 
 pub fn run() {
@@ -75,6 +92,14 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .menu(menu::build)
         .setup(move |app| {
+            let build = build_info(&app.package_info().version.to_string());
+            eprintln!(
+                "orchestrator {} (sha {}, channel {}) started (pid {})",
+                build.version,
+                if build.sha.is_empty() { "unknown" } else { &build.sha },
+                build.channel,
+                std::process::id()
+            );
             devctl::start(app.handle().clone());
             notify::start(app.handle().clone(), decided.clone());
             // api-contract §3: a decided item's toast (and card drop).
@@ -199,4 +224,17 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod build_info_tests {
+    use super::build_info;
+
+    #[test]
+    fn local_defaults_without_build_env() {
+        // The test binary is built without ORCH_BUILD_* (CI sets them only for the app job).
+        let b = build_info("0.1.0");
+        assert_eq!(b.version, "0.1.0");
+        assert_eq!(b.channel, option_env!("ORCH_BUILD_CHANNEL").filter(|c| !c.is_empty()).unwrap_or("local"));
+    }
 }

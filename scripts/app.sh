@@ -2,6 +2,11 @@
 # Builds Orchestrator.app (release) and installs it into ~/Applications.
 #   scripts/app.sh build     # target/release/bundle/macos/Orchestrator.app
 #   scripts/app.sh install   # build, then copy to ~/Applications (refused while it runs)
+#   scripts/app.sh package   # tar.gz + .sig of the built bundle (CI: needs ORCH_UPDATE_KEY)
+# Build env (CI sets these; a local build leaves them out):
+#   ORCH_VERSION        bundle version, e.g. 0.1.42 (default: tauri.conf.json's 0.1.0)
+#   ORCH_BUILD_SHA      commit embedded in the app
+#   ORCH_BUILD_CHANNEL  "main" for CI builds (default "local")
 # The helpers (orch-hook, orch-status, orch-mcp) go inside the bundle; the app
 # copies them to <app data>/bin at start (FR-1201). The UI font (FiraCode Nerd
 # Font Mono, SIL OFL 1.1 + MIT) is bundled from ~/Library/Fonts.
@@ -12,6 +17,8 @@ TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
 APP="$ROOT/target/release/bundle/macos/Orchestrator.app"
 DEST="${ORCH_INSTALL_DIR:-$HOME/Applications}"
 FONT_DIR="${ORCH_FONT_DIR:-$HOME/Library/Fonts}"
+export ORCH_BUILD_CHANNEL="${ORCH_BUILD_CHANNEL:-local}"
+export ORCH_BUILD_SHA="${ORCH_BUILD_SHA:-}"
 
 # On this Mac (macOS 27 beta) proc-macro dylibs linked many at once sometimes
 # come out unloadable ("mis-aligned LINKEDIT string pool"). Remove those that
@@ -59,8 +66,34 @@ build() {
   # The release core embeds ui/dist: build it first (it is gitignored).
   (cd ui && bun run build)
   core_release
-  (cd ui && bun run tauri build --config "$ROOT/crates/orch-app/tauri.bundle.json")
+  # The version override is a --config merge: no committed file changes.
+  set -- --config "$ROOT/crates/orch-app/tauri.bundle.json"
+  if [ -n "${ORCH_VERSION:-}" ]; then
+    set -- "$@" --config "{\"version\":\"$ORCH_VERSION\"}"
+  fi
+  (cd ui && bun run tauri build "$@")
   echo "built $APP"
+}
+
+# Packs the built bundle as the update asset and signs it (api-contract §1):
+# Orchestrator_<version>_aarch64.app.tar.gz (Orchestrator.app at the root) + .sig.
+package() {
+  : "${ORCH_VERSION:?set ORCH_VERSION to the version of the bundle (e.g. 0.1.42)}"
+  if [ -z "${ORCH_UPDATE_KEY:-}" ] || [ -z "${ORCH_UPDATE_KEY_PASSWORD:-}" ]; then
+    echo "::error::ORCH_UPDATE_KEY / ORCH_UPDATE_KEY_PASSWORD are not set: refusing to publish an unsigned update (see docs/app/RUNNING.md, Updates)"
+    exit 1
+  fi
+  [ -d "$APP" ] || { echo "no $APP: run $0 build first" >&2; exit 1; }
+  out="${ORCH_PACKAGE_DIR:-$ROOT/target/release/bundle/update}"
+  tarball="$out/Orchestrator_${ORCH_VERSION}_aarch64.app.tar.gz"
+  mkdir -p "$out"
+  rm -f "$tarball" "$tarball.sig"
+  tar -czf "$tarball" -C "$(dirname "$APP")" Orchestrator.app
+  # The CLI reads the key and password from these.
+  TAURI_SIGNING_PRIVATE_KEY="$ORCH_UPDATE_KEY" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$ORCH_UPDATE_KEY_PASSWORD" \
+    sh -c 'cd ui && bun run tauri signer sign "$1"' sh "$tarball"
+  [ -s "$tarball.sig" ] || { echo "::error::signing produced no $tarball.sig" >&2; exit 1; }
+  echo "packaged $tarball (+ .sig)"
 }
 
 install_app() {
@@ -84,5 +117,6 @@ case "${1:-install}" in
   # build would fall through and install the previous bundle.
   install) build; install_app ;;
   install-only) install_app ;;
-  *) echo "usage: $0 [build|install|install-only]" >&2; exit 2 ;;
+  package) package ;;
+  *) echo "usage: $0 [build|install|install-only|package]" >&2; exit 2 ;;
 esac

@@ -16,6 +16,8 @@ make lint      # fmt check, clippy, biome, svelte-check
 make ci        # everything CI runs (CI calls these same targets)
 ```
 
+Every green commit on `main` is also published as a signed `Orchestrator.app` release (`v0.1.<n>`, the 10 newest kept); to install one instead of building, see [Updates](docs/app/RUNNING.md#updates).
+
 ## Layout
 
 - [`crates/governor`](crates/governor/README.md): the usage-pacing Governor, a pure control law with no I/O; `crates/pacing-sim` is its week simulator.
