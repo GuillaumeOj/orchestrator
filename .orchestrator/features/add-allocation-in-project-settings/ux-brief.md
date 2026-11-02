@@ -27,7 +27,7 @@ Nav on the left, "Allocation" selected (nav entry already exists). Right side:
    4. `This week` read only: `used {x} pp` and, with a cap, a thin bar with the cap tick + status words (state 6). Bar uses the Week planner's Used/plan bar style.
 3. **Rest of the plan** table, read only: Allocation · Weight · Share · Tier ·
    Used. This project's row is shown in its place in the table, highlighted
-   (so the share reads against the others) and follows the typed weight live;
+   (so the share reads against the others; its place is `own_index`) and follows the typed weight live;
    "other sessions" last. Link `Edit the plan in the Week planner` + `g`.
 4. Remove link (ghost, `danger` text): `Remove from the plan` + `x`.
 5. `.foot`: **Save** `⌘+⏎` (primary) · Cancel `esc` · then the keys line.
@@ -51,7 +51,10 @@ Save is disabled while nothing changed or while a field is invalid.
 (no modal: reversible until Save): fields disabled and struck, notice "From
 the save on, {name}'s agents are charged to other sessions." with
 `Keep in the plan` (`esc` does the same) → Save applies. A weight of 0 typed in
-the field is the same as remove: the notice appears and the state is 7.
+the field is the same as remove: the notice appears and the state is 7, but
+the Weight field stays enabled (the other fields are disabled), so typing `0`
+on the way to `0.5` or `5` does not drop the focus; a weight above 0 leaves
+state 7. `Keep in the plan` restores the weight from before the removal.
 
 **D. No plan yet.** State 2 → read only proposed even split table, button
 `Set up the weekly plan` (`g`) opens Week planner › Edit plan. No Save, no
@@ -91,7 +94,7 @@ may share a frame with the changes marked; 10 is a crop of the plan editor.
 - Table title: `Rest of the plan`. Column "Allocation", last row `other sessions`.
 - Add button: `Add to the weekly plan`. Remove: `Remove from the plan`. Undo remove: `Keep in the plan`.
 - No plan button: `Set up the weekly plan`. Link: `Edit the plan in the Week planner`.
-- Toast on save: `Saved {name}'s allocation · this week's usage kept`. Removed: same text.
+- Toast on save: `Saved {name}'s allocation · this week's usage kept`. Removed: `Removed {name} from the plan · this week's usage kept`.
 - Plan editor tag: `not in plan`. Info line addition: `Projects not in the plan are charged to “other sessions”; give one a weight to add it.`
 - Hard cap hint: `stops {name}'s agents for the week at this % of the week`.
 
@@ -106,7 +109,7 @@ act when no `input`, `textarea` or `select` has focus and no modifier is held.
 | `esc` | Cancel: discard edits, back to saved values; in 7 = Keep in the plan; in a field it first blurs it | dirty |
 | `a` | Add to the weekly plan | state 3 |
 | `x` | Remove from the plan | state 4, 5 |
-| `g` | Open Week planner › Edit plan | states 2–7 |
+| `g` | Open Week planner › Edit plan | states 2–4 (not with unsaved edits: Save or Cancel first) |
 | `r` | Retry | state 9 load error |
 | `⏎` / `space` on a focused button | press it (single keys skip when a button is focused, as Task backend) | |
 
@@ -121,7 +124,7 @@ state 4: `x` remove · `g` week planner.
 4. **Weight 0 = pending removal** (state 7), mirroring the plan editor.
 5. **Cap thresholds**: amber from 80% of the cap, red at the cap (the brief left them open).
 6. **Cancel/Save disabled when clean**; Save also disabled on a validation error.
-7. **Removal toast** reuses the save toast; no modal anywhere.
+7. **Removal toast** has its own text (the save toast would say "Saved" for a removal); no modal anywhere.
 
 ## Constraints
 

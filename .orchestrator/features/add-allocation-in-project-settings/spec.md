@@ -72,7 +72,10 @@ unchanged.
   ("other sessions") wherever it charges, schedules or caps. So adding or
   removing a project applies to its running agents too, from the save on, and
   after the replay the project's usage earlier this week counts toward its new
-  allocation.
+  allocation (usage rows and agent records that hold `default` for a solo
+  session started before the project had an allocation stay in "other
+  sessions"). Every reader resolves the same way, including the planner's
+  live-agent count per allocation (`core.rs`).
 - Existing records holding a project **name** resolve to that project's id when
   no allocation has that name (no migration).
 
