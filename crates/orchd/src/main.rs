@@ -40,6 +40,8 @@ usage: orchd [--home DIR] <command> [args]
                                 the run report: prompts by tool and decider, pane interventions, waiting
   state | usage | governor      print JSON
   now [--json] [--run <id>]     agents (level/status, reason, since), then runs (phase, level, blocker)
+  chat [--day YYYY-MM-DD] [--search TEXT] [--json]
+                                the chat log: a day's entries (default today), or the entries matching TEXT
   stop                          shut the core down (suspends agents)
 
   projects                      registered projects with git status
@@ -268,6 +270,41 @@ fn run() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&snap)?);
             } else {
                 print!("{}", agent_runtime::now::render(&snap, orch_protocol::now_ms()));
+            }
+            Ok(())
+        }
+        "chat" => {
+            let json = a.flag("--json");
+            let day = a.opt("--day")?;
+            let search = a.opt("--search")?;
+            a.done()?;
+            let entries: Vec<serde_json::Value> = match (search, day) {
+                (Some(query), _) => {
+                    let r = request(&sock, CtlRequest::ChatSearch { query, limit: None })?;
+                    if !r.ok {
+                        return print(r);
+                    }
+                    r.data.as_array().into_iter().flatten().map(|h| h["entry"].clone()).collect()
+                }
+                (None, Some(day)) => {
+                    let r = request(&sock, CtlRequest::ChatDay { day })?;
+                    if !r.ok {
+                        return print(r);
+                    }
+                    r.data["entries"].as_array().cloned().unwrap_or_default()
+                }
+                (None, None) => {
+                    let r = request(&sock, CtlRequest::Now)?;
+                    if !r.ok {
+                        return print(r);
+                    }
+                    r.data["chat"]["entries"].as_array().cloned().unwrap_or_default()
+                }
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&entries)?);
+            } else {
+                print!("{}", agent_runtime::chat::render(&entries, &jiff::tz::TimeZone::system()));
             }
             Ok(())
         }

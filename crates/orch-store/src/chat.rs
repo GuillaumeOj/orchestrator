@@ -10,7 +10,7 @@ use serde::ser::SerializeMap;
 use serde_json::Value;
 
 use crate::db::Store;
-use crate::util::from_js;
+use crate::util::{from_js, opt_u64};
 
 /// One chat entry (api-contract §1).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -32,6 +32,10 @@ pub struct ChatEntry {
     /// The decision as it was: at close (sent with `line`), or as first
     /// listed while open (kept for a close seen only after a restart, not sent).
     pub card: Option<Value>,
+    /// Open across midnight: the previous day's entry of the same decision.
+    pub continued_from: Option<u64>,
+    /// On that previous day's entry: the one that carries on.
+    pub continued_to: Option<u64>,
     pub rev: u64,
 }
 
@@ -40,19 +44,21 @@ impl ChatEntry {
         format!("c-{}", self.n)
     }
 
-    /// A decision entry still waiting for its line.
+    /// A decision entry still waiting for its line (and not carried on to a later day).
     pub fn is_open(&self) -> bool {
-        self.kind == "decision" && self.line.is_none()
+        self.kind == "decision" && self.line.is_none() && self.continued_to.is_none()
     }
 
     /// What `chat_search` matches, lower-cased.
     fn haystack(&self) -> String {
         let s = |v: Option<&Value>, k: &str| v.and_then(|v| v.get(k)).and_then(Value::as_str).unwrap_or("").to_string();
-        let card = self.line.as_ref().and(self.card.as_ref());
+        let (line, card) = (self.line.as_ref(), self.card.as_ref());
         [
             self.text.clone().unwrap_or_default(),
-            s(self.line.as_ref(), "what"),
-            s(self.line.as_ref(), "agent"),
+            s(line, "what"),
+            s(line, "agent"),
+            s(line, "verb"),
+            s(line, "by_detail"),
             s(card, "title"),
             s(card, "summary"),
         ]
@@ -84,6 +90,11 @@ impl Serialize for ChatEntry {
                 m.serialize_entry("card", card)?;
             }
         }
+        for (k, v) in [("continued_from", self.continued_from), ("continued_to", self.continued_to)] {
+            if let Some(n) = v {
+                m.serialize_entry(k, &format!("c-{n}"))?;
+            }
+        }
         m.serialize_entry("rev", &self.rev)?;
         m.end()
     }
@@ -97,7 +108,8 @@ pub struct ChatDay {
     pub decisions: u64,
 }
 
-const COLS: &str = "id, day, at_ms, author, kind, thread, decision, text, line, card, rev";
+const COLS: &str =
+    "id, day, at_ms, author, kind, thread, decision, text, line, card, rev, continued_from, continued_to";
 
 fn row(r: &Row) -> rusqlite::Result<ChatEntry> {
     let json = |i: usize| -> rusqlite::Result<Option<Value>> {
@@ -115,6 +127,8 @@ fn row(r: &Row) -> rusqlite::Result<ChatEntry> {
         line: json(8)?,
         card: json(9)?,
         rev: r.get::<_, i64>(10)? as u64,
+        continued_from: opt_u64(r, 11)?,
+        continued_to: opt_u64(r, 12)?,
     })
 }
 
@@ -130,8 +144,9 @@ impl Store {
         let row = e.clone();
         e.n = self.write(move |tx| {
             tx.execute(
-                "INSERT INTO chat_entries(day, at_ms, author, kind, thread, decision, text, line, card, rev, haystack)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10)",
+                "INSERT INTO chat_entries(day, at_ms, author, kind, thread, decision, text, line, card, rev, haystack,
+                   continued_from, continued_to)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10,?11,?12)",
                 params![
                     row.day,
                     row.at_ms as i64,
@@ -142,7 +157,9 @@ impl Store {
                     row.text,
                     js_opt(&row.line),
                     js_opt(&row.card),
-                    row.haystack()
+                    row.haystack(),
+                    row.continued_from.map(|n| n as i64),
+                    row.continued_to.map(|n| n as i64)
                 ],
             )?;
             Ok(tx.last_insert_rowid() as u64)
@@ -158,7 +175,7 @@ impl Store {
         self.write(move |tx| {
             tx.execute(
                 "UPDATE chat_entries SET day=?2, at_ms=?3, thread=?4, decision=?5, text=?6, line=?7, card=?8,
-                   rev=?9, haystack=?10 WHERE id=?1",
+                   rev=?9, haystack=?10, continued_from=?11, continued_to=?12 WHERE id=?1",
                 params![
                     row.n as i64,
                     row.day,
@@ -169,7 +186,9 @@ impl Store {
                     js_opt(&row.line),
                     js_opt(&row.card),
                     row.rev as i64,
-                    row.haystack()
+                    row.haystack(),
+                    row.continued_from.map(|n| n as i64),
+                    row.continued_to.map(|n| n as i64)
                 ],
             )?;
             Ok(())
@@ -181,7 +200,8 @@ impl Store {
     pub fn chat_day(&self, day: &str) -> Result<Vec<ChatEntry>> {
         let day = day.to_string();
         self.read(move |c| {
-            let mut st = c.prepare_cached(&format!("SELECT {COLS} FROM chat_entries WHERE day=?1 ORDER BY at_ms, id"))?;
+            let mut st =
+                c.prepare_cached(&format!("SELECT {COLS} FROM chat_entries WHERE day=?1 ORDER BY at_ms, id"))?;
             Ok(st.query_map([day], row)?.collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -217,11 +237,13 @@ impl Store {
         })
     }
 
-    /// Decision entries still waiting for their line, any day, oldest first.
+    /// Decision entries still waiting for their line (and not carried on),
+    /// any day, oldest first.
     pub fn chat_open(&self) -> Result<Vec<ChatEntry>> {
         self.read(|c| {
             let mut st = c.prepare_cached(&format!(
-                "SELECT {COLS} FROM chat_entries WHERE kind = 'decision' AND line IS NULL ORDER BY at_ms, id"
+                "SELECT {COLS} FROM chat_entries WHERE kind = 'decision' AND line IS NULL AND continued_to IS NULL
+                 ORDER BY at_ms, id"
             ))?;
             Ok(st.query_map([], row)?.collect::<rusqlite::Result<_>>()?)
         })
@@ -279,13 +301,14 @@ mod tests {
         d.thread = Some("run-1".into());
         d.card = Some(json!({"title": "Bash · cargo add Serde_json", "summary": "open"}));
         let mut d = s.chat_insert(&d).unwrap();
-        // Open: the snapshot is kept but neither sent nor searched.
+        // Open: the snapshot is kept and searched (its title), not sent.
         let v = json!(d);
         assert!(v.get("card").is_none() && v.get("line").is_none() && v.get("text").is_none(), "{v}");
-        assert!(s.chat_search("serde", 10).unwrap().is_empty());
+        assert_eq!(s.chat_search("serde", 10).unwrap().len(), 1);
         assert_eq!(s.chat_open().unwrap().len(), 1);
         assert_eq!(s.chat_has_decisions(&["inbox-3".into(), "inbox-9".into()]).unwrap(), ["inbox-3"]);
-        d.line = Some(json!({"verb": "allowed", "agent": "back-1", "what": "cargo add serde_json", "by": "rule"}));
+        d.line = Some(json!({"verb": "allowed", "agent": "back-1", "what": "cargo add serde_json", "by": "rule",
+                             "by_detail": "Bash(cargo add:*)"}));
         let d = s.chat_update(&d).unwrap();
         assert_eq!(d.rev, 2);
         assert!(json!(d)["card"].is_object());
@@ -299,12 +322,84 @@ mod tests {
         let hits = s.chat_search("good MORNING", 10).unwrap();
         assert_eq!(hits.iter().map(|e| e.day.as_str()).collect::<Vec<_>>(), ["2026-11-02", "2026-11-01"]);
         assert_eq!(s.chat_search("back-1", 1).unwrap().len(), 1);
+        assert_eq!(s.chat_search("ALLOWED", 9).unwrap().len(), 1, "the verb");
+        assert_eq!(s.chat_search("cargo add:*", 9).unwrap().len(), 1, "the rule");
         assert_eq!(s.chat_day("2026-11-01").unwrap(), [m, d]);
         assert_eq!(
             s.chat_days("2026-11-02", 30).unwrap(),
             [ChatDay { day: "2026-11-01".into(), entries: 2, decisions: 1 }]
         );
+        // Carried on to the next day: the old entry leaves the open list, both say so.
+        let mut old = entry("2026-11-02", 101, "decision");
+        old.decision = Some("q-1".into());
+        let mut old = s.chat_insert(&old).unwrap();
+        let mut new = entry("2026-11-03", 200, "decision");
+        (new.decision, new.continued_from) = (Some("q-1".into()), Some(old.n));
+        let new = s.chat_insert(&new).unwrap();
+        old.continued_to = Some(new.n);
+        let old = s.chat_update(&old).unwrap();
+        assert_eq!(s.chat_open().unwrap(), std::slice::from_ref(&new));
+        assert_eq!(
+            (json!(old)["continued_to"].clone(), json!(new)["continued_from"].clone()),
+            (json!(new.id()), json!(old.id()))
+        );
+        assert_eq!(s.chat_day("2026-11-02").unwrap().last(), Some(&old), "returned with no line");
         assert!(s.chat_has_kind("2026-11-02", "morning").unwrap());
         assert!(!s.chat_has_kind("2026-11-03", "morning").unwrap());
+    }
+
+    /// 90 days of 300 entries: a day and a search load in < 200 ms (spec §5).
+    #[test]
+    fn a_day_and_a_search_are_fast_over_90_days() {
+        let (_d, s) = store();
+        let rows: Vec<ChatEntry> = (0..90u64)
+            .flat_map(|d| {
+                let day = format!("2031-{:02}-{:02}", 1 + d / 28, 1 + d % 28);
+                (0..300u64).map(move |i| {
+                    let mut e = entry(&day, d * 86_400_000 + i * 1000, "decision");
+                    e.decision = Some(format!("inbox-{}", d * 300 + i));
+                    e.thread = Some(format!("run-{}", i % 7));
+                    e.line = Some(json!({"verb": "allowed", "agent": format!("back-{}", i % 5),
+                                         "what": format!("cargo test -p crate{i}"), "by": "you", "state": "effect"}));
+                    e.card = Some(json!({"title": format!("Bash · cargo test -p crate{i}"), "summary": "Run the tests",
+                                         "context": [{"type": "tool_call", "tool": "Bash", "input": {"command": "x".repeat(200)}}]}));
+                    e
+                })
+            })
+            .collect();
+        s.write(move |tx| {
+            for e in rows {
+                tx.execute(
+                    "INSERT INTO chat_entries(day, at_ms, author, kind, thread, decision, line, card, haystack)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                    params![
+                        e.day,
+                        e.at_ms as i64,
+                        e.author,
+                        e.kind,
+                        e.thread,
+                        e.decision,
+                        js_opt(&e.line),
+                        js_opt(&e.card),
+                        e.haystack()
+                    ],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let t = std::time::Instant::now();
+        assert_eq!(s.chat_day("2031-02-10").unwrap().len(), 300);
+        let day = t.elapsed();
+        let t = std::time::Instant::now();
+        assert_eq!(s.chat_search("crate299", 50).unwrap().len(), 50);
+        assert!(s.chat_search("nothing like it", 50).unwrap().is_empty());
+        let search = t.elapsed() / 2;
+        let t = std::time::Instant::now();
+        assert_eq!(s.chat_days("2031-12-31", 30).unwrap().len(), 30);
+        let days = t.elapsed();
+        for (what, took) in [("chat_day", day), ("chat_search", search), ("chat_days", days)] {
+            assert!(took < std::time::Duration::from_millis(200), "{what} took {took:?}");
+        }
     }
 }

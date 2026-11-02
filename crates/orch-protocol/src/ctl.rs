@@ -180,6 +180,23 @@ pub enum CtlRequest {
     Governor,
     /// P4.1: the attention world (`now_snapshot`).
     Now,
+    /// P4.3: days of the chat log before `before` (today excluded), newest first.
+    ChatDays {
+        #[serde(default)]
+        limit: Option<usize>,
+        #[serde(default)]
+        before: Option<String>,
+    },
+    /// P4.3: one day of the chat log and its outcomes.
+    ChatDay {
+        day: String,
+    },
+    /// P4.3: chat entries matching `query`, newest first.
+    ChatSearch {
+        query: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     /// Pull transport: everything buffered for this agent since the last read.
     Read {
         agent_id: String,

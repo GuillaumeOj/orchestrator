@@ -533,8 +533,10 @@ ALTER TABLE team_runs ADD COLUMN pr_status TEXT;
     // Authors core | overwatch | user; kinds decision | morning | text |
     // annotation | rule_proposal (P4.4 adds no migration). `line` and `card`
     // are JSON; `card` holds the open decision's snapshot until `line` is set.
-    // `haystack`: the searched text, lower-cased (text, line.what,
-    // line.agent, card title and summary).
+    // A decision open across midnight gets a new entry in the new day
+    // (`continued_from`), the old one keeps no line (`continued_to`).
+    // `haystack`: the searched text, lower-cased (text, line what, agent,
+    // verb and by_detail, card title and summary).
     r#"
 CREATE TABLE chat_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -547,12 +549,15 @@ CREATE TABLE chat_entries (
     text TEXT,
     line TEXT,
     card TEXT,
+    continued_from INTEGER,
+    continued_to INTEGER,
     rev INTEGER NOT NULL DEFAULT 1,
     haystack TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX chat_entries_day ON chat_entries(day, at_ms, id);
 CREATE INDEX chat_entries_decision ON chat_entries(decision) WHERE decision IS NOT NULL;
-CREATE INDEX chat_entries_open ON chat_entries(kind) WHERE kind = 'decision' AND line IS NULL;
+CREATE INDEX chat_entries_open ON chat_entries(kind)
+  WHERE kind = 'decision' AND line IS NULL AND continued_to IS NULL;
 "#,
 ];
 

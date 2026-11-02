@@ -217,6 +217,24 @@ pub async fn digest_seen(core: CoreState<'_>, up_to: String) -> Res<()> {
     blocking(core, move |c| c.runtime()?.digest_seen(&up_to)).await
 }
 
+/// P4.3: days of the chat log before `before` (today excluded), newest first (api-contract §3).
+#[tauri::command]
+pub async fn chat_days(core: CoreState<'_>, limit: Option<usize>, before: Option<String>) -> Res<Value> {
+    blocking(core, move |c| Ok(serde_json::json!(c.runtime()?.chat_days(limit, before.as_deref())?))).await
+}
+
+/// P4.3: one day of the chat log, with that day's outcomes.
+#[tauri::command]
+pub async fn chat_day(core: CoreState<'_>, day: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.chat_day(&day)).await
+}
+
+/// P4.3: chat entries matching `query` (case-insensitive), newest first.
+#[tauri::command]
+pub async fn chat_search(core: CoreState<'_>, query: String, limit: Option<usize>) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.chat_search(&query, limit)).await
+}
+
 #[tauri::command]
 pub async fn inbox_act(core: CoreState<'_>, item: String, action: String, message: Option<String>) -> Res<Value> {
     blocking(core, move |c| c.inbox_act(&item, &action, message.as_deref())).await

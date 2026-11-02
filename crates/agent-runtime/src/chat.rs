@@ -32,8 +32,9 @@ pub(crate) struct ChatState {
     /// Decision id → its entry still waiting for a line.
     open: BTreeMap<String, ChatEntry>,
     /// Decision id → its entry with a line, while the decision is still
-    /// listed (its lifecycle goes on: sent, then effect).
-    closed: BTreeMap<String, ChatEntry>,
+    /// listed (its lifecycle goes on: sent, then effect), and its last
+    /// snapshot while open.
+    closed: BTreeMap<String, (ChatEntry, Option<Value>)>,
     /// Stored decisions known to have an entry (asked of the store once).
     known: BTreeSet<String>,
 }
@@ -65,12 +66,9 @@ pub fn verb(d: &Decision) -> &'static str {
     let by = by_of(lc.decided_by.as_deref()).0;
     match lc.state {
         "failed" => return "failed",
-        "stale" => return "expired",
+        "stale" => return "dismissed",
         "interrupted" => return "interrupted",
         _ => {}
-    }
-    if by == "expired" {
-        return "expired";
     }
     if lc.effect.as_deref() == Some("restarted") {
         return "restarted";
@@ -95,6 +93,7 @@ pub fn verb(d: &Decision) -> &'static str {
         ("budget", "approve") => "applied",
         ("budget", "reject") => "skipped",
         ("question", "reply") => "answered",
+        (_, _) if by == "expired" => "expired",
         // Answered in Claude Code's own dialog (a prompt, a held permission).
         (_, _) if by == "pane" => "answered",
         _ => "dismissed",
@@ -102,10 +101,29 @@ pub fn verb(d: &Decision) -> &'static str {
 }
 
 /// The closed decision's line (api-contract §1). `rule`: the rule that
-/// decided, when it is still in the store (its pattern names it).
-pub fn line_of(d: &Decision, rule: Option<&PermissionRule>, now: u64) -> Value {
+/// decided, when it is still in the store (its pattern names it); `prior`:
+/// the entry's snapshot while it was open.
+///
+/// A synthesized decision that cleared by itself is `dismissed · core ·
+/// stale` (ux F8); `expired` is for a default taken at its deadline (the
+/// Governor's ask) and a parked permission the core closed (ux F10).
+pub fn line_of(d: &Decision, rule: Option<&PermissionRule>, prior: Option<&Value>, now: u64) -> Value {
     let lc = &d.lifecycle;
-    let (by, rule_id) = by_of(lc.decided_by.as_deref());
+    let (mut by, rule_id) = by_of(lc.decided_by.as_deref());
+    let (mut verb, mut state) = (verb(d), lc.state);
+    let was_parked = prior.and_then(|c| c["lifecycle"]["state"].as_str()) == Some("parked");
+    if d.synthesized && by != "you" {
+        let deadline = d.payload.get("deadline_ms").and_then(Value::as_u64);
+        match deadline {
+            Some(t) if d.kind == "ask" && lc.decided_at_ms.unwrap_or(now) >= t => {
+                let apply = d.payload.get("default").and_then(Value::as_str) == Some("approve");
+                (verb, by, state) = (if apply { "run now" } else { "kept queued" }, "expired", "effect");
+            }
+            _ => (verb, by, state) = ("dismissed", "core", "stale"),
+        }
+    } else if d.kind == "permission" && by == "core" && lc.state == "dismissed" && was_parked {
+        (verb, by) = ("expired", "expired");
+    }
     let what = match d.kind {
         "permission" => {
             let input = d.payload.get("tool_input").or_else(|| d.payload.get("input")).cloned().unwrap_or_default();
@@ -115,10 +133,10 @@ pub fn line_of(d: &Decision, rule: Option<&PermissionRule>, now: u64) -> Value {
         _ => d.title.clone(),
     };
     let mut line = json!({
-        "verb": verb(d),
+        "verb": verb,
         "what": cut(&what, WHAT_MAX),
         "by": by,
-        "state": lc.state,
+        "state": state,
         "at_ms": lc.decided_at_ms.or(lc.effect_at_ms).or(lc.sent_at_ms).unwrap_or(now),
     });
     if let Some(a) = d.agent.as_deref().or_else(|| d.subject.get("agent").and_then(Value::as_str)) {
@@ -134,7 +152,8 @@ pub fn line_of(d: &Decision, rule: Option<&PermissionRule>, now: u64) -> Value {
 }
 
 /// "Good morning. 1 run in progress, 1 decision waiting, week 38 % against
-/// 35 % planned." Parts at zero are left out (P4.2 notes §8.6).
+/// 35 % planned." Parts at zero are left out (P4.2 notes §8.6), the week
+/// with no plan too; all zero says so (ux F5). `week`: (used, planned) %.
 pub fn morning_text(runs: u32, decisions: u32, week: Option<(f64, f64)>) -> String {
     let n = |k: u32, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
     let mut parts = vec![];
@@ -144,14 +163,14 @@ pub fn morning_text(runs: u32, decisions: u32, week: Option<(f64, f64)>) -> Stri
     if decisions > 0 {
         parts.push(n(decisions, "decision waiting", "decisions waiting"));
     }
-    if let Some((used, plan)) = week.filter(|(u, _)| u.round() > 0.0) {
-        parts.push(if plan.round() > 0.0 {
-            format!("week {:.0} % against {:.0} % planned", used, plan)
-        } else {
-            format!("week {used:.0} %")
-        });
+    if let Some((used, plan)) = week.filter(|(u, p)| u.round() > 0.0 && p.round() > 0.0) {
+        parts.push(format!("week {used:.0} % against {plan:.0} % planned"));
     }
-    if parts.is_empty() { "Good morning.".into() } else { format!("Good morning. {}.", parts.join(", ")) }
+    if parts.is_empty() {
+        "Good morning. Nothing is running and nothing is waiting for you.".into()
+    } else {
+        format!("Good morning. {}.", parts.join(", "))
+    }
 }
 
 /// `allowed back-1: cargo add serde_json · rule: installs` (the UI's line
@@ -250,15 +269,44 @@ impl Runtime {
                 };
                 write(&e, &mut out);
             }
-            // A card still open from an earlier day moves to today's thread,
-            // after the morning line.
-            for e in cs.open.values_mut() {
-                if e.day != x.day && e.decision.as_deref().is_some_and(is_open) {
-                    let mut moved = e.clone();
-                    (moved.day, moved.at_ms) = (x.day.into(), x.now + 1);
-                    if let Some(w) = write(&moved, &mut out) {
-                        *e = w;
-                    }
+            // A card still open from an earlier day carries on in a new entry
+            // of today's thread, after the morning line (ux F1); the old one
+            // keeps no line ("left open").
+            for (id, e) in cs.open.iter_mut() {
+                if e.day == x.day || !is_open(id) {
+                    continue;
+                }
+                let next = ChatEntry {
+                    day: x.day.into(),
+                    at_ms: x.now + 1,
+                    author: e.author.clone(),
+                    kind: e.kind.clone(),
+                    thread: e.thread.clone(),
+                    decision: e.decision.clone(),
+                    card: Some(card_of(&x.decisions[id])),
+                    continued_from: Some(e.n),
+                    ..Default::default()
+                };
+                let Some(next) = write(&next, &mut out) else { continue };
+                let mut old = e.clone();
+                old.continued_to = Some(next.n);
+                write(&old, &mut out);
+                *e = next;
+            }
+        }
+        // Open ones: the snapshot follows what the card shows (parked, its
+        // title), not pushed (the card renders from `now.decisions`).
+        for (id, e) in cs.open.iter_mut() {
+            let Some(d) = x.decisions.get(id).filter(|d| d.is_open()) else { continue };
+            let shown = |c: Option<&Value>| {
+                c.map(|c| (c["lifecycle"]["state"].clone(), c["title"].clone(), c["summary"].clone()))
+            };
+            let card = card_of(d);
+            if shown(e.card.as_ref()) != shown(Some(&card)) {
+                let mut next = e.clone();
+                next.card = Some(card);
+                if let Ok(w) = self.db.chat_update(&next) {
+                    *e = w;
                 }
             }
         }
@@ -272,6 +320,7 @@ impl Runtime {
         };
         for id in closing {
             let Some(mut e) = cs.open.remove(&id) else { continue };
+            let prior = e.card.clone();
             let last = x
                 .decisions
                 .get(&id)
@@ -281,18 +330,18 @@ impl Runtime {
                 .or_else(|| dismissed_from_snapshot(&e, x.now));
             match last {
                 Some(d) => {
-                    e.line = Some(line_of(&d, rule_of(&d), x.now));
+                    e.line = Some(line_of(&d, rule_of(&d), prior.as_ref(), x.now));
                     e.card = Some(card_of(&d));
                 }
                 None => {
                     e.line = Some(json!({"verb": "dismissed", "what": cut(&id, WHAT_MAX), "by": "core",
-                                         "state": "dismissed", "at_ms": x.now}));
+                                         "state": "stale", "at_ms": x.now}));
                 }
             }
             if let Some(w) = write(&e, &mut out)
                 && x.decisions.contains_key(&id)
             {
-                cs.closed.insert(id, w);
+                cs.closed.insert(id, (w, prior));
             }
         }
         // Closed ones still listed: their lifecycle goes on (or an undo opened them again).
@@ -302,7 +351,7 @@ impl Runtime {
                 cs.closed.remove(&id);
                 continue;
             };
-            let mut e = cs.closed[&id].clone();
+            let (mut e, prior) = cs.closed[&id].clone();
             if d.is_open() {
                 (e.line, e.card) = (None, Some(card_of(d)));
                 cs.closed.remove(&id);
@@ -314,9 +363,9 @@ impl Runtime {
             let card = card_of(d);
             if e.card.as_ref() != Some(&card) {
                 let rule = by_of(d.lifecycle.decided_by.as_deref()).1.and_then(|n| self.rule(n));
-                (e.line, e.card) = (Some(line_of(d, rule.as_ref(), x.now)), Some(card));
+                (e.line, e.card) = (Some(line_of(d, rule.as_ref(), prior.as_ref(), x.now)), Some(card));
                 if let Some(w) = write(&e, &mut out) {
-                    cs.closed.insert(id, w);
+                    cs.closed.insert(id, (w, prior));
                 }
             }
         }
@@ -365,12 +414,12 @@ impl Runtime {
                     kind: "decision".into(),
                     thread: d.thread.clone(),
                     decision: Some(id.clone()),
-                    line: Some(line_of(d, rule.as_ref(), x.now)),
+                    line: Some(line_of(d, rule.as_ref(), None, x.now)),
                     card: Some(card_of(d)),
                     ..Default::default()
                 };
                 if let Some(w) = write(&e, &mut out) {
-                    cs.closed.insert(id, w);
+                    cs.closed.insert(id, (w, None));
                 }
             }
         }
@@ -468,7 +517,7 @@ impl Runtime {
             kind: "decision".into(),
             thread: d.thread.clone(),
             decision: Some(d.id.clone()),
-            line: Some(line_of(&d, Some(rule), now)),
+            line: Some(line_of(&d, Some(rule), None, now)),
             card: Some(card_of(&d)),
             ..Default::default()
         };

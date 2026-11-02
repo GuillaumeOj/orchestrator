@@ -399,6 +399,12 @@ impl Runtime {
         lock(&self.now.answers).insert(id.to_string(), effect);
     }
 
+    /// Tests: the publisher as a new process finds it (nothing cached).
+    #[cfg(test)]
+    pub(crate) fn forget_now(&self) {
+        *lock(&self.now.state) = State::default();
+    }
+
     /// The agent's last published record.
     pub fn attention_of(&self, id: &str) -> Option<AgentAttention> {
         lock(&self.now.state).last.as_ref()?.agents.get(id).cloned()

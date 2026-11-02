@@ -464,13 +464,15 @@ impl Runtime {
             match rule.effect {
                 // Audited (FR-709), and posted in the chat as a settled line (FR-1305).
                 RuleEffect::Allow => {
-                    if let Ok(n) = self.db.audit(&actor, Some(&rec.id), "permission", Some(&call.tool), "allow", detail) {
+                    if let Ok(n) = self.db.audit(&actor, Some(&rec.id), "permission", Some(&call.tool), "allow", detail)
+                    {
                         self.chat_rule_answered(rec, &call, rule, true, n);
                     }
                     return Some(HookOutput::permission_request(PermissionBehavior::Allow, None));
                 }
                 RuleEffect::Deny => {
-                    if let Ok(n) = self.db.audit(&actor, Some(&rec.id), "permission", Some(&call.tool), "deny", detail) {
+                    if let Ok(n) = self.db.audit(&actor, Some(&rec.id), "permission", Some(&call.tool), "deny", detail)
+                    {
                         self.chat_rule_answered(rec, &call, rule, false, n);
                     }
                     return Some(HookOutput::permission_request(
