@@ -469,7 +469,8 @@ impl Runtime {
             tracker: Default::default(),
             pid: None,
             pgid: None,
-            allocation: cx.feature.allocation.clone().unwrap_or_else(|| cx.project.name.clone()),
+            // Charged to the feature's allocation, else the project's (its id, like solo sessions).
+            allocation: cx.feature.allocation.clone().unwrap_or_else(|| cx.project.id.clone()),
             tier: cfg.tier,
             created_at_ms: now_ms(),
             last_event: None,

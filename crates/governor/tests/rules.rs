@@ -1050,3 +1050,63 @@ fn memory_pressure_is_one_more_reason_when_enforced() {
     let e = g.queue()[0].id;
     assert!(g.run_now(e, at(2)).is_some(), "Run now overrides the memory cap (FR-203)");
 }
+
+// ---------------------------------------------------------------- allocations the plan doesn't have
+
+/// A / B / C, plus `default` (other sessions, low, capped at 5 %).
+fn gov_with_default() -> Governor {
+    let mut p = plan();
+    let mut d = alloc("default", 10.0, Tier::Low);
+    d.hard_cap_pct = Some(5.0);
+    p.allocations.push(d);
+    Governor::new(p, policy(), start()).unwrap()
+}
+
+#[test]
+fn an_unknown_allocation_is_charged_and_capped_as_default() {
+    let mut g = gov_with_default();
+    assert_eq!(g.resolve_allocation(&"shop".into()), AllocationId::from("default"));
+    assert_eq!(g.resolve_allocation(&"B".into()), AllocationId::from("B"));
+    g.request_turn(task("shop-1", "shop", Tier::Normal), at(0));
+    g.ingest(&UsageSample::cost(at(30), "shop-1".into(), 60.0)); // 6 pp at k = 10
+    assert!((g.allocation_usage_pct(&"default".into()) - 6.0).abs() < 1e-9);
+    assert_eq!(g.allocation_usage_pct(&"shop".into()), 0.0);
+    g.turn_ended(&"shop-1".into(), at(31));
+    let d = g.request_turn(task("shop-1", "shop", Tier::Normal), at(32));
+    assert_eq!(queue_reason(&d), Some(QueueReason::HardCap), "default's cap");
+}
+
+#[test]
+fn an_unknown_allocation_is_queued_with_defaults_tier() {
+    let mut g = gov_with_default();
+    assert_eq!(g.request_turn(task("shop-1", "shop", Tier::Normal), at(0)).effective, Verdict::Admit);
+    g.turn_ended(&"shop-1".into(), at(1));
+    // A tool call outside an admitted turn re-queues the agent at its allocation's tier.
+    assert!(matches!(g.tool_call(&tool("shop-1"), at(2)).effective, Verdict::Deny { .. }));
+    assert_eq!(g.queue()[0].tier, Tier::Low);
+    assert_eq!(g.queue()[0].allocation, AllocationId::from("shop"), "recorded as-is");
+}
+
+#[test]
+fn a_project_name_resolves_to_its_id_unless_an_allocation_has_that_name() {
+    let mut g = gov_with_default();
+    g.set_aliases([("shop-api".to_string(), AllocationId::from("A")), ("B".to_string(), "C".into())].into());
+    assert_eq!(g.resolve_allocation(&"shop-api".into()), AllocationId::from("A"));
+    assert_eq!(g.resolve_allocation(&"B".into()), AllocationId::from("B"), "the plan's own id wins");
+    g.set_aliases([("old".to_string(), AllocationId::from("gone"))].into());
+    assert_eq!(g.resolve_allocation(&"old".into()), AllocationId::from("default"), "alias not in the plan");
+}
+
+#[test]
+fn a_replay_into_a_plan_that_adds_the_allocation_counts_its_earlier_usage() {
+    let s = UsageSample::cost(at(30), "shop-1".into(), 60.0);
+    let mut before = gov_with_default();
+    before.replay(&s, CostClass::Autonomous, Some("shop".into()));
+    assert!((before.allocation_usage_pct(&"default".into()) - 6.0).abs() < 1e-9);
+    let mut p = before.plan().clone();
+    p.allocations.insert(3, alloc("shop", 20.0, Tier::Normal));
+    let mut after = Governor::new(p, policy(), start()).unwrap();
+    after.replay(&s, CostClass::Autonomous, Some("shop".into()));
+    assert!((after.allocation_usage_pct(&"shop".into()) - 6.0).abs() < 1e-9);
+    assert_eq!(after.allocation_usage_pct(&"default".into()), 0.0);
+}

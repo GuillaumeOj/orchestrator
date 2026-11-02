@@ -334,6 +334,9 @@ impl CostClass {
     }
 }
 
+/// Work charged to an allocation the plan doesn't have goes here (other sessions).
+const DEFAULT_ALLOCATION: &str = "default";
+
 /// An admitted turn while it runs (opaque outside the Governor; see [`LiveRecord`]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LiveTurn {
@@ -443,6 +446,9 @@ pub struct Governor {
     alloc_cost: BTreeMap<AllocationId, f64>,
     service_offset: BTreeMap<AllocationId, f64>,
     agent_alloc: BTreeMap<AgentId, AllocationId>,
+    /// Old records name an allocation by project name: name → project id
+    /// ([`Governor::set_aliases`]).
+    aliases: BTreeMap<String, AllocationId>,
     live: BTreeMap<AgentId, LiveTurn>,
     /// Each agent's last ended turn: its class and end time, so the turn's
     /// last API response, ingested after Stop, is still attributed to it.
@@ -521,6 +527,7 @@ impl Governor {
             alloc_cost: BTreeMap::new(),
             service_offset: BTreeMap::new(),
             agent_alloc: BTreeMap::new(),
+            aliases: BTreeMap::new(),
             live: BTreeMap::new(),
             ended: BTreeMap::new(),
             queue: Vec::new(),
@@ -753,6 +760,26 @@ impl Governor {
         match self.fam.solve(k)[family] {
             Some(kf) if kf > 0.0 => (k / kf).clamp(0.2, 5.0),
             _ => 1.0,
+        }
+    }
+
+    /// Names that stand for an allocation id (records holding a project name
+    /// instead of its id). Used only when no allocation has that name.
+    pub fn set_aliases(&mut self, aliases: BTreeMap<String, AllocationId>) {
+        self.aliases = aliases;
+    }
+
+    /// The plan allocation work recorded under `id` is charged, queued and
+    /// capped as: `id` itself, else the allocation its alias names, else
+    /// `default` (other sessions). Agents keep the id they were given, so a
+    /// replan that adds or removes it applies to them at once.
+    pub fn resolve_allocation(&self, id: &AllocationId) -> AllocationId {
+        if self.plan.allocation(id).is_some() {
+            return id.clone();
+        }
+        match self.aliases.get(&id.0) {
+            Some(a) if self.plan.allocation(a).is_some() => a.clone(),
+            _ => AllocationId(DEFAULT_ALLOCATION.into()),
         }
     }
 
@@ -1028,7 +1055,7 @@ impl Governor {
             self.interactive_cost += c;
         }
         if let Some(a) = alloc {
-            *self.alloc_cost.entry(a).or_insert(0.0) += c;
+            *self.alloc_cost.entry(self.resolve_allocation(&a)).or_insert(0.0) += c;
         }
     }
 
@@ -1232,7 +1259,7 @@ impl Governor {
         if tier == Tier::Critical {
             return Ok(());
         }
-        if self.deferred.contains_key(alloc) {
+        if self.deferred.contains_key(&self.resolve_allocation(alloc)) {
             return Err(QueueReason::DeferredUntilReset);
         }
         if self.over_hard_cap(alloc) {
@@ -1270,6 +1297,7 @@ impl Governor {
     }
 
     fn over_hard_cap(&self, alloc: &AllocationId) -> bool {
+        let alloc = &self.resolve_allocation(alloc);
         self.plan
             .allocation(alloc)
             .and_then(|a| a.hard_cap_pct)
@@ -1366,7 +1394,7 @@ impl Governor {
     /// Would an eligible queued entry be released before this request?
     fn queued_ahead(&self, req: &TurnRequest, now: Timestamp) -> bool {
         let service = self.service();
-        let mine = service.get(&req.allocation).copied().unwrap_or(0.0);
+        let mine = service.get(&self.resolve_allocation(&req.allocation)).copied().unwrap_or(0.0);
         self.queue.iter().any(|e| {
             let eff = e.aged_tier(now, self.policy.aging_hours);
             !self.live.contains_key(&e.agent)
@@ -1403,7 +1431,7 @@ impl Governor {
             }
             self.stats.tool_calls_denied += 1;
             if let Some(alloc) = self.agent_alloc.get(&req.agent).cloned() {
-                let tier = self.plan.allocation(&alloc).map_or(Tier::Normal, |a| a.tier);
+                let tier = self.plan.allocation(&self.resolve_allocation(&alloc)).map_or(Tier::Normal, |a| a.tier);
                 // `enqueue` keeps the agent's entry if it already has one.
                 self.enqueue(req.agent.clone(), alloc, tier, TurnKind::Continue, true, false, None, cause, now);
             }
@@ -1450,7 +1478,7 @@ impl Governor {
             } else if live.scheduled && self.in_working_time(now) {
                 // FR-816: work scheduled off-hours stops when working time starts.
                 Some(QueueReason::ScheduledOffHours { starts_at: self.next_off_hours(now) })
-            } else if self.deferred.contains_key(alloc) {
+            } else if self.deferred.contains_key(&self.resolve_allocation(alloc)) {
                 Some(QueueReason::DeferredUntilReset)
             } else {
                 self.over_hard_cap(alloc).then_some(QueueReason::HardCap)
@@ -1572,8 +1600,12 @@ impl Governor {
         }
         // Start-time fair queuing: an allocation that becomes backlogged starts
         // at the lowest service of the others, so idle time is not banked.
-        let busy = self.queue.iter().any(|e| e.allocation == allocation)
-            || self.live.values().any(|t| t.allocation == allocation && t.class == CostClass::Autonomous);
+        let key = self.resolve_allocation(&allocation);
+        let busy = self.queue.iter().any(|e| self.resolve_allocation(&e.allocation) == key)
+            || self
+                .live
+                .values()
+                .any(|t| t.class == CostClass::Autonomous && self.resolve_allocation(&t.allocation) == key);
         if !busy {
             let service = self.service();
             let floor = self
@@ -1581,12 +1613,13 @@ impl Governor {
                 .iter()
                 .map(|e| &e.allocation)
                 .chain(self.live.values().filter(|t| t.class == CostClass::Autonomous).map(|t| &t.allocation))
-                .filter(|a| **a != allocation)
-                .filter_map(|a| service.get(a).copied())
+                .map(|a| self.resolve_allocation(a))
+                .filter(|a| *a != key)
+                .filter_map(|a| service.get(&a).copied())
                 .fold(f64::INFINITY, f64::min);
-            let mine = service.get(&allocation).copied().unwrap_or(0.0);
+            let mine = service.get(&key).copied().unwrap_or(0.0);
             if floor.is_finite() && mine < floor {
-                *self.service_offset.entry(allocation.clone()).or_insert(0.0) += floor - mine;
+                *self.service_offset.entry(key).or_insert(0.0) += floor - mine;
             }
         }
         let id = EntryId(self.next_entry);
@@ -1625,15 +1658,31 @@ impl Governor {
 
     /// Fair-queuing service per allocation: attributed usage (plus the live
     /// turns' expected cost) divided by weight, plus its start-time offset.
+    /// Ids the plan doesn't have (queued or live) map to their resolved
+    /// allocation's service, so lookups by an entry's own id work.
     fn service(&self) -> BTreeMap<AllocationId, f64> {
         let mut out = BTreeMap::new();
         for a in &self.plan.allocations {
-            let live =
-                self.live.values().filter(|t| t.allocation == a.id && t.class == CostClass::Autonomous).count() as f64;
+            let live = self
+                .live
+                .values()
+                .filter(|t| t.class == CostClass::Autonomous && self.resolve_allocation(&t.allocation) == a.id)
+                .count() as f64;
             let raw =
                 (self.alloc_cost.get(&a.id).copied().unwrap_or(0.0) + live * self.avg_turn_cost) / a.weight.max(1e-6);
             let offset = self.service_offset.get(&a.id).copied().unwrap_or(0.0);
             out.insert(a.id.clone(), raw + offset);
+        }
+        let unknown: Vec<&AllocationId> = self
+            .queue
+            .iter()
+            .map(|e| &e.allocation)
+            .chain(self.live.values().map(|t| &t.allocation))
+            .filter(|a| !out.contains_key(*a))
+            .collect();
+        for a in unknown {
+            let v = out.get(&self.resolve_allocation(a)).copied().unwrap_or(0.0);
+            out.insert(a.clone(), v);
         }
         out
     }
@@ -1980,8 +2029,8 @@ impl Governor {
             .iter()
             .filter(|a| a.tier < min_tier && !self.deferred.contains_key(&a.id))
             .map(|a| {
-                let queued = self.queue.iter().filter(|e| e.allocation == a.id).count();
-                let live = self.live.values().filter(|t| t.allocation == a.id).count();
+                let queued = self.queue.iter().filter(|e| self.resolve_allocation(&e.allocation) == a.id).count();
+                let live = self.live.values().filter(|t| self.resolve_allocation(&t.allocation) == a.id).count();
                 (queued + live, a)
             })
             .filter(|(n, _)| *n > 0)

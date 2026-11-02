@@ -225,6 +225,8 @@ pub fn run() {
             commands::import_kitty,
             commands::plan_form,
             commands::plan_set,
+            commands::project_allocation,
+            commands::project_allocation_set,
             commands::governor_enforce,
             commands::trust_command,
             commands::settings_get,

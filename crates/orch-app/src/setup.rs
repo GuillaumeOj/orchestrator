@@ -19,6 +19,8 @@ use crate::core::Core;
 use crate::kitty;
 use crate::services::Project;
 
+use agent_runtime::runtime::DEFAULT_ALLOCATION;
+
 /// Settings keys (under `ui.` in the store).
 pub const FIRST_RUN_KEY: &str = "first_run_ms";
 pub const KITTY_KEY: &str = "kitty.conf";
@@ -168,6 +170,130 @@ pub struct AllocationForm {
     pub hard_cap_pct: Option<f64>,
 }
 
+impl AllocationForm {
+    /// The rules `PlanForm::apply` and `project_allocation_set` share. A
+    /// weight-0 row is dropped, so only a kept row's cap matters.
+    fn check(&self) -> Result<()> {
+        if !(self.weight.is_finite() && self.weight >= 0.0) {
+            bail!("weight of {} {}: use 0 or more", self.id, self.weight);
+        }
+        if let Some(c) = self.hard_cap_pct.filter(|c| self.weight > 0.0 && !(0.0..=100.0).contains(c)) {
+            bail!("hard cap of {} {c}%: use 0–100 %, or leave it empty", self.id);
+        }
+        Ok(())
+    }
+}
+
+impl From<&BudgetAllocation> for AllocationForm {
+    fn from(a: &BudgetAllocation) -> Self {
+        AllocationForm {
+            id: a.id.0.clone(),
+            target: a.target.clone(),
+            weight: a.weight,
+            tier: a.tier,
+            hard_cap_pct: a.hard_cap_pct,
+        }
+    }
+}
+
+impl From<&AllocationForm> for BudgetAllocation {
+    fn from(a: &AllocationForm) -> Self {
+        BudgetAllocation {
+            id: AllocationId(a.id.clone()),
+            target: a.target.clone(),
+            weight: a.weight,
+            tier: a.tier,
+            hard_cap_pct: a.hard_cap_pct,
+        }
+    }
+}
+
+/// A project's allocation as Project settings › Allocation shows it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProjectAllocationView {
+    /// The project id (= its allocation id).
+    pub project: String,
+    pub name: String,
+    /// A plan was saved (`PLAN_KEY`). Without one, the allocations are the
+    /// split `PlanForm::from_plan` proposes.
+    pub plan_confirmed: bool,
+    /// None: not in the plan (charged to `default`, other sessions).
+    pub allocation: Option<AllocationLine>,
+    /// The plan's other allocations, in plan order, `default` last.
+    pub others: Vec<AllocationLine>,
+    /// Weight `Add` pre-fills: mean of the project allocations, rounded, ≥ 1.
+    pub proposed_weight: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct AllocationLine {
+    pub id: String,
+    pub target: String,
+    pub weight: f64,
+    pub tier: Tier,
+    pub hard_cap_pct: Option<f64>,
+    /// Usage charged to it this week, pp of the week.
+    pub used_pct: f64,
+}
+
+/// The project's row as Project settings › Allocation saves it.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct AllocationEdit {
+    pub weight: f64,
+    pub tier: Tier,
+    #[serde(default)]
+    pub hard_cap_pct: Option<f64>,
+}
+
+fn allocation_view(
+    project: &Project,
+    plan_confirmed: bool,
+    plan: &WeeklyPlan,
+    used: impl Fn(&AllocationId) -> f64,
+) -> ProjectAllocationView {
+    let line = |a: &BudgetAllocation| AllocationLine {
+        id: a.id.0.clone(),
+        target: a.target.clone(),
+        weight: a.weight,
+        tier: a.tier,
+        hard_cap_pct: a.hard_cap_pct,
+        used_pct: used(&a.id),
+    };
+    let is_default = |a: &&BudgetAllocation| a.id.0 == DEFAULT_ALLOCATION;
+    let mut others: Vec<AllocationLine> =
+        plan.allocations.iter().filter(|a| a.id.0 != project.id && !is_default(a)).map(line).collect();
+    others.extend(plan.allocations.iter().filter(is_default).map(line));
+    let weights: Vec<f64> = plan.allocations.iter().filter(|a| !is_default(a)).map(|a| a.weight).collect();
+    let proposed_weight =
+        if weights.is_empty() { 1.0 } else { (weights.iter().sum::<f64>() / weights.len() as f64).round().max(1.0) };
+    ProjectAllocationView {
+        project: project.id.clone(),
+        name: project.name.clone(),
+        plan_confirmed,
+        allocation: plan.allocations.iter().find(|a| a.id.0 == project.id).map(line),
+        others,
+        proposed_weight,
+    }
+}
+
+/// `plan` with `project`'s allocation replaced, added (before `default`) or,
+/// with `row` None, removed. The other allocations are untouched.
+fn with_project_allocation(mut plan: WeeklyPlan, project: &str, row: Option<&AllocationForm>) -> WeeklyPlan {
+    let at = plan.allocations.iter().position(|a| a.id.0 == project);
+    match (at, row) {
+        (Some(i), Some(r)) => plan.allocations[i] = r.into(),
+        (Some(i), None) => {
+            plan.allocations.remove(i);
+        }
+        (None, Some(r)) => {
+            let at = plan.allocations.iter().position(|a| a.id.0 == DEFAULT_ALLOCATION);
+            plan.allocations.insert(at.unwrap_or(plan.allocations.len()), r.into());
+        }
+        (None, None) => {}
+    }
+    plan
+}
+
 const DAYS: [(&str, Day); 7] = [
     ("mon", Day::Mon),
     ("tue", Day::Tue),
@@ -189,7 +315,9 @@ fn parse_time(s: &str) -> Result<Time> {
 
 impl PlanForm {
     /// The form for `plan`. A plan with only the default allocation (never
-    /// edited) proposes an even split over the projects (J0 step 4).
+    /// edited) proposes an even split over the projects (J0 step 4). Else the
+    /// plan's allocations, plus each project it doesn't have at weight 0
+    /// (dropped by `apply` unless given a weight), before `default`.
     pub fn from_plan(plan: &WeeklyPlan, projects: &[Project]) -> PlanForm {
         let blocks = &plan.calendar.blocks;
         let first = blocks.first();
@@ -198,8 +326,7 @@ impl PlanForm {
         if days.is_empty() {
             days = DAYS[..5].iter().map(|(n, _)| n.to_string()).collect();
         }
-        let only_default =
-            plan.allocations.len() == 1 && plan.allocations[0].id.0 == agent_runtime::runtime::DEFAULT_ALLOCATION;
+        let only_default = plan.allocations.len() == 1 && plan.allocations[0].id.0 == DEFAULT_ALLOCATION;
         let allocations = if only_default && !projects.is_empty() {
             projects
                 .iter()
@@ -212,16 +339,21 @@ impl PlanForm {
                 })
                 .collect()
         } else {
-            plan.allocations
+            let mut rows: Vec<AllocationForm> = plan.allocations.iter().map(AllocationForm::from).collect();
+            let missing: Vec<AllocationForm> = projects
                 .iter()
-                .map(|a| AllocationForm {
-                    id: a.id.0.clone(),
-                    target: a.target.clone(),
-                    weight: a.weight,
-                    tier: a.tier,
-                    hard_cap_pct: a.hard_cap_pct,
+                .filter(|p| !rows.iter().any(|a| a.id == p.id))
+                .map(|p| AllocationForm {
+                    id: p.id.clone(),
+                    target: p.name.clone(),
+                    weight: 0.0,
+                    tier: Tier::Normal,
+                    hard_cap_pct: None,
                 })
-                .collect()
+                .collect();
+            let at = rows.iter().position(|a| a.id == DEFAULT_ALLOCATION).unwrap_or(rows.len());
+            rows.splice(at..at, missing);
+            rows
         };
         PlanForm {
             days,
@@ -257,25 +389,19 @@ impl PlanForm {
             bail!("pick at least one working day");
         }
         let mut allocations: Vec<BudgetAllocation> = vec![];
+        for a in &self.allocations {
+            a.check()?;
+        }
         for a in self.allocations.iter().filter(|a| a.weight > 0.0) {
             if allocations.iter().any(|x| x.id.0 == a.id) {
                 bail!("allocation {} twice", a.id);
             }
-            if let Some(c) = a.hard_cap_pct.filter(|c| !(0.0..=100.0).contains(c)) {
-                bail!("hard cap of {} {c}%: use 0–100 %, or leave it empty", a.id);
-            }
-            allocations.push(BudgetAllocation {
-                id: AllocationId(a.id.clone()),
-                target: a.target.clone(),
-                weight: a.weight,
-                tier: a.tier,
-                hard_cap_pct: a.hard_cap_pct,
-            });
+            allocations.push(a.into());
         }
-        if !allocations.iter().any(|a| a.id.0 == agent_runtime::runtime::DEFAULT_ALLOCATION) {
+        if !allocations.iter().any(|a| a.id.0 == DEFAULT_ALLOCATION) {
             let w = if allocations.is_empty() { 100.0 } else { 1.0 };
             allocations.push(BudgetAllocation {
-                id: AllocationId(agent_runtime::runtime::DEFAULT_ALLOCATION.into()),
+                id: AllocationId(DEFAULT_ALLOCATION.into()),
                 target: "other sessions".into(),
                 weight: w,
                 tier: Tier::Normal,
@@ -361,6 +487,50 @@ impl Core {
         rt.replan(plan)?;
         self.settings.set(PLAN_KEY, json!(orch_protocol::now_ms()))?;
         Ok(())
+    }
+
+    /// Project settings › Allocation: `project`'s allocation in the current
+    /// plan, or in the split proposed while no plan is confirmed.
+    pub fn project_allocation(&self, project: &str) -> Result<ProjectAllocationView> {
+        let p = self.project(project)?;
+        let rt = self.runtime()?;
+        let confirmed = self.settings.get(PLAN_KEY).is_some();
+        let projects = if confirmed { vec![] } else { self.projects() };
+        rt.with_governor(|g| {
+            let plan =
+                if confirmed { g.plan().clone() } else { PlanForm::from_plan(g.plan(), &projects).apply(g.plan())? };
+            Ok(allocation_view(&p, confirmed, &plan, |id| g.allocation_usage_pct(id)))
+        })
+    }
+
+    /// Replaces, adds or (`form` None or weight 0) removes only `project`'s
+    /// allocation in the current plan; the week's usage is replayed into it.
+    pub fn project_allocation_set(
+        &self,
+        project: &str,
+        form: Option<&AllocationEdit>,
+    ) -> Result<ProjectAllocationView> {
+        let p = self.project(project)?;
+        if self.settings.get(PLAN_KEY).is_none() {
+            bail!("set up the weekly plan first");
+        }
+        let row = form.filter(|f| f.weight != 0.0).map(|f| AllocationForm {
+            id: p.id.clone(),
+            target: p.name.clone(),
+            weight: f.weight,
+            tier: f.tier,
+            hard_cap_pct: f.hard_cap_pct,
+        });
+        if let Some(r) = &row {
+            r.check()?;
+        }
+        let rt = self.runtime()?;
+        let plan = rt.with_governor(|g| g.plan().clone());
+        let next = with_project_allocation(plan.clone(), &p.id, row.as_ref());
+        if next != plan {
+            rt.replan(next)?;
+        }
+        self.project_allocation(project)
     }
 
     /// FR-812: leave (or go back to) shadow mode. Takes effect now.
@@ -455,8 +625,8 @@ mod tests {
         assert_eq!((p.allocations[1].hard_cap_pct, p.off_hours_allowance_pct), (Some(12.0), 5.0));
         assert_eq!(p.allocations.len(), 3, "default kept for other sessions");
         assert_eq!((p.week_start, p.reset_at), (plan.week_start, plan.reset_at), "same week");
-        let back = PlanForm::from_plan(&p, &[]);
-        assert_eq!(back.allocations.len(), 3);
+        let back = PlanForm::from_plan(&p, &[project("shop"), project("api")]);
+        assert_eq!(back.allocations.len(), 3, "every project already in the plan");
         assert_eq!(back.start, "10:00");
         assert_eq!((back.allocations[1].hard_cap_pct, back.off_hours_allowance_pct), (Some(12.0), 5.0));
         governor::Governor::new(p, governor::PacingPolicy::default(), now).expect("a valid plan");
@@ -471,5 +641,46 @@ mod tests {
         assert!(bad(|x| x.off_hours_allowance_pct = 120.0));
         assert!(bad(|x| x.allocations[0].hard_cap_pct = Some(-1.0)));
         assert!(bad(|x| x.days = vec!["funday".into()]));
+        assert!(bad(|x| x.allocations[0].weight = -1.0));
+    }
+
+    #[test]
+    fn plan_form_lists_projects_missing_from_the_plan_at_weight_0() {
+        let now: governor::jiff::Timestamp = "2026-10-21T09:00:00Z".parse().unwrap();
+        let plan = agent_runtime::runtime::default_plan(now, true);
+        let p = PlanForm::from_plan(&plan, &[project("shop")]).apply(&plan).unwrap();
+        let f = PlanForm::from_plan(&p, &[project("shop"), project("new")]);
+        let rows = |f: &PlanForm| f.allocations.iter().map(|a| (a.id.clone(), a.weight)).collect::<Vec<_>>();
+        assert_eq!(rows(&f), [("shop".into(), 1.0), ("new".into(), 0.0), ("default".into(), 1.0)]);
+        let new = &f.allocations[1];
+        assert_eq!((new.tier, new.hard_cap_pct, new.target.as_str()), (Tier::Normal, None, "new"));
+        assert_eq!(f.apply(&p).unwrap().allocations, p.allocations, "a weight-0 row is not added");
+        let mut f2 = f.clone();
+        f2.allocations[1].weight = 2.0;
+        let ids: Vec<String> = f2.apply(&p).unwrap().allocations.iter().map(|a| a.id.0.clone()).collect();
+        assert_eq!(ids, ["shop", "new", "default"]);
+    }
+
+    #[test]
+    fn one_projects_allocation_is_replaced_added_or_removed() {
+        let now: governor::jiff::Timestamp = "2026-10-21T09:00:00Z".parse().unwrap();
+        let plan = agent_runtime::runtime::default_plan(now, true);
+        let p = PlanForm::from_plan(&plan, &[project("shop")]).apply(&plan).unwrap();
+        let row = |id: &str, weight| AllocationForm {
+            id: id.into(),
+            target: id.into(),
+            weight,
+            tier: Tier::High,
+            hard_cap_pct: None,
+        };
+        let ids = |p: &WeeklyPlan| p.allocations.iter().map(|a| (a.id.0.clone(), a.weight)).collect::<Vec<_>>();
+        let added = with_project_allocation(p.clone(), "api", Some(&row("api", 4.0)));
+        assert_eq!(ids(&added), [("shop".into(), 1.0), ("api".into(), 4.0), ("default".into(), 1.0)]);
+        let changed = with_project_allocation(added.clone(), "shop", Some(&row("shop", 7.0)));
+        assert_eq!(ids(&changed), [("shop".into(), 7.0), ("api".into(), 4.0), ("default".into(), 1.0)]);
+        let removed = with_project_allocation(changed, "api", None);
+        assert_eq!(ids(&removed), [("shop".into(), 7.0), ("default".into(), 1.0)]);
+        assert_eq!(removed.calendar, p.calendar);
+        assert_eq!(with_project_allocation(p.clone(), "api", None), p);
     }
 }
