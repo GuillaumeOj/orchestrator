@@ -18,6 +18,9 @@ Point numbers below follow ux-brief §2 (1–13).
 | F4 | **"All caught up" is false when cards are open** (P4.1 §5 digest copy: "All caught up · 5 done today"). | The cleared digest says "5 done today, all seen" (§7). "Nothing needs you." is a separate line, shown only when no card is open. Supersedes P4.1 §5's cleared copy. |
 | F5 | **The morning line has no all-zero form.** Parts at zero are left out (P4.2 §8.6); with nothing running, nothing waiting and no plan the sentence would be "Good morning." alone. | Back writes: "Good morning. Nothing is running and nothing is waiting for you." when all parts are zero; the week part is left out when there is no plan. Other forms as in P4.2 §8.6, with counts that say what they are: "1 run in progress", "3 decisions waiting", "week 38 % against 35 % planned". |
 | F6 | **No way to hide the chat column in P4.3.** It is a fixed column (D5), also over a zoomed pane (§9). At 1280 a terminal gets 884 px. | Keep fixed for P4.3 (oversight must not be one key from hidden). If the first week shows a need, a "Hide decisions" command is a P4.4 candidate. No action now. |
+| F8 | **Auto-cleared synthesized decisions never close** (`error-`, `wait-`, `trust-`, `ask-` vanish from `now` when their condition clears). Their entry gets no `line`. | Back closes the entry when a synthesized id leaves `now` with `line.verb: "dismissed"`, `by: "core"`, `state: "stale"`; the UI then shows `▸ dismissed back-1: … · by the app`. |
+| F9 | **Search misses what the line shows** (verb, rule label) and live open decisions. | Back also matches `line.verb`, `line.by_detail` and open decisions' title/summary (contract §3). Until then ui must not promise it. |
+| F10 | **Expiry and parked.** A permission hold that expires *parks* (stays a card, FR-705). | `expired` lines are for decisions with a default (ask, budget: `kept queued`/`applied` · expired) and for a parked permission dismissed by the core; a hold expiring itself is the parked card. Spec §3.2 "expiry" read this way. |
 | F7 | **Notification copy changes in Rust** (`notify.rs`: "N items need you", title = the decision's title). | New titles and bodies in §8.3, for back. |
 
 ---
@@ -57,7 +60,7 @@ Point numbers below follow ux-brief §2 (1–13).
 |---|---|---|
 | Settled by the user (`by = you`), effect reached | **10 s after the effect** | Timer starts at `effect`, not at the click. Paused while the pointer is over the card or focus is inside it with text typed in the reply area (a reply being written never collapses under the cursor). Collapse never moves focus off the thread: if the card had focus, focus goes to the next open card, else to the line itself. |
 | Dismiss (any card) | **at once** | The "Dismissed by you · 14:05" marker is not shown first; the line says it. |
-| Settled by a rule, in the pane, by expiry or by the core | **at once, and never as a card** | Posted as a line from the start (D3). It does not notify, does not change the badge, and does not take focus. |
+| Settled by a rule, in the pane, by expiry (F10) or by the core | **at once, and never as a card** | Posted as a line from the start (D3). It does not notify, does not change the badge, and does not take focus. |
 | open · parked · failed · stale | **stays a card** | Failed has its actions again plus Dismiss; stale has Dismiss. |
 | sent (5 s undo window) | stays a card | The card shows "Allowing once · Undo u"; undo returns it to open. |
 | PR gate in effect | collapses after 10 s like the rest | The expanded line keeps **Open PR o**. |
@@ -112,8 +115,10 @@ When `by_detail` is missing for a rule, the tail is `· rule`. The verb `expired
 ### 2.4 Line states
 - **Undo window** (5 s, user's own decision, before it reaches the effect): the card is still a card (§2.1). A line never carries Undo in P4.3: undo of a rule's effect is P4.4 (FR-1310).
 - **Undone**: the card returns to open; no line.
+- **Order**: entries sit at their posting time (`at`); a card that collapses keeps its place and shows `line.at_ms` on the right. "↳ after" picks the earlier decision by `line.at_ms`.
+- **Dismiss has no undo** (it collapses at once); `u` applies only to a decision in its 5 s window, where the card is still shown. This supersedes spec §3.3's "undo shows on the line" for P4.3.
 - **Expanded** (`⏎`, click, `▾`): the read-only card from the snapshot (or the live decision), with its marker ("Allowed by rule installs · 14:02", "Allowed in the pane · 14:02", P4.1 §3.4 `<by>` words), no action buttons except the ones that stay meaningful: **Open PR o** (PR gate), **Open pane o** where the pane still exists, **Open in Notion ↗**. `⏎` or click again collapses. At most one line is expanded per click; expanding does not move other items.
-- **Accessibility**: `article`, `aria-label` = "Allowed back-1: cargo add serde_json, by rule installs, 14:02", `aria-expanded`.
+- **Accessibility**: `article`, `aria-label` = "Allowed back-1: cargo add serde_json, by rule installs, 14:02". `aria-expanded` goes on the line's toggle `button` inside the article (the `article` role does not support it).
 
 ---
 
@@ -172,12 +177,12 @@ Fri 30 Oct · 9 decisions
 Thu 29 Oct · 4 decisions
 Show earlier days
 ```
-  - Row = `<Yesterday | weekday day month> · <n> decisions` (`decisions` of `chat_days`; "1 decision"; a day with only a morning line: "no decisions"). "Yesterday" only for the previous calendar day, else the weekday date. "Show earlier days" loads the next 30 (`before`). No days: "No earlier days yet." Loading: "Loading days…". Error: "Could not load days: <why> · Retry".
+  - Row = `[Yesterday · ]<weekday day month> · <n> decisions` (`decisions` of `chat_days`; "1 decision"; a day with only a morning line: "no decisions"). The "Yesterday · " prefix only for the previous calendar day. "Show earlier days" loads the next 30 (`before`). No days: "No earlier days yet." Loading: "Loading days…". Error: "Could not load days: <why> · Retry".
 - Keys: `[` previous day, `]` next day (towards today), `t` back to today, all while the chat has focus. In the popover: `j/k` or arrows, `⏎` opens, `Esc` closes.
 - Palette: "Older days…", "Back to today" (only on a past day).
 
 ### 6.2 A past day (read-only)
-- Header: title unchanged, the day button reads `Sun 1 Nov ▾`; a strip under it (28 px): **"Sunday 1 Nov · read-only · Back to today t"**. The filter row is hidden. Footer: "Read-only. Back to today · t".
+- Header: title unchanged, the day button reads `Sun 1 Nov ▾`; a strip under it (28 px): **"Sunday 1 Nov · read-only · Back to today t"**. The filter row is hidden. Footer: "Read-only · Back to today t" (as §1).
 - Content: that day's morning line, then every entry **as a line** (cards that were still open at the end of the day: `▸ left open back-1: Bash · pnpm add zod`, muted, no tail; their expanded card shows the snapshot or the live decision's last state, with the marker "Open until the day ended" — see F1). Lines expand (`⏎`) to the read-only card with its marker; **no actions at all, no Undo, no reply field**, `o` still opens a PR, a report or a task when the subject exists.
 - At the end: the day's outcomes (`chat_day.outcomes`) as the digest group, **"Sun 1 Nov · 4 outcomes"** with no Clear; rows keep `o`. No outcomes: "No outcomes that day."
 - Loading: skeleton of three lines and "Loading Sun 1 Nov…". Error: "Could not load Sun 1 Nov: <why> · Retry". An empty day cannot be listed (days with at least one entry); a day from a stale list returning nothing: "Nothing was recorded on Sun 1 Nov."
@@ -248,8 +253,8 @@ Levels 1–2 only, as today; rules and panes never notify (D3).
 |---|---|---|
 | One decision, agent known | **"back-1 needs you"** | the card title, then the summary's first line, ≤ 120 chars: `Bash · pnpm add zod` ⏎ `Add zod` |
 | One decision, no agent (budget, battery, MCP) | **"Orchestrator needs you"** | title, then summary's first line |
-| Two or more, one agent | **"3 decisions need you · back-1"** | up to 3 card titles one per line, then "+2 more" |
-| Two or more, several agents | **"3 decisions need you · 2 agents"** | up to 3 lines `back-1: <title>`, then "+2 more" |
+| Two or more, one agent | **"5 decisions need you · back-1"** | up to 3 card titles one per line, then "+2 more" (no "+n more" line when 3 or fewer) |
+| Two or more, several agents | **"5 decisions need you · 2 agents"** | up to 3 lines `back-1: <title>`, then "+2 more" (none when 3 or fewer) |
 | Click | brings the app forward and focuses the **oldest** decision of the notification (§8.1) | |
 
 The old "N items need you" is dropped (principle 11: items → decisions).
@@ -264,7 +269,7 @@ Widths (P4.2 §4 stand; sidebar 240 or the 56 px rail below 1512; centre min 640
 |---|---|---|---|---|
 | 1280 | rail 56 | 884 | **340** | overlay in the chat's slot (340) |
 | 1512 | 240 | 912 | 360 | overlay in the chat's slot (360) |
-| 1728 | 240 | 808 | 360 | **docked 320** (centre 808 includes it: 240+808+360+320) |
+| 1728 | 240 | 808 | 360 | **docked 320** (240+808+360+320 = 1728: the Inspector is added to the centre's 808, it does not take from it) |
 
 - The chat spans from under the title bar to above the status bar, full height. The **shell dock** (⌘J) sits under the **centre only**; the chat column is never covered by it.
 - **Inspector overlay** (below 1728), ⌘I toggles, `Esc` or ⌘I closes (P4.2 §4 rules 1–5):
@@ -334,6 +339,8 @@ Result: **no binding collision, one semantic collision (`r`) now visible on one 
 |---|---|---|
 | `components/TitleBar.svelte:22` | `Inbox <count>` + `⌘⇧I` | **`Decisions <count>`** + `⌘⇧I`. Tooltip/aria-label: "3 decisions need you · ⌘⇧I"; zero: "No decisions waiting · ⌘⇧I". Click = ⌘⇧I (focus the chat on the oldest open card; at 0 focus the column). Class `.inbox` → `.decisions` (code). |
 | `components/TitleBar.svelte:20` | `openSingleton('inbox')` | focus the chat (code) |
+| `components/PaneFrame.svelte:10,26,46` | imports `InboxPane`, kind map `inbox: 'inbox'`, `spec.type === 'inbox'` branch | remove all three with the pane (code) |
+| `lib/app.svelte.js:350` | `openSingleton('inbox')` (code) | focus the chat (`chatFocus`) |
 | `lib/app.svelte.js:181` | pane title `inbox: 'Inbox'` | remove the entry (no `inbox` pane; a saved one is dropped at restore) |
 | `lib/app.svelte.js:1045` | palette "Open Inbox" | **"Show decisions"** (id `decisions`, hint ⌘⇧I). New: "Search decisions" (⌘L), "Older days…", "Back to today", "Filter decisions: All / Blocking / Errors / Budget" |
 | `lib/app.svelte.js:1047` | "Clear today's digest" | unchanged |
@@ -356,7 +363,7 @@ Result: **no binding collision, one semantic collision (`r`) now visible on one 
 ### 11.2 Rust UI strings (front/back)
 | File:line | Today | New |
 |---|---|---|
-| `crates/orch-app/src/menu.rs:34` | menu item "Inbox" (⌘⇧I) | **"Show Decisions"** (id `decisions`) |
+| `crates/orch-app/src/menu.rs:34` and `:107` | menu item "Inbox" (⌘⇧I) and the accelerator map `("CmdOrCtrl+Shift+I", "inbox")` | **"Show Decisions"** (id `decisions` in both places, matching `keyboard.js`) |
 | `crates/orch-app/src/notify.rs:55-56` | "N items need you" / "N agents need you" | §8.3 |
 
 ### 11.3 Agent-facing strings (back; no behaviour change; the agent may repeat them to the user)
@@ -370,7 +377,7 @@ Result: **no binding collision, one semantic collision (`r`) now visible on one 
 | `crates/agent-runtime/src/reconcile.rs:299,301,367,371,375` | "…parked in the Inbox: …", "back in the Inbox as a restart gate", "Inbox item {item} …" | "…parked as a decision: …", "back as a restart gate", "Decision {item} …" |
 | `crates/governor/src/governor.rs:1428` | "…Inbox item for the user" | "…decision for the user" |
 | `crates/orch-mcp/src/lib.rs:121` | "…fyi (shown in the Inbox, no notification)." | "…fyi (shown in the decisions column, no notification)." |
-| `inbox.rs:723,729,774` (errors) | "no Inbox item {id}" / "Inbox item {id} is already …" | "no decision {id}" / "Decision {id} is already …" |
+| `inbox.rs:723,729,774,976` (errors), `orch-app/src/core.rs:1123` | "no Inbox item {id}" / "Inbox item {id} is already …" / "Inbox item {id} is no longer failed or stale" | "no decision {id}" / "Decision {id} is already …" / "Decision {id} is no longer failed or stale" |
 
 SPEC text (§9.2 line 548, FR-210, FR-705 and the notes) is lead's (F3). Command and table names stay `inbox_*`.
 
@@ -418,6 +425,6 @@ On page 04.3, give each of these five cards its own subject line, blocks and act
 | **Budget** | "Reserve for your own work used up" · (no agent, project only: none) | markdown: "Agents are squeezed harder until Mon 09:00."; cost: "Cost · +3.4 pp of the week reserved"; countdown: "Applies in 18 min" | Apply `a` · Skip `r` |
 | **Notion** | "Comment on checkout · spec.md" · "shop-api › checkout" | markdown with source header "From Notion · checkout spec ↗": "Sam: Can we drop the retry on 409? It hides the conflict." | Reply · Dismiss `r` · Open in Notion ↗ |
 
-Clipping rules for all cards (also the other kinds): card width 344 (324 at 1280); padding 12; blocks wrap and break long tokens; tool-call and pty blocks keep mono and scroll horizontally inside their frame with a fade at the edge, collapsed past 6 lines ("Show 14 more lines"); action buttons wrap to a second row, each label and its `Kbd` stay together; a marker line wraps to two lines, never truncates. Check every kind at 340.
+Clipping rules for all cards (also the other kinds): card width 336 (316 at 1280: column minus 2×12 column padding, §9); card padding 12; blocks wrap and break long tokens; tool-call and pty blocks keep mono and scroll horizontally inside their frame with a fade at the edge, collapsed past 6 lines ("Show 14 more lines"); action buttons wrap to a second row, each label and its `Kbd` stay together; a marker line wraps to two lines, never truncates. Check every kind at 340.
 
 Also on 04.3 (the P4.3 additions, brief §3): header with day button and search, filter row and strip, collapsed lines per verb (§2.3), the reference line (§3), the fold header (§4), the digest states (§7), day separators (§6.3), past day and search results (§6), the notification highlight (§8.1), every row of §12. Page 05: §10. Page 03: §9. Page 06: J5 storyboard in the chat, 4–6 frames: (1) a permission card arrives with a notification; (2) `a`, "Allowing once · Undo u"; (3) "Allowed · back-1 resumed"; (4) 10 s later it is a line; (5) a rule-answered permission arrives as a line only, with no notification; (6) `⏎` expands a line. `00 Cover` and the README: P4.3 rows **In review**; no new token is expected (accent tint 12 % reuses `--color-accent`; if the pulse needs a token, add `--color-accent-wash` to `tokens.json`).
