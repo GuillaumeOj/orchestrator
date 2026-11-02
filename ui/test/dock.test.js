@@ -268,7 +268,7 @@ describe('restore', () => {
     expect(Object.values(app.panes).map((p) => p.type)).toEqual(['mission']);
   });
 
-  it('keeps a session over Mission control in its group', async () => {
+  it('moves a saved session over Mission control to the dock too', async () => {
     const base = saved();
     h.saved = saved({
       layout: { ...base.layout, children: [leaf('p1'), leaf('p5', 'p2')] },
@@ -276,8 +276,8 @@ describe('restore', () => {
       focused: 'p1',
     });
     await restoreLayout();
-    expect(inDock('p2')).toBe(false);
-    expect(allPanes(app.layout)).toContain('p2');
+    expect(inDock('p2')).toBe(true);
+    expect(allPanes(app.layout)).not.toContain('p2');
   });
 
   it('moves a saved 0.3 height to 0.45 once, and keeps a height saved under v 2', async () => {

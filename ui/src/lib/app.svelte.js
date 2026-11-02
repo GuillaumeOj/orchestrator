@@ -498,28 +498,19 @@ export async function openTrust(projectId) {
 export const openMission = () => openSingleton('mission');
 
 /**
- * A session over the board (D5, spec §3.3): the agent's pane as a tab in
- * Mission control's group, in watch mode. One already open anywhere gets
- * focus, in watch mode again (notes §1.10). Without Mission control: as
- * `openAgent`.
+ * A session over the board (D5, spec §3.3): the agent's dock tab, in watch
+ * mode. One already open gets focus, in watch mode again (notes §1.10).
+ * Without Mission control: as `openAgent`.
  */
 export function openSession(agentId) {
   const over = findPane((s) => s.type === 'mission');
   if (!over) return openAgent(agentId);
   const existing = findPane((s) => s.type === 'agent' && s.agentId === agentId);
   if (existing) {
-    app.panes[existing].watch = true;
-    // Only a tab in Mission control's own group is "over the board".
-    if (L.leafOf(app.layout, existing) === L.leafOf(app.layout, over)) app.panes[existing].over ??= over;
+    Object.assign(app.panes[existing], { watch: true, over });
     return focusPane(existing);
   }
-  const id = newPaneId();
-  app.panes[id] = { type: 'agent', agentId, projectId: agent(agentId)?.project_id, watch: true, over, title: agentId };
-  app.layout = L.addTab(app.layout, over, id);
-  app.zoomed = null;
-  focusPane(id);
-  saveLayout();
-  return id;
+  return addDockPane({ type: 'agent', agentId, projectId: agent(agentId)?.project_id, watch: true, over });
 }
 
 /** Take-over (⏎ or a click in watch mode): the PTY gets the keyboard. */
@@ -530,7 +521,7 @@ export function takeOver(paneId) {
   focusPane(paneId);
 }
 
-/** Esc in watch mode: back to the Mission control the session opened over; the tab stays. */
+/** Esc in watch mode: back to the Mission control the session opened over; the dock tab stays. */
 export function leaveWatch(paneId) {
   const over = app.panes[paneId]?.over;
   if (over && app.panes[over]) focusPane(over);
@@ -877,8 +868,7 @@ export async function restoreLayout() {
     return;
   }
   // Agents saved in the workspace move to the dock, after the saved dock tabs.
-  // A session over Mission control (`over`) stays in its group.
-  const migrated = L.allPanes(saved.layout).filter((id) => saved.panes[id]?.type === 'agent' && !saved.panes[id].over);
+  const migrated = L.allPanes(saved.layout).filter((id) => saved.panes[id]?.type === 'agent');
   const docked = [...(saved.dock?.tabs ?? []), ...migrated];
   const ids = [...L.allPanes(saved.layout), ...docked];
   for (const id of ids) nextPane = Math.max(nextPane, Number(id.slice(1)) + 1);
