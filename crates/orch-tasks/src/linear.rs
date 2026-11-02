@@ -358,6 +358,8 @@ impl<T: Graphql> LinearIssues<T> {
             blocked_by,
             other_labels: labels.into_iter().filter(|l| l != LABEL && !l.starts_with("orch:")).collect(),
             updated_at: s(&v["updatedAt"]),
+            // The listing asks for the `orch` label.
+            managed: true,
         })
     }
 

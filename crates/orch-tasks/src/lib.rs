@@ -11,7 +11,7 @@ use anyhow::{Result, anyhow};
 use orch_store::{Project, Store, Task, TaskBackendConfig, TaskNote};
 use orch_team::TaskStatus;
 
-use crate::github::{Gh, GhCli, GithubIssues, Issue, IssueWrite};
+use crate::github::{Fields, Gh, GhCli, GithubIssues, Issue, IssueWrite, Listing};
 use crate::linear::{Graphql, LinearIssues};
 
 impl Gh for Box<dyn Gh> {
@@ -57,9 +57,11 @@ impl SyncReport {
 /// A remote task backend (GitHub Issues, Linear): the issue operations the
 /// sync needs. `Issue.number` is the remote's id.
 pub trait Remote: Send + Sync {
-    fn list_issues(&self) -> Result<Vec<Issue>>;
+    /// The issues to sync; `since` = the cursor of the last sync, for a
+    /// remote that keeps one ([`Remote::github_repo`]).
+    fn list_issues(&self, since: Option<&str>) -> Result<Listing>;
     fn create_issue(&self, w: &IssueWrite) -> Result<Issue>;
-    /// Replaces the managed fields; labels the app does not manage are kept.
+    /// Writes `w.fields` of the issue; labels the app does not manage are kept.
     fn update_issue(&self, id: &str, w: &IssueWrite) -> Result<Issue>;
     fn get_issue(&self, id: &str) -> Result<Issue>;
     fn add_comment(&self, id: &str, text: &str) -> Result<()>;
@@ -68,17 +70,23 @@ pub trait Remote: Send + Sync {
     fn unmapped_states(&self) -> Vec<String> {
         Vec::new()
     }
+    /// The GitHub repository (`owner/name`) of a GitHub remote; it also
+    /// scopes the sync cursor. `None` = not GitHub (no cursor).
+    fn github_repo(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 impl<G: Gh> Remote for GithubIssues<G> {
-    fn list_issues(&self) -> Result<Vec<Issue>> {
-        self.list()
+    fn list_issues(&self, since: Option<&str>) -> Result<Listing> {
+        self.list(since)
     }
     fn create_issue(&self, w: &IssueWrite) -> Result<Issue> {
         self.create(w)
     }
     fn update_issue(&self, id: &str, w: &IssueWrite) -> Result<Issue> {
-        let keep = self.get(id)?.other_labels;
+        // The labels are sent whole: re-read the ones the app does not manage.
+        let keep = if w.fields.state { self.get(id)?.other_labels } else { Vec::new() };
         self.update(id, w, &keep)
     }
     fn get_issue(&self, id: &str) -> Result<Issue> {
@@ -87,11 +95,15 @@ impl<G: Gh> Remote for GithubIssues<G> {
     fn add_comment(&self, id: &str, text: &str) -> Result<()> {
         self.comment(id, text)
     }
+    fn github_repo(&self) -> Result<Option<String>> {
+        self.repo().map(Some)
+    }
 }
 
 impl<T: Graphql> Remote for LinearIssues<T> {
-    fn list_issues(&self) -> Result<Vec<Issue>> {
-        self.list()
+    /// Always the full listing (no cursor).
+    fn list_issues(&self, _since: Option<&str>) -> Result<Listing> {
+        Ok(Listing { issues: self.list()?, complete: true, cursor: None })
     }
     fn create_issue(&self, w: &IssueWrite) -> Result<Issue> {
         self.create(w)
@@ -201,6 +213,15 @@ impl<'a> TaskService<'a> {
         }
     }
 
+    /// The GitHub repository (`owner/name`) of a GitHub-backed project, for
+    /// issue URLs; `None` for another backend.
+    pub fn github_repo(&self) -> Result<Option<String>> {
+        match &self.backend {
+            Backend::Remote(_, r) => r.github_repo(),
+            Backend::Local => Ok(None),
+        }
+    }
+
     /// The remote of a task the project's backend owns.
     fn remote_of(&self, t: &Task) -> Option<&Arc<dyn Remote>> {
         match &self.backend {
@@ -209,14 +230,14 @@ impl<'a> TaskService<'a> {
         }
     }
 
-    fn write_of<'t>(&self, t: &'t Task) -> IssueWrite<'t> {
+    fn write_of<'t>(&self, t: &'t Task, fields: Fields) -> IssueWrite<'t> {
         let blocked_by = t
             .depends_on
             .iter()
             .filter_map(|id| self.store.task(*id).ok().flatten())
             .filter_map(|d| d.external_id)
             .collect();
-        IssueWrite { title: &t.title, body: &t.body, status: t.status, node: t.node.as_deref(), blocked_by }
+        IssueWrite { title: &t.title, body: &t.body, status: t.status, node: t.node.as_deref(), blocked_by, fields }
     }
 
     fn pending(t: &Task) -> Option<String> {
@@ -229,9 +250,23 @@ impl<'a> TaskService<'a> {
         }
     }
 
-    /// Pushes `t` to the remote (create or update) and records what it said.
-    fn push(&self, gh: &dyn Remote, t: &mut Task) -> Result<()> {
-        let w = self.write_of(t);
+    /// What a write of `t` must send to its issue: the parts that differ
+    /// from the stored task (`before`). Everything for a task the remote
+    /// never got or whose last change did not reach it.
+    fn changed(t: &Task, before: Option<&Task>) -> Fields {
+        match before {
+            Some(b) if t.external_id.is_some() && Self::pending(b).is_none() => Fields {
+                state: t.status != b.status || t.node != b.node,
+                content: t.title != b.title || t.body != b.body || t.depends_on != b.depends_on,
+            },
+            _ => Fields::ALL,
+        }
+    }
+
+    /// Pushes `fields` of `t` to the remote (a create sends everything) and
+    /// records what it said.
+    fn push(&self, gh: &dyn Remote, t: &mut Task, fields: Fields) -> Result<()> {
+        let w = self.write_of(t, fields);
         let issue = match &t.external_id {
             None => gh.create_issue(&w)?,
             Some(n) => gh.update_issue(n, &w)?,
@@ -246,10 +281,14 @@ impl<'a> TaskService<'a> {
             t.backend = self.kind().into();
         }
         t.project_id = self.project.id.clone();
+        let before = if t.id == 0 { None } else { self.store.task(t.id)? };
+        let fields = Self::changed(&t, before.as_ref());
         t.id = self.store.upsert_task(&t)?;
         let mut remote_error = None;
-        if let Some(gh) = self.remote_of(&t).cloned() {
-            match self.push(gh.as_ref(), &mut t) {
+        if let Some(gh) = self.remote_of(&t).cloned()
+            && fields.any()
+        {
+            match self.push(gh.as_ref(), &mut t, fields) {
                 Ok(()) => {}
                 Err(e) => {
                     Self::mark_pending(&mut t);
@@ -320,12 +359,46 @@ impl<'a> TaskService<'a> {
         let Backend::Remote(kind, gh) = &self.backend else { return Ok(SyncReport::default()) };
         let (kind, gh) = (*kind, gh.as_ref());
         let mut rep = SyncReport::default();
-        let issues = gh.list_issues()?;
+        let scope = gh.github_repo()?.map(|r| format!("{kind}:{r}"));
+        let since = match (&scope, self.store.task_sync_cursor(&self.project.id)?) {
+            (Some(s), Some((sc, c))) if *s == sc => Some(c),
+            _ => None,
+        };
+        let listing = gh.list_issues(since.as_deref())?;
+        let mut issues = listing.issues;
         let local = self.store.tasks(Some(&self.project.id), None, None)?;
         // Local tasks the remote never got.
         for t in local.iter().filter(|t| t.backend == kind && t.external_id.is_none()) {
             let mut t = t.clone();
-            match self.push(gh, &mut t) {
+            match self.push(gh, &mut t, Fields::ALL) {
+                Ok(()) => {
+                    self.store.upsert_task(&t)?;
+                    rep.pushed.push(t.id);
+                }
+                Err(e) => rep.errors.push(format!("{}: {e:#}", t.handle())),
+            }
+        }
+        // Pending tasks whose issue is not listed. An incremental listing
+        // leaves out the issues that did not change: pushed again (pending,
+        // remote unchanged). A full one leaves out the issues it does not
+        // ask for (closed without `orch`): read one by one, then as listed.
+        let listed: std::collections::HashSet<&str> = issues.iter().map(|i| i.number.as_str()).collect();
+        let unlisted: Vec<Task> = local
+            .iter()
+            .filter(|t| t.backend == kind && Self::pending(t).is_some())
+            .filter(|t| t.external_id.as_deref().is_some_and(|n| !listed.contains(n)))
+            .cloned()
+            .collect();
+        for mut t in unlisted {
+            if listing.complete {
+                // Gone (deleted, transferred): left pending, as before.
+                if let Ok(issue) = gh.get_issue(t.external_id.as_deref().unwrap_or_default()) {
+                    issues.push(issue);
+                }
+                continue;
+            }
+            t.remote_updated_at = Self::pending(&t);
+            match self.push(gh, &mut t, Fields::ALL) {
                 Ok(()) => {
                     self.store.upsert_task(&t)?;
                     rep.pushed.push(t.id);
@@ -338,6 +411,9 @@ impl<'a> TaskService<'a> {
         let mut adopted: Vec<(u64, &Issue)> = Vec::new();
         for issue in &issues {
             match self.store.task_by_external(&self.project.id, kind, &issue.number)? {
+                // History stays on the remote: a closed issue the app never
+                // tracked and does not manage is not imported.
+                None if issue.status == TaskStatus::Done && !issue.managed => {}
                 None => {
                     let mut t = Task::new(&self.project.id, kind, &issue.title, now_ms);
                     t.external_id = Some(issue.number.clone());
@@ -349,7 +425,7 @@ impl<'a> TaskService<'a> {
                 Some(mut t) => match Self::pending(&t) {
                     Some(seen) if seen == issue.updated_at || seen.is_empty() && issue.updated_at.is_empty() => {
                         t.remote_updated_at = Some(seen);
-                        match self.push(gh, &mut t) {
+                        match self.push(gh, &mut t, Fields::ALL) {
                             Ok(()) => {
                                 self.store.upsert_task(&t)?;
                                 rep.pushed.push(t.id);
@@ -376,6 +452,10 @@ impl<'a> TaskService<'a> {
             }
         }
         rep.unmapped_states = gh.unmapped_states();
+        if let (Some(scope), Some(c)) = (&scope, listing.cursor) {
+            let c = since.filter(|s| *s > c).unwrap_or(c);
+            self.store.set_task_sync_cursor(&self.project.id, scope, &c)?;
+        }
         for (id, issue) in adopted {
             if issue.blocked_by.is_empty() {
                 continue;

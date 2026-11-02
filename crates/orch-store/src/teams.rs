@@ -346,6 +346,10 @@ impl TaskBackendConfig {
     }
 }
 
+fn cursor_key(project: &str) -> String {
+    format!("task_sync_cursor:{project}")
+}
+
 impl Project {
     pub fn typed_settings(&self) -> ProjectSettings {
         serde_json::from_value(self.settings.clone()).unwrap_or_default()
@@ -1013,7 +1017,9 @@ impl Store {
         }
         let topics = [orch_protocol::Topic::Project(id.to_string()), orch_protocol::Topic::Board(id.to_string())];
         let (id, s, b) = (id.to_string(), js(settings), js(backend));
+        let cfg = backend.clone();
         let n = self.write(move |tx| {
+            Store::reset_cursor_on_change(tx, &id, &cfg, None)?;
             Ok(tx.execute(
                 "UPDATE projects SET settings=?2, task_backend=?3, track_orchestrator_dir=?4 WHERE id=?1",
                 params![id, s, b, track_orchestrator_dir],
@@ -1023,6 +1029,37 @@ impl Store {
             return Err(anyhow!("no such project"));
         }
         self.note(topics);
+        Ok(())
+    }
+
+    /// The sync cursor of `project`'s remote task backend: `(scope, cursor)`,
+    /// `scope` naming what it belongs to (`github:owner/name`), `cursor` the
+    /// newest `updated_at` the last sync saw.
+    pub fn task_sync_cursor(&self, project: &str) -> Result<Option<(String, String)>> {
+        let v = self.setting(&cursor_key(project))?;
+        Ok(v.and_then(|v| Some((v["scope"].as_str()?.to_string(), v["cursor"].as_str()?.to_string()))))
+    }
+
+    pub fn set_task_sync_cursor(&self, project: &str, scope: &str, cursor: &str) -> Result<()> {
+        self.set_setting(&cursor_key(project), &serde_json::json!({"scope": scope, "cursor": cursor}))
+    }
+
+    /// Drops `project`'s sync cursor when its stored backend setting or
+    /// checkout differs from the new one (the next sync reads everything).
+    pub(crate) fn reset_cursor_on_change(
+        tx: &rusqlite::Transaction,
+        id: &str,
+        backend: &TaskBackendConfig,
+        path: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let old: Option<(String, String)> = tx
+            .query_row("SELECT task_backend, path FROM projects WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?;
+        let Some((old_backend, old_path)) = old else { return Ok(()) };
+        let old_backend: TaskBackendConfig = serde_json::from_str(&old_backend).unwrap_or_default();
+        if old_backend != *backend || path.is_some_and(|p| p != old_path) {
+            tx.execute("DELETE FROM kv WHERE key=?1", [cursor_key(id)])?;
+        }
         Ok(())
     }
 
@@ -1041,6 +1078,7 @@ impl Store {
         tx.execute("DELETE FROM team_versions WHERE team_scope=?1", [id])?;
         tx.execute("DELETE FROM teams WHERE scope=?1", [id])?;
         tx.execute("DELETE FROM roles WHERE scope=?1", [id])?;
+        tx.execute("DELETE FROM kv WHERE key=?1", [cursor_key(id)])?;
         Ok(())
     }
 }
@@ -1054,6 +1092,57 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let s = Store::open(&d.path().join("o.db")).unwrap();
         (d, s)
+    }
+
+    #[test]
+    fn the_task_sync_cursor_survives_a_restart_and_resets_on_a_backend_change() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("o.db");
+        let mut p = Project {
+            id: "p1".into(),
+            name: "shop".into(),
+            path: d.path().join("shop"),
+            default_branch: "main".into(),
+            remotes: vec![],
+            worktree_root: d.path().join("w"),
+            task_backend: serde_json::json!({"type": "github", "repo": "me/shop"}),
+            track_orchestrator_dir: true,
+            settings: serde_json::json!({}),
+            created_at_ms: 1,
+            last_active_at_ms: 1,
+            last_fetch_at_ms: None,
+            last_fetch_error: None,
+            archived: false,
+        };
+        let cursor = Some(("github:me/shop".to_string(), "2026-11-02T10:00:00Z".to_string()));
+        {
+            let s = Store::open(&path).unwrap();
+            s.upsert_project(&p).unwrap();
+            s.set_task_sync_cursor("p1", "github:me/shop", "2026-11-02T10:00:00Z").unwrap();
+            s.flush().unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.task_sync_cursor("p1").unwrap(), cursor);
+        // A registry refresh (same backend, same checkout) keeps it.
+        p.last_active_at_ms = 9;
+        s.upsert_project(&p).unwrap();
+        let settings = s.project("p1").unwrap().unwrap().typed_settings();
+        s.set_project_settings("p1", &settings, &p.backend(), true).unwrap();
+        assert_eq!(s.task_sync_cursor("p1").unwrap(), cursor);
+        // Another repository: reset.
+        let other = TaskBackendConfig::Github { repo: Some("me/other".into()) };
+        s.set_project_settings("p1", &settings, &other, true).unwrap();
+        assert_eq!(s.task_sync_cursor("p1").unwrap(), None);
+        // Another checkout: reset.
+        p.task_backend = serde_json::to_value(&other).unwrap();
+        s.set_task_sync_cursor("p1", "github:me/other", "t").unwrap();
+        p.path = d.path().join("moved");
+        s.upsert_project(&p).unwrap();
+        assert_eq!(s.task_sync_cursor("p1").unwrap(), None);
+        // Local and back: reset.
+        s.set_task_sync_cursor("p1", "github:me/other", "t").unwrap();
+        s.set_project_settings("p1", &settings, &TaskBackendConfig::Local, true).unwrap();
+        assert_eq!(s.task_sync_cursor("p1").unwrap(), None);
     }
 
     #[test]

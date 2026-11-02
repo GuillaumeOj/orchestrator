@@ -6,14 +6,37 @@ use serde_json::{Value, json};
 use super::*;
 
 /// GitHub in memory: issues, labels, comments; `offline` fails every call.
+/// Every write moves a clock of ten minutes, so `since` filters for real.
 #[derive(Default)]
 struct World {
     issues: Vec<Value>,
     labels: Vec<String>,
     comments: Vec<(String, String)>,
-    clock: u64,
+    clock: i64,
     offline: bool,
     calls: usize,
+    /// Paged list calls: (path, pages returned).
+    lists: Vec<(String, usize)>,
+    /// PATCHes: (issue, the fields sent; `labels` if any label was).
+    patches: Vec<(u64, Vec<String>)>,
+    /// Single issue reads.
+    gets: usize,
+}
+
+impl World {
+    fn tick(&mut self) -> String {
+        self.clock += 1;
+        stamp(self.clock)
+    }
+}
+
+fn stamp(clock: i64) -> String {
+    let base: jiff::Timestamp = "2026-11-02T10:00:00Z".parse().unwrap();
+    (base + jiff::SignedDuration::from_mins(10 * clock)).to_string()
+}
+
+fn labels(names: &[&str]) -> Value {
+    json!(names.iter().map(|l| json!({"name": l})).collect::<Vec<_>>())
 }
 
 #[derive(Clone, Default)]
@@ -22,11 +45,23 @@ struct FakeGh(Arc<Mutex<World>>);
 impl FakeGh {
     fn edit(&self, number: u64, f: impl FnOnce(&mut Value)) {
         let mut w = self.0.lock().unwrap();
-        w.clock += 1;
-        let stamp = format!("t{}", w.clock);
+        let stamp = w.tick();
         let i = w.issues.iter_mut().find(|i| i["number"] == json!(number)).unwrap();
         f(i);
-        i["updatedAt"] = json!(stamp);
+        i["updated_at"] = json!(stamp);
+    }
+    /// An issue made on GitHub (not by the app).
+    fn add(&self, number: u64, title: &str, state: &str, names: &[&str]) {
+        let mut w = self.0.lock().unwrap();
+        let stamp = w.tick();
+        w.issues.push(json!({"number": number, "title": title, "body": "", "state": state,
+            "labels": labels(names), "updated_at": stamp}));
+    }
+    fn last_patch(&self) -> (u64, Vec<String>) {
+        self.0.lock().unwrap().patches.last().cloned().unwrap()
+    }
+    fn label_names(&self, number: u64) -> Vec<String> {
+        self.issue(number)["labels"].as_array().unwrap().iter().map(|l| l["name"].as_str().unwrap().into()).collect()
     }
     fn issue(&self, number: u64) -> Value {
         self.0.lock().unwrap().issues.iter().find(|i| i["number"] == json!(number)).unwrap().clone()
@@ -62,8 +97,10 @@ impl Gh for FakeGh {
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
         let (f, labels) = fields(args);
         let get = |k: &str| f.iter().find(|(kk, _)| kk == k).map(|(_, v)| v.clone());
-        w.clock += 1;
-        let stamp = format!("t{}", w.clock);
+        if !matches!(a.as_slice(), ["api", "--paginate", ..] | ["api", _]) {
+            w.tick();
+        }
+        let stamp = stamp(w.clock);
         match a.as_slice() {
             ["api", "-X", "POST", path, ..] if path.ends_with("/labels") => {
                 let n = get("name").unwrap();
@@ -82,38 +119,63 @@ impl Gh for FakeGh {
                 assert_eq!(*path, "repos/me/shop/issues");
                 let number = w.issues.len() as u64 + 1;
                 let issue = json!({"number": number, "title": get("title"), "body": get("body"), "state": "open",
-                    "labels": labels.iter().map(|l| json!({"name": l})).collect::<Vec<_>>(), "updated_at": stamp});
+                    "labels": labels.iter().map(|l| json!({"name": l})).collect::<Vec<_>>(), "updated_at": stamp,
+                    "html_url": format!("https://github.com/me/shop/issues/{number}")});
                 w.issues.push(issue.clone());
                 Ok(issue.to_string())
             }
             ["api", "-X", "PATCH", path, ..] => {
                 let number: u64 = path.rsplit('/').next().unwrap().parse().unwrap();
+                let mut sent: Vec<String> = f.iter().map(|(k, _)| k.clone()).collect();
+                if !labels.is_empty() {
+                    sent.push("labels".into());
+                }
+                w.patches.push((number, sent));
                 let i = w.issues.iter_mut().find(|i| i["number"] == json!(number)).unwrap();
-                i["title"] = json!(get("title"));
-                i["body"] = json!(get("body"));
-                i["state"] = json!(get("state"));
-                i["labels"] = json!(labels.iter().map(|l| json!({"name": l})).collect::<Vec<_>>());
+                for (k, v) in &f {
+                    i[k.as_str()] = json!(v);
+                }
+                if !labels.is_empty() {
+                    i["labels"] = json!(labels.iter().map(|l| json!({"name": l})).collect::<Vec<_>>());
+                }
                 i["updated_at"] = json!(stamp);
-                i["updatedAt"] = json!(stamp);
                 Ok(i.to_string())
             }
-            ["api", path] => {
-                let number: u64 = path.rsplit('/').next().unwrap().parse().unwrap();
-                Ok(w.issues.iter().find(|i| i["number"] == json!(number)).unwrap().to_string())
-            }
-            ["issue", "list", ..] => Ok(Value::Array(
-                w.issues
+            ["api", "--paginate", path] => {
+                // GET repos/me/shop/issues?state=…&labels=…&since=…&per_page=…
+                let (p, q) = path.split_once('?').unwrap();
+                assert_eq!(p, "repos/me/shop/issues");
+                let q: std::collections::HashMap<&str, &str> =
+                    q.split('&').map(|kv| kv.split_once('=').unwrap()).collect();
+                let per_page: usize = q["per_page"].parse().unwrap();
+                assert_eq!(per_page, 100);
+                let since: Option<jiff::Timestamp> = q.get("since").map(|s| s.parse().unwrap());
+                let items: Vec<Value> = w
+                    .issues
                     .iter()
-                    .map(|i| {
-                        let mut i = i.clone();
-                        if i.get("updatedAt").is_none() {
-                            i["updatedAt"] = i["updated_at"].clone();
-                        }
-                        i
+                    .filter(|i| q["state"] == "all" || i["state"] == json!(q["state"]))
+                    .filter(|i| {
+                        q.get("labels").is_none_or(|l| i["labels"].as_array().unwrap().contains(&json!({"name": l})))
                     })
-                    .collect(),
-            )
-            .to_string()),
+                    .filter(|i| {
+                        since.is_none_or(|s| i["updated_at"].as_str().unwrap().parse::<jiff::Timestamp>().unwrap() >= s)
+                    })
+                    .cloned()
+                    .collect();
+                // `gh --paginate`: one array per page, back to back.
+                let pages: Vec<String> = items.chunks(per_page).map(|c| Value::Array(c.to_vec()).to_string()).collect();
+                let out = if pages.is_empty() { "[]".to_string() } else { pages.join("\n") };
+                w.lists.push((path.to_string(), pages.len().max(1)));
+                Ok(out)
+            }
+            ["api", path] => {
+                w.gets += 1;
+                let number: u64 = path.rsplit('/').next().unwrap().parse().unwrap();
+                match w.issues.iter().find(|i| i["number"] == json!(number)) {
+                    Some(i) => Ok(i.to_string()),
+                    None => bail!("HTTP 404: Not Found"),
+                }
+            }
             other => bail!("unexpected gh call {other:?}"),
         }
     }
@@ -183,8 +245,8 @@ fn github_write_through_and_import() {
     let rep = svc.sync(7).unwrap();
     assert!(rep.updated.is_empty() && rep.conflicts.is_empty() && rep.imported.is_empty(), "{rep:?}");
     // An issue opened on GitHub by hand, with the orch label, is imported.
-    gh.0.lock().unwrap().issues.push(json!({"number": 3, "title": "From GitHub", "body": "Blocked by: #2",
-        "state": "open", "labels": [{"name": "orch"}, {"name": "orch:ready"}], "updatedAt": "x1"}));
+    gh.add(3, "From GitHub", "open", &["orch", "orch:ready"]);
+    gh.edit(3, |i| i["body"] = json!("Blocked by: #2"));
     let rep = svc.sync(8).unwrap();
     assert_eq!(rep.imported.len(), 1);
     let imported = s.task(rep.imported[0]).unwrap().unwrap();
@@ -431,4 +493,214 @@ fn linear_new_states_and_existing_labels() {
     let rep = svc.sync(4).unwrap();
     assert_eq!(rep.unmapped_states, ["Backlog", "Todo", "In Progress", "Doing it", "Done", "Canceled"]);
     assert_eq!(rep.summary()["unmapped_states"][0], "Backlog");
+}
+
+fn github_setup() -> (tempfile::TempDir, Store, Project, FakeGh) {
+    let (d, s, p) = setup(json!({"type": "github", "repo": "me/shop"}));
+    (d, s, p, FakeGh::default())
+}
+
+fn svc<'a>(s: &'a Store, p: &Project, gh: &FakeGh) -> TaskService<'a> {
+    TaskService::new(s, p, Some(Box::new(gh.clone())))
+}
+
+fn by_issue(s: &Store, n: u64) -> Task {
+    s.task_by_external("p1", "github", &n.to_string()).unwrap().unwrap()
+}
+
+/// Acceptance 2: more than 500 issues, most without `orch`, read page by
+/// page; the closed ones without `orch` are left on GitHub; reading writes
+/// nothing.
+#[test]
+fn github_reads_every_open_issue_paged() {
+    let (_d, s, p, gh) = github_setup();
+    for n in 1..=600 {
+        gh.add(n, &format!("Issue {n}"), "open", if n == 5 { &["orch:review", "bug"] } else { &["bug"] });
+    }
+    for n in 601..=700 {
+        gh.add(n, "Old managed", "closed", &["orch"]);
+    }
+    for n in 701..=750 {
+        gh.add(n, "Old", "closed", &["bug"]);
+    }
+    let calls = gh.0.lock().unwrap().calls;
+    let rep = svc(&s, &p, &gh).sync(1).unwrap();
+    assert_eq!(rep.imported.len(), 700);
+    assert!(rep.errors.is_empty(), "{rep:?}");
+    let w = gh.0.lock().unwrap();
+    assert_eq!(w.calls - calls, 2, "two paged reads, no write");
+    assert_eq!(
+        w.lists,
+        [
+            ("repos/me/shop/issues?state=open&per_page=100".to_string(), 6),
+            ("repos/me/shop/issues?state=closed&labels=orch&per_page=100".to_string(), 1)
+        ]
+    );
+    drop(w);
+    assert_eq!(by_issue(&s, 1).status, TaskStatus::Backlog);
+    assert_eq!(by_issue(&s, 5).status, TaskStatus::Review);
+    assert_eq!(by_issue(&s, 650).status, TaskStatus::Done);
+    assert!(s.task_by_external("p1", "github", "720").unwrap().is_none());
+    assert_eq!(gh.label_names(1), ["bug"], "import adds no label");
+}
+
+/// Acceptance 3 and 5: a status change sends only labels and state (a
+/// foreign issue becomes managed, its labels kept); a title/body edit only
+/// title and body; nothing changed, nothing sent.
+#[test]
+fn github_writes_only_what_changed() {
+    let (_d, s, p, gh) = github_setup();
+    gh.add(1, "Foreign", "open", &["bug"]);
+    let svc = svc(&s, &p, &gh);
+    svc.sync(1).unwrap();
+    let t = by_issue(&s, 1);
+    gh.edit(1, |i| i["body"] = json!("Written on GitHub\r\n"));
+
+    let out = svc.set_status(t.id, TaskStatus::InProgress, 2).unwrap();
+    assert!(out.remote_error.is_none(), "{:?}", out.remote_error);
+    let (n, mut sent) = gh.last_patch();
+    sent.sort();
+    assert_eq!((n, sent), (1, vec!["labels".to_string(), "state".to_string()]));
+    assert_eq!(gh.label_names(1), ["orch", "orch:in_progress", "bug"]);
+    assert_eq!(gh.issue(1)["body"], json!("Written on GitHub\r\n"), "the body is not rewritten");
+    svc.set_status(t.id, TaskStatus::Done, 3).unwrap();
+    assert_eq!(gh.issue(1)["state"], json!("closed"));
+    svc.set_status(t.id, TaskStatus::Ready, 4).unwrap();
+    assert_eq!(gh.issue(1)["state"], json!("open"));
+    assert_eq!(gh.label_names(1), ["orch", "orch:ready", "bug"]);
+
+    // Title and body: no label read, no labels/state sent.
+    let gets = gh.0.lock().unwrap().gets;
+    let mut t = s.task(t.id).unwrap().unwrap();
+    (t.title, t.body) = ("Renamed".into(), "New body".into());
+    svc.update(t.clone(), 5).unwrap();
+    let (_, mut sent) = gh.last_patch();
+    sent.sort();
+    assert_eq!(sent, ["body", "title"]);
+    assert_eq!(gh.0.lock().unwrap().gets, gets);
+    assert_eq!((gh.issue(1)["title"].clone(), gh.issue(1)["state"].clone()), (json!("Renamed"), json!("open")));
+
+    // A change GitHub does not show: no call at all.
+    let calls = gh.0.lock().unwrap().calls;
+    let mut t = s.task(t.id).unwrap().unwrap();
+    t.branch = Some("orch/x".into());
+    let out = svc.update(t, 6).unwrap();
+    assert!(out.remote_error.is_none());
+    assert_eq!(gh.0.lock().unwrap().calls, calls);
+}
+
+/// Acceptance 4: after the first sync only what changed since is read; a
+/// close, an edit and a reopen come back; a closed issue the app never
+/// tracked, without `orch`, is not imported.
+#[test]
+fn github_incremental_sync() {
+    let (_d, s, p, gh) = github_setup();
+    gh.add(1, "Foreign", "open", &[]);
+    gh.add(2, "Managed", "open", &["orch", "orch:ready"]);
+    let svc = svc(&s, &p, &gh);
+    assert_eq!(svc.sync(1).unwrap().imported.len(), 2);
+    gh.edit(1, |i| i["title"] = json!("Foreign v2"));
+    gh.edit(2, |i| i["state"] = json!("closed"));
+    gh.add(3, "Closed elsewhere", "closed", &["wontfix"]);
+    gh.add(4, "New", "open", &[]);
+    let rep = svc.sync(2).unwrap();
+    let last = gh.0.lock().unwrap().lists.last().unwrap().0.clone();
+    // The cursor (issue 2's first stamp) minus a minute.
+    assert_eq!(last, format!("repos/me/shop/issues?state=all&since={}&per_page=100", "2026-11-02T10:19:00Z"));
+    assert_eq!(rep.imported.len(), 1);
+    assert_eq!(rep.updated.len(), 2);
+    assert_eq!(by_issue(&s, 1).title, "Foreign v2");
+    assert_eq!(by_issue(&s, 2).status, TaskStatus::Done);
+    assert!(s.task_by_external("p1", "github", "3").unwrap().is_none());
+    assert_eq!(by_issue(&s, 4).status, TaskStatus::Backlog);
+    gh.edit(2, |i| i["state"] = json!("open"));
+    let rep = svc.sync(3).unwrap();
+    assert_eq!(rep.updated, [by_issue(&s, 2).id]);
+    assert_eq!(by_issue(&s, 2).status, TaskStatus::Ready);
+    assert_eq!(svc.sync(4).unwrap(), SyncReport::default(), "nothing changed");
+}
+
+/// Acceptance 7: an offline status change is pushed at the next sync when
+/// the issue did not change (so it is not in the incremental list); when it
+/// did, the remote wins.
+#[test]
+fn github_pending_change_not_in_the_incremental_list() {
+    let (_d, s, p, gh) = github_setup();
+    gh.add(1, "Old", "open", &[]);
+    gh.add(2, "Newer", "open", &[]);
+    let svc = svc(&s, &p, &gh);
+    svc.sync(1).unwrap();
+    let t = by_issue(&s, 1);
+    gh.0.lock().unwrap().offline = true;
+    assert!(svc.set_status(t.id, TaskStatus::InProgress, 2).unwrap().remote_error.is_some());
+    gh.0.lock().unwrap().offline = false;
+    let rep = svc.sync(3).unwrap();
+    assert_eq!(rep.pushed, [t.id]);
+    let (n, mut sent) = gh.last_patch();
+    sent.sort();
+    assert_eq!((n, sent), (1, ["body", "labels", "state", "title"].map(String::from).to_vec()));
+    assert_eq!(gh.label_names(1), ["orch", "orch:in_progress"]);
+    assert!(!by_issue(&s, 1).remote_updated_at.unwrap().starts_with(PENDING));
+
+    // Changed on both sides: GitHub wins.
+    gh.0.lock().unwrap().offline = true;
+    svc.set_status(t.id, TaskStatus::Review, 4).unwrap();
+    gh.0.lock().unwrap().offline = false;
+    gh.edit(1, |i| i["title"] = json!("Theirs"));
+    let rep = svc.sync(5).unwrap();
+    assert_eq!(rep.conflicts, [t.id]);
+    let t = by_issue(&s, 1);
+    assert_eq!((t.title.as_str(), t.status), ("Theirs", TaskStatus::InProgress));
+}
+
+/// A full read (no cursor) does not list a tracked issue closed without
+/// `orch`: a pending task on it is read alone, then pushed or adopted.
+#[test]
+fn github_pending_change_not_in_the_full_list() {
+    let (_d, s, p, gh) = github_setup();
+    gh.add(1, "Foreign", "open", &[]);
+    gh.add(2, "Foreign too", "open", &[]);
+    let svc = svc(&s, &p, &gh);
+    svc.sync(1).unwrap();
+    gh.edit(1, |i| i["state"] = json!("closed"));
+    gh.edit(2, |i| i["state"] = json!("closed"));
+    svc.sync(2).unwrap();
+    let (a, b) = (by_issue(&s, 1), by_issue(&s, 2));
+    assert_eq!((a.status, b.status), (TaskStatus::Done, TaskStatus::Done));
+    // Both reopened in the app while offline; #2 then edited on GitHub.
+    gh.0.lock().unwrap().offline = true;
+    svc.set_status(a.id, TaskStatus::Ready, 3).unwrap();
+    svc.set_status(b.id, TaskStatus::Ready, 3).unwrap();
+    gh.0.lock().unwrap().offline = false;
+    gh.edit(2, |i| i["title"] = json!("Theirs"));
+    s.set_task_sync_cursor("p1", "github:me/old", "2026-11-02T10:00:00Z").unwrap();
+    let rep = svc.sync(4).unwrap();
+    assert!(gh.0.lock().unwrap().lists.last().unwrap().0.contains("state=closed&labels=orch"), "a full read");
+    assert_eq!((rep.pushed, rep.conflicts), (vec![a.id], vec![b.id]));
+    assert_eq!(gh.issue(1)["state"], json!("open"));
+    assert_eq!(by_issue(&s, 2).status, TaskStatus::Done);
+}
+
+/// Acceptance 8: the cursor survives a restart; a new checkout (or a
+/// cursor of another repository) means a full read again.
+#[test]
+fn github_cursor_survives_a_restart() {
+    let (d, s, mut p, gh) = github_setup();
+    gh.add(1, "One", "open", &[]);
+    svc(&s, &p, &gh).sync(1).unwrap();
+    assert_eq!(s.task_sync_cursor("p1").unwrap(), Some(("github:me/shop".into(), stamp(1))));
+    s.flush().unwrap();
+    drop(s);
+    let s = Store::open(&d.path().join("o.db")).unwrap();
+    let last = |gh: &FakeGh| gh.0.lock().unwrap().lists.last().unwrap().0.clone();
+    svc(&s, &p, &gh).sync(2).unwrap();
+    assert!(last(&gh).contains("since="), "{}", last(&gh));
+    p.path = d.path().join("moved");
+    s.upsert_project(&p).unwrap();
+    svc(&s, &p, &gh).sync(3).unwrap();
+    assert!(last(&gh).contains("state=closed&labels=orch"), "a full read: {}", last(&gh));
+    s.set_task_sync_cursor("p1", "github:me/old", &stamp(1)).unwrap();
+    svc(&s, &p, &gh).sync(4).unwrap();
+    assert!(last(&gh).contains("state=closed&labels=orch"), "a full read: {}", last(&gh));
+    assert_eq!(svc(&s, &p, &gh).github_repo().unwrap().as_deref(), Some("me/shop"));
 }
