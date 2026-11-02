@@ -269,19 +269,26 @@ pub(crate) struct SyncIn<'a> {
     pub morning: &'a dyn Fn() -> String,
 }
 
+/// A chat write or read that failed is retried or dropped, never fatal; the log names the entry.
+fn warn_entry(e: &ChatEntry, what: &str, err: &dyn std::fmt::Display) {
+    let id = e.decision.clone().unwrap_or_else(|| format!("c-{}", e.n));
+    eprintln!("warn: chat entry {id} {what}: {err}");
+}
+
 impl Runtime {
     /// Brings the log in step with the decisions just computed; the entries
     /// written (new or changed), for the `now` event.
     pub(crate) fn chat_sync(&self, cs: &mut ChatState, x: SyncIn) -> Vec<ChatEntry> {
         let mut out = vec![];
         let write = |e: &ChatEntry, out: &mut Vec<ChatEntry>| -> Option<ChatEntry> {
-            let e = if e.n == 0 { self.db.chat_insert(e) } else { self.db.chat_update(e) };
-            let e = e.ok()?;
-            upsert(out, e.clone());
-            Some(e)
+            let w = if e.n == 0 { self.db.chat_insert(e) } else { self.db.chat_update(e) };
+            let w = w.inspect_err(|err| warn_entry(e, "not written", err)).ok()?;
+            upsert(out, w.clone());
+            Some(w)
         };
         if !cs.loaded {
-            for e in self.db.chat_open().unwrap_or_default() {
+            let open = self.db.chat_open().inspect_err(|err| eprintln!("warn: open chat entries not read: {err}"));
+            for e in open.unwrap_or_default() {
                 if let Some(d) = e.decision.clone() {
                     cs.open.insert(d, e);
                 }
@@ -350,8 +357,9 @@ impl Runtime {
             if !same {
                 let mut next = e.clone();
                 next.card = Some(card_of(d));
-                if let Ok(w) = self.db.chat_update(&next) {
-                    *e = w;
+                match self.db.chat_update(&next) {
+                    Ok(w) => *e = w,
+                    Err(err) => warn_entry(&next, "card not updated", &err),
                 }
             }
         }
@@ -436,7 +444,13 @@ impl Runtime {
             .map(|d| d.id.clone())
             .collect();
         if !unseen.is_empty() {
-            let have: BTreeSet<String> = self.db.chat_has_decisions(&unseen).unwrap_or_default().into_iter().collect();
+            let have: BTreeSet<String> = self
+                .db
+                .chat_has_decisions(&unseen)
+                .inspect_err(|err| eprintln!("warn: chat entries of {unseen:?} not looked up: {err}"))
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
             for id in unseen {
                 cs.known.insert(id.clone());
                 if have.contains(&id) {
@@ -518,8 +532,13 @@ impl Runtime {
         let Some(mut d) = item.ok().and_then(|i| self.build_bare(&[i]).pop()) else { return };
         (d.id, d.actions, d.waits_on) = (format!("audit-{audit}"), vec![], "core");
         let e = decision_entry(&day, now, &d, Some(line_of(&d, Some(rule), None, now)));
-        if let Ok(e) = self.db.chat_insert(&e) {
-            self.now.chat_posted().push(e);
+        match self.db.chat_insert(&e) {
+            Ok(e) => {
+                self.now.chat_posted().push(e);
+                // Wake the publisher: the settled line goes out now, not at the next tick.
+                self.touch("chat");
+            }
+            Err(err) => warn_entry(&e, "not written", &err),
         }
     }
 
