@@ -219,7 +219,7 @@ describe('Project settings › Allocation', () => {
     await tick();
     expect(container.textContent).toContain("From the save on, shop-api's agents are charged to other sessions.");
     expect(weight(container).disabled).toBe(false);
-    expect(container.querySelector('#alloc-cap').disabled).toBe(true);
+    expect(/** @type {HTMLInputElement} */ (container.querySelector('#alloc-cap')).disabled).toBe(true);
     // esc = Keep in the plan: the weight comes back.
     await fireEvent.keyDown(root, { key: 'Escape' });
     await tick();
@@ -295,7 +295,7 @@ describe('Project settings › Allocation', () => {
 
   it('clearing the hard cap saves a null cap; esc keeps the keys working', async () => {
     const { container, root } = await open(view());
-    const cap = container.querySelector('#alloc-cap');
+    const cap = /** @type {HTMLInputElement} */ (container.querySelector('#alloc-cap'));
     await type(cap, '');
     expect(container.textContent).not.toContain('Hard cap must be');
     expect(btn(container, /^Save/).disabled).toBe(false);
@@ -304,7 +304,7 @@ describe('Project settings › Allocation', () => {
     expect(document.activeElement).toBe(root);
     await fireEvent.keyDown(root, { key: 'Escape' });
     await tick();
-    expect(container.querySelector('#alloc-cap').value).toBe('30');
+    expect(/** @type {HTMLInputElement} */ (container.querySelector('#alloc-cap')).value).toBe('30');
     await type(container.querySelector('#alloc-cap'), '');
     replies.project_allocation_set = (a) =>
       view({ allocation: alloc('shop-api', 50, { tier: 'high', hard_cap_pct: a.form.hard_cap_pct }) });

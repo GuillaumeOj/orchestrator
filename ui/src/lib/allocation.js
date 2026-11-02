@@ -40,7 +40,10 @@ export function addDraft(view) {
 /** An empty cap field (a number input gives null once cleared). */
 const noCap = (c) => c === '' || c == null;
 
-/** Inline errors by field; empty when valid. */
+/**
+ * Inline errors by field; empty when valid.
+ * @returns {{ weight?: string, cap?: string }}
+ */
 export function validate(draft) {
   const errors = {};
   const w = num(draft.weight);

@@ -100,7 +100,10 @@
     saveError = null;
     if (!view.allocation) draft = null;
     else if (pending) keep();
-    else draft = draftOf(view.allocation);
+    else {
+      draft = draftOf(view.allocation);
+      lastWeight = draft.weight; // what Keep restores is the saved weight again, not a discarded edit
+    }
     refocus();
   }
 
