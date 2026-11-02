@@ -979,10 +979,12 @@ impl Core {
         let history = self.history.lock_ok();
         let mut v = rt.with_governor(|g| {
             // Counted where the Governor charges them (unknown allocations: `default`).
+            let mut live_by: BTreeMap<String, usize> = BTreeMap::new();
+            for a in live.iter().filter_map(|id| alloc_of.get(id)) {
+                *live_by.entry(g.resolve_allocation(&a.clone().into()).0).or_default() += 1;
+            }
             planner::build(g, Timestamp::now(), &history, &self.past_actions, five_reset, &|alloc| {
-                live.iter()
-                    .filter(|id| alloc_of.get(*id).is_some_and(|a| g.resolve_allocation(&a.clone().into()).0 == alloc))
-                    .count()
+                live_by.get(alloc).copied().unwrap_or(0)
             })
         });
         v.first_run_ms = self.settings.get(setup::FIRST_RUN_KEY).and_then(|v| v.as_i64());

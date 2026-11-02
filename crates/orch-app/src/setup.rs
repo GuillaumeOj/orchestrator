@@ -221,7 +221,8 @@ pub struct ProjectAllocationView {
     pub allocation: Option<AllocationLine>,
     /// The plan's other allocations, in plan order, `default` last.
     pub others: Vec<AllocationLine>,
-    /// Weight `Add` pre-fills: mean of the project allocations, rounded, ≥ 1.
+    /// Weight `Add` pre-fills: mean of the project allocations (not the
+    /// features'), rounded, ≥ 1.
     pub proposed_weight: f64,
 }
 
@@ -247,6 +248,7 @@ pub struct AllocationEdit {
 
 fn allocation_view(
     project: &Project,
+    projects: &[Project],
     plan_confirmed: bool,
     plan: &WeeklyPlan,
     used: impl Fn(&AllocationId) -> f64,
@@ -263,7 +265,12 @@ fn allocation_view(
     let mut others: Vec<AllocationLine> =
         plan.allocations.iter().filter(|a| a.id.0 != project.id && !is_default(a)).map(line).collect();
     others.extend(plan.allocations.iter().filter(is_default).map(line));
-    let weights: Vec<f64> = plan.allocations.iter().filter(|a| !is_default(a)).map(|a| a.weight).collect();
+    let weights: Vec<f64> = plan
+        .allocations
+        .iter()
+        .filter(|a| !is_default(a) && projects.iter().any(|p| p.id == a.id.0))
+        .map(|a| a.weight)
+        .collect();
     let proposed_weight =
         if weights.is_empty() { 1.0 } else { (weights.iter().sum::<f64>() / weights.len() as f64).round().max(1.0) };
     ProjectAllocationView {
@@ -314,11 +321,12 @@ fn parse_time(s: &str) -> Result<Time> {
 }
 
 impl PlanForm {
-    /// The form for `plan`. A plan with only the default allocation (never
-    /// edited) proposes an even split over the projects (J0 step 4). Else the
-    /// plan's allocations, plus each project it doesn't have at weight 0
-    /// (dropped by `apply` unless given a weight), before `default`.
-    pub fn from_plan(plan: &WeeklyPlan, projects: &[Project]) -> PlanForm {
+    /// The form for `plan`. Before a plan is `confirmed`, one with only the
+    /// default allocation proposes an even split over the projects (J0 step
+    /// 4). Else the plan's allocations, plus each project it doesn't have at
+    /// weight 0 (dropped by `apply` unless given a weight), before `default`:
+    /// a confirmed plan whose projects were all taken out stays that way.
+    pub fn from_plan(plan: &WeeklyPlan, projects: &[Project], confirmed: bool) -> PlanForm {
         let blocks = &plan.calendar.blocks;
         let first = blocks.first();
         let mut days: Vec<String> =
@@ -327,7 +335,7 @@ impl PlanForm {
             days = DAYS[..5].iter().map(|(n, _)| n.to_string()).collect();
         }
         let only_default = plan.allocations.len() == 1 && plan.allocations[0].id.0 == DEFAULT_ALLOCATION;
-        let allocations = if only_default && !projects.is_empty() {
+        let allocations = if only_default && !confirmed && !projects.is_empty() {
             projects
                 .iter()
                 .map(|p| AllocationForm {
@@ -458,8 +466,9 @@ impl Core {
     pub fn plan_form(&self) -> Result<PlanForm> {
         let rt = self.runtime()?;
         let projects = self.projects();
+        let confirmed = self.settings.get(PLAN_KEY).is_some();
         Ok(rt.with_governor(|g| {
-            let mut f = PlanForm::from_plan(g.plan(), &projects);
+            let mut f = PlanForm::from_plan(g.plan(), &projects, confirmed);
             f.per_model_weights = Some(g.policy().per_model_weights);
             f.off_hours_live_cap = Some(g.policy().off_hours_live_cap);
             f
@@ -495,11 +504,14 @@ impl Core {
         let p = self.project(project)?;
         let rt = self.runtime()?;
         let confirmed = self.settings.get(PLAN_KEY).is_some();
-        let projects = if confirmed { vec![] } else { self.projects() };
+        let projects = self.projects();
         rt.with_governor(|g| {
-            let plan =
-                if confirmed { g.plan().clone() } else { PlanForm::from_plan(g.plan(), &projects).apply(g.plan())? };
-            Ok(allocation_view(&p, confirmed, &plan, |id| g.allocation_usage_pct(id)))
+            let plan = if confirmed {
+                g.plan().clone()
+            } else {
+                PlanForm::from_plan(g.plan(), &projects, false).apply(g.plan())?
+            };
+            Ok(allocation_view(&p, &projects, confirmed, &plan, |id| g.allocation_usage_pct(id)))
         })
     }
 
@@ -513,6 +525,10 @@ impl Core {
         let p = self.project(project)?;
         if self.settings.get(PLAN_KEY).is_none() {
             bail!("set up the weekly plan first");
+        }
+        if p.id == DEFAULT_ALLOCATION {
+            // Its id is the other sessions' allocation: editing it here would edit (or drop) that one.
+            bail!("project {} shares its id with the other sessions' allocation: edit it in the weekly plan", p.id);
         }
         let row = form.filter(|f| f.weight != 0.0).map(|f| AllocationForm {
             id: p.id.clone(),
@@ -607,7 +623,7 @@ mod tests {
     fn plan_form_even_split_then_round_trip() {
         let now: governor::jiff::Timestamp = "2026-10-21T09:00:00Z".parse().unwrap();
         let plan = agent_runtime::runtime::default_plan(now, true);
-        let f = PlanForm::from_plan(&plan, &[project("shop"), project("api")]);
+        let f = PlanForm::from_plan(&plan, &[project("shop"), project("api")], false);
         assert_eq!(f.days, ["mon", "tue", "wed", "thu", "fri"]);
         assert_eq!((f.start.as_str(), f.end.as_str()), ("09:00", "19:00"));
         assert_eq!(
@@ -625,7 +641,7 @@ mod tests {
         assert_eq!((p.allocations[1].hard_cap_pct, p.off_hours_allowance_pct), (Some(12.0), 5.0));
         assert_eq!(p.allocations.len(), 3, "default kept for other sessions");
         assert_eq!((p.week_start, p.reset_at), (plan.week_start, plan.reset_at), "same week");
-        let back = PlanForm::from_plan(&p, &[project("shop"), project("api")]);
+        let back = PlanForm::from_plan(&p, &[project("shop"), project("api")], false);
         assert_eq!(back.allocations.len(), 3, "every project already in the plan");
         assert_eq!(back.start, "10:00");
         assert_eq!((back.allocations[1].hard_cap_pct, back.off_hours_allowance_pct), (Some(12.0), 5.0));
@@ -648,8 +664,8 @@ mod tests {
     fn plan_form_lists_projects_missing_from_the_plan_at_weight_0() {
         let now: governor::jiff::Timestamp = "2026-10-21T09:00:00Z".parse().unwrap();
         let plan = agent_runtime::runtime::default_plan(now, true);
-        let p = PlanForm::from_plan(&plan, &[project("shop")]).apply(&plan).unwrap();
-        let f = PlanForm::from_plan(&p, &[project("shop"), project("new")]);
+        let p = PlanForm::from_plan(&plan, &[project("shop")], false).apply(&plan).unwrap();
+        let f = PlanForm::from_plan(&p, &[project("shop"), project("new")], false);
         let rows = |f: &PlanForm| f.allocations.iter().map(|a| (a.id.clone(), a.weight)).collect::<Vec<_>>();
         assert_eq!(rows(&f), [("shop".into(), 1.0), ("new".into(), 0.0), ("default".into(), 1.0)]);
         let new = &f.allocations[1];
@@ -659,13 +675,16 @@ mod tests {
         f2.allocations[1].weight = 2.0;
         let ids: Vec<String> = f2.apply(&p).unwrap().allocations.iter().map(|a| a.id.0.clone()).collect();
         assert_eq!(ids, ["shop", "new", "default"]);
+        // A confirmed plan whose projects were all taken out: no split proposed.
+        let f = PlanForm::from_plan(&plan, &[project("shop")], true);
+        assert_eq!(rows(&f), [("shop".into(), 0.0), ("default".into(), 100.0)]);
     }
 
     #[test]
     fn one_projects_allocation_is_replaced_added_or_removed() {
         let now: governor::jiff::Timestamp = "2026-10-21T09:00:00Z".parse().unwrap();
         let plan = agent_runtime::runtime::default_plan(now, true);
-        let p = PlanForm::from_plan(&plan, &[project("shop")]).apply(&plan).unwrap();
+        let p = PlanForm::from_plan(&plan, &[project("shop")], false).apply(&plan).unwrap();
         let row = |id: &str, weight| AllocationForm {
             id: id.into(),
             target: id.into(),

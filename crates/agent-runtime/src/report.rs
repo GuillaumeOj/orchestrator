@@ -204,6 +204,10 @@ pub fn build(i: &Inputs) -> WeeklyReport {
         (BTreeMap::<String, Acc>::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
     let (mut agents_pp, mut interactive_pp) = (0.0, 0.0);
     let mut alloc_used: BTreeMap<String, f64> = BTreeMap::new();
+    // Charged where the Governor charged it: an allocation the plan doesn't
+    // have (or an old record's project name) counts toward its resolution.
+    let aliases = crate::runtime::name_aliases(i.projects.iter().map(|(id, n)| (id.clone(), n.clone())));
+    let charged = |a: &str| plan.charged_to(&governor::AllocationId(a.to_string()), &aliases).0.clone();
     let mut last_reading: Option<(u64, f64)> = None;
     let mut peaks: BTreeMap<String, f64> = BTreeMap::new();
     for s in i.samples.iter().filter(in_week) {
@@ -232,7 +236,7 @@ pub fn build(i: &Inputs) -> WeeklyReport {
         } else {
             agents_pp += pp;
             if let Some(a) = &s.allocation {
-                *alloc_used.entry(a.clone()).or_insert(0.0) += pp;
+                *alloc_used.entry(charged(a)).or_insert(0.0) += pp;
             }
         }
         let add = |m: &mut BTreeMap<String, Acc>, key: String, label: String| {
@@ -266,7 +270,7 @@ pub fn build(i: &Inputs) -> WeeklyReport {
     // Plan vs actual: each allocation's share of the agents' budget by now.
     let budget = (100.0 - plan.reserve_pct).max(0.0) * i.plan_fraction.clamp(0.0, 1.0);
     let weights: f64 = plan.allocations.iter().map(|a| a.weight).sum::<f64>().max(1e-9);
-    let waits = queue_waits(i.actions, i.samples);
+    let waits = queue_waits(i.actions, i.samples, &charged);
     let allocations = plan
         .allocations
         .iter()
@@ -417,7 +421,11 @@ pub fn suggestions(r: &WeeklyReport) -> Vec<String> {
 /// Minutes each queued turn waited, per allocation: a `queue` action paired
 /// with the `release` of the same entry (ids restart at each boot, so the
 /// latest queue of that entry and agent before the release).
-fn queue_waits(actions: &[GovernorAction], samples: &[UsageRecord]) -> BTreeMap<String, Vec<f64>> {
+fn queue_waits(
+    actions: &[GovernorAction],
+    samples: &[UsageRecord],
+    charged: &dyn Fn(&str) -> String,
+) -> BTreeMap<String, Vec<f64>> {
     // The allocation of an agent: from its samples (agents may be gone).
     let mut alloc_of: BTreeMap<&str, &str> = BTreeMap::new();
     for s in samples {
@@ -436,7 +444,7 @@ fn queue_waits(actions: &[GovernorAction], samples: &[UsageRecord]) -> BTreeMap<
                 if let Some(t) = queued.remove(&(entry.0, agent.0.as_str())) {
                     let min = (a.ts.as_millisecond() - t.as_millisecond()) as f64 / 60_000.0;
                     let alloc = alloc_of.get(agent.0.as_str()).copied().unwrap_or(crate::runtime::DEFAULT_ALLOCATION);
-                    out.entry(alloc.to_string()).or_default().push(min.max(0.0));
+                    out.entry(charged(alloc)).or_default().push(min.max(0.0));
                 }
             }
             _ => {}
@@ -641,6 +649,47 @@ mod tests {
             undone_at: None,
             ask: None,
         }
+    }
+
+    #[test]
+    fn usage_counts_toward_the_allocation_the_governor_charged() {
+        let mut plan = plan();
+        plan.allocations.push(BudgetAllocation {
+            id: "default".into(),
+            target: "other sessions".into(),
+            weight: 1.0,
+            tier: Tier::Normal,
+            hard_cap_pct: None,
+        });
+        let samples = vec![
+            // A project the plan doesn't have: other sessions.
+            sample(1, "A", 20.0, "autonomous", "blog", "claude-sonnet-4-5", None),
+            // An old record holding the project's name: its id.
+            sample(2, "B", 10.0, "autonomous", "API", "claude-sonnet-4-5", None),
+        ];
+        let projects: BTreeMap<String, String> = [("api".to_string(), "API".to_string())].into();
+        let cal = Calibration {
+            ts: t(100),
+            cost_per_weekly_pct: 10.0,
+            confidence: 0.8,
+            unattributed_rate: 0.0,
+            per_model: None,
+        };
+        let r = build(&Inputs {
+            plan: &plan,
+            samples: &samples,
+            agents: &BTreeMap::new(),
+            projects: &projects,
+            calibration: &cal,
+            actions: &[],
+            forecasts: &[],
+            plan_fraction: 1.0,
+            weekly_pct: None,
+            in_progress: false,
+            now: t(168),
+        });
+        let used: Vec<(&str, f64)> = r.allocations.iter().map(|a| (a.id.as_str(), a.used_pp)).collect();
+        assert_eq!(used, [("shop", 0.0), ("api", 1.0), ("default", 2.0)]);
     }
 
     #[test]

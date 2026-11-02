@@ -628,9 +628,17 @@ impl Runtime {
                 .filter_map(|a| a.hard_cap_pct.map(|cap| (a.id.0.clone(), (g.allocation_usage_pct(&a.id), cap))))
                 .collect();
             let full = |r: &Option<crate::usage::Reading>| r.as_ref().is_some_and(|r| r.used_pct >= 100.0);
+            let charged_to = queue
+                .iter()
+                .filter_map(|e| {
+                    let to = g.resolve_allocation(&e.allocation);
+                    (to != e.allocation).then(|| (e.allocation.0.clone(), to.0))
+                })
+                .collect();
             let gov = GovFacts {
                 live_autonomous: g.live_autonomous(),
                 hard_caps,
+                charged_to,
                 exhausted: if full(&view.five_hour) {
                     Some(Window::FiveHour)
                 } else if full(&view.weekly) {
