@@ -402,6 +402,17 @@ describe('still open from yesterday (F1, api-contract §1)', () => {
     expect(r.container.querySelectorAll('article.line').length).toBe(1);
   });
 
+  it('no Today label when nothing under it is shown (a filter hides the rest)', () => {
+    const blocking = { ...p, level: 1 };
+    const other = { ...qq, level: 2 };
+    const t = chat.thread({
+      chat: { day: '2026-11-02', entries: { a: carriedEntry('c-8', blocking, 'c-1', 1), b: entry('c-9', other) } },
+      decisions: { [blocking.id]: blocking, [other.id]: other },
+      filter: 'blocking',
+    });
+    expect(t.items.filter((i) => i.type === 'group').map((i) => i.label)).toEqual(['Still open from Sun 1 Nov']);
+  });
+
   it('the label is a calendar date: the same in any time zone, across a month start', () => {
     expect(chat.thread({ chat: { day: '2026-11-02', entries: {} } }).items).toEqual([]);
     const label = (day) => {

@@ -197,7 +197,7 @@ function composedLine(d, now) {
  * re-renders only what it touched (spec §5: < 16 ms for 300 entries).
  *
  * Returns { items, cards, all, counts, open, shown, nextDue }:
- * items   [{type:'morning'|'card'|'line'|'fold', key, …}] in order
+ * items   [{type:'morning'|'card'|'line'|'fold'|'group', key, …}] in order
  * cards   the card items shown (j/k stops), in order
  * all     every card item, before the filter and the fold
  * counts  open cards per filter id, before filtering (the chips)
@@ -313,11 +313,16 @@ export function thread({
   const items = [];
   /** @type {Item[]} */
   const cards = [];
-  let group = 0; // 0: none yet · 1: the group opened · 2: its "Today" label placed
+  let group = 0; // 0: none yet · 1: the group opened · 2: past it
+  let todayDue = false; // the "Today" label waits for the first item that is actually shown
+  const flushToday = () => {
+    if (todayDue) items.push({ type: 'group', key: 'group:today', label: 'Today' });
+    todayDue = false;
+  };
   for (const it of all) {
     if (group === 1 && !carried(it) && it.type !== 'morning') {
       group = 2;
-      items.push({ type: 'group', key: 'group:today', label: 'Today' });
+      todayDue = true;
     }
     if (it.type === 'card') {
       if (!test(it.d)) continue;
@@ -326,6 +331,7 @@ export function thread({
         items.push({ type: 'group', key: 'group:carried', label: carriedLabel(chat?.day) });
       }
       if (folded.size && it.key === shown[FOLD_AT].key) {
+        flushToday();
         const rest = shown.slice(FOLD_AT);
         items.push({
           type: 'fold',
@@ -338,6 +344,7 @@ export function thread({
       if (folded.has(it.key) && !foldOpen) continue;
       cards.push(it);
     }
+    flushToday();
     items.push(it);
   }
   return { items, cards, all: cardsAll, counts, shown: shown.length, nextDue };
@@ -427,7 +434,10 @@ export function dayLabel(day, long = false) {
 }
 
 /** The calendar day before `day` ("2026-11-02" → "2026-11-01"). */
-export const prevDay = (day) => new Date(utc(day).getTime() - 864e5).toISOString().slice(0, 10);
+export const prevDay = (day) => {
+  const t = utc(day).getTime() - 864e5;
+  return Number.isNaN(t) ? String(day) : new Date(t).toISOString().slice(0, 10);
+};
 
 /** A row of the days popover (notes §6.1): "Yesterday · Sun 1 Nov · 12 decisions". */
 export function dayRowText(r, today) {
