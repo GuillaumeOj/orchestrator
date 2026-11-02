@@ -5,6 +5,7 @@
   // confirmed plan the core proposes an even split. Saving keeps the week's
   // usage (the Governor replays it into the new plan).
   import { onMount } from 'svelte';
+  import { share, TIERS } from '../lib/allocation.js';
   import { refresh, toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import Kbd from './Kbd.svelte';
@@ -77,10 +78,10 @@
           <tr class:out>
             <td>{a.target || a.id}{#if out}<span class="tag">not in plan</span>{/if}</td>
             <td><input class="field mono" type="number" min="0" step="1" bind:value={a.weight} aria-label="Weight of {a.id}" /></td>
-            <td class="muted">{total ? Math.round(((Number(a.weight) || 0) / total) * 100) : 0}%</td>
+            <td class="muted">{share(a.weight, total)}%</td>
             <td>
               <select class="field" bind:value={a.tier} aria-label="Tier of {a.id}">
-                <option value="critical">critical</option><option value="high">high</option><option value="normal">normal</option><option value="low">low</option>
+                {#each TIERS as t (t)}<option value={t}>{t}</option>{/each}
               </select>
             </td>
             <td><input class="field mono" type="number" min="0" max="100" step="1" placeholder="none" bind:value={a.hard_cap_pct} aria-label="Hard cap of {a.id}" /></td>

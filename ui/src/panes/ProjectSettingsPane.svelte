@@ -207,7 +207,9 @@
   </nav>
 
   <div class="body">
-    {#if error}
+    {#if section.id === 'allocation'}
+      <AllocationSettings bind:this={alloc} project={pid} {name} />
+    {:else if error}
       <p class="err">Could not read {name}'s settings: {error}</p>
     {:else if !saved}
       <p class="muted">Loading…</p>
@@ -302,8 +304,6 @@
       <label class="line"><span class="lab">Parent page</span><input class="field grow" bind:value={notionPage} placeholder="Notion page URL or id" spellcheck="false" /></label>
       <p class="muted note">Share the page with your Notion integration. The token is in <button class="link" onclick={() => openSettings('integrations')}>Settings › Integrations</button>.</p>
       <div class="foot"><button class="btn primary" disabled={busy || !dirty} onclick={() => save()}>Save <Kbd keys="⌘+⏎" /></button></div>
-    {:else if section.id === 'allocation'}
-      <AllocationSettings bind:this={alloc} project={pid} {name} />
     {:else if section.id === 'mcp'}
       <McpSettings project={pid} selected={null} />
     {:else}

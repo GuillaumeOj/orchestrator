@@ -9,7 +9,6 @@ import {
   capBar,
   isDirty,
   keysFor,
-  ownShare,
   pendingRemoval,
   savedToast,
   share,
@@ -76,14 +75,17 @@ describe('allocation helpers', () => {
   it('pending removal drops the own row and hints on other sessions', () => {
     const rows = tableRows(view(), { weight: '0', tier: 'high', cap: '30' }, 'shop-api');
     expect(rows.some((r) => r.own)).toBe(false);
-    expect(rows.at(-1)).toMatchObject({ label: 'other sessions', tag: '+ shop-api' });
-    expect(ownShare(view(), { weight: '0', tier: 'high', cap: '' }, 'shop-api')).toBeNull();
+    // The project's usage (7.4) moves to other sessions (1) in the preview.
+    expect(rows.at(-1)).toMatchObject({ label: 'other sessions', tag: '+ shop-api', used_pct: 8.4 });
   });
 
-  it('not in the plan: the table is the plan, other sessions carries the hint; Add shows the share', () => {
+  it('not in the plan: other sessions carries the hint; after Add a live own row sits before it', () => {
     const v = out();
     expect(tableRows(v, null, 'docs').at(-1).tag).toBe('+ docs');
-    expect(ownShare(v, addDraft(v), 'docs')).toBe(Math.round((33 / 84) * 100));
+    const rows = tableRows(v, addDraft(v), 'docs');
+    expect(rows.map((r) => r.label)).toEqual(['blog', 'infra', 'docs', 'other sessions']);
+    expect(rows[2]).toMatchObject({ own: true, weight: 33, share: Math.round((33 / 84) * 100) });
+    expect(rows.at(-1).tag).toBe('');
   });
 
   it('proposed default and fallbacks', () => {
@@ -99,6 +101,8 @@ describe('allocation helpers', () => {
     });
     expect(validate({ weight: '', tier: 'high', cap: '' }).weight).toBeTruthy();
     expect(validate({ weight: '0', tier: 'high', cap: '0' })).toEqual({});
+    expect(validate({ weight: '5', tier: 'high', cap: null })).toEqual({}); // a cleared number input
+    expect(validate({ weight: '0', tier: 'high', cap: '120' })).toEqual({}); // removal ignores the cap
   });
 
   it('form → payload: numbers, null cap, weight 0 = remove', () => {
@@ -124,8 +128,9 @@ describe('allocation helpers', () => {
     expect(capBar(24, 30, 'a').state).toBe('amber');
     expect(capBar(25.1, 30, 'a').words).toBe('▲ close to the cap · 25.1 of 30%');
     expect(capBar(30, 30, 'a').words).toMatch(/^■ cap reached · a's agents are stopped/);
-    expect(capBar(30, 30, 'a').fill).toBeCloseTo(80);
-    expect(capBar(0, 0, 'a').state).toBe('green');
+    expect(capBar(30, 30, 'a').fill).toBe(100);
+    expect(capBar(24, 30, 'a').fill).toBeCloseTo(64);
+    expect(capBar(0, 0, 'a')).toMatchObject({ state: 'red', fill: 100 });
     expect(capBar(0.1, 0, 'a').state).toBe('red');
     expect(capBar(1, null, 'a')).toBeNull();
   });
@@ -133,15 +138,14 @@ describe('allocation helpers', () => {
   it('toasts and the keys line', () => {
     expect(savedToast('shop-api', {})).toBe("Saved shop-api's allocation · this week's usage kept");
     expect(savedToast('shop-api', null)).toBe("Removed shop-api from the plan · this week's usage kept");
-    expect(keysFor(out(), null, false, false)).toEqual([
+    expect(keysFor(out(), null, false, false, false)).toEqual([
       ['a', 'add'],
       ['g', 'week planner'],
     ]);
-    expect(keysFor(view(), { weight: '50', tier: 'high', cap: '30' }, false, false).map((k) => k[0])).toEqual([
-      'x',
-      'g',
-    ]);
-    expect(keysFor(null, null, false, true)).toEqual([['r', 'retry']]);
+    const d = { weight: '50', tier: 'high', cap: '30' };
+    expect(keysFor(view(), d, false, false, false).map((k) => k[0])).toEqual(['x', 'g']);
+    expect(keysFor(view(), d, true, true, false).map((k) => k[0])).toEqual(['esc', 'x']); // invalid: no ⌘+⏎, no g
+    expect(keysFor(null, null, false, false, true)).toEqual([['r', 'retry']]);
   });
 });
 
@@ -287,6 +291,48 @@ describe('Project settings › Allocation', () => {
       expect(container.textContent).toContain("Couldn't save: set up the weekly plan first. Nothing was changed."),
     );
     expect(weight(container).value).toBe('60');
+  });
+
+  it('clearing the hard cap saves a null cap; esc keeps the keys working', async () => {
+    const { container, root } = await open(view());
+    const cap = container.querySelector('#alloc-cap');
+    await type(cap, '');
+    expect(container.textContent).not.toContain('Hard cap must be');
+    expect(btn(container, /^Save/).disabled).toBe(false);
+    cap.focus();
+    await fireEvent.keyDown(cap, { key: 'Escape' });
+    expect(document.activeElement).toBe(root);
+    await fireEvent.keyDown(root, { key: 'Escape' });
+    await tick();
+    expect(container.querySelector('#alloc-cap').value).toBe('30');
+    await type(container.querySelector('#alloc-cap'), '');
+    replies.project_allocation_set = (a) =>
+      view({ allocation: alloc('shop-api', 50, { tier: 'high', hard_cap_pct: a.form.hard_cap_pct }) });
+    await fireEvent.keyDown(root, { key: 'Enter', metaKey: true });
+    await waitFor(() => expect(calls.find(([c]) => c === 'project_allocation_set')[1].form.hard_cap_pct).toBeNull());
+  });
+
+  it('typing 0 after an unsaved Add goes back to not in the plan', async () => {
+    const { container, root } = await open(out());
+    await fireEvent.keyDown(root, { key: 'a' });
+    await tick();
+    await type(weight(container), '0');
+    expect(weight(container)).toBeNull();
+    expect(container.textContent).not.toContain('From the save on');
+  });
+
+  it('reloads when the plan dialog closes', async () => {
+    const { container, root } = await open(
+      view({ plan_confirmed: false, allocation: alloc('shop-api', 1), others: [alloc('default', 1)] }),
+    );
+    await fireEvent.keyDown(root, { key: 'g' });
+    await tick();
+    const loads = () => calls.filter(([c]) => c === 'project_allocation').length;
+    const before = loads();
+    replies.project_allocation = view();
+    app.overlay = null;
+    await waitFor(() => expect(loads()).toBe(before + 1));
+    await waitFor(() => expect(weight(container)).toBeTruthy());
   });
 
   it('load error: box with Retry, r reloads', async () => {
