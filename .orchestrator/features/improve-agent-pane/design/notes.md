@@ -30,7 +30,7 @@ Content of states 1, 2 (ux-brief "States to draw"): tabs in open order `[L] lead
 
 - Height 24 px (as today). Gap between tabs `space.xxs` (2 px).
 - Left: the tabs, in open order. Right, pinned: `+` (new shell), then the hint `⌘J hide` (`text.caption`, `color.text.muted`, `space.sm` right padding). In the zoomed state the hint group reads `ZOOMED` · `⌘; z restore` · `⌘J hide` (see State 4).
-- **Overflow**: the tabs scroll horizontally inside their own lane (scrollbar hidden); `+` and the hint group don't scroll. When the lane overflows, a 1 px `color.border.subtle` divider separates the lane from `+`, so the clipped tab reads as cut, not as the last one. The active tab is always scrolled into view. No fade, no "n more" counter (decision: not in the brief, ⌘; ] / [ and the palette already reach every tab).
+- **Overflow**: the tabs scroll horizontally inside their own lane (scrollbar hidden); `+` and the hint group don't scroll. Only while the lane overflows (no space taken otherwise), a 1 px `color.border.subtle` divider separates the lane from `+`, so the clipped tab reads as cut, not as the last one. The active tab is always scrolled into view. No fade, no "n more" counter (decision: not in the brief, ⌘; ] / [ and the palette already reach every tab).
 
 ## Dock tab (02 Components · `Dock tab · variants`)
 
@@ -43,7 +43,7 @@ Shared by both kinds: height 24, top corners `radius.sm`, font `text.label` (12 
 | label | short name: the team node (`team.node`, as the sidebar's AgentChip), else the agent id, `color.text.secondary` | title as today (`zsh · <project>`, `trust · <project>`, the command), `color.text.secondary` |
 | status | StatusBadge icon only (compact), `size.icon` (16 px) box, glyph in `color.status.<state>` | — |
 | × | `color.text.muted`; tooltip "Close tab · the agent keeps running" | `color.text.muted`; tooltip "Close shell" |
-| tooltip on the tab | full agent id · the sidebar row's wait line (`waitLine`: status label · what it waits on · since, §9.5), e.g. `improve-agent-pane-back-1 · Waiting for you · permission WebFetch · 2 min` | the title |
+| tooltip on the tab | full agent id · the sidebar row's wait line (`waitLine`: status label · what it waits on · since, §9.5), e.g. `improve-agent-pane-back-1 · Waiting for you · permission WebFetch · 2 min`; the whole tab shows it, the status icon included (no badge tooltip of its own) | the title |
 
 States:
 
@@ -65,7 +65,7 @@ The agent pane as in 04 Screens · `Agent pane · 1512`, minus the workspace pan
 
 1. **Agent tab active** — workspace = project pane `shop-api` (single pane, focused border off since the dock has focus); dock 0.45; `back-1` active and focused.
 2. **Shell tab active** — same layout; `zsh · shop-api` active, the terminal body; the agent tabs keep their status icons (back-1 still waiting).
-3. **No workspace pane** — the dock fills the work column: no handle (nothing to resize against), no empty-workspace message; the tab strip starts at the top of the column.
+3. **No workspace pane** — the dock fills the work column: no handle (nothing to resize against), no empty-workspace message; `space.xs` (4 px) of `color.surface.chrome` above the tab strip, where the handle was (T-64).
 4. **Zoomed** — the dock covers the whole work column (the workspace is not drawn); no handle; the right group reads `ZOOMED` (`text.caption`, `color.accent.default`, as the pane header's tag) · `⌘; z restore` · `⌘J hide`. Decision: no "n of m" after ZOOMED, the dock is a single zoom target.
 5. **Overflow at 1280** — 12 tabs (7 agents, 5 shells) with the rail + overlay inspector layout of `Shell · 1280`; the active tab (`ui-1`) is the 9th, scrolled into view, the first ones cut on the left; divider before `+`.
 
@@ -76,5 +76,5 @@ All five accepted by `lead` (T-62).
 - Tab max width 200 px with ellipsis (brief says "long name ellipsized", no size).
 - Active tab `color.surface.pane`, hover `color.surface.raised` (lead, after T-62 review: the active tab must join the agent body, whose header row is `surface.pane`; `surface.raised` on the active tab left a seam). Supersedes the first "hover = surface.pane" decision.
 - Overflow divider (1 px `color.border.subtle`), no fade or counter.
-- No drag handle when the dock fills the column (states 3 and 4).
+- No drag handle when the dock fills the column (states 3 and 4); a `space.xs` top padding keeps the tab strip 4 px below the column top, as with the handle.
 - `ZOOMED` without "n of m".
