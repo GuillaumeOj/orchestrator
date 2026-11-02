@@ -230,7 +230,7 @@
             <rect x={x(o.a)} y={bandY} width={Math.max(1, x(Math.min(o.b, v.reset_at_ms)) - x(o.a))} height={BAND.h} class="off" />
             {#if o.label}<text x={x(o.a) + 4} y={bandY + BAND.h + 10} class="ax">off-hours</text>{/if}
           {/each}
-          {#if off?.queued && offStart}<text x={Math.min(x(offStart) + 4, w - 80)} y={y(0) - 6} class="tag okq">☾ {off.queued} queued</text>{/if}
+          {#if off?.queued && offStart}<text x={Math.min(x(offStart) + 64, w - 80)} y={bandY + BAND.h + 10} class="tag okq">☾ {off.queued} queued</text>{/if}
           <rect x={pad.l} y={y(100)} width={w - pad.l - pad.r} height={Math.max(0, y(reserveTop) - y(100))} class="reserve" />
           {#each [0, 25, 50, 75, 100] as g (g)}
             <line x1={pad.l} x2={w - pad.r} y1={y(g)} y2={y(g)} class="grid-l" /><text x={pad.l - 6} y={y(g) + 4} class="ax" text-anchor="end">{g}%</text>
