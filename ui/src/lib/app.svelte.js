@@ -1002,8 +1002,7 @@ export async function checkForUpdates() {
       u = app.data?.update ?? u;
     }
     const out = checkOutcome(u);
-    if (typeof out === 'string') toast(out);
-    else if (out) toast(out.error, { kind: 'error' });
+    if (out) toast(out.text, out.error ? { kind: 'error' } : {});
   } catch (e) {
     toast(errText(e), { kind: 'error' });
   }

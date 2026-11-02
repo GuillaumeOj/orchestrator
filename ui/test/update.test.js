@@ -64,10 +64,11 @@ describe('update copy', () => {
     expect(updateActions(upd({ state: 'ready', available: avail })).restart).toBeNull();
   });
   it('check outcomes and about', () => {
-    expect(checkOutcome(upd())).toBe('Orchestrator is up to date (0.1.41)');
-    expect(checkOutcome(upd({ state: 'ready', available: avail }))).toBe('Orchestrator 0.1.42 is ready');
+    expect(checkOutcome(upd())).toEqual({ text: 'Orchestrator is up to date (0.1.41)' });
+    expect(checkOutcome(upd({ state: 'ready', available: avail })).text).toBe('Orchestrator 0.1.42 is ready');
     expect(checkOutcome(upd({ state: 'error', error: 'offline' }))).toMatchObject({
-      error: expect.stringContaining('offline'),
+      error: true,
+      text: expect.stringContaining('offline'),
     });
     expect(checkOutcome(upd({ state: 'checking' }))).toBeNull();
     expect(aboutText(upd())).toMatch(/^Orchestrator 0\.1\.41 · bd5797c · main · checked /);

@@ -58,11 +58,11 @@ export function checkOutcome(u) {
   if (!u) return null;
   switch (u.state) {
     case 'ready':
-      return `Orchestrator ${u.available.version} is ready`;
+      return { text: `Orchestrator ${u.available.version} is ready` };
     case 'error':
-      return { error: `Update check failed: ${u.error ?? 'unknown error'}` };
+      return { text: `Update check failed: ${u.error ?? 'unknown error'}`, error: true };
     case 'idle':
-      return `Orchestrator is up to date (${u.current.version})`;
+      return { text: `Orchestrator is up to date (${u.current.version})` };
     default:
       return null;
   }
