@@ -112,12 +112,14 @@ fn ask_core(
         deadline_ms: if waits { reply_deadline.as_millis() as u64 } else { 0 },
         payload: payload.clone(),
     }));
-    bus::write_line(&mut &stream, &msg).map_err(|e| e.tag())?;
     let left = reply_deadline.saturating_sub(started.elapsed());
     if left.is_zero() {
         return Err(BusError::Timeout.tag());
     }
+    // Before writing: once the peer has replied and closed, macOS refuses
+    // `setsockopt` with EINVAL.
     stream.set_read_timeout(Some(left)).map_err(|e| e.to_string())?;
+    bus::write_line(&mut &stream, &msg).map_err(|e| e.tag())?;
     let reply: ReplyEnvelope = bus::read_line(&mut BufReader::new(&stream)).map_err(|e| e.tag())?;
     if reply.v != PROTOCOL_VERSION {
         return Err(format!("protocol version {}", reply.v));
@@ -275,6 +277,20 @@ mod tests {
         let o = run(&payload("PreToolUse"), &env(d2.path(), 5_000));
         assert_eq!(o, Outcome { stdout: None, exit: 0, fallback: None }, "{o:?}");
         core2.join().unwrap();
+    }
+
+    #[test]
+    fn quick_reply_and_close_is_still_read() {
+        const N: usize = 200;
+        let d = short_dir();
+        let core = fake_core(d.path(), N, |mut s| {
+            writeln!(s, r#"{{"v":1,"reply":"ack"}}"#).unwrap();
+        });
+        for i in 0..N {
+            let o = run(&payload("PreToolUse"), &env(d.path(), 5_000));
+            assert_eq!(o, Outcome { stdout: None, exit: 0, fallback: None }, "run {i}: {o:?}");
+        }
+        core.join().unwrap();
     }
 
     #[test]

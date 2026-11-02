@@ -160,8 +160,10 @@ pub fn round_trip(
     reply_timeout: Option<Duration>,
 ) -> Result<crate::Reply, BusError> {
     let s = connect(path, connect_timeout)?;
-    write_line(&mut &s, msg)?;
+    // Before writing: once the peer has replied and closed, macOS refuses
+    // `setsockopt` with EINVAL.
     s.set_read_timeout(reply_timeout)?;
+    write_line(&mut &s, msg)?;
     let reply: crate::ReplyEnvelope = read_line(&mut std::io::BufReader::new(&s))?;
     if reply.v != crate::PROTOCOL_VERSION {
         return Err(BusError::Protocol(format!("protocol version {}", reply.v)));
@@ -229,5 +231,30 @@ mod tests {
         let r: Result<serde_json::Value, _> = read_line(&mut BufReader::new(&c2));
         assert!(matches!(r, Err(BusError::Eof)));
         t.join().unwrap();
+    }
+
+    /// The server answers and closes at once; the client must still read the
+    /// reply (on macOS `setsockopt` fails with EINVAL on a closed peer).
+    #[test]
+    fn round_trip_survives_quick_reply_and_close() {
+        let d = short_dir();
+        let p = d.path().join("q.sock");
+        let l = bind_listener(&p).unwrap();
+        let t = std::thread::spawn(move || {
+            while let Ok((s, _)) = l.accept() {
+                let _: serde_json::Value = read_line(&mut BufReader::new(&s)).unwrap();
+                write_line(&mut &s, &crate::ReplyEnvelope::new(crate::Reply::Ack)).unwrap();
+            }
+        });
+        let msg = crate::Envelope::new(crate::Msg::Status(crate::StatusMsg {
+            agent_id: "a".into(),
+            ts_ms: 0,
+            payload: serde_json::json!({}),
+        }));
+        for i in 0..500 {
+            let r = round_trip(&p, &msg, Duration::from_secs(1), Some(Duration::from_secs(5)));
+            assert_eq!(r.unwrap_or_else(|e| panic!("call {i}: {e}")), crate::Reply::Ack);
+        }
+        drop(t); // detached: the accept loop ends with the process
     }
 }
