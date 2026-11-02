@@ -644,9 +644,14 @@ pub fn update_check(updater: UpdaterState) -> Res<Value> {
 
 /// Quits as ⌘Q does (agents suspended), installs the staged update and relaunches it.
 /// The pre-flight runs first: if it fails, the app stays up and the state is `error`.
+/// Async: the pre-flight may copy the bundle (across volumes), off the main thread.
 #[tauri::command]
-pub fn update_restart(app: tauri::AppHandle, updater: UpdaterState) -> Res<()> {
-    updater.prepare_restart().map_err(e)?;
+pub async fn update_restart(app: tauri::AppHandle, updater: UpdaterState<'_>) -> Res<()> {
+    let updater = updater.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || updater.prepare_restart())
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(e)?;
     app.exit(0);
     Ok(())
 }

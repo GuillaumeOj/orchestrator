@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -137,7 +137,9 @@ pub fn decode_public_key(b64: &str) -> Result<minisign_verify::PublicKey> {
 }
 
 /// Checks `file` against a Tauri `.sig` (base64 of the minisign signature text),
-/// streaming the file so a 100 MB tarball never sits in memory.
+/// streaming the file so a 100 MB tarball never sits in memory. The signed
+/// trusted comment must name this file, so an older signed tarball re-published
+/// under a newer name is refused (no downgrade).
 pub fn verify_file(key: &minisign_verify::PublicKey, sig_b64: &str, file: &Path) -> Result<()> {
     let sig = decode_b64_text(sig_b64)
         .ok()
@@ -153,7 +155,12 @@ pub fn verify_file(key: &minisign_verify::PublicKey, sig_b64: &str, file: &Path)
         }
         verifier.update(&buf[..n]);
     }
-    verifier.finalize().map_err(|_| anyhow!("signature does not match"))
+    verifier.finalize().map_err(|_| anyhow!("signature does not match"))?;
+    let name = file.file_name().map(|n| format!("file:{}", n.to_string_lossy())).unwrap_or_default();
+    if !sig.trusted_comment().split('\t').any(|f| f == name) {
+        bail!("signature is for another file");
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- when it is off
@@ -321,41 +328,22 @@ fn offline(stderr: &str) -> bool {
 
 /// Runs `gh`, killed after `timeout` so a hung network call never wedges the thread.
 fn gh(args: &[&str], timeout: Duration) -> Result<String, GhError> {
-    let mut child = match Command::new("gh")
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(GhError::Missing),
-        Err(e) => return Err(GhError::Failed(e.to_string())),
-    };
-    let read = |mut r: Box<dyn Read + Send>| {
-        std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = r.read_to_string(&mut s);
-            s
-        })
-    };
-    let out = read(Box::new(child.stdout.take().expect("piped")));
-    let err = read(Box::new(child.stderr.take().expect("piped")));
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(100)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(GhError::Offline);
-            }
+    let mut cmd = Command::new("gh");
+    cmd.args(args).env("GH_PROMPT_DISABLED", "1").env("NO_COLOR", "1");
+    let out = match orch_git::git::run_with_deadline(cmd, timeout) {
+        Ok(o) => o,
+        Err(e) => {
+            return Err(match e.downcast_ref::<std::io::Error>() {
+                Some(io) if io.kind() == std::io::ErrorKind::NotFound => GhError::Missing,
+                Some(io) => GhError::Failed(io.to_string()),
+                // The deadline.
+                None => GhError::Offline,
+            });
         }
     };
-    let (out, err) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
-    if status.success() {
-        Ok(out)
+    let err = String::from_utf8_lossy(&out.stderr);
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else if offline(&err) {
         Err(GhError::Offline)
     } else {
@@ -387,6 +375,8 @@ struct Inner {
     poke: bool,
     /// "Restart to update" prepared this bundle: the swap runs at exit.
     restart: Option<PathBuf>,
+    /// A check is under way (set with `poke` taken, under the same lock).
+    running: bool,
 }
 
 type Sink = Arc<dyn Fn(Value) + Send + Sync>;
@@ -400,7 +390,6 @@ pub struct Updater {
     bundle: Option<PathBuf>,
     /// Off for good (debug, ORCH_NO_UPDATE, key, bundle): no thread, no apply.
     off: bool,
-    running: AtomicBool,
 }
 
 impl Updater {
@@ -409,7 +398,8 @@ impl Updater {
         let key_ok = decode_public_key(PUB_KEY).is_ok();
         let no_update = std::env::var("ORCH_NO_UPDATE").is_ok_and(|v| v == "1");
         let why = disabled_reason(cfg!(debug_assertions), no_update, key_ok, &exe);
-        let bundle = bundle_of(&exe).filter(|_| !under_target(&exe));
+        // Unused when off (a `target/` build is off).
+        let bundle = bundle_of(&exe);
         Updater::with(current, dir, bundle, why)
     }
 
@@ -442,13 +432,12 @@ impl Updater {
             }
         }
         Arc::new(Updater {
-            inner: Mutex::new(Inner { s, staged, poke: false, restart: None }),
+            inner: Mutex::new(Inner { s, staged, poke: false, restart: None, running: false }),
             wake: Condvar::new(),
             sink: Mutex::new(None),
             dir,
             bundle,
             off: why.is_some(),
-            running: AtomicBool::new(false),
         })
     }
 
@@ -462,8 +451,13 @@ impl Updater {
         let _ = std::thread::Builder::new().name("update".into()).spawn(move || {
             me.wait(FIRST_CHECK);
             loop {
-                let manual = std::mem::take(&mut me.inner.lock_ok().poke);
+                let manual = {
+                    let mut i = me.inner.lock_ok();
+                    i.running = true;
+                    std::mem::take(&mut i.poke)
+                };
                 me.check(manual);
+                me.inner.lock_ok().running = false;
                 me.wait(EVERY);
             }
         });
@@ -481,7 +475,7 @@ impl Updater {
 
     fn snapshot(&self) -> UpdateState {
         let mut s = self.inner.lock_ok().s.clone();
-        s.apply_on_quit = s.state == "ready" && s.current.channel == "main";
+        s.apply_on_quit = exit_action(s.state, &s.current.channel, None) == ExitAction::Apply;
         s
     }
 
@@ -500,34 +494,39 @@ impl Updater {
         if self.off {
             bail!("updates are off ({})", self.inner.lock_ok().s.disabled_why.clone().unwrap_or_default());
         }
-        if !self.running.load(Ordering::SeqCst) {
-            self.set(|i| {
+        self.set(|i| {
+            if !i.running {
                 i.poke = true;
                 if i.s.state != "ready" {
                     i.s.state = "checking";
                 }
-            });
-            self.wake.notify_all();
-        }
+            }
+        });
+        self.wake.notify_all();
         Ok(self.json())
     }
 
+    /// A failed check or download. A verified update already staged stays ready
+    /// (the failure is only logged): it can still be installed.
     fn fail(&self, msg: String) {
         eprintln!("update: {msg}");
         self.set(|i| {
-            i.s.state = "error";
-            i.s.error = Some(msg);
             i.s.progress = None;
+            match i.staged.as_deref().and_then(staged_info) {
+                Some(info) => {
+                    i.s.state = "ready";
+                    i.s.available = Some(info);
+                    i.s.error = None;
+                }
+                None => {
+                    i.s.state = "error";
+                    i.s.error = Some(msg);
+                }
+            }
         });
     }
 
     fn check(&self, manual: bool) {
-        self.running.store(true, Ordering::SeqCst);
-        self.check_inner(manual);
-        self.running.store(false, Ordering::SeqCst);
-    }
-
-    fn check_inner(&self, manual: bool) {
         let before = {
             let i = self.inner.lock_ok();
             if i.restart.is_some() {
@@ -540,6 +539,9 @@ impl Updater {
             me.set(|i| {
                 if i.s.state == "checking" {
                     i.s.state = if before == "checking" { "idle" } else { before };
+                }
+                if i.s.state != "error" {
+                    i.s.error = None;
                 }
             })
         };
@@ -574,7 +576,8 @@ impl Updater {
         let now = jiff::Timestamp::now().as_second();
         let (newer, staged) = {
             let i = self.inner.lock_ok();
-            let staged = i.staged.is_some() && i.s.available.as_ref().is_some_and(|a| a.version == rel.info.version);
+            // The staged bundle's own version: `available` may name a newer one whose download failed.
+            let staged = staged_is(i.staged.as_deref(), &rel.info.version);
             (is_newer(&rel.info.version, &i.s.current), staged)
         };
         if !newer || staged {
@@ -637,11 +640,8 @@ impl Updater {
         }
         let key = decode_public_key(PUB_KEY)?;
         let sig = std::fs::read_to_string(dl.join(&rel.sig)).map_err(|_| anyhow!("signature missing"))?;
-        // Nothing unverified is ever extracted.
-        verify_file(&key, &sig, &tarball).map_err(|e| {
-            let _ = remove_any(&dl);
-            anyhow!("{e:#}")
-        })?;
+        // Nothing unverified is ever extracted (the caller removes the download).
+        verify_file(&key, &sig, &tarball)?;
         let partial = self.dir.join(format!("{}.partial", rel.info.version));
         remove_any(&partial)?;
         std::fs::create_dir_all(&partial)?;
@@ -653,24 +653,30 @@ impl Updater {
         }
         std::fs::write(partial.join("release.json"), serde_json::to_vec(&rel.info)?)?;
         let dest = self.dir.join(&rel.info.version);
-        let mut i = self.inner.lock_ok();
-        if i.restart.is_some() {
-            // A restart is under way with the previous staged build: keep that one.
-            drop(i);
-            let _ = remove_any(&partial);
-            return Ok(());
+        {
+            let mut i = self.inner.lock_ok();
+            if i.restart.is_some() {
+                // A restart is under way with the previous staged build: keep that one.
+                drop(i);
+                let _ = remove_any(&partial);
+                return Ok(());
+            }
+            // The previous staged build goes now; while "downloading", nothing else uses it.
+            i.staged = None;
         }
-        // One staged version at most.
+        // One staged version at most (removed with no lock held).
         for e in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
             if e.path() != partial && e.file_type().is_ok_and(|t| t.is_dir()) {
                 let _ = remove_any(&e.path());
             }
         }
-        std::fs::rename(&partial, &dest)?;
-        i.staged = Some(dest.join("Orchestrator.app"));
-        drop(i);
+        if let Err(e) = std::fs::rename(&partial, &dest) {
+            let _ = remove_any(&partial);
+            return Err(e).context("staging the update");
+        }
         eprintln!("update: {} verified and staged", rel.info.version);
         self.set(|i| {
+            i.staged = Some(dest.join("Orchestrator.app"));
             i.s.state = "ready";
             i.s.progress = None;
             i.s.error = None;
@@ -749,6 +755,16 @@ impl Updater {
         let _ = std::fs::create_dir_all(&self.dir);
         let _ = std::fs::write(self.dir.join(LAST_ERROR), format!("install failed: {e:#}"));
     }
+}
+
+/// Whether `staged` (`updates/<version>/Orchestrator.app`) is `version`.
+/// The release a staged bundle came from (`updates/<version>/release.json`).
+fn staged_info(app: &Path) -> Option<Available> {
+    serde_json::from_slice(&std::fs::read(app.parent()?.join("release.json")).ok()?).ok()
+}
+
+fn staged_is(staged: Option<&Path>, version: &str) -> bool {
+    staged.and_then(|p| p.parent()?.file_name()).is_some_and(|n| n == version)
 }
 
 /// The staged update of an earlier run, if it is still newer than this build.
@@ -883,6 +899,11 @@ mod tests {
         let good = Path::new(FIX).join("payload.bin");
         assert!(verify_file(&test_key(), "bm9wZQ==", &good).is_err());
         assert!(verify_file(&test_key(), "%%%", &good).is_err());
+        // A valid signature, but for another file name.
+        let renamed = tmp.path().join("Orchestrator_0.1.99_aarch64.app.tar.gz");
+        std::fs::copy(&good, &renamed).unwrap();
+        let err = verify_file(&test_key(), &fixture("payload.bin.sig"), &renamed).unwrap_err();
+        assert_eq!(err.to_string(), "signature is for another file");
         // Signed by another key (the real one is not the test one).
         assert!(verify_file(&decode_public_key(PUB_KEY).unwrap(), &fixture("payload.bin.sig"), &good).is_err());
     }
@@ -1005,6 +1026,33 @@ mod tests {
         assert!(u.prepare_restart().is_err());
         u.on_exit();
         assert_eq!(marker(&bundle), "old");
+    }
+
+    #[test]
+    fn a_staged_build_is_matched_by_its_own_version() {
+        let p = PathBuf::from("/d/updates/0.1.42/Orchestrator.app");
+        assert!(staged_is(Some(&p), "0.1.42"));
+        // `available` moved on to 0.1.43 but its download failed: 0.1.42 is still what is staged.
+        assert!(!staged_is(Some(&p), "0.1.43"));
+        assert!(!staged_is(None, "0.1.42"));
+    }
+
+    #[test]
+    fn a_failed_check_keeps_a_staged_update_ready() {
+        let tmp = tempfile::tempdir().unwrap();
+        let updates = tmp.path().join("updates");
+        fake_app(&updates.join("0.1.42/Orchestrator.app"), "new");
+        let info = Available { version: "0.1.42".into(), sha: "f".into(), published_at: None, subject: "s".into() };
+        std::fs::write(updates.join("0.1.42/release.json"), serde_json::to_vec(&info).unwrap()).unwrap();
+        let u = Updater::with(build("0.1.41", "main"), updates, None, None);
+        u.fail("offline".into());
+        let s = u.snapshot();
+        assert_eq!((s.state, s.error, s.available), ("ready", None, Some(info)));
+
+        let u = Updater::with(build("0.1.41", "main"), tmp.path().join("none"), None, None);
+        u.fail("offline".into());
+        let s = u.snapshot();
+        assert_eq!((s.state, s.error.as_deref()), ("error", Some("offline")));
     }
 
     #[test]
