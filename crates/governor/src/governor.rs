@@ -1425,7 +1425,7 @@ impl Governor {
                     now,
                     ActionKind::Watchdog { agent: req.agent.clone() },
                     format!("turn over its ceiling ({used_pct:.1} pp, {minutes:.0} min)"),
-                    "turn interrupted at this tool boundary; Inbox item for the user".into(),
+                    "turn interrupted at this tool boundary; decision for the user".into(),
                     self.mode(),
                     self.auto_outcome(),
                     None,

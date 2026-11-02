@@ -504,7 +504,7 @@ impl Runtime {
             Waited::Decided(i) if allows(&i) => HookOutput::permission_request(PermissionBehavior::Allow, None),
             Waited::Decided(i) => {
                 let m = reply(&i).map(|m| format!("ORCH: the user says: {m}"));
-                let m = m.unwrap_or_else(|| "ORCH: the user denied this in the Inbox.".into());
+                let m = m.unwrap_or_else(|| "ORCH: the user denied this.".into());
                 HookOutput::permission_request(PermissionBehavior::Deny, Some(&m))
             }
             Waited::Parked => HookOutput::permission_request(PermissionBehavior::Deny, Some(PARKED_MESSAGE)),
@@ -727,13 +727,13 @@ impl Runtime {
         let mut item = self
             .store
             .read(|s| s.inbox.iter().find(|i| i.id == id).cloned())
-            .ok_or_else(|| anyhow!("no Inbox item {id}"))?;
+            .ok_or_else(|| anyhow!("no decision {id}"))?;
         if !item.open() {
             // A failed or stale decision leaves the Inbox only this way.
             if decision == InboxDecision::Dismiss && item.ended() {
                 return self.dismiss_ended(&item);
             }
-            bail!("Inbox item {id} is already {:?}", item.status);
+            bail!("Decision {id} is already {:?}", item.status);
         }
         // Checked before claiming: an always-allow that can't become a rule is refused whole.
         let rule_spec = if decision == InboxDecision::AlwaysAllow {
@@ -778,7 +778,7 @@ impl Runtime {
             closed
         })?;
         match claimed {
-            Err(now) => bail!("Inbox item {id} is already {now:?}"),
+            Err(now) => bail!("Decision {id} is already {now:?}"),
             // The hold may have parked it since it was read: act on the status it was claimed in.
             Ok(Some(was)) => item.status = was,
             Ok(None) => {}
@@ -980,7 +980,7 @@ impl Runtime {
             true
         })?;
         if !claimed {
-            bail!("Inbox item {id} is no longer failed or stale");
+            bail!("Decision {id} is no longer failed or stale");
         }
         self.advance(id, Stage::Effect("dismissed", None));
         self.closed_by(item, "user", "dismiss", "dismissed");
@@ -1035,7 +1035,7 @@ impl Runtime {
             json!({"item": id}),
         )?;
         Ok(format!(
-            "Requested: Inbox item {id} asks the user to push {branch} and open a PR into {base}. You will be told the result; there is nothing else to do for it now."
+            "Requested: decision {id} asks the user to push {branch} and open a PR into {base}. You will be told the result; there is nothing else to do for it now."
         ))
     }
 

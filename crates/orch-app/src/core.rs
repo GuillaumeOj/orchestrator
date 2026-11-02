@@ -815,7 +815,7 @@ impl Core {
                 let m = message.ok_or_else(|| anyhow!("empty reply"))?;
                 // It comes after the prompt in the pane is answered: say what it answers.
                 let text = if item.starts_with("wait-") {
-                    format!("ORCH: the user answered from the Inbox while a prompt was open in your pane: {m}")
+                    format!("ORCH: the user answered in the app while a prompt was open in your pane: {m}")
                 } else {
                     m.to_string()
                 };
@@ -1117,10 +1117,8 @@ impl Core {
     pub fn gate_detail(&self, item: &str) -> Result<Value> {
         let rt = self.runtime()?;
         let n: u64 = item.strip_prefix("gate-").ok_or_else(|| anyhow!("{item} is not a gate"))?.parse()?;
-        let it = rt
-            .store
-            .read(|s| s.inbox.iter().find(|i| i.id == n).cloned())
-            .ok_or_else(|| anyhow!("no Inbox item {n}"))?;
+        let it =
+            rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).cloned()).ok_or_else(|| anyhow!("no decision {n}"))?;
         let p = &it.payload;
         let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         let wt = PathBuf::from(s("worktree"));
