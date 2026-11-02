@@ -218,7 +218,7 @@ through `orch-tasks` (Local or GitHub Issues, FR-501–503).
 - **Gates**: spec approve → `planning` and "ORCH: approved: proceed…"; reject/reply → `spec` with
   the user's words. A lead's `request_pr` → `pr_gate`; approved and opened → `pr_open` with the PR
   URL and number; declined or failed → `integrating`.
-- **Open PR** (`pr`): `pr_tick` (fetch thread, every 60 s; none offline or on battery below 20 %)
+- **Open PR** (`pr`): `pr_tick` (fetch thread, every 60 s, through `server::NetClock::step` in orchd and the app alike; none offline or on battery below 20 %)
   runs `gh pr view` per `pr_open` run, fetches the base and PR head at most every 5 min, and stores
   `run.pr` (state, CI jobs, position, `pushed_sha`, unpushed, rewritten). Changes against the stored
   status (so a restart repeats nothing): CI → error, behind on a new base head, conflicts → one ORCH

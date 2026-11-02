@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use agent_runtime::paths::AppPaths;
 use agent_runtime::runtime::{Runtime, RuntimeConfig};
-use agent_runtime::server::{FETCH_EVERY, HOUSEKEEPING_EVERY, PUMP_EVERY, TICK_EVERY};
+use agent_runtime::server::{HOUSEKEEPING_EVERY, NET_STEP_EVERY, NetClock, PUMP_EVERY, TICK_EVERY};
 use anyhow::{Context, Result, anyhow, bail};
 use governor::jiff::Timestamp;
 use orch_git::git::real;
@@ -313,17 +313,14 @@ impl Core {
                 std::thread::sleep(PUMP_EVERY);
             }
         })?;
-        // Background git fetch (FR-103) on its own thread: network calls take a while.
+        // Background git fetch (FR-103) and open PRs on their own thread: network calls take a while.
         {
             let (rt, stop) = (self.runtime()?.clone(), self.stop.clone());
             std::thread::Builder::new().name("orch-fetch".into()).spawn(move || {
-                let mut last: Option<Instant> = None;
+                let mut net = NetClock::default();
                 while !stop.load(Ordering::SeqCst) {
-                    if last.is_none_or(|t| t.elapsed() >= FETCH_EVERY) {
-                        rt.fetch_tick(&rt.cfg.fetch, rt.cfg.conditions.as_ref());
-                        last = Some(Instant::now());
-                    }
-                    std::thread::sleep(Duration::from_millis(500));
+                    net.step(&rt, Instant::now());
+                    std::thread::sleep(NET_STEP_EVERY);
                 }
             })?;
         }
