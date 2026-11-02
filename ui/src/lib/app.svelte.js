@@ -69,8 +69,7 @@ export function now30() {
 export const inDock = (id) => app.dock.tabs.includes(id);
 
 /** The dock takes the whole work column: no workspace pane, or a zoomed dock tab. */
-export const dockFills = () =>
-  app.dock.open && app.dock.tabs.length > 0 && (!app.layout || inDock(app.zoomed));
+export const dockFills = () => app.dock.open && app.dock.tabs.length > 0 && (!app.layout || inDock(app.zoomed));
 
 /** xterm.js panes by pane id (not reactive). */
 export const terms = new Map();
