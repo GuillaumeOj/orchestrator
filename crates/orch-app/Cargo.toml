@@ -36,6 +36,9 @@ uuid.workspace = true
 tauri = { version = "2.12", features = [] }
 core-text = "22"
 tauri-plugin-notification = "2.4"
+# Update signatures (minisign, as `tauri signer` writes them).
+minisign-verify = "0.3"
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile.workspace = true

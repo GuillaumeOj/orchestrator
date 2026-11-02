@@ -3,6 +3,6 @@
   "bundle": {
     "externalBin": ["bundle/bin/orch-hook", "bundle/bin/orch-status", "bundle/bin/orch-mcp"],
     "resources": { "bundle/fonts/": "fonts/" },
-    "macOS": { "minimumSystemVersion": "13.0" }
+    "macOS": { "minimumSystemVersion": "13.0", "signingIdentity": "-" }
   }
 }

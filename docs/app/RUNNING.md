@@ -16,8 +16,42 @@ make install
 
 Needs: Rust (rustup), bun, Xcode command line tools, git ≥ 2.48, and FiraCode Nerd Font
 Mono in `~/Library/Fonts` (the build bundles four of its weights into the app; `ORCH_FONT_DIR`
-points elsewhere). `gh` (logged in) for PRs and CI. The app is not signed or notarized: it is
+points elsewhere). `gh` (logged in) for PRs and CI. The app is ad-hoc signed, not notarized: it is
 built on this Mac, so Gatekeeper does not quarantine it.
+
+## Updates
+
+Every commit that lands on `main` with green CI becomes a build. The `app` job in
+`.github/workflows/ci.yml` (macOS runner, about 15 to 25 minutes) runs `scripts/app.sh build`
+with `ORCH_VERSION=0.1.<run number>`, packs `Orchestrator_0.1.<n>_aarch64.app.tar.gz`, signs it
+(`scripts/app.sh package`), publishes the GitHub release `v0.1.<n>` and keeps the 10 newest. PR
+runs never build it. The bundle is ad-hoc code signed, not notarized.
+
+A local `make app` / `make install` stays `0.1.0`, channel `local` (always older than a CI
+build). Build info (version, commit, channel) is in the start line of `logs/orchestrator.log`.
+
+**One-time key setup** (before the first merge; the private key never goes through an agent):
+
+1. `cd ui && bun run tauri signer generate -w ~/.orchestrator-update.key` (asks for a password).
+   It writes the private key there and the public key next to it (`.pub`).
+2. `gh secret set ORCH_UPDATE_KEY < ~/.orchestrator-update.key` and
+   `gh secret set ORCH_UPDATE_KEY_PASSWORD`.
+3. The public key is committed as `crates/orch-app/update.pub`.
+
+Without the secrets the `app` job fails with an explicit error and publishes nothing: re-run it
+once they are set.
+
+**First install by hand.** Download a CI build once, then the app updates itself:
+
+```bash
+gh release download --repo GuillaumeOj/orchestrator --pattern '*.tar.gz' --dir /tmp/orch
+tar -xzf /tmp/orch/Orchestrator_*_aarch64.app.tar.gz -C /tmp/orch
+rm -rf ~/Applications/Orchestrator.app && mv /tmp/orch/Orchestrator.app ~/Applications/
+```
+
+`gh` and `tar` do not set the quarantine attribute, so Gatekeeper stays quiet. A build
+downloaded in a browser is quarantined: run `xattr -dr com.apple.quarantine Orchestrator.app`
+(or right-click, Open). Alternatively `make install` from `main`.
 
 ## First run (J0)
 

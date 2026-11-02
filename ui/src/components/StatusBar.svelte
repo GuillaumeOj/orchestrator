@@ -1,10 +1,11 @@
 <script>
   // Status bar (§9.2): git state of the focused project, live/queued agents with
   // the pressure state in words, the 5h guard chip whenever it holds work, memory.
-  import { app, contextAgent, contextProject, openSingleton } from '../lib/app.svelte.js';
+  import { app, checkForUpdates, contextAgent, contextProject, openSingleton, restartToUpdate } from '../lib/app.svelte.js';
   import { clock, mb } from '../lib/format.js';
   import { counts, liveText } from '../lib/now.svelte.js';
   import { powerChip } from '../lib/pacing.js';
+  import { updateChip } from '../lib/update.js';
   import Kbd from './Kbd.svelte';
   import PressurePill from './PressurePill.svelte';
 
@@ -18,6 +19,7 @@
   const fiveReset = $derived(app.data?.usage?.five_hour?.resets_at);
   const watch = $derived(app.data?.memory_watch);
   const power = $derived(powerChip(app.data?.power));
+  const upd = $derived(updateChip(app.data?.update));
 </script>
 
 <footer class="status">
@@ -39,6 +41,11 @@
   {/if}
   <span class="grow"></span>
   {#if watch?.alert}<span class="memwarn" title="WebKit helper above {watch.warn_mb} MB · logged every minute in {watch.log}"><span aria-hidden="true">⚠</span> {watch.alert}</span>{/if}
+  {#if upd?.kind === 'downloading'}
+    <span class="upd" title={upd.title}>{upd.text}</span>
+  {:else if upd}
+    <button class="plain chip upd" class:ready={upd.kind === 'ready'} class:warn={upd.kind === 'error'} onclick={upd.kind === 'ready' ? restartToUpdate : checkForUpdates} title={upd.title}>{upd.text}</button>
+  {/if}
   {#if m}<span title="app {mb(m.app_mb)} · agents {mb(m.agents_mb)} · shells {mb(m.shells_mb)}">RAM {mb(m.total_mb)} / {mb(m.system_mb)}</span><span class="muted">·</span>{/if}
   <span class:armed={app.leader}>{app.leader ? 'LEADER' : 'leader'} <Kbd keys="⌘+;" /></span>
 </footer>
@@ -72,6 +79,12 @@
   }
   .chip.warn {
     border-color: var(--color-pacing-amber);
+  }
+  .chip.upd.ready {
+    border-color: var(--color-accent-default);
+  }
+  .chip.upd.warn {
+    color: var(--color-pacing-amber);
   }
   .guard {
     display: inline-flex;

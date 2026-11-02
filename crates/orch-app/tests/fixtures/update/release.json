@@ -1,0 +1,34 @@
+{
+  "assets": [
+    {
+      "apiUrl": "https://api.github.com/repos/GuillaumeOj/orchestrator/releases/assets/1",
+      "contentType": "application/gzip",
+      "createdAt": "2026-11-01T10:00:00Z",
+      "downloadCount": 0,
+      "id": "RA_1",
+      "label": "",
+      "name": "Orchestrator_0.1.42_aarch64.app.tar.gz",
+      "size": 104857600,
+      "state": "uploaded",
+      "updatedAt": "2026-11-01T10:00:00Z",
+      "url": "https://github.com/GuillaumeOj/orchestrator/releases/download/v0.1.42/Orchestrator_0.1.42_aarch64.app.tar.gz"
+    },
+    {
+      "apiUrl": "https://api.github.com/repos/GuillaumeOj/orchestrator/releases/assets/2",
+      "contentType": "application/octet-stream",
+      "createdAt": "2026-11-01T10:00:00Z",
+      "downloadCount": 0,
+      "id": "RA_2",
+      "label": "",
+      "name": "Orchestrator_0.1.42_aarch64.app.tar.gz.sig",
+      "size": 400,
+      "state": "uploaded",
+      "updatedAt": "2026-11-01T10:00:00Z",
+      "url": "https://github.com/GuillaumeOj/orchestrator/releases/download/v0.1.42/Orchestrator_0.1.42_aarch64.app.tar.gz.sig"
+    }
+  ],
+  "body": "Merge pull request #23 from GuillaumeOj/orch/some-feature/integration\n\nCommit: [f9b1e20c0ffee](https://github.com/GuillaumeOj/orchestrator/commit/f9b1e20c0ffee)",
+  "publishedAt": "2026-11-01T10:00:00Z",
+  "tagName": "v0.1.42",
+  "targetCommitish": "f9b1e20c0ffeef9b1e20c0ffeef9b1e20c0ffee0"
+}

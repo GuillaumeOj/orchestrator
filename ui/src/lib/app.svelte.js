@@ -15,6 +15,7 @@ import { STATUS } from './status.js';
 import { runStateLabel } from './teams.js';
 import { TermPane } from './term.js';
 import { breakpoint } from './tokens.js';
+import { aboutText, checkOutcome, readyToast, updateActions } from './update.js';
 
 /** The dock's share of the work column when nothing is saved: agents need rows. */
 const DOCK_HEIGHT = 0.45;
@@ -962,6 +963,65 @@ function prunePanes() {
   if (sel?.kind === 'agent' && !activeAgents().some((a) => a.id === sel.id)) app.selection = null;
 }
 
+// ---------------------------------------------------------------- updates
+
+const TOASTED_KEY = 'ui.update_toasted';
+let toasted = null; // the last version toasted (persisted under TOASTED_KEY)
+let toastedLoad = null;
+
+/** The core pushed a new `update` object: keep it in `app.data`, toast a staged version once. */
+export async function applyUpdate(u) {
+  if (!u) return;
+  if (app.data) app.data = new Snapshot({ ...app.data, update: u });
+  if (u.state !== 'ready' || !u.available) return;
+  // The persisted version is read once; the check-and-record below has no await between
+  // them, so the startup call and an `update` event for the same version toast once.
+  toastedLoad ??= invoke('settings_get', { key: TOASTED_KEY }).then(
+    (v) => (toasted = v),
+    () => null,
+  );
+  await toastedLoad;
+  const text = readyToast(u, toasted);
+  if (!text) return;
+  toasted = u.available.version;
+  invoke('settings_set', { key: TOASTED_KEY, value: toasted }).catch(() => {});
+  toast(text, { ms: 12000, action: { label: 'Restart now', run: restartToUpdate } });
+}
+
+export function restartToUpdate() {
+  invoke('update_restart').catch((e) => toast(errText(e), { kind: 'error' }));
+}
+
+/** Palette "Check for updates": the toast says what the check found. */
+export async function checkForUpdates() {
+  try {
+    let u = await invoke('update_check');
+    // The core settles asynchronously: follow the `update` pushes (kept in app.data) for the outcome.
+    for (let n = 0; n < 120 && (u?.state === 'checking' || u?.state === 'downloading'); n++) {
+      await new Promise((r) => setTimeout(r, 500));
+      u = app.data?.update ?? u;
+    }
+    const out = checkOutcome(u);
+    if (out) toast(out.text, out.error ? { kind: 'error' } : {});
+  } catch (e) {
+    toast(errText(e), { kind: 'error' });
+  }
+}
+
+export function aboutOrchestrator() {
+  toast(aboutText(app.data?.update), { ms: 10000 });
+}
+
+function updateCommands() {
+  const u = app.data?.update;
+  const off = updateActions(u);
+  return [
+    { id: 'update.check', label: 'Check for updates', disabled: off.check, run: checkForUpdates },
+    { id: 'update.restart', label: 'Restart to update', disabled: off.restart, run: restartToUpdate },
+    { id: 'update.about', label: 'About Orchestrator', run: aboutOrchestrator },
+  ];
+}
+
 // ---------------------------------------------------------------- commands
 
 /**
@@ -990,6 +1050,7 @@ export function commands() {
     },
     { id: 'planner', label: 'Open Week planner', run: () => openSingleton('planner') },
     { id: 'setup', label: 'Set up Orchestrator (first run)…', run: () => openSingleton('setup') },
+    ...updateCommands(),
     { id: 'settings', label: 'Settings', run: () => openSettings() },
     { id: 'settings.integrations', label: 'Settings: Integrations', run: () => openSettings('integrations') },
     { id: 'settings.mcp', label: 'Settings: MCP servers', run: () => openSettings('mcp') },
