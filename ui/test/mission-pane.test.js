@@ -75,6 +75,7 @@ function home() {
   app.panes = { mc: { type: 'mission', title: 'Mission control' } };
   app.layout = L.leaf('mc');
   app.focused = 'mc';
+  app.dock = { ...app.dock, open: false, tabs: [], active: null };
 }
 
 afterEach(cleanup);
@@ -417,10 +418,11 @@ describe('sessions over the board (spec §3.3, D5)', () => {
     return { c, id };
   }
 
-  it('⏎ opens the target as a tab in Mission control’s group, in watch mode', async () => {
+  it('⏎ opens the target as a dock tab, in watch mode', async () => {
     const { id } = await openBack1();
     expect(app.panes[id]).toMatchObject({ type: 'agent', agentId: 'back-1', watch: true, over: 'mc' });
-    expect(L.leafOf(app.layout, 'mc').tabs).toEqual(['mc', id]);
+    expect(app.dock.tabs).toEqual([id]);
+    expect(L.leafOf(app.layout, 'mc').tabs).toEqual(['mc']);
     expect(app.focused).toBe(id);
     const pane = render(AgentPane, { paneId: id }).container;
     await settle();
@@ -435,7 +437,7 @@ describe('sessions over the board (spec §3.3, D5)', () => {
     await settle();
     key(pane.querySelector('.session.watch'), 'Escape');
     expect(app.focused).toBe('mc');
-    expect(L.leafOf(app.layout, 'mc').tabs).toContain(id);
+    expect(app.dock.tabs).toContain(id);
     // ⏎ again on the row focuses the same tab, still watching.
     A.openSession('back-1');
     await settle();
@@ -459,12 +461,26 @@ describe('sessions over the board (spec §3.3, D5)', () => {
     expect(app.selection).toEqual({ kind: 'run', id: 'run-12' });
   });
 
-  it('an agent pane in another split is never "over the board" (self-review)', () => {
-    app.panes.side = { type: 'agent', agentId: 'fix-feed', title: 'fix-feed' };
-    app.layout = L.split(app.layout, 'mc', 'row', 'side');
-    A.openSession('fix-feed');
-    expect(app.panes.side.watch).toBe(true);
-    expect(app.panes.side.over).toBeUndefined();
+  it('Esc from a zoomed dock unzooms it; reopening a taken-over tab watches it again', async () => {
+    const { id } = await openBack1();
+    app.zoomed = id;
+    A.leaveWatch(id);
+    expect(app.focused).toBe('mc');
+    expect(app.zoomed).toBeNull();
+    app.panes[id].watch = false;
+    delete app.panes[id].over;
+    A.openSession('back-1');
+    expect(app.panes[id]).toMatchObject({ watch: true, over: 'mc' });
+    expect(app.dock.tabs).toEqual([id]);
+  });
+
+  it('without Mission control a session opens as openAgent', () => {
+    app.panes = {};
+    app.layout = null;
+    A.openSession('back-1');
+    const [id] = app.dock.tabs;
+    expect(app.panes[id]).toMatchObject({ agentId: 'back-1' });
+    expect(app.panes[id].watch).toBeUndefined();
   });
 
   it('a click in the terminal takes over; Tab into it does not (review)', async () => {

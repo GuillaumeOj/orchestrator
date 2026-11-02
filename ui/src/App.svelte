@@ -1,6 +1,6 @@
 <script>
   // The app shell (§9.2, Penpot 03): title bar, sidebar or icon rail, tiling
-  // workspace over the shell dock, inspector (docked ≥ 1512 px, overlay
+  // workspace over the dock, inspector (docked ≥ 1512 px, overlay
   // below), status bar.
   import { onMount } from 'svelte';
   import Banner from './components/Banner.svelte';
@@ -14,7 +14,7 @@
   import TitleBar from './components/TitleBar.svelte';
   import Toasts from './components/Toasts.svelte';
   import Workspace from './components/Workspace.svelte';
-  import { app, applyTheme, flushDecisions, keyContext, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
+  import { app, applyTheme, dockFills, flushDecisions, keyContext, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
   import { startDev } from './lib/dev.js';
   import { loadUiFont, prepareKitty } from './lib/fonts.js';
   import { inTauri, invoke, listen } from './lib/ipc.js';
@@ -126,7 +126,7 @@
       {#if isWide}<Sidebar />{:else}<IconRail />{/if}
     {/if}
     <div class="work">
-      {#if ready || !inTauri}<Workspace />{/if}
+      {#if (ready || !inTauri) && !dockFills()}<Workspace />{/if}
       {#if app.dock.open && app.dock.tabs.length}<Dock />{/if}
     </div>
     {#if isWide && app.inspector}<Inspector />{/if}

@@ -1,14 +1,15 @@
 <script>
   // Tiling workspace (§9.2): splits, tabs, zoom. Hidden panes don't render; their
   // terminals keep their buffers (§9.1 principle 6, FR-1005).
-  import { app } from '../lib/app.svelte.js';
+  import { app, inDock } from '../lib/app.svelte.js';
   import Kbd from './Kbd.svelte';
   import Node from './Node.svelte';
   import PaneFrame from './PaneFrame.svelte';
 </script>
 
 <main class="ws">
-  {#if app.zoomed && app.panes[app.zoomed]}
+  <!-- A dock pane is drawn by the Dock only. -->
+  {#if app.zoomed && app.panes[app.zoomed] && !inDock(app.zoomed)}
     <PaneFrame paneId={app.zoomed} zoomed />
   {:else if app.layout}
     <Node node={app.layout} />
