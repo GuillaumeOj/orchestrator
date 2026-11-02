@@ -24,7 +24,7 @@
   let error = $state(null);
   let feature = $state('all');
   let cur = $state({ col: 1, row: 0 });
-  let form = $state(null); // { title, node, run_id, body } for n; { task, node } for a
+  let form = $state(null); // { title, node, run_id, body } for n; { task, node } for a; { task, title, body } for e
   let syncing = $state(false);
   let menu = $state(false); // the selected card's menu (Open task, Run off-hours, Assign node)
   let offHours = $state(null); // planner_view.off_hours (the allowance and the next window)
@@ -193,8 +193,10 @@
     }
   }
 
+  // Keyed on the id, not on `spec` (which is replaced when the pane's taskId is cleared).
+  const projectId = $derived(spec.projectId);
   $effect(() => {
-    const project = spec.projectId;
+    const project = projectId;
     if (project) openSync(project);
   });
 
@@ -228,7 +230,7 @@
     {#if form?.kind === 'new'}
       <div class="form">
         <!-- svelte-ignore a11y_autofocus -->
-        <input class="field grow" autofocus bind:value={form.title} placeholder="Task title" onkeydown={(e) => e.key === 'Enter' && (e.preventDefault(), create())} />
+        <input class="field grow" autofocus bind:value={form.title} placeholder="Task title" onkeydown={(e) => e.key === 'Enter' && !e.metaKey && (e.preventDefault(), create())} />
         <textarea class="field body" rows="4" bind:value={form.body} placeholder="Description (optional) — ⌘⏎ to create" aria-label="Description"></textarea>
         <select class="field" bind:value={form.run_id} aria-label="Feature">
           <option value="">no feature</option>
@@ -308,7 +310,7 @@
       {/each}
     </div>
     <footer class="keys">
-      <span><Kbd keys="h/l" /> column</span><span><Kbd keys="j/k" /> card</span><span><Kbd keys="⇧+h/l" /> move card</span><span><Kbd keys="⏎" /> open</span><span><Kbd keys="a" /> assign</span><span><Kbd keys="e" /> edit</span>{#if v.backend === 'github' || v.backend === 'linear'}<span><Kbd keys="g" /> open</span>{/if}<span><Kbd keys="n" /> new</span><span><Kbd keys="r" /> sync</span><span><Kbd keys="space" /> menu</span><span><Kbd keys="⇧+O" /> off-hours</span>
+      <span><Kbd keys="h/l" /> column</span><span><Kbd keys="j/k" /> card</span><span><Kbd keys="⇧+h/l" /> move card</span><span><Kbd keys="⏎" /> open</span><span><Kbd keys="a" /> assign</span><span><Kbd keys="e" /> edit</span>{#if selected?.remote_url}<span><Kbd keys="g" /> open</span>{/if}<span><Kbd keys="n" /> new</span><span><Kbd keys="r" /> sync</span><span><Kbd keys="space" /> menu</span><span><Kbd keys="⇧+O" /> off-hours</span>
       {#if selected}<span class="grow"></span><span class="muted">{handle(selected)} · updated {ago(selected.updated_at_ms)}</span>{/if}
     </footer>
   {:else}
