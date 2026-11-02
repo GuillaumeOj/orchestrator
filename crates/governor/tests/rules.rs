@@ -1065,8 +1065,8 @@ fn gov_with_default() -> Governor {
 #[test]
 fn an_unknown_allocation_is_charged_and_capped_as_default() {
     let mut g = gov_with_default();
-    assert_eq!(g.resolve_allocation(&"shop".into()), AllocationId::from("default"));
-    assert_eq!(g.resolve_allocation(&"B".into()), AllocationId::from("B"));
+    assert_eq!(*g.resolve_allocation(&"shop".into()), AllocationId::from("default"));
+    assert_eq!(*g.resolve_allocation(&"B".into()), AllocationId::from("B"));
     g.request_turn(task("shop-1", "shop", Tier::Normal), at(0));
     g.ingest(&UsageSample::cost(at(30), "shop-1".into(), 60.0)); // 6 pp at k = 10
     assert!((g.allocation_usage_pct(&"default".into()) - 6.0).abs() < 1e-9);
@@ -1091,10 +1091,10 @@ fn an_unknown_allocation_is_queued_with_defaults_tier() {
 fn a_project_name_resolves_to_its_id_unless_an_allocation_has_that_name() {
     let mut g = gov_with_default();
     g.set_aliases([("shop-api".to_string(), AllocationId::from("A")), ("B".to_string(), "C".into())].into());
-    assert_eq!(g.resolve_allocation(&"shop-api".into()), AllocationId::from("A"));
-    assert_eq!(g.resolve_allocation(&"B".into()), AllocationId::from("B"), "the plan's own id wins");
+    assert_eq!(*g.resolve_allocation(&"shop-api".into()), AllocationId::from("A"));
+    assert_eq!(*g.resolve_allocation(&"B".into()), AllocationId::from("B"), "the plan's own id wins");
     g.set_aliases([("old".to_string(), AllocationId::from("gone"))].into());
-    assert_eq!(g.resolve_allocation(&"old".into()), AllocationId::from("default"), "alias not in the plan");
+    assert_eq!(*g.resolve_allocation(&"old".into()), AllocationId::from("default"), "alias not in the plan");
 }
 
 #[test]

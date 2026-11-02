@@ -301,7 +301,7 @@ pub fn build(
             tier: a.tier,
             used_pct: gov.allocation_usage_pct(&a.id),
             plan_pct: ideal_now * a.weight / total_weight,
-            queued: queue.iter().filter(|q| gov.resolve_allocation(&q.allocation) == a.id).count(),
+            queued: queue.iter().filter(|q| *gov.resolve_allocation(&q.allocation) == a.id).count(),
             live: live_by_alloc(&a.id.0),
             hard_cap_pct: a.hard_cap_pct,
         })

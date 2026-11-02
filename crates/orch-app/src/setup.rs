@@ -184,6 +184,18 @@ impl AllocationForm {
     }
 }
 
+impl AllocationForm {
+    /// `project`'s row: its id is the allocation id, its name the target.
+    fn of_project(p: &Project, weight: f64, tier: Tier, hard_cap_pct: Option<f64>) -> Self {
+        AllocationForm { id: p.id.clone(), target: p.name.clone(), weight, tier, hard_cap_pct }
+    }
+}
+
+/// Where a new allocation goes among `ids`: before `default`, which stays last.
+fn before_default<'a>(mut ids: impl Iterator<Item = &'a str>) -> Option<usize> {
+    ids.position(|id| id == DEFAULT_ALLOCATION)
+}
+
 impl From<&BudgetAllocation> for AllocationForm {
     fn from(a: &BudgetAllocation) -> Self {
         AllocationForm {
@@ -228,11 +240,8 @@ pub struct ProjectAllocationView {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct AllocationLine {
-    pub id: String,
-    pub target: String,
-    pub weight: f64,
-    pub tier: Tier,
-    pub hard_cap_pct: Option<f64>,
+    #[serde(flatten)]
+    pub row: AllocationForm,
     /// Usage charged to it this week, pp of the week.
     pub used_pct: f64,
 }
@@ -253,14 +262,7 @@ fn allocation_view(
     plan: &WeeklyPlan,
     used: impl Fn(&AllocationId) -> f64,
 ) -> ProjectAllocationView {
-    let line = |a: &BudgetAllocation| AllocationLine {
-        id: a.id.0.clone(),
-        target: a.target.clone(),
-        weight: a.weight,
-        tier: a.tier,
-        hard_cap_pct: a.hard_cap_pct,
-        used_pct: used(&a.id),
-    };
+    let line = |a: &BudgetAllocation| AllocationLine { row: a.into(), used_pct: used(&a.id) };
     let is_default = |a: &&BudgetAllocation| a.id.0 == DEFAULT_ALLOCATION;
     let mut others: Vec<AllocationLine> =
         plan.allocations.iter().filter(|a| a.id.0 != project.id && !is_default(a)).map(line).collect();
@@ -293,7 +295,7 @@ fn with_project_allocation(mut plan: WeeklyPlan, project: &str, row: Option<&All
             plan.allocations.remove(i);
         }
         (None, Some(r)) => {
-            let at = plan.allocations.iter().position(|a| a.id.0 == DEFAULT_ALLOCATION);
+            let at = before_default(plan.allocations.iter().map(|a| a.id.0.as_str()));
             plan.allocations.insert(at.unwrap_or(plan.allocations.len()), r.into());
         }
         (None, None) => {}
@@ -336,30 +338,15 @@ impl PlanForm {
         }
         let only_default = plan.allocations.len() == 1 && plan.allocations[0].id.0 == DEFAULT_ALLOCATION;
         let allocations = if only_default && !confirmed && !projects.is_empty() {
-            projects
-                .iter()
-                .map(|p| AllocationForm {
-                    id: p.id.clone(),
-                    target: p.name.clone(),
-                    weight: 1.0,
-                    tier: Tier::Normal,
-                    hard_cap_pct: None,
-                })
-                .collect()
+            projects.iter().map(|p| AllocationForm::of_project(p, 1.0, Tier::Normal, None)).collect()
         } else {
             let mut rows: Vec<AllocationForm> = plan.allocations.iter().map(AllocationForm::from).collect();
             let missing: Vec<AllocationForm> = projects
                 .iter()
                 .filter(|p| !rows.iter().any(|a| a.id == p.id))
-                .map(|p| AllocationForm {
-                    id: p.id.clone(),
-                    target: p.name.clone(),
-                    weight: 0.0,
-                    tier: Tier::Normal,
-                    hard_cap_pct: None,
-                })
+                .map(|p| AllocationForm::of_project(p, 0.0, Tier::Normal, None))
                 .collect();
-            let at = rows.iter().position(|a| a.id == DEFAULT_ALLOCATION).unwrap_or(rows.len());
+            let at = before_default(rows.iter().map(|a| a.id.as_str())).unwrap_or(rows.len());
             rows.splice(at..at, missing);
             rows
         };
@@ -399,8 +386,9 @@ impl PlanForm {
         let mut allocations: Vec<BudgetAllocation> = vec![];
         for a in &self.allocations {
             a.check()?;
-        }
-        for a in self.allocations.iter().filter(|a| a.weight > 0.0) {
+            if a.weight == 0.0 {
+                continue; // not in the plan: charged to `default`
+            }
             if allocations.iter().any(|x| x.id.0 == a.id) {
                 bail!("allocation {} twice", a.id);
             }
@@ -530,13 +518,8 @@ impl Core {
             // Its id is the other sessions' allocation: editing it here would edit (or drop) that one.
             bail!("project {} shares its id with the other sessions' allocation: edit it in the weekly plan", p.id);
         }
-        let row = form.filter(|f| f.weight != 0.0).map(|f| AllocationForm {
-            id: p.id.clone(),
-            target: p.name.clone(),
-            weight: f.weight,
-            tier: f.tier,
-            hard_cap_pct: f.hard_cap_pct,
-        });
+        let row =
+            form.filter(|f| f.weight != 0.0).map(|f| AllocationForm::of_project(&p, f.weight, f.tier, f.hard_cap_pct));
         if let Some(r) = &row {
             r.check()?;
         }

@@ -632,7 +632,7 @@ impl Runtime {
                 .iter()
                 .filter_map(|e| {
                     let to = g.resolve_allocation(&e.allocation);
-                    (to != e.allocation).then(|| (e.allocation.0.clone(), to.0))
+                    (*to != e.allocation).then(|| (e.allocation.0.clone(), to.0.clone()))
                 })
                 .collect();
             let gov = GovFacts {

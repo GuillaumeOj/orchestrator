@@ -2957,27 +2957,8 @@ pub(crate) mod tests {
 
     #[test]
     fn project_names_alias_their_ids_unless_two_projects_share_one() {
-        let (_d, rt) = test_runtime(false);
-        let p = |id: &str, name: &str| orch_store::Project {
-            id: id.into(),
-            name: name.into(),
-            path: format!("/x/{id}").into(),
-            default_branch: "main".into(),
-            remotes: vec![],
-            worktree_root: format!("/x/{id}.worktrees").into(),
-            task_backend: json!({"type": "local"}),
-            track_orchestrator_dir: true,
-            settings: json!({}),
-            created_at_ms: 1,
-            last_active_at_ms: 1,
-            last_fetch_at_ms: None,
-            last_fetch_error: None,
-            archived: false,
-        };
-        for (id, name) in [("shop", "shop-api"), ("a", "dup"), ("b", "dup")] {
-            rt.db.upsert_project(&p(id, name)).unwrap();
-        }
-        let aliases = project_aliases(&rt.db).unwrap();
+        let pairs = [("shop", "shop-api"), ("a", "dup"), ("b", "dup")];
+        let aliases = name_aliases(pairs.map(|(id, n)| (id.to_string(), n.to_string())));
         assert_eq!(aliases.get("shop-api"), Some(&governor::AllocationId::from("shop")));
         assert!(!aliases.contains_key("dup"), "ambiguous: left to `default`");
     }

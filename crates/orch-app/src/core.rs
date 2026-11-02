@@ -981,7 +981,7 @@ impl Core {
             // Counted where the Governor charges them (unknown allocations: `default`).
             let mut live_by: BTreeMap<String, usize> = BTreeMap::new();
             for a in live.iter().filter_map(|id| alloc_of.get(id)) {
-                *live_by.entry(g.resolve_allocation(&a.clone().into()).0).or_default() += 1;
+                *live_by.entry(g.resolve_allocation(&a.clone().into()).0.clone()).or_default() += 1;
             }
             planner::build(g, Timestamp::now(), &history, &self.past_actions, five_reset, &|alloc| {
                 live_by.get(alloc).copied().unwrap_or(0)
@@ -2003,8 +2003,8 @@ mod tests {
         // No plan yet: the proposed even split, and nothing can be saved.
         let v = core.project_allocation("repo").unwrap();
         assert!(!v.plan_confirmed);
-        assert_eq!(v.allocation.as_ref().map(|a| a.weight), Some(1.0));
-        assert_eq!(v.others.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["default"]);
+        assert_eq!(v.allocation.as_ref().map(|a| a.row.weight), Some(1.0));
+        assert_eq!(v.others.iter().map(|a| a.row.id.as_str()).collect::<Vec<_>>(), ["default"]);
         let edit = |weight, hard_cap_pct| AllocationEdit { weight, tier: governor::Tier::High, hard_cap_pct };
         let err = core.project_allocation_set("repo", Some(&edit(2.0, None))).unwrap_err();
         assert_eq!(err.to_string(), "set up the weekly plan first");
@@ -2038,14 +2038,14 @@ mod tests {
         let v = core.project_allocation(&p2.id).unwrap();
         assert!(v.plan_confirmed && v.allocation.is_none());
         assert_eq!(v.proposed_weight, 3.0, "mean of the project allocations");
-        assert_eq!(v.others.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["repo", "default"]);
+        assert_eq!(v.others.iter().map(|a| a.row.id.as_str()).collect::<Vec<_>>(), ["repo", "default"]);
 
         // Add: before `default`; the rest of the plan untouched; the usage now counts toward it.
         let before = rt.with_governor(|g| g.plan().clone());
         let v = core.project_allocation_set(&p2.id, Some(&edit(2.0, Some(10.0)))).unwrap();
         let a = v.allocation.clone().unwrap();
         assert_eq!(
-            (a.weight, a.tier, a.hard_cap_pct, a.target.as_str()),
+            (a.row.weight, a.row.tier, a.row.hard_cap_pct, a.row.target.as_str()),
             (2.0, governor::Tier::High, Some(10.0), &*p2.name)
         );
         assert!(a.used_pct > 0.0, "the week's usage replayed into it: {a:?}");
@@ -2066,7 +2066,7 @@ mod tests {
 
         // Change, then remove (null, or weight 0).
         let v = core.project_allocation_set(&p2.id, Some(&edit(5.0, None))).unwrap();
-        assert_eq!(v.allocation.map(|a| (a.weight, a.hard_cap_pct)), Some((5.0, None)));
+        assert_eq!(v.allocation.map(|a| (a.row.weight, a.row.hard_cap_pct)), Some((5.0, None)));
         assert!(core.project_allocation_set(&p2.id, None).unwrap().allocation.is_none());
         assert_eq!(ids(&rt.with_governor(|g| g.plan().clone())), ["repo", "default"]);
         core.project_allocation_set(&p2.id, Some(&edit(4.0, None))).unwrap();
@@ -2093,17 +2093,14 @@ mod tests {
             off_hours: false,
         })
         .unwrap();
-        let allocs = || (solo.clone(), rt.store.read(|s| s.agents["fx-lead-1"].allocation.clone()));
-        assert_eq!(allocs(), ("repo".to_string(), "repo".to_string()), "the project id, plan or not");
-        let resolved = || {
-            let (a, b) = allocs();
-            rt.with_governor(|g| (g.resolve_allocation(&a.into()).0, g.resolve_allocation(&b.into()).0))
-        };
-        assert_eq!(resolved(), ("default".to_string(), "default".to_string()), "not in the plan: other sessions");
+        let team = rt.store.read(|s| s.agents["fx-lead-1"].allocation.clone());
+        assert_eq!((solo.as_str(), team.as_str()), ("repo", "repo"), "the project id, plan or not");
+        let charged = |a: &str| rt.with_governor(|g| g.resolve_allocation(&a.into()).0.clone());
+        assert_eq!((charged(&solo), charged(&team)), ("default".into(), "default".into()), "not in the plan");
         let mut form = core.plan_form().unwrap();
         form.allocations[0].weight = 2.0;
         core.set_plan(&form).unwrap();
-        assert_eq!(resolved(), ("repo".to_string(), "repo".to_string()), "both follow the plan");
+        assert_eq!((charged(&solo), charged(&team)), ("repo".into(), "repo".into()), "both follow the plan");
         core.shutdown();
     }
 
