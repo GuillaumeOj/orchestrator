@@ -4,6 +4,7 @@
   // and age · title · subject · context blocks · reply · actions · marker. Live
   // while the decision is listed; read-only (`line` given) when a collapsed
   // line expands: no actions but the ones that open something.
+  import { untrack } from 'svelte';
   import { now30, openUrl } from '../../lib/app.svelte.js';
   import { byWords, lineMarker, verbText } from '../../lib/chat.js';
   import { clock, waited } from '../../lib/format.js';
@@ -54,7 +55,10 @@
   });
   // A reply being written never collapses under the cursor (notes §2.1); a
   // card that leaves (filtered out, settled elsewhere) lets go of its hold.
-  $effect(() => onhold(!!text.trim()));
+  $effect(() => {
+    const held = !!text.trim();
+    untrack(() => onhold(held)); // the parent's set of held cards is not this effect's input
+  });
   $effect(() => () => onhold(false));
 
   function replyKey(e) {

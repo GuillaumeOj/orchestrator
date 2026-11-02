@@ -78,6 +78,7 @@
   let found = $state(null); // { q, status: 'loading' | 'ready' | 'error', list, err }
   let searchTick = $state(0);
   let dayList = []; // chat_days loaded so far, newest first
+  let dayEnd = false; // dayList reaches the oldest day
   let announce = $state('');
   const seen = new Map(); // decision id → when its effect was first seen
   const memo = new Map(); // the thread's items, reused while unchanged
@@ -96,7 +97,8 @@
       seen,
       // Read only for a card past its collapse time: hovering costs no rebuild otherwise.
       isHeld: (id) => hovered === id || typing.has(id),
-      now,
+      // The collapse clock is the moment of the derivation (`now` only wakes it at a due time).
+      now: Math.max(now, Date.now()),
       memo,
     }),
   );
@@ -219,14 +221,20 @@
     return () => clearTimeout(timer);
   });
 
+  /** Reads a page of `chat_days` into `dayList` (the first, or the next one); true when it was the last. */
+  async function fetchDays(more) {
+    const before = more ? dayList.at(-1)?.day : undefined;
+    const page = (await invoke('chat_days', { limit: DAYS_PAGE, ...(before ? { before } : {}) })) ?? [];
+    dayList = more ? [...dayList, ...page] : page;
+    dayEnd = page.length < DAYS_PAGE;
+  }
+
   /** The days popover's list; `more` loads the next page (notes §6.1). */
   async function loadDays(more = false) {
-    const before = more ? dayList.at(-1)?.day : undefined;
     if (!more) daysPop = { status: 'loading', list: [], err: '', end: false };
     try {
-      const page = (await invoke('chat_days', { limit: DAYS_PAGE, ...(before ? { before } : {}) })) ?? [];
-      dayList = more ? [...dayList, ...page] : page;
-      daysPop = { status: 'ready', list: dayList, err: '', end: page.length < DAYS_PAGE };
+      await fetchDays(more);
+      daysPop = { status: 'ready', list: dayList, err: '', end: dayEnd };
     } catch (err) {
       daysPop = { status: 'error', list: dayList, err: errText(err), end: false };
     }
@@ -269,16 +277,26 @@
 
   /** `[` / `]`: the previous / next day with entries (notes §6.1). */
   async function stepDay(delta) {
-    if (!dayList.length) await loadDays();
-    const i = past ? dayList.findIndex((r) => r.day === past.day) : -1;
-    const n = i + (delta < 0 ? 1 : -1); // newest first: older is a higher index
-    if (past && n < 0) return backToToday();
-    if (!past && delta > 0) return;
-    const next = dayList[n];
-    if (next) openDay(next.day);
-    else if (delta < 0 && daysPop?.end !== true && dayList.length) {
-      await loadDays(true);
+    try {
+      if (!dayList.length) await fetchDays(false);
+      let i = past ? dayList.findIndex((r) => r.day === past.day) : -1;
+      // A day opened from a search may lie beyond the loaded pages: page on until it shows.
+      while (past && i < 0 && !dayEnd && dayList.at(-1)?.day > past.day) {
+        await fetchDays(true);
+        i = dayList.findIndex((r) => r.day === past.day);
+      }
+      if (past && i < 0) {
+        const older = dayList.findIndex((r) => r.day < past.day);
+        i = older < 0 ? dayList.length : older - 0.5; // between its neighbours
+      }
+      const step = delta < 0 ? 1 : -1; // newest first: older is a higher index
+      const n = Number.isInteger(i) ? i + step : i + step / 2;
+      if (past && n < 0) return backToToday();
+      if (!past && delta > 0) return;
+      if (!dayList[n] && delta < 0 && !dayEnd && dayList.length) await fetchDays(true);
       if (dayList[n]) openDay(dayList[n].day);
+    } catch (err) {
+      toast(`Could not load days: ${errText(err)}`, { kind: 'error' });
     }
   }
 
@@ -518,7 +536,7 @@
     const take = () => e.preventDefault();
     if (key === 'escape') {
       take();
-      if (daysPop) return (daysPop = null);
+      if (daysPop) return (daysPop = null), feed?.focus();
       // A past day opened from a result returns to the results (notes §6.4).
       if (past?.viaSearch) return (past = null);
       if (past) return backToToday();
@@ -527,8 +545,8 @@
     }
     if (daysPop || found?.list.length) {
       const root = daysPop ? e.target.closest('.days') : e.target.closest('.results');
-      if (root && (key === 'j' || key === 'ArrowDown')) return take(), stepFocus(root, 1);
-      if (root && (key === 'k' || key === 'ArrowUp')) return take(), stepFocus(root, -1);
+      if (root && (key === 'j' || key === 'arrowdown')) return take(), stepFocus(root, 1);
+      if (root && (key === 'k' || key === 'arrowup')) return take(), stepFocus(root, -1);
     }
     if (key === 't' && past) return take(), backToToday();
     if (key === '[' || key === ']') return take(), stepDay(key === '[' ? -1 : 1);
@@ -539,6 +557,8 @@
       if (o && key === 'o') return take(), openOutcome(o);
       return;
     }
+    // The results or the days list cover today's cards: nothing acts on them unseen.
+    if (searching || daysPop) return key === '/' ? (take(), openSearch()) : undefined;
     // A focused line, link or button takes its own ⏎ (Tab order, notes §10.2).
     if (key === 'enter' && e.target !== feed && e.target.closest?.('button')) return;
     if (key === '/') return take(), openSearch();
