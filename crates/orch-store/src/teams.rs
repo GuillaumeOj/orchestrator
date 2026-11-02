@@ -711,17 +711,20 @@ impl Store {
     /// move made meanwhile (a pause, a stop). Raises the feature's topic, so
     /// an open Feature pane sees a background check (even a failed one).
     pub fn set_run_pr(&self, id: &str, pr: &PrStatus, url: Option<&str>) -> Result<()> {
-        let topics = self.run(id)?.map(|r| orch_protocol::Topic::Feature(r.feature_id));
         let (id, pr, url) = (id.to_string(), js(pr), url.map(str::to_string));
-        self.write_touching(topics, move |tx| {
-            tx.execute(
-                "UPDATE team_runs SET pr_status=?2,
-                   pr_url=CASE WHEN pr_url IS NULL OR pr_url='' THEN COALESCE(?3, pr_url) ELSE pr_url END
-                 WHERE id=?1",
-                params![id, pr, url],
-            )?;
-            Ok(())
-        })
+        let feature = self.write(move |tx| {
+            Ok(tx
+                .query_row(
+                    "UPDATE team_runs SET pr_status=?2,
+                       pr_url=CASE WHEN pr_url IS NULL OR pr_url='' THEN COALESCE(?3, pr_url) ELSE pr_url END
+                     WHERE id=?1 RETURNING feature_id",
+                    params![id, pr, url],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?)
+        })?;
+        self.touch(feature.map(orch_protocol::Topic::Feature));
+        Ok(())
     }
 
     pub fn run(&self, id: &str) -> Result<Option<TeamRun>> {

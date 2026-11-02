@@ -894,9 +894,11 @@ mod tests {
         fx.rt.subscribe_now(Arc::new(move |v| g.lock().unwrap().push(v.clone())));
         fx.rt.now_pump(false);
         let fid = fx.rt.db.run(&fx.run).unwrap().unwrap().feature_id;
+        // Only what the check itself raises: the events of the setup are behind us.
+        got.lock().unwrap().clear();
         fx.rt.pr_tick(now_ms() + MIN);
         fx.rt.now_pump(false);
-        let ev = got.lock().unwrap().last().cloned().unwrap();
+        let ev = got.lock().unwrap().last().cloned().expect("the background check pushed a now event");
         assert!(ev["topics"].as_array().unwrap().contains(&json!(format!("feature:{fid}"))), "{ev}");
     }
 
