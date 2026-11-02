@@ -15,7 +15,7 @@ Drawn in T-66 after T-64 was built, from these notes and `ui/src/components/Dock
 | `dock-5-overflow-1280.png` | 03 Shell & layouts · `Dock · 1280 · tab overflow` | 1280 × 800 |
 | `dock-tab-variants.png` | 02 Components · `Improve agent pane · Dock tab` (component set `Dock tab`) | component sheet |
 
-The five dock frames sit in a new row at the bottom of the page (y = 5068, under `Layout notes · P4.2`, 100 px apart). The Dock tab component set is the last section of 02 Components (`Improve agent pane · Dock tab`): 8 variants (Kind agent/shell × State default/hover/active/active focused), every status icon, long names. `Shell · 1512 · shell dock` is kept as the "before" reference; the new frames supersede it.
+The five dock frames sit in a new row at the bottom of the page (y = 5068, under `Layout notes · P4.2`, 100 px apart). The Dock tab component set is the last section of 02 Components (`Improve agent pane · Dock tab`): 8 variants (Kind agent/shell × State default/hover/active/active focused), the ten status icons of the P1 Status badge (it has no Not started yet icon variant), long names. `Shell · 1512 · shell dock` is kept as the "before" reference; the new frames supersede it.
 
 Content of states 1, 2 (ux-brief "States to draw"): tabs in open order `[L] lead` (Working) · `[B] back-1` (Waiting for you) · `zsh · shop-api` · `[F] front-1` (Idle) · `pnpm test` (shell). Workspace above: the project pane `shop-api`. State 1 has `back-1` active (its agent pane header, the "waiting for you" strip and the PTY), state 2 has `zsh · shop-api` active.
 
@@ -23,7 +23,7 @@ Content of states 1, 2 (ux-brief "States to draw"): tabs in open order `[L] lead
 
 - Under the workspace, full width of the work column (sidebar ↔ inspector). `color.surface.chrome` background, padding `0 space.xs space.xs`.
 - Handle: `space.xs` (4 px) tall on top, `color.border.strong` on hover / focus.
-- Height: 0.45 of the column by default (spec §3.1). In the 1512 frames: work column 920 px tall (982 − `size.titlebar` 36 − `size.statusbar` 24 − the two 1 px rules) → dock 414 px, workspace above 506 px. At 1280: column 738 px → dock 332 px.
+- Height: 0.45 of the column by default (spec §3.1). In the app at 1512 × 982: work column 922 px tall (982 − `size.titlebar` 36 − `size.statusbar` 24; their 1 px borders sit inside those heights, `box-sizing: border-box`) → dock 415 px, workspace above 507 px. At 1280 × 800: column 740 px → dock 333 px. The frames are 2 px shorter (see "Drawn as built").
 - Body: `radius.sm` on every corner, clip; the top-left is square only while the first tab is active and the lane is not scrolled (that tab sits on it).
 
 ## Tab strip
@@ -84,8 +84,10 @@ All five accepted by `lead` (T-62).
 Where the frames differ from the text above, they follow T-64 (`Dock.svelte`):
 
 - Role mark: the P1 Agent chip at Size compact (16 × 16 in the file; the code's mark is 14 × 16).
+- Status icon: the P1 Status badge at Style icon, 12 × 16 in the file; the code's compact badge is a `size.icon` (16 px) box, so each agent tab is 4 px wider in the app.
+- Column height: the shell frames draw the title bar and status bar rules as separate 1 px layers outside the 36 / 24 px bars, so the work column is 920 px (dock 414, workspace 506; 738 → dock 332 at 1280), 2 px less than the app's 922.
 - Overflow divider: 1 × 12 px, vertically centred in the strip (`.sep`), not the strip's full height.
 - Hints: `⌘J` and `⌘; z` are P1 Key hint keycaps (the code's `Kbd`), then the word (`hide`, `restore`) in `color.text.muted`; the `⌘; z restore` group is a button with `space.sm` on both sides.
 - State 1 and 2: the idle agent is `front-1` (not `front-2`), the sidebar's agent; the sidebar and Inspector show the same statuses as the tabs (lead Working, back-1 Waiting for you, front-1 Idle).
 - State 3 and 4 look the same apart from the right group: the zoomed dock also fills the column, with `space.xs` above the tab strip.
-- State 5: the overlay inspector is closed so the strip reads in full. The workspace holds the project pane, the active `ui-1` is Working. Two shells have long commands (`pnpm --filter shop-api test`, `tail -f logs/checkout.log`): they hit the 200 px cap and ellipsize, and push `ui-1` past the lane's edge. Scrolled into view, `ui-1` ends at the lane's right edge and the first tab (`lead`) is cut on the left.
+- State 5: the overlay inspector is closed so the strip reads in full. The workspace holds the project pane. Under the live cap of 1, `ui-1` (active) is the one Working agent; `lead` is At gate and `back-2` Queued, as the status bar's "1 live · 2 queued" says. Two shells have long commands (`pnpm --filter shop-api test`, `tail -f logs/checkout.log`): they hit the 200 px cap and ellipsize, and push `ui-1` past the lane's edge. Scrolled into view, `ui-1` ends at the lane's right edge and the first tab (`lead`) is cut on the left.

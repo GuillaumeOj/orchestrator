@@ -34,7 +34,7 @@ The UI source of truth is the FigCraft file [`Orchestrator.figcraft`](Orchestrat
 
 ## Screenshots
 
-Exports of the boards (Dark theme unless noted), taken from the Penpot file before the move to FigCraft and refreshed by hand.
+Exports of the boards (Dark theme unless noted), taken from the Penpot file before the move to FigCraft and refreshed by hand; rows added since (the improve-agent-pane Dock) are FigCraft exports.
 
 | Page | Image |
 |---|---|
