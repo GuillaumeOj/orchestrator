@@ -139,3 +139,21 @@ Frames in `docs/design/Orchestrator.figcraft`: **04 Project settings ·
 Allocation · 1512** (state 4), the **states** board (1–9), and the plan editor
 row variant (10), exported as PNG to
 `.orchestrator/features/add-allocation-in-project-settings/design/`.
+
+## Lead decisions after the design review (T-89)
+
+These override the frames where they differ.
+
+1. **Weights are whole numbers** (step 1, min 0), as in the plan editor. Fractional
+   weights aren't offered; the backend still accepts any number ≥ 0.
+2. **`x` right after an unsaved Add** (state 3 → `a` → `x`) cancels the Add and
+   returns to state 3. Nothing is pending.
+3. **No-plan state (2)** renders the proposed split exactly as `project_allocation`
+   returns it, `other sessions` row included (3 projects at weight 1 + other
+   sessions at 1 = 25% each). The frame's 3 × 33% is illustrative only.
+4. **Plan editor note**, one sentence on other sessions: "Weights are relative; a
+   weight of 0 drops the allocation. A hard cap stops the allocation for the week
+   once it used that % of the week. Projects not in the plan are charged to
+   “other sessions”; give one a weight to add it."
+5. **Shares** are rounded per row and may not add up to exactly 100%. That's
+   fine; don't adjust them to force 100%.
