@@ -38,7 +38,7 @@ Env read with `option_env!` in `orch-app` (defaults in parentheses): `ORCH_BUILD
 | Field | Values |
 |---|---|
 | `current.channel` | `"main"` (CI build) or `"local"` |
-| `enabled` / `disabled_why` | `false` with a reason: `"debug build"`, `"ORCH_NO_UPDATE"`, `"bundle not writable"`, `"gh not installed"`, `"gh not logged in"` (the last two are rechecked at each check) |
+| `enabled` / `disabled_why` | `false` with a reason: `"debug build"`, `"ORCH_NO_UPDATE"`, `"bundle not writable"`, `"build in target/"`, `"no update key"` (the committed `update.pub` is still the placeholder), `"gh not installed"`, `"gh not logged in"` (the last two are rechecked at each check) |
 | `state` | `"idle"` (up to date or never checked), `"checking"`, `"downloading"`, `"ready"` (verified and staged), `"error"` |
 | `available` | the newer release, or `null` when none |
 | `progress` | `0.0..1.0` while `downloading` when known, else `null` |
