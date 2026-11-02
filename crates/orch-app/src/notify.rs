@@ -94,11 +94,12 @@ impl Watch {
                 format!("{}\n{}", one.title, first_line(&one.summary)).trim_end().to_string(),
             ),
             many => {
-                let agents: BTreeSet<&str> = many.iter().filter_map(|i| i.agent.as_deref()).collect();
+                // A decision with no agent (budget, battery) counts as its own "Orchestrator".
+                let agents: BTreeSet<&str> =
+                    many.iter().map(|i| i.agent.as_deref().unwrap_or("Orchestrator")).collect();
                 let title = match agents.iter().next() {
                     Some(a) if agents.len() == 1 => format!("{} decisions need you · {a}", many.len()),
-                    Some(_) => format!("{} decisions need you · {} agents", many.len(), agents.len()),
-                    None => format!("{} decisions need you", many.len()),
+                    _ => format!("{} decisions need you · {} agents", many.len(), agents.len()),
                 };
                 let mut lines: Vec<String> = many
                     .iter()
@@ -179,7 +180,11 @@ pub fn start(app: AppHandle, core: Arc<Core>) {
                 n = n.sound("Glass");
             }
             match n.show() {
-                Ok(()) => pending.arm(note.decision_id, Instant::now()),
+                // Already looking at the app: nothing to bring forward.
+                Ok(()) if !app.webview_windows().values().any(|w| w.is_focused().unwrap_or(false)) => {
+                    pending.arm(note.decision_id, Instant::now())
+                }
+                Ok(()) => {}
                 Err(e) => eprintln!("notification failed: {e}"),
             }
         }

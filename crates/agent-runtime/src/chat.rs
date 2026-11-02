@@ -55,7 +55,7 @@ fn by_of(decided_by: Option<&str>) -> (&'static str, Option<u64>) {
         "pane" => ("pane", None),
         "expired" => ("expired", None),
         "overwatch" => ("overwatch", None),
-        r if r.starts_with("rule:") => ("rule", r[5..].parse().ok()),
+        r if r.starts_with("rule:") => ("rule", r["rule:".len()..].parse().ok()),
         _ => ("core", None),
     }
 }
@@ -360,7 +360,7 @@ impl Runtime {
         let mut rebuilt = self.closed_elsewhere(&closing, x.decisions, x.gone);
         for id in closing {
             let Some(mut e) = cs.open.remove(&id) else { continue };
-            let prior = e.card.clone();
+            let (before, prior) = (e.clone(), e.card.clone());
             let last = x
                 .decisions
                 .get(&id)
@@ -374,10 +374,15 @@ impl Runtime {
                 }
                 None => close_from_snapshot(&mut e, x.now),
             }
-            if let Some(w) = write(&e, &mut out)
-                && x.decisions.contains_key(&id)
-            {
-                cs.closed.insert(id, (w, prior));
+            match write(&e, &mut out) {
+                Some(w) if x.decisions.contains_key(&id) => {
+                    cs.closed.insert(id, (w, prior));
+                }
+                Some(_) => {}
+                // The store refused: still waiting for its line, tried again next time.
+                None => {
+                    cs.open.insert(id, before);
+                }
             }
         }
         // Closed ones still listed: their lifecycle goes on (or an undo opened them again).
