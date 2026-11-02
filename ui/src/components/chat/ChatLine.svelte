@@ -96,4 +96,10 @@
       background: color-mix(in srgb, var(--color-accent-default) 12%, transparent);
     }
   }
+  @media (prefers-reduced-motion: reduce) {
+    .line.pulse .row {
+      animation: none;
+      background: color-mix(in srgb, var(--color-accent-default) 12%, transparent);
+    }
+  }
 </style>

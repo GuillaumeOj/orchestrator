@@ -67,8 +67,8 @@
 </script>
 
 <div class="card {state}" class:open class:selected class:marked class:pulse class:ro={!live} class:muted={state === 'stale'} data-decision={d.id} data-state={pending ? 'pending' : state}>
-  {#if ref}
-    <button class="ref" onclick={onjump} aria-label="Follows: {ref.text}. Jump to it">↳ after: {ref.text}</button>
+  {#if ref && !pending && ['open', 'parked', 'failed', 'stale'].includes(state)}
+    <button class="ref" onclick={onjump} aria-label="Follows: {ref.what}, {ref.at}. Jump to it">↳ after: {ref.what} · {ref.at}</button>
   {/if}
   <div class="top">
     <span class="kind" style:color={k.color}><span aria-hidden="true">{k.icon}</span> {k.label}{parked(d) ? ' · parked' : ''}{restarted(d) ? ' · after restart' : ''}{kindBy}</span>

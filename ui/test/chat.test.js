@@ -269,6 +269,7 @@ describe('the thread', () => {
     const { container: c } = render(ChatColumn);
     const ref = card(c, 'perm-1').querySelector('.ref');
     expect(text(ref)).toMatch(/^↳ after: approved Spec gate · checkout · \d\d:\d\d$/);
+    expect(ref.getAttribute('aria-label')).toMatch(/^Follows: approved Spec gate · checkout, \d\d:\d\d\. Jump to it$/);
     await fireEvent.click(ref);
     await tick();
     expect(lines(c)[0].querySelector('button').getAttribute('aria-expanded')).toBe('true');
@@ -560,7 +561,7 @@ describe('the shell (notes §9)', () => {
     app.inspector = true;
     const { container: c } = render(Inspector, { overlay: true });
     const banner = c.querySelector('.banner');
-    expect(text(banner.querySelector('span'))).toBe('3 cards need you, 1 blocking');
+    expect(text(banner.querySelector('span'))).toMatch(/^\S+ 3 cards need you, 1 blocking$/);
     expect(text(banner.querySelector('.kbd'))).toBe('⌘+⇧+I');
     await fireEvent.click(banner);
     expect(app.inspector).toBe(false);

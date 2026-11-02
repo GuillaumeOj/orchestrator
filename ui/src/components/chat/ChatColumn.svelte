@@ -24,7 +24,7 @@
     toast,
     undoLast,
   } from '../../lib/app.svelte.js';
-  import { digestText, FOLD_AT, filterStrip, foldText, nextFilter, thread } from '../../lib/chat.js';
+  import { digestText, FOLD_AT, filterStrip, foldText, nextFilter, thread, verbText } from '../../lib/chat.js';
   import { clock } from '../../lib/format.js';
   import { actionByKey, agentOf, answerText, FILTERS, intentFor, keyIntent } from '../../lib/inbox.js';
   import { errText } from '../../lib/ipc.js';
@@ -425,7 +425,7 @@
             selected={cur === `c:${it.id}`}
             marked={marked.has(it.id)}
             pending={pendingOf(it.id)}
-            ref={it.ref ? { text: `${it.ref.line.verb === 'run now' ? 'started' : it.ref.line.verb} ${it.ref.line.what} · ${clock(it.ref.line.at_ms)}` } : null}
+            ref={it.ref ? { what: `${verbText(it.ref.line.verb)} ${it.ref.line.what}`, at: clock(it.ref.line.at_ms) } : null}
             replying={reply?.id === it.id ? reply.action : null}
             pulse={pulse === it.key}
             bind:choices={() => choices[it.id] ?? [], (v) => (choices[it.id] = v)}
@@ -543,6 +543,10 @@
     padding: var(--space-md);
     outline: none;
   }
+  /* 8 px between cards, 4 px after a line (Penpot 04.3). */
+  .feed > :global(article.line) {
+    margin-bottom: calc(var(--space-xs) - var(--space-sm));
+  }
   .morning {
     padding: var(--space-sm) var(--space-md);
     background: var(--color-surface-pane);
@@ -632,6 +636,10 @@
   .chat:not(:focus-within) :global(.card.selected:not(.marked)),
   .chat:not(:focus-within) .sel {
     box-shadow: none;
+  }
+  /* Marked keeps its accent bar; the ring goes. */
+  .chat:not(:focus-within) :global(.card.selected.marked) {
+    box-shadow: inset 3px 0 0 var(--color-accent-default);
   }
   .chat:focus-within .head {
     box-shadow: inset 0 -2px 0 var(--color-accent-default);

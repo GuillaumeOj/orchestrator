@@ -19,7 +19,7 @@
 </script>
 
 <aside class="insp" class:overlay aria-label="Inspector">
-  {#if banner}<button class="banner" onclick={() => focusCard()}><span>{banner}</span><Kbd keys="⌘+⇧+I" /></button>{/if}
+  {#if banner}<button class="banner" onclick={() => focusCard()}><span><span class="icon" style:color="var(--color-status-waiting-for-you)" aria-hidden="true">{'\u{F0005}'}</span> {banner}</span><Kbd keys="⌘+⇧+I" /></button>{/if}
   <div class="head"><span class="muted">Inspector{s ? ` · ${s.kind}` : ''}</span>{#if overlay}<button class="x" onclick={() => (app.inspector = false)}><Kbd keys="esc" /></button>{:else}<Kbd keys="⌘+I" />{/if}</div>
   {#if s?.kind === 'agent'}{#key s.id}<AgentInspector id={s.id} />{/key}
   {:else if s?.kind === 'run'}{#key s.id}<RunInspector id={s.id} />{/key}
