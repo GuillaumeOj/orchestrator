@@ -75,6 +75,11 @@ pub(crate) fn fully_seen(m: &Message, paste_file: Option<&str>, referenced: &BTr
     paste_file.map(str::to_string).into_iter().chain(own).all(|f| referenced.contains(&f))
 }
 
+/// The transcript ends with the agent's finished answer.
+fn turn_ended(s: &crate::transcript::Summary) -> bool {
+    s.last_type.as_deref() == Some("assistant") && s.last_stop_reason.as_deref() == Some("end_turn")
+}
+
 /// The last `n` lines of a PTY tail.
 fn last_lines(tail: &str, n: usize) -> String {
     let lines: Vec<&str> = tail.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -126,7 +131,8 @@ pub(crate) fn next_step(turns: &[TurnRow], f: &PasteFacts) -> Step {
             }
         });
     if visible && !turns.iter().all(|t| t.enter_retried) {
-        return Step::Enter;
+        // Never while the user types: the Enter would send their draft.
+        return if f.quiet { Step::Enter } else { Step::Wait };
     }
     if f.idle && f.quiet && f.silent { Step::Esc } else { Step::Wait }
 }
@@ -219,6 +225,10 @@ impl Runtime {
     }
 
     pub(crate) fn note_referenced(&self, agent: &str, p: &HookPayload) {
+        // A subagent's Read reaches its own context, not the agent's.
+        if in_subagent(p) {
+            return;
+        }
         let Some(input) = &p.tool_input else { return };
         let files = referenced_files(input);
         if !files.is_empty() {
@@ -279,19 +289,22 @@ impl Runtime {
     }
 
     /// Before a turn is pasted again: one the transcript shows the CLI took
-    /// is marked delivered instead (true), never typed twice.
+    /// is started late instead (true), never typed twice.
     pub(crate) fn already_in_transcript(&self, rec: &AgentRecord, batch: &[TurnRow]) -> bool {
-        let markers = crate::transcript::summarize_session(&self.cfg.projects_root, &rec.session_id).markers;
-        let seen: Vec<String> = batch.iter().filter(|t| markers.contains(&t.id)).map(|t| t.id.clone()).collect();
-        if seen.is_empty() {
+        let sum = crate::transcript::summarize_session(&self.cfg.projects_root, &rec.session_id);
+        let taken: Vec<&TurnRow> = batch.iter().filter(|t| sum.markers.contains(&t.id)).collect();
+        if taken.is_empty() {
             return false;
         }
-        self.mark_delivered(&rec.id, &seen, None);
-        self.delivery_event(
-            &rec.id,
-            "recovered",
-            json!({"turns": seen, "how": "late_hook", "from_state": rec.tracker.state}),
-        );
+        // Their messages went back to the queue with the turn: handed again,
+        // so the late prompt marks them seen and they are never sent twice.
+        let now = now_ms();
+        for t in taken.iter().filter(|t| !t.messages.is_empty()) {
+            let _ = self.db.hand_messages(&t.messages, &rec.id, "turn", Some(&t.id), now);
+        }
+        let seen: Vec<String> = taken.iter().map(|t| t.id.clone()).collect();
+        // The tracker learns the turn started (and ended): nothing is pasted into it.
+        self.late_turn_start(rec, &seen, turn_ended(&sum));
         true
     }
 
@@ -350,9 +363,7 @@ impl Runtime {
         let pasted = turns.iter().filter_map(|t| t.delivered_at_ms).max().unwrap_or(0);
         let facts = PasteFacts {
             markers: sum.as_ref().map(|s| s.markers.clone()).unwrap_or_default(),
-            turn_ended: sum.as_ref().is_some_and(|s| {
-                s.last_type.as_deref() == Some("assistant") && s.last_stop_reason.as_deref() == Some("end_turn")
-            }),
+            turn_ended: sum.as_ref().is_some_and(turn_ended),
             tail: &tail,
             idle: rec.tracker.state == AgentState::Idle,
             quiet: now >= l.last_user_input_ms.load(Ordering::SeqCst) + delivery::USER_QUIET.as_millis() as u64,
@@ -488,6 +499,9 @@ impl Runtime {
     /// UserPromptSubmit still marks its turns delivered.
     pub(crate) fn replay_spool(&self, id: &str) {
         let dir = self.cfg.paths.agent_dir(id);
+        // Taken before the check: a live hook waits for a sweep that took the
+        // spool, so its own event never applies before the older ones.
+        let _replaying = self.replaying.lock().unwrap_or_else(|e| e.into_inner());
         if !spool::spool_path(&dir).exists() {
             return;
         }

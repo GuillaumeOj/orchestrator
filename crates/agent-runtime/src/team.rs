@@ -1043,21 +1043,25 @@ impl Runtime {
                 "message" => format!("from {who}"),
                 k => format!("{} from {who}", k.replace('_', " ")),
             };
-            let line = if m.body.chars().count() <= cap {
-                format!("\n- {head}: {}", m.body)
-            } else {
-                let path = dir.join(message_file_name(m.id));
-                let full = format!("# {head} (message {})\n\n{}\n", m.id, m.body);
-                if std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, full)).is_err() {
-                    continue; // not handed: tried again with the next hand-over
+            let long = (m.body.chars().count() > cap).then(|| dir.join(message_file_name(m.id)));
+            let line = match &long {
+                None => format!("\n- {head}: {}", m.body),
+                Some(path) => {
+                    let preview: String = m.body.chars().take(PREVIEW).collect();
+                    format!("\n- {head}: {preview}…\n  full text: {}", path.display())
                 }
-                r.files.push((m.id, path.clone()));
-                let preview: String = m.body.chars().take(PREVIEW).collect();
-                format!("\n- {head}: {preview}…\n  full text: {}", path.display())
             };
             let n = line.chars().count();
             if !r.included.is_empty() && len + n > budget {
                 break;
+            }
+            // Written only once it is handed: a message past the budget waits.
+            if let Some(path) = long {
+                let full = format!("# {head} (message {})\n\n{}\n", m.id, m.body);
+                if std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, full)).is_err() {
+                    continue; // not handed: tried again with the next hand-over
+                }
+                r.files.push((m.id, path));
             }
             len += n;
             r.text.push_str(&line);
