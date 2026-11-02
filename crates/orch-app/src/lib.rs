@@ -172,6 +172,7 @@ pub fn run() {
             commands::feature_asset,
             commands::board_view,
             commands::board_sync,
+            commands::board_open_sync,
             commands::task_create,
             commands::task_update,
             commands::run_act,

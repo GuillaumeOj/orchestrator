@@ -505,11 +505,14 @@ fn run() -> Result<()> {
                     }
                     "set" => {
                         let (status, node, note) = (a.opt("--status")?, a.opt("--node")?, a.opt("--note")?);
+                        let (title, body) = (a.opt("--title")?, a.opt("--body")?);
                         CtlRequest::TaskUpdate {
                             task_id: a.next("task id")?.parse().context("task id")?,
                             status,
                             node,
                             note,
+                            title,
+                            body,
                         }
                     }
                     other => bail!("team task {other:?}: add | set"),

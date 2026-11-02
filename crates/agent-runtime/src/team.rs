@@ -35,6 +35,8 @@ use crate::state::AgentState;
 use crate::store::{Admission, AgentRecord, TeamSeat, TurnRow, TurnStatus};
 
 /// Settings key prefix of each project's last task sync (`tasks.last_sync.<project>`).
+/// Opening a Board syncs its project only if the last sync is older than this.
+pub const OPEN_SYNC_AFTER_MS: u64 = 60_000;
 pub const LAST_SYNC_KEY: &str = "tasks.last_sync.";
 
 /// What to launch (J3 step 2).
@@ -798,20 +800,38 @@ impl Runtime {
     }
 
     /// FR-503: syncs the remote task backend of every project with an active
-    /// run. A conflict keeps the remote's version and tells the user.
+    /// run or whose Board was opened in this process. A conflict keeps the
+    /// remote's version and tells the user.
     pub fn sync_task_backends(&self) {
-        let mut seen = std::collections::BTreeSet::new();
+        let mut ids = std::collections::BTreeSet::new();
         for run in self.db.runs(None, true).unwrap_or_default() {
-            let Ok(Some(feature)) = self.db.feature(&run.feature_id) else { continue };
-            if !seen.insert(feature.project_id.clone()) {
-                continue;
+            if let Ok(Some(feature)) = self.db.feature(&run.feature_id) {
+                ids.insert(feature.project_id);
             }
-            let Ok(Some(project)) = self.db.project(&feature.project_id) else { continue };
-            if project.backend().kind() == "local" {
-                continue;
-            }
-            let _ = self.sync_tasks(&project);
         }
+        ids.extend(self.watched_projects.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned());
+        for id in ids {
+            let Ok(Some(project)) = self.db.project(&id) else { continue };
+            if project.backend().kind() != "local" {
+                let _ = self.sync_tasks(&project);
+            }
+        }
+    }
+
+    /// The Board of `project` opened: it is watched from now on (background
+    /// sync), and its remote backend is synced unless it was synced less
+    /// than [`OPEN_SYNC_AFTER_MS`] ago. `None` = nothing to do (local
+    /// backend, or synced recently).
+    pub fn open_sync(&self, project: &orch_store::Project) -> Option<Result<orch_tasks::SyncReport>> {
+        if project.backend().kind() == "local" {
+            return None;
+        }
+        self.watched_projects.lock().unwrap_or_else(|e| e.into_inner()).insert(project.id.clone());
+        let at = self.last_sync(&project.id)["at_ms"].as_u64().unwrap_or(0);
+        if now_ms().saturating_sub(at) < OPEN_SYNC_AFTER_MS {
+            return None;
+        }
+        Some(self.sync_tasks(project))
     }
 
     /// Syncs one project's remote backend now (FR-503): conflicts (the

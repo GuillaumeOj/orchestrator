@@ -64,6 +64,16 @@ pub fn features(rt: &agent_runtime::runtime::Runtime) -> Result<Vec<Value>> {
         .collect())
 }
 
+/// What `task_update` changes: each `None` is left as it is.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TaskEdit<'a> {
+    pub status: Option<&'a str>,
+    pub node: Option<&'a str>,
+    pub note: Option<&'a str>,
+    pub title: Option<&'a str>,
+    pub body: Option<&'a str>,
+}
+
 impl Core {
     pub fn teams_view(&self, project: Option<&str>) -> Result<Value> {
         let rt = self.runtime()?;
@@ -174,6 +184,12 @@ impl Core {
         let last = rt.last_sync(project_id);
         let won: Vec<u64> = last["conflicts"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
         let marks = rt.off_hours_marks();
+        // The repository issue URLs point to: the configured one, else what
+        // `gh` resolved for the checkout (a failure only leaves no link).
+        let github_repo = match backend {
+            TaskBackendConfig::Github { .. } => rt.tasks_for(&p).github_repo().ok().flatten(),
+            _ => None,
+        };
         let tasks: Vec<Value> = rt
             .db
             .tasks(Some(project_id), None, None)?
@@ -183,6 +199,12 @@ impl Core {
                 let mut v = json!(t);
                 v["remote_won"] = json!(won.contains(&t.id));
                 v["off_hours"] = json!(off);
+                v["remote_url"] = match (&github_repo, &t.external_id) {
+                    (Some(repo), Some(n)) if t.backend == "github" => {
+                        json!(format!("https://github.com/{repo}/issues/{n}"))
+                    }
+                    _ => Value::Null,
+                };
                 v
             })
             .collect();
@@ -206,17 +228,32 @@ impl Core {
         }))
     }
 
+    /// The Board opened: syncs the project's remote backend unless it was
+    /// synced less than a minute ago, and watches it for the background sync.
+    pub fn board_open_sync(&self, project_id: &str) -> Result<Value> {
+        let rt = self.runtime()?;
+        let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
+        let Some(r) = rt.open_sync(&p) else { return Ok(json!({"synced": false})) };
+        self.record_sync(project_id, &r);
+        Ok(json!({"synced": true, "report": r?.summary()}))
+    }
+
+    /// Keeps (or clears) the sync error the Board shows for a project.
+    fn record_sync(&self, project_id: &str, r: &Result<orch_tasks::SyncReport>) {
+        if let Ok(mut m) = self.sync_errors.lock() {
+            match r {
+                Ok(_) => m.remove(project_id),
+                Err(e) => m.insert(project_id.to_string(), format!("{e:#}")),
+            };
+        }
+    }
+
     /// The Board's `r`: sync the project's remote backend now (FR-503).
     pub fn board_sync(&self, project_id: &str) -> Result<Value> {
         let rt = self.runtime()?;
         let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
         let r = rt.sync_tasks(&p);
-        if let Ok(mut m) = self.sync_errors.lock() {
-            match &r {
-                Ok(_) => m.remove(project_id),
-                Err(e) => m.insert(project_id.to_string(), format!("{e:#}")),
-            };
-        }
+        self.record_sync(project_id, &r);
         Ok(r?.summary())
     }
 
@@ -246,8 +283,9 @@ impl Core {
         Ok(json!(t))
     }
 
-    pub fn task_update(&self, id: u64, status: Option<&str>, node: Option<&str>, note: Option<&str>) -> Result<Value> {
-        Ok(json!(self.runtime()?.user_update_task(id, status, node, note)?))
+    pub fn task_update(&self, id: u64, upd: TaskEdit<'_>) -> Result<Value> {
+        let TaskEdit { status, node, note, title, body } = upd;
+        Ok(json!(self.runtime()?.user_update_task(id, status, node, note, title, body)?))
     }
 
     pub fn run_act(&self, run_id: &str, action: &str) -> Result<Value> {

@@ -180,6 +180,9 @@ pub struct Runtime {
     teaming: std::sync::atomic::AtomicBool,
     /// Each project's task backend, kept across calls.
     pub(crate) task_backends: orch_tasks::Backends,
+    /// Projects whose Board was opened in this process: the background task
+    /// sync covers their remote backend too.
+    pub(crate) watched_projects: Mutex<std::collections::BTreeSet<String>>,
     /// The starter roles and presets were checked this run.
     pub(crate) presets_checked: std::sync::atomic::AtomicBool,
     /// FR-505: one Notion publish or poll per feature at a time, and the
@@ -464,6 +467,7 @@ impl Runtime {
             indexing: std::sync::atomic::AtomicBool::new(false),
             teaming: std::sync::atomic::AtomicBool::new(false),
             task_backends: orch_tasks::Backends::default(),
+            watched_projects: Mutex::default(),
             presets_checked: std::sync::atomic::AtomicBool::new(false),
             notion_locks: Mutex::new(BTreeMap::new()),
             notion_polling: std::sync::atomic::AtomicBool::new(false),

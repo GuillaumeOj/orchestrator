@@ -1513,7 +1513,12 @@ mod tests {
         assert_eq!(b["backend"], "local");
         assert_eq!(b["tasks"][0]["title"], "By hand");
         assert_eq!(b["runs"][0]["nodes"].as_array().unwrap().len(), 3);
-        let t = core.task_update(t["id"].as_u64().unwrap(), Some("backlog"), None, Some("later")).unwrap();
+        let t = core
+            .task_update(
+                t["id"].as_u64().unwrap(),
+                crate::teams::TaskEdit { status: Some("backlog"), note: Some("later"), ..Default::default() },
+            )
+            .unwrap();
         assert_eq!((t["status"].as_str(), t["notes"].as_array().unwrap().len()), (Some("backlog"), 2));
         // A message from the user; pause and resume the team.
         assert!(core.message_send(run["id"].as_str().unwrap(), "lead", "hello").is_ok());
@@ -1847,6 +1852,29 @@ mod tests {
         core.shutdown();
     }
 
+    /// The Board links a GitHub task to its issue.
+    #[test]
+    fn board_tasks_carry_their_issue_url() {
+        let d = tmp();
+        let core = test_core(d.path());
+        let rt = core.runtime().unwrap().clone();
+        let mut p = rt.db.project("repo").unwrap().unwrap();
+        p.task_backend = json!({"type": "github", "repo": "me/shop"});
+        rt.db.upsert_project(&p).unwrap();
+        let mut issue = orch_store::Task::new("repo", "github", "From GitHub", 1);
+        issue.external_id = Some("42".into());
+        let (issue, local) = (
+            rt.db.upsert_task(&issue).unwrap(),
+            rt.db.upsert_task(&orch_store::Task::new("repo", "local", "Mine", 1)).unwrap(),
+        );
+        let v = core.board_view("repo").unwrap();
+        let url =
+            |id: u64| v["tasks"].as_array().unwrap().iter().find(|t| t["id"] == id).unwrap()["remote_url"].clone();
+        assert_eq!(url(issue), "https://github.com/me/shop/issues/42");
+        assert!(url(local).is_null(), "no issue, no link");
+        core.shutdown();
+    }
+
     /// D8 and the Board on a Linear-backed project (api-contract §7).
     #[test]
     fn switching_to_linear_asks_first_then_pushes_open_tasks() {
@@ -1858,7 +1886,11 @@ mod tests {
         assert_eq!(st["projects"][0]["name"], "Shop");
         let mk = |title: &str| core.task_create(json!({"project_id": "repo", "title": title})).unwrap();
         let (a, b) = (mk("Open one"), mk("Done one"));
-        core.task_update(b["id"].as_u64().unwrap(), Some("done"), None, None).unwrap();
+        core.task_update(
+            b["id"].as_u64().unwrap(),
+            crate::teams::TaskEdit { status: Some("done"), ..Default::default() },
+        )
+        .unwrap();
         let form = |migrate: Option<&str>| -> crate::teams::ProjectSettingsForm {
             serde_json::from_value(json!({"settings": {}, "backend": {"type": "linear", "team": "ENG"},
                 "track_orchestrator_dir": true, "migrate": migrate}))
