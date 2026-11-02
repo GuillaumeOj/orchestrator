@@ -192,6 +192,7 @@ impl Fx {
             created_at_ms: NOW - age_min * MIN,
             delivered_at_ms: None,
             read_at_ms: None,
+            ..Default::default()
         });
     }
 }

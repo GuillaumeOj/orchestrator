@@ -127,10 +127,37 @@ pub fn watchdog_check(a: &AgentRecord, now: u64) -> Option<(Watch, u64)> {
     (a.tracker.background_tasks == 0 && now.saturating_sub(last) > NO_PROGRESS_MS).then_some((Watch::Stalled, start))
 }
 
-/// Longest message body kept (the rest is cut).
+/// Longest text of the messages in one turn (the rest waits for the next one).
 pub(crate) const MAX_BODY: usize = 8_000;
+/// Longest message body stored: a longer one is refused, never cut.
+pub(crate) const MAX_STORED: usize = 64_000;
 /// Longest text injected at a tool call.
-const MAX_INJECT: usize = 1_500;
+const MAX_INJECT: usize = 3_000;
+/// A message longer than this (in a turn, at a tool call, in `inbox`) is
+/// shown as its first [`PREVIEW`] chars and the path of its full text.
+pub(crate) const INLINE_TURN: usize = 3_000;
+pub(crate) const INLINE_INJECT: usize = 1_200;
+const INLINE_INBOX: usize = 6_000;
+pub(crate) const PREVIEW: usize = 600;
+
+/// The inline limit of a message handed `via` (`turn` or `inject`).
+pub(crate) fn inline_cap(via: Option<&str>) -> usize {
+    if via == Some("inject") { INLINE_INJECT } else { INLINE_TURN }
+}
+
+/// Where a long message's full text is written for its agent.
+pub(crate) fn message_file_name(id: u64) -> String {
+    format!("msg-{id}.md")
+}
+
+/// Messages rendered for one hand-over: only `included` ones are in `text`
+/// (the others wait); `files` are the messages too long to show in full.
+#[derive(Debug, Default)]
+pub(crate) struct Rendered {
+    pub text: String,
+    pub included: Vec<u64>,
+    pub files: Vec<(u64, std::path::PathBuf)>,
+}
 
 pub(crate) fn cut(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n).collect::<String>()) }
@@ -939,9 +966,14 @@ impl Runtime {
         if !rules::can_message(&cx.team, from_node, &to_node) {
             bail!("the team rules don't let {from_node} message {to_node}");
         }
-        let body = cut(body.trim(), MAX_BODY);
+        let body = body.trim();
         if body.is_empty() {
             bail!("empty message");
+        }
+        // Never cut silently (F7): the sender keeps the long part in a file.
+        let n = body.chars().count();
+        if n > MAX_STORED {
+            bail!("message too long ({n} chars, max {MAX_STORED}): put the details in a file and send its path");
         }
         let recipients: Vec<Option<String>> = match to_agent {
             Some(a) => vec![Some(a)],
@@ -957,13 +989,13 @@ impl Runtime {
         };
         let mut ids = vec![];
         for r in recipients {
-            ids.push(self.add_run_message(cx, from_node, from_agent, &to_node, r, kind, &body, r#ref.clone())?);
+            ids.push(self.add_run_message(cx, from_node, from_agent, &to_node, r, kind, body, r#ref.clone())?);
         }
         self.run_event(
             &cx.run.id,
             from_agent,
             "message",
-            json!({"from": from_node, "to": to, "kind": kind, "body": cut(&body, 300)}),
+            json!({"from": from_node, "to": to, "kind": kind, "body": cut(body, 300)}),
         );
         Ok(ids)
     }
@@ -990,29 +1022,52 @@ impl Runtime {
             to_node: to_node.into(),
             to_agent,
             kind: kind.into(),
-            body: cut(body, MAX_BODY),
+            body: body.into(),
             r#ref,
             created_at_ms: now_ms(),
-            delivered_at_ms: None,
-            read_at_ms: None,
+            ..Default::default()
         })
     }
 
-    pub(crate) fn render_messages(msgs: &[Message], max: usize) -> String {
-        let mut s = String::new();
+    /// Renders messages for `agent` within `budget` chars: a message over
+    /// `cap` is written in full to `<agent dir>/messages/msg-<id>.md` and
+    /// shown as its first [`PREVIEW`] chars and that path. Messages past the
+    /// budget are left out (never "(more…)"): they wait for the next hand-over.
+    pub(crate) fn render_for(&self, agent: &str, msgs: &[Message], budget: usize, cap: usize) -> Rendered {
+        let dir = self.cfg.paths.agent_dir(agent).join("messages");
+        let mut r = Rendered::default();
+        let mut len = 0;
         for m in msgs {
             let who = m.from_agent.clone().unwrap_or_else(|| m.from_node.clone());
-            let line = match m.kind.as_str() {
-                "message" => format!("\n- from {who}: {}", m.body),
-                k => format!("\n- {} from {who}: {}", k.replace('_', " "), m.body),
+            let head = match m.kind.as_str() {
+                "message" => format!("from {who}"),
+                k => format!("{} from {who}", k.replace('_', " ")),
             };
-            if s.chars().count() + line.chars().count() > max {
-                s.push_str("\n(more: call mcp__orch__inbox)");
+            let long = (m.body.chars().count() > cap).then(|| dir.join(message_file_name(m.id)));
+            let line = match &long {
+                None => format!("\n- {head}: {}", m.body),
+                Some(path) => {
+                    let preview: String = m.body.chars().take(PREVIEW).collect();
+                    format!("\n- {head}: {preview}…\n  full text: {}", path.display())
+                }
+            };
+            let n = line.chars().count();
+            if !r.included.is_empty() && len + n > budget {
                 break;
             }
-            s.push_str(&line);
+            // Written only once it is handed: a message past the budget waits.
+            if let Some(path) = long {
+                let full = format!("# {head} (message {})\n\n{}\n", m.id, m.body);
+                if std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, full)).is_err() {
+                    continue; // not handed: tried again with the next hand-over
+                }
+                r.files.push((m.id, path));
+            }
+            len += n;
+            r.text.push_str(&line);
+            r.included.push(m.id);
         }
-        s
+        r
     }
 
     fn unread(&self, rec: &AgentRecord) -> Vec<Message> {
@@ -1020,12 +1075,13 @@ impl Runtime {
         self.db.messages(&seat.run_id, Some((&seat.node, Some(&rec.id))), true).unwrap_or_default()
     }
 
-    /// Unread messages not handed over yet: not delivered (pasted or given
-    /// as context), and not carried by a turn still waiting for its paste,
+    /// Unread messages not handed over yet: queued (not pasted or given as
+    /// context, not failed), and not carried by a turn still waiting for its paste,
     /// this agent's or another's of the node (a message to the node binds to
     /// an agent only at the paste).
     fn undelivered(&self, rec: &AgentRecord) -> Vec<Message> {
-        let mut msgs: Vec<Message> = self.unread(rec).into_iter().filter(|m| m.delivered_at_ms.is_none()).collect();
+        let mut msgs: Vec<Message> =
+            self.unread(rec).into_iter().filter(|m| m.delivery_state() == orch_store::DeliveryState::Queued).collect();
         if msgs.is_empty() {
             return msgs;
         }
@@ -1040,11 +1096,6 @@ impl Runtime {
         msgs
     }
 
-    /// The agent's unread messages among `ids` (to remind it at its Stop).
-    pub(crate) fn unread_of(&self, rec: &AgentRecord, ids: &[u64]) -> Vec<Message> {
-        self.unread(rec).into_iter().filter(|m| ids.contains(&m.id)).collect()
-    }
-
     /// A task of this run, by id.
     pub(crate) fn run_task(&self, cx: &RunCtx, id: u64) -> Result<Task> {
         let t = self.db.task(id)?.ok_or_else(|| anyhow!("no task {id}"))?;
@@ -1054,17 +1105,21 @@ impl Runtime {
         Ok(t)
     }
 
-    /// FR-403 for a busy agent: its new messages, as PostToolUse context.
-    pub(crate) fn inject_messages(&self, rec: &AgentRecord) -> Option<String> {
+    /// FR-403 for a busy agent: its new messages as PostToolUse context,
+    /// handed during the running turn `prompt_id`. They are seen once the
+    /// reply is confirmed (the returned ids, [`Runtime::on_hook_ack`]).
+    pub(crate) fn inject_messages(&self, rec: &AgentRecord, prompt_id: Option<&str>) -> Option<(String, Vec<u64>)> {
         let msgs = self.undelivered(rec);
         if msgs.is_empty() {
             return None;
         }
-        let ids: Vec<u64> = msgs.iter().map(|m| m.id).collect();
-        let _ = self.db.deliver_messages(&ids, &rec.id, now_ms());
-        // Read when this turn ends; its Stop reminds the agent of them first.
-        self.note_injected(&rec.id, &ids);
-        Some(format!("ORCH: {} new message(s):{}", msgs.len(), Self::render_messages(&msgs, MAX_INJECT)))
+        let r = self.render_for(&rec.id, &msgs, MAX_INJECT, INLINE_INJECT);
+        if r.included.is_empty() {
+            return None;
+        }
+        let _ = self.db.hand_messages(&r.included, &rec.id, "inject", prompt_id, now_ms());
+        self.delivery_event(&rec.id, "handed", json!({"messages": r.included, "via": "inject", "turn": prompt_id}));
+        Some((format!("ORCH: {} new message(s):{}", r.included.len(), r.text), r.included))
     }
 
     /// FR-403 for idle and suspended agents: their new messages as one turn
@@ -1083,14 +1138,17 @@ impl Runtime {
             if msgs.is_empty() {
                 continue;
             }
+            let r = self.render_for(&rec.id, &msgs, MAX_BODY, INLINE_TURN);
+            if r.included.is_empty() {
+                continue;
+            }
             let text = format!(
                 "ORCH: {} new message(s) for you:{}\n\nAnswer with mcp__orch__send_message when needed.",
-                msgs.len(),
-                Self::render_messages(&msgs, MAX_BODY)
+                r.included.len(),
+                r.text
             );
-            // Marked delivered when this turn is pasted (FR-206), not now.
-            let ids: Vec<u64> = msgs.iter().map(|m| m.id).collect();
-            let _ = self.deliver_messages_turn(&rec.id, &text, ids);
+            // Handed when this turn is pasted, seen when its prompt starts (FR-206).
+            let _ = self.deliver_messages_turn(&rec.id, &text, r.included);
         }
     }
 
@@ -1286,12 +1344,19 @@ impl Runtime {
             "inbox" => {
                 let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
                 let msgs = self.db.messages(&cx.run.id, Some((me, Some(&rec.id))), !all)?;
-                let unread: Vec<u64> = msgs.iter().filter(|m| m.read_at_ms.is_none()).map(|m| m.id).collect();
-                self.db.mark_messages(&unread, Some(&rec.id), now_ms())?;
+                self.note_inbox_called(&rec.id);
                 if msgs.is_empty() {
                     return Ok(("No new messages.".into(), json!([])));
                 }
-                Ok((format!("{} message(s):{}", msgs.len(), Self::render_messages(&msgs, MAX_BODY * 2)), json!(msgs)))
+                // Every message in full, or its first part and its file: never "(more…)".
+                let r = self.render_for(&rec.id, &msgs, usize::MAX, INLINE_INBOX);
+                let unread: Vec<u64> = msgs
+                    .iter()
+                    .filter(|m| m.read_at_ms.is_none() && r.included.contains(&m.id))
+                    .map(|m| m.id)
+                    .collect();
+                self.db.mark_messages(&unread, Some(&rec.id), now_ms())?;
+                Ok((format!("{} message(s):{}", r.included.len(), r.text), json!(msgs)))
             }
             "list_tasks" => {
                 let mine = args.get("mine").and_then(Value::as_bool).unwrap_or(false);
@@ -2026,7 +2091,7 @@ mod tests {
         ok(&rt, rev, "submit_review", json!({"task": t, "findings": ["api.rs:1 no test"], "summary": "one gap"}));
         assert_eq!(rt.db.task(t).unwrap().unwrap().status, TaskStatus::Review);
         let lrec = rt.store.read(|s| s.agents[lead].clone());
-        let report = rt.inject_messages(&lrec).unwrap();
+        let report = rt.inject_messages(&lrec, None).unwrap().0;
         assert!(report.contains("Reviewed by review: one gap") && report.contains("api.rs:1 no test"), "{report}");
         assert!(queued(&rt, back).iter().any(|b| b.contains("api.rs:1 no test")), "the owner sees the findings");
         assert!(ok(&rt, lead, "merge", json!({"branch": "orch/fx/back-1", "task": t})).contains("is done"));
@@ -2103,7 +2168,7 @@ mod tests {
         assert!(rt.plan_lock(&rec(), "Read").is_none());
         ok(&rt, back, "submit_plan", json!({"plan": "add api.rs; test it"}));
         let lrec = rt.store.read(|s| s.agents[lead].clone());
-        assert!(rt.inject_messages(&lrec).unwrap().contains("add api.rs; test it"));
+        assert!(rt.inject_messages(&lrec, None).unwrap().0.contains("add api.rs; test it"));
         let task = rec().team.unwrap().task.unwrap();
         ok(&rt, lead, "decide_plan", json!({"task": task, "approve": false, "note": "also docs"}));
         assert!(queued(&rt, back).iter().any(|b| b.contains("needs changes: also docs")));
@@ -2112,6 +2177,49 @@ mod tests {
         ok(&rt, lead, "decide_plan", json!({"task": task, "approve": true}));
         assert!(queued(&rt, back).iter().any(|b| b.contains("is approved")));
         assert!(edit(&rt).is_none(), "edits allowed once approved");
+    }
+
+    /// F7: a long plan reached the lead cut mid-sentence (6,000 chars in the
+    /// message, 8,000 kept), with no file and no marker. It now arrives whole,
+    /// as its first part and the path of its full text.
+    #[test]
+    fn a_long_plan_reaches_the_lead_whole_never_cut() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back", "plan_first": true}));
+        rt.team_tick();
+        let plan = format!("{} THE END OF THE PLAN", "step; ".repeat(1_600));
+        assert!(plan.chars().count() > 9_000);
+        ok(&rt, back, "submit_plan", json!({"plan": plan}));
+        let task = rt.store.read(|s| s.agents[back].team.as_ref().unwrap().task.unwrap());
+        assert_eq!(rt.db.task(task).unwrap().unwrap().flow.plan.as_deref(), Some(plan.as_str()), "kept whole");
+        let run = rt.store.read(|s| s.agents[lead].team.as_ref().unwrap().run_id.clone());
+        let m = rt
+            .db
+            .messages(&run, Some(("lead", Some(lead))), true)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.kind == "plan")
+            .unwrap();
+        assert!(m.body.contains("THE END OF THE PLAN"), "the message is whole");
+        // Rendered for the lead: its first part and its file, which holds all of it.
+        let lrec = rt.store.read(|s| s.agents[lead].clone());
+        let text = rt.inject_messages(&lrec, None).unwrap().0;
+        let file = rt.cfg.paths.agent_dir(lead).join("messages").join(message_file_name(m.id));
+        assert!(text.contains(&format!("full text: {}", file.display())), "{text}");
+        assert!(std::fs::read_to_string(&file).unwrap().contains("THE END OF THE PLAN"));
+        // `inbox` shows the path too, never "(more…)".
+        let out = ok(&rt, lead, "inbox", json!({}));
+        assert!(out.contains(&file.display().to_string()) && !out.contains("(more"), "{out}");
+        // Too long to keep: refused with a way out, not cut.
+        let huge = "x".repeat(MAX_STORED + 1);
+        assert!(call(&rt, back, "submit_plan", json!({"plan": huge})).1.contains("put the details in a file"));
+        assert!(
+            call(&rt, back, "send_message", json!({"to": "lead", "body": huge}))
+                .1
+                .contains("put the details in a file")
+        );
     }
 
     #[test]
@@ -2247,9 +2355,9 @@ mod tests {
         // Messages: a busy agent gets them at its next tool call.
         ok(&rt, back, "send_message", json!({"to": "lead", "body": "where is the config?"}));
         let lrec = rt.store.read(|s| s.agents[lead].clone());
-        let injected = rt.inject_messages(&lrec).unwrap();
+        let injected = rt.inject_messages(&lrec, None).unwrap().0;
         assert!(injected.starts_with("ORCH: 1 new message") && injected.contains("where is the config?"));
-        assert!(rt.inject_messages(&lrec).is_none(), "delivered once");
+        assert!(rt.inject_messages(&lrec, None).is_none(), "delivered once");
         ok(&rt, lead, "send_message", json!({"to": "back", "body": "in config/"}));
         assert!(ok(&rt, back, "inbox", json!({})).contains("in config/"));
 
@@ -2271,7 +2379,7 @@ mod tests {
         let review = json!({"fixed": ["a typo"], "unfixed": [{"finding": "no index on x", "reason": "out of scope"}]});
         ok(&rt, back, "report_done", json!({"summary": "api.rs added, tested", "review": review}));
         assert_eq!(rt.db.task(t1.id).unwrap().unwrap().status, TaskStatus::Review);
-        let report = rt.inject_messages(&lrec).unwrap();
+        let report = rt.inject_messages(&lrec, None).unwrap().0;
         assert!(report.contains("report from fx-back-1") && report.contains("LEFT: no index on x"), "{report}");
         assert!(call(&rt, lead, "merge", json!({"branch": "main"})).1.contains("only branches of this feature"));
         assert!(ok(&rt, lead, "merge", json!({"branch": "orch/fx/back-1", "task": t1.id})).contains("is done"));

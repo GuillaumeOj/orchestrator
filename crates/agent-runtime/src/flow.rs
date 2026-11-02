@@ -210,22 +210,20 @@ impl Runtime {
                 if t.node.as_deref() != Some(me) {
                     bail!("task {id} is not yours");
                 }
-                t.flow.plan = Some(cut(plan, 8_000));
+                let body = format!(
+                    "plan for task id {id} ({}):\n{}\n\nApprove it or send it back with mcp__orch__decide_plan.",
+                    t.title, plan
+                );
+                // Kept and sent whole (F7): checked as sent, before anything is stored.
+                let n = body.chars().count();
+                if n > crate::team::MAX_STORED {
+                    bail!("plan too long ({n} chars): put the details in a file and send a summary with its path");
+                }
+                t.flow.plan = Some(plan.to_string());
                 t.flow.plan_approved = false;
                 self.db.upsert_task(&t)?;
                 let up = rules::reports_to(&cx.team, me).unwrap_or_else(|| "lead".into());
-                self.post_message(
-                    cx,
-                    Sender(me, Some(&rec.id)),
-                    &up,
-                    "plan",
-                    &format!(
-                        "plan for task id {id} ({}):\n{}\n\nApprove it or send it back with mcp__orch__decide_plan.",
-                        t.title,
-                        cut(plan, 6_000)
-                    ),
-                    json!({"task": id}),
-                )?;
+                self.post_message(cx, Sender(me, Some(&rec.id)), &up, "plan", &body, json!({"task": id}))?;
                 self.run_event(&cx.run.id, Some(&rec.id), "task.plan", json!({"task": id}));
                 Ok((format!("Plan sent to {up}. End your turn; the decision comes as a new turn."), Value::Null))
             }

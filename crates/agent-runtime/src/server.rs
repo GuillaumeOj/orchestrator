@@ -111,26 +111,29 @@ pub fn serve(rt: Arc<Runtime>, listener: UnixListener, stop: Arc<AtomicBool>) ->
     Ok(())
 }
 
-fn reply(s: &UnixStream, r: Reply) {
-    let _ = bus::write_line(&mut &*s, &ReplyEnvelope::new(r));
+/// Writes the answer; `false` when it could not be written.
+fn reply(s: &UnixStream, r: Reply) -> bool {
+    bus::write_line(&mut &*s, &ReplyEnvelope::new(r)).is_ok()
 }
 
 fn handle(rt: &Runtime, s: UnixStream, stop: &AtomicBool) {
     let mut reader = BufReader::new(&s);
     let env: Envelope = match bus::read_line(&mut reader) {
         Ok(e) => e,
-        Err(e) => return reply(&s, Reply::Error { message: e.to_string() }),
+        Err(e) => {
+            reply(&s, Reply::Error { message: e.to_string() });
+            return;
+        }
     };
     if env.v != PROTOCOL_VERSION {
-        return reply(
-            &s,
-            Reply::Error { message: format!("protocol version {} (core speaks {PROTOCOL_VERSION})", env.v) },
-        );
+        reply(&s, Reply::Error { message: format!("protocol version {} (core speaks {PROTOCOL_VERSION})", env.v) });
+        return;
     }
     match env.msg {
-        Msg::Hook(m) => {
-            let output = rt.on_hook(&m, Some(&s));
-            reply(&s, Reply::Hook { output });
+        Msg::Hook(m) => rt.serve_hook(&m, Some(&s), |r| reply(&s, r)),
+        Msg::HookAck(m) => {
+            rt.on_hook_ack(&m.agent_id, &m.ids);
+            reply(&s, Reply::Ack);
         }
         Msg::Status(m) => {
             rt.on_status(&m);
@@ -142,7 +145,8 @@ fn handle(rt: &Runtime, s: UnixStream, stop: &AtomicBool) {
         }
         Msg::Ctl(CtlRequest::Attach { agent_id, rows, cols }) => {
             if !rt.live_ids().contains(&agent_id) {
-                return reply(&s, Reply::Ctl(CtlReply::err(format!("agent {agent_id} is not running"))));
+                reply(&s, Reply::Ctl(CtlReply::err(format!("agent {agent_id} is not running"))));
+                return;
             }
             reply(&s, Reply::Ctl(CtlReply::ok(json!("attached"))));
             // Input sent right after the request is already in the reader's buffer.
@@ -156,7 +160,9 @@ fn handle(rt: &Runtime, s: UnixStream, stop: &AtomicBool) {
             stop.store(true, Ordering::SeqCst);
             reply(&s, Reply::Ctl(CtlReply::ok(json!("stopped"))));
         }
-        Msg::Ctl(req) => reply(&s, Reply::Ctl(ctl(rt, req))),
+        Msg::Ctl(req) => {
+            reply(&s, Reply::Ctl(ctl(rt, req)));
+        }
     }
 }
 
