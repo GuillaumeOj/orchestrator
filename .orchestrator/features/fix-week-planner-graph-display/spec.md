@@ -27,6 +27,13 @@ The data needed is already there. `PlannerView.actual` (`HistoryPoint`) carries
 `used` (W) and `governed` (G) for every sample, and `snapshot.used` is W now.
 **No backend change.**
 
+> **Update after the rebase onto main (2026-11-02):** main's T-44 ("week chart
+> draws the week's usage") landed first. It draws the used line and fill with
+> the agents area inside, and plan / forecast / w/ governor on the total scale
+> (`*_total` curve fields). It covers section 2 below, so this branch keeps
+> main's version and ships only section 1 (the working-hours band) plus the
+> "now" tag kept inside the SVG. Acceptance 2–4 are covered by main's tests.
+
 ## Change (frontend only, `PlannerPane.svelte`)
 
 ### 1. Working hours become a band on the time axis

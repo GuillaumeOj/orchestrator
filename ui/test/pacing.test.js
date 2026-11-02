@@ -370,14 +370,10 @@ describe('planner, banner, status bar, board', () => {
   });
 
   describe('week chart', () => {
-    const hist = (used, governed) => [{ t_ms: now - 3600000, used, governed }];
-    const snap = (used, governed) => ({ ...planner().snapshot, used, governed, ideal: 38 });
-    const edgeY = (container, cls) =>
-      Number(container.querySelector(`path.${cls}`).getAttribute('d').split('L').at(-1).split(',')[1]);
     const render0 = async (over) => {
       replies.planner_view = planner(over);
       const r = render(PlannerPane);
-      await waitFor(() => expect(r.container.querySelector('svg path.total-fill')).toBeTruthy());
+      await waitFor(() => expect(r.container.querySelector('svg path.fill')).toBeTruthy());
       return r;
     };
     // The y of a percentage, read from the 0% and 100% grid lines.
@@ -423,32 +419,6 @@ describe('planner, banner, status bar, board', () => {
       expect(b.container.querySelector('rect.off')).toBeNull();
       expect(b.container.textContent).toContain('band: working hours');
       expect(b.container.textContent).not.toContain('off-hours hatched');
-    });
-
-    it('total edge at y(used), agents edge at y(governed) at now', async () => {
-      const { container } = await render0({ actual: hist(50, 40), snapshot: snap(56, 47) });
-      const y = scale(container);
-      expect(edgeY(container, 'total')).toBeCloseTo(y(56), 0);
-      expect(edgeY(container, 'actual')).toBeCloseTo(y(47), 0);
-      expect(container.querySelector('svg').getAttribute('aria-label')).toBe(
-        'Week usage: total 56%, agents 47% against the ideal 38%',
-      );
-      expect(container.textContent).toContain('total');
-    });
-
-    it('governed above used is clamped to the total', async () => {
-      const { container } = await render0({ actual: hist(30, 33), snapshot: snap(56, 60) });
-      const y = scale(container);
-      expect(edgeY(container, 'actual')).toBeCloseTo(y(56), 0);
-      const pts = container.querySelector('path.actual').getAttribute('d').split('L');
-      expect(Number(pts[0].split(',')[1].replace('M', ''))).toBeCloseTo(y(30), 0);
-    });
-
-    it('used == governed leaves no visible band between the edges', async () => {
-      const { container } = await render0({ actual: hist(40, 40), snapshot: snap(47, 47) });
-      expect(container.querySelector('path.total').getAttribute('d')).toBe(
-        container.querySelector('path.actual').getAttribute('d'),
-      );
     });
   });
 
