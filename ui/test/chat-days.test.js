@@ -229,6 +229,25 @@ describe('search', () => {
     expect(/** @type {HTMLInputElement} */ (c.querySelector('input.field')).value).toBe('serde');
   });
 
+  it("t and Back to today from a result's day close the search; an open decision reads with its kind", async () => {
+    app.now = { ...nowOf(app.data, { decisions: [perm] }), chat: chatOf([entry('c-1', perm)]) };
+    replies.chat_search = [
+      { day: '2026-11-02', entry: entry('c-1', perm) },
+      { day: '2026-11-01', entry: old },
+    ];
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { container: c } = render(ChatColumn);
+    await type(c, 'serde');
+    await vi.advanceTimersByTimeAsync(250);
+    expect(text(c.querySelectorAll('[data-result]')[0])).toContain('● Permission · Bash · pnpm add zod');
+    await fireEvent.click(c.querySelectorAll('[data-result]')[1]);
+    await vi.advanceTimersByTimeAsync(10);
+    await press(c, 't');
+    expect(c.querySelector('[data-result]')).toBeNull();
+    expect(c.querySelector('input.field')).toBeNull();
+    expect(c.querySelector('.day').textContent).toContain('Today');
+  });
+
   it('a result of today opens its line in the thread', async () => {
     const e = closedEntry('c-1', perm, {
       verb: 'allowed',

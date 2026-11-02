@@ -38,7 +38,10 @@
     pastItems,
     resultsHead,
     resultText,
+    tailText,
     thread,
+    verbText,
+    warnVerb,
   } from '../../lib/chat.js';
   import { clock, plural } from '../../lib/format.js';
   import { actionByKey, agentOf, answerText, blockOf, FILTERS, intentFor, keyIntent } from '../../lib/inbox.js';
@@ -270,6 +273,7 @@
 
   function backToToday() {
     past = null;
+    searchOpen = false; // only Esc returns to the results (notes §6.4)
     outcome = null;
     daysPop = null;
     feed?.focus();
@@ -605,6 +609,7 @@
     {/if}
   </header>
   {#if daysPop}
+    <button class="scrim" tabindex="-1" aria-label="Close the days" onclick={() => (daysPop = null)}></button>
     <div class="days" role="dialog" aria-label="Older days">
       {#if daysPop.status === 'loading'}
         <p class="muted pad">Loading days…</p>
@@ -677,7 +682,7 @@
             {@const rt = resultText(r, app.now.decisions)}
             {#if i === 0 || found.list[i - 1].day !== r.day}<div class="sep" role="separator">{dayLabel(r.day).toUpperCase()}</div>{/if}
             <button class="result" data-result data-step onclick={() => openResult(r)}>
-              <span class="rtext" class:warn={rt.warn}>{#if rt.open}<span aria-label="waiting">● </span>{:else if r.entry.kind !== 'morning'}▸ {/if}{rt.text}</span>
+              <span class="rtext" title={rt.text}>{#if rt.open}<span aria-label="waiting">●</span>{' '}{:else if r.entry.kind !== 'morning'}▸ {/if}{#if rt.line}<span class="verb" class:warn={warnVerb(rt.line.verb)}>{verbText(rt.line.verb)}</span>{rt.line.agent ? ` ${rt.line.agent}` : ''}: {rt.line.what ?? ''}{#if tailText(rt.line)} <span class="muted">· {tailText(rt.line)}</span>{/if}{:else}{rt.text}{/if}</span>
               <span class="muted rwhen">{dayLabel(r.day)} · {clock(r.entry.line?.at_ms ?? r.entry.at_ms)}</span>
             </button>
           {/each}
@@ -817,11 +822,25 @@
   .days {
     display: flex;
     flex-direction: column;
-    flex: none;
-    max-height: 240px;
+    position: absolute;
+    top: 40px;
+    right: 12px;
+    z-index: 5;
+    width: min(320px, calc(100% - 24px));
+    max-height: 280px;
     overflow: auto;
     background: var(--color-surface-raised);
-    border-bottom: var(--border-width-default) solid var(--color-border-subtle);
+    border: var(--border-width-default) solid var(--color-border-subtle);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-overlay);
+  }
+  .scrim {
+    position: absolute;
+    inset: 40px 0 0;
+    z-index: 4;
+    border: 0;
+    padding: 0;
+    background: color-mix(in srgb, var(--color-surface-chrome) calc(var(--opacity-backdrop) * 100%), transparent);
   }
   .pad {
     margin: 0;
@@ -859,7 +878,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-sm);
-    color: var(--color-text-secondary);
+    color: var(--color-text-muted);
     font: var(--text-caption);
     letter-spacing: 0.06em;
   }
@@ -889,8 +908,8 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .rtext.warn {
-    color: var(--color-status-error, var(--color-text-primary));
+  .rtext .verb.warn {
+    color: var(--color-status-waiting-for-you);
   }
   .rwhen {
     font: var(--text-caption);

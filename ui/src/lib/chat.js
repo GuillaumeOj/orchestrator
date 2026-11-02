@@ -5,6 +5,7 @@
 
 import { clock, plural } from './format.js';
 import { agentOf, cut, FILTERS } from './inbox.js';
+import { decisionKind } from './status.js';
 
 /** A user's own decision collapses to its line this long after its effect (notes §2.1). */
 export const COLLAPSE_MS = 10000;
@@ -451,8 +452,8 @@ export function resultsHead(q, n, limit = 50) {
 export function resultText(r, decisions = {}) {
   const e = r.entry;
   if (e.kind === 'morning' || (e.text && !e.decision)) return { text: e.text ?? '', open: false };
-  if (e.line) return { text: `${lineText(e.line)}`, open: false, warn: warnVerb(e.line.verb) };
+  if (e.line) return { line: e.line, text: lineText(e.line), open: false };
   const d = decisions[e.decision];
-  if (d) return { text: d.title, open: true };
+  if (d) return { text: `${decisionKind(d).label} · ${d.title}`, open: true };
   return { text: lineText(leftOpen(e)), open: false };
 }
