@@ -529,6 +529,31 @@ ALTER TABLE inbox_items ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE team_runs ADD COLUMN pr_number INTEGER;
 ALTER TABLE team_runs ADD COLUMN pr_status TEXT;
 "#,
+    // 13 (P4.3, FR-1305): the chat log, one thread per local working day.
+    // Authors core | overwatch | user; kinds decision | morning | text |
+    // annotation | rule_proposal (P4.4 adds no migration). `line` and `card`
+    // are JSON; `card` holds the open decision's snapshot until `line` is set.
+    // `haystack`: the searched text, lower-cased (text, line.what,
+    // line.agent, card title and summary).
+    r#"
+CREATE TABLE chat_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day TEXT NOT NULL,
+    at_ms INTEGER NOT NULL,
+    author TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    thread TEXT,
+    decision TEXT,
+    text TEXT,
+    line TEXT,
+    card TEXT,
+    rev INTEGER NOT NULL DEFAULT 1,
+    haystack TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX chat_entries_day ON chat_entries(day, at_ms, id);
+CREATE INDEX chat_entries_decision ON chat_entries(decision) WHERE decision IS NOT NULL;
+CREATE INDEX chat_entries_open ON chat_entries(kind) WHERE kind = 'decision' AND line IS NULL;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

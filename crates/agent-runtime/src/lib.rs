@@ -2,6 +2,7 @@
 
 pub mod artifacts;
 pub mod attention;
+pub mod chat;
 pub mod compile;
 pub mod decision;
 pub mod delivery;

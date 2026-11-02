@@ -261,7 +261,7 @@ impl Runtime {
     }
 
     /// Who and what a new decision is about, as it stands now (stored with it).
-    fn subject_now(&self, agent: Option<&str>, project: Option<&str>) -> Value {
+    pub(crate) fn subject_now(&self, agent: Option<&str>, project: Option<&str>) -> Value {
         let rec = agent.and_then(|a| self.store.read(|s| s.agents.get(a).cloned()));
         let feature = rec
             .as_ref()
@@ -462,12 +462,17 @@ impl Runtime {
             let actor = format!("rule:{}", rule.id);
             let detail = call.detail(None, Some(rule));
             match rule.effect {
+                // Audited (FR-709), and posted in the chat as a settled line (FR-1305).
                 RuleEffect::Allow => {
-                    let _ = self.db.audit(&actor, Some(&rec.id), "permission", Some(&call.tool), "allow", detail);
+                    if let Ok(n) = self.db.audit(&actor, Some(&rec.id), "permission", Some(&call.tool), "allow", detail) {
+                        self.chat_rule_answered(rec, &call, rule, true, n);
+                    }
                     return Some(HookOutput::permission_request(PermissionBehavior::Allow, None));
                 }
                 RuleEffect::Deny => {
-                    let _ = self.db.audit(&actor, Some(&rec.id), "permission", Some(&call.tool), "deny", detail);
+                    if let Ok(n) = self.db.audit(&actor, Some(&rec.id), "permission", Some(&call.tool), "deny", detail) {
+                        self.chat_rule_answered(rec, &call, rule, false, n);
+                    }
                     return Some(HookOutput::permission_request(
                         PermissionBehavior::Deny,
                         Some(&format!("ORCH: denied by the user's rule {} ({}).", rule.id, rule.pattern)),

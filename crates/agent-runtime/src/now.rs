@@ -51,6 +51,7 @@ struct State {
     /// The decisions last sent (open ones and those closed recently), by id.
     decisions: BTreeMap<String, Decision>,
     outcomes: OutcomeCache,
+    chat: crate::chat::ChatState,
 }
 
 /// Today's outcomes (the local date), and the last event id read.
@@ -73,6 +74,27 @@ pub struct Now {
     /// Synthesized cards answered from the Inbox (ask, pane prompt, error):
     /// their final upsert says so instead of `dismissed`.
     answers: Mutex<BTreeMap<String, &'static str>>,
+    /// Chat entries posted outside a computation (a rule's answer): the next
+    /// `now` event carries them.
+    chat_posted: Mutex<Vec<orch_store::ChatEntry>>,
+    /// Tests: the clock and time zone the publisher reads.
+    #[cfg(test)]
+    pub(crate) clock: Mutex<Option<(u64, jiff::tz::TimeZone)>>,
+}
+
+impl Now {
+    pub(crate) fn chat_posted(&self) -> MutexGuard<'_, Vec<orch_store::ChatEntry>> {
+        lock(&self.chat_posted)
+    }
+
+    /// Now and the local time zone (the working day's).
+    pub(crate) fn clock(&self) -> (u64, jiff::tz::TimeZone) {
+        #[cfg(test)]
+        if let Some(c) = lock(&self.clock).clone() {
+            return c;
+        }
+        (now_ms(), jiff::tz::TimeZone::system())
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -94,6 +116,7 @@ fn delta(
     new: &World,
     (upsert, closed): (&[Decision], &[String]),
     outcomes: &[Outcome],
+    chat: &[orch_store::ChatEntry],
     topics: &BTreeSet<String>,
 ) -> Option<Value> {
     let (agents, agents_gone) = changed(&old.agents, &new.agents);
@@ -107,6 +130,7 @@ fn delta(
         && upsert.is_empty()
         && closed.is_empty()
         && outcomes.is_empty()
+        && chat.is_empty()
         && topics.is_empty();
     if nothing {
         return None;
@@ -120,6 +144,9 @@ fn delta(
     });
     if let Some(c) = counts {
         v["counts"] = json!(c);
+    }
+    if !chat.is_empty() {
+        v["chat"] = json!(chat);
     }
     Some(v)
 }
@@ -386,6 +413,8 @@ impl Runtime {
         let st = lock(&self.now.state);
         let empty = World::default();
         let w = st.last.as_ref().unwrap_or(&empty);
+        let day = st.chat.day.clone();
+        let entries = self.db.chat_day(&day).unwrap_or_default();
         json!({
             "rev": st.rev,
             "agents": w.agents.values().collect::<Vec<_>>(),
@@ -393,6 +422,7 @@ impl Runtime {
             "counts": w.counts,
             "decisions": st.decisions.values().collect::<Vec<_>>(),
             "outcomes": st.outcomes.list,
+            "chat": {"day": day, "entries": entries},
         })
     }
 
@@ -410,7 +440,8 @@ impl Runtime {
         let queue_now: GovSeen = self.with_governor(|g| {
             (g.queue().to_vec(), g.paused_agents().iter().map(|a| a.0.clone()).collect(), g.pending_ask())
         });
-        let now = now_ms();
+        let (now, tz) = self.now.clock();
+        let posted = !self.now.chat_posted().is_empty();
         let mut st = lock(&self.now.state);
         let queue_moved = st.queue.as_ref() != Some(&queue_now);
         let team_moved = st.team.changes != Some(team_changes);
@@ -421,7 +452,8 @@ impl Runtime {
             || queue_moved
             || team_moved
             || !topics.is_empty()
-            || !db_topics.is_empty())
+            || !db_topics.is_empty()
+            || posted)
         {
             return;
         }
@@ -475,7 +507,6 @@ impl Runtime {
         });
         // Today's outcomes: the new ones since the last read (all on a new
         // day), read for the same day the cache is keyed by.
-        let tz = jiff::tz::TimeZone::system();
         let (midnight, day) = crate::digest::today(now, &tz);
         if st.outcomes.day != day {
             st.outcomes = OutcomeCache { day, ..Default::default() };
@@ -522,7 +553,28 @@ impl Runtime {
         let mut answers = lock(&self.now.answers);
         let (upsert, closed) = decision_delta(&state.decisions, &mut decisions, &mut answers, now, state.rev + 1);
         drop(answers);
-        let event = delta(state.rev + 1, &old, &world, (&upsert, &closed), &new_outcomes, &topics);
+        // The chat log follows (FR-1305): entries posted, lined or moved.
+        let gone: Vec<Decision> = upsert.iter().filter(|d| !decisions.contains_key(&d.id)).cloned().collect();
+        let in_progress = state
+            .team
+            .runs
+            .iter()
+            .filter(|r| !r.run.status.finished() && !r.run.status.held() && r.run.status != orch_team::RunState::Draft)
+            .count();
+        let today = state.outcomes.day.clone();
+        let waiting = world.counts.global.decisions;
+        let morning = || {
+            let week = self.with_governor(|g| {
+                let s = g.snapshot(governor::jiff::Timestamp::from_millisecond(now as i64).unwrap_or_default());
+                (s.used, s.plan)
+            });
+            crate::chat::morning_text(in_progress as u32, waiting, Some(week))
+        };
+        let chat = self.chat_sync(
+            &mut state.chat,
+            crate::chat::SyncIn { now, day: &today, decisions: &decisions, gone: &gone, morning: &morning },
+        );
+        let event = delta(state.rev + 1, &old, &world, (&upsert, &closed), &new_outcomes, &chat, &topics);
         state.decisions = decisions;
         state.last = Some(world);
         let Some(event) = event else { return };

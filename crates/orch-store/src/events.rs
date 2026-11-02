@@ -173,6 +173,28 @@ impl Store {
         })
     }
 
+    /// Events of `kinds` with `since_ms <= ts_ms < until_ms`, oldest first
+    /// (a past day's outcomes), each with its team run.
+    pub fn events_of_kinds_in(&self, since_ms: u64, until_ms: u64, kinds: &[&str]) -> Result<Vec<RunEvent>> {
+        let kinds: Vec<String> = kinds.iter().map(|k| k.to_string()).collect();
+        self.read(move |c| {
+            let marks = vec!["?"; kinds.len()].join(",");
+            let sql = format!(
+                "SELECT id, ts_ms, agent_id, kind, detail, team_run_id FROM events
+                 WHERE ts_ms >= ? AND ts_ms < ? AND kind IN ({marks}) ORDER BY id"
+            );
+            let args = [since_ms as i64, until_ms as i64]
+                .into_iter()
+                .map(rusqlite::types::Value::Integer)
+                .chain(kinds.into_iter().map(rusqlite::types::Value::Text));
+            let mut st = c.prepare(&sql)?;
+            let rows = st
+                .query_map(rusqlite::params_from_iter(args), |r| Ok((row_event(r)?, r.get(5)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(rows)
+        })
+    }
+
     /// A team run's timeline (FR-408), newest first.
     pub fn run_events(&self, run_id: &str, limit: usize) -> Result<Vec<Event>> {
         let run = run_id.to_string();

@@ -150,6 +150,7 @@ mod tests {
             created_ms: 0,
             agent: Some(agent.into()),
             synthesized: false,
+            decision: None,
             payload: json!({}),
         }
     }

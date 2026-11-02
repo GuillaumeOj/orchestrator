@@ -214,6 +214,18 @@ impl Runtime {
         (evs.iter().filter_map(|(e, r)| outcome(e, r.as_deref(), &names, seen, tz)).collect(), last)
     }
 
+    /// The outcomes of `since_ms <= at < until_ms` (a past day's, for
+    /// `chat_day`), `seen` false.
+    pub(crate) fn outcomes_between(&self, since_ms: u64, until_ms: u64, tz: &TimeZone) -> Vec<Outcome> {
+        let Ok(evs) = self.db.events_of_kinds_in(since_ms, until_ms, &KINDS) else { return vec![] };
+        if evs.is_empty() {
+            return vec![];
+        }
+        let paths = self.db.projects(false).unwrap_or_default().into_iter().map(|p| (p.path, p.id)).collect();
+        let names = self.names(&evs, &BTreeMap::new(), &paths);
+        evs.iter().filter_map(|(e, r)| outcome(e, r.as_deref(), &names, 0, tz)).collect()
+    }
+
     /// The runs, agents' projects and tasks these events name.
     fn names(
         &self,
