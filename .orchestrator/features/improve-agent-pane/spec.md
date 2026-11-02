@@ -25,6 +25,7 @@
 ### 3.1 One bottom panel for shells and agents (the dock)
 
 - **Agents open in the dock.** `openAgent` adds the agent as a dock tab (`addDockPane`) and focuses it; an agent already open (in the dock) gets its tab focused. Every path that opens an agent goes through it: sidebar, icon rail, Overview, Feature team card, project pane, palette `Open <agent>`, leader w (`nextWaiting`), Inbox/notification links.
+- **Mission control sessions too** (user decision, 2026-11-02, after main brought P4.2): `openSession` opens the agent as a dock tab in watch mode with `over` set. Esc returns to Mission control, ⏎ takes over, and an agent already open gets its dock tab back in watch mode (T-67).
 - **Shells open in the dock**: `openShell()` without `how` (unchanged), the project pane's **Shell** button (drop `how: 'right'`), the Inspector's **Shell here** (unchanged), `runInPane` (gh auth login, claude /mcp) and `openTrust` (trust dialog). These shells keep their title (`trust · <project>`, the command).
 - Stay in the workspace: nvim (`openEditor`), every non-terminal pane, and the explicit **Split right / Split below (shell)** commands (leader v / s), which keep making a shell pane where the user asked for one.
 - The dock shows the active tab's content: `TermPaneView` for a shell, `AgentPane` (its header with role, status, model, ctx, session, actions and its strips) for an agent. No `PaneFrame` header in the dock: the tab carries the title and the close button.
@@ -70,5 +71,7 @@ The Overwatch / Mission control (P4.2) and its "session over the board"; the age
 | T-62 Penpot: the dock with agent and shell tabs | ui | — | 03 Shell & layouts: dock with mixed tabs (states in ux-brief), dock filling the column, zoomed dock; 02 Components: dock tab (shell, agent + statuses, focused, overflow). Export PNGs to `design/` |
 | T-63 Agent drawn at its real size on every show | front (opus, `plan_first`) | — | Confirm the cause, fix in `term.js` / `mountTerm`; the plan says if the core's `agent_attach` must change (then a back task follows, per api-contract) |
 | T-64 Agents and shells in the bottom dock | front | T-62, T-63 | `app.svelte.js` (open*, focus, zoom, restore migration, default height), `Dock.svelte`, `App.svelte`, `Workspace.svelte`, `ProjectPane.svelte`, tests. Asks `ui` for a visual review |
+| T-66 Dock frames in FigCraft | ui | T-64 | ADR-012: 5 dock states + Dock tab set in `docs/design/Orchestrator.figcraft`, PNGs in `design/` |
+| T-67 Mission control sessions open as dock tabs | front | — | `openSession`, `leaveWatch`, restore; `mission-pane.test.js`, `dock.test.js` |
 
 `ux`: no separate task; the interaction rules are settled in [ux-brief.md](ux-brief.md). `back`: no work unless T-63's plan shows the core must change.
