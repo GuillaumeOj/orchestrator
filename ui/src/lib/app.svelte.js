@@ -70,7 +70,7 @@ export const inDock = (id) => app.dock.tabs.includes(id);
 
 /** The dock takes the whole work column: no workspace pane, or a zoomed dock tab. */
 export const dockFills = () =>
-  app.dock.open && app.dock.tabs.length > 0 && (!app.layout || (!!app.zoomed && inDock(app.zoomed)));
+  app.dock.open && app.dock.tabs.length > 0 && (!app.layout || inDock(app.zoomed));
 
 /** xterm.js panes by pane id (not reactive). */
 export const terms = new Map();
@@ -633,10 +633,8 @@ export function focusDirection(dir) {
 
 export function focusNumber(n) {
   const id = L.visible(app.layout)[n - 1];
-  if (id) {
-    app.zoomed = app.zoomed ? id : null;
-    focusPane(id);
-  }
+  // focusPane moves a workspace zoom with the focus and ends a dock zoom.
+  if (id) focusPane(id);
 }
 
 export function toggleZoom() {

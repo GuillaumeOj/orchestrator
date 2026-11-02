@@ -20,7 +20,7 @@
   const clamp = (h) => Math.min(0.8, Math.max(0.12, h));
 
   const fill = $derived(dockFills());
-  const zoomed = $derived(!!app.zoomed && inDock(app.zoomed));
+  const zoomed = $derived(inDock(app.zoomed));
   const activeSpec = $derived(app.panes[app.dock.active]);
   /** The first tab is active and nothing is scrolled off: it sits on the body's top-left corner. */
   const squareTL = $derived(app.dock.tabs[0] === app.dock.active && !scrolled);

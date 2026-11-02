@@ -23,6 +23,7 @@ const {
   cycleDock,
   dockFills,
   focusDirection,
+  focusNumber,
   focusPane,
   inDock,
   openAgent,
@@ -161,6 +162,25 @@ describe('zoom and the dock filling the column', () => {
     toggleZoom();
     expect(app.zoomed).toBe(null);
     expect(dockFills()).toBe(false);
+  });
+
+  it('⌘1…9 from a zoomed dock tab focuses the workspace pane and ends the zoom', async () => {
+    await openShell();
+    toggleZoom();
+    focusNumber(1);
+    expect(app.focused).toBe('p1');
+    expect(app.zoomed).toBe(null);
+    expect(dockFills()).toBe(false);
+  });
+
+  it('⌘1…9 moves a workspace zoom to the pane it focuses', async () => {
+    await openShell({ how: 'right' });
+    const [, second] = app.layout.children.flatMap((c) => c.tabs);
+    focusPane('p1');
+    toggleZoom();
+    focusNumber(2);
+    expect(app.focused).toBe(second);
+    expect(app.zoomed).toBe(second);
   });
 
   it('keeps the zoom across dock tabs and ends it on the other side', async () => {
