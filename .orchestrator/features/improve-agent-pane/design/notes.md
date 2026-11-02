@@ -1,29 +1,29 @@
 # Improve Agent Pane · design notes (T-62)
 
-Penpot file **Orchestrator**. Companion of [../ux-brief.md](../ux-brief.md) and [../spec.md](../spec.md). Existing tokens only (`ui/src/styles/tokens.css`); no new token.
+FigCraft file [`docs/design/Orchestrator.figcraft`](../../../../docs/design/Orchestrator.figcraft) (ADR-012). Companion of [../ux-brief.md](../ux-brief.md) and [../spec.md](../spec.md). Existing tokens only (`ui/src/styles/tokens.css`); no new token.
 
 ## Frames
 
-Not drawn yet: Penpot was unavailable during T-62, so these notes are the build reference for T-64. The frames and PNG exports below come with T-66; until then the names are the plan.
+Drawn in T-66 after T-64 was built, from these notes and `ui/src/components/Dock.svelte` (where the two differ, the frames follow the code; see "Drawn as built" below). T-62 had no frames: Penpot was unavailable, then ADR-012 moved the design to FigCraft.
 
-| Export (planned) | Penpot page · frame | Size |
+| Export | FigCraft page · frame | Size |
 |---|---|---|
 | `dock-1-agent-active.png` | 03 Shell & layouts · `Dock · 1512 · agent active` | 1512 × 982 |
 | `dock-2-shell-active.png` | 03 Shell & layouts · `Dock · 1512 · shell active` | 1512 × 982 |
 | `dock-3-no-workspace.png` | 03 Shell & layouts · `Dock · 1512 · no workspace pane` | 1512 × 982 |
 | `dock-4-zoomed.png` | 03 Shell & layouts · `Dock · 1512 · zoomed` | 1512 × 982 |
 | `dock-5-overflow-1280.png` | 03 Shell & layouts · `Dock · 1280 · tab overflow` | 1280 × 800 |
-| `dock-tab-variants.png` | 02 Components · `Dock tab · variants` | component sheet |
+| `dock-tab-variants.png` | 02 Components · `Improve agent pane · Dock tab` (component set `Dock tab`) | component sheet |
 
-The five dock frames sit in a new row under `Shell · 1512 · shell dock` (y = 3246, 100 px apart, as the other rows of the page). `Shell · 1512 · shell dock` is kept as the "before" reference; the new frames supersede it.
+The five dock frames sit in a new row at the bottom of the page (y = 5068, under `Layout notes · P4.2`, 100 px apart). The Dock tab component set is the last section of 02 Components (`Improve agent pane · Dock tab`): 8 variants (Kind agent/shell × State default/hover/active/active focused), every status icon, long names. `Shell · 1512 · shell dock` is kept as the "before" reference; the new frames supersede it.
 
-Content of states 1, 2 (ux-brief "States to draw"): tabs in open order `[L] lead` (Working) · `[B] back-1` (Waiting for you) · `zsh · shop-api` · `[F] front-2` (Idle) · `pnpm test` (shell). Workspace above: the project pane `shop-api`. State 1 has `back-1` active (its agent pane header, the "waiting for you" strip and the PTY), state 2 has `zsh · shop-api` active.
+Content of states 1, 2 (ux-brief "States to draw"): tabs in open order `[L] lead` (Working) · `[B] back-1` (Waiting for you) · `zsh · shop-api` · `[F] front-1` (Idle) · `pnpm test` (shell). Workspace above: the project pane `shop-api`. State 1 has `back-1` active (its agent pane header, the "waiting for you" strip and the PTY), state 2 has `zsh · shop-api` active.
 
 ## Dock (container, unchanged unless said)
 
 - Under the workspace, full width of the work column (sidebar ↔ inspector). `color.surface.chrome` background, padding `0 space.xs space.xs`.
 - Handle: `space.xs` (4 px) tall on top, `color.border.strong` on hover / focus.
-- Height: 0.45 of the column by default (spec §3.1). In the 1512 frames: work column 922 px tall (982 − `size.titlebar` 36 − `size.statusbar` 24) → dock 415 px, workspace above 507 px.
+- Height: 0.45 of the column by default (spec §3.1). In the 1512 frames: work column 920 px tall (982 − `size.titlebar` 36 − `size.statusbar` 24 − the two 1 px rules) → dock 414 px, workspace above 506 px. At 1280: column 738 px → dock 332 px.
 - Body: `radius.sm` on every corner, clip; the top-left is square only while the first tab is active and the lane is not scrolled (that tab sits on it).
 
 ## Tab strip
@@ -32,7 +32,7 @@ Content of states 1, 2 (ux-brief "States to draw"): tabs in open order `[L] lead
 - Left: the tabs, in open order. Right, pinned: `+` (new shell), then the hint `⌘J hide` (`text.caption`, `color.text.muted`, `space.sm` right padding). In the zoomed state the hint group reads `ZOOMED` · `⌘; z restore` · `⌘J hide` (see State 4).
 - **Overflow**: the tabs scroll horizontally inside their own lane (scrollbar hidden); `+` and the hint group don't scroll. Only while the lane overflows (no space taken otherwise), a 1 px `color.border.subtle` divider separates the lane from `+`, so the clipped tab reads as cut, not as the last one. The active tab is always scrolled into view. No fade, no "n more" counter (decision: not in the brief, ⌘; ] / [ and the palette already reach every tab).
 
-## Dock tab (02 Components · `Dock tab · variants`)
+## Dock tab (02 Components · component set `Dock tab`)
 
 Shared by both kinds: height 24, top corners `radius.sm`, font `text.label` (12 px / 500), padding `0 space.sm` on the label, `0 space.xs` on the ×.
 
@@ -78,3 +78,14 @@ All five accepted by `lead` (T-62).
 - Overflow divider (1 px `color.border.subtle`), no fade or counter.
 - No drag handle when the dock fills the column (states 3 and 4); a `space.xs` top padding keeps the tab strip 4 px below the column top, as with the handle.
 - `ZOOMED` without "n of m".
+
+## Drawn as built (T-66)
+
+Where the frames differ from the text above, they follow T-64 (`Dock.svelte`):
+
+- Role mark: the P1 Agent chip at Size compact (16 × 16 in the file; the code's mark is 14 × 16).
+- Overflow divider: 1 × 12 px, vertically centred in the strip (`.sep`), not the strip's full height.
+- Hints: `⌘J` and `⌘; z` are P1 Key hint keycaps (the code's `Kbd`), then the word (`hide`, `restore`) in `color.text.muted`; the `⌘; z restore` group is a button with `space.sm` on both sides.
+- State 1 and 2: the idle agent is `front-1` (not `front-2`), the sidebar's agent; the sidebar and Inspector show the same statuses as the tabs (lead Working, back-1 Waiting for you, front-1 Idle).
+- State 3 and 4 look the same apart from the right group: the zoomed dock also fills the column, with `space.xs` above the tab strip.
+- State 5: the overlay inspector is closed so the strip reads in full. The workspace holds the project pane, the active `ui-1` is Working. Two shells have long commands (`pnpm --filter shop-api test`, `tail -f logs/checkout.log`): they hit the 200 px cap and ellipsize, and push `ui-1` past the lane's edge. Scrolled into view, `ui-1` ends at the lane's right edge and the first tab (`lead`) is cut on the left.
