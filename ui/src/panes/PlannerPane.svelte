@@ -65,6 +65,7 @@
   // The time-axis band (working hours, off-hours) sits in the gutter under the 0% line.
   const BAND = { gap: 5, h: 5 };
   const bandY = $derived(H - pad.b + BAND.gap);
+  const bandLabelY = $derived(bandY + BAND.h + 10);
   const x = (t) => pad.l + ((t - v.week_start_ms) / (v.reset_at_ms - v.week_start_ms)) * (w - pad.l - pad.r);
   const y = (val) => pad.t + (1 - Math.min(Math.max(val, 0), 110) / 100) * (H - pad.t - pad.b);
   const path = (pts) => pts.map((q, i) => `${i ? 'L' : 'M'}${x(q[0]).toFixed(1)},${y(q[1]).toFixed(1)}`).join('');
@@ -228,9 +229,9 @@
           {#each v.working as [a, b] (a)}<rect x={x(a)} y={bandY} width={Math.max(1, x(b) - x(a))} height={BAND.h} class="work" />{/each}
           {#each offBands as o (o.a)}
             <rect x={x(o.a)} y={bandY} width={Math.max(1, x(Math.min(o.b, v.reset_at_ms)) - x(o.a))} height={BAND.h} class="off" />
-            {#if o.label}<text x={x(o.a) + 4} y={bandY + BAND.h + 10} class="ax">off-hours</text>{/if}
+            {#if o.label}<text x={x(o.a) + 4} y={bandLabelY} class="ax">off-hours</text>{/if}
           {/each}
-          {#if off?.queued && offStart}<text x={Math.min(x(offStart) + 64, w - 80)} y={bandY + BAND.h + 10} class="tag okq">☾ {off.queued} queued</text>{/if}
+          {#if off?.queued && offStart}<text x={Math.min(x(offStart) + 64, w - 80)} y={bandLabelY} class="tag okq">☾ {off.queued} queued</text>{/if}
           <rect x={pad.l} y={y(100)} width={w - pad.l - pad.r} height={Math.max(0, y(reserveTop) - y(100))} class="reserve" />
           {#each [0, 25, 50, 75, 100] as g (g)}
             <line x1={pad.l} x2={w - pad.r} y1={y(g)} y2={y(g)} class="grid-l" /><text x={pad.l - 6} y={y(g) + 4} class="ax" text-anchor="end">{g}%</text>
