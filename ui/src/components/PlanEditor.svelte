@@ -73,8 +73,9 @@
       <thead><tr><th>Allocation</th><th>Weight</th><th>Share</th><th>Tier</th><th title="Stops this allocation's agents for the week at this % of the week">Hard cap (%)</th></tr></thead>
       <tbody>
         {#each form.allocations as a (a.id)}
-          <tr>
-            <td>{a.target || a.id}</td>
+          {@const out = a.id !== 'default' && !(Number(a.weight) > 0)}
+          <tr class:out>
+            <td>{a.target || a.id}{#if out}<span class="tag">not in plan</span>{/if}</td>
             <td><input class="field mono" type="number" min="0" step="1" bind:value={a.weight} aria-label="Weight of {a.id}" /></td>
             <td class="muted">{total ? Math.round(((Number(a.weight) || 0) / total) * 100) : 0}%</td>
             <td>
@@ -87,7 +88,7 @@
         {/each}
       </tbody>
     </table>
-    <p class="muted">Weights are relative; a weight of 0 drops the allocation. A hard cap stops the allocation for the week once it used that % of the week. Sessions outside these projects are charged to “other sessions”.</p>
+    <p class="muted">Weights are relative; a weight of 0 drops the allocation. A hard cap stops the allocation for the week once it used that % of the week. Projects not in the plan are charged to “other sessions”; give one a weight to add it.</p>
     {#if error}<p class="err">{error}</p>{/if}
     <div class="foot">
       {#if onCancel}<button type="button" class="btn ghost" onclick={onCancel}>Cancel <Kbd keys="esc" /></button>{/if}
@@ -137,6 +138,20 @@
   }
   p {
     margin: 0;
+  }
+  tr.out td {
+    color: var(--color-text-muted);
+  }
+  tr.out .field {
+    border-color: var(--color-border-subtle);
+    color: var(--color-text-muted);
+  }
+  .tag {
+    margin-left: var(--space-sm);
+    padding: 0 var(--space-xs);
+    border: var(--border-width-default) solid var(--color-border-subtle);
+    border-radius: var(--radius-sm);
+    font: var(--text-caption);
   }
   .foot {
     display: flex;

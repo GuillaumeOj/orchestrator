@@ -6,6 +6,7 @@
   // overrides. Keys: 1–3 backend, j/k mapping rows, ⏎ change a row,
   // r sync, ⌘⏎ save, esc cancel.
   import { onMount } from 'svelte';
+  import AllocationSettings from '../components/AllocationSettings.svelte';
   import ConnBadge from '../components/ConnBadge.svelte';
   import Kbd from '../components/Kbd.svelte';
   import McpSettings from '../components/McpSettings.svelte';
@@ -46,6 +47,7 @@
   let syncErr = $state(null);
   let unmapped = $state([]); // board_sync.unmapped_states: Linear states with no column
   let root = $state(null);
+  let alloc = $state(null); // AllocationSettings (forwards the keys)
 
   const connected = $derived(linearInt?.status === 'connected');
   const dirty = $derived(
@@ -168,6 +170,7 @@
   }
 
   function onKey(e) {
+    if (section.id === 'allocation' && !ask) return alloc?.onKey(e);
     if (ask) {
       if (e.key === 'Enter') save('push_open');
       else if (e.key === 'l') save('leave');
@@ -299,6 +302,8 @@
       <label class="line"><span class="lab">Parent page</span><input class="field grow" bind:value={notionPage} placeholder="Notion page URL or id" spellcheck="false" /></label>
       <p class="muted note">Share the page with your Notion integration. The token is in <button class="link" onclick={() => openSettings('integrations')}>Settings › Integrations</button>.</p>
       <div class="foot"><button class="btn primary" disabled={busy || !dirty} onclick={() => save()}>Save <Kbd keys="⌘+⏎" /></button></div>
+    {:else if section.id === 'allocation'}
+      <AllocationSettings bind:this={alloc} project={pid} {name} />
     {:else if section.id === 'mcp'}
       <McpSettings project={pid} selected={null} />
     {:else}
