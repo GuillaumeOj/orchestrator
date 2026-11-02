@@ -14,7 +14,7 @@
   import TitleBar from './components/TitleBar.svelte';
   import Toasts from './components/Toasts.svelte';
   import Workspace from './components/Workspace.svelte';
-  import { app, applyTheme, dockFills, flushDecisions, keyContext, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
+  import { app, applyTheme, applyUpdate, dockFills, flushDecisions, keyContext, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
   import { startDev } from './lib/dev.js';
   import { loadUiFont, prepareKitty } from './lib/fonts.js';
   import { inTauri, invoke, listen } from './lib/ipc.js';
@@ -81,6 +81,7 @@
     window.addEventListener('keydown', onKeyDown, true);
     let decisions;
     let unlisten = () => {};
+    let unlistenUpdate = () => {};
     let stopNow = () => {};
     let stopState = () => {};
     (async () => {
@@ -99,6 +100,8 @@
       startDev();
       // The undo window's flush: sends due decisions, fetches nothing.
       decisions = setInterval(flushDecisions, 1000);
+      unlistenUpdate = await listen('update', (ev) => applyUpdate(ev.payload));
+      applyUpdate(app.data?.update);
       unlisten = await listen('menu', (ev) => {
         // A chord handled by the webview may also fire its menu item: once is enough.
         if (lastKeyCommand.id === ev.payload && Date.now() - lastKeyCommand.at < 400) return;
@@ -110,6 +113,7 @@
       stopState();
       stopNow();
       unlisten();
+      unlistenUpdate();
       window.removeEventListener('resize', onResize);
       window.removeEventListener('keydown', onKeyDown, true);
     };

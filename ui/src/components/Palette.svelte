@@ -22,6 +22,7 @@
     app.overlay = null;
   }
   function choose(item) {
+    if (item?.disabled) return;
     close();
     item?.run();
   }
@@ -44,9 +45,10 @@
   <ul role="listbox">
     {#each items.slice(0, 50) as item, n (item.id ?? item.label)}
       <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <li role="option" aria-selected={n === i} class:on={n === i} onmousemove={() => (i = n)} onclick={() => choose(item)}>
+      <li role="option" aria-selected={n === i} aria-disabled={item.disabled ? true : undefined} class:on={n === i} class:off={item.disabled} onmousemove={() => (i = n)} onclick={() => choose(item)}>
         <span class="label">{item.label}</span>
         {#if item.scope === 'agent'}<span class="muted">agent</span>{/if}
+        {#if item.disabled}<span class="muted">{item.disabled}</span>{/if}
         {#if item.detail}<span class="muted">{item.detail}</span>{/if}
         <Kbd keys={item.hint} />
       </li>
@@ -109,5 +111,8 @@
   }
   .label {
     flex: 1;
+  }
+  li.off .label {
+    color: var(--color-text-disabled);
   }
 </style>
