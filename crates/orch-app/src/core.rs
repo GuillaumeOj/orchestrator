@@ -1875,6 +1875,24 @@ mod tests {
         core.shutdown();
     }
 
+    /// The Board never runs `gh` to find the repository: with none configured
+    /// there is no link until a sync resolved it.
+    #[test]
+    fn board_view_does_not_shell_out_for_the_repo() {
+        let d = tmp();
+        let core = test_core(d.path());
+        let rt = core.runtime().unwrap().clone();
+        let mut p = rt.db.project("repo").unwrap().unwrap();
+        p.task_backend = json!({"type": "github"});
+        rt.db.upsert_project(&p).unwrap();
+        let mut issue = orch_store::Task::new("repo", "github", "From GitHub", 1);
+        issue.external_id = Some("42".into());
+        let id = rt.db.upsert_task(&issue).unwrap();
+        let v = core.board_view("repo").unwrap();
+        assert!(v["tasks"].as_array().unwrap().iter().find(|t| t["id"] == id).unwrap()["remote_url"].is_null());
+        core.shutdown();
+    }
+
     /// D8 and the Board on a Linear-backed project (api-contract §7).
     #[test]
     fn switching_to_linear_asks_first_then_pushes_open_tasks() {

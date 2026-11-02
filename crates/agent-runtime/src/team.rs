@@ -37,6 +37,13 @@ use crate::store::{Admission, AgentRecord, TeamSeat, TurnRow, TurnStatus};
 /// Opening a Board syncs its project only if the last sync is older than this.
 pub const OPEN_SYNC_AFTER_MS: u64 = 60_000;
 /// Settings key prefix of each project's last task sync (`tasks.last_sync.<project>`).
+/// The sync of one project in flight, and how its last one ended.
+#[derive(Default)]
+pub struct SyncGate {
+    finished: std::sync::atomic::AtomicU64,
+    last: std::sync::Mutex<Option<std::result::Result<orch_tasks::SyncReport, String>>>,
+}
+
 pub const LAST_SYNC_KEY: &str = "tasks.last_sync.";
 
 /// What to launch (J3 step 2).
@@ -837,7 +844,27 @@ impl Runtime {
     /// Syncs one project's remote backend now (FR-503): conflicts (the
     /// remote won) become Inbox info items, and the outcome is kept for the
     /// Board (`last_sync`).
+    ///
+    /// One sync at a time per project: a call that finds one running waits
+    /// for it and returns its outcome instead of starting a second pass (two
+    /// passes would each create the issue of a never-pushed task).
     pub fn sync_tasks(&self, project: &orch_store::Project) -> Result<orch_tasks::SyncReport> {
+        let gate =
+            self.sync_gates.lock().unwrap_or_else(|e| e.into_inner()).entry(project.id.clone()).or_default().clone();
+        let arrived = gate.finished.load(std::sync::atomic::Ordering::SeqCst);
+        let mut last = gate.last.lock().unwrap_or_else(|e| e.into_inner());
+        if gate.finished.load(std::sync::atomic::Ordering::SeqCst) != arrived
+            && let Some(done) = last.clone()
+        {
+            return done.map_err(|e| anyhow!(e));
+        }
+        let r = self.sync_tasks_now(project);
+        *last = Some(r.as_ref().map(Clone::clone).map_err(|e| format!("{e:#}")));
+        gate.finished.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        r
+    }
+
+    fn sync_tasks_now(&self, project: &orch_store::Project) -> Result<orch_tasks::SyncReport> {
         let remote = match project.backend().kind() {
             "linear" => "Linear",
             _ => "GitHub",

@@ -398,6 +398,47 @@ mod tests {
         assert_eq!(lists(&gh), 4, "synced again");
     }
 
+    /// Two syncs at once of a project with a never-pushed task make one issue.
+    #[test]
+    fn concurrent_syncs_of_a_project_create_one_issue() {
+        #[derive(Clone, Default)]
+        struct SlowGh(Arc<Mutex<Vec<String>>>);
+        impl orch_tasks::github::Gh for SlowGh {
+            fn run(&self, args: &[String]) -> anyhow::Result<String> {
+                let line = args.join(" ");
+                self.0.lock().unwrap().push(line.clone());
+                if line.contains("--paginate") {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    return Ok("[]".into());
+                }
+                if line.contains("-X POST") && line.ends_with("/issues")
+                    || line.contains("-X POST repos/me/shop/issues")
+                {
+                    return Ok(json!({"number": 9, "title": "T", "body": "", "state": "open", "labels": [],
+                        "updated_at": "2026-11-02T10:00:00Z"})
+                    .to_string());
+                }
+                Ok("{}".into())
+            }
+        }
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
+        let gh = SlowGh::default();
+        let mut cfg = test_cfg(d.path(), false);
+        let g = gh.clone();
+        cfg.gh = Some(GhFactory(Arc::new(move || Box::new(g.clone()))));
+        let rt = Runtime::new(cfg).unwrap();
+        let p = project(&rt, "p", json!({"type": "github", "repo": "me/shop"}));
+        rt.db.upsert_task(&Task::new("p", "github", "Never pushed", 1)).unwrap();
+        let reports: Vec<_> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..2).map(|_| s.spawn(|| rt.sync_tasks(&p).unwrap())).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let creates = gh.0.lock().unwrap().iter().filter(|c| c.contains("-X POST repos/me/shop/issues ")).count();
+        assert_eq!(creates, 1, "{:?}", gh.0.lock().unwrap());
+        assert_eq!(reports[0], reports[1], "the second returns the first's report");
+        assert_eq!(rt.db.tasks(Some("p"), None, None).unwrap().len(), 1);
+    }
+
     #[test]
     fn the_background_sync_covers_watched_projects() {
         let (_d, rt, gh) = github_runtime();

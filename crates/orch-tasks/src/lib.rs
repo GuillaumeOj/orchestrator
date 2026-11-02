@@ -75,6 +75,11 @@ pub trait Remote: Send + Sync {
     fn github_repo(&self) -> Result<Option<String>> {
         Ok(None)
     }
+    /// Like [`Remote::github_repo`] but never runs anything: the repository
+    /// if it is configured or already resolved, else `None`.
+    fn known_github_repo(&self) -> Option<String> {
+        None
+    }
     /// What the sync cursor belongs to; `None` = the remote keeps no cursor.
     fn cursor_scope(&self) -> Result<Option<String>> {
         Ok(None)
@@ -101,6 +106,9 @@ impl<G: Gh> Remote for GithubIssues<G> {
     }
     fn github_repo(&self) -> Result<Option<String>> {
         self.repo().map(Some)
+    }
+    fn known_github_repo(&self) -> Option<String> {
+        self.known_repo()
     }
     fn cursor_scope(&self) -> Result<Option<String>> {
         Ok(Some(format!("github:{}", self.repo()?)))
@@ -226,6 +234,15 @@ impl<'a> TaskService<'a> {
         match &self.backend {
             Backend::Remote(_, r) => r.github_repo(),
             Backend::Local => Ok(None),
+        }
+    }
+
+    /// [`TaskService::github_repo`] without running `gh`: `None` until the
+    /// repository is configured or a first call resolved it.
+    pub fn known_github_repo(&self) -> Option<String> {
+        match &self.backend {
+            Backend::Remote(_, r) => r.known_github_repo(),
+            Backend::Local => None,
         }
     }
 

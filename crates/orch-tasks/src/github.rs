@@ -220,6 +220,11 @@ impl<G: Gh> GithubIssues<G> {
         self.gh.run(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
     }
 
+    /// The repository when it needs no `gh` call to know it.
+    pub fn known_repo(&self) -> Option<String> {
+        self.repo.get().cloned().or_else(|| self.configured.clone())
+    }
+
     pub fn repo(&self) -> Result<String> {
         if let Some(r) = self.repo.get() {
             return Ok(r.clone());

@@ -109,6 +109,7 @@ impl Gh for FakeGh {
         }
         let stamp = stamp(w.clock);
         match a.as_slice() {
+            ["repo", "view", ..] => Ok(json!({"nameWithOwner": "me/shop"}).to_string()),
             ["api", "-X", "POST", path, ..] if path.ends_with("/labels") => {
                 let n = get("name").unwrap();
                 if w.labels.contains(&n) {
@@ -735,4 +736,21 @@ fn github_unparsable_cursor_is_replaced() {
     s.set_task_sync_cursor("p1", "github:me/shop", "garbage").unwrap();
     svc(&s, &p, &gh).sync(1).unwrap();
     assert_eq!(s.task_sync_cursor("p1").unwrap(), Some(("github:me/shop".into(), stamp(1))));
+}
+
+/// The Board asks for the repository without running `gh`: unknown until a
+/// first call resolved it (or configured up front).
+#[test]
+fn known_github_repo_never_runs_gh() {
+    let (_d, s, p, gh) = github_setup();
+    assert_eq!(svc(&s, &p, &gh).known_github_repo().as_deref(), Some("me/shop"), "configured");
+    let (_d, s, mut p, gh) = github_setup();
+    p.task_backend = json!({"type": "github"});
+    s.upsert_project(&p).unwrap();
+    let backends = Backends::default();
+    let service = || backends.service(&s, &p, || Some(Box::new(gh.clone())), || Box::new(linear::Unconfigured));
+    assert_eq!(service().known_github_repo(), None);
+    assert_eq!(gh.0.lock().unwrap().calls, 0, "no gh call");
+    service().github_repo().unwrap();
+    assert_eq!(service().known_github_repo().as_deref(), Some("me/shop"), "resolved once");
 }

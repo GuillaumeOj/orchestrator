@@ -185,9 +185,10 @@ impl Core {
         let won: Vec<u64> = last["conflicts"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
         let marks = rt.off_hours_marks();
         // The repository issue URLs point to: the configured one, else what
-        // `gh` resolved for the checkout (a failure only leaves no link).
+        // the first sync resolved for the checkout (no link before; the
+        // render never runs `gh`).
         let github_repo = match backend {
-            TaskBackendConfig::Github { .. } => rt.tasks_for(&p).github_repo().ok().flatten(),
+            TaskBackendConfig::Github { .. } => rt.tasks_for(&p).known_github_repo(),
             _ => None,
         };
         let tasks: Vec<Value> = rt
