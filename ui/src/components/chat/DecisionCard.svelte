@@ -51,8 +51,10 @@
   $effect(() => {
     if (!replying) text = '';
   });
-  // A reply being written never collapses under the cursor (notes §2.1).
+  // A reply being written never collapses under the cursor (notes §2.1); a
+  // card that leaves (filtered out, settled elsewhere) lets go of its hold.
   $effect(() => onhold(!!text.trim()));
+  $effect(() => () => onhold(false));
 
   function replyKey(e) {
     if (e.key === 'Escape') {
@@ -66,7 +68,7 @@
   }
 </script>
 
-<div class="card {state}" class:open class:selected class:marked class:pulse class:ro={!live} class:muted={state === 'stale'} data-decision={d.id} data-state={pending ? 'pending' : state}>
+<div class="card {state}" class:open class:selected class:marked class:pulse class:ro={!live} class:muted={state === 'stale'} data-decision={d.id} data-state={pending && !pending.sent ? 'pending' : state}>
   {#if ref && !pending && ['open', 'parked', 'failed', 'stale'].includes(state)}
     <button class="ref" onclick={onjump} aria-label="Follows: {ref.what}, {ref.at}. Jump to it">↳ after: {ref.what} · {ref.at}</button>
   {/if}
@@ -112,11 +114,11 @@
       {/each}
     </div>
   {:else if live && pending}
-    <div class="actions"><button class="btn ghost" onclick={() => onkey('u')}>Undo <Kbd keys="u" /></button></div>
+    {#if !pending.sent}<div class="actions"><button class="btn ghost" onclick={() => onkey('u')}>Undo <Kbd keys="u" /></button></div>{/if}
   {:else if prUrl || (!live && opens.length)}
     <div class="actions">
       {#if prUrl}<button class="btn ghost" onclick={() => openUrl(prUrl)}>Open PR <Kbd keys="o" /></button>
-      {:else}{#each opens as x (x.id)}<button class="btn ghost" onclick={() => onkey('o')}>{x.label}{#if x.key}{' '}<Kbd keys={x.key} />{/if}</button>{/each}{/if}
+      {:else}{#each opens as x (x.id)}<button class="btn ghost" onclick={() => onact(x.id)}>{x.label}{#if x.key}{' '}<Kbd keys={x.key} />{/if}</button>{/each}{/if}
     </div>
   {/if}
   {#if line}

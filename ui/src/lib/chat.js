@@ -4,7 +4,7 @@
 // the column renders what `thread()` returns.
 
 import { clock } from './format.js';
-import { agentOf, FILTERS } from './inbox.js';
+import { agentOf, cut, FILTERS } from './inbox.js';
 
 /** A user's own decision collapses to its line this long after its effect (notes §2.1). */
 export const COLLAPSE_MS = 10000;
@@ -114,11 +114,6 @@ export function alreadyText(line, now = Date.now()) {
   return `Already ${verbText(line.verb)}${by ? ` ${by}` : ''} · ${clock(line.at_ms, now)}`;
 }
 
-const cut = (s, n = 48) => {
-  const t = String(s ?? '');
-  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
-};
-
 /** The verb a closed decision's lifecycle says, for a decision the core has
  *  not posted a line for yet (the entry's `line` is the source). */
 function verbOf(d) {
@@ -161,7 +156,7 @@ export function lineOfDecision(d, now = Date.now()) {
   return {
     verb: verbOf(d),
     agent: agentOf(d) ?? undefined,
-    what: cut(d.title),
+    what: cut(d.title, 48),
     by: by.startsWith('rule:') ? 'rule' : (BY[by] ?? 'core'),
     by_detail: by.startsWith('rule:') ? by.slice(5) : undefined,
     state: lc.state,
@@ -170,6 +165,15 @@ export function lineOfDecision(d, now = Date.now()) {
 }
 
 // ---------------------------------------------------------------- thread
+
+// The line composed for a decision with no `line` yet, per decision object (a
+// push replaces the object): the same line each call, so the memo keeps its item.
+const composed = new WeakMap();
+function composedLine(d, now) {
+  let l = composed.get(d);
+  if (!l) composed.set(d, (l = lineOfDecision(d, now)));
+  return l;
+}
 
 /**
  * @typedef {{ type: 'morning' | 'card' | 'line' | 'fold', key: string, id?: string, d?: any,
@@ -184,9 +188,10 @@ export function lineOfDecision(d, now = Date.now()) {
  * the previous call's items by key, reused when unchanged so a `now` event
  * re-renders only what it touched (spec §5: < 16 ms for 300 entries).
  *
- * Returns { items, cards, counts, open, hidden, nextDue }:
+ * Returns { items, cards, all, counts, open, shown, nextDue }:
  * items   [{type:'morning'|'card'|'line'|'fold', key, …}] in order
  * cards   the card items shown (j/k stops), in order
+ * all     every card item, before the filter and the fold
  * counts  open cards per filter id, before filtering (the chips)
  * nextDue the next time a card collapses (null: none)
  */
@@ -249,7 +254,7 @@ export function thread({
     if (m === 'card') all.push({ type: 'card', key: e.id, id: d.id, d, entry: e });
     else if (m === 'line') {
       const live = d && latest.get(d.id) === e;
-      const line = e.line ?? lineOfDecision(d, now);
+      const line = e.line ?? composedLine(d, now);
       all.push({ type: 'line', key: e.id, id: e.decision, line, d: (live ? d : null) ?? e.card ?? d, entry: e });
     }
   }
@@ -308,7 +313,7 @@ export function thread({
     }
     items.push(it);
   }
-  return { items, cards, counts, open: cardsAll.length, shown: shown.length, nextDue };
+  return { items, cards, all: cardsAll, counts, open: cardsAll.length, shown: shown.length, nextDue };
 }
 
 /** The same item as last time: what it renders from did not change. */

@@ -32,7 +32,7 @@ Environment:
 | `ORCH_NO_RECOVER` | Skip the J10 reconciler at start. |
 | `ORCH_ENFORCE` | Enforce the Governor (default: shadow mode until the user enforces it from the Week planner, FR-812). |
 | `ORCH_WEBKIT_WARN_MB` | Memory watch threshold per WebKit helper (default 600 MB). |
-| `ORCH_DEV_CTL`, `ORCH_DEV_LOG` | Development harness, off by default ([`devctl.rs`](src/devctl.rs)): JSON lines on that socket run UI commands or snippets (`{"cmd":"run","id":"inbox"}`, `{"cmd":"eval","js":"…"}`); results go to the log. Used for the screenshots and measurements in [docs/app](../../docs/app/README.md). |
+| `ORCH_DEV_CTL`, `ORCH_DEV_LOG` | Development harness, off by default ([`devctl.rs`](src/devctl.rs)): JSON lines on that socket run UI commands or snippets (`{"cmd":"run","id":"decisions"}`, `{"cmd":"eval","js":"…"}`); results go to the log. Used for the screenshots and measurements in [docs/app](../../docs/app/README.md). |
 
 `open -n --env ORCH_HOME=… Orchestrator.app` passes the variables to a bundle.
 

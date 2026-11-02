@@ -58,7 +58,8 @@ export const app = $state({
   mission: { projects: null },
   missionFilterOpen: false, // the palette's "Filter Mission control by project"
   // A request for the chat column (P4.3): { id } focuses that decision's card
-  // (null: the oldest open card), { search: true } opens its search.
+  // (null: the oldest open card) with the filter on All, or on `filter` when
+  // given; { search: true } opens its search.
   chatFocus: null,
   chatFilter: 'all', // the chat's level filter (notes §5): never saved
   selectedProject: null,
@@ -381,8 +382,9 @@ export function searchDecisions() {
 
 /** The chat's level filter (notes §5). */
 export function filterDecisions(id) {
+  if (!inspectorDocked()) app.inspector = false;
   app.chatFilter = id;
-  focusCard();
+  app.chatFocus = { id: null, filter: id };
 }
 
 /**

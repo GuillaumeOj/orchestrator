@@ -123,7 +123,8 @@ export function tailLines(text, n = 12) {
   return lines.slice(-n).join('\n');
 }
 
-const cut = (text, n) => {
+/** Text cut to `n` characters, an ellipsis last. */
+export const cut = (text, n) => {
   const s = String(text ?? '');
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 };

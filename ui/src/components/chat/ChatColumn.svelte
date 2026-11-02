@@ -22,9 +22,10 @@
     openUrl,
     projects,
     toast,
+    undoItem,
     undoLast,
   } from '../../lib/app.svelte.js';
-  import { digestText, FOLD_AT, filterStrip, foldText, nextFilter, thread, verbText } from '../../lib/chat.js';
+  import { alreadyText, digestText, FOLD_AT, filterStrip, foldText, nextFilter, thread, verbText } from '../../lib/chat.js';
   import { clock } from '../../lib/format.js';
   import { actionByKey, agentOf, answerText, FILTERS, intentFor, keyIntent } from '../../lib/inbox.js';
   import { errText } from '../../lib/ipc.js';
@@ -75,7 +76,9 @@
     }),
   );
   const fold = $derived(t.items.find((i) => i.type === 'fold') ?? null);
-  const pendingOf = (id) => app.pending.find((p) => p.item === id && !p.sent) ?? null;
+  // Its decision in the undo window, or sent and not yet answered by the core
+  // (`sent`): either way the card takes no second answer.
+  const pendingOf = (id) => app.pending.find((p) => p.item === id) ?? null;
   // j/k stops: the cards, the fold header, the digest header (notes §10.2).
   const stops = $derived([...t.items.filter((i) => i.type === 'card' || i.type === 'fold').map(stopKey), 'digest']);
   function stopKey(i) {
@@ -128,10 +131,11 @@
   });
 
   // New level 1–2 cards are announced, throttled (spec §5 accessibility).
-  const announced = new Set(untrack(() => t.cards.map((c) => c.id)));
+  // Every open card counts, folded or filtered out too (else it is announced late).
+  const announced = new Set(untrack(() => t.all.map((c) => c.id)));
   let announcedAt = 0;
   $effect(() => {
-    const fresh = t.cards.filter((c) => c.d.level <= 2 && !announced.has(c.id) && c.d.lifecycle?.state === 'open');
+    const fresh = t.all.filter((c) => c.d.level <= 2 && !announced.has(c.id) && c.d.lifecycle?.state === 'open');
     if (!fresh.length) return;
     for (const c of fresh) announced.add(c.id);
     if (Date.now() - announcedAt < 3000) return;
@@ -145,13 +149,14 @@
     const req = app.chatFocus;
     if (!req) return;
     app.chatFocus = null;
-    untrack(() => (req.search ? openSearch() : focusOn(req.id)));
+    untrack(() => (req.search ? openSearch() : focusOn(req.id, req.filter)));
   });
 
-  /** Focus a decision's card (or its line), else the oldest open card, else the digest. */
-  async function focusOn(id) {
+  /** Focus a decision's card (or its line), else the oldest open card, else the digest.
+   *  The filter goes to All (or to `filter`: the palette's "Filter decisions: …"). */
+  async function focusOn(id, filter = 'all') {
     searchOpen = false;
-    app.chatFilter = 'all';
+    app.chatFilter = filter;
     await tick();
     let card = id ? t.cards.find((c) => c.id === id) : null;
     if (id && !card && fold?.n && !foldOpen) {
@@ -159,8 +164,11 @@
       await tick();
       card = t.cards.find((c) => c.id === id);
     }
+    // Already closed (notes §8.2): say what happened to it, then show the next open card,
+    // or its line when none is open. Unknown: say so, and show the oldest open card.
     const line = id && !card ? t.items.findLast((i) => i.type === 'line' && i.id === id) : null;
-    if (line) {
+    if (line && !t.cards.length) {
+      toast(alreadyText(line.line));
       expanded = new Set([...expanded, line.key]);
       sel = null;
       await tick();
@@ -168,10 +176,12 @@
       feed?.querySelector(`[data-line-toggle="${line.key}"]`)?.focus();
       return;
     }
-    card ??= t.cards[0] ?? null;
-    sel = card ? `c:${card.id}` : 'digest';
+    if (line) toast(`${alreadyText(line.line)}. Showing the next card.`);
+    else if (id && !card) toast('That decision is no longer listed.');
+    const target = card ?? t.cards[0] ?? null;
+    sel = target ? `c:${target.id}` : 'digest';
     feed?.focus();
-    if (card && id) flash(card.key);
+    if (card) flash(card.key);
     reveal();
   }
 
@@ -283,6 +293,12 @@
 
   function cardKey(d, key) {
     sel = `c:${d.id}`;
+    // A card's own Undo button undoes that card, not the last decision taken.
+    if (key === 'u' && pendingOf(d.id) && !pendingOf(d.id).sent) {
+      undoItem(d.id);
+      toast('Undone');
+      return;
+    }
     apply(keyIntent(key, d), d);
   }
 
@@ -361,8 +377,10 @@
     if (key === 'enter' && cur === 'fold') return take(), (foldOpen = !foldOpen);
     const intent = keyIntent(key, selCard?.d ?? null);
     if (!intent) return;
-    // Not on a card (the fold or digest header, a digest row still listed): only move and undo.
-    if ((o || !selCard) && intent.kind !== 'move' && intent.kind !== 'undo') return take();
+    // Not on a card (the fold or digest header, a digest row still listed, a
+    // focused line or its read-only card): only move and undo.
+    const onLine = !!e.target.closest?.('article.line');
+    if ((o || !selCard || onLine) && intent.kind !== 'move' && intent.kind !== 'undo') return take();
     if (selCard && pendingOf(selCard.id) && intent.kind !== 'move' && intent.kind !== 'undo') return take();
     if (apply(intent, selCard?.d)) take();
   }
@@ -409,7 +427,7 @@
           <span aria-hidden="true">{it.open ? '▾' : '▸'}</span> {foldText(it)} · <Kbd keys={it.open ? '⏎' : 'j'} />
         </button>
       {:else if it.type === 'line'}
-        <ChatLine item={it} expanded={expanded.has(it.key)} pulse={pulse === it.key} ontoggle={() => toggleLine(it.key)} onkey={(k) => k === 'o' && it.d && apply(intentFor(it.d, 'open'), it.d)} />
+        <ChatLine item={it} expanded={expanded.has(it.key)} pulse={pulse === it.key} ontoggle={() => toggleLine(it.key)} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
       {:else}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <article

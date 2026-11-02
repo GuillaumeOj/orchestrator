@@ -519,6 +519,55 @@ describe('filter, fold and keys', () => {
     expect(app.inspector).toBe(true);
   });
 
+  it('the palette\'s "Filter decisions: …" keeps its filter (not reset to All by the focus)', async () => {
+    const all = kinds();
+    setNow([all[0], all[6], all[8]]);
+    const { container: c } = render(ChatColumn);
+    run('decisions.filter.errors');
+    await settle();
+    expect(app.chatFilter).toBe('errors');
+    expect(cardIds(c)).toEqual(['error-back-1']);
+  });
+
+  it("a card's Undo button undoes that card, not the last decision; a sent one shows no actions", async () => {
+    const [perm, q] = kinds();
+    setNow([perm, q]);
+    const { container: c } = render(ChatColumn);
+    await press(c, 'a'); // perm-1
+    await fireEvent.mouseDown(card(c, 'q-2'));
+    await press(c, 'r');
+    expect(app.pending.map((p) => p.item)).toEqual(['perm-1', 'q-2']);
+    await fireEvent.click([...card(c, 'perm-1').querySelectorAll('.actions button')].find((b) => text(b) === 'Undo u'));
+    expect(app.pending.map((p) => p.item)).toEqual(['q-2']);
+    // Sent, the core not answered yet: no actions again, no Undo.
+    app.pending[0].sent = true;
+    flushSync();
+    expect(buttons(card(c, 'q-2'))).toEqual([]);
+    await fireEvent.mouseDown(card(c, 'q-2'));
+    await press(c, 'r');
+    expect(app.pending).toHaveLength(1);
+  });
+
+  it('keys on a focused line never act on another card', async () => {
+    const now = Date.now();
+    const all = kinds(now);
+    setNow(
+      [all[0]],
+      [
+        closedEntry('c-1', all[1], {
+          verb: 'answered',
+          agent: 'front-1',
+          what: 'Which auth provider?',
+          by: 'you',
+          at_ms: now - 50 * MIN,
+        }),
+      ],
+    );
+    const { container: c } = render(ChatColumn);
+    await fireEvent.keyDown(lines(c)[0].querySelector('button'), { key: 'a' });
+    expect(app.pending).toEqual([]);
+  });
+
   it('Mission control d / a chip: focusCard opens a folded card', async () => {
     const all = kinds();
     setNow(all);
@@ -527,6 +576,32 @@ describe('filter, fold and keys', () => {
     await settle();
     expect(selected(c)).toBe('notion-3');
     expect(card(c, 'notion-3').classList.contains('pulse')).toBe(true);
+  });
+
+  it('focusCard on a closed decision says what happened and shows the next card, else its line', async () => {
+    const now = new Date().setHours(14, 2, 0, 0);
+    const [perm, q] = kinds();
+    const done = closedEntry(
+      'c-1',
+      { ...perm, created_ms: now - MIN },
+      { verb: 'allowed', agent: 'back-1', what: 'pnpm add zod', by: 'pane', at_ms: now },
+    );
+    setNow([q], [done, entry('c-2', q)]);
+    const { container: c } = render(ChatColumn);
+    app.chatFocus = { id: 'perm-1' };
+    await settle();
+    expect(app.toasts.at(-1).text).toBe('Already allowed in the pane · 14:02. Showing the next card.');
+    expect(selected(c)).toBe('q-2');
+    cleanup();
+    setNow([], [done]);
+    const r = render(ChatColumn).container;
+    app.chatFocus = { id: 'perm-1' };
+    await settle();
+    expect(app.toasts.at(-1).text).toBe('Already allowed in the pane · 14:02');
+    expect(lines(r)[0].querySelector('button').getAttribute('aria-expanded')).toBe('true');
+    app.chatFocus = { id: 'gone-9' };
+    await settle();
+    expect(app.toasts.at(-1).text).toBe('That decision is no longer listed.');
   });
 
   it('⌘L opens the search field with its placeholder', async () => {

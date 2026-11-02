@@ -137,7 +137,8 @@
       {#if app.dock.open && app.dock.tabs.length}<Dock />{/if}
     </div>
     <div class="chatslot" class:narrow={!isWide}>
-      <ChatColumn />
+      <!-- Under the Inspector's overlay the chat is hidden: out of the Tab order too. -->
+      <div class="chatwrap" inert={!docked && app.inspector}><ChatColumn /></div>
       {#if !docked && app.inspector}<Inspector overlay />{/if}
     </div>
     {#if docked && app.inspector}<Inspector />{/if}
@@ -164,6 +165,11 @@
     flex: none;
     width: var(--size-chat);
     min-height: 0;
+    display: flex;
+  }
+  .chatwrap {
+    flex: 1;
+    min-width: 0;
     display: flex;
   }
   .chatslot.narrow {
