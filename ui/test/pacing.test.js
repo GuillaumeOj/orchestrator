@@ -369,6 +369,89 @@ describe('planner, banner, status bar, board', () => {
     expect(Object.values(app.panes).some((p) => p.type === 'report' && p.reportId === 'current')).toBe(true);
   });
 
+  describe('week chart', () => {
+    const hist = (used, governed) => [{ t_ms: now - 3600000, used, governed }];
+    const snap = (used, governed) => ({ ...planner().snapshot, used, governed, ideal: 38 });
+    const edgeY = (container, cls) =>
+      Number(container.querySelector(`path.${cls}`).getAttribute('d').split('L').at(-1).split(',')[1]);
+    const render0 = async (over) => {
+      replies.planner_view = planner(over);
+      const r = render(PlannerPane);
+      await waitFor(() => expect(r.container.querySelector('svg path.total-fill')).toBeTruthy());
+      return r;
+    };
+    // The y of a percentage, read from the 0% and 100% grid lines.
+    const scale = (container) => {
+      const ys = [...container.querySelectorAll('line.grid-l')].map((l) => Number(l.getAttribute('y1')));
+      const [y0, y100] = [ys[0], ys.at(-1)];
+      return (val) => y0 + (y100 - y0) * (Math.min(val, 100) / 100);
+    };
+
+    it('working blocks are a gutter band, one rect each, none full height', async () => {
+      const working = [
+        [now - 86400000, now - 80000000],
+        [now, now + 3600000],
+      ];
+      const { container } = await render0({ working });
+      const rects = [...container.querySelectorAll('svg rect.work')];
+      expect(rects).toHaveLength(2);
+      const y0 = scale(container)(0);
+      for (const r of rects) {
+        expect(Number(r.getAttribute('y'))).toBeGreaterThan(y0);
+        expect(Number(r.getAttribute('height'))).toBeLessThanOrEqual(6);
+      }
+      const plotH = scale(container)(0) - scale(container)(100);
+      for (const r of container.querySelectorAll('svg rect'))
+        expect(Number(r.getAttribute('height'))).toBeLessThan(plotH);
+      expect(container.textContent).toContain('band: working hours · off-hours hatched');
+    });
+
+    it('off-hours hatching sits in the band only with an allowance', async () => {
+      const a = await render0();
+      const off = a.container.querySelector('rect.off');
+      expect(Number(off.getAttribute('y'))).toBeGreaterThan(scale(a.container)(0));
+      cleanup();
+      const b = await render0({
+        off_hours: {
+          allowance_pct: 0,
+          windows: [{ start: iso(now), end: iso(now + 3600000) }],
+          live_cap: 1,
+          queued: 0,
+          running: 0,
+        },
+      });
+      expect(b.container.querySelector('rect.off')).toBeNull();
+      expect(b.container.textContent).toContain('band: working hours');
+      expect(b.container.textContent).not.toContain('off-hours hatched');
+    });
+
+    it('total edge at y(used), agents edge at y(governed) at now', async () => {
+      const { container } = await render0({ actual: hist(50, 40), snapshot: snap(56, 47) });
+      const y = scale(container);
+      expect(edgeY(container, 'total')).toBeCloseTo(y(56), 0);
+      expect(edgeY(container, 'actual')).toBeCloseTo(y(47), 0);
+      expect(container.querySelector('svg').getAttribute('aria-label')).toBe(
+        'Week usage: total 56%, agents 47% against the ideal 38%',
+      );
+      expect(container.textContent).toContain('total');
+    });
+
+    it('governed above used is clamped to the total', async () => {
+      const { container } = await render0({ actual: hist(30, 33), snapshot: snap(56, 60) });
+      const y = scale(container);
+      expect(edgeY(container, 'actual')).toBeCloseTo(y(56), 0);
+      const pts = container.querySelector('path.actual').getAttribute('d').split('L');
+      expect(Number(pts[0].split(',')[1].replace('M', ''))).toBeCloseTo(y(30), 0);
+    });
+
+    it('used == governed leaves no visible band between the edges', async () => {
+      const { container } = await render0({ actual: hist(40, 40), snapshot: snap(47, 47) });
+      expect(container.querySelector('path.total').getAttribute('d')).toBe(
+        container.querySelector('path.actual').getAttribute('d'),
+      );
+    });
+  });
+
   it('planner: no allowance disables Run off-hours', async () => {
     replies.planner_view = planner({
       off_hours: {
