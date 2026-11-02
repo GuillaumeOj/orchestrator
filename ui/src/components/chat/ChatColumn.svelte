@@ -12,6 +12,7 @@
     coreAct,
     decide,
     featureBySlug,
+    focusCard,
     focusPane,
     openAgent,
     openBoard,
@@ -25,10 +26,23 @@
     undoItem,
     undoLast,
   } from '../../lib/app.svelte.js';
-  import { alreadyText, digestText, FOLD_AT, filterStrip, foldText, nextFilter, thread } from '../../lib/chat.js';
-  import { clock } from '../../lib/format.js';
+  import {
+    alreadyText,
+    dayLabel,
+    dayRowText,
+    digestText,
+    FOLD_AT,
+    filterStrip,
+    foldText,
+    nextFilter,
+    pastItems,
+    resultsHead,
+    resultText,
+    thread,
+  } from '../../lib/chat.js';
+  import { clock, plural } from '../../lib/format.js';
   import { actionByKey, agentOf, answerText, blockOf, FILTERS, intentFor, keyIntent } from '../../lib/inbox.js';
-  import { errText } from '../../lib/ipc.js';
+  import { errText, invoke, listen } from '../../lib/ipc.js';
   import { clearDigest, counts, digest } from '../../lib/now.svelte.js';
   import Kbd from '../Kbd.svelte';
   import OutcomeRow from '../OutcomeRow.svelte';
@@ -39,6 +53,9 @@
   const TITLE = 'Decisions';
   const DIGEST_ROWS = 5;
   const PULSE_MS = 1500;
+  const DAYS_PAGE = 30;
+  const SEARCH_LIMIT = 50;
+  const SEARCH_DEBOUNCE_MS = 200;
 
   let foldOpen = $state(false);
   let sel = $state(null); // 'c:<decision id>' | 'fold' | 'digest'
@@ -55,11 +72,18 @@
   let searchOpen = $state(false);
   let query = $state('');
   let pulse = $state(null); // the item key with the focus highlight
+  // Older days (notes §6): the days popover, a past day (read-only), search results.
+  let daysPop = $state(null); // { status: 'loading' | 'ready' | 'error', list, err, end }
+  let past = $state(null); // { day, status, entries, outcomes, err, viaSearch, target }
+  let found = $state(null); // { q, status: 'loading' | 'ready' | 'error', list, err }
+  let searchTick = $state(0);
+  let dayList = []; // chat_days loaded so far, newest first
   let announce = $state('');
   const seen = new Map(); // decision id → when its effect was first seen
   const memo = new Map(); // the thread's items, reused while unchanged
   let feed;
   let searchField = $state();
+  let aside;
 
   const filter = $derived(app.chatFilter);
   const t = $derived(
@@ -104,6 +128,11 @@
   const dg = $derived(digestText(outcomes, doneToday));
   const strip = $derived(filterStrip(filter, t.counts));
   const showFilters = $derived(t.all.length >= 2 || filter !== 'all');
+  const q = $derived(query.trim());
+  const wanted = $derived(searchOpen && q.length >= 2); // a search to run (kept while a result's day is open)
+  const searching = $derived(wanted && !past);
+  const todayDay = $derived(app.now.chat?.day ?? null);
+  const pastThread = $derived(past?.status === 'ready' ? pastItems(past.entries) : []);
   const lastSettled = $derived(t.items.findLast((i) => i.type === 'line')?.line.at_ms ?? null);
 
   // A user's effect starts its collapse clock when it is first seen (no effect_at_ms).
@@ -156,10 +185,137 @@
     untrack(() => (req.search ? openSearch() : focusOn(req.id, req.filter)));
   });
 
+  // The core's `focus_card {id}` (a notification opened, api-contract §4): the
+  // same as ⌘⇧I on that card; the Inspector's overlay closes.
+  $effect(() => {
+    let off = null;
+    let dead = false;
+    listen('focus_card', (ev) => focusCard(ev.payload?.id ?? null))
+      .then((f) => (dead ? f() : (off = f)))
+      .catch(() => {});
+    return () => {
+      dead = true;
+      off?.();
+    };
+  });
+
+  // chat_search, 200 ms after the last keystroke (notes §6.4); a late answer to an old query is dropped.
+  $effect(() => {
+    searchTick;
+    if (!wanted) {
+      found = null;
+      return;
+    }
+    const text = q;
+    found = { q: text, status: 'loading', list: [], err: '' };
+    const timer = setTimeout(async () => {
+      try {
+        const list = await invoke('chat_search', { query: text, limit: SEARCH_LIMIT });
+        if (found?.q === text) found = { q: text, status: 'ready', list: list ?? [], err: '' };
+      } catch (err) {
+        if (found?.q === text) found = { q: text, status: 'error', list: [], err: errText(err) };
+      }
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  });
+
+  /** The days popover's list; `more` loads the next page (notes §6.1). */
+  async function loadDays(more = false) {
+    const before = more ? dayList.at(-1)?.day : undefined;
+    if (!more) daysPop = { status: 'loading', list: [], err: '', end: false };
+    try {
+      const page = (await invoke('chat_days', { limit: DAYS_PAGE, ...(before ? { before } : {}) })) ?? [];
+      dayList = more ? [...dayList, ...page] : page;
+      daysPop = { status: 'ready', list: dayList, err: '', end: page.length < DAYS_PAGE };
+    } catch (err) {
+      daysPop = { status: 'error', list: dayList, err: errText(err), end: false };
+    }
+  }
+
+  async function toggleDays() {
+    if (daysPop) return (daysPop = null);
+    await loadDays();
+    await tick();
+    aside?.querySelector('[data-day-row]')?.focus();
+  }
+
+  /** Opens a past day (notes §6.2); `target`: the entry to scroll to and expand. */
+  async function openDay(day, { viaSearch = false, target = null } = {}) {
+    daysPop = null;
+    past = { day, status: 'loading', entries: [], outcomes: [], err: '', viaSearch, target };
+    outcome = null;
+    try {
+      const r = await invoke('chat_day', { day });
+      if (past?.day !== day) return;
+      past = { ...past, status: 'ready', entries: r?.entries ?? [], outcomes: r?.outcomes ?? [] };
+      if (target) {
+        expanded = new Set([...expanded, target]);
+        await tick();
+        const el = feed?.querySelector(`[data-line-toggle="${target}"]`);
+        el?.scrollIntoView({ block: 'center' });
+        el?.focus();
+      } else feed?.focus();
+    } catch (err) {
+      if (past?.day === day) past = { ...past, status: 'error', err: errText(err) };
+    }
+  }
+
+  function backToToday() {
+    past = null;
+    outcome = null;
+    daysPop = null;
+    feed?.focus();
+  }
+
+  /** `[` / `]`: the previous / next day with entries (notes §6.1). */
+  async function stepDay(delta) {
+    if (!dayList.length) await loadDays();
+    const i = past ? dayList.findIndex((r) => r.day === past.day) : -1;
+    const n = i + (delta < 0 ? 1 : -1); // newest first: older is a higher index
+    if (past && n < 0) return backToToday();
+    if (!past && delta > 0) return;
+    const next = dayList[n];
+    if (next) openDay(next.day);
+    else if (delta < 0 && daysPop?.end !== true && dayList.length) {
+      await loadDays(true);
+      if (dayList[n]) openDay(dayList[n].day);
+    }
+  }
+
+  /** A search result opens: today's entry in the thread, an earlier day's in that day (notes §6.4). */
+  async function openResult(r) {
+    const e = r.entry;
+    if (r.day === todayDay) {
+      searchOpen = false;
+      await tick();
+      const it = t.items.find((i) => i.key === e.id) ?? t.items.find((i) => i.id && i.id === e.decision);
+      if (!it) return feed?.focus();
+      if (it.type === 'line') expanded = new Set([...expanded, it.key]);
+      else if (it.type === 'card') sel = `c:${it.id}`;
+      await tick();
+      flash(it.key);
+      const el = feed?.querySelector(it.type === 'line' ? `[data-line-toggle="${it.key}"]` : `.stop.sel`);
+      el?.scrollIntoView({ block: 'center' });
+      (el ?? feed)?.focus();
+      return;
+    }
+    openDay(r.day, { viaSearch: true, target: e.id });
+  }
+
+  /** Moves the focus through `[data-step]` buttons inside `root` (j/k and arrows in a list). */
+  function stepFocus(root, delta) {
+    const list = [...(root?.querySelectorAll('[data-step]') ?? [])];
+    const i = list.indexOf(document.activeElement);
+    list[Math.min(Math.max(i + delta, 0), list.length - 1)]?.focus();
+  }
+
   /** Focus a decision's card (or its line), else the oldest open card, else the digest.
-   *  The filter goes to All (or to `filter`: the palette's "Filter decisions: …"). */
+   *  The filter goes to All (or to `filter`: the palette's "Filter decisions: …").
+   *  A past day or a search is left: the card is in today's thread. */
   async function focusOn(id, filter = 'all') {
     searchOpen = false;
+    past = null;
+    daysPop = null;
     app.chatFilter = filter;
     await tick();
     let card = id ? t.cards.find((c) => c.id === id) : null;
@@ -362,8 +518,26 @@
     const take = () => e.preventDefault();
     if (key === 'escape') {
       take();
+      if (daysPop) return (daysPop = null);
+      // A past day opened from a result returns to the results (notes §6.4).
+      if (past?.viaSearch) return (past = null);
+      if (past) return backToToday();
       if (searchOpen) return (searchOpen = false);
       return leave();
+    }
+    if (daysPop || found?.list.length) {
+      const root = daysPop ? e.target.closest('.days') : e.target.closest('.results');
+      if (root && (key === 'j' || key === 'ArrowDown')) return take(), stepFocus(root, 1);
+      if (root && (key === 'k' || key === 'ArrowUp')) return take(), stepFocus(root, -1);
+    }
+    if (key === 't' && past) return take(), backToToday();
+    if (key === '[' || key === ']') return take(), stepDay(key === '[' ? -1 : 1);
+    if (past) {
+      // Read-only: nothing acts. `o` opens a digest row's subject; j/k scroll.
+      const o = outcome ? past.outcomes.find((x) => x.id === outcome) : null;
+      if (key === '/') return take(), openSearch();
+      if (o && key === 'o') return take(), openOutcome(o);
+      return;
     }
     // A focused line, link or button takes its own ⏎ (Tab order, notes §10.2).
     if (key === 'enter' && e.target !== feed && e.target.closest?.('button')) return;
@@ -388,23 +562,49 @@
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<aside class="chat" aria-label={TITLE} onkeydown={onKey}>
+<aside class="chat" aria-label={TITLE} onkeydown={onKey} bind:this={aside}>
   <header class="head">
     {#if searchOpen}
       <div class="search">
         <span class="icon muted" aria-hidden="true">{'\u{F0349}'}</span>
-        <input class="field" bind:this={searchField} bind:value={query} placeholder="Search decisions and lines" aria-label="Search decisions and lines" onkeydown={(e) => e.key === 'Escape' && (e.preventDefault(), e.stopPropagation(), query ? (query = '') : ((searchOpen = false), feed?.focus()))} />
+        <input class="field" bind:this={searchField} bind:value={query} placeholder="Search decisions and lines" aria-label="Search decisions and lines" onkeydown={(e) => {
+          if (e.key === 'ArrowDown' && found?.list.length) return e.preventDefault(), aside?.querySelector('[data-result]')?.focus();
+          if (e.key !== 'Escape') return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (query) query = '';
+          else (searchOpen = false), feed?.focus();
+        }} />
         {#if query}<button class="iconbtn" aria-label="Clear the search" onclick={() => (query = '')}>×</button>{:else}<Kbd keys="esc" />{/if}
       </div>
     {:else}
       <h2 class="title">{TITLE}</h2>
       <span class="grow"></span>
-      <button class="day" aria-haspopup="dialog" title="Older days">Today ▾</button>
+      <button class="day" aria-haspopup="dialog" aria-expanded={!!daysPop} title="Older days" onclick={toggleDays}>{past ? dayLabel(past.day) : 'Today'} ▾</button>
       <button class="iconbtn" aria-label="Search decisions · ⌘L" title="Search decisions · ⌘L" onclick={openSearch}><span aria-hidden="true">{'\u{F0349}'}</span></button>
     {/if}
   </header>
-  {#if searchOpen && query.trim().length < 2}<p class="strip muted">Type 2 or more characters.</p>{/if}
-  {#if showFilters}
+  {#if daysPop}
+    <div class="days" role="dialog" aria-label="Older days">
+      {#if daysPop.status === 'loading'}
+        <p class="muted pad">Loading days…</p>
+      {:else if daysPop.status === 'error'}
+        <p class="pad">Could not load days: {daysPop.err} · <button class="link" onclick={() => loadDays(!!daysPop.list.length)}>Retry</button></p>
+      {:else if !daysPop.list.length}
+        <p class="muted pad">No earlier days yet.</p>
+      {/if}
+      {#each daysPop.list as r (r.day)}
+        <button class="drow" data-day-row data-step class:on={past?.day === r.day} onclick={() => openDay(r.day)}>{dayRowText(r, todayDay)}</button>
+      {/each}
+      {#if daysPop.status === 'ready' && daysPop.list.length && !daysPop.end}
+        <button class="drow link" data-step onclick={() => loadDays(true)}>Show earlier days</button>
+      {/if}
+    </div>
+  {/if}
+  {#if past}
+    <p class="strip" data-past-strip>{dayLabel(past.day, true)} · read-only · <button class="link" onclick={backToToday}>Back to today</button> <Kbd keys="t" /></p>
+  {:else if searchOpen && q.length < 2}<p class="strip muted">Type 2 or more characters.</p>{/if}
+  {#if showFilters && !past && !searching}
     <div class="filters" role="group" aria-label="Filter cards">
       {#each FILTERS as f (f.id)}
         {#if f.id === 'all' || t.counts[f.id] || filter === f.id}
@@ -419,7 +619,51 @@
     {/if}
   {/if}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-  <div class="feed" role="feed" aria-label="Decisions, today" tabindex="0" data-chat-focus bind:this={feed}>
+  <div class="feed" role="feed" aria-label={past ? `Decisions, ${dayLabel(past.day)}` : searching ? 'Search results' : 'Decisions, today'} tabindex="0" data-chat-focus bind:this={feed}>
+    {#if past}
+      {#if past.status === 'loading'}
+        <div class="skeleton" aria-hidden="true"><i></i><i></i><i></i></div>
+        <p class="muted" role="status">Loading {dayLabel(past.day)}…</p>
+      {:else if past.status === 'error'}
+        <p>Could not load {dayLabel(past.day)}: {past.err} · <button class="link" onclick={() => openDay(past.day, { viaSearch: past.viaSearch, target: past.target })}>Retry</button></p>
+      {:else}
+        {#each pastThread as it (it.key)}
+          {#if it.type === 'morning'}
+            <article class="morning" aria-label="Morning summary">{it.entry.text}</article>
+          {:else}
+            <ChatLine item={it} expanded={expanded.has(it.key)} pulse={false} ontoggle={() => toggleLine(it.key)} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
+          {/if}
+        {/each}
+        {#if !pastThread.length}<p class="empty muted">Nothing was recorded on {dayLabel(past.day)}.</p>{/if}
+        <section class="digest" aria-label="{dayLabel(past.day)} outcomes">
+          <div class="dh"><b>{dayLabel(past.day)} · {plural(past.outcomes.length, 'outcome')}</b></div>
+          {#each past.outcomes as o (o.id)}
+            <OutcomeRow outcome={o} selected={outcome === o.id} onselect={() => (outcome = o.id)} />
+          {/each}
+          {#if !past.outcomes.length}<p class="muted body">No outcomes that day.</p>{/if}
+        </section>
+      {/if}
+    {:else if searching}
+      {#if !found || found.status === 'loading'}
+        <p class="muted" role="status">Searching…</p>
+      {:else if found.status === 'error'}
+        <p>Could not search: {found.err} · <button class="link" onclick={() => searchTick++}>Retry</button></p>
+      {:else if !found.list.length}
+        <p class="empty">Nothing found for “{found.q}” in decisions and lines.</p>
+      {:else}
+        <div class="results">
+          <p class="muted rhead" role="status">{resultsHead(found.q, found.list.length, SEARCH_LIMIT)}</p>
+          {#each found.list as r, i (r.entry.id)}
+            {@const rt = resultText(r, app.now.decisions)}
+            {#if i === 0 || found.list[i - 1].day !== r.day}<div class="sep" role="separator">{dayLabel(r.day).toUpperCase()}</div>{/if}
+            <button class="result" data-result data-step onclick={() => openResult(r)}>
+              <span class="rtext" class:warn={rt.warn}>{#if rt.open}<span aria-label="waiting">● </span>{:else if r.entry.kind !== 'morning'}▸ {/if}{rt.text}</span>
+              <span class="muted rwhen">{dayLabel(r.day)} · {clock(r.entry.line?.at_ms ?? r.entry.at_ms)}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    {:else}
     {#each t.items as it (it.type === 'card' ? `card:${it.key}` : it.key)}
       {#if it.type === 'morning'}
         <article class="morning" aria-label="Morning summary">{it.entry.text}</article>
@@ -479,10 +723,15 @@
       {/if}
       {#if dg.body}<p class="muted body">{dg.body}</p>{/if}
     </section>
+    {/if}
   </div>
   <footer class="foot muted">
-    <span>Cards work here. The Overwatch joins in a later release.</span>
-    <span class="keys"><Kbd keys="⌘+L" /> search</span>
+    {#if past}
+      <span>Read-only · Back to today <Kbd keys="t" /></span>
+    {:else}
+      <span>Cards work here. The Overwatch joins in a later release.</span>
+      <span class="keys"><Kbd keys="⌘+L" /> search</span>
+    {/if}
   </footer>
   <div class="sr" aria-live="polite">{announce}</div>
 </aside>
@@ -544,6 +793,97 @@
     flex: none;
     padding: 0 var(--space-md);
     overflow: hidden;
+  }
+  .days {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    max-height: 240px;
+    overflow: auto;
+    background: var(--color-surface-raised);
+    border-bottom: var(--border-width-default) solid var(--color-border-subtle);
+  }
+  .pad {
+    margin: 0;
+    padding: var(--space-sm) var(--space-md);
+  }
+  .drow {
+    height: var(--size-row);
+    flex: none;
+    padding: 0 var(--space-md);
+    border: 0;
+    background: none;
+    color: var(--color-text-primary);
+    font: var(--text-label);
+    text-align: left;
+  }
+  .drow:hover,
+  .drow.on {
+    background: var(--color-surface-pane);
+  }
+  .drow:focus-visible,
+  .result:focus-visible {
+    outline: var(--border-width-focus) solid var(--color-focus);
+    outline-offset: -2px;
+  }
+  .results {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+  .rhead {
+    margin: 0;
+  }
+  .sep {
+    height: 24px;
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    color: var(--color-text-secondary);
+    font: var(--text-caption);
+    letter-spacing: 0.06em;
+  }
+  .sep::before,
+  .sep::after {
+    content: '';
+    flex: 1;
+    border-top: var(--border-width-default) solid var(--color-border-subtle);
+  }
+  .result {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--space-xs) var(--space-sm);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--color-text-primary);
+    font: var(--text-label);
+    text-align: left;
+  }
+  .result:hover {
+    background: var(--color-surface-raised);
+  }
+  .rtext {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rtext.warn {
+    color: var(--color-status-error, var(--color-text-primary));
+  }
+  .rwhen {
+    font: var(--text-caption);
+  }
+  .skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xs);
+  }
+  .skeleton i {
+    height: var(--size-row);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-pane);
   }
   .strip {
     margin: 0;

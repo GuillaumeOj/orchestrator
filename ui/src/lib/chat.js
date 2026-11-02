@@ -107,7 +107,8 @@ export function lineLabel(line, now = Date.now()) {
 }
 
 /** The expanded line's marker: "Allowed by rule installs · 14:02". */
-export const lineMarker = (line, now = Date.now()) => `${cap(settled(line))} · ${clock(line.at_ms, now)}`;
+export const lineMarker = (line, now = Date.now()) =>
+  line.verb === 'left open' ? 'Open until the day ended' : `${cap(settled(line))} · ${clock(line.at_ms, now)}`;
 
 /** "Already allowed in the pane · 14:02" (notes §8.2). */
 export const alreadyText = (line, now = Date.now()) => `Already ${settled(line)} · ${clock(line.at_ms, now)}`;
@@ -382,4 +383,76 @@ export function nextFilter(filter, counts) {
     if (id === 'all' || counts[id]) return id;
   }
   return 'all';
+}
+
+// ---------------------------------------------------------------- older days
+
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// A working day is a calendar date, not an instant: every date calculation is
+// in UTC so it reads the same in any time zone.
+const utc = (day) => {
+  const [y, m, d] = String(day).split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+};
+
+/** "Sun 1 Nov" (`long`: "Sunday 1 Nov"), from "2026-11-01". */
+export function dayLabel(day, long = false) {
+  const d = utc(day);
+  if (Number.isNaN(d.getTime())) return String(day);
+  const w = WEEKDAYS[d.getUTCDay()];
+  return `${long ? w : w.slice(0, 3)} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
+}
+
+/** The calendar day before `day` ("2026-11-02" → "2026-11-01"). */
+export const prevDay = (day) => new Date(utc(day).getTime() - 864e5).toISOString().slice(0, 10);
+
+/** A row of the days popover (notes §6.1): "Yesterday · Sun 1 Nov · 12 decisions". */
+export function dayRowText(r, today) {
+  const n = r.decisions ? plural(r.decisions, 'decision') : 'no decisions';
+  return `${today && r.day === prevDay(today) ? 'Yesterday · ' : ''}${dayLabel(r.day)} · ${n}`;
+}
+
+/** The line of an entry with none (a past day's entry still open at its end, notes §6.2). */
+function leftOpen(e) {
+  const d = e.card ?? {};
+  return {
+    verb: 'left open',
+    agent: agentOf(d) ?? undefined,
+    what: cut(d.title ?? '', 48),
+    by: '',
+    state: 'open',
+    at_ms: e.at_ms,
+  };
+}
+
+/** An entry's line: the core's, else "left open" (muted, no tail). */
+export const entryLine = (e) => e.line ?? leftOpen(e);
+
+/** A past day's thread (notes §6.2): the morning line, then every decision as a line, oldest first. */
+export function pastItems(entries) {
+  return [...(entries ?? [])]
+    .filter((e) => e.kind === 'morning' || e.kind === 'decision')
+    .sort(byTime)
+    .map((e) =>
+      e.kind === 'morning'
+        ? { type: 'morning', key: e.id, entry: e }
+        : { type: 'line', key: e.id, id: e.decision, line: entryLine(e), d: e.card ?? null, entry: e },
+    );
+}
+
+/** The search results' header (notes §6.4). */
+export function resultsHead(q, n, limit = 50) {
+  if (n >= limit) return `First ${limit} results for “${q}”. Narrow the search.`;
+  return `${plural(n, 'result')} for “${q}”`;
+}
+
+/** A search result's first row: the morning text, the line, or the open decision. */
+export function resultText(r, decisions = {}) {
+  const e = r.entry;
+  if (e.kind === 'morning' || (e.text && !e.decision)) return { text: e.text ?? '', open: false };
+  if (e.line) return { text: `${lineText(e.line)}`, open: false, warn: warnVerb(e.line.verb) };
+  const d = decisions[e.decision];
+  if (d) return { text: d.title, open: true };
+  return { text: lineText(leftOpen(e)), open: false };
 }
