@@ -80,7 +80,7 @@
 
   const stateLabel = (s) => PRESSURE[s]?.label ?? s;
 
-  // Opening another report in this pane (Inbox digest, palette) reloads it.
+  // Opening another report in this pane (the chat's digest, palette) reloads it.
   $effect(() => {
     id;
     untrack(load);

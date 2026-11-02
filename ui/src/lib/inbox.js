@@ -1,5 +1,5 @@
-// Inbox triage (FR-707, Penpot 04 Inbox and 06 J5) over the core's Decisions
-// (P4.1, api-contract §2): j/k move, a/r/⏎/o run the action with that key,
+// Decision cards (FR-707, FR-1304; the chat column since P4.3) over the core's
+// Decisions (P4.1, api-contract §2): j/k move, a/r/⏎/o run the action with that key,
 // e open in nvim, x select for batch, u undo for 5 s, c clear the digest.
 // Decisions wait out the undo window on the client, then go to the core.
 // Copy: docs/design/p4-design-notes.md §3–§5.
@@ -16,23 +16,11 @@ export const FILTERS = [
   { id: 'budget', label: 'Budget', test: (d) => d.level === 3 },
 ];
 
-export const LEVELS = { 1: 'Blocking', 2: 'Errors', 3: 'Budget' };
-
 /** Decisions to show: filtered, without those whose decision is in its undo window. */
 export function visibleItems(list, filterId, pending = []) {
   const f = FILTERS.find((x) => x.id === filterId) ?? FILTERS[0];
   const hidden = new Set(pending.map((p) => p.item));
   return list.filter((d) => f.test(d) && !hidden.has(d.id));
-}
-
-export { move } from './select.js';
-
-/** Selection after the selected item leaves the list: the next one, else the previous. */
-export function afterRemoval(items, removedId) {
-  const i = items.findIndex((x) => x.id === removedId);
-  const rest = items.filter((x) => x.id !== removedId);
-  if (!rest.length) return null;
-  return rest[Math.min(Math.max(i, 0), rest.length - 1)].id;
 }
 
 // ---------------------------------------------------------------- facts

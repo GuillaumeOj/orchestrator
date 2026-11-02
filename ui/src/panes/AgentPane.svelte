@@ -3,7 +3,7 @@
   // with a header (role, status + reason + since from its attention record,
   // model, context, session usage) and a strip for the states that need words
   // (queued or not started, suspended, limit, error, a permission prompt held
-  // or parked for the Inbox). The PTY itself is left untouched. Opened over
+  // or parked for its card). The PTY itself is left untouched. Opened over
   // Mission control it starts in watch mode (D5): the terminal renders but
   // the strip has the keys, ⏎ or a click takes over, Esc goes back.
   import { onMount } from 'svelte';
@@ -33,11 +33,11 @@
   const ds = $derived(statusOf(spec?.agentId));
   const fresh = $derived(ds === 'not_started');
   // Answered in the PTY (a trust dialog, a prompt in the pane); a gate, a team
-  // question or the Governor's ask is answered in the Inbox.
+  // question or the Governor's ask is answered on its card.
   const inPane = $derived(/^(trust|wait)-/.test(rec?.waiting_on?.ref ?? ''));
   const snap = $derived(app.data?.usage?.snapshot);
   const sessionPp = $derived(ppOf(a, snap));
-  // Its permission prompt (held or parked): the Inbox's own item, not a second list.
+  // Its permission prompt (held or parked): its card's own decision, not a second list.
   // "Answer in the pane" only hides the strip while the dialog is in the PTY below:
   // once the hold parks (no more `in_pane`), the dialog is gone and the strip is back.
   let handedOver = $state(null);
@@ -143,7 +143,7 @@
     <div class="strip warn perm">
       <div class="row">
         <span class="icon" style:color="var(--color-status-waiting-for-you)" aria-hidden="true">{'\u{F0005}'}</span>
-        <span><b>Waiting for you</b> for {ago(perm.created_ms)} · {perm.title} · also in the Inbox</span>
+        <span><b>Waiting for you</b> for {ago(perm.created_ms)} · {perm.title} · also on its card · ⌘⇧I</span>
         <span class="grow"></span>
         {#each permActions as x (x.id)}
           {#if x.id === 'in_pane'}
@@ -157,7 +157,7 @@
       {#key perm.id}<PermissionCall block={blockOf(perm, 'tool_call')} />{/key}
     </div>
   {:else if rec?.level === 'needs_you'}
-    <div class="strip warn"><span class="icon" style:color={STATUS[ds].color}>{STATUS[ds].icon}</span> <b>{STATUS[ds].label}</b> <WaitingChip {rec} /> · {inPane ? 'answer it in the pane below: the app never does' : 'answer it in the Inbox'}</div>
+    <div class="strip warn"><span class="icon" style:color={STATUS[ds].color}>{STATUS[ds].icon}</span> <b>{STATUS[ds].label}</b> <WaitingChip {rec} /> · {inPane ? 'answer it in the pane below: the app never does' : 'answer it on its card (⌘⇧I)'}</div>
   {:else if rec?.level === 'queued'}
     <div class="strip">
       <span class="icon" style:color={STATUS[ds].color}>{STATUS[ds].icon}</span>

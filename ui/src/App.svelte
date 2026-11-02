@@ -1,9 +1,11 @@
 <script>
-  // The app shell (§9.2, Penpot 03): title bar, sidebar or icon rail, tiling
-  // workspace over the dock, inspector (docked ≥ 1512 px, overlay
-  // below), status bar.
+  // The app shell (§9.2, Penpot 03, P4.3 notes §9): title bar, sidebar or icon
+  // rail, tiling workspace over the dock, the chat column (fixed, 360 px; 340
+  // below 1512), the Inspector (docked 320 at ≥ 1728 px, else an overlay over
+  // the chat's slot), status bar.
   import { onMount } from 'svelte';
   import Banner from './components/Banner.svelte';
+  import ChatColumn from './components/chat/ChatColumn.svelte';
   import Dialogs from './components/Dialogs.svelte';
   import Dock from './components/Dock.svelte';
   import IconRail from './components/IconRail.svelte';
@@ -14,7 +16,7 @@
   import TitleBar from './components/TitleBar.svelte';
   import Toasts from './components/Toasts.svelte';
   import Workspace from './components/Workspace.svelte';
-  import { app, applyTheme, applyUpdate, dockFills, flushDecisions, keyContext, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
+  import { app, applyTheme, applyUpdate, dockFills, flushDecisions, inspectorDocked, inspectorOverlay, keyContext, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
   import { startDev } from './lib/dev.js';
   import { loadUiFont, prepareKitty } from './lib/fonts.js';
   import { inTauri, invoke, listen } from './lib/ipc.js';
@@ -68,8 +70,8 @@
         return stop();
       default:
         // The watch-mode strip's Esc goes back to Mission control; Esc anywhere else closes the overlay.
-        if (e.key === 'Escape' && app.inspectorOverlay && !inXterm && !e.target.closest?.('[data-watch]')) {
-          app.inspectorOverlay = false;
+        if (e.key === 'Escape' && inspectorOverlay() && !inXterm && !e.target.closest?.('[data-watch]')) {
+          app.inspector = false;
           stop();
         }
     }
@@ -120,6 +122,7 @@
   });
 
   const isWide = $derived(wide());
+  const docked = $derived(inspectorDocked());
 </script>
 
 <div class="shell">
@@ -133,10 +136,13 @@
       {#if (ready || !inTauri) && !dockFills()}<Workspace />{/if}
       {#if app.dock.open && app.dock.tabs.length}<Dock />{/if}
     </div>
-    {#if isWide && app.inspector}<Inspector />{/if}
+    <div class="chatslot" class:narrow={!isWide}>
+      <ChatColumn />
+      {#if !docked && app.inspector}<Inspector overlay />{/if}
+    </div>
+    {#if docked && app.inspector}<Inspector />{/if}
   </div>
   <StatusBar />
-  {#if !isWide && app.inspectorOverlay}<Inspector overlay />{/if}
   {#if app.overlay?.kind === 'palette' || app.overlay?.kind === 'jump'}{#key app.overlay.kind}<Palette mode={app.overlay.kind} />{/key}{/if}
   <Dialogs />
   <Toasts />
@@ -152,6 +158,16 @@
     flex: 1;
     min-height: 0;
     display: flex;
+  }
+  .chatslot {
+    position: relative;
+    flex: none;
+    width: var(--size-chat);
+    min-height: 0;
+    display: flex;
+  }
+  .chatslot.narrow {
+    width: 340px;
   }
   .work {
     flex: 1;

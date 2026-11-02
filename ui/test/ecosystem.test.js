@@ -42,7 +42,7 @@ const { default: SettingsPane } = await import('../src/panes/SettingsPane.svelte
 const { default: FeaturePane } = await import('../src/panes/FeaturePane.svelte');
 const { default: TeamCanvasPane } = await import('../src/panes/TeamCanvasPane.svelte');
 const { default: DesignSection } = await import('../src/components/DesignSection.svelte');
-const { default: InboxPane } = await import('../src/panes/InboxPane.svelte');
+const { default: ChatColumn } = await import('../src/components/chat/ChatColumn.svelte');
 const { default: Dialogs } = await import('../src/components/Dialogs.svelte');
 const { flushDecisions } = await import('../src/lib/app.svelte.js');
 
@@ -705,9 +705,9 @@ describe('role inspector, Design section and presets (T-7)', () => {
     replies.open_url = null;
     replies.integrations_view = { items: [] };
     replies.mcp_registry_view = { servers: [], project_overrides: {} };
-    const { container, getAllByText } = render(InboxPane);
+    const { container, getAllByText } = render(ChatColumn);
     expect(getAllByText('Reconnect', { exact: false }).length).toBeGreaterThan(0);
-    const root = container.querySelector('[data-pane-focus]');
+    const root = container.querySelector('[data-chat-focus]');
     await fireEvent.keyDown(root, { key: 'a' });
     await waitFor(() =>
       expect(calls.some(([c, a]) => c === 'open_url' && a.url === 'https://claude.ai/settings/connectors')).toBe(true),

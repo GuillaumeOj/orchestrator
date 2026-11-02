@@ -1,5 +1,4 @@
 import { fireEvent, render } from '@testing-library/svelte';
-import { flushSync } from 'svelte';
 import { beforeEach, describe, expect, it } from 'vitest';
 import PacingIndicator from '../src/components/PacingIndicator.svelte';
 import Sidebar from '../src/components/Sidebar.svelte';
@@ -7,8 +6,7 @@ import StatusBadge from '../src/components/StatusBadge.svelte';
 import StatusBar from '../src/components/StatusBar.svelte';
 import TaskModelChip from '../src/components/TaskModelChip.svelte';
 import { app, decide, decisionPushed } from '../src/lib/app.svelte.js';
-import InboxPane from '../src/panes/InboxPane.svelte';
-import { act, budgetDecision, decision, fixture, nowOf, permDecision } from './fixture.js';
+import { fixture, nowOf, permDecision } from './fixture.js';
 
 beforeEach(() => {
   app.data = fixture();
@@ -95,57 +93,6 @@ describe('components', () => {
     expect(t).toContain('Red');
   });
 
-  it('inbox triage: j moves, a decides with a 5 s undo window, u undoes', async () => {
-    const { container, getAllByText } = render(InboxPane);
-    const root = container.querySelector('[data-pane-focus]');
-    expect(getAllByText('Allow once', { exact: false }).length).toBeGreaterThan(0);
-    await fireEvent.keyDown(root, { key: 'j' });
-    expect(container.querySelector('.item.sel').textContent).toContain('Defer');
-    await fireEvent.keyDown(root, { key: 'k' });
-    await fireEvent.keyDown(root, { key: 'a' });
-    flushSync();
-    expect(app.pending).toHaveLength(1);
-    expect(app.pending[0]).toMatchObject({ item: 'perm-1', action: 'approve' });
-    expect(app.toasts.at(-1).text).toBe('Allowing once · front-1 · pnpm add @stripe/stripe-js');
-    expect(container.querySelector('.item.sel').textContent).toContain('Defer'); // selection moved on
-    await fireEvent.keyDown(root, { key: 'u' });
-    expect(app.pending).toHaveLength(0);
-  });
-
-  const withItems = (...extra) => {
-    app.now = nowOf(app.data, { decisions: [...extra, permDecision(), budgetDecision()] });
-  };
-  const detail = (container) => container.querySelector('.detail');
-  const buttons = (container) =>
-    [...detail(container).querySelectorAll('.actions button')].map((b) => b.textContent.trim());
-
-  it('permission card: tool, cwd name with the full path on hover, input collapsed past 6 lines', async () => {
-    const command = Array.from({ length: 9 }, (_, i) => `echo ${i + 1}`).join('\n');
-    const perm = permDecision();
-    withItems({
-      ...perm,
-      id: 'inbox-9',
-      created_ms: perm.created_ms - 1,
-      context: [{ ...perm.context[0], input: { command } }],
-    });
-    const { container, getByText } = render(InboxPane);
-    const cwd = getByText('front-1', { selector: '.call .mono' });
-    expect(cwd.getAttribute('title')).toBe('/Users/me/dev/shop-web.worktrees/front-1');
-    expect(detail(container).querySelector('.input').textContent).toBe(command.split('\n').slice(0, 6).join('\n'));
-    await fireEvent.click(getByText('Show 3 more lines'));
-    expect(detail(container).querySelector('.input').textContent).toBe(command);
-    expect(detail(container).querySelector('.subject').textContent).toBe('front-1 · Frontend · shop-api');
-    expect(detail(container).querySelector('[data-state]').textContent).toContain('Waiting for you · 4 min');
-    expect(buttons(container)).toEqual([
-      'Allow once a',
-      'Deny r',
-      'Deny with message ⏎',
-      'Open pane o',
-      'Always allow',
-      'Answer in the pane',
-    ]);
-  });
-
   it('a decision taken elsewhere drops ours still in its undo window; a parked one keeps it', () => {
     const perm = permDecision();
     decide(perm, 'approve');
@@ -156,95 +103,6 @@ describe('components', () => {
     decisionPushed(parked, { ...perm, lifecycle: { state: 'effect', decided_by: 'pane', effect: 'allowed' } });
     expect(app.pending).toHaveLength(0);
     expect(app.toasts.at(-1).text).toBe('Answered in the pane · front-1');
-  });
-
-  it('"Answer in the pane" opens the pane and decides nothing', async () => {
-    const { container } = render(InboxPane);
-    const b = [...detail(container).querySelectorAll('.actions button')].find(
-      (x) => x.textContent === 'Answer in the pane',
-    );
-    await fireEvent.click(b);
-    expect(app.pending).toHaveLength(0);
-    expect(Object.values(app.panes)).toMatchObject([{ type: 'agent', agentId: 'front-1' }]);
-  });
-
-  it('parked permission: the Parked marker, no "Answer in the pane", Always allow only when offered', () => {
-    const perm = permDecision();
-    withItems({
-      ...perm,
-      id: 'inbox-9',
-      created_ms: perm.created_ms - 1,
-      lifecycle: { state: 'parked', decided_by: 'expired' },
-      actions: perm.actions.filter((x) => x.id !== 'in_pane' && x.id !== 'always'),
-    });
-    const { container } = render(InboxPane);
-    expect(detail(container).querySelector('[data-state="parked"]').textContent).toContain(
-      'Parked · front-1 stopped; resumes on your answer',
-    );
-    expect(container.querySelector('.item.sel').textContent).toContain('Permission · parked');
-    expect(buttons(container)).toEqual(['Allow once a', 'Deny r', 'Deny with message ⏎', 'Open pane o']);
-  });
-
-  it('startup card: the error, the PTY tail in monospace and its actions', async () => {
-    const tail = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n');
-    withItems(
-      decision({
-        id: 'startup-4',
-        kind: 'startup',
-        level: 1,
-        subject: { agent: 'back-1' },
-        title: 'back-1 could not resume',
-        created_ms: Date.now() - 600000, // oldest first: selected
-        context: [
-          { type: 'error', text: 'Its resume start exited at once', detail: 'exit status 1' },
-          { type: 'pty_tail', text: tail },
-        ],
-        actions: [
-          act('restart_fresh', 'Restart fresh'),
-          act('dismiss', 'Dismiss'),
-          act('delete', 'Delete'),
-          act('open', 'Open pane', 'o'),
-        ],
-      }),
-    );
-    const { container } = render(InboxPane);
-    expect(container.querySelector('.item.sel').textContent).toContain('Startup');
-    expect(detail(container).querySelector('[data-block="pty_tail"] pre.mono').textContent).toBe(
-      tail.split('\n').slice(-12).join('\n'),
-    );
-    expect(detail(container).querySelector('[data-block="error"] .err').textContent).toBe(
-      'Its resume start exited at once',
-    );
-    await fireEvent.click(detail(container).querySelector('[data-block="error"] .link'));
-    expect(detail(container).querySelector('[data-block="error"] pre').textContent).toBe('exit status 1');
-    expect(buttons(container)).toEqual(['Open pane o', 'Restart fresh', 'Dismiss', 'Delete']);
-    await fireEvent.click(
-      [...detail(container).querySelectorAll('.actions button')].find((b) => b.textContent === 'Restart fresh'),
-    );
-    expect(app.pending[0]).toMatchObject({ item: 'startup-4', action: 'restart_fresh' });
-    expect(app.toasts.at(-1).text).toBe('Restarting fresh · back-1');
-  });
-
-  it('restart gate: its text, Approve/Reject and the after-restart note, never "Spec gate"', () => {
-    withItems(
-      decision({
-        id: 'gate-3',
-        kind: 'gate',
-        gate: 'restart',
-        subject: { agent: 'back-1' },
-        title: 'Still waiting after a restart · back-1',
-        created_ms: Date.now() - 600000,
-        context: [{ type: 'markdown', text: 'run the migration' }],
-        actions: [act('approve', 'Approve', 'a'), act('reject', 'Reject', 'r'), act('open', 'Open', 'o')],
-        payload: { restarted: true },
-      }),
-    );
-    const { container } = render(InboxPane);
-    expect(container.textContent).not.toContain('Spec gate');
-    expect(container.querySelector('.item.sel').textContent).toContain('Restart gate');
-    expect(detail(container).querySelector('[data-block="markdown"]').textContent).toContain('run the migration');
-    expect(detail(container).textContent).toContain('After restart');
-    expect(buttons(container)).toEqual(['Approve a', 'Reject r', 'Open o']);
   });
 });
 

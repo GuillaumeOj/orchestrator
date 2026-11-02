@@ -513,7 +513,7 @@ export function hints(row, { target: t = null, rec = null, decision = null } = {
   const h = [['j k', 'move']];
   if (!row) return [...h, ['f', 'filter']];
   if (row.kind === 'outcome') return [...h, ['o', 'open'], ['f', 'filter']];
-  if (row.kind === 'decisions') return [...h, ['⏎', 'open in Inbox'], ['f', 'filter']];
+  if (row.kind === 'decisions') return [...h, ['⏎', 'show card'], ['f', 'filter']];
   if (t) h.push(['⏎', `open ${t}`]);
   if (row.kind === 'queue') {
     const fresh = rec?.status === 'not_started';

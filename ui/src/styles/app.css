@@ -186,7 +186,7 @@ select.field {
   flex: 1;
 }
 
-/* A pane's filter and key-hint row (Mission control, Inbox). */
+/* A pane's filter and key-hint row (Mission control). */
 .toolbar {
   flex: none;
   display: flex;

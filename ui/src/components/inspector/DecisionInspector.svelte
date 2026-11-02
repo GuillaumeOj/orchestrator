@@ -1,8 +1,8 @@
 <script>
   // Inspector · decision (notes §5.3): kind and title, subject, lifecycle
-  // marker, context blocks (read-only), Open in Inbox. It never decides: the
-  // Inbox (the card after P4.3) owns the undo window.
-  import { app, openInbox } from '../../lib/app.svelte.js';
+  // marker, context blocks (read-only), Show card. It never decides: its card
+  // in the chat column owns the undo window.
+  import { app, focusCard } from '../../lib/app.svelte.js';
   import { subjectLine } from '../../lib/inbox.js';
   import { decisionKind } from '../../lib/status.js';
   import ContextBlocks from '../ContextBlocks.svelte';
@@ -21,9 +21,9 @@
   <LifecycleMarker decision={d} />
   <ContextBlocks decision={d} />
   <div class="acts">
-    <button class="btn" onclick={() => openInbox(d.id)}>Open in Inbox <Kbd keys="d" /></button>
+    <button class="btn" onclick={() => focusCard(d.id)}>Show card <Kbd keys="d" /></button>
   </div>
-  <p class="muted">Decide in the Inbox (the card after P4.3): it owns the undo window.</p>
+  <p class="muted">Decide on its card: it owns the undo window.</p>
 {:else}
   <p class="muted">This decision is closed.</p>
 {/if}

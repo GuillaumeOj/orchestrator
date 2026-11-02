@@ -1,7 +1,8 @@
 <script>
-  // Title bar (§9.2): palette entry, the two-window pacing indicator, the Inbox
-  // badge. The window's traffic lights sit over its left edge (titleBarStyle Overlay).
-  import { app, openSingleton } from '../lib/app.svelte.js';
+  // Title bar (§9.2): palette entry, the two-window pacing indicator, the
+  // Decisions badge (open level 1–3 decisions; click = ⌘⇧I, P4.3 notes §11). The window's traffic lights sit over its left edge (titleBarStyle Overlay).
+  import { app, focusCard } from '../lib/app.svelte.js';
+  import { badgeLabel } from '../lib/chat.js';
   import { counts } from '../lib/now.svelte.js';
   import Kbd from './Kbd.svelte';
   import PacingIndicator from './PacingIndicator.svelte';
@@ -17,9 +18,9 @@
     <Kbd keys="⌘+K" />
   </button>
   <div class="center" data-tauri-drag-region><PacingIndicator /></div>
-  <button class="inbox" class:on={badge > 0} onclick={() => openSingleton('inbox')}>
+  <button class="decisions" class:on={badge > 0} onclick={() => focusCard()} title={badgeLabel(badge)} aria-label={badgeLabel(badge)}>
     {#if badge > 0}<span class="icon" style:color="var(--color-status-waiting-for-you)" aria-hidden="true">{'\u{F0005}'}</span>{/if}
-    Inbox <span class="count" class:zero={badge === 0}>{badge > 99 ? '99+' : badge}</span>
+    Decisions <span class="count" class:zero={badge === 0}>{badge > 99 ? '99+' : badge}</span>
     <Kbd keys="⌘+⇧+I" />
   </button>
 </header>
@@ -62,7 +63,7 @@
     justify-content: center;
     min-width: 0;
   }
-  .inbox {
+  .decisions {
     display: inline-flex;
     align-items: center;
     gap: var(--space-sm);
@@ -73,8 +74,8 @@
     background: none;
     font: var(--text-body-strong);
   }
-  .inbox:hover,
-  .inbox.on {
+  .decisions:hover,
+  .decisions.on {
     background: var(--color-surface-raised);
   }
   .count.zero {

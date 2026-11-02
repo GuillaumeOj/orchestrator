@@ -2,10 +2,10 @@
   // Waiting-on chip (notes §1.1, Penpot P4.1 Waiting-on chip): the kind icon
   // (muted), the core's reason, and since. Since shows for needs_you, waiting,
   // queued and error; running shows its activity instead. The ref is a link: a
-  // decision opens its Inbox detail, an agent focuses it, a task opens its card.
+  // decision shows its card in the chat, an agent focuses it, a task opens its card.
   // Compact (rows, tooltips): the reason truncates, since never does;
   // the full text is on hover. The status badge sits before it, on the surface.
-  import { now30, openAgent, openBoard, openInbox } from '../lib/app.svelte.js';
+  import { focusCard, now30, openAgent, openBoard } from '../lib/app.svelte.js';
   import { waitLine, waitSince, waitWhat } from '../lib/now.svelte.js';
   import { WAITING_ON } from '../lib/status.js';
 
@@ -21,7 +21,7 @@
     if (!ref) return null;
     switch (rec.waiting_on.kind) {
       case 'user':
-        return () => openInbox(ref);
+        return () => focusCard(ref);
       case 'agent':
         return () => openAgent(ref);
       case 'task':

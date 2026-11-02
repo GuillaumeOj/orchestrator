@@ -258,7 +258,7 @@
                 </div>
               {/each}
             </div>
-            <p class="muted note">Issues labelled orch in {lin.team} sync both ways. When both sides changed, Linear wins and you get an Inbox note. Assignee node: label orch:node:&lt;id&gt;. Dependencies: Linear "blocks" relations.</p>
+            <p class="muted note">Issues labelled orch in {lin.team} sync both ways. When both sides changed, Linear wins and you get a note in today's digest. Assignee node: label orch:node:&lt;id&gt;. Dependencies: Linear "blocks" relations.</p>
           {/if}
         {/if}
       {/if}

@@ -4,7 +4,7 @@
 // registry. Terminal objects (xterm.js) live outside the reactive state, in `terms`.
 
 import { clock as clockOf } from './format.js';
-import { decisionToast, due, isOpen, older, pendingToast, UNDO_MS, version } from './inbox.js';
+import { decisionToast, due, FILTERS, isOpen, older, pendingToast, UNDO_MS, version } from './inbox.js';
 import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
@@ -20,9 +20,23 @@ import { aboutText, checkOutcome, readyToast, updateActions } from './update.js'
 /** The dock's share of the work column when nothing is saved: agents need rows. */
 const DOCK_HEIGHT = 0.45;
 
+/**
+ * @typedef {{ rev: number, agents: Record<string, any>, runs: Record<string, any>,
+ *   decisions: Record<string, any>, outcomes: any[], counts: { global: any, projects: any },
+ *   chat?: { day: string | null, entries: Record<string, any> } }} Now
+ */
+
 export const app = $state({
   data: null, // app_state
-  now: { rev: 0, agents: {}, runs: {}, decisions: {}, outcomes: [], counts: { global: {}, projects: {} } }, // now.svelte.js
+  now: /** @type {Now} */ ({
+    rev: 0,
+    agents: {},
+    runs: {},
+    decisions: {},
+    outcomes: [],
+    counts: { global: {}, projects: {} },
+    chat: { day: null, entries: {} }, // today's chat entries (P4.3)
+  }), // now.svelte.js
   kitty: null,
   layout: null,
   panes: {}, // paneId → { type, agentId?, termId?, projectId?, cwd?, title }
@@ -30,19 +44,23 @@ export const app = $state({
   zoomed: null,
   leader: false,
   sidebar: true,
-  inspector: true,
-  inspectorOverlay: false, // below 1512 px the inspector is an overlay, opened by ⌘I
+  // The Inspector is open (⌘I): docked at ≥ 1728 px, else an overlay over the
+  // chat column's slot (P4.2 notes §4); one state across the breakpoint.
+  inspector: false,
   width: typeof window !== 'undefined' ? window.innerWidth : 1512,
   overlay: null, // { kind: 'palette' | 'jump' | 'new-session' | 'add-project' | 'confirm', … }
   toasts: [],
-  pending: [], // Inbox decisions in their undo window: { item, card, action, message, at, toast }
+  pending: [], // decisions in their undo window: { item, card, action, message, at, toast }
   // What the Inspector shows when no agent pane has focus (D10): set by the
   // sidebar, the palette and Mission control. { kind: 'agent' | 'run' | 'decision', id }
   selection: null,
   // Mission control's project filter (settings key `mission`, D8): null = all.
   mission: { projects: null },
   missionFilterOpen: false, // the palette's "Filter Mission control by project"
-  inboxFocus: null, // a decision id the Inbox selects when it opens (the waiting-on chip's link)
+  // A request for the chat column (P4.3): { id } focuses that decision's card
+  // (null: the oldest open card), { search: true } opens its search.
+  chatFocus: null,
+  chatFilter: 'all', // the chat's level filter (notes §5): never saved
   selectedProject: null,
   theme: null, // null = system, 'dark' | 'light' (user choice)
   themeRev: 0, // bumped when the applied theme may have changed (diagrams redraw)
@@ -81,6 +99,10 @@ const newPaneId = () => `p${nextPane++}`;
 // ---------------------------------------------------------------- derived
 
 export const wide = () => app.width >= breakpoint.md;
+/** The Inspector docks beside the chat at ≥ 1728 px; below, it overlays the chat's slot. */
+export const inspectorDocked = () => app.width >= breakpoint.lg;
+/** The Inspector covers the chat column. */
+export const inspectorOverlay = () => app.inspector && !inspectorDocked();
 export const agents = () => app.data?.agents ?? [];
 export const agent = (id) => agents().find((a) => a.id === id);
 /** Agents not deleted (archived ones stay in the snapshot for history). */
@@ -178,7 +200,6 @@ function title(spec) {
       return (
         {
           mission: 'Mission control',
-          inbox: 'Inbox',
           planner: 'Week planner',
           setup: 'Set up Orchestrator',
           settings: 'Settings',
@@ -337,22 +358,36 @@ export function findPane(pred) {
   return Object.entries(app.panes).find(([, s]) => pred(s))?.[0];
 }
 
-/** Singleton panes (Mission control, Inbox, Week planner) open as a tab, or get focus. */
+/** Singleton panes (Mission control, Week planner) open as a tab, or get focus. */
 export function openSingleton(type) {
   const existing = findPane((s) => s.type === type);
   if (existing) return focusPane(existing);
   addPane({ type }, app.layout ? 'tab' : 'right');
 }
 
-/** The Inbox with this decision selected (a waiting-on chip's ref). */
-export function openInbox(decisionId = null) {
-  app.inboxFocus = decisionId;
-  openSingleton('inbox');
+/** ⌘⇧I, the badge, a waiting-on chip, Mission control `d`: the chat column
+ *  focused on that decision's card (null: the oldest open one). The
+ *  Inspector's overlay closes: the user asks for the cards (P4.2 notes §4). */
+export function focusCard(id = null) {
+  if (!inspectorDocked()) app.inspector = false;
+  app.chatFocus = { id };
+}
+
+/** ⌘L: the chat's search (D1: until the Overwatch's input exists). */
+export function searchDecisions() {
+  if (!inspectorDocked()) app.inspector = false;
+  app.chatFocus = { search: true };
+}
+
+/** The chat's level filter (notes §5). */
+export function filterDecisions(id) {
+  app.chatFilter = id;
+  focusCard();
 }
 
 /**
  * P3: Settings (⌘,), one pane, opened straight to a section ('integrations' |
- * 'mcp' | …) with a server selected (banners, Inbox items, the inspector).
+ * 'mcp' | …) with a server selected (banners, decision cards, the inspector).
  */
 export function openSettings(section = null, server = null, projectId = null) {
   const existing = findPane((s) => s.type === 'settings');
@@ -394,7 +429,7 @@ export async function openUrl(url) {
 }
 
 /**
- * Where an Inbox action sends the user (D3): `{open: 'settings', server}`,
+ * Where a card's action sends the user (D3): `{open: 'settings', server}`,
  * `{open: 'pane', run}` or `{open: 'url', url}`. Anything else: nothing.
  */
 export function routeOpen(r, projectId = null) {
@@ -859,7 +894,8 @@ export async function restoreLayout() {
   const [saved] = await Promise.all([invoke('settings_get', { key: 'layout' }).catch(() => null), loadMission()]);
   if (saved) {
     app.sidebar = saved.sidebar ?? true;
-    app.inspector = saved.inspector ?? true;
+    // Never opens over the chat by itself (P4.2 notes §4 rule 1): docked only.
+    app.inspector = !!saved.inspector && inspectorDocked();
     app.theme = saved.theme ?? null;
     app.kittyTheme = saved.kittyTheme ?? false;
   }
@@ -879,7 +915,8 @@ export async function restoreLayout() {
   await Promise.all(
     ids.map(async (id) => {
       let s = saved.panes[id];
-      if (!s || paneGone(s)) return;
+      // A saved `inbox` pane (removed in P4.3): its slot closes, the cards are in the chat.
+      if (!s || s.type === 'inbox' || paneGone(s)) return;
       // The Overview became Mission control (D9).
       if (s.type === 'overview') s = { ...s, type: 'mission', title: 'Mission control' };
       // A shell that does not start is dropped from the restored layout.
@@ -1042,9 +1079,15 @@ export function commands() {
         app.missionFilterOpen = true;
       },
     },
-    { id: 'inbox', label: 'Open Inbox', run: () => openSingleton('inbox') },
+    { id: 'decisions', label: 'Show decisions', run: () => focusCard() },
+    { id: 'decisions.search', label: 'Search decisions', run: searchDecisions },
+    ...FILTERS.map((f) => ({
+      id: `decisions.filter.${f.id}`,
+      label: `Filter decisions: ${f.label}`,
+      run: () => filterDecisions(f.id),
+    })),
     {
-      id: 'inbox.clear-digest',
+      id: 'decisions.clear-digest',
       label: "Clear today's digest",
       run: () => clearDigest().catch((e) => toast(errText(e), { kind: 'error' })),
     },
@@ -1087,8 +1130,10 @@ export function commands() {
     {
       id: 'inspector',
       label: 'Toggle inspector',
-      run: () =>
-        wide() ? ((app.inspector = !app.inspector), saveLayout()) : (app.inspectorOverlay = !app.inspectorOverlay),
+      run: () => {
+        app.inspector = !app.inspector;
+        saveLayout();
+      },
     },
     { id: 'agent.next-waiting', label: 'Jump to next waiting agent', run: nextWaiting },
     {
@@ -1299,7 +1344,7 @@ export function jumpTargets() {
   return out;
 }
 
-// ---------------------------------------------------------------- inbox decisions
+// ---------------------------------------------------------------- decisions
 
 /** Records a decision; it reaches the core when its 5 s undo window ends (FR-707 `u`).
  *  Its toast says what will be sent; the effect is said when the core pushes it. */
@@ -1392,7 +1437,7 @@ export function decisionPushed(prev, d) {
   if (SETTLED.has(state)) mine.delete(d.id);
   if (!text) return;
   if (state === 'failed')
-    toast(text, { kind: 'error', sticky: true, action: { label: 'Open', run: () => openInbox(d.id) } });
+    toast(text, { kind: 'error', sticky: true, action: { label: 'Show card', run: () => focusCard(d.id) } });
   else if (d.lifecycle.effect === 'pr_opened' && d.lifecycle.effect_detail)
     toast(text, { action: { label: 'Open PR', run: () => openUrl(d.lifecycle.effect_detail) } });
   else toast(text);

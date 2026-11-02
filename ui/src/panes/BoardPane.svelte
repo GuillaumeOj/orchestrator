@@ -40,7 +40,7 @@
   async function load() {
     try {
       v = await invoke('board_view', { project: spec.projectId });
-      // Opened on a task (an Inbox conflict note): select its card once.
+      // Opened on a task (a conflict note's card): select its card once.
       if (spec.taskId != null) {
         const want = String(spec.taskId);
         feature = 'all';

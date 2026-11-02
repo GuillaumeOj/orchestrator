@@ -248,13 +248,13 @@ describe('keys (spec §3.4)', () => {
     expect(calls).toContainEqual({ cmd: 'governor_act', args: { action: 'run_now', arg: 314 } });
   });
 
-  it('d opens the Inbox on the row decision; o on an outcome with a link opens it', async () => {
+  it('d shows the row decision’s card in the chat', async () => {
     const { container: c } = render(MissionPane, { paneId: 'mc' });
     await settle();
     key(c.querySelector('.mc'), 'd');
     await tick();
-    expect(app.inboxFocus).toBe('inbox-1');
-    expect(Object.values(app.panes).some((s) => s.type === 'inbox')).toBe(true);
+    expect(app.chatFocus).toEqual({ id: 'inbox-1' });
+    expect(Object.values(app.panes).some((s) => s.type === 'inbox')).toBe(false);
   });
 });
 
@@ -643,7 +643,7 @@ describe('Inspector follows the selection (spec §3.5)', () => {
     expect(t).toContain('Open feature');
   });
 
-  it('a decision: kind, title, subject, marker, Open in Inbox; never Allow or Deny', () => {
+  it('a decision: kind, title, subject, marker, Show card; never Allow or Deny', () => {
     app.selection = { kind: 'decision', id: 'inbox-1' };
     const c = render(Inspector).container;
     const t = text(c);
@@ -651,7 +651,8 @@ describe('Inspector follows the selection (spec §3.5)', () => {
     expect(t).toContain('Permission');
     expect(t).toContain('Bash · pnpm add zod');
     expect(t).toContain('back-1 · shop-api › checkout');
-    expect(t).toContain('Open in Inbox');
+    expect(t).toContain('Show card');
+    expect(t).not.toContain('Inbox');
     expect([...c.querySelectorAll('button')].map((b) => b.textContent)).not.toContain('Allow once');
   });
 

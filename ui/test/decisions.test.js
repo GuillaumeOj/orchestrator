@@ -24,7 +24,7 @@ const { app, decide, flushDecisions } = await import('../src/lib/app.svelte.js')
 const { applyNow } = await import('../src/lib/now.svelte.js');
 const { LIFECYCLE } = await import('../src/lib/status.js');
 const { UNDO_MS } = await import('../src/lib/inbox.js');
-const { default: InboxPane } = await import('../src/panes/InboxPane.svelte');
+const { default: ChatColumn } = await import('../src/components/chat/ChatColumn.svelte');
 const { default: ContextBlocks } = await import('../src/components/ContextBlocks.svelte');
 const { default: LifecycleMarker } = await import('../src/components/LifecycleMarker.svelte');
 const { default: WaitingChip } = await import('../src/components/WaitingChip.svelte');
@@ -178,7 +178,7 @@ describe('context blocks: one component per type, in order', () => {
 
   it('options: every question, multi-select included; Answer sends the choices once each has one', async () => {
     app.now = nowOf(app.data, { decisions: [question()] });
-    const { container: c } = render(InboxPane);
+    const { container: c } = render(ChatColumn);
     const opts = block(c, 'options');
     expect([...opts.querySelectorAll('legend')].map(text)).toEqual([
       'Question 1 of 2 · Auth',
@@ -355,11 +355,11 @@ describe('toasts: never before sent, the effect when the core pushes it', () => 
       actions: [act('dismiss', 'Dismiss'), act('open', 'Open pane', 'o')],
     });
     app.now = nowOf(app.data, { decisions: [gate] });
-    const { container: c } = render(InboxPane);
-    expect(c.querySelector('.detail [data-state="failed"]').textContent).toContain(
+    const { container: c } = render(ChatColumn);
+    expect(c.querySelector('.card [data-state="failed"]').textContent).toContain(
       'Failed · push rejected: non-fast-forward',
     );
-    const dismiss = [...c.querySelectorAll('.detail .actions button')].find((b) => b.textContent.trim() === 'Dismiss');
+    const dismiss = [...c.querySelectorAll('.card .actions button')].find((b) => b.textContent.trim() === 'Dismiss');
     await fireEvent.click(dismiss);
     expect(app.pending[0]).toMatchObject({ item: 'gate-6', action: 'dismiss' });
     expect(app.toasts.at(-1).text).toBe('Dismissing · PR gate · checkout');
@@ -387,8 +387,9 @@ describe('toasts: never before sent, the effect when the core pushes it', () => 
       kind: 'error',
       sticky: true,
     });
+    expect(app.toasts.at(-1).action.label).toBe('Show card');
     app.toasts.at(-1).action.run();
-    expect(app.inboxFocus).toBe('gate-6');
+    expect(app.chatFocus).toEqual({ id: 'gate-6' });
   });
 
   it('an effect in the inbox_act answer itself toasts once, and its later push does not again', async () => {
@@ -458,8 +459,8 @@ describe('outcome digest (level 4)', () => {
     app.now = nowOf(app.data, { decisions: [], outcomes: outcomes() });
     app.now.counts.global.done_today = 6;
     replies.digest_seen = null;
-    const { container: c, getByText } = render(InboxPane);
-    const rows = [...c.querySelectorAll('.list [role=option][title]')];
+    const { container: c, getByText } = render(ChatColumn);
+    const rows = [...c.querySelectorAll('.digest [role=option][title]')];
     expect(rows.map((r) => r.getAttribute('title'))).toEqual([
       'PR opened · checkout #12 ↗',
       'blog › fix-feed: Fixed the feed pagination',
@@ -469,11 +470,12 @@ describe('outcome digest (level 4)', () => {
     ]);
     expect(text(rows[3])).toMatch(/^\S+ T-4 done · checkout API \(back-1\) 00:02$/);
     expect(rows[0].querySelector('.link')).toBeTruthy();
-    expect(text(c.querySelector('.lh.digest'))).toBe('4 · Today · 5 outcomes Clear c');
-    await fireEvent.keyDown(c.querySelector('[data-pane-focus]'), { key: 'c' });
-    await waitFor(() => expect(text(c.querySelector('.list'))).toContain('All caught up · 6 done today'));
+    expect(text(c.querySelector('.digest .dh'))).toBe('Today · 5 outcomes · Clear · 6 done today c');
+    await fireEvent.keyDown(c.querySelector('[data-chat-focus]'), { key: 'c' });
+    await waitFor(() => expect(text(c.querySelector('.digest'))).toContain('6 done today, all seen.'));
     expect(calls.find(([cmd]) => cmd === 'digest_seen')[1]).toEqual({ upTo: 'ev-15' });
-    expect(getByText('All caught up · 6 done today')).toBeTruthy();
+    expect(text(c.querySelector('.digest .dh'))).toBe('Today · 6 done');
+    expect(getByText('6 done today, all seen.')).toBeTruthy();
   });
 
   it('a failed run is the one marked outcome', () => {
@@ -501,17 +503,17 @@ describe('outcome digest (level 4)', () => {
         },
       ],
     });
-    const { container: c } = render(InboxPane);
-    const icons = [...c.querySelectorAll('.list [role=option][title] .icon')];
+    const { container: c } = render(ChatColumn);
+    const icons = [...c.querySelectorAll('.digest [role=option][title] .icon')];
     expect(icons[0].getAttribute('style')).toContain('--color-phase-failed');
     expect(icons[1].classList.contains('muted')).toBe(true);
   });
 
   it('with a digest row selected, a/r/⏎ do not act on the decision above it', async () => {
     app.now = nowOf(app.data, { outcomes: outcomes().slice(0, 1) });
-    const { container: c } = render(InboxPane);
-    await fireEvent.click(c.querySelector('.list [role=option][title]'));
-    const root = c.querySelector('[data-pane-focus]');
+    const { container: c } = render(ChatColumn);
+    await fireEvent.click(c.querySelector('.digest [role=option][title]'));
+    const root = c.querySelector('[data-chat-focus]');
     for (const key of ['a', 'r', 'Enter']) await fireEvent.keyDown(root, { key });
     expect(app.pending).toEqual([]);
     // j/k go back to the decisions: a acts again.
@@ -522,24 +524,25 @@ describe('outcome digest (level 4)', () => {
 
   it('a selected digest row that left the digest no longer blocks a/r/⏎', async () => {
     app.now = nowOf(app.data, { outcomes: outcomes().slice(0, 1) });
-    const { container: c } = render(InboxPane);
-    await fireEvent.click(c.querySelector('.list [role=option][title]'));
+    const { container: c } = render(ChatColumn);
+    await fireEvent.click(c.querySelector('.digest [role=option][title]'));
     app.now.outcomes = [];
     flushSync();
-    await fireEvent.keyDown(c.querySelector('[data-pane-focus]'), { key: 'a' });
+    await fireEvent.keyDown(c.querySelector('[data-chat-focus]'), { key: 'a' });
     expect(app.pending).toHaveLength(1);
   });
 
   it('empty: "Nothing done yet today."', () => {
     app.now = nowOf(app.data, { decisions: [] });
-    const { container: c } = render(InboxPane);
-    expect(text(c.querySelector('.list'))).toContain('Nothing done yet today.');
-    expect(c.querySelector('.lh.digest .link')).toBeNull();
+    const { container: c } = render(ChatColumn);
+    expect(text(c.querySelector('.digest'))).toContain('Nothing done yet today.');
+    expect(c.querySelector('.digest .dh .link')).toBeNull();
+    expect(text(c)).toContain('Nothing needs you.');
   });
 });
 
 describe('waiting-on chip', () => {
-  it('a decision ref opens the Inbox on it; an agent ref focuses the agent', async () => {
+  it('a decision ref shows its card in the chat; an agent ref focuses the agent', async () => {
     const user = rec('front-1', 'waiting_for_you', {
       reason: 'permission: Bash pnpm add zod',
       waiting_on: { kind: 'user', ref: 'perm-1', since_ms: Date.now() - 2 * MIN },
@@ -547,8 +550,8 @@ describe('waiting-on chip', () => {
     const { container: c } = render(WaitingChip, { rec: user });
     expect(text(c)).toMatch(/permission: Bash pnpm add zod · 2 min$/);
     await fireEvent.click(c.querySelector('.link'));
-    expect(app.inboxFocus).toBe('perm-1');
-    expect(Object.values(app.panes).some((p) => p.type === 'inbox')).toBe(true);
+    expect(app.chatFocus).toEqual({ id: 'perm-1' });
+    expect(Object.values(app.panes).some((p) => p.type === 'inbox')).toBe(false);
     cleanup();
     const agent = rec('front-1', 'idle', {
       level: 'waiting',

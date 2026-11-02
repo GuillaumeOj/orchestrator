@@ -31,7 +31,8 @@ pub const ITEMS: &[(&str, &[Item])] = &[
             ("sidebar", "Toggle Sidebar", "CmdOrCtrl+B"),
             ("inspector", "Toggle Inspector", "CmdOrCtrl+I"),
             ("dock.toggle", "Toggle Shell Dock", "CmdOrCtrl+J"),
-            ("inbox", "Inbox", "CmdOrCtrl+Shift+I"),
+            ("decisions", "Show Decisions", "CmdOrCtrl+Shift+I"),
+            ("decisions.search", "Search Decisions", "CmdOrCtrl+L"),
             ("pane.focus.1", "Focus Pane 1", "CmdOrCtrl+1"),
             ("pane.focus.2", "Focus Pane 2", "CmdOrCtrl+2"),
             ("pane.focus.3", "Focus Pane 3", "CmdOrCtrl+3"),
@@ -104,7 +105,8 @@ mod tests {
         for (chord, id) in [
             ("CmdOrCtrl+K", "palette"),
             ("CmdOrCtrl+P", "jump"),
-            ("CmdOrCtrl+Shift+I", "inbox"),
+            ("CmdOrCtrl+Shift+I", "decisions"),
+            ("CmdOrCtrl+L", "decisions.search"),
             ("CmdOrCtrl+,", "settings"),
         ] {
             assert_eq!(by_accel(chord), Some(id));

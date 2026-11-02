@@ -28,7 +28,7 @@ export const LEVEL = {
   done: { label: 'Done', icon: '■', color: 'var(--color-attention-done)' },
 };
 
-// Decision kinds (Inbox list): their own palette, not a borrowed agent state.
+// Decision kinds (decision cards): their own palette, not a borrowed agent state.
 const DECISION = {
   permission: { label: 'Permission', icon: '\u{F0BC5}' },
   question: { label: 'Question', icon: '\u{F0186}' },
