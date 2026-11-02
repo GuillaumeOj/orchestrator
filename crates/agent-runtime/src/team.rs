@@ -36,7 +36,6 @@ use crate::store::{Admission, AgentRecord, TeamSeat, TurnRow, TurnStatus};
 
 /// Opening a Board syncs its project only if the last sync is older than this.
 pub const OPEN_SYNC_AFTER_MS: u64 = 60_000;
-/// Settings key prefix of each project's last task sync (`tasks.last_sync.<project>`).
 /// The sync of one project in flight, and how its last one ended.
 #[derive(Default)]
 pub struct SyncGate {
@@ -44,6 +43,7 @@ pub struct SyncGate {
     last: std::sync::Mutex<Option<std::result::Result<orch_tasks::SyncReport, String>>>,
 }
 
+/// Settings key prefix of each project's last task sync (`tasks.last_sync.<project>`).
 pub const LAST_SYNC_KEY: &str = "tasks.last_sync.";
 
 /// What to launch (J3 step 2).

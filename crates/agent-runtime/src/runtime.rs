@@ -180,10 +180,10 @@ pub struct Runtime {
     teaming: std::sync::atomic::AtomicBool,
     /// Each project's task backend, kept across calls.
     pub(crate) task_backends: orch_tasks::Backends,
-    /// Projects whose Board was opened in this process: the background task
-    /// sync covers their remote backend too.
     /// One per project: serialises its task syncs ([`Runtime::sync_tasks`]).
     pub(crate) sync_gates: Mutex<std::collections::HashMap<String, std::sync::Arc<crate::team::SyncGate>>>,
+    /// Projects whose Board was opened in this process: the background task
+    /// sync covers their remote backend too.
     pub(crate) watched_projects: Mutex<std::collections::BTreeSet<String>>,
     /// The starter roles and presets were checked this run.
     pub(crate) presets_checked: std::sync::atomic::AtomicBool,

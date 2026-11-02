@@ -65,8 +65,10 @@
         body: patch.body ?? null,
       });
       await load();
+      return true;
     } catch (e) {
       toast(errText(e), { kind: 'error' });
+      return false;
     }
   }
 
@@ -96,10 +98,12 @@
     if (f?.kind !== 'edit') return;
     if (!f.title.trim()) return toast('The task needs a title', { kind: 'error' });
     const patch = editPatch(f.task, f);
-    form = null;
+    if (patch.title !== null || patch.body !== null) {
+      // A failed save keeps the form (and what was typed) open.
+      if (!(await update(f.task, patch))) return;
+    }
+    if (form === f) form = null;
     root?.focus();
-    if (patch.title === null && patch.body === null) return;
-    await update(f.task, patch);
   }
 
   function openRemote(t) {

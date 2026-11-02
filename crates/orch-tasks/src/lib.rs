@@ -82,7 +82,7 @@ pub trait Remote: Send + Sync {
     }
     /// What the sync cursor belongs to; `None` = the remote keeps no cursor.
     fn cursor_scope(&self) -> Result<Option<String>> {
-        Ok(None)
+        Ok(self.github_repo()?.map(|r| format!("github:{r}")))
     }
 }
 
@@ -109,9 +109,6 @@ impl<G: Gh> Remote for GithubIssues<G> {
     }
     fn known_github_repo(&self) -> Option<String> {
         self.known_repo()
-    }
-    fn cursor_scope(&self) -> Result<Option<String>> {
-        Ok(Some(format!("github:{}", self.repo()?)))
     }
 }
 
@@ -443,7 +440,7 @@ impl<'a> TaskService<'a> {
                         // Gone: left as it is. Any other failure: the cursor must not
                         // move past an issue never read (an incremental list would
                         // not show it again).
-                        Err(e) if format!("{e:#}").contains("404") || format!("{e:#}").contains("Not Found") => {}
+                        Err(e) if issue_gone(&e) => {}
                         Err(_) => read_failed = true,
                     }
                 }
@@ -547,6 +544,13 @@ impl<'a> TaskService<'a> {
             .map(|d| d.id)
             .collect()
     }
+}
+
+/// A read failed because the issue no longer exists (deleted: 410, or
+/// transferred/never there: 404) rather than for a transient reason.
+fn issue_gone(e: &anyhow::Error) -> bool {
+    let m = format!("{e:#}");
+    ["HTTP 404", "HTTP 410", "Not Found", "Gone"].iter().any(|p| m.contains(p))
 }
 
 #[cfg(test)]
