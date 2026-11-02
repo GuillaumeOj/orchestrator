@@ -156,7 +156,7 @@ When `by_detail` is missing for a rule, the tail is `· rule`. The verb `expired
 
 ## 5. Header filter (point 5, D6)
 
-- Row under the title, 32 px: chips **All n · Blocking n · Errors n · Budget n**, counts are **open cards** (levels 1, 2, 3; same tests as `FILTERS` in `lib/inbox.js`). Zero-count chips other than All are hidden. The whole row is hidden when fewer than 2 cards are open (a filter of one card filters nothing) and on a past day.
+- Row under the title, 32 px: chips **All n · Blocking n · Errors n · Budget n**, counts are **open cards** (levels 1, 2, 3; same tests as `FILTERS` in `lib/inbox.js`). Zero-count chips other than All are hidden. The whole row is hidden when fewer than 2 cards are open and the filter is All (an active filter keeps it visible) and on a past day.
 - Applies to **cards only**: open, parked, failed, stale cards. Lines, the morning line, the fold header's count (after filtering), the digest, separators are never filtered. The title bar badge ignores the filter.
 - **A filter that hides open cards says so**, in a strip under the chips (replaces the filter row's bottom edge, 28 px, warning-neutral):
   `Showing Blocking · 2 of 5 open cards. 3 hidden · Show all`
