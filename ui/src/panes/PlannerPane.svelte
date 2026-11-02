@@ -64,8 +64,8 @@
   const pad = { l: 36, r: 8, t: 10, b: 36 };
   // The time-axis band (working hours, off-hours) sits in the gutter under the 0% line.
   const BAND = { gap: 5, h: 5 };
-  const bandY = $derived(H - pad.b + BAND.gap);
-  const bandLabelY = $derived(bandY + BAND.h + 10);
+  const bandY = H - pad.b + BAND.gap;
+  const bandLabelY = bandY + BAND.h + 10;
   const x = (t) => pad.l + ((t - v.week_start_ms) / (v.reset_at_ms - v.week_start_ms)) * (w - pad.l - pad.r);
   const y = (val) => pad.t + (1 - Math.min(Math.max(val, 0), 110) / 100) * (H - pad.t - pad.b);
   const path = (pts) => pts.map((q, i) => `${i ? 'L' : 'M'}${x(q[0]).toFixed(1)},${y(q[1]).toFixed(1)}`).join('');
@@ -244,7 +244,7 @@
           <path d={forecast} class="fc" />
           <path d={used} class="actual" />
           <line x1={x(v.now_ms)} x2={x(v.now_ms)} y1={pad.t} y2={H - pad.b} class="now" />
-          <text x={x(v.now_ms) + 6} y={y(s.used) - 8} class="tag">now {clock(v.now_ms)} · week {Math.round(s.used)}% (plan {Math.round(s.plan)}%, {pp(s.error)}) · agents {Math.round(s.governed)}%</text>
+          <text x={x(v.now_ms) + 6} y={Math.max(pad.t + 8, y(s.used) - 8)} class="tag">now {clock(v.now_ms)} · week {Math.round(s.used)}% (plan {Math.round(s.plan)}%, {pp(s.error)}) · agents {Math.round(s.governed)}%</text>
           {#if emptyAt && emptyAt < v.reset_at_ms}<text x={Math.min(x(emptyAt), w - 180)} y={y(100) - 2} class="tag warn">⚠ empty {clock(emptyAt)} at this rate</text>{/if}
           <text x={w - pad.r - 4} y={y(reserveTop) - 4} class="ax" text-anchor="end">reserve {v.reserve_pct}% for you</text>
         </svg>
