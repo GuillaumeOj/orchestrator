@@ -16,7 +16,8 @@
   "thread": "run-12",               // run id, else agent id; absent for morning
   "decision": "inbox-42",           // kind decision: the Decision id (matches now.decisions[].id while listed)
   "text": "Good morning. 1 run in progress, 1 decision waiting, week 38 % against 35 % planned.",
-                                    // morning (and P4.4 text); absent for decision
+                                    // morning (and P4.4 text); absent for decision. Parts at zero left out; all zero:
+                                    // "Good morning. Nothing is running and nothing is waiting for you."; no plan: no week part (ux F5)
   "line": {                         // kind decision, once it closed; absent while open / parked
     "verb": "allowed",              // allowed | denied | answered | approved | sent back | rejected | restarted
                                     // | applied | skipped | kept queued | run now | dismissed | expired | interrupted | failed
@@ -28,12 +29,17 @@
     "at_ms": 1793600060000          // decided (or closed) at
   },
   "card": { /* kind decision, once closed: the Decision as it was (P4.1 §2.1 shape, payload omitted) */ },
+  "continued_from": "c-790",        // optional: open across midnight (§1, F1)
+  "continued_to": "c-812",          // optional: on the previous day's entry
   "rev": 3                          // +1 on every write of this entry; keep the highest
 }
 ```
 - A decision entry is written when the decision is first listed open; `line` and `card` are added when it closes (one write). A permission answered by a rule, in the pane or by expiry without ever being listed open is posted already closed (`line` and `card` set in the first write).
 - The UI renders a decision entry from `now.decisions[decision]` while it is listed, else from `card`. The line text is UI-composed from `line` (copy: ux), e.g. `▸ allowed back-1: cargo add serde_json · rule: installs`.
 - `by` maps from `lifecycle.decided_by`: `user` → you, `rule:<id>` → rule (`by_detail` = label or id), `pane`, `expired`, `core`, `overwatch` as is.
+- **Synthesized decisions that clear by themselves** (`error-`, `wait-`, `trust-`, `ask-` leaving `now` when their condition ends) close their entry with `line {verb: "dismissed", by: "core", state: "stale"}` (ux F8).
+- **Open across midnight** (ux F1, data fix): at the day rollover, every decision still open gets a **new entry in the new day** (new id, same `decision`, `continued_from: "<old entry id>"`); the old entry keeps no `line` and gets `continued_to: "<new entry id>"`. An entry with no `line` in a past day is "left open" (UI copy). `chat_day` and `chat_search` return such entries as they are.
+- **Expired** lines (ux F10) are for decisions with a default (ask, budget) and a parked permission the core dismissed; a permission hold that expires parks and stays an open card.
 
 ## 2. Push
 
@@ -54,13 +60,13 @@ A new working day starts a new thread: the first entry of a new `day` tells the 
 |---|---|---|
 | `chat_days` | `{ limit? = 30, before? : "YYYY-MM-DD" }` | `[ { "day": "2026-11-01", "entries": 41, "decisions": 12 } ]` newest first, days with at least one entry, today excluded |
 | `chat_day` | `{ day: "YYYY-MM-DD" }` | `{ "day", "entries": [ ChatEntry… ], "outcomes": [ Outcome… ] }` — entries oldest first; outcomes of that day (P4.1 §2.4, rebuilt from events, `seen` omitted) |
-| `chat_search` | `{ query, limit? = 50 }` | `[ { "day", "entry": ChatEntry } ]` newest first; matches the entry's `text`, `line.what`, `line.agent`, the card's `title` and `summary`, case-insensitive substring; today included |
+| `chat_search` | `{ query, limit? = 50 }` | `[ { "day", "entry": ChatEntry } ]` newest first; matches the entry's `text`, `line.what`, `line.agent`, `line.verb`, `line.by_detail`, the card's `title` and `summary`, and for entries still open the live decision's `title` and `summary` (ux F9); case-insensitive substring; today included |
 
 Errors are the usual `{ code, message }`; an unknown or malformed day is `bad_request`.
 
 ## 4. Notifications and `focus_card`
 
-- A notification for one decision carries its id; a batched notification carries the oldest one of the batch.
+- A notification for one decision carries its id; a batched notification carries the oldest one of the batch. Titles and bodies: [p4-3-design-notes.md](../../../docs/design/p4-3-design-notes.md) §8.3 (ux F7).
 - When the user clicks it (or, if the platform gives no click callback, when the app is activated within 60 s of the last notification; spec §3.5), the app emits the Tauri event:
 ```jsonc
 // event "focus_card"
