@@ -1,0 +1,11 @@
+# P4.3 — Decisions
+
+| # | Date | Decision | Why |
+|---|---|---|---|
+| D1 | 2026-11-02 | **No chat input and no Overwatch status in P4.3 code.** The column holds the core's entries only (cards, lines, morning line, digest); the footer says the Overwatch comes later, and ⌘L focuses the chat's search. The store and contract already take `overwatch` / `user` authors and the P4.4 entry kinds. | The Overwatch is P4.4 (FR-1306): a message box that wakes nothing would be a dead surface (same reasoning as P4.2 D2). |
+| D2 | 2026-11-02 | The chat log is a **core table** of entries, one per decision (plus the morning line), with the closed decision's **line and card snapshot** written at close. | Decisions leave `now` 10 min after closing, synthesized ones have no row, and older days must stay readable and searchable (FR-1305). |
+| D3 | 2026-11-02 | Permissions settled by a store rule, in the pane or by expiry are posted as **lines**, never as open cards, and never notify. | J5 · 2 and §9.6: what is settled without the user appears collapsed; oversight starts before the Overwatch exists. |
+| D4 | 2026-11-02 | The thread is **chronological**; a follow-up decision of the same run shows a reference to the earlier one ("↳ after: …") rather than being moved under it. ux may revise in the design pass. | A thread that reorders under the user's eyes breaks `j/k`; the reference keeps "the follow-up sits under the earlier answer" readable. |
+| D5 | 2026-11-02 | The chat column is a **fixed column** of the shell, not a pane type; below 1728 the Inspector overlays its slot, docked ≥ 1728 (P4.2 notes §4). | SPEC §9.1 · 4 "the chat a fixed column"; P4.2 F7 measured the centre's minimum width. |
+| D6 | 2026-11-02 | The Inbox's level filters (All / Blocking / Errors / Budget) move to the chat header and filter **cards only**; the per-project and per-agent filters of FR-707 are not carried over (Mission control filters by project). | Lines and the digest are history; the badge must never depend on a filter. |
+| D7 | 2026-11-02 | Notification click: a real click callback if the macOS plugin offers one; otherwise app activation within 60 s of a notification focuses its card. Back checks first (plan). | tauri-plugin-notification on desktop may not report clicks; the fallback still meets "a notification click opens the app on that card". |
