@@ -233,6 +233,9 @@ pub struct ProjectAllocationView {
     pub allocation: Option<AllocationLine>,
     /// The plan's other allocations, in plan order, `default` last.
     pub others: Vec<AllocationLine>,
+    /// Where `allocation` sits among all the plan's allocations, in plan
+    /// order (the UI inserts it into `others` there); None with no allocation.
+    pub own_index: Option<usize>,
     /// Weight `Add` pre-fills: mean of the project allocations (not the
     /// features'), rounded, ≥ 1.
     pub proposed_weight: f64,
@@ -264,6 +267,7 @@ fn allocation_view(
 ) -> ProjectAllocationView {
     let line = |a: &BudgetAllocation| AllocationLine { row: a.into(), used_pct: used(&a.id) };
     let is_default = |a: &&BudgetAllocation| a.id.0 == DEFAULT_ALLOCATION;
+    let own = plan.allocations.iter().position(|a| a.id.0 == project.id);
     let mut others: Vec<AllocationLine> =
         plan.allocations.iter().filter(|a| a.id.0 != project.id && !is_default(a)).map(line).collect();
     others.extend(plan.allocations.iter().filter(is_default).map(line));
@@ -279,8 +283,9 @@ fn allocation_view(
         project: project.id.clone(),
         name: project.name.clone(),
         plan_confirmed,
-        allocation: plan.allocations.iter().find(|a| a.id.0 == project.id).map(line),
+        allocation: own.map(|i| line(&plan.allocations[i])),
         others,
+        own_index: own,
         proposed_weight,
     }
 }

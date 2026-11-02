@@ -2004,6 +2004,7 @@ mod tests {
         let v = core.project_allocation("repo").unwrap();
         assert!(!v.plan_confirmed);
         assert_eq!(v.allocation.as_ref().map(|a| a.row.weight), Some(1.0));
+        assert_eq!(v.own_index, Some(0), "the proposed split lists it first");
         assert_eq!(v.others.iter().map(|a| a.row.id.as_str()).collect::<Vec<_>>(), ["default"]);
         let edit = |weight, hard_cap_pct| AllocationEdit { weight, tier: governor::Tier::High, hard_cap_pct };
         let err = core.project_allocation_set("repo", Some(&edit(2.0, None))).unwrap_err();
@@ -2039,6 +2040,7 @@ mod tests {
         assert!(v.plan_confirmed && v.allocation.is_none());
         assert_eq!(v.proposed_weight, 3.0, "mean of the project allocations");
         assert_eq!(v.others.iter().map(|a| a.row.id.as_str()).collect::<Vec<_>>(), ["repo", "default"]);
+        assert_eq!(v.own_index, None, "not in the plan");
 
         // Add: before `default`; the rest of the plan untouched; the usage now counts toward it.
         let before = rt.with_governor(|g| g.plan().clone());
@@ -2049,6 +2051,7 @@ mod tests {
             (2.0, governor::Tier::High, Some(10.0), &*p2.name)
         );
         assert!(a.used_pct > 0.0, "the week's usage replayed into it: {a:?}");
+        assert_eq!(v.own_index, Some(1), "after `repo`, before `default`");
         let after = rt.with_governor(|g| g.plan().clone());
         let ids = |p: &governor::WeeklyPlan| p.allocations.iter().map(|a| a.id.0.clone()).collect::<Vec<_>>();
         assert_eq!(ids(&after), ["repo".to_string(), p2.id.clone(), "default".to_string()]);
