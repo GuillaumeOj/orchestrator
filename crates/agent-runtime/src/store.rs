@@ -80,6 +80,8 @@ impl TurnRow {
         self.status = TurnStatus::Queued;
         self.admission = Admission::Pending;
         self.delivered_at_ms = None;
+        self.enter_retried = false;
+        self.file = None;
     }
 }
 
@@ -135,6 +137,8 @@ pub enum TurnStatus {
     Delivered,
     Done,
     Cancelled,
+    /// The paste watchdog gave up after its last attempt (its messages failed).
+    Failed,
 }
 
 /// Where a turn stands with the Governor (admission point 1).
@@ -170,6 +174,20 @@ pub struct TurnRow {
     /// its turn is recognised by its prompt.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub command: bool,
+    /// Pastes the CLI never acknowledged (the paste watchdog's attempts).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub attempts: u32,
+    /// The watchdog already sent Enter again for this paste.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enter_retried: bool,
+    /// The paste went to this file of the agent's `messages/` folder (too
+    /// long to paste): its messages are read once the agent read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 fn message_kind() -> governor::TurnKind {
@@ -190,6 +208,9 @@ impl TurnRow {
             admission,
             messages: vec![],
             command: false,
+            attempts: 0,
+            enter_retried: false,
+            file: None,
         }
     }
 }
@@ -266,7 +287,9 @@ impl StateFile {
                 }
             });
         }
-        keep_last(&mut self.turns, |t| matches!(t.status, TurnStatus::Done | TurnStatus::Cancelled));
+        keep_last(&mut self.turns, |t| {
+            matches!(t.status, TurnStatus::Done | TurnStatus::Cancelled | TurnStatus::Failed)
+        });
         keep_last(&mut self.holds, |h| h.status != HoldStatus::Held);
         keep_last(&mut self.inbox, |i| !i.open());
     }

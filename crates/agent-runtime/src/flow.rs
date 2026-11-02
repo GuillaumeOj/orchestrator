@@ -203,6 +203,11 @@ impl Runtime {
                     bail!("plans are sent to the lead");
                 }
                 let plan = str_arg(args, "plan").ok_or_else(|| anyhow!("`plan` is required"))?;
+                // Kept and sent whole (F7): a plan is never cut on its way to the lead.
+                let n = plan.chars().count();
+                if n > crate::team::MAX_STORED - 500 {
+                    bail!("plan too long ({n} chars): put the details in a file and send a summary with its path");
+                }
                 let id = task_arg("task")
                     .or(rec.team.as_ref().and_then(|s| s.task))
                     .ok_or_else(|| anyhow!("you have no current task"))?;
@@ -210,7 +215,7 @@ impl Runtime {
                 if t.node.as_deref() != Some(me) {
                     bail!("task {id} is not yours");
                 }
-                t.flow.plan = Some(cut(plan, 8_000));
+                t.flow.plan = Some(plan.to_string());
                 t.flow.plan_approved = false;
                 self.db.upsert_task(&t)?;
                 let up = rules::reports_to(&cx.team, me).unwrap_or_else(|| "lead".into());
@@ -221,8 +226,7 @@ impl Runtime {
                     "plan",
                     &format!(
                         "plan for task id {id} ({}):\n{}\n\nApprove it or send it back with mcp__orch__decide_plan.",
-                        t.title,
-                        cut(plan, 6_000)
+                        t.title, plan
                     ),
                     json!({"task": id}),
                 )?;

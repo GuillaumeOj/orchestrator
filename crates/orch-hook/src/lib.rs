@@ -9,6 +9,9 @@
 //! - Every other event waits at most 1 s, exits 0 with no output when the core
 //!   is unreachable, and is spooled to the agent folder for replay.
 //! - It never exits 2 (that blocks and erases the user's prompt) and never 1.
+//! - A reply that carries team messages (`ack` ids) is confirmed once printed
+//!   ([`confirm`], at most [`ACK_DEADLINE`]); a confirmation that fails is
+//!   kept in `<agent dir>/acks.pending` and sent with the next hook.
 
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -17,8 +20,8 @@ use std::time::{Duration, Instant};
 use orch_protocol::bus::{self, BusError};
 use orch_protocol::spool::{self, SpoolRecord};
 use orch_protocol::{
-    CONNECT_TIMEOUT_MS, DEFAULT_HOOK_DEADLINE_MS, Envelope, HookEvent, HookMsg, HookOutput, Msg, PROTOCOL_VERSION,
-    Reply, ReplyEnvelope, now_ms,
+    CONNECT_TIMEOUT_MS, DEFAULT_HOOK_DEADLINE_MS, Envelope, HookAckMsg, HookEvent, HookMsg, HookOutput, Msg,
+    PROTOCOL_VERSION, Reply, ReplyEnvelope, now_ms,
 };
 
 /// What orch-hook needs from its environment (set by the core at spawn).
@@ -53,7 +56,13 @@ pub struct Outcome {
     pub exit: i32,
     /// Set when the core could not answer (for tests and debugging).
     pub fallback: Option<String>,
+    /// Team messages the printed output carries: [`confirm`] them once printed.
+    pub ack: Vec<u64>,
 }
+
+/// The longest a confirmation may delay the hook's exit.
+pub const ACK_DEADLINE: Duration = Duration::from_millis(300);
+pub const ACKS_FILE: &str = "acks.pending";
 
 /// Non-tool events never wait longer than this for the reply.
 const NON_TOOL_REPLY_DEADLINE: Duration = Duration::from_millis(1_000);
@@ -67,9 +76,13 @@ pub fn run(input: &[u8], env: &HookEnv) -> Outcome {
     let waits = event.waits_for_core();
     let reply_deadline = if waits { env.deadline } else { NON_TOOL_REPLY_DEADLINE };
 
-    let result = ask_core(env, &event, &payload, ts_ms, waits, reply_deadline, started);
+    let acks = take_pending(env);
+    let result = ask_core(env, &event, &payload, ts_ms, waits, reply_deadline, started, &acks);
+    if result.is_err() {
+        keep_pending(env, &acks);
+    }
     match result {
-        Ok(output) => Outcome { stdout: output.map(|o| o.to_json_string()), exit: 0, fallback: None },
+        Ok((output, ack)) => Outcome { stdout: output.map(|o| o.to_json_string()), exit: 0, fallback: None, ack },
         Err(why) => {
             if let (Some(dir), Some(agent)) = (&env.agent_dir, &env.agent_id) {
                 let rec = SpoolRecord {
@@ -87,11 +100,71 @@ pub fn run(input: &[u8], env: &HookEnv) -> Outcome {
                 stdout: HookOutput::fail_closed(&event).map(|o| o.to_json_string()),
                 exit: 0,
                 fallback: Some(why),
+                ack: vec![],
             }
         }
     }
 }
 
+/// Confirms a printed reply's team messages to the core, within
+/// [`ACK_DEADLINE`]; when that fails they go with the next hook.
+pub fn confirm(env: &HookEnv, ids: &[u64]) {
+    if ids.is_empty() {
+        return;
+    }
+    if send_ack(env, ids).is_err() {
+        keep_pending(env, ids);
+    }
+}
+
+fn send_ack(env: &HookEnv, ids: &[u64]) -> Result<(), String> {
+    let started = Instant::now();
+    let socket = env.socket.as_deref().ok_or("ORCH_SOCK not set")?;
+    let agent_id = env.agent_id.clone().ok_or("ORCH_AGENT_ID not set")?;
+    let stream = bus::connect(socket, ACK_DEADLINE).map_err(|e| e.tag())?;
+    let left = ACK_DEADLINE.saturating_sub(started.elapsed());
+    if left.is_zero() {
+        return Err(BusError::Timeout.tag());
+    }
+    stream.set_read_timeout(Some(left)).map_err(|e| e.to_string())?;
+    stream.set_write_timeout(Some(left)).map_err(|e| e.to_string())?;
+    bus::write_line(&mut &stream, &Envelope::new(Msg::HookAck(HookAckMsg { agent_id, ids: ids.to_vec() })))
+        .map_err(|e| e.tag())?;
+    let reply: ReplyEnvelope = bus::read_line(&mut BufReader::new(&stream)).map_err(|e| e.tag())?;
+    match reply.reply {
+        Reply::Ack if reply.v == PROTOCOL_VERSION => Ok(()),
+        _ => Err("unexpected reply".into()),
+    }
+}
+
+fn acks_path(env: &HookEnv) -> Option<PathBuf> {
+    env.agent_dir.as_ref().map(|d| d.join(ACKS_FILE))
+}
+
+/// Takes the confirmations left by earlier hooks (renamed first, so a
+/// concurrent hook never sends or loses the same ones).
+fn take_pending(env: &HookEnv) -> Vec<u64> {
+    let Some(path) = acks_path(env) else { return vec![] };
+    let taken = path.with_extension(format!("pending.{}", std::process::id()));
+    if std::fs::rename(&path, &taken).is_err() {
+        return vec![];
+    }
+    let text = std::fs::read_to_string(&taken).unwrap_or_default();
+    let _ = std::fs::remove_file(&taken);
+    text.split_whitespace().filter_map(|t| t.parse().ok()).collect()
+}
+
+/// Best effort, one `O_APPEND` write: a hook never fails because of it.
+fn keep_pending(env: &HookEnv, ids: &[u64]) {
+    use std::io::Write;
+    let Some(path) = acks_path(env).filter(|_| !ids.is_empty()) else { return };
+    let line = format!("{}\n", ids.iter().map(u64::to_string).collect::<Vec<_>>().join(" "));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn ask_core(
     env: &HookEnv,
     event: &HookEvent,
@@ -100,7 +173,8 @@ fn ask_core(
     waits: bool,
     reply_deadline: Duration,
     started: Instant,
-) -> Result<Option<HookOutput>, String> {
+    acks: &[u64],
+) -> Result<(Option<HookOutput>, Vec<u64>), String> {
     let socket: &Path = env.socket.as_deref().ok_or("ORCH_SOCK not set")?;
     let agent_id = env.agent_id.clone().ok_or("ORCH_AGENT_ID not set")?;
     let stream =
@@ -111,6 +185,7 @@ fn ask_core(
         ts_ms,
         deadline_ms: if waits { reply_deadline.as_millis() as u64 } else { 0 },
         payload: payload.clone(),
+        acks: acks.to_vec(),
     }));
     let left = reply_deadline.saturating_sub(started.elapsed());
     if left.is_zero() {
@@ -125,8 +200,8 @@ fn ask_core(
         return Err(format!("protocol version {}", reply.v));
     }
     match reply.reply {
-        Reply::Hook { output } => Ok(output),
-        Reply::Ack => Ok(None),
+        Reply::Hook { output, ack } => Ok((output, ack)),
+        Reply::Ack => Ok((None, vec![])),
         Reply::Error { message } => Err(format!("core error: {message}")),
         Reply::Ctl(_) | Reply::Mcp { .. } => Err("unexpected reply".into()),
     }
@@ -179,7 +254,7 @@ mod tests {
         }
         for ev in HookEvent::REGISTERED.iter().filter(|e| !e.waits_for_core()) {
             let o = run(&payload(ev.as_str()), &e);
-            assert_eq!(o, Outcome { stdout: None, exit: 0, fallback: Some("ENOENT".into()) }, "{ev}");
+            assert_eq!(o, Outcome { stdout: None, exit: 0, fallback: Some("ENOENT".into()), ack: vec![] }, "{ev}");
         }
         let recs = spooled(d.path());
         assert_eq!(recs.len(), HookEvent::REGISTERED.len());
@@ -275,7 +350,7 @@ mod tests {
             writeln!(s, r#"{{"v":1,"reply":"hook","output":null}}"#).unwrap();
         });
         let o = run(&payload("PreToolUse"), &env(d2.path(), 5_000));
-        assert_eq!(o, Outcome { stdout: None, exit: 0, fallback: None }, "{o:?}");
+        assert_eq!(o, Outcome { stdout: None, exit: 0, fallback: None, ack: vec![] }, "{o:?}");
         core2.join().unwrap();
     }
 
@@ -288,7 +363,7 @@ mod tests {
         });
         for i in 0..N {
             let o = run(&payload("PreToolUse"), &env(d.path(), 5_000));
-            assert_eq!(o, Outcome { stdout: None, exit: 0, fallback: None }, "run {i}: {o:?}");
+            assert_eq!(o, Outcome { stdout: None, exit: 0, fallback: None, ack: vec![] }, "run {i}: {o:?}");
         }
         core.join().unwrap();
     }
@@ -301,6 +376,54 @@ mod tests {
         });
         assert_denied(&run(&payload("PreToolUse"), &env(d.path(), 5_000)));
         core.join().unwrap();
+    }
+
+    #[test]
+    fn injected_messages_are_confirmed_or_sent_with_the_next_hook() {
+        let d = short_dir();
+        let e = env(d.path(), 5_000);
+        let l = bind_listener(&d.path().join("core.sock")).unwrap();
+        let core = std::thread::spawn(move || {
+            let mut got = vec![];
+            for i in 0..3 {
+                let (mut s, _) = l.accept().unwrap();
+                let mut line = String::new();
+                std::io::BufReader::new(&s).read_line(&mut line).unwrap();
+                got.push(serde_json::from_str::<Envelope>(&line).unwrap().msg);
+                match i {
+                    0 => writeln!(s, r#"{{"v":1,"reply":"hook","output":null,"ack":[7,8]}}"#).unwrap(),
+                    1 => writeln!(s, r#"{{"v":1,"reply":"ack"}}"#).unwrap(),
+                    _ => writeln!(s, r#"{{"v":1,"reply":"hook","output":null}}"#).unwrap(),
+                }
+            }
+            got
+        });
+        let o = run(&payload("PostToolUse"), &e);
+        assert_eq!(o.ack, [7, 8]);
+        confirm(&e, &o.ack);
+        // The core is gone for the next confirmation: kept, sent with the next hook.
+        confirm(&HookEnv { socket: Some(d.path().join("none.sock")), ..e.clone() }, &[9]);
+        assert!(d.path().join(ACKS_FILE).exists());
+        let t = Instant::now();
+        confirm(&HookEnv { socket: Some(d.path().join("none.sock")), ..e.clone() }, &[10]);
+        assert!(t.elapsed() <= ACK_DEADLINE + Duration::from_millis(100));
+        run(&payload("PostToolUse"), &e);
+        let got = core.join().unwrap();
+        assert_eq!(got[1], Msg::HookAck(HookAckMsg { agent_id: "a1".into(), ids: vec![7, 8] }));
+        match &got[2] {
+            Msg::Hook(h) => assert_eq!(h.acks, [9, 10]),
+            m => panic!("{m:?}"),
+        }
+        assert!(!d.path().join(ACKS_FILE).exists(), "sent once");
+    }
+
+    #[test]
+    fn pending_acks_stay_when_the_core_is_down() {
+        let d = short_dir();
+        let e = env(d.path(), 5_000);
+        keep_pending(&e, &[3]);
+        run(&payload("PostToolUse"), &e);
+        assert_eq!(take_pending(&e), [3], "kept for the next hook");
     }
 
     #[test]

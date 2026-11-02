@@ -398,9 +398,10 @@ impl Core {
         match env.msg {
             // PermissionRequest included: the runtime holds it as a store
             // Inbox item, and parks it when nobody answers in time (FR-705).
-            Msg::Hook(m) => {
-                let output = rt.on_hook(&m, Some(&s));
-                reply(Reply::Hook { output });
+            Msg::Hook(m) => rt.serve_hook(&m, Some(&s), |r| bus::write_line(&mut &s, &ReplyEnvelope::new(r)).is_ok()),
+            Msg::HookAck(m) => {
+                rt.on_hook_ack(&m.agent_id, &m.ids);
+                reply(Reply::Ack);
             }
             Msg::Status(m) => {
                 rt.on_status(&m);
@@ -1610,13 +1611,14 @@ mod tests {
                 deadline_ms,
                 payload: json!({"hook_event_name": "PermissionRequest", "session_id": "s",
                     "tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": "/w"}),
+                acks: vec![],
             }));
             bus::write_line(&mut &s, &msg).unwrap();
             let r: ReplyEnvelope = bus::read_line(&mut BufReader::new(&s)).unwrap();
             r
         };
         let behavior = |r: ReplyEnvelope| match r.reply {
-            Reply::Hook { output: Some(o) } => o.0["hookSpecificOutput"]["decision"].clone(),
+            Reply::Hook { output: Some(o), .. } => o.0["hookSpecificOutput"]["decision"].clone(),
             other => panic!("{other:?}"),
         };
         let ask2 = ask.clone();
