@@ -17,6 +17,8 @@ The core already checks every open PR every minute:
 
 But `set_run_pr` writes with `Store::write`, not `Store::write_touching`: unlike every other team-table write (`upsert_run`, `upsert_task`, …) it notes **no `now` topic**. The UI only refetches the Feature pane on a topic (`FeaturePane.svelte`: `onTopics(['feature:<id>', 'features', 'teams'], load)`, "no poll"), on mount and on window focus. So the status the background check stores is never pushed to the open pane; only the manual `pr_refresh` (whose reply the PR line applies directly) and a window refocus show it.
 
+**Second cause, found after the user tested the build (T-1 alone was not enough):** the desktop app does not run `server.rs`. `crates/orch-app/src/core.rs:316` starts its own `orch-fetch` thread, and that thread calls only `fetch_tick`, never `pr_tick`. In the app, then, open PRs are checked only by ↻ (and the immediate check after an update push). The 60 s watcher exists only in headless `orchd`.
+
 Moves the check causes (merged → `done`, closed → `integrating`) already go through run-state writes that touch topics; only the status itself (CI, position, unpushed, `checked_at_ms`, `error`) is silent.
 
 ## 3. Scope
@@ -33,6 +35,7 @@ Out of scope: a configurable interval, checking PRs more often while the pane is
 
 ## 4. Acceptance
 
+0. In the **desktop app** (not only `orchd`), the background PR check runs every 60 s.
 1. With a Feature pane open on a run in `pr_open`, a change on GitHub (CI turns green/red, base moves, PR merged) shows on the PR line within ~60 s with no click and the window focused; `checked` reads `just now` after each background check.
 2. A background check that fails (gh error) turns the line stale (`last checked …`) without a click.
 3. The manual ↻ works as before.
@@ -45,5 +48,6 @@ Out of scope: a configurable interval, checking PRs more often while the pane is
 | Task | Owner | Notes |
 |---|---|---|
 | T-1 PR status writes raise the feature topic | back | `orch-store/src/teams.rs` (`set_run_pr` + test), runtime test, READMEs |
+| T-2 The app runs the PR watcher | back | one shared network-loop step in `agent-runtime` used by both `orch-app/src/core.rs` and `agent-runtime/src/server.rs` (fetch every `FETCH_EVERY`, `pr_tick` every `PR_EVERY`), with a test |
 
 No frontend or design work (see `ux-brief.md` and `api-contract.md`).
