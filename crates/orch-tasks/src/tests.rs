@@ -563,6 +563,9 @@ fn github_writes_only_what_changed() {
     assert_eq!((n, sent), (1, vec!["labels".to_string(), "state".to_string()]));
     assert_eq!(gh.label_names(1), ["orch", "orch:in_progress", "bug"]);
     assert_eq!(gh.issue(1)["body"], json!("Written on GitHub\r\n"), "the body is not rewritten");
+    let after = by_issue(&s, 1);
+    assert_eq!(after.body, "Written on GitHub", "the remote body is taken, not hidden by the new stamp");
+    assert_eq!(svc.sync(2).unwrap().updated, Vec::<u64>::new());
     svc.set_status(t.id, TaskStatus::Done, 3).unwrap();
     assert_eq!(gh.issue(1)["state"], json!("closed"));
     svc.set_status(t.id, TaskStatus::Ready, 4).unwrap();
@@ -703,4 +706,30 @@ fn github_cursor_survives_a_restart() {
     svc(&s, &p, &gh).sync(4).unwrap();
     assert!(last(&gh).contains("state=closed&labels=orch"), "a full read: {}", last(&gh));
     assert_eq!(svc(&s, &p, &gh).github_repo().unwrap().as_deref(), Some("me/shop"));
+}
+
+/// A full read (no cursor) does not list a tracked issue closed on GitHub
+/// without `orch`: a task still open in the app is read alone and closed.
+#[test]
+fn github_full_read_finds_a_tracked_issue_closed_elsewhere() {
+    let (_d, s, p, gh) = github_setup();
+    gh.add(1, "Foreign", "open", &[]);
+    let svc = svc(&s, &p, &gh);
+    svc.sync(1).unwrap();
+    gh.edit(1, |i| i["state"] = json!("closed"));
+    s.set_task_sync_cursor("p1", "github:me/old", &stamp(1)).unwrap();
+    let rep = svc.sync(2).unwrap();
+    assert!(gh.0.lock().unwrap().lists.last().unwrap().0.contains("state=closed&labels=orch"), "a full read");
+    assert_eq!(rep.updated, [by_issue(&s, 1).id]);
+    assert_eq!(by_issue(&s, 1).status, TaskStatus::Done);
+}
+
+/// A cursor that does not parse is replaced by the listing's, not kept.
+#[test]
+fn github_unparsable_cursor_is_replaced() {
+    let (_d, s, p, gh) = github_setup();
+    gh.add(1, "One", "open", &[]);
+    s.set_task_sync_cursor("p1", "github:me/shop", "garbage").unwrap();
+    svc(&s, &p, &gh).sync(1).unwrap();
+    assert_eq!(s.task_sync_cursor("p1").unwrap(), Some(("github:me/shop".into(), stamp(1))));
 }

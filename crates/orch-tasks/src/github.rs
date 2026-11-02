@@ -67,8 +67,8 @@ pub struct Listing {
     /// Every issue the sync should know; `false` = only the issues changed
     /// since the cursor (an issue not listed did not change).
     pub complete: bool,
-    /// The newest `updated_at` seen, the next sync's `since`; `None` = the
-    /// remote keeps no cursor.
+    /// The newest `updated_at` seen (never older than the `since` asked
+    /// with), the next sync's `since`; `None` = the remote keeps no cursor.
     pub cursor: Option<String>,
 }
 
@@ -121,7 +121,7 @@ pub fn parse_body(body: &str) -> (String, Vec<String>) {
     (kept.join("\n").trim_end().to_string(), deps)
 }
 
-/// Reads one issue from `gh issue list --json` or `gh api` output.
+/// Reads one issue from `gh api` output (REST, or `--json` field names).
 pub fn parse_issue(v: &Value) -> Option<Issue> {
     let number = match &v["number"] {
         Value::Number(n) => n.to_string(),
@@ -173,7 +173,6 @@ pub struct Fields {
 
 impl Fields {
     pub const ALL: Fields = Fields { state: true, content: true };
-    pub const NONE: Fields = Fields { state: false, content: false };
 
     pub fn any(self) -> bool {
         self.state || self.content
@@ -337,7 +336,8 @@ impl<G: Gh> GithubIssues<G> {
             }
         };
         let raw: Vec<Value> = raw.into_iter().filter(|v| v.get("pull_request").is_none()).collect();
-        let cursor = raw.iter().filter_map(|v| v["updated_at"].as_str()).max().map(str::to_string);
+        let newest = raw.iter().filter_map(|v| v["updated_at"].as_str()?.parse::<jiff::Timestamp>().ok()).max();
+        let cursor = newest.max(since).map(|t| t.to_string());
         Ok(Listing { issues: raw.iter().filter_map(parse_issue).collect(), complete, cursor })
     }
 

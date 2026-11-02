@@ -264,13 +264,27 @@ impl<'a> TaskService<'a> {
     }
 
     /// Pushes `fields` of `t` to the remote (a create sends everything) and
-    /// records what it said.
+    /// records what it said. The parts not sent are taken from the issue:
+    /// recording its new `updated_at` would otherwise hide a change made on
+    /// the remote since the last sync.
     fn push(&self, gh: &dyn Remote, t: &mut Task, fields: Fields) -> Result<()> {
         let w = self.write_of(t, fields);
         let issue = match &t.external_id {
             None => gh.create_issue(&w)?,
             Some(n) => gh.update_issue(n, &w)?,
         };
+        let sent_deps = w.blocked_by;
+        if t.external_id.is_some() && !fields.content {
+            t.title = issue.title.clone();
+            t.body = issue.body.clone();
+            if issue.blocked_by != sent_deps {
+                t.depends_on = self.deps_of(&issue);
+            }
+        }
+        if t.external_id.is_some() && !fields.state {
+            t.status = issue.status;
+            t.node = issue.node.clone().or(t.node.take());
+        }
         t.external_id = Some(issue.number);
         t.remote_updated_at = Some(issue.updated_at);
         Ok(())
@@ -378,15 +392,17 @@ impl<'a> TaskService<'a> {
                 Err(e) => rep.errors.push(format!("{}: {e:#}", t.handle())),
             }
         }
-        // Pending tasks whose issue is not listed. An incremental listing
-        // leaves out the issues that did not change: pushed again (pending,
-        // remote unchanged). A full one leaves out the issues it does not
-        // ask for (closed without `orch`): read one by one, then as listed.
+        // Tracked tasks whose issue is not listed. An incremental listing
+        // leaves out the issues that did not change: a pending one is pushed
+        // again (pending, remote unchanged). A full GitHub one leaves out the
+        // issues it does not ask for (closed without `orch`): a pending or
+        // still open task is read one by one, then handled as listed.
+        let full_github = listing.complete && scope.is_some();
         let listed: std::collections::HashSet<&str> = issues.iter().map(|i| i.number.as_str()).collect();
         let unlisted: Vec<Task> = local
             .iter()
-            .filter(|t| t.backend == kind && Self::pending(t).is_some())
-            .filter(|t| t.external_id.as_deref().is_some_and(|n| !listed.contains(n)))
+            .filter(|t| t.backend == kind && t.external_id.as_deref().is_some_and(|n| !listed.contains(n)))
+            .filter(|t| Self::pending(t).is_some() || full_github && t.status != TaskStatus::Done)
             .cloned()
             .collect();
         for mut t in unlisted {
@@ -453,7 +469,6 @@ impl<'a> TaskService<'a> {
         }
         rep.unmapped_states = gh.unmapped_states();
         if let (Some(scope), Some(c)) = (&scope, listing.cursor) {
-            let c = since.filter(|s| *s > c).unwrap_or(c);
             self.store.set_task_sync_cursor(&self.project.id, scope, &c)?;
         }
         for (id, issue) in adopted {

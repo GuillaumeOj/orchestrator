@@ -71,7 +71,7 @@ makes a new one.
 | unchanged | changed | adopt the remote (`updated`) |
 | pending (push failed) | unchanged | push again (`pushed`) |
 | pending | not in an incremental list (so unchanged) | push again (`pushed`) |
-| pending | not in a full list (closed without `orch`) | read the issue alone, then as above |
+| pending, or not Done | not in a full GitHub list (closed without `orch`) | read the issue alone, then as listed |
 | pending | changed | **adopt the remote** and report it (`conflicts`): the caller tells the user |
 | never created remotely | — | create the issue (`pushed`) |
 | — | new open issue (GitHub: any labels; Linear: with `orch`) | import (`imported`) |
