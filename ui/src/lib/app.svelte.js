@@ -289,7 +289,8 @@ const CLOSED_MAX = 20;
 /** ⌘W, a tab's ×, a pane's close: the pane can be reopened. */
 export function closePaneByUser(id = app.focused) {
   if (!id || !app.panes[id]) return;
-  closed.push({ spec: app.panes[id], docked: inDock(id) });
+  // Watch mode is a session over the board, not part of what the pane is: reopened, it is a plain tab.
+  closed.push({ spec: { ...app.panes[id], watch: undefined, over: undefined }, docked: inDock(id) });
   if (closed.length > CLOSED_MAX) closed.shift();
   closePane(id);
 }
