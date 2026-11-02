@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { allPanes } from '../src/lib/layout.js';
 import { fixture } from './fixture.js';
 
 let nextTerm = 1;
@@ -260,11 +261,23 @@ describe('restore', () => {
     expect(app.focused).toBe('p4');
   });
 
-  it('adds the Overview only when the workspace and the dock are both empty', async () => {
+  it('adds Mission control only when the workspace and the dock are both empty', async () => {
     h.saved = saved({ layout: null, panes: {}, dock: { open: false, tabs: [] } });
     app.panes = {};
     await restoreLayout();
-    expect(Object.values(app.panes).map((p) => p.type)).toEqual(['overview']);
+    expect(Object.values(app.panes).map((p) => p.type)).toEqual(['mission']);
+  });
+
+  it('keeps a session over Mission control in its group', async () => {
+    const base = saved();
+    h.saved = saved({
+      layout: { ...base.layout, children: [leaf('p1'), leaf('p5', 'p2')] },
+      panes: { ...base.panes, p5: { type: 'mission' }, p2: { ...agent('back-1'), over: 'p5', watch: true } },
+      focused: 'p1',
+    });
+    await restoreLayout();
+    expect(inDock('p2')).toBe(false);
+    expect(allPanes(app.layout)).toContain('p2');
   });
 
   it('moves a saved 0.3 height to 0.45 once, and keeps a height saved under v 2', async () => {
