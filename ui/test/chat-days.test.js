@@ -331,3 +331,86 @@ describe('focus_card (spec §3.5, api-contract §4)', () => {
     expect(handlers.focus_card).toBeUndefined();
   });
 });
+
+describe('still open from yesterday (F1, api-contract §1)', () => {
+  const NOW = Date.now();
+  const [p, qq] = kinds(NOW);
+  const setup = (decisions, entries) => {
+    app.now = { ...nowOf(app.data, { decisions }), chat: chatOf(entries) };
+  };
+  const carriedEntry = (id, d, from, at) => entry(id, d, { at_ms: at, continued_from: from });
+  const groups = (c) => [...c.querySelectorAll('[data-group]')].map(text);
+  const order = (c) =>
+    [...feed(c).children].map((x) => (x.matches('[data-group]') ? text(x) : x.className.split(' ')[0]));
+
+  it('one carried card: the label names the day before, right after the morning line; Today follows', () => {
+    const today = { ...qq, created_ms: NOW - 5 * MIN };
+    setup([p, today], [morning(NOW - 60 * MIN), entry('c-9', today), carriedEntry('c-8', p, 'c-790', NOW - 59 * MIN)]);
+    const { container: c } = render(ChatColumn);
+    expect(groups(c)).toEqual(['STILL OPEN FROM SUN 1 NOV', 'TODAY']);
+    const o = order(c);
+    expect(o.slice(0, 5)).toEqual(['morning', 'STILL OPEN FROM SUN 1 NOV', 'stop', 'TODAY', 'stop']);
+    expect(c.querySelector('[data-decision="perm-1"]')).not.toBeNull();
+  });
+
+  it('two carried cards keep their order inside the group, even when a today card is older', () => {
+    const a = { ...p, created_ms: NOW - 50 * MIN };
+    const b = { ...qq, created_ms: NOW - 40 * MIN };
+    const t = { ...qq, id: 'q-3', created_ms: NOW - 55 * MIN };
+    setup(
+      [a, b, t],
+      [
+        morning(NOW - 60 * MIN),
+        entry('c-t', t),
+        carriedEntry('c-1', a, 'c-70', NOW - 50 * MIN),
+        carriedEntry('c-2', b, 'c-71', NOW - 40 * MIN),
+      ],
+    );
+    const { container: c } = render(ChatColumn);
+    expect(groups(c)).toEqual(['STILL OPEN FROM SUN 1 NOV', 'TODAY']);
+    expect(order(c).slice(0, 6)).toEqual(['morning', 'STILL OPEN FROM SUN 1 NOV', 'stop', 'stop', 'TODAY', 'stop']);
+    const ids = [...c.querySelectorAll('[data-decision]')].map((x) => x.getAttribute('data-decision'));
+    expect(ids).toEqual(['perm-1', 'q-2', 'q-3']);
+  });
+
+  it('the group disappears when the carried cards close', () => {
+    setup([p], [morning(NOW - 60 * MIN), carriedEntry('c-8', p, 'c-790', NOW - 59 * MIN)]);
+    const { container: c, unmount } = render(ChatColumn);
+    expect(groups(c)).toEqual(['STILL OPEN FROM SUN 1 NOV']);
+    unmount();
+    const closed = { ...p, level: 4, lifecycle: { state: 'effect', decided_by: 'user', effect_at_ms: NOW - 20 * MIN } };
+    setup(
+      [closed],
+      [
+        morning(NOW - 60 * MIN),
+        {
+          ...carriedEntry('c-8', p, 'c-790', NOW - 59 * MIN),
+          line: {
+            verb: 'allowed',
+            agent: 'back-1',
+            what: 'pnpm add zod',
+            by: 'you',
+            state: 'effect',
+            at_ms: NOW - 20 * MIN,
+          },
+          card: closed,
+        },
+      ],
+    );
+    const r = render(ChatColumn);
+    expect(groups(r.container)).toEqual([]);
+    expect(r.container.querySelectorAll('article.line').length).toBe(1);
+  });
+
+  it('the label is a calendar date: the same in any time zone, across a month start', () => {
+    expect(chat.thread({ chat: { day: '2026-11-02', entries: {} } }).items).toEqual([]);
+    const label = (day) => {
+      const e = carriedEntry('c-8', p, 'c-1', 1);
+      const t = chat.thread({ chat: { day, entries: { 'c-8': e } }, decisions: { [p.id]: p } });
+      return t.items.find((i) => i.type === 'group')?.label;
+    };
+    expect(label('2026-11-02')).toBe('Still open from Sun 1 Nov');
+    expect(label('2026-03-01')).toBe('Still open from Sat 28 Feb');
+    expect(label(null)).toBe('Still open from yesterday');
+  });
+});

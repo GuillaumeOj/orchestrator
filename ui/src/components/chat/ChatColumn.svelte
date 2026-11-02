@@ -692,6 +692,8 @@
     {#each t.items as it (it.type === 'card' ? `card:${it.key}` : it.key)}
       {#if it.type === 'morning'}
         <article class="morning" aria-label="Morning summary">{it.entry.text}</article>
+      {:else if it.type === 'group'}
+        <div class="sep group" role="separator" data-group>{it.label.toUpperCase()}</div>
       {:else if it.type === 'fold'}
         <button class="fold stop" class:sel={cur === 'fold'} class:warn={it.blocking > 0} aria-expanded={it.open} aria-label="{it.n} more open cards{it.blocking ? `, ${it.blocking} blocking` : ''}. {it.open ? 'Fold them' : 'Show them'}" onclick={() => ((sel = 'fold'), (foldOpen = !foldOpen))}>
           <span aria-hidden="true">{it.open ? '▾' : '▸'}</span> {foldText(it)} · <Kbd keys={it.open ? '⏎' : 'j'} />
@@ -887,6 +889,9 @@
     content: '';
     flex: 1;
     border-top: var(--border-width-default) solid var(--color-border-subtle);
+  }
+  .sep.group::before {
+    display: none;
   }
   .result {
     display: flex;

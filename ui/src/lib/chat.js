@@ -184,8 +184,8 @@ function composedLine(d, now) {
 }
 
 /**
- * @typedef {{ type: 'morning' | 'card' | 'line' | 'fold', key: string, id?: string, d?: any,
- *   entry?: any, line?: any, ref?: any, n?: number, blocking?: number, open?: boolean }} Item
+ * @typedef {{ type: 'morning' | 'card' | 'line' | 'fold' | 'group', key: string, id?: string, d?: any,
+ *   entry?: any, line?: any, ref?: any, label?: string, n?: number, blocking?: number, open?: boolean }} Item
  */
 
 /**
@@ -294,6 +294,15 @@ export function thread({
     for (const it of all) memo.set(it.key, it);
   }
 
+  // Decisions still open from the day before (api-contract §1, F1) sit in a
+  // group right after the morning line; inside it they keep their order.
+  const carried = (i) => i.type === 'card' && !!i.entry.continued_from;
+  if (all.some(carried)) {
+    const at = all.findIndex((i) => i.type !== 'morning');
+    const rest = all.splice(Math.max(at, 0));
+    all.push(...rest.filter(carried), ...rest.filter((i) => !carried(i)));
+  }
+
   const cardsAll = all.filter((i) => i.type === 'card');
   const counts = Object.fromEntries(FILTERS.map((f) => [f.id, cardsAll.filter((i) => f.test(i.d)).length]));
   const test = (FILTERS.find((f) => f.id === filter) ?? FILTERS[0]).test;
@@ -304,9 +313,18 @@ export function thread({
   const items = [];
   /** @type {Item[]} */
   const cards = [];
+  let group = 0; // 0: none yet · 1: the group opened · 2: its "Today" label placed
   for (const it of all) {
+    if (group === 1 && !carried(it) && it.type !== 'morning') {
+      group = 2;
+      items.push({ type: 'group', key: 'group:today', label: 'Today' });
+    }
     if (it.type === 'card') {
       if (!test(it.d)) continue;
+      if (!group && carried(it)) {
+        group = 1;
+        items.push({ type: 'group', key: 'group:carried', label: carriedLabel(chat?.day) });
+      }
       if (folded.size && it.key === shown[FOLD_AT].key) {
         const rest = shown.slice(FOLD_AT);
         items.push({
@@ -324,6 +342,9 @@ export function thread({
   }
   return { items, cards, all: cardsAll, counts, shown: shown.length, nextDue };
 }
+
+/** "Still open from Sun 1 Nov": the day before today's thread (calendar arithmetic, no time zone). */
+const carriedLabel = (day) => `Still open from ${day ? dayLabel(prevDay(day)) : 'yesterday'}`;
 
 /** The same item as last time: what it renders from did not change. */
 function sameItem(a, b) {
