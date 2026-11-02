@@ -16,6 +16,7 @@ pub mod services;
 pub mod setup;
 pub mod teams;
 pub mod terms;
+pub mod update;
 pub mod watch;
 
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -89,14 +90,18 @@ fn build_info_from(version: &str, sha: Option<&str>, channel: Option<&str>) -> B
 pub fn run() {
     let cfg = core::CoreConfig::from_env();
     bundle_environment(&cfg);
+    let updates = cfg.home.join("updates");
     let core = core::Core::start(cfg);
     let decided = core.clone();
+    let context = tauri::generate_context!();
+    let build = build_info(&context.package_info().version.to_string());
+    let updater = update::Updater::new(build.clone(), updates);
     let app = tauri::Builder::default()
         .manage(core.clone())
+        .manage(updater.clone())
         .plugin(tauri_plugin_notification::init())
         .menu(menu::build)
         .setup(move |app| {
-            let build = build_info(&app.package_info().version.to_string());
             eprintln!(
                 "orchestrator {} (sha {}, channel {}) started (pid {})",
                 build.version,
@@ -105,6 +110,11 @@ pub fn run() {
                 std::process::id()
             );
             devctl::start(app.handle().clone());
+            // api-contract §3: the `update` event carries the whole state.
+            let h = app.handle().clone();
+            updater.start(Arc::new(move |v| {
+                let _ = h.emit("update", v);
+            }));
             notify::start(app.handle().clone(), decided.clone());
             // api-contract §3: a decided item's toast (and card drop).
             if let Ok(rt) = decided.runtime() {
@@ -216,15 +226,21 @@ pub fn run() {
             commands::settings_get,
             commands::settings_set,
             commands::dev_enabled,
+            commands::update_check,
+            commands::update_restart,
             devctl::dev_report,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("building the Tauri app");
     app.run(|handle, ev| {
         if let RunEvent::Exit = ev {
             // Agents are suspended (resumed by session id next time), shells closed.
             if let Some(core) = handle.try_state::<Arc<core::Core>>() {
                 core.shutdown();
+            }
+            // Then the staged update, if any, replaces the bundle (spec §3.3).
+            if let Some(u) = handle.try_state::<Arc<update::Updater>>() {
+                u.on_exit();
             }
         }
     });

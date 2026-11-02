@@ -17,10 +17,12 @@ use crate::planner::PlannerView;
 use crate::services::Project;
 use crate::setup::PlanForm;
 use crate::terms::TermKind;
+use crate::update::Updater;
 use orch_git::project::RemovalChoices;
 
 type Res<T> = Result<T, String>;
 type CoreState<'a> = State<'a, Arc<Core>>;
+type UpdaterState<'a> = State<'a, Arc<Updater>>;
 
 /// A pull returns at least this often, so a closed pane's loop ends promptly.
 const PULL_WAIT: Duration = Duration::from_secs(2);
@@ -41,8 +43,10 @@ async fn blocking<T: Send + 'static>(
 
 /// Off the main thread (sync commands run there): it runs git and scans processes.
 #[tauri::command]
-pub async fn app_state(core: CoreState<'_>) -> Res<Value> {
-    blocking(core, |c| Ok(c.state())).await
+pub async fn app_state(core: CoreState<'_>, updater: UpdaterState<'_>) -> Res<Value> {
+    let mut v = blocking(core, |c| Ok(c.state())).await?;
+    v["update"] = updater.json();
+    Ok(v)
 }
 
 /// P4.1: the attention world, at the `now` event's last rev (api-contract §3.2).
@@ -628,4 +632,21 @@ pub fn settings_set(core: CoreState, key: String, value: Value) -> Res<()> {
 #[tauri::command]
 pub fn dev_enabled() -> bool {
     crate::devctl::enabled()
+}
+
+// ---------------------------------------------------------------- updates
+
+/// Checks for an update now (api-contract §4); returns the state once the check started.
+#[tauri::command]
+pub fn update_check(updater: UpdaterState) -> Res<Value> {
+    updater.check_now().map_err(e)
+}
+
+/// Quits as ⌘Q does (agents suspended), installs the staged update and relaunches it.
+/// The pre-flight runs first: if it fails, the app stays up and the state is `error`.
+#[tauri::command]
+pub fn update_restart(app: tauri::AppHandle, updater: UpdaterState) -> Res<()> {
+    updater.prepare_restart().map_err(e)?;
+    app.exit(0);
+    Ok(())
 }
