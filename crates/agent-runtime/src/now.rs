@@ -420,16 +420,18 @@ impl Runtime {
         let empty = World::default();
         let w = st.last.as_ref().unwrap_or(&empty);
         let day = st.chat.day.clone();
-        let entries = self.db.chat_day(&day).unwrap_or_default();
-        json!({
+        let mut snap = json!({
             "rev": st.rev,
             "agents": w.agents.values().collect::<Vec<_>>(),
             "runs": w.runs.values().collect::<Vec<_>>(),
             "counts": w.counts,
             "decisions": st.decisions.values().collect::<Vec<_>>(),
             "outcomes": st.outcomes.list,
-            "chat": {"day": day, "entries": entries},
-        })
+        });
+        // Today's entries, read once the publisher's lock is released.
+        drop(st);
+        snap["chat"] = json!({"entries": self.db.chat_day(&day).unwrap_or_default(), "day": day});
+        snap
     }
 
     /// Recomputes and sends what changed: when a write changed the state,

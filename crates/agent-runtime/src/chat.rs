@@ -13,7 +13,7 @@ use orch_store::{ChatDay, ChatEntry, PermissionRule};
 use serde_json::{Value, json};
 
 use crate::attention::copy::cut;
-use crate::decision::{self, Decision, Lifecycle};
+use crate::decision::{self, Decision};
 use crate::runtime::Runtime;
 
 /// A line's `what`: the short input or title, cut by the core.
@@ -87,8 +87,8 @@ pub fn verb(d: &Decision) -> &'static str {
         ("permission", "approve" | "always_allow") => "allowed",
         ("permission", "reject" | "reply") => "denied",
         ("gate", "approve") => "approved",
-        ("gate", "reject" | "reply") if gate == "spec" => "sent back",
         ("gate", "reply") => "sent back",
+        ("gate", "reject") if gate == "spec" => "sent back",
         ("gate", "reject") => "rejected",
         ("budget", "approve") => "applied",
         ("budget", "reject") => "skipped",
@@ -215,6 +215,41 @@ fn day_bounds(date: jiff::civil::Date, tz: &TimeZone) -> Result<(u64, u64)> {
     Ok((ms(date)?, ms(date.tomorrow()?)?))
 }
 
+/// A core decision entry; `line` set when it is posted settled.
+fn decision_entry(day: &str, at_ms: u64, d: &Decision, line: Option<Value>) -> ChatEntry {
+    ChatEntry {
+        day: day.into(),
+        at_ms,
+        author: "core".into(),
+        kind: "decision".into(),
+        thread: d.thread.clone(),
+        decision: Some(d.id.clone()),
+        line,
+        card: Some(card_of(d)),
+        ..Default::default()
+    }
+}
+
+/// An open entry whose decision is gone with no row (a synthesized card that
+/// cleared while the app was down): its snapshot, closed by the core (ux F8).
+fn close_from_snapshot(e: &mut ChatEntry, now: u64) {
+    let card = e.card.as_ref();
+    let what = card.and_then(|c| c["title"].as_str()).or(e.decision.as_deref()).unwrap_or("");
+    let mut line =
+        json!({"verb": "dismissed", "what": cut(what, WHAT_MAX), "by": "core", "state": "stale", "at_ms": now});
+    if let Some(a) = card.and_then(|c| c["subject"]["agent"].as_str()) {
+        line["agent"] = json!(a);
+    }
+    e.line = Some(line);
+    if let Some(c) = e.card.as_mut() {
+        let version = c["lifecycle"]["version"].as_u64().unwrap_or(0) + 1;
+        c["lifecycle"] = json!({"state": "dismissed", "decided_by": "core", "decided_at_ms": now,
+                                "effect": "dismissed", "effect_at_ms": now, "version": version});
+        c["waits_on"] = json!("core");
+        c["actions"] = json!([]);
+    }
+}
+
 fn upsert(out: &mut Vec<ChatEntry>, e: ChatEntry) {
     match out.iter_mut().find(|o| o.n == e.n) {
         Some(o) => *o = e,
@@ -254,6 +289,12 @@ impl Runtime {
             cs.loaded = true;
         }
         let is_open = |id: &str| x.decisions.get(id).is_some_and(Decision::is_open);
+        // The rule that decided (its pattern names it), read once and only when asked.
+        let rules = std::cell::OnceCell::new();
+        let rule_of = |d: &Decision| -> Option<PermissionRule> {
+            let id = by_of(d.lifecycle.decided_by.as_deref()).1?;
+            rules.get_or_init(|| self.db.rules().unwrap_or_default()).iter().find(|r| r.id == id).cloned()
+        };
         // A new working day (start, or local midnight while running).
         if cs.day != x.day {
             cs.day = x.day.to_string();
@@ -317,11 +358,6 @@ impl Runtime {
         // Closed (or gone): the line and card, one write.
         let closing: Vec<String> = cs.open.keys().filter(|id| !is_open(id)).cloned().collect();
         let mut rebuilt = self.closed_elsewhere(&closing, x.decisions, x.gone);
-        let rules = if closing.is_empty() { vec![] } else { self.db.rules().unwrap_or_default() };
-        let rule_of = |d: &Decision| {
-            let id = by_of(d.lifecycle.decided_by.as_deref()).1?;
-            rules.iter().find(|r| r.id == id)
-        };
         for id in closing {
             let Some(mut e) = cs.open.remove(&id) else { continue };
             let prior = e.card.clone();
@@ -330,17 +366,13 @@ impl Runtime {
                 .get(&id)
                 .or_else(|| x.gone.iter().find(|d| d.id == id))
                 .cloned()
-                .or_else(|| rebuilt.remove(&id))
-                .or_else(|| dismissed_from_snapshot(&e, x.now));
+                .or_else(|| rebuilt.remove(&id));
             match last {
                 Some(d) => {
-                    e.line = Some(line_of(&d, rule_of(&d), prior.as_ref(), x.now));
+                    e.line = Some(line_of(&d, rule_of(&d).as_ref(), prior.as_ref(), x.now));
                     e.card = Some(card_of(&d));
                 }
-                None => {
-                    e.line = Some(json!({"verb": "dismissed", "what": cut(&id, WHAT_MAX), "by": "core",
-                                         "state": "stale", "at_ms": x.now}));
-                }
+                None => close_from_snapshot(&mut e, x.now),
             }
             if let Some(w) = write(&e, &mut out)
                 && x.decisions.contains_key(&id)
@@ -355,21 +387,27 @@ impl Runtime {
                 cs.closed.remove(&id);
                 continue;
             };
-            let (mut e, prior) = cs.closed[&id].clone();
             if d.is_open() {
+                let Some((mut e, _)) = cs.closed.remove(&id) else { continue };
                 (e.line, e.card) = (None, Some(card_of(d)));
-                cs.closed.remove(&id);
                 if let Some(w) = write(&e, &mut out) {
                     cs.open.insert(id, w);
                 }
                 continue;
             }
-            let card = card_of(d);
-            if e.card.as_ref() != Some(&card) {
-                let rule = by_of(d.lifecycle.decided_by.as_deref()).1.and_then(|n| self.rule(n));
-                (e.line, e.card) = (Some(line_of(d, rule.as_ref(), prior.as_ref(), x.now)), Some(card));
+            // Compared on what moves after a close (lifecycle, actions, title):
+            // the card is built only when one did.
+            let (e, prior) = &cs.closed[&id];
+            let same = e.card.as_ref().is_some_and(|c| {
+                c["lifecycle"] == json!(d.lifecycle)
+                    && c["actions"] == json!(d.actions)
+                    && c["title"] == d.title.as_str()
+            });
+            if !same {
+                let mut e = e.clone();
+                (e.line, e.card) = (Some(line_of(d, rule_of(d).as_ref(), prior.as_ref(), x.now)), Some(card_of(d)));
                 if let Some(w) = write(&e, &mut out) {
-                    cs.closed.insert(id, (w, prior));
+                    cs.closed.get_mut(&id).expect("listed").0 = w;
                 }
             }
         }
@@ -378,17 +416,7 @@ impl Runtime {
             x.decisions.values().filter(|d| d.is_open() && !cs.open.contains_key(&d.id)).collect();
         fresh.sort_by_key(|d| (d.created_ms, d.id.clone()));
         for d in fresh {
-            let e = ChatEntry {
-                day: x.day.into(),
-                at_ms: x.now,
-                author: "core".into(),
-                kind: "decision".into(),
-                thread: d.thread.clone(),
-                decision: Some(d.id.clone()),
-                card: Some(card_of(d)),
-                ..Default::default()
-            };
-            if let Some(w) = write(&e, &mut out) {
+            if let Some(w) = write(&decision_entry(x.day, x.now, d, None), &mut out) {
                 cs.known.insert(d.id.clone());
                 cs.open.insert(d.id.clone(), w);
             }
@@ -410,19 +438,8 @@ impl Runtime {
                     continue;
                 }
                 let d = &x.decisions[&id];
-                let rule = by_of(d.lifecycle.decided_by.as_deref()).1.and_then(|n| self.rule(n));
-                let e = ChatEntry {
-                    day: x.day.into(),
-                    at_ms: x.now,
-                    author: "core".into(),
-                    kind: "decision".into(),
-                    thread: d.thread.clone(),
-                    decision: Some(id.clone()),
-                    line: Some(line_of(d, rule.as_ref(), None, x.now)),
-                    card: Some(card_of(d)),
-                    ..Default::default()
-                };
-                if let Some(w) = write(&e, &mut out) {
+                let line = line_of(d, rule_of(d).as_ref(), None, x.now);
+                if let Some(w) = write(&decision_entry(x.day, x.now, d, Some(line)), &mut out) {
                     cs.closed.insert(id, (w, None));
                 }
             }
@@ -432,10 +449,6 @@ impl Runtime {
             upsert(&mut out, e);
         }
         out
-    }
-
-    fn rule(&self, id: u64) -> Option<PermissionRule> {
-        self.db.rules().ok()?.into_iter().find(|r| r.id == id)
     }
 
     /// Stored decisions among `ids` that left the list (closed while the
@@ -457,17 +470,22 @@ impl Runtime {
         if items.is_empty() {
             return BTreeMap::new();
         }
-        let empty = BTreeMap::new();
-        let cx = decision::Ctx {
-            items: &items,
-            agents: &empty,
-            tails: &BTreeMap::new(),
+        self.build_bare(&items).into_iter().map(|d| (d.id.clone(), d)).collect()
+    }
+
+    /// Stored items as Decisions, without the live state (agents, runs,
+    /// tails): what their rows say.
+    fn build_bare(&self, items: &[orch_store::InboxItem]) -> Vec<Decision> {
+        let (agents, tails, projects) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
+        decision::build(&decision::Ctx {
+            items,
+            agents: &agents,
+            tails: &tails,
             ask: None,
             runs: &[],
-            projects: &BTreeMap::new(),
+            projects: &projects,
             startup_timeout_ms: self.cfg.startup_timeout.as_millis() as u64,
-        };
-        decision::build(&cx).into_iter().map(|d| (d.id.clone(), d)).collect()
+        })
     }
 
     /// A permission a store rule answered (FR-709's audit write, `audit` its
@@ -483,48 +501,18 @@ impl Runtime {
         let (now, tz) = self.now.clock();
         let (_, day) = crate::digest::today(now, &tz);
         let subject = self.subject_now(Some(&rec.id), None);
-        let short = crate::inbox::main_arg(&call.tool, &call.input).unwrap_or_default();
-        let desc = call.input.get("description").and_then(Value::as_str).unwrap_or("");
-        let shown = if desc.is_empty() { cut(&short, 60) } else { cut(desc, 60) };
-        let d = Decision {
-            id: format!("audit-{audit}"),
-            kind: "permission",
-            gate: None,
-            level: 1,
-            title: format!("{} · {shown}", call.tool),
-            summary: desc.to_string(),
-            context: vec![json!({"type": "tool_call", "tool": call.tool, "input": call.input, "cwd": call.cwd})],
-            actions: vec![],
-            lifecycle: Lifecycle {
-                state: "effect",
-                decided_by: Some(format!("rule:{}", rule.id)),
-                decided_at_ms: Some(now),
-                effect: Some(if allow { "allowed" } else { "denied" }.into()),
-                effect_at_ms: Some(now),
-                version: 1,
-                ..Default::default()
-            },
-            thread: decision::thread_of(&subject),
-            thread_prev: None,
-            waits_on: "core",
-            created_ms: now,
-            agent: Some(rec.id.clone()),
-            synthesized: false,
-            decision: Some(if allow { "approve" } else { "reject" }.into()),
-            payload: json!({"tool": call.tool, "tool_input": call.input}),
-            subject,
-        };
-        let e = ChatEntry {
-            day,
-            at_ms: now,
-            author: "core".into(),
-            kind: "decision".into(),
-            thread: d.thread.clone(),
-            decision: Some(d.id.clone()),
-            line: Some(line_of(&d, Some(rule), None, now)),
-            card: Some(card_of(&d)),
-            ..Default::default()
-        };
+        // The permission card as the Inbox builds it, closed by the rule.
+        let item = serde_json::from_value::<orch_store::InboxItem>(json!({
+            "id": audit, "kind": "permission", "agent_id": rec.id, "body": "", "created_at_ms": now,
+            "payload": {"tool": call.tool, "tool_input": call.input, "cwd": call.cwd,
+                        "description": call.input.get("description")},
+            "status": "effect", "decided_at_ms": now, "decided_by": format!("rule:{}", rule.id),
+            "decision": if allow { "approve" } else { "reject" }, "effect": if allow { "allowed" } else { "denied" },
+            "effect_at_ms": now, "subject": subject, "thread": decision::thread_of(&subject), "version": 1,
+        }));
+        let Some(mut d) = item.ok().and_then(|i| self.build_bare(&[i]).pop()) else { return };
+        (d.id, d.actions, d.waits_on) = (format!("audit-{audit}"), vec![], "core");
+        let e = decision_entry(&day, now, &d, Some(line_of(&d, Some(rule), None, now)));
         if let Ok(e) = self.db.chat_insert(&e) {
             self.now.chat_posted().push(e);
         }
@@ -574,54 +562,6 @@ impl Runtime {
         let hits = self.db.chat_search(query.trim(), limit.unwrap_or(SEARCH_LIMIT))?;
         Ok(Value::Array(hits.into_iter().map(|e| json!({"day": e.day, "entry": e})).collect()))
     }
-}
-
-/// An open entry whose decision is gone with no row (a synthesized card
-/// that cleared while the app was down): closed by the core, from its snapshot.
-fn dismissed_from_snapshot(e: &ChatEntry, now: u64) -> Option<Decision> {
-    let card = e.card.as_ref()?;
-    let s = |k: &str| card.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-    let kind: &'static str = match card.get("kind").and_then(Value::as_str)? {
-        "permission" => "permission",
-        "question" => "question",
-        "gate" => "gate",
-        "startup" => "startup",
-        "budget" => "budget",
-        "ask" => "ask",
-        "trust" => "trust",
-        "wait" => "wait",
-        "error" => "error",
-        "notion" => "notion",
-        _ => "alert",
-    };
-    Some(Decision {
-        id: s("id"),
-        kind,
-        gate: None,
-        level: card.get("level").and_then(Value::as_u64).unwrap_or(2) as u8,
-        subject: card.get("subject").cloned().unwrap_or_default(),
-        title: s("title"),
-        summary: s("summary"),
-        context: card.get("context").and_then(Value::as_array).cloned().unwrap_or_default(),
-        actions: vec![],
-        lifecycle: Lifecycle {
-            state: "dismissed",
-            decided_by: Some("core".into()),
-            decided_at_ms: Some(now),
-            effect: Some("dismissed".into()),
-            effect_at_ms: Some(now),
-            version: card["lifecycle"]["version"].as_u64().unwrap_or(0) + 1,
-            ..Default::default()
-        },
-        thread: card.get("thread").and_then(Value::as_str).map(str::to_string),
-        thread_prev: None,
-        waits_on: "core",
-        created_ms: card.get("created_ms").and_then(Value::as_u64).unwrap_or(0),
-        agent: card["subject"]["agent"].as_str().map(str::to_string),
-        synthesized: true,
-        decision: None,
-        payload: Value::Null,
-    })
 }
 
 #[cfg(test)]

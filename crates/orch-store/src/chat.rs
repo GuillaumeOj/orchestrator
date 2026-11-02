@@ -44,11 +44,6 @@ impl ChatEntry {
         format!("c-{}", self.n)
     }
 
-    /// A decision entry still waiting for its line (and not carried on to a later day).
-    pub fn is_open(&self) -> bool {
-        self.kind == "decision" && self.line.is_none() && self.continued_to.is_none()
-    }
-
     /// What `chat_search` matches, lower-cased.
     fn haystack(&self) -> String {
         let s = |v: Option<&Value>, k: &str| v.and_then(|v| v.get(k)).and_then(Value::as_str).unwrap_or("").to_string();
@@ -137,7 +132,7 @@ fn row(r: &Row) -> rusqlite::Result<ChatEntry> {
 }
 
 fn js_opt(v: &Option<Value>) -> Option<String> {
-    v.as_ref().map(|v| v.to_string())
+    v.as_ref().map(crate::util::js)
 }
 
 impl Store {

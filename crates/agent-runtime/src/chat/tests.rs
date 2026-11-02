@@ -4,6 +4,7 @@ use orch_protocol::InboxDecision;
 use orch_store::{InboxStatus, RuleEffect, RuleScope};
 
 use super::*;
+use crate::decision::Lifecycle;
 use crate::runtime::tests::{hook, test_runtime};
 use crate::state::AgentState;
 
