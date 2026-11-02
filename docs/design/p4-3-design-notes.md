@@ -95,7 +95,7 @@ When `by_detail` is missing for a rule, the tail is `· rule`. The verb `expired
 | `verb` | by you | by rule | in the pane | expired | by the app |
 |---|---|---|---|---|---|
 | allowed | `▸ allowed back-1: cargo add serde_json` | `… · rule: installs` | `… · in the pane` | (parks, no line) | — |
-| denied | `▸ denied back-1: rm -rf build` | `… · rule: no-rm` | `… · in the pane` | `… · expired` | — |
+| denied | `▸ denied back-1: rm -rf build` | `… · rule: no-rm` | `… · in the pane` | (parks, no line) | — |
 | answered | `▸ answered front-1: Which auth provider?` | — | `… · in the pane` | — | — |
 | approved | `▸ approved lead-1: Spec gate · checkout` | — | — | — | — |
 | sent back | `▸ sent back lead-1: Spec gate · checkout` | — | — | — | — |
@@ -104,7 +104,7 @@ When `by_detail` is missing for a rule, the tail is `· rule`. The verb `expired
 | applied | `▸ applied: Reserve for your own work used up` | — | — | `… · expired` | — |
 | skipped | `▸ skipped: Reserve for your own work used up` | — | — | — | — |
 | kept queued | `▸ kept queued back-1: Run back-1 now? ≈ +2.1 pp` | — | — | `… · expired` | — |
-| started (run now) | `▸ started back-1: Run back-1 now? ≈ +2.1 pp` | — | — | `… · expired` | — |
+| started (run now) | `▸ started back-1: Run back-1 now? ≈ +2.1 pp` | — | — | — (expiry keeps it queued) | — |
 | dismissed | `▸ dismissed front-1: front-1 did not start` | — | — | — | `… · by the app` |
 | expired | — | — | — | `▸ expired back-1: Bash · pnpm add zod` | — |
 | interrupted | — | — | `▸ interrupted back-1: Bash · pnpm add zod · in the pane` | — | `… · by the app` |
@@ -156,7 +156,7 @@ When `by_detail` is missing for a rule, the tail is `· rule`. The verb `expired
 
 ## 5. Header filter (point 5, D6)
 
-- Row under the title, 32 px: chips **All n · Blocking n · Errors n · Budget n**, counts are **open cards** (levels 1, 2, 3; same tests as `FILTERS` in `lib/inbox.js`). Zero-count chips other than All are hidden. The whole row is hidden when fewer than 2 cards are open and the filter is All (an active filter keeps it visible) and on a past day.
+- Row under the title, 32 px: chips **All n · Blocking n · Errors n · Budget n**, counts are **open cards** (levels 1, 2, 3; same tests as `FILTERS` in `lib/inbox.js`), so Blocking + Errors + Budget = All. Zero-count chips other than All and the active one are hidden (an active chip whose cards all closed shows its 0 until the filter changes). The whole row is hidden when fewer than 2 cards are open and the filter is All (an active filter keeps it visible) and on a past day.
 - Applies to **cards only**: open, parked, failed, stale cards. Lines, the morning line, the fold header's count (after filtering), the digest, separators are never filtered. The title bar badge ignores the filter.
 - **A filter that hides open cards says so**, in a strip under the chips (replaces the filter row's bottom edge, 28 px, warning-neutral):
   `Showing Blocking · 2 of 5 open cards. 3 hidden · Show all`
@@ -194,7 +194,7 @@ A centred small-caps label with a hairline on each side, 24 px, muted: `SUN 1 NO
 ### 6.4 Search
 - ⌘L, `/` or the 🔍 button turns the header's title row into a field (full width, 40 px): placeholder **"Search decisions and lines"**, a clear ✕ when typed, `Esc` to close. Matches what `chat_search` matches (line text, agent, card title and summary, morning text); case-insensitive; today included.
 - Under 2 characters nothing is searched; below the field: "Type 2 or more characters." Debounce 200 ms. Loading: "Searching…". 
-- **Results** replace the thread (the filter row is hidden), newest first, grouped by day separators. Each result is two rows: row 1 the line as in §2.2 (open cards: kind label + title with a "waiting" mark: `● Permission · Bash · pnpm add zod`), row 2 muted: `Sun 1 Nov · 14:02`. The match is not highlighted (substring on fields not all shown). Header of the list: **"4 results for “serde”"** ("1 result for…"; at the limit: "First 50 results for “serde”. Narrow the search.").
+- **Results** replace the thread (the filter row is hidden), newest first, grouped by day separators. Each result is two rows: row 1 the line as in §2.2 (open cards, once back matches open decisions (F9; until then an open entry has no text, line or card to match): kind label + title with a "waiting" mark: `● Permission · Bash · pnpm add zod`), row 2 muted: `Sun 1 Nov · 14:02`. The match is not highlighted (substring on fields not all shown). Header of the list: **"4 results for “serde”"** ("1 result for…"; at the limit: "First 50 results for “serde”. Narrow the search.").
 - `↓` from the field enters the results; `j/k` move once inside; `⏎` on a result opens it: today's entry → close the search, scroll the thread to it and expand it with the §8.1 highlight; an earlier day → open that day (§6.2) with the entry scrolled to and expanded. Search is kept when going back (`Esc` from a past day opened via search returns to the results; second `Esc` closes the search).
 - **No results**: "Nothing found for “serde” in decisions and lines." Error: "Could not search: <why> · Retry".
 - `Esc` order: clear the text (first press, if any) → close the search and return to the thread → (next press) focus returns to the centre.
@@ -232,7 +232,7 @@ Nothing is decided by arriving; no action fires.
 ### 8.2 The decision already closed
 `focus_card` for a decision that is no longer open focuses **the next open card** (the oldest) and shows a toast (6 s, info) that says what happened to it from its `line`:
 
-`Already <verb> <by> · <time>` — verbs from §2.3 in the past form they already have; by: you → "by you", rule → "by rule installs", pane → "in the pane", expired → "(expired)", core → "by the app".
+`Already <verb> <by> · <time>` — verbs from §2.3 in the past form they already have; by: you → "by you", rule → "by rule installs", pane → "in the pane", expired → "(expired)" ("Already kept queued (expired) · 14:20"; the verb `expired` takes no `<by>`), core → "by the app".
 
 | Closed how | Toast |
 |---|---|
@@ -269,7 +269,7 @@ Widths (P4.2 §4 stand; sidebar 240 or the 56 px rail below 1512; centre min 640
 |---|---|---|---|---|
 | 1280 | rail 56 | 884 | **340** | overlay in the chat's slot (340) |
 | 1512 | 240 | 912 | 360 | overlay in the chat's slot (360) |
-| 1728 | 240 | 808 | 360 | **docked 320** (240+808+360+320 = 1728: the Inspector is added to the centre's 808, it does not take from it) |
+| 1728 | 240 | 808 | 360 | **docked 320** (240+808+360+320 = 1728: the docked Inspector takes its 320 from the centre, which would otherwise be 1128) |
 
 - The chat spans from under the title bar to above the status bar, full height. The **shell dock** (⌘J) sits under the **centre only**; the chat column is never covered by it.
 - **Inspector overlay** (below 1728), ⌘I toggles, `Esc` or ⌘I closes (P4.2 §4 rules 1–5):
@@ -280,7 +280,7 @@ Widths (P4.2 §4 stand; sidebar 240 or the 56 px rail below 1512; centre min 640
   - Crossing 1728 keeps the user's open/closed state.
 - **Docked at 1728**: the chat and the Inspector sit side by side; no banner (the chat is visible).
 - **Zoomed pane** (⌘; z): zoom enlarges a pane within the **centre**; **the chat stays** (it is not in the tiling tree). The Inspector's overlay still works over it. Reason: oversight must not be one pane toggle away from hidden (F6). The 1280 zoomed terminal is therefore 884 × content height.
-- Minimum widths: card content 316 px (340 column − 2×12 padding); blocks wrap, long tokens break (`overflow-wrap: anywhere`), mono blocks scroll horizontally inside the block, buttons wrap to rows with each label + key together (no clipped button).
+- Minimum widths: card 316 px (340 column − 2×12 column padding), content 292 px inside the card's own 12 px padding (§13); blocks wrap, long tokens break (`overflow-wrap: anywhere`), mono blocks scroll horizontally inside the block, buttons wrap to rows with each label + key together (no clipped button).
 - Page 03 frames: P4.2 row at 1280 (rail + centre + 340 chat), 1512 (overlay closed, overlay open with banner), 1728 (docked), zoomed pane at 1280, dock open at 1512. Draw the chat with the P4.3 states of §12 (a card open, a line, the fold off).
 
 ---
@@ -301,8 +301,8 @@ Widths (P4.2 §4 stand; sidebar 240 or the 56 px rail below 1512; centre min 640
 | `j` `k` / ↓ ↑ | Next / previous **open card**; skips lines; the fold header and the digest header are stops | any |
 | `Tab` / `⇧Tab` | Move through every focusable thing: header controls, reference links, lines, fold header, digest rows | any |
 | `⏎` | The card's default action (Answer · Reply · Send back with notes — as in the Inbox); expands/collapses a line; expands a fold; follows a "↳ after" reference; opens a search result | card · line · header |
-| `a` | Primary action (Allow once · Approve · Apply · Run now · Restart fresh) | open/parked card |
-| `r` | Secondary (Deny · Send back · Reject · Skip · Keep queued · Dismiss for a question) | open card |
+| `a` | Primary action (Allow once · Approve · Apply · Run now · Restart fresh · Reconnect) | open/parked card |
+| `r` | Secondary (Deny · Send back · Reject · Skip · Keep queued · Dismiss for a question or an alert); on an error card **Resume** (its primary, as in the Inbox) | open card |
 | `o` | Open pane / PR / outcome / Notion page | card · outcome row |
 | `x` | Mark the card for the batch (Inbox batch behaviour), then `a` / `r` apply to all marked | open card |
 | `u` | Undo the last decision within 5 s | any |
@@ -321,7 +321,7 @@ Other keys do nothing (no beep). In the reply area and the search field every ke
 |---|---|
 | **Global chords** | ⌘⇧I and ⌘L are unclaimed elsewhere (`keyboard.js` CHORDS has no ⌘L). Both work from a terminal pane (⌘ chords never reach the PTY). The command id `inbox` becomes `decisions`. |
 | **Leader keys** (⌘; then s v h j k l z t ] [ e w p o g) | None: the leader consumes the next key. `[`/`]` and `t` here are bare keys with the chat focused; ⌘; ] / [ are the dock. `⌘; w` (next waiting agent) is unrelated to `j/k`. |
-| **Mission control map** (j k h l ⏎ space i p s r ⇧K d n f o ⌫) | **Shared letters, same screen now**: both panes are visible together, so the focus ring decides. `j/k` same meaning in both. **`r` = Resume in Mission control, Reject/Deny/Skip in the chat** (F2 of P4.2, now on one screen): mitigations — the focused region's header takes an accent underline, the card carries its own `r` label on the button, and Mission control's hint row shows `r resume`. `⏎` replies in the chat, opens a session in Mission control. `o` opens "the thing" in both. `f` filters in both (levels there, projects here). `d` is the bridge: Mission control `d` focuses that decision's card in the chat. `i p s h l n space ⇧K ⌫` are unbound in the chat and do nothing. `x u e a c t [ ] /` are unbound in Mission control. |
+| **Mission control map** (j k h l ⏎ space i p s r ⇧K d n f o ⌫) | **Shared letters, same screen now**: both panes are visible together, so the focus ring decides. `j/k` same meaning in both. **`r` = Resume in Mission control, Reject/Deny/Skip in the chat** (Resume only on an error card) (F2 of P4.2, now on one screen): mitigations — the focused region's header takes an accent underline, the card carries its own `r` label on the button, and Mission control's hint row shows `r resume`. `⏎` replies in the chat, opens a session in Mission control. `o` opens "the thing" in both. `f` filters in both (projects there, levels here). `d` is the bridge: Mission control `d` focuses that decision's card in the chat. `i p s h l n space ⇧K ⌫` are unbound in the chat and do nothing. `x u e a c t [ ] /` are unbound in Mission control. |
 | **Text fields** (reply, search) | They swallow single keys; `Esc` leaves. |
 | **Terminal panes** | Chat keys never fire in a terminal; the chat is a separate focus target. After `Esc` focus returns to the pane (terminal) that had it. |
 | **Palette / dialogs** | A dialog takes ⌘⏎ / ⏎ / Esc first. |
@@ -427,4 +427,4 @@ On page 04.3, give each of these five cards its own subject line, blocks and act
 
 Clipping rules for all cards (also the other kinds): card width 336 (316 at 1280: column minus 2×12 column padding, §9); card padding 12; blocks wrap and break long tokens; tool-call and pty blocks keep mono and scroll horizontally inside their frame with a fade at the edge, collapsed past 6 lines ("Show 14 more lines"); action buttons wrap to a second row, each label and its `Kbd` stay together; a marker line wraps to two lines, never truncates. Check every kind at 340.
 
-Also on 04.3 (the P4.3 additions, brief §3): header with day button and search, filter row and strip, collapsed lines per verb (§2.3), the reference line (§3), the fold header (§4), the digest states (§7), day separators (§6.3), past day and search results (§6), the notification highlight (§8.1), every row of §12. Page 05: §10. Page 03: §9. Page 06: J5 storyboard in the chat, 4–6 frames: (1) a permission card arrives with a notification; (2) `a`, "Allowing once · Undo u"; (3) "Allowed · back-1 resumed"; (4) 10 s later it is a line; (5) a rule-answered permission arrives as a line only, with no notification; (6) `⏎` expands a line. `00 Cover` and the README: P4.3 rows **In review**; no new token is expected (accent tint 12 % reuses `--color-accent`; if the pulse needs a token, add `--color-accent-wash` to `tokens.json`).
+Also on 04.3 (the P4.3 additions, brief §3): header with day button and search, filter row and strip, collapsed lines per verb (§2.3), the reference line (§3), the fold header (§4), the digest states (§7), day separators (§6.3), past day and search results (§6), the notification highlight (§8.1), every row of §12. Page 05: §10. Page 03: §9. Page 06: J5 storyboard in the chat, 4–6 frames: (1) a permission card arrives with a notification; (2) `a`, "Allowing once · Undo u"; (3) "Allowed · back-1 resumed"; (4) 10 s later it is a line; (5) a rule-answered permission arrives as a line only, with no notification; (6) `⏎` expands a line. `00 Cover` and the README: P4.3 rows **In review**; no new token is expected (accent tint 12 % reuses `--color-accent-default`, token `color.accent.default`; if the pulse needs a token, add `--color-accent-wash` to `tokens.json`).
