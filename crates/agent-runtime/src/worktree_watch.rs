@@ -176,14 +176,20 @@ mod tests {
         rt.watches().get(path).map_or(0, |w| w.panes)
     }
 
-    /// The pump, every 50 ms for `d`: how many topics `t` raised.
-    fn pump_for(t: &mut Throttle, d: Duration) -> usize {
-        let (end, mut n) = (Instant::now() + d, 0);
+    /// What the test sink recorded: when each event arrived, and what it was.
+    type Events = Mutex<Vec<(Instant, String)>>;
+
+    /// The pump, every 50 ms for `d`: when `t` raised its topics.
+    fn pump_for(t: &mut Throttle, d: Duration) -> Vec<Instant> {
+        let (end, mut topics) = (Instant::now() + d, vec![]);
         while Instant::now() < end {
-            n += usize::from(t.due(Instant::now(), DEBOUNCE));
+            let now = Instant::now();
+            if t.due(now, DEBOUNCE) {
+                topics.push(now);
+            }
             std::thread::sleep(Duration::from_millis(50));
         }
-        n
+        topics
     }
 
     #[test]
@@ -220,7 +226,7 @@ mod tests {
     /// Waits until the stream has been quiet for 500 ms (bounded), clearing
     /// `dirty` and the recorded `fired`: events of the setup or of the phase
     /// before must not count for the next one.
-    fn settle(t: &mut Throttle, fired: &Mutex<Vec<String>>) {
+    fn settle(t: &mut Throttle, fired: &Events) {
         let end = Instant::now() + Duration::from_secs(5);
         loop {
             t.dirty.store(false, Ordering::SeqCst);
@@ -234,45 +240,101 @@ mod tests {
         t.last = None;
     }
 
+    /// Checks the throttle contract on what a phase really did, whenever the
+    /// OS delivered its events (FSEvents may split one write over batches
+    /// more than a second apart, and then a trailing topic is right):
+    ///
+    /// 1. a topic is raised;
+    /// 2. the first one at once after the first event (or after the pump
+    ///    started, if the events came first: the burst writes before it pumps);
+    /// 3. a later one only after an event newer than the previous topic;
+    /// 4. two are at least `DEBOUNCE` apart;
+    /// 5. every event is the phase's own (`own`; one elsewhere is shown, not
+    ///    failed).
+    ///
+    /// `t0` is the write, `pumped` when the pump started.
+    fn assert_throttled(
+        phase: &str,
+        t0: Instant,
+        pumped: Instant,
+        events: &[(Instant, String)],
+        topics: &[Instant],
+        own: impl Fn(&str) -> bool,
+    ) {
+        // An event is recorded just before it sets `dirty`: let one that was
+        // recorded a hair before a topic still count as after it.
+        const SLACK: Duration = Duration::from_millis(10);
+        let ms = |i: Instant| i.saturating_duration_since(t0).as_millis();
+        let timeline = || {
+            let ev: Vec<_> = events.iter().map(|(i, p)| format!("{}ms {p}", ms(*i))).collect();
+            let tp: Vec<_> = topics.iter().map(|i| format!("{}ms", ms(*i))).collect();
+            format!("{phase}: events [{}], topics [{}]", ev.join(", "), tp.join(", "))
+        };
+        println!("{}", timeline());
+        let (Some(first), Some(&raised)) = (events.first(), topics.first()) else {
+            panic!("1. a topic is raised: {}", timeline());
+        };
+        assert!(
+            raised.saturating_duration_since(first.0.max(pumped)) <= Duration::from_millis(250),
+            "2. at once: {}",
+            timeline()
+        );
+        for w in topics.windows(2) {
+            assert!(w[1].duration_since(w[0]) >= DEBOUNCE, "4. at most once a second: {}", timeline());
+            assert!(
+                events.iter().any(|(i, _)| *i + SLACK > w[0] && *i <= w[1] + SLACK),
+                "3. not without a change: {}",
+                timeline()
+            );
+        }
+        let elsewhere: Vec<_> = events.iter().filter(|(_, p)| !own(p)).collect();
+        if !elsewhere.is_empty() {
+            println!("{phase}: events elsewhere (tolerated): {elsewhere:?}");
+        }
+    }
+
     /// Real FSEvents (macOS CI): a sandbox without the FSEvents service gets
-    /// no events, so this one runs outside it.
+    /// no events, so this one runs outside it. Topics follow the throttle
+    /// contract for a write and for a burst, and none for an ignored path.
     #[test]
-    fn one_topic_per_change_two_per_burst_none_for_ignored() {
+    fn topics_follow_the_throttle_contract_none_for_ignored() {
         let (_d, root) = tmp();
         std::fs::create_dir_all(root.join("target")).unwrap();
         let mut t = Throttle::default();
-        let fired = Arc::new(Mutex::new(Vec::<String>::new()));
+        let fired = Arc::new(Events::default());
         let (dirty, sink) = (t.dirty.clone(), fired.clone());
         let _w = watch(&root, move |what| {
-            sink.lock().unwrap().push(format!("{what:?}"));
+            // Recorded before `dirty`, so every event `due` sees is on the timeline.
+            sink.lock().unwrap().push((Instant::now(), format!("{what:?}")));
             dirty.store(true, Ordering::SeqCst);
         })
         .unwrap();
-        let fired_now = || format!("{:?}", fired.lock().unwrap());
+        let events = || fired.lock().unwrap().clone();
         // Late events of the setup (the temp dir itself, a rescan) are not the test's.
         settle(&mut t, &fired);
         // An ignored path: it raises nothing (a stray event elsewhere is tolerated).
         std::fs::write(root.join("target/out.o"), "x").unwrap();
         pump_for(&mut t, Duration::from_millis(1600));
         let ignored = format!("{}/target", root.display());
-        assert!(
-            !fired.lock().unwrap().iter().any(|p| p.contains(&ignored)),
-            "ignored paths raise nothing: {}",
-            fired_now()
-        );
-        // One write: one topic within ~1.5 s.
+        assert!(!events().iter().any(|(_, p)| p.contains(&ignored)), "ignored paths raise nothing: {:?}", events());
+        // One write: topics follow the contract, whatever the batches.
         settle(&mut t, &fired);
+        let t0 = Instant::now();
         std::fs::write(root.join("a.txt"), "a").unwrap();
+        let pumped = Instant::now();
         let one = pump_for(&mut t, Duration::from_millis(1500));
-        assert_eq!(one, 1, "fired: {}", fired_now());
+        assert_throttled("one write", t0, pumped, &events(), &one, |p| p.contains("/a.txt"));
         settle(&mut t, &fired);
-        // 50 writes in 200 ms: at most 2 (the leading one and the trailing one).
+        // 50 writes in 200 ms: a leading topic, then at most one a second.
+        let t0 = Instant::now();
         for i in 0..50 {
             std::fs::write(root.join(format!("b{i}.txt")), "b").unwrap();
             std::thread::sleep(Duration::from_millis(4));
         }
+        let pumped = Instant::now();
         let burst = pump_for(&mut t, Duration::from_millis(2500));
-        assert!((1..=2).contains(&burst), "{burst}, fired: {}", fired_now());
+        println!("burst: {} topics", burst.len());
+        assert_throttled("burst", t0, pumped, &events(), &burst, |p| p.contains("/b"));
     }
 
     #[test]
