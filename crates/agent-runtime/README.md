@@ -223,7 +223,8 @@ through `orch-tasks` (Local or GitHub Issues, FR-501–503).
   `run.pr` (state, CI jobs, position, `pushed_sha`, unpushed, rewritten). Changes against the stored
   status (so a restart repeats nothing): CI → error, behind on a new base head, conflicts → one ORCH
   turn to the lead; merged → `done`, closed → `integrating` (lead told, an `info` Inbox item, a
-  pending update gate withdrawn). A gh failure keeps the status with `error`. `pr_refresh(feature)`
+  pending update gate withdrawn). Every stored check raises the `feature:<id>` `now` topic, a gh failure
+  included (it keeps the status with `error`), so an open Feature pane follows background checks. `pr_refresh(feature)`
   checks now. `request_pr` in `pr_open` → a `push_pr_update` gate (new commits since `pushed_sha`;
   refused when there are none, or while a rebase is in progress); approved → push of the approved
   head (fast-forward, or after a rebase `--force-with-lease` on the PR head the gate saw: a remote

@@ -708,10 +708,12 @@ impl Store {
 
     /// Stores a run's PR status (and its URL when it had none) without
     /// touching its state: a check that waited on the network never undoes a
-    /// move made meanwhile (a pause, a stop).
+    /// move made meanwhile (a pause, a stop). Raises the feature's topic, so
+    /// an open Feature pane sees a background check (even a failed one).
     pub fn set_run_pr(&self, id: &str, pr: &PrStatus, url: Option<&str>) -> Result<()> {
+        let topics = self.run(id)?.map(|r| orch_protocol::Topic::Feature(r.feature_id));
         let (id, pr, url) = (id.to_string(), js(pr), url.map(str::to_string));
-        self.write(move |tx| {
+        self.write_touching(topics, move |tx| {
             tx.execute(
                 "UPDATE team_runs SET pr_status=?2,
                    pr_url=CASE WHEN pr_url IS NULL OR pr_url='' THEN COALESCE(?3, pr_url) ELSE pr_url END
@@ -1060,6 +1062,34 @@ mod tests {
         let id = s.upsert_task(&t).unwrap();
         assert_eq!(s.task(id).unwrap().unwrap().flow.model.as_deref(), Some("opus"));
         assert_eq!(serde_json::to_value(&t.flow).unwrap()["model"], "opus");
+    }
+
+    #[test]
+    fn a_stored_pr_status_raises_only_the_feature_topic() {
+        let (_d, s) = store();
+        let (roles, team) = presets::full_stack();
+        for r in &roles {
+            s.upsert_role(r, 1).unwrap();
+        }
+        s.save_team(&team, &roles, 1).unwrap();
+        let run = TeamRun {
+            id: "r1".into(),
+            team_id: team.id.clone(),
+            team_scope: team.scope.clone(),
+            team_version: 1,
+            feature_id: "f1".into(),
+            status: RunState::PrOpen,
+            resume_status: None,
+            pr_url: None,
+            started_at_ms: 1,
+            ended_at_ms: None,
+            pr_number: Some(12),
+            pr: None,
+        };
+        s.upsert_run(&run).unwrap();
+        s.take_topics();
+        s.set_run_pr("r1", &PrStatus::default(), None).unwrap();
+        assert_eq!(s.take_topics().into_iter().collect::<Vec<_>>(), ["feature:f1"]);
     }
 
     #[test]

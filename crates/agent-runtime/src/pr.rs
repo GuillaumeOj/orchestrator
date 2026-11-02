@@ -886,6 +886,21 @@ mod tests {
     }
 
     #[test]
+    fn a_background_check_raises_the_feature_topic() {
+        let fx = integrating();
+        open(&fx);
+        let got = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let g = got.clone();
+        fx.rt.subscribe_now(Arc::new(move |v| g.lock().unwrap().push(v.clone())));
+        fx.rt.now_pump(false);
+        let fid = fx.rt.db.run(&fx.run).unwrap().unwrap().feature_id;
+        fx.rt.pr_tick(now_ms() + MIN);
+        fx.rt.now_pump(false);
+        let ev = got.lock().unwrap().last().cloned().unwrap();
+        assert!(ev["topics"].as_array().unwrap().contains(&json!(format!("feature:{fid}"))), "{ev}");
+    }
+
+    #[test]
     fn new_commits_go_to_the_open_pr_through_an_update_gate() {
         let fx = integrating();
         let rt = &fx.rt;
