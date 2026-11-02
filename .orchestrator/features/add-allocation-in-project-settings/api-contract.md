@@ -50,9 +50,8 @@ null
   which is not "unchanged" for a calendar with differing blocks.
 - Applied with `Runtime::replan` (week's usage replayed). Returns the new view.
 - Errors (nothing saved): `plan_confirmed` false → `"set up the weekly plan
-  first"`; weight < 0 or not finite → `"weight must be 0 or more"` (new check:
-  `PlanForm::apply` silently drops rows with weight <= 0, it never errors on a
-  negative); cap outside 0–100 → `"hard cap of {id} {c}%: use 0–100 %, or leave
+  first"`; weight < 0 or not finite → `"weight of {id} {w}: use 0 or more"` (new
+  check, shared with `plan_set`, which now rejects a negative weight too); cap outside 0–100 → `"hard cap of {id} {c}%: use 0–100 %, or leave
   it empty"` (the `apply` message). Weight 0 removes and ignores the cap.
 
 ## Changed: `plan_form() -> PlanForm`
