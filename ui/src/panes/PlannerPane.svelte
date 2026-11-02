@@ -61,7 +61,11 @@
   const p = $derived(PRESSURE[s?.state] ?? PRESSURE.green);
   // Chart geometry
   const H = 220;
-  const pad = { l: 36, r: 8, t: 10, b: 22 };
+  const pad = { l: 36, r: 8, t: 10, b: 36 };
+  // The time-axis band (working hours, off-hours) sits in the gutter under the 0% line.
+  const BAND = { gap: 5, h: 5 };
+  const bandY = H - pad.b + BAND.gap;
+  const bandLabelY = bandY + BAND.h + 10;
   const x = (t) => pad.l + ((t - v.week_start_ms) / (v.reset_at_ms - v.week_start_ms)) * (w - pad.l - pad.r);
   const y = (val) => pad.t + (1 - Math.min(Math.max(val, 0), 110) / 100) * (H - pad.t - pad.b);
   const path = (pts) => pts.map((q, i) => `${i ? 'L' : 'M'}${x(q[0]).toFixed(1)},${y(q[1]).toFixed(1)}`).join('');
@@ -212,7 +216,7 @@
     <div class="grid">
       <section class="card week" bind:clientWidth={w}>
         <div class="ch">
-          <b>Week</b><span class="muted">working hours shaded{offHoursAllowed(off) ? ' · off-hours hatched' : ''}</span>
+          <b>Week</b><span class="muted">band: working hours{offHoursAllowed(off) ? ' · off-hours hatched' : ''}</span>
           <span class="grow"></span>
           <span class="leg"><i class="l actual"></i>Week used</span>
           <span class="leg"><i class="l sw-agents"></i>Agents</span>
@@ -222,17 +226,17 @@
         </div>
         <svg width={w - 2} height={H} role="img" aria-label="Week usage so far against the plan">
           <defs><pattern id="offhatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" class="hatch" /></pattern></defs>
-          {#each v.working as [a, b] (a)}<rect x={x(a)} y={pad.t} width={Math.max(1, x(b) - x(a))} height={H - pad.t - pad.b} class="work" />{/each}
+          {#each v.working as [a, b] (a)}<rect x={x(a)} y={bandY} width={Math.max(1, x(b) - x(a))} height={BAND.h} class="work" />{/each}
           {#each offBands as o (o.a)}
-            <rect x={x(o.a)} y={pad.t} width={Math.max(1, x(Math.min(o.b, v.reset_at_ms)) - x(o.a))} height={H - pad.t - pad.b} class="off" />
-            {#if o.label}<text x={x(o.a) + 4} y={H - pad.b - 6} class="ax">off-hours</text>{/if}
+            <rect x={x(o.a)} y={bandY} width={Math.max(1, x(Math.min(o.b, v.reset_at_ms)) - x(o.a))} height={BAND.h} class="off" />
+            {#if o.label}<text x={x(o.a) + 4} y={bandLabelY} class="ax">off-hours</text>{/if}
           {/each}
-          {#if off?.queued && offStart}<text x={Math.min(x(offStart) + 4, w - 80)} y={y(30)} class="tag okq">☾ {off.queued} queued</text>{/if}
+          {#if off?.queued && offStart}<text x={Math.min(x(offStart) + 64, w - 80)} y={bandLabelY} class="tag okq">☾ {off.queued} queued</text>{/if}
           <rect x={pad.l} y={y(100)} width={w - pad.l - pad.r} height={Math.max(0, y(reserveTop) - y(100))} class="reserve" />
           {#each [0, 25, 50, 75, 100] as g (g)}
             <line x1={pad.l} x2={w - pad.r} y1={y(g)} y2={y(g)} class="grid-l" /><text x={pad.l - 6} y={y(g) + 4} class="ax" text-anchor="end">{g}%</text>
           {/each}
-          {#each days as d (d)}<text x={x(d) + 4} y={H - 6} class="ax">{new Date(d).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })}</text>{/each}
+          {#each days as d (d)}<text x={x(d) + 4} y={H - 3} class="ax">{new Date(d).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })}</text>{/each}
           <path d={usedFill} class="fill" />
           <path d={agentsFill} class="agents" />
           <path d={plan} class="ideal" />
@@ -240,7 +244,7 @@
           <path d={forecast} class="fc" />
           <path d={used} class="actual" />
           <line x1={x(v.now_ms)} x2={x(v.now_ms)} y1={pad.t} y2={H - pad.b} class="now" />
-          <text x={x(v.now_ms) + 6} y={y(s.used) - 8} class="tag">now {clock(v.now_ms)} · week {Math.round(s.used)}% (plan {Math.round(s.plan)}%, {pp(s.error)}) · agents {Math.round(s.governed)}%</text>
+          <text x={x(v.now_ms) + 6} y={Math.max(pad.t + 8, y(s.used) - 8)} class="tag">now {clock(v.now_ms)} · week {Math.round(s.used)}% (plan {Math.round(s.plan)}%, {pp(s.error)}) · agents {Math.round(s.governed)}%</text>
           {#if emptyAt && emptyAt < v.reset_at_ms}<text x={Math.min(x(emptyAt), w - 180)} y={y(100) - 2} class="tag warn">⚠ empty {clock(emptyAt)} at this rate</text>{/if}
           <text x={w - pad.r - 4} y={y(reserveTop) - 4} class="ax" text-anchor="end">reserve {v.reserve_pct}% for you</text>
         </svg>
@@ -418,8 +422,7 @@
     display: block;
   }
   .work {
-    fill: var(--color-surface-raised);
-    opacity: 0.5;
+    fill: var(--color-text-muted);
   }
   .reserve {
     fill: var(--color-surface-selected);
@@ -446,7 +449,7 @@
     fill: url(#offhatch);
   }
   .hatch {
-    stroke: var(--color-border-subtle);
+    stroke: var(--color-text-muted);
     stroke-width: 2;
   }
   .mw {
