@@ -83,8 +83,9 @@ export function changedFields(view, draft) {
   const a = view?.allocation;
   if (!draft) return {};
   if (!a) return { weight: true, tier: true, cap: true };
-  const s = draftOf(a);
-  return { weight: draft.weight !== s.weight, tier: draft.tier !== s.tier, cap: String(draft.cap ?? '') !== s.cap };
+  // As numbers, like isDirty: '03' equals 3, an empty cap is none.
+  const cap = noCap(draft.cap) ? null : num(draft.cap);
+  return { weight: num(draft.weight) !== a.weight, tier: draft.tier !== a.tier, cap: cap !== (a.hard_cap_pct ?? null) };
 }
 
 /**

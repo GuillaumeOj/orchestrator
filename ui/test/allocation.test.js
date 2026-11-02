@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   addDraft,
   capBar,
+  changedFields,
   isDirty,
   keysFor,
   pendingRemoval,
@@ -121,6 +122,20 @@ describe('allocation helpers', () => {
     expect(isDirty(out(), null)).toBe(false);
     expect(isDirty(out(), { weight: '33', tier: 'normal', cap: '' })).toBe(true);
     expect(isDirty(out(), { weight: '0', tier: 'normal', cap: '' })).toBe(false);
+  });
+
+  it('changed markers compare numbers, so they agree with Save', () => {
+    const v = view();
+    const same = { weight: '50', tier: 'high', cap: '30' };
+    expect(changedFields(v, same)).toEqual({ weight: false, tier: false, cap: false });
+    expect(changedFields(v, { ...same, weight: '050' }).weight).toBe(false);
+    expect(changedFields(v, { ...same, cap: '030' }).cap).toBe(false);
+    expect(changedFields(v, { ...same, cap: '' }).cap).toBe(true);
+    expect(changedFields(v, { ...same, cap: null }).cap).toBe(true);
+    const nocap = view({ allocation: alloc('shop-api', 50, { tier: 'high', hard_cap_pct: null }) });
+    expect(changedFields(nocap, { ...same, cap: '' }).cap).toBe(false);
+    expect(changedFields(nocap, { ...same, cap: null }).cap).toBe(false);
+    expect(isDirty(v, { ...same, weight: '050', cap: '030' })).toBe(false);
   });
 
   it('cap bar: green, amber from 80 % of the cap, red at the cap; the track spans cap / 0.8', () => {
