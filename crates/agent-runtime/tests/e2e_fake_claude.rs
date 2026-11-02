@@ -432,7 +432,7 @@ fn starts_that_never_happen_reach_the_inbox_or_restart_fresh_once() {
 /// FR-203 (acceptance 5): a probe flapping warn↔normal leaves the cap alone,
 /// and an agent with a pasted, not started turn is never suspended.
 #[test]
-fn a_flapping_probe_keeps_the_cap_and_a_pasted_turn_is_never_suspended() {
+fn a_flapping_probe_keeps_the_cap_and_a_pasted_turn_is_not_suspended_until_requeued_or_failed() {
     let mem = Arc::new(agent_runtime::resources::FixedMemory::new(PressureLevel::Normal));
     let m2 = mem.clone();
     let core = Core::start("orchfl", move |c| {
@@ -454,6 +454,9 @@ fn a_flapping_probe_keeps_the_cap_and_a_pasted_turn_is_never_suspended() {
                 agent_runtime::store::Admission::Admitted,
             );
             t.status = agent_runtime::store::TurnStatus::Delivering;
+            t.delivered_at_ms = Some(orch_protocol::now_ms());
+            // Its last attempt: the watchdog fails it rather than paste it again.
+            t.attempts = 2;
             s.turns.push(t);
         })
         .unwrap();
@@ -463,6 +466,16 @@ fn a_flapping_probe_keeps_the_cap_and_a_pasted_turn_is_never_suspended() {
         assert_eq!(core.rt.live_cap(), 2, "the cap holds while the probe flaps");
     }
     assert_ne!(core.state_of("a"), "suspended");
+    // fix-team-getting-stucked §3.1: the paste watchdog ends the paste (no
+    // ack within `delivery.ack_secs`), and the agent is suspendable again.
+    core.rt.db.set_setting(agent_runtime::handover::ACK_KEY, &serde_json::json!(1)).unwrap();
+    let failed = || {
+        core.rt
+            .store
+            .read(|s| s.turns.iter().any(|t| t.agent_id == "a" && t.status == agent_runtime::store::TurnStatus::Failed))
+    };
+    wait_for("the watchdog to fail the paste", 20, failed);
+    wait_for("an idle suspend once nothing is pasted", 20, || core.state_of("a") == "suspended");
 }
 
 /// FR-1311 (acceptance 7): typing into a waiting agent's pane records one

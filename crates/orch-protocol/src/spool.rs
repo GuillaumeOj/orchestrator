@@ -57,6 +57,22 @@ pub fn read(path: &Path) -> std::io::Result<(Vec<SpoolRecord>, usize)> {
     Ok((recs, bad))
 }
 
+/// Takes the spool for replay: renamed first, so a hook spooling meanwhile
+/// starts a new file and two replays never apply the same records. The
+/// records come back in file order (each session's order).
+pub fn take(agent_dir: &Path) -> std::io::Result<(Vec<SpoolRecord>, usize)> {
+    let path = spool_path(agent_dir);
+    let taken = agent_dir.join(format!("{SPOOL_FILE}.replaying.{}", crate::now_ms()));
+    match std::fs::rename(&path, &taken) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((vec![], 0)),
+        Err(e) => return Err(e),
+    }
+    let out = read(&taken);
+    let _ = std::fs::remove_file(&taken);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +100,10 @@ mod tests {
         assert_eq!(bad, 1);
         assert_eq!(recs[0].event, HookEvent::Stop);
         assert!(read(&d.path().join("none")).unwrap().0.is_empty());
+        let (recs, _) = take(d.path()).unwrap();
+        assert_eq!(recs.len(), 2);
+        assert!(!spool_path(d.path()).exists(), "taken once");
+        assert!(take(d.path()).unwrap().0.is_empty());
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 0, "nothing left behind");
     }
 }

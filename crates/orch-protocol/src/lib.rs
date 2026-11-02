@@ -75,6 +75,16 @@ pub enum Msg {
     Ctl(CtlRequest),
     /// From orch-mcp: one orchestrator tool call by an agent.
     Mcp(McpMsg),
+    /// From orch-hook, after it printed a reply that carried team messages:
+    /// they reached the CLI (FR-403). Answered with [`Reply::Ack`].
+    HookAck(HookAckMsg),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HookAckMsg {
+    pub agent_id: String,
+    /// The `ack` ids of the reply.
+    pub ids: Vec<u64>,
 }
 
 /// An orchestrator MCP tool call (`commit`, `request_pr`…), executed by the
@@ -100,6 +110,10 @@ pub struct HookMsg {
     pub deadline_ms: u64,
     /// The raw hook payload, untouched.
     pub payload: serde_json::Value,
+    /// Ids of an earlier reply's injected messages that orch-hook printed
+    /// but could not confirm at once ([`Msg::HookAck`] failed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acks: Vec<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -131,6 +145,10 @@ pub enum Reply {
     /// For a hook: the JSON to print on stdout (`None` = print nothing, exit 0).
     Hook {
         output: Option<HookOutput>,
+        /// Team messages the output carries: orch-hook confirms them once
+        /// printed ([`Msg::HookAck`]), or with its next hook.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        ack: Vec<u64>,
     },
     /// For a statusline sample or anything that needs no answer.
     Ack,
@@ -198,9 +216,16 @@ mod tests {
 
     #[test]
     fn hook_reply_round_trip() {
-        let r = Reply::Hook { output: Some(HookOutput::pre_tool_use(ToolDecision::Deny, "ORCH: no")) };
+        let r = Reply::Hook { output: Some(HookOutput::pre_tool_use(ToolDecision::Deny, "ORCH: no")), ack: vec![] };
         let s = serde_json::to_string(&r).unwrap();
+        assert!(!s.contains("ack"), "{s}");
         let back: Reply = serde_json::from_str(&s).unwrap();
         assert_eq!(back, r);
+        let r = Reply::Hook { output: None, ack: vec![4, 5] };
+        assert_eq!(serde_json::from_str::<Reply>(&serde_json::to_string(&r).unwrap()).unwrap(), r);
+        let e = Envelope::new(Msg::HookAck(HookAckMsg { agent_id: "a1".into(), ids: vec![4] }));
+        let s = serde_json::to_string(&e).unwrap();
+        assert!(s.contains(r#""type":"hook_ack""#), "{s}");
+        assert_eq!(serde_json::from_str::<Envelope>(&s).unwrap(), e);
     }
 }
