@@ -75,10 +75,14 @@ pub struct BuildInfo {
 }
 
 pub fn build_info(version: &str) -> BuildInfo {
+    build_info_from(version, option_env!("ORCH_BUILD_SHA"), option_env!("ORCH_BUILD_CHANNEL"))
+}
+
+fn build_info_from(version: &str, sha: Option<&str>, channel: Option<&str>) -> BuildInfo {
     BuildInfo {
         version: version.to_string(),
-        sha: option_env!("ORCH_BUILD_SHA").unwrap_or("").to_string(),
-        channel: option_env!("ORCH_BUILD_CHANNEL").filter(|c| !c.is_empty()).unwrap_or("local").to_string(),
+        sha: sha.unwrap_or("").to_string(),
+        channel: channel.filter(|c| !c.is_empty()).unwrap_or("local").to_string(),
     }
 }
 
@@ -228,13 +232,19 @@ pub fn run() {
 
 #[cfg(test)]
 mod build_info_tests {
-    use super::build_info;
+    use super::build_info_from;
 
     #[test]
     fn local_defaults_without_build_env() {
-        // The test binary is built without ORCH_BUILD_* (CI sets them only for the app job).
-        let b = build_info("0.1.0");
-        assert_eq!(b.version, "0.1.0");
-        assert_eq!(b.channel, option_env!("ORCH_BUILD_CHANNEL").filter(|c| !c.is_empty()).unwrap_or("local"));
+        let b = build_info_from("0.1.0", None, None);
+        assert_eq!((b.version.as_str(), b.sha.as_str(), b.channel.as_str()), ("0.1.0", "", "local"));
+        // scripts/app.sh exports an empty channel for a local build.
+        assert_eq!(build_info_from("0.1.0", Some(""), Some("")).channel, "local");
+    }
+
+    #[test]
+    fn ci_build_env_is_reported() {
+        let b = build_info_from("0.1.42", Some("abc123"), Some("main"));
+        assert_eq!((b.version.as_str(), b.sha.as_str(), b.channel.as_str()), ("0.1.42", "abc123", "main"));
     }
 }

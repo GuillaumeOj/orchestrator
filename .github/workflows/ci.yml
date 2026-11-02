@@ -72,7 +72,8 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
-    # Builds publish one at a time; none is dropped (the app updates to the newest).
+    # Builds publish one at a time. GitHub keeps one pending run per group, so a burst of merges
+    # can skip the middle ones; the app updates to the newest anyway.
     concurrency:
       group: app-release
       cancel-in-progress: false
@@ -121,12 +122,17 @@ jobs:
         run: |
           tag="v$ORCH_VERSION"
           subject=$(git log -1 --format=%s "$GITHUB_SHA")
-          gh release create "$tag" \
-            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
-            --title "Orchestrator $ORCH_VERSION" \
-            --notes "$subject"$'\n\n'"Commit: [$GITHUB_SHA]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA)" \
-            "target/release/bundle/update/Orchestrator_${ORCH_VERSION}_aarch64.app.tar.gz" \
-            "target/release/bundle/update/Orchestrator_${ORCH_VERSION}_aarch64.app.tar.gz.sig"
+          asset="target/release/bundle/update/Orchestrator_${ORCH_VERSION}_aarch64.app.tar.gz"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # A re-run of this run (same run number): the release exists, replace its assets.
+            gh release upload "$tag" "$asset" "$asset.sig" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
+              --title "Orchestrator $ORCH_VERSION" \
+              --notes "$subject"$'\n\n'"Commit: [$GITHUB_SHA]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA)" \
+              "$asset" "$asset.sig"
+          fi
       - name: Prune old releases (keep the 10 newest)
         run: |
           gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \

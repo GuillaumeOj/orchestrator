@@ -16,7 +16,7 @@ make install
 
 Needs: Rust (rustup), bun, Xcode command line tools, git ≥ 2.48, and FiraCode Nerd Font
 Mono in `~/Library/Fonts` (the build bundles four of its weights into the app; `ORCH_FONT_DIR`
-points elsewhere). `gh` (logged in) for PRs and CI. The app is not signed or notarized: it is
+points elsewhere). `gh` (logged in) for PRs and CI. The app is ad-hoc signed, not notarized: it is
 built on this Mac, so Gatekeeper does not quarantine it.
 
 ## Updates
