@@ -15,7 +15,7 @@ use crate::core::{Core, EditorOpen, NewSession, TermInfo};
 use crate::kitty::KittyImport;
 use crate::planner::PlannerView;
 use crate::services::Project;
-use crate::setup::PlanForm;
+use crate::setup::{AllocationEdit, PlanForm, ProjectAllocationView};
 use crate::terms::TermKind;
 use crate::update::Updater;
 use orch_git::project::RemovalChoices;
@@ -640,6 +640,22 @@ pub fn plan_form(core: CoreState) -> Res<PlanForm> {
 #[tauri::command]
 pub fn plan_set(core: CoreState, form: PlanForm) -> Res<()> {
     core.set_plan(&form).map_err(e)
+}
+
+/// Project settings › Allocation (api-contract.md).
+#[tauri::command]
+pub fn project_allocation(core: CoreState, project: String) -> Res<ProjectAllocationView> {
+    core.project_allocation(&project).map_err(e)
+}
+
+/// `form` null (or weight 0) takes the project out of the plan.
+#[tauri::command]
+pub fn project_allocation_set(
+    core: CoreState,
+    project: String,
+    form: Option<AllocationEdit>,
+) -> Res<ProjectAllocationView> {
+    core.project_allocation_set(&project, form.as_ref()).map_err(e)
 }
 
 #[tauri::command]

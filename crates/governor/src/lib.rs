@@ -19,8 +19,8 @@ pub use governor::{
 };
 pub use models::{Downgrade, DowngradeWhen, ModelOverride, ModelWindow, ModelWindowReading, ModelWindowState};
 pub use plan::{
-    AskDefault, AutoContinue, BudgetAllocation, LiveCaps, PacingPolicy, SAME_RESET_S, Thresholds, WeeklyPlan,
-    same_reset,
+    AskDefault, AutoContinue, BudgetAllocation, DEFAULT_ALLOCATION, LiveCaps, PacingPolicy, SAME_RESET_S, Thresholds,
+    WeeklyPlan, same_reset,
 };
 pub use pressure::{PressureInputs, PressureState, StateMachine};
 pub use queue::{QueueEntry, QueueReason, TurnCeiling, TurnKind};

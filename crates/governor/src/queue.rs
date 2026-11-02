@@ -1,7 +1,6 @@
 //! Queue entries and weighted fair queuing with strict critical and aging (FR-808).
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -150,10 +149,10 @@ impl QueueEntry {
 }
 
 /// Release order: strict by effective tier, then by allocation service
-/// (attributed usage / weight, lowest first), then FIFO. `service` must already
-/// include the start-time offset so idle allocations cannot hoard credit.
-pub fn release_cmp(a: &QueueEntry, b: &QueueEntry, service: &BTreeMap<AllocationId, f64>) -> Ordering {
-    let svc = |e: &QueueEntry| service.get(&e.allocation).copied().unwrap_or(0.0);
+/// (attributed usage / weight, lowest first), then FIFO. `svc` (an entry's
+/// allocation service) must already include the start-time offset so idle
+/// allocations cannot hoard credit.
+pub fn release_cmp(a: &QueueEntry, b: &QueueEntry, svc: &dyn Fn(&QueueEntry) -> f64) -> Ordering {
     b.effective_tier
         .cmp(&a.effective_tier)
         .then_with(|| svc(a).total_cmp(&svc(b)))
@@ -188,9 +187,9 @@ mod tests {
     #[test]
     fn tier_beats_service_and_service_beats_fifo() {
         let es = [entry(1, "a", Tier::Normal, 0), entry(2, "b", Tier::Normal, 5), entry(3, "a", Tier::High, 9)];
-        let service: BTreeMap<AllocationId, f64> = [("a".into(), 10.0), ("b".into(), 2.0)].into();
+        let service: std::collections::BTreeMap<AllocationId, f64> = [("a".into(), 10.0), ("b".into(), 2.0)].into();
         let mut sorted: Vec<&QueueEntry> = es.iter().collect();
-        sorted.sort_by(|a, b| release_cmp(a, b, &service));
+        sorted.sort_by(|a, b| release_cmp(a, b, &|e| service[&e.allocation]));
         let order: Vec<u64> = sorted.iter().map(|e| e.id.0).collect();
         assert_eq!(order, vec![3, 2, 1]);
     }
