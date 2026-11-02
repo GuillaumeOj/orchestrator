@@ -4,7 +4,7 @@ FigCraft file [`docs/design/Orchestrator.figcraft`](../../../../docs/design/Orch
 
 ## Frames
 
-Drawn in T-66 after T-64 was built, from these notes and `ui/src/components/Dock.svelte` (where the two differ, the frames follow the code; see "Drawn as built" below). T-62 had no frames: Penpot was unavailable, then ADR-012 moved the design to FigCraft.
+Drawn in T-66 after T-64 was built (differences: "Drawn as built" below). T-62 had no frames: Penpot was unavailable, then ADR-012 moved the design to FigCraft.
 
 | Export | FigCraft page · frame | Size |
 |---|---|---|
@@ -54,7 +54,7 @@ States:
 | active | `color.surface.pane` (joins the agent header row, same surface as the body) | `color.text.secondary` | — |
 | active + focused (keyboard in the dock) | `color.surface.pane` | `color.text.primary` | — (as today) |
 
-- Status icons drawn: Working `color.status.working`, Waiting for you `color.status.waiting-for-you`, Idle `color.status.idle`, Suspended `color.status.suspended`, Error `color.status.error`. At gate, Queued, Paused, Blocked by limit, Not started yet and Done the same way. No blinking, no count (brief).
+- Status icons drawn: Working `color.status.working`, Waiting for you `color.status.waiting-for-you`, Idle `color.status.idle`, Suspended `color.status.suspended`, Error `color.status.error`. At gate, Queued, Paused, Blocked by limit and Done the same way; Not started yet too in the app (the P1 Status badge has no icon variant for it, so the sheet shows ten). No blinking, no count (brief).
 - **Long name**: the tab caps at 200 px; the name ellipsizes, mark, status icon and × never shrink. Shell titles ellipsize the same way. Decision: 200 px keeps ~6 tabs visible at 1280 with the hint group, and fits every `<role>-<n>` short name without cutting.
 
 ## Body of an agent tab
@@ -84,10 +84,9 @@ All five accepted by `lead` (T-62).
 Where the frames differ from the text above, they follow T-64 (`Dock.svelte`):
 
 - Role mark: the P1 Agent chip at Size compact (16 × 16 in the file; the code's mark is 14 × 16).
-- Status icon: the P1 Status badge at Style icon, 12 × 16 in the file; the code's compact badge is a `size.icon` (16 px) box, so each agent tab is 4 px wider in the app.
-- Column height: the shell frames draw the title bar and status bar rules as separate 1 px layers outside the 36 / 24 px bars, so the work column is 920 px (dock 414, workspace 506; 738 → dock 332 at 1280), 2 px less than the app's 922.
+- Status icon: the P1 Status badge at Style icon is 12 px wide in the file; the code's compact badge is `size.icon` (16 px) wide, so each agent tab is 4 px wider in the app.
+- Column height: the shell frames draw the bar rules as separate 1 px layers, so the column is 2 px shorter than in the app (dock 414, 332 at 1280).
 - Overflow divider: 1 × 12 px, vertically centred in the strip (`.sep`), not the strip's full height.
-- Hints: `⌘J` and `⌘; z` are P1 Key hint keycaps (the code's `Kbd`), then the word (`hide`, `restore`) in `color.text.muted`; the `⌘; z restore` group is a button with `space.sm` on both sides.
-- State 1 and 2: the idle agent is `front-1` (not `front-2`), the sidebar's agent; the sidebar and Inspector show the same statuses as the tabs (lead Working, back-1 Waiting for you, front-1 Idle).
-- State 3 and 4 look the same apart from the right group: the zoomed dock also fills the column, with `space.xs` above the tab strip.
-- State 5: the overlay inspector is closed so the strip reads in full. The workspace holds the project pane. Under the live cap of 1, `ui-1` (active) is the one Working agent; `lead` is At gate and `back-2` Queued, as the status bar's "1 live · 2 queued" says. Two shells have long commands (`pnpm --filter shop-api test`, `tail -f logs/checkout.log`): they hit the 200 px cap and ellipsize, and push `ui-1` past the lane's edge. Scrolled into view, `ui-1` ends at the lane's right edge and the first tab (`lead`) is cut on the left.
+- Hints: a Key hint keycap (`Kbd`) then the word in `color.text.muted`; `⌘; z restore` is a button with `space.sm` on both sides.
+- States 1 and 2: the sidebar and Inspector show the same agents and statuses as the tabs.
+- State 5: the overlay inspector is closed and the workspace holds the project pane. Two long shell commands (ellipsized at 200 px) push `ui-1` past the lane's edge. Under the live cap of 1, `ui-1` is the one Working agent (`lead` At gate, `back-2` Queued).
