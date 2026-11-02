@@ -46,6 +46,7 @@
 ### 2.1 `now` event (adds one field)
 ```jsonc
 { "rev": 1834, …, "chat": [ ChatEntry… ] }   // new and changed entries (upsert by id, keep highest `rev`); absent when none
+// "topics" gains "chat" when any entry changed (a rule-answered line wakes the publisher at once)
 ```
 A new working day starts a new thread: the first entry of a new `day` tells the UI to start today's thread over (entries of the previous day move to "older days").
 
