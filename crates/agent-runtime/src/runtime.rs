@@ -180,6 +180,9 @@ pub struct Runtime {
     teaming: std::sync::atomic::AtomicBool,
     /// A paste-watchdog and spool pass ([`Runtime::handover_tick`]) is running.
     pub(crate) watching: std::sync::atomic::AtomicBool,
+    /// Held while a spool is replayed: a live hook waits for the sweep's
+    /// replay of older events, so events apply in their order (§3.3).
+    pub(crate) replaying: Mutex<()>,
     /// Each project's task backend, kept across calls.
     pub(crate) task_backends: orch_tasks::Backends,
     /// One per project: serialises its task syncs ([`Runtime::sync_tasks`]).
@@ -474,6 +477,7 @@ impl Runtime {
             indexing: std::sync::atomic::AtomicBool::new(false),
             teaming: std::sync::atomic::AtomicBool::new(false),
             watching: std::sync::atomic::AtomicBool::new(false),
+            replaying: Mutex::new(()),
             task_backends: orch_tasks::Backends::default(),
             sync_gates: Mutex::default(),
             watched_projects: Mutex::default(),
@@ -2026,8 +2030,12 @@ impl Runtime {
         if !self.watching.swap(true, Ordering::SeqCst) {
             if let Some(me) = self.me.upgrade() {
                 std::thread::spawn(move || {
-                    me.handover_tick(now_ms());
+                    // A panic never leaves the guard set (the watchdog would stop for good).
+                    let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| me.handover_tick(now_ms())));
                     me.watching.store(false, Ordering::SeqCst);
+                    if tick.is_err() {
+                        me.event("-", "tick_panic", json!({"step": "handover"}));
+                    }
                 });
             } else {
                 self.watching.store(false, Ordering::SeqCst);
@@ -2324,15 +2332,16 @@ impl Runtime {
                 t.file = file.clone();
             }
         })?;
-        l.pty.write(&prepared.paste_bytes())?;
-        std::thread::sleep(delivery::PASTE_TO_ENTER);
-        l.pty.write(b"\r")?;
-        l.pasted_at_ms.store(now, Ordering::SeqCst);
-        // FR-206: team messages are handed at the paste, seen when its prompt starts.
+        // FR-206: team messages are handed at the paste, seen when its prompt
+        // starts. Handed before the Enter: a fast UserPromptSubmit finds them.
         for t in batch.iter().filter(|t| !t.messages.is_empty()) {
             let _ = self.db.hand_messages(&t.messages, &rec.id, "turn", Some(&t.id), now);
             self.delivery_event(&rec.id, "handed", json!({"messages": t.messages, "via": "turn", "turn": t.id}));
         }
+        l.pty.write(&prepared.paste_bytes())?;
+        std::thread::sleep(delivery::PASTE_TO_ENTER);
+        l.pty.write(b"\r")?;
+        l.pasted_at_ms.store(now, Ordering::SeqCst);
         self.event(&rec.id, "delivered", json!({"turn": turn.id, "turns": ids, "chars": prepared.text.chars().count(), "file": prepared.file.as_ref().map(|f| f.0.clone())}));
         Ok(())
     }
