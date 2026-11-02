@@ -245,16 +245,18 @@ mod tests {
     /// more than a second apart, and then a trailing topic is right):
     ///
     /// 1. a topic is raised;
-    /// 2. the first one at once after the first event;
+    /// 2. the first one at once after the first event (or after the pump
+    ///    started, if the events came first: the burst writes before it pumps);
     /// 3. a later one only after an event newer than the previous topic;
     /// 4. two are at least `DEBOUNCE` apart;
     /// 5. every event is the phase's own (`own`; one elsewhere is shown, not
     ///    failed).
     ///
-    /// `t0` is the write.
+    /// `t0` is the write, `pumped` when the pump started.
     fn assert_throttled(
         phase: &str,
         t0: Instant,
+        pumped: Instant,
         events: &[(Instant, String)],
         topics: &[Instant],
         own: impl Fn(&str) -> bool,
@@ -272,10 +274,18 @@ mod tests {
         let (Some(first), Some(&raised)) = (events.first(), topics.first()) else {
             panic!("1. a topic is raised: {}", timeline());
         };
-        assert!(raised.saturating_duration_since(first.0) <= Duration::from_millis(250), "2. at once: {}", timeline());
+        assert!(
+            raised.saturating_duration_since(first.0.max(pumped)) <= Duration::from_millis(250),
+            "2. at once: {}",
+            timeline()
+        );
         for w in topics.windows(2) {
             assert!(w[1].duration_since(w[0]) >= DEBOUNCE, "4. at most once a second: {}", timeline());
-            assert!(events.iter().any(|(i, _)| *i + SLACK > w[0]), "3. not without a change: {}", timeline());
+            assert!(
+                events.iter().any(|(i, _)| *i + SLACK > w[0] && *i <= w[1] + SLACK),
+                "3. not without a change: {}",
+                timeline()
+            );
         }
         let elsewhere: Vec<_> = events.iter().filter(|(_, p)| !own(p)).collect();
         if !elsewhere.is_empty() {
@@ -311,8 +321,9 @@ mod tests {
         settle(&mut t, &fired);
         let t0 = Instant::now();
         std::fs::write(root.join("a.txt"), "a").unwrap();
+        let pumped = Instant::now();
         let one = pump_for(&mut t, Duration::from_millis(1500));
-        assert_throttled("one write", t0, &events(), &one, |p| p.contains("/a.txt"));
+        assert_throttled("one write", t0, pumped, &events(), &one, |p| p.contains("/a.txt"));
         settle(&mut t, &fired);
         // 50 writes in 200 ms: a leading topic, then at most one a second.
         let t0 = Instant::now();
@@ -320,9 +331,10 @@ mod tests {
             std::fs::write(root.join(format!("b{i}.txt")), "b").unwrap();
             std::thread::sleep(Duration::from_millis(4));
         }
+        let pumped = Instant::now();
         let burst = pump_for(&mut t, Duration::from_millis(2500));
         println!("burst: {} topics", burst.len());
-        assert_throttled("burst", t0, &events(), &burst, |p| p.contains("/b"));
+        assert_throttled("burst", t0, pumped, &events(), &burst, |p| p.contains("/b"));
     }
 
     #[test]
