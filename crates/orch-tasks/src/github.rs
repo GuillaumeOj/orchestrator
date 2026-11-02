@@ -60,13 +60,24 @@ pub struct Issue {
     pub managed: bool,
 }
 
+/// What a listing leaves out, i.e. what an issue not in it means.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Coverage {
+    /// Every issue the sync should know: one not listed is not the app's.
+    #[default]
+    All,
+    /// Only the issues changed since the cursor: one not listed did not change.
+    ChangedSince,
+    /// Every open issue and the managed closed ones: one not listed may be
+    /// closed without `orch` (read it alone).
+    OpenAndManaged,
+}
+
 /// The issues a sync reads.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Listing {
     pub issues: Vec<Issue>,
-    /// Every issue the sync should know; `false` = only the issues changed
-    /// since the cursor (an issue not listed did not change).
-    pub complete: bool,
+    pub coverage: Coverage,
     /// The newest `updated_at` seen (never older than the `since` asked
     /// with), the next sync's `since`; `None` = the remote keeps no cursor.
     pub cursor: Option<String>,
@@ -173,6 +184,7 @@ pub struct Fields {
 
 impl Fields {
     pub const ALL: Fields = Fields { state: true, content: true };
+    pub const STATE: Fields = Fields { state: true, content: false };
 
     pub fn any(self) -> bool {
         self.state || self.content
@@ -252,7 +264,8 @@ impl<G: Gh> GithubIssues<G> {
         Ok(())
     }
 
-    fn fields(w: &IssueWrite, f: Fields, keep: &[String]) -> Vec<String> {
+    fn fields(w: &IssueWrite, keep: &[String]) -> Vec<String> {
+        let f = w.fields;
         let mut a: Vec<String> = Vec::new();
         if f.content {
             a.extend(["-f".into(), format!("title={}", w.title)]);
@@ -271,14 +284,10 @@ impl<G: Gh> GithubIssues<G> {
         self.ensure_labels()?;
         let repo = self.repo()?;
         let mut args = vec!["api".to_string(), "-X".into(), "POST".into(), format!("repos/{repo}/issues")];
-        args.extend(Self::fields(w, Fields::ALL, &[]));
+        args.extend(Self::fields(&IssueWrite { fields: Fields::ALL, ..w.clone() }, &[]));
         let mut issue = self.parse(&self.gh.run(&args)?)?;
         if w.status == TaskStatus::Done {
-            issue = self.update(
-                &issue.number,
-                &IssueWrite { fields: Fields { state: true, content: false }, ..w.clone() },
-                &[],
-            )?;
+            issue = self.update(&issue.number, &IssueWrite { fields: Fields::STATE, ..w.clone() }, &[])?;
         }
         Ok(issue)
     }
@@ -291,7 +300,7 @@ impl<G: Gh> GithubIssues<G> {
         }
         let repo = self.repo()?;
         let mut args = vec!["api".to_string(), "-X".into(), "PATCH".into(), format!("repos/{repo}/issues/{number}")];
-        args.extend(Self::fields(w, w.fields, keep));
+        args.extend(Self::fields(w, keep));
         if w.fields.state {
             args.push("-f".into());
             args.push(format!("state={}", if w.status == TaskStatus::Done { "closed" } else { "open" }));
@@ -318,33 +327,35 @@ impl<G: Gh> GithubIssues<G> {
     }
 
     /// The issues a sync reads, through the REST issues endpoint, paged.
-    /// No `since`: every open issue and the closed `orch` ones (`complete`).
+    /// No `since`: every open issue and the closed `orch` ones.
     /// With `since` (the last cursor): every issue changed since a minute
     /// before it, open or closed. Pull requests are skipped.
     pub fn list(&self, since: Option<&str>) -> Result<Listing> {
         let repo = self.repo()?;
         let since = since.and_then(|c| c.parse::<jiff::Timestamp>().ok());
-        let (raw, complete) = match since {
+        let (raw, coverage) = match since {
             Some(t) => {
                 let from = t - jiff::SignedDuration::from_secs(SINCE_OVERLAP_S);
-                (self.pages(&format!("repos/{repo}/issues?state=all&since={from}&per_page=100"))?, false)
+                (self.pages(&repo, &format!("state=all&since={from}"))?, Coverage::ChangedSince)
             }
             None => {
-                let mut v = self.pages(&format!("repos/{repo}/issues?state=open&per_page=100"))?;
-                v.extend(self.pages(&format!("repos/{repo}/issues?state=closed&labels={LABEL}&per_page=100"))?);
-                (v, true)
+                let mut v = self.pages(&repo, "state=open")?;
+                v.extend(self.pages(&repo, &format!("state=closed&labels={LABEL}"))?);
+                (v, Coverage::OpenAndManaged)
             }
         };
         let raw: Vec<Value> = raw.into_iter().filter(|v| v.get("pull_request").is_none()).collect();
         let newest = raw.iter().filter_map(|v| v["updated_at"].as_str()?.parse::<jiff::Timestamp>().ok()).max();
         let cursor = newest.max(since).map(|t| t.to_string());
-        Ok(Listing { issues: raw.iter().filter_map(parse_issue).collect(), complete, cursor })
+        Ok(Listing { issues: raw.iter().filter_map(parse_issue).collect(), coverage, cursor })
     }
 
-    /// Every item of a paged GET (`gh api --paginate` prints one JSON array
-    /// per page, back to back). A GET: no `-f` here, `gh` would POST.
-    fn pages(&self, path: &str) -> Result<Vec<Value>> {
-        let out = self.gh(&["api", "--paginate", path])?;
+    /// Every issue of a paged GET of `repo`'s issues with `query` (`gh api
+    /// --paginate` prints one JSON array per page, back to back). A GET: no
+    /// `-f` here, `gh` would POST.
+    fn pages(&self, repo: &str, query: &str) -> Result<Vec<Value>> {
+        let path = format!("repos/{repo}/issues?{query}&per_page=100");
+        let out = self.gh(&["api", "--paginate", &path])?;
         let mut items = Vec::new();
         for page in serde_json::Deserializer::from_str(&out).into_iter::<Value>() {
             match page.context("gh api: not JSON")? {
@@ -415,8 +426,8 @@ mod tests {
         let gh = GithubIssues::new(Pages(out.into()), Some("me/shop".into()));
         let l = gh.list(None).unwrap();
         assert_eq!(l.issues.iter().map(|i| i.number.as_str()).collect::<Vec<_>>(), ["1", "3"]);
-        assert_eq!((l.complete, l.cursor.as_deref()), (true, Some("2026-11-02T11:00:00Z")));
+        assert_eq!((l.coverage, l.cursor.as_deref()), (Coverage::OpenAndManaged, Some("2026-11-02T11:00:00Z")));
         let l = gh.list(Some("2026-11-02T11:00:00Z")).unwrap();
-        assert!(!l.complete);
+        assert_eq!(l.coverage, Coverage::ChangedSince);
     }
 }

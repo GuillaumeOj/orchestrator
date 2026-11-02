@@ -1056,8 +1056,10 @@ impl Store {
             .query_row("SELECT task_backend, path FROM projects WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
             .optional()?;
         let Some((old_backend, old_path)) = old else { return Ok(()) };
-        let old_backend: TaskBackendConfig = serde_json::from_str(&old_backend).unwrap_or_default();
-        if old_backend != *backend || path.is_some_and(|p| p != old_path) {
+        // Same text = same setting; a differing one may only order its keys differently.
+        let changed = old_backend != js(backend)
+            && serde_json::from_str::<TaskBackendConfig>(&old_backend).unwrap_or_default() != *backend;
+        if changed || path.is_some_and(|p| p != old_path) {
             tx.execute("DELETE FROM kv WHERE key=?1", [cursor_key(id)])?;
         }
         Ok(())

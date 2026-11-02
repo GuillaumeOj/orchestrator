@@ -18,8 +18,9 @@ conflicts, errors }`, `github_repo()` (`owner/name`, for issue URLs). A failed p
 task pending; `sync` pushes it again.
 
 Both remotes implement `Remote` (list, create, update, get, comment); the sync is the same for
-both. `list_issues(since)` returns a `Listing { issues, complete, cursor }`: Linear always lists
-in full (no cursor); GitHub lists in full without a cursor and incrementally with one.
+both. `list_issues(since)` returns a `Listing { issues, coverage, cursor }`; `coverage` says what an
+issue not listed means: `All` (Linear: not the app's), `OpenAndManaged` (GitHub without a cursor:
+maybe closed without `orch`, read alone), `ChangedSince` (GitHub with a cursor: unchanged).
 
 What a write sends is decided against the stored task: status or node changed → `state`, title,
 body or dependencies changed → `content` (`IssueWrite.fields`); a task the remote never got or a

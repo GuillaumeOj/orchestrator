@@ -3,7 +3,7 @@
 pub mod github;
 pub mod linear;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -11,7 +11,7 @@ use anyhow::{Result, anyhow};
 use orch_store::{Project, Store, Task, TaskBackendConfig, TaskNote};
 use orch_team::TaskStatus;
 
-use crate::github::{Fields, Gh, GhCli, GithubIssues, Issue, IssueWrite, Listing};
+use crate::github::{Coverage, Fields, Gh, GhCli, GithubIssues, Issue, IssueWrite, Listing};
 use crate::linear::{Graphql, LinearIssues};
 
 impl Gh for Box<dyn Gh> {
@@ -75,6 +75,10 @@ pub trait Remote: Send + Sync {
     fn github_repo(&self) -> Result<Option<String>> {
         Ok(None)
     }
+    /// What the sync cursor belongs to; `None` = the remote keeps no cursor.
+    fn cursor_scope(&self) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 impl<G: Gh> Remote for GithubIssues<G> {
@@ -98,12 +102,15 @@ impl<G: Gh> Remote for GithubIssues<G> {
     fn github_repo(&self) -> Result<Option<String>> {
         self.repo().map(Some)
     }
+    fn cursor_scope(&self) -> Result<Option<String>> {
+        Ok(Some(format!("github:{}", self.repo()?)))
+    }
 }
 
 impl<T: Graphql> Remote for LinearIssues<T> {
     /// Always the full listing (no cursor).
     fn list_issues(&self, _since: Option<&str>) -> Result<Listing> {
-        Ok(Listing { issues: self.list()?, complete: true, cursor: None })
+        Ok(Listing { issues: self.list()?, coverage: Coverage::All, cursor: None })
     }
     fn create_issue(&self, w: &IssueWrite) -> Result<Issue> {
         self.create(w)
@@ -274,16 +281,18 @@ impl<'a> TaskService<'a> {
             Some(n) => gh.update_issue(n, &w)?,
         };
         let sent_deps = w.blocked_by;
-        if t.external_id.is_some() && !fields.content {
-            t.title = issue.title.clone();
-            t.body = issue.body.clone();
-            if issue.blocked_by != sent_deps {
-                t.depends_on = self.deps_of(&issue);
+        if t.external_id.is_some() {
+            if !fields.content {
+                t.title = issue.title.clone();
+                t.body = issue.body.clone();
+                if issue.blocked_by != sent_deps {
+                    t.depends_on = self.deps_of(&issue);
+                }
             }
-        }
-        if t.external_id.is_some() && !fields.state {
-            t.status = issue.status;
-            t.node = issue.node.clone().or(t.node.take());
+            if !fields.state {
+                t.status = issue.status;
+                t.node = issue.node.clone().or(t.node.take());
+            }
         }
         t.external_id = Some(issue.number);
         t.remote_updated_at = Some(issue.updated_at);
@@ -373,7 +382,7 @@ impl<'a> TaskService<'a> {
         let Backend::Remote(kind, gh) = &self.backend else { return Ok(SyncReport::default()) };
         let (kind, gh) = (*kind, gh.as_ref());
         let mut rep = SyncReport::default();
-        let scope = gh.github_repo()?.map(|r| format!("{kind}:{r}"));
+        let scope = gh.cursor_scope()?;
         let since = match (&scope, self.store.task_sync_cursor(&self.project.id)?) {
             (Some(s), Some((sc, c))) if *s == sc => Some(c),
             _ => None,
@@ -383,50 +392,49 @@ impl<'a> TaskService<'a> {
         let local = self.store.tasks(Some(&self.project.id), None, None)?;
         // Local tasks the remote never got.
         for t in local.iter().filter(|t| t.backend == kind && t.external_id.is_none()) {
-            let mut t = t.clone();
-            match self.push(gh, &mut t, Fields::ALL) {
-                Ok(()) => {
-                    self.store.upsert_task(&t)?;
-                    rep.pushed.push(t.id);
-                }
-                Err(e) => rep.errors.push(format!("{}: {e:#}", t.handle())),
-            }
+            self.repush(gh, t.clone(), &mut rep)?;
         }
-        // Tracked tasks whose issue is not listed. An incremental listing
-        // leaves out the issues that did not change: a pending one is pushed
-        // again (pending, remote unchanged). A full GitHub one leaves out the
-        // issues it does not ask for (closed without `orch`): a pending or
-        // still open task is read one by one, then handled as listed.
-        let full_github = listing.complete && scope.is_some();
-        let listed: std::collections::HashSet<&str> = issues.iter().map(|i| i.number.as_str()).collect();
-        let unlisted: Vec<Task> = local
+        // Tracked tasks whose issue is not listed: what that means depends
+        // on what the listing covers.
+        let listed: HashSet<&str> = issues.iter().map(|i| i.number.as_str()).collect();
+        let unlisted: Vec<&Task> = local
             .iter()
             .filter(|t| t.backend == kind && t.external_id.as_deref().is_some_and(|n| !listed.contains(n)))
-            .filter(|t| Self::pending(t).is_some() || full_github && t.status != TaskStatus::Done)
-            .cloned()
             .collect();
-        for mut t in unlisted {
-            if listing.complete {
-                // Gone (deleted, transferred): left pending, as before.
-                if let Ok(issue) = gh.get_issue(t.external_id.as_deref().unwrap_or_default()) {
-                    issues.push(issue);
+        match listing.coverage {
+            Coverage::All => {}
+            // Not changed since the cursor: a pending one is pushed again.
+            Coverage::ChangedSince => {
+                for t in unlisted.into_iter().filter(|t| Self::pending(t).is_some()) {
+                    let mut t = t.clone();
+                    t.remote_updated_at = Self::pending(&t);
+                    self.repush(gh, t, &mut rep)?;
                 }
-                continue;
             }
-            t.remote_updated_at = Self::pending(&t);
-            match self.push(gh, &mut t, Fields::ALL) {
-                Ok(()) => {
-                    self.store.upsert_task(&t)?;
-                    rep.pushed.push(t.id);
+            // Maybe closed without `orch`: a pending or open one is read
+            // alone, then handled as listed. One gone (deleted, transferred)
+            // is left as it is.
+            Coverage::OpenAndManaged => {
+                for t in unlisted.into_iter().filter(|t| Self::pending(t).is_some() || t.status != TaskStatus::Done) {
+                    if let Ok(issue) = gh.get_issue(t.external_id.as_deref().unwrap_or_default()) {
+                        issues.push(issue);
+                    }
                 }
-                Err(e) => rep.errors.push(format!("{}: {e:#}", t.handle())),
             }
         }
+        // The tracked tasks by issue, read once (with the ones just created).
+        let mut tracked: HashMap<String, Task> = self
+            .store
+            .tasks(Some(&self.project.id), None, None)?
+            .into_iter()
+            .filter(|t| t.backend == kind)
+            .filter_map(|t| Some((t.external_id.clone()?, t)))
+            .collect();
         // Adopted issues whose `Blocked by:` may name an issue imported later
         // in this pass: resolved again once every issue is in the store.
         let mut adopted: Vec<(u64, &Issue)> = Vec::new();
         for issue in &issues {
-            match self.store.task_by_external(&self.project.id, kind, &issue.number)? {
+            match tracked.remove(&issue.number) {
                 // History stays on the remote: a closed issue the app never
                 // tracked and does not manage is not imported.
                 None if issue.status == TaskStatus::Done && !issue.managed => {}
@@ -441,13 +449,7 @@ impl<'a> TaskService<'a> {
                 Some(mut t) => match Self::pending(&t) {
                     Some(seen) if seen == issue.updated_at || seen.is_empty() && issue.updated_at.is_empty() => {
                         t.remote_updated_at = Some(seen);
-                        match self.push(gh, &mut t, Fields::ALL) {
-                            Ok(()) => {
-                                self.store.upsert_task(&t)?;
-                                rep.pushed.push(t.id);
-                            }
-                            Err(e) => rep.errors.push(format!("{}: {e:#}", t.handle())),
-                        }
+                        self.repush(gh, t, &mut rep)?;
                     }
                     Some(_) => {
                         self.adopt(&mut t, issue);
@@ -468,7 +470,9 @@ impl<'a> TaskService<'a> {
             }
         }
         rep.unmapped_states = gh.unmapped_states();
-        if let (Some(scope), Some(c)) = (&scope, listing.cursor) {
+        if let (Some(scope), Some(c)) = (&scope, listing.cursor)
+            && since.as_ref() != Some(&c)
+        {
             self.store.set_task_sync_cursor(&self.project.id, scope, &c)?;
         }
         for (id, issue) in adopted {
@@ -483,6 +487,18 @@ impl<'a> TaskService<'a> {
             }
         }
         Ok(rep)
+    }
+
+    /// Pushes every field of `t` again and reports it.
+    fn repush(&self, gh: &dyn Remote, mut t: Task, rep: &mut SyncReport) -> Result<()> {
+        match self.push(gh, &mut t, Fields::ALL) {
+            Ok(()) => {
+                self.store.upsert_task(&t)?;
+                rep.pushed.push(t.id);
+            }
+            Err(e) => rep.errors.push(format!("{}: {e:#}", t.handle())),
+        }
+        Ok(())
     }
 
     fn adopt(&self, t: &mut Task, issue: &Issue) {
