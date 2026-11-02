@@ -19,6 +19,34 @@ pub const TICK_EVERY: Duration = Duration::from_secs(30);
 pub const HOUSEKEEPING_EVERY: Duration = Duration::from_secs(5);
 pub const FETCH_EVERY: Duration = Duration::from_secs(60);
 
+/// How often the network thread wakes to see what is due.
+pub const NET_STEP_EVERY: Duration = Duration::from_millis(500);
+
+/// When the network thread last ran each of its jobs; both are due at start.
+/// orchd and the app drive the same [`NetClock::step`], so neither misses one.
+#[derive(Default)]
+pub struct NetClock {
+    fetch: Option<Instant>,
+    pr: Option<Instant>,
+}
+
+impl NetClock {
+    /// One pass of the network thread: the background git fetch (FR-103)
+    /// every [`FETCH_EVERY`], the open PRs of team runs (state, CI, position
+    /// against the base) every [`crate::pr::PR_EVERY`].
+    pub fn step(&mut self, rt: &Runtime, now: Instant) {
+        let due = |last: Option<Instant>, every| last.is_none_or(|t| now.saturating_duration_since(t) >= every);
+        if due(self.fetch, FETCH_EVERY) {
+            rt.fetch_tick(&rt.cfg.fetch, rt.cfg.conditions.as_ref());
+            self.fetch = Some(now);
+        }
+        if due(self.pr, crate::pr::PR_EVERY) {
+            rt.pr_tick(orch_protocol::now_ms());
+            self.pr = Some(now);
+        }
+    }
+}
+
 /// Serves until `stop` is set (by a `shutdown` request or the caller).
 pub fn serve(rt: Arc<Runtime>, listener: UnixListener, stop: Arc<AtomicBool>) -> std::io::Result<()> {
     let loops = {
@@ -45,18 +73,10 @@ pub fn serve(rt: Arc<Runtime>, listener: UnixListener, stop: Arc<AtomicBool>) ->
     {
         let (rt, stop) = (rt.clone(), stop.clone());
         std::thread::Builder::new().name("orch-fetch".into()).spawn(move || {
-            let (mut last, mut last_pr): (Option<Instant>, Option<Instant>) = (None, None);
+            let mut net = NetClock::default();
             while !stop.load(Ordering::SeqCst) {
-                if last.is_none_or(|t| t.elapsed() >= FETCH_EVERY) {
-                    rt.fetch_tick(&rt.cfg.fetch, rt.cfg.conditions.as_ref());
-                    last = Some(Instant::now());
-                }
-                // Open PRs of team runs (state, CI, position against the base).
-                if last_pr.is_none_or(|t| t.elapsed() >= crate::pr::PR_EVERY) {
-                    rt.pr_tick(orch_protocol::now_ms());
-                    last_pr = Some(Instant::now());
-                }
-                std::thread::sleep(Duration::from_millis(500));
+                net.step(&rt, Instant::now());
+                std::thread::sleep(NET_STEP_EVERY);
             }
         })?;
     }

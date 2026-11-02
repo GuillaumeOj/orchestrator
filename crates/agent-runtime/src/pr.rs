@@ -886,6 +886,40 @@ mod tests {
     }
 
     #[test]
+    fn a_background_check_raises_the_feature_topic() {
+        let fx = integrating();
+        open(&fx);
+        let got = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let g = got.clone();
+        fx.rt.subscribe_now(Arc::new(move |v| g.lock().unwrap().push(v.clone())));
+        fx.rt.now_pump(false);
+        let fid = fx.rt.db.run(&fx.run).unwrap().unwrap().feature_id;
+        // Only what the check itself raises: the events of the setup are behind us.
+        got.lock().unwrap().clear();
+        fx.rt.pr_tick(now_ms() + MIN);
+        fx.rt.now_pump(false);
+        let ev = got.lock().unwrap().last().cloned().expect("the background check pushed a now event");
+        assert!(ev["topics"].as_array().unwrap().contains(&json!(format!("feature:{fid}"))), "{ev}");
+    }
+
+    #[test]
+    fn the_network_step_checks_open_prs_every_minute() {
+        // The step both orchd and the app run on their network thread (the
+        // app once had a fetch-only loop: no PR was ever checked there).
+        let fx = integrating();
+        open(&fx);
+        let views = || fx.hub.lock().unwrap().views;
+        let (mut net, t0) = (crate::server::NetClock::default(), std::time::Instant::now());
+        let v0 = views();
+        net.step(&fx.rt, t0);
+        assert_eq!(views(), v0 + 1, "the first step checks the open PR");
+        net.step(&fx.rt, t0 + PR_EVERY / 2);
+        assert_eq!(views(), v0 + 1, "not again before PR_EVERY");
+        net.step(&fx.rt, t0 + PR_EVERY);
+        assert_eq!(views(), v0 + 2, "again once PR_EVERY has passed");
+    }
+
+    #[test]
     fn new_commits_go_to_the_open_pr_through_an_update_gate() {
         let fx = integrating();
         let rt = &fx.rt;
