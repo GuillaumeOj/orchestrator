@@ -123,6 +123,7 @@
 
   const isWide = $derived(wide());
   const docked = $derived(inspectorDocked());
+  const overlaid = $derived(inspectorOverlay());
 </script>
 
 <div class="shell">
@@ -138,8 +139,8 @@
     </div>
     <div class="chatslot" class:narrow={!isWide}>
       <!-- Under the Inspector's overlay the chat is hidden: out of the Tab order too. -->
-      <div class="chatwrap" inert={!docked && app.inspector}><ChatColumn /></div>
-      {#if !docked && app.inspector}<Inspector overlay />{/if}
+      <div class="chatwrap" inert={overlaid}><ChatColumn /></div>
+      {#if overlaid}<Inspector overlay />{/if}
     </div>
     {#if docked && app.inspector}<Inspector />{/if}
   </div>

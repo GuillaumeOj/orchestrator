@@ -2,13 +2,14 @@
   // Lifecycle marker (notes §3.4, Penpot P4.1 Lifecycle marker): one line under
   // the decision's title, never a spinner. Icon in color.lifecycle.<state>; the
   // text in text.secondary, failed in its own color, stale, dismissed and
-  // interrupted muted. A PR opened links its URL.
+  // interrupted muted. A PR opened links its URL. `given` ({ state, text })
+  // replaces what the lifecycle says (an expanded chat line's marker).
   import { now30, openUrl } from '../lib/app.svelte.js';
   import { marker } from '../lib/inbox.js';
   import { LIFECYCLE } from '../lib/status.js';
 
-  let { decision, pending = null } = $props();
-  const m = $derived(marker(decision, pending, Math.max(now30(), Date.now())));
+  let { decision, pending = null, given = null } = $props();
+  const m = $derived(given ?? marker(decision, pending, Math.max(now30(), Date.now())));
   const muted = $derived(['stale', 'dismissed', 'interrupted'].includes(m.state));
 </script>
 

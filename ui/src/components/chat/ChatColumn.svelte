@@ -25,9 +25,9 @@
     undoItem,
     undoLast,
   } from '../../lib/app.svelte.js';
-  import { alreadyText, digestText, FOLD_AT, filterStrip, foldText, nextFilter, thread, verbText } from '../../lib/chat.js';
+  import { alreadyText, digestText, FOLD_AT, filterStrip, foldText, nextFilter, thread } from '../../lib/chat.js';
   import { clock } from '../../lib/format.js';
-  import { actionByKey, agentOf, answerText, FILTERS, intentFor, keyIntent } from '../../lib/inbox.js';
+  import { actionByKey, agentOf, answerText, blockOf, FILTERS, intentFor, keyIntent } from '../../lib/inbox.js';
   import { errText } from '../../lib/ipc.js';
   import { clearDigest, counts, digest } from '../../lib/now.svelte.js';
   import Kbd from '../Kbd.svelte';
@@ -70,7 +70,8 @@
       filter,
       foldOpen,
       seen,
-      held: new Set([hovered, ...typing]),
+      // Read only for a card past its collapse time: hovering costs no rebuild otherwise.
+      isHeld: (id) => hovered === id || typing.has(id),
       now,
       memo,
     }),
@@ -78,7 +79,8 @@
   const fold = $derived(t.items.find((i) => i.type === 'fold') ?? null);
   // Its decision in the undo window, or sent and not yet answered by the core
   // (`sent`): either way the card takes no second answer.
-  const pendingOf = (id) => app.pending.find((p) => p.item === id) ?? null;
+  const pendingById = $derived(new Map(app.pending.map((p) => [p.item, p])));
+  const pendingOf = (id) => pendingById.get(id) ?? null;
   // j/k stops: the cards, the fold header, the digest header (notes §10.2).
   const stops = $derived([...t.items.filter((i) => i.type === 'card' || i.type === 'fold').map(stopKey), 'digest']);
   function stopKey(i) {
@@ -101,7 +103,7 @@
   const doneToday = $derived(counts().done_today);
   const dg = $derived(digestText(outcomes, doneToday));
   const strip = $derived(filterStrip(filter, t.counts));
-  const showFilters = $derived(t.open >= 2 || filter !== 'all');
+  const showFilters = $derived(t.all.length >= 2 || filter !== 'all');
   const lastSettled = $derived(t.items.findLast((i) => i.type === 'line')?.line.at_ms ?? null);
 
   // A user's effect starts its collapse clock when it is first seen (no effect_at_ms).
@@ -127,6 +129,8 @@
     if (d !== day) {
       day = d;
       app.chatFilter = 'all';
+      seen.clear();
+      announced.clear();
     }
   });
 
@@ -252,7 +256,7 @@
         coreAct(d, intent.action);
         return true;
       case 'answer': {
-        const opts = d.context?.find((b) => b.type === 'options');
+        const opts = blockOf(d, 'options');
         if (opts) {
           const c = choices[d.id] ?? [];
           if (opts.questions.every((_, i) => c[i]?.length)) send(d, 'answer', answerText(c));
@@ -294,7 +298,8 @@
   function cardKey(d, key) {
     sel = `c:${d.id}`;
     // A card's own Undo button undoes that card, not the last decision taken.
-    if (key === 'u' && pendingOf(d.id) && !pendingOf(d.id).sent) {
+    const p = pendingOf(d.id);
+    if (key === 'u' && p && !p.sent) {
       undoItem(d.id);
       toast('Undone');
       return;
@@ -328,10 +333,7 @@
 
   function hover(id, on) {
     if (on) hovered = id;
-    else if (hovered === id) {
-      hovered = null;
-      now = Date.now();
-    }
+    else if (hovered === id) hovered = null;
   }
 
   function typed(id, on) {
@@ -339,7 +341,6 @@
     const s = new Set(typing);
     on ? s.add(id) : s.delete(id);
     typing = s;
-    if (!on) now = Date.now();
   }
 
   const clear = () => {
@@ -443,7 +444,7 @@
             selected={cur === `c:${it.id}`}
             marked={marked.has(it.id)}
             pending={pendingOf(it.id)}
-            ref={it.ref ? { what: `${verbText(it.ref.line.verb)} ${it.ref.line.what}`, at: clock(it.ref.line.at_ms) } : null}
+            ref={it.ref?.line}
             replying={reply?.id === it.id ? reply.action : null}
             pulse={pulse === it.key}
             bind:choices={() => choices[it.id] ?? [], (v) => (choices[it.id] = v)}
@@ -456,7 +457,7 @@
         </article>
       {/if}
     {/each}
-    {#if !t.open}
+    {#if !t.all.length}
       <p class="empty">
         <b>Nothing needs you</b>{lastSettled ? ` · last settled ${clock(lastSettled)}` : '.'}
         {#if !projects().length}<br /><span class="muted">Add a project and start a session; its cards appear here.</span>
@@ -639,9 +640,6 @@
   }
   .keys {
     flex: none;
-  }
-  .grow {
-    flex: 1;
   }
   .sr {
     position: absolute;

@@ -3,7 +3,7 @@
 // line, cards and collapsed lines, with the level filter and the fold. Pure:
 // the column renders what `thread()` returns.
 
-import { clock } from './format.js';
+import { clock, plural } from './format.js';
 import { agentOf, cut, FILTERS } from './inbox.js';
 
 /** A user's own decision collapses to its line this long after its effect (notes §2.1). */
@@ -88,63 +88,56 @@ export function byWords(line) {
   }
 }
 
+const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+/** "allowed back-1: cargo add serde_json" ("applied: …" with no agent). */
+const head = (line, f = (s) => s) =>
+  `${f(verbText(line.verb))}${line.agent ? ` ${line.agent}` : ''}: ${line.what ?? ''}`;
+/** "allowed by rule installs". */
+const settled = (line) => [verbText(line.verb), byWords(line)].filter(Boolean).join(' ');
+
 /** "allowed back-1: cargo add serde_json · rule: installs" (no time, no ▸). */
 export function lineText(line) {
-  const head = line.agent ? `${verbText(line.verb)} ${line.agent}: ` : `${verbText(line.verb)}: `;
   const tail = tailText(line);
-  return `${head}${line.what ?? ''}${tail ? ` · ${tail}` : ''}`;
+  return `${head(line)}${tail ? ` · ${tail}` : ''}`;
 }
-
-const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
 /** The line's accessible name: "Allowed back-1: cargo add serde_json, by rule installs, 14:02". */
 export function lineLabel(line, now = Date.now()) {
-  const head = line.agent ? `${cap(verbText(line.verb))} ${line.agent}: ` : `${cap(verbText(line.verb))}: `;
-  return [`${head}${line.what ?? ''}`, byWords(line), clock(line.at_ms, now)].filter(Boolean).join(', ');
+  return [head(line, cap), byWords(line), clock(line.at_ms, now)].filter(Boolean).join(', ');
 }
 
 /** The expanded line's marker: "Allowed by rule installs · 14:02". */
-export function lineMarker(line, now = Date.now()) {
-  return [`${cap(verbText(line.verb))}${byWords(line) ? ` ${byWords(line)}` : ''}`, clock(line.at_ms, now)].join(' · ');
-}
+export const lineMarker = (line, now = Date.now()) => `${cap(settled(line))} · ${clock(line.at_ms, now)}`;
 
 /** "Already allowed in the pane · 14:02" (notes §8.2). */
-export function alreadyText(line, now = Date.now()) {
-  const by = byWords(line);
-  return `Already ${verbText(line.verb)}${by ? ` ${by}` : ''} · ${clock(line.at_ms, now)}`;
-}
+export const alreadyText = (line, now = Date.now()) => `Already ${settled(line)} · ${clock(line.at_ms, now)}`;
 
-/** The verb a closed decision's lifecycle says, for a decision the core has
- *  not posted a line for yet (the entry's `line` is the source). */
+// The verb a closed decision's lifecycle says, for a decision the core has not
+// posted a line for yet (the entry's `line` is the source).
+const STATE_VERB = { dismissed: 'dismissed', interrupted: 'interrupted', failed: 'failed' };
+const EFFECT_VERB = {
+  allowed: 'allowed',
+  denied: 'denied',
+  pr_opened: 'approved',
+  restarted: 'restarted',
+  applied: 'applied',
+  skipped: 'skipped',
+  deleted: 'dismissed',
+  dismissed: 'dismissed',
+  queued: 'answered',
+};
+const ASK_VERB = { applied: 'run now', skipped: 'kept queued', queued: 'kept queued' };
+const KIND_VERB = { permission: 'allowed', gate: 'approved', ask: 'run now' };
 function verbOf(d) {
-  const lc = d.lifecycle ?? {};
-  if (lc.state === 'dismissed') return lc.effect === 'restarted' ? 'restarted' : 'dismissed';
-  if (lc.state === 'interrupted') return 'interrupted';
-  if (lc.state === 'failed') return 'failed';
-  switch (lc.effect) {
-    case 'allowed':
-      return 'allowed';
-    case 'denied':
-      return 'denied';
-    case 'pr_opened':
-      return 'approved';
-    case 'restarted':
-      return 'restarted';
-    case 'applied':
-      return d.kind === 'ask' ? 'run now' : 'applied';
-    case 'skipped':
-      return d.kind === 'ask' ? 'kept queued' : 'skipped';
-    case 'deleted':
-    case 'dismissed':
-      return 'dismissed';
-    case 'queued':
-      return d.kind === 'ask' ? 'kept queued' : 'answered';
-    default:
-      if (d.kind === 'permission') return 'allowed';
-      if (d.kind === 'gate') return 'approved';
-      if (d.kind === 'ask') return 'run now';
-      return 'answered';
-  }
+  const { state, effect } = d.lifecycle ?? {};
+  if (state === 'dismissed' && effect === 'restarted') return 'restarted';
+  return (
+    STATE_VERB[state] ??
+    (d.kind === 'ask' ? ASK_VERB[effect] : undefined) ??
+    EFFECT_VERB[effect] ??
+    KIND_VERB[d.kind] ??
+    'answered'
+  );
 }
 
 const BY = { user: 'you', pane: 'pane', expired: 'expired', core: 'core', overwatch: 'overwatch' };
@@ -166,6 +159,19 @@ export function lineOfDecision(d, now = Date.now()) {
 
 // ---------------------------------------------------------------- thread
 
+// A decision listed with no entry yet gets a placeholder entry, per decision
+// object: the same one each call, so the memo keeps its item.
+const placeholders = new WeakMap();
+function placeholder(d) {
+  let e = placeholders.get(d);
+  if (!e)
+    placeholders.set(
+      d,
+      (e = { id: `d:${d.id}`, kind: 'decision', decision: d.id, thread: d.thread, at_ms: d.created_ms }),
+    );
+  return e;
+}
+
 // The line composed for a decision with no `line` yet, per decision object (a
 // push replaces the object): the same line each call, so the memo keeps its item.
 const composed = new WeakMap();
@@ -184,7 +190,7 @@ function composedLine(d, now) {
  * The thread to render. `chat` = { day, entries }; `decisions` = now.decisions;
  * `pending` = app.pending; `seen` = Map decision id → when the column first saw
  * its effect (the collapse clock when the lifecycle has no effect_at_ms);
- * `held` = ids whose collapse waits (pointer over it, a reply typed); `memo` =
+ * `isHeld(id)` = its collapse waits (pointer over it, a reply typed); `memo` =
  * the previous call's items by key, reused when unchanged so a `now` event
  * re-renders only what it touched (spec §5: < 16 ms for 300 entries).
  *
@@ -202,7 +208,7 @@ export function thread({
   filter = 'all',
   foldOpen = false,
   seen = new Map(),
-  held = new Set(),
+  isHeld = /** @type {(id: string) => boolean} */ (() => false),
   now = Date.now(),
   memo = null,
 }) {
@@ -219,7 +225,7 @@ export function thread({
   // at its creation time.
   for (const d of Object.values(decisions))
     if (!latest.has(d.id) && d.level < 4) {
-      const e = { id: `d:${d.id}`, kind: 'decision', decision: d.id, thread: d.thread, at_ms: d.created_ms ?? now };
+      const e = placeholder(d);
       entries.push(e);
       latest.set(d.id, e);
     }
@@ -234,10 +240,11 @@ export function thread({
       if (waiting.has(d.id) || CARD_STATES.has(lc.state)) return 'card';
       if (lc.state === 'effect' && lc.decided_by === 'user') {
         const due = (lc.effect_at_ms ?? seen.get(d.id) ?? now) + COLLAPSE_MS;
-        if (held.has(d.id) || now < due) {
-          if (!held.has(d.id)) nextDue = nextDue == null ? due : Math.min(nextDue, due);
+        if (now < due) {
+          nextDue = nextDue == null ? due : Math.min(nextDue, due);
           return 'card';
         }
+        if (isHeld(d.id)) return 'card';
       }
       return 'line';
     }
@@ -255,7 +262,7 @@ export function thread({
     else if (m === 'line') {
       const live = d && latest.get(d.id) === e;
       const line = e.line ?? composedLine(d, now);
-      all.push({ type: 'line', key: e.id, id: e.decision, line, d: (live ? d : null) ?? e.card ?? d, entry: e });
+      all.push({ type: 'line', key: e.id, id: e.decision, line, d: live ? d : (e.card ?? d), entry: e });
     }
   }
   const reuse = (it) => {
@@ -313,19 +320,13 @@ export function thread({
     }
     items.push(it);
   }
-  return { items, cards, all: cardsAll, counts, open: cardsAll.length, shown: shown.length, nextDue };
+  return { items, cards, all: cardsAll, counts, shown: shown.length, nextDue };
 }
 
 /** The same item as last time: what it renders from did not change. */
 function sameItem(a, b) {
   return (
-    a.type === b.type &&
-    a.id === b.id &&
-    a.d === b.d &&
-    a.line === b.line &&
-    a.ref === b.ref &&
-    (a.entry === b.entry ||
-      (a.entry.id.startsWith('d:') && a.entry.at_ms === b.entry.at_ms && a.entry.thread === b.entry.thread))
+    a.type === b.type && a.id === b.id && a.d === b.d && a.line === b.line && a.ref === b.ref && a.entry === b.entry
   );
 }
 
@@ -346,22 +347,28 @@ export function filterStrip(filter, counts) {
   return `Showing ${label} · ${shown} of ${counts.all} open cards. ${hidden} hidden`;
 }
 
+/** "3 cards need you", "1 decision needs you". */
+const needText = (n, noun) => `${plural(n, noun)} need${n === 1 ? 's' : ''} you`;
+
 /** The overlay's banner (notes §9): null when no card is open. */
 export function bannerText(open, blocking) {
   if (!open) return null;
-  return `${open} card${open === 1 ? '' : 's'} need${open === 1 ? 's' : ''} you${blocking ? `, ${blocking} blocking` : ''}`;
+  return `${needText(open, 'card')}${blocking ? `, ${blocking} blocking` : ''}`;
 }
 
 /** The title bar badge's label (notes §11.1). */
-export const badgeLabel = (n) =>
-  n ? `${n} decision${n === 1 ? '' : 's'} need${n === 1 ? 's' : ''} you · ⌘⇧I` : 'No decisions waiting · ⌘⇧I';
+export const badgeLabel = (n) => (n ? `${needText(n, 'decision')} · ⌘⇧I` : 'No decisions waiting · ⌘⇧I');
 
 /** The digest group's header and body (notes §7). */
 export function digestText(outcomes, doneToday) {
   const n = outcomes.length;
   if (n) {
-    const head = `Today · ${n} outcome${n === 1 ? '' : 's'}`;
-    return { head, clear: true, more: doneToday > n ? `${doneToday} done today` : null, body: null };
+    return {
+      head: `Today · ${plural(n, 'outcome')}`,
+      clear: true,
+      more: doneToday > n ? `${doneToday} done today` : null,
+      body: null,
+    };
   }
   if (doneToday) return { head: `Today · ${doneToday} done`, clear: false, body: `${doneToday} done today, all seen.` };
   return { head: 'Today · no outcomes yet', clear: false, body: 'Nothing done yet today.' };

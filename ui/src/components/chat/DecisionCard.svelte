@@ -5,9 +5,9 @@
   // while the decision is listed; read-only (`line` given) when a collapsed
   // line expands: no actions but the ones that open something.
   import { now30, openUrl } from '../../lib/app.svelte.js';
-  import { byWords, lineMarker } from '../../lib/chat.js';
-  import { waited } from '../../lib/format.js';
-  import { agentOf, keyless, parked, restarted, subjectLine } from '../../lib/inbox.js';
+  import { byWords, lineMarker, verbText } from '../../lib/chat.js';
+  import { clock, waited } from '../../lib/format.js';
+  import { agentOf, blockOf, keyless, parked, restarted, subjectLine } from '../../lib/inbox.js';
   import { decisionKind, LIFECYCLE } from '../../lib/status.js';
   import ContextBlocks from '../ContextBlocks.svelte';
   import Kbd from '../Kbd.svelte';
@@ -33,14 +33,15 @@
 
   const live = $derived(!line);
   // "Permission · by rule" on an expanded line settled without you.
-  const kindBy = $derived(line?.by && line.by !== 'you' ? ` · ${line.by === 'rule' ? 'by rule' : byWords(line)}` : '');
+  const kindBy = $derived(line?.by && line.by !== 'you' ? ` · ${byWords({ ...line, by_detail: undefined })}` : '');
   const k = $derived(decisionKind(d));
   const state = $derived(d.lifecycle?.state ?? 'open');
   const now = $derived(Math.max(now30(), Date.now()));
   // Actions while it waits on the user, failed (again, with Dismiss) or stale (Dismiss).
-  const acting = $derived(live && !pending && ['open', 'parked', 'failed', 'stale'].includes(state));
+  const waitsOnUser = $derived(['open', 'parked', 'failed', 'stale'].includes(state));
+  const acting = $derived(live && !pending && waitsOnUser);
   const keyed = $derived((d.actions ?? []).filter((x) => x.key));
-  const options = $derived(d.context?.find((b) => b.type === 'options') ?? null);
+  const options = $derived(blockOf(d, 'options'));
   const answered = $derived(!!options && options.questions.every((_, i) => choices[i]?.length));
   // What still opens something once it is settled: the pane, the PR, the Notion page.
   const opens = $derived((d.actions ?? []).filter((x) => x.id === 'open' || x.key === 'o'));
@@ -69,8 +70,9 @@
 </script>
 
 <div class="card {state}" class:open class:selected class:marked class:pulse class:ro={!live} class:muted={state === 'stale'} data-decision={d.id} data-state={pending && !pending.sent ? 'pending' : state}>
-  {#if ref && !pending && ['open', 'parked', 'failed', 'stale'].includes(state)}
-    <button class="ref" onclick={onjump} aria-label="Follows: {ref.what}, {ref.at}. Jump to it">↳ after: {ref.what} · {ref.at}</button>
+  {#if ref && !pending && waitsOnUser}
+    {@const what = `${verbText(ref.verb)} ${ref.what}`}
+    <button class="ref" onclick={onjump} aria-label="Follows: {what}, {clock(ref.at_ms, now)}. Jump to it">↳ after: {what} · {clock(ref.at_ms, now)}</button>
   {/if}
   <div class="top">
     <span class="kind" style:color={k.color}><span aria-hidden="true">{k.icon}</span> {k.label}{parked(d) ? ' · parked' : ''}{restarted(d) ? ' · after restart' : ''}{kindBy}</span>
@@ -121,15 +123,7 @@
       {:else}{#each opens as x (x.id)}<button class="btn ghost" onclick={() => onact(x.id)}>{x.label}{#if x.key}{' '}<Kbd keys={x.key} />{/if}</button>{/each}{/if}
     </div>
   {/if}
-  {#if line}
-    {@const st = LIFECYCLE[line.state] ? line.state : 'effect'}
-    <div class="lc" class:muted={['stale', 'dismissed', 'interrupted'].includes(st)} data-state={st}>
-      <span class="icon" style:color={LIFECYCLE[st].color} aria-hidden="true">{LIFECYCLE[st].icon}</span>
-      <span>{lineMarker(line, now)}</span>
-    </div>
-  {:else}
-    <LifecycleMarker decision={d} {pending} />
-  {/if}
+  <LifecycleMarker decision={d} {pending} given={line ? { state: LIFECYCLE[line.state] ? line.state : 'effect', text: lineMarker(line, now) } : null} />
 </div>
 
 <style>
@@ -234,17 +228,5 @@
   }
   .actions .btn {
     white-space: nowrap;
-  }
-  .lc {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-xs);
-    color: var(--color-text-secondary);
-  }
-  .lc.muted {
-    color: var(--color-text-muted);
-  }
-  .grow {
-    flex: 1;
   }
 </style>

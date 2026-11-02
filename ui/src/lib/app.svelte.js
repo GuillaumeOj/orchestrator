@@ -370,21 +370,19 @@ export function openSingleton(type) {
  *  focused on that decision's card (null: the oldest open one). The
  *  Inspector's overlay closes: the user asks for the cards (P4.2 notes §4). */
 export function focusCard(id = null) {
-  if (!inspectorDocked()) app.inspector = false;
-  app.chatFocus = { id };
+  askChat({ id });
 }
 
 /** ⌘L: the chat's search (D1: until the Overwatch's input exists). */
-export function searchDecisions() {
-  if (!inspectorDocked()) app.inspector = false;
-  app.chatFocus = { search: true };
-}
+export const searchDecisions = () => askChat({ search: true });
 
 /** The chat's level filter (notes §5). */
-export function filterDecisions(id) {
+export const filterDecisions = (id) => askChat({ id: null, filter: id });
+
+/** A request for the chat column; the Inspector's overlay closes (P4.2 notes §4). */
+function askChat(req) {
   if (!inspectorDocked()) app.inspector = false;
-  app.chatFilter = id;
-  app.chatFocus = { id: null, filter: id };
+  app.chatFocus = req;
 }
 
 /**
