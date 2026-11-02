@@ -389,6 +389,11 @@ impl<'a> TaskService<'a> {
         };
         let listing = gh.list_issues(since.as_deref())?;
         let mut issues = listing.issues;
+        // A paged read can return an issue twice (one created meanwhile shifts
+        // the pages): importing it twice would make two tasks.
+        let mut seen = HashSet::new();
+        issues.retain(|i| seen.insert(i.number.clone()));
+        let mut read_failed = false;
         let local = self.store.tasks(Some(&self.project.id), None, None)?;
         // Local tasks the remote never got.
         for t in local.iter().filter(|t| t.backend == kind && t.external_id.is_none()) {
@@ -416,8 +421,13 @@ impl<'a> TaskService<'a> {
             // is left as it is.
             Coverage::OpenAndManaged => {
                 for t in unlisted.into_iter().filter(|t| Self::pending(t).is_some() || t.status != TaskStatus::Done) {
-                    if let Ok(issue) = gh.get_issue(t.external_id.as_deref().unwrap_or_default()) {
-                        issues.push(issue);
+                    match gh.get_issue(t.external_id.as_deref().unwrap_or_default()) {
+                        Ok(issue) => issues.push(issue),
+                        // Gone: left as it is. Any other failure: the cursor must not
+                        // move past an issue never read (an incremental list would
+                        // not show it again).
+                        Err(e) if format!("{e:#}").contains("404") || format!("{e:#}").contains("Not Found") => {}
+                        Err(_) => read_failed = true,
                     }
                 }
             }
@@ -471,6 +481,7 @@ impl<'a> TaskService<'a> {
         }
         rep.unmapped_states = gh.unmapped_states();
         if let (Some(scope), Some(c)) = (&scope, listing.cursor)
+            && !read_failed
             && since.as_ref() != Some(&c)
         {
             self.store.set_task_sync_cursor(&self.project.id, scope, &c)?;

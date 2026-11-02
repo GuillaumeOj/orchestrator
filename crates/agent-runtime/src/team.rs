@@ -34,9 +34,9 @@ use crate::runtime::Runtime;
 use crate::state::AgentState;
 use crate::store::{Admission, AgentRecord, TeamSeat, TurnRow, TurnStatus};
 
-/// Settings key prefix of each project's last task sync (`tasks.last_sync.<project>`).
 /// Opening a Board syncs its project only if the last sync is older than this.
 pub const OPEN_SYNC_AFTER_MS: u64 = 60_000;
+/// Settings key prefix of each project's last task sync (`tasks.last_sync.<project>`).
 pub const LAST_SYNC_KEY: &str = "tasks.last_sync.";
 
 /// What to launch (J3 step 2).
