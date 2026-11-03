@@ -2,6 +2,7 @@
 
 pub mod artifacts;
 pub mod attention;
+pub mod blocker;
 pub mod chat;
 pub mod compile;
 pub mod decision;
@@ -42,6 +43,7 @@ pub mod shell;
 pub mod startup;
 pub mod state;
 pub mod store;
+pub mod stuck;
 pub mod supervise;
 pub mod team;
 pub mod team_admin;

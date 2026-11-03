@@ -76,8 +76,17 @@ pub(crate) fn fully_seen(m: &Message, paste_file: Option<&str>, referenced: &BTr
     paste_file.map(str::to_string).into_iter().chain(own).all(|f| referenced.contains(&f))
 }
 
+/// A hook the CLI did send but the core never got, rebuilt from the transcript.
+fn synthetic_hook(rec: &AgentRecord, event: HookEvent, mut payload: Value) -> HookMsg {
+    payload["hook_event_name"] = json!(event.as_str());
+    if let Some(sid) = &rec.tracker.session_id {
+        payload["session_id"] = json!(sid);
+    }
+    HookMsg { agent_id: rec.id.clone(), event, ts_ms: now_ms(), deadline_ms: 0, payload, acks: vec![] }
+}
+
 /// The transcript ends with the agent's finished answer.
-fn turn_ended(s: &crate::transcript::Summary) -> bool {
+pub(crate) fn turn_ended(s: &crate::transcript::Summary) -> bool {
     s.last_type.as_deref() == Some("assistant") && s.last_stop_reason.as_deref() == Some("end_turn")
 }
 
@@ -146,7 +155,10 @@ pub struct DeliveryFailure {
 
 impl Runtime {
     /// A delivery event, on the run's timeline for a team agent.
-    pub(crate) fn delivery_event(&self, agent: &str, kind: &str, detail: Value) {
+    pub(crate) fn delivery_event(&self, agent: &str, kind: &str, mut detail: Value) {
+        if let Some(o) = detail.as_object_mut() {
+            o.entry("agent").or_insert_with(|| json!(agent));
+        }
         match self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.as_ref().map(|t| t.run_id.clone()))) {
             Some(run) => self.run_event(&run, Some(agent), kind, detail),
             None => self.event(agent, kind, detail),
@@ -392,14 +404,13 @@ impl Runtime {
 
     /// The marker is in the transcript: the UserPromptSubmit (and, when the
     /// turn is over there, the Stop) applied late.
+    /// The Stop the core never got, applied from the transcript (§3.7).
+    pub(crate) fn late_stop(&self, rec: &AgentRecord) {
+        self.apply_hook(&synthetic_hook(rec, HookEvent::Stop, json!({})), None, true);
+    }
+
     pub(crate) fn late_turn_start(&self, rec: &AgentRecord, seen: &[String], ended: bool) {
-        let mk = |event: HookEvent, mut payload: Value| {
-            payload["hook_event_name"] = json!(event.as_str());
-            if let Some(sid) = &rec.tracker.session_id {
-                payload["session_id"] = json!(sid);
-            }
-            HookMsg { agent_id: rec.id.clone(), event, ts_ms: now_ms(), deadline_ms: 0, payload, acks: vec![] }
-        };
+        let mk = |event: HookEvent, payload: Value| synthetic_hook(rec, event, payload);
         let prompt = seen.iter().map(|t| marker(t)).collect::<Vec<_>>().join(" ");
         self.apply_hook(&mk(HookEvent::UserPromptSubmit, json!({"prompt": prompt})), None, true);
         if ended {
@@ -470,11 +481,33 @@ impl Runtime {
     /// its other turns. **T-207 hook point**: the `delivery` decision
     /// (api-contract §2) and the note to the agent's Lead are raised here.
     pub(crate) fn on_delivery_failed(&self, f: &DeliveryFailure) {
+        let rec = self.store.read(|s| s.agents.get(&f.agent).cloned());
+        let messages = self.db.messages_by_id(&f.messages).unwrap_or_default();
+        let key = format!(
+            "{}:delivery:{}",
+            f.agent,
+            f.messages.first().map(u64::to_string).or(f.turns.first().cloned()).unwrap_or_default()
+        );
+        let decision = rec.and_then(|rec| {
+            self.raise_delivery(
+                &rec,
+                crate::stuck::Raise {
+                    episode: "delivery",
+                    blocker: f.blocker.into(),
+                    since_ms: f.since_ms,
+                    messages,
+                    turns: f.turns.clone(),
+                    key,
+                    stuck_event: false,
+                },
+            )
+        });
         self.delivery_event(
             &f.agent,
             "delivery_failed",
             json!({"turns": f.turns, "messages": f.messages, "attempts": f.attempts, "blocker": f.blocker,
-                   "since_ms": f.since_ms, "tail": f.tail}),
+                   "since_ms": f.since_ms, "tail": f.tail,
+                   "decision": decision.map(|d| crate::decision::decision_id("delivery", d))}),
         );
     }
 
