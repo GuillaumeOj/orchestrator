@@ -2139,7 +2139,7 @@ pub fn read_feature_asset(worktree: &Path, slug: &str, path: &str) -> Result<Val
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::runtime::tests::test_runtime;
     use orch_git::fixtures::scratch_repo;
@@ -2457,7 +2457,7 @@ mod tests {
         (err, text)
     }
 
-    fn ok(rt: &Runtime, agent: &str, tool: &str, args: Value) -> String {
+    pub(crate) fn ok(rt: &Runtime, agent: &str, tool: &str, args: Value) -> String {
         let (err, text) = call(rt, agent, tool, args);
         assert!(!err, "{agent} {tool}: {text}");
         text
@@ -2489,7 +2489,7 @@ mod tests {
         (d, rt, rd, repo, p.id)
     }
 
-    fn write_commit(rt: &Runtime, agent: &str, file: &str, body: &str) {
+    pub(crate) fn write_commit(rt: &Runtime, agent: &str, file: &str, body: &str) {
         let wt = rt.store.read(|s| s.agents[agent].worktree.clone());
         let p = wt.join(file);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -2559,7 +2559,7 @@ mod tests {
     }
 
     /// A launched feature past its spec gate.
-    fn approved(rt: &Runtime, pid: &str) -> TeamRun {
+    pub(crate) fn approved(rt: &Runtime, pid: &str) -> TeamRun {
         approved_with(rt, pid, "bugfix-squad")
     }
 

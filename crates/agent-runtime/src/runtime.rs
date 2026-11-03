@@ -102,6 +102,22 @@ pub struct RuntimeConfig {
     pub linear: Option<crate::linear::LinearFactory>,
     /// Replaces the Notion transport (tests).
     pub notion: Option<crate::notion::NotionFactory>,
+    /// Replaces the PTY + `claude` process of a spawn (tests): the chaos suite
+    /// runs a fake CLI in process.
+    pub terminal: Option<TerminalFactory>,
+}
+
+/// Starts the terminal of a spawn; the closure runs when the "process" exits.
+#[derive(Clone)]
+pub struct TerminalFactory(pub Arc<TerminalFn>);
+
+/// What starts a terminal: the compiled command, and what runs on exit.
+pub type TerminalFn = dyn Fn(&crate::compile::Compiled, crate::pty::OnExit) -> Result<PtyProcess> + Send + Sync;
+
+impl std::fmt::Debug for TerminalFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TerminalFactory")
+    }
 }
 
 impl RuntimeConfig {
@@ -135,6 +151,7 @@ impl RuntimeConfig {
             power: Arc::new(crate::power::Caffeinate::default()),
             linear: None,
             notion: None,
+            terminal: None,
         }
     }
 }
@@ -907,17 +924,15 @@ impl Runtime {
         // late exit of an old process never touches a newer one.
         let pid_cell = Arc::new(std::sync::OnceLock::<i32>::new());
         let pid_for_exit = pid_cell.clone();
-        let pty = PtyProcess::spawn(
-            &compiled,
-            self.cfg.rows,
-            self.cfg.cols,
-            None,
-            Box::new(move |status| {
-                if let (Some(rt), Some(pid)) = (weak.upgrade(), pid_for_exit.get()) {
-                    rt.on_exit(&id_owned, *pid, status);
-                }
-            }),
-        )?;
+        let on_exit: Box<dyn FnOnce(Option<u32>) + Send> = Box::new(move |status| {
+            if let (Some(rt), Some(pid)) = (weak.upgrade(), pid_for_exit.get()) {
+                rt.on_exit(&id_owned, *pid, status);
+            }
+        });
+        let pty = match &self.cfg.terminal {
+            Some(t) => (t.0)(&compiled, on_exit)?,
+            None => PtyProcess::spawn(&compiled, self.cfg.rows, self.cfg.cols, None, on_exit)?,
+        };
         let (pid, pgid) = (pty.pid, pty.pgid);
         let _ = pid_cell.set(pid);
         self.live.lock().unwrap_or_else(|e| e.into_inner()).insert(
@@ -945,7 +960,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn on_exit(&self, id: &str, pid: i32, status: Option<u32>) {
+    pub(crate) fn on_exit(&self, id: &str, pid: i32, status: Option<u32>) {
         let gone = {
             let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
             if live.get(id).is_some_and(|l| l.pty.pid == pid) { live.remove(id) } else { None }
@@ -1088,6 +1103,8 @@ impl Runtime {
                 }
             })?;
         } else if let Some(l) = live {
+            // A fake terminal has no signal to end it.
+            l.pty.fake_exit(Some(143));
             // Wait (bounded) until the exit callback has run, so callers see the
             // new state and a resume does not race it.
             for _ in 0..100 {
@@ -3011,21 +3028,19 @@ pub(crate) mod tests {
     }
 
     /// A live process (a shell that sleeps) standing for `id` on `model`.
-    pub(crate) fn insert_test_live(rt: &Runtime, id: &str, model: Option<&str>, task: u64, dir: &Path) {
-        let cfg = crate::compile::Compiled {
-            agent_dir: dir.into(),
-            settings_path: Default::default(),
-            mcp_path: Default::default(),
-            gitconfig_path: Default::default(),
-            settings: Value::Null,
-            mcp: Value::Null,
-            gitconfig: String::new(),
-            program: "/bin/sleep".into(),
-            args: vec!["60".into()],
-            env: [("PATH".to_string(), "/usr/bin:/bin".to_string())].into(),
-            cwd: dir.into(),
-        };
-        let pty = PtyProcess::spawn(&cfg, 24, 80, None, Box::new(|_| {})).unwrap();
+    pub(crate) fn insert_test_live(rt: &Runtime, id: &str, model: Option<&str>, task: u64, _dir: &Path) {
+        insert_live(rt, id, crate::pty::echoing_fake(), model, task);
+    }
+
+    /// `id` is live behind `pty` (a fake terminal), ready for input.
+    pub(crate) fn insert_test_live_with(rt: &Runtime, id: &str, pty: PtyProcess) {
+        insert_live(rt, id, pty, None, 0);
+        if let Some(l) = rt.live_get(id) {
+            l.ready_at_ms.store(1, Ordering::SeqCst);
+        }
+    }
+
+    fn insert_live(rt: &Runtime, id: &str, pty: PtyProcess, model: Option<&str>, task: u64) {
         let live = Live {
             pty,
             ready_at_ms: AtomicU64::new(0),

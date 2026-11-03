@@ -42,7 +42,7 @@ pub struct Output {
 }
 
 impl Output {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Output {
             buf: Mutex::new(Buf::default()),
             cv: Condvar::new(),
@@ -57,7 +57,7 @@ impl Output {
 
     /// Called by the reader thread. Returns the terminal queries to answer when
     /// nobody is attached (a real terminal would answer them).
-    fn push(&self, data: &[u8]) -> Vec<&'static [u8]> {
+    pub(crate) fn push(&self, data: &[u8]) -> Vec<&'static [u8]> {
         let mut b = self.lock();
         while b.attached && b.bytes.len() >= HIGH_WATERMARK && !b.closed {
             b = self.cv.wait(b).unwrap_or_else(|e| e.into_inner());
@@ -143,7 +143,7 @@ impl Output {
         self.trust_dialog.store(false, Ordering::Relaxed);
     }
 
-    fn close(&self) {
+    pub(crate) fn close(&self) {
         self.lock().closed = true;
         self.cv.notify_all();
     }
@@ -193,11 +193,19 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// Runs when a (fake) process exits, with its exit code.
+pub type OnExit = Box<dyn FnOnce(Option<u32>) + Send>;
+/// Gets what is typed into a fake terminal.
+pub type OnInput = Box<dyn FnMut(&[u8]) + Send>;
+
 /// A live `claude` process.
 pub struct PtyProcess {
     pub pid: i32,
     pub pgid: i32,
-    master: Mutex<Box<dyn MasterPty + Send>>,
+    /// None for a fake terminal ([`PtyProcess::fake`]).
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
+    /// Set for a fake terminal: how its "process" exits.
+    fake: Option<Arc<FakeExit>>,
     writer: Mutex<Box<dyn Write + Send>>,
     pub output: Arc<Output>,
     exited: Arc<AtomicBool>,
@@ -246,7 +254,8 @@ impl PtyProcess {
         let proc = PtyProcess {
             pid,
             pgid,
-            master: Mutex::new(pair.master),
+            master: Mutex::new(Some(pair.master)),
+            fake: None,
             writer: Mutex::new(writer),
             output: output.clone(),
             exited: exited.clone(),
@@ -290,7 +299,7 @@ impl PtyProcess {
 
     fn writer_handle(&self) -> impl Fn(&[u8]) + Send + 'static {
         // A duplicate of the master fd, so answers don't contend with the main writer.
-        let fd = self.master.lock().ok().and_then(|m| m.as_raw_fd());
+        let fd = self.master.lock().ok().and_then(|m| m.as_ref().and_then(|m| m.as_raw_fd()));
         let dup = fd.map(|fd| {
             // SAFETY: duplicating our own master fd, with close-on-exec.
             unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) }
@@ -318,7 +327,9 @@ impl PtyProcess {
 
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
         let m = self.master.lock().unwrap_or_else(|e| e.into_inner());
-        m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
+        if let Some(m) = m.as_ref() {
+            m.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
+        }
         Ok(())
     }
 
@@ -331,7 +342,87 @@ impl PtyProcess {
     }
 
     pub fn master_fd(&self) -> Option<i32> {
-        self.master.lock().ok().and_then(|m| m.as_raw_fd())
+        self.master.lock().ok().and_then(|m| m.as_ref().and_then(|m| m.as_raw_fd()))
+    }
+
+    /// A terminal with no process behind it (tests): what is written to it
+    /// goes to `on_input`, and output is pushed with `output.push`. Its pid
+    /// is one no process has, so no signal ever reaches anything.
+    pub fn fake(on_input: OnInput, on_exit: OnExit) -> PtyProcess {
+        static NEXT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(2_000_000_000);
+        let pid = NEXT.fetch_add(1, Ordering::SeqCst);
+        let output = Arc::new(Output::new());
+        let exited = Arc::new(AtomicBool::new(false));
+        let fake =
+            Arc::new(FakeExit { output: output.clone(), exited: exited.clone(), on_exit: Mutex::new(Some(on_exit)) });
+        PtyProcess {
+            pid,
+            pgid: pid,
+            master: Mutex::new(None),
+            fake: Some(fake),
+            writer: Mutex::new(Box::new(FnWriter(on_input))),
+            output,
+            exited,
+            spawned_at_ms: orch_protocol::now_ms(),
+        }
+    }
+
+    /// The handle that ends a fake terminal from another thread.
+    pub fn fake_handle(&self) -> Option<Arc<FakeExit>> {
+        self.fake.clone()
+    }
+
+    /// Ends a fake terminal's "process" (no-op on a real one: signals do that).
+    pub fn fake_exit(&self, status: Option<u32>) {
+        if let Some(f) = &self.fake {
+            f.exit(status);
+        }
+    }
+}
+
+/// A fake terminal that only shows what is typed into it (tests).
+#[cfg(test)]
+pub(crate) fn echoing_fake() -> PtyProcess {
+    let out: Arc<Mutex<Option<Arc<Output>>>> = Arc::new(Mutex::new(None));
+    let o2 = out.clone();
+    let p = PtyProcess::fake(
+        Box::new(move |bytes| {
+            if let Some(o) = o2.lock().unwrap().as_ref() {
+                o.push(bytes);
+            }
+        }),
+        Box::new(|_| {}),
+    );
+    *out.lock().unwrap() = Some(p.output.clone());
+    p
+}
+
+/// How a fake terminal's process ends: output closed, exit flag, callback once.
+pub struct FakeExit {
+    output: Arc<Output>,
+    exited: Arc<AtomicBool>,
+    on_exit: Mutex<Option<OnExit>>,
+}
+
+impl FakeExit {
+    pub fn exit(&self, status: Option<u32>) {
+        let cb = self.on_exit.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let Some(cb) = cb else { return };
+        self.output.close();
+        self.exited.store(true, Ordering::SeqCst);
+        cb(status);
+    }
+}
+
+struct FnWriter(OnInput);
+
+impl Write for FnWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        (self.0)(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
