@@ -822,7 +822,7 @@ mod tests {
     const FIX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/update");
 
     fn build(version: &str, channel: &str) -> BuildInfo {
-        BuildInfo { version: version.into(), sha: "abc".into(), channel: channel.into() }
+        BuildInfo { version: version.into(), sha: "abc".into(), channel: channel.into(), pr: None }
     }
 
     fn fixture(name: &str) -> String {

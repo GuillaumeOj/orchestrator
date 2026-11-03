@@ -1,0 +1,55 @@
+name: Build and sign the app
+description: >
+  Builds Orchestrator.app and packs and signs the update tarball (scripts/app.sh build + package).
+  The caller checks out the commit to build and sets ORCH_VERSION, ORCH_BUILD_SHA,
+  ORCH_BUILD_CHANNEL (and ORCH_BUILD_PR for a PR build) in its env.
+
+inputs:
+  update-key:
+    description: Minisign private key (secret ORCH_UPDATE_KEY)
+    required: true
+  update-key-password:
+    description: Password of that key (secret ORCH_UPDATE_KEY_PASSWORD)
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Signing key is set
+      shell: bash
+      env:
+        ORCH_UPDATE_KEY: ${{ inputs.update-key }}
+        ORCH_UPDATE_KEY_PASSWORD: ${{ inputs.update-key-password }}
+      run: |
+        if [ -z "$ORCH_UPDATE_KEY" ] || [ -z "$ORCH_UPDATE_KEY_PASSWORD" ]; then
+          echo "::error::secrets ORCH_UPDATE_KEY / ORCH_UPDATE_KEY_PASSWORD are not set: nothing is published (see docs/app/RUNNING.md, Updates)"
+          exit 1
+        fi
+    - run: rustup toolchain install # from rust-toolchain.toml
+      shell: bash
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version-file: ui/package.json
+    - name: FiraCode Nerd Font
+      shell: bash
+      env:
+        NERD_FONTS_VERSION: v3.4.0
+        FIRACODE_SHA256: 7cc4ffd8f7a1fc914cdab7b149808298165ff7a7f40e40d82dea9ebe41e8ca0b
+      run: |
+        curl -fsSL -o "$RUNNER_TEMP/FiraCode.zip" \
+          "https://github.com/ryanoasis/nerd-fonts/releases/download/$NERD_FONTS_VERSION/FiraCode.zip"
+        echo "$FIRACODE_SHA256  $RUNNER_TEMP/FiraCode.zip" | shasum -a 256 -c -
+        mkdir "$RUNNER_TEMP/fonts"
+        for w in Regular Medium SemiBold Bold; do
+          unzip -j -d "$RUNNER_TEMP/fonts" "$RUNNER_TEMP/FiraCode.zip" "FiraCodeNerdFontMono-$w.ttf"
+        done
+        echo "ORCH_FONT_DIR=$RUNNER_TEMP/fonts" >> "$GITHUB_ENV"
+    - run: scripts/app.sh build
+      shell: bash
+    - name: Pack and sign
+      shell: bash
+      env:
+        ORCH_UPDATE_KEY: ${{ inputs.update-key }}
+        ORCH_UPDATE_KEY_PASSWORD: ${{ inputs.update-key-password }}
+      run: scripts/app.sh package

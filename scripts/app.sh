@@ -6,7 +6,8 @@
 # Build env (CI sets these; a local build leaves them out):
 #   ORCH_VERSION        bundle version, e.g. 0.1.42 (default: tauri.conf.json's 0.1.0)
 #   ORCH_BUILD_SHA      commit embedded in the app
-#   ORCH_BUILD_CHANNEL  "main" for CI builds (default "local")
+#   ORCH_BUILD_CHANNEL  "main" or "pr" for CI builds (default "local")
+#   ORCH_BUILD_PR       pull request number, with channel "pr" (unset otherwise)
 # The helpers (orch-hook, orch-status, orch-mcp) go inside the bundle; the app
 # copies them to <app data>/bin at start (FR-1201). The UI font (FiraCode Nerd
 # Font Mono, SIL OFL 1.1 + MIT) is bundled from ~/Library/Fonts.
@@ -19,6 +20,7 @@ DEST="${ORCH_INSTALL_DIR:-$HOME/Applications}"
 FONT_DIR="${ORCH_FONT_DIR:-$HOME/Library/Fonts}"
 export ORCH_BUILD_CHANNEL="${ORCH_BUILD_CHANNEL:-local}"
 export ORCH_BUILD_SHA="${ORCH_BUILD_SHA:-}"
+export ORCH_BUILD_PR="${ORCH_BUILD_PR:-}"
 
 # On this Mac (macOS 27 beta) proc-macro dylibs linked many at once sometimes
 # come out unloadable ("mis-aligned LINKEDIT string pool"). Remove those that
