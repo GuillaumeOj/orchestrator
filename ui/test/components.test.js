@@ -104,7 +104,6 @@ describe('components', () => {
     expect(app.pending).toHaveLength(0);
     expect(app.toasts.at(-1).text).toBe('Answered in the pane · front-1');
   });
-  // The delivery card tests moved to the chat DecisionCard (fix-team-getting-stucked, after main removed the Inbox pane).
 });
 
 describe('diff pane', () => {
