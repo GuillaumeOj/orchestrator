@@ -119,9 +119,11 @@ impl Runtime {
         let text: BTreeMap<String, String> = self
             .members_of(cx, &agents)
             .iter()
-            .filter_map(|m| m.stuck(now).map(|(what, since, line)| (m, what, since, line)))
-            .filter(|(m, what, ..)| !(*what == "idle_with_task" && waits_on_background(&m.agent)))
-            .map(|(m, what, since, line)| (format!("{}:{what}:{since}", m.agent), line))
+            .filter_map(|m| {
+                let (what, since, line) = m.stuck(now)?;
+                let waiting = what == "idle_with_task" && waits_on_background(&m.agent);
+                (!waiting).then(|| (format!("{}:{what}:{since}", m.agent), line))
+            })
             .collect();
         let new = self.supervised(&cx.run.id, &text.keys().cloned().collect());
         if new.is_empty() {

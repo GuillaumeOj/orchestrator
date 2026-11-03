@@ -224,6 +224,11 @@ pub fn to_suspend(
 /// slot before one is freed for it.
 pub const SLOT_WAIT_MS: u64 = 120_000;
 
+/// The live agents counted under the cap (not the reserved ones) fill it.
+pub fn at_cap(live: &[LiveAgent], cap: u32) -> bool {
+    live.iter().filter(|a| !a.reserved).count() >= cap as usize
+}
+
 /// A team member with no process, unread messages and a queued turn.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SlotWaiter {
@@ -252,7 +257,7 @@ pub fn slot_victim(
     cap: u32,
     now_ms: u64,
 ) -> Option<(String, String)> {
-    if live.iter().filter(|a| !a.reserved).count() < cap as usize {
+    if !at_cap(live, cap) {
         return None;
     }
     let mut waiters: Vec<&SlotWaiter> =

@@ -954,10 +954,29 @@ impl Governor {
     /// its model's window exhausted (FR-815). An agent blocked by a limit is
     /// idle again once this is false (fix-team-getting-stucked §3.2).
     pub fn limit_in_force(&self, agent: &AgentId, now: Timestamp) -> bool {
-        self.active_limit(now).is_some()
-            || self
-                .tight_window(self.agent_model.get(agent).map(String::as_str), now)
-                .is_some_and(|w| w.state == ModelWindowState::Exhausted)
+        // At the critical tier only an exhausted model window holds.
+        self.active_limit(now).is_some() || self.model_window_hold(agent, Tier::Critical, now).is_some()
+    }
+
+    /// Whether anything holds `agent`'s work past the pacing caps: Pause
+    /// all, its own pause, a plan limit or its model's window exhausted
+    /// (the holds a team's coordination still respects, §3.5).
+    pub fn holds_work(&self, agent: &AgentId, now: Timestamp) -> bool {
+        self.hold_reason(agent, false, now).is_some() || self.limit_in_force(agent, now)
+    }
+
+    /// A plan limit is over (its reset, or a reading under 100 %).
+    fn clear_limit(&mut self, window: Window, now: Timestamp, why: String) {
+        self.limits.remove(&window);
+        self.log(
+            now,
+            ActionKind::LimitReset { window },
+            why,
+            "queued work resumes in priority order".into(),
+            ActionMode::Auto,
+            Outcome::Applied,
+            None,
+        );
     }
 
     fn active_limit(&self, now: Timestamp) -> Option<(Window, Timestamp)> {
@@ -1128,23 +1147,13 @@ impl Governor {
         }
         if r.used_pct >= 100.0 {
             self.mark_limit(window, r.resets_at, ts);
-        } else if self.limits.get(&window).is_some_and(|until| *until == r.resets_at)
-            && self.limits.remove(&window).is_some()
-        {
+        } else if self.limits.get(&window) == Some(&r.resets_at) {
             // A newer reading under 100 % of the same window (its reset is
             // the limit's): the limit is over before its reset time
             // (fix-team-getting-stucked §3.2). A limit placed on a guessed
             // window (a StopFailure with no exhausted reading) has another
             // reset and holds until it.
-            self.log(
-                ts,
-                ActionKind::LimitReset { window },
-                format!("{window:?} window under 100 % again"),
-                "queued work resumes in priority order".into(),
-                ActionMode::Auto,
-                Outcome::Applied,
-                None,
-            );
+            self.clear_limit(window, ts, format!("{window:?} window under 100 % again"));
         }
     }
 
@@ -1848,16 +1857,7 @@ impl Governor {
         // Limits that reset.
         let expired: Vec<Window> = self.limits.iter().filter(|(_, u)| **u <= now).map(|(w, _)| *w).collect();
         for w in expired {
-            self.limits.remove(&w);
-            self.log(
-                now,
-                ActionKind::LimitReset { window: w },
-                format!("{w:?} window reset"),
-                "queued work resumes in priority order".into(),
-                ActionMode::Auto,
-                Outcome::Applied,
-                None,
-            );
+            self.clear_limit(w, now, format!("{w:?} window reset"));
         }
 
         self.update_burn(now);
