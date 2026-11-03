@@ -175,6 +175,10 @@ pub fn apply(t: &mut Tracker, event: &HookEvent, p: &HookPayload) -> Vec<Effect>
                 fx.push(Effect::TurnStarted { origin, markers });
             }
         }
+        // A background subagent's tool call (`agent_id` set) after its
+        // agent's Stop is not a turn: the agent stays idle (§3.2).
+        HookEvent::PreToolUse | HookEvent::PostToolUse | HookEvent::PostToolUseFailure
+            if t.state == S::Idle && p.agent_id.as_deref().is_some_and(|a| !a.is_empty()) => {}
         HookEvent::PreToolUse => {
             t.current_tool = p.tool_name.clone();
             if !matches!(t.state, S::WaitingGate | S::Queued) {
@@ -340,6 +344,10 @@ mod tests {
         assert_eq!(fx, [Effect::TurnEndedWithBackground]);
         assert_eq!(t.state, AgentState::Idle, "§3.2: idle with background tasks, it can take messages");
         assert_eq!(t.background_tasks, 1);
+        // The background subagent's tool calls start no turn of the agent's.
+        ev(&mut t, "PreToolUse", json!({"agent_id":"sa1","tool_name":"Bash"}));
+        ev(&mut t, "PostToolUse", json!({"agent_id":"sa1","tool_name":"Bash"}));
+        assert_eq!(t.state, AgentState::Idle);
         // Internal SubagentStop: no state.
         ev(&mut t, "SubagentStop", json!({"agent_id":"x","agent_type":""}));
         assert_eq!(t.subagents.len(), 1);

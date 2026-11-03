@@ -1128,9 +1128,14 @@ impl Governor {
         }
         if r.used_pct >= 100.0 {
             self.mark_limit(window, r.resets_at, ts);
-        } else if self.limits.remove(&window).is_some() {
-            // A newer reading under 100 %: the limit is over before its
-            // reset time (fix-team-getting-stucked §3.2).
+        } else if self.limits.get(&window).is_some_and(|until| *until == r.resets_at)
+            && self.limits.remove(&window).is_some()
+        {
+            // A newer reading under 100 % of the same window (its reset is
+            // the limit's): the limit is over before its reset time
+            // (fix-team-getting-stucked §3.2). A limit placed on a guessed
+            // window (a StopFailure with no exhausted reading) has another
+            // reset and holds until it.
             self.log(
                 ts,
                 ActionKind::LimitReset { window },

@@ -1743,7 +1743,10 @@ impl Runtime {
                     .filter(|t| {
                         t.agent_id == id && t.status == TurnStatus::Queued && t.admission != Admission::Admitted
                     })
-                    .min_by_key(|t| (t.admission != Admission::Waiting(entry), t.created_at_ms));
+                    // Its own turn first, then by class (§3.5), then queue order.
+                    .min_by_key(|t| {
+                        (t.admission != Admission::Waiting(entry), delivery::class_rank(t.kind), t.created_at_ms)
+                    });
                 match existing {
                     Some(t) => t.admission = Admission::Admitted,
                     None => {
@@ -2203,11 +2206,8 @@ impl Runtime {
             if let Some(me) = self.me.upgrade() {
                 std::thread::spawn(move || {
                     // A panic never leaves the guard set (the watchdog would stop for good).
-                    let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| me.handover_tick(now_ms())));
+                    me.tick_step("-", "handover", || me.handover_tick(now_ms()));
                     me.watching.store(false, Ordering::SeqCst);
-                    if tick.is_err() {
-                        me.event("-", "tick_panic", json!({"step": "handover"}));
-                    }
                 });
             } else {
                 self.watching.store(false, Ordering::SeqCst);
@@ -2530,17 +2530,28 @@ impl Runtime {
         if batch.iter().any(|t| t.attempts > 0) && self.already_in_transcript(rec, &batch) {
             return Ok(());
         }
-        l.ready_at_ms.store(0, Ordering::SeqCst);
         let ids: Vec<&str> = batch.iter().map(|t| t.id.as_str()).collect();
         let file = prepared.file.as_ref().and_then(|f| f.0.file_name()).map(|n| n.to_string_lossy().into_owned());
-        self.store.write(|s| {
+        // Claimed in one write, only if every turn is still queued: one an
+        // injection dropped meanwhile (its messages given at a tool call,
+        // §3.2) is never pasted from this pass's snapshot.
+        let claimed = self.store.write(|s| {
+            let queued = |id: &str| s.turns.iter().any(|t| t.id == id && t.status == TurnStatus::Queued);
+            if !ids.iter().all(|id| queued(id)) {
+                return false;
+            }
             for t in s.turns.iter_mut().filter(|t| ids.contains(&t.id.as_str())) {
                 t.status = TurnStatus::Delivering;
                 t.delivered_at_ms = Some(now);
                 t.enter_retried = false;
                 t.file = file.clone();
             }
+            true
         })?;
+        if !claimed {
+            return Ok(());
+        }
+        l.ready_at_ms.store(0, Ordering::SeqCst);
         // FR-206: team messages are handed at the paste, seen when its prompt
         // starts. Handed before the Enter: a fast UserPromptSubmit finds them.
         for t in batch.iter().filter(|t| !t.messages.is_empty()) {
@@ -3286,11 +3297,18 @@ pub(crate) mod tests {
         let item = crash_item(&rt).expect("crash item");
         assert_eq!(item.payload["restarts"], 2);
         rt.pump();
-        assert_eq!(
-            rt.store.read(|s| s.inbox.iter().filter(|i| i.payload["failed"] == "crash").count()),
-            1,
-            "raised once"
-        );
+        let crash_items =
+            |rt: &Runtime| rt.store.read(|s| s.inbox.iter().filter(|i| i.payload["failed"] == "crash").count());
+        assert_eq!(crash_items(&rt), 1, "raised once");
+        // Dismissed: not raised again for the same used-up budget.
+        rt.store
+            .write(|s| {
+                s.inbox.iter_mut().find(|i| i.id == item.id).unwrap().status = orch_store::InboxStatus::Dismissed
+            })
+            .unwrap();
+        rt.pump();
+        assert_eq!(crash_items(&rt), 1, "a dismissed item is not raised again");
+        rt.store.write(|s| s.inbox.iter_mut().find(|i| i.id == item.id).unwrap().status = item.status).unwrap();
         // The lead's (or the user's) resume: the budget starts again, the item closes.
         assert!(rt.clear_crash("a1", "lead"));
         assert!(crash_item(&rt).is_none());

@@ -332,7 +332,18 @@ impl Runtime {
         if crash_restart_allowed(&rec.crash_restarts, now) {
             return true;
         }
-        if self.startup_item(&rec.id).is_none() {
+        // Once per used-up budget: an item raised since the last restart,
+        // even dismissed, is not raised again (the caller checked none is open).
+        let last = rec.crash_restarts.last().copied().unwrap_or(0);
+        let raised = self.store.read(|s| {
+            s.inbox.iter().any(|i| {
+                i.kind == "startup"
+                    && i.agent_id.as_deref() == Some(rec.id.as_str())
+                    && i.payload.get("failed").and_then(Value::as_str) == Some("crash")
+                    && i.created_at_ms >= last
+            })
+        });
+        if !raised {
             let tail = self.house().crash_tails.get(&rec.id).cloned().unwrap_or_default();
             let n = recent_restarts(&rec.crash_restarts, now).len();
             let payload = json!({
@@ -380,6 +391,7 @@ impl Runtime {
             .ok()
             .flatten()
             .unwrap_or(false);
+        self.house().crash_tails.remove(id);
         let item = self.store.read(|s| {
             s.inbox
                 .iter()
