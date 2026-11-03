@@ -204,7 +204,7 @@ export function rowState(pr, u, now = Date.now()) {
     return b.status === 'current'
       ? {
           kind: 'current',
-          text: ['build ' + sha7(b.sha), agoText(b.published_at, now)].filter(Boolean).join(' · '),
+          text: [`build ${sha7(b.sha)}`, agoText(b.published_at, now)].filter(Boolean).join(' · '),
           action: install(),
         }
       : {
