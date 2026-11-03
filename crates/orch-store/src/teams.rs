@@ -1048,6 +1048,19 @@ impl Store {
         )
     }
 
+    /// The user (or the Lead) asked for another go at these (T-207
+    /// `retry`): failed or taken-back messages that no turn has shown yet go
+    /// back to the queue with their attempts reset.
+    pub fn retry_messages(&self, ids: &[u64]) -> Result<()> {
+        self.each_message(
+            ids,
+            "UPDATE messages SET failed_at_ms=NULL, handed_at_ms=NULL, via=NULL, turn_id=NULL, attempts=0,
+                 last_error=NULL
+               WHERE id=?1 AND read_at_ms IS NULL AND delivered_at_ms IS NULL",
+            vec![],
+        )
+    }
+
     /// Unread messages injected into `agent_id`'s turns (seen or not), or
     /// into every agent's when `None`.
     pub fn injected_unread(&self, agent_id: Option<&str>) -> Result<Vec<Message>> {

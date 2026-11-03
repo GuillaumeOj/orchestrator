@@ -527,6 +527,7 @@ impl Runtime {
         st.outcomes.list.extend(new_outcomes.iter().cloned());
         let done_today = st.outcomes.list.len() as u32;
         let paused = &queue_now.1;
+        let (unacked, typing) = self.delivery_flags(now);
         let mut world = attention::compute(
             &attention::Inputs {
                 agents: &agents,
@@ -545,6 +546,8 @@ impl Runtime {
                 done_today,
                 tz: &tz,
                 decisions: &decisions,
+                unacked: &unacked,
+                typing: &typing,
             },
             now,
         );

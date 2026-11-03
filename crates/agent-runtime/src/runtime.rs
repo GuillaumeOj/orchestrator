@@ -268,6 +268,9 @@ pub(crate) struct House {
     /// The PTY tail of each agent's last process that exited unasked (a
     /// crash): shown when its restarts are used up (§3.5).
     pub(crate) crash_tails: BTreeMap<String, String>,
+    /// `delivery` decisions raised this run of the core, by episode key
+    /// (§3.7): a dismissed one is not raised again for the same episode.
+    pub(crate) delivery_raised: std::collections::BTreeSet<String>,
 }
 
 /// A hook's event detail (FR-1311, the run report): the common fields, plus
@@ -1583,6 +1586,19 @@ impl Runtime {
     /// `api_error` alert the failure already raised.
     pub(crate) fn on_repeated_failure(&self, rec: &AgentRecord, error: &str) {
         self.delivery_event(&rec.id, "continue_failed", json!({"agent": rec.id, "error": error}));
+        let now = now_ms();
+        self.raise_delivery(
+            rec,
+            crate::stuck::Raise {
+                episode: "delivery",
+                blocker: "not_idle:error".into(),
+                since_ms: now,
+                messages: vec![],
+                turns: vec![],
+                key: format!("{}:repeated_failure:{now}", rec.id),
+                stuck_event: true,
+            },
+        );
     }
 
     /// Marks the turns `markers` delivered and, for a turn that started at

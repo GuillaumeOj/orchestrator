@@ -153,8 +153,52 @@ impl Runtime {
             "run": cx.run, "feature": cx.feature, "team": cx.team, "project": {"id": cx.project.id, "name": cx.project.name, "backend": cx.project.backend().kind()},
             "rules": rules::rules_text(&cx.team), "agents": agents, "tasks": tasks, "docs": docs,
             "artifacts": self.artifacts_json(&cx.feature)?,
-            "timeline": self.db.run_events(run_id, 200)?,
+            "timeline": self.timeline_json(run_id)?,
         }))
+    }
+
+    /// The run's events, newest first; a message event gains `delivery`
+    /// (api-contract §3): how far its message(s) got.
+    fn timeline_json(&self, run_id: &str) -> Result<Vec<Value>> {
+        use orch_store::DeliveryState as D;
+        let now = now_ms();
+        let mut out = vec![];
+        for e in self.db.run_events(run_id, 200)? {
+            let ids: Vec<u64> = e.detail["ids"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
+            let mut v = serde_json::to_value(&e)?;
+            if !ids.is_empty() {
+                let msgs = self.db.messages_by_id(&ids).unwrap_or_default();
+                // The least advanced message tells how far the event got.
+                let rank = |m: &orch_store::Message| match m.delivery_state() {
+                    D::Failed => 0,
+                    D::Queued => 1,
+                    D::Handed => 2,
+                    D::Seen => 3,
+                    D::Read => 4,
+                };
+                if let Some(m) = msgs.iter().min_by_key(|m| rank(m)) {
+                    let waiting = matches!(m.delivery_state(), D::Queued | D::Handed);
+                    let blocker = m
+                        .to_agent
+                        .as_deref()
+                        .filter(|_| {
+                            waiting && now.saturating_sub(m.created_at_ms) > crate::attention::UNDELIVERED_AFTER_MS
+                        })
+                        .and_then(|a| self.store.read(|s| s.agents.get(a).cloned()))
+                        .map(|rec| self.blocker_for(&rec, now));
+                    v["delivery"] = json!({
+                        "state": m.delivery_state(),
+                        "attempts": msgs.iter().map(|m| m.attempts).max().unwrap_or(0),
+                        "via": m.via,
+                        "blocker": blocker,
+                        "seen_at_ms": m.delivered_at_ms,
+                        "read_at_ms": m.read_at_ms,
+                    });
+                }
+            }
+            out.push(v);
+        }
+        Ok(out)
     }
 
     /// One feature doc from the integration worktree (rendered by the UI).

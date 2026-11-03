@@ -60,6 +60,8 @@ impl Fx {
                 done_today: self.done_today,
                 tz: &tz,
                 decisions: &decisions,
+                unacked: &BTreeSet::new(),
+                typing: &BTreeSet::new(),
             },
             NOW,
         )
@@ -990,4 +992,52 @@ fn a_paused_run_has_held_in_and_a_deferred_one_until() {
     f.phase(RunState::Executing);
     let v = serde_json::to_value(&f.world().runs["run-1"]).unwrap();
     assert!(v.get("held_in").is_none() && v.get("until_ms").is_none());
+}
+
+#[test]
+fn undelivered_messages_show_with_one_blocker_after_a_minute() {
+    let mut f = Fx::default();
+    f.lead(AgentState::Idle);
+    f.member("back-1", "back", AgentState::Idle, Some(4));
+    // 30 s old: not shown yet.
+    f.messages.push(Message {
+        id: 1,
+        team_run_id: "run-1".into(),
+        from_node: "lead".into(),
+        to_node: "back".into(),
+        kind: "message".into(),
+        created_at_ms: NOW - 30_000,
+        ..Default::default()
+    });
+    assert!(f.rec("back-1").undelivered.is_none());
+    f.message(("lead", None), "back", "message", 3);
+    let u = f.rec("back-1").undelivered.expect("waited over a minute");
+    assert_eq!((u.count, u.oldest_ms, u.blocker.as_str()), (1, NOW - 3 * MIN, "unknown"));
+    // Held by the Governor: the blocker says why.
+    f.entry("back-1", QueueReason::OffHours, None);
+    assert_eq!(f.rec("back-1").undelivered.unwrap().blocker, "governor:off_hours");
+    // Seen: delivered, no longer undelivered.
+    f.messages[1].delivered_at_ms = Some(NOW);
+    assert!(f.rec("back-1").undelivered.is_none());
+    // The wrong agent of the node is not concerned.
+    f.messages[1].delivered_at_ms = None;
+    f.messages[1].to_agent = Some("back-2".into());
+    assert!(f.rec("back-1").undelivered.is_none());
+}
+
+#[test]
+fn an_open_delivery_decision_is_the_agents_wait() {
+    let mut f = Fx::default();
+    f.lead(AgentState::Idle);
+    f.member("back-1", "back", AgentState::Idle, Some(4));
+    let payload = json!({"blocker": "no_ack", "messages": [{"id": 1}], "episode": "delivery"});
+    let id = f.item("back-1", "delivery", payload, 2);
+    let r = f.rec("back-1");
+    assert_eq!((r.level, r.status), (Level::Error, Status::Error));
+    let w = r.waiting_on.unwrap();
+    assert_eq!((w.kind, w.r#ref), (WaitKind::Delivery, Some(format!("delivery-{id}"))));
+    assert_eq!(r.reason, "1 message not delivered · paste not acknowledged");
+    // A stuck episode with no message.
+    f.inbox[0].payload = json!({"blocker": "not_idle:working", "messages": [], "episode": "working_silent"});
+    assert_eq!(f.rec("back-1").reason, "looks stuck · busy (working)");
 }
