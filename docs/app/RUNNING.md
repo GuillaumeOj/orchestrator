@@ -53,7 +53,8 @@ signature against the same key as `main` updates, and stages the bundle in `upda
 ⌘Q does (agents suspended and resumed by session id) and swaps the bundle; a plain quit never
 applies a PR build. A PR build behaves like a local build toward `main` updates: it stages the
 latest `main` release (any release counts as newer), never applies it on quit, and "Restart" with
-target `main` brings you back.
+target `main` brings you back. Same rules as `main` updates for when this is off (debug build,
+`ORCH_NO_UPDATE`, bundle not writable, no key).
 
 *Your data and PR builds.* A PR may add a database migration, and after it ran a `main` build
 refuses the store ("newer than this build"). So the restart into a PR build, when you run a
@@ -63,8 +64,7 @@ newer than it can read and a copy of a readable schema exists, it moves the stor
 and blobs to `state/aside/orch-<taken_at>-schema-<v>/`, puts the copy in place, and shows a
 warning: "Your data was restored from before PR #<n> (taken …). What changed while testing it
 is kept in …". Nothing from the testing session is merged back. Without a usable copy the old
-behaviour applies: a scratch store and a warning. A failed snapshot refuses the restart. Same rules as `main` updates for when this is off (debug build,
-`ORCH_NO_UPDATE`, bundle not writable, no key).
+behaviour applies: a scratch store and a warning. A failed snapshot refuses the restart.
 
 **One-time key setup** (before the first merge; the private key never goes through an agent):
 

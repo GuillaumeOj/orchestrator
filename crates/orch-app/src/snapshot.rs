@@ -178,16 +178,32 @@ fn restore(d: &Dirs, info: &Backup, have: u32) -> Result<PathBuf> {
     }
     let aside = unused(&d.aside().join(format!("orch-{}-schema-{have}", info.taken_at)));
     std::fs::create_dir_all(&aside)?;
-    // The live store (and its WAL files) moves aside, then the snapshot moves in.
-    for name in [DB, "orch.db-wal", "orch.db-shm", BLOBS] {
-        let from = d.state.join(name);
-        if from.exists() {
-            std::fs::rename(&from, aside.join(name)).with_context(|| format!("moving {name} aside"))?;
+    // The live store (and its WAL files) moves aside, then the snapshot moves in. A failure
+    // puts back what was moved, so the caller never finds the live store gone.
+    let mut moved: Vec<&str> = vec![];
+    let put_in = (|| -> Result<()> {
+        for name in [DB, "orch.db-wal", "orch.db-shm", BLOBS] {
+            let from = d.state.join(name);
+            if from.exists() {
+                std::fs::rename(&from, aside.join(name)).with_context(|| format!("moving {name} aside"))?;
+                moved.push(name);
+            }
         }
-    }
-    std::fs::rename(&db_new, d.db()).context("putting the snapshot in")?;
-    if blobs_new.is_dir() {
-        std::fs::rename(&blobs_new, d.blobs()).context("putting the snapshot's blobs in")?;
+        std::fs::rename(&db_new, d.db()).context("putting the snapshot in")?;
+        if blobs_new.is_dir() {
+            std::fs::rename(&blobs_new, d.blobs()).context("putting the snapshot's blobs in")?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = put_in {
+        let _ = std::fs::remove_file(d.db());
+        let _ = std::fs::remove_dir_all(d.blobs());
+        for name in moved {
+            let _ = std::fs::rename(aside.join(name), d.state.join(name));
+        }
+        let _ = std::fs::remove_file(&db_new);
+        let _ = std::fs::remove_dir_all(&blobs_new);
+        return Err(e);
     }
     Ok(aside)
 }
@@ -210,6 +226,11 @@ fn when(secs: i64, zone: &jiff::tz::TimeZone) -> String {
 /// A `main` build on a database it opened normally drops a snapshot older than 14 days.
 pub fn prune(db: &Path, running: &BuildInfo, now: i64) {
     if running.channel != "main" {
+        return;
+    }
+    // Only when the store is readable by this build: after a failed restore the snapshot may be
+    // the one good copy.
+    if !orch_store::schema_version(db).ok().flatten().is_some_and(|v| v <= orch_store::SCHEMA_VERSION) {
         return;
     }
     let d = Dirs::of(db);
