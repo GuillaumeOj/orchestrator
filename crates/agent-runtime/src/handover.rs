@@ -32,6 +32,10 @@ const MAX_ATTEMPTS: u32 = 3;
 /// Setting: seconds a paste may wait for its UserPromptSubmit before the
 /// watchdog checks it.
 pub const ACK_KEY: &str = "delivery.ack_secs";
+/// How long a message may stay unread before the invariant raises a decision (§3.7).
+pub const INVARIANT_KEY: &str = "delivery.invariant_secs";
+/// How long a member waits for a process slot before one is freed for it (§3.5).
+pub const SLOT_WAIT_KEY: &str = "delivery.slot_wait_secs";
 const DEFAULT_ACK: Duration = Duration::from_secs(20);
 /// `last_error` of a message handed back because the model did not see all of it.
 const NOT_FULLY_SEEN: &str = "not_fully_seen";
@@ -324,13 +328,19 @@ impl Runtime {
     }
 
     fn ack_ms(&self) -> u64 {
+        self.secs_setting(ACK_KEY, DEFAULT_ACK.as_millis() as u64)
+    }
+
+    /// A delivery bound in seconds from the settings (so tests and users can
+    /// shorten it), at least one second; `default_ms` when unset.
+    pub(crate) fn secs_setting(&self, key: &str, default_ms: u64) -> u64 {
         self.db
-            .setting(ACK_KEY)
+            .setting(key)
             .ok()
             .flatten()
             .and_then(|v| v.as_f64())
             .map(|s| (s.max(1.0) * 1000.0) as u64)
-            .unwrap_or(DEFAULT_ACK.as_millis() as u64)
+            .unwrap_or(default_ms)
     }
 
     /// §3.1: a paste with no UserPromptSubmit within `delivery.ack_secs`.

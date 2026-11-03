@@ -626,6 +626,14 @@ impl Runtime {
         }
     }
 
+    /// Chaos suite (§3.8): makes the team-tick step `step` panic on every
+    /// run until cleared with `None`.
+    pub fn inject_tick_fault(&self, step: Option<&str>) {
+        if let Ok(mut t) = self.tick_fault.lock() {
+            *t = step.map(str::to_string);
+        }
+    }
+
     /// One step of the periodic pass under `catch_unwind` (§3.6): a panic is
     /// a `tick_panic` event (on the run's timeline, `run` "-" for none) and
     /// `None`.
@@ -633,6 +641,9 @@ impl Runtime {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             #[cfg(test)]
             tests::maybe_panic(run, step);
+            if self.tick_fault.lock().is_ok_and(|t| t.as_deref() == Some(step)) {
+                panic!("injected panic in {step}");
+            }
             f()
         }));
         match r {
@@ -1132,6 +1143,9 @@ impl Runtime {
     /// its run with no unread messages is suspended ([`crate::resources::slot_victim`]).
     pub(crate) fn free_slot_for_messages(&self, live: &[crate::resources::LiveAgent], cap: u32, now: u64) {
         use crate::resources::{Member, SLOT_WAIT_MS, SlotWaiter, at_cap};
+        // The wait is a setting (`delivery.slot_wait_secs`): the pure rule
+        // counts SLOT_WAIT_MS, so shift the clock by the difference.
+        let now = now + SLOT_WAIT_MS.saturating_sub(self.secs_setting(crate::handover::SLOT_WAIT_KEY, SLOT_WAIT_MS));
         if !at_cap(live, cap) {
             return;
         }

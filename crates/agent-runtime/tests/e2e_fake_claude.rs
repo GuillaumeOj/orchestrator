@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use agent_runtime::paths::AppPaths;
 use agent_runtime::resources::PressureLevel;
@@ -17,18 +17,7 @@ use orch_protocol::{AgentSpec, CtlRequest, bus};
 use serde_json::Value;
 
 mod common;
-use common::{Screens, agent, git, helper_bins, short_tempdir};
-
-fn wait_for(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
-    let end = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < end {
-        if f() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    panic!("timed out waiting for {what}");
-}
+use common::{Core, Screens, agent, git, helper_bins, short_tempdir, wait_for};
 
 #[test]
 fn start_deliver_suspend_resume_kill_with_fake_claude() {
@@ -168,68 +157,6 @@ fn hook_with_core_down_denies_tools_and_spools() {
     assert!(o.stdout.is_empty());
     let spool = std::fs::read_to_string(d.path().join("spool.jsonl")).unwrap();
     assert_eq!(spool.lines().count(), 2);
-}
-
-/// A core on a fake claude with its own config tweaks; returns what tests need.
-struct Core {
-    _root: tempfile::TempDir,
-    rt: Arc<Runtime>,
-    sock: PathBuf,
-    repo: PathBuf,
-    stop: Arc<AtomicBool>,
-    srv: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Core {
-    fn start(prefix: &str, tweak: impl FnOnce(&mut RuntimeConfig)) -> Core {
-        let root = short_tempdir(prefix);
-        let paths = AppPaths::new(root.path().join("app"));
-        agent_runtime::preflight::install_helpers(&helper_bins(), &paths.bin_dir()).unwrap();
-        let fake = root.path().join("fake-claude");
-        std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake_claude.sh"), &fake).unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let repo = root.path().join("proj/demo");
-        std::fs::create_dir_all(&repo).unwrap();
-        git(&repo, &["init", "-q", "-b", "main"]);
-        git(&repo, &["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "init"]);
-        let mut cfg = RuntimeConfig::new(paths.clone());
-        cfg.claude = fake;
-        cfg.default_plan = test_plan;
-        cfg.projects_root = root.path().join("projects");
-        cfg.hold = Duration::from_secs(1);
-        cfg.idle_suspend = None;
-        tweak(&mut cfg);
-        let rt = Runtime::new(cfg).unwrap();
-        let listener = bus::bind_listener(&paths.socket()).unwrap();
-        let stop = Arc::new(AtomicBool::new(false));
-        let srv = {
-            let (rt, stop) = (rt.clone(), stop.clone());
-            std::thread::spawn(move || server::serve(rt, listener, stop).unwrap())
-        };
-        Core { _root: root, rt, sock: paths.socket(), repo, stop, srv: Some(srv) }
-    }
-
-    fn start_agent(&self, id: &str) {
-        let spec = AgentSpec { agent_id: id.into(), repo: self.repo.display().to_string(), ..Default::default() };
-        let r = request(&self.sock, CtlRequest::Start { spec: Box::new(spec) }).unwrap();
-        assert!(r.ok, "{r:?}");
-        request(&self.sock, CtlRequest::Deliver { agent_id: id.into(), text: "hello".into() }).unwrap();
-        wait_for("first turn", 15, || agent(&self.sock, id)["turns"] == 1 && agent(&self.sock, id)["state"] == "idle");
-    }
-
-    fn state_of(&self, id: &str) -> String {
-        agent(&self.sock, id)["state"].as_str().unwrap_or("").to_string()
-    }
-}
-
-impl Drop for Core {
-    fn drop(&mut self) {
-        let _ = request(&self.sock, CtlRequest::Shutdown);
-        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(h) = self.srv.take() {
-            let _ = h.join();
-        }
-    }
 }
 
 #[test]
