@@ -1,7 +1,7 @@
 // Teams in the UI (P2): run states, the team timeline's filters and copy,
 // and the Board's columns and moves. Pure: tested in test/teams.test.js.
 
-import { plural } from './format.js';
+import { plural, spaced } from './format.js';
 
 /** Team-run states (§6.2) → status colors (Penpot 02 Feature card). */
 export function runStateColor(s) {
@@ -112,13 +112,13 @@ export function timelineText(e) {
     case 'message':
       return `${d.kind && d.kind !== 'message' ? `${String(d.kind).replace('_', ' ')} ` : ''}→ ${d.to}: ${d.body ?? ''}`;
     case 'redelivered':
-      return `redelivered to ${d.agent}${d.attempt ? ` (attempt ${d.attempt})` : ''}${d.why ? ` · ${String(d.why).replace(/_/g, ' ')}` : ''}`;
+      return `redelivered to ${d.agent}${d.attempt ? ` (attempt ${d.attempt})` : ''}${d.why ? ` · ${spaced(d.why)}` : ''}`;
     case 'delivery_failed':
       return `${d.agent} did not receive ${plural((d.messages ?? []).length || 1, 'message')}`;
     case 'recovered':
-      return `${d.agent} recovered from ${String(d.from_state).replace(/_/g, ' ')}${d.how ? ` (${String(d.how).replace(/_/g, ' ')})` : ''}`;
+      return `${d.agent} recovered from ${spaced(d.from_state)}${d.how ? ` (${spaced(d.how)})` : ''}`;
     case 'stuck':
-      return `${d.agent} looks stuck${d.episode ? ` · ${String(d.episode).replace(/_/g, ' ')}` : ''}`;
+      return `${d.agent} looks stuck${d.episode ? ` · ${spaced(d.episode)}` : ''}`;
     case 'tick_panic':
       return `scheduler step failed${d.step ? ` (${d.step})` : ''}${d.message ? `: ${d.message}` : ''}`;
     case 'run.state':

@@ -1,7 +1,7 @@
 // Delivery in the UI (fix-team-getting-stuck, api-contract §1–§5): blocker
 // labels, the undelivered chip, timeline glyphs and the report section. Pure:
 // tested in test/delivery.test.js.
-import { clock, waited } from './format.js';
+import { clock, spaced, waited } from './format.js';
 
 /** A wait under this is muted; over it the chip is a warning (ux-brief §2). */
 export const WARN_MS = 10 * 60_000;
@@ -10,8 +10,8 @@ export const WARN_MS = 10 * 60_000;
 export function blockerLabel(b) {
   if (!b) return '';
   if (b === 'not_idle:idle') return 'idle';
-  if (b.startsWith('not_idle:')) return `busy (${b.slice(9).replace(/_/g, ' ')})`;
-  if (b.startsWith('governor:')) return `held: ${b.slice(9).replace(/_/g, ' ')}`;
+  if (b.startsWith('not_idle:')) return `busy (${spaced(b.slice(9))})`;
+  if (b.startsWith('governor:')) return `held: ${spaced(b.slice(9))}`;
   return (
     {
       starting_up: 'starting',
@@ -44,7 +44,7 @@ export const deliveryRef = (rec) => (rec?.waiting_on?.kind === 'delivery' ? (rec
 /** Timeline glyphs by delivery state (ux-brief §3). */
 export const DELIVERY_GLYPH = { queued: '○', handed: '◐', seen: '●', read: '✓', failed: '✕' };
 
-/** `{glyph, label, times}` for a timeline event's `delivery`, null when it has none. */
+/** `{glyph, redelivered, title}` for a timeline event's `delivery`, null when it has none. */
 export function deliveryMark(e, now = Date.now()) {
   const d = e?.delivery;
   if (!d || !DELIVERY_GLYPH[d.state]) return null;
@@ -64,7 +64,7 @@ export function deliveryMark(e, now = Date.now()) {
 /** Report `delivery` section → display model; `empty` when no message was sent. */
 export function deliveryReport(r) {
   if (!r?.sent) return { empty: true };
-  const table = (m) => Object.entries(m ?? {}).map(([k, n]) => ({ key: k.replace(/_/g, ' '), n }));
+  const table = (m) => Object.entries(m ?? {}).map(([k, n]) => ({ key: spaced(k), n }));
   const ms = (n) => (n == null ? '–' : n < 1000 ? `${n} ms` : `${(n / 1000).toFixed(1)} s`);
   return {
     empty: false,
