@@ -125,7 +125,25 @@ describe('PacingSettings', () => {
     await fireEvent.input(input(container, 'live'), { target: { value: '6' } });
     await fireEvent.keyDown(input(container, 'live'), { key: 'Enter' });
     await waitFor(() => getByText('Saved'));
-    expect(calls.find((c) => c[0] === 'pacing_settings_set')[1]).toEqual({ live_cap: 6, off_hours_live_cap: 1 });
+    expect(calls.find((c) => c[0] === 'pacing_settings_set')[1]).toEqual({ live_cap: 6 });
+    expect(getByText('Apply').closest('button').disabled).toBe(true);
+  });
+
+  it('sends only the field that changed', async () => {
+    reply = (cmd, a) => (cmd === 'pacing_settings' ? view() : view({ off_hours_live_cap: a.off_hours_live_cap }));
+    const { container, getByText } = render(PacingSettings);
+    await waitFor(() => getByText('Live agents'));
+    await fireEvent.input(input(container, 'off'), { target: { value: '2' } });
+    await fireEvent.click(getByText('Apply'));
+    await waitFor(() => getByText('Saved'));
+    expect(calls.find((c) => c[0] === 'pacing_settings_set')[1]).toEqual({ off_hours_live_cap: 2 });
+  });
+
+  it('the same number typed another way is not a change', async () => {
+    const { container, getByText } = render(PacingSettings);
+    await waitFor(() => getByText('Live agents'));
+    await fireEvent.input(input(container, 'live'), { target: { value: '03' } });
+    expect(text(container)).not.toContain('was 3');
     expect(getByText('Apply').closest('button').disabled).toBe(true);
   });
 

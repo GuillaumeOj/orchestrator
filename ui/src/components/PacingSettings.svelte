@@ -25,8 +25,9 @@
   const offCheck = $derived(view ? checkCap(off, 'off-hours live agents', view.off_hours_live_cap_min, view.off_hours_live_cap_max) : 0);
   const liveErr = $derived(typeof liveCheck === 'object' ? liveCheck.error : null);
   const offErr = $derived(typeof offCheck === 'object' ? offCheck.error : null);
-  const liveChanged = $derived(view != null && live.trim() !== String(view.live_cap));
-  const offChanged = $derived(view != null && off.trim() !== String(view.off_hours_live_cap));
+  // Changed = a different value, not different text ("03" is still 3).
+  const liveChanged = $derived(view != null && live.trim() !== String(view.live_cap) && liveCheck !== view.live_cap);
+  const offChanged = $derived(view != null && off.trim() !== String(view.off_hours_live_cap) && offCheck !== view.off_hours_live_cap);
   const canApply = $derived(!busy && (liveChanged || offChanged) && !liveErr && !offErr);
   const atDefaults = $derived(view != null && live.trim() === String(view.live_cap_default) && off.trim() === String(view.off_hours_live_cap_default));
   const caps = $derived(derivedCaps(shown));
@@ -56,8 +57,13 @@
     saved = false;
     const both = liveChanged && offChanged;
     const n = liveCheck;
+    // Only what changed: an absent field is left alone, so an untouched Live agents (under
+    // `orchd --cap`, the flag's value) is not stored as the user's choice.
+    const args = {};
+    if (liveChanged) args.live_cap = liveCheck;
+    if (offChanged) args.off_hours_live_cap = offCheck;
     try {
-      take(await invoke('pacing_settings_set', { live_cap: liveCheck, off_hours_live_cap: offCheck }));
+      take(await invoke('pacing_settings_set', args));
       toast(both ? 'Pacing settings saved' : liveChanged ? `Live agents set to ${n}` : `Off-hours live agents set to ${offCheck}`);
       saved = true;
       clearTimeout(savedTimer);
@@ -74,10 +80,12 @@
     off = String(view.off_hours_live_cap_default);
     shown = view.live_cap_default;
     saved = false;
+    saveError = null;
   }
 
   function onLiveInput() {
     saved = false;
+    saveError = null;
     if (typeof liveCheck === 'number') shown = liveCheck;
   }
 
@@ -91,6 +99,7 @@
       shown = next;
     } else off = String(next);
     saved = false;
+    saveError = null;
   }
 
   function onFieldKey(e, which) {
@@ -145,13 +154,13 @@
     <div class="field-block">
       <label for="live-cap" class="lbl">Live agents</label>
       <div class="inline">
-        <input id="live-cap" class="num" class:invalid={liveErr} type="text" inputmode="numeric" autocomplete="off" data-field="live" data-section-focus aria-invalid={liveErr ? 'true' : undefined} aria-describedby="live-cap-help" bind:value={live} oninput={onLiveInput} onkeydown={(e) => onFieldKey(e, 'live')} disabled={busy} />
+        <input id="live-cap" class="num" class:invalid={liveErr} type="text" inputmode="numeric" autocomplete="off" data-field="live" data-section-focus aria-invalid={liveErr ? 'true' : undefined} aria-describedby={liveErr ? 'live-cap-err live-cap-help' : 'live-cap-help'} bind:value={live} oninput={onLiveInput} onkeydown={(e) => onFieldKey(e, 'live')} readonly={busy} />
         <span class="muted cap">{view.live_cap_min}–{view.live_cap_max}</span>
         {#if liveChanged}<span class="was">● was {view.live_cap}</span>{/if}
       </div>
       <p class="muted help" id="live-cap-help">Autonomous agents running at once when the week is on plan.</p>
       {#if liveErr}
-        <p class="secondary help"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> {liveErr}</p>
+        <p class="secondary help" id="live-cap-err"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> {liveErr}</p>
       {:else if typeof liveCheck === 'number' && liveCheck > 6}
         <p class="secondary help"><span class="warn" aria-hidden="true">{'\u{F0026}'}</span> More than 6 agents can use 190–255 MB each and use the week sooner. The Governor still paces the week.</p>
       {/if}
@@ -175,13 +184,13 @@
     <div class="field-block">
       <label for="off-cap" class="lbl">Off-hours live agents</label>
       <div class="inline">
-        <input id="off-cap" class="num" class:invalid={offErr} type="text" inputmode="numeric" autocomplete="off" data-field="off" aria-invalid={offErr ? 'true' : undefined} aria-describedby="off-cap-help" bind:value={off} oninput={() => (saved = false)} onkeydown={(e) => onFieldKey(e, 'off')} disabled={busy} />
+        <input id="off-cap" class="num" class:invalid={offErr} type="text" inputmode="numeric" autocomplete="off" data-field="off" aria-invalid={offErr ? 'true' : undefined} aria-describedby={offErr ? 'off-cap-err off-cap-help' : 'off-cap-help'} bind:value={off} oninput={() => ((saved = false), (saveError = null))} onkeydown={(e) => onFieldKey(e, 'off')} readonly={busy} />
         <span class="muted cap">{view.off_hours_live_cap_min}–{view.off_hours_live_cap_max}</span>
         {#if offChanged}<span class="was">● was {view.off_hours_live_cap}</span>{/if}
       </div>
       <p class="muted help" id="off-cap-help">Agents running outside working hours while the week is a little over plan, never more than Live agents allows.</p>
       {#if offErr}
-        <p class="secondary help"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> {offErr}</p>
+        <p class="secondary help" id="off-cap-err"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> {offErr}</p>
       {/if}
       {#if !view.off_hours_allowance_pct}
         <p class="muted help">The plan has no off-hours allowance, so agents don't run off-hours. Set one in the <button class="link" onclick={() => openSingleton('planner')}>Week planner</button>.</p>
