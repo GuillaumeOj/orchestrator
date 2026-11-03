@@ -73,7 +73,7 @@ and dims (opacity), no error text in the block.
 | **Edited** | A field differs from the saved value: Apply enabled, derived block updates live, fields with a change get the standard "modified" mark used by other settings (no new token). "Reset to defaults" enabled when a value is not the default. |
 | **Shadow mode** | Note under the intro, info style (muted icon + text): `Shadow mode is on: the Governor logs the cap without enforcing it. The memory cap still applies.` The Governor row of the derived block is muted with the suffix `logged only`; the memory row stays normal. |
 | **Above 6** (Live agents > 6) | Warning under the field (warning color + glyph): `More than 6 agents can use 190–255 MB each and use the week sooner. The Governor still paces the week.` Never blocks Apply. |
-| **Lowering** (new value < `now.live_autonomous` or < the saved value while agents are live) | Note above Apply, muted: `Working agents finish their turn; new turns wait for a slot.` Shown only while the edit is below the live count. |
+| **Lowering** (new Live agents value < `now.live_autonomous`) | Note above Apply, muted: `Working agents finish their turn; new turns wait for a slot.` Shown only while the edit is below the live count. |
 | **No off-hours allowance** (`off_hours_allowance_pct = 0`) | Field stays editable. Note under it: `The plan has no off-hours allowance, so agents don't run off-hours. Set one in the Week planner.` ("Week planner" is a link.) |
 | **Field error** | Under the field, error color + glyph, the core's text verbatim: `live agents 0: use 1–20`, `off-hours live agents 25: use 0–20`. Checked on every keystroke (client mirror of the bounds); the core's text is shown if the set call refuses. Apply disabled while any field is invalid; the empty field counts as invalid with `live agents: use 1–20`. Non-integers are refused the same way. |
 | **Loading** | Heading and intro show. Fields and blocks as skeleton rows (two fields, one block); header line `Reading the pacing settings…`. Nothing is editable. |
@@ -94,10 +94,10 @@ Notes:
 | Key | Where | Action |
 |---|---|---|
 | `⏎` | nav list | Enter the section, focus **Live agents** (`data-section-focus`) |
-| `tab` / `⇧tab` | section | Live agents → Off-hours live agents → Apply → Reset to defaults (the Week planner links come after their field) |
+| `tab` / `⇧tab` | section | Intro "Week planner" link → Live agents → Off-hours live agents → its "Week planner" link (only with the no-allowance note) → Apply → Reset to defaults |
 | `↑` / `↓` | number field | Step the value by 1 (stops at the bounds) |
 | `⏎` | in a field | Apply (no-op while Apply is disabled) |
-| `esc` | in a field | Leave the field, focus stays in the section; a second `esc` returns to the section list (already handled by `onBodyKey`: not from inside an input) |
+| `esc` | in a field | Leave the field, focus stays in the section; a second `esc` returns to the section list. `onBodyKey` ignores `esc` inside an input, so the section must blur the field itself (new handler on the inputs) |
 | `esc` | elsewhere in the section | Back to the section list |
 | `r` | load error | Retry |
 
@@ -106,6 +106,13 @@ No new global key; none conflicts with the existing Settings keys (`j/k`, `⏎`,
 
 Hint line (muted, bottom of the section, like Integrations):
 `⏎ apply · ↑↓ step · tab next · esc back to sections`
+
+## 5a. Open points (for lead)
+
+- Off-hours live agents is applied as the smaller of the state cap and its own value, so 10 with Live agents 3 changes nothing over plan. Copy kept as in the brief; say if the helper should mention it.
+- The "Now" line shows the Governor cap only. `now.process_cap` is not shown; add `· 2 processes` if lead wants it.
+- `--cap` is a headless flag; the app never shows it, so nothing in the UI mentions it.
+- Reset copy uses `live_cap_default` and `off_hours_live_cap_default` from the view, not hardcoded numbers.
 
 ## 5. Checklist against ux-brief.md
 
