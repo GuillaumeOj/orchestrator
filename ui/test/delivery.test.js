@@ -67,7 +67,7 @@ describe('WaitingChip kind delivery', () => {
     });
     const { container } = render(WaitingChip, { rec: r });
     await fireEvent.click(container.querySelector('button.link'));
-    expect(app.panes[app.focused]?.type).toBe('inbox');
+    expect(app.chatFocus).toMatchObject({ id: 'delivery-4' });
   });
 });
 
@@ -185,7 +185,7 @@ describe('MemberChip undelivered chip', () => {
     expect(chip.parentElement.closest('button')).toBeNull();
     expect(chip.getAttribute('tabindex')).not.toBe('-1');
     await fireEvent.click(chip);
-    expect(app.panes[app.focused]?.type).toBe('inbox');
+    expect(app.chatFocus).toMatchObject({ id: 'delivery-4' });
   });
   it('shows nothing when nothing is undelivered', () => {
     const { container } = render(MemberChip, { id: 'back-1', rec: rec('back-1', 'idle'), now: Date.now() });

@@ -8,7 +8,7 @@
   import { now30, openUrl } from '../../lib/app.svelte.js';
   import { byWords, lineMarker, verbText } from '../../lib/chat.js';
   import { clock, waited } from '../../lib/format.js';
-  import { agentOf, blockOf, keyless, parked, restarted, subjectLine } from '../../lib/inbox.js';
+  import { agentOf, blockOf, deliveryPrimary, keyless, parked, restarted, subjectLine } from '../../lib/inbox.js';
   import { decisionKind, LIFECYCLE } from '../../lib/status.js';
   import ContextBlocks from '../ContextBlocks.svelte';
   import Kbd from '../Kbd.svelte';
@@ -47,6 +47,15 @@
   // What still opens something once it is settled: the pane, the PR, the Notion page.
   const opens = $derived((d.actions ?? []).filter((x) => x.id === 'open' || x.key === 'o'));
   const prUrl = $derived(d.lifecycle?.effect === 'pr_opened' ? d.lifecycle.effect_detail : null);
+  const primary = $derived(deliveryPrimary(d));
+  // What a delivery or a crash-looped startup card adds to its context blocks.
+  const advice = $derived(
+    d.kind === 'delivery'
+      ? 'Retry puts the messages back in its queue now. Open the pane to see what it shows; Restart fresh starts a new session with its brief and task.'
+      : d.kind === 'startup' && d.payload?.failed === 'crash'
+        ? 'It was restarted automatically and crashed again. Open the pane to see why, or restart it fresh: a new session with its brief and task.'
+        : null,
+  );
   const open = $derived(state === 'open' || state === 'parked' || !!pending);
 
   let text = $state('');
@@ -90,6 +99,7 @@
   {#if live && restarted(d)}
     <p class="muted note">This was still waiting when the core restarted. Your answer reaches {agentOf(d) ?? 'the agent'} as a turn.</p>
   {/if}
+  {#if live && advice}<p class="muted note">{advice}</p>{/if}
   {#if replying}
     <div class="reply">
       <!-- svelte-ignore a11y_autofocus -->
@@ -102,8 +112,8 @@
       {#each keyed as x (x.id)}
         <button
           class="btn"
-          class:primary={x.key === 'a' || (x.id === 'answer' && answered) || (d.kind === 'error' && x.id === 'resume')}
-          class:ghost={x.key === 'o'}
+          class:primary={x.key === 'a' || (x.id === 'answer' && answered) || (d.kind === 'error' && x.id === 'resume') || primary === x.id}
+          class:ghost={x.key === 'o' && primary !== x.id}
           disabled={x.id === 'answer' && options && !answered}
           onclick={() => onkey(x.key)}>{x.label} <Kbd keys={x.key === 'enter' ? '⏎' : x.key} /></button
         >
@@ -111,9 +121,9 @@
       {#each keyless(d) as x (x.id)}
         <button
           class="btn"
-          class:primary={x.id === 'restart_fresh'}
+          class:primary={primary ? primary === x.id : x.id === 'restart_fresh'}
           class:danger={x.id === 'delete'}
-          class:ghost={x.id !== 'restart_fresh' && x.id !== 'delete'}
+          class:ghost={primary ? primary !== x.id : x.id !== 'restart_fresh' && x.id !== 'delete'}
           title={x.id === 'always' ? d.payload?.always : null}
           onclick={() => onact(x.id)}>{x.label}</button
         >
