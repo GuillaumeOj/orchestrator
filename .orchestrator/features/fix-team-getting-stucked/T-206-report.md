@@ -55,9 +55,11 @@ The branch also brings in my T-204 `/simplify` commit **c2439b9**. It landed aft
 - The pump resets stale `Waiting` entries for every turn (not only the first), then works on the picked turn.
 - The ride-along batch is the agent's other turns in priority order. It stops at a command, a held turn, a turn that waits on background work, or a not-yet-admitted Task (its model switch, FR-819, happens when it is picked itself).
 
-**Team messages at the user tier**
-- `decide_turn` asks with `interactive: true` for a Message turn of a team agent.
-- It doesn't while Pause all is on, the agent is paused (a run pause pauses its agents), or a plan limit is in force. Without that last condition, a limited agent would re-hit the limit with every message.
+**Team messages: admitted at the user tier, paced as autonomous work** (lead's triage of the review)
+- `TurnRequest.coordination` (new, Governor): `decide_turn` sets it for a Message turn of a team agent (a nudge is one). It is not `interactive`.
+- The Governor admits such a turn past the live cap, the queue order, the 5h guard and the Red tier (`check_coordination`). Pause all, the agent's pause, a plan limit, an exhausted model window and a free process slot for a spawn still hold it. A held one is queued with a `coordination` flag on its entry, so its release uses the same light check. Like a critical turn, it replaces the agent's older queue entry.
+- It is then live as `CostClass::Autonomous`: its tool calls go through the normal admission (the 5h guard, deferral and the hard cap hold them at the next tool boundary), it keeps its ceiling watchdog, and its cost is charged to the allocation. An earlier version ran it as `Interactive` for the whole turn, which let a nudge like "fix these findings" run past the budget holds. That was a pacing leak.
+- Test: `a_coordination_turn_is_admitted_ahead_of_queued_work_but_its_tools_are_paced` (governor/tests/rules.rs).
 
 **Slot release**
 - The pure rule is `resources::slot_victim`.

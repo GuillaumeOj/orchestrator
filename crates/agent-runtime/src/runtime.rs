@@ -718,22 +718,21 @@ impl Runtime {
             self.sync_off_hours(rec);
         }
         let model = self.turn_model(rec);
-        let agent = AgentId(rec.id.clone());
-        // §3.5: a team's messages carry its coordination, not new work: they
-        // are admitted at the user tier. A pause or a plan limit still holds them.
-        let team_message = kind == TurnKind::Message
-            && rec.team.is_some()
-            && !self.with_governor(|g| g.holds_work(&agent, Timestamp::now()));
         let req = TurnRequest {
-            agent,
+            agent: AgentId(rec.id.clone()),
             allocation: rec.allocation.clone().into(),
             tier: rec.tier,
-            interactive: origin == TurnOrigin::User || team_message,
+            interactive: origin == TurnOrigin::User,
             kind,
             self_started: origin == TurnOrigin::SelfStarted,
             ceiling: None,
             needs_spawn,
             model,
+            // §3.5: a team's messages and nudges carry its coordination: the
+            // Governor admits them like a user's turn, but paces their tool
+            // calls as autonomous work (the Governor holds them for a pause
+            // or a limit).
+            coordination: kind == TurnKind::Message && rec.team.is_some(),
         };
         let ar = AdmissionRequest {
             agent_id: rec.id.clone(),

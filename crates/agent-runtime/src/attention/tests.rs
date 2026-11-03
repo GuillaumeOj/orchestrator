@@ -161,6 +161,7 @@ impl Fx {
             self_started: false,
             ceiling: None,
             needs_spawn: false,
+            coordination: false,
         });
     }
 
