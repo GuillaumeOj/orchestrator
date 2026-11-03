@@ -12,12 +12,12 @@ Point numbers follow ux-brief §2 (1–13). Widths: the column is 340 px (card 3
 
 | # | Finding | Proposal |
 |---|---|---|
-| F1 | **`deciding` has no exit when the Overwatch will not decide.** Spec §3.9 shows "deciding" for 60 s while the Overwatch is not `off` / `down`. Two gaps: (a) `paused` (Pause all, limit) holds the Overwatch, so a "deciding" card would count down for nothing; (b) when the Overwatch only annotates (it is unsure) or its turn ends without deciding, the user still waits out the 60 s, and the notification fires 60 s late for a call it has already passed to the user. | Core sets `deciding_until_ms` only when status is `asleep`, `waking` or `working`; absent for `off`, `down`, `paused` (card is "Waiting for you" at once, no flash). Core ends deciding **at once** (`waits_on: "user"`) when `annotate` is called on that decision, when `decide_permission` returns `not_allowed`, or when the turn that carried the event ends. The UI only reads `deciding_until_ms` / `waits_on`. |
+| F1 | **`deciding` has no exit when the Overwatch will not decide.** Spec §3.9 shows "deciding" for 60 s while the Overwatch is not `off` / `down`. Two gaps: (a) `paused` (Pause all, limit) holds the Overwatch, so a "deciding" card would count down for nothing; (b) when the Overwatch only annotates (it is unsure) or its turn ends without deciding, the user still waits out the 60 s, and the notification fires 60 s late for a call it has already passed to the user. | Core sets `deciding_until_ms` only when status is `asleep`, `waking` or `working`; absent for `off`, `down`, `paused` (card is "Waiting for you" at once, no flash). Core ends deciding **at once** (`waits_on: "user"`) when `annotate` is called on that decision, when `decide_permission` returns `not_allowed`, or when the turn that carried the event ends. The UI only reads `deciding_until_ms` / `waits_on`. **After a hand-over `decide_permission` must return `too_late`** (else the card the user is reading collapses under them). The 300 s hold should restart at hand-over, and `permission_secs` must stay below `hold_secs`. |
 | F2 | **Status copy needs reasons and a session flag.** `why` is free text. `paused` and `down` need short, stable reasons; and the status click (spec §3.3 "opens its session") has nothing to open before the first event of the day (D2 lazy start). | Core sends `why` from this set (≤ 40 chars): paused → `Pause all` · `limit reached`; down → `could not start` · `stopped unexpectedly` · `login expired` · `limit reached` · `too slow, 2 turns over 10 min`. Add `overwatch.has_session: bool` (a session exists today, running or suspended). `agent` stays always present. |
 | F3 | **A user-only permission does not say why it is asking.** The user sees a card for `curl evil.example` or a Linear write and cannot tell "policy says ask" from "the app never lets the Overwatch decide this". The annotation is the Overwatch's opinion, not the reason. | Add optional `asks_because` on `permission` decisions: `{ kind: "core" \| "policy" \| "default" \| "overwatch_unsure", detail }` shown as one muted line (§4.5). `core` detail comes from `policy::hard` (e.g. "network host outside the allow-list"), `policy` detail is the rule id. |
 | F4 | **The core-denied line has no tail slot.** P4.3 §2.2 gives `by: core` the tail "· by the app". Spec §3.2 wants "denied back-1: … · core: outside the worktree". `by_detail` is the missing piece. | `line.by = "core"` with `by_detail` → tail `· core: <by_detail>` (≤ 40 chars); without `by_detail` the P4.3 tail `· by the app` stays. `by = "policy"` → `· policy: <id>` (replaces `rule: <id>`, spec). Migrated rules show `policy: r12` as generated; ui shows them as is. |
 | F5 | **Two verbs are missing for the rule proposal** and one state. Spec lists `added`; "Not now" has no line. A line for the declined proposal keeps the history ("Not now" history is a spec reason for the own entry kind), and the corrected-answer state is not "undone". | `line.verb` gains `not now`; `line` gains `corrected_at_ms?` beside `undone_at_ms` (answered lines: "corrected 14:05"; others "undone 14:03"). |
-| F6 | **The rule proposal needs to know it is the second ask.** D6 says two declines end it. The user is never told that the second "Not now" is the last. | `rule_proposal` decisions carry `declined_before: 0 \| 1`. When 1, the button stays **Not now** and the card adds the line "You said not now on Tue 14:20. It won't be asked again if you decline." (§7). Needs the date of the first decline too: `declined_at_ms?`. |
+| F6 | **The rule proposal needs to know it is the second ask, its count and threshold** (the threshold is a setting, 2–10, so "3" in copy must come from the core: add `count` and `threshold`). D6 says two declines end it. The user is never told that the second "Not now" is the last. | `rule_proposal` decisions carry `declined_before: 0 \| 1`. When 1, the button stays **Not now** and the card adds the line "You said not now on Tue 14:20. It won't be asked again if you decline." (§7). Needs the date of the first decline too: `declined_at_ms?`. |
 | F7 | **Edit rule leaves the card in limbo.** Spec §3.7: Edit rule opens the file in nvim with the rule appended, commented out. Nothing closes or changes the card. | The card stays open with the marker "Opened in nvim · 15:22. Uncomment the rule to enable it." ; core closes it as `added` (muted marker "Added by hand · 15:24") when the file then contains an active rule with the same `match`, `effect` and scope. Otherwise the user presses **Not now** or **Add rule**. |
 | F8 | **Annotation length against the card.** P4.2 §8.1 says "at most two lines"; the contract allows 280 chars (about 5 lines at 316 px). | UI clamps to 3 lines with "Show more" (expands in place); role prompt asks the Overwatch for ≤ 140 chars; the 280 cap stays. |
 | F9 | **Source links in free text beyond docs.** J12 frame 3 (P4.2 §7) cites "Governor log 11:02–11:40 ↗" and "attention records". The contract's link kinds are doc paths and `chat:<id>`. Nothing opens a Governor log. | Link schemes in `post` text and `sources`: a doc path (opens in the feature pane), `chat:<id>`, and two new: `agent:<id>` (opens the session over the board), `run:<id>` (opens the run in the inspector). The Governor's log is cited as plain text ("Governor log, 11:02–11:40"). J12 frame 3 redrawn that way (§12). |
@@ -81,7 +81,7 @@ Point numbers follow ux-brief §2 (1–13). Widths: the column is 340 px (card 3
 | `working` | none | none (the thread shows "Overwatch is working · 12 s" below, §2.2) |
 | `asleep` | none | `waking…` until the status leaves `waking`, then it clears |
 | `waking` | none | `waking…` |
-| `paused` | `Paused · it answers when it resumes` | `Sent when the Overwatch resumes` |
+| `paused` | `Paused · it answers when it resumes` | `Sent when the Overwatch resumes` (core: `delivery: pending` also while paused; open point for back) |
 | `down` | `Down · messages are kept until it is back` | `Sent when the Overwatch is back` |
 | `off` | `Off · turn it on in Settings` (link) | `Sent when the Overwatch is turned on` |
 
@@ -199,14 +199,14 @@ Same line pattern as P4.3 §2.2 (`▸ <verb> <agent>: <what> · <tail>        ti
 | allowed (policy) | `▸ allowed back-1: cargo add serde_json · policy: installs` | marker `Allowed by policy rule installs · 14:02`; `Rule in shop-api/.orchestrator/policy.toml` |
 | denied (Overwatch) | `▸ denied back-1: rm -rf build · Overwatch: outside the task's files` | marker `Denied by the Overwatch · 14:02`; the denial message sent to the agent |
 | denied (policy) | `▸ denied back-1: curl … · policy: no-network` | marker `Denied by policy rule no-network` |
-| denied (core) | `▸ denied back-1: git push origin main · core: outside the worktree` | marker `Denied by the app · 14:02`; line `This is always denied. No rule or answer can allow it.` |
+| denied (core) | `▸ denied back-1: git push origin main · core: git push is never allowed` | marker `Denied by the app · 14:02`; line `This is always denied. No rule or answer can allow it.` |
 | answered (Overwatch) | `▸ answered front-1: API pagination · from api-contract.md §3` | the question, the answer, **sources** as links; marker `Answered by the Overwatch · 14:02` |
 | restarted (Overwatch) | `▸ restarted ui-1: first session never started · Overwatch: fresh start` | marker `Restarted fresh by the Overwatch · 14:02`; what it told the agent |
 | resumed (Overwatch) | `▸ resumed back-1: parked on an expired hold · Overwatch: answer was given` | marker `Resumed by the Overwatch · 14:02 · how: resumed / queued / restarted fresh` |
 | nudged (Overwatch) | `▸ nudged back-1: "rebase on the integration branch" · Overwatch: idle 12 min` | the full nudge text as sent: `ORCH: from the Overwatch: …` |
 | reprioritized (Overwatch) | `▸ reprioritized back-2: Normal → High in the queue · Overwatch: unblocks checkout` | marker `Tier changed by the Overwatch · 14:02 · was Normal` |
 | added (rule, you) | `▸ added rule: allow pnpm add * in shop-api` | the rule block (mono), file, the three decisions it came from |
-| not now (rule, you) | `▸ not now: allow pnpm add * in shop-api · asking again after 3 more` | the rule block; second time: `won't ask again` |
+| not now (rule, you) | `▸ not now: allow pnpm add * in shop-api · asking again after {threshold} more` | the rule block; second time: `won't ask again` |
 
 - **Answered** is the one verb whose tail is the source, not the reason (the reason is the answer; the source is the proof): `· from <first source>`, and ` +1` when more (`· from api-contract.md §3 +1`). Several sources expand in the line's body.
 - **Colours**: `denied` verb in warning text as in P4.3; the `core:` tail is plain secondary. Nothing else is coloured; the word carries it.
@@ -259,7 +259,7 @@ No fixed window except the condition (spec §3.8 "available while"). The only ti
 ```
 RULE PROPOSAL                                  15:20
 Allow `pnpm add *` in shop-api?
-You allowed this 3 times as front. Add a rule so it stops asking.
+You allowed this {count} times as front. Add a rule so it stops asking.
   Mon 14:02 · front-1 · allowed ↗
   Mon 14:40 · front-1 · allowed ↗
   Mon 15:10 · front-1 · allowed ↗
@@ -273,7 +273,7 @@ The Overwatch: same package manager, never touched outside node_modules.   (only
 Waiting for you · just now
 ```
 - **Title**: `<Effect> \`<match shown readable>\` in <project>?` — "Allow `pnpm add *` in shop-api?" (the mono rule block keeps the exact FR-708 grammar `Bash(pnpm add:*)`). Global scope: "in every project". With a role: "…in shop-api for front".
-- **Text**: "You allowed this 3 times as front. Add a rule so it stops asking." Deny rules: "You denied this 3 times…  Add a rule so it is denied without asking." Core-posted (Overwatch off/down/no proposal): same text, no "The Overwatch:" line.
+- **Text**: "You allowed this {count} times as front. Add a rule so it stops asking." Deny rules: "You denied this 3 times…  Add a rule so it is denied without asking." Core-posted (Overwatch off/down/no proposal): same text, no "The Overwatch:" line.
 - **Links**: the three earlier decisions, `<day> <time> · <agent> · allowed|denied ↗`; click jumps to the entry (or reads "(earlier day)" plain text when beyond 30 days).
 - **Level 4**: never notifies, not in the badge (spec); sits in the thread at its time; `j/k` stop on it; ⌘⇧I skips it unless nothing else is open.
 - **Second ask** (F6): the text line is added: `Not now on Tue 14:20. It won't be asked again if you decline.`
@@ -285,7 +285,7 @@ Waiting for you · just now
 | Adding (core call) | `Adding rule…` | disabled |
 | Added | `Added to shop-api policy · 15:21 · Undo u`, muted, 5 s | Undo u (removes the rule; the card returns to open) |
 | Added, after 5 s | collapses at once to `▸ added rule: allow pnpm add * in shop-api` with **Remove rule** in its expanded body (§6) | |
-| Not now (1st) | `Not now. Asking again after 3 more.`, muted; collapses at once to the `not now` line | none |
+| Not now (1st) | `Not now. Asking again after {threshold} more.`, muted; collapses at once to the `not now` line | none |
 | Not now (2nd) | `Not now. It won't be asked again for pnpm add.`, muted; collapses to the line | none |
 | Edit opened (F7) | `Opened in nvim · 15:22. Uncomment the rule to enable it.` | Add rule a · Not now r · Edit rule ⏎ stay |
 | Added by hand (F7) | `Added by hand · 15:24`, muted; collapses | none |
