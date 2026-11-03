@@ -48,13 +48,16 @@
   const opens = $derived((d.actions ?? []).filter((x) => x.id === 'open' || x.key === 'o'));
   const prUrl = $derived(d.lifecycle?.effect === 'pr_opened' ? d.lifecycle.effect_detail : null);
   const primary = $derived(deliveryPrimary(d));
-  // What a delivery or a crash-looped startup card adds to its context blocks.
+  // What a delivery or a crash-looped startup card adds to its context blocks,
+  // while there is still something to press (not once settled, pending or stale).
   const advice = $derived(
-    d.kind === 'delivery'
-      ? 'Retry puts the messages back in its queue now. Open the pane to see what it shows; Restart fresh starts a new session with its brief and task.'
-      : d.kind === 'startup' && d.payload?.failed === 'crash'
-        ? 'It was restarted automatically and crashed again. Open the pane to see why, or restart it fresh: a new session with its brief and task.'
-        : null,
+    !acting || state === 'stale'
+      ? null
+      : d.kind === 'delivery'
+        ? 'Retry puts the messages back in its queue now. Open the pane to see what it shows; Restart fresh starts a new session with its brief and task.'
+        : d.kind === 'startup' && d.payload?.failed === 'crash'
+          ? 'It was restarted automatically and crashed again. Open the pane to see why, or restart it fresh: a new session with its brief and task.'
+          : null,
   );
   const open = $derived(state === 'open' || state === 'parked' || !!pending);
 
@@ -99,7 +102,7 @@
   {#if live && restarted(d)}
     <p class="muted note">This was still waiting when the core restarted. Your answer reaches {agentOf(d) ?? 'the agent'} as a turn.</p>
   {/if}
-  {#if live && advice}<p class="muted note">{advice}</p>{/if}
+  {#if advice}<p class="muted note">{advice}</p>{/if}
   {#if replying}
     <div class="reply">
       <!-- svelte-ignore a11y_autofocus -->
