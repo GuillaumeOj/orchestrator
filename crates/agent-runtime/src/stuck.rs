@@ -380,6 +380,13 @@ impl Runtime {
             }
             if let Some(key) = it.payload["key"].as_str() {
                 h.delivery_raised.remove(key);
+                h.retried_keys.insert(key.to_string(), orch_protocol::now_ms());
+            }
+            // The Working watchdog flags a turn once: let it flag this one again.
+            if it.payload["episode"] == "working_silent"
+                && let Some(since) = it.payload["since_ms"].as_u64()
+            {
+                h.watchdog.remove(&format!("{agent}:{since}:Stalled"));
             }
         }
         if let Some(key) = it.payload["key"].as_str() {

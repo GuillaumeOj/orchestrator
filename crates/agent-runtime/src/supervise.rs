@@ -137,11 +137,13 @@ impl Runtime {
                 else {
                     continue;
                 };
-                let waited = now.saturating_sub(w.since_ms);
+                let key = format!("{}:stuck_wait:{}", m.agent, w.since_ms);
+                // A retry of its decision starts the wait's clock again.
+                let since = self.house().retried_keys.get(&key).copied().unwrap_or(0).max(w.since_ms);
+                let waited = now.saturating_sub(since);
                 if waited < crate::stuck::WAIT_ON_LEAD_MS {
                     continue;
                 }
-                let key = format!("{}:stuck_wait:{}", m.agent, w.since_ms);
                 let line = format!(
                     "{} has waited {} for you ({}); answer it",
                     m.agent,

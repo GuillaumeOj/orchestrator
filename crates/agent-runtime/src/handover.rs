@@ -32,6 +32,8 @@ const MAX_ATTEMPTS: u32 = 3;
 /// Setting: seconds a paste may wait for its UserPromptSubmit before the
 /// watchdog checks it.
 pub const ACK_KEY: &str = "delivery.ack_secs";
+/// Delivery events that are kept per agent, off the run timeline.
+pub(crate) const PLUMBING: [&str; 4] = ["handed", "seen", "read", "continue_failed"];
 /// How long a message may stay unread before the invariant raises a decision (§3.7).
 pub const INVARIANT_KEY: &str = "delivery.invariant_secs";
 /// How long a member waits for a process slot before one is freed for it (§3.5).
@@ -162,6 +164,12 @@ impl Runtime {
     pub(crate) fn delivery_event(&self, agent: &str, kind: &str, mut detail: Value) {
         if let Some(o) = detail.as_object_mut() {
             o.entry("agent").or_insert_with(|| json!(agent));
+        }
+        // The plumbing of every message (handed, seen, read…) is the agent's
+        // own event: on the run timeline it would push the real events off
+        // its window.
+        if PLUMBING.contains(&kind) {
+            return self.event(agent, kind, detail);
         }
         match self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.as_ref().map(|t| t.run_id.clone()))) {
             Some(run) => self.run_event(&run, Some(agent), kind, detail),
