@@ -229,6 +229,39 @@ pub async fn chat_day(core: CoreState<'_>, day: String) -> Res<Value> {
     blocking(core, move |c| c.runtime()?.chat_day(&day)).await
 }
 
+/// P4.4: the policy files in effect, also missing ones (api-contract §3.3, §5 F15).
+#[tauri::command]
+pub async fn policy_files(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, move |c| Ok(serde_json::json!(c.runtime()?.policy_files()))).await
+}
+
+/// P4.4: the default effects when no rule matches (team roles, solo sessions).
+#[tauri::command]
+pub async fn policy_defaults(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, move |c| Ok(serde_json::json!(c.runtime()?.policy_defaults()))).await
+}
+
+#[tauri::command]
+pub async fn set_policy_defaults(core: CoreState<'_>, team: String, solo: String) -> Res<Value> {
+    blocking(core, move |c| Ok(serde_json::json!(c.runtime()?.set_policy_defaults(&team, &solo)?))).await
+}
+
+/// P4.4: opens a policy file in the editor (FR-1101), created first when missing.
+#[tauri::command]
+pub async fn policy_open(
+    core: CoreState<'_>,
+    scope: String,
+    project: Option<String>,
+    rows: u16,
+    cols: u16,
+) -> Res<EditorOpen> {
+    blocking(core, move |c| {
+        let path = c.runtime()?.policy_open(&scope, project.as_deref())?;
+        c.editor_open(project.as_deref(), None, Some(&path.display().to_string()), None, rows, cols)
+    })
+    .await
+}
+
 /// P4.3: chat entries matching `query` (case-insensitive), newest first.
 #[tauri::command]
 pub async fn chat_search(core: CoreState<'_>, query: String, limit: Option<usize>) -> Res<Value> {

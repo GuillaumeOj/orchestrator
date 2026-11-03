@@ -51,9 +51,11 @@ export const verbText = (verb) => (verb === 'run now' ? 'started' : (verb ?? '')
 /** The verb takes the warning colour (the word is always there). */
 export const warnVerb = (verb) => WARN.has(verb);
 
-/** The line's tail from `by` (notes §2.2): none for you. */
+/** The line's tail from `by` (notes §2.2): none for you. `policy` (P4.4) and `rule` (older entries) read alike. */
 export function tailText(line) {
   switch (line?.by) {
+    case 'policy':
+      return line.by_detail ? `policy: ${line.by_detail}` : 'policy';
     case 'rule':
       return line.by_detail ? `rule: ${line.by_detail}` : 'rule';
     case 'pane':
@@ -61,7 +63,8 @@ export function tailText(line) {
     case 'expired':
       return line.verb === 'expired' ? '' : 'expired';
     case 'core':
-      return 'by the app';
+      // A core denial names its hard-list reason (api-contract §5, ux F4).
+      return line.by_detail ? `core: ${line.by_detail}` : 'by the app';
     case 'overwatch':
       return line.by_detail ? `Overwatch: ${line.by_detail}` : 'Overwatch';
     default:
@@ -74,6 +77,8 @@ export function byWords(line) {
   switch (line?.by) {
     case 'you':
       return 'by you';
+    case 'policy':
+      return line.by_detail ? `by policy ${line.by_detail}` : 'by policy';
     case 'rule':
       return line.by_detail ? `by rule ${line.by_detail}` : 'by rule';
     case 'pane':
@@ -152,8 +157,10 @@ export function lineOfDecision(d, now = Date.now()) {
     verb: verbOf(d),
     agent: agentOf(d) ?? undefined,
     what: cut(d.title, 48),
-    by: by.startsWith('rule:') ? 'rule' : (BY[by] ?? 'core'),
-    by_detail: by.startsWith('rule:') ? by.slice(5) : undefined,
+    // The actor `rule:<id>` is a policy rule since P4.4 (api-contract §3.2).
+    by: by.startsWith('rule:') ? 'policy' : (BY[by] ?? 'core'),
+    // A core denial names its hard-list reason, as the core's line does.
+    by_detail: by.startsWith('rule:') ? by.slice(5) : by === 'core' ? (d.payload?.hard_why ?? undefined) : undefined,
     state: lc.state,
     at_ms: lc.effect_at_ms ?? lc.decided_at_ms ?? now,
   };

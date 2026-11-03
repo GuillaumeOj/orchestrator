@@ -211,17 +211,46 @@ pub enum CtlRequest {
         #[serde(default)]
         message: Option<String>,
     },
-    Rules,
+    /// The policy files' rules (FR-1308), global first; `project` narrows.
+    Rules {
+        #[serde(default)]
+        project: Option<String>,
+    },
+    /// Appends a rule to the policy file of its scope.
     AddRule {
         /// `project` / `role` / `agent`.
         scope: String,
         scope_id: String,
         pattern: String,
-        /// `allow` / `deny` / `ask`.
+        /// `allow` / `deny` / `overwatch` / `user` (`ask` reads as `user`).
         effect: String,
     },
+    /// Removes a policy rule by id (`file`: `global` | `project:<id>` when ids repeat).
     RevokeRule {
-        id: u64,
+        id: String,
+        #[serde(default)]
+        file: Option<String>,
+    },
+    /// `policy_files` (api-contract §3.3).
+    PolicyFiles,
+    PolicyDefaults,
+    SetPolicyDefaults {
+        team: String,
+        solo: String,
+    },
+    /// The file's path, created when missing (`policy_open`).
+    PolicyOpen {
+        scope: String,
+        #[serde(default)]
+        project: Option<String>,
+    },
+    /// `orchd policy --test`: the effect of a call and what decides it.
+    PolicyTest {
+        #[serde(default)]
+        project: Option<String>,
+        role: String,
+        tool: String,
+        input: serde_json::Value,
     },
     Audit {
         #[serde(default)]

@@ -253,6 +253,35 @@ impl Store {
         })
     }
 
+    /// Migration 14: active rules not yet exported to a policy file, oldest first.
+    pub fn rules_to_migrate(&self) -> Result<Vec<PermissionRule>> {
+        self.read(|c| {
+            let mut st = c.prepare(&format!(
+                "SELECT {RULE_COLS} FROM permission_rules
+                 WHERE revoked_at_ms IS NULL AND migrated_at_ms IS NULL ORDER BY id"
+            ))?;
+            Ok(st.query_map([], row_rule)?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// Stamps rules as exported to the policy files (migration 14).
+    pub fn mark_rules_migrated(&self, ids: &[u64]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let ids = ids.to_vec();
+        let now = crate::now_ms();
+        self.write(move |tx| {
+            for id in ids {
+                tx.execute(
+                    "UPDATE permission_rules SET migrated_at_ms=?2 WHERE id=?1 AND migrated_at_ms IS NULL",
+                    params![id as i64, now as i64],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
     // ------------------------------------------------------------ usage samples
 
     /// Appends a sample without waiting (statusline/OTLP paths must not block).
@@ -688,6 +717,21 @@ mod tests {
         assert!(s.rules().unwrap().is_empty());
         let n: i64 = s.read(|c| Ok(c.query_row("SELECT count(*) FROM permission_rules", [], |r| r.get(0))?)).unwrap();
         assert_eq!(n, 1, "kept for the audit trail");
+    }
+
+    #[test]
+    fn rules_migrate_once_and_skip_revoked() {
+        let (_d, s) = store();
+        let a = s.add_rule(RuleScope::Project, "p", "Bash(ls)", RuleEffect::Allow, None).unwrap();
+        let b = s.add_rule(RuleScope::Role, "back", "Bash(rm:*)", RuleEffect::Ask, None).unwrap();
+        let c = s.add_rule(RuleScope::Agent, "a1", "Edit", RuleEffect::Deny, None).unwrap();
+        s.revoke_rule(c.id).unwrap();
+        assert_eq!(s.rules_to_migrate().unwrap(), vec![a.clone(), b.clone()]);
+        s.mark_rules_migrated(&[a.id]).unwrap();
+        assert_eq!(s.rules_to_migrate().unwrap(), vec![b.clone()]);
+        s.mark_rules_migrated(&[b.id]).unwrap();
+        assert!(s.rules_to_migrate().unwrap().is_empty());
+        s.mark_rules_migrated(&[]).unwrap();
     }
 
     #[test]

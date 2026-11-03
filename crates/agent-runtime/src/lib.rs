@@ -25,6 +25,7 @@ pub mod otlp;
 pub mod pacing;
 pub mod paths;
 pub mod permissions;
+pub mod policy;
 pub mod power;
 pub mod pr;
 pub mod preflight;

@@ -1,5 +1,5 @@
-//! The Inbox side of the runtime (FR-705, FR-707–709): PermissionRequest
-//! hooks answered from the store's rules or held for a decision, parked when
+//! The Inbox side of the runtime (FR-705, FR-707–709, FR-1308): PermissionRequest
+//! hooks answered by the core's hard lists or the policy files, or held for a decision, parked when
 //! nobody answers in time, the user's decisions, scoped "always allow" rules,
 //! one-shot allows, and the PR gate.
 
@@ -9,10 +9,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use orch_protocol::{HookOutput, HookPayload, InboxDecision, PermissionBehavior, now_ms};
-use orch_store::{InboxItem, InboxStatus, PermissionRule, RuleEffect, RuleScope};
+use orch_store::{InboxItem, InboxStatus, RuleScope};
 use serde_json::{Value, json};
 
 use crate::permissions::{self, Subject};
+use crate::policy::hard::{HardKind, HardVerdict};
+use crate::policy::{Effect, Evaluation, Gate, Source};
 use crate::runtime::{Runtime, conn_closed, reserved_slot};
 use crate::state::AgentState;
 use crate::store::{AgentRecord, HoldKind, HoldRow, HoldStatus, StateFile, TurnStatus};
@@ -111,11 +113,18 @@ impl Call {
         }
     }
 
-    /// The audit detail (FR-709): the call, its item, and the rule that answered.
-    pub(crate) fn detail(&self, item: Option<u64>, rule: Option<&PermissionRule>) -> Value {
+    /// The audit detail (FR-709): the call, its item, and the policy's
+    /// answer (the rule and its file, or the hard list's reason).
+    pub(crate) fn detail(&self, item: Option<u64>, ev: Option<&Evaluation>) -> Value {
         let mut d = json!({"item": item, "tool": self.tool, "tool_input": self.input, "tool_use_id": self.tool_use_id});
-        if let Some(r) = rule {
-            d["rule"] = json!({"id": r.id, "pattern": r.pattern, "effect": r.effect.as_str()});
+        match ev.map(|e| (e, &e.source)) {
+            Some((e, Source::Policy { file, .. })) => {
+                if let Some(r) = &e.rule {
+                    d["rule"] = json!({"id": r.id, "pattern": r.pattern, "effect": r.effect.as_str(), "file": file});
+                }
+            }
+            Some((_, Source::Hard { why })) => d["hard"] = json!(why),
+            _ => {}
         }
         d
     }
@@ -160,10 +169,16 @@ fn has_parked(s: &StateFile, agent: &str) -> bool {
 impl Runtime {
     /// Who an agent is for rule scopes.
     pub fn subject(&self, rec: &AgentRecord) -> Subject {
+        self.subject_with(rec, self.db.project_by_path(&rec.repo).ok().flatten().as_ref())
+    }
+
+    /// [`Runtime::subject`] with its project already looked up.
+    pub(crate) fn subject_with(&self, rec: &AgentRecord, project: Option<&orch_store::Project>) -> Subject {
         Subject {
             agent_id: rec.id.clone(),
             role: rec.role.name.clone(),
-            project_id: self.db.project_by_path(&rec.repo).ok().flatten().map(|p| p.id),
+            project_id: project.map(|p| p.id.clone()),
+            team: rec.team.is_some(),
         }
     }
 
@@ -431,19 +446,31 @@ impl Runtime {
     }
 
     /// The user approved this exact call after it parked: allowed once
-    /// (FR-705), before any rule, and audited as theirs.
-    pub(crate) fn one_shot(&self, rec: &AgentRecord, call: &Call) -> bool {
+    /// (FR-705), before any rule, and audited as theirs. A call on the
+    /// user-only list takes it only when the user's own decision made it.
+    pub(crate) fn one_shot(&self, rec: &AgentRecord, call: &Call, hard: Option<&HardVerdict>) -> bool {
         let Ok(Some(item)) = self.db.take_one_shot(&rec.id, &call.tool, &call.input) else { return false };
+        if hard.is_some_and(|h| h.kind == HardKind::UserOnly) && !self.decided_by_user(item) {
+            return false;
+        }
         let mut detail = call.detail(item, None);
         detail["one_shot"] = json!(true);
         let _ = self.db.audit("user", Some(&rec.id), "permission", Some(&call.tool), "allow", detail);
         true
     }
 
-    /// PermissionRequest (FR-705): a one-shot allow or a rule decides at
-    /// once; otherwise the request becomes an Inbox item and the hook is held
-    /// (within orch-hook's deadline) until the user decides. No decision in
-    /// time → denied and parked: the agent stops and resumes on the answer.
+    /// The decision `item` (a one-shot's source) was closed by the user.
+    fn decided_by_user(&self, item: Option<u64>) -> bool {
+        let Some(id) = item else { return false };
+        self.store.read(|s| s.inbox.iter().any(|i| i.id == id && i.decided_by.as_deref() == Some("user")))
+    }
+
+    /// PermissionRequest (FR-705, FR-1308): the core's hard deny list
+    /// answers first (even before a one-shot allow), then a one-shot allow,
+    /// then the policy (allow / deny at once; `user` / `overwatch` / the
+    /// default: the request becomes a decision and the hook is held, within
+    /// orch-hook's deadline). No decision in time → denied and parked: the
+    /// agent stops and resumes on the answer.
     pub(crate) fn permission_request(
         &self,
         rec: &AgentRecord,
@@ -452,55 +479,59 @@ impl Runtime {
         conn: Option<&UnixStream>,
     ) -> Option<HookOutput> {
         let call = Call::from_hook(p);
-        if self.one_shot(rec, &call) {
-            return Some(HookOutput::permission_request(PermissionBehavior::Allow, None));
-        }
-        let subject = self.subject(rec);
-        let rules = self.db.rules().unwrap_or_default();
-        let mut ask_rule = None;
-        if let Some(rule) = permissions::evaluate(&rules, &subject, &call.tool, &call.input) {
-            let actor = format!("rule:{}", rule.id);
-            let detail = call.detail(None, Some(rule));
-            match rule.effect {
-                // Audited (FR-709), and posted in the chat as a settled line (FR-1305).
-                RuleEffect::Allow => {
-                    if let Ok(n) = self.db.audit(&actor, Some(&rec.id), "permission", Some(&call.tool), "allow", detail)
-                    {
-                        self.chat_rule_answered(rec, &call, rule, true, n);
-                    }
-                    return Some(HookOutput::permission_request(PermissionBehavior::Allow, None));
-                }
-                RuleEffect::Deny => {
-                    if let Ok(n) = self.db.audit(&actor, Some(&rec.id), "permission", Some(&call.tool), "deny", detail)
-                    {
-                        self.chat_rule_answered(rec, &call, rule, false, n);
-                    }
-                    return Some(HookOutput::permission_request(
-                        PermissionBehavior::Deny,
-                        Some(&format!("ORCH: denied by the user's rule {} ({}).", rule.id, rule.pattern)),
-                    ));
-                }
-                // Its answer is audited by whoever gives it.
-                RuleEffect::Ask => ask_rule = Some(rule.id),
+        let (ev, subject) = match self.policy_gate(rec, &call, true) {
+            Gate::HardDeny(ev) => {
+                self.policy_answered(rec, &call, &ev);
+                let m = format!("ORCH: denied by {}. Do not retry it.", ev.denial());
+                return Some(HookOutput::permission_request(PermissionBehavior::Deny, Some(&m)));
+            }
+            Gate::OneShot => return Some(HookOutput::permission_request(PermissionBehavior::Allow, None)),
+            // With the defaults the policy always answers.
+            Gate::Policy(ev, subject) => (ev.expect("the default effect"), subject),
+        };
+        match ev.effect {
+            Effect::Allow => {
+                self.policy_answered(rec, &call, &ev);
+                Some(HookOutput::permission_request(PermissionBehavior::Allow, None))
+            }
+            Effect::Deny => {
+                self.policy_answered(rec, &call, &ev);
+                let m = format!("ORCH: denied by {}.", ev.denial());
+                Some(HookOutput::permission_request(PermissionBehavior::Deny, Some(&m)))
+            }
+            // B2 routes `overwatch` to the Overwatch; until then it waits on the user.
+            Effect::User | Effect::Overwatch => {
+                self.permission_request_with(rec, &call, &subject, &ev, self.hold_budget(deadline_ms), conn)
             }
         }
-        self.permission_request_with(rec, &call, &subject, ask_rule, self.hold_budget(deadline_ms), conn)
     }
 
-    /// The Inbox part of [`Runtime::permission_request`], after the rules.
+    /// A call the policy or the core answered itself: audited (FR-709,
+    /// actor `rule:<id>` or `core`) and posted in the chat as a settled line
+    /// (FR-1305).
+    pub(crate) fn policy_answered(&self, rec: &AgentRecord, call: &Call, ev: &Evaluation) {
+        let word = if ev.effect == Effect::Allow { "allow" } else { "deny" };
+        if let Ok(n) =
+            self.db.audit(&ev.actor(), Some(&rec.id), "permission", Some(&call.tool), word, call.detail(None, Some(ev)))
+        {
+            self.chat_policy_answered(rec, call, ev, n);
+        }
+    }
+
+    /// The Inbox part of [`Runtime::permission_request`], after the policy.
     pub(crate) fn permission_request_with(
         &self,
         rec: &AgentRecord,
         call: &Call,
         subject: &Subject,
-        ask_rule: Option<u64>,
+        ev: &Evaluation,
         budget: Duration,
         conn: Option<&UnixStream>,
     ) -> Option<HookOutput> {
         if budget.is_zero() {
             return None;
         }
-        let out = match self.hold_for_decision(rec, call, subject, ask_rule, budget, conn) {
+        let out = match self.hold_for_decision(rec, call, subject, Some(ev), budget, conn) {
             Waited::Decided(i) if allows(&i) => HookOutput::permission_request(PermissionBehavior::Allow, None),
             Waited::Decided(i) => {
                 let m = reply(&i).map(|m| format!("ORCH: the user says: {m}"));
@@ -522,19 +553,22 @@ impl Runtime {
     /// hold row (for the reconciler), the wait (EOF on `conn` = Esc in the
     /// pane), and the item parked if nobody decided in time. Shared by
     /// PermissionRequest hooks and orch-mcp calls under an `ask` rule.
-    /// `ask_rule`: the rule that sent it here (then "always allow" is not
-    /// offered: an allow rule would never win over it).
+    /// `ev`: the policy's answer that sent it here. "Always allow" is not
+    /// offered when a `user` rule or the hard lists did (an allow rule would
+    /// never win over them).
     pub(crate) fn hold_for_decision(
         &self,
         rec: &AgentRecord,
         call: &Call,
         subject: &Subject,
-        ask_rule: Option<u64>,
+        ev: Option<&Evaluation>,
         budget: Duration,
         conn: Option<&UnixStream>,
     ) -> Waited {
         let (tool, input) = (call.tool.as_str(), &call.input);
-        let always = if ask_rule.is_some() { None } else { permissions::always_pattern(tool, input) };
+        let always =
+            if ev.is_some_and(|e| !e.allows_always()) { None } else { permissions::always_pattern(tool, input) };
+        let ask_rule = ev.and_then(Evaluation::rule_id);
         let (summary, description) = brief(tool, input);
         let line = permissions::summary(tool, input);
         let item = match self.add_item(
@@ -549,6 +583,9 @@ impl Runtime {
                 "summary": summary,
                 "description": description,
                 "ask_rule": ask_rule,
+                "effect": ev.map(|e| e.effect),
+                "effect_source": ev.map(|e| &e.source),
+                "asks_because": ev.map(Evaluation::asks_because),
                 "always": always,
                 "project_id": subject.project_id,
                 "role": subject.role,
@@ -659,36 +696,6 @@ impl Runtime {
         self.store.read(|s| has_parked(s, id))
     }
 
-    /// Adds a permission rule (FR-708) and logs it (FR-709).
-    pub fn add_rule(
-        &self,
-        scope: RuleScope,
-        scope_id: &str,
-        pattern: &str,
-        effect: RuleEffect,
-        source_inbox_item: Option<u64>,
-    ) -> Result<orch_store::PermissionRule> {
-        let rule = self.db.add_rule(scope, scope_id, pattern, effect, source_inbox_item)?;
-        self.db.audit("user", None, "rule_added", Some(pattern), effect.as_str(), json!(rule))?;
-        Ok(rule)
-    }
-
-    /// Revokes a rule (the row is kept) and logs it. False if unknown or already revoked.
-    pub fn revoke_rule(&self, id: u64) -> Result<bool> {
-        let rule = self.db.rules().unwrap_or_default().into_iter().find(|r| r.id == id);
-        let done = self.db.revoke_rule(id)?;
-        self.db.audit(
-            "user",
-            None,
-            "rule_revoked",
-            Some(&id.to_string()),
-            if done { "ok" } else { "unknown" },
-            json!({"rule": id, "pattern": rule.as_ref().map(|r| &r.pattern),
-                   "effect": rule.as_ref().map(|r| r.effect.as_str())}),
-        )?;
-        Ok(done)
-    }
-
     /// How a turn the core queued for `agent` reaches it.
     pub fn delivered_effect(&self, agent: &str) -> &'static str {
         if self.live(agent).is_some() { "delivered" } else { "resumed" }
@@ -739,8 +746,14 @@ impl Runtime {
         let rule_spec = if decision == InboxDecision::AlwaysAllow {
             let always = item.payload.get("always").or_else(|| item.payload.get("always_pattern"));
             let Some(pattern) = always.and_then(Value::as_str).map(str::to_string) else {
-                match item.payload.get("ask_rule").and_then(Value::as_u64) {
-                    Some(r) => bail!("rule {r} says to always ask for this: revoke it to allow it always"),
+                let ask_rule = item.payload.get("ask_rule").filter(|v| !v.is_null());
+                let hard = item.payload.pointer("/effect_source/kind").and_then(Value::as_str) == Some("hard");
+                match ask_rule {
+                    Some(r) => {
+                        let r = r.as_str().map(str::to_string).unwrap_or_else(|| r.to_string());
+                        bail!("rule {r} says to always ask for this: revoke it to allow it always")
+                    }
+                    None if hard => bail!("the core keeps this call for you: approve it once instead"),
                     None => bail!("item {id} cannot become a rule (approve it once instead)"),
                 }
             };
@@ -796,7 +809,9 @@ impl Runtime {
         )?;
         let mut result = json!({"item": id, "decision": word, "decided_by": "user"});
         if let Some((sc, sid, pattern)) = rule_spec {
-            result["rule"] = json!(self.add_rule(sc, &sid, &pattern, RuleEffect::Allow, Some(id))?);
+            // Written to the policy file of its scope (FR-1308).
+            let project = item.payload.get("project_id").and_then(Value::as_str);
+            result["rule"] = self.add_rule(sc, &sid, project, &pattern, Effect::Allow, Some(format!("inbox-{id}")))?;
         }
         let allowed = matches!(decision, InboxDecision::Approve | InboxDecision::AlwaysAllow);
         let why = message.filter(|m| !m.trim().is_empty()).unwrap_or("The user said no.");
@@ -1181,12 +1196,12 @@ mod tests {
     #[test]
     fn rules_answer_at_once_and_are_audited() {
         let (_d, rt) = test_runtime(true);
-        rt.db.add_rule(RuleScope::Role, "solo", "Bash(cargo test:*)", RuleEffect::Allow, None).unwrap();
-        rt.db.add_rule(RuleScope::Agent, "a1", "Bash(rm:*)", RuleEffect::Deny, None).unwrap();
+        rt.add_rule(RuleScope::Role, "solo", None, "Bash(cargo test:*)", Effect::Allow, None).unwrap();
+        rt.add_rule(RuleScope::Agent, "a1", None, "Bash(rm:*)", Effect::Deny, None).unwrap();
         assert_eq!(behavior(&rt.on_hook(&perm("cargo test -p x"), None)).as_deref(), Some("allow"));
         let o = rt.on_hook(&perm("rm -rf build"), None);
         assert_eq!(behavior(&o).as_deref(), Some("deny"));
-        assert!(message(&o).contains("ORCH: denied by the user's rule"));
+        assert!(message(&o).contains("ORCH: denied by the user's policy rule r2"), "{}", message(&o));
         assert!(rt.inbox().is_empty());
         let log = rt.db.audit_log(Some("a1"), 10).unwrap();
         assert_eq!(log.len(), 2);
@@ -1234,8 +1249,12 @@ mod tests {
         let h = std::thread::spawn(move || rt2.permission_request_for_test("cargo fmt", Duration::from_secs(5)));
         decide_soon(&rt, InboxDecision::AlwaysAllow, Some("agent"), None).join().unwrap();
         assert_eq!(behavior(&h.join().unwrap()).as_deref(), Some("allow"));
-        let rules = rt.db.rules().unwrap();
-        assert_eq!((rules[0].pattern.as_str(), rules[0].scope), ("Bash(cargo fmt)", RuleScope::Agent));
+        // Written to the policy file (FR-1308): a1 is in no project, so the global one.
+        let rules = rt.policy_rules(None);
+        assert_eq!((rules[0]["match"].as_str(), rules[0]["agent"].as_str()), (Some("Bash(cargo fmt)"), Some("a1")));
+        assert_eq!(rules[0]["file"], "global");
+        let text = std::fs::read_to_string(rt.global_policy_path()).unwrap();
+        assert!(text.contains("match = \"Bash(cargo fmt)\"") && text.contains("from = \"inbox-"), "{text}");
         assert_eq!(behavior(&rt.on_hook(&perm("cargo fmt"), None)).as_deref(), Some("allow"));
         assert!(rt.inbox().is_empty());
         // Every decision is in the audit log (FR-709), and has an outcome.
@@ -1311,7 +1330,7 @@ mod tests {
         rt.on_hook(&perm("make"), None);
         let id = rt.inbox()[0].id;
         rt.decide(id, InboxDecision::AlwaysAllow, Some("agent"), None).unwrap();
-        assert_eq!(rt.db.rules().unwrap()[0].pattern, "Bash(make)");
+        assert_eq!(rt.policy_rules(None)[0]["match"], "Bash(make)");
         assert_eq!(rt.store.read(|s| s.turns.last().unwrap().body.clone()), "ORCH: approved: retry the call Bash make");
     }
 
@@ -1370,7 +1389,7 @@ mod tests {
         assert_eq!(wins, 1, "exactly one decision acts");
         assert_eq!(rt.store.read(|s| s.turns.iter().filter(|t| t.body.ends_with("Answer: yes")).count()), 1);
         // An item sent to the Inbox by an `ask` rule can be approved, not always-allowed.
-        rt.db.add_rule(RuleScope::Role, "solo", "Bash(make:*)", RuleEffect::Ask, None).unwrap();
+        rt.add_rule(RuleScope::Role, "solo", None, "Bash(make:*)", Effect::User, None).unwrap();
         let rt2 = rt.clone();
         let h = std::thread::spawn(move || rt2.on_hook(&perm("make all"), None));
         let mut item = None;
@@ -1382,12 +1401,13 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         let item = item.unwrap();
-        assert_eq!((item.payload["ask_rule"].as_u64(), item.payload.get("always")), (Some(1), Some(&Value::Null)));
+        assert_eq!((item.payload["ask_rule"].as_str(), item.payload.get("always")), (Some("r1"), Some(&Value::Null)));
+        assert_eq!(item.payload["asks_because"], json!({"kind": "policy", "detail": "r1"}));
         let e = rt.decide(item.id, InboxDecision::AlwaysAllow, None, None).unwrap_err();
         assert!(e.to_string().contains("always ask"), "{e}");
         let st = rt.store.read(|s| s.inbox.iter().find(|i| i.id == item.id).unwrap().status);
         assert_ne!(st, InboxStatus::Decided, "refused whole");
-        assert!(rt.db.rules().unwrap().iter().all(|r| r.effect != RuleEffect::Allow));
+        assert!(rt.policy_rules(None).iter().all(|r| r["effect"] != "allow"));
         let _ = h.join();
     }
 
@@ -1407,7 +1427,7 @@ mod tests {
             })
             .unwrap();
         rt.decide(id, InboxDecision::AlwaysAllow, Some("agent"), None).unwrap();
-        assert_eq!(rt.db.rules().unwrap()[0].pattern, "Bash(cargo fmt)");
+        assert_eq!(rt.policy_rules(None)[0]["match"], "Bash(cargo fmt)");
         assert_eq!(rt.db.audit_log(Some("a1"), 1).unwrap()[0].detail["tool_input"]["command"], "cargo fmt");
     }
 
@@ -1462,8 +1482,8 @@ mod tests {
     #[test]
     fn rule_changes_are_audited_with_their_pattern() {
         let (_d, rt) = test_runtime(true);
-        let r = rt.add_rule(RuleScope::Agent, "a1", "Bash(ls)", RuleEffect::Allow, None).unwrap();
-        assert!(rt.revoke_rule(r.id).unwrap());
+        let r = rt.add_rule(RuleScope::Agent, "a1", None, "Bash(ls)", Effect::Allow, None).unwrap();
+        assert!(rt.revoke_rule(r["rule"]["id"].as_str().unwrap(), None).unwrap());
         let log = rt.db.audit_log(None, 2).unwrap();
         assert_eq!((log[0].action.as_str(), log[0].detail["pattern"].as_str()), ("rule_revoked", Some("Bash(ls)")));
         assert_eq!(log[0].detail["effect"], "allow");
@@ -1595,7 +1615,8 @@ mod tests {
             let p = HookPayload::parse(&json!({"hook_event_name": "PermissionRequest", "tool_name": "Bash",
                 "tool_input": {"command": cmd}, "tool_use_id": format!("tu-{cmd}")}));
             let subject = self.subject(&rec);
-            self.permission_request_with(&rec, &Call::from_hook(&p), &subject, None, hold, None)
+            let ev = Evaluation { effect: Effect::User, source: Source::Default, rule: None };
+            self.permission_request_with(&rec, &Call::from_hook(&p), &subject, &ev, hold, None)
         }
     }
 

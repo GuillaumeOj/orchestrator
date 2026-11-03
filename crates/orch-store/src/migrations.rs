@@ -572,6 +572,13 @@ ALTER TABLE messages ADD COLUMN last_error TEXT;
 UPDATE messages SET handed_at_ms = delivered_at_ms WHERE delivered_at_ms IS NOT NULL;
 CREATE INDEX messages_agent_via ON messages(to_agent, via, read_at_ms);
 "#,
+    // 15 (P4.4, FR-1308, D8): the store's permission rules become entries of
+    // the policy files. The core exports each non-revoked row once at its
+    // first start and stamps it here; the table is no longer read (kept, for
+    // one release).
+    r#"
+ALTER TABLE permission_rules ADD COLUMN migrated_at_ms INTEGER;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

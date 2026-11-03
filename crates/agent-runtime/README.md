@@ -21,7 +21,8 @@ No UI, no Tauri: [`orchd`](../orchd/README.md) drives it from the command line.
 | `store` | The runtime's rows in memory, written through to SQLite ([orch-store](../orch-store/README.md)) per change | ADR-005, NFR-2 |
 | `runtime` | The core: hooks → state → Governor, PreToolUse holds, delivery pump, lifecycle, housekeeping | FR-202–207, FR-806 |
 | `inbox` | PermissionRequest from rules or the Inbox, decisions, always-allow rules, PR gate | FR-705, FR-707–709 |
-| `permissions` | Rule patterns and evaluation (deny > ask > allow, project/role/agent scopes) | FR-705, FR-708 |
+| `permissions` | The FR-708 rule pattern grammar (`Tool`, `Tool(prefix:*)`, `Tool(dir/**)`…) | FR-705, FR-708 |
+| `policy` | The permission policy: the core's hard lists (`policy::hard`), `policy.toml` files (global, per project) read, watched and written in place, evaluation (deny > user > overwatch > allow, then `[defaults]`), migration 14 of the store's rules | FR-1308 |
 | `mcp` | orch-mcp tool calls: `commit` and `request_pr`, under the rules, audited | FR-702 gap, ADR-009 |
 | `resources` | Memory-pressure live cap and idle auto-suspend (pure policy + probe) | FR-203, FR-204 |
 | `live_cap` | The base live cap (`governor.live_cap`) and the off-hours cap: read at start, `set_live_caps`, `pacing_settings` | FR-203, FR-816 |
@@ -126,13 +127,32 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
 - `reserve_exhausted` (FR-807) becomes a `budget` Inbox item, once per plan week (also in shadow
   mode: it is a warning).
 
-## Inbox and permissions (FR-705, FR-707–709)
+## Inbox and permissions (FR-705, FR-707–709, FR-1308)
 
-- **PermissionRequest**: a one-shot allow (below) answers first, then the store's rules (`deny` >
-  `ask` > `allow`, scopes project / role / agent, syntax `Tool`, `Tool(exact)`, `Tool(prefix:*)`,
-  `Tool(dir/**)`, `mcp__x__*`). With no deciding rule (or `ask`), an Inbox item `permission`
+- **Hard lists** (`policy::hard`, code constants): always denied — paths in a credential store or
+  the app's `state/` (`~`, `$HOME`, relative paths and symlinks resolved), Edit / Write outside the
+  worktree and `extra_write`, and in any Bash segment `git push`, `gh pr create`, `gh pr merge`, a
+  `git merge` into a protected branch (main, master, the base, a specialist's integration branch);
+  user only — `gh` calls that write, destructive git (`reset --hard`, `clean`, `branch -D`, …),
+  WebFetch / curl / wget to a host outside `network_allow` (or one that can't be read), tools of
+  external MCP servers that write. A hard deny answers at once (actor `core`, a settled chat line
+  `by: core` with the reason); a user-only call always waits for the user.
+- **Policy files**: `<app data>/policy.toml` and per project `.orchestrator/policy.toml` (when the
+  project tracks `.orchestrator/`) or `<app data>/projects/<id>/policy.toml`; `[[rule]]` tables
+  (`match`, `effect` allow | deny | overwatch | user, optional `id`, `role`, `agent`, `note`) and the
+  global `[defaults]` (team `overwatch`, solo `user`). Read at start and on change (watcher, 500 ms
+  debounce); a parse error keeps the last good version and raises one `alert` (`policy_parse`, file
+  and line). Always allow, `rule add` / `rule revoke` write the files with `toml_edit` (comments and
+  order kept). The store's `permission_rules` were exported once (migration 14, `id = "r<row>"`) and
+  are no longer read.
+- **PermissionRequest**: the hard deny list answers first, then a one-shot allow (below; for a
+  user-only call only one the user's decision made), then the policy (global and project rules
+  merged, the most restrictive wins: `deny` > `user` > `overwatch` > `allow`; no rule: the default
+  effect). Allow / deny answer at once (actor `rule:<id>`, a chat line `by: policy`). `user` and
+  `overwatch` (held as `user` until the Overwatch routes it) create an Inbox item `permission`
   (priority 30, payload: `tool`, `tool_input`, `cwd`, `tool_use_id`, `summary`, `description`,
-  `ask_rule`, `always`, project, role) is created and the hook is **held** (a `gate` hold row with the
+  `ask_rule`, `always`, `effect`, `effect_source`, `asks_because`, project, role). Orchestrator MCP
+  tools take no default (no rule: they run); the hard lists apply to them too. The item is created and the hook is **held** (a `gate` hold row with the
   item id) for `permission_hold` (default 300 s, setting `permissions.hold_secs`, always 2 s inside
   orch-hook's deadline; MCP `ask` rules use the same budget). Approve → `allow`; Reject → `deny` "the
   user denied this in the Inbox"; Reply → `deny` with the user's words; Always allow → `allow` + a
@@ -558,7 +578,8 @@ std::thread::spawn({ let rt = rt.clone(); move || server::serve(rt, bus::bind_li
 |---|---|
 | Agents | `start(&AgentSpec)`, `resume`, `suspend`, `kill`, `interrupt`, `deliver`, `attach`/`read_output`/`resize`, `note_user_activity`, `state_json`, `live_ids`, `live_cap` |
 | Governor | `usage_json`, `governor_json`, `pause_all`, `resume_all`, `pause_agent`, `resume_agent`, `run_now`, `cancel`, `undo`, `sprint`, `answer_ask`, `set_shadow`, `set_plan`, `replan`, `tick` (the server loop calls it) |
-| Inbox | `inbox()`, `decide(id, InboxDecision, scope, message)`, `add_rule`, `revoke_rule` (audited); `rt.db.rules()` to list |
+| Inbox | `inbox()`, `decide(id, InboxDecision, scope, message)` |
+| Policy | `add_rule`, `revoke_rule(id, file)` (audited, written to the files), `policy_rules`, `policy_files`, `policy_defaults` / `set_policy_defaults`, `policy_open`, `policy_test`, `hard_check(rec, tool, input, cwd)` |
 | Commits | `commit_for(agent, &CommitRequest, "user")` |
 | Projects | `add_project`, `clone_project`, `projects_overview`, `project_detail(id, with_prs)`, `fetch_project`, `diff`, `remove_worktree`, `removal_plan`, `remove_project`, `relocate_project` |
 | Data | `rt.db` (`orch_store::Store`): `events`, `audit_log`, `search_transcripts`, `usage_since`, `forecasts_since`, `actions`, `terminals`… (read freely; change runtime-owned tables through `rt`) |
