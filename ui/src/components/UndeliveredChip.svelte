@@ -11,7 +11,7 @@
 </script>
 
 {#if chip}
-  <button class="udel" class:warn={chip.warn} title="Waiting {chip.since}" onclick={(e) => (e.stopPropagation(), openDelivery(rec))}>{chip.text}</button>
+  <button class="udel" class:warn={chip.warn} title={chip.since ? `Waiting ${chip.since}` : null} onclick={(e) => (e.stopPropagation(), openDelivery(rec))}>{chip.text}</button>
 {/if}
 
 <style>
