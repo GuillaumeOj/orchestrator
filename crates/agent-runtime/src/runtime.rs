@@ -185,6 +185,8 @@ pub struct Runtime {
     /// The SQLite database (shared with the git service and the UI's queries).
     pub db: orch_store::Store,
     gov: Mutex<Governor>,
+    /// One live-cap change at a time ([`Runtime::set_live_caps`]).
+    pub(crate) live_cap_change: Mutex<()>,
     /// FR-203: the base live cap now (the Governor's `LiveCaps` and the
     /// process cap derive from it); [`Runtime::set_live_caps`] changes it.
     base_cap: std::sync::atomic::AtomicU32,
@@ -523,6 +525,7 @@ impl Runtime {
             store,
             db,
             gov: Mutex::new(gov),
+            live_cap_change: Mutex::new(()),
             base_cap: std::sync::atomic::AtomicU32::new(base_cap),
             usage: Mutex::new(UsageCollector::new()),
             live: Mutex::new(BTreeMap::new()),
@@ -2178,14 +2181,21 @@ impl Runtime {
     /// ask and sprints carry over (`Governor::carry`); a sprint keeps its boost
     /// on the new curve.
     pub fn replan(&self, plan: WeeklyPlan) -> Result<()> {
+        self.rebuild_governor(Some(plan))
+    }
+
+    /// [`Runtime::replan`] on `plan`, or on the current plan (`None`: the
+    /// policy or the base cap changed), read under the Governor's lock.
+    pub(crate) fn rebuild_governor(&self, plan: Option<WeeklyPlan>) -> Result<()> {
         let now = Timestamp::now();
-        if plan.reset_at <= now || plan.week_start > now {
-            bail!("the plan does not cover now");
-        }
         let released = {
             // Held through the rebuild: a turn queued meanwhile on the old
             // Governor would miss the carry and wait on an entry that is gone.
             let mut old = self.gov();
+            let plan = plan.unwrap_or_else(|| old.plan().clone());
+            if plan.reset_at <= now || plan.week_start > now {
+                bail!("the plan does not cover now");
+            }
             let carry = old.carry();
             self.db.save_plan(&plan, orch_store::PlanStatus::Active)?;
             let (gov, released) = restore_governor(
@@ -2305,9 +2315,10 @@ impl Runtime {
             .collect();
         self.watch_startups(now);
         let idle_ms = self.cfg.idle_suspend.map(|d| d.as_millis() as u64);
-        let suspend = resources::to_suspend(&live, self.live_cap(), level, idle_ms, now);
+        let suspend = resources::to_suspend(&live, self.live_cap(), idle_ms, now);
         let freeing = !suspend.is_empty();
         for (id, why) in suspend {
+            let why = if why == resources::OVER_CAP { resources::over_cap_reason(level) } else { why };
             self.event(&id, "auto_suspend", json!({"why": why, "pressure": level}));
             if let Some(me) = self.me.upgrade() {
                 // Suspending waits for the exit: never on the caller's loop.
@@ -2837,7 +2848,7 @@ impl Runtime {
             "inbox": s.inbox.iter().filter(|i| i.open()).collect::<Vec<_>>(),
             "turns": s.turns.iter().rev().take(20).collect::<Vec<_>>(),
             "warnings": self.warnings,
-            "live_cap": {"base": self.base_cap(), "effective": self.live_cap(), "pressure": self.house().pressure.effective, "raw_pressure": self.cfg.memory.level()},
+            "live_cap": {"base": self.base_cap(), "effective": self.live_cap(), "pressure": self.memory_pressure(), "raw_pressure": self.cfg.memory.level()},
             "otlp": self.otlp_endpoint(),
         })
     }

@@ -659,9 +659,10 @@ pub fn project_allocation_set(
 }
 
 /// Settings › Pacing policy: the live caps and what they give (api-contract).
+/// Off the main thread: it computes the Governor's snapshot.
 #[tauri::command]
-pub fn pacing_settings(core: CoreState) -> Res<agent_runtime::live_cap::PacingSettings> {
-    core.pacing_settings().map_err(e)
+pub async fn pacing_settings(core: CoreState<'_>) -> Res<agent_runtime::live_cap::PacingSettings> {
+    blocking(core, |c| c.pacing_settings()).await
 }
 
 /// Sets `live_cap` and/or `off_hours_live_cap` (absent = unchanged), applied

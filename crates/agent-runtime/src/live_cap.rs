@@ -3,9 +3,7 @@
 //! (per pressure state) and the process cap under memory pressure; changing
 //! it rebuilds the Governor at once.
 
-use std::sync::Mutex;
-
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use governor::jiff::Timestamp;
 use serde::Serialize;
 use serde_json::json;
@@ -21,9 +19,6 @@ pub const LIVE_CAP_MAX: u32 = 20;
 pub const OFF_HOURS_LIVE_CAP_MIN: u32 = 0;
 pub const OFF_HOURS_LIVE_CAP_MAX: u32 = 20;
 
-/// One change at a time: each reads the current values, then rebuilds.
-static SETTING: Mutex<()> = Mutex::new(());
-
 /// The stored base cap: the default when none is stored; `Err` (a warning
 /// for the log) when the stored value is not a whole number in 1–20.
 pub fn stored(db: &orch_store::Store) -> Result<u32, String> {
@@ -32,8 +27,8 @@ pub fn stored(db: &orch_store::Store) -> Result<u32, String> {
         Ok(_) => return Ok(DEFAULT_LIVE_CAP),
         Err(e) => return Err(format!("{LIVE_CAP_KEY}: {e:#}; using {DEFAULT_LIVE_CAP}")),
     };
-    match v.as_u64().filter(|n| (LIVE_CAP_MIN as u64..=LIVE_CAP_MAX as u64).contains(n)) {
-        Some(n) => Ok(n as u32),
+    match v.as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| check_live_cap(*n).is_ok()) {
+        Some(n) => Ok(n),
         None => Err(format!("{LIVE_CAP_KEY} {v} is outside {LIVE_CAP_MIN}–{LIVE_CAP_MAX}; using {DEFAULT_LIVE_CAP}")),
     }
 }
@@ -158,48 +153,29 @@ impl Runtime {
     /// current value, leaves a cap as it is.
     pub fn set_live_caps(&self, live_cap: Option<u32>, off_hours: Option<u32>) -> Result<()> {
         check(live_cap, off_hours)?;
-        let _one = SETTING.lock().unwrap_or_else(|e| e.into_inner());
-        let (base, old_off, plan) =
-            self.with_governor(|g| (self.base_cap(), g.policy().off_hours_live_cap, g.plan().clone()));
-        // The cap in effect already (`--cap` gave it): nothing to apply, but
-        // the setting is the user's choice for the next start.
-        if let Some(n) = live_cap.filter(|n| *n == base) {
-            if self.db.setting(LIVE_CAP_KEY)?.and_then(|v| v.as_u64()) != Some(n as u64) {
-                self.db.set_setting(LIVE_CAP_KEY, &json!(n))?;
-            }
+        let _one = self.live_cap_change.lock().unwrap_or_else(|e| e.into_inner());
+        let base = self.base_cap();
+        let old_off = self.with_governor(|g| g.policy().off_hours_live_cap);
+        // As stored (none, or a value `--cap` overrides): a failed change puts it back.
+        let stored = self.db.setting(LIVE_CAP_KEY)?.unwrap_or(serde_json::Value::Null);
+        // The setting is the user's choice for the next start, even when the
+        // cap in effect (`--cap`) already is that value.
+        if let Some(n) = live_cap.filter(|n| stored.as_u64() != Some(*n as u64)) {
+            self.db.set_setting(LIVE_CAP_KEY, &json!(n))?;
         }
         let live_cap = live_cap.filter(|n| *n != base);
         let off_hours = off_hours.filter(|n| *n != old_off);
         if live_cap.is_none() && off_hours.is_none() {
             return Ok(());
         }
-        let now = Timestamp::now();
-        if plan.reset_at <= now || plan.week_start > now {
-            // The week is just rolling over (`tick` moves the Governor on).
-            return Err(anyhow!("the plan week is changing: try again in a moment"));
+        if let Some(n) = live_cap {
+            self.set_base_cap(n);
         }
-        // The stored value as it was (none, or one `--cap` overrides): a
-        // failed change puts it back, never the base in effect.
-        let old_stored = match live_cap {
-            Some(_) => Some(self.db.setting(LIVE_CAP_KEY)?.unwrap_or(serde_json::Value::Null)),
-            None => None,
-        };
-        // Reads the base and the stored policy. Failed at any step: nothing changes.
-        let applied = (|| {
-            if let Some(n) = live_cap {
-                self.db.set_setting(LIVE_CAP_KEY, &json!(n))?;
-                self.set_base_cap(n);
-            }
-            if let Some(n) = off_hours {
-                self.update_policy(|p| p.off_hours_live_cap = n)?;
-            }
-            self.replan(plan)
-        })();
-        if let Err(e) = applied {
-            if let Some(old) = &old_stored {
-                self.set_base_cap(base);
-                let _ = self.db.set_setting(LIVE_CAP_KEY, old);
-            }
+        // Rebuilt from the base and the stored policy. Failed: nothing changes.
+        let applied = off_hours.map_or(Ok(()), |n| self.update_policy(|p| p.off_hours_live_cap = n));
+        if let Err(e) = applied.and_then(|()| self.rebuild_governor(None)) {
+            self.set_base_cap(base);
+            let _ = self.db.set_setting(LIVE_CAP_KEY, &stored);
             if off_hours.is_some() {
                 let _ = self.update_policy(|p| p.off_hours_live_cap = old_off);
             }
