@@ -473,8 +473,8 @@ impl Core {
         let rt = self.runtime()?;
         let plan = form.apply(&rt.with_governor(|g| g.plan().clone()))?;
         // Pacing options live in the policy; the replan below rebuilds the Governor with it.
-        if let Some(cap) = form.off_hours_live_cap.filter(|c| *c > 20) {
-            bail!("off-hours live cap {cap}: use 0–20");
+        if let Some(cap) = form.off_hours_live_cap {
+            agent_runtime::live_cap::check_off_hours(cap)?;
         }
         if form.per_model_weights.is_some() || form.off_hours_live_cap.is_some() {
             rt.update_policy(|p| {
@@ -535,6 +535,23 @@ impl Core {
             rt.replan(next)?;
         }
         self.project_allocation(project)
+    }
+
+    /// Settings › Pacing policy (api-contract `pacing_settings`).
+    pub fn pacing_settings(&self) -> Result<agent_runtime::live_cap::PacingSettings> {
+        Ok(self.runtime()?.pacing_settings())
+    }
+
+    /// Sets the base and the off-hours live caps (absent = unchanged); they
+    /// apply now. Returns the new view.
+    pub fn set_pacing_settings(
+        &self,
+        live_cap: Option<u32>,
+        off_hours_live_cap: Option<u32>,
+    ) -> Result<agent_runtime::live_cap::PacingSettings> {
+        let rt = self.runtime()?;
+        rt.set_live_caps(live_cap, off_hours_live_cap)?;
+        Ok(rt.pacing_settings())
     }
 
     /// FR-812: leave (or go back to) shadow mode. Takes effect now.

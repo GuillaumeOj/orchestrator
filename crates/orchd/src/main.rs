@@ -587,7 +587,7 @@ fn serve(paths: AppPaths, mut a: Args) -> Result<()> {
     cfg.shadow = !a.flag("--enforce");
     let recover = !a.flag("--no-recover");
     if let Some(c) = a.opt("--cap")? {
-        cfg.base_cap = c.parse()?;
+        cfg.base_cap = Some(c.parse()?);
     }
     if let Some(h) = a.opt("--hold-secs")? {
         cfg.hold = Duration::from_secs(h.parse()?);

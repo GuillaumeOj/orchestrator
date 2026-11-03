@@ -189,7 +189,7 @@ impl LiveAgent {
 /// Agents to suspend now: idle ones past `idle_after_ms`, then, while more
 /// agents are live than `cap`, the least recently active idle ones. Working
 /// agents are never stopped; reserved ones (team leads) don't count toward
-/// the cap and are never stopped for it.
+/// the cap and are never stopped for it. Reasons: `idle`, [`OVER_CAP`].
 pub fn to_suspend(
     agents: &[LiveAgent],
     cap: u32,
@@ -213,7 +213,7 @@ pub fn to_suspend(
             if over == 0 {
                 break;
             }
-            out.push((a.id.clone(), "memory_pressure"));
+            out.push((a.id.clone(), OVER_CAP));
             over -= 1;
         }
     }
@@ -271,6 +271,16 @@ pub fn slot_victim(
             .min_by_key(|a| a.last_activity_ms)
             .map(|a| (w.id.clone(), a.id.clone()))
     })
+}
+
+/// [`to_suspend`]'s reason for an agent above the cap.
+pub const OVER_CAP: &str = "over_cap";
+
+/// What an over-cap suspend is logged as: `memory_pressure` under pressure,
+/// else `live_cap` (the user lowered the cap). The weekly report counts
+/// only the first.
+pub fn over_cap_reason(level: PressureLevel) -> &'static str {
+    if level == PressureLevel::Normal { "live_cap" } else { "memory_pressure" }
 }
 
 #[cfg(test)]
@@ -361,7 +371,7 @@ mod tests {
         // Pressure: cap 1 → also the next idle one; the working agent stays.
         assert_eq!(
             to_suspend(&agents, 1, Some(10 * min), now),
-            vec![("old-idle".to_string(), "idle"), ("idle".to_string(), "memory_pressure")]
+            vec![("old-idle".to_string(), "idle"), ("idle".to_string(), OVER_CAP)]
         );
         // Attached, queued work or background tasks protect an idle agent.
         agents[1].attached = true;
@@ -415,12 +425,19 @@ mod tests {
         // Cap 2: back and front fit, the lead doesn't count.
         assert!(to_suspend(&agents, 2, None, now).is_empty());
         // Cap 1: back goes, never the lead (older, idle).
-        assert_eq!(to_suspend(&agents, 1, None, now), vec![("back".to_string(), "memory_pressure")]);
+        assert_eq!(to_suspend(&agents, 1, None, now), vec![("back".to_string(), OVER_CAP)]);
         // Idle past the timer: suspended only once its cache went cold.
         let mut warm = agents[0].clone();
         warm.warm_until_ms = now + 1;
         assert!(to_suspend(&[warm.clone()], 3, Some(10), now).is_empty());
         warm.warm_until_ms = now;
         assert_eq!(to_suspend(&[warm], 3, Some(10), now), vec![("lead".to_string(), "idle")]);
+    }
+
+    #[test]
+    fn an_over_cap_suspend_is_live_cap_unless_memory_is_under_pressure() {
+        assert_eq!(over_cap_reason(PressureLevel::Normal), "live_cap");
+        assert_eq!(over_cap_reason(PressureLevel::Warn), "memory_pressure");
+        assert_eq!(over_cap_reason(PressureLevel::Critical), "memory_pressure");
     }
 }

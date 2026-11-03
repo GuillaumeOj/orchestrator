@@ -63,7 +63,10 @@ pub struct RuntimeConfig {
     pub otel_endpoint: Option<String>,
     /// FR-812: log governor decisions without enforcing them.
     pub shadow: bool,
-    pub base_cap: u32,
+    /// FR-203: the base live cap for this run (`orchd serve --cap`), not
+    /// stored. `None` = the `governor.live_cap` setting, else
+    /// [`DEFAULT_LIVE_CAP`](crate::live_cap::DEFAULT_LIVE_CAP).
+    pub base_cap: Option<u32>,
     /// How long a PreToolUse waits for the Governor before denying (ADR-007: "a few seconds").
     pub hold: Duration,
     pub rows: u16,
@@ -133,7 +136,7 @@ impl RuntimeConfig {
             projects_root: crate::transcript::projects_root(&home),
             otel_endpoint: None,
             shadow: true,
-            base_cap: 3,
+            base_cap: None,
             hold: Duration::from_secs(5),
             rows: 50,
             cols: 160,
@@ -182,6 +185,11 @@ pub struct Runtime {
     /// The SQLite database (shared with the git service and the UI's queries).
     pub db: orch_store::Store,
     gov: Mutex<Governor>,
+    /// One live-cap change at a time ([`Runtime::set_live_caps`]).
+    pub(crate) live_cap_change: Mutex<()>,
+    /// FR-203: the base live cap now (the Governor's `LiveCaps` and the
+    /// process cap derive from it); [`Runtime::set_live_caps`] changes it.
+    base_cap: std::sync::atomic::AtomicU32,
     usage: Mutex<UsageCollector>,
     live: Mutex<BTreeMap<String, Arc<Live>>>,
     decisions: Mutex<VecDeque<AdmissionDecision>>,
@@ -474,7 +482,19 @@ impl Runtime {
         // `cfg.shadow = false` forces enforcement (`serve --enforce`, ORCH_ENFORCE);
         // otherwise the user's stored choice decides (FR-812).
         cfg.shadow = cfg.shadow && enforce_chosen(&db) != Some(true);
-        let (gov, released) = restore_governor(&db, &store, &cfg, cfg.shadow, None, now)?;
+        let mut warnings = vec![];
+        let base_cap = match cfg.base_cap {
+            // `orchd serve --cap`: a bad value fails the start.
+            Some(c) => {
+                crate::live_cap::check_live_cap(c)?;
+                c
+            }
+            None => crate::live_cap::stored(&db).unwrap_or_else(|w| {
+                warnings.push(w);
+                crate::live_cap::DEFAULT_LIVE_CAP
+            }),
+        };
+        let (gov, released) = restore_governor(&db, &store, &cfg, base_cap, cfg.shadow, None, now)?;
         let home = crate::paths::home_dir();
         let shell = std::env::var_os("SHELL").map(PathBuf::from).unwrap_or_else(|| "/bin/zsh".into());
         // Independent subprocesses (the login shell can take seconds): run them together.
@@ -486,7 +506,7 @@ impl Runtime {
             let join = "startup probe panicked";
             (path.join().expect(join), version.join().expect(join), git.join().expect(join), identity)
         });
-        let mut warnings = crate::env::parent_env_warnings();
+        warnings.extend(crate::env::parent_env_warnings());
         match version {
             Ok(VersionCheck::Untested(v)) => {
                 warnings.push(format!("claude {v} is newer than the last tested version: run the contract tests (R2)"))
@@ -505,6 +525,8 @@ impl Runtime {
             store,
             db,
             gov: Mutex::new(gov),
+            live_cap_change: Mutex::new(()),
+            base_cap: std::sync::atomic::AtomicU32::new(base_cap),
             usage: Mutex::new(UsageCollector::new()),
             live: Mutex::new(BTreeMap::new()),
             decisions: Mutex::new(VecDeque::new()),
@@ -620,7 +642,7 @@ impl Runtime {
 
     /// Tells the Governor how many `claude` processes run and the memory cap
     /// on them (FR-203); spawns it held wait for a free slot.
-    fn sync_process_slots(&self) {
+    pub(crate) fn sync_process_slots(&self) {
         let releases = self.gov().set_process_slots(self.live_count(), self.live_cap(), Timestamp::now());
         self.handle_releases(releases);
     }
@@ -2122,7 +2144,21 @@ impl Runtime {
 
     /// FR-203: the live-agent cap now (base, lowered under memory pressure).
     pub fn live_cap(&self) -> u32 {
-        resources::effective_cap(self.cfg.base_cap, self.house().pressure.effective)
+        resources::effective_cap(self.base_cap(), self.memory_pressure())
+    }
+
+    /// FR-203: the base live cap in effect (the setting, `--cap`, else 3).
+    pub fn base_cap(&self) -> u32 {
+        self.base_cap.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn set_base_cap(&self, cap: u32) {
+        self.base_cap.store(cap, Ordering::SeqCst);
+    }
+
+    /// FR-203: the memory pressure level that sets the cap (with hysteresis).
+    pub fn memory_pressure(&self) -> resources::PressureLevel {
+        self.house().pressure.effective
     }
 
     /// The Week planner's confirmed plan (FR-802): replaces the current one.
@@ -2145,18 +2181,32 @@ impl Runtime {
     /// ask and sprints carry over (`Governor::carry`); a sprint keeps its boost
     /// on the new curve.
     pub fn replan(&self, plan: WeeklyPlan) -> Result<()> {
+        self.rebuild_governor(Some(plan))
+    }
+
+    /// [`Runtime::replan`] on `plan`, or on the current plan (`None`: the
+    /// policy or the base cap changed), read under the Governor's lock.
+    pub(crate) fn rebuild_governor(&self, plan: Option<WeeklyPlan>) -> Result<()> {
         let now = Timestamp::now();
-        if plan.reset_at <= now || plan.week_start > now {
-            bail!("the plan does not cover now");
-        }
         let released = {
             // Held through the rebuild: a turn queued meanwhile on the old
             // Governor would miss the carry and wait on an entry that is gone.
             let mut old = self.gov();
+            let plan = plan.unwrap_or_else(|| old.plan().clone());
+            if plan.reset_at <= now || plan.week_start > now {
+                bail!("the plan does not cover now");
+            }
             let carry = old.carry();
             self.db.save_plan(&plan, orch_store::PlanStatus::Active)?;
-            let (gov, released) =
-                restore_governor(&self.db, &self.store, &self.cfg, plan.shadow_mode, Some(carry), now)?;
+            let (gov, released) = restore_governor(
+                &self.db,
+                &self.store,
+                &self.cfg,
+                self.base_cap(),
+                plan.shadow_mode,
+                Some(carry),
+                now,
+            )?;
             // The new Governor's action ids start again: store them under a new key.
             let prev = self.boot_ms.load(Ordering::SeqCst);
             self.boot_ms.store(now_ms().max(prev + 1), Ordering::SeqCst);
@@ -2268,6 +2318,7 @@ impl Runtime {
         let suspend = resources::to_suspend(&live, self.live_cap(), idle_ms, now);
         let freeing = !suspend.is_empty();
         for (id, why) in suspend {
+            let why = if why == resources::OVER_CAP { resources::over_cap_reason(level) } else { why };
             self.event(&id, "auto_suspend", json!({"why": why, "pressure": level}));
             if let Some(me) = self.me.upgrade() {
                 // Suspending waits for the exit: never on the caller's loop.
@@ -2797,7 +2848,7 @@ impl Runtime {
             "inbox": s.inbox.iter().filter(|i| i.open()).collect::<Vec<_>>(),
             "turns": s.turns.iter().rev().take(20).collect::<Vec<_>>(),
             "warnings": self.warnings,
-            "live_cap": {"base": self.cfg.base_cap, "effective": self.live_cap(), "pressure": self.house().pressure.effective, "raw_pressure": self.cfg.memory.level()},
+            "live_cap": {"base": self.base_cap(), "effective": self.live_cap(), "pressure": self.memory_pressure(), "raw_pressure": self.cfg.memory.level()},
             "otlp": self.otlp_endpoint(),
         })
     }
@@ -2858,7 +2909,7 @@ fn project_for_dir(projects: &[orch_store::Project], name: &str) -> Option<Strin
 }
 
 /// The Governor at start: the active plan when its week is still running
-/// (else the default week), the stored policy (live cap from the config),
+/// (else the default week), the stored policy (live caps from `base_cap`),
 /// this week's statusline samples replayed with their cost class (NFR-2), and
 /// the carry-over state (`carry`, else the stored one): pauses, deferrals, the
 /// ask, sprints and the queue entries whose turns still wait for them. A turn
@@ -2867,12 +2918,13 @@ fn restore_governor(
     db: &orch_store::Store,
     store: &Store,
     cfg: &RuntimeConfig,
+    base_cap: u32,
     shadow: bool,
     carry: Option<governor::Carry>,
     now: Timestamp,
 ) -> Result<(Governor, Vec<Release>)> {
     let mut policy = db.policy(POLICY_ID)?.unwrap_or_default();
-    policy.live_caps = governor::LiveCaps::from_base(cfg.base_cap);
+    policy.live_caps = governor::LiveCaps::from_base(base_cap);
     db.save_policy(POLICY_ID, &policy)?;
     let mut plan = match db.active_plan()? {
         Some(p) if p.reset_at > now && p.week_start <= now => p,

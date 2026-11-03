@@ -243,6 +243,8 @@ pub fn run() {
             commands::project_allocation,
             commands::project_allocation_set,
             commands::governor_enforce,
+            commands::pacing_settings,
+            commands::pacing_settings_set,
             commands::trust_command,
             commands::settings_get,
             commands::settings_set,
