@@ -26,6 +26,20 @@ F1 ×4 (swallowed Enter, modal + Esc, lost hook applied late, three unacknowledg
 ## Bugs found in T-204/206/207 code
 None. Two things worth knowing from building the simulation: a limit placed by a StopFailure is cleared only by a **newer** reading of the same window with the same reset (the fake sends 100 % then 20 %, strictly later), and a crash mid-turn leaves the interrupted turn `Delivered` (the next message restarts the agent; that orphan turn is not requeued).
 
+## Follow-ups from lead's triage and the ui review (this round)
+- **ui's fixes from e3cf530** folded in: `restart_fresh` resets the crash budget, dead `blocker::kind` dropped. The third (`close_delivered` keeps the decision on a lookup error) was already in (`c73e764`).
+- **Model-switch fallback:** when the background suspend of a model switch fails, the agent is marked (`House.switch_failed`); `task_boundary` then lets the task run on the current process instead of waiting forever. Unit test `a_failed_switch_stop_lets_the_task_run_on_the_current_model`.
+- **A User turn bypasses the crash budget:** `pump_one` resumes a crashed agent for a User turn even with the budget used up and a `startup` item open, and resets the budget (`clear_crash`). Message/Continue/Task turns still count. Chaos test `f3_an_agent_that_keeps_crashing…` ends with a user message resuming it; the unit test `a_crashed_agent_with_work_is_resumed_twice_an_hour_then_waits` now uses a Message turn for the budget and checks the user bypass.
+- **Statusline reading vs a real limit (was LEFT 4), proved and fixed:** governor test `a_reading_a_little_under_100_does_not_lift_a_limit_the_api_reported` failed before the change (97 % lifted a limit placed by a hit). A limit now ends early only on a reading under 95 % (`LIMIT_LIFT_BELOW_PCT`) of the same window and reset.
+- **Retry on an invariant decision:** it now takes the stuck paste (a `Delivering` turn carrying the decision's messages) back to the queue and restores `ready_at`; before, the message stayed carried by a turn nobody would paste, and the agent never took input again. The key is released on every retry and the invariant counts the message's age from the retry, so a second failure is raised again after one window, not at once. Chaos test `retry_on_an_invariant_decision_resends_and_a_second_failure_is_raised_again` found the `ready_at` bug.
+- **`spool::take` losing events on a crash mid-replay:** `take` now returns `Taken`; the renamed file stays until `Taken::done()` (called after every record is applied), and the next `take` reads leftover `.replaying.*` files first, oldest first. A record applied twice is dropped as stale. Test in `spool.rs`.
+- **Checked with the fake CLI:**
+  - inject/pump double delivery: `f8…` counts the note once (not pasted again after the injection);
+  - `on_repeated_failure` dedup: the key carried the time, so every failed Continue raised a decision; it now raises none while one is open (`a_repeated_failure_keeps_one_open_decision`);
+  - `render_for` order: `messages_are_rendered_in_send_order_and_a_long_one_keeps_its_place` (send order kept, the long one cut with its file, nothing dropped). No bug there.
+
+Suite: `cargo test -p agent-runtime --lib chaos::` 19 passed, 5 runs in a row; clippy and fmt clean. The rest of `-p agent-runtime --lib` has only the environmental failures (otlp, procs, `pty::tests`, `worktree_watch`, the 3 `pacing` tests that hardcode `/tmp`, `otlp_requests_become_usage_samples`).
+
 ## First version (kept)
 
 ### What was built

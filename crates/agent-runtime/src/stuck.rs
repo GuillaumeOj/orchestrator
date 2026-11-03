@@ -185,9 +185,9 @@ impl Runtime {
                 .unread(&rec)
                 .into_iter()
                 .filter(|m| {
-                    m.failed_at_ms.is_none()
-                        && m.delivered_at_ms.is_none()
-                        && now.saturating_sub(m.created_at_ms) > limit
+                    // A retry starts the message's clock again.
+                    let since = self.house().retried_at.get(&m.id).copied().unwrap_or(0).max(m.created_at_ms);
+                    m.failed_at_ms.is_none() && m.delivered_at_ms.is_none() && now.saturating_sub(since) > limit
                 })
                 .collect();
             let Some(first) = old.first() else { continue };
@@ -320,7 +320,14 @@ impl Runtime {
             .store
             .write(|s| {
                 let mut n = 0;
-                for t in s.turns.iter_mut().filter(|t| turns.contains(&t.id) && t.status == TurnStatus::Failed) {
+                // Failed turns of a watchdog decision, and a paste still in
+                // flight that carries a message of an invariant decision.
+                let carries = |t: &crate::store::TurnRow| t.messages.iter().any(|m| ids.contains(m));
+                for t in s.turns.iter_mut().filter(|t| {
+                    t.agent_id == agent
+                        && ((turns.contains(&t.id) && t.status == TurnStatus::Failed)
+                            || (t.status == TurnStatus::Delivering && carries(t)))
+                }) {
                     t.requeue();
                     t.attempts = 0;
                     n += 1;
@@ -328,6 +335,13 @@ impl Runtime {
                 n
             })
             .unwrap_or(0);
+        if requeued > 0
+            && let Some(l) = self.live(&agent)
+        {
+            // A paste that was in flight zeroed `ready_at`; the agent takes input again.
+            let at = orch_protocol::now_ms() + crate::delivery::AFTER_STOP.as_millis() as u64;
+            l.ready_at_ms.store(at, std::sync::atomic::Ordering::SeqCst);
+        }
         if !ids.is_empty() {
             self.db.retry_messages(&ids)?;
         }
@@ -356,13 +370,19 @@ impl Runtime {
             "redelivered",
             json!({"agent": agent, "messages": ids, "attempt": 0, "why": "retry"}),
         );
-        // A paste that failed again after this retry is a new episode: the
-        // watchdog's key is released (the invariant's stays, or the message,
-        // still old and unread, would raise a second decision at once).
-        if !it.payload["turns"].as_array().is_none_or(Vec::is_empty)
-            && let Some(key) = it.payload["key"].as_str()
+        // What fails again after this retry is a new episode: the key is
+        // released, and the invariant counts the messages' age from now, so
+        // it does not raise a second decision at once.
         {
-            self.house().delivery_raised.remove(key);
+            let mut h = self.house();
+            for id in &ids {
+                h.retried_at.insert(*id, orch_protocol::now_ms());
+            }
+            if let Some(key) = it.payload["key"].as_str() {
+                h.delivery_raised.remove(key);
+            }
+        }
+        if let Some(key) = it.payload["key"].as_str() {
             let retired = json!(format!("{key}:retried"));
             let _ = self.store.write(|s| {
                 if let Some(i) = s.inbox.iter_mut().find(|i| i.id == item) {

@@ -540,10 +540,11 @@ impl Runtime {
         // Taken before the check: a live hook waits for a sweep that took the
         // spool, so its own event never applies before the older ones.
         let _replaying = self.replaying.lock().unwrap_or_else(|e| e.into_inner());
-        if !spool::spool_path(&dir).exists() {
+        if !spool::pending(&dir) {
             return;
         }
-        let Ok((records, malformed)) = spool::take(&dir) else { return };
+        let Ok(mut taken) = spool::take(&dir) else { return };
+        let (records, malformed) = (std::mem::take(&mut taken.records), taken.malformed);
         let Some(last) = self.store.read(|s| s.agents.get(id).map(|a| a.last_event_at_ms.unwrap_or(0))) else {
             return;
         };
@@ -568,6 +569,8 @@ impl Runtime {
             self.apply_hook(&m, None, true);
             applied += 1;
         }
+        // Applied: only now do the taken files go (a crash before keeps them).
+        taken.done();
         self.event(id, "spool_replayed", json!({"applied": applied, "dropped": dropped, "malformed": malformed}));
     }
 }

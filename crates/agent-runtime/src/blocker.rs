@@ -81,11 +81,6 @@ pub fn of(f: &Facts) -> String {
     }
 }
 
-/// The cause without its detail: `governor:off_hours` → `governor`.
-pub fn kind(blocker: &str) -> &str {
-    blocker.split(':').next().unwrap_or(blocker)
-}
-
 /// The UI label of a blocker (api-contract §1), for Lead notes and card copy.
 pub fn label(blocker: &str) -> String {
     match blocker.split_once(':') {
@@ -147,6 +142,5 @@ mod tests {
         assert_eq!(label("no_ack"), "paste not acknowledged");
         assert_eq!(label("slot"), "waiting for a slot");
         assert_eq!(label("whatever"), "not delivered");
-        assert_eq!((kind("governor:limit"), kind("no_ack")), ("governor", "no_ack"));
     }
 }
