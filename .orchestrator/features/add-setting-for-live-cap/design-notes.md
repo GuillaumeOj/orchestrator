@@ -70,8 +70,8 @@ and dims (opacity), no error text in the block.
 | State | What shows |
 |---|---|
 | **Default** | Saved values (3 and 1 on a fresh install). Apply disabled. Derived `Green 3 · Amber 2 · Red 1 · Catch-up 5`, memory `3 · 2 · 1`. "Now" line. |
-| **Edited** | A field differs from the saved value: Apply enabled, derived block updates live, fields with a change get the standard "modified" mark used by other settings (no new token). "Reset to defaults" enabled when a value is not the default. |
-| **Shadow mode** | Note under the intro, info style (muted icon + text): `Shadow mode is on: the Governor logs the cap without enforcing it. The memory cap still applies.` The Governor row of the derived block is muted with the suffix `logged only`; the memory row stays normal. |
+| **Edited** | A field differs from the saved value: Apply enabled, derived block updates live, a changed field shows `● was 3` after it (the saved value) in `color.accent.default`, as drawn on live-cap-edited.png (new pattern, no new token). "Reset to defaults" enabled when a value is not the default. |
+| **Shadow mode** | Note under the intro, in a bordered box (`border/subtle`, muted icon + text, as drawn on live-cap-shadow-mode.png): `Shadow mode is on: the Governor logs the cap without enforcing it. The memory cap still applies.` The Governor row of the derived block is muted with the suffix `logged only`; the memory row stays normal. |
 | **Above 6** (Live agents > 6) | Warning under the field (warning color + glyph): `More than 6 agents can use 190–255 MB each and use the week sooner. The Governor still paces the week.` Never blocks Apply. |
 | **Lowering** (new Live agents value < `now.live_autonomous`) | Note above Apply, muted: `Working agents finish their turn; new turns wait for a slot.` Shown only while the edit is below the live count. |
 | **No off-hours allowance** (`off_hours_allowance_pct = 0`) | Field stays editable. Note under it: `The plan has no off-hours allowance, so agents don't run off-hours. Set one in the Week planner.` ("Week planner" is a link.) |
@@ -112,10 +112,8 @@ Hint line (muted, bottom of the section, like Integrations):
 **Lead decisions (2026-11-03):** the Now line shows the process cap (`, 3 processes`), since that cap is what holds agents under memory pressure. The off-hours helper says it never exceeds Live agents. The derived values are computed in the core (authoritative) and previewed in JS while the user types (kept). Off-hours validation: one shared validator and one message (`off-hours live agents {n}: use 0–20`) for `plan_set` and `pacing_settings_set` (back). `--cap` is checked against 1–20 at start (back). No UI for it.
 
 
-- Off-hours live agents is applied as the smaller of the state cap and its own value, so 10 with Live agents 3 changes nothing over plan. Copy kept as in the brief; say if the helper should mention it.
-- The "Now" line shows the Governor cap only. `now.process_cap` is not shown; add `· 2 processes` if lead wants it.
-- `--cap` is a headless flag; the app never shows it, so nothing in the UI mentions it.
 - Reset copy uses `live_cap_default` and `off_hours_live_cap_default` from the view, not hardcoded numbers.
+- Lowering note, loading, saving, saved, save error and the off-hours field error have no board: build them from the copy and states table above, with the same parts as the drawn boards.
 
 ## 5. Checklist against ux-brief.md
 
