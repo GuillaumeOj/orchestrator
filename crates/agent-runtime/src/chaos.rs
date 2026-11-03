@@ -718,9 +718,9 @@ mod scenarios {
         let (sim, cli) = sim_with_agent();
         cli.set(|s| s.exit_mid_turn = true);
         let t = sim.say("a1", "this one dies");
-        sim.until("the Continue in the new process", 40, || cli.saw("crashed in the middle of your last turn"));
+        sim.until("the Continue in the new process", 40, || cli.saw("your session crashed mid-turn and was resumed"));
         sim.until("idle again", 20, || sim.state("a1") == AgentState::Idle);
-        assert_eq!(sim.status(&t), T::Failed, "the interrupted turn is closed");
+        assert_eq!(sim.status(&t), T::Done, "the interrupted turn is closed");
         let ev = sim.events("a1", "recovered");
         assert!(ev.iter().any(|e| e["from_state"] == "crashed" && e["how"] == "continue"), "{ev:?}");
         assert!(ev.iter().any(|e| e["from_state"] == "crashed" && e["how"] == "resume"), "{ev:?}");
