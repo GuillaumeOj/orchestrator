@@ -32,6 +32,12 @@ const MAX_ATTEMPTS: u32 = 3;
 /// Setting: seconds a paste may wait for its UserPromptSubmit before the
 /// watchdog checks it.
 pub const ACK_KEY: &str = "delivery.ack_secs";
+/// Delivery events that are kept per agent, off the run timeline.
+pub(crate) const PLUMBING: [&str; 4] = ["handed", "seen", "read", "continue_failed"];
+/// How long a message may stay unread before the invariant raises a decision (§3.7).
+pub const INVARIANT_KEY: &str = "delivery.invariant_secs";
+/// How long a member waits for a process slot before one is freed for it (§3.5).
+pub const SLOT_WAIT_KEY: &str = "delivery.slot_wait_secs";
 const DEFAULT_ACK: Duration = Duration::from_secs(20);
 /// `last_error` of a message handed back because the model did not see all of it.
 const NOT_FULLY_SEEN: &str = "not_fully_seen";
@@ -158,6 +164,12 @@ impl Runtime {
     pub(crate) fn delivery_event(&self, agent: &str, kind: &str, mut detail: Value) {
         if let Some(o) = detail.as_object_mut() {
             o.entry("agent").or_insert_with(|| json!(agent));
+        }
+        // The plumbing of every message (handed, seen, read…) is the agent's
+        // own event: on the run timeline it would push the real events off
+        // its window.
+        if PLUMBING.contains(&kind) {
+            return self.event(agent, kind, detail);
         }
         match self.store.read(|s| s.agents.get(agent).and_then(|a| a.team.as_ref().map(|t| t.run_id.clone()))) {
             Some(run) => self.run_event(&run, Some(agent), kind, detail),
@@ -324,13 +336,19 @@ impl Runtime {
     }
 
     fn ack_ms(&self) -> u64 {
+        self.secs_setting(ACK_KEY, DEFAULT_ACK.as_millis() as u64)
+    }
+
+    /// A delivery bound in seconds from the settings (so tests and users can
+    /// shorten it), at least one second; `default_ms` when unset.
+    pub(crate) fn secs_setting(&self, key: &str, default_ms: u64) -> u64 {
         self.db
-            .setting(ACK_KEY)
+            .setting(key)
             .ok()
             .flatten()
             .and_then(|v| v.as_f64())
             .map(|s| (s.max(1.0) * 1000.0) as u64)
-            .unwrap_or(DEFAULT_ACK.as_millis() as u64)
+            .unwrap_or(default_ms)
     }
 
     /// §3.1: a paste with no UserPromptSubmit within `delivery.ack_secs`.
@@ -530,10 +548,11 @@ impl Runtime {
         // Taken before the check: a live hook waits for a sweep that took the
         // spool, so its own event never applies before the older ones.
         let _replaying = self.replaying.lock().unwrap_or_else(|e| e.into_inner());
-        if !spool::spool_path(&dir).exists() {
+        if !spool::pending(&dir) {
             return;
         }
-        let Ok((records, malformed)) = spool::take(&dir) else { return };
+        let Ok(mut taken) = spool::take(&dir) else { return };
+        let (records, malformed) = (std::mem::take(&mut taken.records), taken.malformed);
         let Some(last) = self.store.read(|s| s.agents.get(id).map(|a| a.last_event_at_ms.unwrap_or(0))) else {
             return;
         };
@@ -558,6 +577,8 @@ impl Runtime {
             self.apply_hook(&m, None, true);
             applied += 1;
         }
+        // Applied: only now do the taken files go (a crash before keeps them).
+        taken.done();
         self.event(id, "spool_replayed", json!({"applied": applied, "dropped": dropped, "malformed": malformed}));
     }
 }

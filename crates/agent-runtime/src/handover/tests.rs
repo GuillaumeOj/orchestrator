@@ -52,6 +52,10 @@ fn turn(rt: &Runtime, id: &str) -> TurnRow {
 
 fn events(rt: &Runtime, kind: &str) -> Vec<Value> {
     rt.db.flush().unwrap();
+    if PLUMBING.contains(&kind) {
+        // Kept per agent, off the run timeline.
+        return rt.db.events(0, Some("a1"), Some(kind), 500).unwrap().into_iter().map(|e| e.detail).collect();
+    }
     rt.db.run_events("r1", 500).unwrap_or_default().into_iter().filter(|e| e.kind == kind).map(|e| e.detail).collect()
 }
 

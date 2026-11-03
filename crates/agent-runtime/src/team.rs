@@ -626,13 +626,22 @@ impl Runtime {
         }
     }
 
+    /// Chaos suite (§3.8): makes the team-tick step `step` panic on every
+    /// run until cleared with `None`.
+    pub fn inject_tick_fault(&self, step: Option<&str>) {
+        if let Ok(mut t) = self.tick_fault.lock() {
+            *t = step.map(str::to_string);
+        }
+    }
+
     /// One step of the periodic pass under `catch_unwind` (§3.6): a panic is
     /// a `tick_panic` event (on the run's timeline, `run` "-" for none) and
     /// `None`.
     pub(crate) fn tick_step<R>(&self, run: &str, step: &str, f: impl FnOnce() -> R) -> Option<R> {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            #[cfg(test)]
-            tests::maybe_panic(run, step);
+            if self.tick_fault.lock().is_ok_and(|t| t.as_deref() == Some(step)) {
+                panic!("injected panic in {step}");
+            }
             f()
         }));
         match r {
@@ -866,7 +875,14 @@ impl Runtime {
         let keys: std::collections::BTreeSet<String> =
             hits.iter().map(|(id, _, what, start)| format!("{id}:{start}:{what:?}")).collect();
         for (id, run, what, start) in hits {
-            if self.live(&id).is_none() || !self.watchdog_once(format!("{id}:{start}:{what:?}")) {
+            if self.live(&id).is_none() {
+                continue;
+            }
+            // A retried silence is judged again only after another window.
+            let retried = self.house().retried_keys.get(&format!("{id}:working_silent:{start}")).copied();
+            if retried.is_some_and(|t| now.saturating_sub(t) <= NO_PROGRESS_MS)
+                || !self.watchdog_once(format!("{id}:{start}:{what:?}"))
+            {
                 continue;
             }
             let (text, detail) = match what {
@@ -1132,6 +1148,8 @@ impl Runtime {
     /// its run with no unread messages is suspended ([`crate::resources::slot_victim`]).
     pub(crate) fn free_slot_for_messages(&self, live: &[crate::resources::LiveAgent], cap: u32, now: u64) {
         use crate::resources::{Member, SLOT_WAIT_MS, SlotWaiter, at_cap};
+        // The wait is a setting (`delivery.slot_wait_secs`), longer or shorter.
+        let wait = self.secs_setting(crate::handover::SLOT_WAIT_KEY, SLOT_WAIT_MS);
         if !at_cap(live, cap) {
             return;
         }
@@ -1160,7 +1178,7 @@ impl Runtime {
                 Some(SlotWaiter { id: a.id.clone(), run: run_of(a), since_ms })
             })
             .collect();
-        if !waiters.iter().any(|w| now.saturating_sub(w.since_ms) >= SLOT_WAIT_MS) {
+        if !waiters.iter().any(|w| now.saturating_sub(w.since_ms) >= wait) {
             return;
         }
         // Then the live members of the waiters' runs.
@@ -1169,12 +1187,13 @@ impl Runtime {
             .filter(|a| live.iter().any(|l| l.id == a.id) && waiters.iter().any(|w| w.run == run_of(a)))
             .map(|a| (a.id.clone(), Member { run: run_of(a), unread: !self.unread(a).is_empty() }))
             .collect();
-        let Some((waiter, victim)) = crate::resources::slot_victim(&waiters, live, &members, cap, now) else { return };
+        let Some((waiter, victim)) = crate::resources::slot_victim(&waiters, live, &members, cap, now, wait) else {
+            return;
+        };
         if self.suspend_in_background(&victim, "slot") {
-            let run = members.get(&victim).map(|m| m.run.clone()).unwrap_or_default();
             let detail = json!({"for": waiter, "suspended": victim});
-            self.event(&victim, "slot_freed", detail.clone());
-            self.run_event(&run, Some(&victim), "slot_freed", detail);
+            // The agent's event only: not on the run timeline (plumbing).
+            self.event(&victim, "slot_freed", detail);
         }
     }
 
@@ -2126,27 +2145,12 @@ pub fn read_feature_asset(worktree: &Path, slug: &str, path: &str) -> Result<Val
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::runtime::tests::test_runtime;
     use orch_git::fixtures::scratch_repo;
     use orch_protocol::{InboxDecision, McpMsg};
     use std::sync::Arc;
-
-    thread_local! {
-        /// The step [`Runtime::tick_step`] panics in, on this thread (§3.6 tests).
-        static PANIC_IN: std::cell::RefCell<Option<&'static str>> = const { std::cell::RefCell::new(None) };
-    }
-
-    pub(super) fn maybe_panic(_run: &str, step: &str) {
-        if PANIC_IN.with(|p| *p.borrow() == Some(step)) {
-            panic!("injected panic in {step}");
-        }
-    }
-
-    fn panic_in(step: Option<&'static str>) {
-        PANIC_IN.with(|p| *p.borrow_mut() = step);
-    }
 
     /// §3.6 (F9): a panic in one step of a run is a `tick_panic` event, and
     /// the run's other steps carry on (here: delivery), so do later ticks.
@@ -2168,9 +2172,9 @@ mod tests {
             })
             .unwrap();
         ok(&rt, back, "send_message", json!({"to": "lead", "body": "a question"}));
-        panic_in(Some("dispatch"));
+        rt.inject_tick_fault(Some("dispatch"));
         rt.team_tick();
-        panic_in(None);
+        rt.inject_tick_fault(None);
         let ev = rt.db.last_run_event(&run.id, "tick_panic").unwrap().expect("tick_panic");
         assert_eq!((ev.detail["run"].as_str(), ev.detail["step"].as_str()), (Some(run.id.as_str()), Some("dispatch")));
         assert!(ev.detail["message"].as_str().unwrap().contains("injected panic"));
@@ -2251,6 +2255,10 @@ mod tests {
 
     fn delivery_items(rt: &Runtime) -> Vec<orch_store::InboxItem> {
         rt.store.read(|s| s.inbox.iter().filter(|i| i.kind == "delivery").cloned().collect())
+    }
+
+    fn open_delivery_items(rt: &Runtime) -> Vec<orch_store::InboxItem> {
+        delivery_items(rt).into_iter().filter(|i| i.open()).collect()
     }
 
     fn idle(rt: &Runtime, id: &str) {
@@ -2453,13 +2461,64 @@ mod tests {
         // A busy lead is not idle: nothing is raised for it.
     }
 
+    /// H: after Retry, the same stuck_wait episode raises a new decision once
+    /// another window has passed (not at once), and again after that.
+    #[test]
+    fn retry_of_a_stuck_wait_decision_raises_again_after_a_window() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        idle(&rt, lead);
+        idle(&rt, back);
+        ok(&rt, back, "send_message", json!({"to": "lead", "body": "which way?"}));
+        let run = rt.db.runs(None, true).unwrap()[0].id.clone();
+        let cx = rt.run_ctx(&run).unwrap();
+        let later = |min: u64| now_ms() + min * 60_000;
+        rt.supervise(&cx, later(27));
+        let first = open_delivery_items(&rt).remove(0);
+        rt.retry_delivery(first.id).unwrap();
+        assert!(open_delivery_items(&rt).is_empty(), "closed by the retry");
+        // The test's clock runs ahead: the retry happened at minute 27.
+        let key = format!("{back}:stuck_wait:{}", first.payload["since_ms"]);
+        assert!(rt.house().retried_keys.contains_key(&key), "{key}");
+        rt.house().retried_keys.insert(key, later(27));
+        rt.supervise(&cx, later(28));
+        assert!(open_delivery_items(&rt).is_empty(), "not at once: the wait counts from the retry");
+        rt.supervise(&cx, later(60));
+        let again = open_delivery_items(&rt);
+        assert_eq!(again.len(), 1, "a second failure of the episode is raised again");
+        assert_ne!(again[0].id, first.id);
+        assert_eq!(again[0].payload["episode"], "stuck_wait");
+    }
+
+    /// H: the same for a silent Working turn.
+    #[test]
+    fn retry_of_a_working_silent_decision_raises_again_after_a_window() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let back = "fx-back-1";
+        ok(&rt, "fx-lead-1", "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        assert!(rt.working_silent(back, 77));
+        let first = open_delivery_items(&rt).remove(0);
+        rt.retry_delivery(first.id).unwrap();
+        assert!(open_delivery_items(&rt).is_empty());
+        // The key is free again; the clock of the episode starts at the retry.
+        assert!(rt.working_silent(back, 77));
+        let again = open_delivery_items(&rt);
+        assert_eq!(again.len(), 1, "raised again for the same turn");
+        assert_ne!(again[0].id, first.id);
+    }
+
     fn call(rt: &Runtime, agent: &str, tool: &str, args: Value) -> (bool, String) {
         let (err, text, _) = rt
             .on_mcp(&McpMsg { agent_id: agent.into(), tool: tool.into(), arguments: args, deadline_ms: 10_000 }, None);
         (err, text)
     }
 
-    fn ok(rt: &Runtime, agent: &str, tool: &str, args: Value) -> String {
+    pub(crate) fn ok(rt: &Runtime, agent: &str, tool: &str, args: Value) -> String {
         let (err, text) = call(rt, agent, tool, args);
         assert!(!err, "{agent} {tool}: {text}");
         text
@@ -2491,7 +2550,7 @@ mod tests {
         (d, rt, rd, repo, p.id)
     }
 
-    fn write_commit(rt: &Runtime, agent: &str, file: &str, body: &str) {
+    pub(crate) fn write_commit(rt: &Runtime, agent: &str, file: &str, body: &str) {
         let wt = rt.store.read(|s| s.agents[agent].worktree.clone());
         let p = wt.join(file);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -2561,7 +2620,7 @@ mod tests {
     }
 
     /// A launched feature past its spec gate.
-    fn approved(rt: &Runtime, pid: &str) -> TeamRun {
+    pub(crate) fn approved(rt: &Runtime, pid: &str) -> TeamRun {
         approved_with(rt, pid, "bugfix-squad")
     }
 

@@ -246,7 +246,7 @@ pub struct Member {
 }
 
 /// §3.5 (F6): the slot deadlock. When the live agents fill the cap and a
-/// member has waited [`SLOT_WAIT_MS`] with unread messages, the least
+/// member has waited `wait_ms` ([`SLOT_WAIT_MS`] by default) with unread messages, the least
 /// recently active live idle member of its run with no unread messages is
 /// suspended for it: `(waiter, victim)`, one per pass. Never a reserved
 /// agent (the Lead's own slot), never one that is not suspendable.
@@ -256,12 +256,13 @@ pub fn slot_victim(
     members: &BTreeMap<String, Member>,
     cap: u32,
     now_ms: u64,
+    wait_ms: u64,
 ) -> Option<(String, String)> {
     if !at_cap(live, cap) {
         return None;
     }
     let mut waiters: Vec<&SlotWaiter> =
-        waiters.iter().filter(|w| now_ms.saturating_sub(w.since_ms) >= SLOT_WAIT_MS).collect();
+        waiters.iter().filter(|w| now_ms.saturating_sub(w.since_ms) >= wait_ms).collect();
     waiters.sort_by_key(|w| w.since_ms);
     waiters.into_iter().find_map(|w| {
         live.iter()
@@ -389,20 +390,20 @@ mod tests {
         .into();
         let w = vec![SlotWaiter { id: "r1-back".into(), run: "r1".into(), since_ms: 0 }];
         // Under 2 min: nothing yet.
-        assert_eq!(slot_victim(&w, &live, &members, 3, SLOT_WAIT_MS - 1), None);
+        assert_eq!(slot_victim(&w, &live, &members, 3, SLOT_WAIT_MS - 1, SLOT_WAIT_MS), None);
         // The least recently active idle member of the same run, never the
         // lead, never another run's (r2-back is older).
         let at = SLOT_WAIT_MS + 10 * min;
-        assert_eq!(slot_victim(&w, &live, &members, 3, at), Some(("r1-back".into(), "r1-ux".into())));
+        assert_eq!(slot_victim(&w, &live, &members, 3, at, SLOT_WAIT_MS), Some(("r1-back".into(), "r1-ux".into())));
         // One with unread messages is kept.
         members.get_mut("r1-ux").unwrap().unread = true;
-        assert_eq!(slot_victim(&w, &live, &members, 3, at), Some(("r1-back".into(), "r1-front".into())));
+        assert_eq!(slot_victim(&w, &live, &members, 3, at, SLOT_WAIT_MS), Some(("r1-back".into(), "r1-front".into())));
         // A busy one is never stopped.
         let mut busy = live.clone();
         busy[0].idle = false;
-        assert_eq!(slot_victim(&w, &busy, &members, 3, at), None);
+        assert_eq!(slot_victim(&w, &busy, &members, 3, at, SLOT_WAIT_MS), None);
         // A free slot: no one is stopped.
-        assert_eq!(slot_victim(&w, &live, &members, 4, at), None);
+        assert_eq!(slot_victim(&w, &live, &members, 4, at, SLOT_WAIT_MS), None);
     }
 
     #[test]

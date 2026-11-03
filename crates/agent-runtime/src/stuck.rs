@@ -176,6 +176,7 @@ impl Runtime {
     /// §3.7: no message stays unread over [`INVARIANT_MS`] while its target
     /// is not working on a turn, without a decision naming the cause.
     pub(crate) fn delivery_invariant(&self, cx: &RunCtx, now: u64) {
+        let limit = self.secs_setting(crate::handover::INVARIANT_KEY, INVARIANT_MS);
         for rec in self.run_agents(&cx.run.id) {
             if rec.tracker.state == AgentState::Working {
                 continue;
@@ -184,9 +185,9 @@ impl Runtime {
                 .unread(&rec)
                 .into_iter()
                 .filter(|m| {
-                    m.failed_at_ms.is_none()
-                        && m.delivered_at_ms.is_none()
-                        && now.saturating_sub(m.created_at_ms) > INVARIANT_MS
+                    // A retry starts the message's clock again.
+                    let since = self.house().retried_at.get(&m.id).copied().unwrap_or(0).max(m.created_at_ms);
+                    m.failed_at_ms.is_none() && m.delivered_at_ms.is_none() && now.saturating_sub(since) > limit
                 })
                 .collect();
             let Some(first) = old.first() else { continue };
@@ -245,8 +246,10 @@ impl Runtime {
                     })
                 })
             } else {
-                let msgs = self.db.messages_by_id(&ids).unwrap_or_default();
-                msgs.iter().all(|m| m.delivered_at_ms.is_some() || m.read_at_ms.is_some())
+                // A failed lookup closes nothing (an empty list would count as all seen).
+                self.db
+                    .messages_by_id(&ids)
+                    .is_ok_and(|msgs| msgs.iter().all(|m| m.delivered_at_ms.is_some() || m.read_at_ms.is_some()))
             };
             if !done {
                 continue;
@@ -317,7 +320,14 @@ impl Runtime {
             .store
             .write(|s| {
                 let mut n = 0;
-                for t in s.turns.iter_mut().filter(|t| turns.contains(&t.id) && t.status == TurnStatus::Failed) {
+                // Failed turns of a watchdog decision, and a paste still in
+                // flight that carries a message of an invariant decision.
+                let carries = |t: &crate::store::TurnRow| t.messages.iter().any(|m| ids.contains(m));
+                for t in s.turns.iter_mut().filter(|t| {
+                    t.agent_id == agent
+                        && ((turns.contains(&t.id) && t.status == TurnStatus::Failed)
+                            || (t.status == TurnStatus::Delivering && carries(t)))
+                }) {
                     t.requeue();
                     t.attempts = 0;
                     n += 1;
@@ -325,6 +335,13 @@ impl Runtime {
                 n
             })
             .unwrap_or(0);
+        if requeued > 0
+            && let Some(l) = self.live(&agent)
+        {
+            // A paste that was in flight zeroed `ready_at`; the agent takes input again.
+            let at = orch_protocol::now_ms() + crate::delivery::AFTER_STOP.as_millis() as u64;
+            l.ready_at_ms.store(at, std::sync::atomic::Ordering::SeqCst);
+        }
         if !ids.is_empty() {
             self.db.retry_messages(&ids)?;
         }
@@ -353,6 +370,33 @@ impl Runtime {
             "redelivered",
             json!({"agent": agent, "messages": ids, "attempt": 0, "why": "retry"}),
         );
+        // What fails again after this retry is a new episode: the key is
+        // released, and the invariant counts the messages' age from now, so
+        // it does not raise a second decision at once.
+        {
+            let mut h = self.house();
+            for id in &ids {
+                h.retried_at.insert(*id, orch_protocol::now_ms());
+            }
+            if let Some(key) = it.payload["key"].as_str() {
+                h.delivery_raised.remove(key);
+                h.retried_keys.insert(key.to_string(), orch_protocol::now_ms());
+            }
+            // The Working watchdog flags a turn once: let it flag this one again.
+            if it.payload["episode"] == "working_silent"
+                && let Some(since) = it.payload["since_ms"].as_u64()
+            {
+                h.watchdog.remove(&format!("{agent}:{since}:Stalled"));
+            }
+        }
+        if let Some(key) = it.payload["key"].as_str() {
+            let retired = json!(format!("{key}:retried"));
+            let _ = self.store.write(|s| {
+                if let Some(i) = s.inbox.iter_mut().find(|i| i.id == item) {
+                    i.payload["key"] = retired;
+                }
+            });
+        }
         if let Some(i) = self.close_item(item, InboxStatus::Decided, "retry", "user") {
             self.advance(i.id, Stage::Effect("retried", None));
             self.outcome(&i, "user", "retried");

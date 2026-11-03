@@ -102,6 +102,22 @@ pub struct RuntimeConfig {
     pub linear: Option<crate::linear::LinearFactory>,
     /// Replaces the Notion transport (tests).
     pub notion: Option<crate::notion::NotionFactory>,
+    /// Replaces the PTY + `claude` process of a spawn (tests): the chaos suite
+    /// runs a fake CLI in process.
+    pub terminal: Option<TerminalFactory>,
+}
+
+/// Starts the terminal of a spawn; the closure runs when the "process" exits.
+#[derive(Clone)]
+pub struct TerminalFactory(pub Arc<TerminalFn>);
+
+/// What starts a terminal: the compiled command, and what runs on exit.
+pub type TerminalFn = dyn Fn(&crate::compile::Compiled, crate::pty::OnExit) -> Result<PtyProcess> + Send + Sync;
+
+impl std::fmt::Debug for TerminalFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TerminalFactory")
+    }
 }
 
 impl RuntimeConfig {
@@ -135,6 +151,7 @@ impl RuntimeConfig {
             power: Arc::new(crate::power::Caffeinate::default()),
             linear: None,
             notion: None,
+            terminal: None,
         }
     }
 }
@@ -184,6 +201,8 @@ pub struct Runtime {
     /// A task-backend sync ([`Runtime::sync_task_backends`]) is running: on
     /// its own thread, off the team pass (§3.6).
     syncing: std::sync::atomic::AtomicBool,
+    /// Chaos suite (§3.8): the team-tick step that panics ([`Runtime::inject_tick_fault`]).
+    pub(crate) tick_fault: Mutex<Option<String>>,
     /// A paste-watchdog and spool pass ([`Runtime::handover_tick`]) is running.
     pub(crate) watching: std::sync::atomic::AtomicBool,
     /// Held while a spool is replayed: a live hook waits for the sweep's
@@ -243,7 +262,7 @@ pub(crate) struct House {
     /// Last sync of the remote task backends (FR-503).
     last_task_sync_ms: u64,
     /// Watchdog alerts already raised, by `<agent>:<turn start>` (FR-407).
-    watchdog: std::collections::BTreeSet<String>,
+    pub(crate) watchdog: std::collections::BTreeSet<String>,
     /// Last FR-604 probe of the servers the running agents use.
     last_mcp_probe_ms: u64,
     /// Files of its `messages/` folder each agent referenced in a tool call
@@ -271,6 +290,14 @@ pub(crate) struct House {
     /// `delivery` decisions raised this run of the core, by episode key
     /// (§3.7): a dismissed one is not raised again for the same episode.
     pub(crate) delivery_raised: std::collections::BTreeSet<String>,
+    /// Agents whose model switch could not stop the process: their task runs
+    /// on the current model instead of waiting for a switch that never comes.
+    pub(crate) switch_failed: std::collections::BTreeSet<String>,
+    /// When the user last retried each message of a `delivery` decision (§3.7).
+    pub(crate) retried_at: BTreeMap<u64, u64>,
+    /// When the user last retried the decision of each episode key (§3.7):
+    /// the episode's clock starts again from then.
+    pub(crate) retried_keys: BTreeMap<String, u64>,
 }
 
 /// A hook's event detail (FR-1311, the run report): the common fields, plus
@@ -489,6 +516,7 @@ impl Runtime {
             indexing: std::sync::atomic::AtomicBool::new(false),
             teaming: std::sync::atomic::AtomicBool::new(false),
             syncing: std::sync::atomic::AtomicBool::new(false),
+            tick_fault: Mutex::new(None),
             watching: std::sync::atomic::AtomicBool::new(false),
             replaying: Mutex::new(()),
             task_backends: orch_tasks::Backends::default(),
@@ -904,17 +932,15 @@ impl Runtime {
         // late exit of an old process never touches a newer one.
         let pid_cell = Arc::new(std::sync::OnceLock::<i32>::new());
         let pid_for_exit = pid_cell.clone();
-        let pty = PtyProcess::spawn(
-            &compiled,
-            self.cfg.rows,
-            self.cfg.cols,
-            None,
-            Box::new(move |status| {
-                if let (Some(rt), Some(pid)) = (weak.upgrade(), pid_for_exit.get()) {
-                    rt.on_exit(&id_owned, *pid, status);
-                }
-            }),
-        )?;
+        let on_exit: Box<dyn FnOnce(Option<u32>) + Send> = Box::new(move |status| {
+            if let (Some(rt), Some(pid)) = (weak.upgrade(), pid_for_exit.get()) {
+                rt.on_exit(&id_owned, *pid, status);
+            }
+        });
+        let pty = match &self.cfg.terminal {
+            Some(t) => (t.0)(&compiled, on_exit)?,
+            None => PtyProcess::spawn(&compiled, self.cfg.rows, self.cfg.cols, None, on_exit)?,
+        };
         let (pid, pgid) = (pty.pid, pty.pgid);
         let _ = pid_cell.set(pid);
         self.live.lock().unwrap_or_else(|e| e.into_inner()).insert(
@@ -942,7 +968,7 @@ impl Runtime {
         Ok(())
     }
 
-    fn on_exit(&self, id: &str, pid: i32, status: Option<u32>) {
+    pub(crate) fn on_exit(&self, id: &str, pid: i32, status: Option<u32>) {
         let gone = {
             let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
             if live.get(id).is_some_and(|l| l.pty.pid == pid) { live.remove(id) } else { None }
@@ -981,6 +1007,7 @@ impl Runtime {
         // exit after the start): the pump resumes it when it has work.
         if self.store.read(|s| s.agents.get(id).is_some_and(crate::startup::crashed)) {
             self.note_crash(id, &l);
+            self.continue_after_crash(id);
         }
     }
 
@@ -1018,6 +1045,9 @@ impl Runtime {
                         a.tracker.stop_intent = StopIntent::None;
                     }
                 });
+                if why == "model_switch" {
+                    me.house().switch_failed.insert(id.clone());
+                }
                 me.event(&id, "suspend_failed", json!({"why": why, "error": format!("{e:#}")}));
             }
         });
@@ -1085,6 +1115,8 @@ impl Runtime {
                 }
             })?;
         } else if let Some(l) = live {
+            // A fake terminal has no signal to end it.
+            l.pty.fake_exit(Some(143));
             // Wait (bounded) until the exit callback has run, so callers see the
             // new state and a resume does not race it.
             for _ in 0..100 {
@@ -1580,11 +1612,50 @@ impl Runtime {
         }
     }
 
+    /// §3.5 (F3): a process that died in the middle of a turn leaves work that
+    /// nobody asks for again, and with nothing queued the pump never restarts
+    /// it. The interrupted turn is closed as failed and one Continue turn is
+    /// queued, which the crash restart then carries to the new process.
+    pub(crate) fn continue_after_crash(&self, id: &str) {
+        let queued = self.store.write(|s| {
+            let mut interrupted = false;
+            for t in s.turns.iter_mut().filter(|t| t.agent_id == id && t.status == TurnStatus::Delivered) {
+                t.status = TurnStatus::Failed;
+                interrupted = true;
+            }
+            let has = s
+                .turns
+                .iter()
+                .any(|t| t.agent_id == id && t.status == TurnStatus::Queued && t.kind == TurnKind::Continue);
+            if interrupted && !has {
+                let text = "ORCH: your process crashed in the middle of your last turn and was restarted. \
+                            Carry on, or report where you are.";
+                s.turns.push(TurnRow::queued(id, text, TurnKind::Continue, Admission::Pending));
+            }
+            interrupted && !has
+        });
+        if queued.unwrap_or(false) {
+            self.delivery_event(id, "recovered", json!({"agent": id, "from_state": "crashed", "how": "continue"}));
+        }
+    }
+
     /// The Continue turn queued after a failure failed too: no loop. The
     /// event, and a `delivery` decision for the user (and the agent's Lead),
     /// beside the `api_error` alert the failure already raised.
     pub(crate) fn on_repeated_failure(&self, rec: &AgentRecord, error: &str) {
         self.delivery_event(&rec.id, "continue_failed", json!({"agent": rec.id, "error": error}));
+        // One decision while it is open: every further failed Continue is the same episode.
+        let open = self.store.read(|s| {
+            s.inbox.iter().any(|i| {
+                i.kind == "delivery"
+                    && i.open()
+                    && i.agent_id.as_deref() == Some(rec.id.as_str())
+                    && i.payload["blocker"] == "not_idle:error"
+            })
+        });
+        if open {
+            return;
+        }
         let now = now_ms();
         self.raise_delivery(
             rec,
@@ -1801,7 +1872,7 @@ impl Runtime {
     /// Housekeeping: agents blocked by a limit no longer in force (no release
     /// comes for one the Governor holds no entry for: interactive, shadow
     /// mode, or its auto-continue allowed).
-    fn lift_limits(&self, now: u64) {
+    pub fn lift_limits(&self, now: u64) {
         // A minute after the hit at least: a limit the Governor could not
         // place (a model it doesn't know) must not bounce every pass.
         let blocked: Vec<String> = self.store.read(|s| {
@@ -2429,13 +2500,19 @@ impl Runtime {
             let never_started = rec.never_started();
             // §3.5 (F3): a crashed agent with work resumes the same way, at
             // most twice an hour; then a `startup` item waits for the user.
-            let crashed = crate::startup::crashed(rec) && self.startup_item(&rec.id).is_none();
+            // The user's own words resume a crashed agent whose budget is used up.
+            let by_user = turn.kind == TurnKind::User;
+            let crashed = crate::startup::crashed(rec) && (by_user || self.startup_item(&rec.id).is_none());
             // FR-705: parked on the user's decision, only their own words resume it.
             let suspended = (rec.tracker.state == AgentState::Suspended || never_started || crashed)
                 && rec.flag.is_none()
                 && (turn.kind == TurnKind::User || !self.is_parked(&rec.id));
-            if suspended && crashed && !self.crash_restart(rec, now) {
-                return Ok(());
+            if suspended && crashed {
+                if by_user {
+                    self.clear_crash(&rec.id, "user");
+                } else if !self.crash_restart(rec, now) {
+                    return Ok(());
+                }
             }
             if suspended && turn.admission == Admission::Pending {
                 self.sync_process_slots();
@@ -3008,21 +3085,19 @@ pub(crate) mod tests {
     }
 
     /// A live process (a shell that sleeps) standing for `id` on `model`.
-    pub(crate) fn insert_test_live(rt: &Runtime, id: &str, model: Option<&str>, task: u64, dir: &Path) {
-        let cfg = crate::compile::Compiled {
-            agent_dir: dir.into(),
-            settings_path: Default::default(),
-            mcp_path: Default::default(),
-            gitconfig_path: Default::default(),
-            settings: Value::Null,
-            mcp: Value::Null,
-            gitconfig: String::new(),
-            program: "/bin/sleep".into(),
-            args: vec!["60".into()],
-            env: [("PATH".to_string(), "/usr/bin:/bin".to_string())].into(),
-            cwd: dir.into(),
-        };
-        let pty = PtyProcess::spawn(&cfg, 24, 80, None, Box::new(|_| {})).unwrap();
+    pub(crate) fn insert_test_live(rt: &Runtime, id: &str, model: Option<&str>, task: u64, _dir: &Path) {
+        insert_live(rt, id, crate::pty::echoing_fake(), model, task);
+    }
+
+    /// `id` is live behind `pty` (a fake terminal), ready for input.
+    pub(crate) fn insert_test_live_with(rt: &Runtime, id: &str, pty: PtyProcess) {
+        insert_live(rt, id, pty, None, 0);
+        if let Some(l) = rt.live_get(id) {
+            l.ready_at_ms.store(1, Ordering::SeqCst);
+        }
+    }
+
+    fn insert_live(rt: &Runtime, id: &str, pty: PtyProcess, model: Option<&str>, task: u64) {
         let live = Live {
             pty,
             ready_at_ms: AtomicU64::new(0),
@@ -3280,7 +3355,8 @@ pub(crate) mod tests {
         let crash_item = |rt: &Runtime| {
             rt.store.read(|s| s.inbox.iter().find(|i| i.open() && crate::startup::is_crash_item(i, "a1")).cloned())
         };
-        rt.deliver_user("a1", "hello").unwrap();
+        // Work that is not the user's own words: it is what the budget counts.
+        let work = rt.deliver_kind("a1", "hello", TurnKind::Message).unwrap();
         // Killed by the user: never restarted.
         set(&rt, &|a| a.tracker.state = AgentState::Killed);
         rt.pump();
@@ -3320,6 +3396,14 @@ pub(crate) mod tests {
         rt.pump();
         assert_eq!(crash_items(&rt), 1, "a dismissed item is not raised again");
         rt.store.write(|s| s.inbox.iter_mut().find(|i| i.id == item.id).unwrap().status = item.status).unwrap();
+        // The user's own message resumes it whatever the budget says: the
+        // spawn is attempted (the test has no `claude`, so it fails and flags),
+        // the budget starts again and the item closes.
+        rt.store.write(|s| s.turns.retain(|t| t.id != work)).unwrap();
+        rt.deliver_user("a1", "back again").unwrap();
+        rt.pump();
+        assert!(flag(&rt).is_some_and(|f| f.contains("could not resume")), "{:?}", flag(&rt));
+        assert!(crash_item(&rt).is_none(), "the item closes");
         // The lead's (or the user's) resume: the budget starts again, the item closes.
         rt.clear_crash("a1", "lead");
         assert!(crash_item(&rt).is_none());

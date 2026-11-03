@@ -765,6 +765,24 @@ fn a_limit_is_lifted_at_its_reset_or_by_a_newer_reading_under_100() {
     assert!(g.limit_in_force(&a, at(42)), "a guessed limit holds until its reset");
 }
 
+/// A limit the API reported is not lifted by a reading that is merely a
+/// little under 100 % (the statusline rounds down: a spent window reads 97 %
+/// or 99 %): that would re-admit the agent into the same limit, again and
+/// again. Only a clear drop (the window really moved on) lifts it early.
+#[test]
+fn a_reading_a_little_under_100_does_not_lift_a_limit_the_api_reported() {
+    let mut g = governor();
+    let a: AgentId = "A-1".into();
+    g.ingest(&five(at(10), "A-1", 100.0, at(200)));
+    g.rate_limit_hit(Some(&a), Window::FiveHour, at(200), at(11));
+    g.ingest(&five(at(20), "A-1", 97.0, at(200)));
+    assert!(g.limit_in_force(&a, at(21)), "97 % is still the spent window");
+    g.ingest(&five(at(30), "A-1", 99.0, at(200)));
+    assert!(g.limit_in_force(&a, at(31)));
+    g.ingest(&five(at(40), "A-1", 40.0, at(200)));
+    assert!(!g.limit_in_force(&a, at(41)), "a clear drop lifts it");
+}
+
 #[test]
 fn watchdog_interrupts_turns_over_their_ceiling() {
     let mut g = governor();

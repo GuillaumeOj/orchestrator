@@ -210,8 +210,21 @@ impl Runtime {
         };
         flag(format!("{id}: restarting as a fresh session"))?;
         let r = self.restart_fresh_flagged(id, &rec, why, by);
-        if let Err(e) = &r {
-            let _ = flag(format!("{id}: could not restart fresh: {e:#}"));
+        match &r {
+            Err(e) => {
+                let _ = flag(format!("{id}: could not restart fresh: {e:#}"));
+            }
+            // A new session starts its crash budget again (§3.5): the card of a
+            // used-up budget offers this, and a crash of the new session must be
+            // restarted or raised, not swallowed by the old count.
+            Ok(_) => {
+                let _ = self.store.write(|s| {
+                    if let Some(a) = s.agents.get_mut(id) {
+                        a.crash_restarts.clear();
+                    }
+                });
+                self.house().crash_tails.remove(id);
+            }
         }
         r
     }

@@ -112,7 +112,9 @@ impl Runtime {
             }
         };
         let Some(l) = live else { return false };
-        if l.model == want {
+        // The process would not stop for the switch: the task runs on it.
+        let switch_failed = self.house().switch_failed.remove(&rec.id);
+        if l.model == want || switch_failed {
             l.task.store(task.unwrap_or(0), Ordering::Relaxed);
             return false;
         }
@@ -393,6 +395,23 @@ mod tests {
     fn switches(rt: &Runtime) -> Vec<Value> {
         rt.db.flush().unwrap();
         rt.db.events(0, Some("a1"), Some("model_switch"), 10).unwrap().into_iter().rev().map(|e| e.detail).collect()
+    }
+
+    /// A switch that could not stop the process is not waited for: the task
+    /// runs on the model the process has.
+    #[test]
+    fn a_failed_switch_stop_lets_the_task_run_on_the_current_model() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        agent(&rt, d.path(), "a1", "sonnet", None);
+        seat_on(&rt, "a1", 1, Some("opus"));
+        insert_test_live(&rt, "a1", Some("sonnet"), 0, d.path());
+        idle(&rt, "a1");
+        assert!(rt.task_boundary(&rec(&rt, "a1")), "the switch is under way: the task waits");
+        // Its stop failed.
+        rt.house().switch_failed.insert("a1".into());
+        assert!(!rt.task_boundary(&rec(&rt, "a1")), "it runs on the current process");
+        assert!(rt.house().switch_failed.is_empty(), "asked once");
     }
 
     /// Spec §2.2: a task with a model runs on it (the agent is suspended
