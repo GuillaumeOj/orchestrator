@@ -331,6 +331,12 @@ fn starts_that_never_happen_reach_the_inbox_or_restart_fresh_once() {
     assert!(request(&core.sock, CtlRequest::Suspend { agent_id: "a".into() }).unwrap().ok);
     wait_for("suspended", 10, || core.state_of("a") == "suspended");
     std::fs::write(wt.join(".fake-resume-dies"), "").unwrap();
+    // No transcript: the fake keeps one where the core looks (beside the socket).
+    let no_transcript = |sid: &str| {
+        let t = core.sock.parent().unwrap().join(format!("fake-projects/-fake/{sid}.jsonl"));
+        std::fs::remove_file(&t).unwrap_or_else(|e| panic!("{}: {e}", t.display()));
+    };
+    no_transcript(&sid);
     request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "after the resume".into() }).unwrap();
     let did_turn = || agent(&core.sock, "a")["turns"].as_u64() == Some(2) && core.state_of("a") == "idle";
     let end = std::time::Instant::now() + Duration::from_secs(30);
@@ -355,6 +361,7 @@ fn starts_that_never_happen_reach_the_inbox_or_restart_fresh_once() {
     std::fs::write(wt.join(".fake-start-dies"), "").unwrap();
     assert!(request(&core.sock, CtlRequest::Suspend { agent_id: "a".into() }).unwrap().ok);
     wait_for("suspended again", 10, || core.state_of("a") == "suspended");
+    no_transcript(agent(&core.sock, "a")["session_id"].as_str().unwrap());
     let before = spawns("a");
     request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "again".into() }).unwrap();
     wait_for("failed start item", 30, || startup().is_some_and(|i| i.payload.get("failed").is_some()));
