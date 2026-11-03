@@ -184,6 +184,8 @@ pub struct Runtime {
     /// A task-backend sync ([`Runtime::sync_task_backends`]) is running: on
     /// its own thread, off the team pass (§3.6).
     syncing: std::sync::atomic::AtomicBool,
+    /// Chaos suite (§3.8): the team-tick step that panics ([`Runtime::inject_tick_fault`]).
+    pub(crate) tick_fault: Mutex<Option<String>>,
     /// A paste-watchdog and spool pass ([`Runtime::handover_tick`]) is running.
     pub(crate) watching: std::sync::atomic::AtomicBool,
     /// Held while a spool is replayed: a live hook waits for the sweep's
@@ -489,6 +491,7 @@ impl Runtime {
             indexing: std::sync::atomic::AtomicBool::new(false),
             teaming: std::sync::atomic::AtomicBool::new(false),
             syncing: std::sync::atomic::AtomicBool::new(false),
+            tick_fault: Mutex::new(None),
             watching: std::sync::atomic::AtomicBool::new(false),
             replaying: Mutex::new(()),
             task_backends: orch_tasks::Backends::default(),
@@ -1801,7 +1804,7 @@ impl Runtime {
     /// Housekeeping: agents blocked by a limit no longer in force (no release
     /// comes for one the Governor holds no entry for: interactive, shadow
     /// mode, or its auto-continue allowed).
-    fn lift_limits(&self, now: u64) {
+    pub fn lift_limits(&self, now: u64) {
         // A minute after the hit at least: a limit the Governor could not
         // place (a model it doesn't know) must not bounce every pass.
         let blocked: Vec<String> = self.store.read(|s| {

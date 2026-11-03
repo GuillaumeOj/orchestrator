@@ -176,6 +176,7 @@ impl Runtime {
     /// §3.7: no message stays unread over [`INVARIANT_MS`] while its target
     /// is not working on a turn, without a decision naming the cause.
     pub(crate) fn delivery_invariant(&self, cx: &RunCtx, now: u64) {
+        let limit = self.secs_setting(crate::handover::INVARIANT_KEY, INVARIANT_MS);
         for rec in self.run_agents(&cx.run.id) {
             if rec.tracker.state == AgentState::Working {
                 continue;
@@ -186,7 +187,7 @@ impl Runtime {
                 .filter(|m| {
                     m.failed_at_ms.is_none()
                         && m.delivered_at_ms.is_none()
-                        && now.saturating_sub(m.created_at_ms) > INVARIANT_MS
+                        && now.saturating_sub(m.created_at_ms) > limit
                 })
                 .collect();
             let Some(first) = old.first() else { continue };
