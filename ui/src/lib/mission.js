@@ -199,7 +199,7 @@ export function allowed(rec) {
 /** The decision a row opens with `d`: the target's wait on the user, else the run's blocker's. */
 export function decisionOf(row, rec) {
   if (row?.kind === 'decisions') return row.ids[0] ?? null;
-  const user = (w) => (w?.kind === 'user' ? w.ref : null);
+  const user = (w) => (w?.kind === 'user' || w?.kind === 'delivery' ? w.ref : null);
   return user(rec?.waiting_on) ?? (row?.kind === 'run' ? user(row.run.blocker?.waiting_on) : null);
 }
 

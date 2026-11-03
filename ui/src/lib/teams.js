@@ -74,11 +74,14 @@ const FAMILY = (k) =>
             ? 'run'
             : 'other';
 
+// Plumbing of a message's lifecycle: its state shows as the glyph on the message line.
+const HIDDEN_KINDS = new Set(['handed', 'seen', 'read', 'continue_failed', 'slot_freed']);
+
 export function timelineFilter(id) {
-  if (id === 'all') return () => true;
+  if (id === 'all') return (e) => !HIDDEN_KINDS.has(e.kind);
   if (id === 'gates')
     return (e) => e.kind === 'run.state' && /gate/.test(`${e.detail?.to} ${e.detail?.from} ${e.detail?.why}`);
-  return (e) => FAMILY(e.kind) === id;
+  return (e) => !HIDDEN_KINDS.has(e.kind) && FAMILY(e.kind) === id;
 }
 
 /** `PR #12 CI failed (ci / test, ci / e2e) · behind main by 3`: only the parts that changed. */
