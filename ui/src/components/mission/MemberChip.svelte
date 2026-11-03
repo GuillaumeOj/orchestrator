@@ -1,9 +1,9 @@
 <script>
-  import { openDelivery } from '../../lib/app.svelte.js';
-  import { undeliveredChip } from '../../lib/delivery.js';
   // Member chip (notes §1.3, Penpot P4.2 Member chip): role mark, status
   // icon, name and the member's short wait. Selected (h/l target): filled
   // outline. Busy while an action on it waits for the core.
+  import { openDelivery } from '../../lib/app.svelte.js';
+  import { undeliveredChip } from '../../lib/delivery.js';
   import { shortWait } from '../../lib/mission.js';
   import { STATUS } from '../../lib/status.js';
   import AgentChip from '../AgentChip.svelte';
