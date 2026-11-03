@@ -17,7 +17,7 @@ use crate::planner::PlannerView;
 use crate::services::Project;
 use crate::setup::{AllocationEdit, PlanForm, ProjectAllocationView};
 use crate::terms::TermKind;
-use crate::update::Updater;
+use crate::update::{RestartTarget, Updater};
 use orch_git::project::RemovalChoices;
 
 type Res<T> = Result<T, String>;
@@ -696,15 +696,55 @@ pub fn update_check(updater: UpdaterState) -> Res<Value> {
 }
 
 /// Quits as ⌘Q does (agents suspended), installs the staged update and relaunches it.
-/// The pre-flight runs first: if it fails, the app stays up and the state is `error`.
+/// `target` is `"main"` (the default) or `"pr"` (the PR build installed with `pr_build_install`;
+/// the database snapshot runs first and can refuse). The pre-flight runs before the quit: if it
+/// fails, the app stays up and the state is `error`.
 /// Async: the pre-flight may copy the bundle (across volumes), off the main thread.
 #[tauri::command]
-pub async fn update_restart(app: tauri::AppHandle, updater: UpdaterState<'_>) -> Res<()> {
+pub async fn update_restart(
+    app: tauri::AppHandle,
+    core: CoreState<'_>,
+    updater: UpdaterState<'_>,
+    target: Option<String>,
+) -> Res<()> {
+    let target = match target.as_deref() {
+        None | Some("main") => RestartTarget::Main,
+        Some("pr") => RestartTarget::Pr,
+        Some(other) => return Err(format!("unknown restart target {other:?}")),
+    };
     let updater = updater.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || updater.prepare_restart())
-        .await
-        .map_err(|err| err.to_string())?
-        .map_err(e)?;
+    let core = core.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if target == RestartTarget::Pr {
+            let pr = updater.pr_ready()?;
+            crate::snapshot::before_pr_restart(&core, &updater.current(), pr)?;
+        }
+        updater.prepare_restart_to(target)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(e)?;
     app.exit(0);
     Ok(())
+}
+
+/// Open PRs and their CI builds (api-contract §4). Runs gh, off the main thread; gh and network
+/// trouble are in the result's `error`, only a permanently off updater is an `Err`.
+#[tauri::command]
+pub async fn pr_builds_list(updater: UpdaterState<'_>) -> Res<Value> {
+    let updater = updater.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || updater.pr_builds_list())
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(e)
+}
+
+/// Starts installing PR `number`'s build (progress in the `update` event's `pr_install`).
+#[tauri::command]
+pub async fn pr_build_install(updater: UpdaterState<'_>, number: u64) -> Res<Value> {
+    let updater = updater.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || updater.install_pr(number))
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(e)
 }

@@ -30,6 +30,42 @@ runs never build it. The bundle is ad-hoc code signed, not notarized.
 A local `make app` / `make install` stays `0.1.0`, channel `local` (always older than a CI
 build). Build info (version, commit, channel) is in the start line of `logs/orchestrator.log`.
 
+**PR builds.** A push to a pull request also becomes a build, so a PR can be tried before it
+merges. The `app-pr` job (the build steps of `app`, from `.github/actions/build-app`) runs after
+fmt, clippy, tests and the UI checks are green, on the PR's own head commit (not the merge
+commit) with `ORCH_BUILD_CHANNEL=pr` and `ORCH_BUILD_PR=<number>`, and packs the tarball
+unsigned. PR code never sees the signing key or a write token: `app-pr` has a read-only token and
+no secret, and a second job, `app-pr-publish`, checks out the base branch, signs the tarball
+(never extracted or run there) and publishes the prerelease `pr-<n>`
+(`Orchestrator_0.1.<run>_aarch64.app.tar.gz` + `.sig`, target = head sha), replacing the previous
+push's one. A prerelease is never "latest", so the main updater ignores it, and the `main` prune
+only touches `v0.1.<n>` tags. Only same-repo, non-draft PRs not opened by Renovate are built (a
+fork has no signing secret; a draft is built when marked ready for review). Closing or merging the
+PR runs `.github/workflows/pr-build-cleanup.yml`, which deletes the release and its tag. Building
+a PR costs a macOS runner for the same 15 to 25 minutes as a `main` build. The start line of
+`logs/orchestrator.log` shows `channel pr, PR #<n>` for such a build.
+
+*Installing one from the app.* The core lists the open PRs with their builds (`pr_builds_list`:
+`gh pr list` and the `pr-<n>` prereleases, only when asked, never in the background) and installs
+one on request (`pr_build_install`): it downloads the tarball and `.sig` with `gh`, checks the
+signature against the same key as `main` updates, and stages the bundle in `updates/pr-<n>/`
+(one PR build at most; the staged `main` update stays). "Restart" with target `pr` then quits as
+⌘Q does (agents suspended and resumed by session id) and swaps the bundle; a plain quit never
+applies a PR build. A PR build behaves like a local build toward `main` updates: it stages the
+latest `main` release (any release counts as newer), never applies it on quit, and "Restart" with
+target `main` brings you back. Same rules as `main` updates for when this is off (debug build,
+`ORCH_NO_UPDATE`, bundle not writable, no key).
+
+*Your data and PR builds.* A PR may add a database migration, and after it ran a `main` build
+refuses the store ("newer than this build"). So the restart into a PR build, when you run a
+`main` or `local` build, first writes a consistent copy of the store to `state/backup/` (a
+restart from one PR build to another keeps the existing copy). If a build later finds the store
+newer than it can read and a copy of a readable schema exists, it moves the store, its WAL files
+and blobs to `state/aside/orch-<taken_at>-schema-<v>/`, puts the copy in place, and shows a
+warning: "Your data was restored from before PR #<n> (taken …). What changed while testing it
+is kept in …". Nothing from the testing session is merged back. Without a usable copy the old
+behaviour applies: a scratch store and a warning. A failed snapshot refuses the restart.
+
 **One-time key setup** (before the first merge; the private key never goes through an agent):
 
 1. `cd ui && bun run tauri signer generate -w ~/.orchestrator-update.key` (asks for a password).
@@ -112,6 +148,9 @@ warning (your own work used up the reserve) also reaches the Inbox in shadow mod
 | Path | What |
 |---|---|
 | `state/orch.db` (+ `-wal`, `-shm`, `orch.blobs/`) | SQLite store: projects, agents, worktree rows, Inbox, rules, usage samples, plans, forecasts, governor actions, settings (`kv`, keys `ui.*`), audit log, transcript index |
+| `state/backup/` (`orch.db`, `orch.blobs/`, `backup.json`) | The database snapshot taken before a restart into a PR build (see Updates), replaced by the next one, dropped by a `main` build once it is 14 days old |
+| `state/aside/orch-<taken_at>-schema-<v>/` | A store set aside by a restore: what you did while testing a PR build. Never deleted by the app |
+| `updates/pr-<n>/` | The PR build staged by Settings › Builds (one at most), kept until it is installed, replaced or its PR is the running build |
 | `bin/` | `orch-hook`, `orch-status`, `orch-mcp`, copied from the app bundle at every start when they changed (a stable path outside the `.app`) |
 | `agents/<id>/` | Per-agent settings layer, MCP config, git config, hook spool |
 | `logs/orchestrator.log` (+ `.1`, the previous run) | The app's log when started from the Finder |

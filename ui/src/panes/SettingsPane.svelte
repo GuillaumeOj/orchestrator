@@ -4,6 +4,7 @@
   // sections say where their values are edited today. Keys: j/k sections,
   // ⏎ into the section, esc back to the list.
   import { onMount, untrack } from 'svelte';
+  import BuildsSettings from '../components/BuildsSettings.svelte';
   import IntegrationsSettings from '../components/IntegrationsSettings.svelte';
   import Kbd from '../components/Kbd.svelte';
   import McpSettings from '../components/McpSettings.svelte';
@@ -23,6 +24,7 @@
     { id: 'pacing', label: 'Pacing policy' },
     { id: 'keyboard', label: 'Keyboard' },
     { id: 'memory', label: 'Memory' },
+    { id: 'builds', label: 'Builds' },
   ];
 
   const section = $derived(SECTIONS.find((s) => s.id === spec?.section) ?? SECTIONS[1]);
@@ -98,6 +100,8 @@
       <IntegrationsSettings initial={firstInts} onstatus={(items) => (needs = attentionCount(items))} />
     {:else if section.id === 'mcp'}
       {#key spec?.server}<McpSettings project={spec?.projectId ?? null} selected={spec?.server ?? null} initial={firstMcp} />{/key}
+    {:else if section.id === 'builds'}
+      {#key spec?.server}<BuildsSettings selected={spec?.server ?? null} />{/key}
     {:else}
       <section class="later">
         <h2>{section.label}</h2>

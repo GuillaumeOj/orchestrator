@@ -172,6 +172,12 @@ impl Core {
         let paths = AppPaths::new(cfg.home.clone());
         let mut warnings = vec![];
         let started = Timestamp::now();
+        // A store left newer than this build by a PR build is replaced by the snapshot taken
+        // before it (spec §4.3), before anything opens it.
+        // Not while another core owns the socket: it has the store open.
+        if !orch_protocol::is_listening(&paths.socket()) {
+            warnings.extend(crate::snapshot::restore_if_newer(&paths.db_file(), &jiff::tz::TimeZone::system()));
+        }
         let (rt, core_error) = match start_runtime(&cfg, &paths, &mut warnings) {
             Ok(rt) => (Some(rt), None),
             Err(e) => (None, Some(format!("{e:#}"))),

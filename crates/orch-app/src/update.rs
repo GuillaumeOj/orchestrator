@@ -22,34 +22,43 @@ use serde_json::Value;
 
 use crate::{BuildInfo, LockOk};
 
-const REPO: &str = "GuillaumeOj/orchestrator";
+pub(crate) const REPO: &str = "GuillaumeOj/orchestrator";
 /// The public half of the update signing key: base64 of the minisign public key
 /// text, exactly as `tauri signer generate` writes it (spec §4). CI signs with
 /// the private half (the `ORCH_UPDATE_KEY` secret).
-const PUB_KEY: &str = include_str!("../update.pub");
+pub(crate) const PUB_KEY: &str = include_str!("../update.pub");
 
 const FIRST_CHECK: Duration = Duration::from_secs(60);
 const EVERY: Duration = Duration::from_secs(30 * 60);
-const VIEW_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const VIEW_TIMEOUT: Duration = Duration::from_secs(60);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-const RELEASE_FIELDS: &str = "tagName,assets,publishedAt,targetCommitish,body";
+pub(crate) const RELEASE_FIELDS: &str = "tagName,assets,publishedAt,targetCommitish,body";
 /// Written when a swap at quit failed: the next start shows it as the error, once.
 const LAST_ERROR: &str = "last_error";
 const DOWNLOAD: &str = "download";
+/// The PR build's own download dir, so it never meets a main download. Every PR dir under
+/// `updates/` starts with `pr-` (`pr-download`, `pr-<n>.partial`, `pr-<n>`): the main staging
+/// code leaves them alone.
+const PR_DOWNLOAD: &str = "pr-download";
+
+fn is_pr_dir(p: &Path) -> bool {
+    p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("pr-"))
+}
 
 // ---------------------------------------------------------------- versions
 
-fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+pub(crate) fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     let mut it = s.strip_prefix('v').unwrap_or(s).split('.').map(|p| p.parse::<u64>().ok());
     let v = (it.next()??, it.next()??, it.next()??);
     it.next().is_none().then_some(v)
 }
 
 /// Whether release `version` is newer than the running build. A local build
-/// (`make app`, channel `local`) is older than any CI build.
+/// (`make app`, channel `local`) or a PR build (channel `pr`, whose version comes from a run
+/// number shared with `main`) is older than any `main` release.
 fn is_newer(version: &str, current: &BuildInfo) -> bool {
     let Some(v) = parse_version(version) else { return false };
-    current.channel == "local" || parse_version(&current.version).is_none_or(|c| v > c)
+    current.channel != "main" || parse_version(&current.version).is_none_or(|c| v > c)
 }
 
 // ---------------------------------------------------------------- releases
@@ -132,7 +141,7 @@ fn decode_b64_text(b64: &str) -> Result<String> {
 }
 
 /// The minisign public key from `update.pub`'s format (base64 of the key text).
-fn decode_public_key(b64: &str) -> Result<minisign_verify::PublicKey> {
+pub(crate) fn decode_public_key(b64: &str) -> Result<minisign_verify::PublicKey> {
     minisign_verify::PublicKey::decode(&decode_b64_text(b64)?).map_err(|e| anyhow!("public key: {e}"))
 }
 
@@ -140,7 +149,7 @@ fn decode_public_key(b64: &str) -> Result<minisign_verify::PublicKey> {
 /// streaming the file so a 100 MB tarball never sits in memory. The signed
 /// trusted comment must name this file, so an older signed tarball re-published
 /// under a newer name is refused (no downgrade).
-fn verify_file(key: &minisign_verify::PublicKey, sig_b64: &str, file: &Path) -> Result<()> {
+pub(crate) fn verify_file(key: &minisign_verify::PublicKey, sig_b64: &str, file: &Path) -> Result<()> {
     let sig = decode_b64_text(sig_b64)
         .ok()
         .and_then(|t| minisign_verify::Signature::decode(&t).ok())
@@ -217,7 +226,7 @@ fn sibling(bundle: &Path, suffix: &str) -> PathBuf {
     bundle.with_file_name(format!(".{name}.{suffix}"))
 }
 
-fn is_app(p: &Path) -> bool {
+pub(crate) fn is_app(p: &Path) -> bool {
     p.join("Contents/Info.plist").is_file() && p.join("Contents/MacOS").is_dir()
 }
 
@@ -260,7 +269,7 @@ fn swap(bundle: &Path, prepared: &Path) -> Result<()> {
     Ok(())
 }
 
-fn remove_any(p: &Path) -> std::io::Result<()> {
+pub(crate) fn remove_any(p: &Path) -> std::io::Result<()> {
     match std::fs::symlink_metadata(p) {
         Ok(m) if m.is_dir() => std::fs::remove_dir_all(p),
         Ok(_) => std::fs::remove_file(p),
@@ -277,6 +286,7 @@ fn cleanup(bundle: Option<&Path>, updates: &Path) {
         let _ = remove_any(&sibling(b, "update"));
     }
     let _ = remove_any(&updates.join(DOWNLOAD));
+    let _ = remove_any(&updates.join(PR_DOWNLOAD));
     for e in std::fs::read_dir(updates).into_iter().flatten().flatten() {
         if e.file_name().to_string_lossy().ends_with(".partial") {
             let _ = remove_any(&e.path());
@@ -304,7 +314,7 @@ fn exit_action(state: Phase, channel: &str, restart: Option<PathBuf>) -> ExitAct
 
 // ---------------------------------------------------------------- gh
 
-enum GhError {
+pub(crate) enum GhError {
     Missing,
     Offline,
     Failed(String),
@@ -312,7 +322,7 @@ enum GhError {
 
 impl GhError {
     /// The text of `error` (api-contract §3).
-    fn msg(&self) -> String {
+    pub(crate) fn msg(&self) -> String {
         match self {
             GhError::Offline => "offline".into(),
             GhError::Missing => "gh: not installed".into(),
@@ -338,7 +348,7 @@ fn offline(stderr: &str) -> bool {
 }
 
 /// Runs `gh`, killed after `timeout` so a hung network call never wedges the thread.
-fn gh(args: &[&str], timeout: Duration) -> Result<String, GhError> {
+pub(crate) fn gh(args: &[&str], timeout: Duration) -> Result<String, GhError> {
     let mut cmd = Command::new("gh");
     cmd.args(args).env("GH_PROMPT_DISABLED", "1").env("NO_COLOR", "1");
     let out = match orch_git::git::run_with_deadline(cmd, timeout) {
@@ -383,6 +393,58 @@ struct Staged {
     info: Available,
 }
 
+/// The PR build being installed or staged (api-contract §3 `pr_install`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PrInstall {
+    pub pr: u64,
+    pub title: String,
+    pub version: String,
+    pub sha: String,
+    pub state: PrPhase,
+    pub progress: Option<f64>,
+    pub error: Option<String>,
+}
+
+impl PrInstall {
+    /// A download that has not found its release yet.
+    fn pending(pr: u64) -> Self {
+        PrInstall {
+            pr,
+            title: String::new(),
+            version: String::new(),
+            sha: String::new(),
+            state: PrPhase::Downloading,
+            progress: None,
+            error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PrPhase {
+    Downloading,
+    /// Verified and staged.
+    Ready,
+    Error,
+}
+
+/// What `updates/pr-<n>/release.json` holds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct PrStaged {
+    version: String,
+    sha: String,
+    pr: u64,
+    title: String,
+}
+
+/// Which staged build `update_restart` swaps in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartTarget {
+    Main,
+    Pr,
+}
+
 /// api-contract §3, field for field.
 #[derive(Debug, Clone, Serialize)]
 struct UpdateState {
@@ -395,17 +457,30 @@ struct UpdateState {
     error: Option<String>,
     checked_at: Option<i64>,
     apply_on_quit: bool,
+    pr_install: Option<PrInstall>,
 }
 
 struct Inner {
     s: UpdateState,
     staged: Option<Staged>,
+    /// The verified PR build under `updates/pr-<n>/` (`pr_install.state = ready`).
+    staged_pr: Option<PathBuf>,
     /// `update_check` asked for a check now.
     poke: bool,
     /// "Restart to update" prepared this bundle: the swap runs at exit.
     restart: Option<PathBuf>,
     /// A check is under way (set with `poke` taken, under the same lock).
     running: bool,
+}
+
+impl Inner {
+    /// The staged PR bundle, when it is verified and no restart is under way.
+    fn ready_pr(&self) -> Option<PathBuf> {
+        match (&self.staged_pr, self.s.pr_install.as_ref().map(|p| p.state)) {
+            (Some(app), Some(PrPhase::Ready)) if self.restart.is_none() => Some(app.clone()),
+            _ => None,
+        }
+    }
 }
 
 type Sink = Arc<dyn Fn(Value) + Send + Sync>;
@@ -443,8 +518,10 @@ impl Updater {
             error: None,
             checked_at: None,
             apply_on_quit: false,
+            pr_install: None,
         };
         let mut staged = None;
+        let mut staged_pr = None;
         if why.is_none() {
             cleanup(bundle.as_deref(), &dir);
             if let Ok(err) = std::fs::read_to_string(dir.join(LAST_ERROR)) {
@@ -459,9 +536,21 @@ impl Updater {
                 }
                 staged = Some(st);
             }
+            if let Some((app, info)) = find_staged_pr(&dir, &s.current) {
+                s.pr_install = Some(PrInstall {
+                    pr: info.pr,
+                    title: info.title,
+                    version: info.version,
+                    sha: info.sha,
+                    state: PrPhase::Ready,
+                    progress: None,
+                    error: None,
+                });
+                staged_pr = Some(app);
+            }
         }
         Arc::new(Updater {
-            inner: Mutex::new(Inner { s, staged, poke: false, restart: None, running: false }),
+            inner: Mutex::new(Inner { s, staged, staged_pr, poke: false, restart: None, running: false }),
             wake: Condvar::new(),
             sink: Mutex::new(None),
             dir,
@@ -627,49 +716,9 @@ impl Updater {
             i.s.progress = (rel.tarball_size > 0).then_some(0.0);
             i.s.error = None;
         });
-        let dl = self.dir.join(DOWNLOAD);
-        remove_any(&dl)?;
-        std::fs::create_dir_all(&dl)?;
-        let tarball = dl.join(&rel.tarball);
-        let done = AtomicBool::new(false);
-        let res = std::thread::scope(|scope| {
-            if rel.tarball_size > 0 {
-                scope.spawn(|| self.poll_progress(&tarball, rel.tarball_size, &done));
-            }
-            let res = gh(
-                &[
-                    "release",
-                    "download",
-                    &rel.tag,
-                    "--repo",
-                    REPO,
-                    "--pattern",
-                    &rel.tarball,
-                    "--pattern",
-                    &rel.sig,
-                    "--dir",
-                    &dl.to_string_lossy(),
-                    "--clobber",
-                ],
-                DOWNLOAD_TIMEOUT,
-            );
-            done.store(true, Ordering::SeqCst);
-            res
-        });
-        res.map_err(|e| anyhow!(e.msg()))?;
-        let key = decode_public_key(PUB_KEY)?;
-        let sig = std::fs::read_to_string(dl.join(&rel.sig)).map_err(|_| anyhow!("signature missing"))?;
-        // Nothing unverified is ever extracted (the caller removes the download).
-        verify_file(&key, &sig, &tarball)?;
         let partial = self.dir.join(format!("{}.partial", rel.info.version));
-        remove_any(&partial)?;
-        std::fs::create_dir_all(&partial)?;
-        let ok = Command::new("/usr/bin/tar").arg("-xzf").arg(&tarball).arg("-C").arg(&partial).status()?.success();
-        let _ = remove_any(&dl);
-        if !ok || !is_app(&partial.join("Orchestrator.app")) {
-            let _ = remove_any(&partial);
-            bail!("extracting the update failed");
-        }
+        let progress = |p| self.set(|i| i.s.progress = Some(p));
+        self.fetch_verified(&rel.tag, &rel.tarball, &rel.sig, rel.tarball_size, DOWNLOAD, &partial, &progress)?;
         std::fs::write(partial.join("release.json"), serde_json::to_vec(&rel.info)?)?;
         let dest = self.dir.join(&rel.info.version);
         {
@@ -685,7 +734,7 @@ impl Updater {
         }
         // One staged version at most (removed with no lock held).
         for e in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
-            if e.path() != partial && e.file_type().is_ok_and(|t| t.is_dir()) {
+            if e.path() != partial && !is_pr_dir(&e.path()) && e.file_type().is_ok_and(|t| t.is_dir()) {
                 let _ = remove_any(&e.path());
             }
         }
@@ -703,27 +752,85 @@ impl Updater {
         Ok(())
     }
 
-    /// Reports the partial tarball's size against the asset's while gh downloads.
-    fn poll_progress(&self, file: &Path, size: u64, done: &AtomicBool) {
-        let mut last = 0.0;
-        while !done.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_millis(500));
-            let got = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
-            let p = (got as f64 / size as f64).min(1.0);
-            if p - last >= 0.05 {
-                last = p;
-                self.set(|i| i.s.progress = Some((p * 100.0).round() / 100.0));
+    /// Downloads release `tag`'s tarball and signature into `updates/<dl>`, verifies the signature
+    /// (nothing unverified is ever extracted) and extracts the bundle to `partial`, which holds
+    /// `Orchestrator.app` on success. The download dir is removed whatever the outcome.
+    #[allow(clippy::too_many_arguments)]
+    fn fetch_verified(
+        &self,
+        tag: &str,
+        tarball_name: &str,
+        sig_name: &str,
+        size: u64,
+        dl: &str,
+        partial: &Path,
+        progress: &(impl Fn(f64) + Sync),
+    ) -> Result<()> {
+        let dl = self.dir.join(dl);
+        remove_any(&dl)?;
+        std::fs::create_dir_all(&dl)?;
+        let tarball = dl.join(tarball_name);
+        let done = AtomicBool::new(false);
+        let res = std::thread::scope(|scope| {
+            if size > 0 {
+                scope.spawn(|| poll_progress(&tarball, size, &done, progress));
             }
+            let res = gh(
+                &[
+                    "release",
+                    "download",
+                    tag,
+                    "--repo",
+                    REPO,
+                    "--pattern",
+                    tarball_name,
+                    "--pattern",
+                    sig_name,
+                    "--dir",
+                    &dl.to_string_lossy(),
+                    "--clobber",
+                ],
+                DOWNLOAD_TIMEOUT,
+            );
+            done.store(true, Ordering::SeqCst);
+            res
+        });
+        let verified = res.map_err(|e| anyhow!(e.msg())).and_then(|_| {
+            let key = decode_public_key(PUB_KEY)?;
+            let sig = std::fs::read_to_string(dl.join(sig_name)).map_err(|_| anyhow!("signature missing"))?;
+            verify_file(&key, &sig, &tarball)
+        });
+        let extracted = verified.and_then(|()| {
+            remove_any(partial)?;
+            std::fs::create_dir_all(partial)?;
+            let ok = Command::new("/usr/bin/tar").arg("-xzf").arg(&tarball).arg("-C").arg(partial).status()?.success();
+            if !ok || !is_app(&partial.join("Orchestrator.app")) {
+                bail!("extracting the update failed");
+            }
+            Ok(())
+        });
+        let _ = remove_any(&dl);
+        if extracted.is_err() {
+            let _ = remove_any(partial);
         }
+        extracted
     }
 
-    /// `update_restart`'s pre-flight, with the app still up: the staged bundle is
+    /// `update_restart`'s pre-flight, with the app still up: the staged bundle of `target` is
     /// moved next to the running one. Errors leave the app as it was.
     pub fn prepare_restart(&self) -> Result<()> {
+        self.prepare_restart_to(RestartTarget::Main)
+    }
+
+    /// `prepare_restart` for either staged build.
+    pub fn prepare_restart_to(&self, target: RestartTarget) -> Result<()> {
         let mut i = self.inner.lock_ok();
-        let staged = match (&i.staged, i.s.state) {
-            (Some(st), Phase::Ready) if i.restart.is_none() => st.app.clone(),
-            _ => bail!("no update ready"),
+        let staged = match target {
+            RestartTarget::Main => match (&i.staged, i.s.state) {
+                (Some(st), Phase::Ready) if i.restart.is_none() => st.app.clone(),
+                _ => bail!("no update ready"),
+            },
+            RestartTarget::Pr => i.ready_pr().ok_or_else(|| anyhow!("no PR build ready"))?,
         };
         let bundle = self.bundle.clone().ok_or_else(|| anyhow!("not running from an app bundle"))?;
         match prepare(&bundle, &staged) {
@@ -732,12 +839,159 @@ impl Updater {
                 Ok(())
             }
             Err(e) => {
-                i.staged = None;
-                drop(i);
-                self.fail(format!("{e:#}"));
+                match target {
+                    RestartTarget::Main => {
+                        i.staged = None;
+                        drop(i);
+                        self.fail(format!("{e:#}"));
+                    }
+                    RestartTarget::Pr => {
+                        drop(i);
+                        self.fail_pr(format!("{e:#}"));
+                    }
+                }
                 Err(e)
             }
         }
+    }
+
+    /// The running build.
+    pub fn current(&self) -> BuildInfo {
+        self.inner.lock_ok().s.current.clone()
+    }
+
+    /// The PR number of the verified build `update_restart` with target `pr` would swap in.
+    pub fn pr_ready(&self) -> Result<u64> {
+        let i = self.inner.lock_ok();
+        i.ready_pr().and(i.s.pr_install.as_ref().map(|p| p.pr)).ok_or_else(|| anyhow!("no PR build ready"))
+    }
+
+    /// `Err` when the updater is off for good (`disabled_why` names the reason).
+    pub(crate) fn require_on(&self) -> Result<()> {
+        if self.off {
+            bail!("updates are off ({})", self.inner.lock_ok().s.disabled_why.clone().unwrap_or_default());
+        }
+        Ok(())
+    }
+
+    /// `pr_builds_list` (api-contract §4). Runs gh: call it off the main thread.
+    pub fn pr_builds_list(&self) -> Result<Value> {
+        self.require_on()?;
+        Ok(crate::pr_builds::list())
+    }
+
+    fn fail_pr(&self, msg: String) {
+        eprintln!("update: PR build: {msg}");
+        self.set(|i| {
+            i.staged_pr = None;
+            if let Some(p) = i.s.pr_install.as_mut() {
+                p.state = PrPhase::Error;
+                p.progress = None;
+                p.error = Some(msg);
+            }
+        });
+    }
+
+    /// `pr_build_install`: refuses at once when it cannot start; otherwise fetches the PR's
+    /// release (gh trouble ends as `pr_install.state = error`), then downloads in the background.
+    pub fn install_pr(self: &Arc<Self>, number: u64) -> Result<Value> {
+        self.require_on()?;
+        {
+            let mut i = self.inner.lock_ok();
+            if i.s.current.pr == Some(number) {
+                bail!("already running");
+            }
+            if i.s.pr_install.as_ref().is_some_and(|p| p.state == PrPhase::Downloading) {
+                bail!("an install is already downloading");
+            }
+            if i.restart.is_some() {
+                bail!("a restart is under way");
+            }
+            // One PR build staged at most: the new install replaces it, whatever the lookup
+            // finds (state and disk are cleared together, the disk below with no lock held).
+            i.staged_pr = None;
+            i.s.pr_install = Some(PrInstall::pending(number));
+        }
+        self.set(|_| {}); // emit "downloading" now: the release lookup below can take a while
+        for e in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with("pr-") && name != PR_DOWNLOAD && e.file_type().is_ok_and(|t| t.is_dir()) {
+                let _ = remove_any(&e.path());
+            }
+        }
+        let rel = match crate::pr_builds::fetch(number) {
+            Ok(r) => r,
+            Err(crate::pr_builds::FetchError::NoBuild) => {
+                self.set(|i| i.s.pr_install = None);
+                bail!("no build for PR #{number}");
+            }
+            Err(crate::pr_builds::FetchError::Gh(msg)) => {
+                self.set(|i| {
+                    i.s.pr_install =
+                        Some(PrInstall { state: PrPhase::Error, error: Some(msg), ..PrInstall::pending(number) });
+                });
+                return Ok(self.json());
+            }
+        };
+        self.set(|i| {
+            i.s.pr_install = Some(PrInstall {
+                pr: number,
+                title: rel.title.clone(),
+                version: rel.version.clone(),
+                sha: rel.sha.clone(),
+                state: PrPhase::Downloading,
+                progress: (rel.tarball_size > 0).then_some(0.0),
+                error: None,
+            });
+        });
+        let me = self.clone();
+        let spawned = std::thread::Builder::new().name("pr-install".into()).spawn(move || {
+            if let Err(e) = me.download_pr(number, &rel) {
+                let _ = remove_any(&me.dir.join(PR_DOWNLOAD));
+                me.fail_pr(format!("{e:#}"));
+            }
+        });
+        if let Err(e) = spawned {
+            self.fail_pr(format!("starting the download: {e}"));
+        }
+        Ok(self.json())
+    }
+
+    /// Downloads, verifies and stages a PR build (`updates/pr-<n>/`).
+    fn download_pr(&self, number: u64, rel: &crate::pr_builds::PrRelease) -> Result<()> {
+        let partial = self.dir.join(format!("pr-{number}.partial"));
+        let progress = |p| {
+            self.set(|i| {
+                if let Some(pi) = i.s.pr_install.as_mut() {
+                    pi.progress = Some(p);
+                }
+            })
+        };
+        self.fetch_verified(&rel.tag, &rel.tarball, &rel.sig, rel.tarball_size, PR_DOWNLOAD, &partial, &progress)?;
+        let staged =
+            PrStaged { version: rel.version.clone(), sha: rel.sha.clone(), pr: number, title: rel.title.clone() };
+        std::fs::write(partial.join("release.json"), serde_json::to_vec(&staged)?)?;
+        if self.inner.lock_ok().restart.is_some() {
+            // A restart is under way with another staged build: keep that one.
+            let _ = remove_any(&partial);
+            return Ok(());
+        }
+        let dest = self.dir.join(format!("pr-{number}"));
+        remove_any(&dest)?;
+        if let Err(e) = std::fs::rename(&partial, &dest) {
+            let _ = remove_any(&partial);
+            return Err(e).context("staging the PR build");
+        }
+        eprintln!("update: PR #{number} build {} verified and staged", rel.version);
+        self.set(|i| {
+            i.staged_pr = Some(dest.join("Orchestrator.app"));
+            if let Some(p) = i.s.pr_install.as_mut() {
+                p.state = PrPhase::Ready;
+                p.progress = None;
+                p.error = None;
+            }
+        });
+        Ok(())
     }
 
     /// At `RunEvent::Exit`, after the core has suspended the agents.
@@ -776,12 +1030,29 @@ impl Updater {
     }
 }
 
+/// Reports the partial tarball's size against the asset's while gh downloads.
+fn poll_progress(file: &Path, size: u64, done: &AtomicBool, progress: &impl Fn(f64)) {
+    let mut last = 0.0;
+    while !done.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(500));
+        let got = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
+        let p = (got as f64 / size as f64).min(1.0);
+        if p - last >= 0.05 {
+            last = p;
+            progress((p * 100.0).round() / 100.0);
+        }
+    }
+}
+
 /// The staged update of an earlier run, if it is still newer than this build;
 /// every other directory in `dir` goes (one staged version at most).
 fn find_staged(dir: &Path, current: &BuildInfo) -> Option<Staged> {
     let mut found: Option<Staged> = None;
     for e in std::fs::read_dir(dir).ok()?.flatten() {
         let p = e.path();
+        if is_pr_dir(&p) {
+            continue;
+        }
         let app = p.join("Orchestrator.app");
         let info =
             std::fs::read(p.join("release.json")).ok().and_then(|b| serde_json::from_slice::<Available>(&b).ok());
@@ -793,6 +1064,35 @@ fn find_staged(dir: &Path, current: &BuildInfo) -> Option<Staged> {
                 let _ = remove_any(&p);
             }
             _ => {}
+        }
+    }
+    found
+}
+
+/// The staged PR build of an earlier run (`updates/pr-<n>/`), unless it is the build now
+/// running or incomplete; those directories, and any second one, go.
+fn find_staged_pr(dir: &Path, current: &BuildInfo) -> Option<(PathBuf, PrStaged)> {
+    let mut found: Option<(PathBuf, PrStaged)> = None;
+    for e in std::fs::read_dir(dir).ok()?.flatten() {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !e.file_type().is_ok_and(|t| t.is_dir()) || name == PR_DOWNLOAD || !is_pr_dir(&p) {
+            continue;
+        }
+        let app = p.join("Orchestrator.app");
+        let info = std::fs::read(p.join("release.json")).ok().and_then(|b| serde_json::from_slice::<PrStaged>(&b).ok());
+        match info {
+            Some(info)
+                if found.is_none()
+                    && name == format!("pr-{}", info.pr)
+                    && current.pr != Some(info.pr)
+                    && is_app(&app) =>
+            {
+                found = Some((app, info));
+            }
+            _ => {
+                let _ = remove_any(&p);
+            }
         }
     }
     found
@@ -822,7 +1122,7 @@ mod tests {
     const FIX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/update");
 
     fn build(version: &str, channel: &str) -> BuildInfo {
-        BuildInfo { version: version.into(), sha: "abc".into(), channel: channel.into() }
+        BuildInfo { version: version.into(), sha: "abc".into(), channel: channel.into(), pr: None }
     }
 
     fn fixture(name: &str) -> String {
@@ -861,6 +1161,13 @@ mod tests {
         let local = build("0.1.0", "local");
         assert!(is_newer("0.1.1", &local));
         assert!(is_newer("0.1.0", &local));
+    }
+
+    #[test]
+    fn a_pr_build_is_older_than_any_main_release() {
+        // A PR run number can be higher than main's latest release.
+        let pr = build("0.1.99", "pr");
+        assert!(is_newer("0.1.50", &pr));
     }
 
     #[test]
@@ -1106,5 +1413,169 @@ mod tests {
         }
         assert_eq!(v["current"]["channel"], "main");
         assert_eq!(v["state"], "idle");
+    }
+
+    // ------------------------------------------------------------ PR builds
+
+    fn pr_build(pr: u64) -> BuildInfo {
+        BuildInfo { version: "0.1.57".into(), sha: "abc".into(), channel: "pr".into(), pr: Some(pr) }
+    }
+
+    /// `updates/pr-<n>/` as a finished install leaves it.
+    fn stage_pr(updates: &Path, pr: u64, marker: &str) {
+        let dir = updates.join(format!("pr-{pr}"));
+        fake_app(&dir.join("Orchestrator.app"), marker);
+        let info = PrStaged { version: "0.1.61".into(), sha: "a17c3d0".into(), pr, title: "Fix the graph".into() };
+        std::fs::write(dir.join("release.json"), serde_json::to_vec(&info).unwrap()).unwrap();
+    }
+
+    fn pr_state(u: &Updater) -> Option<PrInstall> {
+        u.snapshot().pr_install
+    }
+
+    #[test]
+    fn pr_install_and_list_are_refused_while_updates_are_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let u = Updater::with(build("0.1.5", "main"), tmp.path().into(), None, Some("debug build"));
+        assert!(u.install_pr(12).unwrap_err().to_string().contains("updates are off (debug build)"));
+        assert!(u.pr_builds_list().unwrap_err().to_string().contains("updates are off"));
+        assert_eq!(pr_state(&u), None);
+    }
+
+    #[test]
+    fn the_running_pr_build_cannot_be_installed_and_one_download_at_a_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let u = Updater::with(pr_build(12), tmp.path().into(), None, None);
+        assert_eq!(u.install_pr(12).unwrap_err().to_string(), "already running");
+        u.set(|i| {
+            i.s.pr_install = Some(PrInstall {
+                pr: 14,
+                title: "t".into(),
+                version: "0.1.61".into(),
+                sha: "s".into(),
+                state: PrPhase::Downloading,
+                progress: Some(0.2),
+                error: None,
+            })
+        });
+        assert!(u.install_pr(15).unwrap_err().to_string().contains("already downloading"));
+        // The refused call changed nothing.
+        assert_eq!(pr_state(&u).unwrap().pr, 14);
+    }
+
+    #[test]
+    fn a_staged_pr_build_is_restored_at_start_and_shown_as_ready() {
+        let tmp = tempfile::tempdir().unwrap();
+        stage_pr(tmp.path(), 14, "pr");
+        let u = Updater::with(build("0.1.50", "main"), tmp.path().into(), None, None);
+        let p = pr_state(&u).unwrap();
+        assert_eq!((p.pr, p.state, p.version.as_str(), p.sha.as_str()), (14, PrPhase::Ready, "0.1.61", "a17c3d0"));
+        assert_eq!((p.title.as_str(), p.progress, p.error), ("Fix the graph", None, None));
+        let v = u.json();
+        assert_eq!(v["pr_install"]["state"], "ready");
+        assert_eq!(v["current"]["pr"], Value::Null);
+        assert!(u.pr_ready().is_ok());
+        // Idle: no object at all.
+        let idle = Updater::with(build("0.1.50", "main"), tempfile::tempdir().unwrap().path().into(), None, None);
+        assert!(idle.json()["pr_install"].is_null());
+    }
+
+    #[test]
+    fn the_running_or_an_incomplete_pr_build_is_not_kept_and_main_staging_is_untouched() {
+        let tmp = tempfile::tempdir().unwrap();
+        stage_pr(tmp.path(), 12, "pr");
+        let u = Updater::with(pr_build(12), tmp.path().into(), None, None);
+        assert_eq!(pr_state(&u), None);
+        assert!(!tmp.path().join("pr-12").exists());
+
+        std::fs::create_dir_all(tmp.path().join("pr-13/Orchestrator.app")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("pr-14.partial")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("pr-download")).unwrap();
+        stage_pr(tmp.path(), 15, "pr");
+        fake_app(&tmp.path().join("0.1.70/Orchestrator.app"), "main");
+        let info = Available { version: "0.1.70".into(), sha: "f".into(), published_at: None, subject: "s".into() };
+        std::fs::write(tmp.path().join("0.1.70/release.json"), serde_json::to_vec(&info).unwrap()).unwrap();
+        let u = Updater::with(build("0.1.50", "main"), tmp.path().into(), None, None);
+        let s = u.snapshot();
+        assert_eq!((s.state, s.available.unwrap().version.as_str()), (Phase::Ready, "0.1.70"));
+        assert_eq!(pr_state(&u).unwrap().pr, 15);
+        for gone in ["pr-13", "pr-14.partial", "pr-download"] {
+            assert!(!tmp.path().join(gone).exists(), "{gone}");
+        }
+        assert!(tmp.path().join("pr-15/Orchestrator.app").exists());
+        assert!(tmp.path().join("0.1.70/Orchestrator.app").exists());
+    }
+
+    #[test]
+    fn restarting_into_a_pr_build_needs_one_staged_and_ready() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = tmp.path().join("Applications/Orchestrator.app");
+        fake_app(&bundle, "old");
+        let u = Updater::with(build("0.1.50", "main"), tmp.path().join("updates"), Some(bundle.clone()), None);
+        assert_eq!(u.prepare_restart_to(RestartTarget::Pr).unwrap_err().to_string(), "no PR build ready");
+        assert_eq!(u.pr_ready().unwrap_err().to_string(), "no PR build ready");
+        assert_eq!(marker(&bundle), "old");
+
+        stage_pr(&tmp.path().join("updates"), 14, "pr build");
+        let u = Updater::with(build("0.1.50", "main"), tmp.path().join("updates"), Some(bundle.clone()), None);
+        u.prepare_restart_to(RestartTarget::Pr).unwrap();
+        // Prepared once; a second restart (any target) is refused.
+        assert!(u.prepare_restart_to(RestartTarget::Pr).is_err());
+        assert!(u.prepare_restart().is_err());
+        u.on_exit();
+        assert_eq!(marker(&bundle), "pr build");
+    }
+
+    #[test]
+    fn a_plain_quit_never_applies_a_pr_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = tmp.path().join("Orchestrator.app");
+        fake_app(&bundle, "old");
+        stage_pr(&tmp.path().join("updates"), 14, "pr build");
+        for current in [build("0.1.50", "main"), build("0.1.0", "local"), pr_build(9)] {
+            let u = Updater::with(current, tmp.path().join("updates"), Some(bundle.clone()), None);
+            assert_eq!(pr_state(&u).unwrap().state, PrPhase::Ready);
+            u.on_exit();
+            assert_eq!(marker(&bundle), "old");
+        }
+    }
+
+    #[test]
+    fn a_pr_build_runs_beside_main_updates_as_a_local_build_does() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundle = tmp.path().join("Orchestrator.app");
+        let updates = tmp.path().join("updates");
+        fake_app(&bundle, "pr build");
+        // Version 0.1.99 (a PR run number) still sees main's 0.1.50 as newer, stages it, and a
+        // plain quit does not apply it; Restart does.
+        fake_app(&updates.join("0.1.50/Orchestrator.app"), "main");
+        let info = Available { version: "0.1.50".into(), sha: "f".into(), published_at: None, subject: "s".into() };
+        std::fs::write(updates.join("0.1.50/release.json"), serde_json::to_vec(&info).unwrap()).unwrap();
+        let mut running = pr_build(9);
+        running.version = "0.1.99".into();
+        let u = Updater::with(running.clone(), updates.clone(), Some(bundle.clone()), None);
+        let s = u.snapshot();
+        assert_eq!((s.state, s.apply_on_quit), (Phase::Ready, false));
+        u.on_exit();
+        assert_eq!(marker(&bundle), "pr build");
+        let u = Updater::with(running, updates, Some(bundle.clone()), None);
+        u.prepare_restart().unwrap();
+        u.on_exit();
+        assert_eq!(marker(&bundle), "main");
+    }
+
+    #[test]
+    fn a_failed_pr_pre_flight_keeps_the_app_up_with_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let updates = tmp.path().join("updates");
+        stage_pr(&updates, 14, "pr build");
+        // The bundle's parent does not exist: the pre-flight cannot work.
+        let bundle = tmp.path().join("nowhere/Orchestrator.app");
+        let u = Updater::with(build("0.1.50", "main"), updates, Some(bundle), None);
+        assert!(u.prepare_restart_to(RestartTarget::Pr).is_err());
+        let p = pr_state(&u).unwrap();
+        assert_eq!(p.state, PrPhase::Error);
+        assert!(p.error.is_some());
+        assert!(u.pr_ready().is_err());
     }
 }

@@ -1,0 +1,32 @@
+name: Build the app
+description: >
+  Builds Orchestrator.app (toolchain, caches, font, scripts/app.sh build). It takes no secret:
+  a PR build runs this on untrusted code. The caller checks out the commit to build and sets
+  ORCH_VERSION, ORCH_BUILD_SHA, ORCH_BUILD_CHANNEL (and ORCH_BUILD_PR for a PR build) in its
+  env, then packs (and, only where the code is trusted, signs) with scripts/app.sh.
+
+runs:
+  using: composite
+  steps:
+    - run: rustup toolchain install # from rust-toolchain.toml
+      shell: bash
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version-file: ui/package.json
+    - name: FiraCode Nerd Font
+      shell: bash
+      env:
+        NERD_FONTS_VERSION: v3.4.0
+        FIRACODE_SHA256: 7cc4ffd8f7a1fc914cdab7b149808298165ff7a7f40e40d82dea9ebe41e8ca0b
+      run: |
+        curl -fsSL -o "$RUNNER_TEMP/FiraCode.zip" \
+          "https://github.com/ryanoasis/nerd-fonts/releases/download/$NERD_FONTS_VERSION/FiraCode.zip"
+        echo "$FIRACODE_SHA256  $RUNNER_TEMP/FiraCode.zip" | shasum -a 256 -c -
+        mkdir "$RUNNER_TEMP/fonts"
+        for w in Regular Medium SemiBold Bold; do
+          unzip -j -d "$RUNNER_TEMP/fonts" "$RUNNER_TEMP/FiraCode.zip" "FiraCodeNerdFontMono-$w.ttf"
+        done
+        echo "ORCH_FONT_DIR=$RUNNER_TEMP/fonts" >> "$GITHUB_ENV"
+    - run: scripts/app.sh build
+      shell: bash

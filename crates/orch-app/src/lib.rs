@@ -12,8 +12,10 @@ pub mod memory;
 pub mod menu;
 pub mod notify;
 pub mod planner;
+pub mod pr_builds;
 pub mod services;
 pub mod setup;
+pub mod snapshot;
 pub mod teams;
 pub mod terms;
 pub mod update;
@@ -73,17 +75,35 @@ pub struct BuildInfo {
     pub version: String,
     pub sha: String,
     pub channel: String,
+    /// The pull request number of a `pr` channel build (`ORCH_BUILD_PR`), else `None`.
+    pub pr: Option<u64>,
 }
 
 pub fn build_info(version: &str) -> BuildInfo {
-    build_info_from(version, option_env!("ORCH_BUILD_SHA"), option_env!("ORCH_BUILD_CHANNEL"))
+    build_info_from(
+        version,
+        option_env!("ORCH_BUILD_SHA"),
+        option_env!("ORCH_BUILD_CHANNEL"),
+        option_env!("ORCH_BUILD_PR"),
+    )
 }
 
-fn build_info_from(version: &str, sha: Option<&str>, channel: Option<&str>) -> BuildInfo {
-    BuildInfo {
-        version: version.to_string(),
-        sha: sha.unwrap_or("").to_string(),
-        channel: channel.filter(|c| !c.is_empty()).unwrap_or("local").to_string(),
+fn build_info_from(version: &str, sha: Option<&str>, channel: Option<&str>, pr: Option<&str>) -> BuildInfo {
+    let channel = channel.filter(|c| !c.is_empty()).unwrap_or("local").to_string();
+    // Only a `pr` build carries a number; an unparsable one is dropped.
+    let pr = if channel == "pr" { pr.and_then(|n| n.trim().parse().ok()) } else { None };
+    BuildInfo { version: version.to_string(), sha: sha.unwrap_or("").to_string(), channel, pr }
+}
+
+impl std::fmt::Display for BuildInfo {
+    /// The build as the start log line prints it: `0.1.57 (sha f9b1e20, channel pr, PR #12)`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let sha = if self.sha.is_empty() { "unknown" } else { &self.sha };
+        write!(f, "{} (sha {sha}, channel {}", self.version, self.channel)?;
+        if let Some(n) = self.pr {
+            write!(f, ", PR #{n}")?;
+        }
+        write!(f, ")")
     }
 }
 
@@ -95,6 +115,7 @@ pub fn run() {
     let decided = core.clone();
     let context = tauri::generate_context!();
     let build = build_info(&context.package_info().version.to_string());
+    snapshot::prune(&core.paths.db_file(), &build, jiff::Timestamp::now().as_second());
     let updater = update::Updater::new(build.clone(), updates);
     let app = tauri::Builder::default()
         .manage(core.clone())
@@ -102,13 +123,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .menu(menu::build)
         .setup(move |app| {
-            eprintln!(
-                "orchestrator {} (sha {}, channel {}) started (pid {})",
-                build.version,
-                if build.sha.is_empty() { "unknown" } else { &build.sha },
-                build.channel,
-                std::process::id()
-            );
+            eprintln!("orchestrator {build} started (pid {})", std::process::id());
             devctl::start(app.handle().clone());
             // api-contract §3: the `update` event carries the whole state.
             let h = app.handle().clone();
@@ -234,6 +249,8 @@ pub fn run() {
             commands::dev_enabled,
             commands::update_check,
             commands::update_restart,
+            commands::pr_builds_list,
+            commands::pr_build_install,
             devctl::dev_report,
         ])
         .build(context)
@@ -262,19 +279,53 @@ pub fn run() {
 
 #[cfg(test)]
 mod build_info_tests {
-    use super::build_info_from;
+    use super::{BuildInfo, build_info_from};
 
     #[test]
     fn local_defaults_without_build_env() {
-        let b = build_info_from("0.1.0", None, None);
+        let b = build_info_from("0.1.0", None, None, None);
         assert_eq!((b.version.as_str(), b.sha.as_str(), b.channel.as_str()), ("0.1.0", "", "local"));
+        assert_eq!(b.pr, None);
         // scripts/app.sh exports an empty channel for a local build.
-        assert_eq!(build_info_from("0.1.0", Some(""), Some("")).channel, "local");
+        assert_eq!(build_info_from("0.1.0", Some(""), Some(""), Some("")).channel, "local");
     }
 
     #[test]
     fn ci_build_env_is_reported() {
-        let b = build_info_from("0.1.42", Some("abc123"), Some("main"));
+        let b = build_info_from("0.1.42", Some("abc123"), Some("main"), None);
         assert_eq!((b.version.as_str(), b.sha.as_str(), b.channel.as_str()), ("0.1.42", "abc123", "main"));
+        assert_eq!(b.pr, None);
+    }
+
+    #[test]
+    fn pr_build_carries_its_number() {
+        let b = build_info_from("0.1.57", Some("f9b1e20"), Some("pr"), Some("12"));
+        assert_eq!((b.channel.as_str(), b.pr), ("pr", Some(12)));
+    }
+
+    #[test]
+    fn pr_number_only_on_the_pr_channel_and_only_if_a_number() {
+        assert_eq!(build_info_from("0.1.1", None, Some("main"), Some("12")).pr, None);
+        assert_eq!(build_info_from("0.1.1", None, None, Some("12")).pr, None);
+        assert_eq!(build_info_from("0.1.1", None, Some("pr"), Some("")).pr, None);
+        assert_eq!(build_info_from("0.1.1", None, Some("pr"), Some("abc")).pr, None);
+        assert_eq!(build_info_from("0.1.1", None, Some("pr"), None).pr, None);
+    }
+
+    #[test]
+    fn serialises_pr_as_null_or_a_number() {
+        let main = serde_json::to_value(build_info_from("0.1.2", Some("a"), Some("main"), None)).unwrap();
+        assert!(main["pr"].is_null());
+        let pr = serde_json::to_value(build_info_from("0.1.2", Some("a"), Some("pr"), Some("12"))).unwrap();
+        assert_eq!(pr["pr"], 12);
+    }
+
+    #[test]
+    fn start_line_names_the_pr() {
+        let line = |sha: &str, channel: &str, pr| {
+            BuildInfo { version: "0.1.57".into(), sha: sha.into(), channel: channel.into(), pr }.to_string()
+        };
+        assert_eq!(line("f9b1e20", "pr", Some(12)), "0.1.57 (sha f9b1e20, channel pr, PR #12)");
+        assert_eq!(line("", "local", None), "0.1.57 (sha unknown, channel local)");
     }
 }

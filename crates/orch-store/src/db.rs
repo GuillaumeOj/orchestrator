@@ -109,6 +109,17 @@ fn configure(c: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The schema version (`user_version`) of the database file at `path` without opening it as a
+/// store: no migration, no WAL setup. `None` when there is no file.
+pub fn schema_version(path: &Path) -> Result<Option<u32>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("opening {}", path.display()))?;
+    Ok(Some(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+}
+
 /// A queued write's result ([`Store::write_begin`]).
 pub struct Pending<R>(Receiver<Result<R>>);
 
@@ -154,6 +165,20 @@ impl Store {
 
     pub fn path(&self) -> &Path {
         &self.inner.path
+    }
+
+    /// Writes a consistent copy of the database (`VACUUM INTO`) to `dest`, which must not exist.
+    /// It reads through its own connection, so writes queued meanwhile are not blocked and are
+    /// not in the copy. The copy carries the schema version (`user_version`).
+    pub fn backup_to(&self, dest: &Path) -> Result<()> {
+        if dest.exists() {
+            return Err(anyhow!("{} already exists", dest.display()));
+        }
+        let c = Connection::open_with_flags(&self.inner.path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        configure(&c)?;
+        c.execute("VACUUM INTO ?1", [dest.to_string_lossy().as_ref()])
+            .with_context(|| format!("copying the database to {}", dest.display()))?;
+        Ok(())
     }
 
     /// Folder for payloads too large for a row (NFR-8: large outputs outside the rows).
@@ -285,6 +310,38 @@ mod tests {
         let n: i64 =
             s.read(|c| Ok(c.query_row("SELECT count(*) FROM kv WHERE key LIKE 'k%'", [], |r| r.get(0))?)).unwrap();
         assert_eq!(n, 50);
+    }
+
+    #[test]
+    fn a_backup_is_a_consistent_copy_with_the_schema_version() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(&d.path().join("orch.db")).unwrap();
+        s.write(|tx| Ok(tx.execute("INSERT INTO kv(key, value) VALUES ('a', '1')", [])?)).unwrap();
+        let copy = d.path().join("copy.db");
+        s.backup_to(&copy).unwrap();
+        // Later writes are not in it; it opens as a store of its own.
+        s.write(|tx| Ok(tx.execute("INSERT INTO kv(key, value) VALUES ('b', '2')", [])?)).unwrap();
+        assert_eq!(schema_version(&copy).unwrap(), Some(migrations::SCHEMA_VERSION));
+        let c = Store::open(&copy).unwrap();
+        let n: i64 =
+            c.read(|c| Ok(c.query_row("SELECT count(*) FROM kv WHERE key IN ('a','b')", [], |r| r.get(0))?)).unwrap();
+        assert_eq!(n, 1);
+        // It never overwrites.
+        assert!(s.backup_to(&copy).is_err());
+    }
+
+    #[test]
+    fn the_schema_version_is_read_without_migrating() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("orch.db");
+        assert_eq!(schema_version(&path).unwrap(), None);
+        {
+            let c = Connection::open(&path).unwrap();
+            c.pragma_update(None, "user_version", migrations::SCHEMA_VERSION + 3).unwrap();
+        }
+        assert_eq!(schema_version(&path).unwrap(), Some(migrations::SCHEMA_VERSION + 3));
+        // Newer than this build: the store refuses it, the probe does not.
+        assert!(Store::open(&path).is_err());
     }
 
     #[test]

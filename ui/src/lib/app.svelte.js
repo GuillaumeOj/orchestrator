@@ -15,7 +15,16 @@ import { STATUS } from './status.js';
 import { runStateLabel } from './teams.js';
 import { TermPane } from './term.js';
 import { breakpoint } from './tokens.js';
-import { aboutText, checkOutcome, readyToast, updateActions } from './update.js';
+import {
+  aboutText,
+  backToMain,
+  checkOutcome,
+  isRestoreWarning,
+  prKey,
+  prReadyToast,
+  readyToast,
+  updateActions,
+} from './update.js';
 
 /** The dock's share of the work column when nothing is saved: agents need rows. */
 const DOCK_HEIGHT = 0.45;
@@ -70,6 +79,7 @@ export const app = $state({
   // `layout`). `v: 2` marks a height saved under the 0.45 default.
   dock: { open: false, height: DOCK_HEIGHT, tabs: [], active: null, v: 2 },
   error: null,
+  prTitles: {}, // PR number → title, from the last `pr_builds_list` (the status chip's tooltip)
 });
 
 // One clock for relative times ("checked 14:58 · 2m ago"), every 30 s, started on first use.
@@ -976,6 +986,7 @@ async function readState() {
     const data = await invoke('app_state');
     data.features ??= app.data?.features ?? null;
     app.data = new Snapshot(data);
+    announceWarnings(data.warnings);
     app.error = null;
     prunePanes();
   } catch (e) {
@@ -1010,6 +1021,7 @@ let toastedLoad = null;
 export async function applyUpdate(u) {
   if (!u) return;
   if (app.data) app.data = new Snapshot({ ...app.data, update: u });
+  announcePrBuild(u);
   if (u.state !== 'ready' || !u.available) return;
   // The persisted version is read once; the check-and-record below has no await between
   // them, so the startup call and an `update` event for the same version toast once.
@@ -1025,8 +1037,46 @@ export async function applyUpdate(u) {
   toast(text, { ms: 12000, action: { label: 'Restart now', run: restartToUpdate } });
 }
 
-export function restartToUpdate() {
-  invoke('update_restart').catch((e) => toast(errText(e), { kind: 'error' }));
+/** "PR #n's build is ready", once per staged build (persisted); the action opens Settings › Builds on that row. */
+const PR_TOASTED_KEY = 'ui.pr_build_toasted';
+let prToasted;
+function announcePrBuild(u) {
+  const i = u.pr_install;
+  if (i?.state !== 'ready') return;
+  const key = prKey(i);
+  if (prToasted === key) return; // sync guard: a second push for the same build
+  const load =
+    prToasted === undefined
+      ? invoke('settings_get', { key: PR_TOASTED_KEY }).catch(() => null)
+      : Promise.resolve(prToasted);
+  prToasted = key; // claim now so a concurrent push does not toast twice
+  load.then((last) => {
+    const text = prReadyToast(u, last);
+    if (!text) return;
+    invoke('settings_set', { key: PR_TOASTED_KEY, value: key }).catch(() => {});
+    toast(text, { ms: 12000, action: { label: 'Restart to run', run: () => openSettings('builds', `pr:${i.pr}`) } });
+  });
+}
+
+const announcedWarnings = new Set();
+/** Start-up warnings after a restore (api-contract §6): an amber toast, 15 s, once. */
+export function announceWarnings(warnings) {
+  for (const w of warnings ?? []) {
+    if (!isRestoreWarning(w) || announcedWarnings.has(w)) continue;
+    announcedWarnings.add(w);
+    toast(w, { kind: 'warn', ms: 15000 });
+  }
+}
+
+/** Restart into `target`: 'main' (default, today's behaviour) or 'pr' (the staged PR build). */
+export function restartToUpdate(target = 'main') {
+  const t = target === 'pr' ? 'pr' : 'main';
+  return invoke('update_restart', { target: t }).catch((e) => toast(errText(e), { kind: 'error' }));
+}
+
+/** Palette / Settings "Back to main". */
+export function backToMainBuild() {
+  return restartToUpdate('main');
 }
 
 /** Palette "Check for updates": the toast says what the check found. */
@@ -1052,9 +1102,12 @@ export function aboutOrchestrator() {
 function updateCommands() {
   const u = app.data?.update;
   const off = updateActions(u);
+  const back = backToMain(u);
   return [
     { id: 'update.check', label: 'Check for updates', disabled: off.check, run: checkForUpdates },
     { id: 'update.restart', label: 'Restart to update', disabled: off.restart, run: restartToUpdate },
+    { id: 'update.pr', label: 'Install a PR build…', run: () => openSettings('builds') },
+    { id: 'update.main', label: 'Back to main', disabled: back.why, run: backToMainBuild },
     { id: 'update.about', label: 'About Orchestrator', run: aboutOrchestrator },
   ];
 }

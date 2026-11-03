@@ -6,8 +6,8 @@
 
 <div class="toasts" aria-live="polite">
   {#each app.toasts as t (t.id)}
-    <div class="toast" class:error={t.kind === 'error'}>
-      <span class="icon" style:color={t.kind === 'error' ? 'var(--color-status-error)' : 'var(--color-status-done)'} aria-hidden="true">{t.kind === 'error' ? '\u{F0159}' : '\u{F012C}'}</span>
+    <div class="toast" class:error={t.kind === 'error'} class:warn={t.kind === 'warn'}>
+      <span class="icon" style:color={t.kind === 'error' ? 'var(--color-status-error)' : t.kind === 'warn' ? 'var(--color-pacing-amber)' : 'var(--color-status-done)'} aria-hidden="true">{t.kind === 'error' ? '\u{F0159}' : t.kind === 'warn' ? '\u{F0026}' : '\u{F012C}'}</span>
       <span class="text">{t.text}</span>
       {#if t.undo}<button class="btn ghost" onclick={() => undoItem(t.item)}>Undo <Kbd keys="u" /></button>{/if}
       {#if t.action}<button class="btn ghost" onclick={() => (dismissToast(t.id), t.action.run())}>{t.action.label}</button>{/if}
@@ -41,6 +41,9 @@
   }
   .toast.error {
     border-color: var(--color-status-error);
+  }
+  .toast.warn {
+    border-color: var(--color-pacing-amber);
   }
   .text {
     flex: 1;

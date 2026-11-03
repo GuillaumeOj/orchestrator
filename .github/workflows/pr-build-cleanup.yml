@@ -1,0 +1,26 @@
+name: PR build cleanup
+
+# A closed or merged pull request loses its build: release pr-<number> and its tag.
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    name: Delete the PR build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Delete release and tag
+        run: |
+          tag="pr-$PR_NUMBER"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          else
+            echo "no release $tag: nothing to delete"
+          fi

@@ -1,0 +1,62 @@
+[
+ {
+  "number": 12,
+  "title": "Add build on PRs",
+  "headRefName": "orch/add-build-pr/integration",
+  "headRefOid": "f9b1e20c0ffeef9b1e20c0ffeef9b1e20c0ffee0",
+  "author": {
+   "login": "GuillaumeOj"
+  },
+  "isDraft": false,
+  "updatedAt": "2026-11-02T05:56:40Z",
+  "url": "https://github.com/GuillaumeOj/orchestrator/pull/12"
+ },
+ {
+  "number": 14,
+  "title": "Fix the week planner graph",
+  "headRefName": "orch/f14/integration",
+  "headRefOid": "a17c3d0a17c3d0a17c3d0a17c3d0a17c3d0a17c1",
+  "author": {
+   "login": "GuillaumeOj"
+  },
+  "isDraft": false,
+  "updatedAt": "2026-11-02T05:40:00Z",
+  "url": "https://github.com/GuillaumeOj/orchestrator/pull/14"
+ },
+ {
+  "number": 15,
+  "title": "Draft: spike",
+  "headRefName": "orch/f15/integration",
+  "headRefOid": "cccccccccccccccccccccccccccccccccccccccc",
+  "author": {
+   "login": "GuillaumeOj"
+  },
+  "isDraft": true,
+  "updatedAt": "2026-11-02T05:23:20Z",
+  "url": "https://github.com/GuillaumeOj/orchestrator/pull/15"
+ },
+ {
+  "number": 16,
+  "title": "Sig missing",
+  "headRefName": "orch/f16/integration",
+  "headRefOid": "dddddddddddddddddddddddddddddddddddddddd",
+  "author": {
+   "login": "GuillaumeOj"
+  },
+  "isDraft": false,
+  "updatedAt": "2026-11-02T05:06:40Z",
+  "url": "https://github.com/GuillaumeOj/orchestrator/pull/16"
+ },
+ {
+  "number": 17,
+  "title": "Release not a prerelease",
+  "headRefName": "orch/f17/integration",
+  "headRefOid": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "author": {
+   "login": "GuillaumeOj"
+  },
+  "isDraft": false,
+  "updatedAt": "2026-11-02T04:50:00Z",
+  "url": "https://github.com/GuillaumeOj/orchestrator/pull/17"
+ }
+]
