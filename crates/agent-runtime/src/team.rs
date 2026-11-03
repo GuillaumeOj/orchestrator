@@ -1047,8 +1047,7 @@ impl Runtime {
             let line = match &long {
                 None => format!("\n- {head}: {}", m.body),
                 Some(path) => {
-                    let preview: String = m.body.chars().take(PREVIEW).collect();
-                    format!("\n- {head}: {preview}…\n  full text: {}", path.display())
+                    format!("\n- {head}: {}\n  full text: {}", cut(&m.body, PREVIEW), path.display())
                 }
             };
             let n = line.chars().count();

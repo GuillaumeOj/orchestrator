@@ -21,19 +21,20 @@ use orch_protocol::{HookEvent, HookMsg, HookPayload, Reply, now_ms, spool};
 use orch_store::Message;
 use serde_json::{Value, json};
 
+use crate::decision::last_lines;
 use crate::delivery::{self, marker};
 use crate::runtime::{Live, Runtime};
 use crate::state::AgentState;
 use crate::store::{AgentRecord, TurnRow, TurnStatus};
 
 /// Pastes the CLI may leave unacknowledged before the turn fails.
-pub const MAX_ATTEMPTS: u32 = 3;
+const MAX_ATTEMPTS: u32 = 3;
 /// Setting: seconds a paste may wait for its UserPromptSubmit before the
 /// watchdog checks it.
 pub const ACK_KEY: &str = "delivery.ack_secs";
-pub const DEFAULT_ACK: Duration = Duration::from_secs(20);
+const DEFAULT_ACK: Duration = Duration::from_secs(20);
 /// `last_error` of a message handed back because the model did not see all of it.
-pub const NOT_FULLY_SEEN: &str = "not_fully_seen";
+const NOT_FULLY_SEEN: &str = "not_fully_seen";
 /// Lines of the PTY tail kept with a delivery failure.
 const TAIL_LINES: usize = 40;
 
@@ -78,12 +79,6 @@ pub(crate) fn fully_seen(m: &Message, paste_file: Option<&str>, referenced: &BTr
 /// The transcript ends with the agent's finished answer.
 fn turn_ended(s: &crate::transcript::Summary) -> bool {
     s.last_type.as_deref() == Some("assistant") && s.last_stop_reason.as_deref() == Some("end_turn")
-}
-
-/// The last `n` lines of a PTY tail.
-fn last_lines(tail: &str, n: usize) -> String {
-    let lines: Vec<&str> = tail.lines().filter(|l| !l.trim().is_empty()).collect();
-    lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
 /// What the paste watchdog reads for one unacknowledged paste.
