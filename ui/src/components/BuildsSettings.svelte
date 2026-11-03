@@ -129,16 +129,17 @@
     {/if}
     {#each rows as r (r.id)}
       {@const st = rowState(r, u, now)}
+      {@const asking = confirming === r.number && st.kind === 'ready'}
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
       <div class="row" class:sel={r.id === cur?.id} data-pr={r.number} data-state={st.kind} onclick={() => (selId = r.id)}>
         <div class="top">
-          <span class="num mono">#{r.number}</span>
+          <a class="num mono" href={r.url} onclick={(e) => (e.preventDefault(), openUrl(r.url))}>#{r.number}</a>
           <a class="title ell" href={r.url} onclick={(e) => (e.preventDefault(), openUrl(r.url))}>{r.draft ? 'Draft: ' : ''}{r.title}</a>
           <span class="grow"></span>
           <span class="state" class:warn={st.tone === 'warn'} class:muted={st.tone === 'muted'}>
             {#if st.dot}<span class="dot" aria-hidden="true">●</span>{/if}{st.text}
           </span>
-          {#if st.action && confirming !== r.number}
+          {#if st.action && !asking}
             <button class="btn" class:primary={st.action.primary} disabled={st.action.disabled} onclick={() => act(r)}>{st.action.label}{#if r.id === cur?.id} <Kbd keys="⏎" />{/if}</button>
           {/if}
         </div>
@@ -146,7 +147,7 @@
           <span class="ell">{r.branch} · {r.author}</span>
           {#if st.note}<span class="note">{st.note}</span>{/if}
         </div>
-        {#if confirming === r.number}
+        {#if asking}
           <div class="confirm" data-confirm>
             <span>{restartConfirm(u, r.number)}</span>
             <button class="btn primary" data-restart onclick={() => restart()}>Restart</button>
@@ -241,6 +242,7 @@
     width: 3.5em;
     flex: none;
     color: var(--color-text-secondary);
+    text-decoration: none;
   }
   .title {
     min-width: 0;
@@ -249,10 +251,11 @@
     text-decoration: none;
   }
   .title:hover,
-  a.mono:hover {
+  .num:hover,
+  .l1 a.mono:hover {
     text-decoration: underline;
   }
-  a.mono {
+  .l1 a.mono {
     color: inherit;
   }
   .ell {
