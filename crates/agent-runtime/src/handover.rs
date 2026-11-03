@@ -402,13 +402,13 @@ impl Runtime {
         }
     }
 
-    /// The marker is in the transcript: the UserPromptSubmit (and, when the
-    /// turn is over there, the Stop) applied late.
     /// The Stop the core never got, applied from the transcript (§3.7).
     pub(crate) fn late_stop(&self, rec: &AgentRecord) {
         self.apply_hook(&synthetic_hook(rec, HookEvent::Stop, json!({})), None, true);
     }
 
+    /// The marker is in the transcript: the UserPromptSubmit (and, when the
+    /// turn is over there, the Stop) applied late.
     pub(crate) fn late_turn_start(&self, rec: &AgentRecord, seen: &[String], ended: bool) {
         let mk = |event: HookEvent, payload: Value| synthetic_hook(rec, event, payload);
         let prompt = seen.iter().map(|t| marker(t)).collect::<Vec<_>>().join(" ");
@@ -478,8 +478,8 @@ impl Runtime {
     }
 
     /// The paste watchdog gave up: the turns are failed and the agent takes
-    /// its other turns. **T-207 hook point**: the `delivery` decision
-    /// (api-contract §2) and the note to the agent's Lead are raised here.
+    /// its other turns. The `delivery` decision (api-contract §2) and the
+    /// note to the agent's Lead are raised here.
     pub(crate) fn on_delivery_failed(&self, f: &DeliveryFailure) {
         let rec = self.store.read(|s| s.agents.get(&f.agent).cloned());
         let messages = self.db.messages_by_id(&f.messages).unwrap_or_default();

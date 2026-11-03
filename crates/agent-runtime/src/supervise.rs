@@ -119,8 +119,8 @@ impl Runtime {
         // Idle after a Stop with background work (§3.2): it waits for its
         // own shells or subagents, which start its next turn. Not stuck.
         let waits_on_background = |id: &str| agents.iter().any(|a| a.id == id && a.tracker.background_tasks > 0);
-        let text: BTreeMap<String, String> = self
-            .members_of(cx, &agents)
+        let members = self.members_of(cx, &agents);
+        let mut text: BTreeMap<String, String> = members
             .iter()
             .filter_map(|m| {
                 let (what, since, line) = m.stuck(now)?;
@@ -128,11 +128,10 @@ impl Runtime {
                 (!waiting).then(|| (format!("{}:{what}:{since}", m.agent), line))
             })
             .collect();
-        let mut text = text;
         // §3.7: a member waiting on an idle Lead (an unanswered review request
         // or report) is stuck too; its Lead is told, and the user after 10 min more.
         if lead.tracker.state == crate::state::AgentState::Idle {
-            for m in self.members_of(cx, &agents) {
+            for m in &members {
                 let Some(w) =
                     m.waiting_on.as_ref().filter(|w| w.kind == WaitKind::Agent && w.r#ref.as_deref() == Some(&lead.id))
                 else {
