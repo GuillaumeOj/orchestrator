@@ -43,6 +43,10 @@ const mcpAlert = (d) => d?.kind === 'alert' && d.payload?.alert === 'mcp_needs_a
 export const actionByKey = (d, key) => d?.actions?.find((a) => a.key === key) ?? null;
 /** A decision's context block of that type, if any. */
 export const blockOf = (d, type) => d?.context?.find((b) => b.type === type) ?? null;
+/** The delivery card's primary action (ux-brief §1): Open pane when the CLI did
+ *  not acknowledge or the user is typing, else Retry now. */
+export const deliveryPrimary = (d) =>
+  d?.kind === 'delivery' ? (['no_ack', 'user_typing'].includes(d.payload?.blocker) ? 'open' : 'retry') : null;
 /** Actions with no key: buttons in the detail only. */
 export const keyless = (d) => (d?.actions ?? []).filter((a) => !a.key);
 /** Kind label (notes §3.2), from the decision-kind palette. */
@@ -152,6 +156,8 @@ export function pendingVerb(d, action) {
       return { approve: 'Allowing once', always: 'Always allowing' }[action] ?? 'Denying';
     case 'startup':
       return { restart_fresh: 'Restarting fresh', delete: 'Deleting' }[action] ?? 'Dismissing';
+    case 'delivery':
+      return { retry: 'Retrying', restart_fresh: 'Restarting fresh' }[action] ?? 'Dismissing';
     case 'budget':
       return action === 'approve' ? 'Applying' : 'Skipping';
     case 'ask':
@@ -174,7 +180,7 @@ export function pendingToast(d, action) {
   const verb = pendingVerb(d, action);
   if (d.kind === 'permission') return `${verb}${who(d)}${what(d)}`;
   if (d.kind === 'budget') return `${verb} · ${d.title}`;
-  if (verb === 'Dismissing' && d.kind !== 'startup') return `${verb} · ${cut(d.title, 40)}`;
+  if (verb === 'Dismissing' && d.kind !== 'startup' && d.kind !== 'delivery') return `${verb} · ${cut(d.title, 40)}`;
   return `${verb}${who(d)}`;
 }
 
@@ -243,8 +249,12 @@ export function effectText(d, mine = {}) {
       return prOpened(d, lc.effect_detail);
     case 'restarted':
       return `Restarted fresh · ${agent}`;
+    case 'retried':
+      return `Retrying · ${agent}`;
     case 'dismissed':
       if (mcpAlert(d)) return `Dismissed until it fails again · ${d.payload?.name ?? d.payload?.server ?? ''}`;
+      if (d.kind === 'delivery')
+        return `Dismissed · ${agent}${d.payload?.messages?.length ? ' (messages stay failed)' : ''}`;
       return `Dismissed · ${cut(d.title, 40)}`;
     // The Governor's ask is answered at once with applied / skipped.
     case 'applied':

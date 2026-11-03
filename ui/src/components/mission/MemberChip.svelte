@@ -5,6 +5,7 @@
   import { shortWait } from '../../lib/mission.js';
   import { STATUS } from '../../lib/status.js';
   import AgentChip from '../AgentChip.svelte';
+  import UndeliveredChip from '../UndeliveredChip.svelte';
 
   /** @type {{ id: string, rec: any, now: number, selected?: boolean, busy?: boolean, onclick?: (e: MouseEvent) => void }} */
   let { id, rec, now, selected = false, busy = false, onclick = () => {} } = $props();
@@ -19,6 +20,7 @@
   <span class="name">{id}</span>
   {#if wait}<span class="wait" class:error>{wait}</span>{/if}
 </button>
+<UndeliveredChip {rec} />
 
 <style>
   .mchip {
