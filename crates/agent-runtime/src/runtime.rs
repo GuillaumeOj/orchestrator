@@ -482,7 +482,11 @@ impl Runtime {
         cfg.shadow = cfg.shadow && enforce_chosen(&db) != Some(true);
         let mut warnings = vec![];
         let base_cap = match cfg.base_cap {
-            Some(c) => c,
+            // `orchd serve --cap`: a bad value fails the start.
+            Some(c) => {
+                crate::live_cap::check_live_cap(c)?;
+                c
+            }
             None => crate::live_cap::stored(&db).unwrap_or_else(|w| {
                 warnings.push(w);
                 crate::live_cap::DEFAULT_LIVE_CAP
@@ -2184,8 +2188,15 @@ impl Runtime {
             let mut old = self.gov();
             let carry = old.carry();
             self.db.save_plan(&plan, orch_store::PlanStatus::Active)?;
-            let (gov, released) =
-                restore_governor(&self.db, &self.store, &self.cfg, self.base_cap(), plan.shadow_mode, Some(carry), now)?;
+            let (gov, released) = restore_governor(
+                &self.db,
+                &self.store,
+                &self.cfg,
+                self.base_cap(),
+                plan.shadow_mode,
+                Some(carry),
+                now,
+            )?;
             // The new Governor's action ids start again: store them under a new key.
             let prev = self.boot_ms.load(Ordering::SeqCst);
             self.boot_ms.store(now_ms().max(prev + 1), Ordering::SeqCst);

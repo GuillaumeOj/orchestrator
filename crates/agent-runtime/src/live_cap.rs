@@ -18,6 +18,7 @@ pub const LIVE_CAP_KEY: &str = "governor.live_cap";
 pub const DEFAULT_LIVE_CAP: u32 = 3;
 pub const LIVE_CAP_MIN: u32 = 1;
 pub const LIVE_CAP_MAX: u32 = 20;
+pub const OFF_HOURS_LIVE_CAP_MIN: u32 = 0;
 pub const OFF_HOURS_LIVE_CAP_MAX: u32 = 20;
 
 /// One change at a time: each reads the current values, then rebuilds.
@@ -33,21 +34,30 @@ pub fn stored(db: &orch_store::Store) -> Result<u32, String> {
     };
     match v.as_u64().filter(|n| (LIVE_CAP_MIN as u64..=LIVE_CAP_MAX as u64).contains(n)) {
         Some(n) => Ok(n as u32),
-        None => Err(format!(
-            "{LIVE_CAP_KEY} {v} is outside {LIVE_CAP_MIN}–{LIVE_CAP_MAX}; using {DEFAULT_LIVE_CAP}"
-        )),
+        None => Err(format!("{LIVE_CAP_KEY} {v} is outside {LIVE_CAP_MIN}–{LIVE_CAP_MAX}; using {DEFAULT_LIVE_CAP}")),
     }
+}
+
+/// The base live cap: 1–20 (Settings, `orchd serve --cap`).
+pub fn check_live_cap(n: u32) -> Result<()> {
+    if !(LIVE_CAP_MIN..=LIVE_CAP_MAX).contains(&n) {
+        bail!("live agents {n}: use {LIVE_CAP_MIN}–{LIVE_CAP_MAX}");
+    }
+    Ok(())
+}
+
+/// The off-hours live cap: 0–20 (Settings, and the Week planner's `plan_set`).
+pub fn check_off_hours(n: u32) -> Result<()> {
+    if !(OFF_HOURS_LIVE_CAP_MIN..=OFF_HOURS_LIVE_CAP_MAX).contains(&n) {
+        bail!("off-hours live agents {n}: use {OFF_HOURS_LIVE_CAP_MIN}–{OFF_HOURS_LIVE_CAP_MAX}");
+    }
+    Ok(())
 }
 
 /// Both values checked before anything is written (api-contract).
 pub fn check(live_cap: Option<u32>, off_hours: Option<u32>) -> Result<()> {
-    if let Some(n) = live_cap.filter(|n| !(LIVE_CAP_MIN..=LIVE_CAP_MAX).contains(n)) {
-        bail!("live agents {n}: use {LIVE_CAP_MIN}–{LIVE_CAP_MAX}");
-    }
-    if let Some(n) = off_hours.filter(|n| *n > OFF_HOURS_LIVE_CAP_MAX) {
-        bail!("off-hours live agents {n}: use 0–{OFF_HOURS_LIVE_CAP_MAX}");
-    }
-    Ok(())
+    live_cap.map_or(Ok(()), check_live_cap)?;
+    off_hours.map_or(Ok(()), check_off_hours)
 }
 
 /// The caps a base gives, by the core's own formulas.
@@ -99,6 +109,7 @@ pub struct PacingSettings {
     pub live_cap_max: u32,
     pub off_hours_live_cap: u32,
     pub off_hours_live_cap_default: u32,
+    pub off_hours_live_cap_min: u32,
     pub off_hours_live_cap_max: u32,
     /// From the current plan: 0 = agents don't run off-hours at all.
     pub off_hours_allowance_pct: f64,
@@ -122,6 +133,7 @@ impl Runtime {
             live_cap_max: LIVE_CAP_MAX,
             off_hours_live_cap: off_hours,
             off_hours_live_cap_default: governor::PacingPolicy::default().off_hours_live_cap,
+            off_hours_live_cap_min: OFF_HOURS_LIVE_CAP_MIN,
             off_hours_live_cap_max: OFF_HOURS_LIVE_CAP_MAX,
             off_hours_allowance_pct: allowance,
             shadow,
@@ -195,6 +207,123 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::tests::{hook, insert_test_live, test_agent, test_cfg, test_runtime};
+    use crate::state::TurnOrigin;
+    use governor::{AgentId, LiveCaps, QueueReason, TurnKind};
+
+    fn events(rt: &Runtime, kind: &str) -> Vec<serde_json::Value> {
+        rt.db.flush().unwrap();
+        rt.db.events(0, None, Some(kind), 10).unwrap().into_iter().map(|e| e.detail).collect()
+    }
+
+    #[test]
+    fn the_setting_is_read_at_start_and_cap_overrides_it() {
+        let d = tempfile::Builder::new().prefix("orchlc").tempdir_in(orch_protocol::test_tmp()).unwrap();
+        let start = |cap: Option<u32>| {
+            let mut cfg = test_cfg(d.path(), true);
+            cfg.base_cap = cap;
+            Runtime::new(cfg).unwrap()
+        };
+        // Nothing stored: 3.
+        let rt = start(None);
+        assert_eq!((rt.base_cap(), rt.live_cap()), (3, 3));
+        rt.db.set_setting(LIVE_CAP_KEY, &json!(6)).unwrap();
+        rt.db.flush().unwrap();
+        drop(rt);
+        // The setting, in both caps.
+        let rt = start(None);
+        assert_eq!((rt.base_cap(), rt.live_cap()), (6, 6));
+        assert_eq!(rt.with_governor(|g| g.policy().live_caps.clone()), LiveCaps::from_base(6));
+        drop(rt);
+        // `--cap` wins for its run, and is not stored.
+        let rt = start(Some(2));
+        assert_eq!((rt.base_cap(), rt.pacing_settings().live_cap), (2, 2));
+        assert_eq!(rt.with_governor(|g| g.policy().live_caps.green), 2);
+        assert_eq!(rt.db.setting(LIVE_CAP_KEY).unwrap(), Some(json!(6)));
+        drop(rt);
+        // A bad `--cap` fails the start.
+        let mut cfg = test_cfg(d.path(), true);
+        cfg.base_cap = Some(21);
+        assert_eq!(Runtime::new(cfg).err().unwrap().to_string(), "live agents 21: use 1–20");
+        // A stored value out of range: ignored with a warning.
+        for bad in [json!(0), json!(25), json!("lots")] {
+            let rt = start(None);
+            rt.db.set_setting(LIVE_CAP_KEY, &bad).unwrap();
+            rt.db.flush().unwrap();
+            drop(rt);
+            let rt = start(None);
+            assert_eq!(rt.base_cap(), DEFAULT_LIVE_CAP, "{bad}");
+            assert!(rt.warnings.iter().any(|w| w.contains(LIVE_CAP_KEY)), "{:?}", rt.warnings);
+        }
+    }
+
+    #[test]
+    fn a_change_applies_now_and_logs_once() {
+        let (_d, rt) = test_runtime(true);
+        let caps = |rt: &Runtime| rt.with_governor(|g| (g.policy().live_caps.clone(), g.policy().off_hours_live_cap));
+        rt.set_live_caps(Some(6), Some(2)).unwrap();
+        assert_eq!(caps(&rt), (LiveCaps::from_base(6), 2));
+        assert_eq!(rt.live_cap(), 6);
+        let v = rt.pacing_settings();
+        assert_eq!((v.live_cap, v.off_hours_live_cap, v.derived.catch_up, v.now.process_cap), (6, 2, 8, 6));
+        let state = rt.with_governor(|g| g.snapshot(Timestamp::now()).state);
+        assert_eq!(v.now.governor_cap, LiveCaps::from_base(6).for_state(state), "the snapshot follows");
+        assert_eq!(events(&rt, "live_cap_set"), vec![json!({"from": 3, "to": 6, "by": "user"})]);
+        assert_eq!(events(&rt, "off_hours_live_cap_set"), vec![json!({"from": 1, "to": 2, "by": "user"})]);
+        // Stored: the next start keeps both.
+        assert_eq!(rt.db.setting(LIVE_CAP_KEY).unwrap(), Some(json!(6)));
+        assert_eq!(rt.db.policy(crate::runtime::POLICY_ID).unwrap().unwrap().off_hours_live_cap, 2);
+        // The same values: a no-op (no event).
+        rt.set_live_caps(Some(6), Some(2)).unwrap();
+        rt.set_live_caps(None, None).unwrap();
+        assert_eq!(events(&rt, "live_cap_set").len(), 1);
+        // Refused: nothing changes, the other field included.
+        for (cap, off, err) in
+            [(Some(0), Some(3), "live agents 0: use 1–20"), (Some(4), Some(25), "off-hours live agents 25: use 0–20")]
+        {
+            assert_eq!(rt.set_live_caps(cap, off).unwrap_err().to_string(), err);
+            assert_eq!(caps(&rt), (LiveCaps::from_base(6), 2));
+        }
+        assert_eq!(events(&rt, "live_cap_set").len(), 1);
+    }
+
+    #[test]
+    fn work_held_for_a_process_slot_starts_when_the_cap_goes_up() {
+        let (d, rt) = test_runtime(true);
+        rt.set_live_caps(Some(1), None).unwrap();
+        // Another agent holds the only slot; a1's spawn waits for one.
+        insert_test_live(&rt, "a2", None, 0, d.path());
+        let a1 = AgentId("a1".into());
+        rt.governor_act(|g, now| (g.hold_spawn(&a1, &"default".into(), governor::Tier::Normal, 1, 1, now), Vec::new()));
+        rt.sync_process_slots();
+        let queued =
+            |rt: &Runtime| rt.with_governor(|g| g.queue().iter().map(|e| e.reason.clone()).collect::<Vec<_>>());
+        assert_eq!(queued(&rt), vec![QueueReason::MemoryPressure { cap: 1 }]);
+        rt.set_live_caps(Some(2), None).unwrap();
+        assert!(queued(&rt).is_empty(), "released by the higher cap");
+    }
+
+    #[test]
+    fn lowering_never_stops_a_working_agent() {
+        let (d, rt) = test_runtime(false);
+        let mut a2 = test_agent(d.path());
+        a2.id = "a2".into();
+        rt.store.write(|s| s.agents.insert("a2".into(), a2)).unwrap();
+        // a1 runs an app turn.
+        let rec = rt.store.read(|s| s.agents["a1"].clone());
+        assert!(rt.decide_turn(&rec, TurnKind::Message, TurnOrigin::App, false).effective.is_admit());
+        rt.on_hook(&hook("UserPromptSubmit", json!({"prompt": "[t:0123abcd] go"})), None);
+        rt.set_live_caps(Some(1), None).unwrap();
+        // Still running, still counted, its tools still admitted.
+        assert!(rt.with_governor(|g| g.is_live(&AgentId("a1".into()))));
+        assert!(rt.on_hook(&hook("PreToolUse", json!({"tool_name": "Bash"})), None).is_none(), "tool admitted");
+        // Another agent's turn now waits for the lower cap.
+        let rec = rt.store.read(|s| s.agents["a2"].clone());
+        let d = rt.decide_turn(&rec, TurnKind::Message, TurnOrigin::App, false);
+        assert!(!d.effective.is_admit());
+        let reason = rt.with_governor(|g| g.queue().iter().find(|e| e.agent.0 == "a2").map(|e| e.reason.clone()));
+        assert!(matches!(reason, Some(QueueReason::LiveCap { cap: 1, .. })), "{reason:?}");
+    }
 
     #[test]
     fn derived_caps_follow_the_core_formulas() {

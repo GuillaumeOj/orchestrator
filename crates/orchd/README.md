@@ -45,7 +45,8 @@ target/debug/orchd team export full-stack > team.json && target/debug/orchd team
   `<home>/state/orch.db` (a `state.json` from earlier builds is imported once).
 - `serve` runs the J10 reconciler first (`--no-recover` to skip), refuses to start if another core
   answers, and runs the Governor in **shadow mode** unless `--enforce`. Options: `--cap N` (live cap
-  base, lowered under memory pressure), `--hold-secs N` (PreToolUse hold), `--permission-hold-secs N`
+  base 1–20 for this run, lowered under memory pressure; without it, the `governor.live_cap`
+  setting, else 3), `--hold-secs N` (PreToolUse hold), `--permission-hold-secs N`
   (Inbox hold for permission prompts; 0 = straight to the pane), `--idle-min N` (idle auto-suspend,
   0 = off, default 10), `--fetch-min N` (background fetch interval, default 15), `--otel URL`
   (external receiver) or `--no-otel` (default: the bundled receiver on 127.0.0.1, ephemeral port).

@@ -340,7 +340,10 @@ mod tests {
         assert!(x.suspendable());
         x.delivering = true;
         assert!(!x.suspendable());
-        assert!(to_suspend(&[x.clone()], 0, PressureLevel::Warn, Some(1), 1_000_000).is_empty(), "neither idle nor pressure");
+        assert!(
+            to_suspend(&[x.clone()], 0, PressureLevel::Warn, Some(1), 1_000_000).is_empty(),
+            "neither idle nor pressure"
+        );
         x.delivering = false;
         x.startup_blocked = true;
         assert!(to_suspend(&[x], 0, PressureLevel::Warn, Some(1), 1_000_000).is_empty());
@@ -361,7 +364,10 @@ mod tests {
         let now = 100 * min;
         let mut agents = vec![a("old-idle", true, now - 20 * min), a("idle", true, now - min), a("work", false, 0)];
         // Idle timer only.
-        assert_eq!(to_suspend(&agents, 3, PressureLevel::Warn, Some(10 * min), now), vec![("old-idle".to_string(), "idle")]);
+        assert_eq!(
+            to_suspend(&agents, 3, PressureLevel::Warn, Some(10 * min), now),
+            vec![("old-idle".to_string(), "idle")]
+        );
         // Pressure: cap 1 → also the next idle one; the working agent stays.
         assert_eq!(
             to_suspend(&agents, 1, PressureLevel::Warn, Some(10 * min), now),
@@ -419,7 +425,10 @@ mod tests {
         // Cap 2: back and front fit, the lead doesn't count.
         assert!(to_suspend(&agents, 2, PressureLevel::Warn, None, now).is_empty());
         // Cap 1: back goes, never the lead (older, idle).
-        assert_eq!(to_suspend(&agents, 1, PressureLevel::Warn, None, now), vec![("back".to_string(), "memory_pressure")]);
+        assert_eq!(
+            to_suspend(&agents, 1, PressureLevel::Warn, None, now),
+            vec![("back".to_string(), "memory_pressure")]
+        );
         // Idle past the timer: suspended only once its cache went cold.
         let mut warm = agents[0].clone();
         warm.warm_until_ms = now + 1;

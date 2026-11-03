@@ -1980,6 +1980,59 @@ mod tests {
         core.shutdown();
     }
 
+    /// api-contract `pacing_settings` / `pacing_settings_set`: the keys, the
+    /// fresh-install values, a set returning the new view, a field error.
+    #[test]
+    fn pacing_settings_shapes() {
+        let d = tmp();
+        let core = test_core(d.path());
+        let v = serde_json::to_value(core.pacing_settings().unwrap()).unwrap();
+        let keys = |v: &Value| {
+            let mut k = v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+            k.sort();
+            k
+        };
+        let mut want = [
+            "live_cap",
+            "live_cap_default",
+            "live_cap_min",
+            "live_cap_max",
+            "off_hours_live_cap",
+            "off_hours_live_cap_default",
+            "off_hours_live_cap_min",
+            "off_hours_live_cap_max",
+            "off_hours_allowance_pct",
+            "shadow",
+            "derived",
+            "now",
+        ]
+        .map(String::from)
+        .to_vec();
+        want.sort();
+        assert_eq!(keys(&v), want);
+        assert_eq!(
+            v["derived"],
+            json!({"green": 3, "amber": 2, "red": 1, "catch_up": 5, "memory_normal": 3, "memory_warn": 2, "memory_critical": 1})
+        );
+        assert_eq!(keys(&v["now"]), ["governor_cap", "live_autonomous", "pressure", "process_cap", "state"]);
+        assert_eq!(
+            (&v["live_cap"], &v["off_hours_live_cap"], &v["now"]["pressure"]),
+            (&json!(3), &json!(1), &json!("normal"))
+        );
+        assert!(v["now"]["state"].is_string() && v["shadow"].is_boolean());
+        let v = serde_json::to_value(core.set_pacing_settings(Some(6), None).unwrap()).unwrap();
+        assert_eq!(
+            (&v["live_cap"], &v["off_hours_live_cap"], &v["derived"]["amber"]),
+            (&json!(6), &json!(1), &json!(3))
+        );
+        let err = core.set_pacing_settings(None, Some(25)).map_err(|e| format!("{e:#}")).unwrap_err();
+        assert_eq!(err, "off-hours live agents 25: use 0–20");
+        // plan_set shares the off-hours validator.
+        let mut form = core.plan_form().unwrap();
+        form.off_hours_live_cap = Some(21);
+        assert_eq!(format!("{:#}", core.set_plan(&form).unwrap_err()), "off-hours live agents 21: use 0–20");
+    }
+
     #[test]
     fn the_first_plan_keeps_the_week_s_usage() {
         let d = tmp();

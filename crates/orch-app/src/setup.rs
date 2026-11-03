@@ -473,8 +473,8 @@ impl Core {
         let rt = self.runtime()?;
         let plan = form.apply(&rt.with_governor(|g| g.plan().clone()))?;
         // Pacing options live in the policy; the replan below rebuilds the Governor with it.
-        if let Some(cap) = form.off_hours_live_cap.filter(|c| *c > 20) {
-            bail!("off-hours live cap {cap}: use 0–20");
+        if let Some(cap) = form.off_hours_live_cap {
+            agent_runtime::live_cap::check_off_hours(cap)?;
         }
         if form.per_model_weights.is_some() || form.off_hours_live_cap.is_some() {
             rt.update_policy(|p| {
