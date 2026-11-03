@@ -38,6 +38,8 @@
       const f = $state.snapshot(form);
       f.reserve_pct = Number(f.reserve_pct);
       f.off_hours_allowance_pct = Number(f.off_hours_allowance_pct) || 0;
+      // The cap is edited in Settings › Pacing policy; resending the loaded value would undo it.
+      delete f.off_hours_live_cap;
       for (const a of f.allocations) {
         a.weight = Number(a.weight);
         // Empty means no cap.
