@@ -126,6 +126,12 @@ pub fn check(ctx: &HardCtx, tool: &str, input: &Value) -> Option<HardVerdict> {
             keep(&mut found, path_verdict(ctx, &ctx.cwd, p));
         }
     }
+    // Glob's pattern is a path too (`~/.ssh/*`).
+    if tool == "Glob" {
+        if let Some(p) = input.get("pattern").and_then(Value::as_str) {
+            keep(&mut found, path_verdict(ctx, &ctx.cwd, p));
+        }
+    }
     if matches!(tool, "Edit" | "Write" | "MultiEdit" | "NotebookEdit") {
         let p = input.get("file_path").or_else(|| input.get("notebook_path")).and_then(Value::as_str);
         if let Some(p) = p {
@@ -383,6 +389,16 @@ pub fn segments(cmd: &str) -> Vec<String> {
             '$' if chars.peek() == Some(&'(') => {
                 out.push(std::mem::take(&mut cur));
             }
+            // `${HOME}`: a parameter, not a group (kept whole for the path check).
+            '$' if chars.peek() == Some(&'{') => {
+                cur.push(c);
+                for n in chars.by_ref() {
+                    cur.push(n);
+                    if n == '}' {
+                        break;
+                    }
+                }
+            }
             _ => cur.push(c),
         }
     }
@@ -421,12 +437,17 @@ fn strip_wrappers(words: &[String]) -> &[String] {
         }
         match base_name(w) {
             "env" | "sudo" | "doas" | "nohup" | "time" | "exec" | "command" | "builtin" | "nice" | "xargs" | "then"
-            | "do" | "else" | "!" => {
+            | "do" | "else" | "if" | "elif" | "while" | "until" | "!" | "timeout" => {
+                let timeout = base_name(w) == "timeout";
                 i += 1;
                 // Their own flags (and `-u user`-style values, conservatively).
                 while i < words.len() && (words[i].starts_with('-') || is_assignment(&words[i])) {
-                    let takes = matches!(words[i].as_str(), "-u" | "-g" | "-n" | "-C" | "-p");
+                    let takes = matches!(words[i].as_str(), "-u" | "-g" | "-n" | "-C" | "-p" | "-s" | "-k");
                     i += if takes { 2 } else { 1 };
+                }
+                // `timeout 10 git push`: the duration.
+                if timeout {
+                    i += 1;
                 }
             }
             _ => break,
@@ -462,7 +483,8 @@ fn segment(ctx: &HardCtx, sh: &mut Shell, all: &[String], depth: u8) -> Option<H
         "gh" => keep(&mut found, gh(args)),
         "curl" | "wget" | "http" | "https" | "xh" => keep(&mut found, fetch(ctx, args)),
         "bash" | "sh" | "zsh" | "dash" if depth < 4 => {
-            if let Some(i) = args.iter().position(|a| a == "-c" || a == "-lc" || a == "-ic") {
+            // `-c`, and clusters ending in it (`-lc`, `-ec`, `-xc`).
+            if let Some(i) = args.iter().position(|a| a.starts_with('-') && !a.starts_with("--") && a.ends_with('c')) {
                 if let Some(script) = args.get(i + 1) {
                     keep(&mut found, bash_in(ctx, sh, script, depth + 1));
                 }
@@ -543,9 +565,9 @@ fn git(ctx: &HardCtx, sh: &mut Shell, args: &[String]) -> Option<HardVerdict> {
         "reset" if has("--hard") || has("--merge") || has("--keep") => Some(user_only(WHY_GIT_DESTRUCTIVE)),
         "clean" if !(has("-n") || has("--dry-run")) => Some(user_only(WHY_GIT_DESTRUCTIVE)),
         "branch" => {
-            let force_delete = has("-D")
-                || ((has("-d") || has("--delete")) && (has("-f") || has("--force")))
-                || rest.iter().any(|a| a.starts_with('-') && !a.starts_with("--") && a.contains('D'));
+            // Short flags, clustered or not (`-D`, `-d -f`, `-df`).
+            let short = |c: char| rest.iter().any(|a| a.starts_with('-') && !a.starts_with("--") && a.contains(c));
+            let force_delete = short('D') || ((short('d') || has("--delete")) && (short('f') || has("--force")));
             let rename_force = has("-M") || has("-C");
             (force_delete || rename_force).then(|| user_only(WHY_GIT_DESTRUCTIVE))
         }
@@ -1034,6 +1056,21 @@ mod tests {
         let state = f.ctx.app_root.join("state").display().to_string();
         assert_eq!(bash_v(&f, &format!("sqlite3 '{state}/orch.db' .dump")).unwrap().why, WHY_STATE);
         assert_eq!(bash_v(&f, "ls ~/.ssh*"), None, "globs are not resolved");
+        // `${HOME}` unquoted or double-quoted is a parameter, not a group.
+        for c in ["cat ${HOME}/.netrc", "cat \"${HOME}/.ssh/id_rsa\""] {
+            assert_eq!(bash_v(&f, c).unwrap().why, WHY_CREDENTIALS, "{c}");
+        }
+        assert_eq!(check(&f.ctx, "Glob", &json!({"pattern": "~/.ssh/*"})).unwrap().why, WHY_CREDENTIALS);
+    }
+
+    #[test]
+    fn compound_heads_and_flag_clusters_are_seen_through() {
+        let f = fx();
+        for c in ["if git push; then :; fi", "while git push; do :; done", "timeout 60 git push", "bash -ec 'git push'"]
+        {
+            assert_eq!(kind(bash_v(&f, c)), Some(HardKind::Deny), "{c}");
+        }
+        assert_eq!(kind(bash_v(&f, "git branch -df old")), Some(HardKind::UserOnly));
     }
 
     #[test]

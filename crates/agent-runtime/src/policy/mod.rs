@@ -270,7 +270,11 @@ fn neutralised(rules: &[Rule]) -> Vec<(String, String)> {
             let bare = |s: &str| s.trim_end_matches('*').trim_end_matches(':').to_string();
             let v = match tool {
                 "Bash" => {
-                    let cmd = spec.map(bare).unwrap_or_else(|| "git push".into());
+                    // A prefix that covers `git push` (`Bash(git:*)`, `Bash(*)`) is tested as it.
+                    let cmd = match spec {
+                        Some(s) if !s.ends_with('*') || !"git push".starts_with(bare(s).as_str()) => bare(s),
+                        _ => "git push".into(),
+                    };
                     hard::check(&ctx, "Bash", &json!({"command": cmd}))
                 }
                 "WebFetch" => {
@@ -278,7 +282,15 @@ fn neutralised(rules: &[Rule]) -> Vec<(String, String)> {
                     hard::check(&ctx, "WebFetch", &json!({"url": url}))
                 }
                 t if t.starts_with("mcp__") => {
-                    let name = if t.ends_with('*') { format!("{}write", t.trim_end_matches('*')) } else { t.into() };
+                    // `mcp__linear__*` → one of its tools; `mcp__*` (no server yet) → any server's.
+                    let base = t.trim_end_matches('*');
+                    let name = if !t.ends_with('*') {
+                        t.to_string()
+                    } else if base.matches("__").count() >= 2 {
+                        format!("{base}write")
+                    } else {
+                        "mcp__x__write".to_string()
+                    };
                     hard::check(&ctx, &name, &json!({}))
                 }
                 _ => None,
@@ -337,11 +349,19 @@ pub fn evaluate(
 pub struct Policy {
     files: std::sync::Mutex<BTreeMap<Scope, FileState>>,
     watch: std::sync::Mutex<Option<watch::Watch>>,
+    /// Held across a file's read-modify-write (and the next id it picks):
+    /// two concurrent writes neither lose a rule nor share an id.
+    writes: std::sync::Mutex<()>,
 }
 
 impl Policy {
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<Scope, FileState>> {
         self.files.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// One file write at a time (see `writes`).
+    pub(crate) fn write_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.writes.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Every loaded file, global first.

@@ -74,14 +74,24 @@ impl Runtime {
             let _ = w.watcher.unwatch(&gone);
             w.dirs.remove(&gone);
         }
+        let mut added = vec![];
         for d in want {
             if !w.dirs.contains(&d) {
                 match w.watcher.watch(&d, RecursiveMode::NonRecursive) {
                     Ok(()) => {
-                        w.dirs.insert(d);
+                        w.dirs.insert(d.clone());
+                        added.push(d);
                     }
                     Err(e) => eprintln!("warn: {} not watched: {e}", d.display()),
                 }
+            }
+        }
+        drop(slot);
+        // A directory that appeared since the file was first read (`git pull`
+        // bringing `.orchestrator/policy.toml`): its file may already be there.
+        for f in self.policy.files() {
+            if f.path.parent().is_some_and(|p| added.iter().any(|d| d == p)) {
+                self.policy_reload(&f.scope);
             }
         }
     }

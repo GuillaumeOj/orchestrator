@@ -197,6 +197,7 @@ impl Runtime {
         self.policy_sync();
         let (target, role, agent) = self.rule_target(scope, scope_id, project)?;
         let path = self.policy_path(&target)?;
+        let w = self.policy.write_lock();
         let rule = Rule {
             id: self.policy.next_id(),
             pattern: pattern.into(),
@@ -209,6 +210,7 @@ impl Runtime {
         };
         file::append_rule(&path, &rule)?;
         self.policy_reload(&target);
+        drop(w);
         let out = json!({"rule": rule, "file": target.label(), "path": path.display().to_string()});
         let mut detail = out.clone();
         (detail["id"], detail["pattern"], detail["effect"]) = (json!(rule.id), json!(pattern), json!(effect));
@@ -222,6 +224,7 @@ impl Runtime {
         self.policy_sync();
         let scope =
             file_label.map(|l| Scope::parse(l).ok_or_else(|| anyhow!("file: global | project:<id>"))).transpose()?;
+        let w = self.policy.write_lock();
         let found = self.policy.find(id, scope.as_ref());
         let done = match &found {
             Some((sc, _)) => {
@@ -231,6 +234,7 @@ impl Runtime {
             }
             None => false,
         };
+        drop(w);
         self.db.audit(
             "user",
             None,
@@ -283,9 +287,12 @@ impl Runtime {
         };
         let d = Defaults { team: parse("team", team)?, solo: parse("solo", solo)? };
         self.policy_sync();
-        file::set_defaults(&self.global_policy_path(), &d)?;
+        {
+            let _w = self.policy.write_lock();
+            file::set_defaults(&self.global_policy_path(), &d)?;
+            self.policy_reload(&Scope::Global);
+        }
         self.db.audit("user", None, "policy_defaults", None, "ok", json!(d))?;
-        self.policy_reload(&Scope::Global);
         Ok(self.policy.defaults())
     }
 
@@ -346,10 +353,12 @@ impl Runtime {
             Err(e) => return eprintln!("warn: store rules not read for migration: {e:#}"),
         };
         self.policy_sync();
+        let _w = self.policy.write_lock();
         let mut done = vec![];
         for r in rows {
             let target = match r.scope {
-                RuleScope::Project if self.db.project(&r.scope_id).ok().flatten().is_none() => {
+                // Gone (not a read error: that one is retried at the next start).
+                RuleScope::Project if matches!(self.db.project(&r.scope_id), Ok(None)) => {
                     done.push(r.id);
                     continue;
                 }

@@ -41,7 +41,10 @@ impl Runtime {
         };
         let hard = self.hard_check(&rec, &tool, &m.arguments, call.cwd.as_deref());
         if let Some(h) = hard.as_ref().filter(|h| h.kind == HardKind::Deny) {
-            let _ = self.db.audit("core", Some(&rec.id), &m.tool, Some(&tool), "deny", json!({"hard": h.why}));
+            // The same audit detail as the policy's answers (the call, and the reason).
+            let ev =
+                Evaluation { effect: Effect::Deny, source: crate::policy::Source::Hard { why: h.why }, rule: None };
+            let _ = self.db.audit("core", Some(&rec.id), &m.tool, Some(&tool), "deny", call.detail(None, Some(&ev)));
             return (true, format!("Denied by the core ({}). Do not retry.", h.why), Value::Null);
         }
         let mut actor = format!("agent:{}", rec.id);

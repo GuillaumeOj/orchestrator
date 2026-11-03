@@ -159,7 +159,8 @@ export function lineOfDecision(d, now = Date.now()) {
     what: cut(d.title, 48),
     // The actor `rule:<id>` is a policy rule since P4.4 (api-contract §3.2).
     by: by.startsWith('rule:') ? 'policy' : (BY[by] ?? 'core'),
-    by_detail: by.startsWith('rule:') ? by.slice(5) : undefined,
+    // A core denial names its hard-list reason, as the core's line does.
+    by_detail: by.startsWith('rule:') ? by.slice(5) : by === 'core' ? (d.payload?.hard_why ?? undefined) : undefined,
     state: lc.state,
     at_ms: lc.effect_at_ms ?? lc.decided_at_ms ?? now,
   };

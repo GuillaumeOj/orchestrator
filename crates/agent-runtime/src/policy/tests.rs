@@ -188,12 +188,24 @@ effect = "allow"
 id = "no-push"
 match = "Bash(git push:*)"
 effect = "deny"
+[[rule]]
+id = "all-git"
+match = "Bash(git:*)"
+effect = "allow"
+[[rule]]
+id = "all-mcp"
+match = "mcp__*"
+effect = "allow"
+[[rule]]
+id = "orch"
+match = "mcp__orch__*"
+effect = "allow"
 "#,
     );
     let mut ff = f.clone();
     ff.doc.warnings.extend(neutralised(&f.doc.rules));
     let ids: Vec<&str> = ff.doc.warnings.iter().map(|(id, _)| id.as_str()).collect();
-    assert_eq!(ids, ["all-bash", "push", "linear"]);
+    assert_eq!(ids, ["all-bash", "push", "linear", "all-git", "all-mcp"]);
     assert!(ff.row()["warnings"][0]["message"].as_str().unwrap().contains("git push"));
 }
 
