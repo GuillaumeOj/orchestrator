@@ -405,6 +405,21 @@ pub struct PrInstall {
     pub error: Option<String>,
 }
 
+impl PrInstall {
+    /// A download that has not found its release yet.
+    fn pending(pr: u64) -> Self {
+        PrInstall {
+            pr,
+            title: String::new(),
+            version: String::new(),
+            sha: String::new(),
+            state: PrPhase::Downloading,
+            progress: None,
+            error: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PrPhase {
@@ -888,20 +903,19 @@ impl Updater {
             if i.restart.is_some() {
                 bail!("a restart is under way");
             }
-            // One PR build staged at most: the new install replaces it (removed below, unlocked).
+            // One PR build staged at most: the new install replaces it, whatever the lookup
+            // finds (state and disk are cleared together, the disk below with no lock held).
             i.staged_pr = None;
-            i.s.pr_install = Some(PrInstall {
-                pr: number,
-                title: String::new(),
-                version: String::new(),
-                sha: String::new(),
-                state: PrPhase::Downloading,
-                progress: None,
-                error: None,
-            });
+            i.s.pr_install = Some(PrInstall::pending(number));
         }
-        let release = crate::pr_builds::fetch(number);
-        let rel = match release {
+        self.set(|_| {}); // emit "downloading" now: the release lookup below can take a while
+        for e in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with("pr-") && name != PR_DOWNLOAD && e.file_type().is_ok_and(|t| t.is_dir()) {
+                let _ = remove_any(&e.path());
+            }
+        }
+        let rel = match crate::pr_builds::fetch(number) {
             Ok(r) => r,
             Err(crate::pr_builds::FetchError::NoBuild) => {
                 self.set(|i| i.s.pr_install = None);
@@ -909,25 +923,12 @@ impl Updater {
             }
             Err(crate::pr_builds::FetchError::Gh(msg)) => {
                 self.set(|i| {
-                    i.s.pr_install = Some(PrInstall {
-                        pr: number,
-                        title: String::new(),
-                        version: String::new(),
-                        sha: String::new(),
-                        state: PrPhase::Error,
-                        progress: None,
-                        error: Some(msg),
-                    });
+                    i.s.pr_install =
+                        Some(PrInstall { state: PrPhase::Error, error: Some(msg), ..PrInstall::pending(number) });
                 });
                 return Ok(self.json());
             }
         };
-        for e in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with("pr-") && name != PR_DOWNLOAD && e.file_type().is_ok_and(|t| t.is_dir()) {
-                let _ = remove_any(&e.path());
-            }
-        }
         self.set(|i| {
             i.s.pr_install = Some(PrInstall {
                 pr: number,

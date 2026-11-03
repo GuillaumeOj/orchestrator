@@ -180,6 +180,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # gh pr view (the state check before publishing)
+      pull-requests: read
     concurrency:
       group: app-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: true
