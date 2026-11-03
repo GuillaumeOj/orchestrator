@@ -49,9 +49,9 @@ export function size(bytes) {
   return `${Math.max(1, Math.round(bytes / KIB))} KB`;
 }
 
-/** "1 file", "3 files". */
 /** `no_ack` → `no ack`. */
 export const spaced = (s) => String(s).replace(/_/g, ' ');
+/** "1 file", "3 files". */
 export const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /** How long a wait has held (P4.1 notes §1.1): "just now", "3 min", "1 h 5 min", "2 d". */
