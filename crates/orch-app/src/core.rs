@@ -437,23 +437,7 @@ impl Core {
         if !agent_runtime::paths::valid_id(&id) {
             bail!("name {id:?}: use letters, digits, '-' or '_'");
         }
-        let spec = AgentSpec {
-            agent_id: id.clone(),
-            repo: project.path.display().to_string(),
-            slug: Some(id.clone()),
-            base: req.base.clone().filter(|b| !b.is_empty()),
-            model: req.model.clone().filter(|m| !m.is_empty()),
-            effort: req.effort.clone().filter(|e| !e.is_empty()),
-            permission_mode: req.permission_mode.clone().filter(|m| !m.is_empty()),
-            first_message: req.message.clone().filter(|m| !m.trim().is_empty()),
-            tier: req.tier.clone(),
-            // Charged to the project's allocation when the plan has one (FR-802).
-            allocation: rt
-                .with_governor(|g| g.plan().allocations.iter().any(|a| a.id.0 == project.id))
-                .then(|| project.id.clone()),
-            ..Default::default()
-        };
-        rt.start(&spec)?;
+        rt.start(&solo_spec(&project, &id, req))?;
         Ok(id)
     }
 
@@ -593,7 +577,7 @@ impl Core {
 
     // ------------------------------------------------------------ terminals
 
-    fn project(&self, id: &str) -> Result<Project> {
+    pub(crate) fn project(&self, id: &str) -> Result<Project> {
         self.projects().into_iter().find(|p| p.id == id).ok_or_else(|| anyhow!("no project {id}"))
     }
 
@@ -994,8 +978,13 @@ impl Core {
             rt.store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.allocation.clone())).collect());
         let history = self.history.lock_ok();
         let mut v = rt.with_governor(|g| {
+            // Counted where the Governor charges them (unknown allocations: `default`).
+            let mut live_by: BTreeMap<String, usize> = BTreeMap::new();
+            for a in live.iter().filter_map(|id| alloc_of.get(id)) {
+                *live_by.entry(g.resolve_allocation(&a.clone().into()).0.clone()).or_default() += 1;
+            }
             planner::build(g, Timestamp::now(), &history, &self.past_actions, five_reset, &|alloc| {
-                live.iter().filter(|id| alloc_of.get(*id).is_some_and(|a| a == alloc)).count()
+                live_by.get(alloc).copied().unwrap_or(0)
             })
         });
         v.first_run_ms = self.settings.get(setup::FIRST_RUN_KEY).and_then(|v| v.as_i64());
@@ -1324,6 +1313,25 @@ fn accept_loop(listener: UnixListener, core: std::sync::Weak<Core>, stop: Arc<At
         let Ok(s) = conn else { continue };
         let Some(c) = core.upgrade() else { break };
         std::thread::spawn(move || c.handle_conn(s));
+    }
+}
+
+/// A solo session's agent (`agent_start`, FR-201).
+fn solo_spec(project: &Project, id: &str, req: &NewSession) -> AgentSpec {
+    AgentSpec {
+        agent_id: id.to_string(),
+        repo: project.path.display().to_string(),
+        slug: Some(id.to_string()),
+        base: req.base.clone().filter(|b| !b.is_empty()),
+        model: req.model.clone().filter(|m| !m.is_empty()),
+        effort: req.effort.clone().filter(|e| !e.is_empty()),
+        permission_mode: req.permission_mode.clone().filter(|m| !m.is_empty()),
+        first_message: req.message.clone().filter(|m| !m.trim().is_empty()),
+        tier: req.tier.clone(),
+        // Charged to the project's allocation, like its team agents (FR-802):
+        // the Governor resolves it to `default` while the plan doesn't have it.
+        allocation: Some(project.id.clone()),
+        ..Default::default()
     }
 }
 
@@ -1982,6 +1990,120 @@ mod tests {
             p.snapshot.used_central
         );
         assert!(p.allocations.iter().any(|a| a.id == "repo"));
+        core.shutdown();
+    }
+
+    #[test]
+    fn project_allocation_adds_changes_and_removes_only_this_project() {
+        use crate::setup::AllocationEdit;
+        let d = tmp();
+        let core = test_core(d.path());
+        let rt = core.runtime().unwrap().clone();
+        assert_eq!(core.project_allocation("nope").unwrap_err().to_string(), "no project nope");
+        // No plan yet: the proposed even split, and nothing can be saved.
+        let v = core.project_allocation("repo").unwrap();
+        assert!(!v.plan_confirmed);
+        assert_eq!(v.allocation.as_ref().map(|a| a.row.weight), Some(1.0));
+        assert_eq!(v.own_index, Some(0), "the proposed split lists it first");
+        assert_eq!(v.others.iter().map(|a| a.row.id.as_str()).collect::<Vec<_>>(), ["default"]);
+        let edit = |weight, hard_cap_pct| AllocationEdit { weight, tier: governor::Tier::High, hard_cap_pct };
+        let err = core.project_allocation_set("repo", Some(&edit(2.0, None))).unwrap_err();
+        assert_eq!(err.to_string(), "set up the weekly plan first");
+        let mut form = core.plan_form().unwrap();
+        form.allocations[0].weight = 3.0;
+        core.set_plan(&form).unwrap();
+
+        // A project registered after the plan: not in it, listed at weight 0 by Edit plan.
+        let (_keep, repo2) = orch_git::fixtures::scratch_repo();
+        let p2 = core.project_add(&repo2).unwrap();
+        let rows = core.plan_form().unwrap().allocations;
+        assert_eq!(
+            rows.iter().map(|a| (a.id.as_str(), a.weight)).collect::<Vec<_>>(),
+            [("repo", 3.0), (p2.id.as_str(), 0.0), ("default", 1.0)]
+        );
+        // Its usage earlier this week, charged to `default` until it joins the plan.
+        let reset = rt.with_governor(|g| g.plan().reset_at);
+        rt.db.add_usage(orch_store::UsageRecord {
+            ts_ms: now_ms() - 60_000,
+            agent_id: Some("p2-agent".into()),
+            cost_delta: Some(50.0),
+            weekly_pct: Some(10.0),
+            weekly_resets_at: Some(reset.as_second()),
+            provenance: "observed".into(),
+            source: Some(orch_store::UsageSource::Statusline),
+            class: Some("autonomous".into()),
+            allocation: Some(p2.id.clone()),
+            ..Default::default()
+        });
+        rt.db.flush().unwrap();
+        let v = core.project_allocation(&p2.id).unwrap();
+        assert!(v.plan_confirmed && v.allocation.is_none());
+        assert_eq!(v.proposed_weight, 3.0, "mean of the project allocations");
+        assert_eq!(v.others.iter().map(|a| a.row.id.as_str()).collect::<Vec<_>>(), ["repo", "default"]);
+        assert_eq!(v.own_index, None, "not in the plan");
+
+        // Add: before `default`; the rest of the plan untouched; the usage now counts toward it.
+        let before = rt.with_governor(|g| g.plan().clone());
+        let v = core.project_allocation_set(&p2.id, Some(&edit(2.0, Some(10.0)))).unwrap();
+        let a = v.allocation.clone().unwrap();
+        assert_eq!(
+            (a.row.weight, a.row.tier, a.row.hard_cap_pct, a.row.target.as_str()),
+            (2.0, governor::Tier::High, Some(10.0), &*p2.name)
+        );
+        assert!(a.used_pct > 0.0, "the week's usage replayed into it: {a:?}");
+        assert_eq!(v.own_index, Some(1), "after `repo`, before `default`");
+        let after = rt.with_governor(|g| g.plan().clone());
+        let ids = |p: &governor::WeeklyPlan| p.allocations.iter().map(|a| a.id.0.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&after), ["repo".to_string(), p2.id.clone(), "default".to_string()]);
+        assert_eq!(
+            (&after.calendar, after.reserve_pct, &after.allocations[0]),
+            (&before.calendar, before.reserve_pct, &before.allocations[0])
+        );
+
+        // Invalid: nothing saved.
+        let err = core.project_allocation_set(&p2.id, Some(&edit(2.0, Some(120.0)))).unwrap_err();
+        assert!(err.to_string().contains("hard cap"), "{err}");
+        let err = core.project_allocation_set(&p2.id, Some(&edit(-1.0, None))).unwrap_err();
+        assert!(err.to_string().contains("use 0 or more"), "{err}");
+        assert_eq!(rt.with_governor(|g| g.plan().clone()), after);
+
+        // Change, then remove (null, or weight 0).
+        let v = core.project_allocation_set(&p2.id, Some(&edit(5.0, None))).unwrap();
+        assert_eq!(v.allocation.map(|a| (a.row.weight, a.row.hard_cap_pct)), Some((5.0, None)));
+        assert!(core.project_allocation_set(&p2.id, None).unwrap().allocation.is_none());
+        assert_eq!(ids(&rt.with_governor(|g| g.plan().clone())), ["repo", "default"]);
+        core.project_allocation_set(&p2.id, Some(&edit(4.0, None))).unwrap();
+        assert!(core.project_allocation_set(&p2.id, Some(&edit(0.0, None))).unwrap().allocation.is_none());
+        core.shutdown();
+    }
+
+    #[test]
+    fn a_solo_session_and_a_team_agent_of_a_project_share_its_allocation() {
+        let d = tmp();
+        let core = test_core(d.path());
+        let rt = core.runtime().unwrap().clone();
+        // The solo session's spec as `agent_start` hands it to the runtime
+        // (spawning needs Claude Code), the team agent as launched.
+        let solo = solo_spec(&core.project("repo").unwrap(), "solo", &NewSession::default()).allocation.unwrap();
+        core.teams_view(Some("repo")).unwrap(); // installs the preset teams
+        core.team_launch(agent_runtime::team::LaunchSpec {
+            project_id: "repo".into(),
+            team_id: "bugfix-squad".into(),
+            slug: "fx".into(),
+            title: "Fix X".into(),
+            brief: "b".into(),
+            base: None,
+            off_hours: false,
+        })
+        .unwrap();
+        let team = rt.store.read(|s| s.agents["fx-lead-1"].allocation.clone());
+        assert_eq!((solo.as_str(), team.as_str()), ("repo", "repo"), "the project id, plan or not");
+        let charged = |a: &str| rt.with_governor(|g| g.resolve_allocation(&a.into()).0.clone());
+        assert_eq!((charged(&solo), charged(&team)), ("default".into(), "default".into()), "not in the plan");
+        let mut form = core.plan_form().unwrap();
+        form.allocations[0].weight = 2.0;
+        core.set_plan(&form).unwrap();
+        assert_eq!((charged(&solo), charged(&team)), ("repo".into(), "repo".into()), "both follow the plan");
         core.shutdown();
     }
 

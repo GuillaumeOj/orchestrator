@@ -1,5 +1,8 @@
 //! Weekly plan, allocations and pacing policy (SPEC §7).
 
+use std::collections::BTreeMap;
+use std::sync::LazyLock;
+
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -50,9 +53,31 @@ pub fn same_reset(a: Timestamp, b: Timestamp) -> bool {
     (a.as_second() - b.as_second()).abs() <= SAME_RESET_S
 }
 
+/// Work charged to an allocation the plan doesn't have goes here (other sessions).
+pub const DEFAULT_ALLOCATION: &str = "default";
+
+static DEFAULT_ID: LazyLock<AllocationId> = LazyLock::new(|| AllocationId(DEFAULT_ALLOCATION.into()));
+
 impl WeeklyPlan {
     pub fn allocation(&self, id: &AllocationId) -> Option<&BudgetAllocation> {
         self.allocations.iter().find(|a| &a.id == id)
+    }
+
+    /// The allocation work recorded under `id` is charged to: `id` itself,
+    /// else the allocation its alias names (records holding a project name
+    /// instead of its id), else [`DEFAULT_ALLOCATION`] (other sessions).
+    pub fn charged_to<'a>(
+        &'a self,
+        id: &'a AllocationId,
+        aliases: &'a BTreeMap<String, AllocationId>,
+    ) -> &'a AllocationId {
+        if self.allocation(id).is_some() {
+            return id;
+        }
+        match aliases.get(&id.0) {
+            Some(a) if self.allocation(a).is_some() => a,
+            _ => &DEFAULT_ID,
+        }
     }
 }
 

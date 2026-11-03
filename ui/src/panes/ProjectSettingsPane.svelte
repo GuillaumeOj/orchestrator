@@ -6,6 +6,7 @@
   // overrides. Keys: 1–3 backend, j/k mapping rows, ⏎ change a row,
   // r sync, ⌘⏎ save, esc cancel.
   import { onMount } from 'svelte';
+  import AllocationSettings from '../components/AllocationSettings.svelte';
   import ConnBadge from '../components/ConnBadge.svelte';
   import Kbd from '../components/Kbd.svelte';
   import McpSettings from '../components/McpSettings.svelte';
@@ -46,6 +47,7 @@
   let syncErr = $state(null);
   let unmapped = $state([]); // board_sync.unmapped_states: Linear states with no column
   let root = $state(null);
+  let alloc = $state(null); // AllocationSettings (forwards the keys)
 
   const connected = $derived(linearInt?.status === 'connected');
   const dirty = $derived(
@@ -168,6 +170,7 @@
   }
 
   function onKey(e) {
+    if (section.id === 'allocation' && !ask) return alloc?.onKey(e);
     if (ask) {
       if (e.key === 'Enter') save('push_open');
       else if (e.key === 'l') save('leave');
@@ -204,7 +207,9 @@
   </nav>
 
   <div class="body">
-    {#if error}
+    {#if section.id === 'allocation'}
+      <AllocationSettings bind:this={alloc} project={pid} {name} />
+    {:else if error}
       <p class="err">Could not read {name}'s settings: {error}</p>
     {:else if !saved}
       <p class="muted">Loading…</p>

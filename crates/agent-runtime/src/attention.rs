@@ -336,6 +336,9 @@ pub struct GovFacts {
     pub live_autonomous: u32,
     /// Allocations with a hard cap: `(used pp, cap pp)`.
     pub hard_caps: BTreeMap<String, (f64, f64)>,
+    /// A queued entry's allocation → the plan allocation it is charged and
+    /// capped as, when they differ (one the plan doesn't have: `default`).
+    pub charged_to: BTreeMap<String, String>,
     /// The window an agent blocked by a limit waits on (the exhausted one).
     pub exhausted: Option<Window>,
     pub five_hour_resets_ms: Option<u64>,
@@ -526,10 +529,13 @@ pub mod copy {
                     true,
                 );
             }
-            QueueReason::HardCap => match g.hard_caps.get(&e.allocation.0) {
-                Some((used, cap)) => format!("{} cap reached · {used:.0} of {cap:.0} pp", e.allocation.0),
-                None => format!("{} cap reached", e.allocation.0),
-            },
+            QueueReason::HardCap => {
+                let id = g.charged_to.get(&e.allocation.0).unwrap_or(&e.allocation.0);
+                match g.hard_caps.get(id) {
+                    Some((used, cap)) => format!("{id} cap reached · {used:.0} of {cap:.0} pp"),
+                    None => format!("{id} cap reached"),
+                }
+            }
             QueueReason::PausedAll => PAUSE_ALL.into(),
             QueueReason::PausedAgent => PAUSED_BY_YOU.into(),
             QueueReason::MemoryPressure { cap } => format!("memory pressure · live cap {live}/{cap}"),

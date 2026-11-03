@@ -2,6 +2,8 @@
 export const pct = (v, digits = 0) => (v == null || Number.isNaN(v) ? '—' : `${Number(v).toFixed(digits)}%`);
 /** "+9", "−3": a signed delta. */
 export const signed = (v, digits = 0) => (v == null ? '—' : `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(digits)}`);
+/** "7.4 pp": an unsigned amount of the week. */
+export const ppAmount = (v, digits = 1) => (v == null ? '—' : `${Number(v).toFixed(digits)} pp`);
 export const pp = (v, digits = 0) => (v == null ? '—' : `${signed(v, digits)} pp`);
 
 export function clock(ms, now = Date.now()) {

@@ -464,6 +464,10 @@ fn rule_4_paused_and_reasons_with_their_own_time() {
     f.queue[0].reason = QueueReason::HardCap;
     f.gov.hard_caps.insert("default".into(), (12.0, 12.0));
     assert_eq!(f.rec("a").reason, "default cap reached · 12 of 12 pp · next · ≈09:31");
+    // A project the plan doesn't have is capped as `default`: named so.
+    f.queue[0].allocation = "shop".into();
+    f.gov.charged_to.insert("shop".into(), "default".into());
+    assert_eq!(f.rec("a").reason, "default cap reached · 12 of 12 pp · next · ≈09:31");
     f.queue[0].reason = QueueReason::FiveHourGuard;
     f.gov.five_hour_pct = Some(86.4);
     assert_eq!(f.rec("a").reason, "5h guard · 5h window at 86 % · next · ≈09:31");

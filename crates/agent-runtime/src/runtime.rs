@@ -40,7 +40,7 @@ use crate::store::{Admission, AgentRecord, HoldKind, HoldRow, HoldStatus, Store,
 use crate::usage::UsageCollector;
 use crate::worktree;
 
-pub const DEFAULT_ALLOCATION: &str = "default";
+pub use governor::DEFAULT_ALLOCATION;
 /// The CLI shows its "continuing automatically at …" banner just after the
 /// StopFailure hook returns; Esc sent before it would cancel nothing.
 const ESC_AFTER_RATE_LIMIT: Duration = Duration::from_secs(1);
@@ -2497,6 +2497,7 @@ fn restore_governor(
     // reset (FR-814). Either way the reset anchors the calibration.
     let seen_from = samples.first().map_or(now, |(_, s)| s.ts).clamp(start, now.max(start));
     let mut gov = Governor::new(plan.clone(), policy.clone(), seen_from).map_err(|e| anyhow!("{e:?}"))?;
+    let aliases = project_aliases(db)?;
     let allocs: BTreeMap<String, String> =
         store.read(|s| s.agents.values().map(|a| (a.id.clone(), a.allocation.clone())).collect());
     // FR-814: the estimator the week started with, then the week replayed,
@@ -2504,13 +2505,14 @@ fn restore_governor(
     match db.week_estimator(start)? {
         Some(e) => gov.restore_estimator(e),
         None => {
-            if let Some(e) = rebuild_estimator(db, &plan, &policy, &allocs)? {
+            if let Some(e) = rebuild_estimator(db, &plan, &policy, &allocs, &aliases)? {
                 gov.restore_estimator(e);
             }
             let base = gov.week_estimator().clone();
             db.save_estimator("week", start, &base.calibrator.snapshot(seen_from), &base)?;
         }
     }
+    gov.set_aliases(aliases);
     for (u, sample) in samples {
         let class = u.class.as_deref().and_then(orch_store::untag).unwrap_or(governor::CostClass::Interactive);
         let alloc = u.allocation.clone().or_else(|| u.agent_id.as_ref().and_then(|a| allocs.get(a).cloned()));
@@ -2548,6 +2550,24 @@ fn restore_governor(
     Ok((gov, released))
 }
 
+/// Project name → project id, for agent and usage records made when team
+/// agents were charged to their project's name.
+fn project_aliases(db: &orch_store::Store) -> Result<BTreeMap<String, governor::AllocationId>> {
+    Ok(name_aliases(db.projects(true)?.into_iter().map(|p| (p.id, p.name))))
+}
+
+/// `(id, name)` pairs as name → id aliases. A name two projects share is
+/// ambiguous and left out (those records go to `default`).
+pub(crate) fn name_aliases(
+    projects: impl IntoIterator<Item = (String, String)>,
+) -> BTreeMap<String, governor::AllocationId> {
+    let mut out: BTreeMap<String, Option<governor::AllocationId>> = BTreeMap::new();
+    for (id, name) in projects {
+        out.entry(name).and_modify(|v| *v = None).or_insert(Some(id.into()));
+    }
+    out.into_iter().filter_map(|(n, id)| Some((n, id?))).collect()
+}
+
 /// `p` moved by whole weeks to the week that holds `now`.
 fn roll_forward(mut p: WeeklyPlan, now: Timestamp) -> WeeklyPlan {
     let week = 168 * 3600;
@@ -2582,6 +2602,7 @@ fn rebuild_estimator(
     plan: &WeeklyPlan,
     policy: &governor::PacingPolicy,
     allocs: &BTreeMap<String, String>,
+    aliases: &BTreeMap<String, governor::AllocationId>,
 ) -> Result<Option<governor::EstimatorState>> {
     let Some((prev_start, base)) = db.week_estimator_before(plan.week_start)? else { return Ok(None) };
     let prev_reset = prev_start.checked_add(168.hours()).unwrap_or(plan.week_start).min(plan.week_start);
@@ -2594,6 +2615,7 @@ fn rebuild_estimator(
     let samples = week_samples(db, prev_start, Some(prev_reset))?;
     let Ok(mut prev) = Governor::new(prev_plan, policy.clone(), prev_start) else { return Ok(Some(base)) };
     prev.restore_estimator(base);
+    prev.set_aliases(aliases.clone());
     for (u, sample) in samples {
         let class = u.class.as_deref().and_then(orch_store::untag).unwrap_or(governor::CostClass::Interactive);
         let alloc = u.allocation.clone().or_else(|| u.agent_id.as_ref().and_then(|a| allocs.get(a).cloned()));
@@ -2931,6 +2953,14 @@ pub(crate) mod tests {
         assert_eq!(rt.resume_all(), 0, "a1 is still paused on its own");
         assert_eq!(rt.resume_agent("a1"), 1);
         assert_eq!(waiting(&rt), Some(Admission::Admitted));
+    }
+
+    #[test]
+    fn project_names_alias_their_ids_unless_two_projects_share_one() {
+        let pairs = [("shop", "shop-api"), ("a", "dup"), ("b", "dup")];
+        let aliases = name_aliases(pairs.map(|(id, n)| (id.to_string(), n.to_string())));
+        assert_eq!(aliases.get("shop-api"), Some(&governor::AllocationId::from("shop")));
+        assert!(!aliases.contains_key("dup"), "ambiguous: left to `default`");
     }
 
     #[test]
