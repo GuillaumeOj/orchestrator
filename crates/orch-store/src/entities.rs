@@ -89,6 +89,7 @@ impl Store {
         let pr = pr.clone();
         let topics = [orch_protocol::Topic::Project(pr.id.clone()), orch_protocol::Topic::Board(pr.id.clone())];
         self.write_touching(topics, move |tx| {
+            Store::reset_cursor_on_change(tx, &pr.id, &pr.backend(), Some(&p(&pr.path)))?;
             tx.execute(
                 &format!(
                     "INSERT INTO projects({PROJECT_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)

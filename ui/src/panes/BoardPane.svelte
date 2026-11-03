@@ -2,7 +2,7 @@
   // Board (FR-502, Penpot 04 Board · 1512): a project's tasks in five columns,
   // the same over every backend (Local, GitHub Issues). Keys: h/l column, j/k
   // card, ⇧h/⇧l move the card to the previous / next status, ⏎ open its
-  // feature, a assign to a node, n new task, r sync with the backend, ⇧O run
+  // feature, a assign to a node, n new task, e edit title/body, g open the issue on GitHub/Linear, r sync with the backend, ⇧O run
   // the card off-hours (or back in working hours), space the card menu (P3).
   // Linear-backed boards mark the cards where Linear's change won (FR-503).
   import { onMount } from 'svelte';
@@ -10,13 +10,13 @@
   import Kbd from '../components/Kbd.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import TaskModelChip from '../components/TaskModelChip.svelte';
-  import { app, openFeature, queueOffHours, refresh, toast } from '../lib/app.svelte.js';
+  import { app, openFeature, openUrl, queueOffHours, refresh, toast } from '../lib/app.svelte.js';
   import { ago, clock } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { backendLabel, remoteName, syncCounts } from '../lib/linear.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
-  import { blockedBy, COLUMNS, handle, moveCursor, shiftStatus } from '../lib/teams.js';
+  import { blockedBy, COLUMNS, editPatch, handle, moveCursor, remoteLinkLabel, shiftStatus } from '../lib/teams.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -24,7 +24,7 @@
   let error = $state(null);
   let feature = $state('all');
   let cur = $state({ col: 1, row: 0 });
-  let form = $state(null); // { title, node, run_id, body } for n; { task, node } for a
+  let form = $state(null); // { title, node, run_id, body } for n; { task, node } for a; { task, title, body } for e
   let syncing = $state(false);
   let menu = $state(false); // the selected card's menu (Open task, Run off-hours, Assign node)
   let offHours = $state(null); // planner_view.off_hours (the allowance and the next window)
@@ -56,10 +56,19 @@
 
   async function update(t, patch) {
     try {
-      await invoke('task_update', { id: t.id, status: patch.status ?? null, node: patch.node ?? null, note: patch.note ?? null });
+      await invoke('task_update', {
+        id: t.id,
+        status: patch.status ?? null,
+        node: patch.node ?? null,
+        note: patch.note ?? null,
+        title: patch.title ?? null,
+        body: patch.body ?? null,
+      });
       await load();
+      return true;
     } catch (e) {
       toast(errText(e), { kind: 'error' });
+      return false;
     }
   }
 
@@ -77,6 +86,29 @@
     } catch (e) {
       toast(errText(e), { kind: 'error' });
     }
+  }
+
+  function startEdit(t) {
+    menu = false;
+    if (t) form = { kind: 'edit', task: t, title: t.title ?? '', body: t.body ?? '' };
+  }
+
+  async function saveEdit() {
+    const f = form;
+    if (f?.kind !== 'edit') return;
+    if (!f.title.trim()) return toast('The task needs a title', { kind: 'error' });
+    const patch = editPatch(f.task, f);
+    if (patch.title !== null || patch.body !== null) {
+      // A failed save keeps the form (and what was typed) open.
+      if (!(await update(f.task, patch))) return;
+    }
+    if (form === f) form = null;
+    root?.focus();
+  }
+
+  function openRemote(t) {
+    menu = false;
+    if (t?.remote_url) openUrl(t.remote_url);
   }
 
   /** The task, or its run, is marked "Run off-hours" (board_view). */
@@ -106,6 +138,8 @@
 
   function onKey(e) {
     if (e.target.closest('input, textarea, select')) {
+      if (e.key === 'Enter' && e.metaKey && form?.kind === 'edit') return (saveEdit(), e.preventDefault());
+      if (e.key === 'Enter' && e.metaKey && form?.kind === 'new') return (create(), e.preventDefault());
       if (e.key === 'Escape') ((form = null), root?.focus(), e.preventDefault());
       return;
     }
@@ -118,6 +152,8 @@
     }
     if (menu && e.key === 'm') return ((menu = false), (moveMenu = true), e.preventDefault());
     if (menu && e.key === 'Enter' && selected?.feature_id) return ((menu = false), openFeature(selected.feature_id), e.preventDefault());
+    if (menu && e.key === 'e' && selected) return (startEdit(selected), e.preventDefault());
+    if (menu && e.key === 'g' && selected?.remote_url) return (openRemote(selected), e.preventDefault());
     if (menu && e.key === 'Escape') return ((menu = false), e.preventDefault());
     if (e.key === 'O' || (e.shiftKey && e.key === 'o')) return (toggleOffHours(selected), e.preventDefault());
     if (e.key === ' ' && selected) return ((menu = !menu), e.preventDefault());
@@ -134,12 +170,39 @@
     else if (key === 'Enter' && selected?.feature_id) openFeature(selected.feature_id);
     else if (key === 'a' && selected && runOf(selected)) form = { kind: 'assign', task: selected, node: selected.node ?? '' };
     else if (key === 'n') form = { kind: 'new', title: '', node: '', run_id: v?.runs[0]?.id ?? '', body: '' };
+    else if (key === 'e' && selected) startEdit(selected);
+    else if (key === 'g' && selected?.remote_url) openRemote(selected);
     else if (key === 'r') sync();
     else if (key === 'Escape') form = null;
     else return;
     e.preventDefault();
     queueMicrotask(() => root?.querySelector('.task.sel')?.scrollIntoView({ block: 'nearest' }));
   }
+
+  // Opening the Board (or switching project) syncs a remote backend that is
+  // stale; the core throttles it (60 s) and keeps the project in the background sync.
+  async function openSync(project) {
+    syncing = true;
+    try {
+      const r = await invoke('board_open_sync', { project });
+      if (project !== spec.projectId) return;
+      if (r?.synced) await load();
+    } catch (e) {
+      if (project === spec.projectId) {
+        await load();
+        if (v) v = { ...v, last_sync_error: errText(e) };
+      }
+    } finally {
+      if (project === spec.projectId) syncing = false;
+    }
+  }
+
+  // Keyed on the id, not on `spec` (which is replaced when the pane's taskId is cleared).
+  const projectId = $derived(spec.projectId);
+  $effect(() => {
+    const project = projectId;
+    if (project) openSync(project);
+  });
 
   onMount(() => {
     invoke('planner_view')
@@ -171,7 +234,8 @@
     {#if form?.kind === 'new'}
       <div class="form">
         <!-- svelte-ignore a11y_autofocus -->
-        <input class="field grow" autofocus bind:value={form.title} placeholder="Task title" onkeydown={(e) => e.key === 'Enter' && (e.preventDefault(), create())} />
+        <input class="field grow" autofocus bind:value={form.title} placeholder="Task title" onkeydown={(e) => e.key === 'Enter' && !e.metaKey && (e.preventDefault(), create())} />
+        <textarea class="field body" rows="4" bind:value={form.body} placeholder="Description (optional) — ⌘⏎ to create" aria-label="Description"></textarea>
         <select class="field" bind:value={form.run_id} aria-label="Feature">
           <option value="">no feature</option>
           {#each v.runs as r (r.id)}<option value={r.id}>{r.slug}</option>{/each}
@@ -184,6 +248,15 @@
         {/if}
         <button class="btn primary" onclick={create}>Create</button>
         <button class="btn ghost" onclick={() => (form = null)}>Cancel</button>
+      </div>
+    {:else if form?.kind === 'edit'}
+      <div class="form">
+        <span class="mono">Edit {handle(form.task)}</span>
+        <!-- svelte-ignore a11y_autofocus -->
+        <input class="field grow" autofocus bind:value={form.title} placeholder="Task title" onkeydown={(e) => e.key === 'Enter' && !e.metaKey && (e.preventDefault(), saveEdit())} />
+        <textarea class="field body" rows="4" bind:value={form.body} placeholder="Description — ⌘⏎ to save" aria-label="Description"></textarea>
+        <button class="btn primary" onclick={saveEdit}>Save</button>
+        <button class="btn ghost" onclick={() => ((form = null), root?.focus())}>Cancel</button>
       </div>
     {:else if form?.kind === 'assign'}
       <div class="form">
@@ -222,6 +295,8 @@
               <div class="menu" role="menu" aria-label="Task menu">
                 <button role="menuitem" onclick={() => ((menu = false), t.feature_id && openFeature(t.feature_id))}>Open task <Kbd keys="⏎" /></button>
                 <button role="menuitem" disabled={!offHoursAllowed(offHours)} title={offHoursAllowed(offHours) ? '' : OFF_DISABLED} onclick={() => toggleOffHours(t)}>{isOff(t) ? 'Run in working hours' : 'Run off-hours'} <Kbd keys="⇧+O" /></button>
+                <button role="menuitem" onclick={() => startEdit(t)}>Edit… <Kbd keys="e" /></button>
+                {#if remoteLinkLabel(t)}<button role="menuitem" onclick={() => openRemote(t)}>{remoteLinkLabel(t)} <Kbd keys="g" /></button>{/if}
                 <button role="menuitem" onclick={() => ((menu = false), (moveMenu = true))}>Move to… <Kbd keys="m" /></button>
                 <button role="menuitem" disabled={!runOf(t)} onclick={() => ((menu = false), (form = { kind: 'assign', task: t, node: t.node ?? '' }))}>Assign node… <Kbd keys="a" /></button>
               </div>
@@ -239,7 +314,7 @@
       {/each}
     </div>
     <footer class="keys">
-      <span><Kbd keys="h/l" /> column</span><span><Kbd keys="j/k" /> card</span><span><Kbd keys="⇧+h/l" /> move card</span><span><Kbd keys="⏎" /> open</span><span><Kbd keys="a" /> assign</span><span><Kbd keys="n" /> new</span><span><Kbd keys="r" /> sync</span><span><Kbd keys="space" /> menu</span><span><Kbd keys="⇧+O" /> off-hours</span>
+      <span><Kbd keys="h/l" /> column</span><span><Kbd keys="j/k" /> card</span><span><Kbd keys="⇧+h/l" /> move card</span><span><Kbd keys="⏎" /> open</span><span><Kbd keys="a" /> assign</span><span><Kbd keys="e" /> edit</span>{#if selected?.remote_url}<span><Kbd keys="g" /> open</span>{/if}<span><Kbd keys="n" /> new</span><span><Kbd keys="r" /> sync</span><span><Kbd keys="space" /> menu</span><span><Kbd keys="⇧+O" /> off-hours</span>
       {#if selected}<span class="grow"></span><span class="muted">{handle(selected)} · updated {ago(selected.updated_at_ms)}</span>{/if}
     </footer>
   {:else}
@@ -306,6 +381,15 @@
     gap: var(--space-md);
     color: var(--color-text-secondary);
     font: var(--text-caption);
+  }
+  .form {
+    flex-wrap: wrap;
+  }
+  .body {
+    flex-basis: 100%;
+    resize: vertical;
+    field-sizing: content;
+    min-height: 4lh;
   }
   .pname {
     font: var(--text-heading);

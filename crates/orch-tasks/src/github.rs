@@ -3,6 +3,10 @@
 //! the issues the app manages, `orch:<status>` the column (a closed issue is
 //! Done), `orch:node:<id>` the assignee node; dependencies are a
 //! `Blocked by: #12, #13` line at the end of the body.
+//!
+//! Every open issue is read, with or without `orch` (Backlog until its first
+//! status change makes it managed); reading never writes. After the first
+//! sync only the issues changed since a cursor are read (`since`).
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -52,7 +56,35 @@ pub struct Issue {
     /// Labels the app does not manage, kept on every update.
     pub other_labels: Vec<String>,
     pub updated_at: String,
+    /// Has the `orch` label.
+    pub managed: bool,
 }
+
+/// What a listing leaves out, i.e. what an issue not in it means.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Coverage {
+    /// Every issue the sync should know: one not listed is not the app's.
+    #[default]
+    All,
+    /// Only the issues changed since the cursor: one not listed did not change.
+    ChangedSince,
+    /// Every open issue and the managed closed ones: one not listed may be
+    /// closed without `orch` (read it alone).
+    OpenAndManaged,
+}
+
+/// The issues a sync reads.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Listing {
+    pub issues: Vec<Issue>,
+    pub coverage: Coverage,
+    /// The newest `updated_at` seen (never older than the `since` asked
+    /// with), the next sync's `since`; `None` = the remote keeps no cursor.
+    pub cursor: Option<String>,
+}
+
+/// Overlap of an incremental read, for clock skew and same-second writes.
+const SINCE_OVERLAP_S: i64 = 60;
 
 pub fn status_label(s: TaskStatus) -> String {
     format!("orch:{}", s.as_str())
@@ -100,7 +132,7 @@ pub fn parse_body(body: &str) -> (String, Vec<String>) {
     (kept.join("\n").trim_end().to_string(), deps)
 }
 
-/// Reads one issue from `gh issue list --json` or `gh api` output.
+/// Reads one issue from `gh api` output (REST, or `--json` field names).
 pub fn parse_issue(v: &Value) -> Option<Issue> {
     let number = match &v["number"] {
         Value::Number(n) => n.to_string(),
@@ -126,6 +158,7 @@ pub fn parse_issue(v: &Value) -> Option<Issue> {
             .unwrap_or(TaskStatus::Backlog)
     };
     let node = labels.iter().find_map(|l| l.strip_prefix(NODE_PREFIX)).map(str::to_string);
+    let is_managed = labels.iter().any(|l| l == LABEL);
     let (body, blocked_by) = parse_body(v["body"].as_str().unwrap_or(""));
     Some(Issue {
         number,
@@ -136,7 +169,26 @@ pub fn parse_issue(v: &Value) -> Option<Issue> {
         blocked_by,
         other_labels: labels.into_iter().filter(|l| !managed(l)).collect(),
         updated_at: v["updatedAt"].as_str().or_else(|| v["updated_at"].as_str()).unwrap_or("").to_string(),
+        managed: is_managed,
     })
+}
+
+/// Which parts of an issue a write sends (GitHub; Linear sends all).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fields {
+    /// Labels (managed + the issue's others) and open/closed.
+    pub state: bool,
+    /// Title and body (with its `Blocked by:` line).
+    pub content: bool,
+}
+
+impl Fields {
+    pub const ALL: Fields = Fields { state: true, content: true };
+    pub const STATE: Fields = Fields { state: true, content: false };
+
+    pub fn any(self) -> bool {
+        self.state || self.content
+    }
 }
 
 /// What to write to an issue.
@@ -147,6 +199,8 @@ pub struct IssueWrite<'a> {
     pub status: TaskStatus,
     pub node: Option<&'a str>,
     pub blocked_by: Vec<String>,
+    /// What an update sends; a create sends everything.
+    pub fields: Fields,
 }
 
 pub struct GithubIssues<G: Gh> {
@@ -164,6 +218,11 @@ impl<G: Gh> GithubIssues<G> {
 
     fn gh(&self, args: &[&str]) -> Result<String> {
         self.gh.run(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    /// The repository when it needs no `gh` call to know it.
+    pub fn known_repo(&self) -> Option<String> {
+        self.repo.get().cloned().or_else(|| self.configured.clone())
     }
 
     pub fn repo(&self) -> Result<String> {
@@ -211,15 +270,16 @@ impl<G: Gh> GithubIssues<G> {
     }
 
     fn fields(w: &IssueWrite, keep: &[String]) -> Vec<String> {
-        let mut a = vec![
-            "-f".into(),
-            format!("title={}", w.title),
-            "-f".into(),
-            format!("body={}", render_body(w.body, &w.blocked_by)),
-        ];
-        for l in labels_for(w.status, w.node).into_iter().chain(keep.iter().cloned()) {
-            a.push("-f".into());
-            a.push(format!("labels[]={l}"));
+        let f = w.fields;
+        let mut a: Vec<String> = Vec::new();
+        if f.content {
+            a.extend(["-f".into(), format!("title={}", w.title)]);
+            a.extend(["-f".into(), format!("body={}", render_body(w.body, &w.blocked_by))]);
+        }
+        if f.state {
+            for l in labels_for(w.status, w.node).into_iter().chain(keep.iter().cloned()) {
+                a.extend(["-f".into(), format!("labels[]={l}")]);
+            }
         }
         a
     }
@@ -229,23 +289,27 @@ impl<G: Gh> GithubIssues<G> {
         self.ensure_labels()?;
         let repo = self.repo()?;
         let mut args = vec!["api".to_string(), "-X".into(), "POST".into(), format!("repos/{repo}/issues")];
-        args.extend(Self::fields(w, &[]));
+        args.extend(Self::fields(&IssueWrite { fields: Fields::ALL, ..w.clone() }, &[]));
         let mut issue = self.parse(&self.gh.run(&args)?)?;
         if w.status == TaskStatus::Done {
-            issue = self.update(&issue.number, w, &[])?;
+            issue = self.update(&issue.number, &IssueWrite { fields: Fields::STATE, ..w.clone() }, &[])?;
         }
         Ok(issue)
     }
 
-    /// Replaces title, body, state and the managed labels; `keep` are the
-    /// issue's other labels.
+    /// Sends what `w.fields` names: title and body, and/or state and the
+    /// labels (managed + `keep`, the issue's other labels).
     pub fn update(&self, number: &str, w: &IssueWrite, keep: &[String]) -> Result<Issue> {
-        self.ensure_labels()?;
+        if w.fields.state {
+            self.ensure_labels()?;
+        }
         let repo = self.repo()?;
         let mut args = vec!["api".to_string(), "-X".into(), "PATCH".into(), format!("repos/{repo}/issues/{number}")];
         args.extend(Self::fields(w, keep));
-        args.push("-f".into());
-        args.push(format!("state={}", if w.status == TaskStatus::Done { "closed" } else { "open" }));
+        if w.fields.state {
+            args.push("-f".into());
+            args.push(format!("state={}", if w.status == TaskStatus::Done { "closed" } else { "open" }));
+        }
         self.parse(&self.gh.run(&args)?)
     }
 
@@ -267,25 +331,44 @@ impl<G: Gh> GithubIssues<G> {
         Ok(())
     }
 
-    /// Every managed issue, open and closed.
-    pub fn list(&self) -> Result<Vec<Issue>> {
+    /// The issues a sync reads, through the REST issues endpoint, paged.
+    /// No `since`: every open issue and the closed `orch` ones.
+    /// With `since` (the last cursor): every issue changed since a minute
+    /// before it, open or closed. Pull requests are skipped.
+    pub fn list(&self, since: Option<&str>) -> Result<Listing> {
         let repo = self.repo()?;
-        let out = self.gh(&[
-            "issue",
-            "list",
-            "--repo",
-            &repo,
-            "--label",
-            LABEL,
-            "--state",
-            "all",
-            "--limit",
-            "500",
-            "--json",
-            "number,title,body,state,labels,updatedAt",
-        ])?;
-        let v: Value = serde_json::from_str(&out)?;
-        Ok(v.as_array().into_iter().flatten().filter_map(parse_issue).collect())
+        let since = since.and_then(|c| c.parse::<jiff::Timestamp>().ok());
+        let (raw, coverage) = match since {
+            Some(t) => {
+                let from = t - jiff::SignedDuration::from_secs(SINCE_OVERLAP_S);
+                (self.pages(&repo, &format!("state=all&since={from}"))?, Coverage::ChangedSince)
+            }
+            None => {
+                let mut v = self.pages(&repo, "state=open")?;
+                v.extend(self.pages(&repo, &format!("state=closed&labels={LABEL}"))?);
+                (v, Coverage::OpenAndManaged)
+            }
+        };
+        let raw: Vec<Value> = raw.into_iter().filter(|v| v.get("pull_request").is_none()).collect();
+        let newest = raw.iter().filter_map(|v| v["updated_at"].as_str()?.parse::<jiff::Timestamp>().ok()).max();
+        let cursor = newest.max(since).map(|t| t.to_string());
+        Ok(Listing { issues: raw.iter().filter_map(parse_issue).collect(), coverage, cursor })
+    }
+
+    /// Every issue of a paged GET of `repo`'s issues with `query` (`gh api
+    /// --paginate` prints one JSON array per page, back to back). A GET: no
+    /// `-f` here, `gh` would POST.
+    fn pages(&self, repo: &str, query: &str) -> Result<Vec<Value>> {
+        let path = format!("repos/{repo}/issues?{query}&per_page=100");
+        let out = self.gh(&["api", "--paginate", &path])?;
+        let mut items = Vec::new();
+        for page in serde_json::Deserializer::from_str(&out).into_iter::<Value>() {
+            match page.context("gh api: not JSON")? {
+                Value::Array(a) => items.extend(a),
+                v => return Err(anyhow!("gh api {path}: expected a list, got {v}")),
+            }
+        }
+        Ok(items)
     }
 
     fn parse(&self, out: &str) -> Result<Issue> {
@@ -325,5 +408,31 @@ mod tests {
         assert_eq!(parse_issue(&closed).unwrap().status, TaskStatus::Done);
         let bare = serde_json::json!({"number": 2, "state": "open", "labels": [{"name": "orch"}]});
         assert_eq!(parse_issue(&bare).unwrap().status, TaskStatus::Backlog);
+        assert!(parse_issue(&bare).unwrap().managed);
+        let foreign = serde_json::json!({"number": 3, "state": "open", "labels": [{"name": "bug"}]});
+        let f = parse_issue(&foreign).unwrap();
+        assert_eq!((f.status, f.managed, f.other_labels), (TaskStatus::Backlog, false, vec!["bug".to_string()]));
+    }
+
+    struct Pages(String);
+    impl Gh for Pages {
+        fn run(&self, args: &[String]) -> Result<String> {
+            assert!(!args.iter().any(|a| a == "-f" || a == "-F"), "a list is a GET: {args:?}");
+            assert_eq!(args[..2], ["api", "--paginate"]);
+            if args[2].contains("state=closed") { Ok("[]".into()) } else { Ok(self.0.clone()) }
+        }
+    }
+
+    #[test]
+    fn paged_lists_skip_pull_requests() {
+        let out = r#"[{"number": 1, "state": "open", "updated_at": "2026-11-02T10:00:00Z"},
+                      {"number": 2, "state": "open", "pull_request": {}, "updated_at": "2026-11-02T12:00:00Z"}]
+                     [{"number": 3, "state": "open", "updated_at": "2026-11-02T11:00:00Z"}]"#;
+        let gh = GithubIssues::new(Pages(out.into()), Some("me/shop".into()));
+        let l = gh.list(None).unwrap();
+        assert_eq!(l.issues.iter().map(|i| i.number.as_str()).collect::<Vec<_>>(), ["1", "3"]);
+        assert_eq!((l.coverage, l.cursor.as_deref()), (Coverage::OpenAndManaged, Some("2026-11-02T11:00:00Z")));
+        let l = gh.list(Some("2026-11-02T11:00:00Z")).unwrap();
+        assert_eq!(l.coverage, Coverage::ChangedSince);
     }
 }

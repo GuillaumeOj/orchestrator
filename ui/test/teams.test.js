@@ -9,8 +9,10 @@ import { roleOf } from '../src/lib/status.js';
 import {
   blockedBy,
   COLUMNS,
+  editPatch,
   handle,
   moveCursor,
+  remoteLinkLabel,
   runStateLabel,
   shiftStatus,
   slugify,
@@ -107,6 +109,23 @@ describe('team helpers', () => {
   });
 });
 
+describe('Board edit helpers', () => {
+  it('editPatch sends only the changed fields', () => {
+    const t = { title: 'A', body: 'x' };
+    expect(editPatch(t, { title: 'A', body: 'x' })).toEqual({ title: null, body: null });
+    expect(editPatch(t, { title: ' B ', body: 'x\n' })).toEqual({ title: 'B', body: null });
+    expect(editPatch(t, { title: 'A', body: '' })).toEqual({ title: null, body: '' });
+    expect(editPatch({ title: 'A' }, { title: 'A', body: '' })).toEqual({ title: null, body: null });
+  });
+  it('remoteLinkLabel names the remote, null without a url', () => {
+    expect(remoteLinkLabel({ backend: 'github', remote_url: 'https://github.com/a/b/issues/1' })).toBe(
+      'Open on GitHub',
+    );
+    expect(remoteLinkLabel({ backend: 'linear', remote_url: 'https://linear.app/x' })).toBe('Open in Linear');
+    expect(remoteLinkLabel({ backend: 'local', remote_url: null })).toBeNull();
+  });
+});
+
 describe('P2 panes', () => {
   beforeEach(() => {
     cleanup();
@@ -150,6 +169,42 @@ describe('P2 panes', () => {
     await fireEvent.keyDown(board, { key: 'n' });
     await tick();
     expect(container.querySelector('input[placeholder="Task title"]')).toBeTruthy();
+  });
+
+  it('the board syncs on open and edits a card with e, sending only the changed fields', async () => {
+    replies.board_open_sync = { synced: true };
+    replies.board_view = {
+      project: { id: 'shop', name: 'shop-api' },
+      backend: 'github',
+      repo: 'me/shop',
+      last_sync_error: null,
+      tasks: [
+        task(1, 'ready', {
+          backend: 'github',
+          external_id: '42',
+          body: 'old',
+          remote_url: 'https://github.com/me/shop/issues/42',
+        }),
+      ],
+      features: [],
+      runs: [],
+    };
+    replies.task_update = (a) => task(a.id, 'ready');
+    app.panes.b2 = { type: 'board', projectId: 'shop', title: 'shop tasks' };
+    const { container, getByText } = render(BoardPane, { paneId: 'b2' });
+    await waitFor(() => getByText('Task 1'));
+    expect(calls.some(([c, a]) => c === 'board_open_sync' && a.project === 'shop')).toBe(true);
+    expect(container.querySelector('footer.keys')?.textContent).toMatch(/g\s*open/);
+    const board = container.querySelector('.board');
+    await fireEvent.keyDown(board, { key: 'e' });
+    await tick();
+    expect(getByText('Edit #42')).toBeTruthy();
+    const ta = container.querySelector('textarea');
+    await fireEvent.input(ta, { target: { value: 'new body' } });
+    await fireEvent.keyDown(ta, { key: 'Enter', metaKey: true });
+    await waitFor(() =>
+      expect(calls.some(([c, a]) => c === 'task_update' && a.body === 'new body' && a.title === null)).toBe(true),
+    );
   });
 
   it('the feature pane shows the run, the rendered doc, the team and the timeline', async () => {

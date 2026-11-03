@@ -213,3 +213,19 @@ export function slugify(s) {
       .slice(0, 30) || ''
   );
 }
+
+/** The fields of an edit form that differ from the task (null = unchanged), as `task_update` takes them. */
+export function editPatch(task, form) {
+  const title = (form.title ?? '').trim();
+  const body = (form.body ?? '').trimEnd();
+  return {
+    title: title !== (task.title ?? '').trim() ? title : null,
+    body: body !== (task.body ?? '').trimEnd() ? body : null,
+  };
+}
+
+/** The card-menu / `g` label for a task's remote page, or null without a `remote_url`. */
+export function remoteLinkLabel(task) {
+  if (!task?.remote_url) return null;
+  return task.backend === 'linear' ? 'Open in Linear' : 'Open on GitHub';
+}

@@ -312,9 +312,17 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
             )
             .map(|t| json!(t)),
         ),
-        CtlRequest::TaskUpdate { task_id, status, node, note } => {
-            ok_or(rt.user_update_task(task_id, status.as_deref(), node.as_deref(), note.as_deref()).map(|t| json!(t)))
-        }
+        CtlRequest::TaskUpdate { task_id, status, node, note, title, body } => ok_or(
+            rt.user_update_task(
+                task_id,
+                status.as_deref(),
+                node.as_deref(),
+                note.as_deref(),
+                title.as_deref(),
+                body.as_deref(),
+            )
+            .map(|t| json!(t)),
+        ),
         CtlRequest::Message { run_id, to, body } => {
             ok_or(rt.user_message(&run_id, &to, &body).map(|ids| json!({"ids": ids})))
         }

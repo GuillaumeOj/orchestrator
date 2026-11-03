@@ -228,28 +228,51 @@ impl Runtime {
         Ok(out.value)
     }
 
-    /// The user moves, reassigns or annotates a task (board, Feature pane).
+    /// The user moves, reassigns, retitles, rewrites or annotates a task
+    /// (board, Feature pane). A title or body equal to the task's is no
+    /// change; status, title and body are saved and pushed together.
     pub fn user_update_task(
         &self,
         task_id: u64,
         status: Option<&str>,
         node: Option<&str>,
         note: Option<&str>,
+        title: Option<&str>,
+        body: Option<&str>,
     ) -> Result<Task> {
+        let title = title.map(str::trim);
+        if title == Some("") {
+            bail!("the task needs a title");
+        }
+        let body = body.map(str::trim_end);
         let mut t = self.db.task(task_id)?.ok_or_else(|| anyhow!("no task {task_id}"))?;
         if let Some(n) = node {
             t = self.reassign_task(task_id, n)?;
         }
         let project = self.db.project(&t.project_id)?.ok_or_else(|| anyhow!("no project {}", t.project_id))?;
         let svc = self.tasks_for(&project);
+        let mut changed = false;
+        let mut moved = None;
         if let Some(s) = status {
             let s: TaskStatus = s.parse().map_err(|e: String| anyhow!(e))?;
             if s != t.status {
                 self.apply_status(&mut t, s);
-                t = svc.update(t, now_ms())?.value;
-                if let Some(r) = &t.team_run_id {
-                    self.run_event(r, None, "task.updated", json!({"task": task_id, "status": s, "by": "user"}));
-                }
+                changed = true;
+                moved = Some(s);
+            }
+        }
+        if let Some(title) = title.filter(|x| *x != t.title) {
+            t.title = title.to_string();
+            changed = true;
+        }
+        if let Some(body) = body.filter(|x| *x != t.body) {
+            t.body = body.to_string();
+            changed = true;
+        }
+        if changed {
+            t = svc.update(t, now_ms())?.value;
+            if let (Some(s), Some(r)) = (moved, &t.team_run_id) {
+                self.run_event(r, None, "task.updated", json!({"task": task_id, "status": s, "by": "user"}));
             }
         }
         if let Some(n) = note.map(str::trim).filter(|n| !n.is_empty()) {
@@ -267,8 +290,170 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests {
-    use crate::runtime::tests::test_runtime;
+    use std::sync::{Arc, Mutex};
+
+    use crate::runtime::Runtime;
+    use crate::runtime::tests::{test_cfg, test_runtime};
+    use crate::team::{GhFactory, OPEN_SYNC_AFTER_MS};
+    use orch_store::{Project, Task};
     use orch_team::{PermissionProfile, RoleDef, Scope};
+    use serde_json::json;
+
+    /// A `gh` over an empty repo that logs the PATCHes and list calls it gets.
+    #[derive(Clone, Default)]
+    struct CountingGh(Arc<Mutex<Vec<String>>>);
+
+    impl orch_tasks::github::Gh for CountingGh {
+        fn run(&self, args: &[String]) -> anyhow::Result<String> {
+            self.0.lock().unwrap().push(args.join(" "));
+            match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+                ["api", "--paginate", ..] => Ok("[]".into()),
+                ["api", "-X", "PATCH", ..] => Ok(json!({"number": 7, "title": "T", "body": "", "state": "open",
+                    "labels": [], "updated_at": "2026-11-02T10:00:00Z"})
+                .to_string()),
+                _ => Ok("{}".into()),
+            }
+        }
+    }
+
+    fn project(rt: &Runtime, id: &str, backend: serde_json::Value) -> Project {
+        let p = Project {
+            id: id.into(),
+            name: id.into(),
+            path: std::env::temp_dir().join(id),
+            default_branch: "main".into(),
+            remotes: vec![],
+            worktree_root: std::env::temp_dir().join(id).join("w"),
+            task_backend: backend,
+            track_orchestrator_dir: true,
+            settings: json!({}),
+            created_at_ms: 1,
+            last_active_at_ms: 1,
+            last_fetch_at_ms: None,
+            last_fetch_error: None,
+            archived: false,
+        };
+        rt.db.upsert_project(&p).unwrap();
+        p
+    }
+
+    fn github_runtime() -> (tempfile::TempDir, Arc<Runtime>, CountingGh) {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
+        let gh = CountingGh::default();
+        let mut cfg = test_cfg(d.path(), false);
+        let g = gh.clone();
+        cfg.gh = Some(GhFactory(Arc::new(move || Box::new(g.clone()))));
+        (d, Runtime::new(cfg).unwrap(), gh)
+    }
+
+    fn lists(gh: &CountingGh) -> usize {
+        gh.0.lock().unwrap().iter().filter(|c| c.contains("--paginate")).count()
+    }
+
+    #[test]
+    fn the_task_form_edits_title_and_body() {
+        let (_d, rt, gh) = github_runtime();
+        project(&rt, "p", json!({"type": "github", "repo": "me/shop"}));
+        let mut t = Task::new("p", "github", "Old title", 1);
+        t.external_id = Some("7".into());
+        t.body = "old body".into();
+        t.remote_updated_at = Some("2026-11-02T09:00:00Z".into());
+        let id = rt.db.upsert_task(&t).unwrap();
+        let patches = || gh.0.lock().unwrap().iter().filter(|c| c.contains("PATCH")).count();
+        // Trimmed; one push for title and body.
+        let t = rt.user_update_task(id, None, None, None, Some("  New title \n"), Some("new body \n\n")).unwrap();
+        assert_eq!((t.title.as_str(), t.body.as_str()), ("New title", "new body"));
+        assert_eq!(patches(), 1);
+        let call = gh.0.lock().unwrap().iter().find(|c| c.contains("PATCH")).cloned().unwrap();
+        assert!(call.contains("title=New title") && call.contains("body=new body"), "{call}");
+        assert!(!call.contains("labels") && !call.contains("state="), "{call}");
+        // Nothing changed: no write. An empty title is refused, nothing saved.
+        rt.user_update_task(id, None, None, None, Some("New title"), Some("new body")).unwrap();
+        rt.user_update_task(id, None, None, None, None, None).unwrap();
+        assert_eq!(patches(), 1);
+        let e = rt.user_update_task(id, None, None, None, Some("  "), Some("x")).unwrap_err();
+        assert_eq!(e.to_string(), "the task needs a title");
+        assert_eq!(rt.db.task(id).unwrap().unwrap().body, "new body");
+        // An empty body clears it.
+        let t = rt.user_update_task(id, None, None, None, None, Some("")).unwrap();
+        assert_eq!(t.body, "");
+    }
+
+    #[test]
+    fn opening_a_board_syncs_at_most_once_a_minute_and_watches_the_project() {
+        let (_d, rt, gh) = github_runtime();
+        let p = project(&rt, "p", json!({"type": "github", "repo": "me/shop"}));
+        let local = project(&rt, "l", json!({"type": "local"}));
+        assert!(rt.open_sync(&local).is_none(), "a local backend has nothing to sync");
+        assert!(rt.open_sync(&p).unwrap().is_ok());
+        assert_eq!(lists(&gh), 2, "open issues + closed orch issues");
+        // Quick re-open: nothing, but still watched.
+        assert!(rt.open_sync(&p).is_none());
+        assert_eq!(lists(&gh), 2);
+        // Older than the throttle: syncs again.
+        let mut last = rt.last_sync("p");
+        last["at_ms"] = json!(orch_protocol::now_ms() - OPEN_SYNC_AFTER_MS - 1);
+        rt.db.set_setting(&format!("{}p", crate::team::LAST_SYNC_KEY), &last).unwrap();
+        assert!(rt.open_sync(&p).unwrap().is_ok());
+        assert_eq!(lists(&gh), 4, "synced again");
+    }
+
+    /// Two syncs at once of a project with a never-pushed task make one issue.
+    #[test]
+    fn concurrent_syncs_of_a_project_create_one_issue() {
+        #[derive(Clone, Default)]
+        struct SlowGh(Arc<Mutex<Vec<String>>>);
+        impl orch_tasks::github::Gh for SlowGh {
+            fn run(&self, args: &[String]) -> anyhow::Result<String> {
+                let line = args.join(" ");
+                self.0.lock().unwrap().push(line.clone());
+                if line.contains("--paginate") {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    return Ok("[]".into());
+                }
+                if line.contains("-X POST") && line.ends_with("/issues")
+                    || line.contains("-X POST repos/me/shop/issues")
+                {
+                    return Ok(json!({"number": 9, "title": "T", "body": "", "state": "open", "labels": [],
+                        "updated_at": "2026-11-02T10:00:00Z"})
+                    .to_string());
+                }
+                Ok("{}".into())
+            }
+        }
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
+        let gh = SlowGh::default();
+        let mut cfg = test_cfg(d.path(), false);
+        let g = gh.clone();
+        cfg.gh = Some(GhFactory(Arc::new(move || Box::new(g.clone()))));
+        let rt = Runtime::new(cfg).unwrap();
+        let p = project(&rt, "p", json!({"type": "github", "repo": "me/shop"}));
+        rt.db.upsert_task(&Task::new("p", "github", "Never pushed", 1)).unwrap();
+        let reports: Vec<_> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..2).map(|_| s.spawn(|| rt.sync_tasks(&p).unwrap())).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let creates = gh.0.lock().unwrap().iter().filter(|c| c.contains("-X POST repos/me/shop/issues ")).count();
+        assert_eq!(creates, 1, "{:?}", gh.0.lock().unwrap());
+        assert_eq!(reports[0], reports[1], "the second returns the first's report");
+        assert_eq!(rt.db.tasks(Some("p"), None, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_background_sync_covers_watched_projects() {
+        let (_d, rt, gh) = github_runtime();
+        let p = project(&rt, "p", json!({"type": "github", "repo": "me/shop"}));
+        project(&rt, "q", json!({"type": "github", "repo": "me/other"}));
+        rt.sync_task_backends();
+        assert_eq!(lists(&gh), 0, "no run, not watched");
+        rt.open_sync(&p);
+        let before = lists(&gh);
+        rt.sync_task_backends();
+        assert!(lists(&gh) > before, "the watched project is synced in the background");
+        let repos: std::collections::BTreeSet<_> =
+            gh.0.lock().unwrap().iter().filter(|c| c.contains("--paginate")).map(|c| c.contains("me/shop")).collect();
+        assert_eq!(repos, [true].into(), "only the watched project");
+    }
 
     #[test]
     fn gated_roles_move_to_auto_mode_once() {

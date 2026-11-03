@@ -370,6 +370,10 @@ pub enum CtlRequest {
         node: Option<String>,
         #[serde(default)]
         note: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        body: Option<String>,
     },
     /// The user messages a node or agent of a run (FR-409).
     Message {

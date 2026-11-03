@@ -334,6 +334,11 @@ pub async fn board_sync(core: CoreState<'_>, project: String) -> Res<Value> {
 }
 
 #[tauri::command]
+pub async fn board_open_sync(core: CoreState<'_>, project: String) -> Res<Value> {
+    blocking(core, move |c| c.board_open_sync(&project)).await
+}
+
+#[tauri::command]
 pub async fn task_create(core: CoreState<'_>, form: Value) -> Res<Value> {
     blocking(core, move |c| c.task_create(form)).await
 }
@@ -345,8 +350,22 @@ pub async fn task_update(
     status: Option<String>,
     node: Option<String>,
     note: Option<String>,
+    title: Option<String>,
+    body: Option<String>,
 ) -> Res<Value> {
-    blocking(core, move |c| c.task_update(id, status.as_deref(), node.as_deref(), note.as_deref())).await
+    blocking(core, move |c| {
+        c.task_update(
+            id,
+            crate::teams::TaskEdit {
+                status: status.as_deref(),
+                node: node.as_deref(),
+                note: note.as_deref(),
+                title: title.as_deref(),
+                body: body.as_deref(),
+            },
+        )
+    })
+    .await
 }
 
 #[tauri::command]
