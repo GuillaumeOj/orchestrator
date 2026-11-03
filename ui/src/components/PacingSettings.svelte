@@ -75,17 +75,21 @@
     }
   }
 
-  function reset() {
-    live = String(view.live_cap_default);
-    off = String(view.off_hours_live_cap_default);
-    shown = view.live_cap_default;
+  /** Any edit drops the last outcome ('Saved', 'Could not save'). */
+  function touch() {
     saved = false;
     saveError = null;
   }
 
+  function reset() {
+    live = String(view.live_cap_default);
+    off = String(view.off_hours_live_cap_default);
+    shown = view.live_cap_default;
+    touch();
+  }
+
   function onLiveInput() {
-    saved = false;
-    saveError = null;
+    touch();
     if (typeof liveCheck === 'number') shown = liveCheck;
   }
 
@@ -98,8 +102,7 @@
       live = String(next);
       shown = next;
     } else off = String(next);
-    saved = false;
-    saveError = null;
+    touch();
   }
 
   function onFieldKey(e, which) {
@@ -140,7 +143,7 @@
   <p class="muted intro">How many agents may run at once. The <button class="link" onclick={() => openSingleton('planner')}>Week planner</button> edits the plan: days, hours, reserve, allocations.</p>
 
   {#if loadError}
-    <p class="err line"><span aria-hidden="true">{'\u{F0159}'}</span> Could not read the pacing settings: {loadError}</p>
+    <p class="secondary help"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> Could not read the pacing settings: {loadError}</p>
     <div><button class="btn" onclick={load}>Retry <Kbd keys="r" /></button></div>
     <p class="muted hints"><Kbd keys="r" /> retry · <Kbd keys="esc" /> back to sections</p>
   {:else if !view}
@@ -184,7 +187,7 @@
     <div class="field-block">
       <label for="off-cap" class="lbl">Off-hours live agents</label>
       <div class="inline">
-        <input id="off-cap" class="num" class:invalid={offErr} type="text" inputmode="numeric" autocomplete="off" data-field="off" aria-invalid={offErr ? 'true' : undefined} aria-describedby={offErr ? 'off-cap-err off-cap-help' : 'off-cap-help'} bind:value={off} oninput={() => ((saved = false), (saveError = null))} onkeydown={(e) => onFieldKey(e, 'off')} readonly={busy} />
+        <input id="off-cap" class="num" class:invalid={offErr} type="text" inputmode="numeric" autocomplete="off" data-field="off" aria-invalid={offErr ? 'true' : undefined} aria-describedby={offErr ? 'off-cap-err off-cap-help' : 'off-cap-help'} bind:value={off} oninput={touch} onkeydown={(e) => onFieldKey(e, 'off')} readonly={busy} />
         <span class="muted cap">{view.off_hours_live_cap_min}–{view.off_hours_live_cap_max}</span>
         {#if offChanged}<span class="was">● was {view.off_hours_live_cap}</span>{/if}
       </div>
@@ -193,7 +196,7 @@
         <p class="secondary help" id="off-cap-err"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> {offErr}</p>
       {/if}
       {#if !view.off_hours_allowance_pct}
-        <p class="muted help">The plan has no off-hours allowance, so agents don't run off-hours. Set one in the <button class="link" onclick={() => openSingleton('planner')}>Week planner</button>.</p>
+        <p class="secondary help"><span class="muted" aria-hidden="true">{'\u{F02FD}'}</span> The plan has no off-hours allowance, so agents don't run off-hours. Set one in the <button class="link" onclick={() => openSingleton('planner')}>Week planner</button>.</p>
       {/if}
     </div>
 
@@ -203,10 +206,10 @@
     </p>
 
     {#if lowering}<p class="muted help">Working agents finish their turn; new turns wait for a slot.</p>{/if}
-    {#if saveError}<p class="err help"><span aria-hidden="true">{'\u{F0159}'}</span> Could not save: {saveError}</p>{/if}
+    {#if saveError}<p class="secondary help"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> Could not save: {saveError}</p>{/if}
 
     <div class="actions">
-      <button class="btn primary" disabled={!canApply} onclick={apply}>{busy ? 'Applying…' : 'Apply'} {#if !busy}<Kbd keys="⏎" />{/if}</button>
+      <button class="btn primary" disabled={!canApply} onclick={apply}>{busy ? 'Applying…' : 'Apply'} <Kbd keys="⏎" /></button>
       <button class="btn" disabled={busy || atDefaults} onclick={reset}>Reset to defaults</button>
       {#if saved}<span class="done" role="status">Saved</span>{/if}
     </div>
@@ -299,8 +302,7 @@
     border: var(--border-width-default) solid var(--color-border-subtle);
     border-radius: var(--radius-md);
   }
-  .gives.dim .states,
-  .gives.dim .mem {
+  .gives.dim {
     opacity: 0.5;
   }
   .states {
@@ -315,6 +317,7 @@
   }
   .states b.muted {
     color: var(--color-text-muted);
+    font-weight: 400;
   }
   .mem {
     font: var(--text-mono-sm);
