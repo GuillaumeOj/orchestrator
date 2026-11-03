@@ -587,6 +587,7 @@ impl Runtime {
     /// `tick_panic {run, step, message}` event, and the other steps and runs
     /// carry on. Task-backend sync runs on its own thread (housekeeping).
     pub fn team_tick(&self) {
+        self.tick_step("-", "close_delivered", || self.close_delivered());
         let runs = self.db.runs(None, true).unwrap_or_default();
         for run in runs {
             let id = run.id.as_str();
@@ -615,6 +616,7 @@ impl Runtime {
                 }
             });
             self.tick_step(id, "supervise", || self.supervise(&cx, now_ms()));
+            self.tick_step(id, "invariant", || self.delivery_invariant(&cx, now_ms()));
             self.tick_step(id, "deliver_messages", || self.deliver_messages(&cx));
             self.tick_step(id, "progress", || {
                 if let Err(e) = self.progress(&cx) {
@@ -875,6 +877,7 @@ impl Runtime {
                         json!({"kind": "ceiling", "minutes": m}),
                     )
                 }
+                Watch::Stalled if self.working_silent(&id, start) => continue,
                 Watch::Stalled => (
                     format!("{id}: no progress for {} min (no tool call or answer)", NO_PROGRESS_MS / 60_000),
                     json!({"kind": "stalled"}),
@@ -1049,7 +1052,7 @@ impl Runtime {
             &cx.run.id,
             from_agent,
             "message",
-            json!({"from": from_node, "to": to, "kind": kind, "body": cut(body, 300)}),
+            json!({"from": from_node, "to": to, "kind": kind, "body": cut(body, 300), "ids": ids}),
         );
         Ok(ids)
     }
@@ -1175,7 +1178,7 @@ impl Runtime {
         }
     }
 
-    fn unread(&self, rec: &AgentRecord) -> Vec<Message> {
+    pub(crate) fn unread(&self, rec: &AgentRecord) -> Vec<Message> {
         let Some(seat) = &rec.team else { return vec![] };
         self.db.messages(&seat.run_id, Some((&seat.node, Some(&rec.id))), true).unwrap_or_default()
     }
@@ -2240,6 +2243,214 @@ mod tests {
         let huge = "x".repeat(MAX_STORED + 1);
         let (err, msg) = call(&rt, lead, "create_task", json!({"title": "Big", "node": "back", "body": huge}));
         assert!(err && msg.contains("too long"), "{msg}");
+    }
+
+    fn old_messages(rt: &Runtime) {
+        rt.db.write(|tx| Ok(tx.execute("UPDATE messages SET created_at_ms = 1", [])?)).unwrap();
+    }
+
+    fn delivery_items(rt: &Runtime) -> Vec<orch_store::InboxItem> {
+        rt.store.read(|s| s.inbox.iter().filter(|i| i.kind == "delivery").cloned().collect())
+    }
+
+    fn idle(rt: &Runtime, id: &str) {
+        rt.store
+            .write(|s| {
+                for t in s.turns.iter_mut().filter(|t| t.agent_id == id) {
+                    t.status = TurnStatus::Done;
+                }
+                let a = s.agents.get_mut(id).unwrap();
+                a.spawns = 1;
+                a.tracker.state = AgentState::Idle;
+            })
+            .unwrap();
+    }
+
+    /// §3.7: an unread message over 10 min with its target not working is a
+    /// `delivery` decision naming the cause, once per episode; the Lead's
+    /// own is `stuck_lead` (user only), a member's also tells the Lead; a
+    /// working target is left alone; it closes by itself once seen.
+    #[test]
+    fn the_invariant_raises_one_decision_per_episode_and_closes_when_seen() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        idle(&rt, lead);
+        idle(&rt, back);
+        ok(&rt, back, "send_message", json!({"to": "lead", "body": "report"}));
+        ok(&rt, lead, "send_message", json!({"to": "back", "body": "go"}));
+        let cx = rt.run_ctx(&rt.db.runs(None, true).unwrap()[0].id).unwrap();
+        // Young messages are no breach.
+        rt.delivery_invariant(&cx, now_ms());
+        assert!(delivery_items(&rt).is_empty());
+        old_messages(&rt);
+        // A working target is not a breach either.
+        rt.store.write(|s| s.agents.get_mut(back).unwrap().tracker.state = AgentState::Working).unwrap();
+        rt.delivery_invariant(&cx, now_ms());
+        assert_eq!(delivery_items(&rt).len(), 1, "only the lead's");
+        rt.store.write(|s| s.agents.get_mut(back).unwrap().tracker.state = AgentState::Idle).unwrap();
+        rt.delivery_invariant(&cx, now_ms());
+        rt.delivery_invariant(&cx, now_ms());
+        let items = delivery_items(&rt);
+        assert_eq!(items.len(), 2, "one per episode, not per tick");
+        let of = |a: &str| items.iter().find(|i| i.agent_id.as_deref() == Some(a)).unwrap();
+        assert_eq!(of(lead).payload["episode"], "stuck_lead");
+        assert_eq!(of(back).payload["episode"], "delivery");
+        assert_eq!(of(back).payload["blocker"], "unknown");
+        assert_eq!(of(back).payload["messages"][0]["preview"], "go");
+        assert_eq!(of(back).body, "fx-back-1 did not receive 1 message(s)");
+        // The Lead heard about the member, not about itself.
+        let notes: Vec<_> =
+            rt.db.messages(&cx.run.id, None, false).unwrap().into_iter().filter(|m| m.kind == "status").collect();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].body.contains("fx-back-1") && notes[0].to_agent.as_deref() == Some(lead));
+        // The decision is on the agent's record.
+        // Dismissed: the same episode is not raised again.
+        let id = of(back).id;
+        rt.decide(id, orch_protocol::InboxDecision::Dismiss, None, None).unwrap();
+        rt.delivery_invariant(&cx, now_ms());
+        assert_eq!(delivery_items(&rt).len(), 2);
+        // Seen: the open decision closes by itself.
+        let lid = of(lead).id;
+        let ids: Vec<u64> =
+            of(lead).payload["messages"].as_array().unwrap().iter().map(|m| m["id"].as_u64().unwrap()).collect();
+        rt.db.hand_messages(&ids, lead, "turn", None, now_ms()).unwrap();
+        rt.db.see_messages(&ids, now_ms()).unwrap();
+        rt.close_delivered();
+        let closed = rt.store.read(|s| s.inbox.iter().find(|i| i.id == lid).cloned()).unwrap();
+        assert!(!closed.open() && closed.decided_by.as_deref() == Some("core"), "{closed:?}");
+    }
+
+    /// An open decision already names the cause: no second one.
+    #[test]
+    fn a_stuck_agent_with_an_open_decision_gets_no_second_one() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        idle(&rt, lead);
+        idle(&rt, back);
+        ok(&rt, lead, "send_message", json!({"to": "back", "body": "go"}));
+        old_messages(&rt);
+        rt.add_item(Some(back), "startup", "x".into(), json!({}), 1).unwrap();
+        let cx = rt.run_ctx(&rt.db.runs(None, true).unwrap()[0].id).unwrap();
+        rt.delivery_invariant(&cx, now_ms());
+        assert!(delivery_items(&rt).is_empty());
+    }
+
+    /// `retry`: failed messages and turns go back with their attempts reset.
+    #[test]
+    fn retry_puts_failed_messages_and_turns_back() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        idle(&rt, back);
+        ok(&rt, lead, "send_message", json!({"to": "back", "body": "go"}));
+        let run = rt.db.runs(None, true).unwrap()[0].id.clone();
+        let m = rt.db.messages(&run, Some(("back", Some(back))), true).unwrap();
+        let ids: Vec<u64> = m.iter().map(|m| m.id).collect();
+        rt.db.fail_messages(&ids, "no_ack", 5).unwrap();
+        let turn = rt.deliver_messages_turn(back, "ORCH: x", ids.clone()).unwrap();
+        rt.store
+            .write(|s| {
+                let t = s.turns.iter_mut().find(|t| t.id == turn).unwrap();
+                t.status = TurnStatus::Failed;
+                t.attempts = 3;
+            })
+            .unwrap();
+        rt.on_delivery_failed(&crate::handover::DeliveryFailure {
+            agent: back.into(),
+            turns: vec![turn.clone()],
+            messages: ids.clone(),
+            attempts: 3,
+            blocker: "no_ack",
+            since_ms: 1,
+            tail: "tail".into(),
+        });
+        let items = delivery_items(&rt);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].payload["blocker"], "no_ack");
+        assert_eq!(items[0].payload["messages"][0]["id"], ids[0]);
+        // Events are written off the caller's thread.
+        let ev = (0..100)
+            .find_map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                rt.db.last_run_event(&run, "delivery_failed").unwrap()
+            })
+            .expect("delivery_failed event");
+        assert!(ev.detail["decision"].is_string());
+        rt.retry_delivery(items[0].id).unwrap();
+        let t = rt.store.read(|s| s.turns.iter().find(|t| t.id == turn).cloned()).unwrap();
+        assert_eq!((t.status, t.attempts), (TurnStatus::Queued, 0));
+        let m = &rt.db.messages_by_id(&ids).unwrap()[0];
+        assert_eq!((m.failed_at_ms, m.attempts), (None, 0));
+        assert!(!rt.store.read(|s| s.inbox.iter().find(|i| i.id == items[0].id).unwrap().open()));
+    }
+
+    /// The `Working` watchdog on a silent team agent: a decision (and a note
+    /// for the Lead), once per turn.
+    #[test]
+    fn a_silent_working_team_agent_raises_a_decision_and_tells_the_lead() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let back = "fx-back-1";
+        ok(&rt, "fx-lead-1", "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        assert!(rt.working_silent(back, 77));
+        assert!(rt.working_silent(back, 77));
+        let items = delivery_items(&rt);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].payload["episode"], "working_silent");
+        let run = rt.db.runs(None, true).unwrap()[0].id.clone();
+        assert!(rt.db.messages(&run, None, false).unwrap().iter().any(|m| m.kind == "status"));
+        // A solo agent has no decision: the caller raises its alert.
+    }
+
+    /// §3.7: a member waiting 15 min on an idle Lead is reported to the
+    /// Lead; 10 min later, to the user as a decision.
+    #[test]
+    fn a_member_waiting_on_an_idle_lead_is_told_then_escalated() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        idle(&rt, lead);
+        idle(&rt, back);
+        ok(&rt, back, "send_message", json!({"to": "lead", "body": "which way?"}));
+        let run = rt.db.runs(None, true).unwrap()[0].id.clone();
+        let cx = rt.run_ctx(&run).unwrap();
+        let status = |rt: &Runtime| {
+            rt.db.messages(&run, None, false).unwrap().into_iter().filter(|m| m.kind == "status").count()
+        };
+        let later = |min: u64| now_ms() + min * 60_000;
+        rt.supervise(&cx, later(5));
+        assert_eq!(status(&rt), 0, "not yet");
+        rt.supervise(&cx, later(16));
+        assert_eq!(status(&rt), 1);
+        assert!(
+            rt.db
+                .messages(&run, None, false)
+                .unwrap()
+                .iter()
+                .any(|m| m.body.contains("has waited") && m.body.contains("for you"))
+        );
+        assert!(delivery_items(&rt).is_empty());
+        rt.supervise(&cx, later(17));
+        assert_eq!(status(&rt), 1, "told once");
+        rt.supervise(&cx, later(27));
+        let items = delivery_items(&rt);
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            (items[0].payload["episode"].as_str(), items[0].agent_id.as_deref()),
+            (Some("stuck_wait"), Some(back))
+        );
+        // A busy lead is not idle: nothing is raised for it.
     }
 
     fn call(rt: &Runtime, agent: &str, tool: &str, args: Value) -> (bool, String) {

@@ -36,12 +36,6 @@ pub fn crash_restart_allowed(times: &[u64], now: u64) -> bool {
     recent_restarts(times, now).len() < CRASH_RESTARTS_PER_HOUR
 }
 
-/// §3.5 (F3): the process is gone without the core asking (an `Error` after
-/// its exit), and nothing else owns its recovery: not a failed start
-/// (FR-415's `resume_failed`, which restarts fresh), not flagged (a failed
-/// spawn, a fresh restart under way). A `Killed` agent was killed by the
-/// user (every core kill is the user's) and stays down. The caller checks
-/// that it has no process and no open `startup` item.
 /// `id`'s `startup` item for a used-up crash budget (`failed: "crash"`).
 pub fn is_crash_item(i: &orch_store::InboxItem, id: &str) -> bool {
     i.kind == "startup"
@@ -49,6 +43,12 @@ pub fn is_crash_item(i: &orch_store::InboxItem, id: &str) -> bool {
         && i.payload.get("failed").and_then(Value::as_str) == Some("crash")
 }
 
+/// §3.5 (F3): the process is gone without the core asking (an `Error` after
+/// its exit), and nothing else owns its recovery: not a failed start
+/// (FR-415's `resume_failed`, which restarts fresh), not flagged (a failed
+/// spawn, a fresh restart under way). A `Killed` agent was killed by the
+/// user (every core kill is the user's) and stays down. The caller checks
+/// that it has no process and no open `startup` item.
 pub fn crashed(rec: &AgentRecord) -> bool {
     rec.tracker.state == AgentState::Error && !rec.resume_failed && rec.flag.is_none()
 }

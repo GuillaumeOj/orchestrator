@@ -732,6 +732,23 @@ impl Core {
                 other => bail!("{other} does not apply to {item}"),
             };
         }
+        // A message that did not arrive, or an agent that looks stuck (T-207).
+        if let Some(n) = item.strip_prefix("delivery-") {
+            let n: u64 = n.parse()?;
+            let agent = rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).and_then(|i| i.agent_id.clone()));
+            let agent = agent.ok_or_else(|| anyhow!("no delivery item {n}"))?;
+            return match action {
+                "retry" => rt.retry_delivery(n),
+                "restart_fresh" => {
+                    let r = self.restart_fresh(&agent)?;
+                    let _ = rt.decide(n, InboxDecision::Dismiss, None, None);
+                    rt.advance(n, agent_runtime::inbox::Stage::Effect("restarted", None));
+                    Ok(json!({"ok": true, "effect": "restarted", "lifecycle": rt.lifecycle(n), "result": r}))
+                }
+                "dismiss" => Ok(done(rt.decide(n, InboxDecision::Dismiss, None, None)?)),
+                other => bail!("{other} does not apply to {item}"),
+            };
+        }
         if let Some(n) = item.strip_prefix("alert-") {
             let n: u64 = n.parse()?;
             let found = rt.store.read(|s| {

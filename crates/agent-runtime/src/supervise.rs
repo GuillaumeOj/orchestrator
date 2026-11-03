@@ -9,7 +9,7 @@ use orch_protocol::now_ms;
 
 use serde_json::{Value, json};
 
-use crate::attention::{Level, Status};
+use crate::attention::{Level, Status, WaitKind, WaitingOn};
 use crate::runtime::Runtime;
 use crate::state::AgentState;
 use crate::store::AgentRecord;
@@ -33,6 +33,8 @@ pub struct MemberStatus {
     pub reason: String,
     /// Since when it is at this level and wait, ms.
     pub since_ms: u64,
+    /// Who or what it waits on.
+    pub waiting_on: Option<WaitingOn>,
 }
 
 impl MemberStatus {
@@ -100,7 +102,8 @@ impl Runtime {
                     level: r.level,
                     status: r.status,
                     reason: r.reason,
-                    since_ms: r.waiting_on.map(|w| w.since_ms).unwrap_or(r.since_ms),
+                    since_ms: r.waiting_on.as_ref().map(|w| w.since_ms).unwrap_or(r.since_ms),
+                    waiting_on: r.waiting_on,
                 })
             })
             .collect()
@@ -116,8 +119,8 @@ impl Runtime {
         // Idle after a Stop with background work (§3.2): it waits for its
         // own shells or subagents, which start its next turn. Not stuck.
         let waits_on_background = |id: &str| agents.iter().any(|a| a.id == id && a.tracker.background_tasks > 0);
-        let text: BTreeMap<String, String> = self
-            .members_of(cx, &agents)
+        let members = self.members_of(cx, &agents);
+        let mut text: BTreeMap<String, String> = members
             .iter()
             .filter_map(|m| {
                 let (what, since, line) = m.stuck(now)?;
@@ -125,6 +128,45 @@ impl Runtime {
                 (!waiting).then(|| (format!("{}:{what}:{since}", m.agent), line))
             })
             .collect();
+        // §3.7: a member waiting on an idle Lead (an unanswered review request
+        // or report) is stuck too; its Lead is told, and the user after 10 min more.
+        if lead.tracker.state == crate::state::AgentState::Idle {
+            for m in &members {
+                let Some(w) =
+                    m.waiting_on.as_ref().filter(|w| w.kind == WaitKind::Agent && w.r#ref.as_deref() == Some(&lead.id))
+                else {
+                    continue;
+                };
+                let waited = now.saturating_sub(w.since_ms);
+                if waited < crate::stuck::WAIT_ON_LEAD_MS {
+                    continue;
+                }
+                let key = format!("{}:stuck_wait:{}", m.agent, w.since_ms);
+                let line = format!(
+                    "{} has waited {} for you ({}); answer it",
+                    m.agent,
+                    crate::now::duration(waited),
+                    m.reason
+                );
+                text.insert(key, line);
+                if waited >= crate::stuck::WAIT_ON_LEAD_MS + crate::stuck::WAIT_ESCALATE_MS
+                    && let Some(rec) = agents.iter().find(|a| a.id == m.agent)
+                {
+                    self.raise_delivery(
+                        rec,
+                        crate::stuck::Raise {
+                            episode: "stuck_wait",
+                            blocker: "not_idle:idle".into(),
+                            since_ms: w.since_ms,
+                            messages: vec![],
+                            turns: vec![],
+                            key: format!("{}:stuck_wait:{}", m.agent, w.since_ms),
+                            stuck_event: true,
+                        },
+                    );
+                }
+            }
+        }
         let new = self.supervised(&cx.run.id, &text.keys().cloned().collect());
         if new.is_empty() {
             return;
@@ -223,6 +265,7 @@ mod tests {
             status: Status::Idle,
             reason: String::new(),
             since_ms: 0,
+            waiting_on: None,
         }
     }
 

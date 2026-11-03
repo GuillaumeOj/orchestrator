@@ -64,9 +64,44 @@ pub struct Interventions {
     pub by_cause: BTreeMap<String, u64>,
 }
 
+/// Send → seen time of the messages that were seen, ms.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Latency {
+    pub p50: u64,
+    pub p95: u64,
+}
+
+/// Message delivery (fix-team-getting-stucked, api-contract §5).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliveryReport {
+    pub sent: u64,
+    pub seen: u64,
+    pub read: u64,
+    pub failed: u64,
+    pub latency_ms: Latency,
+    /// By cause (a blocker's kind: `no_ack`, `not_idle`…).
+    pub redelivered: BTreeMap<String, u64>,
+    /// By the state the agent was recovered from.
+    pub recovered: BTreeMap<String, u64>,
+    /// By episode.
+    pub stuck: BTreeMap<String, u64>,
+    pub tick_panics: u64,
+}
+
+/// Nearest-rank percentile of a sorted list.
+fn percentile(sorted: &[u64], p: f64) -> u64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let rank = ((p / 100.0) * sorted.len() as f64).ceil() as usize;
+    sorted[rank.clamp(1, sorted.len()) - 1]
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunReport {
     pub agents: Vec<ReportAgent>,
+    #[serde(default)]
+    pub delivery: DeliveryReport,
     pub prompts: Prompts,
     pub interventions: Interventions,
     /// Open → decided of the agents' permission, question, gate and startup
@@ -141,6 +176,18 @@ impl RunReport {
             "startups blocked {}, fresh restarts {}, pressure changes {}, pressure suspends {}\n",
             self.startup_blocked, self.restarted_fresh, self.pressure_changes, self.pressure_suspends
         ));
+        let d = &self.delivery;
+        out.push_str(&format!(
+            "messages sent {}, seen {}, read {}, failed {}; send to seen p50 {} ms, p95 {} ms\n",
+            d.sent, d.seen, d.read, d.failed, d.latency_ms.p50, d.latency_ms.p95
+        ));
+        out.push_str(&format!(
+            "redelivered: {}; recovered: {}; stuck: {}; tick panics {}\n",
+            by(&d.redelivered),
+            by(&d.recovered),
+            by(&d.stuck),
+            d.tick_panics
+        ));
         if baseline {
             out.push_str(&format!("baseline: the {} team run\n", BASELINE.date));
         }
@@ -170,16 +217,27 @@ impl Store {
 
             // Events in the range.
             let mut st = c.prepare(
-                "SELECT agent_id, kind, detail FROM events WHERE ts_ms >= ?1 AND ts_ms < ?2
+                "SELECT agent_id, kind, detail, team_run_id FROM events WHERE ts_ms >= ?1 AND ts_ms < ?2
                  AND kind IN ('PermissionRequest', 'pane_intervention', 'restarted_fresh', 'memory_pressure',
-                              'auto_suspend')
+                              'auto_suspend', 'redelivered', 'recovered', 'stuck', 'tick_panic')
                  ORDER BY ts_ms, id",
             )?;
             let rows = st.query_map(params![since as i64, until as i64], |r| {
-                Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
             })?;
             for row in rows {
-                let (agent, kind, text) = row?;
+                let (agent, kind, text, event_run) = row?;
+                if kind == "tick_panic" {
+                    if run.is_none() || event_run == run {
+                        rep.delivery.tick_panics += 1;
+                    }
+                    continue;
+                }
                 if kind == "memory_pressure" {
                     rep.pressure_changes += 1;
                     continue;
@@ -206,9 +264,42 @@ impl Store {
                         bump(&mut rep.interventions.by_cause, &cause.unwrap_or_else(|| s("waited_on")));
                     }
                     "auto_suspend" if d["why"] == "memory_pressure" => rep.pressure_suspends += 1,
+                    "redelivered" => {
+                        let why = d.get("why").and_then(Value::as_str).unwrap_or("?");
+                        bump(&mut rep.delivery.redelivered, why.split(':').next().unwrap_or(why));
+                    }
+                    "recovered" => bump(&mut rep.delivery.recovered, &s("from_state")),
+                    "stuck" => bump(&mut rep.delivery.stuck, &s("episode")),
                     _ => {}
                 }
             }
+            // The messages sent in the range, by how far they got.
+            let mut st = c.prepare(
+                "SELECT created_at_ms, delivered_at_ms, read_at_ms, failed_at_ms FROM messages
+                 WHERE created_at_ms >= ?1 AND created_at_ms < ?2 AND (?3 IS NULL OR team_run_id = ?3)",
+            )?;
+            let mut latencies = vec![];
+            let rows = st.query_map(params![since as i64, until as i64, run], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<i64>>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                ))
+            })?;
+            for row in rows {
+                let (created, seen, read, failed) = row?;
+                rep.delivery.sent += 1;
+                // A message read at once (the `inbox` tool) was seen when it was read.
+                if let Some(at) = seen.or(read) {
+                    rep.delivery.seen += 1;
+                    latencies.push((at - created).max(0) as u64);
+                }
+                rep.delivery.read += read.is_some() as u64;
+                rep.delivery.failed += failed.is_some() as u64;
+            }
+            latencies.sort_unstable();
+            rep.delivery.latency_ms = Latency { p50: percentile(&latencies, 50.0), p95: percentile(&latencies, 95.0) };
             // How each agent runs: its last spawn up to `until`, in the range or
             // before it (one indexed row per agent).
             let mut st = c.prepare(
@@ -399,5 +490,72 @@ mod tests {
         // A time range alone covers every agent; one ending early cuts the events.
         let all = s.run_report(&ReportQuery { until_ms: Some(12), ..Default::default() }, 0).unwrap();
         assert_eq!((all.agents.len(), all.prompts.total), (3, 2));
+    }
+
+    /// The Delivery section: messages by how far they got, latency
+    /// percentiles, and the delivery events by cause, state and episode.
+    #[test]
+    fn a_report_counts_deliveries_redeliveries_recoveries_and_stuck_episodes() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(&d.path().join("s.db")).unwrap();
+        s.write(|tx| {
+            tx.execute(
+                "INSERT INTO agents(id, repo, worktree, session_id, state, created_at_ms, data) VALUES ('a1','/r','/w','s','idle',0,?1)",
+                params![json!({"role": {"name": "back"}, "team": {"run_id": "r1"}}).to_string()],
+            )?;
+            // (run, created, seen, read, failed)
+            #[allow(clippy::type_complexity)]
+            let msgs: [(&str, i64, Option<i64>, Option<i64>, Option<i64>); 6] = [
+                ("r1", 100, Some(110), Some(150), None),
+                ("r1", 100, Some(120), None, None),
+                ("r1", 100, Some(200), Some(210), None),
+                ("r1", 100, None, None, Some(300)),
+                ("r1", 100, None, None, None),
+                ("r2", 100, Some(101), None, None),
+            ];
+            for (run, created, seen, read, failed) in msgs {
+                tx.execute(
+                    "INSERT INTO messages(team_run_id, from_node, to_node, kind, body, created_at_ms, delivered_at_ms, read_at_ms, failed_at_ms)
+                     VALUES (?1,'lead','back','message','x',?2,?3,?4,?5)",
+                    params![run, created, seen, read, failed],
+                )?;
+            }
+            let ev = |ts: i64, agent: Option<&str>, run: Option<&str>, kind: &str, d: Value| {
+                tx.execute(
+                    "INSERT INTO events(ts_ms, agent_id, kind, detail, team_run_id) VALUES (?1,?2,?3,?4,?5)",
+                    params![ts, agent, kind, d.to_string(), run],
+                )
+            };
+            ev(10, Some("a1"), Some("r1"), "redelivered", json!({"why": "no_ack"}))?;
+            ev(11, Some("a1"), Some("r1"), "redelivered", json!({"why": "governor:off_hours"}))?;
+            ev(12, Some("a1"), Some("r1"), "redelivered", json!({"why": "governor:limit"}))?;
+            ev(13, Some("a1"), Some("r1"), "recovered", json!({"from_state": "error", "how": "continue"}))?;
+            ev(14, Some("a1"), Some("r1"), "stuck", json!({"episode": "stuck_wait"}))?;
+            ev(15, None, Some("r1"), "tick_panic", json!({"step": "dispatch"}))?;
+            ev(16, None, Some("r2"), "tick_panic", json!({"step": "dispatch"}))?;
+            Ok(())
+        })
+        .unwrap();
+        let r = s.run_report(&ReportQuery { team_run_id: Some("r1".into()), ..Default::default() }, 1_000).unwrap();
+        let d = &r.delivery;
+        assert_eq!((d.sent, d.seen, d.read, d.failed), (5, 3, 2, 1));
+        // Seen after 10, 20 and 100 ms.
+        assert_eq!((d.latency_ms.p50, d.latency_ms.p95), (20, 100));
+        assert_eq!((d.redelivered["no_ack"], d.redelivered["governor"]), (1, 2));
+        assert_eq!((d.recovered["error"], d.stuck["stuck_wait"], d.tick_panics), (1, 1, 1));
+        let text = r.render(false);
+        assert!(
+            text.contains("messages sent 5, seen 3, read 2, failed 1; send to seen p50 20 ms, p95 100 ms"),
+            "{text}"
+        );
+        assert!(
+            text.contains("redelivered: governor 2, no_ack 1; recovered: error 1; stuck: stuck_wait 1; tick panics 1"),
+            "{text}"
+        );
+        let j = serde_json::to_value(&r).unwrap();
+        assert!(j["delivery"]["latency_ms"]["p95"].is_u64() && j["delivery"]["redelivered"].is_object());
+        // No run: every message and panic.
+        let all = s.run_report(&ReportQuery::default(), 1_000).unwrap();
+        assert_eq!((all.delivery.sent, all.delivery.tick_panics), (6, 2));
     }
 }
