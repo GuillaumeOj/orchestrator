@@ -722,14 +722,17 @@ mod scenarios {
             if crash_item() {
                 break;
             }
-            sim.say("a1", &format!("message {i}"));
+            // Work that is not the user's own: it is what the budget counts.
+            sim.rt.deliver_kind("a1", &format!("message {i}"), TurnKind::Message).unwrap();
             sim.until("a crash", 40, || sim.state("a1") == AgentState::Error || crash_item());
         }
         sim.until("a crash decision", 40, crash_item);
         assert_eq!(sim.events("a1", "recovered").iter().filter(|e| e["from_state"] == "crashed").count(), 2);
         cli.set(|s| s.crash_always = false);
-        sim.rt.resume("a1", Some("back again")).unwrap();
-        sim.until("the resumed agent", 30, || cli.saw("back again"));
+        // The user's own message resumes it, whatever the used-up budget says.
+        sim.say("a1", "back again");
+        sim.until("the resumed agent", 40, || cli.saw("back again"));
+        assert!(sim.items("startup").iter().all(|i| i.payload["failed"] != "crash"), "the crash item is closed");
     }
 
     /// F4: the Stop never reached the core, so the agent looks `Working`. The
@@ -906,5 +909,67 @@ mod scenarios {
             !sim.events("fx-front-1", "slot_freed").is_empty() || !sim.run_events(&run.id, "slot_freed").is_empty()
         );
         sim.until("read", 30, || sim.unread(&run.id, "back", "fx-back-1") == 0);
+    }
+
+    /// Retry on an invariant decision takes the stuck paste back and sends it
+    /// again; if that fails too the user hears of it again (a new episode, after
+    /// another invariant window), and when it works the decision stays closed.
+    #[test]
+    fn retry_on_an_invariant_decision_resends_and_a_second_failure_is_raised_again() {
+        let (sim, _rd, run, cli) = team_with_lead(|_| {});
+        sim.rt.db.set_setting(ACK_KEY, &json!(3600)).unwrap();
+        cli.set(|s| (s.modal, s.modal_always) = (true, true));
+        sim.rt.user_message(&run.id, "lead", "are you there?").unwrap();
+        sim.until("a delivery decision", 30, || !sim.items("delivery").is_empty());
+        let first = sim.items("delivery").remove(0);
+        let stuck: Vec<String> = sim.rt.store.read(|s| {
+            s.turns.iter().filter(|t| t.agent_id == LEAD && t.status == T::Delivering).map(|t| t.id.clone()).collect()
+        });
+        assert_eq!(stuck.len(), 1);
+        sim.rt.retry_delivery(first.id).unwrap();
+        assert!(sim.items("delivery").is_empty(), "the decision is closed");
+        assert_eq!(sim.status(&stuck[0]), T::Queued, "the stuck paste is taken back");
+        // Still stuck: a second decision, after another window.
+        sim.until("a second decision", 30, || !sim.items("delivery").is_empty());
+        assert_ne!(sim.items("delivery")[0].id, first.id);
+        // It works this time.
+        cli.set(|s| (s.modal, s.modal_always) = (false, false));
+        sim.rt.db.set_setting(ACK_KEY, &json!(1)).unwrap();
+        let item = sim.items("delivery").remove(0);
+        sim.rt.retry_delivery(item.id).unwrap();
+        sim.until("the message seen", 40, || cli.saw("are you there?") && sim.unread(&run.id, "lead", LEAD) == 0);
+        assert!(sim.items("delivery").is_empty());
+    }
+
+    /// The same failing agent keeps failing: one open decision, not one per failed
+    /// Continue; after the user is done with it, a new failure is a new decision.
+    #[test]
+    fn a_repeated_failure_keeps_one_open_decision() {
+        let (sim, cli) = sim_with_agent();
+        cli.set(|s| s.stop_failure_sticky = Some("server_error".into()));
+        sim.say("a1", "one");
+        sim.until("a decision", 30, || !sim.items("delivery").is_empty());
+        sim.until("idle", 10, || sim.state("a1") == AgentState::Idle);
+        sim.say("a1", "two");
+        sim.until("the second failure chain", 30, || sim.events("a1", "continue_failed").len() >= 2);
+        sim.until("idle", 10, || sim.state("a1") == AgentState::Idle);
+        assert_eq!(sim.items("delivery").len(), 1, "one open decision");
+    }
+
+    /// Messages reach the model in the order they were sent, a long one keeps its
+    /// place (cut, with its file), and nothing is dropped.
+    #[test]
+    fn messages_are_rendered_in_send_order_and_a_long_one_keeps_its_place() {
+        let (sim, _rd, run, cli) = team_with_lead(|_| {});
+        let long = format!("LONG{}", "y".repeat(4_000));
+        for body in ["first note", long.as_str(), "third note"] {
+            sim.rt.user_message(&run.id, "lead", body).unwrap();
+        }
+        sim.until("all three", 30, || cli.saw("third note"));
+        let line =
+            cli.lines().into_iter().find(|l| l.starts_with("DONE[") && l.contains("first note")).expect("one turn");
+        let at = |n: &str| line.find(n).unwrap_or_else(|| panic!("{n} in {line}"));
+        assert!(at("first note") < at("LONG") && at("LONG") < at("full text:") && at("full text:") < at("third note"));
+        assert!(!line.contains(&"y".repeat(1_000)), "the long one is cut");
     }
 }

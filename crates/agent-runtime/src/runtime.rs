@@ -290,6 +290,11 @@ pub(crate) struct House {
     /// `delivery` decisions raised this run of the core, by episode key
     /// (§3.7): a dismissed one is not raised again for the same episode.
     pub(crate) delivery_raised: std::collections::BTreeSet<String>,
+    /// Agents whose model switch could not stop the process: their task runs
+    /// on the current model instead of waiting for a switch that never comes.
+    pub(crate) switch_failed: std::collections::BTreeSet<String>,
+    /// When the user last retried each message of a `delivery` decision (§3.7).
+    pub(crate) retried_at: BTreeMap<u64, u64>,
 }
 
 /// A hook's event detail (FR-1311, the run report): the common fields, plus
@@ -1036,6 +1041,9 @@ impl Runtime {
                         a.tracker.stop_intent = StopIntent::None;
                     }
                 });
+                if why == "model_switch" {
+                    me.house().switch_failed.insert(id.clone());
+                }
                 me.event(&id, "suspend_failed", json!({"why": why, "error": format!("{e:#}")}));
             }
         });
@@ -1605,6 +1613,18 @@ impl Runtime {
     /// beside the `api_error` alert the failure already raised.
     pub(crate) fn on_repeated_failure(&self, rec: &AgentRecord, error: &str) {
         self.delivery_event(&rec.id, "continue_failed", json!({"agent": rec.id, "error": error}));
+        // One decision while it is open: every further failed Continue is the same episode.
+        let open = self.store.read(|s| {
+            s.inbox.iter().any(|i| {
+                i.kind == "delivery"
+                    && i.open()
+                    && i.agent_id.as_deref() == Some(rec.id.as_str())
+                    && i.payload["blocker"] == "not_idle:error"
+            })
+        });
+        if open {
+            return;
+        }
         let now = now_ms();
         self.raise_delivery(
             rec,
@@ -2449,13 +2469,19 @@ impl Runtime {
             let never_started = rec.never_started();
             // §3.5 (F3): a crashed agent with work resumes the same way, at
             // most twice an hour; then a `startup` item waits for the user.
-            let crashed = crate::startup::crashed(rec) && self.startup_item(&rec.id).is_none();
+            // The user's own words resume a crashed agent whose budget is used up.
+            let by_user = turn.kind == TurnKind::User;
+            let crashed = crate::startup::crashed(rec) && (by_user || self.startup_item(&rec.id).is_none());
             // FR-705: parked on the user's decision, only their own words resume it.
             let suspended = (rec.tracker.state == AgentState::Suspended || never_started || crashed)
                 && rec.flag.is_none()
                 && (turn.kind == TurnKind::User || !self.is_parked(&rec.id));
-            if suspended && crashed && !self.crash_restart(rec, now) {
-                return Ok(());
+            if suspended && crashed {
+                if by_user {
+                    self.clear_crash(&rec.id, "user");
+                } else if !self.crash_restart(rec, now) {
+                    return Ok(());
+                }
             }
             if suspended && turn.admission == Admission::Pending {
                 self.sync_process_slots();
@@ -3298,7 +3324,8 @@ pub(crate) mod tests {
         let crash_item = |rt: &Runtime| {
             rt.store.read(|s| s.inbox.iter().find(|i| i.open() && crate::startup::is_crash_item(i, "a1")).cloned())
         };
-        rt.deliver_user("a1", "hello").unwrap();
+        // Work that is not the user's own words: it is what the budget counts.
+        let work = rt.deliver_kind("a1", "hello", TurnKind::Message).unwrap();
         // Killed by the user: never restarted.
         set(&rt, &|a| a.tracker.state = AgentState::Killed);
         rt.pump();
@@ -3338,6 +3365,14 @@ pub(crate) mod tests {
         rt.pump();
         assert_eq!(crash_items(&rt), 1, "a dismissed item is not raised again");
         rt.store.write(|s| s.inbox.iter_mut().find(|i| i.id == item.id).unwrap().status = item.status).unwrap();
+        // The user's own message resumes it whatever the budget says: the
+        // spawn is attempted (the test has no `claude`, so it fails and flags),
+        // the budget starts again and the item closes.
+        rt.store.write(|s| s.turns.retain(|t| t.id != work)).unwrap();
+        rt.deliver_user("a1", "back again").unwrap();
+        rt.pump();
+        assert!(flag(&rt).is_some_and(|f| f.contains("could not resume")), "{:?}", flag(&rt));
+        assert!(crash_item(&rt).is_none(), "the item closes");
         // The lead's (or the user's) resume: the budget starts again, the item closes.
         rt.clear_crash("a1", "lead");
         assert!(crash_item(&rt).is_none());

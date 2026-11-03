@@ -418,6 +418,9 @@ pub struct Stats {
     pub queued_by_reason: BTreeMap<String, u64>,
 }
 
+/// A reading must be under this for the window's limit to end before its reset.
+const LIMIT_LIFT_BELOW_PCT: f64 = 95.0;
+
 /// The usage-pacing Governor. Pure and deterministic: every method takes the
 /// current time, nothing does I/O.
 #[derive(Clone, Debug)]
@@ -1149,12 +1152,13 @@ impl Governor {
         }
         if r.used_pct >= 100.0 {
             self.mark_limit(window, r.resets_at, ts);
-        } else if self.limits.get(&window) == Some(&r.resets_at) {
+        } else if r.used_pct < LIMIT_LIFT_BELOW_PCT && self.limits.get(&window) == Some(&r.resets_at) {
             // A newer reading under 100 % of the same window (its reset is
             // the limit's): the limit is over before its reset time
             // (fix-team-getting-stucked §3.2). A limit placed on a guessed
             // window (a StopFailure with no exhausted reading) has another
-            // reset and holds until it.
+            // reset and holds until it. Only a clear drop lifts it: the
+            // statusline rounds down, and a spent window reads 97 or 99 %.
             self.clear_limit(window, ts, format!("{window:?} window under 100 % again"));
         }
     }
