@@ -161,6 +161,14 @@ pub fn restore_if_newer(db: &Path, zone: &jiff::tz::TimeZone) -> Option<String> 
 }
 
 fn restore(d: &Dirs, info: &Backup, have: u32) -> Result<PathBuf> {
+    let aside = unused(&d.aside().join(format!("orch-{}-schema-{have}", info.taken_at)));
+    std::fs::create_dir_all(&aside)?;
+    restore_to(d, &aside)?;
+    Ok(aside)
+}
+
+/// Stages the snapshot, then swaps it with the live store, which goes to `aside`.
+fn restore_to(d: &Dirs, aside: &Path) -> Result<()> {
     // The snapshot is staged next to the live store first: nothing is moved if that fails.
     let (db_new, blobs_new) = (d.state.join("orch.db.restore"), d.state.join("orch.blobs.restore"));
     let _ = std::fs::remove_file(&db_new);
@@ -176,12 +184,14 @@ fn restore(d: &Dirs, info: &Backup, have: u32) -> Result<PathBuf> {
         let _ = std::fs::remove_dir_all(&blobs_new);
         return Err(e.context("staging the snapshot"));
     }
-    let aside = unused(&d.aside().join(format!("orch-{}-schema-{have}", info.taken_at)));
-    std::fs::create_dir_all(&aside)?;
-    // The live store (and its WAL files) moves aside, then the snapshot moves in. A failure
-    // puts back what was moved, so the caller never finds the live store gone.
+    put_in(d, aside, &db_new, &blobs_new)
+}
+
+/// Moves the live store into `aside` and the staged snapshot in its place. A failure puts back
+/// what was moved, so the caller never finds the live store gone.
+fn put_in(d: &Dirs, aside: &Path, db_new: &Path, blobs_new: &Path) -> Result<()> {
     let mut moved: Vec<&str> = vec![];
-    let put_in = (|| -> Result<()> {
+    let res = (|| -> Result<()> {
         for name in [DB, "orch.db-wal", "orch.db-shm", BLOBS] {
             let from = d.state.join(name);
             if from.exists() {
@@ -189,13 +199,13 @@ fn restore(d: &Dirs, info: &Backup, have: u32) -> Result<PathBuf> {
                 moved.push(name);
             }
         }
-        std::fs::rename(&db_new, d.db()).context("putting the snapshot in")?;
+        std::fs::rename(db_new, d.db()).context("putting the snapshot in")?;
         if blobs_new.is_dir() {
-            std::fs::rename(&blobs_new, d.blobs()).context("putting the snapshot's blobs in")?;
+            std::fs::rename(blobs_new, d.blobs()).context("putting the snapshot's blobs in")?;
         }
         Ok(())
     })();
-    if let Err(e) = put_in {
+    if res.is_err() {
         // What sits at a moved name now is the snapshot's (or nothing); a name that never moved
         // is still the live store and stays.
         for name in moved {
@@ -204,12 +214,11 @@ fn restore(d: &Dirs, info: &Backup, have: u32) -> Result<PathBuf> {
             let _ = std::fs::remove_dir_all(&at);
             let _ = std::fs::rename(aside.join(name), at);
         }
-        let _ = std::fs::remove_dir(&aside);
-        let _ = std::fs::remove_file(&db_new);
-        let _ = std::fs::remove_dir_all(&blobs_new);
-        return Err(e);
+        let _ = std::fs::remove_dir(aside);
+        let _ = std::fs::remove_file(db_new);
+        let _ = std::fs::remove_dir_all(blobs_new);
     }
-    Ok(aside)
+    res
 }
 
 /// `path`, or `path-2`, `-3`… so a store set aside is never overwritten.
@@ -421,5 +430,57 @@ mod tests {
         assert!(!backup.exists());
         // Nothing to drop is fine.
         prune(&db, &build("main"), 1000 + 30 * day);
+    }
+
+    /// A newer live store with a snapshot, and the bytes of what a failed restore must not change.
+    fn failing_restore_setup() -> (tempfile::TempDir, Dirs, PathBuf, Vec<u8>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = snapshot_then_newer_store(tmp.path(), "main");
+        let d = Dirs::of(&db);
+        let bytes = std::fs::read(&db).unwrap();
+        (tmp, d, db, bytes)
+    }
+
+    fn assert_live_store_intact(tmp: &tempfile::TempDir, db: &Path, bytes: &[u8]) {
+        assert_eq!(std::fs::read(db).unwrap(), bytes, "orch.db changed");
+        assert_eq!(orch_store::schema_version(db).unwrap(), Some(SCHEMA_VERSION + 2));
+        let blobs = tmp.path().join("state/orch.blobs");
+        assert_eq!(std::fs::read_to_string(blobs.join("b1")).unwrap(), "before");
+        assert_eq!(std::fs::read_to_string(blobs.join("b2")).unwrap(), "new");
+        for leftover in ["orch.db.restore", "orch.blobs.restore"] {
+            assert!(!tmp.path().join("state").join(leftover).exists(), "{leftover}");
+        }
+    }
+
+    #[test]
+    fn a_restore_that_cannot_move_the_database_aside_leaves_the_live_store_alone() {
+        let (tmp, d, db, bytes) = failing_restore_setup();
+        // `orch.db` is a non-empty directory in the aside folder: the first rename fails.
+        let aside = tmp.path().join("state/aside/x");
+        std::fs::create_dir_all(aside.join("orch.db/inner")).unwrap();
+        assert!(restore_to(&d, &aside).is_err());
+        assert_live_store_intact(&tmp, &db, &bytes);
+    }
+
+    #[test]
+    fn a_restore_that_fails_after_the_database_moved_puts_everything_back() {
+        let (tmp, d, db, bytes) = failing_restore_setup();
+        // `orch.blobs` is a file in the aside folder: the database moves, the blobs cannot.
+        let aside = tmp.path().join("state/aside/x");
+        std::fs::create_dir_all(&aside).unwrap();
+        std::fs::write(aside.join("orch.blobs"), "in the way").unwrap();
+        assert!(restore_to(&d, &aside).is_err());
+        assert_live_store_intact(&tmp, &db, &bytes);
+        // The aside folder holds only what was in the way.
+        assert!(!aside.join("orch.db").exists());
+    }
+
+    #[test]
+    fn restore_if_newer_changes_nothing_when_the_restore_cannot_start() {
+        let (tmp, _d, db, bytes) = failing_restore_setup();
+        // `state/aside` is a file: the aside folder cannot be created.
+        std::fs::write(tmp.path().join("state/aside"), "in the way").unwrap();
+        assert!(restore_if_newer(&db, &utc()).is_none());
+        assert_live_store_intact(&tmp, &db, &bytes);
     }
 }
