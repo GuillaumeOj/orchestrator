@@ -118,10 +118,7 @@ impl Runtime {
         }
         // Asked once, never waited for on the pump (§3.6): later pumps find
         // the stop under way, and the turn goes to the respawned process.
-        if rec.tracker.state == AgentState::Idle
-            && rec.tracker.stop_intent == crate::state::StopIntent::None
-            && self.suspend_in_background(&rec.id, "model_switch")
-        {
+        if rec.tracker.state == AgentState::Idle && self.suspend_in_background(&rec.id, "model_switch") {
             self.event(&rec.id, "model_switch", json!({"from": l.model, "to": want, "why": why}));
         }
         true

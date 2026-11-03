@@ -723,9 +723,7 @@ impl Runtime {
         // are admitted at the user tier. A pause or a plan limit still holds them.
         let team_message = kind == TurnKind::Message
             && rec.team.is_some()
-            && self.with_governor(|g| {
-                !g.is_paused_all() && !g.paused_agents().contains(&agent) && !g.limit_in_force(&agent, Timestamp::now())
-            });
+            && !self.with_governor(|g| g.holds_work(&agent, Timestamp::now()));
         let req = TurnRequest {
             agent,
             allocation: rec.allocation.clone().into(),
@@ -992,28 +990,23 @@ impl Runtime {
     /// Asks for a suspend and returns at once (§3.6): the stop waits up to
     /// 5 s for the exit, never on the pump or the team pass. The stop intent
     /// is set now, so the pump pastes nothing meanwhile and a second request
-    /// is a no-op. False when the agent has no process.
+    /// is a no-op. True only when this call asked for the stop (a live
+    /// agent with no stop under way).
     pub(crate) fn suspend_in_background(&self, id: &str, why: &'static str) -> bool {
         if self.live_get(id).is_none() {
             return false;
         }
         let first = self
             .store
-            .write(|s| {
-                let a = s.agents.get_mut(id)?;
-                let first = a.tracker.stop_intent == StopIntent::None;
-                if first {
+            .write(|s| match s.agents.get_mut(id) {
+                Some(a) if a.tracker.stop_intent == StopIntent::None => {
                     a.tracker.stop_intent = StopIntent::Suspend;
+                    true
                 }
-                Some(first)
+                _ => false,
             })
-            .ok()
-            .flatten()
             .unwrap_or(false);
-        if !first {
-            return true;
-        }
-        let Some(me) = self.me.upgrade() else { return true };
+        let Some(me) = self.me.upgrade().filter(|_| first) else { return first };
         let id = id.to_string();
         std::thread::spawn(move || {
             if let Err(e) = me.suspend(&id) {
@@ -1765,16 +1758,23 @@ impl Runtime {
     /// released it, or no limit holds it any more): its waiting turns are
     /// pasted as usual. No-op for any other state.
     pub(crate) fn limit_lifted(&self, id: &str, how: &str) {
+        let blocked = |s: &crate::store::StateFile| {
+            s.agents.get(id).is_some_and(|a| a.tracker.state == AgentState::BlockedByLimit)
+        };
+        // A read first: most releases are for agents that are not blocked.
+        if !self.store.read(blocked) {
+            return;
+        }
         let lifted = self
             .store
-            .write(|s| {
-                let a = s.agents.get_mut(id).filter(|a| a.tracker.state == AgentState::BlockedByLimit)?;
-                a.tracker.state = AgentState::Idle;
-                Some(())
+            .write(|s| match s.agents.get_mut(id) {
+                Some(a) if a.tracker.state == AgentState::BlockedByLimit => {
+                    a.tracker.state = AgentState::Idle;
+                    true
+                }
+                _ => false,
             })
-            .ok()
-            .flatten()
-            .is_some();
+            .unwrap_or(false);
         if !lifted {
             return;
         }
@@ -2352,9 +2352,9 @@ impl Runtime {
                     self.event(&rec.id, "stale_admission", json!({"turn": turn, "entry": entry}));
                 }
             }
-            let fresh = |t: &&TurnRow| !stale.iter().any(|(id, _)| id == &t.id);
-            // §3.5 (F5): the first turn by priority that can move.
-            let Some(turn) = delivery::pick_turn(turns.iter().filter(fresh), rec.tracker.background_tasks) else {
+            // §3.5 (F5): the first turn by priority that can move (a stale
+            // turn is still `Waiting` in this snapshot: skipped this pass).
+            let Some(turn) = delivery::pick_turn(&turns, rec.tracker.background_tasks) else {
                 continue;
             };
             if let Err(e) = self.pump_one(&rec, turn, now) {
@@ -2504,8 +2504,7 @@ impl Runtime {
                     .filter(|t| t.id != turn.id)
                     .take_while(|t| {
                         !t.command
-                            && matches!(t.admission, Admission::Pending | Admission::Admitted)
-                            && !(bg > 0 && delivery::waits_on_background(t.kind))
+                            && delivery::can_move(t, bg)
                             && !(t.kind == TurnKind::Task && t.admission == Admission::Pending)
                     })
                     .cloned()
@@ -3265,9 +3264,7 @@ pub(crate) mod tests {
         };
         let flag = |rt: &Runtime| rt.store.read(|s| s.agents["a1"].flag.clone());
         let crash_item = |rt: &Runtime| {
-            rt.store.read(|s| {
-                s.inbox.iter().find(|i| i.open() && i.kind == "startup" && i.payload["failed"] == "crash").cloned()
-            })
+            rt.store.read(|s| s.inbox.iter().find(|i| i.open() && crate::startup::is_crash_item(i, "a1")).cloned())
         };
         rt.deliver_user("a1", "hello").unwrap();
         // Killed by the user: never restarted.
@@ -3310,7 +3307,7 @@ pub(crate) mod tests {
         assert_eq!(crash_items(&rt), 1, "a dismissed item is not raised again");
         rt.store.write(|s| s.inbox.iter_mut().find(|i| i.id == item.id).unwrap().status = item.status).unwrap();
         // The lead's (or the user's) resume: the budget starts again, the item closes.
-        assert!(rt.clear_crash("a1", "lead"));
+        rt.clear_crash("a1", "lead");
         assert!(crash_item(&rt).is_none());
         assert!(rt.store.read(|s| s.agents["a1"].crash_restarts.is_empty()));
         // An hour-old restart no longer counts.

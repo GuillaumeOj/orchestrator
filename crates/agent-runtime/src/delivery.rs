@@ -184,10 +184,14 @@ pub fn pick_turn<'a>(
     queued: impl IntoIterator<Item = &'a crate::store::TurnRow>,
     background_tasks: usize,
 ) -> Option<&'a crate::store::TurnRow> {
-    by_priority(queued).into_iter().find(|t| {
-        !matches!(t.admission, crate::store::Admission::Waiting(_))
-            && !(background_tasks > 0 && waits_on_background(t.kind))
-    })
+    by_priority(queued).into_iter().find(|t| can_move(t, background_tasks))
+}
+
+/// A queued turn can move now: not held in the Governor's queue, and not a
+/// task or continue waiting for the agent's background work.
+pub fn can_move(t: &crate::store::TurnRow, background_tasks: usize) -> bool {
+    !matches!(t.admission, crate::store::Admission::Waiting(_))
+        && !(background_tasks > 0 && waits_on_background(t.kind))
 }
 
 #[cfg(test)]

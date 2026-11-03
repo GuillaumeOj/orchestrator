@@ -133,6 +133,17 @@ pub fn watchdog_check(a: &AgentRecord, now: u64) -> Option<(Watch, u64)> {
 pub(crate) const MAX_BODY: usize = 8_000;
 /// Longest message body stored: a longer one is refused, never cut.
 pub(crate) const MAX_STORED: usize = 64_000;
+
+/// F7: a text the team stores whole (a message, a plan, a task body) is
+/// refused above [`MAX_STORED`], never cut; `what` names it and `way_out`
+/// says where the details go instead.
+pub(crate) fn check_stored(what: &str, text: &str, way_out: &str) -> Result<()> {
+    let n = text.chars().count();
+    if n > MAX_STORED {
+        bail!("{what} too long ({n} chars, max {MAX_STORED}): {way_out}");
+    }
+    Ok(())
+}
 /// Longest text injected at a tool call.
 const MAX_INJECT: usize = 3_000;
 /// A message longer than this (in a turn, at a tool call, in `inbox`) is
@@ -579,14 +590,14 @@ impl Runtime {
         let runs = self.db.runs(None, true).unwrap_or_default();
         for run in runs {
             let id = run.id.as_str();
-            let cx = self.tick_step(id, "context", || match self.run_ctx(id) {
-                Ok(cx) => Some(cx),
-                Err(e) => {
+            let cx = match self.tick_step(id, "context", || self.run_ctx(id)) {
+                Some(Ok(cx)) => cx,
+                Some(Err(e)) => {
                     self.event("-", "team_error", json!({"run": id, "error": e.to_string()}));
-                    None
+                    continue;
                 }
-            });
-            let Some(cx) = cx.flatten() else { continue };
+                None => continue,
+            };
             // A deleted feature has no running team: a run left active under
             // it (a relaunch that didn't un-archive) would spawn seats nobody
             // sees and block every new launch on the slug.
@@ -1017,10 +1028,7 @@ impl Runtime {
             bail!("empty message");
         }
         // Never cut silently (F7): the sender keeps the long part in a file.
-        let n = body.chars().count();
-        if n > MAX_STORED {
-            bail!("message too long ({n} chars, max {MAX_STORED}): put the details in a file and send its path");
-        }
+        check_stored("message", body, "put the details in a file and send its path")?;
         let recipients: Vec<Option<String>> = match to_agent {
             Some(a) => vec![Some(a)],
             None => {
@@ -1120,8 +1128,8 @@ impl Runtime {
     /// process slot gets one: the least recently active live idle member of
     /// its run with no unread messages is suspended ([`crate::resources::slot_victim`]).
     pub(crate) fn free_slot_for_messages(&self, live: &[crate::resources::LiveAgent], cap: u32, now: u64) {
-        use crate::resources::{Member, SlotWaiter};
-        if live.iter().filter(|a| !a.reserved).count() < cap as usize {
+        use crate::resources::{Member, SLOT_WAIT_MS, SlotWaiter, at_cap};
+        if !at_cap(live, cap) {
             return;
         }
         // Held for a process slot (a spawn held at the cap, `hold_spawn`).
@@ -1139,19 +1147,25 @@ impl Runtime {
         let agents: Vec<AgentRecord> = self.store.read(|s| {
             s.agents.values().filter(|a| a.team.is_some() && a.tracker.state != AgentState::Archived).cloned().collect()
         });
-        let is_live = |id: &str| live.iter().any(|l| l.id == id);
-        let mut waiters = vec![];
-        let mut members = BTreeMap::new();
-        for a in &agents {
-            let run = a.team.as_ref().map(|t| t.run_id.clone()).unwrap_or_default();
-            if is_live(&a.id) {
-                members.insert(a.id.clone(), Member { run, unread: !self.unread(a).is_empty() });
-            } else if held.contains(&a.id) && self.has_queued_turn(&a.id) {
-                if let Some(since_ms) = self.unread(a).iter().map(|m| m.created_at_ms).min() {
-                    waiters.push(SlotWaiter { id: a.id.clone(), run, since_ms });
-                }
-            }
+        let run_of = |a: &AgentRecord| a.team.as_ref().map(|t| t.run_id.clone()).unwrap_or_default();
+        // The waiters first: nothing more is read unless one waited long enough.
+        let waiters: Vec<SlotWaiter> = agents
+            .iter()
+            .filter(|a| held.contains(&a.id) && self.has_queued_turn(&a.id))
+            .filter_map(|a| {
+                let since_ms = self.unread(a).iter().map(|m| m.created_at_ms).min()?;
+                Some(SlotWaiter { id: a.id.clone(), run: run_of(a), since_ms })
+            })
+            .collect();
+        if !waiters.iter().any(|w| now.saturating_sub(w.since_ms) >= SLOT_WAIT_MS) {
+            return;
         }
+        // Then the live members of the waiters' runs.
+        let members: BTreeMap<String, Member> = agents
+            .iter()
+            .filter(|a| live.iter().any(|l| l.id == a.id) && waiters.iter().any(|w| w.run == run_of(a)))
+            .map(|a| (a.id.clone(), Member { run: run_of(a), unread: !self.unread(a).is_empty() }))
+            .collect();
         let Some((waiter, victim)) = crate::resources::slot_victim(&waiters, live, &members, cap, now) else { return };
         if self.suspend_in_background(&victim, "slot") {
             let run = members.get(&victim).map(|m| m.run.clone()).unwrap_or_default();
@@ -1643,12 +1657,7 @@ impl Runtime {
                 t.title = cut(title, 200);
                 // Stored whole (F7): a body too long to keep is refused, never cut.
                 let body = str_arg(args, "body").unwrap_or("");
-                let n = body.chars().count();
-                if n > MAX_STORED {
-                    bail!(
-                        "task body too long ({n} chars, max {MAX_STORED}): put the details in a feature doc and name it in the body"
-                    );
-                }
+                check_stored("task body", body, "put the details in a feature doc and name it in the body")?;
                 t.body = body.to_string();
                 t.node = Some(node.into());
                 t.depends_on = deps;
