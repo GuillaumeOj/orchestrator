@@ -1,0 +1,13 @@
+# P4.4 — Decisions
+
+| # | Date | Decision | Why |
+|---|---|---|---|
+| D1 | 2026-11-03 | A **short design pass** first (ux notes, then ui boards), starting from the P4.4 parts already drawn in P4.2 Part B and kept on 04.3 as "(P4.4)". Back starts at once (policy, runtime, tools); front starts on the store wiring and mocks, its UI when ui hands off. | The surfaces exist as drafts; what is new is copy and states (deciding, undo, down / off, settings). Back has the longest path. |
+| D2 | 2026-11-03 | The Overwatch session starts **lazily on the first event of the working day**, not at app start; the morning line stays the core's. | A quiet day costs nothing; the morning line already exists (P4.3) and needs no LLM. |
+| D3 | 2026-11-03 | With no matching rule, the effect is `overwatch` for team roles and `user` for solo sessions; both are settings (the policy file's `[defaults]`). | FR-1308 / R11: `overwatch` is opt-in per rule, defaulting to team roles only; a solo session has the user at its pane anyway. |
+| D4 | 2026-11-03 | No in-app rule editor: Settings lists the policy files with Open in editor; rules are added from cards (Always allow, Add rule) and removed by undo. | FR-1308 "a policy file you edit"; nvim is the editor (FR-1101); a form editor is a lot of UI for a file the user reads once. |
+| D5 | 2026-11-03 | Stuck signals of a team member reach the Overwatch only after the lead has had 5 min; leads and solo sessions reach it at once. | The lead owns its team (FR-411); two supervisors acting on the same signal would double-nudge. What the user had to unstick in the 2026-10-27 run was the lead itself. |
+| D6 | 2026-11-03 | A kind of call with two declined rule proposals is never proposed again. | "Not now" twice is a no; asking every three answers for ever is noise. |
+| D7 | 2026-11-03 | An annotation lives on the decision (and its card snapshot), not as a separate chat entry. | It is part of the card (P4.2 §8.1) and must expand with it on older days. |
+| D8 | 2026-11-03 | The store's permission rules are migrated **into the policy files** once (migration 14 marks them); from then the files are the only rule source and `permission_rules` stays unread for one release. | FR-1308: "the store's permission rules (FR-708) are entries of it"; one source avoids two lists that disagree. |
+| D9 | 2026-11-03 | The core keeps a **hard-deny** list (always denied) and a **user-only** list (the Overwatch and the policy can't allow) as code constants, checked on every path, beyond what each agent's `settings.json` already denies. | ADR-011 §5.1 / R11: the Overwatch must never be the last line; today those denies exist only in the generated settings. |
