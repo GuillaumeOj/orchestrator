@@ -332,9 +332,18 @@ fn starts_that_never_happen_reach_the_inbox_or_restart_fresh_once() {
     wait_for("suspended", 10, || core.state_of("a") == "suspended");
     std::fs::write(wt.join(".fake-resume-dies"), "").unwrap();
     request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "after the resume".into() }).unwrap();
-    wait_for("fresh session did the turn", 30, || {
-        agent(&core.sock, "a")["turns"].as_u64() == Some(2) && core.state_of("a") == "idle"
-    });
+    let did_turn = || agent(&core.sock, "a")["turns"].as_u64() == Some(2) && core.state_of("a") == "idle";
+    let end = std::time::Instant::now() + Duration::from_secs(30);
+    while !did_turn() && std::time::Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if !did_turn() {
+        core.rt.db.flush().unwrap();
+        let ev: Vec<_> =
+            core.rt.db.events(0, Some("a"), None, 60).unwrap().into_iter().map(|e| (e.kind, e.detail)).collect();
+        let turns = request(&core.sock, CtlRequest::State).unwrap().data["turns"].clone();
+        panic!("fresh session did the turn: {} turns: {turns} events: {ev:?}", agent(&core.sock, "a"));
+    }
     assert_ne!(agent(&core.sock, "a")["session_id"].as_str().unwrap(), sid);
     core.rt.db.flush().unwrap();
     let fresh = core.rt.db.events(0, Some("a"), Some("restarted_fresh"), 5).unwrap();

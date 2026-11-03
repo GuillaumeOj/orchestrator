@@ -48,9 +48,9 @@ jobs:
             exit 1
           fi
       - run: make clippy
-      # Every test binary runs (no stop at the first failing one), and the
-      # failing tests and their panics become one annotation on the run, so
-      # they can be read without the job log.
+      # Every test binary runs (no stop at the first failing one), and each
+      # failing test becomes an annotation on the run, with its panic, so
+      # it can be read without the job log.
       - name: make rust-test
         run: |
           set -o pipefail
@@ -58,10 +58,8 @@ jobs:
       - name: Failing tests
         if: failure()
         run: |
-          # A panic's message is on the lines after it.
-          lines=$(awk '/panicked at/ {n=3} /\.\.\. FAILED|^error: test failed/ || n-- > 0' "$RUNNER_TEMP/rust-test.log" | cut -c1-400 | head -80)
-          [ -n "$lines" ] || exit 0
-          printf '::error title=Failing Rust tests::%s\n' "$(printf '%s' "$lines" | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')"
+          [ -f "$RUNNER_TEMP/rust-test.log" ] || exit 0
+          python3 .github/scripts/failing-tests.py "$RUNNER_TEMP/rust-test.log"
 
   ui:
     name: UI lint, type check, test and build

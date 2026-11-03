@@ -109,11 +109,12 @@ while IFS= read -r line; do
   out=$(hook "{\"hook_event_name\":\"PreToolUse\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo hi\"},\"tool_use_id\":\"tu$n\"}")
   echo "PRE[$n]:$out"
   # A pasted "PERMIT <cmd>" (or the core's "retry the call Bash <cmd>") asks
-  # for a permission the way Claude Code's dialog would.
+  # for a permission the way Claude Code's dialog would. Several queued turns
+  # come in one paste, joined by "---": a command ends at the next turn.
   permit=""
   case "$raw" in
-    *'retry the call Bash '*) permit=$(printf '%s' "$raw" | sed 's/.*retry the call Bash //') ;;
-    *PERMIT*) permit=$(printf '%s' "$raw" | sed 's/.*PERMIT //') ;;
+    *'retry the call Bash '*) permit=$(printf '%s' "$raw" | sed 's/.*retry the call Bash //; s/ *---.*$//') ;;
+    *PERMIT*) permit=$(printf '%s' "$raw" | sed 's/.*PERMIT //; s/ *---.*$//') ;;
   esac
   if [ -n "$permit" ]; then
     out=$(hook "{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$permit\"},\"tool_use_id\":\"tp$n\",\"cwd\":\"$PWD\"}")
@@ -124,7 +125,7 @@ while IFS= read -r line; do
     *COMMIT*) echo "work $n" > "work-$n.txt"; echo "MCP[$n]:$(mcp_commit "fake commit $n")" ;;
     *ORCHTOOL*)
       name=$(printf '%s' "$raw" | sed -n 's/.*ORCHTOOL \([a-z_]*\) .*/\1/p')
-      args=$(printf '%s' "$raw" | sed -n 's/.*ORCHTOOL [a-z_]* \(.*\)$/\1/p')
+      args=$(printf '%s' "$raw" | sed -n 's/.*ORCHTOOL [a-z_]* \(.*\)$/\1/p' | sed 's/ *---.*$//')
       case "$raw" in *WRITE*) echo "work $n" > "work-$n.txt" ;; esac
       echo "MCP[$n]:$(mcp_call "$name" "$args")" ;;
   esac
