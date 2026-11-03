@@ -55,7 +55,8 @@ usage: orchd [--home DIR] <command> [args]
   commit <agent> <message...> [--path P]...   commit in the agent's worktree (same path as orch-mcp)
   inbox                         pending Inbox items
   decide <item> approve|reject|always|reply|dismiss [--scope project|role|agent] [--message TEXT]
-  rules | rule add <project|role|agent> <id> <pattern> <allow|deny|ask> | rule revoke <id>
+  rules [--project P] | rule add <project|role|agent> <id> <pattern> <allow|deny|overwatch|user> | rule revoke <id> [--file F]
+  policy [--project P] [--test TOOL INPUT --role R]   the policy files and merged rules; --test: a call's effect and what decides it
   audit [agent] | events [--agent A] [--kind PREFIX] [--limit N]
   search <query...> [--project ID]        full-text search over indexed transcripts
 
@@ -81,6 +82,24 @@ fn main() {
 }
 
 struct Args(Vec<String>);
+
+/// `orchd policy --test TOOL INPUT`: a JSON object as is, else the tool's
+/// main argument (the Bash command, the file path, the URL…).
+fn test_input(tool: &str, input: &str) -> serde_json::Value {
+    if let Ok(v @ serde_json::Value::Object(_)) = serde_json::from_str(input) {
+        return v;
+    }
+    let key = match tool {
+        "Bash" => "command",
+        "Read" | "Edit" | "Write" | "MultiEdit" => "file_path",
+        "NotebookEdit" => "notebook_path",
+        "WebFetch" => "url",
+        "WebSearch" => "query",
+        "Glob" | "Grep" => "pattern",
+        _ => return serde_json::json!({}),
+    };
+    serde_json::json!({ key: input })
+}
 
 impl Args {
     fn flag(&mut self, name: &str) -> bool {
@@ -443,8 +462,35 @@ fn run() -> Result<()> {
             print(request(&sock, CtlRequest::Decide { item_id, decision, scope, message })?)
         }
         "rules" => {
+            let project = a.opt("--project")?;
             a.done()?;
-            print(request(&sock, CtlRequest::Rules)?)
+            print(request(&sock, CtlRequest::Rules { project })?)
+        }
+        "policy" => {
+            let project = a.opt("--project")?;
+            let role = a.opt("--role")?;
+            let test = match a.0.iter().position(|x| x == "--test") {
+                Some(i) if i + 2 < a.0.len() => {
+                    let input = a.0.remove(i + 2);
+                    let tool = a.0.remove(i + 1);
+                    a.0.remove(i);
+                    Some((tool, input))
+                }
+                Some(_) => bail!("--test needs TOOL and INPUT"),
+                None => None,
+            };
+            a.done()?;
+            match test {
+                Some((tool, input)) => {
+                    let input = test_input(&tool, &input);
+                    let role = role.unwrap_or_else(|| "solo".into());
+                    print(request(&sock, CtlRequest::PolicyTest { project, role, tool, input })?)
+                }
+                None => {
+                    print(request(&sock, CtlRequest::PolicyFiles)?)?;
+                    print(request(&sock, CtlRequest::Rules { project })?)
+                }
+            }
         }
         "rule" => {
             let req = match a.next("rule subcommand")?.as_str() {
@@ -454,7 +500,10 @@ fn run() -> Result<()> {
                     pattern: a.next("pattern")?,
                     effect: a.next("effect")?,
                 },
-                "revoke" => CtlRequest::RevokeRule { id: a.next("rule id")?.parse().context("rule id")? },
+                "revoke" => {
+                    let file = a.opt("--file")?;
+                    CtlRequest::RevokeRule { id: a.next("rule id")?, file }
+                }
                 other => bail!("unknown rule subcommand {other:?}"),
             };
             a.done()?;

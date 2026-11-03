@@ -1,17 +1,18 @@
 //! Orchestrator MCP tool calls (orch-mcp → bus → here). The core executes
-//! them outside the agent's sandbox, after the permission rules (ADR-009):
-//! a `deny` rule refuses, an `ask` rule holds the call for an Inbox
-//! decision, otherwise (`allow` or no rule: the P1 default) it runs.
+//! them outside the agent's sandbox, after the hard lists and the policy
+//! rules (ADR-009, FR-1308): the hard deny list and a `deny` rule refuse, a
+//! `user` / `overwatch` rule holds the call for a decision, otherwise
+//! (`allow` or no rule: the P1 default, not the policy's `[defaults]`) it runs.
 
 use anyhow::{Result, anyhow, bail};
 use orch_git::commit::{CommitRequest, CommitResult};
 use orch_protocol::{McpMsg, now_ms};
-use orch_store::RuleEffect;
 use serde_json::{Value, json};
 use std::os::unix::net::UnixStream;
 
 use crate::inbox::{Call, PARKED_MESSAGE, Waited, allows, reply};
-use crate::permissions;
+use crate::policy::hard::HardKind;
+use crate::policy::{Effect, Evaluation};
 use crate::runtime::Runtime;
 use crate::store::AgentRecord;
 
@@ -29,40 +30,45 @@ impl Runtime {
         if !rec.role.may_call(&m.tool) {
             return (true, format!("{} is not one of your tools", m.tool), Value::Null);
         }
-        // A one-shot allow (an approved parked call), then the rules
-        // (deny > ask > allow), for every orchestrator tool. Each answer is
-        // audited (FR-709).
+        // The hard deny list, a one-shot allow (an approved parked call),
+        // then the policy rules (deny > user > overwatch > allow), for every
+        // orchestrator tool. Each answer is audited (FR-709).
         let call = Call {
             tool: tool.clone(),
             input: m.arguments.clone(),
             tool_use_id: None,
             cwd: Some(rec.worktree.display().to_string()),
         };
+        let hard = self.hard_check(&rec, &tool, &m.arguments, call.cwd.as_deref());
+        if let Some(h) = hard.as_ref().filter(|h| h.kind == HardKind::Deny) {
+            let _ = self.db.audit("core", Some(&rec.id), &m.tool, Some(&tool), "deny", json!({"hard": h.why}));
+            return (true, format!("Denied by the core ({}). Do not retry.", h.why), Value::Null);
+        }
         let mut actor = format!("agent:{}", rec.id);
-        if self.one_shot(&rec, &call) {
+        if self.one_shot(&rec, &call, hard.as_ref()) {
             actor = "user".into();
         } else {
-            let rules = self.db.rules().unwrap_or_default();
-            let subject = self.subject(&rec);
-            if let Some(rule) = permissions::evaluate(&rules, &subject, &tool, &m.arguments) {
-                let rule_actor = format!("rule:{}", rule.id);
-                let detail = call.detail(None, Some(rule));
-                match rule.effect {
-                    RuleEffect::Deny => {
-                        let _ = self.db.audit(&rule_actor, Some(&rec.id), &m.tool, Some(&tool), "deny", detail);
+            self.policy_sync();
+            let ev = self.policy.evaluate(&self.subject(&rec), &tool, &m.arguments, hard.as_ref(), false);
+            if let Some(ev) = ev {
+                let detail = call.detail(None, Some(&ev));
+                let (id, pattern) = ev.rule.as_ref().map_or(("?", ""), |r| (r.id.as_str(), r.pattern.as_str()));
+                match ev.effect {
+                    Effect::Deny => {
+                        let _ = self.db.audit(&ev.actor(), Some(&rec.id), &m.tool, Some(&tool), "deny", detail);
                         return (
                             true,
-                            format!("Denied by the user's rule {} ({}). Do not retry.", rule.id, rule.pattern),
+                            format!("Denied by the user's policy rule {id} ({pattern}). Do not retry."),
                             Value::Null,
                         );
                     }
-                    RuleEffect::Ask => match self.ask_user(&rec, &call, rule.id, m.deadline_ms, conn) {
+                    Effect::User | Effect::Overwatch => match self.ask_user(&rec, &call, &ev, m.deadline_ms, conn) {
                         Ok(()) => actor = "user".into(),
                         Err(e) => return (true, format!("{e:#}"), Value::Null),
                     },
-                    RuleEffect::Allow => {
-                        let _ = self.db.audit(&rule_actor, Some(&rec.id), &m.tool, Some(&tool), "allow", detail);
-                        actor = rule_actor;
+                    Effect::Allow => {
+                        let _ = self.db.audit(&ev.actor(), Some(&rec.id), &m.tool, Some(&tool), "allow", detail);
+                        actor = ev.actor();
                     }
                 }
             }
@@ -101,19 +107,19 @@ impl Runtime {
         }
     }
 
-    /// Holds a tool call for an Inbox decision (the `ask` rule `ask_rule`),
+    /// Holds a tool call for a decision (the policy's answer `ev`),
     /// as long as a PermissionRequest is held; parked when nobody answers.
     fn ask_user(
         &self,
         rec: &AgentRecord,
         call: &Call,
-        ask_rule: u64,
+        ev: &Evaluation,
         deadline_ms: u64,
         conn: Option<&UnixStream>,
     ) -> Result<()> {
         let subject = self.subject(rec);
         let budget = self.hold_budget(deadline_ms);
-        match self.hold_for_decision(rec, call, &subject, Some(ask_rule), budget, conn) {
+        match self.hold_for_decision(rec, call, &subject, Some(ev), budget, conn) {
             Waited::Decided(i) if allows(&i) => Ok(()),
             Waited::Decided(i) => {
                 let why = reply(&i).map(|m| format!(" They said: {m}")).unwrap_or_default();
@@ -213,12 +219,12 @@ mod tests {
         assert!(err && text.contains("nothing to commit"), "{text}");
         // A deny rule refuses before anything runs.
         let project = rt.subject(&rt.store.read(|s| s.agents["a1"].clone())).project_id.unwrap();
-        let rule = rt.db.add_rule(RuleScope::Project, &project, "mcp__orch__commit", RuleEffect::Deny, None).unwrap();
+        let rule = rt.add_rule(RuleScope::Project, &project, None, "mcp__orch__commit", Effect::Deny, None).unwrap();
         std::fs::write(wt.join("b.txt"), "b").unwrap();
         let (err, text, _) = call(&rt, "commit", json!({"message": "add b"}));
-        assert!(err && text.contains("Denied by the user's rule"), "{text}");
+        assert!(err && text.contains("Denied by the user's policy rule r1"), "{text}");
         assert_eq!(tgit(&wt, &["log", "-1", "--format=%s"]).trim(), "add a");
-        rt.db.revoke_rule(rule.id).unwrap();
+        assert!(rt.revoke_rule(rule["rule"]["id"].as_str().unwrap(), None).unwrap());
         let (err, text, _) = call(&rt, "commit", json!({"message": "add b"}));
         assert!(!err, "{text}");
     }
@@ -227,7 +233,7 @@ mod tests {
     fn ask_rule_holds_the_commit_for_the_user() {
         let (_d, rt) = test_runtime(true);
         let (_r, _repo, wt) = with_worktree(&rt);
-        rt.db.add_rule(RuleScope::Role, "solo", "mcp__orch__commit", RuleEffect::Ask, None).unwrap();
+        rt.add_rule(RuleScope::Role, "solo", None, "mcp__orch__commit", Effect::User, None).unwrap();
         std::fs::write(wt.join("c.txt"), "c").unwrap();
         let rt2 = rt.clone();
         let h = std::thread::spawn(move || call(&rt2, "commit", json!({"message": "add c"})));
@@ -252,7 +258,7 @@ mod tests {
     fn an_unanswered_ask_parks_with_the_permission_budget_and_allow_retries_once() {
         let (_d, rt) = test_runtime(true);
         let (_r, _repo, wt) = with_worktree(&rt);
-        rt.db.add_rule(RuleScope::Role, "solo", "mcp__orch__commit", RuleEffect::Ask, None).unwrap();
+        rt.add_rule(RuleScope::Role, "solo", None, "mcp__orch__commit", Effect::User, None).unwrap();
         std::fs::write(wt.join("d.txt"), "d").unwrap();
         // 540 s of hook deadline: the hold is the 300 ms test budget, not 1 s.
         let t0 = std::time::Instant::now();
@@ -280,12 +286,13 @@ mod tests {
     fn mcp_rule_answers_are_audited_on_every_tool() {
         let (_d, rt) = test_runtime(true);
         rt.store.write(|s| s.agents.get_mut("a1").unwrap().role.orch_tools = vec!["inbox".into()]).unwrap();
-        let rule = rt.db.add_rule(RuleScope::Role, "solo", "mcp__orch__inbox", RuleEffect::Allow, None).unwrap();
+        rt.add_rule(RuleScope::Role, "solo", None, "mcp__orch__inbox", Effect::Allow, None).unwrap();
         let _ = call(&rt, "inbox", json!({}));
         let log = rt.db.audit_log(Some("a1"), 5).unwrap();
         let e = log.iter().find(|e| e.action == "inbox").expect("audited");
-        assert_eq!((e.actor.clone(), e.decision.as_str()), (format!("rule:{}", rule.id), "allow"));
+        assert_eq!((e.actor.as_str(), e.decision.as_str()), ("rule:r1", "allow"));
         assert_eq!(e.detail["rule"]["pattern"], "mcp__orch__inbox");
+        assert_eq!(e.detail["rule"]["file"], "global");
     }
 
     #[test]

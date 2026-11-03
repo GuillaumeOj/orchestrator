@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 use orch_protocol::InboxDecision;
-use orch_store::{InboxStatus, RuleEffect, RuleScope};
+use orch_store::{InboxStatus, RuleScope};
+
+use crate::policy::Effect;
 
 use super::*;
 use crate::decision::Lifecycle;
@@ -148,7 +150,7 @@ fn rule_answers_are_posted_settled_and_never_open() {
     fix_clock(&rt, orch_protocol::now_ms());
     let got = collect(&rt);
     rt.now_pump(false);
-    rt.db.add_rule(RuleScope::Agent, "a1", "Bash(cargo add:*)", RuleEffect::Allow, None).unwrap();
+    rt.add_rule(RuleScope::Agent, "a1", None, "Bash(cargo add:*)", Effect::Allow, None).unwrap();
     let perm = |cmd: &str| {
         hook("PermissionRequest", json!({"tool_name": "Bash", "tool_input": {"command": cmd}, "tool_use_id": "t"}))
     };
@@ -166,7 +168,7 @@ fn rule_answers_are_posted_settled_and_never_open() {
     assert_eq!(e["rev"], 1, "line and card in the first write");
     assert_eq!(
         (e["line"]["verb"].as_str(), e["line"]["by"].as_str(), e["line"]["by_detail"].as_str()),
-        (Some("allowed"), Some("rule"), Some("Bash(cargo add:*)"))
+        (Some("allowed"), Some("policy"), Some("r1"))
     );
     assert_eq!((e["line"]["what"].as_str(), e["line"]["agent"].as_str()), (Some("cargo add serde_json"), Some("a1")));
     assert_eq!(e["card"]["kind"], "permission");
@@ -177,13 +179,25 @@ fn rule_answers_are_posted_settled_and_never_open() {
     assert!(!listed(&ev));
     assert!(rt.open_decisions().iter().all(|d| d.kind != "permission"), "never counted in the badge");
     // A deny rule too.
-    rt.db.add_rule(RuleScope::Agent, "a1", "Bash(rm:*)", RuleEffect::Deny, None).unwrap();
+    rt.add_rule(RuleScope::Agent, "a1", None, "Bash(rm:*)", Effect::Deny, None).unwrap();
     rt.on_hook(&perm("rm -rf build"), None);
     rt.now_pump(false);
     let ev = got.lock().unwrap().last().cloned().unwrap();
     assert!(!listed(&ev));
     let e = audit(&ev)[0].clone();
     assert_eq!(e["line"]["verb"], "denied");
+    // The core's hard deny: `by: core` with its reason (ux F4).
+    let o = rt.on_hook(&perm("git push origin HEAD"), None);
+    assert!(o.is_some());
+    rt.now_pump(false);
+    let ev = got.lock().unwrap().last().cloned().unwrap();
+    assert!(!listed(&ev));
+    let e = audit(&ev).into_iter().find(|e| e["line"]["what"] == "git push origin HEAD").expect("a core line");
+    assert_eq!(
+        (e["line"]["verb"].as_str(), e["line"]["by"].as_str(), e["line"]["by_detail"].as_str()),
+        (Some("denied"), Some("core"), Some(crate::policy::hard::WHY_GIT_PUSH))
+    );
+    assert_eq!(e["card"]["lifecycle"]["decided_by"], "core");
 }
 
 #[test]
@@ -364,14 +378,14 @@ fn lc(state: &'static str, by: &str) -> Lifecycle {
 #[test]
 fn lines_for_every_decider() {
     let line = |d: &Decision| {
-        let l = line_of(d, None, None, 99);
+        let l = line_of(d, None, 99);
         (l["verb"].as_str().unwrap().to_string(), l["by"].as_str().unwrap().to_string())
     };
     let pair = |v: &str, b: &str| (v.to_string(), b.to_string());
     assert_eq!(line(&decision("permission", None, Some("approve"), lc("effect", "user"))), pair("allowed", "you"));
     assert_eq!(line(&decision("permission", None, Some("always_allow"), lc("sent", "user"))), pair("allowed", "you"));
     assert_eq!(line(&decision("permission", None, Some("reply"), lc("sent", "user"))), pair("denied", "you"));
-    assert_eq!(line(&decision("permission", None, Some("approve"), lc("effect", "rule:4"))), pair("allowed", "rule"));
+    assert_eq!(line(&decision("permission", None, Some("approve"), lc("effect", "rule:4"))), pair("allowed", "policy"));
     assert_eq!(line(&decision("permission", None, Some("in_pane"), lc("dismissed", "pane"))), pair("answered", "pane"));
     assert_eq!(line(&decision("gate", Some("spec"), Some("approve"), lc("effect", "user"))), pair("approved", "you"));
     assert_eq!(line(&decision("gate", Some("spec"), Some("reject"), lc("sent", "user"))), pair("sent back", "you"));
@@ -394,30 +408,25 @@ fn lines_for_every_decider() {
     assert_eq!(line(&ask), pair("kept queued", "expired"));
     ask.payload = json!({"default": "reject", "deadline_ms": 50});
     assert_eq!(line(&ask), pair("dismissed", "core"), "cleared before its deadline");
-    // What: the command for a permission, the title cut at 48 otherwise; the rule's pattern.
-    let rule = PermissionRule {
-        id: 4,
-        scope: RuleScope::Project,
-        scope_id: "p".into(),
-        pattern: "Bash(cargo add:*)".into(),
-        effect: RuleEffect::Allow,
-        source_inbox_item_id: None,
-        created_at_ms: 0,
-        revoked_at_ms: None,
-    };
-    let l = line_of(&decision("permission", None, Some("approve"), lc("effect", "rule:4")), Some(&rule), None, 99);
+    // What: the command for a permission, the title cut at 48 otherwise; the policy rule's id.
+    let l = line_of(&decision("permission", None, Some("approve"), lc("effect", "rule:installs")), None, 99);
     assert_eq!(
-        (l["what"].as_str(), l["by_detail"].as_str(), l["at_ms"].as_u64()),
-        (Some("cargo add serde_json"), Some("Bash(cargo add:*)"), Some(7))
+        (l["what"].as_str(), l["by"].as_str(), l["by_detail"].as_str(), l["at_ms"].as_u64()),
+        (Some("cargo add serde_json"), Some("policy"), Some("installs"), Some(7))
     );
-    assert_eq!(line_of(&decision("permission", None, None, lc("effect", "rule:9")), None, None, 0)["by_detail"], "9");
-    let l = line_of(&decision("question", None, Some("reply"), lc("sent", "user")), None, None, 0);
+    assert_eq!(line_of(&decision("permission", None, None, lc("effect", "rule:9")), None, 0)["by_detail"], "9");
+    // A core denial names its hard-list reason.
+    let mut core = decision("permission", None, Some("reject"), lc("effect", "core"));
+    core.payload["hard_why"] = json!("git push: the core pushes");
+    let l = line_of(&core, None, 0);
+    assert_eq!((l["by"].as_str(), l["by_detail"].as_str()), (Some("core"), Some("git push: the core pushes")));
+    let l = line_of(&decision("question", None, Some("reply"), lc("sent", "user")), None, 0);
     assert_eq!(l["what"].as_str().unwrap().chars().count(), WHAT_MAX);
     assert_eq!(
         line_text(
-            &json!({"verb": "allowed", "agent": "back-1", "what": "cargo add serde_json", "by": "rule", "by_detail": "installs"})
+            &json!({"verb": "allowed", "agent": "back-1", "what": "cargo add serde_json", "by": "policy", "by_detail": "installs"})
         ),
-        "allowed back-1: cargo add serde_json · rule: installs"
+        "allowed back-1: cargo add serde_json · policy: installs"
     );
 }
 

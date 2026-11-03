@@ -251,8 +251,16 @@ fn an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry() {
     // A rule answers at once.
     let rule = core
         .rt
-        .add_rule(orch_store::RuleScope::Agent, "a", "Bash(cargo test:*)", orch_store::RuleEffect::Allow, None)
+        .add_rule(
+            orch_store::RuleScope::Agent,
+            "a",
+            None,
+            "Bash(cargo test:*)",
+            agent_runtime::policy::Effect::Allow,
+            None,
+        )
         .unwrap();
+    let rule_id = rule["rule"]["id"].as_str().unwrap().to_string();
     request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "PERMIT cargo test -q".into() }).unwrap();
     wait_for("rule turn", 15, || agent(&core.sock, "a")["turns"] == 2 && core.state_of("a") == "idle");
     let perm2 = screen().lines().find(|l| l.contains("PERM[2]:")).map(str::to_string).unwrap_or_default();
@@ -287,7 +295,7 @@ fn an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry() {
     let open: Vec<_> = core.rt.inbox().into_iter().map(|i| (i.kind, i.status, i.body, i.payload)).collect();
     assert!(open.is_empty(), "no second prompt: {open:?}");
     // The rule, the expiry, the user's Allow, and the retry on their one-shot allow.
-    assert_eq!(audit(), [format!("rule:{}", rule.id), "expired".into(), "user".into(), "user".into()]);
+    assert_eq!(audit(), [format!("rule:{rule_id}"), "expired".into(), "user".into(), "user".into()]);
     let one_shot = request(&core.sock, CtlRequest::Audit { agent_id: Some("a".into()), limit: Some(1) }).unwrap().data;
     assert_eq!(one_shot[0]["detail"]["one_shot"], true, "{one_shot}");
 }

@@ -227,6 +227,8 @@ pub struct Runtime {
     /// Projects whose Board was opened in this process: the background task
     /// sync covers their remote backend too.
     pub(crate) watched_projects: Mutex<std::collections::BTreeSet<String>>,
+    /// The permission policy files (FR-1308), read and watched.
+    pub(crate) policy: crate::policy::Policy,
     /// The starter roles and presets were checked this run.
     pub(crate) presets_checked: std::sync::atomic::AtomicBool,
     /// FR-505: one Notion publish or poll per feature at a time, and the
@@ -549,6 +551,7 @@ impl Runtime {
             issue_repos: Mutex::default(),
             sync_gates: Mutex::default(),
             watched_projects: Mutex::default(),
+            policy: Default::default(),
             presets_checked: std::sync::atomic::AtomicBool::new(false),
             notion_locks: Mutex::new(BTreeMap::new()),
             notion_polling: std::sync::atomic::AtomicBool::new(false),
@@ -561,6 +564,9 @@ impl Runtime {
         });
         rt.handle_releases(released);
         rt.backfill_report(now);
+        // Migration 14: the store's rules go to the policy files (once).
+        rt.migrate_store_rules();
+        rt.policy_sync();
         Ok(rt)
     }
 
