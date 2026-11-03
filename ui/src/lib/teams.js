@@ -1,6 +1,8 @@
 // Teams in the UI (P2): run states, the team timeline's filters and copy,
 // and the Board's columns and moves. Pure: tested in test/teams.test.js.
 
+import { plural } from './format.js';
+
 /** Team-run states (§6.2) → status colors (Penpot 02 Feature card). */
 export function runStateColor(s) {
   return (
@@ -52,20 +54,25 @@ export const TL_FILTERS = [
   { id: 'git', label: 'Git' },
   { id: 'gates', label: 'Gates' },
   { id: 'run', label: 'Run' },
+  { id: 'delivery', label: 'Delivery' },
 ];
+
+const DELIVERY_KINDS = new Set(['redelivered', 'delivery_failed', 'recovered', 'stuck', 'tick_panic']);
 
 const RUN_KINDS = new Set(['run.state', 'run.launched', 'run.team_changed', 'agent.added', 'agent.fresh_session']);
 
 const FAMILY = (k) =>
-  k === 'message' || k === 'asked_user'
-    ? 'messages'
-    : k.startsWith('task.')
-      ? 'tasks'
-      : k.startsWith('git.') || k.startsWith('pr.')
-        ? 'git'
-        : RUN_KINDS.has(k)
-          ? 'run'
-          : 'other';
+  DELIVERY_KINDS.has(k)
+    ? 'delivery'
+    : k === 'message' || k === 'asked_user'
+      ? 'messages'
+      : k.startsWith('task.')
+        ? 'tasks'
+        : k.startsWith('git.') || k.startsWith('pr.')
+          ? 'git'
+          : RUN_KINDS.has(k)
+            ? 'run'
+            : 'other';
 
 export function timelineFilter(id) {
   if (id === 'all') return () => true;
@@ -101,6 +108,16 @@ export function timelineText(e) {
   switch (e.kind) {
     case 'message':
       return `${d.kind && d.kind !== 'message' ? `${String(d.kind).replace('_', ' ')} ` : ''}→ ${d.to}: ${d.body ?? ''}`;
+    case 'redelivered':
+      return `redelivered to ${d.agent}${d.attempt ? ` (attempt ${d.attempt})` : ''}${d.why ? ` · ${String(d.why).replace(/_/g, ' ')}` : ''}`;
+    case 'delivery_failed':
+      return `${d.agent} did not receive ${plural((d.messages ?? []).length || 1, 'message')}`;
+    case 'recovered':
+      return `${d.agent} recovered from ${String(d.from_state).replace(/_/g, ' ')}${d.how ? ` (${String(d.how).replace(/_/g, ' ')})` : ''}`;
+    case 'stuck':
+      return `${d.agent} looks stuck${d.episode ? ` · ${String(d.episode).replace(/_/g, ' ')}` : ''}`;
+    case 'tick_panic':
+      return `scheduler step failed${d.step ? ` (${d.step})` : ''}${d.message ? `: ${d.message}` : ''}`;
     case 'run.state':
       return `${runStateLabel(d.from)} → ${runStateLabel(d.to)}${d.why ? ` (${d.why})` : ''}`;
     case 'run.launched':

@@ -36,6 +36,7 @@ const DECISION = {
   'gate-pr': { label: 'PR gate', icon: '\u{F14CF}' },
   'gate-restart': { label: 'Restart gate', icon: '\u{F0709}' },
   startup: { label: 'Startup', icon: '\u{F0425}' },
+  delivery: { label: 'Delivery', icon: '\u{F048A}', token: 'startup' },
   ask: { label: 'Run now?', icon: '\u{F140C}' },
   budget: { label: 'Budget', icon: '\u{F0BDD}' },
   trust: { label: 'Trust dialog', icon: '\u{F0CCC}' },
@@ -49,7 +50,8 @@ const DECISION = {
 export function decisionKind(d) {
   const want = d?.kind === 'gate' ? `gate-${d.gate ?? 'restart'}` : d?.kind;
   const key = DECISION[want] ? want : 'alert';
-  return { ...DECISION[key], color: `var(--color-decision-${key})` };
+  const { token = key, ...kind } = DECISION[key];
+  return { ...kind, color: `var(--color-decision-${token})` };
 }
 
 // Decision lifecycle (the marker): icon and color.lifecycle.<state>.
@@ -73,6 +75,7 @@ export const WAITING_ON = {
   governor: '\u{F05D1}',
   limit: '\u{F029A}',
   startup: '\u{F14DF}',
+  delivery: '\u{F048A}',
   external: '\u{F109B}',
   running: '\u{F018D}',
 };
