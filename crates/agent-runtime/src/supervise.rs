@@ -179,6 +179,9 @@ impl Runtime {
                         json!({"session_id": session}),
                     ));
                 }
+                // §3.5: a crashed agent (its restarts used up or not) resumes
+                // with its restart budget reset and its `crash` item closed.
+                self.clear_crash(&m.agent, "lead");
                 // A failed resume flags the agent, and the delivery loop never
                 // starts a flagged one: the lead's resume is a new attempt.
                 self.store.write(|s| {

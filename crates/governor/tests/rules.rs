@@ -692,6 +692,24 @@ fn a_100_percent_reading_counts_as_a_limit() {
 }
 
 #[test]
+fn a_limit_is_lifted_at_its_reset_or_by_a_newer_reading_under_100() {
+    let mut g = governor();
+    let a: AgentId = "A-1".into();
+    assert!(!g.limit_in_force(&a, at(0)));
+    g.ingest(&five(at(10), "A-1", 100.0, at(200)));
+    assert!(g.limit_in_force(&a, at(11)));
+    assert!(!g.limit_in_force(&a, at(200)), "its reset passed");
+    // A newer reading under 100 % ends it before its reset.
+    g.ingest(&five(at(20), "A-1", 40.0, at(200)));
+    assert!(!g.limit_in_force(&a, at(21)));
+    assert_eq!(g.request_turn(task("A-1", "A", Tier::High), at(22)).effective, Verdict::Admit);
+    // An older one does not.
+    g.ingest(&five(at(30), "A-1", 100.0, at(200)));
+    g.ingest(&five(at(25), "A-1", 40.0, at(200)));
+    assert!(g.limit_in_force(&a, at(31)));
+}
+
+#[test]
 fn watchdog_interrupts_turns_over_their_ceiling() {
     let mut g = governor();
     let mut r = task("A-1", "A", Tier::High);

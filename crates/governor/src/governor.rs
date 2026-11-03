@@ -950,6 +950,16 @@ impl Governor {
         cap
     }
 
+    /// Whether a plan limit holds `agent`'s work now: a hit plan window, or
+    /// its model's window exhausted (FR-815). An agent blocked by a limit is
+    /// idle again once this is false (fix-team-getting-stucked §3.2).
+    pub fn limit_in_force(&self, agent: &AgentId, now: Timestamp) -> bool {
+        self.active_limit(now).is_some()
+            || self
+                .tight_window(self.agent_model.get(agent).map(String::as_str), now)
+                .is_some_and(|w| w.state == ModelWindowState::Exhausted)
+    }
+
     fn active_limit(&self, now: Timestamp) -> Option<(Window, Timestamp)> {
         self.limits.iter().filter(|(_, until)| **until > now).map(|(w, u)| (*w, *u)).max_by_key(|(_, u)| *u)
     }
@@ -1118,6 +1128,18 @@ impl Governor {
         }
         if r.used_pct >= 100.0 {
             self.mark_limit(window, r.resets_at, ts);
+        } else if self.limits.remove(&window).is_some() {
+            // A newer reading under 100 %: the limit is over before its
+            // reset time (fix-team-getting-stucked §3.2).
+            self.log(
+                ts,
+                ActionKind::LimitReset { window },
+                format!("{window:?} window under 100 % again"),
+                "queued work resumes in priority order".into(),
+                ActionMode::Auto,
+                Outcome::Applied,
+                None,
+            );
         }
     }
 

@@ -123,12 +123,12 @@ pub enum Effect {
     QueuedMessage,
     /// The turn ended and the agent is idle (deliver queued work, tell the Governor).
     TurnEnded,
-    /// The turn ended but background work runs on and will start a turn by
-    /// itself (the count is in `Tracker::background_tasks`).
+    /// The turn ended (the agent is idle) but background work runs on and
+    /// will start a turn by itself (the count is in `Tracker::background_tasks`).
     TurnEndedWithBackground,
     /// StopFailure `rate_limit` (J9).
     RateLimited { message: Option<String> },
-    /// StopFailure with another error.
+    /// StopFailure with another error: the agent is idle, `last_error` kept.
     Failed { error: String },
     /// A permission dialog is up in the pane.
     NeedsUser,
@@ -149,6 +149,7 @@ pub fn apply(t: &mut Tracker, event: &HookEvent, p: &HookPayload) -> Vec<Effect>
                 t.prompt_id = None;
                 t.turn_origin = None;
                 t.current_tool = None;
+                t.background_tasks = 0;
                 fx.push(Effect::Ready);
             }
         }
@@ -202,14 +203,10 @@ pub fn apply(t: &mut Tracker, event: &HookEvent, p: &HookPayload) -> Vec<Effect>
             t.prompt_id = None;
             let bg = p.running_background_tasks();
             t.background_tasks = bg;
-            if bg > 0 {
-                // Not idle: background work will start a new turn by itself.
-                t.state = S::Working;
-                fx.push(Effect::TurnEndedWithBackground);
-            } else {
-                t.state = S::Idle;
-                fx.push(Effect::TurnEnded);
-            }
+            // Idle either way (§3.2): the CLI queues input while background
+            // shells run, so messages go out; tasks wait for the background.
+            t.state = S::Idle;
+            fx.push(if bg > 0 { Effect::TurnEndedWithBackground } else { Effect::TurnEnded });
             t.turn_origin = None;
         }
         HookEvent::StopFailure => {
@@ -222,7 +219,9 @@ pub fn apply(t: &mut Tracker, event: &HookEvent, p: &HookPayload) -> Vec<Effect>
                 t.state = S::BlockedByLimit;
                 fx.push(Effect::RateLimited { message: p.last_assistant_message.clone() });
             } else {
-                t.state = S::Error;
+                // The process is alive and can take the next turn (§3.2):
+                // idle, with the error kept on the record.
+                t.state = S::Idle;
                 fx.push(Effect::Failed { error: err });
             }
         }
@@ -331,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_with_background_tasks_is_not_idle_and_notification_is_self_started() {
+    fn stop_with_background_tasks_is_idle_and_notification_is_self_started() {
         let mut t = Tracker::default();
         ev(&mut t, "SessionStart", json!({}));
         ev(&mut t, "UserPromptSubmit", json!({"prompt_id":"p1","prompt":"spawn a subagent"}));
@@ -339,7 +338,7 @@ mod tests {
         assert_eq!(t.subagents.len(), 1);
         let fx = ev(&mut t, "Stop", json!({"background_tasks":[{"id":"sa1","type":"subagent","status":"running"}]}));
         assert_eq!(fx, [Effect::TurnEndedWithBackground]);
-        assert_eq!(t.state, AgentState::Working);
+        assert_eq!(t.state, AgentState::Idle, "§3.2: idle with background tasks, it can take messages");
         assert_eq!(t.background_tasks, 1);
         // Internal SubagentStop: no state.
         ev(&mut t, "SubagentStop", json!({"agent_id":"x","agent_type":""}));
@@ -370,7 +369,17 @@ mod tests {
         ev(&mut t, "UserPromptSubmit", json!({"prompt_id":"p2"}));
         let fx = ev(&mut t, "StopFailure", json!({"error":"model_not_found"}));
         assert_eq!(fx, [Effect::Failed { error: "model_not_found".into() }]);
-        assert_eq!(t.state, AgentState::Error);
+        assert_eq!(t.state, AgentState::Idle, "§3.2: the process is alive, it can take the next turn");
+        assert_eq!(t.last_error.as_deref(), Some("model_not_found"));
+    }
+
+    #[test]
+    fn a_new_session_forgets_background_tasks() {
+        let mut t = Tracker::default();
+        ev(&mut t, "Stop", json!({"background_tasks":[{"id":"b1","type":"shell","status":"running"}]}));
+        assert_eq!(t.background_tasks, 1);
+        ev(&mut t, "SessionStart", json!({"source":"resume"}));
+        assert_eq!(t.background_tasks, 0);
     }
 
     #[test]
