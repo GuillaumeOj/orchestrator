@@ -94,7 +94,7 @@ Out:
    without a restart; a queued turn waiting for a slot starts; after an app
    restart the value is still 6.
 3. Setting 1 with 3 agents working: none is stopped; their next turns queue
-   with "1 live agents allowed in Green".
+   with `QueueReason::LiveCap { cap: 1 }` (shown as the existing "{cap} live agents allowed in {state}" text).
 4. 0 or 21 is refused with the field error; nothing changes.
 5. `cargo test` and the UI tests pass; new tests cover the setting read at
    start, the change applied live (Governor caps + process slots), the
