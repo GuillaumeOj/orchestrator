@@ -707,6 +707,12 @@ fn a_limit_is_lifted_at_its_reset_or_by_a_newer_reading_under_100() {
     g.ingest(&five(at(30), "A-1", 100.0, at(200)));
     g.ingest(&five(at(25), "A-1", 40.0, at(200)));
     assert!(g.limit_in_force(&a, at(31)));
+    // A limit placed on a guessed window (another reset) is not lifted by
+    // a reading of the real window under 100 %.
+    let mut g = governor();
+    g.rate_limit_hit(Some(&a), Window::FiveHour, at(100), at(40));
+    g.ingest(&five(at(41), "A-1", 45.0, at(300)));
+    assert!(g.limit_in_force(&a, at(42)), "a guessed limit holds until its reset");
 }
 
 #[test]

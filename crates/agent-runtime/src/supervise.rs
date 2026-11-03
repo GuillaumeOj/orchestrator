@@ -113,10 +113,15 @@ impl Runtime {
         let Some(lead) = agents.iter().find(|a| a.team.as_ref().map(|t| t.node.as_str()) == lead_node) else {
             return;
         };
+        // Idle after a Stop with background work (§3.2): it waits for its
+        // own shells or subagents, which start its next turn. Not stuck.
+        let waits_on_background = |id: &str| agents.iter().any(|a| a.id == id && a.tracker.background_tasks > 0);
         let text: BTreeMap<String, String> = self
             .members_of(cx, &agents)
             .iter()
-            .filter_map(|m| m.stuck(now).map(|(what, since, line)| (format!("{}:{what}:{since}", m.agent), line)))
+            .filter_map(|m| m.stuck(now).map(|(what, since, line)| (m, what, since, line)))
+            .filter(|(m, what, ..)| !(*what == "idle_with_task" && waits_on_background(&m.agent)))
+            .map(|(m, what, since, line)| (format!("{}:{what}:{since}", m.agent), line))
             .collect();
         let new = self.supervised(&cx.run.id, &text.keys().cloned().collect());
         if new.is_empty() {

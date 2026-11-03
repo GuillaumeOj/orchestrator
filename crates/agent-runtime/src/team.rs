@@ -1124,16 +1124,12 @@ impl Runtime {
         if live.iter().filter(|a| !a.reserved).count() < cap as usize {
             return;
         }
-        // Held for a slot: a Governor entry waiting on the cap or on memory.
+        // Held for a process slot (a spawn held at the cap, `hold_spawn`).
+        // `LiveCap` counts running turns: suspending an idle process frees none.
         let held: std::collections::BTreeSet<String> = self.with_governor(|g| {
             g.queue()
                 .iter()
-                .filter(|e| {
-                    matches!(
-                        e.reason,
-                        governor::QueueReason::MemoryPressure { .. } | governor::QueueReason::LiveCap { .. }
-                    )
-                })
+                .filter(|e| matches!(e.reason, governor::QueueReason::MemoryPressure { .. }))
                 .map(|e| e.agent.0.clone())
                 .collect()
         });
@@ -1151,8 +1147,7 @@ impl Runtime {
             if is_live(&a.id) {
                 members.insert(a.id.clone(), Member { run, unread: !self.unread(a).is_empty() });
             } else if held.contains(&a.id) && self.has_queued_turn(&a.id) {
-                let oldest = self.unread(a).iter().map(|m| m.created_at_ms).min();
-                if let Some(since_ms) = oldest {
+                if let Some(since_ms) = self.unread(a).iter().map(|m| m.created_at_ms).min() {
                     waiters.push(SlotWaiter { id: a.id.clone(), run, since_ms });
                 }
             }

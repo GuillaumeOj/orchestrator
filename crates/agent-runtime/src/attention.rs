@@ -491,6 +491,7 @@ pub mod copy {
             None => format!("{mode} start exited"),
         }
     }
+    pub const KEEPS_CRASHING: &str = "keeps crashing";
     pub const WRITING: &str = "writing";
     pub const BEHIND_QUEUE: &str = "behind higher-priority work";
 
@@ -728,6 +729,8 @@ impl<'a> Ctx<'a> {
             let s = |k: &str| it.payload.get(k).and_then(Value::as_str);
             return Some(if it.kind == "startup" {
                 let reason = match s("failed") {
+                    // §3.5: its automatic restarts are used up, not a start that exited.
+                    Some("crash") => copy::KEEPS_CRASHING.to_string(),
                     Some(mode) => copy::start_exited(mode, it.payload.get("exit_status").and_then(Value::as_u64)),
                     None => copy::no_session(self.i.startup_timeout_ms / 1000),
                 };
