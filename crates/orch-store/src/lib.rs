@@ -16,7 +16,7 @@ mod transcripts;
 mod util;
 
 pub use chat::{ChatDay, ChatEntry};
-pub use db::{Pending, Store, Tx};
+pub use db::{Pending, Store, Tx, schema_version};
 pub use ecosystem::IntegrationRow;
 pub use events::{AuditEntry, Event, Retention, RunEvent};
 pub use migrations::SCHEMA_VERSION;

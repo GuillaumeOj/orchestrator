@@ -716,8 +716,8 @@ pub async fn update_restart(
     let core = core.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         if target == RestartTarget::Pr {
-            updater.pr_ready()?;
-            crate::snapshot::before_pr_restart(&core, &updater.current())?;
+            let pr = updater.pr_ready()?;
+            crate::snapshot::before_pr_restart(&core, &updater.current(), pr)?;
         }
         updater.prepare_restart_to(target)
     })

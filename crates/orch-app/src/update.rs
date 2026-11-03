@@ -860,9 +860,10 @@ impl Updater {
         self.inner.lock_ok().s.current.clone()
     }
 
-    /// Whether `update_restart` with target `pr` has a verified build to swap in.
-    pub fn pr_ready(&self) -> Result<()> {
-        self.inner.lock_ok().ready_pr().map(|_| ()).ok_or_else(|| anyhow!("no PR build ready"))
+    /// The PR number of the verified build `update_restart` with target `pr` would swap in.
+    pub fn pr_ready(&self) -> Result<u64> {
+        let i = self.inner.lock_ok();
+        i.ready_pr().and(i.s.pr_install.as_ref().map(|p| p.pr)).ok_or_else(|| anyhow!("no PR build ready"))
     }
 
     /// `Err` when the updater is off for good (`disabled_why` names the reason).

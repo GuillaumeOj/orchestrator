@@ -115,6 +115,7 @@ pub fn run() {
     let decided = core.clone();
     let context = tauri::generate_context!();
     let build = build_info(&context.package_info().version.to_string());
+    snapshot::prune(core.db.path(), &build, jiff::Timestamp::now().as_second());
     let updater = update::Updater::new(build.clone(), updates);
     let app = tauri::Builder::default()
         .manage(core.clone())
