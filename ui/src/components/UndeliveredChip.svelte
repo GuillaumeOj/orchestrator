@@ -6,7 +6,7 @@
   import { undeliveredChip } from '../lib/delivery.js';
 
   let { rec } = $props();
-  const now = $derived(Math.max(now30(), Date.now()));
+  const now = $derived(now30());
   const chip = $derived(undeliveredChip(rec, now));
 </script>
 
@@ -27,7 +27,7 @@
     cursor: pointer;
   }
   .udel.warn {
-    border-color: var(--color-attention-error);
-    color: var(--color-attention-error);
+    border-color: var(--color-attention-needs-you);
+    color: var(--color-attention-needs-you);
   }
 </style>

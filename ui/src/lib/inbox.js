@@ -180,7 +180,7 @@ export function pendingToast(d, action) {
   const verb = pendingVerb(d, action);
   if (d.kind === 'permission') return `${verb}${who(d)}${what(d)}`;
   if (d.kind === 'budget') return `${verb} · ${d.title}`;
-  if (verb === 'Dismissing' && d.kind !== 'startup') return `${verb} · ${cut(d.title, 40)}`;
+  if (verb === 'Dismissing' && d.kind !== 'startup' && d.kind !== 'delivery') return `${verb} · ${cut(d.title, 40)}`;
   return `${verb}${who(d)}`;
 }
 
@@ -253,6 +253,7 @@ export function effectText(d, mine = {}) {
       return `Retrying · ${agent}`;
     case 'dismissed':
       if (mcpAlert(d)) return `Dismissed until it fails again · ${d.payload?.name ?? d.payload?.server ?? ''}`;
+      if (d.kind === 'delivery') return `Dismissed · ${agent} (messages stay failed)`;
       return `Dismissed · ${cut(d.title, 40)}`;
     // The Governor's ask is answered at once with applied / skipped.
     case 'applied':

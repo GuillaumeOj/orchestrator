@@ -39,6 +39,13 @@ describe('undelivered chip', () => {
     expect(undeliveredChip(u(3), NOW)).toMatchObject({ text: '2 undelivered · held: off hours', warn: false });
     expect(undeliveredChip(u(12), NOW).warn).toBe(true);
   });
+  it('warns without a start time when a decision is open', () => {
+    const r = { count: 1, blocker: 'no_ack' };
+    expect(undeliveredChip({ undelivered: r }, NOW).warn).toBe(false);
+    expect(undeliveredChip({ undelivered: r, waiting_on: { kind: 'delivery', ref: 'delivery-2' } }, NOW).warn).toBe(
+      true,
+    );
+  });
   it('renders in the component and nothing when empty', () => {
     const r = render(UndeliveredChip, {
       rec: { agent: 'back-1', undelivered: { count: 1, oldest_ms: Date.now() - 20 * 60_000, blocker: 'no_ack' } },
@@ -68,6 +75,9 @@ describe('delivery decision helpers', () => {
     expect(decisionKind({ kind: 'delivery' }).label).toBe('Delivery');
     expect(pendingVerb({ kind: 'delivery' }, 'retry')).toBe('Retrying');
     expect(pendingVerb({ kind: 'delivery' }, 'dismiss')).toBe('Dismissing');
+    expect(
+      effectText({ kind: 'delivery', subject: { agent: 'back-1' }, title: 'x', lifecycle: { effect: 'dismissed' } }),
+    ).toBe('Dismissed · back-1 (messages stay failed)');
     expect(effectText({ kind: 'delivery', subject: { agent: 'back-1' }, lifecycle: { effect: 'retried' } })).toBe(
       'Retrying · back-1',
     );

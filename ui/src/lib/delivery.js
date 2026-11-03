@@ -32,7 +32,8 @@ export function undeliveredChip(rec, now = Date.now()) {
   const blocker = blockerLabel(u.blocker);
   return {
     text: `${u.count} undelivered${blocker ? ` · ${blocker}` : ''}`,
-    warn: (u.oldest_ms ?? 0) > 0 && now - u.oldest_ms >= WARN_MS,
+    // Without a start time, an open decision means it already crossed the limit.
+    warn: u.oldest_ms ? now - u.oldest_ms >= WARN_MS : !!deliveryRef(rec),
     since: u.oldest_ms ? waited(u.oldest_ms, now) : '',
   };
 }
