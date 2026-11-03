@@ -253,7 +253,8 @@ export function effectText(d, mine = {}) {
       return `Retrying · ${agent}`;
     case 'dismissed':
       if (mcpAlert(d)) return `Dismissed until it fails again · ${d.payload?.name ?? d.payload?.server ?? ''}`;
-      if (d.kind === 'delivery') return `Dismissed · ${agent} (messages stay failed)`;
+      if (d.kind === 'delivery')
+        return `Dismissed · ${agent}${d.payload?.messages?.length ? ' (messages stay failed)' : ''}`;
       return `Dismissed · ${cut(d.title, 40)}`;
     // The Governor's ask is answered at once with applied / skipped.
     case 'applied':

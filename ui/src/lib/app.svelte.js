@@ -3,6 +3,7 @@
 // now.svelte.js), the tiling workspace, focus, overlays and the command
 // registry. Terminal objects (xterm.js) live outside the reactive state, in `terms`.
 
+import { deliveryRef } from './delivery.js';
 import { clock as clockOf } from './format.js';
 import { decisionToast, due, FILTERS, isOpen, older, pendingToast, UNDO_MS, version } from './inbox.js';
 import { errText, invoke } from './ipc.js';
@@ -498,7 +499,7 @@ export function openFeature(featureId, timeline = null) {
 /** The undelivered chip's target (ux-brief §2): the decision if there is one, else
  *  the agent's feature timeline filtered to Delivery. */
 export function openDelivery(rec) {
-  const ref = rec?.waiting_on?.kind === 'delivery' ? rec.waiting_on.ref : null;
+  const ref = deliveryRef(rec);
   if (ref) return focusCard(ref);
   const f = features().find((x) => x.run?.id && x.run.id === rec?.run);
   if (f) openFeature(f.id, 'delivery');

@@ -75,9 +75,15 @@ describe('delivery decision helpers', () => {
     expect(decisionKind({ kind: 'delivery' }).label).toBe('Delivery');
     expect(pendingVerb({ kind: 'delivery' }, 'retry')).toBe('Retrying');
     expect(pendingVerb({ kind: 'delivery' }, 'dismiss')).toBe('Dismissing');
-    expect(
-      effectText({ kind: 'delivery', subject: { agent: 'back-1' }, title: 'x', lifecycle: { effect: 'dismissed' } }),
-    ).toBe('Dismissed · back-1 (messages stay failed)');
+    const dismissed = (messages) => ({
+      kind: 'delivery',
+      subject: { agent: 'back-1' },
+      title: 'x',
+      payload: { messages },
+      lifecycle: { effect: 'dismissed' },
+    });
+    expect(effectText(dismissed([{ id: 1 }]))).toBe('Dismissed · back-1 (messages stay failed)');
+    expect(effectText(dismissed([]))).toBe('Dismissed · back-1');
     expect(effectText({ kind: 'delivery', subject: { agent: 'back-1' }, lifecycle: { effect: 'retried' } })).toBe(
       'Retrying · back-1',
     );
@@ -99,6 +105,12 @@ describe('timeline', () => {
       expect(f({ kind })).toBe(true);
     expect(f({ kind: 'message' })).toBe(false);
     expect(timelineFilter('messages')({ kind: 'stuck' })).toBe(false);
+  });
+  it('hides the lifecycle plumbing events', () => {
+    for (const kind of ['handed', 'seen', 'read']) {
+      expect(timelineFilter('all')({ kind })).toBe(false);
+      expect(timelineFilter('other')({ kind })).toBe(false);
+    }
   });
   it('words the new events', () => {
     expect(timelineText({ kind: 'redelivered', detail: { agent: 'back-1', attempt: 2, why: 'no_ack' } })).toBe(
