@@ -21,6 +21,37 @@ use crate::store::{AgentRecord, TurnStatus};
 pub const QUICK_EXIT_MS: u64 = 5_000;
 /// The PTY tail kept in a `startup` item (its end).
 pub const TAIL_MAX: usize = 4_096;
+/// Automatic restarts of a crashed agent per hour (§3.5); the next crash
+/// is the user's (a `startup` item with `failed: "crash"`).
+pub const CRASH_RESTARTS_PER_HOUR: usize = 2;
+const HOUR_MS: u64 = 3_600_000;
+
+/// The restarts of the last hour, of `times` (ms).
+pub fn recent_restarts(times: &[u64], now: u64) -> Vec<u64> {
+    times.iter().copied().filter(|t| now.saturating_sub(*t) < HOUR_MS).collect()
+}
+
+/// §3.5: whether a crashed agent may be restarted automatically once more.
+pub fn crash_restart_allowed(times: &[u64], now: u64) -> bool {
+    recent_restarts(times, now).len() < CRASH_RESTARTS_PER_HOUR
+}
+
+/// §3.5 (F3): the process is gone without the core asking (an `Error` after
+/// its exit), and nothing else owns its recovery: not a failed start
+/// (FR-415's `resume_failed`, which restarts fresh), not flagged (a failed
+/// spawn, a fresh restart under way). A `Killed` agent was killed by the
+/// user (every core kill is the user's) and stays down. The caller checks
+/// that it has no process and no open `startup` item.
+/// `id`'s `startup` item for a used-up crash budget (`failed: "crash"`).
+pub fn is_crash_item(i: &orch_store::InboxItem, id: &str) -> bool {
+    i.kind == "startup"
+        && i.agent_id.as_deref() == Some(id)
+        && i.payload.get("failed").and_then(Value::as_str) == Some("crash")
+}
+
+pub fn crashed(rec: &AgentRecord) -> bool {
+    rec.tracker.state == AgentState::Error && !rec.resume_failed && rec.flag.is_none()
+}
 
 /// The last `TAIL_MAX` bytes of `s`, cut at a char boundary.
 fn tail(s: &str) -> String {
@@ -266,7 +297,7 @@ impl Runtime {
 
     /// A team agent starts its next task in a new session: a new session id
     /// and `start_fresh`, written together, so the delivery loop spawns it
-    /// with `--session-id`. A live (idle) agent is suspended first. Unlike
+    /// with `--session-id`. A live (idle) agent is asked to suspend. Unlike
     /// [`Runtime::restart_fresh`] nothing is re-queued and no failure is
     /// recorded. The caller only rotates a quiet agent; the lead is never
     /// rotated. A session already rotated and not used yet (an assignment
@@ -275,9 +306,9 @@ impl Runtime {
         if self.store.read(|s| s.agents.get(id).is_some_and(|a| a.start_fresh)) {
             return Ok(());
         }
-        if self.live(id).is_some() {
-            self.suspend(id)?;
-        }
+        // Asked, not waited for (§3.6): the pump spawns the new session once
+        // the process is gone, and pastes nothing into the old one meanwhile.
+        self.suspend_in_background(id, "fresh_session");
         let (old, new, seat) = self.store.write(|s| {
             let Some(a) = s.agents.get_mut(id) else { bail!("no agent {id}") };
             let Some(seat) = a.team.clone() else { bail!("agent {id} is not in a team") };
@@ -296,6 +327,72 @@ impl Runtime {
             json!({"node": seat.node, "task": task.id, "title": task.title}),
         );
         Ok(())
+    }
+
+    /// §3.5: a crashed agent (no process, [`crashed`]) with queued work,
+    /// about to be resumed. True when it may be: its restart is counted (at
+    /// the spawn, so a resume that dies before SessionStart uses budget too).
+    /// Its third crash in the hour raises one `startup` item with
+    /// `failed: "crash"` instead, and the agent waits for the user, the
+    /// lead's `resume_agent` or a fresh restart.
+    pub(crate) fn crash_restart(&self, rec: &AgentRecord, now: u64) -> bool {
+        if crash_restart_allowed(&rec.crash_restarts, now) {
+            return true;
+        }
+        // Once per used-up budget: an item raised since the last restart,
+        // even dismissed, is not raised again (the caller checked none is open).
+        let last = rec.crash_restarts.last().copied();
+        let since = last.unwrap_or(0);
+        let raised = self.store.read(|s| s.inbox.iter().any(|i| is_crash_item(i, &rec.id) && i.created_at_ms >= since));
+        if !raised {
+            let tail = self.house().crash_tails.get(&rec.id).cloned().unwrap_or_default();
+            let n = recent_restarts(&rec.crash_restarts, now).len();
+            let payload = json!({
+                "waiting_on": "startup", "mode": "resume", "failed": "crash",
+                "since_ms": last.unwrap_or(now),
+                "restarts": n, "error": rec.tracker.last_error, "tail": tail,
+            });
+            let title = format!("{} keeps crashing", rec.id);
+            let _ = self.add_item(Some(&rec.id), "startup", title, payload, PRIORITY_ALERT);
+            self.event(&rec.id, "crash_restarts_used", json!({"restarts": n}));
+        }
+        false
+    }
+
+    /// The spawn of a crashed agent went out: counted, and `recovered`.
+    pub(crate) fn crash_restarted(&self, id: &str, now: u64) {
+        let _ = self.store.write(|s| {
+            if let Some(a) = s.agents.get_mut(id) {
+                a.crash_restarts = recent_restarts(&a.crash_restarts, now);
+                a.crash_restarts.push(now);
+            }
+        });
+        self.delivery_event(id, "recovered", json!({"agent": id, "from_state": "crashed", "how": "resume"}));
+    }
+
+    /// A process that exited unasked (a crash): its PTY tail is kept for the
+    /// item raised when its restarts are used up.
+    pub(crate) fn note_crash(&self, id: &str, l: &Live) {
+        let tail = tail(&l.pty.output.tail_text());
+        self.house().crash_tails.insert(id.to_string(), tail);
+    }
+
+    /// The lead's (or the user's) resume of a crashed agent: its restart
+    /// budget starts again and its `crash` item closes (§3.5).
+    pub(crate) fn clear_crash(&self, id: &str, by: &str) {
+        let _ = self.store.write(|s| {
+            if let Some(a) = s.agents.get_mut(id) {
+                a.crash_restarts.clear();
+            }
+        });
+        self.house().crash_tails.remove(id);
+        let item = self.store.read(|s| s.inbox.iter().find(|i| i.open() && is_crash_item(i, id)).map(|i| i.id));
+        if let Some(item) = item
+            && let Some(i) = self.close_item(item, InboxStatus::Decided, "resume", by)
+        {
+            self.advance(i.id, crate::inbox::Stage::Effect("resumed", None));
+            self.outcome(&i, by, "resumed");
+        }
     }
 
     /// Whether an agent's last start failed in a way only a fresh session fixes.

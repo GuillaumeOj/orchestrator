@@ -215,10 +215,7 @@ impl Runtime {
                     t.title, plan
                 );
                 // Kept and sent whole (F7): checked as sent, before anything is stored.
-                let n = body.chars().count();
-                if n > crate::team::MAX_STORED {
-                    bail!("plan too long ({n} chars): put the details in a file and send a summary with its path");
-                }
+                crate::team::check_stored("plan", &body, "put the details in a file and send a summary with its path")?;
                 t.flow.plan = Some(plan.to_string());
                 t.flow.plan_approved = false;
                 self.db.upsert_task(&t)?;

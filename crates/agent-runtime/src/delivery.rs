@@ -116,6 +116,10 @@ pub struct GateInputs {
     pub idle: bool,
     pub trust_dialog: bool,
     pub background_tasks: usize,
+    /// The turn waits for background work to finish (Task and Continue
+    /// turns). Message and User turns go out anyway: the CLI queues input
+    /// while background shells run (§3.2, §6.4).
+    pub waits_on_background: bool,
     /// Earliest time input may be sent (SessionStart + 1.5 s, Stop + 0.5 s).
     pub ready_at_ms: Option<u64>,
     pub last_user_input_ms: Option<u64>,
@@ -132,7 +136,7 @@ pub fn can_deliver(g: &GateInputs) -> Result<(), Blocker> {
     if !g.idle {
         return Err(Blocker::NotIdle);
     }
-    if g.background_tasks > 0 {
+    if g.waits_on_background && g.background_tasks > 0 {
         return Err(Blocker::BackgroundTasks(g.background_tasks));
     }
     match g.ready_at_ms {
@@ -145,6 +149,49 @@ pub fn can_deliver(g: &GateInputs) -> Result<(), Blocker> {
         }
     }
     Ok(())
+}
+
+/// §3.5 (F5): the class of a turn, lower first. The user's own words, then
+/// the team's coordination (messages, nudges), then continues, then new work.
+pub fn class_rank(kind: governor::TurnKind) -> u8 {
+    use governor::TurnKind as K;
+    match kind {
+        K::User => 0,
+        K::Message => 1,
+        K::Continue => 2,
+        K::Task => 3,
+    }
+}
+
+/// Task and Continue turns wait for the agent's background work; messages
+/// and the user's turns don't (§3.2).
+pub fn waits_on_background(kind: governor::TurnKind) -> bool {
+    matches!(kind, governor::TurnKind::Task | governor::TurnKind::Continue)
+}
+
+/// One agent's queued turns (in queue order) by priority: class first,
+/// queue order within a class (a stable sort).
+pub fn by_priority<'a>(turns: impl IntoIterator<Item = &'a crate::store::TurnRow>) -> Vec<&'a crate::store::TurnRow> {
+    let mut v: Vec<_> = turns.into_iter().collect();
+    v.sort_by_key(|t| class_rank(t.kind));
+    v
+}
+
+/// §3.5 (F5): the turn the pump works on for one agent: the first by
+/// priority that can move. A turn waiting in the Governor's queue no longer
+/// holds back the turns behind it, nor does a task waiting for background work.
+pub fn pick_turn<'a>(
+    queued: impl IntoIterator<Item = &'a crate::store::TurnRow>,
+    background_tasks: usize,
+) -> Option<&'a crate::store::TurnRow> {
+    by_priority(queued).into_iter().find(|t| can_move(t, background_tasks))
+}
+
+/// A queued turn can move now: not held in the Governor's queue, and not a
+/// task or continue waiting for the agent's background work.
+pub fn can_move(t: &crate::store::TurnRow, background_tasks: usize) -> bool {
+    !matches!(t.admission, crate::store::Admission::Waiting(_))
+        && !(background_tasks > 0 && waits_on_background(t.kind))
 }
 
 #[cfg(test)]
@@ -207,13 +254,47 @@ mod tests {
         assert!(find_markers("[t:short]").is_empty());
     }
 
+    fn turn(kind: governor::TurnKind, admission: crate::store::Admission) -> crate::store::TurnRow {
+        crate::store::TurnRow::queued("a", "x", kind, admission)
+    }
+
+    #[test]
+    fn the_pump_takes_the_first_turn_that_can_move_by_class() {
+        use crate::store::Admission::*;
+        use governor::TurnKind::*;
+        // Queue order: an old task held by the Governor, a continue, two
+        // messages, the user's answer.
+        let q = [
+            turn(Task, Waiting(1)),
+            turn(Continue, Pending),
+            turn(Message, Pending),
+            turn(Message, Admitted),
+            turn(User, Pending),
+        ];
+        assert_eq!(pick_turn(&q, 0).map(|t| &t.id), Some(&q[4].id), "the user first, past a held task");
+        assert_eq!(pick_turn(&q[..4], 0).map(|t| &t.id), Some(&q[2].id), "then messages, oldest first");
+        assert_eq!(pick_turn([&q[0], &q[1]], 0).map(|t| &t.id), Some(&q[1].id), "a held task blocks nothing");
+        assert_eq!(pick_turn([&q[0]], 0), None, "only held work: nothing to do");
+        // Background work: tasks and continues wait, messages go.
+        assert_eq!(pick_turn([&q[0], &q[1]], 2), None);
+        assert_eq!(pick_turn(&q[..3], 2).map(|t| &t.id), Some(&q[2].id));
+        let order: Vec<&String> = by_priority(&q).into_iter().map(|t| &t.id).collect();
+        assert_eq!(order, [&q[4].id, &q[2].id, &q[3].id, &q[1].id, &q[0].id]);
+    }
+
     #[test]
     fn gate_rules() {
         let ok = GateInputs { live: true, idle: true, ready_at_ms: Some(1_000), now_ms: 5_000, ..Default::default() };
         assert_eq!(can_deliver(&ok), Ok(()));
         assert_eq!(can_deliver(&GateInputs { live: false, ..ok.clone() }), Err(Blocker::NotLive));
         assert_eq!(can_deliver(&GateInputs { idle: false, ..ok.clone() }), Err(Blocker::NotIdle));
-        assert_eq!(can_deliver(&GateInputs { background_tasks: 2, ..ok.clone() }), Err(Blocker::BackgroundTasks(2)));
+        let bg = GateInputs { background_tasks: 2, ..ok.clone() };
+        assert_eq!(can_deliver(&bg), Ok(()), "a message or the user's turn goes out past background work");
+        assert_eq!(
+            can_deliver(&GateInputs { waits_on_background: true, ..bg }),
+            Err(Blocker::BackgroundTasks(2)),
+            "a task or continue turn waits for it"
+        );
         assert_eq!(can_deliver(&GateInputs { ready_at_ms: None, ..ok.clone() }), Err(Blocker::StartingUp));
         assert_eq!(can_deliver(&GateInputs { ready_at_ms: Some(6_000), ..ok.clone() }), Err(Blocker::StartingUp));
         assert_eq!(

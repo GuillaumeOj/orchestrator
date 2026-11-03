@@ -455,6 +455,56 @@ fn five_hour_guard_holds_autonomous_work_above_threshold() {
     assert!(!r.is_empty());
 }
 
+/// fix-team-getting-stucked §3.5: a team's coordination turn (a message, a
+/// nudge) is admitted like a user's, ahead of queued work and past the 5h
+/// guard and the live cap, but runs as autonomous work: its tool calls are
+/// held by the 5h guard, and it keeps its ceiling. Pause all and a plan
+/// limit still hold it.
+#[test]
+fn a_coordination_turn_is_admitted_ahead_of_queued_work_but_its_tools_are_paced() {
+    let msg =
+        |agent: &str| TurnRequest { kind: TurnKind::Message, coordination: true, ..task(agent, "A", Tier::Normal) };
+    let mut g = governor();
+    // Queued task work behind the 5h guard, and the live cap full.
+    g.request_turn(task("W-1", "A", Tier::High), at(0));
+    g.ingest(&five(at(10), "W-1", 86.0, at(100)));
+    let d = g.request_turn(task("B-1", "B", Tier::Normal), at(12));
+    assert_eq!(queue_reason(&d), Some(QueueReason::FiveHourGuard));
+    // A plain Message-kind turn without the flag waits like any task...
+    let plain = TurnRequest { kind: TurnKind::Message, ..task("M-0", "A", Tier::Normal) };
+    assert_eq!(queue_reason(&g.request_turn(plain, at(13))), Some(QueueReason::FiveHourGuard));
+    // ...the coordination turn does not.
+    assert_eq!(g.request_turn(msg("M-1"), at(14)).effective, Verdict::Admit);
+    assert!(g.is_live(&"M-1".into()));
+    // Its tool calls are paced like autonomous work: held by the 5h guard.
+    let d = g.tool_call(&tool("M-1"), at(15));
+    assert_eq!(
+        d.effective,
+        Verdict::Deny { reason: DenyReason::PausedByGovernor { cause: QueueReason::FiveHourGuard } }
+    );
+    assert!(!g.is_live(&"M-1".into()), "the turn ends at that tool boundary");
+
+    // Its ceiling is kept (the watchdog), unlike a user's turn.
+    let mut g = governor();
+    let mut r = msg("M-2");
+    r.ceiling = Some(TurnCeiling { max_pct: None, max_minutes: Some(30) });
+    assert_eq!(g.request_turn(r, at(0)).effective, Verdict::Admit);
+    assert_eq!(g.tool_call(&tool("M-2"), at(10)).effective, Verdict::Admit);
+    assert_eq!(g.tool_call(&tool("M-2"), at(31)).effective, Verdict::Deny { reason: DenyReason::TurnCeiling });
+
+    // Pause all and a plan limit still hold it; it runs when they lift.
+    let mut g = governor();
+    g.pause_all(at(0));
+    let d = g.request_turn(msg("M-3"), at(1));
+    assert_eq!(queue_reason(&d), Some(QueueReason::PausedAll));
+    g.resume_all(at(2));
+    assert!(g.is_live(&"M-3".into()), "released past the caps once resumed");
+    let mut g = governor();
+    g.ingest(&five(at(10), "X", 100.0, at(200)));
+    let d = g.request_turn(msg("M-4"), at(11));
+    assert_eq!(queue_reason(&d), Some(QueueReason::LimitReached { window: Window::FiveHour }));
+}
+
 #[test]
 fn five_hour_projection_caps_live_agents_to_one() {
     let mut g = governor();
@@ -689,6 +739,30 @@ fn a_100_percent_reading_counts_as_a_limit() {
     g.ingest(&five(at(10), "A-1", 100.0, at(200)));
     let d = g.request_turn(task("A-1", "A", Tier::High), at(11));
     assert_eq!(queue_reason(&d), Some(QueueReason::LimitReached { window: Window::FiveHour }));
+}
+
+#[test]
+fn a_limit_is_lifted_at_its_reset_or_by_a_newer_reading_under_100() {
+    let mut g = governor();
+    let a: AgentId = "A-1".into();
+    assert!(!g.limit_in_force(&a, at(0)));
+    g.ingest(&five(at(10), "A-1", 100.0, at(200)));
+    assert!(g.limit_in_force(&a, at(11)));
+    assert!(!g.limit_in_force(&a, at(200)), "its reset passed");
+    // A newer reading under 100 % ends it before its reset.
+    g.ingest(&five(at(20), "A-1", 40.0, at(200)));
+    assert!(!g.limit_in_force(&a, at(21)));
+    assert_eq!(g.request_turn(task("A-1", "A", Tier::High), at(22)).effective, Verdict::Admit);
+    // An older one does not.
+    g.ingest(&five(at(30), "A-1", 100.0, at(200)));
+    g.ingest(&five(at(25), "A-1", 40.0, at(200)));
+    assert!(g.limit_in_force(&a, at(31)));
+    // A limit placed on a guessed window (another reset) is not lifted by
+    // a reading of the real window under 100 %.
+    let mut g = governor();
+    g.rate_limit_hit(Some(&a), Window::FiveHour, at(100), at(40));
+    g.ingest(&five(at(41), "A-1", 45.0, at(300)));
+    assert!(g.limit_in_force(&a, at(42)), "a guessed limit holds until its reset");
 }
 
 #[test]

@@ -44,6 +44,9 @@ pub use governor::DEFAULT_ALLOCATION;
 /// The CLI shows its "continuing automatically at …" banner just after the
 /// StopFailure hook returns; Esc sent before it would cancel nothing.
 const ESC_AFTER_RATE_LIMIT: Duration = Duration::from_secs(1);
+/// An agent blocked by a limit stays so at least this long after its last
+/// hook, even when the Governor holds no limit (§3.2).
+const LIMIT_GRACE_MS: u64 = 60_000;
 const CONTINUE_MESSAGE: &str = "ORCH: the orchestrator admitted your work again. Continue the task you were doing.";
 
 #[derive(Clone, Debug)]
@@ -177,7 +180,10 @@ pub struct Runtime {
     /// A transcript index pass is running.
     indexing: std::sync::atomic::AtomicBool,
     /// A team pass ([`Runtime::team_tick`]) is running.
-    teaming: std::sync::atomic::AtomicBool,
+    pub(crate) teaming: std::sync::atomic::AtomicBool,
+    /// A task-backend sync ([`Runtime::sync_task_backends`]) is running: on
+    /// its own thread, off the team pass (§3.6).
+    syncing: std::sync::atomic::AtomicBool,
     /// A paste-watchdog and spool pass ([`Runtime::handover_tick`]) is running.
     pub(crate) watching: std::sync::atomic::AtomicBool,
     /// Held while a spool is replayed: a live hook waits for the sweep's
@@ -259,6 +265,9 @@ pub(crate) struct House {
     pub(crate) last_notion_ms: u64,
     /// FR-816: the off-hours marks of tasks and runs (the store's, cached).
     pub(crate) off_hours_marks: Option<crate::pacing::OffHoursMarks>,
+    /// The PTY tail of each agent's last process that exited unasked (a
+    /// crash): shown when its restarts are used up (§3.5).
+    pub(crate) crash_tails: BTreeMap<String, String>,
 }
 
 /// A hook's event detail (FR-1311, the run report): the common fields, plus
@@ -476,6 +485,7 @@ impl Runtime {
             otlp: Mutex::new(None),
             indexing: std::sync::atomic::AtomicBool::new(false),
             teaming: std::sync::atomic::AtomicBool::new(false),
+            syncing: std::sync::atomic::AtomicBool::new(false),
             watching: std::sync::atomic::AtomicBool::new(false),
             replaying: Mutex::new(()),
             task_backends: orch_tasks::Backends::default(),
@@ -718,6 +728,11 @@ impl Runtime {
             ceiling: None,
             needs_spawn,
             model,
+            // §3.5: a team's messages and nudges carry its coordination: the
+            // Governor admits them like a user's turn, but paces their tool
+            // calls as autonomous work (the Governor holds them for a pause
+            // or a limit).
+            coordination: kind == TurnKind::Message && rec.team.is_some(),
         };
         let ar = AdmissionRequest {
             agent_id: rec.id.clone(),
@@ -813,6 +828,7 @@ impl Runtime {
             resume_failed: false,
             start_fresh: false,
             spawned_at_ms: None,
+            crash_restarts: vec![],
         };
         self.store.write(|s| s.agents.insert(rec.id.clone(), rec.clone()))?;
         // Every agent belongs to a registered project (J1); starting one marks it active (FR-103).
@@ -952,16 +968,57 @@ impl Runtime {
         let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
         self.handle_releases(releases);
         self.event(id, "exited", json!({"status": status}));
-        if let Some(l) = gone
-            && failed_start
-        {
+        let Some(l) = gone else { return };
+        if failed_start {
+            // FR-415 owns a start that died: one fresh restart (not counted
+            // as a crash restart), then the user (`resume_failed`).
             self.check_quick_exit(id, &l, status);
+        }
+        // §3.5: a crash FR-415 left alone (a resume with a session, or an
+        // exit after the start): the pump resumes it when it has work.
+        if self.store.read(|s| s.agents.get(id).is_some_and(crate::startup::crashed)) {
+            self.note_crash(id, &l);
         }
     }
 
     /// Stops the process and keeps the session (FR-204).
     pub fn suspend(&self, id: &str) -> Result<Vec<String>> {
         self.stop(id, StopIntent::Suspend)
+    }
+
+    /// Asks for a suspend and returns at once (§3.6): the stop waits up to
+    /// 5 s for the exit, never on the pump or the team pass. The stop intent
+    /// is set now, so the pump pastes nothing meanwhile and a second request
+    /// is a no-op. True only when this call asked for the stop (a live
+    /// agent with no stop under way).
+    pub(crate) fn suspend_in_background(&self, id: &str, why: &'static str) -> bool {
+        if self.live_get(id).is_none() {
+            return false;
+        }
+        let first = self
+            .store
+            .write(|s| match s.agents.get_mut(id) {
+                Some(a) if a.tracker.stop_intent == StopIntent::None => {
+                    a.tracker.stop_intent = StopIntent::Suspend;
+                    true
+                }
+                _ => false,
+            })
+            .unwrap_or(false);
+        let Some(me) = self.me.upgrade().filter(|_| first) else { return first };
+        let id = id.to_string();
+        std::thread::spawn(move || {
+            if let Err(e) = me.suspend(&id) {
+                // Not stopped: the agent takes its work on its current process.
+                let _ = me.store.write(|s| {
+                    if let Some(a) = s.agents.get_mut(&id) {
+                        a.tracker.stop_intent = StopIntent::None;
+                    }
+                });
+                me.event(&id, "suspend_failed", json!({"why": why, "error": format!("{e:#}")}));
+            }
+        });
+        true
     }
 
     /// FR-207: SIGTERM to `claude`'s group and to every tty-less process whose
@@ -1040,6 +1097,8 @@ impl Runtime {
 
     pub fn resume(&self, id: &str, message: Option<&str>) -> Result<()> {
         self.spawn(id, None)?;
+        // The user's resume of a crashed agent: its restart budget starts again.
+        self.clear_crash(id, "user");
         if let Some(m) = message {
             self.deliver_user(id, m)?;
         }
@@ -1393,37 +1452,9 @@ impl Runtime {
                 self.mark_delivered(id, &markers, None);
             }
             Effect::TurnEnded | Effect::TurnEndedWithBackground => {
-                self.house().index_dirty.insert(id.to_string());
-                // A command whose prompt never reached a hook ends with the turn too.
-                let delivered = |t: &TurnRow| {
-                    t.agent_id == id
-                        && (t.status == TurnStatus::Delivered || t.command && t.status == TurnStatus::Delivering)
-                };
-                self.house().asked.remove(id);
-                let ended = self
-                    .store
-                    .write(|s| {
-                        let mut ended: Vec<TurnRow> = vec![];
-                        for turn in s.turns.iter_mut() {
-                            if delivered(turn) {
-                                turn.status = TurnStatus::Done;
-                                ended.push(turn.clone());
-                            } else if turn.agent_id == id && turn.status == TurnStatus::Delivering {
-                                // A paste still unacknowledged after another
-                                // turn: its watchdog clock starts again now.
-                                turn.delivered_at_ms = Some(now);
-                            }
-                        }
-                        ended
-                    })
-                    .unwrap_or_default();
-                // §3.4: read only when fully seen; injected but never seen → queued.
-                self.settle_messages(rec, &ended, now);
-                if let (Some(l), Effect::TurnEnded) = (&live, &fx) {
-                    l.ready_at_ms.store(now + delivery::AFTER_STOP.as_millis() as u64, Ordering::SeqCst);
-                }
-                let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
-                self.handle_releases(releases);
+                // Idle either way (§3.2): with background work, only its
+                // tasks and continues wait for it.
+                self.end_turn(rec, live.as_deref(), now);
             }
             Effect::RateLimited { message } => {
                 let model_limit =
@@ -1468,11 +1499,90 @@ impl Runtime {
                 // `alert: api_error` puts the agent in error (attention rule 1).
                 let payload = json!({"alert": "api_error", "error": error});
                 let _ = self.add_item(Some(id), "alert", format!("{id}: API error {error}"), payload, 0);
-                let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
-                self.handle_releases(releases);
+                // §3.2: the process lives on, idle; its turn is over.
+                let ended = self.end_turn(rec, live.as_deref(), now);
+                self.continue_after_failure(rec, &ended, &error);
             }
             Effect::NeedsUser => {}
         }
+    }
+
+    /// The agent's turn is over (Stop, or a StopFailure it lives through):
+    /// its delivered turns are done, its messages settled (§3.4), input may
+    /// go out again after [`delivery::AFTER_STOP`], and the Governor is told.
+    /// The turns that ended.
+    fn end_turn(&self, rec: &AgentRecord, live: Option<&Live>, now: u64) -> Vec<TurnRow> {
+        let id = rec.id.as_str();
+        self.house().index_dirty.insert(id.to_string());
+        // A command whose prompt never reached a hook ends with the turn too.
+        let delivered = |t: &TurnRow| {
+            t.agent_id == id && (t.status == TurnStatus::Delivered || t.command && t.status == TurnStatus::Delivering)
+        };
+        self.house().asked.remove(id);
+        let ended = self
+            .store
+            .write(|s| {
+                let mut ended: Vec<TurnRow> = vec![];
+                for turn in s.turns.iter_mut() {
+                    if delivered(turn) {
+                        turn.status = TurnStatus::Done;
+                        ended.push(turn.clone());
+                    } else if turn.agent_id == id && turn.status == TurnStatus::Delivering {
+                        // A paste still unacknowledged after another
+                        // turn: its watchdog clock starts again now.
+                        turn.delivered_at_ms = Some(now);
+                    }
+                }
+                ended
+            })
+            .unwrap_or_default();
+        // §3.4: read only when fully seen; injected but never seen → queued.
+        self.settle_messages(rec, &ended, now);
+        if let Some(l) = live {
+            l.ready_at_ms.store(now + delivery::AFTER_STOP.as_millis() as u64, Ordering::SeqCst);
+        }
+        let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
+        self.handle_releases(releases);
+        ended
+    }
+
+    /// §3.2: a turn that failed (StopFailure, not a rate limit) is followed by
+    /// one Continue turn, unless one is queued already. When the failed turn
+    /// was that Continue, nothing is queued: [`Runtime::on_repeated_failure`].
+    fn continue_after_failure(&self, rec: &AgentRecord, ended: &[TurnRow], error: &str) {
+        let id = rec.id.as_str();
+        if ended.iter().any(|t| t.after_failure) {
+            self.on_repeated_failure(rec, error);
+            return;
+        }
+        let queued = self.store.write(|s| {
+            let has = s
+                .turns
+                .iter()
+                .any(|t| t.agent_id == id && t.status == TurnStatus::Queued && t.kind == TurnKind::Continue);
+            if !has {
+                let text = format!("ORCH: your last turn failed ({error}). Carry on, or report where you are.");
+                let mut t = TurnRow::queued(id, &text, TurnKind::Continue, Admission::Pending);
+                t.after_failure = true;
+                s.turns.push(t);
+            }
+            !has
+        });
+        if queued.unwrap_or(false) {
+            self.delivery_event(
+                id,
+                "recovered",
+                json!({"agent": id, "from_state": "error", "how": "continue", "error": error}),
+            );
+        }
+    }
+
+    /// The Continue turn queued after a failure failed too: no loop. **T3
+    /// hook point** (fix-team-getting-stucked task 3): the decision for the
+    /// user (or the agent's Lead) is raised here; for now an event, and the
+    /// `api_error` alert the failure already raised.
+    pub(crate) fn on_repeated_failure(&self, rec: &AgentRecord, error: &str) {
+        self.delivery_event(&rec.id, "continue_failed", json!({"agent": rec.id, "error": error}));
     }
 
     /// Marks the turns `markers` delivered and, for a turn that started at
@@ -1607,6 +1717,8 @@ impl Runtime {
                 continue;
             }
             self.event(&id, "released", serde_json::to_value(&r).unwrap_or(Value::Null));
+            // §3.2: released past its limit, the agent takes input again.
+            self.limit_lifted(&id, "release");
             let _ = self.store.write(|s| {
                 let held = s
                     .holds
@@ -1623,7 +1735,10 @@ impl Runtime {
                     .filter(|t| {
                         t.agent_id == id && t.status == TurnStatus::Queued && t.admission != Admission::Admitted
                     })
-                    .min_by_key(|t| (t.admission != Admission::Waiting(entry), t.created_at_ms));
+                    // Its own turn first, then by class (§3.5), then queue order.
+                    .min_by_key(|t| {
+                        (t.admission != Admission::Waiting(entry), delivery::class_rank(t.kind), t.created_at_ms)
+                    });
                 match existing {
                     Some(t) => t.admission = Admission::Admitted,
                     None => {
@@ -1635,6 +1750,58 @@ impl Runtime {
         for agent in gone {
             let releases = self.gov().turn_ended(&agent, Timestamp::now());
             self.handle_releases(releases);
+        }
+    }
+
+    /// §3.2: an agent blocked by a limit is idle again (the Governor
+    /// released it, or no limit holds it any more): its waiting turns are
+    /// pasted as usual. No-op for any other state.
+    pub(crate) fn limit_lifted(&self, id: &str, how: &str) {
+        let blocked = |s: &crate::store::StateFile| {
+            s.agents.get(id).is_some_and(|a| a.tracker.state == AgentState::BlockedByLimit)
+        };
+        // A read first: most releases are for agents that are not blocked.
+        if !self.store.read(blocked) {
+            return;
+        }
+        let lifted = self
+            .store
+            .write(|s| match s.agents.get_mut(id) {
+                Some(a) if a.tracker.state == AgentState::BlockedByLimit => {
+                    a.tracker.state = AgentState::Idle;
+                    true
+                }
+                _ => false,
+            })
+            .unwrap_or(false);
+        if !lifted {
+            return;
+        }
+        if let Some(l) = self.live_get(id) {
+            l.ready_at_ms.store(now_ms(), Ordering::SeqCst);
+        }
+        self.delivery_event(id, "recovered", json!({"agent": id, "from_state": "blocked_by_limit", "how": how}));
+    }
+
+    /// Housekeeping: agents blocked by a limit no longer in force (no release
+    /// comes for one the Governor holds no entry for: interactive, shadow
+    /// mode, or its auto-continue allowed).
+    fn lift_limits(&self, now: u64) {
+        // A minute after the hit at least: a limit the Governor could not
+        // place (a model it doesn't know) must not bounce every pass.
+        let blocked: Vec<String> = self.store.read(|s| {
+            s.agents
+                .values()
+                .filter(|a| a.tracker.state == AgentState::BlockedByLimit)
+                .filter(|a| now.saturating_sub(a.last_event_at_ms.unwrap_or(0)) >= LIMIT_GRACE_MS)
+                .map(|a| a.id.clone())
+                .collect()
+        });
+        for id in blocked {
+            let agent = AgentId(id.clone());
+            if !self.with_governor(|g| g.limit_in_force(&agent, Timestamp::now())) {
+                self.limit_lifted(&id, "limit_over");
+            }
         }
     }
 
@@ -1922,6 +2089,7 @@ impl Runtime {
             self.event("-", "memory_pressure", json!({"raw": raw, "effective": level, "cap": self.live_cap()}));
         }
         self.sync_process_slots();
+        self.lift_limits(now);
         // One pass: queued turns per agent, agents with a pasted turn, and
         // agents with an open `startup` item (both kept live, FR-203/415).
         let (queued, delivering, startup_open) = self.store.read(|s| {
@@ -1991,7 +2159,9 @@ impl Runtime {
             .collect();
         self.watch_startups(now);
         let idle_ms = self.cfg.idle_suspend.map(|d| d.as_millis() as u64);
-        for (id, why) in resources::to_suspend(&live, self.live_cap(), idle_ms, now) {
+        let suspend = resources::to_suspend(&live, self.live_cap(), idle_ms, now);
+        let freeing = !suspend.is_empty();
+        for (id, why) in suspend {
             self.event(&id, "auto_suspend", json!({"why": why, "pressure": level}));
             if let Some(me) = self.me.upgrade() {
                 // Suspending waits for the exit: never on the caller's loop.
@@ -1999,6 +2169,10 @@ impl Runtime {
                     let _ = me.suspend(&id);
                 });
             }
+        }
+        // §3.5 (F6): no slot freed above, and a member's messages wait for one.
+        if !freeing {
+            self.free_slot_for_messages(&live, self.live_cap(), now);
         }
         let (do_index, do_purge) = {
             let mut h = self.house();
@@ -2031,29 +2205,36 @@ impl Runtime {
             if let Some(me) = self.me.upgrade() {
                 std::thread::spawn(move || {
                     // A panic never leaves the guard set (the watchdog would stop for good).
-                    let tick = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| me.handover_tick(now_ms())));
+                    me.tick_step("-", "handover", || me.handover_tick(now_ms()));
                     me.watching.store(false, Ordering::SeqCst);
-                    if tick.is_err() {
-                        me.event("-", "tick_panic", json!({"step": "handover"}));
-                    }
                 });
             } else {
                 self.watching.store(false, Ordering::SeqCst);
             }
         }
-        // Teams: dispatch, messages, run progress (network calls with GitHub).
+        // Teams: dispatch, messages, run progress. Each run and step under
+        // its own panic guard, and the `teaming` guard always released (§3.6).
         if !self.teaming.swap(true, Ordering::SeqCst) {
             if let Some(me) = self.me.upgrade() {
                 std::thread::spawn(move || {
-                    me.team_tick();
-                    me.watchdog(now_ms());
-                    if me.task_sync_due() {
-                        me.sync_task_backends();
-                    }
+                    me.tick_step("-", "team_tick", || me.team_tick());
+                    me.tick_step("-", "watchdog", || me.watchdog(now_ms()));
                     me.teaming.store(false, Ordering::SeqCst);
                 });
             } else {
                 self.teaming.store(false, Ordering::SeqCst);
+            }
+        }
+        // Task backends (GitHub/Linear network calls): their own thread and
+        // guard, off the delivery path (§3.6).
+        if !self.syncing.load(Ordering::SeqCst) && self.task_sync_due() && !self.syncing.swap(true, Ordering::SeqCst) {
+            if let Some(me) = self.me.upgrade() {
+                std::thread::spawn(move || {
+                    me.tick_step("-", "task_sync", || me.sync_task_backends());
+                    me.syncing.store(false, Ordering::SeqCst);
+                });
+            } else {
+                self.syncing.store(false, Ordering::SeqCst);
             }
         }
         if do_purge {
@@ -2130,27 +2311,52 @@ impl Runtime {
                 self.event(&id, "trust_dialog", json!({"seen": seen}));
             }
         }
-        let queued: Vec<(AgentRecord, TurnRow)> = self.store.read(|s| {
-            let mut out: BTreeMap<String, (AgentRecord, TurnRow)> = BTreeMap::new();
+        // Every agent's queued turns, in queue order.
+        let queued: Vec<(AgentRecord, Vec<TurnRow>)> = self.store.read(|s| {
+            let mut out: BTreeMap<String, Vec<TurnRow>> = BTreeMap::new();
             for t in s.turns.iter().filter(|t| t.status == TurnStatus::Queued) {
-                if out.contains_key(&t.agent_id) {
-                    continue;
-                }
-                if let Some(a) = s.agents.get(&t.agent_id) {
-                    out.insert(t.agent_id.clone(), (a.clone(), t.clone()));
-                }
+                out.entry(t.agent_id.clone()).or_default().push(t.clone());
             }
-            out.into_values().collect()
+            out.into_iter().filter_map(|(id, turns)| Some((s.agents.get(&id)?.clone(), turns))).collect()
         });
         // The Governor's queue, read once for every agent's waiting turn.
         let entries: std::collections::BTreeSet<u64> =
-            if queued.iter().any(|(_, t)| matches!(t.admission, Admission::Waiting(_))) {
+            if queued.iter().flat_map(|(_, ts)| ts).any(|t| matches!(t.admission, Admission::Waiting(_))) {
                 self.with_governor(|g| g.queue().iter().map(|q| q.id.0).collect())
             } else {
                 Default::default()
             };
-        for (rec, turn) in queued {
-            if let Err(e) = self.pump_one(&rec, &turn, now, &entries) {
+        for (rec, turns) in queued {
+            // An entry gone without a release (dropped for a critical turn):
+            // ask again rather than wait forever (next pass). A release that
+            // comes meanwhile admits the turn anyway.
+            let mut stale = vec![];
+            for t in &turns {
+                if let Admission::Waiting(e) = t.admission
+                    && !entries.contains(&e)
+                {
+                    stale.push((t.id.clone(), e));
+                }
+            }
+            if !stale.is_empty() {
+                let _ = self.store.write(|s| {
+                    for (id, e) in &stale {
+                        let t = s.turns.iter_mut().find(|t| &t.id == id && t.admission == Admission::Waiting(*e));
+                        if let Some(t) = t {
+                            t.admission = Admission::Pending;
+                        }
+                    }
+                });
+                for (turn, entry) in &stale {
+                    self.event(&rec.id, "stale_admission", json!({"turn": turn, "entry": entry}));
+                }
+            }
+            // §3.5 (F5): the first turn by priority that can move (a stale
+            // turn is still `Waiting` in this snapshot: skipped this pass).
+            let Some(turn) = delivery::pick_turn(&turns, rec.tracker.background_tasks) else {
+                continue;
+            };
+            if let Err(e) = self.pump_one(&rec, turn, now) {
                 self.event(&rec.id, "delivery_error", json!(e.to_string()));
             }
         }
@@ -2192,30 +2398,11 @@ impl Runtime {
         admission == Admission::Admitted
     }
 
-    fn pump_one(
-        &self,
-        rec: &AgentRecord,
-        turn: &TurnRow,
-        now: u64,
-        entries: &std::collections::BTreeSet<u64>,
-    ) -> Result<()> {
+    /// One agent's turn picked by [`delivery::pick_turn`]: admission, a
+    /// resume or a restart when the process is gone, then the paste.
+    fn pump_one(&self, rec: &AgentRecord, turn: &TurnRow, now: u64) -> Result<()> {
         // FR-819: a new task is where the model may change (never mid-turn).
         if turn.kind == TurnKind::Task && turn.admission == Admission::Pending && self.task_boundary(rec) {
-            return Ok(());
-        }
-        if let Admission::Waiting(e) = turn.admission
-            && !entries.contains(&e)
-        {
-            // Its entry is gone without a release (dropped for a critical
-            // turn): ask again rather than wait forever. A release that comes
-            // meanwhile admits the turn anyway.
-            self.store.write(|s| {
-                let stale = s.turns.iter_mut().find(|t| t.id == turn.id && t.admission == Admission::Waiting(e));
-                if let Some(t) = stale {
-                    t.admission = Admission::Pending;
-                }
-            })?;
-            self.event(&rec.id, "stale_admission", json!({"turn": turn.id, "entry": e}));
             return Ok(());
         }
         let Some(l) = self.live_get(&rec.id) else {
@@ -2225,10 +2412,16 @@ impl Runtime {
             // A team agent that never ran starts the same way (with its own
             // session id) once its first turn is admitted.
             let never_started = rec.never_started();
+            // §3.5 (F3): a crashed agent with work resumes the same way, at
+            // most twice an hour; then a `startup` item waits for the user.
+            let crashed = crate::startup::crashed(rec) && self.startup_item(&rec.id).is_none();
             // FR-705: parked on the user's decision, only their own words resume it.
-            let suspended = (rec.tracker.state == AgentState::Suspended || never_started)
+            let suspended = (rec.tracker.state == AgentState::Suspended || never_started || crashed)
                 && rec.flag.is_none()
                 && (turn.kind == TurnKind::User || !self.is_parked(&rec.id));
+            if suspended && crashed && !self.crash_restart(rec, now) {
+                return Ok(());
+            }
             if suspended && turn.admission == Admission::Pending {
                 self.sync_process_slots();
             }
@@ -2268,14 +2461,23 @@ impl Runtime {
                     })?;
                     return Err(e);
                 }
+                if crashed {
+                    self.crash_restarted(&rec.id, now);
+                }
             }
             return Ok(());
         };
+        // A stop under way (a model switch, a fresh session for the next
+        // task): the turn goes to the next process.
+        if rec.tracker.stop_intent != StopIntent::None {
+            return Ok(());
+        }
         let gate = GateInputs {
             live: !l.pty.has_exited(),
             idle: rec.tracker.state == AgentState::Idle,
             trust_dialog: rec.trust_dialog,
             background_tasks: rec.tracker.background_tasks,
+            waits_on_background: delivery::waits_on_background(turn.kind),
             ready_at_ms: Some(l.ready_at_ms.load(Ordering::SeqCst)).filter(|t| *t > 0),
             last_user_input_ms: Some(l.last_user_input_ms.load(Ordering::SeqCst)).filter(|t| *t > 0),
             now_ms: now,
@@ -2290,21 +2492,26 @@ impl Runtime {
             let text = turn.body.trim().to_string();
             (vec![turn.clone()], delivery::Prepared { turn_id: turn.id.clone(), text, file: None })
         } else {
+            // The others in priority order (§3.5), up to a command, one held by
+            // the Governor, one waiting for background work, or a new task
+            // (its model is settled when it is picked itself, FR-819).
+            let bg = rec.tracker.background_tasks;
             let next: Vec<TurnRow> = self.store.read(|s| {
-                s.turns
-                    .iter()
-                    .filter(|t| t.agent_id == rec.id && t.status == TurnStatus::Queued)
-                    .skip_while(|t| t.id != turn.id)
+                let mine = s.turns.iter().filter(|t| t.agent_id == rec.id && t.status == TurnStatus::Queued);
+                delivery::by_priority(mine)
+                    .into_iter()
+                    .filter(|t| t.id != turn.id)
                     .take_while(|t| {
                         !t.command
-                            && (t.id == turn.id || matches!(t.admission, Admission::Pending | Admission::Admitted))
+                            && delivery::can_move(t, bg)
+                            && !(t.kind == TurnKind::Task && t.admission == Admission::Pending)
                     })
                     .cloned()
                     .collect()
             });
-            let mut batch = vec![];
+            let mut batch = vec![turn.clone()];
             for t in next {
-                if t.id != turn.id && !self.admit_turn(rec, &t, false) {
+                if !self.admit_turn(rec, &t, false) {
                     break;
                 }
                 batch.push(t);
@@ -2321,17 +2528,28 @@ impl Runtime {
         if batch.iter().any(|t| t.attempts > 0) && self.already_in_transcript(rec, &batch) {
             return Ok(());
         }
-        l.ready_at_ms.store(0, Ordering::SeqCst);
         let ids: Vec<&str> = batch.iter().map(|t| t.id.as_str()).collect();
         let file = prepared.file.as_ref().and_then(|f| f.0.file_name()).map(|n| n.to_string_lossy().into_owned());
-        self.store.write(|s| {
+        // Claimed in one write, only if every turn is still queued: one an
+        // injection dropped meanwhile (its messages given at a tool call,
+        // §3.2) is never pasted from this pass's snapshot.
+        let claimed = self.store.write(|s| {
+            let queued = |id: &str| s.turns.iter().any(|t| t.id == id && t.status == TurnStatus::Queued);
+            if !ids.iter().all(|id| queued(id)) {
+                return false;
+            }
             for t in s.turns.iter_mut().filter(|t| ids.contains(&t.id.as_str())) {
                 t.status = TurnStatus::Delivering;
                 t.delivered_at_ms = Some(now);
                 t.enter_retried = false;
                 t.file = file.clone();
             }
+            true
         })?;
+        if !claimed {
+            return Ok(());
+        }
+        l.ready_at_ms.store(0, Ordering::SeqCst);
         // FR-206: team messages are handed at the paste, seen when its prompt
         // starts. Handed before the Enter: a fast UserPromptSubmit finds them.
         for t in batch.iter().filter(|t| !t.messages.is_empty()) {
@@ -2824,6 +3042,7 @@ pub(crate) mod tests {
             resume_failed: false,
             start_fresh: false,
             spawned_at_ms: None,
+            crash_restarts: vec![],
         }
     }
 
@@ -2944,6 +3163,155 @@ pub(crate) mod tests {
         assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::BlockedByLimit);
         let g = rt.governor_json();
         assert!(g["actions"].to_string().contains("limit"), "{g}");
+    }
+
+    fn events_of(rt: &Runtime, kind: &str) -> Vec<Value> {
+        rt.db.flush().unwrap();
+        rt.db.events(0, Some("a1"), Some(kind), 50).unwrap().into_iter().map(|e| e.detail).collect()
+    }
+
+    fn turns_of(rt: &Runtime) -> Vec<TurnRow> {
+        rt.store.read(|s| s.turns.iter().filter(|t| t.agent_id == "a1").cloned().collect())
+    }
+
+    /// §3.2 (F2): a StopFailure the process lives through leaves the agent
+    /// idle, its turn over, and one Continue queued; a failure of that
+    /// Continue queues nothing more (the T3 hook point).
+    #[test]
+    fn a_failed_turn_leaves_the_agent_idle_with_one_continue_and_no_loop() {
+        let (_d, rt) = test_runtime(false);
+        let mut t = TurnRow::queued("a1", "work", TurnKind::Task, Admission::Admitted);
+        t.status = TurnStatus::Delivered;
+        let first = t.id.clone();
+        rt.store.write(|s| s.turns.push(t)).unwrap();
+        rt.on_hook(&hook("StopFailure", json!({"error": "server_error"})), None);
+        let a = rt.store.read(|s| s.agents["a1"].clone());
+        assert_eq!(a.tracker.state, AgentState::Idle);
+        assert_eq!(a.tracker.last_error.as_deref(), Some("server_error"));
+        let ts = turns_of(&rt);
+        assert_eq!(ts.iter().find(|t| t.id == first).unwrap().status, TurnStatus::Done, "the failed turn is over");
+        let cont: Vec<_> = ts.iter().filter(|t| t.kind == TurnKind::Continue).collect();
+        assert_eq!(cont.len(), 1);
+        assert!(cont[0].after_failure && cont[0].body.contains("your last turn failed (server_error)"));
+        assert_eq!(events_of(&rt, "recovered")[0]["from_state"], "error");
+        // Another failure before it ran: still one.
+        rt.on_hook(&hook("StopFailure", json!({"error": "server_error"})), None);
+        assert_eq!(turns_of(&rt).iter().filter(|t| t.kind == TurnKind::Continue).count(), 1);
+        // That Continue ran and failed too: nothing queued, the hook point fires.
+        rt.store
+            .write(|s| s.turns.iter_mut().find(|t| t.after_failure).unwrap().status = TurnStatus::Delivered)
+            .unwrap();
+        rt.on_hook(&hook("StopFailure", json!({"error": "overloaded"})), None);
+        let queued = turns_of(&rt).into_iter().filter(|t| t.status == TurnStatus::Queued).count();
+        assert_eq!(queued, 0, "no loop");
+        assert_eq!(events_of(&rt, "continue_failed")[0]["error"], "overloaded");
+        assert_eq!(rt.store.read(|s| s.agents["a1"].tracker.state), AgentState::Idle);
+    }
+
+    /// §3.2 (F2): an agent blocked by a limit is idle again when the
+    /// Governor releases it, or once no limit holds it (no release ever
+    /// comes for one it holds no entry for), not within a minute of the hit.
+    #[test]
+    fn a_limit_released_or_over_gives_the_agent_back() {
+        let (_d, rt) = test_runtime(false);
+        let block = |rt: &Runtime, at: u64| {
+            rt.store
+                .write(|s| {
+                    let a = s.agents.get_mut("a1").unwrap();
+                    a.tracker.state = AgentState::BlockedByLimit;
+                    a.last_event_at_ms = Some(at);
+                })
+                .unwrap()
+        };
+        let state = |rt: &Runtime| rt.store.read(|s| s.agents["a1"].tracker.state);
+        let now = now_ms();
+        block(&rt, now);
+        rt.lift_limits(now + 1_000);
+        assert_eq!(state(&rt), AgentState::BlockedByLimit, "not within a minute of the hit");
+        // A limit in force holds it.
+        let reset = Timestamp::now() + std::time::Duration::from_secs(3600);
+        rt.governor_act(|g, now| (g.rate_limit_hit(None, governor::Window::FiveHour, reset, now), Vec::new()));
+        rt.lift_limits(now + LIMIT_GRACE_MS + 1);
+        assert_eq!(state(&rt), AgentState::BlockedByLimit);
+        // A Governor release gives it back at once.
+        rt.handle_releases(vec![Release {
+            entry: governor::EntryId(999),
+            agent: AgentId("a1".into()),
+            allocation: DEFAULT_ALLOCATION.into(),
+            kind: TurnKind::Continue,
+            self_started: false,
+            service: Default::default(),
+        }]);
+        assert_eq!(state(&rt), AgentState::Idle);
+        assert_eq!(events_of(&rt, "recovered")[0]["how"], "release");
+        // No limit at all (a fresh runtime): over once the grace passed.
+        let (_d2, rt2) = test_runtime(false);
+        block(&rt2, now);
+        rt2.lift_limits(now + LIMIT_GRACE_MS + 1);
+        assert_eq!(state(&rt2), AgentState::Idle);
+        assert_eq!(events_of(&rt2, "recovered")[0]["how"], "limit_over");
+    }
+
+    /// §3.5 (F3): a crashed agent with queued work is resumed by the pump,
+    /// at most twice an hour; then a `startup` item (`failed: "crash"`).
+    /// One the user killed, or a start FR-415 owns, is left alone.
+    #[test]
+    fn a_crashed_agent_with_work_is_resumed_twice_an_hour_then_waits() {
+        let (_d, rt) = test_runtime(true);
+        let set = |rt: &Runtime, f: &dyn Fn(&mut AgentRecord)| {
+            rt.store.write(|s| f(s.agents.get_mut("a1").unwrap())).unwrap();
+        };
+        let flag = |rt: &Runtime| rt.store.read(|s| s.agents["a1"].flag.clone());
+        let crash_item = |rt: &Runtime| {
+            rt.store.read(|s| s.inbox.iter().find(|i| i.open() && crate::startup::is_crash_item(i, "a1")).cloned())
+        };
+        rt.deliver_user("a1", "hello").unwrap();
+        // Killed by the user: never restarted.
+        set(&rt, &|a| a.tracker.state = AgentState::Killed);
+        rt.pump();
+        assert!(flag(&rt).is_none() && crash_item(&rt).is_none());
+        // A failed start is FR-415's (a fresh restart, then the user).
+        set(&rt, &|a| {
+            a.tracker.state = AgentState::Error;
+            a.resume_failed = true;
+        });
+        rt.pump();
+        assert!(flag(&rt).is_none() && crash_item(&rt).is_none());
+        // A crash: the pump resumes it (the test has no `claude`, so the
+        // spawn fails and flags it: it was attempted).
+        set(&rt, &|a| a.resume_failed = false);
+        rt.pump();
+        assert!(flag(&rt).is_some_and(|f| f.contains("could not resume")), "{:?}", flag(&rt));
+        // Two restarts in the hour already: a `startup` item, no spawn.
+        let now = now_ms();
+        set(&rt, &|a| {
+            a.flag = None;
+            a.crash_restarts = vec![now - 50 * 60_000, now - 5 * 60_000];
+        });
+        rt.pump();
+        assert!(flag(&rt).is_none(), "no spawn past the budget");
+        let item = crash_item(&rt).expect("crash item");
+        assert_eq!(item.payload["restarts"], 2);
+        rt.pump();
+        let crash_items =
+            |rt: &Runtime| rt.store.read(|s| s.inbox.iter().filter(|i| i.payload["failed"] == "crash").count());
+        assert_eq!(crash_items(&rt), 1, "raised once");
+        // Dismissed: not raised again for the same used-up budget.
+        rt.store
+            .write(|s| {
+                s.inbox.iter_mut().find(|i| i.id == item.id).unwrap().status = orch_store::InboxStatus::Dismissed
+            })
+            .unwrap();
+        rt.pump();
+        assert_eq!(crash_items(&rt), 1, "a dismissed item is not raised again");
+        rt.store.write(|s| s.inbox.iter_mut().find(|i| i.id == item.id).unwrap().status = item.status).unwrap();
+        // The lead's (or the user's) resume: the budget starts again, the item closes.
+        rt.clear_crash("a1", "lead");
+        assert!(crash_item(&rt).is_none());
+        assert!(rt.store.read(|s| s.agents["a1"].crash_restarts.is_empty()));
+        // An hour-old restart no longer counts.
+        assert!(crate::startup::crash_restart_allowed(&[now - 3_600_000, now - 60_000], now));
+        assert!(!crate::startup::crash_restart_allowed(&[now - 59 * 60_000, now - 60_000], now));
     }
 
     #[test]

@@ -158,7 +158,7 @@ pub struct Ctx<'a> {
 }
 
 /// The last `n` non-blank lines.
-fn last_lines(s: &str, n: usize) -> String {
+pub(crate) fn last_lines(s: &str, n: usize) -> String {
     let lines: Vec<&str> = s.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
@@ -400,6 +400,13 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             let failed = p.get("failed").and_then(Value::as_str);
             let (title, why) = match failed {
                 Some("fresh") => (format!("{who} could not start fresh"), "restarted fresh, failed again".to_string()),
+                Some("crash") => (
+                    format!("{who} keeps crashing"),
+                    format!(
+                        "exited {} times in an hour; restarted automatically, now waits for you",
+                        crate::startup::CRASH_RESTARTS_PER_HOUR + 1
+                    ),
+                ),
                 Some(mode) => (format!("{who} did not start"), crate::attention::copy::start_exited(mode, None)),
                 None => (
                     format!("{who} did not start"),

@@ -59,6 +59,10 @@ pub struct AgentRecord {
     /// When its current process was spawned (ms).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawned_at_ms: Option<u64>,
+    /// When the core restarted it after a crash (ms, the last hour): at most
+    /// [`crate::startup::CRASH_RESTARTS_PER_HOUR`] (§3.5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crash_restarts: Vec<u64>,
 }
 
 /// Where a team agent sits: its run, its node and its current task.
@@ -184,6 +188,10 @@ pub struct TurnRow {
     /// long to paste): its messages are read once the agent read it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
+    /// The Continue turn queued after a failed turn (StopFailure, §3.2): a
+    /// failure of this one raises a decision instead of another Continue.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub after_failure: bool,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -211,6 +219,7 @@ impl TurnRow {
             attempts: 0,
             enter_retried: false,
             file: None,
+            after_failure: false,
         }
     }
 }

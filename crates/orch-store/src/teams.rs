@@ -302,18 +302,6 @@ pub enum DeliveryState {
     Failed,
 }
 
-impl DeliveryState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            DeliveryState::Queued => "queued",
-            DeliveryState::Handed => "handed",
-            DeliveryState::Seen => "seen",
-            DeliveryState::Read => "read",
-            DeliveryState::Failed => "failed",
-        }
-    }
-}
-
 impl Message {
     pub fn delivery_state(&self) -> DeliveryState {
         if self.read_at_ms.is_some() {

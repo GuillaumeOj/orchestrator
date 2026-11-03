@@ -42,6 +42,14 @@ pub struct TurnRequest {
     /// The model the turn runs on (FR-815: a tight model window holds it).
     #[serde(default)]
     pub model: Option<String>,
+    /// A team's coordination turn (a message or a nudge, fix-team-getting-
+    /// stucked §3.5): **admitted** at the user tier (no wait behind the
+    /// caps, the queue or the 5h guard; Pause all, its pause, a plan limit
+    /// and an exhausted model window still hold it), but it runs as
+    /// autonomous work: its tool calls go through the normal admission and
+    /// the turn keeps its ceiling watchdog and its cost class.
+    #[serde(default)]
+    pub coordination: bool,
 }
 
 impl TurnRequest {
@@ -56,6 +64,7 @@ impl TurnRequest {
             ceiling: None,
             needs_spawn: false,
             model: None,
+            coordination: false,
         }
     }
 }
@@ -950,6 +959,28 @@ impl Governor {
         cap
     }
 
+    /// Whether a plan limit holds `agent`'s work now: a hit plan window, or
+    /// its model's window exhausted (FR-815). An agent blocked by a limit is
+    /// idle again once this is false (fix-team-getting-stucked §3.2).
+    pub fn limit_in_force(&self, agent: &AgentId, now: Timestamp) -> bool {
+        // At the critical tier only an exhausted model window holds.
+        self.active_limit(now).is_some() || self.model_window_hold(agent, Tier::Critical, now).is_some()
+    }
+
+    /// A plan limit is over (its reset, or a reading under 100 %).
+    fn clear_limit(&mut self, window: Window, now: Timestamp, why: String) {
+        self.limits.remove(&window);
+        self.log(
+            now,
+            ActionKind::LimitReset { window },
+            why,
+            "queued work resumes in priority order".into(),
+            ActionMode::Auto,
+            Outcome::Applied,
+            None,
+        );
+    }
+
     fn active_limit(&self, now: Timestamp) -> Option<(Window, Timestamp)> {
         self.limits.iter().filter(|(_, until)| **until > now).map(|(w, u)| (*w, *u)).max_by_key(|(_, u)| *u)
     }
@@ -1118,6 +1149,13 @@ impl Governor {
         }
         if r.used_pct >= 100.0 {
             self.mark_limit(window, r.resets_at, ts);
+        } else if self.limits.get(&window) == Some(&r.resets_at) {
+            // A newer reading under 100 % of the same window (its reset is
+            // the limit's): the limit is over before its reset time
+            // (fix-team-getting-stucked §3.2). A limit placed on a guessed
+            // window (a StopFailure with no exhausted reading) has another
+            // reset and holds until it.
+            self.clear_limit(window, ts, format!("{window:?} window under 100 % again"));
         }
     }
 
@@ -1269,7 +1307,27 @@ impl Governor {
         Ok(())
     }
 
+    /// The admission of a coordination turn: only the holds that stop all
+    /// work (Pause all, its pause, a plan limit, an exhausted model window)
+    /// and a free process slot for a spawn; not the caps, the 5h guard, the
+    /// Red tier or the queue order.
+    fn check_coordination(&self, agent: &AgentId, needs_spawn: bool, now: Timestamp) -> Result<(), QueueReason> {
+        if let Some(r) = self.hold_reason(agent, false, now) {
+            return Err(r);
+        }
+        if needs_spawn {
+            self.memory_check()?;
+        }
+        match self.model_window_hold(agent, Tier::Critical, now) {
+            Some(r) => Err(r),
+            None => Ok(()),
+        }
+    }
+
     fn check_entry(&self, e: &QueueEntry, eff_tier: Tier, now: Timestamp) -> Result<(), QueueReason> {
+        if e.coordination {
+            return self.check_coordination(&e.agent, e.needs_spawn, now);
+        }
         self.check(&e.agent, &e.allocation, e.tier, eff_tier, e.needs_spawn, now)
     }
 
@@ -1321,9 +1379,11 @@ impl Governor {
         }
         let m = self.metrics(now);
         let class = CostClass::of(req.interactive, req.tier);
+        let coordination = req.coordination && class != CostClass::Interactive;
 
-        // Critical work is admitted now: drop the agent's older queued entry.
-        if class == CostClass::Critical {
+        // Critical and coordination work is admitted now: drop the agent's
+        // older queued entry.
+        if class == CostClass::Critical || coordination {
             self.queue.retain(|e| e.agent != req.agent);
         }
         // Already waiting in the queue: keep one entry per agent.
@@ -1340,6 +1400,7 @@ impl Governor {
 
         let proposed_reason: Option<QueueReason> = match class {
             CostClass::Interactive => None,
+            _ if coordination => self.check_coordination(&req.agent, req.needs_spawn, now).err(),
             _ => match self.check(&req.agent, &req.allocation, req.tier, req.tier, req.needs_spawn, now) {
                 Err(r) => Some(r),
                 Ok(()) if class == CostClass::Critical => None,
@@ -1382,7 +1443,11 @@ impl Governor {
     fn queue_request(&mut self, req: TurnRequest, reason: QueueReason, now: Timestamp) -> Decision {
         let kind = if req.self_started { TurnKind::Continue } else { req.kind };
         let (spawn, ceiling) = (req.needs_spawn, req.ceiling);
+        let coordination = req.coordination;
         let id = self.enqueue(req.agent, req.allocation, req.tier, kind, req.self_started, spawn, ceiling, reason, now);
+        if coordination && let Some(e) = self.queue.iter_mut().find(|e| e.id == id) {
+            e.coordination = true;
+        }
         self.refresh_queue(now);
         let e = self.queue.iter().find(|e| e.id == id).expect("just queued");
         let v = Verdict::Queue { entry: Some(id), reason: e.reason.clone(), estimated_start: e.estimated_start };
@@ -1639,6 +1704,7 @@ impl Governor {
             self_started,
             ceiling,
             needs_spawn,
+            coordination: false,
         });
         self.stats.queued += 1;
         *self.stats.queued_by_reason.entry(reason_key(&reason).into()).or_insert(0) += 1;
@@ -1821,16 +1887,7 @@ impl Governor {
         // Limits that reset.
         let expired: Vec<Window> = self.limits.iter().filter(|(_, u)| **u <= now).map(|(w, _)| *w).collect();
         for w in expired {
-            self.limits.remove(&w);
-            self.log(
-                now,
-                ActionKind::LimitReset { window: w },
-                format!("{w:?} window reset"),
-                "queued work resumes in priority order".into(),
-                ActionMode::Auto,
-                Outcome::Applied,
-                None,
-            );
+            self.clear_limit(w, now, format!("{w:?} window reset"));
         }
 
         self.update_burn(now);
