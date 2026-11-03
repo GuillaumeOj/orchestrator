@@ -1614,13 +1614,13 @@ impl Runtime {
 
     /// §3.5 (F3): a process that died in the middle of a turn leaves work that
     /// nobody asks for again, and with nothing queued the pump never restarts
-    /// it. The interrupted turn is closed as failed and one Continue turn is
+    /// it. The interrupted turn is closed as done and one Continue turn is
     /// queued, which the crash restart then carries to the new process.
     pub(crate) fn continue_after_crash(&self, id: &str) {
         let queued = self.store.write(|s| {
             let mut interrupted = false;
             for t in s.turns.iter_mut().filter(|t| t.agent_id == id && t.status == TurnStatus::Delivered) {
-                t.status = TurnStatus::Failed;
+                t.status = TurnStatus::Done;
                 interrupted = true;
             }
             let has = s
@@ -1628,8 +1628,7 @@ impl Runtime {
                 .iter()
                 .any(|t| t.agent_id == id && t.status == TurnStatus::Queued && t.kind == TurnKind::Continue);
             if interrupted && !has {
-                let text = "ORCH: your process crashed in the middle of your last turn and was restarted. \
-                            Carry on, or report where you are.";
+                let text = "ORCH: your session crashed mid-turn and was resumed. Check where you were and carry on.";
                 s.turns.push(TurnRow::queued(id, text, TurnKind::Continue, Admission::Pending));
             }
             interrupted && !has
