@@ -58,7 +58,8 @@ jobs:
       - name: Failing tests
         if: failure()
         run: |
-          lines=$(grep -E '\.\.\. FAILED|panicked at|timed out waiting|assertion|^error: test failed' "$RUNNER_TEMP/rust-test.log" | head -60 || true)
+          # A panic's message is on the lines after it.
+          lines=$(awk '/panicked at/ {n=3} /\.\.\. FAILED|^error: test failed/ || n-- > 0' "$RUNNER_TEMP/rust-test.log" | cut -c1-400 | head -80)
           [ -n "$lines" ] || exit 0
           printf '::error title=Failing Rust tests::%s\n' "$(printf '%s' "$lines" | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')"
 

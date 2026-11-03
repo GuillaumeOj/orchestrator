@@ -284,7 +284,8 @@ fn an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry() {
     // The pasted retry shows (and the agent reads idle) before its turn
     // submits: wait for the retried call's own permission answer.
     wait_for("retry answered", 30, || audit().len() >= 4);
-    assert!(core.rt.inbox().is_empty(), "no second prompt");
+    let open: Vec<_> = core.rt.inbox().into_iter().map(|i| (i.kind, i.status, i.body, i.payload)).collect();
+    assert!(open.is_empty(), "no second prompt: {open:?}");
     // The rule, the expiry, the user's Allow, and the retry on their one-shot allow.
     assert_eq!(audit(), [format!("rule:{}", rule.id), "expired".into(), "user".into(), "user".into()]);
     let one_shot = request(&core.sock, CtlRequest::Audit { agent_id: Some("a".into()), limit: Some(1) }).unwrap().data;

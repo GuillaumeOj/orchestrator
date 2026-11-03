@@ -47,6 +47,8 @@ const ESC_AFTER_RATE_LIMIT: Duration = Duration::from_secs(1);
 /// An agent blocked by a limit stays so at least this long after its last
 /// hook, even when the Governor holds no limit (§3.2).
 const LIMIT_GRACE_MS: u64 = 60_000;
+/// The flag of an agent whose start just failed, while FR-415 decides (`on_exit`).
+const CHECKING_START: &str = "checking its failed start";
 const CONTINUE_MESSAGE: &str = "ORCH: the orchestrator admitted your work again. Continue the task you were doing.";
 
 #[derive(Clone, Debug)]
@@ -983,12 +985,27 @@ impl Runtime {
                 let failed = a.tracker.stop_intent == StopIntent::None && a.tracker.state == AgentState::Starting;
                 if a.pid == Some(pid) {
                     a.on_process_gone();
+                    // FR-415 decides about a failed start first: until then the
+                    // pump must not resume it as a crash (§3.5), which would
+                    // race the fresh restart.
+                    if failed && a.flag.is_none() {
+                        a.flag = Some(CHECKING_START.into());
+                    }
                 }
                 Some(failed)
             })
             .ok()
             .flatten()
             .unwrap_or(false);
+        let checked = || {
+            let _ = self.store.write(|s| {
+                if let Some(a) = s.agents.get_mut(id)
+                    && a.flag.as_deref() == Some(CHECKING_START)
+                {
+                    a.flag = None;
+                }
+            });
+        };
         // FR-203: a pasted turn the process never started goes back to the
         // queue (not on a late exit of an older process: the turns are a newer one's).
         if gone.is_some() {
@@ -997,12 +1014,16 @@ impl Runtime {
         let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
         self.handle_releases(releases);
         self.event(id, "exited", json!({"status": status}));
-        let Some(l) = gone else { return };
+        let Some(l) = gone else {
+            checked();
+            return;
+        };
         if failed_start {
             // FR-415 owns a start that died: one fresh restart (not counted
             // as a crash restart), then the user (`resume_failed`).
             self.check_quick_exit(id, &l, status);
         }
+        checked();
         // §3.5: a crash FR-415 left alone (a resume with a session, or an
         // exit after the start): the pump resumes it when it has work.
         if self.store.read(|s| s.agents.get(id).is_some_and(crate::startup::crashed)) {
