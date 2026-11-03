@@ -246,8 +246,10 @@ impl Runtime {
                     })
                 })
             } else {
-                let msgs = self.db.messages_by_id(&ids).unwrap_or_default();
-                msgs.iter().all(|m| m.delivered_at_ms.is_some() || m.read_at_ms.is_some())
+                // A failed lookup closes nothing (an empty list would count as all seen).
+                self.db
+                    .messages_by_id(&ids)
+                    .is_ok_and(|msgs| msgs.iter().all(|m| m.delivered_at_ms.is_some() || m.read_at_ms.is_some()))
             };
             if !done {
                 continue;
@@ -354,6 +356,20 @@ impl Runtime {
             "redelivered",
             json!({"agent": agent, "messages": ids, "attempt": 0, "why": "retry"}),
         );
+        // A paste that failed again after this retry is a new episode: the
+        // watchdog's key is released (the invariant's stays, or the message,
+        // still old and unread, would raise a second decision at once).
+        if !it.payload["turns"].as_array().is_none_or(Vec::is_empty)
+            && let Some(key) = it.payload["key"].as_str()
+        {
+            self.house().delivery_raised.remove(key);
+            let retired = json!(format!("{key}:retried"));
+            let _ = self.store.write(|s| {
+                if let Some(i) = s.inbox.iter_mut().find(|i| i.id == item) {
+                    i.payload["key"] = retired;
+                }
+            });
+        }
         if let Some(i) = self.close_item(item, InboxStatus::Decided, "retry", "user") {
             self.advance(i.id, Stage::Effect("retried", None));
             self.outcome(&i, "user", "retried");
