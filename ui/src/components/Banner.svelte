@@ -4,6 +4,7 @@
   import { app, governor, openSingleton } from '../lib/app.svelte.js';
   import { when } from '../lib/format.js';
   import { counts } from '../lib/now.svelte.js';
+  import { isRestoreWarning } from '../lib/update.js';
   import Kbd from './Kbd.svelte';
 
   let dismissed = $state({});
@@ -28,7 +29,7 @@
       const n = d.power?.off_hours_pending ?? 0;
       out.push({ id: 'ac', color: 'var(--color-pacing-amber)', title: 'Off-hours work needs AC power.', text: `${n} off-hours task${n === 1 ? '' : 's'} won't run while the Mac sleeps. Plug in to keep it awake, or they wait for the next off-hours window.`, details: true, later: true });
     }
-    for (const w of d.warnings ?? []) out.push({ id: `w:${w}`, color: 'var(--color-status-queued)', title: 'Check:', text: w });
+    for (const w of (d.warnings ?? []).filter((w) => !isRestoreWarning(w))) out.push({ id: `w:${w}`, color: 'var(--color-status-queued)', title: 'Check:', text: w });
     return out.filter((b) => !dismissed[b.id]);
   });
   const top = $derived(banners[0]);
