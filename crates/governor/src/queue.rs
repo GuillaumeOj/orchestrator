@@ -118,6 +118,10 @@ pub struct QueueEntry {
     /// for a process slot under memory pressure (FR-203).
     #[serde(default)]
     pub needs_spawn: bool,
+    /// A team's coordination turn (a message, a nudge): admitted past the
+    /// caps like a user's, but its tool calls are paced as autonomous work.
+    #[serde(default)]
+    pub coordination: bool,
 }
 
 fn weekly() -> Window {
@@ -181,6 +185,7 @@ mod tests {
             self_started: false,
             ceiling: None,
             needs_spawn: false,
+            coordination: false,
         }
     }
 
