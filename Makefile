@@ -26,7 +26,7 @@ clippy:
 	cargo clippy --workspace --all-targets --locked -- -D warnings
 
 rust-test:
-	cargo test --workspace --locked
+	cargo test --workspace --locked $(CARGO_TEST_ARGS)
 
 # Fast when nothing changed; keeps node_modules in step with bun.lock.
 ui-deps:

@@ -48,7 +48,19 @@ jobs:
             exit 1
           fi
       - run: make clippy
-      - run: make rust-test
+      # Every test binary runs (no stop at the first failing one), and the
+      # failing tests and their panics become one annotation on the run, so
+      # they can be read without the job log.
+      - name: make rust-test
+        run: |
+          set -o pipefail
+          make rust-test CARGO_TEST_ARGS=--no-fail-fast 2>&1 | tee "$RUNNER_TEMP/rust-test.log"
+      - name: Failing tests
+        if: failure()
+        run: |
+          lines=$(grep -E '\.\.\. FAILED|panicked at|timed out waiting|assertion|^error: test failed' "$RUNNER_TEMP/rust-test.log" | head -60 || true)
+          [ -n "$lines" ] || exit 0
+          printf '::error title=Failing Rust tests::%s\n' "$(printf '%s' "$lines" | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}')"
 
   ui:
     name: UI lint, type check, test and build
