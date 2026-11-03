@@ -89,16 +89,10 @@ fn test_input(tool: &str, input: &str) -> serde_json::Value {
     if let Ok(v @ serde_json::Value::Object(_)) = serde_json::from_str(input) {
         return v;
     }
-    let key = match tool {
-        "Bash" => "command",
-        "Read" | "Edit" | "Write" | "MultiEdit" => "file_path",
-        "NotebookEdit" => "notebook_path",
-        "WebFetch" => "url",
-        "WebSearch" => "query",
-        "Glob" | "Grep" => "pattern",
-        _ => return serde_json::json!({}),
-    };
-    serde_json::json!({ key: input })
+    match agent_runtime::permissions::primary_key(tool) {
+        Some(key) => serde_json::json!({ key: input }),
+        None => serde_json::json!({}),
+    }
 }
 
 impl Args {

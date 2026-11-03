@@ -47,22 +47,6 @@ pub const WHY_HOST: &str = "network host outside the allow-list";
 pub const WHY_HOST_UNKNOWN: &str = "network host not readable";
 pub const WHY_MCP_WRITE: &str = "external MCP tool that writes";
 
-/// Every reason, for tests and docs.
-pub const ALL_WHY: &[&str] = &[
-    WHY_CREDENTIALS,
-    WHY_STATE,
-    WHY_WRITE_OUTSIDE,
-    WHY_GIT_PUSH,
-    WHY_PR_CREATE,
-    WHY_PR_MERGE,
-    WHY_MERGE_PROTECTED,
-    WHY_GH_WRITE,
-    WHY_GIT_DESTRUCTIVE,
-    WHY_HOST,
-    WHY_HOST_UNKNOWN,
-    WHY_MCP_WRITE,
-];
-
 /// The hard lists in words (the Overwatch's briefing, Settings).
 pub fn describe() -> Vec<(&'static str, HardKind)> {
     use HardKind::*;
@@ -83,8 +67,8 @@ pub fn describe() -> Vec<(&'static str, HardKind)> {
 #[derive(Clone, Debug, Default)]
 pub struct HardCtx {
     pub home: PathBuf,
-    /// The app-data root (`state/` under it is denied).
-    pub app_root: PathBuf,
+    /// The app's state directory (denied, like the credential stores).
+    pub state_dir: PathBuf,
     pub worktree: PathBuf,
     /// The call's working directory (relative paths resolve against it).
     pub cwd: PathBuf,
@@ -95,26 +79,28 @@ pub struct HardCtx {
     pub protected: Vec<String>,
     /// The worktree's current branch, read on first need (`git merge` only).
     pub branch: OnceCell<Option<String>>,
+    /// The guarded paths (credential stores, the state dir), as written and
+    /// through their links, lower-cased: computed once per check.
+    pub(super) guarded: OnceCell<Vec<(String, &'static str)>>,
+    pub(super) worktree_real: OnceCell<PathBuf>,
 }
 
 impl HardCtx {
     fn current_branch(&self) -> Option<&str> {
-        self.branch.get_or_init(|| head_branch(&self.worktree)).as_deref()
+        self.branch.get_or_init(|| orch_git::worktree::current_branch(&self.worktree).ok()).as_deref()
     }
-}
 
-/// The branch HEAD points at, from the worktree's `.git` (file or dir).
-fn head_branch(worktree: &Path) -> Option<String> {
-    let dot = worktree.join(".git");
-    let git_dir = if dot.is_file() {
-        let s = std::fs::read_to_string(&dot).ok()?;
-        let p = PathBuf::from(s.trim().strip_prefix("gitdir:")?.trim());
-        if p.is_absolute() { p } else { worktree.join(p) }
-    } else {
-        dot
-    };
-    let head = std::fs::read_to_string(git_dir.join("HEAD")).ok()?;
-    head.trim().strip_prefix("ref: refs/heads/").map(str::to_string)
+    fn guarded(&self) -> &[(String, &'static str)] {
+        self.guarded.get_or_init(|| {
+            let stores = CREDENTIAL_STORES.iter().map(|(p, _)| (self.home.join(p), WHY_CREDENTIALS));
+            let state = (!self.state_dir.as_os_str().is_empty()).then(|| (self.state_dir.clone(), WHY_STATE));
+            stores.chain(state).flat_map(|(p, why)| forms(p).map(|f| (lower(&f), why))).collect()
+        })
+    }
+
+    fn worktree_real(&self) -> &Path {
+        self.worktree_real.get_or_init(|| real_through_links(&self.worktree))
+    }
 }
 
 /// Is this call on a hard list? Always-denied wins over user-only.
@@ -235,11 +221,18 @@ fn real_through_links(p: &Path) -> PathBuf {
     }
 }
 
+fn lower(p: &Path) -> String {
+    p.to_string_lossy().to_lowercase()
+}
+
+/// `p` is `dir` or under it (component-wise; both lower-cased).
+fn under_lower(p: &str, dir: &str) -> bool {
+    Path::new(p).starts_with(dir)
+}
+
 /// `p` is `dir` or under it (component-wise, case-insensitive: APFS is).
 fn under(p: &Path, dir: &Path) -> bool {
-    let lower = |x: &Path| x.to_string_lossy().to_lowercase();
-    let (p, dir) = (PathBuf::from(lower(p)), PathBuf::from(lower(dir)));
-    p.starts_with(&dir)
+    under_lower(&lower(p), &lower(dir))
 }
 
 /// Both forms of a protected path: as written and through its links.
@@ -252,16 +245,8 @@ fn path_verdict(ctx: &HardCtx, cwd: &Path, raw: &str) -> Option<HardVerdict> {
     if raw.is_empty() {
         return None;
     }
-    let p = resolve(ctx, cwd, raw);
-    for (store, _) in CREDENTIAL_STORES {
-        if forms(ctx.home.join(store)).iter().any(|s| under(&p, s)) {
-            return Some(deny(WHY_CREDENTIALS));
-        }
-    }
-    if !ctx.app_root.as_os_str().is_empty() && forms(ctx.app_root.join("state")).iter().any(|s| under(&p, s)) {
-        return Some(deny(WHY_STATE));
-    }
-    None
+    let p = lower(&resolve(ctx, cwd, raw));
+    ctx.guarded().iter().find(|(g, _)| under_lower(&p, g)).map(|(_, why)| deny(why))
 }
 
 fn may_write(ctx: &HardCtx, raw: &str) -> bool {
@@ -276,7 +261,7 @@ fn may_write(ctx: &HardCtx, raw: &str) -> bool {
 
 /// The host of a URL (`https://user@a.b:443/x` → `a.b`), or of a bare
 /// `a.b/x`. `None` when it can't be read.
-pub fn host_of(url: &str) -> Option<String> {
+pub fn url_host(url: &str) -> Option<String> {
     let rest = match url.split_once("://") {
         Some((scheme, rest)) if !scheme.is_empty() => rest,
         Some(_) => return None,
@@ -306,7 +291,7 @@ pub fn host_allowed(allow: &[String], host: &str) -> bool {
 }
 
 fn host_verdict(ctx: &HardCtx, url: &str) -> Option<HardVerdict> {
-    match host_of(url) {
+    match url_host(url) {
         Some(h) if host_allowed(&ctx.network_allow, &h) => None,
         Some(_) => Some(user_only(WHY_HOST)),
         None => Some(user_only(WHY_HOST_UNKNOWN)),
@@ -477,7 +462,7 @@ fn segment(ctx: &HardCtx, sh: &mut Shell, all: &[String], depth: u8) -> Option<H
         "cd" | "pushd" => {
             let to = args.iter().find(|a| !a.starts_with('-')).map(String::as_str).unwrap_or("~");
             sh.cwd = resolve(ctx, &sh.cwd, to);
-            sh.outside = !under(&sh.cwd, &real_through_links(&ctx.worktree));
+            sh.outside = !under(&sh.cwd, ctx.worktree_real());
         }
         "git" => keep(&mut found, git(ctx, sh, args)),
         "gh" => keep(&mut found, gh(args)),
@@ -505,7 +490,7 @@ fn git(ctx: &HardCtx, sh: &mut Shell, args: &[String]) -> Option<HardVerdict> {
             "-C" => {
                 if let Some(d) = args.get(i + 1) {
                     let dir = resolve(ctx, &sh.cwd, d);
-                    elsewhere = !under(&dir, &real_through_links(&ctx.worktree));
+                    elsewhere = !under(&dir, ctx.worktree_real());
                 }
                 i += 2;
             }
@@ -706,19 +691,19 @@ fn fetch(ctx: &HardCtx, args: &[String]) -> Option<HardVerdict> {
             continue;
         }
         if let Some(u) = a.strip_prefix("--url=") {
-            match host_of(u) {
+            match url_host(u) {
                 Some(h) => hosts.push(h),
                 None => unreadable = true,
             }
         } else if a == "--url" {
-            match args.get(i + 1).and_then(|u| host_of(u)) {
+            match args.get(i + 1).and_then(|u| url_host(u)) {
                 Some(h) => hosts.push(h),
                 None => unreadable = true,
             }
             i += 2;
             continue;
         } else if !a.starts_with('-') {
-            match host_of(a) {
+            match url_host(a) {
                 Some(h) => hosts.push(h),
                 None => unreadable = true,
             }
@@ -757,13 +742,14 @@ mod tests {
         std::fs::create_dir_all(&extra).unwrap();
         let ctx = HardCtx {
             home,
-            app_root: app,
+            state_dir: app.join("state"),
             cwd: wt.clone(),
             worktree: wt,
             extra_write: vec![extra],
             network_allow: vec!["github.com".into(), "*.crates.io".into()],
             protected: vec!["main".into(), "master".into(), "orch/x/integration".into()],
             branch: OnceCell::from(Some("feat".to_string())),
+            ..Default::default()
         };
         Fx { _d: d, ctx }
     }
@@ -775,6 +761,22 @@ mod tests {
     fn kind(v: Option<HardVerdict>) -> Option<HardKind> {
         v.map(|v| v.kind)
     }
+
+    /// Every reason.
+    const ALL_WHY: &[&str] = &[
+        WHY_CREDENTIALS,
+        WHY_STATE,
+        WHY_WRITE_OUTSIDE,
+        WHY_GIT_PUSH,
+        WHY_PR_CREATE,
+        WHY_PR_MERGE,
+        WHY_MERGE_PROTECTED,
+        WHY_GH_WRITE,
+        WHY_GIT_DESTRUCTIVE,
+        WHY_HOST,
+        WHY_HOST_UNKNOWN,
+        WHY_MCP_WRITE,
+    ];
 
     #[test]
     fn reasons_are_short() {
@@ -788,7 +790,7 @@ mod tests {
     fn file_tools_in_credential_stores_and_state_are_denied() {
         let f = fx();
         let home = f.ctx.home.display().to_string();
-        let state = f.ctx.app_root.join("state/orch.db").display().to_string();
+        let state = f.ctx.state_dir.join("orch.db").display().to_string();
         for (tool, input) in [
             ("Read", json!({"file_path": format!("{home}/.ssh/id_rsa")})),
             ("Read", json!({"file_path": "~/.ssh/id_rsa"})),
@@ -830,7 +832,9 @@ mod tests {
         let real = f.ctx.home.join("vault");
         std::fs::create_dir_all(&real).unwrap();
         std::os::unix::fs::symlink(&real, f.ctx.home.join(".password-store")).unwrap();
-        let v = check(&f.ctx, "Read", &json!({"file_path": real.join("pw.gpg").display().to_string()}));
+        // A context is built per call: a new one sees the new link.
+        let ctx = HardCtx { guarded: OnceCell::new(), ..f.ctx.clone() };
+        let v = check(&ctx, "Read", &json!({"file_path": real.join("pw.gpg").display().to_string()}));
         assert_eq!(v.unwrap().why, WHY_CREDENTIALS);
     }
 
@@ -852,7 +856,7 @@ mod tests {
             HardKind::Deny
         );
         // A link out of the worktree is outside.
-        std::os::unix::fs::symlink(&f.ctx.app_root, f.ctx.worktree.join("out")).unwrap();
+        std::os::unix::fs::symlink(f.ctx.state_dir.parent().unwrap(), f.ctx.worktree.join("out")).unwrap();
         assert_eq!(check(&f.ctx, "Write", &json!({"file_path": "out/x"})).unwrap().why, WHY_WRITE_OUTSIDE);
         // Reading outside is not a hard case.
         assert_eq!(check(&f.ctx, "Read", &json!({"file_path": "/etc/hosts"})), None);
@@ -916,11 +920,6 @@ mod tests {
         let mut on_main = f.ctx.clone();
         on_main.branch = OnceCell::from(Some("main".to_string()));
         assert_eq!(check(&on_main, "Bash", &json!({"command": "git merge feat"})).unwrap().kind, HardKind::Deny);
-        // Read from the worktree's HEAD when not given.
-        let d = tempfile::tempdir_in(orch_protocol::test_tmp()).unwrap();
-        std::fs::create_dir_all(d.path().join(".git")).unwrap();
-        std::fs::write(d.path().join(".git/HEAD"), "ref: refs/heads/master\n").unwrap();
-        assert_eq!(head_branch(d.path()).as_deref(), Some("master"));
     }
 
     #[test]
@@ -1053,7 +1052,7 @@ mod tests {
         ] {
             assert_eq!(bash_v(&f, c).unwrap().why, WHY_CREDENTIALS, "{c}");
         }
-        let state = f.ctx.app_root.join("state").display().to_string();
+        let state = f.ctx.state_dir.display().to_string();
         assert_eq!(bash_v(&f, &format!("sqlite3 '{state}/orch.db' .dump")).unwrap().why, WHY_STATE);
         assert_eq!(bash_v(&f, "ls ~/.ssh*"), None, "globs are not resolved");
         // `${HOME}` unquoted or double-quoted is a parameter, not a group.

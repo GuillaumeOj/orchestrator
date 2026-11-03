@@ -11,8 +11,7 @@ use serde_json::{Value, json};
 use std::os::unix::net::UnixStream;
 
 use crate::inbox::{Call, PARKED_MESSAGE, Waited, allows, reply};
-use crate::policy::hard::HardKind;
-use crate::policy::{Effect, Evaluation};
+use crate::policy::{Effect, Evaluation, Gate};
 use crate::runtime::Runtime;
 use crate::store::AgentRecord;
 
@@ -39,36 +38,30 @@ impl Runtime {
             tool_use_id: None,
             cwd: Some(rec.worktree.display().to_string()),
         };
-        let hard = self.hard_check(&rec, &tool, &m.arguments, call.cwd.as_deref());
-        if let Some(h) = hard.as_ref().filter(|h| h.kind == HardKind::Deny) {
-            // The same audit detail as the policy's answers (the call, and the reason).
-            let ev =
-                Evaluation { effect: Effect::Deny, source: crate::policy::Source::Hard { why: h.why }, rule: None };
-            let _ = self.db.audit("core", Some(&rec.id), &m.tool, Some(&tool), "deny", call.detail(None, Some(&ev)));
-            return (true, format!("Denied by the core ({}). Do not retry.", h.why), Value::Null);
-        }
         let mut actor = format!("agent:{}", rec.id);
-        if self.one_shot(&rec, &call, hard.as_ref()) {
-            actor = "user".into();
-        } else {
-            self.policy_sync();
-            let ev = self.policy.evaluate(&self.subject(&rec), &tool, &m.arguments, hard.as_ref(), false);
-            if let Some(ev) = ev {
+        match self.policy_gate(&rec, &call, false) {
+            Gate::HardDeny(ev) => {
+                // The same audit detail as the policy's answers (the call, and the reason).
+                let _ =
+                    self.db.audit("core", Some(&rec.id), &m.tool, Some(&tool), "deny", call.detail(None, Some(&ev)));
+                return (true, format!("Denied by {}. Do not retry.", ev.denial()), Value::Null);
+            }
+            Gate::OneShot => actor = "user".into(),
+            // No rule: the P1 default, it runs.
+            Gate::Policy(None, _) => {}
+            Gate::Policy(Some(ev), subject) => {
                 let detail = call.detail(None, Some(&ev));
-                let (id, pattern) = ev.rule.as_ref().map_or(("?", ""), |r| (r.id.as_str(), r.pattern.as_str()));
                 match ev.effect {
                     Effect::Deny => {
                         let _ = self.db.audit(&ev.actor(), Some(&rec.id), &m.tool, Some(&tool), "deny", detail);
-                        return (
-                            true,
-                            format!("Denied by the user's policy rule {id} ({pattern}). Do not retry."),
-                            Value::Null,
-                        );
+                        return (true, format!("Denied by {}. Do not retry.", ev.denial()), Value::Null);
                     }
-                    Effect::User | Effect::Overwatch => match self.ask_user(&rec, &call, &ev, m.deadline_ms, conn) {
-                        Ok(()) => actor = "user".into(),
-                        Err(e) => return (true, format!("{e:#}"), Value::Null),
-                    },
+                    Effect::User | Effect::Overwatch => {
+                        match self.ask_user(&rec, &call, &subject, &ev, m.deadline_ms, conn) {
+                            Ok(()) => actor = "user".into(),
+                            Err(e) => return (true, format!("{e:#}"), Value::Null),
+                        }
+                    }
                     Effect::Allow => {
                         let _ = self.db.audit(&ev.actor(), Some(&rec.id), &m.tool, Some(&tool), "allow", detail);
                         actor = ev.actor();
@@ -116,13 +109,13 @@ impl Runtime {
         &self,
         rec: &AgentRecord,
         call: &Call,
+        subject: &crate::permissions::Subject,
         ev: &Evaluation,
         deadline_ms: u64,
         conn: Option<&UnixStream>,
     ) -> Result<()> {
-        let subject = self.subject(rec);
         let budget = self.hold_budget(deadline_ms);
-        match self.hold_for_decision(rec, call, &subject, Some(ev), budget, conn) {
+        match self.hold_for_decision(rec, call, subject, Some(ev), budget, conn) {
             Waited::Decided(i) if allows(&i) => Ok(()),
             Waited::Decided(i) => {
                 let why = reply(&i).map(|m| format!(" They said: {m}")).unwrap_or_default();

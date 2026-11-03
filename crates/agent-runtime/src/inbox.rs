@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::permissions::{self, Subject};
 use crate::policy::hard::{HardKind, HardVerdict};
-use crate::policy::{Effect, Evaluation, Source};
+use crate::policy::{Effect, Evaluation, Gate, Source};
 use crate::runtime::{Runtime, conn_closed, reserved_slot};
 use crate::state::AgentState;
 use crate::store::{AgentRecord, HoldKind, HoldRow, HoldStatus, StateFile, TurnStatus};
@@ -169,10 +169,15 @@ fn has_parked(s: &StateFile, agent: &str) -> bool {
 impl Runtime {
     /// Who an agent is for rule scopes.
     pub fn subject(&self, rec: &AgentRecord) -> Subject {
+        self.subject_with(rec, self.db.project_by_path(&rec.repo).ok().flatten().as_ref())
+    }
+
+    /// [`Runtime::subject`] with its project already looked up.
+    pub(crate) fn subject_with(&self, rec: &AgentRecord, project: Option<&orch_store::Project>) -> Subject {
         Subject {
             agent_id: rec.id.clone(),
             role: rec.role.name.clone(),
-            project_id: self.db.project_by_path(&rec.repo).ok().flatten().map(|p| p.id),
+            project_id: project.map(|p| p.id.clone()),
             team: rec.team.is_some(),
         }
     }
@@ -474,25 +479,16 @@ impl Runtime {
         conn: Option<&UnixStream>,
     ) -> Option<HookOutput> {
         let call = Call::from_hook(p);
-        let hard = self.hard_check(rec, &call.tool, &call.input, call.cwd.as_deref());
-        if let Some(h) = hard.as_ref().filter(|h| h.kind == HardKind::Deny) {
-            let ev = Evaluation { effect: Effect::Deny, source: Source::Hard { why: h.why }, rule: None };
-            self.policy_answered(rec, &call, &ev);
-            return Some(HookOutput::permission_request(
-                PermissionBehavior::Deny,
-                Some(&format!("ORCH: denied by the core ({}). Do not retry it.", h.why)),
-            ));
-        }
-        if self.one_shot(rec, &call, hard.as_ref()) {
-            return Some(HookOutput::permission_request(PermissionBehavior::Allow, None));
-        }
-        self.policy_sync();
-        let subject = self.subject(rec);
-        let ev = self.policy.evaluate(&subject, &call.tool, &call.input, hard.as_ref(), true).unwrap_or(Evaluation {
-            effect: Effect::User,
-            source: Source::Default,
-            rule: None,
-        });
+        let (ev, subject) = match self.policy_gate(rec, &call, true) {
+            Gate::HardDeny(ev) => {
+                self.policy_answered(rec, &call, &ev);
+                let m = format!("ORCH: denied by {}. Do not retry it.", ev.denial());
+                return Some(HookOutput::permission_request(PermissionBehavior::Deny, Some(&m)));
+            }
+            Gate::OneShot => return Some(HookOutput::permission_request(PermissionBehavior::Allow, None)),
+            // With the defaults the policy always answers.
+            Gate::Policy(ev, subject) => (ev.expect("the default effect"), subject),
+        };
         match ev.effect {
             Effect::Allow => {
                 self.policy_answered(rec, &call, &ev);
@@ -500,11 +496,8 @@ impl Runtime {
             }
             Effect::Deny => {
                 self.policy_answered(rec, &call, &ev);
-                let (id, pattern) = ev.rule.as_ref().map_or(("?", ""), |r| (r.id.as_str(), r.pattern.as_str()));
-                Some(HookOutput::permission_request(
-                    PermissionBehavior::Deny,
-                    Some(&format!("ORCH: denied by the user's policy rule {id} ({pattern}).")),
-                ))
+                let m = format!("ORCH: denied by {}.", ev.denial());
+                Some(HookOutput::permission_request(PermissionBehavior::Deny, Some(&m)))
             }
             // B2 routes `overwatch` to the Overwatch; until then it waits on the user.
             Effect::User | Effect::Overwatch => {
@@ -573,8 +566,8 @@ impl Runtime {
         conn: Option<&UnixStream>,
     ) -> Waited {
         let (tool, input) = (call.tool.as_str(), &call.input);
-        let kept = ev.is_some_and(|e| !matches!(e.source, Source::Default));
-        let always = if kept { None } else { permissions::always_pattern(tool, input) };
+        let always =
+            if ev.is_some_and(|e| !e.allows_always()) { None } else { permissions::always_pattern(tool, input) };
         let ask_rule = ev.and_then(Evaluation::rule_id);
         let (summary, description) = brief(tool, input);
         let line = permissions::summary(tool, input);

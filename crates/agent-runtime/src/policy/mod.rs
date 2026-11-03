@@ -25,6 +25,7 @@ use crate::permissions::{self, Subject};
 use file::{ParseError, PolicyDoc};
 use hard::{HardKind, HardVerdict};
 
+pub(crate) use rt::Gate;
 pub use rt::POLICY_ALERT;
 
 /// What a rule (or the default) does with a call. Ordered by restriction.
@@ -60,9 +61,9 @@ impl Effect {
         }
     }
 
-    /// Someone (the Overwatch or the user) decides: the call is held.
-    pub fn holds(self) -> bool {
-        matches!(self, Effect::Overwatch | Effect::User)
+    /// A default effect (D3): `overwatch` | `user` only.
+    pub fn parse_default(s: &str) -> Option<Effect> {
+        Self::parse(s).filter(|e| matches!(e, Effect::Overwatch | Effect::User))
     }
 }
 
@@ -161,6 +162,27 @@ pub struct Evaluation {
 }
 
 impl Evaluation {
+    /// The core's hard deny of a call.
+    pub fn hard(h: &HardVerdict) -> Evaluation {
+        let effect = if h.kind == HardKind::Deny { Effect::Deny } else { Effect::User };
+        Evaluation { effect, source: Source::Hard { why: h.why }, rule: None }
+    }
+
+    /// Who denied, in words: "the core (git push: …)", "the user's policy rule r2 (Bash(rm:*))".
+    pub fn denial(&self) -> String {
+        match (&self.source, &self.rule) {
+            (Source::Hard { why }, _) => format!("the core ({why})"),
+            (_, Some(r)) => format!("the user's policy rule {} ({})", r.id, r.pattern),
+            _ => "the policy".into(),
+        }
+    }
+
+    /// "Always allow" can make a rule that takes effect: not when a `user`
+    /// rule or the hard lists sent the call here (an allow never wins over them).
+    pub fn allows_always(&self) -> bool {
+        matches!(self.source, Source::Default)
+    }
+
     /// The FR-709 actor of an answer it gives itself: `rule:<id>` | `core`.
     pub fn actor(&self) -> String {
         match &self.source {
@@ -193,6 +215,8 @@ impl Evaluation {
 pub struct FileState {
     pub scope: Scope,
     pub path: PathBuf,
+    /// `path` through its directory's links (FSEvents reports real paths).
+    real: PathBuf,
     pub exists: bool,
     pub doc: PolicyDoc,
     pub error: Option<ParseError>,
@@ -200,13 +224,16 @@ pub struct FileState {
 
 impl FileState {
     fn new(scope: Scope, path: PathBuf) -> FileState {
-        FileState { scope, path, exists: false, doc: PolicyDoc::default(), error: None }
+        let real = real_file(&path);
+        FileState { scope, path, real, exists: false, doc: PolicyDoc::default(), error: None }
     }
 
     /// Reads the file again. A parse error keeps the last good rules.
     /// Returns whether the error changed (for the alert).
     fn reload(&mut self) -> bool {
         let before = self.error.clone();
+        // Its directory may have appeared since.
+        self.real = real_file(&self.path);
         match std::fs::read_to_string(&self.path) {
             Ok(text) => {
                 self.exists = true;
@@ -247,11 +274,19 @@ impl FileState {
     }
 }
 
+fn real_file(p: &Path) -> PathBuf {
+    match (p.parent(), p.file_name()) {
+        (Some(d), Some(n)) => crate::paths::real(d).join(n),
+        _ => p.to_path_buf(),
+    }
+}
+
 /// Allow / overwatch rules whose match covers a call the hard lists keep:
 /// loaded, but no effect on those calls (api-contract §1; Settings warns).
 fn neutralised(rules: &[Rule]) -> Vec<(String, String)> {
     let ctx = hard::HardCtx {
         home: PathBuf::from("/nonexistent-home"),
+        state_dir: PathBuf::new(),
         worktree: PathBuf::from("/nonexistent-worktree"),
         cwd: PathBuf::from("/nonexistent-worktree"),
         protected: vec!["main".into()],
@@ -312,7 +347,7 @@ pub fn evaluate(
     use_defaults: bool,
 ) -> Option<Evaluation> {
     if let Some(h) = hard.filter(|h| h.kind == HardKind::Deny) {
-        return Some(Evaluation { effect: Effect::Deny, source: Source::Hard { why: h.why }, rule: None });
+        return Some(Evaluation::hard(h));
     }
     let mut best: Option<(&Rule, &Scope)> = None;
     for f in files {
@@ -332,7 +367,7 @@ pub fn evaluate(
     });
     if let Some(h) = hard.filter(|h| h.kind == HardKind::UserOnly) {
         if found.as_ref().is_none_or(|e| e.effect < Effect::User) {
-            return Some(Evaluation { effect: Effect::User, source: Source::Hard { why: h.why }, rule: None });
+            return Some(Evaluation::hard(h));
         }
     }
     found.or_else(|| {
@@ -342,6 +377,11 @@ pub fn evaluate(
             rule: None,
         })
     })
+}
+
+/// The global file's `[defaults]`, else D3's.
+fn defaults_of(files: &BTreeMap<Scope, FileState>) -> Defaults {
+    files.get(&Scope::Global).and_then(|f| f.doc.defaults).unwrap_or_default()
 }
 
 /// The loaded files, by scope.
@@ -375,7 +415,17 @@ impl Policy {
 
     /// The global file's `[defaults]`, else D3's.
     pub fn defaults(&self) -> Defaults {
-        self.lock().get(&Scope::Global).and_then(|f| f.doc.defaults).unwrap_or_default()
+        defaults_of(&self.lock())
+    }
+
+    /// Is `scope`'s file known (read at a sync)?
+    pub fn knows(&self, scope: &Scope) -> bool {
+        self.lock().contains_key(scope)
+    }
+
+    /// The directories of the known files (for the watcher).
+    fn dirs(&self) -> Vec<PathBuf> {
+        self.lock().values().filter_map(|f| f.path.parent().map(PathBuf::from)).collect()
     }
 
     /// Sets the files to know (path per scope): new or moved ones are read,
@@ -403,14 +453,8 @@ impl Policy {
 
     /// The scope whose file is `path`.
     fn scope_of(&self, path: &Path) -> Option<Scope> {
-        let canon = |p: &Path| {
-            p.parent()
-                .and_then(|d| std::fs::canonicalize(d).ok())
-                .map(|d| d.join(p.file_name().unwrap_or_default()))
-                .unwrap_or_else(|| p.to_path_buf())
-        };
-        let want = canon(path);
-        self.lock().values().find(|f| f.path == path || canon(&f.path) == want).map(|f| f.scope.clone())
+        let want = real_file(path);
+        self.lock().values().find(|f| f.path == path || f.real == want).map(|f| f.scope.clone())
     }
 
     /// The evaluation for `s` (its project's file and the global one).
@@ -427,8 +471,7 @@ impl Policy {
         if let Some(p) = &s.project_id {
             apply.extend(files.get(&Scope::Project(p.clone())));
         }
-        let defaults = files.get(&Scope::Global).and_then(|f| f.doc.defaults).unwrap_or_default();
-        evaluate(&apply, defaults, s, tool, input, hard, use_defaults)
+        evaluate(&apply, defaults_of(&files), s, tool, input, hard, use_defaults)
     }
 
     /// A rule by id (in `scope` when given), with its file.

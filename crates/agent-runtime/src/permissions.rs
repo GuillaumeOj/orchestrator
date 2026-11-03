@@ -21,23 +21,28 @@ pub struct Subject {
     pub team: bool,
 }
 
-/// The input a rule's `(spec)` matches against.
-pub fn primary_input(tool: &str, input: &Value) -> Option<String> {
-    let key = match tool {
+/// The input key a rule's `(spec)` matches for a built-in tool.
+pub fn primary_key(tool: &str) -> Option<&'static str> {
+    Some(match tool {
         "Bash" => "command",
         "Read" | "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => "file_path",
         "WebFetch" => "url",
         "WebSearch" => "query",
         "Glob" | "Grep" => "pattern",
-        _ => {
-            return match input {
-                Value::Null => None,
-                Value::Object(m) if m.is_empty() => None,
-                other => Some(other.to_string()),
-            };
-        }
-    };
-    input.get(key).and_then(Value::as_str).map(str::to_string)
+        _ => return None,
+    })
+}
+
+/// The input a rule's `(spec)` matches against (the whole input for other tools).
+pub fn primary_input(tool: &str, input: &Value) -> Option<String> {
+    match primary_key(tool) {
+        Some(key) => input.get(key).and_then(Value::as_str).map(str::to_string),
+        None => match input {
+            Value::Null => None,
+            Value::Object(m) if m.is_empty() => None,
+            other => Some(other.to_string()),
+        },
+    }
 }
 
 fn tool_matches(pat: &str, tool: &str) -> bool {

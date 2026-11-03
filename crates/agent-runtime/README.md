@@ -579,7 +579,7 @@ std::thread::spawn({ let rt = rt.clone(); move || server::serve(rt, bus::bind_li
 | Agents | `start(&AgentSpec)`, `resume`, `suspend`, `kill`, `interrupt`, `deliver`, `attach`/`read_output`/`resize`, `note_user_activity`, `state_json`, `live_ids`, `live_cap` |
 | Governor | `usage_json`, `governor_json`, `pause_all`, `resume_all`, `pause_agent`, `resume_agent`, `run_now`, `cancel`, `undo`, `sprint`, `answer_ask`, `set_shadow`, `set_plan`, `replan`, `tick` (the server loop calls it) |
 | Inbox | `inbox()`, `decide(id, InboxDecision, scope, message)` |
-| Policy | `add_rule`, `revoke_rule(id, file)` (audited, written to the files), `policy_rules`, `policy_files`, `policy_defaults` / `set_policy_defaults`, `policy_open`, `policy_test`, `hard_check(rec, tool, input, cwd)`, `evaluate_call` |
+| Policy | `add_rule`, `revoke_rule(id, file)` (audited, written to the files), `policy_rules`, `policy_files`, `policy_defaults` / `set_policy_defaults`, `policy_open`, `policy_test`, `hard_check(rec, tool, input, cwd)` |
 | Commits | `commit_for(agent, &CommitRequest, "user")` |
 | Projects | `add_project`, `clone_project`, `projects_overview`, `project_detail(id, with_prs)`, `fetch_project`, `diff`, `remove_worktree`, `removal_plan`, `remove_project`, `relocate_project` |
 | Data | `rt.db` (`orch_store::Store`): `events`, `audit_log`, `search_transcripts`, `usage_since`, `forecasts_since`, `actions`, `terminals`… (read freely; change runtime-owned tables through `rt`) |

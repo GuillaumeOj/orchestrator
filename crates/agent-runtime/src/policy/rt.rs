@@ -3,21 +3,34 @@
 //! allow, `rule add` / `revoke`), the parse-error alerts, the one-time
 //! export of the store's rules (migration 14) and the `policy_*` commands.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow, bail};
 use orch_store::{InboxStatus, RuleEffect, RuleScope};
 use serde_json::{Value, json};
 
-use super::hard::{self, HardCtx, HardVerdict};
+use super::hard::{self, HardCtx, HardKind, HardVerdict};
 use super::{Defaults, Effect, Evaluation, Rule, Scope, file};
+use crate::inbox::Call;
 use crate::permissions::Subject;
 use crate::runtime::Runtime;
 use crate::store::AgentRecord;
 
 /// The `alert` decision a broken policy file raises (its payload's `alert`).
 pub const POLICY_ALERT: &str = "policy_parse";
+
+/// What the core's checks say about a call before anything is held: the
+/// shared first steps of a PermissionRequest and an orchestrator tool call.
+pub(crate) enum Gate {
+    /// On the hard deny list: answered at once.
+    HardDeny(Evaluation),
+    /// A one-shot allow (an approved parked call) took it.
+    OneShot,
+    /// The policy's answer (`None`: no rule and no default asked for), and
+    /// who asked.
+    Policy(Option<Evaluation>, Subject),
+}
 
 impl Runtime {
     /// `<app data>/policy.toml`.
@@ -47,8 +60,9 @@ impl Runtime {
 
     /// Brings the known files in line with the registered projects (new
     /// ones read, moved ones re-read, removed ones dropped) and the watcher
-    /// with them. Cheap when nothing changed.
-    pub(crate) fn policy_sync(&self) {
+    /// with them. Run at start, on project changes and by the policy
+    /// commands; the hot paths only [`Runtime::policy_ensure`].
+    pub fn policy_sync(&self) {
         let mut want = BTreeMap::from([(Scope::Global, self.global_policy_path())]);
         for p in self.db.projects(false).unwrap_or_default() {
             want.insert(Scope::Project(p.id.clone()), self.project_policy_path(&p));
@@ -59,6 +73,15 @@ impl Runtime {
             }
         }
         self.policy_watch();
+    }
+
+    /// Syncs when `project`'s file is not known yet (a project registered
+    /// by a path that did not sync): the per-call check, with no I/O.
+    fn policy_ensure(&self, project: Option<&str>) {
+        let known = |sc: &Scope| self.policy.knows(sc);
+        if !known(&Scope::Global) || project.is_some_and(|p| !known(&Scope::Project(p.into()))) {
+            self.policy_sync();
+        }
     }
 
     /// Reads `scope`'s file again (a watcher event, our own write).
@@ -106,51 +129,64 @@ impl Runtime {
         }
     }
 
-    /// The hard lists' view of `rec` (spec §3.2.1).
-    pub fn hard_ctx(&self, rec: &AgentRecord, cwd: Option<&str>) -> HardCtx {
+    /// The hard lists' context for a worktree of `project`.
+    fn hard_ctx_base(&self, worktree: PathBuf, project: Option<&orch_store::Project>) -> HardCtx {
         let mut protected = vec!["main".to_string(), "master".to_string()];
-        if let Ok(Some(p)) = self.db.project_by_path(&rec.repo) {
+        if let Some(p) = project {
             protected.push(p.default_branch.clone());
             protected.extend(p.typed_settings().base_branch);
         }
+        HardCtx {
+            home: crate::paths::home_dir(),
+            state_dir: self.cfg.paths.state_dir(),
+            cwd: worktree.clone(),
+            worktree,
+            protected,
+            ..Default::default()
+        }
+    }
+
+    /// The hard lists' view of `rec` (spec §3.2.1), its project given.
+    fn hard_ctx_with(&self, rec: &AgentRecord, project: Option<&orch_store::Project>, cwd: Option<&str>) -> HardCtx {
+        let mut ctx = self.hard_ctx_base(rec.worktree.clone(), project);
         // A specialist never merges into its run's integration branch (its lead does).
         if let Some(seat) = rec.team.as_ref().filter(|_| !crate::runtime::reserved_slot(rec)) {
             if let Ok(Some(f)) = self.db.feature(&seat.feature_id) {
-                protected.push(f.integration_branch());
+                ctx.protected.push(f.integration_branch());
             }
         }
-        protected.sort();
-        protected.dedup();
-        HardCtx {
-            home: crate::paths::home_dir(),
-            app_root: self.cfg.paths.root.clone(),
-            worktree: rec.worktree.clone(),
-            cwd: cwd.map(PathBuf::from).unwrap_or_else(|| rec.worktree.clone()),
-            extra_write: rec.role.extra_write.clone(),
-            network_allow: rec.role.network_allow.clone(),
-            protected,
-            branch: Default::default(),
+        ctx.protected.sort();
+        ctx.protected.dedup();
+        if let Some(c) = cwd {
+            ctx.cwd = PathBuf::from(c);
         }
+        ctx.extra_write = rec.role.extra_write.clone();
+        ctx.network_allow = rec.role.network_allow.clone();
+        ctx
     }
 
     /// Is `rec`'s call on a hard list? (B2, B3: every Overwatch path checks it.)
     pub fn hard_check(&self, rec: &AgentRecord, tool: &str, input: &Value, cwd: Option<&str>) -> Option<HardVerdict> {
-        hard::check(&self.hard_ctx(rec, cwd), tool, input)
+        let project = self.db.project_by_path(&rec.repo).ok().flatten();
+        hard::check(&self.hard_ctx_with(rec, project.as_ref(), cwd), tool, input)
     }
 
-    /// The policy's answer for `rec`'s call, hard lists included.
-    /// `use_defaults` false: no matching rule gives `None` (orchestrator tools run).
-    pub fn evaluate_call(
-        &self,
-        rec: &AgentRecord,
-        tool: &str,
-        input: &Value,
-        cwd: Option<&str>,
-        use_defaults: bool,
-    ) -> Option<Evaluation> {
-        self.policy_sync();
-        let hard = self.hard_check(rec, tool, input, cwd);
-        self.policy.evaluate(&self.subject(rec), tool, input, hard.as_ref(), use_defaults)
+    /// The hard deny list, then a one-shot allow, then the policy (the
+    /// default effect only when `use_defaults`). One project lookup.
+    pub(crate) fn policy_gate(&self, rec: &AgentRecord, call: &Call, use_defaults: bool) -> Gate {
+        let project = self.db.project_by_path(&rec.repo).ok().flatten();
+        let ctx = self.hard_ctx_with(rec, project.as_ref(), call.cwd.as_deref());
+        let hard = hard::check(&ctx, &call.tool, &call.input);
+        if let Some(h) = hard.as_ref().filter(|h| h.kind == HardKind::Deny) {
+            return Gate::HardDeny(Evaluation::hard(h));
+        }
+        if self.one_shot(rec, call, hard.as_ref()) {
+            return Gate::OneShot;
+        }
+        let subject = self.subject_with(rec, project.as_ref());
+        self.policy_ensure(subject.project_id.as_deref());
+        let ev = self.policy.evaluate(&subject, &call.tool, &call.input, hard.as_ref(), use_defaults);
+        Gate::Policy(ev, subject)
     }
 
     /// The file a new rule goes to: project → its file; role → the
@@ -281,10 +317,7 @@ impl Runtime {
 
     /// Writes `[defaults]` in the global file (overwatch | user each).
     pub fn set_policy_defaults(&self, team: &str, solo: &str) -> Result<Defaults> {
-        let parse = |k: &str, v: &str| match Effect::parse(v) {
-            Some(e @ (Effect::Overwatch | Effect::User)) => Ok(e),
-            _ => Err(anyhow!("{k}: overwatch | user")),
-        };
+        let parse = |k: &str, v: &str| Effect::parse_default(v).ok_or_else(|| anyhow!("{k}: overwatch | user"));
         let d = Defaults { team: parse("team", team)?, solo: parse("solo", solo)? };
         self.policy_sync();
         {
@@ -319,19 +352,7 @@ impl Runtime {
         self.policy_sync();
         let proj = project.map(|p| self.db.project(p)?.ok_or_else(|| anyhow!("no project {p}"))).transpose()?;
         let wt = proj.as_ref().map(|p| p.path.clone()).unwrap_or_else(|| PathBuf::from("/"));
-        let ctx = HardCtx {
-            home: crate::paths::home_dir(),
-            app_root: self.cfg.paths.root.clone(),
-            cwd: wt.clone(),
-            worktree: wt,
-            protected: ["main", "master"]
-                .iter()
-                .map(|s| s.to_string())
-                .chain(proj.iter().map(|p| p.default_branch.clone()))
-                .collect(),
-            ..Default::default()
-        };
-        let hard = hard::check(&ctx, tool, input);
+        let hard = hard::check(&self.hard_ctx_base(wt, proj.as_ref()), tool, input);
         let s = Subject {
             agent_id: String::new(),
             role: role.into(),
@@ -355,6 +376,7 @@ impl Runtime {
         self.policy_sync();
         let _w = self.policy.write_lock();
         let mut done = vec![];
+        let mut touched = BTreeSet::new();
         for r in rows {
             let target = match r.scope {
                 // Gone (not a read error: that one is retried at the next start).
@@ -387,11 +409,15 @@ impl Runtime {
             };
             match written {
                 Ok(()) => {
-                    self.policy_reload(&scope);
+                    touched.insert(scope);
                     done.push(r.id);
                 }
                 Err(e) => eprintln!("warn: store rule {} not migrated: {e:#}", r.id),
             }
+        }
+        // Each file read once, after all its rules are in.
+        for scope in &touched {
+            self.policy_reload(scope);
         }
         if let Err(e) = self.db.mark_rules_migrated(&done) {
             eprintln!("warn: migrated store rules not marked: {e:#}");

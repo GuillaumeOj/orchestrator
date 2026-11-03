@@ -59,9 +59,9 @@ pub fn parse(text: &str) -> Result<PolicyDoc, ParseError> {
         let eff = |k: &str| -> Result<Option<Effect>, ParseError> {
             match t.get(k) {
                 None => Ok(None),
-                Some(i) => match i.as_str().and_then(Effect::parse) {
-                    Some(e @ (Effect::Overwatch | Effect::User)) => Ok(Some(e)),
-                    _ => Err(bad(at(i.span()), format!("defaults.{k} must be \"overwatch\" or \"user\""))),
+                Some(i) => match i.as_str().and_then(Effect::parse_default) {
+                    Some(e) => Ok(Some(e)),
+                    None => Err(bad(at(i.span()), format!("defaults.{k} must be \"overwatch\" or \"user\""))),
                 },
             }
         };
@@ -125,9 +125,7 @@ fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     }
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, doc.to_string()).with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| format!("write {}", path.display()))
+    crate::compile::write_atomic(path, doc.to_string().as_bytes()).with_context(|| format!("write {}", path.display()))
 }
 
 /// Creates the file with its header when missing. True if it created it.

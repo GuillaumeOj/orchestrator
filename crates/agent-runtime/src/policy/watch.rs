@@ -26,13 +26,7 @@ fn is_policy_file(p: &std::path::Path) -> bool {
 impl Runtime {
     /// Watches the directories of the known files (those that exist).
     pub(super) fn policy_watch(&self) {
-        let want: BTreeSet<PathBuf> = self
-            .policy
-            .files()
-            .iter()
-            .filter_map(|f| f.path.parent().map(PathBuf::from))
-            .filter(|d| d.is_dir())
-            .collect();
+        let want: BTreeSet<PathBuf> = self.policy.dirs().into_iter().filter(|d| d.is_dir()).collect();
         let mut slot = self.policy.watch.lock().unwrap_or_else(|e| e.into_inner());
         if slot.as_ref().is_some_and(|w| w.dirs == want) {
             return;

@@ -31,12 +31,14 @@ impl Runtime {
         let p = project::register(&self.db, path)?;
         self.db.audit("user", None, "project_added", p.path.to_str(), "ok", json!({"id": p.id}))?;
         self.mark_full_index();
+        self.policy_sync();
         Ok(p)
     }
 
     pub fn clone_project(&self, url: &str, parent: &Path, name: Option<&str>) -> Result<Project> {
         let p = project::clone(&self.db, url, parent, name, Duration::from_secs(600))?;
         self.db.audit("user", None, "project_cloned", Some(url), "ok", json!({"id": p.id, "path": p.path}))?;
+        self.policy_sync();
         Ok(p)
     }
 
@@ -288,6 +290,7 @@ impl Runtime {
             self.store.write(|s| s.worktrees.retain(|_, w| w.repo != p.path))?;
         }
         self.db.audit("user", None, "project_removed", p.path.to_str(), "ok", json!(report))?;
+        self.policy_sync();
         Ok(report)
     }
 
@@ -337,6 +340,7 @@ impl Runtime {
         np.worktree_root = orch_git::worktree::worktree_root(&new);
         self.db.upsert_project(&np)?;
         self.db.audit("user", None, "project_relocated", new.to_str(), "ok", json!({"from": old, "report": report}))?;
+        self.policy_sync();
         Ok(report)
     }
 }
