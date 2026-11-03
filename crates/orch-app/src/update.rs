@@ -473,6 +473,16 @@ struct Inner {
     running: bool,
 }
 
+impl Inner {
+    /// The staged PR bundle, when it is verified and no restart is under way.
+    fn ready_pr(&self) -> Option<PathBuf> {
+        match (&self.staged_pr, self.s.pr_install.as_ref().map(|p| p.state)) {
+            (Some(app), Some(PrPhase::Ready)) if self.restart.is_none() => Some(app.clone()),
+            _ => None,
+        }
+    }
+}
+
 type Sink = Arc<dyn Fn(Value) + Send + Sync>;
 
 pub struct Updater {
@@ -820,10 +830,7 @@ impl Updater {
                 (Some(st), Phase::Ready) if i.restart.is_none() => st.app.clone(),
                 _ => bail!("no update ready"),
             },
-            RestartTarget::Pr => match (&i.staged_pr, i.s.pr_install.as_ref().map(|p| p.state)) {
-                (Some(app), Some(PrPhase::Ready)) if i.restart.is_none() => app.clone(),
-                _ => bail!("no PR build ready"),
-            },
+            RestartTarget::Pr => i.ready_pr().ok_or_else(|| anyhow!("no PR build ready"))?,
         };
         let bundle = self.bundle.clone().ok_or_else(|| anyhow!("not running from an app bundle"))?;
         match prepare(&bundle, &staged) {
@@ -855,11 +862,7 @@ impl Updater {
 
     /// Whether `update_restart` with target `pr` has a verified build to swap in.
     pub fn pr_ready(&self) -> Result<()> {
-        let i = self.inner.lock_ok();
-        match (&i.staged_pr, i.s.pr_install.as_ref().map(|p| p.state)) {
-            (Some(_), Some(PrPhase::Ready)) if i.restart.is_none() => Ok(()),
-            _ => bail!("no PR build ready"),
-        }
+        self.inner.lock_ok().ready_pr().map(|_| ()).ok_or_else(|| anyhow!("no PR build ready"))
     }
 
     /// `Err` when the updater is off for good (`disabled_why` names the reason).
