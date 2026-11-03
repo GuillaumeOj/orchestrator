@@ -3,6 +3,7 @@
 
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, describe, expect, it } from 'vitest';
+import MemberChip from '../src/components/mission/MemberChip.svelte';
 import UndeliveredChip from '../src/components/UndeliveredChip.svelte';
 import WaitingChip from '../src/components/WaitingChip.svelte';
 import { app } from '../src/lib/app.svelte.js';
@@ -169,5 +170,25 @@ describe('report section', () => {
     expect(d.tables[1].rows).toEqual([]);
     expect(d.tables[2].rows).toEqual([{ key: 'stuck wait', n: 1 }]);
     expect(d.panics).toBe(1);
+  });
+});
+
+describe('MemberChip undelivered chip', () => {
+  it('is a sibling button of the member button, not nested, and opens the decision', async () => {
+    const r = rec('back-1', 'error', {
+      undelivered: { count: 2, oldest_ms: Date.now() - 20 * 60_000, blocker: 'no_ack' },
+      waiting_on: { kind: 'delivery', ref: 'delivery-4', since_ms: Date.now() - 60000 },
+    });
+    const { container } = render(MemberChip, { id: 'back-1', rec: r, now: Date.now() });
+    expect(container.querySelector('button button')).toBeNull();
+    const chip = container.querySelector('button.udel');
+    expect(chip.parentElement.closest('button')).toBeNull();
+    expect(chip.getAttribute('tabindex')).not.toBe('-1');
+    await fireEvent.click(chip);
+    expect(app.panes[app.focused]?.type).toBe('inbox');
+  });
+  it('shows nothing when nothing is undelivered', () => {
+    const { container } = render(MemberChip, { id: 'back-1', rec: rec('back-1', 'idle'), now: Date.now() });
+    expect(container.querySelector('.udel')).toBeNull();
   });
 });
