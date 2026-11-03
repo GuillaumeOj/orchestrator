@@ -124,7 +124,9 @@ pub fn watchdog_check(a: &AgentRecord, now: u64) -> Option<(Watch, u64)> {
         return Some((Watch::Ceiling(m), start));
     }
     let last = a.last_event_at_ms.unwrap_or(start).max(start);
-    (a.tracker.background_tasks == 0 && now.saturating_sub(last) > NO_PROGRESS_MS).then_some((Watch::Stalled, start))
+    // A Stop with background tasks leaves the agent idle (§3.2): a working
+    // agent is in a turn of its own, whatever count its last Stop left.
+    (now.saturating_sub(last) > NO_PROGRESS_MS).then_some((Watch::Stalled, start))
 }
 
 /// Longest text of the messages in one turn (the rest waits for the next one).
@@ -177,6 +179,14 @@ fn model_arg(args: &Value) -> Result<Option<Option<String>>> {
         );
     }
     Ok(Some(Some(m.to_string()).filter(|m| !m.is_empty())))
+}
+
+/// A panic's message (a `&str` or `String` payload), else "panic".
+pub(crate) fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "panic".into())
 }
 
 pub fn agent_id_for(slug: &str, node: &str, n: u32) -> String {
@@ -515,6 +525,7 @@ impl Runtime {
             resume_failed: false,
             start_fresh: false,
             spawned_at_ms: None,
+            crash_restarts: vec![],
         };
         self.store.write(|s| s.agents.insert(id.clone(), rec.clone()))?;
         // Bind the worktree row to its agent.
@@ -560,32 +571,68 @@ impl Runtime {
     /// Dispatch, message delivery and run progression for every active run
     /// (call every few seconds, off the delivery loop: a GitHub backend makes
     /// network calls).
+    ///
+    /// §3.6 (F9): each run's steps run apart: a panic in one is a
+    /// `tick_panic {run, step, message}` event, and the other steps and runs
+    /// carry on. Task-backend sync runs on its own thread (housekeeping).
     pub fn team_tick(&self) {
         let runs = self.db.runs(None, true).unwrap_or_default();
         for run in runs {
-            let cx = match self.run_ctx(&run.id) {
-                Ok(cx) => cx,
+            let id = run.id.as_str();
+            let cx = self.tick_step(id, "context", || match self.run_ctx(id) {
+                Ok(cx) => Some(cx),
                 Err(e) => {
-                    self.event("-", "team_error", json!({"run": run.id, "error": e.to_string()}));
-                    continue;
+                    self.event("-", "team_error", json!({"run": id, "error": e.to_string()}));
+                    None
                 }
-            };
+            });
+            let Some(cx) = cx.flatten() else { continue };
             // A deleted feature has no running team: a run left active under
             // it (a relaunch that didn't un-archive) would spawn seats nobody
             // sees and block every new launch on the slug.
             if cx.feature.archived {
-                if let Err(e) = self.end_run(&run.id, "feature deleted") {
-                    self.run_event(&run.id, None, "team_error", json!(format!("{e:#}")));
-                }
+                self.tick_step(id, "end_run", || {
+                    if let Err(e) = self.end_run(id, "feature deleted") {
+                        self.run_event(id, None, "team_error", json!(format!("{e:#}")));
+                    }
+                });
                 continue;
             }
-            if let Err(e) = self.dispatch(&cx) {
-                self.run_event(&run.id, None, "dispatch_error", json!(format!("{e:#}")));
-            }
-            self.supervise(&cx, now_ms());
-            self.deliver_messages(&cx);
-            if let Err(e) = self.progress(&cx) {
-                self.run_event(&run.id, None, "team_error", json!(format!("{e:#}")));
+            self.tick_step(id, "dispatch", || {
+                if let Err(e) = self.dispatch(&cx) {
+                    self.run_event(id, None, "dispatch_error", json!(format!("{e:#}")));
+                }
+            });
+            self.tick_step(id, "supervise", || self.supervise(&cx, now_ms()));
+            self.tick_step(id, "deliver_messages", || self.deliver_messages(&cx));
+            self.tick_step(id, "progress", || {
+                if let Err(e) = self.progress(&cx) {
+                    self.run_event(id, None, "team_error", json!(format!("{e:#}")));
+                }
+            });
+        }
+    }
+
+    /// One step of the periodic pass under `catch_unwind` (§3.6): a panic is
+    /// a `tick_panic` event (on the run's timeline, `run` "-" for none) and
+    /// `None`.
+    pub(crate) fn tick_step<R>(&self, run: &str, step: &str, f: impl FnOnce() -> R) -> Option<R> {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            #[cfg(test)]
+            tests::maybe_panic(run, step);
+            f()
+        }));
+        match r {
+            Ok(v) => Some(v),
+            Err(p) => {
+                let message = panic_message(p.as_ref());
+                let detail = json!({"run": run, "step": step, "message": message});
+                if run == "-" {
+                    self.event("-", "tick_panic", detail);
+                } else {
+                    self.run_event(run, None, "tick_panic", detail);
+                }
+                None
             }
         }
     }
@@ -726,9 +773,8 @@ impl Runtime {
                 }
                 None => continue,
             };
-            // A live idle agent is suspended inline (SIGTERM, bounded by the
-            // stop's grace and its wait for the exit callback): the tick never
-            // waits on a busy agent.
+            // A live idle agent is asked to suspend (§3.6: not waited for):
+            // its task turn goes to the new session's process.
             if !rec.never_started()
                 && let Err(e) = self.rotate_for_task(&rec.id, t)
             {
@@ -1069,16 +1115,68 @@ impl Runtime {
         r
     }
 
+    /// §3.5 (F6), housekeeping, the live agents filling the cap: a member
+    /// with unread messages held [`crate::resources::SLOT_WAIT_MS`] for a
+    /// process slot gets one: the least recently active live idle member of
+    /// its run with no unread messages is suspended ([`crate::resources::slot_victim`]).
+    pub(crate) fn free_slot_for_messages(&self, live: &[crate::resources::LiveAgent], cap: u32, now: u64) {
+        use crate::resources::{Member, SlotWaiter};
+        if live.iter().filter(|a| !a.reserved).count() < cap as usize {
+            return;
+        }
+        // Held for a slot: a Governor entry waiting on the cap or on memory.
+        let held: std::collections::BTreeSet<String> = self.with_governor(|g| {
+            g.queue()
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e.reason,
+                        governor::QueueReason::MemoryPressure { .. } | governor::QueueReason::LiveCap { .. }
+                    )
+                })
+                .map(|e| e.agent.0.clone())
+                .collect()
+        });
+        if held.is_empty() {
+            return;
+        }
+        let agents: Vec<AgentRecord> = self.store.read(|s| {
+            s.agents.values().filter(|a| a.team.is_some() && a.tracker.state != AgentState::Archived).cloned().collect()
+        });
+        let is_live = |id: &str| live.iter().any(|l| l.id == id);
+        let mut waiters = vec![];
+        let mut members = BTreeMap::new();
+        for a in &agents {
+            let run = a.team.as_ref().map(|t| t.run_id.clone()).unwrap_or_default();
+            if is_live(&a.id) {
+                members.insert(a.id.clone(), Member { run, unread: !self.unread(a).is_empty() });
+            } else if held.contains(&a.id) && self.has_queued_turn(&a.id) {
+                let oldest = self.unread(a).iter().map(|m| m.created_at_ms).min();
+                if let Some(since_ms) = oldest {
+                    waiters.push(SlotWaiter { id: a.id.clone(), run, since_ms });
+                }
+            }
+        }
+        let Some((waiter, victim)) = crate::resources::slot_victim(&waiters, live, &members, cap, now) else { return };
+        if self.suspend_in_background(&victim, "slot") {
+            let run = members.get(&victim).map(|m| m.run.clone()).unwrap_or_default();
+            let detail = json!({"for": waiter, "suspended": victim});
+            self.event(&victim, "slot_freed", detail.clone());
+            self.run_event(&run, Some(&victim), "slot_freed", detail);
+        }
+    }
+
     fn unread(&self, rec: &AgentRecord) -> Vec<Message> {
         let Some(seat) = &rec.team else { return vec![] };
         self.db.messages(&seat.run_id, Some((&seat.node, Some(&rec.id))), true).unwrap_or_default()
     }
 
     /// Unread messages not handed over yet: queued (not pasted or given as
-    /// context, not failed), and not carried by a turn still waiting for its paste,
-    /// this agent's or another's of the node (a message to the node binds to
-    /// an agent only at the paste).
-    fn undelivered(&self, rec: &AgentRecord) -> Vec<Message> {
+    /// context, not failed), and, `with_queued` false, not carried by a turn
+    /// already queued for them. A turn being pasted always holds its own
+    /// (§3.2: only while it is `Delivering`), this agent's or another's of
+    /// the node (a message to the node binds to an agent only at the paste).
+    fn undelivered(&self, rec: &AgentRecord, with_queued: bool) -> Vec<Message> {
         let mut msgs: Vec<Message> =
             self.unread(rec).into_iter().filter(|m| m.delivery_state() == orch_store::DeliveryState::Queued).collect();
         if msgs.is_empty() {
@@ -1087,7 +1185,10 @@ impl Runtime {
         let carried: std::collections::HashSet<u64> = self.store.read(|s| {
             s.turns
                 .iter()
-                .filter(|t| !t.messages.is_empty() && matches!(t.status, TurnStatus::Queued | TurnStatus::Delivering))
+                .filter(|t| {
+                    !t.messages.is_empty()
+                        && (t.status == TurnStatus::Delivering || !with_queued && t.status == TurnStatus::Queued)
+                })
                 .flat_map(|t| t.messages.iter().copied())
                 .collect()
         });
@@ -1108,7 +1209,9 @@ impl Runtime {
     /// handed during the running turn `prompt_id`. They are seen once the
     /// reply is confirmed (the returned ids, [`Runtime::on_hook_ack`]).
     pub(crate) fn inject_messages(&self, rec: &AgentRecord, prompt_id: Option<&str>) -> Option<(String, Vec<u64>)> {
-        let msgs = self.undelivered(rec);
+        // §3.2: a message turn that can't be pasted (the agent is busy, or
+        // held) doesn't hold its messages back from the running turn.
+        let msgs = self.undelivered(rec, true);
         if msgs.is_empty() {
             return None;
         }
@@ -1116,9 +1219,35 @@ impl Runtime {
         if r.included.is_empty() {
             return None;
         }
+        self.drop_carrying_turns(&r.included);
         let _ = self.db.hand_messages(&r.included, &rec.id, "inject", prompt_id, now_ms());
         self.delivery_event(&rec.id, "handed", json!({"messages": r.included, "via": "inject", "turn": prompt_id}));
         Some((format!("ORCH: {} new message(s):{}", r.included.len(), r.text), r.included))
+    }
+
+    /// Queued message turns that carry any of `ids` (injected instead) are
+    /// dropped: their other messages are still queued, and the next pass
+    /// builds a turn for them. A turn is never pasted with a message twice.
+    /// A Governor entry the dropped turn waited on goes too when nothing
+    /// else of its agent is queued (its release would run a Continue).
+    fn drop_carrying_turns(&self, ids: &[u64]) {
+        let held = self.store.write(|s| {
+            let mut held = vec![];
+            s.turns.retain(|t| {
+                let drop = t.status == TurnStatus::Queued
+                    && t.kind == TurnKind::Message
+                    && t.messages.iter().any(|m| ids.contains(m));
+                if let (true, Admission::Waiting(e)) = (drop, t.admission) {
+                    held.push((t.agent_id.clone(), e));
+                }
+                !drop
+            });
+            held.retain(|(a, _)| !s.turns.iter().any(|t| &t.agent_id == a && t.status == TurnStatus::Queued));
+            held
+        });
+        for (_, e) in held.unwrap_or_default() {
+            self.governor_act(|g, now| (g.cancel(governor::EntryId(e), now), Vec::new()));
+        }
     }
 
     /// FR-403 for idle and suspended agents: their new messages as one turn
@@ -1133,7 +1262,7 @@ impl Runtime {
             if busy || rec.never_started() && self.has_queued_turn(&rec.id) {
                 continue;
             }
-            let msgs = self.undelivered(&rec);
+            let msgs = self.undelivered(&rec, false);
             if msgs.is_empty() {
                 continue;
             }
@@ -1517,7 +1646,15 @@ impl Runtime {
                 let model = model_arg(args)?.flatten();
                 let mut t = Task::new(&cx.project.id, "", title, now_ms());
                 t.title = cut(title, 200);
-                t.body = cut(str_arg(args, "body").unwrap_or(""), MAX_BODY);
+                // Stored whole (F7): a body too long to keep is refused, never cut.
+                let body = str_arg(args, "body").unwrap_or("");
+                let n = body.chars().count();
+                if n > MAX_STORED {
+                    bail!(
+                        "task body too long ({n} chars, max {MAX_STORED}): put the details in a feature doc and name it in the body"
+                    );
+                }
+                t.body = body.to_string();
                 t.node = Some(node.into());
                 t.depends_on = deps;
                 t.status = status;
@@ -1988,6 +2125,118 @@ mod tests {
     use orch_git::fixtures::scratch_repo;
     use orch_protocol::{InboxDecision, McpMsg};
     use std::sync::Arc;
+
+    thread_local! {
+        /// The step [`Runtime::tick_step`] panics in, on this thread (§3.6 tests).
+        static PANIC_IN: std::cell::RefCell<Option<&'static str>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn maybe_panic(_run: &str, step: &str) {
+        if PANIC_IN.with(|p| *p.borrow() == Some(step)) {
+            panic!("injected panic in {step}");
+        }
+    }
+
+    fn panic_in(step: Option<&'static str>) {
+        PANIC_IN.with(|p| *p.borrow_mut() = step);
+    }
+
+    /// §3.6 (F9): a panic in one step of a run is a `tick_panic` event, and
+    /// the run's other steps carry on (here: delivery), so do later ticks.
+    #[test]
+    fn a_panic_in_one_step_never_stops_delivery() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        let run = approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        rt.store
+            .write(|s| {
+                for t in s.turns.iter_mut().filter(|t| t.agent_id == lead) {
+                    t.status = TurnStatus::Done;
+                }
+                let a = s.agents.get_mut(lead).unwrap();
+                a.spawns = 1;
+                a.tracker.state = AgentState::Idle;
+            })
+            .unwrap();
+        ok(&rt, back, "send_message", json!({"to": "lead", "body": "a question"}));
+        panic_in(Some("dispatch"));
+        rt.team_tick();
+        panic_in(None);
+        let ev = rt.db.last_run_event(&run.id, "tick_panic").unwrap().expect("tick_panic");
+        assert_eq!((ev.detail["run"].as_str(), ev.detail["step"].as_str()), (Some(run.id.as_str()), Some("dispatch")));
+        assert!(ev.detail["message"].as_str().unwrap().contains("injected panic"));
+        assert!(
+            rt.store.read(|s| s.turns.iter().any(|t| t.agent_id == lead && !t.messages.is_empty())),
+            "delivery ran after the panic"
+        );
+        rt.team_tick();
+        let panics = rt.db.run_events(&run.id, 500).unwrap().into_iter().filter(|e| e.kind == "tick_panic").count();
+        assert_eq!(panics, 1, "the next tick runs every step");
+        // A panic outside a run.
+        assert_eq!(rt.tick_step("-", "watchdog", || -> u8 { panic!("boom") }), None);
+        assert_eq!(rt.tick_step("-", "watchdog", || 7), Some(7));
+    }
+
+    /// §3.2: a message carried by a turn that can't be pasted yet is injected
+    /// at the agent's next tool call (and that turn dropped, never pasted
+    /// with it again); a turn being pasted keeps its messages.
+    #[test]
+    fn a_message_in_a_queued_turn_is_injected_but_not_one_being_pasted() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        rt.store
+            .write(|s| {
+                for t in s.turns.iter_mut().filter(|t| t.agent_id == lead) {
+                    t.status = TurnStatus::Done;
+                }
+                let a = s.agents.get_mut(lead).unwrap();
+                a.spawns = 1;
+                a.tracker.state = AgentState::Idle;
+            })
+            .unwrap();
+        ok(&rt, back, "send_message", json!({"to": "lead", "body": "first"}));
+        rt.team_tick();
+        let carrying = |rt: &Runtime| -> Vec<TurnRow> {
+            rt.store
+                .read(|s| s.turns.iter().filter(|t| t.agent_id == lead && !t.messages.is_empty()).cloned().collect())
+        };
+        assert_eq!(carrying(&rt).len(), 1);
+        let lrec = rt.store.read(|s| s.agents[lead].clone());
+        let (text, ids) = rt.inject_messages(&lrec, Some("p1")).expect("injected past its queued turn");
+        assert!(text.contains("first"));
+        assert!(carrying(&rt).is_empty(), "its turn is dropped: never pasted twice");
+        assert_eq!(ids.len(), 1);
+        // A turn being pasted holds its messages.
+        ok(&rt, back, "send_message", json!({"to": "lead", "body": "second"}));
+        rt.team_tick();
+        rt.store
+            .write(|s| {
+                let t = s.turns.iter_mut().find(|t| t.agent_id == lead && !t.messages.is_empty()).unwrap();
+                t.status = TurnStatus::Delivering;
+            })
+            .unwrap();
+        assert!(rt.inject_messages(&lrec, Some("p1")).is_none());
+    }
+
+    /// F7: a task body is stored whole; one too long to keep is refused.
+    #[test]
+    fn a_task_body_is_stored_whole_or_refused() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let lead = "fx-lead-1";
+        let body = format!("{}THE END", "x".repeat(9_000));
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back", "body": body}));
+        let t = rt.db.tasks(None, None, None).unwrap().into_iter().find(|t| t.title == "API").unwrap();
+        assert_eq!(t.body, body);
+        let huge = "x".repeat(MAX_STORED + 1);
+        let (err, msg) = call(&rt, lead, "create_task", json!({"title": "Big", "node": "back", "body": huge}));
+        assert!(err && msg.contains("too long"), "{msg}");
+    }
 
     fn call(rt: &Runtime, agent: &str, tool: &str, args: Value) -> (bool, String) {
         let (err, text, _) = rt
@@ -2594,7 +2843,11 @@ mod tests {
         assert_eq!(watchdog_check(&a, 20 * min), None);
         assert_eq!(watchdog_check(&a, 26 * min), Some((Watch::Stalled, 0)));
         a.tracker.background_tasks = 1;
-        assert_eq!(watchdog_check(&a, 26 * min), None, "background work is progress elsewhere");
+        assert_eq!(
+            watchdog_check(&a, 26 * min),
+            Some((Watch::Stalled, 0)),
+            "§3.2: the count left by the last Stop no longer hides a silent turn"
+        );
         a.role.turn_ceiling_minutes = Some(20);
         assert_eq!(watchdog_check(&a, 21 * min), Some((Watch::Ceiling(20), 0)));
         a.tracker.state = AgentState::Idle;
