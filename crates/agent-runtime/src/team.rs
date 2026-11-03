@@ -639,8 +639,6 @@ impl Runtime {
     /// `None`.
     pub(crate) fn tick_step<R>(&self, run: &str, step: &str, f: impl FnOnce() -> R) -> Option<R> {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            #[cfg(test)]
-            tests::maybe_panic(run, step);
             if self.tick_fault.lock().is_ok_and(|t| t.as_deref() == Some(step)) {
                 panic!("injected panic in {step}");
             }
@@ -2148,21 +2146,6 @@ mod tests {
     use orch_protocol::{InboxDecision, McpMsg};
     use std::sync::Arc;
 
-    thread_local! {
-        /// The step [`Runtime::tick_step`] panics in, on this thread (§3.6 tests).
-        static PANIC_IN: std::cell::RefCell<Option<&'static str>> = const { std::cell::RefCell::new(None) };
-    }
-
-    pub(super) fn maybe_panic(_run: &str, step: &str) {
-        if PANIC_IN.with(|p| *p.borrow() == Some(step)) {
-            panic!("injected panic in {step}");
-        }
-    }
-
-    fn panic_in(step: Option<&'static str>) {
-        PANIC_IN.with(|p| *p.borrow_mut() = step);
-    }
-
     /// §3.6 (F9): a panic in one step of a run is a `tick_panic` event, and
     /// the run's other steps carry on (here: delivery), so do later ticks.
     #[test]
@@ -2183,9 +2166,9 @@ mod tests {
             })
             .unwrap();
         ok(&rt, back, "send_message", json!({"to": "lead", "body": "a question"}));
-        panic_in(Some("dispatch"));
+        rt.inject_tick_fault(Some("dispatch"));
         rt.team_tick();
-        panic_in(None);
+        rt.inject_tick_fault(None);
         let ev = rt.db.last_run_event(&run.id, "tick_panic").unwrap().expect("tick_panic");
         assert_eq!((ev.detail["run"].as_str(), ev.detail["step"].as_str()), (Some(run.id.as_str()), Some("dispatch")));
         assert!(ev.detail["message"].as_str().unwrap().contains("injected panic"));
