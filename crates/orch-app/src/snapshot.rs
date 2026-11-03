@@ -196,11 +196,15 @@ fn restore(d: &Dirs, info: &Backup, have: u32) -> Result<PathBuf> {
         Ok(())
     })();
     if let Err(e) = put_in {
-        let _ = std::fs::remove_file(d.db());
-        let _ = std::fs::remove_dir_all(d.blobs());
+        // What sits at a moved name now is the snapshot's (or nothing); a name that never moved
+        // is still the live store and stays.
         for name in moved {
-            let _ = std::fs::rename(aside.join(name), d.state.join(name));
+            let at = d.state.join(name);
+            let _ = std::fs::remove_file(&at);
+            let _ = std::fs::remove_dir_all(&at);
+            let _ = std::fs::rename(aside.join(name), at);
         }
+        let _ = std::fs::remove_dir(&aside);
         let _ = std::fs::remove_file(&db_new);
         let _ = std::fs::remove_dir_all(&blobs_new);
         return Err(e);
