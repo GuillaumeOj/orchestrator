@@ -171,6 +171,8 @@ impl Runtime {
         let by_id: std::collections::HashMap<u64, orch_store::Message> =
             self.db.messages_by_id(&all).unwrap_or_default().into_iter().map(|m| (m.id, m)).collect();
         let mut out = vec![];
+        // One blocker per agent for the whole timeline.
+        let mut blockers: std::collections::HashMap<String, Option<String>> = Default::default();
         for e in events {
             let ids = ids_of(&e);
             let mut v = serde_json::to_value(&e)?;
@@ -192,8 +194,15 @@ impl Runtime {
                         .filter(|_| {
                             waiting && now.saturating_sub(m.created_at_ms) > crate::attention::UNDELIVERED_AFTER_MS
                         })
-                        .and_then(|a| self.store.read(|s| s.agents.get(a).cloned()))
-                        .map(|rec| self.blocker_for(&rec, now));
+                        .and_then(|a| {
+                            blockers
+                                .entry(a.to_string())
+                                .or_insert_with(|| {
+                                    let rec = self.store.read(|s| s.agents.get(a).cloned())?;
+                                    Some(self.blocker_for(&rec, now))
+                                })
+                                .clone()
+                        });
                     v["delivery"] = json!({
                         "state": m.delivery_state(),
                         "attempts": msgs.iter().map(|m| m.attempts).max().unwrap_or(0),

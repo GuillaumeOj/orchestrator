@@ -1143,9 +1143,8 @@ impl Runtime {
     /// its run with no unread messages is suspended ([`crate::resources::slot_victim`]).
     pub(crate) fn free_slot_for_messages(&self, live: &[crate::resources::LiveAgent], cap: u32, now: u64) {
         use crate::resources::{Member, SLOT_WAIT_MS, SlotWaiter, at_cap};
-        // The wait is a setting (`delivery.slot_wait_secs`): the pure rule
-        // counts SLOT_WAIT_MS, so shift the clock by the difference.
-        let now = now + SLOT_WAIT_MS.saturating_sub(self.secs_setting(crate::handover::SLOT_WAIT_KEY, SLOT_WAIT_MS));
+        // The wait is a setting (`delivery.slot_wait_secs`), longer or shorter.
+        let wait = self.secs_setting(crate::handover::SLOT_WAIT_KEY, SLOT_WAIT_MS);
         if !at_cap(live, cap) {
             return;
         }
@@ -1174,7 +1173,7 @@ impl Runtime {
                 Some(SlotWaiter { id: a.id.clone(), run: run_of(a), since_ms })
             })
             .collect();
-        if !waiters.iter().any(|w| now.saturating_sub(w.since_ms) >= SLOT_WAIT_MS) {
+        if !waiters.iter().any(|w| now.saturating_sub(w.since_ms) >= wait) {
             return;
         }
         // Then the live members of the waiters' runs.
@@ -1183,7 +1182,9 @@ impl Runtime {
             .filter(|a| live.iter().any(|l| l.id == a.id) && waiters.iter().any(|w| w.run == run_of(a)))
             .map(|a| (a.id.clone(), Member { run: run_of(a), unread: !self.unread(a).is_empty() }))
             .collect();
-        let Some((waiter, victim)) = crate::resources::slot_victim(&waiters, live, &members, cap, now) else { return };
+        let Some((waiter, victim)) = crate::resources::slot_victim(&waiters, live, &members, cap, now, wait) else {
+            return;
+        };
         if self.suspend_in_background(&victim, "slot") {
             let run = members.get(&victim).map(|m| m.run.clone()).unwrap_or_default();
             let detail = json!({"for": waiter, "suspended": victim});
