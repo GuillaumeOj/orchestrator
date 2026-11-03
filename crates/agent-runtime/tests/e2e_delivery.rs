@@ -123,8 +123,11 @@ fn f2_a_server_error_gets_one_continue_and_a_second_failure_a_decision() {
     next_message_arrives(&core, &screens, "a");
 }
 
-/// F3: the process dies mid-turn. The agent restarts with `--resume` and the
-/// turn is pasted again, no app restart.
+/// F3: the process dies mid-turn, after the CLI took the message. The turn is
+/// closed (the resumed session has it in its transcript), a Continue turn is
+/// queued, and the agent restarts with `--resume` and gets it, no app restart.
+/// The crashed process's screen is gone with it, so the proof is the Continue
+/// on the new one.
 #[test]
 fn f3_a_crashed_agent_is_resumed_and_gets_its_message() {
     let core = core_with_agent("orchd3a", |_| {});
@@ -132,7 +135,10 @@ fn f3_a_crashed_agent_is_resumed_and_gets_its_message() {
     set(&core, "a", ".fake-exit-mid-turn", "");
     let turn = deliver(&core, "a", "second");
     until_done(&core, &turn, 40);
-    seen_by_model(&core, &screens, "a", &turn);
+    wait_for("the crash Continue on the resumed screen", 30, || {
+        core.rt.paste_watchdog(now_ms());
+        screens.read(&core.sock, "a").contains("your session crashed mid-turn")
+    });
     let ev = events(&core, "a", "recovered");
     assert!(ev.iter().any(|e| e["from_state"] == "crashed" && e["how"] == "resume"), "{ev:?}");
     next_message_arrives(&core, &screens, "a");
