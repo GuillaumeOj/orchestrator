@@ -161,6 +161,13 @@ impl Runtime {
         let _one = SETTING.lock().unwrap_or_else(|e| e.into_inner());
         let (base, old_off, plan) =
             self.with_governor(|g| (self.base_cap(), g.policy().off_hours_live_cap, g.plan().clone()));
+        // The cap in effect already (`--cap` gave it): nothing to apply, but
+        // the setting is the user's choice for the next start.
+        if let Some(n) = live_cap.filter(|n| *n == base) {
+            if self.db.setting(LIVE_CAP_KEY)?.and_then(|v| v.as_u64()) != Some(n as u64) {
+                self.db.set_setting(LIVE_CAP_KEY, &json!(n))?;
+            }
+        }
         let live_cap = live_cap.filter(|n| *n != base);
         let off_hours = off_hours.filter(|n| *n != old_off);
         if live_cap.is_none() && off_hours.is_none() {
@@ -171,18 +178,27 @@ impl Runtime {
             // The week is just rolling over (`tick` moves the Governor on).
             return Err(anyhow!("the plan week is changing: try again in a moment"));
         }
-        if let Some(n) = live_cap {
-            self.db.set_setting(LIVE_CAP_KEY, &json!(n))?;
-            self.set_base_cap(n);
-        }
-        if let Some(n) = off_hours {
-            self.update_policy(|p| p.off_hours_live_cap = n)?;
-        }
-        // Reads the base and the stored policy. Failed: nothing changes.
-        if let Err(e) = self.replan(plan) {
-            if live_cap.is_some() {
+        // The stored value as it was (none, or one `--cap` overrides): a
+        // failed change puts it back, never the base in effect.
+        let old_stored = match live_cap {
+            Some(_) => Some(self.db.setting(LIVE_CAP_KEY)?.unwrap_or(serde_json::Value::Null)),
+            None => None,
+        };
+        // Reads the base and the stored policy. Failed at any step: nothing changes.
+        let applied = (|| {
+            if let Some(n) = live_cap {
+                self.db.set_setting(LIVE_CAP_KEY, &json!(n))?;
+                self.set_base_cap(n);
+            }
+            if let Some(n) = off_hours {
+                self.update_policy(|p| p.off_hours_live_cap = n)?;
+            }
+            self.replan(plan)
+        })();
+        if let Err(e) = applied {
+            if let Some(old) = &old_stored {
                 self.set_base_cap(base);
-                let _ = self.db.set_setting(LIVE_CAP_KEY, &json!(base));
+                let _ = self.db.set_setting(LIVE_CAP_KEY, old);
             }
             if off_hours.is_some() {
                 let _ = self.update_policy(|p| p.off_hours_live_cap = old_off);
@@ -240,6 +256,10 @@ mod tests {
         assert_eq!((rt.base_cap(), rt.pacing_settings().live_cap), (2, 2));
         assert_eq!(rt.with_governor(|g| g.policy().live_caps.green), 2);
         assert_eq!(rt.db.setting(LIVE_CAP_KEY).unwrap(), Some(json!(6)));
+        // Set to the `--cap` value: no change now, but stored for the next start.
+        rt.set_live_caps(Some(2), None).unwrap();
+        assert_eq!(rt.db.setting(LIVE_CAP_KEY).unwrap(), Some(json!(2)));
+        assert!(events(&rt, "live_cap_set").is_empty());
         drop(rt);
         // A bad `--cap` fails the start.
         let mut cfg = test_cfg(d.path(), true);

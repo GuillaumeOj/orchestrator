@@ -666,7 +666,9 @@ pub fn pacing_settings(core: CoreState) -> Res<agent_runtime::live_cap::PacingSe
 
 /// Sets `live_cap` and/or `off_hours_live_cap` (absent = unchanged), applied
 /// now; returns the new view. Off the main thread: it rebuilds the Governor.
-#[tauri::command]
+/// The arguments keep their snake_case names, as the api-contract gives them
+/// (`{ live_cap, off_hours_live_cap }`): camelCase keys would read as absent.
+#[tauri::command(rename_all = "snake_case")]
 pub async fn pacing_settings_set(
     core: CoreState<'_>,
     live_cap: Option<u32>,
