@@ -114,7 +114,11 @@ impl Runtime {
             "messages": messages, "episode": r.episode, "tail": self.tail_of(&rec.id),
             "turns": r.turns, "key": r.key,
         });
-        let id = self.add_item(Some(&rec.id), "delivery", title, payload, PRIORITY_ALERT).ok()?;
+        let Ok(id) = self.add_item(Some(&rec.id), "delivery", title, payload, PRIORITY_ALERT) else {
+            // Nothing was raised: the episode may be tried again.
+            self.house().delivery_raised.remove(&r.key);
+            return None;
+        };
         if r.stuck_event {
             self.delivery_event(&rec.id, "stuck", json!({"agent": rec.id, "episode": r.episode}));
         }
@@ -179,7 +183,11 @@ impl Runtime {
             let old: Vec<Message> = self
                 .unread(&rec)
                 .into_iter()
-                .filter(|m| m.failed_at_ms.is_none() && now.saturating_sub(m.created_at_ms) > INVARIANT_MS)
+                .filter(|m| {
+                    m.failed_at_ms.is_none()
+                        && m.delivered_at_ms.is_none()
+                        && now.saturating_sub(m.created_at_ms) > INVARIANT_MS
+                })
                 .collect();
             let Some(first) = old.first() else { continue };
             if self.names_cause(&rec) {
@@ -204,7 +212,8 @@ impl Runtime {
     /// message seen (`delivered`), or, for one without messages, the agent
     /// active again (`recovered`).
     pub(crate) fn close_delivered(&self) {
-        let open: Vec<(u64, Option<String>, Vec<u64>, u64)> = self.store.read(|s| {
+        #[allow(clippy::type_complexity)]
+        let open: Vec<(u64, Option<String>, Vec<u64>, u64, Option<String>)> = self.store.read(|s| {
             s.inbox
                 .iter()
                 .filter(|i| i.open() && i.kind == "delivery")
@@ -215,16 +224,26 @@ impl Runtime {
                         .flatten()
                         .filter_map(|m| m["id"].as_u64())
                         .collect();
-                    (i.id, i.agent_id.clone(), ids, i.created_at_ms)
+                    (i.id, i.agent_id.clone(), ids, i.created_at_ms, i.payload["episode"].as_str().map(str::to_string))
                 })
                 .collect()
         });
-        for (id, agent, ids, created) in open {
+        for (id, agent, ids, created, episode) in open {
             let done = if ids.is_empty() {
-                let last = agent
-                    .as_deref()
-                    .and_then(|a| self.store.read(|s| s.agents.get(a).and_then(|r| r.last_event_at_ms)));
-                last.is_some_and(|t| t > created)
+                // Over when the agent moved on: a turn started after the
+                // decision, or (a silent turn) it is idle again. A stray
+                // hook (a notification, a keystroke) proves nothing.
+                let silent = episode.as_deref() == Some("working_silent");
+                agent.as_deref().is_some_and(|a| {
+                    self.store.read(|s| {
+                        s.agents.get(a).is_some_and(|r| {
+                            r.tracker.turn_started_ms.is_some_and(|t| t > created)
+                                || (silent
+                                    && r.tracker.state == AgentState::Idle
+                                    && r.last_event_at_ms.is_some_and(|t| t > created))
+                        })
+                    })
+                })
             } else {
                 let msgs = self.db.messages_by_id(&ids).unwrap_or_default();
                 msgs.iter().all(|m| m.delivered_at_ms.is_some() || m.read_at_ms.is_some())
@@ -309,7 +328,19 @@ impl Runtime {
         if !ids.is_empty() {
             self.db.retry_messages(&ids)?;
         }
-        if ids.is_empty() && requeued == 0 {
+        if it.payload["episode"] == "stuck_wait" {
+            // The member waits on its Lead: it is the Lead that needs the nudge.
+            let lead = self.store.read(|s| s.agents.get(&agent).and_then(|a| a.team.clone())).and_then(|seat| {
+                let cx = self.run_ctx(&seat.run_id).ok()?;
+                self.lead_of(&cx)
+            });
+            let lead = lead.ok_or_else(|| anyhow!("{agent} has no lead to nudge"))?;
+            self.deliver_kind(
+                &lead.id,
+                &format!("ORCH: {agent} has waited a long time for your answer. Answer it, then carry on."),
+                governor::TurnKind::Continue,
+            )?;
+        } else if ids.is_empty() && requeued == 0 {
             // A stuck agent with nothing to resend: a nudge to carry on.
             self.deliver_kind(
                 &agent,

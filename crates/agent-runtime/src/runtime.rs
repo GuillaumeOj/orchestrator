@@ -1580,10 +1580,9 @@ impl Runtime {
         }
     }
 
-    /// The Continue turn queued after a failure failed too: no loop. **T3
-    /// hook point** (fix-team-getting-stucked task 3): the decision for the
-    /// user (or the agent's Lead) is raised here; for now an event, and the
-    /// `api_error` alert the failure already raised.
+    /// The Continue turn queued after a failure failed too: no loop. The
+    /// event, and a `delivery` decision for the user (and the agent's Lead),
+    /// beside the `api_error` alert the failure already raised.
     pub(crate) fn on_repeated_failure(&self, rec: &AgentRecord, error: &str) {
         self.delivery_event(&rec.id, "continue_failed", json!({"agent": rec.id, "error": error}));
         let now = now_ms();
