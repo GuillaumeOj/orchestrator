@@ -41,7 +41,7 @@ fork has no signing secret; a draft is built when marked ready for review). Clos
 PR runs `.github/workflows/pr-build-cleanup.yml`, which deletes the release and its tag. Building
 a PR costs a macOS runner for the same 15 to 25 minutes as a `main` build. The start line of
 `logs/orchestrator.log` shows `channel pr, PR #<n>` for such a build. Installing one from the app
-is described below once Settings › Builds lands.
+(Settings › Builds) is not there yet; until it lands, download the `.app.tar.gz` from the release.
 
 **One-time key setup** (before the first merge; the private key never goes through an agent):
 

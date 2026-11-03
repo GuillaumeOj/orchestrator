@@ -156,6 +156,13 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           tag="pr-$ORCH_BUILD_PR"
+          # The PR may have been closed or merged while this build ran: pr-build-cleanup has
+          # already run then, so publishing now would leave a release nothing deletes.
+          state=$(gh pr view "$ORCH_BUILD_PR" --repo "$GITHUB_REPOSITORY" --json state --jq .state)
+          if [ "$state" != "OPEN" ]; then
+            echo "PR #$ORCH_BUILD_PR is $state: not publishing $tag"
+            exit 0
+          fi
           asset="target/release/bundle/update/Orchestrator_${ORCH_VERSION}_aarch64.app.tar.gz"
           # The release is replaced, not updated, so its tag follows the newest built commit.
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then

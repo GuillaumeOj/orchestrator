@@ -74,5 +74,6 @@ export function aboutText(u) {
   if (!c) return 'Orchestrator';
   const sha = c.sha ? ` · ${c.sha.slice(0, 7)}` : '';
   const last = u.checked_at ? ` · checked ${clock(u.checked_at * 1000)}` : '';
-  return `Orchestrator ${c.version}${sha} · ${c.channel === 'main' ? 'main' : 'local build'}${last}`;
+  const channel = c.channel === 'main' ? 'main' : c.channel === 'pr' && c.pr ? `PR #${c.pr}` : 'local build';
+  return `Orchestrator ${c.version}${sha} · ${channel}${last}`;
 }

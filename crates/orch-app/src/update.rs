@@ -46,10 +46,11 @@ fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
 }
 
 /// Whether release `version` is newer than the running build. A local build
-/// (`make app`, channel `local`) is older than any CI build.
+/// (`make app`, channel `local`) or a PR build (channel `pr`, whose version comes from a run
+/// number shared with `main`) is older than any `main` release.
 fn is_newer(version: &str, current: &BuildInfo) -> bool {
     let Some(v) = parse_version(version) else { return false };
-    current.channel == "local" || parse_version(&current.version).is_none_or(|c| v > c)
+    current.channel != "main" || parse_version(&current.version).is_none_or(|c| v > c)
 }
 
 // ---------------------------------------------------------------- releases
@@ -861,6 +862,13 @@ mod tests {
         let local = build("0.1.0", "local");
         assert!(is_newer("0.1.1", &local));
         assert!(is_newer("0.1.0", &local));
+    }
+
+    #[test]
+    fn a_pr_build_is_older_than_any_main_release() {
+        // A PR run number can be higher than main's latest release.
+        let pr = build("0.1.99", "pr");
+        assert!(is_newer("0.1.50", &pr));
     }
 
     #[test]
