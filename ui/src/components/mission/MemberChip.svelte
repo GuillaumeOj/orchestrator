@@ -1,4 +1,5 @@
 <script>
+  import { openDelivery } from '../../lib/app.svelte.js';
   import { undeliveredChip } from '../../lib/delivery.js';
   // Member chip (notes §1.3, Penpot P4.2 Member chip): role mark, status
   // icon, name and the member's short wait. Selected (h/l target): filled
@@ -20,7 +21,13 @@
   <span class="icon" style:color={st.color} aria-hidden="true">{busy ? '\u{F0772}' : st.icon}</span>
   <span class="name">{id}</span>
   {#if wait}<span class="wait" class:error>{wait}</span>{/if}
-  {#if udel}<span class="wait" class:error={udel.warn} data-undelivered title="{udel.text} · waiting {udel.since}">{udel.text}</span>{/if}
+  {#if udel}
+    <!-- A span in the chip's button: a button here would nest interactive elements. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- biome-ignore lint/a11y/useSemanticElements: nested inside the chip's own button -->
+    <!-- biome-ignore lint/a11y/useKeyWithClickEvents: reachable from the agent pane's chip -->
+    <span class="wait udel" class:warn={udel.warn} role="button" tabindex="-1" data-undelivered title="{udel.text} · waiting {udel.since}" onclick={(e) => (e.stopPropagation(), openDelivery(rec))}>{udel.text}</span>
+  {/if}
 </button>
 
 <style>
@@ -60,6 +67,12 @@
     font: var(--text-caption);
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .udel {
+    cursor: pointer;
+  }
+  .udel.warn {
+    color: var(--color-attention-needs-you);
   }
   .wait.error {
     color: var(--color-status-error);
