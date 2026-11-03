@@ -162,12 +162,20 @@ impl Runtime {
     fn timeline_json(&self, run_id: &str) -> Result<Vec<Value>> {
         use orch_store::DeliveryState as D;
         let now = now_ms();
+        let events = self.db.run_events(run_id, 200)?;
+        let ids_of = |e: &orch_store::Event| -> Vec<u64> {
+            e.detail["ids"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect()
+        };
+        // One lookup for every message of the timeline.
+        let all: Vec<u64> = events.iter().flat_map(ids_of).collect();
+        let by_id: std::collections::HashMap<u64, orch_store::Message> =
+            self.db.messages_by_id(&all).unwrap_or_default().into_iter().map(|m| (m.id, m)).collect();
         let mut out = vec![];
-        for e in self.db.run_events(run_id, 200)? {
-            let ids: Vec<u64> = e.detail["ids"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
+        for e in events {
+            let ids = ids_of(&e);
             let mut v = serde_json::to_value(&e)?;
             if !ids.is_empty() {
-                let msgs = self.db.messages_by_id(&ids).unwrap_or_default();
+                let msgs: Vec<orch_store::Message> = ids.iter().filter_map(|i| by_id.get(i).cloned()).collect();
                 // The least advanced message tells how far the event got.
                 let rank = |m: &orch_store::Message| match m.delivery_state() {
                     D::Failed => 0,
