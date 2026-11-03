@@ -9,6 +9,7 @@
   import Kbd from '../components/Kbd.svelte';
   import PressurePill from '../components/PressurePill.svelte';
   import { app, openSingleton, saveLayout, toast } from '../lib/app.svelte.js';
+  import { deliveryReport } from '../lib/delivery.js';
   import { dayHm, dayTime } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { onTopics } from '../lib/now.svelte.js';
@@ -167,6 +168,26 @@
       </div>
 
       <div class="col side">
+        {#if r.delivery}
+          {@const dl = deliveryReport(r.delivery)}
+          <section class="card" data-section="delivery">
+            <div class="ch"><b>Delivery</b><span class="muted">team messages</span></div>
+            {#if dl.empty}
+              <p class="muted">No team messages in this run</p>
+            {:else}
+              {#each dl.counts as [label, n] (label)}<div class="kv"><span>{label}</span><span>{n}</span></div>{/each}
+              <p class="muted note">Send to seen · {dl.latency}</p>
+              {#each dl.tables as t (t.title)}
+                {#if t.rows.length}
+                  <div class="muted note">{t.title}</div>
+                  {#each t.rows as row (row.key)}<div class="kv"><span>{row.key}</span><span>{row.n}</span></div>{/each}
+                {/if}
+              {/each}
+              {#if dl.panics}<p class="muted note">Scheduler step failures: {dl.panics}</p>{/if}
+            {/if}
+          </section>
+        {/if}
+
         <section class="card">
           <div class="ch"><b>Time in each state</b><span class="muted">{Math.round(r.states.reduce((a, s) => a + s.minutes, 0) / 60)} h</span></div>
           <div class="stbar" role="img" aria-label="Time in each state">

@@ -1,4 +1,5 @@
 <script>
+  import { undeliveredChip } from '../../lib/delivery.js';
   // Member chip (notes §1.3, Penpot P4.2 Member chip): role mark, status
   // icon, name and the member's short wait. Selected (h/l target): filled
   // outline. Busy while an action on it waits for the core.
@@ -11,6 +12,7 @@
   const st = $derived(STATUS[rec?.status] ?? STATUS.idle);
   const wait = $derived(shortWait(rec, now));
   const error = $derived(rec?.status === 'error');
+  const udel = $derived(undeliveredChip(rec, now));
 </script>
 
 <button class="mchip" class:selected class:busy aria-pressed={selected} title="{id} · {st.label}{rec?.reason ? ` · ${rec.reason}` : ''}" {onclick} tabindex="-1">
@@ -18,6 +20,7 @@
   <span class="icon" style:color={st.color} aria-hidden="true">{busy ? '\u{F0772}' : st.icon}</span>
   <span class="name">{id}</span>
   {#if wait}<span class="wait" class:error>{wait}</span>{/if}
+  {#if udel}<span class="wait" class:error={udel.warn} data-undelivered title="{udel.text} · waiting {udel.since}">{udel.text}</span>{/if}
 </button>
 
 <style>

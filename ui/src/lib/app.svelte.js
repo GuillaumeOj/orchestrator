@@ -482,11 +482,27 @@ export function openProject(projectId) {
 }
 
 /** P2: a feature's pane (docs, tasks, team, timeline), one per feature. */
-export function openFeature(featureId) {
+export function openFeature(featureId, timeline = null) {
   const existing = findPane((s) => s.type === 'feature' && s.featureId === featureId);
-  if (existing) return focusPane(existing);
+  if (existing) {
+    if (timeline) app.panes[existing].timeline = timeline;
+    return focusPane(existing);
+  }
   const f = features().find((x) => x.id === featureId);
-  addPane({ type: 'feature', featureId, projectId: f?.project_id }, app.layout ? 'tab' : 'right');
+  addPane(
+    { type: 'feature', featureId, projectId: f?.project_id, ...(timeline ? { timeline } : {}) },
+    app.layout ? 'tab' : 'right',
+  );
+}
+
+/** The undelivered chip's target (ux-brief §2): the decision if there is one, else
+ *  the agent's feature timeline filtered to Delivery. */
+export function openDelivery(rec) {
+  const ref = rec?.waiting_on?.kind === 'delivery' ? rec.waiting_on.ref : null;
+  if (ref) return focusCard(ref);
+  const f = features().find((x) => x.run?.id && x.run.id === rec?.run);
+  if (f) openFeature(f.id, 'delivery');
+  else openAgent(rec?.agent);
 }
 
 /** P2: a project's Board (FR-502), one per project; `taskId` selects that card. */

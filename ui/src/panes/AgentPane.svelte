@@ -14,6 +14,7 @@
   import PermissionCall from '../components/PermissionCall.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import TermHost from '../components/TermHost.svelte';
+  import UndeliveredChip from '../components/UndeliveredChip.svelte';
   import WaitingChip from '../components/WaitingChip.svelte';
   import { agent, agentAction, app, cancelQueued, confirm, decide, leaveWatch, mountTerm, openEditor, runNow, takeOver, toast } from '../lib/app.svelte.js';
   import { ago, clock, duration } from '../lib/format.js';
@@ -129,6 +130,7 @@
     {/if}
     <span class="muted">ctx</span><CtxBar value={a.context_pct} />
     <span class="muted">session</span><span>{sessionPp == null ? '—' : `${sessionPp.toFixed(1)} pp`}</span>
+    <UndeliveredChip {rec} />
     <span class="grow"></span>
     {#if a.live}
       <button class="hint" onclick={() => agentAction(a.id, 'interrupt')}><Kbd keys="esc" /> interrupt</button>
