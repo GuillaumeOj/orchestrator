@@ -31,9 +31,12 @@ A local `make app` / `make install` stays `0.1.0`, channel `local` (always older
 build). Build info (version, commit, channel) is in the start line of `logs/orchestrator.log`.
 
 **PR builds.** A push to a pull request also becomes a build, so a PR can be tried before it
-merges. The `app-pr` job (same steps as `app`, from `.github/actions/build-app`) runs after fmt,
-clippy, tests and the UI checks are green, on the PR's own head commit (not the merge commit)
-with `ORCH_BUILD_CHANNEL=pr` and `ORCH_BUILD_PR=<number>`. It publishes the prerelease `pr-<n>`
+merges. The `app-pr` job (the build steps of `app`, from `.github/actions/build-app`) runs after
+fmt, clippy, tests and the UI checks are green, on the PR's own head commit (not the merge
+commit) with `ORCH_BUILD_CHANNEL=pr` and `ORCH_BUILD_PR=<number>`, and packs the tarball
+unsigned. PR code never sees the signing key or a write token: `app-pr` has a read-only token and
+no secret, and a second job, `app-pr-publish`, checks out the base branch, signs the tarball
+(never extracted or run there) and publishes the prerelease `pr-<n>`
 (`Orchestrator_0.1.<run>_aarch64.app.tar.gz` + `.sig`, target = head sha), replacing the previous
 push's one. A prerelease is never "latest", so the main updater ignores it, and the `main` prune
 only touches `v0.1.<n>` tags. Only same-repo, non-draft PRs not opened by Renovate are built (a

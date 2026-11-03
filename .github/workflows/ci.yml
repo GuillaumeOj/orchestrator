@@ -67,7 +67,7 @@ jobs:
 
   # Every green commit on main becomes a signed Orchestrator.app release (v0.1.<run_number>)
   # that installed apps pick up by themselves. The logic lives in scripts/app.sh; the steps
-  # shared with app-pr in .github/actions/build-app.
+  # shared with app-pr in .github/actions/build-app (which takes no secret).
   app:
     name: Build and release the app
     needs: [rust-fmt, rust, ui]
@@ -89,10 +89,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Signing key is set
+        env:
+          ORCH_UPDATE_KEY: ${{ secrets.ORCH_UPDATE_KEY }}
+          ORCH_UPDATE_KEY_PASSWORD: ${{ secrets.ORCH_UPDATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ORCH_UPDATE_KEY" ] || [ -z "$ORCH_UPDATE_KEY_PASSWORD" ]; then
+            echo "::error::secrets ORCH_UPDATE_KEY / ORCH_UPDATE_KEY_PASSWORD are not set: nothing is published (see docs/app/RUNNING.md, Updates)"
+            exit 1
+          fi
       - uses: ./.github/actions/build-app
-        with:
-          update-key: ${{ secrets.ORCH_UPDATE_KEY }}
-          update-key-password: ${{ secrets.ORCH_UPDATE_KEY_PASSWORD }}
+      # main is merged code: it may hold the key (a PR build never does, see app-pr).
+      - name: Pack and sign
+        env:
+          ORCH_UPDATE_KEY: ${{ secrets.ORCH_UPDATE_KEY }}
+          ORCH_UPDATE_KEY_PASSWORD: ${{ secrets.ORCH_UPDATE_KEY_PASSWORD }}
+        run: scripts/app.sh package
       - name: Publish release
         run: |
           tag="v$ORCH_VERSION"
@@ -119,6 +131,9 @@ jobs:
   # Every green push to a same-repo pull request becomes a prerelease pr-<number> that the app
   # can install from Settings > Builds. Fork PRs never get the signing secret; drafts and Renovate
   # PRs are skipped to save macOS minutes (a draft is built when it becomes ready for review).
+  # Two jobs, so that PR code never runs next to the signing key or a write token:
+  #   app-pr          builds and packs the PR's code (read-only token, no secret), unsigned;
+  #   app-pr-publish  signs that tarball with the trusted base tree and publishes the release.
   app-pr:
     name: Build the app for the pull request
     needs: [rust-fmt, rust, ui]
@@ -129,8 +144,8 @@ jobs:
       && github.event.pull_request.user.login != 'renovate[bot]'
     runs-on: macos-latest
     permissions:
-      contents: write
-    # A newer push supersedes the build in progress.
+      contents: read
+    # A newer push supersedes the build in progress (app-pr-publish has the same group).
     concurrency:
       group: app-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -139,7 +154,6 @@ jobs:
       ORCH_BUILD_SHA: ${{ github.event.pull_request.head.sha }}
       ORCH_BUILD_CHANNEL: pr
       ORCH_BUILD_PR: ${{ github.event.pull_request.number }}
-      GH_TOKEN: ${{ github.token }}
     steps:
       # The PR's own commit, not the merge commit the event checks out by default.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -147,15 +161,73 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
       - uses: ./.github/actions/build-app
+      - run: scripts/app.sh pack
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          update-key: ${{ secrets.ORCH_UPDATE_KEY }}
-          update-key-password: ${{ secrets.ORCH_UPDATE_KEY_PASSWORD }}
+          name: pr-build
+          path: target/release/bundle/update/Orchestrator_${{ env.ORCH_VERSION }}_aarch64.app.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  app-pr-publish:
+    name: Sign and publish the pull request build
+    needs: [app-pr]
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && !github.event.pull_request.draft
+      && github.event.pull_request.user.login != 'renovate[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: app-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    env:
+      ORCH_VERSION: 0.1.${{ github.run_number }}
+      ORCH_BUILD_SHA: ${{ github.event.pull_request.head.sha }}
+      ORCH_BUILD_PR: ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # Trusted code: the base branch (main), never the PR. The tarball below is only hashed and
+      # signed here, never extracted or run.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Signing key is set
+        env:
+          ORCH_UPDATE_KEY: ${{ secrets.ORCH_UPDATE_KEY }}
+          ORCH_UPDATE_KEY_PASSWORD: ${{ secrets.ORCH_UPDATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ORCH_UPDATE_KEY" ] || [ -z "$ORCH_UPDATE_KEY_PASSWORD" ]; then
+            echo "::error::secrets ORCH_UPDATE_KEY / ORCH_UPDATE_KEY_PASSWORD are not set: nothing is published (see docs/app/RUNNING.md, Updates)"
+            exit 1
+          fi
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: ui/package.json
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pr-build
+          path: ${{ runner.temp }}/pr-build
+      - name: Sign
+        env:
+          ORCH_UPDATE_KEY: ${{ secrets.ORCH_UPDATE_KEY }}
+          ORCH_UPDATE_KEY_PASSWORD: ${{ secrets.ORCH_UPDATE_KEY_PASSWORD }}
+        run: |
+          tarball="$RUNNER_TEMP/pr-build/Orchestrator_${ORCH_VERSION}_aarch64.app.tar.gz"
+          (cd ui && bun install --frozen-lockfile)
+          TAURI_SIGNING_PRIVATE_KEY="$ORCH_UPDATE_KEY" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$ORCH_UPDATE_KEY_PASSWORD" \
+            sh -c 'cd ui && bun run tauri signer sign "$1"' sh "$tarball"
+          [ -s "$tarball.sig" ] || { echo "::error::signing produced no $tarball.sig"; exit 1; }
       - name: Publish prerelease
         env:
           # Untrusted text: read through the environment, never spliced into the script.
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           tag="pr-$ORCH_BUILD_PR"
+          asset="$RUNNER_TEMP/pr-build/Orchestrator_${ORCH_VERSION}_aarch64.app.tar.gz"
           # The PR may have been closed or merged while this build ran: pr-build-cleanup has
           # already run then, so publishing now would leave a release nothing deletes.
           state=$(gh pr view "$ORCH_BUILD_PR" --repo "$GITHUB_REPOSITORY" --json state --jq .state)
@@ -163,7 +235,6 @@ jobs:
             echo "PR #$ORCH_BUILD_PR is $state: not publishing $tag"
             exit 0
           fi
-          asset="target/release/bundle/update/Orchestrator_${ORCH_VERSION}_aarch64.app.tar.gz"
           # The release is replaced, not updated, so its tag follows the newest built commit.
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag

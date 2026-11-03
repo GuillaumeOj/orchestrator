@@ -2,7 +2,8 @@
 # Builds Orchestrator.app (release) and installs it into ~/Applications.
 #   scripts/app.sh build     # target/release/bundle/macos/Orchestrator.app
 #   scripts/app.sh install   # build, then copy to ~/Applications (refused while it runs)
-#   scripts/app.sh package   # tar.gz + .sig of the built bundle (CI: needs ORCH_UPDATE_KEY)
+#   scripts/app.sh pack      # tar.gz of the built bundle, unsigned (CI builds of PR code)
+#   scripts/app.sh package   # pack, then sign it: tar.gz + .sig (CI: needs ORCH_UPDATE_KEY)
 # Build env (CI sets these; a local build leaves them out):
 #   ORCH_VERSION        bundle version, e.g. 0.1.42 (default: tauri.conf.json's 0.1.0)
 #   ORCH_BUILD_SHA      commit embedded in the app
@@ -77,20 +78,27 @@ build() {
   echo "built $APP"
 }
 
-# Packs the built bundle as the update asset and signs it (api-contract §1):
-# Orchestrator_<version>_aarch64.app.tar.gz (Orchestrator.app at the root) + .sig.
-package() {
+# Packs the built bundle as the update asset (api-contract §1):
+# Orchestrator_<version>_aarch64.app.tar.gz (Orchestrator.app at the root). Needs no secret, so
+# a CI job that builds untrusted code can run it; the signing happens in a trusted job.
+pack() {
   : "${ORCH_VERSION:?set ORCH_VERSION to the version of the bundle (e.g. 0.1.42)}"
-  if [ -z "${ORCH_UPDATE_KEY:-}" ] || [ -z "${ORCH_UPDATE_KEY_PASSWORD:-}" ]; then
-    echo "::error::ORCH_UPDATE_KEY / ORCH_UPDATE_KEY_PASSWORD are not set: refusing to publish an unsigned update (see docs/app/RUNNING.md, Updates)"
-    exit 1
-  fi
   [ -d "$APP" ] || { echo "no $APP: run $0 build first" >&2; exit 1; }
   out="${ORCH_PACKAGE_DIR:-$ROOT/target/release/bundle/update}"
   tarball="$out/Orchestrator_${ORCH_VERSION}_aarch64.app.tar.gz"
   mkdir -p "$out"
   rm -f "$tarball" "$tarball.sig"
   tar -czf "$tarball" -C "$(dirname "$APP")" Orchestrator.app
+  echo "packed $tarball"
+}
+
+# pack, then sign: refuses to run without the key, so an unsigned update is never published.
+package() {
+  if [ -z "${ORCH_UPDATE_KEY:-}" ] || [ -z "${ORCH_UPDATE_KEY_PASSWORD:-}" ]; then
+    echo "::error::ORCH_UPDATE_KEY / ORCH_UPDATE_KEY_PASSWORD are not set: refusing to publish an unsigned update (see docs/app/RUNNING.md, Updates)"
+    exit 1
+  fi
+  pack
   # The CLI reads the key and password from these.
   TAURI_SIGNING_PRIVATE_KEY="$ORCH_UPDATE_KEY" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$ORCH_UPDATE_KEY_PASSWORD" \
     sh -c 'cd ui && bun run tauri signer sign "$1"' sh "$tarball"
@@ -119,6 +127,7 @@ case "${1:-install}" in
   # build would fall through and install the previous bundle.
   install) build; install_app ;;
   install-only) install_app ;;
+  pack) pack ;;
   package) package ;;
-  *) echo "usage: $0 [build|install|install-only|package]" >&2; exit 2 ;;
+  *) echo "usage: $0 [build|install|install-only|pack|package]" >&2; exit 2 ;;
 esac
