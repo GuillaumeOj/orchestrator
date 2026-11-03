@@ -16,6 +16,7 @@ No arguments.
   "live_cap_max": 20,
   "off_hours_live_cap": 1,
   "off_hours_live_cap_default": 1,
+  "off_hours_live_cap_min": 0,
   "off_hours_live_cap_max": 20,
   "off_hours_allowance_pct": 0,
   "shadow": true,
