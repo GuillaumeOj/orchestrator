@@ -296,9 +296,9 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
             Decision::Flag(format!("{} in worktree, {} unmerged path(s)", insp.in_progress.join("/"), insp.unmerged))
         } else if let Some(permission) = open_gate {
             Decision::Suspend(if permission {
-                "permission prompt parked in the Inbox: resumes on the answer".into()
+                "permission prompt parked as a decision: resumes on the answer".into()
             } else {
-                "gate still open: back in the Inbox as a restart gate".into()
+                "gate still open: back as a restart gate".into()
             })
         } else if rec.tracker.background_tasks > 0 {
             Decision::Resume(format!(
@@ -364,15 +364,15 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                         i.payload["restarted"] = serde_json::json!(true);
                         report.parked.push(item);
                         format!(
-                            "Inbox item {item} parked: the agent was denied while the core was down and resumes on the answer"
+                            "Decision {item} parked: the agent was denied while the core was down and resumes on the answer"
                         )
                     }
                     // Decided (or parked) just before the core died: nothing waits on this hold.
-                    None => format!("Inbox item {item} already closed or parked"),
+                    None => format!("Decision {item} already closed or parked"),
                 },
                 (HoldKind::Gate, None) => {
                     fresh_gates.push(h.summary.clone());
-                    "back in the Inbox as a restart gate".to_string()
+                    "back as a restart gate".to_string()
                 }
                 (HoldKind::Governor, _) => "requeued".to_string(),
             };

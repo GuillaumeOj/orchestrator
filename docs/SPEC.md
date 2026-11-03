@@ -195,7 +195,7 @@ Priority: **M** must, **S** should, **C** could. Phases are listed in §11. Jour
 | FR-207 | **Interrupt** (Esc sent to the PTY), **pause** (no new turns delivered), **kill**: SIGTERM to `claude`'s process group **and** to the group of every process with no controlling terminal whose cwd is inside the agent's worktree (`lsof -d cwd`), then SIGKILL after 5 s. A process with its own terminal and another group (the user's shell `cd`'d into the worktree) is not the agent's and is left alone. The process group alone isn't enough: Claude's Bash tool runs each command in its own session, and `cmd &` children outlive `claude` (P0). The agent id in the environment can't be used to find them (macOS hides the environment of system binaries). PTY master file descriptors are close-on-exec, so a leaked one can't keep a headless `claude` alive. The kill is **checked**: the core scans again (up to 2 s after SIGKILL, zombies ignored) and, if a process of the agent survived, the kill fails with its pid and command, the agent keeps its pid and group so a retry finds it, and nothing is deleted. | M |
 | FR-208 | Clickable file paths and URLs in agent and shell panes (open in editor or browser). Paths that the terminal wrapped onto several rows are joined before matching (Claude Code wraps long paths). | M |
 | FR-209 | Search across session transcripts (Claude Code's JSONL files), per project or global. Transcripts are found **by session id** across `~/.claude/projects/*/`: after a repo move, a resumed session keeps writing to the transcript in the old project folder. The index (SQLite FTS5) covers the sessions of the app's agents and the transcripts in each registered project's folders (its checkout and its worktree root); it is updated incrementally after each turn. | S |
-| FR-210 | macOS notifications follow the attention ladder (§9.6), never one per finished turn. The core watches the Inbox every 3 s, also while the window is hidden; new level 1–2 items notify with a sound, several at once batched; a question asked as `fyi` never notifies. Desktop and sound are settings (palette). | M |
+| FR-210 | macOS notifications follow the attention ladder (§9.6), never one per finished turn. The core watches the open decisions (woken by the `now` push since P4.1), also while the window is hidden; new level 1–2 decisions notify with a sound, several at once batched; a question asked as `fyi` never notifies. Desktop and sound are settings (palette). From P4.3 a notification carries its decision (a batch: the oldest), and activating the app within 60 s of it focuses that card in the chat (`focus_card`; the macOS plugin reports no click). | M |
 
 ### 4.3 Agent & team builder (visual canvas)
 | ID | Requirement | P |
@@ -575,9 +575,11 @@ The UI is **designed in FigCraft before it is built** (ADR-012, which replaces A
 ```
 Opening a row's session shows its Claude Code pane over the board, as a tab (Esc returns to Mission control); shells stay in the dock. The Inspector shows the selection's details (agent, run, task or decision) and follows the selection in Mission control.
 
+**From P4.3** the chat column is built: a fixed column of the shell (360 px, 340 at 1280), titled **Decisions** until the Overwatch joins in P4.4. Below 1728 px the Inspector is an **overlay over the chat's slot** (⌘I toggles; ⌘⇧I and ⌘L close it), docked 320 px beside the chat at ≥ 1728. The title bar badge reads **Decisions n**.
+
 - **Sidebar** (⌘B): Projects → Features → agents, and solo sessions **under their project**. It is the only navigation tree. ⌘P is a fuzzy jump into it. Below 1512 px it collapses to an icon rail with status dots.
 - **Workspace**: tiling panes with splits, tabs and zoom, over the **shell dock** (one tab per shell, resizable, ⌘J).
-- **Inspector** (⌘I): docked at ≥ 1512 px, overlay below that.
+- **Inspector** (⌘I): docked at ≥ 1512 px, overlay below that (until P4.3; from P4.3 docked at ≥ 1728 px, overlay over the chat column below).
 - **Status bar**: git state of the focused project, live/queued agents with the pressure state in words, a **5h guard** chip whenever the guard holds work ("5h guard · cap 1 until 13:00", in any pressure state), memory.
 
 ### 9.3 Pane types
@@ -595,7 +597,7 @@ Opening a row's session shows its Claude Code pane over the board, as a tab (Esc
 | Board | Tasks over any backend | backend disconnected |
 | Team canvas | Builder + Rules panel | invalid (inline errors), unsaved |
 | Week planner | Ideal vs actual (week and 5h), allocations, forecast, policy, governor log, next-action preview | no plan yet, shadow mode, Green/Amber/Red/Catch-up, estimated (low confidence) |
-| Inbox (until P4.3) | Triage | empty, many pending, stale items |
+| Inbox (P1–P4.2, removed in P4.3) | Triage; its decisions are cards in the chat column from P4.3 | — |
 | Settings | Claude Code, MCP registry, integrations, terminal/editor, pacing policy, keyboard, memory | integration disconnected |
 
 **Global banners** (component inventory): limit reached + reset time (one variant per window: weekly and 5h), login expired, Claude Code version unsupported, Governor in Red, live-agent cap reached, offline, not on AC power with off-hours work queued.
@@ -657,11 +659,11 @@ From P4.3 (v0.12) the ladder applies to **cards in the Overwatch chat** instead 
 - **Shift+Enter** in agent panes sends `ESC CR`, so it adds a newline in Claude Code instead of submitting (P0).
 - **⌘⏎ submits a dialog**: the chord handler passes it to the dialog even when focus is not in a text field.
 - The app ships its own macOS menu, so system items (Close Window ⌘W, Hide ⌘H, Minimize ⌘M) don't take chords this contract uses.
-- **Global ⌘ shortcuts**: ⌘K palette, ⌘P jump, ⌘B sidebar, ⌘I inspector, ⌘N new project, ⌘T new session, ⌘1…9 focus pane, ⌘W close pane, ⌘⇧T reopen the last closed pane, ⌘⇧I Inbox.
+- **Global ⌘ shortcuts**: ⌘K palette, ⌘P jump, ⌘B sidebar, ⌘I inspector, ⌘N new project, ⌘T new session, ⌘1…9 focus pane, ⌘W close pane, ⌘⇧T reopen the last closed pane, ⌘⇧I Inbox (from P4.3: the chat on the oldest open card).
 - **Leader + key**: `s`/`v` split horizontally/vertically, `h j k l` move focus, `z` zoom, `t` new shell, `e` open editor, `w` next waiting agent, `p` pause/resume the focused agent, `o` Overview, `g` Week planner.
 - **Notation** (FigCraft, docs, UI): one key-hint container per shortcut; `+` joins keys pressed together (`⌘+⇧+I`), a space separates the steps of a sequence (`⌘+; z` = leader, then `z`).
 - **Pane-local single keys** when the pane has focus and is not a terminal: Inbox (FR-707, plus `e` open in nvim), Overview (`⏎` open, `i` interrupt, `p` pause, `s` suspend, `r` resume, `⇧K` kill (asks first; `k` moves up), FR-903), Week planner (`S` sprint mode, `P` pause all, `e` edit plan, `u` undo the selected log entry), canvas (FR-302). The full map is on Penpot page `05`.
-- **From P4** (v0.12): ⌘⇧I focuses the chat on the oldest open card (cards take the FR-707 keys; `j/k` move between open cards, skipping collapsed lines); ⌘L focuses the chat input; leader `o` opens Mission control; in Mission control, `j/k` move rows, `⏎` opens the session over the board (Esc returns), `i`/`p`/`s`/`r`/`⇧K` act on the **selected** row, `f` filters by project.
+- **From P4** (v0.12): ⌘⇧I focuses the chat on the oldest open card (cards take the FR-707 keys; `j/k` move between open cards, skipping collapsed lines); ⌘L focuses the chat input (in P4.3, before the Overwatch exists: the chat's search); leader `o` opens Mission control; in Mission control, `j/k` move rows, `⏎` opens the session over the board (Esc returns), `i`/`p`/`s`/`r`/`⇧K` act on the **selected** row, `f` filters by project.
 - **Known limits** (P0): xterm.js has no kitty keyboard protocol, so `Ctrl-I` = Tab, `Ctrl-M` = Enter and `Ctrl-[` = Esc as in legacy terminals, and `Ctrl-/`, `Ctrl-.`, `Ctrl-;` and every `Ctrl-Shift-<letter>` send nothing. These are recorded on Penpot page `05`. Not yet tested with physical keys: ⌘-chords against the menu, dead keys and IME composition (R9).
 
 ### 9.8 Wireframes (low-fi, starting points for the FigCraft file)

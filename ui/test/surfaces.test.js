@@ -51,7 +51,7 @@ const { default: Banner } = await import('../src/components/Banner.svelte');
 const { default: TitleBar } = await import('../src/components/TitleBar.svelte');
 const { default: Inspector } = await import('../src/components/Inspector.svelte');
 const { default: MissionPane } = await import('../src/panes/MissionPane.svelte');
-const { default: InboxPane } = await import('../src/panes/InboxPane.svelte');
+const { default: ChatColumn } = await import('../src/components/chat/ChatColumn.svelte');
 const { default: AgentPane } = await import('../src/panes/AgentPane.svelte');
 const { default: FeaturePane } = await import('../src/panes/FeaturePane.svelte');
 
@@ -198,10 +198,10 @@ describe('every surface shows the same numbers (spec §6.1)', () => {
 
   it('decisions 2', () => {
     const title = render(TitleBar).container;
-    expect(title.querySelector('.inbox .count').textContent).toBe('2');
-    const inbox = render(InboxPane).container;
-    expect(inbox.querySelectorAll('.item')).toHaveLength(2);
-    expect(text(inbox)).toContain('All 2');
+    expect(title.querySelector('.decisions .count').textContent).toBe('2');
+    const chat = render(ChatColumn).container;
+    expect(chat.querySelectorAll('.card')).toHaveLength(2);
+    expect(text(chat)).toContain('All 2');
   });
 
   it('queued 2 and live 5 / cap 4', () => {
@@ -276,11 +276,11 @@ describe('surfaces render the record: status, reason, since', () => {
     expect(container.querySelector('.fh .pill').textContent).toBe('Executing');
   });
 
-  it('inbox list badges use the decision-kind palette', () => {
-    const inbox = render(InboxPane).container;
-    const kinds = [...inbox.querySelectorAll('.item .kind')].map((k) => k.getAttribute('title'));
+  it('card kind labels use the decision-kind palette', () => {
+    const chat = render(ChatColumn).container;
+    const kinds = [...chat.querySelectorAll('.card .kind')].map((k) => text(k).replace(/^\S+ /, ''));
     expect(kinds).toEqual(['Permission', 'Question']);
-    expect(/** @type {HTMLElement} */ (inbox.querySelector('.item .kind')).style.color).toBe(
+    expect(/** @type {HTMLElement} */ (chat.querySelector('.card .kind')).style.color).toBe(
       'var(--color-decision-permission)',
     );
   });

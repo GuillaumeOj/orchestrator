@@ -140,6 +140,9 @@ pub fn run() {
             commands::watch_worktree,
             commands::unwatch_worktree,
             commands::digest_seen,
+            commands::chat_days,
+            commands::chat_day,
+            commands::chat_search,
             commands::kitty_config,
             commands::font_files,
             commands::read_font,
@@ -234,6 +237,14 @@ pub fn run() {
         .build(context)
         .expect("building the Tauri app");
     app.run(|handle, ev| {
+        match &ev {
+            // D7: no click callback on desktop; the app coming forward soon
+            // after a notification focuses that decision's card.
+            RunEvent::WindowEvent { event: tauri::WindowEvent::Focused(true), .. } => notify::on_activated(handle),
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => notify::on_activated(handle),
+            _ => {}
+        }
         if let RunEvent::Exit = ev {
             // Agents are suspended (resumed by session id next time), shells closed.
             if let Some(core) = handle.try_state::<Arc<core::Core>>() {

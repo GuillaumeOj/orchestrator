@@ -20,7 +20,7 @@ vi.mock('../src/lib/ipc.js', () => ({
 }));
 
 const { default: FeaturePane } = await import('../src/panes/FeaturePane.svelte');
-const { default: InboxPane } = await import('../src/panes/InboxPane.svelte');
+const { default: ChatColumn } = await import('../src/components/chat/ChatColumn.svelte');
 
 const view = {
   feature: { id: 'shop-onb', project_id: 'shop-api', slug: 'onboarding', integration_worktree: '/w/onb' },
@@ -143,18 +143,18 @@ describe('Notion comment in the Inbox', () => {
     app.now = nowOf(app.data, { decisions: [d] });
     replies.inbox_act = { open: 'url', url: 'https://notion.so/onb#c1' };
     replies.open_url = null;
-    const { container, getAllByText } = render(InboxPane);
+    const { container, getAllByText } = render(ChatColumn);
     expect(getAllByText('Notion comment', { exact: false }).length).toBeGreaterThan(0);
     expect(container.textContent).toContain('Open in Notion ↗');
     expect(container.textContent).toContain('From notion.so/onb#c1 ↗');
     expect(container.textContent).not.toContain('Reply');
-    await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: 'o' });
+    await fireEvent.keyDown(container.querySelector('[data-chat-focus]'), { key: 'o' });
     await waitFor(() =>
       expect(calls.some(([c, a]) => c === 'open_url' && a.url === 'https://notion.so/onb#c1')).toBe(true),
     );
     expect(calls.find(([c]) => c === 'inbox_act')[1]).toEqual({ item: 'alert-9', action: 'open', message: null });
     // r dismisses, as on the other alerts (through the undo window).
-    await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: 'r' });
+    await fireEvent.keyDown(container.querySelector('[data-chat-focus]'), { key: 'r' });
     expect(app.pending.at(-1)).toMatchObject({ item: 'alert-9', action: 'dismiss' });
     expect(app.toasts.at(-1).text).toBe('Dismissing · Comment on onboarding · spec.md');
     app.pending = [];
@@ -184,9 +184,9 @@ describe('Notion comment in the Inbox', () => {
       features: [],
       runs: [],
     };
-    const { container } = render(InboxPane);
+    const { container } = render(ChatColumn);
     await fireEvent.click(container.querySelector('[role="option"][title^="ENG-140"]'));
-    await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: 'o' });
+    await fireEvent.keyDown(container.querySelector('[data-chat-focus]'), { key: 'o' });
     await waitFor(() =>
       expect(
         Object.values(app.panes).some((p) => p.type === 'board' && p.projectId === 'shop-api' && p.taskId === 40),

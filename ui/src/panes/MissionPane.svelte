@@ -19,9 +19,9 @@
     app,
     cancelQueued,
     confirm,
+    focusCard,
     now30,
     openBoard,
-    openInbox,
     openReport,
     openSession,
     openUrl,
@@ -177,7 +177,7 @@
   function onEnter() {
     if (!selKey) return;
     if (selKey.startsWith('lane:') || selKey === 'showall') return expand(selKey);
-    if (row?.kind === 'decisions') return openInbox(row.ids[0]);
+    if (row?.kind === 'decisions') return focusCard(row.ids[0]);
     if (row?.kind === 'outcome') return openOutcome(row.outcome);
     if (t) openSession(t);
   }
@@ -205,7 +205,7 @@
       if (row && row.kind !== 'outcome' && row.kind !== 'decisions') return run(() => (details = toggle(details, selKey)));
       return;
     }
-    if (k === 'd') return dec && run(() => openInbox(dec));
+    if (k === 'd') return dec && run(() => focusCard(dec));
     if (k === 'o') {
       if (row?.kind === 'outcome') return run(() => openOutcome(row.outcome));
       if (row?.kind === 'run' && row.run.pr) return run(() => openUrl(row.run.pr.url));
@@ -273,7 +273,7 @@
         {:else if r.kind === 'decisions'}
           <div class="loose">
             <span style:color="var(--color-attention-needs-you)" aria-hidden="true">{LEVEL.needs_you.icon}</span>
-            {looseText(r.count)} · <button class="linkbtn" tabindex="-1" onclick={(e) => (e.stopPropagation(), openInbox(r.ids[0]))}>Open in Inbox</button> <Kbd keys="d" />
+            {looseText(r.count)} · <button class="linkbtn" tabindex="-1" onclick={(e) => (e.stopPropagation(), focusCard(r.ids[0]))}>Show card</button> <Kbd keys="d" />
           </div>
         {/if}
         {#if details[r.key] && r.kind !== 'decisions'}<RowDetails ids={ids(r)} {now} />{/if}

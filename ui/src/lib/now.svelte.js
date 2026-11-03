@@ -5,6 +5,7 @@
 // refetches its view when its topic arrives, on mount and on window focus.
 
 import { app, decisionGone, decisionPushed } from './app.svelte.js';
+import { chatOf, upsertEntries } from './chat.js';
 import { startOfDay, waited } from './format.js';
 import { isOpen, older } from './inbox.js';
 import { invoke, listen } from './ipc.js';
@@ -39,6 +40,7 @@ function setSnapshot(s) {
     decisions: byKey(s?.decisions, 'id'),
     outcomes: s?.outcomes ?? [],
     counts: s?.counts ?? { global: {}, projects: {} },
+    chat: chatOf(s?.chat),
   };
 }
 
@@ -97,6 +99,8 @@ export function applyNow(ev) {
     // spec §3.7); a long session would keep every day's.
     if (ev.outcomes?.length) n.outcomes = mergeOutcomes(n.outcomes, ev.outcomes);
     if (ev.counts) n.counts = ev.counts;
+    // Today's chat entries (P4.3 api-contract §2.1): new and changed ones.
+    if (ev.chat?.length) upsertEntries((n.chat ??= { day: null, entries: {} }), ev.chat);
     n.rev = ev.rev;
   } else if (ev.rev > n.rev) {
     missed = Math.max(missed, ev.rev);
@@ -189,7 +193,7 @@ export function mergeOutcomes(held, pushed, now = Date.now()) {
   return [...held.filter((o) => !ids.has(o.id) && o.at_ms >= day), ...pushed];
 }
 
-/** Today's outcomes not yet cleared, newest first (the Inbox digest, level 4). */
+/** Today's outcomes not yet cleared, newest first (the chat column's digest, level 4). */
 export const digest = (now = Date.now()) =>
   app.now.outcomes.filter((o) => !o.seen && o.at_ms >= startOfDay(now)).sort((x, y) => y.at_ms - x.at_ms);
 

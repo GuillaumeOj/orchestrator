@@ -30,7 +30,7 @@
     <section>
       <h4>{r.level === 'error' ? 'Error' : 'Blocker'}</h4>
       <div><button class="link" onclick={() => select('agent', b.agent)}>{b.agent}</button> · {b.reason}</div>
-      {#if b.waiting_on?.since_ms}<div class="muted">{waited(b.waiting_on.since_ms, now)}{b.waiting_on.kind === 'user' ? ' · Open in Inbox d' : ''}</div>{/if}
+      {#if b.waiting_on?.since_ms}<div class="muted">{waited(b.waiting_on.since_ms, now)}{b.waiting_on.kind === 'user' ? ' · Show card d' : ''}</div>{/if}
     </section>
   {/if}
   <section>

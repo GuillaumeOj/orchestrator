@@ -1,8 +1,7 @@
-// Inbox helpers over Decisions (P4.1, api-contract §2; copy: p4-design-notes §3–§4).
+// Decision-card helpers over Decisions (P4.1, api-contract §2; copy: p4-design-notes §3–§4).
 import { describe, expect, it } from 'vitest';
 import { baseName, waited } from '../src/lib/format.js';
 import {
-  afterRemoval,
   answerText,
   collapse,
   decisionToast,
@@ -12,7 +11,6 @@ import {
   keyIntent,
   kindLabel,
   marker,
-  move,
   pendingToast,
   subjectLine,
   tailLines,
@@ -68,20 +66,13 @@ const mcp = decision({
   ],
 });
 
-describe('inbox triage', () => {
+describe('card triage', () => {
   const list = [permDecision(), question, budgetDecision()];
 
   it('filters by level and hides decisions in their undo window', () => {
     expect(visibleItems(list, 'blocking').map((d) => d.id)).toEqual(['perm-1', 'q-2']);
     expect(visibleItems(list, 'budget').map((d) => d.id)).toEqual(['ask-7']);
     expect(visibleItems(list, 'all', [{ item: 'perm-1' }]).map((d) => d.id)).toEqual(['q-2', 'ask-7']);
-  });
-
-  it('j/k move and selection survives removal', () => {
-    expect(move(list, 'perm-1', 1)).toBe('q-2');
-    expect(afterRemoval(list, 'perm-1')).toBe('q-2');
-    expect(afterRemoval(list, 'ask-7')).toBe('q-2');
-    expect(afterRemoval([list[0]], 'perm-1')).toBe(null);
   });
 
   it('a/r/⏎/o run the action that has the key; core-answered ones go at once', () => {

@@ -16,7 +16,8 @@ describe('keyboard contract §9.7', () => {
       kind: 'command',
       command: 'palette',
     });
-    expect(classify(key('I', { meta: true, shift: true, code: 'KeyI' }), { terminal: true }).command).toBe('inbox');
+    expect(classify(key('I', { meta: true, shift: true, code: 'KeyI' }), { terminal: true }).command).toBe('decisions');
+    expect(classify(key('l', { meta: true, code: 'KeyL' }), { terminal: true }).command).toBe('decisions.search');
     expect(classify(key('3', { meta: true, code: 'Digit3' })).command).toBe('pane.focus.3');
     expect(classify(key('w', { meta: true, code: 'KeyW' })).command).toBe('pane.close');
   });
@@ -64,7 +65,8 @@ describe('keyboard contract §9.7', () => {
 
   it('hints use the Penpot notation', () => {
     expect(hint('palette')).toBe('⌘+K');
-    expect(hint('inbox')).toBe('⌘+⇧+I');
+    expect(hint('decisions')).toBe('⌘+⇧+I');
+    expect(hint('decisions.search')).toBe('⌘+L');
     expect(hint('pane.zoom')).toBe('⌘+; z');
     expect(Object.values(CHORDS)).toContain('session.new');
   });

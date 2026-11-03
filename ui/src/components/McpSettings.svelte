@@ -63,7 +63,7 @@
     }
   }
 
-  /** Banners, the Inbox and Integrations open a server ("design:penpot" = that tool's). */
+  /** Banners, decision cards and Integrations open a server ("design:penpot" = that tool's). */
   function select(want) {
     if (!want) return;
     const tool = want.startsWith('design:') ? want.slice(7) : null;

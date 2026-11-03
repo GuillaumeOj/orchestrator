@@ -114,7 +114,7 @@ impl Runtime {
         self.question_item(rec, &text, options, "AskUserQuestion", true, questions).ok()?;
         Some(HookOutput::pre_tool_use(
             ToolDecision::Deny,
-            "ORCH: forwarded to the user through the Inbox; the answer arrives as a new turn. Continue with other work or end your turn.",
+            "ORCH: forwarded to the user in the app; the answer arrives as a new turn. Continue with other work or end your turn.",
         ))
     }
 

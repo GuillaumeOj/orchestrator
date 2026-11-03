@@ -188,8 +188,7 @@ impl Runtime {
     pub fn outcomes_since(&self, after: u64) -> Vec<Outcome> {
         let tz = TimeZone::system();
         let (midnight, date) = today(orch_protocol::now_ms(), &tz);
-        let paths = self.db.projects(false).unwrap_or_default().into_iter().map(|p| (p.path, p.id)).collect();
-        self.outcomes_of_day(midnight, &date, after, &tz, &BTreeMap::new(), &paths).0
+        self.outcomes_of_day(midnight, &date, after, &tz, &BTreeMap::new(), &self.project_paths()).0
     }
 
     /// The outcomes of the day starting at `midnight` (`date`) after event
@@ -209,9 +208,35 @@ impl Runtime {
         if evs.is_empty() {
             return (vec![], last);
         }
-        let seen = self.digest_watermark(date);
-        let names = self.names(&evs, runs, paths);
-        (evs.iter().filter_map(|(e, r)| outcome(e, r.as_deref(), &names, seen, tz)).collect(), last)
+        (self.outcomes_of(&evs, self.digest_watermark(date), tz, runs, paths), last)
+    }
+
+    /// Main checkout → project id (what names an agent's project).
+    fn project_paths(&self) -> BTreeMap<std::path::PathBuf, String> {
+        self.db.projects(false).unwrap_or_default().into_iter().map(|p| (p.path, p.id)).collect()
+    }
+
+    /// These events' outcomes, `seen` up to the watermark `seen`.
+    fn outcomes_of(
+        &self,
+        evs: &[(Event, Option<String>)],
+        seen: u64,
+        tz: &TimeZone,
+        runs: &BTreeMap<String, (String, String)>,
+        paths: &BTreeMap<std::path::PathBuf, String>,
+    ) -> Vec<Outcome> {
+        let names = self.names(evs, runs, paths);
+        evs.iter().filter_map(|(e, r)| outcome(e, r.as_deref(), &names, seen, tz)).collect()
+    }
+
+    /// The outcomes of `since_ms <= at < until_ms` (a past day's, for
+    /// `chat_day`), `seen` false.
+    pub(crate) fn outcomes_between(&self, since_ms: u64, until_ms: u64, tz: &TimeZone) -> Vec<Outcome> {
+        let Ok(evs) = self.db.events_of_kinds_in(since_ms, until_ms, &KINDS) else { return vec![] };
+        if evs.is_empty() {
+            return vec![];
+        }
+        self.outcomes_of(&evs, 0, tz, &BTreeMap::new(), &self.project_paths())
     }
 
     /// The runs, agents' projects and tasks these events name.

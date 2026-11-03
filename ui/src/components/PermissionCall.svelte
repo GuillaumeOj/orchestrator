@@ -1,7 +1,7 @@
 <script>
   // A `tool_call` block (FR-705, notes §3.3): "<tool> in <worktree name>" (the
   // full cwd on hover) and the input in mono, collapsed past 6 lines. In the
-  // Inbox detail and the agent pane's permission strip.
+  // decision card and the agent pane's permission strip.
   import { baseName, plural } from '../lib/format.js';
   import { collapse, inputText } from '../lib/inbox.js';
 

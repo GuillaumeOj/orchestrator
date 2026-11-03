@@ -1738,7 +1738,7 @@ impl Runtime {
                     json!({"item": id}),
                 );
                 Ok((
-                    "The spec gate is in the user's Inbox. End your turn now; you will be told the decision.".into(),
+                    "The spec gate is waiting for the user. End your turn now; you will be told the decision.".into(),
                     json!({"item": id}),
                 ))
             }

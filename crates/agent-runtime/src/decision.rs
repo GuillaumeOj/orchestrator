@@ -124,6 +124,10 @@ pub struct Decision {
     /// Built from live state, no stored row (trust, wait, error, ask).
     #[serde(skip)]
     pub synthesized: bool,
+    /// The stored decision word (`approve`, `reject`, `reply`…): the chat
+    /// line's verb.
+    #[serde(skip)]
+    pub decision: Option<String>,
     pub payload: Value,
 }
 
@@ -502,6 +506,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
         created_ms: i.created_at_ms,
         agent: i.agent_id.clone(),
         synthesized: false,
+        decision: i.decision.clone(),
         subject,
         payload: p.clone(),
     }
@@ -539,6 +544,7 @@ fn synth(
         created_ms,
         agent: agent.map(str::to_string),
         synthesized: true,
+        decision: None,
         payload,
     }
 }

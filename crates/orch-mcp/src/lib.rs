@@ -118,7 +118,7 @@ pub fn tools() -> Value {
             json!({
                 "question": s("The question, with the context the user needs to answer it."),
                 "options": {"type": "array", "items": {"type": "string"}, "description": "Suggested answers."},
-                "kind": s("decision (default: the user is notified) or fyi (shown in the Inbox, no notification).")
+                "kind": s("decision (default: the user is notified) or fyi (shown in the decisions column, no notification).")
             }),
             &["question"],
         ),

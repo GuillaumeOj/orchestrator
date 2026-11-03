@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+mod chat;
 mod db;
 mod ecosystem;
 mod entities;
@@ -14,6 +15,7 @@ mod teams;
 mod transcripts;
 mod util;
 
+pub use chat::{ChatDay, ChatEntry};
 pub use db::{Pending, Store, Tx};
 pub use ecosystem::IntegrationRow;
 pub use events::{AuditEntry, Event, Retention, RunEvent};

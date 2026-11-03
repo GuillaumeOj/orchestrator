@@ -510,7 +510,7 @@ impl Runtime {
             format!("push {} commit(s) of {branch} to PR #{n}", commits.len())
         };
         Ok(format!(
-            "Requested: Inbox item {id} asks the user to {what}. You will be told the result; there is nothing else to do for it now."
+            "Requested: decision {id} asks the user to {what}. You will be told the result; there is nothing else to do for it now."
         ))
     }
 
