@@ -262,7 +262,7 @@ pub(crate) struct House {
     /// Last sync of the remote task backends (FR-503).
     last_task_sync_ms: u64,
     /// Watchdog alerts already raised, by `<agent>:<turn start>` (FR-407).
-    watchdog: std::collections::BTreeSet<String>,
+    pub(crate) watchdog: std::collections::BTreeSet<String>,
     /// Last FR-604 probe of the servers the running agents use.
     last_mcp_probe_ms: u64,
     /// Files of its `messages/` folder each agent referenced in a tool call
@@ -295,6 +295,9 @@ pub(crate) struct House {
     pub(crate) switch_failed: std::collections::BTreeSet<String>,
     /// When the user last retried each message of a `delivery` decision (§3.7).
     pub(crate) retried_at: BTreeMap<u64, u64>,
+    /// When the user last retried the decision of each episode key (§3.7):
+    /// the episode's clock starts again from then.
+    pub(crate) retried_keys: BTreeMap<String, u64>,
 }
 
 /// A hook's event detail (FR-1311, the run report): the common fields, plus
@@ -1004,6 +1007,7 @@ impl Runtime {
         // exit after the start): the pump resumes it when it has work.
         if self.store.read(|s| s.agents.get(id).is_some_and(crate::startup::crashed)) {
             self.note_crash(id, &l);
+            self.continue_after_crash(id);
         }
     }
 
@@ -1605,6 +1609,33 @@ impl Runtime {
                 "recovered",
                 json!({"agent": id, "from_state": "error", "how": "continue", "error": error}),
             );
+        }
+    }
+
+    /// §3.5 (F3): a process that died in the middle of a turn leaves work that
+    /// nobody asks for again, and with nothing queued the pump never restarts
+    /// it. The interrupted turn is closed as failed and one Continue turn is
+    /// queued, which the crash restart then carries to the new process.
+    pub(crate) fn continue_after_crash(&self, id: &str) {
+        let queued = self.store.write(|s| {
+            let mut interrupted = false;
+            for t in s.turns.iter_mut().filter(|t| t.agent_id == id && t.status == TurnStatus::Delivered) {
+                t.status = TurnStatus::Failed;
+                interrupted = true;
+            }
+            let has = s
+                .turns
+                .iter()
+                .any(|t| t.agent_id == id && t.status == TurnStatus::Queued && t.kind == TurnKind::Continue);
+            if interrupted && !has {
+                let text = "ORCH: your process crashed in the middle of your last turn and was restarted. \
+                            Carry on, or report where you are.";
+                s.turns.push(TurnRow::queued(id, text, TurnKind::Continue, Admission::Pending));
+            }
+            interrupted && !has
+        });
+        if queued.unwrap_or(false) {
+            self.delivery_event(id, "recovered", json!({"agent": id, "from_state": "crashed", "how": "continue"}));
         }
     }
 

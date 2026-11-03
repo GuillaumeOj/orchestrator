@@ -711,6 +711,22 @@ mod scenarios {
         sim.next_message_arrives("a1", &cli);
     }
 
+    /// F3: nobody writes again after the crash. The interrupted turn gets one
+    /// Continue turn, which restarts the agent: it does not stay down.
+    #[test]
+    fn f3_a_crash_mid_turn_queues_a_continue_and_the_agent_restarts_by_itself() {
+        let (sim, cli) = sim_with_agent();
+        cli.set(|s| s.exit_mid_turn = true);
+        let t = sim.say("a1", "this one dies");
+        sim.until("the Continue in the new process", 40, || cli.saw("crashed in the middle of your last turn"));
+        sim.until("idle again", 20, || sim.state("a1") == AgentState::Idle);
+        assert_eq!(sim.status(&t), T::Failed, "the interrupted turn is closed");
+        let ev = sim.events("a1", "recovered");
+        assert!(ev.iter().any(|e| e["from_state"] == "crashed" && e["how"] == "continue"), "{ev:?}");
+        assert!(ev.iter().any(|e| e["from_state"] == "crashed" && e["how"] == "resume"), "{ev:?}");
+        sim.next_message_arrives("a1", &cli);
+    }
+
     /// F3 (bound): at most 2 automatic restarts an hour; the third crash is a
     /// `startup` decision (`failed: crash`), and the user's resume works.
     #[test]
@@ -727,7 +743,13 @@ mod scenarios {
             sim.until("a crash", 40, || sim.state("a1") == AgentState::Error || crash_item());
         }
         sim.until("a crash decision", 40, crash_item);
-        assert_eq!(sim.events("a1", "recovered").iter().filter(|e| e["from_state"] == "crashed").count(), 2);
+        assert_eq!(
+            sim.events("a1", "recovered")
+                .iter()
+                .filter(|e| e["from_state"] == "crashed" && e["how"] == "resume")
+                .count(),
+            2
+        );
         cli.set(|s| s.crash_always = false);
         // The user's own message resumes it, whatever the used-up budget says.
         sim.say("a1", "back again");
@@ -813,13 +835,12 @@ mod scenarios {
         sim.rt.user_message(&run.id, "lead", &long).unwrap();
         sim.until("the cut message", 30, || cli.saw("full text:"));
         sim.until("the message read", 30, || sim.unread(&run.id, "lead", LEAD) == 0);
-        assert!(sim.run_events(&run.id, "read").iter().all(|e| e["truncated"] != true), "read in full");
+        assert!(sim.events(LEAD, "read").iter().all(|e| e["truncated"] != true), "read in full");
         // The model does not read the file: handed back once, then read as truncated.
         cli.set(|s| s.read_full = false);
         sim.rt.user_message(&run.id, "lead", &long).unwrap();
         sim.until("read as truncated", 40, || {
-            sim.unread(&run.id, "lead", LEAD) == 0
-                && sim.run_events(&run.id, "read").iter().any(|e| e["truncated"] == true)
+            sim.unread(&run.id, "lead", LEAD) == 0 && sim.events(LEAD, "read").iter().any(|e| e["truncated"] == true)
         });
         sim.until("idle, nothing looping", 10, || sim.state(LEAD) == AgentState::Idle);
         sim.rt.user_message(&run.id, "lead", "short follow-up").unwrap();
@@ -922,6 +943,7 @@ mod scenarios {
         sim.rt.user_message(&run.id, "lead", "are you there?").unwrap();
         sim.until("a delivery decision", 30, || !sim.items("delivery").is_empty());
         let first = sim.items("delivery").remove(0);
+        assert_eq!(first.payload["episode"], "stuck_lead", "the lead's own episode");
         let stuck: Vec<String> = sim.rt.store.read(|s| {
             s.turns.iter().filter(|t| t.agent_id == LEAD && t.status == T::Delivering).map(|t| t.id.clone()).collect()
         });
@@ -971,5 +993,25 @@ mod scenarios {
         let at = |n: &str| line.find(n).unwrap_or_else(|| panic!("{n} in {line}"));
         assert!(at("first note") < at("LONG") && at("LONG") < at("full text:") && at("full text:") < at("third note"));
         assert!(!line.contains(&"y".repeat(1_000)), "the long one is cut");
+    }
+
+    /// The plumbing of the messages (handed, seen, read…) is kept per agent and
+    /// never fills the run timeline's window: a real message is still there
+    /// after 300 of them.
+    #[test]
+    fn plumbing_events_do_not_push_real_messages_off_the_timeline() {
+        let (sim, _rd, run, _cli) = team_with_lead(|_| {});
+        sim.rt.user_message(&run.id, "lead", "the one that matters").unwrap();
+        for i in 0..300 {
+            let kind = ["handed", "seen", "read", "continue_failed"][i % 4];
+            sim.rt.delivery_event(LEAD, kind, json!({"messages": [i]}));
+        }
+        sim.rt.db.flush().unwrap();
+        let v = sim.rt.run_json(&run.id).unwrap();
+        let kinds: Vec<&str> = v["timeline"].as_array().unwrap().iter().filter_map(|e| e["kind"].as_str()).collect();
+        assert!(kinds.contains(&"message"), "the message is in the timeline: {kinds:?}");
+        assert!(kinds.iter().all(|k| !["handed", "seen", "read", "continue_failed"].contains(k)));
+        // They are still the agent's events, for the report.
+        assert!(!sim.events(LEAD, "seen").is_empty());
     }
 }

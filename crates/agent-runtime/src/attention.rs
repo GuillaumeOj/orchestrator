@@ -700,6 +700,8 @@ struct Ctx<'a> {
     tasks: BTreeMap<u64, &'a Task>,
     /// Agents by (run, node).
     seats: BTreeMap<(&'a str, &'a str), &'a str>,
+    /// Messages of a `delivery` decision the user dismissed: they are given up, not undelivered.
+    given_up: std::collections::BTreeSet<u64>,
 }
 
 fn is_lead(a: &AgentRecord) -> bool {
@@ -731,10 +733,17 @@ impl<'a> Ctx<'a> {
             .values()
             .filter_map(|a| a.team.as_ref().map(|t| ((t.run_id.as_str(), t.node.as_str()), a.id.as_str())))
             .collect();
+        let given_up = i
+            .inbox
+            .iter()
+            .filter(|it| it.kind == "delivery" && it.status == InboxStatus::Dismissed)
+            .flat_map(|it| it.payload["messages"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_u64()))
+            .collect();
         Ctx {
             i,
             now,
             open,
+            given_up,
             entries,
             runs: i.runs.iter().map(|r| (r.run.id.as_str(), r)).collect(),
             tasks: i.tasks.iter().map(|t| (t.id, t)).collect(),
@@ -1143,6 +1152,7 @@ impl<'a> Ctx<'a> {
                     && m.to_agent.as_deref().is_none_or(|t| t == a.id)
                     && m.read_at_ms.is_none()
                     && m.delivered_at_ms.is_none()
+                    && !self.given_up.contains(&m.id)
                     && self.now.saturating_sub(m.created_at_ms) > UNDELIVERED_AFTER_MS
             })
             .map(|m| m.created_at_ms)

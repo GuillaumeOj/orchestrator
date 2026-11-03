@@ -875,7 +875,14 @@ impl Runtime {
         let keys: std::collections::BTreeSet<String> =
             hits.iter().map(|(id, _, what, start)| format!("{id}:{start}:{what:?}")).collect();
         for (id, run, what, start) in hits {
-            if self.live(&id).is_none() || !self.watchdog_once(format!("{id}:{start}:{what:?}")) {
+            if self.live(&id).is_none() {
+                continue;
+            }
+            // A retried silence is judged again only after another window.
+            let retried = self.house().retried_keys.get(&format!("{id}:working_silent:{start}")).copied();
+            if retried.is_some_and(|t| now.saturating_sub(t) <= NO_PROGRESS_MS)
+                || !self.watchdog_once(format!("{id}:{start}:{what:?}"))
+            {
                 continue;
             }
             let (text, detail) = match what {
@@ -1184,10 +1191,9 @@ impl Runtime {
             return;
         };
         if self.suspend_in_background(&victim, "slot") {
-            let run = members.get(&victim).map(|m| m.run.clone()).unwrap_or_default();
             let detail = json!({"for": waiter, "suspended": victim});
-            self.event(&victim, "slot_freed", detail.clone());
-            self.run_event(&run, Some(&victim), "slot_freed", detail);
+            // The agent's event only: not on the run timeline (plumbing).
+            self.event(&victim, "slot_freed", detail);
         }
     }
 
@@ -2251,6 +2257,10 @@ pub(crate) mod tests {
         rt.store.read(|s| s.inbox.iter().filter(|i| i.kind == "delivery").cloned().collect())
     }
 
+    fn open_delivery_items(rt: &Runtime) -> Vec<orch_store::InboxItem> {
+        delivery_items(rt).into_iter().filter(|i| i.open()).collect()
+    }
+
     fn idle(rt: &Runtime, id: &str) {
         rt.store
             .write(|s| {
@@ -2449,6 +2459,57 @@ pub(crate) mod tests {
             (Some("stuck_wait"), Some(back))
         );
         // A busy lead is not idle: nothing is raised for it.
+    }
+
+    /// H: after Retry, the same stuck_wait episode raises a new decision once
+    /// another window has passed (not at once), and again after that.
+    #[test]
+    fn retry_of_a_stuck_wait_decision_raises_again_after_a_window() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        idle(&rt, lead);
+        idle(&rt, back);
+        ok(&rt, back, "send_message", json!({"to": "lead", "body": "which way?"}));
+        let run = rt.db.runs(None, true).unwrap()[0].id.clone();
+        let cx = rt.run_ctx(&run).unwrap();
+        let later = |min: u64| now_ms() + min * 60_000;
+        rt.supervise(&cx, later(27));
+        let first = open_delivery_items(&rt).remove(0);
+        rt.retry_delivery(first.id).unwrap();
+        assert!(open_delivery_items(&rt).is_empty(), "closed by the retry");
+        // The test's clock runs ahead: the retry happened at minute 27.
+        let key = format!("{back}:stuck_wait:{}", first.payload["since_ms"]);
+        assert!(rt.house().retried_keys.contains_key(&key), "{key}");
+        rt.house().retried_keys.insert(key, later(27));
+        rt.supervise(&cx, later(28));
+        assert!(open_delivery_items(&rt).is_empty(), "not at once: the wait counts from the retry");
+        rt.supervise(&cx, later(60));
+        let again = open_delivery_items(&rt);
+        assert_eq!(again.len(), 1, "a second failure of the episode is raised again");
+        assert_ne!(again[0].id, first.id);
+        assert_eq!(again[0].payload["episode"], "stuck_wait");
+    }
+
+    /// H: the same for a silent Working turn.
+    #[test]
+    fn retry_of_a_working_silent_decision_raises_again_after_a_window() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let back = "fx-back-1";
+        ok(&rt, "fx-lead-1", "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        assert!(rt.working_silent(back, 77));
+        let first = open_delivery_items(&rt).remove(0);
+        rt.retry_delivery(first.id).unwrap();
+        assert!(open_delivery_items(&rt).is_empty());
+        // The key is free again; the clock of the episode starts at the retry.
+        assert!(rt.working_silent(back, 77));
+        let again = open_delivery_items(&rt);
+        assert_eq!(again.len(), 1, "raised again for the same turn");
+        assert_ne!(again[0].id, first.id);
     }
 
     fn call(rt: &Runtime, agent: &str, tool: &str, args: Value) -> (bool, String) {

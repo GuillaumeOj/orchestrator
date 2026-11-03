@@ -1025,6 +1025,26 @@ fn undelivered_messages_show_with_one_blocker_after_a_minute() {
     assert!(f.rec("back-1").undelivered.is_none());
 }
 
+/// Failed messages count while their `delivery` decision is open; once the
+/// user dismissed it they are given up and the chip goes away.
+#[test]
+fn a_dismissed_delivery_decision_clears_the_undelivered_chip() {
+    let mut f = Fx::default();
+    f.lead(AgentState::Idle);
+    f.member("back-1", "back", AgentState::Idle, Some(4));
+    f.message(("lead", None), "back", "message", 3);
+    f.messages[0].failed_at_ms = Some(NOW - MIN);
+    let id = f.messages[0].id;
+    assert_eq!(f.rec("back-1").undelivered.expect("failed, still counted").count, 1);
+    let payload = json!({"blocker": "no_ack", "messages": [{"id": id}], "episode": "delivery"});
+    f.item("back-1", "delivery", payload, 2);
+    assert_eq!(f.rec("back-1").undelivered.expect("decision open").count, 1);
+    f.inbox[0].status = InboxStatus::Dismissed;
+    assert!(f.rec("back-1").undelivered.is_none(), "dismissed: given up");
+    let v = serde_json::to_value(f.rec("back-1")).unwrap();
+    assert!(v.get("undelivered").is_none(), "the field is absent");
+}
+
 #[test]
 fn an_open_delivery_decision_is_the_agents_wait() {
     let mut f = Fx::default();
