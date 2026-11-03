@@ -2,7 +2,33 @@
 
 Branch `orch/fix-team-getting-stucked/back-1`. Covers spec §3.8 and exit criteria 1 and 2.
 
-## What was built
+## Approach (changed after the first report)
+The first version ran everything through `fake_claude.sh` on a real PTY and a unix socket, which this sandbox refuses (`openpty`, `bind`). The suite is now **in process**, and runs in the sandbox with `ORCH_TEST_TMP=$TMPDIR TMPDIR=$TMPDIR cargo test -p agent-runtime --lib chaos::`.
+
+### The terminal seam
+- `PtyProcess::fake(on_input, on_exit)` (pty.rs): a terminal with no process. Writes go to `on_input`; output is pushed with `output.push`. Its pid is one no process has, so no signal reaches anything. `fake_exit` / `fake_handle` end it; `Runtime::stop` calls `fake_exit` so suspend/kill work on it.
+- `RuntimeConfig.terminal: Option<TerminalFactory>` replaces the PTY + `claude` of a spawn (`Runtime::spawn`). `None` in production.
+- `insert_test_live` now uses an echoing fake terminal, so the 4 `openpty`-based handover watchdog tests run in the sandbox (they pass; no change to their assertions).
+
+### The fake CLI (`src/chaos.rs`, `#[cfg(test)]`)
+A thread behind the fake terminal. It takes a bracketed paste, Enter and Esc, echoes like a tty, and answers the way Claude Code does: through `Runtime::serve_hook` (plus the `on_hook_ack` orch-hook sends), `on_status` and a transcript file. Switches (set per test on `Cli`): swallow the next Enter, a modal (once or `modal_always`) that eats keys until Esc, dropped hooks, dropped Stop, StopFailure (`rate_limit`, `server_error`, sticky), Stop with a background task, exit mid-turn / always, a delayed PostToolUse, a subagent's PostToolUse, the model reading `full text:` files, the statusline's 5 h usage.
+`Sim` builds a runtime whose spawns start this CLI, a git worktree for agent `a1`, a squad run past its gate, and the loop of the server (`pump`, `team_tick`, `paste_watchdog`, `housekeeping`). Once every fake CLI is quiet the paste watchdog gets a clock 30 s ahead, so its 20 s bound costs nothing.
+
+### Scenarios (16, all pass; 6 runs in a row)
+F1 ×4 (swallowed Enter, modal + Esc, lost hook applied late, three unacknowledged pastes → `delivery` decision), F2 ×3 (server error → one Continue, second failure → decision; rate limit lifted; background tasks), F3 ×2 (crash resumed; two restarts then a `startup` decision, user resume works), F4 (lost Stop from the transcript), F5 (held Task does not block the user's answer), F6 (slot freed for a waiting member), F7 (long message read only when seen, else truncated once), F8 (injection seen once, never into a subagent), F9 (`tick_panic`, delivery goes on), and the delivery invariant (one decision per episode, closes when seen).
+
+### CI smoke tests (`tests/e2e_delivery.rs`, `fake_claude.sh`)
+`fake_claude.sh` keeps its switches (sentinel files in the worktree). Three smoke tests remain for CI: a swallowed Enter (F1), a server error (F2), a crashed agent resumed (F3). They need a PTY and a socket, so they do not run in this sandbox; they were not run here.
+
+### Other knobs
+- Settings `delivery.invariant_secs` (default 10 min) and `delivery.slot_wait_secs` (default 2 min), next to `delivery.ack_secs`; `Runtime::lift_limits` and `inject_tick_fault` are `pub`.
+
+## Bugs found in T-204/206/207 code
+None. Two things worth knowing from building the simulation: a limit placed by a StopFailure is cleared only by a **newer** reading of the same window with the same reset (the fake sends 100 % then 20 %, strictly later), and a crash mid-turn leaves the interrupted turn `Delivered` (the next message restarts the agent; that orphan turn is not requeued).
+
+## First version (kept)
+
+### What was built
 
 ### The fake CLI misbehaves (`tests/fake_claude.sh`)
 The spawned process gets a cleared environment, so the switches are **sentinel files in the agent's worktree** (the style FR-415 already uses), not env vars. A consumed one hits one turn.
@@ -28,36 +54,3 @@ Also: the fake writes an assistant `end_turn` line to the transcript (so the lat
 - Settings `delivery.invariant_secs` (default 10 min) and `delivery.slot_wait_secs` (default 2 min), next to `delivery.ack_secs`; shared reader `secs_setting`.
 - `Runtime::inject_tick_fault(step)`: makes a team-tick step panic (the F9 test; the unit test still uses its own hook).
 
-### `tests/e2e_delivery.rs` (16 tests; `Core` and `wait_for` moved to `tests/common`)
-| Mode | Test | Bound shown |
-|---|---|---|
-| F1 | `f1_a_swallowed_enter_is_sent_again` | `redelivered{how:enter}`, marker on screen, next message arrives |
-| F1 | `f1_a_modal_that_eats_keys_…` | Esc once, turn re-pasted, marker seen |
-| F1 | `f1_a_lost_hook_is_applied_late_…` | `recovered{late_hook}`, no second paste |
-| F1 | `f1_three_unacknowledged_pastes_…` | turn `failed`, one `delivery` decision (`no_ack`), next message arrives |
-| F2 | `f2_a_server_error_gets_one_continue_…` | one Continue, second failure → `continue_failed` + decision |
-| F2 | `f2_a_rate_limited_agent_is_idle_again_…` | `blocked_by_limit` → idle once the limit is over |
-| F2 | `f2_background_tasks_do_not_hold_a_message` | idle with a background task, message delivered |
-| F3 | `f3_a_crashed_agent_is_resumed_…` | `recovered{crashed, resume}`, message pasted again |
-| F3 | `f3_an_agent_that_keeps_crashing_…` | 2 restarts, then `startup` decision `failed:crash`; the user's resume works |
-| F4 | `f4_a_lost_stop_is_applied_…` | working watchdog (called with now + 16 min) applies the Stop |
-| F5 | `f5_a_held_turn_does_not_block_…` | a Task held by the 5 h guard does not hold the user's answer |
-| F6 | `f6_a_member_waiting_for_a_slot_…` | idle colleague suspended, waiter gets its message |
-| F7 | `f7_a_long_message_is_read_only_…` | read in full when the file was read; else handed back once, then `read{truncated:true}` |
-| F8 | `f8_an_injected_message_is_seen_once_…` | injected once at the tool call; a subagent's call gets nothing, the message arrives as a turn |
-| F9 | `f9_a_panic_in_the_team_tick_…` | `tick_panic` event, delivery goes on |
-| inv. | `the_delivery_invariant_names_the_cause_…` | one `delivery` decision (`no_ack`) per episode, closes when seen |
-
-
-No real 20 s sleep anywhere: `delivery.ack_secs` is 1 s, the paste watchdog is driven from the wait loops, the 15 min watchdog is called with a later `now`, the invariant and slot waits are 1–2 s settings.
-
-## Bugs found in T-204/206/207 code
-None found, but nothing could run (see "Not run" below).
-
-## Not run here
-The sandbox of this session refuses `bind()` on a unix socket and `openpty()` (`Operation not permitted`, `out of pty devices`), so **no fake-claude e2e test could run here, old or new** (`idle_agents_are_suspended_and_resume_on_new_work` fails the same way on the unchanged code). What was checked:
-- everything compiles (`cargo test --no-run`), `cargo fmt`;
-- the fake's switches were driven over pipes with stub hooks (swallow, drop-hooks, drop-stop, StopFailure, background, exit, subagent, delay, modal's structure): each emits the hooks expected;
-- not checked: the tty parts of the modal (`stty -icanon min 0 time 1` and the lone-Esc detection) and every timing in the tests.
-
-The 5-runs loop (`for i in 1..5; cargo test -p agent-runtime --test e2e_delivery`) therefore has to run on the macOS CI or the user's machine. F6 and F5 depend most on Governor details (the 5 h guard at 90 %, the spawn held at `base_cap = 1`) and are the likeliest to need a tweak.
