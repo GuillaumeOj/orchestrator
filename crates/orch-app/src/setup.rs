@@ -537,6 +537,23 @@ impl Core {
         self.project_allocation(project)
     }
 
+    /// Settings › Pacing policy (api-contract `pacing_settings`).
+    pub fn pacing_settings(&self) -> Result<agent_runtime::live_cap::PacingSettings> {
+        Ok(self.runtime()?.pacing_settings())
+    }
+
+    /// Sets the base and the off-hours live caps (absent = unchanged); they
+    /// apply now. Returns the new view.
+    pub fn set_pacing_settings(
+        &self,
+        live_cap: Option<u32>,
+        off_hours_live_cap: Option<u32>,
+    ) -> Result<agent_runtime::live_cap::PacingSettings> {
+        let rt = self.runtime()?;
+        rt.set_live_caps(live_cap, off_hours_live_cap)?;
+        Ok(rt.pacing_settings())
+    }
+
     /// FR-812: leave (or go back to) shadow mode. Takes effect now.
     pub fn set_enforce(&self, enforce: bool) -> Result<()> {
         // The runtime stores the choice (`governor.enforce`), like `orchd enforce`.

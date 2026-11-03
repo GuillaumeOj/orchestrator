@@ -15,6 +15,7 @@ pub mod inbox;
 pub mod integrations;
 pub mod intervention;
 pub mod linear;
+pub mod live_cap;
 pub mod mcp;
 pub mod net;
 pub mod notion;
