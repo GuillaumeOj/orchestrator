@@ -115,3 +115,17 @@ Decision kind `rule_proposal` (level 4, `waits_on: "user"`, not counted in `coun
 ## 4. `orchd`
 - `orchd overwatch`: status, today's session id, turns `09:12:04 resume warm events=3 wake=6.2s first_tool=8.1s 41s`, p50 / p90 wake.
 - `orchd policy [--project P] [--test "Bash" "pnpm add zod" --role front]`: the merged rules, and for `--test` the effect and the rule (or hard list entry) that decides it.
+
+## 5. Additions from the ux pass (D10, ux F1–F18)
+- `now.overwatch` gains `has_session: bool`; `why` is one of: paused → `Pause all` | `limit reached`; down → `could not start` | `stopped unexpectedly` | `login expired` | `limit reached` | `too slow, 2 turns over 10 min`.
+- `deciding_until_ms` is set only while status is `asleep` | `waking` | `working`. Deciding ends at once (`waits_on: "user"`, field removed) on `annotate` of that decision, on `decide_permission` → `not_allowed`, or when the turn that carried the event ends without deciding. After hand-over `decide_permission` returns `too_late`. The permission hold restarts at hand-over; `permission_secs` must be < `hold_secs` (the settings command refuses otherwise).
+- `permission` decisions gain `asks_because?: { kind: "core" | "policy" | "default" | "overwatch_unsure", detail }`. `core` = a user-only entry of `policy::hard` (detail is its reason, e.g. "network host outside the allow-list"); `policy` = a `user` rule (detail = its id); `default` = no rule and the default is `user`; `overwatch_unsure` = handed over after deciding.
+- `line.by = "core"` carries `by_detail` (≤ 40 chars) for core denials.
+- `line.verb` gains `not now`; `line` gains `corrected_at_ms?` (answered lines corrected through undo).
+- `rule_proposal` decisions carry `count`, `threshold`, `declined_before: 0 | 1`, `declined_at_ms?`. After **Edit rule** the decision stays open with `edited_at_ms`; the core closes it as `added` (`effect_detail: "by hand"`) when the target file then holds an active rule with the same `match`, `effect` and scope.
+- Link schemes in `post` text and `sources`: a doc path, `chat:<id>`, `agent:<id>`, `run:<id>`.
+- `chat_discard { entry }`: removes a user entry whose `delivery` is `pending` (else `bad_request`). Pending entries from earlier days are delivered with the next briefing, marked "sent earlier".
+- `chat_send` refuses text over 2 000 chars (`bad_request`).
+- `policy_files` returns the global scope and every registered project even when the file is missing (`exists: false`, `rules: 0`); `open_in_editor` on a missing policy path creates it with `version = 1` and a comment line first (new command `policy_open { scope, project? }` does both).
+- Typing in the Overwatch's pane is recorded as `pane_intervention` like any agent's.
+- The Overwatch's usage counts in the week's usage (morning line included), has no planned share, and draws on the reserve.
