@@ -25,7 +25,7 @@ Off-hours live agents  [ 1 ]  (0–20)
 Agents running outside working hours while the week is a little over plan.
 [no-allowance note] [field error]
 
-Now: Amber · 2 allowed · 1 live · memory normal   <- muted
+Now: Amber · 2 allowed · 1 live · memory normal, 3 processes   <- muted
 
 [Apply]  [Reset to defaults]   Saved               <- "Saved" inline, muted-success
 
@@ -51,8 +51,8 @@ with the label as text (never color alone).
 | Derived, muted line | `Half-weight hours scale the cap down. Leads and the Overwatch have their own slot and don't count.` |
 | Off-hours label | `Off-hours live agents` |
 | Off-hours range | `0–20` |
-| Off-hours helper | `Agents running outside working hours while the week is a little over plan.` |
-| Now | `Now: Amber · 2 allowed · 1 live · memory normal` (state label from `PRESSURE`; "2 allowed" = `governor_cap`; "1 live" = `live_autonomous`; memory = `pressure`) |
+| Off-hours helper | `Agents running outside working hours while the week is a little over plan, never more than Live agents allows.` |
+| Now | `Now: Amber · 2 allowed · 1 live · memory normal, 3 processes` (state label from `PRESSURE`; "2 allowed" = `governor_cap`; "1 live" = `live_autonomous`; memory = `pressure`; "3 processes" = `process_cap`, singular "1 process") |
 | Apply | `Apply` (primary) |
 | Reset | `Reset to defaults` (secondary; sets the fields to 3 and 1, does not save) |
 | Saved | `Saved` (inline after Apply, fades after 3 s; toast `Live agents set to 6` / `Pacing settings saved` when both changed) |
@@ -108,6 +108,9 @@ Hint line (muted, bottom of the section, like Integrations):
 `⏎ apply · ↑↓ step · tab next · esc back to sections`
 
 ## 5a. Open points (for lead)
+
+**Lead decisions (2026-11-03):** the Now line shows the process cap (`, 3 processes`), since that cap is what holds agents under memory pressure. The off-hours helper says it never exceeds Live agents. The derived values are computed in the core (authoritative) and previewed in JS while the user types (kept). Off-hours validation: one shared validator and one message (`off-hours live agents {n}: use 0–20`) for `plan_set` and `pacing_settings_set` (back). `--cap` is checked against 1–20 at start (back). No UI for it.
+
 
 - Off-hours live agents is applied as the smaller of the state cap and its own value, so 10 with Live agents 3 changes nothing over plan. Copy kept as in the brief; say if the helper should mention it.
 - The "Now" line shows the Governor cap only. `now.process_cap` is not shown; add `· 2 processes` if lead wants it.
