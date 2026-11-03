@@ -158,7 +158,7 @@ pub struct Ctx<'a> {
 }
 
 /// The last `n` non-blank lines.
-fn last_lines(s: &str, n: usize) -> String {
+pub(crate) fn last_lines(s: &str, n: usize) -> String {
     let lines: Vec<&str> = s.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
