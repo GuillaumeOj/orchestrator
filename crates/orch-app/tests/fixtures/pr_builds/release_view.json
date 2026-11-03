@@ -1,0 +1,17 @@
+{
+ "tagName": "pr-12",
+ "isPrerelease": true,
+ "targetCommitish": "f9b1e20c0ffeef9b1e20c0ffeef9b1e20c0ffee0",
+ "publishedAt": "2026-11-02T06:05:00Z",
+ "body": "Add build on PRs\n\nCommit: x",
+ "assets": [
+  {
+   "name": "Orchestrator_0.1.57_aarch64.app.tar.gz",
+   "size": 104857600
+  },
+  {
+   "name": "Orchestrator_0.1.57_aarch64.app.tar.gz.sig",
+   "size": 400
+  }
+ ]
+}

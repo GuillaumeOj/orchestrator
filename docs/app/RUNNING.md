@@ -43,8 +43,18 @@ only touches `v0.1.<n>` tags. Only same-repo, non-draft PRs not opened by Renova
 fork has no signing secret; a draft is built when marked ready for review). Closing or merging the
 PR runs `.github/workflows/pr-build-cleanup.yml`, which deletes the release and its tag. Building
 a PR costs a macOS runner for the same 15 to 25 minutes as a `main` build. The start line of
-`logs/orchestrator.log` shows `channel pr, PR #<n>` for such a build. Installing one from the app
-(Settings › Builds) is not there yet; until it lands, download the `.app.tar.gz` from the release.
+`logs/orchestrator.log` shows `channel pr, PR #<n>` for such a build.
+
+*Installing one from the app.* The core lists the open PRs with their builds (`pr_builds_list`:
+`gh pr list` and the `pr-<n>` prereleases, only when asked, never in the background) and installs
+one on request (`pr_build_install`): it downloads the tarball and `.sig` with `gh`, checks the
+signature against the same key as `main` updates, and stages the bundle in `updates/pr-<n>/`
+(one PR build at most; the staged `main` update stays). "Restart" with target `pr` then quits as
+⌘Q does (agents suspended and resumed by session id) and swaps the bundle; a plain quit never
+applies a PR build. A PR build behaves like a local build toward `main` updates: it stages the
+latest `main` release (any release counts as newer), never applies it on quit, and "Restart" with
+target `main` brings you back. Same rules as `main` updates for when this is off (debug build,
+`ORCH_NO_UPDATE`, bundle not writable, no key).
 
 **One-time key setup** (before the first merge; the private key never goes through an agent):
 

@@ -12,8 +12,10 @@ pub mod memory;
 pub mod menu;
 pub mod notify;
 pub mod planner;
+pub mod pr_builds;
 pub mod services;
 pub mod setup;
+pub mod snapshot;
 pub mod teams;
 pub mod terms;
 pub mod update;
@@ -246,6 +248,8 @@ pub fn run() {
             commands::dev_enabled,
             commands::update_check,
             commands::update_restart,
+            commands::pr_builds_list,
+            commands::pr_build_install,
             devctl::dev_report,
         ])
         .build(context)
