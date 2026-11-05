@@ -8,8 +8,8 @@
   import { clock } from '../../lib/format.js';
   import DecisionCard from './DecisionCard.svelte';
 
-  /** @type {{ item: any, expanded?: boolean, pulse?: boolean, entries?: any, ontoggle?: () => void, onopen?: (id: string) => void, onref?: (ref: any) => void }} */
-  let { item, expanded = false, pulse = false, entries = {}, ontoggle = () => {}, onopen = () => {}, onref = () => {} } = $props();
+  /** @type {{ item: any, expanded?: boolean, pulse?: boolean, entries?: any, refok?: (ref: any) => boolean, ontoggle?: () => void, onopen?: (id: string) => void, onref?: (ref: any) => void }} */
+  let { item, expanded = false, pulse = false, entries = {}, refok = () => true, ontoggle = () => {}, onopen = () => {}, onref = () => {} } = $props();
   const line = $derived(item.line);
   const now = $derived(Math.max(now30(), Date.now()));
   const tail = $derived(tailText(line));
@@ -24,7 +24,7 @@
     <span class="at muted">{clock(line.at_ms, now)}</span>
   </button>
   {#if expanded && item.d}
-    <DecisionCard d={item.d} {line} {entries} {onref} onact={onopen} />
+    <DecisionCard d={item.d} {line} {entries} {refok} {onref} onact={onopen} />
   {/if}
 </article>
 

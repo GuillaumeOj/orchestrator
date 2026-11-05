@@ -60,6 +60,20 @@ const msg = (id, author, at_ms, over = {}) => ({
   ...over,
 });
 
+// jsdom has no layout: a clamped box "overflows" (its text is longer than the clamp), an open one fits.
+Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+  configurable: true,
+  get() {
+    return this.classList?.contains('clamped') || this.classList?.contains('clamp') ? 500 : 0;
+  },
+});
+Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+  configurable: true,
+  get() {
+    return this.classList?.contains('clamped') || this.classList?.contains('clamp') ? 100 : 0;
+  },
+});
+
 beforeEach(() => {
   calls.length = 0;
   for (const k of Object.keys(replies)) delete replies[k];
@@ -120,11 +134,16 @@ describe('the status in the header (notes §1)', () => {
       return t;
     };
     expect(tip(OW('off', { has_session: false }))).toBe('Overwatch is off. Turn it on in Settings.');
-    expect(tip(OW('asleep'))).toBe('Overwatch is asleep. It wakes on the next event.');
-    expect(tip(OW('waking', { events: 2 }))).toBe('Overwatch is waking · 2 events waiting');
-    expect(tip(OW('working', { events: 2 }))).toBe('Overwatch is working on 2 events');
-    expect(tip(OW('paused', { why: 'limit reached' }))).toBe('Overwatch is paused: limit reached');
-    expect(tip(OW('down', { why: 'login expired' }))).toBe('Overwatch is down: login expired. Cards still work.');
+    // A status with a session today is a control: the tooltip adds the key.
+    const open = ' · ⏎ open its session';
+    expect(tip(OW('asleep'))).toBe(`Overwatch is asleep. It wakes on the next event.${open}`);
+    expect(tip(OW('asleep', { has_session: false }))).toBe('Overwatch is asleep. It wakes on the next event.');
+    expect(tip(OW('waking', { events: 2 }))).toBe(`Overwatch is waking · 2 events waiting${open}`);
+    expect(tip(OW('working', { events: 2 }))).toBe(`Overwatch is working on 2 events${open}`);
+    expect(tip(OW('paused', { why: 'limit reached' }))).toBe(`Overwatch is paused: limit reached${open}`);
+    expect(tip(OW('down', { why: 'login expired' }))).toBe(
+      `Overwatch is down: login expired. Cards still work.${open}`,
+    );
   });
 
   it('a click on the status opens its session over the board; no session or off: not a control', async () => {
@@ -147,7 +166,8 @@ describe('the status in the header (notes §1)', () => {
     setNow([], [], OW('down', { why: 'login expired' }));
     const { container: c } = render(ChatColumn);
     const strip = c.querySelector('[data-ow-strip]');
-    expect(text(strip)).toBe('Overwatch is down · login expired · cards still work Restart');
+    expect(text(strip.querySelector('.l1'))).toBe('Overwatch is down');
+    expect(text(strip.querySelector('.l2'))).toBe('login expired · cards still work');
     await fireEvent.click(strip.querySelector('button'));
     await settle();
     expect(calls).toContainEqual(['overwatch_restart', undefined]);
@@ -166,6 +186,8 @@ describe('the status in the header (notes §1)', () => {
     await settle();
     expect(text(c.querySelector('[data-ow-strip] button'))).toBe('Restart');
     expect(app.toasts.at(-1).text).toBe('Could not restart: no login');
+    // The strip's second line says it once, in place of the reason.
+    expect(text(c.querySelector('[data-ow-strip] .l2'))).toBe('Could not restart: no login');
   });
 
   it('no strip while off or paused; Restart is dim while the core is unreachable', () => {
@@ -507,7 +529,7 @@ describe('text entries (notes §2.1)', () => {
       const { container: c } = render(ChatColumn);
       const link = c.querySelector('[data-entry="c-3"] button.ref');
       expect(/** @type {HTMLElement} */ (link).dataset.ref).toBe('doc');
-      expect(link.textContent).toBe('the contract↗');
+      expect(link.textContent).toBe('api-contract.md §3↗'); // the label form, not the model's words
       await fireEvent.click(link);
       const pane = Object.values(app.panes).find((p) => p.type === 'feature');
       expect(pane).toMatchObject({ featureId: 'f1', doc: 'api-contract.md' });
@@ -961,12 +983,14 @@ describe('Settings → Overwatch (notes §9.1)', () => {
     const c = await open();
     await fireEvent.change(row(c, 'batch_secs').querySelector('input'), { target: { value: '2' } });
     await settle();
-    expect(text(row(c, 'batch_secs').querySelector('.err'))).toBe('5–300 s.');
+    expect(text(row(c, 'batch_secs').querySelector('.err'))).toBe('5–300 s. Still using 30 s.');
     expect(row(c, 'batch_secs').querySelector('input').getAttribute('aria-invalid')).toBe('true');
     await fireEvent.change(row(c, 'rule_threshold').querySelector('input'), { target: { value: '11' } });
     await fireEvent.change(row(c, 'permission_secs').querySelector('input'), { target: { value: '300' } });
     await settle();
-    expect(text(row(c, 'permission_secs').querySelector('.err'))).toBe('Must not exceed the hold length (300 s).');
+    expect(text(row(c, 'permission_secs').querySelector('.err'))).toBe(
+      'Must be below the hold length (300 s). Still using 60 s.',
+    );
     expect(calls.filter(([k]) => k === 'set_overwatch_settings')).toEqual([]);
   });
 
@@ -976,7 +1000,7 @@ describe('Settings → Overwatch (notes §9.1)', () => {
     await fireEvent.change(row(c, 'permission_secs').querySelector('input'), { target: { value: '250' } });
     await settle();
     expect(text(row(c, 'permission_secs').querySelector('.err'))).toBe(
-      'permission_secs must be between 1 and the hold (200 s), exclusive',
+      'permission_secs must be between 1 and the hold (200 s), exclusive Still using 60 s.',
     );
   });
 
@@ -1037,5 +1061,139 @@ describe('pure helpers', () => {
     expect(ow.statusChange(OW('asleep'), OW('working'))).toBeNull();
     expect(ow.statusChange(OW('paused'), OW('asleep'))).toBeNull();
     expect(ow.statusChange(OW('asleep'), OW('asleep'))).toBeNull();
+  });
+});
+
+describe('review fixes (ui review of T-226)', () => {
+  it('an unknown chat_send reads as "the core doesn\'t support messages yet", not the raw error', async () => {
+    replies.chat_send = new Error('Command chat_send not found');
+    setNow();
+    const { container: c } = render(ChatColumn);
+    await fireEvent.input(field(c), { target: { value: 'hi' } });
+    await fireEvent.keyDown(field(c), { key: 'Enter' });
+    await settle();
+    expect(text(c.querySelector('article.text.user'))).toContain("Not sent: the core doesn't support messages yet");
+  });
+
+  it('the Overwatch session always opens in watch mode, even without Mission control', async () => {
+    setNow([], [], OW('working', { events: 1 }));
+    const { container: c } = render(ChatColumn);
+    await fireEvent.click(status(c));
+    const pane = Object.values(app.panes).find((p) => p.type === 'agent' && p.agentId === 'overwatch');
+    expect(pane?.watch).toBe(true);
+  });
+
+  it('"back" only from down to asleep, waking or working', () => {
+    expect(ow.statusChange(OW('down'), OW('paused'))).toBeNull();
+    expect(ow.statusChange(OW('down'), OW('off'))).toBeNull();
+    expect(ow.statusChange(OW('down'), OW('working'))).toBe('Overwatch is back.');
+  });
+
+  it('the ring and its name follow the real window (permission_secs)', () => {
+    const d = { created_ms: 1000, deciding_until_ms: 1000 + 120000 };
+    expect(ow.decidingShare(d, 1000 + 60000)).toBe(0.5);
+    expect(ow.decidingName(d)).toBe('Overwatch is deciding, up to 2 minutes');
+    expect(ow.decidingName({ created_ms: 0, deciding_until_ms: 90000 })).toBe('Overwatch is deciding, up to 90 s');
+  });
+
+  it('the why-asked line: core and policy reasons, or the Overwatch passing it on', () => {
+    const [perm] = kinds();
+    const with_ = (a) => {
+      setNow([{ ...perm, asks_because: a }], [entry('c-1', perm)]);
+      const r = render(ChatColumn);
+      const t = r.container.querySelector('[data-asks]');
+      const out = t ? text(t) : null;
+      r.unmount();
+      return out;
+    };
+    expect(with_({ kind: 'core', detail: 'network host outside the allow-list' })).toBe(
+      'Only you can allow this: network host outside the allow-list.',
+    );
+    expect(with_({ kind: 'policy', detail: 'policy installs-ask' })).toBe(
+      'Only you can allow this: policy installs-ask.',
+    );
+    expect(with_({ kind: 'overwatch_unsure', detail: '' })).toBe('The Overwatch did not decide this.');
+    expect(with_({ kind: 'default', detail: '' })).toBeNull();
+  });
+
+  it('a card the Overwatch settles under the pointer stays, saying who settled it; it collapses on leave', async () => {
+    const [perm] = kinds();
+    setNow([perm], [entry('c-1', perm)]);
+    const { container: c } = render(ChatColumn);
+    await fireEvent.mouseEnter(card(c, 'perm-1').parentElement);
+    const at = Date.now();
+    app.now.decisions['perm-1'] = {
+      ...perm,
+      lifecycle: { state: 'effect', effect: 'allowed', decided_by: 'overwatch', effect_at_ms: at },
+    };
+    app.now.chat.entries['c-1'] = closedEntry(
+      'c-1',
+      perm,
+      { verb: 'allowed', agent: 'back-1', what: 'pnpm add zod', by: 'overwatch', at_ms: at },
+      { rev: 3 },
+    );
+    await settle();
+    expect(text(card(c, 'perm-1').querySelector('.lc'))).toMatch(/Allowed by the Overwatch · \d\d:\d\d$/);
+    await fireEvent.mouseLeave(card(c, 'perm-1').parentElement);
+    await settle();
+    expect(card(c, 'perm-1')).toBeNull();
+    expect(c.querySelector('article.line')).toBeTruthy();
+  });
+
+  it('a reply while scrolled up shows "New from the Overwatch ↓" and does not scroll; at the foot it stays', async () => {
+    setNow([], [msg('c-1', 'user', Date.now() - 1000, { delivery: 'delivered' })], OW('working', { events: 1 }));
+    const { container: c } = render(ChatColumn);
+    const f = feed(c);
+    // Scrolled up: not at the foot.
+    Object.defineProperty(f, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(f, 'clientHeight', { configurable: true, value: 300 });
+    f.scrollTop = 100;
+    await fireEvent.scroll(f);
+    app.now.chat.entries['c-2'] = msg('c-2', 'overwatch', Date.now(), { reply_to: 'c-1' });
+    await settle();
+    expect(text(c.querySelector('[data-new-reply]'))).toBe('New from the Overwatch ↓');
+    expect(f.scrollTop).toBe(100);
+    await fireEvent.click(c.querySelector('[data-new-reply]'));
+    await settle();
+    expect(c.querySelector('[data-new-reply]')).toBeNull();
+  });
+
+  it('a search hit on a text entry scrolls to it', async () => {
+    replies.chat_search = [
+      { day: app.now.chat?.day ?? DAY, entry: msg('c-1', 'overwatch', Date.now(), { text: 'checkout waited' }) },
+    ];
+    setNow([], [msg('c-1', 'overwatch', Date.now(), { text: 'checkout waited' })]);
+    app.now.chat.day = DAY;
+    replies.chat_search[0].day = DAY;
+    const { container: c } = render(ChatColumn);
+    run('decisions.search');
+    await settle();
+    await fireEvent.input(c.querySelector('.search input'), { target: { value: 'checkout' } });
+    await new Promise((r) => setTimeout(r, 260));
+    await fireEvent.click(c.querySelector('[data-result]'));
+    await settle();
+    expect(c.querySelector('[data-entry="c-1"]').classList.contains('pulse')).toBe(true);
+  });
+
+  it('the Permission time follows the real hold: strictly below it, with "Still using 60 s."', async () => {
+    replies.overwatch_settings = {
+      enabled: true,
+      model: 'sonnet',
+      batch_secs: 30,
+      permission_secs: 60,
+      idle_secs: 120,
+      rule_threshold: 3,
+    };
+    replies.settings_get = ({ key }) => (key === 'permissions.hold_secs' ? 120 : null);
+    app.panes = { p1: { type: 'settings', section: 'overwatch' } };
+    const { container: c } = render(SettingsPane, { paneId: 'p1' });
+    await settle();
+    const input = /** @type {HTMLInputElement} */ (c.querySelector('[data-row="permission_secs"] input'));
+    await fireEvent.change(input, { target: { value: '120' } });
+    await settle();
+    expect(text(c.querySelector('[data-row="permission_secs"] .err'))).toBe(
+      'Must be below the hold length (120 s). Still using 60 s.',
+    );
+    expect(input.value).toBe('60');
   });
 });

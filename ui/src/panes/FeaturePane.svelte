@@ -129,12 +129,14 @@
     }
   }
 
-  // The doc a source link asked for, once: a later click on another tab stays, a reload doesn't snap back.
-  let appliedDoc = null;
+  // The doc a source link asked for, once: it is cleared from the pane as it is shown, so a later
+  // click on another tab stays and a reload doesn't snap back.
+  let anchor = $state(null);
   function requestedDoc() {
     const want = spec?.doc;
-    if (!want || want === appliedDoc || !v?.docs?.includes(want)) return null;
-    appliedDoc = want;
+    if (!want || !v?.docs?.includes(want)) return null;
+    anchor = spec.anchor ?? null;
+    app.panes[paneId] = { ...app.panes[paneId], doc: null, anchor: null };
     return want;
   }
   // The same pane asked for another doc (a source link while it is open).
@@ -265,7 +267,7 @@
             <div class="tabs" role="tablist">
               {#each v.docs as d (d)}<button class="tab" class:on={doc.name === d} role="tab" aria-selected={doc.name === d} onclick={() => showDoc(d)}>{d}</button>{/each}
             </div>
-            <div class="rendered"><Markdown text={doc.text} feature={spec.featureId} ondoc={openSibling} /></div>
+            <div class="rendered"><Markdown text={doc.text} feature={spec.featureId} ondoc={openSibling} {anchor} /></div>
           {:else}
             <p class="muted">No docs yet: the lead writes them in the spec step.</p>
           {/if}

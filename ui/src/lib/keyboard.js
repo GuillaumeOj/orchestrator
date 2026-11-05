@@ -128,6 +128,7 @@ export function kittyKey(k) {
 
 /** Key hint notation (§9.7): `+` joins keys pressed together, a space separates steps. */
 export function hint(command) {
+  if (command === 'decisions.search') return '/'; // a key of the chat column, no chord (P4.4 notes §11.4)
   for (const [chord, c] of Object.entries(CHORDS)) if (c === command) return glyphs(chord);
   for (const [k, c] of Object.entries(LEADER)) if (c === command) return `${glyphs('cmd+;')} ${k}`;
   return '';

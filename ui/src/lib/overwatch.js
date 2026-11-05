@@ -29,8 +29,19 @@ export function statusText(ow) {
   return SHORT[ow.status] ?? ow.status;
 }
 
-/** The status' tooltip and accessible name (notes §1). */
-export function statusTip(ow) {
+/** The status' tooltip and accessible name (notes §1); `open`: it is a control, ⏎ opens its session. */
+export function statusTip(ow, open = false) {
+  const tip = baseTip(ow);
+  return open ? `${tip} · ⏎ open its session` : tip;
+}
+
+/** The settings section's status (notes §9.1): "Overwatch · down: login expired", null when it is up. */
+export function sectionStatus(ow) {
+  if (ow.status !== 'down' && ow.status !== 'paused') return null;
+  return `Overwatch · ${ow.status}${ow.why ? `: ${ow.why}` : ''}`;
+}
+
+function baseTip(ow) {
   switch (ow.status) {
     case 'off':
       return 'Overwatch is off. Turn it on in Settings.';
@@ -92,7 +103,8 @@ export function deliveryText(entry, ow) {
 export function statusChange(prev, ow) {
   if (!prev || prev.status === ow.status) return null;
   if (ow.status === 'down') return `Overwatch is down${ow.why ? `: ${ow.why}` : ''}. Cards still work.`;
-  if (prev.status === 'down' && ow.status !== 'off') return 'Overwatch is back.'; // switched off is not back
+  // Only a real return: switched off or paused is not "back" (notes §8).
+  if (prev.status === 'down' && ['asleep', 'waking', 'working'].includes(ow.status)) return 'Overwatch is back.';
   return null;
 }
 
@@ -108,9 +120,21 @@ export const decidingLeft = (d, now = Date.now()) => Math.max(0, Math.ceil((d.de
 /** "Overwatch is deciding · 42 s left". */
 export const decidingText = (d, now = Date.now()) => `Overwatch is deciding · ${decidingLeft(d, now)} s left`;
 
+/** The whole window in ms: from the card's creation to the deadline (`permission_secs`), else a minute. */
+export const decidingWindow = (d) => {
+  const w = d.deciding_until_ms - (d.created_ms ?? 0);
+  return w > 0 && w <= 300000 ? w : DECIDING_MS;
+};
+
 /** 0..1 of the ring still full. */
 export const decidingShare = (d, now = Date.now()) =>
-  Math.min(1, Math.max(0, (d.deciding_until_ms - now) / DECIDING_MS));
+  Math.min(1, Math.max(0, (d.deciding_until_ms - now) / decidingWindow(d)));
+
+/** The marker's static accessible name: "Overwatch is deciding, up to 1 minute" / "up to 90 s". */
+export function decidingName(d) {
+  const s = Math.round(decidingWindow(d) / 1000);
+  return `Overwatch is deciding, up to ${s % 60 === 0 ? plural(s / 60, 'minute') : `${s} s`}`;
+}
 
 // ---------------------------------------------------------------- annotation
 
@@ -127,8 +151,6 @@ export function recommendsText(d) {
   return label ? `recommends ${label.toLowerCase()}` : '';
 }
 
-/** The note shows 3 lines, then "Show more" (notes §4.1, F8): about 3 × 45 characters at 316 px. */
-export const NOTE_CLAMP = 140;
 export const SOURCES_SHOWN = 3;
 
 // ---------------------------------------------------------------- source links
@@ -177,7 +199,11 @@ export function docLabel(ref) {
  */
 export function sourceLabel(src, entries = {}, now = Date.now()) {
   const r = refKind(src);
-  if (!r) return String(src);
+  return r ? refLabel(r, entries, now) : String(src);
+}
+
+/** The label of a parsed ref (null: no longer available). */
+export function refLabel(r, entries = {}, now = Date.now()) {
   if (r.kind === 'doc') return docLabel(r);
   if (r.kind === 'agent') return r.id;
   if (r.kind === 'run') return `run ${r.id.replace(/^run-/, '')}`;
@@ -216,7 +242,3 @@ export function workingText(entry, now = Date.now()) {
 
 /** The turn ended and nothing came back: the Overwatch went to sleep after the message (notes §2.2). */
 export const noReply = (entry, ow) => !!entry && ow.status === 'asleep' && (ow.since_ms ?? 0) > entry.at_ms;
-
-/** Over this many characters or lines an Overwatch entry clamps (notes §2.1). */
-export const longText = (text) =>
-  String(text ?? '').split('\n').length > CLAMP_LINES || String(text ?? '').length > 600;

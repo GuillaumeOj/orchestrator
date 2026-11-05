@@ -4,18 +4,28 @@
   // the Overwatch's reply (left, a rule, markdown with its source links, a
   // "↳ re:" reference when the question is not just above, clamped at 12 lines).
   import { now30 } from '../../lib/app.svelte.js';
+  import { dayLabel } from '../../lib/chat.js';
   import { clock } from '../../lib/format.js';
-  import { deliveryText, longText } from '../../lib/overwatch.js';
+  import { deliveryText } from '../../lib/overwatch.js';
   import Markdown from '../Markdown.svelte';
 
-  /** @type {{ item: any, ow: any, pulse?: boolean, reply?: { id: string, text: string } | null, note?: string, failed?: string | null, onref?: (ref: any) => void, refok?: (ref: any) => boolean, onreplyto?: (id: string) => void, onremove?: () => void, onretry?: () => void, onsession?: () => void }} */
-  let { item, ow, pulse = false, reply = null, note = '', failed = null, onref, refok, onreplyto = () => {}, onremove = () => {}, onretry = () => {}, onsession } = $props();
+  /** @type {{ item: any, ow: any, pulse?: boolean, reply?: { id: string, text: string } | null, note?: string, failed?: string | null, past?: boolean, today?: string | null, reflabel?: (ref: any) => string | null, onref?: (ref: any) => void, refok?: (ref: any) => boolean, onreplyto?: (id: string) => void, onremove?: () => void, onretry?: () => void, onsession?: () => void }} */
+  let { item, ow, pulse = false, reply = null, note = '', failed = null, past = false, today = null, reflabel, onref, refok, onreplyto = () => {}, onremove = () => {}, onretry = () => {}, onsession } = $props();
   const e = $derived(item.entry);
   const user = $derived(e.author === 'user');
   const now = $derived(Math.max(now30(), Date.now()));
-  const marker = $derived(user ? deliveryText(e, ow) : '');
-  const long = $derived(!user && longText(e.text));
+  // A past day's entry carries its day ("Mon 2 Nov 18:40") and no live delivery state (notes §2).
+  const stamp = $derived(past && today && e.day && e.day !== today ? `${dayLabel(e.day)} ${new Date(e.at_ms).toTimeString().slice(0, 5)}` : clock(e.at_ms, now));
+  const marker = $derived(user && !past ? deliveryText(e, ow) : '');
   let more = $state(false);
+  let bodyEl = $state();
+  // Long = the clamp hides something: measured, not guessed from the characters (notes §2.1).
+  let over = $state(false);
+  $effect(() => {
+    e.text;
+    if (!more && bodyEl) over = bodyEl.scrollHeight > bodyEl.clientHeight + 1;
+  });
+  const long = $derived(!user && (over || more));
 
   function onkeydown(ev) {
     if (ev.key !== 'Enter' || ev.target !== ev.currentTarget || !long) return;
@@ -30,27 +40,27 @@
   class:user
   class:ow={!user}
   class:pulse
-  aria-label="{user ? 'You' : 'Overwatch'}, {clock(e.at_ms, now)}"
+  aria-label="{user ? 'You' : 'Overwatch'}, {stamp}"
   data-entry={e.id}
   data-author={e.author}
   tabindex={long ? 0 : undefined}
   {onkeydown}
 >
   {#if reply}<button class="ref" onclick={() => onreplyto(reply.id)} aria-label="Reply to: {reply.text}">↳ re: {reply.text}</button>{/if}
-  <div class="label muted">{user ? 'You' : 'Overwatch'} · {clock(e.at_ms, now)}</div>
+  <div class="label muted">{user ? 'You' : 'Overwatch'} · {stamp}</div>
   {#if user}
     <div class="body plain">{e.text}</div>
   {:else}
-    <div class="body" class:clamped={long && !more}>
-      <Markdown text={e.text ?? ''} {onref} {refok} />
+    <div class="body" class:clamped={!more} class:fits={!over} bind:this={bodyEl}>
+      <Markdown text={e.text ?? ''} {onref} {refok} {reflabel} />
     </div>
     {#if long}<button class="link more" aria-expanded={more} onclick={() => (more = !more)}>{more ? 'Show less' : 'Show more'}</button>{/if}
   {/if}
   {#if failed}
     <div class="mark fail" role="alert">Not sent: {failed} · <button class="link" onclick={onretry}>Retry</button></div>
-  {:else if marker || e.delivery === 'pending'}
+  {:else if marker || (e.delivery === 'pending' && !past)}
     <div class="mark muted">
-      {marker}{#if e.delivery === 'pending'}{' · '}<button class="link" onclick={onremove}>Remove</button>{/if}
+      {marker}{#if e.delivery === 'pending' && !past}{' · '}<button class="link" onclick={onremove}>Remove</button>{/if}
     </div>
   {/if}
   {#if note}
@@ -116,6 +126,8 @@
   .body.clamped {
     max-height: calc(12 * 1.5em);
     overflow: hidden;
+  }
+  .body.clamped:not(.fits) {
     mask-image: linear-gradient(to bottom, black calc(100% - 2em), transparent);
   }
   .ref {

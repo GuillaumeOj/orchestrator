@@ -10,9 +10,9 @@
   import { clock, waited } from '../../lib/format.js';
   import { agentOf, blockOf, deliveryPrimary, keyless, parked, restarted, subjectLine } from '../../lib/inbox.js';
   import {
+    decidingName,
     decidingShare,
     decidingText,
-    NOTE_CLAMP,
     recommended,
     recommendsText,
     refKind,
@@ -24,7 +24,7 @@
   import Kbd from '../Kbd.svelte';
   import LifecycleMarker from '../LifecycleMarker.svelte';
 
-  /** @type {{ d: any, line?: any, selected?: boolean, marked?: boolean, pending?: any, ref?: any, replying?: string | null, pulse?: boolean, deciding?: boolean, handed?: number | null, entries?: any, choices?: string[][], onkey?: (key: string) => void, onact?: (id: string) => void, onreply?: (text: string | null) => void, onjump?: () => void, onhold?: (held: boolean) => void, onref?: (ref: any) => void }} */
+  /** @type {{ d: any, line?: any, selected?: boolean, marked?: boolean, pending?: any, ref?: any, replying?: string | null, pulse?: boolean, deciding?: boolean, refok?: (ref: any) => boolean, handed?: number | null, entries?: any, choices?: string[][], onkey?: (key: string) => void, onact?: (id: string) => void, onreply?: (text: string | null) => void, onjump?: () => void, onhold?: (held: boolean) => void, onref?: (ref: any) => void }} */
   let {
     d,
     line = null,
@@ -35,6 +35,7 @@
     replying = null,
     pulse = false,
     deciding = false,
+    refok = () => true,
     handed = null,
     entries = {},
     choices = $bindable([]),
@@ -75,6 +76,14 @@
   );
   const open = $derived(state === 'open' || state === 'parked' || !!pending);
 
+  // Why you are asked (notes §4.5, F3): the core's or a rule's reason, or the Overwatch passing it on.
+  const askText = $derived.by(() => {
+    const a = d.asks_because;
+    if (!a || d.kind !== 'permission') return '';
+    if (a.kind === 'core' || a.kind === 'policy') return `Only you can allow this: ${a.detail}.`;
+    return a.kind === 'overwatch_unsure' ? 'The Overwatch did not decide this.' : '';
+  });
+
   // The Overwatch's note (P4.4 notes §4): its recommendation is highlighted, never pre-selected;
   // an expanded line keeps the note, read-only, without the highlight.
   const note = $derived(d.annotation?.note ? d.annotation : null);
@@ -82,7 +91,16 @@
   let noteOpen = $state(false);
   let srcOpen = $state(false);
   const sources = $derived([...new Set(note?.sources ?? [])]); // a repeated source would break the keyed each
-  const longNote = $derived((note?.note?.length ?? 0) > NOTE_CLAMP);
+  // Measured, not guessed: the clamp hides something only when the text overflows 3 lines.
+  let noteEl = $state();
+  let noteOver = $state(false);
+  $effect(() => {
+    note?.note;
+    if (!noteOpen && noteEl) noteOver = noteEl.scrollHeight > noteEl.clientHeight + 1;
+  });
+  const longNote = $derived(noteOver || noteOpen);
+  /** A source's click: the card's project goes with it, so a doc is found in the right one. */
+  const openSource = (r) => onref({ ...r, project: d.subject?.project ?? null });
 
   // Deciding (notes §3): the ring and the seconds left, once a second; the card is a normal card meanwhile.
   let tick = $state(Date.now());
@@ -135,6 +153,7 @@
   </div>
   <div class="title">{d.title}</div>
   {#if subjectLine(d)}<div class="subject secondary">{subjectLine(d)}</div>{/if}
+  {#if askText}<div class="why muted" data-asks>{askText}</div>{/if}
   {#if d.summary && !d.context?.length}<p class="summary">{d.summary}</p>{/if}
   <ContextBlocks decision={d} bind:choices />
   {#if live && restarted(d)}
@@ -151,15 +170,16 @@
   {#if note}
     <div class="note" class:ro={!live} data-annotation>
       <div class="nh"><b>Overwatch</b>{#if recId || (!live && recommended(d))}{' '}<span class="muted">· {recommendsText(d)}</span>{/if}</div>
-      <p class="nt" class:clamp={longNote && !noteOpen}>{note.note}</p>
+      <p class="nt" class:clamp={!noteOpen} bind:this={noteEl}>{note.note}</p>
       {#if longNote}<button class="link" aria-expanded={noteOpen} onclick={() => (noteOpen = !noteOpen)}>{noteOpen ? 'Show less' : 'Show more'}</button>{/if}
       {#if sources.length}
         <div class="srcs">
-          {#each srcOpen ? sources : sources.slice(0, SOURCES_SHOWN) as s, i (s)}
+          {#each srcOpen ? sources : sources.slice(0, SOURCES_SHOWN) as s, i (i)}
+            {@const r = refKind(s)}
             {@const label = sourceLabel(s, entries)}
             {#if i}<span class="muted" aria-hidden="true">·</span>{/if}
-            {#if label == null}<span class="muted" title="No longer available">{s}</span>
-            {:else if refKind(s)}<button class="link" data-source onclick={() => onref(refKind(s))}>{label} ↗</button>
+            {#if label == null || (r && !refok(r))}<span class="muted" title="No longer available">{label ?? s}</span>
+            {:else if r}<button class="link" data-source onclick={() => openSource(r)}>{label} ↗</button>
             {:else}<span class="muted">{label}</span>{/if}
           {/each}
           {#if sources.length > SOURCES_SHOWN && !srcOpen}<button class="link" onclick={() => (srcOpen = true)}>+ {sources.length - SOURCES_SHOWN} more</button>{/if}
@@ -184,6 +204,7 @@
         <button
           class="btn"
           class:rec={x.id === recId}
+          aria-label={x.id === recId ? `${x.label}, recommended by the Overwatch` : undefined}
           class:primary={primary ? primary === x.id : x.id === 'restart_fresh'}
           class:danger={x.id === 'delete'}
           class:ghost={primary ? primary !== x.id : x.id !== 'restart_fresh' && x.id !== 'delete'}
@@ -201,7 +222,7 @@
     </div>
   {/if}
   {#if deciding && live && !pending}
-    <div class="lc deciding" data-deciding role="group" aria-label="Overwatch is deciding, up to 1 minute">
+    <div class="lc deciding" data-deciding role="group" aria-label={decidingName(d)}>
       <span class="ring" style:background="conic-gradient(var(--color-accent-default) {Math.round(decidingShare(d, tick) * 360)}deg, var(--color-border-subtle) 0)" aria-hidden="true"></span>
       <span aria-hidden="true">{decidingText(d, tick)}</span>
     </div>
@@ -292,6 +313,10 @@
   .title {
     font: var(--text-body-strong);
   }
+  .why {
+    margin-top: calc(-1 * var(--space-xs));
+    font: var(--text-caption);
+  }
   .subject {
     margin-top: calc(-1 * var(--space-xs));
     font: var(--text-caption);
@@ -315,7 +340,7 @@
   }
   /* The Overwatch's recommendation: an accent outline and a tag, never pre-selected (notes §4.1). */
   .actions .btn.rec {
-    outline: 2px dashed var(--color-accent-default);
+    outline: 1.5px dashed var(--color-accent-default);
     outline-offset: -1px;
     white-space: normal;
   }

@@ -67,7 +67,7 @@ describe('keyboard contract §9.7', () => {
     expect(hint('palette')).toBe('⌘+K');
     expect(hint('decisions')).toBe('⌘+⇧+I');
     expect(hint('overwatch.ask')).toBe('⌘+L');
-    expect(hint('decisions.search')).toBe(''); // `/` in the chat, no chord
+    expect(hint('decisions.search')).toBe('/'); // a key of the chat, no chord
     expect(hint('pane.zoom')).toBe('⌘+; z');
     expect(Object.values(CHORDS)).toContain('session.new');
   });

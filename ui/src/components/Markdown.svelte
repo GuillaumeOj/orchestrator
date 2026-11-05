@@ -14,13 +14,19 @@
   import Diagram from './Diagram.svelte';
   import MdImage from './MdImage.svelte';
 
-  let { text = '', feature = null, ondoc = null, onref = null, refok = () => true } = $props();
+  let { text = '', feature = null, ondoc = null, onref = null, refok = () => true, reflabel = () => null, anchor = null } = $props();
   const doc = $derived(prepare(text));
   // Heading and footnote ids are prefixed per instance: two docs on screen don't clash.
   const uid = $props.id();
   const prefix = `${uid}-`;
 
   const BR = /^\s*<br\s*\/?>\s*$/i;
+
+  // A section asked for (a source link's `#slug`): scrolled to once the text is shown.
+  $effect(() => {
+    text;
+    if (anchor) tick().then(() => scrollTo(anchor));
+  });
 
   /** Ids (slugs, `fn:1`) are lowercase. */
   function scrollTo(id) {
@@ -136,7 +142,7 @@
   {@const ref = onref ? refKind(url) : null}
   {@const k = linkKind(url, !!ondoc)}
   <!-- hrefs come from the classified target, never the raw string. -->
-  {#if ref && !refok(ref)}<span class="gone" title="No longer available">{@render inlines(children)}</span>{:else if ref}<button class="ref" {title} data-ref={ref.kind} onclick={() => onref(ref)}>{@render inlines(children, true)}<span class="arrow" aria-hidden="true">↗</span></button>{:else if k.kind === 'external'}<a class="ext" href={k.url} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}<span class="arrow" aria-hidden="true">↗</span></a>{:else if k.kind === 'anchor' || k.kind === 'doc'}<a href={k.kind === 'anchor' ? `#${k.anchor}` : k.name} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}</a>{:else if k.kind === 'repo'}<span class="repo" title={k.path}>{@render inlines(children)}</span>{:else}<span {title}>{@render inlines(children)}</span>{/if}
+  {#if ref && !refok(ref)}<span class="gone" title="No longer available">{@render inlines(children)}</span>{:else if ref}<button class="ref" {title} data-ref={ref.kind} onclick={() => onref(ref)}>{#if reflabel(ref)}{reflabel(ref)}{:else}{@render inlines(children, true)}{/if}<span class="arrow" aria-hidden="true">↗</span></button>{:else if k.kind === 'external'}<a class="ext" href={k.url} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}<span class="arrow" aria-hidden="true">↗</span></a>{:else if k.kind === 'anchor' || k.kind === 'doc'}<a href={k.kind === 'anchor' ? `#${k.anchor}` : k.name} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}</a>{:else if k.kind === 'repo'}<span class="repo" title={k.path}>{@render inlines(children)}</span>{:else}<span {title}>{@render inlines(children)}</span>{/if}
 {/snippet}
 
 

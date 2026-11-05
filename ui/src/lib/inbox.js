@@ -310,6 +310,12 @@ export function marker(d, pending = null, now = Date.now()) {
       return { state: 'sent', text: `Sent to ${agent}${at(lc.sent_at_ms)}` };
     case 'effect': {
       const url = lc.effect === 'pr_opened' ? lc.effect_detail : null;
+      // Settled by the Overwatch while you were reading it (P4.4 notes §3).
+      if (lc.decided_by === 'overwatch' && (lc.effect === 'allowed' || lc.effect === 'denied'))
+        return {
+          state: 'effect',
+          text: `${lc.effect === 'denied' ? 'Denied' : 'Allowed'} by the Overwatch${at(lc.effect_at_ms)}`,
+        };
       return { state: 'effect', text: `${effectText(d) ?? 'Done'}${at(lc.effect_at_ms)}`, url };
     }
     case 'failed':

@@ -1,3 +1,8 @@
+<script module>
+  // Hand-over times outlive the column (it remounts with the shell); pruned as cards close.
+  const handedStore = {};
+</script>
+
 <script>
   // The chat column (FR-1304/1305, P4.3 spec §3.3, notes §1–§10; P4.4 spec §3.9,
   // notes §1–§4; Penpot 04.3): a fixed column of the shell, not a pane. Header
@@ -61,6 +66,7 @@
     featureDoc,
     noReply,
     overwatchOf,
+    refLabel,
     replyRef,
     statusChange,
     statusText,
@@ -76,9 +82,10 @@
   import DecisionCard from './DecisionCard.svelte';
 
   const TITLE = 'Overwatch';
-  /** The status' dot: its shape differs by state so colour is never the only signal (notes §1). */
-  const DOT = { off: '○', asleep: '○', waking: '◐', working: '●', paused: '⏸', down: '●' };
-  const DIGEST_ROWS = 5;
+  const NO_COMMAND = /not found|unknown command|not registered|no such command/i;
+  /** A command the core does not have yet reads as that, not as the raw error. */
+  const cmdError = (err) => (NO_COMMAND.test(errText(err)) ? "the core doesn't support messages yet" : errText(err));
+    const DIGEST_ROWS = 5;
   const PULSE_MS = 1500;
   const DAYS_PAGE = 30;
   const SEARCH_LIMIT = 50;
@@ -113,7 +120,10 @@
   let searchField = $state();
   let aside;
   let input = $state(); // the Overwatch input (⌘L)
-  let handedAt = $state({}); // decision id → when its deciding hand-over to you happened
+  let handedAt = $state({ ...handedStore }); // decision id → when its deciding hand-over to you happened
+  let restartError = $state(''); // a failed Restart replaces the strip's second line once
+  let stick = $state(true); // the thread is at its foot: a new reply keeps it there (notes §2.1)
+  let newReply = $state(false); // "New from the Overwatch ↓"
   let unsent = $state([]); // messages `chat_send` refused: { entry, why }
   let restarting = $state(false);
   let tick5 = $state(Date.now()); // the in-flight row's clock, every 5 s
@@ -138,6 +148,9 @@
   const fold = $derived(t.items.find((i) => i.type === 'fold') ?? null);
   const ow = $derived(overwatchOf(app.now));
   const entries = $derived(app.now.chat?.entries ?? {});
+  // Links resolve against the day on screen (a past day has its own entries).
+  const viewEntries = $derived(past?.status === 'ready' ? Object.fromEntries(past.entries.map((x) => [x.id, x])) : entries);
+  const reflabel = (ref) => refLabel(ref, viewEntries);
   const coreDown = $derived(app.data?.core?.ok === false);
   const strip_ = $derived(stripText(ow));
   // Your last message and what became of it (notes §2.2).
@@ -213,14 +226,30 @@
   });
 
   // A deciding card that handed over to you (notes §3): its marker reads "Waiting for you" from that moment.
-  const wasDeciding = new Set();
+  const wasDeciding = new Map(); // decision id → its deadline
   $effect(() => {
     const open = new Set(t.all.map((c) => c.id));
     for (const c of t.all) {
-      if (c.deciding) wasDeciding.add(c.id);
-      else if (wasDeciding.delete(c.id) && c.d.lifecycle?.state === 'open') untrack(() => (handedAt[c.id] = Date.now()));
+      if (c.deciding) wasDeciding.set(c.id, c.d.deciding_until_ms);
+      else if (wasDeciding.has(c.id)) {
+        // The hand-over is the deadline, or now when the core handed over early.
+        const at = Math.min(Date.now(), wasDeciding.get(c.id));
+        wasDeciding.delete(c.id);
+        if (c.d.lifecycle?.state === 'open')
+          untrack(() => {
+            handedAt[c.id] = at;
+            handedStore[c.id] = at;
+          });
+      }
     }
-    for (const id of wasDeciding) if (!open.has(id)) wasDeciding.delete(id);
+    for (const id of wasDeciding.keys()) if (!open.has(id)) wasDeciding.delete(id);
+    untrack(() => {
+      for (const id of Object.keys(handedAt))
+        if (!open.has(id)) {
+          delete handedAt[id];
+          delete handedStore[id];
+        }
+    });
   });
 
   // New level 1–2 cards are announced, throttled (spec §5 accessibility).
@@ -250,6 +279,11 @@
     const fresh = texts.filter((e) => e.author === 'overwatch' && !heard.has(e.id));
     if (!fresh.length) return;
     for (const e of fresh) heard.add(e.id);
+    // Quiet: at the foot it stays at the foot; scrolled up it shows a pill instead (notes §2.1).
+    untrack(() => {
+      if (stick) toFoot();
+      else newReply = true;
+    });
     if (Date.now() - heardAt < 3000) return;
     heardAt = Date.now();
     announce = 'The Overwatch replied';
@@ -269,6 +303,7 @@
     const cur = ow;
     const msg = statusChange(prevOw, cur);
     if (cur.status !== 'down' || cur.since_ms !== prevOw.since_ms || cur.why !== prevOw.why) restarting = false;
+    if (cur.status !== 'down') restartError = '';
     prevOw = cur;
     if (!msg) return;
     announce = msg;
@@ -413,6 +448,7 @@
       await tick();
       const it = t.items.find((i) => i.key === e.id) ?? t.items.find((i) => i.id && i.id === e.decision);
       if (!it) return feed?.focus();
+      if (it.type === 'text') return jumpEntry(it.key);
       if (it.type === 'line') expanded = new Set([...expanded, it.key]);
       else if (it.type === 'card') sel = `c:${it.id}`;
       await tick();
@@ -479,6 +515,18 @@
     searchField?.focus();
   }
 
+  function toFoot() {
+    tick().then(() => {
+      if (feed) feed.scrollTop = feed.scrollHeight;
+      newReply = false;
+    });
+  }
+
+  function onFeedScroll() {
+    stick = !feed || feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
+    if (stick) newReply = false;
+  }
+
   /** ⌘L: the input, from anywhere; an open search, a past day or the days list closes (notes §2.3). */
   async function ask() {
     searchOpen = false;
@@ -493,9 +541,11 @@
     try {
       const r = await invoke('chat_send', { text });
       if (r?.entry) upsertEntries((app.now.chat ??= { day: null, entries: {} }), [r.entry]);
+      stick = true;
+      toFoot();
     } catch (err) {
       const entry = retry?.entry ?? { id: `unsent-${++sendSeq}`, kind: 'text', author: 'user', text, at_ms: Date.now() };
-      unsent = [...unsent.filter((u) => u !== retry), { entry, why: errText(err) }];
+      unsent = [...unsent.filter((u) => u !== retry), { entry, why: cmdError(err) }];
     }
   }
 
@@ -510,16 +560,18 @@
       await invoke('chat_discard', { entry: entry.id });
       delete app.now.chat?.entries?.[entry.id];
     } catch (err) {
-      toast(`Could not remove: ${errText(err)}`, { kind: 'error' });
+      toast(`Could not remove: ${cmdError(err)}`, { kind: 'error' });
     }
   }
 
   async function restart() {
     restarting = true;
+    restartError = '';
     try {
       await restartOverwatch();
-    } catch {
+    } catch (err) {
       restarting = false;
+      restartError = errText(err);
     }
   }
 
@@ -527,7 +579,7 @@
 
   /** Whether a link's target still exists (else it is plain text with a tooltip, notes §2.1). */
   function refOk(ref) {
-    if (ref.kind === 'chat') return !!entries[ref.id];
+    if (ref.kind === 'chat') return !!viewEntries[ref.id];
     if (ref.kind === 'agent') return !!app.now.agents[ref.id] || !!app.data?.agents?.some((a) => a.id === ref.id);
     if (ref.kind === 'run') return !!app.now.runs[ref.id];
     return true;
@@ -536,23 +588,33 @@
   /** A source link: a doc opens in the feature pane, `chat:` jumps to its entry, `agent:` / `run:` open them (api-contract §5). */
   function openRef(ref) {
     if (ref.kind === 'chat') return jumpEntry(ref.id);
-    if (ref.kind === 'agent') return openSession(ref.id);
+    if (ref.kind === 'agent') return openSession(ref.id, { watch: true });
     if (ref.kind === 'run') {
       select('run', ref.id);
       if (!app.inspector) app.inspector = true;
       return;
     }
+    // The cited project first (a card's), else the focused one; two projects can share a feature slug.
+    const project = ref.project ?? contextProject()?.id ?? null;
     const fd = featureDoc(ref.path);
-    const f = fd ? features().find((x) => x.slug === fd.slug) : null;
-    if (f) return openFeature(f.id, fd.name);
-    // Another doc of the repo: in nvim, in the project that has it.
-    openEditor(ref.path, null, { projectId: contextProject()?.id });
+    const same = fd ? features().filter((x) => x.slug === fd.slug) : [];
+    const f = same.find((x) => x.project_id === project) ?? same[0];
+    if (f) return openFeature(f.id, fd.name, ref.section);
+    // Another doc of the repo: in nvim, in the cited project.
+    openEditor(ref.path, null, { projectId: project });
   }
 
   /** Scrolls to an entry of today's thread (a text, a line, a card) and highlights it. */
   async function jumpEntry(id) {
     searchOpen = false;
-    past = null;
+    // On a past day a link to that day's entry stays on that day.
+    if (!(past && past.entries.some((x) => x.id === id))) past = null;
+    // A hidden or folded card is shown first: the filter goes to All, the fold opens.
+    if (!past && t.all.some((c) => c.key === id)) {
+      app.chatFilter = 'all';
+      await tick();
+      if (!t.cards.some((c) => c.key === id) && fold?.n) foldOpen = true;
+    }
     await tick();
     let el = feed?.querySelector(`[data-entry="${id}"]`);
     if (!el) {
@@ -801,9 +863,9 @@
     {:else}
       <h2 class="title">{TITLE}</h2>
       {#if canOpenSession(ow)}
-        <button class="status" data-ow-status={ow.status} aria-label={statusTip(ow)} title={statusTip(ow)} onclick={openOverwatch}><span class="dot {ow.status}" aria-hidden="true">{DOT[ow.status]}</span> <span class="stext">{statusText(ow)}</span></button>
+        <button class="status" data-ow-status={ow.status} aria-label={statusTip(ow, true)} title={statusTip(ow, true)} onclick={openOverwatch}><span class="dot {ow.status}" aria-hidden="true"></span> <span class="stext">{statusText(ow)}</span></button>
       {:else}
-        <span class="status" data-ow-status={ow.status} title={statusTip(ow)}><span class="dot {ow.status}" aria-hidden="true">{DOT[ow.status]}</span> <span class="stext">{statusText(ow)}</span></span>
+        <span class="status" data-ow-status={ow.status} title={statusTip(ow)}><span class="dot {ow.status}" aria-hidden="true"></span> <span class="stext">{statusText(ow)}</span></span>
       {/if}
       <span class="grow"></span>
       <button class="day" aria-haspopup="dialog" aria-expanded={!!daysPop} title="Older days" onclick={toggleDays}>{past ? dayLabel(past.day) : 'Today'} ▾</button>
@@ -811,11 +873,11 @@
     {/if}
   </header>
   {#if strip_}
-    <p class="strip down" data-ow-strip>
-      <span class="stext">{strip_}</span>
-      <span class="grow"></span>
+    <div class="strip down" data-ow-strip>
+      <span class="l1">Overwatch is down</span>
+      <span class="l2" class:bad={restartError}>{restartError ? `Could not restart: ${restartError}` : `${ow.why ? `${ow.why} · ` : ''}cards still work`}</span>
       <button class="btn" disabled={restarting || coreDown} title={coreDown ? 'The core is not reachable' : undefined} onclick={restart}>{restarting ? 'Restarting…' : 'Restart'}</button>
-    </p>
+    </div>
   {/if}
   {#if daysPop}
     <button class="scrim" tabindex="-1" aria-label="Close the days" onclick={() => (daysPop = null)}></button>
@@ -853,7 +915,7 @@
     {/if}
   {/if}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-  <div class="feed" role="feed" aria-label={past ? `Decisions, ${dayLabel(past.day)}` : searching ? 'Search results' : 'Decisions, today'} tabindex="0" data-chat-focus bind:this={feed}>
+  <div class="feed" role="feed" aria-label={past ? `Decisions, ${dayLabel(past.day)}` : searching ? 'Search results' : 'Decisions, today'} tabindex="0" data-chat-focus bind:this={feed} onscroll={onFeedScroll}>
     {#if past}
       {#if past.status === 'loading'}
         <div class="skeleton" aria-hidden="true"><i></i><i></i><i></i></div>
@@ -865,9 +927,9 @@
           {#if it.type === 'morning'}
             <article class="morning" aria-label="Morning summary">{it.entry.text}</article>
           {:else if it.type === 'text'}
-            <ChatText item={it} {ow} onref={openRef} refok={refOk} />
+            <ChatText item={it} {ow} past today={todayDay} {reflabel} onref={openRef} refok={refOk} />
           {:else}
-            <ChatLine item={it} expanded={expanded.has(it.key)} pulse={false} {entries} onref={openRef} ontoggle={() => toggleLine(it.key)} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
+            <ChatLine item={it} expanded={expanded.has(it.key)} pulse={false} entries={viewEntries} refok={refOk} onref={openRef} ontoggle={() => toggleLine(it.key)} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
           {/if}
         {/each}
         {#if !pastThread.length}<p class="empty muted">Nothing was recorded on {dayLabel(past.day)}.</p>{/if}
@@ -911,6 +973,7 @@
           reply={replyRef(it.entry, t.items[i - 1]?.key, entries)}
           note={silent?.id === it.entry.id ? 'No reply. Ask again, or look at its session.' : ''}
           onsession={silent?.id === it.entry.id && ow.has_session ? openOverwatch : undefined}
+          {reflabel}
           onref={openRef}
           refok={refOk}
           onreplyto={jumpEntry}
@@ -923,7 +986,7 @@
           <span aria-hidden="true">{it.open ? '▾' : '▸'}</span> {foldText(it)} · <Kbd keys={it.open ? '⏎' : 'j'} />
         </button>
       {:else if it.type === 'line'}
-        <ChatLine item={it} expanded={expanded.has(it.key)} pulse={pulse === it.key} {entries} onref={openRef} ontoggle={() => toggleLine(it.key)} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
+        <ChatLine item={it} expanded={expanded.has(it.key)} pulse={pulse === it.key} {entries} refok={refOk} onref={openRef} ontoggle={() => toggleLine(it.key)} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
       {:else}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <article
@@ -945,6 +1008,7 @@
             deciding={it.deciding}
             handed={handedAt[it.id] ?? null}
             {entries}
+            refok={refOk}
             onref={openRef}
             bind:choices={() => choices[it.id] ?? [], (v) => (choices[it.id] = v)}
             onkey={(k) => cardKey(it.d, k)}
@@ -962,7 +1026,7 @@
     {#if working}
       <p class="muted working" data-working>{workingText(working, tick5)}</p>
     {/if}
-    {#if !t.all.length && !texts.length}
+    {#if !t.all.length && !texts.length && !unsent.length}
       <p class="empty">
         <b>Nothing needs you</b>{lastSettled ? ` · last settled ${clock(lastSettled)}` : '.'}
         {#if !projects().length}<br /><span class="muted">Add a project and start a session; its cards appear here.</span>
@@ -991,6 +1055,7 @@
       <span>Read-only · Back to today <Kbd keys="t" /></span>
     </footer>
   {:else}
+    {#if newReply}<button class="pill" data-new-reply onclick={toFoot}>New from the Overwatch ↓</button>{/if}
     <ChatInput bind:this={input} {ow} onsend={sendMessage} onleave={() => feed?.focus()} />
   {/if}
   <div class="sr" aria-live="polite">{announce}</div>
@@ -1041,23 +1106,78 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* The status dots, drawn: the shape differs by state so colour is never the only signal (notes §1). */
   .dot {
     flex: none;
-    font-size: 10px;
+    box-sizing: border-box;
+    align-self: center;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 1.5px solid var(--color-text-muted);
   }
-  .dot.working,
+  .dot.asleep {
+    border-color: var(--color-text-secondary);
+  }
   .dot.waking {
-    color: var(--color-accent-default);
+    border-color: var(--color-accent-default);
+    background: linear-gradient(90deg, var(--color-accent-default) 50%, transparent 50%);
   }
-  .dot.paused,
+  .dot.working {
+    border-color: var(--color-accent-default);
+    background: var(--color-accent-default);
+  }
+  .dot.paused {
+    border: 0;
+    border-radius: 0;
+    background: linear-gradient(90deg, var(--color-status-waiting-for-you) 0 2px, transparent 2px 4px, var(--color-status-waiting-for-you) 4px 6px, transparent 6px);
+    width: 8px;
+  }
   .dot.down {
+    border-color: var(--color-status-waiting-for-you);
+    background: var(--color-status-waiting-for-you);
+  }
+  .status[data-ow-status='paused'] .stext,
+  .status[data-ow-status='down'] .stext {
     color: var(--color-status-waiting-for-you);
   }
   .strip.down {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    column-gap: var(--space-sm);
     align-items: center;
-    gap: var(--space-sm);
+    min-height: 44px;
+  }
+  .strip.down .l1 {
     color: var(--color-status-waiting-for-you);
+    font-weight: var(--font-weight-semibold);
+  }
+  .strip.down .l2 {
+    grid-column: 1;
+    font: var(--text-caption);
+    color: var(--color-text-secondary);
+  }
+  .strip.down .l2.bad {
+    color: var(--color-status-error);
+  }
+  .strip.down .btn {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+  .pill {
+    position: absolute;
+    left: 50%;
+    bottom: 96px;
+    transform: translateX(-50%);
+    z-index: 3;
+    padding: var(--space-xs) var(--space-md);
+    border: var(--border-width-default) solid var(--color-accent-default);
+    border-radius: var(--radius-full);
+    background: var(--color-surface-raised);
+    color: var(--color-accent-default);
+    font: var(--text-label);
+    box-shadow: var(--shadow-overlay);
   }
   .working {
     margin: 0;

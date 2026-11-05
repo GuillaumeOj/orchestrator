@@ -395,7 +395,7 @@ export const askOverwatch = () => askChat({ ask: true });
 export function openOverwatch() {
   const ow = app.now?.overwatch;
   if (!ow?.has_session || ow.status === 'off') return;
-  openSession(ow.agent ?? 'overwatch');
+  openSession(ow.agent ?? 'overwatch', { watch: true });
 }
 
 /** Restart (the strip, the palette): a fresh session; the toast says when it is back (notes §8). */
@@ -504,16 +504,16 @@ export function openProject(projectId) {
 }
 
 /** P2: a feature's pane (docs, tasks, team, timeline), one per feature. */
-export function openFeature(featureId, doc = null, timeline = null) {
+export function openFeature(featureId, doc = null, anchor = null, timeline = null) {
   const existing = findPane((s) => s.type === 'feature' && s.featureId === featureId);
   if (existing) {
-    if (doc) app.panes[existing] = { ...app.panes[existing], doc };
+    if (doc) app.panes[existing] = { ...app.panes[existing], doc, anchor };
     if (timeline) app.panes[existing].timeline = timeline;
     return focusPane(existing);
   }
   const f = features().find((x) => x.id === featureId);
   addPane(
-    { type: 'feature', featureId, projectId: f?.project_id, ...(doc ? { doc } : {}), ...(timeline ? { timeline } : {}) },
+    { type: 'feature', featureId, projectId: f?.project_id, ...(doc ? { doc, anchor } : {}), ...(timeline ? { timeline } : {}) },
     app.layout ? 'tab' : 'right',
   );
 }
@@ -524,7 +524,7 @@ export function openDelivery(rec) {
   const ref = deliveryRef(rec);
   if (ref) return focusCard(ref);
   const f = features().find((x) => x.run?.id && x.run.id === rec?.run);
-  if (f) openFeature(f.id, null, 'delivery');
+  if (f) openFeature(f.id, null, null, 'delivery');
   else openAgent(rec?.agent);
 }
 
@@ -588,15 +588,22 @@ export const openMission = () => openSingleton('mission');
  * mode. One already open gets focus, in watch mode again (notes §1.10).
  * Without Mission control: as `openAgent`.
  */
-export function openSession(agentId) {
+export function openSession(agentId, { watch = false } = {}) {
   const over = findPane((s) => s.type === 'mission');
-  if (!over) return openAgent(agentId);
+  // `watch`: never a live tab, so a keystroke can't reach the session by accident (it counts as an intervention).
+  if (!over && !watch) return openAgent(agentId);
   const existing = findPane((s) => s.type === 'agent' && s.agentId === agentId);
   if (existing) {
-    Object.assign(app.panes[existing], { watch: true, over });
+    Object.assign(app.panes[existing], { watch: true, over: over ?? null });
     return focusPane(existing);
   }
-  return addDockPane({ type: 'agent', agentId, projectId: agent(agentId)?.project_id, watch: true, over });
+  return addDockPane({
+    type: 'agent',
+    agentId,
+    projectId: agent(agentId)?.project_id,
+    watch: true,
+    over: over ?? null,
+  });
 }
 
 /** Take-over (⏎ or a click in watch mode): the PTY gets the keyboard. */
