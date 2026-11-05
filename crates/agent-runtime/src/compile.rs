@@ -24,6 +24,9 @@ pub const ORCH_PREAMBLE: &str = "Text that starts with ORCH: in hook context or 
 /// The preamble of a team specialist, who has no `request_pr`.
 pub const ORCH_PREAMBLE_TEAM: &str = "Text that starts with ORCH: in hook context, hook errors or a delivered message comes from the orchestrator app, on behalf of the user. Follow it. To commit, use the mcp__orch__commit tool: `git commit` cannot write the repository from your sandbox. You cannot push or merge yourself. GitHub is not reachable from your sandbox: read an issue of this project with mcp__orch__read_issue and change it (comment, labels, content, state) with mcp__orch__update_issue.";
 
+/// The Overwatch's: the channel only (it commits nothing).
+pub const OVERWATCH_PREAMBLE: &str = "Text that starts with ORCH: in a delivered message, hook context or hook errors comes from the orchestrator app, on behalf of the user. Follow it.";
+
 /// The orchestrator's MCP server name in `mcp.json` (tools appear as `mcp__orch__<tool>`).
 pub const ORCH_MCP_SERVER: &str = "orch";
 
@@ -95,7 +98,16 @@ pub struct CompileCtx {
     pub session: SessionMode,
     pub env: EnvInputs,
     pub git_identity: (String, String),
+    /// The Overwatch (P4.4): the folders it may read (registered projects'
+    /// checkouts and worktrees, its day folder, its `messages/`), and
+    /// nothing it may write or run. `None` for every other agent.
+    pub overwatch: Option<Vec<PathBuf>>,
 }
+
+/// The tools the Overwatch never has (spec §3.3), denied by name on top of
+/// `dontAsk` (which already refuses anything not allowed).
+pub const OVERWATCH_DENIED_TOOLS: &[&str] =
+    &["Edit", "Write", "NotebookEdit", "Bash", "WebFetch", "WebSearch", "Task", "Agent"];
 
 /// The compiled agent: files to write, then the command to spawn.
 #[derive(Clone, Debug)]
@@ -156,23 +168,12 @@ pub fn main_read_denies(main: &Path, git_common_dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
-    let settings_path = ctx.agent_dir.join("settings.json");
-    let mcp_path = ctx.agent_dir.join("mcp.json");
-    let gitconfig_path = ctx.agent_dir.join("gitconfig");
+/// `(denyRead, allowRead, allowWrite, permissions.deny, permissions.allow)`.
+type Rules = (Vec<String>, Vec<String>, Vec<String>, Vec<String>, Vec<String>);
+
+/// A worktree agent's sandbox and permission rules (ADR-009).
+fn agent_rules(role: &Role, ctx: &CompileCtx, tools: &[String]) -> Rules {
     let home = &ctx.env.home;
-
-    // ---- hooks: every event → orch-hook, 600 s. Hook and status line
-    // commands run through `sh`: the default home has a space in it.
-    let hook = json!([{ "matcher": "*", "hooks": [{
-        "type": "command",
-        "command": sh_quote(&ctx.helpers.hook.display().to_string()),
-        "timeout": HOOK_TIMEOUT_S,
-    }]}]);
-    let hooks: serde_json::Map<String, Value> =
-        HookEvent::REGISTERED.iter().map(|e| (e.as_str().to_string(), hook.clone())).collect();
-
-    // ---- sandbox (Bash only) and permission rules (Read/Edit/Write)
     let mut deny_read: Vec<String> = CREDENTIAL_STORES.iter().map(|(p, _)| format!("~/{p}")).collect();
     deny_read.extend(ctx.main_read_denies.iter().map(|p| p.display().to_string()));
     deny_read.extend(ctx.other_worktrees.iter().map(|p| p.display().to_string()));
@@ -201,8 +202,51 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
     // FR-206: long turns are files in the agent's own `messages/` (outside
     // the worktree): reading them must not prompt. Nothing else of the app root.
     allow.push(format!("Read({}/**)", rule_path(&ctx.agent_dir.join("messages"))));
-    let tools = role.tools();
     allow.extend(tools.iter().map(|t| format!("mcp__{ORCH_MCP_SERVER}__{t}")));
+    (deny_read, allow_read, allow_write, deny, allow)
+}
+
+/// The Overwatch's: it reads `reads` (and nothing else, `dontAsk` refuses
+/// the rest), never a credential store or the app's state, and has no tool
+/// that writes or runs. Read rules cover Glob and Grep too.
+fn overwatch_rules(role: &Role, ctx: &CompileCtx, reads: &[PathBuf], tools: &[String]) -> Rules {
+    let home = &ctx.env.home;
+    let mut deny_read: Vec<String> = CREDENTIAL_STORES.iter().map(|(p, _)| format!("~/{p}")).collect();
+    deny_read.push(ctx.app_root.join("state").display().to_string());
+    let mut deny: Vec<String> = OVERWATCH_DENIED_TOOLS.iter().map(|t| t.to_string()).collect();
+    for (p, is_dir) in CREDENTIAL_STORES {
+        let abs = rule_path(&home.join(p));
+        deny.push(if *is_dir { format!("Read({abs}/**)") } else { format!("Read({abs})") });
+    }
+    deny.push(format!("Read({}/**)", rule_path(&ctx.app_root.join("state"))));
+    deny.push(format!("Edit({}/**)", rule_path(&ctx.app_root)));
+    deny.extend(role.deny_rules.iter().cloned());
+    let mut allow: Vec<String> = reads.iter().map(|p| format!("Read({}/**)", rule_path(p))).collect();
+    allow.extend(tools.iter().map(|t| format!("mcp__{ORCH_MCP_SERVER}__{t}")));
+    (deny_read, vec![], vec![], deny, allow)
+}
+
+pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
+    let settings_path = ctx.agent_dir.join("settings.json");
+    let mcp_path = ctx.agent_dir.join("mcp.json");
+    let gitconfig_path = ctx.agent_dir.join("gitconfig");
+
+    // ---- hooks: every event → orch-hook, 600 s. Hook and status line
+    // commands run through `sh`: the default home has a space in it.
+    let hook = json!([{ "matcher": "*", "hooks": [{
+        "type": "command",
+        "command": sh_quote(&ctx.helpers.hook.display().to_string()),
+        "timeout": HOOK_TIMEOUT_S,
+    }]}]);
+    let hooks: serde_json::Map<String, Value> =
+        HookEvent::REGISTERED.iter().map(|e| (e.as_str().to_string(), hook.clone())).collect();
+
+    // ---- sandbox (Bash only) and permission rules (Read/Edit/Write)
+    let tools = role.tools();
+    let (deny_read, allow_read, allow_write, deny, allow) = match &ctx.overwatch {
+        Some(reads) => overwatch_rules(role, ctx, reads, &tools),
+        None => agent_rules(role, ctx, &tools),
+    };
 
     let settings = json!({
         "hooks": hooks,
@@ -271,7 +315,13 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
     }
     args.push("--permission-mode".into());
     args.push(role.permission_mode.as_flag().into());
-    let preamble = if tools.iter().any(|t| t == "request_pr") { ORCH_PREAMBLE } else { ORCH_PREAMBLE_TEAM };
+    let preamble = if ctx.overwatch.is_some() {
+        OVERWATCH_PREAMBLE
+    } else if tools.iter().any(|t| t == "request_pr") {
+        ORCH_PREAMBLE
+    } else {
+        ORCH_PREAMBLE_TEAM
+    };
     let prompt = match role.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => format!("{preamble}\n\n{p}"),
         None => preamble.to_string(),
@@ -335,6 +385,7 @@ pub(crate) mod tests {
             session,
             env,
             git_identity: ("N".into(), "e@x".into()),
+            overwatch: None,
         }
     }
 

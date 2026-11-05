@@ -248,6 +248,15 @@ pub fn build(i: &Inputs) -> WeeklyReport {
             let a = s.allocation.as_ref()?;
             Some((a.clone(), i.projects.get(a).cloned()?))
         });
+        // The Overwatch (P4.4) is its own row everywhere: one global agent,
+        // the same id every day.
+        if agent == crate::overwatch::ID {
+            for m in [&mut by_project, &mut by_feature, &mut by_role] {
+                add(m, crate::overwatch::ALLOCATION.to_string(), "Overwatch".to_string());
+            }
+            add(&mut by_model, fam.into(), fam.into());
+            continue;
+        }
         let (pk, pl) = project.unwrap_or_else(|| ("unknown".into(), "unknown project".into()));
         add(&mut by_project, pk, pl);
         let (fk, fl) = at.and_then(|a| a.feature.clone()).unwrap_or_else(|| ("solo".into(), "solo sessions".into()));
