@@ -60,6 +60,17 @@ impl Runtime {
             .unwrap_or_default()
     }
 
+    /// The settings with `patch`'s fields over the current ones.
+    pub fn merge_overwatch_settings(&self, patch: &Value) -> Result<Settings> {
+        let mut v = serde_json::to_value(self.overwatch_settings())?;
+        if let (Some(o), Some(p)) = (v.as_object_mut(), patch.as_object()) {
+            for (k, x) in p {
+                o.insert(k.clone(), x.clone());
+            }
+        }
+        serde_json::from_value(v).map_err(|e| anyhow!("overwatch settings: {e}"))
+    }
+
     /// `set_overwatch_settings`: checked, stored, applied. Off kills the
     /// session (user messages are kept for when it is back); on again starts
     /// a fresh one at the next event.

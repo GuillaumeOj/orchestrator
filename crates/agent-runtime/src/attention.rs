@@ -471,6 +471,8 @@ pub mod copy {
     }
     pub const TRUST: &str = "trust dialog in its pane";
     pub const PANE_PROMPT: &str = "a prompt in its pane";
+    /// A permission the Overwatch may still settle (P4.4).
+    pub const OVERWATCH_DECIDING: &str = "the Overwatch is deciding a permission";
     pub fn review(to: &str, task: &str) -> String {
         format!("→ {to} · review of {task}")
     }
@@ -813,8 +815,14 @@ impl<'a> Ctx<'a> {
             _ => None,
         };
         let items = self.items(&a.id);
+        // A permission the Overwatch is still deciding (P4.4, F1) waits on
+        // it, not on the user: not needs-you until handed over.
+        let deciding = |it: &InboxItem| {
+            it.kind == "permission" && crate::overwatch::deciding::deciding_until(&it.payload).is_some()
+        };
         if let Some(it) = items
             .iter()
+            .filter(|it| !deciding(it))
             .filter_map(|it| rank(it).map(|r| (r, *it)))
             .min_by_key(|(r, it)| (*r, it.created_at_ms))
             .map(|(_, it)| it)
@@ -863,6 +871,12 @@ impl<'a> Ctx<'a> {
                     Some(ask.created_ms),
                 )
                 .wait(WaitKind::User, Some(format!("ask-{}", ask.id))),
+            );
+        }
+        if let Some(it) = items.iter().find(|it| deciding(it)) {
+            return Some(
+                Found::new(Level::Waiting, Status::Working, copy::OVERWATCH_DECIDING, Some(it.created_at_ms))
+                    .wait(WaitKind::External, Some(decision_id(&it.kind, it.id))),
             );
         }
         let last = a.last_event_at_ms.or(Some(a.created_at_ms));

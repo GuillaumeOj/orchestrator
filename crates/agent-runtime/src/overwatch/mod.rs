@@ -348,3 +348,53 @@ pub fn percentiles(v: &[u64]) -> Option<(u64, u64)> {
     let at = |p: f64| s[((p * s.len() as f64).ceil() as usize).clamp(1, s.len()) - 1];
     Some((at(0.5), at(0.9)))
 }
+
+fn secs(ms: u64) -> String {
+    format!("{:.1}s", ms as f64 / 1000.0)
+}
+
+/// `orchd overwatch` (api-contract §4): the status, today's session, one
+/// line per turn (`09:12:04 resumed warm events=3 wake=6.2s first_tool=8.1s 41.0s`)
+/// and the p50 / p90 wake (oldest event queued → first tool call).
+pub fn render_report(r: &Value, tz: &jiff::tz::TimeZone) -> String {
+    let st = &r["status"];
+    let mut out = format!("Overwatch: {}", st["status"].as_str().unwrap_or("?"));
+    if let Some(w) = st["why"].as_str() {
+        out.push_str(&format!(" · {w}"));
+    }
+    out.push_str(&format!(" · {} event(s)\n", st["events"].as_u64().unwrap_or(0)));
+    out.push_str(&format!(
+        "day {} · session {}\n",
+        r["day"].as_str().unwrap_or("?"),
+        r["session"].as_str().unwrap_or("none")
+    ));
+    let turns = r["turns"].as_array().cloned().unwrap_or_default();
+    for t in &turns {
+        let n = |k: &str| t[k].as_u64();
+        let started = n("started_at_ms").unwrap_or(0);
+        let mut l = format!(
+            "{} {} {} events={}",
+            hms(started, tz),
+            t["how"].as_str().unwrap_or("?"),
+            if t["cache_warm"].as_bool() == Some(true) { "warm" } else { "cold" },
+            n("events").unwrap_or(0)
+        );
+        match (n("queued_at_ms"), n("first_tool_ms")) {
+            (Some(q), Some(f)) => l.push_str(&format!(" wake={} first_tool={}", secs(f.saturating_sub(q)), secs(f.saturating_sub(started)))),
+            _ => l.push_str(" wake=- first_tool=-"),
+        }
+        if let Some(e) = n("ended_at_ms") {
+            l.push_str(&format!(" {}", secs(e.saturating_sub(started))));
+        }
+        out.push_str(&l);
+        out.push('\n');
+    }
+    if turns.is_empty() {
+        out.push_str("no turn today\n");
+    }
+    match (r["wake_p50_ms"].as_u64(), r["wake_p90_ms"].as_u64()) {
+        (Some(a), Some(b)) => out.push_str(&format!("wake p50 {} · p90 {}\n", secs(a), secs(b))),
+        _ => out.push_str("wake p50 - · p90 -\n"),
+    }
+    out
+}

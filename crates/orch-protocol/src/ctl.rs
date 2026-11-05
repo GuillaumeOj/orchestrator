@@ -231,6 +231,16 @@ pub enum CtlRequest {
         #[serde(default)]
         file: Option<String>,
     },
+    /// `orchd overwatch`: status, today's session and turns, p50 / p90 wake (P4.4).
+    Overwatch,
+    /// `overwatch_restart`: a fresh session with a new briefing.
+    OverwatchRestart,
+    OverwatchSettings,
+    /// `set_overwatch_settings {enabled, model, batch_secs, permission_secs,
+    /// idle_secs, rule_threshold}` (a missing field keeps its value).
+    SetOverwatchSettings {
+        settings: serde_json::Value,
+    },
     /// `policy_files` (api-contract §3.3).
     PolicyFiles,
     PolicyDefaults,
