@@ -22,6 +22,8 @@ pub mod undo;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tools_tests;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

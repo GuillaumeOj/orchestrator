@@ -19,33 +19,33 @@ use crate::runtime::tests::test_runtime;
 const SEC: u64 = 1000;
 
 /// 2026-11-05 10:00 UTC.
-fn t0() -> u64 {
+pub(super) fn t0() -> u64 {
     "2026-11-05T10:00:00Z".parse::<jiff::Timestamp>().unwrap().as_millisecond() as u64
 }
 
-fn at(rt: &Runtime, ms: u64) {
+pub(super) fn at(rt: &Runtime, ms: u64) {
     *rt.now.clock.lock().unwrap() = Some((ms, TimeZone::UTC));
 }
 
 /// A test runtime driven by hand at `t0`.
-fn manual() -> (tempfile::TempDir, Arc<Runtime>) {
+pub(super) fn manual() -> (tempfile::TempDir, Arc<Runtime>) {
     let (d, rt) = test_runtime(true);
     rt.overwatch.manual.store(true, Ordering::SeqCst);
     at(&rt, t0());
     (d, rt)
 }
 
-fn ow_turns(rt: &Runtime) -> Vec<String> {
+pub(super) fn ow_turns(rt: &Runtime) -> Vec<String> {
     rt.store.read(|s| s.turns.iter().filter(|t| t.agent_id == ID).map(|t| t.body.clone()).collect())
 }
 
-fn batched(summary: &str) -> Event {
+pub(super) fn batched(summary: &str) -> Event {
     let mut e = Event::new(Kind::DecisionOpen, summary);
     e.decision = Some("gate-7".into());
     e
 }
 
-fn blocking(summary: &str) -> Event {
+pub(super) fn blocking(summary: &str) -> Event {
     let mut e = Event::new(Kind::Stuck, summary);
     e.agent = Some("a1".into());
     e
@@ -285,7 +285,7 @@ fn settings_refuse_a_window_as_long_as_the_hold() {
 
 /// A held PermissionRequest of `a1` with effect `overwatch` on its own
 /// thread (hold 5 s, permission_secs 1 s); returns the item id and the hook's answer.
-fn held(rt: &Arc<Runtime>, cmd: &str) -> (u64, std::thread::JoinHandle<Option<HookOutput>>) {
+pub(super) fn held(rt: &Arc<Runtime>, cmd: &str) -> (u64, std::thread::JoinHandle<Option<HookOutput>>) {
     rt.db.set_setting(HOLD_SECS_KEY, &json!(5)).unwrap();
     let mut s = rt.overwatch_settings();
     s.permission_secs = 1;
@@ -309,17 +309,17 @@ fn held(rt: &Arc<Runtime>, cmd: &str) -> (u64, std::thread::JoinHandle<Option<Ho
     (rt.store.read(|s| s.inbox.last().unwrap().id), h)
 }
 
-fn payload(rt: &Runtime, id: u64) -> Value {
+pub(super) fn payload(rt: &Runtime, id: u64) -> Value {
     rt.store.read(|s| s.inbox.iter().find(|i| i.id == id).unwrap().payload.clone())
 }
 
-fn card(rt: &Runtime, id: u64) -> crate::decision::Decision {
+pub(super) fn card(rt: &Runtime, id: u64) -> crate::decision::Decision {
     rt.now_pump(true);
     let want = crate::decision::decision_id("permission", id);
     rt.open_decisions().into_iter().find(|d| d.id == want).expect("open card")
 }
 
-fn allowed(out: Option<HookOutput>) -> bool {
+pub(super) fn allowed(out: Option<HookOutput>) -> bool {
     out.is_some_and(|o| o.0.to_string().contains("\"allow\""))
 }
 
