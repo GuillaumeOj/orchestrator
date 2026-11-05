@@ -319,6 +319,27 @@ impl From<CalendarError> for GovernorError {
     }
 }
 
+/// Why [`Governor::set_tier`] refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TierError {
+    /// The entry is not in the queue (it ran, or was cancelled).
+    NotQueued,
+    /// Critical is for the work that is critical from the start.
+    Critical,
+    /// Above its allocation's tier in the weekly plan (the tier it may have).
+    AboveAllocation(Tier),
+}
+
+impl std::fmt::Display for TierError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TierError::NotQueued => f.write_str("the entry is not queued any more"),
+            TierError::Critical => f.write_str("critical is not a tier you can give"),
+            TierError::AboveAllocation(t) => write!(f, "above its allocation's tier ({t:?} at most)"),
+        }
+    }
+}
+
 /// How a sample's cost counts: the user's own work and critical agent work
 /// draw from the reserve, autonomous work from the agents' budget. The host
 /// stores it with each sample so [`Governor::replay`] can rebuild the week's
@@ -2372,6 +2393,24 @@ impl Governor {
         );
         self.refresh_queue(now);
         Some(release_of(&e, service))
+    }
+
+    /// Moves a queued entry to `tier` (the Overwatch's `reprioritize`, P4.4):
+    /// Low, Normal or High, never above its allocation's tier in the plan.
+    /// Only the queue order changes; admission rules stay. Returns the tier
+    /// it had.
+    pub fn set_tier(&mut self, entry: EntryId, tier: Tier, now: Timestamp) -> Result<Tier, TierError> {
+        let idx = self.queue.iter().position(|e| e.id == entry).ok_or(TierError::NotQueued)?;
+        if tier == Tier::Critical {
+            return Err(TierError::Critical);
+        }
+        let max = self.plan.allocation(&self.queue[idx].allocation).map_or(Tier::Normal, |a| a.tier).min(Tier::High);
+        if tier > max {
+            return Err(TierError::AboveAllocation(max));
+        }
+        let from = std::mem::replace(&mut self.queue[idx].tier, tier);
+        self.refresh_queue(now);
+        Ok(from)
     }
 
     /// Drop a queued entry (cancelled by the user). Returns its agent.

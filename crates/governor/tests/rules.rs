@@ -814,6 +814,28 @@ fn pause_all_holds_at_the_next_tool_call_and_undo_resumes() {
 }
 
 #[test]
+fn set_tier_reorders_the_queue_within_the_allocations_tier() {
+    let mut g = governor();
+    g.pause_all(at(0));
+    // B is a Normal allocation, C a Low one, A High.
+    g.request_turn(task("C-1", "C", Tier::Low), at(1));
+    g.request_turn(task("B-1", "B", Tier::Normal), at(2));
+    let c = g.queue().iter().find(|e| e.agent == AgentId::from("C-1")).unwrap().id;
+    let b = g.queue().iter().find(|e| e.agent == AgentId::from("B-1")).unwrap().id;
+    // Never above the allocation's tier, never Critical, only queued entries.
+    assert_eq!(g.set_tier(c, Tier::High, at(3)), Err(TierError::AboveAllocation(Tier::Low)));
+    assert_eq!(g.set_tier(c, Tier::Critical, at(3)), Err(TierError::Critical));
+    assert_eq!(g.set_tier(EntryId(999), Tier::Low, at(3)), Err(TierError::NotQueued));
+    assert_eq!(g.set_tier(b, Tier::High, at(3)), Err(TierError::AboveAllocation(Tier::Normal)));
+    // Down is fine, and the release order follows.
+    assert_eq!(g.set_tier(b, Tier::Low, at(4)), Ok(Tier::Normal));
+    assert_eq!(g.queue().iter().find(|e| e.id == b).unwrap().tier, Tier::Low);
+    assert_eq!(g.release_order(), vec![c, b], "both Low now: first come first");
+    assert_eq!(g.set_tier(b, Tier::Normal, at(5)), Ok(Tier::Low));
+    assert_eq!(g.release_order(), vec![b, c]);
+}
+
+#[test]
 fn run_now_overrides_the_queue() {
     let mut g = governor();
     g.pause_all(at(0));
