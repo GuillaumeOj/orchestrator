@@ -611,7 +611,12 @@ fn git(ctx: &HardCtx, sh: &mut Shell, args: &[String]) -> Option<HardVerdict> {
             let protected = into.as_deref().is_some_and(|b| ctx.protected.iter().any(|p| p == b));
             // Merging in another checkout (`cd` or `-C` out of the worktree):
             // its branch is not ours to know.
-            (protected || sh.outside || elsewhere).then(|| deny(WHY_MERGE_PROTECTED))
+            if protected || sh.outside || elsewhere {
+                return Some(deny(WHY_MERGE_PROTECTED));
+            }
+            // Detached or unreadable: we can't tell it is not a protected one,
+            // so only the user may (neither a rule nor the Overwatch).
+            into.is_none().then(|| user_only(WHY_MERGE_PROTECTED))
         }
         "reset" if has("--hard") || has("--merge") || has("--keep") => Some(user_only(WHY_GIT_DESTRUCTIVE)),
         "clean" if !(has("-n") || has("--dry-run")) => Some(user_only(WHY_GIT_DESTRUCTIVE)),
@@ -986,6 +991,13 @@ mod tests {
         let mut on_main = f.ctx.clone();
         on_main.branch = OnceCell::from(Some("main".to_string()));
         assert_eq!(check(&on_main, "Bash", &json!({"command": "git merge feat"})).unwrap().kind, HardKind::Deny);
+        // A branch that can't be read: the user's call.
+        let mut unknown = f.ctx.clone();
+        unknown.branch = OnceCell::from(None);
+        for c in ["git merge feat", "git pull"] {
+            let v = check(&unknown, "Bash", &json!({"command": c})).unwrap();
+            assert_eq!((v.kind, v.why), (HardKind::UserOnly, WHY_MERGE_PROTECTED), "{c}");
+        }
         // A checkout of a file leaves the branch where it was.
         let c = json!({"command": "git checkout README.md && git merge feat"});
         assert_eq!(check(&on_main, "Bash", &c).unwrap().kind, HardKind::Deny);

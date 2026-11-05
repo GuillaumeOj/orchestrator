@@ -477,3 +477,21 @@ fn a_long_batch_goes_to_messages_which_it_may_read() {
         "not the rest of the app"
     );
 }
+
+#[test]
+fn turning_it_off_and_on_again_clears_down_like_a_restart() {
+    let (_d, rt) = manual();
+    rt.overwatch_enqueue(blocking("x"));
+    rt.overwatch_pump_at(t0());
+    rt.overwatch_down(why::STOPPED);
+    assert_eq!(rt.overwatch_status().status, Status::Down);
+    let mut s = rt.overwatch_settings();
+    s.enabled = false;
+    rt.set_overwatch_settings(s.clone()).unwrap();
+    s.enabled = true;
+    rt.set_overwatch_settings(s).unwrap();
+    let st = rt.overwatch_status();
+    assert_eq!((st.status, st.why), (Status::Asleep, None));
+    // It takes events again, in a fresh session.
+    assert!(rt.overwatch_enqueue(blocking("again")).is_some());
+}

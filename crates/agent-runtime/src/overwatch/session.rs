@@ -142,7 +142,13 @@ impl Runtime {
             self.overwatch_drop_events();
             self.overwatch_hand_over_all();
         } else if !was.enabled && s.enabled {
-            self.ow().fresh = true;
+            // Like Restart: asleep, a fresh session at the next event, no reason left.
+            {
+                let mut st = self.ow();
+                st.down = None;
+                st.long_turns = 0;
+                st.fresh = true;
+            }
             self.overwatch_requeue_pending();
         } else if was.model != s.model && self.store.read(|st| st.agents.contains_key(ID)) && self.live(ID).is_none() {
             // The next session takes it; a live one keeps its model for the day.
