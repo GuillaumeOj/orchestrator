@@ -4,7 +4,7 @@
   // the Overwatch's reply (left, a rule, markdown with its source links, a
   // "↳ re:" reference when the question is not just above, clamped at 12 lines).
   import { now30 } from '../../lib/app.svelte.js';
-    import { clock, dayTime } from '../../lib/format.js';
+  import { clock, dayTime } from '../../lib/format.js';
   import { deliveryText } from '../../lib/overwatch.js';
   import Markdown from '../Markdown.svelte';
 
