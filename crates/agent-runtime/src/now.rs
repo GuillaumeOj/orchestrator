@@ -431,14 +431,13 @@ impl Runtime {
         snap
     }
 
-    /// Before a read of the published world: what changed since the last
-    /// pump (a hand-over on the Overwatch's exit, a decision) is published
-    /// first, so a read never lags the store. Before the first computation
-    /// nothing is cached: computed in full, so the notifier learns what is
-    /// there at start (no burst later).
+    /// Before a read of the published world: what changed since the
+    /// last pump (a hand-over on the Overwatch's exit, a decision) is
+    /// published first, so a read never lags the store. The first one
+    /// computes in full (`now_pump` does), so the notifier learns what is
+    /// there at start.
     fn now_catch_up(&self) {
-        let first = lock(&self.now.state).last.is_none();
-        self.now_pump(first);
+        self.now_pump(false);
     }
 
     /// Recomputes and sends what changed: when a write changed the state,
