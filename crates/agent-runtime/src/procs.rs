@@ -102,9 +102,11 @@ pub struct AgentMatch<'a> {
 /// another group (the user's shell `cd`'d into the worktree) is left alone.
 pub fn find_agent_procs(procs: &[ProcInfo], m: &AgentMatch) -> Vec<Found> {
     let dir = m.agent_dir.display().to_string();
+    // Not the core's own group (see `own_pgid`): killing it would signal the core.
+    let own_pgid = own_pgid();
     procs
         .iter()
-        .filter(|p| !m.exclude.contains(&p.pid) && p.pid > 1)
+        .filter(|p| !m.exclude.contains(&p.pid) && p.pid > 1 && p.pgid != own_pgid)
         .filter_map(|p| {
             let mut how = vec![];
             if m.pgid.is_some_and(|g| g > 1 && g == p.pgid) {
@@ -125,6 +127,22 @@ pub fn find_agent_procs(procs: &[ProcInfo], m: &AgentMatch) -> Vec<Found> {
         .collect()
 }
 
+/// The core's own process group. Its helper children (a `git` run for the worktree views, `ps`)
+/// share it, so killing the group of one of them would signal the core itself.
+fn own_pgid() -> i32 {
+    // SAFETY: getpgrp has no failure mode.
+    unsafe { libc::getpgrp() }
+}
+
+/// The lists minus the caller's own group and pid, which must never be signalled.
+fn without_self(pgids: &[i32], pids: &[i32]) -> (Vec<i32>, Vec<i32>) {
+    let (own_pid, own_pgid) = (std::process::id() as i32, own_pgid());
+    (
+        pgids.iter().copied().filter(|g| *g != own_pgid).collect(),
+        pids.iter().copied().filter(|p| *p != own_pid).collect(),
+    )
+}
+
 pub fn alive(pid: i32) -> bool {
     // SAFETY: kill with signal 0 only checks for existence.
     let r = unsafe { libc::kill(pid, 0) };
@@ -140,6 +158,8 @@ fn group_alive(pgid: i32) -> bool {
 /// SIGTERM to each group and pid, then SIGKILL whatever is left after `grace`.
 pub fn kill_tree(pgids: &[i32], pids: &[i32], grace: Duration) -> Vec<String> {
     let mut log = vec![];
+    // Never the caller's own process or group, whatever the lists say.
+    let (pgids, pids) = without_self(pgids, pids);
     for sig in [libc::SIGTERM, libc::SIGKILL] {
         let name = if sig == libc::SIGTERM { "SIGTERM" } else { "SIGKILL" };
         for &g in pgids.iter().filter(|g| **g > 1) {
@@ -190,6 +210,8 @@ pub fn kill_verified(
     pgids.sort();
     pgids.dedup();
     let pids: Vec<i32> = found.iter().map(|f| f.proc.pid).chain(extra_pids.iter().copied()).collect();
+    // Not waited on either: the caller is always alive, so the settle wait would run to its end.
+    let (pgids, pids) = without_self(&pgids, &pids);
     let log = kill_tree(&pgids, &pids, grace);
     let end = Instant::now() + settle;
     while Instant::now() < end && (pids.iter().any(|p| alive(*p)) || pgids.iter().any(|g| group_alive(*g))) {
@@ -219,6 +241,30 @@ pub(crate) mod tests {
 
     fn p(pid: i32, pgid: i32, tty: &str, cmd: &str, cwd: Option<&str>) -> ProcInfo {
         ProcInfo { pid, ppid: 1, pgid, stat: "S".into(), tty: tty.into(), cmd: cmd.into(), cwd: cwd.map(PathBuf::from) }
+    }
+
+    #[test]
+    fn never_finds_a_process_of_the_cores_own_group() {
+        let own = own_pgid();
+        // A tty-less helper of the core (a git run) with its cwd in the worktree.
+        let procs =
+            vec![p(900, own, "??", "git status", Some("/w/solo/a1")), p(901, 901, "??", "sleep 5", Some("/w/solo/a1"))];
+        let m = AgentMatch {
+            pgid: None,
+            agent_dir: Path::new("/app/agents/a1"),
+            worktree: Path::new("/w/solo/a1"),
+            exclude: &[],
+        };
+        let found: Vec<i32> = find_agent_procs(&procs, &m).iter().map(|f| f.proc.pid).collect();
+        assert_eq!(found, vec![901]);
+    }
+
+    #[test]
+    fn without_self_drops_the_own_group_and_pid_only() {
+        // Pure: nothing is signalled, so a regression fails the test instead of killing the runner.
+        let (own_pid, own_pgid) = (std::process::id() as i32, own_pgid());
+        let (g, p) = without_self(&[own_pgid, 4242], &[own_pid, 4243]);
+        assert_eq!((g, p), (vec![4242], vec![4243]));
     }
 
     #[test]
