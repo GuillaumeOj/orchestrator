@@ -24,6 +24,7 @@ No UI, no Tauri: [`orchd`](../orchd/README.md) drives it from the command line.
 | `permissions` | Rule patterns and evaluation (deny > ask > allow, project/role/agent scopes) | FR-705, FR-708 |
 | `mcp` | orch-mcp tool calls: `commit` and `request_pr`, under the rules, audited | FR-702 gap, ADR-009 |
 | `resources` | Memory-pressure live cap and idle auto-suspend (pure policy + probe) | FR-203, FR-204 |
+| `live_cap` | The base live cap (`governor.live_cap`) and the off-hours cap: read at start, `set_live_caps`, `pacing_settings` | FR-203, FR-816 |
 | `otlp` | Local OTLP/HTTP JSON receiver (`api_request` events → usage samples) | FR-801, NFR-4 |
 | `projects` | Projects and git through the runtime (register, status, diff, cleanup, J11, relocate) | FR-101–111 |
 | `server` | Bus server on the Unix socket + control requests, loops (pump, tick, housekeeping, fetch) | NFR-3 |
@@ -257,7 +258,7 @@ through `orch-tasks` (Local or GitHub Issues, FR-501–503).
 ## Live cap and idle suspend (FR-203, FR-204)
 
 `housekeeping()` (every 5 s): reads macOS memory pressure (`kern.memorystatus_vm_pressure_level`,
-behind `MemoryProbe`); the live cap is `base_cap` when normal, one less on warn (≥ 1), 1 when
+behind `MemoryProbe`); the live cap is the base cap when normal, one less on warn (≥ 1), 1 when
 critical, and recovers when the pressure ends. Idle agents (no queued turn, no background task, not
 attached) are suspended after `idle_suspend` (default 10 min), and while more agents are live than
 the cap, the least recently active idle ones are suspended too. **Working agents are never
@@ -270,6 +271,18 @@ turn may already be admitted): without a slot the turn goes back to the queue
 (`Governor::hold_spawn`, event `spawn_held`). Run now marks the agent so its next spawn may
 exceed the cap (FR-203).
 `note_user_activity(id)` resets the idle clock (pane focus).
+
+The **base cap** (`Runtime::base_cap`) is `RuntimeConfig::base_cap` when set (`orchd serve --cap N`,
+checked against 1–20, not stored), else the setting `governor.live_cap` (1–20; a stored value out
+of range is ignored with a warning), else 3. It also gives the Governor's `LiveCaps::from_base`.
+`set_live_caps(live_cap, off_hours)` (Settings › Pacing policy) checks both values first
+(`live agents {n}: use 1–20`, `off-hours live agents {n}: use 0–20`), stores them (the setting, the
+policy's `off_hours_live_cap`), rebuilds the Governor once through `replan` (accounting, queue,
+pauses and sprints carry over), re-syncs the process slots (work held for a slot starts if the cap
+went up), logs `live_cap_set` / `off_hours_live_cap_set` `{from, to, by: "user"}` and touches the
+`usage` and `planner` topics. An unchanged value is a no-op. Lowering it stops nothing that works:
+idle agents above the cap are suspended by housekeeping with the reason `live_cap` while memory is
+normal (`memory_pressure` only under pressure; the weekly report counts only those).
 
 ## OTLP receiver (FR-801)
 
@@ -284,7 +297,7 @@ compressed bodies get 415.
   change; a `state/state.json` from the JSON stand-in is imported once (`state.json.imported`).
 - Events go to the `events` table (30-day retention) instead of `events.jsonl`.
 - The Governor at start: the active plan if its week is still running (else the default week), the
-  stored policy (live cap from the config), and this week's statusline samples **replayed with the
+  stored policy (live caps from the base cap), and this week's statusline samples **replayed with the
   cost class and allocation they had** (`Governor::replay`), so W, the governed share and the
   calibration survive a restart. Then the **carry-over state** (`Governor::carry`, kv key
   `governor.carry`, stored on every control and tick when it changed) is restored: pauses, limits,

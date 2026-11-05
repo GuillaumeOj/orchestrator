@@ -915,7 +915,7 @@ mod scenarios {
     /// the waiting member starts and gets its message.
     #[test]
     fn f6_a_member_waiting_for_a_slot_gets_one_from_an_idle_colleague() {
-        let (sim, _rd, run, _lead) = team_with_lead(|c| c.base_cap = 1);
+        let (sim, _rd, run, _lead) = team_with_lead(|c| c.base_cap = Some(1));
         crate::team::tests::ok(&sim.rt, LEAD, "create_task", json!({"title": "UI", "node": "front", "body": "ui"}));
         sim.until("front's first turn done", 60, || {
             sim.rt.store.read(|s| {

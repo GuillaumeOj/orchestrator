@@ -164,7 +164,7 @@ fn memory_pressure_lowers_the_live_cap_and_queued_work_waits_for_a_slot() {
     let mem = Arc::new(agent_runtime::resources::FixedMemory::new(PressureLevel::Normal));
     let m2 = mem.clone();
     let core = Core::start("orchmp", move |c| {
-        c.base_cap = 2;
+        c.base_cap = Some(2);
         c.memory = m2;
         c.pressure_filter = agent_runtime::resources::PressureFilter::new(0, 0);
     });
@@ -195,7 +195,7 @@ fn the_memory_cap_is_checked_at_spawn_and_run_now_overrides_it() {
     let mem = Arc::new(agent_runtime::resources::FixedMemory::new(PressureLevel::Normal));
     let m2 = mem.clone();
     let core = Core::start("orchsp", move |c| {
-        c.base_cap = 2;
+        c.base_cap = Some(2);
         c.memory = m2;
         c.pressure_filter = agent_runtime::resources::PressureFilter::new(0, 0);
     });
@@ -380,7 +380,7 @@ fn a_flapping_probe_keeps_the_cap_and_a_pasted_turn_is_not_suspended_until_reque
     let mem = Arc::new(agent_runtime::resources::FixedMemory::new(PressureLevel::Normal));
     let m2 = mem.clone();
     let core = Core::start("orchfl", move |c| {
-        c.base_cap = 2;
+        c.base_cap = Some(2);
         c.memory = m2;
         c.idle_suspend = Some(Duration::from_secs(1));
     });

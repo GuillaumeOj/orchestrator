@@ -223,3 +223,29 @@ export function reportMarkdown(r) {
   ).join('\n');
   return `${head}\n${alloc}\n${tabs}\n\n≈ API $: ${API_TIP}\n`;
 }
+
+// ---------------------------------------------------------------- live cap
+
+/** The caps a base live cap `b` gives (api-contract: `LiveCaps::from_base`, `effective_cap`). */
+export function derivedCaps(b) {
+  return {
+    green: b,
+    amber: Math.ceil(b / 2),
+    red: Math.min(1, b),
+    catch_up: b + 2,
+    memory_normal: Math.max(b, 1),
+    memory_warn: Math.max(b - 1, 1),
+    memory_critical: 1,
+  };
+}
+
+/** Validate a typed value against `min`–`max` (an integer, digits only). Returns the number, or
+ * `{ error }` with the core's text: "live agents 0: use 1–20", "live agents: use 1–20" when empty. */
+export function checkCap(raw, label, min, max) {
+  const s = String(raw ?? '').trim();
+  const range = `use ${min}–${max}`;
+  if (s === '') return { error: `${label}: ${range}` };
+  const n = Number(s);
+  if (!/^-?\d+$/.test(s) || !Number.isSafeInteger(n) || n < min || n > max) return { error: `${label} ${s}: ${range}` };
+  return n;
+}

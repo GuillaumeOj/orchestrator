@@ -8,6 +8,7 @@
   import IntegrationsSettings from '../components/IntegrationsSettings.svelte';
   import Kbd from '../components/Kbd.svelte';
   import McpSettings from '../components/McpSettings.svelte';
+  import PacingSettings from '../components/PacingSettings.svelte';
   import { app, saveLayout } from '../lib/app.svelte.js';
   import { attentionCount } from '../lib/ecosystem.js';
   import { invoke } from '../lib/ipc.js';
@@ -102,6 +103,8 @@
       {#key spec?.server}<McpSettings project={spec?.projectId ?? null} selected={spec?.server ?? null} initial={firstMcp} />{/key}
     {:else if section.id === 'builds'}
       {#key spec?.server}<BuildsSettings selected={spec?.server ?? null} />{/key}
+    {:else if section.id === 'pacing'}
+      <PacingSettings />
     {:else}
       <section class="later">
         <h2>{section.label}</h2>
