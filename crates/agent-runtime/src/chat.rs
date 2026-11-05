@@ -424,7 +424,8 @@ impl Runtime {
                     && c["title"] == d.title.as_str()
             });
             if !same {
-                let mut e = e.clone();
+                // As stored now: an undo may have written its state since this copy.
+                let mut e = self.db.chat_get(e.n).ok().flatten().unwrap_or_else(|| e.clone());
                 self.set_line(&mut e, d, prior.as_ref(), x.now);
                 e.card = Some(card_of(d));
                 if let Some(w) = write(&e, &mut out) {

@@ -93,7 +93,7 @@ impl Runtime {
             let rec = self.store.read(|s| s.agents.get(id).cloned());
             let Some(rec) = rec else { return Some(moved) };
             let task = rec.team.as_ref().and_then(|t| t.task);
-            (self.live(id).is_none() || task != ctx["task"].as_u64()).then_some(moved)
+            (!rec.tracker.state.is_live() || task != ctx["task"].as_u64()).then_some(moved)
         };
         match ctx["kind"].as_str()? {
             "rule" => {

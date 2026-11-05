@@ -29,7 +29,7 @@ const LIMIT_RETRY_MS: u64 = 5 * 60_000;
 
 impl Runtime {
     /// The Overwatch's pass on the 30 s tick (and the wake after it).
-    pub(crate) fn overwatch_tick(&self) {
+    pub fn overwatch_tick(&self) {
         let now = now_ms();
         self.overwatch_lift_limit(now);
         self.overwatch_watchdog(now);

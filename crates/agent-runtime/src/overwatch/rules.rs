@@ -379,9 +379,12 @@ impl Runtime {
                     added_ms: None,
                     note: None,
                 };
+                self.policy_sync();
                 let _w = self.policy.write_lock();
                 crate::policy::file::append_commented_rule(&path, &rule)?;
                 drop(_w);
+                // The file exists now: watched, so the user's edit is seen.
+                self.policy_sync();
                 self.set_payload(n, &[("edited_at_ms", json!(orch_protocol::now_ms()))]);
                 self.touch("inbox");
                 Ok(json!({"ok": true, "open": "editor", "path": path.display().to_string(),

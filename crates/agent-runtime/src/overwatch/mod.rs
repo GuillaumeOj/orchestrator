@@ -21,6 +21,8 @@ pub mod tools;
 pub mod undo;
 
 #[cfg(test)]
+mod learn_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tools_tests;

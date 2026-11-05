@@ -57,8 +57,12 @@ fn decide_permission_settles_within_the_window_and_audits_as_the_overwatch() {
     let (_d, rt) = manual();
     *rt.now.clock.lock().unwrap() = None;
     let n = deciding_item(&rt, "pnpm add zod");
-    let (err, v) = call(&rt, "decide_permission", json!({"decision": format!("inbox-{n}"), "effect": "allow",
-                                                        "reason": "routine install inside the task"}));
+    let (err, v) = call(
+        &rt,
+        "decide_permission",
+        json!({"decision": format!("inbox-{n}"), "effect": "allow",
+                                                        "reason": "routine install inside the task"}),
+    );
     assert!(!err, "{v}");
     assert_eq!(v["line"]["by"], "overwatch");
     let i = item_of(&rt, n);
@@ -73,7 +77,8 @@ fn decide_permission_settles_within_the_window_and_audits_as_the_overwatch() {
     assert_eq!(line["by_detail"], "routine install inside the task");
     assert_eq!(line["undo"]["label"], "Tell the agent");
     // Decided once: a second call is stale.
-    let (err, v) = call(&rt, "decide_permission", json!({"decision": format!("inbox-{n}"), "effect": "deny", "reason": "x"}));
+    let (err, v) =
+        call(&rt, "decide_permission", json!({"decision": format!("inbox-{n}"), "effect": "deny", "reason": "x"}));
     assert!(err);
     assert_eq!(v["code"], "stale");
 }
@@ -84,12 +89,14 @@ fn decide_permission_refuses_what_the_core_keeps_and_hands_it_over() {
     *rt.now.clock.lock().unwrap() = None;
     let n = deciding_item(&rt, "git reset --hard origin/main");
     assert!(payload(&rt, n)["deciding_until_ms"].is_u64());
-    let (err, v) = call(&rt, "decide_permission", json!({"decision": format!("inbox-{n}"), "effect": "allow", "reason": "x"}));
+    let (err, v) =
+        call(&rt, "decide_permission", json!({"decision": format!("inbox-{n}"), "effect": "allow", "reason": "x"}));
     assert!(err);
     assert_eq!(v["code"], "not_allowed", "{v}");
     // Deciding ended at once (F1): it is the user's, and the tool says so.
     assert!(payload(&rt, n).get("deciding_until_ms").is_none());
-    let (_, v) = call(&rt, "decide_permission", json!({"decision": format!("inbox-{n}"), "effect": "allow", "reason": "x"}));
+    let (_, v) =
+        call(&rt, "decide_permission", json!({"decision": format!("inbox-{n}"), "effect": "allow", "reason": "x"}));
     assert_eq!(v["code"], "too_late");
     assert_eq!(item_of(&rt, n).status, orch_store::InboxStatus::Pending);
 }
@@ -99,16 +106,24 @@ fn decide_permission_needs_effect_overwatch_and_a_decision_that_exists() {
     let (_d, rt) = manual();
     *rt.now.clock.lock().unwrap() = None;
     let user = rt
-        .add_item(Some("a1"), "permission", "a1: Bash: make".into(), json!({"tool": "Bash", "tool_input": {"command": "make"}, "effect": "user"}), 30)
+        .add_item(
+            Some("a1"),
+            "permission",
+            "a1: Bash: make".into(),
+            json!({"tool": "Bash", "tool_input": {"command": "make"}, "effect": "user"}),
+            30,
+        )
         .unwrap();
-    let (_, v) = call(&rt, "decide_permission", json!({"decision": format!("inbox-{user}"), "effect": "allow", "reason": "x"}));
+    let (_, v) =
+        call(&rt, "decide_permission", json!({"decision": format!("inbox-{user}"), "effect": "allow", "reason": "x"}));
     assert_eq!(v["code"], "not_allowed", "{v}");
     let (_, v) = call(&rt, "decide_permission", json!({"decision": "inbox-9999", "effect": "allow", "reason": "x"}));
     assert_eq!(v["code"], "stale");
     let (_, v) = call(&rt, "decide_permission", json!({"decision": "q-1", "effect": "allow", "reason": "x"}));
     assert_eq!(v["code"], "bad_request");
     let n = deciding_item(&rt, "pnpm add zod");
-    let (_, v) = call(&rt, "decide_permission", json!({"decision": format!("inbox-{n}"), "effect": "maybe", "reason": "x"}));
+    let (_, v) =
+        call(&rt, "decide_permission", json!({"decision": format!("inbox-{n}"), "effect": "maybe", "reason": "x"}));
     assert_eq!(v["code"], "bad_request");
 }
 
@@ -117,8 +132,12 @@ fn a_held_hook_gets_the_overwatchs_words_when_it_denies() {
     let (_d, rt) = manual();
     *rt.now.clock.lock().unwrap() = None;
     let (id, h) = held(&rt, "pnpm add left-pad");
-    let (err, v) = call(&rt, "decide_permission", json!({"decision": format!("inbox-{id}"), "effect": "deny",
-                                                        "reason": "not in this task's scope"}));
+    let (err, v) = call(
+        &rt,
+        "decide_permission",
+        json!({"decision": format!("inbox-{id}"), "effect": "deny",
+                                                        "reason": "not in this task's scope"}),
+    );
     assert!(!err, "{v}");
     let out = h.join().unwrap().expect("a hook answer").0.to_string();
     assert!(out.contains("deny") && out.contains("the Overwatch denied this: not in this task's scope"), "{out}");
@@ -198,16 +217,27 @@ fn answer_question_needs_a_source_the_core_can_check() {
 fn a_multi_question_decision_needs_an_answer_per_question() {
     let (_d, rt) = manual();
     docs(&rt);
-    let q = question(&rt, Some(json!([{"question": "Pagination?", "options": ["cursor", "offset"]}, {"question": "Format?"}])));
+    let q = question(
+        &rt,
+        Some(json!([{"question": "Pagination?", "options": ["cursor", "offset"]}, {"question": "Format?"}])),
+    );
     let id = format!("q-{q}");
     let src = json!(["docs/api.md"]);
     let (_, v) = call(&rt, "answer_question", json!({"decision": id, "answers": [{"text": "cursor"}], "sources": src}));
     assert_eq!(v["code"], "bad_request", "{v}");
-    let (_, v) = call(&rt, "answer_question", json!({"decision": id, "sources": src,
-        "answers": [{"question_index": 0, "text": "cursor"}, {"question_index": 0, "text": "again"}]}));
+    let (_, v) = call(
+        &rt,
+        "answer_question",
+        json!({"decision": id, "sources": src,
+        "answers": [{"question_index": 0, "text": "cursor"}, {"question_index": 0, "text": "again"}]}),
+    );
     assert_eq!(v["code"], "bad_request", "twice the same question: {v}");
-    let (err, v) = call(&rt, "answer_question", json!({"decision": id, "sources": src,
-        "answers": [{"question_index": 1, "text": "json"}, {"question_index": 0, "text": "cursor"}]}));
+    let (err, v) = call(
+        &rt,
+        "answer_question",
+        json!({"decision": id, "sources": src,
+        "answers": [{"question_index": 1, "text": "json"}, {"question_index": 0, "text": "cursor"}]}),
+    );
     assert!(!err, "{v}");
     let t = texts(&rt).pop().unwrap();
     assert!(t.contains("Answer: 1. cursor\n2. json"), "{t}");
@@ -222,12 +252,19 @@ fn a_chat_source_is_a_question_or_gate_the_user_answered() {
     rt.decide(old, InboxDecision::Reply, None, Some("cursor, always")).unwrap();
     let entries = settle(&rt);
     let answered = entries.iter().find(|e| e.decision.as_deref() == Some(&format!("q-{old}"))).unwrap().id();
-    let other = rt.db.chat_day(&rt.overwatch_today().1).unwrap().into_iter().find(|e| e.kind == "morning").map(|e| e.id());
+    let other =
+        rt.db.chat_day(&rt.overwatch_today().1).unwrap().into_iter().find(|e| e.kind == "morning").map(|e| e.id());
     let q = question(&rt, None);
     let ask = |src: String| {
-        call(&rt, "answer_question", json!({"decision": format!("q-{q}"), "answers": [{"text": "cursor"}], "sources": [src]}))
+        call(
+            &rt,
+            "answer_question",
+            json!({"decision": format!("q-{q}"), "answers": [{"text": "cursor"}], "sources": [src]}),
+        )
     };
-    for bad in [format!("chat:{}", other.unwrap_or("c-999".into())), "chat:c-999".to_string(), "chat:nonsense".to_string()] {
+    for bad in
+        [format!("chat:{}", other.unwrap_or("c-999".into())), "chat:c-999".to_string(), "chat:nonsense".to_string()]
+    {
         let (err, v) = ask(bad.clone());
         assert!(err && v["code"] == "ungrounded", "{bad}: {v}");
     }
@@ -245,13 +282,20 @@ fn annotate_lives_on_the_card_one_per_decision_and_hands_a_permission_over() {
     let n = deciding_item(&rt, "pnpm add zod");
     let id = format!("inbox-{n}");
     rt.now_pump(true);
-    let (err, v) = call(&rt, "annotate", json!({"decision": id, "note": "Not in the allow list; allow it for this project.",
-                                                "recommend": "always", "sources": ["chat:c-7"]}));
+    let (err, v) = call(
+        &rt,
+        "annotate",
+        json!({"decision": id, "note": "Not in the allow list; allow it for this project.",
+                                                "recommend": "always", "sources": ["chat:c-7"]}),
+    );
     assert!(!err, "{v}");
     // On the card, with its recommendation; the permission is the user's now.
     let d = card(&rt, n);
     let a = d.annotation.clone().expect("annotated");
-    assert_eq!((a["note"].as_str(), a["recommend"].as_str()), (Some("Not in the allow list; allow it for this project."), Some("always")));
+    assert_eq!(
+        (a["note"].as_str(), a["recommend"].as_str()),
+        (Some("Not in the allow list; allow it for this project."), Some("always"))
+    );
     assert_eq!(a["sources"], json!(["chat:c-7"]));
     assert_eq!((d.waits_on, d.deciding_until_ms), ("user", None));
     // A later call replaces it.
@@ -279,17 +323,32 @@ fn card(rt: &Runtime, n: u64) -> crate::decision::Decision {
 fn a_gate_can_only_be_annotated() {
     let (_d, rt) = manual();
     let g = rt
-        .add_item(Some("a1"), "gate", "a1: spec".into(), json!({"action": "spec", "feature": "checkout", "summary": "The spec"}), 20)
+        .add_item(
+            Some("a1"),
+            "gate",
+            "a1: spec".into(),
+            json!({"action": "spec", "feature": "checkout", "summary": "The spec"}),
+            20,
+        )
         .unwrap();
-    let (err, v) = call(&rt, "annotate", json!({"decision": format!("gate-{g}"), "note": "Scope looks right.", "recommend": "approve"}));
+    let (err, v) = call(
+        &rt,
+        "annotate",
+        json!({"decision": format!("gate-{g}"), "note": "Scope looks right.", "recommend": "approve"}),
+    );
     assert!(!err, "{v}");
     rt.now_pump(true);
     let d = rt.open_decisions().into_iter().find(|d| d.id == format!("gate-{g}")).unwrap();
     assert_eq!(d.annotation.unwrap()["recommend"], "approve");
     // None of the decide tools reach it.
-    let (_, v) = call(&rt, "decide_permission", json!({"decision": format!("gate-{g}"), "effect": "allow", "reason": "x"}));
+    let (_, v) =
+        call(&rt, "decide_permission", json!({"decision": format!("gate-{g}"), "effect": "allow", "reason": "x"}));
     assert_eq!(v["code"], "bad_request");
-    let (_, v) = call(&rt, "answer_question", json!({"decision": format!("gate-{g}"), "answers": [{"text": "x"}], "sources": ["a"]}));
+    let (_, v) = call(
+        &rt,
+        "answer_question",
+        json!({"decision": format!("gate-{g}"), "answers": [{"text": "x"}], "sources": ["a"]}),
+    );
     assert_eq!(v["code"], "bad_request");
     assert!(item_of(&rt, g).open());
 }
@@ -323,8 +382,10 @@ fn reprioritize_moves_a_queued_entry_within_its_allocation_and_can_be_restored()
     // The action is a line of its own, with "Restore tier".
     let entry = settle(&rt).into_iter().find(|x| x.kind == "action").expect("an action entry");
     let line = entry.line.clone().unwrap();
-    assert_eq!((line["verb"].as_str(), line["by"].as_str(), line["undo"]["label"].as_str()),
-               (Some("reprioritized"), Some("overwatch"), Some("Restore tier")));
+    assert_eq!(
+        (line["verb"].as_str(), line["by"].as_str(), line["undo"]["label"].as_str()),
+        (Some("reprioritized"), Some("overwatch"), Some("Restore tier"))
+    );
     assert_eq!(line["by_detail"], "can wait for the build");
     let r = rt.chat_undo(&entry.id(), None).unwrap();
     assert_eq!(r["ok"], true, "{r}");
@@ -356,7 +417,14 @@ fn nudge_resume_and_restart_fresh_are_audited_and_posted_as_actions() {
         assert!(err, "{tool} {agent}: {v}");
     }
     // Every acting call is audited and a line.
-    let audit: Vec<String> = rt.db.audit_log(Some("a1"), 20).unwrap().into_iter().filter(|a| a.actor == "overwatch").map(|a| a.action).collect();
+    let audit: Vec<String> = rt
+        .db
+        .audit_log(Some("a1"), 20)
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.actor == "overwatch")
+        .map(|a| a.action)
+        .collect();
     assert!(audit.contains(&"nudge".to_string()) && audit.contains(&"resume_agent".to_string()), "{audit:?}");
     let verbs: Vec<String> = settle(&rt)
         .into_iter()
@@ -374,11 +442,11 @@ fn the_leads_nudge_and_resume_use_the_same_handlers() {
     let (text, data) = rt.nudge_agent("a1", "your lead", "go on").unwrap();
     assert!(text.starts_with("Told a1") && data["turn"].is_string());
     assert_eq!(texts(&rt), ["ORCH: from your lead: go on"]);
-    let (_, _, how) = rt.resume_member("a1", "your lead", "idle").unwrap();
+    let (_, _, how) = rt.resume_member("a1", "lead", "your lead", "idle").unwrap();
     assert_eq!(how, "resumed");
     assert!(texts(&rt).last().unwrap().starts_with("ORCH: you were resumed by your lead."));
     rt.pause_all();
-    assert_eq!(rt.resume_member("a1", "the Overwatch", "idle").unwrap().2, "queued", "Pause all holds it");
+    assert_eq!(rt.resume_member("a1", "overwatch", "the Overwatch", "idle").unwrap().2, "queued", "Pause all holds it");
 }
 
 #[test]
@@ -389,14 +457,17 @@ fn post_writes_a_text_entry_answering_the_message_of_its_turn() {
     // A user message wakes it; its post answers that entry.
     let sent = rt.chat_send("why is checkout slow today?", None).unwrap();
     rt.overwatch_pump_at(t0() + 1);
-    let (err, v) = call(&rt, "post", json!({"text": "**Checkout** waits on the build queue: see [agent:back-1](agent:back-1)."}));
+    let (err, v) =
+        call(&rt, "post", json!({"text": "**Checkout** waits on the build queue: see [agent:back-1](agent:back-1)."}));
     assert!(!err, "{v}");
     let e = rt.db.chat_get(v["entry"].as_str().unwrap().trim_start_matches("c-").parse().unwrap()).unwrap().unwrap();
     assert_eq!((e.author.as_str(), e.kind.as_str()), ("overwatch", "text"));
     assert_eq!(json!(e)["reply_to"], sent.id());
     // The entry is pushed with the next `now`.
     let snap = rt.now_snapshot();
-    assert!(snap["chat"]["entries"].as_array().unwrap().iter().any(|x| x["id"] == e.id() && x["author"] == "overwatch"));
+    assert!(
+        snap["chat"]["entries"].as_array().unwrap().iter().any(|x| x["id"] == e.id() && x["author"] == "overwatch")
+    );
 }
 
 // ------------------------------------------------------------ chat_send
@@ -473,7 +544,13 @@ fn world_and_inspect_have_the_contracts_shapes() {
     for k in ["agents", "runs", "counts", "decisions", "queue", "governor", "overwatch"] {
         assert!(w.get(k).is_some(), "{k} in {w}");
     }
-    assert!(w["decisions"].as_array().unwrap().iter().any(|d| d["id"] == format!("inbox-{n}") && d.get("payload").is_none()));
+    assert!(
+        w["decisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["id"] == format!("inbox-{n}") && d.get("payload").is_none())
+    );
     assert_eq!(w["queue"][0]["agent"], "a1");
     for k in ["week_pct", "plan_pct", "reserve_left_pct", "last_actions"] {
         assert!(w["governor"].get(k).is_some(), "{k}");
@@ -511,7 +588,12 @@ fn other_agents_cannot_call_the_overwatch_tools() {
     let (_d, rt) = manual();
     for t in orch_team::compile::OVERWATCH_TOOLS.iter().filter(|t| !["nudge", "resume_agent"].contains(t)) {
         let (is_err, text, _) = rt.on_mcp(
-            &orch_protocol::McpMsg { agent_id: "a1".into(), tool: (*t).into(), arguments: json!({}), deadline_ms: 1000 },
+            &orch_protocol::McpMsg {
+                agent_id: "a1".into(),
+                tool: (*t).into(),
+                arguments: json!({}),
+                deadline_ms: 1000,
+            },
             None,
         );
         assert!(is_err && text.contains("not one of your tools"), "{t}: {text}");

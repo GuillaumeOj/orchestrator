@@ -52,6 +52,11 @@ impl Overwatch {
         d.push((agent.into(), tool.into(), input, until_ms));
     }
 
+    #[cfg(test)]
+    pub(crate) fn denies_empty(&self) -> bool {
+        self.denies.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
+    }
+
     /// Consumes a matching one-shot deny.
     pub(crate) fn take_deny(&self, agent: &str, tool: &str, input: &Value) -> bool {
         let mut d = self.denies.lock().unwrap_or_else(|e| e.into_inner());
