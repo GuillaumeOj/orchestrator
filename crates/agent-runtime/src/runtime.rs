@@ -543,7 +543,7 @@ impl Runtime {
         self.gov.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub(crate) fn live_get(&self, id: &str) -> Option<Arc<Live>> {
+    fn live_get(&self, id: &str) -> Option<Arc<Live>> {
         self.live.lock().unwrap_or_else(|e| e.into_inner()).get(id).cloned()
     }
 

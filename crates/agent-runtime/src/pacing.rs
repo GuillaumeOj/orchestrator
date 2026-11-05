@@ -430,8 +430,10 @@ mod tests {
         let t0 = std::time::Instant::now();
         assert!(rt.task_boundary(&rec(&rt, "a1")), "waits for the switch");
         assert!(t0.elapsed() < std::time::Duration::from_secs(1), "§3.6: the pump never waits for the suspend");
-        // Asked once: the suspend is quick now, so this may see the process gone.
-        rt.task_boundary(&rec(&rt, "a1"));
+        // Asked once: still waiting, unless the quick suspend has already ended
+        // the process (it never comes back, so "gone" after a false is certain).
+        let waiting = rt.task_boundary(&rec(&rt, "a1"));
+        assert!(waiting || rt.live("a1").is_none(), "still waiting, asked once");
         assert_eq!(switches(&rt), vec![json!({"from": "sonnet", "to": "opus", "why": "task"})]);
         // The suspend runs off the pump: wait for it.
         let stopped = || {
@@ -443,7 +445,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert!(stopped());
-        assert!(rt.live_get("a1").is_none(), "the stop ended the process");
+        assert!(rt.live("a1").is_none(), "the stop ended the process");
 
         // The process resumed with opus for task 1 (a spawn clears the stop
         // intent); the next task has no model.
