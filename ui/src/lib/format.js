@@ -49,6 +49,8 @@ export function size(bytes) {
   return `${Math.max(1, Math.round(bytes / KIB))} KB`;
 }
 
+/** `no_ack` → `no ack`. */
+export const spaced = (s) => String(s).replace(/_/g, ' ');
 /** "1 file", "3 files". */
 export const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 

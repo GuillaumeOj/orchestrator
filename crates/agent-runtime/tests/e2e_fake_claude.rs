@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use agent_runtime::paths::AppPaths;
 use agent_runtime::resources::PressureLevel;
@@ -17,18 +17,7 @@ use orch_protocol::{AgentSpec, CtlRequest, bus};
 use serde_json::Value;
 
 mod common;
-use common::{Screens, agent, git, helper_bins, short_tempdir};
-
-fn wait_for(what: &str, secs: u64, mut f: impl FnMut() -> bool) {
-    let end = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < end {
-        if f() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    panic!("timed out waiting for {what}");
-}
+use common::{Core, Screens, agent, git, helper_bins, short_tempdir, wait_for};
 
 #[test]
 fn start_deliver_suspend_resume_kill_with_fake_claude() {
@@ -170,68 +159,6 @@ fn hook_with_core_down_denies_tools_and_spools() {
     assert_eq!(spool.lines().count(), 2);
 }
 
-/// A core on a fake claude with its own config tweaks; returns what tests need.
-struct Core {
-    _root: tempfile::TempDir,
-    rt: Arc<Runtime>,
-    sock: PathBuf,
-    repo: PathBuf,
-    stop: Arc<AtomicBool>,
-    srv: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Core {
-    fn start(prefix: &str, tweak: impl FnOnce(&mut RuntimeConfig)) -> Core {
-        let root = short_tempdir(prefix);
-        let paths = AppPaths::new(root.path().join("app"));
-        agent_runtime::preflight::install_helpers(&helper_bins(), &paths.bin_dir()).unwrap();
-        let fake = root.path().join("fake-claude");
-        std::fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake_claude.sh"), &fake).unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let repo = root.path().join("proj/demo");
-        std::fs::create_dir_all(&repo).unwrap();
-        git(&repo, &["init", "-q", "-b", "main"]);
-        git(&repo, &["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "init"]);
-        let mut cfg = RuntimeConfig::new(paths.clone());
-        cfg.claude = fake;
-        cfg.default_plan = test_plan;
-        cfg.projects_root = root.path().join("projects");
-        cfg.hold = Duration::from_secs(1);
-        cfg.idle_suspend = None;
-        tweak(&mut cfg);
-        let rt = Runtime::new(cfg).unwrap();
-        let listener = bus::bind_listener(&paths.socket()).unwrap();
-        let stop = Arc::new(AtomicBool::new(false));
-        let srv = {
-            let (rt, stop) = (rt.clone(), stop.clone());
-            std::thread::spawn(move || server::serve(rt, listener, stop).unwrap())
-        };
-        Core { _root: root, rt, sock: paths.socket(), repo, stop, srv: Some(srv) }
-    }
-
-    fn start_agent(&self, id: &str) {
-        let spec = AgentSpec { agent_id: id.into(), repo: self.repo.display().to_string(), ..Default::default() };
-        let r = request(&self.sock, CtlRequest::Start { spec: Box::new(spec) }).unwrap();
-        assert!(r.ok, "{r:?}");
-        request(&self.sock, CtlRequest::Deliver { agent_id: id.into(), text: "hello".into() }).unwrap();
-        wait_for("first turn", 15, || agent(&self.sock, id)["turns"] == 1 && agent(&self.sock, id)["state"] == "idle");
-    }
-
-    fn state_of(&self, id: &str) -> String {
-        agent(&self.sock, id)["state"].as_str().unwrap_or("").to_string()
-    }
-}
-
-impl Drop for Core {
-    fn drop(&mut self) {
-        let _ = request(&self.sock, CtlRequest::Shutdown);
-        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(h) = self.srv.take() {
-            let _ = h.join();
-        }
-    }
-}
-
 #[test]
 fn memory_pressure_lowers_the_live_cap_and_queued_work_waits_for_a_slot() {
     let mem = Arc::new(agent_runtime::resources::FixedMemory::new(PressureLevel::Normal));
@@ -357,7 +284,8 @@ fn an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry() {
     // The pasted retry shows (and the agent reads idle) before its turn
     // submits: wait for the retried call's own permission answer.
     wait_for("retry answered", 30, || audit().len() >= 4);
-    assert!(core.rt.inbox().is_empty(), "no second prompt");
+    let open: Vec<_> = core.rt.inbox().into_iter().map(|i| (i.kind, i.status, i.body, i.payload)).collect();
+    assert!(open.is_empty(), "no second prompt: {open:?}");
     // The rule, the expiry, the user's Allow, and the retry on their one-shot allow.
     assert_eq!(audit(), [format!("rule:{}", rule.id), "expired".into(), "user".into(), "user".into()]);
     let one_shot = request(&core.sock, CtlRequest::Audit { agent_id: Some("a".into()), limit: Some(1) }).unwrap().data;
@@ -403,10 +331,25 @@ fn starts_that_never_happen_reach_the_inbox_or_restart_fresh_once() {
     assert!(request(&core.sock, CtlRequest::Suspend { agent_id: "a".into() }).unwrap().ok);
     wait_for("suspended", 10, || core.state_of("a") == "suspended");
     std::fs::write(wt.join(".fake-resume-dies"), "").unwrap();
+    // No transcript: the fake keeps one where the core looks (beside the socket).
+    let no_transcript = |sid: &str| {
+        let t = core.sock.parent().unwrap().join(format!("fake-projects/-fake/{sid}.jsonl"));
+        std::fs::remove_file(&t).unwrap_or_else(|e| panic!("{}: {e}", t.display()));
+    };
+    no_transcript(&sid);
     request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "after the resume".into() }).unwrap();
-    wait_for("fresh session did the turn", 30, || {
-        agent(&core.sock, "a")["turns"].as_u64() == Some(2) && core.state_of("a") == "idle"
-    });
+    let did_turn = || agent(&core.sock, "a")["turns"].as_u64() == Some(2) && core.state_of("a") == "idle";
+    let end = std::time::Instant::now() + Duration::from_secs(30);
+    while !did_turn() && std::time::Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if !did_turn() {
+        core.rt.db.flush().unwrap();
+        let ev: Vec<_> =
+            core.rt.db.events(0, Some("a"), None, 60).unwrap().into_iter().map(|e| (e.kind, e.detail)).collect();
+        let turns = request(&core.sock, CtlRequest::State).unwrap().data["turns"].clone();
+        panic!("fresh session did the turn: {} turns: {turns} events: {ev:?}", agent(&core.sock, "a"));
+    }
     assert_ne!(agent(&core.sock, "a")["session_id"].as_str().unwrap(), sid);
     core.rt.db.flush().unwrap();
     let fresh = core.rt.db.events(0, Some("a"), Some("restarted_fresh"), 5).unwrap();
@@ -418,6 +361,7 @@ fn starts_that_never_happen_reach_the_inbox_or_restart_fresh_once() {
     std::fs::write(wt.join(".fake-start-dies"), "").unwrap();
     assert!(request(&core.sock, CtlRequest::Suspend { agent_id: "a".into() }).unwrap().ok);
     wait_for("suspended again", 10, || core.state_of("a") == "suspended");
+    no_transcript(agent(&core.sock, "a")["session_id"].as_str().unwrap());
     let before = spawns("a");
     request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "again".into() }).unwrap();
     wait_for("failed start item", 30, || startup().is_some_and(|i| i.payload.get("failed").is_some()));
@@ -432,7 +376,7 @@ fn starts_that_never_happen_reach_the_inbox_or_restart_fresh_once() {
 /// FR-203 (acceptance 5): a probe flapping warn↔normal leaves the cap alone,
 /// and an agent with a pasted, not started turn is never suspended.
 #[test]
-fn a_flapping_probe_keeps_the_cap_and_a_pasted_turn_is_never_suspended() {
+fn a_flapping_probe_keeps_the_cap_and_a_pasted_turn_is_not_suspended_until_requeued_or_failed() {
     let mem = Arc::new(agent_runtime::resources::FixedMemory::new(PressureLevel::Normal));
     let m2 = mem.clone();
     let core = Core::start("orchfl", move |c| {
@@ -454,6 +398,9 @@ fn a_flapping_probe_keeps_the_cap_and_a_pasted_turn_is_never_suspended() {
                 agent_runtime::store::Admission::Admitted,
             );
             t.status = agent_runtime::store::TurnStatus::Delivering;
+            t.delivered_at_ms = Some(orch_protocol::now_ms());
+            // Its last attempt: the watchdog fails it rather than paste it again.
+            t.attempts = 2;
             s.turns.push(t);
         })
         .unwrap();
@@ -463,6 +410,16 @@ fn a_flapping_probe_keeps_the_cap_and_a_pasted_turn_is_never_suspended() {
         assert_eq!(core.rt.live_cap(), 2, "the cap holds while the probe flaps");
     }
     assert_ne!(core.state_of("a"), "suspended");
+    // fix-team-getting-stucked §3.1: the paste watchdog ends the paste (no
+    // ack within `delivery.ack_secs`), and the agent is suspendable again.
+    core.rt.db.set_setting(agent_runtime::handover::ACK_KEY, &serde_json::json!(1)).unwrap();
+    let failed = || {
+        core.rt
+            .store
+            .read(|s| s.turns.iter().any(|t| t.agent_id == "a" && t.status == agent_runtime::store::TurnStatus::Failed))
+    };
+    wait_for("the watchdog to fail the paste", 20, failed);
+    wait_for("an idle suspend once nothing is pasted", 20, || core.state_of("a") == "suspended");
 }
 
 /// FR-1311 (acceptance 7): typing into a waiting agent's pane records one

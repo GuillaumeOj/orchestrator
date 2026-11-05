@@ -318,3 +318,26 @@ fn every_kind_serializes_with_subject_blocks_and_lifecycle() {
         assert!(v.get("agent").is_none(), "routing only");
     }
 }
+
+#[test]
+fn a_delivery_decision_names_the_cause_and_offers_retry() {
+    let mut f = Fx::default();
+    f.member("back-1", "back");
+    f.item(
+        Some("back-1"),
+        "delivery",
+        "back-1 did not receive 2 message(s)",
+        json!({"waiting_on": "delivery", "agent": "back-1", "blocker": "no_ack", "since_ms": 5, "episode": "delivery",
+               "messages": [{"id": 41, "from": "lead", "kind": "message", "preview": "go on", "attempts": 3}],
+               "tail": "a\nb\n"}),
+    );
+    let d = f.one("delivery-1");
+    assert_eq!((d.kind, d.level, d.title.as_str()), ("delivery", 2, "back-1 did not receive 2 message(s)"));
+    assert_eq!(d.summary, "paste not acknowledged");
+    let ids: Vec<&str> = d.actions.iter().map(|a| a.id).collect();
+    assert_eq!(ids, ["open", "retry", "restart_fresh", "dismiss"]);
+    let types: Vec<&str> = d.context.iter().filter_map(|c| c["type"].as_str()).collect();
+    assert_eq!(types, ["error", "markdown", "pty_tail"]);
+    assert!(d.context[1]["text"].as_str().unwrap().contains("go on (3 tries)"));
+    assert!(d.is_open() && d.counts());
+}

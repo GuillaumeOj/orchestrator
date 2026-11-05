@@ -559,6 +559,19 @@ CREATE INDEX chat_entries_decision ON chat_entries(decision) WHERE decision IS N
 CREATE INDEX chat_entries_open ON chat_entries(kind)
   WHERE kind = 'decision' AND line IS NULL AND continued_to IS NULL;
 "#,
+    // 14: a message's delivery lifecycle (fix-team-getting-stucked §2):
+    // queued → handed (pasted or injected) → seen (`delivered_at_ms`, the CLI
+    // acknowledged it) → read, or failed. Rows delivered before were handed then.
+    r#"
+ALTER TABLE messages ADD COLUMN handed_at_ms INTEGER;
+ALTER TABLE messages ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE messages ADD COLUMN via TEXT;
+ALTER TABLE messages ADD COLUMN turn_id TEXT;
+ALTER TABLE messages ADD COLUMN failed_at_ms INTEGER;
+ALTER TABLE messages ADD COLUMN last_error TEXT;
+UPDATE messages SET handed_at_ms = delivered_at_ms WHERE delivered_at_ms IS NOT NULL;
+CREATE INDEX messages_agent_via ON messages(to_agent, via, read_at_ms);
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {
@@ -655,6 +668,30 @@ mod tests {
         );
         assert_eq!(crate::InboxStatus::parse("parked"), crate::InboxStatus::Parked);
         assert_eq!(crate::InboxStatus::Parked.as_str(), "parked");
+    }
+
+    #[test]
+    fn migration_13_backfills_handed_from_delivered() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("m.db");
+        {
+            let mut c = Connection::open(&p).unwrap();
+            for sql in &MIGRATIONS[..12] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.pragma_update(None, "user_version", 12).unwrap();
+            c.execute_batch(
+                "INSERT INTO messages(id, team_run_id, from_node, to_node, kind, body, created_at_ms, delivered_at_ms, read_at_ms)
+                   VALUES (1, 'r', 'a', 'b', 'message', 'x', 1, 5, NULL), (2, 'r', 'a', 'b', 'message', 'y', 1, NULL, NULL);",
+            )
+            .unwrap();
+            migrate(&mut c).unwrap();
+        }
+        let s = crate::Store::open(&p).unwrap();
+        let m = s.messages("r", None, false).unwrap();
+        assert_eq!((m[0].handed_at_ms, m[0].attempts, m[0].via.clone()), (Some(5), 0, None));
+        assert_eq!(m[0].delivery_state(), crate::DeliveryState::Seen);
+        assert_eq!((m[1].handed_at_ms, m[1].delivery_state()), (None, crate::DeliveryState::Queued));
     }
 
     #[test]

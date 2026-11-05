@@ -86,12 +86,22 @@ pub enum WaitKind {
     Limit,
     Startup,
     External,
+    /// A `delivery` decision is open (fix-team-getting-stucked, §4).
+    Delivery,
 }
 
 impl WaitKind {
     /// A wait on something outside the run (a run's `blocker`).
     pub fn external_to_run(self) -> bool {
-        matches!(self, WaitKind::User | WaitKind::Governor | WaitKind::Limit | WaitKind::Startup | WaitKind::External)
+        matches!(
+            self,
+            WaitKind::User
+                | WaitKind::Governor
+                | WaitKind::Limit
+                | WaitKind::Startup
+                | WaitKind::External
+                | WaitKind::Delivery
+        )
     }
 
     pub fn as_str(self) -> &'static str {
@@ -103,6 +113,7 @@ impl WaitKind {
             WaitKind::Limit => "limit",
             WaitKind::Startup => "startup",
             WaitKind::External => "external",
+            WaitKind::Delivery => "delivery",
         }
     }
 }
@@ -146,6 +157,22 @@ pub struct AgentAttention {
     /// The Governor's queue entry, for status `queued` and `not_started`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue: Option<QueueInfo>,
+    /// Messages that waited more than [`UNDELIVERED_AFTER_MS`] without
+    /// reaching the model (api-contract §4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undelivered: Option<Undelivered>,
+}
+
+/// A message that waits this long (unseen) shows on its agent's record.
+pub const UNDELIVERED_AFTER_MS: u64 = 60 * 1000;
+
+/// Messages waiting for an agent, and why (api-contract §4).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Undelivered {
+    pub count: u32,
+    pub oldest_ms: u64,
+    /// One of the blocker vocabulary ([`crate::blocker`]).
+    pub blocker: String,
 }
 
 /// An agent's place in the Governor's queue (P4.2 api-contract §1.2).
@@ -391,6 +418,10 @@ pub struct Inputs<'a> {
     pub tz: &'a TimeZone,
     /// The decisions now ([`crate::decision::build`]): `counts.decisions`.
     pub decisions: &'a [crate::decision::Decision],
+    /// Agents with a paste in flight the CLI has not acknowledged.
+    pub unacked: &'a BTreeSet<String>,
+    /// Agents whose pane the user is typing in.
+    pub typing: &'a BTreeSet<String>,
 }
 
 pub use crate::decision::decision_id;
@@ -398,7 +429,7 @@ pub use crate::decision::decision_id;
 /// An open item that puts its agent in error (spec rule 1, D3).
 fn error_item(i: &InboxItem) -> bool {
     match i.kind.as_str() {
-        "startup" => true,
+        "startup" | "delivery" => true,
         "alert" => {
             matches!(i.payload.get("alert").and_then(Value::as_str), Some("api_error" | "spawn_failed"))
                 || i.payload.get("action").and_then(Value::as_str) == Some("watchdog")
@@ -489,6 +520,16 @@ pub mod copy {
         match status {
             Some(n) => format!("{mode} start exited (status {n})"),
             None => format!("{mode} start exited"),
+        }
+    }
+    pub const KEEPS_CRASHING: &str = "keeps crashing";
+    /// A `delivery` decision's reason: what did not arrive and why.
+    pub fn delivery(messages: usize, blocker: &str) -> String {
+        let label = crate::blocker::label(blocker);
+        match messages {
+            0 => format!("looks stuck · {label}"),
+            1 => format!("1 message not delivered · {label}"),
+            n => format!("{n} messages not delivered · {label}"),
         }
     }
     pub const WRITING: &str = "writing";
@@ -659,6 +700,8 @@ struct Ctx<'a> {
     tasks: BTreeMap<u64, &'a Task>,
     /// Agents by (run, node).
     seats: BTreeMap<(&'a str, &'a str), &'a str>,
+    /// Messages of a `delivery` decision the user dismissed: they are given up, not undelivered.
+    given_up: std::collections::BTreeSet<u64>,
 }
 
 fn is_lead(a: &AgentRecord) -> bool {
@@ -690,10 +733,17 @@ impl<'a> Ctx<'a> {
             .values()
             .filter_map(|a| a.team.as_ref().map(|t| ((t.run_id.as_str(), t.node.as_str()), a.id.as_str())))
             .collect();
+        let given_up = i
+            .inbox
+            .iter()
+            .filter(|it| it.kind == "delivery" && it.status == InboxStatus::Dismissed)
+            .flat_map(|it| it.payload["messages"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_u64()))
+            .collect();
         Ctx {
             i,
             now,
             open,
+            given_up,
             entries,
             runs: i.runs.iter().map(|r| (r.run.id.as_str(), r)).collect(),
             tasks: i.tasks.iter().map(|t| (t.id, t)).collect(),
@@ -726,8 +776,18 @@ impl<'a> Ctx<'a> {
         let item = self.items(&a.id).iter().find(|it| error_item(it) && (!running || it.created_at_ms >= started));
         if let Some(it) = item {
             let s = |k: &str| it.payload.get(k).and_then(Value::as_str);
+            if it.kind == "delivery" {
+                let n = it.payload.get("messages").and_then(Value::as_array).map_or(0, Vec::len);
+                let blocker = it.payload.get("blocker").and_then(Value::as_str).unwrap_or("");
+                return Some(
+                    Found::new(Level::Error, Status::Error, copy::delivery(n, blocker), Some(it.created_at_ms))
+                        .wait(WaitKind::Delivery, Some(decision_id(&it.kind, it.id))),
+                );
+            }
             return Some(if it.kind == "startup" {
                 let reason = match s("failed") {
+                    // §3.5: its automatic restarts are used up, not a start that exited.
+                    Some("crash") => copy::KEEPS_CRASHING.to_string(),
                     Some(mode) => copy::start_exited(mode, it.payload.get("exit_status").and_then(Value::as_u64)),
                     None => copy::no_session(self.i.startup_timeout_ms / 1000),
                 };
@@ -1078,6 +1138,37 @@ impl<'a> Ctx<'a> {
             .then(|| Found::new(Level::Done, Status::Done, "", tasks.iter().map(|t| t.updated_at_ms).max()))
     }
 
+    /// Api-contract §4: the messages for `a` that waited over a minute and
+    /// were not seen yet, with the one blocker that explains them.
+    fn undelivered(&self, a: &AgentRecord, live: bool) -> Option<Undelivered> {
+        let seat = a.team.as_ref()?;
+        let old: Vec<u64> = self
+            .i
+            .messages
+            .iter()
+            .filter(|m| {
+                m.team_run_id == seat.run_id
+                    && m.to_node == seat.node
+                    && m.to_agent.as_deref().is_none_or(|t| t == a.id)
+                    && m.read_at_ms.is_none()
+                    && m.delivered_at_ms.is_none()
+                    && !self.given_up.contains(&m.id)
+                    && self.now.saturating_sub(m.created_at_ms) > UNDELIVERED_AFTER_MS
+            })
+            .map(|m| m.created_at_ms)
+            .collect();
+        let oldest_ms = old.iter().copied().min()?;
+        let facts = crate::blocker::Facts {
+            state: a.tracker.state,
+            crashed: !live && crate::startup::crashed(a),
+            parked: self.items(&a.id).iter().any(|it| it.kind == "permission" && it.status == InboxStatus::Parked),
+            hold: self.entries.get(a.id.as_str()).map(|(_, e)| crate::blocker::hold_of(&e.reason)),
+            unacked: self.i.unacked.contains(&a.id),
+            typing: self.i.typing.contains(&a.id),
+        };
+        Some(Undelivered { count: old.len() as u32, oldest_ms, blocker: crate::blocker::of(&facts) })
+    }
+
     fn record(&self, a: &AgentRecord) -> AgentAttention {
         let live = self.i.live.contains(&a.id);
         let s = a.tracker.state;
@@ -1122,6 +1213,7 @@ impl<'a> Ctx<'a> {
             since_ms: 0,
             since_stored: since.is_some(),
             queue,
+            undelivered: self.undelivered(a, live),
         };
         rec.set_since(since.unwrap_or(0));
         rec

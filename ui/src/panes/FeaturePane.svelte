@@ -14,6 +14,7 @@
   import StatusBadge from '../components/StatusBadge.svelte';
   import TaskModelChip from '../components/TaskModelChip.svelte';
   import { app, confirm, openAgent, openBoard, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
+  import { deliveryMark } from '../lib/delivery.js';
   import { isDesign } from '../lib/ecosystem.js';
   import { ago, dayHm } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
@@ -27,6 +28,14 @@
   let error = $state(null);
   let doc = $state({ name: null, text: '' });
   let tl = $state('all');
+  // Opened from an undelivered chip: the timeline starts on Delivery.
+  $effect(() => {
+    if (spec?.timeline) {
+      tl = spec.timeline;
+      // One-shot: the saved layout must not reopen the pane on Delivery.
+      delete spec.timeline;
+    }
+  });
   let to = $state(null); // a node id; null = the lead (whatever its id)
   let msg = $state('');
   let root;
@@ -297,7 +306,8 @@
           <div class="chips">{#each TL_FILTERS as f (f.id)}<button class="chip" class:on={tl === f.id} onclick={() => (tl = f.id)}>{f.label}</button>{/each}</div>
           <div class="events">
             {#each events as e (e.id)}
-              <div class="ev"><span class="evtime mono muted">{new Date(e.ts_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>{#if e.agent_id}<AgentChip id={e.agent_id} role={roleOfAgent(e.agent_id)} compact />{/if}<span class="evt">{timelineText(e)}</span></div>
+              {@const m = deliveryMark(e)}
+              <div class="ev"><span class="evtime mono muted">{new Date(e.ts_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>{#if e.agent_id}<AgentChip id={e.agent_id} role={roleOfAgent(e.agent_id)} compact />{/if}<span class="evt">{timelineText(e)}</span>{#if m}<span class="dmark" class:failed={e.delivery.state === 'failed'} title={m.title} aria-label={m.title}>{m.glyph}{m.redelivered}</span>{/if}</div>
             {:else}<span class="muted">Nothing yet.</span>{/each}
           </div>
           {#if run && !runFinished(run.status)}
@@ -326,6 +336,15 @@
 </div>
 
 <style>
+  .dmark {
+    flex: none;
+    margin-left: var(--space-xs);
+    color: var(--color-text-muted);
+    font: var(--text-caption);
+  }
+  .dmark.failed {
+    color: var(--color-status-error);
+  }
 
   .nline,
   .nerr {

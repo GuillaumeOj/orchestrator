@@ -24,6 +24,7 @@ pub fn decision_id(kind: &str, id: u64) -> String {
         "permission" => format!("inbox-{id}"),
         "startup" => format!("startup-{id}"),
         "gate" => format!("gate-{id}"),
+        "delivery" => format!("delivery-{id}"),
         "question" => format!("q-{id}"),
         _ => format!("alert-{id}"),
     }
@@ -99,7 +100,7 @@ impl Lifecycle {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Decision {
     pub id: String,
-    /// permission | question | gate | startup | alert | budget | ask | trust | wait | error | notion
+    /// permission | question | gate | startup | delivery | alert | budget | ask | trust | wait | error | notion
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gate: Option<&'static str>,
@@ -158,7 +159,7 @@ pub struct Ctx<'a> {
 }
 
 /// The last `n` non-blank lines.
-fn last_lines(s: &str, n: usize) -> String {
+pub(crate) fn last_lines(s: &str, n: usize) -> String {
     let lines: Vec<&str> = s.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
@@ -275,6 +276,7 @@ fn kind_of(i: &InboxItem) -> (&'static str, Option<&'static str>) {
             _ => ("gate", Some("spec")),
         },
         "startup" => ("startup", None),
+        "delivery" => ("delivery", None),
         "budget" => ("budget", None),
         "notion" => ("notion", None),
         _ if i.payload.get("source").and_then(Value::as_str) == Some("notion") => ("notion", None),
@@ -400,6 +402,13 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             let failed = p.get("failed").and_then(Value::as_str);
             let (title, why) = match failed {
                 Some("fresh") => (format!("{who} could not start fresh"), "restarted fresh, failed again".to_string()),
+                Some("crash") => (
+                    format!("{who} keeps crashing"),
+                    format!(
+                        "exited {} times in an hour; restarted automatically, now waits for you",
+                        crate::startup::CRASH_RESTARTS_PER_HOUR + 1
+                    ),
+                ),
                 Some(mode) => (format!("{who} did not start"), crate::attention::copy::start_exited(mode, None)),
                 None => (
                     format!("{who} did not start"),
@@ -415,6 +424,30 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             }
             actions.push(OPEN_PANE);
             (title, why, ctx, actions)
+        }
+        ("delivery", _) => {
+            // api-contract §2: the payload names the cause; the card says it.
+            let label = crate::blocker::label(s(p, "blocker"));
+            let lines: Vec<String> = p
+                .get("messages")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|m| {
+                    let attempts = m.get("attempts").and_then(Value::as_u64).filter(|n| *n > 0);
+                    let tries = attempts.map(|n| format!(" ({n} tries)")).unwrap_or_default();
+                    format!("- {} from {}: {}{tries}", s(m, "kind").replace('_', " "), s(m, "from"), s(m, "preview"))
+                })
+                .collect();
+            let why = format!("{label}; {}", cut(&body_line, 100));
+            let mut ctx = vec![error_block(&why, None)];
+            if !lines.is_empty() {
+                ctx.push(markdown(&lines.join("\n"), None));
+            }
+            ctx.extend(pty_tail(s(p, "tail")));
+            let actions =
+                vec![OPEN_PANE, act("retry", "Retry now", None), act("restart_fresh", "Restart fresh", None), DISMISS];
+            (cut(&first_line, 80), label, ctx, actions)
         }
         ("budget", _) => {
             let reason = if s(p, "reason").is_empty() { first_line.as_str() } else { s(p, "reason") };

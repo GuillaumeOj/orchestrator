@@ -8,7 +8,7 @@ import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { flushSync, tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chatOf, closedEntry, entry, kinds, morning } from './chat-fixture.js';
-import { act, fixture, nowOf } from './fixture.js';
+import { act, decision, fixture, nowOf } from './fixture.js';
 
 const calls = [];
 const replies = {};
@@ -164,6 +164,57 @@ describe('exit criterion (spec §1a): every Inbox interaction is on a card', () 
     expect(app.pending).toHaveLength(1);
     app.overlay.onYes();
     expect(app.pending.at(-1)).toMatchObject({ item: 'startup-front-1', action: 'delete' });
+  });
+
+  it('delivery card: reason, messages, tail; Retry now primary, Open pane for no_ack and user_typing', async () => {
+    const mk = (blocker) =>
+      decision({
+        id: 'delivery-7',
+        kind: 'delivery',
+        level: 2,
+        subject: { agent: 'back-1' },
+        title: 'back-1 did not receive 2 messages',
+        payload: { blocker },
+        created_ms: Date.now() - 10 * MIN,
+        context: [
+          { type: 'error', text: 'governor' },
+          { type: 'pty_tail', text: 'a\nb' },
+        ],
+        actions: [
+          act('open', 'Open pane', 'o'),
+          act('retry', 'Retry now'),
+          act('restart_fresh', 'Restart fresh'),
+          act('dismiss', 'Dismiss'),
+        ],
+      });
+    const primary = (c) => [...card(c, 'delivery-7').querySelectorAll('.actions button.primary')].map(text);
+    setNow([mk('governor:off_hours')]);
+    let r = render(ChatColumn);
+    expect(text(card(r.container, 'delivery-7'))).toContain('Retry puts the messages back');
+    expect(buttons(card(r.container, 'delivery-7'))).toEqual(['Open pane o', 'Retry now', 'Restart fresh', 'Dismiss']);
+    expect(primary(r.container)).toEqual(['Retry now']);
+    await fireEvent.click(r.getByText('Retry now'));
+    expect(app.pending.at(-1)).toMatchObject({ item: 'delivery-7', action: 'retry' });
+    expect(app.toasts.at(-1).text).toBe('Retrying · back-1');
+    r.unmount();
+    for (const blocker of ['no_ack', 'user_typing']) {
+      app.pending = [];
+      setNow([mk(blocker)]);
+      r = render(ChatColumn);
+      expect(primary(r.container)).toEqual(['Open pane o']);
+      r.unmount();
+    }
+  });
+
+  it('startup card after a crash loop says so; a plain startup card does not', () => {
+    const [startup] = kinds().filter((d) => d.kind === 'startup');
+    setNow([{ ...startup, payload: { failed: 'crash' } }]);
+    let r = render(ChatColumn);
+    expect(text(card(r.container, startup.id))).toContain('crashed again');
+    r.unmount();
+    setNow([startup]);
+    r = render(ChatColumn);
+    expect(text(card(r.container, startup.id))).not.toContain('crashed again');
   });
 
   it('the question answers once every question has a choice', async () => {

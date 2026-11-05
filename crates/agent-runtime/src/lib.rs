@@ -2,6 +2,7 @@
 
 pub mod artifacts;
 pub mod attention;
+pub mod blocker;
 pub mod chat;
 pub mod compile;
 pub mod decision;
@@ -9,6 +10,7 @@ pub mod delivery;
 pub mod digest;
 pub mod env;
 pub mod flow;
+pub mod handover;
 pub mod inbox;
 pub mod integrations;
 pub mod intervention;
@@ -41,6 +43,7 @@ pub mod shell;
 pub mod startup;
 pub mod state;
 pub mod store;
+pub mod stuck;
 pub mod supervise;
 pub mod team;
 pub mod team_admin;
@@ -48,3 +51,7 @@ pub mod transcript;
 pub mod usage;
 pub mod worktree;
 pub mod worktree_watch;
+
+/// The chaos suite (fix-team-getting-stucked §3.8): a fake CLI in process.
+#[cfg(test)]
+mod chaos;

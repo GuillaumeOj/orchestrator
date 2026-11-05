@@ -112,21 +112,16 @@ impl Runtime {
             }
         };
         let Some(l) = live else { return false };
-        if l.model == want {
+        // The process would not stop for the switch: the task runs on it.
+        let switch_failed = self.house().switch_failed.remove(&rec.id);
+        if l.model == want || switch_failed {
             l.task.store(task.unwrap_or(0), Ordering::Relaxed);
             return false;
         }
-        if rec.tracker.state == AgentState::Idle {
-            let from = l.model.clone();
-            match self.suspend(&rec.id) {
-                Ok(_) => self.event(&rec.id, "model_switch", json!({"from": from, "to": want, "why": why})),
-                Err(e) => {
-                    // The task runs on the current model rather than wait for
-                    // a switch that keeps failing (and log it at every pump).
-                    self.event(&rec.id, "model_switch_failed", json!(e.to_string()));
-                    return false;
-                }
-            }
+        // Asked once, never waited for on the pump (§3.6): later pumps find
+        // the stop under way, and the turn goes to the respawned process.
+        if rec.tracker.state == AgentState::Idle && self.suspend_in_background(&rec.id, "model_switch") {
+            self.event(&rec.id, "model_switch", json!({"from": l.model, "to": want, "why": why}));
         }
         true
     }
@@ -402,6 +397,23 @@ mod tests {
         rt.db.events(0, Some("a1"), Some("model_switch"), 10).unwrap().into_iter().rev().map(|e| e.detail).collect()
     }
 
+    /// A switch that could not stop the process is not waited for: the task
+    /// runs on the model the process has.
+    #[test]
+    fn a_failed_switch_stop_lets_the_task_run_on_the_current_model() {
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
+        let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
+        agent(&rt, d.path(), "a1", "sonnet", None);
+        seat_on(&rt, "a1", 1, Some("opus"));
+        insert_test_live(&rt, "a1", Some("sonnet"), 0, d.path());
+        idle(&rt, "a1");
+        assert!(rt.task_boundary(&rec(&rt, "a1")), "the switch is under way: the task waits");
+        // Its stop failed.
+        rt.house().switch_failed.insert("a1".into());
+        assert!(!rt.task_boundary(&rec(&rt, "a1")), "it runs on the current process");
+        assert!(rt.house().switch_failed.is_empty(), "asked once");
+    }
+
     /// Spec §2.2: a task with a model runs on it (the agent is suspended
     /// while idle and resumed with `--model`); the next task without one
     /// goes back to the role's model.
@@ -415,11 +427,26 @@ mod tests {
         idle(&rt, "a1");
         assert_eq!(rt.turn_model(&rec(&rt, "a1")).as_deref(), Some("opus"), "the spawn after the switch");
 
+        let t0 = std::time::Instant::now();
         assert!(rt.task_boundary(&rec(&rt, "a1")), "waits for the switch");
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1), "§3.6: the pump never waits for the suspend");
+        assert!(rt.task_boundary(&rec(&rt, "a1")), "still waiting, asked once");
         assert_eq!(switches(&rt), vec![json!({"from": "sonnet", "to": "opus", "why": "task"})]);
+        // The suspend runs off the pump: wait for it.
+        let stopped = || {
+            rt.db.flush().unwrap();
+            !rt.db.events(0, Some("a1"), Some("stopped"), 1).unwrap().is_empty()
+        };
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !stopped() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(stopped());
 
-        // The process resumed with opus for task 1; the next task has no model.
+        // The process resumed with opus for task 1 (a spawn clears the stop
+        // intent); the next task has no model.
         insert_test_live(&rt, "a1", Some("opus"), 1, d.path());
+        rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.stop_intent = Default::default()).unwrap();
         seat_on(&rt, "a1", 2, None);
         idle(&rt, "a1");
         assert_eq!(rt.turn_model(&rec(&rt, "a1")).as_deref(), Some("sonnet"));

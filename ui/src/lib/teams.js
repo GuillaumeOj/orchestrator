@@ -1,6 +1,8 @@
 // Teams in the UI (P2): run states, the team timeline's filters and copy,
 // and the Board's columns and moves. Pure: tested in test/teams.test.js.
 
+import { plural, spaced } from './format.js';
+
 /** Team-run states (§6.2) → status colors (Penpot 02 Feature card). */
 export function runStateColor(s) {
   return (
@@ -52,26 +54,34 @@ export const TL_FILTERS = [
   { id: 'git', label: 'Git' },
   { id: 'gates', label: 'Gates' },
   { id: 'run', label: 'Run' },
+  { id: 'delivery', label: 'Delivery' },
 ];
+
+const DELIVERY_KINDS = new Set(['redelivered', 'delivery_failed', 'recovered', 'stuck', 'tick_panic']);
 
 const RUN_KINDS = new Set(['run.state', 'run.launched', 'run.team_changed', 'agent.added', 'agent.fresh_session']);
 
 const FAMILY = (k) =>
-  k === 'message' || k === 'asked_user'
-    ? 'messages'
-    : k.startsWith('task.')
-      ? 'tasks'
-      : k.startsWith('git.') || k.startsWith('pr.')
-        ? 'git'
-        : RUN_KINDS.has(k)
-          ? 'run'
-          : 'other';
+  DELIVERY_KINDS.has(k)
+    ? 'delivery'
+    : k === 'message' || k === 'asked_user'
+      ? 'messages'
+      : k.startsWith('task.')
+        ? 'tasks'
+        : k.startsWith('git.') || k.startsWith('pr.')
+          ? 'git'
+          : RUN_KINDS.has(k)
+            ? 'run'
+            : 'other';
+
+// Plumbing of a message's lifecycle: its state shows as the glyph on the message line.
+const HIDDEN_KINDS = new Set(['handed', 'seen', 'read', 'continue_failed', 'slot_freed']);
 
 export function timelineFilter(id) {
-  if (id === 'all') return () => true;
+  if (id === 'all') return (e) => !HIDDEN_KINDS.has(e.kind);
   if (id === 'gates')
     return (e) => e.kind === 'run.state' && /gate/.test(`${e.detail?.to} ${e.detail?.from} ${e.detail?.why}`);
-  return (e) => FAMILY(e.kind) === id;
+  return (e) => !HIDDEN_KINDS.has(e.kind) && FAMILY(e.kind) === id;
 }
 
 /** `PR #12 CI failed (ci / test, ci / e2e) · behind main by 3`: only the parts that changed. */
@@ -101,6 +111,16 @@ export function timelineText(e) {
   switch (e.kind) {
     case 'message':
       return `${d.kind && d.kind !== 'message' ? `${String(d.kind).replace('_', ' ')} ` : ''}→ ${d.to}: ${d.body ?? ''}`;
+    case 'redelivered':
+      return `redelivered to ${d.agent}${d.attempt ? ` (attempt ${d.attempt})` : ''}${d.why ? ` · ${spaced(d.why)}` : ''}`;
+    case 'delivery_failed':
+      return `${d.agent} did not receive ${plural((d.messages ?? []).length || 1, 'message')}`;
+    case 'recovered':
+      return `${d.agent} recovered from ${spaced(d.from_state)}${d.how ? ` (${spaced(d.how)})` : ''}`;
+    case 'stuck':
+      return `${d.agent} looks stuck${d.episode ? ` · ${spaced(d.episode)}` : ''}`;
+    case 'tick_panic':
+      return `scheduler step failed${d.step ? ` (${d.step})` : ''}${d.message ? `: ${d.message}` : ''}`;
     case 'run.state':
       return `${runStateLabel(d.from)} → ${runStateLabel(d.to)}${d.why ? ` (${d.why})` : ''}`;
     case 'run.launched':

@@ -486,6 +486,7 @@ mod tests {
             resume_failed: false,
             start_fresh: false,
             spawned_at_ms: None,
+            crash_restarts: vec![],
         }
     }
 

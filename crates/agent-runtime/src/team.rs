@@ -124,13 +124,53 @@ pub fn watchdog_check(a: &AgentRecord, now: u64) -> Option<(Watch, u64)> {
         return Some((Watch::Ceiling(m), start));
     }
     let last = a.last_event_at_ms.unwrap_or(start).max(start);
-    (a.tracker.background_tasks == 0 && now.saturating_sub(last) > NO_PROGRESS_MS).then_some((Watch::Stalled, start))
+    // A Stop with background tasks leaves the agent idle (§3.2): a working
+    // agent is in a turn of its own, whatever count its last Stop left.
+    (now.saturating_sub(last) > NO_PROGRESS_MS).then_some((Watch::Stalled, start))
 }
 
-/// Longest message body kept (the rest is cut).
+/// Longest text of the messages in one turn (the rest waits for the next one).
 pub(crate) const MAX_BODY: usize = 8_000;
+/// Longest message body stored: a longer one is refused, never cut.
+pub(crate) const MAX_STORED: usize = 64_000;
+
+/// F7: a text the team stores whole (a message, a plan, a task body) is
+/// refused above [`MAX_STORED`], never cut; `what` names it and `way_out`
+/// says where the details go instead.
+pub(crate) fn check_stored(what: &str, text: &str, way_out: &str) -> Result<()> {
+    let n = text.chars().count();
+    if n > MAX_STORED {
+        bail!("{what} too long ({n} chars, max {MAX_STORED}): {way_out}");
+    }
+    Ok(())
+}
 /// Longest text injected at a tool call.
-const MAX_INJECT: usize = 1_500;
+const MAX_INJECT: usize = 3_000;
+/// A message longer than this (in a turn, at a tool call, in `inbox`) is
+/// shown as its first [`PREVIEW`] chars and the path of its full text.
+pub(crate) const INLINE_TURN: usize = 3_000;
+pub(crate) const INLINE_INJECT: usize = 1_200;
+const INLINE_INBOX: usize = 6_000;
+pub(crate) const PREVIEW: usize = 600;
+
+/// The inline limit of a message handed `via` (`turn` or `inject`).
+pub(crate) fn inline_cap(via: Option<&str>) -> usize {
+    if via == Some("inject") { INLINE_INJECT } else { INLINE_TURN }
+}
+
+/// Where a long message's full text is written for its agent.
+pub(crate) fn message_file_name(id: u64) -> String {
+    format!("msg-{id}.md")
+}
+
+/// Messages rendered for one hand-over: only `included` ones are in `text`
+/// (the others wait); `files` are the messages too long to show in full.
+#[derive(Debug, Default)]
+pub(crate) struct Rendered {
+    pub text: String,
+    pub included: Vec<u64>,
+    pub files: Vec<(u64, std::path::PathBuf)>,
+}
 
 pub(crate) fn cut(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n).collect::<String>()) }
@@ -150,6 +190,14 @@ fn model_arg(args: &Value) -> Result<Option<Option<String>>> {
         );
     }
     Ok(Some(Some(m.to_string()).filter(|m| !m.is_empty())))
+}
+
+/// A panic's message (a `&str` or `String` payload), else "panic".
+pub(crate) fn panic_message(p: &(dyn std::any::Any + Send)) -> String {
+    p.downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| p.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "panic".into())
 }
 
 pub fn agent_id_for(slug: &str, node: &str, n: u32) -> String {
@@ -488,6 +536,7 @@ impl Runtime {
             resume_failed: false,
             start_fresh: false,
             spawned_at_ms: None,
+            crash_restarts: vec![],
         };
         self.store.write(|s| s.agents.insert(id.clone(), rec.clone()))?;
         // Bind the worktree row to its agent.
@@ -533,32 +582,79 @@ impl Runtime {
     /// Dispatch, message delivery and run progression for every active run
     /// (call every few seconds, off the delivery loop: a GitHub backend makes
     /// network calls).
+    ///
+    /// §3.6 (F9): each run's steps run apart: a panic in one is a
+    /// `tick_panic {run, step, message}` event, and the other steps and runs
+    /// carry on. Task-backend sync runs on its own thread (housekeeping).
     pub fn team_tick(&self) {
+        self.tick_step("-", "close_delivered", || self.close_delivered());
         let runs = self.db.runs(None, true).unwrap_or_default();
         for run in runs {
-            let cx = match self.run_ctx(&run.id) {
-                Ok(cx) => cx,
-                Err(e) => {
-                    self.event("-", "team_error", json!({"run": run.id, "error": e.to_string()}));
+            let id = run.id.as_str();
+            let cx = match self.tick_step(id, "context", || self.run_ctx(id)) {
+                Some(Ok(cx)) => cx,
+                Some(Err(e)) => {
+                    self.event("-", "team_error", json!({"run": id, "error": e.to_string()}));
                     continue;
                 }
+                None => continue,
             };
             // A deleted feature has no running team: a run left active under
             // it (a relaunch that didn't un-archive) would spawn seats nobody
             // sees and block every new launch on the slug.
             if cx.feature.archived {
-                if let Err(e) = self.end_run(&run.id, "feature deleted") {
-                    self.run_event(&run.id, None, "team_error", json!(format!("{e:#}")));
-                }
+                self.tick_step(id, "end_run", || {
+                    if let Err(e) = self.end_run(id, "feature deleted") {
+                        self.run_event(id, None, "team_error", json!(format!("{e:#}")));
+                    }
+                });
                 continue;
             }
-            if let Err(e) = self.dispatch(&cx) {
-                self.run_event(&run.id, None, "dispatch_error", json!(format!("{e:#}")));
+            self.tick_step(id, "dispatch", || {
+                if let Err(e) = self.dispatch(&cx) {
+                    self.run_event(id, None, "dispatch_error", json!(format!("{e:#}")));
+                }
+            });
+            self.tick_step(id, "supervise", || self.supervise(&cx, now_ms()));
+            self.tick_step(id, "invariant", || self.delivery_invariant(&cx, now_ms()));
+            self.tick_step(id, "deliver_messages", || self.deliver_messages(&cx));
+            self.tick_step(id, "progress", || {
+                if let Err(e) = self.progress(&cx) {
+                    self.run_event(id, None, "team_error", json!(format!("{e:#}")));
+                }
+            });
+        }
+    }
+
+    /// Chaos suite (§3.8): makes the team-tick step `step` panic on every
+    /// run until cleared with `None`.
+    pub fn inject_tick_fault(&self, step: Option<&str>) {
+        if let Ok(mut t) = self.tick_fault.lock() {
+            *t = step.map(str::to_string);
+        }
+    }
+
+    /// One step of the periodic pass under `catch_unwind` (§3.6): a panic is
+    /// a `tick_panic` event (on the run's timeline, `run` "-" for none) and
+    /// `None`.
+    pub(crate) fn tick_step<R>(&self, run: &str, step: &str, f: impl FnOnce() -> R) -> Option<R> {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if self.tick_fault.lock().is_ok_and(|t| t.as_deref() == Some(step)) {
+                panic!("injected panic in {step}");
             }
-            self.supervise(&cx, now_ms());
-            self.deliver_messages(&cx);
-            if let Err(e) = self.progress(&cx) {
-                self.run_event(&run.id, None, "team_error", json!(format!("{e:#}")));
+            f()
+        }));
+        match r {
+            Ok(v) => Some(v),
+            Err(p) => {
+                let message = panic_message(p.as_ref());
+                let detail = json!({"run": run, "step": step, "message": message});
+                if run == "-" {
+                    self.event("-", "tick_panic", detail);
+                } else {
+                    self.run_event(run, None, "tick_panic", detail);
+                }
+                None
             }
         }
     }
@@ -699,9 +795,8 @@ impl Runtime {
                 }
                 None => continue,
             };
-            // A live idle agent is suspended inline (SIGTERM, bounded by the
-            // stop's grace and its wait for the exit callback): the tick never
-            // waits on a busy agent.
+            // A live idle agent is asked to suspend (§3.6: not waited for):
+            // its task turn goes to the new session's process.
             if !rec.never_started()
                 && let Err(e) = self.rotate_for_task(&rec.id, t)
             {
@@ -780,7 +875,14 @@ impl Runtime {
         let keys: std::collections::BTreeSet<String> =
             hits.iter().map(|(id, _, what, start)| format!("{id}:{start}:{what:?}")).collect();
         for (id, run, what, start) in hits {
-            if self.live(&id).is_none() || !self.watchdog_once(format!("{id}:{start}:{what:?}")) {
+            if self.live(&id).is_none() {
+                continue;
+            }
+            // A retried silence is judged again only after another window.
+            let retried = self.house().retried_keys.get(&format!("{id}:working_silent:{start}")).copied();
+            if retried.is_some_and(|t| now.saturating_sub(t) <= NO_PROGRESS_MS)
+                || !self.watchdog_once(format!("{id}:{start}:{what:?}"))
+            {
                 continue;
             }
             let (text, detail) = match what {
@@ -791,6 +893,7 @@ impl Runtime {
                         json!({"kind": "ceiling", "minutes": m}),
                     )
                 }
+                Watch::Stalled if self.working_silent(&id, start) => continue,
                 Watch::Stalled => (
                     format!("{id}: no progress for {} min (no tool call or answer)", NO_PROGRESS_MS / 60_000),
                     json!({"kind": "stalled"}),
@@ -939,10 +1042,12 @@ impl Runtime {
         if !rules::can_message(&cx.team, from_node, &to_node) {
             bail!("the team rules don't let {from_node} message {to_node}");
         }
-        let body = cut(body.trim(), MAX_BODY);
+        let body = body.trim();
         if body.is_empty() {
             bail!("empty message");
         }
+        // Never cut silently (F7): the sender keeps the long part in a file.
+        check_stored("message", body, "put the details in a file and send its path")?;
         let recipients: Vec<Option<String>> = match to_agent {
             Some(a) => vec![Some(a)],
             None => {
@@ -957,13 +1062,13 @@ impl Runtime {
         };
         let mut ids = vec![];
         for r in recipients {
-            ids.push(self.add_run_message(cx, from_node, from_agent, &to_node, r, kind, &body, r#ref.clone())?);
+            ids.push(self.add_run_message(cx, from_node, from_agent, &to_node, r, kind, body, r#ref.clone())?);
         }
         self.run_event(
             &cx.run.id,
             from_agent,
             "message",
-            json!({"from": from_node, "to": to, "kind": kind, "body": cut(&body, 300)}),
+            json!({"from": from_node, "to": to, "kind": kind, "body": cut(body, 300), "ids": ids}),
         );
         Ok(ids)
     }
@@ -990,59 +1095,136 @@ impl Runtime {
             to_node: to_node.into(),
             to_agent,
             kind: kind.into(),
-            body: cut(body, MAX_BODY),
+            body: body.into(),
             r#ref,
             created_at_ms: now_ms(),
-            delivered_at_ms: None,
-            read_at_ms: None,
+            ..Default::default()
         })
     }
 
-    pub(crate) fn render_messages(msgs: &[Message], max: usize) -> String {
-        let mut s = String::new();
+    /// Renders messages for `agent` within `budget` chars: a message over
+    /// `cap` is written in full to `<agent dir>/messages/msg-<id>.md` and
+    /// shown as its first [`PREVIEW`] chars and that path. Messages past the
+    /// budget are left out (never "(more…)"): they wait for the next hand-over.
+    pub(crate) fn render_for(&self, agent: &str, msgs: &[Message], budget: usize, cap: usize) -> Rendered {
+        let dir = self.cfg.paths.agent_dir(agent).join("messages");
+        let mut r = Rendered::default();
+        let mut len = 0;
         for m in msgs {
             let who = m.from_agent.clone().unwrap_or_else(|| m.from_node.clone());
-            let line = match m.kind.as_str() {
-                "message" => format!("\n- from {who}: {}", m.body),
-                k => format!("\n- {} from {who}: {}", k.replace('_', " "), m.body),
+            let head = match m.kind.as_str() {
+                "message" => format!("from {who}"),
+                k => format!("{} from {who}", k.replace('_', " ")),
             };
-            if s.chars().count() + line.chars().count() > max {
-                s.push_str("\n(more: call mcp__orch__inbox)");
+            let long = (m.body.chars().count() > cap).then(|| dir.join(message_file_name(m.id)));
+            let line = match &long {
+                None => format!("\n- {head}: {}", m.body),
+                Some(path) => {
+                    format!("\n- {head}: {}\n  full text: {}", cut(&m.body, PREVIEW), path.display())
+                }
+            };
+            let n = line.chars().count();
+            if !r.included.is_empty() && len + n > budget {
                 break;
             }
-            s.push_str(&line);
+            // Written only once it is handed: a message past the budget waits.
+            if let Some(path) = long {
+                let full = format!("# {head} (message {})\n\n{}\n", m.id, m.body);
+                if std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, full)).is_err() {
+                    continue; // not handed: tried again with the next hand-over
+                }
+                r.files.push((m.id, path));
+            }
+            len += n;
+            r.text.push_str(&line);
+            r.included.push(m.id);
         }
-        s
+        r
     }
 
-    fn unread(&self, rec: &AgentRecord) -> Vec<Message> {
+    /// §3.5 (F6), housekeeping, the live agents filling the cap: a member
+    /// with unread messages held [`crate::resources::SLOT_WAIT_MS`] for a
+    /// process slot gets one: the least recently active live idle member of
+    /// its run with no unread messages is suspended ([`crate::resources::slot_victim`]).
+    pub(crate) fn free_slot_for_messages(&self, live: &[crate::resources::LiveAgent], cap: u32, now: u64) {
+        use crate::resources::{Member, SLOT_WAIT_MS, SlotWaiter, at_cap};
+        // The wait is a setting (`delivery.slot_wait_secs`), longer or shorter.
+        let wait = self.secs_setting(crate::handover::SLOT_WAIT_KEY, SLOT_WAIT_MS);
+        if !at_cap(live, cap) {
+            return;
+        }
+        // Held for a process slot (a spawn held at the cap, `hold_spawn`).
+        // `LiveCap` counts running turns: suspending an idle process frees none.
+        let held: std::collections::BTreeSet<String> = self.with_governor(|g| {
+            g.queue()
+                .iter()
+                .filter(|e| matches!(e.reason, governor::QueueReason::MemoryPressure { .. }))
+                .map(|e| e.agent.0.clone())
+                .collect()
+        });
+        if held.is_empty() {
+            return;
+        }
+        let agents: Vec<AgentRecord> = self.store.read(|s| {
+            s.agents.values().filter(|a| a.team.is_some() && a.tracker.state != AgentState::Archived).cloned().collect()
+        });
+        let run_of = |a: &AgentRecord| a.team.as_ref().map(|t| t.run_id.clone()).unwrap_or_default();
+        // The waiters first: nothing more is read unless one waited long enough.
+        let waiters: Vec<SlotWaiter> = agents
+            .iter()
+            .filter(|a| held.contains(&a.id) && self.has_queued_turn(&a.id))
+            .filter_map(|a| {
+                let since_ms = self.unread(a).iter().map(|m| m.created_at_ms).min()?;
+                Some(SlotWaiter { id: a.id.clone(), run: run_of(a), since_ms })
+            })
+            .collect();
+        if !waiters.iter().any(|w| now.saturating_sub(w.since_ms) >= wait) {
+            return;
+        }
+        // Then the live members of the waiters' runs.
+        let members: BTreeMap<String, Member> = agents
+            .iter()
+            .filter(|a| live.iter().any(|l| l.id == a.id) && waiters.iter().any(|w| w.run == run_of(a)))
+            .map(|a| (a.id.clone(), Member { run: run_of(a), unread: !self.unread(a).is_empty() }))
+            .collect();
+        let Some((waiter, victim)) = crate::resources::slot_victim(&waiters, live, &members, cap, now, wait) else {
+            return;
+        };
+        if self.suspend_in_background(&victim, "slot") {
+            let detail = json!({"for": waiter, "suspended": victim});
+            // The agent's event only: not on the run timeline (plumbing).
+            self.event(&victim, "slot_freed", detail);
+        }
+    }
+
+    pub(crate) fn unread(&self, rec: &AgentRecord) -> Vec<Message> {
         let Some(seat) = &rec.team else { return vec![] };
         self.db.messages(&seat.run_id, Some((&seat.node, Some(&rec.id))), true).unwrap_or_default()
     }
 
-    /// Unread messages not handed over yet: not delivered (pasted or given
-    /// as context), and not carried by a turn still waiting for its paste,
-    /// this agent's or another's of the node (a message to the node binds to
-    /// an agent only at the paste).
-    fn undelivered(&self, rec: &AgentRecord) -> Vec<Message> {
-        let mut msgs: Vec<Message> = self.unread(rec).into_iter().filter(|m| m.delivered_at_ms.is_none()).collect();
+    /// Unread messages not handed over yet: queued (not pasted or given as
+    /// context, not failed), and, `with_queued` false, not carried by a turn
+    /// already queued for them. A turn being pasted always holds its own
+    /// (§3.2: only while it is `Delivering`), this agent's or another's of
+    /// the node (a message to the node binds to an agent only at the paste).
+    fn undelivered(&self, rec: &AgentRecord, with_queued: bool) -> Vec<Message> {
+        let mut msgs: Vec<Message> =
+            self.unread(rec).into_iter().filter(|m| m.delivery_state() == orch_store::DeliveryState::Queued).collect();
         if msgs.is_empty() {
             return msgs;
         }
         let carried: std::collections::HashSet<u64> = self.store.read(|s| {
             s.turns
                 .iter()
-                .filter(|t| !t.messages.is_empty() && matches!(t.status, TurnStatus::Queued | TurnStatus::Delivering))
+                .filter(|t| {
+                    !t.messages.is_empty()
+                        && (t.status == TurnStatus::Delivering || !with_queued && t.status == TurnStatus::Queued)
+                })
                 .flat_map(|t| t.messages.iter().copied())
                 .collect()
         });
         msgs.retain(|m| !carried.contains(&m.id));
         msgs
-    }
-
-    /// The agent's unread messages among `ids` (to remind it at its Stop).
-    pub(crate) fn unread_of(&self, rec: &AgentRecord, ids: &[u64]) -> Vec<Message> {
-        self.unread(rec).into_iter().filter(|m| ids.contains(&m.id)).collect()
     }
 
     /// A task of this run, by id.
@@ -1054,17 +1236,49 @@ impl Runtime {
         Ok(t)
     }
 
-    /// FR-403 for a busy agent: its new messages, as PostToolUse context.
-    pub(crate) fn inject_messages(&self, rec: &AgentRecord) -> Option<String> {
-        let msgs = self.undelivered(rec);
+    /// FR-403 for a busy agent: its new messages as PostToolUse context,
+    /// handed during the running turn `prompt_id`. They are seen once the
+    /// reply is confirmed (the returned ids, [`Runtime::on_hook_ack`]).
+    pub(crate) fn inject_messages(&self, rec: &AgentRecord, prompt_id: Option<&str>) -> Option<(String, Vec<u64>)> {
+        // §3.2: a message turn that can't be pasted (the agent is busy, or
+        // held) doesn't hold its messages back from the running turn.
+        let msgs = self.undelivered(rec, true);
         if msgs.is_empty() {
             return None;
         }
-        let ids: Vec<u64> = msgs.iter().map(|m| m.id).collect();
-        let _ = self.db.deliver_messages(&ids, &rec.id, now_ms());
-        // Read when this turn ends; its Stop reminds the agent of them first.
-        self.note_injected(&rec.id, &ids);
-        Some(format!("ORCH: {} new message(s):{}", msgs.len(), Self::render_messages(&msgs, MAX_INJECT)))
+        let r = self.render_for(&rec.id, &msgs, MAX_INJECT, INLINE_INJECT);
+        if r.included.is_empty() {
+            return None;
+        }
+        self.drop_carrying_turns(&r.included);
+        let _ = self.db.hand_messages(&r.included, &rec.id, "inject", prompt_id, now_ms());
+        self.delivery_event(&rec.id, "handed", json!({"messages": r.included, "via": "inject", "turn": prompt_id}));
+        Some((format!("ORCH: {} new message(s):{}", r.included.len(), r.text), r.included))
+    }
+
+    /// Queued message turns that carry any of `ids` (injected instead) are
+    /// dropped: their other messages are still queued, and the next pass
+    /// builds a turn for them. A turn is never pasted with a message twice.
+    /// A Governor entry the dropped turn waited on goes too when nothing
+    /// else of its agent is queued (its release would run a Continue).
+    fn drop_carrying_turns(&self, ids: &[u64]) {
+        let held = self.store.write(|s| {
+            let mut held = vec![];
+            s.turns.retain(|t| {
+                let drop = t.status == TurnStatus::Queued
+                    && t.kind == TurnKind::Message
+                    && t.messages.iter().any(|m| ids.contains(m));
+                if let (true, Admission::Waiting(e)) = (drop, t.admission) {
+                    held.push((t.agent_id.clone(), e));
+                }
+                !drop
+            });
+            held.retain(|(a, _)| !s.turns.iter().any(|t| &t.agent_id == a && t.status == TurnStatus::Queued));
+            held
+        });
+        for (_, e) in held.unwrap_or_default() {
+            self.governor_act(|g, now| (g.cancel(governor::EntryId(e), now), Vec::new()));
+        }
     }
 
     /// FR-403 for idle and suspended agents: their new messages as one turn
@@ -1079,18 +1293,21 @@ impl Runtime {
             if busy || rec.never_started() && self.has_queued_turn(&rec.id) {
                 continue;
             }
-            let msgs = self.undelivered(&rec);
+            let msgs = self.undelivered(&rec, false);
             if msgs.is_empty() {
+                continue;
+            }
+            let r = self.render_for(&rec.id, &msgs, MAX_BODY, INLINE_TURN);
+            if r.included.is_empty() {
                 continue;
             }
             let text = format!(
                 "ORCH: {} new message(s) for you:{}\n\nAnswer with mcp__orch__send_message when needed.",
-                msgs.len(),
-                Self::render_messages(&msgs, MAX_BODY)
+                r.included.len(),
+                r.text
             );
-            // Marked delivered when this turn is pasted (FR-206), not now.
-            let ids: Vec<u64> = msgs.iter().map(|m| m.id).collect();
-            let _ = self.deliver_messages_turn(&rec.id, &text, ids);
+            // Handed when this turn is pasted, seen when its prompt starts (FR-206).
+            let _ = self.deliver_messages_turn(&rec.id, &text, r.included);
         }
     }
 
@@ -1286,12 +1503,19 @@ impl Runtime {
             "inbox" => {
                 let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
                 let msgs = self.db.messages(&cx.run.id, Some((me, Some(&rec.id))), !all)?;
-                let unread: Vec<u64> = msgs.iter().filter(|m| m.read_at_ms.is_none()).map(|m| m.id).collect();
-                self.db.mark_messages(&unread, Some(&rec.id), now_ms())?;
+                self.note_inbox_called(&rec.id);
                 if msgs.is_empty() {
                     return Ok(("No new messages.".into(), json!([])));
                 }
-                Ok((format!("{} message(s):{}", msgs.len(), Self::render_messages(&msgs, MAX_BODY * 2)), json!(msgs)))
+                // Every message in full, or its first part and its file: never "(more…)".
+                let r = self.render_for(&rec.id, &msgs, usize::MAX, INLINE_INBOX);
+                let unread: Vec<u64> = msgs
+                    .iter()
+                    .filter(|m| m.read_at_ms.is_none() && r.included.contains(&m.id))
+                    .map(|m| m.id)
+                    .collect();
+                self.db.mark_messages(&unread, Some(&rec.id), now_ms())?;
+                Ok((format!("{} message(s):{}", r.included.len(), r.text), json!(msgs)))
             }
             "list_tasks" => {
                 let mine = args.get("mine").and_then(Value::as_bool).unwrap_or(false);
@@ -1453,7 +1677,10 @@ impl Runtime {
                 let model = model_arg(args)?.flatten();
                 let mut t = Task::new(&cx.project.id, "", title, now_ms());
                 t.title = cut(title, 200);
-                t.body = cut(str_arg(args, "body").unwrap_or(""), MAX_BODY);
+                // Stored whole (F7): a body too long to keep is refused, never cut.
+                let body = str_arg(args, "body").unwrap_or("");
+                check_stored("task body", body, "put the details in a feature doc and name it in the body")?;
+                t.body = body.to_string();
                 t.node = Some(node.into());
                 t.depends_on = deps;
                 t.status = status;
@@ -1918,12 +2145,372 @@ pub fn read_feature_asset(worktree: &Path, slug: &str, path: &str) -> Result<Val
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::runtime::tests::test_runtime;
     use orch_git::fixtures::scratch_repo;
     use orch_protocol::{InboxDecision, McpMsg};
     use std::sync::Arc;
+
+    /// §3.6 (F9): a panic in one step of a run is a `tick_panic` event, and
+    /// the run's other steps carry on (here: delivery), so do later ticks.
+    #[test]
+    fn a_panic_in_one_step_never_stops_delivery() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        let run = approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        rt.store
+            .write(|s| {
+                for t in s.turns.iter_mut().filter(|t| t.agent_id == lead) {
+                    t.status = TurnStatus::Done;
+                }
+                let a = s.agents.get_mut(lead).unwrap();
+                a.spawns = 1;
+                a.tracker.state = AgentState::Idle;
+            })
+            .unwrap();
+        ok(&rt, back, "send_message", json!({"to": "lead", "body": "a question"}));
+        rt.inject_tick_fault(Some("dispatch"));
+        rt.team_tick();
+        rt.inject_tick_fault(None);
+        let ev = rt.db.last_run_event(&run.id, "tick_panic").unwrap().expect("tick_panic");
+        assert_eq!((ev.detail["run"].as_str(), ev.detail["step"].as_str()), (Some(run.id.as_str()), Some("dispatch")));
+        assert!(ev.detail["message"].as_str().unwrap().contains("injected panic"));
+        assert!(
+            rt.store.read(|s| s.turns.iter().any(|t| t.agent_id == lead && !t.messages.is_empty())),
+            "delivery ran after the panic"
+        );
+        rt.team_tick();
+        let panics = rt.db.run_events(&run.id, 500).unwrap().into_iter().filter(|e| e.kind == "tick_panic").count();
+        assert_eq!(panics, 1, "the next tick runs every step");
+        // A panic outside a run.
+        assert_eq!(rt.tick_step("-", "watchdog", || -> u8 { panic!("boom") }), None);
+        assert_eq!(rt.tick_step("-", "watchdog", || 7), Some(7));
+    }
+
+    /// §3.2: a message carried by a turn that can't be pasted yet is injected
+    /// at the agent's next tool call (and that turn dropped, never pasted
+    /// with it again); a turn being pasted keeps its messages.
+    #[test]
+    fn a_message_in_a_queued_turn_is_injected_but_not_one_being_pasted() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        rt.store
+            .write(|s| {
+                for t in s.turns.iter_mut().filter(|t| t.agent_id == lead) {
+                    t.status = TurnStatus::Done;
+                }
+                let a = s.agents.get_mut(lead).unwrap();
+                a.spawns = 1;
+                a.tracker.state = AgentState::Idle;
+            })
+            .unwrap();
+        ok(&rt, back, "send_message", json!({"to": "lead", "body": "first"}));
+        rt.team_tick();
+        let carrying = |rt: &Runtime| -> Vec<TurnRow> {
+            rt.store
+                .read(|s| s.turns.iter().filter(|t| t.agent_id == lead && !t.messages.is_empty()).cloned().collect())
+        };
+        assert_eq!(carrying(&rt).len(), 1);
+        let lrec = rt.store.read(|s| s.agents[lead].clone());
+        let (text, ids) = rt.inject_messages(&lrec, Some("p1")).expect("injected past its queued turn");
+        assert!(text.contains("first"));
+        assert!(carrying(&rt).is_empty(), "its turn is dropped: never pasted twice");
+        assert_eq!(ids.len(), 1);
+        // A turn being pasted holds its messages.
+        ok(&rt, back, "send_message", json!({"to": "lead", "body": "second"}));
+        rt.team_tick();
+        rt.store
+            .write(|s| {
+                let t = s.turns.iter_mut().find(|t| t.agent_id == lead && !t.messages.is_empty()).unwrap();
+                t.status = TurnStatus::Delivering;
+            })
+            .unwrap();
+        assert!(rt.inject_messages(&lrec, Some("p1")).is_none());
+    }
+
+    /// F7: a task body is stored whole; one too long to keep is refused.
+    #[test]
+    fn a_task_body_is_stored_whole_or_refused() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let lead = "fx-lead-1";
+        let body = format!("{}THE END", "x".repeat(9_000));
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back", "body": body}));
+        let t = rt.db.tasks(None, None, None).unwrap().into_iter().find(|t| t.title == "API").unwrap();
+        assert_eq!(t.body, body);
+        let huge = "x".repeat(MAX_STORED + 1);
+        let (err, msg) = call(&rt, lead, "create_task", json!({"title": "Big", "node": "back", "body": huge}));
+        assert!(err && msg.contains("too long"), "{msg}");
+    }
+
+    fn old_messages(rt: &Runtime) {
+        rt.db.write(|tx| Ok(tx.execute("UPDATE messages SET created_at_ms = 1", [])?)).unwrap();
+    }
+
+    fn delivery_items(rt: &Runtime) -> Vec<orch_store::InboxItem> {
+        rt.store.read(|s| s.inbox.iter().filter(|i| i.kind == "delivery").cloned().collect())
+    }
+
+    fn open_delivery_items(rt: &Runtime) -> Vec<orch_store::InboxItem> {
+        delivery_items(rt).into_iter().filter(|i| i.open()).collect()
+    }
+
+    fn idle(rt: &Runtime, id: &str) {
+        rt.store
+            .write(|s| {
+                for t in s.turns.iter_mut().filter(|t| t.agent_id == id) {
+                    t.status = TurnStatus::Done;
+                }
+                let a = s.agents.get_mut(id).unwrap();
+                a.spawns = 1;
+                a.tracker.state = AgentState::Idle;
+            })
+            .unwrap();
+    }
+
+    /// §3.7: an unread message over 10 min with its target not working is a
+    /// `delivery` decision naming the cause, once per episode; the Lead's
+    /// own is `stuck_lead` (user only), a member's also tells the Lead; a
+    /// working target is left alone; it closes by itself once seen.
+    #[test]
+    fn the_invariant_raises_one_decision_per_episode_and_closes_when_seen() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        idle(&rt, lead);
+        idle(&rt, back);
+        ok(&rt, back, "send_message", json!({"to": "lead", "body": "report"}));
+        ok(&rt, lead, "send_message", json!({"to": "back", "body": "go"}));
+        let cx = rt.run_ctx(&rt.db.runs(None, true).unwrap()[0].id).unwrap();
+        // Young messages are no breach.
+        rt.delivery_invariant(&cx, now_ms());
+        assert!(delivery_items(&rt).is_empty());
+        old_messages(&rt);
+        // A working target is not a breach either.
+        rt.store.write(|s| s.agents.get_mut(back).unwrap().tracker.state = AgentState::Working).unwrap();
+        rt.delivery_invariant(&cx, now_ms());
+        assert_eq!(delivery_items(&rt).len(), 1, "only the lead's");
+        rt.store.write(|s| s.agents.get_mut(back).unwrap().tracker.state = AgentState::Idle).unwrap();
+        rt.delivery_invariant(&cx, now_ms());
+        rt.delivery_invariant(&cx, now_ms());
+        let items = delivery_items(&rt);
+        assert_eq!(items.len(), 2, "one per episode, not per tick");
+        let of = |a: &str| items.iter().find(|i| i.agent_id.as_deref() == Some(a)).unwrap();
+        assert_eq!(of(lead).payload["episode"], "stuck_lead");
+        assert_eq!(of(back).payload["episode"], "delivery");
+        assert_eq!(of(back).payload["blocker"], "unknown");
+        assert_eq!(of(back).payload["messages"][0]["preview"], "go");
+        assert_eq!(of(back).body, "fx-back-1 did not receive 1 message(s)");
+        // The Lead heard about the member, not about itself.
+        let notes: Vec<_> =
+            rt.db.messages(&cx.run.id, None, false).unwrap().into_iter().filter(|m| m.kind == "status").collect();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].body.contains("fx-back-1") && notes[0].to_agent.as_deref() == Some(lead));
+        // The decision is on the agent's record.
+        // Dismissed: the same episode is not raised again.
+        let id = of(back).id;
+        rt.decide(id, orch_protocol::InboxDecision::Dismiss, None, None).unwrap();
+        rt.delivery_invariant(&cx, now_ms());
+        assert_eq!(delivery_items(&rt).len(), 2);
+        // Seen: the open decision closes by itself.
+        let lid = of(lead).id;
+        let ids: Vec<u64> =
+            of(lead).payload["messages"].as_array().unwrap().iter().map(|m| m["id"].as_u64().unwrap()).collect();
+        rt.db.hand_messages(&ids, lead, "turn", None, now_ms()).unwrap();
+        rt.db.see_messages(&ids, now_ms()).unwrap();
+        rt.close_delivered();
+        let closed = rt.store.read(|s| s.inbox.iter().find(|i| i.id == lid).cloned()).unwrap();
+        assert!(!closed.open() && closed.decided_by.as_deref() == Some("core"), "{closed:?}");
+    }
+
+    /// An open decision already names the cause: no second one.
+    #[test]
+    fn a_stuck_agent_with_an_open_decision_gets_no_second_one() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        idle(&rt, lead);
+        idle(&rt, back);
+        ok(&rt, lead, "send_message", json!({"to": "back", "body": "go"}));
+        old_messages(&rt);
+        rt.add_item(Some(back), "startup", "x".into(), json!({}), 1).unwrap();
+        let cx = rt.run_ctx(&rt.db.runs(None, true).unwrap()[0].id).unwrap();
+        rt.delivery_invariant(&cx, now_ms());
+        assert!(delivery_items(&rt).is_empty());
+    }
+
+    /// `retry`: failed messages and turns go back with their attempts reset.
+    #[test]
+    fn retry_puts_failed_messages_and_turns_back() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        idle(&rt, back);
+        ok(&rt, lead, "send_message", json!({"to": "back", "body": "go"}));
+        let run = rt.db.runs(None, true).unwrap()[0].id.clone();
+        let m = rt.db.messages(&run, Some(("back", Some(back))), true).unwrap();
+        let ids: Vec<u64> = m.iter().map(|m| m.id).collect();
+        rt.db.fail_messages(&ids, "no_ack", 5).unwrap();
+        let turn = rt.deliver_messages_turn(back, "ORCH: x", ids.clone()).unwrap();
+        rt.store
+            .write(|s| {
+                let t = s.turns.iter_mut().find(|t| t.id == turn).unwrap();
+                t.status = TurnStatus::Failed;
+                t.attempts = 3;
+            })
+            .unwrap();
+        rt.on_delivery_failed(&crate::handover::DeliveryFailure {
+            agent: back.into(),
+            turns: vec![turn.clone()],
+            messages: ids.clone(),
+            attempts: 3,
+            blocker: "no_ack",
+            since_ms: 1,
+            tail: "tail".into(),
+        });
+        let items = delivery_items(&rt);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].payload["blocker"], "no_ack");
+        assert_eq!(items[0].payload["messages"][0]["id"], ids[0]);
+        // Events are written off the caller's thread.
+        let ev = (0..100)
+            .find_map(|_| {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                rt.db.last_run_event(&run, "delivery_failed").unwrap()
+            })
+            .expect("delivery_failed event");
+        assert!(ev.detail["decision"].is_string());
+        rt.retry_delivery(items[0].id).unwrap();
+        let t = rt.store.read(|s| s.turns.iter().find(|t| t.id == turn).cloned()).unwrap();
+        assert_eq!((t.status, t.attempts), (TurnStatus::Queued, 0));
+        let m = &rt.db.messages_by_id(&ids).unwrap()[0];
+        assert_eq!((m.failed_at_ms, m.attempts), (None, 0));
+        assert!(!rt.store.read(|s| s.inbox.iter().find(|i| i.id == items[0].id).unwrap().open()));
+    }
+
+    /// The `Working` watchdog on a silent team agent: a decision (and a note
+    /// for the Lead), once per turn.
+    #[test]
+    fn a_silent_working_team_agent_raises_a_decision_and_tells_the_lead() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let back = "fx-back-1";
+        ok(&rt, "fx-lead-1", "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        assert!(rt.working_silent(back, 77));
+        assert!(rt.working_silent(back, 77));
+        let items = delivery_items(&rt);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].payload["episode"], "working_silent");
+        let run = rt.db.runs(None, true).unwrap()[0].id.clone();
+        assert!(rt.db.messages(&run, None, false).unwrap().iter().any(|m| m.kind == "status"));
+        // A solo agent has no decision: the caller raises its alert.
+    }
+
+    /// §3.7: a member waiting 15 min on an idle Lead is reported to the
+    /// Lead; 10 min later, to the user as a decision.
+    #[test]
+    fn a_member_waiting_on_an_idle_lead_is_told_then_escalated() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        idle(&rt, lead);
+        idle(&rt, back);
+        ok(&rt, back, "send_message", json!({"to": "lead", "body": "which way?"}));
+        let run = rt.db.runs(None, true).unwrap()[0].id.clone();
+        let cx = rt.run_ctx(&run).unwrap();
+        let status = |rt: &Runtime| {
+            rt.db.messages(&run, None, false).unwrap().into_iter().filter(|m| m.kind == "status").count()
+        };
+        let later = |min: u64| now_ms() + min * 60_000;
+        rt.supervise(&cx, later(5));
+        assert_eq!(status(&rt), 0, "not yet");
+        rt.supervise(&cx, later(16));
+        assert_eq!(status(&rt), 1);
+        assert!(
+            rt.db
+                .messages(&run, None, false)
+                .unwrap()
+                .iter()
+                .any(|m| m.body.contains("has waited") && m.body.contains("for you"))
+        );
+        assert!(delivery_items(&rt).is_empty());
+        rt.supervise(&cx, later(17));
+        assert_eq!(status(&rt), 1, "told once");
+        rt.supervise(&cx, later(27));
+        let items = delivery_items(&rt);
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            (items[0].payload["episode"].as_str(), items[0].agent_id.as_deref()),
+            (Some("stuck_wait"), Some(back))
+        );
+        // A busy lead is not idle: nothing is raised for it.
+    }
+
+    /// H: after Retry, the same stuck_wait episode raises a new decision once
+    /// another window has passed (not at once), and again after that.
+    #[test]
+    fn retry_of_a_stuck_wait_decision_raises_again_after_a_window() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        idle(&rt, lead);
+        idle(&rt, back);
+        ok(&rt, back, "send_message", json!({"to": "lead", "body": "which way?"}));
+        let run = rt.db.runs(None, true).unwrap()[0].id.clone();
+        let cx = rt.run_ctx(&run).unwrap();
+        let later = |min: u64| now_ms() + min * 60_000;
+        rt.supervise(&cx, later(27));
+        let first = open_delivery_items(&rt).remove(0);
+        rt.retry_delivery(first.id).unwrap();
+        assert!(open_delivery_items(&rt).is_empty(), "closed by the retry");
+        // The test's clock runs ahead: the retry happened at minute 27.
+        let key = format!("{back}:stuck_wait:{}", first.payload["since_ms"]);
+        assert!(rt.house().retried_keys.contains_key(&key), "{key}");
+        rt.house().retried_keys.insert(key, later(27));
+        rt.supervise(&cx, later(28));
+        assert!(open_delivery_items(&rt).is_empty(), "not at once: the wait counts from the retry");
+        rt.supervise(&cx, later(60));
+        let again = open_delivery_items(&rt);
+        assert_eq!(again.len(), 1, "a second failure of the episode is raised again");
+        assert_ne!(again[0].id, first.id);
+        assert_eq!(again[0].payload["episode"], "stuck_wait");
+    }
+
+    /// H: the same for a silent Working turn.
+    #[test]
+    fn retry_of_a_working_silent_decision_raises_again_after_a_window() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let back = "fx-back-1";
+        ok(&rt, "fx-lead-1", "create_task", json!({"title": "API", "node": "back"}));
+        rt.team_tick();
+        assert!(rt.working_silent(back, 77));
+        let first = open_delivery_items(&rt).remove(0);
+        rt.retry_delivery(first.id).unwrap();
+        assert!(open_delivery_items(&rt).is_empty());
+        // The key is free again; the clock of the episode starts at the retry.
+        assert!(rt.working_silent(back, 77));
+        let again = open_delivery_items(&rt);
+        assert_eq!(again.len(), 1, "raised again for the same turn");
+        assert_ne!(again[0].id, first.id);
+    }
 
     fn call(rt: &Runtime, agent: &str, tool: &str, args: Value) -> (bool, String) {
         let (err, text, _) = rt
@@ -1931,7 +2518,7 @@ mod tests {
         (err, text)
     }
 
-    fn ok(rt: &Runtime, agent: &str, tool: &str, args: Value) -> String {
+    pub(crate) fn ok(rt: &Runtime, agent: &str, tool: &str, args: Value) -> String {
         let (err, text) = call(rt, agent, tool, args);
         assert!(!err, "{agent} {tool}: {text}");
         text
@@ -1963,7 +2550,7 @@ mod tests {
         (d, rt, rd, repo, p.id)
     }
 
-    fn write_commit(rt: &Runtime, agent: &str, file: &str, body: &str) {
+    pub(crate) fn write_commit(rt: &Runtime, agent: &str, file: &str, body: &str) {
         let wt = rt.store.read(|s| s.agents[agent].worktree.clone());
         let p = wt.join(file);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -2026,14 +2613,14 @@ mod tests {
         ok(&rt, rev, "submit_review", json!({"task": t, "findings": ["api.rs:1 no test"], "summary": "one gap"}));
         assert_eq!(rt.db.task(t).unwrap().unwrap().status, TaskStatus::Review);
         let lrec = rt.store.read(|s| s.agents[lead].clone());
-        let report = rt.inject_messages(&lrec).unwrap();
+        let report = rt.inject_messages(&lrec, None).unwrap().0;
         assert!(report.contains("Reviewed by review: one gap") && report.contains("api.rs:1 no test"), "{report}");
         assert!(queued(&rt, back).iter().any(|b| b.contains("api.rs:1 no test")), "the owner sees the findings");
         assert!(ok(&rt, lead, "merge", json!({"branch": "orch/fx/back-1", "task": t})).contains("is done"));
     }
 
     /// A launched feature past its spec gate.
-    fn approved(rt: &Runtime, pid: &str) -> TeamRun {
+    pub(crate) fn approved(rt: &Runtime, pid: &str) -> TeamRun {
         approved_with(rt, pid, "bugfix-squad")
     }
 
@@ -2103,7 +2690,7 @@ mod tests {
         assert!(rt.plan_lock(&rec(), "Read").is_none());
         ok(&rt, back, "submit_plan", json!({"plan": "add api.rs; test it"}));
         let lrec = rt.store.read(|s| s.agents[lead].clone());
-        assert!(rt.inject_messages(&lrec).unwrap().contains("add api.rs; test it"));
+        assert!(rt.inject_messages(&lrec, None).unwrap().0.contains("add api.rs; test it"));
         let task = rec().team.unwrap().task.unwrap();
         ok(&rt, lead, "decide_plan", json!({"task": task, "approve": false, "note": "also docs"}));
         assert!(queued(&rt, back).iter().any(|b| b.contains("needs changes: also docs")));
@@ -2112,6 +2699,49 @@ mod tests {
         ok(&rt, lead, "decide_plan", json!({"task": task, "approve": true}));
         assert!(queued(&rt, back).iter().any(|b| b.contains("is approved")));
         assert!(edit(&rt).is_none(), "edits allowed once approved");
+    }
+
+    /// F7: a long plan reached the lead cut mid-sentence (6,000 chars in the
+    /// message, 8,000 kept), with no file and no marker. It now arrives whole,
+    /// as its first part and the path of its full text.
+    #[test]
+    fn a_long_plan_reaches_the_lead_whole_never_cut() {
+        let (_d, rt, _rd, _repo, pid) = setup();
+        approved(&rt, &pid);
+        let (lead, back) = ("fx-lead-1", "fx-back-1");
+        ok(&rt, lead, "create_task", json!({"title": "API", "node": "back", "plan_first": true}));
+        rt.team_tick();
+        let plan = format!("{} THE END OF THE PLAN", "step; ".repeat(1_600));
+        assert!(plan.chars().count() > 9_000);
+        ok(&rt, back, "submit_plan", json!({"plan": plan}));
+        let task = rt.store.read(|s| s.agents[back].team.as_ref().unwrap().task.unwrap());
+        assert_eq!(rt.db.task(task).unwrap().unwrap().flow.plan.as_deref(), Some(plan.as_str()), "kept whole");
+        let run = rt.store.read(|s| s.agents[lead].team.as_ref().unwrap().run_id.clone());
+        let m = rt
+            .db
+            .messages(&run, Some(("lead", Some(lead))), true)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.kind == "plan")
+            .unwrap();
+        assert!(m.body.contains("THE END OF THE PLAN"), "the message is whole");
+        // Rendered for the lead: its first part and its file, which holds all of it.
+        let lrec = rt.store.read(|s| s.agents[lead].clone());
+        let text = rt.inject_messages(&lrec, None).unwrap().0;
+        let file = rt.cfg.paths.agent_dir(lead).join("messages").join(message_file_name(m.id));
+        assert!(text.contains(&format!("full text: {}", file.display())), "{text}");
+        assert!(std::fs::read_to_string(&file).unwrap().contains("THE END OF THE PLAN"));
+        // `inbox` shows the path too, never "(more…)".
+        let out = ok(&rt, lead, "inbox", json!({}));
+        assert!(out.contains(&file.display().to_string()) && !out.contains("(more"), "{out}");
+        // Too long to keep: refused with a way out, not cut.
+        let huge = "x".repeat(MAX_STORED + 1);
+        assert!(call(&rt, back, "submit_plan", json!({"plan": huge})).1.contains("put the details in a file"));
+        assert!(
+            call(&rt, back, "send_message", json!({"to": "lead", "body": huge}))
+                .1
+                .contains("put the details in a file")
+        );
     }
 
     #[test]
@@ -2247,9 +2877,9 @@ mod tests {
         // Messages: a busy agent gets them at its next tool call.
         ok(&rt, back, "send_message", json!({"to": "lead", "body": "where is the config?"}));
         let lrec = rt.store.read(|s| s.agents[lead].clone());
-        let injected = rt.inject_messages(&lrec).unwrap();
+        let injected = rt.inject_messages(&lrec, None).unwrap().0;
         assert!(injected.starts_with("ORCH: 1 new message") && injected.contains("where is the config?"));
-        assert!(rt.inject_messages(&lrec).is_none(), "delivered once");
+        assert!(rt.inject_messages(&lrec, None).is_none(), "delivered once");
         ok(&rt, lead, "send_message", json!({"to": "back", "body": "in config/"}));
         assert!(ok(&rt, back, "inbox", json!({})).contains("in config/"));
 
@@ -2271,7 +2901,7 @@ mod tests {
         let review = json!({"fixed": ["a typo"], "unfixed": [{"finding": "no index on x", "reason": "out of scope"}]});
         ok(&rt, back, "report_done", json!({"summary": "api.rs added, tested", "review": review}));
         assert_eq!(rt.db.task(t1.id).unwrap().unwrap().status, TaskStatus::Review);
-        let report = rt.inject_messages(&lrec).unwrap();
+        let report = rt.inject_messages(&lrec, None).unwrap().0;
         assert!(report.contains("report from fx-back-1") && report.contains("LEFT: no index on x"), "{report}");
         assert!(call(&rt, lead, "merge", json!({"branch": "main"})).1.contains("only branches of this feature"));
         assert!(ok(&rt, lead, "merge", json!({"branch": "orch/fx/back-1", "task": t1.id})).contains("is done"));
@@ -2487,7 +3117,11 @@ mod tests {
         assert_eq!(watchdog_check(&a, 20 * min), None);
         assert_eq!(watchdog_check(&a, 26 * min), Some((Watch::Stalled, 0)));
         a.tracker.background_tasks = 1;
-        assert_eq!(watchdog_check(&a, 26 * min), None, "background work is progress elsewhere");
+        assert_eq!(
+            watchdog_check(&a, 26 * min),
+            Some((Watch::Stalled, 0)),
+            "§3.2: the count left by the last Stop no longer hides a silent turn"
+        );
         a.role.turn_ceiling_minutes = Some(20);
         assert_eq!(watchdog_check(&a, 21 * min), Some((Watch::Ceiling(20), 0)));
         a.tracker.state = AgentState::Idle;

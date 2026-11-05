@@ -398,9 +398,10 @@ impl Core {
         match env.msg {
             // PermissionRequest included: the runtime holds it as a store
             // Inbox item, and parks it when nobody answers in time (FR-705).
-            Msg::Hook(m) => {
-                let output = rt.on_hook(&m, Some(&s));
-                reply(Reply::Hook { output });
+            Msg::Hook(m) => rt.serve_hook(&m, Some(&s), |r| bus::write_line(&mut &s, &ReplyEnvelope::new(r)).is_ok()),
+            Msg::HookAck(m) => {
+                rt.on_hook_ack(&m.agent_id, &m.ids);
+                reply(Reply::Ack);
             }
             Msg::Status(m) => {
                 rt.on_status(&m);
@@ -728,6 +729,23 @@ impl Core {
                     rt.advance(n, agent_runtime::inbox::Stage::Effect("deleted", None));
                     Ok(json!({"ok": true, "effect": "deleted", "lifecycle": rt.lifecycle(n), "result": r}))
                 }
+                other => bail!("{other} does not apply to {item}"),
+            };
+        }
+        // A message that did not arrive, or an agent that looks stuck (T-207).
+        if let Some(n) = item.strip_prefix("delivery-") {
+            let n: u64 = n.parse()?;
+            let agent = rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).and_then(|i| i.agent_id.clone()));
+            let agent = agent.ok_or_else(|| anyhow!("no delivery item {n}"))?;
+            return match action {
+                "retry" => rt.retry_delivery(n),
+                "restart_fresh" => {
+                    let r = self.restart_fresh(&agent)?;
+                    let _ = rt.decide(n, InboxDecision::Dismiss, None, None);
+                    rt.advance(n, agent_runtime::inbox::Stage::Effect("restarted", None));
+                    Ok(json!({"ok": true, "effect": "restarted", "lifecycle": rt.lifecycle(n), "result": r}))
+                }
+                "dismiss" => Ok(done(rt.decide(n, InboxDecision::Dismiss, None, None)?)),
                 other => bail!("{other} does not apply to {item}"),
             };
         }
@@ -1447,6 +1465,7 @@ mod tests {
             resume_failed: false,
             start_fresh: false,
             spawned_at_ms: None,
+            crash_restarts: vec![],
         }
     }
 
@@ -1610,13 +1629,14 @@ mod tests {
                 deadline_ms,
                 payload: json!({"hook_event_name": "PermissionRequest", "session_id": "s",
                     "tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": "/w"}),
+                acks: vec![],
             }));
             bus::write_line(&mut &s, &msg).unwrap();
             let r: ReplyEnvelope = bus::read_line(&mut BufReader::new(&s)).unwrap();
             r
         };
         let behavior = |r: ReplyEnvelope| match r.reply {
-            Reply::Hook { output: Some(o) } => o.0["hookSpecificOutput"]["decision"].clone(),
+            Reply::Hook { output: Some(o), .. } => o.0["hookSpecificOutput"]["decision"].clone(),
             other => panic!("{other:?}"),
         };
         let ask2 = ask.clone();

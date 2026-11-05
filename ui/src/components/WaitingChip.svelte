@@ -21,6 +21,7 @@
     if (!ref) return null;
     switch (rec.waiting_on.kind) {
       case 'user':
+      case 'delivery':
         return () => focusCard(ref);
       case 'agent':
         return () => openAgent(ref);

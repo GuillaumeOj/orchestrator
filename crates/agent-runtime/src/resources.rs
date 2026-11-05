@@ -1,6 +1,8 @@
 //! The live-agent cap under macOS memory pressure (FR-203, NFR-1b) and the
 //! idle auto-suspend rule (FR-204). Pure policy plus a probe behind a trait.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -218,6 +220,59 @@ pub fn to_suspend(
     out
 }
 
+/// §3.5 (F6): how long a team member with unread messages waits for a live
+/// slot before one is freed for it.
+pub const SLOT_WAIT_MS: u64 = 120_000;
+
+/// The live agents counted under the cap (not the reserved ones) fill it.
+pub fn at_cap(live: &[LiveAgent], cap: u32) -> bool {
+    live.iter().filter(|a| !a.reserved).count() >= cap as usize
+}
+
+/// A team member with no process, unread messages and a queued turn.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SlotWaiter {
+    pub id: String,
+    pub run: String,
+    /// Its oldest unread message (ms).
+    pub since_ms: u64,
+}
+
+/// A live team member: its run, and whether it has unread messages.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Member {
+    pub run: String,
+    pub unread: bool,
+}
+
+/// §3.5 (F6): the slot deadlock. When the live agents fill the cap and a
+/// member has waited `wait_ms` ([`SLOT_WAIT_MS`] by default) with unread messages, the least
+/// recently active live idle member of its run with no unread messages is
+/// suspended for it: `(waiter, victim)`, one per pass. Never a reserved
+/// agent (the Lead's own slot), never one that is not suspendable.
+pub fn slot_victim(
+    waiters: &[SlotWaiter],
+    live: &[LiveAgent],
+    members: &BTreeMap<String, Member>,
+    cap: u32,
+    now_ms: u64,
+    wait_ms: u64,
+) -> Option<(String, String)> {
+    if !at_cap(live, cap) {
+        return None;
+    }
+    let mut waiters: Vec<&SlotWaiter> =
+        waiters.iter().filter(|w| now_ms.saturating_sub(w.since_ms) >= wait_ms).collect();
+    waiters.sort_by_key(|w| w.since_ms);
+    waiters.into_iter().find_map(|w| {
+        live.iter()
+            .filter(|a| !a.reserved && a.suspendable())
+            .filter(|a| members.get(&a.id).is_some_and(|m| m.run == w.run && !m.unread))
+            .min_by_key(|a| a.last_activity_ms)
+            .map(|a| (w.id.clone(), a.id.clone()))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,6 +370,40 @@ mod tests {
         agents[0].queued_turns = 0;
         agents[0].background_tasks = 1;
         assert!(to_suspend(&agents, 1, None, now).is_empty());
+    }
+
+    #[test]
+    fn a_member_waiting_for_a_slot_frees_one_from_its_own_run() {
+        let min = 60_000;
+        let live = vec![a("r1-front", true, 5 * min), a("r1-ux", true, 2 * min), a("r2-back", true, 0), {
+            let mut l = a("r1-lead", true, 0);
+            l.reserved = true;
+            l
+        }];
+        let m = |run: &str, unread: bool| Member { run: run.into(), unread };
+        let mut members: BTreeMap<String, Member> = [
+            ("r1-front".to_string(), m("r1", false)),
+            ("r1-ux".to_string(), m("r1", false)),
+            ("r2-back".to_string(), m("r2", false)),
+            ("r1-lead".to_string(), m("r1", false)),
+        ]
+        .into();
+        let w = vec![SlotWaiter { id: "r1-back".into(), run: "r1".into(), since_ms: 0 }];
+        // Under 2 min: nothing yet.
+        assert_eq!(slot_victim(&w, &live, &members, 3, SLOT_WAIT_MS - 1, SLOT_WAIT_MS), None);
+        // The least recently active idle member of the same run, never the
+        // lead, never another run's (r2-back is older).
+        let at = SLOT_WAIT_MS + 10 * min;
+        assert_eq!(slot_victim(&w, &live, &members, 3, at, SLOT_WAIT_MS), Some(("r1-back".into(), "r1-ux".into())));
+        // One with unread messages is kept.
+        members.get_mut("r1-ux").unwrap().unread = true;
+        assert_eq!(slot_victim(&w, &live, &members, 3, at, SLOT_WAIT_MS), Some(("r1-back".into(), "r1-front".into())));
+        // A busy one is never stopped.
+        let mut busy = live.clone();
+        busy[0].idle = false;
+        assert_eq!(slot_victim(&w, &busy, &members, 3, at, SLOT_WAIT_MS), None);
+        // A free slot: no one is stopped.
+        assert_eq!(slot_victim(&w, &live, &members, 4, at, SLOT_WAIT_MS), None);
     }
 
     #[test]

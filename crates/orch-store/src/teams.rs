@@ -247,7 +247,11 @@ impl Task {
 /// A message between nodes of a run (SPEC §7 Message). `to_agent` is set
 /// when the message is for one agent of the node (or once it is delivered
 /// to one).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// Its delivery lifecycle (FR-403): queued → handed (`handed_at_ms`: pasted
+/// or injected) → seen (`delivered_at_ms`: the CLI acknowledged it) → read
+/// (`read_at_ms`: the model saw all of it), or failed (`failed_at_ms`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub id: u64,
     pub team_run_id: String,
@@ -268,6 +272,50 @@ pub struct Message {
     pub delivered_at_ms: Option<u64>,
     #[serde(default)]
     pub read_at_ms: Option<u64>,
+    #[serde(default)]
+    pub handed_at_ms: Option<u64>,
+    /// Hand-overs taken back without an acknowledgement (redeliveries).
+    #[serde(default)]
+    pub attempts: u32,
+    /// `turn` (pasted in a turn) or `inject` (tool-call context), once handed.
+    #[serde(default)]
+    pub via: Option<String>,
+    /// The turn that carried it: the pasted turn's id, or the running turn's
+    /// `prompt_id` for an injection.
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    #[serde(default)]
+    pub failed_at_ms: Option<u64>,
+    /// Why it was last taken back or failed (`no_ack`, `not_fully_seen`…).
+    #[serde(default)]
+    pub last_error: Option<String>,
+}
+
+/// Where a message stands in its delivery lifecycle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryState {
+    Queued,
+    Handed,
+    Seen,
+    Read,
+    Failed,
+}
+
+impl Message {
+    pub fn delivery_state(&self) -> DeliveryState {
+        if self.read_at_ms.is_some() {
+            DeliveryState::Read
+        } else if self.failed_at_ms.is_some() {
+            DeliveryState::Failed
+        } else if self.delivered_at_ms.is_some() {
+            DeliveryState::Seen
+        } else if self.handed_at_ms.is_some() {
+            DeliveryState::Handed
+        } else {
+            DeliveryState::Queued
+        }
+    }
 }
 
 /// A design, doc or build artifact handed between nodes (SPEC §7 Artifact).
@@ -444,7 +492,7 @@ fn row_task(r: &rusqlite::Row) -> rusqlite::Result<Task> {
     })
 }
 
-const MSG_COLS: &str = "id, team_run_id, from_node, from_agent, to_node, to_agent, kind, body, ref, created_at_ms, delivered_at_ms, read_at_ms";
+const MSG_COLS: &str = "id, team_run_id, from_node, from_agent, to_node, to_agent, kind, body, ref, created_at_ms, delivered_at_ms, read_at_ms, handed_at_ms, attempts, via, turn_id, failed_at_ms, last_error";
 
 fn row_message(r: &rusqlite::Row) -> rusqlite::Result<Message> {
     Ok(Message {
@@ -460,6 +508,12 @@ fn row_message(r: &rusqlite::Row) -> rusqlite::Result<Message> {
         created_at_ms: r.get::<_, i64>(9)? as u64,
         delivered_at_ms: opt_u64(r, 10)?,
         read_at_ms: opt_u64(r, 11)?,
+        handed_at_ms: opt_u64(r, 12)?,
+        attempts: r.get::<_, i64>(13)? as u32,
+        via: r.get(14)?,
+        turn_id: r.get(15)?,
+        failed_at_ms: opt_u64(r, 16)?,
+        last_error: r.get(17)?,
     })
 }
 
@@ -920,18 +974,41 @@ impl Store {
         })
     }
 
-    /// Marks messages delivered (handed to the agent, not yet acted on) and
-    /// binds them to the agent of the node that got them. They stay unread
-    /// until [`Store::ack_messages`].
-    pub fn deliver_messages(&self, ids: &[u64], agent_id: &str, at_ms: u64) -> Result<()> {
+    /// Hands messages to `agent_id` (pasted in turn `turn_id`, or injected
+    /// during the turn `turn_id`), binding a node's message to that agent.
+    /// Not seen yet: [`Store::see_messages`] once the CLI acknowledges.
+    pub fn hand_messages(
+        &self,
+        ids: &[u64],
+        agent_id: &str,
+        via: &str,
+        turn_id: Option<&str>,
+        at_ms: u64,
+    ) -> Result<()> {
         self.each_message(
             ids,
-            "UPDATE messages SET to_agent=coalesce(to_agent, ?2), delivered_at_ms=coalesce(delivered_at_ms, ?3) WHERE id=?1",
-            vec![agent_id.to_string().into(), (at_ms as i64).into()],
+            "UPDATE messages SET to_agent=coalesce(to_agent, ?2), handed_at_ms=?3, via=?4, turn_id=?5, delivered_at_ms=NULL
+               WHERE id=?1 AND read_at_ms IS NULL AND failed_at_ms IS NULL",
+            vec![
+                agent_id.to_string().into(),
+                (at_ms as i64).into(),
+                via.to_string().into(),
+                turn_id.map(str::to_string).map(Into::into).unwrap_or(rusqlite::types::Value::Null),
+            ],
         )
     }
 
-    /// The turn that carried these messages ended: they are read.
+    /// The CLI acknowledged these handed messages: they are seen.
+    pub fn see_messages(&self, ids: &[u64], at_ms: u64) -> Result<()> {
+        self.each_message(
+            ids,
+            "UPDATE messages SET delivered_at_ms=coalesce(delivered_at_ms, ?2)
+               WHERE id=?1 AND handed_at_ms IS NOT NULL AND read_at_ms IS NULL AND failed_at_ms IS NULL",
+            vec![(at_ms as i64).into()],
+        )
+    }
+
+    /// The model saw all of them: they are read.
     pub fn ack_messages(&self, ids: &[u64], at_ms: u64) -> Result<()> {
         self.each_message(
             ids,
@@ -940,10 +1017,76 @@ impl Store {
         )
     }
 
-    /// The turn that carried these messages never ran (cancelled, dropped):
-    /// unread ones are delivered again.
+    /// Back to the queue (a hand-over not acknowledged, a turn that never
+    /// ran): unread ones are delivered again. `why` is kept as `last_error`;
+    /// `attempt` counts it as a redelivery.
+    pub fn requeue_messages(&self, ids: &[u64], why: Option<&str>, attempt: bool) -> Result<()> {
+        self.each_message(
+            ids,
+            "UPDATE messages SET handed_at_ms=NULL, via=NULL, turn_id=NULL, delivered_at_ms=NULL,
+                 attempts=attempts + ?2, last_error=coalesce(?3, last_error)
+               WHERE id=?1 AND read_at_ms IS NULL AND failed_at_ms IS NULL",
+            vec![
+                (attempt as i64).into(),
+                why.map(str::to_string).map(Into::into).unwrap_or(rusqlite::types::Value::Null),
+            ],
+        )
+    }
+
+    /// A turn that never ran (cancelled, dropped): its messages go back to
+    /// the queue, not counted as a redelivery.
     pub fn undeliver_messages(&self, ids: &[u64]) -> Result<()> {
-        self.each_message(ids, "UPDATE messages SET delivered_at_ms=NULL WHERE id=?1 AND read_at_ms IS NULL", vec![])
+        self.requeue_messages(ids, None, false)
+    }
+
+    /// Delivery gave up on these (the paste watchdog's last attempt).
+    pub fn fail_messages(&self, ids: &[u64], error: &str, at_ms: u64) -> Result<()> {
+        self.each_message(
+            ids,
+            "UPDATE messages SET failed_at_ms=?2, last_error=?3 WHERE id=?1 AND read_at_ms IS NULL",
+            vec![(at_ms as i64).into(), error.to_string().into()],
+        )
+    }
+
+    /// The user (or the Lead) asked for another go at these (T-207
+    /// `retry`): failed or taken-back messages that no turn has shown yet go
+    /// back to the queue with their attempts reset.
+    pub fn retry_messages(&self, ids: &[u64]) -> Result<()> {
+        self.each_message(
+            ids,
+            "UPDATE messages SET failed_at_ms=NULL, handed_at_ms=NULL, via=NULL, turn_id=NULL, attempts=0,
+                 last_error=NULL
+               WHERE id=?1 AND read_at_ms IS NULL AND delivered_at_ms IS NULL",
+            vec![],
+        )
+    }
+
+    /// Unread messages injected into `agent_id`'s turns (seen or not), or
+    /// into every agent's when `None`.
+    pub fn injected_unread(&self, agent_id: Option<&str>) -> Result<Vec<Message>> {
+        let agent = agent_id.map(str::to_string);
+        self.read(move |c| {
+            let mut st = c.prepare(&format!(
+                "SELECT {MSG_COLS} FROM messages WHERE via='inject' AND read_at_ms IS NULL AND failed_at_ms IS NULL
+                   AND (?1 IS NULL OR to_agent=?1) ORDER BY id"
+            ))?;
+            Ok(st.query_map(params![agent], row_message)?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// Messages by id (missing ids are skipped).
+    pub fn messages_by_id(&self, ids: &[u64]) -> Result<Vec<Message>> {
+        let ids = ids.to_vec();
+        self.read(move |c| {
+            let mut st = c.prepare_cached(&format!("SELECT {MSG_COLS} FROM messages WHERE id=?1"))?;
+            let mut out = vec![];
+            for id in ids {
+                if let Some(m) = st.query_row([id as i64], row_message).optional()? {
+                    out.push(m);
+                }
+            }
+            Ok(out)
+        })
     }
 
     /// Marks messages delivered and read at once (shown in full where they
@@ -1359,6 +1502,7 @@ mod tests {
             created_at_ms: 1,
             delivered_at_ms: None,
             read_at_ms: None,
+            ..Default::default()
         };
         let m1 = s.add_message(&m).unwrap();
         let m2 = s.add_message(&Message { to_agent: Some("back-2".into()), ..m.clone() }).unwrap();
@@ -1370,6 +1514,42 @@ mod tests {
         s.mark_messages(&[m1, m2], None, 10).unwrap();
         assert!(s.messages("r1", Some(("back", None)), true).unwrap().is_empty());
         assert_eq!(s.messages("r1", None, false).unwrap().len(), 2);
+
+        // The delivery lifecycle: queued → handed → seen → read, back to queued, failed.
+        let m3 = s.add_message(&m).unwrap();
+        let st = |id: u64| s.messages_by_id(&[id]).unwrap().remove(0);
+        assert_eq!(st(m3).delivery_state(), DeliveryState::Queued);
+        s.see_messages(&[m3], 3).unwrap();
+        assert_eq!(st(m3).delivery_state(), DeliveryState::Queued, "never seen before it is handed");
+        s.hand_messages(&[m3], "back-1", "inject", Some("p1"), 4).unwrap();
+        let h = st(m3);
+        assert_eq!(
+            (h.delivery_state(), h.via.as_deref(), h.turn_id.as_deref()),
+            (DeliveryState::Handed, Some("inject"), Some("p1"))
+        );
+        assert_eq!(s.injected_unread(Some("back-1")).unwrap().len(), 1);
+        assert!(s.injected_unread(Some("back-2")).unwrap().is_empty());
+        s.requeue_messages(&[m3], Some("no_ack"), true).unwrap();
+        let q = st(m3);
+        assert_eq!(
+            (q.delivery_state(), q.attempts, q.last_error.as_deref(), q.via),
+            (DeliveryState::Queued, 1, Some("no_ack"), None)
+        );
+        s.hand_messages(&[m3], "back-1", "turn", Some("0000000a"), 5).unwrap();
+        s.see_messages(&[m3], 6).unwrap();
+        assert_eq!((st(m3).delivery_state(), st(m3).delivered_at_ms), (DeliveryState::Seen, Some(6)));
+        s.undeliver_messages(&[m3]).unwrap();
+        assert_eq!(
+            (st(m3).delivery_state(), st(m3).attempts),
+            (DeliveryState::Queued, 1),
+            "a dropped turn is no redelivery"
+        );
+        s.fail_messages(&[m3], "no_ack", 7).unwrap();
+        assert_eq!(st(m3).delivery_state(), DeliveryState::Failed);
+        s.hand_messages(&[m3], "back-1", "turn", None, 8).unwrap();
+        assert_eq!(st(m3).handed_at_ms, None, "a failed message is not handed again");
+        s.ack_messages(&[m3], 9).unwrap();
+        assert_eq!(st(m3).delivery_state(), DeliveryState::Read);
 
         s.add_artifact(&Artifact {
             id: 0,
