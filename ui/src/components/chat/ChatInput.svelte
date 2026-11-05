@@ -39,7 +39,7 @@
   }
 
   function onkeydown(e) {
-    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing && e.keyCode !== 229) {
       e.preventDefault();
       submit();
     } else if (e.key === 'Escape') {

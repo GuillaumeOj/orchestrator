@@ -163,7 +163,7 @@
   // j/k stops: the cards, the fold header, the digest header (notes §10.2).
   const stops = $derived([...t.items.filter((i) => i.type === 'card' || i.type === 'fold').map(stopKey), 'digest']);
   // ⌘⇧I and the default selection skip a deciding card unless nothing else is open (P4.4 notes F13).
-  const decidingStops = $derived(new Set(t.cards.filter((c) => c.deciding).map((c) => `c:${c.id}`)));
+  const decidingStops = $derived(new Set(t.cards.filter((c) => c.quiet).map((c) => `c:${c.id}`)));
   const firstStop = $derived(
     stops.find((s) => s !== 'digest' && !decidingStops.has(s)) ?? stops.find((s) => decidingStops.has(s)) ?? stops[0],
   );
@@ -485,7 +485,7 @@
     }
     if (line) toast(`${alreadyText(line.line)}. Showing the next card.`);
     else if (id && !card) toast('That decision is no longer listed.');
-    const target = card ?? t.cards.find((c) => !c.deciding) ?? t.cards[0] ?? null;
+    const target = card ?? t.cards.find((c) => !c.quiet) ?? t.cards[0] ?? null;
     sel = target ? `c:${target.id}` : 'digest';
     feed?.focus();
     if (card) flash(card.key);
@@ -576,7 +576,7 @@
   /** A source link: a doc opens in the feature pane, `chat:` jumps to its entry, `agent:` / `run:` open them (api-contract §5). */
   function openRef(ref) {
     if (ref.kind === 'chat') return jumpEntry(ref.id);
-    if (ref.kind === 'agent') return openSession(ref.id, { watch: true });
+    if (ref.kind === 'agent') return openSession(ref.id, { watch: true, keepLive: true });
     if (ref.kind === 'run') {
       select('run', ref.id);
       if (!app.inspector) app.inspector = true;
@@ -643,6 +643,14 @@
       if (f) return openFeature(f.id);
     }
     if (o.agent) openAgent(o.agent);
+  }
+
+  /** `u` on a focused line: its Undo, if it has one. True on a line (nothing else undoes from there). */
+  function undoOnLine(e) {
+    const line = e.target.closest?.('article.line');
+    if (!line) return false;
+    line.querySelector('button[data-undo-run]')?.click();
+    return true;
   }
 
   /** Runs what a key or an action id means on decision `d` (the Inbox's set). */
@@ -800,7 +808,9 @@
     if (key === 't' && past) return take(), backToToday();
     if (key === '[' || key === ']') return take(), stepDay(key === '[' ? -1 : 1);
     if (past) {
-      // Read-only: nothing acts. `o` opens a digest row's subject; j/k scroll.
+      // Read-only, but a line's Undo still works (notes §6): `u` on a focused line.
+      if (key === 'u' && undoOnLine(e)) return take();
+      // `o` opens a digest row's subject; j/k scroll.
       const o = outcome ? past.outcomes.find((x) => x.id === outcome) : null;
       if (key === '/') return take(), openSearch();
       if (o && key === 'o') return take(), openOutcome(o);
@@ -824,6 +834,8 @@
     // Not on a card (the fold or digest header, a digest row still listed, a
     // focused line or its read-only card): only move and undo.
     const onLine = !!e.target.closest?.('article.line');
+    // `u` on a focused line undoes that line (notes §6.6); else the card's or the last decision's.
+    if (intent.kind === 'undo' && onLine) return take(), undoOnLine(e);
     if ((o || !selCard || onLine) && intent.kind !== 'move' && intent.kind !== 'undo') return take();
     if (selCard && pendingOf(selCard.id) && intent.kind !== 'move' && intent.kind !== 'undo') return take();
     if (apply(intent, selCard?.d)) take();
@@ -915,7 +927,7 @@
           {:else if it.type === 'text'}
             <ChatText item={it} {ow} past today={todayDay} {reflabel} onref={openRef} refok={refOk} />
           {:else}
-            <ChatLine item={it} expanded={expanded.has(it.key)} pulse={false} entries={viewEntries} refok={refOk} onref={openRef} ontoggle={() => toggleLine(it.key)} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
+            <ChatLine item={it} expanded={expanded.has(it.key)} pulse={false} entries={viewEntries} refok={refOk} onref={openRef} ontoggle={() => toggleLine(it.key)} onexpand={() => (expanded = new Set([...expanded, it.key]))} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
           {/if}
         {/each}
         {#if !pastThread.length}<p class="empty muted">Nothing was recorded on {dayLabel(past.day)}.</p>{/if}
@@ -972,7 +984,7 @@
           <span aria-hidden="true">{it.open ? '▾' : '▸'}</span> {foldText(it)} · <Kbd keys={it.open ? '⏎' : 'j'} />
         </button>
       {:else if it.type === 'line'}
-        <ChatLine item={it} expanded={expanded.has(it.key)} pulse={pulse === it.key} {entries} refok={refOk} onref={openRef} ontoggle={() => toggleLine(it.key)} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
+        <ChatLine item={it} expanded={expanded.has(it.key)} pulse={pulse === it.key} {entries} refok={refOk} onref={openRef} ontoggle={() => toggleLine(it.key)} onexpand={() => (expanded = new Set([...expanded, it.key]))} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
       {:else}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <article

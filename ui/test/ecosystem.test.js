@@ -383,6 +383,7 @@ describe('Settings pane', () => {
     await fireEvent.keyDown(nav, { key: 'j' });
     await fireEvent.keyDown(nav, { key: 'j' });
     await fireEvent.keyDown(nav, { key: 'j' });
+    await fireEvent.keyDown(nav, { key: 'j' });
     await tick();
     expect(app.panes.s1.section).toBe('terminal');
     expect(getByText(/Not designed yet/)).toBeTruthy();

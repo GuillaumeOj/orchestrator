@@ -7,7 +7,7 @@
   import { untrack } from 'svelte';
   import { now30, openUrl } from '../../lib/app.svelte.js';
   import { byWords, lineMarker, verbText } from '../../lib/chat.js';
-  import { clock, waited } from '../../lib/format.js';
+  import { clock, dayTime, waited } from '../../lib/format.js';
   import { agentOf, blockOf, deliveryPrimary, keyless, parked, restarted, subjectLine } from '../../lib/inbox.js';
   import {
     decidingName,
@@ -166,7 +166,10 @@
   {#if subjectLine(d)}<div class="subject secondary">{subjectLine(d)}</div>{/if}
   {#if askText}<div class="why muted" data-asks>{askText}</div>{/if}
   {#if d.summary && !d.context?.length}<p class="summary">{d.summary}</p>{/if}
-  <ContextBlocks decision={d} bind:choices />
+  <ContextBlocks decision={d} bind:choices onjump={(id) => onref({ kind: 'chat', id })} />
+  {#if d.kind === 'rule_proposal' && d.payload?.declined_before && live}
+    <p class="muted note" data-second-ask>Not now on {dayTime(d.payload.declined_at_ms)}. It won't be asked again if you decline.</p>
+  {/if}
   {#if live && restarted(d)}
     <p class="muted note">This was still waiting when the core restarted. Your answer reaches {agentOf(d) ?? 'the agent'} as a turn.</p>
   {/if}
@@ -179,7 +182,7 @@
     </div>
   {/if}
   {#if note}
-    <div class="note" class:ro={!live} data-annotation>
+    <div class="ann" class:ro={!live} data-annotation>
       <div class="nh"><b>Overwatch</b>{#if rec}{' '}<span class="muted">· {recommendsText(d)}</span>{/if}</div>
       <p class="nt" class:clamp={!noteOpen} bind:this={noteEl}>{note.note}</p>
       {#if longNote}<button class="link" aria-expanded={noteOpen} onclick={() => (noteOpen = !noteOpen)}>{noteOpen ? 'Show less' : 'Show more'}</button>{/if}
@@ -359,7 +362,7 @@
     color: var(--color-accent-default);
     font: var(--text-caption);
   }
-  .note {
+  .ann {
     display: flex;
     flex-direction: column;
     gap: var(--space-xs);
@@ -368,7 +371,7 @@
     border-left: 2px solid var(--color-accent-default);
     border-radius: var(--radius-sm);
   }
-  .note.ro {
+  .ann.ro {
     border-left-color: var(--color-border-strong);
     color: var(--color-text-secondary);
   }
@@ -390,7 +393,7 @@
     gap: 0 var(--space-xs);
     font: var(--text-caption);
   }
-  .note .link {
+  .ann .link {
     align-self: flex-start;
   }
   .deciding {
