@@ -164,6 +164,31 @@ pub fn append_rule(path: &Path, rule: &Rule) -> Result<()> {
     write_doc(path, &doc)
 }
 
+/// Appends `rule` to the file as a commented-out `[[rule]]` for the user to
+/// edit and uncomment (Edit rule on a proposal). The file is created if missing.
+pub fn append_commented_rule(path: &Path, rule: &Rule) -> Result<()> {
+    ensure(path)?;
+    let mut text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str("\n# A rule proposed from your answers: remove the leading # of each line to turn it on.\n");
+    text.push_str("# [[rule]]\n");
+    text.push_str(&format!(
+        "# id = {:?}\n# match = {:?}\n# effect = {:?}\n",
+        rule.id,
+        rule.pattern,
+        rule.effect.as_str()
+    ));
+    if let Some(r) = &rule.role {
+        text.push_str(&format!("# role = {r:?}\n"));
+    }
+    if let Some(f) = &rule.from {
+        text.push_str(&format!("# from = {f:?}\n"));
+    }
+    crate::compile::write_atomic(path, text.as_bytes()).with_context(|| format!("write {}", path.display()))
+}
+
 /// Removes the rule `id` (explicit or generated). False if absent.
 pub fn remove_rule(path: &Path, id: &str) -> Result<bool> {
     if !path.exists() {

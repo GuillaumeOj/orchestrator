@@ -229,6 +229,24 @@ pub async fn chat_day(core: CoreState<'_>, day: String) -> Res<Value> {
     blocking(core, move |c| c.runtime()?.chat_day(&day)).await
 }
 
+/// P4.4: the user's message to the Overwatch (api-contract §3.3): `{entry}`.
+#[tauri::command]
+pub async fn chat_send(core: CoreState<'_>, text: String, thread: Option<String>) -> Res<Value> {
+    blocking(core, move |c| Ok(serde_json::json!({"entry": c.runtime()?.chat_send(&text, thread.as_deref())?}))).await
+}
+
+/// P4.4: removes a message the Overwatch has not taken (it was down or off).
+#[tauri::command]
+pub async fn chat_discard(core: CoreState<'_>, entry: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.chat_discard(&entry)).await
+}
+
+/// P4.4: undoes an oversight line (`text` corrects an answer).
+#[tauri::command]
+pub async fn chat_undo(core: CoreState<'_>, entry: String, text: Option<String>) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.chat_undo(&entry, text.as_deref())).await
+}
+
 /// P4.4: the Overwatch's settings (api-contract §3.3).
 #[tauri::command]
 pub async fn overwatch_settings(core: CoreState<'_>) -> Res<Value> {

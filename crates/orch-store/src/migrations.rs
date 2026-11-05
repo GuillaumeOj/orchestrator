@@ -579,6 +579,12 @@ CREATE INDEX messages_agent_via ON messages(to_agent, via, read_at_ms);
     r#"
 ALTER TABLE permission_rules ADD COLUMN migrated_at_ms INTEGER;
 "#,
+    // 15 (P4.4, FR-1305/1310): a chat entry's extras as JSON: a user text's
+    // `delivery` (waking | pending | delivered), an Overwatch text's
+    // `reply_to`, and the Overwatch's undo state of a line stays in `line`.
+    r#"
+ALTER TABLE chat_entries ADD COLUMN meta TEXT;
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

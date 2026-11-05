@@ -711,6 +711,12 @@ impl Core {
             let r = rt.decide(n, decision, scope, message)?;
             return Ok(done(r));
         }
+        // A learned-rule proposal (FR-1308): Add rule · Not now · Edit rule.
+        if let Some(n) = item.strip_prefix("rule-") {
+            let n: u64 = n.parse()?;
+            let r = rt.rule_proposal_act(n, action)?;
+            return Ok(r);
+        }
         // A start that never happened (FR-415).
         if let Some(n) = item.strip_prefix("startup-") {
             let n: u64 = n.parse()?;

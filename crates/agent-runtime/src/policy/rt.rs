@@ -27,6 +27,9 @@ pub(crate) enum Gate {
     HardDeny(Evaluation),
     /// A one-shot allow (an approved parked call) took it.
     OneShot,
+    /// The user reversed the Overwatch's approval of this very call (1 h):
+    /// refused once, whatever the policy says.
+    Reversed,
     /// The policy's answer (`None`: no rule and no default asked for), and
     /// who asked.
     Policy(Option<Evaluation>, Subject),
@@ -48,7 +51,7 @@ impl Runtime {
         }
     }
 
-    fn policy_path(&self, scope: &Scope) -> Result<PathBuf> {
+    pub(crate) fn policy_path(&self, scope: &Scope) -> Result<PathBuf> {
         Ok(match scope {
             Scope::Global => self.global_policy_path(),
             Scope::Project(id) => {
@@ -89,6 +92,8 @@ impl Runtime {
         if self.policy.reload(scope) == Some(true) {
             self.policy_alert(scope);
         }
+        // A rule the user wrote by hand for an open proposal closes it (F7).
+        self.rules_check_edited();
         self.touch("policy");
     }
 
@@ -180,6 +185,9 @@ impl Runtime {
         if let Some(h) = hard.as_ref().filter(|h| h.kind == HardKind::Deny) {
             return Gate::HardDeny(Evaluation::hard(h));
         }
+        if self.overwatch.take_deny(&rec.id, &call.tool, &call.input) {
+            return Gate::Reversed;
+        }
         if self.one_shot(rec, call, hard.as_ref()) {
             return Gate::OneShot;
         }
@@ -232,7 +240,20 @@ impl Runtime {
         }
         self.policy_sync();
         let (target, role, agent) = self.rule_target(scope, scope_id, project)?;
-        let path = self.policy_path(&target)?;
+        self.add_rule_to(&target, role, agent, pattern, effect, from)
+    }
+
+    /// [`Runtime::add_rule`] into a given file (a learned rule's target).
+    pub(crate) fn add_rule_to(
+        &self,
+        target: &Scope,
+        role: Option<String>,
+        agent: Option<String>,
+        pattern: &str,
+        effect: Effect,
+        from: Option<String>,
+    ) -> Result<Value> {
+        let path = self.policy_path(target)?;
         let w = self.policy.write_lock();
         let rule = Rule {
             id: self.policy.next_id(),
@@ -245,7 +266,7 @@ impl Runtime {
             note: None,
         };
         file::append_rule(&path, &rule)?;
-        self.policy_reload(&target);
+        self.policy_reload(target);
         drop(w);
         let out = json!({"rule": rule, "file": target.label(), "path": path.display().to_string()});
         let mut detail = out.clone();

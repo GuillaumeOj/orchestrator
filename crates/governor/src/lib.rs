@@ -15,7 +15,8 @@ pub use calendar::{CalendarError, Curve, Day, WorkBlock, WorkingCalendar};
 pub use estimator::{Calibration, Calibrator, FAMILIES, FamilyCalibrator, MIN_FAMILY_SAMPLES, ModelK, family_index};
 pub use governor::{
     Carry, CostClass, Decision, DenyReason, EstimatorState, ForecastSnapshot, Governor, GovernorError, LimitResponse,
-    LiveRecord, LiveTurn, NextActionPreview, Release, SprintRecord, Stats, ToolCallRequest, TurnRequest, Verdict,
+    LiveRecord, LiveTurn, NextActionPreview, Release, SprintRecord, Stats, TierError, ToolCallRequest, TurnRequest,
+    Verdict,
 };
 pub use models::{Downgrade, DowngradeWhen, ModelOverride, ModelWindow, ModelWindowReading, ModelWindowState};
 pub use plan::{
