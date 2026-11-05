@@ -79,8 +79,17 @@ impl Runtime {
     fn with_tallies<R>(&self, f: impl FnOnce(&mut Tallies) -> R) -> R {
         let mut g = self.tallies();
         let t = g.as_mut().expect("loaded");
+        let before = json!(t);
         let r = f(t);
-        let _ = self.db.set_setting(KEY, &json!(t));
+        // Only the decisions behind the last threshold matter; kept bounded.
+        for e in t.values_mut() {
+            let keep = e.from.len().saturating_sub(10);
+            e.from.drain(..keep);
+        }
+        let after = json!(t);
+        if after != before {
+            let _ = self.db.set_setting(KEY, &after);
+        }
         r
     }
 

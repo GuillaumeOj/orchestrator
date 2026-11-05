@@ -201,7 +201,8 @@ impl Runtime {
     /// The last `n` assistant texts of a session's transcript, ≤ 400 chars each.
     fn assistant_tail(&self, session: &str, n: usize) -> Vec<String> {
         let Some(path) = crate::transcript::find(&self.cfg.projects_root, session) else { return vec![] };
-        let Ok(text) = std::fs::read_to_string(path) else { return vec![] };
+        // The end of the file is enough for ten texts (a transcript can be megabytes).
+        let Some(text) = read_tail(&path, 512 * 1024) else { return vec![] };
         let mut out: Vec<String> = text
             .lines()
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
@@ -450,4 +451,17 @@ impl Runtime {
         Ok(json!({"ok": true, "line": {"verb": "answered", "agent": item.agent_id, "by": "overwatch",
                                        "sources": shown}}))
     }
+}
+
+/// The last `max` bytes of a file as text, starting at a line (a cut first line is dropped).
+fn read_tail(path: &std::path::Path, max: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let cut = len.saturating_sub(max);
+    f.seek(SeekFrom::Start(cut)).ok()?;
+    let mut bytes = vec![];
+    f.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    Some(if cut > 0 { text.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or_default() } else { text })
 }

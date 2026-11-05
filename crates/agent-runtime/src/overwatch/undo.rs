@@ -99,7 +99,6 @@ impl Runtime {
             "rule" => {
                 let id = ctx["id"].as_str()?;
                 let file = ctx["file"].as_str();
-                self.policy_sync();
                 let scope = file.and_then(crate::policy::Scope::parse);
                 self.policy.find(id, scope.as_ref()).is_none().then(|| "the rule is not in the file any more".into())
             }
