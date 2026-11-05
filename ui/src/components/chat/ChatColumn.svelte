@@ -82,10 +82,10 @@
   import DecisionCard from './DecisionCard.svelte';
 
   const TITLE = 'Overwatch';
-  const NO_COMMAND = /not found|unknown command|not registered|no such command/i;
+  const NO_COMMAND = /^command \w+ not found/i;
   /** A command the core does not have yet reads as that, not as the raw error. */
   const cmdError = (err) => (NO_COMMAND.test(errText(err)) ? "the core doesn't support messages yet" : errText(err));
-    const DIGEST_ROWS = 5;
+  const DIGEST_ROWS = 5;
   const PULSE_MS = 1500;
   const DAYS_PAGE = 30;
   const SEARCH_LIMIT = 50;
@@ -126,6 +126,7 @@
   let newReply = $state(false); // "New from the Overwatch ↓"
   let unsent = $state([]); // messages `chat_send` refused: { entry, why }
   let restarting = $state(false);
+  let focusedCard = $state(null); // the card with the keyboard focus inside it
   let tick5 = $state(Date.now()); // the in-flight row's clock, every 5 s
   let sendSeq = 0;
 
@@ -139,7 +140,7 @@
       foldOpen,
       seen,
       // Read only for a card past its collapse time: hovering costs no rebuild otherwise.
-      isHeld: (id) => hovered === id || typing.has(id),
+      isHeld: (id, by) => hovered === id || typing.has(id) || (by === 'overwatch' && (sel === `c:${id}` || focusedCard === id)),
       // The collapse clock is the moment of the derivation (`now` only wakes it at a due time).
       now: Math.max(now, Date.now()),
       memo,
@@ -152,7 +153,7 @@
   const viewEntries = $derived(past?.status === 'ready' ? Object.fromEntries(past.entries.map((x) => [x.id, x])) : entries);
   const reflabel = (ref) => refLabel(ref, viewEntries);
   const coreDown = $derived(app.data?.core?.ok === false);
-  const strip_ = $derived(stripText(ow));
+  const downStrip = $derived(stripText(ow));
   // Your last message and what became of it (notes §2.2).
   const texts = $derived(t.items.filter((i) => i.type === 'text').map((i) => i.entry));
   const waitingOn = $derived(awaiting(texts));
@@ -281,6 +282,7 @@
     for (const e of fresh) heard.add(e.id);
     // Quiet: at the foot it stays at the foot; scrolled up it shows a pill instead (notes §2.1).
     untrack(() => {
+      if (past || searchOpen) return; // only today's thread follows the foot
       if (stick) toFoot();
       else newReply = true;
     });
@@ -444,19 +446,8 @@
   async function openResult(r) {
     const e = r.entry;
     if (r.day === todayDay) {
-      searchOpen = false;
-      await tick();
-      const it = t.items.find((i) => i.key === e.id) ?? t.items.find((i) => i.id && i.id === e.decision);
-      if (!it) return feed?.focus();
-      if (it.type === 'text') return jumpEntry(it.key);
-      if (it.type === 'line') expanded = new Set([...expanded, it.key]);
-      else if (it.type === 'card') sel = `c:${it.id}`;
-      await tick();
-      flash(it.key);
-      const el = feed?.querySelector(it.type === 'line' ? `[data-line-toggle="${it.key}"]` : `.stop.sel`);
-      el?.scrollIntoView({ block: 'center' });
-      (el ?? feed)?.focus();
-      return;
+      const key = t.items.find((i) => i.key === e.id) ? e.id : t.items.find((i) => i.id && i.id === e.decision)?.key;
+      return key ? jumpEntry(key) : feed?.focus();
     }
     openDay(r.day, { viaSearch: true, target: e.id });
   }
@@ -616,19 +607,17 @@
       if (!t.cards.some((c) => c.key === id) && fold?.n) foldOpen = true;
     }
     await tick();
-    let el = feed?.querySelector(`[data-entry="${id}"]`);
-    if (!el) {
-      const it = t.items.find((i) => i.key === id);
-      if (it?.type === 'line') {
-        expanded = new Set([...expanded, it.key]);
-        await tick();
-        el = feed?.querySelector(`[data-line-toggle="${it.key}"]`);
-      } else if (it?.type === 'card') {
-        sel = `c:${it.id}`;
-        await tick();
-        el = feed?.querySelector('.stop.sel');
-      }
-    }
+    const it = (past ? pastThread : t.items).find((i) => i.key === id);
+    let el = null;
+    if (it?.type === 'line') {
+      expanded = new Set([...expanded, it.key]);
+      await tick();
+      el = feed?.querySelector(`[data-line-toggle="${it.key}"]`);
+    } else if (it?.type === 'card') {
+      sel = `c:${it.id}`;
+      await tick();
+      el = feed?.querySelector('.stop.sel');
+    } else el = feed?.querySelector(`[data-entry="${id}"]`);
     if (!el) return toast('That entry is no longer listed.');
     flash(id);
     el.scrollIntoView({ block: 'center' });
@@ -872,10 +861,10 @@
       <button class="iconbtn" aria-label="Search decisions · /" title="Search decisions · /" onclick={openSearch}><span aria-hidden="true">{'\u{F0349}'}</span></button>
     {/if}
   </header>
-  {#if strip_}
+  {#if downStrip}
     <div class="strip down" data-ow-strip>
-      <span class="l1">Overwatch is down</span>
-      <span class="l2" class:bad={restartError}>{restartError ? `Could not restart: ${restartError}` : `${ow.why ? `${ow.why} · ` : ''}cards still work`}</span>
+      <span class="l1">{downStrip.title}</span>
+      <span class="l2" class:bad={restartError}>{restartError ? `Could not restart: ${restartError}` : downStrip.detail}</span>
       <button class="btn" disabled={restarting || coreDown} title={coreDown ? 'The core is not reachable' : undefined} onclick={restart}>{restarting ? 'Restarting…' : 'Restart'}</button>
     </div>
   {/if}
@@ -993,6 +982,9 @@
           class="stop"
           class:sel={cur === `c:${it.id}`}
           aria-label="{it.d.title}"
+          data-entry={it.key}
+          onfocusin={() => (focusedCard = it.id)}
+          onfocusout={() => focusedCard === it.id && (focusedCard = null)}
           onmouseenter={() => hover(it.id, true)}
           onmouseleave={() => hover(it.id, false)}
           onmousedown={() => ((sel = `c:${it.id}`), (outcome = null))}
@@ -1111,8 +1103,8 @@
     flex: none;
     box-sizing: border-box;
     align-self: center;
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     border: 1.5px solid var(--color-text-muted);
   }
@@ -1131,7 +1123,7 @@
     border: 0;
     border-radius: 0;
     background: linear-gradient(90deg, var(--color-status-waiting-for-you) 0 2px, transparent 2px 4px, var(--color-status-waiting-for-you) 4px 6px, transparent 6px);
-    width: 8px;
+    width: 6px;
   }
   .dot.down {
     border-color: var(--color-status-waiting-for-you);

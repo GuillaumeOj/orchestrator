@@ -219,7 +219,7 @@ export function thread({
   filter = 'all',
   foldOpen = false,
   seen = new Map(),
-  isHeld = /** @type {(id: string) => boolean} */ (() => false),
+  isHeld = /** @type {(id: string, by?: string) => boolean} */ (() => false),
   now = Date.now(),
   memo = null,
 }) {
@@ -250,14 +250,14 @@ export function thread({
       const lc = d.lifecycle ?? {};
       if (waiting.has(d.id) || CARD_STATES.has(lc.state)) return 'card';
       // Settled by the Overwatch while you read it: it stays only while held (pointer or focus), no timer.
-      if (lc.state === 'effect' && lc.decided_by === 'overwatch' && isHeld(d.id)) return 'card';
+      if (lc.state === 'effect' && lc.decided_by === 'overwatch' && isHeld(d.id, 'overwatch')) return 'card';
       if (lc.state === 'effect' && lc.decided_by === 'user') {
         const due = (lc.effect_at_ms ?? seen.get(d.id) ?? now) + COLLAPSE_MS;
         if (now < due) {
           nextDue = nextDue == null ? due : Math.min(nextDue, due);
           return 'card';
         }
-        if (isHeld(d.id)) return 'card';
+        if (isHeld(d.id, 'user')) return 'card';
       }
       return 'line';
     }

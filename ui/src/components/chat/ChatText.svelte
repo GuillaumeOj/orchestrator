@@ -20,9 +20,17 @@
   let bodyEl = $state();
   // Long = the clamp hides something: measured, not guessed from the characters (notes §2.1).
   let over = $state(false);
+  // Measured again when the body changes size (a diagram or an image arrives later).
   $effect(() => {
     e.text;
-    if (!more && bodyEl) over = bodyEl.scrollHeight > bodyEl.clientHeight + 1;
+    if (!bodyEl) return;
+    const measure = () => {
+      if (!more) over = bodyEl.scrollHeight > bodyEl.clientHeight + 1;
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(bodyEl);
+    return () => ro.disconnect();
   });
   const long = $derived(!user && (over || more));
 

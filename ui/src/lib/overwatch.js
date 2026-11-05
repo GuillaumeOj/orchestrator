@@ -65,21 +65,23 @@ function baseTip(ow) {
 /** The status opens the Overwatch's session when there is one today; `off` never does (notes §1). */
 export const canOpenSession = (ow) => !!ow.has_session && ow.status !== 'off';
 
-/** The strip under the header, only while down (notes §1). */
+/** The strip under the header, only while down: its two lines (notes §1). */
 export const stripText = (ow) =>
-  ow.status === 'down' ? `Overwatch is down${ow.why ? ` · ${ow.why}` : ''} · cards still work` : null;
+  ow.status === 'down'
+    ? { title: 'Overwatch is down', detail: `${ow.why ? `${ow.why} · ` : ''}cards still work` }
+    : null;
 
-/** The hint under the input for the status (notes §2): none while it is up. */
+/** The hint under the input for the status (notes §2): `{ text, link }`, `link` the words that open Settings. */
 export function inputHint(ow) {
   switch (ow.status) {
     case 'paused':
-      return 'Paused · it answers when it resumes';
+      return { text: 'Paused · it answers when it resumes', link: null };
     case 'down':
-      return 'Down · messages are kept until it is back';
+      return { text: 'Down · messages are kept until it is back', link: null };
     case 'off':
-      return 'Off · turn it on in Settings';
+      return { text: 'Off · ', link: 'turn it on in Settings' };
     default:
-      return '';
+      return { text: '', link: null };
   }
 }
 

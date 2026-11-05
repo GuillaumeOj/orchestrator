@@ -399,15 +399,8 @@ export function openOverwatch() {
   openSession(ow.agent ?? 'overwatch', { watch: true });
 }
 
-/** Restart (the strip, the palette): a fresh session; the toast says when it is back (notes §8). */
-export async function restartOverwatch() {
-  try {
-    await invoke('overwatch_restart');
-  } catch (e) {
-    toast(`Could not restart: ${errText(e)}`, { kind: 'error' });
-    throw e;
-  }
-}
+/** Restart (the strip, the palette, Settings): a fresh session; the caller shows a failure where it is (notes §8). */
+export const restartOverwatch = () => invoke('overwatch_restart');
 
 /** The chat's level filter (notes §5). */
 export const filterDecisions = (id) => askChat({ id: null, filter: id });
@@ -589,13 +582,16 @@ export const openMission = () => openSingleton('mission');
  * mode. One already open gets focus, in watch mode again (notes §1.10).
  * Without Mission control: as `openAgent`.
  */
-export function openSession(agentId, { watch = false } = {}) {
+export function openSession(agentId, { watch = false, keepLive = false } = {}) {
   const over = findPane((s) => s.type === 'mission');
   // `watch`: never a live tab, so a keystroke can't reach the session by accident (it counts as an intervention).
   if (!over && !watch) return openAgent(agentId);
   const existing = findPane((s) => s.type === 'agent' && s.agentId === agentId);
+  // `keepLive`: a tab you are typing in stays as it is (a link only brings it forward).
+  if (existing && keepLive && !app.panes[existing].watch) return focusPane(existing);
+  const from = app.focused;
   if (existing) {
-    Object.assign(app.panes[existing], { watch: true, over: over ?? null });
+    Object.assign(app.panes[existing], { watch: true, over: over ?? null, from });
     return focusPane(existing);
   }
   return addDockPane({
@@ -604,6 +600,7 @@ export function openSession(agentId, { watch = false } = {}) {
     projectId: agent(agentId)?.project_id,
     watch: true,
     over: over ?? null,
+    from,
   });
 }
 
@@ -617,8 +614,10 @@ export function takeOver(paneId) {
 
 /** Esc in watch mode: back to the Mission control the session opened over; the dock tab stays. */
 export function leaveWatch(paneId) {
-  const over = app.panes[paneId]?.over;
+  const { over, from } = app.panes[paneId] ?? {};
+  // Back to where it was opened from: the board, else the pane that had the focus (the chat's status).
   if (over && app.panes[over]) focusPane(over);
+  else if (from && app.panes[from] && from !== paneId) focusPane(from);
   else openMission();
 }
 
@@ -1183,7 +1182,13 @@ export function commands() {
     { id: 'overwatch.ask', label: 'Ask the Overwatch', run: askOverwatch },
     { id: 'decisions.search', label: 'Search decisions', run: searchDecisions },
     ...(app.now?.overwatch?.status === 'down'
-      ? [{ id: 'overwatch.restart', label: 'Restart the Overwatch', run: () => restartOverwatch().catch(() => {}) }]
+      ? [
+          {
+            id: 'overwatch.restart',
+            label: 'Restart the Overwatch',
+            run: () => restartOverwatch().catch((e) => toast(`Could not restart: ${errText(e)}`, { kind: 'error' })),
+          },
+        ]
       : []),
     ...(canOpenSession(overwatchOf(app.now))
       ? [{ id: 'overwatch.session', label: "Open the Overwatch's session", run: openOverwatch }]

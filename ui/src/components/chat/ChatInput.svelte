@@ -14,11 +14,8 @@
   const draft = $derived(app.chatDraft);
   const n = $derived(draft.length);
   const over = $derived(n > MAX_CHARS);
-  // The hint for the status; "turn it on in Settings" is a link inside it.
-  const LINK = 'turn it on in Settings';
+  // The hint for the status; its link, when it has one, opens the Overwatch settings.
   const hint = $derived(inputHint(ow));
-  const hintLead = $derived(hint.endsWith(LINK) ? hint.slice(0, -LINK.length) : hint);
-  const hintLink = $derived(hint.endsWith(LINK));
 
   const spaced = (x) => x.toLocaleString('en-US').replace(',', ' ');
 
@@ -69,7 +66,7 @@
   ></textarea>
   <div class="hints muted" id="ow-input-hint">
     <span class="state">
-      {hintLead}{#if hintLink}<button class="link" onclick={() => openSettings('overwatch')}>{LINK}</button>{/if}
+      {hint.text}{#if hint.link}<button class="link" onclick={() => openSettings('overwatch')}>{hint.link}</button>{/if}
       {#if n >= COUNT_FROM}<span class:over data-count>{spaced(n)} / {spaced(MAX_CHARS)}</span>{/if}
     </span>
     <span class="keys">

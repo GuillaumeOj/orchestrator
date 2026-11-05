@@ -15,7 +15,7 @@
   const tail = $derived(tailText(line));
 </script>
 
-<article class="line" class:pulse class:leftopen={line.verb === 'left open'} aria-label={lineLabel(line, now)} data-line={item.id} data-verb={line.verb}>
+<article class="line" class:pulse class:leftopen={line.verb === 'left open'} aria-label={lineLabel(line, now)} data-line={item.id} data-entry={item.key} data-verb={line.verb}>
   <button class="row" aria-expanded={expanded} title={lineText(line)} onclick={ontoggle} data-line-toggle={item.key}>
     <span class="caret" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
     <span class="head"><span class="verb" class:warn={warnVerb(line.verb)}>{verbText(line.verb)}</span>{line.agent ? ` ${line.agent}` : ''}:</span>

@@ -16,8 +16,8 @@
     recommended,
     recommendsText,
     refKind,
+    refLabel,
     SOURCES_SHOWN,
-    sourceLabel,
   } from '../../lib/overwatch.js';
   import { decisionKind, LIFECYCLE } from '../../lib/status.js';
   import ContextBlocks from '../ContextBlocks.svelte';
@@ -80,8 +80,11 @@
   const askText = $derived.by(() => {
     const a = d.asks_because;
     if (!a || d.kind !== 'permission') return '';
-    if (a.kind === 'core' || a.kind === 'policy') return `Only you can allow this: ${a.detail}.`;
-    return a.kind === 'overwatch_unsure' ? 'The Overwatch did not decide this.' : '';
+    if (a.kind === 'overwatch_unsure') return 'The Overwatch did not decide this.';
+    if (a.kind !== 'core' && a.kind !== 'policy') return '';
+    const why = a.kind === 'policy' && a.detail ? `policy ${a.detail.replace(/^policy\s+/, '')}` : (a.detail ?? '');
+    const line = why ? `Only you can allow this: ${why}.` : 'Only you can allow this.';
+    return line.length > 70 ? `${line.slice(0, 69)}…` : line;
   });
 
   // The Overwatch's note (P4.4 notes §4): its recommendation is highlighted, never pre-selected;
@@ -97,7 +100,14 @@
   let noteOver = $state(false);
   $effect(() => {
     note?.note;
-    if (!noteOpen && noteEl) noteOver = noteEl.scrollHeight > noteEl.clientHeight + 1;
+    if (!noteEl) return;
+    const measure = () => {
+      if (!noteOpen) noteOver = noteEl.scrollHeight > noteEl.clientHeight + 1;
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(noteEl);
+    return () => ro.disconnect();
   });
   const longNote = $derived(noteOver || noteOpen);
   /** A source's click: the card's project goes with it, so a doc is found in the right one. */
@@ -177,9 +187,9 @@
         <div class="srcs">
           {#each srcOpen ? sources : sources.slice(0, SOURCES_SHOWN) as s, i (i)}
             {@const r = refKind(s)}
-            {@const label = sourceLabel(s, entries)}
+            {@const label = r ? refLabel(r, entries) : s}
             {#if i}<span class="muted" aria-hidden="true">·</span>{/if}
-            {#if label == null || (r && !refok(r))}<span class="muted" title="No longer available">{label ?? s}</span>
+            {#if label == null || (r && !refok(r))}<span class="muted" title="No longer available">{s}</span>
             {:else if r}<button class="link" data-source onclick={() => openSource(r)}>{label} ↗</button>
             {:else}<span class="muted">{label}</span>{/if}
           {/each}

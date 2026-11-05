@@ -17,6 +17,7 @@
   let { text = '', feature = null, ondoc = null, onref = null, refok = () => true, reflabel = () => null, anchor = null } = $props();
   const doc = $derived(prepare(text));
   // Heading and footnote ids are prefixed per instance: two docs on screen don't clash.
+  let root;
   const uid = $props.id();
   const prefix = `${uid}-`;
 
@@ -30,7 +31,14 @@
 
   /** Ids (slugs, `fn:1`) are lowercase. */
   function scrollTo(id) {
-    if (id) document.getElementById(prefix + String(id).toLowerCase())?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    if (!id) return;
+    let el = document.getElementById(prefix + String(id).toLowerCase());
+    // A section number (`#2`, `#2.1`) matches the heading that starts with it ("2. Commands", "§2 …").
+    if (!el && /^\d+(\.\d+)*$/.test(String(id))) {
+      const lead = new RegExp(`^\\s*(§\\s*)?${String(id).replace(/\./g, '\\.')}(?![\\d.]*\\d)[\\s.):—-]`);
+      el = [...root.querySelectorAll('h1,h2,h3,h4,h5,h6')].find((h) => lead.test(h.textContent ?? ''));
+    }
+    el?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
 
   function follow(e, k) {
@@ -146,7 +154,7 @@
 {/snippet}
 
 
-<div class="md">
+<div class="md" bind:this={root}>
   {@render blocks(doc.root.children)}{#if doc.footnotes.length}
     <section class="footnotes" aria-label="Footnotes">
       <ol>

@@ -185,7 +185,7 @@ describe('the status in the header (notes §1)', () => {
     await fireEvent.click(c.querySelector('[data-ow-strip] button'));
     await settle();
     expect(text(c.querySelector('[data-ow-strip] button'))).toBe('Restart');
-    expect(app.toasts.at(-1).text).toBe('Could not restart: no login');
+    expect(app.toasts).toEqual([]); // said once, in the strip
     // The strip's second line says it once, in place of the reason.
     expect(text(c.querySelector('[data-ow-strip] .l2'))).toBe('Could not restart: no login');
   });
@@ -450,8 +450,8 @@ describe('text entries (notes §2.1)', () => {
       OW('asleep'),
     );
     const { container: c } = render(ChatColumn);
-    const order = [...c.querySelectorAll('.feed > article, .feed > .stop')].map(
-      (x) => x.getAttribute('data-entry') ?? 'card',
+    const order = [...c.querySelectorAll('.feed > article, .feed > .stop')].map((x) =>
+      x.classList.contains('stop') ? 'card' : x.getAttribute('data-entry'),
     );
     expect(order.slice(0, 3)).toEqual(['c-1', 'card', 'c-3']);
     const user = c.querySelector('[data-entry="c-1"]');
@@ -1035,7 +1035,8 @@ describe('pure helpers', () => {
   it('statusText, stripText and deliveryText', () => {
     expect(ow.statusText(OW('working', { events: 0 }))).toBe('working');
     expect(ow.stripText(OW('asleep'))).toBeNull();
-    expect(ow.stripText(OW('down'))).toBe('Overwatch is down · cards still work');
+    expect(ow.stripText(OW('down'))).toEqual({ title: 'Overwatch is down', detail: 'cards still work' });
+    expect(ow.stripText(OW('down', { why: 'login expired' }))?.detail).toBe('login expired · cards still work');
     expect(ow.deliveryText({ delivery: 'delivered' }, OW('down'))).toBe('');
     expect(ow.deliveryText({ delivery: 'pending' }, OW('asleep'))).toBe('waking…');
   });
@@ -1195,5 +1196,52 @@ describe('review fixes (ui review of T-226)', () => {
       'Must be below the hold length (120 s). Still using 60 s.',
     );
     expect(input.value).toBe('60');
+  });
+
+  it('Esc from a watched session goes back to where it was opened, not to Mission control', async () => {
+    const { openOverwatch, leaveWatch } = await import('../src/lib/app.svelte.js');
+    app.panes = { chat1: { type: 'settings' } };
+    app.focused = 'chat1';
+    setNow([], [], OW('working', { events: 1 }));
+    openOverwatch();
+    const id = Object.keys(app.panes).find((k) => app.panes[k].agentId === 'overwatch');
+    expect(app.panes[id]).toMatchObject({ watch: true, from: 'chat1' });
+    leaveWatch(id);
+    expect(app.focused).toBe('chat1');
+    expect(Object.values(app.panes).some((p) => p.type === 'mission')).toBe(false);
+  });
+
+  it('an agent: link only brings a live tab forward; it does not switch it to watch mode', async () => {
+    const { openSession } = await import('../src/lib/app.svelte.js');
+    app.panes = { a1: { type: 'agent', agentId: 'back-1', watch: false } };
+    openSession('back-1', { watch: true, keepLive: true });
+    expect(app.panes.a1.watch).toBe(false);
+  });
+
+  it('a new reply on a past day does not raise the pill', async () => {
+    replies.chat_days = [{ day: '2026-11-01', decisions: 1 }];
+    replies.chat_day = { entries: [], outcomes: [] };
+    setNow([], [msg('c-1', 'user', Date.now() - 1000, { delivery: 'delivered' })], OW('working', { events: 1 }));
+    const { container: c } = render(ChatColumn);
+    await fireEvent.click(c.querySelector('.day'));
+    await settle();
+    await fireEvent.click(c.querySelector('[data-day-row]'));
+    await settle();
+    app.now.chat.entries['c-2'] = msg('c-2', 'overwatch', Date.now(), { reply_to: 'c-1' });
+    await settle();
+    expect(c.querySelector('[data-new-reply]')).toBeNull();
+  });
+
+  it('a policy reason reads "policy <id>" and never "undefined"', () => {
+    const [perm] = kinds();
+    const say = (a) => {
+      setNow([{ ...perm, asks_because: a }], [entry('c-1', perm)]);
+      const r = render(ChatColumn);
+      const t = text(r.container.querySelector('[data-asks]'));
+      r.unmount();
+      return t;
+    };
+    expect(say({ kind: 'policy', detail: 'installs-ask' })).toBe('Only you can allow this: policy installs-ask.');
+    expect(say({ kind: 'core' })).toBe('Only you can allow this.');
   });
 });

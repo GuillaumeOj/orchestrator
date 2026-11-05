@@ -147,6 +147,7 @@
 
   /** A link to a sibling doc (`api-contract.md#…`) switches the tab. */
   function openSibling(name) {
+    anchor = null;
     if (v.docs.includes(name)) return showDoc(name);
     toast(`No doc named ${name} in this feature`, { kind: 'error' });
   }
@@ -265,7 +266,7 @@
           <div class="cardh"><b>Docs</b><span class="muted">.orchestrator/features/{v.feature.slug}/ on the integration branch</span><span class="grow"></span>{#if doc.name}<button class="btn ghost" onclick={openDoc}>Open in nvim <Kbd keys="e" /></button>{/if}</div>
           {#if v.docs.length}
             <div class="tabs" role="tablist">
-              {#each v.docs as d (d)}<button class="tab" class:on={doc.name === d} role="tab" aria-selected={doc.name === d} onclick={() => showDoc(d)}>{d}</button>{/each}
+              {#each v.docs as d (d)}<button class="tab" class:on={doc.name === d} role="tab" aria-selected={doc.name === d} onclick={() => ((anchor = null), showDoc(d))}>{d}</button>{/each}
             </div>
             <div class="rendered"><Markdown text={doc.text} feature={spec.featureId} ondoc={openSibling} {anchor} /></div>
           {:else}

@@ -29,6 +29,7 @@
   let errors = $state(/** @type {Record<string, string>} */ ({}));
   let note = $state('');
   let restarting = $state(false);
+  let restartError = $state('');
   const ow = $derived(overwatchOf(app.now));
   const status = $derived(sectionStatus(ow));
 
@@ -36,14 +37,21 @@
     invoke('overwatch_settings')
       .then((v) => (s = v))
       .catch((e) => (loadError = errText(e)));
-    invoke('settings_get', { key: 'permissions.hold_secs' })
-      .then((v) => {
-        if (Number.isInteger(v) && v > 0) hold = v;
-      })
-      .catch(() => {});
+    readHold();
   });
+  /** `permissions.hold_secs`; 0 means no hold, so no limit. */
+  async function readHold() {
+    try {
+      const v = await invoke('settings_get', { key: 'permissions.hold_secs' });
+      if (Number.isInteger(v) && v >= 0) hold = v;
+    } catch {}
+  }
+  // A restart ends when the Overwatch leaves down, or comes back down with a new reason.
+  let downAt = null;
   $effect(() => {
-    if (ow.status !== 'down') restarting = false;
+    const key = ow.status === 'down' ? `${ow.since_ms}|${ow.why}` : null;
+    if (key !== downAt) restarting = false;
+    downAt = key;
   });
 
   const rangeText = (row) => `${row.min}–${row.max} ${row.unit}`;
@@ -52,7 +60,7 @@
     const still = ` Still using ${s?.[row.key]} ${row.unit}.`;
     if (!Number.isInteger(v)) return `A whole number.${still}`;
     if (v < row.min || v > row.max) return `${rangeText(row)}.${still}`;
-    if (row.key === 'permission_secs' && v >= hold) return `Must be below the hold length (${hold} s).${still}`;
+    if (row.key === 'permission_secs' && hold > 0 && v >= hold) return `Must be below the hold length (${hold} s).${still}`;
     return '';
   }
 
@@ -73,6 +81,7 @@
   async function onNumber(row, e) {
     const box = e.currentTarget;
     const v = Number(box.value);
+    if (row.key === 'permission_secs') await readHold(); // the hold may have changed since this opened
     const bad = check(row, v);
     if (bad) {
       errors = { ...errors, [row.key]: bad };
@@ -97,10 +106,12 @@
 
   async function restart() {
     restarting = true;
+    restartError = '';
     try {
       await restartOverwatch();
-    } catch {
+    } catch (e) {
       restarting = false;
+      restartError = `Could not restart: ${errText(e)}`;
     }
   }
 </script>
@@ -114,6 +125,7 @@
     {#if status}
       <span class="state" data-ow-state><span class="dot {ow.status}" aria-hidden="true"></span> {status}</span>
       {#if ow.status === 'down'}<button class="btn" disabled={restarting} onclick={restart}>{restarting ? 'Restarting…' : 'Restart'}</button>{/if}
+      {#if restartError}<span class="err" role="alert">{restartError}</span>{/if}
     {/if}
   </div>
   {#if loadError}
@@ -197,8 +209,8 @@
   }
   .dot {
     box-sizing: border-box;
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     border: 1.5px solid var(--color-status-waiting-for-you);
   }
