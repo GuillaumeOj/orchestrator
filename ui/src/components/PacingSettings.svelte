@@ -4,7 +4,7 @@
   // only, recomputed while typing), and the cap in effect now. ↑/↓ step, ⏎ applies, esc leaves
   // the field, then the section; r retries a failed load.
   import { onMount } from 'svelte';
-  import { openSingleton, toast } from '../lib/app.svelte.js';
+  import { app, openSingleton, toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { checkCap, derivedCaps } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
@@ -26,13 +26,17 @@
   const liveErr = $derived(typeof liveCheck === 'object' ? liveCheck.error : null);
   const offErr = $derived(typeof offCheck === 'object' ? offCheck.error : null);
   // Changed = a different value, not different text ("03" is still 3).
-  const liveChanged = $derived(view != null && live.trim() !== String(view.live_cap) && liveCheck !== view.live_cap);
-  const offChanged = $derived(view != null && off.trim() !== String(view.off_hours_live_cap) && offCheck !== view.off_hours_live_cap);
+  const liveChanged = $derived(view != null && liveCheck !== view.live_cap);
+  const offChanged = $derived(view != null && offCheck !== view.off_hours_live_cap);
   const canApply = $derived(!busy && (liveChanged || offChanged) && !liveErr && !offErr);
   const atDefaults = $derived(view != null && live.trim() === String(view.live_cap_default) && off.trim() === String(view.off_hours_live_cap_default));
   const caps = $derived(derivedCaps(shown));
-  const lowering = $derived(view != null && !liveErr && liveCheck < view.now.live_autonomous);
-  const now = $derived(view?.now ?? null);
+  // The Now line follows the usage the app already receives (state, governor cap, live count);
+  // memory pressure and process cap only come with the settings, so they keep the loaded value.
+  const snap = $derived(app.data?.usage?.snapshot);
+  const now = $derived(view?.now ? { ...view.now, ...(snap ? { state: snap.state, governor_cap: snap.live_cap, live_autonomous: snap.live_autonomous } : {}) } : null);
+  // Only for an edit that lowers the cap, not for a saved cap the live count already exceeds.
+  const lowering = $derived(now != null && liveChanged && !liveErr && liveCheck < now.live_autonomous);
 
   function take(v) {
     view = v;
@@ -55,16 +59,16 @@
     busy = true;
     saveError = null;
     saved = false;
-    const both = liveChanged && offChanged;
-    const n = liveCheck;
+    // Read before the await: `take` resets the fields, so the deriveds read "unchanged" after it.
+    const [setLive, setOff] = [liveChanged, offChanged];
     // Only what changed: an absent field is left alone, so an untouched Live agents (under
     // `orchd --cap`, the flag's value) is not stored as the user's choice.
     const args = {};
-    if (liveChanged) args.live_cap = liveCheck;
-    if (offChanged) args.off_hours_live_cap = offCheck;
+    if (setLive) args.live_cap = liveCheck;
+    if (setOff) args.off_hours_live_cap = offCheck;
     try {
       take(await invoke('pacing_settings_set', args));
-      toast(both ? 'Pacing settings saved' : liveChanged ? `Live agents set to ${n}` : `Off-hours live agents set to ${offCheck}`);
+      toast(setLive && setOff ? 'Pacing settings saved' : setLive ? `Live agents set to ${args.live_cap}` : `Off-hours live agents set to ${args.off_hours_live_cap}`);
       saved = true;
       clearTimeout(savedTimer);
       savedTimer = setTimeout(() => (saved = false), 3000);
@@ -191,7 +195,7 @@
         <span class="muted cap">{view.off_hours_live_cap_min}–{view.off_hours_live_cap_max}</span>
         {#if offChanged}<span class="was">● was {view.off_hours_live_cap}</span>{/if}
       </div>
-      <p class="muted help" id="off-cap-help">Agents running outside working hours while the week is a little over plan, never more than Live agents allows.</p>
+      <p class="muted help" id="off-cap-help">Agents running outside working hours while the week is a little over plan.</p>
       {#if offErr}
         <p class="secondary help" id="off-cap-err"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> {offErr}</p>
       {/if}

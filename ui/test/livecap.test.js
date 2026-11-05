@@ -1,6 +1,7 @@
 // Settings › Pacing policy (T-220): the derived caps, the field checks, the section against a mocked core.
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { app } from '../src/lib/app.svelte.js';
 import { checkCap, derivedCaps } from '../src/lib/pacing.js';
 
 const calls = [];
@@ -126,6 +127,7 @@ describe('PacingSettings', () => {
     await fireEvent.keyDown(input(container, 'live'), { key: 'Enter' });
     await waitFor(() => getByText('Saved'));
     expect(calls.find((c) => c[0] === 'pacing_settings_set')[1]).toEqual({ live_cap: 6 });
+    expect(app.toasts.at(-1).text).toBe('Live agents set to 6');
     expect(getByText('Apply').closest('button').disabled).toBe(true);
   });
 
@@ -137,6 +139,31 @@ describe('PacingSettings', () => {
     await fireEvent.click(getByText('Apply'));
     await waitFor(() => getByText('Saved'));
     expect(calls.find((c) => c[0] === 'pacing_settings_set')[1]).toEqual({ off_hours_live_cap: 2 });
+    expect(app.toasts.at(-1).text).toBe('Off-hours live agents set to 2');
+  });
+
+  it('toasts both changes as one message', async () => {
+    reply = (cmd, a) =>
+      cmd === 'pacing_settings' ? view() : view({ live_cap: a.live_cap, off_hours_live_cap: a.off_hours_live_cap });
+    const { container, getByText } = render(PacingSettings);
+    await waitFor(() => getByText('Live agents'));
+    await fireEvent.input(input(container, 'live'), { target: { value: '4' } });
+    await fireEvent.input(input(container, 'off'), { target: { value: '2' } });
+    await fireEvent.click(getByText('Apply'));
+    await waitFor(() => getByText('Saved'));
+    expect(app.toasts.at(-1).text).toBe('Pacing settings saved');
+  });
+
+  it('the now line follows the usage snapshot and leaves typed fields alone', async () => {
+    const { container, getByText } = render(PacingSettings);
+    await waitFor(() => getByText('Live agents'));
+    await fireEvent.input(input(container, 'live'), { target: { value: '5' } });
+    app.data = { ...app.data, usage: { snapshot: { state: 'red', live_cap: 1, live_autonomous: 2 } } };
+    await waitFor(() =>
+      expect(text(container)).toContain('Now: ■ Red · 1 allowed · 2 live · memory normal, 3 processes'),
+    );
+    expect(input(container, 'live').value).toBe('5');
+    app.data = { ...app.data, usage: undefined };
   });
 
   it('the same number typed another way is not a change', async () => {
