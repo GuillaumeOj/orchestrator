@@ -180,7 +180,7 @@ fn answer_question_needs_a_source_the_core_can_check() {
     let q = question(&rt, None);
     let id = format!("q-{q}");
     let args = |sources: Value| json!({"decision": id, "answers": [{"text": "Cursor based."}], "sources": sources});
-    for bad in [json!([]), json!(["docs/missing.md"]), json!(["../outside.md"]), json!(["docs/api.md", "nope/x.md"])] {
+    for bad in [json!([]), json!(["docs/missing.md"]), json!(["../outside.md"]), json!(["docs/api.md", "nope/x.md"]), json!(["docs/api.md#9"]), json!(["docs/api.md#Nothing here"])] {
         let (err, v) = call(&rt, "answer_question", args(bad.clone()));
         assert!(err, "{bad}");
         assert_eq!(v["code"], "ungrounded", "{bad}: {v}");

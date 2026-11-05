@@ -511,7 +511,10 @@ fn run() -> Result<()> {
                 },
                 "revoke" => {
                     let file = a.opt("--file")?;
-                    CtlRequest::RevokeRule { id: a.next("rule id")?, file }
+                    let id = a.next("rule id")?;
+                    // The old numeric ids are the migrated rules' `r<n>`.
+                    let id = if id.chars().all(|c| c.is_ascii_digit()) { format!("r{id}") } else { id };
+                    CtlRequest::RevokeRule { id, file }
                 }
                 other => bail!("unknown rule subcommand {other:?}"),
             };

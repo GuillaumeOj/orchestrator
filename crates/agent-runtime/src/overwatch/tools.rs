@@ -245,14 +245,17 @@ impl Runtime {
         let item = self.store.read(|s| s.inbox.iter().find(|i| i.id == n).cloned());
         let Some(item) = item else { return Err(err("stale", "the decision closed meanwhile")) };
         let agent = item.agent_id.clone().and_then(|a| self.store.read(|s| s.agents.get(&a).cloned()));
-        if let Some(agent) = &agent {
-            let tool = item.payload.get("tool").and_then(Value::as_str).unwrap_or("");
-            let cwd = item.payload.get("cwd").and_then(Value::as_str);
-            if let Some(h) = self.hard_check(agent, tool, &crate::inbox::tool_input(&item), cwd) {
-                // Deciding ends at once (F1): the user's.
-                self.overwatch_hand_over(n);
-                return Err(err("not_allowed", format!("the core keeps this call for the user: {}", h.why)));
-            }
+        // Without the agent's record the lists can't be checked: the user's.
+        let Some(agent) = &agent else {
+            self.overwatch_hand_over(n);
+            return Err(err("not_allowed", "the core keeps this call for the user: the agent is gone"));
+        };
+        let tool = item.payload.get("tool").and_then(Value::as_str).unwrap_or("");
+        let cwd = item.payload.get("cwd").and_then(Value::as_str);
+        if let Some(h) = self.hard_check(agent, tool, &crate::inbox::tool_input(&item), cwd) {
+            // Deciding ends at once (F1): the user's.
+            self.overwatch_hand_over(n);
+            return Err(err("not_allowed", format!("the core keeps this call for the user: {}", h.why)));
         }
         self.set_payload(n, &[("overwatch_reason", json!(reason))]);
         let decision = if allow { InboxDecision::Approve } else { InboxDecision::Reject };

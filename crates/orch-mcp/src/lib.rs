@@ -291,7 +291,7 @@ pub fn tools() -> Value {
         ),
         tool(
             "annotate",
-            "Put your recommendation on a decision card the user will decide (one per decision; a later call replaces it). Keep it under 140 characters.",
+            "Put your recommendation on a decision card the user will decide (one per decision; a later call replaces it). Keep it under 280 characters.",
             json!({
                 "decision": s("Decision id."),
                 "note": s("Your recommendation."),

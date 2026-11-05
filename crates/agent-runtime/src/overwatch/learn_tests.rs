@@ -121,14 +121,20 @@ fn propose_rule_makes_a_decision_that_blocks_nobody() {
     assert_eq!((d.kind, d.level, d.waits_on, d.counts()), ("rule_proposal", 4, "user", false));
     assert_eq!(d.actions.iter().map(|a| a.id).collect::<Vec<_>>(), ["add", "not_now", "edit"]);
     let types: Vec<&str> = d.context.iter().filter_map(|b| b["type"].as_str()).collect();
-    assert_eq!(types, ["markdown", "rule", "links"]);
-    let rule = &d.context[1];
+    assert_eq!(types, ["markdown", "markdown", "rule", "links"]);
+    // The core's count, then what the Overwatch said; the title names the rule.
+    assert!(d.context[0]["text"].as_str().unwrap().starts_with("You allowed this call 3 times"), "{}", d.context[0]);
+    assert_eq!(d.context[1]["text"], "The Overwatch: You allowed cargo fmt three times.");
+    assert_eq!(d.title, format!("Allow `cargo fmt` in {}?", p.id));
+    let label = d.context[3]["links"][0]["label"].as_str().unwrap();
+    assert!(label.ends_with(" · allowed") && label.contains(" · a1 · "), "{label}");
+    let rule = &d.context[2];
     assert_eq!(
         (rule["match"].as_str(), rule["effect"].as_str(), rule["scope"].as_str()),
         (Some("Bash(cargo fmt)"), Some("allow"), Some("project"))
     );
     assert!(rule["file"].as_str().unwrap().ends_with(".orchestrator/policy.toml"), "{rule}");
-    assert_eq!(d.context[2]["links"].as_array().unwrap().len(), 3);
+    assert_eq!(d.context[3]["links"].as_array().unwrap().len(), 3);
     assert_eq!(
         (d.payload["count"].as_u64(), d.payload["threshold"].as_u64(), d.payload["declined_before"].as_u64()),
         (Some(3), Some(3), Some(0))

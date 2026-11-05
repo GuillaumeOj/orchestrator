@@ -134,6 +134,7 @@ impl Runtime {
     /// entry; `{ok: false, gone}` with the reason when it can no longer work;
     /// `text` is required to correct an answer.
     pub fn chat_undo(&self, entry: &str, text: Option<&str>) -> Result<Value> {
+        let _one = self.overwatch.undoing.lock().unwrap_or_else(|e| e.into_inner());
         let n: u64 = entry.trim_start_matches("c-").parse().map_err(|_| anyhow!("bad_request: {entry}"))?;
         let Some(mut e) = self.db.chat_get(n)? else { bail!("bad_request: no entry {entry}") };
         let ctx = e.meta.as_ref().and_then(|m| m.get("_undo")).cloned();

@@ -42,10 +42,13 @@ impl Runtime {
         for c in candidates {
             let Ok(real) = c.canonicalize() else { continue };
             if real.is_file() && roots.iter().any(|r| real.starts_with(r)) {
-                return Ok(match section {
-                    Some(s) => format!("{path}#{s}"),
-                    None => path.to_string(),
-                });
+                let Some(sec) = section else { return Ok(path.to_string()) };
+                let text = std::fs::read_to_string(&real).unwrap_or_default();
+                return if has_section(&text, sec) {
+                    Ok(format!("{path}#{sec}"))
+                } else {
+                    Err(format!("{source}: no section {sec:?} in {path}"))
+                };
             }
         }
         Err(format!("{source}: not a file under the feature folder or the project's docs/"))
@@ -78,4 +81,25 @@ impl Runtime {
             Err(format!("chat:{id}: not a question or gate the user answered"))
         }
     }
+}
+
+/// Does a heading of `text` name `section`: by its anchor (`#cursor-paging`)
+/// or by its number or leading words (`3.2`, `§3`, `Cursor paging`)?
+fn has_section(text: &str, section: &str) -> bool {
+    let slug = |h: &str| -> String {
+        h.to_lowercase()
+            .chars()
+            .filter_map(|c| match c {
+                ' ' => Some('-'),
+                c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+                _ => None,
+            })
+            .collect()
+    };
+    let want = section.trim().trim_start_matches('§').trim().to_lowercase();
+    text.lines().filter(|l| l.starts_with('#')).any(|l| {
+        let h = l.trim_start_matches('#').trim().trim_start_matches('§').to_lowercase();
+        slug(&h) == slug(&want)
+            || h.strip_prefix(&want).is_some_and(|rest| rest.chars().next().is_none_or(|c| !c.is_alphanumeric()))
+    })
 }

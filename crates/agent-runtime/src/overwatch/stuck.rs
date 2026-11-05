@@ -148,6 +148,8 @@ impl Runtime {
         };
         if lifted {
             self.event(ID, "overwatch.recovered", json!({"after": why::LIMIT}));
+            // Messages kept while it was down go back in the queue.
+            self.overwatch_requeue_pending();
             self.overwatch_touch();
         }
     }
