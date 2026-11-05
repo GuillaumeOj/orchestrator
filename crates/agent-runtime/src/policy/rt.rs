@@ -155,7 +155,7 @@ impl Runtime {
     fn hard_ctx_with(&self, rec: &AgentRecord, project: Option<&orch_store::Project>, cwd: Option<&str>) -> HardCtx {
         let mut ctx = self.hard_ctx_base(rec.worktree.clone(), project);
         // A specialist never merges into its run's integration branch (its lead does).
-        if let Some(seat) = rec.team.as_ref().filter(|_| !crate::runtime::reserved_slot(rec)) {
+        if let Some(seat) = rec.team.as_ref().filter(|_| !crate::runtime::is_lead(rec)) {
             if let Ok(Some(f)) = self.db.feature(&seat.feature_id) {
                 ctx.protected.push(f.integration_branch());
             }

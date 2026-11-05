@@ -170,8 +170,14 @@ fn user_only(why: &'static str) -> HardVerdict {
 /// removed (lexically), then symlinks resolved through the longest existing
 /// ancestor (a link into `~/.ssh` is `~/.ssh`).
 pub fn resolve(ctx: &HardCtx, cwd: &Path, raw: &str) -> PathBuf {
+    real_through_links(&walk(&expand(ctx, cwd, raw)))
+}
+
+/// `~`, `$HOME` and `${HOME}` expanded and relative paths joined to `cwd`
+/// (nothing resolved: the glob check reads it as written).
+fn expand(ctx: &HardCtx, cwd: &Path, raw: &str) -> PathBuf {
     let raw = raw.trim();
-    let expanded: PathBuf = if raw == "~" || raw == "$HOME" || raw == "${HOME}" {
+    if raw == "~" || raw == "$HOME" || raw == "${HOME}" {
         ctx.home.clone()
     } else if let Some(rest) =
         raw.strip_prefix("~/").or_else(|| raw.strip_prefix("$HOME/")).or_else(|| raw.strip_prefix("${HOME}/"))
@@ -181,8 +187,7 @@ pub fn resolve(ctx: &HardCtx, cwd: &Path, raw: &str) -> PathBuf {
         PathBuf::from(raw)
     } else {
         cwd.join(raw)
-    };
-    real_through_links(&walk(&expanded))
+    }
 }
 
 /// `.` and `..` applied component by component, each existing prefix
@@ -209,30 +214,30 @@ fn walk(p: &Path) -> PathBuf {
 
 /// Does the glob `pat` match `name` (`*` any run, `?` one char)?
 fn wild(pat: &[char], name: &[char]) -> bool {
-    match pat.split_first() {
-        None => name.is_empty(),
-        Some(('*', rest)) => (0..=name.len()).any(|i| wild(rest, &name[i..])),
-        Some(('?', rest)) => !name.is_empty() && wild(rest, &name[1..]),
-        Some((c, rest)) => name.first() == Some(c) && wild(rest, &name[1..]),
+    // `ok[j]`: pat[..i] matches name[..j]. O(pat * name): a word of many
+    // stars (the agent's input) cannot blow the backtracking up.
+    let mut ok = vec![false; name.len() + 1];
+    ok[0] = true;
+    for &p in pat {
+        if p == '*' {
+            for j in 1..=name.len() {
+                ok[j] = ok[j] || ok[j - 1];
+            }
+        } else {
+            for j in (1..=name.len()).rev() {
+                ok[j] = ok[j - 1] && (p == '?' || p == name[j - 1]);
+            }
+            ok[0] = false;
+        }
     }
+    ok[name.len()]
 }
 
 /// A word with glob characters: could it expand to a guarded path (or to
 /// one under it)? Compared component by component against each guarded
 /// path, so `~/.ssh/*` and `~/.s*` both count; links can't be followed.
 fn glob_verdict(ctx: &HardCtx, cwd: &Path, raw: &str) -> Option<HardVerdict> {
-    let raw = raw.trim();
-    let expanded = if raw == "~" || raw == "$HOME" || raw == "${HOME}" {
-        ctx.home.clone()
-    } else if let Some(rest) =
-        raw.strip_prefix("~/").or_else(|| raw.strip_prefix("$HOME/")).or_else(|| raw.strip_prefix("${HOME}/"))
-    {
-        ctx.home.join(rest)
-    } else if Path::new(raw).is_absolute() {
-        PathBuf::from(raw)
-    } else {
-        cwd.join(raw)
-    };
+    let expanded = expand(ctx, cwd, raw);
     let pat: Vec<Vec<char>> = lower(&expanded)
         .split('/')
         .filter(|c| !c.is_empty() && *c != ".")
@@ -582,7 +587,13 @@ fn git(ctx: &HardCtx, sh: &mut Shell, args: &[String]) -> Option<HardVerdict> {
                     break;
                 }
                 if !a.starts_with('-') {
-                    to = Some(a.to_string());
+                    // `git checkout <word>` may name a file, not a branch: it only
+                    // moves the tracked branch onto a protected one (else
+                    // `git checkout README.md; git merge x` would hide that we
+                    // are still on `main`). `switch` always names a branch.
+                    if sub == "switch" || ctx.protected.iter().any(|p| p == a) {
+                        to = Some(a.to_string());
+                    }
                     break;
                 }
                 j += 1;
@@ -975,6 +986,19 @@ mod tests {
         let mut on_main = f.ctx.clone();
         on_main.branch = OnceCell::from(Some("main".to_string()));
         assert_eq!(check(&on_main, "Bash", &json!({"command": "git merge feat"})).unwrap().kind, HardKind::Deny);
+        // A checkout of a file leaves the branch where it was.
+        let c = json!({"command": "git checkout README.md && git merge feat"});
+        assert_eq!(check(&on_main, "Bash", &c).unwrap().kind, HardKind::Deny);
+    }
+
+    #[test]
+    fn many_stars_in_a_word_do_not_blow_up_the_glob_match() {
+        let f = fx();
+        let stars = "*".repeat(200);
+        let started = std::time::Instant::now();
+        assert_eq!(kind(bash_v(&f, &format!("ls ~/{stars}x{stars}y"))), None);
+        assert!(started.elapsed().as_secs() < 5);
+        assert_eq!(kind(bash_v(&f, "cat ~/.s*h/id_rsa")), Some(HardKind::Deny));
     }
 
     #[test]
