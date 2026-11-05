@@ -51,7 +51,7 @@ with the label as text (never color alone).
 | Derived, muted line | `Half-weight hours scale the cap down. Leads and the Overwatch have their own slot and don't count.` |
 | Off-hours label | `Off-hours live agents` |
 | Off-hours range | `0–20` |
-| Off-hours helper | `Agents running outside working hours while the week is a little over plan, never more than Live agents allows.` |
+| Off-hours helper | `Agents running outside working hours while the week is a little over plan.` |
 | Now | `Now: Amber · 2 allowed · 1 live · memory normal, 3 processes` (state label from `PRESSURE`; "2 allowed" = `governor_cap`; "1 live" = `live_autonomous`; memory = `pressure`; "3 processes" = `process_cap`, singular "1 process") |
 | Apply | `Apply` (primary) |
 | Reset | `Reset to defaults` (secondary; sets the fields to 3 and 1, does not save) |
@@ -109,7 +109,7 @@ Hint line (muted, bottom of the section, like Integrations):
 
 ## 5a. Open points (for lead)
 
-**Lead decisions (2026-11-03):** the Now line shows the process cap (`, 3 processes`), since that cap is what holds agents under memory pressure. The off-hours helper says it never exceeds Live agents. The derived values are computed in the core (authoritative) and previewed in JS while the user types (kept). Off-hours validation: one shared validator and one message (`off-hours live agents {n}: use 0–20`) for `plan_set` and `pacing_settings_set` (back). `--cap` is checked against 1–20 at start (back). No UI for it.
+**Lead decisions (2026-11-03):** the Now line shows the process cap (`, 3 processes`), since that cap is what holds agents under memory pressure. The off-hours helper keeps the brief's copy (no "never more than Live agents" clause: a scheduled off-hours turn is checked against the off-hours cap only, governor `off_hours_hold`). The derived values are computed in the core (authoritative) and previewed in JS while the user types (kept). Off-hours validation: one shared validator and one message (`off-hours live agents {n}: use 0–20`) for `plan_set` and `pacing_settings_set` (back). `--cap` is checked against 1–20 at start (back). No UI for it.
 
 
 - Reset copy uses `live_cap_default` and `off_hours_live_cap_default` from the view, not hardcoded numbers.
