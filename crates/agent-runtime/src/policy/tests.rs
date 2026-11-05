@@ -547,7 +547,22 @@ fn a_commented_rule_is_valid_toml_once_uncommented() {
     };
     file::append_commented_rule(&path, &rule).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
-    let on: String = text.lines().map(|l| l.strip_prefix("# ").filter(|_| l.starts_with("# [[") || l.starts_with("# id") || l.starts_with("# match") || l.starts_with("# effect") || l.starts_with("# role") || l.starts_with("# from")).unwrap_or(l)).collect::<Vec<_>>().join("\n");
+    let on: String = text
+        .lines()
+        .map(|l| {
+            l.strip_prefix("# ")
+                .filter(|_| {
+                    l.starts_with("# [[")
+                        || l.starts_with("# id")
+                        || l.starts_with("# match")
+                        || l.starts_with("# effect")
+                        || l.starts_with("# role")
+                        || l.starts_with("# from")
+                })
+                .unwrap_or(l)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let doc = file::parse(&on).expect("the uncommented rule parses");
     assert_eq!(doc.rules.len(), 1);
     assert_eq!(doc.rules[0].pattern, rule.pattern);

@@ -238,11 +238,8 @@ fn wild(pat: &[char], name: &[char]) -> bool {
 /// path, so `~/.ssh/*` and `~/.s*` both count; links can't be followed.
 fn glob_verdict(ctx: &HardCtx, cwd: &Path, raw: &str) -> Option<HardVerdict> {
     let expanded = expand(ctx, cwd, raw);
-    let pat: Vec<Vec<char>> = lower(&expanded)
-        .split('/')
-        .filter(|c| !c.is_empty() && *c != ".")
-        .map(|c| c.chars().collect())
-        .collect();
+    let pat: Vec<Vec<char>> =
+        lower(&expanded).split('/').filter(|c| !c.is_empty() && *c != ".").map(|c| c.chars().collect()).collect();
     ctx.guarded().iter().find_map(|(g, why)| {
         let comps: Vec<Vec<char>> = g.split('/').filter(|c| !c.is_empty()).map(|c| c.chars().collect()).collect();
         // A pattern shorter than the store only names an ancestor.
@@ -1166,7 +1163,8 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::os::unix::fs::symlink(&sub, f.ctx.worktree.join("keys")).unwrap();
         assert_eq!(bash_v(&f, "cat keys/../id_rsa").unwrap().why, WHY_CREDENTIALS);
-        let v = check(&f.ctx, "Read", &json!({"file_path": f.ctx.worktree.join("keys/../id_rsa").display().to_string()}));
+        let v =
+            check(&f.ctx, "Read", &json!({"file_path": f.ctx.worktree.join("keys/../id_rsa").display().to_string()}));
         assert_eq!(v.unwrap().why, WHY_CREDENTIALS);
         assert_eq!(bash_v(&f, "cat src/../Cargo.toml"), None);
     }
