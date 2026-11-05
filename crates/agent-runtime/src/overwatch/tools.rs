@@ -58,11 +58,11 @@ fn require<'a>(args: &'a Value, k: &str) -> Result<&'a str, ToolErr> {
 }
 
 impl Runtime {
-    pub(crate) fn overwatch_tool(&self, rec: &AgentRecord, tool: &str, args: &Value) -> McpAnswer {
+    pub(crate) fn overwatch_tool(&self, _rec: &AgentRecord, tool: &str, args: &Value) -> McpAnswer {
         let r = match tool {
             "world" => self.ow_world(args),
             "inspect" => self.ow_inspect(args),
-            "decide_permission" => self.ow_decide_permission(rec, args),
+            "decide_permission" => self.ow_decide_permission(args),
             "answer_question" => self.ow_answer_question(args),
             "annotate" => self.ow_annotate(args),
             "nudge" => self.ow_nudge(args),
@@ -220,8 +220,7 @@ impl Runtime {
 
     // ------------------------------------------------------------ decisions
 
-    fn ow_decide_permission(&self, rec: &AgentRecord, args: &Value) -> Out {
-        let _ = rec;
+    fn ow_decide_permission(&self, args: &Value) -> Out {
         let n = decision_n(require(args, "decision")?, "inbox")?;
         let effect = require(args, "effect")?;
         let allow = match effect {
@@ -325,10 +324,9 @@ impl Runtime {
     fn ow_nudge(&self, args: &Value) -> Out {
         let a = self.ow_agent(args)?;
         let text = require(args, "text")?;
-        let (_, data) = self.nudge_agent(&a.id, "the Overwatch", text)?;
+        self.nudge_agent(&a.id, "the Overwatch", text)?;
         self.ow_audit(Some(&a.id), "nudge", None, json!({"text": cut(text, 300)}));
         self.post_action("nudged", &a.id, &cut(text, 48), Some(cut(text, 60)), None);
-        let _ = data;
         Ok(json!({"ok": true}))
     }
 

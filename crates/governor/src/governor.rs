@@ -328,6 +328,9 @@ pub enum TierError {
     Critical,
     /// Above its allocation's tier in the weekly plan (the tier it may have).
     AboveAllocation(Tier),
+    /// A critical entry keeps its tier (its admission and reserve cost depend on it,
+    /// and a critical tier can't be given back).
+    IsCritical,
 }
 
 impl std::fmt::Display for TierError {
@@ -335,6 +338,7 @@ impl std::fmt::Display for TierError {
         match self {
             TierError::NotQueued => f.write_str("the entry is not queued any more"),
             TierError::Critical => f.write_str("critical is not a tier you can give"),
+            TierError::IsCritical => f.write_str("a critical entry keeps its tier"),
             TierError::AboveAllocation(t) => write!(f, "above its allocation's tier ({t:?} at most)"),
         }
     }
@@ -2403,6 +2407,9 @@ impl Governor {
         let idx = self.queue.iter().position(|e| e.id == entry).ok_or(TierError::NotQueued)?;
         if tier == Tier::Critical {
             return Err(TierError::Critical);
+        }
+        if self.queue[idx].tier == Tier::Critical {
+            return Err(TierError::IsCritical);
         }
         let max = self.plan.allocation(&self.queue[idx].allocation).map_or(Tier::Normal, |a| a.tier).min(Tier::High);
         if tier > max {

@@ -836,6 +836,16 @@ fn set_tier_reorders_the_queue_within_the_allocations_tier() {
 }
 
 #[test]
+fn set_tier_leaves_a_critical_entry_alone() {
+    let mut g = governor();
+    g.pause_all(at(0));
+    g.request_turn(task("L-1", "A", Tier::Critical), at(1));
+    let e = g.queue().iter().find(|e| e.agent == AgentId::from("L-1")).unwrap().id;
+    assert_eq!(g.set_tier(e, Tier::Low, at(2)), Err(TierError::IsCritical));
+    assert_eq!(g.queue().iter().find(|x| x.id == e).unwrap().tier, Tier::Critical);
+}
+
+#[test]
 fn run_now_overrides_the_queue() {
     let mut g = governor();
     g.pause_all(at(0));

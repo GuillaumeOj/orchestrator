@@ -204,7 +204,7 @@ pub fn render(entries: &[Value], tz: &TimeZone) -> String {
         let hm = at.to_zoned(tz.clone()).strftime("%H:%M").to_string();
         let what = match (e.get("line"), s("kind")) {
             (Some(l), _) => format!("{} {}", s("decision"), line_text(l)),
-            (None, "decision") => format!("{} open", s("decision")),
+            (None, "decision" | "rule_proposal") => format!("{} open", s("decision")),
             (None, _) => s("text").to_string(),
         };
         out.push_str(&format!("{hm} {} {} {what}\n", s("author"), s("kind")));

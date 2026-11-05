@@ -43,7 +43,7 @@ impl Runtime {
     pub(crate) fn overwatch_stuck_scan(&self, now: u64) {
         let agents: Vec<crate::store::AgentRecord> = self.store.read(|s| s.agents.values().cloned().collect());
         let mut current = BTreeSet::new();
-        let mut fresh: Vec<Event> = vec![];
+        let mut fresh: Vec<(String, Event)> = vec![];
         for a in agents.iter().filter(|a| a.id != ID && a.tracker.state != AgentState::Archived) {
             let Some(r) = self.attention_of(&a.id) else { continue };
             let seat = a.team.as_ref();
@@ -71,8 +71,8 @@ impl Runtime {
             if member && now.saturating_sub(first) < LEAD_FIRST_MS {
                 continue;
             }
-            if self.overwatch.stuck_sent.lock().unwrap_or_else(|e| e.into_inner()).insert(key) {
-                fresh.push(stuck_event(&a.id, seat.map(|t| t.run_id.clone()), &line, since, None));
+            if self.overwatch.stuck_sent.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone()) {
+                fresh.push((key, stuck_event(&a.id, seat.map(|t| t.run_id.clone()), &line, since)));
             }
         }
         // Starts that failed (FR-415), once each.
@@ -81,19 +81,22 @@ impl Runtime {
         for i in startups {
             let key = format!("startup-{}", i.id);
             current.insert(key.clone());
-            if self.overwatch.stuck_sent.lock().unwrap_or_else(|e| e.into_inner()).insert(key) {
+            if self.overwatch.stuck_sent.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone()) {
                 let line = i.body.lines().next().unwrap_or("did not start").to_string();
-                let mut ev = stuck_event(i.agent_id.as_deref().unwrap_or(""), None, &line, i.created_at_ms, Some(&i));
+                let mut ev = stuck_event(i.agent_id.as_deref().unwrap_or(""), None, &line, i.created_at_ms);
                 ev.decision = Some(crate::decision::decision_id("startup", i.id));
-                fresh.push(ev);
+                fresh.push((key, ev));
             }
         }
-        // A parked permission the user answered whose agent never resumed.
+        // A parked permission the user answered whose agent never resumed
+        // (not one the Governor holds on purpose: Pause all, a paused agent).
+        let held_all = self.with_governor(|g| g.is_paused_all());
         let answered: Vec<crate::store::InboxItem> = self.store.read(|s| {
             s.inbox
                 .iter()
                 .filter(|i| {
-                    i.kind == "permission"
+                    !held_all
+                        && i.kind == "permission"
                         && (i.status == InboxStatus::Sent
                             || (i.status == InboxStatus::Effect && i.effect.as_deref() == Some("queued")))
                         && i.sent_at_ms.is_some_and(|t| now.saturating_sub(t) >= ANSWERED_MS)
@@ -107,20 +110,24 @@ impl Runtime {
         for i in answered {
             let key = format!("answered-{}", i.id);
             current.insert(key.clone());
-            if self.overwatch.stuck_sent.lock().unwrap_or_else(|e| e.into_inner()).insert(key) {
+            if self.overwatch.stuck_sent.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone()) {
                 let agent = i.agent_id.clone().unwrap_or_default();
                 let line = format!(
                     "{agent} was answered {} ago and has not carried on",
                     crate::now::duration(now - i.sent_at_ms.unwrap_or(now))
                 );
-                fresh.push(stuck_event(&agent, None, &line, i.sent_at_ms.unwrap_or(now), Some(&i)));
+                fresh.push((key, stuck_event(&agent, None, &line, i.sent_at_ms.unwrap_or(now))));
             }
         }
         // Episodes that ended are forgotten (a later one is new).
         self.overwatch.stuck_seen.lock().unwrap_or_else(|e| e.into_inner()).retain(|k, _| current.contains(k));
         self.overwatch.stuck_sent.lock().unwrap_or_else(|e| e.into_inner()).retain(|k| current.contains(k));
-        for ev in fresh {
-            self.overwatch_enqueue(ev);
+        // An event the Overwatch could not take (off, down) is not sent: the
+        // episode is told once it is back.
+        for (key, ev) in fresh {
+            if self.overwatch_enqueue(ev).is_none() {
+                self.overwatch.stuck_sent.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
+            }
         }
     }
 
@@ -185,17 +192,10 @@ impl Runtime {
 }
 
 /// A `stuck` event (api-contract §2.1).
-fn stuck_event(
-    agent: &str,
-    run: Option<String>,
-    line: &str,
-    since_ms: u64,
-    item: Option<&crate::store::InboxItem>,
-) -> Event {
+fn stuck_event(agent: &str, run: Option<String>, line: &str, since_ms: u64) -> Event {
     let mut ev = Event::new(Kind::Stuck, line);
     ev.agent = Some(agent.to_string()).filter(|a| !a.is_empty());
     ev.run = run;
     ev.stuck = Some(Stuck { why: line.to_string(), since_ms });
-    let _ = item;
     ev
 }

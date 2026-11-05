@@ -216,11 +216,15 @@ impl Runtime {
         let (threshold, declined, declined_at) = {
             let t = self.with_tallies(|t| t.get(key).cloned());
             (
-                self.overwatch_settings().rule_threshold,
+                self.overwatch_settings().rule_threshold.max(2),
                 t.as_ref().map_or(0, |t| t.declined),
                 t.and_then(|t| t.declined_at_ms),
             )
         };
+        // Two declines: never proposed again (D6).
+        if declined >= DECLINES_MAX {
+            return Err(err("not_allowed", "this kind of call was declined twice: it is not proposed again"));
+        }
         // One open per kind of call.
         if self.with_tallies(|t| t.get(key).is_some_and(|e| e.open.is_some())) {
             return Err(err("duplicate", "a proposal for this kind of call is already open"));
@@ -281,19 +285,15 @@ impl Runtime {
         let effect = str_arg(args, "effect")
             .and_then(Effect::parse)
             .ok_or_else(|| err("bad_request", "`effect` is allow, deny, overwatch or user"))?;
-        let (project, scope) = match str_arg(args, "scope") {
-            Some("project") => (
-                Some(
-                    str_arg(args, "project")
-                        .ok_or_else(|| err("bad_request", "scope project needs `project`"))?
-                        .to_string(),
-                ),
-                "project",
+        let project = match str_arg(args, "scope") {
+            Some("project") => Some(
+                str_arg(args, "project")
+                    .ok_or_else(|| err("bad_request", "scope project needs `project`"))?
+                    .to_string(),
             ),
-            Some("global") => (None, "global"),
+            Some("global") => None,
             _ => return Err(err("bad_request", "`scope` is project or global")),
         };
-        let _ = scope;
         let from: Vec<String> = args
             .get("from")
             .and_then(Value::as_array)
@@ -346,6 +346,7 @@ impl Runtime {
         match action {
             "add" => {
                 let from = Some(format!("proposal:{}", crate::decision::decision_id("rule_proposal", n)));
+                self.policy_sync();
                 let r = self.add_rule_to(&scope, role, None, &pattern, effect, from)?;
                 let (rid, file) = (r["rule"]["id"].clone(), scope.label());
                 self.set_payload(n, &[("added_rule_id", rid), ("added_file", json!(file))]);

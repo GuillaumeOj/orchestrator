@@ -683,7 +683,10 @@ impl Runtime {
 
     /// `chat_discard`: the kept message leaves the pending list.
     pub(crate) fn overwatch_forget_pending(&self, chat: &str) {
-        self.ow().pending_user.retain(|e| e.chat.as_deref() != Some(chat));
+        let mut st = self.ow();
+        st.pending_user.retain(|e| e.chat.as_deref() != Some(chat));
+        // Requeued on a restart but not taken by a turn yet: still `pending` in the store.
+        st.queue.retain(|e| e.chat.as_deref() != Some(chat));
     }
 
     /// `overwatch_restart`: a fresh session (new briefing) at once, with the

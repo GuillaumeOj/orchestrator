@@ -215,7 +215,7 @@ impl Store {
         })
     }
 
-    /// The entry of a decision (the earliest, when it carried across days).
+    /// The entry of a decision (the latest, when it carried across days: it holds the answer).
     pub fn chat_by_decision(&self, decision: &str) -> Result<Option<ChatEntry>> {
         let decision = decision.to_string();
         self.read(move |c| {
