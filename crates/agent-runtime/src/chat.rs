@@ -95,6 +95,8 @@ pub fn verb(d: &Decision) -> &'static str {
         ("budget", "approve") => "applied",
         ("budget", "reject") => "skipped",
         ("question", "reply") => "answered",
+        ("rule_proposal", "add") => "added",
+        ("rule_proposal", "not_now") => "not now",
         (_, _) if by == "expired" => "expired",
         // Answered in Claude Code's own dialog (a prompt, a held permission).
         (_, _) if by == "pane" => "answered",
@@ -147,10 +149,17 @@ pub fn line_of(d: &Decision, prior: Option<&Value>, now: u64) -> Value {
     let detail = match by {
         "policy" => rule_id.map(str::to_string),
         "core" => d.payload.get("hard_why").and_then(Value::as_str).map(str::to_string),
+        // The Overwatch's reason (≤ 60 chars) and the sources it cited (P4.4).
+        "overwatch" => d.payload.get("overwatch_reason").and_then(Value::as_str).map(|r| cut(r, 60)),
         _ => None,
     };
     if let Some(t) = detail {
         line["by_detail"] = json!(t);
+    }
+    if by == "overwatch"
+        && let Some(src) = d.payload.get("overwatch_sources").filter(|s| s.as_array().is_some_and(|a| !a.is_empty()))
+    {
+        line["sources"] = src.clone();
     }
     line
 }
@@ -225,7 +234,7 @@ fn decision_entry(day: &str, at_ms: u64, d: &Decision, line: Option<Value>) -> C
         day: day.into(),
         at_ms,
         author: "core".into(),
-        kind: "decision".into(),
+        kind: if d.kind == "rule_proposal" { "rule_proposal" } else { "decision" }.into(),
         thread: d.thread.clone(),
         decision: Some(d.id.clone()),
         line,
@@ -375,7 +384,7 @@ impl Runtime {
                 .or_else(|| rebuilt.remove(&id));
             match last {
                 Some(d) => {
-                    e.line = Some(line_of(&d, prior.as_ref(), x.now));
+                    self.set_line(&mut e, &d, prior.as_ref(), x.now);
                     e.card = Some(card_of(&d));
                 }
                 None => close_from_snapshot(&mut e, x.now),
@@ -416,7 +425,8 @@ impl Runtime {
             });
             if !same {
                 let mut e = e.clone();
-                (e.line, e.card) = (Some(line_of(d, prior.as_ref(), x.now)), Some(card_of(d)));
+                self.set_line(&mut e, d, prior.as_ref(), x.now);
+                e.card = Some(card_of(d));
                 if let Some(w) = write(&e, &mut out) {
                     cs.closed.get_mut(&id).expect("listed").0 = w;
                 }
@@ -455,8 +465,9 @@ impl Runtime {
                     continue;
                 }
                 let d = &x.decisions[&id];
-                let line = line_of(d, None, x.now);
-                if let Some(w) = write(&decision_entry(x.day, x.now, d, Some(line)), &mut out) {
+                let mut entry = decision_entry(x.day, x.now, d, None);
+                self.set_line(&mut entry, d, None, x.now);
+                if let Some(w) = write(&entry, &mut out) {
                     cs.closed.insert(id, (w, None));
                 }
             }
@@ -527,14 +538,16 @@ impl Runtime {
         let item = serde_json::from_value::<orch_store::InboxItem>(json!({
             "id": audit, "kind": "permission", "agent_id": rec.id, "body": "", "created_at_ms": now,
             "payload": {"tool": call.tool, "tool_input": call.input, "cwd": call.cwd,
-                        "description": call.input.get("description"), "hard_why": hard_why},
+                        "description": call.input.get("description"), "hard_why": hard_why,
+                        "policy_file": match &ev.source { crate::policy::Source::Policy { file, .. } => Some(file), _ => None }},
             "status": "effect", "decided_at_ms": now, "decided_by": ev.actor(),
             "decision": if allow { "approve" } else { "reject" }, "effect": if allow { "allowed" } else { "denied" },
             "effect_at_ms": now, "subject": subject, "thread": decision::thread_of(&subject), "version": 1,
         }));
         let Some(mut d) = item.ok().and_then(|i| self.build_bare(&[i]).pop()) else { return };
         (d.id, d.actions, d.waits_on) = (format!("audit-{audit}"), vec![], "core");
-        let e = decision_entry(&day, now, &d, Some(line_of(&d, None, now)));
+        let mut e = decision_entry(&day, now, &d, None);
+        self.set_line(&mut e, &d, None, now);
         match self.db.chat_insert(&e) {
             Ok(e) => {
                 self.now.chat_posted().push(e);
@@ -566,7 +579,8 @@ impl Runtime {
         let date = parse_day(day)?;
         let (_, tz) = self.now.clock();
         let (from, until) = day_bounds(date, &tz)?;
-        let entries = self.db.chat_day(day)?;
+        let mut entries = self.db.chat_day(day)?;
+        self.refresh_undo(&mut entries);
         let outcomes: Vec<Value> = self
             .outcomes_between(from, until, &tz)
             .into_iter()

@@ -283,7 +283,7 @@ fn real_file(p: &Path) -> PathBuf {
 
 /// Allow / overwatch rules whose match covers a call the hard lists keep:
 /// loaded, but no effect on those calls (api-contract §1; Settings warns).
-fn neutralised(rules: &[Rule]) -> Vec<(String, String)> {
+pub(crate) fn neutralised(rules: &[Rule]) -> Vec<(String, String)> {
     let ctx = hard::HardCtx {
         home: PathBuf::from("/nonexistent-home"),
         state_dir: PathBuf::new(),

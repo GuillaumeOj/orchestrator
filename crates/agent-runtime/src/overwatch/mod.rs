@@ -11,9 +11,14 @@
 //! from the runtime, [`briefing`] writes the day's briefing.
 
 pub mod briefing;
+pub mod chatw;
 pub mod deciding;
+pub mod ground;
+pub mod rules;
 pub mod session;
+pub mod stuck;
 pub mod tools;
+pub mod undo;
 
 #[cfg(test)]
 mod tests;

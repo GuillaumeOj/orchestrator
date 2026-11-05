@@ -214,6 +214,7 @@ mod tests {
             thread_prev: None,
             waits_on: "user",
             deciding_until_ms: None,
+            annotation: None,
             created_ms: 0,
             agent: Some(agent.into()),
             synthesized: false,

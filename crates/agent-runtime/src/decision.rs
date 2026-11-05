@@ -26,6 +26,7 @@ pub fn decision_id(kind: &str, id: u64) -> String {
         "gate" => format!("gate-{id}"),
         "delivery" => format!("delivery-{id}"),
         "question" => format!("q-{id}"),
+        "rule_proposal" => format!("rule-{id}"),
         _ => format!("alert-{id}"),
     }
 }
@@ -122,6 +123,9 @@ pub struct Decision {
     /// A permission the Overwatch may still settle until then (F1).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deciding_until_ms: Option<u64>,
+    /// The Overwatch's recommendation, one per decision (D7).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<Value>,
     pub created_ms: u64,
     /// The store's agent, for routing (`subject.agent` too).
     #[serde(skip)]
@@ -283,6 +287,7 @@ fn kind_of(i: &InboxItem) -> (&'static str, Option<&'static str>) {
         "delivery" => ("delivery", None),
         "budget" => ("budget", None),
         "notion" => ("notion", None),
+        "rule_proposal" => ("rule_proposal", None),
         _ if i.payload.get("source").and_then(Value::as_str) == Some("notion") => ("notion", None),
         _ => ("alert", None),
     }
@@ -293,8 +298,28 @@ fn level_of(kind: &str) -> u8 {
     match kind {
         "permission" | "question" | "gate" | "trust" | "wait" => 1,
         "budget" | "ask" | "notion" => 3,
+        // Blocks nobody: never notifies, not in the badge (P4.4).
+        "rule_proposal" => 4,
         _ => 2,
     }
+}
+
+/// The `rule_proposal` card (api-contract §3.1): the text, the rule in
+/// mono, the decisions it comes from; Add rule · Not now · Edit rule.
+fn rule_proposal_card(p: &Value) -> (String, String, Vec<Value>, Vec<Action>) {
+    let rule = json!({"type": "rule", "match": p.get("match"), "effect": p.get("effect"), "scope": p.get("scope"),
+                      "project": p.get("project"), "role": p.get("role"), "file": p.get("file")});
+    let mut ctx = vec![markdown(s(p, "text"), None), rule];
+    if let Some(links) = p.get("links").filter(|l| l.as_array().is_some_and(|a| !a.is_empty())) {
+        ctx.push(json!({"type": "links", "links": links}));
+    }
+    let title = format!("Rule · {}", cut(s(p, "match"), 60));
+    let actions = vec![
+        act("add", "Add rule", Some("a")),
+        act("not_now", "Not now", Some("r")),
+        act("edit", "Edit rule", Some("enter")),
+    ];
+    (title, cut(s(p, "text"), 120), ctx, actions)
 }
 
 /// A stored item as a Decision.
@@ -455,6 +480,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
                 vec![OPEN_PANE, act("retry", "Retry now", None), act("restart_fresh", "Restart fresh", None), DISMISS];
             (cut(&first_line, 80), label, ctx, actions)
         }
+        ("rule_proposal", _) => rule_proposal_card(p),
         ("budget", _) => {
             let reason = if s(p, "reason").is_empty() { first_line.as_str() } else { s(p, "reason") };
             let mut ctx = vec![markdown(&i.body, None)];
@@ -547,6 +573,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             _ => "core",
         },
         deciding_until_ms: deciding,
+        annotation: p.get("annotation").filter(|a| a.is_object()).cloned(),
         created_ms: i.created_at_ms,
         agent: i.agent_id.clone(),
         synthesized: false,
@@ -586,6 +613,7 @@ fn synth(
         thread_prev: None,
         waits_on: "user",
         deciding_until_ms: None,
+        annotation: None,
         created_ms,
         agent: agent.map(str::to_string),
         synthesized: true,

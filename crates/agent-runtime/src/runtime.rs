@@ -2112,8 +2112,8 @@ impl Runtime {
         if do_calib && self.db.save_estimator("fit", week_start, &calib, &est).is_ok() {
             self.house().last_fit = Some(est.calibrator);
         }
-        // The Overwatch's batch window and idle grace (off this thread).
-        self.overwatch_wake();
+        // The Overwatch: stuck agents, a lifted limit, the batch window and idle grace.
+        self.overwatch_tick();
         // Time-based reasons and waits ("≈14:20", an MCP call past 5 min).
         self.now_pump(true);
     }

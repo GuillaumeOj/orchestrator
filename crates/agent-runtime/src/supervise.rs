@@ -183,6 +183,53 @@ impl Runtime {
         self.run_event(&cx.run.id, Some(&lead.id), "team.stuck", json!({"members": new}));
     }
 
+    /// Tells `agent` something as its next turn: the one handler behind the
+    /// lead's `nudge` (`from` "your lead") and the Overwatch's ("the Overwatch").
+    pub(crate) fn nudge_agent(&self, agent: &str, from: &str, text: &str) -> Result<(String, Value)> {
+        let turn = self.deliver(agent, &format!("ORCH: from {from}: {text}"))?;
+        Ok((format!("Told {agent}; it gets it as its next turn."), json!({"turn": turn})))
+    }
+
+    /// Restarts a suspended or failed agent so it carries on with its task:
+    /// the one handler behind `resume_agent` of the lead (`by` "your lead")
+    /// and of the Overwatch. `state`: the agent's state as the caller sees it
+    /// (for the refusal). Returns the text, the data and how it went:
+    /// `resumed` | `queued` (Pause all holds it) | `restarted_fresh`.
+    pub(crate) fn resume_member(&self, agent: &str, actor: &str, by: &str, state: &str) -> Result<(String, Value, &'static str)> {
+        if self.live(agent).is_some() {
+            bail!("{agent} is running ({state}): nudge it instead");
+        }
+        // Its last start died at once even fresh, or its resume has no
+        // session to resume (FR-415): a fresh session with its brief.
+        // Queued, not spawned: the Governor admits it like any resume (FR-411).
+        if self.resume_failed(agent) {
+            let session = self.queue_fresh_restart(agent, &format!("resumed by {by} after a failed start"))?;
+            return Ok((
+                format!("{agent} restarts as a fresh session with its brief when admitted."),
+                json!({"session_id": session}),
+                "restarted_fresh",
+            ));
+        }
+        // §3.5: a crashed agent (its restarts used up or not) resumes
+        // with its restart budget reset and its `crash` item closed.
+        self.clear_crash(agent, actor);
+        // A failed resume flags the agent, and the delivery loop never
+        // starts a flagged one: the resume is a new attempt.
+        self.store.write(|s| {
+            if let Some(a) = s.agents.get_mut(agent) {
+                a.flag = None;
+            }
+        })?;
+        // Through the Governor like any work: a continue turn.
+        let turn = self.deliver_kind(
+            agent,
+            &format!("ORCH: you were resumed by {by}. Carry on with your task, or report where you are."),
+            governor::TurnKind::Continue,
+        )?;
+        let held = self.with_governor(|g| g.is_paused_all() || g.paused_agents().iter().any(|a| a.0 == agent));
+        Ok((format!("{agent} resumes when admitted."), json!({"turn": turn}), if held { "queued" } else { "resumed" }))
+    }
+
     /// The lead's tools on its team.
     pub(crate) fn lead_tool(&self, cx: &RunCtx, tool: &str, args: &Value) -> Result<(String, Value)> {
         let now = now_ms();
@@ -212,41 +259,12 @@ impl Runtime {
             "nudge" => {
                 let m = member(args)?;
                 let text = str_arg(args, "text").ok_or_else(|| anyhow!("`text` is required"))?;
-                let turn = self.deliver(&m.agent, &format!("ORCH: from your lead: {text}"))?;
-                Ok((format!("Told {}; it gets it as its next turn.", m.agent), json!({"turn": turn})))
+                self.nudge_agent(&m.agent, "your lead", text)
             }
             "resume_agent" => {
                 let m = member(args)?;
-                if self.live(&m.agent).is_some() {
-                    bail!("{} is running ({}): nudge it instead", m.agent, m.state.label());
-                }
-                // Its last start died at once even fresh, or its resume has no
-                // session to resume (FR-415): a fresh session with its brief.
-                // Queued, not spawned: the Governor admits it like any resume (FR-411).
-                if self.resume_failed(&m.agent) {
-                    let session = self.queue_fresh_restart(&m.agent, "resumed by its lead after a failed start")?;
-                    return Ok((
-                        format!("{} restarts as a fresh session with its brief when admitted.", m.agent),
-                        json!({"session_id": session}),
-                    ));
-                }
-                // §3.5: a crashed agent (its restarts used up or not) resumes
-                // with its restart budget reset and its `crash` item closed.
-                self.clear_crash(&m.agent, "lead");
-                // A failed resume flags the agent, and the delivery loop never
-                // starts a flagged one: the lead's resume is a new attempt.
-                self.store.write(|s| {
-                    if let Some(a) = s.agents.get_mut(&m.agent) {
-                        a.flag = None;
-                    }
-                })?;
-                // Through the Governor like any work: a continue turn.
-                let turn = self.deliver_kind(
-                    &m.agent,
-                    "ORCH: you were resumed by your lead. Carry on with your task, or report where you are.",
-                    governor::TurnKind::Continue,
-                )?;
-                Ok((format!("{} resumes when admitted.", m.agent), json!({"turn": turn})))
+                let (text, data, _) = self.resume_member(&m.agent, "lead", "your lead", m.state.label())?;
+                Ok((text, data))
             }
             other => bail!("unknown lead tool {other}"),
         }

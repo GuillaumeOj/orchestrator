@@ -96,8 +96,9 @@ impl Serialize for ChatEntry {
                 m.serialize_entry(k, &format!("c-{n}"))?;
             }
         }
+        // Extras sent flat; keys starting with `_` are the core's own.
         if let Some(Value::Object(meta)) = &self.meta {
-            for (k, v) in meta {
+            for (k, v) in meta.iter().filter(|(k, _)| !k.starts_with('_')) {
                 m.serialize_entry(k, v)?;
             }
         }
@@ -214,6 +215,18 @@ impl Store {
         })
     }
 
+    /// The entry of a decision (the earliest, when it carried across days).
+    pub fn chat_by_decision(&self, decision: &str) -> Result<Option<ChatEntry>> {
+        let decision = decision.to_string();
+        self.read(move |c| {
+            let mut st = c.prepare_cached(&format!(
+                "SELECT {COLS} FROM chat_entries WHERE decision=?1 ORDER BY id DESC LIMIT 1"
+            ))?;
+            let mut rows = st.query_map([decision], row)?;
+            Ok(rows.next().transpose()?)
+        })
+    }
+
     /// Removes an entry (`chat_discard`); true when it existed.
     pub fn chat_delete(&self, n: u64) -> Result<bool> {
         self.write(move |tx| Ok(tx.execute("DELETE FROM chat_entries WHERE id=?1", [n as i64])? > 0))
@@ -245,7 +258,7 @@ impl Store {
         let before = before.to_string();
         self.read(move |c| {
             let mut st = c.prepare_cached(
-                "SELECT day, count(*), sum(kind = 'decision') FROM chat_entries WHERE day < ?1
+                "SELECT day, count(*), sum(kind IN ('decision', 'rule_proposal')) FROM chat_entries WHERE day < ?1
                  GROUP BY day ORDER BY day DESC LIMIT ?2",
             )?;
             let rows = st.query_map(params![before, limit as i64], |r| {
@@ -276,7 +289,7 @@ impl Store {
     pub fn chat_open(&self) -> Result<Vec<ChatEntry>> {
         self.read(|c| {
             let mut st = c.prepare_cached(&format!(
-                "SELECT {COLS} FROM chat_entries WHERE kind = 'decision' AND line IS NULL AND continued_to IS NULL
+                "SELECT {COLS} FROM chat_entries WHERE kind IN ('decision', 'rule_proposal') AND line IS NULL AND continued_to IS NULL
                  ORDER BY at_ms, id"
             ))?;
             Ok(st.query_map([], row)?.collect::<rusqlite::Result<_>>()?)

@@ -10,7 +10,7 @@ use orch_protocol::{McpMsg, now_ms};
 use serde_json::{Value, json};
 use std::os::unix::net::UnixStream;
 
-use crate::inbox::{Call, PARKED_MESSAGE, Waited, allows, reply};
+use crate::inbox::{Call, PARKED_MESSAGE, Waited, allows};
 use crate::policy::{Effect, Evaluation, Gate};
 use crate::runtime::Runtime;
 use crate::store::AgentRecord;
@@ -51,6 +51,13 @@ impl Runtime {
                 return (true, format!("Denied by {}. Do not retry.", ev.denial()), Value::Null);
             }
             Gate::OneShot => actor = "user".into(),
+            Gate::Reversed => {
+                return (
+                    true,
+                    "The user reversed an earlier approval of this call: do not repeat it.".into(),
+                    Value::Null,
+                );
+            }
             // No rule: the P1 default, it runs.
             Gate::Policy(None, _) => {}
             Gate::Policy(Some(ev), subject) => {
@@ -122,8 +129,8 @@ impl Runtime {
         match self.hold_for_decision(rec, call, subject, Some(ev), budget, conn) {
             Waited::Decided(i) if allows(&i) => Ok(()),
             Waited::Decided(i) => {
-                let why = reply(&i).map(|m| format!(" They said: {m}")).unwrap_or_default();
-                bail!("The user declined this.{why}")
+                let who = crate::inbox::denied_by(&i);
+                bail!("Declined: {who}")
             }
             Waited::Parked => bail!("{PARKED_MESSAGE}"),
             Waited::InPane | Waited::Interrupted => bail!("Interrupted by the user."),

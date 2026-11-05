@@ -67,6 +67,18 @@ pub fn reply(item: &InboxItem) -> Option<&str> {
     item.payload.get("reply").and_then(Value::as_str)
 }
 
+/// Who said no, with their words: "the user says: …" | "the Overwatch denied this: …".
+pub(crate) fn denied_by(item: &InboxItem) -> String {
+    if item.decided_by.as_deref() == Some(crate::overwatch::ID) {
+        let why = item.payload.get("overwatch_reason").and_then(Value::as_str).unwrap_or("it is off task");
+        return format!("the Overwatch denied this: {why}");
+    }
+    match reply(item) {
+        Some(m) => format!("the user says: {m}"),
+        None => "the user denied this.".into(),
+    }
+}
+
 /// A permission item's `tool_input` (`input` in rows from before P4.0).
 pub(crate) fn tool_input(item: &InboxItem) -> Value {
     item.payload.get("tool_input").or_else(|| item.payload.get("input")).cloned().unwrap_or(Value::Null)
@@ -546,6 +558,10 @@ impl Runtime {
                 return Some(HookOutput::permission_request(PermissionBehavior::Deny, Some(&m)));
             }
             Gate::OneShot => return Some(HookOutput::permission_request(PermissionBehavior::Allow, None)),
+            Gate::Reversed => {
+                let m = "ORCH: the user reversed an earlier approval of this very call: do not repeat it.";
+                return Some(HookOutput::permission_request(PermissionBehavior::Deny, Some(m)));
+            }
             // With the defaults the policy always answers.
             Gate::Policy(ev, subject) => (ev.expect("the default effect"), subject),
         };
@@ -594,8 +610,7 @@ impl Runtime {
         let out = match self.hold_for_decision(rec, call, subject, Some(ev), budget, conn) {
             Waited::Decided(i) if allows(&i) => HookOutput::permission_request(PermissionBehavior::Allow, None),
             Waited::Decided(i) => {
-                let m = reply(&i).map(|m| format!("ORCH: the user says: {m}"));
-                let m = m.unwrap_or_else(|| "ORCH: the user denied this.".into());
+                let m = format!("ORCH: {}", denied_by(&i));
                 HookOutput::permission_request(PermissionBehavior::Deny, Some(&m))
             }
             Waited::Parked => HookOutput::permission_request(PermissionBehavior::Deny, Some(PARKED_MESSAGE)),
@@ -664,6 +679,11 @@ impl Runtime {
             Ok(i) => i,
             Err(_) => return Waited::Expired,
         };
+        // The Overwatch went off, down or paused between the deadline and the
+        // card: the user's at once (the race of a status read before the write).
+        if deciding.is_some() && !self.overwatch_may_decide() {
+            self.overwatch_hand_over(item);
+        }
         let hold_id = crate::delivery::new_turn_id();
         let _ = self.store.write(|s| {
             s.holds.push(HoldRow {
@@ -1030,10 +1050,18 @@ impl Runtime {
             ("question", _, InboxDecision::Reply) => {
                 if let (Some(a), Some(m)) = (agent, message) {
                     let q = item.payload.get("question").and_then(Value::as_str).unwrap_or(&item.body);
-                    let text = format!(
-                        "ORCH: the user answered your question.\nQuestion: {}\nAnswer: {m}",
-                        crate::team::cut(q, 600)
-                    );
+                    let head = if by == crate::overwatch::ID {
+                        let src: Vec<&str> = item
+                            .payload
+                            .get("overwatch_sources")
+                            .and_then(Value::as_array)
+                            .map(|a| a.iter().filter_map(Value::as_str).collect())
+                            .unwrap_or_default();
+                        format!("ORCH: the Overwatch answered your question (source: {}).", src.join(", "))
+                    } else {
+                        "ORCH: the user answered your question.".to_string()
+                    };
+                    let text = format!("{head}\nQuestion: {}\nAnswer: {m}", crate::team::cut(q, 600));
                     effect = self.tell(a, &text, &mut result)?;
                     sent = true;
                 }
@@ -1063,6 +1091,14 @@ impl Runtime {
         result["effect"] = json!(effect);
         result["lifecycle"] = self.lifecycle(id);
         self.outcome(&item, by, effect);
+        // The user's Allow once / Deny count toward a learned rule (FR-1308).
+        if by == "user" && item.kind == "permission" {
+            match decision {
+                InboxDecision::Approve => self.rules_learn(&item, true),
+                InboxDecision::Reject | InboxDecision::Reply => self.rules_learn(&item, false),
+                _ => {}
+            }
+        }
         Ok(result)
     }
 

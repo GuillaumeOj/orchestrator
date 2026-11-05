@@ -28,9 +28,44 @@ pub struct Overwatch {
     published: std::sync::Mutex<Option<StatusView>>,
     /// The settings, read once and written through (hot paths read them).
     settings: std::sync::Mutex<Option<Settings>>,
+    /// Annotations of decisions that have no stored row (a Governor ask, a
+    /// pane prompt), by decision id (D7).
+    pub(crate) annotations: std::sync::Mutex<std::collections::BTreeMap<String, Value>>,
+    /// One-shot denies (the user reversed an approval): agent, tool, input, until.
+    denies: std::sync::Mutex<Vec<(String, String, Value, u64)>>,
+    /// The learned-rule tallies (loaded on first use).
+    pub(crate) rules: std::sync::Mutex<Option<super::rules::Tallies>>,
+    /// Stuck episodes (spec §3.6): when a team member's was first seen (its
+    /// lead has had it since), and those already sent.
+    pub(crate) stuck_seen: std::sync::Mutex<std::collections::BTreeMap<String, u64>>,
+    pub(crate) stuck_sent: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// When a `limit reached` down may lift (the window's reset).
+    pub(crate) limit_until: std::sync::atomic::AtomicU64,
 }
 
 impl Overwatch {
+    /// The user reversed an approval: the next identical call is refused (1 h).
+    pub(crate) fn deny_once(&self, agent: &str, tool: &str, input: Value, until_ms: u64) {
+        let mut d = self.denies.lock().unwrap_or_else(|e| e.into_inner());
+        let now = orch_protocol::now_ms();
+        d.retain(|x| x.3 > now);
+        d.push((agent.into(), tool.into(), input, until_ms));
+    }
+
+    /// Consumes a matching one-shot deny.
+    pub(crate) fn take_deny(&self, agent: &str, tool: &str, input: &Value) -> bool {
+        let mut d = self.denies.lock().unwrap_or_else(|e| e.into_inner());
+        let now = orch_protocol::now_ms();
+        d.retain(|x| x.3 > now);
+        match d.iter().position(|x| x.0 == agent && x.1 == tool && &x.2 == input) {
+            Some(i) => {
+                d.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// A status was sent already.
     pub(crate) fn published(&self) -> bool {
         self.published.lock().unwrap_or_else(|e| e.into_inner()).is_some()
@@ -52,7 +87,7 @@ impl Overwatch {
 const SEQ_FILE: &str = "events.seq";
 
 impl Runtime {
-    fn ow(&self) -> MutexGuard<'_, Sched> {
+    pub(crate) fn ow(&self) -> MutexGuard<'_, Sched> {
         self.overwatch.sched.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -389,9 +424,16 @@ impl Runtime {
             cache_warm,
         });
         self.overwatch_touch();
-        if let Err(e) = self.deliver(ID, &text) {
-            self.event(ID, "overwatch.deliver_failed", json!({"error": format!("{e:#}")}));
-            self.overwatch_down(why::COULD_NOT_START);
+        match self.deliver(ID, &text) {
+            // The user's messages in it are delivered (chat delivery state).
+            Ok(_) => {
+                let taken = self.ow().in_flight.as_ref().map(|t| t.events.clone()).unwrap_or_default();
+                self.overwatch_mark_delivered(&taken);
+            }
+            Err(e) => {
+                self.event(ID, "overwatch.deliver_failed", json!({"error": format!("{e:#}")}));
+                self.overwatch_down(why::COULD_NOT_START);
+            }
         }
     }
 
@@ -429,6 +471,7 @@ impl Runtime {
             s.turns.retain(|t| t.agent_id != ID);
             s.agents.insert(ID.into(), rec);
         })?;
+        self.overwatch_load_db_pending();
         let pending: Vec<Event> = {
             let mut st = self.ow();
             st.long_turns = 0;
@@ -505,6 +548,8 @@ impl Runtime {
         for d in carried_permissions(&t) {
             self.overwatch_hand_over(d);
         }
+        // A rule candidate it made no proposal for is the core's to propose.
+        self.rules_unanswered(&t.events);
         if slow {
             self.overwatch_down(why::TOO_SLOW);
             return;
@@ -553,7 +598,10 @@ impl Runtime {
         self.overwatch_turn_ended(now);
     }
 
+    /// A reached limit puts it down until the window resets (the tick lifts it).
     pub(crate) fn overwatch_rate_limited(&self) {
+        let until = self.overwatch_limit_resets(orch_protocol::now_ms());
+        self.overwatch.limit_until.store(until, Ordering::SeqCst);
         self.overwatch_down(why::LIMIT);
     }
 
@@ -582,13 +630,55 @@ impl Runtime {
         for d in carried_permissions(&t) {
             self.overwatch_hand_over(d);
         }
-        self.ow().pending_user.extend(t.events.into_iter().filter(|e| e.kind == Kind::UserMessage));
+        self.rules_unanswered(&t.events);
+        self.keep_user_messages(t.events);
     }
 
     fn overwatch_drop_events(&self) {
+        let queue = std::mem::take(&mut self.ow().queue);
+        self.rules_unanswered(&queue);
+        self.keep_user_messages(queue);
+    }
+
+    /// User messages among `events` wait for the restart (their entries read `pending`).
+    fn keep_user_messages(&self, events: Vec<Event>) {
+        let msgs: Vec<Event> = events.into_iter().filter(|e| e.kind == Kind::UserMessage).collect();
+        if msgs.is_empty() {
+            return;
+        }
+        self.overwatch_mark_pending(&msgs);
+        self.ow().pending_user.extend(msgs);
+    }
+
+    /// User entries still `pending` or `waking` in the store (an earlier
+    /// day's, or lost with an app restart) join the messages kept in memory.
+    fn overwatch_load_db_pending(&self) {
+        let Ok(entries) = self.db.chat_pending_user() else { return };
         let mut st = self.ow();
-        let queue = std::mem::take(&mut st.queue);
-        st.pending_user.extend(queue.into_iter().filter(|e| e.kind == Kind::UserMessage));
+        let known: std::collections::BTreeSet<String> = st
+            .pending_user
+            .iter()
+            .chain(st.queue.iter())
+            .chain(st.in_flight.iter().flat_map(|t| t.events.iter()))
+            .filter_map(|e| e.chat.clone())
+            .collect();
+        for e in entries.into_iter().filter(|e| !known.contains(&e.id())) {
+            let text = e.text.clone().unwrap_or_default();
+            let mut ev = Event::new(Kind::UserMessage, crate::team::cut(&text, 200));
+            (ev.text, ev.chat, ev.at_ms) = (Some(text), Some(e.id()), e.at_ms);
+            st.pending_user.push(ev);
+        }
+    }
+
+    /// The user message of the turn in flight that `post` answers.
+    pub(crate) fn overwatch_reply_target(&self) -> Option<String> {
+        let st = self.ow();
+        st.in_flight.as_ref()?.events.iter().rev().find(|e| e.kind == Kind::UserMessage).and_then(|e| e.chat.clone())
+    }
+
+    /// `chat_discard`: the kept message leaves the pending list.
+    pub(crate) fn overwatch_forget_pending(&self, chat: &str) {
+        self.ow().pending_user.retain(|e| e.chat.as_deref() != Some(chat));
     }
 
     /// `overwatch_restart`: a fresh session (new briefing) at once, with the
