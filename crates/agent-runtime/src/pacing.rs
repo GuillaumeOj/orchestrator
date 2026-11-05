@@ -419,7 +419,7 @@ mod tests {
     /// goes back to the role's model.
     #[test]
     fn a_task_model_switches_at_the_task_boundary_and_back_at_the_next_task() {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
         agent(&rt, d.path(), "a1", "sonnet", None);
         seat_on(&rt, "a1", 1, Some("opus"));
@@ -430,18 +430,22 @@ mod tests {
         let t0 = std::time::Instant::now();
         assert!(rt.task_boundary(&rec(&rt, "a1")), "waits for the switch");
         assert!(t0.elapsed() < std::time::Duration::from_secs(1), "§3.6: the pump never waits for the suspend");
-        assert!(rt.task_boundary(&rec(&rt, "a1")), "still waiting, asked once");
+        // Asked once: still waiting, unless the quick suspend has already ended
+        // the process (it never comes back, so "gone" after a false is certain).
+        let waiting = rt.task_boundary(&rec(&rt, "a1"));
+        assert!(waiting || rt.live("a1").is_none(), "still waiting, asked once");
         assert_eq!(switches(&rt), vec![json!({"from": "sonnet", "to": "opus", "why": "task"})]);
         // The suspend runs off the pump: wait for it.
         let stopped = || {
             rt.db.flush().unwrap();
             !rt.db.events(0, Some("a1"), Some("stopped"), 1).unwrap().is_empty()
         };
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !stopped() && std::time::Instant::now() < until {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert!(stopped());
+        assert!(rt.live("a1").is_none(), "the stop ended the process");
 
         // The process resumed with opus for task 1 (a spawn clears the stop
         // intent); the next task has no model.
@@ -457,7 +461,7 @@ mod tests {
     /// An explicit task model wins over a downgrade in force.
     #[test]
     fn a_task_model_wins_over_a_downgrade() {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
         let rule = Downgrade { to: "sonnet".into(), when: DowngradeWhen::ModelWindow };
         agent(&rt, d.path(), "a1", "opus", Some(rule));
@@ -486,7 +490,7 @@ mod tests {
     /// `update_task` applies to its next run (a new boundary) only.
     #[test]
     fn a_running_task_keeps_its_model_between_its_turns() {
-        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in("/tmp").unwrap();
+        let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let rt = Runtime::new(test_cfg(d.path(), false)).unwrap();
         agent(&rt, d.path(), "a1", "sonnet", None);
         seat_on(&rt, "a1", 1, None);

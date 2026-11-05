@@ -3104,9 +3104,18 @@ pub(crate) mod tests {
         (d, rt)
     }
 
-    /// A live process (a shell that sleeps) standing for `id` on `model`.
+    /// A live process standing for `id` on `model`. Like a real one, its exit
+    /// reaches [`Runtime::on_exit`], so a stop removes the live entry at once.
     pub(crate) fn insert_test_live(rt: &Runtime, id: &str, model: Option<&str>, task: u64, _dir: &Path) {
-        insert_live(rt, id, crate::pty::echoing_fake(), model, task);
+        let pid = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let (me, agent, p2) = (rt.me.clone(), id.to_string(), pid.clone());
+        let pty = crate::pty::echoing_fake(Box::new(move |status| {
+            if let Some(rt) = me.upgrade() {
+                rt.on_exit(&agent, p2.load(Ordering::SeqCst), status);
+            }
+        }));
+        pid.store(pty.pid, Ordering::SeqCst);
+        insert_live(rt, id, pty, model, task);
     }
 
     /// `id` is live behind `pty` (a fake terminal), ready for input.

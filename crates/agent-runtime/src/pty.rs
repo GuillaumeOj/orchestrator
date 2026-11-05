@@ -380,9 +380,10 @@ impl PtyProcess {
     }
 }
 
-/// A fake terminal that only shows what is typed into it (tests).
+/// A fake terminal that only shows what is typed into it (tests); its exit
+/// runs `on_exit`, as a real process's exit does.
 #[cfg(test)]
-pub(crate) fn echoing_fake() -> PtyProcess {
+pub(crate) fn echoing_fake(on_exit: OnExit) -> PtyProcess {
     let out: Arc<Mutex<Option<Arc<Output>>>> = Arc::new(Mutex::new(None));
     let o2 = out.clone();
     let p = PtyProcess::fake(
@@ -391,7 +392,7 @@ pub(crate) fn echoing_fake() -> PtyProcess {
                 o.push(bytes);
             }
         }),
-        Box::new(|_| {}),
+        on_exit,
     );
     *out.lock().unwrap() = Some(p.output.clone());
     p
