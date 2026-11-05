@@ -10,6 +10,7 @@
   import McpSettings from '../components/McpSettings.svelte';
   import OverwatchSettings from '../components/OverwatchSettings.svelte';
   import PacingSettings from '../components/PacingSettings.svelte';
+  import PermissionsSettings from '../components/PermissionsSettings.svelte';
   import { app, saveLayout } from '../lib/app.svelte.js';
   import { attentionCount } from '../lib/ecosystem.js';
   import { invoke } from '../lib/ipc.js';
@@ -22,6 +23,7 @@
     { id: 'claude', label: 'Claude Code' },
     { id: 'integrations', label: 'Integrations' },
     { id: 'overwatch', label: 'Overwatch' },
+    { id: 'permissions', label: 'Permissions' },
     { id: 'mcp', label: 'MCP servers' },
     { id: 'terminal', label: 'Terminal & editor' },
     { id: 'pacing', label: 'Pacing policy' },
@@ -103,6 +105,8 @@
       <IntegrationsSettings initial={firstInts} onstatus={(items) => (needs = attentionCount(items))} />
     {:else if section.id === 'overwatch'}
       <OverwatchSettings />
+    {:else if section.id === 'permissions'}
+      <PermissionsSettings />
     {:else if section.id === 'mcp'}
       {#key spec?.server}<McpSettings project={spec?.projectId ?? null} selected={spec?.server ?? null} initial={firstMcp} />{/key}
     {:else if section.id === 'builds'}

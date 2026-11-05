@@ -238,3 +238,121 @@ export function workingText(entry, now = Date.now()) {
 
 /** The turn ended and nothing came back: the Overwatch went to sleep after the message (notes §2.2). */
 export const noReply = (entry, ow) => !!entry && ow.status === 'asleep' && (ow.since_ms ?? 0) > entry.at_ms;
+
+// ---------------------------------------------------------------- undo on lines (notes §6)
+
+/** Per contract label: the collapsed word, the busy button, the toast after the core confirms. */
+const UNDOS = {
+  'Revoke rule': { short: 'Undo', busy: 'Revoking…' },
+  'Tell the agent': { short: 'Undo', busy: 'Telling…' },
+  'Allow instead': { short: 'Undo', busy: 'Allowing…' },
+  'Correct the answer': { short: 'Correct', busy: 'Sending…', input: true },
+  'Restore tier': { short: 'Undo', busy: 'Restoring…' },
+  'Remove rule': { short: 'Undo', busy: 'Removing…' },
+};
+
+/** The tier a reprioritized line moved from: "Normal → High in the queue" gives "Normal". */
+const tierFrom = (line) => /^(\w+) → /.exec(line.what ?? '')?.[1] ?? null;
+
+/**
+ * Where a line's undo stands: `available` (a button), `done` (undone or corrected),
+ * `gone` (could have been, the condition is gone) or `none` (nothing to undo).
+ */
+export function undoState(line) {
+  if (line?.undone_at_ms || line?.corrected_at_ms) return 'done';
+  if (line?.undo) return 'available';
+  if (line?.undo_gone) return 'gone';
+  return 'none';
+}
+
+/** The word an undone line shows after its tail (notes §6.2): "undone 14:03", "corrected 14:05". */
+export const undoneTail = (line, now = Date.now()) =>
+  line.corrected_at_ms
+    ? `corrected ${clock(line.corrected_at_ms, now)}`
+    : line.undone_at_ms
+      ? `undone ${clock(line.undone_at_ms, now)}`
+      : '';
+
+/**
+ * What the expanded line says about its undo (notes §6.1–6.3): the button's label and busy
+ * label, the explanation under it, the toast after it, the marker once done, or the
+ * "Can't be undone" line. `project` names the policy file's project when known.
+ */
+export function undoInfo(line, project = null, now = Date.now()) {
+  const state = undoState(line);
+  const agent = line.agent ?? 'the agent';
+  const rule = line.by_detail ?? 'the rule';
+  const file = project ? `${project} policy` : 'its policy file';
+  const label = line.undo?.label ?? '';
+  const u = UNDOS[label] ?? { short: 'Undo', busy: 'Undoing…' };
+  // A line already undone no longer carries `undo`: the verb and its source say what it was.
+  const kind = label || guessLabel(line);
+  const at = (ms) => clock(ms, now);
+  const info = {
+    state,
+    label,
+    short: u.short,
+    busy: u.busy,
+    input: !!u.input,
+    explain: '',
+    toast: '',
+    done: '',
+    why: '',
+  };
+  switch (kind) {
+    case 'Revoke rule':
+      info.explain = `Removes rule ${rule} from ${file}. The call already ran.`;
+      info.toast = `Rule ${rule} revoked.`;
+      info.done = `Rule ${rule} revoked · ${at(line.undone_at_ms)}`;
+      break;
+    case 'Tell the agent':
+      info.explain = `Tells ${agent} not to repeat this call and denies the next identical one for 1 hour. The call already ran.`;
+      info.toast = `Told ${agent} not to repeat it.`;
+      info.done = `Undone ${at(line.undone_at_ms)} · ${agent} was told not to repeat it`;
+      break;
+    case 'Allow instead':
+      info.explain = `Lets ${agent} retry this exact call once and tells it so.`;
+      info.toast = `${agent} may retry.`;
+      info.done = `Undone ${at(line.undone_at_ms)} · ${agent} was told it may retry`;
+      break;
+    case 'Correct the answer':
+      info.explain = `Send ${agent} what it should know instead.`;
+      info.toast = `Told ${agent} the answer changed.`;
+      info.done = `Corrected ${at(line.corrected_at_ms)} · ${agent} was told`;
+      break;
+    case 'Restore tier': {
+      const from = tierFrom(line);
+      info.explain = `Puts ${agent} back at ${from ?? 'its earlier tier'}.`;
+      info.toast = `Restored ${agent} to ${from ?? 'its earlier tier'}.`;
+      info.done = `Restored${from ? ` to ${from}` : ''} · ${at(line.undone_at_ms)}`;
+      break;
+    }
+    case 'Remove rule':
+      info.explain = `Removes the rule from ${file}.`;
+      info.toast = 'Rule removed.';
+      info.done = `Rule removed · ${at(line.undone_at_ms)}`;
+      break;
+  }
+  if (state === 'gone') info.why = `Can't be undone: ${line.undo_gone}`;
+  else if (state === 'none')
+    info.why =
+      line.by === 'core' ? 'Always denied by the app. Nothing can change it.' : "Can't be undone: it already ran.";
+  return info;
+}
+
+/** The label an undone line had, from what it says (its `undo` is gone once used). */
+function guessLabel(line) {
+  if (line.corrected_at_ms) return 'Correct the answer';
+  if (!line.undone_at_ms) return '';
+  if (line.verb === 'reprioritized') return 'Restore tier';
+  if (line.verb === 'added') return 'Remove rule';
+  if (line.by === 'policy') return 'Revoke rule';
+  if (line.verb === 'denied') return 'Allow instead';
+  return 'Tell the agent';
+}
+
+/** The undo word on a collapsed line's right edge: "Undo u", "Correct u" (empty when none). */
+export const undoChip = (line) => {
+  if (undoState(line) !== 'available') return '';
+  return `${UNDOS[line.undo.label]?.short ?? 'Undo'} u`;
+};

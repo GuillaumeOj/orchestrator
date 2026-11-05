@@ -7,7 +7,7 @@
   import { untrack } from 'svelte';
   import { now30, openUrl } from '../../lib/app.svelte.js';
   import { byWords, lineMarker, verbText } from '../../lib/chat.js';
-  import { clock, waited } from '../../lib/format.js';
+  import { clock, dayTime, waited } from '../../lib/format.js';
   import { agentOf, blockOf, deliveryPrimary, keyless, parked, restarted, subjectLine } from '../../lib/inbox.js';
   import {
     decidingName,
@@ -166,7 +166,10 @@
   {#if subjectLine(d)}<div class="subject secondary">{subjectLine(d)}</div>{/if}
   {#if askText}<div class="why muted" data-asks>{askText}</div>{/if}
   {#if d.summary && !d.context?.length}<p class="summary">{d.summary}</p>{/if}
-  <ContextBlocks decision={d} bind:choices />
+  <ContextBlocks decision={d} bind:choices onjump={(id) => onref({ kind: 'chat', id })} jumpok={(id) => refok({ kind: 'chat', id })} />
+  {#if d.kind === 'rule_proposal' && d.payload?.declined_before && live}
+    <p class="muted note" data-second-ask>Not now on {dayTime(d.payload.declined_at_ms)}. It won't be asked again if you decline.</p>
+  {/if}
   {#if live && restarted(d)}
     <p class="muted note">This was still waiting when the core restarted. Your answer reaches {agentOf(d) ?? 'the agent'} as a turn.</p>
   {/if}

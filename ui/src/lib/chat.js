@@ -5,7 +5,7 @@
 
 import { clock, plural } from './format.js';
 import { agentOf, cut, FILTERS } from './inbox.js';
-import { isDeciding } from './overwatch.js';
+import { isDeciding, sourceLabel, undoState } from './overwatch.js';
 import { decisionKind } from './status.js';
 
 /** A user's own decision collapses to its line this long after its effect (notes §2.1). */
@@ -53,7 +53,7 @@ export const verbText = (verb) => (verb === 'run now' ? 'started' : (verb ?? '')
 export const warnVerb = (verb) => WARN.has(verb);
 
 /** The line's tail from `by` (notes §2.2): none for you. `policy` (P4.4) and `rule` (older entries) read alike. */
-export function tailText(line) {
+export function tailText(line, entries = {}) {
   switch (line?.by) {
     case 'policy':
       return line.by_detail ? `policy: ${line.by_detail}` : 'policy';
@@ -66,11 +66,22 @@ export function tailText(line) {
     case 'core':
       // A core denial names its hard-list reason (api-contract §5, ux F4).
       return line.by_detail ? `core: ${line.by_detail}` : 'by the app';
-    case 'overwatch':
+    case 'overwatch': {
+      // An answer's tail is its proof, not its reason: "from api-contract.md §3 +1" (notes §5.1).
+      const from = line.verb === 'answered' ? sourceTail(line.sources, entries) : '';
+      if (from) return from;
       return line.by_detail ? `Overwatch: ${line.by_detail}` : 'Overwatch';
+    }
     default:
       return '';
   }
+}
+
+/** "from api-contract.md §3 +1": the first source that still resolves, and how many more. */
+function sourceTail(sources, entries) {
+  const list = [...new Set(sources ?? [])];
+  const label = list.map((x) => sourceLabel(x, entries)).find((x) => x != null);
+  return label ? `from ${label}${list.length > 1 ? ` +${list.length - 1}` : ''}` : '';
 }
 
 /** "by rule installs", "in the pane" (notes §2.4, §8.2): who settled it, in words. */
@@ -103,14 +114,15 @@ const head = (line, f = (s) => s) =>
 const settled = (line) => [verbText(line.verb), byWords(line)].filter(Boolean).join(' ');
 
 /** "allowed back-1: cargo add serde_json · rule: installs" (no time, no ▸). */
-export function lineText(line) {
-  const tail = tailText(line);
+export function lineText(line, entries = {}) {
+  const tail = tailText(line, entries);
   return `${head(line)}${tail ? ` · ${tail}` : ''}`;
 }
 
 /** The line's accessible name: "Allowed back-1: cargo add serde_json, by rule installs, 14:02". */
 export function lineLabel(line, now = Date.now()) {
-  return [head(line, cap), byWords(line), clock(line.at_ms, now)].filter(Boolean).join(', ');
+  const label = [head(line, cap), byWords(line), clock(line.at_ms, now)].filter(Boolean).join(', ');
+  return undoState(line) === 'available' ? `${label}. Undo available.` : label;
 }
 
 /** The expanded line's marker: "Allowed by rule installs · 14:02". */
@@ -133,6 +145,8 @@ const EFFECT_VERB = {
   deleted: 'dismissed',
   dismissed: 'dismissed',
   queued: 'answered',
+  added: 'added',
+  not_now: 'not now',
 };
 const ASK_VERB = { applied: 'run now', skipped: 'kept queued', queued: 'kept queued' };
 const KIND_VERB = { permission: 'allowed', gate: 'approved', ask: 'run now' };
@@ -194,7 +208,7 @@ function composedLine(d, now) {
 /**
  * @typedef {{ type: 'morning' | 'card' | 'line' | 'fold' | 'group' | 'text', key: string, id?: string, d?: any,
  *   entry?: any, line?: any, ref?: any, label?: string, n?: number, blocking?: number, open?: boolean,
- *   deciding?: boolean }} Item
+ *   deciding?: boolean, quiet?: boolean }} Item
  */
 
 /**
@@ -228,14 +242,14 @@ export function thread({
   // The latest entry of each decision (a returning synthesized id has a newer one).
   const latest = new Map();
   for (const e of entries)
-    if (e.kind === 'decision' && e.decision) {
+    if ((e.kind === 'decision' || e.kind === 'rule_proposal') && e.decision) {
       const l = latest.get(e.decision);
       if (!l || byTime(l, e) < 0) latest.set(e.decision, e);
     }
   // A decision listed with no entry yet (an older core, a push in flight) sits
   // at its creation time.
   for (const d of Object.values(decisions))
-    if (!latest.has(d.id) && d.level < 4) {
+    if (!latest.has(d.id) && (d.level < 4 || d.kind === 'rule_proposal')) {
       const e = placeholder(d);
       entries.push(e);
       latest.set(d.id, e);
@@ -246,8 +260,12 @@ export function thread({
   /** 'card' | 'line' | null for a decision entry. */
   const mode = (e, d) => {
     if (d && latest.get(d.id) === e) {
-      if (d.level >= 4) return e.line ? 'line' : null;
       const lc = d.lifecycle ?? {};
+      if (d.kind === 'rule_proposal') {
+        // Level 4: a card while it waits (its Undo is the client's 5 s window); settled, it is its line at once.
+        return waiting.has(d.id) || CARD_STATES.has(lc.state) ? 'card' : 'line';
+      }
+      if (d.level >= 4) return e.line ? 'line' : null;
       if (waiting.has(d.id) || CARD_STATES.has(lc.state)) return 'card';
       // Settled by the Overwatch while you read it: it stays only while held (pointer or focus), no timer.
       if (lc.state === 'effect' && lc.decided_by === 'overwatch' && isHeld(d.id, 'overwatch')) return 'card';
@@ -271,14 +289,24 @@ export function thread({
     // The user's messages and the Overwatch's replies (P4.4 api-contract §3.2).
     if (e.kind === 'text' && (e.author === 'user' || e.author === 'overwatch'))
       all.push({ type: 'text', key: e.id, entry: e });
-    if (e.kind !== 'decision') continue;
+    // The Overwatch's unsticking actions are lines of their own (api-contract §3.2).
+    if (e.kind === 'action' && e.line) all.push({ type: 'line', key: e.id, id: e.id, line: e.line, d: null, entry: e });
+    if (e.kind !== 'decision' && e.kind !== 'rule_proposal') continue;
     const d = decisions[e.decision] ?? null;
     const m = mode(e, d);
     if (m === 'card') {
       // Deciding (notes §3): the Overwatch may still settle it; the card hands over at the deadline.
       const deciding = isDeciding(d, now);
       if (deciding) nextDue = nextDue == null ? d.deciding_until_ms : Math.min(nextDue, d.deciding_until_ms);
-      all.push({ type: 'card', key: e.id, id: d.id, d, entry: e, deciding });
+      all.push({
+        type: 'card',
+        key: e.id,
+        id: d.id,
+        d,
+        entry: e,
+        deciding,
+        quiet: deciding || d.kind === 'rule_proposal',
+      });
     } else if (m === 'line') {
       const live = d && latest.get(d.id) === e;
       const line = e.line ?? composedLine(d, now);
@@ -326,7 +354,7 @@ export function thread({
   const test = (FILTERS.find((f) => f.id === filter) ?? FILTERS[0]).test;
   const shown = cardsAll.filter((i) => test(i.d));
   // Deciding cards are never folded and do not count toward the 5 (notes F13).
-  const counted = shown.filter((i) => !i.deciding);
+  const counted = shown.filter((i) => !i.quiet);
   const folded = new Set(counted.slice(FOLD_AT).map((i) => i.key));
 
   /** @type {Item[]} */
@@ -382,7 +410,8 @@ function sameItem(a, b) {
     a.line === b.line &&
     a.ref === b.ref &&
     a.entry === b.entry &&
-    a.deciding === b.deciding
+    a.deciding === b.deciding &&
+    a.quiet === b.quiet
   );
 }
 
@@ -490,12 +519,12 @@ export const entryLine = (e) => e.line ?? leftOpen(e);
 /** A past day's thread (notes §6.2): the morning line, then every decision as a line, oldest first. */
 export function pastItems(entries) {
   return [...(entries ?? [])]
-    .filter((e) => e.kind === 'morning' || e.kind === 'decision' || e.kind === 'text')
+    .filter((e) => ['morning', 'decision', 'text', 'action', 'rule_proposal'].includes(e.kind))
     .sort(byTime)
     .map((e) =>
       e.kind === 'morning' || e.kind === 'text'
         ? { type: e.kind === 'text' ? 'text' : 'morning', key: e.id, entry: e }
-        : { type: 'line', key: e.id, id: e.decision, line: entryLine(e), d: e.card ?? null, entry: e },
+        : { type: 'line', key: e.id, id: e.decision ?? e.id, line: entryLine(e), d: e.card ?? null, entry: e },
     );
 }
 

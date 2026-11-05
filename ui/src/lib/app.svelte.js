@@ -3,6 +3,7 @@
 // now.svelte.js), the tiling workspace, focus, overlays and the command
 // registry. Terminal objects (xterm.js) live outside the reactive state, in `terms`.
 
+import { upsertEntries } from './chat.js';
 import { deliveryRef } from './delivery.js';
 import { clock as clockOf } from './format.js';
 import { decisionToast, due, FILTERS, isOpen, older, pendingToast, UNDO_MS, version } from './inbox.js';
@@ -464,8 +465,36 @@ export function routeOpen(r, projectId = null) {
   else if (r.open === 'pane' && r.run) runInPane(r.run, `${r.run}${r.server ? ` · ${r.server}` : ''}`, projectId);
   else if (r.open === 'url' && r.url) openUrl(r.url);
   else if (r.open === 'report') openReport(r.report ?? 'current');
+  else if (r.open === 'editor' && r.scope) openPolicy(r.scope, r.project ?? projectId);
   else return false;
   return true;
+}
+
+/** A policy file in nvim (api-contract §5 `policy_open`): created with its first comment when missing. */
+export async function openPolicy(scope, projectId = null) {
+  const project = scope === 'project' ? projectId : null;
+  try {
+    const r = await invoke('policy_open', { scope, project, ...RUN_SIZE });
+    if (r.reused) {
+      const pane = findPane((s) => s.type === 'editor' && s.projectId === project);
+      if (pane) focusPane(pane);
+      return toast('Opened the policy file in nvim');
+    }
+    addPane(
+      { type: 'editor', termId: r.term.id, spawn: RUN_SIZE, cwd: r.term.cwd, projectId: project, file: null },
+      'right',
+    );
+  } catch (e) {
+    toast(`Could not open the policy file: ${errText(e)}`, { kind: 'error' });
+  }
+}
+
+/** Undoes an Overwatch line (api-contract §3.3): `text` is the correction of an answer.
+ *  The line comes back updated; a refusal throws, `{ ok: false, gone }` says why it can't. */
+export async function undoLine(entry, text = null) {
+  const r = await invoke('chat_undo', text == null ? { entry: entry.id } : { entry: entry.id, text });
+  if (r?.entry) upsertEntries((app.now.chat ??= { day: null, entries: {} }), [r.entry]);
+  return r;
 }
 
 /** An action the core answers at once (no undo window): Open (a Notion page, a

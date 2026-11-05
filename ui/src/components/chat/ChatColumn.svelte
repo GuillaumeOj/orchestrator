@@ -163,7 +163,7 @@
   // j/k stops: the cards, the fold header, the digest header (notes §10.2).
   const stops = $derived([...t.items.filter((i) => i.type === 'card' || i.type === 'fold').map(stopKey), 'digest']);
   // ⌘⇧I and the default selection skip a deciding card unless nothing else is open (P4.4 notes F13).
-  const decidingStops = $derived(new Set(t.cards.filter((c) => c.deciding).map((c) => `c:${c.id}`)));
+  const decidingStops = $derived(new Set(t.cards.filter((c) => c.quiet).map((c) => `c:${c.id}`)));
   const firstStop = $derived(
     stops.find((s) => s !== 'digest' && !decidingStops.has(s)) ?? stops.find((s) => decidingStops.has(s)) ?? stops[0],
   );
@@ -485,7 +485,7 @@
     }
     if (line) toast(`${alreadyText(line.line)}. Showing the next card.`);
     else if (id && !card) toast('That decision is no longer listed.');
-    const target = card ?? t.cards.find((c) => !c.deciding) ?? t.cards[0] ?? null;
+    const target = card ?? t.cards.find((c) => !c.quiet) ?? t.cards[0] ?? null;
     sel = target ? `c:${target.id}` : 'digest';
     feed?.focus();
     if (card) flash(card.key);
@@ -824,6 +824,11 @@
     // Not on a card (the fold or digest header, a digest row still listed, a
     // focused line or its read-only card): only move and undo.
     const onLine = !!e.target.closest?.('article.line');
+    // `u` on a focused line undoes that line (notes §6.6); else the card's or the last decision's.
+    if (intent.kind === 'undo' && onLine) {
+      const run = e.target.closest('article.line').querySelector('button[data-undo-run]');
+      if (run) return take(), run.click();
+    }
     if ((o || !selCard || onLine) && intent.kind !== 'move' && intent.kind !== 'undo') return take();
     if (selCard && pendingOf(selCard.id) && intent.kind !== 'move' && intent.kind !== 'undo') return take();
     if (apply(intent, selCard?.d)) take();
@@ -915,7 +920,7 @@
           {:else if it.type === 'text'}
             <ChatText item={it} {ow} past today={todayDay} {reflabel} onref={openRef} refok={refOk} />
           {:else}
-            <ChatLine item={it} expanded={expanded.has(it.key)} pulse={false} entries={viewEntries} refok={refOk} onref={openRef} ontoggle={() => toggleLine(it.key)} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
+            <ChatLine item={it} expanded={expanded.has(it.key)} pulse={false} entries={viewEntries} refok={refOk} onref={openRef} ontoggle={() => toggleLine(it.key)} onexpand={() => (expanded = new Set([...expanded, it.key]))} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
           {/if}
         {/each}
         {#if !pastThread.length}<p class="empty muted">Nothing was recorded on {dayLabel(past.day)}.</p>{/if}
@@ -972,7 +977,7 @@
           <span aria-hidden="true">{it.open ? '▾' : '▸'}</span> {foldText(it)} · <Kbd keys={it.open ? '⏎' : 'j'} />
         </button>
       {:else if it.type === 'line'}
-        <ChatLine item={it} expanded={expanded.has(it.key)} pulse={pulse === it.key} {entries} refok={refOk} onref={openRef} ontoggle={() => toggleLine(it.key)} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
+        <ChatLine item={it} expanded={expanded.has(it.key)} pulse={pulse === it.key} {entries} refok={refOk} onref={openRef} ontoggle={() => toggleLine(it.key)} onexpand={() => (expanded = new Set([...expanded, it.key]))} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
       {:else}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <article
