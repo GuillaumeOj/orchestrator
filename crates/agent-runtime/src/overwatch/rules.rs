@@ -432,7 +432,9 @@ impl Runtime {
         let open: Vec<InboxItem> = self.store.read(|s| {
             s.inbox
                 .iter()
-                .filter(|i| i.kind == "rule_proposal" && i.open() && i.payload.get("edited_at_ms").is_some_and(|v| !v.is_null()))
+                .filter(|i| {
+                    i.kind == "rule_proposal" && i.open() && i.payload.get("edited_at_ms").is_some_and(|v| !v.is_null())
+                })
                 .cloned()
                 .collect()
         });

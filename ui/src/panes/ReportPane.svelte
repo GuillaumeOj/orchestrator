@@ -13,7 +13,7 @@
   import { dayHm, dayTime } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { onTopics } from '../lib/now.svelte.js';
-  import { ACTION_LABEL, API_TIP, delta, kpis, minutes, noData, reportMarkdown, stateBar, TABS, usd, weekNo } from '../lib/pacing.js';
+  import { ACTION_LABEL, API_TIP, delta, kpis, minutes, noData, overwatchLast, reportMarkdown, stateBar, TABS, usd, weekNo } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
 
   let { paneId } = $props();
@@ -28,7 +28,9 @@
   let root = $state(null);
 
   const week = $derived(r ? weekNo(Date.parse(r.week_start)) : null);
-  const rows = $derived(r ? (r[TABS.find((t) => t.id === tab).rows] ?? []) : []);
+  const rows = $derived(r ? overwatchLast(r[TABS.find((t) => t.id === tab).rows] ?? []) : []);
+  // The Overwatch draws on the reserve and has no planned share (P4.4 notes §10); shown when it used anything.
+  const overwatch = $derived((r?.by_role ?? []).find((x) => x.key === 'overwatch') ?? null);
   const maxPp = $derived(Math.max(1, ...rows.map((x) => x.pp)));
   const bar = $derived(r ? stateBar(r.states) : []);
   const estimated = $derived(r?.provenance === 'estimated');
@@ -136,6 +138,11 @@
                   <td>{minutes(a.queued_p50_min)} / {minutes(a.queued_max_min)}</td>
                 </tr>
               {/each}
+              {#if overwatch}
+                <tr class="ow" data-overwatch-row>
+                  <td>Overwatch</td><td>—</td><td title="Not planned: it draws on the reserve.">—</td><td>{overwatch.pp.toFixed(1)} pp</td><td class="muted" colspan="2">from the reserve</td>
+                </tr>
+              {/if}
               <tr><td>reserve (you)</td><td>—</td><td>{Math.round(r.totals.reserve_pct)} pp</td><td>{Math.round(r.totals.interactive_pp)} pp</td><td>{delta(r.totals.interactive_pp - r.totals.reserve_pct).text}</td><td>—</td></tr>
               <tr><td>outside the app</td><td>—</td><td>—</td><td>{Math.round(r.totals.outside_pp)} pp</td><td>—</td><td>—</td></tr>
             </tbody>
@@ -153,7 +160,7 @@
             <tbody>
               {#each rows as x (x.key)}
                 <tr>
-                  <td>{x.key === 'outside' ? 'outside the app' : x.label}</td>
+                  <td title={x.key === 'overwatch' ? 'Not planned: it draws on the reserve.' : undefined}>{x.key === 'outside' ? 'outside the app' : x.label}{x.key === 'overwatch' ? ' · from the reserve' : ''}</td>
                   <td>{estimated ? '≈ ' : ''}{Math.round(x.pp)} pp</td>
                   <td class="share"><span class="sbar"><i style:width="{(x.pp / maxPp) * 100}%"></i></span></td>
                   <td class="usd" title={API_TIP}>{usd(x)}</td>
@@ -238,6 +245,9 @@
 </div>
 
 <style>
+  tr.ow td {
+    border-top: var(--border-width-default) solid var(--color-border-subtle);
+  }
 
   .sugg {
     margin-top: var(--space-md);

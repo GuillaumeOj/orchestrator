@@ -335,7 +335,9 @@ pub fn build(
         now_ms: ms(now),
         shadow: plan.shadow_mode,
         reserve_pct: plan.reserve_pct,
-        overwatch_pp: Some(gov.allocation_usage_pct(&governor::AllocationId(agent_runtime::overwatch::ALLOCATION.into()))),
+        overwatch_pp: Some(
+            gov.allocation_usage_pct(&governor::AllocationId(agent_runtime::overwatch::ALLOCATION.into())),
+        ),
         actual: actual(history, &snap, start, now),
         snapshot: snap,
         curve: points,
