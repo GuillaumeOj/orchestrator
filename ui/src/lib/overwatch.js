@@ -243,12 +243,12 @@ export const noReply = (entry, ow) => !!entry && ow.status === 'asleep' && (ow.s
 
 /** Per contract label: the collapsed word, the busy button, the toast after the core confirms. */
 const UNDOS = {
-  'Revoke rule': { short: 'Undo', busy: 'Revoking' },
-  'Tell the agent': { short: 'Undo', busy: 'Telling' },
-  'Allow instead': { short: 'Undo', busy: 'Allowing' },
-  'Correct the answer': { short: 'Correct', busy: 'Sending', input: true },
-  'Restore tier': { short: 'Undo', busy: 'Restoring' },
-  'Remove rule': { short: 'Undo', busy: 'Removing' },
+  'Revoke rule': { short: 'Undo', busy: () => 'Revoking the rule' },
+  'Tell the agent': { short: 'Undo', busy: (a) => `Telling ${a}` },
+  'Allow instead': { short: 'Undo', busy: (a) => `Allowing ${a}` },
+  'Correct the answer': { short: 'Correct', busy: (a) => `Sending ${a}`, input: true },
+  'Restore tier': { short: 'Undo', busy: (a) => `Restoring ${a}` },
+  'Remove rule': { short: 'Undo', busy: () => 'Removing the rule' },
 };
 
 /** Unsticking verbs: they ran, there is nothing to take back (notes §6.3). */
@@ -287,7 +287,7 @@ export function undoInfo(line, project = null, now = Date.now()) {
   const rule = line.by_detail ?? 'the rule';
   const file = project ? `${project} policy` : 'its policy file';
   const label = line.undo?.label ?? '';
-  const u = UNDOS[label] ?? { short: 'Undo', busy: 'Undoing' };
+  const u = UNDOS[label] ?? { short: 'Undo', busy: () => 'Undoing' };
   // A line already undone no longer carries `undo`: the verb and its source say what it was.
   const kind = label || guessLabel(line);
   const at = (ms) => clock(ms, now);
@@ -295,7 +295,7 @@ export function undoInfo(line, project = null, now = Date.now()) {
     state,
     label,
     short: u.short,
-    busy: `${u.busy} ${label === 'Revoke rule' || label === 'Remove rule' ? 'the rule' : agent}…`,
+    busy: `${u.busy(agent)}…`,
     input: !!u.input,
     explain: '',
     toast: '',

@@ -6,7 +6,7 @@
   const links = $derived(block.links ?? []);
 </script>
 
-{#each links as l, i (i)}
+{#each links as l}
   {#if l.chat}
     <button class="link" data-link-chat={l.chat} onclick={() => onjump(l.chat)}>{l.label} ↗</button>
   {:else}

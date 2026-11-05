@@ -123,6 +123,8 @@ export const agent = (id) => agents().find((a) => a.id === id);
 /** Agents not deleted (archived ones stay in the snapshot for history). */
 export const activeAgents = () => agents().filter((a) => a.state !== 'archived');
 export const projects = () => app.data?.projects ?? [];
+/** A project's name by id (the id itself when it is not listed), null for no id. */
+export const projectName = (id) => (id ? (projects().find((p) => p.id === id)?.name ?? id) : null);
 /** Features with their latest team run (P2). `null` in a snapshot when the
  *  core could not read them: the poll then keeps the previous list. */
 export const features = () => app.data?.features ?? [];

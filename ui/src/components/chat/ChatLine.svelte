@@ -7,11 +7,11 @@
   // (`u`, or the button when expanded), "undone 14:03" once used, "Can't be
   // undone: …" when it can't be; "Correct the answer" opens a reply field.
   import { tick } from 'svelte';
-  import { now30, projects, toast, undoLine } from '../../lib/app.svelte.js';
+  import { now30, projectName, toast, undoLine } from '../../lib/app.svelte.js';
   import { lineLabel, lineText, tailText, verbText, warnVerb } from '../../lib/chat.js';
   import { clock } from '../../lib/format.js';
   import { errText } from '../../lib/ipc.js';
-  import { undoChip, undoInfo, undoneTail } from '../../lib/overwatch.js';
+  import { undoChip, undoInfo, undoneTail, undoState } from '../../lib/overwatch.js';
   import Kbd from '../Kbd.svelte';
   import DecisionCard from './DecisionCard.svelte';
 
@@ -19,23 +19,25 @@
   let { item, expanded = false, pulse = false, entries = {}, refok = () => true, ontoggle = () => {}, onopen = () => {}, onref = () => {}, onexpand = () => {} } = $props();
   // The line after an undo of this window (a past day's entries are not pushed back): the core's reply.
   let patched = $state(null);
-  const projectName = (id) => (id ? (projects().find((p) => p.id === id)?.name ?? id) : null);
   const line = $derived(patched ?? item.line);
   const now = $derived(Math.max(now30(), Date.now()));
   const tail = $derived(tailText(line, entries));
   const undone = $derived(undoneTail(line, now));
   const chip = $derived(undoChip(line));
-  const info = $derived(undoInfo(line, projectName(item.d?.subject?.project), now));
-  const showUndo = $derived(info.state !== 'none' || line.by === 'overwatch' || line.by === 'core' || line.by === 'policy');
-
   let busy = $state(false);
   let failed = $state('');
   let correcting = $state(false);
+  const input = $derived(line.undo?.label === 'Correct the answer');
+  // Full copy only when it is shown or used; a collapsed line needs the chip alone.
+  const info = $derived(expanded || busy || correcting ? undoInfo(line, projectName(item.d?.subject?.project), now) : null);
+  const showUndo = $derived(undoState(line) !== 'none' || line.by === 'overwatch' || line.by === 'core' || line.by === 'policy');
+
   let draft = $state(''); // kept until sent or cancelled, across collapse and expand
   let field = $state();
 
   async function run(text = null) {
-    if (busy || info.state !== 'available') return;
+    if (busy || undoState(line) !== 'available') return;
+    const done = undoInfo(line, projectName(item.d?.subject?.project), now);
     busy = true;
     failed = '';
     try {
@@ -43,9 +45,8 @@
       if (r?.ok === false) failed = r.gone ? `Can't be undone: ${r.gone}` : 'Could not undo.';
       else {
         if (r?.entry?.line) patched = r.entry.line;
-        correcting = false;
-        draft = '';
-        toast(info.toast);
+        cancel();
+        toast(done.toast);
       }
     } catch (err) {
       failed = `Could not undo: ${errText(err)}`;
@@ -55,7 +56,7 @@
   }
   /** The chip, `u` and the body's button: a correction opens its field, the rest act. */
   async function press() {
-    if (!info.input) return run();
+    if (!input) return run();
     if (!expanded) onexpand();
     correcting = true;
     await tick();
@@ -86,7 +87,7 @@
       <span class="what">{line.what ?? ''}</span>
       {#if tail}<span class="tail muted">· {tail}</span>{/if}
     </button>
-    {#if chip}<button class="chip link" data-undo-run onclick={press} aria-label={info.label}>{info.short} <Kbd keys="u" /></button>{/if}
+    {#if chip}<button class="chip link" data-undo-run onclick={press} aria-label={line.undo.label}>{chip.replace(/ u$/, '')} <Kbd keys="u" /></button>{/if}
     <span class="at muted">{undone || clock(line.at_ms, now)}</span>
   </div>
   {#if expanded}
@@ -95,7 +96,7 @@
     {:else}
       <p class="body">{lineText(line, entries)}</p>
     {/if}
-    {#if showUndo}
+    {#if showUndo && info}
       <div class="undo" data-undo-body={info.state}>
         {#if info.state === 'done'}
           <p class="muted" data-undo-done>{info.done}</p>
