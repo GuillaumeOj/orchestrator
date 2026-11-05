@@ -134,7 +134,11 @@
   let anchor = $state(null);
   function requestedDoc() {
     const want = spec?.doc;
-    if (!want || !v?.docs?.includes(want)) return null;
+    if (!want || !v?.docs) return null;
+    if (!v.docs.includes(want)) {
+      app.panes[paneId] = { ...app.panes[paneId], doc: null, anchor: null }; // not one of this feature's docs: drop the request
+      return null;
+    }
     anchor = spec.anchor ?? null;
     app.panes[paneId] = { ...app.panes[paneId], doc: null, anchor: null };
     return want;

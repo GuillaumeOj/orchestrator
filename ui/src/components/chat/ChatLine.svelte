@@ -7,7 +7,7 @@
   // (`u`, or the button when expanded), "undone 14:03" once used, "Can't be
   // undone: …" when it can't be; "Correct the answer" opens a reply field.
   import { tick } from 'svelte';
-  import { now30, toast, undoLine } from '../../lib/app.svelte.js';
+  import { now30, projects, toast, undoLine } from '../../lib/app.svelte.js';
   import { lineLabel, lineText, tailText, verbText, warnVerb } from '../../lib/chat.js';
   import { clock } from '../../lib/format.js';
   import { errText } from '../../lib/ipc.js';
@@ -17,12 +17,15 @@
 
   /** @type {{ item: any, expanded?: boolean, pulse?: boolean, entries?: any, refok?: (ref: any) => boolean, ontoggle?: () => void, onopen?: (id: string) => void, onref?: (ref: any) => void, onexpand?: () => void }} */
   let { item, expanded = false, pulse = false, entries = {}, refok = () => true, ontoggle = () => {}, onopen = () => {}, onref = () => {}, onexpand = () => {} } = $props();
-  const line = $derived(item.line);
+  // The line after an undo of this window (a past day's entries are not pushed back): the core's reply.
+  let patched = $state(null);
+  const projectName = (id) => (id ? (projects().find((p) => p.id === id)?.name ?? id) : null);
+  const line = $derived(patched ?? item.line);
   const now = $derived(Math.max(now30(), Date.now()));
   const tail = $derived(tailText(line, entries));
   const undone = $derived(undoneTail(line, now));
   const chip = $derived(undoChip(line));
-  const info = $derived(undoInfo(line, item.d?.subject?.project ?? null, now));
+  const info = $derived(undoInfo(line, projectName(item.d?.subject?.project), now));
   const showUndo = $derived(info.state !== 'none' || line.by === 'overwatch' || line.by === 'core' || line.by === 'policy');
 
   let busy = $state(false);
@@ -39,6 +42,7 @@
       const r = await undoLine(item.entry, text);
       if (r?.ok === false) failed = r.gone ? `Can't be undone: ${r.gone}` : 'Could not undo.';
       else {
+        if (r?.entry?.line) patched = r.entry.line;
         correcting = false;
         draft = '';
         toast(info.toast);
@@ -57,11 +61,16 @@
     await tick();
     field?.focus();
   }
+  /** Cancel clears the draft (notes §6.4). */
+  function cancel() {
+    correcting = false;
+    draft = '';
+  }
   function fieldKey(e) {
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      correcting = false;
+      cancel();
     } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && draft.trim()) {
       e.preventDefault();
       run(draft.trim());
@@ -76,10 +85,9 @@
       <span class="head"><span class="verb" class:warn={warnVerb(line.verb)}>{verbText(line.verb)}</span>{line.agent ? ` ${line.agent}` : ''}:</span>
       <span class="what">{line.what ?? ''}</span>
       {#if tail}<span class="tail muted">· {tail}</span>{/if}
-      {#if undone}<span class="tail muted">· {undone}</span>{/if}
     </button>
     {#if chip}<button class="chip link" data-undo-run onclick={press} aria-label={info.label}>{info.short} <Kbd keys="u" /></button>{/if}
-    <span class="at muted">{clock(line.at_ms, now)}</span>
+    <span class="at muted">{undone || clock(line.at_ms, now)}</span>
   </div>
   {#if expanded}
     {#if item.d}
@@ -96,10 +104,10 @@
             <textarea class="field" rows="2" bind:this={field} bind:value={draft} onkeydown={fieldKey} aria-label="Correction" placeholder="What should {line.agent ?? 'the agent'} know instead?"></textarea>
             <div class="acts">
               <button class="btn" disabled={busy || !draft.trim()} onclick={() => run(draft.trim())}>{busy ? info.busy : 'Send correction'} <Kbd keys="⌘+⏎" /></button>
-              <button class="btn ghost" onclick={() => (correcting = false)}>Cancel <Kbd keys="esc" /></button>
+              <button class="btn ghost" onclick={cancel}>Cancel <Kbd keys="esc" /></button>
             </div>
           {:else}
-            <button class="btn" data-undo-run disabled={busy} onclick={press}>{busy ? info.busy : info.label}</button>
+            <button class="btn" data-undo-run disabled={busy} onclick={press}>{busy ? info.busy : info.label} {#if !busy}<Kbd keys="u" />{/if}</button>
             <p class="muted">{info.explain}</p>
           {/if}
           {#if failed}<p class="err" role="alert">{failed}</p>{/if}

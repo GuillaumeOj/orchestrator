@@ -170,7 +170,7 @@ export function refKind(url) {
   const u = String(url ?? '').trim();
   const m = /^(chat|agent|run):(.+)$/i.exec(u);
   if (m) return { kind: m[1].toLowerCase(), id: m[2] };
-  if (!DOC.test(u)) return null;
+  if (!DOC.test(u) || u.split('#')[0].split('/').includes('..')) return null;
   const [path, hash = ''] = u.split('#');
   const clean = path.replace(/^(\.\/)+/, '');
   return { kind: 'doc', path: clean, name: clean.split('/').at(-1), section: safeDecode(hash) || null };
@@ -243,13 +243,16 @@ export const noReply = (entry, ow) => !!entry && ow.status === 'asleep' && (ow.s
 
 /** Per contract label: the collapsed word, the busy button, the toast after the core confirms. */
 const UNDOS = {
-  'Revoke rule': { short: 'Undo', busy: 'Revoking…' },
-  'Tell the agent': { short: 'Undo', busy: 'Telling…' },
-  'Allow instead': { short: 'Undo', busy: 'Allowing…' },
-  'Correct the answer': { short: 'Correct', busy: 'Sending…', input: true },
-  'Restore tier': { short: 'Undo', busy: 'Restoring…' },
-  'Remove rule': { short: 'Undo', busy: 'Removing…' },
+  'Revoke rule': { short: 'Undo', busy: 'Revoking' },
+  'Tell the agent': { short: 'Undo', busy: 'Telling' },
+  'Allow instead': { short: 'Undo', busy: 'Allowing' },
+  'Correct the answer': { short: 'Correct', busy: 'Sending', input: true },
+  'Restore tier': { short: 'Undo', busy: 'Restoring' },
+  'Remove rule': { short: 'Undo', busy: 'Removing' },
 };
+
+/** Unsticking verbs: they ran, there is nothing to take back (notes §6.3). */
+const ACTIONS = new Set(['nudged', 'resumed', 'restarted']);
 
 /** The tier a reprioritized line moved from: "Normal → High in the queue" gives "Normal". */
 const tierFrom = (line) => /^(\w+) → /.exec(line.what ?? '')?.[1] ?? null;
@@ -284,7 +287,7 @@ export function undoInfo(line, project = null, now = Date.now()) {
   const rule = line.by_detail ?? 'the rule';
   const file = project ? `${project} policy` : 'its policy file';
   const label = line.undo?.label ?? '';
-  const u = UNDOS[label] ?? { short: 'Undo', busy: 'Undoing…' };
+  const u = UNDOS[label] ?? { short: 'Undo', busy: 'Undoing' };
   // A line already undone no longer carries `undo`: the verb and its source say what it was.
   const kind = label || guessLabel(line);
   const at = (ms) => clock(ms, now);
@@ -292,7 +295,7 @@ export function undoInfo(line, project = null, now = Date.now()) {
     state,
     label,
     short: u.short,
-    busy: u.busy,
+    busy: `${u.busy} ${label === 'Revoke rule' || label === 'Remove rule' ? 'the rule' : agent}…`,
     input: !!u.input,
     explain: '',
     toast: '',
@@ -336,7 +339,11 @@ export function undoInfo(line, project = null, now = Date.now()) {
   if (state === 'gone') info.why = `Can't be undone: ${line.undo_gone}`;
   else if (state === 'none')
     info.why =
-      line.by === 'core' ? 'Always denied by the app. Nothing can change it.' : "Can't be undone: it already ran.";
+      line.by === 'core'
+        ? 'Always denied by the app. Nothing can change it.'
+        : ACTIONS.has(line.verb)
+          ? "Can't be undone: it already ran."
+          : '';
   return info;
 }
 

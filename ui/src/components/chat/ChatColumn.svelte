@@ -576,7 +576,7 @@
   /** A source link: a doc opens in the feature pane, `chat:` jumps to its entry, `agent:` / `run:` open them (api-contract §5). */
   function openRef(ref) {
     if (ref.kind === 'chat') return jumpEntry(ref.id);
-    if (ref.kind === 'agent') return openSession(ref.id, { watch: true });
+    if (ref.kind === 'agent') return openSession(ref.id, { watch: true, keepLive: true });
     if (ref.kind === 'run') {
       select('run', ref.id);
       if (!app.inspector) app.inspector = true;
@@ -643,6 +643,14 @@
       if (f) return openFeature(f.id);
     }
     if (o.agent) openAgent(o.agent);
+  }
+
+  /** `u` on a focused line: its Undo, if it has one. True on a line (nothing else undoes from there). */
+  function undoOnLine(e) {
+    const line = e.target.closest?.('article.line');
+    if (!line) return false;
+    line.querySelector('button[data-undo-run]')?.click();
+    return true;
   }
 
   /** Runs what a key or an action id means on decision `d` (the Inbox's set). */
@@ -800,7 +808,9 @@
     if (key === 't' && past) return take(), backToToday();
     if (key === '[' || key === ']') return take(), stepDay(key === '[' ? -1 : 1);
     if (past) {
-      // Read-only: nothing acts. `o` opens a digest row's subject; j/k scroll.
+      // Read-only, but a line's Undo still works (notes §6): `u` on a focused line.
+      if (key === 'u' && undoOnLine(e)) return take();
+      // `o` opens a digest row's subject; j/k scroll.
       const o = outcome ? past.outcomes.find((x) => x.id === outcome) : null;
       if (key === '/') return take(), openSearch();
       if (o && key === 'o') return take(), openOutcome(o);
@@ -825,10 +835,7 @@
     // focused line or its read-only card): only move and undo.
     const onLine = !!e.target.closest?.('article.line');
     // `u` on a focused line undoes that line (notes §6.6); else the card's or the last decision's.
-    if (intent.kind === 'undo' && onLine) {
-      const run = e.target.closest('article.line').querySelector('button[data-undo-run]');
-      if (run) return take(), run.click();
-    }
+    if (intent.kind === 'undo' && onLine) return take(), undoOnLine(e);
     if ((o || !selCard || onLine) && intent.kind !== 'move' && intent.kind !== 'undo') return take();
     if (selCard && pendingOf(selCard.id) && intent.kind !== 'move' && intent.kind !== 'undo') return take();
     if (apply(intent, selCard?.d)) take();

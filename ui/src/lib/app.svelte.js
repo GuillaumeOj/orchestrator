@@ -472,6 +472,10 @@ export function routeOpen(r, projectId = null) {
 
 /** A policy file in nvim (api-contract §5 `policy_open`): created with its first comment when missing. */
 export async function openPolicy(scope, projectId = null) {
+  // The core's scope label is `global` or `project:<id>`; a bare `project` takes the card's project.
+  const m = /^project:(.+)$/.exec(scope);
+  if (m) projectId = m[1];
+  scope = m ? 'project' : scope;
   const project = scope === 'project' ? projectId : null;
   try {
     const r = await invoke('policy_open', { scope, project, ...RUN_SIZE });

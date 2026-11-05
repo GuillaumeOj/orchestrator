@@ -266,7 +266,7 @@ describe('rule proposal copy (notes §7.2)', () => {
     );
     expect(inbox.effectText(prop({ state: 'effect', effect: 'not_now' }))).toBe('Not now. Asking again after 3 more.');
     expect(inbox.effectText(prop({ state: 'effect', effect: 'not_now' }, { declined_before: 1 }))).toBe(
-      "Not now. It won't be asked again for Bash(pnpm add:*).",
+      "Not now. It won't be asked again for pnpm add.",
     );
   });
 
@@ -313,7 +313,7 @@ describe('lines in the column', () => {
     await fireEvent.click(art(c, 'c-1').querySelector('.chip'));
     await settle();
     expect(calls.find(([k]) => k === 'chat_undo')[1]).toEqual({ entry: 'c-1' });
-    expect(text(toggle(c, 'c-1'))).toMatch(/· undone \d\d:\d\d/);
+    expect(text(art(c, 'c-1').querySelector('.at'))).toMatch(/^undone \d\d:\d\d$/);
     expect(art(c, 'c-1').querySelector('.chip')).toBeNull();
     expect(app.toasts.map((t) => t.text)).toContain('Told back-1 not to repeat it.');
   });
@@ -340,7 +340,7 @@ describe('lines in the column', () => {
     expect(text(body)).toContain('Tell the agent');
     expect(text(body)).toContain('Tells back-1 not to repeat this call');
     await fireEvent.click(body.querySelector('button'));
-    expect(text(art(c, 'c-1').querySelector('.undo button'))).toBe('Telling…');
+    expect(text(art(c, 'c-1').querySelector('.undo button'))).toBe('Telling back-1…');
     expect(art(c, 'c-1').querySelector('.undo button').disabled).toBe(true);
     done({ ok: true, entry: action('c-1', { ...ALLOWED, undone_at_ms: Date.now() }, { rev: 2 }) });
     await settle();
@@ -415,7 +415,30 @@ describe('lines in the column', () => {
     await fireEvent.keyDown(again, { key: 'Enter', metaKey: true });
     await settle();
     expect(calls.find(([k]) => k === 'chat_undo')[1]).toEqual({ entry: 'c-1', text: 'Use cursors, not offsets.' });
-    expect(text(toggle(c, 'c-1'))).toMatch(/· corrected \d\d:\d\d/);
+    expect(text(art(c, 'c-1').querySelector('.at'))).toMatch(/^corrected \d\d:\d\d$/);
+  });
+
+  it("u on a line with nothing to undo does nothing (it is not the last decision's undo)", async () => {
+    const c = await run([{ verb: 'nudged', agent: 'back-1', what: '"rebase"', by_detail: 'idle' }]);
+    app.pending = [{ item: 'x', action: 'approve', at: Date.now(), toast: 1 }];
+    await fireEvent.keyDown(toggle(c, 'c-1'), { key: 'u' });
+    expect(app.pending).toHaveLength(1);
+    expect(calls.filter(([k]) => k === 'chat_undo')).toHaveLength(0);
+  });
+
+  it('a denial by policy has no "it already ran"', () => {
+    expect(ow.undoInfo({ verb: 'denied', by: 'policy', by_detail: 'no-network' }).why).toBe('');
+  });
+
+  it('Cancel clears the draft', async () => {
+    const c = await run([withUndo('Correct the answer', { verb: 'answered', agent: 'front-1', what: 'x' })]);
+    await fireEvent.click(art(c, 'c-1').querySelector('.chip'));
+    await settle();
+    await fireEvent.input(art(c, 'c-1').querySelector('textarea'), { target: { value: 'draft' } });
+    await fireEvent.keyDown(art(c, 'c-1').querySelector('textarea'), { key: 'Escape' });
+    await fireEvent.click(art(c, 'c-1').querySelector('.chip'));
+    await settle();
+    expect(art(c, 'c-1').querySelector('textarea').value).toBe('');
   });
 
   it('Esc in the field cancels it', async () => {
@@ -488,13 +511,6 @@ describe('the rule proposal card', () => {
     ]);
   });
 
-  it('a link to an entry that is gone is plain text', async () => {
-    const d = { ...prop, context: [prop.context[2]] };
-    const c = await open(d, false);
-    expect(cardOf(c).querySelector('[data-link-chat]')).toBeNull();
-    expect(cardOf(c).querySelector('[title="No longer available"]')).toBeTruthy();
-  });
-
   it('Add rule waits out the 5 s undo window as "Adding rule"; Undo brings the card back', async () => {
     const c = await open();
     await fireEvent.click([...cardOf(c).querySelectorAll('.actions button')][0]);
@@ -503,7 +519,7 @@ describe('the rule proposal card', () => {
   });
 
   it('Edit rule asks the core, then opens the policy file in the editor', async () => {
-    replies.inbox_act = { ok: true, open: 'editor', path: '/p/policy.toml', scope: 'project' };
+    replies.inbox_act = { ok: true, open: 'editor', path: '/p/policy.toml', scope: 'project:shop-api' };
     replies.policy_open = { reused: false, term: { id: 't1', cwd: '/p' } };
     const c = await open();
     await fireEvent.click([...cardOf(c).querySelectorAll('.actions button')][2]);
@@ -666,6 +682,14 @@ describe('Settings → Permissions (notes §9.2)', () => {
     app.now = { ...app.now, overwatch: { ...OW('off'), has_session: false } };
     const c = await open();
     expect(text(c.querySelector('[data-ow-off]'))).toBe('The Overwatch is off: every unmatched permission asks you.');
+  });
+
+  it('an empty hold is refused, not saved as "no limit"', async () => {
+    const c = await open();
+    await fireEvent.change(rowOf(c, 'hold').querySelector('input'), { target: { value: '' } });
+    await settle();
+    expect(text(rowOf(c, 'hold').querySelector('.err'))).toBe('A whole number of seconds. Still using 300 s.');
+    expect(calls.filter(([k]) => k === 'settings_set')).toHaveLength(0);
   });
 
   it('the hold: saved, and kept above the Overwatch permission time', async () => {

@@ -15,7 +15,7 @@
   import RuleBlock from './blocks/RuleBlock.svelte';
   import PermissionCall from './PermissionCall.svelte';
 
-  let { decision, choices = $bindable([]), onjump = () => {}, jumpok = () => true } = $props();
+  let { decision, choices = $bindable([]), onjump = () => {} } = $props();
   const BLOCKS = {
     tool_call: PermissionCall,
     markdown: MarkdownBlock,
@@ -38,7 +38,7 @@
         <OptionsBlock {block} name={decision.id} bind:choices />
       {:else if BLOCKS[block.type]}
         {@const Block = BLOCKS[block.type]}
-        <Block {block} {decision} {onjump} {jumpok} />
+        <Block {block} {decision} {onjump} />
       {/if}
     </section>
   {/each}

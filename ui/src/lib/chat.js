@@ -350,7 +350,9 @@ export function thread({
   }
 
   const cardsAll = all.filter((i) => i.type === 'card');
-  const counts = Object.fromEntries(FILTERS.map((f) => [f.id, cardsAll.filter((i) => f.test(i.d)).length]));
+  const counts = Object.fromEntries(
+    FILTERS.map((f) => [f.id, cardsAll.filter((i) => i.d.kind !== 'rule_proposal' && f.test(i.d)).length]),
+  );
   const test = (FILTERS.find((f) => f.id === filter) ?? FILTERS[0]).test;
   const shown = cardsAll.filter((i) => test(i.d));
   // Deciding cards are never folded and do not count toward the 5 (notes F13).

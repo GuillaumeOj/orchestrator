@@ -62,6 +62,9 @@ export function subjectLine(d) {
 // The core answers these at once (no undo window): where to go, or a reconnect.
 const AT_ONCE = new Set(['open', 'reconnect', 'open_settings', 'edit']);
 
+/** `Bash(pnpm add:*)` as `pnpm add`: the rule's call the way a person says it. */
+const readableMatch = (m) => (m ? m.replace(/^\w+\((.*?)(?::?\*+)?\)$/, '$1') : 'this');
+
 /** What an action id does: decide (undo window), reply or answer (a text first),
  *  open the agent's pane, or ask the core at once. */
 export function intentFor(d, id) {
@@ -251,7 +254,7 @@ export function effectText(d, mine = {}) {
           : 'Rule added';
     case 'not_now':
       return d.payload?.declined_before
-        ? `Not now. It won't be asked again for ${blockOf(d, 'rule')?.match ?? 'this'}.`
+        ? `Not now. It won't be asked again for ${readableMatch(blockOf(d, 'rule')?.match)}.`
         : `Not now. Asking again after ${d.payload?.threshold ?? 3} more.`;
     case 'delivered':
       return `Answer delivered · ${agent} reads it next`;

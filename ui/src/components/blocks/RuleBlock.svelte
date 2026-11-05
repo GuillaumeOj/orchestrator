@@ -1,9 +1,13 @@
 <script>
   // `rule` block (P4.4 notes §7.1, api-contract §3.1): the proposed rule in mono,
   // exact FR-708 grammar, with its scope and the file it will be written to.
+  import { projects } from '../../lib/app.svelte.js';
+  import { midCut } from '../../lib/policy.js';
+
   let { block } = $props();
+  const project = $derived(projects().find((p) => p.id === block.project)?.name ?? block.project ?? 'project');
   const scope = $derived(
-    [block.scope === 'global' ? 'every project' : (block.project ?? 'project'), block.role ? `role ${block.role}` : '']
+    [block.scope === 'global' ? 'every project' : project, block.role ? `role ${block.role}` : '']
       .filter(Boolean)
       .join(' · '),
   );
@@ -13,7 +17,7 @@
 <dl class="rule">
   <dt>{block.effect}</dt><dd class="mono" data-rule-match>{block.match}</dd>
   <dt>scope</dt><dd>{scope}</dd>
-  <dt>file</dt><dd class="mono" title={block.file}>{block.file}</dd>
+  <dt>file</dt><dd class="mono" title={block.file}>{midCut(block.file, 40)}</dd>
 </dl>
 
 <style>

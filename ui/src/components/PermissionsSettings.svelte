@@ -24,7 +24,7 @@
 
   function load() {
     invoke('policy_files')
-      .then((v) => (files = v))
+      .then((v) => ((files = v), (loadError = '')))
       .catch((e) => (loadError = errText(e)));
   }
   $effect(() => {
@@ -57,7 +57,7 @@
 
   async function setHold(e) {
     const box = e.currentTarget;
-    const v = Number(box.value);
+    const v = box.value.trim() === '' ? Number.NaN : Number(box.value);
     const before = hold;
     const still = ` Still using ${before} s.`;
     if (!Number.isInteger(v) || v < 0) {
