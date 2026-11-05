@@ -82,9 +82,6 @@
   import DecisionCard from './DecisionCard.svelte';
 
   const TITLE = 'Overwatch';
-  const NO_COMMAND = /^command \w+ not found/i;
-  /** A command the core does not have yet reads as that, not as the raw error. */
-  const cmdError = (err) => (NO_COMMAND.test(errText(err)) ? "the core doesn't support messages yet" : errText(err));
   const DIGEST_ROWS = 5;
   const PULSE_MS = 1500;
   const DAYS_PAGE = 30;
@@ -536,7 +533,7 @@
       toFoot();
     } catch (err) {
       const entry = retry?.entry ?? { id: `unsent-${++sendSeq}`, kind: 'text', author: 'user', text, at_ms: Date.now() };
-      unsent = [...unsent.filter((u) => u !== retry), { entry, why: cmdError(err) }];
+      unsent = [...unsent.filter((u) => u !== retry), { entry, why: errText(err) }];
     }
   }
 
@@ -551,7 +548,7 @@
       await invoke('chat_discard', { entry: entry.id });
       delete app.now.chat?.entries?.[entry.id];
     } catch (err) {
-      toast(`Could not remove: ${cmdError(err)}`, { kind: 'error' });
+      toast(`Could not remove: ${errText(err)}`, { kind: 'error' });
     }
   }
 

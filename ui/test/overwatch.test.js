@@ -1066,16 +1066,6 @@ describe('pure helpers', () => {
 });
 
 describe('review fixes (ui review of T-226)', () => {
-  it('an unknown chat_send reads as "the core doesn\'t support messages yet", not the raw error', async () => {
-    replies.chat_send = new Error('Command chat_send not found');
-    setNow();
-    const { container: c } = render(ChatColumn);
-    await fireEvent.input(field(c), { target: { value: 'hi' } });
-    await fireEvent.keyDown(field(c), { key: 'Enter' });
-    await settle();
-    expect(text(c.querySelector('article.text.user'))).toContain("Not sent: the core doesn't support messages yet");
-  });
-
   it('the Overwatch session always opens in watch mode, even without Mission control', async () => {
     setNow([], [], OW('working', { events: 1 }));
     const { container: c } = render(ChatColumn);
