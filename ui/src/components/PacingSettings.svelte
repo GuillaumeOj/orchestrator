@@ -26,8 +26,8 @@
   const liveErr = $derived(typeof liveCheck === 'object' ? liveCheck.error : null);
   const offErr = $derived(typeof offCheck === 'object' ? offCheck.error : null);
   // Changed = a different value, not different text ("03" is still 3).
-  const liveChanged = $derived(view != null && live.trim() !== String(view.live_cap) && liveCheck !== view.live_cap);
-  const offChanged = $derived(view != null && off.trim() !== String(view.off_hours_live_cap) && offCheck !== view.off_hours_live_cap);
+  const liveChanged = $derived(view != null && liveCheck !== view.live_cap);
+  const offChanged = $derived(view != null && offCheck !== view.off_hours_live_cap);
   const canApply = $derived(!busy && (liveChanged || offChanged) && !liveErr && !offErr);
   const atDefaults = $derived(view != null && live.trim() === String(view.live_cap_default) && off.trim() === String(view.off_hours_live_cap_default));
   const caps = $derived(derivedCaps(shown));
@@ -35,7 +35,8 @@
   // memory pressure and process cap only come with the settings, so they keep the loaded value.
   const snap = $derived(app.data?.usage?.snapshot);
   const now = $derived(view?.now ? { ...view.now, ...(snap ? { state: snap.state, governor_cap: snap.live_cap, live_autonomous: snap.live_autonomous } : {}) } : null);
-  const lowering = $derived(now != null && !liveErr && liveCheck < now.live_autonomous);
+  // Only for an edit that lowers the cap, not for a saved cap the live count already exceeds.
+  const lowering = $derived(now != null && liveChanged && !liveErr && liveCheck < now.live_autonomous);
 
   function take(v) {
     view = v;
