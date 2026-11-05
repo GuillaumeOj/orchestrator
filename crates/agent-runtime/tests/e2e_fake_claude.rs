@@ -698,8 +698,10 @@ fn killing_the_overwatch_mid_turn_leaves_every_card_actionable() {
     assert!(Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success());
     wait_for("down", 10, || core.rt.overwatch_status().status == agent_runtime::overwatch::Status::Down);
     assert_eq!(core.rt.overwatch_status().why.as_deref(), Some("stopped unexpectedly"));
+    // `down` is set first, the hand-over follows in the same call: at once.
+    wait_for("handed over at once", 2, || open_card()["waits_on"] == "user");
     let card = open_card();
-    assert_eq!(card["waits_on"], "user", "handed over at once: {card}");
+    assert!(card.get("deciding_until_ms").is_none(), "{card}");
     assert_eq!(card["payload"]["asks_because"]["kind"], "overwatch_unsure");
     // The card still acts.
     let r = request(
@@ -807,8 +809,10 @@ fn a_team_run_where_the_user_only_uses_the_cards_has_no_pane_intervention() {
     assert!(screen(lead).contains("\"allow\""), "{}", screen(lead));
     assert!(core.rt.db.audit_log(Some(lead), 20).unwrap().iter().any(|e| e.actor.starts_with("rule:")));
 
-    // 2. An unmatched one: team roles default to the Overwatch, which decides it.
-    request(&sock, CtlRequest::Deliver { agent_id: lead.into(), text: "PERMIT pnpm add zod".into() }).unwrap();
+    // 2. An unmatched one: team roles default to the Overwatch, which decides
+    // it inside the turn that carries it (OWALLOW: the fake calls
+    // decide_permission there; a later turn would be too late, F1).
+    request(&sock, CtlRequest::Deliver { agent_id: lead.into(), text: "PERMIT pnpm add zod OWALLOW".into() }).unwrap();
     wait_for("the card", 20, || open("permission").is_some());
     let card = open("permission").unwrap();
     assert_eq!(
@@ -818,9 +822,6 @@ fn a_team_run_where_the_user_only_uses_the_cards_has_no_pane_intervention() {
     );
     wait_for("the Overwatch's turn", 40, || screen(OW).contains("permission inbox-"));
     let id = card["id"].as_str().unwrap().to_string();
-    ow_calls(&format!(
-        r#"ORCHTOOL decide_permission {{"decision":"{id}","effect":"allow","reason":"routine install in the task"}}"#
-    ));
     wait_for("allowed", 30, || open("permission").is_none() && settled(lead));
     let n: u64 = id.trim_start_matches("inbox-").parse().unwrap();
     let item = core.rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).cloned().unwrap());

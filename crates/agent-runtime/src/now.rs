@@ -413,9 +413,10 @@ impl Runtime {
     /// The whole world (`now_snapshot`, `CtlRequest::Now`): `{rev, agents,
     /// runs, counts, decisions, outcomes}`.
     pub fn now_snapshot(&self) -> Value {
-        if lock(&self.now.state).last.is_none() {
-            self.now_pump(true);
-        }
+        // Never behind the store: what changed since the last pump (a
+        // hand-over on the Overwatch's exit, a decision) is published first.
+        let first = lock(&self.now.state).last.is_none();
+        self.now_pump(first);
         let st = lock(&self.now.state);
         let empty = World::default();
         let w = st.last.as_ref().unwrap_or(&empty);
