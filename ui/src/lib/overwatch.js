@@ -5,6 +5,7 @@
 
 import { clock, plural } from './format.js';
 import { cut } from './inbox.js';
+import { safeDecode } from './markdown.js';
 
 /** What `now.overwatch` holds before the core says (an older core): the Overwatch is off. */
 export const OFF = Object.freeze({ status: 'off', events: 0, since_ms: 0, agent: 'overwatch', has_session: false });
@@ -12,9 +13,7 @@ export const OFF = Object.freeze({ status: 'off', events: 0, since_ms: 0, agent:
 export const MAX_CHARS = 2000;
 export const COUNT_FROM = 1800;
 /** The Overwatch may settle a permission this long (spec §3.4); the ring drains over it. */
-export const DECIDING_MS = 60000;
-/** A long Overwatch answer clamps here (notes §2.1). */
-export const CLAMP_LINES = 12;
+const DECIDING_MS = 60000;
 
 /** `now.overwatch`, else the off record. */
 export const overwatchOf = (now) => now?.overwatch ?? OFF;
@@ -35,6 +34,9 @@ export function statusTip(ow, open = false) {
   return open ? `${tip} · ⏎ open its session` : tip;
 }
 
+/** "Overwatch is down: login expired. Cards still work." */
+const downText = (ow) => `Overwatch is down${ow.why ? `: ${ow.why}` : ''}. Cards still work.`;
+
 /** The settings section's status (notes §9.1): "Overwatch · down: login expired", null when it is up. */
 export function sectionStatus(ow) {
   if (ow.status !== 'down' && ow.status !== 'paused') return null;
@@ -54,7 +56,7 @@ function baseTip(ow) {
     case 'paused':
       return `Overwatch is paused${ow.why ? `: ${ow.why}` : ''}`;
     case 'down':
-      return `Overwatch is down${ow.why ? `: ${ow.why}` : ''}. Cards still work.`;
+      return downText(ow);
     default:
       return `Overwatch · ${ow.status}`;
   }
@@ -102,7 +104,7 @@ export function deliveryText(entry, ow) {
 /** The status moves to `down` or comes back: one polite announcement (notes §1, §8); null otherwise. */
 export function statusChange(prev, ow) {
   if (!prev || prev.status === ow.status) return null;
-  if (ow.status === 'down') return `Overwatch is down${ow.why ? `: ${ow.why}` : ''}. Cards still work.`;
+  if (ow.status === 'down') return downText(ow);
   // Only a real return: switched off or paused is not "back" (notes §8).
   if (prev.status === 'down' && ['asleep', 'waking', 'working'].includes(ow.status)) return 'Overwatch is back.';
   return null;
@@ -115,13 +117,13 @@ export const isDeciding = (d, now = Date.now()) =>
   d?.waits_on === 'overwatch' && d.deciding_until_ms != null && d.deciding_until_ms > now;
 
 /** Whole seconds left of the deciding window. */
-export const decidingLeft = (d, now = Date.now()) => Math.max(0, Math.ceil((d.deciding_until_ms - now) / 1000));
+const decidingLeft = (d, now = Date.now()) => Math.max(0, Math.ceil((d.deciding_until_ms - now) / 1000));
 
 /** "Overwatch is deciding · 42 s left". */
 export const decidingText = (d, now = Date.now()) => `Overwatch is deciding · ${decidingLeft(d, now)} s left`;
 
 /** The whole window in ms: from the card's creation to the deadline (`permission_secs`), else a minute. */
-export const decidingWindow = (d) => {
+const decidingWindow = (d) => {
   const w = d.deciding_until_ms - (d.created_ms ?? 0);
   return w > 0 && w <= 300000 ? w : DECIDING_MS;
 };
@@ -172,14 +174,6 @@ export function refKind(url) {
   return { kind: 'doc', path: clean, name: clean.split('/').at(-1), section: safeDecode(hash) || null };
 }
 
-function safeDecode(s) {
-  try {
-    return decodeURIComponent(s);
-  } catch {
-    return s;
-  }
-}
-
 /** Where a feature doc lives: `.orchestrator/features/<slug>/<name>`. */
 export function featureDoc(path) {
   const m = /(?:^|\/)\.orchestrator\/features\/([^/]+)\/(.+)$/.exec(path);
@@ -187,7 +181,7 @@ export function featureDoc(path) {
 }
 
 /** "api-contract.md §3" (`#3`), "spec.md#scope" (`#slug`). */
-export function docLabel(ref) {
+function docLabel(ref) {
   if (!ref.section) return ref.name;
   return /^\d+(\.\d+)*$/.test(ref.section) ? `${ref.name} §${ref.section}` : `${ref.name}#${ref.section}`;
 }

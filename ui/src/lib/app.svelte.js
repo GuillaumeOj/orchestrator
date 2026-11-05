@@ -12,6 +12,7 @@ import { deriveKittyTheme } from './kittytheme.js';
 import * as L from './layout.js';
 import { runNowCost, runNowDialog } from './mission.js';
 import { clearDigest, needsYou, statusOf } from './now.svelte.js';
+import { canOpenSession, overwatchOf } from './overwatch.js';
 import { STATUS } from './status.js';
 import { runStateLabel } from './teams.js';
 import { TermPane } from './term.js';
@@ -393,8 +394,8 @@ export const askOverwatch = () => askChat({ ask: true });
 
 /** The Overwatch's session over the board, when it has one today (notes §1). */
 export function openOverwatch() {
-  const ow = app.now?.overwatch;
-  if (!ow?.has_session || ow.status === 'off') return;
+  const ow = overwatchOf(app.now);
+  if (!canOpenSession(ow)) return;
   openSession(ow.agent ?? 'overwatch', { watch: true });
 }
 
@@ -1184,7 +1185,7 @@ export function commands() {
     ...(app.now?.overwatch?.status === 'down'
       ? [{ id: 'overwatch.restart', label: 'Restart the Overwatch', run: () => restartOverwatch().catch(() => {}) }]
       : []),
-    ...(app.now?.overwatch?.has_session && app.now.overwatch.status !== 'off'
+    ...(canOpenSession(overwatchOf(app.now))
       ? [{ id: 'overwatch.session', label: "Open the Overwatch's session", run: openOverwatch }]
       : []),
     { id: 'overwatch.settings', label: 'Turn the Overwatch on or off', run: () => openSettings('overwatch') },

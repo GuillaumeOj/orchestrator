@@ -4,8 +4,7 @@
   // the Overwatch's reply (left, a rule, markdown with its source links, a
   // "↳ re:" reference when the question is not just above, clamped at 12 lines).
   import { now30 } from '../../lib/app.svelte.js';
-  import { dayLabel } from '../../lib/chat.js';
-  import { clock } from '../../lib/format.js';
+    import { clock, dayTime } from '../../lib/format.js';
   import { deliveryText } from '../../lib/overwatch.js';
   import Markdown from '../Markdown.svelte';
 
@@ -15,7 +14,7 @@
   const user = $derived(e.author === 'user');
   const now = $derived(Math.max(now30(), Date.now()));
   // A past day's entry carries its day ("Mon 2 Nov 18:40") and no live delivery state (notes §2).
-  const stamp = $derived(past && today && e.day && e.day !== today ? `${dayLabel(e.day)} ${new Date(e.at_ms).toTimeString().slice(0, 5)}` : clock(e.at_ms, now));
+  const stamp = $derived(past && today && e.day && e.day !== today ? dayTime(e.at_ms) : clock(e.at_ms, now));
   const marker = $derived(user && !past ? deliveryText(e, ow) : '');
   let more = $state(false);
   let bodyEl = $state();

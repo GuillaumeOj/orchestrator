@@ -183,7 +183,7 @@ export function imageTarget(url) {
   return path ? { kind: 'asset', path } : { kind: 'other' };
 }
 
-function safeDecode(s) {
+export function safeDecode(s) {
   try {
     return decodeURIComponent(s);
   } catch {

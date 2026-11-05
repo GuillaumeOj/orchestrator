@@ -87,7 +87,8 @@
   // The Overwatch's note (P4.4 notes §4): its recommendation is highlighted, never pre-selected;
   // an expanded line keeps the note, read-only, without the highlight.
   const note = $derived(d.annotation?.note ? d.annotation : null);
-  const recId = $derived(live ? recommended(d) : null);
+  const rec = $derived(recommended(d));
+  const recId = $derived(live ? rec : null);
   let noteOpen = $state(false);
   let srcOpen = $state(false);
   const sources = $derived([...new Set(note?.sources ?? [])]); // a repeated source would break the keyed each
@@ -169,7 +170,7 @@
   {/if}
   {#if note}
     <div class="note" class:ro={!live} data-annotation>
-      <div class="nh"><b>Overwatch</b>{#if recId || (!live && recommended(d))}{' '}<span class="muted">· {recommendsText(d)}</span>{/if}</div>
+      <div class="nh"><b>Overwatch</b>{#if rec}{' '}<span class="muted">· {recommendsText(d)}</span>{/if}</div>
       <p class="nt" class:clamp={!noteOpen} bind:this={noteEl}>{note.note}</p>
       {#if longNote}<button class="link" aria-expanded={noteOpen} onclick={() => (noteOpen = !noteOpen)}>{noteOpen ? 'Show less' : 'Show more'}</button>{/if}
       {#if sources.length}
