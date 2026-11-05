@@ -92,7 +92,7 @@ export function deliveryText(entry, ow) {
 export function statusChange(prev, ow) {
   if (!prev || prev.status === ow.status) return null;
   if (ow.status === 'down') return `Overwatch is down${ow.why ? `: ${ow.why}` : ''}. Cards still work.`;
-  if (prev.status === 'down') return 'Overwatch is back.';
+  if (prev.status === 'down' && ow.status !== 'off') return 'Overwatch is back.'; // switched off is not back
   return null;
 }
 

@@ -268,8 +268,8 @@
   $effect(() => {
     const cur = ow;
     const msg = statusChange(prevOw, cur);
+    if (cur.status !== 'down' || cur.since_ms !== prevOw.since_ms || cur.why !== prevOw.why) restarting = false;
     prevOw = cur;
-    if (cur.status !== 'down') restarting = false;
     if (!msg) return;
     announce = msg;
     if (cur.status !== 'down') toast(msg);
@@ -563,6 +563,7 @@
         el = feed?.querySelector(`[data-line-toggle="${it.key}"]`);
       } else if (it?.type === 'card') {
         sel = `c:${it.id}`;
+        await tick();
         el = feed?.querySelector('.stop.sel');
       }
     }

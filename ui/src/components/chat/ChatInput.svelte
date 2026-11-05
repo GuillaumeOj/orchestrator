@@ -16,6 +16,8 @@
   const over = $derived(n > MAX_CHARS);
   const hint = $derived(inputHint(ow));
 
+  const spaced = (x) => x.toLocaleString('en-US').replace(',', ' ');
+
   export function focus() {
     field?.focus();
   }
@@ -64,7 +66,7 @@
   <div class="hints muted" id="ow-input-hint">
     <span class="state">
       {#if ow.status === 'off'}Off · <button class="link" onclick={() => openSettings('overwatch')}>turn it on in Settings</button>{:else}{hint}{/if}
-      {#if n >= COUNT_FROM}<span class:over data-count>{n.toLocaleString('en-US').replace(',', ' ')} / 2 000</span>{/if}
+      {#if n >= COUNT_FROM}<span class:over data-count>{spaced(n)} / {spaced(MAX_CHARS)}</span>{/if}
     </span>
     <span class="keys">
       {#if focused || draft}<Kbd keys="⏎" /> send · <Kbd keys="⇧+⏎" /> new line · <Kbd keys="esc" /> leave{:else}<Kbd keys="⌘+L" />{/if}

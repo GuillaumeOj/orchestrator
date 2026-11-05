@@ -49,8 +49,10 @@
     try {
       s = await invoke('set_overwatch_settings', { settings: { [key]: value } });
       note = why;
+      return true;
     } catch (e) {
       errors = { ...errors, [key]: errText(e) };
+      return false;
     }
   }
 
@@ -64,12 +66,18 @@
     save(row.key, v);
   }
 
-  const toggle = (e) =>
-    save(
-      'enabled',
-      e.currentTarget.checked,
-      e.currentTarget.checked ? 'On. It wakes on the next event.' : 'Off. Open permissions come to you. Its session ends now.',
-    );
+  // A refused save puts the control back on the value that is still applied.
+  async function toggle(e) {
+    const box = e.currentTarget;
+    const on = box.checked;
+    const ok = await save('enabled', on, on ? 'On. It wakes on the next event.' : 'Off. Open permissions come to you. Its session ends now.');
+    if (!ok) box.checked = !on;
+  }
+
+  async function onModel(e) {
+    const pick = e.currentTarget;
+    if (!(await save('model', pick.value))) pick.value = cfg.model;
+  }
 </script>
 
 <section class="ow" aria-label="Overwatch settings">
@@ -94,7 +102,7 @@
     </div>
     <div class="row" data-row="model">
       <label class="lab" for="ow-model">Model</label>
-      <select id="ow-model" class="field" value={cfg.model} onchange={(e) => save('model', e.currentTarget.value)}>
+      <select id="ow-model" class="field" value={cfg.model} onchange={onModel}>
         {#each MODELS as m (m.id)}<option value={m.id}>{m.label}</option>{/each}
         {#if !MODELS.some((m) => m.id === cfg.model)}<option value={cfg.model}>{cfg.model}</option>{/if}
       </select>

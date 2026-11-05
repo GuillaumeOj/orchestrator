@@ -75,8 +75,8 @@
       if (!to || !v.team?.nodes?.some((n) => n.id === to)) to = v.team?.nodes?.find((n) => n.is_lead)?.id ?? null;
       const names = v.docs ?? [];
       // A doc asked for by name (the Overwatch's source links) wins over the first one.
-      const want = spec.doc && names.includes(spec.doc) ? spec.doc : null;
-      if (want && doc.name !== want) await showDoc(want);
+      const want = requestedDoc();
+      if (want) await showDoc(want);
       else if (names.length && (!doc.name || !names.includes(doc.name))) await showDoc(names[0]);
     } catch (e) {
       error = errText(e);
@@ -129,10 +129,18 @@
     }
   }
 
+  // The doc a source link asked for, once: a later click on another tab stays, a reload doesn't snap back.
+  let appliedDoc = null;
+  function requestedDoc() {
+    const want = spec?.doc;
+    if (!want || want === appliedDoc || !v?.docs?.includes(want)) return null;
+    appliedDoc = want;
+    return want;
+  }
   // The same pane asked for another doc (a source link while it is open).
   $effect(() => {
-    const want = spec?.doc;
-    if (want && v?.docs?.includes(want) && untrack(() => doc.name) !== want) showDoc(want);
+    const want = requestedDoc();
+    if (want) showDoc(want);
   });
 
   /** A link to a sibling doc (`api-contract.md#…`) switches the tab. */

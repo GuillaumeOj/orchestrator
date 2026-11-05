@@ -81,7 +81,7 @@
   const recId = $derived(live ? recommended(d) : null);
   let noteOpen = $state(false);
   let srcOpen = $state(false);
-  const sources = $derived(note?.sources ?? []);
+  const sources = $derived([...new Set(note?.sources ?? [])]); // a repeated source would break the keyed each
   const longNote = $derived((note?.note?.length ?? 0) > NOTE_CLAMP);
 
   // Deciding (notes §3): the ring and the seconds left, once a second; the card is a normal card meanwhile.
@@ -177,7 +177,7 @@
           class:rec={x.id === recId}
           aria-label={x.id === recId ? `${x.label}, recommended by the Overwatch` : undefined}
           disabled={x.id === 'answer' && options && !answered}
-          onclick={() => onkey(x.key)}>{x.label}{#if x.id === recId}{' '}<span class="tag">· recommended</span>{/if} <Kbd keys={x.key === 'enter' ? '⏎' : x.key} /></button
+          onclick={() => onkey(x.key)}>{x.label} <Kbd keys={x.key === 'enter' ? '⏎' : x.key} />{#if x.id === recId}{' '}<span class="tag">· recommended</span>{/if}</button
         >
       {/each}
       {#each keyless(d) as x (x.id)}
@@ -315,7 +315,7 @@
   }
   /* The Overwatch's recommendation: an accent outline and a tag, never pre-selected (notes §4.1). */
   .actions .btn.rec {
-    outline: 2px solid var(--color-accent-default);
+    outline: 2px dashed var(--color-accent-default);
     outline-offset: -1px;
     white-space: normal;
   }
