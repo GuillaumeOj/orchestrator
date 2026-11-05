@@ -309,11 +309,24 @@ fn level_of(kind: &str) -> u8 {
 fn rule_proposal_card(p: &Value) -> (String, String, Vec<Value>, Vec<Action>) {
     let rule = json!({"type": "rule", "match": p.get("match"), "effect": p.get("effect"), "scope": p.get("scope"),
                       "project": p.get("project"), "role": p.get("role"), "file": p.get("file")});
-    let mut ctx = vec![markdown(s(p, "text"), None), rule];
+    let mut ctx = vec![markdown(s(p, "text"), None)];
+    // What the Overwatch said when it proposed this one.
+    if !s(p, "why").is_empty() {
+        ctx.push(markdown(&format!("The Overwatch: {}", s(p, "why")), None));
+    }
+    ctx.push(rule);
     if let Some(links) = p.get("links").filter(|l| l.as_array().is_some_and(|a| !a.is_empty())) {
         ctx.push(json!({"type": "links", "links": links}));
     }
-    let title = format!("Rule · {}", cut(s(p, "match"), 60));
+    // "Allow `pnpm add *` in shop-api for front?"
+    let shown = s(p, "match");
+    let shown = shown.split_once('(').and_then(|(_, r)| r.strip_suffix(')')).unwrap_or(shown).replace(":*", " *");
+    let (verb, project, role) = (
+        if s(p, "effect") == "deny" { "Deny" } else { "Allow" },
+        Some(s(p, "project")).filter(|x| !x.is_empty()).map(|x| format!(" in {x}")).unwrap_or_default(),
+        Some(s(p, "role")).filter(|x| !x.is_empty() && *x != "solo").map(|x| format!(" for {x}")).unwrap_or_default(),
+    );
+    let title = format!("{verb} `{}`{project}{role}?", cut(&shown, 60));
     let actions = vec![
         act("add", "Add rule", Some("a")),
         act("not_now", "Not now", Some("r")),

@@ -164,6 +164,11 @@ pub fn append_rule(path: &Path, rule: &Rule) -> Result<()> {
     write_doc(path, &doc)
 }
 
+/// `s` as a TOML string (Rust's `{:?}` escapes are not all TOML's).
+fn toml_str(s: &str) -> String {
+    toml_edit::Value::from(s).to_string().trim().to_string()
+}
+
 /// Appends `rule` to the file as a commented-out `[[rule]]` for the user to
 /// edit and uncomment (Edit rule on a proposal). The file is created if missing.
 pub fn append_commented_rule(path: &Path, rule: &Rule) -> Result<()> {
@@ -175,16 +180,16 @@ pub fn append_commented_rule(path: &Path, rule: &Rule) -> Result<()> {
     text.push_str("\n# A rule proposed from your answers: remove the leading # of each line to turn it on.\n");
     text.push_str("# [[rule]]\n");
     text.push_str(&format!(
-        "# id = {:?}\n# match = {:?}\n# effect = {:?}\n",
-        rule.id,
-        rule.pattern,
-        rule.effect.as_str()
+        "# id = {}\n# match = {}\n# effect = {}\n",
+        toml_str(&rule.id),
+        toml_str(&rule.pattern),
+        toml_str(rule.effect.as_str())
     ));
     if let Some(r) = &rule.role {
-        text.push_str(&format!("# role = {r:?}\n"));
+        text.push_str(&format!("# role = {}\n", toml_str(r)));
     }
     if let Some(f) = &rule.from {
-        text.push_str(&format!("# from = {f:?}\n"));
+        text.push_str(&format!("# from = {}\n", toml_str(f)));
     }
     crate::compile::write_atomic(path, text.as_bytes()).with_context(|| format!("write {}", path.display()))
 }

@@ -514,3 +514,41 @@ fn the_store_table_is_no_longer_read() {
     wait("held: the store row is ignored", 5, || rt.inbox().iter().any(|i| i.kind == "permission"));
     let _ = h.join();
 }
+
+#[test]
+fn a_file_that_never_parsed_asks_the_user_instead_of_failing_open() {
+    let mut broken = FileState::new(Scope::Global, PathBuf::from("/x/policy.toml"));
+    broken.error = Some(ParseError { line: 3, message: "expected `=`".into() });
+    let s = who("front", true);
+    let e = eval(&[&broken], &s, "ls", None);
+    assert_eq!((e.effect, e.source), (Effect::User, Source::Default));
+    // Even a call the defaults would allow, and one another file allows.
+    let ok = file(Scope::Project("shop".into()), "[[rule]]\nid = \"a\"\nmatch = \"Bash(ls:*)\"\neffect = \"allow\"\n");
+    assert_eq!(eval(&[&broken, &ok], &s, "ls", None).effect, Effect::User);
+    // A file that parsed once keeps its last good rules instead.
+    let mut kept = file(Scope::Global, "[[rule]]\nid = \"a\"\nmatch = \"Bash(ls:*)\"\neffect = \"allow\"\n");
+    kept.error = broken.error.clone();
+    assert_eq!(eval(&[&kept], &s, "ls", None).effect, Effect::Allow);
+}
+
+#[test]
+fn a_commented_rule_is_valid_toml_once_uncommented() {
+    let d = tempfile::Builder::new().prefix("pol").tempdir_in(orch_protocol::test_tmp()).unwrap();
+    let path = d.path().join("policy.toml");
+    let rule = Rule {
+        id: "proposal-1".into(),
+        pattern: "Bash(echo \"é\u{7f}\\ \t:*)".into(),
+        effect: Effect::Allow,
+        role: Some("front".into()),
+        agent: None,
+        from: Some("proposal:d-1".into()),
+        added_ms: None,
+        note: None,
+    };
+    file::append_commented_rule(&path, &rule).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let on: String = text.lines().map(|l| l.strip_prefix("# ").filter(|_| l.starts_with("# [[") || l.starts_with("# id") || l.starts_with("# match") || l.starts_with("# effect") || l.starts_with("# role") || l.starts_with("# from")).unwrap_or(l)).collect::<Vec<_>>().join("\n");
+    let doc = file::parse(&on).expect("the uncommented rule parses");
+    assert_eq!(doc.rules.len(), 1);
+    assert_eq!(doc.rules[0].pattern, rule.pattern);
+}

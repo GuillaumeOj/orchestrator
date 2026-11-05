@@ -370,6 +370,12 @@ pub fn evaluate(
             return Some(Evaluation::hard(h));
         }
     }
+    // A file that never parsed has no rules to read: its deny and user rules
+    // are unknown, so nothing is allowed on its account (fail closed).
+    let unread = files.iter().any(|f| f.error.is_some() && f.doc.rules.is_empty());
+    if unread && found.as_ref().is_none_or(|e| e.effect < Effect::User) {
+        return Some(Evaluation { effect: Effect::User, source: Source::Default, rule: None });
+    }
     found.or_else(|| {
         use_defaults.then_some(Evaluation {
             effect: if s.team { defaults.team } else { defaults.solo },

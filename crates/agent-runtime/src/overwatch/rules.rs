@@ -68,9 +68,13 @@ impl Runtime {
     fn tallies(&self) -> std::sync::MutexGuard<'_, Option<Tallies>> {
         let mut g = self.overwatch.rules.lock().unwrap_or_else(|e| e.into_inner());
         if g.is_none() {
-            *g = Some(
-                self.db.setting(KEY).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default(),
-            );
+            let mut t: Tallies =
+                self.db.setting(KEY).ok().flatten().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+            // A candidate event does not outlive the app: it would block the next proposal.
+            for e in t.values_mut() {
+                e.pending = false;
+            }
+            *g = Some(t);
         }
         g
     }
@@ -238,6 +242,7 @@ impl Runtime {
         if self.with_tallies(|t| t.get(key).is_some_and(|e| e.open.is_some())) {
             return Err(err("duplicate", "a proposal for this kind of call is already open"));
         }
+        let did = if spec.effect == Effect::Deny { "denied" } else { "allowed" };
         let links: Vec<Value> = spec
             .from
             .iter()
@@ -245,11 +250,17 @@ impl Runtime {
             .take(threshold as usize)
             .rev()
             .map(|d| {
+                // "Mon 14:02 · front-1 · allowed"
                 let label = d
                     .strip_prefix("inbox-")
                     .and_then(|n| n.parse::<u64>().ok())
-                    .and_then(|n| self.store.read(|s| s.inbox.iter().find(|i| i.id == n).map(|i| i.body.clone())))
-                    .map(|b| cut(&b, 80))
+                    .and_then(|n| self.store.read(|s| s.inbox.iter().find(|i| i.id == n).cloned()))
+                    .map(|i| {
+                        let at = i.decided_at_ms.unwrap_or(i.created_at_ms) as i64;
+                        let t = jiff::Timestamp::from_millisecond(at).unwrap_or_default();
+                        let when = t.to_zoned(jiff::tz::TimeZone::system()).strftime("%a %H:%M");
+                        format!("{when} · {} · {}", i.agent_id.as_deref().unwrap_or("?"), did)
+                    })
                     .unwrap_or_else(|| d.clone());
                 let chat = self.db.chat_by_decision(d).ok().flatten().map(|e| e.id());
                 json!({"decision": d, "label": label, "chat": chat})
@@ -257,21 +268,16 @@ impl Runtime {
             .collect();
         let who = spec.role.as_deref().map(|r| format!(" for {r}")).unwrap_or_default();
         let place = spec.project.as_deref().map(|p| format!(" in {p}")).unwrap_or_default();
-        let did = if spec.effect == Effect::Deny { "denied" } else { "allowed" };
-        let text = if spec.text.trim().is_empty() {
-            format!(
-                "You {did} this call {} times{who}{place}. Add a rule so it is {did} without asking?",
-                spec.from.len().max(threshold as usize)
-            )
-        } else {
-            spec.text.clone()
-        };
+        let text = format!(
+            "You {did} this call {} times{who}{place}. Add a rule so it is {did} without asking?",
+            spec.from.len().max(threshold as usize)
+        );
         let payload = json!({
             "match": spec.pattern, "effect": spec.effect.as_str(),
             "scope": if spec.project.is_some() { "project" } else { "global" },
             "project": spec.project, "role": spec.role,
             "file": path.display().to_string(), "file_label": scope.label(),
-            "text": cut(&text, 600), "links": links, "from": spec.from, "key": key, "source": spec.source,
+            "text": cut(&text, 600), "why": cut(spec.text.trim(), 600), "links": links, "from": spec.from, "key": key, "source": spec.source,
             "count": spec.from.len(), "threshold": threshold, "declined_before": declined,
             "declined_at_ms": declined_at, "notify": false,
         });
@@ -356,7 +362,14 @@ impl Runtime {
             "add" => {
                 let from = Some(format!("proposal:{}", crate::decision::decision_id("rule_proposal", n)));
                 self.policy_sync();
-                let r = self.add_rule_to(&scope, role, None, &pattern, effect, from)?;
+                // The user's own edit is not what closes it now (see `rules_check_edited`).
+                let edited = p.get("edited_at_ms").cloned();
+                self.set_payload(n, &[("edited_at_ms", Value::Null)]);
+                let r = self.add_rule_to(&scope, role, None, &pattern, effect, from).inspect_err(|_| {
+                    if let Some(e) = &edited {
+                        self.set_payload(n, &[("edited_at_ms", e.clone())]);
+                    }
+                })?;
                 let (rid, file) = (r["rule"]["id"].clone(), scope.label());
                 self.set_payload(n, &[("added_rule_id", rid), ("added_file", json!(file))]);
                 self.close_proposal(n, "add", "added", Some(format!("added to {}", file_name(p))));
@@ -419,7 +432,7 @@ impl Runtime {
         let open: Vec<InboxItem> = self.store.read(|s| {
             s.inbox
                 .iter()
-                .filter(|i| i.kind == "rule_proposal" && i.open() && i.payload.get("edited_at_ms").is_some())
+                .filter(|i| i.kind == "rule_proposal" && i.open() && i.payload.get("edited_at_ms").is_some_and(|v| !v.is_null()))
                 .cloned()
                 .collect()
         });

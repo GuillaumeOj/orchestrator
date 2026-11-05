@@ -41,6 +41,8 @@ pub struct Overwatch {
     pub(crate) stuck_sent: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// When a `limit reached` down may lift (the window's reset).
     pub(crate) limit_until: std::sync::atomic::AtomicU64,
+    /// One `chat_undo` at a time (two taps must not both pass the checks).
+    pub(crate) undoing: std::sync::Mutex<()>,
 }
 
 impl Overwatch {
@@ -307,7 +309,7 @@ impl Runtime {
     /// The user messages kept while it was `off` / `down` go back in the
     /// queue, each with a new id of the day (a kept message may never have
     /// had one).
-    fn overwatch_requeue_pending(&self) {
+    pub(crate) fn overwatch_requeue_pending(&self) {
         let (now, day) = self.overwatch_today();
         let mut st = self.ow();
         if st.pending_user.is_empty() {

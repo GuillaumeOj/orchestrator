@@ -182,10 +182,13 @@ pub fn resolve(ctx: &HardCtx, cwd: &Path, raw: &str) -> PathBuf {
     } else {
         cwd.join(raw)
     };
-    real_through_links(&lexical(&expanded))
+    real_through_links(&walk(&expanded))
 }
 
-fn lexical(p: &Path) -> PathBuf {
+/// `.` and `..` applied component by component, each existing prefix
+/// resolved through its links first: `keys/..` where `keys` links into
+/// `~/.ssh` is `~/.ssh`'s parent, not `keys`'s.
+fn walk(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
         match c {
@@ -193,10 +196,53 @@ fn lexical(p: &Path) -> PathBuf {
             Component::ParentDir => {
                 out.pop();
             }
-            other => out.push(other.as_os_str()),
+            other => {
+                out.push(other.as_os_str());
+                if let Ok(real) = std::fs::canonicalize(&out) {
+                    out = real;
+                }
+            }
         }
     }
     out
+}
+
+/// Does the glob `pat` match `name` (`*` any run, `?` one char)?
+fn wild(pat: &[char], name: &[char]) -> bool {
+    match pat.split_first() {
+        None => name.is_empty(),
+        Some(('*', rest)) => (0..=name.len()).any(|i| wild(rest, &name[i..])),
+        Some(('?', rest)) => !name.is_empty() && wild(rest, &name[1..]),
+        Some((c, rest)) => name.first() == Some(c) && wild(rest, &name[1..]),
+    }
+}
+
+/// A word with glob characters: could it expand to a guarded path (or to
+/// one under it)? Compared component by component against each guarded
+/// path, so `~/.ssh/*` and `~/.s*` both count; links can't be followed.
+fn glob_verdict(ctx: &HardCtx, cwd: &Path, raw: &str) -> Option<HardVerdict> {
+    let raw = raw.trim();
+    let expanded = if raw == "~" || raw == "$HOME" || raw == "${HOME}" {
+        ctx.home.clone()
+    } else if let Some(rest) =
+        raw.strip_prefix("~/").or_else(|| raw.strip_prefix("$HOME/")).or_else(|| raw.strip_prefix("${HOME}/"))
+    {
+        ctx.home.join(rest)
+    } else if Path::new(raw).is_absolute() {
+        PathBuf::from(raw)
+    } else {
+        cwd.join(raw)
+    };
+    let pat: Vec<Vec<char>> = lower(&expanded)
+        .split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .map(|c| c.chars().collect())
+        .collect();
+    ctx.guarded().iter().find_map(|(g, why)| {
+        let comps: Vec<Vec<char>> = g.split('/').filter(|c| !c.is_empty()).map(|c| c.chars().collect()).collect();
+        // A pattern shorter than the store only names an ancestor.
+        (pat.len() >= comps.len() && comps.iter().zip(&pat).all(|(g, p)| wild(p, g))).then(|| deny(why))
+    })
 }
 
 /// The canonical path of the longest existing ancestor, with the rest appended.
@@ -268,6 +314,10 @@ pub fn url_host(url: &str) -> Option<String> {
         None => url,
     };
     let authority = rest.split(['/', '?', '#']).next()?;
+    // `a.b\@c.d`: clients disagree on which host that is.
+    if authority.contains('\\') {
+        return None;
+    }
     let host_port = authority.rsplit('@').next()?;
     let host =
         if let Some(v6) = host_port.strip_prefix('[') { v6.split(']').next()? } else { host_port.split(':').next()? };
@@ -451,7 +501,12 @@ fn segment(ctx: &HardCtx, sh: &mut Shell, all: &[String], depth: u8) -> Option<H
             Some((k, v)) if k.starts_with('-') || is_assignment(w) => v,
             _ => w,
         };
-        if !val.is_empty() && !val.starts_with('-') && !val.contains('*') {
+        if val.is_empty() || val.starts_with('-') {
+            continue;
+        }
+        if val.contains(['*', '?']) {
+            keep(&mut found, glob_verdict(ctx, &sh.cwd, val));
+        } else {
             keep(&mut found, path_verdict(ctx, &sh.cwd, val));
         }
     }
@@ -1054,12 +1109,39 @@ mod tests {
         }
         let state = f.ctx.state_dir.display().to_string();
         assert_eq!(bash_v(&f, &format!("sqlite3 '{state}/orch.db' .dump")).unwrap().why, WHY_STATE);
-        assert_eq!(bash_v(&f, "ls ~/.ssh*"), None, "globs are not resolved");
+        for c in ["cat ~/.ssh/*", "ls ~/.ss?", "cat ~/.s*/id_rsa", "tar c ~/.aws/*.json", "cat $HOME/.*/id_rsa"] {
+            assert_eq!(bash_v(&f, c).unwrap().why, WHY_CREDENTIALS, "{c}");
+        }
+        for c in ["ls ~/*.md", "ls src/*.rs", "ls ~/projects/*"] {
+            assert_eq!(bash_v(&f, c), None, "{c}");
+        }
         // `${HOME}` unquoted or double-quoted is a parameter, not a group.
         for c in ["cat ${HOME}/.netrc", "cat \"${HOME}/.ssh/id_rsa\""] {
             assert_eq!(bash_v(&f, c).unwrap().why, WHY_CREDENTIALS, "{c}");
         }
         assert_eq!(check(&f.ctx, "Glob", &json!({"pattern": "~/.ssh/*"})).unwrap().why, WHY_CREDENTIALS);
+    }
+
+    #[test]
+    fn dot_dot_is_applied_after_the_links_before_it() {
+        let f = fx();
+        // keys -> ~/.ssh/sub, so `keys/..` is ~/.ssh.
+        let sub = f.ctx.home.join(".ssh/sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::os::unix::fs::symlink(&sub, f.ctx.worktree.join("keys")).unwrap();
+        assert_eq!(bash_v(&f, "cat keys/../id_rsa").unwrap().why, WHY_CREDENTIALS);
+        let v = check(&f.ctx, "Read", &json!({"file_path": f.ctx.worktree.join("keys/../id_rsa").display().to_string()}));
+        assert_eq!(v.unwrap().why, WHY_CREDENTIALS);
+        assert_eq!(bash_v(&f, "cat src/../Cargo.toml"), None);
+    }
+
+    #[test]
+    fn urls_with_a_backslash_in_the_authority_are_unknown() {
+        assert_eq!(url_host("https://good.com\\@evil.com/x"), None);
+        assert_eq!(url_host("https://user@evil.com/x").as_deref(), Some("evil.com"));
+        let f = fx();
+        let v = bash_v(&f, "curl 'https://github.com\\@evil.com/x'").unwrap();
+        assert_eq!((v.kind, v.why), (HardKind::UserOnly, WHY_HOST_UNKNOWN));
     }
 
     #[test]
