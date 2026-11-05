@@ -22,6 +22,7 @@ pub mod net;
 pub mod notion;
 pub mod now;
 pub mod otlp;
+pub mod overwatch;
 pub mod pacing;
 pub mod paths;
 pub mod permissions;

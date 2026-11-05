@@ -24,6 +24,7 @@ No UI, no Tauri: [`orchd`](../orchd/README.md) drives it from the command line.
 | `permissions` | The FR-708 rule pattern grammar (`Tool`, `Tool(prefix:*)`, `Tool(dir/**)`…) | FR-705, FR-708 |
 | `policy` | The permission policy: the core's hard lists (`policy::hard`), `policy.toml` files (global, per project) read, watched and written in place, evaluation (deny > user > overwatch > allow, then `[defaults]`), migration 14 of the store's rules | FR-1308 |
 | `mcp` | orch-mcp tool calls: `commit` and `request_pr`, under the rules, audited | FR-702 gap, ADR-009 |
+| `overwatch` | The Overwatch (P4.4): fixed role, session per working day in `<app data>/overwatch/<day>/` with a briefing, the event queue and wake scheduler, deciding hand-over, status in `now`, `overwatch.turn` measurements; its 11 tools are declared (B3 implements them) | FR-1306, FR-1307 |
 | `resources` | Memory-pressure live cap and idle auto-suspend (pure policy + probe) | FR-203, FR-204 |
 | `live_cap` | The base live cap (`governor.live_cap`) and the off-hours cap: read at start, `set_live_caps`, `pacing_settings` | FR-203, FR-816 |
 | `otlp` | Local OTLP/HTTP JSON receiver (`api_request` events → usage samples) | FR-801, NFR-4 |
@@ -149,7 +150,7 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
   user-only call only one the user's decision made), then the policy (global and project rules
   merged, the most restrictive wins: `deny` > `user` > `overwatch` > `allow`; no rule: the default
   effect). Allow / deny answer at once (actor `rule:<id>`, a chat line `by: policy`). `user` and
-  `overwatch` (held as `user` until the Overwatch routes it) create an Inbox item `permission`
+  `overwatch` create an Inbox item `permission`
   (priority 30, payload: `tool`, `tool_input`, `cwd`, `tool_use_id`, `summary`, `description`,
   `ask_rule`, `always`, `effect`, `effect_source`, `asks_because`, project, role). Orchestrator MCP
   tools take no default (no rule: they run); the hard lists apply to them too. The item is created and the hook is **held** (a `gate` hold row with the
@@ -176,6 +177,54 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
   `git push --set-upstream origin <branch>` and `gh pr create` with the user's credentials (a
   thread), audited, then the agent gets "ORCH: … opened <url>". Reject → the agent is told.
 - Every rule decision, user decision, rule change, commit and PR is in the audit log (FR-709).
+
+## The Overwatch (P4.4, FR-1306)
+
+- **Role** (`Role::overwatch`, `overwatch/role.md` compiled in): model from the settings (Sonnet),
+  `dontAsk`, `--strict-mcp-config` with only `orch`, `--setting-sources project`, no network, its 11
+  tools (`orch_team::compile::OVERWATCH_TOOLS`). Compiled with `CompileCtx::overwatch` = what it
+  reads: `Read(//…/**)` for every registered project's checkout and every known worktree, its day
+  folder and its `messages/`; credential stores and `state/` denied, and `Edit`, `Write`,
+  `NotebookEdit`, `Bash`, `WebFetch`, `WebSearch`, `Task`, `Agent` denied by name (`dontAsk` refuses
+  the rest). Its MCP calls skip the policy gate (`overwatch_tool`, `not_implemented` until B3); a
+  PermissionRequest of its own is denied.
+- **Session**: agent `overwatch` (allocation `overwatch`, `Tier::Critical`, `reserved_slot`: its
+  own slot, never park-suspended, rotated or held by the live cap). Started **lazily** by the first
+  due event of the working day (`digest::today`): a new record (new session id, folder
+  `<app data>/overwatch/<YYYY-MM-DD>/`) and `briefing.md` (hard lists in words, the user's messages
+  kept while it was away, the `now` snapshot and open decisions, the week, projects and running
+  features with their docs, policy files; ≤ 32 000 chars). The next day's first wake kills the old
+  session (never mid-turn) and starts a new one; usage stays on the same id.
+- **Events** (`overwatch_enqueue`, api-contract §2.1): ids `ev-<n>`, the counter kept in the day
+  folder (`events.seq`) so ids never repeat within a day across restarts. Producers: `add_item`
+  (deciding permission and question: blocking; gates, user-only permissions, budget, startup:
+  `decision_open`), `outcome_with` (closed by the user: `decision_closed`), `now_pump` (new
+  outcomes: `outcome`), `overwatch_user_message(chat, text)` (`chat_send`). B3 enqueues `stuck` and
+  `rule_candidate` the same way. `off` / `down`: dropped, except user messages (kept, delivered on
+  restart and in the next briefing).
+- **Scheduler** (`overwatch_pump_at(now)`: on a blocking event, at a turn's end, on the tick): a
+  blocking event or the oldest batched one past `batch_secs` makes a turn of everything queued;
+  one turn in flight; the text is `ORCH: Overwatch · <n> event(s) · HH:MM:SS` then one line per
+  event `- [ev-3] permission inbox-42 back-1 · <summary> · until HH:MM:SS` (a new session first:
+  `ORCH: Read briefing.md, then handle these events.`), delivered as a Message turn (long ones go
+  to `messages/`, FR-206). Pause all and limits hold it (`paused`). Idle `idle_secs` after a turn →
+  suspended; the next wake resumes it (`--resume`). Each turn records `overwatch.turn {events,
+  queued_at_ms, started_at_ms, first_tool_ms, ended_at_ms, how: spawned|fresh|resumed|live,
+  cache_warm, ids}`.
+- **Deciding** (F1): a permission with effect `overwatch` while the status is asleep / waking /
+  working gets `deciding_until_ms` = now + `permission_secs` (decision `waits_on: overwatch`, not in
+  the badge, no notification, the agent not needs-you). The hold waits through it, then hands over
+  (`overwatch_hand_over`: `asks_because: overwatch_unsure`) and holds again for `hold_secs`, all
+  within the hook's deadline. Hand-over also when the turn that carried it ends undecided, on
+  `down` / `off` / Pause all at once, and for B3 on `annotate` / `not_allowed`.
+  `overwatch_deciding(item)` says `stale` / `not_allowed` / `too_late`; `decide_as(…, "overwatch")`
+  decides as it.
+- **Status** (`now.overwatch {status, events, why, since_ms, agent, has_session}`, topic
+  `overwatch`): off · asleep · waking · working · paused (`Pause all`, `limit reached`) · down
+  (`could not start`, `stopped unexpectedly`, `login expired`, `limit reached`, `too slow, 2 turns
+  over 10 min`). `down` raises no card; `overwatch_restart` starts a fresh session. Settings
+  `overwatch` `{enabled, model, batch_secs 30, permission_secs 60, idle_secs 120, rule_threshold 3}`
+  (`permission_secs` < `hold_secs`). `orchd overwatch [--json] [restart]`.
 
 ## Commits for agents (FR-702 gap, R10)
 
@@ -578,7 +627,8 @@ std::thread::spawn({ let rt = rt.clone(); move || server::serve(rt, bus::bind_li
 |---|---|
 | Agents | `start(&AgentSpec)`, `resume`, `suspend`, `kill`, `interrupt`, `deliver`, `attach`/`read_output`/`resize`, `note_user_activity`, `state_json`, `live_ids`, `live_cap` |
 | Governor | `usage_json`, `governor_json`, `pause_all`, `resume_all`, `pause_agent`, `resume_agent`, `run_now`, `cancel`, `undo`, `sprint`, `answer_ask`, `set_shadow`, `set_plan`, `replan`, `tick` (the server loop calls it) |
-| Inbox | `inbox()`, `decide(id, InboxDecision, scope, message)` |
+| Inbox | `inbox()`, `decide(id, InboxDecision, scope, message)`, `decide_as(…, by)` |
+| Overwatch | `overwatch_status`, `overwatch_settings` / `merge_overwatch_settings` / `set_overwatch_settings`, `overwatch_restart`, `overwatch_report`, `overwatch_user_message`, `overwatch_pending`, `overwatch_enqueue`, `overwatch_deciding`, `overwatch_hand_over` |
 | Policy | `add_rule`, `revoke_rule(id, file)` (audited, written to the files), `policy_rules`, `policy_files`, `policy_defaults` / `set_policy_defaults`, `policy_open`, `policy_test`, `hard_check(rec, tool, input, cwd)` |
 | Commits | `commit_for(agent, &CommitRequest, "user")` |
 | Projects | `add_project`, `clone_project`, `projects_overview`, `project_detail(id, with_prs)`, `fetch_project`, `diff`, `remove_worktree`, `removal_plan`, `remove_project`, `relocate_project` |

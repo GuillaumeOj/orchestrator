@@ -649,3 +649,85 @@ fn a_team_run_end_to_end_with_fake_claude() {
         assert!(kinds.contains(&k), "timeline has {k}: {kinds:?}");
     }
 }
+
+/// P4.4 (spec §5 "Nothing waits on the Overwatch", acceptance 6): a
+/// permission with effect `overwatch` starts the Overwatch lazily (its day
+/// folder, briefing and first turn), the card waits on it while its turn
+/// runs; its process killed mid-turn puts it `down`, the card goes to the
+/// user at once and still acts, and the next permission goes straight to
+/// the user. No pane intervention anywhere.
+#[test]
+fn killing_the_overwatch_mid_turn_leaves_every_card_actionable() {
+    use orch_protocol::InboxDecision;
+    let core = Core::start("orchow", |c| c.permission_hold = Duration::from_secs(40));
+    // Solo sessions default to the user: send this one's calls to the Overwatch.
+    core.rt.set_policy_defaults("overwatch", "overwatch").unwrap();
+    let mut s = core.rt.overwatch_settings();
+    s.permission_secs = 30;
+    core.rt.set_overwatch_settings(s).unwrap();
+    core.start_agent("a");
+    assert!(agent(&core.sock, agent_runtime::overwatch::ID).is_null(), "lazy: no session before an event");
+
+    // The fake sleeps 30 s in a turn whose text says SLOW: the Overwatch's
+    // turn carries this command in its event line.
+    request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "PERMIT pnpm add SLOW".into() }).unwrap();
+    let ow = agent_runtime::overwatch::ID;
+    wait_for("the Overwatch's first turn", 20, || agent(&core.sock, ow)["state"] == "working");
+    let day = core.rt.store.read(|s| s.agents[ow].worktree.clone());
+    assert!(day.join("briefing.md").is_file(), "{day:?}");
+    let screens = Screens::default();
+    wait_for("its turn text", 10, || screens.read(&core.sock, ow).contains("permission inbox-"));
+    assert!(screens.read(&core.sock, ow).contains("Read briefing.md"));
+    let open_card = || {
+        let snap = request(&core.sock, CtlRequest::Now).unwrap().data;
+        snap["decisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["kind"] == "permission" && d["lifecycle"]["state"] == "open")
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let card = open_card();
+    assert_eq!(card["waits_on"], "overwatch", "{card}");
+    assert!(card["deciding_until_ms"].is_u64());
+    let id: u64 = card["id"].as_str().unwrap().trim_start_matches("inbox-").parse().unwrap();
+
+    // Killed from outside, mid-turn.
+    let pid = agent(&core.sock, ow)["pid"].as_i64().unwrap();
+    assert!(Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success());
+    wait_for("down", 10, || core.rt.overwatch_status().status == agent_runtime::overwatch::Status::Down);
+    assert_eq!(core.rt.overwatch_status().why.as_deref(), Some("stopped unexpectedly"));
+    let card = open_card();
+    assert_eq!(card["waits_on"], "user", "handed over at once: {card}");
+    assert_eq!(card["payload"]["asks_because"]["kind"], "overwatch_unsure");
+    // The card still acts.
+    let r = request(
+        &core.sock,
+        CtlRequest::Decide { item_id: id, decision: InboxDecision::Approve, scope: None, message: None },
+    )
+    .unwrap();
+    assert!(r.ok, "{r:?}");
+    wait_for("the call allowed", 10, || screens.read(&core.sock, "a").contains("\"allow\""));
+
+    // While down, the next permission goes straight to the user.
+    wait_for("a idle", 40, || core.state_of("a") == "idle");
+    request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "PERMIT pnpm add zx".into() }).unwrap();
+    wait_for("second card", 10, || open_card()["waits_on"] == "user");
+    assert!(open_card().get("deciding_until_ms").is_none());
+    let id2: u64 = open_card()["id"].as_str().unwrap().trim_start_matches("inbox-").parse().unwrap();
+    let r = request(
+        &core.sock,
+        CtlRequest::Decide { item_id: id2, decision: InboxDecision::Reject, scope: None, message: Some("no".into()) },
+    )
+    .unwrap();
+    assert!(r.ok, "{r:?}");
+
+    // Restart: a fresh session with a new briefing.
+    assert!(request(&core.sock, CtlRequest::OverwatchRestart).unwrap().ok);
+    wait_for("back", 20, || core.rt.overwatch_status().status != agent_runtime::overwatch::Status::Down);
+    core.rt.db.flush().unwrap();
+    assert!(core.rt.db.events(0, None, Some("pane_intervention"), 10).unwrap().is_empty());
+    let report = request(&core.sock, CtlRequest::Overwatch).unwrap().data;
+    assert!(report["turns"].as_array().is_some(), "{report}");
+}

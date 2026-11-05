@@ -133,6 +133,31 @@ impl Role {
         }
     }
 
+    /// The Overwatch (P4.4, spec §3.3): fixed in code, not on the team
+    /// canvas. `dontAsk` (it never raises a prompt of its own), only the
+    /// `orch` server, no network, its 11 tools; what it may read is decided
+    /// at compile time ([`crate::compile::CompileCtx::overwatch`]).
+    pub fn overwatch(model: &str) -> Role {
+        Role {
+            name: crate::overwatch::ID.into(),
+            prompt: Some(crate::overwatch::ROLE_PROMPT.into()),
+            model: Some(model.to_string()).filter(|m| !m.is_empty()),
+            effort: None,
+            permission_mode: PermissionMode::DontAsk,
+            strict_mcp: true,
+            setting_sources: Some(vec!["project".into()]),
+            mcp_servers: Default::default(),
+            mcp_refs: vec![],
+            network_allow: vec![],
+            allow_rules: vec![],
+            deny_rules: vec![],
+            extra_write: vec![],
+            orch_tools: orch_team::compile::OVERWATCH_TOOLS.iter().map(|s| s.to_string()).collect(),
+            turn_ceiling_minutes: Some(crate::overwatch::TURN_CEILING_MIN),
+            downgrade: None,
+        }
+    }
+
     /// A team node compiled by orch-team (FR-308).
     pub fn from_node(n: &orch_team::NodeConfig) -> Result<Role, String> {
         let mut network = default_network();

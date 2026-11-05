@@ -229,6 +229,33 @@ pub async fn chat_day(core: CoreState<'_>, day: String) -> Res<Value> {
     blocking(core, move |c| c.runtime()?.chat_day(&day)).await
 }
 
+/// P4.4: the Overwatch's settings (api-contract §3.3).
+#[tauri::command]
+pub async fn overwatch_settings(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, move |c| Ok(serde_json::json!(c.runtime()?.overwatch_settings()))).await
+}
+
+/// P4.4: a missing field keeps its value; `permission_secs` must stay under the hold.
+#[tauri::command]
+pub async fn set_overwatch_settings(core: CoreState<'_>, settings: Value) -> Res<Value> {
+    blocking(core, move |c| {
+        let rt = c.runtime()?;
+        let s = rt.merge_overwatch_settings(&settings)?;
+        Ok(serde_json::json!(rt.set_overwatch_settings(s)?))
+    })
+    .await
+}
+
+/// P4.4: a fresh Overwatch session with a new briefing (Restart when it is down).
+#[tauri::command]
+pub async fn overwatch_restart(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, move |c| {
+        c.runtime()?.overwatch_restart()?;
+        Ok(serde_json::json!({"ok": true}))
+    })
+    .await
+}
+
 /// P4.4: the policy files in effect, also missing ones (api-contract §3.3, §5 F15).
 #[tauri::command]
 pub async fn policy_files(core: CoreState<'_>) -> Res<Value> {

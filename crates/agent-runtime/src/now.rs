@@ -428,8 +428,9 @@ impl Runtime {
             "decisions": st.decisions.values().collect::<Vec<_>>(),
             "outcomes": st.outcomes.list,
         });
-        // Today's entries, read once the publisher's lock is released.
+        // Today's entries and the Overwatch, read once the publisher's lock is released.
         drop(st);
+        snap["overwatch"] = json!(self.overwatch_status());
         snap["chat"] = json!({"entries": self.db.chat_day(&day).unwrap_or_default(), "day": day});
         snap
     }
@@ -450,6 +451,17 @@ impl Runtime {
         });
         let (now, tz) = self.now.clock();
         let posted = !self.now.chat_posted().is_empty();
+        // `now.overwatch` rides the event when its status changed (P4.4).
+        // Its changes touch the topic; the forced pump (30 s) catches a
+        // reached limit. Not computed on an idle pump.
+        let overwatch = (force || topics.contains(crate::overwatch::TOPIC) || !self.overwatch.published())
+            .then(|| self.overwatch_status());
+        if let Some(ow) = &overwatch
+            && self.overwatch.publish(ow)
+        {
+            topics.insert(crate::overwatch::TOPIC.into());
+        }
+        let overwatch = overwatch.filter(|_| topics.contains(crate::overwatch::TOPIC));
         let mut st = lock(&self.now.state);
         let queue_moved = st.queue.as_ref() != Some(&queue_now);
         let team_moved = st.team.changes != Some(team_changes);
@@ -495,7 +507,12 @@ impl Runtime {
                     || [i.decided_at_ms, i.sent_at_ms, i.effect_at_ms].into_iter().flatten().max().unwrap_or(0)
                         >= recent
             };
-            (s.agents.clone(), s.inbox.iter().filter(keep).cloned().collect())
+            // The Overwatch is not in Mission control's lanes (spec §3.3).
+            let agents = s.agents.iter().filter(|(id, _)| id.as_str() != crate::overwatch::ID);
+            (
+                agents.map(|(k, v)| (k.clone(), v.clone())).collect::<BTreeMap<_, _>>(),
+                s.inbox.iter().filter(keep).cloned().collect(),
+            )
         });
         let (queue, ask, gov) = self.governor_facts();
         // The PTY tail of a synthesized card (trust dialog, a prompt in the pane, an error).
@@ -516,6 +533,7 @@ impl Runtime {
         // Today's outcomes: the new ones since the last read (all on a new
         // day), read for the same day the cache is keyed by.
         let (midnight, day) = crate::digest::today(now, &tz);
+        let same_day = st.outcomes.day == day;
         if st.outcomes.day != day {
             st.outcomes = OutcomeCache { day, ..Default::default() };
         }
@@ -524,6 +542,11 @@ impl Runtime {
         let (new_outcomes, last_read) =
             self.outcomes_of_day(midnight, &st.outcomes.day, st.outcomes.after, &tz, &runs, &st.team.projects);
         st.outcomes.after = last_read;
+        // New outcomes are batched events for the Overwatch (not the day's
+        // backlog read at start or at midnight).
+        if !first && same_day {
+            self.overwatch_on_outcomes(&new_outcomes);
+        }
         st.outcomes.list.extend(new_outcomes.iter().cloned());
         let done_today = st.outcomes.list.len() as u32;
         let paused = &queue_now.1;
@@ -585,7 +608,10 @@ impl Runtime {
             &mut state.chat,
             crate::chat::SyncIn { now, day: &today, decisions: &decisions, gone: &gone, morning: &morning },
         );
-        let event = delta(state.rev + 1, &old, &world, (&upsert, &closed), &new_outcomes, &chat, &topics);
+        let mut event = delta(state.rev + 1, &old, &world, (&upsert, &closed), &new_outcomes, &chat, &topics);
+        if let (Some(e), Some(o)) = (event.as_mut(), overwatch) {
+            e["overwatch"] = json!(o);
+        }
         state.decisions = decisions;
         state.last = Some(world);
         let Some(event) = event else { return };

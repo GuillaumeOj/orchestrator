@@ -41,6 +41,20 @@ pub const LEAD_TOOLS: &[&str] = &[
 /// Specialists only.
 pub const SPECIALIST_TOOLS: &[&str] =
     &["update_task", "report_done", "sync_integration", "submit_plan", "submit_review"];
+/// The Overwatch (P4.4, api-contract §2.2): fixed in code, not on the canvas.
+pub const OVERWATCH_TOOLS: &[&str] = &[
+    "world",
+    "inspect",
+    "decide_permission",
+    "answer_question",
+    "annotate",
+    "nudge",
+    "resume_agent",
+    "restart_fresh",
+    "reprioritize",
+    "propose_rule",
+    "post",
+];
 /// A solo session (P1).
 pub const SOLO_TOOLS: &[&str] = &["commit", "request_pr", "read_issue", "update_issue"];
 /// Every orchestrator tool, in the order orch-mcp lists them.
@@ -68,6 +82,15 @@ pub const ALL_TOOLS: &[&str] = &[
     "sync_integration",
     "submit_plan",
     "submit_review",
+    "world",
+    "inspect",
+    "decide_permission",
+    "answer_question",
+    "annotate",
+    "restart_fresh",
+    "reprioritize",
+    "propose_rule",
+    "post",
 ];
 
 pub fn tools_for(is_lead: bool) -> Vec<String> {
@@ -360,7 +383,8 @@ mod tests {
 
     #[test]
     fn tool_sets_are_known() {
-        for t in COMMON_TOOLS.iter().chain(LEAD_TOOLS).chain(SPECIALIST_TOOLS).chain(SOLO_TOOLS) {
+        for t in COMMON_TOOLS.iter().chain(LEAD_TOOLS).chain(SPECIALIST_TOOLS).chain(SOLO_TOOLS).chain(OVERWATCH_TOOLS)
+        {
             assert!(ALL_TOOLS.contains(t), "{t}");
         }
     }

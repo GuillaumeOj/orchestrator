@@ -29,6 +29,22 @@ pub const PARKED_MESSAGE: &str =
     "ORCH: awaiting the user's approval. Stop here; you will be resumed when it is answered.";
 /// Setting overriding [`crate::runtime::RuntimeConfig::permission_hold`], in seconds.
 pub const HOLD_SECS_KEY: &str = "permissions.hold_secs";
+
+/// How long a held call may wait: `hold` for the user, all of it inside
+/// `ceiling` (the hook's deadline less 2 s).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Hold {
+    pub hold: Duration,
+    pub ceiling: Duration,
+}
+
+#[cfg(test)]
+impl Hold {
+    /// The same for both (tests, a caller with no deadline of its own).
+    pub fn of(d: Duration) -> Hold {
+        Hold { hold: d, ceiling: d }
+    }
+}
 /// How long the one-shot allow of an approved parked call lives.
 pub const ONE_SHOT_TTL_MS: u64 = 3_600_000;
 /// After the Stop that ends a parked turn: its hook reply goes out first.
@@ -213,6 +229,7 @@ impl Runtime {
             f(&v);
         }
         self.event(item.agent_id.as_deref().unwrap_or("-"), "inbox_outcome", v);
+        self.overwatch_on_closed(item, decided_by, effect);
     }
 
     /// Audits (FR-709) and reports an item a decider other than the user's
@@ -264,6 +281,9 @@ impl Runtime {
     ) -> Result<u64> {
         let subject = self.subject_now(agent, payload.get("project").and_then(Value::as_str));
         let thread = crate::decision::thread_of(&subject);
+        // The Overwatch's event (after the store write: the card is posted first).
+        let event =
+            (body.lines().next().unwrap_or("").to_string(), crate::overwatch::deciding::deciding_until(&payload));
         let id = self.store.write(|s| {
             let id = s.add_inbox_item(agent, kind, body, payload, priority);
             if let Some(i) = s.inbox.iter_mut().find(|i| i.id == id) {
@@ -272,6 +292,7 @@ impl Runtime {
             id
         })?;
         self.event(agent.unwrap_or("-"), "inbox_added", json!({"id": id, "kind": kind}));
+        self.overwatch_on_added(id, agent, kind, &event.0, event.1);
         Ok(id)
     }
 
@@ -401,6 +422,43 @@ impl Runtime {
     /// Waits for a decision on `id`, watching the hook connection for EOF.
     /// `None`: the budget ran out with the item still pending.
     pub(crate) fn wait_decision(&self, id: u64, budget: Duration, conn: Option<&UnixStream>) -> Option<Waited> {
+        self.wait_decision_while(id, budget, conn, &|| true)
+    }
+
+    /// The hold of a deciding permission (F1): the Overwatch's window, then
+    /// (handed over: window passed, or ended early) the user's hold from
+    /// that moment, both inside the hook's deadline. `None`: nobody decided.
+    fn wait_deciding(
+        &self,
+        id: u64,
+        deciding: Option<u64>,
+        started: Instant,
+        budget: Hold,
+        conn: Option<&UnixStream>,
+    ) -> Option<Waited> {
+        let Some(until) = deciding else { return self.wait_decision(id, budget.hold, conn) };
+        let window = Duration::from_millis(until.saturating_sub(now_ms()));
+        let still = || {
+            self.store.read(|s| {
+                s.inbox.iter().any(|i| i.id == id && crate::overwatch::deciding::deciding_until(&i.payload).is_some())
+            })
+        };
+        if let Some(w) = self.wait_decision_while(id, window, conn, &still) {
+            return Some(w);
+        }
+        self.overwatch_hand_over(id);
+        let left = budget.ceiling.saturating_sub(started.elapsed());
+        self.wait_decision(id, budget.hold.min(left), conn)
+    }
+
+    /// [`Runtime::wait_decision`] that also stops (`None`) once `keep` is false.
+    fn wait_decision_while(
+        &self,
+        id: u64,
+        budget: Duration,
+        conn: Option<&UnixStream>,
+        keep: &dyn Fn() -> bool,
+    ) -> Option<Waited> {
         let end = Instant::now() + budget;
         loop {
             let Some(status) = self.store.read(|s| s.inbox.iter().find(|i| i.id == id).map(|i| i.status)) else {
@@ -417,7 +475,7 @@ impl Runtime {
                 InboxStatus::Parked => return Some(Waited::Parked),
                 InboxStatus::Expired | InboxStatus::Stale => return Some(Waited::Expired),
             }
-            if Instant::now() >= end {
+            if Instant::now() >= end || !keep() {
                 return None;
             }
             match conn {
@@ -432,8 +490,9 @@ impl Runtime {
     }
 
     /// How long a prompt is held for the Inbox: `permission_hold` (or the
-    /// `permissions.hold_secs` setting), always 2 s inside orch-hook's deadline.
-    pub(crate) fn hold_budget(&self, deadline_ms: u64) -> Duration {
+    /// `permissions.hold_secs` setting), always 2 s inside orch-hook's
+    /// deadline (`ceiling`: a deciding window and the hold after it fit in it).
+    pub(crate) fn hold_budget(&self, deadline_ms: u64) -> Hold {
         let hold = self
             .db
             .setting(HOLD_SECS_KEY)
@@ -442,7 +501,8 @@ impl Runtime {
             .and_then(|v| v.as_u64())
             .map(Duration::from_secs)
             .unwrap_or(self.cfg.permission_hold);
-        hold.min(Duration::from_millis(deadline_ms.saturating_sub(2_000)))
+        let ceiling = Duration::from_millis(deadline_ms.saturating_sub(2_000));
+        Hold { hold: hold.min(ceiling), ceiling }
     }
 
     /// The user approved this exact call after it parked: allowed once
@@ -525,10 +585,10 @@ impl Runtime {
         call: &Call,
         subject: &Subject,
         ev: &Evaluation,
-        budget: Duration,
+        budget: Hold,
         conn: Option<&UnixStream>,
     ) -> Option<HookOutput> {
-        if budget.is_zero() {
+        if budget.hold.is_zero() {
             return None;
         }
         let out = match self.hold_for_decision(rec, call, subject, Some(ev), budget, conn) {
@@ -562,7 +622,7 @@ impl Runtime {
         call: &Call,
         subject: &Subject,
         ev: Option<&Evaluation>,
-        budget: Duration,
+        budget: Hold,
         conn: Option<&UnixStream>,
     ) -> Waited {
         let (tool, input) = (call.tool.as_str(), &call.input);
@@ -571,6 +631,14 @@ impl Runtime {
         let ask_rule = ev.and_then(Evaluation::rule_id);
         let (summary, description) = brief(tool, input);
         let line = permissions::summary(tool, input);
+        // Effect `overwatch` with the Overwatch able to decide: it has
+        // `permission_secs` (within the hook's deadline), then the user (F1).
+        let started = Instant::now();
+        let created = now_ms();
+        let deciding = ev
+            .filter(|e| e.effect == Effect::Overwatch && rec.id != crate::overwatch::ID)
+            .and_then(|_| self.overwatch_deciding_deadline(created))
+            .map(|t| t.min(created + budget.ceiling.as_millis() as u64));
         let item = match self.add_item(
             Some(&rec.id),
             "permission",
@@ -589,6 +657,7 @@ impl Runtime {
                 "always": always,
                 "project_id": subject.project_id,
                 "role": subject.role,
+                "deciding_until_ms": deciding,
             }),
             PRIORITY_BLOCKING,
         ) {
@@ -608,7 +677,7 @@ impl Runtime {
                 inbox_id: Some(item),
             })
         });
-        let waited = match self.wait_decision(item, budget, conn) {
+        let waited = match self.wait_deciding(item, deciding, started, budget, conn) {
             Some(w) => w,
             None => self.park(item),
         };
@@ -731,6 +800,20 @@ impl Runtime {
         scope: Option<&str>,
         message: Option<&str>,
     ) -> Result<Value> {
+        self.decide_as(id, decision, scope, message, "user")
+    }
+
+    /// [`Runtime::decide`] by `by` (FR-709 actor): `user`, or `overwatch`
+    /// for B3's `decide_permission` (which checks
+    /// [`Runtime::overwatch_deciding`] first).
+    pub fn decide_as(
+        &self,
+        id: u64,
+        decision: InboxDecision,
+        scope: Option<&str>,
+        message: Option<&str>,
+        by: &str,
+    ) -> Result<Value> {
         let mut item = self
             .store
             .read(|s| s.inbox.iter().find(|i| i.id == id).cloned())
@@ -773,7 +856,7 @@ impl Runtime {
         let status = if decision == InboxDecision::Dismiss { InboxStatus::Dismissed } else { InboxStatus::Decided };
         let claimed = self.store.write(|s| {
             let was = s.inbox.iter().find(|i| i.id == id).map(|i| i.status);
-            let closed = s.close_inbox(id, status, Some(word.clone()), "user").map(|i| {
+            let closed = s.close_inbox(id, status, Some(word.clone()), by).map(|i| {
                 if let Some(m) = message {
                     i.payload["reply"] = json!(m);
                 }
@@ -798,7 +881,7 @@ impl Runtime {
         }
         let target = item.payload.get("tool").and_then(Value::as_str).map(str::to_string);
         self.db.audit(
-            "user",
+            by,
             item.agent_id.as_deref(),
             &item.kind,
             target.as_deref(),
@@ -807,7 +890,7 @@ impl Runtime {
                    "tool_input": (item.kind == "permission").then(|| tool_input(&item)),
                    "tool_use_id": item.payload.get("tool_use_id")}),
         )?;
-        let mut result = json!({"item": id, "decision": word, "decided_by": "user"});
+        let mut result = json!({"item": id, "decision": word, "decided_by": by});
         if let Some((sc, sid, pattern)) = rule_spec {
             // Written to the policy file of its scope (FR-1308).
             let project = item.payload.get("project_id").and_then(Value::as_str);
@@ -850,7 +933,7 @@ impl Runtime {
                             self.unclaim_parked(id);
                             let err = format!("{e:#}");
                             let _ = self.db.audit(
-                                "user",
+                                by,
                                 Some(a),
                                 &item.kind,
                                 Some(tool),
@@ -858,7 +941,7 @@ impl Runtime {
                                 json!({"item": id, "tool": tool, "tool_input": tool_input(&item),
                                        "tool_use_id": item.payload.get("tool_use_id"), "error": err}),
                             );
-                            self.outcome_with(&item, "user", "failed", Some(&err));
+                            self.outcome_with(&item, by, "failed", Some(&err));
                             return Err(e);
                         }
                     }
@@ -886,7 +969,7 @@ impl Runtime {
                     result["effect"] = json!("stale");
                     result["stale_why"] = json!(why);
                     result["lifecycle"] = self.lifecycle(id);
-                    self.outcome(&item, "user", "stale");
+                    self.outcome(&item, by, "stale");
                     return Ok(result);
                 }
                 // Sent before the push starts: `open_pr` may end (pr_opened or
@@ -899,7 +982,7 @@ impl Runtime {
                 result["pr"] = json!("pushing and opening the PR");
                 result["effect"] = json!(effect);
                 result["lifecycle"] = self.lifecycle(id);
-                self.outcome(&item, "user", effect);
+                self.outcome(&item, by, effect);
                 return Ok(result);
             }
             ("gate", "push_pr_update", InboxDecision::Approve) => {
@@ -979,7 +1062,7 @@ impl Runtime {
         self.advance(id, stage);
         result["effect"] = json!(effect);
         result["lifecycle"] = self.lifecycle(id);
-        self.outcome(&item, "user", effect);
+        self.outcome(&item, by, effect);
         Ok(result)
     }
 
@@ -1217,11 +1300,11 @@ mod tests {
         let (_d, rt) = test_runtime(true);
         let default = crate::runtime::RuntimeConfig::new(crate::paths::AppPaths::new(std::path::PathBuf::from("/x")));
         assert_eq!(default.permission_hold, Duration::from_secs(300));
-        assert_eq!(rt.hold_budget(540_000), Duration::from_millis(300));
-        assert_eq!(rt.hold_budget(1_500), Duration::ZERO);
+        assert_eq!(rt.hold_budget(540_000).hold, Duration::from_millis(300));
+        assert_eq!(rt.hold_budget(1_500).hold, Duration::ZERO);
         rt.db.set_setting(HOLD_SECS_KEY, &json!(5)).unwrap();
-        assert_eq!(rt.hold_budget(540_000), Duration::from_secs(5));
-        assert_eq!(rt.hold_budget(4_000), Duration::from_secs(2), "always 2 s inside the deadline");
+        assert_eq!(rt.hold_budget(540_000).hold, Duration::from_secs(5));
+        assert_eq!(rt.hold_budget(4_000).hold, Duration::from_secs(2), "always 2 s inside the deadline");
     }
 
     #[test]
@@ -1616,7 +1699,7 @@ mod tests {
                 "tool_input": {"command": cmd}, "tool_use_id": format!("tu-{cmd}")}));
             let subject = self.subject(&rec);
             let ev = Evaluation { effect: Effect::User, source: Source::Default, rule: None };
-            self.permission_request_with(&rec, &Call::from_hook(&p), &subject, &ev, hold, None)
+            self.permission_request_with(&rec, &Call::from_hook(&p), &subject, &ev, Hold::of(hold), None)
         }
     }
 

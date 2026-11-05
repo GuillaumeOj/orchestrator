@@ -457,7 +457,7 @@ impl Runtime {
         let cx = self.run_ctx(&seat.run_id).ok()?;
         match seat.task.and_then(|t| self.db.task(t).ok().flatten()) {
             Some(task) => Some(self.task_turn(&cx, &task, rec, &self.branch_of(rec))),
-            None if crate::runtime::reserved_slot(rec) => Some(Self::lead_brief(&cx)),
+            None if crate::runtime::is_lead(rec) => Some(Self::lead_brief(&cx)),
             None => None,
         }
     }
@@ -886,6 +886,14 @@ impl Runtime {
             if retried.is_some_and(|t| now.saturating_sub(t) <= NO_PROGRESS_MS)
                 || !self.watchdog_once(format!("{id}:{start}:{what:?}"))
             {
+                continue;
+            }
+            // The Overwatch: interrupted at its ceiling, no card (its turn
+            // end counts the long turn, P4.4).
+            if id == crate::overwatch::ID {
+                if matches!(what, Watch::Ceiling(_)) {
+                    let _ = self.interrupt(&id);
+                }
                 continue;
             }
             let (text, detail) = match what {

@@ -116,8 +116,12 @@ pub struct Decision {
     pub thread: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_prev: Option<String>,
-    /// user | core (being delivered: not counted in the badge)
+    /// user | overwatch (deciding, P4.4) | core (being delivered): only
+    /// `user` counts in the badge and notifies.
     pub waits_on: &'static str,
+    /// A permission the Overwatch may still settle until then (F1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deciding_until_ms: Option<u64>,
     pub created_ms: u64,
     /// The store's agent, for routing (`subject.agent` too).
     #[serde(skip)]
@@ -140,7 +144,7 @@ impl Decision {
 
     /// Open, levels 1–3: the title badge counts it.
     pub fn counts(&self) -> bool {
-        self.is_open() && self.level <= 3
+        self.is_open() && self.level <= 3 && self.waits_on == "user"
     }
 }
 
@@ -302,6 +306,8 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
     let first_line = i.body.lines().next().unwrap_or("").to_string();
     let body_line = first_line.strip_prefix(&format!("{who}: ")).unwrap_or(&first_line).to_string();
     let open = i.open();
+    let deciding =
+        if open && i.kind == "permission" { crate::overwatch::deciding::deciding_until(&i.payload) } else { None };
     let (title, summary, context, actions): (String, String, Vec<Value>, Vec<Action>) = match (kind, gate) {
         ("permission", _) => {
             let tool = s(p, "tool");
@@ -535,7 +541,12 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
         lifecycle: Lifecycle::of(i),
         thread,
         thread_prev: None,
-        waits_on: if open { "user" } else { "core" },
+        waits_on: match (open, deciding) {
+            (true, Some(_)) => "overwatch",
+            (true, None) => "user",
+            _ => "core",
+        },
+        deciding_until_ms: deciding,
         created_ms: i.created_at_ms,
         agent: i.agent_id.clone(),
         synthesized: false,
@@ -574,6 +585,7 @@ fn synth(
         lifecycle: Lifecycle::open(),
         thread_prev: None,
         waits_on: "user",
+        deciding_until_ms: None,
         created_ms,
         agent: agent.map(str::to_string),
         synthesized: true,

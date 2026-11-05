@@ -233,6 +233,12 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         CtlRequest::RevokeRule { id, file } => {
             ok_or(rt.revoke_rule(&id, file.as_deref()).map(|done| json!({"revoked": done})))
         }
+        CtlRequest::Overwatch => CtlReply::ok(rt.overwatch_report()),
+        CtlRequest::OverwatchRestart => ok_or(rt.overwatch_restart().map(|()| json!({"ok": true}))),
+        CtlRequest::OverwatchSettings => CtlReply::ok(json!(rt.overwatch_settings())),
+        CtlRequest::SetOverwatchSettings { settings } => {
+            ok_or(rt.merge_overwatch_settings(&settings).and_then(|s| rt.set_overwatch_settings(s)).map(|s| json!(s)))
+        }
         CtlRequest::PolicyFiles => CtlReply::ok(json!(rt.policy_files())),
         CtlRequest::PolicyDefaults => CtlReply::ok(json!(rt.policy_defaults())),
         CtlRequest::SetPolicyDefaults { team, solo } => ok_or(rt.set_policy_defaults(&team, &solo).map(|d| json!(d))),

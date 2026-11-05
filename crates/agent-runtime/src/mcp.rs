@@ -29,6 +29,10 @@ impl Runtime {
         if !rec.role.may_call(&m.tool) {
             return (true, format!("{} is not one of your tools", m.tool), Value::Null);
         }
+        // The Overwatch's own tools check the hard lists themselves (B3).
+        if rec.id == crate::overwatch::ID {
+            return self.overwatch_tool(&rec, &m.tool, &m.arguments);
+        }
         // The hard deny list, a one-shot allow (an approved parked call),
         // then the policy rules (deny > user > overwatch > allow), for every
         // orchestrator tool. Each answer is audited (FR-709).

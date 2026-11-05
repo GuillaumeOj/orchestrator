@@ -57,6 +57,7 @@ usage: orchd [--home DIR] <command> [args]
   decide <item> approve|reject|always|reply|dismiss [--scope project|role|agent] [--message TEXT]
   rules [--project P] | rule add <project|role|agent> <id> <pattern> <allow|deny|overwatch|user> | rule revoke <id> [--file F]
   policy [--project P] [--test TOOL INPUT --role R]   the policy files and merged rules; --test: a call's effect and what decides it
+  overwatch [--json] [restart]                 the Overwatch: status, today's turns and p50 / p90 wake; restart: a fresh session
   audit [agent] | events [--agent A] [--kind PREFIX] [--limit N]
   search <query...> [--project ID]        full-text search over indexed transcripts
 
@@ -459,6 +460,20 @@ fn run() -> Result<()> {
             let project = a.opt("--project")?;
             a.done()?;
             print(request(&sock, CtlRequest::Rules { project })?)
+        }
+        "overwatch" => {
+            let json = a.flag("--json");
+            if a.flag("restart") {
+                a.done()?;
+                return print(request(&sock, CtlRequest::OverwatchRestart)?);
+            }
+            a.done()?;
+            let r = request(&sock, CtlRequest::Overwatch)?;
+            if !r.ok || json {
+                return print(r);
+            }
+            print!("{}", agent_runtime::overwatch::render_report(&r.data, &jiff::tz::TimeZone::system()));
+            Ok(())
         }
         "policy" => {
             let project = a.opt("--project")?;

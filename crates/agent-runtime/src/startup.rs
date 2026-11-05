@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::compile::SessionMode;
 use crate::inbox::PRIORITY_ALERT;
-use crate::runtime::{Live, Runtime, reserved_slot};
+use crate::runtime::{Live, Runtime};
 use crate::state::{AgentState, StopIntent};
 use crate::store::{AgentRecord, TurnStatus};
 
@@ -325,7 +325,7 @@ impl Runtime {
         let (old, new, seat) = self.store.write(|s| {
             let Some(a) = s.agents.get_mut(id) else { bail!("no agent {id}") };
             let Some(seat) = a.team.clone() else { bail!("agent {id} is not in a team") };
-            if reserved_slot(a) {
+            if crate::runtime::is_lead(a) {
                 bail!("the lead keeps its session");
             }
             let old = a.new_session();
