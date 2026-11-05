@@ -8,14 +8,14 @@
   import { clock } from '../../lib/format.js';
   import DecisionCard from './DecisionCard.svelte';
 
-  /** @type {{ item: any, expanded?: boolean, pulse?: boolean, ontoggle?: () => void, onopen?: (id: string) => void }} */
-  let { item, expanded = false, pulse = false, ontoggle = () => {}, onopen = () => {} } = $props();
+  /** @type {{ item: any, expanded?: boolean, pulse?: boolean, entries?: any, refok?: (ref: any) => boolean, ontoggle?: () => void, onopen?: (id: string) => void, onref?: (ref: any) => void }} */
+  let { item, expanded = false, pulse = false, entries = {}, refok = () => true, ontoggle = () => {}, onopen = () => {}, onref = () => {} } = $props();
   const line = $derived(item.line);
   const now = $derived(Math.max(now30(), Date.now()));
   const tail = $derived(tailText(line));
 </script>
 
-<article class="line" class:pulse class:leftopen={line.verb === 'left open'} aria-label={lineLabel(line, now)} data-line={item.id} data-verb={line.verb}>
+<article class="line" class:pulse class:leftopen={line.verb === 'left open'} aria-label={lineLabel(line, now)} data-line={item.id} data-entry={item.key} data-verb={line.verb}>
   <button class="row" aria-expanded={expanded} title={lineText(line)} onclick={ontoggle} data-line-toggle={item.key}>
     <span class="caret" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
     <span class="head"><span class="verb" class:warn={warnVerb(line.verb)}>{verbText(line.verb)}</span>{line.agent ? ` ${line.agent}` : ''}:</span>
@@ -24,7 +24,7 @@
     <span class="at muted">{clock(line.at_ms, now)}</span>
   </button>
   {#if expanded && item.d}
-    <DecisionCard d={item.d} {line} onact={onopen} />
+    <DecisionCard d={item.d} {line} {entries} {refok} {onref} onact={onopen} />
   {/if}
 </article>
 

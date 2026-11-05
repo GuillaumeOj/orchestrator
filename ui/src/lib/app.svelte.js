@@ -12,6 +12,7 @@ import { deriveKittyTheme } from './kittytheme.js';
 import * as L from './layout.js';
 import { runNowCost, runNowDialog } from './mission.js';
 import { clearDigest, needsYou, statusOf } from './now.svelte.js';
+import { canOpenSession, overwatchOf } from './overwatch.js';
 import { STATUS } from './status.js';
 import { runStateLabel } from './teams.js';
 import { TermPane } from './term.js';
@@ -33,7 +34,7 @@ const DOCK_HEIGHT = 0.45;
 /**
  * @typedef {{ rev: number, agents: Record<string, any>, runs: Record<string, any>,
  *   decisions: Record<string, any>, outcomes: any[], counts: { global: any, projects: any },
- *   chat?: { day: string | null, entries: Record<string, any> } }} Now
+ *   chat?: { day: string | null, entries: Record<string, any> }, overwatch?: any }} Now
  */
 
 export const app = $state({
@@ -72,6 +73,7 @@ export const app = $state({
   // given; { search: true } opens its search.
   chatFocus: null,
   chatFilter: 'all', // the chat's level filter (notes §5): never saved
+  chatDraft: '', // the Overwatch input's draft (P4.4 notes §2): kept while the app is open, never saved
   selectedProject: null,
   theme: null, // null = system, 'dark' | 'light' (user choice)
   themeRev: 0, // bumped when the applied theme may have changed (diagrams redraw)
@@ -384,8 +386,21 @@ export function focusCard(id = null) {
   askChat({ id });
 }
 
-/** ⌘L: the chat's search (D1: until the Overwatch's input exists). */
+/** `/` and the header button: the chat's search (P4.4 notes §2.3). */
 export const searchDecisions = () => askChat({ search: true });
+
+/** ⌘L: the Overwatch input, from anywhere; an open search closes (P4.4 notes §2.3). */
+export const askOverwatch = () => askChat({ ask: true });
+
+/** The Overwatch's session over the board, when it has one today (notes §1). */
+export function openOverwatch() {
+  const ow = overwatchOf(app.now);
+  if (!canOpenSession(ow)) return;
+  openSession(ow.agent ?? 'overwatch', { watch: true });
+}
+
+/** Restart (the strip, the palette, Settings): a fresh session; the caller shows a failure where it is (notes §8). */
+export const restartOverwatch = () => invoke('overwatch_restart');
 
 /** The chat's level filter (notes §5). */
 export const filterDecisions = (id) => askChat({ id: null, filter: id });
@@ -483,15 +498,16 @@ export function openProject(projectId) {
 }
 
 /** P2: a feature's pane (docs, tasks, team, timeline), one per feature. */
-export function openFeature(featureId, timeline = null) {
+export function openFeature(featureId, doc = null, anchor = null, timeline = null) {
   const existing = findPane((s) => s.type === 'feature' && s.featureId === featureId);
   if (existing) {
+    if (doc) app.panes[existing] = { ...app.panes[existing], doc, anchor };
     if (timeline) app.panes[existing].timeline = timeline;
     return focusPane(existing);
   }
   const f = features().find((x) => x.id === featureId);
   addPane(
-    { type: 'feature', featureId, projectId: f?.project_id, ...(timeline ? { timeline } : {}) },
+    { type: 'feature', featureId, projectId: f?.project_id, ...(doc ? { doc, anchor } : {}), ...(timeline ? { timeline } : {}) },
     app.layout ? 'tab' : 'right',
   );
 }
@@ -502,7 +518,7 @@ export function openDelivery(rec) {
   const ref = deliveryRef(rec);
   if (ref) return focusCard(ref);
   const f = features().find((x) => x.run?.id && x.run.id === rec?.run);
-  if (f) openFeature(f.id, 'delivery');
+  if (f) openFeature(f.id, null, null, 'delivery');
   else openAgent(rec?.agent);
 }
 
@@ -566,15 +582,26 @@ export const openMission = () => openSingleton('mission');
  * mode. One already open gets focus, in watch mode again (notes §1.10).
  * Without Mission control: as `openAgent`.
  */
-export function openSession(agentId) {
+export function openSession(agentId, { watch = false, keepLive = false } = {}) {
   const over = findPane((s) => s.type === 'mission');
-  if (!over) return openAgent(agentId);
+  // `watch`: never a live tab, so a keystroke can't reach the session by accident (it counts as an intervention).
+  if (!over && !watch) return openAgent(agentId);
   const existing = findPane((s) => s.type === 'agent' && s.agentId === agentId);
+  // `keepLive`: a tab you are typing in stays as it is (a link only brings it forward).
+  if (existing && keepLive && !app.panes[existing].watch) return focusPane(existing);
+  const from = app.focused;
   if (existing) {
-    Object.assign(app.panes[existing], { watch: true, over });
+    Object.assign(app.panes[existing], { watch: true, over: over ?? null, from });
     return focusPane(existing);
   }
-  return addDockPane({ type: 'agent', agentId, projectId: agent(agentId)?.project_id, watch: true, over });
+  return addDockPane({
+    type: 'agent',
+    agentId,
+    projectId: agent(agentId)?.project_id,
+    watch: true,
+    over: over ?? null,
+    from,
+  });
 }
 
 /** Take-over (⏎ or a click in watch mode): the PTY gets the keyboard. */
@@ -587,8 +614,10 @@ export function takeOver(paneId) {
 
 /** Esc in watch mode: back to the Mission control the session opened over; the dock tab stays. */
 export function leaveWatch(paneId) {
-  const over = app.panes[paneId]?.over;
+  const { over, from } = app.panes[paneId] ?? {};
+  // Back to where it was opened from: the board, else the pane that had the focus (the chat's status).
   if (over && app.panes[over]) focusPane(over);
+  else if (from && app.panes[from] && from !== paneId) focusPane(from);
   else openMission();
 }
 
@@ -1150,7 +1179,21 @@ export function commands() {
       },
     },
     { id: 'decisions', label: 'Show decisions', run: () => focusCard() },
+    { id: 'overwatch.ask', label: 'Ask the Overwatch', run: askOverwatch },
     { id: 'decisions.search', label: 'Search decisions', run: searchDecisions },
+    ...(app.now?.overwatch?.status === 'down'
+      ? [
+          {
+            id: 'overwatch.restart',
+            label: 'Restart the Overwatch',
+            run: () => restartOverwatch().catch((e) => toast(`Could not restart: ${errText(e)}`, { kind: 'error' })),
+          },
+        ]
+      : []),
+    ...(canOpenSession(overwatchOf(app.now))
+      ? [{ id: 'overwatch.session', label: "Open the Overwatch's session", run: openOverwatch }]
+      : []),
+    { id: 'overwatch.settings', label: 'Turn the Overwatch on or off', run: () => openSettings('overwatch') },
     ...FILTERS.map((f) => ({
       id: `decisions.filter.${f.id}`,
       label: `Filter decisions: ${f.label}`,

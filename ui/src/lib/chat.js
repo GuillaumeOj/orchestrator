@@ -5,6 +5,7 @@
 
 import { clock, plural } from './format.js';
 import { agentOf, cut, FILTERS } from './inbox.js';
+import { isDeciding } from './overwatch.js';
 import { decisionKind } from './status.js';
 
 /** A user's own decision collapses to its line this long after its effect (notes §2.1). */
@@ -191,8 +192,9 @@ function composedLine(d, now) {
 }
 
 /**
- * @typedef {{ type: 'morning' | 'card' | 'line' | 'fold' | 'group', key: string, id?: string, d?: any,
- *   entry?: any, line?: any, ref?: any, label?: string, n?: number, blocking?: number, open?: boolean }} Item
+ * @typedef {{ type: 'morning' | 'card' | 'line' | 'fold' | 'group' | 'text', key: string, id?: string, d?: any,
+ *   entry?: any, line?: any, ref?: any, label?: string, n?: number, blocking?: number, open?: boolean,
+ *   deciding?: boolean }} Item
  */
 
 /**
@@ -217,7 +219,7 @@ export function thread({
   filter = 'all',
   foldOpen = false,
   seen = new Map(),
-  isHeld = /** @type {(id: string) => boolean} */ (() => false),
+  isHeld = /** @type {(id: string, by?: string) => boolean} */ (() => false),
   now = Date.now(),
   memo = null,
 }) {
@@ -247,13 +249,15 @@ export function thread({
       if (d.level >= 4) return e.line ? 'line' : null;
       const lc = d.lifecycle ?? {};
       if (waiting.has(d.id) || CARD_STATES.has(lc.state)) return 'card';
+      // Settled by the Overwatch while you read it: it stays only while held (pointer or focus), no timer.
+      if (lc.state === 'effect' && lc.decided_by === 'overwatch' && isHeld(d.id, 'overwatch')) return 'card';
       if (lc.state === 'effect' && lc.decided_by === 'user') {
         const due = (lc.effect_at_ms ?? seen.get(d.id) ?? now) + COLLAPSE_MS;
         if (now < due) {
           nextDue = nextDue == null ? due : Math.min(nextDue, due);
           return 'card';
         }
-        if (isHeld(d.id)) return 'card';
+        if (isHeld(d.id, 'user')) return 'card';
       }
       return 'line';
     }
@@ -264,11 +268,18 @@ export function thread({
   const all = [];
   for (const e of entries) {
     if (e.kind === 'morning') all.push({ type: 'morning', key: e.id, entry: e });
+    // The user's messages and the Overwatch's replies (P4.4 api-contract §3.2).
+    if (e.kind === 'text' && (e.author === 'user' || e.author === 'overwatch'))
+      all.push({ type: 'text', key: e.id, entry: e });
     if (e.kind !== 'decision') continue;
     const d = decisions[e.decision] ?? null;
     const m = mode(e, d);
-    if (m === 'card') all.push({ type: 'card', key: e.id, id: d.id, d, entry: e });
-    else if (m === 'line') {
+    if (m === 'card') {
+      // Deciding (notes §3): the Overwatch may still settle it; the card hands over at the deadline.
+      const deciding = isDeciding(d, now);
+      if (deciding) nextDue = nextDue == null ? d.deciding_until_ms : Math.min(nextDue, d.deciding_until_ms);
+      all.push({ type: 'card', key: e.id, id: d.id, d, entry: e, deciding });
+    } else if (m === 'line') {
       const live = d && latest.get(d.id) === e;
       const line = e.line ?? composedLine(d, now);
       all.push({ type: 'line', key: e.id, id: e.decision, line, d: live ? d : (e.card ?? d), entry: e });
@@ -314,7 +325,9 @@ export function thread({
   const counts = Object.fromEntries(FILTERS.map((f) => [f.id, cardsAll.filter((i) => f.test(i.d)).length]));
   const test = (FILTERS.find((f) => f.id === filter) ?? FILTERS[0]).test;
   const shown = cardsAll.filter((i) => test(i.d));
-  const folded = new Set(shown.slice(FOLD_AT).map((i) => i.key));
+  // Deciding cards are never folded and do not count toward the 5 (notes F13).
+  const counted = shown.filter((i) => !i.deciding);
+  const folded = new Set(counted.slice(FOLD_AT).map((i) => i.key));
 
   /** @type {Item[]} */
   const items = [];
@@ -337,9 +350,9 @@ export function thread({
         group = 1;
         items.push({ type: 'group', key: 'group:carried', label: carriedLabel(chat?.day) });
       }
-      if (folded.size && it.key === shown[FOLD_AT].key) {
+      if (folded.size && it.key === counted[FOLD_AT].key) {
         flushToday();
-        const rest = shown.slice(FOLD_AT);
+        const rest = counted.slice(FOLD_AT);
         items.push({
           type: 'fold',
           key: 'fold',
@@ -354,7 +367,7 @@ export function thread({
     flushToday();
     items.push(it);
   }
-  return { items, cards, all: cardsAll, counts, shown: shown.length, nextDue };
+  return { items, cards, all: cardsAll, counts, shown: counted.length, nextDue };
 }
 
 /** "Still open from Sun 1 Nov": the day before today's thread (calendar arithmetic, no time zone). */
@@ -363,7 +376,13 @@ const carriedLabel = (day) => `Still open from ${day ? dayLabel(prevDay(day)) : 
 /** The same item as last time: what it renders from did not change. */
 function sameItem(a, b) {
   return (
-    a.type === b.type && a.id === b.id && a.d === b.d && a.line === b.line && a.ref === b.ref && a.entry === b.entry
+    a.type === b.type &&
+    a.id === b.id &&
+    a.d === b.d &&
+    a.line === b.line &&
+    a.ref === b.ref &&
+    a.entry === b.entry &&
+    a.deciding === b.deciding
   );
 }
 
@@ -471,11 +490,11 @@ export const entryLine = (e) => e.line ?? leftOpen(e);
 /** A past day's thread (notes §6.2): the morning line, then every decision as a line, oldest first. */
 export function pastItems(entries) {
   return [...(entries ?? [])]
-    .filter((e) => e.kind === 'morning' || e.kind === 'decision')
+    .filter((e) => e.kind === 'morning' || e.kind === 'decision' || e.kind === 'text')
     .sort(byTime)
     .map((e) =>
-      e.kind === 'morning'
-        ? { type: 'morning', key: e.id, entry: e }
+      e.kind === 'morning' || e.kind === 'text'
+        ? { type: e.kind === 'text' ? 'text' : 'morning', key: e.id, entry: e }
         : { type: 'line', key: e.id, id: e.decision, line: entryLine(e), d: e.card ?? null, entry: e },
     );
 }
