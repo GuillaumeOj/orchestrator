@@ -813,18 +813,26 @@ fn a_team_run_where_the_user_only_uses_the_cards_has_no_pane_intervention() {
     // it inside the turn that carries it (OWALLOW: the fake calls
     // decide_permission there; a later turn would be too late, F1).
     request(&sock, CtlRequest::Deliver { agent_id: lead.into(), text: "PERMIT pnpm add zod OWALLOW".into() }).unwrap();
-    wait_for("the card", 20, || open("permission").is_some());
-    let card = open("permission").unwrap();
-    assert_eq!(
-        (card["waits_on"].as_str(), card["payload"]["effect"].as_str()),
-        (Some("overwatch"), Some("overwatch")),
-        "{card}"
-    );
-    wait_for("the Overwatch's turn", 40, || screen(OW).contains("permission inbox-"));
-    let id = card["id"].as_str().unwrap().to_string();
-    wait_for("allowed", 30, || open("permission").is_none() && settled(lead));
-    let n: u64 = id.trim_start_matches("inbox-").parse().unwrap();
-    let item = core.rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).cloned().unwrap());
+    // Read from the store: a warm Overwatch can settle it before a `Now` poll
+    // ever sees the card open.
+    let zod = || {
+        core.rt.store.read(|s| {
+            s.inbox
+                .iter()
+                .rev()
+                .find(|i| i.kind == "permission" && i.payload.to_string().contains("pnpm add zod"))
+                .cloned()
+        })
+    };
+    wait_for("the card", 20, || zod().is_some());
+    let item = zod().unwrap();
+    assert_eq!(item.payload["effect"].as_str(), Some("overwatch"), "{}", item.payload);
+    let n = item.id;
+    wait_for("the Overwatch's turn", 40, || screen(OW).contains(&format!("permission inbox-{n}")));
+    wait_for("allowed", 30, || {
+        zod().is_some_and(|i| i.decided_by.is_some()) && open("permission").is_none() && settled(lead)
+    });
+    let item = zod().unwrap();
     assert_eq!(item.decided_by.as_deref(), Some("overwatch"));
 
     // 3. A question: answered by the Overwatch, citing the spec.

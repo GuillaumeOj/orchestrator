@@ -348,11 +348,7 @@ impl Runtime {
 
     /// The open decisions last published, oldest first (the notifier's).
     pub fn open_decisions(&self) -> Vec<Decision> {
-        // Before the first computation there is nothing cached: compute, so
-        // the notifier learns what is there at start (no burst later).
-        if lock(&self.now.state).last.is_none() {
-            self.now_pump(true);
-        }
+        self.now_catch_up();
         let st = lock(&self.now.state);
         let mut v: Vec<Decision> = st.decisions.values().filter(|d| d.is_open()).cloned().collect();
         v.sort_by_key(|d| (d.level, d.created_ms));
@@ -413,10 +409,7 @@ impl Runtime {
     /// The whole world (`now_snapshot`, `CtlRequest::Now`): `{rev, agents,
     /// runs, counts, decisions, outcomes}`.
     pub fn now_snapshot(&self) -> Value {
-        // Never behind the store: what changed since the last pump (a
-        // hand-over on the Overwatch's exit, a decision) is published first.
-        let first = lock(&self.now.state).last.is_none();
-        self.now_pump(first);
+        self.now_catch_up();
         let st = lock(&self.now.state);
         let empty = World::default();
         let w = st.last.as_ref().unwrap_or(&empty);
@@ -436,6 +429,16 @@ impl Runtime {
         self.refresh_undo(&mut entries);
         snap["chat"] = json!({"entries": entries, "day": day});
         snap
+    }
+
+    /// Before a read of the published world: what changed since the last
+    /// pump (a hand-over on the Overwatch's exit, a decision) is published
+    /// first, so a read never lags the store. Before the first computation
+    /// nothing is cached: computed in full, so the notifier learns what is
+    /// there at start (no burst later).
+    fn now_catch_up(&self) {
+        let first = lock(&self.now.state).last.is_none();
+        self.now_pump(first);
     }
 
     /// Recomputes and sends what changed: when a write changed the state,
