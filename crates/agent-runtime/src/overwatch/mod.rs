@@ -29,8 +29,6 @@ pub const ALLOCATION: &str = "overwatch";
 pub const ROLE_PROMPT: &str = include_str!("role.md");
 /// FR-407 turn ceiling; two turns in a row past it put it `down`.
 pub const TURN_CEILING_MIN: u32 = 10;
-/// A turn's event text past this goes to `messages/` (spec §5 "Cost").
-pub const TURN_TEXT_MAX: usize = 4_000;
 /// The briefing's cap (≈ 8 k tokens).
 pub const BRIEFING_MAX: usize = 32_000;
 /// A resume within this of the last turn finds the prompt cache warm.
@@ -279,8 +277,8 @@ pub struct Sched {
     pub seq: u64,
     /// The day `seq` and the session belong to.
     pub day: Option<String>,
-    /// `down` and why, since when.
-    pub down: Option<(String, u64)>,
+    /// `down` and why (its `since_ms` is `shown`'s).
+    pub down: Option<String>,
     /// Turns in a row past the ceiling.
     pub long_turns: u32,
     pub last_turn_end_ms: Option<u64>,
@@ -310,11 +308,6 @@ impl Sched {
     pub fn due(&self, now: u64, batch_ms: u64) -> bool {
         self.queue.iter().any(|e| e.kind.blocking())
             || self.queue.iter().map(|e| e.at_ms).min().is_some_and(|t| now >= t.saturating_add(batch_ms))
-    }
-
-    /// When the next batched turn is due (`None`: nothing queued, or due now).
-    pub fn next_due(&self, batch_ms: u64) -> Option<u64> {
-        self.queue.iter().map(|e| e.at_ms).min().map(|t| t.saturating_add(batch_ms))
     }
 
     /// The count `now.overwatch.events` shows.

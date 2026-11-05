@@ -342,11 +342,16 @@ pub(crate) fn hook_event_detail(event: &HookEvent, p: &HookPayload) -> Value {
     d
 }
 
-/// A team lead (the node that merges) and the Overwatch (P4.4): outside the
-/// process cap, never park-suspended or rotated. Not the tier alone, which a
+/// A team lead: the node that merges. Not the tier alone, which a
 /// specialist's role can also set to critical.
+pub(crate) fn is_lead(a: &AgentRecord) -> bool {
+    a.team.is_some() && a.role.orch_tools.iter().any(|t| t == "merge")
+}
+
+/// Outside the process cap, never park-suspended or rotated: a lead and the
+/// Overwatch (P4.4).
 pub(crate) fn reserved_slot(a: &AgentRecord) -> bool {
-    a.id == crate::overwatch::ID || (a.team.is_some() && a.role.orch_tools.iter().any(|t| t == "merge"))
+    is_lead(a) || a.id == crate::overwatch::ID
 }
 
 /// True (and restamps `last`) when `every` ms have passed since `last`.

@@ -452,11 +452,16 @@ impl Runtime {
         let (now, tz) = self.now.clock();
         let posted = !self.now.chat_posted().is_empty();
         // `now.overwatch` rides the event when its status changed (P4.4).
-        let ow = self.overwatch_status();
-        if self.overwatch.publish(&ow) {
+        // Its changes touch the topic; the forced pump (30 s) catches a
+        // reached limit. Not computed on an idle pump.
+        let overwatch = (force || topics.contains(crate::overwatch::TOPIC) || !self.overwatch.published())
+            .then(|| self.overwatch_status());
+        if let Some(ow) = &overwatch
+            && self.overwatch.publish(ow)
+        {
             topics.insert(crate::overwatch::TOPIC.into());
         }
-        let overwatch = topics.contains(crate::overwatch::TOPIC).then_some(ow);
+        let overwatch = overwatch.filter(|_| topics.contains(crate::overwatch::TOPIC));
         let mut st = lock(&self.now.state);
         let queue_moved = st.queue.as_ref() != Some(&queue_now);
         let team_moved = st.team.changes != Some(team_changes);

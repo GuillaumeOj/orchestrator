@@ -26,9 +26,16 @@ pub struct Overwatch {
     pumping: std::sync::Mutex<()>,
     /// The status `now` last sent.
     published: std::sync::Mutex<Option<StatusView>>,
+    /// The settings, read once and written through (hot paths read them).
+    settings: std::sync::Mutex<Option<Settings>>,
 }
 
 impl Overwatch {
+    /// A status was sent already.
+    pub(crate) fn published(&self) -> bool {
+        self.published.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    }
+
     /// Records `v` as sent; true when it differs from the last one.
     pub(crate) fn publish(&self, v: &StatusView) -> bool {
         let mut p = self.published.lock().unwrap_or_else(|e| e.into_inner());
@@ -52,12 +59,17 @@ impl Runtime {
     // ------------------------------------------------------------ settings
 
     pub fn overwatch_settings(&self) -> Settings {
-        self.db
-            .setting(super::SETTINGS_KEY)
-            .ok()
-            .flatten()
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default()
+        let mut cache = self.overwatch.settings.lock().unwrap_or_else(|e| e.into_inner());
+        cache
+            .get_or_insert_with(|| {
+                self.db
+                    .setting(super::SETTINGS_KEY)
+                    .ok()
+                    .flatten()
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default()
+            })
+            .clone()
     }
 
     /// The settings with `patch`'s fields over the current ones.
@@ -79,6 +91,7 @@ impl Runtime {
         s.check(hold).map_err(|e| anyhow!(e))?;
         let was = self.overwatch_settings();
         self.db.set_setting(super::SETTINGS_KEY, &serde_json::to_value(&s)?)?;
+        *self.overwatch.settings.lock().unwrap_or_else(|e| e.into_inner()) = Some(s.clone());
         if was.enabled && !s.enabled {
             self.overwatch_stop_session();
             // A turn cut short by the kill never ends: it must not hold the
@@ -163,7 +176,7 @@ impl Runtime {
             let st = self.ow();
             (st.down.clone(), st.in_flight.is_some(), !st.queue.is_empty(), st.events())
         };
-        if let Some((why, _)) = down {
+        if let Some(why) = down {
             return (Status::Down, Some(why), events);
         }
         if let Some(w) = self.overwatch_paused() {
@@ -247,7 +260,8 @@ impl Runtime {
 
     fn overwatch_save_seq(&self, day: &str, seq: u64) {
         let dir = self.overwatch_day_dir(day);
-        let _ = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join(SEQ_FILE), seq.to_string()));
+        let _ = std::fs::create_dir_all(&dir)
+            .and_then(|()| crate::compile::write_atomic(&dir.join(SEQ_FILE), seq.to_string().as_bytes()));
     }
 
     /// The user messages kept while it was `off` / `down` go back in the
@@ -527,8 +541,7 @@ impl Runtime {
     /// only ends the turn (the session waits at its prompt: the next turn
     /// goes to it). A reached limit puts it `down` too.
     pub(crate) fn overwatch_failed(&self, error: &str, now: u64) {
-        let e = error.to_lowercase();
-        if ["login", "auth", "401", "credential"].iter().any(|k| e.contains(k)) {
+        if crate::registry::looks_like_auth(error) || error.to_ascii_lowercase().contains("login") {
             self.overwatch_down(why::LOGIN);
             return;
         }
@@ -548,13 +561,12 @@ impl Runtime {
     /// (user messages kept), the turn in flight abandoned, every deciding
     /// permission handed over to the user at once.
     pub(crate) fn overwatch_down(&self, why: &str) {
-        let now = self.now.clock().0;
         {
             let mut st = self.ow();
             if st.down.is_some() {
                 return;
             }
-            st.down = Some((why.to_string(), now));
+            st.down = Some(why.to_string());
         }
         self.overwatch_abandon_turn();
         self.overwatch_drop_events();
@@ -647,16 +659,13 @@ impl Runtime {
     fn overwatch_turns_stored(&self) -> Vec<Value> {
         let (now, tz) = self.now.clock();
         let midnight = crate::digest::today(now, &tz).0;
-        let mut v: Vec<Value> = self
-            .db
-            .events(midnight, Some(ID), Some("overwatch.turn"), 1_000)
+        self.db
+            .events_of_kinds_in(midnight, u64::MAX, &["overwatch.turn"])
             .unwrap_or_default()
             .into_iter()
-            .filter(|e| e.kind == "overwatch.turn")
-            .map(|e| e.detail)
-            .collect();
-        v.reverse();
-        v
+            .filter(|(e, _)| e.agent_id.as_deref() == Some(ID))
+            .map(|(e, _)| e.detail)
+            .collect()
     }
 }
 

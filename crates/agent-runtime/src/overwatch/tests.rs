@@ -459,7 +459,7 @@ fn a_long_batch_goes_to_messages_which_it_may_read() {
     }
     rt.overwatch_pump_at(t0());
     let turn = rt.store.read(|s| s.turns.iter().find(|t| t.agent_id == ID).cloned().unwrap());
-    assert!(turn.body.len() > TURN_TEXT_MAX, "{}", turn.body.len());
+    assert!(turn.body.chars().count() > crate::delivery::MAX_PASTE_CHARS, "{}", turn.body.len());
     // The delivery writes it to the Overwatch's own messages/ (FR-206)…
     let agent_dir = rt.cfg.paths.agent_dir(ID);
     let p = crate::delivery::prepare_many(&[(turn.id.as_str(), turn.body.as_str())], &agent_dir);

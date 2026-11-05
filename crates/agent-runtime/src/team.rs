@@ -457,7 +457,7 @@ impl Runtime {
         let cx = self.run_ctx(&seat.run_id).ok()?;
         match seat.task.and_then(|t| self.db.task(t).ok().flatten()) {
             Some(task) => Some(self.task_turn(&cx, &task, rec, &self.branch_of(rec))),
-            None if crate::runtime::reserved_slot(rec) => Some(Self::lead_brief(&cx)),
+            None if crate::runtime::is_lead(rec) => Some(Self::lead_brief(&cx)),
             None => None,
         }
     }

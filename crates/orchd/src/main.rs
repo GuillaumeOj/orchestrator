@@ -463,9 +463,7 @@ fn run() -> Result<()> {
         }
         "overwatch" => {
             let json = a.flag("--json");
-            let restart = a.0.first().is_some_and(|x| x == "restart");
-            if restart {
-                a.0.remove(0);
+            if a.flag("restart") {
                 a.done()?;
                 return print(request(&sock, CtlRequest::OverwatchRestart)?);
             }

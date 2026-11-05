@@ -707,7 +707,7 @@ struct Ctx<'a> {
 }
 
 fn is_lead(a: &AgentRecord) -> bool {
-    crate::runtime::reserved_slot(a)
+    crate::runtime::is_lead(a)
 }
 
 /// Between turns: idle, or suspended/killed with its session kept.
