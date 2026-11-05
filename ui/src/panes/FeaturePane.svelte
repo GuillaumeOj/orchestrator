@@ -74,7 +74,10 @@
       // Default the message box to the lead's node, whatever its id.
       if (!to || !v.team?.nodes?.some((n) => n.id === to)) to = v.team?.nodes?.find((n) => n.is_lead)?.id ?? null;
       const names = v.docs ?? [];
-      if (names.length && (!doc.name || !names.includes(doc.name))) await showDoc(names[0]);
+      // A doc asked for by name (the Overwatch's source links) wins over the first one.
+      const want = spec.doc && names.includes(spec.doc) ? spec.doc : null;
+      if (want && doc.name !== want) await showDoc(want);
+      else if (names.length && (!doc.name || !names.includes(doc.name))) await showDoc(names[0]);
     } catch (e) {
       error = errText(e);
     }
@@ -125,6 +128,12 @@
       doc = { name, text: `(${errText(e)})` };
     }
   }
+
+  // The same pane asked for another doc (a source link while it is open).
+  $effect(() => {
+    const want = spec?.doc;
+    if (want && v?.docs?.includes(want) && untrack(() => doc.name) !== want) showDoc(want);
+  });
 
   /** A link to a sibling doc (`api-contract.md#…`) switches the tab. */
   function openSibling(name) {

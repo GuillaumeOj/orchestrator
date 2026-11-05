@@ -13,7 +13,7 @@ export const CHORDS = {
   'cmd+w': 'pane.close',
   'cmd+shift+t': 'pane.reopen',
   'cmd+shift+i': 'decisions',
-  'cmd+l': 'decisions.search',
+  'cmd+l': 'overwatch.ask',
   'cmd+j': 'dock.toggle',
   'cmd+,': 'settings',
   ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`cmd+${n}`, `pane.focus.${n}`])),

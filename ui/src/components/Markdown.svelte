@@ -3,15 +3,18 @@
   // agent-written text can't inject markup (specs-rendering §3.2, D1). Raw
   // HTML shows as muted text, except <br>; ```mermaid fences are diagrams.
   // `feature` enables relative images (feature_asset); `ondoc(name, anchor)`
-  // opens a sibling .md doc, without it such links are plain text.
+  // opens a sibling .md doc, without it such links are plain text. `onref(ref)`
+  // (the chat's Overwatch text, P4.4) opens a source link: a doc path, `chat:<id>`,
+  // `agent:<id>`, `run:<id>`; `refok(ref)` false = no longer available, plain text.
   import { tick } from 'svelte';
   import { openUrl } from '../lib/app.svelte.js';
   import { frontPairs, linkKind, prepare } from '../lib/markdown.js';
+  import { refKind } from '../lib/overwatch.js';
   import CodeBlock from './CodeBlock.svelte';
   import Diagram from './Diagram.svelte';
   import MdImage from './MdImage.svelte';
 
-  let { text = '', feature = null, ondoc = null } = $props();
+  let { text = '', feature = null, ondoc = null, onref = null, refok = () => true } = $props();
   const doc = $derived(prepare(text));
   // Heading and footnote ids are prefixed per instance: two docs on screen don't clash.
   const uid = $props.id();
@@ -130,9 +133,10 @@
 {/snippet}
 
 {#snippet link(url, title, children)}
+  {@const ref = onref ? refKind(url) : null}
   {@const k = linkKind(url, !!ondoc)}
   <!-- hrefs come from the classified target, never the raw string. -->
-  {#if k.kind === 'external'}<a class="ext" href={k.url} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}<span class="arrow" aria-hidden="true">↗</span></a>{:else if k.kind === 'anchor' || k.kind === 'doc'}<a href={k.kind === 'anchor' ? `#${k.anchor}` : k.name} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}</a>{:else if k.kind === 'repo'}<span class="repo" title={k.path}>{@render inlines(children)}</span>{:else}<span {title}>{@render inlines(children)}</span>{/if}
+  {#if ref && !refok(ref)}<span class="gone" title="No longer available">{@render inlines(children)}</span>{:else if ref}<button class="ref" {title} data-ref={ref.kind} onclick={() => onref(ref)}>{@render inlines(children, true)}<span class="arrow" aria-hidden="true">↗</span></button>{:else if k.kind === 'external'}<a class="ext" href={k.url} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}<span class="arrow" aria-hidden="true">↗</span></a>{:else if k.kind === 'anchor' || k.kind === 'doc'}<a href={k.kind === 'anchor' ? `#${k.anchor}` : k.name} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}</a>{:else if k.kind === 'repo'}<span class="repo" title={k.path}>{@render inlines(children)}</span>{:else}<span {title}>{@render inlines(children)}</span>{/if}
 {/snippet}
 
 
@@ -208,6 +212,22 @@
   .arrow {
     margin-left: 0.15em;
     font-size: 0.8em;
+  }
+  .ref {
+    display: inline;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--color-accent-default);
+    font: inherit;
+    text-align: inherit;
+  }
+  .ref:hover {
+    text-decoration: underline;
+  }
+  .gone {
+    color: var(--color-text-muted);
+    cursor: help;
   }
   .repo {
     color: var(--color-text-muted);

@@ -33,7 +33,7 @@ const DOCK_HEIGHT = 0.45;
 /**
  * @typedef {{ rev: number, agents: Record<string, any>, runs: Record<string, any>,
  *   decisions: Record<string, any>, outcomes: any[], counts: { global: any, projects: any },
- *   chat?: { day: string | null, entries: Record<string, any> } }} Now
+ *   chat?: { day: string | null, entries: Record<string, any> }, overwatch?: any }} Now
  */
 
 export const app = $state({
@@ -72,6 +72,7 @@ export const app = $state({
   // given; { search: true } opens its search.
   chatFocus: null,
   chatFilter: 'all', // the chat's level filter (notes §5): never saved
+  chatDraft: '', // the Overwatch input's draft (P4.4 notes §2): kept while the app is open, never saved
   selectedProject: null,
   theme: null, // null = system, 'dark' | 'light' (user choice)
   themeRev: 0, // bumped when the applied theme may have changed (diagrams redraw)
@@ -384,8 +385,28 @@ export function focusCard(id = null) {
   askChat({ id });
 }
 
-/** ⌘L: the chat's search (D1: until the Overwatch's input exists). */
+/** `/` and the header button: the chat's search (P4.4 notes §2.3). */
 export const searchDecisions = () => askChat({ search: true });
+
+/** ⌘L: the Overwatch input, from anywhere; an open search closes (P4.4 notes §2.3). */
+export const askOverwatch = () => askChat({ ask: true });
+
+/** The Overwatch's session over the board, when it has one today (notes §1). */
+export function openOverwatch() {
+  const ow = app.now?.overwatch;
+  if (!ow?.has_session || ow.status === 'off') return;
+  openSession(ow.agent ?? 'overwatch');
+}
+
+/** Restart (the strip, the palette): a fresh session; the toast says when it is back (notes §8). */
+export async function restartOverwatch() {
+  try {
+    await invoke('overwatch_restart');
+  } catch (e) {
+    toast(`Could not restart: ${errText(e)}`, { kind: 'error' });
+    throw e;
+  }
+}
 
 /** The chat's level filter (notes §5). */
 export const filterDecisions = (id) => askChat({ id: null, filter: id });
@@ -483,15 +504,16 @@ export function openProject(projectId) {
 }
 
 /** P2: a feature's pane (docs, tasks, team, timeline), one per feature. */
-export function openFeature(featureId, timeline = null) {
+export function openFeature(featureId, doc = null, timeline = null) {
   const existing = findPane((s) => s.type === 'feature' && s.featureId === featureId);
   if (existing) {
+    if (doc) app.panes[existing] = { ...app.panes[existing], doc };
     if (timeline) app.panes[existing].timeline = timeline;
     return focusPane(existing);
   }
   const f = features().find((x) => x.id === featureId);
   addPane(
-    { type: 'feature', featureId, projectId: f?.project_id, ...(timeline ? { timeline } : {}) },
+    { type: 'feature', featureId, projectId: f?.project_id, ...(doc ? { doc } : {}), ...(timeline ? { timeline } : {}) },
     app.layout ? 'tab' : 'right',
   );
 }
@@ -502,7 +524,7 @@ export function openDelivery(rec) {
   const ref = deliveryRef(rec);
   if (ref) return focusCard(ref);
   const f = features().find((x) => x.run?.id && x.run.id === rec?.run);
-  if (f) openFeature(f.id, 'delivery');
+  if (f) openFeature(f.id, null, 'delivery');
   else openAgent(rec?.agent);
 }
 
@@ -1150,7 +1172,15 @@ export function commands() {
       },
     },
     { id: 'decisions', label: 'Show decisions', run: () => focusCard() },
+    { id: 'overwatch.ask', label: 'Ask the Overwatch', run: askOverwatch },
     { id: 'decisions.search', label: 'Search decisions', run: searchDecisions },
+    ...(app.now?.overwatch?.status === 'down'
+      ? [{ id: 'overwatch.restart', label: 'Restart the Overwatch', run: () => restartOverwatch().catch(() => {}) }]
+      : []),
+    ...(app.now?.overwatch?.has_session && app.now.overwatch.status !== 'off'
+      ? [{ id: 'overwatch.session', label: "Open the Overwatch's session", run: openOverwatch }]
+      : []),
+    { id: 'overwatch.settings', label: 'Turn the Overwatch on or off', run: () => openSettings('overwatch') },
     ...FILTERS.map((f) => ({
       id: `decisions.filter.${f.id}`,
       label: `Filter decisions: ${f.label}`,
