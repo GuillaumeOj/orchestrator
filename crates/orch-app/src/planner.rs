@@ -114,6 +114,9 @@ pub struct PlannerView {
     pub now_ms: i64,
     pub shadow: bool,
     pub reserve_pct: f64,
+    /// pp of the week so far spent by the Overwatch (its allocation draws on the reserve); absent without one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overwatch_pp: Option<f64>,
     pub snapshot: governor::ForecastSnapshot,
     pub curve: Vec<CurvePoint>,
     pub actual: Vec<HistoryPoint>,
@@ -333,6 +336,11 @@ pub fn build(
         now_ms: ms(now),
         shadow: plan.shadow_mode,
         reserve_pct: plan.reserve_pct,
+        overwatch_pp: plan
+            .allocations
+            .iter()
+            .find(|a| a.id.0 == agent_runtime::overwatch::ALLOCATION)
+            .map(|a| gov.allocation_usage_pct(&a.id)),
         actual: actual(history, &snap, start, now),
         snapshot: snap,
         curve: points,
