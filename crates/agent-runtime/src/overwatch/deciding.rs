@@ -112,17 +112,25 @@ impl Runtime {
     /// permission and a question wake it; other decisions waiting on the
     /// user (gates, user-only permissions, budget, startup) are batched for
     /// annotation. Its own items and alerts are not.
-    pub(crate) fn overwatch_on_added(&self, id: u64, agent: Option<&str>, kind: &str, body: &str, payload: &Value) {
+    /// `first_line`: the item body's; `deciding`: its deciding mark.
+    pub(crate) fn overwatch_on_added(
+        &self,
+        id: u64,
+        agent: Option<&str>,
+        kind: &str,
+        first_line: &str,
+        deciding: Option<u64>,
+    ) {
         if agent == Some(ID) {
             return;
         }
         let ev_kind = match kind {
-            "permission" if deciding_until(payload).is_some() => Kind::Permission,
+            "permission" if deciding.is_some() => Kind::Permission,
             "question" => Kind::Question,
             "permission" | "gate" | "budget" | "startup" => Kind::DecisionOpen,
             _ => return,
         };
-        let mut summary = crate::team::cut(body.lines().next().unwrap_or(""), 200);
+        let mut summary = crate::team::cut(first_line, 200);
         if ev_kind == Kind::Permission {
             summary.push_str(" · effect overwatch");
         }
@@ -130,7 +138,7 @@ impl Runtime {
         ev.decision = Some(crate::decision::decision_id(kind, id));
         ev.agent = agent.map(str::to_string);
         ev.run = agent.and_then(|a| self.store.read(|s| s.agents.get(a)?.team.as_ref().map(|t| t.run_id.clone())));
-        ev.deadline_ms = deciding_until(payload);
+        ev.deadline_ms = deciding;
         self.overwatch_enqueue(ev);
     }
 

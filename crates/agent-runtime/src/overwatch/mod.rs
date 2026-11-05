@@ -72,7 +72,8 @@ impl Settings {
         if self.model.trim().is_empty() || self.model.chars().any(char::is_whitespace) || self.model.starts_with('-') {
             return Err("model: an alias (sonnet, opus, haiku) or a model id".into());
         }
-        if self.permission_secs == 0 || self.permission_secs >= hold_secs {
+        // No hold (0): permissions go to the pane, nothing waits on it.
+        if self.permission_secs == 0 || (hold_secs > 0 && self.permission_secs >= hold_secs) {
             return Err(format!("permission_secs must be between 1 and the hold ({hold_secs} s), exclusive"));
         }
         if self.batch_secs > 3_600 || self.idle_secs > 3_600 {

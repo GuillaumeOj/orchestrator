@@ -81,16 +81,17 @@ impl Runtime {
         self.db.set_setting(super::SETTINGS_KEY, &serde_json::to_value(&s)?)?;
         if was.enabled && !s.enabled {
             self.overwatch_stop_session();
+            // A turn cut short by the kill never ends: it must not hold the
+            // scheduler once it is on again.
+            self.overwatch_abandon_turn();
             self.overwatch_drop_events();
             self.overwatch_hand_over_all();
         } else if !was.enabled && s.enabled {
-            let mut st = self.ow();
-            st.fresh = true;
-            let pending = std::mem::take(&mut st.pending_user);
-            st.queue.extend(pending);
-        } else if was.model != s.model {
+            self.ow().fresh = true;
+            self.overwatch_requeue_pending();
+        } else if was.model != s.model && self.store.read(|st| st.agents.contains_key(ID)) && self.live(ID).is_none() {
             // The next session takes it; a live one keeps its model for the day.
-            self.ow().fresh = self.store.read(|st| st.agents.contains_key(ID)) && self.live(ID).is_none();
+            self.ow().fresh = true;
         }
         self.overwatch_touch();
         self.overwatch_wake();
@@ -206,6 +207,7 @@ impl Runtime {
     pub fn overwatch_enqueue(&self, ev: Event) -> Option<String> {
         let (now, day) = self.overwatch_today();
         let enabled = self.overwatch_settings().enabled;
+        let blocking = ev.kind.blocking();
         let id = {
             let mut st = self.ow();
             if !enabled || st.down.is_some() {
@@ -220,16 +222,19 @@ impl Runtime {
             let id = st.push(ev, now);
             let seq = st.seq;
             drop(st);
-            let dir = self.overwatch_day_dir(&day);
-            let _ = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join(SEQ_FILE), seq.to_string()));
+            self.overwatch_save_seq(&day, seq);
             id
         };
         self.overwatch_touch();
-        self.overwatch_wake();
+        // Batched events wait for the tick; only a blocking one wakes it now.
+        if blocking {
+            self.overwatch_wake();
+        }
         Some(id)
     }
 
-    /// A day's first event: its ids follow the day folder's last one.
+    /// A day's first event: its ids follow the day folder's last one, and
+    /// its turns so far (an app restart mid-day) are read back.
     fn overwatch_seed(&self, st: &mut Sched, day: &str) {
         if st.day.as_deref() == Some(day) {
             return;
@@ -237,7 +242,30 @@ impl Runtime {
         let read = std::fs::read_to_string(self.overwatch_day_dir(day).join(SEQ_FILE)).ok();
         st.seq = read.and_then(|s| s.trim().parse().ok()).unwrap_or(0);
         st.day = Some(day.to_string());
-        st.turns.clear();
+        st.turns = self.overwatch_turns_stored();
+    }
+
+    fn overwatch_save_seq(&self, day: &str, seq: u64) {
+        let dir = self.overwatch_day_dir(day);
+        let _ = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join(SEQ_FILE), seq.to_string()));
+    }
+
+    /// The user messages kept while it was `off` / `down` go back in the
+    /// queue, each with a new id of the day (a kept message may never have
+    /// had one).
+    fn overwatch_requeue_pending(&self) {
+        let (now, day) = self.overwatch_today();
+        let mut st = self.ow();
+        if st.pending_user.is_empty() {
+            return;
+        }
+        self.overwatch_seed(&mut st, &day);
+        for ev in std::mem::take(&mut st.pending_user) {
+            st.push(ev, now);
+        }
+        let seq = st.seq;
+        drop(st);
+        self.overwatch_save_seq(&day, seq);
     }
 
     /// The user's message (`chat_send`, P4.3's entry `chat`): a blocking
@@ -295,6 +323,8 @@ impl Runtime {
             return;
         }
         if self.overwatch_paused().is_some() {
+            // Paused (Pause all, or a limit reached) decides nothing (F1).
+            self.overwatch_hand_over_all();
             self.overwatch_touch();
             return;
         }
@@ -389,15 +419,13 @@ impl Runtime {
             let mut st = self.ow();
             st.long_turns = 0;
             st.last_turn_end_ms = None;
-            std::mem::take(&mut st.pending_user)
+            st.pending_user.clone()
         };
         let text = self.overwatch_briefing(day, now, &pending);
         crate::compile::write_atomic(&dir.join("briefing.md"), text.as_bytes())?;
         self.event(ID, "overwatch.session", json!({"day": day, "dir": dir.display().to_string()}));
         // Messages kept while it was down go in this first turn.
-        if !pending.is_empty() {
-            self.ow().queue.extend(pending);
-        }
+        self.overwatch_requeue_pending();
         Ok(())
     }
 
@@ -496,12 +524,20 @@ impl Runtime {
     }
 
     /// An error on its turn: a login error puts it `down`; another API error
-    /// only ends the turn. A reached limit puts it `down` too.
-    pub(crate) fn overwatch_failed(&self, error: &str) {
+    /// only ends the turn (the session waits at its prompt: the next turn
+    /// goes to it). A reached limit puts it `down` too.
+    pub(crate) fn overwatch_failed(&self, error: &str, now: u64) {
         let e = error.to_lowercase();
-        if ["login", "auth", "401", "oauth", "credential"].iter().any(|k| e.contains(k)) {
+        if ["login", "auth", "401", "credential"].iter().any(|k| e.contains(k)) {
             self.overwatch_down(why::LOGIN);
+            return;
         }
+        let _ = self.store.write(|s| {
+            if let Some(a) = s.agents.get_mut(ID).filter(|a| a.tracker.state == AgentState::Error) {
+                a.tracker.state = AgentState::Idle;
+            }
+        });
+        self.overwatch_turn_ended(now);
     }
 
     pub(crate) fn overwatch_rate_limited(&self) {
@@ -513,23 +549,28 @@ impl Runtime {
     /// permission handed over to the user at once.
     pub(crate) fn overwatch_down(&self, why: &str) {
         let now = self.now.clock().0;
-        let lost = {
+        {
             let mut st = self.ow();
             if st.down.is_some() {
                 return;
             }
             st.down = Some((why.to_string(), now));
-            st.in_flight.take()
-        };
-        if let Some(t) = lost {
-            // A user message in the lost turn is kept for the restart.
-            let mut st = self.ow();
-            st.pending_user.extend(t.events.into_iter().filter(|e| e.kind == Kind::UserMessage));
         }
+        self.overwatch_abandon_turn();
         self.overwatch_drop_events();
         self.overwatch_hand_over_all();
         self.event(ID, "overwatch.down", json!({"why": why}));
         self.overwatch_touch();
+    }
+
+    /// The turn in flight will never end (killed, down): dropped, its
+    /// permissions handed over, a user message in it kept for the restart.
+    fn overwatch_abandon_turn(&self) {
+        let Some(t) = self.ow().in_flight.take() else { return };
+        for d in carried_permissions(&t) {
+            self.overwatch_hand_over(d);
+        }
+        self.ow().pending_user.extend(t.events.into_iter().filter(|e| e.kind == Kind::UserMessage));
     }
 
     fn overwatch_drop_events(&self) {
@@ -545,18 +586,14 @@ impl Runtime {
             anyhow::bail!("the Overwatch is off: turn it on in Settings");
         }
         self.overwatch_stop_session();
-        let carried = {
+        {
             let mut st = self.ow();
             st.down = None;
             st.long_turns = 0;
             st.fresh = true;
-            st.in_flight.take()
-        };
-        if let Some(t) = carried {
-            for d in carried_permissions(&t) {
-                self.overwatch_hand_over(d);
-            }
         }
+        // A user message in the turn cut short goes to the fresh session.
+        self.overwatch_abandon_turn();
         self.event(ID, "overwatch.restart", json!({}));
         // Its own turn reads the briefing even with nothing queued.
         let mut ev = Event::new(Kind::UserMessage, "restarted by the user: read briefing.md and catch up with world()");
@@ -593,16 +630,23 @@ impl Runtime {
         })
     }
 
-    /// Today's `overwatch.turn` events (this process's, else the store's).
+    /// Today's `overwatch.turn` events (kept since the day's first event,
+    /// else the store's).
     fn overwatch_turns_today(&self) -> Vec<Value> {
-        let (now, tz) = self.now.clock();
-        let (midnight, day) = crate::digest::today(now, &tz);
+        let day = self.overwatch_today().1;
         {
             let st = self.ow();
-            if st.day.as_deref() == Some(day.as_str()) && !st.turns.is_empty() {
+            if st.day.as_deref() == Some(day.as_str()) {
                 return st.turns.clone();
             }
         }
+        self.overwatch_turns_stored()
+    }
+
+    /// Today's `overwatch.turn` events in the store, oldest first.
+    fn overwatch_turns_stored(&self) -> Vec<Value> {
+        let (now, tz) = self.now.clock();
+        let midnight = crate::digest::today(now, &tz).0;
         let mut v: Vec<Value> = self
             .db
             .events(midnight, Some(ID), Some("overwatch.turn"), 1_000)

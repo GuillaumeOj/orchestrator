@@ -1630,9 +1630,9 @@ impl Runtime {
             Effect::Failed { error } if id == crate::overwatch::ID => {
                 // No card (it raises no notification): a login error puts it down.
                 self.event(id, "overwatch.failed", json!({"error": error}));
-                self.overwatch_failed(&error);
                 let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
                 self.handle_releases(releases);
+                self.overwatch_failed(&error, self.now.clock().0);
             }
             Effect::Failed { error } => {
                 // `alert: api_error` puts the agent in error (attention rule 1).

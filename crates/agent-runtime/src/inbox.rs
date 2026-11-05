@@ -282,7 +282,8 @@ impl Runtime {
         let subject = self.subject_now(agent, payload.get("project").and_then(Value::as_str));
         let thread = crate::decision::thread_of(&subject);
         // The Overwatch's event (after the store write: the card is posted first).
-        let event = (body.clone(), payload.clone());
+        let event =
+            (body.lines().next().unwrap_or("").to_string(), crate::overwatch::deciding::deciding_until(&payload));
         let id = self.store.write(|s| {
             let id = s.add_inbox_item(agent, kind, body, payload, priority);
             if let Some(i) = s.inbox.iter_mut().find(|i| i.id == id) {
@@ -291,7 +292,7 @@ impl Runtime {
             id
         })?;
         self.event(agent.unwrap_or("-"), "inbox_added", json!({"id": id, "kind": kind}));
-        self.overwatch_on_added(id, agent, kind, &event.0, &event.1);
+        self.overwatch_on_added(id, agent, kind, &event.0, event.1);
         Ok(id)
     }
 

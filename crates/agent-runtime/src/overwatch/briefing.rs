@@ -18,9 +18,10 @@ fn cap(sections: Vec<(String, String)>, max: usize) -> String {
         }
         out.push_str(&head);
         if body.len() > room {
-            let cut: String = body.chars().take(room).collect();
-            let cut = cut.rsplit_once('\n').map_or(cut.as_str(), |(a, _)| a).to_string();
-            out.push_str(&cut);
+            // `room` is in bytes, like the cap: cut at a char boundary.
+            let end = (0..=room).rev().find(|&i| body.is_char_boundary(i)).unwrap_or(0);
+            let cut = &body[..end];
+            out.push_str(cut.rsplit_once('\n').map_or(cut, |(a, _)| a));
             out.push_str("\n… (cut: call world() or inspect for the rest)\n\n");
         } else {
             out.push_str(body.trim_end());
