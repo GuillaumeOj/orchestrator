@@ -21,6 +21,7 @@ pub mod mcp;
 pub mod net;
 pub mod notion;
 pub mod now;
+pub mod overwatch;
 pub mod otlp;
 pub mod pacing;
 pub mod paths;

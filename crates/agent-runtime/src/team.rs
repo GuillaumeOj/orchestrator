@@ -888,6 +888,14 @@ impl Runtime {
             {
                 continue;
             }
+            // The Overwatch: interrupted at its ceiling, no card (its turn
+            // end counts the long turn, P4.4).
+            if id == crate::overwatch::ID {
+                if matches!(what, Watch::Ceiling(_)) {
+                    let _ = self.interrupt(&id);
+                }
+                continue;
+            }
             let (text, detail) = match what {
                 Watch::Ceiling(m) => {
                     let _ = self.interrupt(&id);

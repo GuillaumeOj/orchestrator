@@ -11,6 +11,7 @@
 //! from the runtime, [`briefing`] writes the day's briefing.
 
 pub mod briefing;
+pub mod deciding;
 pub mod session;
 pub mod tools;
 
@@ -258,7 +259,9 @@ pub struct Turn {
     pub events: Vec<Event>,
     /// The oldest event's.
     pub queued_at_ms: u64,
+    /// Delivered at first; its TurnStarted hook once seen (`started`).
     pub started_at_ms: u64,
+    pub started: bool,
     pub first_tool_ms: Option<u64>,
     pub how: How,
     pub cache_warm: bool,

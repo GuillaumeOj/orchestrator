@@ -65,8 +65,10 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").chars().take(120).collect()
 }
 
+/// Levels 1–2 that wait on the user: a permission the Overwatch is still
+/// deciding notifies once, when it is handed over (P4.4 F1).
 fn notifies(d: &Decision) -> bool {
-    d.level <= 2 && d.payload.get("notify").and_then(Value::as_bool) != Some(false)
+    d.level <= 2 && d.waits_on == "user" && d.payload.get("notify").and_then(Value::as_bool) != Some(false)
 }
 
 /// Remembers the items already notified; the first poll only learns them
@@ -211,6 +213,7 @@ mod tests {
             thread: None,
             thread_prev: None,
             waits_on: "user",
+            deciding_until_ms: None,
             created_ms: 0,
             agent: Some(agent.into()),
             synthesized: false,
