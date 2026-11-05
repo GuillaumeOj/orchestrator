@@ -376,6 +376,35 @@ fn going_down_hands_every_deciding_card_over_at_once() {
     assert!(!allowed(h2.join().unwrap()));
 }
 
+/// The card as `Now` serves it (the published snapshot, no explicit pump).
+fn served(rt: &Runtime, id: u64) -> Value {
+    let want = crate::decision::decision_id("permission", id);
+    let snap = rt.now_snapshot();
+    snap["decisions"].as_array().unwrap().iter().find(|d| d["id"] == want.as_str()).cloned().unwrap()
+}
+
+#[test]
+fn its_process_exiting_unasked_hands_every_card_over_and_now_shows_it() {
+    let (_d, rt) = manual();
+    *rt.now.clock.lock().unwrap() = None;
+    let (id, h) = held(&rt, "pnpm add zod");
+    rt.overwatch_pump();
+    assert_eq!(served(&rt, id)["waits_on"], "overwatch");
+    // Asked for (suspend, kill): nothing changes.
+    rt.overwatch_exited(true, false);
+    assert_eq!(served(&rt, id)["waits_on"], "overwatch");
+    // Killed from outside mid-turn (on_exit's path): down, and the very next
+    // `Now` already has the card with the user.
+    rt.overwatch_exited(false, false);
+    assert_eq!(rt.overwatch_status().why.as_deref(), Some(why::STOPPED));
+    let card = served(&rt, id);
+    assert_eq!(card["waits_on"], "user", "{card}");
+    assert!(card.get("deciding_until_ms").is_none(), "{card}");
+    assert_eq!(card["payload"]["asks_because"]["kind"], "overwatch_unsure");
+    rt.decide(id, InboxDecision::Approve, None, None).unwrap();
+    assert!(allowed(h.join().unwrap()));
+}
+
 #[test]
 fn the_turn_that_carried_a_permission_hands_it_over_when_it_ends_undecided() {
     let (_d, rt) = manual();

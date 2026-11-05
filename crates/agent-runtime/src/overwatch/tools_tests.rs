@@ -84,6 +84,22 @@ fn decide_permission_settles_within_the_window_and_audits_as_the_overwatch() {
 }
 
 #[test]
+fn the_user_deciding_while_it_decides_settles_it_and_the_overwatch_is_stale() {
+    let (_d, rt) = manual();
+    *rt.now.clock.lock().unwrap() = None;
+    let (n, h) = held(&rt, "pnpm add zod");
+    assert!(payload(&rt, n)["deciding_until_ms"].is_u64(), "still deciding");
+    // The user's card acts at once, inside the Overwatch's window.
+    rt.decide(n, InboxDecision::Approve, None, None).unwrap();
+    assert!(allowed(h.join().unwrap()));
+    assert_eq!(item_of(&rt, n).decided_by.as_deref(), Some("user"));
+    let (err, v) =
+        call(&rt, "decide_permission", json!({"decision": format!("inbox-{n}"), "effect": "deny", "reason": "x"}));
+    assert!(err);
+    assert_eq!(v["code"], "stale", "{v}");
+}
+
+#[test]
 fn decide_permission_refuses_what_the_core_keeps_and_hands_it_over() {
     let (_d, rt) = manual();
     *rt.now.clock.lock().unwrap() = None;
