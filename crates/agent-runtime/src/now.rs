@@ -431,7 +431,9 @@ impl Runtime {
         // Today's entries and the Overwatch, read once the publisher's lock is released.
         drop(st);
         snap["overwatch"] = json!(self.overwatch_status());
-        snap["chat"] = json!({"entries": self.db.chat_day(&day).unwrap_or_default(), "day": day});
+        let mut entries = self.db.chat_day(&day).unwrap_or_default();
+        self.refresh_undo(&mut entries);
+        snap["chat"] = json!({"entries": entries, "day": day});
         snap
     }
 
@@ -521,7 +523,7 @@ impl Runtime {
             .filter(|a| a.trust_dialog || matches!(a.tracker.state, AgentState::WaitingForYou | AgentState::Error))
             .filter_map(|a| Some((a.id.clone(), self.live(&a.id)?.pty.output.tail_text())))
             .collect();
-        let decisions = decision::build(&decision::Ctx {
+        let mut decisions = decision::build(&decision::Ctx {
             items: &items,
             agents: &agents,
             tails: &tails,
@@ -530,6 +532,16 @@ impl Runtime {
             projects: &st.team.projects,
             startup_timeout_ms: self.cfg.startup_timeout.as_millis() as u64,
         });
+        // The Overwatch's annotations of cards that have no stored row (D7).
+        {
+            let mut notes = self.overwatch.annotations.lock().unwrap_or_else(|e| e.into_inner());
+            if !notes.is_empty() {
+                notes.retain(|id, _| decisions.iter().any(|d| &d.id == id && d.is_open()));
+                for d in decisions.iter_mut().filter(|d| d.synthesized) {
+                    d.annotation = notes.get(&d.id).cloned();
+                }
+            }
+        }
         // Today's outcomes: the new ones since the last read (all on a new
         // day), read for the same day the cache is keyed by.
         let (midnight, day) = crate::digest::today(now, &tz);

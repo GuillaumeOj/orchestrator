@@ -226,6 +226,46 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
   `overwatch` `{enabled, model, batch_secs 30, permission_secs 60, idle_secs 120, rule_threshold 3}`
   (`permission_secs` < `hold_secs`). `orchd overwatch [--json] [restart]`.
 
+### The Overwatch's tools, learned rules and undo (T-225, FR-1307–1310)
+
+- **Tools** (`overwatch::tools`, routed from `on_mcp` before the policy: each checks the core's
+  lists itself; errors `{code, message}`, every acting call audited with actor `overwatch`):
+  `world` / `inspect` (api-contract §2.2 shapes), `decide_permission` (effect `overwatch`, inside
+  `deciding_until_ms`; a call on the hard or user-only list is `not_allowed` and hands the card to
+  the user; `decide_as(…, "overwatch")`), `answer_question` (grounded, below), `annotate`
+  (≤ 280 chars, `recommend` one of the card's actions; on the decision's payload, for a
+  synthesized card in memory; a deciding permission is handed over), `nudge` / `resume_agent` /
+  `restart_fresh` (the lead's handlers, `supervise::nudge_agent` / `resume_member`,
+  `restart_fresh(…, "overwatch")`), `reprioritize` (`Governor::set_tier`: low / normal / high,
+  never above the allocation's tier), `propose_rule`, `post`.
+- **Grounding** (`overwatch::ground`): a source is `chat:<id>` of a question or gate the user
+  answered, or a file under the run's feature folder or the project's `docs/` on the integration
+  worktree (`path#section`, canonicalized: no `..` or link out). No valid source: `ungrounded`.
+  The agent gets `ORCH: the Overwatch answered your question (source: …)`; a multi-question
+  decision needs an answer per question.
+- **Learned rules** (`overwatch::rules`): the user's Allow once / Deny count per (project, role,
+  tool, `always` pattern, answer) in the `overwatch.rules` setting; at `rule_threshold` a
+  `rule_candidate` event; `propose_rule` (or the core, when the Overwatch is off / down / paused
+  or its turn ended without one) makes a `rule_proposal` decision (`rule-<n>`, level 4, payload
+  `match`, `effect`, `scope`, `project`, `role`, `file`, `links`, `count`, `threshold`,
+  `declined_before`). `inbox_act` `add` writes the project's file and closes it `added`, `not_now`
+  resets the count (two declines: never again), `edit` appends the rule commented out and closes
+  the card as `added` / "by hand" once the file holds it.
+- **Stuck events** (`overwatch::stuck`, on the 30 s tick): FR-411 signals for every agent, once
+  per episode; a team member after its lead has had it 5 min; failed starts and answers given
+  but not acted on (3 min). The tick also lifts a `limit reached` down at the window's reset and
+  ends a turn with no Stop 1 min past the ceiling (the session is suspended first).
+- **Chat** (`overwatch::chatw`): `chat_send` (a `user` text entry, `delivery` waking | pending |
+  delivered; `chat_discard` for pending ones), `post` (an `overwatch` text entry, `reply_to` the
+  user message of its turn), `action` entries (nudged, resumed, restarted, reprioritized). Entry
+  extras live in `chat_entries.meta` (migration 15); keys starting with `_` stay in the core.
+- **Undo** (`overwatch::undo`, `chat_undo {entry, text?}`): a settled line offers `undo {id,
+  label, until}` while it means something: Revoke rule (policy answer), Tell the agent (a one-shot
+  deny of that call for 1 h and a note), Allow instead (a one-shot allow and a note), Correct the
+  answer (`text`), Restore tier, Remove rule. A used one reads `undone_at_ms` (answers:
+  `corrected_at_ms`); one that can no longer work reads `undo_gone` ("back-1 already moved on");
+  read lazily when a day is read.
+
 ## Commits for agents (FR-702 gap, R10)
 
 Sandboxed git can't write `<repo>/.git/worktrees/<name>/` under 2.1.302, so agents commit through
@@ -628,7 +668,7 @@ std::thread::spawn({ let rt = rt.clone(); move || server::serve(rt, bus::bind_li
 | Agents | `start(&AgentSpec)`, `resume`, `suspend`, `kill`, `interrupt`, `deliver`, `attach`/`read_output`/`resize`, `note_user_activity`, `state_json`, `live_ids`, `live_cap` |
 | Governor | `usage_json`, `governor_json`, `pause_all`, `resume_all`, `pause_agent`, `resume_agent`, `run_now`, `cancel`, `undo`, `sprint`, `answer_ask`, `set_shadow`, `set_plan`, `replan`, `tick` (the server loop calls it) |
 | Inbox | `inbox()`, `decide(id, InboxDecision, scope, message)`, `decide_as(…, by)` |
-| Overwatch | `overwatch_status`, `overwatch_settings` / `merge_overwatch_settings` / `set_overwatch_settings`, `overwatch_restart`, `overwatch_report`, `overwatch_user_message`, `overwatch_pending`, `overwatch_enqueue`, `overwatch_deciding`, `overwatch_hand_over` |
+| Overwatch | `chat_send`, `chat_discard`, `chat_undo`, `rule_proposal_act`, `overwatch_status`, `overwatch_settings` / `merge_overwatch_settings` / `set_overwatch_settings`, `overwatch_restart`, `overwatch_report`, `overwatch_user_message`, `overwatch_pending`, `overwatch_enqueue`, `overwatch_deciding`, `overwatch_hand_over` |
 | Policy | `add_rule`, `revoke_rule(id, file)` (audited, written to the files), `policy_rules`, `policy_files`, `policy_defaults` / `set_policy_defaults`, `policy_open`, `policy_test`, `hard_check(rec, tool, input, cwd)` |
 | Commits | `commit_for(agent, &CommitRequest, "user")` |
 | Projects | `add_project`, `clone_project`, `projects_overview`, `project_detail(id, with_prs)`, `fetch_project`, `diff`, `remove_worktree`, `removal_plan`, `remove_project`, `relocate_project` |

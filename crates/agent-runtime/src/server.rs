@@ -233,6 +233,12 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         CtlRequest::RevokeRule { id, file } => {
             ok_or(rt.revoke_rule(&id, file.as_deref()).map(|done| json!({"revoked": done})))
         }
+        CtlRequest::ChatSend { text, thread } => {
+            ok_or(rt.chat_send(&text, thread.as_deref()).map(|e| json!({"entry": e})))
+        }
+        CtlRequest::ChatDiscard { entry } => ok_or(rt.chat_discard(&entry)),
+        CtlRequest::ChatUndo { entry, text } => ok_or(rt.chat_undo(&entry, text.as_deref())),
+        CtlRequest::RuleProposal { item, action } => ok_or(rt.rule_proposal_act(item, &action)),
         CtlRequest::Overwatch => CtlReply::ok(rt.overwatch_report()),
         CtlRequest::OverwatchRestart => ok_or(rt.overwatch_restart().map(|()| json!({"ok": true}))),
         CtlRequest::OverwatchSettings => CtlReply::ok(json!(rt.overwatch_settings())),

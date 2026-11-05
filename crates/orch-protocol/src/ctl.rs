@@ -231,6 +231,27 @@ pub enum CtlRequest {
         #[serde(default)]
         file: Option<String>,
     },
+    /// `chat_send {text, thread?}`: the user's message to the Overwatch (P4.4).
+    ChatSend {
+        text: String,
+        #[serde(default)]
+        thread: Option<String>,
+    },
+    /// `chat_discard {entry}`: removes a message still pending.
+    ChatDiscard {
+        entry: String,
+    },
+    /// `chat_undo {entry, text?}`: undoes what an oversight line offers.
+    ChatUndo {
+        entry: String,
+        #[serde(default)]
+        text: Option<String>,
+    },
+    /// Add rule · Not now · Edit rule on a rule proposal (`rule-<n>`).
+    RuleProposal {
+        item: u64,
+        action: String,
+    },
     /// `orchd overwatch`: status, today's session and turns, p50 / p90 wake (P4.4).
     Overwatch,
     /// `overwatch_restart`: a fresh session with a new briefing.
