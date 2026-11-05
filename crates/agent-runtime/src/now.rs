@@ -504,7 +504,10 @@ impl Runtime {
             };
             // The Overwatch is not in Mission control's lanes (spec §3.3).
             let agents = s.agents.iter().filter(|(id, _)| id.as_str() != crate::overwatch::ID);
-            (agents.map(|(k, v)| (k.clone(), v.clone())).collect::<BTreeMap<_, _>>(), s.inbox.iter().filter(keep).cloned().collect())
+            (
+                agents.map(|(k, v)| (k.clone(), v.clone())).collect::<BTreeMap<_, _>>(),
+                s.inbox.iter().filter(keep).cloned().collect(),
+            )
         });
         let (queue, ask, gov) = self.governor_facts();
         // The PTY tail of a synthesized card (trust dialog, a prompt in the pane, an error).

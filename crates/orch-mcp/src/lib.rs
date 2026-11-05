@@ -506,6 +506,30 @@ mod tests {
     }
 
     #[test]
+    fn the_overwatch_sees_its_eleven_tools() {
+        let names = [
+            "world",
+            "inspect",
+            "decide_permission",
+            "answer_question",
+            "annotate",
+            "nudge",
+            "resume_agent",
+            "restart_fresh",
+            "reprioritize",
+            "propose_rule",
+            "post",
+        ];
+        let allowed: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+        let mut listed: Vec<String> =
+            tools_for(&allowed).as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+        let mut want = allowed.clone();
+        listed.sort();
+        want.sort();
+        assert_eq!(listed, want);
+    }
+
+    #[test]
     fn core_down_is_a_tool_error_not_a_crash() {
         let d = tempfile::Builder::new().prefix("om").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let env = McpEnv {

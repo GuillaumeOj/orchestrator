@@ -306,7 +306,8 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
     let first_line = i.body.lines().next().unwrap_or("").to_string();
     let body_line = first_line.strip_prefix(&format!("{who}: ")).unwrap_or(&first_line).to_string();
     let open = i.open();
-    let deciding = if open && i.kind == "permission" { crate::overwatch::deciding::deciding_until(&i.payload) } else { None };
+    let deciding =
+        if open && i.kind == "permission" { crate::overwatch::deciding::deciding_until(&i.payload) } else { None };
     let (title, summary, context, actions): (String, String, Vec<Value>, Vec<Action>) = match (kind, gate) {
         ("permission", _) => {
             let tool = s(p, "tool");

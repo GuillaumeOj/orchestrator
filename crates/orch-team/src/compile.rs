@@ -383,7 +383,8 @@ mod tests {
 
     #[test]
     fn tool_sets_are_known() {
-        for t in COMMON_TOOLS.iter().chain(LEAD_TOOLS).chain(SPECIALIST_TOOLS).chain(SOLO_TOOLS).chain(OVERWATCH_TOOLS) {
+        for t in COMMON_TOOLS.iter().chain(LEAD_TOOLS).chain(SPECIALIST_TOOLS).chain(SOLO_TOOLS).chain(OVERWATCH_TOOLS)
+        {
             assert!(ALL_TOOLS.contains(t), "{t}");
         }
     }

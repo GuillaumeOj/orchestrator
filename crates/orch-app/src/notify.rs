@@ -244,6 +244,20 @@ mod tests {
     }
 
     #[test]
+    fn a_deciding_card_notifies_once_when_handed_over() {
+        let mut w = Watch::default();
+        assert_eq!(w.poll(&[]), None);
+        let mut d = item("inbox-7", 1, "back-1");
+        (d.waits_on, d.deciding_until_ms) = ("overwatch", Some(60_000));
+        assert_eq!(w.poll(&[d.clone()]), None, "the Overwatch is deciding");
+        assert_eq!(w.poll(&[d.clone()]), None);
+        (d.waits_on, d.deciding_until_ms) = ("user", None);
+        let n = w.poll(&[d.clone()]).expect("handed over: it needs the user now");
+        assert_eq!(n.decision_id, "inbox-7");
+        assert_eq!(w.poll(&[d]), None, "once");
+    }
+
+    #[test]
     fn wakes_only_when_needs_you_or_decisions_go_up() {
         let t = Trigger::default();
         let ev = |n: u64, d: u64| json!({"counts": {"global": {"needs_you": n, "decisions": d}}});

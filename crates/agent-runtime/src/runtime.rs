@@ -3228,6 +3228,8 @@ pub(crate) mod tests {
     pub(crate) fn test_runtime(shadow: bool) -> (tempfile::TempDir, Arc<Runtime>) {
         let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let rt = Runtime::new(test_cfg(d.path(), shadow)).unwrap();
+        // The Overwatch is driven by hand in unit tests (no background wake).
+        rt.overwatch.manual.store(true, Ordering::SeqCst);
         rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
         (d, rt)
     }

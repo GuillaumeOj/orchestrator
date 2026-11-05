@@ -532,6 +532,63 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_overwatch_reads_and_calls_its_tools_only() {
+        let mut cx = ctx(SessionMode::New("u".into()));
+        cx.agent_id = "overwatch".into();
+        cx.agent_dir = "/app/agents/overwatch".into();
+        cx.worktree = "/app/overwatch/2026-11-05".into();
+        cx.overwatch = Some(vec![
+            "/p/demo".into(),
+            "/p/demo.worktrees/team/back-1".into(),
+            "/app/overwatch/2026-11-05".into(),
+            "/app/agents/overwatch/messages".into(),
+        ]);
+        let c = compile(&Role::overwatch("sonnet"), &cx);
+        let allow = strs(&c.settings["permissions"]["allow"]);
+        let deny = strs(&c.settings["permissions"]["deny"]);
+        // It reads the projects, its day folder and its long batches (FR-206).
+        for p in [
+            "//p/demo/**",
+            "//p/demo.worktrees/team/back-1/**",
+            "//app/overwatch/2026-11-05/**",
+            "//app/agents/overwatch/messages/**",
+        ] {
+            assert!(allow.contains(&format!("Read({p})")), "{p}: {allow:?}");
+        }
+        // Nothing else of the app (other agents, the store, settings), no credentials.
+        assert!(
+            !allow
+                .iter()
+                .any(|a| a == "Read(//app/**)" || a.starts_with("Read(//app/agents/**") || a.contains("state"))
+        );
+        assert!(
+            deny.contains(&"Read(//Users/u/.ssh/**)".to_string()) && deny.contains(&"Read(//app/state/**)".to_string())
+        );
+        // It cannot write files or run anything.
+        for t in ["Edit", "Write", "NotebookEdit", "Bash", "WebFetch", "WebSearch", "Task"] {
+            assert!(deny.contains(&t.to_string()), "{t} denied");
+            assert!(!allow.iter().any(|a| a == t || a.starts_with(&format!("{t}("))), "{t} not allowed");
+        }
+        assert!(deny.contains(&"Edit(//app/**)".to_string()));
+        assert_eq!(c.settings["sandbox"]["filesystem"]["allowWrite"], json!([]));
+        assert_eq!(c.settings["sandbox"]["network"]["allowedDomains"], json!([]));
+        // dontAsk (no prompt of its own), only the orch server, its 11 tools.
+        assert!(c.args.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "dontAsk"));
+        assert!(c.args.iter().any(|a| a == "--strict-mcp-config"));
+        assert!(c.args.windows(2).any(|w| w[0] == "--model" && w[1] == "sonnet"));
+        assert_eq!(c.mcp["mcpServers"].as_object().unwrap().keys().collect::<Vec<_>>(), ["orch"]);
+        let tools = c.mcp["mcpServers"]["orch"]["env"]["ORCH_TOOLS"].as_str().unwrap();
+        assert_eq!(tools.split(',').collect::<Vec<_>>(), orch_team::compile::OVERWATCH_TOOLS);
+        assert!(!tools.contains("commit"));
+        let tool_allows: Vec<&String> = allow.iter().filter(|a| a.starts_with("mcp__")).collect();
+        assert_eq!(tool_allows.len(), 11);
+        let prompt = &c.args[c.args.iter().position(|a| a == "--append-system-prompt").unwrap() + 1];
+        assert!(prompt.starts_with(OVERWATCH_PREAMBLE) && prompt.contains("You are the Overwatch"));
+        assert!(!prompt.contains("mcp__orch__commit"));
+        assert_eq!(c.cwd, std::path::PathBuf::from("/app/overwatch/2026-11-05"));
+    }
+
+    #[test]
     fn a_team_specialist_gets_its_tools_and_denies() {
         let (roles, team) = orch_team::presets::full_stack();
         let f = orch_team::FeatureCtx { slug: "f".into(), title: "F".into(), base: "main".into() };

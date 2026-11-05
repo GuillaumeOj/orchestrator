@@ -76,10 +76,8 @@ impl Runtime {
                 format!("- {} [{}] {} · {} · waits on {}", s("id"), s("kind"), s("title"), s("summary"), s("waits_on"))
             })
             .collect();
-        sections.push((
-            "Open decisions".into(),
-            if decisions.is_empty() { "None.".into() } else { decisions.join("\n") },
-        ));
+        sections
+            .push(("Open decisions".into(), if decisions.is_empty() { "None.".into() } else { decisions.join("\n") }));
         sections.push(("The week".into(), self.overwatch_week_text()));
         sections.push(("Projects and running features".into(), self.overwatch_projects_text()));
         let files: Vec<String> = self
@@ -87,13 +85,17 @@ impl Runtime {
             .iter()
             .map(|f| {
                 let s = |k: &str| f[k].as_str().unwrap_or("").to_string();
-                let label = if s("scope") == "global" { "global".to_string() } else { format!("project {}", s("project")) };
-                let err = f.get("error").filter(|e| !e.is_null()).map(|e| format!(" · broken: {e}")).unwrap_or_default();
+                let label =
+                    if s("scope") == "global" { "global".to_string() } else { format!("project {}", s("project")) };
+                let err =
+                    f.get("error").filter(|e| !e.is_null()).map(|e| format!(" · broken: {e}")).unwrap_or_default();
                 format!("- {label}: {} · {} rule(s){err}", s("path"), f["rules"].as_u64().unwrap_or(0))
             })
             .collect();
         sections.push(("Policy files today".into(), files.join("\n")));
-        let title = format!("# Overwatch briefing · {day}\n\nWritten by the core at the start of your session. Use world() and inspect(agent) for anything newer.\n\n");
+        let title = format!(
+            "# Overwatch briefing · {day}\n\nWritten by the core at the start of your session. Use world() and inspect(agent) for anything newer.\n\n"
+        );
         title + &cap(sections, super::BRIEFING_MAX - 200)
     }
 
@@ -109,7 +111,10 @@ impl Runtime {
             out.push_str("\n- Pause all is on");
         }
         for a in &plan.allocations {
-            out.push_str(&format!("\n- allocation {} ({}): weight {:.0}, tier {:?}", a.id.0, a.target, a.weight, a.tier));
+            out.push_str(&format!(
+                "\n- allocation {} ({}): weight {:.0}, tier {:?}",
+                a.id.0, a.target, a.weight, a.tier
+            ));
         }
         out
     }

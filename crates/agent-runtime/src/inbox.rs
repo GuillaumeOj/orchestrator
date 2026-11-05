@@ -437,7 +437,11 @@ impl Runtime {
     ) -> Option<Waited> {
         let Some(until) = deciding else { return self.wait_decision(id, budget.hold, conn) };
         let window = Duration::from_millis(until.saturating_sub(now_ms()));
-        let still = || self.store.read(|s| s.inbox.iter().any(|i| i.id == id && crate::overwatch::deciding::deciding_until(&i.payload).is_some()));
+        let still = || {
+            self.store.read(|s| {
+                s.inbox.iter().any(|i| i.id == id && crate::overwatch::deciding::deciding_until(&i.payload).is_some())
+            })
+        };
         if let Some(w) = self.wait_decision_while(id, window, conn, &still) {
             return Some(w);
         }

@@ -134,8 +134,8 @@ impl Runtime {
     /// `now.overwatch` (api-contract §3.1, §5).
     pub fn overwatch_status(&self) -> StatusView {
         let (status, why, events) = self.overwatch_state();
-        let has_session = self.store.read(|s| s.agents.get(ID).is_some_and(|a| a.spawns > 0))
-            && self.overwatch_session_is_today();
+        let has_session =
+            self.store.read(|s| s.agents.get(ID).is_some_and(|a| a.spawns > 0)) && self.overwatch_session_is_today();
         let now = self.now.clock().0;
         let mut st = self.ow();
         let since = match &st.shown {
@@ -335,8 +335,15 @@ impl Runtime {
         }
         let text = super::turn_text(&events, new, now, &tz);
         let queued_at_ms = events.iter().map(|e| e.at_ms).min().unwrap_or(now);
-        self.ow().in_flight =
-            Some(Turn { events, queued_at_ms, started_at_ms: now, started: false, first_tool_ms: None, how, cache_warm });
+        self.ow().in_flight = Some(Turn {
+            events,
+            queued_at_ms,
+            started_at_ms: now,
+            started: false,
+            first_tool_ms: None,
+            how,
+            cache_warm,
+        });
         self.overwatch_touch();
         if let Err(e) = self.deliver(ID, &text) {
             self.event(ID, "overwatch.deliver_failed", json!({"error": format!("{e:#}")}));
@@ -401,7 +408,10 @@ impl Runtime {
                 s.agents.get(ID).is_some_and(|a| a.tracker.state == AgentState::Idle && a.tracker.background_tasks == 0)
                     && !s.turns.iter().any(|t| {
                         t.agent_id == ID
-                            && matches!(t.status, crate::store::TurnStatus::Queued | crate::store::TurnStatus::Delivering)
+                            && matches!(
+                                t.status,
+                                crate::store::TurnStatus::Queued | crate::store::TurnStatus::Delivering
+                            )
                     })
             });
         if idle {
@@ -561,8 +571,12 @@ impl Runtime {
     pub fn overwatch_report(&self) -> Value {
         let status = self.overwatch_status();
         let (_, day) = self.overwatch_today();
-        let session =
-            self.store.read(|s| s.agents.get(ID).filter(|a| Self::session_day(a).as_deref() == Some(day.as_str())).map(|a| a.session_id.clone()));
+        let session = self.store.read(|s| {
+            s.agents
+                .get(ID)
+                .filter(|a| Self::session_day(a).as_deref() == Some(day.as_str()))
+                .map(|a| a.session_id.clone())
+        });
         let turns = self.overwatch_turns_today();
         let wakes: Vec<u64> = turns
             .iter()

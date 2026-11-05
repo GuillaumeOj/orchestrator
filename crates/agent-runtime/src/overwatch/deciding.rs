@@ -51,10 +51,11 @@ impl Runtime {
 
     /// May the Overwatch still settle `item` now? (B3's `decide_permission`.)
     pub fn overwatch_deciding(&self, item: u64) -> Result<u64, NotDeciding> {
-        let now = self.now.clock().0;
-        let found = self.store.read(|s| {
-            s.inbox.iter().find(|i| i.id == item).map(|i| (i.open(), i.kind.clone(), i.payload.clone()))
-        });
+        // Deadlines are wall-clock (the hold's).
+        let now = now_ms();
+        let found = self
+            .store
+            .read(|s| s.inbox.iter().find(|i| i.id == item).map(|i| (i.open(), i.kind.clone(), i.payload.clone())));
         let Some((open, kind, payload)) = found else { return Err(NotDeciding::Stale) };
         if !open {
             return Err(NotDeciding::Stale);

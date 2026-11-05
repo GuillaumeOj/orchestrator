@@ -702,6 +702,41 @@ mod tests {
     }
 
     #[test]
+    fn the_overwatch_is_its_own_row() {
+        let plan = plan();
+        // Two days' sessions, the same id: one row (P4.4).
+        let samples = vec![
+            sample(1, "overwatch", 10.0, "critical", "overwatch", "claude-sonnet-4-5", None),
+            sample(30, "overwatch", 10.0, "critical", "overwatch", "claude-sonnet-4-5", None),
+            sample(2, "B", 10.0, "autonomous", "api", "claude-sonnet-4-5", None),
+        ];
+        let cal = Calibration {
+            ts: t(100),
+            cost_per_weekly_pct: 10.0,
+            confidence: 0.8,
+            unattributed_rate: 0.0,
+            per_model: None,
+        };
+        let r = build(&Inputs {
+            plan: &plan,
+            samples: &samples,
+            agents: &BTreeMap::new(),
+            projects: &BTreeMap::new(),
+            calibration: &cal,
+            actions: &[],
+            forecasts: &[],
+            plan_fraction: 1.0,
+            weekly_pct: None,
+            in_progress: false,
+            now: t(168),
+        });
+        let row = |rows: &[Row]| rows.iter().find(|m| m.key == "overwatch").map(|m| (m.label.clone(), m.pp));
+        assert_eq!(row(&r.by_role), Some(("Overwatch".to_string(), 2.0)), "{:?}", r.by_role);
+        assert_eq!(row(&r.by_project).map(|r| r.1), Some(2.0));
+        assert!(r.by_role.iter().any(|m| m.key == "solo"), "others unchanged");
+    }
+
+    #[test]
     fn plan_vs_actual_per_model_role_and_outside() {
         let plan = plan();
         let samples = vec![

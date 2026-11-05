@@ -380,7 +380,11 @@ pub fn render_report(r: &Value, tz: &jiff::tz::TimeZone) -> String {
             n("events").unwrap_or(0)
         );
         match (n("queued_at_ms"), n("first_tool_ms")) {
-            (Some(q), Some(f)) => l.push_str(&format!(" wake={} first_tool={}", secs(f.saturating_sub(q)), secs(f.saturating_sub(started)))),
+            (Some(q), Some(f)) => l.push_str(&format!(
+                " wake={} first_tool={}",
+                secs(f.saturating_sub(q)),
+                secs(f.saturating_sub(started))
+            )),
             _ => l.push_str(" wake=- first_tool=-"),
         }
         if let Some(e) = n("ended_at_ms") {
