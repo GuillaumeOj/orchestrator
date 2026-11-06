@@ -42,12 +42,28 @@ pub struct ClaudeCheck {
     pub subscription: Option<String>,
     /// What is wrong, with the fix (the app is read-only until it is fixed).
     pub problem: Option<String>,
+    /// Which check `problem` comes from (set iff `problem` is).
+    pub problem_kind: Option<ProblemKind>,
     /// The login could not be checked (a slow or failed `claude auth status`):
     /// shown, not blocking.
     pub note: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProblemKind {
+    NotFound,
+    Version,
+    Login,
+    Plan,
+}
+
 impl ClaudeCheck {
+    fn fail(&mut self, kind: ProblemKind, problem: String) {
+        self.problem = Some(problem);
+        self.problem_kind = Some(kind);
+    }
+
     /// Agents may start: a supported version, logged in with Pro/Max.
     pub fn ready(&self) -> Result<()> {
         match &self.problem {
@@ -62,9 +78,12 @@ pub fn check_claude(path: &Path) -> ClaudeCheck {
     let mut c = ClaudeCheck { path: path.to_path_buf(), ..Default::default() };
     match preflight::claude_version(path) {
         Err(e) => {
-            c.problem = Some(format!(
-                "Claude Code not found ({e:#}). Install it (https://claude.com/claude-code) or set ORCH_CLAUDE, then restart the app."
-            ));
+            c.fail(
+                ProblemKind::NotFound,
+                format!(
+                    "Claude Code not found ({e:#}). Install it (https://claude.com/claude-code) or set ORCH_CLAUDE, then restart the app."
+                ),
+            );
             return c;
         }
         Ok(v) => {
@@ -72,7 +91,10 @@ pub fn check_claude(path: &Path) -> ClaudeCheck {
             match preflight::SUPPORTED_CLAUDE.check(v) {
                 Ok(VersionCheck::Supported(_)) => {}
                 Ok(VersionCheck::Untested(_)) => c.untested = true,
-                Err(e) => c.problem = Some(format!("{e:#}: update Claude Code (claude update), then restart the app.")),
+                Err(e) => c.fail(
+                    ProblemKind::Version,
+                    format!("{e:#}: update Claude Code (Settings › Claude Code, or `claude update`)."),
+                ),
             }
         }
     }
@@ -99,14 +121,15 @@ fn apply_auth(c: &mut ClaudeCheck, v: &Value) {
         return;
     }
     if c.logged_in != Some(true) {
-        c.problem = Some("Claude Code is not logged in: run `claude` in a terminal and /login with your Claude account, then restart the app.".into());
+        c.fail(ProblemKind::Login, "Claude Code is not logged in: run `claude` in a terminal and /login with your Claude account, then restart the app.".into());
     } else if c.auth_method.as_deref() != Some("claude.ai") || !matches!(c.subscription.as_deref(), Some("pro" | "max"))
     {
-        c.problem = Some(format!(
+        let problem = format!(
             "Claude Code is logged in with {} ({}), not a Pro/Max subscription: agents would not run on the plan (NFR-10). Log in with your Claude account (/login).",
             c.auth_method.as_deref().unwrap_or("?"),
             c.subscription.as_deref().unwrap_or("no subscription")
-        ));
+        );
+        c.fail(ProblemKind::Plan, problem);
     }
 }
 
@@ -426,7 +449,7 @@ impl Core {
         let kitty = self.kitty.lock_ok();
         json!({
             "done": self.settings.get(DONE_KEY).is_some(),
-            "claude": self.claude_check(),
+            "claude": self.claude_update.view(),
             "trust": trust,
             "kitty": {"sources": kitty.sources, "font": kitty.font_family, "mapped": kitty.mapped.len(), "unmapped": kitty.unmapped.len(), "editor": kitty.editor},
             "editor": *self.editor_template.lock_ok(),
@@ -592,14 +615,19 @@ mod tests {
         let mut c = ClaudeCheck::default();
         apply_auth(&mut c, &json!({"loggedIn": false}));
         assert!(c.ready().unwrap_err().to_string().contains("not logged in"));
+        assert_eq!(c.problem_kind, Some(ProblemKind::Login));
         let mut c = ClaudeCheck::default();
         apply_auth(&mut c, &json!({"loggedIn": true, "authMethod": "api_key"}));
         assert!(c.ready().unwrap_err().to_string().contains("not a Pro/Max"));
+        assert_eq!(c.problem_kind, Some(ProblemKind::Plan));
         // A version problem is kept (the first thing to fix).
-        let mut c = ClaudeCheck { problem: Some("old".into()), ..Default::default() };
+        let mut c =
+            ClaudeCheck { problem: Some("old".into()), problem_kind: Some(ProblemKind::Version), ..Default::default() };
         apply_auth(&mut c, &json!({"loggedIn": false}));
-        assert_eq!(c.problem.as_deref(), Some("old"));
-        assert!(check_claude(Path::new("/no/such/claude")).ready().unwrap_err().to_string().contains("not found"));
+        assert_eq!((c.problem.as_deref(), c.problem_kind), (Some("old"), Some(ProblemKind::Version)));
+        let c = check_claude(Path::new("/no/such/claude"));
+        assert!(c.ready().unwrap_err().to_string().contains("not found"));
+        assert_eq!(c.problem_kind, Some(ProblemKind::NotFound));
         // A login that could not be checked is noted, not blocking.
         let d = tempfile::tempdir().unwrap();
         let fake = d.path().join("claude");
@@ -610,7 +638,18 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let c = check_claude(&fake);
-        assert!(c.ready().is_ok() && c.note.is_some(), "{c:?}");
+        assert!(c.ready().is_ok() && c.note.is_some() && c.problem_kind.is_none(), "{c:?}");
+        // Too old: the fix is the update, no restart needed.
+        let old = d.path().join("old-claude");
+        std::fs::write(&old, "#!/bin/sh\necho '2.1.200 (Claude Code)'\n").unwrap();
+        std::fs::set_permissions(&old, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let c = check_claude(&old);
+        assert_eq!(c.problem_kind, Some(ProblemKind::Version));
+        let p = c.problem.unwrap();
+        assert!(
+            p.ends_with("update Claude Code (Settings › Claude Code, or `claude update`).") && !p.contains("restart"),
+            "{p}"
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+pub mod claude_update;
 pub mod commands;
 pub mod core;
 pub mod devctl;
@@ -151,6 +152,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app_state,
+            commands::claude_update_check,
+            commands::claude_update_run,
             commands::now_snapshot,
             commands::decision_patch,
             commands::watch_worktree,
