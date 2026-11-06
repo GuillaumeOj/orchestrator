@@ -50,7 +50,9 @@ No UI, no Tauri: [`orchd`](../orchd/README.md) drives it from the command line.
   the path in `sandbox.filesystem.allowWrite`; `read`: `Edit(...)` denied and the path in
   `sandbox.filesystem.denyWrite`, so a read entry inside a write folder stays unwritable from Bash too
   (`denyWrite` is in the settings schema of Claude Code 2.1.317, the installed CLI, "merged with paths from
-  Edit(...) deny rules"; not checked against 2.1.302). Folders also get `--add-dir <p>`. The system prompt
+  Edit(...) deny rules"; not checked against 2.1.302). Each `write` folder also gets `Edit(//p/**/.claude/**)` and
+  `Edit(//p/**/.git/hooks/**)` denied, and `p/**/.claude`, `p/**/.git/hooks` in `denyWrite` (untested with the CLI, like
+  the read entries' `denyWrite`). Folders also get `--add-dir <p>`. The system prompt
   gets a `## Project files` section after the role prompt (omitted when the list is empty). Validation
   refuses a write entry inside a read folder: the read folder's Edit deny would win.
 - **MCP**: `mcpServers.orch` = `<app>/bin/orch-mcp` (stdio, `ORCH_AGENT_ID`/`ORCH_SOCK` in its env),

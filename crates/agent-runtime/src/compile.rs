@@ -236,12 +236,19 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
     let present: Vec<&SpawnFile> = ctx.project_files.iter().filter(|f| !f.missing).collect();
     for f in &present {
         let r = rule_path(&f.path);
-        let pat = if f.kind == FileKind::Folder { format!("{r}/**") } else { r };
+        let pat = if f.kind == FileKind::Folder { format!("{r}/**") } else { r.clone() };
         allow.push(format!("Read({pat})"));
         let p = f.path.display().to_string();
         match f.access {
             FileAccess::Write => {
                 allow.push(format!("Edit({pat})"));
+                if f.kind == FileKind::Folder {
+                    // Code that runs outside the sandbox's control (hooks, agent settings).
+                    for sub in [".claude", ".git/hooks"] {
+                        deny.push(format!("Edit({r}/**/{sub}/**)"));
+                        deny_write.push(format!("{p}/**/{sub}"));
+                    }
+                }
                 allow_write.push(p);
             }
             FileAccess::Read => {
@@ -655,7 +662,16 @@ pub(crate) mod tests {
         assert!(allow_write.contains(&"/Users/u/Brand".to_string()));
         assert!(allow_write.contains(&"/Users/u/design/app.figcraft".to_string()));
         assert!(!allow_write.iter().any(|p| p.contains("api.yaml") || p.ends_with("/Ref") || p.ends_with("legal")));
-        assert_eq!(strs(&fs["denyWrite"]), ["/Users/u/specs/api.yaml", "/Users/u/Ref", "/Users/u/Brand/legal"]);
+        let deny_write = strs(&fs["denyWrite"]);
+        for r in ["/Users/u/specs/api.yaml", "/Users/u/Ref", "/Users/u/Brand/legal"] {
+            assert!(deny_write.contains(&r.to_string()), "denyWrite {r}");
+        }
+        // Write folders (not read ones, not files): no agent settings or git hooks.
+        for sub in [".claude", ".git/hooks"] {
+            assert!(deny.contains(&format!("Edit(//Users/u/Brand/**/{sub}/**)")), "deny {sub}");
+            assert!(deny_write.contains(&format!("/Users/u/Brand/**/{sub}")), "denyWrite {sub}");
+        }
+        assert!(!deny.iter().any(|r| r.contains("/Ref/**/") || r.contains("design/app.figcraft/")));
         assert_eq!(add_dirs(&c), ["/Users/u/Brand", "/Users/u/Ref", "/Users/u/Brand/legal"]);
         // The flags come before the prompt, never inside it.
         assert!(
