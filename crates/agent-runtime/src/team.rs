@@ -434,8 +434,11 @@ impl Runtime {
     /// A lead's first turn: the user's brief and what to do with it.
     fn lead_brief(cx: &RunCtx) -> String {
         let feature = &cx.feature;
+        let hint = crate::github_issue::brief_hint(&feature.brief, &cx.project)
+            .map(|h| format!("{h}\n\n"))
+            .unwrap_or_default();
         format!(
-            "ORCH: you lead the team on feature {} ({}). Brief from the user:\n\n{}\n\nFollow your protocol: write the docs in {}, commit them, then call mcp__orch__request_spec_approval.",
+            "ORCH: you lead the team on feature {} ({}). Brief from the user:\n\n{}\n\n{hint}Follow your protocol: write the docs in {}, commit them, then call mcp__orch__request_spec_approval.",
             feature.title,
             feature.slug,
             if feature.brief.is_empty() {
@@ -3130,7 +3133,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn solo_sessions_keep_their_two_tools() {
+    fn solo_sessions_have_only_the_solo_tools() {
         let (_d, rt) = test_runtime(false);
         assert!(call(&rt, "a1", "send_message", json!({"to": "x", "body": "y"})).1.contains("not one of your tools"));
     }

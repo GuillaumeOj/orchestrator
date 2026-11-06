@@ -24,6 +24,7 @@ The review found that permission rules alone don't enforce a "worktree sandbox":
    - Removing env vars is not enough on its own: in P0 the SSH key on disk and the `gh` keyring token still reached GitHub until the files were made unreadable (decision 1).
    - A `Bash(git push:*)` deny rule is kept as defense in depth only, because a push inside a script bypasses it. Deny rules do win over a hook's `allow`.
    - Pushing, opening PRs and merging into protected branches is done **by the app** through gated orchestrator MCP tools, with the user's credentials kept in the core.
+   - Agents read and change the project's GitHub issues only through the `read_issue` / `update_issue` MCP tools, served by the core with the user's `gh` login and limited to the project's own repository; the sandbox's network and credential rules do not change.
    - Killing an agent (SPEC FR-207) targets `claude`'s process group and the processes **with no controlling terminal** whose cwd is in its worktree; the user's own shells there are left alone.
 4. **Gates through hooks**:
    - PreToolUse runs for every tool call, including allow-listed ones.

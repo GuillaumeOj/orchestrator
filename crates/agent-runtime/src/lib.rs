@@ -10,6 +10,7 @@ pub mod delivery;
 pub mod digest;
 pub mod env;
 pub mod flow;
+pub mod github_issue;
 pub mod handover;
 pub mod inbox;
 pub mod integrations;

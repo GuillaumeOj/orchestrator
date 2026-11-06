@@ -15,7 +15,7 @@ pub const ORCH_SERVER: &str = "orch";
 
 /// Orchestrator MCP tools every team node has.
 pub const COMMON_TOOLS: &[&str] =
-    &["commit", "send_message", "inbox", "list_tasks", "handoff", "request_review", "ask_user"];
+    &["commit", "send_message", "inbox", "list_tasks", "handoff", "request_review", "ask_user", "read_issue"];
 /// Lead only (FR-401: the protocol is enforced by tool availability).
 pub const LEAD_TOOLS: &[&str] = &[
     "create_task",
@@ -33,7 +33,7 @@ pub const LEAD_TOOLS: &[&str] = &[
 pub const SPECIALIST_TOOLS: &[&str] =
     &["update_task", "report_done", "sync_integration", "submit_plan", "submit_review"];
 /// A solo session (P1).
-pub const SOLO_TOOLS: &[&str] = &["commit", "request_pr"];
+pub const SOLO_TOOLS: &[&str] = &["commit", "request_pr", "read_issue"];
 /// Every orchestrator tool, in the order orch-mcp lists them.
 pub const ALL_TOOLS: &[&str] = &[
     "commit",
@@ -44,6 +44,7 @@ pub const ALL_TOOLS: &[&str] = &[
     "handoff",
     "request_review",
     "ask_user",
+    "read_issue",
     "create_task",
     "update_task",
     "request_spec_approval",
