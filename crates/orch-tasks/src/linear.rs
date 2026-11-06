@@ -132,14 +132,41 @@ struct TeamInfo {
     projects: Vec<ProjectRef>,
 }
 
-const FIELDS: &str = "id identifier title description updatedAt state { id name type } labels { nodes { id name } } \
-                      inverseRelations { nodes { id type issue { id identifier } } }";
+const TEAMS_QUERY: &str = "query OrchTeams { teams(first: 100) { nodes { id key name } } }";
+const LABEL_CREATE: &str = "mutation OrchLabelCreate($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { success issueLabel { id name } } }";
+const RELATION_CREATE: &str =
+    "mutation OrchRelationCreate($input: IssueRelationCreateInput!) { issueRelationCreate(input: $input) { success } }";
+const RELATION_DELETE: &str = "mutation OrchRelationDelete($id: String!) { issueRelationDelete(id: $id) { success } }";
+const COMMENT: &str = "mutation OrchComment($input: CommentCreateInput!) { commentCreate(input: $input) { success } }";
+
+fn issue_query() -> String {
+    format!("query OrchIssue($id: String!) {{ issue(id: $id) {{ {FIELDS} }} }}")
+}
+
+fn issue_create() -> String {
+    format!(
+        "mutation OrchIssueCreate($input: IssueCreateInput!) {{ issueCreate(input: $input) {{ success issue {{ {FIELDS} }} }} }}"
+    )
+}
+
+fn issue_update() -> String {
+    format!(
+        "mutation OrchIssueUpdate($id: String!, $input: IssueUpdateInput!) {{ issueUpdate(id: $id, input: $input) {{ success issue {{ {FIELDS} }} }} }}"
+    )
+}
+
+fn issues_query() -> String {
+    format!(
+        "query OrchIssues($filter: IssueFilter, $after: String) {{ issues(first: 25, after: $after, filter: $filter) {{ nodes {{ {FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }}"
+    )
+}
+
+const FIELDS: &str = "id identifier title description updatedAt state { id name type } labels(first: 50) { nodes { id name } } \
+                      inverseRelations(first: 50) { nodes { id type issue { id identifier } } }";
 
 /// `linear_teams`: the workspace's teams.
 pub fn teams(gql: &dyn Graphql) -> Result<Vec<TeamRef>> {
-    let d = gql
-        .call("query OrchTeams { teams(first: 100) { nodes { id key name } } }", &json!({}))
-        .map_err(|e| anyhow!("{e}"))?;
+    let d = gql.call(TEAMS_QUERY, &json!({})).map_err(|e| anyhow!("{e}"))?;
     Ok(d["teams"]["nodes"]
         .as_array()
         .into_iter()
@@ -165,7 +192,7 @@ fn key(v: &Value) -> String {
     v["identifier"].as_str().filter(|i| !i.is_empty()).map_or_else(|| s(&v["id"]), str::to_string)
 }
 
-const TEAM_QUERY: &str = "query OrchTeam($key: String!) { teams(filter: { key: { eq: $key } }) { nodes { id key name \
+const TEAM_QUERY: &str = "query OrchTeam($key: String!) { teams(first: 1, filter: { key: { eq: $key } }) { nodes { id key name \
     states(first: 100) { nodes { id name type position } } projects(first: 100) { nodes { id name } } } } }";
 
 /// Labels by name, over the workspace and every team (a team-scoped
@@ -327,10 +354,7 @@ impl<T: Graphql> LinearIssues<T> {
             self.labels.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), id.clone());
             return Ok(id);
         }
-        let d = self.call(
-            "mutation OrchLabelCreate($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { success issueLabel { id name } } }",
-            json!({"input": {"name": name, "teamId": team_id}}),
-        )?;
+        let d = self.call(LABEL_CREATE, json!({"input": {"name": name, "teamId": team_id}}))?;
         let id = s(&d["issueLabelCreate"]["issueLabel"]["id"]);
         if id.is_empty() {
             bail!("Linear: label {name} not created");
@@ -364,8 +388,7 @@ impl<T: Graphql> LinearIssues<T> {
     }
 
     fn raw(&self, id: &str) -> Result<Value> {
-        let d = self
-            .call(&format!("query OrchIssue($id: String!) {{ issue(id: $id) {{ {FIELDS} }} }}"), json!({"id": id}))?;
+        let d = self.call(&issue_query(), json!({"id": id}))?;
         let v = d["issue"].clone();
         if v.is_null() {
             bail!("no Linear issue {id}");
@@ -401,16 +424,10 @@ impl<T: Graphql> LinearIssues<T> {
             .map(|r| (s(&r["id"]), key(&r["issue"])))
             .collect();
         for b in want.iter().filter(|b| !have.iter().any(|(_, h)| h == *b)) {
-            self.call(
-                "mutation OrchRelationCreate($input: IssueRelationCreateInput!) { issueRelationCreate(input: $input) { success } }",
-                json!({"input": {"issueId": b, "relatedIssueId": id, "type": "blocks"}}),
-            )?;
+            self.call(RELATION_CREATE, json!({"input": {"issueId": b, "relatedIssueId": id, "type": "blocks"}}))?;
         }
         for (rel, _) in have.iter().filter(|(_, h)| !want.contains(h)) {
-            self.call(
-                "mutation OrchRelationDelete($id: String!) { issueRelationDelete(id: $id) { success } }",
-                json!({"id": rel}),
-            )?;
+            self.call(RELATION_DELETE, json!({"id": rel}))?;
         }
         Ok(())
     }
@@ -433,12 +450,7 @@ impl<T: Graphql> LinearIssues<T> {
 
     pub fn create(&self, w: &IssueWrite) -> Result<Issue> {
         let input = self.input(w, None)?;
-        let d = self.call(
-            &format!(
-                "mutation OrchIssueCreate($input: IssueCreateInput!) {{ issueCreate(input: $input) {{ success issue {{ {FIELDS} }} }} }}"
-            ),
-            json!({"input": input}),
-        )?;
+        let d = self.call(&issue_create(), json!({"input": input}))?;
         let v = d["issueCreate"]["issue"].clone();
         if v.is_null() {
             bail!("Linear: issue not created");
@@ -453,12 +465,7 @@ impl<T: Graphql> LinearIssues<T> {
     pub fn update(&self, id: &str, w: &IssueWrite) -> Result<Issue> {
         let cur = self.raw(id)?;
         let input = self.input(w, Some(&cur))?;
-        let d = self.call(
-            &format!(
-                "mutation OrchIssueUpdate($id: String!, $input: IssueUpdateInput!) {{ issueUpdate(id: $id, input: $input) {{ success issue {{ {FIELDS} }} }} }}"
-            ),
-            json!({"id": id, "input": input}),
-        )?;
+        let d = self.call(&issue_update(), json!({"id": id, "input": input}))?;
         let v = d["issueUpdate"]["issue"].clone();
         if v.is_null() {
             bail!("Linear: issue {id} not updated");
@@ -476,10 +483,7 @@ impl<T: Graphql> LinearIssues<T> {
     }
 
     pub fn comment(&self, id: &str, text: &str) -> Result<()> {
-        self.call(
-            "mutation OrchComment($input: CommentCreateInput!) { commentCreate(input: $input) { success } }",
-            json!({"input": {"issueId": id, "body": text}}),
-        )?;
+        self.call(COMMENT, json!({"input": {"issueId": id, "body": text}}))?;
         Ok(())
     }
 
@@ -493,12 +497,7 @@ impl<T: Graphql> LinearIssues<T> {
         let mut out = vec![];
         let mut after = Value::Null;
         for _ in 0..50 {
-            let d = self.call(
-                &format!(
-                    "query OrchIssues($filter: IssueFilter, $after: String) {{ issues(first: 25, after: $after, filter: $filter) {{ nodes {{ {FIELDS} }} pageInfo {{ hasNextPage endCursor }} }} }}"
-                ),
-                json!({"filter": filter, "after": after}),
-            )?;
+            let d = self.call(&issues_query(), json!({"filter": filter, "after": after}))?;
             for v in d["issues"]["nodes"].as_array().into_iter().flatten() {
                 out.push(self.to_issue(v)?);
             }
@@ -538,6 +537,89 @@ pub mod fake {
     use serde_json::{Value, json};
 
     use super::{GqlError, Graphql};
+
+    /// Linear's complexity limit; a query estimated above it is refused.
+    const COMPLEXITY_LIMIT: f64 = 10_000.0;
+
+    /// Linear's query-complexity estimate, from the query text alone: a
+    /// scalar field costs 0.1, an object 1, and a field with a
+    /// sub-selection taking `first: N` multiplies its children by N (50
+    /// for a connection, a sub-selection holding `nodes`, without `first:`).
+    /// Ignores the operation header, variable definitions and fragments.
+    pub fn complexity(query: &str) -> f64 {
+        let b = query.as_bytes();
+        let mut i = b.iter().position(|&c| c == b'{').map_or(b.len(), |p| p + 1);
+        selection(b, &mut i).0
+    }
+
+    /// Parses fields up to the closing `}`: (sum of their costs, holds `nodes`).
+    fn selection(b: &[u8], i: &mut usize) -> (f64, bool) {
+        let (mut sum, mut nodes) = (0.0, false);
+        while *i < b.len() {
+            let c = b[*i];
+            if c == b'}' {
+                *i += 1;
+                break;
+            }
+            if !(c.is_ascii_alphabetic() || c == b'_') {
+                *i += 1;
+                continue;
+            }
+            let start = *i;
+            while *i < b.len() && (b[*i].is_ascii_alphanumeric() || b[*i] == b'_') {
+                *i += 1;
+            }
+            nodes |= &b[start..*i] == b"nodes";
+            skip_ws(b, i);
+            let mut first = None;
+            if b.get(*i) == Some(&b'(') {
+                first = args(b, i);
+                skip_ws(b, i);
+            }
+            if b.get(*i) == Some(&b'{') {
+                *i += 1;
+                let (children, has_nodes) = selection(b, i);
+                let mult = first.unwrap_or(if has_nodes { 50.0 } else { 1.0 });
+                sum += 1.0 + mult * children;
+            } else {
+                sum += 0.1;
+            }
+        }
+        (sum, nodes)
+    }
+
+    fn skip_ws(b: &[u8], i: &mut usize) {
+        while *i < b.len() && (b[*i].is_ascii_whitespace() || b[*i] == b',') {
+            *i += 1;
+        }
+    }
+
+    /// Skips a balanced `(...)` and returns its top-level `first: N`.
+    fn args(b: &[u8], i: &mut usize) -> Option<f64> {
+        let (mut depth, mut first) = (0, None);
+        while *i < b.len() {
+            match b[*i] {
+                b'(' | b'{' | b'[' => depth += 1,
+                b')' | b'}' | b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        *i += 1;
+                        break;
+                    }
+                }
+                b'f' if depth == 1 && b[*i..].starts_with(b"first") && *i > 0 && !b[*i - 1].is_ascii_alphanumeric() => {
+                    let rest = std::str::from_utf8(&b[*i + 5..]).unwrap_or("").trim_start();
+                    if let Some(r) = rest.strip_prefix(':') {
+                        let n: String = r.trim_start().chars().take_while(char::is_ascii_digit).collect();
+                        first = n.parse().ok();
+                    }
+                }
+                _ => {}
+            }
+            *i += 1;
+        }
+        first
+    }
 
     #[derive(Clone, Debug)]
     pub struct FakeIssue {
@@ -641,6 +723,9 @@ pub mod fake {
             let mut w = self.0.lock().unwrap();
             let name = op(query).to_string();
             w.calls.push(name.clone());
+            if complexity(query) > COMPLEXITY_LIMIT {
+                return Err(GqlError::Failed("Query too complex".into()));
+            }
             if w.rate_limited > 0 {
                 w.rate_limited -= 1;
                 return Err(GqlError::RateLimited { retry_after_s: None });
@@ -755,6 +840,51 @@ pub mod fake {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_query_stays_well_under_the_complexity_limit() {
+        use fake::complexity;
+        let all = [
+            TEAMS_QUERY.to_string(),
+            TEAM_QUERY.to_string(),
+            LABEL_QUERY.to_string(),
+            LABEL_CREATE.to_string(),
+            issue_query(),
+            issues_query(),
+            issue_create(),
+            issue_update(),
+            RELATION_CREATE.to_string(),
+            RELATION_DELETE.to_string(),
+            COMMENT.to_string(),
+        ];
+        for q in &all {
+            let c = complexity(q);
+            assert!(c <= 5_000.0, "{c} points: {q}");
+        }
+    }
+
+    #[test]
+    fn the_old_team_query_is_caught() {
+        let old = TEAM_QUERY.replace("first: 1, ", "");
+        assert_ne!(old, TEAM_QUERY);
+        assert!(fake::complexity(&old) > 10_000.0);
+        assert!(fake::complexity(TEAM_QUERY) < 300.0);
+    }
+
+    #[test]
+    fn estimator_rules() {
+        use fake::complexity;
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        // scalars 0.1, object 1, no `first:` on a connection → ×50, args ignored
+        assert!(near(complexity("query Q($a: Int) { xs(filter: { first: 9 }) { nodes { a b } } }"), 1.0 + 50.0 * 1.2));
+        // nested `first:`
+        assert!(near(
+            complexity("{ xs(first: 10) { nodes { a ys(first: 5) { nodes { b } } } } }"),
+            1.0 + 10.0 * (1.0 + 0.1 + 1.0 + 5.0 * 1.1)
+        ));
+        // a mutation payload is not a connection
+        assert!(near(complexity("mutation M($i: I!) { m(input: $i) { success } }"), 1.1));
+    }
 
     #[test]
     fn answers_and_columns() {
