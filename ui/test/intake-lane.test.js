@@ -184,7 +184,13 @@ describe('lib/intake copy rules (notes §2.1, §4.2, §9)', () => {
     expect(e('linear_key').fix).toBe('integrations');
     expect(e('bad_glob').fix).toBe('settings');
     expect(e('failed', { message: 'boom\nstack' })).toMatchObject({ fix: 'retry', text: 'Could not refresh: boom' });
-    const rl = e('rate_limited', { retry_at_ms: NOW + 20 * MIN });
+    // A fixed local noon: "retry at HH:MM" must not cross midnight (tests hold at any hour).
+    const noon = new Date(2026, 10, 4, 12, 0).getTime();
+    const rl = I.errorInfo(
+      { code: 'rate_limited', message: 'raw message', fix: null, retry_at_ms: noon + 20 * MIN },
+      { type: 'github', label: 'acme/shop · label ready' },
+      noon,
+    );
     expect(rl.fix).toBeNull();
     expect(rl.text).toMatch(/^GitHub rate limit reached · retry at \d\d:\d\d$/);
     expect(I.rateLimitedUntil({ error: { code: 'rate_limited', retry_at_ms: NOW + MIN } }, NOW)).toBe(NOW + MIN);
