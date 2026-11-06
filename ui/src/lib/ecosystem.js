@@ -305,7 +305,8 @@ export function artifactTool(a) {
   if (a?.meta?.tool) return a.meta.tool;
   const u = String(a?.uri ?? '');
   // The extension first: a repo path may contain "penpot" or "figma.com" in a folder name.
-  if (/\.figcraft$/i.test(u.split('#')[0])) return 'figcraft';
+  // Never for a URL: the core only parses repo paths as FigCraft files.
+  if (!/^https?:/i.test(u) && /\.figcraft$/i.test(u.split('#')[0])) return 'figcraft';
   if (/penpot/.test(u)) return 'penpot';
   if (/figma\.com/.test(u)) return 'figma';
   return /^https?:/.test(u) ? 'url' : 'file';
@@ -341,7 +342,7 @@ export function previewError(err, a, from = a?.from_node ?? 'the designer') {
 /** "On ui-1's branch · not merged" when the file is not on the integration branch yet. */
 export function notMerged(a, preview = null) {
   if (preview?.source === 'branch') return true;
-  return a?.meta?.tool === 'file' && a?.meta?.on_integration === false;
+  return (a?.meta?.tool === 'file' || a?.meta?.tool === 'figcraft') && a?.meta?.on_integration === false;
 }
 
 /**

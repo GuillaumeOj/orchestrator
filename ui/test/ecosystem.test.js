@@ -15,6 +15,7 @@ import {
   integrationDetail,
   keychainAccount,
   linkOnly,
+  notMerged,
   secretEnv,
   serverForSave,
   serverProblem,
@@ -111,6 +112,11 @@ describe('ecosystem helpers', () => {
     expect(artifactTool({ uri: '/w/a.figcraft.png' })).toBe('file');
     expect(artifactTool({ uri: '/w/notes.txt#x.figcraft' })).toBe('file');
     expect(artifactTool({ uri: 'x', meta: { tool: 'figcraft' } })).toBe('figcraft');
+    expect(artifactTool({ uri: 'https://x.io/a.figcraft' })).toBe('url');
+    expect(artifactTool({ uri: 'http://x.io/a.figcraft#1' })).toBe('url');
+    expect(notMerged({ meta: { tool: 'figcraft', on_integration: false } })).toBe(true);
+    expect(notMerged({ meta: { tool: 'figcraft', on_integration: true } })).toBe(false);
+    expect(notMerged({ meta: { tool: 'figma', on_integration: false } })).toBe(false);
     expect(TOOL.figcraft.label).toBe('FigCraft');
     expect(linkOnly({ uri: '/w/a.figcraft' })).toBe(true);
     const a = { uri: '/w/Orchestrator.figcraft', meta: { tool: 'figcraft', node_id: '252198' } };
