@@ -78,7 +78,10 @@ Out:
 `ProjectSettings.external_files` (`crates/orch-store/src/teams.rs`), a list
 of `{path, kind: "file"|"folder", access: "read"|"write", note?,
 added_at_ms}`. The path is stored canonical (`~` expanded, symlinks
-resolved). Order = the order added. Kept by the dedicated commands only:
+resolved). Order = the order added. Every change (the commands below and `project_settings_set`) is one
+read-modify-write of the project's settings under a single transaction or
+lock, so concurrent saves never drop an entry. Kept by the dedicated
+commands only:
 `project_settings_set` (the General/backend form) keeps the stored list as
 is, whatever its form carries, so the two editors never erase each other.
 
@@ -96,10 +99,16 @@ A path is refused, with a message for that path, when:
 | inside or containing the app's data folder | `{p}: the app's own data can't be shared with agents` |
 | inside or containing a credential store (`CREDENTIAL_STORES`: `~/.ssh`, `~/.aws`, Keychains…) | `{p}: holds credentials, can't be shared with agents` |
 | containing the project's main checkout or another project's | `{p}: contains a project repository, pick a folder inside it` |
+| inside the worktree root of any registered project (agents' worktrees) | `{p}: inside agent worktrees, pick the file in its project instead` |
+| a `write` entry inside a `read` folder of the list | `{p}: inside a read-only folder in the project files; set that folder to Read & write first` |
+| switching a folder to `read` while it contains `write` entries | `{p}: contains files set to Read & write; set them to Read only first` |
+| more than 100 entries | `{p}: 100 files at most per project` |
 
 A folder that is inside another listed folder is accepted (it can carry its
-own access and note); the narrower entry wins for its subtree (a `read`
-folder inside a `write` folder: its files are read only). At most 100
+own access and note). A `read` entry inside a `write` folder makes its
+subtree read only (Edit denied; Bash too when the CLI's sandbox supports
+`denyWrite`). The reverse, a `write` entry inside a `read` folder, is
+refused (Claude Code deny rules always win over allow rules). At most 100
 entries per project.
 
 Adding several paths is all-or-some: valid paths are added, refused ones are
