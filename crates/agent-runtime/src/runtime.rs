@@ -240,6 +240,8 @@ pub struct Runtime {
     pub(crate) notion_polling: std::sync::atomic::AtomicBool,
     /// The Linear API key, read once (cleared when the user changes it).
     pub(crate) linear_token: crate::linear::TokenCache,
+    /// P4.5 intake: the refresher's schedule and the last `now.intake` sent.
+    pub(crate) intake: crate::intake::Refresher,
     /// FR-604: (project, server) probes running in the background.
     pub(crate) probing: Mutex<std::collections::BTreeSet<(Option<String>, String)>>,
     /// Told of every Inbox outcome ([`Runtime::set_outcome_sink`]).
@@ -566,6 +568,7 @@ impl Runtime {
             notion_locks: Mutex::new(BTreeMap::new()),
             notion_polling: std::sync::atomic::AtomicBool::new(false),
             linear_token: Default::default(),
+            intake: Default::default(),
             probing: Default::default(),
             pr_watch: Default::default(),
             outcome_sink: Mutex::new(None),

@@ -473,6 +473,192 @@ impl TaskBackendConfig {
     }
 }
 
+/// The default glob of a `repo_docs` intake source.
+pub const DEFAULT_INTAKE_GLOB: &str = ".orchestrator/backlog/*.md";
+
+/// Typed view of `projects.intake_source` (FR-1312, P4.5 api-contract §1.1):
+/// where the project's Ready to start items come from. `NULL` = none.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum IntakeSource {
+    #[default]
+    None,
+    /// Open issues of `repo` (default: the project's known repository).
+    Github {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repo: Option<String>,
+        filter: GithubIntakeFilter,
+    },
+    /// Issues of a Linear team (id or key) in an unstarted state (and
+    /// backlog when `include_backlog`), optionally of a project and label.
+    Linear {
+        team: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default)]
+        include_backlog: bool,
+    },
+    /// Files of the repository matching `glob` on `branch` (default: the
+    /// project's base branch), read from the local ref.
+    RepoDocs {
+        #[serde(default = "default_glob")]
+        glob: String,
+        #[serde(default)]
+        branch: Option<String>,
+    },
+}
+
+fn default_glob() -> String {
+    DEFAULT_INTAKE_GLOB.into()
+}
+
+/// Which open issues of a GitHub repository are intake items.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum GithubIntakeFilter {
+    /// Issues carrying every one of `names`.
+    Label { names: Vec<String> },
+    /// Issues of the open milestone titled `title`.
+    Milestone { title: String },
+    /// Issues on Projects v2 board `number` of `owner`, optionally only
+    /// those whose *Status* field is `status`.
+    Project {
+        owner: String,
+        number: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+    },
+}
+
+/// A rejected intake source: the field at fault and why (api-contract §1.1).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct IntakeInvalid {
+    pub field: &'static str,
+    pub message: String,
+}
+
+impl std::fmt::Display for IntakeInvalid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.field, self.message)
+    }
+}
+
+impl std::error::Error for IntakeInvalid {}
+
+/// `owner/name`, as GitHub names a repository.
+pub fn valid_repo(r: &str) -> bool {
+    let mut parts = r.split('/');
+    let ok = |s: Option<&str>| {
+        s.is_some_and(|s| {
+            !s.is_empty() && !s.starts_with('-') && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+        })
+    };
+    ok(parts.next()) && ok(parts.next()) && parts.next().is_none()
+}
+
+impl IntakeSource {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            IntakeSource::None => "none",
+            IntakeSource::Github { .. } => "github",
+            IntakeSource::Linear { .. } => "linear",
+            IntakeSource::RepoDocs { .. } => "repo_docs",
+        }
+    }
+
+    pub fn is_none(&self) -> bool {
+        matches!(self, IntakeSource::None)
+    }
+
+    /// The source as stored: names trimmed, empty optionals dropped.
+    pub fn normalized(mut self) -> IntakeSource {
+        let opt = |o: &mut Option<String>| {
+            *o = o.take().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        };
+        match &mut self {
+            IntakeSource::None => {}
+            IntakeSource::Github { repo, filter } => {
+                opt(repo);
+                match filter {
+                    GithubIntakeFilter::Label { names } => {
+                        names.iter_mut().for_each(|n| *n = n.trim().to_string());
+                        names.retain(|n| !n.is_empty());
+                    }
+                    GithubIntakeFilter::Milestone { title } => *title = title.trim().to_string(),
+                    GithubIntakeFilter::Project { owner, status, .. } => {
+                        *owner = owner.trim().to_string();
+                        opt(status);
+                    }
+                }
+            }
+            IntakeSource::Linear { team, project, label, .. } => {
+                *team = team.trim().to_string();
+                opt(project);
+                opt(label);
+            }
+            IntakeSource::RepoDocs { glob, branch } => {
+                *glob = glob.trim().to_string();
+                if glob.is_empty() {
+                    *glob = default_glob();
+                }
+                opt(branch);
+            }
+        }
+        self
+    }
+
+    /// Validation of api-contract §1.1 (the glob's syntax is checked where
+    /// it is compiled, `orch_tasks::intake`).
+    pub fn validate(&self) -> std::result::Result<(), IntakeInvalid> {
+        let bad = |field, message: &str| Err(IntakeInvalid { field, message: message.into() });
+        match self {
+            IntakeSource::None => Ok(()),
+            IntakeSource::Github { repo, filter } => {
+                if let Some(r) = repo
+                    && !valid_repo(r)
+                {
+                    return bad("repo", "the repository must be owner/name");
+                }
+                match filter {
+                    GithubIntakeFilter::Label { names } if names.iter().all(|n| n.trim().is_empty()) => {
+                        bad("names", "name at least one label")
+                    }
+                    GithubIntakeFilter::Label { names } if names.iter().any(|n| n.contains(',')) => {
+                        bad("names", "a label name cannot contain a comma")
+                    }
+                    GithubIntakeFilter::Milestone { title } if title.trim().is_empty() => {
+                        bad("title", "name the milestone")
+                    }
+                    GithubIntakeFilter::Project { number: 0, .. } => bad("number", "the project number is 1 or more"),
+                    GithubIntakeFilter::Project { owner, .. } if !valid_repo(&format!("{}/x", owner.trim())) => {
+                        bad("owner", "the project owner is a GitHub user or organization login")
+                    }
+                    _ => Ok(()),
+                }
+            }
+            IntakeSource::Linear { team, .. } if team.trim().is_empty() => bad("team", "choose a Linear team"),
+            IntakeSource::Linear { .. } => Ok(()),
+            IntakeSource::RepoDocs { glob, branch } => {
+                let g = glob.trim();
+                if g.starts_with('/') {
+                    return bad("glob", "the glob is relative to the repository (no leading /)");
+                }
+                if g.split(['/', '\\']).any(|c| c == "..") {
+                    return bad("glob", "the glob cannot leave the repository (..)");
+                }
+                if let Some(b) = branch
+                    && (b.starts_with('-') || b.contains("..") || b.contains(char::is_whitespace))
+                {
+                    return bad("branch", "not a branch name");
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 fn cursor_key(project: &str) -> String {
     format!("task_sync_cursor:{project}")
 }
@@ -1700,6 +1886,43 @@ mod tests {
         let ev = s.run_events("r1", 10).unwrap();
         assert_eq!(ev.len(), 1);
         assert_eq!(ev[0].kind, "run.state");
+    }
+
+    #[test]
+    fn intake_sources_parse_and_validate() {
+        use serde_json::json;
+        let parse = |v: Value| serde_json::from_value::<IntakeSource>(v).unwrap();
+        let gh = parse(json!({"type": "github", "filter": {"kind": "label", "names": [" ready ", ""]}}));
+        assert_eq!(
+            gh.clone().normalized(),
+            IntakeSource::Github { repo: None, filter: GithubIntakeFilter::Label { names: vec!["ready".into()] } }
+        );
+        let pj = parse(json!({"type": "github", "repo": "acme/shop",
+            "filter": {"kind": "project", "owner": "acme", "number": 7, "status": "Todo"}}));
+        assert_eq!(serde_json::to_value(&pj).unwrap()["filter"]["status"], "Todo");
+        assert!(pj.validate().is_ok());
+        let li = parse(json!({"type": "linear", "team": "ENG", "label": "next"}));
+        assert!(matches!(&li, IntakeSource::Linear { include_backlog: false, .. }));
+        let docs = parse(json!({"type": "repo_docs"}));
+        assert_eq!(docs, IntakeSource::RepoDocs { glob: DEFAULT_INTAKE_GLOB.into(), branch: None });
+        assert_eq!(parse(json!({"type": "none"})), IntakeSource::None);
+        assert_eq!(serde_json::to_value(&docs).unwrap()["type"], "repo_docs");
+        let field = |v: Value| parse(v).normalized().validate().unwrap_err().field;
+        assert_eq!(
+            field(json!({"type": "github", "repo": "shop", "filter": {"kind": "label", "names": ["a"]}})),
+            "repo"
+        );
+        assert_eq!(field(json!({"type": "github", "filter": {"kind": "label", "names": []}})), "names");
+        assert_eq!(field(json!({"type": "github", "filter": {"kind": "milestone", "title": " "}})), "title");
+        assert_eq!(
+            field(json!({"type": "github", "filter": {"kind": "project", "owner": "a", "number": 0}})),
+            "number"
+        );
+        assert_eq!(field(json!({"type": "linear", "team": " "})), "team");
+        assert_eq!(field(json!({"type": "repo_docs", "glob": "/etc/*"})), "glob");
+        assert_eq!(field(json!({"type": "repo_docs", "glob": "docs/../../x/*.md"})), "glob");
+        assert_eq!(field(json!({"type": "repo_docs", "branch": "-x"})), "branch");
+        assert!(valid_repo("acme/shop.js") && !valid_repo("a/b/c") && !valid_repo("-a/b"));
     }
 
     #[test]

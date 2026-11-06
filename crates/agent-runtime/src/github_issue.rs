@@ -410,7 +410,7 @@ impl Change {
 }
 
 impl Runtime {
-    fn gh_in(&self, project: &Project) -> Box<dyn Gh> {
+    pub(crate) fn gh_in(&self, project: &Project) -> Box<dyn Gh> {
         self.gh_override().unwrap_or_else(|| Box::new(GhCli::new(project.path.clone())))
     }
 

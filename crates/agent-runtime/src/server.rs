@@ -69,6 +69,8 @@ pub fn serve(rt: Arc<Runtime>, listener: UnixListener, stop: Arc<AtomicBool>) ->
             }
         })?
     };
+    // Intake refreshes (P4.5) on their own thread.
+    Runtime::spawn_intake(rt.clone(), stop.clone())?;
     // Network work (fetch) on its own thread: it can take a while.
     {
         let (rt, stop) = (rt.clone(), stop.clone());

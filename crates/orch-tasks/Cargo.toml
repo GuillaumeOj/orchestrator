@@ -14,6 +14,8 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 jiff.workspace = true
+globset.workspace = true
 
 [dev-dependencies]
+orch-git = { workspace = true, features = ["fixtures"] }
 tempfile.workspace = true
