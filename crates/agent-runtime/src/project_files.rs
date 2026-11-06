@@ -112,6 +112,12 @@ fn fold(p: &Path) -> PathBuf {
     p.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect()
 }
 
+/// A control character or a Unicode line/paragraph separator: it would break
+/// the prompt's one-line list item.
+fn line_break(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
+}
+
 /// `~` and `~/…` expanded; anything still relative is refused.
 pub fn expand(input: &str, home: &Path) -> Result<PathBuf, String> {
     let s = input.trim();
@@ -173,7 +179,7 @@ pub fn check(canon_path: &Path, b: &Bounds) -> Result<(), &'static str> {
     }
     // A backslash escapes in a rule pattern; a newline would break the
     // prompt's list item.
-    if name.chars().any(|c| c == '\\' || c.is_control()) {
+    if name.chars().any(|c| c == '\\' || line_break(c)) {
         return Err(
             "names with \\ or control characters can't be shared with agents; rename it or pick another folder",
         );
@@ -199,7 +205,7 @@ pub fn check_nesting(
             if kind == FileKind::Folder
                 && files
                     .iter()
-                    .any(|f| f.path != path && f.access == FileAccess::Write && f.path.starts_with(path)) =>
+                    .any(|f| !same(&f.path, path) && f.access == FileAccess::Write && under(&f.path, path)) =>
         {
             Err("contains files set to Read & write; set them to Read only first")
         }
@@ -207,10 +213,19 @@ pub fn check_nesting(
     }
 }
 
+/// Same path, or `a` inside `b`, compared like [`check`] does (case-insensitive).
+fn same(a: &Path, b: &Path) -> bool {
+    fold(a) == fold(b)
+}
+
+fn under(a: &Path, b: &Path) -> bool {
+    fold(a).starts_with(fold(b))
+}
+
 /// Whether `path` is strictly inside a listed `read` folder.
 fn in_read_folder(path: &Path, files: &[ProjectFile]) -> bool {
     files.iter().any(|f| {
-        f.path != path && f.kind == FileKind::Folder && f.access == FileAccess::Read && path.starts_with(&f.path)
+        !same(&f.path, path) && f.kind == FileKind::Folder && f.access == FileAccess::Read && under(path, &f.path)
     })
 }
 
@@ -258,7 +273,7 @@ pub fn locate(inputs: &[String], home: &Path) -> Vec<Located> {
 
 /// The checks of [`resolve`] past canonicalization.
 fn admit(shown: &str, canon: &Path, b: &Bounds, files: &[ProjectFile]) -> Result<(), String> {
-    if files.iter().any(|f| f.path == canon) {
+    if files.iter().any(|f| same(&f.path, canon)) {
         return Err(format!("{shown}: already in the project files"));
     }
     check(canon, b).map_err(|m| format!("{shown}: {m}"))
@@ -321,7 +336,6 @@ pub fn default_access(path: &Path, files: &[ProjectFile]) -> FileAccess {
 /// newlines and other control characters become spaces), trimmed, empty =
 /// none, at most [`MAX_NOTE`] characters.
 pub fn normalize_note(note: &str) -> Result<Option<String>, String> {
-    let line_break = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
     let n: String = note.chars().map(|c| if line_break(c) { ' ' } else { c }).collect();
     match n.trim() {
         "" => Ok(None),
@@ -809,6 +823,10 @@ mod tests {
         assert_eq!(added.len(), 1);
         // The entry being changed is not compared with itself.
         assert_eq!(check_nesting(&brand, FileKind::Folder, FileAccess::Read, &files[..1]), Ok(()));
+        // Case differences don't hide a duplicate or a nesting.
+        let lower = f.b.home.join("brand");
+        assert!(same(&lower, &brand));
+        assert!(under(&lower.join("x"), &brand));
     }
 
     #[test]
