@@ -89,6 +89,8 @@ export function classify(e, ctx = {}) {
     // ⌘⏎ submits a dialog (Penpot 05); the dialog handles it.
     if (name === 'cmd+enter') return { kind: 'pass' };
     if (NATIVE.has(name)) return { kind: 'native' };
+    // ⌘O browses in Project settings › Files; a terminal keeps ignoring it.
+    if (name === 'cmd+o' && !ctx.terminal) return { kind: 'pass' };
     // Any other ⌘ key: never to the PTY, nothing else to do.
     return { kind: 'swallow' };
   }
