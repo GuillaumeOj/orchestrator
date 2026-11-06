@@ -66,14 +66,18 @@ impl VersionRange {
     }
 }
 
-/// `claude --version`, cached per binary (path, size, mtime): it starts a
-/// whole Node/Bun process, and it is checked at every spawn.
+/// `claude --version`, cached per binary (path, the file it resolves to, size,
+/// mtime): it starts a whole Node/Bun process, and it is checked at every
+/// spawn. `claude update` swaps the `~/.local/bin/claude` symlink to a new
+/// version, which changes the resolved file.
 pub fn claude_version(claude: &Path) -> Result<Version> {
+    use std::path::PathBuf;
     use std::sync::Mutex;
-    type Key = (std::path::PathBuf, u64, std::time::SystemTime);
+    type Key = (PathBuf, PathBuf, u64, std::time::SystemTime);
     static CACHE: Mutex<Vec<(Key, Version)>> = Mutex::new(Vec::new());
     let meta = std::fs::metadata(claude).with_context(|| format!("no claude at {}", claude.display()))?;
-    let key: Key = (claude.to_path_buf(), meta.len(), meta.modified().unwrap_or(std::time::UNIX_EPOCH));
+    let real = std::fs::canonicalize(claude).unwrap_or_else(|_| claude.to_path_buf());
+    let key: Key = (claude.to_path_buf(), real, meta.len(), meta.modified().unwrap_or(std::time::UNIX_EPOCH));
     if let Some((_, v)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(k, _)| *k == key) {
         return Ok(*v);
     }
@@ -155,6 +159,28 @@ mod tests {
         assert!(r.check(Version(2, 1, 296)).is_err());
         assert_eq!(r.check(Version(2, 2, 0)).unwrap(), VersionCheck::Untested(Version(2, 2, 0)));
         assert!(VersionRange { strict: true, ..r }.check(Version(2, 2, 0)).is_err());
+    }
+
+    #[test]
+    fn the_version_cache_follows_a_swapped_symlink() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        let script = |v: &str| format!("#!/bin/sh\necho '{v} (Claude Code)'\n");
+        // Same size and same mtime: only the resolved file tells them apart.
+        let (a, b) = (d.path().join("2.1.400"), d.path().join("2.1.401"));
+        let mtime = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        for (p, v) in [(&a, "2.1.400"), (&b, "2.1.401")] {
+            std::fs::write(p, script(v)).unwrap();
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::File::options().write(true).open(p).unwrap().set_modified(mtime).unwrap();
+        }
+        let link = d.path().join("claude");
+        symlink(&a, &link).unwrap();
+        assert_eq!(claude_version(&link).unwrap(), Version(2, 1, 400));
+        let tmp = d.path().join("claude.new");
+        symlink(&b, &tmp).unwrap();
+        std::fs::rename(&tmp, &link).unwrap();
+        assert_eq!(claude_version(&link).unwrap(), Version(2, 1, 401));
     }
 
     #[test]

@@ -58,6 +58,16 @@ textarea {
 .err {
   color: var(--color-status-error);
 }
+/* A spinner glyph (◐): the Claude Code update's block, chip, banner and nav badge. */
+.spinning {
+  display: inline-block;
+  animation: spinning 1s linear infinite;
+}
+@keyframes spinning {
+  to {
+    transform: rotate(360deg);
+  }
+}
 /* A text action (context blocks, digest): accent, no box. */
 .link {
   padding: 0;

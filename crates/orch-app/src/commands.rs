@@ -833,6 +833,20 @@ pub fn dev_enabled() -> bool {
     crate::devctl::enabled()
 }
 
+// ---------------------------------------------------------------- Claude Code updates
+
+/// The latest Claude Code version now; returns `setup.claude` once the check settled.
+#[tauri::command]
+pub async fn claude_update_check(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, |c| c.claude_update_check()).await
+}
+
+/// Starts `claude update` (waits for a running check first); progress via the Setup topic.
+#[tauri::command]
+pub async fn claude_update_run(core: CoreState<'_>) -> Res<Value> {
+    blocking(core, |c| c.claude_update_run().map(|()| serde_json::json!({"started": true}))).await
+}
+
 // ---------------------------------------------------------------- updates
 
 /// Checks for an update now (api-contract §4); returns the state once the check started.
