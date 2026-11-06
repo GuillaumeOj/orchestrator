@@ -1,7 +1,7 @@
 //! Integrations (FR-1203): GitHub through `gh`, Linear and Notion through a
 //! token in the Keychain (tested from the core: agents never call them),
-//! Penpot and Figma through the MCP registry entries tagged with their
-//! design tool. Only the status is stored; the UI sends a token once and
+//! Penpot, Figma and FigCraft through the MCP registry entries tagged with
+//! their design tool. Only the status is stored; the UI sends a token once and
 //! never reads it back (`has_secret`).
 
 use std::time::Duration;
@@ -18,7 +18,7 @@ use crate::net::{HttpResponse, host_of};
 use crate::runtime::Runtime;
 
 /// The integrations, in display order.
-pub const IDS: &[&str] = &["github", "linear", "notion", "penpot", "figma"];
+pub const IDS: &[&str] = &["github", "linear", "notion", "penpot", "figma", "figcraft"];
 
 /// The Notion integration test's call (the bot user).
 pub const NOTION_ME: &str = "/v1/users/me";
@@ -32,6 +32,7 @@ fn name_of(id: &str) -> String {
         "notion" => "Notion".into(),
         "penpot" => "Penpot".into(),
         "figma" => "Figma".into(),
+        "figcraft" => "FigCraft".into(),
         other => other.into(),
     }
 }
@@ -39,7 +40,7 @@ fn name_of(id: &str) -> String {
 /// Linear and Notion keep a token in the Keychain; GitHub has `gh`, the
 /// design tools their MCP servers.
 pub fn needs_secret(id: &str) -> bool {
-    !matches!(id, "github" | "penpot" | "figma")
+    !matches!(id, "github" | "penpot" | "figma" | "figcraft")
 }
 
 /// The Keychain account holding `id`'s secret: an integration's own id, or
@@ -52,6 +53,7 @@ fn design_tool(id: &str) -> Option<DesignTool> {
     match id {
         "penpot" => Some(DesignTool::Penpot),
         "figma" => Some(DesignTool::Figma),
+        "figcraft" => Some(DesignTool::Figcraft),
         _ => None,
     }
 }
@@ -117,7 +119,7 @@ pub fn notion_outcome(r: &HttpResponse) -> Outcome {
     }
 }
 
-/// Penpot and Figma: the registry servers tagged with the tool, in any scope.
+/// Penpot, Figma and FigCraft: the registry servers tagged with the tool, in any scope.
 fn design_tool_row(id: &str, tool: DesignTool, all: &[(Scope, McpServer)]) -> IntegrationRow {
     let servers: Vec<&McpServer> = all.iter().map(|(_, s)| s).filter(|s| s.design_tool == Some(tool)).collect();
     let pick = [McpStatus::NeedsAuth, McpStatus::Error, McpStatus::Connected, McpStatus::Checking];
@@ -338,6 +340,17 @@ mod tests {
         // Penpot: the seeded connector entry.
         assert_eq!(rt.integration_json("penpot")["status"], "unknown");
         assert_eq!(rt.integration_json("figma")["status"], "not_configured");
+        assert_eq!(ids, ["github", "linear", "notion", "penpot", "figma", "figcraft"]);
+        let fc = rt.integration_json("figcraft");
+        assert_eq!(
+            (fc["name"].as_str(), fc["status"].as_str(), fc["needs_secret"].as_bool(), fc["has_secret"].as_bool()),
+            (Some("FigCraft"), Some("not_configured"), Some(false), Some(false))
+        );
+        assert_eq!(
+            rt.integration_secret_set("figcraft", Secret::new("x")).unwrap_err().to_string(),
+            "FigCraft doesn't take a token here"
+        );
+        assert_eq!(rt.integration_secret_remove("figcraft").unwrap_err().to_string(), "FigCraft has no token here");
 
         net.route(
             orch_tasks::linear::URL,
@@ -414,5 +427,28 @@ mod tests {
         let v = rt.integration_test("figma").unwrap();
         assert_eq!((v["status"].as_str(), v["detail"].as_str()), (Some("connected"), Some("MCP: Figma")));
         assert!(v["checked_at_ms"].as_u64().is_some());
+    }
+
+    #[test]
+    fn figcraft_is_probed_over_stdio() {
+        let (_d, rt, _net) = test_runtime_net();
+        let mut s = McpServer::new("figcraft", "FigCraft", McpKind::Stdio);
+        s.command = Some("/bin/sh".into());
+        s.args = vec![
+            "-c".into(),
+            r#"read l; echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"x","version":"1"}}}'
+               read l; read l; echo '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"a"}]}}'; sleep 5"#
+                .into(),
+        ];
+        s.design_tool = Some(DesignTool::Figcraft);
+        rt.mcp_server_save(s.clone(), &Scope::Global).unwrap();
+        assert_eq!(rt.integration_json("figcraft")["status"], "unknown");
+        let v = rt.integration_test("figcraft").unwrap();
+        assert_eq!((v["status"].as_str(), v["detail"].as_str()), (Some("connected"), Some("MCP: FigCraft")));
+        assert!(v["checked_at_ms"].as_u64().is_some());
+        // A command that fails shows as an error on the integration too.
+        s.command = Some("/nonexistent/figcraft-cli".into());
+        rt.mcp_server_save(s, &Scope::Global).unwrap();
+        assert_eq!(rt.integration_test("figcraft").unwrap()["status"], "error");
     }
 }

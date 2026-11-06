@@ -44,6 +44,8 @@ pub enum OpenTarget {
     Url(String),
     /// In Quick Look.
     File(PathBuf),
+    /// In the app that owns the file type (a `.figcraft` file: FigCraft).
+    App(PathBuf),
 }
 
 /// The meta of a stored artifact (parsed now for rows from before P3).
@@ -73,6 +75,34 @@ pub fn design_handoff_body(uri: &str, note: &str, from: &str, lead: &str, export
         ));
     }
     s
+}
+
+/// A blob that is a Git LFS pointer becomes the real content through
+/// `git lfs smudge`; `None` (no git-lfs, or it can't fetch) is "not found on branch".
+fn smudge_lfs(repo: &std::path::Path, bytes: Vec<u8>) -> Result<Vec<u8>> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    if !bytes.starts_with(b"version https://git-lfs") {
+        return Ok(bytes);
+    }
+    let not_found = || anyhow!("not found on branch");
+    let mut child = Command::new("git")
+        .args(["lfs", "smudge"])
+        .current_dir(repo)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| not_found())?;
+    let mut stdin = child.stdin.take().ok_or_else(not_found)?;
+    // The pointer is tiny: written from a thread so a full pipe can't deadlock the read.
+    let writer = std::thread::spawn(move || stdin.write_all(&bytes));
+    let out = child.wait_with_output().map_err(|_| not_found())?;
+    let _ = writer.join();
+    if !out.status.success() {
+        return Err(not_found());
+    }
+    Ok(out.stdout)
 }
 
 impl Runtime {
@@ -153,19 +183,23 @@ impl Runtime {
     pub fn artifact_open_target(&self, feature_id: &str, artifact: u64) -> Result<OpenTarget> {
         let (f, a) = self.feature_and_artifact(feature_id, artifact)?;
         let m = meta_of(&a).ok_or_else(|| anyhow!("can't open {}", a.uri))?;
-        let Some(path) = m.path.filter(|_| m.tool == "file") else {
+        let figcraft = m.tool == "figcraft";
+        let wrap = |p: PathBuf| if figcraft { OpenTarget::App(p) } else { OpenTarget::File(p) };
+        let Some(path) = m.path.filter(|_| m.tool == "file" || figcraft) else {
             let url = a.uri.trim();
             if !(url.starts_with("https://") || url.starts_with("http://")) {
                 bail!("can't open {url}");
             }
             return Ok(OpenTarget::Url(url.to_string()));
         };
-        if let Some(wt) = &f.integration_worktree {
+        // A FigCraft file is never opened in place: FigCraft saving into the integration
+        // worktree would dirty it. It always opens a copy extracted from git.
+        if let Some(wt) = f.integration_worktree.as_ref().filter(|_| !figcraft) {
             let p = wt.join(&path);
             // A plain file only: a committed symlink would open its target; the
             // git blob below is the link's own content.
             if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_file()) {
-                return Ok(OpenTarget::File(p));
+                return Ok(wrap(p));
             }
         }
         let repo = self.project_repo(&f)?;
@@ -173,12 +207,13 @@ impl Runtime {
             let Ok(bytes) = orch_git::git::git_bytes(&repo, &["cat-file", "blob", &format!("{rev}:{path}")]) else {
                 continue;
             };
+            let bytes = smudge_lfs(&repo, bytes)?;
             let dir = self.cfg.paths.root.join("previews");
             std::fs::create_dir_all(&dir)?;
             let name = path.rsplit('/').next().unwrap_or("artifact");
             let out = dir.join(format!("{}-{name}", a.id));
             std::fs::write(&out, bytes)?;
-            return Ok(OpenTarget::File(out));
+            return Ok(wrap(out));
         }
         bail!("not found on branch")
     }
@@ -196,13 +231,18 @@ impl Runtime {
                 c.arg("-p").arg(p);
                 c
             }
+            OpenTarget::App(p) => {
+                let mut c = std::process::Command::new("/usr/bin/open");
+                c.arg(p);
+                c
+            }
         };
         let mut child = cmd
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()?;
-        // Quick Look stays up until the user closes it: reap it off the caller's thread.
+        // Quick Look stays up (`open` returns at once) until the user closes it: reap it off the caller's thread.
         std::thread::spawn(move || child.wait());
         Ok(())
     }
@@ -258,6 +298,7 @@ mod tests {
         tgit(&repo, &["checkout", "-q", "-b", "orch/shop/integration"]);
         tgit(&repo, &["checkout", "-q", "orch/shop/ui-1"]);
         commit_file(&repo, &format!("{dir}/b.svg"), "<svg/>", "b");
+        commit_file(&repo, &format!("{dir}/a.figcraft"), "FC", "fc");
         std::fs::write(repo.join(format!("{dir}/big.png")), vec![0u8; MAX_PREVIEW_BYTES as usize + 1]).unwrap();
         tgit(&repo, &["add", "."]);
         tgit(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "big"]);
@@ -269,6 +310,9 @@ mod tests {
         let gone = add(&rt, &format!("{dir}/gone.png"), "ui");
         let link = add(&rt, "https://design.penpot.app/#/workspace?file-id=f1&page-id=p1", "ui");
         let doc = add(&rt, ".orchestrator/features/shop/spec.md", "ux");
+        let fc = add(&rt, &format!("{dir}/a.figcraft#1:2"), "ui");
+        let fc_gone = add(&rt, &format!("{dir}/gone.figcraft"), "ui");
+        let fc_lfs = add(&rt, &format!("{dir}/lfs.figcraft"), "ui");
 
         let v = rt.artifacts_json(&f).unwrap();
         let on = |i: usize| v[i]["meta"]["on_integration"].clone();
@@ -305,6 +349,25 @@ mod tests {
         rt.db.upsert_feature(&Feature { integration_worktree: Some(wt.clone()), ..f }).unwrap();
         assert_eq!(rt.artifact_open_target("f1", a).unwrap(), OpenTarget::File(wt.join(format!("{dir}/a.png"))));
         // A symlink there is not followed: the blob from the branch is used instead.
+        // A FigCraft file opens in its app, from a copy extracted from git, never the worktree's own.
+        std::fs::write(wt.join(format!("{dir}/a.figcraft")), "fc").unwrap();
+        let OpenTarget::App(p) = rt.artifact_open_target("f1", fc).unwrap() else { panic!() };
+        assert!(p.starts_with(rt.cfg.paths.root.join("previews")), "{}", p.display());
+        assert_eq!(rt.artifact_open_target("f1", fc_gone).unwrap_err().to_string(), "not found on branch");
+        let v = rt.artifacts_json(&rt.db.feature("f1").unwrap().unwrap()).unwrap();
+        assert_eq!((v[6]["meta"]["tool"].as_str(), v[6]["meta"]["node_id"].as_str()), (Some("figcraft"), Some("1:2")));
+        assert_eq!(v[6]["meta"]["on_integration"], json!(false));
+        // An LFS pointer that can't be smudged is not a file.
+        tgit(&repo, &["checkout", "-q", "orch/shop/ui-1"]);
+        commit_file(
+            &repo,
+            &format!("{dir}/lfs.figcraft"),
+            "version https://git-lfs.github.com/spec/v1\noid sha256:0000000000000000000000000000000000000000000000000000000000000000\nsize 5\n",
+            "lfs",
+        );
+        tgit(&repo, &["checkout", "-q", "main"]);
+        assert_eq!(rt.artifact_open_target("f1", fc_lfs).unwrap_err().to_string(), "not found on branch");
+        assert_eq!(smudge_lfs(&repo, b"plain".to_vec()).unwrap(), b"plain");
         let secret = rt.cfg.paths.root.join("secret.txt");
         std::fs::write(&secret, "private").unwrap();
         std::os::unix::fs::symlink(&secret, wt.join(format!("{dir}/b.svg"))).unwrap();

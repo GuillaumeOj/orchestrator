@@ -415,7 +415,8 @@ new place, the known worktrees are repaired (targeted) and re-locked.
   agent (env, argv, settings, gitconfig) ever carries a token: `no_integration_token_reaches_an_agent`.
 - **Integrations** (`integrations.rs`): GitHub from `gh auth status`; Linear (`POST
   api.linear.app/graphql`, `{ viewer organization }`) and Notion (`GET api.notion.com/v1/users/me`)
-  with the Keychain token; Penpot and Figma from the registry entries tagged `design_tool`. Only the
+  with the Keychain token; Penpot, Figma and FigCraft from the registry entries tagged `design_tool`
+  (FigCraft's is a local stdio server, so its status comes from a real probe). Only the
   status is stored (`integrations` table).
 - **Network**: `net.rs` runs `/usr/bin/curl` (system TLS and proxies, no TLS stack in the app) with
   the headers on **stdin** (`-H @-`), so a token is never on a command line. Tests use `FakeNet`.
@@ -456,8 +457,10 @@ new place, the known worktrees are repaired (targeted) and re-locked.
 ## Design artifacts and presets (P3: FR-602, FR-603, FR-306)
 
 - **Artifacts** (`artifacts.rs`): a hand-off stores what its URI points at (`meta`, parsed by
-  `orch_team::artifact`: Penpot file/page/frame ids, Figma file key and node id, a repo-relative
-  file, another URL); rows from before P3 are parsed when read. `feature_view` adds
+  `orch_team::artifact`: Penpot file/page/frame ids, Figma file key and node id, a FigCraft `*.figcraft` path
+  with an optional node id, a repo-relative file, another URL); rows from before P3 are parsed when read. `artifact_open` sends a link to the browser, a file to
+  Quick Look and a FigCraft file (`OpenTarget::App`) to `open` (its app); a blob extracted from a
+  branch that is a Git LFS pointer goes through `git lfs smudge`. `feature_view` adds
   `on_integration` for files (`git cat-file -e orch/<slug>/integration:<path>` in the project repo).
 - **Previews** read the image with `git cat-file` from the integration branch, else from the
   sender's own branches (`orch/<slug>/<node>-*`, newest first); never from a worktree on disk.
