@@ -39,7 +39,7 @@ New surfaces, nothing drawn yet: the **Ready to start** lane and its rows (per s
 2. **Items** (api-contract §1.2): what each source yields, open only:
    - GitHub: open **issues** (pull requests excluded) matching the filter, **minus** issues labelled `orch` or `orch:*` (team tasks of the task backend, never intake). Title, body (first 4 000 chars), URL, `#number`, labels, assignees, milestone, updated_at.
    - Linear: issues of the team (+ project / label) in the kept state types, minus `orch`-labelled; identifier (`ENG-42`), title, description, URL, labels, `estimate` (points), priority, updated_at.
-   - Repo docs: each file matching the glob on the branch (`git ls-tree -r --name-only <ref>`, matched with `globset`, a new workspace dependency); content by `git cat-file blob`. Title = YAML front matter `title`, else the first `# ` heading, else the file name. Optional front matter keys: `size` (`S|M|L`), `mode` (`team|solo`), `team` (team id), `status` (`done` or `started` hides the item). The item's ref is the path; updated = the blob id changing.
+   - Repo docs: each file matching the glob on the branch (`git ls-tree -r --name-only <ref>`, matched with `globset` with `literal_separator(true)`, a new workspace dependency); content by `git cat-file blob`. Title = YAML front matter `title`, else the first `# ` heading, else the file name. Optional front matter keys: `size` (`S|M|L`), `mode` (`team|solo`), `team` (team id), `status` (`done` or `started` hides the item). The item's ref is the path; updated = the blob id changing.
    - Order in the lane: per project, the source's order (GitHub: milestone/label → oldest first; Projects v2: board order; Linear: priority then sort order; repo docs: path order, so `01-…md` naming works).
    - Cap: 50 items per project (more → "+ n more in <source>" with a link).
 3. **Refresh** (`intake::Refresher`, its own thread): every project with a source, every **10 min** (setting `intake.refresh_secs`), and at once on: app start (staggered 2 s per project), a source change, `intake_refresh` (the lane's Refresh, the settings Preview), and for repo docs when the branch tip changes (checked on the existing 60 s fetch tick, no network). One refresh in flight per project; a failure keeps the last good items and records the source error (`gh` missing / not logged in, scope missing, 404 repo, Linear key missing / invalid, rate limit with retry time, bad glob, branch missing). Every refresh writes the cache and pushes on change only.
@@ -61,7 +61,7 @@ New surfaces, nothing drawn yet: the **Ready to start** lane and its rows (per s
 ### 3.4 Estimated cost — FR-1312 (M) — back
 - An item's estimate is **pp of the week** for each mode, as a range, with its basis (api-contract §2.2), recomputed on refresh and when the calibration moves by ≥ 10 %.
 - **History**: the cost of each finished team run (sum of its members' attributed usage, `UsageRecord` by agent and allocation) and each ended solo session with ≥ 1 turn, over the last 8 weeks, converted to pp with the current calibration (`k`, `Calibration`). Per project when it has ≥ 3 samples of that mode, else across projects, else **defaults** (team 6 pp, solo 1.5 pp; settings) with basis `default`.
-- **Size**: S × 0.5, M × 1, L × 2 from repo-docs `size`, Linear `estimate` (≤ 1 S, 2–3 M, ≥ 5 L) or GitHub labels `size:S|M|L` / `size/S` (case-insensitive); unknown = M. Range = p25–p75 of history × size (one sample or defaults: ± 40 %).
+- **Size**: S × 0.5, M × 1, L × 2 from repo-docs `size`, Linear `estimate` (≤ 1 S, ≤ 3 M, ≥ 4 L) or GitHub labels `size:S|M|L` / `size/S` (case-insensitive); unknown = M. Range = p25–p75 of history × size (one sample or defaults: ± 40 %).
 - Shown as "≈ 4–7 pp week" (team) / "≈ 1–2 pp" (solo), basis on hover / details ("median of 7 runs in checkout · size M"). When the high end exceeds what is left of the week's plan for the project (allocation) or of the week: a muted warning "over this week's room (3 pp left)". The estimate is advice; it never blocks a start (the Governor still queues as today).
 
 ### 3.5 Plan with the Overwatch — FR-1312 (S) — back + front
@@ -75,7 +75,7 @@ New surfaces, nothing drawn yet: the **Ready to start** lane and its rows (per s
 - Global Settings › Pacing (or a small Intake block, ux decides): refresh interval, default estimates (team, solo).
 
 ### 3.7 Measuring the exit criterion (S) — back
-- Events `intake.started {item, source, mode, project, est}` and `intake.planned_started {decision, mode}`; every `team_launch` / `agent_start` without either is `intake.untracked_start`.
+- Events `intake.started {item, project, source, mode, est_pp}` and `intake.planned_started {decision, project, mode}` (api-contract §6); every `team_launch` / `agent_start` without either is `intake.untracked_start`.
 - `orchd intake [--week]`: sources and their state, item counts per project, and this week's starts: "started from intake: 9 of 10 (1 untracked: agent fix-ci-3)".
 - The weekly report gains one line "Started from intake n of m" (report JSON `intake {started, planned, untracked}`), shown on the report pane (ux places it).
 
