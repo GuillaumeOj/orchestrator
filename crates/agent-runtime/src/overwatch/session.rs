@@ -307,9 +307,8 @@ impl Runtime {
             }
             self.overwatch_seed(&mut st, &day);
             let id = st.push(ev, now);
-            let seq = st.seq;
             drop(st);
-            self.overwatch_save_seq(&day, seq);
+            self.overwatch_save_seq(&day);
             id
         };
         self.overwatch_touch();
@@ -332,10 +331,13 @@ impl Runtime {
         st.turns = self.overwatch_turns_stored();
     }
 
-    fn overwatch_save_seq(&self, day: &str, seq: u64) {
+    /// The day's last event id, on disk. Written under the lock with the
+    /// current value: two enqueues can't leave the older one in the file.
+    fn overwatch_save_seq(&self, day: &str) {
         let dir = self.overwatch_day_dir(day);
+        let st = self.ow();
         let _ = std::fs::create_dir_all(&dir)
-            .and_then(|()| crate::compile::write_atomic(&dir.join(SEQ_FILE), seq.to_string().as_bytes()));
+            .and_then(|()| crate::compile::write_atomic(&dir.join(SEQ_FILE), st.seq.to_string().as_bytes()));
     }
 
     /// The user messages kept while it was `off` / `down` go back in the
@@ -351,9 +353,8 @@ impl Runtime {
         for ev in std::mem::take(&mut st.pending_user) {
             st.push(ev, now);
         }
-        let seq = st.seq;
         drop(st);
-        self.overwatch_save_seq(&day, seq);
+        self.overwatch_save_seq(&day);
     }
 
     /// The user's message (`chat_send`, P4.3's entry `chat`): a blocking

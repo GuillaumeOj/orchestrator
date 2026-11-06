@@ -523,7 +523,9 @@ fn segment(ctx: &HardCtx, sh: &mut Shell, all: &[String], depth: u8) -> Option<H
         }
         "git" => keep(&mut found, git(ctx, sh, args)),
         "gh" => keep(&mut found, gh(args)),
-        "curl" | "wget" | "http" | "https" | "xh" => keep(&mut found, fetch(ctx, args)),
+        "curl" => keep(&mut found, fetch_strict(ctx, args, &CURL, false)),
+        "wget" => keep(&mut found, fetch_strict(ctx, args, &WGET, true)),
+        "http" | "https" | "xh" => keep(&mut found, fetch_items(ctx, args)),
         "bash" | "sh" | "zsh" | "dash" if depth < 4 => {
             // `-c`, and clusters ending in it (`-lc`, `-ec`, `-xc`).
             if let Some(i) = args.iter().position(|a| a.starts_with('-') && !a.starts_with("--") && a.ends_with('c')) {
@@ -699,78 +701,281 @@ fn gh_api(args: &[String]) -> Option<HardVerdict> {
     (!get).then(|| user_only(WHY_GH_WRITE))
 }
 
-/// curl / wget options whose next word is a value, not a URL.
-const FETCH_VALUE_OPTS: &[&str] = &[
-    "-o",
-    "-O",
-    "--output",
-    "-H",
-    "--header",
-    "-d",
-    "--data",
-    "--data-raw",
-    "--data-binary",
-    "--data-urlencode",
-    "-X",
-    "--request",
-    "-u",
-    "--user",
-    "-A",
-    "--user-agent",
-    "-e",
-    "--referer",
-    "-b",
-    "--cookie",
-    "-c",
-    "--cookie-jar",
-    "-T",
-    "--upload-file",
-    "-F",
-    "--form",
-    "-w",
-    "--write-out",
-    "-m",
-    "--max-time",
-    "--connect-timeout",
-    "--retry",
-    "-K",
-    "--config",
-    "--cacert",
-    "--cert",
-    "--key",
-    "-P",
-    "--directory-prefix",
-    "--output-document",
-    "-t",
-    "--tries",
-    "--timeout",
-];
+/// One fetch tool's options: which take a value (the next word is no URL),
+/// which take none. An option in neither list is not understood.
+struct FetchOpts {
+    short_value: &'static str,
+    short_flag: &'static str,
+    long_value: &'static [&'static str],
+    long_flag: &'static [&'static str],
+    /// Options whose value names more URLs in a file: the hosts can't be read.
+    unreadable: &'static [&'static str],
+}
 
-/// curl / wget: every URL word's host must be allowed; none readable is
-/// user-only (conservative: an unknown option's value reads as a host).
-fn fetch(ctx: &HardCtx, args: &[String]) -> Option<HardVerdict> {
+const CURL: FetchOpts = FetchOpts {
+    short_value: "oHdXuAebcTFwmxUEyYzrCDQPt",
+    short_flag: "sSfLkvViIgGJONnRqZ#jlMpaBh0123456",
+    long_value: &[
+        "--output",
+        "--header",
+        "--data",
+        "--data-raw",
+        "--data-binary",
+        "--data-ascii",
+        "--data-urlencode",
+        "--request",
+        "--user",
+        "--user-agent",
+        "--referer",
+        "--cookie",
+        "--cookie-jar",
+        "--upload-file",
+        "--form",
+        "--form-string",
+        "--write-out",
+        "--max-time",
+        "--connect-timeout",
+        "--retry",
+        "--retry-delay",
+        "--retry-max-time",
+        "--cacert",
+        "--capath",
+        "--cert",
+        "--cert-type",
+        "--key",
+        "--proxy",
+        "--proxy-user",
+        "--limit-rate",
+        "--range",
+        "--continue-at",
+        "--dump-header",
+        "--resolve",
+        "--connect-to",
+        "--interface",
+        "--max-redirs",
+        "--output-dir",
+        "--json",
+        "--oauth2-bearer",
+        "--unix-socket",
+        "--stderr",
+        "--time-cond",
+        "--keepalive-time",
+        "--speed-limit",
+        "--speed-time",
+        "--expect100-timeout",
+    ],
+    long_flag: &[
+        "--silent",
+        "--show-error",
+        "--fail",
+        "--fail-with-body",
+        "--location",
+        "--location-trusted",
+        "--insecure",
+        "--verbose",
+        "--include",
+        "--head",
+        "--globoff",
+        "--get",
+        "--remote-name",
+        "--remote-name-all",
+        "--remote-header-name",
+        "--compressed",
+        "--no-progress-meter",
+        "--progress-bar",
+        "--create-dirs",
+        "--http1.1",
+        "--http2",
+        "--ipv4",
+        "--ipv6",
+        "--retry-connrefused",
+        "--retry-all-errors",
+        "--no-buffer",
+        "--no-keepalive",
+        "--tcp-nodelay",
+        "--netrc",
+        "--raw",
+        "--parallel",
+        "--path-as-is",
+        "--post301",
+    ],
+    unreadable: &["-K", "--config"],
+};
+
+const WGET: FetchOpts = FetchOpts {
+    short_value: "oaeOPtTwQBUlADIXi",
+    short_flag: "qvcbrkpNSxEHdmKFLhV46",
+    long_value: &[
+        "--output-document",
+        "--output-file",
+        "--append-output",
+        "--directory-prefix",
+        "--tries",
+        "--timeout",
+        "--wait",
+        "--waitretry",
+        "--user-agent",
+        "--header",
+        "--post-data",
+        "--post-file",
+        "--user",
+        "--password",
+        "--http-user",
+        "--http-password",
+        "--referer",
+        "--limit-rate",
+        "--quota",
+        "--level",
+        "--accept",
+        "--reject",
+        "--domains",
+        "--exclude-domains",
+        "--include-directories",
+        "--exclude-directories",
+        "--execute",
+        "--load-cookies",
+        "--save-cookies",
+        "--ca-certificate",
+        "--certificate",
+        "--private-key",
+        "--bind-address",
+        "--dns-timeout",
+        "--connect-timeout",
+        "--read-timeout",
+        "--proxy-user",
+        "--proxy-password",
+        "--base",
+        "--method",
+        "--body-data",
+        "--body-file",
+        "--default-page",
+        "--restrict-file-names",
+        "--prefer-family",
+        "--progress",
+        "--max-redirect",
+        "--ca-directory",
+        "--secure-protocol",
+    ],
+    long_flag: &[
+        "--quiet",
+        "--verbose",
+        "--no-verbose",
+        "--continue",
+        "--background",
+        "--recursive",
+        "--no-clobber",
+        "--no-parent",
+        "--timestamping",
+        "--no-check-certificate",
+        "--mirror",
+        "--span-hosts",
+        "--force-html",
+        "--backup-converted",
+        "--debug",
+        "--spider",
+        "--content-disposition",
+        "--convert-links",
+        "--page-requisites",
+        "--no-cache",
+        "--no-cookies",
+        "--no-directories",
+        "--no-host-directories",
+        "--inet4-only",
+        "--inet6-only",
+        "--server-response",
+        "--adjust-extension",
+        "--trust-server-names",
+        "--show-progress",
+        "--no-dns-cache",
+        "--keep-session-cookies",
+        "--retry-connrefused",
+        "--https-only",
+        "--no-http-keep-alive",
+        "--random-wait",
+    ],
+    unreadable: &["-i", "--input-file", "--config"],
+};
+
+/// curl / wget (each its own options): every URL word's host must be allowed;
+/// none readable is user-only, and so is an option that isn't understood: its
+/// value would read as a URL, or a URL would be read as its value.
+fn fetch_strict(ctx: &HardCtx, args: &[String], o: &FetchOpts, wget: bool) -> Option<HardVerdict> {
+    let mut hosts = vec![];
+    let mut unreadable = false;
+    let url = |u: &str, hosts: &mut Vec<String>, unreadable: &mut bool| match url_host(u) {
+        Some(h) => hosts.push(h),
+        None => *unreadable = true,
+    };
+    let mut i = 0;
+    let mut only_urls = false;
+    while i < args.len() {
+        let a = args[i].as_str();
+        i += 1;
+        if only_urls || !a.starts_with('-') || a == "-" {
+            url(a, &mut hosts, &mut unreadable);
+        } else if a == "--" {
+            only_urls = true;
+        } else if let Some(long) = a.strip_prefix("--") {
+            let (name, attached) = match long.split_once('=') {
+                Some((n, v)) => (format!("--{n}"), Some(v)),
+                None => (a.to_string(), None),
+            };
+            if name == "--url" {
+                match attached.or_else(|| args.get(i).map(String::as_str)) {
+                    Some(u) => url(u, &mut hosts, &mut unreadable),
+                    None => unreadable = true,
+                }
+                i += usize::from(attached.is_none());
+            } else if o.unreadable.contains(&name.as_str()) {
+                unreadable = true;
+                i += usize::from(attached.is_none());
+            } else if o.long_value.contains(&name.as_str()) {
+                i += usize::from(attached.is_none());
+            } else if !o.long_flag.contains(&name.as_str()) {
+                unreadable = true;
+            }
+        } else {
+            // A cluster of short options: `-fsSL`, `-sSo out`, `-ofile`, wget's `-nv`.
+            let cluster = &a[1..];
+            if wget && cluster.starts_with('n') {
+                continue;
+            }
+            for (j, c) in cluster.char_indices() {
+                let one = format!("-{c}");
+                let rest_empty = cluster[j + c.len_utf8()..].is_empty();
+                if o.unreadable.contains(&one.as_str()) {
+                    unreadable = true;
+                    i += usize::from(rest_empty);
+                    break;
+                } else if o.short_value.contains(c) {
+                    // The value is the rest of the cluster, else the next word.
+                    i += usize::from(rest_empty);
+                    break;
+                } else if !o.short_flag.contains(c) {
+                    unreadable = true;
+                    break;
+                }
+            }
+        }
+    }
+    if hosts.iter().any(|h| !host_allowed(&ctx.network_allow, h)) {
+        return Some(user_only(WHY_HOST));
+    }
+    (unreadable || hosts.is_empty()).then(|| user_only(WHY_HOST_UNKNOWN))
+}
+
+/// httpie / xh: `METHOD url key=value…`: every URL-like word's host must be allowed.
+fn fetch_items(ctx: &HardCtx, args: &[String]) -> Option<HardVerdict> {
     let mut hosts = vec![];
     let mut unreadable = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
-        if FETCH_VALUE_OPTS.contains(&a) {
+        if matches!(a, "-o" | "--output" | "-a" | "--auth" | "-A" | "--auth-type" | "--timeout" | "--proxy") {
             i += 2;
             continue;
         }
-        if let Some(u) = a.strip_prefix("--url=") {
-            match url_host(u) {
-                Some(h) => hosts.push(h),
-                None => unreadable = true,
-            }
-        } else if a == "--url" {
-            match args.get(i + 1).and_then(|u| url_host(u)) {
-                Some(h) => hosts.push(h),
-                None => unreadable = true,
-            }
-            i += 2;
-            continue;
-        } else if !a.starts_with('-') {
+        if !a.starts_with('-') {
             match url_host(a) {
                 Some(h) => hosts.push(h),
                 None => unreadable = true,
@@ -1083,17 +1288,34 @@ mod tests {
             "wget evil.example/file",
             "curl -H 'Host: github.com' http://10.0.0.1/",
             "cd /tmp && curl --url=https://evil.example",
+            // Options that take a value for one tool and none for the other.
+            "wget -c https://evil.example/x https://github.com/y",
+            "wget -b https://evil.example/x https://github.com/y",
+            "wget -H https://evil.example/x https://github.com/y",
+            "wget -d https://evil.example/x https://github.com/y",
+            "wget -m https://evil.example/x https://github.com/y",
+            "wget -K https://evil.example/x https://github.com/y",
+            "wget -F https://evil.example/x https://github.com/y",
+            "wget -nv https://evil.example/x https://github.com/y",
+            "curl -O https://evil.example/x https://github.com/y",
+            "curl -sSO https://evil.example/x https://github.com/y",
+            "curl -- https://evil.example/x",
         ] {
             assert_eq!(bash_v(&f, c).unwrap().why, WHY_HOST, "{c}");
         }
         // Can't read a host: user-only, never allowed.
-        for c in ["curl", "curl -K cfg", "curl $URL", "curl --limit-rate 3 https://github.com"] {
+        for c in ["curl", "curl -K cfg", "curl $URL", "curl --frobnicate 3 https://github.com", "wget -i urls.txt"] {
             assert_eq!(kind(bash_v(&f, c)), Some(HardKind::UserOnly), "{c}");
         }
         for c in [
             "curl -fsSL https://github.com/a",
             "curl -o x -H 'A: b' https://index.crates.io/y",
             "wget -q https://github.com/z",
+            "wget -c -P out https://github.com/z",
+            "wget -nv -O x --header='A: b' https://github.com/z",
+            "curl -O https://github.com/z",
+            "curl -sSL --max-time 5 -ofile https://github.com/z",
+            "curl --output=x https://github.com/z",
         ] {
             assert_eq!(bash_v(&f, c), None, "{c}");
         }

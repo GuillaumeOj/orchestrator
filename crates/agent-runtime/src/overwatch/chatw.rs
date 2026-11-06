@@ -86,7 +86,7 @@ impl Runtime {
     // ------------------------------------------------------------ the user's messages
 
     /// `chat_send`: the user's text entry, and a `user_message` event. It is
-    /// `pending` while the Overwatch is off or down (delivered on restart),
+    /// `pending` while the Overwatch is off, down or paused (delivered on restart or resume),
     /// else `waking` until a turn takes it.
     pub fn chat_send(&self, text: &str, thread: Option<&str>) -> Result<ChatEntry> {
         let text = text.trim();
@@ -97,7 +97,7 @@ impl Runtime {
             bail!("bad_request: a message is at most {SEND_MAX} characters");
         }
         let (now, day) = self.overwatch_today();
-        let pending = matches!(self.overwatch_status().status, Status::Off | Status::Down);
+        let pending = matches!(self.overwatch_status().status, Status::Off | Status::Down | Status::Paused);
         let e = ChatEntry {
             day,
             at_ms: now,
