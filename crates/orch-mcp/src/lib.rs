@@ -11,7 +11,7 @@
 //! - `request_pr(title, body?, draft?)`: asks the user to push the branch and
 //!   open a PR (an Inbox gate). Agents never push themselves;
 //! - team tools (P2): `send_message`, `inbox`, `list_tasks`, `handoff`,
-//!   `request_review`, `ask_user`, `read_issue`, `create_task`, `update_task`,
+//!   `request_review`, `ask_user`, `read_issue`, `update_issue`, `create_task`, `update_task`,
 //!   `request_spec_approval`, `merge`, `report_done`, `sync_integration`.
 
 use std::io::{BufRead, Write};
@@ -52,7 +52,7 @@ impl McpEnv {
 }
 
 /// Tools a solo session has when `ORCH_TOOLS` is not set (P1).
-pub const SOLO_TOOLS: &[&str] = &["commit", "request_pr", "read_issue"];
+pub const SOLO_TOOLS: &[&str] = &["commit", "request_pr", "read_issue", "update_issue"];
 
 fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
     json!({
@@ -128,6 +128,23 @@ pub fn tools() -> Value {
             json!({
                 "issue": s("42, #42, owner/repo#42 or an issue or pull request URL. Only this project's repository."),
                 "offset": {"type": "integer", "minimum": 0, "description": "Character to start from (0 = the start), to read the next page of a long issue."}
+            }),
+            &["issue"],
+        ),
+        tool(
+            "update_issue",
+            "Change a GitHub issue (or pull request) of this project's repository: title, body, labels, assignees, state, and add a comment. GitHub is not reachable from your sandbox: the core does it for you. All the changes of one call run in this order: title, body and state; add labels; remove labels; assignees; the comment. If one fails, the later ones are skipped and the error says what was applied. `body` replaces the whole body. Labels must already exist in the repository; the board's own (`orch`, `orch:…`) are refused: move your task with update_task. The comment is signed with your agent id.",
+            json!({
+                "issue": s("42, #42, owner/repo#42 or an issue or pull request URL. Only this project's repository."),
+                "title": s("New title."),
+                "body": s("The whole new body (it replaces the old one)."),
+                "add_labels": {"type": "array", "items": {"type": "string"}, "description": "Existing labels to add."},
+                "remove_labels": {"type": "array", "items": {"type": "string"}, "description": "Labels to remove."},
+                "add_assignees": {"type": "array", "items": {"type": "string"}, "description": "GitHub logins to assign."},
+                "remove_assignees": {"type": "array", "items": {"type": "string"}, "description": "GitHub logins to unassign."},
+                "state": s("open or closed."),
+                "state_reason": s("With state closed: completed or not_planned."),
+                "comment": s("A comment to post (Markdown).")
             }),
             &["issue"],
         ),
@@ -377,7 +394,7 @@ mod tests {
         assert_eq!(out[0]["result"]["protocolVersion"], "2025-03-26");
         assert_eq!(out[0]["result"]["serverInfo"]["name"], "orch");
         let names: Vec<_> = out[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].clone()).collect();
-        assert_eq!(names, ["commit", "request_pr", "read_issue"]);
+        assert_eq!(names, ["commit", "request_pr", "read_issue", "update_issue"]);
         assert_eq!(out[2]["error"]["code"], -32601);
         assert_eq!(out[3]["error"]["code"], -32602);
         assert_eq!(out[4]["result"], json!({}));

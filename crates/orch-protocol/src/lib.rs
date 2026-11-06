@@ -33,7 +33,7 @@ pub mod env {
     /// The user's own statusline command, which orch-status runs after forwarding.
     pub const USER_STATUSLINE: &str = "ORCH_USER_STATUSLINE";
     /// Comma-separated orchestrator tools orch-mcp lists for this agent
-    /// (unset: the solo session's `commit,request_pr,read_issue`). The core checks again.
+    /// (unset: the solo session's `commit,request_pr,read_issue,update_issue`). The core checks again.
     pub const TOOLS: &str = "ORCH_TOOLS";
 }
 

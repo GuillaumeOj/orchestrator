@@ -247,6 +247,148 @@ fn pages(out: &str) -> Result<Vec<Value>> {
     Ok(items)
 }
 
+/// Percent-encodes a path segment (a label name may hold spaces, `:` or `/`).
+fn encode_segment(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// A list argument of strings (`add_labels`…): trimmed, empty ones dropped.
+fn list_arg(args: &Value, key: &str) -> Result<Vec<String>> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(a)) => {
+            let mut out: Vec<String> = Vec::new();
+            for v in a {
+                let t = v.as_str().ok_or_else(|| anyhow!("`{key}` must be a list of strings"))?.trim();
+                if !t.is_empty() && !out.iter().any(|o| o == t) {
+                    out.push(t.to_string());
+                }
+            }
+            Ok(out)
+        }
+        Some(_) => bail!("`{key}` must be a list of strings"),
+    }
+}
+
+/// The labels the board owns (`orch`, `orch:<status>`, `orch:node:<id>`).
+fn board_label(name: &str) -> bool {
+    name == orch_tasks::github::LABEL || name.starts_with("orch:")
+}
+
+/// What an `update_issue` call has done so far.
+#[derive(Default)]
+struct Applied {
+    fields: Vec<String>,
+    add_labels: Vec<String>,
+    remove_labels: Vec<String>,
+    add_assignees: Vec<String>,
+    remove_assignees: Vec<String>,
+    comment: bool,
+}
+
+impl Applied {
+    fn render(&self) -> String {
+        let signed = |plus: &[String], minus: &[String]| {
+            plus.iter()
+                .map(|x| format!("+{x}"))
+                .chain(minus.iter().map(|x| format!("\u{2212}{x}")))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let mut parts = self.fields.clone();
+        if !self.add_labels.is_empty() || !self.remove_labels.is_empty() {
+            parts.push(format!("labels {}", signed(&self.add_labels, &self.remove_labels)));
+        }
+        if !self.add_assignees.is_empty() || !self.remove_assignees.is_empty() {
+            parts.push(format!("assignees {}", signed(&self.add_assignees, &self.remove_assignees)));
+        }
+        if self.comment {
+            parts.push("comment posted".into());
+        }
+        parts.join(", ")
+    }
+}
+
+/// What `update_issue` was asked, checked.
+struct Change {
+    title: Option<String>,
+    body: Option<String>,
+    state: Option<&'static str>,
+    state_reason: Option<&'static str>,
+    add_labels: Vec<String>,
+    remove_labels: Vec<String>,
+    add_assignees: Vec<String>,
+    remove_assignees: Vec<String>,
+    comment: Option<String>,
+}
+
+impl Change {
+    fn parse(args: &Value) -> Result<Change> {
+        let text = |k: &str| -> Result<Option<String>> {
+            match args.get(k) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(s)) => Ok(Some(s.clone())),
+                Some(_) => bail!("`{k}` must be a string"),
+            }
+        };
+        let title = text("title")?.map(|t| t.trim().to_string());
+        if title.as_deref() == Some("") {
+            bail!("`title` can't be empty");
+        }
+        let comment = text("comment")?.filter(|c| !c.trim().is_empty());
+        let state = match str_arg(args, "state") {
+            None => None,
+            Some("open") => Some("open"),
+            Some("closed") => Some("closed"),
+            Some(o) => bail!("`state` is open or closed, got {o:?}"),
+        };
+        let state_reason = match str_arg(args, "state_reason") {
+            None => None,
+            Some("completed") => Some("completed"),
+            Some("not_planned") => Some("not_planned"),
+            Some(o) => bail!("`state_reason` is completed or not_planned, got {o:?}"),
+        };
+        if state_reason.is_some() && state != Some("closed") {
+            bail!("`state_reason` goes with state \"closed\"");
+        }
+        let c = Change {
+            title,
+            body: text("body")?,
+            state,
+            state_reason,
+            add_labels: list_arg(args, "add_labels")?,
+            remove_labels: list_arg(args, "remove_labels")?,
+            add_assignees: list_arg(args, "add_assignees")?,
+            remove_assignees: list_arg(args, "remove_assignees")?,
+            comment,
+        };
+        if c.title.is_none()
+            && c.body.is_none()
+            && c.state.is_none()
+            && c.comment.is_none()
+            && c.add_labels.is_empty()
+            && c.remove_labels.is_empty()
+            && c.add_assignees.is_empty()
+            && c.remove_assignees.is_empty()
+        {
+            bail!(
+                "nothing to change: give at least one of title, body, state, add_labels, remove_labels, add_assignees, remove_assignees, comment"
+            );
+        }
+        for l in c.add_labels.iter().chain(&c.remove_labels) {
+            if board_label(l) {
+                bail!("label {l:?} is managed by the board: move your task with update_task instead");
+            }
+        }
+        Ok(c)
+    }
+}
+
 impl Runtime {
     fn gh_in(&self, project: &Project) -> Box<dyn Gh> {
         self.gh_override().unwrap_or_else(|| Box::new(GhCli::new(project.path.clone())))
@@ -312,6 +454,156 @@ impl Runtime {
         )?;
         let text = render_issue(&repo, &issue, &comments);
         Ok((page_of(&text, offset, "read_issue")?, json!({"repo": repo, "number": n})))
+    }
+
+    /// The names of the repository's labels.
+    fn repo_labels(gh: &dyn Gh, repo: &str, n: u64) -> Result<Vec<String>> {
+        let out = gh
+            .run(&["api", "--paginate", &format!("repos/{repo}/labels?per_page=100")].map(String::from))
+            .map_err(|e| gh_failure(&e, repo, n))?;
+        Ok(pages(&out)?.iter().filter_map(|l| l["name"].as_str().map(str::to_string)).collect())
+    }
+
+    /// Checks each label against the repository's, and gives back its own spelling.
+    fn known_labels(wanted: &mut [String], repo: &str, have: &[String]) -> Result<()> {
+        for w in wanted.iter_mut() {
+            match have.iter().find(|h| h.eq_ignore_ascii_case(w)) {
+                Some(h) => *w = h.clone(),
+                None => {
+                    bail!("unknown label {w:?} in {repo} (labels are not created); its labels: {}", have.join(", "))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `update_issue`: the changes of one call, in a fixed order; the first
+    /// failure stops the rest and the error says what was applied.
+    pub(crate) fn update_issue(&self, rec: &AgentRecord, args: &Value) -> Result<(String, Value)> {
+        let mut c = Change::parse(args)?;
+        let (project, repo, n) = self.resolve_issue(rec, args)?;
+        let gh = self.gh_in(&project);
+        let gh = gh.as_ref();
+        let run = |a: &[&str]| gh.run(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        // Checks before anything is sent.
+        if !c.add_labels.is_empty() || !c.remove_labels.is_empty() {
+            let have = Self::repo_labels(gh, &repo, n)?;
+            Self::known_labels(&mut c.add_labels, &repo, &have)?;
+            Self::known_labels(&mut c.remove_labels, &repo, &have)?;
+        }
+        let issue_path = format!("repos/{repo}/issues/{n}");
+        let mut body = c.body.clone();
+        if let Some(b) = &body {
+            // A board-tracked issue keeps the `Blocked by:` line the board wrote.
+            let tracked = self.db.task_by_external(&project.id, "github", &n.to_string())?.is_some();
+            if tracked {
+                let now = run(&["api", &issue_path]).map_err(|e| gh_failure(&e, &repo, n))?;
+                let now: Value = serde_json::from_str(&now).map_err(|e| anyhow!("gh api: not JSON ({e})"))?;
+                let (_, deps) = orch_tasks::github::parse_body(now["body"].as_str().unwrap_or(""));
+                body = Some(orch_tasks::github::render_body(&orch_tasks::github::parse_body(b).0, &deps));
+            }
+        }
+        let mut done = Applied::default();
+        let failed = (|| -> std::result::Result<(), (String, anyhow::Error)> {
+            let step =
+                |what: &str, r: Result<String>| r.map(|_| ()).map_err(|e| (what.to_string(), gh_failure(&e, &repo, n)));
+            // 1. One PATCH: title, body, state.
+            if c.title.is_some() || body.is_some() || c.state.is_some() {
+                let mut a: Vec<String> = ["api", "-X", "PATCH", issue_path.as_str()].map(String::from).to_vec();
+                let mut names = Vec::new();
+                if let Some(t) = &c.title {
+                    a.extend(["-f".into(), format!("title={t}")]);
+                    names.push("title".to_string());
+                }
+                if let Some(b) = &body {
+                    a.extend(["-f".into(), format!("body={b}")]);
+                    names.push("body".to_string());
+                }
+                if let Some(st) = c.state {
+                    a.extend(["-f".into(), format!("state={st}")]);
+                    if let Some(r) = c.state_reason {
+                        a.extend(["-f".into(), format!("state_reason={r}")]);
+                    }
+                    names.push(match c.state_reason {
+                        Some(r) => format!("state {st} ({})", r.replace('_', " ")),
+                        None => format!("state {st}"),
+                    });
+                }
+                step(&format!("update {}", names.join(", ")), gh.run(&a))?;
+                done.fields = names;
+            }
+            // 2. Add labels.
+            if !c.add_labels.is_empty() {
+                let mut a: Vec<String> =
+                    ["api", "-X", "POST", &format!("{issue_path}/labels")].map(String::from).to_vec();
+                for l in &c.add_labels {
+                    a.extend(["-f".into(), format!("labels[]={l}")]);
+                }
+                step(&format!("add labels {}", c.add_labels.join(", ")), gh.run(&a))?;
+                done.add_labels = c.add_labels.clone();
+            }
+            // 3. Remove labels, one call each (a label the issue lacks is already gone).
+            for l in &c.remove_labels {
+                let path = format!("{issue_path}/labels/{}", encode_segment(l));
+                match gh.run(&["api", "-X", "DELETE", &path].map(String::from)) {
+                    Ok(_) => {}
+                    Err(e) if format!("{e:#}").contains("HTTP 404") => {}
+                    Err(e) => return Err((format!("remove label {l}"), gh_failure(&e, &repo, n))),
+                }
+                done.remove_labels.push(l.clone());
+            }
+            // 4. Assignees.
+            for (add, list) in [(true, &c.add_assignees), (false, &c.remove_assignees)] {
+                if list.is_empty() {
+                    continue;
+                }
+                let method = if add { "POST" } else { "DELETE" };
+                let mut a: Vec<String> =
+                    ["api", "-X", method, &format!("{issue_path}/assignees")].map(String::from).to_vec();
+                for who in list {
+                    a.extend(["-f".into(), format!("assignees[]={who}")]);
+                }
+                step(&format!("{} assignees {}", if add { "add" } else { "remove" }, list.join(", ")), gh.run(&a))?;
+                if add { done.add_assignees = list.clone() } else { done.remove_assignees = list.clone() }
+            }
+            // 5. The comment, signed with the agent that wrote it.
+            if let Some(text) = &c.comment {
+                let signed = format!("{}\n\n\u{2014} {} (Orchestrator)", text.trim_end(), rec.id);
+                let a: Vec<String> = ["api", "-X", "POST", &format!("{issue_path}/comments"), "-f"]
+                    .map(String::from)
+                    .into_iter()
+                    .chain([format!("body={signed}")])
+                    .collect();
+                step("comment", gh.run(&a))?;
+                done.comment = true;
+            }
+            Ok(())
+        })()
+        .err();
+        // The Board shows what GitHub says now (also after a partial failure).
+        let tracked = match run(&["api", &issue_path]).ok().and_then(|o| serde_json::from_str::<Value>(&o).ok()) {
+            Some(v) => orch_tasks::github::parse_issue(&v)
+                .map(|i| self.tasks_for(&project).refresh_from(&i, orch_protocol::now_ms()))
+                .transpose()
+                .ok()
+                .flatten()
+                .flatten(),
+            None => None,
+        };
+        if let Some(t) = &tracked {
+            self.event(&rec.id, "task.refreshed", json!({"task": t.id, "issue": n}));
+        }
+        if let Some((what, e)) = failed {
+            let applied = done.render();
+            bail!(
+                "applied: {}; failed at: {what} ({e})",
+                if applied.is_empty() { "nothing".to_string() } else { applied }
+            );
+        }
+        Ok((
+            format!("Updated {repo}#{n}: {}. https://github.com/{repo}/issues/{n}", done.render()),
+            json!({"repo": repo, "number": n}),
+        ))
     }
 }
 
@@ -382,6 +674,8 @@ mod tests {
         issue: Value,
         comments: Vec<Value>,
         fail: Option<&'static str>,
+        /// A write whose arguments contain this fails.
+        fail_at: Option<&'static str>,
     }
 
     impl Gh for Hub {
@@ -393,6 +687,13 @@ mod tests {
             let a: Vec<&str> = args.iter().map(String::as_str).collect();
             match a[..] {
                 ["repo", "view", ..] => Ok(json!({"nameWithOwner": "me/shop"}).to_string()),
+                ["api", "--paginate", path] if path.contains("/labels") => {
+                    Ok(json!([{"name": "bug"}, {"name": "triage"}, {"name": "help wanted"}]).to_string())
+                }
+                ["api", "-X", ..] if self.fail_at.is_some_and(|f| args.join(" ").contains(f)) => {
+                    bail!("gh {}: gh: HTTP 500", args.join(" "))
+                }
+                ["api", "-X", ..] => Ok(self.issue.to_string()),
                 ["api", path] if path.ends_with("/issues/42") => Ok(self.issue.to_string()),
                 ["api", "--paginate", path] if path.contains("/issues/42/comments") => {
                     // Two pages, back to back, like `gh api --paginate`.
@@ -420,6 +721,16 @@ mod tests {
         fail: Option<&'static str>,
         backend_repo: Option<&str>,
     ) -> (tempfile::TempDir, tempfile::TempDir, Arc<Runtime>, Calls) {
+        fixture_with(issue, comments, fail, None, backend_repo)
+    }
+
+    fn fixture_with(
+        issue: Value,
+        comments: usize,
+        fail: Option<&'static str>,
+        fail_at: Option<&'static str>,
+        backend_repo: Option<&str>,
+    ) -> (tempfile::TempDir, tempfile::TempDir, Arc<Runtime>, Calls) {
         let (d, rt) = {
             let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
             let mut cfg = crate::runtime::tests::test_cfg(d.path(), true);
@@ -429,7 +740,7 @@ mod tests {
                 .map(|i| json!({"user": {"login": "c"}, "created_at": "t", "body": format!("comment {i}")}))
                 .collect();
             cfg.gh = Some(GhFactory(Arc::new(move || {
-                Box::new(Hub { calls: c.clone(), issue: issue.clone(), comments: cs.clone(), fail })
+                Box::new(Hub { calls: c.clone(), issue: issue.clone(), comments: cs.clone(), fail, fail_at })
             })));
             let rt = Runtime::new(cfg).unwrap();
             (d, (rt, calls))
@@ -454,13 +765,12 @@ mod tests {
     }
 
     fn read(rt: &Runtime, args: Value) -> (bool, String) {
+        tool(rt, "read_issue", args)
+    }
+
+    fn tool(rt: &Runtime, tool: &str, args: Value) -> (bool, String) {
         let (e, t, _) = rt.on_mcp(
-            &orch_protocol::McpMsg {
-                agent_id: "a1".into(),
-                tool: "read_issue".into(),
-                arguments: args,
-                deadline_ms: 1000,
-            },
+            &orch_protocol::McpMsg { agent_id: "a1".into(), tool: tool.into(), arguments: args, deadline_ms: 1000 },
             None,
         );
         (e, t)
@@ -586,5 +896,129 @@ mod tests {
         );
         assert!(brief_hint("see #9", &p).unwrap().contains("issue #9: read it with"));
         assert_eq!(brief_hint("nothing here", &p), None);
+    }
+
+    fn writes(calls: &Calls) -> Vec<Vec<String>> {
+        calls.lock().unwrap().iter().filter(|c| c.get(1).map(String::as_str) == Some("-X")).cloned().collect()
+    }
+
+    fn update(rt: &Runtime, args: Value) -> (bool, String) {
+        tool(rt, "update_issue", args)
+    }
+
+    #[test]
+    fn update_sends_one_patch_then_labels_assignees_and_a_signed_comment_in_order() {
+        let (_d, _rd, rt, calls) = fixture(issue_json("b"), 0, None, Some("me/shop"));
+        let (err, text) = update(
+            &rt,
+            json!({"issue": "#42", "title": "New title", "body": "New body", "state": "closed", "state_reason": "not_planned",
+                "add_labels": ["bug"], "remove_labels": ["triage"], "add_assignees": ["me"], "remove_assignees": ["old"],
+                "comment": "Done here."}),
+        );
+        assert!(!err, "{text}");
+        assert_eq!(
+            text,
+            "Updated me/shop#42: title, body, state closed (not planned), labels +bug \u{2212}triage, assignees +me \u{2212}old, comment posted. https://github.com/me/shop/issues/42"
+        );
+        let w = writes(&calls);
+        let line = |i: usize| w[i].join(" ");
+        assert_eq!(w.len(), 6, "{w:?}");
+        assert_eq!(
+            line(0),
+            "api -X PATCH repos/me/shop/issues/42 -f title=New title -f body=New body -f state=closed -f state_reason=not_planned"
+        );
+        assert_eq!(line(1), "api -X POST repos/me/shop/issues/42/labels -f labels[]=bug");
+        assert_eq!(line(2), "api -X DELETE repos/me/shop/issues/42/labels/triage");
+        assert_eq!(line(3), "api -X POST repos/me/shop/issues/42/assignees -f assignees[]=me");
+        assert_eq!(line(4), "api -X DELETE repos/me/shop/issues/42/assignees -f assignees[]=old");
+        assert!(line(5).starts_with("api -X POST repos/me/shop/issues/42/comments -f body=Done here."));
+        assert!(line(5).ends_with("\n\n\u{2014} a1 (Orchestrator)"), "{}", line(5));
+        // A label with spaces is encoded in the path.
+        let (err, _) = update(&rt, json!({"issue": "42", "remove_labels": ["help wanted"]}));
+        assert!(!err);
+        assert!(writes(&calls).last().unwrap().join(" ").ends_with("labels/help%20wanted"));
+    }
+
+    #[test]
+    fn unknown_and_board_labels_and_bad_input_are_refused_with_nothing_sent() {
+        let (_d, _rd, rt, calls) = fixture(issue_json("b"), 0, None, Some("me/shop"));
+        let (err, text) = update(&rt, json!({"issue": "42", "title": "T", "add_labels": ["nope"]}));
+        assert!(err && text.contains("unknown label \"nope\"") && text.contains("bug, triage, help wanted"), "{text}");
+        for l in ["orch", "orch:ready", "orch:node:back"] {
+            let (err, text) = update(&rt, json!({"issue": "42", "title": "T", "remove_labels": [l]}));
+            assert!(err && text.contains("managed by the board"), "{text}");
+        }
+        for bad in [
+            json!({"issue": "42"}),
+            json!({"issue": "42", "state": "gone"}),
+            json!({"issue": "42", "state_reason": "completed"}),
+            json!({"issue": "42", "title": "  "}),
+            json!({"issue": "other/repo#1", "comment": "x"}),
+        ] {
+            assert!(update(&rt, bad).0);
+        }
+        assert!(writes(&calls).is_empty(), "{:?}", writes(&calls));
+        assert!(!calls.lock().unwrap().iter().any(|c| c.join(" ").contains("other/repo")));
+    }
+
+    #[test]
+    fn a_failure_reports_what_was_applied_and_skips_the_rest() {
+        let (_d, _rd, rt, calls) = fixture_with(issue_json("b"), 0, None, Some("labels/triage"), Some("me/shop"));
+        let (err, text) = update(
+            &rt,
+            json!({"issue": "42", "title": "T", "add_labels": ["bug"], "remove_labels": ["triage"],
+                "add_assignees": ["me"], "comment": "c"}),
+        );
+        assert!(err && text == "applied: title, labels +bug; failed at: remove label triage (gh: HTTP 500)", "{text}");
+        assert_eq!(writes(&calls).len(), 3, "title, add labels, the failed remove: {:?}", writes(&calls));
+        let (_d, _rd, rt, _) = fixture_with(issue_json("b"), 0, None, Some("PATCH"), Some("me/shop"));
+        let (err, text) = update(&rt, json!({"issue": "42", "title": "T", "comment": "c"}));
+        assert!(err && text.starts_with("applied: nothing; failed at: update title"), "{text}");
+    }
+
+    #[test]
+    fn a_tracked_issue_keeps_its_blocked_by_line_and_the_task_shows_the_new_content() {
+        let after = {
+            let mut v = issue_json("Plan v2\n\nBlocked by: #12");
+            v["title"] = json!("New title");
+            v["state"] = json!("open");
+            v.as_object_mut().unwrap().remove("state_reason");
+            v["updated_at"] = json!("2026-11-05T10:00:00Z");
+            v
+        };
+        let (_d, _rd, rt, calls) = fixture(after, 0, None, Some("me/shop"));
+        let project = rt.db.project_by_path(&rt.store.read(|s| s.agents["a1"].repo.clone())).unwrap().unwrap();
+        let mut t = orch_store::Task::new(&project.id, "github", "Old title", 1);
+        t.external_id = Some("42".into());
+        t.body = "Old body".into();
+        t.remote_updated_at = Some("2026-11-02T10:00:00Z".into());
+        let id = rt.db.upsert_task(&t).unwrap();
+        let (err, text) =
+            update(&rt, json!({"issue": "42", "title": "New title", "body": "Plan v2\n\nBlocked by: #99"}));
+        assert!(!err, "{text}");
+        let patch = writes(&calls)[0].join(" ");
+        assert!(patch.contains("-f body=Plan v2\n\nBlocked by: #12"), "{patch}");
+        assert!(!patch.contains("#99"));
+        let t = rt.db.task(id).unwrap().unwrap();
+        assert_eq!((t.title.as_str(), t.body.as_str()), ("New title", "Plan v2"));
+        assert_eq!(t.remote_updated_at.as_deref(), Some("2026-11-05T10:00:00Z"));
+    }
+
+    #[test]
+    fn a_deny_rule_stops_update_issue_while_read_issue_still_works() {
+        let (_d, _rd, rt, calls) = fixture(issue_json("b"), 0, None, Some("me/shop"));
+        rt.db
+            .add_rule(
+                orch_store::RuleScope::Role,
+                "solo",
+                "mcp__orch__update_issue",
+                orch_store::RuleEffect::Deny,
+                None,
+            )
+            .unwrap();
+        let (err, text) = update(&rt, json!({"issue": "42", "comment": "hi"}));
+        assert!(err && text.contains("Denied by the user's rule"), "{text}");
+        assert!(writes(&calls).is_empty());
+        assert!(!read(&rt, json!({"issue": "42"})).0);
     }
 }

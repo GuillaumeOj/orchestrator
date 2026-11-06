@@ -91,6 +91,7 @@ impl Runtime {
                 (t, Value::Null)
             }),
             "read_issue" => self.read_issue(&rec, &m.arguments),
+            "update_issue" => self.update_issue(&rec, &m.arguments),
             // The team tools (the role's own; `may_call` checked it above).
             _ => self.team_tool(&rec, &m.tool, &m.arguments),
         };

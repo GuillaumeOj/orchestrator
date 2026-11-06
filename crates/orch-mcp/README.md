@@ -10,7 +10,7 @@ There is no network port and no token on the command line.
 ## Tools
 
 An agent sees the tools its role allows: `ORCH_TOOLS` (comma-separated, set by the core in the
-server's `env` and the agent's environment); unset = a solo session's `commit`, `request_pr`, `read_issue`. A tool
+server's `env` and the agent's environment); unset = a solo session's `commit`, `request_pr`, `read_issue`, `update_issue`. A tool
 outside that list is unknown (−32602), and the core checks again (`Runtime::on_mcp`).
 
 | Tool (`mcp__orch__…`) | Who | What the core does |
@@ -19,6 +19,7 @@ outside that list is unknown (−32602), and the core checks again (`Runtime::on
 | `rebase_base(abort?)` | lead | The core fetches `origin/<base>` and rebases the integration branch onto it (task merges kept; refused while a task holds unmerged work or a PR / update request waits). A conflict stops it: `commit` continues it, `abort` restores the branch. |
 | `request_pr(title, body?, draft?)` | solo, lead | Creates an Inbox **gate** (push + PR). Returns at once; on approval the core pushes with the user's credentials, opens the PR with `gh`, and tells the agent the URL. Agents never push. |
 | `read_issue(issue, offset?)` | everyone | Reads an issue or PR of the project's own GitHub repository with the user's `gh` login, outside the sandbox: fields, body and every comment, in pages of 60 000 characters (`offset` for the next). Any other repository is refused. |
+| `update_issue(issue, title?, body?, add_labels?, remove_labels?, add_assignees?, remove_assignees?, state?, state_reason?, comment?)` | everyone | Changes an issue or PR of the project's own GitHub repository, outside the sandbox. One call runs: title/body/state, add labels, remove labels, assignees, the comment, stopping at the first failure (the error lists what was applied). Unknown labels and the board's `orch…` labels are refused; the board's `Blocked by:` line is kept; the comment is signed with the agent id. A deny or ask rule on `mcp__orch__update_issue` covers writes alone. |
 | `send_message(to, body)` | team | To a node or one agent, if the team rules allow it (FR-304). |
 | `inbox(all?)` | team | The agent's messages; marks them read. |
 | `list_tasks(mine?, status?)` | team | The feature's tasks. |

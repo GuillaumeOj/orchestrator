@@ -471,7 +471,7 @@ pub(crate) mod tests {
         assert_eq!(
             servers,
             json!({"orch": {"type": "stdio", "command": "/app/bin/orch-mcp", "args": [],
-                            "env": {"ORCH_AGENT_ID": "a1", "ORCH_SOCK": "/app/core.sock", "ORCH_TOOLS": "commit,request_pr,read_issue"}}})
+                            "env": {"ORCH_AGENT_ID": "a1", "ORCH_SOCK": "/app/core.sock", "ORCH_TOOLS": "commit,request_pr,read_issue,update_issue"}}})
         );
         // The orchestrator tools are allowed (the core applies its own rules).
         let allow = strs(&c.settings["permissions"]["allow"]);
