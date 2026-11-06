@@ -16,6 +16,10 @@ use crate::util::{js, opt_u64};
 /// The `now` topic intake writes touch.
 pub const TOPIC: &str = "intake";
 
+/// The `source` of a started planned brief's row (its `ref` is the
+/// decision id): what gives a run or session its brief origin.
+pub const BRIEF_SOURCE: &str = "brief";
+
 pub(crate) fn status_key(project: &str) -> String {
     format!("intake.status:{project}")
 }
@@ -100,6 +104,10 @@ pub struct IntakeStatus {
     /// Repo docs: the branch tip the cached items were read at.
     #[serde(default)]
     pub tip: Option<String>,
+    /// The source's own view when the source said where it is (a Projects
+    /// v2 board, a Linear team or project): kept across a failed refresh.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 const COLS: &str = "id, project_id, source, ref, title, url, body, meta, updated_at, fetched_at_ms, position, state, \
@@ -297,6 +305,117 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// A ready item was started (spec §3.3): `kind` is `run` or `agent`,
+    /// `reference` the run or agent id. False when it was not ready anymore.
+    pub fn intake_mark_started(&self, id: u64, kind: &str, reference: &str) -> Result<bool> {
+        let (kind, reference) = (kind.to_string(), reference.to_string());
+        let n = self.write(move |tx| {
+            Ok(tx.execute(
+                "UPDATE intake_items SET state='started', started_kind=?2, started_ref=?3,
+                   hidden_at_ms=NULL, hidden_rev=NULL WHERE id=?1 AND state='ready'",
+                params![id as i64, kind, reference],
+            )?)
+        })?;
+        if n > 0 {
+            self.note([TOPIC]);
+        }
+        Ok(n > 0)
+    }
+
+    /// A planned brief was started: kept as a started row of source
+    /// [`BRIEF_SOURCE`] (ref = the decision id), so the run or session
+    /// shows its origin. Never in the lane (not the project's source).
+    pub fn intake_add_brief_start(
+        &self,
+        project: &str,
+        decision: &str,
+        title: &str,
+        kind: &str,
+        reference: &str,
+        now_ms: u64,
+    ) -> Result<u64> {
+        let args = [project, decision, title, kind, reference].map(str::to_string);
+        self.write(move |tx| {
+            let [project, decision, title, kind, reference] = &args;
+            tx.execute(
+                "INSERT INTO intake_items(project_id, source, ref, title, updated_at, fetched_at_ms, state,
+                   started_kind, started_ref) VALUES (?1, ?2, ?3, ?4, '', ?5, 'started', ?6, ?7)
+                 ON CONFLICT(project_id, source, ref) DO UPDATE SET title=?4, state='started',
+                   started_kind=?6, started_ref=?7",
+                params![project, BRIEF_SOURCE, decision, title, now_ms as i64, kind, reference],
+            )?;
+            Ok(tx.query_row(
+                "SELECT id FROM intake_items WHERE project_id=?1 AND source=?2 AND ref=?3",
+                params![project, BRIEF_SOURCE, decision],
+                |r| r.get::<_, i64>(0),
+            )? as u64)
+        })
+        .inspect(|_| self.note([TOPIC]))
+    }
+
+    /// A run or session (`kind`, `reference`) was started from an item or brief.
+    pub fn intake_started_by(&self, kind: &str, reference: &str) -> Result<bool> {
+        let (kind, reference) = (kind.to_string(), reference.to_string());
+        self.read(move |c| {
+            Ok(c.query_row(
+                "SELECT 1 FROM intake_items WHERE state='started' AND started_kind=?1 AND started_ref=?2 LIMIT 1",
+                params![kind, reference],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+        })
+    }
+
+    /// The items the lane lists (ready and hidden), of one project or all.
+    pub fn intake_listed(&self, project: Option<&str>) -> Result<Vec<IntakeRow>> {
+        let p = project.map(str::to_string);
+        self.read(move |c| {
+            let mut st = c.prepare(&format!(
+                "SELECT {COLS} FROM intake_items WHERE state!='started' AND (?1 IS NULL OR project_id=?1)
+                 ORDER BY project_id, position, id"
+            ))?;
+            Ok(st.query_map([p], row)?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// The started rows (items and briefs), oldest first.
+    pub fn intake_started(&self) -> Result<Vec<IntakeRow>> {
+        self.read(move |c| {
+            let mut st = c.prepare(&format!("SELECT {COLS} FROM intake_items WHERE state='started' ORDER BY id"))?;
+            Ok(st.query_map([], row)?.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// The run or session `kind`/`reference` went before any outcome: its
+    /// items are ready again (a brief's row is dropped: the card stays
+    /// closed). The items returned.
+    pub fn intake_return(&self, kind: &str, reference: &str) -> Result<Vec<IntakeRow>> {
+        let (kind, reference) = (kind.to_string(), reference.to_string());
+        let back = self.write(move |tx| {
+            let mut st = tx.prepare(&format!(
+                "SELECT {COLS} FROM intake_items WHERE state='started' AND started_kind=?1 AND started_ref=?2"
+            ))?;
+            let rows: Vec<IntakeRow> = st.query_map(params![kind, reference], row)?.collect::<rusqlite::Result<_>>()?;
+            drop(st);
+            for r in &rows {
+                if r.source == BRIEF_SOURCE {
+                    tx.execute("DELETE FROM intake_items WHERE id=?1", [r.id as i64])?;
+                } else {
+                    tx.execute(
+                        "UPDATE intake_items SET state='ready', started_kind=NULL, started_ref=NULL WHERE id=?1",
+                        [r.id as i64],
+                    )?;
+                }
+            }
+            Ok(rows.into_iter().filter(|r| r.source != BRIEF_SOURCE).collect::<Vec<_>>())
+        })?;
+        if !back.is_empty() {
+            self.note([TOPIC]);
+        }
+        Ok(back)
+    }
+
     pub fn intake_status(&self, project: &str) -> Result<IntakeStatus> {
         Ok(self.setting(&status_key(project))?.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default())
     }
@@ -400,6 +519,34 @@ mod tests {
         // A project's delete takes its cache.
         s.delete_project("p1").unwrap();
         assert!(s.intake_items(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn started_items_and_briefs_return_or_drop() {
+        let (_d, s) = store();
+        s.intake_apply("p1", "github", vec![item("#1", "a"), item("#2", "a")], 1).unwrap();
+        let rows = s.intake_items(Some("p1")).unwrap();
+        let (one, two) = (rows[0].id, rows[1].id);
+        assert!(s.intake_mark_started(one, "run", "run-1").unwrap());
+        assert!(!s.intake_mark_started(one, "agent", "x").unwrap(), "only a ready item starts");
+        s.intake_hide(two, 2).unwrap();
+        assert!(!s.intake_mark_started(two, "agent", "x").unwrap(), "a hidden item does not start");
+        let b = s.intake_add_brief_start("p1", "brief-4", "Plan", "agent", "solo-1", 3).unwrap();
+        let started: Vec<(String, Option<String>)> =
+            s.intake_started().unwrap().into_iter().map(|r| (r.source, r.started_ref)).collect();
+        assert_eq!(started, [("github".into(), Some("run-1".into())), ("brief".into(), Some("solo-1".into()))]);
+        // A refresh keeps both (started), and the brief row never counts as the source's.
+        s.intake_apply("p1", "github", vec![item("#2", "a")], 4).unwrap();
+        assert_eq!(s.intake_item(one).unwrap().unwrap().state, IntakeState::Started);
+        assert!(s.intake_item(b).unwrap().is_some());
+        // The run went before any outcome: #1 is ready again.
+        let back = s.intake_return("run", "run-1").unwrap();
+        assert_eq!(back.iter().map(|r| r.id).collect::<Vec<_>>(), [one]);
+        let r = s.intake_item(one).unwrap().unwrap();
+        assert_eq!((r.state, r.started_kind), (IntakeState::Ready, None));
+        // A brief's row is dropped, not listed as returned.
+        assert!(s.intake_return("agent", "solo-1").unwrap().is_empty());
+        assert!(s.intake_item(b).unwrap().is_none());
     }
 
     #[test]

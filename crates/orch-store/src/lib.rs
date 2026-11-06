@@ -20,7 +20,9 @@ pub use chat::{ChatDay, ChatEntry};
 pub use db::{Pending, Store, Tx, schema_version};
 pub use ecosystem::IntegrationRow;
 pub use events::{AuditEntry, Event, Retention, RunEvent};
-pub use intake::{IntakeRow, IntakeState, IntakeStatus, IntakeUpsert, TOPIC as INTAKE_TOPIC};
+pub use intake::{
+    BRIEF_SOURCE as INTAKE_BRIEF_SOURCE, IntakeRow, IntakeState, IntakeStatus, IntakeUpsert, TOPIC as INTAKE_TOPIC,
+};
 pub use migrations::SCHEMA_VERSION;
 pub use model::*;
 pub use report::{BASELINE, Baseline, Interventions, Prompts, ReportAgent, ReportQuery, RunReport};

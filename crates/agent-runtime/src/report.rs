@@ -110,6 +110,32 @@ pub struct WeeklyReport {
     /// "What to change for next week": plain sentences from the numbers above.
     #[serde(default)]
     pub suggestions: Vec<String>,
+    /// P4.5: the week's starts from intake, planned briefs, and the others.
+    #[serde(default)]
+    pub intake: IntakeCounts,
+}
+
+/// The week's starts (P4.5 spec §3.7, api-contract §6, F18).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct IntakeCounts {
+    /// Runs and sessions started from an intake item (and not given back).
+    pub started: u32,
+    /// Started from a planned brief.
+    pub planned: u32,
+    /// Started otherwise.
+    pub untracked: u32,
+    /// The first untracked ones (at most 5).
+    #[serde(default)]
+    pub untracked_items: Vec<UntrackedStart>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UntrackedStart {
+    /// `run` | `agent`.
+    pub kind: String,
+    /// The feature slug or the agent id.
+    #[serde(rename = "ref")]
+    pub reference: String,
 }
 
 /// Where an agent's usage goes.
@@ -364,6 +390,7 @@ pub fn build(i: &Inputs) -> WeeklyReport {
             .map(|(name, peak)| ModelWindowPeak { family: family(Some(&name)).into(), name, peak_pct: peak })
             .collect(),
         suggestions: vec![],
+        intake: IntakeCounts::default(),
     };
     r.suggestions = suggestions(&r);
     r
@@ -501,7 +528,8 @@ impl Runtime {
         let projects: BTreeMap<String, String> =
             self.db.projects(true).unwrap_or_default().into_iter().map(|p| (p.id, p.name)).collect();
         let agents = self.attributions();
-        Ok(build(&Inputs {
+        let intake = self.intake_counts(start, ms(plan.reset_at));
+        let mut r = build(&Inputs {
             plan,
             samples: &samples,
             agents: &agents,
@@ -513,7 +541,9 @@ impl Runtime {
             weekly_pct,
             in_progress,
             now,
-        }))
+        });
+        r.intake = intake;
+        Ok(r)
     }
 
     /// The report of a week that just ended (FR-818): stored, and a "Weekly

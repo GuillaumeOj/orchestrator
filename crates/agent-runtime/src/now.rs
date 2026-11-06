@@ -568,6 +568,17 @@ impl Runtime {
         let (new_outcomes, last_read) =
             self.outcomes_of_day(midnight, &st.outcomes.day, st.outcomes.after, &tz, &runs, &st.team.projects);
         st.outcomes.after = last_read;
+        // P4.5: where each started run and session came from (F13: on outcomes too).
+        let origins = self.intake_origins();
+        let origin_of = |run: Option<&str>, agent: Option<&str>| {
+            run.and_then(|r| origins.runs.get(r)).or_else(|| agent.and_then(|a| origins.agents.get(a))).cloned()
+        };
+        let mut new_outcomes = new_outcomes;
+        for o in &mut new_outcomes {
+            if let Some(v) = origin_of(o.run.as_deref(), o.agent.as_deref()) {
+                o.extra.insert("origin".into(), v);
+            }
+        }
         // New outcomes are batched events for the Overwatch (not the day's
         // backlog read at start or at midnight).
         if !first && same_day {
@@ -600,6 +611,12 @@ impl Runtime {
             },
             now,
         );
+        for a in world.agents.values_mut().filter(|a| a.run.is_none()) {
+            a.origin = origin_of(None, Some(&a.agent));
+        }
+        for r in world.runs.values_mut() {
+            r.origin = origin_of(Some(&r.run), None);
+        }
         let state = &mut *st;
         remember_since(&mut world, &mut state.firsts, now);
         state.queue = Some(queue_now);

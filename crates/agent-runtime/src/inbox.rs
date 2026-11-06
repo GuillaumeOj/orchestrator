@@ -291,8 +291,22 @@ impl Runtime {
         payload: Value,
         priority: i64,
     ) -> Result<u64> {
+        self.add_item_in(agent, kind, body, payload, priority, None)
+    }
+
+    /// [`Runtime::add_item`] in `thread` (else its subject's), set in the
+    /// same write: the chat never sees the item outside its thread.
+    pub(crate) fn add_item_in(
+        &self,
+        agent: Option<&str>,
+        kind: &str,
+        body: String,
+        payload: Value,
+        priority: i64,
+        thread: Option<String>,
+    ) -> Result<u64> {
         let subject = self.subject_now(agent, payload.get("project").and_then(Value::as_str));
-        let thread = crate::decision::thread_of(&subject);
+        let thread = thread.or_else(|| crate::decision::thread_of(&subject));
         // The Overwatch's event (after the store write: the card is posted first).
         let event =
             (body.lines().next().unwrap_or("").to_string(), crate::overwatch::deciding::deciding_until(&payload));

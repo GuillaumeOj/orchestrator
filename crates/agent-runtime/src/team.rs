@@ -63,6 +63,9 @@ pub struct LaunchSpec {
     /// FR-816: the run's tasks wait for off-hours ("Run off-hours" at launch).
     #[serde(default)]
     pub off_hours: bool,
+    /// P4.5: started from an intake item or a planned brief.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intake: Option<crate::intake::IntakeLink>,
 }
 
 /// Everything about a run, loaded together.
@@ -310,7 +313,19 @@ impl Runtime {
     // ------------------------------------------------------------ launch
 
     /// J3 steps 2–3. Returns the run; the lead waits for the Governor.
+    /// Launches a run on the user's command (J3; P4.5: from an intake item
+    /// or a brief, checked first and recorded after).
     pub fn launch(&self, spec: &LaunchSpec) -> Result<TeamRun> {
+        let claim = self.intake_claim(&spec.project_id, spec.intake.as_ref())?;
+        let run = self.launch_run(spec)?;
+        // The run exists now: a failed read must not hide it (the item would stay ready).
+        let slug =
+            self.db.feature(&run.feature_id).ok().flatten().map_or_else(|| spec.slug.trim().to_string(), |f| f.slug);
+        self.intake_started(claim, &spec.project_id, "run", &run.id, &slug);
+        Ok(run)
+    }
+
+    fn launch_run(&self, spec: &LaunchSpec) -> Result<TeamRun> {
         let spec = &LaunchSpec {
             slug: spec.slug.trim().to_string(),
             base: spec.base.clone().filter(|b| !b.trim().is_empty()),
@@ -1378,6 +1393,11 @@ impl Runtime {
         // First the runs, so the team tick starts no new seat meanwhile.
         for run in self.db.runs(Some(feature_id), true)? {
             self.set_run_state(&run.id, RunState::Failed, "deleted by the user")?;
+        }
+        // Every run of the feature, ended ones too (a run that failed
+        // before any outcome still holds its intake item).
+        for run in self.db.runs(Some(feature_id), false)? {
+            self.intake_on_run_deleted(&run.id);
         }
         let recs: Vec<(String, std::path::PathBuf)> = self.store.read(|s| {
             s.agents
@@ -2647,6 +2667,7 @@ pub(crate) mod tests {
                 brief: "Fix the X bug.".into(),
                 base: None,
                 off_hours: false,
+                intake: None,
             })
             .unwrap();
         write_commit(rt, "fx-lead-1", ".orchestrator/features/fx/spec.md", "# Fix X\n");
@@ -2804,6 +2825,7 @@ pub(crate) mod tests {
                 brief: "Fix the X bug.".into(),
                 base: None,
                 off_hours: false,
+                intake: None,
             })
             .unwrap();
         assert_eq!(run.status, RunState::Spec);
@@ -3046,6 +3068,7 @@ pub(crate) mod tests {
                 brief: "Fix the X bug.".into(),
                 base: None,
                 off_hours: false,
+                intake: None,
             })
             .unwrap();
         let lead = "fx-lead-1";
@@ -3091,6 +3114,7 @@ pub(crate) mod tests {
                 brief: "Fix the X bug.".into(),
                 base: None,
                 off_hours: false,
+                intake: None,
             })
             .unwrap();
         // The feature archived under its active run (an older relaunch).

@@ -1201,7 +1201,24 @@ impl Runtime {
     /// FR-207: SIGTERM to `claude`'s group and to every tty-less process whose
     /// cwd is inside the worktree, SIGKILL after 5 s.
     pub fn kill(&self, id: &str) -> Result<Vec<String>> {
-        self.stop(id, StopIntent::Kill)
+        let log = self.stop(id, StopIntent::Kill)?;
+        // A solo session started from intake, killed before any outcome (P4.5).
+        self.intake_on_session_killed(id);
+        Ok(log)
+    }
+
+    /// Starts a solo session on the user's command (`agent_start`; P4.5:
+    /// from an intake item or a brief, checked first and recorded after).
+    pub fn start_solo(
+        &self,
+        spec: &AgentSpec,
+        project: &str,
+        intake: Option<&crate::intake::IntakeLink>,
+    ) -> Result<()> {
+        let claim = self.intake_claim(project, intake)?;
+        self.start(spec)?;
+        self.intake_started(claim, project, "agent", &spec.agent_id, &spec.agent_id);
+        Ok(())
     }
 
     fn stop(&self, id: &str, intent: StopIntent) -> Result<Vec<String>> {

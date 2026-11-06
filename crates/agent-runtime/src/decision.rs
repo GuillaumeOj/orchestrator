@@ -27,6 +27,7 @@ pub fn decision_id(kind: &str, id: u64) -> String {
         "delivery" => format!("delivery-{id}"),
         "question" => format!("q-{id}"),
         "rule_proposal" => format!("rule-{id}"),
+        "brief" => format!("brief-{id}"),
         _ => format!("alert-{id}"),
     }
 }
@@ -288,6 +289,7 @@ fn kind_of(i: &InboxItem) -> (&'static str, Option<&'static str>) {
         "budget" => ("budget", None),
         "notion" => ("notion", None),
         "rule_proposal" => ("rule_proposal", None),
+        "brief" => ("brief", None),
         _ if i.payload.get("source").and_then(Value::as_str) == Some("notion") => ("notion", None),
         _ => ("alert", None),
     }
@@ -299,7 +301,7 @@ fn level_of(kind: &str) -> u8 {
         "permission" | "question" | "gate" | "trust" | "wait" => 1,
         "budget" | "ask" | "notion" => 3,
         // Blocks nobody: never notifies, not in the badge (P4.4).
-        "rule_proposal" => 4,
+        "rule_proposal" | "brief" => 4,
         _ => 2,
     }
 }
@@ -333,6 +335,23 @@ fn rule_proposal_card(p: &Value) -> (String, String, Vec<Value>, Vec<Action>) {
         act("edit", "Edit rule", Some("enter")),
     ];
     (title, cut(s(p, "text"), 120), ctx, actions)
+}
+
+/// The `brief` card (P4.5 api-contract §5): the brief, project · mode ·
+/// team, its estimate; Launch · Edit open the dialog, Dismiss closes it.
+fn brief_card(p: &Value) -> (String, String, Vec<Value>, Vec<Action>) {
+    let project = Some(s(p, "project_name")).filter(|x| !x.is_empty()).unwrap_or(s(p, "project"));
+    let mut line = format!("{project} · {}", s(p, "mode"));
+    if !s(p, "team").is_empty() {
+        line.push_str(&format!(" · {}", s(p, "team")));
+    }
+    let mut ctx = vec![markdown(s(p, "brief"), None), json!({"type": "text", "text": line})];
+    if let Some(e) = p.get("estimate").filter(|e| e.is_object()) {
+        ctx.push(json!({"type": "cost", "estimate": e}));
+    }
+    let actions =
+        vec![act("launch", "Launch", Some("⏎")), act("edit", "Edit", Some("e")), act("dismiss", "Dismiss", Some("r"))];
+    (cut(s(p, "title"), 80), line, ctx, actions)
 }
 
 /// A stored item as a Decision.
@@ -494,6 +513,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
             (cut(&first_line, 80), label, ctx, actions)
         }
         ("rule_proposal", _) => rule_proposal_card(p),
+        ("brief", _) => brief_card(p),
         ("budget", _) => {
             let reason = if s(p, "reason").is_empty() { first_line.as_str() } else { s(p, "reason") };
             let mut ctx = vec![markdown(&i.body, None)];

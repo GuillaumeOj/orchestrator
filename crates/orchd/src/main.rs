@@ -58,6 +58,7 @@ usage: orchd [--home DIR] <command> [args]
   rules [--project P] | rule add <project|role|agent> <id> <pattern> <allow|deny|overwatch|user> | rule revoke <id> [--file F]
   policy [--project P] [--test TOOL INPUT --role R]   the policy files and merged rules; --test: a call's effect and what decides it
   overwatch [--json] [restart]                 the Overwatch: status, today's turns and p50 / p90 wake; restart: a fresh session
+  intake [--week] [--json]                     intake sources and items per project; --week: this week's starts from intake
   audit [agent] | events [--agent A] [--kind PREFIX] [--limit N]
   search <query...> [--project ID]        full-text search over indexed transcripts
 
@@ -473,6 +474,17 @@ fn run() -> Result<()> {
                 return print(r);
             }
             print!("{}", agent_runtime::overwatch::render_report(&r.data, &jiff::tz::TimeZone::system()));
+            Ok(())
+        }
+        "intake" => {
+            let json = a.flag("--json");
+            let week = a.flag("--week");
+            a.done()?;
+            let r = request(&sock, CtlRequest::Intake { week })?;
+            if !r.ok || json {
+                return print(r);
+            }
+            print!("{}", agent_runtime::intake::report::render(&r.data, &jiff::tz::TimeZone::system()));
             Ok(())
         }
         "policy" => {

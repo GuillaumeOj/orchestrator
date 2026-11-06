@@ -22,6 +22,13 @@ use serde_json::{Value, json};
 
 use crate::runtime::Runtime;
 
+pub mod brief;
+pub mod estimate;
+pub mod report;
+pub mod start;
+
+pub use start::IntakeLink;
+
 pub const TOPIC: &str = orch_store::INTAKE_TOPIC;
 /// Global setting: seconds between two refreshes of a project (F16).
 pub const REFRESH_SECS_KEY: &str = "intake.refresh_secs";
@@ -59,6 +66,12 @@ pub struct Refresher {
     published: Mutex<Option<Value>>,
     /// Linear's 429 back-off, per project.
     backoff: Mutex<BTreeMap<String, Arc<Backoff>>>,
+    /// The estimator's history and rooms (spec §3.4).
+    pub(crate) est: Mutex<Option<Arc<estimate::EstState>>>,
+    /// Items and briefs a start is claiming (one start each).
+    pub(crate) claims: Mutex<BTreeSet<String>>,
+    /// When the history was last read (ms): at most once a minute.
+    pub(crate) est_at: std::sync::atomic::AtomicU64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -152,11 +165,21 @@ struct ProjectFacts {
     can_team: bool,
 }
 
+/// The mode an item suggests: its `mode` front matter, else team when the
+/// project has a default team, else solo.
+fn suggested_mode(meta: &Value, facts: &ProjectFacts) -> &'static str {
+    match meta["mode"].as_str() {
+        Some("team") => "team",
+        Some("solo") => "solo",
+        _ if facts.default_team.is_some() => "team",
+        _ => "solo",
+    }
+}
+
 /// An item as `now.intake` and the commands show it (api-contract §1.2).
-fn item_json(f: &ItemFields, facts: &ProjectFacts) -> Value {
+fn item_json(f: &ItemFields, facts: &ProjectFacts, est: &estimate::EstState) -> Value {
     let meta = f.meta;
-    let doc_mode = meta["mode"].as_str().filter(|m| *m == "team" || *m == "solo");
-    let mode = doc_mode.unwrap_or(if facts.default_team.is_some() { "team" } else { "solo" });
+    let mode = suggested_mode(meta, facts);
     let team = meta["team"].as_str().map(str::to_string).or_else(|| facts.default_team.clone());
     json!({
         "id": f.id.map(|i| format!("it_{i}")),
@@ -171,8 +194,7 @@ fn item_json(f: &ItemFields, facts: &ProjectFacts) -> Value {
         "mode": mode,
         "team": if mode == "team" { json!(team) } else { Value::Null },
         "can_team": facts.can_team,
-        // The estimate lands with P4.5 back 2 (spec §3.4).
-        "estimate": Value::Null,
+        "estimate": estimate::estimate(est, f.project, meta["size"].as_str(), mode),
         "state": f.state.as_str(),
         "excerpt": excerpt(f.body),
     })
@@ -254,34 +276,24 @@ fn source_label(s: &IntakeSource, repo: Option<&str>, base: &str) -> String {
 }
 
 /// The source's list in its own UI (F10); `None` for repo docs.
-fn source_url(s: &IntakeSource, repo: Option<&str>, items: &[&IntakeRow]) -> Option<String> {
+fn source_url(s: &IntakeSource, repo: Option<&str>, listed: Option<&str>) -> Option<String> {
     match s {
         IntakeSource::Github { filter, .. } => {
-            let repo = repo?;
             let q = |s: &str| src::enc(&s.replace('"', ""));
             Some(match filter {
                 GithubIntakeFilter::Label { names } => {
                     let labels: String = names.iter().map(|n| format!("+label:%22{}%22", q(n))).collect();
-                    format!("https://github.com/{repo}/issues?q=is:issue+is:open{labels}")
+                    format!("https://github.com/{}/issues?q=is:issue+is:open{labels}", repo?)
                 }
                 GithubIntakeFilter::Milestone { title } => {
-                    format!("https://github.com/{repo}/issues?q=is:issue+is:open+milestone:%22{}%22", q(title))
+                    format!("https://github.com/{}/issues?q=is:issue+is:open+milestone:%22{}%22", repo?, q(title))
                 }
-                GithubIntakeFilter::Project { owner, number, .. } => {
-                    format!("https://github.com/orgs/{owner}/projects/{number}")
-                }
+                // GitHub says whether the board is an organization's or a user's.
+                GithubIntakeFilter::Project { .. } => listed?.to_string(),
             })
         }
-        IntakeSource::Linear { team, project, .. } => {
-            // The workspace slug is only known from an item's URL.
-            let ws = items.iter().find_map(|r| {
-                r.url.as_deref()?.strip_prefix("https://linear.app/")?.split('/').next().map(str::to_string)
-            })?;
-            Some(match project {
-                Some(p) => format!("https://linear.app/{ws}/project/{p}"),
-                None => format!("https://linear.app/{ws}/team/{team}/active"),
-            })
-        }
+        // The workspace slug, the team key and the project slug come with the issues.
+        IntakeSource::Linear { .. } => listed.map(str::to_string),
         _ => None,
     }
 }
@@ -333,6 +345,8 @@ impl Runtime {
         };
         if tips {
             self.tip_check_of(&projects);
+            // The rooms move with the week; the history with the calibration.
+            self.intake_estimates_update(false);
         }
         let due: Vec<String> = {
             let mut s = lock(&self.intake.sched);
@@ -486,6 +500,9 @@ impl Runtime {
                     status.refreshed_at_ms = Some(now);
                     status.more = listing.more();
                     status.tip = tip;
+                    // An empty answer has no link to give: the last one stays.
+                    status.url = listing.url.or(status.url.take());
+                    self.intake_estimates_update(true);
                     self.event(
                         "-",
                         "intake.refreshed",
@@ -519,6 +536,24 @@ impl Runtime {
         }
     }
 
+    /// The project's source as one line (`acme/shop · label ready`), `None` without one.
+    pub(crate) fn intake_label(&self, p: &Project) -> Option<String> {
+        let source = self.db.intake_source(&p.id).ok().filter(|s| !s.is_none())?;
+        let repo = self.intake_repo_known(p, &source);
+        Some(source_label(&source, repo.as_deref(), &base_branch(p)))
+    }
+
+    /// A GitHub source's repository without asking `gh` (configured, known, or seen).
+    fn intake_repo_known(&self, p: &Project, source: &IntakeSource) -> Option<String> {
+        match source {
+            IntakeSource::Github { repo, .. } => repo
+                .clone()
+                .or_else(|| crate::github_issue::known_repo(p))
+                .or_else(|| self.issue_repos.lock().unwrap_or_else(|e| e.into_inner()).get(&p.id).cloned()),
+            _ => None,
+        }
+    }
+
     fn project_facts(&self, p: &Project) -> ProjectFacts {
         let default_team = p.typed_settings().default_team.filter(|t| !t.is_empty());
         let can_team = default_team.is_some() || self.db.teams(Some(&p.id)).map(|t| !t.is_empty()).unwrap_or(false);
@@ -530,8 +565,9 @@ impl Runtime {
     /// registered project.
     pub fn intake_view(&self) -> Value {
         let projects = self.db.projects(false).unwrap_or_default();
-        let rows = self.db.intake_items(None).unwrap_or_default();
+        let rows = self.db.intake_listed(None).unwrap_or_default();
         let inflight = lock(&self.intake.sched).inflight.clone();
+        let est = self.intake_est();
         let mut items = vec![];
         let mut sources = vec![];
         for p in &projects {
@@ -549,15 +585,9 @@ impl Runtime {
             let status = self.db.intake_status(&p.id).unwrap_or_default();
             let shown = ready.len().min(src::CAP);
             for r in ready.iter().take(src::CAP).chain(hidden.iter()) {
-                items.push(item_json(&ItemFields::of_row(r), &facts));
+                items.push(item_json(&ItemFields::of_row(r), &facts, &est));
             }
-            let repo = match &source {
-                IntakeSource::Github { repo, .. } => repo
-                    .clone()
-                    .or_else(|| crate::github_issue::known_repo(p))
-                    .or_else(|| self.issue_repos.lock().unwrap_or_else(|e| e.into_inner()).get(&p.id).cloned()),
-                _ => None,
-            };
+            let repo = self.intake_repo_known(p, &source);
             let state = if inflight.contains(&p.id) {
                 "refreshing"
             } else if status.error.is_some() {
@@ -572,7 +602,7 @@ impl Runtime {
                 "status": state,
                 "error": status.error,
                 "refreshed_at_ms": status.refreshed_at_ms,
-                "url": source_url(&source, repo.as_deref(), &mine),
+                "url": source_url(&source, repo.as_deref(), status.url.as_deref()),
                 "count": shown,
                 "more": ready.len().saturating_sub(shown) + status.more,
                 "hidden": hidden.len(),
@@ -610,11 +640,12 @@ impl Runtime {
         }
         let status = self.db.intake_status(&p.id)?;
         let facts = self.project_facts(&p);
-        let rows: Vec<IntakeRow> =
-            self.db.intake_items(Some(&p.id))?.into_iter().filter(|r| r.state != IntakeState::Started).collect();
+        let rows: Vec<IntakeRow> = self.db.intake_listed(Some(&p.id))?;
         let ready: Vec<&IntakeRow> = rows.iter().filter(|r| r.state == IntakeState::Ready).collect();
         let more = ready.len().saturating_sub(src::CAP) + status.more;
-        let items: Vec<Value> = ready.iter().take(PREVIEW).map(|r| item_json(&ItemFields::of_row(r), &facts)).collect();
+        let est = self.intake_est();
+        let items: Vec<Value> =
+            ready.iter().take(PREVIEW).map(|r| item_json(&ItemFields::of_row(r), &facts, &est)).collect();
         Ok(
             json!({"preview": {"count": ready.len().min(src::CAP), "more": more, "items": items, "error": status.error}}),
         )
@@ -625,13 +656,14 @@ impl Runtime {
         let p = self.intake_project(project)?;
         let s = parse_source(source)?;
         let facts = self.project_facts(&p);
+        let est = self.intake_est();
         Ok(match self.intake_fetch(&p, &s) {
             Ok((l, _)) => {
                 let items: Vec<Value> = l
                     .items
                     .iter()
                     .take(PREVIEW)
-                    .map(|f| item_json(&ItemFields::of_upsert(&f.upsert(), &p.id, s.kind()), &facts))
+                    .map(|f| item_json(&ItemFields::of_upsert(&f.upsert(), &p.id, s.kind()), &facts, &est))
                     .collect();
                 json!({"count": l.items.len(), "more": l.more(), "items": items, "error": null})
             }
@@ -696,7 +728,7 @@ impl Runtime {
         let p = self.intake_project(&r.project_id)?;
         let m = &r.meta;
         Ok(json!({
-            "item": item_json(&ItemFields::of_row(&r), &self.project_facts(&p)),
+            "item": item_json(&ItemFields::of_row(&r), &self.project_facts(&p), &self.intake_est()),
             "body": r.body,
             "truncated": m["truncated"].as_bool().unwrap_or(false),
             "milestone": m["milestone"],
@@ -704,6 +736,13 @@ impl Runtime {
             "assignees": m["assignees"].as_array().cloned().unwrap_or_default(),
             "points": m["estimate"],
         }))
+    }
+
+    /// The estimate of a cached item, as `now.intake` shows it.
+    pub(crate) fn intake_estimate_of(&self, r: &IntakeRow) -> Value {
+        let Ok(p) = self.intake_project(&r.project_id) else { return Value::Null };
+        let mode = suggested_mode(&r.meta, &self.project_facts(&p));
+        estimate::estimate(&self.intake_est(), &r.project_id, r.meta["size"].as_str(), mode)
     }
 
     pub fn intake_hide(&self, item: &str) -> Result<Value> {

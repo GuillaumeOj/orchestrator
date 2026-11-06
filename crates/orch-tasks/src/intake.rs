@@ -112,13 +112,16 @@ impl Fetched {
 pub struct Listing {
     pub items: Vec<Fetched>,
     pub total: usize,
+    /// The list in the source's own UI when the source said where it is
+    /// (a Projects v2 board, a Linear team or project view).
+    pub url: Option<String>,
 }
 
 impl Listing {
     fn capped(mut items: Vec<Fetched>) -> Listing {
         let total = items.len();
         items.truncate(CAP);
-        Listing { items, total }
+        Listing { items, total, url: None }
     }
 
     pub fn more(&self) -> usize {
@@ -297,7 +300,7 @@ fn rest_issues(gh: &dyn Gh, repo: &str, query: &str) -> R<Listing> {
 }
 
 const PROJECT_QUERY: &str = "query OrchIntakeProject($owner: String!, $number: Int!) { repositoryOwner(login: $owner) { \
-    ... on ProjectV2Owner { projectV2(number: $number) { title items(first: 100) { nodes { \
+    ... on ProjectV2Owner { projectV2(number: $number) { title url items(first: 100) { nodes { \
     fieldValueByName(name: \"Status\") { ... on ProjectV2ItemFieldSingleSelectValue { name } } \
     content { __typename ... on Issue { number title body url state updatedAt repository { nameWithOwner } \
     labels(first: 20) { nodes { name } } assignees(first: 5) { nodes { login } } milestone { title } } } } } } } } }";
@@ -354,7 +357,9 @@ fn project_items(gh: &dyn Gh, repo: &str, owner: &str, number: u64, status: Opti
             Some(f)
         })
         .collect();
-    Ok(Listing::capped(items))
+    // The board's own link: `/orgs/…` or `/users/…` by who owns it.
+    let url = project["url"].as_str().filter(|u| u.starts_with("https://")).map(str::to_string);
+    Ok(Listing { url, ..Listing::capped(items) })
 }
 
 /// The open issues of `repo` that `filter` selects.
@@ -487,7 +492,8 @@ fn team_filter(team: &str) -> Value {
 }
 
 const LINEAR_QUERY: &str = "query OrchIntakeIssues($filter: IssueFilter) { issues(first: 100, filter: $filter) { \
-    nodes { id identifier title description url priority estimate sortOrder updatedAt labels { nodes { name } } } } }";
+    nodes { id identifier title description url priority estimate sortOrder updatedAt team { key } \
+    project { slugId } labels { nodes { name } } } } }";
 
 /// What a Linear intake source lists.
 pub struct LinearQuery<'a> {
@@ -550,7 +556,22 @@ pub fn linear(gql: &dyn Graphql, backoff: &Backoff, now: u64, q: &LinearQuery) -
         })
         .collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
-    Ok(Listing::capped(rows.into_iter().map(|r| r.2).collect()))
+    let url = linear_view_url(&d["issues"]["nodes"], q.project.is_some());
+    Ok(Listing { url, ..Listing::capped(rows.into_iter().map(|r| r.2).collect()) })
+}
+
+/// The Linear view of the source: the project (`/project/<slugId>`) or the
+/// team (`/team/<KEY>/active`), the workspace slug being the one in the
+/// issues' own links. `None` while no issue says them.
+fn linear_view_url(nodes: &Value, by_project: bool) -> Option<String> {
+    nodes.as_array()?.iter().find_map(|v| {
+        let ws = v["url"].as_str()?.strip_prefix("https://linear.app/")?.split('/').next().filter(|w| !w.is_empty())?;
+        Some(if by_project {
+            format!("https://linear.app/{ws}/project/{}", v["project"]["slugId"].as_str().filter(|s| !s.is_empty())?)
+        } else {
+            format!("https://linear.app/{ws}/team/{}/active", v["team"]["key"].as_str().filter(|s| !s.is_empty())?)
+        })
+    })
 }
 
 /// `intake_options` for Linear: the team's labels (but `orch`'s).
@@ -825,6 +846,55 @@ mod tests {
     }
 
     #[test]
+    fn a_project_board_links_to_where_github_says_it_is() {
+        let gh = FakeGh::default();
+        let board = |url: Value| json!({"data": {"repositoryOwner": {"projectV2": {"title": "Road", "url": url, "items": {"nodes": []}}}}});
+        let f = |owner: &str| GithubIntakeFilter::Project { owner: owner.into(), number: 4, status: None };
+        // A user-owned board is under /users/, an organization's under /orgs/.
+        gh.answer("graphql", board(json!("https://github.com/users/me/projects/4")));
+        assert_eq!(
+            github(&gh, "me/shop", &f("me")).unwrap().url.as_deref(),
+            Some("https://github.com/users/me/projects/4")
+        );
+        gh.answer("graphql", board(json!("https://github.com/orgs/acme/projects/4")));
+        assert_eq!(
+            github(&gh, "acme/shop", &f("acme")).unwrap().url.as_deref(),
+            Some("https://github.com/orgs/acme/projects/4")
+        );
+        // No link in the answer: none is made up.
+        gh.answer("graphql", board(Value::Null));
+        assert_eq!(github(&gh, "acme/shop", &f("acme")).unwrap().url, None);
+        // A label or milestone listing has no board.
+        gh.answer("repos/acme/shop/issues", json!([]));
+        assert_eq!(github(&gh, "acme/shop", &GithubIntakeFilter::Label { names: vec!["a".into()] }).unwrap().url, None);
+    }
+
+    #[test]
+    fn a_linear_view_links_from_the_team_key_and_the_project_slug() {
+        let nodes = |url: &str| {
+            json!([{"url": url, "team": {"key": "ENG"}, "project": {"slugId": "ab12cd"}},
+                   {"url": "https://linear.app/other/issue/X-1", "team": {"key": "X"}, "project": null}])
+        };
+        let url = "https://linear.app/acme/issue/ENG-42/refunds";
+        assert_eq!(linear_view_url(&nodes(url), false).as_deref(), Some("https://linear.app/acme/team/ENG/active"));
+        assert_eq!(linear_view_url(&nodes(url), true).as_deref(), Some("https://linear.app/acme/project/ab12cd"));
+        // The first issue that says everything decides; none, none.
+        let no_project = json!([{"url": url, "team": {"key": "ENG"}, "project": null},
+                                {"url": url, "team": {"key": "ENG"}, "project": {"slugId": "zz"}}]);
+        assert_eq!(linear_view_url(&no_project, true).as_deref(), Some("https://linear.app/acme/project/zz"));
+        assert_eq!(linear_view_url(&json!([]), false), None);
+        assert_eq!(linear_view_url(&json!([{"url": "https://example.com/x", "team": {"key": "E"}}]), false), None);
+        // Through the listing: the query asks for them, and the answer's become the source's link.
+        let gql = FakeLinear::default();
+        let q = LinearQuery { team: "ENG", project: None, label: None, include_backlog: false };
+        let (query, _) = {
+            linear(&gql, &Backoff::default(), 1000, &q).unwrap();
+            gql.calls.lock().unwrap()[0].clone()
+        };
+        assert!(query.contains("team { key }") && query.contains("project { slugId }"));
+    }
+
+    #[test]
     fn gh_errors_have_their_codes() {
         let code = |m: &str| gh_error(&anyhow::anyhow!("gh api x: {m}")).code;
         assert_eq!(code("No such file or directory (os error 2)"), "gh_missing");
@@ -886,6 +956,7 @@ mod tests {
             let issue = |id: &str, prio: u64, order: f64, est: Value, state: &str, labels: &[&str]| {
                 json!({"id": format!("u-{id}"), "identifier": id, "title": format!("T {id}"), "description": "d",
                     "url": format!("https://linear.app/x/issue/{id}"), "priority": prio, "estimate": est,
+                    "team": {"key": "ENG"}, "project": {"slugId": "ab12cd"},
                     "sortOrder": order, "updatedAt": "2026-11-03T00:00:00Z", "state": state,
                     "labels": {"nodes": labels.iter().map(|l| json!({"name": l})).collect::<Vec<_>>()}})
             };
@@ -910,6 +981,7 @@ mod tests {
         let l = linear(&gql, &b, 1000, &q).unwrap();
         let refs: Vec<&str> = l.items.iter().map(|i| i.reference.as_str()).collect();
         assert_eq!(refs, ["ENG-3", "ENG-2", "ENG-1"], "priority, then sort order; none last; orch left out");
+        assert_eq!(l.url.as_deref(), Some("https://linear.app/x/project/ab12cd"), "the project's view");
         assert_eq!((l.items[0].size, l.items[1].size, l.items[2].size), (Some(Size::L), Some(Size::S), None));
         assert_eq!((Size::of_points(3.0), Size::of_points(3.5), Size::of_points(0.5)), (Size::M, Size::L, Size::S));
         let (_, vars) = gql.calls.lock().unwrap()[0].clone();
