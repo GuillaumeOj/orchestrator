@@ -36,6 +36,8 @@ uuid.workspace = true
 tauri = { version = "2.12", features = [] }
 core-text = "22"
 tauri-plugin-notification = "2.4"
+# Project settings › Files: the native open panel, files and folders together (macOS).
+rfd = { version = "0.17", default-features = false }
 # Update signatures (minisign, as `tauri signer` writes them).
 minisign-verify = "0.3"
 base64 = "0.22"
