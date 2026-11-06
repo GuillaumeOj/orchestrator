@@ -143,7 +143,10 @@ All are `serde` types.
 - Entering Catch-up lifts the deferrals.
 
 **Live caps.**
-- `LiveCaps::from_base(3)` gives Green 3, Amber 2, Red 1, Catch-up 5, and 0 off-hours.
+- `LiveCaps::from_base(b)` gives Green `b`, Amber `ceil(b/2)`, Red `min(1, b)`, Catch-up `b + 2`,
+  and 0 off-hours: with the default 3, Green 3, Amber 2, Red 1, Catch-up 5.
+- The host sets `b`: the app setting `governor.live_cap` (1–20, default 3, Settings › Pacing
+  policy), or `orchd serve --cap N` for one run. A change rebuilds the Governor (as a replan).
 - In a block of weight `w < 1` the cap is `ceil(cap × w)`.
 - The 5h guard caps it to 1.
 
