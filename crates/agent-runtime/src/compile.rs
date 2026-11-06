@@ -246,7 +246,10 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
                     // Code that runs outside the sandbox's control (hooks, agent settings).
                     for sub in [".claude", ".git/hooks"] {
                         deny.push(format!("Edit({r}/**/{sub}/**)"));
+                        // The directory and what is inside it: the CLI's glob
+                        // handling of a bare directory is untested.
                         deny_write.push(format!("{p}/**/{sub}"));
+                        deny_write.push(format!("{p}/**/{sub}/**"));
                     }
                 }
                 allow_write.push(p);
@@ -670,6 +673,7 @@ pub(crate) mod tests {
         for sub in [".claude", ".git/hooks"] {
             assert!(deny.contains(&format!("Edit(//Users/u/Brand/**/{sub}/**)")), "deny {sub}");
             assert!(deny_write.contains(&format!("/Users/u/Brand/**/{sub}")), "denyWrite {sub}");
+            assert!(deny_write.contains(&format!("/Users/u/Brand/**/{sub}/**")), "denyWrite {sub}/**");
         }
         assert!(!deny.iter().any(|r| r.contains("/Ref/**/") || r.contains("design/app.figcraft/")));
         assert_eq!(add_dirs(&c), ["/Users/u/Brand", "/Users/u/Ref", "/Users/u/Brand/legal"]);
