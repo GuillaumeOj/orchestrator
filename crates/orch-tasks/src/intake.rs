@@ -196,7 +196,7 @@ fn names(v: &Value, key: &str) -> Vec<String> {
 }
 
 /// Percent-encodes a query parameter value.
-fn enc(s: &str) -> String {
+pub fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
@@ -471,11 +471,6 @@ impl Backoff {
             }
             Err(e) => Err(linear_error(&e)),
         }
-    }
-
-    /// Ms until calls resume (0 = now).
-    pub fn until_ms(&self) -> u64 {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).0
     }
 }
 

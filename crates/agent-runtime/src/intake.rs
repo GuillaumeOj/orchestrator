@@ -115,11 +115,16 @@ fn base_branch(p: &Project) -> String {
 fn excerpt(body: &str) -> String {
     let text: String = body
         .lines()
-        .map(|l| l.trim().trim_start_matches(['#', '>', '-', '*', ' ']).trim())
-        .filter(|l| !l.is_empty() && !l.starts_with("```"))
+        .map(|l| {
+            let l = l.trim().trim_start_matches(['#', '>']).trim_start();
+            // A list bullet, not a negative number or a rule.
+            l.strip_prefix("- ").or_else(|| l.strip_prefix("* ")).unwrap_or(l).trim()
+        })
+        .filter(|l| !l.is_empty() && !l.starts_with("```") && *l != "---")
         .collect::<Vec<_>>()
         .join(" ")
-        .replace(['*', '`', '_'], "");
+        .replace("**", "")
+        .replace('`', "");
     match text.char_indices().nth(EXCERPT) {
         Some((at, _)) => format!("{}…", text[..at].trim_end()),
         None => text,
@@ -228,7 +233,7 @@ fn source_url(s: &IntakeSource, repo: Option<&str>, items: &[&IntakeRow]) -> Opt
     match s {
         IntakeSource::Github { filter, .. } => {
             let repo = repo?;
-            let q = |s: &str| s.replace('"', "").replace(' ', "+");
+            let q = |s: &str| src::enc(&s.replace('"', ""));
             Some(match filter {
                 GithubIntakeFilter::Label { names } => {
                     let labels: String = names.iter().map(|n| format!("+label:%22{}%22", q(n))).collect();
@@ -376,31 +381,32 @@ impl Runtime {
         }
     }
 
-    /// Refreshes one project now, unless one is in flight. The items are
-    /// written only when the source did not change meanwhile.
-    pub fn intake_refresh_project(&self, id: &str) {
+    /// Refreshes one project now, unless one is in flight (false then). The
+    /// items are written only when the source did not change meanwhile.
+    pub fn intake_refresh_project(&self, id: &str) -> bool {
         {
             let mut s = lock(&self.intake.sched);
             if !s.inflight.insert(id.to_string()) {
-                return;
+                return false;
             }
+            // Not due while in flight: a request made meanwhile sets 0 again
+            // (the request that started this one is answered by it).
+            s.due.insert(id.to_string(), u64::MAX);
         }
         // The lane shows "refreshing".
-        self.db.touch([TOPIC]);
+        self.db.note([TOPIC]);
         self.intake_refresh_inner(id);
         let mut s = lock(&self.intake.sched);
         s.inflight.remove(id);
         let next = orch_protocol::now_ms() + self.refresh_ms();
         // A request made during the refresh stays due.
-        match s.due.get(id) {
-            Some(0) => {}
-            _ => {
-                s.due.insert(id.to_string(), next);
-            }
+        if s.due.get(id) != Some(&0) {
+            s.due.insert(id.to_string(), next);
         }
         drop(s);
         self.intake.wake.notify_all();
-        self.db.touch([TOPIC]);
+        self.db.note([TOPIC]);
+        true
     }
 
     fn intake_refresh_inner(&self, id: &str) {
@@ -410,6 +416,17 @@ impl Runtime {
             return;
         }
         let t0 = std::time::Instant::now();
+        // Repo docs at the tip already read: nothing can have changed (the
+        // glob is the stored source's; a source change clears the status).
+        if let IntakeSource::RepoDocs { branch, .. } = &source {
+            let mut status = self.db.intake_status(id).unwrap_or_default();
+            let branch = branch.clone().unwrap_or_else(|| base_branch(&p));
+            if status.error.is_none() && status.tip.is_some() && status.tip == src::branch_tip(&p.path, &branch) {
+                status.refreshed_at_ms = Some(orch_protocol::now_ms());
+                let _ = self.db.set_intake_status(id, &status);
+                return;
+            }
+        }
         let got = self.intake_fetch(&p, &source);
         // Changed while we listed: this answer is the old source's.
         if self.db.intake_source(id).ok().as_ref() != Some(&source) {
@@ -451,17 +468,14 @@ impl Runtime {
     /// change must not be answered by the old source's refresh).
     fn intake_refresh_now(&self, id: &str) {
         let deadline = std::time::Instant::now() + WAIT_INFLIGHT;
-        let mut s = lock(&self.intake.sched);
-        while s.inflight.contains(id) && std::time::Instant::now() < deadline {
-            s = self
-                .intake
-                .wake
-                .wait_timeout(s, Duration::from_millis(100))
-                .map(|r| r.0)
-                .unwrap_or_else(|e| e.into_inner().0);
+        // Retried: the refresher thread can take the slot between the wait
+        // and our own start.
+        while !self.intake_refresh_project(id) && std::time::Instant::now() < deadline {
+            let s = lock(&self.intake.sched);
+            if s.inflight.contains(id) {
+                let _ = self.intake.wake.wait_timeout(s, Duration::from_millis(100));
+            }
         }
-        drop(s);
-        self.intake_refresh_project(id);
     }
 
     fn project_facts(&self, p: &Project) -> ProjectFacts {
@@ -681,3 +695,12 @@ impl Runtime {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[test]
+fn excerpts_keep_identifiers_and_numbers() {
+    assert_eq!(
+        excerpt("# Title\n- Rename user_id\n-5% latency\n**bold** `code`"),
+        "Title Rename user_id -5% latency bold code"
+    );
+}

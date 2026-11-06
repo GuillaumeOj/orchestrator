@@ -260,6 +260,8 @@ fn repo_docs_follow_the_branch_tip() {
     assert_eq!(lock(&f.rt.intake.sched).due.get(&f.project.id), Some(&0));
     f.rt.intake_step(orch_protocol::now_ms());
     assert_eq!(f.refs().len(), 2);
+    // Answered: due at the interval again, not refreshed on every pass.
+    assert!(lock(&f.rt.intake.sched).due[&f.project.id] > orch_protocol::now_ms());
     // Options: the count the glob matches; a missing branch is a source error.
     assert_eq!(f.rt.intake_options(&f.project.id, &json!({"type": "repo_docs"})).unwrap()["matches"], 3);
     let o = f.rt.intake_options(&f.project.id, &json!({"type": "repo_docs", "branch": "nope"})).unwrap();

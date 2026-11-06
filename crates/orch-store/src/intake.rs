@@ -263,7 +263,7 @@ impl Store {
             Ok(changed || gone > 0)
         })?;
         if changed {
-            self.touch([TOPIC]);
+            self.note([TOPIC]);
         }
         Ok(changed)
     }
@@ -278,7 +278,7 @@ impl Store {
             )?)
         })?;
         if n > 0 {
-            self.touch([TOPIC]);
+            self.note([TOPIC]);
         }
         Ok(n > 0)
     }
@@ -292,7 +292,7 @@ impl Store {
             )?)
         })?;
         if n > 0 {
-            self.touch([TOPIC]);
+            self.note([TOPIC]);
         }
         Ok(n > 0)
     }
@@ -307,7 +307,7 @@ impl Store {
             return Ok(());
         }
         self.set_setting(&status_key(project), &serde_json::to_value(status)?)?;
-        self.touch([TOPIC]);
+        self.note([TOPIC]);
         Ok(())
     }
 }
