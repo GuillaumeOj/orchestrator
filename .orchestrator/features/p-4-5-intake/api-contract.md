@@ -117,3 +117,29 @@ Errors: `bad_request` (unknown project / team, empty or too long title or brief,
 - `intake.refreshed {project, source, count, ms}`, `intake.error {project, code}`, `intake.started {item, project, source, mode, est_pp}`, `intake.planned_started {decision, project, mode}`, `intake.untracked_start {project, kind, ref}`, `intake.returned {item, why: run_deleted | session_killed}`.
 - Weekly report JSON gains `intake: { started, planned, untracked }`.
 - `orchd intake [--week] [--json]`.
+
+## 7. Amendments from the ux pass (D8; [p4-5-design-notes.md](../../../docs/design/p4-5-design-notes.md) §0)
+These override §1–§6 where they differ. Field names are final.
+- **F1** `error.fix`: `"settings" | "integrations" | "gh_scope" | null`. gh_missing, gh_auth, linear_key, linear_auth → `integrations`; not_found, bad_glob, branch_missing → `settings`; gh_scope → `gh_scope`; rate_limited, failed → `null`.
+- **F2** `error.retry_at_ms?` (rate_limited only).
+- **F3** `error.message`: plain text, ≤ 200 chars (the UI shows its own copy per code).
+- **F4** `intake_preview.error` has the §2.1 source-error shape; validation errors stay command errors `{code: "bad_request", field, message}`.
+- **F5** `intake_item` also returns `milestone?`, `priority?` (Linear label, e.g. "High"), `assignees: string[]`, `points?`.
+- **F6** `estimate.room_scope: "allocation" | "week" | null`.
+- **F7** no second over-room flag (the UI computes the other mode).
+- **F9** `sources[].count` = ready, not hidden, in `items` (≤ 50); `more` = ready beyond the cap; `hidden` = user-hidden in `items`.
+- **F10** `sources[].url?` (GitHub issues list with the filter; Linear team / project view; null for repo docs).
+- **F11** the `stale` error for an item carries `started: {kind: "run" | "agent", name}`; for a brief, `stale` with message `brief closed`. `intake_prefill` returns the same errors.
+- **F12** a hidden item can't be started: `stale` with message `not ready`.
+- **F13** `origin` also on Done-today outcomes (same shape).
+- **F14** `origin {kind: "brief", decision, title}`.
+- **F15 / F20** the `brief` decision carries `title`, `project`, `mode`, `team` as fields.
+- **F16** global settings through `settings_get` / `settings_set`: `intake.refresh_secs` (60–3600, default 600), `intake.default_team_pp`, `intake.default_solo_pp` (0.5–50; defaults 6 and 1.5).
+- **F17** repo docs with `status: done | started` are absent from `items`; `hidden` counts only user-hidden items.
+- **F18** report JSON `intake.untracked_items: [{kind, ref}]` (≤ 5).
+- **F19** GitHub `intake_options` adds `projects: [{owner, number, title, statuses[]}]`; a `gh_scope` error there is returned in `error` (source-error shape), not as a command failure.
+- **F22** Linear points → size: ≤ 1 S, ≤ 3 M, ≥ 4 L (fractions by the same thresholds).
+- **F23** `intake_options` accepts a partial source (GitHub: `repo` only; Linear: `team` only).
+- **F24** `IntakeItem.can_team: bool` (the project has a team to launch).
+- **F25** repo-docs globs match with `globset` `literal_separator(true)` (`*` does not cross `/`).
+- **F26** event fields as §6 (`est_pp`; `project` on `intake.planned_started`).
