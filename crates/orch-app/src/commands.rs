@@ -625,7 +625,7 @@ pub async fn intake_hide(core: CoreState<'_>, item: String) -> Res<Value> {
     blocking(core, move |c| c.runtime()?.intake_hide(&item)).await
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn intake_prefill(
     core: CoreState<'_>,
     item: Option<String>,
