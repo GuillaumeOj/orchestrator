@@ -1,6 +1,6 @@
 //! Policy: evaluation (merge, precedence, scopes, defaults, hard lists),
 //! the files in the Runtime (load, parse errors, the watcher, writes),
-//! migration 14 and the permission paths.
+//! migration 15 and the permission paths.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -453,7 +453,7 @@ fn the_orchestrators_tools_run_with_no_rule_and_hard_checks_apply() {
     assert_eq!(rt.db.audit_log(Some("a1"), 1).unwrap()[0].actor, "core");
 }
 
-// ------------------------------------------------------------------ migration 14
+// ------------------------------------------------------------------ migration 15
 
 fn seed_rules(dir: &Path) -> (orch_store::Project, Vec<u64>) {
     let db = orch_store::Store::open(&dir.join("app/state/orch.db")).unwrap();

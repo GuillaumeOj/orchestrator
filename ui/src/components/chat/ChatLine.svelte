@@ -19,7 +19,8 @@
   let { item, expanded = false, pulse = false, entries = {}, refok = () => true, ontoggle = () => {}, onopen = () => {}, onref = () => {}, onexpand = () => {} } = $props();
   // The line after an undo of this window (a past day's entries are not pushed back): the core's reply.
   let patched = $state(null);
-  const line = $derived(patched ?? item.line);
+  // The core's entry replaces the local copy once it has the undo on it.
+  const line = $derived(patched && !item.line.undone_at_ms && !item.line.corrected_at_ms ? patched : item.line);
   const now = $derived(Math.max(now30(), Date.now()));
   const tail = $derived(tailText(line, entries));
   const undone = $derived(undoneTail(line, now));
@@ -29,7 +30,15 @@
   let correcting = $state(false);
   const input = $derived(line.undo?.label === 'Correct the answer');
   // Full copy only when it is shown or used; a collapsed line needs the chip alone.
-  const info = $derived(expanded || busy || correcting ? undoInfo(line, projectName(item.d?.subject?.project), now) : null);
+  const info = $derived(expanded || busy || correcting ? undoInfo(line, policyLabel(item.d), now) : null);
+  /** The file the line's rule lives in: the decision carries its scope (`global`, `project:<id>`). */
+  function policyLabel(d) {
+    const scope = d?.payload?.policy_file;
+    if (scope === 'global') return 'the global policy';
+    const id = scope?.startsWith('project:') ? scope.slice(8) : d?.subject?.project;
+    const name = projectName(id);
+    return name ? `${name} policy` : null;
+  }
   const showUndo = $derived(undoState(line) !== 'none' || line.by === 'overwatch' || line.by === 'core' || line.by === 'policy');
 
   let draft = $state(''); // kept until sent or cancelled, across collapse and expand
@@ -37,7 +46,7 @@
 
   async function run(text = null) {
     if (busy || undoState(line) !== 'available') return;
-    const done = undoInfo(line, projectName(item.d?.subject?.project), now);
+    const done = undoInfo(line, policyLabel(item.d), now);
     busy = true;
     failed = '';
     try {

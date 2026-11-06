@@ -482,8 +482,7 @@ export async function openPolicy(scope, projectId = null) {
   try {
     const r = await invoke('policy_open', { scope, project, ...RUN_SIZE });
     if (r.reused) {
-      const pane = findPane((s) => s.type === 'editor' && s.projectId === project);
-      if (pane) focusPane(pane);
+      focusEditor(project);
       return toast('Opened the policy file in nvim');
     }
     addPane(
@@ -542,7 +541,13 @@ export function openFeature(featureId, doc = null, anchor = null, timeline = nul
   }
   const f = features().find((x) => x.id === featureId);
   addPane(
-    { type: 'feature', featureId, projectId: f?.project_id, ...(doc ? { doc, anchor } : {}), ...(timeline ? { timeline } : {}) },
+    {
+      type: 'feature',
+      featureId,
+      projectId: f?.project_id,
+      ...(doc ? { doc, anchor } : {}),
+      ...(timeline ? { timeline } : {}),
+    },
     app.layout ? 'tab' : 'right',
   );
 }
@@ -698,9 +703,16 @@ export async function openShell(opts = {}) {
   }
 }
 
+/** Focuses the project's open editor pane (a global one has no project: null or undefined). */
+function focusEditor(projectId) {
+  const pane = findPane((s) => s.type === 'editor' && (s.projectId ?? null) === (projectId ?? null));
+  if (pane) focusPane(pane);
+}
+
 /** FR-1101/1102: reuse the project's nvim when it runs, else a new editor pane. */
 export async function openEditor(file = null, line = null, opts = {}) {
-  const a = opts.agentId ? agent(opts.agentId) : contextAgent();
+  // An explicit project never takes the focused pane's agent: that one may belong to another project.
+  const a = opts.agentId ? agent(opts.agentId) : opts.projectId ? null : contextAgent();
   const p = projects().find((x) => x.id === (opts.projectId ?? a?.project_id)) ?? contextProject();
   try {
     const r = await invoke('editor_open', {
@@ -711,8 +723,7 @@ export async function openEditor(file = null, line = null, opts = {}) {
       ...RUN_SIZE,
     });
     if (r.reused) {
-      const pane = findPane((s) => s.type === 'editor' && s.projectId === p?.id);
-      if (pane) focusPane(pane);
+      focusEditor(p?.id);
       toast(
         file
           ? `Opened ${file}${line ? `:${line}` : ''} in nvim · ${p?.name ?? ''}`

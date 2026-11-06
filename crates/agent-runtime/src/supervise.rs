@@ -195,7 +195,13 @@ impl Runtime {
     /// and of the Overwatch. `state`: the agent's state as the caller sees it
     /// (for the refusal). Returns the text, the data and how it went:
     /// `resumed` | `queued` (Pause all holds it) | `restarted_fresh`.
-    pub(crate) fn resume_member(&self, agent: &str, actor: &str, by: &str, state: &str) -> Result<(String, Value, &'static str)> {
+    pub(crate) fn resume_member(
+        &self,
+        agent: &str,
+        actor: &str,
+        by: &str,
+        state: &str,
+    ) -> Result<(String, Value, &'static str)> {
         if self.live(agent).is_some() {
             bail!("{agent} is running ({state}): nudge it instead");
         }

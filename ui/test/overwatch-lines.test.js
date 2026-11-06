@@ -90,7 +90,8 @@ describe('undo helpers (notes §6)', () => {
   });
 
   it('copy per label: explanation, toast', () => {
-    const info = (label, over) => ow.undoInfo(withUndo(label, over), 'shop-api');
+    expect(ow.undoInfo(withUndo('Revoke rule'), 'the global policy').explain).toContain('from the global policy.');
+    const info = (label, over) => ow.undoInfo(withUndo(label, over), 'shop-api policy');
     expect(info('Revoke rule', { by: 'policy', by_detail: 'installs' })).toMatchObject({
       explain: 'Removes rule installs from shop-api policy. The call already ran.',
       toast: 'Rule installs revoked.',
