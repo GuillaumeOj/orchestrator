@@ -3,7 +3,7 @@
   // update block, compatibility and the account. Everything is derived from `setup.claude`.
   // Keys: u update / retry, r check now, ⏎ the block's default button, esc back to the sections.
   import { app, claudeAct, toast } from '../lib/app.svelte.js';
-  import { account, compat, hint, installedHeader, liveKeys, updateBlock } from '../lib/claude.js';
+  import { account, compat, hint, installedHeader, keysOf, updateBlock } from '../lib/claude.js';
   import { shortPath } from '../lib/format.js';
   import ClaudeUpdateBlock from './ClaudeUpdateBlock.svelte';
   import Kbd from './Kbd.svelte';
@@ -11,7 +11,8 @@
   const c = $derived(app.data?.setup?.claude ?? null);
   const home = $derived(app.data?.core?.user_home ?? '');
   const head = $derived(installedHeader(c));
-  const keys = $derived(liveKeys(c));
+  const block = $derived(updateBlock(c));
+  const keys = $derived(keysOf(block));
   const note = $derived(hint(c));
   const cp = $derived(compat(c));
   const acct = $derived(account(c));
@@ -27,7 +28,7 @@
 
   function onKey(e) {
     if (e.target.closest('input, textarea, select, button, a') || e.metaKey || e.ctrlKey || e.altKey) return;
-    const def = updateBlock(c).buttons.find((b) => b.def);
+    const def = block.buttons.find((b) => b.def);
     if (e.key === 'u' && keys.u) claudeAct('update');
     else if (e.key === 'r' && keys.r) claudeAct('check');
     else if (e.key === 'Enter' && def) claudeAct(def.id);
@@ -66,7 +67,7 @@
   {/if}
   <p class="muted foot">Agents run with auto-update off. The app updates Claude Code only when you ask, and never writes to ~/.claude.</p>
   <p class="muted hints">
-    {#if keys.u}<Kbd keys="u" /> update · {/if}{#if keys.r}<Kbd keys="r" /> check now · {/if}<Kbd keys="esc" /> back to sections
+    {#if keys.u}<Kbd keys="u" /> {keys.uLabel} · {/if}{#if keys.r}<Kbd keys="r" /> check now · {/if}<Kbd keys="esc" /> back to sections
   </p>
 </section>
 

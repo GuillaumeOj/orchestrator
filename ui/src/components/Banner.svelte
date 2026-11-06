@@ -1,7 +1,7 @@
 <script>
   // Global banners (§9.3, Penpot 05 copy): one at a time, highest attention first;
   // the rest collapse to "+n". Error banners: a 4 px left bar in the status color.
-  import { app, claudeUpdate, governor, openSettings, openSingleton } from '../lib/app.svelte.js';
+  import { app, claudeBusy, claudeUpdate, governor, openSettings, openSingleton } from '../lib/app.svelte.js';
   import { bannerClaude } from '../lib/claude.js';
   import { when } from '../lib/format.js';
   import { counts } from '../lib/now.svelte.js';
@@ -9,6 +9,14 @@
   import Kbd from './Kbd.svelte';
 
   let dismissed = $state({});
+  // Each `claude update` run is its own state: a dismissal made before it does not cover its outcome.
+  let claudeRuns = $state(0);
+  let wasUpdating = false;
+  $effect(() => {
+    const now = app.data?.setup?.claude?.update?.state === 'updating';
+    if (now && !wasUpdating) claudeRuns++;
+    wasUpdating = now;
+  });
   const banners = $derived.by(() => {
     const d = app.data;
     const out = [];
@@ -18,7 +26,7 @@
     if (c?.problem) {
       // A too-old Claude Code offers the update; a dismissal only covers the state it was made in.
       const v = bannerClaude(c);
-      out.push({ id: v ? `claude|${v.key}` : 'claude', color: 'var(--color-status-error)', title: 'Read-only:', text: c.problem, fail: v?.fail, update: v?.button, setup: !v?.details, claudeDetails: v?.details });
+      out.push({ id: v ? `claude|${v.key}|${claudeRuns}` : 'claude', color: 'var(--color-status-error)', title: 'Read-only:', text: c.problem, fail: v?.fail, update: v?.button, setup: !v?.details, claudeDetails: v?.details });
     }
     const u = d.usage;
     if (u?.weekly?.used_pct >= 100)
@@ -44,7 +52,7 @@
   <div class="banner" style:box-shadow="inset 4px 0 0 {top.color}" role="status">
     <b>{top.title}</b>
     <span class="text" class:one={top.update}>{top.text}{#if top.fail} <span class="amber">{top.fail}</span>{/if}</span>
-    {#if top.update}<button class="btn" disabled={top.update.disabled} data-claude-update onclick={claudeUpdate}>{#if top.update.spinner}<span class="spin" aria-hidden="true">◐</span> {/if}{top.update.label}</button>{/if}
+    {#if top.update}<button class="btn" disabled={top.update.disabled || claudeBusy()} data-claude-update onclick={claudeUpdate}>{#if top.update.spinner}<span class="spinning" aria-hidden="true">◐</span> {/if}{top.update.label}</button>{/if}
     {#if top.claudeDetails}<button class="btn" onclick={() => openSettings('claude')}>Details</button>{/if}
     {#if top.planner}<button class="btn" onclick={() => openSingleton('planner')}>Week planner <Kbd keys="⌘+; g" /></button>{/if}
     {#if top.setup}<button class="btn" onclick={() => openSingleton('setup')}>Set up</button>{/if}
@@ -77,15 +85,6 @@
   }
   .amber {
     color: var(--color-pacing-amber);
-  }
-  .spin {
-    display: inline-block;
-    animation: banner-spin 1s linear infinite;
-  }
-  @keyframes banner-spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
   .x {
     background: none;

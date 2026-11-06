@@ -1229,30 +1229,54 @@ function keepClaude(c) {
   if (c && app.data) app.data = new Snapshot({ ...app.data, setup: { ...app.data.setup, claude: c } });
 }
 
-/** Run `claude update`: progress comes through the Setup topic; the toast is `announceClaude`'s. */
-export async function claudeUpdate() {
+// One Claude Code command at a time: a second click or key while one is in flight is dropped.
+const claudeBusy$ = $state({ on: false });
+export const claudeBusy = () => claudeBusy$.on;
+
+async function exclusive(fn) {
+  if (claudeBusy$.on) return;
+  claudeBusy$.on = true;
   try {
-    await invoke('claude_update_run');
-  } catch (e) {
-    toast(errText(e), { kind: 'error' });
+    await fn();
+  } finally {
+    claudeBusy$.on = false;
   }
-  await refresh();
 }
 
-/** Check for a newer Claude Code now; `notify` toasts the outcome (the palette). */
-export async function claudeCheck(notify = false) {
-  try {
-    const prev = app.data?.setup?.claude;
-    const c = await invoke('claude_update_check');
-    announceClaude(prev, c);
-    keepClaude(c);
-    const t = notify && checkToast(c);
-    if (t) toast(t.text, t.kind ? { kind: t.kind } : {});
-  } catch (e) {
-    toast(errText(e), { kind: 'error' });
+/** Run `claude update`: progress comes through the Setup topic; the toast is `announceClaude`'s. */
+export const claudeUpdate = () =>
+  exclusive(async () => {
+    try {
+      await invoke('claude_update_run');
+    } catch (e) {
+      toast(errText(e), { kind: 'error' });
+    }
+    const before = app.data?.setup?.claude;
     await refresh();
-  }
-}
+    // A retry that failed before any push showed `updating` leaves the same error state: say so anyway.
+    const u = app.data?.setup?.claude?.update;
+    const was = before?.update;
+    if (u?.state === 'error' && u.error_from === 'update' && was?.state === 'error' && was.error_from === 'update') {
+      const text = 'Claude Code update failed.';
+      if (!app.toasts.some((x) => x.text === text))
+        toast(text, { kind: 'warn', sticky: true, action: { label: 'Details', run: () => openSettings('claude') } });
+    }
+  });
+
+/** Check for a newer Claude Code now; `notify` toasts the outcome (the palette). */
+export const claudeCheck = (notify = false) =>
+  exclusive(async () => {
+    try {
+      const c = await invoke('claude_update_check');
+      // An update may have started while the check ran: its push is fresher than this reply.
+      if (app.data?.setup?.claude?.update?.state !== 'updating') keepClaude(c);
+      const t = notify && checkToast(c);
+      if (t) toast(t.text, t.kind ? { kind: t.kind } : {});
+    } catch (e) {
+      toast(errText(e), { kind: 'error' });
+      await refresh();
+    }
+  });
 
 /** A button or key of the update block: 'update' runs `claude update`, 'check' checks. */
 export const claudeAct = (id) => (id === 'update' ? claudeUpdate() : claudeCheck());

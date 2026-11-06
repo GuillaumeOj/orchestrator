@@ -70,7 +70,7 @@ export function updateBlock(c, now = Date.now()) {
       tone: 'amber',
       glyph: 'warn',
       tip: u.error,
-      buttons: [{ ...upd('Retry'), def: true }, check],
+      buttons: [check, { ...upd('Retry'), primary: true, def: true }],
       log: 'open',
       logLabel: 'Output of claude update',
     };
@@ -89,7 +89,7 @@ export function updateBlock(c, now = Date.now()) {
         u.latest && u.available
           ? `Last known: ${u.latest}${when(u.checked_at) ? ` (checked ${when(u.checked_at)})` : ''}`
           : null,
-      buttons: [{ ...check, def: true }, upd('Update anyway')],
+      buttons: [upd('Update anyway'), { ...check, def: true }],
       log: null,
     };
   if (u.state === 'checking')
@@ -113,8 +113,18 @@ export function updateBlock(c, now = Date.now()) {
       line2:
         'New and resumed agents use it; agents already running keep the version they started with until they restart.',
       line3: checkErr,
-      buttons: [{ ...check, def: true }],
+      buttons: [check],
       log: u.log?.length ? 'collapsible' : null,
+    };
+  // Too old and nothing newer known (or a pinned package manager): the user may still try.
+  if (c.problem_kind === 'version')
+    return {
+      kind: 'too-old',
+      lead: 'Claude Code is too old',
+      tone: 'red',
+      glyph: 'dot',
+      buttons: [check, { ...upd('Update Claude Code'), primary: true, def: true }],
+      log: null,
     };
   if (u.latest)
     return {
@@ -123,7 +133,7 @@ export function updateBlock(c, now = Date.now()) {
       rest: when(u.checked_at) ? ` · checked ${when(u.checked_at)}` : '',
       tone: 'green',
       glyph: 'dot',
-      buttons: [{ ...check, def: true }],
+      buttons: [check],
       log: null,
     };
   return {
@@ -182,9 +192,20 @@ export function account(c) {
 }
 
 /** The keys that are live now (hints line and handler): `u` runs update, `r` checks. */
-export function liveKeys(c, now = Date.now()) {
-  const b = updateBlock(c, now).buttons;
-  return { u: b.some((x) => x.id === 'update'), r: b.some((x) => x.id === 'check') };
+export const liveKeys = (c, now = Date.now()) => keysOf(updateBlock(c, now));
+
+/** The same from an `updateBlock` result. */
+export function keysOf(block) {
+  const b = block.buttons;
+  const up = b.find((x) => x.id === 'update');
+  const uLabel = up
+    ? up.label === 'Retry'
+      ? 'retry'
+      : up.label === 'Update anyway'
+        ? 'update anyway'
+        : 'update'
+    : null;
+  return { u: !!up, r: b.some((x) => x.id === 'check'), uLabel };
 }
 
 /** The Settings nav entry's badge: error dot › amber dot › ↑ › none; a spinner while updating. */
@@ -257,7 +278,7 @@ export function paletteActions(c) {
         : null;
   return {
     check: busy ?? (c.update?.state === 'checking' ? 'already checking' : null),
-    update: busy ?? (c.update?.available ? null : 'no update available'),
+    update: busy ?? (liveKeys(c).u ? null : 'no update available'),
   };
 }
 
@@ -277,6 +298,6 @@ export function bannerClaude(c) {
       ? { label: 'Updating…', disabled: true, spinner: true }
       : { label: failed ? 'Retry update' : 'Update Claude Code' },
     details: failed,
-    key: `${c.problem}|${failed ? u.error : ''}`,
+    key: `${c.problem}|${u.state}|${failed ? u.error : ''}`,
   };
 }

@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { app, commands } from '../src/lib/app.svelte.js';
+import { app, claudeCheck, claudeUpdate, commands } from '../src/lib/app.svelte.js';
 import {
   account,
   bannerClaude,
@@ -126,12 +127,12 @@ describe('update block', () => {
     const f = updateBlock(claude({}, { state: 'error', error: 'EACCES', error_from: 'update' }));
     expect(f.lead).toBe('Update failed: EACCES');
     expect(f.buttons.map((b) => [b.id, b.def])).toEqual([
-      ['update', true],
       ['check', undefined],
+      ['update', true],
     ]);
-    expect(f.buttons[0].label).toBe('Retry');
+    expect(f.buttons[1]).toMatchObject({ label: 'Retry', primary: true });
     const k = updateBlock(claude({}, { state: 'error', error: 'offline', error_from: 'check' }));
-    expect(k.buttons.map((b) => b.label)).toEqual(['Check now', 'Update anyway']);
+    expect(k.buttons.map((b) => b.label)).toEqual(['Update anyway', 'Check now']);
     expect(k.line2).toMatch(/^Last known: 2\.1\.330 \(checked /);
   });
   it('a newer release after an update keeps the "Updated" line above', () => {
@@ -155,10 +156,32 @@ describe('update block', () => {
       'update-failed',
     );
   });
+  it('too old: always offers Update (primary, default), never "Up to date"', () => {
+    for (const u of [
+      { available: false },
+      { available: false, latest: null },
+      { available: false, latest: '2.1.288' },
+    ]) {
+      const b = updateBlock(old({}, u));
+      expect(b.kind).toBe('too-old');
+      expect(b.buttons.at(-1)).toMatchObject({ id: 'update', primary: true, def: true });
+    }
+  });
+  it('no default button in up to date / updated', () => {
+    expect(updateBlock(claude({}, { available: false })).buttons.some((b) => b.def)).toBe(false);
+    expect(
+      updateBlock(claude({}, { available: false, updated: { from: '1', to: '2', at: 1 } })).buttons.some((b) => b.def),
+    ).toBe(false);
+  });
+  it('the u hint names the button', () => {
+    expect(liveKeys(claude({}, { state: 'error', error: 'x', error_from: 'update' })).uLabel).toBe('retry');
+    expect(liveKeys(claude({}, { state: 'error', error: 'x', error_from: 'check' })).uLabel).toBe('update anyway');
+    expect(liveKeys(claude()).uLabel).toBe('update');
+  });
   it('keys follow the buttons', () => {
-    expect(liveKeys(claude())).toEqual({ u: true, r: true });
-    expect(liveKeys(claude({}, { available: false }))).toEqual({ u: false, r: true });
-    expect(liveKeys(claude({}, { state: 'updating' }))).toEqual({ u: false, r: false });
+    expect(liveKeys(claude())).toMatchObject({ u: true, r: true });
+    expect(liveKeys(claude({}, { available: false }))).toMatchObject({ u: false, r: true });
+    expect(liveKeys(claude({}, { state: 'updating' }))).toMatchObject({ u: false, r: false });
   });
 });
 
@@ -244,6 +267,11 @@ describe('badge, chip, toasts, palette', () => {
       update: 'an update is running',
     });
     expect(paletteActions(claude({}, { available: false }))).toEqual({ check: null, update: 'no update available' });
+    // the same cases as the Update / Update anyway buttons
+    expect(paletteActions(old({}, { available: false })).update).toBeNull();
+    expect(
+      paletteActions(claude({}, { state: 'error', error: 'x', error_from: 'check', available: false })).update,
+    ).toBeNull();
     expect(paletteActions(claude())).toEqual({ check: null, update: null });
   });
   it('check outcome toasts', () => {
@@ -379,6 +407,39 @@ describe('components', () => {
     const { container } = render(SetupPane);
     expect(container.querySelector('[data-update-block]')).not.toBeNull();
     expect(text(container)).toContain('2.1.330 is available');
+  });
+
+  it('a stale check reply does not overwrite a running update', async () => {
+    app.data.setup.claude = claude({}, { state: 'checking' });
+    replies.claude_update_check = () => {
+      app.data.setup = { ...app.data.setup, claude: claude({}, { state: 'updating', started_at: 1 }) };
+      return claude({}, { available: false });
+    };
+    await claudeCheck();
+    expect(app.data.setup.claude.update.state).toBe('updating');
+  });
+
+  it('a second click while one command is in flight is dropped', async () => {
+    const gate = { release: (_v) => {} };
+    replies.claude_update_run = () => new Promise((r) => (gate.release = r));
+    replies.app_state = stateWith(claude());
+    const first = claudeUpdate();
+    await claudeUpdate();
+    expect(calls.filter(([c]) => c === 'claude_update_run')).toHaveLength(1);
+    gate.release({ started: true });
+    await first;
+  });
+
+  it('banner: a second failure after a retry is not covered by the first dismissal', async () => {
+    const failed = () => old({}, { state: 'error', error: 'EACCES', error_from: 'update' });
+    app.data.setup.claude = failed();
+    const { container, getByLabelText } = render(Banner);
+    await fireEvent.click(getByLabelText('Dismiss'));
+    expect(container.querySelector('.banner')).toBeNull();
+    app.data.setup = { ...app.data.setup, claude: old({}, { state: 'updating', started_at: 2 }) };
+    await tick();
+    app.data.setup = { ...app.data.setup, claude: failed() };
+    await waitFor(() => expect(container.querySelector('.banner')).not.toBeNull());
   });
 
   it('palette: both commands, with their hints', () => {

@@ -46,7 +46,7 @@
   {#if watch?.alert}<span class="memwarn" title="WebKit helper above {watch.warn_mb} MB · logged every minute in {watch.log}"><span aria-hidden="true">⚠</span> {watch.alert}</span>{/if}
   {#if cc}
     <button class="plain chip claude {cc.kind}" onclick={() => openSettings('claude')} title={cc.title}>
-      {#if cc.kind === 'updating'}<span class="spin" aria-hidden="true">◐</span> {/if}{cc.text}{#if cc.version}<span class="ver">{' '}{cc.version}</span>{/if}
+      {#if cc.kind === 'updating'}<span class="spinning" aria-hidden="true">◐</span> {/if}{cc.text}{#if cc.version}<span class="ver">{' '}{cc.version}</span>{/if}
     </button>
   {/if}
   {#if pr}
@@ -108,15 +108,6 @@
   .chip.claude.failed {
     border-color: var(--color-pacing-amber);
     color: var(--color-pacing-amber);
-  }
-  .spin {
-    display: inline-block;
-    animation: chip-spin 1s linear infinite;
-  }
-  @keyframes chip-spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
   /* Narrow: the Claude chip drops its version before the app chip truncates. */
   @media (max-width: 900px) {

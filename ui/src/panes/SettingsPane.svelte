@@ -98,7 +98,7 @@
         {#if s.id === 'claude' && claudeBadge}
           {#if claudeBadge.kind === 'error'}<span class="status-dot err" title={claudeBadge.title} role="img" aria-label="Claude Code needs you">●</span>
           {:else if claudeBadge.kind === 'warn'}<span class="status-dot amber" title={claudeBadge.title} role="img" aria-label="Claude Code update failed">●</span>
-          {:else if claudeBadge.kind === 'spinner'}<span class="glyph spin" title={claudeBadge.title} role="img" aria-label="Updating Claude Code">◐</span>
+          {:else if claudeBadge.kind === 'spinner'}<span class="glyph spinning" title={claudeBadge.title} role="img" aria-label="Updating Claude Code">◐</span>
           {:else}<span class="glyph up" title={claudeBadge.title} role="img" aria-label="Update available">↑</span>{/if}
         {/if}
         {#if s.id === 'integrations' && needs}<span class="warn err" title="{needs} need you"><span aria-hidden="true">{'\u{F0159}'}</span> {needs}</span>{/if}
@@ -201,14 +201,8 @@
   .glyph.up {
     color: var(--color-accent-default);
   }
-  .glyph.spin {
+  .glyph.spinning {
     color: var(--color-attention-running);
-    animation: nav-spin 1s linear infinite;
-  }
-  @keyframes nav-spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
   .body {
     flex: 1;
