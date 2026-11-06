@@ -1,4 +1,5 @@
 <script>
+  import ClaudeUpdateBlock from '../components/ClaudeUpdateBlock.svelte';
   import Kbd from '../components/Kbd.svelte';
   import PlanEditor from '../components/PlanEditor.svelte';
   // First run (J0): Claude Code installed, in the supported range and logged in
@@ -81,6 +82,7 @@
         <span class="mono">{short(c.path)}</span> · {c.version ?? 'not found'}{c.untested ? ' (newer than the last tested version: run the contract tests)' : ''}
         {#if c.logged_in != null} · {c.logged_in ? `logged in (${c.auth_method}, ${c.subscription ?? 'no subscription'})` : 'not logged in'}{/if}
       </p>
+      {#if c.problem_kind === 'version' || c.update?.state === 'updating'}<ClaudeUpdateBlock {c} compact />{/if}
       {#if c.note}<p class="muted">Note: {c.note}.</p>{/if}
       {#if c.problem}<p class="err">{c.problem} Until then agents cannot start (read-only mode).</p>{/if}
       <p class="muted">Agents run with auto-update off; Claude Code updates are yours to apply. The app never writes to ~/.claude.</p>

@@ -1,7 +1,8 @@
 <script>
   // Global banners (§9.3, Penpot 05 copy): one at a time, highest attention first;
   // the rest collapse to "+n". Error banners: a 4 px left bar in the status color.
-  import { app, governor, openSingleton } from '../lib/app.svelte.js';
+  import { app, claudeUpdate, governor, openSettings, openSingleton } from '../lib/app.svelte.js';
+  import { bannerClaude } from '../lib/claude.js';
   import { when } from '../lib/format.js';
   import { counts } from '../lib/now.svelte.js';
   import { isRestoreWarning } from '../lib/update.js';
@@ -14,7 +15,11 @@
     if (!d) return out;
     if (d.core?.error) out.push({ id: 'core', color: 'var(--color-status-error)', title: 'No agent core.', text: d.core.error });
     const c = d.setup?.claude;
-    if (c?.problem) out.push({ id: 'claude', color: 'var(--color-status-error)', title: 'Read-only:', text: c.problem, setup: true });
+    if (c?.problem) {
+      // A too-old Claude Code offers the update; a dismissal only covers the state it was made in.
+      const v = bannerClaude(c);
+      out.push({ id: v ? `claude|${v.key}` : 'claude', color: 'var(--color-status-error)', title: 'Read-only:', text: c.problem, fail: v?.fail, update: v?.button, setup: !v?.details, claudeDetails: v?.details });
+    }
     const u = d.usage;
     if (u?.weekly?.used_pct >= 100)
       out.push({ id: 'week', color: 'var(--color-status-blocked-by-limit)', title: 'Weekly limit reached.', text: `All agents are blocked by limit; autonomous work resumes in priority order at the reset, ${when(u.weekly.resets_at * 1000)}. Nothing is lost.`, planner: true });
@@ -38,7 +43,9 @@
 {#if top}
   <div class="banner" style:box-shadow="inset 4px 0 0 {top.color}" role="status">
     <b>{top.title}</b>
-    <span class="text">{top.text}</span>
+    <span class="text" class:one={top.update}>{top.text}{#if top.fail} <span class="amber">{top.fail}</span>{/if}</span>
+    {#if top.update}<button class="btn" disabled={top.update.disabled} data-claude-update onclick={claudeUpdate}>{#if top.update.spinner}<span class="spin" aria-hidden="true">◐</span> {/if}{top.update.label}</button>{/if}
+    {#if top.claudeDetails}<button class="btn" onclick={() => openSettings('claude')}>Details</button>{/if}
     {#if top.planner}<button class="btn" onclick={() => openSingleton('planner')}>Week planner <Kbd keys="⌘+; g" /></button>{/if}
     {#if top.setup}<button class="btn" onclick={() => openSingleton('setup')}>Set up</button>{/if}
     {#if top.details}<button class="btn" onclick={() => openSingleton('planner')}>Details <Kbd keys="o" /></button>{/if}
@@ -64,6 +71,21 @@
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .text.one {
+    white-space: nowrap;
+  }
+  .amber {
+    color: var(--color-pacing-amber);
+  }
+  .spin {
+    display: inline-block;
+    animation: banner-spin 1s linear infinite;
+  }
+  @keyframes banner-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
   .x {
     background: none;

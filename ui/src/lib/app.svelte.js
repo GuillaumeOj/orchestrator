@@ -4,6 +4,7 @@
 // registry. Terminal objects (xterm.js) live outside the reactive state, in `terms`.
 
 import { upsertEntries } from './chat.js';
+import { checkToast, claudeToast, paletteActions } from './claude.js';
 import { deliveryRef } from './delivery.js';
 import { clock as clockOf } from './format.js';
 import { decisionToast, due, FILTERS, isOpen, older, pendingToast, UNDO_MS, version } from './inbox.js';
@@ -97,6 +98,26 @@ export function now30() {
     ticking.unref?.(); // never keeps a test runner alive
   }
   return tick.now;
+}
+
+// A 1 s clock for the Claude update's elapsed time: it runs only while a component holds it.
+const sec = $state({ now: Date.now() });
+let secTimer = null;
+let secUsers = 0;
+
+/** "now" to the second; read it in a template after `holdSecondClock()`. */
+export const now1s = () => sec.now;
+
+/** Start the 1 s clock; the returned function releases it (the timer stops with the last holder). */
+export function holdSecondClock() {
+  sec.now = Date.now();
+  if (!secUsers++) secTimer = setInterval(() => (sec.now = Date.now()), 1000);
+  let held = true;
+  return () => {
+    if (!held) return;
+    held = false;
+    if (!--secUsers) clearInterval(secTimer);
+  };
 }
 
 /** A pane shown in the dock rather than the tiling layout. */
@@ -1077,7 +1098,9 @@ async function readState() {
   try {
     const data = await invoke('app_state');
     data.features ??= app.data?.features ?? null;
+    const prevClaude = app.data?.setup?.claude;
     app.data = new Snapshot(data);
+    announceClaude(prevClaude, data.setup?.claude);
     announceWarnings(data.warnings);
     app.error = null;
     prunePanes();
@@ -1191,6 +1214,54 @@ export function aboutOrchestrator() {
   toast(aboutText(app.data?.update), { ms: 10000 });
 }
 
+// ---------------------------------------------------------------- Claude Code updates
+
+/** A toast for what a new `setup.claude` read changed: a finished or failed update of this run. */
+function announceClaude(prev, next) {
+  const t = claudeToast(prev, next);
+  if (!t) return;
+  const { details, ...opts } = t;
+  toast(t.text, details ? { ...opts, action: { label: 'Details', run: () => openSettings('claude') } } : opts);
+}
+
+/** Keep a `setup.claude` the core returned in the snapshot (the Setup topic pushes follow). */
+function keepClaude(c) {
+  if (c && app.data) app.data = new Snapshot({ ...app.data, setup: { ...app.data.setup, claude: c } });
+}
+
+/** Run `claude update`: progress comes through the Setup topic; the toast is `announceClaude`'s. */
+export async function claudeUpdate() {
+  try {
+    await invoke('claude_update_run');
+  } catch (e) {
+    toast(errText(e), { kind: 'error' });
+  }
+  await refresh();
+}
+
+/** Check for a newer Claude Code now; `notify` toasts the outcome (the palette). */
+export async function claudeCheck(notify = false) {
+  try {
+    const prev = app.data?.setup?.claude;
+    const c = await invoke('claude_update_check');
+    announceClaude(prev, c);
+    keepClaude(c);
+    const t = notify && checkToast(c);
+    if (t) toast(t.text, t.kind ? { kind: t.kind } : {});
+  } catch (e) {
+    toast(errText(e), { kind: 'error' });
+    await refresh();
+  }
+}
+
+function claudeCommands() {
+  const off = paletteActions(app.data?.setup?.claude);
+  return [
+    { id: 'claude.check', label: 'Check for Claude Code updates', disabled: off.check, run: () => claudeCheck(true) },
+    { id: 'claude.update', label: 'Update Claude Code', disabled: off.update, run: claudeUpdate },
+  ];
+}
+
 function updateCommands() {
   const u = app.data?.update;
   const off = updateActions(u);
@@ -1253,6 +1324,7 @@ export function commands() {
     { id: 'planner', label: 'Open Week planner', run: () => openSingleton('planner') },
     { id: 'setup', label: 'Set up Orchestrator (first run)…', run: () => openSingleton('setup') },
     ...updateCommands(),
+    ...claudeCommands(),
     { id: 'settings', label: 'Settings', run: () => openSettings() },
     { id: 'settings.integrations', label: 'Settings: Integrations', run: () => openSettings('integrations') },
     { id: 'settings.mcp', label: 'Settings: MCP servers', run: () => openSettings('mcp') },
