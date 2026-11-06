@@ -1367,7 +1367,7 @@ fn solo_spec(project: &Project, id: &str, req: &NewSession) -> AgentSpec {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn test_core(d: &Path) -> Arc<Core> {

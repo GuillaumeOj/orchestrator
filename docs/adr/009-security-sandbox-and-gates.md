@@ -60,3 +60,4 @@ Still untested:
 ## Consequences
 - The PR and merge gates can't be skipped.
 - Some tools need extra sandbox allowances (e.g. Docker or browsers for tests); these are configured per role, and each one is visible in its settings.
+- Project files (FR-112) widen the sandbox with user-approved paths: each entry is readable by every agent of the project (so it may be sent to the model), and a `write` entry is writable from the Edit tools and from Bash. Only the user adds entries, in the app; the validation refuses credential stores, the app's data, the home folder and anything broader, and folders that contain a project repository, so they never overlap the generated denies (which stay and win). Every change is audited (`project_file_added|changed|removed`), and a change applies at each agent's next spawn only.

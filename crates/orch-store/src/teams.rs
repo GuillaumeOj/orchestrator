@@ -357,8 +357,58 @@ pub struct ProjectSettings {
     /// FR-505: the Notion page (URL or id) feature pages are published under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notion_parent_page: Option<String>,
+    /// FR-112: files and folders outside the repository given to every agent
+    /// of the project, in the order added. Kept by the dedicated commands only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_files: Vec<ProjectFile>,
     #[serde(flatten)]
     pub other: serde_json::Map<String, Value>,
+}
+
+/// FR-112: one project file, its path stored canonical.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectFile {
+    pub path: PathBuf,
+    pub kind: FileKind,
+    #[serde(default)]
+    pub access: FileAccess,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    pub added_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileKind {
+    File,
+    Folder,
+}
+
+impl FileKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FileKind::File => "file",
+            FileKind::Folder => "folder",
+        }
+    }
+}
+
+/// What agents may do with a project file (default: read and write).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileAccess {
+    #[default]
+    Write,
+    Read,
+}
+
+impl FileAccess {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FileAccess::Write => "write",
+            FileAccess::Read => "read",
+        }
+    }
 }
 
 /// Typed view of `projects.task_backend` (ADR-004).
@@ -1643,5 +1693,26 @@ mod tests {
         s.delete_project("p1").unwrap();
         assert!(s.tasks(Some("p1"), None, None).unwrap().is_empty());
         assert!(s.features(Some("p1")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn project_files_round_trip_and_default_empty() {
+        let st: ProjectSettings = serde_json::from_value(serde_json::json!({"copy_env": true})).unwrap();
+        assert!(st.external_files.is_empty());
+        assert!(serde_json::to_value(&st).unwrap().get("external_files").is_none(), "skipped when empty");
+        let v = serde_json::json!({"external_files": [
+            {"path": "/b", "kind": "folder", "access": "read", "note": "Brand", "added_at_ms": 1},
+            {"path": "/f.pen", "kind": "file", "added_at_ms": 2}
+        ]});
+        let st: ProjectSettings = serde_json::from_value(v).unwrap();
+        assert_eq!(st.external_files[0].access, FileAccess::Read);
+        assert_eq!(st.external_files[1].access, FileAccess::Write, "write by default");
+        assert_eq!(st.external_files[1].kind, FileKind::File);
+        assert!(st.other.is_empty(), "not caught by the flattened map");
+        let out = serde_json::to_value(&st).unwrap();
+        assert_eq!(
+            out["external_files"][1],
+            serde_json::json!({"path": "/f.pen", "kind": "file", "access": "write", "added_at_ms": 2})
+        );
     }
 }

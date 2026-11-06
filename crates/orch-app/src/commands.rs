@@ -493,6 +493,54 @@ pub async fn project_settings_set(
     blocking(core, move |c| c.project_settings_set(&project, form)).await
 }
 
+// ---- FR-112 Project settings › Files (add-external-files-to-project api-contract)
+
+#[tauri::command]
+pub async fn project_files(core: CoreState<'_>, project: String) -> Res<Value> {
+    blocking(core, move |c| c.project_files(&project)).await
+}
+
+#[tauri::command]
+pub async fn project_files_add(
+    core: CoreState<'_>,
+    project: String,
+    paths: Vec<String>,
+    access: Option<orch_store::FileAccess>,
+) -> Res<Value> {
+    blocking(core, move |c| c.project_files_add(&project, &paths, access)).await
+}
+
+/// `note`: `""` clears it; omitted (or `null`, which IPC can't tell apart) keeps it.
+#[tauri::command]
+pub async fn project_file_update(
+    core: CoreState<'_>,
+    project: String,
+    path: String,
+    access: Option<orch_store::FileAccess>,
+    note: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| c.project_file_update(&project, &path, access, note.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn project_file_remove(core: CoreState<'_>, project: String, path: String) -> Res<Value> {
+    blocking(core, move |c| c.project_file_remove(&project, &path)).await
+}
+
+/// Reveal in Finder, for a path listed in some project's files.
+#[tauri::command]
+pub async fn reveal_path(core: CoreState<'_>, path: String) -> Res<()> {
+    blocking(core, move |c| c.reveal_path(&path)).await
+}
+
+/// The native open panel: files and folders together, several at once;
+/// `[]` when cancelled.
+#[tauri::command]
+pub async fn pick_paths(window: tauri::Window) -> Res<Vec<String>> {
+    let picked = rfd::AsyncFileDialog::new().set_parent(&window).pick_files_or_folders().await;
+    Ok(picked.unwrap_or_default().iter().map(|h| h.path().display().to_string()).collect())
+}
+
 // ---- P3 weekly reports (api-contract §5)
 
 #[tauri::command]
