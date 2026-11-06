@@ -154,7 +154,7 @@ describe('the brief card', () => {
     const c = await open();
     await fireEvent.click(buttons(cardOf(c))[0]);
     await settle();
-    expect(calls.find(([k]) => k === 'intake_prefill')[1]).toEqual({ briefDecision: 'd_88', mode: 'team' });
+    expect(calls.find(([k]) => k === 'intake_prefill')[1]).toEqual({ brief_decision: 'd_88', mode: 'team' });
     expect(app.overlay).toMatchObject({
       kind: 'launch',
       intake: { brief_decision: 'd_88' },
@@ -172,7 +172,7 @@ describe('the brief card', () => {
     const c = await open(brief({ mode: 'solo' }));
     await fireEvent.click(buttons(cardOf(c))[1]);
     await settle();
-    expect(calls.find(([k]) => k === 'intake_prefill')[1]).toEqual({ briefDecision: 'd_88', mode: 'solo' });
+    expect(calls.find(([k]) => k === 'intake_prefill')[1]).toEqual({ brief_decision: 'd_88', mode: 'solo' });
     expect(app.overlay).toMatchObject({ kind: 'new-session', focus: 'brief' });
   });
 

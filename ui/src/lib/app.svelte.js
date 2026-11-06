@@ -529,8 +529,11 @@ export function routeOpen(r, projectId = null) {
   else if (r.open === 'launch' && r.prefill)
     openPrefilled(r.prefill, {
       intake: r.intake ?? (r.decision ? { brief_decision: r.decision } : undefined),
-      origin: r.decision ? { kind: 'brief', decision: r.decision, title: r.title ?? null } : null,
-      focus: r.edit ? 'brief' : null,
+      origin:
+        r.intake?.brief_decision || r.decision
+          ? { kind: 'brief', decision: r.intake?.brief_decision ?? r.decision, title: r.title ?? null }
+          : null,
+      focus: r.focus === 'brief' || r.edit ? 'brief' : null,
     });
   else if (r.open === 'editor' && r.scope) openPolicy(r.scope, r.project ?? projectId);
   else return false;

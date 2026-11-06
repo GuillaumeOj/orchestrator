@@ -60,7 +60,7 @@ export async function startItem(item, mode) {
 /** A brief card's Launch / Edit (notes §8.3): the dialog with the proposed mode. */
 export async function startBrief(decision, mode, { edit = false } = {}) {
   try {
-    const r = await invoke('intake_prefill', { briefDecision: decision.id, mode });
+    const r = await invoke('intake_prefill', { brief_decision: decision.id, mode });
     openPrefilled(r, {
       intake: { brief_decision: decision.id },
       origin: { kind: 'brief', decision: decision.id, title: decision.title ?? null },

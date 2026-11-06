@@ -12,10 +12,10 @@
   const md = $derived(blockOf(d, 'markdown'));
   const cost = $derived(blockOf(d, 'cost'));
   const est = $derived(cost?.estimate ?? cost);
-  const mode = $derived(d.mode === 'solo' ? 'solo' : 'team');
-  const project = $derived(projectName(d.project) ?? d.project ?? 'project');
+  const mode = $derived((d.mode ?? d.payload?.mode) === 'solo' ? 'solo' : 'team');
+  const project = $derived(projectName(d.project ?? d.payload?.project) ?? d.payload?.project_name ?? d.project ?? 'project');
   const modeLine = $derived(
-    blockOf(d, 'text')?.text ?? [project, mode === 'team' ? 'team run' : 'solo session', mode === 'team' ? d.team : null].filter(Boolean).join(' · '),
+    blockOf(d, 'text')?.text ?? [project, mode === 'team' ? 'team run' : 'solo session', mode === 'team' ? (d.team ?? d.payload?.team) : null].filter(Boolean).join(' · '),
   );
   const e = $derived(est?.[mode]);
   const range = $derived(e ? ppRange(e.low_pp, e.high_pp) : '');

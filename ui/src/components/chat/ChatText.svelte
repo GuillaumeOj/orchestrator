@@ -13,7 +13,7 @@
   let { item, ow, pulse = false, reply = null, note = '', failed = null, past = false, today = null, reflabel, onref, refok, onreplyto = () => {}, onremove = () => {}, onretry = () => {}, onsession } = $props();
   const e = $derived(item.entry);
   const user = $derived(e.author === 'user');
-  const planned = $derived(user ? (e.context?.plan ?? plannedEntries[e.id] ?? null) : null);
+  const planned = $derived(user ? (e.meta?.plan?.project ?? e.meta?.plan ?? e.context?.plan ?? plannedEntries[e.id] ?? null) : null);
   const now = $derived(Math.max(now30(), Date.now()));
   // A past day's entry carries its day ("Mon 2 Nov 18:40") and no live delivery state (notes §2).
   const stamp = $derived(past && today && e.day && e.day !== today ? dayTime(e.at_ms) : clock(e.at_ms, now));

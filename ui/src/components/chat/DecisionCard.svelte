@@ -52,7 +52,7 @@
   const brief = $derived(d.kind === 'brief');
   // A brief's Launch / Edit opened the dialog: the card stays open meanwhile, its actions off (notes §8.4).
   const opening = $derived(live && brief && app.overlay?.intake?.brief_decision === d.id);
-  const cardTitle = $derived(brief ? [d.title, projectName(d.project) ?? d.project].filter(Boolean).join(' · ') : d.title);
+  const cardTitle = $derived(brief ? [d.title ?? d.payload?.title, projectName(d.project ?? d.payload?.project) ?? d.payload?.project_name ?? d.project].filter(Boolean).join(' · ') : d.title);
   // "Permission · by rule" on an expanded line settled without you.
   const kindBy = $derived(line?.by && line.by !== 'you' ? ` · ${byWords({ ...line, by_detail: undefined })}` : '');
   const k = $derived(decisionKind(d));
