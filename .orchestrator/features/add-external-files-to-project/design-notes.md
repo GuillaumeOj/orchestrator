@@ -13,7 +13,9 @@ Exports in `design/` of this feature.
 
 1. **Nav order**: the pane's `SECTIONS` become General · **Files** · Task
    backend · Allocation · Notion · MCP overrides (as the brief says); the
-   nav label is "Files".
+   nav label is "Files". The pane's fallback is `SECTIONS[1]` (Task backend):
+   front must make it `SECTIONS.find((s) => s.id === 'backend')` so inserting
+   Files at index 1 doesn't make Files the default section.
 2. **Keys**: the pane already uses `j`/`k` (and arrows) for rows, `⏎` to act
    on a row, `esc` to cancel, `r` for Retry/Sync, and writes `Kbd` as
    `⌘+K`, `⌘+⏎`. The brief's `r` (toggle access) clashes with Retry `r`, so
@@ -158,6 +160,10 @@ input/textarea/select and there are no modifiers, except `⌘+O`.
 | `tab` / `shift+tab` | all | follow the focus order |
 
 `Kbd` renders keys exactly as written above (`⌘+O`, `⌫`).
+
+`⌘+O` needs a global change: `classify` in `ui/src/lib/keyboard.js` swallows
+every ⌘ chord not in `CHORDS`/`NATIVE`, so the pane never sees it. Front adds
+`'cmd+o'` as a pass-through (like `cmd+enter`) or a `files.browse` command.
 
 ## Focus order
 
