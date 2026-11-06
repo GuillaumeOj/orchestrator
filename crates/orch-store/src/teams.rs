@@ -359,10 +359,29 @@ pub struct ProjectSettings {
     pub notion_parent_page: Option<String>,
     /// FR-112: files and folders outside the repository given to every agent
     /// of the project, in the order added. Kept by the dedicated commands only.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, deserialize_with = "lenient_files", skip_serializing_if = "Vec::is_empty")]
     pub external_files: Vec<ProjectFile>,
     #[serde(flatten)]
     pub other: serde_json::Map<String, Value>,
+}
+
+/// A malformed entry is dropped (logged), never a parse failure of the
+/// whole settings.
+fn lenient_files<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<ProjectFile>, D::Error> {
+    let Value::Array(items) = Value::deserialize(d)? else {
+        eprintln!("project settings: external_files is not a list; ignored");
+        return Ok(vec![]);
+    };
+    Ok(items
+        .into_iter()
+        .filter_map(|v| match serde_json::from_value(v) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                eprintln!("project settings: dropped a malformed external_files entry: {e}");
+                None
+            }
+        })
+        .collect())
 }
 
 /// What [`Store::update_project_settings`] edits: a project's settings
@@ -383,6 +402,7 @@ pub struct ProjectFile {
     pub access: FileAccess,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    #[serde(default)]
     pub added_at_ms: u64,
 }
 
@@ -1226,7 +1246,8 @@ impl Store {
                 .optional()?;
             let Some((settings, backend, track_orchestrator_dir)) = row else { bail!("no project {key}") };
             let before = SettingsEdit {
-                settings: serde_json::from_str(&settings).unwrap_or_default(),
+                settings: serde_json::from_str(&settings)
+                    .map_err(|e| anyhow::anyhow!("project settings unreadable: {e}; nothing saved"))?,
                 backend: serde_json::from_str(&backend).unwrap_or_default(),
                 track_orchestrator_dir,
             };
@@ -1779,6 +1800,60 @@ mod tests {
         let p = s.project("p1").unwrap().unwrap();
         assert_eq!(p.task_backend, backend);
         assert_eq!(p.typed_settings().default_team.as_deref(), Some("solo"));
+    }
+
+    fn project_with_settings(settings: serde_json::Value) -> crate::model::Project {
+        crate::model::Project {
+            id: "p1".into(),
+            name: "shop".into(),
+            path: "/tmp/shop".into(),
+            default_branch: "main".into(),
+            remotes: vec![],
+            worktree_root: "/tmp/shop.worktrees".into(),
+            task_backend: serde_json::json!({"type": "local"}),
+            track_orchestrator_dir: true,
+            settings,
+            created_at_ms: 1,
+            last_active_at_ms: 1,
+            last_fetch_at_ms: None,
+            last_fetch_error: None,
+            archived: false,
+        }
+    }
+
+    #[test]
+    fn lenient_project_files_parse() {
+        let v = serde_json::json!({"external_files": [
+            {"path": "/a", "kind": "file"},
+            {"kind": "file"},
+            "junk",
+            {"path": "/b", "kind": "folder", "added_at_ms": 5}
+        ]});
+        let st: ProjectSettings = serde_json::from_value(v).unwrap();
+        let got: Vec<_> = st.external_files.iter().map(|f| (f.path.to_str().unwrap(), f.added_at_ms)).collect();
+        assert_eq!(got, [("/a", 0), ("/b", 5)]);
+    }
+
+    #[test]
+    fn unreadable_settings_refuse_the_edit_and_stay_byte_identical() {
+        let (_d, s) = store();
+        s.upsert_project(&project_with_settings(serde_json::json!({}))).unwrap();
+        s.write(|tx| {
+            tx.execute("UPDATE projects SET settings='{garbage' WHERE id='p1'", [])?;
+            Ok(())
+        })
+        .unwrap();
+        let err = s
+            .update_project_settings("p1", |e| {
+                e.settings.default_team = Some("solo".into());
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("project settings unreadable"), "{err}");
+        assert!(err.to_string().contains("nothing saved"), "{err}");
+        let raw: String =
+            s.read(|c| Ok(c.query_row("SELECT settings FROM projects WHERE id='p1'", [], |r| r.get(0))?)).unwrap();
+        assert_eq!(raw, "{garbage");
     }
 
     #[test]
