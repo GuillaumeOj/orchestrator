@@ -321,7 +321,7 @@ Two sections, in this order, after Integrations: **Overwatch** then **Permission
 | **Overwatch** | switch | on | "An agent that settles routine prompts, answers questions from the docs and keeps agents moving. You see a line for everything it does." | — |
 | **Model** | select: Haiku · Sonnet · Opus (newest of each; the model list as elsewhere) | Sonnet | "The model for its session. Takes effect at the next session." | — |
 | **Batch window** | number + `s` | 30 s | "How long it waits to collect non-urgent events before a turn." | 5–300 s |
-| **Permission time** | number + `s` | 60 s | "How long a permission can wait for it before it comes to you." | 10–300 s, never above the hold length (below); else "Must not exceed the hold length (300 s)." |
+| **Permission time** | number + `s` | 60 s | "How long a permission can wait for it before it comes to you." | 10–300 s, below the hold length (strictly, api-contract §5); else "Must be below the hold length (300 s). Still using 60 s." |
 | **Idle grace** | number + `s` | 120 s | "How long it stays awake after its last event before it sleeps." | 30–1800 s |
 | **Rule threshold** | number + `times` | 3 | "Proposes a rule after you give the same answer this many times." | 2–10 |
 
