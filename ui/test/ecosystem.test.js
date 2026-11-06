@@ -286,10 +286,12 @@ describe('Settings pane', () => {
     const r2 = render(SettingsPane, { paneId: 's1' });
     await waitFor(() => r2.getByText('New MCP server'));
     const d = r2.container;
-    expect(d.querySelector('input[placeholder="figcraft-cli"]').value).toBe('');
-    expect(d.querySelector('input[placeholder="penpot"]').value).toBe('figcraft');
-    expect(d.querySelector('textarea[placeholder="one per line"]').value).toBe('mcp');
-    expect(d.querySelector('select').value).toBe('figcraft');
+    const field = (/** @type {string} */ sel) =>
+      /** @type {HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement} */ (d.querySelector(sel)).value;
+    expect(field('input[placeholder="figcraft-cli"]')).toBe('');
+    expect(field('input[placeholder="penpot"]')).toBe('figcraft');
+    expect(field('textarea[placeholder="one per line"]')).toBe('mcp');
+    expect(field('select')).toBe('figcraft');
     const hint = d.querySelector('.note');
     expect(hint.textContent).toBe(
       'Full path to figcraft-cli. Args mcp run a headless engine; mcp --attach 7979 drives the open FigCraft app.',
