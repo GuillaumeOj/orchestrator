@@ -95,11 +95,9 @@ fn smudge_lfs(repo: &std::path::Path, bytes: Vec<u8>) -> Result<Vec<u8>> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| not_found())?;
-    let mut stdin = child.stdin.take().ok_or_else(not_found)?;
-    // The pointer is tiny: written from a thread so a full pipe can't deadlock the read.
-    let writer = std::thread::spawn(move || stdin.write_all(&bytes));
+    // A pointer is a few lines: it fits the pipe, so no thread is needed to feed it.
+    child.stdin.take().ok_or_else(not_found)?.write_all(&bytes).map_err(|_| not_found())?;
     let out = child.wait_with_output().map_err(|_| not_found())?;
-    let _ = writer.join();
     if !out.status.success() {
         return Err(not_found());
     }
