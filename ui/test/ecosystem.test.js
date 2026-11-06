@@ -107,6 +107,7 @@ describe('ecosystem helpers', () => {
   it('FigCraft: tool guess, link-only tile, title with the node id, off copy', () => {
     expect(artifactTool({ uri: '/w/Orchestrator.figcraft' })).toBe('figcraft');
     expect(artifactTool({ uri: '/w/Orchestrator.FIGCRAFT#252198' })).toBe('figcraft');
+    expect(artifactTool({ uri: '/w/penpot-notes/A.figcraft#1' })).toBe('figcraft');
     expect(artifactTool({ uri: '/w/a.figcraft.png' })).toBe('file');
     expect(artifactTool({ uri: '/w/notes.txt#x.figcraft' })).toBe('file');
     expect(artifactTool({ uri: 'x', meta: { tool: 'figcraft' } })).toBe('figcraft');
