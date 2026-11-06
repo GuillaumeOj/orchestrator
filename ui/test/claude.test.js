@@ -213,6 +213,10 @@ describe('badge, chip, toasts, palette', () => {
       sticky: true,
       details: true,
     });
+    // Seen first while the check after the failed update ran, or not at all while updating.
+    expect(claudeToast(claude({}, { state: 'checking' }), failed)?.text).toBe('Claude Code update failed.');
+    expect(claudeToast(claude(), failed)?.text).toBe('Claude Code update failed.');
+    expect(claudeToast(failed, failed)).toBeNull();
     expect(claudeToast(claude(), claude({}, { state: 'checking' }))).toBeNull();
   });
   it('palette hints', () => {

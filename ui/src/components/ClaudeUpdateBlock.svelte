@@ -11,22 +11,24 @@
   let { c, compact = false } = $props();
 
   const st = $derived(updateBlock(c, now1s()));
+  const kind = $derived(st.kind);
   const lines = $derived(c?.update?.log ?? []);
   // Each state's own choice about the output; reset when the state changes (a new run, a check).
   let shown = $state(null); // null = the state's default
   let lastKind = null;
   $effect(() => {
-    if (st.kind !== lastKind) {
-      lastKind = st.kind;
+    if (kind !== lastKind) {
+      lastKind = kind;
       shown = null;
     }
   });
   const logOpen = $derived(st.log === 'open' ? shown !== false : st.log === 'collapsible' ? shown === true : false);
   const showLog = $derived(compact ? st.kind === 'update-failed' && logOpen : logOpen);
 
-  // The elapsed time ticks once a second while updating.
+  // The elapsed time ticks once a second while updating. `kind` is a primitive, so this effect
+  // does not re-run (and restart the clock) at each tick, when `st` is a new object.
   $effect(() => {
-    if (st.kind === 'updating') return holdSecondClock();
+    if (kind === 'updating') return holdSecondClock();
   });
 
   let logEl = $state(null);

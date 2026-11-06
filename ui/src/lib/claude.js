@@ -226,7 +226,8 @@ export function claudeToast(prev, next) {
   const n = next?.update;
   if (!p || !n) return null;
   if (n.updated && n.updated.at !== p.updated?.at) return { text: `Claude Code updated to ${n.updated.to}.`, ms: 3000 };
-  if (p.state === 'updating' && n.state === 'error' && n.error_from === 'update')
+  // A failed update reads as an error once; the same error on later reads is not news.
+  if (n.state === 'error' && n.error_from === 'update' && (p.state !== 'error' || p.error_from !== 'update'))
     return { text: 'Claude Code update failed.', kind: 'warn', sticky: true, details: true };
   return null;
 }
