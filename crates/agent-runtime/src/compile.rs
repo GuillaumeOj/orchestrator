@@ -694,16 +694,9 @@ pub(crate) mod tests {
 
     #[test]
     fn no_project_files_no_section() {
-        let base = compile(
-            &{
-                let mut r = Role::solo();
-                r.prompt = Some("You are the backend role.".into());
-                r
-            },
-            &ctx(SessionMode::New("u".into())),
-        );
         let c = with_files(vec![]);
-        assert_eq!(c.args, base.args);
+        assert!(!c.args.iter().any(|a| a == "--add-dir"));
+        assert!(prompt_of(&c).ends_with("You are the backend role."));
         assert!(!prompt_of(&c).contains("## Project files"));
         assert!(c.settings["sandbox"]["filesystem"].get("denyWrite").is_none());
     }

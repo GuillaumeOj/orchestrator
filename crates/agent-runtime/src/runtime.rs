@@ -908,14 +908,13 @@ impl Runtime {
         }
         // Without the other projects the bounds would miss their repositories
         // and worktrees: no files rather than unchecked ones.
-        let all = match self.db.projects(true) {
-            Ok(all) => all,
+        let bounds = match self.project_file_bounds(&p, home) {
+            Ok(b) => b,
             Err(e) => {
                 self.event(id, "project_file_skipped", json!({"project": p.id, "reason": format!("{e:#}")}));
                 return vec![];
             }
         };
-        let bounds = project_files::Bounds::of(&p, &all, home, &self.cfg.paths.root);
         let (out, skipped) = project_files::at_spawn(&files, &bounds);
         for why in skipped {
             self.event(id, "project_file_skipped", json!({"project": p.id, "reason": why}));
@@ -923,14 +922,25 @@ impl Runtime {
         out
     }
 
-    /// The live agents of `project` (FR-112: the Files section's note).
-    pub fn live_in_project(&self, project: &str) -> usize {
+    /// What `p`'s files may not touch: the same bounds when adding and at spawn.
+    pub fn project_file_bounds(&self, p: &orch_store::Project, home: &Path) -> Result<project_files::Bounds> {
+        let all = self.db.projects(true)?;
+        Ok(project_files::Bounds::of(p, &all, home, &self.cfg.paths.root))
+    }
+
+    /// The live agents of `p` (FR-112: the Files section's note), matched
+    /// like `agent_project` but without a query per agent.
+    pub fn live_in_project(&self, p: &orch_store::Project) -> usize {
         let live = self.live_ids();
-        self.store
-            .read(|s| live.iter().filter_map(|id| s.agents.get(id)).cloned().collect::<Vec<_>>())
-            .iter()
-            .filter(|rec| self.agent_project(rec).as_deref() == Some(project))
-            .count()
+        self.store.read(|s| {
+            live.iter()
+                .filter_map(|id| s.agents.get(id))
+                .filter(|rec| match &rec.team {
+                    Some(t) => t.project_id == p.id,
+                    None => rec.repo == p.path,
+                })
+                .count()
+        })
     }
 
     /// Spawns `claude` for an existing agent: `--session-id` on first start,
