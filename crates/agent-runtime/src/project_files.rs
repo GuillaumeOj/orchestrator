@@ -23,6 +23,8 @@ pub struct Bounds {
     pub worktree_root: PathBuf,
     /// The main checkouts of the other projects.
     pub other_repos: Vec<PathBuf>,
+    /// The worktree roots of the other projects (agents' worktrees).
+    pub other_worktree_roots: Vec<PathBuf>,
 }
 
 impl Bounds {
@@ -35,6 +37,11 @@ impl Bounds {
             main_checkout: canon_or(&project.path),
             worktree_root: canon_or(&project.worktree_root),
             other_repos: all.iter().filter(|p| p.id != project.id).map(|p| canon_or(&p.path)).collect(),
+            other_worktree_roots: all
+                .iter()
+                .filter(|p| p.id != project.id)
+                .map(|p| canon_or(&p.worktree_root))
+                .collect(),
         }
     }
 }
@@ -63,6 +70,9 @@ pub fn check(canon: &Path, b: &Bounds) -> Result<(), &'static str> {
     let contains = |inner: &Path| inner.starts_with(canon);
     if inside(&b.main_checkout) || inside(&b.worktree_root) {
         return Err("already part of the project (in its repository)");
+    }
+    if b.other_worktree_roots.iter().any(|r| inside(r)) {
+        return Err("inside agent worktrees, pick the file in its project instead");
     }
     if canon.parent().is_none() || contains(&b.home) {
         return Err("too broad, pick a folder inside it");
@@ -231,7 +241,13 @@ mod tests {
         for p in ["home/.ssh", "home/.aws", "home/Library/Keychains", "home/Library/Application Support/Orchestrator"] {
             std::fs::create_dir_all(root.join(p)).unwrap();
         }
-        for p in ["home/dev/shop/src", "home/dev/shop.worktrees/solo/x", "home/dev/other", "home/Brand/logos"] {
+        for p in [
+            "home/dev/shop/src",
+            "home/dev/shop.worktrees/solo/x",
+            "home/dev/other/lib",
+            "home/dev/other.worktrees/solo/y",
+            "home/Brand/logos",
+        ] {
             std::fs::create_dir_all(root.join(p)).unwrap();
         }
         std::fs::write(home.join("Brand/guide.md"), "x").unwrap();
@@ -241,6 +257,7 @@ mod tests {
             main_checkout: home.join("dev/shop"),
             worktree_root: home.join("dev/shop.worktrees"),
             other_repos: vec![home.join("dev/other")],
+            other_worktree_roots: vec![home.join("dev/other.worktrees")],
             home,
         };
         Fx { _d: d, b, root }
@@ -264,6 +281,16 @@ mod tests {
         let f = fx();
         let h = f.b.home.display().to_string();
         assert_eq!(err(&f, "~/nope"), "~/nope: no such file or folder");
+        assert_eq!(
+            err(&f, "~/dev/other.worktrees/solo/y"),
+            "~/dev/other.worktrees/solo/y: inside agent worktrees, pick the file in its project instead"
+        );
+        assert_eq!(
+            err(&f, "~/dev/other.worktrees"),
+            "~/dev/other.worktrees: inside agent worktrees, pick the file in its project instead"
+        );
+        // Inside another project's main checkout: allowed.
+        assert_eq!(resolve("~/dev/other/lib", &f.b, &[]).unwrap().1, FileKind::Folder);
         assert_eq!(err(&f, "~/dev/shop/src"), "~/dev/shop/src: already part of the project (in its repository)");
         assert_eq!(err(&f, "~/dev/shop"), "~/dev/shop: already part of the project (in its repository)");
         assert_eq!(
