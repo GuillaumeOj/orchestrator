@@ -225,9 +225,14 @@ pub fn gh_failure(e: &anyhow::Error, repo: &str, number: u64) -> anyhow::Error {
     } else if low.contains("gh auth login") || low.contains("not logged in") || low.contains("http 401") {
         anyhow!("gh is not logged in: ask the user to run gh auth login")
     } else {
-        let msg = full.rfind("gh: ").map_or(full.as_str(), |i| &full[i + 4..]);
-        anyhow!("gh: {}", msg.lines().next().unwrap_or("").trim())
+        anyhow!("gh: {}", gh_stderr(&full))
     }
+}
+
+/// The first line of what `gh` printed, without the command it failed on.
+fn gh_stderr(full: &str) -> &str {
+    let msg = full.rfind("gh: ").map_or(full, |i| &full[i + 4..]);
+    msg.lines().next().unwrap_or("").trim()
 }
 
 /// Every element of the arrays `gh api --paginate` prints, back to back.
@@ -262,7 +267,7 @@ impl Runtime {
         let out = self
             .gh_in(&project)
             .run(&["repo", "view", "--json", "nameWithOwner"].map(String::from))
-            .map_err(|e| anyhow!("this project has no GitHub repository ({})", gh_failure(&e, "", 0)))?;
+            .map_err(|e| anyhow!("this project has no GitHub repository ({})", gh_stderr(&format!("{e:#}"))))?;
         let repo = serde_json::from_str::<Value>(&out)
             .ok()
             .and_then(|v| v["nameWithOwner"].as_str().map(str::to_string))
