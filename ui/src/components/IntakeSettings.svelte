@@ -169,13 +169,17 @@
     return { message: errText(e) };
   }
 
+  // A request counter per kind: an answer older than the latest request is dropped (null).
+  const seq = { github: 0, linear: 0, repo_docs: 0 };
   async function loadOptions(source) {
+    const n = ++seq[source.type];
+    let out;
     try {
-      const r = await invoke('intake_options', { project, source });
-      return r ?? {};
+      out = (await invoke('intake_options', { project, source })) ?? {};
     } catch (e) {
-      return { error: { code: parseErr(e).code ?? 'failed', message: errText(e) } };
+      out = { error: { code: parseErr(e).code ?? 'failed', message: errText(e) } };
     }
+    return n === seq[source.type] ? out : null;
   }
 
   // GitHub suggestions follow the repository (debounced), Linear's the team, the glob's count the glob.
@@ -186,6 +190,7 @@
     const t = setTimeout(
       async () => {
         const o = await loadOptions({ type: 'github', ...(repo.trim() ? { repo: repo.trim() } : {}) });
+        if (!o) return;
         ghOptions = o;
         ghOptionsError = o.error ?? null;
       },
@@ -212,13 +217,13 @@
     if (!info || type !== 'linear' || !team || linearError) return;
     const t = team;
     untrack(async () => {
+      let states = null;
       try {
-        linStates = await invoke('linear_states', { team: t });
-      } catch {
-        linStates = null;
-      }
+        states = await invoke('linear_states', { team: t });
+      } catch {}
+      if (team === t) linStates = states;
       const o = await loadOptions({ type: 'linear', team: t });
-      if (team === t) linLabels = o.labels ?? [];
+      if (o && team === t) linLabels = o.labels ?? [];
     });
   });
 
@@ -232,7 +237,7 @@
     const b = branch.trim();
     const t = setTimeout(async () => {
       const o = await loadOptions({ type: 'repo_docs', glob: g, branch: b || null });
-      if (glob.trim() === g) matches = o.error ? null : (o.matches ?? null);
+      if (o && glob.trim() === g) matches = o.error ? null : (o.matches ?? null);
     }, 400);
     return () => clearTimeout(t);
   });

@@ -134,6 +134,22 @@ describe('Project settings › Intake', () => {
     });
   });
 
+  it('drops an options answer older than the latest request', async () => {
+    const slow = {};
+    replies.intake_options = (a) => new Promise((res) => (slow[a.source.glob] = res));
+    const { findByRole, getByLabelText, findByText } = open();
+    await fireEvent.click(await findByRole('radio', { name: 'Repo docs' }));
+    await waitFor(() => expect(slow['.orchestrator/backlog/*.md']).toBeTruthy(), { timeout: 2000 });
+    await fireEvent.input(getByLabelText('Glob'), { target: { value: 'docs/*.md' } });
+    await waitFor(() => expect(slow['docs/*.md']).toBeTruthy(), { timeout: 2000 });
+    slow['docs/*.md']({ matches: 9 });
+    expect(await findByText('9 files match')).toBeTruthy();
+    // The first request answers last: it must not overwrite the newer count.
+    slow['.orchestrator/backlog/*.md']({ matches: 1 });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await findByText('9 files match')).toBeTruthy();
+  });
+
   it('a glob with .. is refused in the field', async () => {
     const { findByRole, getByLabelText, getByRole, findByText } = open();
     await fireEvent.click(await findByRole('radio', { name: 'Repo docs' }));
