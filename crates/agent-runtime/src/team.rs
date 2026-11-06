@@ -1586,7 +1586,7 @@ impl Runtime {
                                 && a.from_node == me
                                 && a.team_run_id.as_deref() == Some(cx.run.id.as_str())
                         })
-                        .filter_map(|a| crate::artifacts::meta_of(a).and_then(|m| m.path))
+                        .filter_map(|a| crate::artifacts::meta_of(a).filter(|m| m.tool == "file").and_then(|m| m.path))
                         .collect();
                     exported.dedup();
                     let lead = cx.team.lead().map(|n| n.id.as_str()).unwrap_or("the lead");

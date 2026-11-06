@@ -48,7 +48,7 @@ to empty, so older roles and imported teams load unchanged; raw `mcp_servers` ke
   (`DESIGN_EXPORTS`: export frames under the feature's `design/`, commit, hand off the repo path
   with `kind="design"`); the lead orders frontend after the design task; Full-stack has
   `ui → front` hands-off-to (D2).
-- `artifact::parse`: a hand-off URI → `ArtifactMeta` (Penpot, Figma, repo file, URL).
+- `artifact::parse`: a hand-off URI → `ArtifactMeta` (Penpot, Figma, FigCraft file, repo file, URL).
 
 ## Readings of the spec (simplest reading taken)
 

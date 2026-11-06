@@ -1379,7 +1379,7 @@ mod tests {
         let d = tempfile::Builder::new().prefix("orchapp").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let core = test_core(d.path());
         let v = core.integrations_view().unwrap();
-        assert_eq!(v["items"].as_array().unwrap().len(), 5);
+        assert_eq!(v["items"].as_array().unwrap().len(), 6);
         assert_eq!(v["items"][1]["status"], "not_configured");
         // The registry starts with the penpot connector.
         let reg = core.mcp_registry_view(None).unwrap();
