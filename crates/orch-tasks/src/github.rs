@@ -99,7 +99,8 @@ pub fn labels_for(status: TaskStatus, node: Option<&str>) -> Vec<String> {
     l
 }
 
-fn managed(label: &str) -> bool {
+/// A label of the task backend (`orch`, `orch:*`).
+pub fn managed(label: &str) -> bool {
     label == LABEL || label.starts_with("orch:")
 }
 

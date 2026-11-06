@@ -38,8 +38,6 @@ impl NetClock {
         let due = |last: Option<Instant>, every| last.is_none_or(|t| now.saturating_duration_since(t) >= every);
         if due(self.fetch, FETCH_EVERY) {
             rt.fetch_tick(&rt.cfg.fetch, rt.cfg.conditions.as_ref());
-            // Repo-docs intake: a moved branch tip is refreshed (no network).
-            rt.intake_tip_check();
             self.fetch = Some(now);
         }
         if due(self.pr, crate::pr::PR_EVERY) {

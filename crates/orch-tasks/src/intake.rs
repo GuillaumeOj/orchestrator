@@ -177,10 +177,7 @@ pub fn clip(s: &str) -> (String, bool) {
     }
 }
 
-/// `true` for the task backend's labels.
-pub fn is_orch_label(l: &str) -> bool {
-    l == crate::github::LABEL || l.starts_with("orch:")
-}
+pub use crate::github::managed as is_orch_label;
 
 fn ts_ms(s: &str) -> u64 {
     s.parse::<jiff::Timestamp>().map(|t| t.as_millisecond().max(0) as u64).unwrap_or(0)
@@ -238,7 +235,12 @@ pub fn gh_error(e: &anyhow::Error) -> SourceError {
 }
 
 fn gh_run(gh: &dyn Gh, args: &[&str]) -> R<String> {
-    gh.run(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>()).map_err(|e| gh_error(&e))
+    gh.run(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>()).map_err(|e| {
+        // Classify gh's answer, not our own arguments (a label named "not found").
+        let m = format!("{e:#}");
+        let prefix = format!("gh {}: ", args.join(" "));
+        gh_error(&anyhow::anyhow!("{}", m.strip_prefix(&prefix).unwrap_or(&m)))
+    })
 }
 
 fn gh_json(gh: &dyn Gh, args: &[&str]) -> R<Value> {
@@ -246,26 +248,27 @@ fn gh_json(gh: &dyn Gh, args: &[&str]) -> R<Value> {
     serde_json::from_str(&out).map_err(|_| SourceError::new("failed", format!("gh {}: not JSON", args.join(" "))))
 }
 
-/// A REST issue as an item (`None` for a pull request or a team task).
-fn rest_issue(v: &Value) -> Option<Fetched> {
-    if v.get("pull_request").is_some() || !v["state"].as_str().unwrap_or("open").eq_ignore_ascii_case("open") {
+/// An open GitHub issue as an item (`None` when closed or a team task).
+/// REST and GraphQL name the URL and update time differently.
+fn gh_issue(c: &Value, url_key: &str, updated_key: &str, reference: impl FnOnce(u64) -> String) -> Option<Fetched> {
+    if !c["state"].as_str().unwrap_or("open").eq_ignore_ascii_case("open") {
         return None;
     }
-    let labels = names(&v["labels"], "name");
+    let labels = names(&c["labels"], "name");
     if labels.iter().any(|l| is_orch_label(l)) {
         return None;
     }
-    let number = v["number"].as_u64()?;
-    let (body, truncated) = clip(v["body"].as_str().unwrap_or(""));
-    let updated = st(&v["updated_at"]);
+    let number = c["number"].as_u64()?;
+    let (body, truncated) = clip(c["body"].as_str().unwrap_or(""));
+    let updated = st(&c[updated_key]);
     let mut extra = serde_json::Map::new();
     extra.insert("number".into(), json!(number));
-    extra.insert("assignees".into(), json!(names(&v["assignees"], "login")));
-    extra.insert("milestone".into(), v["milestone"]["title"].clone());
+    extra.insert("assignees".into(), json!(names(&c["assignees"], "login")));
+    extra.insert("milestone".into(), c["milestone"]["title"].clone());
     Some(Fetched {
-        reference: format!("#{number}"),
-        title: st(&v["title"]),
-        url: v["html_url"].as_str().map(str::to_string),
+        reference: reference(number),
+        title: st(&c["title"]),
+        url: c[url_key].as_str().map(str::to_string),
         body,
         truncated,
         updated_at_ms: ts_ms(&updated),
@@ -275,6 +278,14 @@ fn rest_issue(v: &Value) -> Option<Fetched> {
         extra,
         ..Default::default()
     })
+}
+
+/// A REST issue as an item (`None` for a pull request too).
+fn rest_issue(v: &Value) -> Option<Fetched> {
+    if v.get("pull_request").is_some() {
+        return None;
+    }
+    gh_issue(v, "html_url", "updated_at", |n| format!("#{n}"))
 }
 
 fn rest_issues(gh: &dyn Gh, repo: &str, query: &str) -> R<Listing> {
@@ -331,38 +342,16 @@ fn project_items(gh: &dyn Gh, repo: &str, owner: &str, number: u64, status: Opti
         })
         .filter_map(|n| {
             let c = &n["content"];
-            if c["__typename"] != "Issue" || !c["state"].as_str().unwrap_or("").eq_ignore_ascii_case("open") {
+            if c["__typename"] != "Issue" || c["state"].is_null() {
                 return None;
             }
-            let labels = names(&c["labels"], "name");
-            if labels.iter().any(|l| is_orch_label(l)) {
-                return None;
-            }
-            let number = c["number"].as_u64()?;
             let in_repo = c["repository"]["nameWithOwner"].as_str().unwrap_or(repo);
-            let reference =
-                if in_repo.eq_ignore_ascii_case(repo) { format!("#{number}") } else { format!("{in_repo}#{number}") };
-            let (body, truncated) = clip(c["body"].as_str().unwrap_or(""));
-            let updated = st(&c["updatedAt"]);
-            let mut extra = serde_json::Map::new();
-            extra.insert("number".into(), json!(number));
-            extra.insert("repo".into(), json!(in_repo));
-            extra.insert("assignees".into(), json!(names(&c["assignees"], "login")));
-            extra.insert("milestone".into(), c["milestone"]["title"].clone());
-            extra.insert("status".into(), n["fieldValueByName"]["name"].clone());
-            Some(Fetched {
-                reference,
-                title: st(&c["title"]),
-                url: c["url"].as_str().map(str::to_string),
-                body,
-                truncated,
-                updated_at_ms: ts_ms(&updated),
-                rev: updated,
-                size: Size::of_labels(&labels),
-                labels,
-                extra,
-                ..Default::default()
-            })
+            let local = in_repo.eq_ignore_ascii_case(repo);
+            let mut f =
+                gh_issue(c, "url", "updatedAt", |n| if local { format!("#{n}") } else { format!("{in_repo}#{n}") })?;
+            f.extra.insert("repo".into(), json!(in_repo));
+            f.extra.insert("status".into(), n["fieldValueByName"]["name"].clone());
+            Some(f)
         })
         .collect();
     Ok(Listing::capped(items))
@@ -777,6 +766,10 @@ mod tests {
         gh.fail("repos/acme/shop/issues", "exec: No such file or directory (os error 2)");
         let e = github(&gh, "acme/shop", &GithubIntakeFilter::Label { names: vec!["ready".into()] }).unwrap_err();
         assert_eq!((e.code, e.fix), ("gh_missing", Some("integrations")));
+        // gh's answer is classified, not our arguments: a label named "not found".
+        gh.fail("repos/acme/shop/issues", "HTTP 500: server error");
+        let e = github(&gh, "acme/shop", &GithubIntakeFilter::Label { names: vec!["not found".into()] }).unwrap_err();
+        assert_eq!(e.code, "failed");
     }
 
     #[test]

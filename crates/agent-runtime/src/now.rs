@@ -449,7 +449,7 @@ impl Runtime {
         let changed = self.store.take_changed();
         let mut topics = std::mem::take(&mut *lock(&self.now.topics));
         let team_changes = self.db.changes();
-        let db_topics = self.db.take_topics();
+        let mut db_topics = self.db.take_topics();
         // The queue as it is (cheap): what tells it moved. An answered ask
         // moves nothing else.
         let queue_now: GovSeen = self.with_governor(|g| {
@@ -468,6 +468,16 @@ impl Runtime {
             topics.insert(crate::overwatch::TOPIC.into());
         }
         let overwatch = overwatch.filter(|_| topics.contains(crate::overwatch::TOPIC));
+        // `now.intake` rides the event, whole, when it changed (P4.5
+        // api-contract §2.1); intake writes note its topic. Built before the
+        // publisher's lock; the forced pump catches projects added or removed.
+        let intake_noted = topics.remove(crate::intake::TOPIC) | db_topics.remove(crate::intake::TOPIC);
+        let intake = (force || intake_noted || !self.intake.published())
+            .then(|| self.intake_view())
+            .filter(|v| self.intake.publish(v));
+        if intake.is_some() {
+            topics.insert(crate::intake::TOPIC.into());
+        }
         let mut st = lock(&self.now.state);
         let queue_moved = st.queue.as_ref() != Some(&queue_now);
         let team_moved = st.team.changes != Some(team_changes);
@@ -487,16 +497,6 @@ impl Runtime {
             st.team = self.team_cache(team_changes);
         }
         topics.extend(db_topics);
-        // `now.intake` rides the event, whole, when it changed (P4.5
-        // api-contract §2.1); intake writes touch its topic.
-        let intake = (force || topics.contains(crate::intake::TOPIC) || !self.intake.published())
-            .then(|| self.intake_view())
-            .filter(|v| self.intake.publish(v));
-        if intake.is_some() {
-            topics.insert(crate::intake::TOPIC.into());
-        } else {
-            topics.remove(crate::intake::TOPIC);
-        }
         if changed.inbox {
             topics.insert(orch_protocol::Topic::Inbox.into());
         }

@@ -28,6 +28,8 @@ pub const REFRESH_SECS_KEY: &str = "intake.refresh_secs";
 pub const DEFAULT_REFRESH_SECS: u64 = 600;
 /// Start-up refreshes are this far apart, per project.
 pub const STAGGER_MS: u64 = 2000;
+/// How often repo-docs branch tips are checked.
+pub const TIP_EVERY_MS: u64 = 60_000;
 /// How often the refresher thread looks at what is due.
 const STEP: Duration = Duration::from_secs(1);
 /// A `intake_source_set` waits this long for a refresh in flight.
@@ -40,6 +42,8 @@ const EXCERPT: usize = 200;
 struct Sched {
     /// The start-up stagger was laid out.
     started: bool,
+    /// The last repo-docs tip check (ms).
+    last_tip_ms: u64,
     /// When each project is next due (ms).
     due: BTreeMap<String, u64>,
     inflight: BTreeSet<String>,
@@ -149,15 +153,15 @@ struct ProjectFacts {
 }
 
 /// An item as `now.intake` and the commands show it (api-contract §1.2).
-fn item_json(id: Option<u64>, project: &str, source: &str, f: &ItemFields, facts: &ProjectFacts) -> Value {
+fn item_json(f: &ItemFields, facts: &ProjectFacts) -> Value {
     let meta = f.meta;
     let doc_mode = meta["mode"].as_str().filter(|m| *m == "team" || *m == "solo");
     let mode = doc_mode.unwrap_or(if facts.default_team.is_some() { "team" } else { "solo" });
     let team = meta["team"].as_str().map(str::to_string).or_else(|| facts.default_team.clone());
     json!({
-        "id": id.map(|i| format!("it_{i}")),
-        "project": project,
-        "source": source,
+        "id": f.id.map(|i| format!("it_{i}")),
+        "project": f.project,
+        "source": f.source,
         "ref": f.reference,
         "title": f.title,
         "url": f.url,
@@ -175,6 +179,10 @@ fn item_json(id: Option<u64>, project: &str, source: &str, f: &ItemFields, facts
 }
 
 struct ItemFields<'a> {
+    /// `None` in a preview (nothing stored).
+    id: Option<u64>,
+    project: &'a str,
+    source: &'a str,
     reference: &'a str,
     title: &'a str,
     url: Option<&'a str>,
@@ -186,12 +194,29 @@ struct ItemFields<'a> {
 impl<'a> ItemFields<'a> {
     fn of_row(r: &'a IntakeRow) -> ItemFields<'a> {
         ItemFields {
+            id: Some(r.id),
+            project: &r.project_id,
+            source: &r.source,
             reference: &r.reference,
             title: &r.title,
             url: r.url.as_deref(),
             body: &r.body,
             meta: &r.meta,
             state: r.state,
+        }
+    }
+
+    fn of_upsert(u: &'a orch_store::IntakeUpsert, project: &'a str, source: &'a str) -> ItemFields<'a> {
+        ItemFields {
+            id: None,
+            project,
+            source,
+            reference: &u.reference,
+            title: &u.title,
+            url: u.url.as_deref(),
+            body: &u.body,
+            meta: &u.meta,
+            state: IntakeState::Ready,
         }
     }
 }
@@ -296,6 +321,19 @@ impl Runtime {
     /// the start-up refreshes out 2 s apart.
     pub fn intake_step(&self, now: u64) {
         let projects = self.intake_projects();
+        // Repo-docs branch tips, once a minute (local, no network). Not on the
+        // first pass: the start-up stagger reads them all anyway.
+        let tips = {
+            let mut s = lock(&self.intake.sched);
+            let due = s.started && now.saturating_sub(s.last_tip_ms) >= TIP_EVERY_MS;
+            if due || !s.started {
+                s.last_tip_ms = now;
+            }
+            due
+        };
+        if tips {
+            self.tip_check_of(&projects);
+        }
         let due: Vec<String> = {
             let mut s = lock(&self.intake.sched);
             let ids: BTreeSet<&str> = projects.iter().map(|(p, _)| p.id.as_str()).collect();
@@ -326,12 +364,16 @@ impl Runtime {
         self.intake.wake.notify_all();
     }
 
-    /// The fetch tick (no network): a repo-docs project whose branch tip
-    /// moved since its items were read is refreshed.
+    /// A repo-docs project whose branch tip moved since its items were
+    /// read is refreshed (no network).
     pub fn intake_tip_check(&self) {
-        for (p, s) in self.intake_projects() {
+        self.tip_check_of(&self.intake_projects());
+    }
+
+    fn tip_check_of(&self, projects: &[(Project, IntakeSource)]) {
+        for (p, s) in projects {
             let IntakeSource::RepoDocs { branch, .. } = &s else { continue };
-            let branch = branch.clone().unwrap_or_else(|| base_branch(&p));
+            let branch = branch.clone().unwrap_or_else(|| base_branch(p));
             let tip = src::branch_tip(&p.path, &branch);
             let read = self.db.intake_status(&p.id).map(|st| st.tip).unwrap_or_default();
             if tip.is_some() && tip != read {
@@ -416,10 +458,10 @@ impl Runtime {
             return;
         }
         let t0 = std::time::Instant::now();
+        let mut status = self.db.intake_status(id).unwrap_or_default();
         // Repo docs at the tip already read: nothing can have changed (the
         // glob is the stored source's; a source change clears the status).
         if let IntakeSource::RepoDocs { branch, .. } = &source {
-            let mut status = self.db.intake_status(id).unwrap_or_default();
             let branch = branch.clone().unwrap_or_else(|| base_branch(&p));
             if status.error.is_none() && status.tip.is_some() && status.tip == src::branch_tip(&p.path, &branch) {
                 status.refreshed_at_ms = Some(orch_protocol::now_ms());
@@ -433,7 +475,6 @@ impl Runtime {
             self.intake_request(Some(id));
             return;
         }
-        let mut status = self.db.intake_status(id).unwrap_or_default();
         let now = orch_protocol::now_ms();
         match got {
             Ok((listing, tip)) => {
@@ -508,7 +549,7 @@ impl Runtime {
             let status = self.db.intake_status(&p.id).unwrap_or_default();
             let shown = ready.len().min(src::CAP);
             for r in ready.iter().take(src::CAP).chain(hidden.iter()) {
-                items.push(item_json(Some(r.id), &p.id, &r.source, &ItemFields::of_row(r), &facts));
+                items.push(item_json(&ItemFields::of_row(r), &facts));
             }
             let repo = match &source {
                 IntakeSource::Github { repo, .. } => repo
@@ -564,23 +605,19 @@ impl Runtime {
         let p = self.intake_project(project)?;
         let s = parse_source(source)?;
         self.db.set_intake_source(&p.id, &s)?;
-        let error = if s.is_none() {
-            Value::Null
-        } else {
+        if !s.is_none() {
             self.intake_refresh_now(&p.id);
-            self.db.intake_status(&p.id)?.error.unwrap_or(Value::Null)
-        };
+        }
+        let status = self.db.intake_status(&p.id)?;
         let facts = self.project_facts(&p);
         let rows: Vec<IntakeRow> =
             self.db.intake_items(Some(&p.id))?.into_iter().filter(|r| r.state != IntakeState::Started).collect();
         let ready: Vec<&IntakeRow> = rows.iter().filter(|r| r.state == IntakeState::Ready).collect();
-        let more = ready.len().saturating_sub(src::CAP) + self.db.intake_status(&p.id)?.more;
-        let items: Vec<Value> = ready
-            .iter()
-            .take(PREVIEW)
-            .map(|r| item_json(Some(r.id), &p.id, &r.source, &ItemFields::of_row(r), &facts))
-            .collect();
-        Ok(json!({"preview": {"count": ready.len().min(src::CAP), "more": more, "items": items, "error": error}}))
+        let more = ready.len().saturating_sub(src::CAP) + status.more;
+        let items: Vec<Value> = ready.iter().take(PREVIEW).map(|r| item_json(&ItemFields::of_row(r), &facts)).collect();
+        Ok(
+            json!({"preview": {"count": ready.len().min(src::CAP), "more": more, "items": items, "error": status.error}}),
+        )
     }
 
     /// `intake_preview`: a dry run of `source` (nothing stored).
@@ -594,18 +631,7 @@ impl Runtime {
                     .items
                     .iter()
                     .take(PREVIEW)
-                    .map(|f| {
-                        let up = f.upsert();
-                        let fields = ItemFields {
-                            reference: &up.reference,
-                            title: &up.title,
-                            url: up.url.as_deref(),
-                            body: &up.body,
-                            meta: &up.meta,
-                            state: IntakeState::Ready,
-                        };
-                        item_json(None, &p.id, s.kind(), &fields, &facts)
-                    })
+                    .map(|f| item_json(&ItemFields::of_upsert(&f.upsert(), &p.id, s.kind()), &facts))
                     .collect();
                 json!({"count": l.items.len(), "more": l.more(), "items": items, "error": null})
             }
@@ -670,7 +696,7 @@ impl Runtime {
         let p = self.intake_project(&r.project_id)?;
         let m = &r.meta;
         Ok(json!({
-            "item": item_json(Some(r.id), &p.id, &r.source, &ItemFields::of_row(&r), &self.project_facts(&p)),
+            "item": item_json(&ItemFields::of_row(&r), &self.project_facts(&p)),
             "body": r.body,
             "truncated": m["truncated"].as_bool().unwrap_or(false),
             "milestone": m["milestone"],
