@@ -35,9 +35,10 @@ In:
      agents update) or `read` (read only);
    - **note**: optional free text, "what it is for" (e.g. "Brand guide: logo,
      colors, tone"). Agents see it.
-2. **Add** one or several paths at once: native file/folder picker
-   (multi-select, files and folders), drag and drop from Finder onto the
-   section, or typed/pasted paths (`~` expanded, one per line).
+2. **Add** one or several paths at once from a **drop zone**: drag and drop
+   from Finder onto it, or **click it** to open the native macOS window and
+   browse the computer (files and folders, multi-select). Typed/pasted paths
+   (`~` expanded, one per line) also work.
 3. **Edit** access and note, **remove** an entry (the files on disk are never
    touched), **reveal** in Finder, **open** in the editor (FR-1101) for files.
 4. **Agents get them at spawn** (first start and every resume, like MCP
@@ -165,8 +166,9 @@ on the project.
 
 ## Acceptance
 
-1. In Project settings › Files, the user adds a folder and two files at once
-   (picker multi-select, or Finder drag and drop); they are listed with
+1. In Project settings › Files, the user adds a folder and two files at once,
+   either by dropping them from Finder on the drop zone or by clicking the
+   zone and picking them in the native window; they are listed with
    kind, access Read & write, no note. A typed `~/x` path is expanded.
 2. `~/.ssh`, `~`, the project's own `src/`, and a missing path are refused
    with their message; valid paths in the same batch are added.
