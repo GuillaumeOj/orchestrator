@@ -298,6 +298,6 @@ export function bannerClaude(c) {
       ? { label: 'Updating…', disabled: true, spinner: true }
       : { label: failed ? 'Retry update' : 'Update Claude Code' },
     details: failed,
-    key: `${c.problem}|${u.state}|${failed ? u.error : ''}`,
+    key: `${c.problem}|${failed ? u.error : ''}`,
   };
 }

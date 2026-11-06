@@ -401,6 +401,19 @@ describe('components', () => {
     await waitFor(() => expect(container.querySelector('.banner')).not.toBeNull());
   });
 
+  it('banner: a dismissal survives background checks and returns with a failed update', async () => {
+    app.data.setup.claude = old();
+    const { container, getByLabelText } = render(Banner);
+    await fireEvent.click(getByLabelText('Dismiss'));
+    for (const state of ['checking', 'idle']) {
+      app.data.setup = { ...app.data.setup, claude: old({}, { state }) };
+      await tick();
+      expect(container.querySelector('.banner')).toBeNull();
+    }
+    app.data.setup = { ...app.data.setup, claude: old({}, { state: 'error', error: 'EACCES', error_from: 'update' }) };
+    await waitFor(() => expect(container.querySelector('.banner')).not.toBeNull());
+  });
+
   it('Setup step 1: the version problem gets the update state line', () => {
     app.data.setup.claude = old();
     app.data.setup.trust = [];
