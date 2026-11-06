@@ -1775,22 +1775,8 @@ mod tests {
     fn a_settings_edit_keeps_the_stored_backend() {
         let (_d, s) = store();
         let backend = serde_json::json!({"type": "future", "x": 1});
-        let pr = crate::model::Project {
-            id: "p1".into(),
-            name: "shop".into(),
-            path: "/tmp/shop".into(),
-            default_branch: "main".into(),
-            remotes: vec![],
-            worktree_root: "/tmp/shop.worktrees".into(),
-            task_backend: backend.clone(),
-            track_orchestrator_dir: true,
-            settings: serde_json::json!({}),
-            created_at_ms: 1,
-            last_active_at_ms: 1,
-            last_fetch_at_ms: None,
-            last_fetch_error: None,
-            archived: false,
-        };
+        let pr =
+            crate::model::Project { task_backend: backend.clone(), ..project_with_settings(serde_json::json!({})) };
         s.upsert_project(&pr).unwrap();
         s.update_project_settings("p1", |e| {
             e.settings.default_team = Some("solo".into());
