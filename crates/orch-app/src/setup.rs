@@ -73,6 +73,27 @@ impl ClaudeCheck {
     }
 }
 
+/// The start-up runtime's version warnings (`claude 2.1.330 is newer than…`,
+/// `claude: claude 2.1.200 is older than…`) are fixed at start: `state()`
+/// drops them and shows these, from the current check, so they follow an
+/// in-app update.
+pub fn is_runtime_version_warning(w: &str) -> bool {
+    (w.starts_with("claude ") && w.contains(" is newer than the last tested version"))
+        || (w.starts_with("claude: ") && w.contains(" is older than the supported minimum"))
+}
+
+pub fn version_warnings(c: Option<&ClaudeCheck>) -> Vec<String> {
+    let Some(c) = c else { return vec![] };
+    let (Some(v), range) = (&c.version, preflight::SUPPORTED_CLAUDE) else { return vec![] };
+    if c.untested {
+        vec![format!("claude {v} is newer than the last tested version: run the contract tests (R2)")]
+    } else if c.problem_kind == Some(ProblemKind::Version) {
+        vec![format!("claude: claude {v} is older than the supported minimum {}", range.min)]
+    } else {
+        vec![]
+    }
+}
+
 /// `claude --version` and `claude auth status --json` (deadline 15 s).
 pub fn check_claude(path: &Path) -> ClaudeCheck {
     let mut c = ClaudeCheck { path: path.to_path_buf(), ..Default::default() };
@@ -650,6 +671,28 @@ mod tests {
             p.ends_with("update Claude Code (Settings › Claude Code, or `claude update`).") && !p.contains("restart"),
             "{p}"
         );
+    }
+
+    #[test]
+    fn version_warnings_follow_the_current_check() {
+        let runtime = "claude 2.9.0 is newer than the last tested version: run the contract tests (R2)";
+        let old = "claude: claude 2.1.200 is older than the supported minimum 2.1.302";
+        assert!(is_runtime_version_warning(runtime) && is_runtime_version_warning(old));
+        assert!(!is_runtime_version_warning("claude: no claude at /x"));
+        assert!(!is_runtime_version_warning("helpers: claude is newer"));
+        let check = |v: &str, untested, kind| ClaudeCheck {
+            version: Some(v.into()),
+            untested,
+            problem_kind: kind,
+            ..Default::default()
+        };
+        assert_eq!(version_warnings(None), Vec::<String>::new());
+        assert_eq!(version_warnings(Some(&check("2.9.0", true, None))), [runtime]);
+        assert_eq!(version_warnings(Some(&check("2.1.200", false, Some(ProblemKind::Version)))), [old]);
+        // After an in-app update to a supported version: no warning.
+        assert!(version_warnings(Some(&check("2.1.302", false, None))).is_empty());
+        // And to another untested one: the new version.
+        assert!(version_warnings(Some(&check("2.9.1", true, None)))[0].starts_with("claude 2.9.1 is newer"));
     }
 
     #[test]

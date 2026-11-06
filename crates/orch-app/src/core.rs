@@ -926,7 +926,13 @@ impl Core {
         if let Some(rt) = &self.rt {
             let st = rt.state_json();
             agents = st["agents"].as_array().cloned().unwrap_or_default();
-            warnings.extend(st["warnings"].as_array().cloned().unwrap_or_default());
+            // The runtime's version warnings are from its start: ours follow the current check.
+            warnings.extend(
+                (st["warnings"].as_array().into_iter().flatten())
+                    .filter(|w| !w.as_str().is_some_and(setup::is_runtime_version_warning))
+                    .cloned(),
+            );
+            warnings.extend(setup::version_warnings(self.claude_check().as_ref()).into_iter().map(Value::from));
             usage = rt.usage_json();
             if let Some(u) = usage.as_object_mut() {
                 // Per-agent usage is already in `agents`, and `snapshot` replaces `governor`.

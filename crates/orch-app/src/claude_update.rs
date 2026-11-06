@@ -27,6 +27,24 @@ use crate::setup::{self, ClaudeCheck, ProblemKind};
 pub const CHECK_EVERY: Duration = Duration::from_secs(6 * 3600);
 /// `curl --max-time` of one version request.
 const FETCH_SECS: u32 = 15;
+/// Passed to `claude update` when set: the user's proxy and CA settings.
+const NETWORK_ENV: &[&str] = &[
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NODE_EXTRA_CA_CERTS",
+    "SSL_CERT_FILE",
+];
+/// The [`NETWORK_ENV`] variables `get` knows, non-empty.
+fn network_env(get: impl Fn(&str) -> Option<String>) -> BTreeMap<String, String> {
+    NETWORK_ENV.iter().filter_map(|k| get(k).filter(|v| !v.is_empty()).map(|v| ((*k).to_string(), v))).collect()
+}
+
 /// `claude update` is killed after this.
 pub const UPDATE_DEADLINE: Duration = Duration::from_secs(10 * 60);
 /// Lines of `claude update` output kept.
@@ -456,13 +474,16 @@ impl ClaudeUpdater {
     fn update_env(&self) -> BTreeMap<String, String> {
         let var = |k: &str| std::env::var(k).unwrap_or_default();
         let shell = crate::terms::login_shell().display().to_string();
-        BTreeMap::from([
+        let mut env = BTreeMap::from([
             ("PATH".into(), (self.path)()),
             ("HOME".into(), self.home.display().to_string()),
             ("USER".into(), var("USER")),
             ("TERM".into(), "dumb".into()),
             ("SHELL".into(), shell),
-        ])
+        ]);
+        // The user's own network settings, for their own claude.
+        env.extend(network_env(|k| std::env::var(k).ok()));
+        env
     }
 
     /// `<claude> update`, output merged into the log, killed (with its
@@ -777,6 +798,42 @@ esac
 
     /// `update` installs 2.1.330 and swaps the link, like the native installer.
     const SWAP: &str = r#"echo 'Checking for updates...'; printf '\033[32mDownloading\033[0m\n'; echo "DAU=${DISABLE_AUTOUPDATER-unset} KEY=${ANTHROPIC_API_KEY-unset} TERM=$TERM"; sed "s/^  --version) echo '2.1.317/  --version) echo '2.1.330/" "$V/2.1.317" > "$V/2.1.330" && chmod +x "$V/2.1.330" && ln -sfn "$V/2.1.330" "$L.new" && mv -f "$L.new" "$L"; echo 'Successfully updated from 2.1.317 to 2.1.330'"#;
+
+    #[test]
+    fn proxy_settings_pass_through_but_not_credentials() {
+        let all = [
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "NO_PROXY",
+            "https_proxy",
+            "http_proxy",
+            "no_proxy",
+            "ALL_PROXY",
+            "NODE_EXTRA_CA_CERTS",
+            "SSL_CERT_FILE",
+            "ANTHROPIC_API_KEY",
+            "DISABLE_AUTOUPDATER",
+            "GH_TOKEN",
+        ];
+        let env = network_env(|k| all.contains(&k).then(|| format!("v-{k}")));
+        assert_eq!(env["HTTPS_PROXY"], "v-HTTPS_PROXY");
+        assert_eq!(env["NODE_EXTRA_CA_CERTS"], "v-NODE_EXTRA_CA_CERTS");
+        assert_eq!(env.len(), 9, "{env:?}");
+        for k in ["ANTHROPIC_API_KEY", "DISABLE_AUTOUPDATER", "GH_TOKEN"] {
+            assert!(!env.contains_key(k), "{k} must not pass");
+        }
+        assert!(network_env(|_| Some(String::new())).is_empty(), "empty values are dropped");
+        let up = ClaudeUpdater::with(
+            "/h".into(),
+            Box::new(|| {}),
+            Box::new(|_, _| bail!("x")),
+            Box::new(|| "/bin".into()),
+            UPDATE_DEADLINE,
+        );
+        let e = up.update_env();
+        assert!(!e.contains_key("ANTHROPIC_API_KEY") && !e.contains_key("DISABLE_AUTOUPDATER"));
+        assert_eq!((e["TERM"].as_str(), e["HOME"].as_str()), ("dumb", "/h"));
+    }
 
     #[test]
     fn update_swaps_the_version_and_rechecks() {
