@@ -457,6 +457,13 @@ fn a_reversed_approval_whose_delivery_failed_denies_once_when_retried() {
 }
 
 #[test]
+fn a_reversed_approval_is_refused_whatever_the_retry_describes() {
+    let (_d, rt) = manual();
+    rt.overwatch.deny_once("a1", "Bash", json!({"command": "ls", "description": "List"}), now_ms() + 60_000);
+    assert!(rt.overwatch.take_deny("a1", "Bash", &json!({"command": "ls", "description": "Show files"})));
+}
+
+#[test]
 fn undoing_an_answer_needs_the_corrected_text() {
     let (_d, rt) = manual();
     agent_state(&rt, AgentState::Idle);

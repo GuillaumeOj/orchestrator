@@ -32,6 +32,8 @@ use serde_json::Value;
 
 /// The Overwatch's fixed agent id.
 pub const ID: &str = "overwatch";
+/// Its usage allocation and report row.
+pub const ALLOCATION: &str = "overwatch";
 /// Refuses the Overwatch's reserved id on every start path but its own
 /// (a Start, a solo session, a team member, an import).
 pub fn refuse_reserved(id: &str) -> anyhow::Result<()> {
@@ -40,8 +42,6 @@ pub fn refuse_reserved(id: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
-/// Its usage allocation and report row.
-pub const ALLOCATION: &str = "overwatch";
 /// Its system prompt (compiled in).
 pub const ROLE_PROMPT: &str = include_str!("role.md");
 /// FR-407 turn ceiling; two turns in a row past it put it `down`.

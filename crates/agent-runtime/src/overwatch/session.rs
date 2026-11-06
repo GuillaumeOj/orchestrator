@@ -48,19 +48,30 @@ pub struct Overwatch {
     pub(crate) fail_undo_delivery: std::sync::atomic::AtomicBool,
 }
 
+/// The call without the model's own `description` (it may word a retry anew),
+/// like the one-shot allows compare it.
+fn without_description(input: &Value) -> Value {
+    let mut v = input.clone();
+    if let Some(m) = v.as_object_mut() {
+        m.remove("description");
+    }
+    v
+}
+
 impl Overwatch {
     /// The user reversed an approval: the next identical call is refused (1 h).
     pub(crate) fn deny_once(&self, agent: &str, tool: &str, input: Value, until_ms: u64) {
         let mut d = self.denies.lock().unwrap_or_else(|e| e.into_inner());
         let now = orch_protocol::now_ms();
         d.retain(|x| x.3 > now);
-        d.push((agent.into(), tool.into(), input, until_ms));
+        d.push((agent.into(), tool.into(), without_description(&input), until_ms));
     }
 
     /// Takes back a deny `deny_once` just added (its undo failed).
     pub(crate) fn forget_deny(&self, agent: &str, tool: &str, input: &Value, until_ms: u64) {
         let mut d = self.denies.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(i) = d.iter().rposition(|x| x.0 == agent && x.1 == tool && &x.2 == input && x.3 == until_ms) {
+        let input = without_description(input);
+        if let Some(i) = d.iter().rposition(|x| x.0 == agent && x.1 == tool && x.2 == input && x.3 == until_ms) {
             d.remove(i);
         }
     }
@@ -75,7 +86,8 @@ impl Overwatch {
         let mut d = self.denies.lock().unwrap_or_else(|e| e.into_inner());
         let now = orch_protocol::now_ms();
         d.retain(|x| x.3 > now);
-        match d.iter().position(|x| x.0 == agent && x.1 == tool && &x.2 == input) {
+        let input = without_description(input);
+        match d.iter().position(|x| x.0 == agent && x.1 == tool && x.2 == input) {
             Some(i) => {
                 d.remove(i);
                 true
