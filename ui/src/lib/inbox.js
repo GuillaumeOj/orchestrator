@@ -63,7 +63,7 @@ export function subjectLine(d) {
 const AT_ONCE = new Set(['open', 'reconnect', 'open_settings', 'edit']);
 
 /** `Bash(pnpm add:*)` as `pnpm add`: the rule's call the way a person says it. */
-const readableMatch = (m) => (m ? m.replace(/^\w+\((.*?)(?::?\*+)?\)$/, '$1') : 'this');
+const readableMatch = (m) => (m ? m.replace(/^\w+\((.*?)(?::\*)?\)$/, '$1') : 'this');
 
 /** What an action id does: decide (undo window), reply or answer (a text first),
  *  open the agent's pane, or ask the core at once. */

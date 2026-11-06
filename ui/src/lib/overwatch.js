@@ -223,9 +223,7 @@ export function replyRef(entry, prevKey, entries = {}) {
 export function awaiting(texts) {
   const user = texts.findLast((e) => e.author === 'user');
   if (!user || user.delivery === 'pending') return null;
-  const answered = texts.some(
-    (e) => e.author === 'overwatch' && e.at_ms >= user.at_ms && (!e.reply_to || e.reply_to === user.id),
-  );
+  const answered = texts.some((e) => e.author === 'overwatch' && e.at_ms >= user.at_ms && e.reply_to === user.id);
   return answered ? null : user;
 }
 

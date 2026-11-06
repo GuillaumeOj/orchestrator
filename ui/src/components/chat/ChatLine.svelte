@@ -19,7 +19,8 @@
   let { item, expanded = false, pulse = false, entries = {}, refok = () => true, ontoggle = () => {}, onopen = () => {}, onref = () => {}, onexpand = () => {} } = $props();
   // The line after an undo of this window (a past day's entries are not pushed back): the core's reply.
   let patched = $state(null);
-  const line = $derived(patched ?? item.line);
+  // The core's entry replaces the local copy once it has the undo on it.
+  const line = $derived(patched && !item.line.undone_at_ms && !item.line.corrected_at_ms ? patched : item.line);
   const now = $derived(Math.max(now30(), Date.now()));
   const tail = $derived(tailText(line, entries));
   const undone = $derived(undoneTail(line, now));

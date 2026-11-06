@@ -1047,6 +1047,7 @@ describe('pure helpers', () => {
     expect(ow.awaiting([u])).toBe(u);
     expect(ow.awaiting([u, { id: 'o', author: 'overwatch', at_ms: 2000, reply_to: 'u' }])).toBeNull();
     expect(ow.awaiting([u, { id: 'o', author: 'overwatch', at_ms: 2000, reply_to: 'other' }])).toBe(u);
+    expect(ow.awaiting([u, { id: 'o', author: 'overwatch', at_ms: 2000 }])).toBe(u); // a post without reply_to answers nothing
     expect(ow.awaiting([{ ...u, delivery: 'pending' }])).toBeNull();
     expect(ow.noReply(u, { status: 'asleep', since_ms: 3000 })).toBe(true);
     expect(ow.noReply(u, { status: 'asleep', since_ms: 500 })).toBe(false);
