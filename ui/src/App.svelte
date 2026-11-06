@@ -1,11 +1,13 @@
 <script>
   // The app shell (§9.2, Penpot 03, P4.3 notes §9): title bar, sidebar or icon
-  // rail, tiling workspace over the dock, the chat column (fixed, 360 px; 340
-  // below 1512), the Inspector (docked 320 at ≥ 1728 px, else an overlay over
+  // rail, tiling workspace over the dock, the chat column (the Overwatch: 360 px
+  // by default, 340 below 1512, or the width the user dragged by its left edge,
+  // ChatResize), the Inspector (docked 320 at ≥ 1728 px, else an overlay over
   // the chat's slot), status bar.
   import { onMount } from 'svelte';
   import Banner from './components/Banner.svelte';
   import ChatColumn from './components/chat/ChatColumn.svelte';
+  import ChatResize from './components/chat/ChatResize.svelte';
   import Dialogs from './components/Dialogs.svelte';
   import Dock from './components/Dock.svelte';
   import IconRail from './components/IconRail.svelte';
@@ -16,7 +18,7 @@
   import TitleBar from './components/TitleBar.svelte';
   import Toasts from './components/Toasts.svelte';
   import Workspace from './components/Workspace.svelte';
-  import { app, applyTheme, applyUpdate, dockFills, flushDecisions, inspectorDocked, inspectorOverlay, keyContext, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
+  import { app, applyTheme, applyUpdate, chatWidthNow, dockFills, flushDecisions, inspectorDocked, inspectorOverlay, keyContext, refresh, restoreLayout, run, terms, wide } from './lib/app.svelte.js';
   import { startDev } from './lib/dev.js';
   import { loadUiFont, prepareKitty } from './lib/fonts.js';
   import { inTauri, invoke, listen } from './lib/ipc.js';
@@ -137,7 +139,8 @@
       {#if (ready || !inTauri) && !dockFills()}<Workspace />{/if}
       {#if app.dock.open && app.dock.tabs.length}<Dock />{/if}
     </div>
-    <div class="chatslot" class:narrow={!isWide}>
+    <div class="chatslot" style:width="{chatWidthNow()}px">
+      <ChatResize />
       <!-- Under the Inspector's overlay the chat is hidden: out of the Tab order too. -->
       <div class="chatwrap" inert={overlaid}><ChatColumn /></div>
       {#if overlaid}<Inspector overlay />{/if}
@@ -164,7 +167,6 @@
   .chatslot {
     position: relative;
     flex: none;
-    width: var(--size-chat);
     min-height: 0;
     display: flex;
   }
@@ -172,9 +174,6 @@
     flex: 1;
     min-width: 0;
     display: flex;
-  }
-  .chatslot.narrow {
-    width: 340px;
   }
   .work {
     flex: 1;

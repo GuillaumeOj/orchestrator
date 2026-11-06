@@ -85,7 +85,7 @@
   {#if !fill}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
     <div
-      class="handle"
+      class="handle resize-handle"
       role="separator"
       aria-orientation="horizontal"
       aria-valuenow={Math.round(app.dock.height * 100)}
@@ -157,10 +157,6 @@
     height: var(--space-xs);
     flex: none;
     cursor: row-resize;
-  }
-  .handle:hover,
-  .handle:focus-visible {
-    background: var(--color-border-strong);
   }
   .tabs {
     display: flex;

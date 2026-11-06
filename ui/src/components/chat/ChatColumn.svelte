@@ -5,7 +5,7 @@
 
 <script>
   // The chat column (FR-1304/1305, P4.3 spec §3.3, notes §1–§10; P4.4 spec §3.9,
-  // notes §1–§4; Penpot 04.3): a fixed column of the shell, not a pane. Header
+  // notes §1–§4; Penpot 04.3): a column of the shell (not a pane) that the user resizes by its left edge, see ChatResize. Header
   // (Overwatch · its status · Today ▾ · search) · the down strip · level filter ·
   // today's thread (morning line, your messages and its replies, cards, lines,
   // the fold) · the outcome digest · the input (⌘L). Renders `app.now`.
