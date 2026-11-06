@@ -1,6 +1,6 @@
 # Update Claude Code · UX brief
 
-> **Final (T-242, ux).** Sections marked ▲ were added or changed in this pass. For ui (FigCraft frames, exported to `design/`). Inputs: see below; was: ux (flows, states, copy) then ui (FigCraft frames, exported to `design/`). Inputs: [spec.md](spec.md), [api-contract.md](api-contract.md). Reuse the Settings › Builds section's patterns (`BuildsSettings.svelte`: header block, state line, inline log/confirm, muted footnotes) and the existing tokens; no new components unless one is clearly missing.
+> **Final (T-242, ux).** Sections marked ▲ were added or changed in this pass. For ui (FigCraft frames, exported to `design/`). Inputs: [spec.md](spec.md), [api-contract.md](api-contract.md). Reuse the Settings › Builds section's patterns (`BuildsSettings.svelte`: header block, state line, inline log/confirm, muted footnotes) and the existing tokens; no new components unless one is clearly missing.
 
 ## 1. Who and when
 
@@ -13,7 +13,7 @@ The user runs several agents all day. Claude Code ships often (several times a w
 Single column, same width and rhythm as Settings › Builds (`h2` header, muted lines, `btn` / `btn primary` / `link`). Top to bottom:
 
 1. **Header block** (like Builds' "Running" block): label `Installed` (muted), then `2.1.317` (mono, large as Builds' version) · `native installer` · `channel latest`. Line 2 (muted, mono, `~`-shortened path, click copies, tooltip "Copy path"). Install names: `native installer` / `Homebrew` / `npm` / `unknown install`. Version unknown (not found) → see "Not found" below.
-2. **Update block** (the only block with a primary action). Left: state dot + text; right: buttons. States, first match wins in this order: not found › updating › update failed › check failed › checking › updated › available › up to date › never checked.
+2. **Update block** (the only block with a primary action). Before the start-up check lands (`setup.claude == null`): header block shows `Installed` with `…`, the update block shows `Checking Claude Code…` (muted, spinner), no buttons; same text in the Setup step 1 state line; no nav badge, no chip, palette commands disabled with hint `Claude Code is being checked`. Left: state dot + text; right: buttons. States, first match wins in this order: not found › updating › update failed › check failed › checking › updated › available › up to date › never checked.
 
    | state | when (`setup.claude`) | text (tone) | buttons (⏎ = focused default) |
    |---|---|---|---|
@@ -22,7 +22,7 @@ Single column, same width and rhythm as Settings › Builds (`h2` header, muted 
    | update failed | `state == "error"` and `error_from == "update"` | `Update failed: <error>` (amber, one line, ellipsis, full text in tooltip); log open below, labelled "Output of claude update" | **Retry** `⏎` · Check now |
    | check failed | `state == "error"` and `error_from == "check"` | `Couldn't check for updates: <error>` (amber). If `latest` is known and `available`: second muted line `Last known: 2.1.330 (checked 14:02)` | Check now `⏎` · Update anyway (secondary) |
    | checking | `state == "checking"` | `Checking for updates…` (muted, spinner as Builds' refreshing) | none |
-   | updated | `update.updated` set, `state == "idle"`, and not `available` | `Updated 2.1.317 → 2.1.330.` (green dot) + muted second line `New and resumed agents use it; running agents keep 2.1.317 until they restart.` Log collapsed behind a `link` "Show output". | Check now |
+   | updated | `update.updated` set, `state == "idle"`, and not `available` | `Updated 2.1.317 → 2.1.330.` (green dot) + muted second line `New and resumed agents use it; agents already running keep the version they started with until they restart.` Log collapsed behind a `link` "Show output". | Check now |
    | available | `available` | `2.1.330 is available` (accent dot, accent text) | **Update to 2.1.330** `⏎` (primary) · Check now |
    | up to date | `latest` known, not `available` | `Up to date · checked 14:02` (`checked` omitted if `checked_at` null; "yesterday 22:10" style as `when()`) | Check now |
    | never checked | `latest == null`, no error | `Not checked yet` (muted) | Check now `⏎` |
@@ -78,7 +78,7 @@ Only when `problem_kind == "version"`. The red banner text becomes the core's me
 - update failed: button `Retry update`; the text gets one more clause: ` Update failed: <error>` (cut to one line; the full output lives in Settings, and the banner's `Set up` is replaced by `Details` → Settings › Claude Code).
 - success: the banner disappears by itself when the problem clears. Toast as 2.2. If after the update the version is still too old, the same `Update failed` path applies (core reports "still 2.1.x").
 - Other `problem_kind`s (not_found, login, plan): no update button (an update won't fix them).
-- Dismissing the banner (×) hides it for the session as today; the update then continues unaffected.
+- Dismissing the banner (×) hides it for the session as today; the update continues unaffected. A dismissal only covers the state it was made in: if the update then fails (or a different problem appears), the banner comes back (front keys the dismissal on id + problem + update error).
 
 Setup step 1 (version problem): the row `path · version` gets, on the right, the same button, and below it the **same state line as 2.1.2** (reuse the component/helper, compact: no log by default; on failure show the log open, 6 lines high, plus `Open Settings › Claude Code`). In the non-problem case (up to date or untested) step 1 is unchanged except that `untested` keeps its existing note.
 
@@ -88,7 +88,7 @@ Dark theme first, 1280×800 app frames with the Settings pane in view unless sta
 1. `01-up-to-date`: Settings › Claude Code, up to date; nav entry without badge; no chip.
 2. `02-available`: update available; nav badge `↑`; status bar chip `↑ Claude Code 2.1.330` beside the app chip (show a second app-updater chip too); primary button focused.
 3. `03-updating`: log filling (12–15 lines), elapsed `0:42`, nav spinner, chip `Updating Claude Code…`, buttons absent.
-4. `04-updated`: `Updated 2.1.317 → 2.1.330.` with the "running agents keep…" line, "Show output" link, plus the amber "newer than last tested" note; no chip.
+4. `04-updated`: `Updated 2.1.317 → 2.1.330.` with the "agents already running keep…" line, "Show output" link, plus the amber "newer than last tested" note; no chip.
 5. `05-failures`: one frame, two compact states stacked: update failed (log open, Retry + Check now, nav red/amber dot, chip `⚠ Claude Code update`) and check failed (`Last known: …`, Check now + Update anyway).
 6. `06-readonly-banner`: top-of-app strip, three variants stacked: idle (`Update Claude Code` + `Set up`), updating (`Updating…`), update failed (`Retry update` + `Details`).
 7. `07-setup-step-1`: Setup pane step 1 with the version problem and the inline state line (idle and updating).
