@@ -364,7 +364,7 @@ describe('planner, banner, status bar, board', () => {
     await waitFor(() =>
       expect(calls.some(([c, a]) => c === 'queue_off_hours' && a.entry === 'q1' && a.off === true)).toBe(true),
     );
-    await waitFor(() => expect(app.toasts.at(-1)?.text).toMatch(/^deps-1 runs off-hours · starts \d\d:\d\d$/));
+    await waitFor(() => expect(app.toasts.at(-1)?.text).toMatch(/^deps-1 runs off-hours · starts (\w{3} )?\d\d:\d\d$/));
     await fireEvent.keyDown(root, { key: 'R' });
     expect(Object.values(app.panes).some((p) => p.type === 'report' && p.reportId === 'current')).toBe(true);
   });
@@ -505,7 +505,8 @@ describe('planner, banner, status bar, board', () => {
     await waitFor(() => expect(container.textContent).toContain('☾ Off-hours'));
     // The toast undoes it (Penpot 05: "… runs off-hours · starts 18:00 · Undo").
     const t = app.toasts.at(-1);
-    expect(t.text).toMatch(/^T-14 runs off-hours · starts \d\d:\d\d$/);
+    // A start past midnight carries its weekday ("starts Sat 00:08"): tests hold at any hour.
+    expect(t.text).toMatch(/^T-14 runs off-hours · starts (\w{3} )?\d\d:\d\d$/);
     t.action.run();
     await waitFor(() =>
       expect(calls.some(([c, a]) => c === 'queue_off_hours' && a.task === '14' && a.off === false)).toBe(true),
