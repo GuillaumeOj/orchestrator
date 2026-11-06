@@ -1,7 +1,7 @@
 //! The policy in the Runtime: the files it knows (synced with the registered
 //! projects), the hard lists' context for an agent, rule writes (Always
 //! allow, `rule add` / `revoke`), the parse-error alerts, the one-time
-//! export of the store's rules (migration 14) and the `policy_*` commands.
+//! export of the store's rules (migration 15) and the `policy_*` commands.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -384,7 +384,7 @@ impl Runtime {
         Ok(json!({"tool": tool, "input": input, "role": role, "evaluation": ev, "hard": hard}))
     }
 
-    /// Migration 14 (D8): every non-revoked store rule not yet exported is
+    /// Migration 15 (D8): every non-revoked store rule not yet exported is
     /// written to the file of its scope with `id = "r<row id>"` (`ask` →
     /// `user`), then marked. Idempotent: an id already in the file is not
     /// written twice. A rule whose project is gone is marked without export.

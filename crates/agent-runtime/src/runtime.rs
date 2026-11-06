@@ -573,7 +573,7 @@ impl Runtime {
         });
         rt.handle_releases(released);
         rt.backfill_report(now);
-        // Migration 14: the store's rules go to the policy files (once).
+        // Migration 15: the store's rules go to the policy files (once).
         rt.migrate_store_rules();
         rt.policy_sync();
         Ok(rt)

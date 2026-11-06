@@ -253,7 +253,7 @@ impl Store {
         })
     }
 
-    /// Migration 14: active rules not yet exported to a policy file, oldest first.
+    /// Migration 15: active rules not yet exported to a policy file, oldest first.
     pub fn rules_to_migrate(&self) -> Result<Vec<PermissionRule>> {
         self.read(|c| {
             let mut st = c.prepare(&format!(
@@ -264,7 +264,7 @@ impl Store {
         })
     }
 
-    /// Stamps rules as exported to the policy files (migration 14).
+    /// Stamps rules as exported to the policy files (migration 15).
     pub fn mark_rules_migrated(&self, ids: &[u64]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
