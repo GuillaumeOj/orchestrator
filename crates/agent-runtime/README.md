@@ -22,7 +22,7 @@ No UI, no Tauri: [`orchd`](../orchd/README.md) drives it from the command line.
 | `runtime` | The core: hooks → state → Governor, PreToolUse holds, delivery pump, lifecycle, housekeeping | FR-202–207, FR-806 |
 | `inbox` | PermissionRequest from rules or the Inbox, decisions, always-allow rules, PR gate | FR-705, FR-707–709 |
 | `permissions` | The FR-708 rule pattern grammar (`Tool`, `Tool(prefix:*)`, `Tool(dir/**)`…) | FR-705, FR-708 |
-| `policy` | The permission policy: the core's hard lists (`policy::hard`), `policy.toml` files (global, per project) read, watched and written in place, evaluation (deny > user > overwatch > allow, then `[defaults]`), migration 14 of the store's rules | FR-1308 |
+| `policy` | The permission policy: the core's hard lists (`policy::hard`), `policy.toml` files (global, per project) read, watched and written in place, evaluation (deny > user > overwatch > allow, then `[defaults]`), migration 15 of the store's rules | FR-1308 |
 | `mcp` | orch-mcp tool calls: `commit` and `request_pr`, under the rules, audited | FR-702 gap, ADR-009 |
 | `overwatch` | The Overwatch (P4.4): fixed role, session per working day in `<app data>/overwatch/<day>/` with a briefing, the event queue and wake scheduler, deciding hand-over, status in `now`, `overwatch.turn` measurements; its 11 tools are declared (B3 implements them) | FR-1306, FR-1307 |
 | `resources` | Memory-pressure live cap and idle auto-suspend (pure policy + probe) | FR-203, FR-204 |
@@ -144,7 +144,7 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
   global `[defaults]` (team `overwatch`, solo `user`). Read at start and on change (watcher, 500 ms
   debounce); a parse error keeps the last good version and raises one `alert` (`policy_parse`, file
   and line). Always allow, `rule add` / `rule revoke` write the files with `toml_edit` (comments and
-  order kept). The store's `permission_rules` were exported once (migration 14, `id = "r<row>"`) and
+  order kept). The store's `permission_rules` were exported once (migration 15, `id = "r<row>"`) and
   are no longer read.
 - **PermissionRequest**: the hard deny list answers first, then a one-shot allow (below; for a
   user-only call only one the user's decision made), then the policy (global and project rules
@@ -258,7 +258,7 @@ ignored · `SessionEnd` ignored (the process exit and the core's intent decide).
 - **Chat** (`overwatch::chatw`): `chat_send` (a `user` text entry, `delivery` waking | pending |
   delivered; `chat_discard` for pending ones), `post` (an `overwatch` text entry, `reply_to` the
   user message of its turn), `action` entries (nudged, resumed, restarted, reprioritized). Entry
-  extras live in `chat_entries.meta` (migration 15); keys starting with `_` stay in the core.
+  extras live in `chat_entries.meta` (migration 16); keys starting with `_` stay in the core.
 - **Undo** (`overwatch::undo`, `chat_undo {entry, text?}`): a settled line offers `undo {id,
   label, until}` while it means something: Revoke rule (policy answer), Tell the agent (a one-shot
   deny of that call for 1 h and a note), Allow instead (a one-shot allow and a note), Correct the

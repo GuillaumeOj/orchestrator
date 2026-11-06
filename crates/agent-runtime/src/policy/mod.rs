@@ -1,7 +1,7 @@
 //! The permission policy (FR-1308, spec §3.2): the core's hard lists
 //! ([`hard`]), then the rules of the global and project `policy.toml` files
 //! ([`file`]), then the default effect. The store's permission rules
-//! (FR-708) were migrated into the files once (migration 14) and are no
+//! (FR-708) were migrated into the files once (migration 15) and are no
 //! longer read.
 //!
 //! Evaluation order: hard deny → policy rules (global and project merged;
