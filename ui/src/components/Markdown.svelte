@@ -14,7 +14,7 @@
   import Diagram from './Diagram.svelte';
   import MdImage from './MdImage.svelte';
 
-  let { text = '', feature = null, ondoc = null, onref = null, refok = () => true, reflabel = () => null, anchor = null } = $props();
+  let { text = '', feature = null, ondoc = null, onref = null, refok = () => true, reflabel = () => null, anchor = null, anchorAsked = 0 } = $props();
   const doc = $derived(prepare(text));
   // Heading and footnote ids are prefixed per instance: two docs on screen don't clash.
   let root;
@@ -23,9 +23,11 @@
 
   const BR = /^\s*<br\s*\/?>\s*$/i;
 
-  // A section asked for (a source link's `#slug`): scrolled to once the text is shown.
+  // A section asked for (a source link's `#slug`): scrolled to once the text is shown, and again
+  // on every new ask (`anchorAsked` counts them), also for the same section.
   $effect(() => {
     text;
+    anchorAsked;
     if (anchor) tick().then(() => scrollTo(anchor));
   });
 
