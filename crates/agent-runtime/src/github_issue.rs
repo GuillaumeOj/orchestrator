@@ -67,7 +67,8 @@ pub fn parse_issue_ref(text: &str) -> Result<IssueRef> {
 /// `git@github.com:o/r.git`).
 pub fn github_repo_of_url(url: &str) -> Option<String> {
     let (host, rest) = url.split_once("github.com")?;
-    if !(host.is_empty() || host.ends_with(['/', '@'])) {
+    // Not `https://evil.example/github.com/o/r`: the host is github.com itself.
+    if !(host.is_empty() || host.ends_with("://") || host.ends_with('@')) {
         return None;
     }
     let rest = rest.strip_prefix([':', '/'])?.trim_end_matches('/');
@@ -247,8 +248,8 @@ pub fn gh_failure(e: &anyhow::Error, repo: &str, number: u64) -> anyhow::Error {
 
 /// The first line of what `gh` printed, without the command it failed on.
 fn gh_stderr(full: &str) -> &str {
-    let msg = full.rfind("gh: ").map_or(full, |i| &full[i + 4..]);
-    msg.lines().next().unwrap_or("").trim()
+    let line = full.lines().next().unwrap_or("").trim();
+    line.strip_prefix("gh: ").unwrap_or(line)
 }
 
 /// Every element of the arrays `gh api --paginate` prints, back to back.
@@ -569,7 +570,8 @@ impl Runtime {
                 let path = format!("{issue_path}/labels/{}", encode_segment(l));
                 match gh_run(gh, &["api", "-X", "DELETE", &path].map(String::from)) {
                     Ok(_) => {}
-                    Err(e) if format!("{e:#}").contains("HTTP 404") => {}
+                    // Only "Label does not exist": a 404 for the issue itself is a failure.
+                    Err(e) if format!("{e:#}").to_lowercase().contains("label does not exist") => {}
                     Err(e) => return Err((format!("remove label {l}"), gh_failure(&e, &repo, n))),
                 }
                 done.remove_labels.push(l.clone());
