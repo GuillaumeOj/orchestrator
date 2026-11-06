@@ -44,7 +44,9 @@ const sent = (cmd) => calls.filter(([c]) => c === cmd).map(([, a]) => a);
 describe('project files helpers', () => {
   it('splits lines, shortens home, truncates the middle', () => {
     expect(pathLines(' ~/a \n\n/b\r\n')).toEqual(['~/a', '/b']);
-    expect(tilde(`${HOME}/x: holds credentials in ${HOME}`, HOME)).toBe('~/x: holds credentials in ~');
+    expect(tilde(`${HOME}/x: holds credentials in ${HOME}`, HOME)).toBe('~/x: holds credentials in /Users/me');
+    expect(tilde(`/mnt${HOME}/x`, HOME)).toBe(`/mnt${HOME}/x`);
+    expect(tilde(HOME, HOME)).toBe('~');
     expect(tilde('/other/x', '')).toBe('/other/x');
     expect(tilde('/Users/media/x', HOME)).toBe('/Users/media/x');
     expect(midTruncate('~/a')).toBe('~/a');
@@ -259,7 +261,7 @@ describe('Project settings › Files', () => {
     await fireEvent.input(note, { target: { value: 'x'.repeat(501) } });
     await fireEvent.keyDown(note, { key: 'Enter' });
     await waitFor(() => getByText('note: 500 characters at most'));
-    expect(note.value).toBe('Brand guide');
+    expect(note.value).toBe('x'.repeat(501)); // kept for a retry
     await fireEvent.input(note, { target: { value: 'changed' } });
     await fireEvent.keyDown(note, { key: 'Escape' });
     expect(note.value).toBe('Brand guide');
@@ -283,6 +285,36 @@ describe('Project settings › Files', () => {
     await waitFor(() => expect(rows(container)).toHaveLength(2));
     expect(sent('project_file_remove')).toEqual([{ project: 'shop-api', path: `${HOME}/Brand` }]);
     expect(toasts()).toContain('Removed ~/Brand from shop-api');
+  });
+
+  it('retries a failed note save with the typed text', async () => {
+    const { container, getByText } = await open();
+    replies.project_file_update = new Error('disk full');
+    const note = rows(container)[1].querySelector('.note');
+    await fireEvent.input(note, { target: { value: 'Design file' } });
+    await fireEvent.blur(note);
+    await waitFor(() => getByText('disk full'));
+    expect(note.value).toBe('Design file');
+    replies.project_file_update = (a) => ({ files: LIST.map((f) => (f.path === a.path ? { ...f, note: a.note } : f)) });
+    await fireEvent.blur(note);
+    await waitFor(() => expect(sent('project_file_update')).toHaveLength(2));
+    expect(sent('project_file_update')[1].note).toBe('Design file');
+    await waitFor(() => expect(container.querySelector('.nerr')).toBeNull());
+  });
+
+  it('leaves confirm mode on ⏎ when the row has vanished', async () => {
+    const { container, root, getByText } = await open();
+    await fireEvent.click(rows(container)[1].querySelector('[aria-label="Remove"]'));
+    await waitFor(() => getByText(/Remove from the project/));
+    // A reload (here: an add) brings back a list without the confirmed row.
+    const body = container.querySelector('.body');
+    body.getBoundingClientRect = () => /** @type {DOMRect} */ (rect);
+    replies.project_files_add = { files: [LIST[0], LIST[2]], added: [], refused: [] };
+    drag.handler({ payload: { type: 'drop', paths: ['/d'], position: { x: 50, y: 50 } } });
+    await waitFor(() => expect(rows(container)).toHaveLength(2));
+    await fireEvent.keyDown(root, { key: 'Enter' });
+    expect(sent('project_file_remove')).toEqual([]);
+    expect(container.querySelector('[data-confirm]')).toBeNull();
   });
 
   it('reveals in Finder and opens a file in the editor', async () => {
