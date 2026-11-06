@@ -18,12 +18,12 @@ Source: Drive `Orchestrator.figcraft`, page **04.3 Chat column**, row at y = 145
 | Rest | No fill (`background: transparent`). Only the 1 px border shows. |
 | Hover | `background: var(--color-border-strong)` (#545c7e dark / #8990b3 light), on plain `:hover` with no delay or transition, like the dock handle |
 | Focus-visible | Same fill + the global focus ring: `outline: var(--border-width-focus) solid var(--color-focus)` (2 px, #7aa2f7 dark / #2e7de9 light), `outline-offset: 1px`. That is the app's `:focus-visible` rule, so nothing extra is needed beyond not suppressing it. |
-| Dragging | Fill stays `--color-border-strong` (kept the same as the dock handle; no accent colour, so the dock needs no change). |
+| Dragging | Fill stays `--color-border-strong` (no accent colour). |
 | Cursor | `col-resize` on the handle; during the drag `col-resize` on the whole window (e.g. on `body` or a full-window drag shield) and `user-select: none`. |
 | Extras | No grip dots, no custom tooltip, no width read-out; only the native `title="Drag to resize · double-click to reset"`. |
 | A11y | `role="separator"`, `aria-orientation="vertical"`, `aria-label="Resize Overwatch"`, `aria-valuenow` = width in px, `aria-valuemin="300"`, `aria-valuemax` = current max (the clamped bound, not a fixed 720; 720 is only the cap), `tabindex="0"`. |
 
-Same CSS shape as `Dock.svelte`'s `.handle` (`.handle:hover, .handle:focus-visible { background: var(--color-border-strong) }`), plus a `.dragging` class with the same background.
+The look is exactly `Dock.svelte`'s `.handle` (`.handle:hover, .handle:focus-visible { background: var(--color-border-strong) }`), turned vertical, plus a dragging state with the same background. Prefer one shared rule for both handles (e.g. a global resize-handle class in `app.css` covering hover / focus-visible / dragging, with only size and cursor set per handle) over a second copy, so the two can't drift.
 
 ## Widths drawn
 
