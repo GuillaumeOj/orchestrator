@@ -6,16 +6,20 @@ import { tick } from 'svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/lib/app.svelte.js';
 import {
+  artifactTitle,
+  artifactTool,
   checkedAt,
   connStatus,
   effectiveServers,
   envToText,
   integrationDetail,
   keychainAccount,
+  linkOnly,
   secretEnv,
   serverForSave,
   serverProblem,
   sortIntegrations,
+  TOOL,
   textToEnv,
   usedByRoles,
   usedByText,
@@ -100,6 +104,24 @@ describe('ecosystem helpers', () => {
     expect(checkedAt(null, now)).toBe('');
   });
 
+  it('FigCraft: tool guess, link-only tile, title with the node id, off copy', () => {
+    expect(artifactTool({ uri: '/w/Orchestrator.figcraft' })).toBe('figcraft');
+    expect(artifactTool({ uri: '/w/Orchestrator.FIGCRAFT#252198' })).toBe('figcraft');
+    expect(artifactTool({ uri: '/w/a.figcraft.png' })).toBe('file');
+    expect(artifactTool({ uri: '/w/notes.txt#x.figcraft' })).toBe('file');
+    expect(artifactTool({ uri: 'x', meta: { tool: 'figcraft' } })).toBe('figcraft');
+    expect(TOOL.figcraft.label).toBe('FigCraft');
+    expect(linkOnly({ uri: '/w/a.figcraft' })).toBe(true);
+    const a = { uri: '/w/Orchestrator.figcraft', meta: { tool: 'figcraft', node_id: '252198' } };
+    expect(artifactTitle(a)).toBe('Orchestrator.figcraft · 252198');
+    expect(artifactTitle({ ...a, meta: { ...a.meta, node_id: 7 } })).toBe('Orchestrator.figcraft · 7');
+    expect(artifactTitle({ ...a, meta: { tool: 'figcraft' } })).toBe('Orchestrator.figcraft');
+    expect(artifactTitle({ uri: 'https://x.penpot.app/', meta: { tool: 'penpot', node_id: '1', title: 'T' } })).toBe(
+      'T',
+    );
+    expect(integrationDetail(integ('figcraft', 'FigCraft'))).toBe('No FigCraft server in the MCP registry');
+  });
+
   it('integration details and order', () => {
     expect(integrationDetail(integ('github', 'GitHub', { status: 'connected', account: 'GuillaumeOj' }))).toBe(
       'via gh · GuillaumeOj',
@@ -180,6 +202,7 @@ describe('Settings pane', () => {
     integ('notion', 'Notion', { has_secret: true, status: 'needs_auth', detail: '401 from api.notion.com' }),
     integ('penpot', 'Penpot', { status: 'unknown', detail: 'MCP: Penpot' }),
     integ('figma', 'Figma'),
+    integ('figcraft', 'FigCraft', { status: 'unknown' }),
   ];
 
   it('integrations: a revoked token needs auth and sorts first; a pasted key leaves the UI at once', async () => {
@@ -244,6 +267,33 @@ describe('Settings pane', () => {
     await fireEvent.keyDown(sec, { key: 'j' });
     await fireEvent.keyDown(sec, { key: 'x' });
     expect(app.overlay).toBe(null);
+  });
+
+  it('FigCraft: the row reads Unknown (not connector style); its MCP draft is stdio with the hint', async () => {
+    replies.integrations_view = { items: items() };
+    app.panes.s1 = { type: 'settings', section: 'integrations', title: 'Settings' };
+    const r1 = render(SettingsPane, { paneId: 's1' });
+    await waitFor(() => expect(r1.container.querySelector('[data-integration="figcraft"]')).not.toBeNull());
+    const row = r1.container.querySelector('[data-integration="figcraft"]');
+    expect(row.textContent).toContain('FigCraft');
+    expect(row.textContent).toContain('Unknown');
+    expect(row.textContent).not.toContain('Not seen yet');
+    expect(row.textContent).toContain('Open MCP servers');
+    cleanup();
+    replies.mcp_registry_view = { servers: [], project_overrides: {} };
+    app.panes.s1 = { type: 'settings', section: 'mcp', server: 'design:figcraft', title: 'Settings' };
+    const r2 = render(SettingsPane, { paneId: 's1' });
+    await waitFor(() => r2.getByText('New MCP server'));
+    const d = r2.container;
+    expect(d.querySelector('input[placeholder="figcraft-cli"]').value).toBe('');
+    expect(d.querySelector('input[placeholder="penpot"]').value).toBe('figcraft');
+    expect(d.querySelector('textarea[placeholder="one per line"]').value).toBe('mcp');
+    expect(d.querySelector('select').value).toBe('figcraft');
+    const hint = d.querySelector('.note');
+    expect(hint.textContent).toBe(
+      'Full path to figcraft-cli. Args mcp run a headless engine; mcp --attach 7979 drives the open FigCraft app.',
+    );
+    expect([...hint.querySelectorAll('code')].map((c) => c.textContent)).toEqual(['mcp', 'mcp --attach 7979']);
   });
 
   it('MCP servers: a Keychain env value needs the opt-in; a used server is not deleted', async () => {
