@@ -5,7 +5,7 @@
 ## 1. Problem (from the user's brief)
 
 1. **Buttons and shortcut hints look alike.** `Kbd` hints are rendered in ~40 components (title bar, banner, status bar, dock, pane headers, settings, chat, palette…). The user can't tell a clickable control from a hint that only explains a key, and the hints eat space.
-2. **Duplicated actions.** The same action is offered in several places on one screen. Example: a suspended agent shows Resume/… in the app banner **and** in the agent pane's header/strip. The whole app must be checked, not only agent panes.
+2. **Duplicated actions.** The same action is offered in several places on one screen. Example: a suspended agent shows Resume/… in the app banner **and** in the agent pane's header/strip. The whole app must be checked, not only agent panes. (Audit, [audit.md](audit.md) §0: the app banner shows only app-wide conditions; the suspended-agent duplicate is the agent pane's strip + header, plus the Inspector.)
 3. **Settings live in workspace tabs.** App Settings (⌘,: 10 sections), Project settings (6 sections) and the Week planner open as panes (`openSettings`, `openProjectSettings`, `openSingleton('planner')` → `addPane(…, 'tab')`), mixed with work tabs.
 4. **Shell titles are frozen.** A shell dock tab keeps the path it opened in (`zsh · <project>`); it doesn't follow `cd`.
 5. **The dock mixes agents and shells** in one tab strip; with many agents from several projects it is hard to find one.
