@@ -47,8 +47,8 @@ Removes the entry, never the file. Unknown path: same `Err` as above.
 ### `pick_paths() -> string[]`
 
 The native open panel (`tauri-plugin-dialog`), files and folders, multiple
-selection; `[]` when cancelled. The UI passes the result to
-`project_files_add`.
+selection; `[]` when cancelled. Called when the user clicks the drop zone
+(or `⌘O`); the UI passes the result to `project_files_add`.
 
 ### Existing commands
 
