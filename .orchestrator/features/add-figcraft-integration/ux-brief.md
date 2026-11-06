@@ -21,7 +21,7 @@ Small change inside existing screens; no new layout. Everything follows the Penp
 
 ## 3. Design section (feature pane)
 
-- A FigCraft hand-off tile: label "FigCraft", file name as title, `#node` shown after it when present ("Orchestrator.figcraft · 12:34"). No preview; link-only treatment as Penpot/Figma (the designer's exported PNGs carry the preview). Open → FigCraft opens the file.
+- A FigCraft hand-off tile: label "FigCraft", file name as title, `#node` shown after it when present ("Orchestrator.figcraft · 252198"). No preview; link-only treatment as Penpot/Figma (the designer's exported PNGs carry the preview). Open → FigCraft opens the file.
 
 ## 4. Keyboard
 
