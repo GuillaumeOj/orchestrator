@@ -815,7 +815,11 @@ fn a_team_run_where_the_user_only_uses_the_cards_has_no_pane_intervention() {
     });
     let lead_wt = PathBuf::from(agent(&sock, lead)["worktree"].as_str().unwrap());
     std::fs::create_dir_all(lead_wt.join(".orchestrator/features/fx")).unwrap();
-    std::fs::write(lead_wt.join(".orchestrator/features/fx/spec.md"), "# Fix X\n\nUse cursor pagination.\n").unwrap();
+    std::fs::write(
+        lead_wt.join(".orchestrator/features/fx/spec.md"),
+        "# Fix X\n\n## 1. Pagination\n\nUse cursor pagination.\n",
+    )
+    .unwrap();
     call(lead, r#"ORCHTOOL commit {"message":"spec for fx"}"#);
 
     // 1. A routine permission: the policy's rule settles it, no card.
