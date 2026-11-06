@@ -1,6 +1,6 @@
 # Update Claude Code · design notes (T-243, ui)
 
-Frames: FigCraft `docs/design/Orchestrator.figcraft`, page **04.7 Settings**, layers `claude-update-01…09` (spanning x 0–6800, y 4700–7082). Exports here, 1280 px wide, dark unless noted. Copy and states follow [ux-brief.md](../ux-brief.md) §2; this file only records the visual choices.
+Frames: FigCraft [`Orchestrator.figcraft`](https://drive.google.com/open?id=1n4O57ntQDFvv1-pw3flJkmcHh4MeTLVs&usp=drive_fs) (Google Drive, not in the repo), page **04.7 Settings**, layers `claude-update-01…09` (spanning x 0–6800, y 4700–7082). Exports here, 1280 px wide, dark unless noted. Copy and states follow [ux-brief.md](../ux-brief.md) §2; this file only records the visual choices.
 
 | Frame | Shows |
 |---|---|
