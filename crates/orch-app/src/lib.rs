@@ -13,6 +13,7 @@ pub mod menu;
 pub mod notify;
 pub mod planner;
 pub mod pr_builds;
+pub mod project_files;
 pub mod services;
 pub mod setup;
 pub mod snapshot;
@@ -198,6 +199,12 @@ pub fn run() {
             commands::message_send,
             commands::project_settings,
             commands::project_settings_set,
+            commands::project_files,
+            commands::project_files_add,
+            commands::project_file_update,
+            commands::project_file_remove,
+            commands::reveal_path,
+            commands::pick_paths,
             commands::planner_view,
             commands::reports_list,
             commands::report_view,
