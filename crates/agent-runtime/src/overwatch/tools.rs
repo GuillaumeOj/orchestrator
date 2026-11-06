@@ -259,7 +259,11 @@ impl Runtime {
         }
         self.set_payload(n, &[("overwatch_reason", json!(reason))]);
         let decision = if allow { InboxDecision::Approve } else { InboxDecision::Reject };
-        self.decide_as(n, decision, None, None, ID).map_err(|e| err("stale", format!("{e:#}")))?;
+        // The reason is read while deciding; a decision that did not happen keeps none.
+        if let Err(e) = self.decide_as(n, decision, None, None, ID) {
+            self.unset_payload(n, &["overwatch_reason"]);
+            return Err(err("stale", format!("{e:#}")));
+        }
         let verb = if allow { "allowed" } else { "denied" };
         let what = item.payload.get("tool").and_then(Value::as_str).unwrap_or("");
         Ok(json!({"ok": true, "line": {"verb": verb, "agent": item.agent_id, "what": what, "by": "overwatch",
@@ -274,6 +278,19 @@ impl Runtime {
             {
                 for (k, v) in kv {
                     p.insert((*k).into(), v.clone());
+                }
+            }
+        });
+    }
+
+    /// Takes payload keys off a stored item (a no-op once it is gone).
+    pub(crate) fn unset_payload(&self, item: u64, keys: &[&str]) {
+        let _ = self.store.write(|s| {
+            if let Some(i) = s.inbox.iter_mut().find(|i| i.id == item)
+                && let Some(p) = i.payload.as_object_mut()
+            {
+                for k in keys {
+                    p.remove(*k);
                 }
             }
         });
@@ -449,8 +466,10 @@ impl Runtime {
                 .join("\n")
         };
         self.set_payload(n, &[("overwatch_sources", json!(shown)), ("overwatch_reason", json!(cut(&message, 60)))]);
-        self.decide_as(n, InboxDecision::Reply, None, Some(&message), ID)
-            .map_err(|e| err("stale", format!("{e:#}")))?;
+        if let Err(e) = self.decide_as(n, InboxDecision::Reply, None, Some(&message), ID) {
+            self.unset_payload(n, &["overwatch_sources", "overwatch_reason"]);
+            return Err(err("stale", format!("{e:#}")));
+        }
         Ok(json!({"ok": true, "line": {"verb": "answered", "agent": item.agent_id, "by": "overwatch",
                                        "sources": shown}}))
     }

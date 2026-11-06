@@ -106,6 +106,24 @@ fn the_third_identical_answer_is_a_candidate_for_the_overwatch() {
 }
 
 #[test]
+fn a_proposal_whose_decisions_are_gone_still_answers_its_candidate_once() {
+    let (_d, rt) = manual();
+    let (_r, p) = project(&rt);
+    let ids: Vec<String> = (0..3).map(|_| format!("inbox-{}", answer(&rt, &p, "cargo fmt", true))).collect();
+    let cands = candidates(&rt);
+    assert_eq!(cands.len(), 1);
+    // The answered items are not in the store any more: the key can't come from them.
+    rt.store.write(|s| s.inbox.retain(|i| i.kind != "permission")).unwrap();
+    let args = json!({"match": "Bash(cargo fmt)", "effect": "allow", "scope": "project", "project": p.id,
+                      "role": "solo", "from": ids, "why": "x"});
+    let (err, v) = call(&rt, "propose_rule", args);
+    assert!(!err, "{v}");
+    // The turn ends: the core must not propose the same rule again.
+    rt.rules_unanswered(&cands);
+    assert_eq!(proposals(&rt).len(), 1);
+}
+
+#[test]
 fn propose_rule_makes_a_decision_that_blocks_nobody() {
     let (_d, rt) = manual();
     let (_r, p) = project(&rt);
@@ -423,6 +441,22 @@ fn undoing_an_overwatch_denial_allows_that_exact_call_once() {
         "ORCH: the user overrode the denial of `Bash: pnpm add zod`: you may retry it."
     );
     assert_eq!(behavior(&rt.on_hook(&perm("pnpm add zod"), None)).as_deref(), Some("allow"));
+}
+
+#[test]
+fn a_failed_decision_keeps_no_overwatch_reason() {
+    let (_d, rt) = manual();
+    let n = deciding_item(&rt, "pnpm add zod");
+    // The user decides in the same moment: the Overwatch's call is stale.
+    rt.decide(n, InboxDecision::Reject, None, None).unwrap();
+    let (err, v) = call(
+        &rt,
+        "decide_permission",
+        json!({"decision": format!("inbox-{n}"), "effect": "allow", "reason": "routine"}),
+    );
+    assert!(err, "{v}");
+    let item = rt.store.read(|s| s.inbox.iter().find(|i| i.id == n).cloned().unwrap());
+    assert!(item.payload.get("overwatch_reason").is_none(), "{}", item.payload);
 }
 
 #[test]

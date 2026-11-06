@@ -496,6 +496,23 @@ fn post_writes_a_text_entry_answering_the_message_of_its_turn() {
 // ------------------------------------------------------------ chat_send
 
 #[test]
+fn a_message_sent_while_paused_is_pending_until_the_pause_lifts() {
+    let (_d, rt) = manual();
+    rt.pause_all();
+    let a = rt.chat_send("anything new?", None).unwrap();
+    let b = rt.chat_send("never mind this one", None).unwrap();
+    assert_eq!(json!(a)["delivery"], "pending");
+    rt.chat_discard(&b.id()).unwrap();
+    rt.overwatch_pump_at(t0());
+    assert!(super::tests::ow_turns(&rt).is_empty(), "paused: nothing is delivered");
+    rt.resume_all();
+    rt.overwatch_pump_at(t0() + 1);
+    let turns = super::tests::ow_turns(&rt);
+    assert!(turns.len() == 1 && turns[0].contains("anything new?") && !turns[0].contains("never mind"), "{turns:?}");
+    assert_eq!(json!(rt.db.chat_get(a.n).unwrap().unwrap())["delivery"], "delivered");
+}
+
+#[test]
 fn chat_send_tracks_delivery_and_discard_only_takes_pending() {
     let (_d, rt) = manual();
     assert!(rt.chat_send("  ", None).is_err());

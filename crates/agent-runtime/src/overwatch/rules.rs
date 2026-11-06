@@ -318,7 +318,8 @@ impl Runtime {
             return Err(err("bad_request", "`from` lists the decisions it generalises"));
         }
         let role = str_arg(args, "role").map(str::to_string);
-        // The kind of call: from the first decision it comes from.
+        // The kind of call: from the first decision it comes from; else the
+        // pending candidate that counted one of them (it must stop waiting).
         let key = from
             .iter()
             .filter_map(|d| d.strip_prefix("inbox-")?.parse::<u64>().ok())
@@ -326,6 +327,11 @@ impl Runtime {
                 let i = self.store.read(|s| s.inbox.iter().find(|i| i.id == n).cloned())?;
                 let allow = matches!(i.decision.as_deref(), Some("approve" | "always_allow"));
                 Self::key_of_item(&i, allow)
+            })
+            .or_else(|| {
+                self.with_tallies(|t| {
+                    t.iter().find(|(_, e)| e.pending && e.from.iter().any(|d| from.contains(d))).map(|(k, _)| k.clone())
+                })
             })
             .unwrap_or_else(|| {
                 key_of(

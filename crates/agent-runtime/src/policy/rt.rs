@@ -271,7 +271,10 @@ impl Runtime {
         let out = json!({"rule": rule, "file": target.label(), "path": path.display().to_string()});
         let mut detail = out.clone();
         (detail["id"], detail["pattern"], detail["effect"]) = (json!(rule.id), json!(pattern), json!(effect));
-        self.db.audit("user", None, "rule_added", Some(pattern), effect.as_str(), detail)?;
+        // The rule is in the file: a failed log line is no failure of the add (a retry would add it twice).
+        if let Err(e) = self.db.audit("user", None, "rule_added", Some(pattern), effect.as_str(), detail) {
+            eprintln!("warn: rule {} added but not logged: {e:#}", rule.id);
+        }
         Ok(out)
     }
 
