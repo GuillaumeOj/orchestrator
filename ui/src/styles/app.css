@@ -39,6 +39,14 @@ textarea {
   outline-offset: 1px;
 }
 
+/* The Dock's and the Overwatch's resize handles: the same fill on hover, keyboard focus and drag
+   (the focus ring is the global one); each sets its own size and cursor. */
+.resize-handle:hover,
+.resize-handle:focus-visible,
+.resize-handle.dragging {
+  background: var(--color-border-strong);
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;

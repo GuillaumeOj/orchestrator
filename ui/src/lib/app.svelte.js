@@ -18,7 +18,7 @@ import { canOpenSession, overwatchOf } from './overwatch.js';
 import { STATUS } from './status.js';
 import { runStateLabel } from './teams.js';
 import { TermPane } from './term.js';
-import { breakpoint } from './tokens.js';
+import { breakpoint, size } from './tokens.js';
 import {
   aboutText,
   backToMain,
@@ -32,6 +32,9 @@ import {
 
 /** The dock's share of the work column when nothing is saved: agents need rows. */
 const DOCK_HEIGHT = 0.45;
+const CHAT_MIN = 300;
+const CHAT_MAX = 720;
+const CHAT_NARROW = 340;
 
 /**
  * @typedef {{ rev: number, agents: Record<string, any>, runs: Record<string, any>,
@@ -61,6 +64,9 @@ export const app = $state({
   // chat column's slot (P4.2 notes §4); one state across the breakpoint.
   inspector: false,
   width: typeof window !== 'undefined' ? window.innerWidth : 1512,
+  // The Overwatch column's width in px; null = the breakpoint default (360 / 340).
+  // Saved as chosen: the bounds apply at render (`chatWidthNow`), never to this.
+  chatWidth: /** @type {number | null} */ (null),
   overlay: null, // { kind: 'palette' | 'jump' | 'new-session' | 'add-project' | 'confirm', … }
   toasts: [],
   pending: [], // decisions in their undo window: { item, card, action, message, at, toast }
@@ -137,6 +143,36 @@ const newPaneId = () => `p${nextPane++}`;
 export const wide = () => app.width >= breakpoint.md;
 /** The Inspector docks beside the chat at ≥ 1728 px; below, it overlays the chat's slot. */
 export const inspectorDocked = () => app.width >= breakpoint.lg;
+/** The Overwatch column's bounds in px: min 300, max the smaller of 720 and
+ *  what leaves the work column `centre-min` beside the sidebar / rail and a
+ *  docked Inspector. When even the min does not fit, the min wins. */
+export function chatWidthBounds({ width, sidebar, inspector }) {
+  const left = !sidebar ? 0 : width >= breakpoint.md ? size.sidebar : size['sidebar-rail'];
+  const right = inspector && width >= breakpoint.lg ? size.inspector : 0;
+  const fit = width - left - right - size['centre-min'];
+  return { min: CHAT_MIN, max: Math.max(CHAT_MIN, Math.min(CHAT_MAX, fit)) };
+}
+
+/** `w` rounded and held inside the bounds. */
+export const clampChatWidth = (w, bounds) => Math.round(Math.min(bounds.max, Math.max(bounds.min, w)));
+
+/** The default Overwatch width: 360 at ≥ 1512 px, 340 below. */
+export const chatWidthDefault = () => (wide() ? size.chat : CHAT_NARROW);
+
+/** The Overwatch column's bounds right now. */
+export const chatBounds = () => chatWidthBounds({ width: app.width, sidebar: app.sidebar, inspector: app.inspector });
+
+/** The Overwatch column's width right now: the saved one held inside the bounds
+ *  (the bounds never overwrite it), or the breakpoint default as it always was. */
+export const chatWidthNow = () =>
+  app.chatWidth == null ? chatWidthDefault() : clampChatWidth(app.chatWidth, chatBounds());
+
+/** Sets the width (null = default) and remembers it. */
+export function setChatWidth(w) {
+  app.chatWidth = w == null ? null : Math.round(w);
+  saveLayout();
+}
+
 /** The Inspector covers the chat column. */
 export const inspectorOverlay = () => app.inspector && !inspectorDocked();
 export const agents = () => app.data?.agents ?? [];
@@ -1007,6 +1043,7 @@ export function saveLayout() {
         theme: app.theme,
         kittyTheme: app.kittyTheme,
         dock: $state.snapshot(app.dock),
+        chatWidth: app.chatWidth,
       },
     }).catch(() => {});
   }, 400);
@@ -1022,6 +1059,8 @@ export async function restoreLayout() {
     app.theme = saved.theme ?? null;
     app.kittyTheme = saved.kittyTheme ?? false;
   }
+  const cw = saved?.chatWidth;
+  app.chatWidth = Number.isFinite(cw) && cw >= CHAT_MIN && cw <= CHAT_MAX ? Math.round(cw) : null;
   // A dock with tabs and no workspace pane is a layout too.
   if (!saved?.layout && !saved?.dock?.tabs?.length) {
     addPane({ type: 'mission' });
