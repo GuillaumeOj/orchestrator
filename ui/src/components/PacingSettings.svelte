@@ -8,6 +8,7 @@
   import { errText, invoke } from '../lib/ipc.js';
   import { checkCap, derivedCaps } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
+  import IntakeGlobalSettings from './IntakeGlobalSettings.svelte';
   import Kbd from './Kbd.svelte';
 
   let view = $state(null); // the last PacingSettings from the core
@@ -219,6 +220,8 @@
     </div>
     <p class="muted hints"><Kbd keys="⏎" /> apply · <Kbd keys="↑↓" /> step · <Kbd keys="tab" /> next · <Kbd keys="esc" /> back to sections</p>
   {/if}
+  <!-- After the policy loaded: the block reads its own keys. -->
+  {#if view}<IntakeGlobalSettings />{/if}
 </section>
 
 <style>

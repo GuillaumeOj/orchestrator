@@ -20,7 +20,7 @@ describe('status vocabulary §9.5', () => {
     ])
       expect(STATUS[s]?.label).toBeTruthy();
     expect(STATUS.not_started.label).toBe('Not started yet');
-    expect(Object.keys(LEVEL)).toEqual(['needs_you', 'error', 'running', 'waiting', 'queued', 'idle', 'done']);
+    expect(Object.keys(LEVEL)).toEqual(['needs_you', 'error', 'running', 'waiting', 'queued', 'ready', 'idle', 'done']);
   });
 
   it('decision kinds have their own palette entry (a gate by its flavour)', () => {

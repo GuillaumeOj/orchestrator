@@ -2,11 +2,13 @@
   // Inspector · agent (notes §5.1): status, waiting-on, details, actions.
   import { agent, agentAction, app, confirm, openDiff, openInKitty, openSession, openShell, projects } from '../../lib/app.svelte.js';
   import { clock, mb, shortPath, tokens } from '../../lib/format.js';
+  import { originLine } from '../../lib/intake.js';
   import { phaseName } from '../../lib/mission.js';
   import { attention, governorReason, runAttention, statusOf } from '../../lib/now.svelte.js';
   import { cacheState, sessionPp } from '../../lib/status.js';
   import AgentChip from '../AgentChip.svelte';
   import Kbd from '../Kbd.svelte';
+  import OriginChip from '../mission/OriginChip.svelte';
   import StatusBadge from '../StatusBadge.svelte';
   import WaitingChip from '../WaitingChip.svelte';
 
@@ -27,6 +29,7 @@
   <dl>
     {#if rec?.waiting_on}<dt>Waiting on</dt><dd class="wait"><WaitingChip {rec} /></dd>{/if}
     <dt>Doing</dt><dd>{rec?.activity || (rec?.waiting_on ? '—' : rec?.reason || '—')}</dd>
+    {#if rec?.origin ?? run?.origin}<dt>Started from</dt><dd>{originLine(rec?.origin ?? run?.origin)} <OriginChip origin={rec?.origin ?? run?.origin} project={a.project_id} label="Open ↗" /></dd>{/if}
     {#if run}<dt>Run</dt><dd>{run.project} › {run.feature} · {phaseName(run)}</dd>{/if}
     <dt>Model</dt><dd>{a.model ?? 'default'}{a.effort ? ` · ${a.effort}` : ''}</dd>
     <dt>Context</dt><dd>{a.context_pct == null ? '—' : `${Math.round(a.context_pct)} % ctx`}{cache ? ` · cache ${cache}` : ''}</dd>

@@ -9,6 +9,7 @@
   import AllocationSettings from '../components/AllocationSettings.svelte';
   import ConnBadge from '../components/ConnBadge.svelte';
   import FilesSettings from '../components/FilesSettings.svelte';
+  import IntakeSettings from '../components/IntakeSettings.svelte';
   import Kbd from '../components/Kbd.svelte';
   import McpSettings from '../components/McpSettings.svelte';
   import { app, openSettings, projects, saveLayout, toast } from '../lib/app.svelte.js';
@@ -25,6 +26,7 @@
     { id: 'general', label: 'General' },
     { id: 'files', label: 'Files' },
     { id: 'backend', label: 'Task backend' },
+    { id: 'intake', label: 'Intake' },
     { id: 'allocation', label: 'Allocation' },
     { id: 'notion', label: 'Notion' },
     { id: 'mcp', label: 'MCP overrides' },
@@ -51,6 +53,7 @@
   let root = $state(null);
   let alloc = $state(null); // AllocationSettings (forwards the keys)
   let files = $state(null); // FilesSettings (same)
+  let intake = $state(null); // IntakeSettings (⌘⏎ saves)
 
   const connected = $derived(linearInt?.status === 'connected');
   const dirty = $derived(
@@ -175,6 +178,7 @@
   function onKey(e) {
     if (section.id === 'allocation' && !ask) return alloc?.onKey(e);
     if (section.id === 'files') return files?.onKey(e);
+    if (section.id === 'intake') return intake?.onKey(e);
     if (ask) {
       if (e.key === 'Enter') save('push_open');
       else if (e.key === 'l') save('leave');
@@ -215,6 +219,8 @@
       <AllocationSettings bind:this={alloc} project={pid} {name} />
     {:else if section.id === 'files'}
       <FilesSettings bind:this={files} project={pid} {name} />
+    {:else if section.id === 'intake'}
+      <IntakeSettings bind:this={intake} project={pid} {name} />
     {:else if error}
       <p class="err">Could not read {name}'s settings: {error}</p>
     {:else if !saved}

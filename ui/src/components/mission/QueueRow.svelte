@@ -8,6 +8,7 @@
   import AgentChip from '../AgentChip.svelte';
   import Kbd from '../Kbd.svelte';
   import StatusBadge from '../StatusBadge.svelte';
+  import OriginChip from './OriginChip.svelte';
 
   let { rec, run = null, now, onrun = () => {}, oncancel = () => {}, onresume = () => {} } = $props();
   const fresh = $derived(rec.status === 'not_started');
@@ -18,6 +19,7 @@
 
 <div class="l1">
   <span class="who"><AgentChip id={rec.agent} compact /> <b>{rec.agent}</b> <span class="muted">· {run ? `${run.project} › ${run.feature}` : (rec.project ?? '')}</span></span>
+  {#if rec.origin ?? run?.origin}<OriginChip origin={rec.origin ?? run?.origin} project={run?.project ?? rec.project} />{/if}
   <StatusBadge state={rec.status} />
   <span class="reason" title={rec.reason}>{rec.reason}</span>
   {#if tier}<span class="tier" title="Allocation tier: {tier}">{tier}</span>{/if}

@@ -5,7 +5,7 @@
   // while the decision is listed; read-only (`line` given) when a collapsed
   // line expands: no actions but the ones that open something.
   import { untrack } from 'svelte';
-  import { now30, openUrl } from '../../lib/app.svelte.js';
+  import { app, now30, openUrl, projectName } from '../../lib/app.svelte.js';
   import { byWords, lineMarker, verbText } from '../../lib/chat.js';
   import { clock, dayTime, waited } from '../../lib/format.js';
   import { agentOf, blockOf, deliveryPrimary, keyless, parked, restarted, subjectLine } from '../../lib/inbox.js';
@@ -13,6 +13,7 @@
     decidingName,
     decidingShare,
     decidingText,
+    overwatchOf,
     recommended,
     recommendsText,
     refKind,
@@ -23,6 +24,7 @@
   import ContextBlocks from '../ContextBlocks.svelte';
   import Kbd from '../Kbd.svelte';
   import LifecycleMarker from '../LifecycleMarker.svelte';
+  import BriefBody from './BriefBody.svelte';
 
   /** @type {{ d: any, line?: any, selected?: boolean, marked?: boolean, pending?: any, ref?: any, replying?: string | null, pulse?: boolean, deciding?: boolean, refok?: (ref: any) => boolean, handed?: number | null, entries?: any, choices?: string[][], onkey?: (key: string) => void, onact?: (id: string) => void, onreply?: (text: string | null) => void, onjump?: () => void, onhold?: (held: boolean) => void, onref?: (ref: any) => void }} */
   let {
@@ -48,6 +50,10 @@
   } = $props();
 
   const live = $derived(!line);
+  const brief = $derived(d.kind === 'brief');
+  // A brief's Launch / Edit opened the dialog: the card stays open meanwhile, its actions off (notes §8.4).
+  const opening = $derived(live && brief && app.overlay?.intake?.brief_decision === d.id);
+  const cardTitle = $derived(brief ? [d.title ?? d.payload?.title, projectName(d.project ?? d.payload?.project) ?? d.payload?.project_name ?? d.project].filter(Boolean).join(' · ') : d.title);
   // "Permission · by rule" on an expanded line settled without you.
   const kindBy = $derived(line?.by && line.by !== 'you' ? ` · ${byWords({ ...line, by_detail: undefined })}` : '');
   const k = $derived(decisionKind(d));
@@ -162,11 +168,15 @@
     <span class="grow"></span>
     <span class="muted age">{line ? '' : waited(d.created_ms, now)}</span>
   </div>
-  <div class="title">{d.title}</div>
+  <div class="title">{cardTitle}</div>
   {#if subjectLine(d)}<div class="subject secondary">{subjectLine(d)}</div>{/if}
   {#if askText}<div class="why muted" data-asks>{askText}</div>{/if}
   {#if d.summary && !d.context?.length}<p class="summary">{d.summary}</p>{/if}
-  <ContextBlocks decision={d} bind:choices onjump={(id) => onref({ kind: 'chat', id })} />
+  {#if brief}
+    <BriefBody {d} ow={overwatchOf(app.now)} {live} />
+  {:else}
+    <ContextBlocks decision={d} bind:choices onjump={(id) => onref({ kind: 'chat', id })} />
+  {/if}
   {#if d.kind === 'rule_proposal' && d.payload?.declined_before && live}
     <p class="muted note" data-second-ask>Not now on {dayTime(d.payload.declined_at_ms)}. It won't be asked again if you decline.</p>
   {/if}
@@ -206,11 +216,11 @@
       {#each keyed as x (x.id)}
         <button
           class="btn"
-          class:primary={x.key === 'a' || (x.id === 'answer' && answered) || (d.kind === 'error' && x.id === 'resume') || primary === x.id}
+          class:primary={x.key === 'a' || x.id === 'launch' || (x.id === 'answer' && answered) || (d.kind === 'error' && x.id === 'resume') || primary === x.id}
           class:ghost={x.key === 'o' && primary !== x.id}
           class:rec={x.id === recId}
           aria-label={x.id === recId ? `${x.label}, recommended by the Overwatch` : undefined}
-          disabled={x.id === 'answer' && options && !answered}
+          disabled={(x.id === 'answer' && options && !answered) || opening}
           onclick={() => onkey(x.key)}>{x.label} <Kbd keys={x.key === 'enter' ? '⏎' : x.key} />{#if x.id === recId}{' '}<span class="tag">· recommended</span>{/if}</button
         >
       {/each}
@@ -241,7 +251,7 @@
       <span aria-hidden="true">{decidingText(d, tick)}</span>
     </div>
   {:else}
-    <LifecycleMarker decision={d} {pending} given={handedMarker ?? (line ? { state: LIFECYCLE[line.state] ? line.state : 'effect', text: lineMarker(line, now) } : null)} />
+    <LifecycleMarker decision={d} {pending} given={opening ? { state: 'open', text: 'Opening dialog…' } : (handedMarker ?? (line ? { state: LIFECYCLE[line.state] ? line.state : 'effect', text: lineMarker(line, now) } : null))} />
   {/if}
 </div>
 

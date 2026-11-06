@@ -4,11 +4,13 @@
   // status and short wait, the tasks, the PR, when it started.
   import { features, now30, openBoard, openFeature, openUrl, select } from '../../lib/app.svelte.js';
   import { clock, waited } from '../../lib/format.js';
+  import { originLine } from '../../lib/intake.js';
   import { phaseFull, phaseName, prText, shortWait, tasksDetail } from '../../lib/mission.js';
   import { attention, runAttention } from '../../lib/now.svelte.js';
   import { STATUS } from '../../lib/status.js';
   import AgentChip from '../AgentChip.svelte';
   import Kbd from '../Kbd.svelte';
+  import OriginChip from '../mission/OriginChip.svelte';
   import PhaseStepper from '../mission/PhaseStepper.svelte';
   import PrLine from '../PrLine.svelte';
 
@@ -21,6 +23,12 @@
 
 {#if r}
   <div class="title"><span style:color="var(--color-phase-executing)" aria-hidden="true">{'\u{F0D3D}'}</span> <b>{r.feature}</b> <span class="muted">{r.project}</span></div>
+  {#if r.origin}
+    <section>
+      <h4>Started from</h4>
+      <div>{originLine(r.origin)} <OriginChip origin={r.origin} project={r.project} label="Open ↗" /></div>
+    </section>
+  {/if}
   <section>
     <h4>Phase</h4>
     <PhaseStepper run={r} compact />
