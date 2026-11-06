@@ -53,6 +53,7 @@ export const INTEGRATION_COPY = {
   },
   penpot: { off: 'No Penpot server in the MCP registry' },
   figma: { off: 'No Figma server in the MCP registry' },
+  figcraft: { off: 'No FigCraft server in the MCP registry' },
 };
 
 /** The detail line of an integration row. */
@@ -287,15 +288,24 @@ export function designGroups(artifacts) {
 
 /** The tile's title: the meta title, else the file or the last URI segment. */
 export function artifactTitle(a) {
+  const base = baseTitle(a);
+  // FigCraft ids are plain integers (252198): "Orchestrator.figcraft · 252198".
+  const node = a?.meta?.node_id;
+  return node != null && node !== '' && artifactTool(a) === 'figcraft' ? `${base} · ${node}` : base;
+}
+
+function baseTitle(a) {
   if (a?.meta?.title) return a.meta.title;
   const p = a?.meta?.path ?? String(a?.uri ?? '').split(/[?#]/)[0];
   return p.split('/').filter(Boolean).pop() ?? a?.uri ?? '';
 }
 
-/** penpot | figma | file | url (meta first, else guessed from the URI). */
+/** penpot | figma | figcraft | file | url (meta first, else guessed from the URI). */
 export function artifactTool(a) {
   if (a?.meta?.tool) return a.meta.tool;
   const u = String(a?.uri ?? '');
+  // The extension first: a repo path may contain "penpot" or "figma.com" in a folder name.
+  if (/\.figcraft$/i.test(u.split('#')[0])) return 'figcraft';
   if (/penpot/.test(u)) return 'penpot';
   if (/figma\.com/.test(u)) return 'figma';
   return /^https?:/.test(u) ? 'url' : 'file';
@@ -304,12 +314,13 @@ export function artifactTool(a) {
 export const TOOL = {
   penpot: { label: 'Penpot', icon: '\u{F0560}' },
   figma: { label: 'Figma', icon: '\u{F07D4}' },
+  figcraft: { label: 'FigCraft', icon: '\u{F0431}' },
   file: { label: 'File', icon: '\u{F021F}' },
   url: { label: 'Link', icon: '\u{F0337}' },
 };
 
 /** A link-only tile (no export a teammate can read, D9). */
-export const linkOnly = (a) => ['penpot', 'figma', 'url'].includes(artifactTool(a));
+export const linkOnly = (a) => ['penpot', 'figma', 'figcraft', 'url'].includes(artifactTool(a));
 
 /** Can the core serve a preview (exported image)? */
 export const previewable = (a) => !!a?.meta?.previewable;
@@ -352,3 +363,9 @@ export function designTools(team, roles, servers) {
 /** "ux, ui" / "ux and ui" (the warning reads as a sentence). */
 export const nodeList = (nodes, and = false) =>
   and && nodes.length > 1 ? `${nodes.slice(0, -1).join(', ')} and ${nodes.at(-1)}` : nodes.join(', ');
+
+export const DESIGN_TOOL_NAMES = { penpot: 'Penpot', figma: 'Figma', figcraft: 'FigCraft' };
+/** Design tools whose Settings row opens the MCP registry (design:<id>). */
+export const DESIGN_TOOLS = Object.keys(DESIGN_TOOL_NAMES);
+/** Penpot and Figma are claude.ai connectors (status "Not seen yet"); FigCraft is a local stdio server with a real status. */
+export const CONNECTOR_TOOLS = ['penpot', 'figma'];
