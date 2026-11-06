@@ -112,7 +112,7 @@ unchanged.
 
 - **ux**: flows and states of the section and the plan editor change
   (`ux-brief.md`).
-- **ui**: FigCraft frames in `docs/design/Orchestrator.figcraft` (04 Project
+- **ui**: FigCraft frames in [`Orchestrator.figcraft`](https://drive.google.com/open?id=1n4O57ntQDFvv1-pw3flJkmcHh4MeTLVs&usp=drive_fs) (04 Project
   settings · Allocation + states, plan editor row), exported to `design/`.
 - **back**: the two commands (`api-contract.md`), `from_plan`, the charging rule.
 - **front**: the section in `ProjectSettingsPane.svelte` (or a component it

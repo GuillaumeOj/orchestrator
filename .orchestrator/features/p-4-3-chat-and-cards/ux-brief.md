@@ -1,6 +1,6 @@
 # P4.3 — UX brief
 
-> Companion of [spec.md](spec.md). The design file is FigCraft [`docs/design/Orchestrator.figcraft`](../../../docs/design/Orchestrator.figcraft) (Git LFS; [README](../../../docs/design/README.md), ADR-012). Start from P4.2 Part B: page **04.3 Chat column**, page **06.1 J12**, page **03** P4.2 row (1512 with chat, 1728, 1280), and [p4-2-design-notes.md](../../../docs/design/p4-2-design-notes.md) §4 and §8, plus the P4.1 copy in [p4-design-notes.md](../../../docs/design/p4-design-notes.md) §3–5, 7. Exports of Part B: `.orchestrator/features/p-4-2-mission-control/design/p42b-*.png`.
+> Companion of [spec.md](spec.md). The design file is FigCraft [`Orchestrator.figcraft`](https://drive.google.com/open?id=1n4O57ntQDFvv1-pw3flJkmcHh4MeTLVs&usp=drive_fs) (Google Drive, not in the repo; [README](../../../docs/design/README.md), ADR-012). Start from P4.2 Part B: page **04.3 Chat column**, page **06.1 J12**, page **03** P4.2 row (1512 with chat, 1728, 1280), and [p4-2-design-notes.md](../../../docs/design/p4-2-design-notes.md) §4 and §8, plus the P4.1 copy in [p4-design-notes.md](../../../docs/design/p4-design-notes.md) §3–5, 7. Exports of Part B: `.orchestrator/features/p-4-2-mission-control/design/p42b-*.png`.
 > New notes go in `docs/design/p4-3-design-notes.md`. Exports go under `.orchestrator/features/p-4-3-chat-and-cards/design/` (one PNG per board, prefix `p43-`).
 
 ## 1. Principles applied (SPEC §9.1)

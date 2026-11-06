@@ -515,7 +515,7 @@ trait Provider {
 
 ### 9.0 FigCraft file: the UI source of truth
 The UI is **designed in FigCraft before it is built** (ADR-012, which replaces ADR-008), with a gate sized for one person.
-- **File**: `docs/design/Orchestrator.figcraft` (Git LFS), described in `docs/design/README.md`. It was moved from the Penpot file `Orchestrator`.
+- **File**: [`Orchestrator.figcraft`](https://drive.google.com/open?id=1n4O57ntQDFvv1-pw3flJkmcHh4MeTLVs&usp=drive_fs) (Google Drive, not in the repo), described in `docs/design/README.md`. It was moved from the Penpot file `Orchestrator`.
 - **Pages**:
   | Page | Content |
   |---|---|
