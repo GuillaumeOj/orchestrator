@@ -5,9 +5,11 @@
   // (FR-202: killed, checked, hidden; worktrees on request), confirmations.
   // ⌘⏎ submits; esc cancels.
   import { untrack } from 'svelte';
-  import { activeAgents, agent, app, contextProject, deleteAgent, deleteFeature, features, openAgent, openFeature, openProject, openSettings, projects, refresh, toast } from '../lib/app.svelte.js';
+  import { activeAgents, agent, app, contextProject, deleteAgent, deleteFeature, features, openAgent, openFeature, openProject, openSettings, openUrl, projects, refresh, toast } from '../lib/app.svelte.js';
   import { designTools, effectiveServers, kindLabel, nodeList } from '../lib/ecosystem.js';
   import { clock, expandHome, shortPath } from '../lib/format.js';
+  import { dialogEstimate, originChip, SOURCE_NAME, staleBanner, staleOf } from '../lib/intake.js';
+  import { endStarting } from '../lib/intake.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { counts, liveText } from '../lib/now.svelte.js';
   import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
@@ -20,6 +22,11 @@
   const o = $derived(app.overlay);
   let busy = $state(false);
   let error = $state(null);
+  // P4.5: the item or brief went stale while the dialog was open (notes §5.3); the form is disabled.
+  let stale = $state(null);
+  let startBtn = $state();
+  let briefEl = $state();
+  let messageEl = $state();
   // New session
   let form = $state({ project_id: '', name: '', model: 'haiku', effort: '', permission_mode: '', base: '', message: '' });
   // Add project
@@ -28,6 +35,7 @@
   const isUrl = (x) => /^(https?:\/\/|git@|ssh:\/\/)/.test(x.trim());
 
   // Roles for the New session dialog (a role's settings for a solo session).
+  let prefilled = null; // the new-session overlay whose prefill was applied
   let roles = $state([]);
   let roleId = $state('');
   // Launch on feature
@@ -62,8 +70,14 @@
     const ov = o;
     if (ov?.kind !== 'launch') return;
     untrack(() => {
-      const project_id = ov.projectId ?? contextProject()?.id ?? '';
-      launch = { project_id, team_id: ov.teamId ?? '', existing: '', slug: '', title: '', brief: '', base: '', off_hours: false };
+      const pf = ov.prefill;
+      const project_id = pf?.project_id ?? ov.projectId ?? contextProject()?.id ?? '';
+      stale = null;
+      launch = pf
+        ? { project_id, team_id: pf.team_id ?? '', existing: '', slug: pf.slug ?? '', title: pf.title ?? '', brief: pf.brief ?? '', base: pf.base ?? '', off_hours: !!pf.off_hours }
+        : { project_id, team_id: ov.teamId ?? '', existing: '', slug: '', title: '', brief: '', base: '', off_hours: false };
+      // The user reads an item's text first (focus on the primary button); Edit from a brief card focuses the brief.
+      if (pf) queueMicrotask(() => (ov.focus === 'brief' ? briefEl : startBtn)?.focus());
       invoke('planner_view')
         .then((pv) => (offHours = pv.off_hours ?? null))
         .catch(() => (offHours = null));
@@ -76,20 +90,19 @@
   const launchSlug = $derived(launch.existing ? (free.find((f) => f.id === launch.existing)?.slug ?? '') : launch.slug || slugify(launch.title));
 
   async function launchTeamOnFeature() {
-    if (busy) return;
+    if (busy || stale) return;
     busy = true;
     error = null;
     try {
       const run = await invoke('team_launch', {
-        form: { project_id: launch.project_id, team_id: launch.team_id, slug: launchSlug, title: launch.title, brief: launch.brief, base: launch.base || null, off_hours: launch.off_hours || undefined },
+        form: { project_id: launch.project_id, team_id: launch.team_id, slug: launchSlug, title: launch.title, brief: launch.brief, base: launch.base || null, off_hours: launch.off_hours || undefined, intake: o.intake ?? undefined },
       });
       close();
       await refresh();
       openFeature(run.feature_id);
       toast(`Launched ${launchTeam?.team.name ?? launch.team_id} on ${launchSlug} · the lead starts when the Governor admits it`);
     } catch (e) {
-      error = errText(e);
-      busy = false;
+      failed(e);
     }
   }
 
@@ -160,6 +173,16 @@
   }
 
   $effect(() => {
+    if (o?.kind === 'new-session' && o.prefill && o !== prefilled) {
+      // A prefilled session (P4.5): project, name and the item's text; the rest keeps the form's.
+      prefilled = o;
+      const pf = o.prefill;
+      untrack(() => {
+        form = { ...form, project_id: pf.project_id ?? form.project_id, name: pf.name ?? '', message: pf.message ?? '' };
+        stale = null;
+        queueMicrotask(() => (o.focus === 'brief' ? messageEl : startBtn)?.focus());
+      });
+    }
     if (o?.kind === 'new-session') {
       const p = contextProject();
       form.project_id = form.project_id || p?.id || '';
@@ -182,24 +205,35 @@
   function close() {
     app.overlay = null;
     error = null;
+    stale = null;
+    busy = false;
+    // A cancelled prefilled session leaves nothing of the item's text for the next plain one.
+    if (o?.kind === 'new-session' && o.prefill) form = { ...form, name: '', message: '' };
+    endStarting();
+  }
+
+  /** A start that failed: `stale` (P4.5 notes §5.3) disables the form with a banner; any other error is inline. */
+  function failed(e) {
+    const s = o?.intake ? staleOf(e) : null;
+    if (s) stale = s;
+    else error = errText(e);
     busy = false;
   }
 
   async function startSession() {
-    if (busy) return;
+    if (busy || stale) return;
     busy = true;
     error = null;
     try {
       const role = roles.find((x) => x.id === roleId);
-      const id = await invoke('agent_start', { req: { ...$state.snapshot(form), name: form.name.trim(), prompt: role?.prompt || null } });
+      const id = await invoke('agent_start', { req: { ...$state.snapshot(form), name: form.name.trim(), prompt: role?.prompt || null, intake: o.intake ?? undefined } });
       close();
       form = { ...form, name: '', message: '' };
       await refresh();
       openAgent(id);
       toast(`Started ${id} · ${project?.name ?? ''}`);
     } catch (e) {
-      error = errText(e);
-      busy = false;
+      failed(e);
     }
   }
 
@@ -228,6 +262,22 @@
   }
 </script>
 
+{#snippet fromIntake()}
+  <!-- P4.5 notes §5.1–§5.3: the origin chip, the stale banner, the estimate and the untrusted-text note. -->
+  {#if o.origin}
+    {@const chip = originChip(o.origin)}
+    <p class="chip" data-origin><span class="muted">{chip.text}</span>{#if chip.url}{' '}<button type="button" class="linkbtn" onclick={() => openUrl(chip.url)} aria-label="Open {chip.ref} at {SOURCE_NAME[chip.source]}">↗</button>{/if}</p>
+  {/if}
+  {#if stale}<p class="err" role="alert" data-stale>{staleBanner(stale)}</p>{/if}
+{/snippet}
+{#snippet intakeNote(mode)}
+  {#if o.item}
+    {@const est = dialogEstimate(o.item, mode, projects().find((p) => p.id === o.item.project)?.name)}
+    {#if est}<p class="muted note" data-estimate>{est}</p>{/if}
+    <p class="muted note" data-untrusted>This text comes from {SOURCE_NAME[o.item.source]}. It goes to the agent as part of the brief you send.</p>
+  {/if}
+{/snippet}
+
 {#if o && ['new-session', 'add-project', 'launch', 'plan', 'delete-agent', 'delete-feature', 'confirm'].includes(o.kind)}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="scrim" onclick={close}></div>
@@ -235,6 +285,7 @@
     <div class="dlg" role="dialog" aria-modal="true" aria-label="New session" tabindex="-1" onkeydown={(e) => onKey(e, startSession)}>
     <form onsubmit={(e) => (e.preventDefault(), startSession())}>
       <h3>New session</h3>
+      {@render fromIntake()}
       <label>Project
         <select class="field" bind:value={form.project_id}>
           {#each projects() as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
@@ -247,8 +298,9 @@
         </select>
       </label>
       <label>Task <span class="muted">(first message, optional)</span>
-        <textarea class="field" rows="3" bind:value={form.message} placeholder="What should Claude do?"></textarea>
+        <textarea class="field" rows={o.prefill ? 12 : 3} bind:value={form.message} bind:this={messageEl} disabled={!!stale} placeholder="What should Claude do?"></textarea>
       </label>
+      {@render intakeNote('solo')}
       <div class="row">
         <label>Name <!-- svelte-ignore a11y_autofocus --><input class="field" bind:value={form.name} autofocus spellcheck="false" /></label>
         <label>Base branch <input class="field" bind:value={form.base} placeholder={project?.git?.branch ?? 'default'} spellcheck="false" /></label>
@@ -277,7 +329,11 @@
       {#if error}<p class="err">{error}</p>{/if}
       <div class="foot">
         <button type="button" class="btn ghost" onclick={close}>Cancel <Kbd keys="esc" /></button>
-        <button type="submit" class="btn primary" disabled={busy || !form.project_id}>{busy ? 'Starting…' : 'Start session'} <Kbd keys="⌘+⏎" /></button>
+        {#if stale}
+          <button type="button" class="btn primary" bind:this={startBtn} onclick={close}>Close</button>
+        {:else}
+          <button type="submit" class="btn primary" bind:this={startBtn} disabled={busy || !form.project_id}>{busy ? 'Starting…' : 'Start session'} <Kbd keys="⌘+⏎" /></button>
+        {/if}
       </div>
     </form>
     </div>
@@ -285,6 +341,7 @@
     <div class="dlg" role="dialog" aria-modal="true" aria-label="Launch on feature" tabindex="-1" onkeydown={(e) => onKey(e, launchTeamOnFeature)}>
     <form onsubmit={(e) => (e.preventDefault(), launchTeamOnFeature())}>
       <h3>Launch {launchTeam?.team.name ?? 'a team'}</h3>
+      {@render fromIntake()}
       <div class="seg" role="radiogroup" aria-label="Feature">
         <button type="button" class:on={!launch.existing} onclick={() => (launch.existing = '')}>New feature</button>
         {#each free as f (f.id)}<button type="button" class:on={launch.existing === f.id} onclick={() => (launch.existing = f.id)}>Existing: {f.slug}</button>{/each}
@@ -307,11 +364,12 @@
           <label>Base <input class="field mono" bind:value={launch.base} placeholder={projects().find((p) => p.id === launch.project_id)?.default_branch ?? 'main'} spellcheck="false" /></label>
         </div>
         <!-- svelte-ignore a11y_autofocus -->
-        <label>Title <input class="field" bind:value={launch.title} autofocus placeholder="Search v2" /></label>
+        <label>Title <input class="field" bind:value={launch.title} autofocus={!o.prefill} disabled={!!stale} placeholder="Search v2" /></label>
       {/if}
-      <label>Brief <span class="muted">(3 lines)</span>
-        <textarea class="field" rows="3" bind:value={launch.brief} placeholder="What to build, the constraints, where the designs are."></textarea>
+      <label>Brief <span class="muted">({o.prefill ? 'the item as markdown' : '3 lines'})</span>
+        <textarea class="field" rows={o.prefill ? 12 : 3} bind:value={launch.brief} bind:this={briefEl} disabled={!!stale} placeholder="What to build, the constraints, where the designs are."></textarea>
       </label>
+      {@render intakeNote('team')}
       <div class="note what">
         <span>• Creates <span class="mono">orch/{launchSlug || '…'}/integration</span> and the lead's worktree on it.</span>
         <span>• The lead drafts spec.md (and ux-brief.md, api-contract.md) in <span class="mono">.orchestrator/features/{launchSlug || '…'}/</span>, then asks for the Spec gate.</span>
@@ -331,7 +389,11 @@
       {#if error}<p class="err">{error}</p>{/if}
       <div class="foot">
         <button type="button" class="btn ghost" onclick={close}>Cancel <Kbd keys="esc" /></button>
-        <button type="submit" class="btn primary" disabled={busy || !launch.team_id || !launchSlug || !launch.project_id}>{busy ? 'Launching…' : 'Launch'} <Kbd keys="⌘+⏎" /></button>
+        {#if stale}
+          <button type="button" class="btn primary" bind:this={startBtn} onclick={close}>Close</button>
+        {:else}
+          <button type="submit" class="btn primary" bind:this={startBtn} disabled={busy || !launch.team_id || !launchSlug || !launch.project_id}>{busy ? 'Launching…' : 'Launch'} <Kbd keys="⌘+⏎" /></button>
+        {/if}
       </div>
     </form>
     </div>

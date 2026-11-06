@@ -9,6 +9,9 @@
   import Kbd from '../components/Kbd.svelte';
   import ProjectFilter from '../components/mission/ProjectFilter.svelte';
   import QueueRow from '../components/mission/QueueRow.svelte';
+  import ReadyDetails from '../components/mission/ReadyDetails.svelte';
+  import ReadyLine from '../components/mission/ReadyLine.svelte';
+  import ReadyRow from '../components/mission/ReadyRow.svelte';
   import RowDetails from '../components/mission/RowDetails.svelte';
   import RunRow from '../components/mission/RunRow.svelte';
   import SoloRow from '../components/mission/SoloRow.svelte';
@@ -22,6 +25,7 @@
     focusCard,
     now30,
     openBoard,
+    openEditor,
     openReport,
     openSession,
     openUrl,
@@ -32,6 +36,8 @@
   } from '../lib/app.svelte.js';
   import { mb, startOfDay } from '../lib/format.js';
   import { isOpen } from '../lib/inbox.js';
+  import { ageText, modeOf, rateLimitedUntil } from '../lib/intake.js';
+  import { fixSource, hideItem, intakeUi, openSource, planWithOverwatchIn, refreshIntake, setUpIntake, startItem, undoHide, unhideItem } from '../lib/intake.svelte.js';
   import { allowed, COUNT_KEYS, DONE_ROWS, decisionOf, defaultTarget, filterLabel, footerText, hiddenText, hints, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
   import { attention } from '../lib/now.svelte.js';
   import { LEVEL } from '../lib/status.js';
@@ -56,7 +62,7 @@
   });
   // lanes() needs only the day: the 30 s clock does not rebuild it.
   const day = $derived(startOfDay(now));
-  const model = $derived(lanes(app.now, filter, day));
+  const model = $derived(lanes(app.now, filter, day, { projects: ps, showHidden: intakeUi.showHidden }));
   // Rows somewhere, by the core's counts (the filter may hide them all).
   const anyWork = $derived.by(() => {
     const c = app.now.counts?.global ?? {};
@@ -70,8 +76,11 @@
   const dec = $derived(decisionOf(row, trec));
   const hintList = $derived(hints(row, { target: t, rec: trec, decision: dec }));
   const loaded = $derived(app.now.rev > 0);
-  const work = $derived(model.lanes.some((l) => l.id !== 'done' && l.rows.length) || !!model.idle);
-  const moving = $derived(model.lanes.some((l) => l.id !== 'needs_you' && l.id !== 'done') || !!model.idle);
+  // Ready to start is not work in flight: it neither makes the board "busy" nor "moving" (P4.5 notes §1.1).
+  const work = $derived(model.lanes.some((l) => l.id !== 'done' && l.id !== 'ready' && l.rows.length) || !!model.idle);
+  const moving = $derived(model.lanes.some((l) => l.id !== 'needs_you' && l.id !== 'done' && l.id !== 'ready') || !!model.idle);
+  const ready = $derived(model.lanes.find((l) => l.id === 'ready'));
+  const overwatch = $derived(app.now.overwatch?.status ?? 'off');
   const done = $derived(model.lanes.find((l) => l.id === 'done'));
   // A filter hides every row while some exist elsewhere.
   const filteredOut = $derived(!!filter && !work && !done && anyWork);
@@ -179,8 +188,26 @@
     if (selKey.startsWith('lane:') || selKey === 'showall') return expand(selKey);
     if (row?.kind === 'decisions') return focusCard(row.ids[0]);
     if (row?.kind === 'outcome') return openOutcome(row.outcome);
+    if (row?.kind === 'ready') return row.hidden ? unhideItem(row.item) : startItem(row.item, modeOf(row.item));
+    if (row?.kind === 'iline') return lineAct(row);
     if (t) openSession(t);
   }
+
+  // ---- Ready to start (P4.5): user presses only; the lane itself fetches nothing.
+
+  const refreshLane = () => refreshIntake((app.now.intake?.sources ?? []).filter((s) => s.type !== 'none' && (!filter || filter.includes(s.project))).map((s) => s.project));
+
+  /** ⏎ / a click on a line (notes §4.1, §10.1). */
+  function lineAct(r) {
+    if (r.line === 'nosource') return planWithOverwatchIn(r.projects);
+    if (r.line === 'empty') return refreshIntake(r.merged ? r.projects : [r.project]);
+    if (r.line === 'error') return fixSource(r.src);
+    if (r.line === 'more') return r.src.url && openUrl(r.src.url);
+    if (r.line === 'allhidden') return (intakeUi.showHidden = true);
+  }
+
+  /** `e` on a no-source or error line: Project settings › Intake (the first project of a merged line). */
+  const setUp = (r) => setUpIntake(r.projects?.[0] ?? r.project);
 
   function onKey(e) {
     if (filterOpen || e.defaultPrevented) return;
@@ -197,12 +224,23 @@
     if (k === 'k' || k === 'K' || k === 'ArrowUp') return run(() => move(-1));
     if (k === 'h' || k === 'ArrowLeft') return run(() => moveChip(-1));
     if (k === 'l' || k === 'ArrowRight') return run(() => moveChip(1));
+    if (k === 'R' && e.shiftKey) return run(refreshLane);
+    if (k === 'H' && e.shiftKey) return run(() => (intakeUi.showHidden = !intakeUi.showHidden));
+    if (k === 'u' && intakeUi.lastHide) return run(undoHide);
+    if (row?.kind === 'ready') {
+      const it = row.item;
+      if (!row.hidden && k === 't' && it.can_team !== false) return run(() => startItem(it, 'team'));
+      if (!row.hidden && k === 'a') return run(() => startItem(it, 'solo'));
+      if (k === 'x' || k === 'Backspace') return run(() => (row.hidden ? unhideItem(it) : hideItem(it)));
+      if (k === 'o') return run(() => openSource(it, openEditor));
+    }
+    if (row?.kind === 'iline' && k === 'e' && (row.line === 'nosource' || row.line === 'error')) return run(() => setUp(row));
     if (k === 'f') return run(() => (app.missionFilterOpen = true));
     if (k === 'Enter') return run(onEnter);
     if (k === ' ') {
       if (!selKey) return;
       if (selKey.startsWith('lane:') || selKey === 'showall') return run(() => expand(selKey));
-      if (row && row.kind !== 'outcome' && row.kind !== 'decisions') return run(() => (details = toggle(details, selKey)));
+      if (row && row.kind !== 'outcome' && row.kind !== 'decisions' && row.kind !== 'iline') return run(() => (details = toggle(details, selKey)));
       return;
     }
     if (k === 'd') return dec && run(() => focusCard(dec));
@@ -260,6 +298,18 @@
     <div role="row" aria-selected={sel} data-key={r.key}>
       <div role="gridcell"><OutcomeRow outcome={r.outcome} selected={sel} onselect={() => setSel(r.key)} /></div>
     </div>
+  {:else if r.kind === 'ready' || r.kind === 'iline'}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <div class="row ready" class:iline={r.kind === 'iline'} class:sel role="row" tabindex="-1" aria-selected={sel} data-key={r.key} onclick={() => setSel(r.key)}>
+      <div role="gridcell" class="cell">
+        {#if r.kind === 'ready'}
+          <ReadyRow row={r} selected={sel} starting={intakeUi.starting === r.item.id} onstart={(m) => startItem(r.item, m)} onhide={() => hideItem(r.item)} onunhide={() => unhideItem(r.item)} onsource={() => openSource(r.item, openEditor)} ondetails={() => (details = toggle(details, r.key))} />
+          {#if details[r.key]}<ReadyDetails item={r.item} name={r.name} {now} hidden={r.hidden} onstart={(m) => startItem(r.item, m)} onhide={() => hideItem(r.item)} onunhide={() => unhideItem(r.item)} onsource={() => openSource(r.item, openEditor)} />{/if}
+        {:else}
+          <ReadyLine line={r} {now} {overwatch} onplan={() => planWithOverwatchIn(r.projects)} onsetup={() => setUp(r)} onrefresh={() => lineAct(r)} onfix={() => fixSource(r.src)} onopen={() => lineAct(r)} onshow={() => (intakeUi.showHidden = true)} />
+        {/if}
+      </div>
+    </div>
   {:else}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <div class="row {r.kind}" class:sel class:err={r.kind === 'run' ? r.run.level === 'error' : r.agent?.level === 'error'} role="row" tabindex="-1" aria-selected={sel} data-key={r.key} onclick={() => clickRow(r)}>
@@ -276,7 +326,7 @@
             {looseText(r.count)} · <button class="linkbtn" tabindex="-1" onclick={(e) => (e.stopPropagation(), focusCard(r.ids[0]))}>Show card</button> <Kbd keys="d" />
           </div>
         {/if}
-        {#if details[r.key] && r.kind !== 'decisions'}<RowDetails ids={ids(r)} {now} />{/if}
+        {#if details[r.key] && r.kind !== 'decisions'}<RowDetails ids={ids(r)} {now} origin={r.kind === 'run' ? r.run.origin : r.agent?.origin} />{/if}
       </div>
     </div>
   {/if}
@@ -326,7 +376,7 @@
         </div>
       {/if}
       {#each model.lanes as lane (lane.id)}
-        {#if work || lane.id === 'done'}
+        {#if work || lane.id === 'done' || lane.id === 'ready'}
           {@const shut = !!collapsed[lane.id]}
           {@const shown = lane.id === 'done' && !showAll ? lane.rows.slice(0, DONE_ROWS) : lane.rows}
           <section class="lane" aria-label={lane.label}>
@@ -337,6 +387,20 @@
                 <b>{lane.rows.length || lane.id !== 'needs_you' ? lane.label : 'Nothing needs you'}</b>
                 {#if lane.count}<span class="muted">· {lane.count}</span>{/if}
               </button>
+              {#if lane.id === 'ready' && lane.status}
+                {@const st = lane.status}
+                <span class="grow"></span>
+                <!-- A failure stays visible when the lane is collapsed (notes §1.1). -->
+                <span class="rstat" class:fail={!!st.failed}>
+                  {#if st.refreshing}refreshing…{:else if st.failed}{st.failed === 1 ? '1 source failed' : `${st.failed} sources failed`}{:else if st.oldest != null}updated {ageText(st.oldest, now)}{/if}
+                </span>
+                {#if !shut && st.hidden > 0}
+                  <button class="linkbtn rbtn" tabindex="-1" onclick={() => (intakeUi.showHidden = !intakeUi.showHidden)}>{intakeUi.showHidden ? `Hide the ${st.hidden}` : `${st.hidden} hidden · Show`} <Kbd keys="⇧H" /></button>
+                {/if}
+                {#if st.withSource}
+                  <button class="btn ghost rbtn" tabindex="-1" disabled={st.refreshing || !!(app.now.intake?.sources ?? []).some((s) => rateLimitedUntil(s, now))} onclick={refreshLane} title="Check GitHub, Linear and repo docs now">{st.refreshing ? 'Refreshing…' : 'Refresh'} <Kbd keys="⇧R" /></button>
+                {/if}
+              {/if}
             </h3>
             {#if !shut}
               {#each shown as r (r.key)}{@render item(r)}{/each}
@@ -455,6 +519,24 @@
     background: none;
     color: var(--color-text-primary);
     font: var(--text-body);
+  }
+  .rstat {
+    color: var(--color-text-muted);
+    font: var(--text-caption);
+  }
+  .rstat.fail {
+    color: var(--color-status-error);
+  }
+  .rbtn {
+    margin-left: var(--space-sm);
+  }
+  /* Ready is not attention: neutral surface, a dashed rule instead of the solid one (notes p4-5, principle "Ready is not attention"). */
+  .row.ready {
+    border-left: var(--border-width-focus) dashed var(--color-border-strong);
+  }
+  .row.iline {
+    border-style: none;
+    background: none;
   }
   .chev {
     width: var(--size-icon-sm);

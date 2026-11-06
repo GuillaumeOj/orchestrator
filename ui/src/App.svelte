@@ -13,6 +13,7 @@
   import IconRail from './components/IconRail.svelte';
   import Inspector from './components/Inspector.svelte';
   import Palette from './components/Palette.svelte';
+  import PlanChooser from './components/PlanChooser.svelte';
   import Sidebar from './components/Sidebar.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import TitleBar from './components/TitleBar.svelte';
@@ -149,6 +150,7 @@
   </div>
   <StatusBar />
   {#if app.overlay?.kind === 'palette' || app.overlay?.kind === 'jump'}{#key app.overlay.kind}<Palette mode={app.overlay.kind} />{/key}{/if}
+  {#if app.overlay?.kind === 'plan-project'}<PlanChooser />{/if}
   <Dialogs />
   <Toasts />
 </div>

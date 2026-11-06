@@ -3,8 +3,9 @@
   // message (right, accent wash, plain text, the delivery marker under it) or
   // the Overwatch's reply (left, a rule, markdown with its source links, a
   // "↳ re:" reference when the question is not just above, clamped at 12 lines).
-  import { now30 } from '../../lib/app.svelte.js';
+  import { now30, projectName } from '../../lib/app.svelte.js';
   import { clock, dayTime } from '../../lib/format.js';
+  import { plannedEntries } from '../../lib/intake.svelte.js';
   import { deliveryText } from '../../lib/overwatch.js';
   import Markdown from '../Markdown.svelte';
 
@@ -12,6 +13,7 @@
   let { item, ow, pulse = false, reply = null, note = '', failed = null, past = false, today = null, reflabel, onref, refok, onreplyto = () => {}, onremove = () => {}, onretry = () => {}, onsession } = $props();
   const e = $derived(item.entry);
   const user = $derived(e.author === 'user');
+  const planned = $derived(user ? (e.context?.plan ?? plannedEntries[e.id] ?? null) : null);
   const now = $derived(Math.max(now30(), Date.now()));
   // A past day's entry carries its day ("Mon 2 Nov 18:40") and no live delivery state (notes §2).
   const stamp = $derived(past && today && e.day && e.day !== today ? dayTime(e.at_ms) : clock(e.at_ms, now));
@@ -57,6 +59,7 @@
   <div class="label muted">{user ? 'You' : 'Overwatch'} · {stamp}</div>
   {#if user}
     <div class="body plain">{e.text}</div>
+    {#if planned}<div class="muted" data-planning>planning · {projectName(planned)}</div>{/if}
   {:else}
     <div class="body" class:clamped={!more} class:fits={!over} bind:this={bodyEl}>
       <Markdown text={e.text ?? ''} {onref} {refok} {reflabel} />

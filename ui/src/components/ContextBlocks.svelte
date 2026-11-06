@@ -13,6 +13,7 @@
   import OptionsBlock from './blocks/OptionsBlock.svelte';
   import PtyTailBlock from './blocks/PtyTailBlock.svelte';
   import RuleBlock from './blocks/RuleBlock.svelte';
+  import TextBlock from './blocks/TextBlock.svelte';
   import PermissionCall from './PermissionCall.svelte';
 
   let { decision, choices = $bindable([]), onjump = () => {} } = $props();
@@ -28,6 +29,7 @@
     error: ErrorBlock,
     rule: RuleBlock,
     links: LinksBlock,
+    text: TextBlock,
   };
 </script>
 

@@ -4,6 +4,7 @@
 
 import { clock, dayHm, plural, startOfDay, waited } from './format.js';
 import { agentOf, isOpen } from './inbox.js';
+import { modeOf, shortRef } from './intake.js';
 import { STATUS } from './status.js';
 
 // ---------------------------------------------------------------- phase stepper
@@ -260,6 +261,7 @@ const LANES = [
   { id: 'running', label: 'Running', level: 'running' },
   { id: 'waiting', label: 'Waiting on', level: 'waiting' },
   { id: 'queued', label: 'Queued', level: 'queued' },
+  { id: 'ready', label: 'Ready to start', level: 'ready' },
   { id: 'done', label: 'Done today', level: 'done' },
 ];
 
@@ -299,7 +301,7 @@ function rowOf(rec, kind, make, run = null) {
  * Returns { lanes: [{id, label, level, header, count, rows}], idle: {header,
  * count, rows} | null }. Empty lanes are left out except Needs you (D11).
  */
-export function lanes(now, filter = null, at = Date.now()) {
+export function lanes(now, filter = null, at = Date.now(), { projects = [], showHidden = false } = {}) {
   // A record with no project (a decision about the app) shows under any filter.
   const shown = (project) => !filter || project == null || filter.includes(project);
   const runs = now?.runs ?? {};
@@ -390,10 +392,20 @@ export function lanes(now, filter = null, at = Date.now()) {
       rowOf(o, 'outcome', () => ({ kind: 'outcome', key: `outcome:${o.id}`, outcome: o, project: o.project })),
     );
 
-  const byLane = { needs_you: needs, running: rows.running, waiting: rows.waiting, queued: rows.queued, done };
+  // Ready to start (P4.5): not attention, so it is not in any count of the others.
+  const ready = readyLane(now?.intake, { shown, projects, showHidden });
+  const byLane = {
+    needs_you: needs,
+    running: rows.running,
+    waiting: rows.waiting,
+    queued: rows.queued,
+    ready: ready.rows,
+    done,
+  };
   const out = LANES.map((l) => {
+    if (l.id === 'ready') return { ...l, ...ready };
     const count = rowCount(byLane[l.id]);
-    return { ...l, rows: byLane[l.id], count, header: count ? `${l.label} · ${count}` : l.label };
+    return { ...l, rows: byLane[l.id], count, header: count ? `${l.label} · ${count}` : l.label, status: null };
   }).filter((l) => l.id === 'needs_you' || l.rows.length);
   const idleCount = rowCount(rows.idle);
   return {
@@ -403,6 +415,196 @@ export function lanes(now, filter = null, at = Date.now()) {
       : null,
   };
 }
+
+// ---------------------------------------------------------------- Ready to start (P4.5)
+
+const NAMES_SHOWN = 3;
+
+/** "shop-api, blog and infra", "shop-api, blog, infra + 2 more". */
+function nameList(names) {
+  if (names.length === 1) return names[0];
+  if (names.length <= NAMES_SHOWN) return `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+  return `${names.slice(0, NAMES_SHOWN).join(', ')} + ${names.length - NAMES_SHOWN} more`;
+}
+
+/**
+ * The Ready to start lane (spec §3.3, notes p4-5 §1, §4) from `now.intake`: item rows per project
+ * (registered order, the core's order inside), a project's own lines (error before its items, then
+ * "+ n more"), and the merged no-source and zero-item lines. `shown`: the filter's test.
+ * Returns the lane's own fields: { rows, count, header, status }; no rows without intake or project.
+ */
+export function readyLane(
+  intake,
+  { shown = (/** @type {string | null} */ _p) => true, projects = [], showHidden = false } = {},
+) {
+  const empty = { rows: [], count: '', header: 'Ready to start', status: null };
+  if (!intake?.sources) return empty;
+  const order = projects.length ? projects.map((p) => p.id) : intake.sources.map((s) => s.project);
+  const nameOf = (id) => projects.find((p) => p.id === id)?.name ?? id;
+  const srcs = order.map((id) => intake.sources.find((s) => s.project === id)).filter((s) => s && shown(s.project));
+  if (!srcs.length) return empty;
+
+  const rows = [];
+  const items = intake.items ?? [];
+  const lineKey = (kind, project) => `intake:${kind}:${project}`;
+  const mergeNone = [];
+  const zero = [];
+  let total = 0;
+  let hiddenTotal = 0;
+  let readyTotal = 0;
+  let failed = 0;
+  let refreshing = false;
+  let oldest = null;
+
+  for (const s of srcs) {
+    const name = nameOf(s.project);
+    if (s.type === 'none' || s.status === 'none') {
+      mergeNone.push(s.project);
+      rows.push({
+        kind: 'iline',
+        line: 'nosource',
+        key: lineKey('nosource', s.project),
+        project: s.project,
+        merge: 'nosource',
+      });
+      continue;
+    }
+    if (s.status === 'refreshing') refreshing = true;
+    if (s.status === 'error') failed++;
+    if (s.refreshed_at_ms != null) oldest = oldest == null ? s.refreshed_at_ms : Math.min(oldest, s.refreshed_at_ms);
+    total += s.count ?? 0;
+    hiddenTotal += s.hidden ?? 0;
+    const mine = items.filter((i) => i.project === s.project);
+    const ready = mine.filter((i) => i.state !== 'hidden');
+    const hidden = mine.filter((i) => i.state === 'hidden');
+    readyTotal += ready.length;
+    if (s.status === 'error')
+      rows.push({
+        kind: 'iline',
+        line: 'error',
+        key: lineKey('error', s.project),
+        project: s.project,
+        name,
+        src: s,
+        // A rate limit has nothing to press (notes §4.1): not a stop.
+        stop: s.error?.code !== 'rate_limited',
+      });
+    const docs = mine.filter((i) => i.source === 'repo_docs');
+    const add = (i, isHidden) =>
+      rows.push({
+        kind: 'ready',
+        key: `ready:${i.id}`,
+        item: i,
+        project: s.project,
+        name,
+        hidden: isHidden,
+        short: shortRef(i, docs),
+      });
+    for (const i of ready) add(i, false);
+    if (showHidden) for (const i of hidden) add(i, true);
+    if (s.more > 0)
+      rows.push({
+        kind: 'iline',
+        line: 'more',
+        key: lineKey('more', s.project),
+        project: s.project,
+        name,
+        src: s,
+        stop: !!s.url,
+      });
+    if (!mine.length && s.status === 'refreshing')
+      rows.push({
+        kind: 'iline',
+        line: 'looking',
+        key: lineKey('looking', s.project),
+        project: s.project,
+        name,
+        src: s,
+        stop: false,
+      });
+    else if (!ready.length && !(s.hidden > 0) && s.status === 'ok') {
+      zero.push(s.project);
+      rows.push({
+        kind: 'iline',
+        line: 'empty',
+        key: lineKey('empty', s.project),
+        project: s.project,
+        name,
+        src: s,
+        merge: 'empty',
+      });
+    }
+  }
+
+  // Merges (notes §4.1): the no-source projects in one line, 3 or more empty ones in one.
+  const out = [];
+  let seenNone = false;
+  let seenZero = false;
+  for (const r of rows) {
+    if (r.merge === 'nosource') {
+      if (seenNone) continue;
+      seenNone = true;
+      const names = mergeNone.map(nameOf);
+      out.push({
+        ...r,
+        key: 'intake:nosource',
+        projects: mergeNone,
+        names,
+        nameText: nameList(names),
+        many: names.length > 1,
+      });
+    } else if (r.merge === 'empty' && zero.length >= 3) {
+      if (seenZero) continue;
+      seenZero = true;
+      out.push({ ...r, key: 'intake:empty', projects: zero, count: zero.length, merged: true });
+    } else out.push(r);
+  }
+  // Every ready item hidden: one line, not "Nothing ready" (notes §4.1).
+  if (!readyTotal && hiddenTotal > 0 && !showHidden && !out.some((r) => r.line === 'error'))
+    out.unshift({ kind: 'iline', line: 'allhidden', key: 'intake:allhidden', count: hiddenTotal });
+
+  const firstLaunch = refreshing && !total && out.every((r) => r.line === 'looking' || r.line === 'nosource');
+  const count = total ? plural(total, 'item') : '';
+  return {
+    rows: out,
+    count: firstLaunch ? '' : count,
+    header: `Ready to start${count && !firstLaunch ? ` · ${count}` : ''}`,
+    status: {
+      refreshing,
+      failed,
+      oldest,
+      hidden: hiddenTotal,
+      total,
+      withSource: srcs.some((s) => s.type !== 'none' && s.status !== 'none'),
+    },
+  };
+}
+
+/** The Ready row at hand's first-key hints (notes §10.1). */
+export const readyHints = (row) =>
+  row?.kind === 'ready'
+    ? row.hidden
+      ? [
+          ['j k', 'move'],
+          ['x', 'unhide'],
+          ['space', 'details'],
+          ['o', 'source'],
+          ['f', 'filter'],
+        ]
+      : [
+          ['j k', 'move'],
+          ['⏎', `start ${modeOf(row.item) === 'team' ? 'team run' : 'solo'}`],
+          ['t', 'team'],
+          ['a', 'solo'],
+          ['space', 'details'],
+          ['o', 'source'],
+          ['x', 'hide'],
+          ['f', 'filter'],
+        ]
+    : null;
+
+/** A Ready row's one-line summary (palette entries, aria): "#123 Refunds on partial orders". */
+export const readyTitle = (item) => `${item.ref} ${item.title}`;
 
 /** "2 decisions not tied to a session" (notes §1.1). */
 export const looseText = (n) => `${plural(n, 'decision')} not tied to a session`;
@@ -424,7 +626,7 @@ export function stops(model, view = {}) {
       continue;
     }
     const rows = l.id === 'done' && !view.showAll ? l.rows.slice(0, DONE_ROWS) : l.rows;
-    out.push(...rows.map((r) => r.key));
+    out.push(...rows.filter((r) => r.stop !== false).map((r) => r.key));
     if (l.id === 'done' && l.rows.length > DONE_ROWS) out.push('showall');
   }
   if (model.idle) {
@@ -512,6 +714,18 @@ export function hiddenText(counts, filter, projects) {
 export function hints(row, { target: t = null, rec = null, decision = null } = {}) {
   const h = [['j k', 'move']];
   if (!row) return [...h, ['f', 'filter']];
+  if (row.kind === 'ready') return readyHints(row);
+  if (row.kind === 'iline')
+    return [
+      ...h,
+      ...(row.line === 'nosource' || row.line === 'error'
+        ? [
+            ['⏎', row.line === 'error' ? 'fix' : 'plan'],
+            ['e', 'set up'],
+          ]
+        : []),
+      ['f', 'filter'],
+    ];
   if (row.kind === 'outcome') return [...h, ['o', 'open'], ['f', 'filter']];
   if (row.kind === 'decisions') return [...h, ['⏎', 'show card'], ['f', 'filter']];
   if (t) h.push(['⏎', `open ${t}`]);

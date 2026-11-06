@@ -152,6 +152,11 @@ const ASK_VERB = { applied: 'run now', skipped: 'kept queued', queued: 'kept que
 const KIND_VERB = { permission: 'allowed', gate: 'approved', ask: 'run now' };
 function verbOf(d) {
   const { state, effect } = d.lifecycle ?? {};
+  // A brief: "launched <slug>" (closed by the start), revised, else dismissed (P4.5 api-contract §5).
+  if (d.kind === 'brief' && typeof effect === 'string') {
+    if (effect.startsWith('launched')) return 'launched';
+    if (effect === 'revised') return 'revised';
+  }
   if (state === 'dismissed' && effect === 'restarted') return 'restarted';
   return (
     STATE_VERB[state] ??
@@ -161,6 +166,9 @@ function verbOf(d) {
     'answered'
   );
 }
+
+/** Level-4 cards that wait as cards and settle as lines: a rule proposal, a brief (P4.5). */
+export const quietKind = (d) => d?.kind === 'rule_proposal' || d?.kind === 'brief';
 
 const BY = { user: 'you', pane: 'pane', expired: 'expired', core: 'core', overwatch: 'overwatch' };
 
@@ -249,7 +257,7 @@ export function thread({
   // A decision listed with no entry yet (an older core, a push in flight) sits
   // at its creation time.
   for (const d of Object.values(decisions))
-    if (!latest.has(d.id) && (d.level < 4 || d.kind === 'rule_proposal')) {
+    if (!latest.has(d.id) && (d.level < 4 || quietKind(d))) {
       const e = placeholder(d);
       entries.push(e);
       latest.set(d.id, e);
@@ -261,7 +269,7 @@ export function thread({
   const mode = (e, d) => {
     if (d && latest.get(d.id) === e) {
       const lc = d.lifecycle ?? {};
-      if (d.kind === 'rule_proposal') {
+      if (quietKind(d)) {
         // Level 4: a card while it waits (its Undo is the client's 5 s window); settled, it is its line at once.
         return waiting.has(d.id) || CARD_STATES.has(lc.state) ? 'card' : 'line';
       }
@@ -305,7 +313,7 @@ export function thread({
         d,
         entry: e,
         deciding,
-        quiet: deciding || d.kind === 'rule_proposal',
+        quiet: deciding || quietKind(d),
       });
     } else if (m === 'line') {
       const live = d && latest.get(d.id) === e;
@@ -351,7 +359,7 @@ export function thread({
 
   const cardsAll = all.filter((i) => i.type === 'card');
   const counts = Object.fromEntries(
-    FILTERS.map((f) => [f.id, cardsAll.filter((i) => i.d.kind !== 'rule_proposal' && f.test(i.d)).length]),
+    FILTERS.map((f) => [f.id, cardsAll.filter((i) => !quietKind(i.d) && f.test(i.d)).length]),
   );
   const test = (FILTERS.find((f) => f.id === filter) ?? FILTERS[0]).test;
   const shown = cardsAll.filter((i) => test(i.d));

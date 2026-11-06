@@ -48,6 +48,7 @@
     foldText,
     nextFilter,
     pastItems,
+    quietKind,
     resultsHead,
     resultText,
     tailText,
@@ -58,6 +59,8 @@
   } from '../../lib/chat.js';
   import { clock, plural } from '../../lib/format.js';
   import { actionByKey, agentOf, answerText, blockOf, FILTERS, intentFor, keyIntent } from '../../lib/inbox.js';
+  import { briefEnded } from '../../lib/intake.js';
+  import { clearPlan, intakeUi, planContext, plannedEntries, startBrief } from '../../lib/intake.svelte.js';
   import { errText, invoke, listen } from '../../lib/ipc.js';
   import { clearDigest, counts, digest } from '../../lib/now.svelte.js';
   import {
@@ -187,7 +190,7 @@
   const doneToday = $derived(counts().done_today);
   const dg = $derived(digestText(outcomes, doneToday));
   const strip = $derived(filterStrip(filter, t.counts));
-  const showFilters = $derived(t.all.filter((c) => c.d?.kind !== 'rule_proposal').length >= 2 || filter !== 'all');
+  const showFilters = $derived(t.all.filter((c) => !quietKind(c.d)).length >= 2 || filter !== 'all');
   const q = $derived(query.trim());
   const wanted = $derived(searchOpen && q.length >= 2); // a search to run (kept while a result's day is open)
   const searching = $derived(wanted && !past);
@@ -527,13 +530,16 @@
   /** Send: the core writes the entry and wakes the Overwatch; a refusal keeps the text at the foot (notes §2.2). */
   async function sendMessage(text, retry = null) {
     try {
-      const r = await invoke('chat_send', { text });
+      // A message sent while the planning tag shows is a planning message (the tag stays after a send).
+      const context = retry?.context ?? planContext();
+      const r = await invoke('chat_send', context ? { text, context } : { text });
+      if (r?.entry && context) plannedEntries[r.entry.id] = context.plan;
       if (r?.entry) upsertEntries((app.now.chat ??= { day: null, entries: {} }), [r.entry]);
       stick = true;
       toFoot();
     } catch (err) {
       const entry = retry?.entry ?? { id: `unsent-${++sendSeq}`, kind: 'text', author: 'user', text, at_ms: Date.now() };
-      unsent = [...unsent.filter((u) => u !== retry), { entry, why: errText(err) }];
+      unsent = [...unsent.filter((u) => u !== retry), { entry, why: errText(err), context: retry?.context ?? planContext() }];
     }
   }
 
@@ -703,12 +709,25 @@
       case 'editor':
         openEditor(null, null, { agentId: agentOf(d) });
         return true;
+      // A brief's Launch / Edit: the prefilled dialog, in the proposed mode. Nothing is decided here.
+      case 'brief':
+        startBrief(d, d.mode ?? 'team', { edit: intent.edit });
+        return true;
     }
     return false;
   }
 
+  // The planning tag ends with its brief: launched or dismissed (spec §3.5).
+  let planSince = 0; // when the tag appeared: an older brief's end does not clear it
+  $effect(() => {
+    if (!intakeUi.plan) return void (planSince = 0);
+    planSince ||= Date.now();
+    if (Object.values(app.now.decisions).some((d) => briefEnded(d, planSince))) untrack(clearPlan);
+  });
+
   /** Decide (5 s undo window, on the card); focus goes to the next card still waiting. */
   function send(d, action, message = null) {
+    if (d.kind === 'brief' && action === 'dismiss') clearPlan();
     const at = t.cards.findIndex((c) => c.id === d.id);
     const next = [...t.cards.slice(at + 1), ...t.cards.slice(0, Math.max(at, 0))].find(
       (c) => c.id !== d.id && !pendingOf(c.id) && !marked.has(c.id),

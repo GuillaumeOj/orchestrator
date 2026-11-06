@@ -11,6 +11,7 @@
   import { app, openSingleton, saveLayout, toast } from '../lib/app.svelte.js';
   import { deliveryReport } from '../lib/delivery.js';
   import { dayHm, dayTime } from '../lib/format.js';
+  import { reportLine, reportTip } from '../lib/intake.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { ACTION_LABEL, API_TIP, delta, kpis, minutes, noData, overwatchLast, reportMarkdown, stateBar, TABS, usd, weekNo } from '../lib/pacing.js';
@@ -34,6 +35,8 @@
   const maxPp = $derived(Math.max(1, ...rows.map((x) => x.pp)));
   const bar = $derived(r ? stateBar(r.states) : []);
   const estimated = $derived(r?.provenance === 'estimated');
+  const intakeLine = $derived(reportLine(r?.intake));
+  const intakeTip = $derived(reportTip(r?.intake));
   const idx = $derived(list.findIndex((x) => x.id === id));
 
   async function load() {
@@ -110,6 +113,8 @@
       <button class="btn primary" onclick={() => (app.overlay = { kind: 'plan' })}>Plan week {weekNo(Date.parse(r.reset_at))} <Kbd keys="⏎" /></button>
     </header>
     {#if estimated}<p class="warnbox">▲ Estimated: fewer than 20 usage samples this week; pp per row are approximate.</p>{/if}
+
+    {#if intakeLine}<p class="muted intake" data-intake-line title={intakeTip}>{intakeLine}</p>{/if}
 
     {#if noData(r)}
       <p class="empty">No usage was recorded this week. The app was not running, or no agents ran.</p>
