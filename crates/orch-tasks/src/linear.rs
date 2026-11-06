@@ -607,7 +607,11 @@ pub mod fake {
                         break;
                     }
                 }
-                b'f' if depth == 1 && b[*i..].starts_with(b"first") && *i > 0 && !b[*i - 1].is_ascii_alphanumeric() => {
+                b'f' if depth == 1
+                    && b[*i..].starts_with(b"first")
+                    && *i > 0
+                    && !(b[*i - 1].is_ascii_alphanumeric() || b[*i - 1] == b'_') =>
+                {
                     let rest = std::str::from_utf8(&b[*i + 5..]).unwrap_or("").trim_start();
                     if let Some(r) = rest.strip_prefix(':') {
                         let n: String = r.trim_start().chars().take_while(char::is_ascii_digit).collect();
