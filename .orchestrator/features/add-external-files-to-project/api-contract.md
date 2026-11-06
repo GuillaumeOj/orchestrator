@@ -33,10 +33,10 @@ access `write`. Each path is validated alone (spec.md › Validation);
 message. `files` is the whole list after the change. Duplicates inside one
 call count once. An unknown project is an `Err`.
 
-### `project_file_update(project: string, path: string, access?: "write"|"read", note?: string) -> { files: ProjectFile[] }`
+### `project_file_update(project: string, path: string, access?: "write"|"read", note?: string|null) -> { files: ProjectFile[] }`
 
 `path` is the stored canonical path. Only the fields given change; `note:
-""` clears it (trimmed, max 500 chars, else
+""` or `null` clears it (trimmed, max 500 chars, else
 `note: 500 characters at most`). Unknown path: `Err("{path}: not in the
 project files")`.
 
@@ -65,12 +65,9 @@ selection; `[]` when cancelled. Called when the user clicks the drop zone
 ## Drag and drop
 
 Front listens to the Tauri webview drag-drop event
-(`getCurrentWebview().onDragDropEvent`), which carries real paths and the
-pointer position (window-wide, not per element), while the Project settings
-› Files section is shown. Front hit-tests the position against the section's
-own bounding box (panes can be split side by side, and two project settings
-panes can be open), highlights the zone on `over`, and sends `paths` to
-`project_files_add` only for a `drop` inside that box. Nothing on the backend beyond `project_files_add`.
+(`getCurrentWebview().onDragDropEvent`), which carries real paths, while the
+Project settings › Files section is shown, and sends `paths` to
+`project_files_add`. Nothing on the backend beyond `project_files_add`.
 
 ## Agent side (no command; for reference)
 
