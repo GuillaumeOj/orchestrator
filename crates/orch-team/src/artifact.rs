@@ -1,5 +1,5 @@
 //! What a hand-off URI points at (FR-602): a Penpot or Figma frame link, a
-//! repo-relative exported image, or another link. Pure: whether a file is on
+//! FigCraft file (`*.figcraft`, optionally `#<node id>`), a repo-relative exported image, or another link. Pure: whether a file is on
 //! the integration branch is the runtime's to say (`on_integration`).
 
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// api-contract §3 `Artifact.meta`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactMeta {
-    /// `penpot`, `figma`, `file` or `url`.
+    /// `penpot`, `figma`, `figcraft`, `file` or `url`.
     pub tool: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -183,6 +183,19 @@ pub fn parse(uri: &str) -> Option<ArtifactMeta> {
         }
         return Some(ArtifactMeta { tool: "url".into(), title: Some(host), ..Default::default() });
     }
+    let (raw, frag) = uri.split_once('#').map_or((uri, None), |(p, f)| (p, Some(f)));
+    if raw.to_ascii_lowercase().ends_with(".figcraft")
+        && let Some(path) = repo_path(raw)
+    {
+        let node = frag.map(|f| percent_decode(f.strip_prefix("node=").unwrap_or(f))).filter(|n| !n.is_empty());
+        return Some(ArtifactMeta {
+            tool: "figcraft".into(),
+            title: path.rsplit('/').next().map(str::to_string),
+            node_id: node,
+            path: Some(path),
+            ..Default::default()
+        });
+    }
     let path = repo_path(uri)?;
     Some(ArtifactMeta {
         tool: "file".into(),
@@ -250,6 +263,28 @@ mod tests {
         assert_eq!(doc_image_mime("a/b.GIF"), Some("image/gif"));
         assert_eq!(doc_image_mime("a/b.svg"), Some("image/svg+xml"));
         assert_eq!(doc_image_mime("a/b.txt"), None);
+    }
+
+    #[test]
+    fn figcraft_files() {
+        let m = parse("a/b.figcraft").unwrap();
+        assert_eq!(
+            (m.tool.as_str(), m.path.as_deref(), m.title.as_deref(), m.node_id.as_deref(), m.previewable),
+            ("figcraft", Some("a/b.figcraft"), Some("b.figcraft"), None, false)
+        );
+        let m = parse("a/b.FigCraft#12:34").unwrap();
+        assert_eq!(
+            (m.tool.as_str(), m.path.as_deref(), m.node_id.as_deref()),
+            ("figcraft", Some("a/b.FigCraft"), Some("12:34"))
+        );
+        let m = parse("a/b.figcraft#node=12%3A34").unwrap();
+        assert_eq!(m.node_id.as_deref(), Some("12:34"));
+        assert_eq!(parse("a/b.figcraft#").unwrap().node_id, None);
+        assert_eq!(parse("docs/design/Orchestrator.figcraft#252198").unwrap().node_id.as_deref(), Some("252198"));
+        assert_eq!(parse("a/b.figcraft#node=252198").unwrap().node_id.as_deref(), Some("252198"));
+        assert_eq!(parse("../x.figcraft"), None);
+        assert_eq!(parse("/x.figcraft#1:2"), None);
+        assert_eq!(parse("a.figcraft.png").unwrap().tool, "file");
     }
 
     #[test]
