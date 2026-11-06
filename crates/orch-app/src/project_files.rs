@@ -343,6 +343,34 @@ mod tests {
         f.core.shutdown();
     }
 
+    /// One read-modify-write under one lock: concurrent adds and General
+    /// form saves never drop an entry.
+    #[test]
+    fn concurrent_saves_keep_every_entry() {
+        let f = fx();
+        let names: Vec<String> = (0..8).map(|i| format!("f{i}.md")).collect();
+        for n in &names {
+            std::fs::write(f.home.join(n), "x").unwrap();
+        }
+        std::thread::scope(|sc| {
+            for n in &names {
+                let (core, home) = (&f.core, &f.home);
+                sc.spawn(move || core.project_files_add_in("repo", &[format!("~/{n}")], None, home).unwrap());
+            }
+            for _ in 0..4 {
+                sc.spawn(|| {
+                    let form: crate::teams::ProjectSettingsForm = serde_json::from_value(
+                        json!({"settings": {}, "backend": {"type": "local"}, "track_orchestrator_dir": true}),
+                    )
+                    .unwrap();
+                    f.core.project_settings_set("repo", form).unwrap();
+                });
+            }
+        });
+        assert_eq!(f.core.project_files("repo").unwrap()["files"].as_array().unwrap().len(), names.len());
+        f.core.shutdown();
+    }
+
     #[test]
     fn reveal_only_listed_paths() {
         let f = fx();

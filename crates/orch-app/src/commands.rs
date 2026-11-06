@@ -432,7 +432,7 @@ pub async fn project_files_add(
     blocking(core, move |c| c.project_files_add(&project, &paths, access)).await
 }
 
-/// `note`: `""` clears it; omitted (or `null`, which IPC can't tell apart) keeps it.
+/// `note`: absent keeps it; `""` (or only spaces) clears it.
 #[tauri::command]
 pub async fn project_file_update(
     core: CoreState<'_>,
