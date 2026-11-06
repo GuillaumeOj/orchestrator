@@ -42,7 +42,7 @@ No new command or event. Existing shapes gain one value each.
 `tool`: `penpot | figma | figcraft | file | url`. For `figcraft`:
 
 ```json
-{ "tool": "figcraft", "title": "Orchestrator.figcraft", "path": "docs/design/Orchestrator.figcraft",
+{ "tool": "figcraft", "title": "Orchestrator.figcraft", "path": "design/app.figcraft",
   "node_id": "252198", "previewable": false, "on_integration": true }
 ```
 

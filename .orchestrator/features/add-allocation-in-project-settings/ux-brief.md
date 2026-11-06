@@ -135,7 +135,7 @@ state 4: `x` remove · `g` week planner.
 
 ## Hand-off to ui
 
-Frames in `docs/design/Orchestrator.figcraft`: **04 Project settings ·
+Frames in [`Orchestrator.figcraft`](https://drive.google.com/open?id=1n4O57ntQDFvv1-pw3flJkmcHh4MeTLVs&usp=drive_fs): **04 Project settings ·
 Allocation · 1512** (state 4), the **states** board (1–9), and the plan editor
 row variant (10), exported as PNG to
 `.orchestrator/features/add-allocation-in-project-settings/design/`.

@@ -1,6 +1,6 @@
 # Improve Agent Pane · design notes (T-62)
 
-FigCraft file [`docs/design/Orchestrator.figcraft`](../../../../docs/design/Orchestrator.figcraft) (ADR-012). Companion of [../ux-brief.md](../ux-brief.md) and [../spec.md](../spec.md). Existing tokens only (`ui/src/styles/tokens.css`); no new token.
+FigCraft file [`Orchestrator.figcraft`](https://drive.google.com/open?id=1n4O57ntQDFvv1-pw3flJkmcHh4MeTLVs&usp=drive_fs) (ADR-012). Companion of [../ux-brief.md](../ux-brief.md) and [../spec.md](../spec.md). Existing tokens only (`ui/src/styles/tokens.css`); no new token.
 
 ## Frames
 

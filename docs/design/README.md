@@ -1,6 +1,6 @@
 # Design
 
-The UI source of truth is the FigCraft file [`Orchestrator.figcraft`](Orchestrator.figcraft), stored with Git LFS (`git lfs pull` to fetch it). It replaces the Penpot file **Orchestrator**, which it was moved from; the pages are the same, except that the empty `07 Explorations` page was not carried over. Pages `04.1` to `04.7` split the old `04 Screens` page, `04.3` holds the chat column and `06.1` the J12 storyboard. See [ADR-012](../adr/012-ui-design-source-of-truth-figcraft.md) and [SPEC §9](../SPEC.md).
+The UI source of truth is the FigCraft file [`Orchestrator.figcraft`](https://drive.google.com/open?id=1n4O57ntQDFvv1-pw3flJkmcHh4MeTLVs&usp=drive_fs), kept in Google Drive (not in the repo). It replaces the Penpot file **Orchestrator**, which it was moved from; the pages are the same, except that the empty `07 Explorations` page was not carried over. Pages `04.1` to `04.7` split the old `04 Screens` page, `04.3` holds the chat column and `06.1` the J12 storyboard. See [ADR-012](../adr/012-ui-design-source-of-truth-figcraft.md) and [SPEC §9](../SPEC.md).
 
 ## Pages
 
