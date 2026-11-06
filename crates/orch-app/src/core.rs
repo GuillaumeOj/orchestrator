@@ -328,6 +328,8 @@ impl Core {
                 std::thread::sleep(PUMP_EVERY);
             }
         })?;
+        // Intake refreshes (P4.5) on their own thread.
+        agent_runtime::runtime::Runtime::spawn_intake(self.runtime()?.clone(), self.stop.clone())?;
         // Background git fetch (FR-103) and open PRs on their own thread: network calls take a while.
         {
             let (rt, stop) = (self.runtime()?.clone(), self.stop.clone());

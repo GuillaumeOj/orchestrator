@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod github;
+pub mod intake;
 pub mod linear;
 
 use std::collections::{HashMap, HashSet};

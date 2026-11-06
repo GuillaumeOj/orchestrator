@@ -425,6 +425,7 @@ impl Runtime {
         // Today's entries and the Overwatch, read once the publisher's lock is released.
         drop(st);
         snap["overwatch"] = json!(self.overwatch_status());
+        snap["intake"] = self.intake_view();
         let mut entries = self.db.chat_day(&day).unwrap_or_default();
         self.refresh_undo(&mut entries);
         snap["chat"] = json!({"entries": entries, "day": day});
@@ -448,7 +449,7 @@ impl Runtime {
         let changed = self.store.take_changed();
         let mut topics = std::mem::take(&mut *lock(&self.now.topics));
         let team_changes = self.db.changes();
-        let db_topics = self.db.take_topics();
+        let mut db_topics = self.db.take_topics();
         // The queue as it is (cheap): what tells it moved. An answered ask
         // moves nothing else.
         let queue_now: GovSeen = self.with_governor(|g| {
@@ -467,6 +468,16 @@ impl Runtime {
             topics.insert(crate::overwatch::TOPIC.into());
         }
         let overwatch = overwatch.filter(|_| topics.contains(crate::overwatch::TOPIC));
+        // `now.intake` rides the event, whole, when it changed (P4.5
+        // api-contract §2.1); intake writes note its topic. Built before the
+        // publisher's lock; the forced pump catches projects added or removed.
+        let intake_noted = topics.remove(crate::intake::TOPIC) | db_topics.remove(crate::intake::TOPIC);
+        let intake = (force || intake_noted || !self.intake.published())
+            .then(|| self.intake_view())
+            .filter(|v| self.intake.publish(v));
+        if intake.is_some() {
+            topics.insert(crate::intake::TOPIC.into());
+        }
         let mut st = lock(&self.now.state);
         let queue_moved = st.queue.as_ref() != Some(&queue_now);
         let team_moved = st.team.changes != Some(team_changes);
@@ -626,6 +637,9 @@ impl Runtime {
         let mut event = delta(state.rev + 1, &old, &world, (&upsert, &closed), &new_outcomes, &chat, &topics);
         if let (Some(e), Some(o)) = (event.as_mut(), overwatch) {
             e["overwatch"] = json!(o);
+        }
+        if let (Some(e), Some(i)) = (event.as_mut(), intake) {
+            e["intake"] = i;
         }
         state.decisions = decisions;
         state.last = Some(world);
