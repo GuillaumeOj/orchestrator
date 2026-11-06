@@ -913,6 +913,14 @@ const WGET: FetchOpts = FetchOpts {
     open_ended: &["-r", "-H", "-m", "--recursive", "--span-hosts", "--mirror"],
 };
 
+/// Every host must be allowed; none readable (or one unreadable) is the user's.
+fn fetch_verdict(ctx: &HardCtx, hosts: &[String], unreadable: bool) -> Option<HardVerdict> {
+    if hosts.iter().any(|h| !host_allowed(&ctx.network_allow, h)) {
+        return Some(user_only(WHY_HOST));
+    }
+    (unreadable || hosts.is_empty()).then(|| user_only(WHY_HOST_UNKNOWN))
+}
+
 /// curl / wget (each its own options): every URL word's host must be allowed;
 /// none readable is user-only, and so is an option that isn't understood: its
 /// value would read as a URL, or a URL would be read as its value.
@@ -979,10 +987,7 @@ fn fetch_strict(ctx: &HardCtx, args: &[String], o: &FetchOpts, wget: bool) -> Op
             }
         }
     }
-    if hosts.iter().any(|h| !host_allowed(&ctx.network_allow, h)) {
-        return Some(user_only(WHY_HOST));
-    }
-    (unreadable || hosts.is_empty()).then(|| user_only(WHY_HOST_UNKNOWN))
+    fetch_verdict(ctx, &hosts, unreadable)
 }
 
 /// httpie / xh: every non-option word is read as a URL, so a method word or
@@ -1006,10 +1011,7 @@ fn fetch_items(ctx: &HardCtx, args: &[String]) -> Option<HardVerdict> {
         }
         i += 1;
     }
-    if hosts.iter().any(|h| !host_allowed(&ctx.network_allow, h)) {
-        return Some(user_only(WHY_HOST));
-    }
-    (unreadable || hosts.is_empty()).then(|| user_only(WHY_HOST_UNKNOWN))
+    fetch_verdict(ctx, &hosts, unreadable)
 }
 
 #[cfg(test)]
