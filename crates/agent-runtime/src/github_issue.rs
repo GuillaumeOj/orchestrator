@@ -776,13 +776,14 @@ mod tests {
         let (rd, repo) = orch_git::fixtures::scratch_repo();
         let project = orch_git::project::register(&rt.db, &repo).unwrap();
         if let Some(r) = backend_repo {
+            let backend = TaskBackendConfig::Github { repo: Some(r.into()) };
             rt.db
-                .set_project_settings(
-                    &project.id,
-                    &ProjectSettings::default(),
-                    &TaskBackendConfig::Github { repo: Some(r.into()) },
-                    true,
-                )
+                .update_project_settings(&project.id, move |e| {
+                    e.settings = ProjectSettings::default();
+                    e.backend = backend;
+                    e.track_orchestrator_dir = true;
+                    Ok(())
+                })
                 .unwrap();
         }
         let mut a = crate::runtime::tests::test_agent(d.path());

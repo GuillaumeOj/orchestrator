@@ -148,6 +148,12 @@ pub fn check(canon: &Path, b: &Bounds) -> Result<(), &'static str> {
     if contains(&b.main_checkout) || b.other_repos.iter().any(|r| contains(r)) {
         return Err("contains a project repository, pick a folder inside it");
     }
+    // A custom worktree root can sit outside the repository's parent: a folder
+    // above it would open every agent's worktree (the check above is for
+    // the folders inside them).
+    if contains(&b.worktree_root) || b.other_worktree_roots.iter().any(|r| contains(r)) {
+        return Err("contains agent worktrees, pick a folder inside it");
+    }
     let name = canon.to_string_lossy();
     if name.contains(GLOB_CHARS) {
         return Err("names with * ? [ ] { } can't be shared with agents yet; rename it or pick another folder");
@@ -501,6 +507,25 @@ mod tests {
         );
         assert_eq!(err(&f, "~/Library"), "~/Library: the app's own data can't be shared with agents");
         assert_eq!(err(&f, "~/dev"), "~/dev: contains a project repository, pick a folder inside it");
+    }
+
+    /// A worktree root away from its repository: the folder above it is refused.
+    #[test]
+    fn folder_above_a_worktree_root_is_refused() {
+        let f = fx();
+        std::fs::create_dir_all(f.root.join("home/wts/shop")).unwrap();
+        std::fs::create_dir_all(f.root.join("home/wts/other")).unwrap();
+        let b = Bounds {
+            worktree_root: f.b.home.join("wts/shop"),
+            other_worktree_roots: vec![f.b.home.join("wts/other")],
+            ..f.b.clone()
+        };
+        let e = resolve("~/wts", &b, &[]).unwrap_err();
+        assert!(e.ends_with("contains agent worktrees, pick a folder inside it"), "{e}");
+        assert_eq!(
+            resolve("~/wts/shop", &b, &[]).unwrap_err(),
+            "~/wts/shop: already part of the project (in its repository)"
+        );
     }
 
     #[test]
