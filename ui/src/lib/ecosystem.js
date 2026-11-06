@@ -304,12 +304,13 @@ function baseTitle(a) {
 export function artifactTool(a) {
   if (a?.meta?.tool) return a.meta.tool;
   const u = String(a?.uri ?? '');
+  const isUrl = /^https?:/i.test(u);
   // The extension first: a repo path may contain "penpot" or "figma.com" in a folder name.
   // Never for a URL: the core only parses repo paths as FigCraft files.
-  if (!/^https?:/i.test(u) && /\.figcraft$/i.test(u.split('#')[0])) return 'figcraft';
+  if (!isUrl && /\.figcraft$/i.test(u.split('#')[0])) return 'figcraft';
   if (/penpot/.test(u)) return 'penpot';
   if (/figma\.com/.test(u)) return 'figma';
-  return /^https?:/.test(u) ? 'url' : 'file';
+  return isUrl ? 'url' : 'file';
 }
 
 export const TOOL = {
