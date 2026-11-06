@@ -40,7 +40,11 @@ export const isOpen = (d) => d?.lifecycle?.state === 'open' || parked(d);
 export const restarted = (d) => d?.payload?.restarted === true && !parked(d);
 /** An MCP server that needs sign-in (FR-604): Reconnect, Open Settings, Dismiss. */
 const mcpAlert = (d) => d?.kind === 'alert' && d.payload?.alert === 'mcp_needs_auth';
-export const actionByKey = (d, key) => d?.actions?.find((a) => a.key === key) ?? null;
+const KEY_ALIAS = { '⏎': 'enter' };
+export const actionByKey = (d, key) =>
+  d?.actions?.find((a) => (KEY_ALIAS[a.key] ?? a.key) === (KEY_ALIAS[key] ?? key)) ?? null;
+/** A brief card (P4.5): level 4 like a rule proposal; the dialog it opens is not a decision. */
+export const isBrief = (d) => d?.kind === 'brief';
 /** A decision's context block of that type, if any. */
 export const blockOf = (d, type) => d?.context?.find((b) => b.type === type) ?? null;
 /** The delivery card's primary action (ux-brief §1): Open pane when the CLI did
@@ -68,6 +72,8 @@ const readableMatch = (m) => (m ? m.replace(/^\w+\((.*?)(?::\*)?\)$/, '$1') : 't
 /** What an action id does: decide (undo window), reply or answer (a text first),
  *  open the agent's pane, or ask the core at once. */
 export function intentFor(d, id) {
+  // A brief's Launch and Edit open the prefilled dialog; only Dismiss decides.
+  if (isBrief(d) && (id === 'launch' || id === 'edit')) return { kind: 'brief', edit: id === 'edit' };
   if (id === 'in_pane') return { kind: 'pane' };
   if (id === 'reply' || id === 'answer') return { kind: id };
   // A Notion comment, a battery or budget note: the core says where to go.
@@ -78,6 +84,11 @@ export function intentFor(d, id) {
 
 /** What a key does on the selected decision (null: not handled). */
 export function keyIntent(key, d) {
+  if (key === '⏎') key = 'enter';
+  if (isBrief(d) && ['enter', 'e', 'r'].includes(key)) {
+    const act = actionByKey(d, key);
+    return act ? intentFor(d, act.id) : null;
+  }
   switch (key) {
     case 'j':
     case 'arrowdown':
@@ -157,6 +168,8 @@ export function pendingVerb(d, action) {
   switch (d.kind) {
     case 'rule_proposal':
       return action === 'add' ? 'Adding rule' : 'Not now';
+    case 'brief':
+      return 'Dismissing';
     case 'permission':
       return { approve: 'Allowing once', always: 'Always allowing' }[action] ?? 'Denying';
     case 'startup':
@@ -185,7 +198,7 @@ export function pendingToast(d, action) {
   const verb = pendingVerb(d, action);
   if (d.kind === 'permission') return `${verb}${who(d)}${what(d)}`;
   if (d.kind === 'budget') return `${verb} · ${d.title}`;
-  if (d.kind === 'rule_proposal') return `${verb} · ${cut(d.title, 40)}`;
+  if (d.kind === 'rule_proposal' || d.kind === 'brief') return `${verb} · ${cut(d.title, 40)}`;
   if (verb === 'Dismissing' && d.kind !== 'startup' && d.kind !== 'delivery') return `${verb} · ${cut(d.title, 40)}`;
   return `${verb}${who(d)}`;
 }
@@ -222,6 +235,11 @@ const specAnswer = (action) =>
  */
 export function effectText(d, mine = {}) {
   const lc = d.lifecycle ?? {};
+  if (isBrief(d) && lc.state !== 'failed' && typeof lc.effect === 'string') {
+    if (lc.effect.startsWith('launched'))
+      return `Launched ${lc.effect.slice(8).trim() || lc.effect_detail || ''}`.trim();
+    if (lc.effect === 'revised') return 'Revised · a new brief replaces this one';
+  }
   const agent = agentOf(d) ?? 'the agent';
   const eta = lc.effect_detail ? ` starts ${lc.effect_detail}` : '';
   const { action, message } = mine;

@@ -3,7 +3,8 @@
   // P4.3 footer: "Ask the Overwatch…". ⏎ sends, ⇧⏎ a new line, Esc leaves to the
   // thread and keeps the draft, ⌘L focuses it from anywhere. Never disabled by
   // the status: the message waits and says so. The draft lives in `app.chatDraft`.
-  import { app, openSettings } from '../../lib/app.svelte.js';
+  import { app, openSettings, projectName } from '../../lib/app.svelte.js';
+  import { clearPlan, intakeUi } from '../../lib/intake.svelte.js';
   import { COUNT_FROM, inputHint, MAX_CHARS } from '../../lib/overwatch.js';
   import Kbd from '../Kbd.svelte';
 
@@ -51,6 +52,9 @@
 </script>
 
 <div class="input" data-overwatch-input>
+  {#if intakeUi.plan}
+    <span class="plan muted" data-plan-tag>Planning · {projectName(intakeUi.plan)} <button class="x" type="button" aria-label="Stop planning" onclick={() => (clearPlan(), field?.focus())}>✕</button></span>
+  {/if}
   <textarea
     class="field"
     rows="1"
@@ -77,6 +81,17 @@
 </div>
 
 <style>
+  .plan {
+    align-self: flex-start;
+    font: var(--text-caption);
+  }
+  .plan .x {
+    padding: 0 var(--space-xs);
+    border: 0;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+  }
   .input {
     display: flex;
     flex-direction: column;

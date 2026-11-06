@@ -3,12 +3,14 @@
   // status badge and the waiting-on chip (reason + since, or the activity).
   import StatusBadge from '../StatusBadge.svelte';
   import WaitingChip from '../WaitingChip.svelte';
+  import OriginChip from './OriginChip.svelte';
 
   let { rec } = $props();
 </script>
 
 <div class="l1">
   <span class="where"><span class="muted">{rec.project ?? '—'} ›</span> <b>{rec.agent}</b></span>
+  {#if rec.origin}<OriginChip origin={rec.origin} project={rec.project} />{/if}
   <StatusBadge state={rec.status} />
   <span class="why" class:error={rec.level === 'error'}><WaitingChip {rec} compact /></span>
 </div>

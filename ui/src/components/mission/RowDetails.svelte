@@ -4,10 +4,12 @@
   // Governor holds it; app_state gives the raw details (ctx, usage, memory).
   import { agent, app } from '../../lib/app.svelte.js';
   import { mb, waited } from '../../lib/format.js';
+  import { originLine } from '../../lib/intake.js';
   import { attention, waitWhat } from '../../lib/now.svelte.js';
   import { PRESSURE, STATUS, sessionPp } from '../../lib/status.js';
+  import OriginChip from './OriginChip.svelte';
 
-  let { ids, now } = $props();
+  let { ids, now, origin = null } = $props();
   const pressure = $derived(PRESSURE[app.data?.usage?.snapshot?.state]?.label);
   const HELD = new Set(['queued', 'not_started']);
 
@@ -41,6 +43,7 @@
   );
 </script>
 
+{#if origin}<div class="from muted">Started from {originLine(origin)} <OriginChip origin={origin} label="Open ↗" /></div>{/if}
 <table class="details" aria-label="Row details">
   <thead><tr><th>Agent</th><th>Doing</th><th>Running for</th><th>Context</th><th>Usage this session</th><th>Governor</th><th>Memory</th></tr></thead>
   <tbody>
@@ -51,6 +54,10 @@
 </table>
 
 <style>
+  .from {
+    margin-top: var(--space-sm);
+    font: var(--text-caption);
+  }
   .details {
     width: 100%;
     margin-top: var(--space-sm);

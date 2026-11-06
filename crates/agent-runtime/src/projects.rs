@@ -290,6 +290,7 @@ impl Runtime {
             self.store.write(|s| s.worktrees.retain(|_, w| w.repo != p.path))?;
         }
         self.db.audit("user", None, "project_removed", p.path.to_str(), "ok", json!(report))?;
+        self.briefs_stale_for(id);
         self.policy_sync();
         Ok(report)
     }

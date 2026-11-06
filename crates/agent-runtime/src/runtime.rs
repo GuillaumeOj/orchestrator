@@ -240,6 +240,8 @@ pub struct Runtime {
     pub(crate) notion_polling: std::sync::atomic::AtomicBool,
     /// The Linear API key, read once (cleared when the user changes it).
     pub(crate) linear_token: crate::linear::TokenCache,
+    /// P4.5 intake: the refresher's schedule and the last `now.intake` sent.
+    pub(crate) intake: crate::intake::Refresher,
     /// FR-604: (project, server) probes running in the background.
     pub(crate) probing: Mutex<std::collections::BTreeSet<(Option<String>, String)>>,
     /// Told of every Inbox outcome ([`Runtime::set_outcome_sink`]).
@@ -566,6 +568,7 @@ impl Runtime {
             notion_locks: Mutex::new(BTreeMap::new()),
             notion_polling: std::sync::atomic::AtomicBool::new(false),
             linear_token: Default::default(),
+            intake: Default::default(),
             probing: Default::default(),
             pr_watch: Default::default(),
             outcome_sink: Mutex::new(None),
@@ -1198,7 +1201,24 @@ impl Runtime {
     /// FR-207: SIGTERM to `claude`'s group and to every tty-less process whose
     /// cwd is inside the worktree, SIGKILL after 5 s.
     pub fn kill(&self, id: &str) -> Result<Vec<String>> {
-        self.stop(id, StopIntent::Kill)
+        let log = self.stop(id, StopIntent::Kill)?;
+        // A solo session started from intake, killed before any outcome (P4.5).
+        self.intake_on_session_killed(id);
+        Ok(log)
+    }
+
+    /// Starts a solo session on the user's command (`agent_start`; P4.5:
+    /// from an intake item or a brief, checked first and recorded after).
+    pub fn start_solo(
+        &self,
+        spec: &AgentSpec,
+        project: &str,
+        intake: Option<&crate::intake::IntakeLink>,
+    ) -> Result<()> {
+        let claim = self.intake_claim(project, intake)?;
+        self.start(spec)?;
+        self.intake_started(claim, project, "agent", &spec.agent_id, &spec.agent_id);
+        Ok(())
     }
 
     fn stop(&self, id: &str, intent: StopIntent) -> Result<Vec<String>> {

@@ -24,6 +24,8 @@ export const LEVEL = {
   running: { label: 'Running', icon: '▲', color: 'var(--color-attention-running)' },
   waiting: { label: 'Waiting', icon: '◐', color: 'var(--color-attention-waiting)' },
   queued: { label: 'Queued', icon: '□', color: 'var(--color-attention-queued)' },
+  // Ready to start (P4.5): not attention, so no attention color (notes p4-5 "Ready is not attention").
+  ready: { label: 'Ready', icon: '◌', color: 'var(--color-text-muted)' },
   idle: { label: 'Idle', icon: '▭', color: 'var(--color-attention-idle)' },
   done: { label: 'Done', icon: '■', color: 'var(--color-attention-done)' },
 };
@@ -46,14 +48,16 @@ const DECISION = {
   notion: { label: 'Notion comment', icon: '\u{F0C12}' },
   // A rule proposal is a permission's cousin: its colour (no token of its own, notes §7).
   rule_proposal: { label: 'Rule proposal', icon: '\u{F0BC5}', token: 'permission' },
+  // A feature brief the Overwatch planned (P4.5): level 4, its colour is the rule proposal's cousin.
+  brief: { label: 'Brief', icon: '\u{F0219}', color: 'var(--color-accent-default)' },
 };
 
 /** A decision's kind entry: icon, label and its `color.decision.*` token (a gate by its flavour). */
 export function decisionKind(d) {
   const want = d?.kind === 'gate' ? `gate-${d.gate ?? 'restart'}` : d?.kind;
   const key = DECISION[want] ? want : 'alert';
-  const { token = key, ...kind } = DECISION[key];
-  return { ...kind, color: `var(--color-decision-${token})` };
+  const { token = key, color, ...kind } = DECISION[key];
+  return { ...kind, color: color ?? `var(--color-decision-${token})` };
 }
 
 // Decision lifecycle (the marker): icon and color.lifecycle.<state>.

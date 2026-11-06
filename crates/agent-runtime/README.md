@@ -370,6 +370,19 @@ through `orch-tasks` (Local or GitHub Issues, FR-501–503).
   `asked_user` events tagged with the run (`events.team_run_id`).
 - **Remote tasks**: every 5 minutes `sync_task_backends` syncs the GitHub backend of projects with
   an active run; a conflict keeps GitHub's version and adds an `info` Inbox item.
+- **Intake** (P4.5, FR-1312, `intake.rs`): the `orch-intake` thread refreshes each project's intake
+  source (GitHub label / milestone / Projects v2, Linear, repo docs) into the `intake_items` cache
+  every `intake.refresh_secs` (600), staggered 2 s per project at start, at once on a source change
+  or `intake_refresh`, and for repo docs when the local branch tip moves (checked once a
+  minute by the same thread). One refresh in flight per project; an error keeps the last good items. `now.intake` is
+  built from the cache (snapshot, and the delta whole when it changed). Read-only to the sources.
+  Each item's estimate (`intake/estimate.rs`) comes from the last 8 weeks of finished runs and ended
+  solo sessions, re-read on a refresh (at most once a minute) or when `k` moves by 10 %; the rooms
+  follow the week on the minute tick. Starts (`intake/start.rs`): `launch` and `start_solo` claim
+  the item or brief first (`stale`), record it after (`intake.started` / `intake.planned_started`,
+  else `intake.untracked_start`); a run deleted or a solo session killed before any outcome gives
+  its item back. Briefs (`intake/brief.rs`): the Overwatch's `propose_brief` makes a level-4
+  `brief` card; its Launch and Edit only open the prefilled dialog. Nothing here starts work.
 - **Watchdog** (FR-407, every housekeeping pass, any live agent): a turn past its role's
   `turn_ceiling_minutes` is interrupted (Esc) with an Inbox alert; a working agent with no hook for
   15 minutes (and no background work) gets an alert. Once per turn each (`Tracker.turn_started_ms`

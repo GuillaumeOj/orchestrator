@@ -8,6 +8,7 @@ import { checkToast, claudeToast, paletteActions } from './claude.js';
 import { deliveryRef } from './delivery.js';
 import { clock as clockOf } from './format.js';
 import { decisionToast, due, FILTERS, isOpen, older, pendingToast, UNDO_MS, version } from './inbox.js';
+import { openPrefilled, planWithOverwatchIn, refreshIntake, setUpIntake } from './intake.svelte.js';
 import { errText, invoke } from './ipc.js';
 import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
@@ -39,7 +40,7 @@ const CHAT_NARROW = 340;
 /**
  * @typedef {{ rev: number, agents: Record<string, any>, runs: Record<string, any>,
  *   decisions: Record<string, any>, outcomes: any[], counts: { global: any, projects: any },
- *   chat?: { day: string | null, entries: Record<string, any> }, overwatch?: any }} Now
+ *   chat?: { day: string | null, entries: Record<string, any> }, overwatch?: any, intake?: any }} Now
  */
 
 export const app = $state({
@@ -524,6 +525,16 @@ export function routeOpen(r, projectId = null) {
   else if (r.open === 'pane' && r.run) runInPane(r.run, `${r.run}${r.server ? ` · ${r.server}` : ''}`, projectId);
   else if (r.open === 'url' && r.url) openUrl(r.url);
   else if (r.open === 'report') openReport(r.report ?? 'current');
+  // A brief card's Launch / Edit answered by the core (P4.5 api-contract §5): the prefilled dialog.
+  else if (r.open === 'launch' && r.prefill)
+    openPrefilled(r.prefill, {
+      intake: r.intake ?? (r.decision ? { brief_decision: r.decision } : undefined),
+      origin:
+        r.intake?.brief_decision || r.decision
+          ? { kind: 'brief', decision: r.intake?.brief_decision ?? r.decision, title: r.title ?? null }
+          : null,
+      focus: r.focus === 'brief' || r.edit ? 'brief' : null,
+    });
   else if (r.open === 'editor' && r.scope) openPolicy(r.scope, r.project ?? projectId);
   else return false;
   return true;
@@ -1343,6 +1354,19 @@ function updateCommands() {
 
 // ---------------------------------------------------------------- commands
 
+/** The projects "Plan with the Overwatch…" offers: the Mission filter's, else all (notes §8.1). */
+function planProjects() {
+  const all = projects().map((p) => p.id);
+  const f = (app.mission.projects ?? []).filter((id) => all.includes(id));
+  return f.length ? f : all;
+}
+
+/** The palette's hint while the Overwatch cannot answer (notes §8.5). */
+function planHint() {
+  const s = app.now?.overwatch?.status;
+  return s === 'off' ? 'off: your message waits' : s === 'down' ? 'down: your message waits' : undefined;
+}
+
 /**
  * Every action is in the palette with its shortcut (§9.1 principle 1).
  * `scope`: 'agent' commands act on the focused/selected agent and are listed first.
@@ -1362,6 +1386,26 @@ export function commands() {
       },
     },
     { id: 'decisions', label: 'Show decisions', run: () => focusCard() },
+    {
+      id: 'intake.plan',
+      label: 'Plan with the Overwatch…',
+      detail: planHint(),
+      run: () => planWithOverwatchIn(planProjects()),
+    },
+    {
+      id: 'intake.refresh',
+      label: 'Refresh Ready to start',
+      run: () => refreshIntake(app.mission.projects?.length ? app.mission.projects : projects().map((p) => p.id)),
+    },
+    ...(contextProject()
+      ? [
+          {
+            id: 'intake.setup',
+            label: `Set up intake for ${contextProject().name}`,
+            run: () => setUpIntake(contextProject().id),
+          },
+        ]
+      : []),
     { id: 'overwatch.ask', label: 'Ask the Overwatch', run: askOverwatch },
     { id: 'decisions.search', label: 'Search decisions', run: searchDecisions },
     ...(app.now?.overwatch?.status === 'down'

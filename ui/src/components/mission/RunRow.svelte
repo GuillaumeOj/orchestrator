@@ -7,6 +7,7 @@
   import { phaseFull, phaseText, prText, tasksText } from '../../lib/mission.js';
   import { attention } from '../../lib/now.svelte.js';
   import MemberChip from './MemberChip.svelte';
+  import OriginChip from './OriginChip.svelte';
   import PhaseStepper from './PhaseStepper.svelte';
 
   const MAX_CHIPS = 6;
@@ -28,6 +29,7 @@
 
 <div class="l1">
   <span class="where"><span class="muted">{run.project} ›</span> <b>{run.feature}</b></span>
+  {#if run.origin}<OriginChip origin={run.origin} project={run.project} />{/if}
   <PhaseStepper {run} title={phaseFull(run, now)} />
   <span class="grow"></span>
   <span class="phase" class:failed={run.phase === 'failed'} title={phaseFull(run, now)}>{phaseText(run, now)}</span>

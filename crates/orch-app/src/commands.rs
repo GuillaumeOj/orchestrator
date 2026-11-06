@@ -231,8 +231,16 @@ pub async fn chat_day(core: CoreState<'_>, day: String) -> Res<Value> {
 
 /// P4.4: the user's message to the Overwatch (api-contract §3.3): `{entry}`.
 #[tauri::command]
-pub async fn chat_send(core: CoreState<'_>, text: String, thread: Option<String>) -> Res<Value> {
-    blocking(core, move |c| Ok(serde_json::json!({"entry": c.runtime()?.chat_send(&text, thread.as_deref())?}))).await
+pub async fn chat_send(
+    core: CoreState<'_>,
+    text: String,
+    thread: Option<String>,
+    context: Option<Value>,
+) -> Res<Value> {
+    blocking(core, move |c| {
+        Ok(serde_json::json!({"entry": c.runtime()?.chat_send_with(&text, thread.as_deref(), context.as_ref())?}))
+    })
+    .await
 }
 
 /// P4.4: removes a message the Overwatch has not taken (it was down or off).
@@ -577,6 +585,60 @@ pub async fn linear_teams(core: CoreState<'_>) -> Res<Value> {
 #[tauri::command]
 pub async fn linear_states(core: CoreState<'_>, team: String) -> Res<Value> {
     blocking(core, move |c| c.linear_states(&team)).await
+}
+
+// ---- P4.5 intake (api-contract §3.1)
+
+#[tauri::command]
+pub async fn intake_source(core: CoreState<'_>, project: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_source(&project)).await
+}
+
+/// Validates, stores and refreshes at once: `{ preview }`.
+#[tauri::command]
+pub async fn intake_source_set(core: CoreState<'_>, project: String, source: Value) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_source_set(&project, &source)).await
+}
+
+#[tauri::command]
+pub async fn intake_preview(core: CoreState<'_>, project: String, source: Value) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_preview(&project, &source)).await
+}
+
+#[tauri::command]
+pub async fn intake_options(core: CoreState<'_>, project: String, source: Value) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_options(&project, &source)).await
+}
+
+#[tauri::command]
+pub async fn intake_refresh(core: CoreState<'_>, project: Option<String>) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_refresh(project.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn intake_item(core: CoreState<'_>, item: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_item(&item)).await
+}
+
+#[tauri::command]
+pub async fn intake_hide(core: CoreState<'_>, item: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_hide(&item)).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn intake_prefill(
+    core: CoreState<'_>,
+    item: Option<String>,
+    brief_decision: Option<String>,
+    mode: Option<String>,
+) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_prefill(item.as_deref(), brief_decision.as_deref(), mode.as_deref()))
+        .await
+}
+
+#[tauri::command]
+pub async fn intake_unhide(core: CoreState<'_>, item: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_unhide(&item)).await
 }
 
 /// `queue_off_hours`: `entry` and `task` are string ids per the contract

@@ -585,6 +585,33 @@ ALTER TABLE permission_rules ADD COLUMN migrated_at_ms INTEGER;
     r#"
 ALTER TABLE chat_entries ADD COLUMN meta TEXT;
 "#,
+    // 17 (P4.5, FR-1312, D1): a project's intake source (JSON, NULL = none)
+    // and the cache of its items, so the Ready to start lane shows at start.
+    // `updated_at` is the item's revision upstream (GitHub / Linear
+    // `updated_at`, a repo doc's blob id); `position` its order in the source.
+    r#"
+ALTER TABLE projects ADD COLUMN intake_source TEXT;
+CREATE TABLE intake_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    title TEXT NOT NULL,
+    url TEXT,
+    body TEXT NOT NULL DEFAULT '',
+    meta TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL,
+    fetched_at_ms INTEGER NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'ready',
+    started_kind TEXT,
+    started_ref TEXT,
+    hidden_at_ms INTEGER,
+    hidden_rev TEXT,
+    UNIQUE(project_id, source, ref)
+);
+CREATE INDEX intake_items_project ON intake_items(project_id, position);
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

@@ -207,6 +207,10 @@ pub struct Event {
     pub chat: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidate: Option<Value>,
+    /// A planning message (P4.5 api-contract §3.3): `{project, name, path,
+    /// docs_dir, intake, recent_briefs}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<Value>,
 }
 
 impl Event {
@@ -224,6 +228,7 @@ impl Event {
             text: None,
             chat: None,
             candidate: None,
+            plan: None,
         }
     }
 
@@ -243,6 +248,10 @@ impl Event {
         if let Some(t) = self.deadline_ms {
             l.push_str(" · until ");
             l.push_str(&hms(t, tz));
+        }
+        if let Some(p) = &self.plan {
+            l.push_str(" · plan ");
+            l.push_str(&p.to_string());
         }
         l
     }

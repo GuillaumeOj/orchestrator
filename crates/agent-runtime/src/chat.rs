@@ -97,6 +97,8 @@ pub fn verb(d: &Decision) -> &'static str {
         ("question", "reply") => "answered",
         ("rule_proposal", "add") => "added",
         ("rule_proposal", "not_now") => "not now",
+        ("brief", "launch") => "launched",
+        ("brief", "revised") => "revised",
         (_, _) if by == "expired" => "expired",
         // Answered in Claude Code's own dialog (a prompt, a held permission).
         (_, _) if by == "pane" => "answered",

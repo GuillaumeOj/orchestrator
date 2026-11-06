@@ -151,6 +151,9 @@ pub struct NewSession {
     pub base: Option<String>,
     pub message: Option<String>,
     pub tier: Option<String>,
+    /// P4.5: started from an intake item or a planned brief.
+    #[serde(default)]
+    pub intake: Option<agent_runtime::intake::IntakeLink>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -328,6 +331,8 @@ impl Core {
                 std::thread::sleep(PUMP_EVERY);
             }
         })?;
+        // Intake refreshes (P4.5) on their own thread.
+        agent_runtime::runtime::Runtime::spawn_intake(self.runtime()?.clone(), self.stop.clone())?;
         // Background git fetch (FR-103) and open PRs on their own thread: network calls take a while.
         {
             let (rt, stop) = (self.runtime()?.clone(), self.stop.clone());
@@ -465,7 +470,7 @@ impl Core {
             bail!("name {id:?}: use letters, digits, '-' or '_'");
         }
         agent_runtime::overwatch::refuse_reserved(&id)?;
-        rt.start(&solo_spec(&project, &id, req))?;
+        rt.start_solo(&solo_spec(&project, &id, req), &project.id, req.intake.as_ref())?;
         Ok(id)
     }
 
@@ -731,6 +736,10 @@ impl Core {
             };
             let r = rt.decide(n, decision, scope, message)?;
             return Ok(done(r));
+        }
+        // A planned brief (P4.5): Launch · Edit open the prefilled dialog, Dismiss closes it.
+        if let Some(n) = item.strip_prefix("brief-") {
+            return rt.brief_act(n.parse()?, action);
         }
         // A learned-rule proposal (FR-1308): Add rule · Not now · Edit rule.
         if let Some(n) = item.strip_prefix("rule-") {
@@ -1562,6 +1571,7 @@ pub(crate) mod tests {
                 brief: "b".into(),
                 base: None,
                 off_hours: false,
+                intake: None,
             })
             .unwrap();
         let s = core.state();
@@ -2207,6 +2217,7 @@ pub(crate) mod tests {
             brief: "b".into(),
             base: None,
             off_hours: false,
+            intake: None,
         })
         .unwrap();
         let team = rt.store.read(|s| s.agents["fx-lead-1"].allocation.clone());

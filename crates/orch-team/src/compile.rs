@@ -53,6 +53,7 @@ pub const OVERWATCH_TOOLS: &[&str] = &[
     "restart_fresh",
     "reprioritize",
     "propose_rule",
+    "propose_brief",
     "post",
 ];
 /// A solo session (P1).
@@ -90,6 +91,7 @@ pub const ALL_TOOLS: &[&str] = &[
     "restart_fresh",
     "reprioritize",
     "propose_rule",
+    "propose_brief",
     "post",
 ];
 

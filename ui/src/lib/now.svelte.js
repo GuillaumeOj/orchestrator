@@ -43,6 +43,8 @@ function setSnapshot(s) {
     counts: s?.counts ?? { global: {}, projects: {} },
     chat: chatOf(s?.chat),
     overwatch: s?.overwatch ?? OFF,
+    // Ready to start (P4.5, api-contract §2): replaced whole; absent from an older core.
+    intake: s?.intake ?? null,
   };
 }
 
@@ -103,6 +105,8 @@ export function applyNow(ev) {
     if (ev.counts) n.counts = ev.counts;
     // The Overwatch's status (P4.4, api-contract §3.1): sent with the topic `overwatch`.
     if (ev.overwatch) n.overwatch = ev.overwatch;
+    // Intake (P4.5, api-contract §2.1): sent whole, only when it changed.
+    if (ev.intake) n.intake = ev.intake;
     // Today's chat entries (P4.3 api-contract §2.1): new and changed ones.
     if (ev.chat?.length) upsertEntries((n.chat ??= { day: null, entries: {} }), ev.chat);
     n.rev = ev.rev;

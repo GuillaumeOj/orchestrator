@@ -18,7 +18,7 @@
 //!   `request_spec_approval`, `merge`, `report_done`, `sync_integration`;
 //! - the Overwatch's tools (P4.4): `world`, `inspect`, `decide_permission`,
 //!   `answer_question`, `annotate`, `nudge`, `resume_agent`, `restart_fresh`,
-//!   `reprioritize`, `propose_rule`, `post`.
+//!   `reprioritize`, `propose_rule`, `propose_brief`, `post`.
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -331,6 +331,20 @@ pub fn tools() -> Value {
             &["match", "effect", "scope", "from", "why"],
         ),
         tool(
+            "propose_brief",
+            "Propose a feature brief to the user (a card with Launch / Edit / Dismiss). It starts nothing: the user launches it. A new proposal in the same thread replaces the open one.",
+            json!({
+                "project": s("Project id."),
+                "title": s("At most 80 characters."),
+                "slug": s("Feature slug (optional; derived from the title)."),
+                "brief": s("The brief, markdown, at most 8 000 characters; cite the docs it relies on."),
+                "mode": {"type": "string", "enum": ["team", "solo"]},
+                "team": s("Team id for mode team (optional: the project's default team)."),
+                "reply_to": s("Chat entry id of the user's planning message (optional).")
+            }),
+            &["project", "title", "brief", "mode"],
+        ),
+        tool(
             "post",
             "Write in the chat (markdown, at most 2 000 characters): answer the user, or a short status. Links: a doc path, chat:<id>, agent:<id>, run:<id>.",
             json!({"text": s("The text."), "thread": s("A thread id (optional).")}),
@@ -506,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn the_overwatch_sees_its_eleven_tools() {
+    fn the_overwatch_sees_its_twelve_tools() {
         let names = [
             "world",
             "inspect",
@@ -518,6 +532,7 @@ mod tests {
             "restart_fresh",
             "reprioritize",
             "propose_rule",
+            "propose_brief",
             "post",
         ];
         let allowed: Vec<String> = names.iter().map(|s| s.to_string()).collect();

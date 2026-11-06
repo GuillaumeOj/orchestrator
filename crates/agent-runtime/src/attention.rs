@@ -161,6 +161,10 @@ pub struct AgentAttention {
     /// reaching the model (api-contract §4).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub undelivered: Option<Undelivered>,
+    /// P4.5 (api-contract §2.3): the intake item or brief a solo session
+    /// was started from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<serde_json::Value>,
 }
 
 /// A message that waits this long (unseen) shows on its agent's record.
@@ -248,6 +252,9 @@ pub struct RunAttention {
     /// Deferred only: when it resumes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub until_ms: Option<u64>,
+    /// P4.5 (api-contract §2.3): the intake item or brief the run was started from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<serde_json::Value>,
 }
 
 /// A run's tasks by status. Disjoint, except `blocked`: the not-done tasks
@@ -1228,6 +1235,7 @@ impl<'a> Ctx<'a> {
             since_stored: since.is_some(),
             queue,
             undelivered: self.undelivered(a, live),
+            origin: None,
         };
         rec.set_since(since.unwrap_or(0));
         rec
@@ -1330,6 +1338,7 @@ fn run_record(
         }),
         held_in: r.held_in.filter(|_| matches!(r.run.status, RunState::Paused | RunState::Deferred | RunState::Failed)),
         until_ms: (r.run.status == RunState::Deferred).then_some(gov.week_resets_ms).flatten(),
+        origin: None,
     }
 }
 
