@@ -43,9 +43,9 @@ No new command or event. Existing shapes gain one value each.
 
 ```json
 { "tool": "figcraft", "title": "Orchestrator.figcraft", "path": "docs/design/Orchestrator.figcraft",
-  "node_id": "12:34", "previewable": false, "on_integration": true }
+  "node_id": "252198", "previewable": false, "on_integration": true }
 ```
 
 - From a hand-off `artifact` = a repo path ending in `.figcraft` (case-insensitive), optional `#<node id>` or `#node=<node id>` (percent-decoded). `node_id` absent without a fragment.
 - `on_integration` filled by the view as for `file`.
-- `artifact_open` on it opens the file with the default app (FigCraft), not Quick Look. Errors unchanged (`not found on branch`).
+- `artifact_open` on it opens a copy extracted to the app's `previews/` folder (never the integration worktree's file) with the default app (FigCraft), not Quick Look. Errors unchanged (`not found on branch`).
