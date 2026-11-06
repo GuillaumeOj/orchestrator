@@ -3,7 +3,7 @@
   // design notes): a 4 px vertical separator on the slot's left edge, straddling
   // the column's 1 px border. Drag left = wider (live); ←/→ ±16 px (⇧ ±64),
   // Home/End min/max, ⏎ or double-click back to the default. Saved on release.
-  import { app, chatBounds, chatWidthNow, setChatWidth } from '../../lib/app.svelte.js';
+  import { app, chatBounds, chatWidthNow, clampChatWidth, setChatWidth } from '../../lib/app.svelte.js';
 
   const STEP = 16;
   const BIG = 64;
@@ -26,8 +26,7 @@
     body.style.userSelect = 'none';
     dragging = true;
     const move = (ev) => {
-      const b = chatBounds();
-      app.chatWidth = Math.round(Math.min(b.max, Math.max(b.min, w0 + x0 - ev.clientX)));
+      app.chatWidth = clampChatWidth(w0 + x0 - ev.clientX, chatBounds());
     };
     const up = () => {
       el.removeEventListener('pointermove', move);
@@ -44,6 +43,7 @@
   }
 
   function key(e) {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
     const step = e.shiftKey ? BIG : STEP;
     const b = chatBounds();
     const to = {
@@ -53,7 +53,7 @@
       End: b.max,
     }[e.key];
     if (e.key === 'Enter') setChatWidth(null);
-    else if (to !== undefined) setChatWidth(Math.min(b.max, Math.max(b.min, to)));
+    else if (to !== undefined) setChatWidth(clampChatWidth(to, b));
     else return;
     e.preventDefault();
   }
