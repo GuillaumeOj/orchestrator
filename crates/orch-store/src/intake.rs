@@ -104,6 +104,10 @@ pub struct IntakeStatus {
     /// Repo docs: the branch tip the cached items were read at.
     #[serde(default)]
     pub tip: Option<String>,
+    /// The source's own view when the source said where it is (a Projects
+    /// v2 board, a Linear team or project): kept across a failed refresh.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 const COLS: &str = "id, project_id, source, ref, title, url, body, meta, updated_at, fetched_at_ms, position, state, \

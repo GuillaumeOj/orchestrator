@@ -222,6 +222,7 @@ fn linear_items_and_key_errors() {
     *f.linear.issues.lock().unwrap() = Ok(vec![
         json!({"id": "u1", "identifier": "ENG-42", "title": "Refunds", "description": "d", "priority": 2,
                "estimate": 5, "sortOrder": 1.0, "url": "https://linear.app/acme/issue/ENG-42/refunds",
+               "team": {"key": "ENG"}, "project": null,
                "updatedAt": "2026-11-01T00:00:00Z", "labels": {"nodes": [{"name": "next"}]}}),
         json!({"id": "u2", "identifier": "ENG-43", "title": "Task", "description": "", "priority": 1,
                "updatedAt": "2026-11-01T00:00:00Z", "labels": {"nodes": [{"name": "orch"}]}}),

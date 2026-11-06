@@ -276,34 +276,24 @@ fn source_label(s: &IntakeSource, repo: Option<&str>, base: &str) -> String {
 }
 
 /// The source's list in its own UI (F10); `None` for repo docs.
-fn source_url(s: &IntakeSource, repo: Option<&str>, items: &[&IntakeRow]) -> Option<String> {
+fn source_url(s: &IntakeSource, repo: Option<&str>, listed: Option<&str>) -> Option<String> {
     match s {
         IntakeSource::Github { filter, .. } => {
-            let repo = repo?;
             let q = |s: &str| src::enc(&s.replace('"', ""));
             Some(match filter {
                 GithubIntakeFilter::Label { names } => {
                     let labels: String = names.iter().map(|n| format!("+label:%22{}%22", q(n))).collect();
-                    format!("https://github.com/{repo}/issues?q=is:issue+is:open{labels}")
+                    format!("https://github.com/{}/issues?q=is:issue+is:open{labels}", repo?)
                 }
                 GithubIntakeFilter::Milestone { title } => {
-                    format!("https://github.com/{repo}/issues?q=is:issue+is:open+milestone:%22{}%22", q(title))
+                    format!("https://github.com/{}/issues?q=is:issue+is:open+milestone:%22{}%22", repo?, q(title))
                 }
-                GithubIntakeFilter::Project { owner, number, .. } => {
-                    format!("https://github.com/orgs/{owner}/projects/{number}")
-                }
+                // GitHub says whether the board is an organization's or a user's.
+                GithubIntakeFilter::Project { .. } => listed?.to_string(),
             })
         }
-        IntakeSource::Linear { team, project, .. } => {
-            // The workspace slug is only known from an item's URL.
-            let ws = items.iter().find_map(|r| {
-                r.url.as_deref()?.strip_prefix("https://linear.app/")?.split('/').next().map(str::to_string)
-            })?;
-            Some(match project {
-                Some(p) => format!("https://linear.app/{ws}/project/{p}"),
-                None => format!("https://linear.app/{ws}/team/{team}/active"),
-            })
-        }
+        // The workspace slug, the team key and the project slug come with the issues.
+        IntakeSource::Linear { .. } => listed.map(str::to_string),
         _ => None,
     }
 }
@@ -510,6 +500,8 @@ impl Runtime {
                     status.refreshed_at_ms = Some(now);
                     status.more = listing.more();
                     status.tip = tip;
+                    // An empty answer has no link to give: the last one stays.
+                    status.url = listing.url.or(status.url.take());
                     self.intake_estimates_update(true);
                     self.event(
                         "-",
@@ -610,7 +602,7 @@ impl Runtime {
                 "status": state,
                 "error": status.error,
                 "refreshed_at_ms": status.refreshed_at_ms,
-                "url": source_url(&source, repo.as_deref(), &mine),
+                "url": source_url(&source, repo.as_deref(), status.url.as_deref()),
                 "count": shown,
                 "more": ready.len().saturating_sub(shown) + status.more,
                 "hidden": hidden.len(),
