@@ -330,7 +330,7 @@ export function undoInfo(line, file = null, now = Date.now()) {
       break;
     }
     case 'Remove rule':
-      info.explain = `Removes the rule from ${file}.`;
+      info.explain = `Removes the rule from ${where}.`;
       info.toast = 'Rule removed.';
       info.done = `Rule removed · ${at(line.undone_at_ms)}`;
       break;

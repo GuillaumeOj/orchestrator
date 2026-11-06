@@ -137,7 +137,7 @@
     const want = spec?.doc;
     if (!want || !v?.docs) return null;
     anchor = spec.anchor ?? null;
-    anchorAsked++;
+    anchorAsked = untrack(() => anchorAsked) + 1;
     app.panes[paneId] = { ...app.panes[paneId], doc: null, anchor: null }; // one-shot, also when it is not one of the docs
     return v.docs.includes(want) ? want : null;
   }
