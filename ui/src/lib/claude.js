@@ -74,7 +74,11 @@ export function updateBlock(c, now = Date.now()) {
       log: 'open',
       logLabel: 'Output of claude update',
     };
-  if (u.state === 'error')
+  const updated = u.updated ? `Updated ${u.updated.from} → ${u.updated.to}.` : null;
+  // A failed check right after an update keeps the Updated block, with the failure as a muted line.
+  const checkErr =
+    u.state === 'error' && updated ? `Couldn't check for newer versions: ${u.error ?? 'unknown error'}` : null;
+  if (u.state === 'error' && !updated)
     return {
       kind: 'check-failed',
       lead: `Couldn't check for updates: ${u.error ?? 'unknown error'}`,
@@ -90,8 +94,7 @@ export function updateBlock(c, now = Date.now()) {
     };
   if (u.state === 'checking')
     return { kind: 'checking', lead: 'Checking for updates…', tone: 'muted', glyph: 'spinner', buttons: [], log: null };
-  const updated = u.updated ? `Updated ${u.updated.from} → ${u.updated.to}.` : null;
-  if (u.available)
+  if (u.available && !checkErr)
     return {
       kind: 'available',
       lead: `${u.latest} is available`,
@@ -109,6 +112,7 @@ export function updateBlock(c, now = Date.now()) {
       glyph: 'dot',
       line2:
         'New and resumed agents use it; agents already running keep the version they started with until they restart.',
+      line3: checkErr,
       buttons: [{ ...check, def: true }],
       log: u.log?.length ? 'collapsible' : null,
     };

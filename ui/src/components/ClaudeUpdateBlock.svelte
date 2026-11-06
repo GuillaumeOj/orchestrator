@@ -56,6 +56,7 @@
     {/each}
   </div>
   {#if st.line2}<div class="l2 muted">{st.line2}</div>{/if}
+  {#if st.line3}<div class="l2 muted" title={c?.update?.error}>{st.line3}</div>{/if}
   {#if st.log === 'collapsible' && !logOpen && !compact}
     <button class="link l2" onclick={() => (shown = true)}>Show output</button>
   {/if}

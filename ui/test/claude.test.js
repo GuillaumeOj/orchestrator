@@ -141,6 +141,20 @@ describe('update block', () => {
     expect(b.buttons.map((x) => x.label)).toEqual(['Check now', 'Update to 2.1.330']);
     expect(b.buttons[1].primary).toBe(true);
   });
+  it('a failed check right after an update keeps the Updated block with a muted line', () => {
+    const upOk = { updated: { from: '2.1.317', to: '2.1.330', at: 1 }, available: false };
+    for (const extra of [{ state: 'error', error: 'offline', error_from: 'check' }, { state: 'idle' }]) {
+      const b = updateBlock(claude({}, { ...upOk, ...extra }));
+      expect(b.kind).toBe('updated');
+      expect(b.lead).toBe('Updated 2.1.317 → 2.1.330.');
+      expect(b.buttons.map((x) => x.label)).toEqual(['Check now']);
+      expect(b.line3).toBe(extra.error ? "Couldn't check for newer versions: offline" : null);
+    }
+    // a failed update still wins
+    expect(updateBlock(claude({}, { ...upOk, state: 'error', error: 'x', error_from: 'update' })).kind).toBe(
+      'update-failed',
+    );
+  });
   it('keys follow the buttons', () => {
     expect(liveKeys(claude())).toEqual({ u: true, r: true });
     expect(liveKeys(claude({}, { available: false }))).toEqual({ u: false, r: true });
