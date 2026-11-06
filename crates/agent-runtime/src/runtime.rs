@@ -1203,9 +1203,7 @@ impl Runtime {
     pub fn kill(&self, id: &str) -> Result<Vec<String>> {
         let log = self.stop(id, StopIntent::Kill)?;
         // A solo session started from intake, killed before any outcome (P4.5).
-        if self.store.read(|s| s.agents.get(id).is_some_and(|a| a.team.is_none() && !a.is_overwatch())) {
-            self.intake_on_session_killed(id);
-        }
+        self.intake_on_session_killed(id);
         Ok(log)
     }
 

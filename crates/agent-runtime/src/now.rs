@@ -571,9 +571,7 @@ impl Runtime {
         // P4.5: where each started run and session came from (F13: on outcomes too).
         let origins = self.intake_origins();
         let origin_of = |run: Option<&str>, agent: Option<&str>| {
-            run.and_then(|r| origins.get(&("run".to_string(), r.to_string())))
-                .or_else(|| agent.and_then(|a| origins.get(&("agent".to_string(), a.to_string()))))
-                .cloned()
+            run.and_then(|r| origins.runs.get(r)).or_else(|| agent.and_then(|a| origins.agents.get(a))).cloned()
         };
         let mut new_outcomes = new_outcomes;
         for o in &mut new_outcomes {

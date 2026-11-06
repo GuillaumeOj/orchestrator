@@ -80,8 +80,7 @@ pub fn render(r: &Value, tz: &governor::jiff::tz::TimeZone) -> String {
         ));
         if let Some(t) = p["refreshed_at_ms"].as_u64() {
             let mins = now.saturating_sub(t) / 60_000;
-            let at = Timestamp::from_millisecond(t as i64).unwrap_or_default().to_zoned(tz.clone());
-            out.push_str(&format!(" · updated {} ({mins} min ago)", at.strftime("%a %H:%M")));
+            out.push_str(&format!(" · updated {} ({mins} min ago)", crate::attention::clock(t, now, tz)));
         }
         out.push('\n');
     }

@@ -26,29 +26,46 @@ pub struct IntakeLink {
     pub brief_decision: Option<String>,
 }
 
+/// Where started runs and sessions came from, by run id and agent id.
+#[derive(Default)]
+pub(crate) struct Origins {
+    pub runs: std::collections::BTreeMap<String, Value>,
+    pub agents: std::collections::BTreeMap<String, Value>,
+}
+
 /// What a start claimed, held until it succeeded or failed.
+/// `None`: an untracked start.
 pub struct Claim<'a> {
     rt: &'a Runtime,
-    what: Claimed,
-    key: Option<String>,
+    held: Option<(String, Claimed)>,
 }
 
 enum Claimed {
-    None,
     Item(IntakeRow),
     Brief(InboxItem),
 }
 
 impl Drop for Claim<'_> {
     fn drop(&mut self) {
-        if let Some(k) = &self.key {
+        if let Some((k, _)) = &self.held {
             self.rt.intake.claims.lock().unwrap_or_else(|e| e.into_inner()).remove(k);
         }
     }
 }
 
+/// Releases `key` when dropped before the claim holds it (a failed check).
+struct KeyGuard<'a>(&'a Runtime, Option<String>);
+
+impl Drop for KeyGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(k) = self.1.take() {
+            self.0.intake.claims.lock().unwrap_or_else(|e| e.into_inner()).remove(&k);
+        }
+    }
+}
+
 /// A command error whose text is the JSON `{code: "stale", message, …}`.
-fn stale(message: &str, started: Option<Value>) -> anyhow::Error {
+pub(super) fn stale(message: &str, started: Option<Value>) -> anyhow::Error {
     let mut v = json!({"code": "stale", "message": message});
     if let Some(s) = started {
         v["started"] = s;
@@ -85,17 +102,17 @@ pub fn kebab(s: &str, max: usize) -> String {
 /// `base`, else `base-2`, `base-3`… (within `max`) while `taken`.
 fn unique(base: &str, max: usize, taken: impl Fn(&str) -> bool) -> String {
     let base = if base.is_empty() { "work" } else { base };
-    (1..)
+    if !taken(base) {
+        return base.to_string();
+    }
+    (2..)
         .map(|n| {
-            if n == 1 {
-                return base.to_string();
-            }
             let suffix = format!("-{n}");
             let head: String = base.chars().take(max.saturating_sub(suffix.len())).collect();
             format!("{}{suffix}", head.trim_end_matches('-'))
         })
         .find(|c| !taken(c))
-        .unwrap_or_default()
+        .expect("an unbounded range")
 }
 
 /// The item as the brief the user submits (spec §3.3): title, source
@@ -136,10 +153,15 @@ impl Runtime {
             .or_else(|| self.db.teams(Some(&p.id)).ok()?.into_iter().next().map(|t| t.id))
     }
 
-    fn open_brief(&self, id: &str) -> Result<InboxItem> {
+    /// The brief decision `brief-<n>`, open or closed.
+    pub(super) fn find_brief(&self, id: &str) -> Result<InboxItem> {
         let n = brief_n(id)?;
         let item = self.store.read(|s| s.inbox.iter().find(|i| i.id == n && i.kind == "brief").cloned());
-        let item = item.ok_or_else(|| anyhow!("no brief decision {id:?}"))?;
+        item.ok_or_else(|| anyhow!("no brief decision {id:?}"))
+    }
+
+    fn open_brief(&self, id: &str) -> Result<InboxItem> {
+        let item = self.find_brief(id)?;
         if !item.open() {
             return Err(stale("brief closed", None));
         }
@@ -178,8 +200,7 @@ impl Runtime {
                 let r = self.ready_row(i)?;
                 let p = self.intake_project(&r.project_id)?;
                 let facts = self.project_facts(&p);
-                let shown = super::item_json(&super::ItemFields::of_row(&r), &facts, None);
-                let suggested = shown["mode"].as_str().unwrap_or("solo").to_string();
+                let suggested = super::suggested_mode(&r.meta, &facts).to_string();
                 let wanted = r.meta["team"].as_str().map(str::to_string);
                 let url = r.url.clone().unwrap_or_else(|| r.reference.clone());
                 (p, r.title.clone(), item_brief(&r), suggested, wanted, None, Some(url))
@@ -231,39 +252,43 @@ impl Runtime {
     /// ready (or open). Held until the returned claim is dropped; taken
     /// before the check, so a start that just finished is seen as started.
     pub(crate) fn intake_claim(&self, project: &str, link: Option<&IntakeLink>) -> Result<Claim<'_>> {
-        let link = link.filter(|l| l.item.is_some() || l.brief_decision.is_some());
+        enum Link<'l> {
+            Item(&'l str),
+            Brief(&'l str),
+        }
+        let link = match link.map(|l| (l.item.as_deref(), l.brief_decision.as_deref())) {
+            None | Some((None, None)) => return Ok(Claim { rt: self, held: None }),
+            Some((Some(_), Some(_))) => bail!(bad("intake", "an item or a brief decision, not both")),
+            Some((Some(i), None)) => Link::Item(i),
+            Some((None, Some(b))) => Link::Brief(b),
+        };
         let key = match link {
-            None => return Ok(Claim { rt: self, what: Claimed::None, key: None }),
-            Some(IntakeLink { item: Some(_), brief_decision: Some(_) }) => {
-                bail!(bad("intake", "an item or a brief decision, not both"))
-            }
-            Some(IntakeLink { item: Some(i), .. }) => format!("it_{}", item_id(i)?),
-            Some(IntakeLink { brief_decision: Some(b), .. }) => crate::decision::decision_id("brief", brief_n(b)?),
-            Some(_) => unreachable!(),
+            Link::Item(i) => format!("it_{}", item_id(i)?),
+            Link::Brief(b) => crate::decision::decision_id("brief", brief_n(b)?),
         };
         if !self.intake.claims.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone()) {
             return Err(stale("already started", None));
         }
-        // Released on any error below (the claim's drop).
-        let mut claim = Claim { rt: self, what: Claimed::None, key: Some(key) };
-        claim.what = match link {
-            Some(IntakeLink { item: Some(i), .. }) => {
+        // Released on any error below.
+        let mut guard = KeyGuard(self, Some(key));
+        let what = match link {
+            Link::Item(i) => {
                 let r = self.ready_row(i)?;
                 if r.project_id != project {
                     bail!(bad("intake", format!("item {i} is not of project {project}")));
                 }
                 Claimed::Item(r)
             }
-            Some(IntakeLink { brief_decision: Some(b), .. }) => {
+            Link::Brief(b) => {
                 let d = self.open_brief(b)?;
                 if d.payload["project"].as_str() != Some(project) {
                     bail!(bad("intake", format!("{b} is not a brief of project {project}")));
                 }
                 Claimed::Brief(d)
             }
-            _ => unreachable!(),
         };
-        Ok(claim)
+        let key = guard.1.take().expect("held");
+        Ok(Claim { rt: self, held: Some((key, what)) })
     }
 
     /// After a successful start of `kind` (`run` | `agent`) `reference`
@@ -271,11 +296,11 @@ impl Runtime {
     /// brief closes as launched, or the start is untracked.
     pub(crate) fn intake_started(&self, claim: Claim, project: &str, kind: &str, reference: &str, name: &str) {
         let mode = if kind == "run" { "team" } else { "solo" };
-        match &claim.what {
-            Claimed::None => {
+        match claim.held.as_ref().map(|(_, w)| w) {
+            None => {
                 self.event("-", "intake.untracked_start", json!({"project": project, "kind": kind, "ref": name}));
             }
-            Claimed::Item(r) => {
+            Some(Claimed::Item(r)) => {
                 match self.db.intake_mark_started(r.id, kind, reference) {
                     Ok(true) => {}
                     // Gone upstream (or hidden) while the start ran: no origin to keep.
@@ -296,7 +321,7 @@ impl Runtime {
                            "ref": r.reference, "est_pp": est_pp, "started": reference}),
                 );
             }
-            Claimed::Brief(d) => {
+            Some(Claimed::Brief(d)) => {
                 let id = crate::decision::decision_id("brief", d.id);
                 let title = d.payload["title"].as_str().unwrap_or("");
                 if let Err(e) =
@@ -312,7 +337,6 @@ impl Runtime {
                 );
             }
         }
-        drop(claim);
     }
 
     /// The run or session ended before any outcome: its item is ready again.
@@ -328,11 +352,7 @@ impl Runtime {
     }
 
     fn started_from_intake(&self, kind: &str, reference: &str) -> bool {
-        self.db
-            .intake_started()
-            .unwrap_or_default()
-            .iter()
-            .any(|r| r.started_kind.as_deref() == Some(kind) && r.started_ref.as_deref() == Some(reference))
+        self.db.intake_started_by(kind, reference).unwrap_or(false)
     }
 
     /// A run deleted by the user: its item comes back unless the run had an
@@ -367,8 +387,8 @@ impl Runtime {
 
     /// Where each started run and session came from (api-contract §2.3,
     /// F13, F14), by `(kind, ref)`.
-    pub(crate) fn intake_origins(&self) -> std::collections::BTreeMap<(String, String), Value> {
-        let mut out = std::collections::BTreeMap::new();
+    pub(crate) fn intake_origins(&self) -> Origins {
+        let mut out = Origins::default();
         for r in self.db.intake_started().unwrap_or_default() {
             let (Some(kind), Some(reference)) = (r.started_kind.clone(), r.started_ref.clone()) else { continue };
             let v = if r.source == INTAKE_BRIEF_SOURCE {
@@ -377,7 +397,10 @@ impl Runtime {
                 json!({"kind": "intake", "item": format!("it_{}", r.id), "source": r.source, "ref": r.reference,
                        "url": r.url})
             };
-            out.insert((kind, reference), v);
+            match kind.as_str() {
+                "run" => out.runs.insert(reference, v),
+                _ => out.agents.insert(reference, v),
+            };
         }
         out
     }

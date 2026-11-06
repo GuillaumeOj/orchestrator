@@ -35,7 +35,7 @@ pub(crate) fn err(code: &'static str, message: impl Into<String>) -> ToolErr {
     ToolErr { code, message: message.into() }
 }
 
-fn bad(message: impl Into<String>) -> ToolErr {
+pub(crate) fn bad(message: impl Into<String>) -> ToolErr {
     err("bad_request", message)
 }
 
@@ -53,7 +53,7 @@ pub(crate) fn decision_n(id: &str, prefix: &str) -> Result<u64, ToolErr> {
         .ok_or_else(|| bad(format!("decision {id:?}: expected {prefix}-<n>")))
 }
 
-fn require<'a>(args: &'a Value, k: &str) -> Result<&'a str, ToolErr> {
+pub(crate) fn require<'a>(args: &'a Value, k: &str) -> Result<&'a str, ToolErr> {
     str_arg(args, k).ok_or_else(|| bad(format!("`{k}` is required")))
 }
 

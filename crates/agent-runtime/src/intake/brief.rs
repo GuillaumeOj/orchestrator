@@ -6,12 +6,12 @@
 //! the card closes as `launched` when the user's submit starts it. The
 //! Overwatch never starts anything (ADR-011).
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use orch_store::{InboxItem, InboxStatus};
 use serde_json::{Value, json};
 
 use crate::inbox::Stage;
-use crate::overwatch::tools::{Out, ToolErr, err};
+use crate::overwatch::tools::{Out, bad, require};
 use crate::runtime::Runtime;
 use crate::team::str_arg;
 
@@ -20,10 +20,6 @@ pub const BRIEF_MAX: usize = 8000;
 /// Below rule proposals in the Inbox order.
 const PRIORITY_BRIEF: i64 = 5;
 
-fn bad(message: impl Into<String>) -> ToolErr {
-    err("bad_request", message)
-}
-
 impl Runtime {
     fn open_briefs(&self) -> Vec<InboxItem> {
         self.store.read(|s| s.inbox.iter().filter(|i| i.kind == "brief" && i.open()).cloned().collect())
@@ -31,7 +27,7 @@ impl Runtime {
 
     /// `propose_brief {project, title, slug?, brief, mode, team?, reply_to?}`.
     pub(crate) fn ow_propose_brief(&self, args: &Value) -> Out {
-        let project = str_arg(args, "project").ok_or_else(|| bad("`project` is required"))?;
+        let project = require(args, "project")?;
         let p = self.db.project(project)?.ok_or_else(|| bad(format!("no project {project:?}")))?;
         let title = str_arg(args, "title").map(str::trim).unwrap_or("");
         if title.is_empty() || title.chars().count() > TITLE_MAX {
@@ -122,15 +118,14 @@ impl Runtime {
     /// open the dialog prefilled (`routeOpen {open: "launch"}`): nothing is
     /// started here.
     pub fn brief_act(&self, n: u64, action: &str) -> Result<Value> {
-        let item = self.store.read(|s| s.inbox.iter().find(|i| i.id == n && i.kind == "brief").cloned());
-        let item = item.ok_or_else(|| anyhow!("no brief {n}"))?;
         let id = crate::decision::decision_id("brief", n);
+        let item = self.find_brief(&id)?;
         if item.ended() && action == "dismiss" {
             self.close_item(n, InboxStatus::Dismissed, "dismiss", "user");
             return Ok(json!({"ok": true, "effect": "dismissed", "lifecycle": self.lifecycle(n)}));
         }
         if !item.open() {
-            bail!(json!({"code": "stale", "message": "brief closed"}).to_string());
+            return Err(super::start::stale("brief closed", None));
         }
         match action {
             "launch" | "edit" => {

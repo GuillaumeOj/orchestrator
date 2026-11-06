@@ -346,6 +346,33 @@ impl Store {
                 |r| r.get::<_, i64>(0),
             )? as u64)
         })
+        .inspect(|_| self.note([TOPIC]))
+    }
+
+    /// A run or session (`kind`, `reference`) was started from an item or brief.
+    pub fn intake_started_by(&self, kind: &str, reference: &str) -> Result<bool> {
+        let (kind, reference) = (kind.to_string(), reference.to_string());
+        self.read(move |c| {
+            Ok(c.query_row(
+                "SELECT 1 FROM intake_items WHERE state='started' AND started_kind=?1 AND started_ref=?2 LIMIT 1",
+                params![kind, reference],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+        })
+    }
+
+    /// The items the lane lists (ready and hidden), of one project or all.
+    pub fn intake_listed(&self, project: Option<&str>) -> Result<Vec<IntakeRow>> {
+        let p = project.map(str::to_string);
+        self.read(move |c| {
+            let mut st = c.prepare(&format!(
+                "SELECT {COLS} FROM intake_items WHERE state!='started' AND (?1 IS NULL OR project_id=?1)
+                 ORDER BY project_id, position, id"
+            ))?;
+            Ok(st.query_map([p], row)?.collect::<rusqlite::Result<_>>()?)
+        })
     }
 
     /// The started rows (items and briefs), oldest first.

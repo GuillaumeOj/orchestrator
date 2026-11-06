@@ -6,9 +6,11 @@
 //! with the room left this week. Advice only: it never blocks a start.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use governor::AllocationId;
 use governor::jiff::Timestamp;
+use orch_protocol::round1;
 use orch_store::UsageSource;
 use serde_json::{Value, json};
 
@@ -43,11 +45,11 @@ impl Samples {
 }
 
 /// What is left this week for a project.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Room {
-    pub pp: Option<f64>,
+    pub pp: f64,
     /// `allocation` | `week`.
-    pub scope: Option<&'static str>,
+    pub scope: &'static str,
 }
 
 /// The estimator's inputs, kept between refreshes.
@@ -55,14 +57,10 @@ pub struct Room {
 pub struct EstState {
     /// The calibration the samples were converted with.
     pub k: f64,
-    pub samples: Samples,
+    pub samples: Arc<Samples>,
     pub rooms: BTreeMap<String, Room>,
-    /// Team, solo.
-    pub defaults: (f64, f64),
-}
-
-fn tenth(x: f64) -> f64 {
-    (x * 10.0).round() / 10.0
+    pub default_team_pp: f64,
+    pub default_solo_pp: f64,
 }
 
 /// Linear-interpolated percentile of sorted `v`.
@@ -105,23 +103,23 @@ pub fn mode_estimate(s: &Samples, project: &str, mode: &str, default_pp: f64, fa
         ("default", 0, None)
     };
     let (lo, hi) = r.unwrap_or((default_pp * (1.0 - SPREAD), default_pp * (1.0 + SPREAD)));
-    json!({"low_pp": tenth(lo * factor), "high_pp": tenth(hi * factor), "basis": basis, "samples": n})
+    json!({"low_pp": round1(lo * factor), "high_pp": round1(hi * factor), "basis": basis, "samples": n})
 }
 
 /// The item's `Estimate` (api-contract §2.2, F6, F7).
 pub fn estimate(st: &EstState, project: &str, size: Option<&str>, suggested: &str) -> Value {
     let f = size_factor(size);
-    let team = mode_estimate(&st.samples, project, "team", st.defaults.0, f);
-    let solo = mode_estimate(&st.samples, project, "solo", st.defaults.1, f);
-    let room = st.rooms.get(project).cloned().unwrap_or_default();
+    let team = mode_estimate(&st.samples, project, "team", st.default_team_pp, f);
+    let solo = mode_estimate(&st.samples, project, "solo", st.default_solo_pp, f);
+    let room = st.rooms.get(project);
     let high = if suggested == "team" { &team } else { &solo }["high_pp"].as_f64().unwrap_or(0.0);
     json!({
         "team": team,
         "solo": solo,
         "size": size.unwrap_or("M"),
-        "room_pp": room.pp,
-        "room_scope": room.scope,
-        "over_room": room.pp.is_some_and(|r| high > r),
+        "room_pp": room.map(|r| r.pp),
+        "room_scope": room.map(|r| r.scope),
+        "over_room": room.is_some_and(|r| high > r.pp),
     })
 }
 
@@ -206,10 +204,10 @@ impl Runtime {
                     let own = plan.allocations.iter().find(|a| a.id == charged && charged.0 != "default");
                     let room = match own {
                         Some(a) => Room {
-                            pp: Some(tenth((budget * a.weight / weights - g.allocation_usage_pct(&a.id)).max(0.0))),
-                            scope: Some("allocation"),
+                            pp: round1((budget * a.weight / weights - g.allocation_usage_pct(&a.id)).max(0.0)),
+                            scope: "allocation",
                         },
-                        None => Room { pp: Some(tenth(week_left)), scope: Some("week") },
+                        None => Room { pp: round1(week_left), scope: "week" },
                     };
                     (id, room)
                 })
@@ -228,30 +226,28 @@ impl Runtime {
         let k = self.intake_k();
         let old = self.intake.est.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let moved = old.as_ref().is_none_or(|o| ((k - o.k) / o.k.max(1e-9)).abs() >= K_MOVE);
-        let samples = match &old {
-            Some(o) if !force && !moved => o.samples.clone(),
+        let (k, samples) = match &old {
+            Some(o) if !force && !moved => (o.k, o.samples.clone()),
             _ => {
                 self.intake.est_at.store(now, Ordering::SeqCst);
-                self.intake_samples(k, now)
+                (k, Arc::new(self.intake_samples(k, now)))
             }
         };
         let st = EstState {
-            k: if force || moved { k } else { old.as_ref().map_or(k, |o| o.k) },
+            k,
             samples,
             rooms: self.intake_rooms(),
-            defaults: (
-                default_pp(self, DEFAULT_TEAM_KEY, DEFAULT_TEAM_PP),
-                default_pp(self, DEFAULT_SOLO_KEY, DEFAULT_SOLO_PP),
-            ),
+            default_team_pp: default_pp(self, DEFAULT_TEAM_KEY, DEFAULT_TEAM_PP),
+            default_solo_pp: default_pp(self, DEFAULT_SOLO_KEY, DEFAULT_SOLO_PP),
         };
-        if old.as_ref() != Some(&st) {
-            *self.intake.est.lock().unwrap_or_else(|e| e.into_inner()) = Some(st);
+        if old.as_deref() != Some(&st) {
+            *self.intake.est.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(st));
             self.db.note([super::TOPIC]);
         }
     }
 
     /// The estimator's state, computed on first use.
-    pub(crate) fn intake_est(&self) -> EstState {
+    pub(crate) fn intake_est(&self) -> Arc<EstState> {
         if let Some(s) = self.intake.est.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             return s;
         }
@@ -268,9 +264,10 @@ mod tests {
         let m = |v: &[(&str, &[f64])]| v.iter().map(|(p, s)| (p.to_string(), s.to_vec())).collect();
         EstState {
             k: 1.0,
-            samples: Samples { team: m(team), solo: m(solo) },
+            samples: Arc::new(Samples { team: m(team), solo: m(solo) }),
             rooms: BTreeMap::new(),
-            defaults: (6.0, 1.5),
+            default_team_pp: 6.0,
+            default_solo_pp: 1.5,
         }
     }
 
@@ -290,7 +287,7 @@ mod tests {
     #[test]
     fn size_scales_and_room_warns() {
         let mut s = st(&[], &[("shop", &[1.0])]);
-        s.rooms.insert("shop".into(), Room { pp: Some(3.0), scope: Some("allocation") });
+        s.rooms.insert("shop".into(), Room { pp: 3.0, scope: "allocation" });
         let l = estimate(&s, "shop", Some("L"), "team");
         assert_eq!(l["team"], json!({"low_pp": 7.2, "high_pp": 16.8, "basis": "default", "samples": 0}));
         assert_eq!(
@@ -308,7 +305,7 @@ mod tests {
     fn range_is_the_interquartile_span() {
         assert_eq!(range(&[]), None);
         let (lo, hi) = range(&[2.0, 0.0, f64::NAN]).unwrap();
-        assert_eq!((tenth(lo), tenth(hi)), (1.2, 2.8), "one usable sample: ± 40 %");
+        assert_eq!((round1(lo), round1(hi)), (1.2, 2.8), "one usable sample: ± 40 %");
         assert_eq!(range(&[1.0, 2.0, 3.0]), Some((1.5, 2.5)));
     }
 }

@@ -67,7 +67,7 @@ pub struct Refresher {
     /// Linear's 429 back-off, per project.
     backoff: Mutex<BTreeMap<String, Arc<Backoff>>>,
     /// The estimator's history and rooms (spec §3.4).
-    pub(crate) est: Mutex<Option<estimate::EstState>>,
+    pub(crate) est: Mutex<Option<Arc<estimate::EstState>>>,
     /// Items and briefs a start is claiming (one start each).
     pub(crate) claims: Mutex<BTreeSet<String>>,
     /// When the history was last read (ms): at most once a minute.
@@ -165,12 +165,21 @@ struct ProjectFacts {
     can_team: bool,
 }
 
-/// An item as `now.intake` and the commands show it (api-contract §1.2),
-/// with its estimate when the estimator's state is given.
-fn item_json(f: &ItemFields, facts: &ProjectFacts, est: Option<&estimate::EstState>) -> Value {
+/// The mode an item suggests: its `mode` front matter, else team when the
+/// project has a default team, else solo.
+fn suggested_mode(meta: &Value, facts: &ProjectFacts) -> &'static str {
+    match meta["mode"].as_str() {
+        Some("team") => "team",
+        Some("solo") => "solo",
+        _ if facts.default_team.is_some() => "team",
+        _ => "solo",
+    }
+}
+
+/// An item as `now.intake` and the commands show it (api-contract §1.2).
+fn item_json(f: &ItemFields, facts: &ProjectFacts, est: &estimate::EstState) -> Value {
     let meta = f.meta;
-    let doc_mode = meta["mode"].as_str().filter(|m| *m == "team" || *m == "solo");
-    let mode = doc_mode.unwrap_or(if facts.default_team.is_some() { "team" } else { "solo" });
+    let mode = suggested_mode(meta, facts);
     let team = meta["team"].as_str().map(str::to_string).or_else(|| facts.default_team.clone());
     json!({
         "id": f.id.map(|i| format!("it_{i}")),
@@ -185,7 +194,7 @@ fn item_json(f: &ItemFields, facts: &ProjectFacts, est: Option<&estimate::EstSta
         "mode": mode,
         "team": if mode == "team" { json!(team) } else { Value::Null },
         "can_team": facts.can_team,
-        "estimate": est.map(|e| estimate::estimate(e, f.project, meta["size"].as_str(), mode)),
+        "estimate": estimate::estimate(est, f.project, meta["size"].as_str(), mode),
         "state": f.state.as_str(),
         "excerpt": excerpt(f.body),
     })
@@ -564,7 +573,7 @@ impl Runtime {
     /// registered project.
     pub fn intake_view(&self) -> Value {
         let projects = self.db.projects(false).unwrap_or_default();
-        let rows = self.db.intake_items(None).unwrap_or_default();
+        let rows = self.db.intake_listed(None).unwrap_or_default();
         let inflight = lock(&self.intake.sched).inflight.clone();
         let est = self.intake_est();
         let mut items = vec![];
@@ -584,7 +593,7 @@ impl Runtime {
             let status = self.db.intake_status(&p.id).unwrap_or_default();
             let shown = ready.len().min(src::CAP);
             for r in ready.iter().take(src::CAP).chain(hidden.iter()) {
-                items.push(item_json(&ItemFields::of_row(r), &facts, Some(&est)));
+                items.push(item_json(&ItemFields::of_row(r), &facts, &est));
             }
             let repo = self.intake_repo_known(p, &source);
             let state = if inflight.contains(&p.id) {
@@ -639,13 +648,12 @@ impl Runtime {
         }
         let status = self.db.intake_status(&p.id)?;
         let facts = self.project_facts(&p);
-        let rows: Vec<IntakeRow> =
-            self.db.intake_items(Some(&p.id))?.into_iter().filter(|r| r.state != IntakeState::Started).collect();
+        let rows: Vec<IntakeRow> = self.db.intake_listed(Some(&p.id))?;
         let ready: Vec<&IntakeRow> = rows.iter().filter(|r| r.state == IntakeState::Ready).collect();
         let more = ready.len().saturating_sub(src::CAP) + status.more;
         let est = self.intake_est();
         let items: Vec<Value> =
-            ready.iter().take(PREVIEW).map(|r| item_json(&ItemFields::of_row(r), &facts, Some(&est))).collect();
+            ready.iter().take(PREVIEW).map(|r| item_json(&ItemFields::of_row(r), &facts, &est)).collect();
         Ok(
             json!({"preview": {"count": ready.len().min(src::CAP), "more": more, "items": items, "error": status.error}}),
         )
@@ -663,7 +671,7 @@ impl Runtime {
                     .items
                     .iter()
                     .take(PREVIEW)
-                    .map(|f| item_json(&ItemFields::of_upsert(&f.upsert(), &p.id, s.kind()), &facts, Some(&est)))
+                    .map(|f| item_json(&ItemFields::of_upsert(&f.upsert(), &p.id, s.kind()), &facts, &est))
                     .collect();
                 json!({"count": l.items.len(), "more": l.more(), "items": items, "error": null})
             }
@@ -728,7 +736,7 @@ impl Runtime {
         let p = self.intake_project(&r.project_id)?;
         let m = &r.meta;
         Ok(json!({
-            "item": item_json(&ItemFields::of_row(&r), &self.project_facts(&p), Some(&self.intake_est())),
+            "item": item_json(&ItemFields::of_row(&r), &self.project_facts(&p), &self.intake_est()),
             "body": r.body,
             "truncated": m["truncated"].as_bool().unwrap_or(false),
             "milestone": m["milestone"],
@@ -741,7 +749,8 @@ impl Runtime {
     /// The estimate of a cached item, as `now.intake` shows it.
     pub(crate) fn intake_estimate_of(&self, r: &IntakeRow) -> Value {
         let Ok(p) = self.intake_project(&r.project_id) else { return Value::Null };
-        item_json(&ItemFields::of_row(r), &self.project_facts(&p), Some(&self.intake_est()))["estimate"].clone()
+        let mode = suggested_mode(&r.meta, &self.project_facts(&p));
+        estimate::estimate(&self.intake_est(), &r.project_id, r.meta["size"].as_str(), mode)
     }
 
     pub fn intake_hide(&self, item: &str) -> Result<Value> {
