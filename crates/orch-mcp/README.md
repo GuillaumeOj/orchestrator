@@ -10,7 +10,7 @@ There is no network port and no token on the command line.
 ## Tools
 
 An agent sees the tools its role allows: `ORCH_TOOLS` (comma-separated, set by the core in the
-server's `env` and the agent's environment); unset = a solo session's `commit`, `request_pr`. A tool
+server's `env` and the agent's environment); unset = a solo session's `commit`, `request_pr`, `read_issue`. A tool
 outside that list is unknown (−32602), and the core checks again (`Runtime::on_mcp`).
 
 | Tool (`mcp__orch__…`) | Who | What the core does |
@@ -18,6 +18,7 @@ outside that list is unknown (−32602), and the core checks again (`Runtime::on
 | `commit(message, paths?)` | everyone | Stages `paths` (or every change, `git add -A`) and commits in **that agent's worktree**, outside the sandbox, with hooks off and the agent's identity ([orch-git `commit`](../orch-git/README.md)). Concludes a merge left in progress. Logged in the audit log. |
 | `rebase_base(abort?)` | lead | The core fetches `origin/<base>` and rebases the integration branch onto it (task merges kept; refused while a task holds unmerged work or a PR / update request waits). A conflict stops it: `commit` continues it, `abort` restores the branch. |
 | `request_pr(title, body?, draft?)` | solo, lead | Creates an Inbox **gate** (push + PR). Returns at once; on approval the core pushes with the user's credentials, opens the PR with `gh`, and tells the agent the URL. Agents never push. |
+| `read_issue(issue, offset?)` | everyone | Reads an issue or PR of the project's own GitHub repository with the user's `gh` login, outside the sandbox: fields, body and every comment, in pages of 60 000 characters (`offset` for the next). Any other repository is refused. |
 | `send_message(to, body)` | team | To a node or one agent, if the team rules allow it (FR-304). |
 | `inbox(all?)` | team | The agent's messages; marks them read. |
 | `list_tasks(mine?, status?)` | team | The feature's tasks. |

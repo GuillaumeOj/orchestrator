@@ -44,7 +44,7 @@ pub fn parse_issue_ref(text: &str) -> Result<IssueRef> {
     if let Some(rest) = t.strip_prefix("https://github.com/").or_else(|| t.strip_prefix("http://github.com/")) {
         let rest = rest.split(['?', '#']).next().unwrap_or("").trim_end_matches('/');
         let parts: Vec<&str> = rest.split('/').collect();
-        if let [o, r, kind, n] = parts[..]
+        if let [o, r, kind, n, ..] = parts[..]
             && matches!(kind, "issues" | "pull")
             && let Some(repo) = owner_repo(&format!("{o}/{r}"))
             && let Some(number) = number(n)
@@ -66,7 +66,10 @@ pub fn parse_issue_ref(text: &str) -> Result<IssueRef> {
 /// The `owner/name` of a GitHub remote URL (`https://github.com/o/r(.git)`,
 /// `git@github.com:o/r.git`).
 pub fn github_repo_of_url(url: &str) -> Option<String> {
-    let rest = url.split_once("github.com").map(|(_, r)| r)?;
+    let (host, rest) = url.split_once("github.com")?;
+    if !(host.is_empty() || host.ends_with(['/', '@'])) {
+        return None;
+    }
     let rest = rest.strip_prefix([':', '/'])?.trim_end_matches('/');
     let rest = rest.strip_suffix(".git").unwrap_or(rest);
     owner_repo(rest)
@@ -120,6 +123,8 @@ pub fn mentioned_issues(text: &str, repo: &str) -> Vec<u64> {
     for (at, _) in text.match_indices("github.com/") {
         let rest = &text[at + "github.com/".len()..];
         let url: String = rest.chars().take_while(|c| repo_char(*c)).collect();
+        // A sentence's full stop is not part of the URL.
+        let url = url.trim_end_matches('.');
         let parts: Vec<&str> = url.split('/').collect();
         if let [o, r, kind, n, ..] = parts[..]
             && matches!(kind, "issues" | "pull")
@@ -268,7 +273,12 @@ impl Runtime {
 
     /// The issue an `issue` argument names, in the project's repository.
     pub(crate) fn resolve_issue(&self, rec: &AgentRecord, args: &Value) -> Result<(Project, String, u64)> {
-        let r = parse_issue_ref(str_arg(args, "issue").ok_or_else(|| anyhow!("`issue` is required"))?)?;
+        // A model sometimes sends the bare number as a JSON number.
+        let issue = match args.get("issue") {
+            Some(Value::Number(n)) => n.to_string(),
+            _ => str_arg(args, "issue").ok_or_else(|| anyhow!("`issue` is required"))?.to_string(),
+        };
+        let r = parse_issue_ref(&issue)?;
         let (project, repo) = self.issue_repo(rec)?;
         if let Some(asked) = &r.repo
             && !asked.eq_ignore_ascii_case(&repo)
@@ -317,6 +327,7 @@ mod tests {
         assert_eq!(r("o/r#42"), some("o/r", 42));
         assert_eq!(r("https://github.com/o/r/issues/42"), some("o/r", 42));
         assert_eq!(r("https://github.com/o/r/pull/7#issuecomment-1"), some("o/r", 7));
+        assert_eq!(r("https://github.com/o/r/pull/7/files"), some("o/r", 7));
         for bad in ["", "#", "0", "abc", "o#1", "o/r/x#1", "https://github.com/o/r", "https://github.com/o/r/pulls/1"] {
             assert!(parse_issue_ref(bad).is_err(), "{bad}");
         }
@@ -331,6 +342,8 @@ mod tests {
         assert_eq!(m("see #42 and #7, also (#42)"), [7, 42]);
         assert_eq!(m("me/shop#5 but other/repo#6"), [5]);
         assert_eq!(m("https://github.com/me/shop/issues/9 https://github.com/x/y/pull/3"), [9]);
+        assert_eq!(m("see https://github.com/me/shop/issues/9. Then #3."), [3, 9]);
+        assert_eq!(github_repo_of_url("https://notgithub.com/me/shop"), None);
         assert_eq!(m("C#12 and a#b and # 4 and #12abc"), Vec::<u64>::new());
         assert_eq!(m("no issue"), Vec::<u64>::new());
     }
