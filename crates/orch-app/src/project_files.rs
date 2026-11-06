@@ -77,7 +77,7 @@ impl Core {
         let bounds = self.runtime()?.project_file_bounds(&self.files_project(project_id)?, home)?;
         let located = pf::locate(paths, home);
         let ((added, refused), files) = self.edit_files(project_id, move |files| {
-            Ok(pf::add_batch(files, &located, access, &bounds, orch_store::now_ms()))
+            Ok(pf::add_batch(files, located, access, &bounds, orch_store::now_ms()))
         })?;
         for f in files.iter().filter(|f| added.contains(&f.path)) {
             self.audit_file(

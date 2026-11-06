@@ -1240,11 +1240,15 @@ impl Store {
             {
                 bail!("GitHub repository must be owner/name, got {r:?}");
             }
-            Store::reset_cursor_on_change(tx, &key, &e.backend, None)?;
             // A column `edit` left alone keeps its stored text: a Files edit
             // never rewrites the backend (nor one it could not parse).
+            let backend = if e.backend == before.backend {
+                backend
+            } else {
+                Store::reset_cursor_on_change(tx, &key, &e.backend, None)?;
+                js(&e.backend)
+            };
             let settings = if e.settings == before.settings { settings } else { js(&e.settings) };
-            let backend = if e.backend == before.backend { backend } else { js(&e.backend) };
             tx.execute(
                 "UPDATE projects SET settings=?2, task_backend=?3, track_orchestrator_dir=?4 WHERE id=?1",
                 params![key, settings, backend, e.track_orchestrator_dir],
