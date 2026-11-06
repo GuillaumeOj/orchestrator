@@ -8,6 +8,7 @@
   import { onMount } from 'svelte';
   import AllocationSettings from '../components/AllocationSettings.svelte';
   import ConnBadge from '../components/ConnBadge.svelte';
+  import FilesSettings from '../components/FilesSettings.svelte';
   import Kbd from '../components/Kbd.svelte';
   import McpSettings from '../components/McpSettings.svelte';
   import { app, openSettings, projects, saveLayout, toast } from '../lib/app.svelte.js';
@@ -22,12 +23,13 @@
 
   const SECTIONS = [
     { id: 'general', label: 'General' },
+    { id: 'files', label: 'Files' },
     { id: 'backend', label: 'Task backend' },
     { id: 'allocation', label: 'Allocation' },
     { id: 'notion', label: 'Notion' },
     { id: 'mcp', label: 'MCP overrides' },
   ];
-  const section = $derived(SECTIONS.find((s) => s.id === spec?.section) ?? SECTIONS[1]);
+  const section = $derived(SECTIONS.find((s) => s.id === spec?.section) ?? SECTIONS.find((s) => s.id === 'backend'));
 
   let saved = $state(null); // project_settings
   let error = $state(null);
@@ -48,6 +50,7 @@
   let unmapped = $state([]); // board_sync.unmapped_states: Linear states with no column
   let root = $state(null);
   let alloc = $state(null); // AllocationSettings (forwards the keys)
+  let files = $state(null); // FilesSettings (same)
 
   const connected = $derived(linearInt?.status === 'connected');
   const dirty = $derived(
@@ -171,6 +174,7 @@
 
   function onKey(e) {
     if (section.id === 'allocation' && !ask) return alloc?.onKey(e);
+    if (section.id === 'files') return files?.onKey(e);
     if (ask) {
       if (e.key === 'Enter') save('push_open');
       else if (e.key === 'l') save('leave');
@@ -209,6 +213,8 @@
   <div class="body">
     {#if section.id === 'allocation'}
       <AllocationSettings bind:this={alloc} project={pid} {name} />
+    {:else if section.id === 'files'}
+      <FilesSettings bind:this={files} project={pid} {name} />
     {:else if error}
       <p class="err">Could not read {name}'s settings: {error}</p>
     {:else if !saved}

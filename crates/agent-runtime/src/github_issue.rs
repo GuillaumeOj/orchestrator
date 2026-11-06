@@ -638,7 +638,7 @@ impl Runtime {
 mod tests {
     use super::*;
     use crate::team::GhFactory;
-    use orch_store::{ProjectSettings, TaskBackendConfig};
+    use orch_store::TaskBackendConfig;
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -775,14 +775,13 @@ mod tests {
         let (rt, calls) = rt;
         let (rd, repo) = orch_git::fixtures::scratch_repo();
         let project = orch_git::project::register(&rt.db, &repo).unwrap();
-        if let Some(r) = backend_repo {
+        if let Some(r) = backend_repo.map(String::from) {
             rt.db
-                .set_project_settings(
-                    &project.id,
-                    &ProjectSettings::default(),
-                    &TaskBackendConfig::Github { repo: Some(r.into()) },
-                    true,
-                )
+                .update_project_settings(&project.id, |e| {
+                    e.backend = TaskBackendConfig::Github { repo: Some(r) };
+                    e.track_orchestrator_dir = true;
+                    Ok(())
+                })
                 .unwrap();
         }
         let mut a = crate::runtime::tests::test_agent(d.path());

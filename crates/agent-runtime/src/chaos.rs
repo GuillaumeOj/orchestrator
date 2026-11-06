@@ -396,7 +396,14 @@ impl Sim {
     /// A plain agent `a1` in a git worktree of its own, idle and live with a
     /// fake CLI already running.
     pub fn agent_a1(&self) -> Cli {
-        let wt = self._d.path().join("wt");
+        self.agent_a1_unattached();
+        self.attach("a1")
+    }
+
+    /// The record of `a1` in a git worktree of its own (returned, canonical),
+    /// not started.
+    pub fn agent_a1_unattached(&self) -> std::path::PathBuf {
+        let wt = crate::paths::real(self._d.path()).join("wt");
         std::fs::create_dir_all(&wt).unwrap();
         for args in [
             vec!["init", "-q", "-b", "main"],
@@ -406,9 +413,9 @@ impl Sim {
         }
         let mut a = test_agent(self._d.path());
         a.repo = wt.clone();
-        a.worktree = wt;
+        a.worktree = wt.clone();
         self.rt.store.write(|s| s.agents.insert("a1".into(), a)).unwrap();
-        self.attach("a1")
+        wt
     }
 
     /// Gives `agent` a live fake CLI now (as if it had been started and had

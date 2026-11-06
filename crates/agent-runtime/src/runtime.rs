@@ -31,6 +31,7 @@ use crate::env::EnvInputs;
 use crate::paths::{AppPaths, real, valid_id};
 use crate::preflight::{self, VersionCheck, VersionRange};
 use crate::procs::{self, AgentMatch, SystemProcs};
+use crate::project_files::{self, SpawnFile};
 use crate::pty::PtyProcess;
 use crate::reconcile::{self, ReconcileEnv, Report};
 use crate::resources::{self, LiveAgent, MemoryProbe, PressureFilter, SystemMemory};
@@ -917,6 +918,59 @@ impl Runtime {
         Ok(self.store.read(|s| s.agents[&rec.id].clone()))
     }
 
+    /// FR-112: the project's files for this spawn, re-checked; one that now
+    /// fails the checks is skipped and logged, never refusing the spawn.
+    fn spawn_project_files(&self, id: &str, project: Option<&str>, home: &Path) -> Vec<SpawnFile> {
+        let Some(id_p) = project else { return vec![] };
+        let p = match self.db.project(id_p) {
+            Ok(Some(p)) => p,
+            Ok(None) => return vec![],
+            Err(e) => {
+                self.event(id, "project_file_skipped", json!({"project": id_p, "reason": format!("{e:#}")}));
+                return vec![];
+            }
+        };
+        let files = p.typed_settings().external_files;
+        if files.is_empty() {
+            return vec![];
+        }
+        // Without the other projects the bounds would miss their repositories
+        // and worktrees: no files rather than unchecked ones.
+        let bounds = match self.project_file_bounds(&p, home) {
+            Ok(b) => b,
+            Err(e) => {
+                self.event(id, "project_file_skipped", json!({"project": p.id, "reason": format!("{e:#}")}));
+                return vec![];
+            }
+        };
+        let (out, skipped) = project_files::at_spawn(&files, &bounds);
+        for why in skipped {
+            self.event(id, "project_file_skipped", json!({"project": p.id, "reason": why}));
+        }
+        out
+    }
+
+    /// What `p`'s files may not touch: the same bounds when adding and at spawn.
+    pub fn project_file_bounds(&self, p: &orch_store::Project, home: &Path) -> Result<project_files::Bounds> {
+        let all = self.db.projects(true)?;
+        Ok(project_files::Bounds::of(p, &all, home, &self.cfg.paths.root))
+    }
+
+    /// The live agents of `p` (FR-112: the Files section's note), matched
+    /// like `agent_project` but without a query per agent.
+    pub fn live_in_project(&self, p: &orch_store::Project) -> usize {
+        let live = self.live_ids();
+        self.store.read(|s| {
+            live.iter()
+                .filter_map(|id| s.agents.get(id))
+                .filter(|rec| match &rec.team {
+                    Some(t) => t.project_id == p.id,
+                    None => real(&rec.repo) == real(&p.path),
+                })
+                .count()
+        })
+    }
+
     /// Spawns `claude` for an existing agent: `--session-id` on first start,
     /// `--resume` afterwards (the default when `mode` is `None`).
     pub fn spawn(&self, id: &str, mode: Option<SessionMode>) -> Result<()> {
@@ -947,6 +1001,8 @@ impl Runtime {
         let overwatch = rec.is_overwatch().then(|| self.overwatch_reads(&wt));
         let git_common_dir = if overwatch.is_some() { wt.clone() } else { worktree::common_dir(&wt)? };
         let main = real(&rec.repo);
+        let project = self.agent_project(&rec);
+        let project_files = self.spawn_project_files(id, project.as_deref(), &env.home);
         let ctx = CompileCtx {
             agent_id: id.into(),
             name: id.into(),
@@ -966,11 +1022,11 @@ impl Runtime {
             session: mode,
             env,
             git_identity: self.git_identity.clone(),
+            project_files,
             overwatch,
         };
         // Registry refs and opted-in Keychain env values, for this spawn's
         // files only (FR-601, NFR-3); a ref that can't work refuses the spawn.
-        let project = self.agent_project(&rec);
         let mut role = self.resolve_mcp(&rec.role, project.as_deref(), true)?;
         // FR-819: a downgrade in force runs the agent on its fallback model.
         role.model = self.turn_model(&rec);

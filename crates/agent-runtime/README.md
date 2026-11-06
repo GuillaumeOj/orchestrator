@@ -45,6 +45,18 @@ No UI, no Tauri: [`orchd`](../orchd/README.md) drives it from the command line.
   kube, docker config, gnupg, `.npmrc`, `.pypirc`, cargo credentials, pass, Keychains; never
   `~/.gitconfig`), the main checkout **entry by entry except its `.git`**, the other worktrees, and the
   core's `state/`. `allowRead`/`allowWrite`: the git common dir.
+- **Project files** (FR-112, `CompileCtx::project_files`): `Runtime::spawn` reads the agent's project's
+  `external_files` and re-checks each (`project_files::at_spawn`: re-canonicalized; one that now fails the
+  validation is skipped with a `project_file_skipped` event; a missing one is kept for the prompt only).
+  Each present entry: `Read(//p/**)` (folder) or `Read(//p)` (file) allowed; `write`: `Edit(...)` allowed and
+  the path in `sandbox.filesystem.allowWrite`; `read`: `Edit(...)` denied and the path in
+  `sandbox.filesystem.denyWrite`, so a read entry inside a write folder stays unwritable from Bash too
+  (`denyWrite` is in the settings schema of Claude Code 2.1.317, the installed CLI, "merged with paths from
+  Edit(...) deny rules"; not checked against 2.1.302). Each `write` folder also gets `Edit(//p/**/.claude/**)` and
+  `Edit(//p/**/.git/hooks/**)` denied (and `Edit(//p/**/.git/config)`), and `p/**/.claude`, `p/**/.git/hooks`, `p/**/.git/config` in `denyWrite` (untested with the CLI, like
+  the read entries' `denyWrite`). Folders also get `--add-dir <p>`. The system prompt
+  gets a `## Project files` section after the role prompt (omitted when the list is empty). Validation
+  refuses a write entry inside a read folder: the read folder's Edit deny would win.
 - **MCP**: `mcpServers.orch` = `<app>/bin/orch-mcp` (stdio, `ORCH_AGENT_ID`/`ORCH_SOCK` in its env),
   always present, on top of the role's servers. The preamble tells the model to commit with
   `mcp__orch__commit` and ask for PRs with `mcp__orch__request_pr`.
@@ -53,8 +65,8 @@ No UI, no Tauri: [`orchd`](../orchd/README.md) drives it from the command line.
   role's rules. Absolute paths always use `//`. `allow` = the role's rules + `mcp__orch__commit`,
   `mcp__orch__request_pr` (the core applies its own rules to them).
 - **Command line**: `--settings`, `--mcp-config`, `[--strict-mcp-config]`, `[--setting-sources]`,
-  `[--model]`, `[--effort]`, `--permission-mode` (always), `--append-system-prompt` (ORCH preamble, then
-  the role prompt), `-n <id>`, then `--session-id <uuid>` | `--resume <id>` | `--resume <id> --fork-session`.
+  `[--model]`, `[--effort]`, `--permission-mode` (always), `[--add-dir <p>]…` (project folders),
+  `--append-system-prompt` (ORCH preamble, the role prompt, then the Project files section), `-n <id>`, then `--session-id <uuid>` | `--resume <id>` | `--resume <id> --fork-session`.
   `--session-id` for a first start, a fresh restart (FR-415) and each new task of a team agent
   (session per task, below).
   Never `--bare`, `--safe-mode` or `bypassPermissions` (not representable in `PermissionMode`).
