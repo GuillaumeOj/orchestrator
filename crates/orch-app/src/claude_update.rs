@@ -306,9 +306,12 @@ impl ClaudeUpdater {
         let Some(check) = self.check() else { return Value::Null };
         let (install, channel) = *self.shape.lock_ok();
         let i = self.inner.lock_ok();
+        // A failed update stays "error" through the check that follows it, so the
+        // failure (block, chip, badge, toast) does not vanish for the length of a request.
+        let update_failed = matches!(i.error, Some((ErrorFrom::Update, _)));
         let state = if i.updating {
             "updating"
-        } else if i.checking {
+        } else if i.checking && !update_failed {
             "checking"
         } else if i.error.is_some() {
             "error"
@@ -354,26 +357,35 @@ impl ClaudeUpdater {
     /// Asks for the latest version now (`claude_update_check`); a check
     /// already running is waited for instead. Refused while an update runs.
     pub fn check_now(&self) -> Result<()> {
+        self.check_latest(true)
+    }
+
+    /// `manual`: the user asked (it clears a failed update's error, as starting
+    /// an update does). The background check leaves that error alone.
+    fn check_latest(&self, manual: bool) -> Result<()> {
         let (_, install) = self.claude_path()?;
         let mut i = self.inner.lock_ok();
         if i.updating {
             bail!(ERR_RUNNING);
+        }
+        if manual || matches!(i.error, Some((ErrorFrom::Check, _))) {
+            i.error = None;
         }
         if i.checking {
             let _g = self.settled.wait_while(i, |i| i.checking).unwrap_or_else(|e| e.into_inner());
             return Ok(());
         }
         i.checking = true;
-        i.error = None;
         drop(i);
         (self.touch)();
-        self.fetch_and_store(install, false);
+        self.fetch_and_store(install, |_| {});
         Ok(())
     }
 
-    /// The check proper (`checking` already set). After an update, a failed
-    /// check does not replace the update's error.
-    fn fetch_and_store(&self, install: Install, keep_error: bool) {
+    /// The check proper (`checking` already set). A failed check never
+    /// replaces a failed update's error. `finish` runs under the lock, once
+    /// `latest` is known and before `checking` ends.
+    fn fetch_and_store(&self, install: Install, finish: impl FnOnce(&mut Inner)) {
         let channel = self.read_channel();
         self.shape.lock_ok().1 = channel;
         let res = (self.fetch)(install, channel);
@@ -383,11 +395,12 @@ impl ClaudeUpdater {
                 i.latest = Some(v.to_string());
                 i.checked_at = Some(now_secs());
             }
-            Err(e) if !(keep_error && i.error.is_some()) => {
+            Err(e) if !matches!(i.error, Some((ErrorFrom::Update, _))) => {
                 i.error = Some((ErrorFrom::Check, format!("could not check the latest version: {e:#}")))
             }
             Err(_) => {}
         }
+        finish(&mut i);
         i.checking = false;
         drop(i);
         self.settled.notify_all();
@@ -401,7 +414,7 @@ impl ClaudeUpdater {
         while !stop.load(Ordering::SeqCst) {
             // Its only errors are ERR_NOT_FOUND and ERR_RUNNING: nothing to check then.
             // A failed fetch lands in `update.error`.
-            let _ = self.check_now();
+            let _ = self.check_latest(false);
             let next = Instant::now() + CHECK_EVERY;
             let mut i = self.inner.lock_ok();
             while Instant::now() < next && !stop.load(Ordering::SeqCst) {
@@ -447,15 +460,15 @@ impl ClaudeUpdater {
             Some(l) => format!("{s}: {l}"),
             None => s,
         };
+        // Exit 0 with the same version is fine when nothing newer is known (yet).
+        let mut unchanged = None;
         match res {
             Ok(st) if st.success() => match (&before, &now) {
                 (Some(from), Some(to)) if from != to => {
                     i.updated = Some(Updated { from: from.clone(), to: to.clone(), at: now_secs() })
                 }
-                _ => {
-                    let v = now.as_deref().unwrap_or("not found");
-                    i.error = Some((ErrorFrom::Update, format!("claude update finished but Claude Code is still {v}")))
-                }
+                (_, Some(v)) if !is_available(Some(v), i.latest.as_deref()) => unchanged = Some(v.clone()),
+                _ => i.error = Some((ErrorFrom::Update, still(now.as_deref()))),
             },
             Ok(st) => {
                 let how = st.code().map_or_else(|| "was killed".to_string(), |c| format!("exited with {c}"));
@@ -471,7 +484,12 @@ impl ClaudeUpdater {
         drop(i);
         self.settled.notify_all();
         (self.touch)();
-        self.fetch_and_store(install, true);
+        // The check after it may find something newer after all.
+        self.fetch_and_store(install, |i| {
+            if let Some(v) = unchanged.filter(|v| is_available(Some(v), i.latest.as_deref())) {
+                i.error = Some((ErrorFrom::Update, still(Some(&v))));
+            }
+        });
     }
 
     /// The environment of `claude update`: the user's, with the auto-updater
@@ -574,6 +592,10 @@ impl ClaudeUpdater {
         let (_g, t) = self.settled.wait_timeout_while(i, timeout, |i| i.checking || i.updating).unwrap();
         assert!(!t.timed_out(), "still running after {timeout:?}");
     }
+}
+
+fn still(version: Option<&str>) -> String {
+    format!("claude update finished but Claude Code is still {}", version.unwrap_or("not found"))
 }
 
 fn fmt_duration(d: Duration) -> String {
@@ -909,6 +931,69 @@ esac
         let u = update(&r)["update"].clone();
         assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
         assert_eq!(u["error"], "claude update: timed out after 500 ms: Checking...");
+    }
+
+    #[test]
+    fn a_failed_update_stays_an_error_during_the_check_after_it() {
+        let r = rig(fake("2.1.317", "true"), "2.1.330", Duration::from_secs(20));
+        {
+            let mut i = r.up.inner.lock_ok();
+            i.checking = true;
+            i.error = Some((ErrorFrom::Check, "x".into()));
+        }
+        assert_eq!(r.up.view()["update"]["state"], "checking");
+        r.up.inner.lock_ok().error = Some((ErrorFrom::Update, "y".into()));
+        let u = r.up.view()["update"].clone();
+        assert_eq!((u["state"].as_str(), u["error_from"].as_str()), (Some("error"), Some("update")));
+    }
+
+    #[test]
+    fn only_the_user_clears_a_failed_updates_error() {
+        let r = rig(fake("2.1.317", "exit 1"), "2.1.330", Duration::from_secs(20));
+        update(&r);
+        assert_eq!(r.up.view()["update"]["error_from"], "update");
+        // The 6-hourly check updates `latest` / `checked_at` but keeps the error.
+        r.up.inner.lock_ok().checked_at = None;
+        r.up.check_latest(false).unwrap();
+        let u = r.up.view()["update"].clone();
+        assert_eq!((u["error_from"].as_str(), u["state"].as_str()), (Some("update"), Some("error")));
+        assert!(u["checked_at"].is_u64() && u["latest"] == "2.1.330");
+        // A failing background check does not replace it either.
+        let mut failing = ClaudeUpdater::with(
+            r.fake.home.clone(),
+            Box::new(|| {}),
+            Box::new(|_, _| bail!("offline")),
+            Box::new(String::new),
+            UPDATE_DEADLINE,
+        );
+        failing.check = Mutex::new(r.up.check());
+        failing.inner.lock_ok().error = Some((ErrorFrom::Update, "claude update exited with 1".into()));
+        failing.check_latest(false).unwrap();
+        assert_eq!(failing.view()["update"]["error"], "claude update exited with 1");
+        // "Check now" clears it.
+        failing.check_latest(true).unwrap();
+        assert_eq!(failing.view()["update"]["error_from"], "check");
+        r.up.check_now().unwrap();
+        let u = r.up.view()["update"].clone();
+        assert!(u["error"].is_null() && u["state"] == "idle", "{u:#}");
+    }
+
+    #[test]
+    fn exit_0_on_the_latest_version_is_not_an_error() {
+        // Already at the latest, the known one (before) ...
+        let r = rig(fake("2.1.317", "echo 'Claude Code is up to date'"), "2.1.317", Duration::from_secs(20));
+        r.up.check_now().unwrap();
+        let u = update(&r)["update"].clone();
+        assert_eq!((u["state"].as_str(), u["available"].as_bool()), (Some("idle"), Some(false)), "{u:#}");
+        assert!(u["error"].is_null() && u["updated"].is_null(), "{u:#}");
+        assert_eq!(u["log"][0], "Claude Code is up to date");
+        // ... or the one the check after the update finds.
+        let r = rig(fake("2.1.317", "echo 'Claude Code is up to date'"), "2.1.317", Duration::from_secs(20));
+        let u = update(&r)["update"].clone();
+        assert!(u["error"].is_null() && u["state"] == "idle", "{u:#}");
+        // Ahead of the latest (a local build, the stable channel) is fine too.
+        let r = rig(fake("2.1.317", "true"), "2.1.311", Duration::from_secs(20));
+        assert!(update(&r)["update"]["error"].is_null());
     }
 
     #[test]
