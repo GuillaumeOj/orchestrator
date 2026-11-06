@@ -2,6 +2,7 @@
   // Status bar (§9.2): git state of the focused project, live/queued agents with
   // the pressure state in words, the 5h guard chip whenever it holds work, memory.
   import { app, checkForUpdates, contextAgent, contextProject, openSettings, openSingleton, restartToUpdate } from '../lib/app.svelte.js';
+  import { claudeChip } from '../lib/claude.js';
   import { clock, mb } from '../lib/format.js';
   import { counts, liveText } from '../lib/now.svelte.js';
   import { powerChip } from '../lib/pacing.js';
@@ -19,6 +20,7 @@
   const fiveReset = $derived(app.data?.usage?.five_hour?.resets_at);
   const watch = $derived(app.data?.memory_watch);
   const power = $derived(powerChip(app.data?.power));
+  const cc = $derived(claudeChip(app.data?.setup?.claude));
   const upd = $derived(updateChip(app.data?.update));
   const pr = $derived(prChip(app.data?.update, app.prTitles[app.data?.update?.current?.pr]));
 </script>
@@ -42,6 +44,11 @@
   {/if}
   <span class="grow"></span>
   {#if watch?.alert}<span class="memwarn" title="WebKit helper above {watch.warn_mb} MB · logged every minute in {watch.log}"><span aria-hidden="true">⚠</span> {watch.alert}</span>{/if}
+  {#if cc}
+    <button class="plain chip claude {cc.kind}" onclick={() => openSettings('claude')} title={cc.title}>
+      {#if cc.kind === 'updating'}<span class="spinning" aria-hidden="true">◐</span> {/if}{cc.text}{#if cc.version}<span class="ver">{' '}{cc.version}</span>{/if}
+    </button>
+  {/if}
   {#if pr}
     <button class="plain chip upd ready" onclick={() => openSettings('builds')} title={pr.title}>{pr.text}</button>
   {/if}
@@ -89,6 +96,24 @@
   }
   .chip.upd.warn {
     color: var(--color-pacing-amber);
+  }
+  .chip.claude.available {
+    border-color: var(--color-accent-default);
+    color: var(--color-accent-default);
+  }
+  .chip.claude.updating {
+    border-color: var(--color-border-subtle);
+    color: var(--color-text-muted);
+  }
+  .chip.claude.failed {
+    border-color: var(--color-pacing-amber);
+    color: var(--color-pacing-amber);
+  }
+  /* Narrow: the Claude chip drops its version before the app chip truncates. */
+  @media (max-width: 900px) {
+    .chip.claude .ver {
+      display: none;
+    }
   }
   .guard {
     display: inline-flex;

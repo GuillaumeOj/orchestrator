@@ -5,6 +5,7 @@
   // ⏎ into the section, esc back to the list.
   import { onMount, untrack } from 'svelte';
   import BuildsSettings from '../components/BuildsSettings.svelte';
+  import ClaudeSettings from '../components/ClaudeSettings.svelte';
   import IntegrationsSettings from '../components/IntegrationsSettings.svelte';
   import Kbd from '../components/Kbd.svelte';
   import McpSettings from '../components/McpSettings.svelte';
@@ -12,6 +13,7 @@
   import PacingSettings from '../components/PacingSettings.svelte';
   import PermissionsSettings from '../components/PermissionsSettings.svelte';
   import { app, saveLayout } from '../lib/app.svelte.js';
+  import { navBadge } from '../lib/claude.js';
   import { attentionCount } from '../lib/ecosystem.js';
   import { invoke } from '../lib/ipc.js';
   import { move } from '../lib/select.js';
@@ -36,6 +38,7 @@
   // The nav's attention count, refreshed by the Integrations section and on open.
   let needs = $state(0);
   let mcpNeeds = $state(0); // servers that need auth or fail
+  const claudeBadge = $derived(navBadge(app.data?.setup?.claude));
   let nav = $state(null);
   let body = $state(null);
 
@@ -92,6 +95,12 @@
     {#each SECTIONS as s (s.id)}
       <button class="sec" class:on={s.id === section.id} aria-current={s.id === section.id ? 'page' : undefined} onclick={() => pick(s.id)} tabindex="-1">
         <span class="grow">{s.label}</span>
+        {#if s.id === 'claude' && claudeBadge}
+          {#if claudeBadge.kind === 'error'}<span class="status-dot err" title={claudeBadge.title} role="img" aria-label="Claude Code needs you">●</span>
+          {:else if claudeBadge.kind === 'warn'}<span class="status-dot amber" title={claudeBadge.title} role="img" aria-label="Claude Code update failed">●</span>
+          {:else if claudeBadge.kind === 'spinner'}<span class="glyph spinning" title={claudeBadge.title} role="img" aria-label="Updating Claude Code">◐</span>
+          {:else}<span class="glyph up" title={claudeBadge.title} role="img" aria-label="Update available">↑</span>{/if}
+        {/if}
         {#if s.id === 'integrations' && needs}<span class="warn err" title="{needs} need you"><span aria-hidden="true">{'\u{F0159}'}</span> {needs}</span>{/if}
         {#if s.id === 'mcp' && mcpNeeds}<span class="warn" title="{mcpNeeds} need you"><span aria-hidden="true">{'\u{F1983}'}</span> {mcpNeeds}</span>{/if}
       </button>
@@ -109,6 +118,8 @@
       <PermissionsSettings />
     {:else if section.id === 'mcp'}
       {#key spec?.server}<McpSettings project={spec?.projectId ?? null} selected={spec?.server ?? null} initial={firstMcp} />{/key}
+    {:else if section.id === 'claude'}
+      <ClaudeSettings />
     {:else if section.id === 'builds'}
       {#key spec?.server}<BuildsSettings selected={spec?.server ?? null} />{/key}
     {:else if section.id === 'pacing'}
@@ -177,6 +188,21 @@
   .hints {
     font: var(--text-caption);
     padding: 0 var(--space-sm);
+  }
+  .status-dot {
+    font-size: 8px;
+  }
+  .status-dot.amber {
+    color: var(--color-pacing-amber);
+  }
+  .glyph {
+    font-size: 13px;
+  }
+  .glyph.up {
+    color: var(--color-accent-default);
+  }
+  .glyph.spinning {
+    color: var(--color-attention-running);
   }
   .body {
     flex: 1;

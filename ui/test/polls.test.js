@@ -20,7 +20,11 @@ const ALL = [
 
 // file → the setInterval calls it may make (by their callee).
 const ALLOWED = {
-  'lib/app.svelte.js': ['setInterval(() => (tick.now = Date.now()), 30000)'],
+  'lib/app.svelte.js': [
+    'setInterval(() => (tick.now = Date.now()), 30000)',
+    // The elapsed time of a running `claude update`: held only while one runs.
+    'setInterval(() => (sec.now = Date.now()), 1000)',
+  ],
   'App.svelte': ['setInterval(flushDecisions, 1000)'],
 };
 
