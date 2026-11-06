@@ -1241,9 +1241,13 @@ impl Store {
                 bail!("GitHub repository must be owner/name, got {r:?}");
             }
             Store::reset_cursor_on_change(tx, &key, &e.backend, None)?;
+            // A column `edit` left alone keeps its stored text: a Files edit
+            // never rewrites the backend (nor one it could not parse).
+            let settings = if e.settings == before.settings { settings } else { js(&e.settings) };
+            let backend = if e.backend == before.backend { backend } else { js(&e.backend) };
             tx.execute(
                 "UPDATE projects SET settings=?2, task_backend=?3, track_orchestrator_dir=?4 WHERE id=?1",
-                params![key, js(&e.settings), js(&e.backend), e.track_orchestrator_dir],
+                params![key, settings, backend, e.track_orchestrator_dir],
             )?;
             Ok((out, true))
         })?;
@@ -1738,6 +1742,39 @@ mod tests {
         s.delete_project("p1").unwrap();
         assert!(s.tasks(Some("p1"), None, None).unwrap().is_empty());
         assert!(s.features(Some("p1")).unwrap().is_empty());
+    }
+
+    /// A settings-only edit keeps the backend's stored text, even one this
+    /// version can't read.
+    #[test]
+    fn a_settings_edit_keeps_the_stored_backend() {
+        let (_d, s) = store();
+        let backend = serde_json::json!({"type": "future", "x": 1});
+        let pr = crate::model::Project {
+            id: "p1".into(),
+            name: "shop".into(),
+            path: "/tmp/shop".into(),
+            default_branch: "main".into(),
+            remotes: vec![],
+            worktree_root: "/tmp/shop.worktrees".into(),
+            task_backend: backend.clone(),
+            track_orchestrator_dir: true,
+            settings: serde_json::json!({}),
+            created_at_ms: 1,
+            last_active_at_ms: 1,
+            last_fetch_at_ms: None,
+            last_fetch_error: None,
+            archived: false,
+        };
+        s.upsert_project(&pr).unwrap();
+        s.update_project_settings("p1", |e| {
+            e.settings.default_team = Some("solo".into());
+            Ok(())
+        })
+        .unwrap();
+        let p = s.project("p1").unwrap().unwrap();
+        assert_eq!(p.task_backend, backend);
+        assert_eq!(p.typed_settings().default_team.as_deref(), Some("solo"));
     }
 
     #[test]

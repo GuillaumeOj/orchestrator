@@ -138,7 +138,7 @@ impl Core {
             .flat_map(|p| p.typed_settings().external_files)
             .any(|f| f.path == want || f.path == Path::new(path));
         if !listed {
-            bail!("{path}: not in the project files");
+            return Err(not_listed(path));
         }
         Ok(want)
     }
