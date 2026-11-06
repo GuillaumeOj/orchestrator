@@ -9,6 +9,7 @@ export const ICON = {
   remove: '\u{F01B4}',
   dismiss: '\u{F0156}',
   drop: '\u{F0120}',
+  error: '\u{F0159}',
 };
 
 export const ACCESS = [
@@ -28,7 +29,10 @@ export const pathLines = (text) =>
 /** The home folder written `~` wherever it appears in a text (core messages carry paths). */
 export const tilde = (text, home) => {
   const t = String(text ?? '');
-  return home ? t.split(`${home}/`).join('~/').split(home).join('~') : t;
+  if (!home) return t;
+  // Only a whole path component: `/Users/me` must not eat the head of `/Users/media`.
+  const h = home.replace(/\/+$/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return h ? t.replace(new RegExp(`${h}(?![^/\\s:,;'")\\]])`, 'g'), '~') : t;
 };
 
 /** "~/design/…/app.figcraft": keeps the head and the tail of a long path. */

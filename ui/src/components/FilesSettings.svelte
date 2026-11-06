@@ -25,7 +25,8 @@
   let fresh = $state([]); // paths just added (tinted ~2 s)
   let announce = $state('');
   let root = $state(null);
-  let zone = $state(null);
+  let browsing = false; // the native panel is open
+  let freshTimer = null;
 
   const home = $derived(app.data?.core?.user_home ?? '');
   const files = $derived(view?.files ?? []);
@@ -55,7 +56,8 @@
         toast(addedToast(n, name));
         announce = `Added ${n} item${n === 1 ? '' : 's'}`;
         fresh = r.added;
-        setTimeout(() => (fresh = []), 2000);
+        clearTimeout(freshTimer);
+        freshTimer = setTimeout(() => (fresh = []), 2000);
       }
       return n;
     } catch (e) {
@@ -66,11 +68,14 @@
   }
 
   async function browse() {
-    if (adding) return;
+    if (adding || browsing) return;
+    browsing = true;
     try {
       await add((await invoke('pick_paths')) ?? []);
     } catch (e) {
       toast(errText(e), { kind: 'error' });
+    } finally {
+      browsing = false;
     }
   }
 
@@ -226,6 +231,7 @@
     }
     return () => {
       gone = true;
+      clearTimeout(freshTimer);
       off?.();
     };
   });
@@ -237,12 +243,11 @@
   <p class="muted lead">Agents read them in place. They aren't copied, versioned or committed.</p>
 
   {#if loadError && !view}
-    <p class="box errbox">✕ Couldn't load {name}'s files: {loadError} <span class="grow"></span><button class="btn ghost" onclick={load}>Retry <Kbd keys="r" /></button></p>
+    <p class="box errbox"><span class="lerr">{ICON.error}</span> Couldn't load {name}'s files: {loadError} <span class="grow"></span><button class="btn ghost" onclick={load}>Retry <Kbd keys="r" /></button></p>
   {:else if !view}
     <div class="skel" aria-busy="true"><i></i><i></i><i class="short"></i></div>
   {:else}
     <button
-      bind:this={zone}
       class="zone"
       class:tall={!files.length}
       class:drag={dragging}
@@ -252,7 +257,7 @@
       {#if !files.length && !dragging}<span class="muted">No files yet. Add a brand guide, a design file or notes that live outside the repo.</span>{/if}
       <span class="zline">
         <span class="icon">{ICON.drop}</span>
-        {#if dragging}Drop to add to {name}{:else}Drop files or folders here, or <u class="browse">click to browse</u>{/if}
+        {#if dragging}Drop to add to {name}{:else}Drop files or folders here, or <span class="browse">click to browse</span>{/if}
       </span>
       {#if !files.length && !dragging}<span class="muted">Several at once is fine.</span>{/if}
     </button>
@@ -277,6 +282,7 @@
 
     {#if refusals.length}
       <div class="box warnbox" role="status">
+        <span class="warn">▲</span>
         <div class="grow">
           <b>Not added ({refusals.length})</b>
           {#each refusals as r (r.path)}<div class="mono">{short(r.error)}</div>{/each}
@@ -370,6 +376,10 @@
   .zone .browse {
     color: var(--color-accent-default);
   }
+  .zone:not(.tall):not(.drag) {
+    flex-direction: row;
+    justify-content: flex-start;
+  }
   .zone:hover,
   .zone:focus-visible {
     border-color: var(--color-accent-default);
@@ -377,7 +387,7 @@
   }
   .zone:hover .browse,
   .zone:focus-visible .browse {
-    font-weight: 600;
+    text-decoration: underline;
   }
   .zone.drag {
     border-style: solid;
@@ -456,7 +466,7 @@
     background: var(--color-surface-selected);
   }
   .row.fresh {
-    background: var(--color-accent-subtle);
+    background: color-mix(in srgb, var(--color-accent-default) 14%, transparent);
   }
   .row:has(.confirm) {
     display: flex;
@@ -466,6 +476,17 @@
     display: flex;
     align-items: center;
     gap: var(--space-sm);
+  }
+  .row.missing .kind,
+  .row.missing .path {
+    color: var(--color-text-muted);
+  }
+  .warn {
+    color: var(--color-pacing-amber);
+  }
+  .lerr {
+    color: var(--color-status-error);
+    font: var(--text-icon);
   }
   .kind {
     color: var(--color-text-secondary);
@@ -495,25 +516,26 @@
   }
   .seg {
     display: flex;
+    border: var(--border-width-default) solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
   }
   .seg button {
     padding: var(--space-xxs) var(--space-sm);
     background: none;
-    border: var(--border-width-default) solid var(--color-border-subtle);
-    color: var(--color-text-secondary);
+    border: 0;
+    color: var(--color-text-muted);
     font: var(--text-label);
     cursor: pointer;
   }
-  .seg button:first-child {
-    border-radius: var(--radius-sm) 0 0 var(--radius-sm);
-  }
-  .seg button:last-child {
-    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  }
   .seg button.on {
-    background: var(--color-surface-selected);
-    border-color: var(--color-focus);
+    background: var(--color-accent-subtle);
     color: var(--color-text-primary);
+    font-weight: 500;
+  }
+  .seg button:focus-visible {
+    outline: var(--border-width-focus) solid var(--color-focus);
+    outline-offset: -2px;
   }
   .acts {
     display: flex;

@@ -46,6 +46,7 @@ describe('project files helpers', () => {
     expect(pathLines(' ~/a \n\n/b\r\n')).toEqual(['~/a', '/b']);
     expect(tilde(`${HOME}/x: holds credentials in ${HOME}`, HOME)).toBe('~/x: holds credentials in ~');
     expect(tilde('/other/x', '')).toBe('/other/x');
+    expect(tilde('/Users/media/x', HOME)).toBe('/Users/media/x');
     expect(midTruncate('~/a')).toBe('~/a');
     const m = midTruncate(`~/${'d/'.repeat(40)}app.figcraft`);
     expect(m.length).toBeLessThanOrEqual(44);
