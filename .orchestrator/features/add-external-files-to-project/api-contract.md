@@ -28,7 +28,8 @@ of the project (for the footer note).
 ### `project_files_add(project: string, paths: string[], access?: "write"|"read") -> { files: ProjectFile[], added: string[], refused: {path: string, error: string}[] }`
 
 `paths` as typed, picked or dropped (`~/…` expanded by the core). Default
-access `write`. Each path is validated alone (spec.md › Validation);
+access (no `access` given): `write`, or `read` for a path inside a listed
+`read` folder; an explicit `write` there is refused. Each path is validated alone (spec.md › Validation);
 `added` holds the canonical paths added, `refused` the input path with its
 message. `files` is the whole list after the change. Duplicates inside one
 call (same canonical path) count once: added once, never in `refused`. An unknown project is an `Err`.

@@ -32,7 +32,9 @@ In:
    Each entry is one absolute path (a file or a folder, folder = everything
    under it) with:
    - **access**: `write` (read & write, default: the brief asks for files
-     agents update) or `read` (read only);
+     agents update) or `read` (read only). A path added inside a listed
+     `read` folder gets `read` (unless `write` was asked explicitly, which
+     is refused, see Validation);
    - **note**: optional free text, "what it is for" (e.g. "Brand guide: logo,
      colors, tone"). Agents see it.
 2. **Add** one or several paths at once from a **drop zone**: drag and drop
@@ -187,7 +189,9 @@ on the project.
    edits a file of the folder without a permission prompt, from the Edit tool
    and from Bash.
 4. Switching an entry to Read only, then resuming the agent: Edit on it is
-   denied, Bash can't write it, Read still works.
+   denied, Read still works, and Bash can't write it (for an entry nested in
+   a Read & write folder, only when the CLI's sandbox supports `denyWrite`;
+   otherwise this is documented as a known gap).
 5. Team nodes of a feature of the project get the same files and section.
 6. Removing an entry leaves the files on disk; the next spawn no longer has
    it. Saving the General form does not erase the list.
