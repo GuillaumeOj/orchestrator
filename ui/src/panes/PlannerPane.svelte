@@ -290,6 +290,12 @@
                 <td>{al.queued ? `queued (${al.queued})` : over > 2 ? `over +${over.toFixed(0)} pp` : over < -2 ? `under −${Math.abs(over).toFixed(0)} pp` : 'on plan'}{al.live ? ` · ${al.live} live` : ''}</td>
               </tr>
             {/each}
+            <!-- The Overwatch (P4.4 notes §10): no planned share, it draws on the reserve. -->
+            <tr class="ow" data-overwatch-row>
+              <td>Overwatch</td><td>—</td><td>—</td>
+              <td title="Not planned: it draws on the reserve.">{v.overwatch_pp == null ? '—' : `${v.overwatch_pp.toFixed(1)} pp`}</td>
+              <td></td><td class="muted">{v.overwatch_pp == null ? 'from the reserve' : 'so far this week · from the reserve'}</td>
+            </tr>
             <tr><td>reserve (interactive)</td><td>{v.reserve_pct}</td><td>—</td><td>{s.interactive_used.toFixed(0)}%</td><td></td><td>{s.reserve_left.toFixed(0)} pp left</td></tr>
             <tr><td>outside the app</td><td>—</td><td>—</td><td>{s.unattributed_so_far.toFixed(0)}%</td><td></td><td class="muted">claude.ai, other terminals</td></tr>
           </tbody>
@@ -340,6 +346,9 @@
 </div>
 
 <style>
+  tr.ow td {
+    border-top: var(--border-width-default) solid var(--color-border-subtle);
+  }
   .planner {
     flex: 1;
     min-height: 0;

@@ -36,7 +36,7 @@ db.flush()?;                                                    // everything qu
 | Agent, Turn, (holds) | `agents`, `turns`, `holds` | runtime-owned: `load_runtime`, `sync_runtime(RuntimeDiff)`, `runtime_is_empty` |
 | InboxItem | `inbox_items` | runtime-owned; `inbox_item(id)`, `inbox_pending()` (read only); `decided_by` (FR-709) |
 | one-shot allow | `one_shot_allows` | `add_one_shot`, `take_one_shot` (FR-705: one exact call of one agent) |
-| PermissionRule | `permission_rules` | `add_rule`, `revoke_rule` (row kept), `rules()` (active) |
+| PermissionRule | `permission_rules` | `add_rule`, `revoke_rule` (row kept), `rules()` (active); since migration 15 exported once to the policy files (`rules_to_migrate`, `mark_rules_migrated`) and no longer read by the core |
 | UsageSample | `usage_samples` | `add_usage` (detached), `usage_since(ms, source)`, `usage_totals(ms)` |
 | WeeklyPlan, BudgetAllocation | `weekly_plans`, `budget_allocations` | `save_plan(plan, PlanStatus)`, `active_plan`, `previous_plan(before)` |
 | PacingPolicy | `pacing_policies` | `save_policy(id, p)`, `policy(id)` |

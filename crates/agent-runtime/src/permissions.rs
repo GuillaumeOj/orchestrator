@@ -1,41 +1,48 @@
-//! Scoped permission rules (FR-705, FR-708) evaluated by the core: for
-//! PermissionRequest hooks (answered from the store or the Inbox) and for the
+//! The FR-708 pattern grammar of permission rules, shared by the policy
+//! files ([`crate::policy`]) for PermissionRequest hooks and the
 //! orchestrator's own MCP tools. Pure.
 //!
 //! Pattern syntax (a subset of Claude Code's): `Tool` matches every call of
 //! the tool; `Tool(spec)` matches on the call's primary input (Bash command,
 //! file path, URL…): `spec:*` or `spec*` is a prefix, `dir/**` a path prefix,
 //! anything else is exact. A tool name ending in `*` is a prefix
-//! (`mcp__penpot__*`). **Deny wins over ask, ask over allow** (all scopes).
+//! (`mcp__penpot__*`).
 
-use orch_store::{PermissionRule, RuleEffect, RuleScope};
 use serde_json::Value;
 
-/// Who is asking: rules apply when their scope matches any of these.
+/// Who is asking: a policy rule's `role` / `agent` and the project's file
+/// apply when they match.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Subject {
     pub agent_id: String,
     pub role: String,
     pub project_id: Option<String>,
+    /// A team role (else a solo session): picks the default effect (D3).
+    pub team: bool,
 }
 
-/// The input a rule's `(spec)` matches against.
-pub fn primary_input(tool: &str, input: &Value) -> Option<String> {
-    let key = match tool {
+/// The input key a rule's `(spec)` matches for a built-in tool.
+pub fn primary_key(tool: &str) -> Option<&'static str> {
+    Some(match tool {
         "Bash" => "command",
         "Read" | "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => "file_path",
         "WebFetch" => "url",
         "WebSearch" => "query",
         "Glob" | "Grep" => "pattern",
-        _ => {
-            return match input {
-                Value::Null => None,
-                Value::Object(m) if m.is_empty() => None,
-                other => Some(other.to_string()),
-            };
-        }
-    };
-    input.get(key).and_then(Value::as_str).map(str::to_string)
+        _ => return None,
+    })
+}
+
+/// The input a rule's `(spec)` matches against (the whole input for other tools).
+pub fn primary_input(tool: &str, input: &Value) -> Option<String> {
+    match primary_key(tool) {
+        Some(key) => input.get(key).and_then(Value::as_str).map(str::to_string),
+        None => match input {
+            Value::Null => None,
+            Value::Object(m) if m.is_empty() => None,
+            other => Some(other.to_string()),
+        },
+    }
 }
 
 fn tool_matches(pat: &str, tool: &str) -> bool {
@@ -85,25 +92,6 @@ pub fn is_compound(cmd: &str) -> bool {
     ["&&", "||", ";", "|", "&", "`", "$(", "<(", ">(", ">", "<", "\n"].iter().any(|op| cmd.contains(op))
 }
 
-fn applies(r: &PermissionRule, s: &Subject) -> bool {
-    match r.scope {
-        RuleScope::Agent => r.scope_id == s.agent_id,
-        RuleScope::Role => r.scope_id == s.role,
-        RuleScope::Project => s.project_id.as_deref() == Some(r.scope_id.as_str()),
-    }
-}
-
-/// The deciding rule for a call, if any: deny, then ask, then allow.
-pub fn evaluate<'a>(rules: &'a [PermissionRule], s: &Subject, tool: &str, input: &Value) -> Option<&'a PermissionRule> {
-    let hits: Vec<&PermissionRule> = rules
-        .iter()
-        .filter(|r| r.revoked_at_ms.is_none() && applies(r, s) && matches(&r.pattern, tool, input))
-        .collect();
-    [RuleEffect::Deny, RuleEffect::Ask, RuleEffect::Allow]
-        .iter()
-        .find_map(|e| hits.iter().find(|r| r.effect == *e).copied())
-}
-
 /// The rule "always allow this" creates: the exact Bash command, the tool for
 /// the others (a file tool's scope is the project already). `None` when no
 /// rule would mean exactly this call (a command a rule would read as a prefix,
@@ -130,19 +118,6 @@ pub fn summary(tool: &str, input: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    fn rule(id: u64, scope: RuleScope, sid: &str, pattern: &str, effect: RuleEffect) -> PermissionRule {
-        PermissionRule {
-            id,
-            scope,
-            scope_id: sid.into(),
-            pattern: pattern.into(),
-            effect,
-            source_inbox_item_id: None,
-            created_at_ms: 0,
-            revoked_at_ms: None,
-        }
-    }
 
     #[test]
     fn pattern_matching() {
@@ -172,24 +147,6 @@ mod tests {
         }
         assert!(!matches("Bash(ls *)", "Bash", &bash("ls ; rm -rf /")));
         assert!(matches("Bash(cargo test | tee log)", "Bash", &bash("cargo test | tee log")));
-    }
-
-    #[test]
-    fn deny_beats_ask_beats_allow_across_scopes() {
-        let s = Subject { agent_id: "a1".into(), role: "solo".into(), project_id: Some("demo".into()) };
-        let input = json!({"command": "cargo test"});
-        let mut rules = vec![
-            rule(1, RuleScope::Project, "demo", "Bash", RuleEffect::Allow),
-            rule(2, RuleScope::Project, "other", "Bash", RuleEffect::Deny),
-        ];
-        assert_eq!(evaluate(&rules, &s, "Bash", &input).unwrap().id, 1);
-        rules.push(rule(3, RuleScope::Role, "solo", "Bash(cargo:*)", RuleEffect::Ask));
-        assert_eq!(evaluate(&rules, &s, "Bash", &input).unwrap().id, 3);
-        rules.push(rule(4, RuleScope::Agent, "a1", "Bash(cargo test)", RuleEffect::Deny));
-        assert_eq!(evaluate(&rules, &s, "Bash", &input).unwrap().id, 4);
-        rules[3].revoked_at_ms = Some(1);
-        assert_eq!(evaluate(&rules, &s, "Bash", &input).unwrap().id, 3);
-        assert!(evaluate(&rules, &s, "Edit", &json!({})).is_none());
     }
 
     #[test]

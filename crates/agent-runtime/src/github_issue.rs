@@ -1041,17 +1041,18 @@ mod tests {
     #[test]
     fn a_deny_rule_stops_update_issue_while_read_issue_still_works() {
         let (_d, _rd, rt, calls) = fixture(issue_json("b"), 0, None, Some("me/shop"));
-        rt.db
-            .add_rule(
-                orch_store::RuleScope::Role,
-                "solo",
-                "mcp__orch__update_issue",
-                orch_store::RuleEffect::Deny,
-                None,
-            )
-            .unwrap();
+        // P4.4: rules live in policy.toml (the store's table is only migrated from).
+        rt.add_rule(
+            orch_store::RuleScope::Role,
+            "solo",
+            None,
+            "mcp__orch__update_issue",
+            crate::policy::Effect::Deny,
+            None,
+        )
+        .unwrap();
         let (err, text) = update(&rt, json!({"issue": "42", "comment": "hi"}));
-        assert!(err && text.contains("Denied by the user's rule"), "{text}");
+        assert!(err && text.contains("Denied by the user's policy rule"), "{text}");
         assert!(writes(&calls).is_empty());
         assert!(!read(&rt, json!({"issue": "42"})).0);
     }

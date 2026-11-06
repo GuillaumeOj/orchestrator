@@ -13,11 +13,14 @@ export const CHORDS = {
   'cmd+w': 'pane.close',
   'cmd+shift+t': 'pane.reopen',
   'cmd+shift+i': 'decisions',
-  'cmd+l': 'decisions.search',
+  'cmd+l': 'overwatch.ask',
   'cmd+j': 'dock.toggle',
   'cmd+,': 'settings',
   ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`cmd+${n}`, `pane.focus.${n}`])),
 };
+
+/** Commands whose key belongs to the chat column, no chord (P4.4 notes §11.4). */
+const LOCAL_KEYS = { 'decisions.search': '/' };
 
 /** Leader sequences: ⌘; then the key. */
 export const LEADER = {
@@ -128,6 +131,7 @@ export function kittyKey(k) {
 
 /** Key hint notation (§9.7): `+` joins keys pressed together, a space separates steps. */
 export function hint(command) {
+  if (LOCAL_KEYS[command]) return LOCAL_KEYS[command];
   for (const [chord, c] of Object.entries(CHORDS)) if (c === command) return glyphs(chord);
   for (const [k, c] of Object.entries(LEADER)) if (c === command) return `${glyphs('cmd+;')} ${k}`;
   return '';

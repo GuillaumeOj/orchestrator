@@ -26,6 +26,7 @@ pub fn decision_id(kind: &str, id: u64) -> String {
         "gate" => format!("gate-{id}"),
         "delivery" => format!("delivery-{id}"),
         "question" => format!("q-{id}"),
+        "rule_proposal" => format!("rule-{id}"),
         _ => format!("alert-{id}"),
     }
 }
@@ -116,8 +117,15 @@ pub struct Decision {
     pub thread: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_prev: Option<String>,
-    /// user | core (being delivered: not counted in the badge)
+    /// user | overwatch (deciding, P4.4) | core (being delivered): only
+    /// `user` counts in the badge and notifies.
     pub waits_on: &'static str,
+    /// A permission the Overwatch may still settle until then (F1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deciding_until_ms: Option<u64>,
+    /// The Overwatch's recommendation, one per decision (D7).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<Value>,
     pub created_ms: u64,
     /// The store's agent, for routing (`subject.agent` too).
     #[serde(skip)]
@@ -140,7 +148,7 @@ impl Decision {
 
     /// Open, levels 1–3: the title badge counts it.
     pub fn counts(&self) -> bool {
-        self.is_open() && self.level <= 3
+        self.is_open() && self.level <= 3 && self.waits_on == "user"
     }
 }
 
@@ -279,6 +287,7 @@ fn kind_of(i: &InboxItem) -> (&'static str, Option<&'static str>) {
         "delivery" => ("delivery", None),
         "budget" => ("budget", None),
         "notion" => ("notion", None),
+        "rule_proposal" => ("rule_proposal", None),
         _ if i.payload.get("source").and_then(Value::as_str) == Some("notion") => ("notion", None),
         _ => ("alert", None),
     }
@@ -289,8 +298,41 @@ fn level_of(kind: &str) -> u8 {
     match kind {
         "permission" | "question" | "gate" | "trust" | "wait" => 1,
         "budget" | "ask" | "notion" => 3,
+        // Blocks nobody: never notifies, not in the badge (P4.4).
+        "rule_proposal" => 4,
         _ => 2,
     }
+}
+
+/// The `rule_proposal` card (api-contract §3.1): the text, the rule in
+/// mono, the decisions it comes from; Add rule · Not now · Edit rule.
+fn rule_proposal_card(p: &Value) -> (String, String, Vec<Value>, Vec<Action>) {
+    let rule = json!({"type": "rule", "match": p.get("match"), "effect": p.get("effect"), "scope": p.get("scope"),
+                      "project": p.get("project"), "role": p.get("role"), "file": p.get("file")});
+    let mut ctx = vec![markdown(s(p, "text"), None)];
+    // What the Overwatch said when it proposed this one.
+    if !s(p, "why").is_empty() {
+        ctx.push(markdown(&format!("The Overwatch: {}", s(p, "why")), None));
+    }
+    ctx.push(rule);
+    if let Some(links) = p.get("links").filter(|l| l.as_array().is_some_and(|a| !a.is_empty())) {
+        ctx.push(json!({"type": "links", "links": links}));
+    }
+    // "Allow `pnpm add *` in shop-api for front?"
+    let shown = s(p, "match");
+    let shown = shown.split_once('(').and_then(|(_, r)| r.strip_suffix(')')).unwrap_or(shown).replace(":*", " *");
+    let (verb, project, role) = (
+        if s(p, "effect") == "deny" { "Deny" } else { "Allow" },
+        Some(s(p, "project")).filter(|x| !x.is_empty()).map(|x| format!(" in {x}")).unwrap_or_default(),
+        Some(s(p, "role")).filter(|x| !x.is_empty() && *x != "solo").map(|x| format!(" for {x}")).unwrap_or_default(),
+    );
+    let title = format!("{verb} `{}`{project}{role}?", cut(&shown, 60));
+    let actions = vec![
+        act("add", "Add rule", Some("a")),
+        act("not_now", "Not now", Some("r")),
+        act("edit", "Edit rule", Some("enter")),
+    ];
+    (title, cut(s(p, "text"), 120), ctx, actions)
 }
 
 /// A stored item as a Decision.
@@ -302,6 +344,8 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
     let first_line = i.body.lines().next().unwrap_or("").to_string();
     let body_line = first_line.strip_prefix(&format!("{who}: ")).unwrap_or(&first_line).to_string();
     let open = i.open();
+    let deciding =
+        if open && i.kind == "permission" { crate::overwatch::deciding::deciding_until(&i.payload) } else { None };
     let (title, summary, context, actions): (String, String, Vec<Value>, Vec<Action>) = match (kind, gate) {
         ("permission", _) => {
             let tool = s(p, "tool");
@@ -449,6 +493,7 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
                 vec![OPEN_PANE, act("retry", "Retry now", None), act("restart_fresh", "Restart fresh", None), DISMISS];
             (cut(&first_line, 80), label, ctx, actions)
         }
+        ("rule_proposal", _) => rule_proposal_card(p),
         ("budget", _) => {
             let reason = if s(p, "reason").is_empty() { first_line.as_str() } else { s(p, "reason") };
             let mut ctx = vec![markdown(&i.body, None)];
@@ -535,7 +580,13 @@ fn stored(cx: &Ctx, i: &InboxItem) -> Decision {
         lifecycle: Lifecycle::of(i),
         thread,
         thread_prev: None,
-        waits_on: if open { "user" } else { "core" },
+        waits_on: match (open, deciding) {
+            (true, Some(_)) => "overwatch",
+            (true, None) => "user",
+            _ => "core",
+        },
+        deciding_until_ms: deciding,
+        annotation: p.get("annotation").filter(|a| a.is_object()).cloned(),
         created_ms: i.created_at_ms,
         agent: i.agent_id.clone(),
         synthesized: false,
@@ -574,6 +625,8 @@ fn synth(
         lifecycle: Lifecycle::open(),
         thread_prev: None,
         waits_on: "user",
+        deciding_until_ms: None,
+        annotation: None,
         created_ms,
         agent: agent.map(str::to_string),
         synthesized: true,

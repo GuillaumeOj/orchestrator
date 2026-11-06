@@ -362,6 +362,11 @@ pub fn reconcile(env: &ReconcileEnv) -> anyhow::Result<Report> {
                         h.status = HoldStatus::Parked;
                         i.status = orch_store::InboxStatus::Parked;
                         i.payload["restarted"] = serde_json::json!(true);
+                        // The hold that gave the Overwatch its window is gone (P4.4 F1):
+                        // the parked card is the user's.
+                        if let Some(p) = i.payload.as_object_mut() {
+                            p.remove(crate::overwatch::deciding::DECIDING_UNTIL);
+                        }
                         report.parked.push(item);
                         format!(
                             "Decision {item} parked: the agent was denied while the core was down and resumes on the answer"
@@ -487,6 +492,7 @@ mod tests {
             start_fresh: false,
             spawned_at_ms: None,
             crash_restarts: vec![],
+            overwatch: false,
         }
     }
 

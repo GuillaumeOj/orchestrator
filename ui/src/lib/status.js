@@ -44,6 +44,8 @@ const DECISION = {
   alert: { label: 'Alert', icon: '\u{F11CF}' },
   error: { label: 'Error', icon: '\u{F11CF}' },
   notion: { label: 'Notion comment', icon: '\u{F0C12}' },
+  // A rule proposal is a permission's cousin: its colour (no token of its own, notes §7).
+  rule_proposal: { label: 'Rule proposal', icon: '\u{F0BC5}', token: 'permission' },
 };
 
 /** A decision's kind entry: icon, label and its `color.decision.*` token (a gate by its flavour). */

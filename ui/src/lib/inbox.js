@@ -60,7 +60,10 @@ export function subjectLine(d) {
 }
 
 // The core answers these at once (no undo window): where to go, or a reconnect.
-const AT_ONCE = new Set(['open', 'reconnect', 'open_settings']);
+const AT_ONCE = new Set(['open', 'reconnect', 'open_settings', 'edit']);
+
+/** `Bash(pnpm add:*)` as `pnpm add`: the rule's call the way a person says it. */
+const readableMatch = (m) => (m ? m.replace(/^\w+\((.*?)(?::\*)?\)$/, '$1') : 'this');
 
 /** What an action id does: decide (undo window), reply or answer (a text first),
  *  open the agent's pane, or ask the core at once. */
@@ -152,6 +155,8 @@ export function pendingVerb(d, action) {
   // Dismiss (a stale decision's only action) is never a deny, a reject or a skip.
   if (action === 'dismiss') return 'Dismissing';
   switch (d.kind) {
+    case 'rule_proposal':
+      return action === 'add' ? 'Adding rule' : 'Not now';
     case 'permission':
       return { approve: 'Allowing once', always: 'Always allowing' }[action] ?? 'Denying';
     case 'startup':
@@ -180,6 +185,7 @@ export function pendingToast(d, action) {
   const verb = pendingVerb(d, action);
   if (d.kind === 'permission') return `${verb}${who(d)}${what(d)}`;
   if (d.kind === 'budget') return `${verb} · ${d.title}`;
+  if (d.kind === 'rule_proposal') return `${verb} · ${cut(d.title, 40)}`;
   if (verb === 'Dismissing' && d.kind !== 'startup' && d.kind !== 'delivery') return `${verb} · ${cut(d.title, 40)}`;
   return `${verb}${who(d)}`;
 }
@@ -239,6 +245,17 @@ export function effectText(d, mine = {}) {
         return `${action === 'reject' ? 'Rejected' : 'Approved'} · ${agent} resumed`;
       }
       return `Answer sent · ${agent} resumed`;
+    // A rule proposal (P4.4 notes §7.2): added to its file, or declined for now.
+    case 'added':
+      return lc.effect_detail === 'by hand'
+        ? 'Added by hand'
+        : lc.effect_detail
+          ? `${lc.effect_detail[0].toUpperCase()}${lc.effect_detail.slice(1)}`
+          : 'Rule added';
+    case 'not_now':
+      return d.payload?.declined_before
+        ? `Not now. It won't be asked again for ${readableMatch(blockOf(d, 'rule')?.match)}.`
+        : `Not now. Asking again after ${d.payload?.threshold ?? 3} more.`;
     case 'delivered':
       return `Answer delivered · ${agent} reads it next`;
     case 'queued':
@@ -310,6 +327,12 @@ export function marker(d, pending = null, now = Date.now()) {
       return { state: 'sent', text: `Sent to ${agent}${at(lc.sent_at_ms)}` };
     case 'effect': {
       const url = lc.effect === 'pr_opened' ? lc.effect_detail : null;
+      // Settled by the Overwatch while you were reading it (P4.4 notes §3).
+      if (lc.decided_by === 'overwatch' && (lc.effect === 'allowed' || lc.effect === 'denied'))
+        return {
+          state: 'effect',
+          text: `${lc.effect === 'denied' ? 'Denied' : 'Allowed'} by the Overwatch${at(lc.effect_at_ms)}`,
+        };
       return { state: 'effect', text: `${effectText(d) ?? 'Done'}${at(lc.effect_at_ms)}`, url };
     }
     case 'failed':
@@ -324,6 +347,11 @@ export function marker(d, pending = null, now = Date.now()) {
     case 'interrupted':
       return { state: 'interrupted', text: `Interrupted · ${agent} stopped before it was answered` };
     default:
+      if (d.kind === 'rule_proposal' && d.payload?.edited_at_ms)
+        return {
+          state: 'open',
+          text: `Opened in nvim · ${clock(d.payload.edited_at_ms, now)}. Uncomment the rule to enable it.`,
+        };
       return { state: 'open', text: `Waiting for you · ${waited(d.created_ms, now)}` };
   }
 }

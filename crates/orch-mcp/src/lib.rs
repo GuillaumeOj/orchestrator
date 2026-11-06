@@ -15,7 +15,10 @@
 //!   login (the sandbox has neither the login nor a route to GitHub);
 //! - team tools (P2): `send_message`, `inbox`, `list_tasks`, `handoff`,
 //!   `request_review`, `ask_user`, `create_task`, `update_task`,
-//!   `request_spec_approval`, `merge`, `report_done`, `sync_integration`.
+//!   `request_spec_approval`, `merge`, `report_done`, `sync_integration`;
+//! - the Overwatch's tools (P4.4): `world`, `inspect`, `decide_permission`,
+//!   `answer_question`, `annotate`, `nudge`, `resume_agent`, `restart_fresh`,
+//!   `reprioritize`, `propose_rule`, `post`.
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -252,6 +255,87 @@ pub fn tools() -> Value {
             }),
             &["task", "findings"],
         ),
+        // ---- the Overwatch's own (P4.4, api-contract §2.2); `nudge` and
+        // `resume_agent` above are shared with the lead.
+        tool(
+            "world",
+            "The attention snapshot: agents, runs, counts, open decisions (no payloads), the Governor's queue and last actions, your own status. Filter by project id.",
+            json!({"project": s("Project id (optional).")}),
+            &[],
+        ),
+        tool(
+            "inspect",
+            "One agent in detail: its attention record, task, run, last team messages, the tail of its transcript, its open decisions, worktree and feature docs.",
+            json!({"agent": s("Agent id.")}),
+            &["agent"],
+        ),
+        tool(
+            "decide_permission",
+            "Allow or deny a permission whose effect is `overwatch`, while it is still yours to decide (its deadline). Refused for calls the core keeps for the user (not_allowed), after the deadline (too_late) or once closed (stale).",
+            json!({
+                "decision": s("Decision id, e.g. inbox-42."),
+                "effect": {"type": "string", "enum": ["allow", "deny"]},
+                "reason": s("Why, in at most 60 characters (shown on the line).")
+            }),
+            &["decision", "effect", "reason"],
+        ),
+        tool(
+            "answer_question",
+            "Answer an agent's question, citing at least one source: a file under the run's feature dir or the project's docs/ (path#section), or chat:<id> of an earlier answer by the user. Without a valid source nothing is sent (ungrounded).",
+            json!({
+                "decision": s("Decision id."),
+                "answers": {"type": "array", "items": {"type": "object", "properties": {"question_index": {"type": "integer"}, "text": {"type": "string"}}, "required": ["text"]}},
+                "sources": {"type": "array", "items": {"type": "string"}}
+            }),
+            &["decision", "answers", "sources"],
+        ),
+        tool(
+            "annotate",
+            "Put your recommendation on a decision card the user will decide (one per decision; a later call replaces it). Keep it under 280 characters.",
+            json!({
+                "decision": s("Decision id."),
+                "note": s("Your recommendation."),
+                "recommend": s("An action id of the card (e.g. approve, reject, always)."),
+                "sources": {"type": "array", "items": {"type": "string"}}
+            }),
+            &["decision", "note"],
+        ),
+        tool(
+            "restart_fresh",
+            "Restart an agent in a fresh session (its worktree and task kept) when its session is stuck or never started.",
+            json!({"agent": s("Agent id."), "why": s("Why, shown on the line.")}),
+            &["agent", "why"],
+        ),
+        tool(
+            "reprioritize",
+            "Move a queued entry to another tier (low, normal or high; never above its allocation's tier in the weekly plan). Changes the queue order only.",
+            json!({
+                "entry": {"type": "integer"},
+                "tier": {"type": "string", "enum": ["low", "normal", "high"]},
+                "why": s("Why, shown on the line.")
+            }),
+            &["entry", "tier", "why"],
+        ),
+        tool(
+            "propose_rule",
+            "Propose a policy rule to the user (a card with Add rule / Not now / Edit rule), from the decisions it generalises.",
+            json!({
+                "match": s("FR-708 pattern, e.g. Bash(pnpm add:*)."),
+                "effect": {"type": "string", "enum": ["allow", "deny", "overwatch", "user"]},
+                "scope": {"type": "string", "enum": ["project", "global"]},
+                "project": s("Project id (scope project)."),
+                "role": s("Team role name, or solo (optional)."),
+                "from": {"type": "array", "items": {"type": "string"}, "description": "The decision ids it comes from."},
+                "why": s("Why, in a sentence.")
+            }),
+            &["match", "effect", "scope", "from", "why"],
+        ),
+        tool(
+            "post",
+            "Write in the chat (markdown, at most 2 000 characters): answer the user, or a short status. Links: a doc path, chat:<id>, agent:<id>, run:<id>.",
+            json!({"text": s("The text."), "thread": s("A thread id (optional).")}),
+            &["text"],
+        ),
     ])
 }
 
@@ -419,6 +503,30 @@ mod tests {
         for t in tools().as_array().unwrap() {
             assert_eq!(t["inputSchema"]["type"], "object", "{}", t["name"]);
         }
+    }
+
+    #[test]
+    fn the_overwatch_sees_its_eleven_tools() {
+        let names = [
+            "world",
+            "inspect",
+            "decide_permission",
+            "answer_question",
+            "annotate",
+            "nudge",
+            "resume_agent",
+            "restart_fresh",
+            "reprioritize",
+            "propose_rule",
+            "post",
+        ];
+        let allowed: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+        let mut listed: Vec<String> =
+            tools_for(&allowed).as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
+        let mut want = allowed.clone();
+        listed.sort();
+        want.sort();
+        assert_eq!(listed, want);
     }
 
     #[test]

@@ -65,8 +65,10 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").chars().take(120).collect()
 }
 
+/// Levels 1–2 that wait on the user: a permission the Overwatch is still
+/// deciding notifies once, when it is handed over (P4.4 F1).
 fn notifies(d: &Decision) -> bool {
-    d.level <= 2 && d.payload.get("notify").and_then(Value::as_bool) != Some(false)
+    d.level <= 2 && d.waits_on == "user" && d.payload.get("notify").and_then(Value::as_bool) != Some(false)
 }
 
 /// Remembers the items already notified; the first poll only learns them
@@ -211,6 +213,8 @@ mod tests {
             thread: None,
             thread_prev: None,
             waits_on: "user",
+            deciding_until_ms: None,
+            annotation: None,
             created_ms: 0,
             agent: Some(agent.into()),
             synthesized: false,
@@ -238,6 +242,20 @@ mod tests {
         let mut fyi = item("q-6", 1, "f");
         fyi.payload = json!({"notify": false});
         assert_eq!(w.poll(&[fyi]), None);
+    }
+
+    #[test]
+    fn a_deciding_card_notifies_once_when_handed_over() {
+        let mut w = Watch::default();
+        assert_eq!(w.poll(&[]), None);
+        let mut d = item("inbox-7", 1, "back-1");
+        (d.waits_on, d.deciding_until_ms) = ("overwatch", Some(60_000));
+        assert_eq!(w.poll(&[d.clone()]), None, "the Overwatch is deciding");
+        assert_eq!(w.poll(&[d.clone()]), None);
+        (d.waits_on, d.deciding_until_ms) = ("user", None);
+        let n = w.poll(&[d.clone()]).expect("handed over: it needs the user now");
+        assert_eq!(n.decision_id, "inbox-7");
+        assert_eq!(w.poll(&[d]), None, "once");
     }
 
     #[test]

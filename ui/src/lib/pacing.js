@@ -97,6 +97,14 @@ export const TABS = [
   { id: 'model', label: 'Model', rows: 'by_model' },
 ];
 
+/** The Overwatch's row after the others, before "outside the app" (P4.4 notes §10). */
+export function overwatchLast(rows) {
+  const ow = rows.filter((x) => x.key === 'overwatch');
+  if (!ow.length) return rows;
+  const out = rows.filter((x) => x.key === 'outside');
+  return [...rows.filter((x) => x.key !== 'overwatch' && x.key !== 'outside'), ...ow, ...out];
+}
+
 export const API_TIP = 'What these tokens would cost at API prices. Your plan is not billed this way.';
 
 /** "≈ $412"; the outside row has no price. */

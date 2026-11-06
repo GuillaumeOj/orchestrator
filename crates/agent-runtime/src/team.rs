@@ -457,7 +457,7 @@ impl Runtime {
         let cx = self.run_ctx(&seat.run_id).ok()?;
         match seat.task.and_then(|t| self.db.task(t).ok().flatten()) {
             Some(task) => Some(self.task_turn(&cx, &task, rec, &self.branch_of(rec))),
-            None if crate::runtime::reserved_slot(rec) => Some(Self::lead_brief(&cx)),
+            None if crate::runtime::is_lead(rec) => Some(Self::lead_brief(&cx)),
             None => None,
         }
     }
@@ -504,6 +504,7 @@ impl Runtime {
     /// turn starts it once the Governor admits it).
     fn add_team_agent(&self, cx: &RunCtx, node: &str, n: u32, row: &orch_store::WorktreeRow) -> Result<AgentRecord> {
         let id = agent_id_for(&cx.feature.slug, node, n);
+        crate::overwatch::refuse_reserved(&id)?;
         let cfg = orch_team::compile_node(&cx.team, node, &cx.roles, &cx.fctx()).map_err(|e| anyhow!(e))?;
         let role = Role::from_node(&cfg).map_err(|e| anyhow!(e))?;
         // Refs that can't work refuse the launch now, not at the first spawn.
@@ -540,6 +541,7 @@ impl Runtime {
             start_fresh: false,
             spawned_at_ms: None,
             crash_restarts: vec![],
+            overwatch: false,
         };
         self.store.write(|s| s.agents.insert(id.clone(), rec.clone()))?;
         // Bind the worktree row to its agent.
@@ -886,6 +888,14 @@ impl Runtime {
             if retried.is_some_and(|t| now.saturating_sub(t) <= NO_PROGRESS_MS)
                 || !self.watchdog_once(format!("{id}:{start}:{what:?}"))
             {
+                continue;
+            }
+            // The Overwatch: interrupted at its ceiling, no card (its turn
+            // end counts the long turn, P4.4).
+            if self.is_overwatch(&id) {
+                if matches!(what, Watch::Ceiling(_)) {
+                    let _ = self.interrupt(&id);
+                }
                 continue;
             }
             let (text, detail) = match what {

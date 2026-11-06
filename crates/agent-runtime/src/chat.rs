@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
 use jiff::tz::TimeZone;
-use orch_store::{ChatDay, ChatEntry, PermissionRule};
+use orch_store::{ChatDay, ChatEntry};
 use serde_json::{Value, json};
 
 use crate::attention::copy::cut;
@@ -48,14 +48,16 @@ pub fn card_of(d: &Decision) -> Value {
     v
 }
 
-/// `by` from `lifecycle.decided_by` (api-contract §1), and the rule's id.
-fn by_of(decided_by: Option<&str>) -> (&'static str, Option<u64>) {
+/// `by` from `lifecycle.decided_by` (api-contract §1, §3.2), and the
+/// policy rule's id: the actor `rule:<id>` reads as `policy` (P4.4; older
+/// stored lines keep `rule`).
+fn by_of(decided_by: Option<&str>) -> (&'static str, Option<&str>) {
     match decided_by.unwrap_or("core") {
         "user" => ("you", None),
         "pane" => ("pane", None),
         "expired" => ("expired", None),
         "overwatch" => ("overwatch", None),
-        r if r.starts_with("rule:") => ("rule", r["rule:".len()..].parse().ok()),
+        r if r.starts_with("rule:") => ("policy", Some(&r["rule:".len()..])),
         _ => ("core", None),
     }
 }
@@ -93,6 +95,8 @@ pub fn verb(d: &Decision) -> &'static str {
         ("budget", "approve") => "applied",
         ("budget", "reject") => "skipped",
         ("question", "reply") => "answered",
+        ("rule_proposal", "add") => "added",
+        ("rule_proposal", "not_now") => "not now",
         (_, _) if by == "expired" => "expired",
         // Answered in Claude Code's own dialog (a prompt, a held permission).
         (_, _) if by == "pane" => "answered",
@@ -100,14 +104,14 @@ pub fn verb(d: &Decision) -> &'static str {
     }
 }
 
-/// The closed decision's line (api-contract §1). `rule`: the rule that
-/// decided, when it is still in the store (its pattern names it); `prior`:
-/// the entry's snapshot while it was open.
+/// The closed decision's line (api-contract §1). A policy answer names its
+/// rule's id (`by: policy`), a core denial its hard-list reason (`by: core`,
+/// the payload's `hard_why`); `prior`: the entry's snapshot while it was open.
 ///
 /// A synthesized decision that cleared by itself is `dismissed · core ·
 /// stale` (ux F8); `expired` is for a default taken at its deadline (the
 /// Governor's ask) and a parked permission the core closed (ux F10).
-pub fn line_of(d: &Decision, rule: Option<&PermissionRule>, prior: Option<&Value>, now: u64) -> Value {
+pub fn line_of(d: &Decision, prior: Option<&Value>, now: u64) -> Value {
     let lc = &d.lifecycle;
     let (mut by, rule_id) = by_of(lc.decided_by.as_deref());
     let (mut verb, mut state) = (verb(d), lc.state);
@@ -142,11 +146,20 @@ pub fn line_of(d: &Decision, rule: Option<&PermissionRule>, prior: Option<&Value
     if let Some(a) = d.agent.as_deref().or_else(|| d.subject.get("agent").and_then(Value::as_str)) {
         line["agent"] = json!(a);
     }
-    if by == "rule" {
-        let detail = rule.map(|r| r.pattern.clone()).or(rule_id.map(|n| n.to_string()));
-        if let Some(t) = detail {
-            line["by_detail"] = json!(t);
-        }
+    let detail = match by {
+        "policy" => rule_id.map(str::to_string),
+        "core" => d.payload.get("hard_why").and_then(Value::as_str).map(str::to_string),
+        // The Overwatch's reason (≤ 60 chars) and the sources it cited (P4.4).
+        "overwatch" => d.payload.get("overwatch_reason").and_then(Value::as_str).map(|r| cut(r, 60)),
+        _ => None,
+    };
+    if let Some(t) = detail {
+        line["by_detail"] = json!(t);
+    }
+    if by == "overwatch"
+        && let Some(src) = d.payload.get("overwatch_sources").filter(|s| s.as_array().is_some_and(|a| !a.is_empty()))
+    {
+        line["sources"] = src.clone();
     }
     line
 }
@@ -191,7 +204,7 @@ pub fn render(entries: &[Value], tz: &TimeZone) -> String {
         let hm = at.to_zoned(tz.clone()).strftime("%H:%M").to_string();
         let what = match (e.get("line"), s("kind")) {
             (Some(l), _) => format!("{} {}", s("decision"), line_text(l)),
-            (None, "decision") => format!("{} open", s("decision")),
+            (None, "decision" | "rule_proposal") => format!("{} open", s("decision")),
             (None, _) => s("text").to_string(),
         };
         out.push_str(&format!("{hm} {} {} {what}\n", s("author"), s("kind")));
@@ -221,7 +234,7 @@ fn decision_entry(day: &str, at_ms: u64, d: &Decision, line: Option<Value>) -> C
         day: day.into(),
         at_ms,
         author: "core".into(),
-        kind: "decision".into(),
+        kind: if d.kind == "rule_proposal" { "rule_proposal" } else { "decision" }.into(),
         thread: d.thread.clone(),
         decision: Some(d.id.clone()),
         line,
@@ -296,12 +309,6 @@ impl Runtime {
             cs.loaded = true;
         }
         let is_open = |id: &str| x.decisions.get(id).is_some_and(Decision::is_open);
-        // The rule that decided (its pattern names it), read once and only when asked.
-        let rules = std::cell::OnceCell::new();
-        let rule_of = |d: &Decision| -> Option<PermissionRule> {
-            let id = by_of(d.lifecycle.decided_by.as_deref()).1?;
-            rules.get_or_init(|| self.db.rules().unwrap_or_default()).iter().find(|r| r.id == id).cloned()
-        };
         // A new working day (start, or local midnight while running).
         if cs.day != x.day {
             cs.day = x.day.to_string();
@@ -377,7 +384,7 @@ impl Runtime {
                 .or_else(|| rebuilt.remove(&id));
             match last {
                 Some(d) => {
-                    e.line = Some(line_of(&d, rule_of(&d).as_ref(), prior.as_ref(), x.now));
+                    self.set_line(&mut e, &d, prior.as_ref(), x.now);
                     e.card = Some(card_of(&d));
                 }
                 None => close_from_snapshot(&mut e, x.now),
@@ -417,8 +424,10 @@ impl Runtime {
                     && c["title"] == d.title.as_str()
             });
             if !same {
-                let mut e = e.clone();
-                (e.line, e.card) = (Some(line_of(d, rule_of(d).as_ref(), prior.as_ref(), x.now)), Some(card_of(d)));
+                // As stored now: an undo may have written its state since this copy.
+                let mut e = self.db.chat_get(e.n).ok().flatten().unwrap_or_else(|| e.clone());
+                self.set_line(&mut e, d, prior.as_ref(), x.now);
+                e.card = Some(card_of(d));
                 if let Some(w) = write(&e, &mut out) {
                     cs.closed.get_mut(&id).expect("listed").0 = w;
                 }
@@ -457,8 +466,9 @@ impl Runtime {
                     continue;
                 }
                 let d = &x.decisions[&id];
-                let line = line_of(d, rule_of(d).as_ref(), None, x.now);
-                if let Some(w) = write(&decision_entry(x.day, x.now, d, Some(line)), &mut out) {
+                let mut entry = decision_entry(x.day, x.now, d, None);
+                self.set_line(&mut entry, d, None, x.now);
+                if let Some(w) = write(&entry, &mut out) {
                     cs.closed.insert(id, (w, None));
                 }
             }
@@ -507,16 +517,21 @@ impl Runtime {
         })
     }
 
-    /// A permission a store rule answered (FR-709's audit write, `audit` its
-    /// id): posted settled, as a line, never as an open card (J5 · 2).
-    pub(crate) fn chat_rule_answered(
+    /// A permission the policy or the core's hard list answered (FR-709's
+    /// audit write, `audit` its id): posted settled, as a line, never as an
+    /// open card (J5 · 2; core denials ux F4).
+    pub(crate) fn chat_policy_answered(
         &self,
         rec: &crate::store::AgentRecord,
         call: &crate::inbox::Call,
-        rule: &PermissionRule,
-        allow: bool,
+        ev: &crate::policy::Evaluation,
         audit: u64,
     ) {
+        let allow = ev.effect == crate::policy::Effect::Allow;
+        let hard_why = match &ev.source {
+            crate::policy::Source::Hard { why } => Some(*why),
+            _ => None,
+        };
         let (now, tz) = self.now.clock();
         let (_, day) = crate::digest::today(now, &tz);
         let subject = self.subject_now(Some(&rec.id), None);
@@ -524,14 +539,16 @@ impl Runtime {
         let item = serde_json::from_value::<orch_store::InboxItem>(json!({
             "id": audit, "kind": "permission", "agent_id": rec.id, "body": "", "created_at_ms": now,
             "payload": {"tool": call.tool, "tool_input": call.input, "cwd": call.cwd,
-                        "description": call.input.get("description")},
-            "status": "effect", "decided_at_ms": now, "decided_by": format!("rule:{}", rule.id),
+                        "description": call.input.get("description"), "hard_why": hard_why,
+                        "policy_file": match &ev.source { crate::policy::Source::Policy { file, .. } => Some(file), _ => None }},
+            "status": "effect", "decided_at_ms": now, "decided_by": ev.actor(),
             "decision": if allow { "approve" } else { "reject" }, "effect": if allow { "allowed" } else { "denied" },
             "effect_at_ms": now, "subject": subject, "thread": decision::thread_of(&subject), "version": 1,
         }));
         let Some(mut d) = item.ok().and_then(|i| self.build_bare(&[i]).pop()) else { return };
         (d.id, d.actions, d.waits_on) = (format!("audit-{audit}"), vec![], "core");
-        let e = decision_entry(&day, now, &d, Some(line_of(&d, Some(rule), None, now)));
+        let mut e = decision_entry(&day, now, &d, None);
+        self.set_line(&mut e, &d, None, now);
         match self.db.chat_insert(&e) {
             Ok(e) => {
                 self.now.chat_posted().push(e);
@@ -563,7 +580,8 @@ impl Runtime {
         let date = parse_day(day)?;
         let (_, tz) = self.now.clock();
         let (from, until) = day_bounds(date, &tz)?;
-        let entries = self.db.chat_day(day)?;
+        let mut entries = self.db.chat_day(day)?;
+        self.refresh_undo(&mut entries);
         let outcomes: Vec<Value> = self
             .outcomes_between(from, until, &tz)
             .into_iter()

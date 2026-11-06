@@ -444,6 +444,7 @@ impl Core {
         if !agent_runtime::paths::valid_id(&id) {
             bail!("name {id:?}: use letters, digits, '-' or '_'");
         }
+        agent_runtime::overwatch::refuse_reserved(&id)?;
         rt.start(&solo_spec(&project, &id, req))?;
         Ok(id)
     }
@@ -710,6 +711,12 @@ impl Core {
             };
             let r = rt.decide(n, decision, scope, message)?;
             return Ok(done(r));
+        }
+        // A learned-rule proposal (FR-1308): Add rule · Not now · Edit rule.
+        if let Some(n) = item.strip_prefix("rule-") {
+            let n: u64 = n.parse()?;
+            let r = rt.rule_proposal_act(n, action)?;
+            return Ok(r);
         }
         // A start that never happened (FR-415).
         if let Some(n) = item.strip_prefix("startup-") {
@@ -1466,6 +1473,7 @@ mod tests {
             start_fresh: false,
             spawned_at_ms: None,
             crash_restarts: vec![],
+            overwatch: false,
         }
     }
 

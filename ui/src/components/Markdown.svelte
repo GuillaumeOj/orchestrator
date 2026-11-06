@@ -3,25 +3,44 @@
   // agent-written text can't inject markup (specs-rendering §3.2, D1). Raw
   // HTML shows as muted text, except <br>; ```mermaid fences are diagrams.
   // `feature` enables relative images (feature_asset); `ondoc(name, anchor)`
-  // opens a sibling .md doc, without it such links are plain text.
+  // opens a sibling .md doc, without it such links are plain text. `onref(ref)`
+  // (the chat's Overwatch text, P4.4) opens a source link: a doc path, `chat:<id>`,
+  // `agent:<id>`, `run:<id>`; `refok(ref)` false = no longer available, plain text.
   import { tick } from 'svelte';
   import { openUrl } from '../lib/app.svelte.js';
   import { frontPairs, linkKind, prepare } from '../lib/markdown.js';
+  import { refKind } from '../lib/overwatch.js';
   import CodeBlock from './CodeBlock.svelte';
   import Diagram from './Diagram.svelte';
   import MdImage from './MdImage.svelte';
 
-  let { text = '', feature = null, ondoc = null } = $props();
+  let { text = '', feature = null, ondoc = null, onref = null, refok = () => true, reflabel = () => null, anchor = null, anchorAsked = 0 } = $props();
   const doc = $derived(prepare(text));
   // Heading and footnote ids are prefixed per instance: two docs on screen don't clash.
+  let root;
   const uid = $props.id();
   const prefix = `${uid}-`;
 
   const BR = /^\s*<br\s*\/?>\s*$/i;
 
+  // A section asked for (a source link's `#slug`): scrolled to once the text is shown, and again
+  // on every new ask (`anchorAsked` counts them), also for the same section.
+  $effect(() => {
+    text;
+    anchorAsked;
+    if (anchor) tick().then(() => scrollTo(anchor));
+  });
+
   /** Ids (slugs, `fn:1`) are lowercase. */
   function scrollTo(id) {
-    if (id) document.getElementById(prefix + String(id).toLowerCase())?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    if (!id) return;
+    let el = document.getElementById(prefix + String(id).toLowerCase());
+    // A section number (`#2`, `#2.1`) matches the heading that starts with it ("2. Commands", "§2 …").
+    if (!el && /^\d+(\.\d+)*$/.test(String(id))) {
+      const lead = new RegExp(`^\\s*(§\\s*)?${String(id).replace(/\./g, '\\.')}(?![\\d.]*\\d)[\\s.):—-]`);
+      el = [...root.querySelectorAll('h1,h2,h3,h4,h5,h6')].find((h) => lead.test(h.textContent ?? ''));
+    }
+    el?.scrollIntoView({ block: 'start', behavior: 'smooth' });
   }
 
   function follow(e, k) {
@@ -130,13 +149,14 @@
 {/snippet}
 
 {#snippet link(url, title, children)}
+  {@const ref = onref ? refKind(url) : null}
   {@const k = linkKind(url, !!ondoc)}
   <!-- hrefs come from the classified target, never the raw string. -->
-  {#if k.kind === 'external'}<a class="ext" href={k.url} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}<span class="arrow" aria-hidden="true">↗</span></a>{:else if k.kind === 'anchor' || k.kind === 'doc'}<a href={k.kind === 'anchor' ? `#${k.anchor}` : k.name} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}</a>{:else if k.kind === 'repo'}<span class="repo" title={k.path}>{@render inlines(children)}</span>{:else}<span {title}>{@render inlines(children)}</span>{/if}
+  {#if ref && !refok(ref)}<span class="gone" title="No longer available">{@render inlines(children)}</span>{:else if ref}<button class="ref" {title} data-ref={ref.kind} onclick={() => onref(ref)}>{#if reflabel(ref)}{reflabel(ref)}{:else}{@render inlines(children, true)}{/if}<span class="arrow" aria-hidden="true">↗</span></button>{:else if k.kind === 'external'}<a class="ext" href={k.url} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}<span class="arrow" aria-hidden="true">↗</span></a>{:else if k.kind === 'anchor' || k.kind === 'doc'}<a href={k.kind === 'anchor' ? `#${k.anchor}` : k.name} {title} onclick={(e) => follow(e, k)}>{@render inlines(children, true)}</a>{:else if k.kind === 'repo'}<span class="repo" title={k.path}>{@render inlines(children)}</span>{:else}<span {title}>{@render inlines(children)}</span>{/if}
 {/snippet}
 
 
-<div class="md">
+<div class="md" bind:this={root}>
   {@render blocks(doc.root.children)}{#if doc.footnotes.length}
     <section class="footnotes" aria-label="Footnotes">
       <ol>
@@ -208,6 +228,22 @@
   .arrow {
     margin-left: 0.15em;
     font-size: 0.8em;
+  }
+  .ref {
+    display: inline;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--color-accent-default);
+    font: inherit;
+    text-align: inherit;
+  }
+  .ref:hover {
+    text-decoration: underline;
+  }
+  .gone {
+    color: var(--color-text-muted);
+    cursor: help;
   }
   .repo {
     color: var(--color-text-muted);
