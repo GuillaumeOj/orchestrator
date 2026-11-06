@@ -78,7 +78,7 @@ pub fn design_handoff_body(uri: &str, note: &str, from: &str, lead: &str, export
 }
 
 /// A blob that is a Git LFS pointer becomes the real content through
-/// `git lfs smudge`; `None` (no git-lfs, or it can't fetch) is "not found on branch".
+/// `git lfs smudge`; an error (no git-lfs, or it can't fetch) is "not found on branch".
 fn smudge_lfs(repo: &std::path::Path, bytes: Vec<u8>) -> Result<Vec<u8>> {
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -89,6 +89,7 @@ fn smudge_lfs(repo: &std::path::Path, bytes: Vec<u8>) -> Result<Vec<u8>> {
     let mut child = Command::new("git")
         .args(["lfs", "smudge"])
         .current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -207,7 +208,8 @@ impl Runtime {
             let Ok(bytes) = orch_git::git::git_bytes(&repo, &["cat-file", "blob", &format!("{rev}:{path}")]) else {
                 continue;
             };
-            let bytes = smudge_lfs(&repo, bytes)?;
+            // An LFS pointer that can't be fetched: try the next branch, then "not found".
+            let Ok(bytes) = smudge_lfs(&repo, bytes) else { continue };
             let dir = self.cfg.paths.root.join("previews");
             std::fs::create_dir_all(&dir)?;
             let name = path.rsplit('/').next().unwrap_or("artifact");
@@ -220,7 +222,9 @@ impl Runtime {
 
     /// Opens an artifact for the user (browser or Quick Look); returns at once.
     pub fn artifact_open(&self, feature_id: &str, artifact: u64) -> Result<()> {
-        let mut cmd = match self.artifact_open_target(feature_id, artifact)? {
+        let target = self.artifact_open_target(feature_id, artifact)?;
+        let in_app = matches!(target, OpenTarget::App(_));
+        let mut cmd = match target {
             OpenTarget::Url(u) => {
                 let mut c = std::process::Command::new("/usr/bin/open");
                 c.arg(u);
@@ -237,12 +241,17 @@ impl Runtime {
                 c
             }
         };
-        let mut child = cmd
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()?;
-        // Quick Look stays up (`open` returns at once) until the user closes it: reap it off the caller's thread.
+        cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null());
+        if in_app {
+            // `open` returns at once, and fails at once when no app owns the file type: say so.
+            let out = cmd.stderr(std::process::Stdio::piped()).output()?;
+            if !out.status.success() {
+                bail!("can't open the file: {}", String::from_utf8_lossy(&out.stderr).trim());
+            }
+            return Ok(());
+        }
+        let mut child = cmd.stderr(std::process::Stdio::null()).spawn()?;
+        // Quick Look stays up until the user closes it: reap it off the caller's thread.
         std::thread::spawn(move || child.wait());
         Ok(())
     }
@@ -348,7 +357,6 @@ mod tests {
         std::fs::write(wt.join(format!("{dir}/a.png")), "x").unwrap();
         rt.db.upsert_feature(&Feature { integration_worktree: Some(wt.clone()), ..f }).unwrap();
         assert_eq!(rt.artifact_open_target("f1", a).unwrap(), OpenTarget::File(wt.join(format!("{dir}/a.png"))));
-        // A symlink there is not followed: the blob from the branch is used instead.
         // A FigCraft file opens in its app, from a copy extracted from git, never the worktree's own.
         std::fs::write(wt.join(format!("{dir}/a.figcraft")), "fc").unwrap();
         let OpenTarget::App(p) = rt.artifact_open_target("f1", fc).unwrap() else { panic!() };
@@ -368,6 +376,7 @@ mod tests {
         tgit(&repo, &["checkout", "-q", "main"]);
         assert_eq!(rt.artifact_open_target("f1", fc_lfs).unwrap_err().to_string(), "not found on branch");
         assert_eq!(smudge_lfs(&repo, b"plain".to_vec()).unwrap(), b"plain");
+        // A symlink there is not followed: the blob from the branch is used instead.
         let secret = rt.cfg.paths.root.join("secret.txt");
         std::fs::write(&secret, "private").unwrap();
         std::os::unix::fs::symlink(&secret, wt.join(format!("{dir}/b.svg"))).unwrap();
