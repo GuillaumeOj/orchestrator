@@ -56,9 +56,10 @@ pub enum Install {
     Unknown,
 }
 
-/// From the `claude` path, symlinks resolved.
+/// From the `claude` path, symlinks resolved (in `home` too, to compare like with like).
 pub fn install_method(claude: &Path, home: &Path) -> Install {
-    install_of(&std::fs::canonicalize(claude).unwrap_or_else(|_| claude.to_path_buf()), home)
+    let real = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    install_of(&real(claude), &real(home))
 }
 
 fn install_of(real: &Path, home: &Path) -> Install {
@@ -135,13 +136,16 @@ fn curl(url: &str) -> Result<String> {
 
 /// The newest version on `channel`, from the source `claude update` uses for
 /// this install (the native release endpoint, or npm for an npm install),
-/// the other one if it fails.
+/// the other one if it fails. Both are asked at once, so a check takes at
+/// most one request's deadline (api-contract §2: ≤ 20 s).
 pub fn fetch_latest(install: Install, channel: Channel) -> Result<Version> {
-    let native = || exact_version(&curl(&format!("{RELEASES}/{}", channel.tag()))?);
-    let npm = || parse_dist_tags(&curl(NPM_DIST_TAGS)?, channel);
-    let (first, second): (&dyn Fn() -> Result<Version>, &dyn Fn() -> Result<Version>) =
-        if install == Install::Npm { (&npm, &native) } else { (&native, &npm) };
-    first().or_else(|e| second().map_err(|_| e))
+    type Ask = Box<dyn FnOnce() -> Result<Version> + Send>;
+    let native: Ask = Box::new(move || exact_version(&curl(&format!("{RELEASES}/{}", channel.tag()))?));
+    let npm: Ask = Box::new(move || parse_dist_tags(&curl(NPM_DIST_TAGS)?, channel));
+    let (first, second) = if install == Install::Npm { (npm, native) } else { (native, npm) };
+    // Not joined when the first one answers: it ends on its own deadline.
+    let fallback = std::thread::spawn(second);
+    first().or_else(|e| fallback.join().unwrap_or_else(|_| bail!("version request panicked")).map_err(|_| e))
 }
 
 /// `latest` is newer than `installed` (false when either is unknown).
@@ -238,10 +242,7 @@ impl ClaudeUpdater {
     pub fn new(touch: impl Fn() + Send + Sync + 'static) -> ClaudeUpdater {
         let home = agent_runtime::paths::home_dir();
         let h = home.clone();
-        let path = move || {
-            let shell = std::env::var_os("SHELL").map(PathBuf::from).unwrap_or_else(|| "/bin/zsh".into());
-            agent_runtime::env::login_path(&shell, &h)
-        };
+        let path = move || agent_runtime::env::login_path(&crate::terms::login_shell(), &h);
         ClaudeUpdater::with(home, Box::new(touch), Box::new(fetch_latest), Box::new(path), UPDATE_DEADLINE)
     }
 
@@ -281,6 +282,8 @@ impl ClaudeUpdater {
     /// `setup.claude`: null until the start-up check landed.
     pub fn view(&self) -> Value {
         let Some(check) = self.check() else { return Value::Null };
+        // File reads before the lock: the update's output thread takes it per line.
+        let (install, channel) = (install_method(&check.path, &self.home), self.channel());
         let i = self.inner.lock_ok();
         let state = if i.updating {
             "updating"
@@ -294,8 +297,8 @@ impl ClaudeUpdater {
         let r = preflight::SUPPORTED_CLAUDE;
         let v = View {
             check: &check,
-            install: install_method(&check.path, &self.home),
-            channel: self.channel(),
+            install,
+            channel,
             supported: Supported { min: r.min.to_string(), tested_max: r.tested_max.to_string() },
             update: UpdateView {
                 state,
@@ -373,12 +376,9 @@ impl ClaudeUpdater {
     pub fn check_periodically(&self, stop: &std::sync::atomic::AtomicBool) {
         use std::sync::atomic::Ordering;
         while !stop.load(Ordering::SeqCst) {
-            if let Err(e) = self.check_now()
-                && e.to_string() != ERR_NOT_FOUND
-                && e.to_string() != ERR_RUNNING
-            {
-                eprintln!("orchestrator: claude update check: {e:#}");
-            }
+            // Its only errors are ERR_NOT_FOUND and ERR_RUNNING: nothing to check then.
+            // A failed fetch lands in `update.error`.
+            let _ = self.check_now();
             let next = Instant::now() + CHECK_EVERY;
             let mut i = self.inner.lock_ok();
             while Instant::now() < next && !stop.load(Ordering::SeqCst) {
@@ -455,7 +455,7 @@ impl ClaudeUpdater {
     /// left on and no API key (nothing else inherited).
     fn update_env(&self) -> BTreeMap<String, String> {
         let var = |k: &str| std::env::var(k).unwrap_or_default();
-        let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
+        let shell = crate::terms::login_shell().display().to_string();
         BTreeMap::from([
             ("PATH".into(), (self.path)()),
             ("HOME".into(), self.home.display().to_string()),
@@ -469,29 +469,21 @@ impl ClaudeUpdater {
     /// process group) after the deadline.
     fn run_claude_update(&self, claude: &Path) -> Result<ExitStatus> {
         use std::os::unix::process::CommandExt;
+        // One pipe for stdout and stderr: the lines keep the order they were written in.
+        let (out, out_w) = merged_pipe().context("creating the output pipe")?;
         let mut child = Command::new(claude)
             .arg("update")
             .env_clear()
             .envs(self.update_env())
             .current_dir(&self.home)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(out_w.try_clone()?)
+            .stderr(out_w)
             .process_group(0)
             .spawn()
             .with_context(|| format!("running {} update", claude.display()))?;
         let (tx, rx) = mpsc::channel::<String>();
-        for pipe in [
-            child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
-            child.stderr.take().map(|p| Box::new(p) as _),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            let tx = tx.clone();
-            std::thread::spawn(move || read_lines(pipe, &tx));
-        }
-        drop(tx);
+        std::thread::spawn(move || read_lines(Box::new(out), &tx));
         let end = Instant::now() + self.deadline;
         let mut last_touch: Option<Instant> = None;
         let mut pending = false;
@@ -507,7 +499,13 @@ impl ClaudeUpdater {
                     }
                     pending = true;
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => open = false,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    // Both pipes closed: `recv_timeout` no longer waits, so pace the exit polling here.
+                    if !open {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    open = false;
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
             if pending && last_touch.is_none_or(|t| t.elapsed() >= TOUCH_EVERY) {
@@ -515,10 +513,18 @@ impl ClaudeUpdater {
                 last_touch = Some(Instant::now());
                 (self.touch)();
             }
-            if exited.is_none()
-                && let Some(st) = child.try_wait()?
-            {
-                exited = Some((st, Instant::now()));
+            if exited.is_none() {
+                match child.try_wait() {
+                    Ok(Some(st)) => exited = Some((st, Instant::now())),
+                    Ok(None) => {}
+                    Err(e) => {
+                        // Not left running unwatched.
+                        // SAFETY: the child leads its own process group (`process_group(0)`).
+                        unsafe { libc::killpg(child.id() as i32, libc::SIGKILL) };
+                        let _ = child.wait();
+                        return Err(e).context("waiting for claude update");
+                    }
+                }
             }
             match exited {
                 // A child left behind may hold the pipes: stop reading soon after the exit.
@@ -550,6 +556,25 @@ fn fmt_duration(d: Duration) -> String {
         s if s >= 1 => format!("{s} s"),
         _ => format!("{} ms", d.as_millis()),
     }
+}
+
+/// A pipe (read end, write end); the `Command` given the write end closes
+/// its copies once spawned, so the read end ends with the child's output.
+fn merged_pipe() -> std::io::Result<(std::fs::File, std::fs::File)> {
+    use std::os::fd::FromRawFd;
+    let mut fds = [0; 2];
+    // SAFETY: `fds` has room for the two descriptors pipe(2) writes.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: both descriptors are new and owned here only.
+    let (r, w) = unsafe { (std::fs::File::from_raw_fd(fds[0]), std::fs::File::from_raw_fd(fds[1])) };
+    for f in [&r, &w] {
+        use std::os::fd::AsRawFd;
+        // SAFETY: a valid descriptor; FD_CLOEXEC keeps it out of other children.
+        unsafe { libc::fcntl(f.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+    Ok((r, w))
 }
 
 /// Each line of `pipe`, ANSI stripped, blank ones dropped. A `\r`-rewritten
@@ -591,6 +616,10 @@ fn strip_ansi(s: &str) -> String {
                             break;
                         }
                     }
+                }
+                // Charset designation (`ESC ( B`, as in `tput sgr0`): one more byte.
+                Some('(' | ')') => {
+                    it.next();
                 }
                 _ => {}
             },
@@ -676,6 +705,7 @@ mod tests {
         assert_eq!(strip_ansi("\u{1b}[32m✔\u{1b}[0m Updated\u{1b}[K"), "✔ Updated");
         assert_eq!(strip_ansi("\u{1b}]0;title\u{7}x\u{1b}]8;;u\u{1b}\\y"), "xy");
         assert_eq!(strip_ansi("a\tb\u{8}"), "a b");
+        assert_eq!(strip_ansi("\u{1b}(B\u{1b}[mdone"), "done");
     }
 
     /// A fake native install under `home`: `~/.local/bin/claude` → `versions/<v>`.
