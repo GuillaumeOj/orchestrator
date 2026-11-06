@@ -36,6 +36,11 @@ No change made to spec or contract. "Proposal" is what these notes assume until 
 | F18 | **Report line has no names for untracked starts.** `intake { started, planned, untracked }` is counts only; `orchd intake --week` prints "1 untracked: agent fix-ci-3". The report pane can only say "1 not from intake". | Add `untracked_items: [{ kind, ref }]` (≤ 5) to report JSON so the pane can name them in a tooltip. Optional; copy works without. |
 | F19 | **GitHub Projects v2: nothing offered to pick from.** `intake_options` returns labels and milestones for GitHub; for `project` the user has to type owner, number and the Status value blind. | Add `projects: [{ owner, number, title, statuses[] }]` (the user's / repo owner's open projects) to the GitHub `intake_options`. Until then the Project filter is three free fields with a hint (§7.2). Needs `read:project`, so its error (`gh_scope`) can appear in the Options call: show it inline under the filter. |
 | F20 | **Brief card estimate: which mode?** The `cost` block holds the full Estimate (both modes); the card shows the proposed mode's. | None: the UI reads `estimate[mode]`. The brief's `mode` is in the `text` block only as text; add `mode` and `team` as fields on the decision so the UI does not parse "shop-api · team run · default-web". |
+| F22 | **Linear estimate sizes have a hole** (spec §3.4: ≤ 1 S, 2–3 M, ≥ 5 L: 4 and 1.5 map to nothing). | Back: ≤ 1 S, ≤ 3 M, ≥ 4 L, fractions by the same thresholds. |
+| F23 | **`intake_options` takes a full `source`**, but suggestions are needed before a filter exists (`names: []` is `bad_request`). | `intake_options` accepts a partial source (GitHub: `repo` only; Linear: `team` only); say so in the contract. |
+| F24 | **Team availability on an item.** `team` is null for solo-suggested items, so the UI can't tell "project has no team" (§2.2 disables Start team run). | Add `can_team: bool` on `IntakeItem`. |
+| F25 | **Glob `*` crossing `/`** (`globset` default): `backlog/*.md` would match `backlog/archive/x.md`. | Spec: require `literal_separator(true)`. |
+| F26 | **Event fields differ** between spec §3.7 (`est`) and contract §6 (`est_pp`, `project` on planned). | Contract §6 is the source of truth; fix the spec. |
 | F21 | **Prefill and the chat draft for a project the user filtered out.** "Plan with the Overwatch" from the palette needs a project; with a filter showing one project it is that one, otherwise a choice. | UX decision, no contract change: §8.1. |
 
 ---
@@ -80,7 +85,7 @@ Exact layout:
 | Slot | Content | Rules |
 |---|---|---|
 | Glyph (16 px) | GitHub mark, Linear mark, file glyph for repo docs | monochrome (text-muted), not coloured; `aria-label` "GitHub issue", "Linear issue", "Repo doc". New component on page 02: **Source glyph** (3 variants), **Ready row**. |
-| Ref | `#123` · `ENG-42` · `backlog/checkout-v2.md` | mono, muted, fixed max 22 chars. Repo docs: the path **without** the glob's static prefix when all items share it (`.orchestrator/backlog/` is dropped, tooltip full path); otherwise the last two segments with a leading `…/`. |
+| Ref | `#123` · `ENG-42` · `backlog/checkout-v2.md` | mono, muted, fixed max 22 chars. Repo docs: the path **without** the glob's static prefix when all items share it (`.orchestrator/backlog/` is dropped, tooltip full path); otherwise the last two segments with a leading `…/`. **Canonical short form everywhere** (dialogs, chips, origin): the same rule's result, so `checkout-v2.md` for the default glob; the examples `backlog/checkout-v2.md` in this file mean a glob whose prefix is not shared. |
 | Title | `title` | one line, ellipsis; 100 % of the space left. Tooltip full title. |
 | Project | project name | muted, 12 px; right of the title; for a single shown project it is still shown (the rows are copied into other places). |
 | Labels | ≤ 2 chips, then "+n" chip | label text in a neutral chip; `size:*` labels are **not** shown as chips (they feed the estimate, which shows "size M" in details); `orch*` never appears. Order as the source gives. |
@@ -91,14 +96,14 @@ Exact layout:
 Row states (all rows): rest · hover (actions visible; at rest the two buttons are still visible, not hover-only: keyboard-first and touch of the principle) · focused (focus ring, `j/k`) · selected for details · starting (a dialog is open for it: the row shows a muted "Starting…" tag, buttons disabled, until submit or cancel) · hidden (§4.1).
 
 ### 2.1 Estimate copy
-- Range from `estimate[mode].low_pp` / `high_pp`, shown without decimals: round each end to the nearest integer; if both ends round equal, one number ("≈ 4 pp"); if high < 1, "< 1 pp". Examples: 4.1–6.8 → "≈ 4–7 pp week"; 0.9–1.6 → "≈ 1–2 pp week"; 0.3–0.6 → "< 1 pp week"; 5.6–6.4 → "≈ 6 pp week". The unit always has "week" and the mode ("· team", "· solo"): "≈ 4–7 pp week · team".
+- Range from `estimate[mode].low_pp` / `high_pp`, shown without decimals: round each end to the nearest integer; if both ends round equal, one number ("≈ 4 pp"); if high < 1, "< 1 pp"; if low rounds to 0 and high is 1 or more, "< 1–N pp" (0.4–1.4 → "≈ 1 pp"; 0.4–2.6 → "< 1–3 pp"). Examples: 4.1–6.8 → "≈ 4–7 pp week"; 0.9–1.6 → "≈ 1–2 pp week"; 0.3–0.6 → "< 1 pp week"; 5.6–6.4 → "≈ 6 pp week". The unit always has "week" and the mode ("· team", "· solo"): "≈ 4–7 pp week · team".
 - **Basis flag in the row**: `basis: default` adds a muted "rough" prefix: "rough ≈ 4–8 pp week · team". Tooltip: "No finished runs yet: using the default (6 pp)". `project` / `global` show no flag (the basis is in details).
 - **Estimate missing** (older cache, core error): "no estimate" muted, row still startable.
 - **Over room** (`estimate.over_room`): line 2, muted warning text with the warning glyph: "over this week's room (3 pp left)" (with F6: "over shop-api's room this week (3 pp left)"). `room_pp` < 0.5: "over this week's room (none left)". `room_pp` null: nothing. It never disables Start and never changes the button style; the dialog repeats it as one line (§5).
 - The warning compares the **suggested** mode (core `over_room`). If the other mode would also be over, details say so.
 
 ### 2.2 Start actions
-- **Two buttons, suggested first** (`mode` from the item: spec §3.3 suggested mode rule). Labels: "Start team run" / "Start solo". The suggested one is the primary button style (the only primary-style button on screen row; one per row), the other secondary. Key hints inside: team `t`, solo `a`, and `⏎` shown on the suggested one ("Start team run ⏎").
+- **Two buttons, suggested first** (`mode` from the item: spec §3.3 suggested mode rule). Labels: "Start team run" / "Start solo". Both are **neutral outlined** buttons (no accent fill: 50 rows must not make this the loudest lane); the suggested one has a slightly stronger border and shows `⏎`. The accent fill is reserved for the dialog's submit. Key hints inside: team `t`, solo `a`, and `⏎` shown on the suggested one ("Start team run ⏎").
 - If the item has `mode: team` but the project has **no team** (`team` null and project has none): the team button is replaced by a disabled "Start team run" with tooltip "shop-api has no team yet", and solo becomes the suggested one. (Edge: front matter asks for a mode that can't be satisfied.)
 - **Accessible names**: "Start team run for #123 Refunds on partial orders" (full item, not "Start").
 - **Never one click to spend**: both buttons open the prefilled dialog (§5); nothing starts on press. The toast/confirm for a start is the dialog's submit.
@@ -119,7 +124,7 @@ Content width under ~1000 px (1280 shell with the chat column):
 Opens under the row (inline, like P4.2 §1.8), pushes rows down; `space` again closes; one open at a time; `j/k` move away and close it.
 
 ```
-#123 · GitHub · opened by …              (no author: not in the contract)
+#123 · GitHub
 Excerpt / body (rendered as text, ≤ 12 lines, "Show more")
 ─────────────────────────────────────────────────────────────
 Team run   ≈ 4.1–6.8 pp of the week     median range from 7 runs in shop-api · size M
@@ -127,7 +132,7 @@ Solo       ≈ 0.9–1.6 pp of the week     from 12 sessions across projects · 
 Room       3.0 pp left this week (shop-api's allocation)       [over this week's room]
 Labels     ready · size:M · billing
 Milestone  v2.1      Priority  High      Assignees  gu, mia
-Updated    2 days ago (Thu 4 Nov 09:12)
+Updated    2 days ago (Wed 4 Nov 09:12)
 [Open source ↗ o]   [Start team run ⏎] [Start solo a]  [Hide x]
 ```
 
@@ -209,8 +214,9 @@ The existing `launch` (04.4) and `new-session` dialogs, opened by the row button
 - A brief card's **Launch** opens the dialog with the proposed mode; the dialog's mode cannot be switched inside (it is two dialogs); to change mode the user uses Edit then the normal dialogs. (Not a contract matter: Edit opens the same dialog.)
 
 ### 5.3 `stale` error (F11, F12)
-- Raised when opening (`intake_prefill`) or on submit. The dialog stays open and shows an inline banner (error style, top of the body): **"Already started: checkout (team run)"** / **"Already started: fix-feed (solo session)"** (F11 gives the name). Primary button becomes **Close**; the form is disabled. Brief: "This brief was closed: it was dismissed, revised or its project was removed." Primary **Close**.
-- When `prefill` fails on open, the dialog does not open; a toast (after the core answers): "#123 was already started: checkout." and the row leaves the lane on the next `now`.
+- Raised by `intake_prefill` when opening, or by `team_launch` / `agent_start` on submit (the item or brief went stale while the dialog was open).
+- **On submit** the dialog stays open and shows an inline banner (error style, top of the body): **"Already started: checkout (team run)"** / **"Already started: fix-feed (solo session)"** (F11 gives the name). Primary button becomes **Close**; the form is disabled. Brief: "This brief was closed: it was dismissed, revised or its project was removed." Primary **Close**.
+- **On open** (`intake_prefill` fails) the dialog does not open (F11); a toast (after the core answers): "#123 was already started: checkout." (brief: "This brief was closed.") and the row leaves the lane on the next `now`.
 - Any other error on submit: the dialog's usual inline error; the item stays ready.
 
 ---
@@ -219,7 +225,7 @@ The existing `launch` (04.4) and `new-session` dialogs, opened by the row button
 
 | Place | Copy / form |
 |---|---|
-| **Run row** (Running, Needs you, Queued, Waiting on) | after the run name, a muted chip: `from #123` (link-style, mono ref); `from ENG-42`; `from backlog/checkout-v2.md` (last segment, tooltip full path); brief: `from brief` (tooltip "From the Overwatch's brief: Partial refunds"). Click opens the source (GitHub / Linear: browser; docs: editor; brief: the chat line). Not part of the row's focus stops (no extra Tab stop); `o` on a run row keeps its P4.2 meaning (PR), and the chip is reachable through details. |
+| **Run row** (Running, Needs you, Queued, Waiting on) | after the run name, a muted chip: `from #123` (link-style, mono ref); `from ENG-42`; `from checkout-v2.md` (the §2 short form, tooltip full path); brief: `from brief` (tooltip "From the Overwatch's brief: Partial refunds"). Click opens the source (GitHub / Linear: browser; docs: editor; brief: the chat line). Not part of the row's focus stops (no extra Tab stop); `o` on a run row keeps its P4.2 meaning (PR), and the chip is reachable through details. |
 | **Solo row** | same chip after the session name. |
 | **Queue row** | same chip (a queued member of an intake run keeps it). |
 | **Outcome row** (Done today, F13) | same chip after the title: "merged · from #123". |
@@ -303,7 +309,7 @@ Invalid value: "Use a number between 0.5 and 50." Footer pattern as the other Pa
 | **Brief card › Revise** | Not a button on the card (the card has Launch / Edit / Dismiss, contract §5). "Revise" = the user answers in the chat and the Overwatch sends a new brief: the chat input already holds the thread's context. Spec §3.5 mentions "Revise" as an entry: treated as a hint in the card footer, §8.3. |
 | **Project with a source** | Palette only (the lane does not offer it next to real items: starting from intake stays the main way). |
 
-All entries: close any overlay, focus the Overwatch input (⌘L target), set the draft to **"Plan a feature for shop-api: "** with the caret at the end (plain text). The draft is replaced only if the input is empty or holds a previous planning draft; otherwise the project line is appended on a new line (never destroys what is being typed). The next send is sent with `context: { plan: project_id }` (a muted tag in the input, "Planning · shop-api" with an ✕ that clears the context but keeps the text).
+All entries: close any overlay, focus the Overwatch input (⌘L target), set the draft to **"Plan a feature for shop-api: "** with the caret at the end (plain text). The draft is replaced only if the input is empty or holds a previous planning draft; otherwise the project line is appended on a new line (never destroys what is being typed). Every send while the tag shows is sent with `context: { plan: project_id }` (a muted tag in the input, "Planning · shop-api" with an ✕ that clears the context but keeps the text). The tag stays after a send, so the user's follow-up answers keep the planning context (the Overwatch needs it to revise); it clears when the brief card is launched or dismissed, or on ✕.
 
 ### 8.2 Conversation
 - The user's message shows a muted tag under it: "planning · shop-api".
@@ -342,7 +348,7 @@ Waiting for you · just now          Want changes? Answer here and it will send 
 | Dialog open | `Opening dialog…` then marker returns to Open; the card stays open while the dialog is open (card is closed only by the successful start) | actions disabled while the dialog is open |
 | Launch / Edit failed to open | `Could not open the dialog: <message>` (error), `stale` → the Stale row | actions again |
 | Launched | `Launched partial-refunds · 15:24`, muted; collapses at once to `▸ launched partial-refunds (brief) · by you` | none |
-| Dismissed | `Dismissed · 15:21`, muted, collapses to `▸ dismissed brief: Partial refunds` | **Undo u** for 5 s? **No**: dismissing a draft is cheap (ask the Overwatch again); no undo. |
+| Dismissed | `Dismissed · 15:21`, muted, collapses to `▸ dismissed brief: Partial refunds` | none (no undo: dismissing a draft is cheap, ask the Overwatch again) |
 | Revised | `Revised · a new brief replaces this one`, muted, collapses to `▸ revised brief: Partial refunds · by the Overwatch`; the open card is the new one | none |
 | Stale (project removed) | `Stale · shop-api was removed`, muted | **Dismiss r** only |
 | Overwatch off / down | the card **stays** (cards work without the Overwatch, P4.4 §8); the footer line "Want changes?…" is replaced by "The Overwatch is off. Turn it on in Settings to ask for changes." / "The Overwatch is down. Messages are kept until it is back." | actions unchanged |
@@ -363,7 +369,7 @@ Page 04.6, the weekly report pane: one line under the week's totals row (P4.4 §
 |---|---|
 | All from intake | "Started from intake: 10 of 10" |
 | Some not | "Started from intake: 9 of 10 · 1 not from intake" (muted tail; tooltip names them when F18 exists: "agent fix-ci-3") |
-| With briefs | "Started from intake: 9 of 10 · 7 items, 2 briefs" — numerator = `started + planned`; denominator = `started + planned + untracked`; the tail "7 items, 2 briefs" only when `planned` > 0 |
+| With briefs | "Started from intake: 9 of 10 · 7 items, 2 briefs" — numerator = `started + planned`; denominator = `started + planned + untracked`; the tail "7 items, 2 briefs" only when `planned` > 0; with untracked too: "Started from intake: 9 of 11 · 7 items, 2 briefs · 2 not from intake"; total 0 → "Nothing started this week" |
 | None started | "Nothing started this week" |
 | Not available (older report) | line absent |
 
@@ -379,7 +385,7 @@ Page 04.6, the weekly report pane: one line under the week's totals row (P4.4 §
 | Key | Action | On |
 |---|---|---|
 | `j` `k` / ↓ ↑ | Move (lane rows and lines are stops; header is skipped) | any |
-| `⏎` | Start the **suggested mode** (opens the prefilled dialog, never starts); on the "+ n more" line opens the source; on a no-source line starts Plan with the Overwatch; on an error line runs Fix (Copy command for `gh_scope`); on "Nothing ready" line: Refresh; on "n hidden · Show" toggles | row · line |
+| `⏎` | Start the **suggested mode** (opens the prefilled dialog, never starts); on the "+ n more" line opens the source; on a no-source line starts Plan with the Overwatch; on an error line runs Fix (Copy command for `gh_scope`); on "Nothing ready" line: Refresh; on "All n items are hidden · Show" toggles | row · line |
 | `t` | Start **team** run (dialog) | Ready row |
 | `a` | Start solo (**a**gent session) (dialog) | Ready row |
 | `space` | Details | Ready row |
@@ -387,6 +393,7 @@ Page 04.6, the weekly report pane: one line under the week's totals row (P4.4 §
 | `x` · `⌫` | Hide (Unhide on a hidden row) | Ready row |
 | `e` | Set up intake (opens Project settings › Intake) | no-source line · error line |
 | `⇧R` | Refresh the lane (shown projects) | pane |
+| `⇧H` | Show / hide the hidden items (header toggle) | pane |
 | `u` | Undo the last Hide while its toast shows (5 s) | pane |
 | `Esc` | Close details / popover / dialog | — |
 
@@ -410,7 +417,7 @@ Keys are the contract's (§5 `key`). The card's own key labels are shown on the 
 
 | Against | Result |
 |---|---|
-| **Mission control map** (P4.2 §3.1: `j k h l ⏎ space i p s r ⇧K d n f o ⌫ Esc`) | New: `t`, `a`, `x`, `e`, `⇧R`, `u` — all **unbound** there. Reused with the same meaning: `⏎` (act on the row), `space` (details), `o` (open), `⌫` (remove from view; on queue rows it cancels the entry, on Ready rows it hides: both "take it off this list"). **`s` stays Suspend on agent rows and does nothing on Ready rows** (the brief's `s`… proposal is dropped; solo is `a`). `f` stays the filter: **Fix is on `⏎` of the error line, not `f`**. |
+| **Mission control map** (P4.2 §3.1: `j k h l ⏎ space i p s r ⇧K d n f o ⌫ Esc`) | New: `t`, `a`, `x`, `e`, `⇧R`, `⇧H`, `u` — all **unbound** there. Reused with the same meaning: `⏎` (act on the row), `space` (details), `o` (open), `⌫` (P4.2: cancels a queue entry; on Ready rows it hides: both "take it off this list"). **`s` stays Suspend on agent rows and does nothing on Ready rows** (the brief's `s`… proposal is dropped; solo is `a`). `f` stays the filter: **Fix is on `⏎` of the error line, not `f`**. |
 | **`r`** | Resume in Mission control; **Dismiss on the brief card** (chat). Same split as the existing `r` = Resume here / Reject in the Inbox (P4.2 F2): different focus target. No new collision. |
 | **`e`** | Mission control: new, "set up intake" (lines only). Chat: Edit on the brief card. P4.4's chat `e` (open in nvim) applies to other kinds; the card shows its own key on its button, as the rule proposal does for `⏎`. |
 | **`a` and `t`** | `a` is Approve in the chat / Inbox; here it only fires on a focused Ready row in Mission control. `t` is "Back to today" on a past day in the chat (P4.4 §11.2, P4.3 §6.2) and unbound in Mission control. Different panes, never both focused. |
