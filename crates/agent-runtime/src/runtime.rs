@@ -901,7 +901,15 @@ impl Runtime {
     /// FR-112: the project's files for this spawn, re-checked; one that now
     /// fails the checks is skipped and logged, never refusing the spawn.
     fn spawn_project_files(&self, id: &str, project: Option<&str>, home: &Path) -> Vec<SpawnFile> {
-        let Some(p) = project.and_then(|p| self.db.project(p).ok().flatten()) else { return vec![] };
+        let Some(id_p) = project else { return vec![] };
+        let p = match self.db.project(id_p) {
+            Ok(Some(p)) => p,
+            Ok(None) => return vec![],
+            Err(e) => {
+                self.event(id, "project_file_skipped", json!({"project": id_p, "reason": format!("{e:#}")}));
+                return vec![];
+            }
+        };
         let files = p.typed_settings().external_files;
         if files.is_empty() {
             return vec![];
