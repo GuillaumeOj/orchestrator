@@ -10,6 +10,7 @@
     argsToText,
     blankServer,
     checkedAt,
+    DESIGN_TOOL_NAMES,
     effectiveServers,
     envToText,
     KINDS,
@@ -72,7 +73,13 @@
       sel = i;
       edit(servers[i]);
     } else if (tool) {
-      startNew({ id: tool, name: tool === 'penpot' ? 'Penpot' : 'Figma', kind: 'connector', design_tool: tool });
+      const name = DESIGN_TOOL_NAMES[tool] ?? tool;
+      // FigCraft is a local stdio server; Penpot and Figma are claude.ai connectors.
+      startNew(
+        tool === 'figcraft'
+          ? { id: tool, name, kind: 'stdio', command: '', args: ['mcp'], design_tool: tool }
+          : { id: tool, name, kind: 'connector', design_tool: tool },
+      );
     }
   }
 
@@ -91,7 +98,7 @@
   function startNew(over = {}) {
     refused = null;
     problem = null;
-    draft = { server: { ...blankServer(), ...over }, isNew: true, override: false, envText: '', argsText: '' };
+    draft = { server: { ...blankServer(), ...over }, isNew: true, override: false, envText: '', argsText: argsToText(over.args) };
   }
 
   const scopeOf = (override) => (project && override ? { kind: 'project', id: project } : { kind: 'global' });
@@ -254,7 +261,7 @@
               <tr class:sel={i === sel} class:editing={draft && !draft.isNew && draft.server.id === s.id} onclick={() => ((sel = i), edit(s))}>
                 <td><b>{s.name}</b> <span class="muted mono">{s.id}</span></td>
                 <td>{kindLabel(s.kind)}</td>
-                <td>{s.design_tool === 'penpot' ? 'Penpot' : s.design_tool === 'figma' ? 'Figma' : '—'}</td>
+                <td>{DESIGN_TOOL_NAMES[s.design_tool] ?? '—'}</td>
                 <td title={usedByTitle(s.used_by)}>{usedByText(s.used_by)}</td>
                 <td>
                   <ConnBadge status={s.status} connector={s.kind === 'connector'} busy={busy[s.id]} />
@@ -297,11 +304,15 @@
           </div>
           <label><span>design tool</span>
             <select class="field" bind:value={draft.server.design_tool}>
-              <option value={null}>—</option><option value="penpot">Penpot</option><option value="figma">Figma</option>
+              <option value={null}>—</option>
+              {#each Object.entries(DESIGN_TOOL_NAMES) as [id, name] (id)}<option value={id}>{name}</option>{/each}
             </select>
           </label>
           {#if s.kind === 'stdio'}
-            <label><span>command</span><input class="field mono" bind:value={draft.server.command} spellcheck="false" placeholder="npx" /></label>
+            <label><span>command</span><input class="field mono" bind:value={draft.server.command} spellcheck="false" placeholder={draft.server.design_tool === 'figcraft' ? 'figcraft-cli' : 'npx'} /></label>
+            {#if draft.server.design_tool === 'figcraft'}
+              <p class="note muted">Full path to figcraft-cli. Args <code>mcp</code> run a headless engine; <code>mcp --attach 7979</code> drives the open FigCraft app.</p>
+            {/if}
             <label class="top"><span>args</span><textarea class="field mono" rows="3" bind:value={draft.argsText} spellcheck="false" placeholder="one per line"></textarea></label>
           {:else if s.kind === 'http' || s.kind === 'sse'}
             <label><span>URL</span><input class="field mono" bind:value={draft.server.url} spellcheck="false" placeholder="https://…" /></label>

@@ -35,6 +35,7 @@ pub enum McpKind {
 pub enum DesignTool {
     Penpot,
     Figma,
+    Figcraft,
 }
 
 /// FR-604 auth status (also the integrations' status).
@@ -364,6 +365,11 @@ mod tests {
         assert_eq!(v["design_tool"], "penpot");
         assert_eq!(v["status"], "unknown");
         assert_eq!(v["allow_secret_env"], false);
+        for (t, w) in [(DesignTool::Penpot, "penpot"), (DesignTool::Figma, "figma"), (DesignTool::Figcraft, "figcraft")]
+        {
+            assert_eq!(serde_json::to_value(t).unwrap(), w);
+            assert_eq!(serde_json::from_value::<DesignTool>(json!(w)).unwrap(), t);
+        }
         // The UI may send it without status or usage.
         let s: McpServer =
             serde_json::from_value(json!({"id": "x", "name": "X", "kind": "http", "url": "https://x"})).unwrap();

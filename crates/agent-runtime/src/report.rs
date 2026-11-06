@@ -248,6 +248,15 @@ pub fn build(i: &Inputs) -> WeeklyReport {
             let a = s.allocation.as_ref()?;
             Some((a.clone(), i.projects.get(a).cloned()?))
         });
+        // The Overwatch (P4.4) is its own row everywhere: one global agent,
+        // the same id every day.
+        if agent == crate::overwatch::ID {
+            for m in [&mut by_project, &mut by_feature, &mut by_role] {
+                add(m, crate::overwatch::ALLOCATION.to_string(), "Overwatch".to_string());
+            }
+            add(&mut by_model, fam.into(), fam.into());
+            continue;
+        }
         let (pk, pl) = project.unwrap_or_else(|| ("unknown".into(), "unknown project".into()));
         add(&mut by_project, pk, pl);
         let (fk, fl) = at.and_then(|a| a.feature.clone()).unwrap_or_else(|| ("solo".into(), "solo sessions".into()));
@@ -690,6 +699,41 @@ mod tests {
         });
         let used: Vec<(&str, f64)> = r.allocations.iter().map(|a| (a.id.as_str(), a.used_pp)).collect();
         assert_eq!(used, [("shop", 0.0), ("api", 1.0), ("default", 2.0)]);
+    }
+
+    #[test]
+    fn the_overwatch_is_its_own_row() {
+        let plan = plan();
+        // Two days' sessions, the same id: one row (P4.4).
+        let samples = vec![
+            sample(1, "overwatch", 10.0, "critical", "overwatch", "claude-sonnet-4-5", None),
+            sample(30, "overwatch", 10.0, "critical", "overwatch", "claude-sonnet-4-5", None),
+            sample(2, "B", 10.0, "autonomous", "api", "claude-sonnet-4-5", None),
+        ];
+        let cal = Calibration {
+            ts: t(100),
+            cost_per_weekly_pct: 10.0,
+            confidence: 0.8,
+            unattributed_rate: 0.0,
+            per_model: None,
+        };
+        let r = build(&Inputs {
+            plan: &plan,
+            samples: &samples,
+            agents: &BTreeMap::new(),
+            projects: &BTreeMap::new(),
+            calibration: &cal,
+            actions: &[],
+            forecasts: &[],
+            plan_fraction: 1.0,
+            weekly_pct: None,
+            in_progress: false,
+            now: t(168),
+        });
+        let row = |rows: &[Row]| rows.iter().find(|m| m.key == "overwatch").map(|m| (m.label.clone(), m.pp));
+        assert_eq!(row(&r.by_role), Some(("Overwatch".to_string(), 2.0)), "{:?}", r.by_role);
+        assert_eq!(row(&r.by_project).map(|r| r.1), Some(2.0));
+        assert!(r.by_role.iter().any(|m| m.key == "solo"), "others unchanged");
     }
 
     #[test]

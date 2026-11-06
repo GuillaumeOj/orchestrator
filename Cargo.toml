@@ -28,3 +28,7 @@ uuid = { version = "1", features = ["v4"] }
 # FSEvents on macOS: the worktree watcher (P4.1 `worktree:<path>` topic).
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 tempfile = "3"
+# The permission policy file (FR-1308): edited in place, comments kept.
+toml_edit = "0.25"
+# Shell words of a Bash call (the core's hard-deny list).
+shlex = "2"

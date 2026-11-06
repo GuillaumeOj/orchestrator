@@ -316,7 +316,7 @@ The control law is specified in **ADR-007**. The requirements below are what the
 |---|---|---|
 | FR-1201 | Claude Code: path to `claude`, supported version range (checked at every spawn), login status. Agents run with `DISABLE_AUTOUPDATER=1` (in P0 the CLI replaced its own binary mid-session); Claude Code updates are applied by the user, and the contract tests (R2) run after each one. The helper binaries (`orch-hook`, `orch-status`, `orch-mcp`) are installed at a **stable path in app data** (not inside the `.app` bundle, which moves and updates), and checked to exist and be executable at every spawn: a missing hook command fails open. The app never sets `ANTHROPIC_API_KEY`, and warns if it finds one in the environment (it would bill the API instead of the plan). | M |
 | FR-1202 | MCP server registry (reused across roles) with per-project overrides. | M |
-| FR-1203 | Integrations: GitHub (`gh` auth), Linear, Notion, Penpot, Figma, each with status and reconnect. | M (GitHub) / S (others) |
+| FR-1203 | Integrations: GitHub (`gh` auth), Linear, Notion, Penpot, Figma, FigCraft, each with status and reconnect. | M (GitHub) / S (others) |
 | FR-1204 | **Keyboard contract** (§9.7) with configurable bindings and a conflict checker that also reads the macOS system shortcuts (`com.apple.symbolichotkeys`, e.g. input-source switching). | M |
 | FR-1205 | Theme: see §9.1 for precedence. | S |
 | FR-1206 | The app never writes to the user's Claude Code configuration (`~/.claude`, `~/.claude.json`). All agents share it, because a separate config dir (`CLAUDE_CONFIG_DIR`) loses the login; Claude Code itself writes transcripts, history and trust there, and the app only reads them. Each agent gets an extra per-agent settings layer (§6.3). | M |

@@ -749,6 +749,14 @@ describe('lines copy (notes §2.2–2.3)', () => {
       'allowed back-1: cargo add serde_json · rule: installs',
     );
     expect(L1('denied', 'rule')).toBe('denied back-1: cargo add serde_json · rule');
+    // P4.4: policy answers, and the core's denials with their reason.
+    expect(L1('allowed', 'policy', { by_detail: 'installs' })).toBe(
+      'allowed back-1: cargo add serde_json · policy: installs',
+    );
+    expect(chat.byWords({ by: 'policy', by_detail: 'installs' })).toBe('by policy installs');
+    expect(L1('denied', 'core', { by_detail: 'git push: the core pushes' })).toBe(
+      'denied back-1: cargo add serde_json · core: git push: the core pushes',
+    );
     expect(L1('allowed', 'pane')).toBe('allowed back-1: cargo add serde_json · in the pane');
     expect(L1('kept queued', 'expired')).toBe('kept queued back-1: cargo add serde_json · expired');
     expect(L1('expired', 'expired')).toBe('expired back-1: cargo add serde_json');

@@ -132,6 +132,10 @@ impl Core {
         wait_for("first turn", 15, || agent(&self.sock, id)["turns"] == 1 && agent(&self.sock, id)["state"] == "idle");
     }
 
+    pub fn root_path(&self) -> &Path {
+        self._root.path()
+    }
+
     pub fn state_of(&self, id: &str) -> String {
         agent(&self.sock, id)["state"].as_str().unwrap_or("").to_string()
     }

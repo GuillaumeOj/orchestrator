@@ -221,11 +221,17 @@ pub struct Runtime {
     pub(crate) replaying: Mutex<()>,
     /// Each project's task backend, kept across calls.
     pub(crate) task_backends: orch_tasks::Backends,
+    /// Each project's GitHub repository when only `gh` knows it (`read_issue`).
+    pub(crate) issue_repos: Mutex<std::collections::HashMap<String, String>>,
     /// One per project: serialises its task syncs ([`Runtime::sync_tasks`]).
     pub(crate) sync_gates: Mutex<std::collections::HashMap<String, std::sync::Arc<crate::team::SyncGate>>>,
     /// Projects whose Board was opened in this process: the background task
     /// sync covers their remote backend too.
     pub(crate) watched_projects: Mutex<std::collections::BTreeSet<String>>,
+    /// The permission policy files (FR-1308), read and watched.
+    pub(crate) policy: crate::policy::Policy,
+    /// The Overwatch's scheduler (P4.4).
+    pub(crate) overwatch: crate::overwatch::session::Overwatch,
     /// The starter roles and presets were checked this run.
     pub(crate) presets_checked: std::sync::atomic::AtomicBool,
     /// FR-505: one Notion publish or poll per feature at a time, and the
@@ -337,10 +343,16 @@ pub(crate) fn hook_event_detail(event: &HookEvent, p: &HookPayload) -> Value {
     d
 }
 
-/// A team lead (the node that merges): outside the process cap. Not the
-/// tier alone, which a specialist's role can also set to critical.
-pub(crate) fn reserved_slot(a: &AgentRecord) -> bool {
+/// A team lead: the node that merges. Not the tier alone, which a
+/// specialist's role can also set to critical.
+pub(crate) fn is_lead(a: &AgentRecord) -> bool {
     a.team.is_some() && a.role.orch_tools.iter().any(|t| t == "merge")
+}
+
+/// Outside the process cap, never park-suspended or rotated: a lead and the
+/// Overwatch (P4.4).
+pub(crate) fn reserved_slot(a: &AgentRecord) -> bool {
+    is_lead(a) || a.is_overwatch()
 }
 
 /// True (and restamps `last`) when `every` ms have passed since `last`.
@@ -545,8 +557,11 @@ impl Runtime {
             watching: std::sync::atomic::AtomicBool::new(false),
             replaying: Mutex::new(()),
             task_backends: orch_tasks::Backends::default(),
+            issue_repos: Mutex::default(),
             sync_gates: Mutex::default(),
             watched_projects: Mutex::default(),
+            policy: Default::default(),
+            overwatch: Default::default(),
             presets_checked: std::sync::atomic::AtomicBool::new(false),
             notion_locks: Mutex::new(BTreeMap::new()),
             notion_polling: std::sync::atomic::AtomicBool::new(false),
@@ -559,6 +574,9 @@ impl Runtime {
         });
         rt.handle_releases(released);
         rt.backfill_report(now);
+        // Migration 15: the store's rules go to the policy files (once).
+        rt.migrate_store_rules();
+        rt.policy_sync();
         Ok(rt)
     }
 
@@ -847,6 +865,7 @@ impl Runtime {
         if !valid_id(&spec.agent_id) {
             bail!("invalid agent id {:?}", spec.agent_id);
         }
+        crate::overwatch::refuse_reserved(&spec.agent_id)?;
         if self.store.read(|s| s.agents.get(&spec.agent_id).is_some_and(|a| a.tracker.state != AgentState::Archived)) {
             bail!("agent {} exists: resume it instead", spec.agent_id);
         }
@@ -885,6 +904,7 @@ impl Runtime {
             start_fresh: false,
             spawned_at_ms: None,
             crash_restarts: vec![],
+            overwatch: false,
         };
         self.store.write(|s| s.agents.insert(rec.id.clone(), rec.clone()))?;
         // Every agent belongs to a registered project (J1); starting one marks it active (FR-103).
@@ -945,7 +965,7 @@ impl Runtime {
                 .filter_map(|id| s.agents.get(id))
                 .filter(|rec| match &rec.team {
                     Some(t) => t.project_id == p.id,
-                    None => rec.repo == p.path,
+                    None => real(&rec.repo) == real(&p.path),
                 })
                 .count()
         })
@@ -977,7 +997,9 @@ impl Runtime {
         env.socket = self.cfg.paths.socket();
         env.user_statusline = self.user_statusline.clone();
         env.otel_endpoint = self.cfg.otel_endpoint.clone().or_else(|| self.otlp_endpoint());
-        let git_common_dir = worktree::common_dir(&wt)?;
+        // The Overwatch's folder is no repository: it reads, never writes.
+        let overwatch = rec.is_overwatch().then(|| self.overwatch_reads(&wt));
+        let git_common_dir = if overwatch.is_some() { wt.clone() } else { worktree::common_dir(&wt)? };
         let main = real(&rec.repo);
         let project = self.agent_project(&rec);
         let project_files = self.spawn_project_files(id, project.as_deref(), &env.home);
@@ -986,9 +1008,13 @@ impl Runtime {
             name: id.into(),
             agent_dir: agent_dir.clone(),
             app_root: self.cfg.paths.root.clone(),
-            main_read_denies: crate::compile::main_read_denies(&main, &git_common_dir),
+            main_read_denies: if overwatch.is_some() {
+                vec![]
+            } else {
+                crate::compile::main_read_denies(&main, &git_common_dir)
+            },
             git_common_dir,
-            other_worktrees: worktree::others(&rec.repo, &wt),
+            other_worktrees: if overwatch.is_some() { vec![] } else { worktree::others(&rec.repo, &wt) },
             main_checkout: main,
             worktree: wt,
             helpers: self.cfg.helpers.clone(),
@@ -997,6 +1023,7 @@ impl Runtime {
             env,
             git_identity: self.git_identity.clone(),
             project_files,
+            overwatch,
         };
         // Registry refs and opted-in Keychain env values, for this spawn's
         // files only (FR-601, NFR-3); a ref that can't work refuses the spawn.
@@ -1048,6 +1075,12 @@ impl Runtime {
         Ok(())
     }
 
+    /// `id` is the Overwatch's record (made by its own start, never a
+    /// session that took its id).
+    pub(crate) fn is_overwatch(&self, id: &str) -> bool {
+        self.store.read(|s| s.agents.get(id).is_some_and(AgentRecord::is_overwatch))
+    }
+
     pub(crate) fn on_exit(&self, id: &str, pid: i32, status: Option<u32>) {
         let gone = {
             let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
@@ -1056,11 +1089,12 @@ impl Runtime {
         // Asked for (suspend, kill, delete) or not, and before SessionStart:
         // only an unexpected exit of a start is a failed start. Read before
         // `on_process_gone` resets them.
-        let failed_start = self
+        let (failed_start, asked) = self
             .store
             .write(|s| {
                 let a = s.agents.get_mut(id)?;
-                let failed = a.tracker.stop_intent == StopIntent::None && a.tracker.state == AgentState::Starting;
+                let asked = a.tracker.stop_intent != StopIntent::None;
+                let failed = !asked && a.tracker.state == AgentState::Starting;
                 if a.pid == Some(pid) {
                     a.on_process_gone();
                     // FR-415 decides about a failed start first: until then the
@@ -1070,11 +1104,11 @@ impl Runtime {
                         a.flag = Some(CHECKING_START.into());
                     }
                 }
-                Some(failed)
+                Some((failed, asked))
             })
             .ok()
             .flatten()
-            .unwrap_or(false);
+            .unwrap_or((false, true));
         let checked = || {
             let _ = self.store.write(|s| {
                 if let Some(a) = s.agents.get_mut(id)
@@ -1092,6 +1126,14 @@ impl Runtime {
         let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
         self.handle_releases(releases);
         self.event(id, "exited", json!({"status": status}));
+        if self.is_overwatch(id) {
+            // Its own path (P4.4): `down`, no startup card, no notification.
+            if gone.is_some() {
+                self.overwatch_exited(asked, failed_start);
+            }
+            checked();
+            return;
+        }
         let Some(l) = gone else {
             checked();
             return;
@@ -1260,15 +1302,22 @@ impl Runtime {
 
     /// FR-811 Pause all. Returns the Governor action id.
     pub fn pause_all(&self) -> u64 {
-        self.governor_act(|g, now| (g.pause_all(now).0, Vec::new()))
+        let id = self.governor_act(|g, now| (g.pause_all(now).0, Vec::new()));
+        // The Overwatch shows paused (and stops deciding, F1).
+        self.overwatch_hand_over_all();
+        self.overwatch_touch();
+        id
     }
 
     /// Lifts Pause all; returns how many queued turns were released.
     pub fn resume_all(&self) -> usize {
-        self.governor_act(|g, now| {
+        let n = self.governor_act(|g, now| {
             let r = g.resume_all(now);
             (r.len(), r)
-        })
+        });
+        self.overwatch_touch();
+        self.overwatch_wake();
+        n
     }
 
     /// FR-805/811: pause one agent at its next tool boundary (until Resume).
@@ -1515,8 +1564,12 @@ impl Runtime {
         }
         // A solo session's finished turn is an outcome of the digest (D8):
         // its last assistant message, not the prompt it was sent.
+        if m.event == HookEvent::PreToolUse && rec.is_overwatch() {
+            self.overwatch_tool_call(self.now.clock().0);
+        }
         if m.event == HookEvent::Stop
             && rec.team.is_none()
+            && !rec.is_overwatch()
             && let Some(msg) = p.last_assistant_message.as_deref().filter(|t| !t.trim().is_empty())
         {
             self.event(id, "turn.done", json!({"summary": crate::team::cut(msg, 280)}));
@@ -1535,6 +1588,11 @@ impl Runtime {
                     self.admit_tool(&rec, tracker.turn_origin == Some(TurnOrigin::User), &p, m.deadline_ms, conn)
                 }),
             // A rule, or the Inbox (held), or the pane when nobody answers in time.
+            // The Overwatch runs `dontAsk`: a prompt of its own is refused, never held.
+            HookEvent::PermissionRequest if rec.is_overwatch() => Some(HookOutput::permission_request(
+                orch_protocol::PermissionBehavior::Deny,
+                Some("ORCH: the Overwatch only reads and calls its own tools."),
+            )),
             HookEvent::PermissionRequest => self.permission_request(&rec, &p, m.deadline_ms, conn),
             // FR-403: a busy team agent gets its messages at its next tool
             // call, never inside a subagent's (they wait for its own).
@@ -1564,6 +1622,9 @@ impl Runtime {
                 }
             }
             Effect::TurnStarted { origin, markers } => {
+                if rec.is_overwatch() {
+                    self.overwatch_turn_started(now);
+                }
                 self.end_wait_episode(id);
                 self.answers_resumed(id);
                 self.mark_delivered(id, &markers, Some(now));
@@ -1589,8 +1650,14 @@ impl Runtime {
                 // Idle either way (§3.2): with background work, only its
                 // tasks and continues wait for it.
                 self.end_turn(rec, live.as_deref(), now);
+                if rec.is_overwatch() && fx == Effect::TurnEnded {
+                    self.overwatch_turn_ended(self.now.clock().0);
+                }
             }
             Effect::RateLimited { message } => {
+                if rec.is_overwatch() {
+                    self.overwatch_rate_limited();
+                }
                 let model_limit =
                     self.usage.lock().unwrap_or_else(|e| e.into_inner()).exhausted_model_window(id, message.as_deref());
                 if let Some((name, resets)) = model_limit {
@@ -1628,6 +1695,13 @@ impl Runtime {
                         });
                     }
                 }
+            }
+            Effect::Failed { error } if rec.is_overwatch() => {
+                // No card (it raises no notification): a login error puts it down.
+                self.event(id, "overwatch.failed", json!({"error": error}));
+                let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
+                self.handle_releases(releases);
+                self.overwatch_failed(&error, self.now.clock().0);
             }
             Effect::Failed { error } => {
                 // `alert: api_error` puts the agent in error (attention rule 1).
@@ -2102,6 +2176,8 @@ impl Runtime {
         if do_calib && self.db.save_estimator("fit", week_start, &calib, &est).is_ok() {
             self.house().last_fit = Some(est.calibrator);
         }
+        // The Overwatch: stuck agents, a lifted limit, the batch window and idle grace.
+        self.overwatch_tick();
         // Time-based reasons and waits ("≈14:20", an MCP call past 5 min).
         self.now_pump(true);
     }
@@ -2667,7 +2743,20 @@ impl Runtime {
                 }
                 // A first start, or a fresh session queued by the lead (FR-415).
                 let new = never_started || rec.start_fresh;
-                if let Err(e) = self.spawn(&rec.id, new.then(|| SessionMode::New(rec.session_id.clone()))) {
+                let spawned = self.spawn(&rec.id, new.then(|| SessionMode::New(rec.session_id.clone())));
+                if let Err(e) = spawned.as_ref()
+                    && rec.is_overwatch()
+                {
+                    // `down`, no alert card (P4.4): Restart starts it again.
+                    self.store.write(|s| {
+                        if let Some(a) = s.agents.get_mut(&rec.id) {
+                            a.flag = Some(format!("could not start: {e:#}"));
+                        }
+                    })?;
+                    self.event(&rec.id, "overwatch.spawn_failed", json!({"error": format!("{e:#}")}));
+                    self.overwatch_down(crate::overwatch::why::COULD_NOT_START);
+                    return spawned;
+                } else if let Err(e) = spawned {
                     // Flag it so the next pump doesn't retry every 200 ms.
                     let msg = format!("{}: could not resume: {e:#}", rec.id);
                     self.store.write(|s| {
@@ -3208,6 +3297,8 @@ pub(crate) mod tests {
     pub(crate) fn test_runtime(shadow: bool) -> (tempfile::TempDir, Arc<Runtime>) {
         let d = tempfile::Builder::new().prefix("orchrt").tempdir_in(orch_protocol::test_tmp()).unwrap();
         let rt = Runtime::new(test_cfg(d.path(), shadow)).unwrap();
+        // The Overwatch is driven by hand in unit tests (no background wake).
+        rt.overwatch.manual.store(true, Ordering::SeqCst);
         rt.store.write(|s| s.agents.insert("a1".into(), test_agent(d.path()))).unwrap();
         (d, rt)
     }
@@ -3270,6 +3361,7 @@ pub(crate) mod tests {
             start_fresh: false,
             spawned_at_ms: None,
             crash_restarts: vec![],
+            overwatch: false,
         }
     }
 

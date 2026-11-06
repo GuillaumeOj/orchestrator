@@ -8,12 +8,14 @@
   import DocsBlock from './blocks/DocsBlock.svelte';
   import ErrorBlock from './blocks/ErrorBlock.svelte';
   import LastMessageBlock from './blocks/LastMessageBlock.svelte';
+  import LinksBlock from './blocks/LinksBlock.svelte';
   import MarkdownBlock from './blocks/MarkdownBlock.svelte';
   import OptionsBlock from './blocks/OptionsBlock.svelte';
   import PtyTailBlock from './blocks/PtyTailBlock.svelte';
+  import RuleBlock from './blocks/RuleBlock.svelte';
   import PermissionCall from './PermissionCall.svelte';
 
-  let { decision, choices = $bindable([]) } = $props();
+  let { decision, choices = $bindable([]), onjump = () => {} } = $props();
   const BLOCKS = {
     tool_call: PermissionCall,
     markdown: MarkdownBlock,
@@ -24,6 +26,8 @@
     cost: CostBlock,
     countdown: CountdownBlock,
     error: ErrorBlock,
+    rule: RuleBlock,
+    links: LinksBlock,
   };
 </script>
 
@@ -34,7 +38,7 @@
         <OptionsBlock {block} name={decision.id} bind:choices />
       {:else if BLOCKS[block.type]}
         {@const Block = BLOCKS[block.type]}
-        <Block {block} {decision} />
+        <Block {block} {decision} {onjump} />
       {/if}
     </section>
   {/each}

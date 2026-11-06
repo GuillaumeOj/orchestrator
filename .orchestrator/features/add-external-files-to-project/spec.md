@@ -32,7 +32,9 @@ In:
    Each entry is one absolute path (a file or a folder, folder = everything
    under it) with:
    - **access**: `write` (read & write, default: the brief asks for files
-     agents update) or `read` (read only);
+     agents update) or `read` (read only). A path added inside a listed
+     `read` folder gets `read` (unless `write` was asked explicitly, which
+     is refused, see Validation);
    - **note**: optional free text, "what it is for" (e.g. "Brand guide: logo,
      colors, tone"). Agents see it.
 2. **Add** one or several paths at once from a **drop zone**: drag and drop
@@ -102,6 +104,7 @@ A path is refused, with a message for that path, when:
 | containing the project's main checkout or another project's | `{p}: contains a project repository, pick a folder inside it` |
 | inside the worktree root of any registered project (agents' worktrees) | `{p}: inside agent worktrees, pick the file in its project instead` |
 | a name with `*`, `?`, `[`, `]`, `{` or `}` in its path (rule patterns are gitignore-style; their escaping isn't guessed) | `{p}: names with * ? [ ] { } can't be shared with agents yet; rename it or pick another folder` |
+| a backtick in its path (it would break the prompt's code span) | `{p}: names with a backtick can't be shared with agents yet; rename it or pick another folder` |
 | a name with `\` or a control character in its path | `{p}: names with \ or control characters can't be shared with agents; rename it or pick another folder` |
 | neither a regular file nor a folder (a socket, a FIFO, a device) | `{p}: not a file or folder` |
 | a `write` entry inside a `read` folder of the list | `{p}: inside a read-only folder in the project files; set that folder to Read & write first` |
@@ -191,7 +194,9 @@ on the project.
    edits a file of the folder without a permission prompt, from the Edit tool
    and from Bash.
 4. Switching an entry to Read only, then resuming the agent: Edit on it is
-   denied, Bash can't write it, Read still works.
+   denied, Read still works, and Bash can't write it (for an entry nested in
+   a Read & write folder, only when the CLI's sandbox supports `denyWrite`;
+   otherwise this is documented as a known gap).
 5. Team nodes of a feature of the project get the same files and section.
 6. Removing an entry leaves the files on disk; the next spawn no longer has
    it. Saving the General form does not erase the list.

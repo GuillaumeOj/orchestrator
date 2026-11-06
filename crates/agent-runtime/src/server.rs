@@ -222,15 +222,38 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         CtlRequest::Decide { item_id, decision, scope, message } => {
             ok_or(rt.decide(item_id, decision, scope.as_deref(), message.as_deref()))
         }
-        CtlRequest::Rules => ok_or(rt.db.rules().map(|r| json!(r))),
+        CtlRequest::Rules { project } => CtlReply::ok(json!(rt.policy_rules(project.as_deref()))),
         CtlRequest::AddRule { scope, scope_id, pattern, effect } => ok_or((|| {
             let sc =
                 orch_store::RuleScope::parse(&scope).ok_or_else(|| anyhow::anyhow!("scope: project | role | agent"))?;
-            let ef =
-                orch_store::RuleEffect::parse(&effect).ok_or_else(|| anyhow::anyhow!("effect: allow | deny | ask"))?;
-            Ok(json!(rt.add_rule(sc, &scope_id, &pattern, ef, None)?))
+            let ef = crate::policy::Effect::parse(&effect)
+                .ok_or_else(|| anyhow::anyhow!("effect: allow | deny | overwatch | user"))?;
+            rt.add_rule(sc, &scope_id, None, &pattern, ef, None)
         })()),
-        CtlRequest::RevokeRule { id } => ok_or(rt.revoke_rule(id).map(|done| json!({"revoked": done}))),
+        CtlRequest::RevokeRule { id, file } => {
+            ok_or(rt.revoke_rule(&id, file.as_deref()).map(|done| json!({"revoked": done})))
+        }
+        CtlRequest::ChatSend { text, thread } => {
+            ok_or(rt.chat_send(&text, thread.as_deref()).map(|e| json!({"entry": e})))
+        }
+        CtlRequest::ChatDiscard { entry } => ok_or(rt.chat_discard(&entry)),
+        CtlRequest::ChatUndo { entry, text } => ok_or(rt.chat_undo(&entry, text.as_deref())),
+        CtlRequest::RuleProposal { item, action } => ok_or(rt.rule_proposal_act(item, &action)),
+        CtlRequest::Overwatch => CtlReply::ok(rt.overwatch_report()),
+        CtlRequest::OverwatchRestart => ok_or(rt.overwatch_restart().map(|()| json!({"ok": true}))),
+        CtlRequest::OverwatchSettings => CtlReply::ok(json!(rt.overwatch_settings())),
+        CtlRequest::SetOverwatchSettings { settings } => {
+            ok_or(rt.merge_overwatch_settings(&settings).and_then(|s| rt.set_overwatch_settings(s)).map(|s| json!(s)))
+        }
+        CtlRequest::PolicyFiles => CtlReply::ok(json!(rt.policy_files())),
+        CtlRequest::PolicyDefaults => CtlReply::ok(json!(rt.policy_defaults())),
+        CtlRequest::SetPolicyDefaults { team, solo } => ok_or(rt.set_policy_defaults(&team, &solo).map(|d| json!(d))),
+        CtlRequest::PolicyOpen { scope, project } => {
+            ok_or(rt.policy_open(&scope, project.as_deref()).map(|p| json!({"path": p})))
+        }
+        CtlRequest::PolicyTest { project, role, tool, input } => {
+            ok_or(rt.policy_test(project.as_deref(), &role, &tool, &input))
+        }
         CtlRequest::Audit { agent_id, limit } => {
             ok_or(rt.db.audit_log(agent_id.as_deref(), limit.unwrap_or(100)).map(|v| json!(v)))
         }

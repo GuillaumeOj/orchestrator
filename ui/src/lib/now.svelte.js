@@ -9,6 +9,7 @@ import { chatOf, upsertEntries } from './chat.js';
 import { startOfDay, waited } from './format.js';
 import { isOpen, older } from './inbox.js';
 import { invoke, listen } from './ipc.js';
+import { OFF } from './overwatch.js';
 import { STATUS } from './status.js';
 
 const ZERO = {
@@ -41,6 +42,7 @@ function setSnapshot(s) {
     outcomes: s?.outcomes ?? [],
     counts: s?.counts ?? { global: {}, projects: {} },
     chat: chatOf(s?.chat),
+    overwatch: s?.overwatch ?? OFF,
   };
 }
 
@@ -99,6 +101,8 @@ export function applyNow(ev) {
     // spec §3.7); a long session would keep every day's.
     if (ev.outcomes?.length) n.outcomes = mergeOutcomes(n.outcomes, ev.outcomes);
     if (ev.counts) n.counts = ev.counts;
+    // The Overwatch's status (P4.4, api-contract §3.1): sent with the topic `overwatch`.
+    if (ev.overwatch) n.overwatch = ev.overwatch;
     // Today's chat entries (P4.3 api-contract §2.1): new and changed ones.
     if (ev.chat?.length) upsertEntries((n.chat ??= { day: null, entries: {} }), ev.chat);
     n.rev = ev.rev;

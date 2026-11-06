@@ -51,8 +51,11 @@ target/debug/orchd team export full-stack > team.json && target/debug/orchd team
   0 = off, default 10), `--fetch-min N` (background fetch interval, default 15), `--otel URL`
   (external receiver) or `--no-otel` (default: the bundled receiver on 127.0.0.1, ephemeral port).
 - Agents commit with `mcp__orch__commit` (orch-mcp); `orchd commit <agent> <message> [--path P]`
-  does the same from the CLI. `rule add role solo mcp__orch__commit ask` makes every commit wait
-  for an Inbox approval.
+  does the same from the CLI. `rule add role solo mcp__orch__commit user` makes every commit wait
+  for an Inbox approval (rules are written to the policy files, FR-1308).
+- `policy [--project P]` lists the policy files (global, each project's) and their merged rules;
+  `policy --test Bash "pnpm add zod" --role front --project P` prints the effect of that call and
+  what decides it (a rule id and its file, `default`, or the core's hard list).
 - `worktree <repo> solo <slug> | integration <feature> | team <feature> <role> <n>` creates a worktree
   without an agent; `worktree-rm <project> <path> [--delete-branch] [--discard]` removes one
   (unmerged work needs `--discard`). `project remove-plan` / `project remove --history delete|archive`

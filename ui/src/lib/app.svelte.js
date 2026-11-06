@@ -3,6 +3,7 @@
 // now.svelte.js), the tiling workspace, focus, overlays and the command
 // registry. Terminal objects (xterm.js) live outside the reactive state, in `terms`.
 
+import { upsertEntries } from './chat.js';
 import { deliveryRef } from './delivery.js';
 import { clock as clockOf } from './format.js';
 import { decisionToast, due, FILTERS, isOpen, older, pendingToast, UNDO_MS, version } from './inbox.js';
@@ -12,6 +13,7 @@ import { deriveKittyTheme } from './kittytheme.js';
 import * as L from './layout.js';
 import { runNowCost, runNowDialog } from './mission.js';
 import { clearDigest, needsYou, statusOf } from './now.svelte.js';
+import { canOpenSession, overwatchOf } from './overwatch.js';
 import { STATUS } from './status.js';
 import { runStateLabel } from './teams.js';
 import { TermPane } from './term.js';
@@ -33,7 +35,7 @@ const DOCK_HEIGHT = 0.45;
 /**
  * @typedef {{ rev: number, agents: Record<string, any>, runs: Record<string, any>,
  *   decisions: Record<string, any>, outcomes: any[], counts: { global: any, projects: any },
- *   chat?: { day: string | null, entries: Record<string, any> } }} Now
+ *   chat?: { day: string | null, entries: Record<string, any> }, overwatch?: any }} Now
  */
 
 export const app = $state({
@@ -72,6 +74,7 @@ export const app = $state({
   // given; { search: true } opens its search.
   chatFocus: null,
   chatFilter: 'all', // the chat's level filter (notes §5): never saved
+  chatDraft: '', // the Overwatch input's draft (P4.4 notes §2): kept while the app is open, never saved
   selectedProject: null,
   theme: null, // null = system, 'dark' | 'light' (user choice)
   themeRev: 0, // bumped when the applied theme may have changed (diagrams redraw)
@@ -120,6 +123,8 @@ export const agent = (id) => agents().find((a) => a.id === id);
 /** Agents not deleted (archived ones stay in the snapshot for history). */
 export const activeAgents = () => agents().filter((a) => a.state !== 'archived');
 export const projects = () => app.data?.projects ?? [];
+/** A project's name by id (the id itself when it is not listed), null for no id. */
+export const projectName = (id) => (id ? (projects().find((p) => p.id === id)?.name ?? id) : null);
 /** Features with their latest team run (P2). `null` in a snapshot when the
  *  core could not read them: the poll then keeps the previous list. */
 export const features = () => app.data?.features ?? [];
@@ -384,8 +389,21 @@ export function focusCard(id = null) {
   askChat({ id });
 }
 
-/** ⌘L: the chat's search (D1: until the Overwatch's input exists). */
+/** `/` and the header button: the chat's search (P4.4 notes §2.3). */
 export const searchDecisions = () => askChat({ search: true });
+
+/** ⌘L: the Overwatch input, from anywhere; an open search closes (P4.4 notes §2.3). */
+export const askOverwatch = () => askChat({ ask: true });
+
+/** The Overwatch's session over the board, when it has one today (notes §1). */
+export function openOverwatch() {
+  const ow = overwatchOf(app.now);
+  if (!canOpenSession(ow)) return;
+  openSession(ow.agent ?? 'overwatch', { watch: true });
+}
+
+/** Restart (the strip, the palette, Settings): a fresh session; the caller shows a failure where it is (notes §8). */
+export const restartOverwatch = () => invoke('overwatch_restart');
 
 /** The chat's level filter (notes §5). */
 export const filterDecisions = (id) => askChat({ id: null, filter: id });
@@ -449,8 +467,39 @@ export function routeOpen(r, projectId = null) {
   else if (r.open === 'pane' && r.run) runInPane(r.run, `${r.run}${r.server ? ` · ${r.server}` : ''}`, projectId);
   else if (r.open === 'url' && r.url) openUrl(r.url);
   else if (r.open === 'report') openReport(r.report ?? 'current');
+  else if (r.open === 'editor' && r.scope) openPolicy(r.scope, r.project ?? projectId);
   else return false;
   return true;
+}
+
+/** A policy file in nvim (api-contract §5 `policy_open`): created with its first comment when missing. */
+export async function openPolicy(scope, projectId = null) {
+  // The core's scope label is `global` or `project:<id>`; a bare `project` takes the card's project.
+  const m = /^project:(.+)$/.exec(scope);
+  if (m) projectId = m[1];
+  scope = m ? 'project' : scope;
+  const project = scope === 'project' ? projectId : null;
+  try {
+    const r = await invoke('policy_open', { scope, project, ...RUN_SIZE });
+    if (r.reused) {
+      focusEditor(project);
+      return toast('Opened the policy file in nvim');
+    }
+    addPane(
+      { type: 'editor', termId: r.term.id, spawn: RUN_SIZE, cwd: r.term.cwd, projectId: project, file: null },
+      'right',
+    );
+  } catch (e) {
+    toast(`Could not open the policy file: ${errText(e)}`, { kind: 'error' });
+  }
+}
+
+/** Undoes an Overwatch line (api-contract §3.3): `text` is the correction of an answer.
+ *  The line comes back updated; a refusal throws, `{ ok: false, gone }` says why it can't. */
+export async function undoLine(entry, text = null) {
+  const r = await invoke('chat_undo', text == null ? { entry: entry.id } : { entry: entry.id, text });
+  if (r?.entry) upsertEntries((app.now.chat ??= { day: null, entries: {} }), [r.entry]);
+  return r;
 }
 
 /** An action the core answers at once (no undo window): Open (a Notion page, a
@@ -483,15 +532,22 @@ export function openProject(projectId) {
 }
 
 /** P2: a feature's pane (docs, tasks, team, timeline), one per feature. */
-export function openFeature(featureId, timeline = null) {
+export function openFeature(featureId, doc = null, anchor = null, timeline = null) {
   const existing = findPane((s) => s.type === 'feature' && s.featureId === featureId);
   if (existing) {
+    if (doc) app.panes[existing] = { ...app.panes[existing], doc, anchor };
     if (timeline) app.panes[existing].timeline = timeline;
     return focusPane(existing);
   }
   const f = features().find((x) => x.id === featureId);
   addPane(
-    { type: 'feature', featureId, projectId: f?.project_id, ...(timeline ? { timeline } : {}) },
+    {
+      type: 'feature',
+      featureId,
+      projectId: f?.project_id,
+      ...(doc ? { doc, anchor } : {}),
+      ...(timeline ? { timeline } : {}),
+    },
     app.layout ? 'tab' : 'right',
   );
 }
@@ -502,7 +558,7 @@ export function openDelivery(rec) {
   const ref = deliveryRef(rec);
   if (ref) return focusCard(ref);
   const f = features().find((x) => x.run?.id && x.run.id === rec?.run);
-  if (f) openFeature(f.id, 'delivery');
+  if (f) openFeature(f.id, null, null, 'delivery');
   else openAgent(rec?.agent);
 }
 
@@ -566,15 +622,26 @@ export const openMission = () => openSingleton('mission');
  * mode. One already open gets focus, in watch mode again (notes §1.10).
  * Without Mission control: as `openAgent`.
  */
-export function openSession(agentId) {
+export function openSession(agentId, { watch = false, keepLive = false } = {}) {
   const over = findPane((s) => s.type === 'mission');
-  if (!over) return openAgent(agentId);
+  // `watch`: never a live tab, so a keystroke can't reach the session by accident (it counts as an intervention).
+  if (!over && !watch) return openAgent(agentId);
   const existing = findPane((s) => s.type === 'agent' && s.agentId === agentId);
+  // `keepLive`: a tab you are typing in stays as it is (a link only brings it forward).
+  if (existing && keepLive && !app.panes[existing].watch) return focusPane(existing);
+  const from = app.focused;
   if (existing) {
-    Object.assign(app.panes[existing], { watch: true, over });
+    Object.assign(app.panes[existing], { watch: true, over: over ?? null, from });
     return focusPane(existing);
   }
-  return addDockPane({ type: 'agent', agentId, projectId: agent(agentId)?.project_id, watch: true, over });
+  return addDockPane({
+    type: 'agent',
+    agentId,
+    projectId: agent(agentId)?.project_id,
+    watch: true,
+    over: over ?? null,
+    from,
+  });
 }
 
 /** Take-over (⏎ or a click in watch mode): the PTY gets the keyboard. */
@@ -587,8 +654,10 @@ export function takeOver(paneId) {
 
 /** Esc in watch mode: back to the Mission control the session opened over; the dock tab stays. */
 export function leaveWatch(paneId) {
-  const over = app.panes[paneId]?.over;
+  const { over, from } = app.panes[paneId] ?? {};
+  // Back to where it was opened from: the board, else the pane that had the focus (the chat's status).
   if (over && app.panes[over]) focusPane(over);
+  else if (from && app.panes[from] && from !== paneId) focusPane(from);
   else openMission();
 }
 
@@ -634,9 +703,16 @@ export async function openShell(opts = {}) {
   }
 }
 
+/** Focuses the project's open editor pane (a global one has no project: null or undefined). */
+function focusEditor(projectId) {
+  const pane = findPane((s) => s.type === 'editor' && (s.projectId ?? null) === (projectId ?? null));
+  if (pane) focusPane(pane);
+}
+
 /** FR-1101/1102: reuse the project's nvim when it runs, else a new editor pane. */
 export async function openEditor(file = null, line = null, opts = {}) {
-  const a = opts.agentId ? agent(opts.agentId) : contextAgent();
+  // An explicit project never takes the focused pane's agent: that one may belong to another project.
+  const a = opts.agentId ? agent(opts.agentId) : opts.projectId ? null : contextAgent();
   const p = projects().find((x) => x.id === (opts.projectId ?? a?.project_id)) ?? contextProject();
   try {
     const r = await invoke('editor_open', {
@@ -647,8 +723,7 @@ export async function openEditor(file = null, line = null, opts = {}) {
       ...RUN_SIZE,
     });
     if (r.reused) {
-      const pane = findPane((s) => s.type === 'editor' && s.projectId === p?.id);
-      if (pane) focusPane(pane);
+      focusEditor(p?.id);
       toast(
         file
           ? `Opened ${file}${line ? `:${line}` : ''} in nvim · ${p?.name ?? ''}`
@@ -1150,7 +1225,21 @@ export function commands() {
       },
     },
     { id: 'decisions', label: 'Show decisions', run: () => focusCard() },
+    { id: 'overwatch.ask', label: 'Ask the Overwatch', run: askOverwatch },
     { id: 'decisions.search', label: 'Search decisions', run: searchDecisions },
+    ...(app.now?.overwatch?.status === 'down'
+      ? [
+          {
+            id: 'overwatch.restart',
+            label: 'Restart the Overwatch',
+            run: () => restartOverwatch().catch((e) => toast(`Could not restart: ${errText(e)}`, { kind: 'error' })),
+          },
+        ]
+      : []),
+    ...(canOpenSession(overwatchOf(app.now))
+      ? [{ id: 'overwatch.session', label: "Open the Overwatch's session", run: openOverwatch }]
+      : []),
+    { id: 'overwatch.settings', label: 'Turn the Overwatch on or off', run: () => openSettings('overwatch') },
     ...FILTERS.map((f) => ({
       id: `decisions.filter.${f.id}`,
       label: `Filter decisions: ${f.label}`,

@@ -22,6 +22,8 @@ libc.workspace = true
 portable-pty.workspace = true
 uuid.workspace = true
 notify.workspace = true
+toml_edit.workspace = true
+shlex.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

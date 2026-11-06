@@ -36,6 +36,8 @@ pub struct ChatEntry {
     pub continued_from: Option<u64>,
     /// On that previous day's entry: the one that carries on.
     pub continued_to: Option<u64>,
+    /// Extras sent flat with the entry: `delivery`, `reply_to` (P4.4).
+    pub meta: Option<Value>,
     pub rev: u64,
 }
 
@@ -94,6 +96,12 @@ impl Serialize for ChatEntry {
                 m.serialize_entry(k, &format!("c-{n}"))?;
             }
         }
+        // Extras sent flat; keys starting with `_` are the core's own.
+        if let Some(Value::Object(meta)) = &self.meta {
+            for (k, v) in meta.iter().filter(|(k, _)| !k.starts_with('_')) {
+                m.serialize_entry(k, v)?;
+            }
+        }
         m.serialize_entry("rev", &self.rev)?;
         m.end()
     }
@@ -108,7 +116,7 @@ pub struct ChatDay {
 }
 
 const COLS: &str =
-    "id, day, at_ms, author, kind, thread, decision, text, line, card, rev, continued_from, continued_to";
+    "id, day, at_ms, author, kind, thread, decision, text, line, card, rev, continued_from, continued_to, meta";
 
 fn row(r: &Row) -> rusqlite::Result<ChatEntry> {
     let json = |i: usize| -> rusqlite::Result<Option<Value>> {
@@ -128,6 +136,7 @@ fn row(r: &Row) -> rusqlite::Result<ChatEntry> {
         rev: r.get::<_, i64>(10)? as u64,
         continued_from: opt_u64(r, 11)?,
         continued_to: opt_u64(r, 12)?,
+        meta: json(13)?,
     })
 }
 
@@ -144,8 +153,8 @@ impl Store {
         e.n = self.write(move |tx| {
             tx.execute(
                 "INSERT INTO chat_entries(day, at_ms, author, kind, thread, decision, text, line, card, rev, haystack,
-                   continued_from, continued_to)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10,?11,?12)",
+                   continued_from, continued_to, meta)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10,?11,?12,?13)",
                 params![
                     row.day,
                     row.at_ms as i64,
@@ -158,7 +167,8 @@ impl Store {
                     js_opt(&row.card),
                     row.haystack(),
                     row.continued_from.map(|n| n as i64),
-                    row.continued_to.map(|n| n as i64)
+                    row.continued_to.map(|n| n as i64),
+                    js_opt(&row.meta)
                 ],
             )?;
             Ok(tx.last_insert_rowid() as u64)
@@ -174,7 +184,7 @@ impl Store {
         self.write(move |tx| {
             tx.execute(
                 "UPDATE chat_entries SET day=?2, at_ms=?3, thread=?4, decision=?5, text=?6, line=?7, card=?8,
-                   rev=?9, haystack=?10, continued_from=?11, continued_to=?12 WHERE id=?1",
+                   rev=?9, haystack=?10, continued_from=?11, continued_to=?12, meta=?13 WHERE id=?1",
                 params![
                     row.n as i64,
                     row.day,
@@ -187,12 +197,50 @@ impl Store {
                     row.rev as i64,
                     row.haystack(),
                     row.continued_from.map(|n| n as i64),
-                    row.continued_to.map(|n| n as i64)
+                    row.continued_to.map(|n| n as i64),
+                    js_opt(&row.meta)
                 ],
             )?;
             Ok(())
         })?;
         Ok(e)
+    }
+
+    /// One entry by its row id (`c-<n>` without the prefix).
+    pub fn chat_get(&self, n: u64) -> Result<Option<ChatEntry>> {
+        self.read(move |c| {
+            let mut st = c.prepare_cached(&format!("SELECT {COLS} FROM chat_entries WHERE id=?1"))?;
+            let mut rows = st.query_map([n as i64], row)?;
+            Ok(rows.next().transpose()?)
+        })
+    }
+
+    /// The entry of a decision (the latest, when it carried across days: it holds the answer).
+    pub fn chat_by_decision(&self, decision: &str) -> Result<Option<ChatEntry>> {
+        let decision = decision.to_string();
+        self.read(move |c| {
+            let mut st = c.prepare_cached(&format!(
+                "SELECT {COLS} FROM chat_entries WHERE decision=?1 ORDER BY id DESC LIMIT 1"
+            ))?;
+            let mut rows = st.query_map([decision], row)?;
+            Ok(rows.next().transpose()?)
+        })
+    }
+
+    /// Removes an entry (`chat_discard`); true when it existed.
+    pub fn chat_delete(&self, n: u64) -> Result<bool> {
+        self.write(move |tx| Ok(tx.execute("DELETE FROM chat_entries WHERE id=?1", [n as i64])? > 0))
+    }
+
+    /// User text entries not delivered yet (`delivery: pending`), oldest first.
+    pub fn chat_pending_user(&self) -> Result<Vec<ChatEntry>> {
+        self.read(|c| {
+            let mut st = c.prepare_cached(&format!(
+                "SELECT {COLS} FROM chat_entries WHERE author='user' AND kind='text'
+                   AND json_extract(meta, '$.delivery') IN ('pending', 'waking') ORDER BY at_ms, id"
+            ))?;
+            Ok(st.query_map([], row)?.collect::<rusqlite::Result<_>>()?)
+        })
     }
 
     /// A day's entries, oldest first.
@@ -210,7 +258,7 @@ impl Store {
         let before = before.to_string();
         self.read(move |c| {
             let mut st = c.prepare_cached(
-                "SELECT day, count(*), sum(kind = 'decision') FROM chat_entries WHERE day < ?1
+                "SELECT day, count(*), sum(kind IN ('decision', 'rule_proposal')) FROM chat_entries WHERE day < ?1
                  GROUP BY day ORDER BY day DESC LIMIT ?2",
             )?;
             let rows = st.query_map(params![before, limit as i64], |r| {
@@ -241,7 +289,7 @@ impl Store {
     pub fn chat_open(&self) -> Result<Vec<ChatEntry>> {
         self.read(|c| {
             let mut st = c.prepare_cached(&format!(
-                "SELECT {COLS} FROM chat_entries WHERE kind = 'decision' AND line IS NULL AND continued_to IS NULL
+                "SELECT {COLS} FROM chat_entries WHERE kind IN ('decision', 'rule_proposal') AND line IS NULL AND continued_to IS NULL
                  ORDER BY at_ms, id"
             ))?;
             Ok(st.query_map([], row)?.collect::<rusqlite::Result<_>>()?)
