@@ -8,7 +8,7 @@ The shell (FigCraft page with the Overwatch / chat column boards, P4.4 · 04.3).
 
 - Hit area 4 px wide (`--space-xs`), straddling the column's existing left border; the border itself does not move or thicken at rest.
 - **Rest**: invisible apart from the existing 1 px border; cursor `col-resize` on hover.
-- **Hover** (after the cursor rests on it) and **focus-visible**: the 4 px strip fills with `--color-border-strong` (same as the dock's top handle). Focus also shows the standard focus ring token if the strip alone is not enough contrast.
+- **Hover** (plain `:hover`, no delay) and **focus-visible**: the 4 px strip fills with `--color-border-strong` (same as the dock's top handle). Focus also shows the standard focus ring token if the strip alone is not enough contrast.
 - **Dragging**: the strip stays filled (`--color-border-strong`, or `--color-accent-default` if ui judges it clearer, as long as the dock handle gets the same treatment later); cursor `col-resize` everywhere on the window during the drag; no text selection.
 - No grip dots, no tooltip at rest. A `title` on the handle: "Drag to resize · double-click to reset".
 
