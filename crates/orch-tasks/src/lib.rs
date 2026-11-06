@@ -387,6 +387,24 @@ impl<'a> TaskService<'a> {
         Ok(Outcome { value: t, remote_error })
     }
 
+    /// Shows `issue`, as GitHub has it now, on the task that tracks it (an
+    /// agent changed the issue outside the board's own writes). Its
+    /// `updated_at` is recorded, so the next sync sees no remote change and
+    /// no conflict. `None`: no task tracks it, or the task holds a change
+    /// that never reached the remote (the sync settles that one).
+    pub fn refresh_from(&self, issue: &Issue, now_ms: u64) -> Result<Option<Task>> {
+        let Some(mut t) = self.store.task_by_external(&self.project.id, self.kind(), &issue.number)? else {
+            return Ok(None);
+        };
+        if Self::pending(&t).is_some() {
+            return Ok(None);
+        }
+        self.adopt(&mut t, issue);
+        t.updated_at_ms = now_ms;
+        self.store.upsert_task(&t)?;
+        Ok(Some(t))
+    }
+
     /// Brings the remote back (FR-503). New issues are imported; an issue
     /// changed since the last sync replaces the local copy; a local change
     /// that never reached the remote is pushed again, unless the remote

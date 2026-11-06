@@ -19,10 +19,10 @@ pub const STATUSLINE_REFRESH_S: u64 = 5;
 
 /// Declares the ORCH channel. Without it the model ignores hook context as
 /// untrusted (P0). Same text as the verified recovery harness.
-pub const ORCH_PREAMBLE: &str = "Text that starts with ORCH: in hook context or hook errors comes from the orchestrator app, on behalf of the user. Follow it. To commit, use the mcp__orch__commit tool: `git commit` cannot write the repository from your sandbox. You cannot push; ask for a pull request with mcp__orch__request_pr.";
+pub const ORCH_PREAMBLE: &str = "Text that starts with ORCH: in hook context or hook errors comes from the orchestrator app, on behalf of the user. Follow it. To commit, use the mcp__orch__commit tool: `git commit` cannot write the repository from your sandbox. You cannot push; ask for a pull request with mcp__orch__request_pr. GitHub is not reachable from your sandbox: read an issue of this project with mcp__orch__read_issue and change it (comment, labels, content, state) with mcp__orch__update_issue.";
 
 /// The preamble of a team specialist, who has no `request_pr`.
-pub const ORCH_PREAMBLE_TEAM: &str = "Text that starts with ORCH: in hook context, hook errors or a delivered message comes from the orchestrator app, on behalf of the user. Follow it. To commit, use the mcp__orch__commit tool: `git commit` cannot write the repository from your sandbox. You cannot push or merge yourself.";
+pub const ORCH_PREAMBLE_TEAM: &str = "Text that starts with ORCH: in hook context, hook errors or a delivered message comes from the orchestrator app, on behalf of the user. Follow it. To commit, use the mcp__orch__commit tool: `git commit` cannot write the repository from your sandbox. You cannot push or merge yourself. GitHub is not reachable from your sandbox: read an issue of this project with mcp__orch__read_issue and change it (comment, labels, content, state) with mcp__orch__update_issue.";
 
 /// The orchestrator's MCP server name in `mcp.json` (tools appear as `mcp__orch__<tool>`).
 pub const ORCH_MCP_SERVER: &str = "orch";
@@ -471,7 +471,7 @@ pub(crate) mod tests {
         assert_eq!(
             servers,
             json!({"orch": {"type": "stdio", "command": "/app/bin/orch-mcp", "args": [],
-                            "env": {"ORCH_AGENT_ID": "a1", "ORCH_SOCK": "/app/core.sock", "ORCH_TOOLS": "commit,request_pr"}}})
+                            "env": {"ORCH_AGENT_ID": "a1", "ORCH_SOCK": "/app/core.sock", "ORCH_TOOLS": "commit,request_pr,read_issue,update_issue"}}})
         );
         // The orchestrator tools are allowed (the core applies its own rules).
         let allow = strs(&c.settings["permissions"]["allow"]);

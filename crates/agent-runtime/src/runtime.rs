@@ -220,6 +220,8 @@ pub struct Runtime {
     pub(crate) replaying: Mutex<()>,
     /// Each project's task backend, kept across calls.
     pub(crate) task_backends: orch_tasks::Backends,
+    /// Each project's GitHub repository when only `gh` knows it (`read_issue`).
+    pub(crate) issue_repos: Mutex<std::collections::HashMap<String, String>>,
     /// One per project: serialises its task syncs ([`Runtime::sync_tasks`]).
     pub(crate) sync_gates: Mutex<std::collections::HashMap<String, std::sync::Arc<crate::team::SyncGate>>>,
     /// Projects whose Board was opened in this process: the background task
@@ -544,6 +546,7 @@ impl Runtime {
             watching: std::sync::atomic::AtomicBool::new(false),
             replaying: Mutex::new(()),
             task_backends: orch_tasks::Backends::default(),
+            issue_repos: Mutex::default(),
             sync_gates: Mutex::default(),
             watched_projects: Mutex::default(),
             presets_checked: std::sync::atomic::AtomicBool::new(false),
