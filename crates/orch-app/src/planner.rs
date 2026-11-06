@@ -114,6 +114,8 @@ pub struct PlannerView {
     pub now_ms: i64,
     pub shadow: bool,
     pub reserve_pct: f64,
+    /// pp of the week so far spent by the Overwatch (it draws on the reserve, outside the plan's allocations).
+    pub overwatch_pp: Option<f64>,
     pub snapshot: governor::ForecastSnapshot,
     pub curve: Vec<CurvePoint>,
     pub actual: Vec<HistoryPoint>,
@@ -333,6 +335,9 @@ pub fn build(
         now_ms: ms(now),
         shadow: plan.shadow_mode,
         reserve_pct: plan.reserve_pct,
+        overwatch_pp: Some(
+            gov.allocation_usage_pct(&governor::AllocationId(agent_runtime::overwatch::ALLOCATION.into())),
+        ),
         actual: actual(history, &snap, start, now),
         snapshot: snap,
         curve: points,

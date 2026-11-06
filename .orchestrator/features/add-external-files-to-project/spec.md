@@ -99,9 +99,14 @@ A path is refused, with a message for that path, when:
 | inside, or equal to, the project's main checkout or its worktree root | `{p}: already part of the project (in its repository)` |
 | `/`, the home folder, or a folder that contains the home folder | `{p}: too broad, pick a folder inside it` |
 | inside or containing the app's data folder | `{p}: the app's own data can't be shared with agents` |
-| inside or containing a credential store (`CREDENTIAL_STORES`: `~/.ssh`, `~/.aws`, Keychains…) | `{p}: holds credentials, can't be shared with agents` |
+| inside or containing a credential store (`CREDENTIAL_STORES`: `~/.ssh`, `~/.aws`, Keychains…), or the real path behind one that is a symlink | `{p}: holds credentials, can't be shared with agents` |
+| inside or containing settings or code that runs outside the sandbox (`UNSANDBOXED`: `~/.claude`, `~/.claude.json`, `~/Library/LaunchAgents`, `~/.gitconfig`, `~/.config/git`, the shell startup files `~/.zshrc ~/.zshenv ~/.zprofile ~/.zlogin ~/.zlogout ~/.bashrc ~/.bash_profile ~/.bash_login ~/.bash_logout ~/.profile ~/.config/fish`, where `claude` lives `~/.local/bin ~/.local/share/claude`, `~/Applications`; `UNSANDBOXED_SYSTEM`: `/Applications`, `/opt/homebrew`, `/usr/local`), or the real path behind one that is a symlink, or any path with a `.git` or `.claude` component | `{p}: holds settings or code that runs outside the sandbox, can't be shared with agents` |
 | containing the project's main checkout or another project's | `{p}: contains a project repository, pick a folder inside it` |
 | inside the worktree root of any registered project (agents' worktrees) | `{p}: inside agent worktrees, pick the file in its project instead` |
+| a name with `*`, `?`, `[`, `]`, `{` or `}` in its path (rule patterns are gitignore-style; their escaping isn't guessed) | `{p}: names with * ? [ ] { } can't be shared with agents yet; rename it or pick another folder` |
+| a backtick in its path (it would break the prompt's code span) | `{p}: names with a backtick can't be shared with agents yet; rename it or pick another folder` |
+| a name with `\` or a control character in its path | `{p}: names with \ or control characters can't be shared with agents; rename it or pick another folder` |
+| neither a regular file nor a folder (a socket, a FIFO, a device) | `{p}: not a file or folder` |
 | a `write` entry inside a `read` folder of the list | `{p}: inside a read-only folder in the project files; set that folder to Read & write first` |
 | switching a folder to `read` while it contains `write` entries | `{p}: contains files set to Read & write; set them to Read only first` |
 | more than 100 entries | `{p}: 100 files at most per project` |

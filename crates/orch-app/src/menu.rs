@@ -32,7 +32,7 @@ pub const ITEMS: &[(&str, &[Item])] = &[
             ("inspector", "Toggle Inspector", "CmdOrCtrl+I"),
             ("dock.toggle", "Toggle Shell Dock", "CmdOrCtrl+J"),
             ("decisions", "Show Decisions", "CmdOrCtrl+Shift+I"),
-            ("decisions.search", "Search Decisions", "CmdOrCtrl+L"),
+            ("overwatch.ask", "Ask the Overwatch", "CmdOrCtrl+L"),
             ("pane.focus.1", "Focus Pane 1", "CmdOrCtrl+1"),
             ("pane.focus.2", "Focus Pane 2", "CmdOrCtrl+2"),
             ("pane.focus.3", "Focus Pane 3", "CmdOrCtrl+3"),
@@ -106,7 +106,7 @@ mod tests {
             ("CmdOrCtrl+K", "palette"),
             ("CmdOrCtrl+P", "jump"),
             ("CmdOrCtrl+Shift+I", "decisions"),
-            ("CmdOrCtrl+L", "decisions.search"),
+            ("CmdOrCtrl+L", "overwatch.ask"),
             ("CmdOrCtrl+,", "settings"),
         ] {
             assert_eq!(by_accel(chord), Some(id));

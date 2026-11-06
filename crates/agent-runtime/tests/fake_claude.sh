@@ -120,6 +120,16 @@ while IFS= read -r line; do
     out=$(hook "{\"hook_event_name\":\"PermissionRequest\",\"session_id\":\"$SID\",\"prompt_id\":\"p$n\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$permit\"},\"tool_use_id\":\"tp$n\",\"cwd\":\"$PWD\"}")
     echo "PERM[$n]:$out"
   fi
+  # The Overwatch's turn carrying "permission inbox-<n>" of a call marked
+  # OWALLOW: it allows it inside that turn, like its model would. On its own,
+  # not in the case below: a slow runner can join it with an ORCHTOOL turn.
+  case "$prompt" in
+    *'permission inbox-'*OWALLOW*)
+      d=$(printf '%s' "$raw" | sed -n 's/.*permission \(inbox-[0-9]*\).*/\1/p')
+      # In a variable first: bash brace-expands `{a,b}` in a command's words.
+      args="{\"decision\":\"$d\",\"effect\":\"allow\",\"reason\":\"routine install in the task\"}"
+      [ -n "$d" ] && echo "MCP[$n]:$(mcp_call decide_permission "$args")" ;;
+  esac
   case "$prompt" in
     *SLOW*) sleep 30 ;;
     *COMMIT*) echo "work $n" > "work-$n.txt"; echo "MCP[$n]:$(mcp_commit "fake commit $n")" ;;

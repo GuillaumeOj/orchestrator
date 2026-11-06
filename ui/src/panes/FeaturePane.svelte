@@ -74,7 +74,10 @@
       // Default the message box to the lead's node, whatever its id.
       if (!to || !v.team?.nodes?.some((n) => n.id === to)) to = v.team?.nodes?.find((n) => n.is_lead)?.id ?? null;
       const names = v.docs ?? [];
-      if (names.length && (!doc.name || !names.includes(doc.name))) await showDoc(names[0]);
+      // A doc asked for by name (the Overwatch's source links) wins over the first one.
+      const want = requestedDoc();
+      if (want) await showDoc(want);
+      else if (names.length && (!doc.name || !names.includes(doc.name))) await showDoc(names[0]);
     } catch (e) {
       error = errText(e);
     }
@@ -126,8 +129,27 @@
     }
   }
 
+  // The doc a source link asked for, once: it is cleared from the pane as it is shown, so a later
+  // click on another tab stays and a reload doesn't snap back.
+  let anchor = $state(null);
+  let anchorAsked = $state(0); // a second click on the same section scrolls back to it
+  function requestedDoc() {
+    const want = spec?.doc;
+    if (!want || !v?.docs) return null;
+    anchor = spec.anchor ?? null;
+    anchorAsked = untrack(() => anchorAsked) + 1;
+    app.panes[paneId] = { ...app.panes[paneId], doc: null, anchor: null }; // one-shot, also when it is not one of the docs
+    return v.docs.includes(want) ? want : null;
+  }
+  // The same pane asked for another doc (a source link while it is open).
+  $effect(() => {
+    const want = requestedDoc();
+    if (want) showDoc(want);
+  });
+
   /** A link to a sibling doc (`api-contract.md#…`) switches the tab. */
   function openSibling(name) {
+    anchor = null;
     if (v.docs.includes(name)) return showDoc(name);
     toast(`No doc named ${name} in this feature`, { kind: 'error' });
   }
@@ -246,9 +268,9 @@
           <div class="cardh"><b>Docs</b><span class="muted">.orchestrator/features/{v.feature.slug}/ on the integration branch</span><span class="grow"></span>{#if doc.name}<button class="btn ghost" onclick={openDoc}>Open in nvim <Kbd keys="e" /></button>{/if}</div>
           {#if v.docs.length}
             <div class="tabs" role="tablist">
-              {#each v.docs as d (d)}<button class="tab" class:on={doc.name === d} role="tab" aria-selected={doc.name === d} onclick={() => showDoc(d)}>{d}</button>{/each}
+              {#each v.docs as d (d)}<button class="tab" class:on={doc.name === d} role="tab" aria-selected={doc.name === d} onclick={() => ((anchor = null), showDoc(d))}>{d}</button>{/each}
             </div>
-            <div class="rendered"><Markdown text={doc.text} feature={spec.featureId} ondoc={openSibling} /></div>
+            <div class="rendered"><Markdown text={doc.text} feature={spec.featureId} ondoc={openSibling} {anchor} {anchorAsked} /></div>
           {:else}
             <p class="muted">No docs yet: the lead writes them in the spec step.</p>
           {/if}

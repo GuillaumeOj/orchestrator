@@ -18,7 +18,7 @@ the control clients (`orchd` now, the Tauri UI later). SPEC §6, FR-806, NFR-3, 
 |---|---|---|
 | `hook` | orch-hook | `agent_id`, `event` (parsed `hook_event_name`), `ts_ms`, `deadline_ms` (0 = not waiting), raw `payload` |
 | `status` | orch-status | `agent_id`, `ts_ms`, raw statusline `payload` |
-| `ctl` | orchd / UI | `CtlRequest`: agents (`create_worktree`, `start`, `resume`, `suspend`, `kill`, `interrupt`, `deliver`, `attach`, `resize`, `read`, `state`, `usage`, `governor`, `pause_all`, `resume_all`, `shutdown`); Inbox and rules (`inbox`, `decide` with `InboxDecision`, `rules`, `add_rule`, `revoke_rule`, `audit`, `events`); projects and git (`project_add`, `project_clone`, `projects`, `project`, `fetch`, `diff`, `remove_worktree`, `removal_plan`, `remove_project`, `relocate_project`, `commit`, `search`) |
+| `ctl` | orchd / UI | `CtlRequest`: agents (`create_worktree`, `start`, `resume`, `suspend`, `kill`, `interrupt`, `deliver`, `attach`, `resize`, `read`, `state`, `usage`, `governor`, `pause_all`, `resume_all`, `shutdown`); Inbox and rules (`inbox`, `decide` with `InboxDecision`, `rules`, `add_rule`, `revoke_rule`, `policy_files`, `policy_defaults`, `set_policy_defaults`, `policy_open`, `policy_test`, `audit`, `events`); projects and git (`project_add`, `project_clone`, `projects`, `project`, `fetch`, `diff`, `remove_worktree`, `removal_plan`, `remove_project`, `relocate_project`, `commit`, `search`) |
 | `mcp` | orch-mcp | `McpMsg`: `agent_id`, `tool` (`commit`, `request_pr`), `arguments`, `deadline_ms` (300 s by default); answered with `Reply::Mcp` |
 
 ## Socket

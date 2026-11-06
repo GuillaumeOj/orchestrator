@@ -211,17 +211,77 @@ pub enum CtlRequest {
         #[serde(default)]
         message: Option<String>,
     },
-    Rules,
+    /// The policy files' rules (FR-1308), global first; `project` narrows.
+    Rules {
+        #[serde(default)]
+        project: Option<String>,
+    },
+    /// Appends a rule to the policy file of its scope.
     AddRule {
         /// `project` / `role` / `agent`.
         scope: String,
         scope_id: String,
         pattern: String,
-        /// `allow` / `deny` / `ask`.
+        /// `allow` / `deny` / `overwatch` / `user` (`ask` reads as `user`).
         effect: String,
     },
+    /// Removes a policy rule by id (`file`: `global` | `project:<id>` when ids repeat).
     RevokeRule {
-        id: u64,
+        id: String,
+        #[serde(default)]
+        file: Option<String>,
+    },
+    /// `chat_send {text, thread?}`: the user's message to the Overwatch (P4.4).
+    ChatSend {
+        text: String,
+        #[serde(default)]
+        thread: Option<String>,
+    },
+    /// `chat_discard {entry}`: removes a message still pending.
+    ChatDiscard {
+        entry: String,
+    },
+    /// `chat_undo {entry, text?}`: undoes what an oversight line offers.
+    ChatUndo {
+        entry: String,
+        #[serde(default)]
+        text: Option<String>,
+    },
+    /// Add rule · Not now · Edit rule on a rule proposal (`rule-<n>`).
+    RuleProposal {
+        item: u64,
+        action: String,
+    },
+    /// `orchd overwatch`: status, today's session and turns, p50 / p90 wake (P4.4).
+    Overwatch,
+    /// `overwatch_restart`: a fresh session with a new briefing.
+    OverwatchRestart,
+    OverwatchSettings,
+    /// `set_overwatch_settings {enabled, model, batch_secs, permission_secs,
+    /// idle_secs, rule_threshold}` (a missing field keeps its value).
+    SetOverwatchSettings {
+        settings: serde_json::Value,
+    },
+    /// `policy_files` (api-contract §3.3).
+    PolicyFiles,
+    PolicyDefaults,
+    SetPolicyDefaults {
+        team: String,
+        solo: String,
+    },
+    /// The file's path, created when missing (`policy_open`).
+    PolicyOpen {
+        scope: String,
+        #[serde(default)]
+        project: Option<String>,
+    },
+    /// `orchd policy --test`: the effect of a call and what decides it.
+    PolicyTest {
+        #[serde(default)]
+        project: Option<String>,
+        role: String,
+        tool: String,
+        input: serde_json::Value,
     },
     Audit {
         #[serde(default)]

@@ -251,8 +251,16 @@ fn an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry() {
     // A rule answers at once.
     let rule = core
         .rt
-        .add_rule(orch_store::RuleScope::Agent, "a", "Bash(cargo test:*)", orch_store::RuleEffect::Allow, None)
+        .add_rule(
+            orch_store::RuleScope::Agent,
+            "a",
+            None,
+            "Bash(cargo test:*)",
+            agent_runtime::policy::Effect::Allow,
+            None,
+        )
         .unwrap();
+    let rule_id = rule["rule"]["id"].as_str().unwrap().to_string();
     request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "PERMIT cargo test -q".into() }).unwrap();
     wait_for("rule turn", 15, || agent(&core.sock, "a")["turns"] == 2 && core.state_of("a") == "idle");
     let perm2 = screen().lines().find(|l| l.contains("PERM[2]:")).map(str::to_string).unwrap_or_default();
@@ -287,7 +295,7 @@ fn an_unanswered_permission_parks_the_agent_and_allow_runs_the_retry() {
     let open: Vec<_> = core.rt.inbox().into_iter().map(|i| (i.kind, i.status, i.body, i.payload)).collect();
     assert!(open.is_empty(), "no second prompt: {open:?}");
     // The rule, the expiry, the user's Allow, and the retry on their one-shot allow.
-    assert_eq!(audit(), [format!("rule:{}", rule.id), "expired".into(), "user".into(), "user".into()]);
+    assert_eq!(audit(), [format!("rule:{rule_id}"), "expired".into(), "user".into(), "user".into()]);
     let one_shot = request(&core.sock, CtlRequest::Audit { agent_id: Some("a".into()), limit: Some(1) }).unwrap().data;
     assert_eq!(one_shot[0]["detail"]["one_shot"], true, "{one_shot}");
 }
@@ -640,4 +648,275 @@ fn a_team_run_end_to_end_with_fake_claude() {
     for k in ["run.launched", "agent.added", "task.assigned", "message", "git.merge", "task.done"] {
         assert!(kinds.contains(&k), "timeline has {k}: {kinds:?}");
     }
+}
+
+/// P4.4 (spec §5 "Nothing waits on the Overwatch", acceptance 6): a
+/// permission with effect `overwatch` starts the Overwatch lazily (its day
+/// folder, briefing and first turn), the card waits on it while its turn
+/// runs; its process killed mid-turn puts it `down`, the card goes to the
+/// user at once and still acts, and the next permission goes straight to
+/// the user. No pane intervention anywhere.
+#[test]
+fn killing_the_overwatch_mid_turn_leaves_every_card_actionable() {
+    use orch_protocol::InboxDecision;
+    let core = Core::start("orchow", |c| c.permission_hold = Duration::from_secs(40));
+    // Solo sessions default to the user: send this one's calls to the Overwatch.
+    core.rt.set_policy_defaults("overwatch", "overwatch").unwrap();
+    let mut s = core.rt.overwatch_settings();
+    s.permission_secs = 30;
+    core.rt.set_overwatch_settings(s).unwrap();
+    core.start_agent("a");
+    assert!(agent(&core.sock, agent_runtime::overwatch::ID).is_null(), "lazy: no session before an event");
+
+    // The fake sleeps 30 s in a turn whose text says SLOW: the Overwatch's
+    // turn carries this command in its event line.
+    request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "PERMIT pnpm add SLOW".into() }).unwrap();
+    let ow = agent_runtime::overwatch::ID;
+    wait_for("the Overwatch's first turn", 20, || agent(&core.sock, ow)["state"] == "working");
+    let day = core.rt.store.read(|s| s.agents[ow].worktree.clone());
+    assert!(day.join("briefing.md").is_file(), "{day:?}");
+    let screens = Screens::default();
+    wait_for("its turn text", 10, || screens.read(&core.sock, ow).contains("permission inbox-"));
+    assert!(screens.read(&core.sock, ow).contains("Read briefing.md"));
+    let open_card = || {
+        let snap = request(&core.sock, CtlRequest::Now).unwrap().data;
+        snap["decisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["kind"] == "permission" && d["lifecycle"]["state"] == "open")
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let card = open_card();
+    assert_eq!(card["waits_on"], "overwatch", "{card}");
+    assert!(card["deciding_until_ms"].is_u64());
+    let id: u64 = card["id"].as_str().unwrap().trim_start_matches("inbox-").parse().unwrap();
+
+    // Killed from outside, mid-turn.
+    let pid = agent(&core.sock, ow)["pid"].as_i64().unwrap();
+    assert!(Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success());
+    wait_for("down", 10, || core.rt.overwatch_status().status == agent_runtime::overwatch::Status::Down);
+    assert_eq!(core.rt.overwatch_status().why.as_deref(), Some("stopped unexpectedly"));
+    // `down` is set first, the hand-over follows in the same call: at once.
+    wait_for("handed over at once", 2, || open_card()["waits_on"] == "user");
+    let card = open_card();
+    assert!(card.get("deciding_until_ms").is_none(), "{card}");
+    assert_eq!(card["payload"]["asks_because"]["kind"], "overwatch_unsure");
+    // The card still acts.
+    let r = request(
+        &core.sock,
+        CtlRequest::Decide { item_id: id, decision: InboxDecision::Approve, scope: None, message: None },
+    )
+    .unwrap();
+    assert!(r.ok, "{r:?}");
+    wait_for("the call allowed", 10, || screens.read(&core.sock, "a").contains("\"allow\""));
+
+    // While down, the next permission goes straight to the user.
+    wait_for("a idle", 40, || core.state_of("a") == "idle");
+    request(&core.sock, CtlRequest::Deliver { agent_id: "a".into(), text: "PERMIT pnpm add zx".into() }).unwrap();
+    wait_for("second card", 10, || open_card()["waits_on"] == "user");
+    assert!(open_card().get("deciding_until_ms").is_none());
+    let id2: u64 = open_card()["id"].as_str().unwrap().trim_start_matches("inbox-").parse().unwrap();
+    let r = request(
+        &core.sock,
+        CtlRequest::Decide { item_id: id2, decision: InboxDecision::Reject, scope: None, message: Some("no".into()) },
+    )
+    .unwrap();
+    assert!(r.ok, "{r:?}");
+
+    // Restart: a fresh session with a new briefing.
+    assert!(request(&core.sock, CtlRequest::OverwatchRestart).unwrap().ok);
+    wait_for("back", 20, || core.rt.overwatch_status().status != agent_runtime::overwatch::Status::Down);
+    core.rt.db.flush().unwrap();
+    assert!(core.rt.db.events(0, None, Some("pane_intervention"), 10).unwrap().is_empty());
+    let report = request(&core.sock, CtlRequest::Overwatch).unwrap().data;
+    assert!(report["turns"].as_array().is_some(), "{report}");
+}
+
+/// P4.4 exit criterion (spec §1 (a)): a team run where the user only uses
+/// the cards. A routine permission is settled by the policy, an unmatched
+/// one by the Overwatch, a question by the Overwatch with a source, a
+/// specialist that never started is restarted by it, the spec gate is
+/// approved from its card (annotated by the Overwatch), and no
+/// `pane_intervention` is written. The test plays the model of the Overwatch:
+/// it delivers `ORCHTOOL …` lines to the fake `overwatch` session, which calls
+/// the real orch-mcp tools.
+#[test]
+fn a_team_run_where_the_user_only_uses_the_cards_has_no_pane_intervention() {
+    use agent_runtime::overwatch::{ID as OW, Status};
+    use agent_runtime::policy::Effect;
+    // Long enough that a slow CI runner never hands the permission over to
+    // the user before the Overwatch's turn decides it.
+    let core = Core::start("orchx", |c| c.permission_hold = Duration::from_secs(150));
+    let sock = core.sock.clone();
+    let mut s = core.rt.overwatch_settings();
+    (s.batch_secs, s.permission_secs) = (1, 120);
+    core.rt.set_overwatch_settings(s).unwrap();
+    let settled = |id: &str| {
+        let a = agent(&sock, id);
+        a["state"] == "idle" && a["queued_turns"] == 0
+    };
+    let call = |agent_id: &str, line: &str| {
+        let r = request(&sock, CtlRequest::Deliver { agent_id: agent_id.into(), text: line.into() }).unwrap();
+        let turn = r.data["turn"].as_str().unwrap().to_string();
+        wait_for(line, 40, || {
+            let s = request(&sock, CtlRequest::State).unwrap().data;
+            let done = s["turns"].as_array().unwrap().iter().any(|t| t["id"] == turn.as_str() && t["status"] == "done");
+            done && settled(agent_id)
+        });
+    };
+    // As the Overwatch's model would: one tool call, from its own session.
+    let ow_calls = |line: &str| {
+        request(&sock, CtlRequest::Deliver { agent_id: OW.into(), text: line.into() }).unwrap();
+    };
+    let screens = Screens::default();
+    let screen = |agent_id: &str| screens.read(&sock, agent_id);
+    // On a timeout, what the lead and the Overwatch saw (CI has no other trace).
+    fn wait_dump(screens: &Screens, sock: &Path, what: &str, secs: u64, mut f: impl FnMut() -> bool) {
+        let end = std::time::Instant::now() + Duration::from_secs(secs);
+        while std::time::Instant::now() < end {
+            if f() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let (ow, lead) = (screens.read(sock, "overwatch"), screens.read(sock, "fx-lead-1"));
+        panic!("timed out waiting for {what}\n--- the Overwatch's screen ---\n{ow}\n--- the lead's screen ---\n{lead}");
+    }
+    let open = |kind: &str| -> Option<Value> {
+        let snap = request(&sock, CtlRequest::Now).unwrap().data;
+        snap["decisions"]
+            .as_array()?
+            .iter()
+            .find(|d| d["kind"] == kind && matches!(d["lifecycle"]["state"].as_str(), Some("open" | "parked")))
+            .cloned()
+    };
+
+    let p = request(&sock, CtlRequest::ProjectAdd { path: core.repo.display().to_string() }).unwrap();
+    let pid = p.data["id"].as_str().unwrap().to_string();
+    assert!(request(&sock, CtlRequest::InstallPresets).unwrap().ok);
+    let r = request(
+        &sock,
+        CtlRequest::Launch {
+            project_id: pid.clone(),
+            team_id: "bugfix-squad".into(),
+            slug: "fx".into(),
+            title: Some("Fix X".into()),
+            brief: Some("Fix the X bug.".into()),
+            base: None,
+        },
+    )
+    .unwrap();
+    assert!(r.ok, "{r:?}");
+    let lead = "fx-lead-1";
+    wait_dump(&screens, &sock, "lead's first turn", 30, || {
+        agent(&sock, lead)["turns"] == 1 && agent(&sock, lead)["state"] == "idle"
+    });
+    let lead_wt = PathBuf::from(agent(&sock, lead)["worktree"].as_str().unwrap());
+    std::fs::create_dir_all(lead_wt.join(".orchestrator/features/fx")).unwrap();
+    std::fs::write(
+        lead_wt.join(".orchestrator/features/fx/spec.md"),
+        "# Fix X\n\n## 1. Pagination\n\nUse cursor pagination.\n",
+    )
+    .unwrap();
+    call(lead, r#"ORCHTOOL commit {"message":"spec for fx"}"#);
+
+    // 1. A routine permission: the policy's rule settles it, no card.
+    core.rt.add_rule(orch_store::RuleScope::Project, &pid, None, "Bash(cargo add:*)", Effect::Allow, None).unwrap();
+    call(lead, "PERMIT cargo add serde_json");
+    assert!(open("permission").is_none(), "settled by the policy, no card");
+    assert!(screen(lead).contains("\"allow\""), "{}", screen(lead));
+    assert!(core.rt.db.audit_log(Some(lead), 20).unwrap().iter().any(|e| e.actor.starts_with("rule:")));
+
+    // 2. An unmatched one: team roles default to the Overwatch, which decides
+    // it inside the turn that carries it (OWALLOW: the fake calls
+    // decide_permission there; a later turn would be too late, F1).
+    request(&sock, CtlRequest::Deliver { agent_id: lead.into(), text: "PERMIT pnpm add zod OWALLOW".into() }).unwrap();
+    // Read from the store: a warm Overwatch can settle it before a `Now` poll
+    // ever sees the card open.
+    let zod = || {
+        core.rt.store.read(|s| {
+            s.inbox
+                .iter()
+                .rev()
+                .find(|i| i.kind == "permission" && i.payload.to_string().contains("pnpm add zod"))
+                .cloned()
+        })
+    };
+    wait_dump(&screens, &sock, "the card", 20, || zod().is_some());
+    let item = zod().unwrap();
+    assert_eq!(item.payload["effect"].as_str(), Some("overwatch"), "{}", item.payload);
+    let n = item.id;
+    wait_dump(&screens, &sock, "the Overwatch's turn", 40, || screen(OW).contains(&format!("permission inbox-{n}")));
+    let allowed = || zod().is_some_and(|i| i.decided_by.is_some()) && open("permission").is_none() && settled(lead);
+    let end = std::time::Instant::now() + Duration::from_secs(60);
+    while !allowed() && std::time::Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(allowed(), "not allowed: {:?}\n--- the Overwatch's screen ---\n{}", zod(), screen(OW));
+    let item = zod().unwrap();
+    assert_eq!(item.decided_by.as_deref(), Some("overwatch"));
+
+    // 3. A question: answered by the Overwatch, citing the spec.
+    call(lead, r#"ORCHTOOL ask_user {"question":"Which pagination should the API use?"}"#);
+    wait_dump(&screens, &sock, "the question", 20, || open("question").is_some());
+    let q = open("question").unwrap()["id"].as_str().unwrap().to_string();
+    wait_dump(&screens, &sock, "the Overwatch hears of it", 40, || screen(OW).contains(&format!("question {q}")));
+    ow_calls(&format!(
+        r#"ORCHTOOL answer_question {{"decision":"{q}","answers":[{{"text":"Cursor based."}}],"sources":["spec.md#1"]}}"#
+    ));
+    wait_dump(&screens, &sock, "the lead hears the answer", 30, || {
+        screen(lead).contains("the Overwatch answered your question (source: spec.md#1)")
+    });
+
+    // 4. A specialist-like session that never starts: the Overwatch restarts it fresh.
+    let stuck_repo = core.root_path().join("proj/stuck");
+    std::fs::create_dir_all(&stuck_repo).unwrap();
+    git(&stuck_repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(stuck_repo.join(".fake-no-session-start"), "").unwrap();
+    git(&stuck_repo, &["add", "."]);
+    git(&stuck_repo, &["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-q", "-m", "init"]);
+    let spec = AgentSpec { agent_id: "stuck".into(), repo: stuck_repo.display().to_string(), ..Default::default() };
+    assert!(request(&sock, CtlRequest::Start { spec: Box::new(spec) }).unwrap().ok);
+    wait_dump(&screens, &sock, "its startup card", 40, || open("startup").is_some());
+    let stuck_wt = PathBuf::from(agent(&sock, "stuck")["worktree"].as_str().unwrap());
+    std::fs::remove_file(stuck_wt.join(".fake-no-session-start")).unwrap();
+    core.rt.overwatch_tick();
+    wait_dump(&screens, &sock, "the Overwatch hears of it", 40, || screen(OW).contains("startup-"));
+    ow_calls(r#"ORCHTOOL restart_fresh {"agent":"stuck","why":"never started"}"#);
+    wait_dump(&screens, &sock, "restarted", 40, || open("startup").is_none() && core.state_of("stuck") == "idle");
+    let startup = core.rt.store.read(|s| s.inbox.iter().find(|i| i.kind == "startup").cloned().unwrap());
+    assert_eq!(startup.decided_by.as_deref(), Some("overwatch"));
+
+    // 5. The spec gate, annotated by the Overwatch and approved from its card.
+    call(lead, r#"ORCHTOOL request_spec_approval {"summary":"one task for back"}"#);
+    wait_dump(&screens, &sock, "the gate", 20, || open("gate").is_some());
+    let gate = open("gate").unwrap()["id"].as_str().unwrap().to_string();
+    core.rt.overwatch_pump();
+    wait_dump(&screens, &sock, "the Overwatch hears of it", 40, || screen(OW).contains(&gate));
+    ow_calls(&format!(
+        r#"ORCHTOOL annotate {{"decision":"{gate}","note":"Scope matches the brief.","recommend":"approve"}}"#
+    ));
+    wait_dump(&screens, &sock, "annotated", 30, || {
+        open("gate").is_some_and(|g| g["annotation"]["recommend"] == "approve")
+    });
+    let n: u64 = gate.trim_start_matches("gate-").parse().unwrap();
+    let d = request(
+        &sock,
+        CtlRequest::Decide { item_id: n, decision: orch_protocol::InboxDecision::Approve, scope: None, message: None },
+    )
+    .unwrap();
+    assert!(d.ok, "{d:?}");
+
+    // The Overwatch did its work with the user in the cards and the chat only.
+    assert_ne!(core.rt.overwatch_status().status, Status::Down, "{:?}", core.rt.overwatch_status());
+    core.rt.db.flush().unwrap();
+    let who: Vec<String> =
+        core.rt.db.audit_log(None, 200).unwrap().into_iter().filter(|e| e.actor == OW).map(|e| e.action).collect();
+    for a in ["permission", "question", "restart_fresh", "annotate"] {
+        assert!(who.iter().any(|w| w == a), "the Overwatch's {a}: {who:?}");
+    }
+    let interventions = core.rt.db.events_of_kinds_in(0, u64::MAX, &["pane_intervention"]).unwrap();
+    assert!(interventions.is_empty(), "no pane intervention: {interventions:?}");
 }

@@ -4,19 +4,13 @@
 //! and answers the UI.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use agent_runtime::project_files as pf;
 use anyhow::{Result, anyhow, bail};
 use orch_store::{FileAccess, Project, ProjectFile};
 use serde_json::{Value, json};
 
-use crate::LockOk;
 use crate::core::Core;
-
-/// Serializes the read-modify-write of a project's settings (the list, and
-/// the General form that must keep it).
-pub(crate) static SETTINGS_EDIT: Mutex<()> = Mutex::new(());
 
 /// A stored entry as the UI gets it: `exists` checked now.
 fn view(f: &ProjectFile) -> Value {
@@ -38,22 +32,19 @@ impl Core {
         self.runtime()?.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))
     }
 
-    /// Runs `edit` on the project's stored list under [`SETTINGS_EDIT`] (one
-    /// read-modify-write), saving the settings when it returns `true`.
-    /// Returns what `edit` returned and the list after it.
-    fn edit_files<T>(
+    /// Runs `edit` on the project's stored list in one transaction
+    /// ([`orch_store::Store::update_project_settings`]: saved when changed,
+    /// nothing saved on an error). Returns what `edit` returned and the list
+    /// after it.
+    fn edit_files<T: Send + 'static>(
         &self,
         project_id: &str,
-        edit: impl FnOnce(&mut Vec<ProjectFile>) -> Result<(T, bool)>,
+        edit: impl FnOnce(&mut Vec<ProjectFile>) -> Result<T> + Send + 'static,
     ) -> Result<(T, Vec<ProjectFile>)> {
-        let _g = SETTINGS_EDIT.lock_ok();
-        let p = self.files_project(project_id)?;
-        let mut s = p.typed_settings();
-        let (out, save) = edit(&mut s.external_files)?;
-        if save {
-            self.runtime()?.db.set_project_settings(&p.id, &s, &p.backend(), p.track_orchestrator_dir)?;
-        }
-        Ok((out, s.external_files))
+        self.runtime()?.db.update_project_settings(project_id, move |e| {
+            let files = &mut e.settings.external_files;
+            Ok((edit(files)?, files.clone()))
+        })
     }
 
     fn audit_file(&self, project_id: &str, action: &str, detail: Value) {
@@ -81,12 +72,12 @@ impl Core {
         access: Option<FileAccess>,
         home: &Path,
     ) -> Result<Value> {
-        // The bounds don't depend on the list: resolved before the lock.
+        // The bounds and the disk don't depend on the list: read before the
+        // transaction, which then holds no disk access.
         let bounds = self.runtime()?.project_file_bounds(&self.files_project(project_id)?, home)?;
-        let ((added, refused), files) = self.edit_files(project_id, |files| {
-            let r = pf::add_batch(files, paths, access, &bounds, orch_store::now_ms());
-            let save = !r.0.is_empty();
-            Ok((r, save))
+        let located = pf::locate(paths, home);
+        let ((added, refused), files) = self.edit_files(project_id, move |files| {
+            Ok(pf::add_batch(files, located, access, &bounds, orch_store::now_ms()))
         })?;
         for f in files.iter().filter(|f| added.contains(&f.path)) {
             self.audit_file(
@@ -107,10 +98,9 @@ impl Core {
         access: Option<FileAccess>,
         note: Option<&str>,
     ) -> Result<Value> {
-        let (changed, files) = self.edit_files(project_id, |files| {
-            let c = pf::update(files, path, access, note).map_err(|e| anyhow!(e))?;
-            let save = c.is_some();
-            Ok((c, save))
+        let (p, note) = (path.to_string(), note.map(String::from));
+        let (changed, files) = self.edit_files(project_id, move |files| {
+            pf::update(files, &p, access, note.as_deref()).map_err(|e| anyhow!(e))
         })?;
         if let Some(c) = changed {
             let mut detail = json!({"path": path, "note_changed": c.note_changed});
@@ -124,13 +114,14 @@ impl Core {
 
     /// `project_file_remove(project, path) -> {files}`: the entry only, never the file.
     pub fn project_file_remove(&self, project_id: &str, path: &str) -> Result<Value> {
-        let ((), files) = self.edit_files(project_id, |files| {
+        let p = path.to_string();
+        let ((), files) = self.edit_files(project_id, move |files| {
             let n = files.len();
-            files.retain(|f| f.path != Path::new(path));
+            files.retain(|f| f.path != Path::new(&p));
             if files.len() == n {
-                return Err(not_listed(path));
+                return Err(not_listed(&p));
             }
-            Ok(((), true))
+            Ok(())
         })?;
         self.audit_file(project_id, "project_file_removed", json!({"path": path}));
         Ok(json!({"files": views(&files)}))
@@ -147,7 +138,7 @@ impl Core {
             .flat_map(|p| p.typed_settings().external_files)
             .any(|f| f.path == want || f.path == Path::new(path));
         if !listed {
-            bail!("{path}: not in the project files");
+            return Err(not_listed(path));
         }
         Ok(want)
     }
@@ -305,7 +296,8 @@ mod tests {
             f.core.project_files_add_in("repo", &["~/Brand".into(), "~/app.figcraft".into()], None, &f.home).unwrap();
         let fig = strs(&r["added"])[1].clone();
         let before = f.core.project_files("repo").unwrap()["files"].clone();
-        for files in [json!([]), json!([{"path": "/etc", "kind": "folder", "added_at_ms": 1}])] {
+        // Dropped unread: even a malformed list is no error.
+        for files in [json!([]), json!([{"path": "/etc", "kind": "folder", "added_at_ms": 1}]), json!("x")] {
             let s = f
                 .core
                 .project_settings_set("repo", form(json!({"default_team": "full-stack", "external_files": files})))
@@ -331,7 +323,7 @@ mod tests {
         f.core.shutdown();
     }
 
-    /// One read-modify-write under one lock: concurrent adds and General
+    /// One read-modify-write in one transaction: concurrent adds and General
     /// form saves never drop an entry.
     #[test]
     fn concurrent_saves_keep_every_entry() {
@@ -352,6 +344,46 @@ mod tests {
             }
         });
         assert_eq!(f.core.project_files("repo").unwrap()["files"].as_array().unwrap().len(), names.len());
+        f.core.shutdown();
+    }
+
+    /// A register or relocate holds a copy of the project read before an
+    /// add: saving it keeps the entry (it never rewrites `settings`).
+    #[test]
+    fn an_add_interleaved_with_a_register_or_relocate_keeps_the_entry() {
+        let f = fx();
+        let rt = f.core.runtime().unwrap().clone();
+        let stale = rt.db.project("repo").unwrap().unwrap();
+        f.core.project_files_add_in("repo", &["~/Brand".into()], None, &f.home).unwrap();
+        // Register: refreshes the remotes and the activity of its copy.
+        let mut reg = stale.clone();
+        reg.last_active_at_ms += 1;
+        rt.db.upsert_project(&reg).unwrap();
+        // Relocate: the same copy with a new path.
+        let mut moved = stale.clone();
+        moved.path = f._d.path().join("moved");
+        rt.db.upsert_project(&moved).unwrap();
+        let files = f.core.project_files("repo").unwrap()["files"].clone();
+        assert_eq!(strs(&json!([files[0]["path"]])), [f.home.join("Brand").display().to_string()]);
+        rt.db.upsert_project(&stale).unwrap();
+
+        // The same, concurrently, through register itself.
+        let names: Vec<String> = (0..6).map(|i| format!("r{i}.md")).collect();
+        for n in &names {
+            std::fs::write(f.home.join(n), "x").unwrap();
+        }
+        let repo = stale.path.clone();
+        std::thread::scope(|sc| {
+            for n in &names {
+                let (core, home) = (&f.core, &f.home);
+                sc.spawn(move || core.project_files_add_in("repo", &[format!("~/{n}")], None, home).unwrap());
+            }
+            for _ in 0..6 {
+                let (rt, repo) = (&rt, &repo);
+                sc.spawn(move || orch_git::project::register(&rt.db, repo).unwrap());
+            }
+        });
+        assert_eq!(f.core.project_files("repo").unwrap()["files"].as_array().unwrap().len(), names.len() + 1);
         f.core.shutdown();
     }
 

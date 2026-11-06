@@ -95,7 +95,7 @@ pub struct Role {
     #[serde(default)]
     pub extra_write: Vec<PathBuf>,
     /// Orchestrator MCP tools this agent may call; empty = a solo session's
-    /// (`commit`, `request_pr`). Listed by orch-mcp and checked by the core.
+    /// (`commit`, `request_pr`, `read_issue`, `update_issue`). Listed by orch-mcp and checked by the core.
     #[serde(default)]
     pub orch_tools: Vec<String>,
     /// FR-407: a turn running longer is interrupted (the watchdog) and the user told.
@@ -129,6 +129,31 @@ impl Role {
             extra_write: vec![],
             orch_tools: vec![],
             turn_ceiling_minutes: None,
+            downgrade: None,
+        }
+    }
+
+    /// The Overwatch (P4.4, spec §3.3): fixed in code, not on the team
+    /// canvas. `dontAsk` (it never raises a prompt of its own), only the
+    /// `orch` server, no network, its 11 tools; what it may read is decided
+    /// at compile time ([`crate::compile::CompileCtx::overwatch`]).
+    pub fn overwatch(model: &str) -> Role {
+        Role {
+            name: crate::overwatch::ID.into(),
+            prompt: Some(crate::overwatch::ROLE_PROMPT.into()),
+            model: Some(model.to_string()).filter(|m| !m.is_empty()),
+            effort: None,
+            permission_mode: PermissionMode::DontAsk,
+            strict_mcp: true,
+            setting_sources: Some(vec!["project".into()]),
+            mcp_servers: Default::default(),
+            mcp_refs: vec![],
+            network_allow: vec![],
+            allow_rules: vec![],
+            deny_rules: vec![],
+            extra_write: vec![],
+            orch_tools: orch_team::compile::OVERWATCH_TOOLS.iter().map(|s| s.to_string()).collect(),
+            turn_ceiling_minutes: Some(crate::overwatch::TURN_CEILING_MIN),
             downgrade: None,
         }
     }
