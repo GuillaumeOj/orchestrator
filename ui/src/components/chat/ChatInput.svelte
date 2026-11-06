@@ -12,7 +12,7 @@
   let field = $state();
   let focused = $state(false);
   const draft = $derived(app.chatDraft);
-  const n = $derived(draft.length);
+  const n = $derived([...draft.trim()].length); // code points of the trimmed text, like chat_send
   const over = $derived(n > MAX_CHARS);
   // The hint for the status; its link, when it has one, opens the Overwatch settings.
   const hint = $derived(inputHint(ow));

@@ -187,7 +187,7 @@
   const doneToday = $derived(counts().done_today);
   const dg = $derived(digestText(outcomes, doneToday));
   const strip = $derived(filterStrip(filter, t.counts));
-  const showFilters = $derived(t.all.length >= 2 || filter !== 'all');
+  const showFilters = $derived(t.all.filter((c) => c.d?.kind !== 'rule_proposal').length >= 2 || filter !== 'all');
   const q = $derived(query.trim());
   const wanted = $derived(searchOpen && q.length >= 2); // a search to run (kept while a result's day is open)
   const searching = $derived(wanted && !past);
@@ -587,7 +587,8 @@
     const fd = featureDoc(ref.path);
     const same = fd ? features().filter((x) => x.slug === fd.slug) : [];
     const f = same.find((x) => x.project_id === project) ?? same[0];
-    if (f) return openFeature(f.id, fd.name, ref.section);
+    // The feature pane lists the docs of the feature folder itself, not its sub-folders.
+    if (f && !fd.name.includes('/')) return openFeature(f.id, fd.name, ref.section);
     // Another doc of the repo: in nvim, in the cited project.
     openEditor(ref.path, null, { projectId: project });
   }

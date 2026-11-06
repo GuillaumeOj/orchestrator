@@ -711,7 +711,8 @@ function focusEditor(projectId) {
 
 /** FR-1101/1102: reuse the project's nvim when it runs, else a new editor pane. */
 export async function openEditor(file = null, line = null, opts = {}) {
-  const a = opts.agentId ? agent(opts.agentId) : contextAgent();
+  // An explicit project never takes the focused pane's agent: that one may belong to another project.
+  const a = opts.agentId ? agent(opts.agentId) : opts.projectId ? null : contextAgent();
   const p = projects().find((x) => x.id === (opts.projectId ?? a?.project_id)) ?? contextProject();
   try {
     const r = await invoke('editor_open', {
