@@ -746,10 +746,12 @@ fn killing_the_overwatch_mid_turn_leaves_every_card_actionable() {
 fn a_team_run_where_the_user_only_uses_the_cards_has_no_pane_intervention() {
     use agent_runtime::overwatch::{ID as OW, Status};
     use agent_runtime::policy::Effect;
-    let core = Core::start("orchx", |c| c.permission_hold = Duration::from_secs(40));
+    // Long enough that a slow CI runner never hands the permission over to
+    // the user before the Overwatch's turn decides it.
+    let core = Core::start("orchx", |c| c.permission_hold = Duration::from_secs(150));
     let sock = core.sock.clone();
     let mut s = core.rt.overwatch_settings();
-    (s.batch_secs, s.permission_secs) = (1, 25);
+    (s.batch_secs, s.permission_secs) = (1, 120);
     core.rt.set_overwatch_settings(s).unwrap();
     let settled = |id: &str| {
         let a = agent(&sock, id);
@@ -829,9 +831,12 @@ fn a_team_run_where_the_user_only_uses_the_cards_has_no_pane_intervention() {
     assert_eq!(item.payload["effect"].as_str(), Some("overwatch"), "{}", item.payload);
     let n = item.id;
     wait_for("the Overwatch's turn", 40, || screen(OW).contains(&format!("permission inbox-{n}")));
-    wait_for("allowed", 30, || {
-        zod().is_some_and(|i| i.decided_by.is_some()) && open("permission").is_none() && settled(lead)
-    });
+    let allowed = || zod().is_some_and(|i| i.decided_by.is_some()) && open("permission").is_none() && settled(lead);
+    let end = std::time::Instant::now() + Duration::from_secs(60);
+    while !allowed() && std::time::Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(allowed(), "not allowed: {:?}\n--- the Overwatch's screen ---\n{}", zod(), screen(OW));
     let item = zod().unwrap();
     assert_eq!(item.decided_by.as_deref(), Some("overwatch"));
 

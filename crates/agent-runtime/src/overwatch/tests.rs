@@ -184,18 +184,19 @@ fn an_idle_session_is_suspended_after_the_grace() {
     rt.overwatch_enqueue(blocking("x"));
     rt.overwatch_pump_at(t0());
     crate::runtime::tests::insert_test_live(&rt, ID, None, 0, d.path());
-    let pid = rt.live(ID).unwrap().pty.pid;
+    // The test terminal is a fake (no real pid): it is alive while live.
+    let alive = || rt.live(ID).is_some();
     rt.store.write(|s| s.agents.get_mut(ID).unwrap().tracker.state = crate::state::AgentState::Idle).unwrap();
     rt.store.write(|s| s.turns.retain(|t| t.agent_id != ID)).unwrap();
     rt.overwatch_turn_ended(t0() + 10 * SEC);
     rt.overwatch_pump_at(t0() + 129 * SEC);
-    assert!(crate::procs::alive(pid), "within the grace");
+    assert!(alive(), "within the grace");
     rt.overwatch_pump_at(t0() + 131 * SEC);
     let end = Instant::now() + Duration::from_secs(10);
-    while crate::procs::alive(pid) && Instant::now() < end {
+    while alive() && Instant::now() < end {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!crate::procs::alive(pid), "suspended after idle_secs");
+    assert!(!alive(), "suspended after idle_secs");
     assert_eq!(rt.store.read(|s| s.agents[ID].tracker.stop_intent), crate::state::StopIntent::Suspend);
 }
 
