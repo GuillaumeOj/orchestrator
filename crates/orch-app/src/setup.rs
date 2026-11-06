@@ -84,7 +84,8 @@ pub fn is_runtime_version_warning(w: &str) -> bool {
 
 pub fn version_warnings(c: Option<&ClaudeCheck>) -> Vec<String> {
     let Some(c) = c else { return vec![] };
-    let (Some(v), range) = (&c.version, preflight::SUPPORTED_CLAUDE) else { return vec![] };
+    let Some(v) = &c.version else { return vec![] };
+    let range = preflight::SUPPORTED_CLAUDE;
     if c.untested {
         vec![format!("claude {v} is newer than the last tested version: run the contract tests (R2)")]
     } else if c.problem_kind == Some(ProblemKind::Version) {

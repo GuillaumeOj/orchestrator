@@ -86,9 +86,8 @@ fn install_of(real: &Path, home: &Path) -> Install {
         Install::Npm
     } else if real.starts_with(home.join(".local/share/claude/versions")) {
         Install::Native
-    } else if ["/opt/homebrew/", "/usr/local/Cellar/", "/usr/local/Caskroom/", "/home/linuxbrew/.linuxbrew/"]
-        .iter()
-        .any(|p| s.starts_with(p))
+    } else if s.starts_with("/opt/homebrew/")
+        || s.starts_with("/home/linuxbrew/")
         || s.contains("/Caskroom/")
         || s.contains("/Cellar/")
     {
@@ -243,6 +242,9 @@ type Fetch = Box<dyn Fn(Install, Channel) -> Result<Version> + Send + Sync>;
 /// The Claude Code check, the latest version, and the one `claude update` at a time.
 pub struct ClaudeUpdater {
     check: Mutex<Option<ClaudeCheck>>,
+    /// Install method and channel, read when the check lands and before each
+    /// latest-version check, so `view()` (polled about once a second) does no I/O.
+    shape: Mutex<(Install, Channel)>,
     inner: Mutex<Inner>,
     /// Notified when a check or an update ends.
     settled: Condvar,
@@ -273,6 +275,7 @@ impl ClaudeUpdater {
     ) -> ClaudeUpdater {
         ClaudeUpdater {
             check: Mutex::new(None),
+            shape: Mutex::new((Install::Unknown, Channel::Latest)),
             inner: Mutex::new(Inner::default()),
             settled: Condvar::new(),
             home,
@@ -294,14 +297,14 @@ impl ClaudeUpdater {
     }
 
     pub fn set_check(&self, c: ClaudeCheck) {
+        *self.shape.lock_ok() = (install_method(&c.path, &self.home), self.read_channel());
         *self.check.lock_ok() = Some(c);
     }
 
     /// `setup.claude`: null until the start-up check landed.
     pub fn view(&self) -> Value {
         let Some(check) = self.check() else { return Value::Null };
-        // File reads before the lock: the update's output thread takes it per line.
-        let (install, channel) = (install_method(&check.path, &self.home), self.channel());
+        let (install, channel) = *self.shape.lock_ok();
         let i = self.inner.lock_ok();
         let state = if i.updating {
             "updating"
@@ -333,7 +336,7 @@ impl ClaudeUpdater {
         serde_json::to_value(v).unwrap_or(Value::Null)
     }
 
-    fn channel(&self) -> Channel {
+    fn read_channel(&self) -> Channel {
         channel_in(&self.home.join(".claude/settings.json"))
     }
 
@@ -371,7 +374,9 @@ impl ClaudeUpdater {
     /// The check proper (`checking` already set). After an update, a failed
     /// check does not replace the update's error.
     fn fetch_and_store(&self, install: Install, keep_error: bool) {
-        let res = (self.fetch)(install, self.channel());
+        let channel = self.read_channel();
+        self.shape.lock_ok().1 = channel;
+        let res = (self.fetch)(install, channel);
         let mut i = self.inner.lock_ok();
         match res {
             Ok(v) => {
