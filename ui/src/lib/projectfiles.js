@@ -26,13 +26,13 @@ export const pathLines = (text) =>
     .map((l) => l.trim())
     .filter(Boolean);
 
-/** The home folder written `~` wherever it appears in a text (core messages carry paths). */
+/** The home folder written `~` at the start of a path (or of a core message, which leads with its path). */
 export const tilde = (text, home) => {
   const t = String(text ?? '');
   if (!home) return t;
   // Only a whole path component: `/Users/me` must not eat the head of `/Users/media`.
   const h = home.replace(/\/+$/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return h ? t.replace(new RegExp(`${h}(?![^/\\s:,;'")\\]])`, 'g'), '~') : t;
+  return h ? t.replace(new RegExp(`^${h}(?![^/\\s:,;'")\\]])`), '~') : t;
 };
 
 /** "~/design/…/app.figcraft": keeps the head and the tail of a long path. */
@@ -43,7 +43,9 @@ export function midTruncate(path, max = 44) {
   return `${p.slice(0, max - 1 - tail)}…${p.slice(p.length - tail)}`;
 }
 
-export const addedToast = (n, name) => `Added ${n} item${n === 1 ? '' : 's'} to ${name}`;
+export const items = (n) => `${n} item${n === 1 ? '' : 's'}`;
+
+export const addedToast = (n, name) => `Added ${items(n)} to ${name}`;
 
 /** Is a drag position (physical pixels, as Tauri reports it) inside `rect`? */
 export function inRect(pos, rect, ratio = 1) {

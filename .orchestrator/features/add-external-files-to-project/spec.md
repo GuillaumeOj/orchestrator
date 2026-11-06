@@ -104,6 +104,7 @@ A path is refused, with a message for that path, when:
 | containing the project's main checkout or another project's | `{p}: contains a project repository, pick a folder inside it` |
 | inside the worktree root of any registered project (agents' worktrees) | `{p}: inside agent worktrees, pick the file in its project instead` |
 | a name with `*`, `?`, `[`, `]`, `{` or `}` in its path (rule patterns are gitignore-style; their escaping isn't guessed) | `{p}: names with * ? [ ] { } can't be shared with agents yet; rename it or pick another folder` |
+| a backtick in its path (it would break the prompt's code span) | `{p}: names with a backtick can't be shared with agents yet; rename it or pick another folder` |
 | a name with `\` or a control character in its path | `{p}: names with \ or control characters can't be shared with agents; rename it or pick another folder` |
 | neither a regular file nor a folder (a socket, a FIFO, a device) | `{p}: not a file or folder` |
 | a `write` entry inside a `read` folder of the list | `{p}: inside a read-only folder in the project files; set that folder to Read & write first` |

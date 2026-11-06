@@ -9,7 +9,7 @@
   import { onMount, tick } from 'svelte';
   import { app, openEditor, toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { ACCESS, accessLabel, addedToast, ICON, inRect, midTruncate, pathLines, tilde } from '../lib/projectfiles.js';
+  import { ACCESS, accessLabel, addedToast, ICON, inRect, items, midTruncate, pathLines, tilde } from '../lib/projectfiles.js';
   import Kbd from './Kbd.svelte';
 
   let { project, name } = $props();
@@ -54,7 +54,7 @@
       const n = r.added?.length ?? 0;
       if (n) {
         toast(addedToast(n, name));
-        announce = `Added ${n} item${n === 1 ? '' : 's'}`;
+        announce = `Added ${items(n)}`;
         fresh = r.added;
         clearTimeout(freshTimer);
         freshTimer = setTimeout(() => (fresh = []), 2000);
@@ -83,9 +83,7 @@
     const lines = pathLines(text);
     if (!lines.length) return;
     // Refused lines stay in the field so they can be fixed; the block says why.
-    const n = await add(lines);
-    if (n !== undefined && !refusals.length) text = '';
-    else if (n !== undefined) text = refusals.map((r) => r.path).join('\n');
+    if ((await add(lines)) !== undefined) text = refusals.map((r) => r.path).join('\n');
   }
 
   /** Applies one change to an entry; the error text comes back, null when it worked. */
@@ -113,10 +111,8 @@
     noteErr = null;
     // `""` clears the note; leaving it out would keep it.
     const err = await update(f, { note: next });
-    if (err) {
-      noteErr = { path: f.path, text: err };
-      el.value = f.note ?? '';
-    }
+    // Failed: the typed text stays in the field so the user can fix it and retry.
+    if (err) noteErr = { path: f.path, text: err };
   }
 
   function noteKey(e, f) {
@@ -141,8 +137,10 @@
     e.preventDefault();
     const i = ACCESS.findIndex((a) => a.id === f.access);
     const next = ACCESS[(i + d + ACCESS.length) % ACCESS.length].id;
+    // Read now: once the handler returns, Svelte's delegation resets currentTarget to its root.
+    const seg = e.currentTarget;
     setAccess(f, next);
-    tick().then(() => e.currentTarget.querySelector(`[data-access="${next}"]`)?.focus());
+    tick().then(() => seg.querySelector(`[data-access="${next}"]`)?.focus());
   }
 
   async function startRemove(f) {
@@ -199,8 +197,12 @@
     const onButton = !!e.target.closest('button');
     const cur = files[sel];
     if (confirming) {
-      if (k === 'Enter' && !onButton) remove(files.find((f) => f.path === confirming));
-      else if (k === 'Escape') cancelRemove();
+      if (k === 'Enter' && !onButton) {
+        // The row may have vanished (the list reloaded): leave confirm mode, do nothing.
+        const f = files.find((f) => f.path === confirming);
+        if (f) remove(f);
+        else confirming = null;
+      } else if (k === 'Escape') cancelRemove();
       else if (k !== 'j' && k !== 'k' && k !== 'ArrowDown' && k !== 'ArrowUp') return;
       else confirming = null;
       return e.preventDefault();
@@ -285,7 +287,7 @@
         <span class="warn">▲</span>
         <div class="grow">
           <b>Not added ({refusals.length})</b>
-          {#each refusals as r (r.path)}<div class="mono">{short(r.error)}</div>{/each}
+          {#each refusals as r, i (i)}<div class="mono">{short(r.error)}</div>{/each}
         </div>
         <button class="x" aria-label="Dismiss" onclick={() => (refusals = [])}>{ICON.dismiss}</button>
       </div>
