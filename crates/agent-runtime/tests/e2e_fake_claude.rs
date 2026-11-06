@@ -772,6 +772,18 @@ fn a_team_run_where_the_user_only_uses_the_cards_has_no_pane_intervention() {
     };
     let screens = Screens::default();
     let screen = |agent_id: &str| screens.read(&sock, agent_id);
+    // On a timeout, what the lead and the Overwatch saw (CI has no other trace).
+    fn wait_dump(screens: &Screens, sock: &Path, what: &str, secs: u64, mut f: impl FnMut() -> bool) {
+        let end = std::time::Instant::now() + Duration::from_secs(secs);
+        while std::time::Instant::now() < end {
+            if f() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let (ow, lead) = (screens.read(sock, "overwatch"), screens.read(sock, "fx-lead-1"));
+        panic!("timed out waiting for {what}\n--- the Overwatch's screen ---\n{ow}\n--- the lead's screen ---\n{lead}");
+    }
     let open = |kind: &str| -> Option<Value> {
         let snap = request(&sock, CtlRequest::Now).unwrap().data;
         snap["decisions"]
@@ -798,7 +810,9 @@ fn a_team_run_where_the_user_only_uses_the_cards_has_no_pane_intervention() {
     .unwrap();
     assert!(r.ok, "{r:?}");
     let lead = "fx-lead-1";
-    wait_for("lead's first turn", 30, || agent(&sock, lead)["turns"] == 1 && agent(&sock, lead)["state"] == "idle");
+    wait_dump(&screens, &sock, "lead's first turn", 30, || {
+        agent(&sock, lead)["turns"] == 1 && agent(&sock, lead)["state"] == "idle"
+    });
     let lead_wt = PathBuf::from(agent(&sock, lead)["worktree"].as_str().unwrap());
     std::fs::create_dir_all(lead_wt.join(".orchestrator/features/fx")).unwrap();
     std::fs::write(lead_wt.join(".orchestrator/features/fx/spec.md"), "# Fix X\n\nUse cursor pagination.\n").unwrap();
@@ -826,11 +840,11 @@ fn a_team_run_where_the_user_only_uses_the_cards_has_no_pane_intervention() {
                 .cloned()
         })
     };
-    wait_for("the card", 20, || zod().is_some());
+    wait_dump(&screens, &sock, "the card", 20, || zod().is_some());
     let item = zod().unwrap();
     assert_eq!(item.payload["effect"].as_str(), Some("overwatch"), "{}", item.payload);
     let n = item.id;
-    wait_for("the Overwatch's turn", 40, || screen(OW).contains(&format!("permission inbox-{n}")));
+    wait_dump(&screens, &sock, "the Overwatch's turn", 40, || screen(OW).contains(&format!("permission inbox-{n}")));
     let allowed = || zod().is_some_and(|i| i.decided_by.is_some()) && open("permission").is_none() && settled(lead);
     let end = std::time::Instant::now() + Duration::from_secs(60);
     while !allowed() && std::time::Instant::now() < end {
@@ -842,13 +856,13 @@ fn a_team_run_where_the_user_only_uses_the_cards_has_no_pane_intervention() {
 
     // 3. A question: answered by the Overwatch, citing the spec.
     call(lead, r#"ORCHTOOL ask_user {"question":"Which pagination should the API use?"}"#);
-    wait_for("the question", 20, || open("question").is_some());
+    wait_dump(&screens, &sock, "the question", 20, || open("question").is_some());
     let q = open("question").unwrap()["id"].as_str().unwrap().to_string();
-    wait_for("the Overwatch hears of it", 40, || screen(OW).contains(&format!("question {q}")));
+    wait_dump(&screens, &sock, "the Overwatch hears of it", 40, || screen(OW).contains(&format!("question {q}")));
     ow_calls(&format!(
         r#"ORCHTOOL answer_question {{"decision":"{q}","answers":[{{"text":"Cursor based."}}],"sources":["spec.md#1"]}}"#
     ));
-    wait_for("the lead hears the answer", 30, || {
+    wait_dump(&screens, &sock, "the lead hears the answer", 30, || {
         screen(lead).contains("the Overwatch answered your question (source: spec.md#1)")
     });
 
@@ -861,26 +875,28 @@ fn a_team_run_where_the_user_only_uses_the_cards_has_no_pane_intervention() {
     git(&stuck_repo, &["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-q", "-m", "init"]);
     let spec = AgentSpec { agent_id: "stuck".into(), repo: stuck_repo.display().to_string(), ..Default::default() };
     assert!(request(&sock, CtlRequest::Start { spec: Box::new(spec) }).unwrap().ok);
-    wait_for("its startup card", 40, || open("startup").is_some());
+    wait_dump(&screens, &sock, "its startup card", 40, || open("startup").is_some());
     let stuck_wt = PathBuf::from(agent(&sock, "stuck")["worktree"].as_str().unwrap());
     std::fs::remove_file(stuck_wt.join(".fake-no-session-start")).unwrap();
     core.rt.overwatch_tick();
-    wait_for("the Overwatch hears of it", 40, || screen(OW).contains("startup-"));
+    wait_dump(&screens, &sock, "the Overwatch hears of it", 40, || screen(OW).contains("startup-"));
     ow_calls(r#"ORCHTOOL restart_fresh {"agent":"stuck","why":"never started"}"#);
-    wait_for("restarted", 40, || open("startup").is_none() && core.state_of("stuck") == "idle");
+    wait_dump(&screens, &sock, "restarted", 40, || open("startup").is_none() && core.state_of("stuck") == "idle");
     let startup = core.rt.store.read(|s| s.inbox.iter().find(|i| i.kind == "startup").cloned().unwrap());
     assert_eq!(startup.decided_by.as_deref(), Some("overwatch"));
 
     // 5. The spec gate, annotated by the Overwatch and approved from its card.
     call(lead, r#"ORCHTOOL request_spec_approval {"summary":"one task for back"}"#);
-    wait_for("the gate", 20, || open("gate").is_some());
+    wait_dump(&screens, &sock, "the gate", 20, || open("gate").is_some());
     let gate = open("gate").unwrap()["id"].as_str().unwrap().to_string();
     core.rt.overwatch_pump();
-    wait_for("the Overwatch hears of it", 40, || screen(OW).contains(&gate));
+    wait_dump(&screens, &sock, "the Overwatch hears of it", 40, || screen(OW).contains(&gate));
     ow_calls(&format!(
         r#"ORCHTOOL annotate {{"decision":"{gate}","note":"Scope matches the brief.","recommend":"approve"}}"#
     ));
-    wait_for("annotated", 30, || open("gate").is_some_and(|g| g["annotation"]["recommend"] == "approve"));
+    wait_dump(&screens, &sock, "annotated", 30, || {
+        open("gate").is_some_and(|g| g["annotation"]["recommend"] == "approve")
+    });
     let n: u64 = gate.trim_start_matches("gate-").parse().unwrap();
     let d = request(
         &sock,
