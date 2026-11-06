@@ -80,7 +80,6 @@ impl Core {
         let p = self.files_project(project_id)?;
         let bounds = self.bounds(&p, home)?;
         let mut files = p.typed_settings().external_files;
-        let access = access.unwrap_or_default();
         let (added, refused) = pf::add_batch(&mut files, paths, access, &bounds, orch_store::now_ms());
         if !added.is_empty() {
             self.save_files(&p, files.clone())?;
@@ -108,17 +107,14 @@ impl Core {
         let p = self.files_project(project_id)?;
         let mut files = p.typed_settings().external_files;
         let i = files.iter().position(|f| f.path == Path::new(path)).ok_or_else(|| not_listed(path))?;
-        let note = match note {
-            Some(n) => Some(pf::normalize_note(Some(n)).map_err(|e| anyhow!(e))?),
-            None => None,
-        };
+        let note = note.map(|n| pf::normalize_note(Some(n))).transpose().map_err(|e| anyhow!(e))?;
         let f = &files[i];
         let new_access = access.unwrap_or(f.access);
-        if new_access != f.access {
+        let access_changed = new_access != f.access;
+        if access_changed {
             pf::check_nesting(&f.path, f.kind, new_access, &files).map_err(|m| anyhow!("{path}: {m}"))?;
         }
         let note_changed = note.as_ref().is_some_and(|n| *n != f.note);
-        let access_changed = new_access != f.access;
         if access_changed || note_changed {
             let f = &mut files[i];
             f.access = new_access;

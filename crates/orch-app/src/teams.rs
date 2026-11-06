@@ -351,7 +351,7 @@ impl Core {
         {
             // FR-112: the list is the Files section's; this form never changes it.
             let _g = crate::project_files::SETTINGS_EDIT.lock_ok();
-            let mut settings = f.settings.clone();
+            let mut settings = f.settings;
             settings.external_files =
                 rt.db.project(project_id)?.map(|p| p.typed_settings().external_files).unwrap_or_default();
             rt.db.set_project_settings(project_id, &settings, &f.backend, f.track_orchestrator_dir)?;

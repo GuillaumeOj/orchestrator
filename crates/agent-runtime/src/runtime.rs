@@ -906,7 +906,15 @@ impl Runtime {
         if files.is_empty() {
             return vec![];
         }
-        let all = self.db.projects(true).unwrap_or_default();
+        // Without the other projects the bounds would miss their repositories
+        // and worktrees: no files rather than unchecked ones.
+        let all = match self.db.projects(true) {
+            Ok(all) => all,
+            Err(e) => {
+                self.event(id, "project_file_skipped", json!({"project": p.id, "reason": format!("{e:#}")}));
+                return vec![];
+            }
+        };
         let bounds = project_files::Bounds::of(&p, &all, home, &self.cfg.paths.root);
         let (out, skipped) = project_files::at_spawn(&files, &bounds);
         for why in skipped {

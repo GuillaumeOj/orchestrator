@@ -251,7 +251,7 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
         }
     }
 
-    let settings = json!({
+    let mut settings = json!({
         "hooks": hooks,
         "statusLine": {
             "type": "command",
@@ -268,7 +268,6 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
                 "denyRead": deny_read,
                 "allowRead": allow_read,
                 "allowWrite": allow_write,
-                "denyWrite": deny_write,
             },
         },
         "permissions": {
@@ -276,6 +275,11 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
             "deny": deny,
         },
     });
+    // Only when there is one: `denyWrite` is not verified against the
+    // baseline CLI (README), so agents without read entries never carry it.
+    if !deny_write.is_empty() {
+        settings["sandbox"]["filesystem"]["denyWrite"] = json!(deny_write);
+    }
     // The orchestrator's own server always comes with the agent (it wins over
     // a role entry of the same name). It inherits the agent's environment;
     // the identity is repeated explicitly.
@@ -701,6 +705,6 @@ pub(crate) mod tests {
         let c = with_files(vec![]);
         assert_eq!(c.args, base.args);
         assert!(!prompt_of(&c).contains("## Project files"));
-        assert_eq!(c.settings["sandbox"]["filesystem"]["denyWrite"], json!([]));
+        assert!(c.settings["sandbox"]["filesystem"].get("denyWrite").is_none());
     }
 }
