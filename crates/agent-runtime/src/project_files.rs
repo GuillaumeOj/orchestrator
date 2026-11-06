@@ -64,11 +64,25 @@ pub struct Bounds {
     pub other_repos: Vec<PathBuf>,
     /// The worktree roots of the other projects (agents' worktrees).
     pub other_worktree_roots: Vec<PathBuf>,
-    /// Where the credential stores that are symlinks point (a dotfiles
-    /// repo, a synced folder): refused like the stores themselves.
-    pub credential_targets: Vec<PathBuf>,
-    /// Where the [`UNSANDBOXED`] paths that are symlinks point.
-    pub unsandboxed_targets: Vec<PathBuf>,
+    /// The credential stores, and where the ones that are symlinks point
+    /// (a dotfiles repo, a synced folder).
+    pub credentials: Vec<PathBuf>,
+    /// The [`UNSANDBOXED`] and [`UNSANDBOXED_SYSTEM`] paths, with the same
+    /// symlink targets.
+    pub unsandboxed: Vec<PathBuf>,
+}
+
+/// `rel` joined to `home`, plus the real path behind each that is a symlink.
+fn guarded<'a>(home: &Path, rel: impl Iterator<Item = &'a str>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for c in rel.map(|p| home.join(p)) {
+        let r = real(&c);
+        out.push(c);
+        if r != *out.last().unwrap() {
+            out.push(r);
+        }
+    }
+    out
 }
 
 impl Bounds {
@@ -77,20 +91,17 @@ impl Bounds {
     pub fn of(project: &Project, all: &[Project], home: &Path, app_root: &Path) -> Bounds {
         let home = real(home);
         let others = || all.iter().filter(|p| p.id != project.id);
-        // The real paths behind the ones that are symlinks.
-        let targets = |rel: &mut dyn Iterator<Item = &str>| {
-            rel.map(|p| home.join(p)).filter_map(|c| Some(real(&c)).filter(|r| *r != c)).collect()
-        };
-        let credential_targets = targets(&mut CREDENTIAL_STORES.iter().map(|(p, _)| *p));
-        let unsandboxed_targets = targets(&mut UNSANDBOXED.iter().copied());
+        let credentials = guarded(&home, CREDENTIAL_STORES.iter().map(|(p, _)| *p));
+        // Absolute entries: `join` keeps them as they are.
+        let unsandboxed = guarded(&home, UNSANDBOXED.iter().chain(UNSANDBOXED_SYSTEM).copied());
         Bounds {
             app_root: real(app_root),
             main_checkout: real(&project.path),
             worktree_root: real(&project.worktree_root),
             other_repos: others().map(|p| real(&p.path)).collect(),
             other_worktree_roots: others().map(|p| real(&p.worktree_root)).collect(),
-            credential_targets,
-            unsandboxed_targets,
+            credentials,
+            unsandboxed,
             home,
         }
     }
@@ -114,6 +125,7 @@ pub fn expand(input: &str, home: &Path) -> Result<PathBuf, String> {
 pub fn check(canon: &Path, b: &Bounds) -> Result<(), &'static str> {
     let inside = |outer: &Path| canon.starts_with(outer);
     let contains = |inner: &Path| inner.starts_with(canon);
+    let overlaps = |list: &[PathBuf]| list.iter().any(|c| inside(c) || contains(c));
     if inside(&b.main_checkout) || inside(&b.worktree_root) {
         return Err("already part of the project (in its repository)");
     }
@@ -126,28 +138,23 @@ pub fn check(canon: &Path, b: &Bounds) -> Result<(), &'static str> {
     if inside(&b.app_root) || contains(&b.app_root) {
         return Err("the app's own data can't be shared with agents");
     }
-    let mut stores = CREDENTIAL_STORES.iter().map(|(p, _)| b.home.join(p)).chain(b.credential_targets.iter().cloned());
-    if stores.any(|c| inside(&c) || contains(&c)) {
+    if overlaps(&b.credentials) {
         return Err("holds credentials, can't be shared with agents");
     }
-    let mut unsandboxed = UNSANDBOXED
-        .iter()
-        .map(|p| b.home.join(p))
-        .chain(UNSANDBOXED_SYSTEM.iter().map(PathBuf::from))
-        .chain(b.unsandboxed_targets.iter().cloned());
     let unsandboxed_name = canon.components().any(|c| UNSANDBOXED_NAMES.iter().any(|n| c.as_os_str() == *n));
-    if unsandboxed_name || unsandboxed.any(|c| inside(&c) || contains(&c)) {
+    if unsandboxed_name || overlaps(&b.unsandboxed) {
         return Err("holds settings or code that runs outside the sandbox, can't be shared with agents");
     }
     if contains(&b.main_checkout) || b.other_repos.iter().any(|r| contains(r)) {
         return Err("contains a project repository, pick a folder inside it");
     }
-    if canon.to_string_lossy().contains(GLOB_CHARS) {
+    let name = canon.to_string_lossy();
+    if name.contains(GLOB_CHARS) {
         return Err("names with * ? [ ] { } can't be shared with agents yet; rename it or pick another folder");
     }
     // A backslash escapes in a rule pattern; a newline would break the
     // prompt's list item.
-    if canon.to_string_lossy().chars().any(|c| c == '\\' || c.is_control()) {
+    if name.chars().any(|c| c == '\\' || c.is_control()) {
         return Err(
             "names with \\ or control characters can't be shared with agents; rename it or pick another folder",
         );
@@ -191,9 +198,10 @@ fn in_read_folder(path: &Path, files: &[ProjectFile]) -> bool {
 /// A path's kind as it is on disk now; `None` for what is neither a regular
 /// file nor a folder (a socket, a FIFO, a device).
 fn kind_of(p: &Path) -> Option<FileKind> {
-    if p.is_dir() {
+    let t = std::fs::metadata(p).ok()?.file_type();
+    if t.is_dir() {
         Some(FileKind::Folder)
-    } else if p.is_file() {
+    } else if t.is_file() {
         Some(FileKind::File)
     } else {
         None
@@ -249,7 +257,7 @@ pub struct Refused {
 /// count once. Doesn't touch the disk.
 pub fn add_batch(
     files: &mut Vec<ProjectFile>,
-    inputs: &[Located],
+    inputs: Vec<Located>,
     access: Option<FileAccess>,
     b: &Bounds,
     now_ms: u64,
@@ -257,7 +265,7 @@ pub fn add_batch(
     let (mut added, mut refused) = (Vec::new(), Vec::new());
     for Located { input, found } in inputs {
         let shown = input.trim();
-        let checked = found.clone().and_then(|(path, kind)| {
+        let checked = found.and_then(|(path, kind)| {
             // Already added by this very call: counts once.
             if added.contains(&path) {
                 return Ok(None);
@@ -397,7 +405,7 @@ mod tests {
         b: &Bounds,
         now_ms: u64,
     ) -> (Vec<PathBuf>, Vec<Refused>) {
-        super::add_batch(files, &locate(inputs, &b.home), access, b, now_ms)
+        super::add_batch(files, locate(inputs, &b.home), access, b, now_ms)
     }
 
     struct Fx {
@@ -432,8 +440,8 @@ mod tests {
             worktree_root: home.join("dev/shop.worktrees"),
             other_repos: vec![home.join("dev/other")],
             other_worktree_roots: vec![home.join("dev/other.worktrees")],
-            credential_targets: vec![],
-            unsandboxed_targets: vec![],
+            credentials: guarded(&home, CREDENTIAL_STORES.iter().map(|(p, _)| *p)),
+            unsandboxed: guarded(&home, UNSANDBOXED.iter().chain(UNSANDBOXED_SYSTEM).copied()),
             home,
         };
         Fx { _d: d, b, root }
@@ -518,7 +526,7 @@ mod tests {
             ..test_project()
         };
         let b = Bounds::of(&p, &[], &f.b.home, &f.b.app_root);
-        assert_eq!(b.credential_targets, [dots]);
+        assert!(b.credentials.contains(&dots), "{:?}", b.credentials);
         let e = resolve("~/dotfiles", &b, &[]).unwrap_err();
         assert_eq!(e, "~/dotfiles: holds credentials, can't be shared with agents");
         assert_eq!(
@@ -561,7 +569,7 @@ mod tests {
             ..test_project()
         };
         let b = Bounds::of(&p, &[], h, &f.b.app_root);
-        assert_eq!(b.unsandboxed_targets, [h.join("dotfiles/zsh/zshrc")]);
+        assert!(b.unsandboxed.contains(&h.join("dotfiles/zsh/zshrc")), "{:?}", b.unsandboxed);
         for p in ["~/dotfiles/zsh/zshrc", "~/dotfiles"] {
             assert_eq!(resolve(p, &b, &[]).unwrap_err(), format!("{p}: {msg}"));
         }

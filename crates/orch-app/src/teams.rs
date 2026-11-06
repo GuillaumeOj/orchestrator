@@ -318,7 +318,7 @@ impl Core {
         let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
         let mut raw = f.settings;
         raw.remove("external_files");
-        let general: ProjectSettings = serde_json::from_value(Value::Object(raw))?;
+        let mut general: ProjectSettings = serde_json::from_value(Value::Object(raw))?;
         let old = p.backend();
         // A change to Linear, or to another Linear team or project (D8).
         let to_linear = match (&old, &f.backend) {
@@ -355,8 +355,8 @@ impl Core {
         let (backend, track) = (f.backend, f.track_orchestrator_dir);
         rt.db.update_project_settings(project_id, move |e| {
             // FR-112: the stored list stays as the transaction read it.
-            let files = std::mem::take(&mut e.settings.external_files);
-            e.settings = ProjectSettings { external_files: files, ..general };
+            general.external_files = std::mem::take(&mut e.settings.external_files);
+            e.settings = general;
             (e.backend, e.track_orchestrator_dir) = (backend, track);
             Ok(())
         })?;
