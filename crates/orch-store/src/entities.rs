@@ -191,6 +191,8 @@ impl Store {
             tx.execute("DELETE FROM transcript_fts WHERE project_id=?1", [&id])?;
             tx.execute("DELETE FROM transcript_files WHERE project_id=?1", [&id])?;
             tx.execute("DELETE FROM terminals WHERE project_id=?1", [&id])?;
+            tx.execute("DELETE FROM intake_items WHERE project_id=?1", [&id])?;
+            tx.execute("DELETE FROM kv WHERE key=?1", [crate::intake::status_key(&id)])?;
             Store::delete_project_teams(tx, &id)?;
             tx.execute("DELETE FROM projects WHERE id=?1", [&id])?;
             Ok(())
@@ -657,7 +659,7 @@ impl Store {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use governor::{BudgetAllocation, Tier, WorkingCalendar};
 

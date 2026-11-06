@@ -32,3 +32,5 @@ tempfile = "3"
 toml_edit = "0.25"
 # Shell words of a Bash call (the core's hard-deny list).
 shlex = "2"
+# Intake repo docs (P4.5): the backlog glob matched against `git ls-tree`.
+globset = { version = "0.4", default-features = false }
