@@ -304,9 +304,10 @@ function baseTitle(a) {
 export function artifactTool(a) {
   if (a?.meta?.tool) return a.meta.tool;
   const u = String(a?.uri ?? '');
+  // The extension first: a repo path may contain "penpot" or "figma.com" in a folder name.
+  if (/\.figcraft$/i.test(u.split('#')[0])) return 'figcraft';
   if (/penpot/.test(u)) return 'penpot';
   if (/figma\.com/.test(u)) return 'figma';
-  if (/\.figcraft$/i.test(u.split('#')[0])) return 'figcraft';
   return /^https?:/.test(u) ? 'url' : 'file';
 }
 
@@ -363,8 +364,8 @@ export function designTools(team, roles, servers) {
 export const nodeList = (nodes, and = false) =>
   and && nodes.length > 1 ? `${nodes.slice(0, -1).join(', ')} and ${nodes.at(-1)}` : nodes.join(', ');
 
+export const DESIGN_TOOL_NAMES = { penpot: 'Penpot', figma: 'Figma', figcraft: 'FigCraft' };
 /** Design tools whose Settings row opens the MCP registry (design:<id>). */
-export const DESIGN_TOOLS = ['penpot', 'figma', 'figcraft'];
+export const DESIGN_TOOLS = Object.keys(DESIGN_TOOL_NAMES);
 /** Penpot and Figma are claude.ai connectors (status "Not seen yet"); FigCraft is a local stdio server with a real status. */
 export const CONNECTOR_TOOLS = ['penpot', 'figma'];
-export const DESIGN_TOOL_NAMES = { penpot: 'Penpot', figma: 'Figma', figcraft: 'FigCraft' };
