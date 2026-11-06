@@ -43,6 +43,8 @@ pub struct Overwatch {
     pub(crate) limit_until: std::sync::atomic::AtomicU64,
     /// One `chat_undo` at a time (two taps must not both pass the checks).
     pub(crate) undoing: std::sync::Mutex<()>,
+    /// One write of the day's `events.seq` at a time (each writes the latest value).
+    pub(crate) seq_file: std::sync::Mutex<()>,
     /// Tests: the next undo's delivery fails.
     #[cfg(test)]
     pub(crate) fail_undo_delivery: std::sync::atomic::AtomicBool,
@@ -331,13 +333,20 @@ impl Runtime {
         st.turns = self.overwatch_turns_stored();
     }
 
-    /// The day's last event id, on disk. Written under the lock with the
-    /// current value: two enqueues can't leave the older one in the file.
+    /// The day's last event id, on disk. Each write takes the latest value,
+    /// one at a time: two enqueues can't leave the older one in the file, and
+    /// the scheduler is not held during the I/O. A day that rolled meanwhile
+    /// is not written with the new day's counter.
     fn overwatch_save_seq(&self, day: &str) {
+        let _one = self.overwatch.seq_file.lock().unwrap_or_else(|e| e.into_inner());
+        let seq = {
+            let st = self.ow();
+            (st.day.as_deref() == Some(day)).then_some(st.seq)
+        };
+        let Some(seq) = seq else { return };
         let dir = self.overwatch_day_dir(day);
-        let st = self.ow();
         let _ = std::fs::create_dir_all(&dir)
-            .and_then(|()| crate::compile::write_atomic(&dir.join(SEQ_FILE), st.seq.to_string().as_bytes()));
+            .and_then(|()| crate::compile::write_atomic(&dir.join(SEQ_FILE), seq.to_string().as_bytes()));
     }
 
     /// The user messages kept while it was `off` / `down` go back in the

@@ -125,8 +125,10 @@ impl Runtime {
             line["undo_gone"] = json!(why);
             match self.db.chat_update(e) {
                 Ok(w) => {
-                    // Clients holding the entry stop offering the undo.
-                    self.chat_push(&w);
+                    // Clients holding today's entry stop offering the undo.
+                    if w.day == self.overwatch_today().1 {
+                        self.chat_push(&w);
+                    }
                     *e = w;
                 }
                 Err(err) => eprintln!("warn: chat entry {} undo state not written: {err}", e.id()),

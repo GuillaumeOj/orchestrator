@@ -708,8 +708,12 @@ struct FetchOpts {
     short_flag: &'static str,
     long_value: &'static [&'static str],
     long_flag: &'static [&'static str],
-    /// Options whose value names more URLs in a file: the hosts can't be read.
+    /// Options whose value hides a host or more URLs (a config file, a proxy,
+    /// a connection redirect, a command): the hosts can't be read.
     unreadable: &'static [&'static str],
+    /// Options after which the tool fetches hosts nobody listed (recursion,
+    /// spanning hosts). They take no value.
+    open_ended: &'static [&'static str],
 }
 
 const CURL: FetchOpts = FetchOpts {
@@ -760,6 +764,11 @@ const CURL: FetchOpts = FetchOpts {
         "--speed-limit",
         "--speed-time",
         "--expect100-timeout",
+        "--proto",
+        "--proto-redir",
+        "--tls-max",
+        "--ciphers",
+        "--pinnedpubkey",
     ],
     long_flag: &[
         "--silent",
@@ -795,6 +804,10 @@ const CURL: FetchOpts = FetchOpts {
         "--parallel",
         "--path-as-is",
         "--post301",
+        "--tlsv1.0",
+        "--tlsv1.1",
+        "--tlsv1.2",
+        "--tlsv1.3",
     ],
     // A proxy, `--connect-to` or `--resolve` sends the request to another
     // host than the URL's: unreadable, so user-only.
@@ -804,19 +817,21 @@ const CURL: FetchOpts = FetchOpts {
         "-x",
         "--proxy",
         "--preproxy",
+        "--resolve",
+        "--connect-to",
         "--socks4",
         "--socks4a",
         "--socks5",
         "--socks5-hostname",
-        "--resolve",
-        "--connect-to",
+        "--proxy1.0",
         "--doh-url",
     ],
+    open_ended: &[],
 };
 
 const WGET: FetchOpts = FetchOpts {
-    short_value: "oaOPtTwQBUlADIXi",
-    short_flag: "qvcbrkpNSxEHdmKFLhV46",
+    short_value: "oaOPtTwQBUlAIXRG",
+    short_flag: "qvcbkpNSxEdFKLhV46",
     long_value: &[
         "--output-document",
         "--output-file",
@@ -840,7 +855,6 @@ const WGET: FetchOpts = FetchOpts {
         "--level",
         "--accept",
         "--reject",
-        "--domains",
         "--exclude-domains",
         "--include-directories",
         "--exclude-directories",
@@ -873,13 +887,10 @@ const WGET: FetchOpts = FetchOpts {
         "--no-verbose",
         "--continue",
         "--background",
-        "--recursive",
         "--no-clobber",
         "--no-parent",
         "--timestamping",
         "--no-check-certificate",
-        "--mirror",
-        "--span-hosts",
         "--force-html",
         "--backup-converted",
         "--debug",
@@ -905,8 +916,17 @@ const WGET: FetchOpts = FetchOpts {
         "--random-wait",
     ],
     // `-e` runs a wgetrc command (`http_proxy=…`, `input=…`): unreadable.
-    unreadable: &["-i", "--input-file", "--config", "-e", "--execute"],
+    unreadable: &["-i", "--input-file", "--config", "-e", "--execute", "-D", "--domains"],
+    open_ended: &["-r", "-H", "-m", "--recursive", "--span-hosts", "--mirror"],
 };
+
+/// Every host must be allowed; none readable (or one unreadable) is the user's.
+fn fetch_verdict(ctx: &HardCtx, hosts: &[String], unreadable: bool) -> Option<HardVerdict> {
+    if hosts.iter().any(|h| !host_allowed(&ctx.network_allow, h)) {
+        return Some(user_only(WHY_HOST));
+    }
+    (unreadable || hosts.is_empty()).then(|| user_only(WHY_HOST_UNKNOWN))
+}
 
 /// curl / wget (each its own options): every URL word's host must be allowed;
 /// none readable is user-only, and so is an option that isn't understood: its
@@ -938,6 +958,8 @@ fn fetch_strict(ctx: &HardCtx, args: &[String], o: &FetchOpts, wget: bool) -> Op
                     None => unreadable = true,
                 }
                 i += usize::from(attached.is_none());
+            } else if o.open_ended.contains(&name.as_str()) {
+                unreadable = true;
             } else if o.unreadable.contains(&name.as_str()) {
                 unreadable = true;
                 i += usize::from(attached.is_none());
@@ -947,15 +969,17 @@ fn fetch_strict(ctx: &HardCtx, args: &[String], o: &FetchOpts, wget: bool) -> Op
                 unreadable = true;
             }
         } else {
-            // A cluster of short options: `-fsSL`, `-sSo out`, `-ofile`, wget's `-nv`.
-            let cluster = &a[1..];
-            if wget && cluster.starts_with('n') {
-                continue;
-            }
-            for (j, c) in cluster.char_indices() {
+            // A cluster of short options: `-fsSL`, `-sSo out`, `-ofile`, `-o-`, wget's `-nv`.
+            let mut chars = a[1..].char_indices().peekable();
+            while let Some((_, c)) = chars.next() {
                 let one = format!("-{c}");
-                let rest_empty = cluster[j + c.len_utf8()..].is_empty();
-                if o.unreadable.contains(&one.as_str()) {
+                let rest_empty = chars.peek().is_none();
+                if wget && c == 'n' {
+                    // `-nv`, `-nc`, `-nH`...: one more letter belongs to it.
+                    chars.next();
+                } else if o.open_ended.contains(&one.as_str()) {
+                    unreadable = true;
+                } else if o.unreadable.contains(&one.as_str()) {
                     unreadable = true;
                     i += usize::from(rest_empty);
                     break;
@@ -970,13 +994,12 @@ fn fetch_strict(ctx: &HardCtx, args: &[String], o: &FetchOpts, wget: bool) -> Op
             }
         }
     }
-    if hosts.iter().any(|h| !host_allowed(&ctx.network_allow, h)) {
-        return Some(user_only(WHY_HOST));
-    }
-    (unreadable || hosts.is_empty()).then(|| user_only(WHY_HOST_UNKNOWN))
+    fetch_verdict(ctx, &hosts, unreadable)
 }
 
-/// httpie / xh: `METHOD url key=value…`: every URL-like word's host must be allowed.
+/// httpie / xh: every non-option word is read as a URL, so a method word or
+/// a request item (`POST`, `a=b`) reads as an unknown host: such a call is
+/// the user's (conservative).
 fn fetch_items(ctx: &HardCtx, args: &[String]) -> Option<HardVerdict> {
     let mut hosts = vec![];
     let mut unreadable = false;
@@ -999,10 +1022,7 @@ fn fetch_items(ctx: &HardCtx, args: &[String]) -> Option<HardVerdict> {
         }
         i += 1;
     }
-    if hosts.iter().any(|h| !host_allowed(&ctx.network_allow, h)) {
-        return Some(user_only(WHY_HOST));
-    }
-    (unreadable || hosts.is_empty()).then(|| user_only(WHY_HOST_UNKNOWN))
+    fetch_verdict(ctx, &hosts, unreadable)
 }
 
 #[cfg(test)]
@@ -1316,9 +1336,32 @@ mod tests {
             "curl -O https://evil.example/x https://github.com/y",
             "curl -sSO https://evil.example/x https://github.com/y",
             "curl -- https://evil.example/x",
+            "curl -sSo file https://github.com/y https://evil.example/x",
+            "curl -o- https://github.com/y https://evil.example/x",
+            "curl -sSo file -- https://evil.example/x",
+            "curl -- https://github.com/y https://evil.example/x",
+            "wget -O- https://github.com/y https://evil.example/x",
         ] {
             assert_eq!(bash_v(&f, c).unwrap().why, WHY_HOST, "{c}");
         }
+        // Can't read a host (a proxy, a redirect, a list in a file, recursion): user-only.
+        for c in [
+            "curl --proxy http://evil.example:3128 https://github.com/x",
+            "curl -x evil.example:80 https://github.com/x",
+            "curl --resolve github.com:443:10.0.0.1 https://github.com/x",
+            "wget -e use_proxy=on https://github.com/x",
+            "wget -nvi github.com",
+            "wget -r https://github.com/x",
+            "wget -rH https://github.com/x",
+            "wget -D evil.example https://github.com/x",
+            "wget --mirror https://github.com/x",
+            "http POST https://github.com/x a=b",
+        ] {
+            assert_eq!(kind(bash_v(&f, c)), Some(HardKind::UserOnly), "{c}");
+        }
+        assert_eq!(bash_v(&f, "http evil.example/x").unwrap().why, WHY_HOST);
+        assert_eq!(bash_v(&f, "http github.com/x"), None);
+        assert_eq!(bash_v(&f, "wget -nvP out https://github.com/x"), None);
         // Can't read a host: user-only, never allowed.
         for c in [
             "curl",
@@ -1347,6 +1390,10 @@ mod tests {
             "curl -O https://github.com/z",
             "curl -sSL --max-time 5 -ofile https://github.com/z",
             "curl --output=x https://github.com/z",
+            "curl -sSo file https://github.com/z",
+            "curl -o- https://github.com/z",
+            "curl -sSo file -- https://github.com/z",
+            "wget -O- https://github.com/z",
         ] {
             assert_eq!(bash_v(&f, c), None, "{c}");
         }

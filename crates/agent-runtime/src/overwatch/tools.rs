@@ -261,7 +261,7 @@ impl Runtime {
         let decision = if allow { InboxDecision::Approve } else { InboxDecision::Reject };
         // The reason is read while deciding; a decision that did not happen keeps none.
         if let Err(e) = self.decide_as(n, decision, None, None, ID) {
-            self.unset_payload(n, &["overwatch_reason"]);
+            self.unset_payload_if_undecided(n, &["overwatch_reason"]);
             return Err(err("stale", format!("{e:#}")));
         }
         let verb = if allow { "allowed" } else { "denied" };
@@ -283,10 +283,11 @@ impl Runtime {
         });
     }
 
-    /// Takes payload keys off a stored item (a no-op once it is gone).
-    pub(crate) fn unset_payload(&self, item: u64, keys: &[&str]) {
+    /// Takes payload keys off a stored item the Overwatch's own decision did
+    /// not close (a no-op once it is gone): a decision that stood keeps its reason.
+    pub(crate) fn unset_payload_if_undecided(&self, item: u64, keys: &[&str]) {
         let _ = self.store.write(|s| {
-            if let Some(i) = s.inbox.iter_mut().find(|i| i.id == item)
+            if let Some(i) = s.inbox.iter_mut().find(|i| i.id == item && i.decided_by.as_deref() != Some(ID))
                 && let Some(p) = i.payload.as_object_mut()
             {
                 for k in keys {
@@ -467,7 +468,7 @@ impl Runtime {
         };
         self.set_payload(n, &[("overwatch_sources", json!(shown)), ("overwatch_reason", json!(cut(&message, 60)))]);
         if let Err(e) = self.decide_as(n, InboxDecision::Reply, None, Some(&message), ID) {
-            self.unset_payload(n, &["overwatch_sources", "overwatch_reason"]);
+            self.unset_payload_if_undecided(n, &["overwatch_sources", "overwatch_reason"]);
             return Err(err("stale", format!("{e:#}")));
         }
         Ok(json!({"ok": true, "line": {"verb": "answered", "agent": item.agent_id, "by": "overwatch",
