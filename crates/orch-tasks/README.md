@@ -29,7 +29,7 @@ pending one sends everything; nothing GitHub shows changed → no call. Linear s
 **Cursor.** The newest `updated_at` a GitHub sync saw, per project, in the store
 (`Store::task_sync_cursor`, kv `task_sync_cursor:<project>`, with its scope `github:owner/name`),
 so it survives a restart. It is dropped when the project's backend setting or checkout changes
-(`upsert_project`, `set_project_settings`; a no-op update keeps it) and ignored when its scope is
+(`upsert_project`, `update_project_settings`; a no-op update keeps it) and ignored when its scope is
 not the repository the backend resolves. A task whose `backend` is not the project's (left local when the backend changed, D8) is
 never pushed.
 

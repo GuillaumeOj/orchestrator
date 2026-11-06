@@ -9,13 +9,14 @@ use orch_team::Scope;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::LockOk;
 use crate::core::Core;
 
 /// The project settings form (FR-109).
 #[derive(Clone, Debug, Deserialize)]
 pub struct ProjectSettingsForm {
-    pub settings: ProjectSettings,
+    /// The General form's settings. Its `external_files` (FR-112, the Files
+    /// section's) is dropped unread: this form never changes the list.
+    pub settings: serde_json::Map<String, Value>,
     pub backend: TaskBackendConfig,
     pub track_orchestrator_dir: bool,
     /// D8, switching to Linear with tasks: `push_open` or `leave`.
@@ -315,6 +316,9 @@ impl Core {
     pub fn project_settings_set(&self, project_id: &str, f: ProjectSettingsForm) -> Result<Value> {
         let rt = self.runtime()?;
         let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
+        let mut raw = f.settings;
+        raw.remove("external_files");
+        let mut general: ProjectSettings = serde_json::from_value(Value::Object(raw))?;
         let old = p.backend();
         // A change to Linear, or to another Linear team or project (D8).
         let to_linear = match (&old, &f.backend) {
@@ -348,14 +352,14 @@ impl Core {
                 }
             }
         }
-        {
-            // FR-112: the list is the Files section's; this form never changes it.
-            let _g = crate::project_files::SETTINGS_EDIT.lock_ok();
-            let mut settings = f.settings;
-            settings.external_files =
-                rt.db.project(project_id)?.map(|p| p.typed_settings().external_files).unwrap_or_default();
-            rt.db.set_project_settings(project_id, &settings, &f.backend, f.track_orchestrator_dir)?;
-        }
+        let (backend, track) = (f.backend, f.track_orchestrator_dir);
+        rt.db.update_project_settings(project_id, move |e| {
+            // FR-112: the stored list stays as the transaction read it.
+            general.external_files = std::mem::take(&mut e.settings.external_files);
+            e.settings = general;
+            (e.backend, e.track_orchestrator_dir) = (backend, track);
+            Ok(())
+        })?;
         // From one Linear team or project to another: the old issues are not
         // the new team's, so the tasks not pushed stay local (never written
         // to the old issues again).

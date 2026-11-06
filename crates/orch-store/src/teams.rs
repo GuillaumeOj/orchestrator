@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use orch_team::{RoleDef, RunState, Scope, TaskStatus, Team};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -363,6 +363,15 @@ pub struct ProjectSettings {
     pub external_files: Vec<ProjectFile>,
     #[serde(flatten)]
     pub other: serde_json::Map<String, Value>,
+}
+
+/// What [`Store::update_project_settings`] edits: a project's settings
+/// columns, as stored.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SettingsEdit {
+    pub settings: ProjectSettings,
+    pub backend: TaskBackendConfig,
+    pub track_orchestrator_dir: bool,
 }
 
 /// FR-112: one project file, its path stored canonical.
@@ -1195,34 +1204,61 @@ impl Store {
 
     // ------------------------------------------------------------ project settings
 
-    /// FR-109: typed settings, task backend and whether `.orchestrator/` is tracked.
-    pub fn set_project_settings(
-        &self,
-        id: &str,
-        settings: &ProjectSettings,
-        backend: &TaskBackendConfig,
-        track_orchestrator_dir: bool,
-    ) -> Result<()> {
-        if let TaskBackendConfig::Github { repo: Some(r) } = backend
-            && (r.split('/').count() != 2 || r.starts_with('-') || r.contains(char::is_whitespace))
-        {
-            bail!("GitHub repository must be owner/name, got {r:?}");
-        }
+    /// FR-109, FR-112: every edit of a project's settings, task backend or
+    /// `.orchestrator/` tracking. One write transaction re-reads them, runs
+    /// `edit` on them and saves them when `edit` changed something, so two
+    /// edits (the Files section, the General form) never lose each other's
+    /// change. An error from `edit` saves nothing.
+    pub fn update_project_settings<R, F>(&self, id: &str, edit: F) -> Result<R>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut SettingsEdit) -> Result<R> + Send + 'static,
+    {
         let topics = [orch_protocol::Topic::Project(id.to_string()), orch_protocol::Topic::Board(id.to_string())];
-        let (id, s, b) = (id.to_string(), js(settings), js(backend));
-        let cfg = backend.clone();
-        let n = self.write(move |tx| {
-            Store::reset_cursor_on_change(tx, &id, &cfg, None)?;
-            Ok(tx.execute(
+        let key = id.to_string();
+        let (out, changed) = self.write(move |tx| {
+            let row: Option<(String, String, bool)> = tx
+                .query_row(
+                    "SELECT settings, task_backend, track_orchestrator_dir FROM projects WHERE id=?1",
+                    [&key],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            let Some((settings, backend, track_orchestrator_dir)) = row else { bail!("no project {key}") };
+            let before = SettingsEdit {
+                settings: serde_json::from_str(&settings).unwrap_or_default(),
+                backend: serde_json::from_str(&backend).unwrap_or_default(),
+                track_orchestrator_dir,
+            };
+            let mut e = before.clone();
+            let out = edit(&mut e)?;
+            if e == before {
+                return Ok((out, false));
+            }
+            if let TaskBackendConfig::Github { repo: Some(r) } = &e.backend
+                && (r.split('/').count() != 2 || r.starts_with('-') || r.contains(char::is_whitespace))
+            {
+                bail!("GitHub repository must be owner/name, got {r:?}");
+            }
+            // A column `edit` left alone keeps its stored text: a Files edit
+            // never rewrites the backend (nor one it could not parse).
+            let backend = if e.backend == before.backend {
+                backend
+            } else {
+                Store::reset_cursor_on_change(tx, &key, &e.backend, None)?;
+                js(&e.backend)
+            };
+            let settings = if e.settings == before.settings { settings } else { js(&e.settings) };
+            tx.execute(
                 "UPDATE projects SET settings=?2, task_backend=?3, track_orchestrator_dir=?4 WHERE id=?1",
-                params![id, s, b, track_orchestrator_dir],
-            )?)
+                params![key, settings, backend, e.track_orchestrator_dir],
+            )?;
+            Ok((out, true))
         })?;
-        if n == 0 {
-            return Err(anyhow!("no such project"));
+        if changed {
+            self.note(topics);
         }
-        self.note(topics);
-        Ok(())
+        Ok(out)
     }
 
     /// The sync cursor of `project`'s remote task backend: `(scope, cursor)`,
@@ -1321,12 +1357,18 @@ mod tests {
         // A registry refresh (same backend, same checkout) keeps it.
         p.last_active_at_ms = 9;
         s.upsert_project(&p).unwrap();
-        let settings = s.project("p1").unwrap().unwrap().typed_settings();
-        s.set_project_settings("p1", &settings, &p.backend(), true).unwrap();
+        let set = |b: TaskBackendConfig| {
+            s.update_project_settings("p1", move |e| {
+                e.backend = b;
+                Ok(())
+            })
+            .unwrap()
+        };
+        set(p.backend());
         assert_eq!(s.task_sync_cursor("p1").unwrap(), cursor);
         // Another repository: reset.
         let other = TaskBackendConfig::Github { repo: Some("me/other".into()) };
-        s.set_project_settings("p1", &settings, &other, true).unwrap();
+        set(other.clone());
         assert_eq!(s.task_sync_cursor("p1").unwrap(), None);
         // Another checkout: reset.
         p.task_backend = serde_json::to_value(&other).unwrap();
@@ -1336,7 +1378,7 @@ mod tests {
         assert_eq!(s.task_sync_cursor("p1").unwrap(), None);
         // Local and back: reset.
         s.set_task_sync_cursor("p1", "github:me/other", "t").unwrap();
-        s.set_project_settings("p1", &settings, &TaskBackendConfig::Local, true).unwrap();
+        set(TaskBackendConfig::Local);
         assert_eq!(s.task_sync_cursor("p1").unwrap(), None);
     }
 
@@ -1659,20 +1701,31 @@ mod tests {
             archived: false,
         };
         s.upsert_project(&pr).unwrap();
-        let mut st = s.project("p1").unwrap().unwrap().typed_settings();
-        assert_eq!(st.other.get("keep"), Some(&serde_json::json!(1)));
-        st.default_team = Some("full-stack".into());
+        assert_eq!(s.project("p1").unwrap().unwrap().typed_settings().other.get("keep"), Some(&serde_json::json!(1)));
         let gh = TaskBackendConfig::Github { repo: Some("me/shop".into()) };
-        s.set_project_settings("p1", &st, &gh, false).unwrap();
+        let set = |backend: TaskBackendConfig, track: bool, id: &str| {
+            s.update_project_settings(id, move |e| {
+                e.settings.default_team = Some("full-stack".into());
+                (e.backend, e.track_orchestrator_dir) = (backend, track);
+                Ok(())
+            })
+        };
+        set(gh.clone(), false, "p1").unwrap();
         let p = s.project("p1").unwrap().unwrap();
         assert_eq!(p.backend(), gh);
         assert_eq!(p.typed_settings().default_team.as_deref(), Some("full-stack"));
         assert_eq!(p.typed_settings().other.get("keep"), Some(&serde_json::json!(1)));
         assert!(!p.track_orchestrator_dir);
-        assert!(
-            s.set_project_settings("p1", &st, &TaskBackendConfig::Github { repo: Some("bad".into()) }, true).is_err()
-        );
-        assert!(s.set_project_settings("nope", &st, &gh, true).is_err());
+        assert!(set(TaskBackendConfig::Github { repo: Some("bad".into()) }, true, "p1").is_err());
+        assert_eq!(s.project("p1").unwrap().unwrap().backend(), gh, "nothing saved");
+        assert!(set(gh.clone(), true, "nope").is_err());
+        // A register or relocate (an older copy of the project) keeps the settings.
+        let mut old = pr.clone();
+        old.path = "/tmp/shop-moved".into();
+        s.upsert_project(&old).unwrap();
+        let p = s.project("p1").unwrap().unwrap();
+        assert_eq!(p.path, std::path::Path::new("/tmp/shop-moved"));
+        assert_eq!(p.typed_settings().default_team.as_deref(), Some("full-stack"));
 
         let mut t = Task::new("p1", "local", "x", 1);
         t.feature_id = Some("f1".into());
@@ -1693,6 +1746,39 @@ mod tests {
         s.delete_project("p1").unwrap();
         assert!(s.tasks(Some("p1"), None, None).unwrap().is_empty());
         assert!(s.features(Some("p1")).unwrap().is_empty());
+    }
+
+    /// A settings-only edit keeps the backend's stored text, even one this
+    /// version can't read.
+    #[test]
+    fn a_settings_edit_keeps_the_stored_backend() {
+        let (_d, s) = store();
+        let backend = serde_json::json!({"type": "future", "x": 1});
+        let pr = crate::model::Project {
+            id: "p1".into(),
+            name: "shop".into(),
+            path: "/tmp/shop".into(),
+            default_branch: "main".into(),
+            remotes: vec![],
+            worktree_root: "/tmp/shop.worktrees".into(),
+            task_backend: backend.clone(),
+            track_orchestrator_dir: true,
+            settings: serde_json::json!({}),
+            created_at_ms: 1,
+            last_active_at_ms: 1,
+            last_fetch_at_ms: None,
+            last_fetch_error: None,
+            archived: false,
+        };
+        s.upsert_project(&pr).unwrap();
+        s.update_project_settings("p1", |e| {
+            e.settings.default_team = Some("solo".into());
+            Ok(())
+        })
+        .unwrap();
+        let p = s.project("p1").unwrap().unwrap();
+        assert_eq!(p.task_backend, backend);
+        assert_eq!(p.typed_settings().default_team.as_deref(), Some("solo"));
     }
 
     #[test]

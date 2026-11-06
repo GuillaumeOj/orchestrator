@@ -828,7 +828,12 @@ mod tests {
             notion_parent_page: Some("https://www.notion.so/me/Docs-0123456789abcdef0123456789abcdef".into()),
             ..Default::default()
         };
-        rt.db.set_project_settings("p", &settings, &orch_store::TaskBackendConfig::Local, true).unwrap();
+        rt.db
+            .update_project_settings("p", move |e| {
+                e.settings = settings;
+                Ok(())
+            })
+            .unwrap();
 
         let v = rt.notion_publish("f1").unwrap();
         assert_eq!(v["docs"], json!(["spec.md", "decisions.md"]));
@@ -997,6 +1002,11 @@ mod tests {
             notion_parent_page: Some("0123456789abcdef0123456789abcdef".into()),
             ..Default::default()
         };
-        rt.db.set_project_settings("p", &settings, &orch_store::TaskBackendConfig::Local, true).unwrap();
+        rt.db
+            .update_project_settings("p", move |e| {
+                e.settings = settings;
+                Ok(())
+            })
+            .unwrap();
     }
 }
