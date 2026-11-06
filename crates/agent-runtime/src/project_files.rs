@@ -15,6 +15,28 @@ pub const MAX_FILES: usize = 100;
 /// A note's length limit, in characters.
 pub const MAX_NOTE: usize = 500;
 
+/// Where settings or code live that run outside the sandbox (hooks, MCP
+/// servers, launch agents, git and shell startup), relative to home: an
+/// agent that could write them would run code unsandboxed.
+pub const UNSANDBOXED: &[&str] = &[
+    ".claude",
+    ".claude.json",
+    "Library/LaunchAgents",
+    ".gitconfig",
+    ".config/git",
+    ".zshrc",
+    ".zshenv",
+    ".zprofile",
+    ".zlogin",
+    ".bashrc",
+    ".bash_profile",
+    ".profile",
+];
+
+/// Claude Code's rule patterns are gitignore-style: a path with these would
+/// be read as a pattern, and the escaping is not documented.
+const GLOB_CHARS: &[char] = &['*', '?', '[', ']', '{', '}'];
+
 /// What a project file may not touch.
 #[derive(Clone, Debug)]
 pub struct Bounds {
@@ -29,6 +51,8 @@ pub struct Bounds {
     /// Where the credential stores that are symlinks point (a dotfiles
     /// repo, a synced folder): refused like the stores themselves.
     pub credential_targets: Vec<PathBuf>,
+    /// Where the [`UNSANDBOXED`] paths that are symlinks point.
+    pub unsandboxed_targets: Vec<PathBuf>,
 }
 
 impl Bounds {
@@ -37,11 +61,12 @@ impl Bounds {
     pub fn of(project: &Project, all: &[Project], home: &Path, app_root: &Path) -> Bounds {
         let home = real(home);
         let others = || all.iter().filter(|p| p.id != project.id);
-        let credential_targets = CREDENTIAL_STORES
-            .iter()
-            .map(|(p, _)| home.join(p))
-            .filter_map(|c| Some(real(&c)).filter(|r| *r != c))
-            .collect();
+        // The real paths behind the ones that are symlinks.
+        let targets = |rel: &mut dyn Iterator<Item = &str>| {
+            rel.map(|p| home.join(p)).filter_map(|c| Some(real(&c)).filter(|r| *r != c)).collect()
+        };
+        let credential_targets = targets(&mut CREDENTIAL_STORES.iter().map(|(p, _)| *p));
+        let unsandboxed_targets = targets(&mut UNSANDBOXED.iter().copied());
         Bounds {
             app_root: real(app_root),
             main_checkout: real(&project.path),
@@ -49,6 +74,7 @@ impl Bounds {
             other_repos: others().map(|p| real(&p.path)).collect(),
             other_worktree_roots: others().map(|p| real(&p.worktree_root)).collect(),
             credential_targets,
+            unsandboxed_targets,
             home,
         }
     }
@@ -88,8 +114,15 @@ pub fn check(canon: &Path, b: &Bounds) -> Result<(), &'static str> {
     if stores.any(|c| inside(&c) || contains(&c)) {
         return Err("holds credentials, can't be shared with agents");
     }
+    let mut unsandboxed = UNSANDBOXED.iter().map(|p| b.home.join(p)).chain(b.unsandboxed_targets.iter().cloned());
+    if unsandboxed.any(|c| inside(&c) || contains(&c)) {
+        return Err("holds settings or code that runs outside the sandbox, can't be shared with agents");
+    }
     if contains(&b.main_checkout) || b.other_repos.iter().any(|r| contains(r)) {
         return Err("contains a project repository, pick a folder inside it");
+    }
+    if canon.to_string_lossy().contains(GLOB_CHARS) {
+        return Err("names with * ? [ ] { } can't be shared with agents yet; rename it or pick another folder");
     }
     Ok(())
 }
@@ -136,24 +169,37 @@ fn kind_of(p: &Path) -> FileKind {
 /// bounds and the entries already listed. Errors are the full message.
 #[cfg(test)]
 fn resolve(input: &str, b: &Bounds, files: &[ProjectFile]) -> Result<(PathBuf, FileKind), String> {
-    let canon = canonical(input, &b.home)?;
-    let kind = admit(input.trim(), &canon, b, files)?;
+    let (canon, kind) = locate(&[input.to_string()], &b.home).remove(0).found?;
+    admit(input.trim(), &canon, b, files)?;
     Ok((canon, kind))
 }
 
-/// `input` expanded and made canonical.
-fn canonical(input: &str, home: &Path) -> Result<PathBuf, String> {
-    let p = expand(input, home)?;
-    std::fs::canonicalize(&p).map_err(|_| format!("{}: no such file or folder", input.trim()))
+/// An input as found on disk: canonical, with its kind, or the refusal.
+#[derive(Clone, Debug)]
+pub struct Located {
+    pub input: String,
+    pub found: Result<(PathBuf, FileKind), String>,
 }
 
-/// The checks of [`resolve`] past canonicalization; the entry's kind.
-fn admit(shown: &str, canon: &Path, b: &Bounds, files: &[ProjectFile]) -> Result<FileKind, String> {
+/// The disk part of an add (`~` expanded, canonicalized, the kind), done
+/// before the list is read so the save holds nothing while the disk answers.
+/// Blank inputs are dropped.
+pub fn locate(inputs: &[String], home: &Path) -> Vec<Located> {
+    let one = |input: &str| {
+        let p = expand(input, home)?;
+        let canon = std::fs::canonicalize(&p).map_err(|_| format!("{}: no such file or folder", input.trim()))?;
+        let kind = kind_of(&canon);
+        Ok((canon, kind))
+    };
+    inputs.iter().filter(|i| !i.trim().is_empty()).map(|i| Located { input: i.clone(), found: one(i) }).collect()
+}
+
+/// The checks of [`resolve`] past canonicalization.
+fn admit(shown: &str, canon: &Path, b: &Bounds, files: &[ProjectFile]) -> Result<(), String> {
     if files.iter().any(|f| f.path == canon) {
         return Err(format!("{shown}: already in the project files"));
     }
-    check(canon, b).map_err(|m| format!("{shown}: {m}"))?;
-    Ok(kind_of(canon))
+    check(canon, b).map_err(|m| format!("{shown}: {m}"))
 }
 
 /// A refused input with its message (api-contract `refused`).
@@ -163,24 +209,25 @@ pub struct Refused {
     pub error: String,
 }
 
-/// Adds the valid `inputs` to `files` (all-or-some); returns the canonical
-/// paths added and the refused inputs. Duplicates inside one call count once.
+/// Adds the valid [`locate`]d inputs to `files` (all-or-some); returns the
+/// canonical paths added and the refused inputs. Duplicates inside one call
+/// count once. Doesn't touch the disk.
 pub fn add_batch(
     files: &mut Vec<ProjectFile>,
-    inputs: &[String],
+    inputs: &[Located],
     access: Option<FileAccess>,
     b: &Bounds,
     now_ms: u64,
 ) -> (Vec<PathBuf>, Vec<Refused>) {
     let (mut added, mut refused) = (Vec::new(), Vec::new());
-    for input in inputs.iter().filter(|i| !i.trim().is_empty()) {
+    for Located { input, found } in inputs {
         let shown = input.trim();
-        let checked = canonical(input, &b.home).and_then(|path| {
+        let checked = found.clone().and_then(|(path, kind)| {
             // Already added by this very call: counts once.
             if added.contains(&path) {
                 return Ok(None);
             }
-            let kind = admit(shown, &path, b, files)?;
+            admit(shown, &path, b, files)?;
             let access = access.unwrap_or_else(|| default_access(&path, files));
             check_nesting(&path, kind, access, files).map_err(|m| format!("{shown}: {m}"))?;
             if files.len() >= MAX_FILES {
@@ -305,6 +352,16 @@ pub fn at_spawn(files: &[ProjectFile], b: &Bounds) -> (Vec<SpawnFile>, Vec<Strin
 mod tests {
     use super::*;
 
+    fn add_batch(
+        files: &mut Vec<ProjectFile>,
+        inputs: &[String],
+        access: Option<FileAccess>,
+        b: &Bounds,
+        now_ms: u64,
+    ) -> (Vec<PathBuf>, Vec<Refused>) {
+        super::add_batch(files, &locate(inputs, &b.home), access, b, now_ms)
+    }
+
     struct Fx {
         _d: tempfile::TempDir,
         b: Bounds,
@@ -338,6 +395,7 @@ mod tests {
             other_repos: vec![home.join("dev/other")],
             other_worktree_roots: vec![home.join("dev/other.worktrees")],
             credential_targets: vec![],
+            unsandboxed_targets: vec![],
             home,
         };
         Fx { _d: d, b, root }
@@ -429,6 +487,76 @@ mod tests {
             resolve("~/dotfiles/aws", &b, &[]).unwrap_err(),
             "~/dotfiles/aws: holds credentials, can't be shared with agents"
         );
+    }
+
+    /// Settings or code that run outside the sandbox: inside, containing,
+    /// and behind a symlink.
+    #[test]
+    fn unsandboxed_paths_are_refused() {
+        let f = fx();
+        let h = &f.b.home;
+        for p in [".claude/hooks", "Library/LaunchAgents", ".config/git", "dotfiles/zsh"] {
+            std::fs::create_dir_all(h.join(p)).unwrap();
+        }
+        for p in [".claude.json", ".gitconfig", ".zshrc", ".bash_profile", ".profile", "dotfiles/zsh/zshrc"] {
+            std::fs::write(h.join(p), "x").unwrap();
+        }
+        std::os::unix::fs::symlink(h.join("dotfiles/zsh/zshrc"), h.join(".zshenv")).unwrap();
+        let msg = "holds settings or code that runs outside the sandbox, can't be shared with agents";
+        for p in [
+            "~/.claude",
+            "~/.claude/hooks",
+            "~/.claude.json",
+            "~/Library/LaunchAgents",
+            "~/.gitconfig",
+            "~/.config/git",
+            "~/.zshrc",
+            "~/.bash_profile",
+            "~/.profile",
+        ] {
+            assert_eq!(err(&f, p), format!("{p}: {msg}"));
+        }
+        // ~/.zshenv is a symlink into ~/dotfiles: its target and the folders holding it too.
+        let p = orch_store::Project {
+            path: f.b.main_checkout.clone(),
+            worktree_root: f.b.worktree_root.clone(),
+            ..test_project()
+        };
+        let b = Bounds::of(&p, &[], h, &f.b.app_root);
+        assert_eq!(b.unsandboxed_targets, [h.join("dotfiles/zsh/zshrc")]);
+        for p in ["~/dotfiles/zsh/zshrc", "~/dotfiles"] {
+            assert_eq!(resolve(p, &b, &[]).unwrap_err(), format!("{p}: {msg}"));
+        }
+        // A sibling of them is fine.
+        assert!(resolve("~/Brand", &b, &[]).is_ok());
+    }
+
+    /// Rule patterns are gitignore-style: a name with a glob character is
+    /// refused when added and skipped at spawn.
+    #[test]
+    fn glob_characters_are_refused() {
+        let f = fx();
+        let msg = "names with * ? [ ] { } can't be shared with agents yet; rename it or pick another folder";
+        for n in ["a*b", "a?b", "a[1]", "x]", "{a,b}", "c}"] {
+            std::fs::create_dir_all(f.b.home.join("Brand").join(n)).unwrap();
+            let p = format!("~/Brand/{n}");
+            assert_eq!(err(&f, &p), format!("{p}: {msg}"));
+        }
+        // Inside a folder whose name has one, too.
+        std::fs::write(f.b.home.join("Brand/a[1]/guide.md"), "x").unwrap();
+        assert_eq!(err(&f, "~/Brand/a[1]/guide.md"), format!("~/Brand/a[1]/guide.md: {msg}"));
+        // At spawn: an entry stored before the rule is skipped and logged.
+        let path = f.b.home.join("Brand/a*b");
+        let stored = ProjectFile {
+            path: path.clone(),
+            kind: FileKind::Folder,
+            access: FileAccess::Read,
+            note: None,
+            added_at_ms: 0,
+        };
+        let (out, skipped) = at_spawn(&[stored], &f.b);
+        assert!(out.is_empty());
+        assert_eq!(skipped, [format!("{}: {msg}", path.display())]);
     }
 
     fn test_project() -> orch_store::Project {
@@ -597,7 +725,13 @@ mod tests {
             external_files: vec![entry(ext.clone(), Some("Brand guide")), entry(root.join("gone"), None)],
             ..Default::default()
         };
-        sim.rt.db.set_project_settings(&p.id, &settings, &orch_store::TaskBackendConfig::Local, true).unwrap();
+        sim.rt
+            .db
+            .update_project_settings(&p.id, move |e| {
+                e.settings = settings;
+                Ok(())
+            })
+            .unwrap();
 
         sim.rt.spawn("a1", Some(crate::compile::SessionMode::New("s".into()))).unwrap();
         let dir = sim.rt.cfg.paths.agent_dir("a1");
