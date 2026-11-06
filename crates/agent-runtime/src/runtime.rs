@@ -31,6 +31,7 @@ use crate::env::EnvInputs;
 use crate::paths::{AppPaths, real, valid_id};
 use crate::preflight::{self, VersionCheck, VersionRange};
 use crate::procs::{self, AgentMatch, SystemProcs};
+use crate::project_files::{self, SpawnFile};
 use crate::pty::PtyProcess;
 use crate::reconcile::{self, ReconcileEnv, Report};
 use crate::resources::{self, LiveAgent, MemoryProbe, PressureFilter, SystemMemory};
@@ -897,6 +898,33 @@ impl Runtime {
         Ok(self.store.read(|s| s.agents[&rec.id].clone()))
     }
 
+    /// FR-112: the project's files for this spawn, re-checked; one that now
+    /// fails the checks is skipped and logged, never refusing the spawn.
+    fn spawn_project_files(&self, id: &str, project: Option<&str>, home: &Path) -> Vec<SpawnFile> {
+        let Some(p) = project.and_then(|p| self.db.project(p).ok().flatten()) else { return vec![] };
+        let files = p.typed_settings().external_files;
+        if files.is_empty() {
+            return vec![];
+        }
+        let all = self.db.projects(true).unwrap_or_default();
+        let bounds = project_files::Bounds::of(&p, &all, home, &self.cfg.paths.root);
+        let (out, skipped) = project_files::at_spawn(&files, &bounds);
+        for why in skipped {
+            self.event(id, "project_file_skipped", json!({"project": p.id, "reason": why}));
+        }
+        out
+    }
+
+    /// The live agents of `project` (FR-112: the Files section's note).
+    pub fn live_in_project(&self, project: &str) -> usize {
+        let live = self.live_ids();
+        self.store
+            .read(|s| live.iter().filter_map(|id| s.agents.get(id)).cloned().collect::<Vec<_>>())
+            .iter()
+            .filter(|rec| self.agent_project(rec).as_deref() == Some(project))
+            .count()
+    }
+
     /// Spawns `claude` for an existing agent: `--session-id` on first start,
     /// `--resume` afterwards (the default when `mode` is `None`).
     pub fn spawn(&self, id: &str, mode: Option<SessionMode>) -> Result<()> {
@@ -925,6 +953,8 @@ impl Runtime {
         env.otel_endpoint = self.cfg.otel_endpoint.clone().or_else(|| self.otlp_endpoint());
         let git_common_dir = worktree::common_dir(&wt)?;
         let main = real(&rec.repo);
+        let project = self.agent_project(&rec);
+        let project_files = self.spawn_project_files(id, project.as_deref(), &env.home);
         let ctx = CompileCtx {
             agent_id: id.into(),
             name: id.into(),
@@ -940,10 +970,10 @@ impl Runtime {
             session: mode,
             env,
             git_identity: self.git_identity.clone(),
+            project_files,
         };
         // Registry refs and opted-in Keychain env values, for this spawn's
         // files only (FR-601, NFR-3); a ref that can't work refuses the spawn.
-        let project = self.agent_project(&rec);
         let mut role = self.resolve_mcp(&rec.role, project.as_deref(), true)?;
         // FR-819: a downgrade in force runs the agent on its fallback model.
         role.model = self.turn_model(&rec);

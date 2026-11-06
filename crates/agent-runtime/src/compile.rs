@@ -9,8 +9,10 @@ use orch_protocol::HookEvent;
 use serde_json::{Value, json};
 
 use crate::env::{EnvInputs, agent_env, gitconfig};
+use crate::project_files::SpawnFile;
 use crate::role::Role;
 use crate::shell::sh_quote;
+use orch_store::{FileAccess, FileKind};
 
 /// Generous hook timeout that orch-hook never reaches (FR-806): timeouts fail open.
 pub const HOOK_TIMEOUT_S: u64 = 600;
@@ -26,6 +28,29 @@ pub const ORCH_PREAMBLE_TEAM: &str = "Text that starts with ORCH: in hook contex
 
 /// The orchestrator's MCP server name in `mcp.json` (tools appear as `mcp__orch__<tool>`).
 pub const ORCH_MCP_SERVER: &str = "orch";
+
+/// The head of the system prompt's Project files section (FR-112).
+pub const PROJECT_FILES_INTRO: &str = "## Project files\nThe user attached these to the project. They live outside the git repository: they are shared live by every agent of the project and are not versioned. Read them when your task needs them. Before changing one, re-read it and change only what your task needs; never delete or move them. Commit nothing of them.";
+
+/// The Project files section, `None` when the project has none.
+pub fn project_files_prompt(files: &[SpawnFile]) -> Option<String> {
+    if files.is_empty() {
+        return None;
+    }
+    let mut out = PROJECT_FILES_INTRO.to_string();
+    for f in files {
+        let state = match (f.missing, f.access) {
+            (true, _) => "missing",
+            (false, FileAccess::Write) => "read & write",
+            (false, FileAccess::Read) => "read only",
+        };
+        out.push_str(&format!("\n- `{}` ({}, {state})", f.path.display(), f.kind.as_str()));
+        if let Some(n) = &f.note {
+            out.push_str(&format!(": {n}"));
+        }
+    }
+    Some(out)
+}
 
 /// Credential stores made unreadable (ADR-009 decision 1). `true` = directory.
 /// `~/.gitconfig` is deliberately absent: denying it breaks git (P0).
@@ -95,6 +120,8 @@ pub struct CompileCtx {
     pub session: SessionMode,
     pub env: EnvInputs,
     pub git_identity: (String, String),
+    /// FR-112: the project's files, re-checked at spawn.
+    pub project_files: Vec<SpawnFile>,
 }
 
 /// The compiled agent: files to write, then the command to spawn.
@@ -183,6 +210,8 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
     // these writes from sandboxed Bash (README, "Known gaps").
     let mut allow_write = vec![ctx.git_common_dir.display().to_string()];
     allow_write.extend(role.extra_write.iter().map(|p| p.display().to_string()));
+    // FR-112: a read entry under a write folder must stay unwritable from Bash too.
+    let mut deny_write: Vec<String> = vec![];
 
     let mut deny = vec!["Bash(git push:*)".to_string()];
     for (p, is_dir) in CREDENTIAL_STORES {
@@ -203,6 +232,24 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
     allow.push(format!("Read({}/**)", rule_path(&ctx.agent_dir.join("messages"))));
     let tools = role.tools();
     allow.extend(tools.iter().map(|t| format!("mcp__{ORCH_MCP_SERVER}__{t}")));
+    // FR-112: project files. Missing ones are in the prompt only.
+    let present: Vec<&SpawnFile> = ctx.project_files.iter().filter(|f| !f.missing).collect();
+    for f in &present {
+        let r = rule_path(&f.path);
+        let pat = if f.kind == FileKind::Folder { format!("{r}/**") } else { r };
+        allow.push(format!("Read({pat})"));
+        let p = f.path.display().to_string();
+        match f.access {
+            FileAccess::Write => {
+                allow.push(format!("Edit({pat})"));
+                allow_write.push(p);
+            }
+            FileAccess::Read => {
+                deny.push(format!("Edit({pat})"));
+                deny_write.push(p);
+            }
+        }
+    }
 
     let settings = json!({
         "hooks": hooks,
@@ -221,6 +268,7 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
                 "denyRead": deny_read,
                 "allowRead": allow_read,
                 "allowWrite": allow_write,
+                "denyWrite": deny_write,
             },
         },
         "permissions": {
@@ -271,11 +319,19 @@ pub fn compile(role: &Role, ctx: &CompileCtx) -> Compiled {
     }
     args.push("--permission-mode".into());
     args.push(role.permission_mode.as_flag().into());
+    for f in present.iter().filter(|f| f.kind == FileKind::Folder) {
+        args.push("--add-dir".into());
+        args.push(f.path.display().to_string());
+    }
     let preamble = if tools.iter().any(|t| t == "request_pr") { ORCH_PREAMBLE } else { ORCH_PREAMBLE_TEAM };
-    let prompt = match role.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+    let mut prompt = match role.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => format!("{preamble}\n\n{p}"),
         None => preamble.to_string(),
     };
+    if let Some(section) = project_files_prompt(&ctx.project_files) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&section);
+    }
     args.push("--append-system-prompt".into());
     args.push(prompt);
     args.push("-n".into());
@@ -335,6 +391,7 @@ pub(crate) mod tests {
             session,
             env,
             git_identity: ("N".into(), "e@x".into()),
+            project_files: vec![],
         }
     }
 
@@ -539,5 +596,111 @@ pub(crate) mod tests {
     #[test]
     fn rule_paths() {
         assert_eq!(rule_path(Path::new("/a/b")), "//a/b");
+    }
+
+    fn pf(path: &str, kind: FileKind, access: FileAccess, note: Option<&str>, missing: bool) -> SpawnFile {
+        SpawnFile { path: path.into(), kind, access, note: note.map(String::from), missing }
+    }
+
+    fn with_files(files: Vec<SpawnFile>) -> Compiled {
+        let mut cx = ctx(SessionMode::New("u".into()));
+        cx.project_files = files;
+        let mut role = Role::solo();
+        role.prompt = Some("You are the backend role.".into());
+        compile(&role, &cx)
+    }
+
+    fn prompt_of(c: &Compiled) -> &str {
+        &c.args[c.args.iter().position(|a| a == "--append-system-prompt").unwrap() + 1]
+    }
+
+    fn add_dirs(c: &Compiled) -> Vec<&str> {
+        c.args.windows(2).filter(|w| w[0] == "--add-dir").map(|w| w[1].as_str()).collect()
+    }
+
+    /// FR-112 acceptance 3–4: rules, sandbox and `--add-dir` per access and kind.
+    #[test]
+    fn project_files_read_write_file_folder() {
+        let c = with_files(vec![
+            pf("/Users/u/Brand", FileKind::Folder, FileAccess::Write, Some("Brand guide"), false),
+            pf("/Users/u/design/app.figcraft", FileKind::File, FileAccess::Write, None, false),
+            pf("/Users/u/specs/api.yaml", FileKind::File, FileAccess::Read, Some("Partner API"), false),
+            pf("/Users/u/Ref", FileKind::Folder, FileAccess::Read, None, false),
+            pf("/Users/u/Brand/legal", FileKind::Folder, FileAccess::Read, None, false),
+        ]);
+        let s = &c.settings;
+        let allow = strs(&s["permissions"]["allow"]);
+        let deny = strs(&s["permissions"]["deny"]);
+        for r in [
+            "Read(//Users/u/Brand/**)",
+            "Edit(//Users/u/Brand/**)",
+            "Read(//Users/u/design/app.figcraft)",
+            "Edit(//Users/u/design/app.figcraft)",
+            "Read(//Users/u/specs/api.yaml)",
+            "Read(//Users/u/Ref/**)",
+            "Read(//Users/u/Brand/legal/**)",
+        ] {
+            assert!(allow.contains(&r.to_string()), "allow {r}");
+        }
+        for r in ["Edit(//Users/u/specs/api.yaml)", "Edit(//Users/u/Ref/**)", "Edit(//Users/u/Brand/legal/**)"] {
+            assert!(deny.contains(&r.to_string()), "deny {r}");
+            assert!(!allow.contains(&r.to_string()), "not allowed {r}");
+        }
+        let fs = &s["sandbox"]["filesystem"];
+        let allow_write = strs(&fs["allowWrite"]);
+        assert!(allow_write.contains(&"/Users/u/Brand".to_string()));
+        assert!(allow_write.contains(&"/Users/u/design/app.figcraft".to_string()));
+        assert!(!allow_write.iter().any(|p| p.contains("api.yaml") || p.ends_with("/Ref") || p.ends_with("legal")));
+        assert_eq!(strs(&fs["denyWrite"]), ["/Users/u/specs/api.yaml", "/Users/u/Ref", "/Users/u/Brand/legal"]);
+        assert_eq!(add_dirs(&c), ["/Users/u/Brand", "/Users/u/Ref", "/Users/u/Brand/legal"]);
+        // The flags come before the prompt, never inside it.
+        assert!(
+            c.args.iter().position(|a| a == "--add-dir") < c.args.iter().position(|a| a == "--append-system-prompt")
+        );
+    }
+
+    #[test]
+    fn project_files_prompt_section_after_the_role_prompt() {
+        let c = with_files(vec![
+            pf("/Users/me/Brand", FileKind::Folder, FileAccess::Write, Some("Brand guide: logo, colors, tone"), false),
+            pf("/Users/me/design/app.figcraft", FileKind::File, FileAccess::Write, None, false),
+            pf("/Users/me/specs/api.yaml", FileKind::File, FileAccess::Read, Some("Partner API"), false),
+            pf("/Users/me/old.pdf", FileKind::File, FileAccess::Write, None, true),
+        ]);
+        let want = format!(
+            "You are the backend role.\n\n{PROJECT_FILES_INTRO}\n\
+             - `/Users/me/Brand` (folder, read & write): Brand guide: logo, colors, tone\n\
+             - `/Users/me/design/app.figcraft` (file, read & write)\n\
+             - `/Users/me/specs/api.yaml` (file, read only): Partner API\n\
+             - `/Users/me/old.pdf` (file, missing)"
+        );
+        assert!(prompt_of(&c).ends_with(&want), "{}", prompt_of(&c));
+        assert!(PROJECT_FILES_INTRO.starts_with("## Project files\nThe user attached these to the project."));
+    }
+
+    /// Acceptance 7: a missing entry is in the prompt only.
+    #[test]
+    fn missing_project_files_get_no_rules() {
+        let c = with_files(vec![pf("/Users/u/gone", FileKind::Folder, FileAccess::Write, None, true)]);
+        let all = c.settings.to_string();
+        assert!(!all.contains("/Users/u/gone"), "{all}");
+        assert!(add_dirs(&c).is_empty());
+        assert!(prompt_of(&c).contains("- `/Users/u/gone` (folder, missing)"));
+    }
+
+    #[test]
+    fn no_project_files_no_section() {
+        let base = compile(
+            &{
+                let mut r = Role::solo();
+                r.prompt = Some("You are the backend role.".into());
+                r
+            },
+            &ctx(SessionMode::New("u".into())),
+        );
+        let c = with_files(vec![]);
+        assert_eq!(c.args, base.args);
+        assert!(!prompt_of(&c).contains("## Project files"));
+        assert_eq!(c.settings["sandbox"]["filesystem"]["denyWrite"], json!([]));
     }
 }

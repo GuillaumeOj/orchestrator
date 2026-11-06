@@ -9,6 +9,7 @@ use orch_team::Scope;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::LockOk;
 use crate::core::Core;
 
 /// The project settings form (FR-109).
@@ -347,7 +348,14 @@ impl Core {
                 }
             }
         }
-        rt.db.set_project_settings(project_id, &f.settings, &f.backend, f.track_orchestrator_dir)?;
+        {
+            // FR-112: the list is the Files section's; this form never changes it.
+            let _g = crate::project_files::SETTINGS_EDIT.lock_ok();
+            let mut settings = f.settings.clone();
+            settings.external_files =
+                rt.db.project(project_id)?.map(|p| p.typed_settings().external_files).unwrap_or_default();
+            rt.db.set_project_settings(project_id, &settings, &f.backend, f.track_orchestrator_dir)?;
+        }
         // From one Linear team or project to another: the old issues are not
         // the new team's, so the tasks not pushed stay local (never written
         // to the old issues again).
