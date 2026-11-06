@@ -1908,10 +1908,16 @@ mod tests {
         assert_eq!(parse(json!({"type": "none"})), IntakeSource::None);
         assert_eq!(serde_json::to_value(&docs).unwrap()["type"], "repo_docs");
         let field = |v: Value| parse(v).normalized().validate().unwrap_err().field;
-        assert_eq!(field(json!({"type": "github", "repo": "shop", "filter": {"kind": "label", "names": ["a"]}})), "repo");
+        assert_eq!(
+            field(json!({"type": "github", "repo": "shop", "filter": {"kind": "label", "names": ["a"]}})),
+            "repo"
+        );
         assert_eq!(field(json!({"type": "github", "filter": {"kind": "label", "names": []}})), "names");
         assert_eq!(field(json!({"type": "github", "filter": {"kind": "milestone", "title": " "}})), "title");
-        assert_eq!(field(json!({"type": "github", "filter": {"kind": "project", "owner": "a", "number": 0}})), "number");
+        assert_eq!(
+            field(json!({"type": "github", "filter": {"kind": "project", "owner": "a", "number": 0}})),
+            "number"
+        );
         assert_eq!(field(json!({"type": "linear", "team": " "})), "team");
         assert_eq!(field(json!({"type": "repo_docs", "glob": "/etc/*"})), "glob");
         assert_eq!(field(json!({"type": "repo_docs", "glob": "docs/../../x/*.md"})), "glob");

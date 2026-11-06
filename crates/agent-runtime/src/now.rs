@@ -425,6 +425,7 @@ impl Runtime {
         // Today's entries and the Overwatch, read once the publisher's lock is released.
         drop(st);
         snap["overwatch"] = json!(self.overwatch_status());
+        snap["intake"] = self.intake_view();
         let mut entries = self.db.chat_day(&day).unwrap_or_default();
         self.refresh_undo(&mut entries);
         snap["chat"] = json!({"entries": entries, "day": day});
@@ -486,6 +487,16 @@ impl Runtime {
             st.team = self.team_cache(team_changes);
         }
         topics.extend(db_topics);
+        // `now.intake` rides the event, whole, when it changed (P4.5
+        // api-contract §2.1); intake writes touch its topic.
+        let intake = (force || topics.contains(crate::intake::TOPIC) || !self.intake.published())
+            .then(|| self.intake_view())
+            .filter(|v| self.intake.publish(v));
+        if intake.is_some() {
+            topics.insert(crate::intake::TOPIC.into());
+        } else {
+            topics.remove(crate::intake::TOPIC);
+        }
         if changed.inbox {
             topics.insert(orch_protocol::Topic::Inbox.into());
         }
@@ -626,6 +637,9 @@ impl Runtime {
         let mut event = delta(state.rev + 1, &old, &world, (&upsert, &closed), &new_outcomes, &chat, &topics);
         if let (Some(e), Some(o)) = (event.as_mut(), overwatch) {
             e["overwatch"] = json!(o);
+        }
+        if let (Some(e), Some(i)) = (event.as_mut(), intake) {
+            e["intake"] = i;
         }
         state.decisions = decisions;
         state.last = Some(world);

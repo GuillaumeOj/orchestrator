@@ -579,6 +579,49 @@ pub async fn linear_states(core: CoreState<'_>, team: String) -> Res<Value> {
     blocking(core, move |c| c.linear_states(&team)).await
 }
 
+// ---- P4.5 intake (api-contract §3.1)
+
+#[tauri::command]
+pub async fn intake_source(core: CoreState<'_>, project: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_source(&project)).await
+}
+
+/// Validates, stores and refreshes at once: `{ preview }`.
+#[tauri::command]
+pub async fn intake_source_set(core: CoreState<'_>, project: String, source: Value) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_source_set(&project, &source)).await
+}
+
+#[tauri::command]
+pub async fn intake_preview(core: CoreState<'_>, project: String, source: Value) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_preview(&project, &source)).await
+}
+
+#[tauri::command]
+pub async fn intake_options(core: CoreState<'_>, project: String, source: Value) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_options(&project, &source)).await
+}
+
+#[tauri::command]
+pub async fn intake_refresh(core: CoreState<'_>, project: Option<String>) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_refresh(project.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn intake_item(core: CoreState<'_>, item: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_item(&item)).await
+}
+
+#[tauri::command]
+pub async fn intake_hide(core: CoreState<'_>, item: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_hide(&item)).await
+}
+
+#[tauri::command]
+pub async fn intake_unhide(core: CoreState<'_>, item: String) -> Res<Value> {
+    blocking(core, move |c| c.runtime()?.intake_unhide(&item)).await
+}
+
 /// `queue_off_hours`: `entry` and `task` are string ids per the contract
 /// (`"12"`, a task's `"T-12"` too); numbers are accepted as well.
 #[tauri::command]

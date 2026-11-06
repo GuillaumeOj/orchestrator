@@ -48,14 +48,14 @@ impl Size {
         })
     }
 
-    /// Linear points: ≤ 1 S, 2–4 M, ≥ 5 L.
+    /// Linear points: ≤ 1 S, ≤ 3 M, more L (api-contract F22).
     pub fn of_points(p: f64) -> Size {
         if p <= 1.0 {
             Size::S
-        } else if p >= 5.0 {
-            Size::L
-        } else {
+        } else if p <= 3.0 {
             Size::M
+        } else {
+            Size::L
         }
     }
 }
@@ -126,23 +126,34 @@ impl Listing {
     }
 }
 
-/// A refresh's failure (api-contract §2.1 codes); `fix` names where the
-/// user mends it: `settings` | `integrations` | `gh_scope`.
+/// The longest error message (api-contract F3).
+const MESSAGE_MAX: usize = 200;
+
+/// A refresh's failure (api-contract §2.1 codes, F1–F3); `fix` names where
+/// the user mends it: `settings` | `integrations` | `gh_scope` | none.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SourceError {
     pub code: &'static str,
     pub message: String,
-    pub fix: &'static str,
+    pub fix: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_at_ms: Option<u64>,
 }
 
 impl SourceError {
     pub fn new(code: &'static str, message: impl Into<String>) -> SourceError {
         let fix = match code {
-            "gh_missing" | "gh_auth" | "linear_key" | "linear_auth" => "integrations",
-            "gh_scope" => "gh_scope",
-            _ => "settings",
+            "gh_missing" | "gh_auth" | "linear_key" | "linear_auth" => Some("integrations"),
+            "gh_scope" => Some("gh_scope"),
+            "not_found" | "bad_glob" | "branch_missing" => Some("settings"),
+            _ => None,
         };
-        SourceError { code, message: message.into(), fix }
+        let message: String = message.into();
+        let message = match message.char_indices().nth(MESSAGE_MAX - 1) {
+            Some((at, _)) => format!("{}…", &message[..at]),
+            None => message,
+        };
+        SourceError { code, message, fix, retry_at_ms: None }
     }
 
     pub fn json(&self) -> Value {
@@ -204,7 +215,10 @@ pub fn gh_error(e: &anyhow::Error) -> SourceError {
         "gh_missing"
     } else if l.contains("read:project") || l.contains("insufficient_scopes") || l.contains("required scopes") {
         "gh_scope"
-    } else if l.contains("gh auth login") || l.contains("not logged") || l.contains("http 401") || l.contains("bad credentials")
+    } else if l.contains("gh auth login")
+        || l.contains("not logged")
+        || l.contains("http 401")
+        || l.contains("bad credentials")
     {
         "gh_auth"
     } else if l.contains("rate limit") {
@@ -326,11 +340,8 @@ fn project_items(gh: &dyn Gh, repo: &str, owner: &str, number: u64, status: Opti
             }
             let number = c["number"].as_u64()?;
             let in_repo = c["repository"]["nameWithOwner"].as_str().unwrap_or(repo);
-            let reference = if in_repo.eq_ignore_ascii_case(repo) {
-                format!("#{number}")
-            } else {
-                format!("{in_repo}#{number}")
-            };
+            let reference =
+                if in_repo.eq_ignore_ascii_case(repo) { format!("#{number}") } else { format!("{in_repo}#{number}") };
             let (body, truncated) = clip(c["body"].as_str().unwrap_or(""));
             let updated = st(&c["updatedAt"]);
             let mut extra = serde_json::Map::new();
@@ -381,7 +392,32 @@ pub fn github(gh: &dyn Gh, repo: &str, filter: &GithubIntakeFilter) -> R<Listing
     }
 }
 
-/// `intake_options` for GitHub: the repository's labels and open milestones.
+const PROJECTS_QUERY: &str = "query OrchIntakeProjects($owner: String!) { repositoryOwner(login: $owner) { \
+    ... on ProjectV2Owner { projectsV2(first: 20) { nodes { number title closed \
+    field(name: \"Status\") { ... on ProjectV2SingleSelectField { options { name } } } } } } } }";
+
+/// The open Projects v2 boards of `owner` with their *Status* values
+/// (api-contract F19): `Err` with the source error (e.g. `gh_scope`).
+fn github_projects(gh: &dyn Gh, owner: &str) -> R<Vec<Value>> {
+    let v =
+        gh_json(gh, &["api", "graphql", "-f", &format!("query={PROJECTS_QUERY}"), "-f", &format!("owner={owner}")])?;
+    if let Some(e) = graphql_errors(&v) {
+        return Err(e);
+    }
+    Ok(v["data"]["repositoryOwner"]["projectsV2"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["closed"] != true)
+        .map(|p| {
+            json!({"owner": owner, "number": p["number"], "title": p["title"],
+                   "statuses": names(&p["field"]["options"], "name")})
+        })
+        .collect())
+}
+
+/// `intake_options` for GitHub: the repository's labels, open milestones
+/// and its owner's projects (a projects failure is in `error`, F19).
 pub fn github_options(gh: &dyn Gh, repo: &str) -> R<Value> {
     let labels = gh_json(gh, &["api", &format!("repos/{repo}/labels?per_page=100")])?;
     let labels: Vec<String> = names(&labels, "name").into_iter().filter(|l| !is_orch_label(l)).collect();
@@ -392,7 +428,12 @@ pub fn github_options(gh: &dyn Gh, repo: &str) -> R<Value> {
         .flatten()
         .map(|m| json!({"title": m["title"], "open_issues": m["open_issues"].as_u64().unwrap_or(0)}))
         .collect();
-    Ok(json!({"labels": labels, "milestones": milestones}))
+    let owner = repo.split('/').next().unwrap_or(repo);
+    let (projects, error) = match github_projects(gh, owner) {
+        Ok(p) => (p, Value::Null),
+        Err(e) => (vec![], e.json()),
+    };
+    Ok(json!({"labels": labels, "milestones": milestones, "projects": projects, "error": error}))
 }
 
 /// The checkout's repository by `gh repo view` (when no remote names it).
@@ -415,7 +456,7 @@ impl Backoff {
     fn call<T>(&self, now: u64, f: impl FnOnce() -> Result<T, GqlError>) -> R<T> {
         let until = self.0.lock().unwrap_or_else(|e| e.into_inner()).0;
         if now < until {
-            return Err(rate_limited((until - now).div_ceil(1000)));
+            return Err(rate_limited(now, (until - now).div_ceil(1000)));
         }
         match f() {
             Ok(v) => {
@@ -426,7 +467,7 @@ impl Backoff {
                 let mut b = self.0.lock().unwrap_or_else(|e| e.into_inner());
                 let step = retry_after_s.unwrap_or_else(|| (b.1 * 2).clamp(60, 3600));
                 *b = (now + step * 1000, step);
-                Err(rate_limited(step))
+                Err(rate_limited(now, step))
             }
             Err(e) => Err(linear_error(&e)),
         }
@@ -438,13 +479,15 @@ impl Backoff {
     }
 }
 
-fn rate_limited(s: u64) -> SourceError {
-    SourceError::new("rate_limited", format!("rate limit reached: retrying in {s} s"))
+fn rate_limited(now: u64, s: u64) -> SourceError {
+    let mut e = SourceError::new("rate_limited", format!("rate limit reached: retrying in {s} s"));
+    e.retry_at_ms = Some(now + s * 1000);
+    e
 }
 
 pub fn linear_error(e: &GqlError) -> SourceError {
     match e {
-        GqlError::RateLimited { retry_after_s } => rate_limited(retry_after_s.unwrap_or(60)),
+        GqlError::RateLimited { retry_after_s } => rate_limited(orch_store::now_ms(), retry_after_s.unwrap_or(60)),
         GqlError::Unauthorized(m) if m.contains("no Linear API key") || m.contains("no Linear transport") => {
             SourceError::new("linear_key", "no Linear API key: add it in Settings › Integrations")
         }
@@ -502,7 +545,10 @@ pub fn linear(gql: &dyn Graphql, backoff: &Backoff, now: u64, q: &LinearQuery) -
             extra.insert("priority".into(), json!(priority));
             extra.insert("estimate".into(), json!(estimate));
             let f = Fetched {
-                reference: v["identifier"].as_str().filter(|i| !i.is_empty()).map_or_else(|| st(&v["id"]), str::to_string),
+                reference: v["identifier"]
+                    .as_str()
+                    .filter(|i| !i.is_empty())
+                    .map_or_else(|| st(&v["id"]), str::to_string),
                 title: st(&v["title"]),
                 url: v["url"].as_str().map(str::to_string),
                 body,
@@ -679,7 +725,8 @@ mod tests {
     impl Gh for FakeGh {
         fn run(&self, args: &[String]) -> anyhow::Result<String> {
             self.calls.lock().unwrap().push(args.to_vec());
-            let key = if args.get(1).map(String::as_str) == Some("graphql") { "graphql".into() } else { args[1].clone() };
+            let key =
+                if args.get(1).map(String::as_str) == Some("graphql") { "graphql".into() } else { args[1].clone() };
             let a = self.answers.lock().unwrap();
             let hit = a.iter().find(|(k, _)| key.starts_with(k.as_str())).map(|(_, v)| v.clone());
             match hit {
@@ -719,12 +766,9 @@ mod tests {
         list.push(pr);
         list.extend((10..70).map(|n| issue(n, &["ready"])));
         gh.answer("repos/acme/shop/issues?state=open&labels=ready,good%20first", json!(list));
-        let l = github(
-            &gh,
-            "acme/shop",
-            &GithubIntakeFilter::Label { names: vec!["ready".into(), "good first".into()] },
-        )
-        .unwrap();
+        let l =
+            github(&gh, "acme/shop", &GithubIntakeFilter::Label { names: vec!["ready".into(), "good first".into()] })
+                .unwrap();
         assert_eq!((l.items.len(), l.total, l.more()), (50, 61, 11));
         let first = &l.items[0];
         assert_eq!((first.reference.as_str(), first.size, first.truncated), ("#1", Some(Size::L), true));
@@ -737,7 +781,7 @@ mod tests {
         assert_read_only(&gh.calls.lock().unwrap());
         gh.fail("repos/acme/shop/issues", "exec: No such file or directory (os error 2)");
         let e = github(&gh, "acme/shop", &GithubIntakeFilter::Label { names: vec!["ready".into()] }).unwrap_err();
-        assert_eq!((e.code, e.fix), ("gh_missing", "integrations"));
+        assert_eq!((e.code, e.fix), ("gh_missing", Some("integrations")));
     }
 
     #[test]
@@ -778,15 +822,16 @@ mod tests {
         let refs: Vec<&str> = l.items.iter().map(|i| i.reference.as_str()).collect();
         assert_eq!(refs, ["#9", "acme/api#2"]);
         assert_eq!(l.items[1].size, Some(Size::S));
-        let all = github(&gh, "acme/shop", &GithubIntakeFilter::Project { owner: "acme".into(), number: 7, status: None })
-            .unwrap();
+        let all =
+            github(&gh, "acme/shop", &GithubIntakeFilter::Project { owner: "acme".into(), number: 7, status: None })
+                .unwrap();
         assert_eq!(all.items.len(), 3);
         let calls = gh.calls.lock().unwrap().clone();
         assert!(calls[0].iter().any(|a| a == "number=7") && calls[0].iter().any(|a| a == "owner=acme"));
         assert_read_only(&calls);
         // Scope missing, no such project.
         gh.answer("graphql", json!({"errors": [{"type": "INSUFFICIENT_SCOPES", "message": "needs read:project"}]}));
-        assert_eq!(github(&gh, "acme/shop", &f).unwrap_err().fix, "gh_scope");
+        assert_eq!(github(&gh, "acme/shop", &f).unwrap_err().fix, Some("gh_scope"));
         gh.answer("graphql", json!({"data": {"repositoryOwner": {"projectV2": null}}}));
         assert_eq!(github(&gh, "acme/shop", &f).unwrap_err().code, "not_found");
     }
@@ -800,8 +845,11 @@ mod tests {
         assert_eq!(code("API rate limit exceeded for user"), "rate_limited");
         assert_eq!(code("Your token has not been granted the required scopes: read:project"), "gh_scope");
         assert_eq!(code("boom"), "failed");
-        assert_eq!(SourceError::new("gh_auth", "x").fix, "integrations");
-        assert_eq!(SourceError::new("bad_glob", "x").fix, "settings");
+        assert_eq!(SourceError::new("gh_auth", "x").fix, Some("integrations"));
+        assert_eq!(SourceError::new("bad_glob", "x").fix, Some("settings"));
+        assert_eq!(SourceError::new("failed", "x").fix, None);
+        let long = SourceError::new("failed", "y".repeat(500));
+        assert_eq!(long.message.chars().count(), 200);
     }
 
     #[test]
@@ -809,8 +857,22 @@ mod tests {
         let gh = FakeGh::default();
         gh.answer("repos/a/b/labels", json!([{"name": "ready"}, {"name": "orch"}, {"name": "orch:ready"}]));
         gh.answer("repos/a/b/milestones", json!([{"title": "v2", "number": 2, "open_issues": 4}]));
+        gh.answer(
+            "graphql",
+            json!({"data": {"repositoryOwner": {"projectsV2": {"nodes": [
+            {"number": 3, "title": "Road", "closed": false, "field": {"options": [{"name": "Todo"}, {"name": "Done"}]}},
+            {"number": 1, "title": "Old", "closed": true, "field": null}]}}}}),
+        );
         let o = github_options(&gh, "a/b").unwrap();
-        assert_eq!(o, json!({"labels": ["ready"], "milestones": [{"title": "v2", "open_issues": 4}]}));
+        assert_eq!(
+            o,
+            json!({"labels": ["ready"], "milestones": [{"title": "v2", "open_issues": 4}],
+                   "projects": [{"owner": "a", "number": 3, "title": "Road", "statuses": ["Todo", "Done"]}],
+                   "error": null})
+        );
+        gh.answer("graphql", json!({"errors": [{"type": "INSUFFICIENT_SCOPES", "message": "read:project"}]}));
+        let o = github_options(&gh, "a/b").unwrap();
+        assert_eq!((o["projects"].as_array().unwrap().len(), &o["error"]["code"]), (0, &json!("gh_scope")));
         assert_read_only(&gh.calls.lock().unwrap());
     }
 
@@ -861,11 +923,17 @@ mod tests {
         let refs: Vec<&str> = l.items.iter().map(|i| i.reference.as_str()).collect();
         assert_eq!(refs, ["ENG-3", "ENG-2", "ENG-1"], "priority, then sort order; none last; orch left out");
         assert_eq!((l.items[0].size, l.items[1].size, l.items[2].size), (Some(Size::L), Some(Size::S), None));
+        assert_eq!((Size::of_points(3.0), Size::of_points(3.5), Size::of_points(0.5)), (Size::M, Size::L, Size::S));
         let (_, vars) = gql.calls.lock().unwrap()[0].clone();
         assert_eq!(vars["filter"]["team"], json!({"key": {"eq": "ENG"}}));
         assert_eq!(vars["filter"]["project"], json!({"id": {"eq": "pr-1"}}));
         assert_eq!(vars["filter"]["labels"], json!({"name": {"eq": "next"}}));
-        let q2 = LinearQuery { team: "1b2c3d4e-0000-1111-2222-333344445555", project: None, label: None, include_backlog: true };
+        let q2 = LinearQuery {
+            team: "1b2c3d4e-0000-1111-2222-333344445555",
+            project: None,
+            label: None,
+            include_backlog: true,
+        };
         let l = linear(&gql, &b, 1000, &q2).unwrap();
         assert_eq!(l.items[0].reference, "ENG-4");
         assert_eq!(gql.calls.lock().unwrap()[1].1["filter"]["team"]["id"]["eq"], q2.team);
@@ -875,7 +943,8 @@ mod tests {
         // 429: the error says when, and no call is made until then.
         *gql.limited.lock().unwrap() = true;
         let e = linear(&gql, &b, 2000, &q).unwrap_err();
-        assert_eq!((e.code, e.message.contains("30 s")), ("rate_limited", true));
+        assert_eq!((e.code, e.message.contains("30 s"), e.retry_at_ms), ("rate_limited", true, Some(32_000)));
+        assert_eq!(e.fix, None);
         *gql.limited.lock().unwrap() = false;
         let n = gql.calls.lock().unwrap().len();
         assert_eq!(linear(&gql, &b, 10_000, &q).unwrap_err().code, "rate_limited");

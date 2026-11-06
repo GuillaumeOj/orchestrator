@@ -38,6 +38,8 @@ impl NetClock {
         let due = |last: Option<Instant>, every| last.is_none_or(|t| now.saturating_duration_since(t) >= every);
         if due(self.fetch, FETCH_EVERY) {
             rt.fetch_tick(&rt.cfg.fetch, rt.cfg.conditions.as_ref());
+            // Repo-docs intake: a moved branch tip is refreshed (no network).
+            rt.intake_tip_check();
             self.fetch = Some(now);
         }
         if due(self.pr, crate::pr::PR_EVERY) {
@@ -69,6 +71,8 @@ pub fn serve(rt: Arc<Runtime>, listener: UnixListener, stop: Arc<AtomicBool>) ->
             }
         })?
     };
+    // Intake refreshes (P4.5) on their own thread.
+    Runtime::spawn_intake(rt.clone(), stop.clone())?;
     // Network work (fetch) on its own thread: it can take a while.
     {
         let (rt, stop) = (rt.clone(), stop.clone());

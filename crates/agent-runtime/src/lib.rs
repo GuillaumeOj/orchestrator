@@ -13,6 +13,7 @@ pub mod flow;
 pub mod github_issue;
 pub mod handover;
 pub mod inbox;
+pub mod intake;
 pub mod integrations;
 pub mod intervention;
 pub mod linear;
