@@ -82,7 +82,7 @@ pub fn design_handoff_body(uri: &str, note: &str, from: &str, lead: &str, export
 fn smudge_lfs(repo: &std::path::Path, bytes: Vec<u8>) -> Result<Vec<u8>> {
     use std::io::Write;
     use std::process::{Command, Stdio};
-    if !bytes.starts_with(b"version https://git-lfs") {
+    if !is_lfs_pointer(&bytes) {
         return Ok(bytes);
     }
     let not_found = || anyhow!("not found on branch");
@@ -90,6 +90,7 @@ fn smudge_lfs(repo: &std::path::Path, bytes: Vec<u8>) -> Result<Vec<u8>> {
         .args(["lfs", "smudge"])
         .current_dir(repo)
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove("GIT_LFS_SKIP_SMUDGE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -98,10 +99,15 @@ fn smudge_lfs(repo: &std::path::Path, bytes: Vec<u8>) -> Result<Vec<u8>> {
     // A pointer is a few lines: it fits the pipe, so no thread is needed to feed it.
     child.stdin.take().ok_or_else(not_found)?.write_all(&bytes).map_err(|_| not_found())?;
     let out = child.wait_with_output().map_err(|_| not_found())?;
-    if !out.status.success() {
+    // A smudge that echoes the pointer back (skip-smudge, object not local) is no content either.
+    if !out.status.success() || is_lfs_pointer(&out.stdout) {
         return Err(not_found());
     }
     Ok(out.stdout)
+}
+
+fn is_lfs_pointer(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"version https://git-lfs")
 }
 
 impl Runtime {
@@ -381,6 +387,12 @@ mod tests {
         let OpenTarget::File(p) = rt.artifact_open_target("f1", b).unwrap() else { panic!() };
         assert!(p.starts_with(rt.cfg.paths.root.join("previews")), "{}", p.display());
         assert_eq!(std::fs::read_to_string(p).unwrap(), "<svg/>");
+    }
+
+    #[test]
+    fn lfs_pointer_detection() {
+        assert!(is_lfs_pointer(b"version https://git-lfs.github.com/spec/v1\noid sha256:0\n"));
+        assert!(!is_lfs_pointer(b"plain"));
     }
 
     #[test]
