@@ -865,9 +865,9 @@ mod tests {
 
     #[test]
     fn the_old_team_query_is_caught() {
-        let old = TEAM_QUERY.replace("first: 1, ", "");
-        assert_ne!(old, TEAM_QUERY);
-        assert!(fake::complexity(&old) > 10_000.0);
+        let old = "query OrchTeam($key: String!) { teams(filter: { key: { eq: $key } }) { nodes { id key name \
+            states(first: 100) { nodes { id name type position } } projects(first: 100) { nodes { id name } } } } }";
+        assert!(fake::complexity(old) > 10_000.0);
         assert!(fake::complexity(TEAM_QUERY) < 300.0);
     }
 
