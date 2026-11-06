@@ -9,7 +9,7 @@
   import { onMount, tick } from 'svelte';
   import { app, openEditor, toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { ACCESS, accessLabel, addedToast, ICON, inRect, midTruncate, pathLines, tilde } from '../lib/projectfiles.js';
+  import { ACCESS, accessLabel, addedToast, ICON, inRect, items, midTruncate, pathLines, tilde } from '../lib/projectfiles.js';
   import Kbd from './Kbd.svelte';
 
   let { project, name } = $props();
@@ -54,7 +54,7 @@
       const n = r.added?.length ?? 0;
       if (n) {
         toast(addedToast(n, name));
-        announce = `Added ${n} item${n === 1 ? '' : 's'}`;
+        announce = `Added ${items(n)}`;
         fresh = r.added;
         clearTimeout(freshTimer);
         freshTimer = setTimeout(() => (fresh = []), 2000);
@@ -83,9 +83,7 @@
     const lines = pathLines(text);
     if (!lines.length) return;
     // Refused lines stay in the field so they can be fixed; the block says why.
-    const n = await add(lines);
-    if (n !== undefined && !refusals.length) text = '';
-    else if (n !== undefined) text = refusals.map((r) => r.path).join('\n');
+    if ((await add(lines)) !== undefined) text = refusals.map((r) => r.path).join('\n');
   }
 
   /** Applies one change to an entry; the error text comes back, null when it worked. */

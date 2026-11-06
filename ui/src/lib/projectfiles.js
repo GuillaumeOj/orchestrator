@@ -43,7 +43,9 @@ export function midTruncate(path, max = 44) {
   return `${p.slice(0, max - 1 - tail)}…${p.slice(p.length - tail)}`;
 }
 
-export const addedToast = (n, name) => `Added ${n} item${n === 1 ? '' : 's'} to ${name}`;
+export const items = (n) => `${n} item${n === 1 ? '' : 's'}`;
+
+export const addedToast = (n, name) => `Added ${items(n)} to ${name}`;
 
 /** Is a drag position (physical pixels, as Tauri reports it) inside `rect`? */
 export function inRect(pos, rect, ratio = 1) {
