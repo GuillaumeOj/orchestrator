@@ -157,7 +157,7 @@ export function chatWidthBounds({ width, sidebar, inspector }) {
 export const clampChatWidth = (w, bounds) => Math.round(Math.min(bounds.max, Math.max(bounds.min, w)));
 
 /** The default Overwatch width: 360 at ≥ 1512 px, 340 below. */
-export const chatWidthDefault = () => (wide() ? size.chat : CHAT_NARROW);
+const chatWidthDefault = () => (wide() ? size.chat : CHAT_NARROW);
 
 /** The Overwatch column's bounds right now. */
 export const chatBounds = () => chatWidthBounds({ width: app.width, sidebar: app.sidebar, inspector: app.inspector });
