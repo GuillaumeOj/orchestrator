@@ -651,7 +651,7 @@ impl Runtime {
         let started = Instant::now();
         let created = now_ms();
         let deciding = ev
-            .filter(|e| e.effect == Effect::Overwatch && rec.id != crate::overwatch::ID)
+            .filter(|e| e.effect == Effect::Overwatch && !rec.is_overwatch())
             .and_then(|_| self.overwatch_deciding_deadline(created))
             .map(|t| t.min(created + budget.ceiling.as_millis() as u64));
         let item = match self.add_item(

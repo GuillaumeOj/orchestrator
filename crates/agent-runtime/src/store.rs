@@ -63,6 +63,11 @@ pub struct AgentRecord {
     /// [`crate::startup::CRASH_RESTARTS_PER_HOUR`] (§3.5).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub crash_restarts: Vec<u64>,
+    /// Made by the Overwatch's own start (P4.4) and only by it: a record is
+    /// routed as the Overwatch (its tools, reserved slot and hooks) only
+    /// with it, never on its id alone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overwatch: bool,
 }
 
 /// Where a team agent sits: its run, its node and its current task.
@@ -90,6 +95,11 @@ impl TurnRow {
 }
 
 impl AgentRecord {
+    /// The Overwatch itself: its reserved id, and made by its own start.
+    pub fn is_overwatch(&self) -> bool {
+        self.overwatch && self.id == crate::overwatch::ID
+    }
+
     /// Created and never spawned: a team agent waiting for its first turn.
     pub fn never_started(&self) -> bool {
         self.tracker.state == crate::state::AgentState::Created && self.spawns == 0

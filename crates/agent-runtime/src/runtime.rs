@@ -351,7 +351,7 @@ pub(crate) fn is_lead(a: &AgentRecord) -> bool {
 /// Outside the process cap, never park-suspended or rotated: a lead and the
 /// Overwatch (P4.4).
 pub(crate) fn reserved_slot(a: &AgentRecord) -> bool {
-    is_lead(a) || a.id == crate::overwatch::ID
+    is_lead(a) || a.is_overwatch()
 }
 
 /// True (and restamps `last`) when `every` ms have passed since `last`.
@@ -864,6 +864,7 @@ impl Runtime {
         if !valid_id(&spec.agent_id) {
             bail!("invalid agent id {:?}", spec.agent_id);
         }
+        crate::overwatch::refuse_reserved(&spec.agent_id)?;
         if self.store.read(|s| s.agents.get(&spec.agent_id).is_some_and(|a| a.tracker.state != AgentState::Archived)) {
             bail!("agent {} exists: resume it instead", spec.agent_id);
         }
@@ -902,6 +903,7 @@ impl Runtime {
             start_fresh: false,
             spawned_at_ms: None,
             crash_restarts: vec![],
+            overwatch: false,
         };
         self.store.write(|s| s.agents.insert(rec.id.clone(), rec.clone()))?;
         // Every agent belongs to a registered project (J1); starting one marks it active (FR-103).
@@ -942,7 +944,7 @@ impl Runtime {
         env.user_statusline = self.user_statusline.clone();
         env.otel_endpoint = self.cfg.otel_endpoint.clone().or_else(|| self.otlp_endpoint());
         // The Overwatch's folder is no repository: it reads, never writes.
-        let overwatch = (id == crate::overwatch::ID).then(|| self.overwatch_reads(&wt));
+        let overwatch = rec.is_overwatch().then(|| self.overwatch_reads(&wt));
         let git_common_dir = if overwatch.is_some() { wt.clone() } else { worktree::common_dir(&wt)? };
         let main = real(&rec.repo);
         let ctx = CompileCtx {
@@ -1017,6 +1019,12 @@ impl Runtime {
         Ok(())
     }
 
+    /// `id` is the Overwatch's record (made by its own start, never a
+    /// session that took its id).
+    pub(crate) fn is_overwatch(&self, id: &str) -> bool {
+        self.store.read(|s| s.agents.get(id).is_some_and(AgentRecord::is_overwatch))
+    }
+
     pub(crate) fn on_exit(&self, id: &str, pid: i32, status: Option<u32>) {
         let gone = {
             let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
@@ -1062,7 +1070,7 @@ impl Runtime {
         let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
         self.handle_releases(releases);
         self.event(id, "exited", json!({"status": status}));
-        if id == crate::overwatch::ID {
+        if self.is_overwatch(id) {
             // Its own path (P4.4): `down`, no startup card, no notification.
             if gone.is_some() {
                 self.overwatch_exited(asked, failed_start);
@@ -1500,12 +1508,12 @@ impl Runtime {
         }
         // A solo session's finished turn is an outcome of the digest (D8):
         // its last assistant message, not the prompt it was sent.
-        if m.event == HookEvent::PreToolUse && id == crate::overwatch::ID {
+        if m.event == HookEvent::PreToolUse && rec.is_overwatch() {
             self.overwatch_tool_call(self.now.clock().0);
         }
         if m.event == HookEvent::Stop
             && rec.team.is_none()
-            && id != crate::overwatch::ID
+            && !rec.is_overwatch()
             && let Some(msg) = p.last_assistant_message.as_deref().filter(|t| !t.trim().is_empty())
         {
             self.event(id, "turn.done", json!({"summary": crate::team::cut(msg, 280)}));
@@ -1525,7 +1533,7 @@ impl Runtime {
                 }),
             // A rule, or the Inbox (held), or the pane when nobody answers in time.
             // The Overwatch runs `dontAsk`: a prompt of its own is refused, never held.
-            HookEvent::PermissionRequest if id == crate::overwatch::ID => Some(HookOutput::permission_request(
+            HookEvent::PermissionRequest if rec.is_overwatch() => Some(HookOutput::permission_request(
                 orch_protocol::PermissionBehavior::Deny,
                 Some("ORCH: the Overwatch only reads and calls its own tools."),
             )),
@@ -1558,7 +1566,7 @@ impl Runtime {
                 }
             }
             Effect::TurnStarted { origin, markers } => {
-                if id == crate::overwatch::ID {
+                if rec.is_overwatch() {
                     self.overwatch_turn_started(now);
                 }
                 self.end_wait_episode(id);
@@ -1586,12 +1594,12 @@ impl Runtime {
                 // Idle either way (§3.2): with background work, only its
                 // tasks and continues wait for it.
                 self.end_turn(rec, live.as_deref(), now);
-                if id == crate::overwatch::ID && fx == Effect::TurnEnded {
+                if rec.is_overwatch() && fx == Effect::TurnEnded {
                     self.overwatch_turn_ended(self.now.clock().0);
                 }
             }
             Effect::RateLimited { message } => {
-                if id == crate::overwatch::ID {
+                if rec.is_overwatch() {
                     self.overwatch_rate_limited();
                 }
                 let model_limit =
@@ -1632,7 +1640,7 @@ impl Runtime {
                     }
                 }
             }
-            Effect::Failed { error } if id == crate::overwatch::ID => {
+            Effect::Failed { error } if rec.is_overwatch() => {
                 // No card (it raises no notification): a login error puts it down.
                 self.event(id, "overwatch.failed", json!({"error": error}));
                 let releases = self.gov().turn_ended(&AgentId(id.into()), Timestamp::now());
@@ -2681,7 +2689,7 @@ impl Runtime {
                 let new = never_started || rec.start_fresh;
                 let spawned = self.spawn(&rec.id, new.then(|| SessionMode::New(rec.session_id.clone())));
                 if let Err(e) = spawned.as_ref()
-                    && rec.id == crate::overwatch::ID
+                    && rec.is_overwatch()
                 {
                     // `down`, no alert card (P4.4): Restart starts it again.
                     self.store.write(|s| {
@@ -3297,6 +3305,7 @@ pub(crate) mod tests {
             start_fresh: false,
             spawned_at_ms: None,
             crash_restarts: vec![],
+            overwatch: false,
         }
     }
 

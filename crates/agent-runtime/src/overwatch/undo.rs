@@ -130,6 +130,15 @@ impl Runtime {
         }
     }
 
+    /// Tells `agent` what the user undid.
+    fn undo_deliver(&self, agent: &str, text: &str) -> Result<String> {
+        #[cfg(test)]
+        if self.overwatch.fail_undo_delivery.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            bail!("delivery failed (test)");
+        }
+        self.deliver_user(agent, text)
+    }
+
     /// `chat_undo {entry, text?}`: undoes what the line offers. The updated
     /// entry; `{ok: false, gone}` with the reason when it can no longer work;
     /// `text` is required to correct an answer.
@@ -178,20 +187,28 @@ impl Runtime {
             }
             "told" => {
                 let (tool, input, brief) = call();
-                self.overwatch.deny_once(agent, &tool, input, now + ONE_SHOT_MS);
-                self.deliver_user(
+                // Rolled back when the agent is not told: a retry adds it again.
+                let until = now + ONE_SHOT_MS;
+                self.overwatch.deny_once(agent, &tool, input.clone(), until);
+                if let Err(e) = self.undo_deliver(
                     agent,
                     &format!("ORCH: the user reversed the Overwatch's approval of `{brief}`: don't repeat it; if you still need it, say why."),
-                )?;
+                ) {
+                    self.overwatch.forget_deny(agent, &tool, &input, until);
+                    return Err(e);
+                }
             }
             "allow_instead" => {
                 let (tool, input, brief) = call();
                 let item = ctx["item"].as_str().and_then(|d| self.item_of_decision(d));
-                self.db.add_one_shot(agent, &tool, &input, item, now + ONE_SHOT_MS)?;
-                self.deliver_user(
-                    agent,
-                    &format!("ORCH: the user overrode the denial of `{brief}`: you may retry it."),
-                )?;
+                // Rolled back when the agent is not told: a retry adds it again.
+                let id = self.db.add_one_shot(agent, &tool, &input, item, now + ONE_SHOT_MS)?;
+                if let Err(e) = self
+                    .undo_deliver(agent, &format!("ORCH: the user overrode the denial of `{brief}`: you may retry it."))
+                {
+                    let _ = self.db.remove_one_shot(id);
+                    return Err(e);
+                }
             }
             "correct" => {
                 let t = text.unwrap_or_default();

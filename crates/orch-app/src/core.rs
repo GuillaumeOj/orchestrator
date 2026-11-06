@@ -444,6 +444,7 @@ impl Core {
         if !agent_runtime::paths::valid_id(&id) {
             bail!("name {id:?}: use letters, digits, '-' or '_'");
         }
+        agent_runtime::overwatch::refuse_reserved(&id)?;
         rt.start(&solo_spec(&project, &id, req))?;
         Ok(id)
     }
@@ -1472,6 +1473,7 @@ mod tests {
             start_fresh: false,
             spawned_at_ms: None,
             crash_restarts: vec![],
+            overwatch: false,
         }
     }
 

@@ -41,6 +41,14 @@ impl Store {
         })
     }
 
+    /// Removes one-shot allow `id` (its grant was rolled back).
+    pub fn remove_one_shot(&self, id: u64) -> Result<()> {
+        self.write(move |tx| {
+            tx.execute("DELETE FROM one_shot_allows WHERE id=?1", params![id as i64])?;
+            Ok(())
+        })
+    }
+
     /// Consumes the matching unexpired one-shot allow, if any; returns the
     /// Inbox item it came from (`Some(None)` when it had none).
     pub fn take_one_shot(&self, agent_id: &str, tool: &str, input: &Value) -> Result<Option<Option<u64>>> {
@@ -105,5 +113,8 @@ mod tests {
         assert_eq!(s.take_one_shot("a1", "Bash", &reworded).unwrap(), Some(Some(8)));
         s.add_one_shot("a1", "Bash", &input, None, crate::now_ms().saturating_sub(1)).unwrap();
         assert_eq!(s.take_one_shot("a1", "Bash", &input).unwrap(), None, "expired");
+        let id = s.add_one_shot("a1", "Bash", &input, None, far).unwrap();
+        s.remove_one_shot(id).unwrap();
+        assert_eq!(s.take_one_shot("a1", "Bash", &input).unwrap(), None, "removed");
     }
 }

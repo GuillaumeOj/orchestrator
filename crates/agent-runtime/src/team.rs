@@ -504,6 +504,7 @@ impl Runtime {
     /// turn starts it once the Governor admits it).
     fn add_team_agent(&self, cx: &RunCtx, node: &str, n: u32, row: &orch_store::WorktreeRow) -> Result<AgentRecord> {
         let id = agent_id_for(&cx.feature.slug, node, n);
+        crate::overwatch::refuse_reserved(&id)?;
         let cfg = orch_team::compile_node(&cx.team, node, &cx.roles, &cx.fctx()).map_err(|e| anyhow!(e))?;
         let role = Role::from_node(&cfg).map_err(|e| anyhow!(e))?;
         // Refs that can't work refuse the launch now, not at the first spawn.
@@ -540,6 +541,7 @@ impl Runtime {
             start_fresh: false,
             spawned_at_ms: None,
             crash_restarts: vec![],
+            overwatch: false,
         };
         self.store.write(|s| s.agents.insert(id.clone(), rec.clone()))?;
         // Bind the worktree row to its agent.
@@ -890,7 +892,7 @@ impl Runtime {
             }
             // The Overwatch: interrupted at its ceiling, no card (its turn
             // end counts the long turn, P4.4).
-            if id == crate::overwatch::ID {
+            if self.is_overwatch(&id) {
                 if matches!(what, Watch::Ceiling(_)) {
                     let _ = self.interrupt(&id);
                 }
