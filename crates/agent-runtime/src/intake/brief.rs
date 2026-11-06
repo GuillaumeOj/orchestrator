@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use crate::inbox::Stage;
 use crate::overwatch::tools::{Out, ToolErr, err};
 use crate::runtime::Runtime;
-use crate::team::{cut, str_arg};
+use crate::team::str_arg;
 
 pub const TITLE_MAX: usize = 80;
 pub const BRIEF_MAX: usize = 8000;
@@ -72,10 +72,16 @@ impl Runtime {
         };
         // Threaded under the planning message (the one this turn answers).
         let reply_to = str_arg(args, "reply_to").map(str::to_string).or_else(|| self.overwatch_reply_target());
-        let thread = reply_to.as_deref().map(|r| {
-            let n = r.trim_start_matches("c-").parse::<u64>().ok();
-            n.and_then(|n| self.db.chat_get(n).ok().flatten()).and_then(|e| e.thread).unwrap_or_else(|| r.to_string())
-        });
+        // The thread of the message answered (its own id when it is a root).
+        let thread = match reply_to.as_deref() {
+            Some(r) => {
+                let n = r.trim_start_matches("c-").parse::<u64>().ok();
+                let e = n.and_then(|n| self.db.chat_get(n).ok().flatten());
+                let e = e.ok_or_else(|| bad(format!("reply_to {r:?}: no such chat entry")))?;
+                Some(e.thread.clone().unwrap_or_else(|| e.id()))
+            }
+            None => None,
+        };
         let est = self.intake_est();
         let estimate = super::estimate::estimate(&est, &p.id, Some("M"), mode);
         let payload = json!({
@@ -83,7 +89,7 @@ impl Runtime {
             "mode": mode, "team": team, "reply_to": reply_to, "thread": thread,
             "estimate": estimate, "notify": false,
         });
-        let body = format!("Brief · {}", cut(title, 80));
+        let body = format!("Brief · {title}");
         // The open one of the same thread is replaced.
         let revised: Vec<u64> = match &thread {
             Some(t) => {
@@ -91,14 +97,7 @@ impl Runtime {
             }
             None => vec![],
         };
-        let id = self.add_item(None, "brief", body, payload, PRIORITY_BRIEF)?;
-        if let Some(t) = &thread {
-            let _ = self.store.write(|s| {
-                if let Some(i) = s.inbox.iter_mut().find(|i| i.id == id) {
-                    i.thread = Some(t.clone());
-                }
-            });
-        }
+        let id = self.add_item_in(None, "brief", body, payload, PRIORITY_BRIEF, thread)?;
         for old in revised {
             self.brief_close(old, "revised", "revised", None, crate::overwatch::ID);
         }

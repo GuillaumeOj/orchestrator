@@ -115,7 +115,8 @@ pub fn item_brief(r: &IntakeRow) -> String {
 impl Runtime {
     /// A feature slug for `title`, free in `project`.
     pub(crate) fn intake_slug(&self, project: &str, title: &str) -> String {
-        unique(&kebab(title, 40), 40, |s| self.db.feature_by_slug(project, s).ok().flatten().is_some())
+        // `solo` is not a feature slug (`launch` refuses it).
+        unique(&kebab(title, 40), 40, |s| s == "solo" || self.db.feature_by_slug(project, s).ok().flatten().is_some())
     }
 
     /// A solo session name for `title`, free among the agents.
@@ -203,8 +204,10 @@ impl Runtime {
         let mode = mode.unwrap_or(&suggested);
         Ok(match mode {
             "team" => {
+                // A brief's slug stays unless an open feature took it since
+                // (an archived one comes back on launch, as `propose_brief` allows).
                 let slug = slug
-                    .filter(|s| self.db.feature_by_slug(&project.id, s).ok().flatten().is_none())
+                    .filter(|s| self.db.feature_by_slug(&project.id, s).ok().flatten().is_none_or(|f| f.archived))
                     .unwrap_or_else(|| self.intake_slug(&project.id, &title));
                 json!({"launch": {
                     "project_id": project.id,
@@ -224,37 +227,43 @@ impl Runtime {
         })
     }
 
-    /// Before a start: the item is ready (or the brief open) and no other
-    /// start holds it. Held until the returned claim is dropped.
+    /// Before a start: no other start holds the item (or brief), then it is
+    /// ready (or open). Held until the returned claim is dropped; taken
+    /// before the check, so a start that just finished is seen as started.
     pub(crate) fn intake_claim(&self, project: &str, link: Option<&IntakeLink>) -> Result<Claim<'_>> {
         let link = link.filter(|l| l.item.is_some() || l.brief_decision.is_some());
-        let (what, key) = match link {
-            None => (Claimed::None, None),
+        let key = match link {
+            None => return Ok(Claim { rt: self, what: Claimed::None, key: None }),
             Some(IntakeLink { item: Some(_), brief_decision: Some(_) }) => {
                 bail!(bad("intake", "an item or a brief decision, not both"))
             }
+            Some(IntakeLink { item: Some(i), .. }) => format!("it_{}", item_id(i)?),
+            Some(IntakeLink { brief_decision: Some(b), .. }) => crate::decision::decision_id("brief", brief_n(b)?),
+            Some(_) => unreachable!(),
+        };
+        if !self.intake.claims.lock().unwrap_or_else(|e| e.into_inner()).insert(key.clone()) {
+            return Err(stale("already started", None));
+        }
+        // Released on any error below (the claim's drop).
+        let mut claim = Claim { rt: self, what: Claimed::None, key: Some(key) };
+        claim.what = match link {
             Some(IntakeLink { item: Some(i), .. }) => {
                 let r = self.ready_row(i)?;
                 if r.project_id != project {
                     bail!(bad("intake", format!("item {i} is not of project {project}")));
                 }
-                (Claimed::Item(r), Some(format!("it_{}", item_id(i)?)))
+                Claimed::Item(r)
             }
             Some(IntakeLink { brief_decision: Some(b), .. }) => {
                 let d = self.open_brief(b)?;
                 if d.payload["project"].as_str() != Some(project) {
                     bail!(bad("intake", format!("{b} is not a brief of project {project}")));
                 }
-                (Claimed::Brief(d), Some(b.clone()))
+                Claimed::Brief(d)
             }
-            Some(_) => unreachable!(),
+            _ => unreachable!(),
         };
-        if let Some(k) = &key
-            && !self.intake.claims.lock().unwrap_or_else(|e| e.into_inner()).insert(k.clone())
-        {
-            return Err(stale("already started", None));
-        }
-        Ok(Claim { rt: self, what, key })
+        Ok(claim)
     }
 
     /// After a successful start of `kind` (`run` | `agent`) `reference`
@@ -267,8 +276,13 @@ impl Runtime {
                 self.event("-", "intake.untracked_start", json!({"project": project, "kind": kind, "ref": name}));
             }
             Claimed::Item(r) => {
-                if let Err(e) = self.db.intake_mark_started(r.id, kind, reference) {
-                    eprintln!("warn: intake item it_{} not marked started: {e:#}", r.id);
+                match self.db.intake_mark_started(r.id, kind, reference) {
+                    Ok(true) => {}
+                    // Gone upstream (or hidden) while the start ran: no origin to keep.
+                    Ok(false) => {
+                        eprintln!("warn: intake item it_{} was no longer ready when {kind} {reference} started", r.id)
+                    }
+                    Err(e) => eprintln!("warn: intake item it_{} not marked started: {e:#}", r.id),
                 }
                 let est = self.intake_estimate_of(r);
                 let est_pp = est[mode]["low_pp"]

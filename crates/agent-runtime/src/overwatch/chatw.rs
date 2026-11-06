@@ -118,9 +118,12 @@ impl Runtime {
             kind: "text".into(),
             thread: thread.map(str::to_string),
             text: Some(text.to_string()),
-            meta: Some(match &plan {
-                Some(p) => json!({"delivery": if pending { "pending" } else { "waking" }, "plan": p}),
-                None => json!({"delivery": if pending { "pending" } else { "waking" }}),
+            meta: Some({
+                let mut m = json!({"delivery": if pending { "pending" } else { "waking" }});
+                if let Some(p) = &plan {
+                    m["plan"] = p.clone();
+                }
+                m
             }),
             ..Default::default()
         };

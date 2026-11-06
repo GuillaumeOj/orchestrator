@@ -318,7 +318,9 @@ impl Runtime {
     pub fn launch(&self, spec: &LaunchSpec) -> Result<TeamRun> {
         let claim = self.intake_claim(&spec.project_id, spec.intake.as_ref())?;
         let run = self.launch_run(spec)?;
-        let slug = self.db.feature(&run.feature_id)?.map_or_else(|| spec.slug.trim().to_string(), |f| f.slug);
+        // The run exists now: a failed read must not hide it (the item would stay ready).
+        let slug =
+            self.db.feature(&run.feature_id).ok().flatten().map_or_else(|| spec.slug.trim().to_string(), |f| f.slug);
         self.intake_started(claim, &spec.project_id, "run", &run.id, &slug);
         Ok(run)
     }
@@ -1391,6 +1393,10 @@ impl Runtime {
         // First the runs, so the team tick starts no new seat meanwhile.
         for run in self.db.runs(Some(feature_id), true)? {
             self.set_run_state(&run.id, RunState::Failed, "deleted by the user")?;
+        }
+        // Every run of the feature, ended ones too (a run that failed
+        // before any outcome still holds its intake item).
+        for run in self.db.runs(Some(feature_id), false)? {
             self.intake_on_run_deleted(&run.id);
         }
         let recs: Vec<(String, std::path::PathBuf)> = self.store.read(|s| {
