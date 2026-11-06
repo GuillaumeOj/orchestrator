@@ -4,7 +4,7 @@
   // to ask for changes. The card never says the Overwatch started anything.
   import { projectName } from '../../lib/app.svelte.js';
   import { blockOf } from '../../lib/inbox.js';
-  import { basisText, overRoom, ppRange, roomWarning } from '../../lib/intake.js';
+  import { basisText, estimateText, overRoom, roomWarning } from '../../lib/intake.js';
   import Markdown from '../Markdown.svelte';
 
   /** @type {{ d: any, ow: any, live?: boolean }} */
@@ -18,11 +18,8 @@
     blockOf(d, 'text')?.text ?? [project, mode === 'team' ? 'team run' : 'solo session', mode === 'team' ? (d.team ?? d.payload?.team) : null].filter(Boolean).join(' · '),
   );
   const e = $derived(est?.[mode]);
-  const range = $derived(e ? ppRange(e.low_pp, e.high_pp) : '');
   const estLine = $derived(
-    range
-      ? `${e.basis === 'default' ? 'rough ' : ''}${range.startsWith('<') ? range : `≈ ${range}`} pp week · ${basisText(e, mode, est.size ?? 'M', project)}`
-      : '',
+    e && est ? `${estimateText({ estimate: est }, mode).replace(/ · (team|solo)$/, '')} · ${basisText(e, mode, est.size ?? 'M', project)}` : '',
   );
   const warn = $derived(est && overRoom(est, mode) ? roomWarning({ estimate: { ...est, over_room: true } }, project) : '');
   const footer = $derived(
