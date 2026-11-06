@@ -1,11 +1,11 @@
 <script>
   // Settings › Integrations (FR-1203, p3-design-notes §5.1–5.3, J13 · 1–2):
-  // GitHub (gh), Linear and Notion (a token in the Keychain), Penpot and Figma
+  // GitHub (gh), Linear and Notion (a token in the Keychain), Penpot, Figma and FigCraft
   // (from the MCP registry). Rows: j/k move, t test, ⏎ connect / reconnect,
   // x remove the token. A row needing you sorts first.
   import { onMount, tick } from 'svelte';
   import { confirm, now30, openSettings, runInPane, toast } from '../lib/app.svelte.js';
-  import { checkedAt, INTEGRATION_COPY, integrationDetail, needsUser, sortIntegrations } from '../lib/ecosystem.js';
+  import { CONNECTOR_TOOLS, checkedAt, DESIGN_TOOLS, INTEGRATION_COPY, integrationDetail, needsUser, sortIntegrations } from '../lib/ecosystem.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { move } from '../lib/select.js';
   import ConnBadge from './ConnBadge.svelte';
@@ -93,8 +93,10 @@
     );
   }
 
-  /** Penpot and Figma come from the MCP registry (their status is their servers'). */
-  const designTool = (it) => it.id === 'penpot' || it.id === 'figma';
+  /** Penpot, Figma and FigCraft come from the MCP registry (their status is their servers'). */
+  const designTool = (it) => DESIGN_TOOLS.includes(it.id);
+  /** Only the claude.ai connectors read "Not seen yet"; FigCraft's status is real. */
+  const isConnector = (it) => CONNECTOR_TOOLS.includes(it.id);
 
   /** ⏎: what Connect / Reconnect does per integration (§5.2). */
   async function connect(it) {
@@ -141,7 +143,7 @@
   </header>
   {#if error}<p class="err">Could not read the integrations: {error}</p>{/if}
   {#if items == null}
-    {#each ['GitHub', 'Linear', 'Notion', 'Penpot', 'Figma'] as n (n)}
+    {#each ['GitHub', 'Linear', 'Notion', 'Penpot', 'Figma', 'FigCraft'] as n (n)}
       <div class="row skel" aria-busy="true"><span class="name">{n}</span><span class="skelbar"></span></div>
     {/each}
   {:else}
@@ -151,8 +153,8 @@
       <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
       <div class="row" class:sel={focused} data-integration={it.id} onclick={() => (selId = it.id)}>
         <div class="top">
-          <span class="name"><span class="ico" aria-hidden="true">{{ github: '\u{F02A4}', linear: '\u{F0453}', notion: '\u{F0219}', penpot: '\u{F0431}', figma: '\u{F0431}' }[it.id] ?? ''}</span> {it.name}</span>
-          <ConnBadge status={it.status} busy={busy[it.id]} connector={designTool(it)} />
+          <span class="name"><span class="ico" aria-hidden="true">{{ github: '\u{F02A4}', linear: '\u{F0453}', notion: '\u{F0219}', penpot: '\u{F0431}', figma: '\u{F0431}', figcraft: '\u{F0431}' }[it.id] ?? ''}</span> {it.name}</span>
+          <ConnBadge status={it.status} busy={busy[it.id]} connector={isConnector(it)} />
           <span class="detail ell">{integrationDetail(it)}</span>
           <span class="grow"></span>
           <span class="muted when">{checkedAt(it.checked_at_ms, now)}</span>
