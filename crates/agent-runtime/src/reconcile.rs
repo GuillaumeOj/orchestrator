@@ -492,6 +492,7 @@ mod tests {
             start_fresh: false,
             spawned_at_ms: None,
             crash_restarts: vec![],
+            overwatch: false,
         }
     }
 

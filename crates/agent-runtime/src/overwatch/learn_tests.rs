@@ -426,6 +426,37 @@ fn undoing_an_overwatch_denial_allows_that_exact_call_once() {
 }
 
 #[test]
+fn an_undo_whose_delivery_failed_grants_one_one_shot_when_retried() {
+    let (_d, rt) = manual();
+    agent_state(&rt, AgentState::Idle);
+    let n = deciding_item(&rt, "pnpm add zod");
+    call(&rt, "decide_permission", json!({"decision": format!("inbox-{n}"), "effect": "deny", "reason": "off task"}));
+    let e = entry_of(&rt, &format!("inbox-{n}"));
+    rt.overwatch.fail_undo_delivery.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(rt.chat_undo(&e.id(), None).is_err());
+    assert_eq!(rt.chat_undo(&e.id(), None).unwrap()["ok"], true);
+    let input = json!({"command": "pnpm add zod"});
+    assert!(rt.db.take_one_shot("a1", "Bash", &input).unwrap().is_some());
+    assert_eq!(rt.db.take_one_shot("a1", "Bash", &input).unwrap(), None, "exactly one");
+}
+
+#[test]
+fn a_reversed_approval_whose_delivery_failed_denies_once_when_retried() {
+    let (_d, rt) = manual();
+    agent_state(&rt, AgentState::Idle);
+    let n = deciding_item(&rt, "pnpm add zod");
+    call(&rt, "decide_permission", json!({"decision": format!("inbox-{n}"), "effect": "allow", "reason": "routine"}));
+    let e = entry_of(&rt, &format!("inbox-{n}"));
+    rt.overwatch.fail_undo_delivery.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(rt.chat_undo(&e.id(), None).is_err());
+    assert!(rt.overwatch.denies_empty(), "rolled back");
+    assert_eq!(rt.chat_undo(&e.id(), None).unwrap()["ok"], true);
+    let input = json!({"command": "pnpm add zod"});
+    assert!(rt.overwatch.take_deny("a1", "Bash", &input));
+    assert!(rt.overwatch.denies_empty(), "exactly one");
+}
+
+#[test]
 fn undoing_an_answer_needs_the_corrected_text() {
     let (_d, rt) = manual();
     agent_state(&rt, AgentState::Idle);

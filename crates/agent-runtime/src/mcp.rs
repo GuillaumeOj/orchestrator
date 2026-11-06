@@ -30,7 +30,7 @@ impl Runtime {
             return (true, format!("{} is not one of your tools", m.tool), Value::Null);
         }
         // The Overwatch's own tools check the hard lists themselves (B3).
-        if rec.id == crate::overwatch::ID {
+        if rec.is_overwatch() {
             return self.overwatch_tool(&rec, &m.tool, &m.arguments);
         }
         // The hard deny list, a one-shot allow (an approved parked call),
@@ -202,6 +202,38 @@ mod tests {
 
     fn call(rt: &Runtime, tool: &str, args: Value) -> McpAnswer {
         rt.on_mcp(&McpMsg { agent_id: "a1".into(), tool: tool.into(), arguments: args, deadline_ms: 10_000 }, None)
+    }
+
+    #[test]
+    fn a_start_with_the_overwatch_id_is_refused_and_never_routed_as_it() {
+        let (_d, rt) = test_runtime(true);
+        let (_r, repo) = scratch_repo();
+        let spec = orch_protocol::AgentSpec {
+            agent_id: crate::overwatch::ID.into(),
+            repo: repo.display().to_string(),
+            ..Default::default()
+        };
+        let e = rt.start(&spec).unwrap_err().to_string();
+        assert!(e.contains("reserved for the Overwatch"), "{e}");
+        assert!(rt.store.read(|s| !s.agents.contains_key(crate::overwatch::ID)), "nothing recorded");
+        // A record that took the id another way (an old state file) is not
+        // the Overwatch: no reserved slot, none of its tools.
+        let mut rec = crate::runtime::tests::test_agent(&repo);
+        rec.id = crate::overwatch::ID.into();
+        assert!(!rec.is_overwatch() && !crate::runtime::reserved_slot(&rec));
+        assert!(rec.role.orch_tools.iter().all(|t| !orch_team::compile::OVERWATCH_TOOLS.contains(&t.as_str())));
+        rt.store.write(|s| s.agents.insert(rec.id.clone(), rec)).unwrap();
+        let world = rt.on_mcp(
+            &McpMsg {
+                agent_id: crate::overwatch::ID.into(),
+                tool: "world".into(),
+                arguments: json!({}),
+                deadline_ms: 1000,
+            },
+            None,
+        );
+        assert!(world.0 && world.1.contains("not one of your tools"), "{world:?}");
+        assert!(!rt.is_overwatch(crate::overwatch::ID));
     }
 
     #[test]

@@ -43,6 +43,9 @@ pub struct Overwatch {
     pub(crate) limit_until: std::sync::atomic::AtomicU64,
     /// One `chat_undo` at a time (two taps must not both pass the checks).
     pub(crate) undoing: std::sync::Mutex<()>,
+    /// Tests: the next undo's delivery fails.
+    #[cfg(test)]
+    pub(crate) fail_undo_delivery: std::sync::atomic::AtomicBool,
 }
 
 impl Overwatch {
@@ -52,6 +55,14 @@ impl Overwatch {
         let now = orch_protocol::now_ms();
         d.retain(|x| x.3 > now);
         d.push((agent.into(), tool.into(), input, until_ms));
+    }
+
+    /// Takes back a deny `deny_once` just added (its undo failed).
+    pub(crate) fn forget_deny(&self, agent: &str, tool: &str, input: &Value, until_ms: u64) {
+        let mut d = self.denies.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = d.iter().rposition(|x| x.0 == agent && x.1 == tool && &x.2 == input && x.3 == until_ms) {
+            d.remove(i);
+        }
     }
 
     #[cfg(test)]
@@ -174,6 +185,9 @@ impl Runtime {
 
     /// The day the stored session belongs to (its folder's name).
     fn session_day(rec: &AgentRecord) -> Option<String> {
+        if !rec.is_overwatch() {
+            return None;
+        }
         rec.worktree.file_name().map(|n| n.to_string_lossy().into_owned())
     }
 
@@ -478,6 +492,7 @@ impl Runtime {
             start_fresh: false,
             spawned_at_ms: None,
             crash_restarts: vec![],
+            overwatch: true,
         };
         self.store.write(|s| {
             // The old session's undelivered turns are not the new one's.

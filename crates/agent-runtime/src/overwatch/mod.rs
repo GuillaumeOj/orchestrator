@@ -32,6 +32,14 @@ use serde_json::Value;
 
 /// The Overwatch's fixed agent id.
 pub const ID: &str = "overwatch";
+/// Refuses the Overwatch's reserved id on every start path but its own
+/// (a Start, a solo session, a team member, an import).
+pub fn refuse_reserved(id: &str) -> anyhow::Result<()> {
+    if id == ID {
+        anyhow::bail!("{ID:?} is reserved for the Overwatch: pick another name");
+    }
+    Ok(())
+}
 /// Its usage allocation and report row.
 pub const ALLOCATION: &str = "overwatch";
 /// Its system prompt (compiled in).

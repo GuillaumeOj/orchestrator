@@ -513,7 +513,7 @@ impl Runtime {
                         >= recent
             };
             // The Overwatch is not in Mission control's lanes (spec §3.3).
-            let agents = s.agents.iter().filter(|(id, _)| id.as_str() != crate::overwatch::ID);
+            let agents = s.agents.iter().filter(|(_, a)| !a.is_overwatch());
             (
                 agents.map(|(k, v)| (k.clone(), v.clone())).collect::<BTreeMap<_, _>>(),
                 s.inbox.iter().filter(keep).cloned().collect(),
