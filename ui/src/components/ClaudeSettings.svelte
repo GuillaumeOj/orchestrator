@@ -2,7 +2,7 @@
   // Settings › Claude Code (add-update-claude-code ux-brief §2.1): the installed version, the
   // update block, compatibility and the account. Everything is derived from `setup.claude`.
   // Keys: u update / retry, r check now, ⏎ the block's default button, esc back to the sections.
-  import { app, claudeCheck, claudeUpdate, toast } from '../lib/app.svelte.js';
+  import { app, claudeAct, toast } from '../lib/app.svelte.js';
   import { account, compat, hint, installedHeader, liveKeys, updateBlock } from '../lib/claude.js';
   import { shortPath } from '../lib/format.js';
   import ClaudeUpdateBlock from './ClaudeUpdateBlock.svelte';
@@ -28,9 +28,9 @@
   function onKey(e) {
     if (e.target.closest('input, textarea, select, button, a') || e.metaKey || e.ctrlKey || e.altKey) return;
     const def = updateBlock(c).buttons.find((b) => b.def);
-    if (e.key === 'u' && keys.u) claudeUpdate();
-    else if (e.key === 'r' && keys.r) claudeCheck();
-    else if (e.key === 'Enter' && def) (def.id === 'update' ? claudeUpdate : claudeCheck)();
+    if (e.key === 'u' && keys.u) claudeAct('update');
+    else if (e.key === 'r' && keys.r) claudeAct('check');
+    else if (e.key === 'Enter' && def) claudeAct(def.id);
     else return;
     e.preventDefault();
   }

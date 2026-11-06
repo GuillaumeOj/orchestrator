@@ -1254,6 +1254,9 @@ export async function claudeCheck(notify = false) {
   }
 }
 
+/** A button or key of the update block: 'update' runs `claude update`, 'check' checks. */
+export const claudeAct = (id) => (id === 'update' ? claudeUpdate() : claudeCheck());
+
 function claudeCommands() {
   const off = paletteActions(app.data?.setup?.claude);
   return [

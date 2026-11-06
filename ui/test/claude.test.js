@@ -324,7 +324,6 @@ describe('components', () => {
     const { container } = render(StatusBar);
     const chip = container.querySelector('.chip.claude');
     expect(text(chip)).toBe('↑ Claude Code 2.1.330');
-    app.data.setup.claude = claude({}, { available: false });
   });
 
   it('banner: Update Claude Code beside Set up for a version problem; none for a login problem', async () => {

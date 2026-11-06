@@ -3,7 +3,7 @@
   // its buttons and the output of `claude update`. Shared by Settings › Claude Code and,
   // `compact`, the Setup step 1 (no key caps, a 6-line log shown only on failure).
   import { tick } from 'svelte';
-  import { claudeCheck, claudeUpdate, holdSecondClock, now1s, openSettings, openSingleton } from '../lib/app.svelte.js';
+  import { claudeAct, holdSecondClock, now1s, openSettings, openSingleton } from '../lib/app.svelte.js';
   import { updateBlock } from '../lib/claude.js';
   import Kbd from './Kbd.svelte';
 
@@ -40,7 +40,6 @@
     tick().then(() => logEl && (logEl.scrollTop = logEl.scrollHeight));
   });
 
-  const run = (id) => (id === 'update' ? claudeUpdate() : claudeCheck());
   const GLYPH = { dot: '●', spinner: '◐', ring: '○', warn: '▲' };
   const isErr = (l) => /error|fail|denied|ENOENT|EACCES/i.test(l);
 </script>
@@ -53,7 +52,7 @@
     <span class="grow"></span>
     {#if st.setup && !compact}<button class="link" onclick={() => openSingleton('setup')}>Set up</button>{/if}
     {#each st.buttons as b (b.id)}
-      <button class="btn" class:primary={b.primary} class:def={b.def && !compact} data-act={b.id} onclick={() => run(b.id)}>{b.label}{#if b.def && !compact} <Kbd keys="⏎" />{/if}</button>
+      <button class="btn" class:primary={b.primary} class:def={b.def && !compact} data-act={b.id} onclick={() => claudeAct(b.id)}>{b.label}{#if b.def && !compact} <Kbd keys="⏎" />{/if}</button>
     {/each}
   </div>
   {#if st.line2}<div class="l2 muted">{st.line2}</div>{/if}
