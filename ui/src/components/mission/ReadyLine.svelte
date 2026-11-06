@@ -26,13 +26,12 @@
     <span class="muted">·</span>
     <button class="link" tabindex="-1" onclick={(e) => (e.stopPropagation(), onrefresh())}>Refresh</button> <Kbd keys="⇧R" />
   {:else if line.line === 'error'}
-    <span title={info.tip}><span aria-hidden="true">{'\u{F0159}'}</span> {line.name} · {info.text}</span>
+    <span title={info.tip}><span aria-hidden="true">{'\u{F0026}'}</span> {line.name} · {info.text}</span>
     {#if fixLabel}
       <span class="muted">·</span>
       <button class="link" tabindex="-1" onclick={(e) => (e.stopPropagation(), onfix())}>{fixLabel}</button>
       {#if info.fix !== 'retry'}<Kbd keys="⏎" />{/if}
     {/if}
-    {#if until}<span class="muted">· Refresh waits until then</span>{/if}
   {:else if line.line === 'more'}
     <span class="muted">+ {line.src.more} more in {line.src.label}</span>
     {#if line.src.url}<span class="muted">·</span> <button class="link" tabindex="-1" onclick={(e) => (e.stopPropagation(), onopen())}>Open ↗</button> <Kbd keys="⏎" />{/if}

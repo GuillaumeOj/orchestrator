@@ -4,6 +4,7 @@
 // or a click only.
 
 import { app, askOverwatch, openProjectSettings, openSettings, openUrl, projects, toast } from './app.svelte.js';
+import { UNDO_MS } from './inbox.js';
 import { GH_SCOPE_COMMAND, integrationsRow, staleOf, staleToast } from './intake.js';
 import { errText, invoke } from './ipc.js';
 
@@ -14,8 +15,6 @@ export const intakeUi = $state({
   lastHide: null, // { item, ref, until } while the Hide toast's Undo shows (5 s)
   plan: null, // the project id the Overwatch input is planning for ("Planning · shop-api")
 });
-
-const UNDO_MS = 5000;
 
 // ---------------------------------------------------------------- dialogs
 

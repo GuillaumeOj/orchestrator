@@ -75,6 +75,14 @@
   }
   const json = $derived(JSON.stringify(toSource()));
   const dirty = $derived(!!info && json !== baseline);
+  /** "acme/shop · label ready": what the preview counted (notes §7.3). */
+  const previewLabel = $derived.by(() => {
+    if (type === 'github') {
+      const f = fkind === 'label' ? `label ${names.join(', ')}` : fkind === 'milestone' ? `milestone ${milestone}` : `project ${pOwner}/${pNumber}`;
+      return [repo || info?.known_repo, f].filter(Boolean).join(' · ');
+    }
+    return type === 'repo_docs' ? glob : '';
+  });
 
   function fromSource(s) {
     type = s?.type ?? 'none';
@@ -358,7 +366,7 @@
 </script>
 
 {#snippet err(key)}
-  {#if errs[key]}<p class="ferr" role="alert"><span aria-hidden="true">{'\u{F0159}'}</span> {errs[key]}</p>{/if}
+  {#if errs[key]}<p class="ferr" role="alert"><span aria-hidden="true">{'\u{F0026}'}</span> {errs[key]}</p>{/if}
 {/snippet}
 
 {#snippet integrations(code, label)}
@@ -510,14 +518,14 @@
         {#if preview}
           <div class="result" class:stale data-preview>
             {#if previewErr}
-              <p class="ferr" role="alert" title={previewErr.tip}><span aria-hidden="true">{'\u{F0159}'}</span> {previewErr.text}
+              <p class="ferr" role="alert" title={previewErr.tip}><span aria-hidden="true">{'\u{F0026}'}</span> {previewErr.text}
                 {#if previewErr.fix === 'gh_scope'}<button class="link" onclick={copyCommand}>Copy command</button>
                 {:else if previewErr.fix === 'integrations'}<button class="link" onclick={() => openSettings('integrations', integrationsRow(previewErr.code), project)}>Settings › Integrations ↗</button>{/if}
               </p>
             {:else if !preview.count}
               <p class="muted">Nothing matches this source right now. It may still be right: Ready to start will show items when they appear.</p>
             {:else}
-              <p><b>{preview.count} {preview.count === 1 ? 'item' : 'items'}</b></p>
+              <p><b>{preview.count} {preview.count === 1 ? 'item' : 'items'}</b>{previewLabel ? ` in ${previewLabel}` : ''}</p>
               <ul>
                 {#each (preview.items ?? []).slice(0, 5) as it (it.id ?? it.ref)}<li><span class="mono muted">{it.ref}</span> {it.title}</li>{/each}
               </ul>

@@ -3,12 +3,16 @@
 // prefilled dialogs. Pure: tested in test/intake.test.js. Nothing here reads the
 // app state, the clock or the core; callers pass `now` and the data.
 
-import { clock, plural } from './format.js';
+import { clock, plural, startOfDay } from './format.js';
 
 /** Source names in copy (notes: GitHub, Linear, Repo docs). */
 export const SOURCE_NAME = { github: 'GitHub', linear: 'Linear', repo_docs: 'Repo docs', none: 'No source' };
 
-export const MODE_WORD = { team: 'team', solo: 'solo' };
+/** Start button words (notes §2.2, §2.3) and their keys. */
+export const MODE_LABEL = {
+  team: { long: 'Start team run', short: 'Team run', key: 't' },
+  solo: { long: 'Start solo', short: 'Solo', key: 'a' },
+};
 
 // ---------------------------------------------------------------- estimates (notes §2.1)
 
@@ -38,7 +42,7 @@ export function estimateText(item, mode = modeOf(item), { compact = false } = {}
   const e = item?.estimate?.[mode];
   const r = e ? ppRange(e.low_pp, e.high_pp) : '';
   if (!r) return 'no estimate';
-  return `${e.basis === 'default' ? 'rough ' : ''}${approx(r)} pp${compact ? '' : ' week'} · ${MODE_WORD[mode]}`;
+  return `${e.basis === 'default' ? 'rough ' : ''}${approx(r)} pp${compact ? '' : ' week'} · ${mode}`;
 }
 
 /** The tooltip of the estimate (§2.1). */
@@ -151,7 +155,7 @@ export function ageText(ms, now = Date.now()) {
   if (m < 60) return `${m} min ago`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h} h ago`;
-  const days = Math.round((new Date(now).setHours(0, 0, 0, 0) - new Date(ms).setHours(0, 0, 0, 0)) / 86400000);
+  const days = Math.round((startOfDay(now) - startOfDay(ms)) / 86400000);
   return days === 1 ? `yesterday ${clock(ms, ms)}` : clock(ms, now);
 }
 
@@ -271,6 +275,12 @@ export function originLine(origin, title = null) {
   if (origin.kind === 'brief') return `the Overwatch's brief${origin.title ? `: ${origin.title}` : ''}`;
   return `${origin.ref}${title ? ` ${title}` : ''} · ${SOURCE_NAME[origin.source] ?? origin.source}`;
 }
+
+/** Markdown without links or images (notes §8.3): `[t](u)` → `t (u)`, `![alt](u)` → `alt`. */
+export const plainMarkdown = (t) =>
+  String(t ?? '')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]*)\]\(([^)]*)\)/g, '$1 ($2)');
 
 // ---------------------------------------------------------------- the report line (notes §9)
 

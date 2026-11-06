@@ -4,7 +4,7 @@
   // warning, Start team run / Start solo (neutral, opening the prefilled dialogs) and
   // the ⋯ menu (Hide, Open source, Details). Not attention: neutral surface, dashed rule.
   // Under 880 px of row width the project and labels drop to line 2 and the buttons shorten.
-  import { estimateText, estimateTip, modeOf, roomWarning, SOURCE_NAME, shownLabels, startLabel } from '../../lib/intake.js';
+  import { estimateText, estimateTip, MODE_LABEL, modeOf, roomWarning, SOURCE_NAME, shownLabels, startLabel } from '../../lib/intake.js';
   import Kbd from '../Kbd.svelte';
 
   /** @type {{ row: any, selected?: boolean, starting?: boolean, onstart?: (mode: 'team' | 'solo') => void, onhide?: () => void, onunhide?: () => void, onsource?: () => void, ondetails?: () => void }} */
@@ -19,9 +19,6 @@
   const GLYPH = { github: '\u{F02A4}', linear: '\u{F0E6D}', repo_docs: '\u{F0214}' };
   const GLYPH_NAME = { github: 'GitHub issue', linear: 'Linear issue', repo_docs: 'Repo doc' };
   let menu = $state(false);
-
-  const label = (m) => (m === 'team' ? 'Start team run' : 'Start solo');
-  const short = (m) => (m === 'team' ? 'Team run' : 'Solo');
 </script>
 
 <div class="r" class:hidden={row.hidden} class:sel={selected} data-ready={item.id}>
@@ -31,23 +28,16 @@
     <span class="title" title={item.title}>{item.title}</span>
     {#if row.hidden}<span class="tag">Hidden</span>{/if}
     {#if starting}<span class="tag">Starting…</span>{/if}
-    <span class="wide meta">
-      <span class="proj">{row.name}</span>
-      {#each labels.chips as l (l)}<span class="chip">{l}</span>{/each}{#if labels.more}<span class="chip">+{labels.more}</span>{/if}
-    </span>
     {#if !row.hidden}
       <span class="est" title={estimateTip(item, mode)}>
         <span class="wide">{estimateText(item, mode)}</span><span class="narrow">{estimateText(item, mode, { compact: true })}</span>
       </span>
       <span class="acts">
         {#each [mode, other] as m, i (m)}
-          {#if m === 'team' && !canTeam}
-            <button class="btn" disabled tabindex="-1" title="{row.name} has no team yet" aria-label="Start team run for {item.ref} {item.title}">{label(m)}</button>
-          {:else}
-            <button class="btn" class:main={i === 0} tabindex="-1" disabled={starting} aria-label={startLabel(item, m)} onclick={(e) => (e.stopPropagation(), onstart(m))}>
-              <span class="wide">{label(m)}</span><span class="narrow">{short(m)}</span>{#if i === 0}{' '}<Kbd keys="⏎" />{:else if m === 'solo'}{' '}<Kbd keys="a" />{:else}{' '}<Kbd keys="t" />{/if}
-            </button>
-          {/if}
+          {@const noTeam = m === 'team' && !canTeam}
+          <button class="btn" class:main={i === 0} tabindex="-1" disabled={starting || noTeam} title={noTeam ? `${row.name} has no team yet` : undefined} aria-label={startLabel(item, m)} onclick={(e) => (e.stopPropagation(), onstart(m))}>
+            <span class="wide">{MODE_LABEL[m].long}</span><span class="narrow">{MODE_LABEL[m].short}</span>{#if !noTeam}{' '}<Kbd keys={i === 0 ? '⏎' : MODE_LABEL[m].key} />{/if}
+          </button>
         {/each}
       </span>
     {:else}
@@ -66,9 +56,11 @@
       {/if}
     </span>
   </div>
-  <div class="l2" class:nowarn={!warn}>
-    <span class="meta2">{row.name}{#if labels.chips.length} · {labels.chips.join(', ')}{#if labels.more}, +{labels.more}{/if}{/if}</span>
-    {#if warn}<span class="warn"><span aria-hidden="true">{'\u{F0026}'}</span> {warn}</span>{/if}
+  <!-- Line 2 at every width (boards): [warning ·] project · ≤ 2 label chips. -->
+  <div class="l2">
+    {#if warn}<span class="warn"><span aria-hidden="true">{'\u{F0026}'}</span> {warn}</span><span aria-hidden="true">·</span>{/if}
+    <span class="proj">{row.name}</span>
+    {#each labels.chips as l (l)}<span class="chip">{l}</span>{/each}{#if labels.more}<span class="chip">+{labels.more}</span>{/if}
   </div>
 </div>
 
@@ -91,9 +83,6 @@
     color: var(--color-text-muted);
     font: var(--text-caption);
     min-height: 0;
-  }
-  .l2.nowarn {
-    display: none;
   }
   .glyph {
     flex: none;
@@ -123,17 +112,9 @@
     color: var(--color-text-muted);
     font: var(--text-caption);
   }
-  .meta {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    color: var(--color-text-muted);
-    font: var(--text-caption);
-  }
   .chip {
     padding: 0 var(--space-xs);
-    border: var(--border-width-default) solid var(--color-border-subtle);
+    background: var(--color-surface-raised);
     border-radius: var(--radius-sm);
   }
   .est {
@@ -188,26 +169,16 @@
   .menu button:hover {
     background: var(--color-surface-selected);
   }
-  /* Full rows at 880 px and up (1512 shell), compact below (notes §2.3, D9c). */
-  .narrow,
-  .meta2 {
+  /* Full rows at 880 px and up (1512 shell), compact below (notes §2.3, D9c): only the long texts shorten. */
+  .narrow {
     display: none;
   }
   @container (max-width: 879px) {
-    .wide.meta {
-      display: none;
-    }
-    span.wide {
+    .wide {
       display: none;
     }
     .narrow {
       display: inline;
-    }
-    .meta2 {
-      display: inline;
-    }
-    .l2.nowarn {
-      display: flex;
     }
   }
 </style>

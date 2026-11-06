@@ -196,6 +196,9 @@
 
   const refreshLane = () => refreshIntake((app.now.intake?.sources ?? []).filter((s) => s.type !== 'none' && (!filter || filter.includes(s.project))).map((s) => s.project));
 
+  /** A Ready item's actions, for its row and its details. */
+  const itemActs = (it) => ({ onstart: (m) => startItem(it, m), onhide: () => hideItem(it), onunhide: () => unhideItem(it), onsource: () => openSource(it, openEditor) });
+
   /** ⏎ / a click on a line (notes §4.1, §10.1). */
   function lineAct(r) {
     if (r.line === 'nosource') return planWithOverwatchIn(r.projects);
@@ -302,8 +305,8 @@
     <div class="row ready" class:iline={r.kind === 'iline'} class:sel role="row" tabindex="-1" aria-selected={sel} data-key={r.key} onclick={() => setSel(r.key)}>
       <div role="gridcell" class="cell">
         {#if r.kind === 'ready'}
-          <ReadyRow row={r} selected={sel} starting={intakeUi.starting === r.item.id} onstart={(m) => startItem(r.item, m)} onhide={() => hideItem(r.item)} onunhide={() => unhideItem(r.item)} onsource={() => openSource(r.item, openEditor)} ondetails={() => (details = toggle(details, r.key))} />
-          {#if details[r.key]}<ReadyDetails item={r.item} name={r.name} {now} hidden={r.hidden} onstart={(m) => startItem(r.item, m)} onhide={() => hideItem(r.item)} onunhide={() => unhideItem(r.item)} onsource={() => openSource(r.item, openEditor)} />{/if}
+          <ReadyRow row={r} selected={sel} starting={intakeUi.starting === r.item.id} {...itemActs(r.item)} ondetails={() => (details = toggle(details, r.key))} />
+          {#if details[r.key]}<ReadyDetails item={r.item} name={r.name} {now} hidden={r.hidden} {...itemActs(r.item)} />{/if}
         {:else}
           <ReadyLine line={r} {now} {overwatch} onplan={() => planWithOverwatchIn(r.projects)} onsetup={() => setUp(r)} onrefresh={() => lineAct(r)} onfix={() => fixSource(r.src)} onopen={() => lineAct(r)} onshow={() => (intakeUi.showHidden = true)} />
         {/if}
@@ -378,12 +381,12 @@
         {#if work || lane.id === 'done' || lane.id === 'ready'}
           {@const shut = !!collapsed[lane.id]}
           {@const shown = lane.id === 'done' && !showAll ? lane.rows.slice(0, DONE_ROWS) : lane.rows}
-          <section class="lane" aria-label={lane.label}>
+          <section class="lane" class:readylane={lane.id === 'ready'} aria-label={lane.label}>
             <h3 class="lh" class:sel={selKey === `lane:${lane.id}`} data-key="lane:{lane.id}">
               <button class="lbtn" tabindex="-1" aria-expanded={!shut} onclick={() => (collapsed = toggle(collapsed, lane.id))}>
                 <span class="chev" aria-hidden="true">{shut ? '›' : '⌄'}</span>
                 <span style:color={LEVEL[lane.level].color} aria-hidden="true">{LEVEL[lane.level].icon}</span>
-                <b>{lane.rows.length || lane.id !== 'needs_you' ? lane.label : 'Nothing needs you'}</b>
+                <b class:quiet={lane.id === 'ready'}>{lane.rows.length || lane.id !== 'needs_you' ? lane.label : 'Nothing needs you'}</b>
                 {#if lane.count}<span class="muted">· {lane.count}</span>{/if}
               </button>
               {#if lane.id === 'ready' && lane.status}
@@ -393,11 +396,11 @@
                 <span class="rstat" class:fail={!!st.failed}>
                   {#if st.refreshing}refreshing…{:else if st.failed}{st.failed === 1 ? '1 source failed' : `${st.failed} sources failed`}{:else if st.oldest != null}updated {ageText(st.oldest, now)}{/if}
                 </span>
-                {#if !shut && st.hidden > 0}
-                  <button class="linkbtn rbtn" tabindex="-1" onclick={() => (intakeUi.showHidden = !intakeUi.showHidden)}>{intakeUi.showHidden ? `Hide the ${st.hidden}` : `${st.hidden} hidden · Show`} <Kbd keys="⇧H" /></button>
-                {/if}
                 {#if st.withSource}
                   <button class="btn ghost rbtn" tabindex="-1" disabled={st.refreshing || (app.now.intake?.sources ?? []).some((s) => (!filter || filter.includes(s.project)) && rateLimitedUntil(s, now))} onclick={refreshLane} title="Check GitHub, Linear and repo docs now">{st.refreshing ? 'Refreshing…' : 'Refresh'} <Kbd keys="⇧R" /></button>
+                {/if}
+                {#if !shut && st.hidden > 0}
+                  <button class="linkbtn rbtn" tabindex="-1" onclick={() => (intakeUi.showHidden = !intakeUi.showHidden)}>{intakeUi.showHidden ? `Hide the ${st.hidden}` : `${st.hidden} hidden · Show`} <Kbd keys="⇧H" /></button>
                 {/if}
               {/if}
             </h3>
@@ -529,13 +532,24 @@
   .rbtn {
     margin-left: var(--space-sm);
   }
-  /* Ready is not attention: neutral surface, a dashed rule instead of the solid one (notes p4-5, principle "Ready is not attention"). */
-  .row.ready {
-    border-left: var(--border-width-focus) dashed var(--color-border-strong);
+  /* Ready is not attention (notes p4-5): no per-row box; rows sit on the lane between hairlines,
+     and one lane-wide 1 px dashed rule runs down the left through rows and lines alike. */
+  .readylane {
+    padding-left: var(--space-sm);
+    border-left: var(--border-width-default) dashed var(--color-border-strong);
   }
-  .row.iline {
-    border-style: none;
+  .row.ready {
+    margin-top: 0;
+    border: 0;
+    border-bottom: var(--border-width-default) solid var(--color-border-subtle);
+    border-radius: 0;
     background: none;
+  }
+  .row.ready.sel {
+    background: var(--color-surface-selected);
+  }
+  b.quiet {
+    color: var(--color-text-secondary);
   }
   .chev {
     width: var(--size-icon-sm);

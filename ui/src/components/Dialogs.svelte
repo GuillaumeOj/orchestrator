@@ -5,10 +5,11 @@
   // (FR-202: killed, checked, hidden; worktrees on request), confirmations.
   // ⌘⏎ submits; esc cancels.
   import { untrack } from 'svelte';
-  import { activeAgents, agent, app, contextProject, deleteAgent, deleteFeature, features, openAgent, openFeature, openProject, openSettings, openUrl, projects, refresh, toast } from '../lib/app.svelte.js';
+  import { activeAgents, agent, app, contextProject, deleteAgent, deleteFeature, features, focusCard, openAgent, openFeature, openProject, openSettings, openUrl, projects, refresh, toast } from '../lib/app.svelte.js';
   import { designTools, effectiveServers, kindLabel, nodeList } from '../lib/ecosystem.js';
   import { clock, expandHome, shortPath } from '../lib/format.js';
-  import { dialogEstimate, originChip, SOURCE_NAME, staleBanner, staleOf } from '../lib/intake.js';
+  import { blockOf } from '../lib/inbox.js';
+  import { basisText, dialogEstimate, originChip, SOURCE_NAME, staleBanner, staleOf } from '../lib/intake.js';
   import { endStarting } from '../lib/intake.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { counts, liveText } from '../lib/now.svelte.js';
@@ -268,7 +269,7 @@
   <!-- P4.5 notes §5.1–§5.3: the origin chip, the stale banner, the estimate and the untrusted-text note. -->
   {#if o.origin}
     {@const chip = originChip(o.origin)}
-    <p class="chip" data-origin><span class="muted">{chip.text}</span>{#if chip.url}{' '}<button type="button" class="linkbtn" onclick={() => openUrl(chip.url)} aria-label="Open {chip.ref} at {SOURCE_NAME[chip.source]}">↗</button>{/if}</p>
+    <p class="chip" data-origin><span class="muted">{chip.text}</span>{#if chip.url}{' '}<button type="button" class="linkbtn" onclick={() => openUrl(chip.url)} aria-label="Open {chip.ref} at {SOURCE_NAME[chip.source]}">↗</button>{:else if chip.brief}{' '}<button type="button" class="linkbtn" onclick={() => (close(), focusCard(chip.decision))} aria-label="Show the brief card">↗</button>{/if}</p>
   {/if}
   {#if stale}<p class="err" role="alert" data-stale>{staleBanner(stale)}</p>{/if}
 {/snippet}
@@ -277,6 +278,13 @@
     {@const est = dialogEstimate(o.item, mode, projects().find((p) => p.id === o.item.project)?.name)}
     {#if est}<p class="muted note" data-estimate>{est}</p>{/if}
     <p class="muted note" data-untrusted>This text comes from {SOURCE_NAME[o.item.source]}. It goes to the agent as part of the brief you send.</p>
+  {:else if o.origin?.kind === 'brief'}
+    <!-- A brief's estimate is its cost block's (notes §5.2). -->
+    {@const dec = app.now.decisions?.[o.origin.decision]}
+    {@const est = blockOf(dec, 'cost')?.estimate}
+    {@const name = projects().find((p) => p.id === (dec?.payload?.project ?? dec?.project))?.name}
+    {@const line = est ? dialogEstimate({ estimate: est }, mode, name) : ''}
+    {#if line}<p class="muted note" data-estimate>{line}{est[mode] ? ` · ${basisText(est[mode], mode, est.size ?? 'M', name)}` : ''}</p>{/if}
   {/if}
 {/snippet}
 
@@ -559,6 +567,14 @@
     color: var(--color-accent-default);
     font: inherit;
     cursor: pointer;
+  }
+  .chip {
+    display: inline-block;
+    margin: 0;
+    padding: 0 var(--space-sm);
+    border-radius: var(--radius-full, 999px);
+    background: var(--color-surface-raised);
+    font: var(--text-caption);
   }
   .err {
     white-space: pre-wrap;

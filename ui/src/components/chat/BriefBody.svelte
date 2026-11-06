@@ -4,7 +4,7 @@
   // to ask for changes. The card never says the Overwatch started anything.
   import { projectName } from '../../lib/app.svelte.js';
   import { blockOf } from '../../lib/inbox.js';
-  import { basisText, estimateText, overRoom, roomWarning } from '../../lib/intake.js';
+  import { basisText, estimateText, overRoom, plainMarkdown, roomWarning } from '../../lib/intake.js';
   import Markdown from '../Markdown.svelte';
 
   /** @type {{ d: any, ow: any, live?: boolean }} */
@@ -49,7 +49,7 @@
 {#if md}
   <section class="blk" data-block="markdown">
     <div class="bh">Brief</div>
-    <div class="md" class:clamp={!open} bind:this={el}><Markdown text={md.text} /></div>
+    <div class="md" class:clamp={!open} bind:this={el}><Markdown text={plainMarkdown(md.text)} /></div>
     {#if over || open}<button class="link more" aria-expanded={open} onclick={() => (open = !open)}>{open ? 'Show less' : 'Show more'}</button>{/if}
   </section>
 {/if}

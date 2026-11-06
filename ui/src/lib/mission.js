@@ -603,9 +603,6 @@ export const readyHints = (row) =>
         ]
     : null;
 
-/** A Ready row's one-line summary (palette entries, aria): "#123 Refunds on partial orders". */
-export const readyTitle = (item) => `${item.ref} ${item.title}`;
-
 /** "2 decisions not tied to a session" (notes §1.1). */
 export const looseText = (n) => `${plural(n, 'decision')} not tied to a session`;
 
