@@ -95,7 +95,7 @@ pub struct Role {
     #[serde(default)]
     pub extra_write: Vec<PathBuf>,
     /// Orchestrator MCP tools this agent may call; empty = a solo session's
-    /// (`commit`, `request_pr`). Listed by orch-mcp and checked by the core.
+    /// (`commit`, `request_pr`, `read_issue`, `update_issue`). Listed by orch-mcp and checked by the core.
     #[serde(default)]
     pub orch_tools: Vec<String>,
     /// FR-407: a turn running longer is interrupted (the watchdog) and the user told.

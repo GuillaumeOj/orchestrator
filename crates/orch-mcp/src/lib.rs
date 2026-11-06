@@ -4,14 +4,17 @@
 //! the agent's identity comes from the environment the core set at spawn.
 //!
 //! Tools (an agent sees the subset `ORCH_TOOLS` names; a solo session has
-//! `commit` and `request_pr`):
+//! `commit`, `request_pr`, `read_issue` and `update_issue`):
 //! - `commit(message, paths?)`: the core commits in the agent's worktree,
 //!   outside the sandbox (sandboxed git can't write the repository's git dir
 //!   under Claude Code 2.1.302), logged and subject to permission rules;
 //! - `request_pr(title, body?, draft?)`: asks the user to push the branch and
 //!   open a PR (an Inbox gate). Agents never push themselves;
+//! - `read_issue(issue, offset?)`, `update_issue(issue, …)`: the core reads and
+//!   changes an issue of the project's GitHub repository with the user's `gh`
+//!   login (the sandbox has neither the login nor a route to GitHub);
 //! - team tools (P2): `send_message`, `inbox`, `list_tasks`, `handoff`,
-//!   `request_review`, `ask_user`, `read_issue`, `update_issue`, `create_task`, `update_task`,
+//!   `request_review`, `ask_user`, `create_task`, `update_task`,
 //!   `request_spec_approval`, `merge`, `report_done`, `sync_integration`.
 
 use std::io::{BufRead, Write};
