@@ -17,7 +17,7 @@
   // The hint for the status; its link, when it has one, opens the Overwatch settings.
   const hint = $derived(inputHint(ow));
 
-  const spaced = (x) => x.toLocaleString('en-US').replace(',', ' ');
+  const spaced = (x) => x.toLocaleString('en-US').replaceAll(',', ' ');
 
   export function focus() {
     field?.focus();

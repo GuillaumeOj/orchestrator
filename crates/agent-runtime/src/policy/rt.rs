@@ -141,9 +141,12 @@ impl Runtime {
             protected.push(p.default_branch.clone());
             protected.extend(p.typed_settings().base_branch);
         }
+        let mut policy_files = vec![self.global_policy_path()];
+        policy_files.extend(project.map(|p| self.project_policy_path(p)));
         HardCtx {
             home: crate::paths::home_dir(),
             state_dir: self.cfg.paths.state_dir(),
+            policy_files,
             cwd: worktree.clone(),
             worktree,
             protected,

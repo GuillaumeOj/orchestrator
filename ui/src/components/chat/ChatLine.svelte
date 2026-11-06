@@ -51,14 +51,17 @@
     failed = '';
     try {
       const r = await undoLine(item.entry, text);
-      if (r?.ok === false) failed = r.gone ? `Can't be undone: ${r.gone}` : 'Could not undo.';
-      else {
+      if (r?.ok === false) {
+        failed = r.gone ? `Can't be undone: ${r.gone}` : 'Could not undo.';
+        onexpand(); // from the chip or `u` the line is collapsed: the refusal shows in its body
+      } else {
         if (r?.entry?.line) patched = r.entry.line;
         cancel();
         toast(done.toast);
       }
     } catch (err) {
       failed = `Could not undo: ${errText(err)}`;
+      onexpand();
     } finally {
       busy = false;
     }

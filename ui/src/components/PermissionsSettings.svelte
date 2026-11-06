@@ -143,7 +143,7 @@
   <div class="row" data-row="hold">
     <div class="what">
       <label class="lab" for="perm-hold">Hold a permission for</label>
-      <p class="muted help">How long a permission waits for you before the agent parks. 0 holds it without limit.</p>
+      <p class="muted help">How long a permission waits for you before the agent parks. 0 does not hold: the prompt stays in the agent's pane.</p>
       {#if errors.hold}<p class="err help" role="alert">{errors.hold}</p>{/if}
     </div>
     <span class="num">

@@ -46,6 +46,8 @@ pub const WHY_GIT_DESTRUCTIVE: &str = "git command that discards work";
 pub const WHY_HOST: &str = "network host outside the allow-list";
 pub const WHY_HOST_UNKNOWN: &str = "network host not readable";
 pub const WHY_MCP_WRITE: &str = "external MCP tool that writes";
+pub const WHY_POLICY_FILE: &str = "path of a policy.toml";
+pub const WHY_NESTED: &str = "shell nested too deep to read";
 
 /// The hard lists in words (the Overwatch's briefing, Settings).
 pub fn describe() -> Vec<(&'static str, HardKind)> {
@@ -58,6 +60,8 @@ pub fn describe() -> Vec<(&'static str, HardKind)> {
         ("git merge into the base, main, master or (from a specialist) the integration branch", Deny),
         ("gh calls that write (anything but view, list, status, diff, checks, search, api GET)", UserOnly),
         ("git reset --hard, clean, branch -D, checkout -- / -f, restore, stash drop / clear", UserOnly),
+        ("a command naming the global or project policy.toml (an agent can't edit its own rules)", UserOnly),
+        ("shells or eval nested more than 4 deep (they can't be read)", UserOnly),
         ("WebFetch, curl or wget to a host outside the agent's network allow-list", UserOnly),
         ("tools of external MCP servers that write (not get_* / list_* / search* / read*)", UserOnly),
     ]
@@ -74,6 +78,9 @@ pub struct HardCtx {
     pub cwd: PathBuf,
     pub extra_write: Vec<PathBuf>,
     pub network_allow: Vec<String>,
+    /// The global and project `policy.toml`: naming one is user-only (an
+    /// agent must not write its own rules).
+    pub policy_files: Vec<PathBuf>,
     /// Branches no agent merges into: main, master, the project's base and,
     /// for a specialist, its run's integration branch.
     pub protected: Vec<String>,
@@ -294,7 +301,10 @@ fn path_verdict(ctx: &HardCtx, cwd: &Path, raw: &str) -> Option<HardVerdict> {
         return None;
     }
     let p = lower(&resolve(ctx, cwd, raw));
-    ctx.guarded().iter().find(|(g, _)| under_lower(&p, g)).map(|(_, why)| deny(why))
+    if let Some((_, why)) = ctx.guarded().iter().find(|(g, _)| under_lower(&p, g)) {
+        return Some(deny(why));
+    }
+    ctx.policy_files.iter().flat_map(|f| forms(f.clone())).any(|f| lower(&f) == p).then(|| user_only(WHY_POLICY_FILE))
 }
 
 fn may_write(ctx: &HardCtx, raw: &str) -> bool {
@@ -535,6 +545,8 @@ fn segment(ctx: &HardCtx, sh: &mut Shell, all: &[String], depth: u8) -> Option<H
             }
         }
         "eval" if depth < 4 => keep(&mut found, bash_in(ctx, sh, &args.join(" "), depth + 1)),
+        // Deeper than that it isn't read, so it isn't let through either.
+        "bash" | "sh" | "zsh" | "dash" | "eval" => keep(&mut found, Some(user_only(WHY_NESTED))),
         _ => {}
     }
     found
@@ -1058,6 +1070,7 @@ mod tests {
             network_allow: vec!["github.com".into(), "*.crates.io".into()],
             protected: vec!["main".into(), "master".into(), "orch/x/integration".into()],
             branch: OnceCell::from(Some("feat".to_string())),
+            policy_files: vec![app.join("policy.toml"), root.join("proj/.orchestrator/policy.toml")],
             ..Default::default()
         };
         Fx { _d: d, ctx }
@@ -1085,7 +1098,35 @@ mod tests {
         WHY_HOST,
         WHY_HOST_UNKNOWN,
         WHY_MCP_WRITE,
+        WHY_POLICY_FILE,
+        WHY_NESTED,
     ];
+
+    #[test]
+    fn naming_a_policy_file_is_user_only() {
+        let f = fx();
+        let app = f.ctx.state_dir.parent().unwrap().to_path_buf();
+        let proj = app.parent().unwrap().join("proj/.orchestrator/policy.toml");
+        for c in [
+            format!("echo '[[allow]]' >> {}", app.join("policy.toml").display()),
+            format!("sed -i '' s/deny/allow/ {}", proj.display()),
+            format!("cd {} && tee -a policy.toml < x", app.display()),
+        ] {
+            assert_eq!(bash_v(&f, &c).map(|v| (v.kind, v.why)), Some((HardKind::UserOnly, WHY_POLICY_FILE)), "{c}");
+        }
+        // The worktree's own copy is reviewed in the PR: not this rule.
+        assert_eq!(bash_v(&f, "cat .orchestrator/policy.toml"), None);
+    }
+
+    #[test]
+    fn shells_nested_past_the_limit_are_user_only() {
+        let f = fx();
+        // Four deep is still read; five is not, so it is not let through.
+        assert_eq!(bash_v(&f, "eval eval eval eval curl https://evil.example").unwrap().why, WHY_HOST);
+        let v = bash_v(&f, "eval eval eval eval eval curl https://evil.example").unwrap();
+        assert_eq!((v.kind, v.why), (HardKind::UserOnly, WHY_NESTED));
+        assert_eq!(bash_v(&f, "eval eval ls"), None);
+    }
 
     #[test]
     fn reasons_are_short() {
