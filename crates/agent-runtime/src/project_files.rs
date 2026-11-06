@@ -107,6 +107,11 @@ impl Bounds {
     }
 }
 
+/// `p` with every component lowercased, for case-insensitive comparison.
+fn fold(p: &Path) -> PathBuf {
+    p.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect()
+}
+
 /// `~` and `~/…` expanded; anything still relative is refused.
 pub fn expand(input: &str, home: &Path) -> Result<PathBuf, String> {
     let s = input.trim();
@@ -122,9 +127,14 @@ pub fn expand(input: &str, home: &Path) -> Result<PathBuf, String> {
 
 /// Whether `canon` (canonical, absolute) may be shared with the project's
 /// agents at all. The message follows `{p}: `.
-pub fn check(canon: &Path, b: &Bounds) -> Result<(), &'static str> {
-    let inside = |outer: &Path| canon.starts_with(outer);
-    let contains = |inner: &Path| inner.starts_with(canon);
+///
+/// Containment is case-insensitive (APFS is, and `canonicalize` keeps the
+/// typed case: `~/.SSH` is `~/.ssh`). On a case-sensitive volume this only
+/// over-refuses.
+pub fn check(canon_path: &Path, b: &Bounds) -> Result<(), &'static str> {
+    let canon = &fold(canon_path);
+    let inside = |outer: &Path| canon.starts_with(fold(outer));
+    let contains = |inner: &Path| fold(inner).starts_with(canon);
     let overlaps = |list: &[PathBuf]| list.iter().any(|c| inside(c) || contains(c));
     if inside(&b.main_checkout) || inside(&b.worktree_root) {
         return Err("already part of the project (in its repository)");
@@ -154,7 +164,10 @@ pub fn check(canon: &Path, b: &Bounds) -> Result<(), &'static str> {
     if contains(&b.worktree_root) || b.other_worktree_roots.iter().any(|r| contains(r)) {
         return Err("contains agent worktrees, pick a folder inside it");
     }
-    let name = canon.to_string_lossy();
+    let name = canon_path.to_string_lossy();
+    if name.contains('`') {
+        return Err("names with a backtick can't be shared with agents yet; rename it or pick another folder");
+    }
     if name.contains(GLOB_CHARS) {
         return Err("names with * ? [ ] { } can't be shared with agents yet; rename it or pick another folder");
     }
@@ -526,6 +539,34 @@ mod tests {
             resolve("~/wts/shop", &b, &[]).unwrap_err(),
             "~/wts/shop: already part of the project (in its repository)"
         );
+    }
+
+    /// APFS is case-insensitive and canonicalize keeps the typed case.
+    #[test]
+    fn bounds_are_case_insensitive() {
+        let f = fx();
+        let h = &f.b.home;
+        std::fs::create_dir_all(h.join(".ssh")).unwrap();
+        std::fs::create_dir_all(h.join(".git")).unwrap();
+        let b = Bounds { app_root: f.root.join("elsewhere"), ..f.b.clone() };
+        let cred = "holds credentials, can't be shared with agents";
+        for p in ["~/.SSH", "~/.Ssh/id", "~/LIBRARY/KEYCHAINS", "~/Library/KEYCHAINS"] {
+            let c = h.join(p.trim_start_matches("~/"));
+            let e = check(&c, &b).unwrap_err();
+            assert_eq!(e, cred, "{p}");
+        }
+        let c = h.join("proj/.GIT/hooks");
+        assert!(check(&c, &b).unwrap_err().starts_with("holds settings or code"));
+        let c = h.join(".CLAUDE");
+        assert!(check(&c, &b).unwrap_err().starts_with("holds settings or code"));
+    }
+
+    #[test]
+    fn backtick_is_refused() {
+        let f = fx();
+        std::fs::create_dir_all(f.b.home.join("a`b")).unwrap();
+        let e = resolve("~/a`b", &f.b, &[]).unwrap_err();
+        assert_eq!(e, "~/a`b: names with a backtick can't be shared with agents yet; rename it or pick another folder");
     }
 
     #[test]
