@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use agent_runtime::project_files::{self as pf, Bounds};
+use agent_runtime::project_files as pf;
 use anyhow::{Result, anyhow, bail};
 use orch_store::{FileAccess, Project, ProjectFile};
 use serde_json::{Value, json};
@@ -38,17 +38,22 @@ impl Core {
         self.runtime()?.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))
     }
 
-    fn bounds(&self, p: &Project, home: &Path) -> Result<Bounds> {
-        let rt = self.runtime()?;
-        let all = rt.db.projects(true)?;
-        Ok(Bounds::of(p, &all, home, &rt.cfg.paths.root))
-    }
-
-    /// Saves `files` as the project's list, the rest of its settings as stored.
-    fn save_files(&self, p: &Project, files: Vec<ProjectFile>) -> Result<()> {
+    /// Runs `edit` on the project's stored list under [`SETTINGS_EDIT`] (one
+    /// read-modify-write), saving the settings when it returns `true`.
+    /// Returns what `edit` returned and the list after it.
+    fn edit_files<T>(
+        &self,
+        project_id: &str,
+        edit: impl FnOnce(&mut Vec<ProjectFile>) -> Result<(T, bool)>,
+    ) -> Result<(T, Vec<ProjectFile>)> {
+        let _g = SETTINGS_EDIT.lock_ok();
+        let p = self.files_project(project_id)?;
         let mut s = p.typed_settings();
-        s.external_files = files;
-        self.runtime()?.db.set_project_settings(&p.id, &s, &p.backend(), p.track_orchestrator_dir)
+        let (out, save) = edit(&mut s.external_files)?;
+        if save {
+            self.runtime()?.db.set_project_settings(&p.id, &s, &p.backend(), p.track_orchestrator_dir)?;
+        }
+        Ok((out, s.external_files))
     }
 
     fn audit_file(&self, project_id: &str, action: &str, detail: Value) {
@@ -60,7 +65,7 @@ impl Core {
     /// `project_files(project) -> {files, live_agents}`.
     pub fn project_files(&self, project_id: &str) -> Result<Value> {
         let p = self.files_project(project_id)?;
-        let live = self.runtime()?.live_in_project(project_id);
+        let live = self.runtime()?.live_in_project(&p);
         Ok(json!({"files": views(&p.typed_settings().external_files), "live_agents": live}))
     }
 
@@ -76,20 +81,19 @@ impl Core {
         access: Option<FileAccess>,
         home: &Path,
     ) -> Result<Value> {
-        let _g = SETTINGS_EDIT.lock_ok();
-        let p = self.files_project(project_id)?;
-        let bounds = self.bounds(&p, home)?;
-        let mut files = p.typed_settings().external_files;
-        let (added, refused) = pf::add_batch(&mut files, paths, access, &bounds, orch_store::now_ms());
-        if !added.is_empty() {
-            self.save_files(&p, files.clone())?;
-            for f in files.iter().filter(|f| added.contains(&f.path)) {
-                self.audit_file(
-                    project_id,
-                    "project_file_added",
-                    json!({"path": f.path, "kind": f.kind.as_str(), "access": f.access.as_str()}),
-                );
-            }
+        // The bounds don't depend on the list: resolved before the lock.
+        let bounds = self.runtime()?.project_file_bounds(&self.files_project(project_id)?, home)?;
+        let ((added, refused), files) = self.edit_files(project_id, |files| {
+            let r = pf::add_batch(files, paths, access, &bounds, orch_store::now_ms());
+            let save = !r.0.is_empty();
+            Ok((r, save))
+        })?;
+        for f in files.iter().filter(|f| added.contains(&f.path)) {
+            self.audit_file(
+                project_id,
+                "project_file_added",
+                json!({"path": f.path, "kind": f.kind.as_str(), "access": f.access.as_str()}),
+            );
         }
         Ok(json!({"files": views(&files), "added": added, "refused": refused}))
     }
@@ -103,28 +107,15 @@ impl Core {
         access: Option<FileAccess>,
         note: Option<&str>,
     ) -> Result<Value> {
-        let _g = SETTINGS_EDIT.lock_ok();
-        let p = self.files_project(project_id)?;
-        let mut files = p.typed_settings().external_files;
-        let i = files.iter().position(|f| f.path == Path::new(path)).ok_or_else(|| not_listed(path))?;
-        let note = note.map(|n| pf::normalize_note(Some(n))).transpose().map_err(|e| anyhow!(e))?;
-        let f = &files[i];
-        let new_access = access.unwrap_or(f.access);
-        let access_changed = new_access != f.access;
-        if access_changed {
-            pf::check_nesting(&f.path, f.kind, new_access, &files).map_err(|m| anyhow!("{path}: {m}"))?;
-        }
-        let note_changed = note.as_ref().is_some_and(|n| *n != f.note);
-        if access_changed || note_changed {
-            let f = &mut files[i];
-            f.access = new_access;
-            if let Some(n) = note {
-                f.note = n;
-            }
-            self.save_files(&p, files.clone())?;
-            let mut detail = json!({"path": path, "note_changed": note_changed});
-            if access_changed {
-                detail["access"] = json!(new_access.as_str());
+        let (changed, files) = self.edit_files(project_id, |files| {
+            let c = pf::update(files, path, access, note).map_err(|e| anyhow!(e))?;
+            let save = c.is_some();
+            Ok((c, save))
+        })?;
+        if let Some(c) = changed {
+            let mut detail = json!({"path": path, "note_changed": c.note_changed});
+            if let Some(a) = c.access {
+                detail["access"] = json!(a.as_str());
             }
             self.audit_file(project_id, "project_file_changed", detail);
         }
@@ -133,15 +124,14 @@ impl Core {
 
     /// `project_file_remove(project, path) -> {files}`: the entry only, never the file.
     pub fn project_file_remove(&self, project_id: &str, path: &str) -> Result<Value> {
-        let _g = SETTINGS_EDIT.lock_ok();
-        let p = self.files_project(project_id)?;
-        let mut files = p.typed_settings().external_files;
-        let n = files.len();
-        files.retain(|f| f.path != Path::new(path));
-        if files.len() == n {
-            return Err(not_listed(path));
-        }
-        self.save_files(&p, files.clone())?;
+        let ((), files) = self.edit_files(project_id, |files| {
+            let n = files.len();
+            files.retain(|f| f.path != Path::new(path));
+            if files.len() == n {
+                return Err(not_listed(path));
+            }
+            Ok(((), true))
+        })?;
         self.audit_file(project_id, "project_file_removed", json!({"path": path}));
         Ok(json!({"files": views(&files)}))
     }
@@ -149,7 +139,7 @@ impl Core {
     /// The listed entry at `path` in any project (what `reveal_path` may show).
     pub fn listed_project_file(&self, path: &str) -> Result<PathBuf> {
         let rt = self.runtime()?;
-        let want = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+        let want = agent_runtime::paths::real(Path::new(path));
         let listed = rt
             .db
             .projects(false)?
@@ -196,6 +186,14 @@ mod tests {
         std::fs::write(d.path().join("user/api.yaml"), "x").unwrap();
         let home = std::fs::canonicalize(d.path().join("user")).unwrap();
         Fx { _d: d, core, home }
+    }
+
+    /// The General form with `settings`, on the local backend.
+    fn form(settings: Value) -> crate::teams::ProjectSettingsForm {
+        serde_json::from_value(
+            json!({"settings": settings, "backend": {"type": "local"}, "track_orchestrator_dir": true}),
+        )
+        .unwrap()
     }
 
     fn strs(v: &Value) -> Vec<String> {
@@ -306,23 +304,17 @@ mod tests {
         let r =
             f.core.project_files_add_in("repo", &["~/Brand".into(), "~/app.figcraft".into()], None, &f.home).unwrap();
         let fig = strs(&r["added"])[1].clone();
-        let form = |files: Value| -> crate::teams::ProjectSettingsForm {
-            serde_json::from_value(json!({"settings": {"default_team": "full-stack", "external_files": files},
-                "backend": {"type": "local"}, "track_orchestrator_dir": true}))
-            .unwrap()
-        };
         let before = f.core.project_files("repo").unwrap()["files"].clone();
         for files in [json!([]), json!([{"path": "/etc", "kind": "folder", "added_at_ms": 1}])] {
-            let s = f.core.project_settings_set("repo", form(files)).unwrap();
+            let s = f
+                .core
+                .project_settings_set("repo", form(json!({"default_team": "full-stack", "external_files": files})))
+                .unwrap();
             assert_eq!(s["settings"]["default_team"], "full-stack");
             assert_eq!(f.core.project_files("repo").unwrap()["files"], before, "the list is kept");
         }
         // A form without the key keeps it too.
-        let f2: crate::teams::ProjectSettingsForm = serde_json::from_value(
-            json!({"settings": {}, "backend": {"type": "local"}, "track_orchestrator_dir": true}),
-        )
-        .unwrap();
-        f.core.project_settings_set("repo", f2).unwrap();
+        f.core.project_settings_set("repo", form(json!({}))).unwrap();
         assert_eq!(f.core.project_files("repo").unwrap()["files"], before);
 
         let r = f.core.project_file_remove("repo", &fig).unwrap();
@@ -355,11 +347,7 @@ mod tests {
             }
             for _ in 0..4 {
                 sc.spawn(|| {
-                    let form: crate::teams::ProjectSettingsForm = serde_json::from_value(
-                        json!({"settings": {}, "backend": {"type": "local"}, "track_orchestrator_dir": true}),
-                    )
-                    .unwrap();
-                    f.core.project_settings_set("repo", form).unwrap();
+                    f.core.project_settings_set("repo", form(json!({}))).unwrap();
                 });
             }
         });

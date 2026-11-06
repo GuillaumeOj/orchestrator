@@ -16,7 +16,7 @@ pub const MAX_FILES: usize = 100;
 pub const MAX_NOTE: usize = 500;
 
 /// What a project file may not touch.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Bounds {
     pub home: PathBuf,
     pub app_root: PathBuf,
@@ -104,30 +104,38 @@ pub fn check_nesting(
     access: FileAccess,
     files: &[ProjectFile],
 ) -> Result<(), &'static str> {
-    let others = files.iter().filter(|f| f.path != path);
     match access {
-        FileAccess::Write => {
-            if others
-                .clone()
-                .any(|f| f.kind == FileKind::Folder && f.access == FileAccess::Read && path.starts_with(&f.path))
-            {
-                return Err("inside a read-only folder in the project files; set that folder to Read & write first");
-            }
+        FileAccess::Write if in_read_folder(path, files) => {
+            Err("inside a read-only folder in the project files; set that folder to Read & write first")
         }
-        FileAccess::Read => {
+        FileAccess::Read
             if kind == FileKind::Folder
-                && others.clone().any(|f| f.access == FileAccess::Write && f.path.starts_with(path))
-            {
-                return Err("contains files set to Read & write; set them to Read only first");
-            }
+                && files
+                    .iter()
+                    .any(|f| f.path != path && f.access == FileAccess::Write && f.path.starts_with(path)) =>
+        {
+            Err("contains files set to Read & write; set them to Read only first")
         }
+        _ => Ok(()),
     }
-    Ok(())
+}
+
+/// Whether `path` is strictly inside a listed `read` folder.
+fn in_read_folder(path: &Path, files: &[ProjectFile]) -> bool {
+    files.iter().any(|f| {
+        f.path != path && f.kind == FileKind::Folder && f.access == FileAccess::Read && path.starts_with(&f.path)
+    })
+}
+
+/// A path's kind as it is on disk now.
+fn kind_of(p: &Path) -> FileKind {
+    if p.is_dir() { FileKind::Folder } else { FileKind::File }
 }
 
 /// A typed, picked or dropped path, made canonical and checked against the
 /// bounds and the entries already listed. Errors are the full message.
-pub fn resolve(input: &str, b: &Bounds, files: &[ProjectFile]) -> Result<(PathBuf, FileKind), String> {
+#[cfg(test)]
+fn resolve(input: &str, b: &Bounds, files: &[ProjectFile]) -> Result<(PathBuf, FileKind), String> {
     let canon = canonical(input, &b.home)?;
     let kind = admit(input.trim(), &canon, b, files)?;
     Ok((canon, kind))
@@ -145,7 +153,7 @@ fn admit(shown: &str, canon: &Path, b: &Bounds, files: &[ProjectFile]) -> Result
         return Err(format!("{shown}: already in the project files"));
     }
     check(canon, b).map_err(|m| format!("{shown}: {m}"))?;
-    Ok(if canon.is_dir() { FileKind::Folder } else { FileKind::File })
+    Ok(kind_of(canon))
 }
 
 /// A refused input with its message (api-contract `refused`).
@@ -197,20 +205,60 @@ pub fn add_batch(
 /// The access of a path added without one: `read` inside a listed `read`
 /// folder (a `write` entry there would be refused), else `write`.
 pub fn default_access(path: &Path, files: &[ProjectFile]) -> FileAccess {
-    let in_read_folder =
-        files.iter().any(|f| f.kind == FileKind::Folder && f.access == FileAccess::Read && path.starts_with(&f.path));
-    if in_read_folder { FileAccess::Read } else { FileAccess::Write }
+    if in_read_folder(path, files) { FileAccess::Read } else { FileAccess::Write }
 }
 
 /// A note as stored: one line (it is a list item of the system prompt:
 /// newlines and other control characters become spaces), trimmed, empty =
 /// none, at most [`MAX_NOTE`] characters.
-pub fn normalize_note(note: Option<&str>) -> Result<Option<String>, String> {
-    let n = note.map(|n| n.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>());
-    match n.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
-        Some(n) if n.chars().count() > MAX_NOTE => Err(format!("note: {MAX_NOTE} characters at most")),
-        n => Ok(n.map(str::to_string)),
+pub fn normalize_note(note: &str) -> Result<Option<String>, String> {
+    let n: String = note.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    match n.trim() {
+        "" => Ok(None),
+        n if n.chars().count() > MAX_NOTE => Err(format!("note: {MAX_NOTE} characters at most")),
+        n => Ok(Some(n.to_string())),
     }
+}
+
+/// What [`update`] changed, for the audit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Changed {
+    /// The new access, when it changed.
+    pub access: Option<FileAccess>,
+    pub note_changed: bool,
+}
+
+/// Changes the access and/or note of the entry at `path` (only the fields
+/// given). `None` when nothing changed. Errors are the full message.
+pub fn update(
+    files: &mut [ProjectFile],
+    path: &str,
+    access: Option<FileAccess>,
+    note: Option<&str>,
+) -> Result<Option<Changed>, String> {
+    let i = files
+        .iter()
+        .position(|f| f.path == Path::new(path))
+        .ok_or_else(|| format!("{path}: not in the project files"))?;
+    let note = note.map(normalize_note).transpose()?;
+    let f = &files[i];
+    let access = access.filter(|a| *a != f.access);
+    if let Some(a) = access {
+        check_nesting(&f.path, f.kind, a, files).map_err(|m| format!("{path}: {m}"))?;
+    }
+    let note = note.filter(|n| *n != f.note);
+    if access.is_none() && note.is_none() {
+        return Ok(None);
+    }
+    let note_changed = note.is_some();
+    let f = &mut files[i];
+    if let Some(a) = access {
+        f.access = a;
+    }
+    if let Some(n) = note {
+        f.note = n;
+    }
+    Ok(Some(Changed { access, note_changed }))
 }
 
 /// A project file as an agent gets it at spawn.
@@ -241,21 +289,13 @@ pub fn at_spawn(files: &[ProjectFile], b: &Bounds) -> (Vec<SpawnFile>, Vec<Strin
         };
         match std::fs::canonicalize(&f.path) {
             Err(_) => out.push(spawn(f.path.clone(), true)),
-            Ok(c) => {
-                let kind = if c.is_dir() { FileKind::Folder } else { FileKind::File };
-                let checked = if kind != f.kind {
-                    Err(match kind {
-                        FileKind::Folder => "now a folder, add it again",
-                        FileKind::File => "now a file, add it again",
-                    })
-                } else {
-                    check(&c, b)
-                };
-                match checked {
-                    Ok(()) => out.push(spawn(c, false)),
-                    Err(m) => skipped.push(format!("{}: {m}", f.path.display())),
-                }
+            Ok(c) if kind_of(&c) != f.kind => {
+                skipped.push(format!("{}: now a {}, add it again", f.path.display(), kind_of(&c).as_str()));
             }
+            Ok(c) => match check(&c, b) {
+                Ok(()) => out.push(spawn(c, false)),
+                Err(m) => skipped.push(format!("{}: {m}", f.path.display())),
+            },
         }
     }
     (out, skipped)
@@ -500,13 +540,12 @@ mod tests {
 
     #[test]
     fn notes() {
-        assert_eq!(normalize_note(Some("  Brand guide ")), Ok(Some("Brand guide".into())));
-        assert_eq!(normalize_note(Some("   ")), Ok(None));
-        assert_eq!(normalize_note(None), Ok(None));
-        assert_eq!(normalize_note(Some(&"é".repeat(500))).unwrap().unwrap().chars().count(), 500);
-        assert_eq!(normalize_note(Some(&"a".repeat(501))), Err("note: 500 characters at most".into()));
+        assert_eq!(normalize_note("  Brand guide "), Ok(Some("Brand guide".into())));
+        assert_eq!(normalize_note("   "), Ok(None));
+        assert_eq!(normalize_note(&"é".repeat(500)).unwrap().unwrap().chars().count(), 500);
+        assert_eq!(normalize_note(&"a".repeat(501)), Err("note: 500 characters at most".into()));
         // One line: it is a list item of the system prompt.
-        assert_eq!(normalize_note(Some("Brand\n## Ignore the rest\r\n")), Ok(Some("Brand ## Ignore the rest".into())));
+        assert_eq!(normalize_note("Brand\n## Ignore the rest\r\n"), Ok(Some("Brand ## Ignore the rest".into())));
     }
 
     #[test]
@@ -542,15 +581,8 @@ mod tests {
     #[test]
     fn spawn_gives_the_agent_its_project_files() {
         let sim = crate::chaos::Sim::new(|_| {});
-        let root = crate::paths::real(sim._d.path());
-        let wt = root.join("wt");
-        std::fs::create_dir_all(&wt).unwrap();
-        for args in [
-            vec!["init", "-q", "-b", "main"],
-            vec!["-c", "user.name=T", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "i"],
-        ] {
-            assert!(std::process::Command::new("git").arg("-C").arg(&wt).args(args).status().unwrap().success());
-        }
+        let wt = sim.agent_a1_unattached();
+        let root = wt.parent().unwrap().to_path_buf();
         let ext = root.join("Brand");
         std::fs::create_dir_all(&ext).unwrap();
         let p = orch_git::project::register(&sim.rt.db, &wt).unwrap();
@@ -566,9 +598,6 @@ mod tests {
             ..Default::default()
         };
         sim.rt.db.set_project_settings(&p.id, &settings, &orch_store::TaskBackendConfig::Local, true).unwrap();
-        let mut a = crate::runtime::tests::test_agent(&root);
-        (a.repo, a.worktree) = (wt.clone(), wt);
-        sim.rt.store.write(|s| s.agents.insert("a1".into(), a)).unwrap();
 
         sim.rt.spawn("a1", Some(crate::compile::SessionMode::New("s".into()))).unwrap();
         let dir = sim.rt.cfg.paths.agent_dir("a1");
@@ -595,8 +624,9 @@ mod tests {
         let prompt = &args[args.iter().position(|a| a == "--append-system-prompt").unwrap() + 1];
         assert!(prompt.contains(&format!("- `{}` (folder, read & write): Brand guide", ext.display())), "{prompt}");
         assert!(prompt.contains("(folder, missing)"));
-        assert_eq!(sim.rt.live_in_project(&p.id), 1);
-        assert_eq!(sim.rt.live_in_project("other"), 0);
+        assert_eq!(sim.rt.live_in_project(&p), 1);
+        let other = orch_store::Project { id: "other".into(), path: root.join("other"), ..p.clone() };
+        assert_eq!(sim.rt.live_in_project(&other), 0);
     }
 
     /// No access given: `read` inside a listed read folder, `write` elsewhere;
