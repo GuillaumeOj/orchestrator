@@ -25,6 +25,7 @@ use orch_protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::claude_update::ClaudeUpdater;
 use crate::editor;
 use crate::kitty::{self, KittyImport};
 use crate::memory::{self, AppMemory};
@@ -90,7 +91,8 @@ pub struct Core {
     /// Governor actions of earlier starts this plan week (their ids restart
     /// at each start): shown in the log, not undoable.
     past_actions: Vec<governor::GovernorAction>,
-    claude: Mutex<Option<ClaudeCheck>>,
+    /// The Claude Code check (J0) and its updates.
+    pub claude_update: Arc<ClaudeUpdater>,
     pub watch: Arc<MemoryWatch>,
     git: Mutex<Cached<BTreeMap<PathBuf, GitSummary>>>,
     memory: Mutex<Cached<AppMemory>>,
@@ -209,6 +211,12 @@ impl Core {
             Some(rt) => past_week(rt, started),
             None => (History::default(), vec![]),
         };
+        let rt_touch = rt.clone();
+        let claude_update = Arc::new(ClaudeUpdater::new(move || {
+            if let Some(rt) = &rt_touch {
+                rt.touch(orch_protocol::Topic::Setup);
+            }
+        }));
         let core = Arc::new(Core {
             paths,
             rt,
@@ -220,7 +228,7 @@ impl Core {
             editor_template: Mutex::new(editor_template),
             history: Mutex::new(history),
             past_actions,
-            claude: Mutex::new(None),
+            claude_update,
             watch: Arc::new(MemoryWatch::default()),
             git: Mutex::new(Cached::default()),
             memory: Mutex::new(Cached::default()),
@@ -237,12 +245,13 @@ impl Core {
                 Some(rt) => rt.cfg.claude.clone(),
                 None => cfg.claude.clone().unwrap_or_else(|| RuntimeConfig::new(core.paths.clone()).claude),
             };
-            let core2 = core.clone();
+            let (up, stop) = (core.claude_update.clone(), core.stop.clone());
             std::thread::spawn(move || {
-                let c = setup::check_claude(&claude);
-                *core2.claude.lock_ok() = Some(c);
-                if let Some(rt) = &core2.rt {
-                    rt.touch(orch_protocol::Topic::Setup);
+                up.set_check(setup::check_claude(&claude));
+                up.touch();
+                // Then the latest version, every 6 h (not with ORCH_NO_UPDATE=1, as the app updater).
+                if !std::env::var("ORCH_NO_UPDATE").is_ok_and(|v| v == "1") {
+                    up.check_periodically(&stop);
                 }
             });
         }
@@ -360,7 +369,18 @@ impl Core {
 
     /// The Claude Code check (J0), once the background probe has answered.
     pub fn claude_check(&self) -> Option<ClaudeCheck> {
-        self.claude.lock_ok().clone()
+        self.claude_update.check()
+    }
+
+    /// `claude_update_check`: the latest version now, then `setup.claude`.
+    pub fn claude_update_check(&self) -> Result<Value> {
+        self.claude_update.check_now()?;
+        Ok(self.claude_update.view())
+    }
+
+    /// `claude_update_run`: starts `claude update`; progress in `setup.claude.update`.
+    pub fn claude_update_run(&self) -> Result<()> {
+        self.claude_update.start_update()
     }
 
     /// Graceful stop: suspend agents (resumed by id next time), close shells.
@@ -906,7 +926,13 @@ impl Core {
         if let Some(rt) = &self.rt {
             let st = rt.state_json();
             agents = st["agents"].as_array().cloned().unwrap_or_default();
-            warnings.extend(st["warnings"].as_array().cloned().unwrap_or_default());
+            // The runtime's version warnings are from its start: ours follow the current check.
+            warnings.extend(
+                (st["warnings"].as_array().into_iter().flatten())
+                    .filter(|w| !w.as_str().is_some_and(setup::is_runtime_version_warning))
+                    .cloned(),
+            );
+            warnings.extend(setup::version_warnings(self.claude_check().as_ref()).into_iter().map(Value::from));
             usage = rt.usage_json();
             if let Some(u) = usage.as_object_mut() {
                 // Per-agent usage is already in `agents`, and `snapshot` replaces `governor`.
