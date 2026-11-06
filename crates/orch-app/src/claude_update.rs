@@ -439,11 +439,15 @@ impl ClaudeUpdater {
         i.updating = true;
         i.started_at = Some(now_secs());
         i.error = None;
+        i.updated = None;
         i.log.clear();
         drop(i);
         (self.touch)();
         let me = self.clone();
-        std::thread::spawn(move || me.run_update(&claude, install));
+        std::thread::spawn(move || {
+            let _guard = UnwindGuard(&me);
+            me.run_update(&claude, install)
+        });
         Ok(())
     }
 
@@ -591,6 +595,26 @@ impl ClaudeUpdater {
         let i = self.inner.lock_ok();
         let (_g, t) = self.settled.wait_timeout_while(i, timeout, |i| i.checking || i.updating).unwrap();
         assert!(!t.timed_out(), "still running after {timeout:?}");
+    }
+}
+
+/// Held by the update thread: if it unwinds, `updating` (and a check in
+/// flight) would stay set for good and refuse every later update.
+struct UnwindGuard<'a>(&'a ClaudeUpdater);
+
+impl Drop for UnwindGuard<'_> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let mut i = self.0.inner.lock_ok();
+        i.updating = false;
+        i.checking = false;
+        i.started_at = None;
+        i.error = Some((ErrorFrom::Update, "claude update: internal error".into()));
+        drop(i);
+        self.0.settled.notify_all();
+        (self.0.touch)();
     }
 }
 
@@ -994,6 +1018,39 @@ esac
         // Ahead of the latest (a local build, the stable channel) is fine too.
         let r = rig(fake("2.1.317", "true"), "2.1.311", Duration::from_secs(20));
         assert!(update(&r)["update"]["error"].is_null());
+    }
+
+    #[test]
+    fn a_second_run_clears_the_previous_updated() {
+        let r = rig(fake("2.1.317", SWAP), "2.1.330", Duration::from_secs(20));
+        assert_eq!(update(&r)["update"]["updated"]["to"], "2.1.330");
+        // Next run: the (swapped-in) script now ends "already up to date".
+        let versions = r.fake.home.join(".local/share/claude/versions");
+        write_version(&versions, "2.1.330", "echo 'Claude Code is up to date'");
+        let u = update(&r)["update"].clone();
+        assert!(u["updated"].is_null() && u["error"].is_null(), "{u:#}");
+        assert_eq!(u["log"][0], "Claude Code is up to date");
+    }
+
+    #[test]
+    fn a_panic_in_the_update_thread_does_not_leave_it_updating() {
+        let f = fake("2.1.317", "true");
+        let up = Arc::new(ClaudeUpdater::with(
+            f.home.clone(),
+            Box::new(|| {}),
+            Box::new(|_, _| exact_version("2.1.330")),
+            Box::new(|| panic!("injected")),
+            UPDATE_DEADLINE,
+        ));
+        up.set_check(setup::check_claude(&f.link));
+        up.start_update().unwrap();
+        up.wait_settled(Duration::from_secs(20));
+        let u = up.view()["update"].clone();
+        assert_eq!((u["state"].as_str(), u["error"].as_str()), (Some("error"), Some("claude update: internal error")));
+        assert!(u["started_at"].is_null());
+        // The next update is accepted again.
+        up.start_update().unwrap();
+        up.wait_settled(Duration::from_secs(20));
     }
 
     #[test]
