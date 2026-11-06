@@ -57,7 +57,7 @@ db.flush()?;                                                    // everything qu
 | Message (P2) | `messages` | `add_message`, `messages(run, Some((node, agent)), unread)`, `mark_messages(ids, agent, read, at)` |
 | Artifact (P2) | `artifacts` | `add_artifact`, `artifacts(feature)` |
 | (team timeline, FR-408) | `events.team_run_id` | `add_run_event(ts, run, agent, kind, detail)` (detached), `run_events(run, limit)` |
-| (project settings, FR-109) | `projects.settings`, `task_backend` | `Project::typed_settings()`, `Project::backend()`, `set_project_settings(id, settings, backend, track)` |
+| (project settings, FR-109) | `projects.settings`, `task_backend` | `Project::typed_settings()`, `Project::backend()`, `update_project_settings(id, edit)` (one transaction re-reads and saves them; `upsert_project` never rewrites an existing project's `settings`) |
 | (search, FR-209) | `transcript_files`, `transcript_fts` | `index_transcripts(&[TranscriptFile])`, `search_transcripts(q, project, limit)` |
 
 Governor entities are stored as the `governor` crate's serde types (JSON in `data`, key columns

@@ -85,6 +85,10 @@ fn row_usage(r: &rusqlite::Row) -> rusqlite::Result<UsageRecord> {
 impl Store {
     // ------------------------------------------------------------ projects
 
+    /// Inserts `pr`, or updates an existing project's columns but its
+    /// `settings`: those change through [`Store::update_project_settings`]
+    /// only, so a register or relocate holding an older copy never undoes
+    /// an edit made meanwhile.
     pub fn upsert_project(&self, pr: &Project) -> Result<()> {
         let pr = pr.clone();
         let topics = [orch_protocol::Topic::Project(pr.id.clone()), orch_protocol::Topic::Board(pr.id.clone())];
@@ -96,7 +100,7 @@ impl Store {
                      ON CONFLICT(id) DO UPDATE SET name=excluded.name, path=excluded.path,
                        default_branch=excluded.default_branch, remotes=excluded.remotes,
                        worktree_root=excluded.worktree_root, task_backend=excluded.task_backend,
-                       track_orchestrator_dir=excluded.track_orchestrator_dir, settings=excluded.settings,
+                       track_orchestrator_dir=excluded.track_orchestrator_dir,
                        last_active_at_ms=excluded.last_active_at_ms, last_fetch_at_ms=excluded.last_fetch_at_ms,
                        last_fetch_error=excluded.last_fetch_error, archived=excluded.archived"
                 ),
