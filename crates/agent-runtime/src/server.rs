@@ -235,9 +235,10 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
         CtlRequest::RevokeRule { id, file } => {
             ok_or(rt.revoke_rule(&id, file.as_deref()).map(|done| json!({"revoked": done})))
         }
-        CtlRequest::ChatSend { text, thread } => {
-            ok_or(rt.chat_send(&text, thread.as_deref()).map(|e| json!({"entry": e})))
+        CtlRequest::ChatSend { text, thread, context } => {
+            ok_or(rt.chat_send_with(&text, thread.as_deref(), context.as_ref()).map(|e| json!({"entry": e})))
         }
+        CtlRequest::Intake { week } => ok_or(rt.intake_report(week)),
         CtlRequest::ChatDiscard { entry } => ok_or(rt.chat_discard(&entry)),
         CtlRequest::ChatUndo { entry, text } => ok_or(rt.chat_undo(&entry, text.as_deref())),
         CtlRequest::RuleProposal { item, action } => ok_or(rt.rule_proposal_act(item, &action)),
@@ -326,6 +327,7 @@ pub fn ctl(rt: &Runtime, req: CtlRequest) -> CtlReply {
                 brief: brief.unwrap_or_default(),
                 base,
                 off_hours: false,
+                intake: None,
             })
             .map(|r| json!(r)),
         ),

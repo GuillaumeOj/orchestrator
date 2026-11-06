@@ -369,10 +369,16 @@ impl Runtime {
     /// The user's message (`chat_send`, P4.3's entry `chat`): a blocking
     /// event, kept while the Overwatch is `off` / `down`.
     pub fn overwatch_user_message(&self, chat: &str, text: &str) -> Option<String> {
+        self.overwatch_user_message_with(chat, text, None)
+    }
+
+    /// A user message, with its planning context (`chat_send` `context.plan`).
+    pub fn overwatch_user_message_with(&self, chat: &str, text: &str, plan: Option<Value>) -> Option<String> {
         // The turn carries the summary only: a message is whole in it (up to what `chat_send` takes).
         let mut ev = Event::new(Kind::UserMessage, crate::team::cut(text, super::chatw::SEND_MAX));
         ev.text = Some(text.to_string());
         ev.chat = Some(chat.to_string());
+        ev.plan = plan;
         self.overwatch_enqueue(ev)
     }
 
@@ -717,6 +723,7 @@ impl Runtime {
             let text = e.text.clone().unwrap_or_default();
             let mut ev = Event::new(Kind::UserMessage, crate::team::cut(&text, super::chatw::SEND_MAX));
             (ev.text, ev.chat, ev.at_ms) = (Some(text), Some(e.id()), e.at_ms);
+            ev.plan = e.meta.as_ref().and_then(|m| m.get("plan")).filter(|p| p.is_object()).cloned();
             st.pending_user.push(ev);
         }
     }

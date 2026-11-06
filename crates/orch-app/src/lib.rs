@@ -235,6 +235,7 @@ pub fn run() {
             commands::intake_item,
             commands::intake_hide,
             commands::intake_unhide,
+            commands::intake_prefill,
             commands::artifact_preview,
             commands::artifact_open,
             commands::team_duplicate,

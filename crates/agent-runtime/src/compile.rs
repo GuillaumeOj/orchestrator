@@ -649,7 +649,7 @@ pub(crate) mod tests {
         assert!(deny.contains(&"Edit(//app/**)".to_string()));
         assert_eq!(c.settings["sandbox"]["filesystem"]["allowWrite"], json!([]));
         assert_eq!(c.settings["sandbox"]["network"]["allowedDomains"], json!([]));
-        // dontAsk (no prompt of its own), only the orch server, its 11 tools.
+        // dontAsk (no prompt of its own), only the orch server, its 12 tools.
         assert!(c.args.windows(2).any(|w| w[0] == "--permission-mode" && w[1] == "dontAsk"));
         assert!(c.args.iter().any(|a| a == "--strict-mcp-config"));
         assert!(c.args.windows(2).any(|w| w[0] == "--model" && w[1] == "sonnet"));
@@ -658,7 +658,7 @@ pub(crate) mod tests {
         assert_eq!(tools.split(',').collect::<Vec<_>>(), orch_team::compile::OVERWATCH_TOOLS);
         assert!(!tools.contains("commit"));
         let tool_allows: Vec<&String> = allow.iter().filter(|a| a.starts_with("mcp__")).collect();
-        assert_eq!(tool_allows.len(), 11);
+        assert_eq!(tool_allows.len(), 12);
         let prompt = &c.args[c.args.iter().position(|a| a == "--append-system-prompt").unwrap() + 1];
         assert!(prompt.starts_with(OVERWATCH_PREAMBLE) && prompt.contains("You are the Overwatch"));
         assert!(!prompt.contains("mcp__orch__commit"));

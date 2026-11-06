@@ -70,6 +70,7 @@ impl Runtime {
             "restart_fresh" => self.ow_restart_fresh(args),
             "reprioritize" => self.ow_reprioritize(args),
             "propose_rule" => self.ow_propose_rule(args),
+            "propose_brief" => self.ow_propose_brief(args),
             "post" => self.ow_post(args),
             other => Err(err("not_implemented", format!("{other} is not an Overwatch tool"))),
         };

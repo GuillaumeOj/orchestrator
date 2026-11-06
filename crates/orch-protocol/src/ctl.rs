@@ -236,6 +236,9 @@ pub enum CtlRequest {
         text: String,
         #[serde(default)]
         thread: Option<String>,
+        /// `{plan: <project id>}`: a planning message (P4.5).
+        #[serde(default)]
+        context: Option<serde_json::Value>,
     },
     /// `chat_discard {entry}`: removes a message still pending.
     ChatDiscard {
@@ -254,6 +257,11 @@ pub enum CtlRequest {
     },
     /// `orchd overwatch`: status, today's session and turns, p50 / p90 wake (P4.4).
     Overwatch,
+    /// `orchd intake [--week]`: sources, item counts, and this week's starts (P4.5).
+    Intake {
+        #[serde(default)]
+        week: bool,
+    },
     /// `overwatch_restart`: a fresh session with a new briefing.
     OverwatchRestart,
     OverwatchSettings,

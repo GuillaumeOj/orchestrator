@@ -89,6 +89,19 @@ impl Runtime {
     /// `pending` while the Overwatch is off, down or paused (delivered on restart or resume),
     /// else `waking` until a turn takes it.
     pub fn chat_send(&self, text: &str, thread: Option<&str>) -> Result<ChatEntry> {
+        self.chat_send_with(text, thread, None)
+    }
+
+    /// `chat_send` with its `context`: `{plan: <project id>}` marks a
+    /// planning message (P4.5 api-contract §3.3); the event carries the plan.
+    pub fn chat_send_with(&self, text: &str, thread: Option<&str>, context: Option<&Value>) -> Result<ChatEntry> {
+        let plan = match context.and_then(|c| c.get("plan")).filter(|p| !p.is_null()) {
+            Some(p) => {
+                let p = p.as_str().ok_or_else(|| anyhow::anyhow!("bad_request: context.plan is a project id"))?;
+                Some(self.plan_context(p)?)
+            }
+            None => None,
+        };
         let text = text.trim();
         if text.is_empty() {
             bail!("bad_request: an empty message");
@@ -105,13 +118,32 @@ impl Runtime {
             kind: "text".into(),
             thread: thread.map(str::to_string),
             text: Some(text.to_string()),
-            meta: Some(json!({"delivery": if pending { "pending" } else { "waking" }})),
+            meta: Some(match &plan {
+                Some(p) => json!({"delivery": if pending { "pending" } else { "waking" }, "plan": p}),
+                None => json!({"delivery": if pending { "pending" } else { "waking" }}),
+            }),
             ..Default::default()
         };
         let e = self.chat_put(e)?;
         let _ = self.db.audit("user", None, "chat_send", Some(&e.id()), "ok", json!({"chars": text.chars().count()}));
-        self.overwatch_user_message(&e.id(), text);
+        self.overwatch_user_message_with(&e.id(), text, plan);
         Ok(e)
+    }
+
+    /// The plan payload of a planning message: the project, its docs folder,
+    /// its intake source and its last 5 features' titles.
+    fn plan_context(&self, project: &str) -> Result<Value> {
+        let p = self.db.project(project)?.ok_or_else(|| anyhow::anyhow!("bad_request: no project {project:?}"))?;
+        let docs = p.path.join("docs");
+        let intake = self.intake_label(&p);
+        let mut features = self.db.features(Some(&p.id)).unwrap_or_default();
+        features.sort_by_key(|f| std::cmp::Reverse(f.created_at_ms));
+        let recent: Vec<String> = features.into_iter().take(5).map(|f| f.title).collect();
+        Ok(json!({
+            "project": p.id, "name": p.name, "path": p.path,
+            "docs_dir": docs.is_dir().then(|| docs.clone()),
+            "intake": intake, "recent_briefs": recent,
+        }))
     }
 
     /// `chat_discard`: removes a user entry still `pending`.
