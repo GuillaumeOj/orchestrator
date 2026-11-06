@@ -126,7 +126,9 @@ while IFS= read -r line; do
     # OWALLOW: it allows it inside that turn, like its model would.
     *OWALLOW*)
       d=$(printf '%s' "$raw" | sed -n 's/.*permission \(inbox-[0-9]*\).*/\1/p')
-      [ -n "$d" ] && echo "MCP[$n]:$(mcp_call decide_permission "{\"decision\":\"$d\",\"effect\":\"allow\",\"reason\":\"routine install in the task\"}")" ;;
+      # In a variable first: bash brace-expands `{a,b}` in a command's words.
+      args="{\"decision\":\"$d\",\"effect\":\"allow\",\"reason\":\"routine install in the task\"}"
+      [ -n "$d" ] && echo "MCP[$n]:$(mcp_call decide_permission "$args")" ;;
     *COMMIT*) echo "work $n" > "work-$n.txt"; echo "MCP[$n]:$(mcp_commit "fake commit $n")" ;;
     *ORCHTOOL*)
       name=$(printf '%s' "$raw" | sed -n 's/.*ORCHTOOL \([a-z_]*\) .*/\1/p')
