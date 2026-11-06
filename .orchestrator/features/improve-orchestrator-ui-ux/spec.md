@@ -28,27 +28,27 @@
 ## 3. Scope (design decisions; details in ux-brief.md)
 
 ### 3.1 Controls vs hints (problem 1)
-- Rule: a shortcut is never shown inline in the chrome as a pill next to/inside a button. It goes in the control's **tooltip** (`Resume · ⌘R`), in the **palette** (right-aligned, as today), and in a **Keyboard shortcuts** sheet (⌘/ and Help menu), which absorbs the Settings › Keyboard section.
+- Rule: a shortcut is never shown inline in the chrome as a pill next to/inside a button. It goes in the control's **tooltip** (`Resume · ⏎`), in the **palette** (right-aligned, as today), and in a **Keyboard shortcuts** sheet (⌘/ and Help menu), which absorbs the Settings › Keyboard section.
 - Allowed inline exceptions, styled as plain muted text and never as a button: the empty-state of a pane (one line, e.g. "⌘K to open anything"), and the leader-mode overlay while the leader key is held.
 - Buttons have one look per level (primary / secondary / ghost / icon) from the existing tokens; a `Kbd` pill is not interactive and has no hover state.
 
 ### 3.2 One home per action (problem 2)
 - **UX audits every screen** (title bar, banner, sidebar/icon rail, status bar, dock, every pane, chat column, inspector, dialogs) and lists each action with every place it appears. Output: `audit.md`, a table *action → places today → single home → removed from*.
 - Placement rules the audit applies:
-  - The **banner** is for app-wide conditions only (offline, update ready, usage pause, sandbox/auth problems). A condition that belongs to one agent/feature/project is shown **in its pane** (strip) and as a badge in the sidebar, not in the banner.
+  - The **banner** is for app-wide conditions only (no agent core, Claude Code setup problem, weekly / 5-hour limit reached, Governor in Red, off-hours work without AC power, core warnings: audit §3). A condition that belongs to one agent/feature/project is shown **in its pane** (strip) and as a badge in the sidebar, not in the banner.
   - A pane's **header** holds identity and pane-wide actions; a **strip** holds the action that resolves the current state (Resume on a suspended agent). Never both for the same action.
   - The **inspector** shows details and secondary actions, not a copy of the pane's primary action.
   - Toolbar vs context menu: a frequent action in the toolbar, the rest in a `⋯` menu (uses the new Menu component), not both.
 
 ### 3.3 Settings and Week planner as floating windows (problems 3)
-- **App settings** (⌘,), **Project settings** (from the project pane, sidebar, palette) and the **Week planner** open as an **in-app floating window**: centered over the app, dimmed backdrop, title bar with the window name (and the project for Project settings), close ×, Esc closes, section nav on the left as today. Not a workspace tab, not an OS window.
+- **App settings** (⌘,), **Project settings** (from the project pane's Settings button, the palette, and MCP deep links with a project) and the **Week planner** open as an **in-app floating window**: centered over the app, dimmed backdrop, title bar with the window name (and the project for Project settings), close ×, Esc closes, section nav on the left as today. Not a workspace tab, not an OS window.
 - One window at a time; opening another replaces it. Deep links (`openSettings(section, server)`, banners, decision cards) open the window on that section.
 - Sizes: settings 960 × min(760, viewport − 80); planner 1100 × same; both shrink with the app window (min 720 wide), content scrolls inside.
 - Unsaved edits: settings save per field as today; no extra confirm on close.
 
 ### 3.4 One pane, one project (problems 6, 7, 10)
 - **No splits.** The workspace is one tab strip and one pane. Split right/below (leader v / s), the pane numbers (⌘1…9 become "tab 1…9") and pane zoom go away; nvim and shells opened "in a split" go to a tab (nvim) or the dock (shells). A saved layout with splits restores as tabs in reading order.
-- **Project context dropdown**, always shown at the left of the workspace tab strip: each project, plus **All projects**. It filters the tabs: project-bound panes (project, feature, board, diff, team canvas, report of that project) show only in their project; app-wide panes (Overview, Inbox, Mission control) always show and take the project as a filter where they have one (Overview, Mission control's ProjectFilter). Opening a pane of another project switches the context to it. Clicking a project in the sidebar sets the context.
+- **Project context dropdown**, always shown at the left of the workspace tab strip: each project, plus **All projects**. It filters the tabs: project-bound panes (project, feature, board, diff, team canvas, report of that project) show only in their project; app-wide panes (Mission control, Setup) always show; Mission control filters its rows by the context (its own ProjectFilter goes, audit §2.4). The weekly report is app-wide too. Opening a pane of another project switches the context to it. Clicking a project in the sidebar sets the context.
 - **Tabs keep their full title** (min width = content, max ~280 px then ellipsis only for very long names). When they overflow, **‹ ›** scroll buttons appear at the right end of the strip (disabled at each end), plus wheel/trackpad scroll; the active tab is always scrolled into view.
 
 ### 3.5 Dock: Agents / Shells (problems 4, 5)
@@ -72,7 +72,7 @@
 2. FigCraft (the project file `Orchestrator.figcraft` on Google Drive, ADR-012; **never** the repo copy `docs/design/Orchestrator.figcraft`):
    - 02 Components: Select (closed, open, search, groups, disabled, error, focused), Menu, Tab strip with overflow buttons, Floating window, Button vs Kbd/hint styles, Dock view/filter dropdowns, shell tab with live title.
    - 03 Shell & layouts: the app at 1280 and 1512 with the project context dropdown and one pane; tab overflow; dock in Agents (All / one project) and Shells views; waiting dot on the view switch.
-   - 04 Screens: Settings window, Project settings window, Week planner window, Keyboard shortcuts sheet; every pane/strip the audit changes (at least: agent pane suspended/waiting with banner gone, project pane, feature pane, overview, status bar, title bar).
+   - 04 Screens: Settings window, Project settings window, Week planner window, Keyboard shortcuts sheet; every pane/strip the audit changes (at least: agent pane suspended/waiting with banner gone, project pane, feature pane, Mission control, status bar, title bar).
 3. PNG exports of every new/changed frame under `.orchestrator/features/improve-orchestrator-ui-ux/design/`, committed.
 4. `design-notes.md` (ux, after the frames): the implementation hand-off for the follow-up feature: per frame, which components/panes change, state and persistence keys, keyboard changes (removed: split, pane numbers, zoom; added: ⌘/), migration of saved layouts, test list.
 
