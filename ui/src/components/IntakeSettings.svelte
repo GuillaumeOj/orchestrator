@@ -142,8 +142,10 @@
       info = await invoke('intake_source', { project });
       loadError = null;
       fromSource(info.source);
-      baseline = JSON.stringify(toSource());
+      // The default repository is part of the form before the baseline is taken, or a saved source
+      // without `repo` would open as unsaved.
       if (!repo && info.known_repo && type === 'github') repo = info.known_repo;
+      baseline = JSON.stringify(toSource());
     } catch (e) {
       loadError = errText(e);
     }

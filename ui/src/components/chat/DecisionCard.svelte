@@ -12,12 +12,13 @@
   import {
     decidingName,
     decidingShare,
-    decidingText,overwatchOf, 
+    decidingText,
+    overwatchOf,
     recommended,
     recommendsText,
     refKind,
     refLabel,
-    SOURCES_SHOWN
+    SOURCES_SHOWN,
   } from '../../lib/overwatch.js';
   import { decisionKind, LIFECYCLE } from '../../lib/status.js';
   import ContextBlocks from '../ContextBlocks.svelte';

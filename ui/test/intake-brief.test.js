@@ -186,13 +186,14 @@ describe('the brief card', () => {
     expect(app.toasts.at(-1).text).toBe('This brief was closed.');
   });
 
-  it('Dismiss decides, with the 5 s undo window and clears the planning tag', async () => {
+  it('Dismiss decides, with the 5 s undo window and keeps the planning tag until it settles', async () => {
     IS.intakeUi.plan = 'shop-api';
     const c = await open();
     await fireEvent.click(buttons(cardOf(c))[2]);
     expect(app.pending.map((p) => [p.item, p.action])).toEqual([['d_88', 'dismiss']]);
     expect(app.toasts.at(-1).text).toBe('Dismissing · Partial refunds');
-    expect(IS.intakeUi.plan).toBeNull();
+    // Undo is still possible: the tag stays until the dismissal settles.
+    expect(IS.intakeUi.plan).toBe('shop-api');
   });
 
   it('keys: ⏎ launches, e edits, r dismisses', () => {

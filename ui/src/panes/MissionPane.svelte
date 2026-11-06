@@ -79,11 +79,10 @@
   // Ready to start is not work in flight: it neither makes the board "busy" nor "moving" (P4.5 notes §1.1).
   const work = $derived(model.lanes.some((l) => l.id !== 'done' && l.id !== 'ready' && l.rows.length) || !!model.idle);
   const moving = $derived(model.lanes.some((l) => l.id !== 'needs_you' && l.id !== 'done' && l.id !== 'ready') || !!model.idle);
-  const ready = $derived(model.lanes.find((l) => l.id === 'ready'));
   const overwatch = $derived(app.now.overwatch?.status ?? 'off');
   const done = $derived(model.lanes.find((l) => l.id === 'done'));
   // A filter hides every row while some exist elsewhere.
-  const filteredOut = $derived(!!filter && !work && !done && anyWork);
+  const filteredOut = $derived(!!filter && !work && !done && anyWork && !model.lanes.some((l) => l.id === 'ready'));
   const filterOpen = $derived(app.missionFilterOpen);
 
   // The selection follows its row across lanes (keys are the run or agent);
@@ -398,7 +397,7 @@
                   <button class="linkbtn rbtn" tabindex="-1" onclick={() => (intakeUi.showHidden = !intakeUi.showHidden)}>{intakeUi.showHidden ? `Hide the ${st.hidden}` : `${st.hidden} hidden · Show`} <Kbd keys="⇧H" /></button>
                 {/if}
                 {#if st.withSource}
-                  <button class="btn ghost rbtn" tabindex="-1" disabled={st.refreshing || !!(app.now.intake?.sources ?? []).some((s) => rateLimitedUntil(s, now))} onclick={refreshLane} title="Check GitHub, Linear and repo docs now">{st.refreshing ? 'Refreshing…' : 'Refresh'} <Kbd keys="⇧R" /></button>
+                  <button class="btn ghost rbtn" tabindex="-1" disabled={st.refreshing || (app.now.intake?.sources ?? []).some((s) => (!filter || filter.includes(s.project)) && rateLimitedUntil(s, now))} onclick={refreshLane} title="Check GitHub, Linear and repo docs now">{st.refreshing ? 'Refreshing…' : 'Refresh'} <Kbd keys="⇧R" /></button>
                 {/if}
               {/if}
             </h3>

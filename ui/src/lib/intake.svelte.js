@@ -63,7 +63,7 @@ export async function startBrief(decision, mode, { edit = false } = {}) {
     const r = await invoke('intake_prefill', { brief_decision: decision.id, mode });
     openPrefilled(r, {
       intake: { brief_decision: decision.id },
-      origin: { kind: 'brief', decision: decision.id, title: decision.title ?? null },
+      origin: { kind: 'brief', decision: decision.id, title: decision.title ?? decision.payload?.title ?? null },
       focus: edit ? 'brief' : null,
     });
     return true;
@@ -83,10 +83,10 @@ export const endStarting = () => {
 
 /** Refresh for the shown projects (one call per project, so a filter is respected). */
 export async function refreshIntake(projectIds) {
+  // `undefined` is every project; an empty list (a filter with no source) is none.
+  if (projectIds && !projectIds.length) return;
   try {
-    await Promise.all(
-      (projectIds?.length ? projectIds : [null]).map((project) => invoke('intake_refresh', project ? { project } : {})),
-    );
+    await Promise.all((projectIds ?? [null]).map((project) => invoke('intake_refresh', project ? { project } : {})));
   } catch (e) {
     toast(`Could not refresh: ${errText(e)}`, { kind: 'error' });
   }
@@ -99,10 +99,11 @@ export async function hideItem(item) {
   } catch (e) {
     return toast(`Could not hide ${item.ref}: ${errText(e)}`, { kind: 'error' });
   }
-  intakeUi.lastHide = { item, until: Date.now() + UNDO_MS };
+  const hidden = { item, until: Date.now() + UNDO_MS };
+  intakeUi.lastHide = hidden;
   toast(`Hidden ${item.ref}. It comes back if it changes at the source.`, {
     ms: UNDO_MS,
-    action: { label: 'Undo u', run: () => undoHide() },
+    action: { label: 'Undo u', run: () => undoHide(hidden) },
   });
 }
 
@@ -116,10 +117,15 @@ export async function unhideItem(item) {
 }
 
 /** `u` in the pane, or the toast's button, within the 5 s. */
-export async function undoHide() {
-  const h = intakeUi.lastHide;
-  if (!h || h.until < Date.now()) return false;
-  intakeUi.lastHide = null;
+export async function undoHide(h = intakeUi.lastHide) {
+  // `lastHide` is a state proxy: compare by value, not identity.
+  const current = !!h && intakeUi.lastHide?.until === h.until && intakeUi.lastHide?.item?.id === h.item?.id;
+  if (!h || h.until < Date.now()) {
+    // Expired: `u` goes back to the pane's other keys.
+    if (!h || current) intakeUi.lastHide = null;
+    return false;
+  }
+  if (current) intakeUi.lastHide = null;
   await unhideItem(h.item);
   return true;
 }

@@ -1,8 +1,8 @@
 <script>
-  import StatusBadge from '../StatusBadge.svelte';
-  import WaitingChip from '../WaitingChip.svelte';
   // Solo row (notes §1.4, Penpot P4.2 Solo row): project › session, the
   // status badge and the waiting-on chip (reason + since, or the activity).
+  import StatusBadge from '../StatusBadge.svelte';
+  import WaitingChip from '../WaitingChip.svelte';
   import OriginChip from './OriginChip.svelte';
 
   let { rec } = $props();

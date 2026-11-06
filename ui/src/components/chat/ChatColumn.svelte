@@ -531,7 +531,7 @@
   async function sendMessage(text, retry = null) {
     try {
       // A message sent while the planning tag shows is a planning message (the tag stays after a send).
-      const context = retry?.context ?? planContext();
+      const context = retry ? retry.context : planContext(); // a retry keeps its own (or no) context
       const r = await invoke('chat_send', context ? { text, context } : { text });
       if (r?.entry && context) plannedEntries[r.entry.id] = context.plan;
       if (r?.entry) upsertEntries((app.now.chat ??= { day: null, entries: {} }), [r.entry]);
@@ -539,7 +539,7 @@
       toFoot();
     } catch (err) {
       const entry = retry?.entry ?? { id: `unsent-${++sendSeq}`, kind: 'text', author: 'user', text, at_ms: Date.now() };
-      unsent = [...unsent.filter((u) => u !== retry), { entry, why: errText(err), context: retry?.context ?? planContext() }];
+      unsent = [...unsent.filter((u) => u !== retry), { entry, why: errText(err), context: retry ? retry.context : planContext() }];
     }
   }
 
@@ -711,7 +711,7 @@
         return true;
       // A brief's Launch / Edit: the prefilled dialog, in the proposed mode. Nothing is decided here.
       case 'brief':
-        startBrief(d, d.mode ?? 'team', { edit: intent.edit });
+        startBrief(d, d.mode ?? d.payload?.mode ?? 'team', { edit: intent.edit });
         return true;
     }
     return false;
@@ -727,7 +727,6 @@
 
   /** Decide (5 s undo window, on the card); focus goes to the next card still waiting. */
   function send(d, action, message = null) {
-    if (d.kind === 'brief' && action === 'dismiss') clearPlan();
     const at = t.cards.findIndex((c) => c.id === d.id);
     const next = [...t.cards.slice(at + 1), ...t.cards.slice(0, Math.max(at, 0))].find(
       (c) => c.id !== d.id && !pendingOf(c.id) && !marked.has(c.id),

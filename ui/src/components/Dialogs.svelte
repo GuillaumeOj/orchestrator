@@ -203,12 +203,14 @@
   });
 
   function close() {
+    // Read before the overlay is cleared: `o` is derived from it.
+    const prefilledSession = o?.kind === 'new-session' && !!o.prefill;
     app.overlay = null;
     error = null;
     stale = null;
     busy = false;
     // A cancelled prefilled session leaves nothing of the item's text for the next plain one.
-    if (o?.kind === 'new-session' && o.prefill) form = { ...form, name: '', message: '' };
+    if (prefilledSession) form = { ...form, name: '', message: '' };
     endStarting();
   }
 

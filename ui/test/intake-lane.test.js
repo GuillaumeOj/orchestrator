@@ -823,6 +823,25 @@ describe('the prefilled dialogs (notes §5)', () => {
     expect(sent.args.req.message).toContain('Fix the feed.');
   });
 
+  it('cancelling a prefilled session leaves none of the item text for the next plain one', async () => {
+    app.overlay = {
+      kind: 'new-session',
+      prefill: { project_id: 'blog', name: 'fix-feed-2', message: 'Fix the feed.' },
+      intake: { item: 'it_3' },
+      item: item('it_3', 'blog'),
+    };
+    const { container: c } = render(Dialogs);
+    await settle();
+    await settle();
+    expect(c.querySelector('textarea').value).toBe('Fix the feed.');
+    click([...c.querySelectorAll('button')].find((b) => b.textContent.includes('Cancel')));
+    await settle();
+    app.overlay = { kind: 'new-session' };
+    await settle();
+    await settle();
+    expect(c.querySelector('textarea').value).toBe('');
+  });
+
   it('a brief opens without the untrusted-text note, with the brief chip, and Edit focuses the brief', async () => {
     app.overlay = {
       kind: 'launch',

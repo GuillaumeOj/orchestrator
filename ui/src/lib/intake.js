@@ -121,7 +121,7 @@ export function shortRef(item, siblings = []) {
     const segs = ref.split('/');
     return segs.length <= 2
       ? ref
-      : segs.length > 0 && /(^|\/)backlog\/[^/]+$/.test(ref)
+      : /(^|\/)backlog\/[^/]+$/.test(ref)
         ? segs.slice(-1)[0]
         : `…/${segs.slice(-2).join('/')}`;
   }
@@ -152,8 +152,7 @@ export function ageText(ms, now = Date.now()) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h} h ago`;
   const days = Math.round((new Date(now).setHours(0, 0, 0, 0) - new Date(ms).setHours(0, 0, 0, 0)) / 86400000);
-  const hm = clock(ms, ms);
-  return days === 1 ? `yesterday ${hm}` : clock(ms, now);
+  return days === 1 ? `yesterday ${clock(ms, ms)}` : clock(ms, now);
 }
 
 // ---------------------------------------------------------------- source errors (notes §4.2)
