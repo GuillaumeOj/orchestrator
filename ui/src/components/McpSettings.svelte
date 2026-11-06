@@ -304,7 +304,8 @@
           </div>
           <label><span>design tool</span>
             <select class="field" bind:value={draft.server.design_tool}>
-              <option value={null}>—</option><option value="penpot">Penpot</option><option value="figma">Figma</option><option value="figcraft">FigCraft</option>
+              <option value={null}>—</option>
+              {#each Object.entries(DESIGN_TOOL_NAMES) as [id, name] (id)}<option value={id}>{name}</option>{/each}
             </select>
           </label>
           {#if s.kind === 'stdio'}
