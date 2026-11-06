@@ -10,7 +10,7 @@
 
 ## 1. Rules applied (from ux-brief)
 
-R1 Banner = app-wide only · R2 pane header = identity + pane-wide actions, strip = the action that resolves the state, never both · R3 Inspector = details + secondary actions, never the pane's primary action · R4 toolbar = frequent, `⋯` Menu = the rest, never both · R5 status bar = information (a click may open the related window) · R6 the palette is the catalogue, not a duplicate.
+R1 Banner = app-wide only · R2 pane header = identity + pane-wide actions, strip = the action that resolves the state, never both · R3 Inspector = details + secondary actions, never the pane's primary action · R4 toolbar = frequent, `⋯` Menu = the rest, never both · R5 status bar = information only (§2.3; updated in ux-brief) · R6 the palette is the catalogue, not a duplicate.
 H (hints): no `Kbd` inside or next to a button; the key goes in the tooltip (`Label · key`). Kept: palette rows, Menu items (right-aligned), Keyboard shortcuts sheet, one muted line in an empty state, the leader overlay, text-field placeholders (`Message the Overwatch · ⏎ to send`).
 
 ## 2. Duplicates and their single home
@@ -19,13 +19,13 @@ H (hints): no `Kbd` inside or next to a button; the key goes in the tooltip (`La
 
 | Action | Places today | Single home | Removed from |
 |---|---|---|---|
-| Resume | AgentPane header `⏎ resume` :139 (every not-live state); strip Resume :183 (error), :192 (suspended); AgentInspector Resume :49; palette `agent.resume` | **Strip** (error, suspended) | header :139, AgentInspector :49 |
-| Kill | suspended strip :193; AgentInspector :51; palette `agent.kill`; Mission ⇧K | **Header `⋯` menu** (any state) | strip :193, AgentInspector :51 |
-| Delete… | error strip :184, suspended strip :194; AgentInspector :52; palette | **Header `⋯` menu** | strips, AgentInspector |
+| Resume | AgentPane header `⏎ resume` :139 (every not-live state); strip Resume :183 (error), :192 (suspended); AgentInspector Resume :49; palette `agent.resume` | **Strip**, for every not-live agent whatever the strip: error, suspended, permission, needs you add a **Resume** button; queued has **Run now** instead; blocked by limit shows Resume **disabled** (tooltip "Blocked until the reset · hh:mm") | header :139, AgentInspector :49 |
+| Kill | suspended strip :193; AgentInspector :51; palette `agent.kill`; Mission ⇧K | **Header `⋯` menu** (any state); the AgentInspector shows the same `⋯` menu (below) | strip :193, AgentInspector buttons |
+| Delete… | error strip :184, suspended strip :194; AgentInspector :52; palette | **Header `⋯` menu** (+ inspector `⋯`) | strips, AgentInspector buttons |
 | Interrupt, Suspend | header :136-137 (live); AgentInspector :46-47 | **Header** (live only), as icon+label buttons | AgentInspector |
 | More (`⌘K more` opens the palette) | header :141 | replaced by the header **`⋯` Menu**: Kill…, Restart fresh…, Delete…, Shell in its worktree, Diff against base, Open in kitty, Run off-hours / in working hours | — |
-| Shell here, Diff, Open in kitty | AgentInspector :53-55; palette | **Header `⋯` menu** | AgentInspector |
-| Open session | AgentInspector :44 | **AgentInspector** (its only action: the inspector shows an agent that may not be open) | — |
+| Shell here, Diff, Open in kitty | AgentInspector :53-55; palette | **Header `⋯` menu** (+ inspector `⋯`) | AgentInspector buttons |
+| Open session | AgentInspector :44 | **AgentInspector**: **Open session** + the same `⋯` menu as the pane header (R3: secondary actions; the inspector shows an agent selected in the chat that may not be open, so Kill/Delete/Diff/Shell must stay reachable there). Interrupt / Suspend / Resume stay out of it (primary, in the pane) | — |
 | WaitingChip link | header :124 and strip :162/:166/:176 | **Strip** when a strip shows, else header | header while a strip shows |
 | Status label | StatusBadge :123 and strip label :162/:165 | **Header** StatusBadge | strip repeats only the reason, not the label |
 | Permission decision (Allow once / Deny / Always allow / Answer in the pane) | perm strip :150-156; the decision card in the chat column | **Both kept (accepted)**: the strip acts where the agent is, the card is the decision inbox. The strip drops the `⌘⇧I` text and says "also in Decisions" as a link | — |
@@ -83,6 +83,10 @@ The Week planner opens from 10 places today: Banner :42 and :44, StatusBar :35 (
 | Allocation: "Set up the weekly plan" :240 / "Edit the plan in the Week planner" :243; "Keep in the plan" :222 vs Cancel :248 (both esc) | one **Edit weekly plan…** (opens the plan dialog, label fixed); **Cancel** only |
 | Overwatch on/off: palette + ChatInput hint link + section switch | switch in Settings › Overwatch; the others are entries (R6, kept) |
 | Weekly report: Planner button + 2 palette entries running the same | Planner button; `report.list` must open the list (bug) |
+
+### 2.6 Components with actions but no hint and no duplicate
+
+Checked, nothing to change beyond using the shared Select/Menu/tooltip: IconRail (project mark → `openAgent`, hover popover agent rows: the narrow form of the sidebar), PermissionCall (Show n more lines / Show less), OutcomeRow (row select, link), ChatText (reply jump, Show more, Retry, Remove, look at its session), CodeBlock (Copy on hover), MemberChip (chip → `openSession`, UndeliveredChip), blocks/* (DiffSummary Show more files / Show patch, Docs file link, Error Show detail, LastMessage Show more, Links jump, Markdown source ↗, Options radio/checkbox), Markdown (ref / external / anchor / footnote links), MdImage (chip ↗, open large; its overlay gets a × per §4), WaitingChip, UndeliveredChip, LifecycleMarker, PrLine (PR link, CI popover, refresh). No Kbd in any of them.
 
 ## 3. Banner kinds (all stay: app-wide)
 
@@ -185,8 +189,8 @@ Real bindings only (keyboard.js CHORDS :6-20, LEADER :26-42, pane key handlers).
 - **Workspace tab strip**: project context Select · tabs (icon, full title, × on hover/active) · ‹ › when overflowing. No pane header.
 - **Dock strip**: view Select (Agents n / Shells n, waiting dot) · project Select (Agents) · tabs · ‹ › · `+` (Shells view) · Hide dock icon.
 - **Status bar** (information only): connection, pressure, ☾ off-hours, agents/queue counts; PR build and update chips (clickable, only when present); `LEADER` only while held.
-- **Agent pane**: header = role mark, id, StatusBadge, model, ctx, session, WaitingChip (when no strip), UndeliveredChip; buttons Interrupt + Suspend (live) · `⋯` Menu. Strips: permission (Allow once, Deny, Always allow, Answer in the pane, "also in Decisions" link) · needs you (WaitingChip) · queued (Run now + cost, Cancel) · blocked by limit (text) · error (Resume) · suspended (Resume). Watch bar: Take over · Back to Mission control.
-- **Agent inspector**: details + Open session.
+- **Agent pane**: header = role mark, id, StatusBadge, model, ctx, session, WaitingChip (when no strip), UndeliveredChip; buttons Interrupt + Suspend (live) · `⋯` Menu. Strips: permission (Allow once, Deny, Always allow, Answer in the pane, "also in Decisions" link; + Resume when not live) · needs you (WaitingChip; + Resume when not live) · queued (Run now + cost, Cancel) · blocked by limit (text + Resume disabled with the reset time) · error (Resume) · suspended (Resume). Watch bar: Take over · Back to Mission control.
+- **Agent inspector**: details + Open session + `⋯` menu (Kill…, Restart fresh…, Delete…, Shell in its worktree, Diff against base, Open in kitty, Run off-hours).
 - **Run inspector**: blocker link, members, PR line, Open feature, Open board.
 - **Project pane**: header Fetch · Shell · Diff main · Settings · Remove project…; Trust in a pane (untrusted); sessions; worktrees (Diff, Remove); PRs (Load).
 - **Feature pane**: header Publish/Refresh in Notion · Board · Canvas · Pause/Resume team · Stop · Delete…; docs (tabs, Open in nvim, Open in Notion); team rows; timeline chips; message box (To Select, input, Send).
@@ -204,12 +208,12 @@ Real bindings only (keyboard.js CHORDS :6-20, LEADER :26-42, pane key handlers).
 | components/RoleMcp.svelte:63 | downgrade target model | 3 static |
 | components/RoleMcp.svelte:67 | downgrade trigger | 3 static |
 | components/PermissionsSettings.svelte:134 (×2: team, solo) | default effect | 2 static |
-| components/ModelSelect.svelte:24 (used ×2, TeamCanvasPane:647-648) | model | 6 static (+ custom…) |
+| components/ModelSelect.svelte:24 (used ×2, TeamCanvasPane:647-648) | model | 6: default + 4 aliases + custom… |
 | components/OverwatchSettings.svelte:151 | Overwatch model | 3–4 |
 | components/PlanEditor.svelte:85 (per row) | tier | 4 static |
 | components/Dialogs.svelte:239 | new session: project | dynamic |
 | components/Dialogs.svelte:244 | new session: role | dynamic |
-| components/Dialogs.svelte:259 | new session: model | 4 static |
+| components/Dialogs.svelte:259 | new session: model | 4: default + 3 models |
 | components/Dialogs.svelte:264 | new session: effort | 4 static |
 | components/Dialogs.svelte:269 | new session: permission mode | 3 static |
 | components/Dialogs.svelte:294 | launch: project | dynamic |
@@ -227,4 +231,4 @@ Real bindings only (keyboard.js CHORDS :6-20, LEADER :26-42, pane key handlers).
 | panes/TeamCanvasPane.svelte:669 | budget priority | 4 static |
 | panes/TeamCanvasPane.svelte:699 | review mode | 3 static |
 
-Model lists differ: Dialogs :259 (3, no fable), ModelSelect (4 with fable), OverwatchSettings (3), RoleMcp (3). The implementation should share one list.
+Model lists differ (models only, not counting default/custom): Dialogs :259 (3, no fable), ModelSelect (4 with fable), OverwatchSettings (3), RoleMcp (3). The implementation should share one list.

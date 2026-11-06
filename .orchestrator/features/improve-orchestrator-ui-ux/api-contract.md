@@ -6,16 +6,17 @@
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `sidebar.expanded` | `{ [projectId \| "projectId/featureSlug"]: boolean }` | expanded | tree state of the sidebar (replaces the in-memory `collapsed` of `Sidebar.svelte`) |
+| `sidebarTree` | `{ [projectId \| "projectId/featureSlug"]: boolean }` (expanded) | expanded | tree state of the sidebar (replaces the in-memory `collapsed` of `Sidebar.svelte`; not `sidebar`, which is the existing show/hide boolean, app.svelte.js:984) |
 | `workspace.project` | `projectId \| "all"` | the focused project, else `"all"` | project context of the workspace tabs |
 | `dock.view` | `"agents" \| "shells"` | `"agents"` if an agent tab exists, else `"shells"` | dock view |
 | `dock.agentProject` | `projectId \| "all"` | `"all"` | agents filter |
+| `dock.activeAgent`, `dock.activeShell` | pane id \| null | the first tab of the view | active tab per view; `dock.active` becomes the active tab of the current view, so switching views brings back each view's last tab |
 
 A missing or unknown project id falls back to `"all"`.
 
 ## Layout migration
 
-A saved layout with splits (`app.layout` tree) restores as one tab strip, panes in reading order (left→right, top→bottom), the focused one active. `app.zoomed` is dropped.
+A saved layout with splits (`app.layout` tree) restores as one tab strip, panes in reading order (left→right, top→bottom), the focused one active. (`app.zoomed` is never saved: nothing to migrate; the code and its commands go.)
 
 ## Shell title
 
