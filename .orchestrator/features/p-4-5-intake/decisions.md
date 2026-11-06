@@ -1,0 +1,11 @@
+# P4.5 — Decisions
+
+| # | Date | Decision | Why |
+|---|---|---|---|
+| D1 | 2026-11-06 | The intake source is its **own column** (`projects.intake_source`, migration 17), separate from the task backend, plus a cache table `intake_items`. | SPEC §7 lists `intakeSource` as its own field; intake (what to start) and the task backend (a team's tasks) are different lists; the cache lets the lane render at start. |
+| D2 | 2026-11-06 | Repo docs are read from the **local** base branch (`git ls-tree` / `cat-file`, no checkout), re-read when its tip changes. | A file committed on main shows at once without a push; blobs from git can't escape the repo. |
+| D3 | 2026-11-06 | Intake is **read-only** to its sources in P4.5: starting an item writes nothing to GitHub, Linear or the repo; the core remembers it as started. | External writes are user-only calls (P4.4 hard lists); a write-back (assign, label, comment) is a product choice to make after a week of use. |
+| D4 | 2026-11-06 | Issues labelled `orch` / `orch:*` are never intake items. | They are team tasks of the GitHub / Linear task backend; listing them would offer to start a task already inside a run. |
+| D5 | 2026-11-06 | The estimate is a **range in pp of the week** per mode from the project's (else all projects', else default) history of finished runs and sessions, scaled by a size hint. It is advice and never blocks a start. | The only existing estimate is per turn; a whole run's cost is best predicted by past runs. A range is honest about the spread. |
+| D6 | 2026-11-06 | Plan with the Overwatch ends in a **`brief` card** (new tool `propose_brief`, level 4) whose Launch opens the prefilled dialog. The Overwatch never starts it. | ADR-011 §4 and FR-1312 "starting one is always the user's action"; the `rule_proposal` card is the proven pattern. |
+| D7 | 2026-11-06 | Every start from the lane or a brief card goes through the existing launch / new-session dialogs, prefilled by the core (`intake_prefill`). | One rule for slugs and brief text; the user sees the untrusted issue text before it reaches an agent. |
