@@ -78,7 +78,7 @@
 
   // Why you are asked (notes §4.5, F3): the core's or a rule's reason, or the Overwatch passing it on.
   const askText = $derived.by(() => {
-    const a = d.asks_because;
+    const a = d.asks_because ?? d.payload?.asks_because; // the core sends it in the payload
     if (!a || d.kind !== 'permission') return '';
     if (a.kind === 'overwatch_unsure') return 'The Overwatch did not decide this.';
     if (a.kind !== 'core' && a.kind !== 'policy') return '';

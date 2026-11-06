@@ -1056,8 +1056,10 @@
       <span>Read-only · Back to today <Kbd keys="t" /></span>
     </footer>
   {:else}
-    {#if newReply}<button class="pill" data-new-reply onclick={toFoot}>New from the Overwatch ↓</button>{/if}
-    <ChatInput bind:this={input} {ow} onsend={sendMessage} onleave={() => feed?.focus()} />
+    <div class="dock">
+      {#if newReply}<button class="pill" data-new-reply onclick={toFoot}>New from the Overwatch ↓</button>{/if}
+      <ChatInput bind:this={input} {ow} onsend={sendMessage} onleave={() => feed?.focus()} />
+    </div>
   {/if}
   <div class="sr" aria-live="polite">{announce}</div>
 </aside>
@@ -1166,10 +1168,15 @@
     grid-column: 2;
     grid-row: 1 / span 2;
   }
+  /* The pill rides on the input's top edge, whatever height a draft gives it. */
+  .dock {
+    position: relative;
+    flex: none;
+  }
   .pill {
     position: absolute;
     left: 50%;
-    bottom: 96px;
+    bottom: calc(100% + var(--space-sm));
     transform: translateX(-50%);
     z-index: 3;
     padding: var(--space-xs) var(--space-md);

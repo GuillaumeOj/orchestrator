@@ -87,20 +87,19 @@ export function inputHint(ow) {
 
 /** The marker under a user message that has not reached the Overwatch yet (notes §2, §8); '' once delivered. */
 export function deliveryText(entry, ow) {
-  if (entry.delivery === 'pending') {
-    switch (ow.status) {
-      case 'down':
-        return 'Sent when the Overwatch is back';
-      case 'paused':
-        return 'Sent when the Overwatch resumes';
-      case 'off':
-        return 'Sent when the Overwatch is turned on';
-      default:
-        return 'waking…'; // it is back: the core delivers it now
-    }
+  const open = entry.delivery === 'pending' || entry.delivery === 'waking';
+  if (!open) return '';
+  // The core marks a message sent while paused as 'waking'; the status says what it waits for.
+  switch (ow.status) {
+    case 'down':
+      return 'Sent when the Overwatch is back';
+    case 'paused':
+      return 'Sent when the Overwatch resumes';
+    case 'off':
+      return 'Sent when the Overwatch is turned on';
+    default:
+      return entry.delivery === 'pending' || ow.status === 'asleep' || ow.status === 'waking' ? 'waking…' : '';
   }
-  if (entry.delivery === 'waking' && (ow.status === 'asleep' || ow.status === 'waking')) return 'waking…';
-  return '';
 }
 
 /** The status moves to `down` or comes back: one polite announcement (notes §1, §8); null otherwise. */
@@ -279,13 +278,13 @@ export const undoneTail = (line, now = Date.now()) =>
 /**
  * What the expanded line says about its undo (notes §6.1–6.3): the button's label and busy
  * label, the explanation under it, the toast after it, the marker once done, or the
- * "Can't be undone" line. `project` names the policy file's project when known.
+ * "Can't be undone" line. `file` names the policy file ("shop-api policy", "global policy") when known.
  */
-export function undoInfo(line, project = null, now = Date.now()) {
+export function undoInfo(line, file = null, now = Date.now()) {
   const state = undoState(line);
   const agent = line.agent ?? 'the agent';
   const rule = line.by_detail ?? 'the rule';
-  const file = project ? `${project} policy` : 'its policy file';
+  const where = file ?? 'its policy file';
   const label = line.undo?.label ?? '';
   const u = UNDOS[label] ?? { short: 'Undo', busy: () => 'Undoing' };
   // A line already undone no longer carries `undo`: the verb and its source say what it was.
@@ -304,7 +303,7 @@ export function undoInfo(line, project = null, now = Date.now()) {
   };
   switch (kind) {
     case 'Revoke rule':
-      info.explain = `Removes rule ${rule} from ${file}. The call already ran.`;
+      info.explain = `Removes rule ${rule} from ${where}. The call already ran.`;
       info.toast = `Rule ${rule} revoked.`;
       info.done = `Rule ${rule} revoked · ${at(line.undone_at_ms)}`;
       break;

@@ -1039,6 +1039,7 @@ describe('pure helpers', () => {
     expect(ow.stripText(OW('down', { why: 'login expired' }))?.detail).toBe('login expired · cards still work');
     expect(ow.deliveryText({ delivery: 'delivered' }, OW('down'))).toBe('');
     expect(ow.deliveryText({ delivery: 'pending' }, OW('asleep'))).toBe('waking…');
+    expect(ow.deliveryText({ delivery: 'waking' }, OW('paused'))).toBe('Sent when the Overwatch resumes');
   });
 
   it('awaiting / noReply / workingText', () => {
@@ -1090,7 +1091,7 @@ describe('review fixes (ui review of T-226)', () => {
   it('the why-asked line: core and policy reasons, or the Overwatch passing it on', () => {
     const [perm] = kinds();
     const with_ = (a) => {
-      setNow([{ ...perm, asks_because: a }], [entry('c-1', perm)]);
+      setNow([{ ...perm, payload: { ...perm.payload, asks_because: a } }], [entry('c-1', perm)]);
       const r = render(ChatColumn);
       const t = r.container.querySelector('[data-asks]');
       const out = t ? text(t) : null;
@@ -1225,7 +1226,7 @@ describe('review fixes (ui review of T-226)', () => {
   it('a policy reason reads "policy <id>" and never "undefined"', () => {
     const [perm] = kinds();
     const say = (a) => {
-      setNow([{ ...perm, asks_because: a }], [entry('c-1', perm)]);
+      setNow([{ ...perm, payload: { ...perm.payload, asks_because: a } }], [entry('c-1', perm)]);
       const r = render(ChatColumn);
       const t = text(r.container.querySelector('[data-asks]'));
       r.unmount();

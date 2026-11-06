@@ -29,7 +29,15 @@
   let correcting = $state(false);
   const input = $derived(line.undo?.label === 'Correct the answer');
   // Full copy only when it is shown or used; a collapsed line needs the chip alone.
-  const info = $derived(expanded || busy || correcting ? undoInfo(line, projectName(item.d?.subject?.project), now) : null);
+  const info = $derived(expanded || busy || correcting ? undoInfo(line, policyLabel(item.d), now) : null);
+  /** The file the line's rule lives in: the decision carries its scope (`global`, `project:<id>`). */
+  function policyLabel(d) {
+    const scope = d?.payload?.policy_file;
+    if (scope === 'global') return 'the global policy';
+    const id = scope?.startsWith('project:') ? scope.slice(8) : d?.subject?.project;
+    const name = projectName(id);
+    return name ? `${name} policy` : null;
+  }
   const showUndo = $derived(undoState(line) !== 'none' || line.by === 'overwatch' || line.by === 'core' || line.by === 'policy');
 
   let draft = $state(''); // kept until sent or cancelled, across collapse and expand
@@ -37,7 +45,7 @@
 
   async function run(text = null) {
     if (busy || undoState(line) !== 'available') return;
-    const done = undoInfo(line, projectName(item.d?.subject?.project), now);
+    const done = undoInfo(line, policyLabel(item.d), now);
     busy = true;
     failed = '';
     try {
