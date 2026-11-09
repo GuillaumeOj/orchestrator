@@ -912,7 +912,7 @@ describe('role inspector, Design section and presets (T-7)', () => {
     await waitFor(() =>
       expect(r2.container.textContent).toContain('Penpot MCP needs authentication: ui will fail its tools.'),
     );
-    expect(r2.container.textContent).toContain('Launch anyway');
+    expect(r2.container.textContent).toContain('or launch anyway');
     app.overlay = null;
   });
 

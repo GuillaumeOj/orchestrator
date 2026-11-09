@@ -31,6 +31,7 @@
   import { isTypingTarget } from '../lib/keyboard.js';
   import { BACKENDS, mappingRows, mappingToSave, remoteName, syncLine } from '../lib/linear.js';
   import { BOARD_COLUMNS } from '../lib/options.js';
+  import { tooltip } from '../lib/tooltip.js';
   import AllocationSettings from './AllocationSettings.svelte';
   import ConnBadge from './ConnBadge.svelte';
   import FilesSettings from './FilesSettings.svelte';
@@ -268,7 +269,7 @@
       <div class="line">
         <span class="lab">Backend</span>
         <div class="seg" role="radiogroup" aria-label="Backend">
-          {#each BACKENDS as b, i (b.id)}<button role="radio" aria-checked={kind === b.id} class:on={kind === b.id} onclick={() => pickBackend(b.id)}><Kbd keys={String(i + 1)} /> {b.label}</button>{/each}
+          {#each BACKENDS as b, i (b.id)}<button role="radio" aria-checked={kind === b.id} class:on={kind === b.id} onclick={() => pickBackend(b.id)} use:tooltip={{ label: b.label, key: String(i + 1) }}>{b.label}</button>{/each}
         </div>
         {#if kind === 'linear' && linearInt}
           <span class="conn"><ConnBadge status={linearInt.status} />{linearInt.account ? ` · ${linearInt.account}` : ''}</span>
@@ -277,7 +278,7 @@
 
       {#if kind === 'linear'}
         {#if !connected}
-          <p class="box info">ⓘ Linear is not connected. Add a key in <button class="link" onclick={() => openSettings('integrations')}>Settings › Integrations</button> <Kbd keys="⌘+," /></p>
+          <p class="box info">ⓘ Linear is not connected. Add a key in <button class="link" onclick={() => openSettings('integrations')}>Settings › Integrations</button></p>
         {:else if teams == null}
           <div class="skel" aria-busy="true"><span>Loading teams…</span><i></i><i class="short"></i></div>
         {:else}
@@ -315,29 +316,28 @@
           {#each syncErr as m (m)}<p class="box errbox">✕ {m}</p>{/each}
         {/if}
         {#each unmapped as st (st)}
-          <p class="box warnbox">▲ State "{st}" isn't mapped. <button class="btn ghost" onclick={() => root?.querySelector('[data-row] [role="combobox"]')?.focus()}>Map it <Kbd keys="⏎" /></button></p>
+          <p class="box warnbox">▲ State "{st}" isn't mapped. <button class="btn ghost" onclick={() => root?.querySelector('[data-row] [role="combobox"]')?.focus()} use:tooltip={{ label: 'Map it', key: '⏎' }}>Map it</button></p>
         {/each}
         <div class="box syncbox">
           <span>{last ? syncLine(last.report, last.at, remoteName(kind)) : 'Not synced from here yet'}</span>
           <span class="muted">· every 5 min while a team runs</span>
           <span class="grow"></span>
-          <button class="btn ghost" disabled={syncing || dirty} title={dirty ? 'Save first' : ''} onclick={sync}>{syncing ? 'Syncing…' : 'Sync now'} <Kbd keys="r" /></button>
+          <button class="btn ghost" disabled={syncing || dirty} use:tooltip={dirty ? { label: 'Save first' } : { label: 'Sync now', key: 'r' }} onclick={sync}>{syncing ? 'Syncing…' : 'Sync now'}</button>
         </div>
       {/if}
 
       <div class="foot">
-        <button class="btn primary" disabled={busy || !dirty} onclick={() => save()}>Save <Kbd keys="⌘+⏎" /></button>
-        <button class="btn ghost" onclick={cancel}>Cancel <Kbd keys="esc" /></button>
+        <button class="btn primary" disabled={busy || !backendDirty} onclick={() => save()} use:tooltip={{ label: 'Save', key: '⌘⏎' }}>Save</button>
+        <button class="btn ghost" disabled={!backendDirty} onclick={cancel} use:tooltip={{ label: 'Revert', key: 'esc' }}>Revert</button>
       </div>
-      <p class="muted hint"><Kbd keys="j" /><Kbd keys="k" /> rows · <Kbd keys="⏎" /> change · <Kbd keys="1–3" /> backend · <Kbd keys="r" /> sync</p>
 
       {#if ask}
         <div class="confirm" role="dialog" aria-modal="true" aria-label="Move tasks to Linear">
           <h3>Move {name}'s tasks to Linear?</h3>
           <p>{ask.open} open task{ask.open === 1 ? '' : 's'}.{ask.done ? ` ${ask.done} done tasks are not pushed.` : ''}</p>
-          <button class="btn primary" onclick={() => save('push_open')}>Create {ask.open} open tasks as issues in {lin.team} <Kbd keys="⏎" /></button>
-          <button class="btn ghost" onclick={() => save('leave')}>Leave them out (they stay in the app, not synced) <Kbd keys="l" /></button>
-          <button class="btn ghost" onclick={() => (ask = null)}>Cancel <Kbd keys="esc" /></button>
+          <button class="btn primary" onclick={() => save('push_open')}>Create {ask.open} open tasks as issues in {lin.team}</button>
+          <button class="btn ghost" onclick={() => save('leave')}>Leave them out (they stay in the app, not synced)</button>
+          <button class="btn ghost" onclick={() => (ask = null)} use:tooltip={{ label: 'Cancel', key: 'esc' }}>Cancel</button>
         </div>
       {/if}
     {:else if section.id === 'notion'}
@@ -345,7 +345,10 @@
       <p class="muted lead">Publish to Notion (on a feature's page) creates one page per feature under this parent page.</p>
       <label class="line"><span class="lab">Parent page</span><input class="field grow" bind:value={notionPage} placeholder="Notion page URL or id" spellcheck="false" /></label>
       <p class="muted note">Share the page with your Notion integration. The token is in <button class="link" onclick={() => openSettings('integrations')}>Settings › Integrations</button>.</p>
-      <div class="foot"><button class="btn primary" disabled={busy || !dirty} onclick={() => save()}>Save <Kbd keys="⌘+⏎" /></button></div>
+      <div class="foot">
+        <button class="btn primary" disabled={busy || !notionDirty} onclick={() => save()} use:tooltip={{ label: 'Save', key: '⌘⏎' }}>Save</button>
+        <button class="btn ghost" disabled={!notionDirty} onclick={cancel}>Revert</button>
+      </div>
     {:else if section.id === 'mcp'}
       {#key spec?.server}<McpSettings project={pid} selected={spec?.server ?? null} />{/key}
     {:else}
@@ -380,8 +383,7 @@
     font: var(--text-caption);
   }
   .lead,
-  .note,
-  .hint {
+  .note {
     margin: 0;
     font: var(--text-caption);
   }

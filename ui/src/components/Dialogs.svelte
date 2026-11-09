@@ -22,7 +22,6 @@
   import { tooltip } from '../lib/tooltip.js';
   import ConnBadge from './ConnBadge.svelte';
   import FloatingWindow from './FloatingWindow.svelte';
-  import Kbd from './Kbd.svelte';
   import PlanEditor from './PlanEditor.svelte';
   import Select from './Select.svelte';
 
@@ -390,7 +389,7 @@
       <label class="offh" title={offHoursAllowed(offHours) ? '' : OFF_DISABLED}><input type="checkbox" bind:checked={launch.off_hours} disabled={!offHoursAllowed(offHours)} /> Run off-hours{nextOffHours(offHours) ? ` (starts ${clock(nextOffHours(offHours))})` : ''}</label>
       {#each launchTools as d (d.server.id)}
         {#if d.server.status === 'needs_auth'}
-          <p class="note tools warn">{d.server.name} MCP needs authentication: {nodeList(d.nodes, true)} will fail its tools. <button type="button" class="linkbtn" onclick={() => (launch.project_id ? openProjectSettings(launch.project_id, 'mcp', d.server.id) : openSettings('mcp', d.server.id))}>Open Settings</button> <Kbd keys="⌘+," /> · Launch anyway <Kbd keys="⌘+⏎" /></p>
+          <p class="note tools warn">{d.server.name} MCP needs authentication: {nodeList(d.nodes, true)} will fail its tools. <button type="button" class="linkbtn" onclick={() => (launch.project_id ? openProjectSettings(launch.project_id, 'mcp', d.server.id) : openSettings('mcp', d.server.id))} use:tooltip={{ label: 'Open Settings', key: '⌘,' }}>Open Settings</button> · or launch anyway.</p>
         {:else}
           <p class="note tools">Design tools: {nodeList(d.nodes)} use <b>{d.server.name}</b> ({kindLabel(d.server.kind)} · <ConnBadge status={d.server.status} connector={d.server.kind === 'connector'} />)</p>
         {/if}

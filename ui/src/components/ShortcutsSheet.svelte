@@ -79,7 +79,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-sm);
-    min-height: 22px;
+    min-height: var(--size-control-sm);
   }
   dt {
     flex: 1;

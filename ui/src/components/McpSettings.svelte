@@ -44,6 +44,7 @@
   let error = $state(null);
   let sel = $state(0);
   let draft = $state(null); // { server, isNew, override, envText, argsText }
+  let draftBase = ''; // the form as it opened (hasChanges compares against it)
   let problem = $state(null);
   let refused = $state(null); // { id, used_by }
   let busy = $state({});
@@ -95,12 +96,19 @@
       envText: envToText(s.env),
       argsText: argsToText(s.args),
     };
+    draftBase = JSON.stringify(draft);
   }
 
   function startNew(over = {}) {
     refused = null;
     problem = null;
     draft = { server: { ...blankServer(), ...over }, isNew: true, override: false, envText: '', argsText: argsToText(over.args) };
+    draftBase = JSON.stringify(draft);
+  }
+
+  /** The server form has edits not saved yet (the Settings window's Discard guard). */
+  export function hasChanges() {
+    return !!draft && JSON.stringify(draft) !== draftBase;
   }
 
   const scopeOf = (override) => (project && override ? { kind: 'project', id: project } : { kind: 'global' });

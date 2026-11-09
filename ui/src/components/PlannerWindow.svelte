@@ -18,8 +18,8 @@
   import { onTopics } from '../lib/now.svelte.js';
   import { downgradeText, nextOffHours, OFF_DISABLED, offHoursAllowed, windowLabel, windowQueued } from '../lib/pacing.js';
   import { PRESSURE, queueReason } from '../lib/status.js';
+  import { tooltip } from '../lib/tooltip.js';
   import FloatingWindow from './FloatingWindow.svelte';
-  import Kbd from './Kbd.svelte';
   import PressurePill from './PressurePill.svelte';
 
   let v = $state(null);
@@ -208,12 +208,12 @@
         {#if shadowWeekDone}<button class="btn" onclick={() => setEnforce(true)}>Shadow week done · Enforce…</button>{/if}
       {:else}
         <span class="toggle" title="The Governor holds and queues work">Enforced</span>
-        <button class="btn ghost" onclick={() => setEnforce(false)}>Shadow mode…</button>
+        <button class="btn" onclick={() => setEnforce(false)}>Shadow mode…</button>
       {/if}
-      <button class="btn" onclick={sprint}>Sprint mode <Kbd keys="S" /></button>
-      <button class="btn danger" onclick={() => governor('pause_all').then(load)}>Pause all <Kbd keys="P" /></button>
-      <button class="btn ghost" onclick={() => openReport('current')}>Weekly report <Kbd keys="R" /></button>
-      <button class="btn ghost" onclick={() => (app.overlay = { kind: 'plan' })}>{v.plan_set ? 'Edit plan' : 'Set this week’s plan'} <Kbd keys="e" /></button>
+      <button class="btn" onclick={sprint} use:tooltip={{ label: 'Sprint mode', key: 'S' }}>Sprint mode</button>
+      <button class="btn danger" onclick={() => governor('pause_all').then(load)} use:tooltip={{ label: 'Pause all', key: 'P' }}>Pause all</button>
+      <button class="btn" onclick={() => openReport('current')} use:tooltip={{ label: 'Weekly report', key: 'R' }}>Weekly report</button>
+      <button class="btn" onclick={() => (app.overlay = { kind: 'plan' })} use:tooltip={{ label: v.plan_set ? 'Edit plan' : 'Set this week’s plan', key: 'e' }}>{v.plan_set ? 'Edit plan…' : 'Set this week’s plan…'}</button>
     </div>
 
     <div class="grid">
@@ -310,7 +310,7 @@
         <div class="ch"><b>Next action</b><span class="muted">preview</span></div>
         {#if v.queue.length}
           <p>Next release: <b>{v.queue[0].agent}</b> ({v.queue[0].tier}) · {queueReason(v.queue[0])}{v.queue[0].estimated_start ? ` · ≈ ${clock(Date.parse(v.queue[0].estimated_start))}` : ''}</p>
-          <div class="row"><button class="btn ghost" disabled={!offHoursAllowed(off)} title={offHoursAllowed(off) ? '' : OFF_DISABLED} onclick={() => toggleOffHours()}>{head0Off ? 'Run in working hours' : 'Run off-hours'} <Kbd keys="O" /></button></div>
+          <div class="row"><button class="btn ghost" disabled={!offHoursAllowed(off)} title={offHoursAllowed(off) ? '' : OFF_DISABLED} onclick={() => toggleOffHours()} use:tooltip={{ label: head0Off ? 'Run in working hours' : 'Run off-hours', key: 'O' }}>{head0Off ? 'Run in working hours' : 'Run off-hours'}</button></div>
         {:else}
           <p class="muted">Nothing queued.</p>
         {/if}
@@ -320,8 +320,8 @@
             <p><span style:color="var(--color-pacing-amber)">▲</span> Ask: {v.pending_ask.reason}</p>
             <p class="muted">{v.pending_ask.expected_effect} · default: {v.pending_ask.ask.default} at {clock(Date.parse(v.pending_ask.ask.deadline))}</p>
             <div class="row">
-              <button class="btn primary" onclick={() => answerAsk(true)}>Apply <Kbd keys="a" /></button>
-              <button class="btn" onclick={() => answerAsk(false)}>Keep running <Kbd keys="r" /></button>
+              <button class="btn primary" onclick={() => answerAsk(true)} use:tooltip={{ label: 'Apply', key: 'a' }}>Apply</button>
+              <button class="btn" onclick={() => answerAsk(false)} use:tooltip={{ label: 'Keep running', key: 'r' }}>Keep running</button>
             </div>
           </div>
         {/if}
@@ -336,7 +336,7 @@
               <span class="muted when" title={entry.past ? 'an earlier start of the app' : ''}>{entry.past ? dayTime(Date.parse(entry.action.ts)) : clock(Date.parse(entry.action.ts))}</span>
               <span class="ic" style:color={p.color}>{logIcon(entry)}</span>
               <span class="what"><b>{describe(entry)}</b> · {entry.action.reason}{entry.action.expected_effect ? ` → ${entry.action.expected_effect}` : ''}{entry.action.mode === 'shadow' ? ' · shadow' : ''}</span>
-              {#if entry.can_undo}<button class="btn ghost" onclick={() => undo(entry)}>Undo <Kbd keys="u" /></button>
+              {#if entry.can_undo}<button class="btn ghost" onclick={() => undo(entry)} use:tooltip={{ label: 'Undo', key: 'u' }}>Undo</button>
               {:else if entry.action.undone_at}<span class="muted">undone</span>{/if}
             </li>
           {:else}
