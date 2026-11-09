@@ -6,6 +6,7 @@ import { tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Select from '../src/components/Select.svelte';
 import { MODEL_ALIASES, MODEL_OPTIONS, MODELS } from '../src/lib/options.js';
+import { placePopover, typeahead } from '../src/lib/popover.js';
 
 const MODELS_GROUPED = [
   { value: 'opus', label: 'Opus', group: 'Recommended' },
@@ -295,5 +296,21 @@ describe('options.js', () => {
     expect(MODEL_ALIASES).toEqual(['opus', 'sonnet', 'haiku', 'fable']);
     expect(MODEL_OPTIONS.map((o) => o.value)).toEqual(MODEL_ALIASES);
     expect(MODELS.map((o) => o.value)).toEqual(['', ...MODEL_ALIASES, 'custom']);
+  });
+});
+
+describe('popover.js', () => {
+  it('a tall list that fits once capped at 320 px stays below', () => {
+    const r = { top: 300, bottom: 328, left: 10, right: 210 };
+    expect(placePopover(r, 200, 600, 1280, 700).above).toBe(false); // 360 px below ≥ 320
+    expect(placePopover({ ...r, top: 500, bottom: 528 }, 200, 600, 1280, 700).above).toBe(true);
+  });
+
+  it('type-ahead: the same letter typed again cycles through its labels', () => {
+    const labels = ['Sonnet', 'Opus', 'Sonnet 1M', 'Haiku'];
+    const find = typeahead(() => labels);
+    expect(find('s', -1)).toBe(0);
+    expect(find('s', 0)).toBe(2);
+    expect(find('s', 2)).toBe(0);
   });
 });

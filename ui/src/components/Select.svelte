@@ -96,7 +96,9 @@
     hi = startHi();
     await tick();
     measure();
+    // The keyboard goes to the filter, else stays on the box (WebKit does not focus a clicked button).
     if (withSearch) search?.focus();
+    else trigger?.focus();
     revealHi();
   }
 
@@ -105,6 +107,7 @@
     if (!open) return;
     open = false;
     query = '';
+    place = null; // measured afresh on the next open, never shown at a stale spot
     if (refocus) trigger?.focus();
   }
 
@@ -123,7 +126,7 @@
     const rows = shown.length + new Set(shown.map((o) => o.group).filter(Boolean)).size;
     const guess = Math.min(320, rows * 28 + (withSearch ? 40 : 0) + 8);
     const h = pop?.offsetHeight || guess;
-    const w = pop?.offsetWidth || minW;
+    const w = Math.max(pop?.offsetWidth || 0, minW);
     place = { ...placePopover(r, w, h, window.innerWidth, window.innerHeight), minW };
   }
 

@@ -80,13 +80,17 @@
     if (!open) return;
     open = false;
     sub = null;
+    place = null; // measured afresh on the next open, never shown at a stale spot
+    subPlace = null;
     if (refocus) triggerEl()?.focus();
   }
 
-  async function openSub(i) {
+  /** Opens row `i`'s submenu; `focus` (the keyboard) moves into it, a hover leaves the keyboard on the row. */
+  async function openSub(i, focus = true) {
     if (!items[i]?.items?.length || items[i].disabled) return;
     const list = items[i].items;
-    sub = { i, hi: first(list) };
+    if (sub?.i !== i) subPlace = null;
+    sub = { i, hi: focus ? first(list) : -1 };
     await tick();
     const row = pop?.querySelector(`[data-i="${i}"]`);
     if (row && subPop) {
@@ -98,7 +102,7 @@
       const top = Math.max(8, Math.min(r.top - 4, window.innerHeight - 8 - h));
       subPlace = { left, top };
     }
-    focusRow(1, sub.hi);
+    if (focus && sub) focusRow(1, sub.hi);
   }
 
   function closeSub() {
@@ -174,7 +178,8 @@
         else close(true);
         break;
       case 'Tab':
-        close(false);
+        // Back on the trigger first, so the Tab moves on from there (the menu is on the body).
+        close(true);
         return;
       default:
         if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -195,7 +200,7 @@
     else {
       hi = i;
       if (sub && sub.i !== i) sub = null;
-      if (list[i].items?.length) openSub(i);
+      if (list[i].items?.length && sub?.i !== i) openSub(i, false);
     }
     focusRow(level, i);
   }

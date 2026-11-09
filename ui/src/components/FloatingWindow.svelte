@@ -99,6 +99,8 @@
 
   function onWindowKey(e) {
     if (e.key !== 'Escape' || e.defaultPrevented) return;
+    // A window under another one (made inert by it) leaves the Esc to the top one.
+    if (layer?.closest('[inert]')) return;
     const t = /** @type {Node} */ (e.target);
     if (!win?.contains(t) && t !== document.body) return;
     e.preventDefault();
@@ -109,7 +111,7 @@
   /** Tab wraps inside the window (a fallback for `inert`). */
   function onTrapKey(e) {
     if (e.key !== 'Tab') return;
-    const all = focusables(win);
+    const all = focusables(win).filter((n) => n.tabIndex >= 0);
     if (!all.length) return;
     const [a, z] = [all[0], all[all.length - 1]];
     if (e.shiftKey && (document.activeElement === a || document.activeElement === win)) {

@@ -94,6 +94,9 @@
     const max = lane.scrollWidth - lane.clientWidth;
     lane.scrollLeft = Math.max(0, Math.min(max, lane.scrollLeft + dir * by));
     measure();
+    // At the end the arrow turns disabled (or goes with the overflow) and may never
+    // see its pointerup: the hold stops here instead of repeating for ever.
+    if (dir < 0 ? atStart : atEnd) stopHold();
   }
 
   let holdTimer = null;

@@ -8,6 +8,7 @@
 export const HOVER_DELAY = 500;
 const GAP = 6;
 const EDGE = 4;
+const TIP_ID = 'orch-tooltip';
 
 let el = null;
 let owner = null;
@@ -16,7 +17,7 @@ function tipEl() {
   if (el?.isConnected) return el;
   el = document.createElement('div');
   el.className = 'tooltip';
-  el.id = 'orch-tooltip';
+  el.id = TIP_ID;
   el.setAttribute('role', 'tooltip');
   document.body.appendChild(el);
   return el;
@@ -65,7 +66,21 @@ export function placeTip(r, w, h, vw, vh) {
   return { top, left, above };
 }
 
+/** Adds or drops the tooltip's id in `node`'s aria-describedby, keeping the ids it has of its own. */
+function describe(node, on) {
+  const ids = (node.getAttribute('aria-describedby') ?? '').split(/\s+/).filter((x) => x && x !== TIP_ID);
+  if (on) ids.push(TIP_ID);
+  if (ids.length) node.setAttribute('aria-describedby', ids.join(' '));
+  else node.removeAttribute('aria-describedby');
+}
+
+/** Esc hides the tooltip wherever the keyboard is (a hovered control need not have focus). */
+function onDocKey(e) {
+  if (e.key === 'Escape' && owner) hide(owner);
+}
+
 function show(node, p) {
+  if (owner && owner !== node) hide(owner);
   const t = tipEl();
   fill(t, p);
   t.hidden = false;
@@ -75,14 +90,16 @@ function show(node, p) {
   t.style.left = `${left}px`;
   t.classList.toggle('above', above);
   owner = node;
-  node.setAttribute('aria-describedby', t.id);
+  describe(node, true);
+  document.addEventListener('keydown', onDocKey, true);
 }
 
 function hide(node) {
   if (owner !== node) return;
   owner = null;
   if (el) el.hidden = true;
-  node.removeAttribute('aria-describedby');
+  describe(node, false);
+  document.removeEventListener('keydown', onDocKey, true);
 }
 
 /** Svelte action. */
@@ -115,16 +132,12 @@ export function tooltip(node, params) {
     } catch {}
     if (keyboard) open();
   };
-  const onKey = (e) => {
-    if (e.key === 'Escape' && owner === node) close();
-  };
 
   node.addEventListener('pointerenter', onEnter);
   node.addEventListener('pointerleave', close);
   node.addEventListener('pointerdown', close);
   node.addEventListener('focus', onFocus);
   node.addEventListener('blur', close);
-  node.addEventListener('keydown', onKey);
 
   return {
     update(p) {
@@ -142,7 +155,6 @@ export function tooltip(node, params) {
       node.removeEventListener('pointerdown', close);
       node.removeEventListener('focus', onFocus);
       node.removeEventListener('blur', close);
-      node.removeEventListener('keydown', onKey);
     },
   };
 }

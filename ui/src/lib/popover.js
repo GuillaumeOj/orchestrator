@@ -6,6 +6,8 @@
 
 const GAP = 4;
 const EDGE = 8;
+/** A popover never gets taller than this (it scrolls past it). */
+export const POPOVER_MAX_H = 320;
 
 /** Svelte action: moves the node to document.body while it lives. */
 export function portal(node) {
@@ -21,7 +23,8 @@ export function portal(node) {
 export function placePopover(r, w, h, vw, vh, align = 'start') {
   const below = vh - r.bottom - GAP - EDGE;
   const aboveRoom = r.top - GAP - EDGE;
-  const above = h > below && aboveRoom > below;
+  // Measured before its max-height applies: what shows is at most POPOVER_MAX_H.
+  const above = Math.min(h, POPOVER_MAX_H) > below && aboveRoom > below;
   const left = align === 'end' ? r.right - w : r.left;
   return {
     above,
@@ -34,7 +37,7 @@ export function placePopover(r, w, h, vw, vh, align = 'start') {
 
 /** Inline style for `placePopover`'s result. */
 export function popoverStyle(p, minWidth) {
-  const parts = [`left:${p.left}px`, `max-height:${Math.min(320, p.maxHeight)}px`];
+  const parts = [`left:${p.left}px`, `max-height:${Math.min(POPOVER_MAX_H, p.maxHeight)}px`];
   if (minWidth) parts.push(`min-width:${minWidth}px`);
   parts.push(p.above ? `bottom:${p.bottom}px` : `top:${p.top}px`);
   return parts.join(';');
@@ -68,10 +71,12 @@ export function typeahead(labels, isDisabled = (_i) => false, ms = 500) {
     buf = now - at > ms ? key : buf + key;
     at = now;
     const list = labels();
-    const q = buf.toLowerCase();
+    // The same letter typed again and again cycles through the labels starting with it.
+    const same = [...buf].every((c) => c === buf[0]);
+    const q = (same ? buf[0] : buf).toLowerCase();
     const n = list.length;
-    // A repeated single letter cycles; a longer prefix stays on the current match first.
-    const start = buf.length === 1 ? from + 1 : from;
+    // A single letter moves on; a longer prefix stays on the current match first.
+    const start = same ? from + 1 : from;
     for (let k = 0; k < n; k++) {
       const i = (((start + k) % n) + n) % n;
       if (!isDisabled(i) && String(list[i]).toLowerCase().startsWith(q)) return i;
