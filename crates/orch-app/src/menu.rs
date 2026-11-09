@@ -18,8 +18,8 @@ pub const ITEMS: &[(&str, &[Item])] = &[
         &[
             ("project.add", "Add Project…", "CmdOrCtrl+N"),
             ("session.new", "New Session…", "CmdOrCtrl+T"),
-            ("pane.close", "Close Pane", "CmdOrCtrl+W"),
-            ("pane.reopen", "Reopen Closed Pane", "CmdOrCtrl+Shift+T"),
+            ("pane.close", "Close Tab", "CmdOrCtrl+W"),
+            ("pane.reopen", "Reopen Closed Tab", "CmdOrCtrl+Shift+T"),
             ("window.close", "Close Window", "CmdOrCtrl+Shift+W"),
         ],
     ),
@@ -33,17 +33,18 @@ pub const ITEMS: &[(&str, &[Item])] = &[
             ("dock.toggle", "Toggle Shell Dock", "CmdOrCtrl+J"),
             ("decisions", "Show Decisions", "CmdOrCtrl+Shift+I"),
             ("overwatch.ask", "Ask the Overwatch", "CmdOrCtrl+L"),
-            ("pane.focus.1", "Focus Pane 1", "CmdOrCtrl+1"),
-            ("pane.focus.2", "Focus Pane 2", "CmdOrCtrl+2"),
-            ("pane.focus.3", "Focus Pane 3", "CmdOrCtrl+3"),
-            ("pane.focus.4", "Focus Pane 4", "CmdOrCtrl+4"),
-            ("pane.focus.5", "Focus Pane 5", "CmdOrCtrl+5"),
-            ("pane.focus.6", "Focus Pane 6", "CmdOrCtrl+6"),
-            ("pane.focus.7", "Focus Pane 7", "CmdOrCtrl+7"),
-            ("pane.focus.8", "Focus Pane 8", "CmdOrCtrl+8"),
-            ("pane.focus.9", "Focus Pane 9", "CmdOrCtrl+9"),
+            ("pane.focus.1", "Tab 1", "CmdOrCtrl+1"),
+            ("pane.focus.2", "Tab 2", "CmdOrCtrl+2"),
+            ("pane.focus.3", "Tab 3", "CmdOrCtrl+3"),
+            ("pane.focus.4", "Tab 4", "CmdOrCtrl+4"),
+            ("pane.focus.5", "Tab 5", "CmdOrCtrl+5"),
+            ("pane.focus.6", "Tab 6", "CmdOrCtrl+6"),
+            ("pane.focus.7", "Tab 7", "CmdOrCtrl+7"),
+            ("pane.focus.8", "Tab 8", "CmdOrCtrl+8"),
+            ("pane.focus.9", "Tab 9", "CmdOrCtrl+9"),
         ],
     ),
+    ("Help", &[("shortcuts", "Keyboard Shortcuts", "CmdOrCtrl+/")]),
 ];
 
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
@@ -75,7 +76,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .build()?;
     let menu = Menu::new(app)?;
     menu.append(&app_menu)?;
-    for (title, items) in ITEMS.iter().filter(|(t, _)| *t != "Orchestrator") {
+    // Help is appended last, after Window.
+    for (title, items) in ITEMS.iter().filter(|(t, _)| *t != "Orchestrator" && *t != "Help") {
         let mut sub = SubmenuBuilder::new(app, *title);
         for (id, label, accel) in *items {
             sub = sub.item(&MenuItemBuilder::with_id(*id, *label).accelerator(*accel).build(app)?);
@@ -90,6 +92,16 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&PredefinedMenuItem::fullscreen(app, None)?)
         .build()?;
     menu.append(&window)?;
+    let mut help = SubmenuBuilder::new(app, "Help");
+    for (_, items) in ITEMS.iter().filter(|(t, _)| *t == "Help") {
+        for (id, label, accel) in *items {
+            help = help.item(&MenuItemBuilder::with_id(*id, *label).accelerator(*accel).build(app)?);
+        }
+    }
+    let help = help.build()?;
+    menu.append(&help)?;
+    #[cfg(target_os = "macos")]
+    help.set_as_help_menu_for_nsapp()?;
     Ok(menu)
 }
 
@@ -110,6 +122,17 @@ mod tests {
             ("CmdOrCtrl+,", "settings"),
         ] {
             assert_eq!(by_accel(chord), Some(id));
+        }
+        let label = |id: &str| ITEMS.iter().flat_map(|(_, i)| i.iter()).find(|(i, _, _)| *i == id).map(|(_, l, _)| *l);
+        for n in 1..=9 {
+            assert_eq!(label(&format!("pane.focus.{n}")), Some(format!("Tab {n}").as_str()));
+        }
+        assert_eq!(label("pane.close"), Some("Close Tab"));
+        assert_eq!(label("pane.reopen"), Some("Reopen Closed Tab"));
+        assert_eq!(by_accel("CmdOrCtrl+/"), Some("shortcuts"));
+        assert_eq!(label("shortcuts"), Some("Keyboard Shortcuts"));
+        for gone in ["pane.split.right", "pane.split.below", "pane.zoom", "focus.left", "focus.right"] {
+            assert_eq!(label(gone), None);
         }
         let mut accels: Vec<&str> = all.iter().map(|(_, a)| *a).collect();
         accels.sort();
