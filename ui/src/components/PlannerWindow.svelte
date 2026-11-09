@@ -310,7 +310,7 @@
         <div class="ch"><b>Next action</b><span class="muted">preview</span></div>
         {#if v.queue.length}
           <p>Next release: <b>{v.queue[0].agent}</b> ({v.queue[0].tier}) · {queueReason(v.queue[0])}{v.queue[0].estimated_start ? ` · ≈ ${clock(Date.parse(v.queue[0].estimated_start))}` : ''}</p>
-          <div class="row"><button class="btn ghost" disabled={!offHoursAllowed(off)} title={offHoursAllowed(off) ? '' : OFF_DISABLED} onclick={() => toggleOffHours()} use:tooltip={{ label: head0Off ? 'Run in working hours' : 'Run off-hours', key: 'O' }}>{head0Off ? 'Run in working hours' : 'Run off-hours'}</button></div>
+          <div class="row"><button class="btn ghost" disabled={!offHoursAllowed(off)} onclick={() => toggleOffHours()} use:tooltip={offHoursAllowed(off) ? { label: head0Off ? 'Run in working hours' : 'Run off-hours', key: 'O' } : { label: OFF_DISABLED }}>{head0Off ? 'Run in working hours' : 'Run off-hours'}</button></div>
         {:else}
           <p class="muted">Nothing queued.</p>
         {/if}
