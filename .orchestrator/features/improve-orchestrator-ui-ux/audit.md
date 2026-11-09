@@ -76,7 +76,7 @@ The Week planner opens from 10 places today: Banner :42 and :44, StatusBar :35 (
 
 | Duplicate | Decision |
 |---|---|
-| Project settings Save at Task backend :293 and Notion :312, one `save()` for both | **Each section saves itself** (bug for implementation); one Save + Cancel per section, at the section's foot |
+| Project settings Save at Task backend :293 and Notion :312, one `save()` for both | **Each section saves itself** (bug for implementation); one Save + Revert per section, at the section's foot |
 | Integrations row Remove :163 and SecretField Remove :67; row Replace :162 and SecretField Replace :65 | **Row buttons**; SecretField keeps only its input + Save / Cancel |
 | MCP Reconnect: row link :268 and drawer hint button :356 | **Row link**; the drawer shows the hint text only |
 | MCP registry for a project: Settings › MCP servers with projectId (palette :1264, RoleMcp :35/:48, Dialogs :323, decision cards via `routeOpen` :466) and Project settings › MCP overrides :314 | **Project settings › MCP overrides**: every deep link with a projectId opens the Project settings window on `mcp`; Settings › MCP servers is the global registry only |
@@ -141,9 +141,9 @@ Every inline hint is **removed** from the chrome; the key moves to the control's
 
 | Window | Today | Sections (nav) | Notes |
 |---|---|---|---|
-| **Settings** (⌘,) | `openSettings` app.js:421 → `addPane(type settings)` | Claude Code*, Integrations, Overwatch, Permissions, MCP servers, Terminal & editor*, Pacing policy, Memory*, Builds (*placeholders today: kept as "Not designed yet", out of scope). **Keyboard removed** (→ Keyboard shortcuts sheet) | ⌘, on an open window focuses it; a deep link switches the section. Openers: ⌘,, palette `settings*`, `overwatch.settings`, `update.pr`, toast "Restart to run" :1149, StatusBar PR chip :46, ChatInput link :69, IntegrationsSettings :111, Project settings links :237/:311, decision cards `routeOpen` :466 |
-| **Project settings · <project>** | `openProjectSettings` app.js:431 | General*, Files, Task backend, Allocation, Notion, MCP overrides | Openers: ProjectPane Settings :136, palette `project.settings.*`, and every MCP deep link with a projectId (§2.5) |
-| **Week planner** | `openSingleton('planner')` app.js:378 | no nav; current content (forecast, allocations, next action, log, Shadow/Enforce, Sprint, Pause all, Weekly report, Edit plan) | Openers after §2.3: PacingIndicator popover, banners, Settings › Pacing link, ReportPane Esc, palette/leader g |
+| **Settings** (⌘,) | `openSettings` (`lib/app.svelte.js`) → `addPane(type settings)` | Claude Code*, Integrations, Overwatch, Permissions, MCP servers, Terminal & editor*, Pacing policy, Memory*, Builds (*placeholders today: kept as "Not designed yet", out of scope). **Keyboard removed** (→ Keyboard shortcuts sheet) | ⌘, on an open window focuses it; a deep link switches the section. Openers: ⌘,, palette `settings*`, `overwatch.settings`, `update.pr`, toast "Restart to run" :1149, StatusBar PR chip :46, ChatInput link :69, IntegrationsSettings :111, Project settings links :237/:311, decision cards `routeOpen` :466 |
+| **Project settings · <project>** | `openProjectSettings` (`lib/app.svelte.js`) | General*, Files, Task backend, Allocation, Notion, MCP overrides | Openers: ProjectPane Settings :136, palette `project.settings.*`, and every MCP deep link with a projectId (§2.5) |
+| **Week planner** | `openSingleton('planner')` (`lib/app.svelte.js`) | no nav; current content (forecast, allocations, next action, log, Shadow/Enforce, Sprint, Pause all, Weekly report, Edit plan) | Openers after §2.3: PacingIndicator popover, banners, Settings › Pacing link, ReportPane Esc, palette/leader g |
 | **Keyboard shortcuts** (⌘/, new) | Settings › Keyboard placeholder | groups of §7, search field | — |
 
 The Weekly report, Setup, Mission control, Team canvas stay workspace tabs. The PlanEditor and the other dialogs stay dialogs (Dialogs.svelte), drawn with the new floating-window shell at their current small sizes.
@@ -152,11 +152,11 @@ The Weekly report, Setup, Mission control, Team canvas stay workspace tabs. The 
 
 | Command id | Key | Where |
 |---|---|---|
-| `pane.split.right` | leader v | keyboard.js:26-42, app.js:1283 |
-| `pane.split.below` | leader s | app.js:1284 |
-| `pane.zoom` | leader z | app.js:1285; `toggleZoom`, `app.zoomed` |
-| `focus.left` / `focus.right` | leader h / l | run map app.js:1396-1399 |
-| `pane.focus.1…9` | ⌘1…9 | **kept, re-meant**: tab n of the current context (`focusNumber` app.js:1392) |
+| `pane.split.right` | leader v | keyboard.js `LEADER`, `commands()` |
+| `pane.split.below` | leader s | `commands()` |
+| `pane.zoom` | leader z | `commands()`; `toggleZoom`, `app.zoomed` |
+| `focus.left` / `focus.right` | leader h / l | `run` map in `commands()` |
+| `pane.focus.1…9` | ⌘1…9 | **kept, re-meant**: tab n of the current context (`focusNumber` in `lib/app.svelte.js`) |
 | `focus.down` / `focus.up` | leader j / k | **kept**: into / out of the dock |
 
 Components that go: PaneFrame's header (number, kind, zoom, close; PaneFrame.svelte:31-39), Node split handles (Node.svelte:45-53). Workspace renders one tab strip + the active pane.
@@ -193,8 +193,8 @@ Real bindings only (keyboard.js CHORDS :6-20, LEADER :26-42, pane key handlers).
 - **Agent pane**: header = role mark, id, StatusBadge, model, ctx, session, WaitingChip (when no strip), UndeliveredChip; buttons Interrupt + Suspend (live) · `⋯` Menu. Strips: permission (Allow once, Deny, Always allow, Answer in the pane, "also in Decisions" link; when not live: Resume replaces Answer in the pane, which needs a live session) · needs you (WaitingChip; + Resume when not live) · queued (Run now + cost, Cancel) · blocked by limit (text + Resume disabled with the reset time) · error (Resume) · suspended (Resume). Watch bar: Take over · Back to Mission control.
 - **Agent inspector**: details + Open session + `⋯` menu (Kill…, Restart fresh…, Delete…, Shell in its worktree, Diff against base, Open in kitty, Run off-hours).
 - **Run inspector**: blocker link, members, PR line, Open feature, Open board.
-- **Project pane**: header Fetch · Shell · Diff main · Settings · Remove project…; Trust in a pane (untrusted); sessions; worktrees (Diff, Remove); PRs (Load).
-- **Feature pane**: header Publish/Refresh in Notion · Board · Canvas · Pause/Resume team · Stop · Delete…; docs (tabs, Open in nvim, Open in Notion); team rows; timeline chips; message box (To Select, input, Send).
+- **Project pane** (R2–R4): header gear (Project settings) · bin (Remove project…, danger) · `⋯` = Fetch, Shell, Diff main, Trust in a pane (untrusted); sessions; worktrees (Diff ± icon, Remove… bin icon, tooltips); PRs (Load).
+- **Feature pane** (R9, R10, R13): header icons Pause/Resume, Stop, Delete (danger) · `⋯` = Board, Canvas, Publish/Refresh in Notion, Open in Notion; docs (tabs, repo path line with Open in nvim icon); PR line (link, CI dot and count, checks popover); team rows; timeline chips; message box (To Select, input, Send).
 - **Board**: feature chips · Sync · New task; card menu (Open feature, Off-hours, Edit, Open remote, Move to, Assign) with keys; no footer legend.
 - **Mission control**: no Filter button (follows the context); rows with their buttons; no toolbar legend.
 - **Team canvas, Diff, Report, Setup, dialogs**: no frames (T-290 decision): as today minus legends and pills (§4), native selects → Select (§9), tooltips per §4. Status icons everywhere use the StatusBadge vocabulary (the dock tabs included).
@@ -233,3 +233,26 @@ Real bindings only (keyboard.js CHORDS :6-20, LEADER :26-42, pane key handlers).
 | panes/TeamCanvasPane.svelte:699 | review mode | 3 static |
 
 Model lists differ (models only, not counting default/custom): Dialogs :259 (3, no fable), ModelSelect (4 with fable), OverwatchSettings (3), RoleMcp (3). The implementation should share one list.
+
+## 10. Round 2 additions (user review of the PR)
+
+- **Pane header pattern** (every pane): identity left, icon buttons (with tooltips) right, `⋯` Menu last. The `⋯` holds the rest (rule 4: never both).
+- **Notification toggles** (`notify.desktop`, `notify.sound`): home = Settings › Overwatch › Notifications (switches); the palette entries stay (catalogue).
+- **Theme and kitty colours**: home = Settings › Terminal & editor › Appearance; palette `theme.*` stay.
+- **Renderer**: home = Terminal & editor; Memory links to it, no second control. **Live cap**: home = Pacing policy; Memory links to it.
+- **Project name, default branch, fetch, trust, remove**: edited in Project settings › General; the project pane keeps the status (read-only card) and the header icons; Trust in a pane stays in the pane's `⋯` and in General (rule 2: the pane = the action resolving the state, General = the record).
+- Settings and Project settings: every section has its frame (spec §7 R14); no `Kbd` in the nav.
+
+## 11. Added after the audit base (Intake #48, Claude Code update, Overwatch column resize)
+
+The branch was rebased after this audit was read (spec §7), so these were not audited. Same rules (H: no `Kbd` inside or next to a button; key in the tooltip). Anchor on the component, lines drift.
+
+| Component | `Kbd` / duplicate found | Decision |
+|---|---|---|
+| `components/IntakeSettings.svelte` (Save, ~:547) | `Save <Kbd ⌘+⏎>` | pill goes; tooltip `Save · ⌘⏎`; footer Save/Revert (settings-brief §2.4) |
+| `components/IntakeGlobalSettings.svelte` (Save, ~:105) | `Save <Kbd ⏎>` | same |
+| `components/ClaudeSettings.svelte` (~:70), `ClaudeUpdateBlock.svelte` | key line `u` / `r` / `esc back to sections` | line goes; keys in the tooltips of Update / Check now; settings-brief §1.1 |
+| `components/mission/ReadyRow.svelte`, `ReadyDetails.svelte`, `ReadyLine.svelte` (Ready to start lane) | Start team run / Start solo / Hide / Unhide / Open source buttons each carry a `Kbd` (`⏎ t a x o`) | pills go; tooltips `Start team run · t` etc.; the keys stay in the Mission control group of the Keyboard shortcuts sheet |
+| `<select>` x7 in `IntakeSettings` (6) and `IntakeGlobalSettings` (1) | native dropdowns | listed in design-notes §2.1.1 #28-34 |
+| Ready to start lane vs the project context | `lanes()` and the palette `intake.refresh` / `intake.plan` read the removed Mission control filter | follow the workspace project context (design-notes §5.1 rule 7, §5.3) |
+| `components/chat/ChatResize.svelte` | resize handle (not a control with a hint) | kept, R1 |
