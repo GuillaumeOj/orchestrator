@@ -8,7 +8,7 @@
 1. **Window**: the existing floating window (design-notes §2.5). Left nav of sections, content right, scrolls inside. Nav item: label, optional count/status on the right (kept: Claude Code update dot/arrow, Integrations and MCP "needs you" counts). **No `Kbd` in the nav** (the `j`/`k` hint and the `⌘,` pill go; the key is in the tooltip of the gear / the palette).
 2. **Section = title + one-line lead (muted) + groups.** A group is a card (`surface-pane`, subtle border, radius md) with an `h3`-style header and rows. One row = label (fixed 168 px column) · control · muted help text under or beside it. No more than one primary button per section.
 3. **Save model, by section type**:
-   - *Autosaved* (each change applies at once, a small "Saved" confirmation next to the control for 2 s): everything that is a choice among options or a toggle (theme, notifications, cap, renderer…).
+   - *Autosaved* (each change applies at once, a small "Saved" confirmation next to the control for 2 s): everything that is a choice among options or a toggle (theme, notifications, renderer…).
    - *Form with a footer* (primary **Save**, secondary **Revert**, both disabled until dirty, "Unsaved changes" in muted text): sections that edit text the user types (Task backend, Intake, Notion, Allocation, General name/path). The footer sticks to the bottom of the content. No `Kbd` on the buttons (key in tooltip: `Save · ⌘⏎`).
 4. **Selects** are the shared Select (design-notes §2.1); a Select next to a text input has the input's height (R11). Segmented controls only for 2–3 short options that are a mode (Backend: Local / Linear / GitHub).
 5. **Status** is a badge (dot + word), never colour alone. Danger actions are a ghost button in `danger` colour at the end of their own group ("Danger zone"), with the confirm dialog as today.
@@ -36,9 +36,9 @@ States: normal (up to date), update available, update failed (amber badge + erro
 
 Keep the row-per-integration list; redraw as cards, one per integration: name, status badge (Connected / Needs you / Not connected / Error), account/scope line, **Connect / Replace key / Disconnect** (ghost; Disconnect danger) and the key field (password input, "Show" icon button, **Save key** primary only when the input has text). Needs-you cards first. Full texts, no truncation (the T-291 nit). States: loading (3 skeleton cards), empty can't happen, error (a card with `err` and Retry), one card expanded (key being edited), one saving.
 
-### 1.3 Overwatch (today: OverwatchSettings: policy, answer scope, …) + **Notifications** group
+### 1.3 Overwatch (today: OverwatchSettings) + **Notifications** group
 
-Groups: **Policy** (what the Overwatch answers alone: the existing options, as Select/segments), **Answering from the docs**, **Notifications** (moved here from the palette-only `notify.desktop` / `notify.sound` toggles: two switches "Desktop notifications", "Sound", stored under `notifications`). Autosaved. States: normal, Overwatch off (rows disabled with the reason as tooltip).
+Groups, as the code has them: header = title, one-line lead, the Overwatch state (dot + word) and **Restart** (secondary, only when it is down). Rows, each label + muted help left and the control right: **Overwatch** on/off (switch; help: "An agent that settles routine prompts, answers questions from the docs and keeps agents moving. You see a line for everything it does."), **Model** (Select Haiku / Sonnet / Opus, "Takes effect at the next session"), **Batch window** (number, s, 5–300), **Permission time** (number, s, 10–300), **Idle grace** (number, s, 30–1800), **Rule threshold** (number, times, 2–10). Each applies on change, with the error under the row when the core refuses. A separate **Notifications** group (new home of the palette-only `notify.desktop` / `notify.sound`: two switches, stored under `notifications`) is added by this redesign. There are no "policy" or "answer scope" options: the permission rules live in Settings › Permissions. States: loading, load error, Overwatch down (state + Restart), a refused value.
 
 ### 1.4 Permissions (today: PermissionsSettings: policy files, defaults when no rule matches, hold)
 
@@ -56,15 +56,15 @@ Everything here already exists in the app, but is changed only by the palette or
 |---|---|---|
 | **Appearance** | Theme (Select: Follow the system / Dark / Light), **Derive colours from kitty.conf** (switch; a user choice of Dark/Light wins, as today) | stored (`app.theme`, `app.kittyTheme`; palette ids `theme.*`) |
 | **Terminal** | Font (read-only mono line: resolved family and size, source "kitty.conf", with **Open kitty.conf** in editor as ghost), Cursor, Padding, Opacity (read-only line each, from the import), Unmapped options (muted list "n options not applied", expandable) | stored (`app.kitty`, FR-1002) |
-| **Renderer** | Renderer (Select: DOM (default) / WebGL), help: "WebGL costs about 110 MB for the first pane. At most 12 visible panes use it." | **new** setting (FR-1005 says "WebGL is opt-in (setting)"); if it does not exist yet, show the row disabled with "Coming later" tooltip rather than hiding it |
+| **Renderer** | Renderer (Select: DOM (default) / WebGL), help: "DOM is the default. The first WebGL pane costs about 110 MB in the GPU helper, against 10–15 MB per DOM pane. At most 12 visible panes use WebGL; hidden panes and a lost context fall back to DOM." | **new**: the app has only the DOM renderer today (`lib/term.js` comments "WebGL is opt-in" but nothing reads a setting). The row is **new**; drop it if the team does not build it |
 | **Editor** | Editor command (text input, default `nvim +{line} {file}`, mono, **Reset** ghost), "Reuse the project's open nvim" (switch, default on), **Open in kitty** terminal cwd help | stored/new: FR-1102 defines the template; the input is **new** unless `editor` is read from `kitty.conf` (then show it as read-only with "from kitty.conf") |
 | **Shells** | Default shell (read-only: `$SHELL`), new shell opens in (Select: focused agent's worktree / project root) | stored (behaviour of FR-1003); the Select is **new** |
 
 Autosaved; text inputs apply on blur/Enter. States: normal; no `kitty.conf` found (group shows "No kitty.conf found. Defaults are used." and the font rows say "Menlo (default)").
 
-### 1.7 Pacing policy (today: PacingSettings, 349 lines: live cap, weekly/5 h thresholds, off-hours, AC power)
+### 1.7 Pacing policy (today: PacingSettings + IntakeGlobalSettings)
 
-Groups in this order: **Live agents** (cap stepper 1–20, default 3, key `governor.live_cap`; help "Applied at once; lowering never stops a working agent"), **Weekly and 5-hour limits** (thresholds as sliders with the number to the right; the guard chip behaviour as help), **Off-hours** (switch + window From/To time inputs + "only on AC power" switch), **Catch-up**. Autosaved with the "Saved" confirmation. States: normal, a value outside range (error), Governor in Red (read-only banner at the top of the section "Governor is in Red until 13:00": information, no button).
+The section is an **explicit Apply form**, not autosave, and has no weekly/5-hour sliders, off-hours window, AC-power switch or catch-up switch (those live in the plan: Week planner, and the governor itself). Groups in this order: **Live agents** (number input `live_cap`, range shown `min–max`, help "Autonomous agents running at once when the week is on plan", a muted "● was n" when changed, a warning line above 6: "More than 6 agents can use 190–255 MB each and use the week sooner"), **What it gives** (information, not a control: Green / Amber / Red / Catch-up caps with their pressure icons, the Memory line "normal n · warn n · critical n", the foot "Half-weight hours scale the cap down. Leads and the Overwatch have their own slot and don't count"; muted and "logged only" in Shadow mode), **Off-hours live agents** (number input, range, help; a note when the plan has no off-hours allowance with a link to the Week planner), the **Now** line (state · allowed · live · memory), then the footer **Apply** (primary, "Applying…" while busy) and **Reset to defaults** (secondary, disabled at defaults) with a "Saved" confirmation. A "Shadow mode is on" note sits at the top when it applies. Then a second card **Intake** (`IntakeGlobalSettings`: Refresh every Select, Default estimate team run (pp), Default estimate solo session (pp), its own Save). The lead links "Week planner" (opens the window). States: loading (3 skeleton rows), load error (message + Retry), a value outside range (error under the input, "What it gives" dimmed), Shadow mode.
 
 ### 1.8 Memory (placeholder today; **real design from FR-904 / NFR-1b**)
 
@@ -79,9 +79,9 @@ Information-first section; the app already measures its memory (status bar) and 
 
 States: normal, warn (amber bar segment + badge), critical (red), measuring unavailable (muted "Not available on this system").
 
-### 1.9 Builds (today: BuildsSettings: PR builds, update channel; selected server deep link)
+### 1.9 Builds (today: BuildsSettings)
 
-Keep the structure; apply the rules of §0 (cards, no Kbd, Select for channel). One group **PR builds** (list with status dots, **Install** per build), one **Updates** group (channel Select, **Check now**, last checked). States: loading, none ("No PR build"), error.
+Groups, as the code has them: **Running** (a card: version · commit sha link · channel, a second line, **Check** link and **Back to main** secondary, disabled with its reason as tooltip), then **PR builds**: a muted line (count, refreshing, "Refresh" is a control, not a Kbd pill), one row per open pull request (`#n` link, title, state with dot, then one action button **Install** / **Restart** / disabled with a reason; second line branch · author · note). Choosing Restart asks inline: the restart text, **Restart** (primary) and **Cancel**. There is **no channel Select and no "Check now / last checked" group**. States: PR builds off ("PR builds are off: <reason>"), error with Retry, no open pull request, a selected row (deep link), a row asking to restart.
 
 ## 2. Project settings (per project), 7 sections
 
@@ -127,9 +127,21 @@ Same master/detail as 1.5 but each row shows **Inherit / On / Off** (three-optio
 
 ## 3. Frames to draw (T-296)
 
-Naming `04-settings-<section>-1280.png`, `04-project-settings-<section>-1280.png`; plus `-1024` for Claude Code, Terminal & editor, Memory, Project General, Task backend. One frame per section is the normal state; add the listed *additional states* as separate frames only for: Claude Code (update available, failed), Integrations (editing a key), Terminal & editor (no kitty.conf), Memory (warn), Pacing (Red), Project General (untrusted), Files (missing file), Task backend (not connected), MCP servers (error). Everything else: one frame.
+Naming `04-settings-<section>-1280.png`, `04-project-settings-<section>-1280.png`; plus `-1024` for Claude Code, Terminal & editor, Memory, Project General, Task backend. One frame per section is the normal state; add the listed *additional states* as separate frames only for: Claude Code (update available, failed), Integrations (editing a key), Terminal & editor (no kitty.conf), Memory (warn), Pacing (Shadow mode), Project General (untrusted), Files (missing file), Task backend (not connected), MCP servers (error). Everything else: one frame.
 
-## 4. What the brief does not decide
+## 4. Rows that exist only in the design
+
+Everything not listed here is in the code today (marked stored above). These rows have **no code behind them** and are shown in the frames as designed rows; the implementing feature builds the ones it accepts and removes the others from the frame set it follows:
+
+| Section | Row | Needs |
+|---|---|---|
+| Claude Code | Defaults for new sessions (model, effort, permission mode) | an app-wide fallback setting |
+| Overwatch | Notifications switches (the setting `notifications` exists; the palette toggles it) | UI only |
+| Terminal & editor | Renderer Select; Editor command and "Reuse the open nvim"; New shell opens in | settings + `term.js` renderer switch; editor template read |
+| Memory | Warn above (MB) and "Show in the status bar"; the whole stacked bar from per-agent samples | a threshold setting (no default is given by `docs/SPEC.md`: FR-904 only says "with a warning threshold"; the frame's 1 600 MB is a sample value) |
+| Project General | Worktrees › "Remove merged worktrees automatically" | a setting |
+
+## 5. What the brief does not decide
 
 - Whether the **new** rows (Defaults for new sessions, WebGL renderer, editor template, default shell location, memory warn threshold, worktree auto-remove) ship. Each is marked **new** above and drawn in the frame; the implementing feature picks which to build and hides the others. None changes another screen.
 - Settings search (a field in the nav): not drawn; sections are few.
