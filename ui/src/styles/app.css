@@ -113,6 +113,45 @@ textarea {
   font: var(--text-key);
   color: var(--color-text-secondary);
   white-space: nowrap;
+  /* Information, never a control (design-notes §0): no hover, no pointer. */
+  pointer-events: none;
+}
+
+/* Tooltip (lib/tooltip.js, 02-tooltip.png): one shared element on the body. */
+.tooltip {
+  position: fixed;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 24px;
+  max-width: 480px;
+  padding: var(--space-xxs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  border: var(--border-width-default) solid var(--color-border-strong);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-overlay);
+  color: var(--color-text-primary);
+  font: var(--text-label);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.tooltip[hidden] {
+  display: none;
+}
+.tooltip .tip-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.tooltip .tip-dot {
+  color: var(--color-text-muted);
+}
+.tooltip .tip-detail {
+  color: var(--color-text-muted);
+  font: var(--text-caption);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Buttons (Penpot 02): primary, secondary, ghost, danger. */

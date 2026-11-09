@@ -26,6 +26,8 @@ const ALLOWED = {
     'setInterval(() => (sec.now = Date.now()), 1000)',
   ],
   'App.svelte': ['setInterval(flushDecisions, 1000)'],
+  // Press-and-hold on ‹ ›: repeats only while the button is held.
+  'components/TabStrip.svelte': ['setInterval(() => scrollStep(dir), HOLD_REPEAT)'],
 };
 
 describe('no polling (spec §1, §3.5)', () => {
