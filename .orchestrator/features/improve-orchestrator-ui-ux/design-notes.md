@@ -234,7 +234,7 @@ Add `app.window = null` (not persisted: a window never reopens at launch, and `r
 
 | Command id | Key | Remove from | Notes |
 |---|---|---|---|
-| `pane.split.right` | leader `v` | `lib/keyboard.js:LEADER`, palette list `app.js:1283`, `run` map, `menu.rs` if present | `openShell({how})` loses `how`; a shell always goes to the dock |
+| `pane.split.right` | leader `v` | `lib/keyboard.js:LEADER`, palette list in `commands()` (`lib/app.svelte.js`), `run` map, `menu.rs` if present | `openShell({how})` loses `how`; a shell always goes to the dock |
 | `pane.split.below` | leader `s` | same (:1284) | |
 | `pane.zoom` | leader `z` | `LEADER`, :1285, `toggleZoom` (:774), `app.zoomed`, `dockFills` zoom branch (:106), `Dock.svelte` ZOOMED tag + `restore` button, `Workspace.svelte`'s zoomed `PaneFrame` branch | `dockFills()` becomes "dock open and `app.layout` is null" (no tab at all); it must **not** key on the context, or a context with no visible tab would hide the workspace strip with the context Select and the empty-state buttons, leaving no way back from the strip |
 | `focus.left`, `focus.right` | leader `h` / `l` | `LEADER`, `run` map (:1396-1399), `L.neighbor` | |
@@ -251,7 +251,7 @@ Update `lib/keyboard.js:hint()` (it feeds palette rows) and the palette ids in `
 
 Keep `app.layout` as the **single leaf** `{ kind:'leaf', id, tabs: paneId[], active }` or `null` (so `L.leaf/addTab/activate/remove/visible` stay as they are); delete `L.split`, `L.neighbor`, `L.rects`, `L.resize`, and `Node.svelte` (its drag/nudge handlers). `addPane(spec, how)` loses `how`: always `L.addTab` (or `L.leaf` when empty); `app.zoomed` and every read of it go.
 
-Migration (`restoreLayout`, `app.js:995`, and the new `L.flatten`):
+Migration (`restoreLayout`, `lib/app.svelte.js`, and the new `L.flatten`):
 
 ```js
 // lib/layout.js
@@ -336,7 +336,7 @@ export const dockTabs  = () => app.dock.view === 'agents'
 
 **Mission control** reads `app.workspace.project` instead of `app.mission.projects`: `MissionPane.svelte` (`:54` filter derivation, `:78`, `:200` `f` key, `:230-239`, `:294` `ProjectFilter`, the Filter button and toolbar hint) lose all filter UI; rows use `lanes(...)` filtered by `project === ctx` (`lib/mission.js:lanes` takes a `projects: string[] | null` argument today: pass `[ctx]` or `null`). Header: "Mission control" + muted "in <project> · follows the project context" or "every project · follows the project context". Empty: "Nothing in <project>" + **Show all projects** (`setContext('all')`). `mission-fixture.js` / `mission-pane.test.js` adapt.
 
-### 5.4 Persistence (saved with `saveLayout`, `app.js:969`)
+### 5.4 Persistence (saved with `saveLayout`, `lib/app.svelte.js`)
 
 The `layout` setting value gains keys (api-contract): `sidebarTree`, `workspace: { project }`, `dock: { …existing, view, agentProject, activeAgent, activeShell }`.
 
@@ -498,3 +498,63 @@ Rust: `cargo test -p orch-app` (the `term_cwd`/`Term::cwd` test above; menu item
 4. **Dock restore**: `dock.view` = saved value, else the kind of the saved `dock.active`; an `activeAgent` outside the filter falls back to the filter's first agent tab, else the empty view (api-contract).
 5. **Agent inspector has no Resume** (audit §2.1): resume through Open session, then the strip, or the palette.
 6. **Sidebar**: carets on project and feature rows only; agent rows are leaves.
+
+## 13. Round 2 (user review of the PR; spec §7, R1–R15)
+
+Frames of this round are in the same `design/` folder; the rules above still apply. Settings content per section is in [settings-brief.md](settings-brief.md); the flows are in [flows.md](flows.md) and `06-flow-*.png`.
+
+### 13.1 Review fixes (R1–R13)
+
+| R | Frames | Implementation |
+|---|---|---|
+| R1 Overwatch column handle | every frame with the chat column | the handle of `allow-overwatch-menu-resizing` (#47) stays; same visual rule as the dock handle. No change to its code; do not draw anything over it |
+| R2, R3 worktree row | `04-feature-pane`, project pane frames | `ProjectPane.svelte`: Diff → icon button (± glyph, tooltip "Diff"), Remove… → bin icon button, `color.danger`, tooltip "Remove worktree…" (same `confirm` flows) |
+| R4 headers | project pane | one header pattern for every pane: identity left, icon buttons right, `⋯` Menu last. Project: gear (Project settings), bin in danger colour (Remove project…), `⋯` = Fetch, Shell, Diff main, Trust in a pane (untrusted only) |
+| R5 title bar Decisions | `03-title-status-banner` | one gap token between icon, label and count |
+| R6 tab overflow | `03-tab-overflow-*` | the strip clips at the left edge of ‹ ›: one fade on the clipped tab, nothing drawn between it and the buttons, buttons on an opaque background (TabStrip, §2.3) |
+| R7 suspended menu | `04-agent-suspended`, `04-agent-suspended-menu-closed` | `⋯` trigger drawn pressed while its Menu is open, Menu right-aligned under it |
+| R8, R12 frame placement | Drive file | design only (frames moved to the top row of their pages) |
+| R9 feature header | `04-feature-pane` | icon buttons Pause/Resume, Stop, Delete (danger) with tooltips, then `⋯` = Board, Canvas, Publish/Refresh in Notion, Open in Notion. `FeaturePane.svelte` header; the Tasks card keeps no Board button |
+| R10 doc path | `04-feature-pane` | under the doc tabs a muted line: repo-relative path of the shown doc (only when it is in the repo) with an Open in nvim icon button at its end; the old text button goes |
+| R11 Select height | all | Select (regular) = text input height (`--size-control`); `compact` only in the tab strip and the dock strip. Check every row where a Select sits next to an input (feature message box To + input, Settings rows) |
+| R13 PR line | `04-feature-pr-running`, `04-feature-pr-review-done` | `PrLine` in the feature pane's team column: link, CI dot and `n/m` count, checks popover (list of checks with state, "Open checks on GitHub"); running and review-done states |
+
+### 13.2 Settings sections (R14)
+
+Each section is a frame `04-settings-<section>-1280.png` / `04-project-settings-<section>-1280.png` (plus `-1024`, and state variants named in the file). Anchors, all in `ui/src/components/` unless noted; apply [settings-brief.md](settings-brief.md) §0 rules to every one (cards with a header, label column, help text, no `Kbd`, autosave vs footer):
+
+| Frame | Component | Notes |
+|---|---|---|
+| `04-settings-claude-code-*` (+ `update-available`, `update-failed`) | `ClaudeSettings.svelte`, `ClaudeUpdateBlock` | groups Installed / Update / Compatibility / Account / Defaults for new sessions (**new**, optional) |
+| `04-settings-integrations-*` (+ `editing-a-key`) | `IntegrationsSettings.svelte` | cards, full texts, needs-you first |
+| `04-settings-overwatch-1280` | `OverwatchSettings.svelte` | gains a Notifications group: desktop and sound switches (`notifications`, today only the palette ids `notify.desktop` / `notify.sound`) |
+| `04-settings-permissions-1280` | `PermissionsSettings.svelte` | policy files (edited in the file), no-rule-matches Selects, hold seconds (0 = don't hold) |
+| `04-settings-mcp-servers-*` (+ `server-error`) | `McpSettings.svelte` | master/detail |
+| `04-settings-terminal-editor-*` (+ `no-kittyconf`) | **new** `TerminalSettings.svelte` (replaces the "Not designed yet" branch of `SettingsPane`/the window) | Appearance (theme Select, kitty colours switch: `setTheme`, `setKittyTheme`), Terminal (read-only from `app.kitty`, Open kitty.conf), Renderer (**new** setting), Editor command (**new** unless read from kitty.conf), Shells (**new** Select) |
+| `04-settings-pacing-policy-*` (+ `governor-in-red`) | `PacingSettings.svelte` | groups Live agents / Limits / Off-hours / Catch-up |
+| `04-settings-memory-*` (+ `warn`) | **new** `MemorySettings.svelte` | stacked bar from the status bar's memory sample, pressure badge, warn threshold (**new**), explanation text, links to Pacing and Renderer |
+| `04-settings-builds-1280` | `BuildsSettings.svelte` | PR builds list, update channel |
+| `04-project-settings-general-*` (+ `untrusted`) | **new** `ProjectGeneral.svelte` (the "Not designed yet" branch of `ProjectSettingsPane`) | rename, path actions, default branch Select, fetch, trust, worktrees, danger zone. Name and default branch are the only dirty fields (footer Save/Revert) |
+| `04-project-settings-files-*` (+ `missing-file`) | `FilesSettings.svelte` | |
+| `04-project-settings-task-backend-*` (+ `linear-not-connected`) | `ProjectSettingsPane.svelte` backend branch | |
+| `04-project-settings-intake-1280` | `IntakeSettings.svelte` | |
+| `04-project-settings-allocation-1280` | `AllocationSettings.svelte` | |
+| `04-project-settings-notion-1280` | `ProjectSettingsPane.svelte` notion branch | |
+| `04-project-settings-mcp-overrides-1280` | `McpSettings.svelte` with a project | |
+
+"**new**" rows are listed in [settings-brief.md](settings-brief.md) §4: build only those the team accepts, and hide the rest; none changes another screen.
+
+### 13.3 Flows (R15)
+
+`06-flow-<id>.png`, one storyboard per flow of [flows.md](flows.md) (start, context, tabs, dock, agent-state, decision, feature, project, settings, project-settings, planner, shortcuts, terminal, migrate). They carry no new rule: each caption names the rule it shows. Use them as acceptance walkthroughs: each flow is one manual test of the implementation, and F2 to F5, F9, F10 and F14 are also covered by tests (§13.4).
+
+### 13.4 Tests added by round 2 (`ui/test/*.test.js`)
+
+- `settings-sections.test.js`: both windows list their sections (9 and 7), each renders without the "Not designed yet" text, no `Kbd` inside the nav, deep link opens on its section.
+- `terminalsettings.test.js`: theme Select calls `setTheme`; kitty colours switch calls `setKittyTheme`; missing `app.kitty` shows the no-kitty.conf text.
+- `memorysettings.test.js`: bar segments from the sample, pressure badge per level, warn threshold validation.
+- `projectgeneral.test.js`: rename saves, default branch change, Revert, untrusted state shows Trust in a pane.
+- `headers.test.js`: project and feature pane headers: icon buttons have tooltips (`aria-label`), danger icons use the danger class, `⋯` is last and holds the listed items.
+- `prline.test.js`: running and review-done states, checks popover rows.
+- `docpath.test.js`: path line only for docs inside the repo.
+- Extend `selectheight` in `noselect.test.js`: a Select next to an input gets the input's height class.
