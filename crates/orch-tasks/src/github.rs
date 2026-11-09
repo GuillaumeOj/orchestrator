@@ -84,7 +84,7 @@ pub struct Listing {
 }
 
 /// Overlap of an incremental read, for clock skew and same-second writes.
-const SINCE_OVERLAP_S: i64 = 60;
+pub(crate) const SINCE_OVERLAP_S: i64 = 60;
 
 pub fn status_label(s: TaskStatus) -> String {
     format!("orch:{}", s.as_str())
@@ -174,7 +174,7 @@ pub fn parse_issue(v: &Value) -> Option<Issue> {
     })
 }
 
-/// Which parts of an issue a write sends (GitHub; Linear sends all).
+/// Which parts of an issue a write sends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fields {
     /// Labels (managed + the issue's others) and open/closed.

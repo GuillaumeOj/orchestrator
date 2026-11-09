@@ -9,7 +9,7 @@ runtime read one table. Agents never call a backend: the orchestrator MCP tools 
 |---|---|---|---|
 | **Local** | the store | the store | the store |
 | **GitHub Issues** | every open issue of the repo, the closed ones the app tracks or that have `orch` | write-through with `gh api` (the user's `gh` login), **only the changed fields**: a status/node change sends `labels` + `state` (reading the issue first to keep its other labels), a title/body edit `title` + `body` | `sync`: REST `repos/{repo}/issues`, paged (`gh api --paginate`, 100 per page): first all open + closed `orch` issues, then only `state=all&since=<cursor − 1 min>` |
-| **Linear** | issues of one team (and project) with the `orch` label | write-through with GraphQL (`linear.rs`, through a `Graphql` transport the core gives: the Keychain key over curl) | `sync`: `issues(filter: team, label orch)`, paged |
+| **Linear** | every open issue of one team (and project), the closed ones the app tracks or that have `orch` | write-through with GraphQL (`linear.rs`, through a `Graphql` transport the core gives: the Keychain key over curl), **only the changed fields**: a status/node change sends `stateId` + `labelIds` (reading the issue first to keep its other labels), a title/body/dependencies edit `title` + `description` and the `blocks` relations | `sync`: `issues(first: 25, filter)`, paged (400 pages at most): first team (+ project) and state type not `completed`/`canceled` or label `orch`, then only `updatedAt > cursor − 1 min` |
 
 `TaskService::new(store, project, gh)` picks the project's backend (`projects.task_backend`,
 `{"type":"github","repo":"owner/name"}`; no repo = the checkout's). API: `create`, `update`,
@@ -19,18 +19,21 @@ task pending; `sync` pushes it again.
 
 Both remotes implement `Remote` (list, create, update, get, comment); the sync is the same for
 both. `list_issues(since)` returns a `Listing { issues, coverage, cursor }`; `coverage` says what an
-issue not listed means: `All` (Linear: not the app's), `OpenAndManaged` (GitHub without a cursor:
-maybe closed without `orch`, read alone), `ChangedSince` (GitHub with a cursor: unchanged).
+issue not listed means: `All` (not the app's; no remote uses it now), `OpenAndManaged` (without a
+cursor: maybe closed without `orch`, read alone), `ChangedSince` (with a cursor: unchanged). GitHub and
+Linear both list the open + managed issues first, then only the changed ones.
 
 What a write sends is decided against the stored task: status or node changed → `state`, title,
 body or dependencies changed → `content` (`IssueWrite.fields`); a task the remote never got or a
-pending one sends everything; nothing GitHub shows changed → no call. Linear sends every field.
+pending one sends everything; nothing the remote shows changed → no call. The parts not sent are
+taken from the issue's answer, so a remote edit made since the last sync is kept on both sides.
 
-**Cursor.** The newest `updated_at` a GitHub sync saw, per project, in the store
-(`Store::task_sync_cursor`, kv `task_sync_cursor:<project>`, with its scope `github:owner/name`),
-so it survives a restart. It is dropped when the project's backend setting or checkout changes
-(`upsert_project`, `update_project_settings`; a no-op update keeps it) and ignored when its scope is
-not the repository the backend resolves. A task whose `backend` is not the project's (left local when the backend changed, D8) is
+**Cursor.** The newest `updated_at` a sync saw (never older than the one it asked with), per
+project, in the store (`Store::task_sync_cursor`, kv `task_sync_cursor:<project>`, with its scope:
+`github:owner/name`, or `linear:<team key>` / `linear:<team key>/<project id>`), so it survives a
+restart. It is dropped when the project's backend setting or checkout changes (`upsert_project`,
+`update_project_settings`; a no-op update keeps it) and ignored when its scope is not the
+repository, team or project the backend reads (`Remote::cursor_scope`). A task whose `backend` is not the project's (left local when the backend changed, D8) is
 never pushed.
 
 `Backends::service(store, project, gh, linear)` does the same but keeps one remote backend per project for
@@ -52,6 +55,10 @@ makes a new one.
 
 ## Linear mapping
 
+- Every open issue of the team (and of the project, when one is set) is on the board, in the
+  column of its state; reading never writes. A foreign issue becomes managed (`orch` added, its
+  other labels kept) on its first status change in the app. A completed or canceled issue the app
+  never tracked, without `orch`, stays in Linear.
 - `orch` marks managed issues; the workflow state is the column: by state type (`backlog`/`triage`
   → Backlog, `unstarted` → Ready, `started` → In progress, or Review when its name says "review",
   `completed`/`canceled` → Done), overridden per project by `states: {stateId: column}`. Writing a
@@ -72,12 +79,14 @@ makes a new one.
 | unchanged | changed | adopt the remote (`updated`) |
 | pending (push failed) | unchanged | push again (`pushed`) |
 | pending | not in an incremental list (so unchanged) | push again (`pushed`) |
-| pending, or not Done | not in a full GitHub list (closed without `orch`) | read the issue alone, then as listed |
+| pending, or not Done | not in a first (open + managed) list (closed without `orch`) | read the issue alone, then as listed |
 | pending | changed | **adopt the remote** and report it (`conflicts`): the caller tells the user |
 | never created remotely | — | create the issue (`pushed`) |
-| — | new open issue (GitHub: any labels; Linear: with `orch`) | import (`imported`) |
+| — | new open issue (any labels) | import (`imported`) |
 | — | closed issue, untracked, without `orch` | nothing (history stays on the remote) |
 
 Tests: `cargo test -p orch-tasks` (an in-memory GitHub behind the `Gh` trait, with paging and
 `since`: write-through, partial writes, labels, dependencies, comments, import of > 500 issues,
-incremental sync, the cursor across a restart, offline edits, conflicts).
+incremental sync, the cursor across a restart, offline edits, conflicts; and the same for Linear over
+`linear::fake::FakeLinear`, which answers `OrchIssues` by its filter and pages, and refuses a query
+above Linear's complexity limit).

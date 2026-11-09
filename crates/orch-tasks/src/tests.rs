@@ -424,6 +424,7 @@ fn linear_two_way_sync_and_the_remote_wins() {
             state: "st-todo".into(),
             labels: vec![orch],
             updated: 99,
+            ..Default::default()
         });
         w.relations.push(("rel-9".into(), "ENG-2".into(), "ENG-9".into()));
     }
@@ -753,4 +754,203 @@ fn known_github_repo_never_runs_gh() {
     assert_eq!(gh.0.lock().unwrap().calls, 0, "no gh call");
     service().github_repo().unwrap();
     assert_eq!(service().known_github_repo().as_deref(), Some("me/shop"), "resolved once");
+}
+
+fn linear_setup(project: Option<&str>) -> (tempfile::TempDir, Store, Project, linear::fake::FakeLinear) {
+    let mut backend = json!({"type": "linear", "team": "ENG"});
+    if let Some(p) = project {
+        backend["project"] = json!(p);
+    }
+    let (d, s, p) = setup(backend);
+    (d, s, p, linear::fake::FakeLinear::default())
+}
+
+fn lin_svc<'a>(s: &'a Store, p: &Project, lin: &linear::fake::FakeLinear) -> TaskService<'a> {
+    let project = p.task_backend["project"].as_str().map(str::to_string);
+    let remote = linear::LinearIssues::new(lin.clone(), "ENG", project, Default::default());
+    TaskService::with_remote(s, p, "linear", Arc::new(remote))
+}
+
+fn by_key(s: &Store, key: &str) -> Task {
+    s.task_by_external("p1", "linear", key).unwrap().unwrap()
+}
+
+/// The variables and the issue ids of the last `OrchIssues` page.
+fn last_linear_list(lin: &linear::fake::FakeLinear) -> (Value, Vec<String>) {
+    lin.0.lock().unwrap().lists.last().cloned().unwrap()
+}
+
+/// The last `OrchIssueUpdate` input.
+fn last_linear_update(lin: &linear::fake::FakeLinear) -> Value {
+    lin.0.lock().unwrap().updates.last().cloned().unwrap().1
+}
+
+/// fix-linear-pull §3.4 (1): the first sync imports the team's open issues
+/// without `orch`, each in its state's column, and the closed `orch` ones;
+/// completed or canceled issues without `orch` stay in Linear; reading
+/// writes nothing.
+#[test]
+fn linear_first_sync_reads_every_open_issue() {
+    let (_d, s, p, lin) = linear_setup(None);
+    lin.add("ENG-1", "Idea", "st-backlog", &["bug"]);
+    lin.add("ENG-2", "Next", "st-todo", &[]);
+    lin.add("ENG-3", "Doing", "st-progress", &[]);
+    lin.add("ENG-4", "Reviewing", "st-review", &[]);
+    lin.add("ENG-5", "Shipped", "st-done", &[]);
+    lin.add("ENG-6", "Dropped", "st-canceled", &[]);
+    lin.add("ENG-7", "Ours, done", "st-done", &["orch"]);
+    let rep = lin_svc(&s, &p, &lin).sync(1).unwrap();
+    assert_eq!(rep.imported.len(), 5, "{rep:?}");
+    let col = |k: &str| by_key(&s, k).status;
+    assert_eq!(
+        [col("ENG-1"), col("ENG-2"), col("ENG-3"), col("ENG-4"), col("ENG-7")],
+        [TaskStatus::Backlog, TaskStatus::Ready, TaskStatus::InProgress, TaskStatus::Review, TaskStatus::Done]
+    );
+    for k in ["ENG-5", "ENG-6"] {
+        assert!(s.task_by_external("p1", "linear", k).unwrap().is_none(), "{k} is history");
+    }
+    assert_eq!(lin.mutations(), Vec::<String>::new(), "reading never writes");
+    let (vars, _) = last_linear_list(&lin);
+    assert_eq!(vars["filter"]["or"][0]["state"]["type"]["nin"], json!(["completed", "canceled"]));
+    assert_eq!(vars["filter"]["or"][1]["labels"]["name"]["eq"], "orch");
+    assert!(vars["filter"].get("updatedAt").is_none());
+}
+
+/// §3.4 (2): more than the old cap of 1 250 issues (50 pages) is read.
+#[test]
+fn linear_reads_past_the_old_page_cap() {
+    let (_d, s, p, lin) = linear_setup(None);
+    for n in 1..=1_300 {
+        lin.add(&format!("ENG-{n}"), &format!("Issue {n}"), "st-todo", &[]);
+    }
+    let rep = lin_svc(&s, &p, &lin).sync(1).unwrap();
+    assert_eq!(rep.imported.len(), 1_300);
+    assert_eq!(lin.0.lock().unwrap().lists.len(), 52, "pages of 25");
+    assert_eq!(by_key(&s, "ENG-1300").title, "Issue 1300");
+}
+
+/// §3.4 (3): the next sync asks only for what changed since the cursor
+/// (minus a minute); an edit, a close and a reopen in Linear come back, a
+/// closed issue never tracked and without `orch` is not imported. The
+/// cursor is stored with scope `linear:ENG`.
+#[test]
+fn linear_incremental_sync() {
+    let (_d, s, p, lin) = linear_setup(None);
+    // ENG-3 is older than the overlap of a minute before the cursor.
+    lin.add("ENG-3", "C", "st-todo", &[]);
+    lin.wait(300);
+    lin.add("ENG-1", "A", "st-todo", &[]);
+    lin.add("ENG-2", "B", "st-progress", &[]);
+    let svc = lin_svc(&s, &p, &lin);
+    assert_eq!(svc.sync(1).unwrap().imported.len(), 3);
+    let newest = linear::fake::stamp(lin.issue("ENG-2").updated);
+    let cursor = newest.to_string();
+    assert_eq!(s.task_sync_cursor("p1").unwrap(), Some(("linear:ENG".to_string(), cursor.clone())));
+
+    lin.wait(300);
+    lin.edit("ENG-1", |i| i.title = "A v2".into());
+    lin.edit("ENG-2", |i| i.state = "st-done".into());
+    lin.add("ENG-4", "Closed elsewhere", "st-done", &[]);
+    lin.add("ENG-5", "New", "st-backlog", &[]);
+    let rep = svc.sync(2).unwrap();
+    let (vars, ids) = last_linear_list(&lin);
+    let from = newest - jiff::SignedDuration::from_secs(60);
+    assert_eq!(vars["filter"]["updatedAt"]["gt"], from.to_string());
+    assert!(vars["filter"].get("or").is_none(), "all states");
+    assert_eq!(ids, ["ENG-1", "ENG-2", "ENG-4", "ENG-5"], "ENG-3 did not change");
+    assert_eq!(rep.updated, [by_key(&s, "ENG-1").id, by_key(&s, "ENG-2").id]);
+    assert_eq!(rep.imported, [by_key(&s, "ENG-5").id]);
+    assert_eq!(by_key(&s, "ENG-1").title, "A v2");
+    assert_eq!(by_key(&s, "ENG-2").status, TaskStatus::Done);
+    assert!(s.task_by_external("p1", "linear", "ENG-4").unwrap().is_none());
+    assert_ne!(s.task_sync_cursor("p1").unwrap().unwrap().1, cursor, "the cursor moves");
+
+    lin.edit("ENG-2", |i| i.state = "st-todo".into());
+    let rep = svc.sync(3).unwrap();
+    assert_eq!(rep.updated, [by_key(&s, "ENG-2").id]);
+    assert_eq!(by_key(&s, "ENG-2").status, TaskStatus::Ready);
+    assert_eq!(svc.sync(4).unwrap(), SyncReport::default(), "nothing changed");
+}
+
+/// §3.4 (4): moving a foreign card sends the state and the labels (adds
+/// `orch`, keeps the others) but no title or description; editing its
+/// title sends the content but no state.
+#[test]
+fn linear_writes_only_what_changed() {
+    let (_d, s, p, lin) = linear_setup(None);
+    lin.add("ENG-1", "Foreign", "st-todo", &["bug"]);
+    let svc = lin_svc(&s, &p, &lin);
+    svc.sync(1).unwrap();
+    // Edited in Linear since the sync: a status change must not undo it.
+    lin.edit("ENG-1", |i| i.description = "Edited in Linear".into());
+    let t = by_key(&s, "ENG-1");
+    let out = svc.set_status(t.id, TaskStatus::InProgress, 2).unwrap();
+    assert!(out.remote_error.is_none(), "{:?}", out.remote_error);
+    let inp = last_linear_update(&lin);
+    assert_eq!(inp["stateId"], "st-progress");
+    assert!(inp.get("title").is_none() && inp.get("description").is_none(), "{inp}");
+    let names = |id: &str| -> Vec<String> {
+        let w = lin.0.lock().unwrap();
+        let i = w.issues.iter().find(|i| i.id == id).unwrap();
+        i.labels.iter().filter_map(|l| w.labels.iter().find(|(x, _)| x == l).map(|(_, n)| n.clone())).collect()
+    };
+    assert_eq!(names("ENG-1"), ["orch", "bug"]);
+    let i = lin.issue("ENG-1");
+    assert_eq!((i.title.as_str(), i.description.as_str()), ("Foreign", "Edited in Linear"));
+    assert_eq!(out.value.body, "Edited in Linear", "the task takes what it did not send");
+
+    let mut t = by_key(&s, "ENG-1");
+    t.title = "Renamed".into();
+    let out = svc.update(t, 3).unwrap();
+    assert!(out.remote_error.is_none(), "{:?}", out.remote_error);
+    let inp = last_linear_update(&lin);
+    assert_eq!((inp["title"].as_str(), inp["description"].as_str()), (Some("Renamed"), Some("Edited in Linear")));
+    assert!(inp.get("stateId").is_none() && inp.get("labelIds").is_none(), "{inp}");
+    assert_eq!(lin.issue("ENG-1").state, "st-progress");
+    assert_eq!(svc.sync(4).unwrap(), SyncReport::default(), "our own writes are not remote changes");
+}
+
+/// §3.4 (5): a status change made offline is pushed at the next sync when
+/// the issue did not change (so it is not in the incremental list); when
+/// it did, Linear wins.
+#[test]
+fn linear_pending_change_not_in_the_incremental_list() {
+    let (_d, s, p, lin) = linear_setup(None);
+    lin.add("ENG-1", "Old", "st-todo", &[]);
+    lin.wait(300);
+    lin.add("ENG-2", "Other", "st-todo", &[]);
+    let svc = lin_svc(&s, &p, &lin);
+    svc.sync(1).unwrap();
+    lin.0.lock().unwrap().offline = true;
+    let (a, b) = (by_key(&s, "ENG-1").id, by_key(&s, "ENG-2").id);
+    assert!(svc.set_status(a, TaskStatus::InProgress, 2).unwrap().remote_error.is_some());
+    assert!(svc.set_status(b, TaskStatus::Review, 3).unwrap().remote_error.is_some());
+    lin.0.lock().unwrap().offline = false;
+    lin.edit("ENG-2", |i| i.title = "Changed in Linear".into());
+    let rep = svc.sync(4).unwrap();
+    let (_, ids) = last_linear_list(&lin);
+    assert_eq!(ids, ["ENG-2"], "ENG-1 did not change");
+    assert_eq!((rep.pushed, rep.conflicts), (vec![a], vec![b]));
+    assert_eq!(lin.issue("ENG-1").state, "st-progress");
+    let t = by_key(&s, "ENG-2");
+    assert_eq!((t.title.as_str(), t.status), ("Changed in Linear", TaskStatus::Ready), "Linear wins");
+}
+
+/// §3.4 (6): with a project, only its issues are listed (and created
+/// there); the cursor's scope names it.
+#[test]
+fn linear_project_scopes_the_listing() {
+    let (_d, s, p, lin) = linear_setup(Some("proj-1"));
+    lin.add("ENG-1", "In the project", "st-todo", &[]);
+    lin.add("ENG-2", "Elsewhere", "st-todo", &[]);
+    lin.0.lock().unwrap().issues[0].project = Some("proj-1".into());
+    let svc = lin_svc(&s, &p, &lin);
+    let rep = svc.sync(1).unwrap();
+    assert_eq!(rep.imported, [by_key(&s, "ENG-1").id]);
+    assert!(s.task_by_external("p1", "linear", "ENG-2").unwrap().is_none());
+    assert_eq!(last_linear_list(&lin).0["filter"]["project"]["id"]["eq"], "proj-1");
+    assert_eq!(s.task_sync_cursor("p1").unwrap().unwrap().0, "linear:ENG/proj-1");
+    let t = svc.create(Task::new("", "", "New one", 2)).unwrap().value;
+    let key = t.external_id.unwrap();
+    assert_eq!(lin.issue(&key).project.as_deref(), Some("proj-1"));
 }

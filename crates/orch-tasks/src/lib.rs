@@ -59,7 +59,7 @@ impl SyncReport {
 /// sync needs. `Issue.number` is the remote's id.
 pub trait Remote: Send + Sync {
     /// The issues to sync; `since` = the cursor of the last sync, for a
-    /// remote that keeps one ([`Remote::github_repo`]).
+    /// remote that keeps one ([`Remote::cursor_scope`]).
     fn list_issues(&self, since: Option<&str>) -> Result<Listing>;
     fn create_issue(&self, w: &IssueWrite) -> Result<Issue>;
     /// Writes `w.fields` of the issue; labels the app does not manage are kept.
@@ -114,9 +114,8 @@ impl<G: Gh> Remote for GithubIssues<G> {
 }
 
 impl<T: Graphql> Remote for LinearIssues<T> {
-    /// Always the full listing (no cursor).
-    fn list_issues(&self, _since: Option<&str>) -> Result<Listing> {
-        Ok(Listing { issues: self.list()?, coverage: Coverage::All, cursor: None })
+    fn list_issues(&self, since: Option<&str>) -> Result<Listing> {
+        self.list(since)
     }
     fn create_issue(&self, w: &IssueWrite) -> Result<Issue> {
         self.create(w)
@@ -132,6 +131,9 @@ impl<T: Graphql> Remote for LinearIssues<T> {
     }
     fn unmapped_states(&self) -> Vec<String> {
         self.unmapped_states()
+    }
+    fn cursor_scope(&self) -> Result<Option<String>> {
+        Ok(Some(self.cursor_scope()))
     }
 }
 
@@ -565,11 +567,12 @@ impl<'a> TaskService<'a> {
     }
 }
 
-/// A read failed because the issue no longer exists (deleted: 410, or
-/// transferred/never there: 404) rather than for a transient reason.
+/// A read failed because the issue no longer exists (GitHub: deleted, 410,
+/// or transferred/never there, 404; Linear: no such entity) rather than for
+/// a transient reason.
 fn issue_gone(e: &anyhow::Error) -> bool {
     let m = format!("{e:#}");
-    ["HTTP 404", "HTTP 410", "Not Found", "Gone"].iter().any(|p| m.contains(p))
+    ["HTTP 404", "HTTP 410", "Not Found", "Gone", "Entity not found", "no Linear issue"].iter().any(|p| m.contains(p))
 }
 
 #[cfg(test)]
