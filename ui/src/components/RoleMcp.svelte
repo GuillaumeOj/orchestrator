@@ -3,7 +3,7 @@
   // the MCP servers picker over the registry, with status glyphs and the
   // connector / strict-MCP warning, and the model downgrade line. Both save
   // the role through `onsave` (role_save).
-  import { openSettings } from '../lib/app.svelte.js';
+  import { openProjectSettings, openSettings } from '../lib/app.svelte.js';
   import { downgradeProblem, downgradeWarning, downgradeWhen, family, roleMcpNotes, toggleRef } from '../lib/ecosystem.js';
   import { MODEL_ALIASES, MODEL_OPTIONS } from '../lib/options.js';
   import ConnBadge from './ConnBadge.svelte';
@@ -37,7 +37,7 @@
     {#if servers == null}
       <span class="muted">Loading the registry…</span>
     {:else if !servers.length}
-      <span class="muted">No servers in the registry. <button class="link" onclick={() => openSettings('mcp', null, project)}>Add one in Settings</button></span>
+      <span class="muted">No servers in the registry. <button class="link" onclick={() => (project ? openProjectSettings(project, 'mcp') : openSettings('mcp'))}>Add one in Settings</button></span>
     {:else}
       {#each servers as s (s.id)}
         <label class="srv">
@@ -50,7 +50,7 @@
     {/if}
     {#if servers && !refs.length}<span class="muted note">No MCP servers. The role only has Claude Code's built-in tools.</span>{/if}
     {#each notes.missing as id (id)}
-      <p class="box errbox">{'\u{F0159}'} {id} is not in the MCP registry. Add it in <button class="link" onclick={() => openSettings('mcp', null, project)}>Settings › MCP servers</button> or <button class="link" onclick={() => onsave({ mcp_refs: refs.filter((r) => r !== id) })}>remove it here</button>.</p>
+      <p class="box errbox">{'\u{F0159}'} {id} is not in the MCP registry. Add it in <button class="link" onclick={() => (project ? openProjectSettings(project, 'mcp') : openSettings('mcp'))}>Settings › MCP servers</button> or <button class="link" onclick={() => onsave({ mcp_refs: refs.filter((r) => r !== id) })}>remove it here</button>.</p>
     {/each}
     {#each notes.connectors as id (id)}
       <p class="box warnbox">{'\u{F0026}'} {id} is a claude.ai connector, so this role can't use strict MCP: it will also see your other claude.ai connectors. Strict MCP is turned off for this role.</p>

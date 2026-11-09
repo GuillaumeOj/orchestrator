@@ -14,6 +14,10 @@
   import Inspector from './components/Inspector.svelte';
   import Palette from './components/Palette.svelte';
   import PlanChooser from './components/PlanChooser.svelte';
+  import PlannerWindow from './components/PlannerWindow.svelte';
+  import ProjectSettingsWindow from './components/ProjectSettingsWindow.svelte';
+  import SettingsWindow from './components/SettingsWindow.svelte';
+  import ShortcutsSheet from './components/ShortcutsSheet.svelte';
   import Sidebar from './components/Sidebar.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import TitleBar from './components/TitleBar.svelte';
@@ -36,6 +40,10 @@
   let ready = $state(false);
   let lastKeyCommand = { id: null, at: 0 };
   const isNav = (k) => k === 'palette' || k === 'jump';
+  // With a window open (design-notes §3.3): the palette and jump open above it,
+  // ⌘T / ⌘N their dialog above it, ⌘W closes it, ⌘, / ⌘/ toggle or replace it;
+  // every other chord and leader key waits until it closes.
+  const OVER_WINDOW = new Set(['palette', 'jump', 'session.new', 'project.add', 'pane.close', 'settings', 'shortcuts']);
 
   // Keyboard contract §9.7, in the capture phase: ⌘-chords and the leader never
   // reach xterm.js; everything else goes on to the focused element.
@@ -67,13 +75,14 @@
           if (!isNav(app.overlay.kind)) return;
           app.overlay = null;
         }
+        if (app.window && !OVER_WINDOW.has(r.command)) return;
         return run(r.command);
       case 'pty':
         terms.get(app.focused)?.write(r.bytes);
         return stop();
       default:
         // The watch-mode strip's Esc goes back to Mission control; Esc anywhere else closes the overlay.
-        if (e.key === 'Escape' && inspectorOverlay() && !inXterm && !document.querySelector('[role="combobox"][aria-expanded="true"]') && !e.target.closest?.('[data-watch]')) {
+        if (e.key === 'Escape' && inspectorOverlay() && !app.window && !inXterm && !document.querySelector('[role="combobox"][aria-expanded="true"]') && !e.target.closest?.('[data-watch]')) {
           app.inspector = false;
           stop();
         }
@@ -149,6 +158,11 @@
     {#if docked && app.inspector}<Inspector />{/if}
   </div>
   <StatusBar />
+  <!-- One floating window at a time, above the app and under the palette and the dialogs (design-notes §2.4). -->
+  {#if app.window?.kind === 'settings'}<SettingsWindow />
+  {:else if app.window?.kind === 'project-settings'}{#key app.window.projectId}<ProjectSettingsWindow />{/key}
+  {:else if app.window?.kind === 'planner'}<PlannerWindow />
+  {:else if app.window?.kind === 'shortcuts'}<ShortcutsSheet />{/if}
   {#if app.overlay?.kind === 'palette' || app.overlay?.kind === 'jump'}{#key app.overlay.kind}<Palette mode={app.overlay.kind} />{/key}{/if}
   {#if app.overlay?.kind === 'plan-project'}<PlanChooser />{/if}
   <Dialogs />

@@ -8,7 +8,7 @@
   import { onMount, untrack } from 'svelte';
   import Kbd from '../components/Kbd.svelte';
   import PressurePill from '../components/PressurePill.svelte';
-  import { app, openSingleton, saveLayout, toast } from '../lib/app.svelte.js';
+  import { app, openPlanner, saveLayout, toast } from '../lib/app.svelte.js';
   import { deliveryReport } from '../lib/delivery.js';
   import { dayHm, dayTime } from '../lib/format.js';
   import { reportLine, reportTip } from '../lib/intake.js';
@@ -79,7 +79,7 @@
     else if (k === ']') go(list[idx - 1]?.id);
     else if (k === 'e') copyMarkdown();
     else if (k === 'Enter' && !e.target.closest('button')) app.overlay = { kind: 'plan' };
-    else if (k === 'Escape') showList ? (showList = false) : openSingleton('planner');
+    else if (k === 'Escape') showList ? (showList = false) : openPlanner();
     else return;
     e.preventDefault();
   }

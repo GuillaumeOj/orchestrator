@@ -16,6 +16,7 @@ export const CHORDS = {
   'cmd+l': 'overwatch.ask',
   'cmd+j': 'dock.toggle',
   'cmd+,': 'settings',
+  'cmd+/': 'shortcuts',
   ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`cmd+${n}`, `pane.focus.${n}`])),
 };
 
@@ -65,7 +66,9 @@ export function chordName(e) {
   else if (e.code === 'Semicolon') key = ';';
   else if (/^Key[A-Z]$/.test(e.code ?? '') && (e.metaKey || e.ctrlKey)) key = e.code.slice(3);
   key = key.toLowerCase();
-  const mods = [e.metaKey && 'cmd', e.ctrlKey && 'ctrl', e.altKey && 'alt', e.shiftKey && 'shift'].filter(Boolean);
+  // `/` is shifted on AZERTY (⇧: gives '/'): the same chord as on QWERTY, so ⌘/ works on both.
+  const shift = e.shiftKey && key !== '/';
+  const mods = [e.metaKey && 'cmd', e.ctrlKey && 'ctrl', e.altKey && 'alt', shift && 'shift'].filter(Boolean);
   return [...mods, key].join('+');
 }
 

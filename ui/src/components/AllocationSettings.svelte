@@ -124,7 +124,12 @@
 
   const planner = () => (app.overlay = { kind: 'plan' });
 
-  /** Called by the pane for every key event while this section is shown. */
+  /** Unsaved changes (the window's Discard guard). */
+  export function hasChanges() {
+    return dirty || (!!view && !view.allocation && !!draft);
+  }
+
+  /** Called by the window for every key event while this section is shown. */
   export function onKey(e) {
     if (e.metaKey && e.key === 'Enter') return (e.preventDefault(), save());
     if (e.defaultPrevented) return; // an Esc a Select consumed

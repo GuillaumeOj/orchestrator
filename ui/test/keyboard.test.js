@@ -73,6 +73,26 @@ describe('keyboard contract §9.7', () => {
   });
 });
 
+describe('⌘/ and ⌘, (design-notes §3.3, §3.4)', () => {
+  it('⌘/ opens the Keyboard shortcuts sheet on QWERTY', () => {
+    const e = key('/', { meta: true, code: 'Slash' });
+    expect(chordName(e)).toBe('cmd+/');
+    expect(classify(e, { terminal: true })).toEqual({ kind: 'command', command: 'shortcuts' });
+  });
+
+  it('⌘/ on AZERTY (⇧: gives "/", Shift held) is the same chord', () => {
+    const e = key('/', { meta: true, shift: true, code: 'Period' });
+    expect(chordName(e)).toBe('cmd+/');
+    expect(classify(e).command).toBe('shortcuts');
+  });
+
+  it('⌘, is Settings; Shift still counts for other keys', () => {
+    expect(classify(key(',', { meta: true, code: 'Comma' })).command).toBe('settings');
+    expect(chordName(key('T', { meta: true, shift: true, code: 'KeyT' }))).toBe('cmd+shift+t');
+    expect(hint('shortcuts')).toBe('⌘+/');
+  });
+});
+
 describe('dialogs', () => {
   it('⌘⏎ reaches the dialog', () => {
     expect(classify({ key: 'Enter', code: 'Enter', metaKey: true })).toEqual({ kind: 'pass' });

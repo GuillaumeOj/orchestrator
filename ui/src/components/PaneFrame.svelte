@@ -8,11 +8,8 @@
   import DiffPane from '../panes/DiffPane.svelte';
   import FeaturePane from '../panes/FeaturePane.svelte';
   import MissionPane from '../panes/MissionPane.svelte';
-  import PlannerPane from '../panes/PlannerPane.svelte';
   import ProjectPane from '../panes/ProjectPane.svelte';
-  import ProjectSettingsPane from '../panes/ProjectSettingsPane.svelte';
   import ReportPane from '../panes/ReportPane.svelte';
-  import SettingsPane from '../panes/SettingsPane.svelte';
   import SetupPane from '../panes/SetupPane.svelte';
   import TeamCanvasPane from '../panes/TeamCanvasPane.svelte';
   import TermPaneView from '../panes/TermPaneView.svelte';
@@ -22,7 +19,7 @@
   const spec = $derived(app.panes[paneId]);
   const focused = $derived(app.focused === paneId);
   const n = $derived(visible(app.layout).indexOf(paneId) + 1);
-  const kind = $derived({ agent: 'claude', shell: 'zsh', editor: 'nvim', mission: 'mission', planner: 'planner', project: 'project', setup: 'setup', diff: 'diff', canvas: 'canvas', feature: 'feature', board: 'board', settings: 'settings', report: 'report', 'project-settings': 'project' }[spec?.type]);
+  const kind = $derived({ agent: 'claude', shell: 'zsh', editor: 'nvim', mission: 'mission', project: 'project', setup: 'setup', diff: 'diff', canvas: 'canvas', feature: 'feature', board: 'board', report: 'report' }[spec?.type]);
   const total = $derived(visible(app.layout).length);
 </script>
 
@@ -42,15 +39,12 @@
       {#if spec.type === 'agent'}<AgentPane {paneId} />
       {:else if spec.type === 'shell' || spec.type === 'editor'}<TermPaneView {paneId} />
       {:else if spec.type === 'mission'}<MissionPane {paneId} />
-      {:else if spec.type === 'planner'}<PlannerPane />
       {:else if spec.type === 'project'}<ProjectPane {paneId} />
       {:else if spec.type === 'diff'}<DiffPane {paneId} />
       {:else if spec.type === 'canvas'}<TeamCanvasPane {paneId} />
       {:else if spec.type === 'feature'}<FeaturePane {paneId} />
       {:else if spec.type === 'board'}<BoardPane {paneId} />
-      {:else if spec.type === 'settings'}<SettingsPane {paneId} />
       {:else if spec.type === 'report'}<ReportPane {paneId} />
-      {:else if spec.type === 'project-settings'}<ProjectSettingsPane {paneId} />
       {:else if spec.type === 'setup'}<SetupPane />{/if}
     </div>
   </section>

@@ -3,6 +3,7 @@
 // now.svelte.js), the tiling workspace, focus, overlays and the command
 // registry. Terminal objects (xterm.js) live outside the reactive state, in `terms`.
 
+import { tick as svelteTick } from 'svelte';
 import { upsertEntries } from './chat.js';
 import { checkToast, claudeToast, paletteActions } from './claude.js';
 import { deliveryRef } from './delivery.js';
@@ -69,6 +70,17 @@ export const app = $state({
   // Saved as chosen: the bounds apply at render (`chatWidthNow`), never to this.
   chatWidth: /** @type {number | null} */ (null),
   overlay: null, // { kind: 'palette' | 'jump' | 'new-session' | 'add-project' | 'confirm', … }
+  // The floating window (design-notes §3): Settings, Project settings, Week
+  // planner or Keyboard shortcuts, one at a time, never saved.
+  window:
+    /** @type {{ kind: 'settings' | 'project-settings' | 'planner' | 'shortcuts', section?: string | null, server?: string | null, projectId?: string } | null} */ (
+      null
+    ),
+  // What had the focus before the first window opened (an element, never saved);
+  // replacing a window keeps it.
+  windowReturn: /** @type {HTMLElement | null} */ (null),
+  // The Settings window's last section, while the app runs (§3.2).
+  settingsSection: /** @type {string | null} */ (null),
   toasts: [],
   pending: [], // decisions in their undo window: { item, card, action, message, at, toast }
   // What the Inspector shows when no agent pane has focus (D10): set by the
@@ -259,8 +271,6 @@ function title(spec) {
     default:
       if (spec.type === 'project') return projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId;
       if (spec.type === 'trust') return `trust · ${spec.projectId}`;
-      if (spec.type === 'project-settings')
-        return `${projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId} settings`;
       if (spec.type === 'feature') return features().find((f) => f.id === spec.featureId)?.slug ?? 'feature';
       if (spec.type === 'board')
         return `${projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId} tasks`;
@@ -275,9 +285,7 @@ function title(spec) {
       return (
         {
           mission: 'Mission control',
-          planner: 'Week planner',
           setup: 'Set up Orchestrator',
-          settings: 'Settings',
           report: 'Weekly report',
         }[spec.type] ?? spec.type
       );
@@ -286,6 +294,7 @@ function title(spec) {
 
 /** Adds a pane: next to the focused one (`how`: 'right' | 'below' | 'tab'). */
 export function addPane(spec, how = 'right') {
+  leaveWindow();
   const id = newPaneId();
   app.panes[id] = { ...spec, title: spec.title ?? title(spec) };
   const at = app.focused && app.panes[app.focused] ? app.focused : L.visible(app.layout)[0];
@@ -300,6 +309,7 @@ export function addPane(spec, how = 'right') {
 
 /** Adds a shell or an agent to the dock, as its active tab, and opens the dock. */
 export function addDockPane(spec) {
+  leaveWindow();
   const id = newPaneId();
   app.panes[id] = { ...spec, title: spec.title ?? title(spec) };
   app.dock.tabs = [...app.dock.tabs, id];
@@ -433,7 +443,7 @@ export function findPane(pred) {
   return Object.entries(app.panes).find(([, s]) => pred(s))?.[0];
 }
 
-/** Singleton panes (Mission control, Week planner) open as a tab, or get focus. */
+/** Singleton panes (Mission control, Setup) open as a tab, or get focus. */
 export function openSingleton(type) {
   const existing = findPane((s) => s.type === type);
   if (existing) return focusPane(existing);
@@ -472,28 +482,133 @@ function askChat(req) {
   app.chatFocus = req;
 }
 
+// ---------------------------------------------------------------- windows
+
+/** Saved pane types that are windows now (design-notes §3.1). */
+const WINDOW_KINDS = new Set(['settings', 'project-settings', 'planner']);
+
+/** The open window's "has unsaved changes" check (a footer section registers it), or null. */
+let windowGuard = null;
+
 /**
- * P3: Settings (⌘,), one pane, opened straight to a section ('integrations' |
- * 'mcp' | …) with a server selected (banners, decision cards, the inspector).
+ * A section with a Save/Revert footer registers its dirty check while it is
+ * shown; the returned function unregisters it (design-notes §3.3).
+ * @param {() => boolean} isDirty
  */
-export function openSettings(section = null, server = null, projectId = null) {
-  const existing = findPane((s) => s.type === 'settings');
-  if (existing) {
-    if (section) app.panes[existing] = { ...app.panes[existing], section, server, projectId };
-    return focusPane(existing);
-  }
-  addPane({ type: 'settings', section: section ?? 'integrations', server, projectId }, app.layout ? 'tab' : 'right');
+export function guardWindow(isDirty) {
+  windowGuard = isDirty;
+  return () => {
+    if (windowGuard === isDirty) windowGuard = null;
+  };
 }
 
-/** P3: a project's settings (Task backend, Notion, MCP overrides), one pane per project. */
-export function openProjectSettings(projectId, section = null) {
+/** The open window has unsaved changes. */
+export const windowDirty = () => !!app.window && !!windowGuard?.();
+
+/** Asks "Discard changes?" when the window is dirty, else runs `then` at once. */
+export function unlessDirty(then) {
+  if (!windowDirty()) return then();
+  confirm(
+    'Discard changes?',
+    'This section has changes that are not saved.',
+    () => {
+      windowGuard = null;
+      then();
+    },
+    'Discard',
+    'Keep editing',
+  );
+}
+
+const sameWindow = (a, b) => a?.kind === b?.kind && a?.projectId === b?.projectId && a?.section === b?.section;
+
+/** Opens `next`, replacing the open window (asked first when dirty and something else shows). */
+function setWindow(next) {
+  const apply = () => {
+    if (!app.window) {
+      const el = typeof document === 'undefined' ? null : /** @type {HTMLElement | null} */ (document.activeElement);
+      app.windowReturn = el && el !== document.body ? el : null;
+    }
+    app.window = next;
+    if (next.kind === 'settings') app.settingsSection = next.section ?? null;
+  };
+  if (sameWindow(app.window, next)) return apply();
+  unlessDirty(apply);
+}
+
+/** Moves the focus back where it was before the window opened, else to the focused pane. */
+function restoreFocus(el) {
+  svelteTick().then(() => {
+    if (app.window) return;
+    if (el?.isConnected) el.focus();
+    else if (app.focused) focusPane(app.focused);
+  });
+}
+
+/** Closes the window (Esc, ×, ⌘W, the backdrop); `force` skips the Discard question. */
+export function closeWindow(force = false) {
+  if (!app.window) return;
+  const close = () => {
+    windowGuard = null;
+    const el = app.windowReturn;
+    app.window = null;
+    app.windowReturn = null;
+    restoreFocus(el);
+  };
+  if (force) close();
+  else unlessDirty(close);
+}
+
+/** A pane opens (the palette above a window, a link in it): the window gives way, unless it has unsaved changes. */
+function leaveWindow() {
+  if (app.window && !windowDirty()) closeWindow(true);
+}
+
+/** ⌘, and ⌘/: the window of that kind closes when it is open, else opens (replacing another). */
+export function toggleWindow(kind) {
+  if (app.window?.kind === kind) return closeWindow();
+  if (kind === 'settings') openSettings();
+  else if (kind === 'shortcuts') openShortcuts();
+}
+
+/**
+ * Settings (⌘,), the floating window (design-notes §3.1), on a section with a
+ * server or PR selected (banners, toasts, decision cards, the inspector).
+ * An open Settings window updates in place. A project with section `mcp` is
+ * Project settings › MCP overrides; with any other section it only says where
+ * the caller came from and is ignored.
+ */
+export function openSettings(section = null, server = null, projectId = null) {
+  if (projectId && section === 'mcp') return openProjectSettings(projectId, 'mcp', server);
+  const w = app.window;
+  if (w?.kind === 'settings') return setWindow({ ...w, section: section ?? w.section, server });
+  setWindow({ kind: 'settings', section: section ?? app.settingsSection ?? 'integrations', server });
+}
+
+/** A project's settings, one window for any project (opening another project's replaces it). */
+export function openProjectSettings(projectId, section = null, server = null) {
   if (!projectId) return toast('No project in focus');
-  const existing = findPane((s) => s.type === 'project-settings' && s.projectId === projectId);
-  if (existing) {
-    if (section) app.panes[existing] = { ...app.panes[existing], section };
-    return focusPane(existing);
-  }
-  addPane({ type: 'project-settings', projectId, section: section ?? 'backend' }, app.layout ? 'tab' : 'right');
+  const w = app.window;
+  if (w?.kind === 'project-settings' && w.projectId === projectId)
+    return setWindow({ ...w, section: section ?? w.section, server });
+  setWindow({ kind: 'project-settings', projectId, section: section ?? 'backend', server });
+}
+
+/** The Week planner window (pacing indicator, banners, leader g, the palette). */
+export function openPlanner() {
+  if (app.window?.kind !== 'planner') setWindow({ kind: 'planner' });
+}
+
+/** The Keyboard shortcuts sheet (⌘/, Help › Keyboard Shortcuts, the palette). */
+export function openShortcuts() {
+  if (app.window?.kind !== 'shortcuts') setWindow({ kind: 'shortcuts' });
+}
+
+/** The section of the open window (its nav): a switch away from a dirty section asks first. */
+export function windowSection(section) {
+  const w = app.window;
+  if (!w || w.section === section) return;
+  setWindow({ ...w, section, server: null });
 }
 
 /** FR-818: the weekly report ('current' = this week so far), one pane. */
@@ -521,7 +636,8 @@ export async function openUrl(url) {
  */
 export function routeOpen(r, projectId = null) {
   if (!r || typeof r !== 'object') return false;
-  if (r.open === 'settings') openSettings('mcp', r.server ?? null, projectId);
+  if (r.open === 'settings')
+    projectId ? openProjectSettings(projectId, 'mcp', r.server ?? null) : openSettings('mcp', r.server ?? null);
   else if (r.open === 'pane' && r.run) runInPane(r.run, `${r.run}${r.server ? ` · ${r.server}` : ''}`, projectId);
   else if (r.open === 'url' && r.url) openUrl(r.url);
   else if (r.open === 'report') openReport(r.report ?? 'current');
@@ -1089,7 +1205,8 @@ export async function restoreLayout() {
     ids.map(async (id) => {
       let s = saved.panes[id];
       // A saved `inbox` pane (removed in P4.3): its slot closes, the cards are in the chat.
-      if (!s || s.type === 'inbox' || paneGone(s)) return;
+      // Settings, Project settings and the Week planner are windows now (design-notes §3.1): dropped, never opened at launch.
+      if (!s || s.type === 'inbox' || WINDOW_KINDS.has(s.type) || paneGone(s)) return;
       // The Overview became Mission control (D9).
       if (s.type === 'overview') s = { ...s, type: 'mission', title: 'Mission control' };
       // A shell that does not start is dropped from the restored layout.
@@ -1163,8 +1280,7 @@ async function readState() {
  *  however that happened: a button, the CLI, a project removal. */
 function paneGone(s) {
   if (s.type === 'agent') return !activeAgents().some((a) => a.id === s.agentId);
-  if (s.type === 'project' || s.type === 'board' || s.type === 'project-settings')
-    return !projects().some((p) => p.id === s.projectId);
+  if (s.type === 'project' || s.type === 'board') return !projects().some((p) => p.id === s.projectId);
   // Features never read yet (the core's read failed): nothing is known gone.
   if (s.type === 'feature') return app.data?.features != null && !features().some((f) => f.id === s.featureId);
   return false;
@@ -1172,6 +1288,8 @@ function paneGone(s) {
 
 function prunePanes() {
   for (const [id, s] of Object.entries(app.panes)) if (paneGone(s)) closePane(id);
+  // Project settings of a project that is gone: nothing left to edit.
+  if (app.window?.projectId && !projects().some((p) => p.id === app.window.projectId)) closeWindow(true);
   const sel = app.selection;
   if (sel?.kind === 'agent' && !activeAgents().some((a) => a.id === sel.id)) app.selection = null;
 }
@@ -1373,6 +1491,7 @@ function planHint() {
  */
 export function commands() {
   const a = contextAgent();
+  /** @type {{ id: string, label: string, run: (...args: any[]) => any, detail?: string, disabled?: any, scope?: string, hint?: string }[]} */
   const list = [
     { id: 'session.new', label: 'New session…', run: () => (app.overlay = { kind: 'new-session' }) },
     { id: 'project.add', label: 'Add project…', run: () => (app.overlay = { kind: 'add-project' }) },
@@ -1431,7 +1550,8 @@ export function commands() {
       label: "Clear today's digest",
       run: () => clearDigest().catch((e) => toast(errText(e), { kind: 'error' })),
     },
-    { id: 'planner', label: 'Open Week planner', run: () => openSingleton('planner') },
+    { id: 'planner', label: 'Open Week planner', run: openPlanner },
+    { id: 'shortcuts', label: 'Keyboard shortcuts', run: openShortcuts },
     { id: 'setup', label: 'Set up Orchestrator (first run)…', run: () => openSingleton('setup') },
     ...updateCommands(),
     ...claudeCommands(),
@@ -1443,7 +1563,7 @@ export function commands() {
           {
             id: 'settings.mcp.project',
             label: `Settings: MCP servers for ${contextProject().name}`,
-            run: () => openSettings('mcp', null, contextProject().id),
+            run: () => openProjectSettings(contextProject().id, 'mcp'),
           },
         ]
       : []),
@@ -1586,6 +1706,10 @@ export function run(commandId) {
       agentAction(a.id, a.paused ? 'unpause' : 'pause');
     },
     'window.close': () => {},
+    // ⌘, and ⌘/ (and their menu items) toggle their window; ⌘W closes the window before a tab.
+    settings: () => toggleWindow('settings'),
+    shortcuts: () => toggleWindow('shortcuts'),
+    'pane.close': () => (app.window ? closeWindow() : closePaneByUser()),
   };
   if (map[commandId]) return map[commandId]();
   const c = commands().find((x) => x.id === commandId);

@@ -149,7 +149,7 @@ export async function fixSource(src, refresh = () => refreshIntake([src.project]
     } catch {
       toast(`Run it in a terminal, then Refresh: ${GH_SCOPE_COMMAND}`);
     }
-  } else if (fix === 'integrations') openSettings('integrations', integrationsRow(code), src.project);
+  } else if (fix === 'integrations') openSettings('integrations', integrationsRow(code));
   else if (fix === 'settings') openProjectSettings(src.project, 'intake');
   else return refresh();
 }

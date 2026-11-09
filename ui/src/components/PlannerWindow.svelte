@@ -1,5 +1,6 @@
 <script>
-  // Week planner (§9.3, FR-802–804, FR-809, Penpot 04 Week planner): read-only
+  // Week planner, the floating window (design-notes §3, 04-week-planner-*.png;
+  // §9.3, FR-802–804, FR-809, Penpot 04 Week planner): read-only
   // forecast from the Governor. The week's usage so far (line, with the agents'
   // part filled inside it) against the plan, forecast and w/ governor lines, all
   // in % of the weekly limit; plus the 5h window, allocations, next-action preview
@@ -11,14 +12,15 @@
   // off-hours (or back in working hours). P3: model windows, off-hours bands.
   // the downgrade entries (FR-815, 816, 818, 819).
   import { onMount } from 'svelte';
-  import Kbd from '../components/Kbd.svelte';
-  import PressurePill from '../components/PressurePill.svelte';
-  import { app, confirm, governor, openReport, queueOffHours, toast } from '../lib/app.svelte.js';
+  import { app, closeWindow, confirm, governor, openReport, queueOffHours, toast } from '../lib/app.svelte.js';
   import { clock, dayHm, dayTime, duration, pct, pp, when } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { downgradeText, nextOffHours, OFF_DISABLED, offHoursAllowed, windowLabel, windowQueued } from '../lib/pacing.js';
   import { PRESSURE, queueReason } from '../lib/status.js';
+  import FloatingWindow from './FloatingWindow.svelte';
+  import Kbd from './Kbd.svelte';
+  import PressurePill from './PressurePill.svelte';
 
   let v = $state(null);
   let err = $state(null);
@@ -187,6 +189,7 @@
   }
 </script>
 
+<FloatingWindow title="Week planner" size={{ w: 1100, h: 760 }} onclose={() => closeWindow()} restoreFocus={false}>
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <div class="planner" tabindex="0" data-pane-focus onkeydown={onKey} role="region" aria-label="Week planner">
   {#if err}
@@ -344,17 +347,14 @@
     </div>
   {/if}
 </div>
+</FloatingWindow>
 
 <style>
   tr.ow td {
     border-top: var(--border-width-default) solid var(--color-border-subtle);
   }
   .planner {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
     outline: none;
-    padding: var(--space-md);
     font: var(--text-label);
   }
   .head {

@@ -372,3 +372,16 @@ input.field {
   align-items: center;
   gap: var(--space-sm);
 }
+
+/* A backdrop click on a window with unsaved changes: its footer flashes
+   (design-notes §3.3). Any section's `.foot`, so it lives here. */
+.foot.flash {
+  border-radius: var(--radius-sm);
+  animation: foot-flash 0.6s ease-out 2;
+}
+@keyframes foot-flash {
+  50% {
+    background: var(--color-accent-subtle);
+    box-shadow: 0 0 0 var(--space-xs) var(--color-accent-subtle);
+  }
+}

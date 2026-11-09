@@ -31,7 +31,7 @@ vi.mock('@tauri-apps/api/webview', () => ({
   }),
 }));
 
-const { default: ProjectSettingsPane } = await import('../src/panes/ProjectSettingsPane.svelte');
+const { default: ProjectSettingsWindow } = await import('../src/components/ProjectSettingsWindow.svelte');
 
 const file = (path, over = {}) => ({ path, kind: 'file', access: 'write', added_at_ms: 1, exists: true, ...over });
 const HOME = '/Users/me';
@@ -84,23 +84,23 @@ describe('Project settings › Files', () => {
     app.toasts = [];
     app.data = { core: { user_home: HOME } };
     replies.project_files = { files: LIST, live_agents: 2 };
-    app.panes.p1 = { type: 'project-settings', projectId: 'shop-api', section: 'files', title: 'shop-api settings' };
+    app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'files' };
   });
 
   async function open() {
-    const r = render(ProjectSettingsPane, { paneId: 'p1' });
+    const r = render(ProjectSettingsWindow);
     await waitFor(() => expect(r.container.querySelector('.files h2')).toBeTruthy());
     await waitFor(() => expect(r.container.querySelector('[aria-busy]')).toBeNull());
     return { ...r, root: r.container.querySelector('[data-pane-focus]') };
   }
-  const btn = (c, re) => [...c.querySelectorAll('button')].find((b) => re.test(b.textContent));
+  const btn = (c, re) => [...c.querySelectorAll('button')].find((b) => re.test(b.textContent.trim()));
   const rows = (c) => [...c.querySelectorAll('.row')];
   const toasts = () => app.toasts.map((t) => t.text);
   const rect = { left: 0, top: 0, right: 5000, bottom: 5000, width: 5000, height: 5000 };
 
   it('sits second in the nav and lists rows with ~ paths, missing badge and hints', async () => {
     const { container, getByText } = await open();
-    const nav = [...container.querySelectorAll('.sec')].map((b) => b.textContent);
+    const nav = [...container.querySelectorAll('[role="tab"]')].map((b) => b.textContent.trim());
     expect(nav.slice(0, 3)).toEqual(['General', 'Files', 'Task backend']);
     expect(rows(container)).toHaveLength(3);
     expect(container.textContent).toContain('~/Brand');
@@ -113,8 +113,8 @@ describe('Project settings › Files', () => {
 
   it('keeps Task backend as the default section', async () => {
     replies.project_settings = { backend: { type: 'local' }, settings: {}, track_orchestrator_dir: false };
-    app.panes.p1 = { type: 'project-settings', projectId: 'shop-api', title: 't' };
-    const { findByText } = render(ProjectSettingsPane, { paneId: 'p1' });
+    app.window = { kind: 'project-settings', projectId: 'shop-api' };
+    const { findByText } = render(ProjectSettingsWindow);
     await findByText(/Where shop-api's Board lives/);
   });
 
@@ -127,7 +127,7 @@ describe('Project settings › Files', () => {
 
   it('shows a load error and retries with r', async () => {
     replies.project_files = new Error('could not read the settings store');
-    const { container, getByText } = render(ProjectSettingsPane, { paneId: 'p1' });
+    const { container, getByText } = render(ProjectSettingsWindow);
     await waitFor(() => getByText(/Couldn't load shop-api's files: could not read the settings store/));
     replies.project_files = { files: LIST, live_agents: 0 };
     await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: 'r' });

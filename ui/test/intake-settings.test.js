@@ -20,7 +20,7 @@ vi.mock('../src/lib/ipc.js', () => ({
   errText: (e) => (typeof e === 'string' ? e : (e?.message ?? String(e))),
 }));
 
-const { default: ProjectSettingsPane } = await import('../src/panes/ProjectSettingsPane.svelte');
+const { default: ProjectSettingsWindow } = await import('../src/components/ProjectSettingsWindow.svelte');
 const { default: IntakeGlobalSettings } = await import('../src/components/IntakeGlobalSettings.svelte');
 
 const info = (source = null) => ({
@@ -35,8 +35,8 @@ const last = (cmd) => called(cmd).at(-1)?.[1];
 
 function open(section = 'intake') {
   app.data = fixture();
-  app.panes = { ps: { type: 'project-settings', projectId: 'shop-api', section } };
-  return render(ProjectSettingsPane, { paneId: 'ps' });
+  app.window = { kind: 'project-settings', projectId: 'shop-api', section };
+  return render(ProjectSettingsWindow);
 }
 
 beforeEach(() => {
@@ -55,12 +55,12 @@ describe('Project settings › Intake', () => {
   it('is a section after Task backend, and openProjectSettings selects it', async () => {
     const { getAllByRole, findByRole } = open('backend');
     expect(
-      getAllByRole('button')
+      getAllByRole('tab')
         .map((b) => b.textContent.trim())
         .filter((t) => ['Task backend', 'Intake', 'Allocation'].includes(t)),
     ).toEqual(['Task backend', 'Intake', 'Allocation']);
     openProjectSettings('shop-api', 'intake');
-    expect(app.panes.ps.section).toBe('intake');
+    expect(app.window.section).toBe('intake');
     cleanup();
     open('intake');
     expect(await findByRole('radiogroup', { name: 'Source' })).toBeTruthy();
