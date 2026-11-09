@@ -233,7 +233,8 @@ fn team_info(gql: &dyn Graphql, key: &str) -> Result<TeamInfo> {
     Ok(TeamInfo { id: s(&t["id"]), states, projects })
 }
 
-/// The managed issues of one Linear team (and project).
+/// The issues of one Linear team (and project): every open one, and the
+/// managed (`orch`) ones in any state.
 pub struct LinearIssues<T: Graphql> {
     gql: T,
     team_key: String,
@@ -437,10 +438,9 @@ impl<T: Graphql> LinearIssues<T> {
         Ok(())
     }
 
-    /// What `w.fields` names (everything for a create, `current` = `None`):
-    /// title and description, and/or the state and the labels.
-    fn input(&self, w: &IssueWrite, current: Option<&Value>) -> Result<Value> {
-        let f = if current.is_none() { Fields::ALL } else { w.fields };
+    /// What `f` names: title and description, and/or the state and the
+    /// labels (managed + `current`'s others).
+    fn input(&self, w: &IssueWrite, f: Fields, current: Option<&Value>) -> Result<Value> {
         let mut input = json!({});
         if f.content {
             input["title"] = json!(w.title);
@@ -450,17 +450,15 @@ impl<T: Graphql> LinearIssues<T> {
             input["stateId"] = json!(self.state_for(w.status)?);
             input["labelIds"] = json!(self.label_ids(w, current)?);
         }
-        if current.is_none() {
-            input["teamId"] = json!(self.team()?.id);
-            if let Some(p) = &self.project {
-                input["projectId"] = json!(p);
-            }
-        }
         Ok(input)
     }
 
     pub fn create(&self, w: &IssueWrite) -> Result<Issue> {
-        let input = self.input(w, None)?;
+        let mut input = self.input(w, Fields::ALL, None)?;
+        input["teamId"] = json!(self.team()?.id);
+        if let Some(p) = &self.project {
+            input["projectId"] = json!(p);
+        }
         let d = self.call(&issue_create(), json!({"input": input}))?;
         let v = d["issueCreate"]["issue"].clone();
         if v.is_null() {
@@ -477,15 +475,19 @@ impl<T: Graphql> LinearIssues<T> {
     /// relations, and/or the state and the labels (managed + the issue's
     /// others, read first). A state-only write leaves the content alone.
     pub fn update(&self, id: &str, w: &IssueWrite) -> Result<Issue> {
-        let cur = self.raw(id)?;
-        let input = self.input(w, Some(&cur))?;
+        // The labels are sent whole: only a state write needs the issue's others.
+        let cur = if w.fields.state { Some(self.raw(id)?) } else { None };
+        let input = self.input(w, w.fields, cur.as_ref())?;
         let d = self.call(&issue_update(), json!({"id": id, "input": input}))?;
         let v = d["issueUpdate"]["issue"].clone();
         if v.is_null() {
             bail!("Linear: issue {id} not updated");
         }
         let issue = self.to_issue(&v)?;
-        if !w.fields.content || issue.blocked_by == w.blocked_by {
+        let same = |a: &[String], b: &[String]| {
+            a.len() == b.len() && a.iter().all(|x| b.contains(x)) && b.iter().all(|x| a.contains(x))
+        };
+        if !w.fields.content || same(&issue.blocked_by, &w.blocked_by) {
             return Ok(issue);
         }
         self.set_blockers(&v, &w.blocked_by)?;
@@ -535,9 +537,9 @@ impl<T: Graphql> LinearIssues<T> {
             }
         };
         let (mut issues, mut newest) = (vec![], None);
-        let mut after = Value::Null;
+        let (query, mut after) = (issues_query(), Value::Null);
         for _ in 0..MAX_PAGES {
-            let d = self.call(&issues_query(), json!({"filter": filter, "after": after}))?;
+            let d = self.call(&query, json!({"filter": filter, "after": after}))?;
             for v in d["issues"]["nodes"].as_array().into_iter().flatten() {
                 newest = newest.max(v["updatedAt"].as_str().and_then(|t| t.parse::<jiff::Timestamp>().ok()));
                 issues.push(self.to_issue(v)?);

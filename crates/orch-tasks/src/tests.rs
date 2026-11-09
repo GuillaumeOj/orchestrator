@@ -901,8 +901,10 @@ fn linear_writes_only_what_changed() {
 
     let mut t = by_key(&s, "ENG-1");
     t.title = "Renamed".into();
+    let calls = lin.0.lock().unwrap().calls.len();
     let out = svc.update(t, 3).unwrap();
     assert!(out.remote_error.is_none(), "{:?}", out.remote_error);
+    assert_eq!(lin.0.lock().unwrap().calls[calls..], ["OrchIssueUpdate"], "a content write reads nothing first");
     let inp = last_linear_update(&lin);
     assert_eq!((inp["title"].as_str(), inp["description"].as_str()), (Some("Renamed"), Some("Edited in Linear")));
     assert!(inp.get("stateId").is_none() && inp.get("labelIds").is_none(), "{inp}");

@@ -63,13 +63,11 @@ pub struct Issue {
 /// What a listing leaves out, i.e. what an issue not in it means.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Coverage {
-    /// Every issue the sync should know: one not listed is not the app's.
-    #[default]
-    All,
     /// Only the issues changed since the cursor: one not listed did not change.
     ChangedSince,
     /// Every open issue and the managed closed ones: one not listed may be
     /// closed without `orch` (read it alone).
+    #[default]
     OpenAndManaged,
 }
 

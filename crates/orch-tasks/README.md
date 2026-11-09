@@ -19,8 +19,9 @@ task pending; `sync` pushes it again.
 
 Both remotes implement `Remote` (list, create, update, get, comment); the sync is the same for
 both. `list_issues(since)` returns a `Listing { issues, coverage, cursor }`; `coverage` says what an
-issue not listed means: `All` (not the app's; no remote uses it now), `OpenAndManaged` (without a
-cursor: maybe closed without `orch`, read alone), `ChangedSince` (with a cursor: unchanged). GitHub and
+issue not listed means: `OpenAndManaged` (without a cursor: maybe closed without `orch`, read
+alone; one answered under another id, a Linear issue moved to another team, is left as gone),
+`ChangedSince` (with a cursor: unchanged). GitHub and
 Linear both list the open + managed issues first, then only the changed ones.
 
 What a write sends is decided against the stored task: status or node changed → `state`, title,

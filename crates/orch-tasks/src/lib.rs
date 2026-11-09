@@ -72,7 +72,7 @@ pub trait Remote: Send + Sync {
         Vec::new()
     }
     /// The GitHub repository (`owner/name`) of a GitHub remote; it also
-    /// scopes the sync cursor. `None` = not GitHub (no cursor).
+    /// scopes its sync cursor. `None` = not GitHub.
     fn github_repo(&self) -> Result<Option<String>> {
         Ok(None)
     }
@@ -442,7 +442,6 @@ impl<'a> TaskService<'a> {
             .filter(|t| t.backend == kind && t.external_id.as_deref().is_some_and(|n| !listed.contains(n)))
             .collect();
         match listing.coverage {
-            Coverage::All => {}
             // Not changed since the cursor: a pending one is pushed again.
             Coverage::ChangedSince => {
                 for t in unlisted.into_iter().filter(|t| Self::pending(t).is_some()) {
@@ -456,8 +455,12 @@ impl<'a> TaskService<'a> {
             // is left as it is.
             Coverage::OpenAndManaged => {
                 for t in unlisted.into_iter().filter(|t| Self::pending(t).is_some() || t.status != TaskStatus::Done) {
-                    match gh.get_issue(t.external_id.as_deref().unwrap_or_default()) {
-                        Ok(issue) => issues.push(issue),
+                    let id = t.external_id.as_deref().unwrap_or_default();
+                    match gh.get_issue(id) {
+                        Ok(issue) if issue.number == id => issues.push(issue),
+                        // Answered under another id (a Linear issue moved to
+                        // another team): no longer this backend's, like gone.
+                        Ok(_) => {}
                         // Gone: left as it is. Any other failure: the cursor must not
                         // move past an issue never read (an incremental list would
                         // not show it again).
