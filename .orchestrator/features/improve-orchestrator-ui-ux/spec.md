@@ -94,3 +94,34 @@
 | T-290 Shell, dock and screens | ui | T-289 | 03 and 04 frames per §4.2; PNGs; hand-off per frame |
 | T-291 Design notes for the implementation | ux | T-290 | `design-notes.md`; reviews T-290 frames against `audit.md` |
 | T-293 Polish the 03/04 frames | ui | — | layout glitches, sample data, ux's review nits |
+
+## 7. User review, round 1 (2026-11-09, PR declined) — decisions
+
+The branch was rebased on main (bd3c92d), which brings the resizable Overwatch column (`allow-overwatch-menu-resizing`, #47) and Intake (#48: Project settings › Intake).
+
+| # | User's point | Decision |
+|---|---|---|
+| R1 | The Overwatch (chat) column is resizable like the dock: show its handle | Every frame with the chat column shows the column's resize handle as designed in `.orchestrator/features/allow-overwatch-menu-resizing/design/` (same visual rule as the dock's handle) |
+| R2 | Project pane worktree row: "Remove…" → red bin icon | Icon button, `color.danger`, tooltip "Remove worktree…" |
+| R3 | Project pane worktree row: "Diff" → +/- icon | Icon button (diff glyph ±), tooltip "Diff" |
+| R4 | Project pane header: Fetch, Shell, Diff main under a "more" menu; Settings = gear icon; Remove project… = bin icon | Header: gear icon (tooltip "Project settings"), bin icon in danger color (tooltip "Remove project…"), `⋯` Menu with Fetch, Shell, Diff main (+ Trust in a pane when untrusted). Same pattern for every pane header: identity left, icon actions right, `⋯` last |
+| R5 | Title bar Decisions: same gap between count and label as between label and icon | Fix the spacing (one gap token for icon · label · count) |
+| R6 | Tab overflow end is buggy (shadow on the clipped tab, a sliver of the next tab, then the buttons) | The strip clips at the scroll buttons' left edge: one fade on the clipped tab, nothing drawn between it and ‹ ›, the buttons on an opaque background |
+| R7 | Suspended agent frame: the open menu isn't clearly tied to the ⋯ | Show the ⋯ trigger in its pressed/open state, the menu anchored under it (right-aligned), and a pointer on the trigger |
+| R8 | Week planner screens not visible on 04.6 | They were placed at y = 20000. Every frame of this feature goes in a labelled "Improve UI UX" row at the **top** of its page (old frames move below and are tagged "superseded"), on 03, 04.x, 05, 06 |
+| R9 | Feature pane: Publish to Notion, Board, Canvas under a ⋯; Pause, Stop, Delete as icons | Header: icon buttons Pause/Resume, Stop, Delete (danger) with tooltips, then `⋯` with Board, Canvas, Publish/Refresh in Notion, Open in Notion |
+| R10 | Feature pane: show each doc's path (when in the repo) under the doc tabs | A muted path line under the doc tabs: repo-relative path, Open in nvim as an icon at its end |
+| R11 | Select next to a text input must have the same height | Select (regular) = text input height; the compact variant only in dense strips (tab strip, dock). Check every frame where they sit side by side |
+| R12 | Keyboard shortcuts screens not visible | Same cause as R8 (page 05): move them up |
+| R13 | Feature pane with an open PR (link + CI state) is missing | New frame: feature pane with an open PR: PR line (link, CI dot and count, checks popover open), in running and in review-done states |
+| R14 | Design the other settings too (04.7), full redesign | Every section of both windows gets a frame: Settings › Claude Code, Integrations, Overwatch, Permissions, MCP servers, Terminal & editor, Pacing policy, Memory, Builds; Project settings › General, Files, Task backend, Intake, Allocation, Notion, MCP overrides. Placeholders today (Claude Code, Terminal & editor, Memory, General) get a real design from what the app already stores; ux writes the section brief first |
+| R15 | Rework the Flows page | 06 Flows is redrawn for the new UX (single pane, project context, dock views, floating windows, ⋯ menus); ux writes the flow list first |
+
+### Tasks, round 2
+
+| Task | Owner | Depends on |
+|---|---|---|
+| Review fixes on the existing frames (R1–R13) | ui | — |
+| Settings section brief + flows list | ux | — |
+| Settings sections and 06 Flows frames (R14, R15) | ui | both above |
+| Design notes and audit updated for round 2 | ux | the frames task |
