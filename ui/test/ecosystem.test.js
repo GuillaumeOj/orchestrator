@@ -27,6 +27,7 @@ import {
 } from '../src/lib/ecosystem.js';
 import { keyIntent as keyIntentOf } from '../src/lib/inbox.js';
 import { act, decision, fixture, nowOf } from './fixture.js';
+import { labels, pick, picked, shown } from './pick.js';
 
 const UNDO_LATER = Date.now() + 60000;
 
@@ -297,7 +298,7 @@ describe('Settings pane', () => {
     expect(field('input[placeholder="figcraft-cli"]')).toBe('');
     expect(field('input[placeholder="penpot"]')).toBe('figcraft');
     expect(field('textarea[placeholder="one per line"]')).toBe('mcp');
-    expect(field('select')).toBe('figcraft');
+    expect(picked(d)).toBe('figcraft');
     const hint = d.querySelector('.note');
     expect(hint.textContent).toBe(
       'Full path to figcraft-cli. Args mcp run a headless engine; mcp --attach 7979 drives the open FigCraft app.',
@@ -632,13 +633,42 @@ describe('role inspector, Design section and presets (T-7)', () => {
       ).toBe(true),
     );
     expect(insp.textContent).toContain('Switches at the next task, never mid-task.');
-    const to = /** @type {HTMLSelectElement} */ (insp.querySelector('select[aria-label="Downgrade to"]'));
+    const to = insp.querySelector('[role="combobox"][aria-label="Downgrade to"]');
     const n = calls.length;
-    to.value = 'opus';
-    await fireEvent.change(to);
+    await pick(to, 'opus');
     expect(insp.textContent).toContain("Pick a model other than the role's (opus).");
     expect(calls.slice(n).some(([c]) => c === 'role_save')).toBe(false);
-    expect(insp.textContent).toContain('opus window in Red');
+    expect(await labels(insp.querySelector('[role="combobox"][aria-label="Downgrade when"]'))).toContain(
+      'opus window in Red',
+    );
+  });
+
+  it('role inspector: a refused save puts the Select back on the stored value', async () => {
+    canvasReplies([role('lead', 'Lead', { effort: 'low' }), role('ui', 'UI')]);
+    app.panes.c1 = { type: 'canvas', teamId: 'full-stack', title: 'Team' };
+    const { container, getByText } = render(TeamCanvasPane, { paneId: 'c1' });
+    await waitFor(() => getByText('Lead', { selector: '.muted', exact: false }));
+    const insp = container.querySelector('[aria-label="Role inspector"]');
+    const field = (name) => [...insp.querySelectorAll('label')].find((l) => l.textContent.startsWith(name));
+    replies.role_save = new Error('disk full');
+    expect(picked(field('effort'))).toBe('low');
+    await pick(field('effort'), 'high');
+    await waitFor(() => expect(app.toasts.at(-1)?.text).toContain('disk full'));
+    await waitFor(() => expect(picked(field('effort'))).toBe('low'));
+    // The model picker (ModelSelect) and the downgrade picker (RoleMcp) take the same path.
+    await pick(field('model'), 'haiku');
+    await waitFor(() => expect(picked(field('model'))).toBe('opus'));
+  });
+
+  it('new session: an autonomous role shows its permission mode (auto) in the box', async () => {
+    replies.teams_view = { teams: [], roles: [role('dev', 'Dev', { permission_profile: 'autonomous' })] };
+    app.overlay = { kind: 'new-session' };
+    const { container } = render(Dialogs);
+    await waitFor(() => expect(labels(container, 1)).resolves.toContain('Dev'));
+    await pick(container, 'Dev', 1);
+    const perm = [...container.querySelectorAll('label')].find((l) => l.textContent.startsWith('Permissions'));
+    expect(picked(perm)).toBe('auto');
+    expect(shown(perm)).toBe('auto');
   });
 
   it('role inspector: a downgrade on the lead warns', async () => {

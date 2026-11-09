@@ -13,12 +13,14 @@
   import { endStarting } from '../lib/intake.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { counts, liveText } from '../lib/now.svelte.js';
+  import { EFFORTS, MODEL_CHOICES, PERMISSION_MODES } from '../lib/options.js';
   import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
   import { runFinished, slugify } from '../lib/teams.js';
   import ConnBadge from './ConnBadge.svelte';
   import Kbd from './Kbd.svelte';
   import PlanEditor from './PlanEditor.svelte';
+  import Select from './Select.svelte';
 
   const o = $derived(app.overlay);
   let busy = $state(false);
@@ -85,6 +87,16 @@
       loadTeams(project_id);
     });
   });
+  const projectOptions = $derived(projects().map((p) => ({ value: p.id, label: p.name })));
+  const roleOptions = $derived([{ value: '', label: 'plain Claude' }, ...roles.filter((r) => r.id !== 'lead').map((r) => ({ value: r.id, label: r.name }))]);
+  const teamOptions = $derived(
+    (teamsView?.teams ?? []).map((t) => ({
+      value: t.team.id,
+      label: t.team.name,
+      disabled: t.issues.length > 0,
+      reason: t.issues.length ? `Invalid: ${t.issues[0].text}` : undefined,
+    })),
+  );
   const launchTeam = $derived(teamsView?.teams.find((t) => t.team.id === launch.team_id));
   const launchTools = $derived(designTools(launchTeam?.team, teamsView?.roles, registry));
   const free = $derived(features().filter((f) => f.project_id === launch.project_id && (!f.run || runFinished(f.run.status))));
@@ -260,6 +272,7 @@
   }
 
   function onKey(e, submit) {
+    if (e.defaultPrevented) return; // an Esc or Enter a Select consumed
     if (e.key === 'Escape') return (e.preventDefault(), close());
     if (e.key === 'Enter' && (e.metaKey || e.target.tagName === 'INPUT')) return (e.preventDefault(), submit());
   }
@@ -297,15 +310,10 @@
       <h3>New session</h3>
       {@render fromIntake()}
       <label>Project
-        <select class="field" bind:value={form.project_id}>
-          {#each projects() as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
-        </select>
+        <Select bind:value={form.project_id} options={projectOptions} noun="project" />
       </label>
       <label>Role
-        <select class="field" value={roleId} onchange={(e) => pickRole(e.currentTarget.value)}>
-          <option value="">plain Claude</option>
-          {#each roles.filter((r) => r.id !== 'lead') as r (r.id)}<option value={r.id}>{r.name}</option>{/each}
-        </select>
+        <Select value={roleId} options={roleOptions} noun="role" onchange={pickRole} />
       </label>
       <label>Task <span class="muted">(first message, optional)</span>
         <textarea class="field" rows={o.prefill ? 12 : 3} bind:value={form.message} bind:this={messageEl} disabled={!!stale} placeholder="What should Claude do?"></textarea>
@@ -318,19 +326,13 @@
       <p class="muted">Worktree: <span class="mono">orch/solo/{form.name || '…'}</span> in <span class="mono">{project ? `${project.name}.worktrees/${form.name}` : '…'}</span> (sibling folder, locked while in use)</p>
       <div class="row">
         <label>Model
-          <select class="field" bind:value={form.model}>
-            <option value="">default</option><option value="haiku">haiku</option><option value="sonnet">sonnet</option><option value="opus">opus</option>
-          </select>
+          <Select bind:value={form.model} options={MODEL_CHOICES} />
         </label>
         <label>Effort
-          <select class="field" bind:value={form.effort}>
-            <option value="">default</option><option>low</option><option>medium</option><option>high</option>
-          </select>
+          <Select bind:value={form.effort} options={EFFORTS} />
         </label>
         <label>Permissions
-          <select class="field" bind:value={form.permission_mode}>
-            <option value="">default (ask)</option><option value="acceptEdits">accept edits</option><option value="plan">plan</option>
-          </select>
+          <Select bind:value={form.permission_mode} options={PERMISSION_MODES} />
         </label>
       </div>
       {#if snap}
@@ -358,14 +360,10 @@
       </div>
       <div class="row">
         <label>Project
-          <select class="field" value={launch.project_id} onchange={(e) => setLaunchProject(e.currentTarget.value)}>
-            {#each projects() as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
-          </select>
+          <Select value={launch.project_id} options={projectOptions} noun="project" onchange={setLaunchProject} />
         </label>
         <label>Team
-          <select class="field" bind:value={launch.team_id}>
-            {#each teamsView?.teams ?? [] as t (t.team.id)}<option value={t.team.id} disabled={t.issues.length > 0}>{t.team.name}{t.issues.length ? ' (invalid)' : ''}</option>{/each}
-          </select>
+          <Select bind:value={launch.team_id} options={teamOptions} noun="team" />
         </label>
       </div>
       {#if !launch.existing}
@@ -478,7 +476,7 @@
     </form>
     </div>
   {:else if o.kind === 'plan'}
-    <div class="dlg" role="dialog" aria-modal="true" aria-label="Weekly plan" tabindex="-1" onkeydown={(e) => e.key === 'Escape' && (e.preventDefault(), close())}>
+    <div class="dlg" role="dialog" aria-modal="true" aria-label="Weekly plan" tabindex="-1" onkeydown={(e) => !e.defaultPrevented && e.key === 'Escape' && (e.preventDefault(), close())}>
       <h3>Weekly plan</h3>
       <PlanEditor onSaved={close} onCancel={close} />
     </div>

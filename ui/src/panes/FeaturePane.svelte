@@ -11,6 +11,7 @@
   import Kbd from '../components/Kbd.svelte';
   import Markdown from '../components/Markdown.svelte';
   import PrLine from '../components/PrLine.svelte';
+  import Select from '../components/Select.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import TaskModelChip from '../components/TaskModelChip.svelte';
   import { app, confirm, openAgent, openBoard, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
@@ -48,6 +49,7 @@
   let publishError = $state(null);
 
   const run = $derived(v?.run ?? null);
+  const toOptions = $derived((v?.team?.nodes ?? []).map((n) => ({ value: n.id, label: `${n.id}${n.is_lead ? ' (lead)' : ''}` })));
   const paused = $derived(run?.status === 'paused');
   // The run's phase as the core's run record has it (a finished run has none: its status).
   const rr = $derived(run ? runAttention(run.id) : null);
@@ -194,8 +196,8 @@
   }
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select')) {
-      if (e.key === 'Escape') (root?.focus(), e.preventDefault());
+    if (e.target.closest('input, textarea, select, [role="combobox"]')) {
+      if (e.key === 'Escape' && !e.defaultPrevented) (root?.focus(), e.preventDefault());
       return;
     }
     if (e.metaKey || e.ctrlKey || e.altKey || !v) return;
@@ -334,9 +336,7 @@
           </div>
           {#if run && !runFinished(run.status)}
             <div class="msg">
-              <select class="field to" bind:value={to} aria-label="To">
-                {#each v.team?.nodes ?? [] as n (n.id)}<option value={n.id}>{n.id}{n.is_lead ? ' (lead)' : ''}</option>{/each}
-              </select>
+              <Select width="hug" bind:value={to} options={toOptions} aria-label="To" noun="node" />
               <input class="field grow" bind:this={msgBox} bind:value={msg} placeholder="Message {to === lead ? 'the lead' : to}…" onkeydown={(e) => e.key === 'Enter' && (e.preventDefault(), send())} />
               <Kbd keys="⏎" />
             </div>
@@ -561,9 +561,6 @@
     min-width: 0;
     color: var(--color-text-secondary);
     overflow-wrap: anywhere;
-  }
-  .to {
-    width: 9em;
   }
   .art {
     font: var(--text-caption);

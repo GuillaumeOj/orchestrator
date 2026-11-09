@@ -8,6 +8,7 @@
   import { onMount } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
   import Kbd from '../components/Kbd.svelte';
+  import Select from '../components/Select.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import TaskModelChip from '../components/TaskModelChip.svelte';
   import { app, openFeature, openUrl, queueOffHours, refresh, toast } from '../lib/app.svelte.js';
@@ -34,6 +35,11 @@
   const tasks = $derived((v?.tasks ?? []).filter((t) => feature === 'all' || t.feature_id === feature));
   const cols = $derived(COLUMNS.map((c) => tasks.filter((t) => t.status === c.id)));
   const selected = $derived(cols[cur.col]?.[cur.row] ?? null);
+  const featureOptions = $derived([{ value: '', label: 'no feature' }, ...(v?.runs ?? []).map((r) => ({ value: r.id, label: r.slug }))]);
+  /** A run's assignable nodes (never the lead), with an optional empty choice first. */
+  const nodeOptions = (run, none) => [...(none ? [{ value: '', label: none }] : []), ...(run?.nodes ?? []).filter((n) => !n.lead).map((n) => ({ value: n.id, label: n.id }))];
+  /** Puts the keyboard on the picker inside `node` (a Select has no autofocus). */
+  const focusBox = (node) => node.querySelector('button')?.focus();
   const runOf = (t) => v?.runs.find((r) => r.id === t?.team_run_id);
   const nodeRole = (t) => runOf(t)?.nodes.find((n) => n.id === t.node)?.role ?? t.node;
 
@@ -137,10 +143,10 @@
   }
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select')) {
+    if (e.target.closest('input, textarea, select, [role="combobox"]')) {
       if (e.key === 'Enter' && e.metaKey && form?.kind === 'edit') return (saveEdit(), e.preventDefault());
       if (e.key === 'Enter' && e.metaKey && form?.kind === 'new') return (create(), e.preventDefault());
-      if (e.key === 'Escape') ((form = null), root?.focus(), e.preventDefault());
+      if (e.key === 'Escape' && !e.defaultPrevented) ((form = null), root?.focus(), e.preventDefault());
       return;
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -236,15 +242,9 @@
         <!-- svelte-ignore a11y_autofocus -->
         <input class="field grow" autofocus bind:value={form.title} placeholder="Task title" onkeydown={(e) => e.key === 'Enter' && !e.metaKey && (e.preventDefault(), create())} />
         <textarea class="field body" rows="4" bind:value={form.body} placeholder="Description (optional) — ⌘⏎ to create" aria-label="Description"></textarea>
-        <select class="field" bind:value={form.run_id} aria-label="Feature">
-          <option value="">no feature</option>
-          {#each v.runs as r (r.id)}<option value={r.id}>{r.slug}</option>{/each}
-        </select>
+        <Select bind:value={form.run_id} options={featureOptions} aria-label="Feature" noun="feature" />
         {#if form.run_id}
-          <select class="field" bind:value={form.node} aria-label="Node">
-            <option value="">unassigned</option>
-            {#each v.runs.find((r) => r.id === form.run_id)?.nodes.filter((n) => !n.lead) ?? [] as n (n.id)}<option value={n.id}>{n.id}</option>{/each}
-          </select>
+          <Select bind:value={form.node} options={nodeOptions(v.runs.find((r) => r.id === form.run_id), 'unassigned')} aria-label="Node" noun="node" />
         {/if}
         <button class="btn primary" onclick={create}>Create</button>
         <button class="btn ghost" onclick={() => (form = null)}>Cancel</button>
@@ -261,11 +261,9 @@
     {:else if form?.kind === 'assign'}
       <div class="form">
         <span>Assign {handle(form.task)} to</span>
-        <!-- svelte-ignore a11y_autofocus -->
-        <select class="field" autofocus bind:value={form.node} onchange={() => (update(form.task, { node: form.node }), (form = null), root?.focus())}>
-          <option value="" disabled>node…</option>
-          {#each runOf(form.task)?.nodes.filter((n) => !n.lead) ?? [] as n (n.id)}<option value={n.id}>{n.id}</option>{/each}
-        </select>
+        <span use:focusBox>
+          <Select value={form.node} options={nodeOptions(runOf(form.task))} placeholder="node…" aria-label="Node" noun="node" onchange={(node) => (update(form.task, { node }), (form = null), root?.focus())} />
+        </span>
         <button class="btn ghost" onclick={() => (form = null)}>Cancel</button>
       </div>
     {/if}

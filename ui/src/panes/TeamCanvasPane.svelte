@@ -10,10 +10,12 @@
   import Kbd from '../components/Kbd.svelte';
   import ModelSelect from '../components/ModelSelect.svelte';
   import RoleMcp from '../components/RoleMcp.svelte';
+  import Select from '../components/Select.svelte';
   import { app, projects, saveLayout, toast } from '../lib/app.svelte.js';
   import * as C from '../lib/canvas.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { onTopics } from '../lib/now.svelte.js';
+  import { BUDGET_PRIORITIES, EFFORTS, PERMISSION_PROFILES, REVIEW_MODES } from '../lib/options.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -34,6 +36,7 @@
   let saveTimer = null;
 
   const roles = $derived(view?.roles ?? []);
+  const roleOptions = $derived(roles.map((r) => ({ value: r.id, label: r.name })));
   const roleOf = (id) => roles.find((r) => r.id === id);
   const node = $derived(team?.nodes.find((n) => n.id === sel) ?? null);
   const role = $derived(node ? roleOf(node.role_id) : null);
@@ -191,21 +194,30 @@
     }
   }
 
+  /** Saves a role patch; resolves false when it is not saved (refused, or waiting on the starter copy). */
   async function saveRole(patch) {
-    if (!role) return;
+    if (!role) return false;
     // A starter role is a template too: ask where to save a copy (§5.8).
     if (role.origin && role.scope?.kind !== 'project') {
       mode = { kind: 'starter', role: $state.snapshot(role), node: node?.id, rolePatch: patch };
       root?.focus();
-      return;
+      return false;
     }
     try {
       await invoke('role_save', { role: { ...$state.snapshot(role), ...patch } });
       await load();
+      return true;
     } catch (e) {
       toast(`Role: ${errText(e)}`, { kind: 'error' });
+      return false;
     }
   }
+
+  // A Select shows its pick at once; one not saved is remounted on the stored value.
+  let rev = $state(0);
+  const saveSel = async (patch) => {
+    if ((await saveRole(patch)) === false) rev++;
+  };
 
   // ---- presets (FR-306): duplicate a team or role, save as preset, launch
   const scopeOf = (t) => t?.scope ?? { kind: 'global' };
@@ -310,8 +322,8 @@
   }
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select')) {
-      if (e.key === 'Escape') (root?.focus(), e.preventDefault());
+    if (e.target.closest('input, textarea, select, [role="combobox"]')) {
+      if (e.key === 'Escape' && !e.defaultPrevented) (root?.focus(), e.preventDefault());
       return;
     }
     if (!team) return;
@@ -374,7 +386,7 @@
         if (sel && team.nodes.length > 1) mode = { kind: 'connect', from: sel };
         return handled();
       case 'Enter':
-        root?.querySelector('.inspector input, .inspector select')?.focus();
+        root?.querySelector('.inspector input, .inspector [role="combobox"]')?.focus();
         return handled();
       case 'x':
       case 'Backspace':
@@ -639,37 +651,35 @@
             <span class="muted">role {role.name} v{role.version}</span>
           </div>
           <label><span>role</span>
-            <select class="field" value={node.role_id} onchange={(e) => edit(C.updateNode(team, node.id, { role_id: e.currentTarget.value }))}>
-              {#each roles as r (r.id)}<option value={r.id}>{r.name}</option>{/each}
-            </select>
+            <Select value={node.role_id} options={roleOptions} noun="role" onchange={(role_id) => edit(C.updateNode(team, node.id, { role_id }))} />
           </label>
-          {#key `${node.id}:${node.role_id}`}
+          {#key `${node.id}:${node.role_id}:${rev}`}
             <ModelSelect label="model" value={role.model} onsave={(model) => saveRole({ model })} />
             <ModelSelect label="node model" value={node.overrides?.model} emptyLabel={role.model ? `role: ${role.model}` : undefined} onsave={(model) => edit(C.setNodeModel(team, node.id, model))} />
           {/key}
+          {#key rev}
           <label><span>effort</span>
-            <select class="field" value={role.effort ?? ''} onchange={(e) => saveRole({ effort: e.currentTarget.value || null })}>
-              {#each ['', 'low', 'medium', 'high'] as v (v)}<option value={v}>{v || 'default'}</option>{/each}
-            </select>
+            <Select value={role.effort ?? ''} options={EFFORTS} onchange={(effort) => saveSel({ effort: effort || null })} />
           </label>
+          {/key}
           <div class="lab"><span>tools</span>
             <span class="checks">
               {#each ['edit', 'bash', 'web'] as k (k)}<label class="ck"><input type="checkbox" checked={role.tools[k]} onchange={(e) => saveRole({ tools: { ...role.tools, [k]: e.currentTarget.checked } })} /> {k}</label>{/each}
               <label class="ck"><input type="checkbox" checked={role.subagents_allowed} onchange={(e) => saveRole({ subagents_allowed: e.currentTarget.checked })} /> subagents</label>
             </span>
           </div>
+          {#key rev}
           <label><span>permissions</span>
-            <select class="field" value={role.permission_profile} onchange={(e) => saveRole({ permission_profile: e.currentTarget.value })}>
-              {#each ['strict', 'gated', 'autonomous'] as v (v)}<option value={v}>{v}</option>{/each}
-            </select>
+            <Select value={role.permission_profile} options={PERMISSION_PROFILES} onchange={(permission_profile) => saveSel({ permission_profile })} />
           </label>
+          {/key}
           <RoleMcp {role} servers={registry} isLead={node.is_lead} {project} onsave={saveRole} />
           <label><span>max live</span><input class="field" type="number" min="1" max="9" value={node.max_concurrency} disabled={node.is_lead} onchange={(e) => edit(C.updateNode(team, node.id, { max_concurrency: Math.max(1, Number(e.currentTarget.value) || 1) }))} /></label>
+          {#key rev}
           <label><span>budget</span>
-            <select class="field" value={role.budget_priority} onchange={(e) => saveRole({ budget_priority: e.currentTarget.value })}>
-              {#each ['low', 'normal', 'high', 'critical'] as v (v)}<option value={v}>{v}</option>{/each}
-            </select>
+            <Select value={role.budget_priority} options={BUDGET_PRIORITIES} onchange={(budget_priority) => saveSel({ budget_priority })} />
           </label>
+          {/key}
           <label><span>turn ceiling</span><input class="field" type="number" min="0" placeholder="minutes (none)" value={role.turn_ceiling?.minutes ?? ''} onchange={(e) => saveRole({ turn_ceiling: { ...(role.turn_ceiling ?? {}), minutes: Number(e.currentTarget.value) > 0 ? Number(e.currentTarget.value) : null } })} /></label>
           <label class="col"><span>prompt</span><textarea class="field" rows="4" value={role.prompt} onchange={(e) => saveRole({ prompt: e.currentTarget.value })}></textarea></label>
           <div class="row">
@@ -696,11 +706,7 @@
         <div class="rh"><b>Rules</b><span class="grow"></span>{#if issues.length}<span class="err">{issues.length} error{issues.length === 1 ? '' : 's'}</span>{:else if status === 'saved'}<span class="ok">valid</span>{:else}<span class="muted">{status}…</span>{/if}</div>
         {#each issues as i (i.text)}<div class="err">{'\u{F0028}'} {i.text}</div>{/each}
         <label class="lab"><span>review</span>
-          <select class="field" value={team?.review ?? 'self'} disabled={!team} onchange={(e) => edit({ ...team, review: e.currentTarget.value })}>
-            <option value="self">self: /code-review, then /simplify</option>
-            <option value="node">by the reviewer node</option>
-            <option value="none">by the lead</option>
-          </select>
+          <Select value={team?.review ?? 'self'} options={REVIEW_MODES} disabled={!team} onchange={(review) => edit({ ...team, review })} />
         </label>
         {#each lines as [who, what] (who)}
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
