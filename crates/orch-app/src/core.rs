@@ -2326,12 +2326,12 @@ pub(crate) mod tests {
         }
         assert_eq!(core.project_set_default_branch(&p.id, "main").unwrap().default_branch, "main");
         assert_eq!(core.project_set_default_branch(&p.id, "develop").unwrap().default_branch, "develop");
-        let actions: Vec<String> = core.db.audit_log(None, 50).unwrap().into_iter().map(|e| e.action).collect();
-        assert!(actions.iter().any(|a| a == "project_default_branch"), "{actions:?}");
+        let actions =
+            || -> Vec<String> { core.db.audit_log(None, 50).unwrap().into_iter().map(|e| e.action).collect() };
+        assert!(actions().iter().any(|a| a == "project_default_branch"));
         let r = core.project_rename(&p.id, "  Renamed ").unwrap();
         assert_eq!((r.name.as_str(), r.default_branch.as_str()), ("Renamed", "develop"));
-        let actions: Vec<String> = core.db.audit_log(None, 50).unwrap().into_iter().map(|e| e.action).collect();
-        assert!(actions.iter().any(|a| a == "project_renamed"), "{actions:?}");
+        assert!(actions().iter().any(|a| a == "project_renamed"));
         let first = core.projects().into_iter().find(|x| x.id != p.id).unwrap();
         let e = core.project_rename(&p.id, &first.name.to_uppercase()).unwrap_err().to_string();
         assert!(e.starts_with("A project named "), "{e}");
