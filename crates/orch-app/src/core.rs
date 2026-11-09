@@ -1104,17 +1104,21 @@ impl Core {
         Ok(p.into())
     }
 
+    fn stored_project(&self, id: &str) -> Result<orch_store::Project> {
+        self.db.project(id)?.ok_or_else(|| anyhow!("no project {id}"))
+    }
+
     /// Renames a project (only the `name` column is written).
     pub fn project_rename(&self, id: &str, name: &str) -> Result<Project> {
         self.db.rename_project(id, name)?;
-        Ok(self.db.project(id)?.ok_or_else(|| anyhow!("no project {id}"))?.into())
+        Ok(self.stored_project(id)?.into())
     }
 
     /// Local branches of the project's repo, the default branch first.
     pub fn project_branches(&self, id: &str) -> Result<Vec<String>> {
-        let p = self.db.project(id)?.ok_or_else(|| anyhow!("no project {id}"))?;
+        let p = self.stored_project(id)?;
         let out =
-            orch_git::git(&p.path, &["for-each-ref", "--format=%(refname:short)", "--sort=refname", "refs/heads"])?;
+            orch_git::git(&p.path, &["for-each-ref", "--format=%(refname:lstrip=2)", "--sort=refname", "refs/heads"])?;
         let mut v: Vec<String> = out.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
         if let Some(i) = v.iter().position(|b| *b == p.default_branch) {
             let d = v.remove(i);
@@ -1125,7 +1129,7 @@ impl Core {
 
     /// Sets the project's default branch; it must be a local branch.
     pub fn project_set_default_branch(&self, id: &str, branch: &str) -> Result<Project> {
-        let p = self.db.project(id)?.ok_or_else(|| anyhow!("no project {id}"))?;
+        let p = self.stored_project(id)?;
         let branch = branch.trim();
         let ok = !branch.is_empty()
             && !branch.starts_with('-')
@@ -1135,7 +1139,7 @@ impl Core {
         }
         self.db.set_project_default_branch(id, branch)?;
         self.git.lock_ok().at = None; // ahead/behind is against the default branch
-        Ok(self.db.project(id)?.ok_or_else(|| anyhow!("no project {id}"))?.into())
+        Ok(self.stored_project(id)?.into())
     }
 
     /// FR-101: clones `url` into `parent` (default `~/dev`), then registers it.

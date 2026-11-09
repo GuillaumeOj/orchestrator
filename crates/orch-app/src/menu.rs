@@ -76,16 +76,13 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .build()?;
     let menu = Menu::new(app)?;
     menu.append(&app_menu)?;
-    for (title, items) in ITEMS.iter().filter(|(t, _)| *t != "Orchestrator") {
+    // Help is appended last, after Window.
+    for (title, items) in ITEMS.iter().filter(|(t, _)| *t != "Orchestrator" && *t != "Help") {
         let mut sub = SubmenuBuilder::new(app, *title);
         for (id, label, accel) in *items {
             sub = sub.item(&MenuItemBuilder::with_id(*id, *label).accelerator(*accel).build(app)?);
         }
-        let sub = sub.build()?;
-        if *title == "Help" {
-            continue; // appended last, after Window
-        }
-        menu.append(&sub)?;
+        menu.append(&sub.build()?)?;
         if *title == "File" {
             menu.append(&edit)?;
         }
