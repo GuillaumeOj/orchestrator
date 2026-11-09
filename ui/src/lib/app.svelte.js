@@ -623,6 +623,7 @@ export function focusPane(id) {
 export function closePane(id = app.focused) {
   if (!id || !app.panes[id]) return;
   const slot = inDock(id) ? dockTabs().indexOf(id) : -1; // where it sat in the view, before it goes
+  const closedKind = dockKind(id);
   terms.get(id)?.dispose();
   terms.delete(id);
   delete app.panes[id];
@@ -641,7 +642,8 @@ export function closePane(id = app.focused) {
     }
     // The last tab of the view's kind: the other view when it has tabs, else the dock closes.
     // (A filter with no agent left keeps its empty view: "No agent running in …".)
-    if (!(view === 'agents' ? dockAgents() : dockShells()).length) {
+    // Only when the closed tab was of the view's kind: closing another kind never moves an empty view the user chose.
+    if (closedKind === view && !(view === 'agents' ? dockAgents() : dockShells()).length) {
       const other = view === 'agents' ? 'shells' : 'agents';
       if ((other === 'agents' ? dockAgents() : dockShells()).length) {
         app.dock.view = other;
@@ -1252,19 +1254,24 @@ export function onShellOsc7(id, data) {
 /** OSC 0/2: the last source, only when it looks like a path and nothing better answered. */
 export function onShellTitle(id, text) {
   if (osc7Seen.has(id) || polled.has(id) || !looksLikePath(text)) return;
+  // `~` cannot be expanded before the home directory is known: "~/dev" would read "/dev".
+  if (/^\s*~/.test(text) && !userHome()) return;
   setShellCwd(id, expandHome(text, userHome()));
 }
 
 /** One `term_cwd` read per shell, skipping those that sent OSC 7. */
 export async function readShellCwd(...ids) {
-  for (const id of ids) {
-    const termId = app.panes[id]?.termId;
-    if (osc7Seen.has(id) || termId == null) continue;
-    const dir = await invoke('term_cwd', { id: termId }).catch(() => null);
-    if (!dir || osc7Seen.has(id)) continue;
-    polled.add(id);
-    setShellCwd(id, dir);
-  }
+  await Promise.all(
+    ids.map(async (id) => {
+      const termId = app.panes[id]?.termId;
+      if (osc7Seen.has(id) || termId == null) return;
+      const dir = await invoke('term_cwd', { id: termId }).catch(() => null);
+      // The tab may have closed during the read: nothing is recorded for a gone pane.
+      if (!dir || osc7Seen.has(id) || !app.panes[id]) return;
+      polled.add(id);
+      setShellCwd(id, dir);
+    }),
+  );
 }
 
 let cwdTimer = null;
@@ -1600,17 +1607,16 @@ export async function restoreLayout() {
   const active = panes[saved.focused] && migrated.includes(saved.focused) ? saved.focused : saved.dock?.active;
   // A height saved before the 0.45 default (no `v`) is the old 0.3 default: moved once.
   const height = saved.dock?.height;
-  const kind = (id) => (panes[id]?.type === 'shell' ? 'shells' : 'agents');
   /** A saved per-view active tab, only when it is still a tab of that kind. */
-  const keep = (id, k) => (tabs.includes(id) && kind(id) === k ? id : null);
+  const keep = (id, k) => (tabs.includes(id) && dockKind(id) === k ? id : null);
   const sd = saved.dock ?? {};
   // The view: saved, else the kind of the active tab (§12.4), else Agents when one is open.
   const view =
     sd.view === 'agents' || sd.view === 'shells'
       ? sd.view
       : tabs.includes(active)
-        ? kind(active)
-        : tabs.some((id) => kind(id) === 'agents')
+        ? dockKind(active)
+        : tabs.some((id) => dockKind(id) === 'agents')
           ? 'agents'
           : 'shells';
   app.dock = {

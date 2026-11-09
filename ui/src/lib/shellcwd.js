@@ -2,7 +2,7 @@
 // directory comes from, in order: OSC 7 (instant, when the shell sends it),
 // the core's `term_cwd` poll (every shell), an OSC 0/2 title that looks like a
 // path, the path the shell opened in. Pure helpers here; the wiring is in
-// `app.svelte.js` (`trackShells`, `onShellCwd`).
+// `app.svelte.js` (`trackShells`, `readShellCwd`, `onShellOsc7`, `onShellTitle`).
 
 import { shortPath } from './format.js';
 

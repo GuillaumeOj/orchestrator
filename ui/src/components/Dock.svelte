@@ -109,6 +109,10 @@
       {#if view === 'agents'}
         <Select compact bare width="hug" aria-label="Project filter" noun="project" value={filter} options={dockProjectOptions()} dot={dockProjectWaiting() ?? false} onchange={setDockProject} />
       {/if}
+      {#if !tabs.length}
+        <span class="muted empty-note">{emptyText}</span>
+        {#if view === 'shells'}<button class="btn sm" onclick={() => openShell()}>New shell</button>{/if}
+      {/if}
     {/snippet}
     {#snippet tab(t)}
       {@const spec = app.panes[t.id]}
@@ -135,10 +139,7 @@
         {#if activeSpec.type === 'agent'}<AgentPane paneId={active} />{:else}<TermPaneView paneId={active} />{/if}
       </div>
     {:else}
-      <div class="body empty" id={PANEL}>
-        <p class="muted">{emptyText}</p>
-        {#if view === 'shells'}<button class="btn" onclick={() => openShell()}>New shell</button>{/if}
-      </div>
+      <div class="body" id={PANEL}></div>
     {/if}
   {/key}
 </section>
@@ -181,12 +182,15 @@
     border-radius: 0 0 var(--radius-sm) var(--radius-sm);
     overflow: hidden;
   }
-  .body.empty {
-    align-items: center;
-    justify-content: center;
-    gap: var(--space-sm);
+  .empty-note {
+    white-space: nowrap;
   }
-  .body.empty p {
-    margin: 0;
+  .dock :global(.trail .icon-btn),
+  .dock :global(.lead .btn) {
+    height: var(--size-control-sm);
+    min-height: 0;
+  }
+  .dock :global(.trail .icon-btn) {
+    width: var(--size-control-sm);
   }
 </style>
