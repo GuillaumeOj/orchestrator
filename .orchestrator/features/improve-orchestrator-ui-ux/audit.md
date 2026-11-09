@@ -186,17 +186,18 @@ Real bindings only (keyboard.js CHORDS :6-20, LEADER :26-42, pane key handlers).
 - **Title bar**: Jump search field-button · PacingIndicator (popover: details + Week planner) · Decisions (count). No pills.
 - **Banner**: text + its buttons per §3 + ×.
 - **Sidebar**: `+` Add project · tree rows (project, feature, agent) with carets (state remembered). No `⌘B` pill.
+- **Sidebar / icon rail in All projects**: no project row highlighted (the context is not a project).
 - **Workspace tab strip**: project context Select · tabs (icon, full title, × on hover/active) · ‹ › when overflowing. No pane header.
-- **Dock strip**: view Select (Agents n / Shells n, waiting dot) · project Select (Agents) · tabs · ‹ › · `+` (Shells view) · Hide dock icon.
+- **Dock strip**: view Select (Agents n / Shells n = the number of agent / shell **tabs open in the dock**, all projects; not every agent of the sidebar; waiting dot) · project Select (Agents) · tabs · ‹ › · `+` (Shells view) · Hide dock icon.
 - **Status bar** (information only): connection, pressure, ☾ off-hours, agents/queue counts; PR build and update chips (clickable, only when present); `LEADER` only while held.
-- **Agent pane**: header = role mark, id, StatusBadge, model, ctx, session, WaitingChip (when no strip), UndeliveredChip; buttons Interrupt + Suspend (live) · `⋯` Menu. Strips: permission (Allow once, Deny, Always allow, Answer in the pane, "also in Decisions" link; + Resume when not live) · needs you (WaitingChip; + Resume when not live) · queued (Run now + cost, Cancel) · blocked by limit (text + Resume disabled with the reset time) · error (Resume) · suspended (Resume). Watch bar: Take over · Back to Mission control.
+- **Agent pane**: header = role mark, id, StatusBadge, model, ctx, session, WaitingChip (when no strip), UndeliveredChip; buttons Interrupt + Suspend (live) · `⋯` Menu. Strips: permission (Allow once, Deny, Always allow, Answer in the pane, "also in Decisions" link; when not live: Resume replaces Answer in the pane, which needs a live session) · needs you (WaitingChip; + Resume when not live) · queued (Run now + cost, Cancel) · blocked by limit (text + Resume disabled with the reset time) · error (Resume) · suspended (Resume). Watch bar: Take over · Back to Mission control.
 - **Agent inspector**: details + Open session + `⋯` menu (Kill…, Restart fresh…, Delete…, Shell in its worktree, Diff against base, Open in kitty, Run off-hours).
 - **Run inspector**: blocker link, members, PR line, Open feature, Open board.
 - **Project pane**: header Fetch · Shell · Diff main · Settings · Remove project…; Trust in a pane (untrusted); sessions; worktrees (Diff, Remove); PRs (Load).
 - **Feature pane**: header Publish/Refresh in Notion · Board · Canvas · Pause/Resume team · Stop · Delete…; docs (tabs, Open in nvim, Open in Notion); team rows; timeline chips; message box (To Select, input, Send).
 - **Board**: feature chips · Sync · New task; card menu (Open feature, Off-hours, Edit, Open remote, Move to, Assign) with keys; no footer legend.
 - **Mission control**: no Filter button (follows the context); rows with their buttons; no toolbar legend.
-- **Team canvas, Diff, Report, Setup**: as today minus legends and pills; Select components.
+- **Team canvas, Diff, Report, Setup, dialogs**: no frames (T-290 decision): as today minus legends and pills (§4), native selects → Select (§9), tooltips per §4. Status icons everywhere use the StatusBadge vocabulary (the dock tabs included).
 - **Settings / Project settings / Week planner / Keyboard shortcuts**: floating windows (§5).
 
 ## 9. Native `<select>` to replace with Select (27)
