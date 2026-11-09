@@ -1,7 +1,8 @@
 <script>
   // Icon rail below 1512 px (§9.2): one mark per project with a count badge when
   // agents need you (the project's `needs_you` count); hover or focus opens the project summary (Penpot 03 rail hover).
-  import { activeAgents, openAgent, projects } from '../lib/app.svelte.js';
+  // The context's project is marked (none in All projects); a click sets the context and opens the project.
+  import { activeAgents, app, openAgent, openProject, projects, setContext } from '../lib/app.svelte.js';
   import { attention, counts, needYouText, statusOf, waitLine } from '../lib/now.svelte.js';
   import AgentChip from './AgentChip.svelte';
   import StatusBadge from './StatusBadge.svelte';
@@ -17,8 +18,9 @@
 
 <nav class="rail" aria-label="Projects">
   {#each rows as { p, list, need } (p.id)}
-    <div class="slot" role="group" onmouseenter={() => (hover = p.id)} onmouseleave={() => (hover = null)}>
-      <button class="mark" onfocus={() => (hover = p.id)} onblur={() => (hover = null)} onclick={() => list[0] && openAgent(list[0].id)} aria-label={p.name}>
+    {@const current = app.workspace.project === p.id}
+    <div class="slot" class:on={current} role="group" onmouseenter={() => (hover = p.id)} onmouseleave={() => (hover = null)}>
+      <button class="mark" onfocus={() => (hover = p.id)} onblur={() => (hover = null)} onclick={() => (setContext(p.id), openProject(p.id))} aria-label={p.name} aria-current={current ? 'true' : undefined}>
         {p.name[0]?.toUpperCase()}
       </button>
       {#if need}<span class="count" title={needYouText(need)}>{need}</span>{/if}
@@ -53,6 +55,14 @@
     flex-direction: column;
     align-items: center;
     gap: var(--space-xxs);
+  }
+  .slot.on {
+    background: var(--color-surface-selected);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 0 0 var(--space-xs) var(--color-surface-selected);
+  }
+  .slot.on .mark {
+    border-color: var(--color-accent-default);
   }
   .mark {
     width: var(--size-control);

@@ -7,7 +7,6 @@
   // lanes and details, and the keys (notes §3.1).
   import { untrack } from 'svelte';
   import Kbd from '../components/Kbd.svelte';
-  import ProjectFilter from '../components/mission/ProjectFilter.svelte';
   import QueueRow from '../components/mission/QueueRow.svelte';
   import ReadyDetails from '../components/mission/ReadyDetails.svelte';
   import ReadyLine from '../components/mission/ReadyLine.svelte';
@@ -29,17 +28,18 @@
     openReport,
     openSession,
     openUrl,
+    projectName,
     projects,
     runNow,
     select,
-    setMissionFilter,
+    setContext,
   } from '../lib/app.svelte.js';
   import { mb, startOfDay } from '../lib/format.js';
   import { isOpen } from '../lib/inbox.js';
   import { ageText, modeOf, rateLimitedUntil } from '../lib/intake.js';
   import { fixSource, hideItem, intakeUi, openSource, planWithOverwatchIn, refreshIntake, setUpIntake, startItem, undoHide, unhideItem } from '../lib/intake.svelte.js';
   import { isTypingTarget } from '../lib/keyboard.js';
-  import { allowed, COUNT_KEYS, DONE_ROWS, decisionOf, defaultTarget, filterLabel, footerText, hiddenText, hints, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
+  import { allowed, COUNT_KEYS, DONE_ROWS, decisionOf, defaultTarget, footerText, hiddenText, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
   import { attention } from '../lib/now.svelte.js';
   import { LEVEL } from '../lib/status.js';
 
@@ -56,11 +56,9 @@
 
   const now = $derived(Math.max(now30(), Date.now()));
   const ps = $derived(projects());
-  // A removed project leaves the filter; with none left it shows all.
-  const filter = $derived.by(() => {
-    const f = app.mission.projects?.filter((id) => ps.some((p) => p.id === id));
-    return f?.length ? f : null;
-  });
+  // Rows follow the workspace's project context (design-notes §5.3): [id], or null in All projects.
+  const ctx = $derived(app.workspace.project !== 'all' && ps.some((p) => p.id === app.workspace.project) ? app.workspace.project : null);
+  const filter = $derived(ctx ? [ctx] : null);
   // lanes() needs only the day: the 30 s clock does not rebuild it.
   const day = $derived(startOfDay(now));
   const model = $derived(lanes(app.now, filter, day, { projects: ps, showHidden: intakeUi.showHidden }));
@@ -75,16 +73,14 @@
   const t = $derived(target(row, chip));
   const trec = $derived(t ? attention(t) : null);
   const dec = $derived(decisionOf(row, trec));
-  const hintList = $derived(hints(row, { target: t, rec: trec, decision: dec }));
   const loaded = $derived(app.now.rev > 0);
   // Ready to start is not work in flight: it neither makes the board "busy" nor "moving" (P4.5 notes §1.1).
   const work = $derived(model.lanes.some((l) => l.id !== 'done' && l.id !== 'ready' && l.rows.length) || !!model.idle);
   const moving = $derived(model.lanes.some((l) => l.id !== 'needs_you' && l.id !== 'done' && l.id !== 'ready') || !!model.idle);
   const overwatch = $derived(app.now.overwatch?.status ?? 'off');
   const done = $derived(model.lanes.find((l) => l.id === 'done'));
-  // A filter hides every row while some exist elsewhere.
+  // The context hides every row while some exist elsewhere.
   const filteredOut = $derived(!!filter && !work && !done && anyWork && !model.lanes.some((l) => l.id === 'ready'));
-  const filterOpen = $derived(app.missionFilterOpen);
 
   // The selection follows its row across lanes (keys are the run or agent);
   // a row that left gives its place to the one now there.
@@ -213,7 +209,7 @@
   const setUp = (r) => setUpIntake(r.projects?.[0] ?? r.project);
 
   function onKey(e) {
-    if (filterOpen || e.defaultPrevented) return;
+    if (e.defaultPrevented) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (isTypingTarget(e.target)) return;
     const k = e.key;
@@ -238,7 +234,6 @@
       if (k === 'o') return run(() => openSource(it, openEditor));
     }
     if (row?.kind === 'iline' && k === 'e' && (row.line === 'nosource' || row.line === 'error')) return run(() => setUp(row));
-    if (k === 'f') return run(() => (app.missionFilterOpen = true));
     if (k === 'Enter') return run(onEnter);
     if (k === ' ') {
       if (!selKey) return;
@@ -263,21 +258,6 @@
     if (k === 'p') return run(() => act(t, agent(t)?.paused || trec.status === 'paused' ? 'unpause' : 'pause'));
     if (k === 's' && ok.s) return run(() => act(t, 'suspend'));
     if (k === 'r' && ok.r) return run(() => act(t, trec.status === 'paused' ? 'unpause' : 'resume'));
-  }
-
-  /** Closes the popover with its choice; `refocus` (⏎, Esc) gives the keys back to the pane, a
-   *  click elsewhere leaves focus where it went. */
-  function applyFilter(next, { refocus = false } = {}) {
-    app.missionFilterOpen = false;
-    if (JSON.stringify(next) !== JSON.stringify(filter)) setMissionFilter(next);
-    if (refocus) queueMicrotask(() => /** @type {HTMLElement | null} */ (document.querySelector(`[data-pane="${paneId}"] .mc`))?.focus());
-  }
-
-  let pf = $state(); // the open ProjectFilter
-
-  function onFilterButton() {
-    if (filterOpen) pf?.apply({ refocus: true });
-    else app.missionFilterOpen = true;
   }
 
   function clickRow(r) {
@@ -339,19 +319,7 @@
 <div class="mc" tabindex="0" data-pane-focus onkeydown={onKey} role="region" aria-label="Mission control">
   <div class="toolbar">
     <b>Mission control</b>
-    <span class="fwrap">
-      <!-- While open, a press on the button keeps focus in the popover: the click closes it once. -->
-      <button class="fbtn" class:on={!!filter} onmousedown={(e) => filterOpen && e.preventDefault()} onclick={onFilterButton} title={hiddenText(app.now.counts, filter, ps) || 'Filter by project'}>
-        <span aria-hidden="true">{'\u{F0232}'}</span> {filterLabel(filter, ps)} <Kbd keys="f" />
-      </button>
-      {#if filterOpen}<ProjectFilter bind:this={pf} {filter} projects={ps} counts={app.now.counts} onapply={applyFilter} />{/if}
-    </span>
-    <span class="grow"></span>
-    {#if loaded && ps.length}
-      <span class="hints">
-        {#each hintList as [keys, label] (keys)}<span class="hint"><Kbd {keys} /> {label}</span>{/each}
-      </span>
-    {/if}
+    <span class="muted">{ctx ? `in ${projectName(ctx)}` : 'every project'} · follows the project context</span>
   </div>
 
   <div class="scroll" role="grid" aria-label="Mission control rows" aria-readonly="true">
@@ -367,8 +335,8 @@
       </div>
     {:else if filteredOut}
       <div class="empty">
-        <h2>Nothing in the {filter.length === 1 ? filterLabel(filter, ps) : `${filter.length} projects`} selected</h2>
-        <button class="linkbtn" onclick={() => setMissionFilter(null)}>Show all projects</button> <span class="muted">or change the filter</span> <Kbd keys="f" />
+        <p class="secondary">Nothing in {projectName(ctx)}</p>
+        <button class="btn" onclick={() => setContext('all')}>Show all projects</button>
       </div>
     {:else}
       {#if !work}
@@ -455,42 +423,11 @@
     align-items: center;
     gap: var(--space-sm);
     min-height: var(--size-row);
-    padding: var(--space-xs) var(--space-md);
-    border-bottom: var(--border-width-default) solid var(--color-border-subtle);
+    padding: var(--space-md) var(--space-lg) var(--space-xs);
     white-space: nowrap;
   }
-  .fwrap {
-    position: relative;
-  }
-  .fbtn {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
-    height: var(--size-control-sm);
-    padding: 0 var(--space-sm);
-    border: var(--border-width-default) solid var(--color-border-strong);
-    border-radius: var(--radius-sm);
-    background: none;
-    color: var(--color-text-secondary);
-    font: var(--text-label);
-  }
-  .fbtn.on {
-    border-color: var(--color-accent-default);
-    color: var(--color-accent-default);
-  }
-  .hints {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: var(--space-xs) var(--space-sm);
-    min-width: 0;
-    overflow: hidden;
-    color: var(--color-text-secondary);
-  }
-  .hint {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-xs);
+  .toolbar b {
+    font: var(--text-title);
   }
   .scroll {
     flex: 1;

@@ -580,29 +580,6 @@ export function readyLane(
   };
 }
 
-/** The Ready row at hand's first-key hints (notes §10.1). */
-export const readyHints = (row) =>
-  row?.kind === 'ready'
-    ? row.hidden
-      ? [
-          ['j k', 'move'],
-          ['x', 'unhide'],
-          ['space', 'details'],
-          ['o', 'source'],
-          ['f', 'filter'],
-        ]
-      : [
-          ['j k', 'move'],
-          ['⏎', `start ${modeOf(row.item) === 'team' ? 'team run' : 'solo'}`],
-          ['t', 'team'],
-          ['a', 'solo'],
-          ['space', 'details'],
-          ['o', 'source'],
-          ['x', 'hide'],
-          ['f', 'filter'],
-        ]
-    : null;
-
 /** "2 decisions not tied to a session" (notes §1.1). */
 export const looseText = (n) => `${plural(n, 'decision')} not tied to a session`;
 
@@ -641,24 +618,7 @@ export function rowIndex(model) {
   return m;
 }
 
-// ---------------------------------------------------------------- toolbar, footer
-
-/** The filter button (notes §1.9): "All projects", "shop-api", "2 projects of 4". */
-export function filterLabel(filter, projects) {
-  if (!filter) return 'All projects';
-  if (filter.length === 1) return projects.find((p) => p.id === filter[0])?.name ?? filter[0];
-  return `${filter.length} projects of ${projects.length}`;
-}
-
-/** A filter after toggling `id` (notes §1.9): the last project cannot be unchecked; all checked = null. */
-export function toggleProject(filter, id, all) {
-  const cur = filter ?? all;
-  const toggled = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
-  // Only known projects count (a removed one left in the filter must not keep the last one unchecked).
-  const next = all.filter((x) => toggled.includes(x));
-  if (!next.length) return filter;
-  return next.length === all.length ? null : next;
-}
+// ---------------------------------------------------------------- footer
 
 export const COUNT_KEYS = ['needs_you', 'error', 'running', 'waiting', 'queued', 'idle', 'live', 'done_today'];
 
@@ -682,14 +642,12 @@ export function countParts(c, { running = false } = {}) {
   return parts;
 }
 
-/** The footer's left part (notes §1.8, frames): counts, then "live cap 2/2", then the filter. */
+/** The footer's left part (notes §1.8, frames): counts, then "live cap 2/2". */
 export function footerText(counts, filter, projects) {
   if (!projects.length) return 'No projects';
   const c = filteredCounts(counts, filter);
   const live = c.live_cap != null ? `live cap ${c.live ?? 0}/${c.live_cap}` : `${c.live ?? 0} live`;
-  return [...countParts(c, { running: true }), live, filter && filter.length > 1 ? filterLabel(filter, projects) : null]
-    .filter(Boolean)
-    .join(' · ');
+  return [...countParts(c, { running: true }), live].join(' · ');
 }
 
 /** "Hiding blog, infra · 3 running, 1 queued" (notes §1.9) for the projects a filter leaves out. */
@@ -702,44 +660,4 @@ export function hiddenText(counts, filter, projects) {
     hidden.map((p) => p.id),
   );
   return [`Hiding ${hidden.map((p) => p.name).join(', ')}`, ...countParts(c)].join(' · ');
-}
-
-/**
- * The toolbar's key hints for the row at hand (notes §1.9, lead's fix 3):
- * [[keys, label]], hidden ones dropped. `rec` is the target's record.
- */
-export function hints(row, { target: t = null, rec = null, decision = null } = {}) {
-  const h = [['j k', 'move']];
-  if (!row) return [...h, ['f', 'filter']];
-  if (row.kind === 'ready') return readyHints(row);
-  if (row.kind === 'iline')
-    return [
-      ...h,
-      ...(row.line === 'nosource' || row.line === 'error'
-        ? [
-            ['⏎', row.line === 'error' ? 'fix' : 'plan'],
-            ['e', 'set up'],
-          ]
-        : []),
-      ['f', 'filter'],
-    ];
-  if (row.kind === 'outcome') return [...h, ['o', 'open'], ['f', 'filter']];
-  if (row.kind === 'decisions') return [...h, ['⏎', 'show card'], ['f', 'filter']];
-  if (t) h.push(['⏎', `open ${t}`]);
-  if (row.kind === 'queue') {
-    const fresh = rec?.status === 'not_started';
-    if (rec?.queue) h.push(['n', fresh ? 'start now' : 'run now'], ['⌫', 'cancel']);
-    if (rec?.status === 'paused') h.push(['r', 'resume']);
-  } else if (t && rec) {
-    const ok = allowed(rec);
-    const keys = ['i', 'p', 's', 'r'].filter((k) => ok[k]);
-    h.push([[...keys, '⇧K'].join(' '), t]);
-  }
-  if (decision) h.push(['d', 'decision']);
-  if (row.kind === 'run') {
-    h.push(['h l', 'chips']);
-    if (row.run.pr) h.push(['o', 'PR']);
-  }
-  h.push(['space', 'details'], ['f', 'filter']);
-  return h;
 }

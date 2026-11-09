@@ -25,7 +25,7 @@ const A = await import('../src/lib/app.svelte.js');
 const { app } = A;
 const L = await import('../src/lib/layout.js');
 const I = await import('../src/lib/intake.js');
-const { lanes, readyLane, stops, hints } = await import('../src/lib/mission.js');
+const { lanes, readyLane, stops } = await import('../src/lib/mission.js');
 const { intakeUi } = await import('../src/lib/intake.svelte.js');
 const readyOf = (...a) => lanes(...a).lanes.find((l) => l.id === 'ready');
 const { default: MissionPane } = await import('../src/panes/MissionPane.svelte');
@@ -392,14 +392,6 @@ describe('the lane model (lib/mission.js readyLane, F9)', () => {
     expect(lanes(now, ['infra'], NOW, { projects }).lanes.some((l) => l.id === 'ready')).toBe(false);
   });
 
-  it('gives each Ready row the keys of the notes in the hint row', () => {
-    const r = readyOf({ intake: intake([item('it_1', 'shop-api')], [source('shop-api', { count: 1 })]) }, null, NOW, {
-      projects,
-    }).rows[0];
-    expect(hints(r).map(([k]) => k)).toEqual(['j k', '⏎', 't', 'a', 'space', 'o', 'x', 'f']);
-    expect(hints({ ...r, hidden: true }).map(([k]) => k)).toEqual(['j k', 'x', 'space', 'o', 'f']);
-  });
-
   it('keeps `readyLane` empty for a core without intake', () => {
     expect(readyLane(undefined).rows).toEqual([]);
   });
@@ -448,8 +440,7 @@ describe('Mission control: the Ready to start lane', () => {
     };
     Object.assign(app.now.intake, extra);
     app.selection = null;
-    app.mission = { projects: null };
-    app.missionFilterOpen = false;
+    app.workspace = { project: 'all' };
     app.overlay = null;
     app.toasts = [];
     app.panes = { mc: { type: 'mission', title: 'Mission control' } };
@@ -585,7 +576,7 @@ describe('Mission control: the Ready to start lane', () => {
     expect(app.toasts.at(-1).text).toBe('#2 is back in Ready to start.');
   });
 
-  it('⇧R refreshes each shown project with a source; the filter is respected', async () => {
+  it('⇧R refreshes each shown project with a source; the context is respected', async () => {
     const { container: c } = render(MissionPane, { paneId: 'mc' });
     await settle();
     key(c.querySelector('.mc'), 'R', { shiftKey: true });
@@ -595,7 +586,7 @@ describe('Mission control: the Ready to start lane', () => {
       ['intake_refresh', { project: 'blog' }],
     ]);
     calls.length = 0;
-    app.mission = { projects: ['blog'] };
+    app.workspace = { project: 'blog' };
     await settle();
     key(c.querySelector('.mc'), 'R', { shiftKey: true });
     await settle();

@@ -56,7 +56,7 @@ beforeEach(() => {
   app.chatDraft = '';
   app.width = 1512;
   app.overlay = null;
-  app.mission = { projects: null };
+  app.workspace = { project: 'all' };
   IS.intakeUi.plan = null;
 });
 afterEach(() => cleanup());
@@ -272,8 +272,7 @@ describe('Plan with the Overwatch', () => {
     expect(app.chatFocus).toEqual({ ask: true });
   });
 
-  it('several projects open the chooser, the Mission filter first; Enter chooses', async () => {
-    app.mission = { projects: ['shop-api', 'blog'] };
+  it('All projects opens the chooser on every project; Enter chooses', async () => {
     entryOf('intake.plan').run();
     expect(app.overlay).toEqual({ kind: 'plan-project', ids: ['shop-api', 'blog'] });
     const { default: PlanChooser } = await import('../src/components/PlanChooser.svelte');
@@ -291,8 +290,8 @@ describe('Plan with the Overwatch', () => {
     expect(entryOf('intake.plan').detail).toBe('off: your message waits');
   });
 
-  it('Refresh calls intake_refresh for the shown projects', async () => {
-    app.mission = { projects: ['blog'] };
+  it('Refresh calls intake_refresh for the context project (design-notes §5.1 rule 7)', async () => {
+    app.workspace = { project: 'blog' };
     entryOf('intake.refresh').run();
     await settle();
     expect(calls.filter(([k]) => k === 'intake_refresh').map(([, a]) => a)).toEqual([{ project: 'blog' }]);

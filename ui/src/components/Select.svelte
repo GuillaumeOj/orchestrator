@@ -16,7 +16,7 @@
    *                      disabled?: boolean, reason?: string, icon?: string, detail?: string }[], placeholder?: string,
    *          compact?: boolean, searchable?: boolean | 'auto', error?: string | null, disabled?: boolean,
    *          id?: string, name?: string, 'aria-label'?: string, 'aria-labelledby'?: string,
-   *          width?: 'fill' | 'hug', noun?: string, dot?: boolean | string }}
+   *          width?: 'fill' | 'hug', noun?: string, dot?: boolean | string, bare?: boolean }}
    */
   let {
     value = $bindable(null),
@@ -34,6 +34,8 @@
     width,
     noun = 'option',
     dot = false,
+    // The closed box shows the label only: no count, no dot of the selected option (its own `dot` still shows).
+    bare = false,
   } = $props();
 
   const uid = $props.id();
@@ -59,8 +61,8 @@
     return q ? options.filter((o) => String(o.label).toLowerCase().includes(q)) : options;
   });
   const hug = $derived((width ?? (compact ? 'hug' : 'fill')) === 'hug');
-  /** The closed box's dot: its own, or the selected option's. */
-  const boxDot = $derived(dot || selected?.dot);
+  /** The closed box's dot: its own, or the selected option's (not when `bare`). */
+  const boxDot = $derived(dot || (!bare && selected?.dot));
 
   const enabled = (i) => i >= 0 && i < shown.length && !shown[i].disabled;
   const firstEnabled = () => nextUsable(shown.length, -1, 1, enabled);
@@ -79,6 +81,11 @@
     () => shown.map((o) => o.label),
     (i) => shown[i].disabled,
   );
+
+  /** Opens the list from outside (a palette command), as a click on the box does. */
+  export function show() {
+    return openList();
+  }
 
   async function openList() {
     if (disabled || open) return;
@@ -235,7 +242,7 @@
   >
     {#if selected?.icon}<span class="ic" aria-hidden="true">{selected.icon}</span>{/if}
     <span class="val" class:ph={!selected}>{selected ? selected.label : placeholder}</span>
-    {#if selected?.count != null}<span class="cnt">{selected.count}</span>{/if}
+    {#if selected?.count != null && !bare}<span class="cnt">{selected.count}</span>{/if}
     {#if boxDot}<span class="dot" role="img" aria-label={dotLabel(boxDot)} use:tooltip={typeof boxDot === 'string' ? boxDot : null}></span>{/if}
     <span class="chev" aria-hidden="true">{open ? '\u{F0143}' : '\u{F0140}'}</span>
   </button>

@@ -1,6 +1,7 @@
 // The app's state: what the core reports (`app_state`, read on its `now`
 // topics; attention records, decisions and counts in `app.now`, see
-// now.svelte.js), the tiling workspace, focus, overlays and the command
+// now.svelte.js), the workspace (one tab strip in a project context), focus,
+// overlays and the command
 // registry. Terminal objects (xterm.js) live outside the reactive state, in `terms`.
 
 import { tick as svelteTick } from 'svelte';
@@ -15,7 +16,7 @@ import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
 import * as L from './layout.js';
 import { runNowCost, runNowDialog } from './mission.js';
-import { clearDigest, needsYou, statusOf } from './now.svelte.js';
+import { clearDigest, counts, needsYou, statusOf } from './now.svelte.js';
 import { canOpenSession, overwatchOf } from './overwatch.js';
 import { STATUS } from './status.js';
 import { runStateLabel } from './teams.js';
@@ -59,7 +60,12 @@ export const app = $state({
   layout: null,
   panes: {}, // paneId → { type, agentId?, termId?, projectId?, cwd?, title }
   focused: null,
-  zoomed: null,
+  // The workspace's project context (design-notes §5.1): 'all' or a project id.
+  workspace: { project: /** @type {string} */ ('all') },
+  // The palette's "Set the project context…" asks the context Select to open.
+  contextOpen: false,
+  // The sidebar tree (§5.4): expanded state per `projectId` / `f:<featureId>`; absent = expanded.
+  sidebarTree: /** @type {Record<string, boolean>} */ ({}),
   leader: false,
   sidebar: true,
   // The Inspector is open (⌘I): docked at ≥ 1728 px, else an overlay over the
@@ -86,9 +92,6 @@ export const app = $state({
   // What the Inspector shows when no agent pane has focus (D10): set by the
   // sidebar, the palette and Mission control. { kind: 'agent' | 'run' | 'decision', id }
   selection: null,
-  // Mission control's project filter (settings key `mission`, D8): null = all.
-  mission: { projects: null },
-  missionFilterOpen: false, // the palette's "Filter Mission control by project"
   // A request for the chat column (P4.3): { id } focuses that decision's card
   // (null: the oldest open card) with the filter on All, or on `filter` when
   // given; { search: true } opens its search.
@@ -139,11 +142,12 @@ export function holdSecondClock() {
   };
 }
 
-/** A pane shown in the dock rather than the tiling layout. */
+/** A pane shown in the dock rather than the workspace. */
 export const inDock = (id) => app.dock.tabs.includes(id);
 
-/** The dock takes the whole work column: no workspace pane, or a zoomed dock tab. */
-export const dockFills = () => app.dock.open && app.dock.tabs.length > 0 && (!app.layout || inDock(app.zoomed));
+/** The dock takes the whole work column: no workspace tab at all. Never keyed
+ *  on the context: a context with no tab still shows the strip and its Select. */
+export const dockFills = () => app.dock.open && app.dock.tabs.length > 0 && !app.layout;
 
 /** xterm.js panes by pane id (not reactive). */
 export const terms = new Map();
@@ -202,6 +206,101 @@ export const features = () => app.data?.features ?? [];
 export const featureBySlug = (projectId, slug) => features().find((f) => f.project_id === projectId && f.slug === slug);
 export const focusedSpec = () => app.panes[app.focused];
 export const isTerminal = (spec) => ['agent', 'shell', 'editor'].includes(spec?.type);
+
+// ---------------------------------------------------------------- project context (design-notes §5.1, §5.3)
+
+/** The project a workspace pane belongs to, or null for an app-wide pane
+ *  (Mission control, Setup, the weekly report, an editor or a canvas without a project). */
+export function paneProject(spec) {
+  if (!spec) return null;
+  if (spec.type === 'feature')
+    return features().find((f) => f.id === spec.featureId)?.project_id ?? spec.projectId ?? null;
+  if (['project', 'board', 'diff', 'trust', 'canvas', 'editor'].includes(spec.type)) return spec.projectId ?? null;
+  return null;
+}
+
+/** The tab shows in the current context: All projects, an app-wide pane, or one of the context's project. */
+export function inContext(id) {
+  const ctx = app.workspace.project;
+  if (ctx === 'all') return true;
+  const p = paneProject(app.panes[id]);
+  return p == null || p === ctx;
+}
+
+/** The workspace tabs the context shows, in strip order (⌘1…9 count these). */
+export const visibleTabs = () => (app.layout?.tabs ?? []).filter(inContext);
+
+/** The workspace's active tab when the context shows it; null = the empty state. */
+export function activeTab() {
+  const a = app.layout?.active;
+  return a && inContext(a) ? a : null;
+}
+
+/** A project id the app knows, else 'all' (a removed project, a stale saved value). */
+const knownContext = (id) => (id && id !== 'all' && projects().some((p) => p.id === id) ? id : 'all');
+
+/**
+ * Sets the workspace's project context ('all' or a project id) and remembers it.
+ * The active tab stays when the new context shows it, else the first tab it
+ * shows becomes active (no per-context last tab, §12.8), else the empty state.
+ */
+export function setContext(projectId) {
+  const was = activeTab();
+  app.workspace = { project: knownContext(projectId) };
+  const vis = visibleTabs();
+  if (app.layout && vis.length && !vis.includes(app.layout.active)) app.layout = L.activate(app.layout, vis[0]);
+  // A workspace focus follows the strip; a dock focus stays where it is.
+  const now = activeTab();
+  if (now !== was && !inDock(app.focused)) {
+    if (now) focusPane(now);
+    else app.focused = app.dock.open ? app.dock.active : null;
+  }
+  saveLayout();
+}
+
+/**
+ * The dock already shows this agent's waiting dot (design-notes §12.7): then the
+ * context Select does not. The dock's view and project Selects carry their dots
+ * with the dock views (T6, §5.2); until then the dock shows none, so the context
+ * Select carries every waiting agent of another project.
+ */
+export const dockShowsWaiting = (_agentId) => false;
+
+/** "lead (orch) is waiting for you". */
+const waitingText = (agentId) => {
+  const a = agent(agentId);
+  return `${a?.team?.node ?? agentId} (${projectName(a?.project_id) ?? '?'}) is waiting for you`;
+};
+
+/**
+ * The closed context Select's waiting dot (§12.7): an agent of another project
+ * than the context needs you and the dock does not show its dot. Never in All
+ * projects. Its tooltip text names the first one; null = no dot.
+ */
+export function contextWaiting() {
+  const ctx = app.workspace.project;
+  if (ctx === 'all') return null;
+  const r = needsYou().find((x) => {
+    const p = agent(x.agent)?.project_id;
+    return p && p !== ctx && !dockShowsWaiting(x.agent);
+  });
+  return r ? waitingText(r.agent) : null;
+}
+
+/** The context Select's options: All projects (every tab) + each project
+ *  (its own tabs; a dot while one of its agents needs you). */
+export function contextOptions() {
+  const tabs = app.layout?.tabs ?? [];
+  return [
+    { value: 'all', label: 'All projects', count: tabs.length },
+    ...projects().map((p) => ({
+      value: p.id,
+      label: p.name,
+      count: tabs.filter((id) => paneProject(app.panes[id]) === p.id).length,
+      dot: counts({ project: p.id }).needs_you > 0,
+    })),
+  ];
+}
 
 /** classify()'s context for a keydown on `target` (§9.7). A session in watch
  *  mode is not a terminal for the keyboard: its strip takes ⏎ and Esc (D5). */
@@ -292,16 +391,12 @@ function title(spec) {
   }
 }
 
-/** Adds a pane: next to the focused one (`how`: 'right' | 'below' | 'tab'). */
-export function addPane(spec, how = 'right') {
+/** Adds a pane as the workspace's last tab, focused (its project becomes the context, rule 3). */
+export function addPane(spec) {
   leaveWindow();
   const id = newPaneId();
   app.panes[id] = { ...spec, title: spec.title ?? title(spec) };
-  const at = app.focused && app.panes[app.focused] ? app.focused : L.visible(app.layout)[0];
-  if (!app.layout) app.layout = L.leaf(id);
-  else if (how === 'tab') app.layout = L.addTab(app.layout, at, id);
-  else app.layout = L.split(app.layout, at, how === 'below' ? 'col' : 'row', id);
-  app.zoomed = null;
+  app.layout = L.addTab(app.layout, id);
   focusPane(id);
   saveLayout();
   return id;
@@ -325,10 +420,9 @@ export function toggleDock() {
   app.dock.open = !app.dock.open;
   if (app.dock.open) focusPane(app.dock.active ?? app.dock.tabs[0]);
   else {
-    if (inDock(app.zoomed)) app.zoomed = null;
     if (inDock(app.focused)) {
-      // No workspace pane to hand the focus to: nothing is focused, not a hidden tab.
-      const next = L.visible(app.layout)[0];
+      // No workspace tab to hand the focus to: nothing is focused, not a hidden tab.
+      const next = activeTab();
       if (next) focusPane(next);
       else app.focused = null;
     }
@@ -346,15 +440,20 @@ export function cycleDock(d) {
 
 export function focusPane(id) {
   if (!app.panes[id]) return;
+  const s = app.panes[id];
   if (inDock(id)) {
     app.dock.active = id;
     app.dock.open = true;
-  } else app.layout = L.activate(app.layout, id);
+  } else {
+    // A tab of another project brings its context (rule 3); All projects stays All.
+    if (!inContext(id)) {
+      app.workspace = { project: paneProject(s) };
+      saveLayout();
+    }
+    app.layout = L.activate(app.layout, id);
+  }
   app.focused = id;
-  const s = app.panes[id];
   if (s.agentId) select('agent', s.agentId);
-  // Zoom follows the focus inside its side (workspace or dock), and ends when the other side is focused.
-  if (app.zoomed && app.zoomed !== id) app.zoomed = inDock(app.zoomed) === inDock(id) ? id : null;
   // Focus whatever is focused when this runs: several calls in a row end on
   // the last, and each terminal's focusin then matches `app.focused`. A
   // session in watch mode never gets the terminal: its strip has the keys (D5).
@@ -379,15 +478,22 @@ export function closePane(id = app.focused) {
     app.dock.tabs = app.dock.tabs.filter((t) => t !== id);
     if (app.dock.active === id) app.dock.active = app.dock.tabs[Math.min(i, app.dock.tabs.length - 1)] ?? null;
     if (!app.dock.tabs.length) app.dock.open = false;
-    if (app.focused === id) app.focused = app.dock.active ?? L.visible(app.layout)[0] ?? null;
-  } else app.layout = L.remove(app.layout, id);
-  if (app.zoomed === id) app.zoomed = null;
-  if (app.focused === id) app.focused = L.visible(app.layout)[0] ?? (app.dock.open ? app.dock.active : null);
+    if (app.focused === id) app.focused = app.dock.active ?? activeTab();
+  } else {
+    // The next tab the context shows takes an active tab's place (else the one before it).
+    const vis = visibleTabs();
+    const i = vis.indexOf(id);
+    const wasActive = app.layout?.active === id;
+    app.layout = L.remove(app.layout, id);
+    const rest = vis.filter((t) => t !== id);
+    if (wasActive && i >= 0 && rest.length) app.layout = L.activate(app.layout, rest[Math.min(i, rest.length - 1)]);
+  }
+  if (app.focused === id) app.focused = activeTab() ?? (app.dock.open ? app.dock.active : null);
   if (app.focused) focusPane(app.focused);
   saveLayout();
 }
 
-/** Panes the user closed, newest last, for Reopen closed pane (⌘⇧T). A
+/** Panes the user closed, newest last, for Reopen closed tab (⌘⇧T). A
  *  pane that closes itself (a shell exits, Setup is done, its agent or
  *  feature is gone) goes through `closePane` and is not offered back. */
 const closed = [];
@@ -413,9 +519,9 @@ export async function reopenClosed() {
     const s = await revive(spec);
     if (!s) continue;
     if (docked) return addDockPane(s);
-    return addPane(s, isTerminal(s) || !app.layout ? 'right' : 'tab');
+    return addPane(s);
   }
-  toast('No closed pane to reopen');
+  toast('No closed tab to reopen');
 }
 
 /** What a pane is about: two panes with these equal show the same thing. */
@@ -447,7 +553,7 @@ export function findPane(pred) {
 export function openSingleton(type) {
   const existing = findPane((s) => s.type === type);
   if (existing) return focusPane(existing);
-  addPane({ type }, app.layout ? 'tab' : 'right');
+  addPane({ type });
 }
 
 /** ⌘⇧I, the badge, a waiting-on chip, Mission control `d`: the chat column
@@ -638,7 +744,7 @@ export function openReport(reportId = 'current') {
     app.panes[existing] = { ...app.panes[existing], reportId };
     return focusPane(existing);
   }
-  addPane({ type: 'report', reportId }, app.layout ? 'tab' : 'right');
+  addPane({ type: 'report', reportId });
 }
 
 /** A link in the browser (the core runs `open`; only http(s)). */
@@ -689,10 +795,7 @@ export async function openPolicy(scope, projectId = null) {
       focusEditor(project);
       return toast('Opened the policy file in nvim');
     }
-    addPane(
-      { type: 'editor', termId: r.term.id, spawn: RUN_SIZE, cwd: r.term.cwd, projectId: project, file: null },
-      'right',
-    );
+    addPane({ type: 'editor', termId: r.term.id, spawn: RUN_SIZE, cwd: r.term.cwd, projectId: project, file: null });
   } catch (e) {
     toast(`Could not open the policy file: ${errText(e)}`, { kind: 'error' });
   }
@@ -732,7 +835,7 @@ export function openProject(projectId) {
   app.selectedProject = projectId;
   const existing = findPane((s) => s.type === 'project' && s.projectId === projectId);
   if (existing) return focusPane(existing);
-  addPane({ type: 'project', projectId }, app.layout ? 'tab' : 'right');
+  addPane({ type: 'project', projectId });
 }
 
 /** P2: a feature's pane (docs, tasks, team, timeline), one per feature. */
@@ -744,16 +847,13 @@ export function openFeature(featureId, doc = null, anchor = null, timeline = nul
     return focusPane(existing);
   }
   const f = features().find((x) => x.id === featureId);
-  addPane(
-    {
-      type: 'feature',
-      featureId,
-      projectId: f?.project_id,
-      ...(doc ? { doc, anchor } : {}),
-      ...(timeline ? { timeline } : {}),
-    },
-    app.layout ? 'tab' : 'right',
-  );
+  addPane({
+    type: 'feature',
+    featureId,
+    projectId: f?.project_id,
+    ...(doc ? { doc, anchor } : {}),
+    ...(timeline ? { timeline } : {}),
+  });
 }
 
 /** The undelivered chip's target (ux-brief §2): the decision if there is one, else
@@ -774,24 +874,23 @@ export function openBoard(projectId, taskId = null) {
     if (taskId != null) app.panes[existing] = { ...app.panes[existing], taskId };
     return focusPane(existing);
   }
-  addPane({ type: 'board', projectId, taskId }, app.layout ? 'tab' : 'right');
+  addPane({ type: 'board', projectId, taskId });
 }
 
-/** P2: the Team canvas (FR-301), on a team (or the library when none). */
+/** P2: the Team canvas (FR-301), on a team (or the library when none). Bound to
+ *  `projectId`, else to the context's project; from All projects it is app-wide (§12.2). */
 export function openCanvas(teamId = null, projectId = null) {
   const existing = findPane((s) => s.type === 'canvas' && (!teamId || s.teamId === teamId));
   if (existing) return focusPane(existing);
-  addPane(
-    { type: 'canvas', teamId, projectId: projectId ?? contextProject()?.id ?? null },
-    app.layout ? 'tab' : 'right',
-  );
+  const ctx = app.workspace.project;
+  addPane({ type: 'canvas', teamId, projectId: projectId ?? (ctx === 'all' ? null : ctx) });
 }
 
 /** FR-107: a worktree's diff against its base, one pane per worktree. */
 export function openDiff(projectId, path, branch = null) {
   const existing = findPane((s) => s.type === 'diff' && s.path === path);
   if (existing) return focusPane(existing);
-  addPane({ type: 'diff', projectId, path, branch }, 'right');
+  addPane({ type: 'diff', projectId, path, branch });
 }
 
 /**
@@ -892,16 +991,13 @@ async function spawnShell({ projectId, agentId, cwd, run }) {
   return { ...t, spawn };
 }
 
-/** A shell: a dock tab by default, a pane with `how` ('right' | 'below').
- *  `agentId: null` = no agent (undefined = the one in focus). */
+/** A shell, as a dock tab. `agentId: null` = no agent (undefined = the one in focus). */
 export async function openShell(opts = {}) {
   const projectId = opts.projectId ?? contextProject()?.id;
   const agentId = opts.agentId ?? contextAgent()?.id;
   try {
     const t = await spawnShell({ projectId, agentId, cwd: opts.cwd });
-    const spec = { type: 'shell', termId: t.id, spawn: t.spawn, cwd: t.cwd, projectId, agentId };
-    if (opts.how) addPane(spec, opts.how);
-    else addDockPane(spec);
+    addDockPane({ type: 'shell', termId: t.id, spawn: t.spawn, cwd: t.cwd, projectId, agentId });
   } catch (e) {
     toast(`Could not open a shell: ${errText(e)}`, { kind: 'error' });
   }
@@ -935,7 +1031,7 @@ export async function openEditor(file = null, line = null, opts = {}) {
       );
       return;
     }
-    addPane({ type: 'editor', termId: r.term.id, spawn: RUN_SIZE, cwd: r.term.cwd, projectId: p?.id, file }, 'right');
+    addPane({ type: 'editor', termId: r.term.id, spawn: RUN_SIZE, cwd: r.term.cwd, projectId: p?.id, file });
   } catch (e) {
     toast(`Could not open the editor: ${errText(e)}`, { kind: 'error' });
   }
@@ -957,28 +1053,19 @@ export function termFor(paneId, hooks) {
 
 // ---------------------------------------------------------------- focus moves
 
+/** Leader j / k: down into the dock's active tab, up back to the workspace's active tab. */
 export function focusDirection(dir) {
-  if (!app.focused) return;
-  // The dock is below every pane: down from the bottom row, up back out.
-  if (inDock(app.focused)) {
-    if (dir === 'up') focusPane(L.visible(app.layout).at(-1));
-    return;
+  if (dir === 'down' && !inDock(app.focused) && app.dock.open && app.dock.active) focusPane(app.dock.active);
+  else if (dir === 'up' && inDock(app.focused)) {
+    const a = activeTab();
+    if (a) focusPane(a);
   }
-  const n = L.neighbor(app.layout, app.focused, dir);
-  if (n) focusPane(n);
-  else if (dir === 'down' && app.dock.open && app.dock.active) focusPane(app.dock.active);
 }
 
+/** ⌘1…9: the n-th tab the context shows; out of range does nothing. */
 export function focusNumber(n) {
-  const id = L.visible(app.layout)[n - 1];
-  // focusPane moves a workspace zoom with the focus and ends a dock zoom.
+  const id = visibleTabs()[n - 1];
   if (id) focusPane(id);
-}
-
-export function toggleZoom() {
-  if (!app.focused) return;
-  app.zoomed = app.zoomed ? null : app.focused;
-  focusPane(app.focused);
 }
 
 /** Leader w: the next agent that needs you, longest waiting first (attention ladder level 1). */
@@ -1152,21 +1239,6 @@ export function confirm(text, detail, onYes, yes = 'Confirm', no = 'Cancel') {
   app.overlay = { kind: 'confirm', text, detail, onYes, yes, no };
 }
 
-/** Mission control's project filter from settings (D8). */
-async function loadMission() {
-  const v = await invoke('settings_get', { key: 'mission' }).catch(() => null);
-  // Projects removed since are dropped (the pane drops them too once the list is read).
-  const known = projects().length ? (id) => projects().some((p) => p.id === id) : () => true;
-  const ids = Array.isArray(v?.projects) ? v.projects.filter(known) : [];
-  app.mission = { projects: ids.length ? ids : null };
-}
-
-/** Sets and remembers Mission control's project filter (null = all projects). */
-export function setMissionFilter(projects) {
-  app.mission = { projects };
-  invoke('settings_set', { key: 'mission', value: { projects } }).catch(() => {});
-}
-
 // ---------------------------------------------------------------- persistence
 
 let saveTimer = null;
@@ -1191,14 +1263,49 @@ export function saveLayout() {
         kittyTheme: app.kittyTheme,
         dock: $state.snapshot(app.dock),
         chatWidth: app.chatWidth,
+        sidebarTree: $state.snapshot(app.sidebarTree),
+        workspace: { project: app.workspace.project },
       },
     }).catch(() => {});
   }, 400);
 }
 
-/** Restores the saved layout: shells and editors restart in their cwd (NFR-2). */
+/** Sidebar caret click (§5.4): a project (`p.id`) or feature (`f:<id>`) row, remembered. */
+export function toggleTree(key) {
+  app.sidebarTree = { ...app.sidebarTree, [key]: !treeOpen(key) };
+  saveLayout();
+}
+
+/** A sidebar row is expanded unless the user closed it. */
+export const treeOpen = (key) => app.sidebarTree[key] ?? true;
+
+/** The saved tree without the projects and features that are gone (features
+ *  never read: their keys stay). */
+function pruneTree(tree) {
+  if (!tree || typeof tree !== 'object') return {};
+  const read = app.data?.features != null;
+  return Object.fromEntries(
+    Object.entries(tree).filter(([k, v]) => {
+      if (typeof v !== 'boolean') return false;
+      if (k.startsWith('f:')) return !read || features().some((f) => f.id === k.slice(2));
+      return projects().some((p) => p.id === k);
+    }),
+  );
+}
+
+/** Restores the saved layout: shells and editors restart in their cwd (NFR-2).
+ *  A layout saved with splits comes back as one tab strip (design-notes §4.2);
+ *  the old `mission` key (Mission control's filter) is not read any more. */
 export async function restoreLayout() {
-  const [saved] = await Promise.all([invoke('settings_get', { key: 'layout' }).catch(() => null), loadMission()]);
+  const saved = await invoke('settings_get', { key: 'layout' }).catch(() => null);
+  app.sidebarTree = pruneTree(saved?.sidebarTree);
+  // The saved context, else the focused pane's project, else All (rule 5, 6).
+  const ctx = saved?.workspace?.project;
+  app.workspace = {
+    project: knownContext(
+      ctx ?? paneProject(saved?.panes?.[saved?.focused]) ?? saved?.panes?.[saved?.focused]?.projectId,
+    ),
+  };
   if (saved) {
     app.sidebar = saved.sidebar ?? true;
     // Never opens over the chat by itself (P4.2 notes §4 rule 1): docked only.
@@ -1248,15 +1355,21 @@ export async function restoreLayout() {
     active: tabs.includes(active) ? active : (tabs[0] ?? null),
     v: 2,
   };
-  app.layout = L.reid(L.prune(saved.layout, (id) => !!panes[id] && !migrated.includes(id)));
+  const kept = (id) => !!panes[id] && !migrated.includes(id);
+  app.layout = L.prune(L.flatten(saved.layout, kept(saved.focused) ? saved.focused : null), kept);
+  // The context's first tab when the saved active one is hidden or gone.
+  const vis = visibleTabs();
+  if (app.layout && vis.length && !vis.includes(app.layout.active)) app.layout = L.activate(app.layout, vis[0]);
   // Mission control only when both the workspace and the dock are empty.
   if (!app.layout && !tabs.length) addPane({ type: 'mission' });
-  else
-    focusPane(
-      panes[saved.focused] && (!inDock(saved.focused) || app.dock.open)
-        ? saved.focused
-        : (L.visible(app.layout)[0] ?? app.dock.active),
-    );
+  else {
+    const f = saved.focused;
+    const back =
+      panes[f] && (inDock(f) ? app.dock.open : inContext(f))
+        ? f
+        : (activeTab() ?? (app.dock.open ? app.dock.active : null));
+    if (back) focusPane(back);
+  }
   if (!app.data?.setup?.done) openSingleton('setup');
 }
 
@@ -1312,6 +1425,8 @@ function prunePanes() {
   if (app.window?.projectId && !projects().some((p) => p.id === app.window.projectId)) closeWindow(true);
   const sel = app.selection;
   if (sel?.kind === 'agent' && !activeAgents().some((a) => a.id === sel.id)) app.selection = null;
+  // The context's project was removed: All projects.
+  if (app.workspace.project !== 'all' && app.data && knownContext(app.workspace.project) === 'all') setContext('all');
 }
 
 // ---------------------------------------------------------------- updates
@@ -1492,11 +1607,11 @@ function updateCommands() {
 
 // ---------------------------------------------------------------- commands
 
-/** The projects "Plan with the Overwatch…" offers: the Mission filter's, else all (notes §8.1). */
+/** The projects "Plan with the Overwatch…" and "Refresh Ready to start" take:
+ *  the context's project, else all (design-notes §5.1 rule 7). */
 function planProjects() {
-  const all = projects().map((p) => p.id);
-  const f = (app.mission.projects ?? []).filter((id) => all.includes(id));
-  return f.length ? f : all;
+  const ctx = knownContext(app.workspace.project);
+  return ctx === 'all' ? projects().map((p) => p.id) : [ctx];
 }
 
 /** The palette's hint while the Overwatch cannot answer (notes §8.5). */
@@ -1516,14 +1631,7 @@ export function commands() {
     { id: 'session.new', label: 'New session…', run: () => (app.overlay = { kind: 'new-session' }) },
     { id: 'project.add', label: 'Add project…', run: () => (app.overlay = { kind: 'add-project' }) },
     { id: 'mission', label: 'Open Mission control', run: openMission },
-    {
-      id: 'mission.filter',
-      label: 'Filter Mission control by project',
-      run: () => {
-        openMission();
-        app.missionFilterOpen = true;
-      },
-    },
+    { id: 'mission.filter', label: 'Set the project context…', run: () => (app.contextOpen = true) },
     { id: 'decisions', label: 'Show decisions', run: () => focusCard() },
     {
       id: 'intake.plan',
@@ -1534,7 +1642,7 @@ export function commands() {
     {
       id: 'intake.refresh',
       label: 'Refresh Ready to start',
-      run: () => refreshIntake(app.mission.projects?.length ? app.mission.projects : projects().map((p) => p.id)),
+      run: () => refreshIntake(planProjects()),
     },
     ...(contextProject()
       ? [
@@ -1602,11 +1710,8 @@ export function commands() {
     { id: 'dock.next', label: 'Next dock tab', run: () => cycleDock(1) },
     { id: 'dock.prev', label: 'Previous dock tab', run: () => cycleDock(-1) },
     { id: 'editor.open', label: 'Open editor (nvim)', run: () => openEditor() },
-    { id: 'pane.split.right', label: 'Split right (shell)', run: () => openShell({ how: 'right' }) },
-    { id: 'pane.split.below', label: 'Split below (shell)', run: () => openShell({ how: 'below' }) },
-    { id: 'pane.zoom', label: 'Zoom / restore the focused pane', run: toggleZoom },
-    { id: 'pane.close', label: 'Close pane', run: () => closePaneByUser() },
-    { id: 'pane.reopen', label: 'Reopen closed pane', run: reopenClosed },
+    { id: 'pane.close', label: 'Close tab', run: () => closePaneByUser() },
+    { id: 'pane.reopen', label: 'Reopen closed tab', run: reopenClosed },
     { id: 'sidebar', label: 'Toggle sidebar', run: () => ((app.sidebar = !app.sidebar), saveLayout()) },
     {
       id: 'inspector',
@@ -1715,8 +1820,6 @@ export function run(commandId) {
   const map = {
     palette: () => (app.overlay = app.overlay?.kind === 'palette' ? null : { kind: 'palette' }),
     jump: () => (app.overlay = app.overlay?.kind === 'jump' ? null : { kind: 'jump' }),
-    'focus.left': () => focusDirection('left'),
-    'focus.right': () => focusDirection('right'),
     'focus.up': () => focusDirection('up'),
     'focus.down': () => focusDirection('down'),
     'agent.pause': () => {
