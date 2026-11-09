@@ -487,23 +487,42 @@ function askChat(req) {
 /** Saved pane types that are windows now (design-notes §3.1). */
 const WINDOW_KINDS = new Set(['settings', 'project-settings', 'planner']);
 
-/** The open window's "has unsaved changes" check (a footer section registers it), or null. */
+/** The open window's guard (a footer section registers it): `{ isDirty, onDiscard }`, or null. */
 let windowGuard = null;
 
 /**
  * A section with a Save/Revert footer registers its dirty check while it is
- * shown; the returned function unregisters it (design-notes §3.3).
+ * shown, and what to do when the user discards; the returned function
+ * unregisters it (design-notes §3.3).
  * @param {() => boolean} isDirty
+ * @param {() => void} [onDiscard]
  */
-export function guardWindow(isDirty) {
-  windowGuard = isDirty;
+export function guardWindow(isDirty, onDiscard) {
+  const guard = { isDirty, onDiscard };
+  windowGuard = guard;
   return () => {
-    if (windowGuard === isDirty) windowGuard = null;
+    if (windowGuard === guard) windowGuard = null;
   };
 }
 
 /** The open window has unsaved changes. */
-export const windowDirty = () => !!app.window && !!windowGuard?.();
+export const windowDirty = () => !!app.window && !!windowGuard?.isDirty();
+
+/**
+ * A backdrop click: a clean window closes; one with unsaved changes only
+ * flashes its footer (Esc, ×, ⌘W ask instead; design-notes §3.3).
+ */
+export function backdropClose() {
+  if (!windowDirty()) return closeWindow();
+  const foot = /** @type {HTMLElement | null} */ (document.querySelector('.fw-layer .foot'));
+  if (!foot) return;
+  foot.classList.remove('flash');
+  void foot.offsetWidth; // restart the animation
+  foot.classList.add('flash');
+}
+
+/** Esc, ×, backdrop: the window's `onclose(reason)`. */
+export const onWindowClose = (reason) => (reason === 'backdrop' ? backdropClose() : closeWindow());
 
 /** Asks "Discard changes?" when the window is dirty, else runs `then` at once. */
 export function unlessDirty(then) {
@@ -512,7 +531,9 @@ export function unlessDirty(then) {
     'Discard changes?',
     'This section has changes that are not saved.',
     () => {
+      const guard = windowGuard;
       windowGuard = null;
+      guard?.onDiscard?.();
       then();
     },
     'Discard',
@@ -566,9 +587,8 @@ function leaveWindow() {
 
 /** ⌘, and ⌘/: the window of that kind closes when it is open, else opens (replacing another). */
 export function toggleWindow(kind) {
-  if (app.window?.kind === kind) return closeWindow();
-  if (kind === 'settings') openSettings();
-  else if (kind === 'shortcuts') openShortcuts();
+  if (app.window?.kind !== kind) return kind === 'settings' ? openSettings() : openShortcuts();
+  closeWindow();
 }
 
 /**

@@ -10,8 +10,6 @@
     { id: 'mcp', label: 'MCP overrides' },
   ];
 
-  /** Sections with a Save/Revert footer: closing or leaving them dirty asks first (design-notes §3.3). */
-  export const FOOTER_SECTIONS = new Set(['backend', 'intake', 'allocation', 'notion']);
 </script>
 
 <script>
@@ -25,7 +23,7 @@
   // "Discard changes?" before the window closes or the section changes; a
   // backdrop click on it only flashes the footer.
   import { onMount, untrack } from 'svelte';
-  import { app, closeWindow, guardWindow, openSettings, projects, toast, windowDirty, windowSection } from '../lib/app.svelte.js';
+  import { app, guardWindow, onWindowClose, openSettings, projects, toast, windowSection } from '../lib/app.svelte.js';
   import { clock } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { isTypingTarget } from '../lib/keyboard.js';
@@ -89,27 +87,8 @@
     if (section.id === 'allocation') return !!alloc?.hasChanges();
     return false;
   }
-  onMount(() => guardWindow(sectionDirty));
-
-  // Leaving Task backend or Notion (the guard asked first): their fields go back to what is saved.
-  let shown = untrack(() => section.id);
-  $effect(() => {
-    const id = section.id;
-    untrack(() => {
-      if (id !== shown && (dirty || ask)) cancel();
-      shown = id;
-    });
-  });
-
-  /** Esc, ×, the backdrop: a backdrop click on unsaved changes only flashes the footer. */
-  function onclose(reason) {
-    if (reason !== 'backdrop' || !windowDirty()) return closeWindow();
-    const foot = /** @type {HTMLElement | null} */ (root?.querySelector('.foot'));
-    if (!foot) return;
-    foot.classList.remove('flash');
-    void foot.offsetWidth; // restart the animation
-    foot.classList.add('flash');
-  }
+  // Discarding (closing or leaving the section): the fields go back to what is saved.
+  onMount(() => guardWindow(sectionDirty, () => (dirty || ask) && cancel()));
 
   async function load() {
     try {
@@ -249,7 +228,7 @@
   onMount(load);
 </script>
 
-<FloatingWindow title="Project settings" subtitle={name} size={{ w: 960, h: 760 }} nav={SECTIONS} section={section.id} onsection={windowSection} {onclose} restoreFocus={false}>
+<FloatingWindow title="Project settings" subtitle={name} size={{ w: 960, h: 760 }} nav={SECTIONS} section={section.id} onsection={windowSection} onclose={onWindowClose} restoreFocus={false}>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <!-- data-pane-focus: where a section puts the focus back when its button goes away (it keeps the keys). -->
   <div class="ps" tabindex="-1" data-pane-focus bind:this={root} onkeydown={onKey}>

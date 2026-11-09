@@ -19,7 +19,7 @@
   // section, esc back to the nav, then closes). The sections are the
   // components they were in the pane; Keyboard moved to the shortcuts sheet (⌘/).
   import { onMount } from 'svelte';
-  import { app, closeWindow, guardWindow, windowDirty, windowSection } from '../lib/app.svelte.js';
+  import { app, guardWindow, onWindowClose, windowSection } from '../lib/app.svelte.js';
   import { navBadge } from '../lib/claude.js';
   import { attentionCount } from '../lib/ecosystem.js';
   import { invoke } from '../lib/ipc.js';
@@ -56,17 +56,6 @@
   // MCP servers' server form is the one section with unsaved edits (design-notes §3.3).
   let mcp = $state(null);
   onMount(() => guardWindow(() => section.id === 'mcp' && !!mcp?.hasChanges()));
-  let body = $state(null);
-
-  /** A backdrop click on unsaved edits flashes the form's footer; anything else closes (asked first when dirty). */
-  function onclose(reason) {
-    if (reason !== 'backdrop' || !windowDirty()) return closeWindow();
-    const foot = /** @type {HTMLElement | null} */ (body?.querySelector('.foot'));
-    if (!foot) return;
-    foot.classList.remove('flash');
-    void foot.offsetWidth; // restart the animation
-    foot.classList.add('flash');
-  }
 
   onMount(async () => {
     // The first section has mounted (children mount first) and took its view;
@@ -98,10 +87,9 @@
   section={section.id}
   onsection={windowSection}
   navBadge={badge}
-  {onclose}
+  onclose={onWindowClose}
   restoreFocus={false}
 >
-  <div class="sbody" bind:this={body}>
   {#if section.id === 'integrations'}
     <IntegrationsSettings initial={firstInts} onstatus={(items) => (needs = attentionCount(items))} />
   {:else if section.id === 'overwatch'}
@@ -122,7 +110,6 @@
       <p class="muted">Not designed yet. The current values are editable from <Kbd keys="⌘+K" />.</p>
     </section>
   {/if}
-  </div>
 </FloatingWindow>
 
 <style>
