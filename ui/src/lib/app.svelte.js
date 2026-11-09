@@ -562,6 +562,7 @@ export function toggleDock() {
   if (app.dock.open) {
     const t = app.dock.active ?? dockTabs()[0];
     if (t) focusPane(t);
+    void readShellCwd(...liveShells()); // the titles were not kept current while hidden
   } else {
     if (inDock(app.focused)) {
       // No workspace tab to hand the focus to: nothing is focused, not a hidden tab.
@@ -1054,9 +1055,13 @@ export function openBoard(projectId, taskId = null) {
 /** P2: the Team canvas (FR-301), on a team (or the library when none). Bound to
  *  `projectId`, else to the context's project; from All projects it is app-wide (§12.2). */
 export function openCanvas(teamId = null, projectId = null) {
-  const existing = findPane((s) => s.type === 'canvas' && (!teamId || s.teamId === teamId));
+  // A team's canvas is that team's; a team-less one is the project's (in a project context) or the app-wide one (All projects).
+  const project = projectId ?? contextProjectId();
+  const existing = findPane(
+    (s) => s.type === 'canvas' && (teamId ? s.teamId === teamId : (paneProject(s) ?? null) === (project ?? null)),
+  );
   if (existing) return focusPane(existing);
-  addPane({ type: 'canvas', teamId, projectId: projectId ?? contextProjectId() });
+  addPane({ type: 'canvas', teamId, projectId: project });
 }
 
 /** FR-107: a worktree's diff against its base, one pane per worktree. */
@@ -1229,6 +1234,8 @@ const polled = new Set();
 const localHosts = new Map();
 
 const liveShells = () => app.dock.tabs.filter((id) => app.panes[id]?.live && app.panes[id].type === 'shell');
+/** The shells whose titles are on screen: none while the dock is hidden. */
+const shownShells = () => (app.dock.open ? liveShells() : []);
 
 /** A new directory for a live shell: its title follows, the layout is saved (throttled). */
 function setShellCwd(id, cwd) {
@@ -1283,14 +1290,14 @@ export function trackShells() {
     if (!ids.length) {
       clearInterval(cwdTimer);
       cwdTimer = null;
-    } else if (document.visibilityState === 'visible') void readShellCwd(...ids);
+    } else if (document.visibilityState === 'visible') void readShellCwd(...shownShells());
   }, POLL_MS);
 }
 
 if (typeof document !== 'undefined') {
   // The window shown again: one read at once, not after the next tick.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') void readShellCwd(...liveShells());
+    if (document.visibilityState === 'visible') void readShellCwd(...shownShells());
   });
 }
 

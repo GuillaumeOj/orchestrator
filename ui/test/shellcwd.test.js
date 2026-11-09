@@ -149,6 +149,19 @@ describe('live shells in the app', () => {
     expect(app.panes.p1.cwd).toBe('/Users/me/dev/x');
   });
 
+  it('does not poll while the dock is hidden, reads at once when it is shown again', async () => {
+    A.trackShells();
+    app.dock.open = false;
+    h.cwd.set(11, '/Users/me/hidden');
+    await vi.advanceTimersByTimeAsync(S.POLL_MS * 3);
+    expect(h.calls).toEqual([]);
+    A.toggleDock();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(app.dock.open).toBe(true);
+    expect(h.calls).toContain(11);
+    expect(app.panes.p1.cwd).toBe('/Users/me/hidden');
+  });
+
   it('one read on focus', async () => {
     h.cwd.set(11, '/Users/me/focus');
     A.focusPane('p1');
