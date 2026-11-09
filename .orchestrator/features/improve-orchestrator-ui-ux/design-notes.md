@@ -234,7 +234,7 @@ Add `app.window = null` (not persisted: a window never reopens at launch, and `r
 - **Close** (Esc, ×, backdrop click, `closeWindow()`): `app.window = null`, restore focus; a terminal pane regains the keyboard through `focusPane`'s existing microtask.
 - **⌘,** with Settings open: close it (toggle). With another window open: replace by Settings. **⌘/** likewise for the sheet. Other global chords (⌘K palette, ⌘P jump) open the palette above the window (`Palette` z-index > window); ⌘T / ⌘N open their dialog above the window; the dialog layer is above the window layer. ⌘W with a window open closes the window, not a tab.
 - Dialogs (`Dialogs.svelte`: new session, add project, launch, plan, delete, confirm) stay `app.overlay` dialogs, drawn with the **same shell** (backdrop, title bar, ×, focus trap) at their current small sizes: factor `Dialogs.svelte`'s `.dlg` wrapper into `FloatingWindow` (no nav, `size` per dialog). The Cancel/submit buttons lose their `esc` / `⌘⏎` / `⏎` pills; tooltips "Cancel · esc", "Start session · ⌘⏎".
-- Settings sections that autosave (settings-brief §0.3) need no confirm on close. **Sections with a Save/Revert footer** (Task backend, Intake, Notion, Allocation, General) are guarded: closing the window (Esc, ×, backdrop click, ⌘W, replacing it by another window) or switching section while the form is dirty asks "Discard changes?" (Discard / Keep editing); one stray backdrop click must not lose typed text. A backdrop click on a dirty window does nothing but flash the footer; the Week planner and Settings keep polling/`onTopics` while open and stop on close (`onMount` cleanup already does it).
+- Settings sections that autosave (settings-brief §0.3) need no confirm on close. **Sections with a Save/Revert footer** (Task backend, Intake, Notion, Allocation, General) are guarded: closing the window (Esc, ×, ⌘W, replacing it by another window) or switching section while the form is dirty asks "Discard changes?" (Discard / Keep editing); one stray backdrop click must not lose typed text. A backdrop click on a dirty window does not ask: it does nothing but flash the footer (Esc, ×, ⌘W, replacing the window or switching section ask); the Week planner and Settings keep polling/`onTopics` while open and stop on close (`onMount` cleanup already does it).
 
 ### 3.4 Native menu and Help
 
@@ -302,7 +302,7 @@ export function setContext(projectId /* 'all' | id */)   // sets, activates a vi
 
 Rules:
 1. **Filter**: tabs not in the context are hidden from the strip but stay open (not closed, terminals keep running); changing the context shows them again.
-2. **Active tab on change**: keep the active tab if it is still visible; else the last-active visible tab for that context (remember `app.workspace.last[projectId]` in memory), else the first visible; else the empty state (§1.2 `03-empty-workspace-*`).
+2. **Active tab on change**: keep the active tab if it is still visible; else the first visible tab (no per-context last tab is remembered, §12.8); else the empty state (§1.2 `03-empty-workspace-*`).
 3. **Opening a pane of another project** (`focusPane` on a hidden tab, `openProject`, `openFeature`, `openBoard`, `openDiff`, `openCanvas` with a project): `setContext(thatProject)` first — except when the context is `all` (stays `all`). App-wide panes never change the context.
 4. **Sidebar / icon rail**: clicking a project sets the context (`openProject` already sets `app.selectedProject`; it now also calls `setContext`). Clicking a feature or agent row there: feature → its project's context + `openFeature`; agent → `openAgent` (dock; the context is **not** changed). In `all`, no project row/mark is highlighted: `Sidebar.svelte` and `IconRail.svelte` derive "current" from `app.workspace.project !== 'all' ? it : null` (today `app.selectedProject`; keep `selectedProject` for the inspector but not for the highlight).
 5. **Restore**: unknown project id → `'all'` (api-contract).
@@ -362,7 +362,7 @@ The `layout` setting value gains keys (api-contract): `sidebarTree`, `workspace:
 | `dock.agentProject` | `app.dock.agentProject` | project Select | unknown id → `'all'` |
 | `dock.activeAgent`, `dock.activeShell` | `app.dock` | `focusPane` | pane id not among the restored tabs → first tab of that view; `dock.active` = the one of `dock.view` |
 
-`saveLayout` snapshots `app.dock` already (`$state.snapshot(app.dock)`): the new fields ride along; add `sidebarTree` and `workspace` to the `value` object. Unsaved on purpose: `app.window`, `windowReturn`, the in-memory `workspace.last`, tab scroll position, Select popovers.
+`saveLayout` snapshots `app.dock` already (`$state.snapshot(app.dock)`): the new fields ride along; add `sidebarTree` and `workspace` to the `value` object. Unsaved on purpose: `app.window`, `windowReturn`, tab scroll position, Select popovers.
 
 ---
 
@@ -512,6 +512,8 @@ Rust: `cargo test -p orch-app` (the `term_cwd`/`Term::cwd` test above; menu item
 4. **Dock restore**: `dock.view` = saved value, else the kind of the saved `dock.active`; an `activeAgent` outside the filter falls back to the filter's first agent tab, else the empty view (api-contract).
 5. **Agent inspector has no Resume** (audit §2.1): resume through Open session, then the strip, or the palette.
 6. **Sidebar**: carets on project and feature rows only; agent rows are leaves.
+7. **Waiting dot rule (one rule, all three Selects)**: a closed Select shows the dot iff something its current choice **hides** needs the user (`attention(agentId)`); the tooltip names the first ("lead (orch) is waiting for you"); each open option carries its own dot. Workspace context Select: another project than the context waits (never in All projects). Dock project Select: an agent of another project than the filter waits (never at All). Dock view Select: in the **Shells** view, any agent tab waits (shells never wait); in the Agents view never (the agents are visible, the project Select carries it). So one waiting agent never lights two closed Selects. Test in `dockviews.test.js` and `context.test.js`.
+8. **Switching the context** activates the first tab of the new context unless the active tab already belongs to it (app-wide panes such as Mission control belong to every context); no per-context "last tab" is remembered or saved. With no tab it shows the empty state (`workspace.project` is the only saved context key).
 
 ## 13. Round 2 (user review of the PR; spec §7, R1–R15)
 
@@ -545,9 +547,9 @@ Each section is a frame `04-settings-<section>-1280.png` / `04-project-settings-
 | `04-settings-permissions-1280` | `PermissionsSettings.svelte` | policy files (edited in the file), no-rule-matches Selects, hold seconds (0 = don't hold) |
 | `04-settings-mcp-servers-*` (+ `server-error`) | `McpSettings.svelte` | master/detail |
 | `04-settings-terminal-editor-*` (+ `no-kittyconf`) | **new** `TerminalSettings.svelte` (replaces the "Not designed yet" branch of `SettingsPane`/the window) | Appearance (theme Select, kitty colours switch: `setTheme`, `setKittyTheme`), Terminal (read-only from `app.kitty`, Open kitty.conf), Renderer (**new** setting), Editor command (**new** unless read from kitty.conf), Shells (**new** Select) |
-| `04-settings-pacing-policy-*` (+ `governor-in-red`) | `PacingSettings.svelte` | groups Live agents / Limits / Off-hours / Catch-up |
+| `04-settings-pacing-policy-*` (+ `governor-in-red`) | `PacingSettings.svelte` (+ `IntakeGlobalSettings`) | explicit Apply form, groups as settings-brief §1.7: Live agents / What it gives / Off-hours live agents / Now, then the Intake card; no limits sliders or catch-up switch |
 | `04-settings-memory-*` (+ `warn`) | **new** `MemorySettings.svelte` | stacked bar from the status bar's memory sample, pressure badge, warn threshold (**new**), explanation text, links to Pacing and Renderer |
-| `04-settings-builds-1280` | `BuildsSettings.svelte` | PR builds list, update channel |
+| `04-settings-builds-1280` | `BuildsSettings.svelte` | Running build card (Check, Back to main) and the PR builds list; no channel Select (settings-brief §1.9) |
 | `04-project-settings-general-*` (+ `untrusted`) | **new** `ProjectGeneral.svelte` (the "Not designed yet" branch of `ProjectSettingsPane`) | rename, path actions, default branch Select, fetch, trust, worktrees, danger zone. Name and default branch are the only dirty fields (footer Save/Revert) |
 | `04-project-settings-files-*` (+ `missing-file`) | `FilesSettings.svelte` | |
 | `04-project-settings-task-backend-*` (+ `linear-not-connected`) | `ProjectSettingsPane.svelte` backend branch | |
@@ -572,6 +574,3 @@ Each section is a frame `04-settings-<section>-1280.png` / `04-project-settings-
 - `prline.test.js`: running and review-done states, checks popover rows.
 - `docpath.test.js`: path line only for docs inside the repo.
 - Extend `selectheight` in `noselect.test.js`: a Select next to an input gets the input's height class.
-
-7. **Waiting dot rule (one rule, all three Selects)**: a closed Select shows the dot iff something its current choice **hides** needs the user (`attention(agentId)`); the tooltip names the first ("lead (orch) is waiting for you"); each open option carries its own dot. Workspace context Select: another project than the context waits (never in All projects). Dock project Select: an agent of another project than the filter waits (never at All). Dock view Select: in the **Shells** view, any agent tab waits (shells never wait); in the Agents view never (the agents are visible, the project Select carries it). So one waiting agent never lights two closed Selects. Test in `dockviews.test.js` and `context.test.js`.
-8. **Switching the context** activates the first tab of the new context unless the active tab already belongs to it (app-wide panes such as Mission control belong to every context); no per-context "last tab" is remembered or saved. With no tab it shows the empty state (`workspace.project` is the only saved context key).

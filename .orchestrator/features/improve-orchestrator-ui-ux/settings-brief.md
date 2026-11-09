@@ -34,7 +34,7 @@ States: normal (up to date), update available, update failed (amber badge + erro
 
 ### 1.2 Integrations (today: list of GitHub, Linear, Notion, … with status and a key field)
 
-Keep the row-per-integration list; redraw as cards, one per integration: name, status badge (Connected / Needs you / Not connected / Error), account/scope line, **Connect / Replace key / Disconnect** (ghost; Disconnect danger) and the key field (password input, "Show" icon button, **Save key** primary only when the input has text). Needs-you cards first. Full texts, no truncation (the T-291 nit). States: loading (3 skeleton cards), empty can't happen, error (a card with `err` and Retry), one card expanded (key being edited), one saving.
+Keep the row-per-integration list; redraw as cards, one per integration: name, status badge (Connected / Needs you / Not connected / Error), account/scope line, **Connect / Reconnect / Replace** and **Remove** (ghost; Remove danger; the labels the code has) and the key field (password input, "Show" icon button, **Save key** primary only when the input has text). Needs-you cards first. Full texts, no truncation (the T-291 nit). States: loading (3 skeleton cards), empty can't happen, error (a card with `err` and Retry), one card expanded (key being edited), one saving.
 
 ### 1.3 Overwatch (today: OverwatchSettings) + **Notifications** group
 
@@ -42,7 +42,7 @@ Groups, as the code has them: header = title, one-line lead, the Overwatch state
 
 ### 1.4 Permissions (today: PermissionsSettings: policy files, defaults when no rule matches, hold)
 
-Groups, as the code has them: **Policy files** (one row per file: the global one and one per project; path, title, parse error or warnings, **Open in editor** / **Create and open**; rules are edited in the file, not in a table), **When no rule matches** (two Selects, Team roles and Solo sessions: Allow / Ask me / Deny as `EFFECTS` lists them; a muted line when the Overwatch is off), **Hold** (hold seconds: number input with `s` suffix, whole number, default 300, `0` = do not hold, the prompt stays in the agent's pane; must stay above the Overwatch's permission time; key `permissions.hold_secs`, autosave on blur). States: no policy file yet, a file with a parse error (last good version still used), warnings list with "Show n more", hold rejected (error under the input, previous value kept). A rules table is **not** in this section: it would be a new editor for the policy files, out of scope.
+Groups, as the code has them: **Policy files** (one row per file: the global one and one per project; path, title, parse error or warnings, **Open in editor** / **Create and open**; rules are edited in the file, not in a table), **When no rule matches** (two Selects, Team roles and Solo sessions: "The Overwatch decides" / "Ask me", the two `EFFECTS` in `PermissionsSettings`; Allow and Deny are rules in the policy files, not choices here; a muted line when the Overwatch is off), **Hold** (hold seconds: number input with `s` suffix, whole number, default 300, `0` = do not hold, the prompt stays in the agent's pane; must stay above the Overwatch's permission time; key `permissions.hold_secs`, autosave on blur). States: no policy file yet, a file with a parse error (last good version still used), warnings list with "Show n more", hold rejected (error under the input, previous value kept). A rules table is **not** in this section: it would be a new editor for the policy files, out of scope.
 
 ### 1.5 MCP servers (today: McpSettings: registry list, per server detail, "needs you" count)
 
@@ -73,7 +73,7 @@ Information-first section; the app already measures its memory (status bar) and 
 | Group | Content | Source |
 |---|---|---|
 | **Now** | Total (Tauri + webview + each `claude`), as a stacked bar: App (Rust core + webview + GPU helper) / agents (one segment each, labelled by id) / shells; pressure state badge (Normal / Warn / Critical) with the since-time; the live agent count vs cap | stored (status bar's memory and pressure, FR-904) |
-| **Warning** | Warn above (number input, MB; default 1 600 MB), **Show in the status bar** (switch: the memory chip) | the threshold is **new** (FR-904 says "with a warning threshold"); show disabled if absent |
+| **Warning** | Warn above (number input, MB; no default is specified, 1 600 MB is a sample value in the frame), **Show in the status bar** (switch: the memory chip) | the threshold is **new** (FR-904 says "with a warning threshold"); show disabled if absent |
 | **Under pressure** | read-only explanation list: "warn: one live agent less (min. 1) · critical: 1 · back up after 120 s of normal"; link "Live agents cap" → Pacing policy | stored behaviour (FR-203); text only |
 | **Renderer** | link to Terminal & editor › Renderer (no duplicate control) | — |
 
@@ -93,8 +93,8 @@ Today these live on the project pane (card) and in the sidebar menu; the pane he
 
 | Group | Rows | Source |
 |---|---|---|
-| **Project** | Name (input; rename), Path (mono, read-only, **Reveal in Finder** / **Open in kitty** ghost icon buttons), Id (muted, copy) | stored (`Project.name`, `path`, `id`) |
-| **Git** | Default branch (Select of the repo's branches, current marked), Remote (read-only, `origin` url), Fetch every 15 min (read-only help: "paused on low battery or offline"), **Fetch now** (secondary), Last fetch time + error | stored (`default_branch`, `last_fetch_*`); the fetch interval is fixed (help text, not a setting) |
+| **Project** | Name (input; rename), Path (mono, read-only, **Reveal in Finder** / **Open in kitty** ghost icon buttons), Id (muted, copy) | name edit is **new** (no rename command; the other rows are stored: `Project.name`, `path`, `id`) |
+| **Git** | Default branch (Select of the repo's branches, current marked; **new**: nothing writes `default_branch` after the project is added), Remote (read-only, `origin` url), Fetch every 15 min (read-only help: "paused on low battery or offline"), **Fetch now** (secondary), Last fetch time + error | read parts stored (`default_branch`, `last_fetch_*`); the editable Default branch is **new**; the fetch interval is fixed (help text, not a setting) |
 | **Trust** | Status badge (Trusted / Not trusted yet) and **Trust in a pane** (secondary, only when untrusted) | stored (`d.trusted`, `openTrust`) |
 | **Worktrees** | Worktree root (read-only mono), "Remove merged worktrees automatically" (switch) | root stored; the switch is **new** — drop the row if the team does not want it |
 | **Danger zone** | **Remove project…** (ghost danger) with its confirm; text "Sessions and history stay on disk" as it says today | stored (`startRemoval`) |
@@ -103,7 +103,7 @@ Form with footer (Name, Default branch are the only dirty-able fields). States: 
 
 ### 2.2 Files (exists; redo to the rules)
 
-Per-file access (the CLAUDE.md-like files and the docs folder the agents may read/write): list of rows, file path (mono) · access Select (Read & write / Read only, `ACCESS` in `lib/projectfiles.js`; a click toggles it in code today) · note · **Open in nvim** icon · remove icon. **Add file…** at the list's end (dropping from Finder also adds). **Autosaved per action, no footer** (`FilesSettings` has no Save today): it is the exception to the form-with-footer rule of §0.3. States: normal, empty, a path that no longer exists (amber row "Missing" + Remove).
+Per-file access (the CLAUDE.md-like files and the docs folder the agents may read/write): list of rows, file path (mono) · access Select (Read & write / Read only, `ACCESS` in `lib/projectfiles.js`; today a two-button radio group with a toggle key, `FilesSettings`) · note · **Open in nvim** icon · remove icon. **Add file…** at the list's end (dropping from Finder also adds). **Autosaved per action, no footer** (`FilesSettings` has no Save today): it is the exception to the form-with-footer rule of §0.3. States: normal, empty, a path that no longer exists (amber row "Missing" + Remove).
 
 ### 2.3 Task backend (exists)
 
@@ -140,6 +140,8 @@ Everything not listed here is in the code today (marked stored above). These row
 | Terminal & editor | Renderer Select; Editor command and "Reuse the open nvim"; New shell opens in | settings + `term.js` renderer switch; editor template read |
 | Memory | Warn above (MB) and "Show in the status bar"; the whole stacked bar from per-agent samples | a threshold setting (no default is given by `docs/SPEC.md`: FR-904 only says "with a warning threshold"; the frame's 1 600 MB is a sample value) |
 | Project General | Worktrees › "Remove merged worktrees automatically" | a setting |
+| Project General | Name (rename) and Default branch as editable fields | a rename command and a default-branch setter (the project record has both columns, no write path) |
+| MCP overrides | Inherit / On / Off per server (today: an "Override for <project>" checkbox in the server's edit drawer) | UI only on top of the existing scope (`scope` project vs global) |
 
 ## 5. What the brief does not decide
 
