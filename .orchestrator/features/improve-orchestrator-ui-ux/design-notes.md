@@ -437,7 +437,7 @@ Rule (spec §3.1): no `Kbd` inside or next to a control. Allowed: tooltips (`Lab
 | Team canvas Connect/Delete | inspector buttons | legend :559 |
 | RunInspector PR | `PrLine` | `Open PR ↗` :66 |
 | DesignSection keys | tooltips; preview gets a visible × | legends :207 :229 |
-| Project settings Save | **per section** (Task backend, Notion each: Save + Cancel at the section foot) | the shared `save()` :293/:312 |
+| Project settings Save | **per section** (Task backend, Notion each: Save + Revert at the section foot (the label is Revert everywhere; Cancel only closes a dialog or ends an inline edit)) | the shared `save()` :293/:312 |
 | Integrations Remove / Replace | row buttons | `SecretField` Remove/Replace :65-67 |
 | MCP Reconnect | row link | drawer hint button :356 |
 | MCP registry per project | Project settings › MCP overrides (all deep links with a project) | Settings › MCP with `projectId` |

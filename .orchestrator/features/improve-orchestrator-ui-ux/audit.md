@@ -76,7 +76,7 @@ The Week planner opens from 10 places today: Banner :42 and :44, StatusBar :35 (
 
 | Duplicate | Decision |
 |---|---|
-| Project settings Save at Task backend :293 and Notion :312, one `save()` for both | **Each section saves itself** (bug for implementation); one Save + Cancel per section, at the section's foot |
+| Project settings Save at Task backend :293 and Notion :312, one `save()` for both | **Each section saves itself** (bug for implementation); one Save + Revert per section, at the section's foot |
 | Integrations row Remove :163 and SecretField Remove :67; row Replace :162 and SecretField Replace :65 | **Row buttons**; SecretField keeps only its input + Save / Cancel |
 | MCP Reconnect: row link :268 and drawer hint button :356 | **Row link**; the drawer shows the hint text only |
 | MCP registry for a project: Settings › MCP servers with projectId (palette :1264, RoleMcp :35/:48, Dialogs :323, decision cards via `routeOpen` :466) and Project settings › MCP overrides :314 | **Project settings › MCP overrides**: every deep link with a projectId opens the Project settings window on `mcp`; Settings › MCP servers is the global registry only |
