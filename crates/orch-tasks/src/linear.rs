@@ -6,6 +6,10 @@
 //! are comments. The transport ([`Graphql`]) is a trait: the app's sends the
 //! Keychain's API key through curl; tests use [`fake::FakeLinear`].
 //!
+//! Like GitHub, every open issue of the team (and project) is read, with or
+//! without `orch`; reading never writes. After the first sync only the
+//! issues changed since a cursor are read (`updatedAt`).
+//!
 //! Rate limits: a 429 or a `RATELIMITED` error stops every call of this
 //! backend for a while (Retry-After, else 60 s doubling up to an hour).
 
@@ -18,10 +22,14 @@ use orch_team::TaskStatus;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::github::{Issue, IssueWrite, LABEL};
+use crate::github::{Coverage, Fields, Issue, IssueWrite, LABEL, Listing, listing, managed, since_window};
 
 pub const URL: &str = "https://api.linear.app/graphql";
 const NODE_PREFIX: &str = "orch:node:";
+/// Pages of 25 a listing reads at most (10 000 issues).
+const MAX_PAGES: usize = 400;
+/// Issues per `OrchIssues` page (`first:` in [`issues_query`]).
+const PAGE: usize = 25;
 
 /// What a GraphQL call can fail with.
 #[derive(Clone, Debug, PartialEq)]
@@ -161,8 +169,8 @@ fn issues_query() -> String {
     )
 }
 
-const FIELDS: &str = "id identifier title description updatedAt state { id name type } labels(first: 50) { nodes { id name } } \
-                      inverseRelations(first: 50) { nodes { id type issue { id identifier } } }";
+const FIELDS: &str = "id identifier title description updatedAt team { id } project { id } state { id name type } \
+                      labels(first: 50) { nodes { id name } } inverseRelations(first: 50) { nodes { id type issue { id identifier } } }";
 
 /// `linear_teams`: the workspace's teams.
 pub fn teams(gql: &dyn Graphql) -> Result<Vec<TeamRef>> {
@@ -227,7 +235,8 @@ fn team_info(gql: &dyn Graphql, key: &str) -> Result<TeamInfo> {
     Ok(TeamInfo { id: s(&t["id"]), states, projects })
 }
 
-/// The managed issues of one Linear team (and project).
+/// The issues of one Linear team (and project): every open one, and the
+/// managed (`orch`) ones in any state.
 pub struct LinearIssues<T: Graphql> {
     gql: T,
     team_key: String,
@@ -380,18 +389,25 @@ impl<T: Graphql> LinearIssues<T> {
             status: self.column(&v["state"]),
             node: labels.iter().find_map(|l| l.strip_prefix(NODE_PREFIX)).map(str::to_string),
             blocked_by,
-            other_labels: labels.into_iter().filter(|l| l != LABEL && !l.starts_with("orch:")).collect(),
+            managed: labels.iter().any(|l| l == LABEL),
+            other_labels: labels.into_iter().filter(|l| !managed(l)).collect(),
             updated_at: s(&v["updatedAt"]),
-            // The listing asks for the `orch` label.
-            managed: true,
         })
     }
 
+    /// The issue, if it is still in the team (and project): one moved
+    /// elsewhere is no longer this backend's, as if gone.
     fn raw(&self, id: &str) -> Result<Value> {
         let d = self.call(&issue_query(), json!({"id": id}))?;
         let v = d["issue"].clone();
         if v.is_null() {
             bail!("no Linear issue {id}");
+        }
+        let team = self.team()?;
+        if v["team"]["id"] != team.id.as_str()
+            || self.project.as_ref().is_some_and(|p| v["project"]["id"] != p.as_str())
+        {
+            bail!("no Linear issue {id} in {}", self.cursor_scope());
         }
         Ok(v)
     }
@@ -404,8 +420,7 @@ impl<T: Graphql> LinearIssues<T> {
         }
         if let Some(c) = current {
             for l in c["labels"]["nodes"].as_array().into_iter().flatten() {
-                let name = s(&l["name"]);
-                if name != LABEL && !name.starts_with("orch:") {
+                if !managed(&s(&l["name"])) {
                     ids.push(s(&l["id"]));
                 }
             }
@@ -413,8 +428,8 @@ impl<T: Graphql> LinearIssues<T> {
         Ok(ids)
     }
 
-    /// Makes the issue's `blocks` relations match `w.blocked_by`.
-    fn set_blockers(&self, issue: &Value, want: &[String]) -> Result<()> {
+    /// Makes the issue's `blocks` relations match `want`; whether any changed.
+    fn set_blockers(&self, issue: &Value, want: &[String]) -> Result<bool> {
         let id = key(issue);
         let have: Vec<(String, String)> = issue["inverseRelations"]["nodes"]
             .as_array()
@@ -423,59 +438,66 @@ impl<T: Graphql> LinearIssues<T> {
             .filter(|r| r["type"] == "blocks")
             .map(|r| (s(&r["id"]), key(&r["issue"])))
             .collect();
+        let mut changed = false;
         for b in want.iter().filter(|b| !have.iter().any(|(_, h)| h == *b)) {
             self.call(RELATION_CREATE, json!({"input": {"issueId": b, "relatedIssueId": id, "type": "blocks"}}))?;
+            changed = true;
         }
         for (rel, _) in have.iter().filter(|(_, h)| !want.contains(h)) {
             self.call(RELATION_DELETE, json!({"id": rel}))?;
+            changed = true;
         }
-        Ok(())
+        Ok(changed)
     }
 
-    fn input(&self, w: &IssueWrite, current: Option<&Value>) -> Result<Value> {
-        let mut input = json!({
-            "title": w.title,
-            "description": w.body,
-            "stateId": self.state_for(w.status)?,
-            "labelIds": self.label_ids(w, current)?,
-        });
-        if current.is_none() {
-            input["teamId"] = json!(self.team()?.id);
-            if let Some(p) = &self.project {
-                input["projectId"] = json!(p);
-            }
+    /// What `f` names: title and description, and/or the state and the
+    /// labels (managed + `current`'s others).
+    fn input(&self, w: &IssueWrite, f: Fields, current: Option<&Value>) -> Result<Value> {
+        let mut input = json!({});
+        if f.content {
+            input["title"] = json!(w.title);
+            input["description"] = json!(w.body);
+        }
+        if f.state {
+            input["stateId"] = json!(self.state_for(w.status)?);
+            input["labelIds"] = json!(self.label_ids(w, current)?);
         }
         Ok(input)
     }
 
     pub fn create(&self, w: &IssueWrite) -> Result<Issue> {
-        let input = self.input(w, None)?;
+        let mut input = self.input(w, Fields::ALL, None)?;
+        input["teamId"] = json!(self.team()?.id);
+        if let Some(p) = &self.project {
+            input["projectId"] = json!(p);
+        }
         let d = self.call(&issue_create(), json!({"input": input}))?;
         let v = d["issueCreate"]["issue"].clone();
         if v.is_null() {
             bail!("Linear: issue not created");
         }
-        if w.blocked_by.is_empty() {
-            return self.to_issue(&v);
+        if self.set_blockers(&v, &w.blocked_by)? {
+            return self.get(&key(&v));
         }
-        self.set_blockers(&v, &w.blocked_by)?;
-        self.get(&key(&v))
+        self.to_issue(&v)
     }
 
+    /// Sends what `w.fields` names: title, description and the `blocks`
+    /// relations, and/or the state and the labels (managed + the issue's
+    /// others, read first). A state-only write leaves the content alone.
     pub fn update(&self, id: &str, w: &IssueWrite) -> Result<Issue> {
-        let cur = self.raw(id)?;
-        let input = self.input(w, Some(&cur))?;
+        // The labels are sent whole: only a state write needs the issue's others.
+        let cur = if w.fields.state { Some(self.raw(id)?) } else { None };
+        let input = self.input(w, w.fields, cur.as_ref())?;
         let d = self.call(&issue_update(), json!({"id": id, "input": input}))?;
         let v = d["issueUpdate"]["issue"].clone();
         if v.is_null() {
             bail!("Linear: issue {id} not updated");
         }
-        let have: Vec<String> = self.to_issue(&v)?.blocked_by;
-        if have == w.blocked_by {
-            return self.to_issue(&v);
+        if w.fields.content && self.set_blockers(&v, &w.blocked_by)? {
+            return self.get(id);
         }
-        self.set_blockers(&v, &w.blocked_by)?;
-        self.get(id)
+        self.to_issue(&v)
     }
 
     pub fn get(&self, id: &str) -> Result<Issue> {
@@ -487,26 +509,61 @@ impl<T: Graphql> LinearIssues<T> {
         Ok(())
     }
 
-    /// Every managed issue of the team (and project), all states.
-    pub fn list(&self) -> Result<Vec<Issue>> {
-        let team = self.team()?.id.clone();
-        let mut filter = json!({"team": {"id": {"eq": team}}, "labels": {"name": {"eq": LABEL}}});
+    /// What the sync cursor belongs to: `linear:<team key>`, or
+    /// `linear:<team key>/<project id>` with a project.
+    pub fn cursor_scope(&self) -> String {
+        match &self.project {
+            Some(p) => format!("linear:{}/{p}", self.team_key),
+            None => format!("linear:{}", self.team_key),
+        }
+    }
+
+    /// The issues a sync reads, of the team (and project), paged.
+    /// No `since`: every issue whose state is not completed or canceled,
+    /// and the `orch` ones in any state. With `since` (the last cursor):
+    /// every issue updated since a minute before it, all states.
+    pub fn list(&self, since: Option<&str>) -> Result<Listing> {
+        self.list_capped(since, MAX_PAGES)
+    }
+
+    /// [`LinearIssues::list`] reading `max_pages` at most: more is an error,
+    /// not a silent cut (the cursor would move past the issues never read).
+    fn list_capped(&self, since: Option<&str>, max_pages: usize) -> Result<Listing> {
+        let window = since_window(since);
+        let mut filter = json!({"team": {"id": {"eq": self.team()?.id}}});
         if let Some(p) = &self.project {
             filter["project"] = json!({"id": {"eq": p}});
         }
-        let mut out = vec![];
-        let mut after = Value::Null;
-        for _ in 0..50 {
-            let d = self.call(&issues_query(), json!({"filter": filter, "after": after}))?;
+        let coverage = match window {
+            Some((_, from)) => {
+                filter["updatedAt"] = json!({"gt": from.to_string()});
+                Coverage::ChangedSince
+            }
+            None => {
+                filter["or"] = json!([
+                    {"state": {"type": {"nin": ["completed", "canceled"]}}},
+                    {"labels": {"name": {"eq": LABEL}}},
+                ]);
+                Coverage::OpenAndManaged
+            }
+        };
+        let mut issues = vec![];
+        let (query, mut after) = (issues_query(), Value::Null);
+        for _ in 0..max_pages {
+            let d = self.call(&query, json!({"filter": filter, "after": after}))?;
             for v in d["issues"]["nodes"].as_array().into_iter().flatten() {
-                out.push(self.to_issue(v)?);
+                issues.push(self.to_issue(v)?);
             }
             if d["issues"]["pageInfo"]["hasNextPage"] != true {
-                break;
+                return Ok(listing(issues, coverage, window.map(|(t, _)| t)));
             }
             after = d["issues"]["pageInfo"]["endCursor"].clone();
         }
-        Ok(out)
+        bail!(
+            "Linear: {} lists more than {} issues; set a Linear project to narrow it",
+            self.cursor_scope(),
+            max_pages * PAGE
+        )
     }
 }
 
@@ -536,7 +593,7 @@ pub mod fake {
 
     use serde_json::{Value, json};
 
-    use super::{GqlError, Graphql};
+    use super::{GqlError, Graphql, PAGE};
 
     /// Linear's complexity limit; a query estimated above it is refused.
     const COMPLEXITY_LIMIT: f64 = 10_000.0;
@@ -625,14 +682,18 @@ pub mod fake {
         first
     }
 
-    #[derive(Clone, Debug)]
+    #[derive(Clone, Debug, Default)]
     pub struct FakeIssue {
         pub id: String,
         pub title: String,
         pub description: String,
         pub state: String,
+        /// Label ids.
         pub labels: Vec<String>,
+        /// The clock tick of its `updatedAt` (one tick = one second).
         pub updated: u64,
+        /// Its Linear project id.
+        pub project: Option<String>,
     }
 
     #[derive(Default)]
@@ -647,10 +708,18 @@ pub mod fake {
         /// The next calls answer `RATELIMITED`.
         pub rate_limited: u32,
         pub calls: Vec<String>,
+        /// The mutations among them.
+        pub mutations: Vec<String>,
         /// States added in Linear after the team was first read: (id, name, type, position).
         pub extra_states: Vec<(String, String, String, f64)>,
         /// Label creations (a second `orch` would be a bug).
         pub labels_created: Vec<String>,
+        /// Every call fails (no network).
+        pub offline: bool,
+        /// Each `OrchIssues` call: (its variables, the issue ids answered).
+        pub lists: Vec<(Value, Vec<String>)>,
+        /// Each `OrchIssueUpdate`: (issue id, the input sent).
+        pub updates: Vec<(String, Value)>,
     }
 
     #[derive(Clone, Default)]
@@ -677,6 +746,39 @@ pub mod fake {
             i.updated = c;
         }
 
+        /// An issue made in Linear (by someone else), with labels by name
+        /// (created as needed); no project.
+        pub fn add(&self, id: &str, title: &str, state: &str, labels: &[&str]) {
+            let mut w = self.0.lock().unwrap();
+            w.clock += 1;
+            let mut ids = vec![];
+            for n in labels {
+                let found = w.labels.iter().find(|(_, l)| l == n).map(|(id, _)| id.clone());
+                ids.push(found.unwrap_or_else(|| new_label(&mut w, n)));
+            }
+            let issue = FakeIssue {
+                id: id.into(),
+                title: title.into(),
+                state: state.into(),
+                labels: ids,
+                updated: w.clock,
+                ..Default::default()
+            };
+            w.issues.push(issue);
+        }
+
+        /// Time passes in Linear: `s` seconds.
+        pub fn wait(&self, s: u64) {
+            self.0.lock().unwrap().clock += s;
+        }
+
+        /// The names of the labels of issue `id`.
+        pub fn label_names(&self, id: &str) -> Vec<String> {
+            let w = self.0.lock().unwrap();
+            let i = w.issues.iter().find(|i| i.id == id).expect("issue");
+            label_names(&w, i).into_iter().map(str::to_string).collect()
+        }
+
         pub fn issue(&self, id: &str) -> FakeIssue {
             self.0.lock().unwrap().issues.iter().find(|i| i.id == id).cloned().expect("issue")
         }
@@ -694,6 +796,13 @@ pub mod fake {
         rest.split(['(', ' ', '{']).next().unwrap_or("")
     }
 
+    /// A label created in the workspace; its id.
+    fn new_label(w: &mut World, name: &str) -> String {
+        let id = format!("lbl-{}", w.labels.len() + 1);
+        w.labels.push((id.clone(), name.to_string()));
+        id
+    }
+
     fn state_of(w: &World, id: &str) -> Value {
         STATES
             .iter()
@@ -704,13 +813,57 @@ pub mod fake {
             .unwrap_or(json!({"id": id}))
     }
 
+    /// The `updatedAt` of clock tick `t`.
+    pub fn stamp(t: u64) -> jiff::Timestamp {
+        // 2026-10-28T00:00:00Z.
+        jiff::Timestamp::from_second(1_793_145_600 + t as i64).expect("in range")
+    }
+
+    /// The (id, name) of `i`'s labels.
+    fn labels_of<'a>(w: &'a World, i: &'a FakeIssue) -> impl Iterator<Item = &'a (String, String)> {
+        i.labels.iter().filter_map(|id| w.labels.iter().find(|(l, _)| l == id))
+    }
+
+    fn label_names<'a>(w: &'a World, i: &'a FakeIssue) -> Vec<&'a str> {
+        labels_of(w, i).map(|(_, n)| n.as_str()).collect()
+    }
+
+    /// Whether `i` passes an `IssueFilter`, for the fields the app sends.
+    fn matches(w: &World, i: &FakeIssue, f: &Value) -> Result<bool, GqlError> {
+        let unsupported = |k: &str| GqlError::Failed(format!("fake: unsupported filter {k}: {f}"));
+        for (k, c) in f.as_object().into_iter().flatten() {
+            let ok = match k.as_str() {
+                "team" => c["id"]["eq"] == "team-1",
+                "project" => i.project.as_deref() == Some(c["id"]["eq"].as_str().ok_or_else(|| unsupported(k))?),
+                "updatedAt" => {
+                    let gt: jiff::Timestamp =
+                        c["gt"].as_str().and_then(|t| t.parse().ok()).ok_or_else(|| unsupported(k))?;
+                    stamp(i.updated) > gt
+                }
+                "state" => {
+                    let nin = c["type"]["nin"].as_array().ok_or_else(|| unsupported(k))?;
+                    !nin.contains(&state_of(w, &i.state)["type"])
+                }
+                "labels" => {
+                    let name = c["name"]["eq"].as_str().ok_or_else(|| unsupported(k))?;
+                    label_names(w, i).contains(&name)
+                }
+                "or" => {
+                    let subs = c.as_array().ok_or_else(|| unsupported(k))?;
+                    subs.iter().try_fold(false, |any, sub| Ok(any || matches(w, i, sub)?))?
+                }
+                _ => return Err(unsupported(k)),
+            };
+            if !ok {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     fn render(w: &World, i: &FakeIssue) -> Value {
-        let labels: Vec<Value> = i
-            .labels
-            .iter()
-            .filter_map(|id| w.labels.iter().find(|(l, _)| l == id))
-            .map(|(id, name)| json!({"id": id, "name": name}))
-            .collect();
+        let labels: Vec<Value> = labels_of(w, i).map(|(id, name)| json!({"id": id, "name": name})).collect();
+        let project = i.project.as_ref().map_or(Value::Null, |p| json!({"id": p}));
         let inv: Vec<Value> = w
             .relations
             .iter()
@@ -718,8 +871,8 @@ pub mod fake {
             .map(|r| json!({"id": r.0, "type": "blocks", "issue": {"id": format!("uuid-{}", r.1), "identifier": r.1}}))
             .collect();
         json!({"id": format!("uuid-{}", i.id), "identifier": i.id, "title": i.title, "description": i.description,
-               "updatedAt": format!("2026-10-28T00:00:{:02}.000Z", i.updated), "state": state_of(w, &i.state),
-               "labels": {"nodes": labels}, "inverseRelations": {"nodes": inv}})
+               "updatedAt": stamp(i.updated).strftime("%Y-%m-%dT%H:%M:%S.000Z").to_string(), "state": state_of(w, &i.state),
+               "team": {"id": "team-1"}, "project": project, "labels": {"nodes": labels}, "inverseRelations": {"nodes": inv}})
     }
 
     impl Graphql for FakeLinear {
@@ -727,6 +880,12 @@ pub mod fake {
             let mut w = self.0.lock().unwrap();
             let name = op(query).to_string();
             w.calls.push(name.clone());
+            if query.trim_start().starts_with("mutation") {
+                w.mutations.push(name.clone());
+            }
+            if w.offline {
+                return Err(GqlError::Failed("offline".into()));
+            }
             if complexity(query) > COMPLEXITY_LIMIT {
                 return Err(GqlError::Failed("Query too complex".into()));
             }
@@ -767,11 +926,10 @@ pub mod fake {
                     json!({"issueLabels": {"nodes": nodes}})
                 }
                 "OrchLabelCreate" => {
-                    let id = format!("lbl-{}", w.labels.len() + 1);
-                    w.labels.push((id.clone(), s(&v["input"]["name"])));
                     let name = s(&v["input"]["name"]);
-                    w.labels_created.push(name);
-                    json!({"issueLabelCreate": {"success": true, "issueLabel": {"id": id, "name": s(&v["input"]["name"])}}})
+                    let id = new_label(&mut w, &name);
+                    w.labels_created.push(name.clone());
+                    json!({"issueLabelCreate": {"success": true, "issueLabel": {"id": id, "name": name}}})
                 }
                 "OrchIssueCreate" => {
                     let inp = &v["input"];
@@ -782,6 +940,7 @@ pub mod fake {
                         state: s(&inp["stateId"]),
                         labels: inp["labelIds"].as_array().into_iter().flatten().map(s).collect(),
                         updated: clock,
+                        project: inp["projectId"].as_str().map(str::to_string),
                     };
                     w.issues.push(i.clone());
                     json!({"issueCreate": {"success": true, "issue": render(&w, &i)}})
@@ -789,13 +948,23 @@ pub mod fake {
                 "OrchIssueUpdate" => {
                     let id = s(&v["id"]);
                     let inp = v["input"].clone();
+                    w.updates.push((id.clone(), inp.clone()));
                     let Some(i) = w.issues.iter_mut().find(|i| i.id == id) else {
                         return Err(GqlError::Failed(format!("Entity not found: {id}")));
                     };
-                    i.title = s(&inp["title"]);
-                    i.description = s(&inp["description"]);
-                    i.state = s(&inp["stateId"]);
-                    i.labels = inp["labelIds"].as_array().into_iter().flatten().map(s).collect();
+                    // Only the fields sent change.
+                    if let Some(t) = inp["title"].as_str() {
+                        i.title = t.into();
+                    }
+                    if let Some(d) = inp["description"].as_str() {
+                        i.description = d.into();
+                    }
+                    if let Some(st) = inp["stateId"].as_str() {
+                        i.state = st.into();
+                    }
+                    if let Some(l) = inp["labelIds"].as_array() {
+                        i.labels = l.iter().map(s).collect();
+                    }
                     i.updated = clock;
                     let i = i.clone();
                     json!({"issueUpdate": {"success": true, "issue": render(&w, &i)}})
@@ -806,14 +975,22 @@ pub mod fake {
                     json!({"issue": i.map(|i| render(&w, &i)).unwrap_or(Value::Null)})
                 }
                 "OrchIssues" => {
-                    let orch = w.labels.iter().find(|(_, n)| n == "orch").map(|(id, _)| id.clone());
-                    let nodes: Vec<Value> = w
-                        .issues
-                        .iter()
-                        .filter(|i| orch.as_ref().is_some_and(|o| i.labels.contains(o)))
-                        .map(|i| render(&w, i))
-                        .collect();
-                    json!({"issues": {"nodes": nodes, "pageInfo": {"hasNextPage": false, "endCursor": null}}})
+                    // In creation order; the cursor is the index of the next one.
+                    let mut hits = vec![];
+                    for i in &w.issues {
+                        if matches(&w, i, &v["filter"])? {
+                            hits.push(i);
+                        }
+                    }
+                    let from: usize = v["after"].as_str().and_then(|a| a.parse().ok()).unwrap_or(0);
+                    let to = (from + PAGE).min(hits.len());
+                    let page = &hits[from.min(to)..to];
+                    let nodes: Vec<Value> = page.iter().map(|i| render(&w, i)).collect();
+                    let ids = page.iter().map(|i| i.id.clone()).collect();
+                    let more = to < hits.len();
+                    w.lists.push((v.clone(), ids));
+                    json!({"issues": {"nodes": nodes,
+                        "pageInfo": {"hasNextPage": more, "endCursor": if more { json!(to.to_string()) } else { Value::Null }}}})
                 }
                 "OrchRelationCreate" => {
                     let inp = &v["input"];
@@ -867,6 +1044,48 @@ mod tests {
         }
     }
 
+    /// fix-linear-pull §3.4 (7): both listings pass the guard (the filters
+    /// are variables, so they cost nothing; the query text itself is in
+    /// `every_query_stays_well_under_the_complexity_limit`) and the fake's
+    /// refusal above the limit.
+    #[test]
+    fn the_listings_stay_under_the_complexity_limit() {
+        assert!(!issues_query().contains("orch"), "the filter is a variable");
+        assert!(issues_query().contains(&format!("issues(first: {PAGE},")), "PAGE is the query's page");
+        let f = fake::FakeLinear::default();
+        let l = LinearIssues::new(f.clone(), "ENG", Some("proj-1".into()), BTreeMap::new());
+        let first = l.list(None).unwrap();
+        assert_eq!((first.coverage, first.cursor), (Coverage::OpenAndManaged, None), "nothing seen yet");
+        let next = l.list(Some("2026-10-28T00:10:00Z")).unwrap();
+        assert_eq!((next.coverage, next.cursor.as_deref()), (Coverage::ChangedSince, Some("2026-10-28T00:10:00Z")));
+        assert_eq!(l.cursor_scope(), "linear:ENG/proj-1");
+    }
+
+    /// Past the page cap the listing fails instead of cutting short (its
+    /// cursor would move past the issues never read).
+    #[test]
+    fn the_page_cap_is_an_error() {
+        let f = fake::FakeLinear::default();
+        for n in 1..=60 {
+            f.add(&format!("ENG-{n}"), "x", "st-todo", &[]);
+        }
+        let l = LinearIssues::new(f.clone(), "ENG", None, BTreeMap::new());
+        let e = l.list_capped(None, 2).unwrap_err().to_string();
+        assert!(e.contains("more than 50 issues"), "{e}");
+        assert_eq!(l.list_capped(None, 3).unwrap().issues.len(), 60);
+    }
+
+    /// An issue moved out of the project (or team) reads as gone.
+    #[test]
+    fn an_issue_moved_out_of_the_project_is_gone() {
+        let f = fake::FakeLinear::default();
+        f.add("ENG-1", "x", "st-todo", &[]);
+        let l = LinearIssues::new(f.clone(), "ENG", Some("proj-1".into()), BTreeMap::new());
+        assert!(l.get("ENG-1").unwrap_err().to_string().contains("no Linear issue ENG-1 in linear:ENG/proj-1"));
+        f.edit("ENG-1", |i| i.project = Some("proj-1".into()));
+        assert_eq!(l.get("ENG-1").unwrap().number, "ENG-1");
+    }
+
     #[test]
     fn the_old_team_query_is_caught() {
         let old = "query OrchTeam($key: String!) { teams(filter: { key: { eq: $key } }) { nodes { id key name \
@@ -910,14 +1129,14 @@ mod tests {
         let f = fake::FakeLinear::default();
         f.0.lock().unwrap().rate_limited = 1;
         let l = LinearIssues::new(f.clone(), "ENG", None, BTreeMap::new());
-        let e = l.list().unwrap_err().to_string();
+        let e = l.list(None).unwrap_err().to_string();
         assert!(e.contains("rate limit"), "{e}");
         assert!(l.backoff_s() >= 59, "60 s at first");
         let calls = f.0.lock().unwrap().calls.len();
-        assert!(l.list().unwrap_err().to_string().contains("retrying in"));
+        assert!(l.list(None).unwrap_err().to_string().contains("retrying in"));
         assert_eq!(f.0.lock().unwrap().calls.len(), calls, "no call while backing off");
         *l.backoff.lock().unwrap() = (0, 60);
-        assert!(l.list().is_ok());
+        assert!(l.list(None).is_ok());
         assert_eq!(l.backoff_s(), 0);
     }
 }
