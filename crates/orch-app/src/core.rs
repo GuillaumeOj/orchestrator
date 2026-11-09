@@ -1111,7 +1111,10 @@ impl Core {
     /// Renames a project (only the `name` column is written).
     pub fn project_rename(&self, id: &str, name: &str) -> Result<Project> {
         self.db.rename_project(id, name)?;
-        Ok(self.stored_project(id)?.into())
+        let p = self.stored_project(id)?;
+        let _ =
+            self.db.audit("user", None, "project_renamed", p.path.to_str(), "ok", json!({"id": p.id, "name": p.name}));
+        Ok(p.into())
     }
 
     /// Local branches of the project's repo, the default branch first.
@@ -1133,13 +1136,22 @@ impl Core {
         let branch = branch.trim();
         let ok = !branch.is_empty()
             && !branch.starts_with('-')
-            && orch_git::git::git_ok(&p.path, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]);
+            && orch_git::git::git_ok(&p.path, &["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")]);
         if !ok {
             bail!("No branch {branch} in this repo");
         }
         self.db.set_project_default_branch(id, branch)?;
         self.git.lock_ok().at = None; // ahead/behind is against the default branch
-        Ok(self.stored_project(id)?.into())
+        let p = self.stored_project(id)?;
+        let _ = self.db.audit(
+            "user",
+            None,
+            "project_default_branch",
+            p.path.to_str(),
+            "ok",
+            json!({"id": p.id, "branch": branch}),
+        );
+        Ok(p.into())
     }
 
     /// FR-101: clones `url` into `parent` (default `~/dev`), then registers it.
@@ -2309,8 +2321,18 @@ pub(crate) mod tests {
         let e = core.project_set_default_branch(&p.id, "nope").unwrap_err().to_string();
         assert_eq!(e, "No branch nope in this repo");
         assert!(core.project_set_default_branch(&p.id, "--all").is_err());
+        for bad in ["main~1", "main^{tree}", "main@{0}"] {
+            let e = core.project_set_default_branch(&p.id, bad).unwrap_err().to_string();
+            assert_eq!(e, format!("No branch {bad} in this repo"));
+        }
+        assert_eq!(core.project_set_default_branch(&p.id, "main").unwrap().default_branch, "main");
+        assert_eq!(core.project_set_default_branch(&p.id, "develop").unwrap().default_branch, "develop");
+        let actions: Vec<String> = core.db.audit_log(None, 50).unwrap().into_iter().map(|e| e.action).collect();
+        assert!(actions.iter().any(|a| a == "project_default_branch"), "{actions:?}");
         let r = core.project_rename(&p.id, "  Renamed ").unwrap();
         assert_eq!((r.name.as_str(), r.default_branch.as_str()), ("Renamed", "develop"));
+        let actions: Vec<String> = core.db.audit_log(None, 50).unwrap().into_iter().map(|e| e.action).collect();
+        assert!(actions.iter().any(|a| a == "project_renamed"), "{actions:?}");
         let first = core.projects().into_iter().find(|x| x.id != p.id).unwrap();
         let e = core.project_rename(&p.id, &first.name.to_uppercase()).unwrap_err().to_string();
         assert!(e.starts_with("A project named "), "{e}");
