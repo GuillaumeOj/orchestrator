@@ -126,7 +126,7 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, textarea, select')) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, textarea, select, [role="combobox"]')) return;
     if (e.key === 'r' && loadError) {
       e.preventDefault();
       load();

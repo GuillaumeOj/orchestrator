@@ -78,7 +78,7 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, select, textarea')) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, select, textarea, [role="combobox"]')) return;
     const k = { j: () => move(1), k: () => move(-1), r: load, c: startPr, e: () => current && openEditor(`${spec.path}/${current.path}`, null, { projectId: spec.projectId }) }[e.key];
     if (k) {
       e.preventDefault();

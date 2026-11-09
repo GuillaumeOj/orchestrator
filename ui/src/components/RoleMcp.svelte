@@ -5,8 +5,9 @@
   // the role through `onsave` (role_save).
   import { openSettings } from '../lib/app.svelte.js';
   import { downgradeProblem, downgradeWarning, downgradeWhen, family, roleMcpNotes, toggleRef } from '../lib/ecosystem.js';
-  import { MODEL_ALIASES } from '../lib/options.js';
+  import { MODEL_ALIASES, MODEL_OPTIONS } from '../lib/options.js';
   import ConnBadge from './ConnBadge.svelte';
+  import Select from './Select.svelte';
 
   /** @type {{ role: any, servers: any[] | null, isLead?: boolean, project?: string | null, onsave: (patch: object) => void }} */
   let { role, servers, isLead = false, project = null, onsave } = $props();
@@ -20,6 +21,7 @@
   });
   const problem = $derived(dg ? downgradeProblem(role, dg.to) : null);
   const warning = $derived(dg ? downgradeWarning(role, isLead) : null);
+  const whenOptions = $derived(downgradeWhen(role.model).map((w) => ({ value: w.id, label: w.label })));
   const defaultTo = $derived(MODEL_ALIASES.find((m) => m !== family(role.model) && m !== 'opus') ?? 'sonnet');
 
   function setDowngrade(next) {
@@ -61,13 +63,9 @@
     {#if dg}
       <div class="line">
         to
-        <select class="field sm" aria-label="Downgrade to" value={dg.to} onchange={(e) => setDowngrade({ ...dg, to: e.currentTarget.value })}>
-          {#each MODEL_ALIASES as m (m)}<option value={m}>{m}</option>{/each}
-        </select>
+        <Select width="hug" aria-label="Downgrade to" value={dg.to} options={MODEL_OPTIONS} onchange={(to) => setDowngrade({ ...dg, to })} />
         when
-        <select class="field sm" aria-label="Downgrade when" value={dg.when} onchange={(e) => setDowngrade({ ...dg, when: e.currentTarget.value })}>
-          {#each downgradeWhen(role.model) as w (w.id)}<option value={w.id}>{w.label}</option>{/each}
-        </select>
+        <Select width="hug" aria-label="Downgrade when" value={dg.when} options={whenOptions} onchange={(when) => setDowngrade({ ...dg, when })} />
       </div>
       <span class="muted note">Switches at the next task, never mid-task. Loses the prompt cache; the conversation is kept.</span>
       {#if problem}<p class="box errbox">{'\u{F0159}'} {problem} Save is disabled.</p>{/if}
@@ -131,9 +129,6 @@
     display: flex;
     align-items: center;
     gap: var(--space-xs);
-  }
-  .field.sm {
-    width: auto;
   }
   .ck {
     display: inline-flex;

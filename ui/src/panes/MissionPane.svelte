@@ -214,7 +214,7 @@
   function onKey(e) {
     if (filterOpen || e.defaultPrevented) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.target.closest?.('input, textarea, select')) return;
+    if (e.target.closest?.('input, textarea, select, [role="combobox"]')) return;
     const k = e.key;
     const run = (fn) => {
       e.preventDefault();

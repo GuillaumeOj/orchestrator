@@ -31,11 +31,13 @@
   import ConnBadge from './ConnBadge.svelte';
   import Kbd from './Kbd.svelte';
   import SecretField from './SecretField.svelte';
+  import Select from './Select.svelte';
 
   /** `initial`: the Settings pane's mcp_registry_view, taken once (no second fetch on open). */
   /** @type {{ project?: string | null, selected?: string | null, initial?: (() => Promise<any> | null) | null }} */
   let { project = null, selected = null, initial = null } = $props();
 
+  const DESIGN_TOOL_OPTIONS = [{ value: null, label: '—' }, ...Object.entries(DESIGN_TOOL_NAMES).map(([value, label]) => ({ value, label }))];
   const CONNECTOR_URL = 'https://claude.ai/settings/connectors';
 
   let view = $state(null);
@@ -303,10 +305,7 @@
             <span class="seg">{#each KINDS as k (k.id)}<button role="radio" aria-checked={draft.server.kind === k.id} class:on={draft.server.kind === k.id} onclick={() => (draft.server.kind = k.id)}>{k.label}</button>{/each}</span>
           </div>
           <label><span>design tool</span>
-            <select class="field" bind:value={draft.server.design_tool}>
-              <option value={null}>—</option>
-              {#each Object.entries(DESIGN_TOOL_NAMES) as [id, name] (id)}<option value={id}>{name}</option>{/each}
-            </select>
+            <Select bind:value={draft.server.design_tool} options={DESIGN_TOOL_OPTIONS} />
           </label>
           {#if s.kind === 'stdio'}
             <label><span>command</span><input class="field mono" bind:value={draft.server.command} spellcheck="false" placeholder={draft.server.design_tool === 'figcraft' ? 'figcraft-cli' : 'npx'} /></label>

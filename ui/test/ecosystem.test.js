@@ -27,6 +27,7 @@ import {
 } from '../src/lib/ecosystem.js';
 import { keyIntent as keyIntentOf } from '../src/lib/inbox.js';
 import { act, decision, fixture, nowOf } from './fixture.js';
+import { labels, pick, picked } from './pick.js';
 
 const UNDO_LATER = Date.now() + 60000;
 
@@ -297,7 +298,7 @@ describe('Settings pane', () => {
     expect(field('input[placeholder="figcraft-cli"]')).toBe('');
     expect(field('input[placeholder="penpot"]')).toBe('figcraft');
     expect(field('textarea[placeholder="one per line"]')).toBe('mcp');
-    expect(field('select')).toBe('figcraft');
+    expect(picked(d)).toBe('figcraft');
     const hint = d.querySelector('.note');
     expect(hint.textContent).toBe(
       'Full path to figcraft-cli. Args mcp run a headless engine; mcp --attach 7979 drives the open FigCraft app.',
@@ -632,13 +633,14 @@ describe('role inspector, Design section and presets (T-7)', () => {
       ).toBe(true),
     );
     expect(insp.textContent).toContain('Switches at the next task, never mid-task.');
-    const to = /** @type {HTMLSelectElement} */ (insp.querySelector('select[aria-label="Downgrade to"]'));
+    const to = insp.querySelector('[role="combobox"][aria-label="Downgrade to"]');
     const n = calls.length;
-    to.value = 'opus';
-    await fireEvent.change(to);
+    await pick(to, 'opus');
     expect(insp.textContent).toContain("Pick a model other than the role's (opus).");
     expect(calls.slice(n).some(([c]) => c === 'role_save')).toBe(false);
-    expect(insp.textContent).toContain('opus window in Red');
+    expect(await labels(insp.querySelector('[role="combobox"][aria-label="Downgrade when"]'))).toContain(
+      'opus window in Red',
+    );
   });
 
   it('role inspector: a downgrade on the lead warns', async () => {

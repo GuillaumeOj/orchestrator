@@ -7,11 +7,15 @@
   import { errText, invoke } from '../lib/ipc.js';
   import { overwatchOf } from '../lib/overwatch.js';
   import { fileName, fileRows, fileTitle, midCut, WARNINGS_SHOWN } from '../lib/policy.js';
+  import Select from './Select.svelte';
 
   const EFFECTS = [
     { id: 'overwatch', label: 'The Overwatch decides' },
     { id: 'user', label: 'Ask me' },
   ];
+
+  const EFFECT_OPTIONS = EFFECTS.map((x) => ({ value: x.id, label: x.label }));
+  let rev = $state(0); // a refused save remounts the pickers on the value still applied
 
   let files = $state(/** @type {any[] | null} */ (null));
   let loadError = $state('');
@@ -43,14 +47,13 @@
     return () => document.removeEventListener('visibilitychange', again);
   });
 
-  async function setDefault(which, e) {
-    const box = e.currentTarget;
+  async function setDefault(which, value) {
     const before = defaults?.[which];
     errors = { ...errors, defaults: '' };
     try {
-      defaults = await invoke('set_policy_defaults', { ...defaults, [which]: box.value });
+      defaults = await invoke('set_policy_defaults', { ...defaults, [which]: value });
     } catch (err) {
-      box.value = before ?? 'user';
+      rev++;
       errors = { ...errors, defaults: `${errText(err)} Still using “${EFFECTS.find((x) => x.id === before)?.label ?? before}”.` };
     }
   }
@@ -131,9 +134,7 @@
         <label class="lab" for="perm-{which}">{label}</label>
         {#if which === 'team'}<p class="muted help">When no rule matches a permission. The Overwatch's decisions are lines you can undo; Ask me makes a card.</p>{/if}
       </div>
-      <select id="perm-{which}" class="field" value={defaults?.[which] ?? 'user'} disabled={!defaults} onchange={(e) => setDefault(which, e)}>
-        {#each EFFECTS as x (x.id)}<option value={x.id}>{x.label}</option>{/each}
-      </select>
+      {#key rev}<Select id="perm-{which}" value={defaults?.[which] ?? 'user'} options={EFFECT_OPTIONS} disabled={!defaults} onchange={(v) => setDefault(which, v)} />{/key}
     </div>
   {/each}
   {#if ow.status === 'off'}<p class="muted help" data-ow-off>The Overwatch is off: every unmatched permission asks you.</p>{/if}

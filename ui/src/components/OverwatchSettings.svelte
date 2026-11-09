@@ -6,7 +6,9 @@
   // stays applied until a save lands, and the message says which.
   import { app, restartOverwatch } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { MODEL_OPTIONS } from '../lib/options.js';
   import { overwatchOf, sectionStatus } from '../lib/overwatch.js';
+  import Select from './Select.svelte';
 
   /** The number rows: key, label, unit, range, help (notes §9.1). */
   const ROWS = [
@@ -16,11 +18,7 @@
     { key: 'rule_threshold', label: 'Rule threshold', unit: 'times', min: 2, max: 10, help: 'Proposes a rule after you give the same answer this many times.' },
   ];
   const HOLD_DEFAULT = 300; // used when the setting can't be read; the core is the judge either way
-  const MODELS = [
-    { id: 'haiku', label: 'Haiku' },
-    { id: 'sonnet', label: 'Sonnet' },
-    { id: 'opus', label: 'Opus' },
-  ];
+  let rev = $state(0); // a refused model save remounts the picker on the model still applied
 
   /** @type {{ enabled: boolean, model: string, batch_secs: number, permission_secs: number, idle_secs: number, rule_threshold: number } | null} */
   let s = $state(null);
@@ -98,10 +96,11 @@
     if (!ok) box.checked = !on;
   }
 
-  async function pickModel(e) {
-    const box = e.currentTarget;
-    const before = s?.model;
-    if (!(await save('model', box.value)) && before) box.value = before;
+  // The aliases only (§9.7); a stored custom id stays selectable so it is shown, not lost.
+  const modelOptions = $derived(MODEL_OPTIONS.some((m) => m.value === s?.model) ? MODEL_OPTIONS : [...MODEL_OPTIONS, { value: s?.model, label: s?.model }]);
+
+  async function pickModel(model) {
+    if (!(await save('model', model))) rev++;
   }
 
   async function restart() {
@@ -148,10 +147,7 @@
         <p class="muted help">The model for its session. Takes effect at the next session.</p>
         {#if errors.model}<p class="err help">{errors.model}</p>{/if}
       </div>
-      <select id="ow-model" class="field" value={s.model} onchange={pickModel}>
-        {#each MODELS as m (m.id)}<option value={m.id}>{m.label}</option>{/each}
-        {#if !MODELS.some((m) => m.id === s?.model)}<option value={s.model}>{s.model}</option>{/if}
-      </select>
+      {#key rev}<Select id="ow-model" value={s.model} options={modelOptions} onchange={pickModel} />{/key}
     </div>
     {#each ROWS as row (row.key)}
       <div class="row" data-row={row.key}>

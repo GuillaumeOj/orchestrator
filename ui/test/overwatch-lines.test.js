@@ -6,6 +6,7 @@ import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chatOf, closedEntry, entry } from './chat-fixture.js';
 import { decision, fixture, nowOf } from './fixture.js';
+import { labels, pick, picked } from './pick.js';
 
 const calls = [];
 const replies = {};
@@ -665,17 +666,17 @@ describe('Settings → Permissions (notes §9.2)', () => {
 
   it('the default effects: Overwatch decides / Ask me; saved on change; reverted on refusal', async () => {
     const c = await open();
-    const team = rowOf(c, 'default-team').querySelector('select');
-    const solo = rowOf(c, 'default-solo').querySelector('select');
-    expect([...team.options].map(text)).toEqual(['The Overwatch decides', 'Ask me']);
-    expect([team.value, solo.value]).toEqual(['overwatch', 'user']);
-    await fireEvent.change(solo, { target: { value: 'overwatch' } });
+    const team = rowOf(c, 'default-team');
+    const solo = rowOf(c, 'default-solo');
+    expect(await labels(team)).toEqual(['The Overwatch decides', 'Ask me']);
+    expect([picked(team), picked(solo)]).toEqual(['overwatch', 'user']);
+    await pick(solo, 'The Overwatch decides');
     await settle();
     expect(calls.find(([k]) => k === 'set_policy_defaults')[1]).toEqual({ team: 'overwatch', solo: 'overwatch' });
     replies.set_policy_defaults = new Error('policy.toml is read-only');
-    await fireEvent.change(team, { target: { value: 'user' } });
+    await pick(team, 'Ask me');
     await settle();
-    expect(team.value).toBe('overwatch');
+    expect(picked(team)).toBe('overwatch');
     expect(text(c.querySelector('.err'))).toContain('policy.toml is read-only');
   });
 

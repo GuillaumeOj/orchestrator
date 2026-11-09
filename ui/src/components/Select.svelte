@@ -238,7 +238,7 @@
     <span class="chev" aria-hidden="true">{open ? '\u{F0143}' : '\u{F0140}'}</span>
   </button>
   <input type="hidden" {name} value={value ?? ''} />
-  {#if error}<span class="msg" id={errId}>{error}</span>{/if}
+  {#if error}<span class="msg" id={errId} role="alert">{error}</span>{/if}
 </span>
 
 {#if open}

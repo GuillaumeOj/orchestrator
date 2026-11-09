@@ -5,6 +5,7 @@
   import { toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import Kbd from './Kbd.svelte';
+  import Select from './Select.svelte';
 
   const KEYS = { refresh: 'intake.refresh_secs', team: 'intake.default_team_pp', solo: 'intake.default_solo_pp' };
   const DEFAULTS = { refresh: 600, team: 6, solo: 1.5 };
@@ -34,10 +35,11 @@
   const soloPp = $derived(pp(solo));
   const dirty = $derived(Number(refresh) !== held.refresh || teamPp !== held.team || soloPp !== held.solo);
   const canSave = $derived(!busy && dirty && teamPp != null && soloPp != null);
-  const options = $derived(
-    EVERY.some(([s]) => s === Number(refresh))
+  const refreshOptions = $derived(
+    (EVERY.some(([s]) => s === Number(refresh))
       ? EVERY
-      : /** @type {[number, string][]} */ ([...EVERY, [Number(refresh), `${Math.round(Number(refresh) / 60)} min`]]).sort((a, b) => a[0] - b[0]),
+      : /** @type {[number, string][]} */ ([...EVERY, [Number(refresh), `${Math.round(Number(refresh) / 60)} min`]]).sort((a, b) => a[0] - b[0])
+    ).map(([secs, label]) => ({ value: String(secs), label })),
   );
 
   async function load() {
@@ -83,9 +85,7 @@
   <h3>Intake</h3>
   <div class="block">
     <label class="lbl" for="ig-refresh">Refresh every</label>
-    <select id="ig-refresh" class="field auto" bind:value={refresh}>
-      {#each options as [secs, label] (secs)}<option value={String(secs)}>{label}</option>{/each}
-    </select>
+    <Select id="ig-refresh" width="hug" bind:value={refresh} options={refreshOptions} />
     <p class="muted help">How often Ready to start checks sources. Refresh in the lane checks at once.</p>
   </div>
   <div class="block">

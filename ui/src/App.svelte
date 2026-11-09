@@ -42,7 +42,7 @@
   function onKeyDown(e) {
     if (e.isComposing) return;
     const inXterm = !!e.target.closest?.('.xterm');
-    const inField = !inXterm && !!e.target.closest?.('input, textarea, select');
+    const inField = !inXterm && !!e.target.closest?.('input, textarea, select, [role="combobox"]');
     const r = classify(e, keyContext(e.target));
     const stop = () => {
       e.preventDefault();
