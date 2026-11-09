@@ -155,11 +155,11 @@ impl Store {
     /// unique, case-insensitively, among the *other* projects.
     pub fn rename_project(&self, id: &str, name: &str) -> Result<()> {
         let name = name.trim().to_string();
-        if name.is_empty() || name.chars().count() > 80 {
-            anyhow::bail!(
-                "{}",
-                if name.is_empty() { "Name can't be empty" } else { "Name is too long (80 characters max)" }
-            );
+        if name.is_empty() {
+            anyhow::bail!("Name can't be empty");
+        }
+        if name.chars().count() > 80 {
+            anyhow::bail!("Name is too long (80 characters max)");
         }
         let id = id.to_string();
         let topics = [orch_protocol::Topic::Project(id.clone()), orch_protocol::Topic::Board(id.clone())];
