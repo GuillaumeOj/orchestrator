@@ -204,6 +204,7 @@
               class="x icon-btn"
               tabindex="-1"
               aria-label="Close {t.title}"
+              use:tooltip={{ label: 'Close', key: '⌘W' }}
               onclick={(e) => (e.stopPropagation(), onclose?.(t.id))}>{'\u{F0156}'}</button
             >
           {/if}
@@ -295,7 +296,7 @@
     gap: var(--space-sm);
     min-width: min-content;
     max-width: 280px;
-    padding: 0 var(--space-xs) 0 var(--space-md);
+    padding: 0 var(--space-sm) 0 var(--space-md);
     color: var(--color-text-secondary);
     font: var(--text-label);
     white-space: nowrap;
@@ -342,8 +343,8 @@
   }
   /* × only on the active, hovered or keyboard-focused tab; its space is kept. */
   .x {
-    width: 16px;
-    height: 16px;
+    width: var(--size-icon);
+    height: var(--size-icon);
     visibility: hidden;
   }
   .tab:is(.on, :hover, :focus-visible) .x {
@@ -361,5 +362,9 @@
     gap: var(--space-xxs);
     padding: 0 var(--space-xs);
     background: var(--color-surface-chrome);
+  }
+  .arrow {
+    width: var(--size-control-sm);
+    height: var(--size-control-sm);
   }
 </style>

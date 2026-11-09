@@ -266,7 +266,6 @@
   .nav [role='tablist'] {
     display: flex;
     flex-direction: column;
-    gap: var(--space-xxs);
     outline: none;
   }
   .tab {

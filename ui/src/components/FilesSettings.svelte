@@ -305,9 +305,11 @@
                 <input class="field note" aria-label="Note for {short(f.path)}" placeholder="What is it for? Agents see this" value={f.note ?? ''} spellcheck="false" onblur={(e) => saveNote(f, e.currentTarget)} onkeydown={(e) => noteKey(e, f)} />
                 {#if noteErr?.path === f.path}<span class="nerr">{noteErr.text}</span>{/if}
               </span>
-              {#key `${f.path}:${rev}`}
-                <Select width="hug" aria-label="Access for {short(f.path)}" value={f.access} options={ACCESS_OPTIONS} onchange={(access) => setAccess(f, access)} />
-              {/key}
+              <span class="access">
+                {#key `${f.path}:${rev}`}
+                  <Select aria-label="Access for {short(f.path)}" value={f.access} options={ACCESS_OPTIONS} onchange={(access) => setAccess(f, access)} />
+                {/key}
+              </span>
               <span class="acts">
                 <button class="act" aria-label="Reveal in Finder" title="Reveal in Finder" disabled={!f.exists} onclick={() => reveal(f)}>{ICON.reveal}</button>
                 {#if !folder}<button class="act" aria-label="Open in editor" title="Open in editor" disabled={!f.exists} onclick={() => edit(f)}>{ICON.editor}</button>{/if}
@@ -326,6 +328,11 @@
 </div>
 
 <style>
+  /* One width for every row, so the column lines up (04-project-settings-files). */
+  .access {
+    flex: none;
+    width: 136px;
+  }
   .files {
     display: flex;
     flex-direction: column;
