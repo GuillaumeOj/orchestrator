@@ -6,7 +6,7 @@
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `sidebarTree` | `{ [projectId \| "f:<featureId>"]: boolean }` (expanded; the keys `Sidebar.svelte` already uses) | expanded | tree state of the sidebar (replaces the in-memory `collapsed` of `Sidebar.svelte`; not `sidebar`, which is the existing show/hide boolean, app.svelte.js:984) |
+| `sidebarTree` | `{ [projectId \| "f:<featureId>"]: boolean }` (expanded; the keys `Sidebar.svelte` already uses) | expanded | tree state of the sidebar (replaces the in-memory `collapsed` of `Sidebar.svelte`; not `sidebar`, which is the existing show/hide boolean, `app.sidebar` in `app.svelte.js`, saved by `saveLayout`) |
 | `workspace.project` | `projectId \| "all"` | the focused project, else `"all"` | project context of the workspace tabs |
 | `dock.view` | `"agents" \| "shells"` | the saved value; else the kind of the saved `dock.active`; else `"agents"` if an agent tab exists, else `"shells"` | dock view |
 | `dock.agentProject` | `projectId \| "all"` | `"all"` | agents filter |

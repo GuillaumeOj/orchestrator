@@ -40,9 +40,9 @@ Keep the row-per-integration list; redraw as cards, one per integration: name, s
 
 Groups: **Policy** (what the Overwatch answers alone: the existing options, as Select/segments), **Answering from the docs**, **Notifications** (moved here from the palette-only `notify.desktop` / `notify.sound` toggles: two switches "Desktop notifications", "Sound", stored under `notifications`). Autosaved. States: normal, Overwatch off (rows disabled with the reason as tooltip).
 
-### 1.4 Permissions (today: PermissionsSettings: hold seconds, rules list)
+### 1.4 Permissions (today: PermissionsSettings: policy files, defaults when no rule matches, hold)
 
-Groups: **Prompt hold** (hold seconds: number input with `s` suffix, 1–600, default 300, key `permissions.hold_secs`, autosave on blur), **Rules** (table: scope Select · tool/pattern input · decision Select Allow/Ask/Deny · row delete icon (bin, tooltip "Delete rule"); header **Add rule** primary-ghost; deny over ask over allow is stated once as help text). States: empty rules ("No rule yet. Every permission prompt goes to the Inbox"), one invalid row (error border + message).
+Groups, as the code has them: **Policy files** (one row per file: the global one and one per project; path, title, parse error or warnings, **Open in editor** / **Create and open**; rules are edited in the file, not in a table), **When no rule matches** (two Selects, Team roles and Solo sessions: Allow / Ask me / Deny as `EFFECTS` lists them; a muted line when the Overwatch is off), **Hold** (hold seconds: number input with `s` suffix, whole number, default 300, `0` = do not hold, the prompt stays in the agent's pane; must stay above the Overwatch's permission time; key `permissions.hold_secs`, autosave on blur). States: no policy file yet, a file with a parse error (last good version still used), warnings list with "Show n more", hold rejected (error under the input, previous value kept). A rules table is **not** in this section: it would be a new editor for the policy files, out of scope.
 
 ### 1.5 MCP servers (today: McpSettings: registry list, per server detail, "needs you" count)
 
@@ -103,7 +103,7 @@ Form with footer (Name, Default branch are the only dirty-able fields). States: 
 
 ### 2.2 Files (exists; redo to the rules)
 
-Per-file access (the CLAUDE.md-like files and the docs folder the agents may read/write): list of rows, file path (mono) · access Select (Read / Read & write / Hidden: it is a Select in the frames, a radio pair in code today) · **Open in nvim** icon · remove icon. **Add file…** at the list's end. Form with footer. States: normal, empty, a path that no longer exists (amber row "Missing" + Remove).
+Per-file access (the CLAUDE.md-like files and the docs folder the agents may read/write): list of rows, file path (mono) · access Select (Read & write / Read only, `ACCESS` in `lib/projectfiles.js`; a click toggles it in code today) · note · **Open in nvim** icon · remove icon. **Add file…** at the list's end (dropping from Finder also adds). **Autosaved per action, no footer** (`FilesSettings` has no Save today): it is the exception to the form-with-footer rule of §0.3. States: normal, empty, a path that no longer exists (amber row "Missing" + Remove).
 
 ### 2.3 Task backend (exists)
 
@@ -115,7 +115,7 @@ Keep its content; apply the rules (cards, footer, no Kbd). Group the existing co
 
 ### 2.5 Allocation (exists: `AllocationSettings`)
 
-Groups: **Budget priority** (Select), **Max concurrency** (stepper), **Per-role overrides** (table: role · concurrency stepper · priority Select). Footer Save/Revert. States: normal, over the global cap (amber help "The global live cap is 3").
+Groups, as the code has them: **This project's share** (Weight input, Tier Select: critical / high / normal / low, Hard cap % input, the cap bar against the weekly use), **Rest of the plan** (read-only table of the other projects' shares, or "Proposed split" before the plan is confirmed), **Keep in the plan / Remove** (a weight of 0 until Save). Footer Save/Revert. States: normal, plan not confirmed (proposed split, read only), removal pending, a value out of range (error under the input). There are no per-role overrides and no concurrency stepper here.
 
 ### 2.6 Notion (exists, small)
 
