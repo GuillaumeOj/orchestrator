@@ -44,7 +44,7 @@
 - **App settings** (⌘,), **Project settings** (from the project pane's Settings button, the palette, and MCP deep links with a project) and the **Week planner** open as an **in-app floating window**: centered over the app, dimmed backdrop, title bar with the window name (and the project for Project settings), close ×, Esc closes, section nav on the left as today. Not a workspace tab, not an OS window.
 - One window at a time; opening another replaces it. Deep links (`openSettings(section, server)`, banners, decision cards) open the window on that section.
 - Sizes: settings 960 × min(760, viewport − 80); planner 1100 × same; both shrink with the app window (min 720 wide), content scrolls inside.
-- Unsaved edits: settings save per field as today; no extra confirm on close.
+- Unsaved edits: autosaved sections need no confirm on close; sections with a Save/Revert footer (settings-brief §0.3) ask "Discard changes?" when closed or left while dirty (design-notes §3.3).
 
 ### 3.4 One pane, one project (problems 6, 7, 10)
 - **No splits.** The workspace is one tab strip and one pane. Split right/below (leader v / s), the pane numbers (⌘1…9 become "tab 1…9") and pane zoom go away; nvim and shells opened "in a split" go to a tab (nvim) or the dock (shells). A saved layout with splits restores as tabs in reading order.
@@ -57,7 +57,7 @@
 - **Shell tab title follows the shell's working directory**: `zsh · ~/dev/orch/ui` (home shortened to `~`, path truncated from the left beyond ~32 chars, full path in the tooltip). Source: OSC 7 (cwd) with a fallback to OSC 0/2 (title) — see api-contract.md. Command shells (`runInPane`, trust) keep their fixed title.
 
 ### 3.6 Select component (problem 8)
-- One **Select** (single value, optional search for > 8 options, optional group headers, disabled options with a reason) and one **Menu** (actions) built on the same popover; same height, border, radius, focus ring and error state as the text input. Keyboard: ↑/↓, Home/End, type-ahead, Enter/Space, Esc; opens below or flips above; aria `combobox`/`listbox`. Used by the dock and workspace dropdowns and replaces the 27 native `<select>`.
+- One **Select** (single value, optional search for > 8 options, optional group headers, disabled options with a reason) and one **Menu** (actions) built on the same popover; same height, border, radius, focus ring and error state as the text input. Keyboard: ↑/↓, Home/End, type-ahead, Enter/Space, Esc; opens below or flips above; aria `combobox`/`listbox`. Used by the dock and workspace dropdowns and replaces every native `<select>` (27 at the audit base, 34 after Intake).
 
 ### 3.7 Remembered state (problem 9)
 - Persisted across restarts: sidebar tree expansion (per project and feature), workspace project context, dock view and agent project filter. Contract in api-contract.md.

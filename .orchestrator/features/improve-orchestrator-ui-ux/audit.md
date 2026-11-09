@@ -242,3 +242,17 @@ Model lists differ (models only, not counting default/custom): Dialogs :259 (3, 
 - **Renderer**: home = Terminal & editor; Memory links to it, no second control. **Live cap**: home = Pacing policy; Memory links to it.
 - **Project name, default branch, fetch, trust, remove**: edited in Project settings › General; the project pane keeps the status (read-only card) and the header icons; Trust in a pane stays in the pane's `⋯` and in General (rule 2: the pane = the action resolving the state, General = the record).
 - Settings and Project settings: every section has its frame (spec §7 R14); no `Kbd` in the nav.
+
+## 11. Added after the audit base (Intake #48, Claude Code update, Overwatch column resize)
+
+The branch was rebased after this audit was read (spec §7), so these were not audited. Same rules (H: no `Kbd` inside or next to a button; key in the tooltip). Anchor on the component, lines drift.
+
+| Component | `Kbd` / duplicate found | Decision |
+|---|---|---|
+| `components/IntakeSettings.svelte` (Save, ~:547) | `Save <Kbd ⌘+⏎>` | pill goes; tooltip `Save · ⌘⏎`; footer Save/Revert (settings-brief §2.4) |
+| `components/IntakeGlobalSettings.svelte` (Save, ~:105) | `Save <Kbd ⏎>` | same |
+| `components/ClaudeSettings.svelte` (~:70), `ClaudeUpdateBlock.svelte` | key line `u` / `r` / `esc back to sections` | line goes; keys in the tooltips of Update / Check now; settings-brief §1.1 |
+| `components/mission/ReadyRow.svelte`, `ReadyDetails.svelte`, `ReadyLine.svelte` (Ready to start lane) | Start team run / Start solo / Hide / Unhide / Open source buttons each carry a `Kbd` (`⏎ t a x o`) | pills go; tooltips `Start team run · t` etc.; the keys stay in the Mission control group of the Keyboard shortcuts sheet |
+| `<select>` x7 in `IntakeSettings` (6) and `IntakeGlobalSettings` (1) | native dropdowns | listed in design-notes §2.1.1 #28-34 |
+| Ready to start lane vs the project context | `lanes()` and the palette `intake.refresh` / `intake.plan` read the removed Mission control filter | follow the workspace project context (design-notes §5.1 rule 7, §5.3) |
+| `components/chat/ChatResize.svelte` | resize handle (not a control with a hint) | kept, R1 |

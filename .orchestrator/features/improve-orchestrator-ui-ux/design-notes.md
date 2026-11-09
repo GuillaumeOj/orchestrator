@@ -11,7 +11,7 @@
 3. **Settings, Project settings, Week planner, Keyboard shortcuts** are in-app floating windows, never workspace tabs (§3).
 4. **Single pane, project context**: no splits, no zoom, no pane numbers; one tab strip with a project Select, tabs that never shrink, `‹ ›` overflow (§4, §5).
 5. **Dock = Agents / Shells views** with a project filter on Agents; shells titled by their live directory (§5, §6).
-6. **Select** and **Menu** replace the 27 native `<select>` and every ad-hoc popover menu (§2).
+6. **Select** and **Menu** replace every native `<select>` (27 at the audit base + 7 added by Intake, §2.1.1) and every ad-hoc popover menu (§2).
 7. **Remembered**: sidebar tree, workspace project, dock view and agent filter (§5.4).
 
 New shared components (all in `components/`): `Select.svelte`, `Menu.svelte`, `Tooltip.svelte` (action `use:tooltip`), `TabStrip.svelte`, `FloatingWindow.svelte`, `ShortcutsSheet.svelte`. Deleted: `Node.svelte`, `PaneFrame.svelte` (header), `mission/ProjectFilter.svelte`, `SettingsPane.svelte`/`ProjectSettingsPane.svelte`/`PlannerPane.svelte` as *panes* (their bodies move into windows, §3). `Kbd.svelte` stays (tooltips, palette, menus, sheet, leader overlay) with no hover state and `pointer-events: none`.
@@ -100,7 +100,7 @@ Form integration: Select renders a hidden `<input name value>` so form-based cod
 
 **Shared lists** (new `lib/options.js`): `MODELS` (default + 4 aliases + custom, with fable) used by `ModelSelect`, `Dialogs` new session, `OverwatchSettings`, `RoleMcp`, `TeamCanvasPane`; `EFFORTS`, `PERMISSION_MODES`, `TIERS`, `REVIEW_MODES`, `PERMISSION_PROFILES`, `BUDGET_PRIORITIES`, `BOARD_COLUMNS` (the static lists of §2.1.1). Name clash: `lib/ecosystem.js` already exports `MODELS = ['opus','sonnet','haiku']` (RoleMcp, no fable) and `lib/canvas.js` has `MODEL_ALIASES` (4, with fable): replace both with the new list, do not add a third. The **required-value** pickers (Overwatch model, RoleMcp downgrade target) use the aliases only: no "default" and no "custom…" entry (`MODEL_OPTIONS` = aliases, `MODELS` = default + aliases + custom for the optional ones); `RoleMcp.defaultTo` and `downgradeProblem` (`family()`) must be checked with the 4th alias, and the core must accept it for the Overwatch model before it is offered there. Disabled model options carry `reason` ("Not in your plan (Max only)", `02-select.png`) when the plan lacks them. `ModelSelect.svelte` becomes a thin wrapper around Select + the "custom…" text input.
 
-#### 2.1.1 The 27 native `<select>` (all to Select)
+#### 2.1.1 The native `<select>` (all to Select): 27 at the audit base, plus the Intake ones below
 
 Lines from the audit base; use `grep -rn "<select" ui/src` to relocate. After the change `grep -rn "<select" ui/src` returns nothing (test, §10).
 
@@ -135,6 +135,20 @@ Lines from the audit base; use `grep -rn "<select" ui/src` to relocate. After th
 | 27 | `panes/TeamCanvasPane.svelte:699` | review mode | `REVIEW_MODES` (3) |
 
 (27 `<select>` elements, checked with `grep -rn "<select" ui/src` at the audit base. Not a `<select>` today but drawn as a Select in `04-project-settings-files-*`: the per-file access control of `components/FilesSettings.svelte:319` (a radio pair `read` / `write`): replace it with the same Select, 2 static options `read` / `read & write`; keep `setAccess`.)
+
+**Added after the audit base (Intake, #48; the branch was rebased on it, spec §7)**: 7 more `<select>` (`grep` now returns 34), all to Select with the same rules; `noselect.test.js` fails until they move.
+
+| # | file:line (anchor on the id) | what | options |
+|---|---|---|---|
+| 28 | `components/IntakeGlobalSettings.svelte:86` (`#ig-refresh`) | refresh interval | static |
+| 29 | `components/IntakeSettings.svelte:430` (`#in-ms`) | GitHub milestone | dynamic |
+| 30 | `components/IntakeSettings.svelte:442` (`#in-proj`) | GitHub project | dynamic, searchable |
+| 31 | `components/IntakeSettings.svelte:454` (`#in-status`) | GitHub project status | dynamic |
+| 32 | `components/IntakeSettings.svelte:477` (`#in-team`) | Linear team | dynamic, searchable; `error` state (`class:bad`) maps to Select `error` |
+| 33 | `components/IntakeSettings.svelte:486` (`#in-lproj`) | Linear project | dynamic, searchable |
+| 34 | `components/IntakeSettings.svelte:493` (`#in-llabel`) | Linear label | dynamic |
+
+Their `onchange={edit}` handlers (dirty tracking) become the Select `onchange`; `#in-team` also resets `lproject` / `llabel` there.
 
 Also move to the new components: the ad-hoc popovers listed in §2.2 and `components/mission/ProjectFilter.svelte` (deleted, §5.3).
 
@@ -193,7 +207,7 @@ Add `app.window = null` (not persisted: a window never reopens at launch, and `r
 | Function (today) | After |
 |---|---|
 | `openSettings(section, server, projectId)` (:421) | `app.window = { kind: 'settings', section: section ?? 'integrations', server, projectId }`. If a Settings window is already open: update `section`/`server` in place (focus stays in the window, nav follows). If another window is open: replace. No `addPane`, no `findPane`. `projectId` is accepted only so callers can be rewritten: **a non-null `projectId` with section `mcp` is rewritten to `openProjectSettings(projectId, 'mcp')`; with any other section it is ignored** (`fixSource` in `intake.svelte.js` calls `openSettings('integrations', 'github' | 'linear', projectId)`: the project only says where the error came from, the Integrations window opens as for a null `projectId`) (audit §2.5): palette `settings.mcp` project variant (:1264), `RoleMcp` (:35/:48), `Dialogs` (:323), `routeOpen` (:466). |
-| `openProjectSettings(projectId, section)` (:431) | `app.window = { kind: 'project-settings', projectId, section: section ?? 'backend' }` (default section stays `backend` until General is designed; the nav lists General first as a placeholder). `toast('No project in focus')` guard stays. One window total, not one per project: opening it for another project replaces it. |
+| `openProjectSettings(projectId, section)` (:431) | `app.window = { kind: 'project-settings', projectId, section: section ?? 'backend' }` (default section stays `backend`; General is now designed, §13.2, and is listed first in the nav). `toast('No project in focus')` guard stays. One window total, not one per project: opening it for another project replaces it. |
 | `openSingleton('planner')` (:379) | `openPlanner()`: `app.window = { kind: 'planner' }`. `openSingleton` keeps handling `mission`, `setup` only. Palette `planner`, leader `g`, banners, PacingIndicator popover, Settings › Pacing link, ReportPane Esc call `openPlanner`. |
 | (new) `openShortcuts()` | `app.window = { kind: 'shortcuts' }`; palette `shortcuts` ("Keyboard shortcuts"), chord `cmd+/` in `lib/keyboard.js:CHORDS`, Help menu item (§3.4). |
 | (new) `closeWindow()` | `app.window = null`; restores focus (below). |
@@ -220,7 +234,7 @@ Add `app.window = null` (not persisted: a window never reopens at launch, and `r
 - **Close** (Esc, ×, backdrop click, `closeWindow()`): `app.window = null`, restore focus; a terminal pane regains the keyboard through `focusPane`'s existing microtask.
 - **⌘,** with Settings open: close it (toggle). With another window open: replace by Settings. **⌘/** likewise for the sheet. Other global chords (⌘K palette, ⌘P jump) open the palette above the window (`Palette` z-index > window); ⌘T / ⌘N open their dialog above the window; the dialog layer is above the window layer. ⌘W with a window open closes the window, not a tab.
 - Dialogs (`Dialogs.svelte`: new session, add project, launch, plan, delete, confirm) stay `app.overlay` dialogs, drawn with the **same shell** (backdrop, title bar, ×, focus trap) at their current small sizes: factor `Dialogs.svelte`'s `.dlg` wrapper into `FloatingWindow` (no nav, `size` per dialog). The Cancel/submit buttons lose their `esc` / `⌘⏎` / `⏎` pills; tooltips "Cancel · esc", "Start session · ⌘⏎".
-- Settings saves per field as today; no confirm on close; the Week planner and Settings keep polling/`onTopics` while open and stop on close (`onMount` cleanup already does it).
+- Settings sections that autosave (settings-brief §0.3) need no confirm on close. **Sections with a Save/Revert footer** (Task backend, Intake, Notion, Allocation, General) are guarded: closing the window (Esc, ×, backdrop click, ⌘W, replacing it by another window) or switching section while the form is dirty asks "Discard changes?" (Discard / Keep editing); one stray backdrop click must not lose typed text. A backdrop click on a dirty window does nothing but flash the footer; the Week planner and Settings keep polling/`onTopics` while open and stop on close (`onMount` cleanup already does it).
 
 ### 3.4 Native menu and Help
 
@@ -293,7 +307,7 @@ Rules:
 4. **Sidebar / icon rail**: clicking a project sets the context (`openProject` already sets `app.selectedProject`; it now also calls `setContext`). Clicking a feature or agent row there: feature → its project's context + `openFeature`; agent → `openAgent` (dock; the context is **not** changed). In `all`, no project row/mark is highlighted: `Sidebar.svelte` and `IconRail.svelte` derive "current" from `app.workspace.project !== 'all' ? it : null` (today `app.selectedProject`; keep `selectedProject` for the inspector but not for the highlight).
 5. **Restore**: unknown project id → `'all'` (api-contract).
 6. **Default** when no saved value: the focused project, else `all`.
-7. Context Select (`Workspace.svelte`, compact): options `All projects` + `projects()`; counts = visible tabs per project; waiting dot via `counts(p.id).needs_you > 0` (`lib/now.svelte.js:counts`); the closed value shows the project name; width hugs (max 220). Palette `mission.filter` (:1220) becomes "Set the project context…" → opens this Select (`app.contextOpen = true`); `missionFilterOpen`, `app.mission`, `setMissionFilter` and the `mission` settings key are removed (the key is ignored on read).
+7. Context Select (`Workspace.svelte`, compact): options `All projects` + `projects()`; counts = visible tabs per project; waiting dot via `counts(p.id).needs_you > 0` (`lib/now.svelte.js:counts`); the closed value shows the project name; width hugs (max 220). Palette `mission.filter` (:1220) becomes "Set the project context…" → opens this Select (`app.contextOpen = true`); `missionFilterOpen`, `app.mission`, `setMissionFilter` and the `mission` settings key are removed (the key is ignored on read). Two Intake consumers of `app.mission.projects` must move to the context first, or they throw once `app.mission` is gone: `planProjects()` (palette "Plan with the Overwatch…": the context's project, else all) and the `intake.refresh` palette command ("Refresh Ready to start": same). Test in `context.test.js`.
 
 ### 5.2 Dock views and filter
 
@@ -334,7 +348,7 @@ export const dockTabs  = () => app.dock.view === 'agents'
 | agent, shell | dock only; not in the workspace strip (the dock has its own filter) | — |
 | `settings`, `project-settings`, `planner` | windows, not panes | — |
 
-**Mission control** reads `app.workspace.project` instead of `app.mission.projects`: `MissionPane.svelte` (`:54` filter derivation, `:78`, `:200` `f` key, `:230-239`, `:294` `ProjectFilter`, the Filter button and toolbar hint) lose all filter UI; rows use `lanes(...)` filtered by `project === ctx` (`lib/mission.js:lanes` takes a `projects: string[] | null` argument today: pass `[ctx]` or `null`). Header: "Mission control" + muted "in <project> · follows the project context" or "every project · follows the project context". Empty: "Nothing in <project>" + **Show all projects** (`setContext('all')`). `mission-fixture.js` / `mission-pane.test.js` adapt.
+**Mission control** reads `app.workspace.project` instead of `app.mission.projects`: `MissionPane.svelte` (`:54` filter derivation, `:78`, `:200` `f` key, `:230-239`, `:294` `ProjectFilter`, the Filter button and toolbar hint) lose all filter UI; rows use `lanes(now, filter, day, { projects, showHidden })` (`lib/mission.js`): its **second** argument `filter` is the project-id list (`string[] | null`): pass `[ctx]` or `null`. Do **not** pass the context as the option `projects`: that one is the project *objects* list (names for the Ready lane's source rows, `readyLane`), and the Ready to start lane (Intake) follows the same filter. Header: "Mission control" + muted "in <project> · follows the project context" or "every project · follows the project context". Empty: "Nothing in <project>" + **Show all projects** (`setContext('all')`). `mission-fixture.js` / `mission-pane.test.js` adapt.
 
 ### 5.4 Persistence (saved with `saveLayout`, `lib/app.svelte.js`)
 
@@ -342,7 +356,7 @@ The `layout` setting value gains keys (api-contract): `sidebarTree`, `workspace:
 
 | Key | Source of truth | Written | Read in `restoreLayout` |
 |---|---|---|---|
-| `sidebarTree` `{ [projectId \| "projectId/featureSlug"]: boolean }` | replaces `let collapsed = $state({})` in `Sidebar.svelte:14` (keys already used: `collapsed[p.id]` and `collapsed[k]` with `k = \`f:${f.id}\``: the contract's `"projectId/featureSlug"` format is not what the code keys on; keep `p.id` / `f:<featureId>` and prune on those); store **expanded** booleans in `app.sidebarTree`, default expanded when the key is absent | caret click → `app.sidebarTree[k] = !…; saveLayout()` | `app.sidebarTree = saved.sidebarTree ?? {}`; keys of projects/features that no longer exist are pruned on read |
+| `sidebarTree` `{ [projectId \| "f:<featureId>"]: boolean }` | replaces `let collapsed = $state({})` in `Sidebar.svelte:14` (keys already used: `collapsed[p.id]` and `collapsed[k]` with `k = \`f:${f.id}\``: the contract uses the same keys; prune on `p.id` / `f:<featureId>`); store **expanded** booleans in `app.sidebarTree`, default expanded when the key is absent | caret click → `app.sidebarTree[k] = !…; saveLayout()` | `app.sidebarTree = saved.sidebarTree ?? {}`; keys of projects/features that no longer exist are pruned on read |
 | `workspace.project` | `app.workspace.project` | `setContext` | unknown id → `'all'`; absent → focused project else `'all'` |
 | `dock.view` | `app.dock.view` | view Select | absent → `'agents'` if an agent tab exists else `'shells'` |
 | `dock.agentProject` | `app.dock.agentProject` | project Select | unknown id → `'all'` |
@@ -483,7 +497,7 @@ Rust: `cargo test -p orch-app` (the `term_cwd`/`Term::cwd` test above; menu item
 ## 11. Suggested slicing for the implementation feature
 
 1. **Foundations** (no visible change): `Tooltip`, `Select`, `Menu`, `lib/options.js`, `FloatingWindow`, `TabStrip` with tests (§10 first five).
-2. **Select sweep**: the 27 `<select>` + `ModelSelect` + Files picker; `noselect.test.js`.
+2. **Select sweep**: the 34 `<select>` (§2.1.1, Intake included) + `ModelSelect` + Files picker; `noselect.test.js`.
 3. **Hints and duplicates**: audit §2/§4 per file (agent pane + inspector first), `ShortcutsSheet`, `hints.test.js`.
 4. **Windows**: Settings/Project settings/Planner/Shortcuts, `openSettings` rewrite, deep-link rewrites (§3.2), menu.rs Help.
 5. **Single pane + context**: `layout.js` flatten, `Workspace` + `TabStrip`, delete `Node`/`PaneFrame` header/zoom/split commands, `restoreLayout` migration, Mission control context, sidebar/icon-rail highlight.
