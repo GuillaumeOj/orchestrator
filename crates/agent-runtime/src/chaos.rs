@@ -970,12 +970,13 @@ mod scenarios {
         // It works this time, through a slow CLI: the 1 s invariant window passes
         // before the lead takes the paste. A new episode raised then would be closed
         // only by the next tick, after the message is seen, so the window is lifted:
-        // when the retry works, nothing is raised again.
+        // when the retry works, nothing is raised again. The paste watchdog stays
+        // away too (`ACK_KEY` is still 3600): a 1 s ack would press Enter again
+        // during the slow submit.
         cli.set(|s| {
             (s.modal, s.modal_always) = (false, false);
             s.delay_submit = Some(Duration::from_millis(1500));
         });
-        sim.rt.db.set_setting(ACK_KEY, &json!(1)).unwrap();
         sim.rt.db.set_setting(INVARIANT_KEY, &json!(3600)).unwrap();
         let item = sim.items("delivery").remove(0);
         sim.rt.retry_delivery(item.id).unwrap();
