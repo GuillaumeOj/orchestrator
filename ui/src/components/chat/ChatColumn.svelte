@@ -4,13 +4,6 @@
 </script>
 
 <script>
-  // The chat column (FR-1304/1305, P4.3 spec §3.3, notes §1–§10; P4.4 spec §3.9,
-  // notes §1–§4; Penpot 04.3): a column of the shell (not a pane) that the user resizes by its left edge, see ChatResize. Header
-  // (Overwatch · its status · Today ▾ · search) · the down strip · level filter ·
-  // today's thread (morning line, your messages and its replies, cards, lines,
-  // the fold) · the outcome digest · the input (⌘L). Renders `app.now`.
-  // Keys with the chat focused: j/k open cards, a r ⏎ o x u e on the focused
-  // card, c clear the digest, f filter, / search, Esc back to the centre pane.
   import { tick, untrack } from 'svelte';
   import {
     app,
@@ -62,6 +55,14 @@
   import { briefEnded } from '../../lib/intake.js';
   import { clearPlan, intakeUi, planContext, plannedEntries, startBrief } from '../../lib/intake.svelte.js';
   import { errText, invoke, listen } from '../../lib/ipc.js';
+  // The chat column (FR-1304/1305, P4.3 spec §3.3, notes §1–§10; P4.4 spec §3.9,
+  // notes §1–§4; Penpot 04.3): a column of the shell (not a pane) that the user resizes by its left edge, see ChatResize. Header
+  // (Overwatch · its status · Today ▾ · search) · the down strip · level filter ·
+  // today's thread (morning line, your messages and its replies, cards, lines,
+  // the fold) · the outcome digest · the input (⌘L). Renders `app.now`.
+  // Keys with the chat focused: j/k open cards, a r ⏎ o x u e on the focused
+  // card, c clear the digest, f filter, / search, Esc back to the centre pane.
+  import { isTypingTarget } from '../../lib/keyboard.js';
   import { clearDigest, counts, digest } from '../../lib/now.svelte.js';
   import {
     awaiting,
@@ -805,7 +806,7 @@
 
   function onKey(e) {
     if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.target.closest?.('input, textarea')) return;
+    if (isTypingTarget(e.target)) return;
     // A long reply takes its own ⏎ (Show more); it is not a card (notes §2.1).
     if (e.key === 'Enter' && e.target.closest?.('article.text')) return;
     const key = e.key === 'Enter' ? 'enter' : e.key.length === 1 ? e.key : e.key.toLowerCase();

@@ -212,7 +212,8 @@
     position: fixed;
     inset: 0;
     z-index: 45;
-    background: var(--color-surface-chrome);
+    /* Black in both themes: it dims the app (lead decision, T-312). */
+    background: var(--color-backdrop);
     opacity: var(--opacity-backdrop);
   }
   .win {

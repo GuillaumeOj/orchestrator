@@ -211,7 +211,7 @@ describe('Project settings › Files', () => {
     replies.project_file_update = (a) => ({
       files: LIST.map((f) => (f.path === a.path ? { ...f, access: a.access } : f)),
     });
-    await pick(rows(container)[1], 'read');
+    await pick(rows(container)[1], 'Read only');
     await waitFor(() => expect(toasts()).toContain('~/design/app.figcraft is now Read only'));
     expect(sent('project_file_update')[0]).toEqual({
       project: 'shop-api',

@@ -59,6 +59,12 @@ const NATIVE = new Set([
 
 const MODIFIERS = new Set(['Meta', 'Control', 'Alt', 'Shift', 'CapsLock', 'Fn']);
 
+/** Where a key is typed, not a command: a text field, a native select, a Select box. */
+export const TYPING = 'input, textarea, select, [role="combobox"]';
+
+/** The key event's target takes text (pane-local single keys leave it alone). */
+export const isTypingTarget = (el) => !!el?.closest?.(TYPING);
+
 /** `cmd+shift+i`-style name; letters lowercased, digits from `code` (layout safe). */
 export function chordName(e) {
   let key = e.key;

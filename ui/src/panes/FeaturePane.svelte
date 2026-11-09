@@ -1,10 +1,4 @@
 <script>
-  // Feature pane (§9.3, Penpot 04 Feature · 1512): the feature's latest team
-  // run: docs from the integration branch (rendered), tasks, the team with
-  // live states, the timeline (FR-408) with a message box (FR-409), artifacts
-  // and the PR, and the Design section (P3). Keys: e open the doc in nvim, b
-  // board, c canvas, p pause / resume the team, m message, d Design,
-  // N publish / refresh the docs in Notion (FR-505).
   import { onMount, untrack } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
   import DesignSection from '../components/DesignSection.svelte';
@@ -19,9 +13,17 @@
   import { isDesign } from '../lib/ecosystem.js';
   import { ago, dayHm } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  // Feature pane (§9.3, Penpot 04 Feature · 1512): the feature's latest team
+  // run: docs from the integration branch (rendered), tasks, the team with
+  // live states, the timeline (FR-408) with a message box (FR-409), artifacts
+  // and the PR, and the Design section (P3). Keys: e open the doc in nvim, b
+  // board, c canvas, p pause / resume the team, m message, d Design,
+  // N publish / refresh the docs in Notion (FR-505).
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { backendLabel, remoteName } from '../lib/linear.js';
   import { onTopics, runAttention, runPhase, statusOf } from '../lib/now.svelte.js';
   import { handle, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
+  import { tooltip } from '../lib/tooltip.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -196,7 +198,7 @@
   }
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select, [role="combobox"]')) {
+    if (isTypingTarget(e.target)) {
       if (e.key === 'Escape' && !e.defaultPrevented) (root?.focus(), e.preventDefault());
       return;
     }
@@ -338,7 +340,7 @@
             <div class="msg">
               <Select width="hug" bind:value={to} options={toOptions} aria-label="To" noun="node" />
               <input class="field grow" bind:this={msgBox} bind:value={msg} placeholder="Message {to === lead ? 'the lead' : to}…" onkeydown={(e) => e.key === 'Enter' && (e.preventDefault(), send())} />
-              <Kbd keys="⏎" />
+              <button type="button" class="icon-btn" aria-label="Send" disabled={!msg.trim()} use:tooltip={{ label: 'Send', key: '⏎' }} onclick={send}>{'\u{F048A}'}</button>
             </div>
           {/if}
         </section>

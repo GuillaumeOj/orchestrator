@@ -1,10 +1,4 @@
 <script>
-  // Mission control (FR-1302, P4.2 spec §3.2–3.4, notes p4-2, Penpot 04):
-  // what runs, waits on what, is queued why and was done today, on one
-  // screen. A render of `now` (§9.1 principle 10): it fetches nothing, and
-  // its one timer is the 30 s relative-time clock. Rows and lanes come from
-  // `lanes()` (lib/mission.js); this pane keeps the selection, the open
-  // lanes and details, and the keys (notes §3.1).
   import { untrack } from 'svelte';
   import Kbd from '../components/Kbd.svelte';
   import ProjectFilter from '../components/mission/ProjectFilter.svelte';
@@ -38,6 +32,13 @@
   import { isOpen } from '../lib/inbox.js';
   import { ageText, modeOf, rateLimitedUntil } from '../lib/intake.js';
   import { fixSource, hideItem, intakeUi, openSource, planWithOverwatchIn, refreshIntake, setUpIntake, startItem, undoHide, unhideItem } from '../lib/intake.svelte.js';
+  // Mission control (FR-1302, P4.2 spec §3.2–3.4, notes p4-2, Penpot 04):
+  // what runs, waits on what, is queued why and was done today, on one
+  // screen. A render of `now` (§9.1 principle 10): it fetches nothing, and
+  // its one timer is the 30 s relative-time clock. Rows and lanes come from
+  // `lanes()` (lib/mission.js); this pane keeps the selection, the open
+  // lanes and details, and the keys (notes §3.1).
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { allowed, COUNT_KEYS, DONE_ROWS, decisionOf, defaultTarget, filterLabel, footerText, hiddenText, hints, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
   import { attention } from '../lib/now.svelte.js';
   import { LEVEL } from '../lib/status.js';
@@ -214,7 +215,7 @@
   function onKey(e) {
     if (filterOpen || e.defaultPrevented) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.target.closest?.('input, textarea, select, [role="combobox"]')) return;
+    if (isTypingTarget(e.target)) return;
     const k = e.key;
     const run = (fn) => {
       e.preventDefault();

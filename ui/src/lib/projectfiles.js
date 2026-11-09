@@ -12,12 +12,19 @@ export const ICON = {
   error: '\u{F0159}',
 };
 
+/** A project file's access (`write` / `read` are the stored ids): the Select's options and the toast's words. */
 export const ACCESS = [
-  { id: 'write', label: 'Read & write' },
-  { id: 'read', label: 'Read only' },
+  { value: 'write', label: 'Read & write' },
+  { value: 'read', label: 'Read only' },
 ];
 
-export const accessLabel = (id) => ACCESS.find((a) => a.id === id)?.label ?? id;
+export const accessLabel = (id) => ACCESS.find((a) => a.value === id)?.label ?? id;
+
+/** The access options of one row, each with what it lets agents do (the option's tooltip). */
+export const accessOptions = (kind, folder) => [
+  { ...ACCESS[0], detail: `Agents can change this ${kind}` },
+  { ...ACCESS[1], detail: `Agents can only read this ${folder ? "folder's files" : 'file'}` },
+];
 
 /** One path per non-empty line. */
 export const pathLines = (text) =>

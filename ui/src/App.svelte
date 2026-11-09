@@ -27,7 +27,7 @@
   import { startDev } from './lib/dev.js';
   import { loadUiFont, prepareKitty } from './lib/fonts.js';
   import { inTauri, invoke, listen } from './lib/ipc.js';
-  import { classify } from './lib/keyboard.js';
+  import { classify, isTypingTarget } from './lib/keyboard.js';
   import { connectNow, onTopics } from './lib/now.svelte.js';
 
   // The `now` topics app_state answers for (its non-attention data): the
@@ -40,6 +40,8 @@
   let ready = $state(false);
   let lastKeyCommand = { id: null, at: 0 };
   const isNav = (k) => k === 'palette' || k === 'jump';
+  // An open Select or Menu takes the Esc first (it closes itself, not the inspector overlay).
+  const OPEN_POPOVER = '[role="combobox"][aria-expanded="true"], [aria-haspopup="menu"][aria-expanded="true"]';
   // With a window open (design-notes §3.3): the palette and jump open above it,
   // ⌘T / ⌘N their dialog above it, ⌘W closes it, ⌘, / ⌘/ toggle or replace it;
   // every other chord and leader key waits until it closes.
@@ -50,7 +52,7 @@
   function onKeyDown(e) {
     if (e.isComposing) return;
     const inXterm = !!e.target.closest?.('.xterm');
-    const inField = !inXterm && !!e.target.closest?.('input, textarea, select, [role="combobox"]');
+    const inField = !inXterm && isTypingTarget(e.target);
     const r = classify(e, keyContext(e.target));
     const stop = () => {
       e.preventDefault();
@@ -82,7 +84,7 @@
         return stop();
       default:
         // The watch-mode strip's Esc goes back to Mission control; Esc anywhere else closes the overlay.
-        if (e.key === 'Escape' && inspectorOverlay() && !app.window && !inXterm && !document.querySelector('[role="combobox"][aria-expanded="true"]') && !e.target.closest?.('[data-watch]')) {
+        if (e.key === 'Escape' && inspectorOverlay() && !app.window && !inXterm && !document.querySelector(OPEN_POPOVER) && !e.target.closest?.('[data-watch]')) {
           app.inspector = false;
           stop();
         }

@@ -1,11 +1,12 @@
 <script>
+  import { onMount } from 'svelte';
+  import { app, openPlanner, toast } from '../lib/app.svelte.js';
+  import { errText, invoke } from '../lib/ipc.js';
   // Settings › Pacing policy (live-cap feature, design-notes.md): the base live cap and the
   // off-hours live cap, the caps they give per Governor state and under memory pressure (read
   // only, recomputed while typing), and the cap in effect now. ↑/↓ step, ⏎ applies, esc leaves
   // the field, then the section; r retries a failed load.
-  import { onMount } from 'svelte';
-  import { app, openPlanner, toast } from '../lib/app.svelte.js';
-  import { errText, invoke } from '../lib/ipc.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { checkCap, derivedCaps } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
   import IntakeGlobalSettings from './IntakeGlobalSettings.svelte';
@@ -126,7 +127,7 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, textarea, select, [role="combobox"]')) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
     if (e.key === 'r' && loadError) {
       e.preventDefault();
       load();

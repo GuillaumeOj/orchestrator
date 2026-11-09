@@ -1,10 +1,4 @@
 <script>
-  // Weekly report (FR-818, Penpot 04 Weekly report, J8 · 4): used at reset,
-  // plan vs actual per allocation, use by project / feature / role / model in
-  // pp of the week (≈ API $ muted, D7), time in each state, governor actions,
-  // model windows and the past reports. The current week reads "so far".
-  // Keys: 1–4 breakdown, R reports list, [ ] previous / next report,
-  // e copy as markdown, ⏎ plan next week, esc back to the Week planner.
   import { onMount, untrack } from 'svelte';
   import Kbd from '../components/Kbd.svelte';
   import PressurePill from '../components/PressurePill.svelte';
@@ -13,6 +7,13 @@
   import { dayHm, dayTime } from '../lib/format.js';
   import { reportLine, reportTip } from '../lib/intake.js';
   import { errText, invoke } from '../lib/ipc.js';
+  // Weekly report (FR-818, Penpot 04 Weekly report, J8 · 4): used at reset,
+  // plan vs actual per allocation, use by project / feature / role / model in
+  // pp of the week (≈ API $ muted, D7), time in each state, governor actions,
+  // model windows and the past reports. The current week reads "so far".
+  // Keys: 1–4 breakdown, R reports list, [ ] previous / next report,
+  // e copy as markdown, ⏎ plan next week, esc back to the Week planner.
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { ACTION_LABEL, API_TIP, delta, kpis, minutes, noData, overwatchLast, reportMarkdown, stateBar, TABS, usd, weekNo } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
@@ -70,7 +71,7 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, textarea, select')) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
     const k = e.key;
     const n = Number(k);
     if (n >= 1 && n <= 4) tab = TABS[n - 1].id;

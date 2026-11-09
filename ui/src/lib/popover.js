@@ -45,17 +45,21 @@ export function popoverStyle(p, minWidth) {
 
 /**
  * Closes on a pointer down outside `inside()` nodes, a scroll that is not inside
- * them, and window blur. Returns the cleanup.
+ * them, the focus moving outside them, and window blur. Returns the cleanup.
  */
 export function dismissOn(inside, close) {
   const within = (t) => inside().some((n) => n?.contains(t));
   const down = (e) => !within(e.target) && close('outside');
   const scroll = (e) => !within(e.target) && close('scroll');
   const blur = () => close('blur');
+  // The focus moved elsewhere by a key (⌘1, ⌘J) or by code: the popover must not float over the new place.
+  const focus = (e) => !within(e.target) && close('focus');
   document.addEventListener('pointerdown', down, true);
   document.addEventListener('scroll', scroll, true);
+  document.addEventListener('focusin', focus, true);
   window.addEventListener('blur', blur);
   return () => {
+    document.removeEventListener('focusin', focus, true);
     document.removeEventListener('pointerdown', down, true);
     document.removeEventListener('scroll', scroll, true);
     window.removeEventListener('blur', blur);

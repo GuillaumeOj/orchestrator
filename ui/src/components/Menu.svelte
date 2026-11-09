@@ -297,7 +297,8 @@
   .ck {
     flex: none;
     width: var(--size-icon-sm);
-    color: var(--color-accent-default);
+    /* Quieter than the accent (02-select, 02-menu). */
+    color: var(--color-text-secondary);
     font: var(--text-icon);
   }
   .lab {

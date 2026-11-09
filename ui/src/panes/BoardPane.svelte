@@ -1,10 +1,4 @@
 <script>
-  // Board (FR-502, Penpot 04 Board · 1512): a project's tasks in five columns,
-  // the same over every backend (Local, GitHub Issues). Keys: h/l column, j/k
-  // card, ⇧h/⇧l move the card to the previous / next status, ⏎ open its
-  // feature, a assign to a node, n new task, e edit title/body, g open the issue on GitHub/Linear, r sync with the backend, ⇧O run
-  // the card off-hours (or back in working hours), space the card menu (P3).
-  // Linear-backed boards mark the cards where Linear's change won (FR-503).
   import { onMount } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
   import Kbd from '../components/Kbd.svelte';
@@ -14,6 +8,13 @@
   import { app, openFeature, openUrl, queueOffHours, refresh, toast } from '../lib/app.svelte.js';
   import { ago, clock } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  // Board (FR-502, Penpot 04 Board · 1512): a project's tasks in five columns,
+  // the same over every backend (Local, GitHub Issues). Keys: h/l column, j/k
+  // card, ⇧h/⇧l move the card to the previous / next status, ⏎ open its
+  // feature, a assign to a node, n new task, e edit title/body, g open the issue on GitHub/Linear, r sync with the backend, ⇧O run
+  // the card off-hours (or back in working hours), space the card menu (P3).
+  // Linear-backed boards mark the cards where Linear's change won (FR-503).
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { backendLabel, remoteName, syncCounts } from '../lib/linear.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
@@ -143,7 +144,7 @@
   }
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select, [role="combobox"]')) {
+    if (isTypingTarget(e.target)) {
       if (e.key === 'Enter' && e.metaKey && form?.kind === 'edit') return (saveEdit(), e.preventDefault());
       if (e.key === 'Enter' && e.metaKey && form?.kind === 'new') return (create(), e.preventDefault());
       if (e.key === 'Escape' && !e.defaultPrevented) ((form = null), root?.focus(), e.preventDefault());

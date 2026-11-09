@@ -92,6 +92,13 @@
     });
   });
 
+  // A title or badge that changes width (a shell's live title) changes the overflow too.
+  const looks = $derived(tabs.map((t) => `${t.title}\u0000${t.badge ?? ''}`).join('\n'));
+  $effect(() => {
+    void looks;
+    tick().then(measure);
+  });
+
   /** One ‹ or › step: the lane width minus one tab. */
   function scrollStep(dir) {
     if (!lane) return;
@@ -294,7 +301,7 @@
     display: flex;
     align-items: center;
     gap: var(--space-sm);
-    min-width: min-content;
+    min-width: 0;
     max-width: 280px;
     padding: 0 var(--space-sm) 0 var(--space-md);
     color: var(--color-text-secondary);
