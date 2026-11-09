@@ -8,7 +8,7 @@ import { tick as svelteTick } from 'svelte';
 import { upsertEntries } from './chat.js';
 import { checkToast, claudeToast, paletteActions } from './claude.js';
 import { deliveryRef } from './delivery.js';
-import { clock as clockOf } from './format.js';
+import { clock as clockOf, expandHome } from './format.js';
 import { decisionToast, due, FILTERS, isOpen, older, pendingToast, UNDO_MS, version } from './inbox.js';
 import { openPrefilled, planWithOverwatchIn, refreshIntake, setUpIntake } from './intake.svelte.js';
 import { errText, invoke } from './ipc.js';
@@ -16,8 +16,9 @@ import { hint } from './keyboard.js';
 import { deriveKittyTheme } from './kittytheme.js';
 import * as L from './layout.js';
 import { runNowCost, runNowDialog } from './mission.js';
-import { clearDigest, counts, needsYou, statusOf } from './now.svelte.js';
+import { attention, clearDigest, counts, needsYou, statusOf } from './now.svelte.js';
 import { canOpenSession, overwatchOf } from './overwatch.js';
+import { isLocalHost, liveTitle, looksLikePath, POLL_MS, parseOsc7 } from './shellcwd.js';
 import { STATUS } from './status.js';
 import { runStateLabel } from './teams.js';
 import { TermPane } from './term.js';
@@ -104,7 +105,19 @@ export const app = $state({
   kittyTheme: false, // derive surface, text and accent from kitty.conf (§9.1); a user choice wins
   // Agents and shells live in one dock under the panes, one tab each (not in
   // `layout`). `v: 2` marks a height saved under the 0.45 default.
-  dock: { open: false, height: DOCK_HEIGHT, tabs: [], active: null, v: 2 },
+  // `view`, `agentProject`, `activeAgent`, `activeShell`: design-notes §5.2 (`active` = the current view's).
+  dock: /** @type {{ open: boolean, height: number, tabs: string[], active: string | null, v: number,
+   *  view?: 'agents' | 'shells', agentProject?: string, activeAgent?: string | null, activeShell?: string | null }} */ ({
+    open: false,
+    height: DOCK_HEIGHT,
+    tabs: [],
+    active: null,
+    v: 2,
+    view: 'agents',
+    agentProject: 'all',
+    activeAgent: null,
+    activeShell: null,
+  }),
   error: null,
   prTitles: {}, // PR number → title, from the last `pr_builds_list` (the status chip's tooltip)
 });
@@ -148,6 +161,102 @@ export const inDock = (id) => app.dock.tabs.includes(id);
 /** The dock takes the whole work column: no workspace tab at all. Never keyed
  *  on the context: a context with no tab still shows the strip and its Select. */
 export const dockFills = () => app.dock.open && app.dock.tabs.length > 0 && !app.layout;
+
+// ---------------------------------------------------------------- dock views (§5.2)
+
+const dockKind = (id) => (app.panes[id]?.type === 'shell' ? 'shells' : 'agents');
+/** The project a dock agent tab belongs to. */
+const tabProject = (id) => app.panes[id]?.projectId ?? agent(app.panes[id]?.agentId)?.project_id ?? null;
+export const dockAgents = () => app.dock.tabs.filter((id) => app.panes[id]?.type === 'agent');
+export const dockShells = () => app.dock.tabs.filter((id) => app.panes[id]?.type === 'shell');
+/** The dock's view: saved, else the kind of its active tab. */
+export const dockView = () => app.dock.view ?? dockKind(app.dock.active);
+/** The agents filter ('all' or a project id). */
+export const dockFilter = () => app.dock.agentProject ?? 'all';
+/** The tabs the strip shows: the view's kind, agents narrowed by the project filter. */
+export const dockTabs = () =>
+  dockView() === 'agents'
+    ? dockAgents().filter((id) => dockFilter() === 'all' || tabProject(id) === dockFilter())
+    : dockShells();
+
+/** The view's remembered tab, else its first: `dock.active` follows the view and the filter. */
+function settleDock() {
+  const tabs = dockTabs();
+  const kept = dockView() === 'agents' ? app.dock.activeAgent : app.dock.activeShell;
+  const id = tabs.includes(kept) ? kept : (tabs[0] ?? null);
+  app.dock.active = id;
+  if (id) app.dock[dockView() === 'agents' ? 'activeAgent' : 'activeShell'] = id;
+}
+
+/** After the view or filter changed: a focus that was in the dock follows the new active tab. */
+function refocusDock() {
+  if (!inDock(app.focused)) return;
+  if (app.dock.active) focusPane(app.dock.active);
+  else app.focused = activeTab();
+}
+
+/** The view Select (Agents / Shells): restores that view's active tab. */
+export function setDockView(view) {
+  app.dock.view = view;
+  settleDock();
+  refocusDock();
+  saveLayout();
+}
+
+/** The project Select of the Agents view. */
+export function setDockProject(projectId) {
+  app.dock.agentProject = projectId;
+  settleDock();
+  refocusDock();
+  saveLayout();
+}
+
+const waits = (id) => attention(app.panes[id]?.agentId)?.level === 'needs_you';
+
+/** The view Select's options: the number of open dock tabs of each kind, whatever the filter. */
+export const dockViewOptions = () => [
+  { value: 'agents', label: 'Agents', count: dockAgents().length },
+  { value: 'shells', label: 'Shells', count: dockShells().length },
+];
+
+/** The project Select's options: All projects + the projects with an open agent tab;
+ *  the current filter stays listed at 0. Each carries its waiting dot. */
+export function dockProjectOptions() {
+  const tabs = dockAgents();
+  const per = new Map();
+  for (const id of tabs) {
+    const p = tabProject(id);
+    if (p) per.set(p, [...(per.get(p) ?? []), id]);
+  }
+  const f = dockFilter();
+  if (f !== 'all' && !per.has(f)) per.set(f, []);
+  const known = projects()
+    .filter((p) => per.has(p.id))
+    .map((p) => p.id);
+  const ids = [...known, ...[...per.keys()].filter((k) => !known.includes(k))];
+  return [
+    { value: 'all', label: 'All projects', count: tabs.length, sep: true },
+    ...ids.map((id) => ({
+      value: id,
+      label: projectName(id),
+      count: per.get(id).length,
+      dot: per.get(id).some(waits),
+    })),
+  ];
+}
+
+/** The view Select's waiting dot (§12.7): in Shells, an agent tab that needs you; text, or null. */
+export function dockViewWaiting() {
+  const id = dockView() === 'shells' ? dockAgents().find(waits) : null;
+  return id ? waitingText(app.panes[id].agentId) : null;
+}
+
+/** The closed project Select's waiting dot: an agent tab of another project than the filter (never in All). */
+export function dockProjectWaiting() {
+  const f = dockFilter();
+  const id = f === 'all' ? null : dockAgents().find((t) => tabProject(t) !== f && waits(t));
+  return id ? waitingText(app.panes[id].agentId) : null;
+}
 
 /** xterm.js panes by pane id (not reactive). */
 export const terms = new Map();
@@ -279,12 +388,12 @@ export function setContext(projectId) {
 }
 
 /**
- * The dock already shows this agent's waiting dot (design-notes §12.7): then the
- * context Select does not. The dock's view and project Selects carry their dots
- * with the dock views (T6, §5.2); until then the dock shows none, so the context
- * Select carries every waiting agent of another project.
+ * The dock already shows this agent's waiting dot (design-notes §12.7): it is
+ * open and the agent's tab is open there (its view or project Select carries the
+ * dot). Then the context Select does not.
  */
-export const dockShowsWaiting = (_agentId) => false;
+export const dockShowsWaiting = (agentId) =>
+  app.dock.open && dockAgents().some((id) => app.panes[id].agentId === agentId);
 
 /** An agent's short name: its team node, else its id. */
 export const agentShort = (agentId) => agent(agentId)?.team?.node ?? agentId;
@@ -386,6 +495,8 @@ function title(spec) {
     case 'agent':
       return spec.agentId;
     case 'shell': {
+      // An interactive shell shows its live directory; a command shell keeps its fixed title.
+      if (spec.live && spec.cwd) return liveTitle(spec.shell, spec.cwd, userHome());
       const dir =
         String(spec.cwd ?? '')
           .split('/')
@@ -437,7 +548,9 @@ export function addDockPane(spec) {
   app.panes[id] = { ...spec, title: spec.title ?? title(spec) };
   app.dock.tabs = [...app.dock.tabs, id];
   app.dock.open = true;
+  // focusPane picks the view (and the filter) that shows the new tab.
   focusPane(id);
+  trackShells();
   saveLayout();
   return id;
 }
@@ -446,8 +559,10 @@ export function addDockPane(spec) {
 export function toggleDock() {
   if (!app.dock.tabs.length) return openShell();
   app.dock.open = !app.dock.open;
-  if (app.dock.open) focusPane(app.dock.active ?? app.dock.tabs[0]);
-  else {
+  if (app.dock.open) {
+    const t = app.dock.active ?? dockTabs()[0];
+    if (t) focusPane(t);
+  } else {
     if (inDock(app.focused)) {
       // No workspace tab to hand the focus to: nothing is focused, not a hidden tab.
       const next = activeTab();
@@ -458,20 +573,29 @@ export function toggleDock() {
   saveLayout();
 }
 
-/** Next or previous dock tab (`d` = 1 or -1). */
+/** Next or previous dock tab of the view and filter (`d` = 1 or -1). */
 export function cycleDock(d) {
-  const tabs = app.dock.tabs;
+  const tabs = dockTabs();
   if (!tabs.length) return;
   const i = tabs.indexOf(app.dock.active);
-  focusPane(tabs[(i + d + tabs.length) % tabs.length]);
+  focusPane(tabs[i < 0 ? (d > 0 ? 0 : tabs.length - 1) : (i + d + tabs.length) % tabs.length]);
 }
 
 export function focusPane(id) {
   if (!app.panes[id]) return;
   const s = app.panes[id];
   if (inDock(id)) {
+    // The tab's view; an agent hidden by another project's filter moves the filter to its project.
+    app.dock.view = dockKind(id);
+    if (s.type === 'agent') {
+      const f = dockFilter();
+      if (f !== 'all' && tabProject(id) !== f) app.dock.agentProject = tabProject(id) ?? 'all';
+      app.dock.activeAgent = id;
+    } else app.dock.activeShell = id;
     app.dock.active = id;
     app.dock.open = true;
+    saveLayout();
+    if (s.live) readShellCwd(id);
   } else {
     // A tab of another project brings its context (rule 3); All projects stays All.
     if (!inContext(id)) {
@@ -498,13 +622,32 @@ export function focusPane(id) {
 
 export function closePane(id = app.focused) {
   if (!id || !app.panes[id]) return;
+  const slot = inDock(id) ? dockTabs().indexOf(id) : -1; // where it sat in the view, before it goes
   terms.get(id)?.dispose();
   terms.delete(id);
   delete app.panes[id];
+  osc7Seen.delete(id);
+  polled.delete(id);
+  localHosts.delete(id);
   if (inDock(id)) {
-    const i = app.dock.tabs.indexOf(id);
+    const view = dockView();
     app.dock.tabs = app.dock.tabs.filter((t) => t !== id);
-    if (app.dock.active === id) app.dock.active = app.dock.tabs[Math.min(i, app.dock.tabs.length - 1)] ?? null;
+    if (app.dock.activeAgent === id) app.dock.activeAgent = null;
+    if (app.dock.activeShell === id) app.dock.activeShell = null;
+    if (app.dock.active === id) {
+      const rest = dockTabs();
+      app.dock.active = rest[Math.min(Math.max(slot, 0), rest.length - 1)] ?? null;
+      if (app.dock.active) app.dock[view === 'agents' ? 'activeAgent' : 'activeShell'] = app.dock.active;
+    }
+    // The last tab of the view's kind: the other view when it has tabs, else the dock closes.
+    // (A filter with no agent left keeps its empty view: "No agent running in …".)
+    if (!(view === 'agents' ? dockAgents() : dockShells()).length) {
+      const other = view === 'agents' ? 'shells' : 'agents';
+      if ((other === 'agents' ? dockAgents() : dockShells()).length) {
+        app.dock.view = other;
+        settleDock();
+      }
+    }
     if (!app.dock.tabs.length) app.dock.open = false;
     if (app.focused === id) app.focused = app.dock.active ?? activeTab();
   } else {
@@ -566,7 +709,8 @@ async function revive(s) {
   if (s.type !== 'shell' && s.type !== 'editor') return s;
   try {
     const t = await spawnShell({ projectId: s.projectId, cwd: s.cwd });
-    const spec = { ...s, type: 'shell', termId: t.id, spawn: t.spawn, cwd: t.cwd };
+    // A restored shell is a plain interactive one again, whatever it was running.
+    const spec = { ...s, type: 'shell', termId: t.id, spawn: t.spawn, cwd: t.cwd, shell: t.shell, live: true };
     return { ...spec, title: title(spec) };
   } catch {
     return null;
@@ -1024,7 +1168,16 @@ export async function openShell(opts = {}) {
   const agentId = opts.agentId ?? contextAgent()?.id;
   try {
     const t = await spawnShell({ projectId, agentId, cwd: opts.cwd });
-    addDockPane({ type: 'shell', termId: t.id, spawn: t.spawn, cwd: t.cwd, projectId, agentId });
+    addDockPane({
+      type: 'shell',
+      termId: t.id,
+      spawn: t.spawn,
+      cwd: t.cwd,
+      shell: t.shell,
+      live: true,
+      projectId,
+      agentId,
+    });
   } catch (e) {
     toast(`Could not open a shell: ${errText(e)}`, { kind: 'error' });
   }
@@ -1062,6 +1215,76 @@ export async function openEditor(file = null, line = null, opts = {}) {
   } catch (e) {
     toast(`Could not open the editor: ${errText(e)}`, { kind: 'error' });
   }
+}
+
+// ---------------------------------------------------------------- shell live title (§6)
+
+const userHome = () => app.data?.core?.user_home ?? '';
+/** Dock shells whose OSC 7 was seen (instant: no poll), and those the core's poll has answered. */
+const osc7Seen = new Set();
+const polled = new Set();
+/** Per shell, the host names its OSC 7 reported first (the local prompt's, before any ssh). */
+const localHosts = new Map();
+
+const liveShells = () => app.dock.tabs.filter((id) => app.panes[id]?.live && app.panes[id].type === 'shell');
+
+/** A new directory for a live shell: its title follows, the layout is saved (throttled). */
+function setShellCwd(id, cwd) {
+  const s = app.panes[id];
+  if (!s?.live || !cwd || s.cwd === cwd) return;
+  s.cwd = cwd;
+  s.title = title(s);
+  saveLayout();
+}
+
+/** OSC 7 from the shell: `file://host/path`. A foreign host (an ssh session) is ignored. */
+export function onShellOsc7(id, data) {
+  const r = parseOsc7(data);
+  if (!r || !app.panes[id]?.live) return;
+  let names = localHosts.get(id);
+  if (!names) localHosts.set(id, (names = []));
+  if (!names.length && r.host) names.push(r.host);
+  if (!isLocalHost(r.host, names)) return;
+  osc7Seen.add(id);
+  setShellCwd(id, r.path);
+}
+
+/** OSC 0/2: the last source, only when it looks like a path and nothing better answered. */
+export function onShellTitle(id, text) {
+  if (osc7Seen.has(id) || polled.has(id) || !looksLikePath(text)) return;
+  setShellCwd(id, expandHome(text, userHome()));
+}
+
+/** One `term_cwd` read per shell, skipping those that sent OSC 7. */
+export async function readShellCwd(...ids) {
+  for (const id of ids) {
+    const termId = app.panes[id]?.termId;
+    if (osc7Seen.has(id) || termId == null) continue;
+    const dir = await invoke('term_cwd', { id: termId }).catch(() => null);
+    if (!dir || osc7Seen.has(id)) continue;
+    polled.add(id);
+    setShellCwd(id, dir);
+  }
+}
+
+let cwdTimer = null;
+/** Polls the live shells every POLL_MS while the window is visible; stops when none is left. */
+export function trackShells() {
+  if (cwdTimer || !liveShells().length) return;
+  cwdTimer = setInterval(() => {
+    const ids = liveShells();
+    if (!ids.length) {
+      clearInterval(cwdTimer);
+      cwdTimer = null;
+    } else if (document.visibilityState === 'visible') void readShellCwd(...ids);
+  }, POLL_MS);
+}
+
+if (typeof document !== 'undefined') {
+  // The window shown again: one read at once, not after the next tick.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void readShellCwd(...liveShells());
+  });
 }
 
 /** Creates (or returns) the xterm.js pane for a pane spec. */
@@ -1247,6 +1470,8 @@ export function mountTerm(paneId, host, hooks) {
     onKey: (e) => !e.metaKey && !app.panes[paneId]?.watch,
     // In watch mode only ⏎ or a click takes over (TermHost): Tab into xterm goes back to the strip.
     onFocus: () => (app.panes[paneId]?.watch || app.focused !== paneId) && focusPane(paneId),
+    onOsc7: (data) => onShellOsc7(paneId, data),
+    onTitle: (text) => onShellTitle(paneId, text),
     ...hooks,
   });
   t.mount(host);
@@ -1375,13 +1600,33 @@ export async function restoreLayout() {
   const active = panes[saved.focused] && migrated.includes(saved.focused) ? saved.focused : saved.dock?.active;
   // A height saved before the 0.45 default (no `v`) is the old 0.3 default: moved once.
   const height = saved.dock?.height;
+  const kind = (id) => (panes[id]?.type === 'shell' ? 'shells' : 'agents');
+  /** A saved per-view active tab, only when it is still a tab of that kind. */
+  const keep = (id, k) => (tabs.includes(id) && kind(id) === k ? id : null);
+  const sd = saved.dock ?? {};
+  // The view: saved, else the kind of the active tab (§12.4), else Agents when one is open.
+  const view =
+    sd.view === 'agents' || sd.view === 'shells'
+      ? sd.view
+      : tabs.includes(active)
+        ? kind(active)
+        : tabs.some((id) => kind(id) === 'agents')
+          ? 'agents'
+          : 'shells';
   app.dock = {
-    open: (!!saved.dock?.open || landed) && tabs.length > 0,
-    height: saved.dock?.v === 2 ? (height ?? DOCK_HEIGHT) : !height || height === 0.3 ? DOCK_HEIGHT : height,
+    open: (!!sd.open || landed) && tabs.length > 0,
+    height: sd.v === 2 ? (height ?? DOCK_HEIGHT) : !height || height === 0.3 ? DOCK_HEIGHT : height,
     tabs,
-    active: tabs.includes(active) ? active : (tabs[0] ?? null),
+    active: null,
     v: 2,
+    view,
+    agentProject: knownContext(sd.agentProject),
+    activeAgent: keep(sd.activeAgent, 'agents') ?? keep(active, 'agents'),
+    activeShell: keep(sd.activeShell, 'shells') ?? keep(active, 'shells'),
   };
+  // An active tab outside the filter falls back to the filter's first agent tab, else the empty view.
+  settleDock();
+  trackShells();
   const kept = (id) => !!panes[id] && !migrated.includes(id);
   app.layout = L.prune(L.flatten(saved.layout, kept(saved.focused) ? saved.focused : null), kept);
   // The context's first tab when the saved active one is hidden or gone.
@@ -1391,7 +1636,7 @@ export async function restoreLayout() {
   else {
     const f = saved.focused;
     const back =
-      panes[f] && (inDock(f) ? app.dock.open : inContext(f))
+      panes[f] && (inDock(f) ? app.dock.open && f === app.dock.active : inContext(f))
         ? f
         : (activeTab() ?? (app.dock.open ? app.dock.active : null));
     if (back) focusPane(back);

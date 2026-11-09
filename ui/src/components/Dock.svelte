@@ -1,58 +1,68 @@
 <script>
-  // The dock (§9.2): agents and shells in one panel under the panes, one tab
-  // each, so a terminal never crowds the workspace. ⌘J shows or hides it;
-  // hidden tabs keep running and keep their buffers (§9.1 principle 6). With no
-  // workspace tab at all it fills the whole work column.
-  import { tick } from 'svelte';
-  import { agentShort, app, closePaneByUser, dockFills, focusPane, openShell, saveLayout } from '../lib/app.svelte.js';
+  // The dock (§9.2, design-notes §5.2): agents and shells in one panel under the
+  // panes, two views (Agents / Shells) on one compact tab strip. ⌘J shows or
+  // hides it; hidden tabs keep running and keep their buffers (§9.1 principle 6).
+  // With no workspace tab at all it fills the whole work column.
+  import {
+    agentShort,
+    app,
+    closePaneByUser,
+    dockFills,
+    dockFilter,
+    dockProjectOptions,
+    dockProjectWaiting,
+    dockShells,
+    dockTabs,
+    dockView,
+    dockViewOptions,
+    dockViewWaiting,
+    focusPane,
+    openShell,
+    projectName,
+    saveLayout,
+    setDockProject,
+    setDockView,
+    toggleDock,
+  } from '../lib/app.svelte.js';
   import { attention, statusOf, waitLine } from '../lib/now.svelte.js';
+  import { shellTip } from '../lib/shellcwd.js';
+  import { tooltip } from '../lib/tooltip.js';
   import AgentPane from '../panes/AgentPane.svelte';
   import TermPaneView from '../panes/TermPaneView.svelte';
   import AgentChip from './AgentChip.svelte';
-  import Kbd from './Kbd.svelte';
+  import Select from './Select.svelte';
   import StatusBadge from './StatusBadge.svelte';
+  import TabStrip from './TabStrip.svelte';
+
+  const PREFIX = 'dock';
+  const PANEL = 'dock-panel';
 
   let el = $state();
-  let lane = $state();
-  /** The tab lane is wider than its box: a divider shows the clipped tab as cut. */
-  let overflow = $state(false);
-  let scrolled = $state(false);
   const clamp = (h) => Math.min(0.8, Math.max(0.12, h));
 
   const fill = $derived(dockFills());
-  const activeSpec = $derived(app.panes[app.dock.active]);
-  /** The first tab is active and nothing is scrolled off: it sits on the body's top-left corner. */
-  const squareTL = $derived(app.dock.tabs[0] === app.dock.active && !scrolled);
+  const view = $derived(dockView());
+  const filter = $derived(dockFilter());
+  const active = $derived(app.dock.active);
+  const activeSpec = $derived(app.panes[active]);
 
-  /** An agent tab's name: its team node, else its id. */
-  const short = (spec) => agentShort(spec.agentId);
+  /** An agent tab's tooltip: its id and what it waits for; a shell's: its title and the full path. */
   const tip = (spec) =>
     spec.type === 'agent'
       ? [spec.agentId, waitLine(attention(spec.agentId))].filter(Boolean).join(' · ')
-      : (spec.title ?? '');
+      : shellTip(spec.title, spec.live ? spec.cwd : null);
 
-  function measure() {
-    if (!lane) return;
-    overflow = lane.scrollWidth > lane.clientWidth + 1;
-    scrolled = lane.scrollLeft > 0;
-  }
+  const tabs = $derived(
+    dockTabs().map((id) => {
+      const spec = app.panes[id];
+      return { id, title: spec?.type === 'agent' ? agentShort(spec.agentId) : (spec?.title ?? id), tooltip: tip(spec ?? {}) };
+    }),
+  );
 
-  $effect(() => {
-    if (!lane) return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(lane);
-    return () => ro.disconnect();
-  });
-
-  // The active tab is always in view.
-  $effect(() => {
-    const id = app.dock.active;
-    void app.dock.tabs.length;
-    tick().then(() => {
-      lane?.querySelector(`[data-tab="${id}"]`)?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
-      measure();
-    });
-  });
+  /** What an empty view says. */
+  const emptyText = $derived(
+    view === 'shells' ? 'No shell open' : filter === 'all' ? 'No agent running' : `No agent running in ${projectName(filter)}`,
+  );
 
   /** Drag the top edge: the dock's share of the column. */
   function drag(e) {
@@ -93,41 +103,41 @@
       onkeydown={nudge}
     ></div>
   {/if}
-  <div class="tabs" role="tablist">
-    <div class="lane" bind:this={lane} onscroll={measure}>
-      {#each app.dock.tabs as t (t)}
-        {@const spec = app.panes[t]}
-        {#if spec}
-          <div class="tab" class:on={t === app.dock.active} class:focused={t === app.focused} data-tab={t} role="tab" aria-selected={t === app.dock.active} title={tip(spec)}>
-            <button class="label" onclick={() => focusPane(t)}>
-              {#if spec.type === 'agent'}
-                <AgentChip id={spec.agentId} compact />
-                <span class="name">{short(spec)}</span>
-                <StatusBadge state={statusOf(spec.agentId)} compact />
-              {:else}
-                <span class="name">{spec.title ?? t}</span>
-              {/if}
-            </button>
-            <button
-              class="x"
-              aria-label={spec.type === 'agent' ? 'Close tab' : 'Close shell'}
-              title={spec.type === 'agent' ? 'Close tab · the agent keeps running' : 'Close shell'}
-              onclick={() => closePaneByUser(t)}>×</button>
-          </div>
-        {/if}
-      {/each}
-    </div>
-    {#if overflow}<span class="sep"></span>{/if}
-    <button class="add" aria-label="New shell" title="New shell" onclick={() => openShell()}>+</button>
-    <span class="grow"></span>
-    <span class="muted hint"><Kbd keys="⌘+J" /> hide</span>
-  </div>
+  <TabStrip compact {tabs} {active} label="Dock tabs" idPrefix={PREFIX} panelId={PANEL} onselect={focusPane} onclose={closePaneByUser}>
+    {#snippet leading()}
+      <Select compact width="hug" aria-label="Dock view" noun="view" value={view} options={dockViewOptions()} dot={dockViewWaiting() ?? false} onchange={setDockView} />
+      {#if view === 'agents'}
+        <Select compact bare width="hug" aria-label="Project filter" noun="project" value={filter} options={dockProjectOptions()} dot={dockProjectWaiting() ?? false} onchange={setDockProject} />
+      {/if}
+    {/snippet}
+    {#snippet tab(t)}
+      {@const spec = app.panes[t.id]}
+      {#if spec?.type === 'agent'}
+        <AgentChip id={spec.agentId} compact />
+        <span class="name">{t.title}</span>
+        <StatusBadge state={statusOf(spec.agentId)} compact />
+      {:else}
+        <span class="name">{t.title}</span>
+      {/if}
+    {/snippet}
+    {#snippet trailing()}
+      {#if view === 'shells' && dockShells().length}
+        <button type="button" class="icon-btn" aria-label="New shell" use:tooltip={'New shell'} onclick={() => openShell()}>+</button>
+      {/if}
+      <button type="button" class="icon-btn" aria-label="Hide dock" use:tooltip={{ label: 'Hide dock', key: '⌘J' }} onclick={toggleDock}>{'\u{F0140}'}</button>
+    {/snippet}
+  </TabStrip>
   <!-- One terminal on screen; the others keep running (their xterm is kept). -->
-  {#key app.dock.active}
+  {#key active}
     {#if activeSpec}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="body" class:square={squareTL} data-pane={app.dock.active} onmousedown={() => app.focused !== app.dock.active && focusPane(app.dock.active)}>
-        {#if activeSpec.type === 'agent'}<AgentPane paneId={app.dock.active} />{:else}<TermPaneView paneId={app.dock.active} />{/if}
+      <div class="body" id={PANEL} role="tabpanel" tabindex="-1" aria-labelledby="{PREFIX}-tab-{active}" data-pane={active} onmousedown={() => app.focused !== active && focusPane(active)}>
+        {#if activeSpec.type === 'agent'}<AgentPane paneId={active} />{:else}<TermPaneView paneId={active} />{/if}
+      </div>
+    {:else}
+      <div class="body empty" id={PANEL}>
+        <p class="muted">{emptyText}</p>
+        {#if view === 'shells'}<button class="btn" onclick={() => openShell()}>New shell</button>{/if}
       </div>
     {/if}
   {/key}
@@ -153,93 +163,14 @@
     flex: none;
     cursor: row-resize;
   }
-  .tabs {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xxs);
-    height: 24px;
-    flex: none;
-  }
-  /* The tabs scroll inside their lane; `+` and the hint stay pinned. */
-  .lane {
-    display: flex;
-    gap: var(--space-xxs);
-    height: 100%;
-    min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .lane::-webkit-scrollbar {
-    display: none;
-  }
-  .sep {
-    width: 1px;
-    height: 12px;
-    flex: none;
-    background: var(--color-border-subtle);
-  }
-  .tab {
-    display: flex;
-    align-items: center;
-    flex: none;
-    max-width: 200px;
-    height: 100%;
-    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-    background: var(--color-surface-chrome);
-    font: var(--text-label);
-  }
-  .tab:hover {
-    background: var(--color-surface-raised);
-  }
-  .tab.on {
-    background: var(--color-surface-pane);
-  }
-  .tab .label {
-    display: flex;
-    align-items: center;
-    gap: var(--space-xs);
-    min-width: 0;
-    flex: 1;
-  }
   .name {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   /* The badge's own title is the status label: the tab's tooltip (id · wait line) wins. */
-  .tab :global(.badge) {
+  .dock :global(.tab .badge) {
     pointer-events: none;
-  }
-  .tab:hover .label,
-  .tab.focused .label {
-    color: var(--color-text-primary);
-  }
-  .tab button,
-  .add {
-    border: 0;
-    background: none;
-    padding: 0 var(--space-sm);
-    height: 100%;
-    color: var(--color-text-secondary);
-  }
-  .tab .x {
-    flex: none;
-    padding: 0 var(--space-xs);
-    color: var(--color-text-muted);
-  }
-  .tab:hover .x {
-    color: var(--color-text-secondary);
-  }
-  .add {
-    flex: none;
-  }
-  .grow {
-    flex: 1;
-  }
-  .hint {
-    flex: none;
-    font: var(--text-caption);
-    padding-right: var(--space-sm);
   }
   .body {
     flex: 1;
@@ -247,10 +178,15 @@
     display: flex;
     flex-direction: column;
     background: var(--color-surface-pane);
-    border-radius: var(--radius-sm);
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
     overflow: hidden;
   }
-  .body.square {
-    border-top-left-radius: 0;
+  .body.empty {
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-sm);
+  }
+  .body.empty p {
+    margin: 0;
   }
 </style>
