@@ -51,7 +51,7 @@ The Memory stacked bar shows what the existing memory sample carries (per agent 
 
 ### 3.2 Shell live title
 
-design-notes §6.1, as decided there: a core-side poll of the shell process's cwd (`term_cwd`, every 1.5 s while the window is visible), OSC 7 honoured when a shell sends it, OSC 0/2 only when path-like. No shell integration injected.
+design-notes §6.1, as decided there: a UI poll of the core command `term_cwd` (the shell process's cwd, every 1.5 s while the window is visible), OSC 7 honoured when a shell sends it, OSC 0/2 only when path-like. No shell integration injected.
 
 ### 3.3 Out of scope
 
