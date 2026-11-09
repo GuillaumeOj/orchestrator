@@ -85,11 +85,9 @@ beforeEach(() => {
   app.data = /** @type {any} */ (missionData(now));
   app.now = missionNow(now);
   app.selection = null;
-  app.mission = { projects: null };
-  app.missionFilterOpen = false;
+  app.workspace = { project: 'all' };
   app.overlay = null;
   app.toasts = [];
-  app.zoomed = null;
   home();
   calls.length = 0;
   terms.length = 0;
@@ -172,7 +170,6 @@ describe('keys (spec §3.4)', () => {
     const mc = c.querySelector('.mc');
     expect(app.selection).toEqual({ kind: 'run', id: 'run-12' });
     expect(row(c, 'run:run-12').getAttribute('aria-selected')).toBe('true');
-    expect(text(c.querySelector('.toolbar'))).toContain('open back-1');
     key(mc, 'j');
     await tick();
     expect(app.selection).toEqual({ kind: 'agent', id: 'fix-feed' });
@@ -305,59 +302,26 @@ describe('review fixes (T-61)', () => {
     expect(app.selection).toEqual({ kind: 'agent', id: 'fix-feed' });
   });
 
-  it('the filter button closes an open popover, once', async () => {
-    const { container: c } = render(MissionPane, { paneId: 'mc' });
-    await settle();
-    const btn = c.querySelector('.fbtn');
-    fireEvent.click(btn);
-    await tick();
-    expect(c.querySelector('.pop')).not.toBeNull();
-    fireEvent.mouseDown(btn);
-    fireEvent.click(btn);
-    await tick();
-    expect(c.querySelector('.pop')).toBeNull();
-    expect(app.missionFilterOpen).toBe(false);
-  });
-
-  it('a click away closes the filter without taking focus back', async () => {
-    const { container: c } = render(MissionPane, { paneId: 'mc' });
-    await settle();
-    key(c.querySelector('.mc'), 'f');
-    await tick();
-    const other = document.createElement('input');
-    document.body.appendChild(other);
-    other.focus();
-    await settle();
-    expect(app.missionFilterOpen).toBe(false);
-    expect(document.activeElement).toBe(other);
-    other.remove();
-  });
-
-  it('"Show all projects" clears the filter (self-review)', async () => {
+  it('"Show all projects" sets the context to All projects', async () => {
     app.now.agents = { 'fix-feed': app.now.agents['fix-feed'] };
     app.now.runs = {};
     app.now.outcomes = [];
     app.now.decisions = {};
-    app.mission = { projects: ['infra'] };
+    app.workspace = { project: 'infra' };
     const { container: c } = render(MissionPane, { paneId: 'mc' });
     await settle();
-    fireEvent.click([...c.querySelectorAll('.linkbtn')].find((b) => b.textContent.includes('Show all projects')));
+    fireEvent.click([...c.querySelectorAll('button')].find((b) => b.textContent === 'Show all projects'));
     await settle();
-    expect(app.mission.projects).toBeNull();
+    expect(app.workspace.project).toBe('all');
     expect(row(c, 'agent:fix-feed')).not.toBeNull();
   });
 
-  it('a saved filter drops removed projects', async () => {
-    app.mission = { projects: ['gone'] };
+  it('a context of a removed project shows every project', async () => {
+    app.workspace = { project: 'gone' };
     const { container: c } = render(MissionPane, { paneId: 'mc' });
     await settle();
-    expect(text(c.querySelector('.fbtn'))).toContain('All projects');
+    expect(text(c.querySelector('.toolbar'))).toContain('every project');
     expect(row(c, 'run:run-12')).not.toBeNull();
-    store.mission = { projects: ['blog', 'gone'] };
-    app.layout = null;
-    app.panes = {};
-    await A.restoreLayout();
-    expect(app.mission.projects).toEqual(['blog']);
   });
 
   it('⌫ on a solo queue row asks before dropping its turn', async () => {
@@ -422,7 +386,7 @@ describe('sessions over the board (spec §3.3, D5)', () => {
     const { id } = await openBack1();
     expect(app.panes[id]).toMatchObject({ type: 'agent', agentId: 'back-1', watch: true, over: 'mc' });
     expect(app.dock.tabs).toEqual([id]);
-    expect(L.leafOf(app.layout, 'mc').tabs).toEqual(['mc']);
+    expect(app.layout.tabs).toEqual(['mc']);
     expect(app.focused).toBe(id);
     const pane = render(AgentPane, { paneId: id }).container;
     await settle();
@@ -461,12 +425,10 @@ describe('sessions over the board (spec §3.3, D5)', () => {
     expect(app.selection).toEqual({ kind: 'run', id: 'run-12' });
   });
 
-  it('Esc from a zoomed dock unzooms it; reopening a taken-over tab watches it again', async () => {
+  it('Esc from the dock goes back to Mission control; reopening a taken-over tab watches it again', async () => {
     const { id } = await openBack1();
-    app.zoomed = id;
     A.leaveWatch(id);
     expect(app.focused).toBe('mc');
-    expect(app.zoomed).toBeNull();
     app.panes[id].watch = false;
     delete app.panes[id].over;
     A.openSession('back-1');
@@ -574,42 +536,45 @@ describe('keyboard contract §9.7 with watch mode', () => {
   });
 });
 
-describe('project filter (D8)', () => {
-  it('f opens it; space toggles, ⏎ applies; rows follow; remembered in settings `mission`', async () => {
+describe('project context (design-notes §5.3, 04-mission-control-context)', () => {
+  it('rows follow app.workspace.project; header says so; no Filter button, no legend, f does nothing', async () => {
     const { container: c } = render(MissionPane, { paneId: 'mc' });
     await settle();
+    expect(text(c.querySelector('.toolbar')).trim()).toBe(
+      'Mission control every project · follows the project context',
+    );
+    expect(row(c, 'run:run-12')).not.toBeNull();
+    expect(c.querySelector('.fbtn')).toBeNull();
+    expect(c.querySelector('.toolbar .kbd')).toBeNull();
     key(c.querySelector('.mc'), 'f');
     await tick();
-    const pop = c.querySelector('.pop');
-    expect(text(pop)).toContain('shop-api 1 needs you · 1 running · 1 waiting · 1 queued');
-    key(pop, 'j');
-    key(pop, ' ');
-    key(pop, 'Enter');
+    expect(c.querySelector('.pop')).toBeNull();
+    app.workspace = { project: 'infra' };
     await settle();
-    expect(store.mission).toEqual({ projects: ['blog', 'infra'] });
+    expect(text(c.querySelector('.toolbar')).trim()).toBe('Mission control in infra · follows the project context');
     expect(row(c, 'run:run-12')).toBeNull();
     expect(row(c, 'queue:infra-1')).not.toBeNull();
-    expect(text(c.querySelector('.fbtn'))).toContain('2 projects of 3');
   });
 
-  it('a filter that hides every row says so', async () => {
+  it('a context with nothing: "Nothing in <project>" + Show all projects', async () => {
     app.now.agents = { 'fix-feed': app.now.agents['fix-feed'] };
     app.now.runs = {};
     app.now.outcomes = [];
     app.now.decisions = {};
-    app.mission = { projects: ['infra'] };
+    app.workspace = { project: 'infra' };
     const { container: c } = render(MissionPane, { paneId: 'mc' });
     await settle();
-    expect(text(c)).toContain('Nothing in the infra selected');
+    expect(text(c.querySelector('.empty')).trim()).toBe('Nothing in infra Show all projects');
     expect(text(c.querySelector('.foot'))).toContain('Hiding shop-api, blog');
   });
 
-  it('restored at start, with the layout', async () => {
+  it('the old `mission` settings key is ignored at restore', async () => {
     store.mission = { projects: ['blog'] };
     app.layout = null;
     app.panes = {};
     await A.restoreLayout();
-    expect(app.mission.projects).toEqual(['blog']);
+    expect('mission' in app).toBe(false);
+    expect(app.workspace.project).toBe('all');
     expect(Object.values(app.panes).map((s) => s.type)).toEqual(['mission']);
   });
 });

@@ -180,7 +180,7 @@ beforeEach(() => {
   app.panes = {};
   app.focused = null;
   app.selection = null;
-  app.mission = { projects: null };
+  app.workspace = { project: 'all' };
 });
 
 describe('every surface shows the same numbers (spec §6.1)', () => {

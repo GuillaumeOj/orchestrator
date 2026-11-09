@@ -29,7 +29,8 @@ describe('no native select (R11)', () => {
     expect(sel).toMatch(/\.box\s*{[^}]*height:\s*var\(--size-control\)/s);
     expect(read('styles/app.css')).toMatch(/select\.field\s*{[^}]*min-height:\s*var\(--size-control\)/s);
     const compact = svelte.filter(
-      (p) => /<Select[^>]*\bcompact\b/.test(readFileSync(p, 'utf8')) && !p.endsWith('TabStrip.svelte'),
+      // A strip's leading Select (the workspace's context, the dock's views) is compact.
+      (p) => /<Select[^>]*\bcompact\b/.test(readFileSync(p, 'utf8')) && !/<TabStrip\b/.test(readFileSync(p, 'utf8')),
     );
     expect(compact.map((p) => p.slice(SRC.length))).toEqual([]);
   });

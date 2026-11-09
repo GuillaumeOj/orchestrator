@@ -31,16 +31,29 @@ describe('keyboard contract §9.7', () => {
   it('leader ⌘; then a key', () => {
     const lead = classify(key(';', { meta: true, code: 'Semicolon' }), { terminal: true });
     expect(lead.kind).toBe('leader');
-    expect(classify(key('z', { code: 'KeyZ' }), { leader: true, terminal: true })).toEqual({
+    expect(classify(key('j', { code: 'KeyJ' }), { leader: true, terminal: true })).toEqual({
       kind: 'command',
-      command: 'pane.zoom',
+      command: 'focus.down',
     });
-    expect(classify(key('v'), { leader: true }).command).toBe('pane.split.right');
-    expect(classify(key('s'), { leader: true }).command).toBe('pane.split.below');
+    expect(classify(key('k'), { leader: true }).command).toBe('focus.up');
+    expect(classify(key(']'), { leader: true }).command).toBe('dock.next');
+    expect(classify(key('['), { leader: true }).command).toBe('dock.prev');
     expect(classify(key('Shift'), { leader: true }).kind).toBe('swallow');
     expect(classify(key('q'), { leader: true }).kind).toBe('cancel');
     expect(classify(key('Escape'), { leader: true }).kind).toBe('cancel');
-    for (const k of 'svhjklztewpog') expect(LEADER[k]).toBeTruthy();
+    for (const k of 'jktewpog') expect(LEADER[k]).toBeTruthy();
+  });
+
+  it('single pane (design-notes §4.1): v s h l z cancel the leader; ⌘1…9 stay', () => {
+    for (const k of 'vshlz') {
+      expect(LEADER[k]).toBeUndefined();
+      expect(classify(key(k), { leader: true })).toEqual({ kind: 'cancel' });
+    }
+    for (let n = 1; n <= 9; n++)
+      expect(classify(key(String(n), { meta: true, code: `Digit${n}` })).command).toBe(`pane.focus.${n}`);
+    for (const id of ['pane.zoom', 'pane.split.right', 'pane.split.below', 'focus.left', 'focus.right'])
+      expect(hint(id)).toBe('');
+    expect(hint('focus.down')).toBe('⌘+; j');
   });
 
   it('everything else goes to the PTY; Shift+Enter is ESC CR in agent panes only', () => {
@@ -68,7 +81,7 @@ describe('keyboard contract §9.7', () => {
     expect(hint('decisions')).toBe('⌘+⇧+I');
     expect(hint('overwatch.ask')).toBe('⌘+L');
     expect(hint('decisions.search')).toBe('/'); // a key of the chat, no chord
-    expect(hint('pane.zoom')).toBe('⌘+; z');
+    expect(hint('pane.close')).toBe('⌘+W');
     expect(Object.values(CHORDS)).toContain('session.new');
   });
 });

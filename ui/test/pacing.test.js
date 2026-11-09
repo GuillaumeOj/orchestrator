@@ -437,7 +437,16 @@ describe('planner, banner, status bar, board', () => {
     await waitFor(() => getByText('Run off-hours', { exact: false }));
     const b = [...container.querySelectorAll('button')].find((x) => x.textContent.includes('Run off-hours'));
     expect(b.disabled).toBe(true);
-    expect(b.getAttribute('title')).toBe('Off-hours allowance is 0 % this week. Set it in the plan (e).');
+    // The reason is in the tooltip, not a native title (two tooltips would show).
+    expect(b.hasAttribute('title')).toBe(false);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await fireEvent.pointerEnter(b);
+      vi.advanceTimersByTime(600);
+      expect(document.getElementById('orch-tooltip')?.textContent).toContain('Off-hours allowance is 0 % this week.');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('on battery: one banner and the status bar chip', () => {

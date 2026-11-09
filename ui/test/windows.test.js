@@ -237,9 +237,7 @@ describe('focus (design-notes §3.3)', () => {
 describe('restore and reopen', () => {
   it('saved settings / project-settings / planner panes are dropped; no window opens at launch', async () => {
     let tree = L.leaf('p1');
-    tree = L.addTab(tree, 'p1', 'p2');
-    tree = L.addTab(tree, 'p2', 'p3');
-    tree = L.addTab(tree, 'p3', 'p4');
+    for (const id of ['p2', 'p3', 'p4']) tree = L.addTab(tree, id);
     replies.settings_get = ({ key }) =>
       key === 'layout'
         ? {
@@ -269,7 +267,7 @@ describe('restore and reopen', () => {
     await reopenClosed();
     expect(app.window).toBeNull();
     expect(paneTypes()).toEqual(['mission']);
-    expect(app.toasts.at(-1).text).toBe('No closed pane to reopen');
+    expect(app.toasts.at(-1).text).toBe('No closed tab to reopen');
   });
 });
 

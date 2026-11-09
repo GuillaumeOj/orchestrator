@@ -699,7 +699,8 @@ describe('the shell (notes §9)', () => {
   });
 
   it('a saved Inbox pane (and a Week planner pane, a window now) is dropped at restore; Mission control stays home', async () => {
-    const tree = L.split(L.leaf('p1'), 'p1', 'row', 'p2');
+    // A layout saved with a split (before the single pane, design-notes §4.2).
+    const tree = { kind: 'split', id: 's1', dir: 'row', sizes: [0.5, 0.5], children: [L.leaf('p1'), L.leaf('p2')] };
     replies.settings_get = ({ key }) =>
       key === 'layout'
         ? {

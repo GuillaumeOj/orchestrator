@@ -24,14 +24,11 @@ export const CHORDS = {
 const LOCAL_KEYS = { 'decisions.search': '/' };
 
 /** Leader sequences: ⌘; then the key. */
+/** Single pane (design-notes §4.1): no split, zoom or left/right focus; j / k
+ *  move between the workspace and the dock. */
 export const LEADER = {
-  s: 'pane.split.below',
-  v: 'pane.split.right',
-  h: 'focus.left',
   j: 'focus.down',
   k: 'focus.up',
-  l: 'focus.right',
-  z: 'pane.zoom',
   t: 'shell.new',
   ']': 'dock.next',
   '[': 'dock.prev',

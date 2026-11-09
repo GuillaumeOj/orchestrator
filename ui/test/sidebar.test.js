@@ -3,15 +3,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fixture } from './fixture.js';
 
 let next = null; // the next app_state payload
+const saves = []; // `layout` values written by saveLayout
 vi.mock('../src/lib/ipc.js', () => ({
   inTauri: false,
   errText: (e) => (typeof e === 'string' ? e : (e?.message ?? String(e))),
   listen: () => Promise.resolve(() => {}),
-  invoke: (cmd) => (cmd === 'app_state' ? Promise.resolve(next) : Promise.resolve(null)),
+  invoke: (cmd, args) => {
+    if (cmd === 'settings_set' && args.key === 'layout') saves.push(args.value);
+    return cmd === 'app_state' ? Promise.resolve(next) : Promise.resolve(null);
+  },
 }));
 
 const { app, closePane, refresh, reopenClosed, run } = await import('../src/lib/app.svelte.js');
 const { default: Sidebar } = await import('../src/components/Sidebar.svelte');
+const { default: IconRail } = await import('../src/components/IconRail.svelte');
 
 const feature = { id: 'shop-api-fx', project_id: 'shop-api', slug: 'fx', branch: 'orch/fx/integration', run: null };
 const lead = (featureId) => ({
@@ -27,6 +32,9 @@ beforeEach(() => {
   app.layout = { kind: 'leaf', id: 'l1', tabs: ['p1'], active: 'p1' };
   app.focused = 'p1';
   app.toasts = [];
+  app.workspace = { project: 'all' };
+  app.sidebarTree = {};
+  saves.length = 0;
 });
 
 describe('sidebar', () => {
@@ -58,6 +66,60 @@ describe('sidebar', () => {
     const { container } = render(Sidebar);
     expect(container.querySelector('.row.feature')?.textContent).toContain('fx');
     expect(container.querySelector('.row.agent.team')).not.toBeNull();
+  });
+});
+
+describe('sidebar tree and project context (design-notes §5.1 rule 4, §5.4)', () => {
+  const projectRow = (c, name) => [...c.querySelectorAll('.row.project')].find((r) => r.textContent.includes(name));
+
+  it('carets toggle app.sidebarTree (expanded booleans, absent = expanded) and save it; the row does not open', async () => {
+    vi.useFakeTimers();
+    try {
+      const { container } = render(Sidebar);
+      expect(container.querySelector('.row.feature')).not.toBeNull();
+      await fireEvent.click(projectRow(container, 'shop-api').querySelector('.caret'));
+      expect(app.sidebarTree).toEqual({ 'shop-api': false });
+      expect(container.querySelector('.row.feature')).toBeNull();
+      expect(app.workspace.project).toBe('all');
+      await fireEvent.click(projectRow(container, 'shop-api').querySelector('.caret'));
+      await fireEvent.click(container.querySelector('.row.feature .caret'));
+      expect(app.sidebarTree).toEqual({ 'shop-api': true, 'f:shop-api-fx': false });
+      expect(container.querySelector('.row.feature').closest('li').getAttribute('aria-expanded')).toBe('false');
+      vi.advanceTimersByTime(500);
+      expect(saves.at(-1).sidebarTree).toEqual({ 'shop-api': true, 'f:shop-api-fx': false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a project click sets the context and highlights only that row; none in All projects', async () => {
+    const { container } = render(Sidebar);
+    expect(container.querySelectorAll('.row.project.selected')).toHaveLength(0);
+    await fireEvent.click(projectRow(container, 'blog'));
+    expect(app.workspace.project).toBe('blog');
+    expect([...container.querySelectorAll('.row.project.selected')].map((r) => r.textContent)).toEqual([
+      expect.stringContaining('blog'),
+    ]);
+    expect(Object.values(app.panes).some((s) => s.type === 'project' && s.projectId === 'blog')).toBe(true);
+  });
+
+  it('a feature click sets its project context and opens it', async () => {
+    app.workspace = { project: 'blog' };
+    app.panes = {};
+    app.layout = null;
+    const { container } = render(Sidebar);
+    await fireEvent.click(container.querySelector('.row.feature'));
+    expect(app.workspace.project).toBe('shop-api');
+    expect(Object.values(app.panes)).toMatchObject([{ type: 'feature', featureId: feature.id }]);
+  });
+
+  it('the icon rail marks the context project only, and a click sets it', async () => {
+    const { container } = render(IconRail);
+    expect(container.querySelectorAll('.slot.on')).toHaveLength(0);
+    await fireEvent.click(container.querySelector('[aria-label="blog"]'));
+    expect(app.workspace.project).toBe('blog');
+    expect(container.querySelector('.slot.on [aria-label="blog"]')).not.toBeNull();
+    expect(container.querySelectorAll('.slot.on')).toHaveLength(1);
   });
 });
 

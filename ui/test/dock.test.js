@@ -34,7 +34,6 @@ const {
   restoreLayout,
   runInPane,
   toggleDock,
-  toggleZoom,
 } = await import('../src/lib/app.svelte.js');
 
 beforeEach(() => {
@@ -43,7 +42,7 @@ beforeEach(() => {
   app.layout = { kind: 'leaf', id: 'l1', tabs: ['p1'], active: 'p1' };
   app.focused = 'p1';
   app.dock = { open: false, height: 0.45, tabs: [], active: null, v: 2 };
-  app.zoomed = null;
+  app.workspace = { project: 'all' };
   h.saved = null;
 });
 
@@ -56,10 +55,10 @@ describe('shell dock', () => {
     expect(app.layout.tabs).toEqual(['p1']);
     expect(app.focused).toBe(app.dock.tabs[1]);
     expect(app.dock.active).toBe(app.dock.tabs[1]);
-    // A split still makes a pane.
+    // No split any more (design-notes §4.1): `how` is ignored, a shell is always a dock tab.
     await openShell({ how: 'right' });
-    expect(app.layout.kind).toBe('split');
-    expect(app.dock.tabs).toHaveLength(2);
+    expect(app.layout).toEqual({ kind: 'leaf', id: 'l1', tabs: ['p1'], active: 'p1' });
+    expect(app.dock.tabs).toHaveLength(3);
   });
 
   it('cycles, hides and shows, and moves focus in and out', async () => {
@@ -152,60 +151,23 @@ describe('agents in the dock', () => {
   });
 });
 
-describe('zoom and the dock filling the column', () => {
-  it('zooms a dock tab over the column and restores it', async () => {
+describe('the dock filling the column (no zoom, design-notes §4.1)', () => {
+  it('fills only with no workspace tab at all, whatever the context', async () => {
     await openShell();
-    const [a] = app.dock.tabs;
     expect(dockFills()).toBe(false);
-    toggleZoom();
-    expect(app.zoomed).toBe(a);
-    expect(dockFills()).toBe(true);
-    toggleZoom();
-    expect(app.zoomed).toBe(null);
+    // A context showing none of the tabs keeps the workspace (its strip and Select).
+    app.panes.p2 = { type: 'project', projectId: 'shop-api', title: 'shop-api' };
+    app.layout = { kind: 'leaf', id: 'l1', tabs: ['p2'], active: 'p2' };
+    app.workspace = { project: 'blog' };
     expect(dockFills()).toBe(false);
+    expect('zoomed' in app).toBe(false);
   });
 
-  it('⌘1…9 from a zoomed dock tab focuses the workspace pane and ends the zoom', async () => {
+  it('⌘1…9 from the dock focuses the n-th workspace tab', async () => {
     await openShell();
-    toggleZoom();
     focusNumber(1);
     expect(app.focused).toBe('p1');
-    expect(app.zoomed).toBe(null);
-    expect(dockFills()).toBe(false);
-  });
-
-  it('⌘1…9 moves a workspace zoom to the pane it focuses', async () => {
-    await openShell({ how: 'right' });
-    const [, second] = app.layout.children.flatMap((c) => c.tabs);
-    focusPane('p1');
-    toggleZoom();
-    focusNumber(2);
-    expect(app.focused).toBe(second);
-    expect(app.zoomed).toBe(second);
-  });
-
-  it('keeps the zoom across dock tabs and ends it on the other side', async () => {
-    await openShell();
-    openAgent('front-1');
-    const [a, b] = app.dock.tabs;
-    toggleZoom();
-    expect(app.zoomed).toBe(b);
-    cycleDock(1);
-    expect(app.focused).toBe(a);
-    expect(app.zoomed).toBe(a);
-    focusPane('p1');
-    expect(app.zoomed).toBe(null);
-    toggleZoom(); // a workspace zoom
-    expect(app.zoomed).toBe('p1');
-    focusPane(a);
-    expect(app.zoomed).toBe(null);
-  });
-
-  it('hiding the dock ends its zoom', async () => {
-    await openShell();
-    toggleZoom();
-    toggleDock();
-    expect(app.zoomed).toBe(null);
+    focusNumber(5);
     expect(app.focused).toBe('p1');
   });
 

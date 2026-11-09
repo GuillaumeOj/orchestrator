@@ -33,7 +33,7 @@
   /** @type {{ title: string, subtitle?: string | null, size?: { w: number, h?: number | null }, minW?: number,
    *           onclose: (reason: 'esc' | 'close' | 'backdrop') => void,
    *           nav?: { id: string, label: string, badge?: string | number }[] | null, section?: string | null,
-   *           navTitle?: string | null, onsection?: (id: string) => void, onrestore?: () => void,
+   *           navTitle?: string | null, onsection?: (id: string) => void,
    *           restoreFocus?: boolean, role?: 'dialog' | 'alertdialog',
    *           children?: import('svelte').Snippet, titleExtra?: import('svelte').Snippet,
    *           navBadge?: import('svelte').Snippet<[string]>, onkeydown?: (e: KeyboardEvent) => void }} */
@@ -47,7 +47,6 @@
     section = null,
     navTitle = null,
     onsection,
-    onrestore,
     // false: the opener restores the focus itself (the app windows: `closeWindow`).
     restoreFocus = true,
     role = 'dialog',
@@ -106,7 +105,6 @@
       for (const c of made) c.removeAttribute('inert');
       if (!restoreFocus) return;
       if (opener?.isConnected && opener !== document.body) opener.focus();
-      else onrestore?.();
     };
   });
 

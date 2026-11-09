@@ -2,9 +2,9 @@
   // The dock (§9.2): agents and shells in one panel under the panes, one tab
   // each, so a terminal never crowds the workspace. ⌘J shows or hides it;
   // hidden tabs keep running and keep their buffers (§9.1 principle 6). With no
-  // workspace pane, or zoomed (⌘; z), it fills the whole work column.
+  // workspace tab at all it fills the whole work column.
   import { tick } from 'svelte';
-  import { agent, app, closePaneByUser, dockFills, focusPane, inDock, openShell, saveLayout, toggleZoom } from '../lib/app.svelte.js';
+  import { agentShort, app, closePaneByUser, dockFills, focusPane, openShell, saveLayout } from '../lib/app.svelte.js';
   import { attention, statusOf, waitLine } from '../lib/now.svelte.js';
   import AgentPane from '../panes/AgentPane.svelte';
   import TermPaneView from '../panes/TermPaneView.svelte';
@@ -20,13 +20,12 @@
   const clamp = (h) => Math.min(0.8, Math.max(0.12, h));
 
   const fill = $derived(dockFills());
-  const zoomed = $derived(inDock(app.zoomed));
   const activeSpec = $derived(app.panes[app.dock.active]);
   /** The first tab is active and nothing is scrolled off: it sits on the body's top-left corner. */
   const squareTL = $derived(app.dock.tabs[0] === app.dock.active && !scrolled);
 
   /** An agent tab's name: its team node, else its id. */
-  const short = (spec) => agent(spec.agentId)?.team?.node ?? spec.agentId;
+  const short = (spec) => agentShort(spec.agentId);
   const tip = (spec) =>
     spec.type === 'agent'
       ? [spec.agentId, waitLine(attention(spec.agentId))].filter(Boolean).join(' · ')
@@ -121,10 +120,6 @@
     {#if overflow}<span class="sep"></span>{/if}
     <button class="add" aria-label="New shell" title="New shell" onclick={() => openShell()}>+</button>
     <span class="grow"></span>
-    {#if zoomed}
-      <span class="zoomtag">ZOOMED</span>
-      <button class="hint" onclick={toggleZoom}><Kbd keys="⌘+; z" /> restore</button>
-    {/if}
     <span class="muted hint"><Kbd keys="⌘+J" /> hide</span>
   </div>
   <!-- One terminal on screen; the others keep running (their xterm is kept). -->
@@ -147,7 +142,7 @@
     background: var(--color-surface-chrome);
     padding: 0 var(--space-xs) var(--space-xs);
   }
-  /* Filling the column (no workspace pane, or zoomed): nothing to resize against. */
+  /* Filling the column (no workspace tab): nothing to resize against. */
   .dock.fill {
     flex: 1;
     min-width: 0;
@@ -241,20 +236,10 @@
   .grow {
     flex: 1;
   }
-  .zoomtag {
-    font: var(--text-caption);
-    color: var(--color-accent-default);
-  }
   .hint {
     flex: none;
     font: var(--text-caption);
     padding-right: var(--space-sm);
-  }
-  button.hint {
-    border: 0;
-    background: none;
-    color: var(--color-text-muted);
-    padding-left: var(--space-sm);
   }
   .body {
     flex: 1;

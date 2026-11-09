@@ -2,8 +2,10 @@
   // Sidebar (§9.2): Projects → Features → agents; solo sessions under their
   // project. The only navigation tree. Badges are the core's attention
   // records; a feature's count is its run's `needs_you`, its label the run's phase
-  // (a finished run has no record: its own status).
-  import { activeAgents, app, features, inspected, openAgent, openFeature, openProject, projects } from '../lib/app.svelte.js';
+  // (a finished run has no record: its own status). The current project is the
+  // workspace's context (none in All projects); a project or feature click sets
+  // it. Carets are remembered (`app.sidebarTree`, design-notes §5.4).
+  import { activeAgents, app, features, inspected, openAgent, openFeature, openProjectContext, projects, setContext, toggleTree, treeOpen } from '../lib/app.svelte.js';
   import { pct } from '../lib/format.js';
   import { attention, featureRun, needYouText, runPhase, statusOf, waitLine } from '../lib/now.svelte.js';
   import { runStateLabel } from '../lib/teams.js';
@@ -11,7 +13,6 @@
   import Kbd from './Kbd.svelte';
   import StatusBadge from './StatusBadge.svelte';
 
-  let collapsed = $state({});
   const focusedAgent = $derived.by(() => {
     const s = inspected();
     return s?.kind === 'agent' ? s.id : null;
@@ -30,6 +31,17 @@
   );
   const focusedFeature = $derived(app.panes[app.focused]?.type === 'feature' ? app.panes[app.focused].featureId : null);
 
+  function clickFeature(f) {
+    setContext(f.project_id);
+    openFeature(f.id);
+  }
+
+  /** A caret: toggles its row without opening it. */
+  const caret = (e, key) => {
+    e.stopPropagation();
+    toggleTree(key);
+  };
+
   function onKey(e) {
     // Arrow keys move between rows (the tree is keyboard reachable without the mouse).
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
@@ -45,30 +57,33 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <ul role="tree" tabindex="-1" onkeydown={onKey}>
     {#each byProject as { p, feats, list } (p.id)}
-      <li role="treeitem" aria-selected="false" aria-expanded={!collapsed[p.id]}>
-        <button data-row class="row project" class:selected={app.panes[app.focused]?.type === 'project' && app.panes[app.focused]?.projectId === p.id} onclick={() => openProject(p.id)} title={p.path}>
+      {@const open = treeOpen(p.id)}
+      {@const current = app.workspace.project === p.id}
+      <li role="treeitem" aria-selected={current} aria-expanded={open}>
+        <button data-row class="row project" class:selected={current} aria-current={current ? 'true' : undefined} onclick={() => openProjectContext(p.id)} title={p.path}>
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-          <span class="caret" aria-hidden="true" onclick={(e) => (e.stopPropagation(), (collapsed[p.id] = !collapsed[p.id]))}>{collapsed[p.id] ? '▸' : '▾'}</span>
+          <span class="caret" aria-hidden="true" onclick={(e) => caret(e, p.id)}>{open ? '▾' : '▸'}</span>
           <span class="name">{p.name}</span>
           <span class="meta">
             {#if p.git?.branch}<span class="icon" aria-hidden="true">{'\u{E725}'}</span> {p.git.branch}{/if}
             {#if p.git?.ahead}↑{p.git.ahead}{/if}{#if p.git?.behind}↓{p.git.behind}{/if}{#if p.git?.dirty} ±{p.git.dirty}{/if}
           </span>
         </button>
-        {#if !collapsed[p.id]}
+        {#if open}
           <ul role="group">
             {#each feats as { f, list: fl } (f.id)}
               {@const k = `f:${f.id}`}
               {@const n = featureRun(f)?.counts?.needs_you ?? 0}
               {@const phase = runPhase(f.run)}
-              <li role="treeitem" aria-selected={focusedFeature === f.id} aria-expanded={!collapsed[k]}>
-                <button data-row class="row feature" class:selected={focusedFeature === f.id} onclick={() => openFeature(f.id)} title="{f.archived ? 'Deleted, agents left · ' : ''}{f.branch} · {phase ? runStateLabel(phase) : 'no run'}">
+              {@const fopen = treeOpen(k)}
+              <li role="treeitem" aria-selected={focusedFeature === f.id} aria-expanded={fopen}>
+                <button data-row class="row feature" class:selected={focusedFeature === f.id} onclick={() => clickFeature(f)} title="{f.archived ? 'Deleted, agents left · ' : ''}{f.branch} · {phase ? runStateLabel(phase) : 'no run'}">
                   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-                  <span class="caret" aria-hidden="true" onclick={(e) => (e.stopPropagation(), (collapsed[k] = !collapsed[k]))}>{collapsed[k] ? '▸' : '▾'}</span>
+                  <span class="caret" aria-hidden="true" onclick={(e) => caret(e, k)}>{fopen ? '▾' : '▸'}</span>
                   <span class="name">{f.slug}</span>
                   {#if n}<span class="badge" aria-label={needYouText(n)} title={needYouText(n)}>{n}</span>{:else if f.archived}<span class="meta">deleted</span>{:else if phase}<span class="meta">{runStateLabel(phase)}</span>{/if}
                 </button>
-                {#if !collapsed[k]}
+                {#if fopen}
                   <ul role="group">
                     {#each fl as a (a.id)}
                       <li role="treeitem" aria-selected={focusedAgent === a.id}>
