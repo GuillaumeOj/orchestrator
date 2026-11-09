@@ -28,6 +28,8 @@ pub const URL: &str = "https://api.linear.app/graphql";
 const NODE_PREFIX: &str = "orch:node:";
 /// Pages of 25 a listing reads at most (10 000 issues).
 const MAX_PAGES: usize = 400;
+/// Issues per `OrchIssues` page (`first:` in [`issues_query`]).
+const PAGE: usize = 25;
 
 /// What a GraphQL call can fail with.
 #[derive(Clone, Debug, PartialEq)]
@@ -547,24 +549,21 @@ impl<T: Graphql> LinearIssues<T> {
         };
         let mut issues = vec![];
         let (query, mut after) = (issues_query(), Value::Null);
-        for page in 0.. {
-            if page == max_pages {
-                bail!(
-                    "Linear: {} lists more than {} issues; set a Linear project to narrow it",
-                    self.cursor_scope(),
-                    max_pages * 25
-                );
-            }
+        for _ in 0..max_pages {
             let d = self.call(&query, json!({"filter": filter, "after": after}))?;
             for v in d["issues"]["nodes"].as_array().into_iter().flatten() {
                 issues.push(self.to_issue(v)?);
             }
             if d["issues"]["pageInfo"]["hasNextPage"] != true {
-                break;
+                return Ok(listing(issues, coverage, window.map(|(t, _)| t)));
             }
             after = d["issues"]["pageInfo"]["endCursor"].clone();
         }
-        Ok(listing(issues, coverage, window.map(|(t, _)| t)))
+        bail!(
+            "Linear: {} lists more than {} issues; set a Linear project to narrow it",
+            self.cursor_scope(),
+            max_pages * PAGE
+        )
     }
 }
 
@@ -594,7 +593,7 @@ pub mod fake {
 
     use serde_json::{Value, json};
 
-    use super::{GqlError, Graphql};
+    use super::{GqlError, Graphql, PAGE};
 
     /// Linear's complexity limit; a query estimated above it is refused.
     const COMPLEXITY_LIMIT: f64 = 10_000.0;
@@ -804,15 +803,6 @@ pub mod fake {
         id
     }
 
-    /// The type of state `id`, if the team has it.
-    fn state_type<'a>(w: &'a World, id: &str) -> Option<&'a str> {
-        STATES
-            .iter()
-            .find(|s| s.0 == id)
-            .map(|s| s.2)
-            .or_else(|| w.extra_states.iter().find(|s| s.0 == id).map(|s| s.2.as_str()))
-    }
-
     fn state_of(w: &World, id: &str) -> Value {
         STATES
             .iter()
@@ -829,8 +819,13 @@ pub mod fake {
         jiff::Timestamp::from_second(1_793_145_600 + t as i64).expect("in range")
     }
 
-    fn label_names<'a>(w: &'a World, i: &FakeIssue) -> Vec<&'a str> {
-        i.labels.iter().filter_map(|id| w.labels.iter().find(|(l, _)| l == id)).map(|(_, n)| n.as_str()).collect()
+    /// The (id, name) of `i`'s labels.
+    fn labels_of<'a>(w: &'a World, i: &'a FakeIssue) -> impl Iterator<Item = &'a (String, String)> {
+        i.labels.iter().filter_map(|id| w.labels.iter().find(|(l, _)| l == id))
+    }
+
+    fn label_names<'a>(w: &'a World, i: &'a FakeIssue) -> Vec<&'a str> {
+        labels_of(w, i).map(|(_, n)| n.as_str()).collect()
     }
 
     /// Whether `i` passes an `IssueFilter`, for the fields the app sends.
@@ -847,21 +842,15 @@ pub mod fake {
                 }
                 "state" => {
                     let nin = c["type"]["nin"].as_array().ok_or_else(|| unsupported(k))?;
-                    !state_type(w, &i.state).is_some_and(|t| nin.iter().any(|n| n == t))
+                    !nin.contains(&state_of(w, &i.state)["type"])
                 }
                 "labels" => {
                     let name = c["name"]["eq"].as_str().ok_or_else(|| unsupported(k))?;
                     label_names(w, i).contains(&name)
                 }
                 "or" => {
-                    let mut any = false;
-                    for sub in c.as_array().ok_or_else(|| unsupported(k))? {
-                        if matches(w, i, sub)? {
-                            any = true;
-                            break;
-                        }
-                    }
-                    any
+                    let subs = c.as_array().ok_or_else(|| unsupported(k))?;
+                    subs.iter().try_fold(false, |any, sub| Ok(any || matches(w, i, sub)?))?
                 }
                 _ => return Err(unsupported(k)),
             };
@@ -872,19 +861,8 @@ pub mod fake {
         Ok(true)
     }
 
-    /// The `first: N` of the `issues(...)` connection in `query`.
-    fn page_size(query: &str) -> usize {
-        let rest = query.split("issues(first:").nth(1).unwrap_or("50");
-        rest.trim_start().chars().take_while(char::is_ascii_digit).collect::<String>().parse().unwrap_or(50)
-    }
-
     fn render(w: &World, i: &FakeIssue) -> Value {
-        let labels: Vec<Value> = i
-            .labels
-            .iter()
-            .filter_map(|id| w.labels.iter().find(|(l, _)| l == id))
-            .map(|(id, name)| json!({"id": id, "name": name}))
-            .collect();
+        let labels: Vec<Value> = labels_of(w, i).map(|(id, name)| json!({"id": id, "name": name})).collect();
         let project = i.project.as_ref().map_or(Value::Null, |p| json!({"id": p}));
         let inv: Vec<Value> = w
             .relations
@@ -1005,7 +983,7 @@ pub mod fake {
                         }
                     }
                     let from: usize = v["after"].as_str().and_then(|a| a.parse().ok()).unwrap_or(0);
-                    let to = (from + page_size(query)).min(hits.len());
+                    let to = (from + PAGE).min(hits.len());
                     let page = &hits[from.min(to)..to];
                     let nodes: Vec<Value> = page.iter().map(|i| render(&w, i)).collect();
                     let ids = page.iter().map(|i| i.id.clone()).collect();
@@ -1073,6 +1051,7 @@ mod tests {
     #[test]
     fn the_listings_stay_under_the_complexity_limit() {
         assert!(!issues_query().contains("orch"), "the filter is a variable");
+        assert!(issues_query().contains(&format!("issues(first: {PAGE},")), "PAGE is the query's page");
         let f = fake::FakeLinear::default();
         let l = LinearIssues::new(f.clone(), "ENG", Some("proj-1".into()), BTreeMap::new());
         let first = l.list(None).unwrap();

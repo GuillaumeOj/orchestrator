@@ -923,7 +923,7 @@ fn linear_project_scopes_the_listing() {
     let (_d, s, p, lin) = linear_setup(Some("proj-1"));
     lin.add("ENG-1", "In the project", "st-todo", &[]);
     lin.add("ENG-2", "Elsewhere", "st-todo", &[]);
-    lin.0.lock().unwrap().issues[0].project = Some("proj-1".into());
+    lin.edit("ENG-1", |i| i.project = Some("proj-1".into()));
     let svc = lin_svc(&s, &p, &lin);
     let rep = svc.sync(1).unwrap();
     assert_eq!(rep.imported, [by_key(&s, "ENG-1").id]);
