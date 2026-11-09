@@ -372,19 +372,14 @@ fn linear_two_way_sync_and_the_remote_wins() {
     let b = svc.create(b).unwrap().value;
     assert_eq!(lin.issue("ENG-2").state, "st-todo");
     assert_eq!(lin.blockers("ENG-2"), ["ENG-1"]);
-    let names = |id: &str| -> Vec<String> {
-        let w = lin.0.lock().unwrap();
-        let i = w.issues.iter().find(|i| i.id == id).unwrap();
-        i.labels.iter().filter_map(|l| w.labels.iter().find(|(x, _)| x == l).map(|(_, n)| n.clone())).collect()
-    };
-    assert_eq!(names("ENG-2"), ["orch", "orch:node:front"]);
+    assert_eq!(lin.label_names("ENG-2"), ["orch", "orch:node:front"]);
     // Moving a task in the app moves the issue; labels added in Linear stay.
     lin.0.lock().unwrap().labels.push(("lbl-bug".into(), "bug".into()));
     lin.edit("ENG-2", |i| i.labels.push("lbl-bug".into()));
     svc.sync(2).unwrap();
     svc.set_status(b.id, TaskStatus::Review, 3).unwrap();
     assert_eq!(lin.issue("ENG-2").state, "st-review");
-    assert!(names("ENG-2").contains(&"bug".to_string()));
+    assert!(lin.label_names("ENG-2").contains(&"bug".to_string()));
     svc.note(b.id, "front", "ready for review", 4).unwrap();
     assert_eq!(lin.0.lock().unwrap().comments, [("ENG-2".to_string(), "**front**: ready for review".to_string())]);
     assert_eq!(svc.sync(5).unwrap(), SyncReport::default(), "nothing changed remotely");
@@ -414,20 +409,8 @@ fn linear_two_way_sync_and_the_remote_wins() {
     assert_eq!(rep.summary()["pulled"], 1);
 
     // An issue made in Linear with the orch label is imported, its blocker resolved.
-    {
-        let mut w = lin.0.lock().unwrap();
-        let orch = w.labels.iter().find(|(_, n)| n == "orch").unwrap().0.clone();
-        w.issues.push(crate::linear::fake::FakeIssue {
-            id: "ENG-9".into(),
-            title: "From Linear".into(),
-            description: "d".into(),
-            state: "st-todo".into(),
-            labels: vec![orch],
-            updated: 99,
-            ..Default::default()
-        });
-        w.relations.push(("rel-9".into(), "ENG-2".into(), "ENG-9".into()));
-    }
+    lin.add("ENG-9", "From Linear", "st-todo", &["orch"]);
+    lin.0.lock().unwrap().relations.push(("rel-9".into(), "ENG-2".into(), "ENG-9".into()));
     let rep = svc.sync(10).unwrap();
     let t = s.task(rep.imported[0]).unwrap().unwrap();
     assert_eq!((t.status, t.depends_on.clone(), t.backend.as_str()), (TaskStatus::Ready, vec![b.id], "linear"));
@@ -809,7 +792,7 @@ fn linear_first_sync_reads_every_open_issue() {
     for k in ["ENG-5", "ENG-6"] {
         assert!(s.task_by_external("p1", "linear", k).unwrap().is_none(), "{k} is history");
     }
-    assert_eq!(lin.mutations(), Vec::<String>::new(), "reading never writes");
+    assert_eq!(lin.0.lock().unwrap().mutations, Vec::<String>::new(), "reading never writes");
     let (vars, _) = last_linear_list(&lin);
     assert_eq!(vars["filter"]["or"][0]["state"]["type"]["nin"], json!(["completed", "canceled"]));
     assert_eq!(vars["filter"]["or"][1]["labels"]["name"]["eq"], "orch");
@@ -889,12 +872,7 @@ fn linear_writes_only_what_changed() {
     let inp = last_linear_update(&lin);
     assert_eq!(inp["stateId"], "st-progress");
     assert!(inp.get("title").is_none() && inp.get("description").is_none(), "{inp}");
-    let names = |id: &str| -> Vec<String> {
-        let w = lin.0.lock().unwrap();
-        let i = w.issues.iter().find(|i| i.id == id).unwrap();
-        i.labels.iter().filter_map(|l| w.labels.iter().find(|(x, _)| x == l).map(|(_, n)| n.clone())).collect()
-    };
-    assert_eq!(names("ENG-1"), ["orch", "bug"]);
+    assert_eq!(lin.label_names("ENG-1"), ["orch", "bug"]);
     let i = lin.issue("ENG-1");
     assert_eq!((i.title.as_str(), i.description.as_str()), ("Foreign", "Edited in Linear"));
     assert_eq!(out.value.body, "Edited in Linear", "the task takes what it did not send");

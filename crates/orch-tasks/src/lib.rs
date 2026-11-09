@@ -455,12 +455,8 @@ impl<'a> TaskService<'a> {
             // is left as it is.
             Coverage::OpenAndManaged => {
                 for t in unlisted.into_iter().filter(|t| Self::pending(t).is_some() || t.status != TaskStatus::Done) {
-                    let id = t.external_id.as_deref().unwrap_or_default();
-                    match gh.get_issue(id) {
-                        Ok(issue) if issue.number == id => issues.push(issue),
-                        // Answered under another id (a Linear issue moved to
-                        // another team): no longer this backend's, like gone.
-                        Ok(_) => {}
+                    match gh.get_issue(t.external_id.as_deref().unwrap_or_default()) {
+                        Ok(issue) => issues.push(issue),
                         // Gone: left as it is. Any other failure: the cursor must not
                         // move past an issue never read (an incremental list would
                         // not show it again).
@@ -571,8 +567,8 @@ impl<'a> TaskService<'a> {
 }
 
 /// A read failed because the issue no longer exists (GitHub: deleted, 410,
-/// or transferred/never there, 404; Linear: no such entity) rather than for
-/// a transient reason.
+/// or transferred/never there, 404; Linear: no such entity, or moved out of
+/// the team or project) rather than for a transient reason.
 fn issue_gone(e: &anyhow::Error) -> bool {
     let m = format!("{e:#}");
     ["HTTP 404", "HTTP 410", "Not Found", "Gone", "Entity not found", "no Linear issue"].iter().any(|p| m.contains(p))

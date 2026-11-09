@@ -9,7 +9,7 @@ runtime read one table. Agents never call a backend: the orchestrator MCP tools 
 |---|---|---|---|
 | **Local** | the store | the store | the store |
 | **GitHub Issues** | every open issue of the repo, the closed ones the app tracks or that have `orch` | write-through with `gh api` (the user's `gh` login), **only the changed fields**: a status/node change sends `labels` + `state` (reading the issue first to keep its other labels), a title/body edit `title` + `body` | `sync`: REST `repos/{repo}/issues`, paged (`gh api --paginate`, 100 per page): first all open + closed `orch` issues, then only `state=all&since=<cursor − 1 min>` |
-| **Linear** | every open issue of one team (and project), the closed ones the app tracks or that have `orch` | write-through with GraphQL (`linear.rs`, through a `Graphql` transport the core gives: the Keychain key over curl), **only the changed fields**: a status/node change sends `stateId` + `labelIds` (reading the issue first to keep its other labels), a title/body/dependencies edit `title` + `description` and the `blocks` relations | `sync`: `issues(first: 25, filter)`, paged (400 pages at most): first team (+ project) and state type not `completed`/`canceled` or label `orch`, then only `updatedAt > cursor − 1 min` |
+| **Linear** | every open issue of one team (and project), the closed ones the app tracks or that have `orch` | write-through with GraphQL (`linear.rs`, through a `Graphql` transport the core gives: the Keychain key over curl), **only the changed fields**: a status/node change sends `stateId` + `labelIds` (reading the issue first to keep its other labels), a title/body/dependencies edit `title` + `description` and the `blocks` relations | `sync`: `issues(first: 25, filter)`, paged (more than 400 pages is an error, not a silent cut): first team (+ project) and state type not `completed`/`canceled` or label `orch`, then only `updatedAt > cursor − 1 min` |
 
 `TaskService::new(store, project, gh)` picks the project's backend (`projects.task_backend`,
 `{"type":"github","repo":"owner/name"}`; no repo = the checkout's). API: `create`, `update`,
@@ -20,9 +20,9 @@ task pending; `sync` pushes it again.
 Both remotes implement `Remote` (list, create, update, get, comment); the sync is the same for
 both. `list_issues(since)` returns a `Listing { issues, coverage, cursor }`; `coverage` says what an
 issue not listed means: `OpenAndManaged` (without a cursor: maybe closed without `orch`, read
-alone; one answered under another id, a Linear issue moved to another team, is left as gone),
-`ChangedSince` (with a cursor: unchanged). GitHub and
-Linear both list the open + managed issues first, then only the changed ones.
+alone), `ChangedSince` (with a cursor: unchanged). GitHub and Linear both list the open + managed
+issues first, then only the changed ones. A Linear issue read alone that has left the team or
+project counts as gone (left as it is).
 
 What a write sends is decided against the stored task: status or node changed → `state`, title,
 body or dependencies changed → `content` (`IssueWrite.fields`); a task the remote never got or a

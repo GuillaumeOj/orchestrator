@@ -61,18 +61,17 @@ pub struct Issue {
 }
 
 /// What a listing leaves out, i.e. what an issue not in it means.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Coverage {
     /// Only the issues changed since the cursor: one not listed did not change.
     ChangedSince,
     /// Every open issue and the managed closed ones: one not listed may be
     /// closed without `orch` (read it alone).
-    #[default]
     OpenAndManaged,
 }
 
 /// The issues a sync reads.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Listing {
     pub issues: Vec<Issue>,
     pub coverage: Coverage,
@@ -82,7 +81,21 @@ pub struct Listing {
 }
 
 /// Overlap of an incremental read, for clock skew and same-second writes.
-pub(crate) const SINCE_OVERLAP_S: i64 = 60;
+const SINCE_OVERLAP_S: i64 = 60;
+
+/// An incremental read's `since` (the last cursor, parsed) and the time it
+/// reads from (a minute before). `None`: no cursor, or not a time.
+pub(crate) fn since_window(since: Option<&str>) -> Option<(jiff::Timestamp, jiff::Timestamp)> {
+    let t = since?.parse::<jiff::Timestamp>().ok()?;
+    Some((t, t - jiff::SignedDuration::from_secs(SINCE_OVERLAP_S)))
+}
+
+/// A listing whose cursor is the newest `updated_at` of `issues`, never
+/// older than the `since` it was asked with.
+pub(crate) fn listing(issues: Vec<Issue>, coverage: Coverage, since: Option<jiff::Timestamp>) -> Listing {
+    let newest = issues.iter().filter_map(|i| i.updated_at.parse::<jiff::Timestamp>().ok()).max();
+    Listing { cursor: newest.max(since).map(|t| t.to_string()), issues, coverage }
+}
 
 pub fn status_label(s: TaskStatus) -> String {
     format!("orch:{}", s.as_str())
@@ -336,22 +349,17 @@ impl<G: Gh> GithubIssues<G> {
     /// before it, open or closed. Pull requests are skipped.
     pub fn list(&self, since: Option<&str>) -> Result<Listing> {
         let repo = self.repo()?;
-        let since = since.and_then(|c| c.parse::<jiff::Timestamp>().ok());
-        let (raw, coverage) = match since {
-            Some(t) => {
-                let from = t - jiff::SignedDuration::from_secs(SINCE_OVERLAP_S);
-                (self.pages(&repo, &format!("state=all&since={from}"))?, Coverage::ChangedSince)
-            }
+        let window = since_window(since);
+        let (raw, coverage) = match window {
+            Some((_, from)) => (self.pages(&repo, &format!("state=all&since={from}"))?, Coverage::ChangedSince),
             None => {
                 let mut v = self.pages(&repo, "state=open")?;
                 v.extend(self.pages(&repo, &format!("state=closed&labels={LABEL}"))?);
                 (v, Coverage::OpenAndManaged)
             }
         };
-        let raw: Vec<Value> = raw.into_iter().filter(|v| v.get("pull_request").is_none()).collect();
-        let newest = raw.iter().filter_map(|v| v["updated_at"].as_str()?.parse::<jiff::Timestamp>().ok()).max();
-        let cursor = newest.max(since).map(|t| t.to_string());
-        Ok(Listing { issues: raw.iter().filter_map(parse_issue).collect(), coverage, cursor })
+        let issues = raw.iter().filter(|v| v.get("pull_request").is_none()).filter_map(parse_issue).collect();
+        Ok(listing(issues, coverage, window.map(|(t, _)| t)))
     }
 
     /// Every issue of a paged GET of `repo`'s issues with `query` (`gh api
