@@ -58,7 +58,7 @@ Known case to settle first: suspended agent (banner + header + strip). Then the 
 
 ## Dock
 
-- **View Select**: `Agents (n)` / `Shells (n)`; waiting dot on it when a hidden agent needs the user.
+- **View Select**: `Agents (n)` / `Shells (n)`; waiting dot only in the Shells view when an agent needs the user (rule: design-notes §12.7; the project Select carries the dot for other projects).
 - **Project Select** (Agents view only): `All projects` + projects with agents.
 - Tabs as today (agent: role mark · short name · status icon; shell: title). Shell title = `zsh · <cwd>` live, `~` for home, left-truncated, full path in the tooltip.
 - Overflow like the workspace (‹ ›), then `+` (new shell; in Agents view it is hidden).
