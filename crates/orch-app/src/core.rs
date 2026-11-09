@@ -161,6 +161,8 @@ pub struct TermInfo {
     pub id: u32,
     pub kind: TermKind,
     pub cwd: PathBuf,
+    /// Basename of the program actually spawned (`zsh`; the shell for command panes too).
+    pub shell: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -630,7 +632,7 @@ impl Core {
 
     pub fn term_spawn(&self, kind: TermKind, cwd: &Path, run: Option<&str>, rows: u16, cols: u16) -> Result<TermInfo> {
         let t = self.terms.spawn(kind, cwd, run, rows, cols)?;
-        Ok(TermInfo { id: t.id, kind, cwd: t.cwd.clone() })
+        Ok(TermInfo { id: t.id, kind, cwd: t.cwd.clone(), shell: t.shell.clone() })
     }
 
     /// FR-1101/1102: reuse the project's nvim if it answers, else a new pane
@@ -1100,6 +1102,44 @@ impl Core {
             None => orch_git::project::register(&self.db, path)?,
         };
         Ok(p.into())
+    }
+
+    fn stored_project(&self, id: &str) -> Result<orch_store::Project> {
+        self.db.project(id)?.ok_or_else(|| anyhow!("no project {id}"))
+    }
+
+    /// Renames a project (only the `name` column is written).
+    pub fn project_rename(&self, id: &str, name: &str) -> Result<Project> {
+        self.db.rename_project(id, name)?;
+        Ok(self.stored_project(id)?.into())
+    }
+
+    /// Local branches of the project's repo, the default branch first.
+    pub fn project_branches(&self, id: &str) -> Result<Vec<String>> {
+        let p = self.stored_project(id)?;
+        let out =
+            orch_git::git(&p.path, &["for-each-ref", "--format=%(refname:lstrip=2)", "--sort=refname", "refs/heads"])?;
+        let mut v: Vec<String> = out.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
+        if let Some(i) = v.iter().position(|b| *b == p.default_branch) {
+            let d = v.remove(i);
+            v.insert(0, d);
+        }
+        Ok(v)
+    }
+
+    /// Sets the project's default branch; it must be a local branch.
+    pub fn project_set_default_branch(&self, id: &str, branch: &str) -> Result<Project> {
+        let p = self.stored_project(id)?;
+        let branch = branch.trim();
+        let ok = !branch.is_empty()
+            && !branch.starts_with('-')
+            && orch_git::git::git_ok(&p.path, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]);
+        if !ok {
+            bail!("No branch {branch} in this repo");
+        }
+        self.db.set_project_default_branch(id, branch)?;
+        self.git.lock_ok().at = None; // ahead/behind is against the default branch
+        Ok(self.stored_project(id)?.into())
     }
 
     /// FR-101: clones `url` into `parent` (default `~/dev`), then registers it.
@@ -2253,6 +2293,27 @@ pub(crate) mod tests {
         // Nothing to open a PR from on the base branch; a PR needs a title.
         assert!(core.worktree_create_pr(&p.id, &repo, "t", "", false).unwrap_err().to_string().contains("base branch"));
         assert!(core.worktree_create_pr(&p.id, &wt.path, " ", "", false).unwrap_err().to_string().contains("title"));
+        core.shutdown();
+    }
+
+    #[test]
+    fn projects_rename_and_default_branch() {
+        let d = tmp();
+        let core = test_core(d.path());
+        let (_keep, other) = orch_git::fixtures::scratch_repo();
+        let p = core.project_add(&other).unwrap();
+        orch_git::fixtures::git(&other, &["branch", "develop"]);
+        assert_eq!(core.project_branches(&p.id).unwrap(), vec!["main", "develop"]);
+        assert_eq!(core.project_set_default_branch(&p.id, "develop").unwrap().default_branch, "develop");
+        assert_eq!(core.project_branches(&p.id).unwrap()[0], "develop");
+        let e = core.project_set_default_branch(&p.id, "nope").unwrap_err().to_string();
+        assert_eq!(e, "No branch nope in this repo");
+        assert!(core.project_set_default_branch(&p.id, "--all").is_err());
+        let r = core.project_rename(&p.id, "  Renamed ").unwrap();
+        assert_eq!((r.name.as_str(), r.default_branch.as_str()), ("Renamed", "develop"));
+        let first = core.projects().into_iter().find(|x| x.id != p.id).unwrap();
+        let e = core.project_rename(&p.id, &first.name.to_uppercase()).unwrap_err().to_string();
+        assert!(e.starts_with("A project named "), "{e}");
         core.shutdown();
     }
 

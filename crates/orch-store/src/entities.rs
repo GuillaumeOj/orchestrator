@@ -150,6 +150,47 @@ impl Store {
         })
     }
 
+    /// Renames a project: only the `name` column is written (a concurrent
+    /// edit of another column survives). The name is trimmed, 1-80 chars and
+    /// unique, case-insensitively, among the *other* projects.
+    pub fn rename_project(&self, id: &str, name: &str) -> Result<()> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            anyhow::bail!("Name can't be empty");
+        }
+        if name.chars().count() > 80 {
+            anyhow::bail!("Name is too long (80 characters max)");
+        }
+        let id = id.to_string();
+        let topics = [orch_protocol::Topic::Project(id.clone()), orch_protocol::Topic::Board(id.clone())];
+        self.write_touching(topics, move |tx| {
+            let taken: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE id<>?1 AND archived=0 AND lower(name)=lower(?2))",
+                params![id, name],
+                |r| r.get(0),
+            )?;
+            if taken {
+                anyhow::bail!("A project named {name} already exists");
+            }
+            if tx.execute("UPDATE projects SET name=?2 WHERE id=?1", params![id, name])? == 0 {
+                anyhow::bail!("no project {id}");
+            }
+            Ok(())
+        })
+    }
+
+    /// Writes only the `default_branch` column.
+    pub fn set_project_default_branch(&self, id: &str, branch: &str) -> Result<()> {
+        let (id, branch) = (id.to_string(), branch.to_string());
+        let topics = [orch_protocol::Topic::Project(id.clone()), orch_protocol::Topic::Board(id.clone())];
+        self.write_touching(topics, move |tx| {
+            if tx.execute("UPDATE projects SET default_branch=?2 WHERE id=?1", params![id, branch])? == 0 {
+                anyhow::bail!("no project {id}");
+            }
+            Ok(())
+        })
+    }
+
     pub fn touch_project(&self, id: &str, at_ms: u64) -> Result<()> {
         let id = id.to_string();
         self.write(move |tx| {
@@ -711,6 +752,27 @@ pub(crate) mod tests {
         s.delete_project("demo").unwrap();
         assert!(s.project("demo").unwrap().is_none());
         assert!(s.rules().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rename_and_default_branch_write_their_own_column() {
+        let (_d, s) = store();
+        let mut a = project("a", "/x/a");
+        a.name = "Alpha".into();
+        let mut b = project("b", "/x/b");
+        b.name = "Beta".into();
+        s.upsert_project(&a).unwrap();
+        s.upsert_project(&b).unwrap();
+        let err = |r: Result<()>| r.unwrap_err().to_string();
+        assert_eq!(err(s.rename_project("b", " alpha ")), "A project named alpha already exists");
+        assert_eq!(err(s.rename_project("b", "  ")), "Name can't be empty");
+        assert!(err(s.rename_project("b", &"x".repeat(81))).contains("too long"));
+        s.rename_project("a", "ALPHA").unwrap(); // its own name, re-cased
+        assert_eq!(s.project("a").unwrap().unwrap().name, "ALPHA");
+        s.set_project_default_branch("a", "develop").unwrap();
+        let p = s.project("a").unwrap().unwrap();
+        assert_eq!((p.name.as_str(), p.default_branch.as_str()), ("ALPHA", "develop"));
+        assert!(s.rename_project("zz", "n").is_err());
     }
 
     #[test]
