@@ -48,7 +48,7 @@
 
 ### 3.4 One pane, one project (problems 6, 7, 10)
 - **No splits.** The workspace is one tab strip and one pane. Split right/below (leader v / s), the pane numbers (⌘1…9 become "tab 1…9") and pane zoom go away; nvim and shells opened "in a split" go to a tab (nvim) or the dock (shells). A saved layout with splits restores as tabs in reading order.
-- **Project context dropdown**, always shown at the left of the workspace tab strip: each project, plus **All projects**. It filters the tabs: project-bound panes (project, feature, board, diff, team canvas, report of that project) show only in their project; app-wide panes (Mission control, Setup) always show; Mission control filters its rows by the context (its own ProjectFilter goes, audit §2.4). The weekly report is app-wide too. Opening a pane of another project switches the context to it, except in All projects, which stays All (design-notes §5.1 rule 3). Clicking a project in the sidebar sets the context.
+- **Project context dropdown**, always shown at the left of the workspace tab strip: each project, plus **All projects**. It filters the tabs: project-bound panes (project, feature, board, diff, team canvas, editor of that project) show only in their project; a pane with no project (an editor opened outside a project, a team canvas opened from All projects, the weekly report) is app-wide; app-wide panes (Mission control, Setup) always show; Mission control filters its rows by the context (its own ProjectFilter goes, audit §2.4). The weekly report is app-wide too. Opening a pane of another project switches the context to it, except in All projects, which stays All (design-notes §5.1 rule 3). Clicking a project in the sidebar sets the context.
 - **Tabs keep their full title** (min width = content, max ~280 px then ellipsis only for very long names). When they overflow, **‹ ›** scroll buttons appear at the right end of the strip (disabled at each end), plus wheel/trackpad scroll; the active tab is always scrolled into view.
 
 ### 3.5 Dock: Agents / Shells (problems 4, 5)
@@ -89,7 +89,8 @@
 
 | Task | Owner | Depends on | Notes |
 |---|---|---|---|
-| T-1 App audit: actions, hints, duplicates | ux (opus) | — | `audit.md`; reads `ui/src` and the current frames in `docs/design/img` |
-| T-2 Components: Select, Menu, tab overflow, floating window, button vs hint, dock dropdowns | ui | T-1 | 02 Components in the Drive figcraft; PNGs |
-| T-3 Shell, dock and screens | ui | T-2 | 03 and 04 frames per §4.2; PNGs; hand-off per frame |
-| T-4 Design notes for the implementation | ux | T-3 | `design-notes.md`; reviews T-3 frames against `audit.md` |
+| T-288 App audit: actions, hints, duplicates | lead (ux had no slot) | — | `audit.md`; reads `ui/src` and the current frames in `docs/design/img` |
+| T-289 Components: Select, Menu, tab overflow, floating window, button vs hint, dock dropdowns | ui | T-288 | 02 Components in the Drive figcraft; PNGs |
+| T-290 Shell, dock and screens | ui | T-289 | 03 and 04 frames per §4.2; PNGs; hand-off per frame |
+| T-291 Design notes for the implementation | ux | T-290 | `design-notes.md`; reviews T-290 frames against `audit.md` |
+| T-293 Polish the 03/04 frames | ui | — | layout glitches, sample data, ux's review nits |

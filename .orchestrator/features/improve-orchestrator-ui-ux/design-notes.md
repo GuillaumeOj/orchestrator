@@ -489,3 +489,12 @@ Rust: `cargo test -p orch-app` (the `term_cwd`/`Term::cwd` test above; menu item
 5. **Single pane + context**: `layout.js` flatten, `Workspace` + `TabStrip`, delete `Node`/`PaneFrame` header/zoom/split commands, `restoreLayout` migration, Mission control context, sidebar/icon-rail highlight.
 6. **Dock views + persistence**: `Dock.svelte` views/filter, `sidebarTree`, `persist.test.js`.
 7. **Shell live title**: `term_cwd` (core) + OSC 7 + poll.
+
+## 12. Lead decisions after T-293 (they override the sections above where they differ)
+
+1. **`openProjectSettings(projectId, section = null, server = null)`**: a third argument, so the MCP deep links rewritten from `openSettings('mcp', server, projectId)` (§3.1, §3.2) keep the selected server: `app.window = { kind: 'project-settings', projectId, section, server }`, and Project settings › MCP overrides passes `selected={spec.server}` to `McpSettings` (today `null`, `ProjectSettingsPane.svelte:314`). Test in `windows.test.js`.
+2. **Panes with no project** (`paneProject(spec) == null`: an editor opened outside a project, a team canvas opened from All projects, the weekly report, Mission control, Setup) are app-wide: always visible, they never change the context (§5.3).
+3. **Dock project Select waiting dot**: the closed project Select shows the waiting dot when an agent filtered out by `dock.agentProject` needs the user (`counts(p).needs_you` of the other projects); the view Select keeps its dot for agents outside the current view. Each open option keeps its per-project dot (02-dock-strip).
+4. **Dock restore**: `dock.view` = saved value, else the kind of the saved `dock.active`; an `activeAgent` outside the filter falls back to the filter's first agent tab, else the empty view (api-contract).
+5. **Agent inspector has no Resume** (audit §2.1): resume through Open session, then the strip, or the palette.
+6. **Sidebar**: carets on project and feature rows only; agent rows are leaves.

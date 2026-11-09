@@ -8,9 +8,11 @@
 |---|---|---|---|
 | `sidebarTree` | `{ [projectId \| "f:<featureId>"]: boolean }` (expanded; the keys `Sidebar.svelte` already uses) | expanded | tree state of the sidebar (replaces the in-memory `collapsed` of `Sidebar.svelte`; not `sidebar`, which is the existing show/hide boolean, app.svelte.js:984) |
 | `workspace.project` | `projectId \| "all"` | the focused project, else `"all"` | project context of the workspace tabs |
-| `dock.view` | `"agents" \| "shells"` | `"agents"` if an agent tab exists, else `"shells"` | dock view |
+| `dock.view` | `"agents" \| "shells"` | the saved value; else the kind of the saved `dock.active`; else `"agents"` if an agent tab exists, else `"shells"` | dock view |
 | `dock.agentProject` | `projectId \| "all"` | `"all"` | agents filter |
-| `dock.activeAgent`, `dock.activeShell` | pane id \| null | the first tab of the view | active tab per view; `dock.active` becomes the active tab of the current view, so switching views brings back each view's last tab |
+| `dock.activeAgent`, `dock.activeShell` | pane id \| null | the first tab of the view | active tab per view; `dock.active` becomes the active tab of the current view, so switching views brings back each view's last tab. An `activeAgent` outside `dock.agentProject` is not shown: the first agent tab of the filter is, else the empty view |
+
+The old `mission` key (Mission control's project filter) is ignored on read and no longer written (design-notes §5.1 rule 7).
 
 A missing or unknown project id falls back to `"all"`.
 

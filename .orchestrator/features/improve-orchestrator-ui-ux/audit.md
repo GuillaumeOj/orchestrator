@@ -25,7 +25,7 @@ H (hints): no `Kbd` inside or next to a button; the key goes in the tooltip (`La
 | Interrupt, Suspend | header :136-137 (live); AgentInspector :46-47 | **Header** (live only), as icon+label buttons | AgentInspector |
 | More (`⌘K more` opens the palette) | header :141 | replaced by the header **`⋯` Menu**: Kill…, Restart fresh…, Delete…, Shell in its worktree, Diff against base, Open in kitty, Run off-hours / in working hours | — |
 | Shell here, Diff, Open in kitty | AgentInspector :53-55; palette | **Header `⋯` menu** (+ inspector `⋯`) | AgentInspector buttons |
-| Open session | AgentInspector :44 | **AgentInspector**: **Open session** + the same `⋯` menu as the pane header (R3: secondary actions; the inspector shows an agent selected in the chat that may not be open, so Kill/Delete/Diff/Shell must stay reachable there). Interrupt / Suspend / Resume stay out of it (primary, in the pane) | — |
+| Open session | AgentInspector :44 | **AgentInspector**: **Open session** + the same `⋯` menu as the pane header (R3: secondary actions; the inspector shows an agent selected in the chat that may not be open, so Kill/Delete/Diff/Shell must stay reachable there). Interrupt / Suspend / Resume stay out of it (primary, in the pane). Accepted asymmetry with Kill/Delete: resuming means looking at the session, so it goes through **Open session** (one click, the strip's Resume is then right there) or the palette; Kill/Delete/Diff/Shell don't need the session | — |
 | WaitingChip link | header :124 and strip :162/:166/:176 | **Strip** when a strip shows, else header | header while a strip shows |
 | Status label | StatusBadge :123 and strip label :162/:165 | **Header** StatusBadge | strip repeats only the reason, not the label |
 | Permission decision (Allow once / Deny / Always allow / Answer in the pane) | perm strip :150-156; the decision card in the chat column | **Both kept (accepted)**: the strip acts where the agent is, the card is the decision inbox. The strip drops the `⌘⇧I` text and says "also in Decisions" as a link | — |
@@ -114,7 +114,7 @@ Every inline hint is **removed** from the chrome; the key moves to the control's
 | Sidebar | `⌘B` :44, `⌘N` :99, title "(⌘N)" | tooltips "Add project · ⌘N"; ⌘B in the sheet |
 | Dock | `⌘; z restore` :126, `⌘J hide` :128 | zoom gone; Hide dock icon tooltip |
 | PaneFrame | `⌘; z`, `⌘W` :38-39 | PaneFrame header gone; tab × tooltip "Close · ⌘W" |
-| Workspace empty | `⌘T` :19, `⌘; o / g / t` :20 | button "New session" (tooltip ⌘T) + one line "⌘K to open anything" |
+| Workspace empty | `⌘T` :19, `⌘; o / g / t` :20 | one line "⌘K to open anything" + two buttons (ux-brief): **Open <project>** and **New session** in a project context, **Mission control** and **New session** in All projects (tooltip ⌘T on New session) |
 | Dialogs | `esc` on every Cancel, `⌘⏎` / `⏎` on every submit, `⌘,` :323 | none in buttons; tooltips "Cancel · esc", "Start session · ⌘⏎" |
 | Toasts | `u` :12 | tooltip "Undo · u" |
 | Inspector | `⌘⇧I` :22, `esc` as the close button's only content :23, `⌘I` :23 | × icon button "Close · esc"; others tooltips |
@@ -185,7 +185,7 @@ Real bindings only (keyboard.js CHORDS :6-20, LEADER :26-42, pane key handlers).
 
 - **Title bar**: Jump search field-button · PacingIndicator (popover: details + Week planner) · Decisions (count). No pills.
 - **Banner**: text + its buttons per §3 + ×.
-- **Sidebar**: `+` Add project · tree rows (project, feature, agent) with carets (state remembered). No `⌘B` pill.
+- **Sidebar**: `+` Add project · tree rows (project, feature, agent); carets on project and feature rows only, agent rows are leaves (state remembered). No `⌘B` pill.
 - **Sidebar / icon rail in All projects**: no project row highlighted (the context is not a project).
 - **Workspace tab strip**: project context Select · tabs (icon, full title, × on hover/active) · ‹ › when overflowing. No pane header.
 - **Dock strip**: view Select (Agents n / Shells n = the number of agent / shell **tabs open in the dock**, all projects; not every agent of the sidebar; waiting dot) · project Select (Agents) · tabs · ‹ › · `+` (Shells view) · Hide dock icon.
