@@ -73,7 +73,7 @@
         return stop();
       default:
         // The watch-mode strip's Esc goes back to Mission control; Esc anywhere else closes the overlay.
-        if (e.key === 'Escape' && inspectorOverlay() && !inXterm && !e.target.closest?.('[data-watch]')) {
+        if (e.key === 'Escape' && inspectorOverlay() && !inXterm && !document.querySelector('[role="combobox"][aria-expanded="true"]') && !e.target.closest?.('[data-watch]')) {
           app.inspector = false;
           stop();
         }

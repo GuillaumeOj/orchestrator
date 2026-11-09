@@ -42,6 +42,9 @@
     ).map(([secs, label]) => ({ value: String(secs), label })),
   );
 
+  /** Any edit (a Select fires no input event) drops the last save's outcome. */
+  const clearOutcome = () => ((saved = false), (failure = null));
+
   async function load() {
     const [r, t, s] = await Promise.all(Object.values(KEYS).map((key) => invoke('settings_get', { key }).catch(() => null)));
     const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
@@ -81,11 +84,11 @@
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<section class="ig" aria-label="Intake" onkeydown={onKey} oninput={() => ((saved = false), (failure = null))}>
+<section class="ig" aria-label="Intake" onkeydown={onKey} oninput={clearOutcome}>
   <h3>Intake</h3>
   <div class="block">
     <label class="lbl" for="ig-refresh">Refresh every</label>
-    <Select id="ig-refresh" width="hug" bind:value={refresh} options={refreshOptions} />
+    <Select id="ig-refresh" width="hug" bind:value={refresh} options={refreshOptions} onchange={clearOutcome} />
     <p class="muted help">How often Ready to start checks sources. Refresh in the lane checks at once.</p>
   </div>
   <div class="block">

@@ -2,7 +2,6 @@
 // (FR-501, FR-503; p3-design-notes §5.13, J13 · 3–5). Pure: tested in
 // test/linear.test.js.
 import { clock } from './format.js';
-import { COLUMNS } from './teams.js';
 
 /** `label` names the backend (the segmented control, headers); `remote` is
  *  the short name in sentences and on cards ("changed in GitHub"). */
@@ -15,9 +14,6 @@ export const BACKENDS = [
 const backendOf = (id) => BACKENDS.find((b) => b.id === id) ?? BACKENDS[0];
 export const backendLabel = (id) => backendOf(id).label;
 export const remoteName = (id) => backendOf(id).remote;
-
-/** Board column labels by id. */
-export const COLUMN_LABEL = Object.fromEntries(COLUMNS.map((c) => [c.id, c.label]));
 
 /** The mapping rows: each Linear state with its column (saved, else its default). */
 export function mappingRows(states, saved = {}) {
