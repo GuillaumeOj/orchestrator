@@ -5,7 +5,7 @@
   // (a finished run has no record: its own status). The current project is the
   // workspace's context (none in All projects); a project or feature click sets
   // it. Carets are remembered (`app.sidebarTree`, design-notes §5.4).
-  import { activeAgents, app, features, inspected, openAgent, openFeature, openProject, projects, setContext, toggleTree, treeOpen } from '../lib/app.svelte.js';
+  import { activeAgents, app, features, inspected, openAgent, openFeature, openProjectContext, projects, setContext, toggleTree, treeOpen } from '../lib/app.svelte.js';
   import { pct } from '../lib/format.js';
   import { attention, featureRun, needYouText, runPhase, statusOf, waitLine } from '../lib/now.svelte.js';
   import { runStateLabel } from '../lib/teams.js';
@@ -30,11 +30,6 @@
     }),
   );
   const focusedFeature = $derived(app.panes[app.focused]?.type === 'feature' ? app.panes[app.focused].featureId : null);
-
-  function clickProject(id) {
-    setContext(id);
-    openProject(id);
-  }
 
   function clickFeature(f) {
     setContext(f.project_id);
@@ -65,7 +60,7 @@
       {@const open = treeOpen(p.id)}
       {@const current = app.workspace.project === p.id}
       <li role="treeitem" aria-selected={current} aria-expanded={open}>
-        <button data-row class="row project" class:selected={current} aria-current={current ? 'true' : undefined} onclick={() => clickProject(p.id)} title={p.path}>
+        <button data-row class="row project" class:selected={current} aria-current={current ? 'true' : undefined} onclick={() => openProjectContext(p.id)} title={p.path}>
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <span class="caret" aria-hidden="true" onclick={(e) => caret(e, p.id)}>{open ? '▾' : '▸'}</span>
           <span class="name">{p.name}</span>

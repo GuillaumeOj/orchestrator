@@ -242,6 +242,24 @@ export function activeTab() {
 export const knownContext = (id) =>
   id && id !== 'all' && (!app.data || projects().some((p) => p.id === id)) ? id : 'all';
 
+/** The context's project id, or null in All projects (or for a project that is gone). */
+export function contextProjectId() {
+  const ctx = knownContext(app.workspace.project);
+  return ctx === 'all' ? null : ctx;
+}
+
+/** A hidden active tab gives way to the first tab the context shows (none: left as is, the empty state). */
+function settleActive() {
+  const vis = visibleTabs();
+  if (app.layout && vis.length && !vis.includes(app.layout.active)) app.layout = L.activate(app.layout, vis[0]);
+}
+
+/** A sidebar or icon-rail project click: its context, then its pane (rule 4). */
+export function openProjectContext(projectId) {
+  setContext(projectId);
+  openProject(projectId);
+}
+
 /**
  * Sets the workspace's project context ('all' or a project id) and remembers it.
  * The active tab stays when the new context shows it, else the first tab it
@@ -250,8 +268,7 @@ export const knownContext = (id) =>
 export function setContext(projectId) {
   const was = activeTab();
   app.workspace = { project: knownContext(projectId) };
-  const vis = visibleTabs();
-  if (app.layout && vis.length && !vis.includes(app.layout.active)) app.layout = L.activate(app.layout, vis[0]);
+  settleActive();
   // A workspace focus follows the strip; a dock focus stays where it is.
   const now = activeTab();
   if (now !== was && !inDock(app.focused)) {
@@ -269,11 +286,12 @@ export function setContext(projectId) {
  */
 export const dockShowsWaiting = (_agentId) => false;
 
+/** An agent's short name: its team node, else its id. */
+export const agentShort = (agentId) => agent(agentId)?.team?.node ?? agentId;
+
 /** "lead (orch) is waiting for you". */
-const waitingText = (agentId) => {
-  const a = agent(agentId);
-  return `${a?.team?.node ?? agentId} (${projectName(a?.project_id) ?? '?'}) is waiting for you`;
-};
+const waitingText = (agentId) =>
+  `${agentShort(agentId)} (${projectName(agent(agentId)?.project_id) ?? '?'}) is waiting for you`;
 
 /**
  * The closed context Select's waiting dot (§12.7): an agent of another project
@@ -294,12 +312,17 @@ export function contextWaiting() {
  *  (its own tabs; a dot while one of its agents needs you). */
 export function contextOptions() {
   const tabs = app.layout?.tabs ?? [];
+  const per = new Map();
+  for (const id of tabs) {
+    const p = paneProject(app.panes[id]);
+    if (p) per.set(p, (per.get(p) ?? 0) + 1);
+  }
   return [
     { value: 'all', label: 'All projects', count: tabs.length, sep: true },
     ...projects().map((p) => ({
       value: p.id,
       label: p.name,
-      count: tabs.filter((id) => paneProject(app.panes[id]) === p.id).length,
+      count: per.get(p.id) ?? 0,
       dot: counts({ project: p.id }).needs_you > 0,
     })),
   ];
@@ -887,8 +910,7 @@ export function openBoard(projectId, taskId = null) {
 export function openCanvas(teamId = null, projectId = null) {
   const existing = findPane((s) => s.type === 'canvas' && (!teamId || s.teamId === teamId));
   if (existing) return focusPane(existing);
-  const ctx = app.workspace.project;
-  addPane({ type: 'canvas', teamId, projectId: projectId ?? (ctx === 'all' ? null : ctx) });
+  addPane({ type: 'canvas', teamId, projectId: projectId ?? contextProjectId() });
 }
 
 /** FR-107: a worktree's diff against its base, one pane per worktree. */
@@ -1293,7 +1315,7 @@ function pruneTree(tree) {
     Object.entries(tree).filter(([k, v]) => {
       if (typeof v !== 'boolean') return false;
       if (k.startsWith('f:')) return !read || features().some((f) => f.id === k.slice(2));
-      return !app.data || projects().some((p) => p.id === k);
+      return knownContext(k) !== 'all';
     }),
   );
 }
@@ -1363,8 +1385,7 @@ export async function restoreLayout() {
   const kept = (id) => !!panes[id] && !migrated.includes(id);
   app.layout = L.prune(L.flatten(saved.layout, kept(saved.focused) ? saved.focused : null), kept);
   // The context's first tab when the saved active one is hidden or gone.
-  const vis = visibleTabs();
-  if (app.layout && vis.length && !vis.includes(app.layout.active)) app.layout = L.activate(app.layout, vis[0]);
+  settleActive();
   // Mission control only when both the workspace and the dock are empty.
   if (!app.layout && !tabs.length) addPane({ type: 'mission' });
   else {
@@ -1615,8 +1636,8 @@ function updateCommands() {
 /** The projects "Plan with the Overwatch…" and "Refresh Ready to start" take:
  *  the context's project, else all (design-notes §5.1 rule 7). */
 function planProjects() {
-  const ctx = knownContext(app.workspace.project);
-  return ctx === 'all' ? projects().map((p) => p.id) : [ctx];
+  const ctx = contextProjectId();
+  return ctx ? [ctx] : projects().map((p) => p.id);
 }
 
 /** The palette's hint while the Overwatch cannot answer (notes §8.5). */

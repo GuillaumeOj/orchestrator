@@ -30,7 +30,7 @@ export function remove(tree, paneId) {
 }
 
 /** Each group's active tab, in reading order (a saved tree's focus fallback). */
-export function visible(tree) {
+function visible(tree) {
   if (!tree) return [];
   if (tree.kind === 'leaf') return [tree.active];
   return tree.children.flatMap(visible);

@@ -4,7 +4,7 @@
   // hidden tabs keep running and keep their buffers (§9.1 principle 6). With no
   // workspace tab at all it fills the whole work column.
   import { tick } from 'svelte';
-  import { agent, app, closePaneByUser, dockFills, focusPane, openShell, saveLayout } from '../lib/app.svelte.js';
+  import { agentShort, app, closePaneByUser, dockFills, focusPane, openShell, saveLayout } from '../lib/app.svelte.js';
   import { attention, statusOf, waitLine } from '../lib/now.svelte.js';
   import AgentPane from '../panes/AgentPane.svelte';
   import TermPaneView from '../panes/TermPaneView.svelte';
@@ -25,7 +25,7 @@
   const squareTL = $derived(app.dock.tabs[0] === app.dock.active && !scrolled);
 
   /** An agent tab's name: its team node, else its id. */
-  const short = (spec) => agent(spec.agentId)?.team?.node ?? spec.agentId;
+  const short = (spec) => agentShort(spec.agentId);
   const tip = (spec) =>
     spec.type === 'agent'
       ? [spec.agentId, waitLine(attention(spec.agentId))].filter(Boolean).join(' · ')

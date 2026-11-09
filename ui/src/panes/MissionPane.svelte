@@ -21,8 +21,8 @@
     app,
     cancelQueued,
     confirm,
+    contextProjectId,
     focusCard,
-    knownContext,
     now30,
     openBoard,
     openEditor,
@@ -58,7 +58,7 @@
   const now = $derived(Math.max(now30(), Date.now()));
   const ps = $derived(projects());
   // Rows follow the workspace's project context (design-notes §5.3): [id], or null in All projects.
-  const ctx = $derived(knownContext(app.workspace.project) === 'all' ? null : app.workspace.project);
+  const ctx = $derived(contextProjectId());
   const filter = $derived(ctx ? [ctx] : null);
   // lanes() needs only the day: the 30 s clock does not rebuild it.
   const day = $derived(startOfDay(now));
