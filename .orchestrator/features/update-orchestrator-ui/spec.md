@@ -41,7 +41,7 @@ The design leaves the choice to this feature. Decision (the user can change it a
 | Overwatch › Notifications switches (desktop, sound) | **yes** | the `notifications` setting exists; UI only |
 | MCP overrides › Inherit / On / Off per server | **yes** | UI only, on top of the existing project/global scope |
 | Project › General › Name (rename) and Default branch | **yes** | columns exist; back adds the write path (api-contract §2) |
-| Memory › Warn above (MB) | **yes** | FR-904 asks for a warning threshold; back adds the setting, default 1600 MB |
+| Memory › Warn above (MB) | **yes** | FR-904 asks for a warning threshold; a UI setting `memory_warn_mb` (api-contract §3), default 1600 MB, validated by the UI |
 | Claude Code › Defaults for new sessions | no (hidden) | new app-wide fallback model; separate feature |
 | Terminal & editor › Renderer, Editor command / Reuse the open nvim, New shell opens in | no (hidden) | new settings + renderer switch; separate feature |
 | Memory › Show in the status bar | no (hidden) | the status bar already shows the sample |
@@ -63,7 +63,7 @@ Ordered as design-notes §11. The frontend is one long chain on the `front` node
 
 | # | Task | Owner | Depends on |
 |---|---|---|---|
-| T1 | Backend: `term_cwd` + shell name, menu (Tab n, Close Tab, Help › Keyboard Shortcuts), project rename + default branch, memory warn threshold | back | — |
+| T1 | Backend: `term_cwd` + shell name, menu (Tab n, Close Tab, Help › Keyboard Shortcuts), project rename + default branch | back | — |
 | T2 | Foundations: `Tooltip`, `Select`, `Menu`, `lib/options.js`, `FloatingWindow`, `TabStrip` + their tests (no visible change) | front (opus) | — |
 | T3 | Select sweep: the 34 `<select>` + `ModelSelect` + Files access picker; `noselect.test.js`; one model list (§9.7) | front | T2 |
 | T4 | Floating windows: Settings, Project settings, Week planner, Shortcuts sheet (`lib/shortcuts.js`), openers and deep links (§3), ⌘/ and AZERTY, dialogs in the window shell, Discard-changes guard | front (opus) | T3 |
