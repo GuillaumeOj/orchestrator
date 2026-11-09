@@ -49,6 +49,8 @@ pub(crate) struct Switches {
     pub crash_always: bool,
     /// The next PostToolUse waits this long.
     pub delay_post: Option<Duration>,
+    /// The next turn's UserPromptSubmit waits this long (a slow CLI).
+    pub delay_submit: Option<Duration>,
     /// The next PostToolUse comes from a subagent.
     pub subagent: bool,
     /// The model reads any `full text: <path>` it is shown.
@@ -224,18 +226,22 @@ impl Machine {
         self.n += 1;
         self.cli.turns.fetch_add(1, Ordering::SeqCst);
         let n = self.n;
-        let (drop_all, exit, delay, sub, read_full, usage) = {
+        let (drop_all, exit, delay, delay_submit, sub, read_full, usage) = {
             let mut sw = self.cli.sw.lock().unwrap();
             let exit = std::mem::take(&mut sw.exit_mid_turn) || sw.crash_always;
             (
                 std::mem::take(&mut sw.drop_hooks),
                 exit,
                 sw.delay_post.take(),
+                sw.delay_submit.take(),
                 std::mem::take(&mut sw.subagent),
                 sw.read_full,
                 sw.usage,
             )
         };
+        if let Some(d) = delay_submit {
+            std::thread::sleep(d);
+        }
         self.transcript(&rt, json!({"type": "user", "message": {"role": "user", "content": prompt}}));
         self.hook(&rt, drop_all, "UserPromptSubmit", json!({"prompt": prompt}));
         if exit {
@@ -961,13 +967,21 @@ mod scenarios {
         // Still stuck: a second decision, after another window.
         sim.until("a second decision", 30, || !sim.items("delivery").is_empty());
         assert_ne!(sim.items("delivery")[0].id, first.id);
-        // It works this time.
-        cli.set(|s| (s.modal, s.modal_always) = (false, false));
+        // It works this time, through a slow CLI: the 1 s invariant window passes
+        // before the lead takes the paste. A new episode raised then would be closed
+        // only by the next tick, after the message is seen, so the window is lifted:
+        // when the retry works, nothing is raised again.
+        cli.set(|s| {
+            (s.modal, s.modal_always) = (false, false);
+            s.delay_submit = Some(Duration::from_millis(1500));
+        });
         sim.rt.db.set_setting(ACK_KEY, &json!(1)).unwrap();
+        sim.rt.db.set_setting(INVARIANT_KEY, &json!(3600)).unwrap();
         let item = sim.items("delivery").remove(0);
         sim.rt.retry_delivery(item.id).unwrap();
         sim.until("the message seen", 40, || cli.saw("are you there?") && sim.unread(&run.id, "lead", LEAD) == 0);
-        assert!(sim.items("delivery").is_empty());
+        let left: Vec<_> = sim.items("delivery").into_iter().map(|i| i.payload).collect();
+        assert!(left.is_empty(), "no decision raised again: {left:?}");
     }
 
     /// The same failing agent keeps failing: one open decision, not one per failed
