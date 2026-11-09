@@ -2,7 +2,7 @@
 // document.body (a clipped container, the dock or a dialog, never cuts it),
 // placed under its trigger or flipped above when there is no room below (the
 // dock is at the bottom), and closed on an outside pointer down, an ancestor's
-// scroll or the window losing focus.
+// scroll, the focus moving outside it or the window losing focus.
 
 const GAP = 4;
 const EDGE = 8;

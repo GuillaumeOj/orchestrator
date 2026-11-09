@@ -15,10 +15,6 @@
 </script>
 
 <script>
-  import { onMount, untrack } from 'svelte';
-  import { app, closeWindow, guardWindow, openSettings, projects, toast, windowDirty, windowSection } from '../lib/app.svelte.js';
-  import { clock } from '../lib/format.js';
-  import { errText, invoke } from '../lib/ipc.js';
   // Project settings (design-notes §3, 04-project-settings-*.png; Penpot 04
   // Project settings · Linear, J13 · 3–5): a project's sections in the
   // floating window. Task backend (Local / GitHub Issues / Linear with its
@@ -28,6 +24,10 @@
   // a row, r sync, ⌘⏎ save, esc cancel. A dirty footer section asks
   // "Discard changes?" before the window closes or the section changes; a
   // backdrop click on it only flashes the footer.
+  import { onMount, untrack } from 'svelte';
+  import { app, closeWindow, guardWindow, openSettings, projects, toast, windowDirty, windowSection } from '../lib/app.svelte.js';
+  import { clock } from '../lib/format.js';
+  import { errText, invoke } from '../lib/ipc.js';
   import { isTypingTarget } from '../lib/keyboard.js';
   import { BACKENDS, mappingRows, mappingToSave, remoteName, syncLine } from '../lib/linear.js';
   import { BOARD_COLUMNS } from '../lib/options.js';

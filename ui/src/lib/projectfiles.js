@@ -21,9 +21,9 @@ export const ACCESS = [
 export const accessLabel = (id) => ACCESS.find((a) => a.value === id)?.label ?? id;
 
 /** The access options of one row, each with what it lets agents do (the option's tooltip). */
-export const accessOptions = (kind, folder) => [
+export const accessOptions = (kind) => [
   { ...ACCESS[0], detail: `Agents can change this ${kind}` },
-  { ...ACCESS[1], detail: `Agents can only read this ${folder ? "folder's files" : 'file'}` },
+  { ...ACCESS[1], detail: `Agents can only read this ${kind === 'folder' ? "folder's files" : 'file'}` },
 ];
 
 /** One path per non-empty line. */

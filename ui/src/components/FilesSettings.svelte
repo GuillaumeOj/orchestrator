@@ -1,14 +1,14 @@
 <script>
-  import { getCurrentWebview } from '@tauri-apps/api/webview';
-  import { onMount, tick } from 'svelte';
-  import { app, openEditor, toast } from '../lib/app.svelte.js';
-  import { errText, invoke } from '../lib/ipc.js';
   // Project settings › Files (FR-112): files and folders outside the repository
   // that every agent of the project can use. Edits are commands applied at once
   // (add, access, note on blur, remove): no Save. Add by dropping from Finder
   // (the webview drag-drop event carries real paths), by clicking the zone
   // (⌘O, the native panel), or by pasting paths. Single keys act when no field
   // has focus (the pane forwards its key events to onKey).
+  import { getCurrentWebview } from '@tauri-apps/api/webview';
+  import { onMount, tick } from 'svelte';
+  import { app, openEditor, toast } from '../lib/app.svelte.js';
+  import { errText, invoke } from '../lib/ipc.js';
   import { isTypingTarget } from '../lib/keyboard.js';
   import { accessLabel, accessOptions, addedToast, ICON, inRect, items, midTruncate, pathLines, tilde } from '../lib/projectfiles.js';
   import Kbd from './Kbd.svelte';
@@ -307,7 +307,7 @@
               </span>
               <span class="access">
                 {#key `${f.path}:${rev}`}
-                  <Select aria-label="Access for {short(f.path)}" value={f.access} options={accessOptions(f.kind, folder)} onchange={(access) => setAccess(f, access)} />
+                  <Select aria-label="Access for {short(f.path)}" value={f.access} options={accessOptions(f.kind)} onchange={(access) => setAccess(f, access)} />
                 {/key}
               </span>
               <span class="acts">

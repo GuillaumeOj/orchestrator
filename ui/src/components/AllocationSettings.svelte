@@ -1,4 +1,9 @@
 <script>
+  // Project settings › Allocation (FR-109, FR-802): this project's share of the
+  // weekly plan — weight, tier, hard cap — against the rest of the plan, which
+  // is read only here. Nothing is saved before Save (⌘⏎); esc discards.
+  // Remove is a weight of 0 until Save. Single keys act only when no field has
+  // focus (the pane forwards its key events to onKey).
   import { onMount, tick } from 'svelte';
   import {
     addDraft,
@@ -17,11 +22,6 @@
   import { app, refresh, toast } from '../lib/app.svelte.js';
   import { ppAmount } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
-  // Project settings › Allocation (FR-109, FR-802): this project's share of the
-  // weekly plan — weight, tier, hard cap — against the rest of the plan, which
-  // is read only here. Nothing is saved before Save (⌘⏎); esc discards.
-  // Remove is a weight of 0 until Save. Single keys act only when no field has
-  // focus (the pane forwards its key events to onKey).
   import { isTypingTarget } from '../lib/keyboard.js';
   import { TIERS as TIER_OPTIONS } from '../lib/options.js';
   import Kbd from './Kbd.svelte';

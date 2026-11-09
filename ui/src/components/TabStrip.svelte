@@ -66,12 +66,21 @@
     atEnd = lane.scrollLeft >= max - 1;
   }
 
+  // The lane's box and every tab's: a tab that changes width (a shell's live
+  // title, a badge, the UI font loading) changes the overflow too.
+  const ro = new ResizeObserver(() => measure());
+  $effect(() => () => ro.disconnect());
   $effect(() => {
     if (!lane) return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(lane);
-    return () => ro.disconnect();
+    const el = lane;
+    ro.observe(el);
+    return () => ro.unobserve(el);
   });
+  /** Svelte action on each tab: the observer above watches its size. */
+  function sized(node) {
+    ro.observe(node);
+    return { destroy: () => ro.unobserve(node) };
+  }
 
   const tabEl = (id) => /** @type {HTMLElement | null} */ (lane?.querySelector(`[data-tab="${CSS.escape(id)}"]`) ?? null);
 
@@ -90,13 +99,6 @@
       if (target) tabEl(target)?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
       measure();
     });
-  });
-
-  // A title or badge that changes width (a shell's live title) changes the overflow too.
-  const looks = $derived(tabs.map((t) => `${t.title}\u0000${t.badge ?? ''}`).join('\n'));
-  $effect(() => {
-    void looks;
-    tick().then(measure);
   });
 
   /** One ‹ or › step: the lane width minus one tab. */
@@ -193,6 +195,7 @@
           aria-controls={panelId}
           tabindex={t.id === tabbable ? 0 : -1}
           use:tooltip={tipFor}
+          use:sized
           onclick={() => onselect?.(t.id)}
           onauxclick={(e) => onAux(e, t)}
           onmousedown={(e) => e.button === 1 && e.preventDefault()}

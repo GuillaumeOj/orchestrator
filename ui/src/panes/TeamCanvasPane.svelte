@@ -1,4 +1,10 @@
 <script>
+  // Team canvas (FR-301–308, Penpot 04 Team canvas · 1512): the builder, the
+  // role inspector and the Rules panel. Mouse optional (§9.1): n add, hjkl /
+  // arrows select, ⇧+hjkl move, c connect (target number, then edge type 1–4),
+  // ⏎ inspect, x delete, = auto-layout, u undo, ⌃r redo, ⇧R library (roles and teams), ⌘⏎ launch,
+  // D duplicate the selected role (the team when none), then 1 global / 2 project (FR-306).
+  // Every edit saves (debounced); the core validates and versions the team.
   import { onMount } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
   import Kbd from '../components/Kbd.svelte';
@@ -8,12 +14,6 @@
   import { app, projects, saveLayout, toast } from '../lib/app.svelte.js';
   import * as C from '../lib/canvas.js';
   import { errText, invoke } from '../lib/ipc.js';
-  // Team canvas (FR-301–308, Penpot 04 Team canvas · 1512): the builder, the
-  // role inspector and the Rules panel. Mouse optional (§9.1): n add, hjkl /
-  // arrows select, ⇧+hjkl move, c connect (target number, then edge type 1–4),
-  // ⏎ inspect, x delete, = auto-layout, u undo, ⌃r redo, ⇧R library (roles and teams), ⌘⏎ launch,
-  // D duplicate the selected role (the team when none), then 1 global / 2 project (FR-306).
-  // Every edit saves (debounced); the core validates and versions the team.
   import { isTypingTarget } from '../lib/keyboard.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { BUDGET_PRIORITIES, EFFORTS, PERMISSION_PROFILES, REVIEW_MODES } from '../lib/options.js';
