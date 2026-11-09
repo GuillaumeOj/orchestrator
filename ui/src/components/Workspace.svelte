@@ -3,13 +3,13 @@
   const ICON = {
     mission: '\u{F0437}',
     project: '\u{F024B}',
-    feature: '\u{E725}',
+    feature: '\u{F062C}',
     board: '\u{F0570}',
-    diff: '\u{E728}',
-    canvas: '\u{F0484}',
+    diff: '\u{F08AA}',
+    canvas: '\u{F1049}',
     editor: '\u{E62B}',
     shell: '\u{F018D}',
-    report: '\u{F0128}',
+    report: '\u{F0219}',
     setup: '\u{F0493}',
     trust: '\u{F0498}',
   };

@@ -12,7 +12,7 @@
 
   /**
    * @type {{ value?: any, onchange?: (v: any) => void,
-   *          options?: { value: any, label: string, group?: string, count?: number | string, dot?: boolean | string,
+   *          options?: { value: any, label: string, group?: string, sep?: boolean, count?: number | string, dot?: boolean | string,
    *                      disabled?: boolean, reason?: string, icon?: string, detail?: string }[], placeholder?: string,
    *          compact?: boolean, searchable?: boolean | 'auto', error?: string | null, disabled?: boolean,
    *          id?: string, name?: string, 'aria-label'?: string, 'aria-labelledby'?: string,
@@ -295,6 +295,8 @@
           {#if o.dot}<span class="dot" role="img" aria-label={dotLabel(o.dot)}></span>{/if}
           {#if o.count != null}<span class="cnt">{o.count}</span>{/if}
         </div>
+        <!-- `sep`: the option ends a section with no group header (All projects, 03-context-select-open). -->
+        {#if o.sep && i < shown.length - 1}<div class="popover-sep" role="separator"></div>{/if}
       {/each}
     </div>
     {#if withSearch && query.trim() && !shown.length}<p class="none">No {noun} matches “{query.trim()}”</p>{/if}

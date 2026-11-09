@@ -204,7 +204,7 @@ describe('the context Select (rule 7, §12.7, 03-context-select-open)', () => {
   it('options: All projects (every tab) + each project (its own tabs), a dot per project that needs you', () => {
     app.now.counts.projects = { blog: countsOf({ needs_you: 1 }) };
     expect(A.contextOptions()).toEqual([
-      { value: 'all', label: 'All projects', count: 5 },
+      { value: 'all', label: 'All projects', count: 5, sep: true },
       { value: 'shop-api', label: 'shop-api', count: 2, dot: false },
       { value: 'blog', label: 'blog', count: 1, dot: true },
     ]);
@@ -237,6 +237,10 @@ describe('the context Select (rule 7, §12.7, 03-context-select-open)', () => {
       o.textContent.replace(/\s+/g, ' ').trim(),
     );
     expect(opts[0]).toMatch(/^All projects\s?5/);
+    // A separator after All projects, with no group header (03-context-select-open).
+    const list = document.querySelector('[role="listbox"]');
+    expect(list.children[1].getAttribute('role')).toBe('separator');
+    expect(list.querySelector('.gh')).toBeNull();
     // Picking a project sets the context.
     await fireEvent.click(
       [...document.querySelectorAll('[role="option"]')].find((o) => o.textContent.includes('blog')),

@@ -210,12 +210,13 @@ export const isTerminal = (spec) => ['agent', 'shell', 'editor'].includes(spec?.
 // ---------------------------------------------------------------- project context (design-notes §5.1, §5.3)
 
 /** The project a workspace pane belongs to, or null for an app-wide pane
- *  (Mission control, Setup, the weekly report, an editor or a canvas without a project). */
+ *  (Mission control, Setup, the weekly report, a shell, an editor or a canvas without a project). */
 export function paneProject(spec) {
   if (!spec) return null;
   if (spec.type === 'feature')
     return features().find((f) => f.id === spec.featureId)?.project_id ?? spec.projectId ?? null;
-  if (['project', 'board', 'diff', 'trust', 'canvas', 'editor'].includes(spec.type)) return spec.projectId ?? null;
+  if (['project', 'board', 'diff', 'trust', 'canvas', 'editor', 'shell'].includes(spec.type))
+    return spec.projectId ?? null;
   return null;
 }
 
@@ -236,8 +237,10 @@ export function activeTab() {
   return a && inContext(a) ? a : null;
 }
 
-/** A project id the app knows, else 'all' (a removed project, a stale saved value). */
-const knownContext = (id) => (id && id !== 'all' && projects().some((p) => p.id === id) ? id : 'all');
+/** A project id the app knows, else 'all' (a removed project, a stale saved value).
+ *  Before any `app_state` read nothing is known gone: the id is kept (prunePanes checks it once read). */
+export const knownContext = (id) =>
+  id && id !== 'all' && (!app.data || projects().some((p) => p.id === id)) ? id : 'all';
 
 /**
  * Sets the workspace's project context ('all' or a project id) and remembers it.
@@ -292,7 +295,7 @@ export function contextWaiting() {
 export function contextOptions() {
   const tabs = app.layout?.tabs ?? [];
   return [
-    { value: 'all', label: 'All projects', count: tabs.length },
+    { value: 'all', label: 'All projects', count: tabs.length, sep: true },
     ...projects().map((p) => ({
       value: p.id,
       label: p.name,
@@ -335,7 +338,9 @@ export function select(kind, id) {
 export function contextProject() {
   const s = focusedSpec();
   const a = contextAgent();
-  return projects().find((p) => p.id === (s?.projectId ?? a?.project_id)) ?? projects()[0];
+  // Else the workspace's project context (an app-wide pane in focus), else the first project.
+  const id = s?.projectId ?? a?.project_id ?? app.workspace.project;
+  return projects().find((p) => p.id === id) ?? projects()[0];
 }
 
 // ---------------------------------------------------------------- toasts
@@ -447,7 +452,7 @@ export function focusPane(id) {
   } else {
     // A tab of another project brings its context (rule 3); All projects stays All.
     if (!inContext(id)) {
-      app.workspace = { project: paneProject(s) };
+      app.workspace = { project: knownContext(paneProject(s)) };
       saveLayout();
     }
     app.layout = L.activate(app.layout, id);
@@ -1279,8 +1284,8 @@ export function toggleTree(key) {
 /** A sidebar row is expanded unless the user closed it. */
 export const treeOpen = (key) => app.sidebarTree[key] ?? true;
 
-/** The saved tree without the projects and features that are gone (features
- *  never read: their keys stay). */
+/** The saved tree without the projects and features that are gone (projects or
+ *  features never read, the first `app_state` read failed: their keys stay). */
 function pruneTree(tree) {
   if (!tree || typeof tree !== 'object') return {};
   const read = app.data?.features != null;
@@ -1288,7 +1293,7 @@ function pruneTree(tree) {
     Object.entries(tree).filter(([k, v]) => {
       if (typeof v !== 'boolean') return false;
       if (k.startsWith('f:')) return !read || features().some((f) => f.id === k.slice(2));
-      return projects().some((p) => p.id === k);
+      return !app.data || projects().some((p) => p.id === k);
     }),
   );
 }
@@ -1631,7 +1636,10 @@ export function commands() {
     { id: 'session.new', label: 'New session…', run: () => (app.overlay = { kind: 'new-session' }) },
     { id: 'project.add', label: 'Add project…', run: () => (app.overlay = { kind: 'add-project' }) },
     { id: 'mission', label: 'Open Mission control', run: openMission },
-    { id: 'mission.filter', label: 'Set the project context…', run: () => (app.contextOpen = true) },
+    // The context Select is in the workspace's strip: not drawn while the dock fills the column.
+    ...(dockFills()
+      ? []
+      : [{ id: 'mission.filter', label: 'Set the project context…', run: () => (app.contextOpen = true) }]),
     { id: 'decisions', label: 'Show decisions', run: () => focusCard() },
     {
       id: 'intake.plan',
