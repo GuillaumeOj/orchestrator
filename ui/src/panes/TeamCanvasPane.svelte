@@ -194,21 +194,30 @@
     }
   }
 
+  /** Saves a role patch; resolves false when it is not saved (refused, or waiting on the starter copy). */
   async function saveRole(patch) {
-    if (!role) return;
+    if (!role) return false;
     // A starter role is a template too: ask where to save a copy (§5.8).
     if (role.origin && role.scope?.kind !== 'project') {
       mode = { kind: 'starter', role: $state.snapshot(role), node: node?.id, rolePatch: patch };
       root?.focus();
-      return;
+      return false;
     }
     try {
       await invoke('role_save', { role: { ...$state.snapshot(role), ...patch } });
       await load();
+      return true;
     } catch (e) {
       toast(`Role: ${errText(e)}`, { kind: 'error' });
+      return false;
     }
   }
+
+  // A Select shows its pick at once; one not saved is remounted on the stored value.
+  let rev = $state(0);
+  const saveSel = async (patch) => {
+    if ((await saveRole(patch)) === false) rev++;
+  };
 
   // ---- presets (FR-306): duplicate a team or role, save as preset, launch
   const scopeOf = (t) => t?.scope ?? { kind: 'global' };
@@ -644,27 +653,33 @@
           <label><span>role</span>
             <Select value={node.role_id} options={roleOptions} noun="role" onchange={(role_id) => edit(C.updateNode(team, node.id, { role_id }))} />
           </label>
-          {#key `${node.id}:${node.role_id}`}
+          {#key `${node.id}:${node.role_id}:${rev}`}
             <ModelSelect label="model" value={role.model} onsave={(model) => saveRole({ model })} />
             <ModelSelect label="node model" value={node.overrides?.model} emptyLabel={role.model ? `role: ${role.model}` : undefined} onsave={(model) => edit(C.setNodeModel(team, node.id, model))} />
           {/key}
+          {#key rev}
           <label><span>effort</span>
-            <Select value={role.effort ?? ''} options={EFFORTS} onchange={(effort) => saveRole({ effort: effort || null })} />
+            <Select value={role.effort ?? ''} options={EFFORTS} onchange={(effort) => saveSel({ effort: effort || null })} />
           </label>
+          {/key}
           <div class="lab"><span>tools</span>
             <span class="checks">
               {#each ['edit', 'bash', 'web'] as k (k)}<label class="ck"><input type="checkbox" checked={role.tools[k]} onchange={(e) => saveRole({ tools: { ...role.tools, [k]: e.currentTarget.checked } })} /> {k}</label>{/each}
               <label class="ck"><input type="checkbox" checked={role.subagents_allowed} onchange={(e) => saveRole({ subagents_allowed: e.currentTarget.checked })} /> subagents</label>
             </span>
           </div>
+          {#key rev}
           <label><span>permissions</span>
-            <Select value={role.permission_profile} options={PERMISSION_PROFILES} onchange={(permission_profile) => saveRole({ permission_profile })} />
+            <Select value={role.permission_profile} options={PERMISSION_PROFILES} onchange={(permission_profile) => saveSel({ permission_profile })} />
           </label>
+          {/key}
           <RoleMcp {role} servers={registry} isLead={node.is_lead} {project} onsave={saveRole} />
           <label><span>max live</span><input class="field" type="number" min="1" max="9" value={node.max_concurrency} disabled={node.is_lead} onchange={(e) => edit(C.updateNode(team, node.id, { max_concurrency: Math.max(1, Number(e.currentTarget.value) || 1) }))} /></label>
+          {#key rev}
           <label><span>budget</span>
-            <Select value={role.budget_priority} options={BUDGET_PRIORITIES} onchange={(budget_priority) => saveRole({ budget_priority })} />
+            <Select value={role.budget_priority} options={BUDGET_PRIORITIES} onchange={(budget_priority) => saveSel({ budget_priority })} />
           </label>
+          {/key}
           <label><span>turn ceiling</span><input class="field" type="number" min="0" placeholder="minutes (none)" value={role.turn_ceiling?.minutes ?? ''} onchange={(e) => saveRole({ turn_ceiling: { ...(role.turn_ceiling ?? {}), minutes: Number(e.currentTarget.value) > 0 ? Number(e.currentTarget.value) : null } })} /></label>
           <label class="col"><span>prompt</span><textarea class="field" rows="4" value={role.prompt} onchange={(e) => saveRole({ prompt: e.currentTarget.value })}></textarea></label>
           <div class="row">

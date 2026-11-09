@@ -25,6 +25,8 @@ export const PERMISSION_MODES = [
   { value: '', label: 'default (ask)' },
   { value: 'acceptEdits', label: 'accept edits' },
   { value: 'plan', label: 'plan' },
+  // What an autonomous role starts with (Dialogs `pickRole`).
+  { value: 'auto', label: 'auto' },
 ];
 
 /** Allocation tiers, highest first (`lib/allocation.js:TIERS` holds the ids). */

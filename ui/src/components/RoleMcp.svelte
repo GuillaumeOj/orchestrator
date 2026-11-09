@@ -9,7 +9,7 @@
   import ConnBadge from './ConnBadge.svelte';
   import Select from './Select.svelte';
 
-  /** @type {{ role: any, servers: any[] | null, isLead?: boolean, project?: string | null, onsave: (patch: object) => void }} */
+  /** @type {{ role: any, servers: any[] | null, isLead?: boolean, project?: string | null, onsave: (patch: object) => Promise<boolean | void> | void }} */
   let { role, servers, isLead = false, project = null, onsave } = $props();
 
   const refs = $derived(role.mcp_refs ?? []);
@@ -24,9 +24,11 @@
   const whenOptions = $derived(downgradeWhen(role.model).map((w) => ({ value: w.id, label: w.label })));
   const defaultTo = $derived(MODEL_ALIASES.find((m) => m !== family(role.model) && m !== 'opus') ?? 'sonnet');
 
-  function setDowngrade(next) {
+  async function setDowngrade(next) {
+    const before = dg;
     dg = next;
-    if (!next || !downgradeProblem(role, next.to)) onsave({ downgrade: next });
+    // `onsave` resolves false when not saved: show the stored downgrade again.
+    if ((!next || !downgradeProblem(role, next.to)) && (await onsave({ downgrade: next })) === false) dg = before;
   }
 </script>
 

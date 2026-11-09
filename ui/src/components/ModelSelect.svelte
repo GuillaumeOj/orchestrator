@@ -7,6 +7,7 @@
 
   let { label, value, emptyLabel = "default (Claude Code's)", onsave } = $props();
   let picking = $state(false); // "custom…" picked, text not typed yet
+  let rev = $state(0); // a refused save remounts the picker on the stored value
   const option = $derived(picking ? 'custom' : modelOption(value));
   const options = $derived(MODELS.map((m) => (m.value === '' ? { ...m, label: emptyLabel } : m)));
 
@@ -16,17 +17,27 @@
     picking = false;
   });
 
+  // `onsave` may resolve false: not saved, so the picker goes back to the stored value.
+  async function save(model) {
+    if ((await onsave(model)) === false) {
+      picking = false;
+      rev++;
+    }
+  }
+
   function pick(v) {
     picking = v === 'custom';
-    if (!picking) onsave(modelValue(v));
+    if (!picking) save(modelValue(v));
   }
 </script>
 
-<label><span>{label}</span>
-  <Select value={option} {options} noun="model" onchange={pick} />
-</label>
+{#key rev}
+  <label><span>{label}</span>
+    <Select value={option} {options} noun="model" onchange={pick} />
+  </label>
+{/key}
 {#if option === 'custom'}
-  <input class="field mono custom" aria-label="Custom {label}" placeholder="claude-…" value={modelOption(value) === 'custom' ? value : ''} onchange={(e) => onsave(modelValue('custom', e.currentTarget.value))} />
+  <input class="field mono custom" aria-label="Custom {label}" placeholder="claude-…" value={modelOption(value) === 'custom' ? value : ''} onchange={(e) => save(modelValue('custom', e.currentTarget.value))} />
 {/if}
 
 <style>
