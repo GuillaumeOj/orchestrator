@@ -52,7 +52,7 @@
 - **Tabs keep their full title** (min width = content, max ~280 px then ellipsis only for very long names). When they overflow, **‹ ›** scroll buttons appear at the right end of the strip (disabled at each end), plus wheel/trackpad scroll; the active tab is always scrolled into view.
 
 ### 3.5 Dock: Agents / Shells (problems 4, 5)
-- A **view dropdown** at the left of the dock strip: **Agents (n)** / **Shells (n)**. When Agents: a second dropdown **project**: All projects / each project with agents. Tabs show only the selected view and filter. The view switch shows a waiting dot when an agent outside the current view needs the user.
+- A **view dropdown** at the left of the dock strip: **Agents (n)** / **Shells (n)**. When Agents: a second dropdown **project**: All projects / each project with agents. Tabs show only the selected view and filter. A waiting dot sits on the closed Select whose current choice hides the waiting agent: the project Select when the agent belongs to another project, the view Select only in the Shells view (one agent never lights two Selects; design-notes §12.7).
 - Opening an agent switches the dock to Agents (filter to its project, or keeps All); opening a shell switches to Shells. ⌘; ] / [ cycle within the current view.
 - **Shell tab title follows the shell's working directory**: `zsh · ~/dev/orch/ui` (home shortened to `~`, path truncated from the left beyond ~32 chars, full path in the tooltip). Source: OSC 7 (cwd) with a fallback to OSC 0/2 (title) — see api-contract.md. Command shells (`runInPane`, trust) keep their fixed title.
 
@@ -71,7 +71,7 @@
 1. `audit.md` (ux): every action and hint per screen, duplicates, and the decision for each (§3.1, §3.2).
 2. FigCraft (the project file `Orchestrator.figcraft` on Google Drive, ADR-012; **never** the repo copy `docs/design/Orchestrator.figcraft`):
    - 02 Components: Select (closed, open, search, groups, disabled, error, focused), Menu, Tab strip with overflow buttons, Floating window, Button vs Kbd/hint styles, Dock view/filter dropdowns, shell tab with live title.
-   - 03 Shell & layouts: the app at 1280 and 1512 with the project context dropdown and one pane; tab overflow; dock in Agents (All / one project) and Shells views; waiting dot on the view switch.
+   - 03 Shell & layouts: the app at 1280 and 1512 with the project context dropdown and one pane; tab overflow; dock in Agents (All / one project) and Shells views; waiting dot per design-notes §12.7 (project Select in Agents, view Select in Shells).
    - 04 Screens: Settings window, Project settings window, Week planner window, Keyboard shortcuts sheet; every pane/strip the audit changes (at least: agent pane suspended/waiting with banner gone, project pane, feature pane, Mission control, status bar, title bar).
 3. PNG exports of every new/changed frame under `.orchestrator/features/improve-orchestrator-ui-ux/design/`, committed.
 4. `design-notes.md` (ux, after the frames): the implementation hand-off for the follow-up feature: per frame, which components/panes change, state and persistence keys, keyboard changes (removed: split, pane numbers, zoom; added: ⌘/), migration of saved layouts, test list.
