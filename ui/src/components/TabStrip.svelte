@@ -2,6 +2,10 @@
   /** Press-and-hold on ‹ ›: the first repeat after this delay, then every REPEAT ms. */
   export const HOLD_DELAY = 400;
   export const HOLD_REPEAT = 80;
+  const ARROWS = [
+    { dir: -1, name: 'Scroll tabs left', glyph: '\u{F0141}' },
+    { dir: 1, name: 'Scroll tabs right', glyph: '\u{F0142}' },
+  ];
 </script>
 
 <script>
@@ -14,7 +18,8 @@
   // and a tab just opened are scrolled into view. Keyboard: a roving tabindex
   // (← → Home End move, Enter / Space activates, Delete or ⌘W closes);
   // middle-click closes.
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
+  import { move } from '../lib/select.js';
   import { tooltip } from '../lib/tooltip.js';
 
   /**
@@ -49,8 +54,6 @@
   let overflow = $state(false);
   let atStart = $state(true);
   let atEnd = $state(true);
-  let hovered = $state(/** @type {string | null} */ (null));
-  let focused = $state(/** @type {string | null} */ (null));
   /** The tab that holds tabindex 0: the last one the keyboard was on, else the active one. */
   let rove = $state(/** @type {string | null} */ (null));
   const tabbable = $derived(tabs.some((t) => t.id === rove) ? rove : tabs.some((t) => t.id === active) ? active : (tabs[0]?.id ?? null));
@@ -73,9 +76,12 @@
   const tabEl = (id) => /** @type {HTMLElement | null} */ (lane?.querySelector(`[data-tab="${CSS.escape(id)}"]`) ?? null);
 
   // The active tab, and any tab just opened, are scrolled into view.
+  // Keyed on the ids only: a new badge or title does not scroll the strip back.
+  const idKey = $derived(tabs.map((t) => t.id).join('\n'));
   let known = new Set();
   $effect(() => {
-    const ids = tabs.map((t) => t.id);
+    void idKey;
+    const ids = untrack(() => tabs.map((t) => t.id));
     const fresh = ids.filter((id) => !known.has(id));
     const first = known.size === 0;
     known = new Set(ids);
@@ -131,8 +137,8 @@
     const i = tabs.findIndex((t) => t.id === id);
     const t = tabs[i];
     if (!t) return;
-    if (e.key === 'ArrowRight') focusTab(tabs[Math.min(tabs.length - 1, i + 1)].id);
-    else if (e.key === 'ArrowLeft') focusTab(tabs[Math.max(0, i - 1)].id);
+    if (e.key === 'ArrowRight') focusTab(move(tabs, id, 1));
+    else if (e.key === 'ArrowLeft') focusTab(move(tabs, id, -1));
     else if (e.key === 'Home') focusTab(tabs[0].id);
     else if (e.key === 'End') focusTab(tabs[tabs.length - 1].id);
     else if (e.key === 'Enter' || e.key === ' ') onselect?.(t.id);
@@ -152,13 +158,13 @@
     onclose?.(t.id);
   }
 
-  /** The tooltip: the tab's own, else the full title when the label is cut. */
-  function tip(t) {
-    return (node) => {
-      if (t.tooltip) return t.tooltip;
-      const name = node?.querySelector('.name');
-      return name && name.scrollWidth > name.clientWidth ? t.title : null;
-    };
+  /** The tooltip, read when it shows: the tab's own, else the full title when the label is cut. */
+  function tipFor(node) {
+    const t = tabs.find((x) => x.id === node?.dataset.tab);
+    if (!t) return null;
+    if (t.tooltip) return t.tooltip;
+    const name = node.querySelector('.name');
+    return name && name.scrollWidth > name.clientWidth ? t.title : null;
   }
 </script>
 
@@ -179,14 +185,11 @@
           aria-selected={on}
           aria-controls={panelId}
           tabindex={t.id === tabbable ? 0 : -1}
-          use:tooltip={tip(t)}
+          use:tooltip={tipFor}
           onclick={() => onselect?.(t.id)}
           onauxclick={(e) => onAux(e, t)}
           onmousedown={(e) => e.button === 1 && e.preventDefault()}
-          onpointerenter={() => (hovered = t.id)}
-          onpointerleave={() => hovered === t.id && (hovered = null)}
-          onfocus={() => ((focused = t.id), (rove = t.id))}
-          onblur={() => focused === t.id && (focused = null)}
+          onfocus={() => (rove = t.id)}
         >
           {#if tabContent}
             {@render tabContent(t)}
@@ -198,10 +201,9 @@
           {#if t.closable !== false}
             <button
               type="button"
-              class="x"
+              class="x icon-btn"
               tabindex="-1"
               aria-label="Close {t.title}"
-              style:visibility={on || hovered === t.id || focused === t.id ? 'visible' : 'hidden'}
               onclick={(e) => (e.stopPropagation(), onclose?.(t.id))}>{'\u{F0156}'}</button
             >
           {/if}
@@ -211,8 +213,9 @@
   </div>
   {#if overflow}
     <div class="arrows">
-      <button type="button" class="arrow" aria-label="Scroll tabs left" disabled={atStart} use:tooltip={'Scroll tabs left'} onpointerdown={(e) => startHold(e, -1)} onpointerup={stopHold} onpointerleave={stopHold} onpointercancel={stopHold} onclick={(e) => keyClick(e, -1)}>{'\u{F0141}'}</button>
-      <button type="button" class="arrow" aria-label="Scroll tabs right" disabled={atEnd} use:tooltip={'Scroll tabs right'} onpointerdown={(e) => startHold(e, 1)} onpointerup={stopHold} onpointerleave={stopHold} onpointercancel={stopHold} onclick={(e) => keyClick(e, 1)}>{'\u{F0142}'}</button>
+      {#each ARROWS as { dir, name, glyph } (dir)}
+        <button type="button" class="arrow icon-btn" aria-label={name} disabled={dir < 0 ? atStart : atEnd} use:tooltip={name} onpointerdown={(e) => startHold(e, dir)} onpointerup={stopHold} onpointerleave={stopHold} onpointercancel={stopHold} onclick={(e) => keyClick(e, dir)}>{glyph}</button>
+      {/each}
     </div>
   {/if}
   {#if trailing}<div class="trail">{@render trailing()}</div>{/if}
@@ -337,23 +340,18 @@
     color: var(--color-text-muted);
     font: var(--text-caption);
   }
+  /* × only on the active, hovered or keyboard-focused tab; its space is kept. */
   .x {
-    flex: none;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
     width: 16px;
     height: 16px;
-    padding: 0;
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--color-text-secondary);
-    font: var(--text-icon);
+    visibility: hidden;
   }
-  .x:hover {
+  .tab:is(.on, :hover, :focus-visible) .x {
+    visibility: visible;
+  }
+  /* On a hovered tab (surface.raised) the × hover needs one step more. */
+  .x:hover:not(:disabled) {
     background: var(--color-surface-selected);
-    color: var(--color-text-primary);
   }
   /* Opaque, so the clipped tab ends at their left edge. */
   .arrows {
@@ -363,25 +361,5 @@
     gap: var(--space-xxs);
     padding: 0 var(--space-xs);
     background: var(--color-surface-chrome);
-  }
-  .arrow {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--size-control-sm);
-    height: var(--size-control-sm);
-    padding: 0;
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--color-text-secondary);
-    font: var(--text-icon);
-  }
-  .arrow:hover:not(:disabled) {
-    background: var(--color-surface-raised);
-    color: var(--color-text-primary);
-  }
-  .arrow:disabled {
-    color: var(--color-text-disabled);
   }
 </style>

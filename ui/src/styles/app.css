@@ -154,6 +154,72 @@ textarea {
   text-overflow: ellipsis;
 }
 
+/* The popover of Select and Menu (lib/popover.js, 02-select.png, 02-menu.png):
+   rendered on the body, so its box lives here, not in a component's scope. */
+.popover {
+  position: fixed;
+  z-index: 70;
+  max-width: 360px;
+  overflow-y: auto;
+  padding: var(--space-xs) 0;
+  border-radius: var(--radius-md);
+  border: var(--border-width-default) solid var(--color-border-strong);
+  background: var(--color-surface-pane);
+  box-shadow: var(--shadow-overlay);
+  color: var(--color-text-primary);
+  font: var(--text-body);
+  outline: none;
+}
+.popover-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  height: var(--size-row);
+  margin: 0 var(--space-xs);
+  padding: 0 var(--space-sm);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  outline: none;
+}
+.popover-row.hi {
+  background: var(--color-surface-raised);
+}
+.popover-row.off {
+  color: var(--color-text-disabled);
+}
+.popover-sep {
+  height: 1px;
+  margin: var(--space-xs) 0;
+  background: var(--color-border-subtle);
+}
+
+/* Icon-only button (⋯, ×, ‹ ›): no box at rest; a component sets another square size. */
+.icon-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--size-control-sm);
+  height: var(--size-control-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: var(--text-icon);
+}
+.icon-btn:hover:not(:disabled) {
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+}
+.icon-btn.pressed {
+  background: var(--color-surface-selected);
+  color: var(--color-text-primary);
+}
+.icon-btn:disabled {
+  color: var(--color-text-disabled);
+}
+
 /* Buttons (Penpot 02): primary, secondary, ghost, danger. */
 .btn {
   display: inline-flex;

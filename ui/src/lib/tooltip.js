@@ -5,7 +5,7 @@
 // params may be a function of the node, read when the tooltip shows (a title
 // known to be cut only then); a falsy label shows nothing.
 
-export const HOVER_DELAY = 500;
+const HOVER_DELAY = 500;
 const GAP = 6;
 const EDGE = 4;
 const TIP_ID = 'orch-tooltip';
@@ -24,11 +24,10 @@ function tipEl() {
 }
 
 /** Normalised params: `{ label, key, detail }` or null when there is nothing to show. */
-export function tipParams(p, node = null) {
+function tipParams(p, node = null) {
   const v = typeof p === 'function' ? p(node) : p;
-  if (!v) return null;
-  if (typeof v === 'string') return { label: v, key: null, detail: null };
-  return v.label ? { label: v.label, key: v.key ?? null, detail: v.detail ?? null } : null;
+  if (typeof v === 'string') return v ? { label: v } : null;
+  return v?.label ? v : null;
 }
 
 function fill(t, { label, key, detail }) {

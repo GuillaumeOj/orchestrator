@@ -27,6 +27,7 @@
   // an open Select / Menu popover or an editing field had its chance
   // (`defaultPrevented`). `onclose(reason)`: 'esc' | 'close' | 'backdrop'.
   import { onMount, tick } from 'svelte';
+  import { move } from '../lib/select.js';
   import { tooltip } from '../lib/tooltip.js';
 
   /** @type {{ title: string, subtitle?: string | null, size?: { w: number, h?: number | null }, minW?: number,
@@ -130,12 +131,10 @@
 
   function onNavKey(e) {
     if (e.metaKey || e.ctrlKey || e.altKey || !nav?.length) return;
-    const i = nav.findIndex((n) => n.id === current);
-    const go = (j) => pick(nav[Math.max(0, Math.min(nav.length - 1, j))].id);
-    if (e.key === 'j' || e.key === 'ArrowDown') go(i + 1);
-    else if (e.key === 'k' || e.key === 'ArrowUp') go(i - 1);
-    else if (e.key === 'Home') go(0);
-    else if (e.key === 'End') go(nav.length - 1);
+    if (e.key === 'j' || e.key === 'ArrowDown') pick(move(nav, current, 1));
+    else if (e.key === 'k' || e.key === 'ArrowUp') pick(move(nav, current, -1));
+    else if (e.key === 'Home') pick(nav[0].id);
+    else if (e.key === 'End') pick(nav[nav.length - 1].id);
     else if (e.key === 'Enter') (focusables(body)[0] ?? body)?.focus();
     else return;
     e.preventDefault();
@@ -162,7 +161,7 @@
     <header class="bar">
       <h2 id={titleId} class="title">{title}{#if subtitle}<span class="sub">{` · ${subtitle}`}</span>{/if}</h2>
       {#if titleExtra}<div class="extra">{@render titleExtra()}</div>{/if}
-      <button type="button" class="x" aria-label="Close" use:tooltip={{ label: 'Close', key: 'esc' }} onclick={() => onclose('close')}>{'\u{F0156}'}</button>
+      <button type="button" class="x icon-btn" aria-label="Close" use:tooltip={{ label: 'Close', key: 'esc' }} onclick={() => onclose('close')}>{'\u{F0156}'}</button>
     </header>
     <div class="main">
       {#if nav}
@@ -247,23 +246,9 @@
     min-width: 0;
   }
   .x {
-    flex: none;
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
     width: var(--size-control);
     height: var(--size-control);
-    padding: 0;
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--color-text-secondary);
-    font: var(--text-icon);
-  }
-  .x:hover {
-    background: var(--color-surface-raised);
-    color: var(--color-text-primary);
+    margin-left: auto;
   }
   .main {
     flex: 1;

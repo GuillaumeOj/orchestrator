@@ -7,7 +7,7 @@
 const GAP = 4;
 const EDGE = 8;
 /** A popover never gets taller than this (it scrolls past it). */
-export const POPOVER_MAX_H = 320;
+const POPOVER_MAX_H = 320;
 
 /** Svelte action: moves the node to document.body while it lives. */
 export function portal(node) {
@@ -82,5 +82,29 @@ export function typeahead(labels, isDisabled = (_i) => false, ms = 500) {
       if (!isDisabled(i) && String(list[i]).toLowerCase().startsWith(q)) return i;
     }
     return -1;
+  };
+}
+
+/**
+ * The next row from `from` in direction `delta` (±1) that `ok(i)` accepts, among
+ * `n` rows; `from` when there is none (the highlight stays at the ends).
+ * `from = -1, delta = 1` gives the first usable row, `from = n, delta = -1` the last.
+ */
+export function nextUsable(n, from, delta, ok) {
+  for (let i = from + delta; i >= 0 && i < n; i += delta) if (ok(i)) return i;
+  return from;
+}
+
+/** The `data-i` index of the row an event happened in, else -1. */
+export function rowIndex(e) {
+  const row = e.target.closest?.('[data-i]');
+  return row ? Number(row.dataset.i) : -1;
+}
+
+/** A submenu of `w` × `h` beside its row `r`: to the right, else to the left; kept inside the window. */
+export function placeSubmenu(r, w, h, vw, vh) {
+  return {
+    left: vw - r.right >= w ? r.right + 2 : Math.max(EDGE, r.left - w - 2),
+    top: Math.max(EDGE, Math.min(r.top - GAP, vh - EDGE - h)),
   };
 }

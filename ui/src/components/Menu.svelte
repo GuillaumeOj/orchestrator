@@ -8,7 +8,7 @@
   // trigger. The default trigger is the `⋯` icon button, its tooltip the label
   // only (the menu has no key of its own).
   import { tick } from 'svelte';
-  import { dismissOn, placePopover, popoverStyle, portal, typeahead } from '../lib/popover.js';
+  import { dismissOn, nextUsable, placePopover, placeSubmenu, popoverStyle, portal, rowIndex, typeahead } from '../lib/popover.js';
   import { tooltip } from '../lib/tooltip.js';
   import Kbd from './Kbd.svelte';
 
@@ -40,10 +40,7 @@
   const usable = (list, i) => i >= 0 && i < list.length && !list[i].separator && !list[i].disabled;
   const subItems = $derived(sub ? (items[sub.i]?.items ?? []) : []);
 
-  function next(list, from, delta) {
-    for (let i = from + delta; i >= 0 && i < list.length; i += delta) if (usable(list, i)) return i;
-    return from;
-  }
+  const next = (list, from, delta) => nextUsable(list.length, from, delta, (i) => usable(list, i));
   const first = (list) => next(list, -1, 1);
   const last = (list) => next(list, list.length, -1);
 
@@ -55,6 +52,13 @@
     () => subItems.map((x) => x.label ?? ''),
     (i) => !usable(subItems, i),
   );
+
+  /** One level of the menu (0 the menu, 1 its open submenu): its rows, highlight and type-ahead. */
+  function lvl(level) {
+    return level
+      ? { list: subItems, cur: sub?.hi ?? -1, put: (i) => sub && (sub.hi = i), find: findSub }
+      : { list: items, cur: hi, put: (i) => (hi = i), find: findTop };
+  }
 
   function focusRow(level, i) {
     tick().then(() => /** @type {HTMLElement | null | undefined} */ ((level ? subPop : pop)?.querySelector(`[data-i="${i}"]`))?.focus());
@@ -94,13 +98,8 @@
     await tick();
     const row = pop?.querySelector(`[data-i="${i}"]`);
     if (row && subPop) {
-      const r = row.getBoundingClientRect();
-      const w = subPop.offsetWidth || 200;
       const h = subPop.offsetHeight || list.length * 28 + 8;
-      const room = window.innerWidth - r.right;
-      const left = room >= w ? r.right + 2 : Math.max(8, r.left - w - 2);
-      const top = Math.max(8, Math.min(r.top - 4, window.innerHeight - 8 - h));
-      subPlace = { left, top };
+      subPlace = placeSubmenu(row.getBoundingClientRect(), subPop.offsetWidth || 200, h, window.innerWidth, window.innerHeight);
     }
     if (focus && sub) focusRow(1, sub.hi);
   }
@@ -120,7 +119,7 @@
   }
 
   function activate(level, i) {
-    const list = level ? subItems : items;
+    const { list } = lvl(level);
     if (!usable(list, i)) return;
     if (!level && list[i].items?.length) openSub(i);
     else run(list[i]);
@@ -143,16 +142,14 @@
   }
 
   function onMenuKey(e, level) {
-    const list = level ? subItems : items;
-    const cur = level ? (sub?.hi ?? -1) : hi;
+    const { list, cur, put, find } = lvl(level);
     const set = (i) => {
-      if (level && sub) sub.hi = i;
-      else hi = i;
+      put(i);
       focusRow(level, i);
     };
     switch (e.key) {
       case 'ArrowDown':
-        set(cur < 0 ? first(list) : next(list, cur, 1));
+        set(next(list, cur, 1));
         break;
       case 'ArrowUp':
         set(cur < 0 ? last(list) : next(list, cur, -1));
@@ -183,58 +180,50 @@
         return;
       default:
         if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
-          const i = (level ? findSub : findTop)(e.key, cur);
+          const i = find(e.key, cur);
           if (i >= 0) set(i);
           break;
         }
         return;
     }
+    // The window or dialog under the menu checks `defaultPrevented` (design-notes §2.1).
     e.preventDefault();
-    e.stopPropagation();
   }
 
-  function onRowEnter(level, i) {
-    const list = level ? subItems : items;
-    if (!usable(list, i)) return;
-    if (level && sub) sub.hi = i;
-    else {
-      hi = i;
+  /** The pointer over row `i`: it takes the highlight (and opens its submenu without the keyboard). */
+  function onRowMove(e, level) {
+    const i = rowIndex(e);
+    const { list, cur, put } = lvl(level);
+    if (i === cur || !usable(list, i)) return;
+    put(i);
+    if (!level) {
       if (sub && sub.i !== i) sub = null;
       if (list[i].items?.length && sub?.i !== i) openSub(i, false);
     }
     focusRow(level, i);
   }
 
-  function onRowClick(e, level) {
-    const row = e.target.closest?.('[data-i]');
-    if (row) activate(level, Number(row.dataset.i));
-  }
-
-  function onRowMove(e, level) {
-    const row = e.target.closest?.('[data-i]');
-    if (!row) return;
-    const i = Number(row.dataset.i);
-    if (i !== (level ? sub?.hi : hi)) onRowEnter(level, i);
-  }
-
+  const toggle = () => (open ? close(true) : openMenu());
   const triggerAttrs = $derived({
     'aria-haspopup': 'menu',
     'aria-expanded': open,
     'aria-controls': open ? menuId : undefined,
-    onclick: () => (open ? close(true) : openMenu()),
+    onclick: toggle,
     onkeydown: onTriggerKey,
   });
 </script>
 
 {#snippet list(rows, level)}
+  {@const checkable = rows.some((r) => r.checked != null)}
+  {@const cur = lvl(level).cur}
   {#each rows as it, i (i)}
     {#if it.separator}
-      <div class="sep" role="separator"></div>
+      <div class="popover-sep" role="separator"></div>
     {:else}
       <div
         data-i={i}
-        class="item"
-        class:hi={i === (level ? sub?.hi : hi)}
+        class="item popover-row"
+        class:hi={i === cur}
         class:danger={it.destructive}
         class:off={it.disabled}
         class:sub={!level && sub?.i === i}
@@ -246,7 +235,7 @@
         tabindex="-1"
         use:tooltip={it.disabled ? it.reason : null}
       >
-        {#if rows.some((r) => r.checked != null)}<span class="ck" aria-hidden="true">{it.checked ? '\u{F012C}' : ''}</span>{/if}
+        {#if checkable}<span class="ck" aria-hidden="true">{it.checked ? '\u{F012C}' : ''}</span>{/if}
         {#if it.icon}<span class="ic" aria-hidden="true">{it.icon}</span>{/if}
         <span class="lab">{it.label}</span>
         {#if it.key}<span class="key"><Kbd keys={it.key} /></span>{/if}
@@ -260,16 +249,16 @@
   {#if trigger}
     {@render trigger(triggerAttrs)}
   {:else}
-    <button type="button" class="mtrig" class:pressed={open} aria-label={label} {disabled} use:tooltip={label} {...triggerAttrs}>{'\u{F01D8}'}</button>
+    <button type="button" class="icon-btn" class:pressed={open} aria-label={label} {disabled} use:tooltip={label} {...triggerAttrs}>{'\u{F01D8}'}</button>
   {/if}
 </span>
 
 {#if open}
-  <div class="pop" id={menuId} role="menu" aria-label={label} tabindex="-1" bind:this={pop} use:portal style={place ? popoverStyle(place) : 'visibility:hidden'} onkeydown={(e) => onMenuKey(e, 0)} onclick={(e) => onRowClick(e, 0)} onpointermove={(e) => onRowMove(e, 0)}>
+  <div class="pop popover" id={menuId} role="menu" aria-label={label} tabindex="-1" bind:this={pop} use:portal style={place ? popoverStyle(place) : 'visibility:hidden'} onkeydown={(e) => onMenuKey(e, 0)} onclick={(e) => activate(0, rowIndex(e))} onpointermove={(e) => onRowMove(e, 0)}>
     {@render list(items, 0)}
   </div>
   {#if sub}
-    <div class="pop" role="menu" aria-label={items[sub.i]?.label} tabindex="-1" bind:this={subPop} use:portal style={subPlace ? `left:${subPlace.left}px;top:${subPlace.top}px` : 'visibility:hidden'} onkeydown={(e) => onMenuKey(e, 1)} onclick={(e) => onRowClick(e, 1)} onpointermove={(e) => onRowMove(e, 1)}>
+    <div class="pop popover" role="menu" aria-label={items[sub.i]?.label} tabindex="-1" bind:this={subPop} use:portal style={subPlace ? `left:${subPlace.left}px;top:${subPlace.top}px` : 'visibility:hidden'} onkeydown={(e) => onMenuKey(e, 1)} onclick={(e) => activate(1, rowIndex(e))} onpointermove={(e) => onRowMove(e, 1)}>
       {@render list(subItems, 1)}
     </div>
   {/if}
@@ -278,31 +267,6 @@
 <style>
   .mwrap {
     display: contents;
-  }
-  .mtrig {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: none;
-    width: var(--size-control-sm);
-    height: var(--size-control-sm);
-    padding: 0;
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--color-text-secondary);
-    font: var(--text-icon);
-  }
-  .mtrig:hover:not(:disabled) {
-    background: var(--color-surface-raised);
-    color: var(--color-text-primary);
-  }
-  .mtrig.pressed {
-    background: var(--color-surface-selected);
-    color: var(--color-text-primary);
-  }
-  .mtrig:disabled {
-    color: var(--color-text-disabled);
   }
 
   .ic {
@@ -313,37 +277,10 @@
   }
 
   .pop {
-    position: fixed;
-    z-index: 70;
     min-width: 200px;
-    max-width: 360px;
-    overflow-y: auto;
-    padding: var(--space-xs) 0;
-    border-radius: var(--radius-md);
-    border: var(--border-width-default) solid var(--color-border-strong);
-    background: var(--color-surface-pane);
-    box-shadow: var(--shadow-overlay);
-    color: var(--color-text-primary);
-    font: var(--text-body);
-    outline: none;
   }
-  .item {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    height: var(--size-row);
-    margin: 0 var(--space-xs);
-    padding: 0 var(--space-sm);
-    border-radius: var(--radius-sm);
-    white-space: nowrap;
-    outline: none;
-  }
-  .item.hi,
   .item.sub {
     background: var(--color-surface-raised);
-  }
-  .item:focus-visible {
-    outline: none;
   }
   .item.danger {
     color: var(--color-status-error);
@@ -354,7 +291,6 @@
   .item.danger.hi {
     background: color-mix(in srgb, var(--color-status-error) 20%, transparent);
   }
-  .item.off,
   .item.off .ic {
     color: var(--color-text-disabled);
   }
@@ -378,10 +314,5 @@
     margin-left: auto;
     color: var(--color-text-secondary);
     font: var(--text-icon);
-  }
-  .sep {
-    height: 1px;
-    margin: var(--space-xs) 0;
-    background: var(--color-border-subtle);
   }
 </style>

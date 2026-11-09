@@ -7,7 +7,7 @@
   // the value; the Esc it consumes is preventDefault'ed so a dialog or window
   // under it does not close too). `onchange` fires only on a user pick.
   import { tick } from 'svelte';
-  import { dismissOn, placePopover, popoverStyle, portal, typeahead } from '../lib/popover.js';
+  import { dismissOn, nextUsable, placePopover, popoverStyle, portal, rowIndex, typeahead } from '../lib/popover.js';
   import { tooltip } from '../lib/tooltip.js';
 
   /**
@@ -63,26 +63,17 @@
   const boxDot = $derived(dot || selected?.dot);
 
   const enabled = (i) => i >= 0 && i < shown.length && !shown[i].disabled;
-  const firstEnabled = () => shown.findIndex((o) => !o.disabled);
-  const lastEnabled = () => shown.findLastIndex((o) => !o.disabled);
+  const firstEnabled = () => nextUsable(shown.length, -1, 1, enabled);
+  const lastEnabled = () => nextUsable(shown.length, shown.length, -1, enabled);
+  /** A dot's accessible name (and tooltip): its own text, else "Needs you". */
+  const dotLabel = (d) => (typeof d === 'string' ? d : 'Needs you');
 
   function startHi() {
     const i = shown.findIndex((o) => o.value === value && !o.disabled);
     return i >= 0 ? i : firstEnabled();
   }
 
-  function step(delta) {
-    if (!shown.length) return;
-    let i = hi;
-    for (let k = 0; k < shown.length; k++) {
-      i += delta;
-      if (i < 0 || i >= shown.length) return;
-      if (enabled(i)) {
-        hi = i;
-        return;
-      }
-    }
-  }
+  const step = (delta) => (hi = nextUsable(shown.length, hi, delta, enabled));
 
   const find = typeahead(
     () => shown.map((o) => o.label),
@@ -124,7 +115,7 @@
     const r = trigger.getBoundingClientRect();
     const minW = Math.min(360, Math.max(200, r.width));
     const rows = shown.length + new Set(shown.map((o) => o.group).filter(Boolean)).size;
-    const guess = Math.min(320, rows * 28 + (withSearch ? 40 : 0) + 8);
+    const guess = rows * 28 + (withSearch ? 40 : 0) + 8;
     const h = pop?.offsetHeight || guess;
     const w = Math.max(pop?.offsetWidth || 0, minW);
     place = { ...placePopover(r, w, h, window.innerWidth, window.innerHeight), minW };
@@ -208,14 +199,9 @@
     tick().then(measure);
   }
 
-  function onListClick(e) {
-    const row = e.target.closest?.('[data-i]');
-    if (row) pick(Number(row.dataset.i));
-  }
-
   function onListMove(e) {
-    const row = e.target.closest?.('[data-i]');
-    if (row && enabled(Number(row.dataset.i))) hi = Number(row.dataset.i);
+    const i = rowIndex(e);
+    if (enabled(i)) hi = i;
   }
 
   // Keep the keyboard where it is (the box or the filter) when the list is clicked.
@@ -248,7 +234,7 @@
     {#if selected?.icon}<span class="ic" aria-hidden="true">{selected.icon}</span>{/if}
     <span class="val" class:ph={!selected}>{selected ? selected.label : placeholder}</span>
     {#if selected?.count != null}<span class="cnt">{selected.count}</span>{/if}
-    {#if boxDot}<span class="dot" role="img" aria-label={typeof boxDot === 'string' ? boxDot : 'Needs you'} use:tooltip={typeof boxDot === 'string' ? boxDot : null}></span>{/if}
+    {#if boxDot}<span class="dot" role="img" aria-label={dotLabel(boxDot)} use:tooltip={typeof boxDot === 'string' ? boxDot : null}></span>{/if}
     <span class="chev" aria-hidden="true">{open ? '\u{F0143}' : '\u{F0140}'}</span>
   </button>
   <input type="hidden" {name} value={value ?? ''} />
@@ -257,7 +243,7 @@
 
 {#if open}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="pop" class:above={place?.above} bind:this={pop} use:portal style={place ? popoverStyle(place, place.minW) : 'visibility:hidden'} onmousedown={keepFocus}>
+  <div class="pop popover" class:above={place?.above} bind:this={pop} use:portal style={place ? popoverStyle(place, place.minW) : 'visibility:hidden'} onmousedown={keepFocus}>
     {#if withSearch}
       <div class="search">
         <span class="ic" aria-hidden="true">{'\u{F0349}'}</span>
@@ -277,16 +263,16 @@
         />
       </div>
     {/if}
-    <div class="list" id={listId} role="listbox" tabindex="-1" aria-label={ariaLabel} aria-labelledby={ariaLabelledby} onclick={onListClick} onpointermove={onListMove} onkeydown={listKey}>
+    <div class="list" id={listId} role="listbox" tabindex="-1" aria-label={ariaLabel} aria-labelledby={ariaLabelledby} onclick={(e) => pick(rowIndex(e))} onpointermove={onListMove} onkeydown={listKey}>
       {#each shown as o, i (i)}
         {#if o.group && o.group !== shown[i - 1]?.group}
-          {#if i > 0}<div class="sep" role="separator"></div>{/if}
+          {#if i > 0}<div class="popover-sep" role="separator"></div>{/if}
           <div class="gh" role="presentation">{o.group}</div>
         {/if}
         <div
           id={optId(i)}
           data-i={i}
-          class="opt"
+          class="opt popover-row"
           class:hi={i === hi}
           class:off={o.disabled}
           role="option"
@@ -297,7 +283,7 @@
           <span class="ck" aria-hidden="true">{o.value === value ? '\u{F012C}' : ''}</span>
           {#if o.icon}<span class="ic" aria-hidden="true">{o.icon}</span>{/if}
           <span class="lab">{o.label}</span>
-          {#if o.dot}<span class="dot" role="img" aria-label={typeof o.dot === 'string' ? o.dot : 'Needs you'}></span>{/if}
+          {#if o.dot}<span class="dot" role="img" aria-label={dotLabel(o.dot)}></span>{/if}
           {#if o.count != null}<span class="cnt">{o.count}</span>{/if}
         </div>
       {/each}
@@ -403,19 +389,11 @@
     font: var(--text-caption);
   }
 
+  /* The shared .popover box, as a column: the filter field, then the list scrolls. */
   .pop {
-    position: fixed;
-    z-index: 70;
     display: flex;
     flex-direction: column;
-    max-width: 360px;
-    padding: var(--space-xs) 0;
-    border-radius: var(--radius-md);
-    border: var(--border-width-default) solid var(--color-border-strong);
-    background: var(--color-surface-pane);
-    box-shadow: var(--shadow-overlay);
-    color: var(--color-text-primary);
-    font: var(--text-body);
+    overflow: hidden;
   }
   .search {
     display: flex;
@@ -448,26 +426,8 @@
     color: var(--color-text-muted);
     font: var(--text-caption);
   }
-  .sep {
-    height: 1px;
-    margin: var(--space-xs) 0;
-    background: var(--color-border-subtle);
-  }
   .opt {
-    display: flex;
-    align-items: center;
-    gap: var(--space-sm);
-    height: var(--size-row);
-    margin: 0 var(--space-xs);
-    padding: 0 var(--space-sm) 0 var(--space-xs);
-    border-radius: var(--radius-sm);
-    white-space: nowrap;
-  }
-  .opt.hi {
-    background: var(--color-surface-raised);
-  }
-  .opt.off {
-    color: var(--color-text-disabled);
+    padding-left: var(--space-xs);
   }
   .ck {
     flex: none;

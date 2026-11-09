@@ -177,18 +177,14 @@ describe('TabStrip', () => {
     expect(onclose).toHaveBeenCalledTimes(2);
   });
 
-  it('a click selects; × shows on the active, hovered or focused tab only and closes', async () => {
+  it('a click selects; × shows on the active, hovered or focused tab only (CSS) and closes', async () => {
     const onselect = vi.fn();
     const onclose = vi.fn();
     const { container } = render(TabStrip, { props: { tabs: TABS, active: 'p2', onselect, onclose } });
-    const vis = () => tabs(container).map((x) => x.querySelector('.x').style.visibility);
-    expect(vis()).toEqual(['hidden', 'visible', 'hidden', 'hidden', 'hidden']);
-    await fireEvent.pointerEnter(tabs(container)[3]);
-    expect(vis()).toEqual(['hidden', 'visible', 'hidden', 'visible', 'hidden']);
-    await fireEvent.pointerLeave(tabs(container)[3]);
-    expect(vis()[3]).toBe('hidden');
-    await fireEvent.focus(tabs(container)[4]);
-    expect(vis()[4]).toBe('visible');
+    // jsdom has no :hover: the rule itself is checked (CSS keeps the × space, no layout shift).
+    const css = readFileSync('src/components/TabStrip.svelte', 'utf8');
+    expect(css).toMatch(/\.x \{[^}]*visibility: hidden;/);
+    expect(css).toMatch(/\.tab:is\(\.on, :hover, :focus-visible\) \.x \{\s*visibility: visible;/);
     await fireEvent.click(tabs(container)[3]);
     expect(onselect).toHaveBeenCalledWith('p4');
     await fireEvent.click(tabs(container)[1].querySelector('.x'));
