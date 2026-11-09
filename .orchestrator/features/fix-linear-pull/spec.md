@@ -52,7 +52,7 @@ Same model as GitHub (`GithubIssues::list`, `Coverage`, the store's sync cursor)
 
 The Linear note in Project settings › Task backend says *"Issues labelled orch in {team} sync both ways."* Make it say what the app now does:
 
-> Open issues of {team} (and of the project, when one is set) show on the Board. Moving or editing a card writes it back to Linear and adds the label orch. When both sides changed, Linear wins and you get a note in today's digest. Assignee node: label orch:node:&lt;id&gt;. Dependencies: Linear "blocks" relations.
+> Open issues of {team} (and of the project, when one is set) show on the Board. Moving or editing a card writes it back to Linear; moving it also adds the label orch. When both sides changed, Linear wins and you get a note in today's digest. Assignee node: label orch:node:&lt;id&gt;. Dependencies: Linear "blocks" relations.
 
 Update any UI test that pins the old sentence.
 
