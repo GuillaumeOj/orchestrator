@@ -7,7 +7,7 @@
 ```
 ┌ title bar ─────────────────────────────────────────────────────────────────┐
 │ banner (app-wide conditions only)                                           │
-├ sidebar ─┬ [orch ▾] │ Overview │ orch · project │ feat-x │ board │ … ‹ › ─┬ chat ┤
+├ sidebar ─┬ [orch ▾] │ Mission control │ orch · project │ feat-x │ board │ … ‹ › ─┬ chat ┤
 │ tree     │                                                              │      │
 │ (state   │                 one pane (no splits)                         │      │
 │ kept)    │                                                              │      │
@@ -29,7 +29,7 @@
 - A control looks like a control: button (primary/secondary/ghost), icon button (with tooltip), Select, tab, link. Hover and focus states on all.
 - Information looks static: text, badges, status icons, `Kbd` pills. `Kbd` has no hover, no pointer cursor, and appears only in tooltips, the palette, menus (right-aligned), the Keyboard shortcuts sheet, an empty pane's one-line hint and the leader overlay.
 - Remove: inline hints in the title bar, status bar, dock (`⌘J hide`), pane headers (`⌘; z restore`…), strips and settings rows. Their key goes to the control's tooltip: `Hide dock · ⌘J`.
-- Keyboard shortcuts sheet (⌘/ and Help › Keyboard shortcuts): a floating window, grouped (Navigation, Workspace, Dock, Agents, Chat), searchable; replaces Settings › Keyboard.
+- Keyboard shortcuts sheet (⌘/ and Help › Keyboard shortcuts): a floating window, searchable, with the groups and bindings of [audit.md](audit.md) §7; replaces Settings › Keyboard.
 
 ## Duplicates (audit rules)
 
@@ -38,7 +38,7 @@ For each action, list where it appears today, pick one home with these rules, re
 2. Pane header = identity + pane-wide actions; strip = the action that resolves the current state. Never the same action in both.
 3. Inspector = details + secondary actions, never the pane's primary action.
 4. Toolbar = frequent actions; `⋯` Menu = the rest. Never both.
-5. Status bar = information; a click may open the related window (pacing → Week planner), no buttons.
+5. Status bar = information only (audit §2.3: the Week planner's entry is the title-bar pacing indicator); the PR-build and update chips stay clickable because they only appear when there is something to act on.
 6. The palette lists every command (it is the catalogue, not a duplicate).
 
 Known case to settle first: suspended agent (banner + header + strip). Then the whole app.
@@ -54,7 +54,7 @@ Known case to settle first: suspended agent (banner + header + strip). Then the 
 
 - **Project context Select**, left of the tab strip, always shown: `All projects` + projects (status dot when a project has something waiting). Selecting filters tabs (spec §3.4). Last choice is kept.
 - Tabs: full title, close × on hover/active, icon by kind. Overflow: tabs scroll; **‹ ›** at the right end, disabled at each end; the active tab scrolled into view; a tab opened off-screen scrolls in.
-- Empty (no tab for this context): a one-line muted hint and two buttons (Open project overview, New feature) — no key pills besides the one-line hint.
+- Empty (no tab for this context): a one-line muted hint ("⌘K to open anything") and two buttons: in a project context **Open <project>** and **New session**; in All projects **Mission control** and **New session**. No key pills besides the one-line hint.
 
 ## Dock
 
@@ -62,7 +62,7 @@ Known case to settle first: suspended agent (banner + header + strip). Then the 
 - **Project Select** (Agents view only): `All projects` + projects with agents.
 - Tabs as today (agent: role mark · short name · status icon; shell: title). Shell title = `zsh · <cwd>` live, `~` for home, left-truncated, full path in the tooltip.
 - Overflow like the workspace (‹ ›), then `+` (new shell; in Agents view it is hidden).
-- Empty view: "No shell open" + New shell button; "No agent running in <project>".
+- Empty view: "No shell open" + an inline New shell button (no `+` then: one home); "No agent running in <project>".
 
 ## Select / Menu component
 
