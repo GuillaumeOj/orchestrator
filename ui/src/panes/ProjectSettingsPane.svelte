@@ -275,7 +275,7 @@
                 </div>
               {/each}
             </div>
-            <p class="muted note">Open issues of {lin.team} (and of the project, when one is set) show on the Board. Moving or editing a card writes it back to Linear and adds the label orch. When both sides changed, Linear wins and you get a note in today's digest. Assignee node: label orch:node:&lt;id&gt;. Dependencies: Linear "blocks" relations.</p>
+            <p class="muted note">Open issues of {lin.team} (and of the project, when one is set) show on the Board. Moving or editing a card writes it back to Linear; moving it also adds the label orch. When both sides changed, Linear wins and you get a note in today's digest. Assignee node: label orch:node:&lt;id&gt;. Dependencies: Linear "blocks" relations.</p>
           {/if}
         {/if}
       {/if}
