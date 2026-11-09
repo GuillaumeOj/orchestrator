@@ -20,6 +20,7 @@ import {
   timelineText,
 } from '../src/lib/teams.js';
 import { fixture, nowOf } from './fixture.js';
+import { pick, picked } from './pick.js';
 
 const calls = [];
 const replies = {};
@@ -342,10 +343,8 @@ describe('P2 panes', () => {
     app.overlay = { kind: 'launch', teamId: 'duo', projectId: 'shop-api' };
     const { container } = render(Dialogs);
     await waitFor(() => expect(container.textContent).toContain('duo'));
-    const [projectSel, teamSel] = container.querySelectorAll('select');
-    projectSel.value = 'blog';
-    await fireEvent.change(projectSel);
-    await waitFor(() => expect(/** @type {HTMLSelectElement} */ (teamSel).value).toBe('blog-team'));
+    await pick(container, 'blog');
+    await waitFor(() => expect(picked(container, 1)).toBe('blog-team'));
     expect(calls.filter(([c]) => c === 'teams_view').map(([, a]) => a.project)).toEqual(['shop-api', 'blog']);
     expect(container.textContent).not.toContain('duo');
   });

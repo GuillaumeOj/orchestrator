@@ -58,7 +58,7 @@
   }
 
   function onBodyKey(e) {
-    if (e.key === 'Escape' && !e.defaultPrevented && !e.target.closest('input, textarea, select')) {
+    if (e.key === 'Escape' && !e.defaultPrevented && !e.target.closest('input, textarea, select, [role="combobox"]')) {
       e.preventDefault();
       nav?.focus();
     }

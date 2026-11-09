@@ -12,10 +12,12 @@
   import IntakeSettings from '../components/IntakeSettings.svelte';
   import Kbd from '../components/Kbd.svelte';
   import McpSettings from '../components/McpSettings.svelte';
+  import Select from '../components/Select.svelte';
   import { app, openSettings, projects, saveLayout, toast } from '../lib/app.svelte.js';
   import { clock } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { BACKENDS, COLUMN_LABEL, mappingRows, mappingToSave, remoteName, syncLine } from '../lib/linear.js';
+  import { BACKENDS, mappingRows, mappingToSave, remoteName, syncLine } from '../lib/linear.js';
+  import { BOARD_COLUMNS } from '../lib/options.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -55,6 +57,8 @@
   let files = $state(null); // FilesSettings (same)
   let intake = $state(null); // IntakeSettings (⌘⏎ saves)
 
+  const teamOptions = $derived((teams ?? []).map((t) => ({ value: t.key, label: `${t.key} · ${t.name}` })));
+  const projectOptions = $derived([{ value: '', label: 'Any project' }, ...(states?.projects ?? []).map((p) => ({ value: p.id, label: p.name }))]);
   const connected = $derived(linearInt?.status === 'connected');
   const dirty = $derived(
     !!saved &&
@@ -188,14 +192,14 @@
     }
     if (e.metaKey && e.key === 'Enter') return (e.preventDefault(), save());
     // Section keys work after a click on a segment or a button; not while typing or picking.
-    if (e.target.closest('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.target.closest('input, textarea, select, [role="combobox"]') || e.metaKey || e.ctrlKey || e.altKey) return;
     if (section.id !== 'backend') return;
     const k = e.key;
     if ((k === 'Enter' || k === ' ') && e.target.closest('button')) return;
     if (k >= '1' && k <= '3') pickBackend(BACKENDS[Number(k) - 1].id);
     else if (k === 'j' || k === 'ArrowDown') rowSel = Math.min(rows.length - 1, rowSel + 1);
     else if (k === 'k' || k === 'ArrowUp') rowSel = Math.max(0, rowSel - 1);
-    else if (k === 'Enter') root?.querySelector(`[data-row="${rowSel}"] select`)?.focus();
+    else if (k === 'Enter') root?.querySelector(`[data-row="${rowSel}"] [role="combobox"]`)?.focus();
     else if (k === 'r' && !dirty) sync();
     else if (k === 'Escape') cancel();
     else return;
@@ -246,16 +250,11 @@
         {:else}
           {#if teamsError}<p class="err">{teamsError}</p>{/if}
           <label class="line"><span class="lab">Team</span>
-            <select class="field auto" value={lin.team} onchange={(e) => pickTeam(e.currentTarget.value)}>
-              {#each teams as t (t.id)}<option value={t.key}>{t.key} · {t.name}</option>{/each}
-            </select>
+            <Select width="hug" searchable value={lin.team} options={teamOptions} noun="team" onchange={pickTeam} />
             <span class="muted">{teams.length} team{teams.length === 1 ? '' : 's'}: {teams.map((t) => `${t.key} · ${t.name}`).join(', ')}</span>
           </label>
           <label class="line"><span class="lab">Project</span>
-            <select class="field auto" bind:value={lin.project}>
-              <option value="">Any project</option>
-              {#each states?.projects ?? [] as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
-            </select>
+            <Select width="hug" searchable bind:value={lin.project} options={projectOptions} noun="project" />
             <span class="muted">optional: limit to one Linear project</span>
           </label>
 
@@ -268,9 +267,7 @@
                 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                 <div class="mrow" class:sel={i === rowSel} data-row={i} onclick={() => (rowSel = i)}>
                   <b>{r.name}</b><span class="muted">→</span>
-                  <select class="field auto" aria-label="Column for {r.name}" value={r.column} onchange={(e) => setColumn(i, e.currentTarget.value)}>
-                    {#each Object.entries(COLUMN_LABEL) as [id, label] (id)}<option value={id}>{label}</option>{/each}
-                  </select>
+                  <Select width="hug" aria-label="Column for {r.name}" value={r.column} options={BOARD_COLUMNS} onchange={(column) => setColumn(i, column)} />
                   {#if r.isDefault}<span class="muted">default</span>{/if}
                 </div>
               {/each}
@@ -285,7 +282,7 @@
           {#each syncErr as m (m)}<p class="box errbox">✕ {m}</p>{/each}
         {/if}
         {#each unmapped as st (st)}
-          <p class="box warnbox">▲ State "{st}" isn't mapped. <button class="btn ghost" onclick={() => root?.querySelector('[data-row] select')?.focus()}>Map it <Kbd keys="⏎" /></button></p>
+          <p class="box warnbox">▲ State "{st}" isn't mapped. <button class="btn ghost" onclick={() => root?.querySelector('[data-row] [role="combobox"]')?.focus()}>Map it <Kbd keys="⏎" /></button></p>
         {/each}
         <div class="box syncbox">
           <span>{last ? syncLine(last.report, last.at, remoteName(kind)) : 'Not synced from here yet'}</span>
@@ -398,9 +395,6 @@
     width: 120px;
     flex: none;
     color: var(--color-text-muted);
-  }
-  .field.auto {
-    width: auto;
   }
   .seg {
     display: flex;

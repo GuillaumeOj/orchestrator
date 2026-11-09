@@ -111,7 +111,7 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, select, textarea')) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, select, textarea, [role="combobox"]')) return;
     const k = { f: fetchNow, p: loadPrs, t: () => openTrust(p.id), x: startRemoval }[e.key];
     if (k) {
       e.preventDefault();

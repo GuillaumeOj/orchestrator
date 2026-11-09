@@ -8,6 +8,7 @@ import { flushSync, tick } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chatOf, closedEntry, entry, kinds } from './chat-fixture.js';
 import { fixture, nowOf } from './fixture.js';
+import { labels, pick, picked } from './pick.js';
 
 const calls = [];
 const replies = {};
@@ -956,8 +957,8 @@ describe('Settings → Overwatch (notes §9.1)', () => {
     const nav = [...c.querySelectorAll('.sec')].map(text);
     expect(nav.indexOf('Overwatch')).toBe(nav.indexOf('Integrations') + 1);
     expect(row(c, 'enabled').querySelector('input').checked).toBe(true);
-    expect(row(c, 'model').querySelector('select').value).toBe('sonnet');
-    expect([...row(c, 'model').querySelectorAll('option')].map(text)).toEqual(['Haiku', 'Sonnet', 'Opus']);
+    expect(picked(row(c, 'model'))).toBe('sonnet');
+    expect(await labels(row(c, 'model'))).toEqual(['opus', 'sonnet', 'haiku', 'fable']);
     for (const [k, v] of [
       ['batch_secs', 30],
       ['permission_secs', 60],
@@ -974,7 +975,7 @@ describe('Settings → Overwatch (notes §9.1)', () => {
     await fireEvent.change(input, { target: { value: '300' } });
     await settle();
     expect(calls).toContainEqual(['set_overwatch_settings', { settings: { idle_secs: 300 } }]);
-    await fireEvent.change(row(c, 'model').querySelector('select'), { target: { value: 'opus' } });
+    await pick(row(c, 'model'), 'opus');
     await settle();
     expect(calls).toContainEqual(['set_overwatch_settings', { settings: { model: 'opus' } }]);
   });

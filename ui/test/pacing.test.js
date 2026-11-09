@@ -22,6 +22,7 @@ import {
 } from '../src/lib/pacing.js';
 import { queueReason } from '../src/lib/status.js';
 import { fixture } from './fixture.js';
+import { pick } from './pick.js';
 
 const calls = [];
 const replies = {};
@@ -556,12 +557,8 @@ describe('planner, banner, status bar, board', () => {
     app.panes.c1 = { type: 'canvas', teamId: 'mine', projectId: 'shop-api', title: 'Team' };
     const { container, getByText } = render(TeamCanvasPane, { paneId: 'c1' });
     await waitFor(() => getByText('role lead v1'));
-    const selects = [...container.querySelectorAll('.inspector select')].map(
-      (x) => /** @type {HTMLSelectElement} */ (x),
-    );
-    const sel = selects.find((s) => [...s.options].some((o) => o.value === 'high'));
-    sel.value = 'high';
-    await fireEvent.change(sel);
+    const effort = [...container.querySelectorAll('.inspector label')].find((l) => l.textContent.startsWith('effort'));
+    await pick(effort, 'high');
     expect(container.querySelector('[aria-label="Starter"]').textContent).toContain('Role lead is a starter.');
     expect(calls.some(([c]) => c === 'role_save')).toBe(false);
     await fireEvent.keyDown(container.querySelector('.canvas-pane'), { key: 'Enter' });

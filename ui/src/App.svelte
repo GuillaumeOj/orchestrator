@@ -42,7 +42,7 @@
   function onKeyDown(e) {
     if (e.isComposing) return;
     const inXterm = !!e.target.closest?.('.xterm');
-    const inField = !inXterm && !!e.target.closest?.('input, textarea, select');
+    const inField = !inXterm && !!e.target.closest?.('input, textarea, select, [role="combobox"]');
     const r = classify(e, keyContext(e.target));
     const stop = () => {
       e.preventDefault();
@@ -73,7 +73,7 @@
         return stop();
       default:
         // The watch-mode strip's Esc goes back to Mission control; Esc anywhere else closes the overlay.
-        if (e.key === 'Escape' && inspectorOverlay() && !inXterm && !e.target.closest?.('[data-watch]')) {
+        if (e.key === 'Escape' && inspectorOverlay() && !inXterm && !document.querySelector('[role="combobox"][aria-expanded="true"]') && !e.target.closest?.('[data-watch]')) {
           app.inspector = false;
           stop();
         }

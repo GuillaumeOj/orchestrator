@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from '../src/lib/app.svelte.js';
 import { classify } from '../src/lib/keyboard.js';
 import { addedToast, inRect, midTruncate, pathLines, tilde } from '../src/lib/projectfiles.js';
+import { pick, picked } from './pick.js';
 
 const calls = [];
 const replies = {};
@@ -210,14 +211,14 @@ describe('Project settings › Files', () => {
     replies.project_file_update = (a) => ({
       files: LIST.map((f) => (f.path === a.path ? { ...f, access: a.access } : f)),
     });
-    await fireEvent.click(rows(container)[1].querySelector('[data-access="read"]'));
+    await pick(rows(container)[1], 'read');
     await waitFor(() => expect(toasts()).toContain('~/design/app.figcraft is now Read only'));
     expect(sent('project_file_update')[0]).toEqual({
       project: 'shop-api',
       path: `${HOME}/design/app.figcraft`,
       access: 'read',
     });
-    expect(rows(container)[1].querySelector('[data-access="read"]').getAttribute('aria-checked')).toBe('true');
+    expect(picked(rows(container)[1])).toBe('read');
 
     replies.project_file_update = new Error(
       '/Users/me/Brand: contains files set to Read & write; set them to Read only first',

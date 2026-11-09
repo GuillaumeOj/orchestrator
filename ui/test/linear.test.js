@@ -8,6 +8,7 @@ import { app } from '../src/lib/app.svelte.js';
 import { mappingRows, mappingToSave, syncLine } from '../src/lib/linear.js';
 import { handle } from '../src/lib/teams.js';
 import { fixture } from './fixture.js';
+import { pick } from './pick.js';
 
 const calls = [];
 const replies = {};
@@ -121,9 +122,7 @@ describe('project settings › Task backend', () => {
     await fireEvent.keyDown(root, { key: 'j' });
     await fireEvent.keyDown(root, { key: 'j' });
     expect(container.querySelector('.mrow.sel').textContent).toContain('In Progress');
-    const sel = /** @type {HTMLSelectElement} */ (container.querySelector('.mrow.sel select'));
-    sel.value = 'review';
-    await fireEvent.change(sel);
+    await pick(container.querySelector('.mrow.sel'), 'Review');
     expect(container.querySelector('.mrow.sel').textContent).not.toContain('default');
     // ⌘⏎: refused with counts → the D8 confirm; ⏎ creates the open tasks.
     await fireEvent.keyDown(root, { key: 'Enter', metaKey: true });
@@ -173,7 +172,7 @@ describe('project settings › Task backend', () => {
     await waitFor(() => getByText('State "QA" isn\'t mapped.', { exact: false }));
     expect(getByText('✕ Linear rate limit: retrying in 60 s')).toBeTruthy();
     await fireEvent.click(getByText('Map it', { exact: false }));
-    expect(document.activeElement).toBe(container.querySelector('[data-row] select'));
+    expect(document.activeElement).toBe(container.querySelector('[data-row] [role="combobox"]'));
   });
 
   it('board on Linear: the header, the ENG ids and the remote-won marker', async () => {

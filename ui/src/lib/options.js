@@ -13,8 +13,11 @@ export const MODEL_ALIASES = ['opus', 'sonnet', 'haiku', 'fable'];
 /** Required-value model pickers (Overwatch model, a downgrade target): the aliases only. */
 export const MODEL_OPTIONS = plain(MODEL_ALIASES);
 
-/** Optional model pickers (new session, a role, a node): default, the aliases, then a custom id. */
-export const MODELS = [{ value: '', label: 'default' }, ...MODEL_OPTIONS, { value: 'custom', label: 'custom…' }];
+/** A model picker with no custom id (new session): default, then the aliases. */
+export const MODEL_CHOICES = [{ value: '', label: 'default' }, ...MODEL_OPTIONS];
+
+/** Optional model pickers that take a custom id (a role, a node): `MODEL_CHOICES`, then custom. */
+export const MODELS = [...MODEL_CHOICES, { value: 'custom', label: 'custom…' }];
 
 export const EFFORTS = [{ value: '', label: 'default' }, ...plain(['low', 'medium', 'high'])];
 
@@ -22,6 +25,8 @@ export const PERMISSION_MODES = [
   { value: '', label: 'default (ask)' },
   { value: 'acceptEdits', label: 'accept edits' },
   { value: 'plan', label: 'plan' },
+  // What an autonomous role starts with (Dialogs `pickRole`).
+  { value: 'auto', label: 'auto' },
 ];
 
 /** Allocation tiers, highest first (`lib/allocation.js:TIERS` holds the ids). */
@@ -36,6 +41,12 @@ export const REVIEW_MODES = [
 export const PERMISSION_PROFILES = plain(['strict', 'gated', 'autonomous']);
 
 export const BUDGET_PRIORITIES = plain(['low', 'normal', 'high', 'critical']);
+
+/** A project file's access (`read` / `write` are the stored ids). */
+export const ACCESS_OPTIONS = [
+  { value: 'read', label: 'read' },
+  { value: 'write', label: 'read & write' },
+];
 
 /** Board columns (`lib/teams.js:COLUMNS`), e.g. a Linear state's column. */
 export const BOARD_COLUMNS = COLUMNS.map((c) => ({ value: c.id, label: c.label }));

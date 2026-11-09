@@ -15,7 +15,6 @@
     num,
     pendingRemoval,
     savedToast,
-    TIERS,
     tableRows,
     toForm,
     validate,
@@ -23,7 +22,9 @@
   import { app, refresh, toast } from '../lib/app.svelte.js';
   import { ppAmount } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { TIERS as TIER_OPTIONS } from '../lib/options.js';
   import Kbd from './Kbd.svelte';
+  import Select from './Select.svelte';
 
   let { project, name } = $props();
   let view = $state(null); // ProjectAllocationView
@@ -126,7 +127,8 @@
   /** Called by the pane for every key event while this section is shown. */
   export function onKey(e) {
     if (e.metaKey && e.key === 'Enter') return (e.preventDefault(), save());
-    const typing = e.target.closest('input, textarea, select');
+    if (e.defaultPrevented) return; // an Esc a Select consumed
+    const typing = e.target.closest('input, textarea, select, [role="combobox"]');
     if (e.key === 'Escape' && typing && (dirty || draft)) {
       // In a field esc first blurs it; the next one cancels.
       refocus();
@@ -192,7 +194,7 @@
       {#if errors.weight}<p class="ferr" id="alloc-weight-err">{errors.weight}</p>{/if}
       <div class="line" class:off={pending}>
         <label class="lab" for="alloc-tier">Tier</label>
-        <select id="alloc-tier" class="field auto" disabled={pending} bind:value={draft.tier}>{#each TIERS as t (t)}<option value={t}>{t}</option>{/each}</select>
+        <Select id="alloc-tier" width="hug" disabled={pending} bind:value={draft.tier} options={TIER_OPTIONS} />
         {#if changed.tier && !pending}<span class="chg">• changed</span>{/if}
       </div>
       <div class="line" class:off={pending}>
