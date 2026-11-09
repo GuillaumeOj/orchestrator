@@ -8,11 +8,12 @@
   import { onMount, untrack } from 'svelte';
   import Kbd from '../components/Kbd.svelte';
   import PressurePill from '../components/PressurePill.svelte';
-  import { app, openSingleton, saveLayout, toast } from '../lib/app.svelte.js';
+  import { app, openPlanner, saveLayout, toast } from '../lib/app.svelte.js';
   import { deliveryReport } from '../lib/delivery.js';
   import { dayHm, dayTime } from '../lib/format.js';
   import { reportLine, reportTip } from '../lib/intake.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { ACTION_LABEL, API_TIP, delta, kpis, minutes, noData, overwatchLast, reportMarkdown, stateBar, TABS, usd, weekNo } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
@@ -70,7 +71,7 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, textarea, select')) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
     const k = e.key;
     const n = Number(k);
     if (n >= 1 && n <= 4) tab = TABS[n - 1].id;
@@ -79,7 +80,7 @@
     else if (k === ']') go(list[idx - 1]?.id);
     else if (k === 'e') copyMarkdown();
     else if (k === 'Enter' && !e.target.closest('button')) app.overlay = { kind: 'plan' };
-    else if (k === 'Escape') showList ? (showList = false) : openSingleton('planner');
+    else if (k === 'Escape') showList ? (showList = false) : openPlanner();
     else return;
     e.preventDefault();
   }

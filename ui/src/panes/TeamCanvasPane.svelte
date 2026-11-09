@@ -14,6 +14,7 @@
   import { app, projects, saveLayout, toast } from '../lib/app.svelte.js';
   import * as C from '../lib/canvas.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { BUDGET_PRIORITIES, EFFORTS, PERMISSION_PROFILES, REVIEW_MODES } from '../lib/options.js';
 
@@ -322,7 +323,7 @@
   }
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select, [role="combobox"]')) {
+    if (isTypingTarget(e.target)) {
       if (e.key === 'Escape' && !e.defaultPrevented) (root?.focus(), e.preventDefault());
       return;
     }

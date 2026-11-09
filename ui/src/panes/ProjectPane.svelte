@@ -10,6 +10,7 @@
   import { activeAgents, app, closePane, confirm, openAgent, openDiff, openProjectSettings, openShell, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
   import { ago, dayTime, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { onTopics, statusOf } from '../lib/now.svelte.js';
 
   let { paneId } = $props();
@@ -111,7 +112,7 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, select, textarea, [role="combobox"]')) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
     const k = { f: fetchNow, p: loadPrs, t: () => openTrust(p.id), x: startRemoval }[e.key];
     if (k) {
       e.preventDefault();

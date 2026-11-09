@@ -3,7 +3,7 @@
   // total the plan reports, "agents" the governed share; the plan and the pp delta
   // refer to the agents. Week bars: fill = total W stacked outside app / you /
   // agents (spec fix-week-and-daily-limit), 2 px tick = the total plan.
-  import { app, openSingleton } from '../lib/app.svelte.js';
+  import { app, openPlanner } from '../lib/app.svelte.js';
   import { clock, pct, signed, when } from '../lib/format.js';
   import { hotWindows, weekSegments } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
@@ -69,7 +69,7 @@
         {u.five_hour ? `resets ${when(u.five_hour.resets_at * 1000)}` : ''} · guard at 85%{s.five_hour_guard ? ' · guard on' : ''}
       </div>
       <div class="muted">live {s.live_autonomous}/{s.live_cap} · queued {s.queued} · {s.provenance === 'observed' ? 'observed' : 'estimated (low confidence)'}</div>
-      <button class="btn ghost" onclick={() => ((open = false), openSingleton('planner'))}>open Week planner <Kbd keys="⌘+; g" /></button>
+      <button class="btn ghost" onclick={() => ((open = false), openPlanner())}>open Week planner <Kbd keys="⌘+; g" /></button>
     </div>
   {/if}
 {:else}

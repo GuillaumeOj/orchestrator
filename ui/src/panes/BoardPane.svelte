@@ -14,6 +14,7 @@
   import { app, openFeature, openUrl, queueOffHours, refresh, toast } from '../lib/app.svelte.js';
   import { ago, clock } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { backendLabel, remoteName, syncCounts } from '../lib/linear.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
@@ -143,7 +144,7 @@
   }
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select, [role="combobox"]')) {
+    if (isTypingTarget(e.target)) {
       if (e.key === 'Enter' && e.metaKey && form?.kind === 'edit') return (saveEdit(), e.preventDefault());
       if (e.key === 'Enter' && e.metaKey && form?.kind === 'new') return (create(), e.preventDefault());
       if (e.key === 'Escape' && !e.defaultPrevented) ((form = null), root?.focus(), e.preventDefault());

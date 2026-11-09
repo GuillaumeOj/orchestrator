@@ -1,7 +1,7 @@
 <script>
   // Status bar (§9.2): git state of the focused project, live/queued agents with
   // the pressure state in words, the 5h guard chip whenever it holds work, memory.
-  import { app, checkForUpdates, contextAgent, contextProject, openSettings, openSingleton, restartToUpdate } from '../lib/app.svelte.js';
+  import { app, checkForUpdates, contextAgent, contextProject, openPlanner, openSettings, restartToUpdate } from '../lib/app.svelte.js';
   import { claudeChip } from '../lib/claude.js';
   import { clock, mb } from '../lib/format.js';
   import { counts, liveText } from '../lib/now.svelte.js';
@@ -34,13 +34,13 @@
   <span class="live"><span style:color="var(--color-attention-running)" aria-hidden="true">▲</span> {liveText(c)}</span>
   <span class="queued"><span style:color="var(--color-attention-queued)" aria-hidden="true">□</span> queued {c.queued}</span>
   {#if s}
-    <button class="plain" onclick={() => openSingleton('planner')}><PressurePill state={s.state} shadow={app.data?.usage?.shadow} /></button>
+    <button class="plain" onclick={() => openPlanner()}><PressurePill state={s.state} shadow={app.data?.usage?.shadow} /></button>
     {#if s.five_hour_guard}
       <span class="guard"><span style:color="var(--color-status-blocked-by-limit)" aria-hidden="true">⊘</span> <b>5h guard</b> cap 1{fiveReset ? ` until ${clock(fiveReset * 1000)}` : ''}</span>
     {/if}
   {/if}
   {#if power}
-    <button class="plain chip" class:warn={power.warn} onclick={() => openSingleton('planner')} title="Off-hours work (FR-816)"><span aria-hidden="true">☾</span> {power.text}</button>
+    <button class="plain chip" class:warn={power.warn} onclick={() => openPlanner()} title="Off-hours work (FR-816)"><span aria-hidden="true">☾</span> {power.text}</button>
   {/if}
   <span class="grow"></span>
   {#if watch?.alert}<span class="memwarn" title="WebKit helper above {watch.warn_mb} MB · logged every minute in {watch.log}"><span aria-hidden="true">⚠</span> {watch.alert}</span>{/if}

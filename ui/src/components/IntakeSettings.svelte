@@ -360,7 +360,12 @@
     toast('Copied. Run it in a terminal, then Preview again.');
   }
 
-  /** Called by the pane for keys typed in the section. */
+  /** Unsaved changes (the window's Discard guard). */
+  export function hasChanges() {
+    return dirty;
+  }
+
+  /** Called by the window for keys typed in the section. */
   export function onKey(e) {
     if (e.metaKey && e.key === 'Enter') {
       e.preventDefault();
@@ -386,7 +391,7 @@
 {/snippet}
 
 {#snippet integrations(code, label)}
-  <p class="box info" data-not-set-up>{label} isn't set up. <button class="link" onclick={() => openSettings('integrations', integrationsRow(code), project)}>Settings › Integrations ↗</button></p>
+  <p class="box info" data-not-set-up>{label} isn't set up. <button class="link" onclick={() => openSettings('integrations', integrationsRow(code))}>Settings › Integrations ↗</button></p>
 {/snippet}
 
 <section class="intake" aria-label="Intake">
@@ -515,7 +520,7 @@
             {#if previewErr}
               <p class="ferr" role="alert" title={previewErr.tip}><span aria-hidden="true">{'\u{F0026}'}</span> {previewErr.text}
                 {#if previewErr.fix === 'gh_scope'}<button class="link" onclick={copyCommand}>Copy command</button>
-                {:else if previewErr.fix === 'integrations'}<button class="link" onclick={() => openSettings('integrations', integrationsRow(previewErr.code), project)}>Settings › Integrations ↗</button>{/if}
+                {:else if previewErr.fix === 'integrations'}<button class="link" onclick={() => openSettings('integrations', integrationsRow(previewErr.code))}>Settings › Integrations ↗</button>{/if}
               </p>
             {:else if !preview.count}
               <p class="muted">Nothing matches this source right now. It may still be right: Ready to start will show items when they appear.</p>

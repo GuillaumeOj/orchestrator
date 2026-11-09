@@ -1,7 +1,7 @@
 <script>
   // Global banners (§9.3, Penpot 05 copy): one at a time, highest attention first;
   // the rest collapse to "+n". Error banners: a 4 px left bar in the status color.
-  import { app, claudeBusy, claudeUpdate, governor, openSettings, openSingleton } from '../lib/app.svelte.js';
+  import { app, claudeBusy, claudeUpdate, governor, openPlanner, openSettings, openSingleton } from '../lib/app.svelte.js';
   import { bannerClaude } from '../lib/claude.js';
   import { when } from '../lib/format.js';
   import { counts } from '../lib/now.svelte.js';
@@ -54,9 +54,9 @@
     <span class="text" class:one={top.update}>{top.text}{#if top.fail} <span class="amber">{top.fail}</span>{/if}</span>
     {#if top.update}<button class="btn" disabled={top.update.disabled || claudeBusy()} data-claude-update onclick={claudeUpdate}>{#if top.update.spinner}<span class="spinning" aria-hidden="true">◐</span> {/if}{top.update.label}</button>{/if}
     {#if top.claudeDetails}<button class="btn" onclick={() => openSettings('claude')}>Details</button>{/if}
-    {#if top.planner}<button class="btn" onclick={() => openSingleton('planner')}>Week planner <Kbd keys="⌘+; g" /></button>{/if}
+    {#if top.planner}<button class="btn" onclick={() => openPlanner()}>Week planner <Kbd keys="⌘+; g" /></button>{/if}
     {#if top.setup}<button class="btn" onclick={() => openSingleton('setup')}>Set up</button>{/if}
-    {#if top.details}<button class="btn" onclick={() => openSingleton('planner')}>Details <Kbd keys="o" /></button>{/if}
+    {#if top.details}<button class="btn" onclick={() => openPlanner()}>Details <Kbd keys="o" /></button>{/if}
     {#if top.later}<button class="btn ghost" onclick={() => (dismissed[top.id] = true)}>Later <Kbd keys="esc" /></button>{/if}
     {#if top.pause}<button class="btn ghost" onclick={() => governor('pause_all')}>Pause all</button>{/if}
     {#if banners.length > 1}<span class="muted">+{banners.length - 1}</span>{/if}

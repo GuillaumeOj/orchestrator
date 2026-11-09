@@ -62,6 +62,7 @@
   import { briefEnded } from '../../lib/intake.js';
   import { clearPlan, intakeUi, planContext, plannedEntries, startBrief } from '../../lib/intake.svelte.js';
   import { errText, invoke, listen } from '../../lib/ipc.js';
+  import { isTypingTarget } from '../../lib/keyboard.js';
   import { clearDigest, counts, digest } from '../../lib/now.svelte.js';
   import {
     awaiting,
@@ -805,7 +806,7 @@
 
   function onKey(e) {
     if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.target.closest?.('input, textarea')) return;
+    if (isTypingTarget(e.target)) return;
     // A long reply takes its own ⏎ (Show more); it is not a card (notes §2.1).
     if (e.key === 'Enter' && e.target.closest?.('article.text')) return;
     const key = e.key === 'Enter' ? 'enter' : e.key.length === 1 ? e.key : e.key.toLowerCase();

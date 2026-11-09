@@ -23,7 +23,7 @@ vi.mock('../src/lib/ipc.js', () => ({
   errText: (e) => (typeof e === 'string' ? e : (e?.message ?? String(e))),
 }));
 
-const { default: ProjectSettingsPane } = await import('../src/panes/ProjectSettingsPane.svelte');
+const { default: ProjectSettingsWindow } = await import('../src/components/ProjectSettingsWindow.svelte');
 const { default: BoardPane } = await import('../src/panes/BoardPane.svelte');
 
 const STATES = [
@@ -85,8 +85,8 @@ describe('project settings › Task backend', () => {
   it('not connected: the Linear option stays enabled and points to Integrations', async () => {
     replies.project_settings = settings();
     replies.integrations_view = linear('not_configured');
-    app.panes.p1 = { type: 'project-settings', projectId: 'shop-api', section: 'backend', title: 'shop-api settings' };
-    const { container, getByText } = render(ProjectSettingsPane, { paneId: 'p1' });
+    app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'backend' };
+    const { container, getByText } = render(ProjectSettingsWindow);
     await waitFor(() => getByText(/Where shop-api's Board lives/));
     await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: '3' });
     await tick();
@@ -108,8 +108,8 @@ describe('project settings › Task backend', () => {
     replies.project_settings_set = (a) =>
       a.form.migrate ? settings(a.form.backend) : { confirm: { kind: 'linear_migrate', open: 7, done: 12 } };
     replies.board_sync = { imported: 0, updated: 0, pushed: 7, pulled: 0, conflicts: 0, errors: [] };
-    app.panes.p1 = { type: 'project-settings', projectId: 'shop-api', section: 'backend', title: 'shop-api settings' };
-    const { container, getByText } = render(ProjectSettingsPane, { paneId: 'p1' });
+    app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'backend' };
+    const { container, getByText } = render(ProjectSettingsWindow);
     await waitFor(() => getByText(/Where shop-api's Board lives/));
     const root = container.querySelector('[data-pane-focus]');
     await fireEvent.keyDown(root, { key: '3' });
@@ -165,8 +165,8 @@ describe('project settings › Task backend', () => {
       errors: ['Linear rate limit: retrying in 60 s'],
       unmapped_states: ['QA'],
     };
-    app.panes.p1 = { type: 'project-settings', projectId: 'shop-api', section: 'backend', title: 'shop-api settings' };
-    const { container, getByText } = render(ProjectSettingsPane, { paneId: 'p1' });
+    app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'backend' };
+    const { container, getByText } = render(ProjectSettingsWindow);
     await waitFor(() => expect(container.querySelectorAll('.mrow')).toHaveLength(6));
     await fireEvent.click(getByText('Sync now', { exact: false }));
     await waitFor(() => getByText('State "QA" isn\'t mapped.', { exact: false }));

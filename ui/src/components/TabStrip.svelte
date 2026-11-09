@@ -66,12 +66,21 @@
     atEnd = lane.scrollLeft >= max - 1;
   }
 
+  // The lane's box and every tab's: a tab that changes width (a shell's live
+  // title, a badge, the UI font loading) changes the overflow too.
+  const ro = new ResizeObserver(() => measure());
+  $effect(() => () => ro.disconnect());
   $effect(() => {
     if (!lane) return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(lane);
-    return () => ro.disconnect();
+    const el = lane;
+    ro.observe(el);
+    return () => ro.unobserve(el);
   });
+  /** Svelte action on each tab: the observer above watches its size. */
+  function sized(node) {
+    ro.observe(node);
+    return { destroy: () => ro.unobserve(node) };
+  }
 
   const tabEl = (id) => /** @type {HTMLElement | null} */ (lane?.querySelector(`[data-tab="${CSS.escape(id)}"]`) ?? null);
 
@@ -186,6 +195,7 @@
           aria-controls={panelId}
           tabindex={t.id === tabbable ? 0 : -1}
           use:tooltip={tipFor}
+          use:sized
           onclick={() => onselect?.(t.id)}
           onauxclick={(e) => onAux(e, t)}
           onmousedown={(e) => e.button === 1 && e.preventDefault()}
@@ -204,6 +214,7 @@
               class="x icon-btn"
               tabindex="-1"
               aria-label="Close {t.title}"
+              use:tooltip={{ label: 'Close', key: '⌘W' }}
               onclick={(e) => (e.stopPropagation(), onclose?.(t.id))}>{'\u{F0156}'}</button
             >
           {/if}
@@ -293,9 +304,9 @@
     display: flex;
     align-items: center;
     gap: var(--space-sm);
-    min-width: min-content;
+    min-width: 0;
     max-width: 280px;
-    padding: 0 var(--space-xs) 0 var(--space-md);
+    padding: 0 var(--space-sm) 0 var(--space-md);
     color: var(--color-text-secondary);
     font: var(--text-label);
     white-space: nowrap;
@@ -342,8 +353,8 @@
   }
   /* × only on the active, hovered or keyboard-focused tab; its space is kept. */
   .x {
-    width: 16px;
-    height: 16px;
+    width: var(--size-icon);
+    height: var(--size-icon);
     visibility: hidden;
   }
   .tab:is(.on, :hover, :focus-visible) .x {
@@ -361,5 +372,9 @@
     gap: var(--space-xxs);
     padding: 0 var(--space-xs);
     background: var(--color-surface-chrome);
+  }
+  .arrow {
+    width: var(--size-control-sm);
+    height: var(--size-control-sm);
   }
 </style>

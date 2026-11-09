@@ -38,7 +38,7 @@ vi.mock('../src/lib/ipc.js', () => ({
 }));
 
 const { default: ReportPane } = await import('../src/panes/ReportPane.svelte');
-const { default: PlannerPane } = await import('../src/panes/PlannerPane.svelte');
+const { default: PlannerWindow } = await import('../src/components/PlannerWindow.svelte');
 const { default: BoardPane } = await import('../src/panes/BoardPane.svelte');
 const { default: Banner } = await import('../src/components/Banner.svelte');
 const { default: StatusBar } = await import('../src/components/StatusBar.svelte');
@@ -352,7 +352,7 @@ describe('planner, banner, status bar, board', () => {
     replies.planner_view = planner();
     replies.queue_off_hours = { starts_at: iso(now + 3600000) };
     replies.governor_act = {};
-    const { container, getByText } = render(PlannerPane);
+    const { container, getByText } = render(PlannerWindow);
     await waitFor(() => getByText('Model windows'));
     const t = container.textContent;
     expect(t).toContain('opus week 92 %');
@@ -373,7 +373,7 @@ describe('planner, banner, status bar, board', () => {
   describe('week chart', () => {
     const render0 = async (over) => {
       replies.planner_view = planner(over);
-      const r = render(PlannerPane);
+      const r = render(PlannerWindow);
       await waitFor(() => expect(r.container.querySelector('svg path.fill')).toBeTruthy());
       return r;
     };
@@ -433,7 +433,7 @@ describe('planner, banner, status bar, board', () => {
         running: 0,
       },
     });
-    const { container, getByText } = render(PlannerPane);
+    const { container, getByText } = render(PlannerWindow);
     await waitFor(() => getByText('Run off-hours', { exact: false }));
     const b = [...container.querySelectorAll('button')].find((x) => x.textContent.includes('Run off-hours'));
     expect(b.disabled).toBe(true);

@@ -38,6 +38,7 @@
   import { isOpen } from '../lib/inbox.js';
   import { ageText, modeOf, rateLimitedUntil } from '../lib/intake.js';
   import { fixSource, hideItem, intakeUi, openSource, planWithOverwatchIn, refreshIntake, setUpIntake, startItem, undoHide, unhideItem } from '../lib/intake.svelte.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { allowed, COUNT_KEYS, DONE_ROWS, decisionOf, defaultTarget, filterLabel, footerText, hiddenText, hints, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
   import { attention } from '../lib/now.svelte.js';
   import { LEVEL } from '../lib/status.js';
@@ -214,7 +215,7 @@
   function onKey(e) {
     if (filterOpen || e.defaultPrevented) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.target.closest?.('input, textarea, select, [role="combobox"]')) return;
+    if (isTypingTarget(e.target)) return;
     const k = e.key;
     const run = (fn) => {
       e.preventDefault();

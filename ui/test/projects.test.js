@@ -25,7 +25,7 @@ const { default: SetupPane } = await import('../src/panes/SetupPane.svelte');
 const { default: PlanEditor } = await import('../src/components/PlanEditor.svelte');
 const { default: StatusBar } = await import('../src/components/StatusBar.svelte');
 const { default: Banner } = await import('../src/components/Banner.svelte');
-const { default: PlannerPane } = await import('../src/panes/PlannerPane.svelte');
+const { default: PlannerWindow } = await import('../src/components/PlannerWindow.svelte');
 
 function plannerView(over = {}) {
   const now = Date.now();
@@ -320,7 +320,7 @@ describe('first run (J0)', () => {
 describe('week planner', () => {
   it('lists the actions of this start and of earlier ones (same ids), counts the shadow week', async () => {
     replies.planner_view = plannerView();
-    const { container } = render(PlannerPane);
+    const { container } = render(PlannerWindow);
     await waitFor(() => expect(text(container)).toContain('green → amber'));
     const t = text(container);
     expect(t).toContain('pause all · why');
@@ -331,7 +331,7 @@ describe('week planner', () => {
 
   it('draws the week usage: legend and the now tag', async () => {
     replies.planner_view = plannerView();
-    const { container } = render(PlannerPane);
+    const { container } = render(PlannerWindow);
     await waitFor(() => expect(text(container)).toContain('Week used'));
     const t = text(container);
     for (const l of ['Week used', 'Agents', 'Plan', 'Forecast', 'W/ governor']) expect(t).toContain(l);
@@ -346,7 +346,7 @@ describe('week planner', () => {
 
   it('offers to enforce once the shadow week is over, and to go back', async () => {
     replies.planner_view = plannerView({ first_run_ms: Date.now() - 8 * 86400000 });
-    const { container, getByText } = render(PlannerPane);
+    const { container, getByText } = render(PlannerWindow);
     await waitFor(() => expect(text(container)).toContain('Shadow week done · Enforce…'));
     await fireEvent.click(getByText('Shadow week done · Enforce…'));
     expect(app.overlay.text).toBe('Enforce the Governor?');
@@ -355,7 +355,7 @@ describe('week planner', () => {
     await waitFor(() => expect(calls.some(([c, a]) => c === 'governor_enforce' && a.enforce === true)).toBe(true));
     cleanup();
     replies.planner_view = plannerView({ shadow: false });
-    const r = render(PlannerPane);
+    const r = render(PlannerWindow);
     await waitFor(() => expect(text(r.container)).toContain('Enforced'));
   });
 });

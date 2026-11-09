@@ -33,7 +33,7 @@ vi.mock('../src/lib/ipc.js', () => ({
   errText: (e) => (typeof e === 'string' ? e : (e?.message ?? String(e))),
 }));
 
-const { default: ProjectSettingsPane } = await import('../src/panes/ProjectSettingsPane.svelte');
+const { default: ProjectSettingsWindow } = await import('../src/components/ProjectSettingsWindow.svelte');
 
 const alloc = (id, weight, over = {}) => ({
   id,
@@ -185,13 +185,8 @@ describe('Project settings › Allocation', () => {
 
   async function open(v) {
     replies.project_allocation = v;
-    app.panes.p1 = {
-      type: 'project-settings',
-      projectId: 'shop-api',
-      section: 'allocation',
-      title: 'shop-api settings',
-    };
-    const r = render(ProjectSettingsPane, { paneId: 'p1' });
+    app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'allocation' };
+    const r = render(ProjectSettingsWindow);
     await waitFor(() => {
       expect(r.container.querySelector('.alloc h2')).toBeTruthy();
       expect(r.container.querySelector('[aria-busy]')).toBeNull();
@@ -352,13 +347,8 @@ describe('Project settings › Allocation', () => {
 
   it('load error: box with Retry, r reloads', async () => {
     replies.project_allocation = new Error("the core isn't reachable");
-    app.panes.p1 = {
-      type: 'project-settings',
-      projectId: 'shop-api',
-      section: 'allocation',
-      title: 'shop-api settings',
-    };
-    const { container, getByText } = render(ProjectSettingsPane, { paneId: 'p1' });
+    app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'allocation' };
+    const { container, getByText } = render(ProjectSettingsWindow);
     await waitFor(() => getByText(/Couldn't load shop-api's allocation: the core isn't reachable/));
     replies.project_allocation = view();
     await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: 'r' });

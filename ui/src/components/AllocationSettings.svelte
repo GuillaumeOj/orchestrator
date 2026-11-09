@@ -22,6 +22,7 @@
   import { app, refresh, toast } from '../lib/app.svelte.js';
   import { ppAmount } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { TIERS as TIER_OPTIONS } from '../lib/options.js';
   import Kbd from './Kbd.svelte';
   import Select from './Select.svelte';
@@ -124,11 +125,16 @@
 
   const planner = () => (app.overlay = { kind: 'plan' });
 
-  /** Called by the pane for every key event while this section is shown. */
+  /** Unsaved changes (the window's Discard guard). */
+  export function hasChanges() {
+    return dirty || (!!view && !view.allocation && !!draft);
+  }
+
+  /** Called by the window for every key event while this section is shown. */
   export function onKey(e) {
     if (e.metaKey && e.key === 'Enter') return (e.preventDefault(), save());
     if (e.defaultPrevented) return; // an Esc a Select consumed
-    const typing = e.target.closest('input, textarea, select, [role="combobox"]');
+    const typing = isTypingTarget(e.target);
     if (e.key === 'Escape' && typing && (dirty || draft)) {
       // In a field esc first blurs it; the next one cancels.
       refocus();

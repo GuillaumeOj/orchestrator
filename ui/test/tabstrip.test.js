@@ -48,11 +48,12 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('TabStrip', () => {
-  it('tabs never shrink: flex none, min-width content, max 280 then ellipsis', () => {
+  it('tabs never shrink: flex none (content width), max 280 then ellipsis', () => {
     const css = readFileSync('src/components/TabStrip.svelte', 'utf8');
     const rule = css.match(/\n {2}\.tab \{([^}]*)\}/)[1];
     expect(rule).toMatch(/flex: none;/);
-    expect(rule).toMatch(/min-width: min-content;/);
+    // min-content would beat max-width and a long title would never ellipsize (ui review).
+    expect(rule).toMatch(/min-width: 0;/);
     expect(rule).toMatch(/max-width: 280px;/);
     const name = css.match(/\n {2}\.name \{([^}]*)\}/)[1];
     expect(name).toMatch(/text-overflow: ellipsis;/);

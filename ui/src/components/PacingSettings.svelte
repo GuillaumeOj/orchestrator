@@ -4,8 +4,9 @@
   // only, recomputed while typing), and the cap in effect now. ↑/↓ step, ⏎ applies, esc leaves
   // the field, then the section; r retries a failed load.
   import { onMount } from 'svelte';
-  import { app, openSingleton, toast } from '../lib/app.svelte.js';
+  import { app, openPlanner, toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { checkCap, derivedCaps } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
   import IntakeGlobalSettings from './IntakeGlobalSettings.svelte';
@@ -126,13 +127,13 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, textarea, select, [role="combobox"]')) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
     if (e.key === 'r' && loadError) {
       e.preventDefault();
       load();
     } else if (e.key === 'p') {
       e.preventDefault();
-      openSingleton('planner');
+      openPlanner();
     }
   }
 
@@ -145,7 +146,7 @@
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <section class="pacing" tabindex="-1" data-section-focus={view ? undefined : ''} bind:this={root} onkeydown={onKey} aria-label="Pacing policy">
   <h2>Pacing policy</h2>
-  <p class="muted intro">How many agents may run at once. The <button class="link" onclick={() => openSingleton('planner')}>Week planner</button> edits the plan: days, hours, reserve, allocations.</p>
+  <p class="muted intro">How many agents may run at once. The <button class="link" onclick={() => openPlanner()}>Week planner</button> edits the plan: days, hours, reserve, allocations.</p>
 
   {#if loadError}
     <p class="secondary help"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> Could not read the pacing settings: {loadError}</p>
@@ -201,7 +202,7 @@
         <p class="secondary help" id="off-cap-err"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> {offErr}</p>
       {/if}
       {#if !view.off_hours_allowance_pct}
-        <p class="secondary help"><span class="muted" aria-hidden="true">{'\u{F02FD}'}</span> The plan has no off-hours allowance, so agents don't run off-hours. Set one in the <button class="link" onclick={() => openSingleton('planner')}>Week planner</button>.</p>
+        <p class="secondary help"><span class="muted" aria-hidden="true">{'\u{F02FD}'}</span> The plan has no off-hours allowance, so agents don't run off-hours. Set one in the <button class="link" onclick={() => openPlanner()}>Week planner</button>.</p>
       {/if}
     </div>
 

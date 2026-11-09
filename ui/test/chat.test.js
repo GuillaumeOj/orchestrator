@@ -698,7 +698,7 @@ describe('the shell (notes §9)', () => {
     expect(render(Inspector, { overlay: true }).container.querySelector('.banner')).toBeNull();
   });
 
-  it('a saved Inbox pane is dropped at restore; Mission control stays home', async () => {
+  it('a saved Inbox pane (and a Week planner pane, a window now) is dropped at restore; Mission control stays home', async () => {
     const tree = L.split(L.leaf('p1'), 'p1', 'row', 'p2');
     replies.settings_get = ({ key }) =>
       key === 'layout'
@@ -711,7 +711,8 @@ describe('the shell (notes §9)', () => {
         : null;
     app.data = { ...fixture(), setup: { done: true } };
     await restoreLayout();
-    expect(Object.values(app.panes).map((p) => p.type)).toEqual(['planner']);
+    expect(Object.values(app.panes).map((p) => p.type)).toEqual(['mission']);
+    expect(app.window).toBeNull();
     // Below 1728 the saved Inspector does not open over the chat by itself.
     expect(app.inspector).toBe(false);
     replies.settings_get = ({ key }) =>

@@ -1,30 +1,6 @@
-<script>
-  // Project settings (Penpot 04 Project settings · Linear, J13 · 3–5): a
-  // project's sections. P3 builds Task backend (Local / GitHub Issues /
-  // Linear with its team, project and state mapping, Sync now, the D8
-  // confirm), Notion (the parent page for Publish, FR-505) and the MCP
-  // overrides. Keys: 1–3 backend, j/k mapping rows, ⏎ change a row,
-  // r sync, ⌘⏎ save, esc cancel.
-  import { onMount } from 'svelte';
-  import AllocationSettings from '../components/AllocationSettings.svelte';
-  import ConnBadge from '../components/ConnBadge.svelte';
-  import FilesSettings from '../components/FilesSettings.svelte';
-  import IntakeSettings from '../components/IntakeSettings.svelte';
-  import Kbd from '../components/Kbd.svelte';
-  import McpSettings from '../components/McpSettings.svelte';
-  import Select from '../components/Select.svelte';
-  import { app, openSettings, projects, saveLayout, toast } from '../lib/app.svelte.js';
-  import { clock } from '../lib/format.js';
-  import { errText, invoke } from '../lib/ipc.js';
-  import { BACKENDS, mappingRows, mappingToSave, remoteName, syncLine } from '../lib/linear.js';
-  import { BOARD_COLUMNS } from '../lib/options.js';
-
-  let { paneId } = $props();
-  const spec = $derived(app.panes[paneId]);
-  const pid = $derived(spec?.projectId);
-  const name = $derived(projects().find((p) => p.id === pid)?.name ?? pid);
-
-  const SECTIONS = [
+<script module>
+  /** The Project settings window's sections, in nav order (General first, design-notes §3.1). */
+  export const SECTIONS = [
     { id: 'general', label: 'General' },
     { id: 'files', label: 'Files' },
     { id: 'backend', label: 'Task backend' },
@@ -33,6 +9,43 @@
     { id: 'notion', label: 'Notion' },
     { id: 'mcp', label: 'MCP overrides' },
   ];
+
+  /** Sections with a Save/Revert footer: closing or leaving them dirty asks first (design-notes §3.3). */
+  export const FOOTER_SECTIONS = new Set(['backend', 'intake', 'allocation', 'notion']);
+</script>
+
+<script>
+  // Project settings (design-notes §3, 04-project-settings-*.png; Penpot 04
+  // Project settings · Linear, J13 · 3–5): a project's sections in the
+  // floating window. Task backend (Local / GitHub Issues / Linear with its
+  // team, project and state mapping, Sync now, the D8 confirm), Notion (the
+  // parent page for Publish, FR-505), the MCP overrides, Files, Intake and
+  // Allocation. Keys in the section: 1–3 backend, j/k mapping rows, ⏎ change
+  // a row, r sync, ⌘⏎ save, esc cancel. A dirty footer section asks
+  // "Discard changes?" before the window closes or the section changes; a
+  // backdrop click on it only flashes the footer.
+  import { onMount, untrack } from 'svelte';
+  import { app, closeWindow, guardWindow, openSettings, projects, toast, windowDirty, windowSection } from '../lib/app.svelte.js';
+  import { clock } from '../lib/format.js';
+  import { errText, invoke } from '../lib/ipc.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
+  import { BACKENDS, mappingRows, mappingToSave, remoteName, syncLine } from '../lib/linear.js';
+  import { BOARD_COLUMNS } from '../lib/options.js';
+  import { tooltip } from '../lib/tooltip.js';
+  import AllocationSettings from './AllocationSettings.svelte';
+  import ConnBadge from './ConnBadge.svelte';
+  import FilesSettings from './FilesSettings.svelte';
+  import FloatingWindow from './FloatingWindow.svelte';
+  import IntakeSettings from './IntakeSettings.svelte';
+  import Kbd from './Kbd.svelte';
+  import McpSettings from './McpSettings.svelte';
+  import Select from './Select.svelte';
+
+  const spec = $derived(app.window);
+  // The window is for one project: a new project mounts a new window.
+  const pid = untrack(() => spec?.projectId);
+  const name = $derived(projects().find((p) => p.id === pid)?.name ?? pid);
+
   const section = $derived(SECTIONS.find((s) => s.id === spec?.section) ?? SECTIONS.find((s) => s.id === 'backend'));
 
   let saved = $state(null); // project_settings
@@ -60,12 +73,43 @@
   const teamOptions = $derived((teams ?? []).map((t) => ({ value: t.key, label: `${t.key} · ${t.name}` })));
   const projectOptions = $derived([{ value: '', label: 'Any project' }, ...(states?.projects ?? []).map((p) => ({ value: p.id, label: p.name }))]);
   const connected = $derived(linearInt?.status === 'connected');
-  const dirty = $derived(
+  const backendDirty = $derived(
     !!saved &&
       (kind !== saved.backend?.type ||
-        (kind === 'linear' && (lin.team !== saved.backend.team || (lin.project || '') !== (saved.backend.project ?? '') || JSON.stringify(mappingToSave(rows) ?? {}) !== JSON.stringify(saved.backend.states ?? {}))) ||
-        notionPage !== (saved.settings?.notion_parent_page ?? '')),
+        (kind === 'linear' && (lin.team !== saved.backend.team || (lin.project || '') !== (saved.backend.project ?? '') || JSON.stringify(mappingToSave(rows) ?? {}) !== JSON.stringify(saved.backend.states ?? {})))),
   );
+  const notionDirty = $derived(!!saved && notionPage !== (saved.settings?.notion_parent_page ?? ''));
+  const dirty = $derived(backendDirty || notionDirty);
+
+  /** The shown section has changes that are not saved (the window's Discard guard). */
+  function sectionDirty() {
+    if (section.id === 'backend') return backendDirty || !!ask;
+    if (section.id === 'notion') return notionDirty;
+    if (section.id === 'intake') return !!intake?.hasChanges();
+    if (section.id === 'allocation') return !!alloc?.hasChanges();
+    return false;
+  }
+  onMount(() => guardWindow(sectionDirty));
+
+  // Leaving Task backend or Notion (the guard asked first): their fields go back to what is saved.
+  let shown = untrack(() => section.id);
+  $effect(() => {
+    const id = section.id;
+    untrack(() => {
+      if (id !== shown && (dirty || ask)) cancel();
+      shown = id;
+    });
+  });
+
+  /** Esc, ×, the backdrop: a backdrop click on unsaved changes only flashes the footer. */
+  function onclose(reason) {
+    if (reason !== 'backdrop' || !windowDirty()) return closeWindow();
+    const foot = /** @type {HTMLElement | null} */ (root?.querySelector('.foot'));
+    if (!foot) return;
+    foot.classList.remove('flash');
+    void foot.offsetWidth; // restart the animation
+    foot.classList.add('flash');
+  }
 
   async function load() {
     try {
@@ -174,11 +218,6 @@
     load();
   }
 
-  function pick(id) {
-    app.panes[paneId] = { ...app.panes[paneId], section: id };
-    saveLayout();
-  }
-
   function onKey(e) {
     if (section.id === 'allocation' && !ask) return alloc?.onKey(e);
     if (section.id === 'files') return files?.onKey(e);
@@ -192,7 +231,7 @@
     }
     if (e.metaKey && e.key === 'Enter') return (e.preventDefault(), save());
     // Section keys work after a click on a segment or a button; not while typing or picking.
-    if (e.target.closest('input, textarea, select, [role="combobox"]') || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (isTypingTarget(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
     if (section.id !== 'backend') return;
     const k = e.key;
     if ((k === 'Enter' || k === ' ') && e.target.closest('button')) return;
@@ -201,7 +240,8 @@
     else if (k === 'k' || k === 'ArrowUp') rowSel = Math.max(0, rowSel - 1);
     else if (k === 'Enter') root?.querySelector(`[data-row="${rowSel}"] [role="combobox"]`)?.focus();
     else if (k === 'r' && !dirty) sync();
-    else if (k === 'Escape') cancel();
+    // Esc reverts unsaved changes; with none it goes back to the nav (the window's).
+    else if (k === 'Escape' && dirty) cancel();
     else return;
     e.preventDefault();
   }
@@ -209,16 +249,10 @@
   onMount(load);
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-<div class="ps" tabindex="0" data-pane-focus bind:this={root} onkeydown={onKey} role="region" aria-label="Project settings">
-  <nav class="nav" aria-label="Project settings sections">
-    <span class="muted">{name}</span>
-    {#each SECTIONS as s (s.id)}<button class="sec" class:on={s.id === section.id} onclick={() => pick(s.id)}>{s.label}</button>{/each}
-    <span class="grow"></span>
-    <span class="muted hint"><Kbd keys="⌘+K" /> "{name} settings"</span>
-  </nav>
-
-  <div class="body">
+<FloatingWindow title="Project settings" subtitle={name} size={{ w: 960, h: 760 }} nav={SECTIONS} section={section.id} onsection={windowSection} {onclose} restoreFocus={false}>
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- data-pane-focus: where a section puts the focus back when its button goes away (it keeps the keys). -->
+  <div class="ps" tabindex="-1" data-pane-focus bind:this={root} onkeydown={onKey}>
     {#if section.id === 'allocation'}
       <AllocationSettings bind:this={alloc} project={pid} {name} />
     {:else if section.id === 'files'}
@@ -235,7 +269,7 @@
       <div class="line">
         <span class="lab">Backend</span>
         <div class="seg" role="radiogroup" aria-label="Backend">
-          {#each BACKENDS as b, i (b.id)}<button role="radio" aria-checked={kind === b.id} class:on={kind === b.id} onclick={() => pickBackend(b.id)}><Kbd keys={String(i + 1)} /> {b.label}</button>{/each}
+          {#each BACKENDS as b, i (b.id)}<button role="radio" aria-checked={kind === b.id} class:on={kind === b.id} onclick={() => pickBackend(b.id)} use:tooltip={{ label: b.label, key: String(i + 1) }}>{b.label}</button>{/each}
         </div>
         {#if kind === 'linear' && linearInt}
           <span class="conn"><ConnBadge status={linearInt.status} />{linearInt.account ? ` · ${linearInt.account}` : ''}</span>
@@ -244,7 +278,7 @@
 
       {#if kind === 'linear'}
         {#if !connected}
-          <p class="box info">ⓘ Linear is not connected. Add a key in <button class="link" onclick={() => openSettings('integrations')}>Settings › Integrations</button> <Kbd keys="⌘+," /></p>
+          <p class="box info">ⓘ Linear is not connected. Add a key in <button class="link" onclick={() => openSettings('integrations')}>Settings › Integrations</button></p>
         {:else if teams == null}
           <div class="skel" aria-busy="true"><span>Loading teams…</span><i></i><i class="short"></i></div>
         {:else}
@@ -282,29 +316,28 @@
           {#each syncErr as m (m)}<p class="box errbox">✕ {m}</p>{/each}
         {/if}
         {#each unmapped as st (st)}
-          <p class="box warnbox">▲ State "{st}" isn't mapped. <button class="btn ghost" onclick={() => root?.querySelector('[data-row] [role="combobox"]')?.focus()}>Map it <Kbd keys="⏎" /></button></p>
+          <p class="box warnbox">▲ State "{st}" isn't mapped. <button class="btn ghost" onclick={() => root?.querySelector('[data-row] [role="combobox"]')?.focus()} use:tooltip={{ label: 'Map it', key: '⏎' }}>Map it</button></p>
         {/each}
         <div class="box syncbox">
           <span>{last ? syncLine(last.report, last.at, remoteName(kind)) : 'Not synced from here yet'}</span>
           <span class="muted">· every 5 min while a team runs</span>
           <span class="grow"></span>
-          <button class="btn ghost" disabled={syncing || dirty} title={dirty ? 'Save first' : ''} onclick={sync}>{syncing ? 'Syncing…' : 'Sync now'} <Kbd keys="r" /></button>
+          <button class="btn ghost" disabled={syncing || dirty} use:tooltip={dirty ? { label: 'Save first' } : { label: 'Sync now', key: 'r' }} onclick={sync}>{syncing ? 'Syncing…' : 'Sync now'}</button>
         </div>
       {/if}
 
       <div class="foot">
-        <button class="btn primary" disabled={busy || !dirty} onclick={() => save()}>Save <Kbd keys="⌘+⏎" /></button>
-        <button class="btn ghost" onclick={cancel}>Cancel <Kbd keys="esc" /></button>
+        <button class="btn primary" disabled={busy || !backendDirty} onclick={() => save()} use:tooltip={{ label: 'Save', key: '⌘⏎' }}>Save</button>
+        <button class="btn ghost" disabled={!backendDirty} onclick={cancel} use:tooltip={{ label: 'Revert', key: 'esc' }}>Revert</button>
       </div>
-      <p class="muted hint"><Kbd keys="j" /><Kbd keys="k" /> rows · <Kbd keys="⏎" /> change · <Kbd keys="1–3" /> backend · <Kbd keys="r" /> sync</p>
 
       {#if ask}
         <div class="confirm" role="dialog" aria-modal="true" aria-label="Move tasks to Linear">
           <h3>Move {name}'s tasks to Linear?</h3>
           <p>{ask.open} open task{ask.open === 1 ? '' : 's'}.{ask.done ? ` ${ask.done} done tasks are not pushed.` : ''}</p>
-          <button class="btn primary" onclick={() => save('push_open')}>Create {ask.open} open tasks as issues in {lin.team} <Kbd keys="⏎" /></button>
-          <button class="btn ghost" onclick={() => save('leave')}>Leave them out (they stay in the app, not synced) <Kbd keys="l" /></button>
-          <button class="btn ghost" onclick={() => (ask = null)}>Cancel <Kbd keys="esc" /></button>
+          <button class="btn primary" onclick={() => save('push_open')}>Create {ask.open} open tasks as issues in {lin.team}</button>
+          <button class="btn ghost" onclick={() => save('leave')}>Leave them out (they stay in the app, not synced)</button>
+          <button class="btn ghost" onclick={() => (ask = null)} use:tooltip={{ label: 'Cancel', key: 'esc' }}>Cancel</button>
         </div>
       {/if}
     {:else if section.id === 'notion'}
@@ -312,15 +345,18 @@
       <p class="muted lead">Publish to Notion (on a feature's page) creates one page per feature under this parent page.</p>
       <label class="line"><span class="lab">Parent page</span><input class="field grow" bind:value={notionPage} placeholder="Notion page URL or id" spellcheck="false" /></label>
       <p class="muted note">Share the page with your Notion integration. The token is in <button class="link" onclick={() => openSettings('integrations')}>Settings › Integrations</button>.</p>
-      <div class="foot"><button class="btn primary" disabled={busy || !dirty} onclick={() => save()}>Save <Kbd keys="⌘+⏎" /></button></div>
+      <div class="foot">
+        <button class="btn primary" disabled={busy || !notionDirty} onclick={() => save()} use:tooltip={{ label: 'Save', key: '⌘⏎' }}>Save</button>
+        <button class="btn ghost" disabled={!notionDirty} onclick={cancel}>Revert</button>
+      </div>
     {:else if section.id === 'mcp'}
-      <McpSettings project={pid} selected={null} />
+      {#key spec?.server}<McpSettings project={pid} selected={spec?.server ?? null} />{/key}
     {:else}
       <h2>{section.label}</h2>
       <p class="muted">Not designed yet. The current values are editable from <Kbd keys="⌘+K" />.</p>
     {/if}
   </div>
-</div>
+</FloatingWindow>
 
 <style>
 
@@ -328,46 +364,12 @@
     border-color: var(--color-pacing-amber);
   }
   .ps {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    outline: none;
-    font: var(--text-label);
-  }
-  .nav {
-    width: 200px;
-    flex: none;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-xxs);
-    padding: var(--space-md) var(--space-sm);
-    background: var(--color-surface-chrome);
-    border-right: var(--border-width-default) solid var(--color-border-subtle);
-  }
-  .sec {
-    height: var(--size-row);
-    padding: 0 var(--space-sm);
-    background: none;
-    border: 0;
-    border-radius: var(--radius-sm);
-    color: var(--color-text-secondary);
-    font: var(--text-body);
-    text-align: left;
-    cursor: pointer;
-  }
-  .sec.on {
-    background: var(--color-surface-selected);
-    color: var(--color-text-primary);
-  }
-  .body {
     position: relative;
-    flex: 1;
-    min-width: 0;
-    overflow: auto;
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
-    padding: var(--space-lg) var(--space-xl);
+    font: var(--text-label);
+    outline: none;
   }
   h2 {
     margin: 0;
@@ -381,8 +383,7 @@
     font: var(--text-caption);
   }
   .lead,
-  .note,
-  .hint {
+  .note {
     margin: 0;
     font: var(--text-caption);
   }

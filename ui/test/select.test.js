@@ -102,6 +102,20 @@ describe('Select', () => {
     expect(hiLabel()).toBe('Sonnet');
   });
 
+  it('the list closes when the focus moves elsewhere (⌘1, ⌘J, code), keeping the value', async () => {
+    const onchange = vi.fn();
+    const { container } = render(Select, { props: { value: 'opus', options: MODELS_GROUPED, onchange } });
+    const elsewhere = document.createElement('button');
+    document.body.append(elsewhere);
+    await key(box(container), 'ArrowDown');
+    expect(list()).toBeTruthy();
+    elsewhere.focus();
+    await tick();
+    expect(list()).toBeNull();
+    expect(onchange).not.toHaveBeenCalled();
+    elsewhere.remove();
+  });
+
   it('Enter and Space pick, close and give focus back; onchange fires only on a user pick', async () => {
     const onchange = vi.fn();
     const { container, rerender } = render(Select, { props: { value: 'opus', options: MODELS_GROUPED, onchange } });
@@ -121,6 +135,10 @@ describe('Select', () => {
     expect(onchange).toHaveBeenLastCalledWith('sonnet');
     expect(onchange).toHaveBeenCalledTimes(2);
     expect(b.textContent).toContain('Sonnet');
+    // Re-picking the current value fires nothing (as a native select).
+    await key(b, 'Enter');
+    await key(b, 'Enter');
+    expect(onchange).toHaveBeenCalledTimes(2);
   });
 
   it('a click on an option picks it; a click on a disabled option does nothing', async () => {

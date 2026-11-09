@@ -13,7 +13,7 @@
   /**
    * @type {{ value?: any, onchange?: (v: any) => void,
    *          options?: { value: any, label: string, group?: string, count?: number | string, dot?: boolean | string,
-   *                      disabled?: boolean, reason?: string, icon?: string }[], placeholder?: string,
+   *                      disabled?: boolean, reason?: string, icon?: string, detail?: string }[], placeholder?: string,
    *          compact?: boolean, searchable?: boolean | 'auto', error?: string | null, disabled?: boolean,
    *          id?: string, name?: string, 'aria-label'?: string, 'aria-labelledby'?: string,
    *          width?: 'fill' | 'hug', noun?: string, dot?: boolean | string }}
@@ -106,6 +106,8 @@
     if (!enabled(i)) return;
     const v = shown[i].value;
     close(true);
+    // Re-picking the current value changes nothing, as a native select (no reset of what depends on it).
+    if (v === value) return;
     value = v;
     onchange?.(v);
   }
@@ -278,7 +280,7 @@
           role="option"
           aria-selected={o.value === value}
           aria-disabled={o.disabled ? true : undefined}
-          use:tooltip={o.disabled ? o.reason : null}
+          use:tooltip={o.disabled ? o.reason : (o.detail ?? null)}
         >
           <span class="ck" aria-hidden="true">{o.value === value ? '\u{F012C}' : ''}</span>
           {#if o.icon}<span class="ic" aria-hidden="true">{o.icon}</span>{/if}
@@ -432,7 +434,8 @@
   .ck {
     flex: none;
     width: 12px;
-    color: var(--color-accent-default);
+    /* Quieter than the accent (02-select, 02-menu). */
+    color: var(--color-text-secondary);
     font: var(--text-icon);
   }
   .lab {

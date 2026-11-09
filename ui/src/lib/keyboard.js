@@ -16,6 +16,7 @@ export const CHORDS = {
   'cmd+l': 'overwatch.ask',
   'cmd+j': 'dock.toggle',
   'cmd+,': 'settings',
+  'cmd+/': 'shortcuts',
   ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`cmd+${n}`, `pane.focus.${n}`])),
 };
 
@@ -58,6 +59,12 @@ const NATIVE = new Set([
 
 const MODIFIERS = new Set(['Meta', 'Control', 'Alt', 'Shift', 'CapsLock', 'Fn']);
 
+/** Where a key is typed, not a command: a text field, a native select, a Select box. */
+const TYPING = 'input, textarea, select, [role="combobox"]';
+
+/** The key event's target takes text (pane-local single keys leave it alone). */
+export const isTypingTarget = (el) => !!el?.closest?.(TYPING);
+
 /** `cmd+shift+i`-style name; letters lowercased, digits from `code` (layout safe). */
 export function chordName(e) {
   let key = e.key;
@@ -65,7 +72,9 @@ export function chordName(e) {
   else if (e.code === 'Semicolon') key = ';';
   else if (/^Key[A-Z]$/.test(e.code ?? '') && (e.metaKey || e.ctrlKey)) key = e.code.slice(3);
   key = key.toLowerCase();
-  const mods = [e.metaKey && 'cmd', e.ctrlKey && 'ctrl', e.altKey && 'alt', e.shiftKey && 'shift'].filter(Boolean);
+  // `/` is shifted on AZERTY (⇧: gives '/'): the same chord as on QWERTY, so ⌘/ works on both.
+  const shift = e.shiftKey && key !== '/';
+  const mods = [e.metaKey && 'cmd', e.ctrlKey && 'ctrl', e.altKey && 'alt', shift && 'shift'].filter(Boolean);
   return [...mods, key].join('+');
 }
 

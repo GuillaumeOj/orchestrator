@@ -8,6 +8,7 @@
   import { app, confirm, openEditor, toast } from '../lib/app.svelte.js';
   import { lineKind, patchByFile, STATUS_WORD } from '../lib/diff.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { onTopics } from '../lib/now.svelte.js';
 
   let { paneId } = $props();
@@ -78,7 +79,7 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, select, textarea, [role="combobox"]')) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
     const k = { j: () => move(1), k: () => move(-1), r: load, c: startPr, e: () => current && openEditor(`${spec.path}/${current.path}`, null, { projectId: spec.projectId }) }[e.key];
     if (k) {
       e.preventDefault();

@@ -106,7 +106,7 @@ textarea {
 .kbd {
   display: inline-flex;
   align-items: center;
-  height: 16px;
+  height: var(--size-icon);
   padding: 0 var(--space-xs);
   border: var(--border-width-default) solid var(--color-border-strong);
   border-radius: var(--radius-sm);
@@ -193,14 +193,14 @@ textarea {
   background: var(--color-border-subtle);
 }
 
-/* Icon-only button (⋯, ×, ‹ ›): no box at rest; a component sets another square size. */
+/* Icon-only button (⋯, ×): ghost, 28 (02-button-vs-hint); the strip arrows and dock strip icons set 22. */
 .icon-btn {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: var(--size-control-sm);
-  height: var(--size-control-sm);
+  width: var(--size-control);
+  height: var(--size-control);
   padding: 0;
   border: 0;
   border-radius: var(--radius-sm);
@@ -212,6 +212,7 @@ textarea {
   background: var(--color-surface-raised);
   color: var(--color-text-primary);
 }
+.icon-btn:active:not(:disabled),
 .icon-btn.pressed {
   background: var(--color-surface-selected);
   color: var(--color-text-primary);
@@ -237,15 +238,29 @@ textarea {
 .btn:hover {
   background: var(--color-surface-raised);
 }
+/* Pressed (02-button-vs-hint): one step more than hover. */
+.btn:active:not(:disabled) {
+  background: var(--color-surface-selected);
+}
 .btn.primary {
   background: var(--color-accent-subtle);
   border-color: var(--color-accent-default);
+}
+/* Hover lightens the accent fill one step; pressed is the plain accent tint. */
+.btn.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent-subtle) 80%, var(--color-accent-default));
+}
+.btn.primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent-subtle) 60%, var(--color-accent-default));
 }
 .btn.ghost {
   border-color: transparent;
 }
 .btn.danger {
   border-color: var(--color-status-error);
+}
+.btn.danger:active:not(:disabled) {
+  background: color-mix(in srgb, transparent 80%, var(--color-status-error));
 }
 .btn:disabled {
   color: var(--color-text-disabled);
@@ -304,6 +319,11 @@ select.field {
   user-select: text;
   -webkit-user-select: text;
 }
+/* One line: the Select's box (R11, 02-select). */
+input.field {
+  height: var(--size-control);
+  padding: 0 var(--space-sm);
+}
 
 .grow {
   flex: 1;
@@ -351,4 +371,17 @@ select.field {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
+}
+
+/* A backdrop click on a window with unsaved changes: its footer flashes
+   (design-notes §3.3). Any section's `.foot`, so it lives here. */
+.foot.flash {
+  border-radius: var(--radius-sm);
+  animation: foot-flash 0.6s ease-out 2;
+}
+@keyframes foot-flash {
+  50% {
+    background: var(--color-accent-subtle);
+    box-shadow: 0 0 0 var(--space-xs) var(--color-accent-subtle);
+  }
 }

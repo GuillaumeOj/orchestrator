@@ -19,9 +19,11 @@
   import { isDesign } from '../lib/ecosystem.js';
   import { ago, dayHm } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { backendLabel, remoteName } from '../lib/linear.js';
   import { onTopics, runAttention, runPhase, statusOf } from '../lib/now.svelte.js';
   import { handle, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
+  import { tooltip } from '../lib/tooltip.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -39,6 +41,7 @@
   });
   let to = $state(null); // a node id; null = the lead (whatever its id)
   let msg = $state('');
+  let sending = $state(false); // a message on its way: a second click or ⏎ does not send it twice
   let root;
   let msgBox = $state(null);
   let design = $state(null);
@@ -178,7 +181,8 @@
 
   async function send() {
     const body = msg.trim();
-    if (!body || !run || !to) return;
+    if (!body || !run || !to || sending) return;
+    sending = true;
     try {
       await invoke('message_send', { run: run.id, to, body });
       msg = '';
@@ -186,6 +190,8 @@
       await load();
     } catch (e) {
       toast(errText(e), { kind: 'error' });
+    } finally {
+      sending = false;
     }
   }
 
@@ -196,7 +202,7 @@
   }
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select, [role="combobox"]')) {
+    if (isTypingTarget(e.target)) {
       if (e.key === 'Escape' && !e.defaultPrevented) (root?.focus(), e.preventDefault());
       return;
     }
@@ -338,7 +344,7 @@
             <div class="msg">
               <Select width="hug" bind:value={to} options={toOptions} aria-label="To" noun="node" />
               <input class="field grow" bind:this={msgBox} bind:value={msg} placeholder="Message {to === lead ? 'the lead' : to}…" onkeydown={(e) => e.key === 'Enter' && (e.preventDefault(), send())} />
-              <Kbd keys="⏎" />
+              <button type="button" class="icon-btn" aria-label="Send" disabled={!msg.trim() || sending} use:tooltip={{ label: 'Send', key: '⏎' }} onclick={send}>{'\u{F048A}'}</button>
             </div>
           {/if}
         </section>
