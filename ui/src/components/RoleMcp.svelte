@@ -4,7 +4,8 @@
   // connector / strict-MCP warning, and the model downgrade line. Both save
   // the role through `onsave` (role_save).
   import { openSettings } from '../lib/app.svelte.js';
-  import { downgradeProblem, downgradeWarning, downgradeWhen, family, MODELS, roleMcpNotes, toggleRef } from '../lib/ecosystem.js';
+  import { downgradeProblem, downgradeWarning, downgradeWhen, family, roleMcpNotes, toggleRef } from '../lib/ecosystem.js';
+  import { MODEL_ALIASES } from '../lib/options.js';
   import ConnBadge from './ConnBadge.svelte';
 
   /** @type {{ role: any, servers: any[] | null, isLead?: boolean, project?: string | null, onsave: (patch: object) => void }} */
@@ -19,7 +20,7 @@
   });
   const problem = $derived(dg ? downgradeProblem(role, dg.to) : null);
   const warning = $derived(dg ? downgradeWarning(role, isLead) : null);
-  const defaultTo = $derived(MODELS.find((m) => m !== family(role.model) && m !== 'opus') ?? 'sonnet');
+  const defaultTo = $derived(MODEL_ALIASES.find((m) => m !== family(role.model) && m !== 'opus') ?? 'sonnet');
 
   function setDowngrade(next) {
     dg = next;
@@ -61,7 +62,7 @@
       <div class="line">
         to
         <select class="field sm" aria-label="Downgrade to" value={dg.to} onchange={(e) => setDowngrade({ ...dg, to: e.currentTarget.value })}>
-          {#each MODELS as m (m)}<option value={m}>{m}</option>{/each}
+          {#each MODEL_ALIASES as m (m)}<option value={m}>{m}</option>{/each}
         </select>
         when
         <select class="field sm" aria-label="Downgrade when" value={dg.when} onchange={(e) => setDowngrade({ ...dg, when: e.currentTarget.value })}>

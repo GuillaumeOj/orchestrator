@@ -3,6 +3,7 @@
 // selection, connect mode, undo/redo and a layered auto-layout. The core
 // validates and versions the team on save; `localIssues` gives instant
 // feedback while editing.
+import { MODEL_ALIASES } from './options.js';
 
 export const EDGE_KINDS = ['reports-to', 'hands-off-to', 'reviews', 'can-message'];
 export const NODE_W = 176;
@@ -280,8 +281,6 @@ export class History {
     return this.future.pop();
   }
 }
-
-export const MODEL_ALIASES = ['opus', 'sonnet', 'haiku', 'fable'];
 
 /** The model select's option for a stored value: '' (default), an alias, or 'custom'. */
 export function modelOption(value) {

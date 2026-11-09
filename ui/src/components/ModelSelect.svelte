@@ -1,7 +1,8 @@
 <script>
   // A model picker: the default, an alias, or a custom id typed in a mono input.
   // `value` is the stored model (null for default); `onsave` gets the value to store.
-  import { MODEL_ALIASES, modelOption, modelValue } from '../lib/canvas.js';
+  import { modelOption, modelValue } from '../lib/canvas.js';
+  import { MODEL_ALIASES } from '../lib/options.js';
 
   let { label, value, emptyLabel = "default (Claude Code's)", onsave } = $props();
   let picking = $state(false); // "custom…" picked, text not typed yet
