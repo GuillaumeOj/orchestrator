@@ -208,7 +208,7 @@ Real bindings only (keyboard.js CHORDS :6-20, LEADER :26-42, pane key handlers).
 | components/McpSettings.svelte:306 | design tool of a server | 4 static |
 | components/RoleMcp.svelte:63 | downgrade target model | 3 static |
 | components/RoleMcp.svelte:67 | downgrade trigger | 3 static |
-| components/PermissionsSettings.svelte:134 (×2: team, solo) | default effect | 2 static |
+| components/PermissionsSettings.svelte:134 (one element, rendered for team and solo) | default effect | 2 static |
 | components/ModelSelect.svelte:24 (used ×2, TeamCanvasPane:647-648) | model | 6: default + 4 aliases + custom… |
 | components/OverwatchSettings.svelte:151 | Overwatch model | 3–4 |
 | components/PlanEditor.svelte:85 (per row) | tier | 4 static |
