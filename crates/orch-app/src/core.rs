@@ -1135,7 +1135,6 @@ impl Core {
         let p = self.stored_project(id)?;
         let branch = branch.trim();
         let ok = !branch.is_empty()
-            && !branch.starts_with('-')
             && orch_git::git::git_ok(&p.path, &["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")]);
         if !ok {
             bail!("No branch {branch} in this repo");
