@@ -967,12 +967,9 @@ mod scenarios {
         // Still stuck: a second decision, after another window.
         sim.until("a second decision", 30, || !sim.items("delivery").is_empty());
         assert_ne!(sim.items("delivery")[0].id, first.id);
-        // It works this time, through a slow CLI: the 1 s invariant window passes
-        // before the lead takes the paste. A new episode raised then would be closed
-        // only by the next tick, after the message is seen, so the window is lifted:
-        // when the retry works, nothing is raised again. The paste watchdog stays
-        // away too (`ACK_KEY` is still 3600): a 1 s ack would press Enter again
-        // during the slow submit.
+        // It works this time, through a slow CLI that takes the paste after the 1 s
+        // invariant window: the window is lifted (and `ACK_KEY` stays 3600), so
+        // nothing is raised again or re-pressed while the retry goes through.
         cli.set(|s| {
             (s.modal, s.modal_always) = (false, false);
             s.delay_submit = Some(Duration::from_millis(1500));
