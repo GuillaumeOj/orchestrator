@@ -757,12 +757,11 @@ pub mod fake {
                 let found = w.labels.iter().find(|(_, l)| l == n).map(|(id, _)| id.clone());
                 ids.push(found.unwrap_or_else(|| new_label(&mut w, n)));
             }
-            let labels = ids;
             let issue = FakeIssue {
                 id: id.into(),
                 title: title.into(),
                 state: state.into(),
-                labels,
+                labels: ids,
                 updated: w.clock,
                 ..Default::default()
             };
@@ -1068,11 +1067,11 @@ mod tests {
     }
 
     /// fix-linear-pull §3.4 (7): both listings pass the guard (the filters
-    /// are variables, so they cost nothing) and the fake's refusal above
-    /// the limit.
+    /// are variables, so they cost nothing; the query text itself is in
+    /// `every_query_stays_well_under_the_complexity_limit`) and the fake's
+    /// refusal above the limit.
     #[test]
     fn the_listings_stay_under_the_complexity_limit() {
-        assert!(fake::complexity(&issues_query()) <= 5_000.0);
         assert!(!issues_query().contains("orch"), "the filter is a variable");
         let f = fake::FakeLinear::default();
         let l = LinearIssues::new(f.clone(), "ENG", Some("proj-1".into()), BTreeMap::new());
