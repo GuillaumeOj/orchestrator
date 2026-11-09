@@ -138,7 +138,7 @@ Storyboard `06-flow-terminal.png`. Test: `shellcwd.test.js`, `terminalsettings.t
 2. Open a file from agent output → nvim opens as a workspace **tab** (project-bound), no split · dn §4.1.
 3. Settings › Terminal & editor → Appearance: theme Select (`setTheme`) and kitty-colours switch (`setKittyTheme`); Terminal block read-only; missing kitty.conf shows its text · *04-settings-terminal-editor-1280*, *…-no-kittyconf-1280* · dn §13.4. Renderer, Editor command, Shells rows hidden (spec §3.1).
 4. Open in kitty (agent `⋯`, project `⋯`/Shell, Terminal settings) → kitty opens in that worktree · dn §1.3.1.
-5. Leader `v` `s` `h` `l` `z` do nothing; no `pane.split.*` / `pane.zoom` in palette or menu · dn §4.1.
+5. Leader `v` `s` `h` `l` `z` do nothing (`j` `k` stay: into / out of the dock); no `pane.split.*` / `pane.zoom` in palette or menu · dn §4.1.
 
 ### F14 `migrate` · Restart and old layouts
 Storyboard `06-flow-migrate.png`. Test: `persist.test.js`, `layout.test.js`, `windows.test.js`, `sidebar.test.js`.
