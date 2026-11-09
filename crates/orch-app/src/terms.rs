@@ -240,7 +240,9 @@ impl Term {
     /// when the shell has exited: checked first, so a reused pid is never read.
     pub fn cwd(&self) -> Option<PathBuf> {
         let pid = self.pid?;
-        if !matches!(self.child.lock_ok().try_wait(), Ok(None)) {
+        // Hold the guard across the read: kill() reaps under it, so the pid cannot be reused meanwhile.
+        let mut child = self.child.lock_ok();
+        if !matches!(child.try_wait(), Ok(None)) {
             return None;
         }
         pid_cwd(pid)
