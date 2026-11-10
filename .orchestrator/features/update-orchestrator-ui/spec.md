@@ -39,7 +39,7 @@ The design leaves the choice to this feature. Decision (the user can change it a
 | Row | Ships? | Why |
 |---|---|---|
 | Overwatch › Notifications switches (desktop, sound) | **yes** | the `notifications` setting exists; UI only |
-| MCP overrides › Inherit / On / Off per server | **yes** | UI only, on top of the existing project/global scope |
+| MCP overrides › Inherit / On / Off per server | **partly**: two options **Inherit** / **Override** (a project-scoped copy with its own env); **Off hidden** | UI only, on top of the existing project/global scope. The store has no per-project "disabled" state, so Off would need a backend and runtime change (out of scope). Without Off, "On" would read like Inherit, hence the label Override (lead, during T-316) |
 | Project › General › Name (rename) and Default branch | **yes** | columns exist; back adds the write path (api-contract §2) |
 | Memory › Warn above (MB) | **yes** | FR-904 asks for a warning threshold; a UI setting `memory_warn_mb` (api-contract §3), default 1600 MB, validated by the UI |
 | Claude Code › Defaults for new sessions | no (hidden) | new app-wide fallback model; separate feature |
