@@ -112,6 +112,13 @@
       }), 'Remove project');
   }
 
+  // Asked from Project settings › General: start the removal once the project is known (one-shot).
+  $effect(() => {
+    if (!spec?.remove || !p) return;
+    app.panes[paneId] = { ...app.panes[paneId], remove: false };
+    startRemoval();
+  });
+
   // The header's `⋯` (R4): Fetch, Shell, Diff main, Trust in a pane (untrusted only); keys that work in the pane.
   const menu = $derived([
     { id: 'fetch', icon: '\u{F06B0}', label: busy === 'fetch' ? 'Fetching…' : 'Fetch', key: 'f', disabled: !!busy, reason: 'Busy', run: fetchNow },

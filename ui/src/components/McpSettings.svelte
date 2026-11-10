@@ -146,6 +146,42 @@
     }
   }
 
+  /** Override: a project-scoped copy of the global server (its own env); the form opens on it. */
+  async function setOverride(s) {
+    if (s.scope) return;
+    try {
+      const r = await invoke('mcp_server_save', { server: serverForSave($state.snapshot(s)), scope: { kind: 'project', id: project } });
+      toast(`${project} has its own ${r.name}`);
+      await load();
+      sel = Math.max(0, servers.findIndex((x) => x.id === r.id));
+      edit(servers[sel] ?? r);
+    } catch (e) {
+      toast(`${s.name}: ${errText(e)}`, { kind: 'error' });
+    }
+  }
+
+  /** Inherit: the project copy goes (behind a confirm when its env differs from the global one). */
+  function setInherit(s) {
+    if (!s.scope) return;
+    const global = (view?.servers ?? []).find((x) => x.id === s.id);
+    const differs = !global || JSON.stringify(s.env ?? {}) !== JSON.stringify(global.env ?? {});
+    const run = async () => {
+      try {
+        const r = await invoke('mcp_server_delete', { id: s.id, scope: { kind: 'project', id: project } });
+        if (r?.deleted === false) return toast(`${s.name} is used by roles of ${project}`, { kind: 'error' });
+        toast(`${project} uses the global ${s.name}`);
+        await load();
+        sel = Math.max(0, servers.findIndex((x) => x.id === s.id));
+        if (servers[sel]) edit(servers[sel]);
+        else draft = null;
+      } catch (e) {
+        toast(`${s.name}: ${errText(e)}`, { kind: 'error' });
+      }
+    };
+    if (!differs) return run();
+    confirm(`Use the global ${s.name} in ${project}?`, `${project}'s own copy, with its own env, is deleted.`, run, 'Inherit');
+  }
+
   function remove(s) {
     if (!s) return;
     const scope = scopeOf(s.scope);
@@ -368,8 +404,17 @@
           </div>
         {/if}
 
-        {#if project}
-          <label class="ck"><input type="checkbox" bind:checked={draft.override} disabled={!draft.isNew && !!s.scope} /> Override for {project}</label>
+        {#if project && !draft.isNew}
+          <div class="kinds" data-override>
+            <span>this project</span>
+            <span class="seg" role="radiogroup" aria-label="{s.name} in {project}">
+              <button type="button" role="radio" aria-checked={!s.scope} class:on={!s.scope} onclick={() => setInherit(s)}>Inherit</button>
+              <button type="button" role="radio" aria-checked={!!s.scope} class:on={!!s.scope} onclick={() => setOverride(s)}>Override</button>
+            </span>
+          </div>
+          <p class="note muted">{s.scope ? `${project} has its own copy of ${s.name}, with its own env.` : `${project} uses the global ${s.name} as it is.`}</p>
+        {:else if project}
+          <label class="ck"><input type="checkbox" bind:checked={draft.override} /> Override for {project}</label>
         {/if}
         {#if problem}<p class="err">{problem}</p>{/if}
         <div class="foot">

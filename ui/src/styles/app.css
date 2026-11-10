@@ -395,3 +395,121 @@ input.field {
     box-shadow: 0 0 0 var(--space-xs) var(--color-accent-subtle);
   }
 }
+
+/* Settings sections (settings-brief §0): title + lead, groups as cards (a header, rows: label
+   column 168 px · control · help), a sticky footer for form sections, a switch. */
+.sset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  max-width: 760px;
+}
+.sset > h2 {
+  margin: 0;
+  font: var(--text-heading);
+}
+.sset > .lead {
+  margin: calc(var(--space-sm) * -1) 0 0;
+}
+.scard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  background: var(--color-surface-pane);
+  border: var(--border-width-default) solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+.scard > h3 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  margin: 0;
+  font: var(--text-title);
+}
+.scard > h3 .muted {
+  font: var(--text-caption);
+}
+.srow {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-sm) var(--space-md);
+}
+.srow > .slab {
+  color: var(--color-text-secondary);
+}
+.srow > .sctl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+.srow .shelp {
+  grid-column: 2;
+  margin: calc(var(--space-xs) * -1) 0 0;
+  font: var(--text-caption);
+  color: var(--color-text-muted);
+}
+.sok {
+  color: var(--color-status-done);
+  font: var(--text-caption);
+}
+.serr {
+  color: var(--color-status-error);
+  font: var(--text-caption);
+}
+/* A form section's footer sticks to the bottom of the window's content. */
+.sfoot {
+  position: sticky;
+  bottom: calc(var(--space-xl) * -1);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+  margin: var(--space-md) calc(var(--space-xl) * -1) calc(var(--space-xl) * -1);
+  padding: var(--space-md) var(--space-xl);
+  background: var(--color-surface-pane);
+  border-top: var(--border-width-default) solid var(--color-border-subtle);
+}
+.sfoot > .dirty {
+  margin-right: auto;
+  color: var(--color-text-muted);
+}
+input[role="switch"] {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 30px;
+  height: 16px;
+  margin: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-border-strong);
+  cursor: pointer;
+}
+input[role="switch"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-text-primary);
+  transition: left 0.12s;
+}
+input[role="switch"]:checked {
+  background: var(--color-accent-default);
+}
+input[role="switch"]:checked::after {
+  left: 16px;
+}
+input[role="switch"]:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+input[role="switch"]:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}

@@ -29,9 +29,11 @@
   import FloatingWindow from './FloatingWindow.svelte';
   import IntegrationsSettings from './IntegrationsSettings.svelte';
   import McpSettings from './McpSettings.svelte';
+  import MemorySettings from './MemorySettings.svelte';
   import OverwatchSettings from './OverwatchSettings.svelte';
   import PacingSettings from './PacingSettings.svelte';
   import PermissionsSettings from './PermissionsSettings.svelte';
+  import TerminalSettings from './TerminalSettings.svelte';
 
   const spec = $derived(app.window);
   const section = $derived(SECTIONS.find((s) => s.id === spec?.section) ?? SECTIONS[1]);
@@ -103,11 +105,10 @@
     {#key spec?.server}<BuildsSettings selected={spec?.server ?? null} />{/key}
   {:else if section.id === 'pacing'}
     <PacingSettings />
-  {:else}
-    <section class="later">
-      <h2>{section.label}</h2>
-      <p class="muted">Not designed yet. The current values are editable from the palette (⌘K).</p>
-    </section>
+  {:else if section.id === 'terminal'}
+    <TerminalSettings />
+  {:else if section.id === 'memory'}
+    <MemorySettings />
   {/if}
 </FloatingWindow>
 
@@ -130,9 +131,5 @@
   }
   .glyph.spinning {
     color: var(--color-attention-running);
-  }
-  .later h2 {
-    margin: 0 0 var(--space-sm);
-    font: var(--text-heading);
   }
 </style>

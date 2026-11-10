@@ -103,6 +103,31 @@
     if (!(await save('model', model))) rev++;
   }
 
+  // Notifications (the `notifications` setting, desktop and sound; both on unless stored off):
+  // the palette's two toggles stay; this is their settings home.
+  let notify = $state({ desktop: true, sound: true });
+  let notifyNote = $state('');
+  let notifyError = $state('');
+  $effect(() => {
+    invoke('settings_get', { key: 'notifications' })
+      .then((v) => (notify = { desktop: true, sound: true, ...(v ?? {}) }))
+      .catch(() => {});
+  });
+  async function toggleNotify(key, e) {
+    const box = e.currentTarget;
+    const next = { ...notify, [key]: box.checked };
+    notifyError = '';
+    try {
+      await invoke('settings_set', { key: 'notifications', value: next });
+      notify = next;
+      notifyNote = key;
+      setTimeout(() => (notifyNote = ''), 2000);
+    } catch (err) {
+      box.checked = !box.checked;
+      notifyError = errText(err);
+    }
+  }
+
   async function restart() {
     restarting = true;
     restartError = '';
@@ -172,6 +197,20 @@
         </span>
       </div>
     {/each}
+    <h3 class="grp">Notifications</h3>
+    {#each [['desktop', 'Desktop notifications', 'A system notification when something needs you.'], ['sound', 'Sound', 'A sound with it.']] as [k, label, help] (k)}
+      <div class="row" data-row="notify-{k}">
+        <div class="what">
+          <label class="lab" for="ow-n-{k}">{label}</label>
+          <p class="muted help">{help}</p>
+        </div>
+        <span class="num">
+          {#if notifyNote === k}<span class="ok" role="status">✓ Saved</span>{/if}
+          <input id="ow-n-{k}" type="checkbox" role="switch" aria-checked={notify[k]} checked={notify[k]} onchange={(e) => toggleNotify(k, e)} />
+        </span>
+      </div>
+    {/each}
+    {#if notifyError}<p class="err help" role="alert">{notifyError}</p>{/if}
   {/if}
 </section>
 
@@ -194,6 +233,14 @@
   }
   .sub {
     margin: 0;
+  }
+  .grp {
+    margin: var(--space-md) 0 0;
+    font: var(--text-title);
+  }
+  .ok {
+    color: var(--color-status-done);
+    font: var(--text-caption);
   }
   .state {
     display: inline-flex;

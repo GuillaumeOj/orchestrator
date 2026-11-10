@@ -1016,6 +1016,14 @@ export function openProject(projectId) {
   addPane({ type: 'project', projectId });
 }
 
+/** Project settings › General › Remove project…: the removal flow lives in the project pane,
+ *  so its pane opens and starts it (a one-shot flag the pane clears). */
+export function askRemoveProject(projectId) {
+  openProject(projectId);
+  const id = findPane((s) => s.type === 'project' && s.projectId === projectId);
+  if (id) app.panes[id] = { ...app.panes[id], remove: true };
+}
+
 /** P2: a feature's pane (docs, tasks, team, timeline), one per feature. */
 export function openFeature(featureId, doc = null, anchor = null, timeline = null) {
   const existing = findPane((s) => s.type === 'feature' && s.featureId === featureId);
