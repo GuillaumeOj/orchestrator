@@ -167,11 +167,15 @@ impl Store {
             // SQLite's lower() is ASCII only: compare with Unicode case folding here.
             let wanted = name.to_lowercase();
             let mut st = tx.prepare("SELECT name FROM projects WHERE id<>?1 AND archived=0")?;
-            let taken = st
-                .query_map(params![id], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-                .iter()
-                .any(|n| n.to_lowercase() == wanted);
+            let mut rows = st.query(params![id])?;
+            let mut taken = false;
+            while let Some(r) = rows.next()? {
+                if r.get::<_, String>(0)?.to_lowercase() == wanted {
+                    taken = true;
+                    break;
+                }
+            }
+            drop(rows);
             drop(st);
             if taken {
                 anyhow::bail!("A project named {name} already exists");
