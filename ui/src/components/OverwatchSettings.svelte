@@ -144,9 +144,11 @@
   <div class="h">
     <h2>Overwatch</h2>
     {#if status}
-      <span class="state pill" data-ow-state><span class="dot {ow.status}" aria-hidden="true"></span> {status}</span>
-      {#if ow.status === 'down'}<button class="btn" disabled={restarting} onclick={restart}>{restarting ? 'Restarting…' : 'Restart'}</button>{/if}
-      {#if restartError}<span class="err" role="alert">{restartError}</span>{/if}
+      <span class="end">
+        {#if restartError}<span class="err" role="alert">{restartError}</span>{/if}
+        {#if ow.status === 'down'}<button class="btn" disabled={restarting} onclick={restart}>{restarting ? 'Restarting…' : 'Restart'}</button>{/if}
+        <span class="state pill" data-ow-state><span class="dot {ow.status}" aria-hidden="true"></span> {status}</span>
+      </span>
     {/if}
   </div>
   <p class="muted lead">An agent that settles routine prompts for you.</p>
@@ -221,6 +223,12 @@
   .h h2 {
     margin: 0;
     font: var(--text-heading);
+  }
+  .end {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-left: auto;
   }
   .pill {
     display: inline-flex;
