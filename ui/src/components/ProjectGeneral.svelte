@@ -13,6 +13,8 @@
 
   let { project: pid } = $props();
   const p = $derived(projects().find((x) => x.id === pid) ?? null);
+  /** The project's `origin` (else its first remote), read from the record: no extra call. */
+  const remote = $derived((p?.remotes ?? []).find((r) => r.name === 'origin') ?? p?.remotes?.[0] ?? null);
   const home = $derived(app.data?.core?.user_home ?? '');
 
   let name = $state('');
@@ -137,6 +139,12 @@
         <div class="branchsel"><Select value={branch} options={branchOptions} aria-label="Default branch" onchange={(v) => (branch = v)} /></div>
         {#if branchError}<p class="serr shelp" role="alert">{branchError}</p>{/if}
       </div>
+      {#if remote}
+        <div class="srow" data-row="remote">
+          <span class="slab">Remote</span>
+          <span class="sctl"><span>{remote.name} · <span class="mono">{remote.url.replace(/^(https?:\/\/|ssh:\/\/|git@)/, '').replace(':', '/').replace(/\.git$/, '')}</span></span></span>
+        </div>
+      {/if}
       <div class="srow">
         <span class="slab">Fetch</span>
         <span class="sctl">

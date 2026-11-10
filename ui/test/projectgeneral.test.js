@@ -74,6 +74,16 @@ describe('General', () => {
     expect(text(container)).not.toContain('Remove merged worktrees');
   });
 
+  it('shows the Git remote read from the record, and none when there is none', async () => {
+    app.data.projects[0].remotes = [{ name: 'origin', url: 'git@github.com:acme/shop-api.git' }];
+    const { container } = await open();
+    expect(text(container.querySelector('[data-row="remote"]'))).toBe('Remote origin · github.com/acme/shop-api');
+    cleanup();
+    app.data.projects[0].remotes = [];
+    const again = await open();
+    expect(again.container.querySelector('[data-row="remote"]')).toBeNull();
+  });
+
   it('shows the record: name, path, id, default branch, fetch, worktree root', async () => {
     const { container } = await open();
     expect(/** @type {any} */ (container.querySelector('#pg-name')).value).toBe('shop-api');

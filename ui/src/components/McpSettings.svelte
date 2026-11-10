@@ -316,7 +316,7 @@
         <p class="muted empty">No MCP servers yet. Add one with New server, or start a design preset: it adds Penpot.</p>
       {:else if view}
         <table>
-          <thead><tr><th>Name</th><th>Kind</th><th>Design tool</th><th>Used by</th><th>Status</th><th>Scope</th></tr></thead>
+          <thead><tr><th>Name</th><th>Kind</th><th>Design tool</th><th>Used by</th><th>Status</th><th>{project ? 'For ' + project : 'Scope'}</th></tr></thead>
           <tbody>
             {#each servers as s, i (s.id)}
               <tr class:sel={i === sel} class:editing={draft && !draft.isNew && draft.server.id === s.id} onclick={() => ((sel = i), edit(s))}>
@@ -328,7 +328,7 @@
                   <ConnBadge status={s.status} connector={s.kind === 'connector'} busy={busy[s.id]} />
                   {#if s.status === 'needs_auth' && s.kind !== 'stdio'}<button class="link" onclick={(e) => (e.stopPropagation(), reconnect(s))}>Reconnect</button>{/if}
                 </td>
-                <td class="muted">{s.scope ? `${s.scope} override` : 'Global'}</td>
+                <td class="muted" data-scope>{project ? (s.scope ? 'Override' : 'Inherit') : s.scope ? `${s.scope} override` : 'Global'}</td>
               </tr>
             {/each}
           </tbody>

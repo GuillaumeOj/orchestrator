@@ -188,6 +188,11 @@ describe('MCP overrides: Inherit / Override', () => {
     expect(seg(container, 'Inherit').getAttribute('aria-checked')).toBe('true');
   });
 
+  it('the list row shows the state: Inherit without a project copy', async () => {
+    const { container } = await open();
+    expect(text(container.querySelector('[data-scope]'))).toBe('Inherit');
+  });
+
   it('Override saves a project-scoped copy', async () => {
     const { container } = await open();
     await fireEvent.click(seg(container, 'Override'));
