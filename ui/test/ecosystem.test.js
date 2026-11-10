@@ -27,6 +27,7 @@ import {
 } from '../src/lib/ecosystem.js';
 import { keyIntent as keyIntentOf } from '../src/lib/inbox.js';
 import { act, decision, fixture, nowOf } from './fixture.js';
+import { labels, pick, picked, shown } from './pick.js';
 
 const UNDO_LATER = Date.now() + 60000;
 
@@ -43,7 +44,7 @@ vi.mock('../src/lib/ipc.js', () => ({
   errText: (e) => (typeof e === 'string' ? e : (e?.message ?? String(e))),
 }));
 
-const { default: SettingsPane } = await import('../src/panes/SettingsPane.svelte');
+const { default: SettingsWindow } = await import('../src/components/SettingsWindow.svelte');
 const { default: FeaturePane } = await import('../src/panes/FeaturePane.svelte');
 const { default: TeamCanvasPane } = await import('../src/panes/TeamCanvasPane.svelte');
 const { default: DesignSection } = await import('../src/components/DesignSection.svelte');
@@ -220,8 +221,8 @@ describe('Settings pane', () => {
         release = () => r(integ('linear', 'Linear', { has_secret: true, status: 'connected', account: 'Acme' }));
         expect(a).toEqual({ id: 'linear', secret: 'lin_api_SECRET1234' });
       });
-    app.panes.s1 = { type: 'settings', section: 'integrations', title: 'Settings' };
-    const { container, getByText } = render(SettingsPane, { paneId: 's1' });
+    app.window = { kind: 'settings', section: 'integrations' };
+    const { container, getByText } = render(SettingsWindow);
     await waitFor(() => getByText('via gh · GuillaumeOj'));
     const rows = [...container.querySelectorAll('[data-integration]')].map((r) => r.getAttribute('data-integration'));
     expect(rows[0]).toBe('notion');
@@ -259,8 +260,8 @@ describe('Settings pane', () => {
     replies.integrations_view = { items: items() };
     replies.integration_test = (a) => integ(a.id, 'Notion', { has_secret: true, status: 'connected' });
     replies.integration_secret_remove = (a) => integ(a.id, 'Notion');
-    app.panes.s1 = { type: 'settings', section: 'integrations', title: 'Settings' };
-    const { container, getByText } = render(SettingsPane, { paneId: 's1' });
+    app.window = { kind: 'settings', section: 'integrations' };
+    const { container, getByText } = render(SettingsWindow);
     await waitFor(() => getByText('Needs auth'));
     const sec = container.querySelector('[aria-label="Integrations"]');
     // x on Notion (first: it needs you) asks first.
@@ -278,8 +279,8 @@ describe('Settings pane', () => {
 
   it('FigCraft: the row reads Unknown (not connector style); its MCP draft is stdio with the hint', async () => {
     replies.integrations_view = { items: items() };
-    app.panes.s1 = { type: 'settings', section: 'integrations', title: 'Settings' };
-    const r1 = render(SettingsPane, { paneId: 's1' });
+    app.window = { kind: 'settings', section: 'integrations' };
+    const r1 = render(SettingsWindow);
     await waitFor(() => expect(r1.container.querySelector('[data-integration="figcraft"]')).not.toBeNull());
     const row = r1.container.querySelector('[data-integration="figcraft"]');
     expect(row.textContent).toContain('FigCraft');
@@ -288,8 +289,8 @@ describe('Settings pane', () => {
     expect(row.textContent).toContain('Open MCP servers');
     cleanup();
     replies.mcp_registry_view = { servers: [], project_overrides: {} };
-    app.panes.s1 = { type: 'settings', section: 'mcp', server: 'design:figcraft', title: 'Settings' };
-    const r2 = render(SettingsPane, { paneId: 's1' });
+    app.window = { kind: 'settings', section: 'mcp', server: 'design:figcraft' };
+    const r2 = render(SettingsWindow);
     await waitFor(() => r2.getByText('New MCP server'));
     const d = r2.container;
     const field = (/** @type {string} */ sel) =>
@@ -297,7 +298,7 @@ describe('Settings pane', () => {
     expect(field('input[placeholder="figcraft-cli"]')).toBe('');
     expect(field('input[placeholder="penpot"]')).toBe('figcraft');
     expect(field('textarea[placeholder="one per line"]')).toBe('mcp');
-    expect(field('select')).toBe('figcraft');
+    expect(picked(d)).toBe('figcraft');
     const hint = d.querySelector('.note');
     expect(hint.textContent).toBe(
       'Full path to figcraft-cli. Args mcp run a headless engine; mcp --attach 7979 drives the open FigCraft app.',
@@ -327,8 +328,8 @@ describe('Settings pane', () => {
     replies.integrations_view = { items: items() };
     replies.mcp_server_save = (a) => ({ ...a.server, status: 'unknown', used_by: [] });
     replies.mcp_server_delete = { deleted: false, used_by: [{ team: 'full-stack', node: 'ui', role: 'ui' }] };
-    app.panes.s1 = { type: 'settings', section: 'mcp', server: 'figma-local', title: 'Settings' };
-    const { container, getByText } = render(SettingsPane, { paneId: 's1' });
+    app.window = { kind: 'settings', section: 'mcp', server: 'figma-local' };
+    const { container, getByText } = render(SettingsWindow);
     await waitFor(() => getByText('Pass this secret to the agent.'));
     expect(container.textContent).toContain('FIGMA_TOKEN from Keychain: figma');
     expect(container.textContent).toContain('Figma local exited or refused its credentials: exit 1.');
@@ -367,26 +368,26 @@ describe('Settings pane', () => {
   it('MCP servers: empty registry invites to add one; n opens a new entry', async () => {
     replies.mcp_registry_view = { servers: [], project_overrides: {} };
     replies.integrations_view = { items: [] };
-    app.panes.s1 = { type: 'settings', section: 'mcp', title: 'Settings' };
-    const { container, getByText } = render(SettingsPane, { paneId: 's1' });
+    app.window = { kind: 'settings', section: 'mcp' };
+    const { container, getByText } = render(SettingsWindow);
     await waitFor(() => getByText(/No MCP servers yet/));
     await fireEvent.keyDown(container.querySelector('[aria-label="MCP servers"]'), { key: 'n' });
     await tick();
     expect(getByText('New MCP server')).toBeTruthy();
   });
 
-  it('sections not designed yet say where to edit', async () => {
+  it('Terminal & editor is a designed section (no placeholder)', async () => {
     replies.integrations_view = { items: [] };
-    app.panes.s1 = { type: 'settings', section: 'integrations', title: 'Settings' };
-    const { container, getByText } = render(SettingsPane, { paneId: 's1' });
-    const nav = container.querySelector('nav');
-    await fireEvent.keyDown(nav, { key: 'j' });
-    await fireEvent.keyDown(nav, { key: 'j' });
-    await fireEvent.keyDown(nav, { key: 'j' });
-    await fireEvent.keyDown(nav, { key: 'j' });
-    await tick();
-    expect(app.panes.s1.section).toBe('terminal');
-    expect(getByText(/Not designed yet/)).toBeTruthy();
+    app.window = { kind: 'settings', section: 'integrations' };
+    const { container, getByText } = render(SettingsWindow);
+    const nav = container.querySelector('[role="tablist"]');
+    for (let i = 0; i < 4; i++) {
+      await fireEvent.keyDown(nav, { key: 'j' });
+      await tick();
+    }
+    expect(app.window.section).toBe('terminal');
+    expect(getByText('Appearance')).toBeTruthy();
+    expect(container.textContent).not.toContain('Not designed yet');
   });
 });
 
@@ -632,13 +633,42 @@ describe('role inspector, Design section and presets (T-7)', () => {
       ).toBe(true),
     );
     expect(insp.textContent).toContain('Switches at the next task, never mid-task.');
-    const to = /** @type {HTMLSelectElement} */ (insp.querySelector('select[aria-label="Downgrade to"]'));
+    const to = insp.querySelector('[role="combobox"][aria-label="Downgrade to"]');
     const n = calls.length;
-    to.value = 'opus';
-    await fireEvent.change(to);
+    await pick(to, 'opus');
     expect(insp.textContent).toContain("Pick a model other than the role's (opus).");
     expect(calls.slice(n).some(([c]) => c === 'role_save')).toBe(false);
-    expect(insp.textContent).toContain('opus window in Red');
+    expect(await labels(insp.querySelector('[role="combobox"][aria-label="Downgrade when"]'))).toContain(
+      'opus window in Red',
+    );
+  });
+
+  it('role inspector: a refused save puts the Select back on the stored value', async () => {
+    canvasReplies([role('lead', 'Lead', { effort: 'low' }), role('ui', 'UI')]);
+    app.panes.c1 = { type: 'canvas', teamId: 'full-stack', title: 'Team' };
+    const { container, getByText } = render(TeamCanvasPane, { paneId: 'c1' });
+    await waitFor(() => getByText('Lead', { selector: '.muted', exact: false }));
+    const insp = container.querySelector('[aria-label="Role inspector"]');
+    const field = (name) => [...insp.querySelectorAll('label')].find((l) => l.textContent.startsWith(name));
+    replies.role_save = new Error('disk full');
+    expect(picked(field('effort'))).toBe('low');
+    await pick(field('effort'), 'high');
+    await waitFor(() => expect(app.toasts.at(-1)?.text).toContain('disk full'));
+    await waitFor(() => expect(picked(field('effort'))).toBe('low'));
+    // The model picker (ModelSelect) and the downgrade picker (RoleMcp) take the same path.
+    await pick(field('model'), 'haiku');
+    await waitFor(() => expect(picked(field('model'))).toBe('opus'));
+  });
+
+  it('new session: an autonomous role shows its permission mode (auto) in the box', async () => {
+    replies.teams_view = { teams: [], roles: [role('dev', 'Dev', { permission_profile: 'autonomous' })] };
+    app.overlay = { kind: 'new-session' };
+    const { container } = render(Dialogs);
+    await waitFor(() => expect(labels(container, 1)).resolves.toContain('Dev'));
+    await pick(container, 'Dev', 1);
+    const perm = [...container.querySelectorAll('label')].find((l) => l.textContent.startsWith('Permissions'));
+    expect(picked(perm)).toBe('auto');
+    expect(shown(perm)).toBe('auto');
   });
 
   it('role inspector: a downgrade on the lead warns', async () => {
@@ -663,7 +693,7 @@ describe('role inspector, Design section and presets (T-7)', () => {
     await fireEvent.keyDown(pane, { key: 'Escape' }); // nothing selected: D is about the team
     await fireEvent.keyDown(pane, { key: 'D', shiftKey: true });
     await tick();
-    expect(container.querySelector('[aria-label="Duplicate"]').textContent).toContain('to shop-api');
+    expect(container.querySelector('[aria-label="Duplicate"]').textContent).toContain('To shop-api');
     await fireEvent.keyDown(pane, { key: '2' });
     await waitFor(() =>
       expect(
@@ -776,8 +806,9 @@ describe('role inspector, Design section and presets (T-7)', () => {
     expect(calls.find(([c]) => c === 'inbox_act')[1]).toEqual({ item: 'alert-7', action: 'reconnect', message: null });
     expect(app.pending).toHaveLength(0); // no undo window: nothing was decided
     await fireEvent.keyDown(root, { key: 'o' });
-    await waitFor(() => expect(Object.values(app.panes).some((p) => p.type === 'settings')).toBe(true));
-    expect(Object.values(app.panes).find((p) => p.type === 'settings')).toMatchObject({
+    // With a project, the MCP deep link is Project settings › MCP overrides (design-notes §12.1).
+    await waitFor(() => expect(app.window?.kind).toBe('project-settings'));
+    expect(app.window).toMatchObject({
       section: 'mcp',
       server: 'penpot',
       projectId: 'shop-api',
@@ -806,8 +837,8 @@ describe('role inspector, Design section and presets (T-7)', () => {
     replies.mcp_secrets_status = { figma: true, other: false };
     replies.mcp_secret_delete = null;
     replies.mcp_secret_set = null;
-    app.panes.s1 = { type: 'settings', section: 'mcp', server: 'figma-local', title: 'Settings' };
-    const { container } = render(SettingsPane, { paneId: 's1' });
+    app.window = { kind: 'settings', section: 'mcp', server: 'figma-local' };
+    const { container } = render(SettingsWindow);
     await waitFor(() => expect(container.querySelectorAll('.kc')).toHaveLength(2));
     await waitFor(() => expect(container.querySelectorAll('.kc')[0].textContent).toContain('Stored in Keychain'));
     expect(calls.find(([c]) => c === 'mcp_secrets_status')[1]).toEqual({ accounts: ['figma', 'other'] });
@@ -843,8 +874,8 @@ describe('role inspector, Design section and presets (T-7)', () => {
       ],
     };
     replies.integration_test = (a) => integ(a.id, 'Notion', { has_secret: true, status: 'connected' });
-    app.panes.s1 = { type: 'settings', section: 'integrations', title: 'Settings' };
-    const { container, getByText } = render(SettingsPane, { paneId: 's1' });
+    app.window = { kind: 'settings', section: 'integrations' };
+    const { container, getByText } = render(SettingsWindow);
     await waitFor(() => getByText('Needs auth'));
     const sec = container.querySelector('[aria-label="Integrations"]');
     expect(container.querySelector('.row.sel').getAttribute('data-integration')).toBe('notion');
@@ -882,7 +913,7 @@ describe('role inspector, Design section and presets (T-7)', () => {
     await waitFor(() =>
       expect(r2.container.textContent).toContain('Penpot MCP needs authentication: ui will fail its tools.'),
     );
-    expect(r2.container.textContent).toContain('Launch anyway');
+    expect(r2.container.textContent).toContain('or launch anyway');
     app.overlay = null;
   });
 

@@ -9,7 +9,6 @@ import {
   capBar,
   changedFields,
   isDirty,
-  keysFor,
   pendingRemoval,
   savedToast,
   share,
@@ -33,7 +32,7 @@ vi.mock('../src/lib/ipc.js', () => ({
   errText: (e) => (typeof e === 'string' ? e : (e?.message ?? String(e))),
 }));
 
-const { default: ProjectSettingsPane } = await import('../src/panes/ProjectSettingsPane.svelte');
+const { default: ProjectSettingsWindow } = await import('../src/components/ProjectSettingsWindow.svelte');
 
 const alloc = (id, weight, over = {}) => ({
   id,
@@ -150,17 +149,9 @@ describe('allocation helpers', () => {
     expect(capBar(1, null, 'a')).toBeNull();
   });
 
-  it('toasts and the keys line', () => {
+  it('toasts', () => {
     expect(savedToast('shop-api', {})).toBe("Saved shop-api's allocation · this week's usage kept");
     expect(savedToast('shop-api', null)).toBe("Removed shop-api from the plan · this week's usage kept");
-    expect(keysFor(out(), null, false, false, false)).toEqual([
-      ['a', 'add'],
-      ['g', 'week planner'],
-    ]);
-    const d = { weight: '50', tier: 'high', cap: '30' };
-    expect(keysFor(view(), d, false, false, false).map((k) => k[0])).toEqual(['x', 'g']);
-    expect(keysFor(view(), d, true, true, false).map((k) => k[0])).toEqual(['esc', 'x']); // invalid: no ⌘+⏎, no g
-    expect(keysFor(null, null, false, false, true)).toEqual([['r', 'retry']]);
   });
 });
 
@@ -185,13 +176,8 @@ describe('Project settings › Allocation', () => {
 
   async function open(v) {
     replies.project_allocation = v;
-    app.panes.p1 = {
-      type: 'project-settings',
-      projectId: 'shop-api',
-      section: 'allocation',
-      title: 'shop-api settings',
-    };
-    const r = render(ProjectSettingsPane, { paneId: 'p1' });
+    app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'allocation' };
+    const r = render(ProjectSettingsWindow);
     await waitFor(() => {
       expect(r.container.querySelector('.alloc h2')).toBeTruthy();
       expect(r.container.querySelector('[aria-busy]')).toBeNull();
@@ -352,13 +338,8 @@ describe('Project settings › Allocation', () => {
 
   it('load error: box with Retry, r reloads', async () => {
     replies.project_allocation = new Error("the core isn't reachable");
-    app.panes.p1 = {
-      type: 'project-settings',
-      projectId: 'shop-api',
-      section: 'allocation',
-      title: 'shop-api settings',
-    };
-    const { container, getByText } = render(ProjectSettingsPane, { paneId: 'p1' });
+    app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'allocation' };
+    const { container, getByText } = render(ProjectSettingsWindow);
     await waitFor(() => getByText(/Couldn't load shop-api's allocation: the core isn't reachable/));
     replies.project_allocation = view();
     await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: 'r' });

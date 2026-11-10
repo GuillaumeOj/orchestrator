@@ -1,6 +1,5 @@
 <script>
   import ClaudeUpdateBlock from '../components/ClaudeUpdateBlock.svelte';
-  import Kbd from '../components/Kbd.svelte';
   import PlanEditor from '../components/PlanEditor.svelte';
   // First run (J0): Claude Code installed, in the supported range and logged in
   // with Pro/Max (otherwise the app stays read-only); projects; workspace trust
@@ -10,6 +9,7 @@
   import { app, applyTheme, closePane, findPane, openProject, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
   import { expandHome, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { tooltip } from '../lib/tooltip.js';
 
   const s = $derived(app.data?.setup);
   const c = $derived(s?.claude);
@@ -90,7 +90,7 @@
   </section>
 
   <section class="card" class:ok={done.projects}>
-    <div class="ch"><span class="mark">{done.projects ? '✓' : '2'}</span><b>Projects</b><span class="grow"></span><button class="btn" onclick={() => (app.overlay = { kind: 'add-project' })}>Add project <Kbd keys="⌘+N" /></button></div>
+    <div class="ch"><span class="mark">{done.projects ? '✓' : '2'}</span><b>Projects</b><span class="grow"></span><button class="btn" use:tooltip={{ label: 'Add project', key: '⌘N' }} onclick={() => (app.overlay = { kind: 'add-project' })}>Add project</button></div>
     {#each projects() as p (p.id)}
       <div class="prow">
         <button class="link" onclick={() => openProject(p.id)}>{p.name}</button>

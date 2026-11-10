@@ -62,6 +62,7 @@
   import { briefEnded } from '../../lib/intake.js';
   import { clearPlan, intakeUi, planContext, plannedEntries, startBrief } from '../../lib/intake.svelte.js';
   import { errText, invoke, listen } from '../../lib/ipc.js';
+  import { isTypingTarget } from '../../lib/keyboard.js';
   import { clearDigest, counts, digest } from '../../lib/now.svelte.js';
   import {
     awaiting,
@@ -77,7 +78,7 @@
     stripText,
     workingText,
   } from '../../lib/overwatch.js';
-  import Kbd from '../Kbd.svelte';
+  import { tooltip } from '../../lib/tooltip.js';
   import OutcomeRow from '../OutcomeRow.svelte';
   import ChatInput from './ChatInput.svelte';
   import ChatLine from './ChatLine.svelte';
@@ -805,7 +806,7 @@
 
   function onKey(e) {
     if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.target.closest?.('input, textarea')) return;
+    if (isTypingTarget(e.target)) return;
     // A long reply takes its own ⏎ (Show more); it is not a card (notes §2.1).
     if (e.key === 'Enter' && e.target.closest?.('article.text')) return;
     const key = e.key === 'Enter' ? 'enter' : e.key.length === 1 ? e.key : e.key.toLowerCase();
@@ -875,25 +876,25 @@
           if (query) query = '';
           else (searchOpen = false), feed?.focus();
         }} />
-        {#if query}<button class="iconbtn" aria-label="Clear the search" onclick={() => (query = '')}>×</button>{:else}<Kbd keys="esc" />{/if}
+        <button class="iconbtn" aria-label={query ? 'Clear the search' : 'Close the search'} use:tooltip={{ label: query ? 'Clear' : 'Close', key: 'esc' }} onclick={() => (query ? (query = '') : ((searchOpen = false), feed?.focus()))}>×</button>
       </div>
     {:else}
       <h2 class="title">{TITLE}</h2>
       {#if canOpenSession(ow)}
-        <button class="status" data-ow-status={ow.status} aria-label={statusTip(ow, true)} title={statusTip(ow, true)} onclick={openOverwatch}><span class="dot {ow.status}" aria-hidden="true"></span> <span class="stext">{statusText(ow)}</span></button>
+        <button class="status" data-ow-status={ow.status} aria-label={statusTip(ow, true)} use:tooltip={statusTip(ow, true)} onclick={openOverwatch}><span class="dot {ow.status}" aria-hidden="true"></span> <span class="stext">{statusText(ow)}</span></button>
       {:else}
         <span class="status" data-ow-status={ow.status} title={statusTip(ow)}><span class="dot {ow.status}" aria-hidden="true"></span> <span class="stext">{statusText(ow)}</span></span>
       {/if}
       <span class="grow"></span>
-      <button class="day" aria-haspopup="dialog" aria-expanded={!!daysPop} title="Older days" onclick={toggleDays}>{past ? dayLabel(past.day) : 'Today'} ▾</button>
-      <button class="iconbtn" aria-label="Search decisions · /" title="Search decisions · /" onclick={openSearch}><span aria-hidden="true">{'\u{F0349}'}</span></button>
+      <button class="day" aria-haspopup="dialog" aria-expanded={!!daysPop} use:tooltip={'Older days'} onclick={toggleDays}>{past ? dayLabel(past.day) : 'Today'} ▾</button>
+      <button class="iconbtn" aria-label="Search decisions" use:tooltip={{ label: 'Search decisions', key: '/' }} onclick={openSearch}><span aria-hidden="true">{'\u{F0349}'}</span></button>
     {/if}
   </header>
   {#if downStrip}
     <div class="strip down" data-ow-strip>
       <span class="l1">{downStrip.title}</span>
       <span class="l2" class:bad={restartError}>{restartError ? `Could not restart: ${restartError}` : downStrip.detail}</span>
-      <button class="btn" disabled={restarting || coreDown} title={coreDown ? 'The core is not reachable' : undefined} onclick={restart}>{restarting ? 'Restarting…' : 'Restart'}</button>
+      <button class="btn" disabled={restarting || coreDown} use:tooltip={coreDown ? { label: 'Restart', detail: 'The core is not reachable' } : null} onclick={restart}>{restarting ? 'Restarting…' : 'Restart'}</button>
     </div>
   {/if}
   {#if daysPop}
@@ -915,7 +916,7 @@
     </div>
   {/if}
   {#if past}
-    <p class="strip" data-past-strip>{dayLabel(past.day, true)} · read-only · <button class="link" onclick={backToToday}>Back to today</button> <Kbd keys="t" /></p>
+    <p class="strip" data-past-strip>{dayLabel(past.day, true)} · read-only · <button class="link" use:tooltip={{ label: 'Back to today', key: 't' }} onclick={backToToday}>Back to today</button></p>
   {:else if searchOpen && q.length < 2}<p class="strip muted">Type 2 or more characters.</p>{/if}
   {#if showFilters && !past && !searching}
     <div class="filters" role="group" aria-label="Filter cards">
@@ -924,8 +925,6 @@
           <button class="filter-chip" class:on={filter === f.id} aria-pressed={filter === f.id} onclick={() => (app.chatFilter = f.id)}>{f.label} {t.counts[f.id]}</button>
         {/if}
       {/each}
-      <span class="grow"></span>
-      <Kbd keys="f" />
     </div>
     {#if strip}
       <p class="strip" data-strip>{strip} · <button class="link" onclick={() => (app.chatFilter = 'all')}>Show all</button></p>
@@ -1000,7 +999,7 @@
         <div class="sep group" role="separator" data-group>{it.label.toUpperCase()}</div>
       {:else if it.type === 'fold'}
         <button class="fold stop" class:sel={cur === 'fold'} class:warn={it.blocking > 0} aria-expanded={it.open} aria-label="{it.n} more open cards{it.blocking ? `, ${it.blocking} blocking` : ''}. {it.open ? 'Fold them' : 'Show them'}" onclick={() => ((sel = 'fold'), (foldOpen = !foldOpen))}>
-          <span aria-hidden="true">{it.open ? '▾' : '▸'}</span> {foldText(it)} · <Kbd keys={it.open ? '⏎' : 'j'} />
+          <span aria-hidden="true">{it.open ? '▾' : '▸'}</span> {foldText(it)}
         </button>
       {:else if it.type === 'line'}
         <ChatLine item={it} expanded={expanded.has(it.key)} pulse={pulse === it.key} {entries} refok={refOk} onref={openRef} ontoggle={() => toggleLine(it.key)} onexpand={() => (expanded = new Set([...expanded, it.key]))} onopen={(id) => it.d && apply(intentFor(it.d, id), it.d)} />
@@ -1055,10 +1054,8 @@
     {/if}
     <section class="digest" aria-label="Today's outcomes">
       <div class="dh stop" class:sel={cur === 'digest'}>
-        <b>{dg.head}{#if dg.clear}{' · '}<button class="link" onclick={clear}>Clear</button>{/if}</b>
+        <b>{dg.head}{#if dg.clear}{' · '}<button class="link" use:tooltip={{ label: 'Clear', key: 'c' }} onclick={clear}>Clear</button>{/if}</b>
         {#if dg.more}<span class="muted">· {dg.more}</span>{/if}
-        <span class="grow"></span>
-        {#if dg.clear}<Kbd keys="c" />{/if}
       </div>
       {#each moreOutcomes ? outcomes : outcomes.slice(0, DIGEST_ROWS) as o (o.id)}
         <OutcomeRow outcome={o} selected={outcome === o.id} onselect={() => (outcome = o.id)} />
@@ -1072,7 +1069,7 @@
   </div>
   {#if past}
     <footer class="foot muted">
-      <span>Read-only · Back to today <Kbd keys="t" /></span>
+      <span>Read-only</span>
     </footer>
   {:else}
     <div class="dock">

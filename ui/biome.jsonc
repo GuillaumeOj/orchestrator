@@ -17,6 +17,8 @@
       // warnings (visible, not blocking) until the UI gets an a11y pass.
       "a11y": {
         "useButtonType": "off",
+        // Select and ModelSelect render the control (a combobox button) inside the label.
+        "noLabelWithoutControl": { "level": "error", "options": { "inputComponents": ["Select", "ModelSelect"] } },
         "noAutofocus": "warn",
         "noNoninteractiveElementToInteractiveRole": "warn",
         "noNoninteractiveTabindex": "warn",

@@ -1,11 +1,12 @@
 <script>
   // Status bar (§9.2): git state of the focused project, live/queued agents with
   // the pressure state in words, the 5h guard chip whenever it holds work, memory.
-  import { app, checkForUpdates, contextAgent, contextProject, openSettings, openSingleton, restartToUpdate } from '../lib/app.svelte.js';
+  import { app, checkForUpdates, contextAgent, contextProject, openSettings, restartToUpdate } from '../lib/app.svelte.js';
   import { claudeChip } from '../lib/claude.js';
   import { clock, mb } from '../lib/format.js';
   import { counts, liveText } from '../lib/now.svelte.js';
   import { powerChip } from '../lib/pacing.js';
+  import { tooltip } from '../lib/tooltip.js';
   import { prChip, updateChip } from '../lib/update.js';
   import Kbd from './Kbd.svelte';
   import PressurePill from './PressurePill.svelte';
@@ -34,31 +35,31 @@
   <span class="live"><span style:color="var(--color-attention-running)" aria-hidden="true">▲</span> {liveText(c)}</span>
   <span class="queued"><span style:color="var(--color-attention-queued)" aria-hidden="true">□</span> queued {c.queued}</span>
   {#if s}
-    <button class="plain" onclick={() => openSingleton('planner')}><PressurePill state={s.state} shadow={app.data?.usage?.shadow} /></button>
+    <PressurePill state={s.state} shadow={app.data?.usage?.shadow} />
     {#if s.five_hour_guard}
       <span class="guard"><span style:color="var(--color-status-blocked-by-limit)" aria-hidden="true">⊘</span> <b>5h guard</b> cap 1{fiveReset ? ` until ${clock(fiveReset * 1000)}` : ''}</span>
     {/if}
   {/if}
   {#if power}
-    <button class="plain chip" class:warn={power.warn} onclick={() => openSingleton('planner')} title="Off-hours work (FR-816)"><span aria-hidden="true">☾</span> {power.text}</button>
+    <span class="offh" class:warn={power.warn} use:tooltip={'Off-hours work (FR-816)'}><span aria-hidden="true">☾</span> {power.text}</span>
   {/if}
   <span class="grow"></span>
-  {#if watch?.alert}<span class="memwarn" title="WebKit helper above {watch.warn_mb} MB · logged every minute in {watch.log}"><span aria-hidden="true">⚠</span> {watch.alert}</span>{/if}
+  {#if watch?.alert}<span class="memwarn" use:tooltip={`WebKit helper above ${watch.warn_mb} MB · logged every minute in ${watch.log}`}><span aria-hidden="true">⚠</span> {watch.alert}</span>{/if}
   {#if cc}
-    <button class="plain chip claude {cc.kind}" onclick={() => openSettings('claude')} title={cc.title}>
+    <button type="button" class="plain chip claude {cc.kind}" onclick={() => openSettings('claude')} use:tooltip={cc.title}>
       {#if cc.kind === 'updating'}<span class="spinning" aria-hidden="true">◐</span> {/if}{cc.text}{#if cc.version}<span class="ver">{' '}{cc.version}</span>{/if}
     </button>
   {/if}
   {#if pr}
-    <button class="plain chip upd ready" onclick={() => openSettings('builds')} title={pr.title}>{pr.text}</button>
+    <button type="button" class="plain chip upd ready" onclick={() => openSettings('builds')} use:tooltip={pr.title}>{pr.text}</button>
   {/if}
   {#if upd?.kind === 'downloading'}
-    <span class="upd" title={upd.title}>{upd.text}</span>
+    <span class="upd" use:tooltip={upd.title}>{upd.text}</span>
   {:else if upd}
-    <button class="plain chip upd" class:ready={upd.kind === 'ready'} class:warn={upd.kind === 'error'} onclick={upd.kind === 'ready' ? () => restartToUpdate() : checkForUpdates} title={upd.title}>{upd.text}</button>
+    <button class="plain chip upd" class:ready={upd.kind === 'ready'} class:warn={upd.kind === 'error'} onclick={upd.kind === 'ready' ? () => restartToUpdate() : checkForUpdates} use:tooltip={upd.title}>{upd.text}</button>
   {/if}
-  {#if m}<span title="app {mb(m.app_mb)} · agents {mb(m.agents_mb)} · shells {mb(m.shells_mb)}">RAM {mb(m.total_mb)} / {mb(m.system_mb)}</span><span class="muted">·</span>{/if}
-  <span class:armed={app.leader}>{app.leader ? 'LEADER' : 'leader'} <Kbd keys="⌘+;" /></span>
+  {#if app.leader}<span class="leader" data-leader>LEADER <Kbd keys="⌘+;" /> then</span>{/if}
+  {#if m}<span use:tooltip={`app ${mb(m.app_mb)} · agents ${mb(m.agents_mb)} · shells ${mb(m.shells_mb)}`}>RAM {mb(m.total_mb)} / {mb(m.system_mb)}</span>{/if}
 </footer>
 
 <style>
@@ -88,8 +89,11 @@
     font: var(--text-label);
     cursor: pointer;
   }
-  .chip.warn {
-    border-color: var(--color-pacing-amber);
+  .offh {
+    color: var(--color-text-secondary);
+  }
+  .offh.warn {
+    color: var(--color-pacing-amber);
   }
   .chip.upd.ready {
     border-color: var(--color-accent-default);
@@ -128,8 +132,15 @@
     color: var(--color-status-error);
     font-weight: var(--font-weight-semibold);
   }
-  .armed {
-    color: var(--color-accent-default);
-    font-weight: var(--font-weight-semibold);
+  /* The leader overlay (§7): only while ⌘; is held, an accent chip. */
+  .leader {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: 0 var(--space-sm);
+    border: var(--border-width-default) solid var(--color-accent-default);
+    border-radius: var(--radius-sm);
+    background: var(--color-accent-subtle);
+    color: var(--color-text-secondary);
   }
 </style>

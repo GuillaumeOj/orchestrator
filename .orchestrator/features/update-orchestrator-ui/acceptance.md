@@ -103,7 +103,7 @@ Storyboard `06-flow-settings.png`. Test: `windows.test.js`, `floatwindow.test.js
 
 ### F10 `project-settings` · Project settings window
 Storyboard `06-flow-project-settings.png`. Test: `windows.test.js`, `settings-sections.test.js`, `projectgeneral.test.js`.
-1. Project pane gear → window "Project settings · orch", 7 sections, General first in the nav · *04-project-settings-files-1280* · dn §3.1.
+1. Project pane gear → window "Project settings · orch", 7 sections, General listed first in the nav, opens on Task backend (default section `backend`, or the deep link's section) · *04-project-settings-files-1280* · dn §3.1.
 2. General → rename + default branch Select are the only dirty fields; footer Save + Revert; path actions, fetch, trust, worktrees, danger zone; untrusted state shows Trust in a pane · *04-project-settings-general-1280*, *…-untrusted-1280* · spec §3.1 (Name, Default branch ship).
 3. Task backend, Linear not connected → link opens Settings › Integrations, which **replaces** this window; Discard guard if dirty · *04-project-settings-task-backend-linear-not-connected-1280* · dn §3.2.
 4. Files → access Select `read` / `read & write` per row; missing-file state · *04-project-settings-files-1280*, *…-missing-file-1280* · R11.

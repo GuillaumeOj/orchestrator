@@ -180,7 +180,7 @@ beforeEach(() => {
   app.panes = {};
   app.focused = null;
   app.selection = null;
-  app.mission = { projects: null };
+  app.workspace = { project: 'all' };
 });
 
 describe('every surface shows the same numbers (spec §6.1)', () => {
@@ -226,7 +226,8 @@ describe('surfaces render the record: status, reason, since', () => {
     expect(chip.getAttribute('title')).toContain('→ lead · review of T-4');
     openPane({ type: 'agent', agentId: 'rev-1' });
     const pane = render(AgentPane, { paneId: 'p1' }).container;
-    expect(text(pane.querySelector('.ah'))).toMatch(want);
+    // The strip carries the wait when one shows (design-notes §8: WaitingChip strip, else header).
+    expect(text(pane.querySelector('.strip'))).toMatch(want);
     const insp = render(Inspector).container;
     expect(text(insp)).toMatch(want);
     expect(text(insp)).toContain('Waiting on');

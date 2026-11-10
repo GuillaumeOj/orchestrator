@@ -13,6 +13,7 @@
     ciFooter,
     ciHeader,
     ciLabel,
+    ciWord,
     jobColor,
     jobLabel,
     jobName,
@@ -22,8 +23,10 @@
     positionBadge,
     REBASED_TIP,
     refreshError,
+    reviewWord,
     toPush,
   } from '../lib/pr.js';
+  import { tooltip } from '../lib/tooltip.js';
 
   let { run, feature, onrun = () => {} } = $props();
   const now = $derived(now30());
@@ -39,6 +42,8 @@
   const push = $derived(open ? toPush(pr.unpushed) : null);
   const checked = $derived(pr ? checkedText(pr.checked_at_ms, { now, stale }) : null);
   const watched = $derived(st === 'checking' || open);
+  const word = $derived(open ? ciWord(pr.ci) : null);
+  const review = $derived(open ? reviewWord(pr.review_decision) : null);
 
   let busy = $state(false);
   async function refresh() {
@@ -148,14 +153,16 @@
   <p class="muted nline">No PR yet: the lead asks with request_pr after integration (PR gate).</p>
 {:else}
   <div class="prline" class:stale bind:this={line}>
-    <button class="link pr" title={run.pr_url} aria-label="Pull request {number ? `#${number}` : ''}, opens in the browser" onclick={() => openUrl(run.pr_url)}>{linkText}</button>
+    <button type="button" class="link pr" use:tooltip={run.pr_url} aria-label="Pull request {number ? `#${number}` : ''}, opens in the browser" onclick={() => openUrl(run.pr_url)}>{linkText} <span class="ext" aria-hidden="true">{'\u{F03CC}'}</span></button>
 
     {#if st === 'checking'}
       <span class="muted cap">checking…</span>
     {:else if open}
       <span class="ci" role="presentation" bind:this={wrap} onmouseenter={hoverIn} onmouseleave={hoverOut} onkeydown={popKey}>
         <button
+          type="button"
           class="cibtn"
+          class:on={shown}
           bind:this={ciBtn}
           aria-label={ciLabel(pr.ci)}
           aria-expanded={shown}
@@ -189,12 +196,14 @@
         {/if}
       </span>
 
-      <span class="badge cap" style:color={stale ? null : pos.color} title={pos.tip}>{level >= 3 ? pos.short : pos.text}</span>
+      {#if word}<span class="cap" data-ci-word style:color={stale ? 'var(--color-text-muted)' : word.color}>{word.text}</span><span class="cap muted" aria-hidden="true">·</span>{/if}
+      <span class="badge cap" style:color={stale ? null : pos.color} use:tooltip={pos.tip}>{level >= 3 ? pos.short : pos.text}</span>
+      {#if review}<span class="cap muted" aria-hidden="true">·</span><span class="cap" data-review style:color={stale ? 'var(--color-text-muted)' : review.color}>{review.text}</span>{/if}
       {#if push}
-        <span class="cap muted" title={push.tip}>{level >= 4 ? push.short : push.text}</span>
+        <span class="cap muted" use:tooltip={push.tip}>{level >= 4 ? push.short : push.text}</span>
       {/if}
       {#if pr.rewritten}
-        <span class="cap" style:color={stale ? 'var(--color-text-muted)' : 'var(--color-status-waiting-for-you)'} title={REBASED_TIP}>{level >= 5 ? '↻' : 'rebased'}</span>
+        <span class="cap" style:color={stale ? 'var(--color-text-muted)' : 'var(--color-status-waiting-for-you)'} use:tooltip={REBASED_TIP}>{level >= 5 ? '↻' : 'rebased'}</span>
       {/if}
     {:else if st === 'merged'}
       <span class="cap" style:color="var(--color-status-done)">merged</span>
@@ -208,7 +217,7 @@
     {/if}
     {#if checked && st !== 'checking'}
       {#if level < 2}
-        <span class="cap muted" title={stale ? `Last check failed: ${pr.error}. Showing the last known status.` : checked.clock}>
+        <span class="cap muted" use:tooltip={stale ? `Last check failed: ${pr.error}. Showing the last known status.` : checked.clock}>
           {busy ? 'checking…' : level >= 1 ? checked.short : checked.text}
         </span>
       {/if}
@@ -220,7 +229,7 @@
         aria-label="Refresh PR status"
         aria-busy={busy}
         disabled={busy || st === 'checking'}
-        title={level >= 1 && checked ? `Refresh PR status · ${checked.clock}` : 'Refresh PR status'}
+        use:tooltip={level >= 1 && checked ? `Refresh PR status · ${checked.clock}` : 'Refresh PR status'}
         onclick={refresh}><span aria-hidden="true">{SPIN}</span></button
       >
     {/if}
@@ -265,15 +274,28 @@
     position: relative;
     display: inline-flex;
   }
+  /* The CI chip (04-feature-pr-*): dot and n/m in a bordered chip, the accent border while its popover is open. */
   .cibtn {
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    padding: 0;
+    height: 22px;
+    padding: 0 var(--space-sm);
     background: none;
-    border: 0;
+    border: var(--border-width-default) solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
     color: inherit;
     cursor: pointer;
+  }
+  .cibtn:hover,
+  .cibtn.on {
+    background: var(--color-surface-raised);
+  }
+  .cibtn.on {
+    border-color: var(--color-accent-default);
+  }
+  .ext {
+    font: var(--text-icon);
   }
   .dot {
     width: var(--size-status-dot, 8px);

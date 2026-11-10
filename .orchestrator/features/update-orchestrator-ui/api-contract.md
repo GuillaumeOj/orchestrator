@@ -8,7 +8,7 @@
 |---|---|---|
 | `Term::cwd(&self) -> Option<PathBuf>` (`terms.rs`) | cwd of the **shell's pid** (not the foreground group) | macOS `proc_pidinfo(PROC_PIDVNODEPATHINFO)` → `pvi_cdir.vip_path`; elsewhere `readlink /proc/<pid>/cwd`; `None` if the process is gone; check the child has not exited first (`try_wait`) so a reused pid is never read |
 | Tauri command `term_cwd(id: u32) -> Option<String>` (`commands.rs`, next to `term_resize`; registered after `term_kill`) | `null` when the terminal id is unknown or exited | never an error for a closed terminal: the UI polls it |
-| Shell name | the term spawn result (or `TermInfo`, whichever the UI reads at open) gains `shell: String` = basename of the program actually spawned for an interactive shell (e.g. `"zsh"`; same source as the spawn, so it can't disagree with `login_shell()` / the default program) | for command terminals (`run` set) it is still the shell basename; the UI ignores it there |
+| Shell name | `term_spawn` result `TermInfo` (`core.rs`) gains `shell: String` = basename of the program actually spawned for an interactive shell (e.g. `"zsh"`; same source as the spawn, so it can't disagree with `login_shell()` / the default program) | for command terminals (`run` set) it is still the shell basename; the UI ignores it there |
 
 UI: polls `term_cwd` every 1500 ms per live dock shell while `document.visibilityState === 'visible'`, skips a shell once OSC 7 was seen (design-notes §6).
 
@@ -17,8 +17,8 @@ UI: polls `term_cwd` every 1500 ms per live dock shell while `document.visibilit
 | Command | Args | Result | Rules |
 |---|---|---|---|
 | `rename_project` | `{ id, name }` | the updated project record | name trimmed, 1–80 chars, unique among the other projects (case-insensitive, the project being renamed excluded, so keeping or re-casing its own name is allowed; two projects may already share a folder-derived name) → error text the UI shows under the field: "A project named <name> already exists" / "Name can't be empty". Emits the existing project-changed topic so the sidebar, tabs and windows refresh. Write only the `name` / `default_branch` column (a dedicated store update), not `upsert_project` with a copy read earlier: that upsert overwrites every column and would undo a concurrent edit |
-| `set_default_branch` | `{ id, branch }` | the updated project record | `branch` must be a local branch of the project's repo (`git rev-parse --verify refs/heads/<branch>`) → else error "No branch <branch> in this repo". Writes `projects.default_branch`. Back checks whether the typed setting `base_branch` (`ProjectSettings.base_branch`, `orch-store/src/teams.rs`, read through `typed_settings()` in `agent-runtime/src/team.rs` and `policy/rt.rs`) already plays this role and, if so, documents in its report which one the General field writes and why (one field, one source) |
-| `project_branches` (if no equivalent exists) | `{ id }` | `string[]` local branches, default first | feeds the Default branch Select |
+| `set_default_branch` | `{ id, branch }` | the updated project record | `branch` must be a local branch of the project's repo (`git rev-parse --verify refs/heads/<branch>`) → else error "No branch <branch> in this repo". Writes `projects.default_branch`. **Settled:** the General field writes `projects.default_branch`. `ProjectSettings.base_branch` stays an optional per-project override used only to pick a feature's base (`team.rs`: spec base, else `base_branch`, else `default_branch`); it is not the project's default branch and is not touched here |
+| `project_branches` (new; no equivalent existed) | `{ id }` | `string[]` local branches, default first | feeds the Default branch Select |
 
 If equivalent commands already exist, back reuses them and lists their names in the report; front calls what the report names.
 

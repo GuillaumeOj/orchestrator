@@ -11,11 +11,10 @@
     changedFields,
     draftOf,
     isDirty,
-    keysFor,
+
     num,
     pendingRemoval,
     savedToast,
-    TIERS,
     tableRows,
     toForm,
     validate,
@@ -23,7 +22,10 @@
   import { app, refresh, toast } from '../lib/app.svelte.js';
   import { ppAmount } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import Kbd from './Kbd.svelte';
+  import { isTypingTarget } from '../lib/keyboard.js';
+  import { TIERS as TIER_OPTIONS } from '../lib/options.js';
+  import { tooltip } from '../lib/tooltip.js';
+  import Select from './Select.svelte';
 
   let { project, name } = $props();
   let view = $state(null); // ProjectAllocationView
@@ -43,7 +45,7 @@
   const rows = $derived(view ? tableRows(view, draft, name) : []);
   const mine = $derived(!draft || pending || errors.weight ? null : (rows.find((r) => r.own)?.share ?? null));
   const bar = $derived(view?.allocation && confirmed ? capBar(view.allocation.used_pct, num(draft?.cap ?? ''), name) : null);
-  const keys = $derived(keysFor(view, draft, dirty, invalid, !!loadError && !view));
+
 
   function take(v) {
     view = v;
@@ -123,10 +125,16 @@
 
   const planner = () => (app.overlay = { kind: 'plan' });
 
-  /** Called by the pane for every key event while this section is shown. */
+  /** Unsaved changes (the window's Discard guard). */
+  export function hasChanges() {
+    return dirty || (!!view && !view.allocation && !!draft);
+  }
+
+  /** Called by the window for every key event while this section is shown. */
   export function onKey(e) {
     if (e.metaKey && e.key === 'Enter') return (e.preventDefault(), save());
-    const typing = e.target.closest('input, textarea, select');
+    if (e.defaultPrevented) return; // an Esc a Select consumed
+    const typing = isTypingTarget(e.target);
     if (e.key === 'Escape' && typing && (dirty || draft)) {
       // In a field esc first blurs it; the next one cancels.
       refocus();
@@ -168,20 +176,20 @@
   {#if loadError && !view}
     <p class="box errbox" role="alert">
       <span>✕ Couldn't load {name}'s allocation: {loadError}</span><span class="grow"></span>
-      <button class="btn ghost" onclick={load}>Retry <Kbd keys="r" /></button>
+      <button class="btn ghost" use:tooltip={{ label: 'Retry', key: 'r' }} onclick={load}>Retry</button>
     </p>
   {:else if !view}
     <div class="skel" aria-busy="true"><i></i><i class="short"></i><i></i></div>
     <h3>Rest of the plan</h3>
     <div class="skel wide" aria-busy="true"><i></i><i></i><i></i><i></i></div>
-    <div class="foot"><button class="btn primary" disabled>Save <Kbd keys="⌘+⏎" /></button><button class="btn ghost" disabled>Cancel <Kbd keys="esc" /></button></div>
+    <div class="foot"><button class="btn primary" disabled>Save</button><button class="btn ghost" disabled>Cancel</button></div>
   {:else}
     {#if !confirmed}
       <p class="box info">ⓘ No weekly plan yet. The core proposes an even split; nothing is applied until you set it up.</p>
       <h3>Proposed split <span class="muted">even · read only · nothing applied</span></h3>
     {:else if !view.allocation && !draft}
       <p class="box info">ⓘ {name} isn't in this week's plan. Its agents are charged to other sessions.</p>
-      <div><button class="btn primary" onclick={add}>Add to the weekly plan <Kbd keys="a" /></button></div>
+      <div><button class="btn primary" use:tooltip={{ label: 'Add to the weekly plan', key: 'a' }} onclick={add}>Add to the weekly plan</button></div>
     {:else}
       <div class="line">
         <label class="lab" for="alloc-weight">Weight</label>
@@ -192,7 +200,7 @@
       {#if errors.weight}<p class="ferr" id="alloc-weight-err">{errors.weight}</p>{/if}
       <div class="line" class:off={pending}>
         <label class="lab" for="alloc-tier">Tier</label>
-        <select id="alloc-tier" class="field auto" disabled={pending} bind:value={draft.tier}>{#each TIERS as t (t)}<option value={t}>{t}</option>{/each}</select>
+        <Select id="alloc-tier" width="hug" disabled={pending} bind:value={draft.tier} options={TIER_OPTIONS} />
         {#if changed.tier && !pending}<span class="chg">• changed</span>{/if}
       </div>
       <div class="line" class:off={pending}>
@@ -218,8 +226,7 @@
       {/if}
       {#if pending}
         <p class="box warnbox">
-          <span>▲ From the save on, {name}'s agents are charged to other sessions.</span><span class="grow"></span>
-          <button class="btn ghost" onclick={keep}>Keep in the plan <Kbd keys="esc" /></button>
+          <span>▲ From the save on, {name}'s agents are charged to other sessions. Cancel keeps it in the plan.</span>
         </p>
       {/if}
     {/if}
@@ -237,18 +244,17 @@
     </div>
 
     {#if !confirmed}
-      <div><button class="btn primary" onclick={planner}>Set up the weekly plan <Kbd keys="g" /></button></div>
+      <div><button class="btn primary" use:tooltip={{ label: 'Edit weekly plan', key: 'g' }} onclick={planner}>Edit weekly plan…</button></div>
       <p class="muted note">No fields, no Save: the section confirms nothing by itself.</p>
     {:else}
-      <button class="link" onclick={planner} disabled={dirty} title={dirty ? 'Save or cancel first' : ''}>Edit the plan in the Week planner{#if !dirty} <Kbd keys="g" />{/if}</button>
-      {#if draft && view.allocation && !pending}<button class="link danger" onclick={remove}>Remove from the plan <Kbd keys="x" /></button>{/if}
+      <button class="link" onclick={planner} disabled={dirty} use:tooltip={dirty ? { label: 'Edit weekly plan', detail: 'Save or cancel first' } : { label: 'Edit weekly plan', key: 'g' }}>Edit weekly plan…</button>
+      {#if draft && view.allocation && !pending}<button class="link danger" use:tooltip={{ label: 'Remove from the plan', key: 'x' }} onclick={remove}>Remove from the plan</button>{/if}
       {#if saveError}<p class="box errbox" role="alert">✕ Couldn't save: {saveError}. Nothing was changed.</p>{/if}
       <div class="foot">
-        <button class="btn primary" disabled={busy || !dirty || invalid} onclick={save}>Save <Kbd keys="⌘+⏎" /></button>
-        <button class="btn ghost" disabled={!dirty && !(draft && !view.allocation)} onclick={cancel}>Cancel <Kbd keys="esc" /></button>
+        <button class="btn primary" disabled={busy || !dirty || invalid} use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={save}>Save</button>
+        <button class="btn ghost" disabled={!dirty && !(draft && !view.allocation)} use:tooltip={{ label: 'Cancel', key: 'esc' }} onclick={cancel}>Cancel</button>
       </div>
     {/if}
-    <p class="muted hint">{#each keys as [k, label], i (k)}{#if i}{' · '}{/if}<Kbd keys={k} /> {label}{/each}</p>
   {/if}
 </div>
 
@@ -270,8 +276,7 @@
     font: var(--text-caption);
   }
   .lead,
-  .note,
-  .hint {
+  .note {
     margin: 0;
     font: var(--text-caption);
   }
