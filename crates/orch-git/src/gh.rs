@@ -294,7 +294,7 @@ pub fn parse_pr_list(json: &str) -> Result<Vec<PullRequest>> {
             state: p["state"].as_str().unwrap_or("").into(),
             url: p["url"].as_str().unwrap_or("").into(),
             is_draft: p["isDraft"].as_bool().unwrap_or(false),
-            review_decision: review_decision(&p),
+            review_decision: review_decision(p),
             checks: summarize_rollup(&p["statusCheckRollup"]),
         })
         .collect())
