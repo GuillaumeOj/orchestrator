@@ -195,11 +195,12 @@ impl Terms {
     pub fn kill(&self, id: u32) {
         let t = self.map.lock_ok().remove(&id);
         if let Some(t) = t {
-            if let Some(pid) = t.pid {
+            let mut c = t.child.lock_ok();
+            // Only while the shell is unreaped: cwd() may have reaped it, and its pid may be reused.
+            if let (Some(pid), Ok(None)) = (t.pid, c.try_wait()) {
                 // SAFETY: plain syscall on a pid we spawned.
                 unsafe { libc::killpg(pid as i32, libc::SIGHUP) };
             }
-            let mut c = t.child.lock_ok();
             let _ = c.kill();
             let _ = c.wait();
             t.output.close();
