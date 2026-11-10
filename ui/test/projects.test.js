@@ -270,9 +270,9 @@ describe('project pane', () => {
   it('a failing PR load still toasts its error', async () => {
     let n = 0;
     replies.project_detail = () => (++n === 1 ? Promise.resolve(detail) : Promise.reject(new Error('gh not found')));
-    const { container, getByText } = render(ProjectPane, { paneId: 'p1' });
+    const { container } = render(ProjectPane, { paneId: 'p1' });
     await waitFor(() => expect(text(container)).toContain('shop-api.worktrees/old'));
-    await fireEvent.click(getByText('Load'));
+    await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: 'p' });
     await waitFor(() => expect(JSON.stringify(app.toasts)).toContain('gh not found'));
   });
 
@@ -283,9 +283,14 @@ describe('project pane', () => {
     };
     const { container, getAllByText } = render(ProjectPane, { paneId: 'p1' });
     await waitFor(() => expect(text(container)).toContain('used by back-2'));
-    const btn = /** @type {HTMLButtonElement} */ (container.querySelectorAll('button[aria-label="Remove worktree…"]')[1]);
+    const btn = /** @type {HTMLButtonElement} */ (
+      container.querySelectorAll('button[aria-label="Remove worktree…"]')[1]
+    );
     expect(btn.disabled).toBe(true);
-    expect(/** @type {HTMLButtonElement} */ (container.querySelectorAll('button[aria-label="Remove worktree…"]')[0]).disabled).toBe(false);
+    expect(
+      /** @type {HTMLButtonElement} */ (container.querySelectorAll('button[aria-label="Remove worktree…"]')[0])
+        .disabled,
+    ).toBe(false);
   });
 
   it('J11: archive by default, unmerged worktrees kept unless ticked', async () => {
