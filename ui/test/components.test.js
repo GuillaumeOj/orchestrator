@@ -229,6 +229,9 @@ describe('agent pane: header and strips (§1.3.1)', () => {
       buttons.includes('Resume') ? 1 : 0,
     );
     if (perm) expect(txt(p.strip)).toContain('also in Decisions');
+    else expect(txt(p.strip)).not.toContain('also in Decisions');
+    // One primary per strip: Allow once in a permission strip, else Resume (04-agent-strips).
+    expect(p.strip.querySelectorAll('.btn.primary').length).toBe(buttons.length ? 1 : 0);
     expect(txt(p.strip)).not.toContain('⌘⇧I');
   });
 

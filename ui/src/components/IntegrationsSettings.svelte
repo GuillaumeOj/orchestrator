@@ -7,6 +7,7 @@
   import { confirm, now30, openSettings, runInPane, toast } from '../lib/app.svelte.js';
   import { CONNECTOR_TOOLS, checkedAt, DESIGN_TOOLS, INTEGRATION_COPY, integrationDetail, needsUser, sortIntegrations } from '../lib/ecosystem.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { keyIgnored } from '../lib/keyboard.js';
   import { move } from '../lib/select.js';
   import { tooltip } from '../lib/tooltip.js';
   import ConnBadge from './ConnBadge.svelte';
@@ -117,7 +118,7 @@
   const lastCheck = $derived(Math.max(0, ...(items ?? []).map((i) => i.checked_at_ms ?? 0)) || null);
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select, button') || e.metaKey || e.ctrlKey || e.altKey || !rows.length) return;
+    if (keyIgnored(e, { controls: true }) || !rows.length) return;
     const k = e.key;
     if (k === 'j' || k === 'ArrowDown') selId = move(rows, cur?.id, 1);
     else if (k === 'k' || k === 'ArrowUp') selId = move(rows, cur?.id, -1);

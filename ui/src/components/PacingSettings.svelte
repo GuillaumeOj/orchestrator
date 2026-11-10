@@ -6,7 +6,7 @@
   import { onMount } from 'svelte';
   import { app, openPlanner, toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { isTypingTarget } from '../lib/keyboard.js';
+  import { keyIgnored } from '../lib/keyboard.js';
   import { checkCap, derivedCaps } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
   import { tooltip } from '../lib/tooltip.js';
@@ -127,7 +127,7 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
+    if (keyIgnored(e)) return;
     if (e.key === 'r' && loadError) {
       e.preventDefault();
       load();

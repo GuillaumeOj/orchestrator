@@ -10,7 +10,7 @@
   import { activeAgents, app, closePane, confirm, openAgent, openDiff, openProjectSettings, openShell, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
   import { ago, dayTime, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { isTypingTarget } from '../lib/keyboard.js';
+  import { keyIgnored } from '../lib/keyboard.js';
   import { onTopics, statusOf } from '../lib/now.svelte.js';
   import { tooltip } from '../lib/tooltip.js';
 
@@ -121,7 +121,7 @@
   ]);
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
+    if (keyIgnored(e)) return;
     const k = { f: fetchNow, p: loadPrs, t: () => openTrust(p.id), x: startRemoval }[e.key];
     if (k) {
       e.preventDefault();
@@ -207,7 +207,7 @@
     </section>
 
     <section class="card">
-      <div class="ch"><b>Pull requests</b><span class="muted">gh</span><span class="grow"></span><button type="button" class="btn ghost" onclick={loadPrs} disabled={!!busy} use:tooltip={{ label: 'Load pull requests', key: 'p' }}>{busy === 'prs' ? 'Loading…' : 'Load'}</button></div>
+      <div class="ch"><b>Pull requests</b><span class="muted">gh</span><span class="grow"></span><button type="button" class="btn" onclick={loadPrs} disabled={!!busy} use:tooltip={{ label: 'Load PRs', key: 'p' }}>{busy === 'prs' ? 'Loading…' : 'Load PRs'}</button></div>
       {#if prs?.error}<p class="muted">{prs.error}</p>
       {:else if prs}
         {#each prs as pr (pr.number)}

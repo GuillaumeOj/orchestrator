@@ -510,7 +510,7 @@ describe('planner, banner, status bar, board', () => {
     await tick();
     // The card menu is the shared Menu (on the body), keys right-aligned (04-board-pane, §9 bug 3).
     const menu = document.body.querySelector('[role="menu"][aria-label="Task menu"]');
-    for (const item of ['Open feature', 'Run off-hours', 'Move to', 'Assign node…'])
+    for (const item of ['Open feature', 'Run off-hours', 'Edit', 'Move to', 'Assign'])
       expect(menu.textContent).toContain(item);
     expect(menu.textContent).not.toContain('Open task');
     await fireEvent.keyDown(document.activeElement, { key: 'Escape' });

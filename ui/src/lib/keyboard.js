@@ -62,6 +62,11 @@ const TYPING = 'input, textarea, select, [role="combobox"]';
 /** The key event's target takes text (pane-local single keys leave it alone). */
 export const isTypingTarget = (el) => !!el?.closest?.(TYPING);
 
+/** A pane-local single key leaves this event alone: a modifier is held, a field has the
+ *  focus, or (`controls`) a button or link does (its own ⏎ / space). */
+export const keyIgnored = (e, { controls = false } = {}) =>
+  e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target) || (controls && !!e.target?.closest?.('button, a'));
+
 /** `cmd+shift+i`-style name; letters lowercased, digits from `code` (layout safe). */
 export function chordName(e) {
   let key = e.key;

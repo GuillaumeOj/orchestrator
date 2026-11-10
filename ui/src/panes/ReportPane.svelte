@@ -12,7 +12,7 @@
   import { dayHm, dayTime } from '../lib/format.js';
   import { reportLine, reportTip } from '../lib/intake.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { isTypingTarget } from '../lib/keyboard.js';
+  import { keyIgnored } from '../lib/keyboard.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { ACTION_LABEL, API_TIP, delta, kpis, minutes, noData, overwatchLast, reportMarkdown, stateBar, TABS, usd, weekNo } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
@@ -77,7 +77,7 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
+    if (keyIgnored(e)) return;
     const k = e.key;
     const n = Number(k);
     if (n >= 1 && n <= 4) tab = TABS[n - 1].id;

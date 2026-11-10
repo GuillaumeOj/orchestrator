@@ -7,7 +7,7 @@
   import { app, confirm, openEditor, toast } from '../lib/app.svelte.js';
   import { lineKind, patchByFile, STATUS_WORD } from '../lib/diff.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { isTypingTarget } from '../lib/keyboard.js';
+  import { keyIgnored } from '../lib/keyboard.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { tooltip } from '../lib/tooltip.js';
 
@@ -79,7 +79,7 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
+    if (keyIgnored(e)) return;
     const k = { j: () => move(1), k: () => move(-1), r: load, c: startPr, e: () => current && openEditor(`${spec.path}/${current.path}`, null, { projectId: spec.projectId }) }[e.key];
     if (k) {
       e.preventDefault();

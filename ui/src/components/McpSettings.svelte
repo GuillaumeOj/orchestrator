@@ -28,6 +28,7 @@
     usedByTitle,
   } from '../lib/ecosystem.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { keyIgnored } from '../lib/keyboard.js';
   import { tooltip } from '../lib/tooltip.js';
   import ConnBadge from './ConnBadge.svelte';
   import SecretField from './SecretField.svelte';
@@ -233,7 +234,7 @@
       root?.focus();
       return;
     }
-    if (e.target.closest('input, textarea, select, button') || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (keyIgnored(e, { controls: true })) return;
     const k = e.key;
     if (k === 'j' || k === 'ArrowDown') sel = Math.min(servers.length - 1, sel + 1);
     else if (k === 'k' || k === 'ArrowUp') sel = Math.max(0, sel - 1);

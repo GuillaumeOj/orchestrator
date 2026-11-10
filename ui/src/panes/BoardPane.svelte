@@ -146,7 +146,7 @@
     { id: 'open', label: 'Open feature', key: '⏎', disabled: !t.feature_id, reason: 'Not part of a feature', run: () => openFeature(t.feature_id) },
     { id: 'off', label: isOff(t) ? 'Run in working hours' : 'Run off-hours', key: '⇧O', disabled: !offHoursAllowed(offHours), reason: OFF_DISABLED, run: () => toggleOffHours(t) },
     { separator: true },
-    { id: 'edit', label: 'Edit…', key: 'e', run: () => startEdit(t) },
+    { id: 'edit', label: 'Edit', key: 'e', run: () => startEdit(t) },
     ...(remoteLinkLabel(t) ? [{ id: 'remote', label: remoteLinkLabel(t), key: 'g', run: () => openRemote(t) }] : []),
     {
       id: 'move',
@@ -154,7 +154,7 @@
       key: 'm',
       items: COLUMNS.map((col, i) => ({ id: col.id, label: col.label, key: String(i + 1), disabled: col.id === t.status, reason: 'Already there', run: () => update(t, { status: col.id }) })),
     },
-    { id: 'assign', label: 'Assign node…', key: 'a', disabled: !runOf(t), reason: 'No active run to assign in', run: () => (form = { kind: 'assign', task: t, node: t.node ?? '' }) },
+    { id: 'assign', label: 'Assign', key: 'a', disabled: !runOf(t), reason: 'No active run to assign in', run: () => (form = { kind: 'assign', task: t, node: t.node ?? '' }) },
   ];
 
   function onKey(e) {

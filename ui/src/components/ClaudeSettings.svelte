@@ -5,6 +5,7 @@
   import { app, claudeAct, toast } from '../lib/app.svelte.js';
   import { account, compat, hint, installedHeader, keysOf, updateBlock } from '../lib/claude.js';
   import { shortPath } from '../lib/format.js';
+  import { keyIgnored } from '../lib/keyboard.js';
   import { tooltip } from '../lib/tooltip.js';
   import ClaudeUpdateBlock from './ClaudeUpdateBlock.svelte';
 
@@ -27,7 +28,7 @@
   }
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select, button, a') || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (keyIgnored(e, { controls: true })) return;
     const def = block.buttons.find((b) => b.def);
     if (e.key === 'u' && keys.u) claudeAct('update');
     else if (e.key === 'r' && keys.r) claudeAct('check');

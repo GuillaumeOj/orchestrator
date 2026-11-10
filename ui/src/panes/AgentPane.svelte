@@ -22,7 +22,7 @@
   import { errText } from '../lib/ipc.js';
   import { runNowCost } from '../lib/mission.js';
   import { attention, openDecisions, statusOf } from '../lib/now.svelte.js';
-  import { cacheState, sessionPp as ppOf, STATUS } from '../lib/status.js';
+  import { sessionPp as ppOf, STATUS } from '../lib/status.js';
   import { tooltip } from '../lib/tooltip.js';
 
   let { paneId } = $props();
@@ -34,9 +34,6 @@
   const rec = $derived(a ? attention(a.id) : null);
   const ds = $derived(statusOf(spec?.agentId));
   const fresh = $derived(ds === 'not_started');
-  // Answered in the PTY (a trust dialog, a prompt in the pane); a gate, a team
-  // question or the Governor's ask is answered on its card.
-  const inPane = $derived(/^(trust|wait)-/.test(rec?.waiting_on?.ref ?? ''));
   const snap = $derived(app.data?.usage?.snapshot);
   const sessionPp = $derived(ppOf(a, snap));
   // Its permission prompt (held or parked): its card's own decision, not a second list.
@@ -53,7 +50,6 @@
   // The strip's buttons: the decision's own actions, Deny with message and Open aside (the pane is here);
   // "Answer in the pane" needs a live session: a not-live strip offers Resume instead (§1.3.1).
   const permActions = $derived((perm?.actions ?? []).filter((x) => x.id !== 'reply' && x.id !== 'open' && (x.id !== 'in_pane' || a?.live)));
-  const cache = $derived(cacheState(a, clock));
   const watching = $derived(!!spec?.watch);
   // Opened over Mission control and taken over: the strip says how to go back (notes F4).
   const overBoard = $derived(!!spec?.over && !!app.panes[spec.over]);
@@ -168,7 +164,7 @@
     <div class="strip warn perm" data-strip="perm">
       <div class="row">
         <span class="icon" style:color="var(--color-status-waiting-for-you)" aria-hidden="true">{'\u{F0005}'}</span>
-        <span>Permission · {perm.title} · {ago(perm.created_ms)} · <button type="button" class="link" onclick={() => focusCard(perm.id)}>also in Decisions</button></span>
+        <span>Permission · {perm.title} · <button type="button" class="link" onclick={() => focusCard(perm.id)}>also in Decisions</button></span>
         <span class="grow"></span>
         {#each permActions as x (x.id)}
           {#if x.id === 'in_pane'}
@@ -177,7 +173,7 @@
             <button type="button" class="btn" class:primary={x.id === 'approve'} use:tooltip={x.id === 'always' ? perm.payload?.always : null} onclick={() => decide(perm, x.id)}>{x.label}</button>
           {/if}
         {/each}
-        {#if !a.live}{@render resume()}{/if}
+        {#if !a.live}{@render resume(false)}{/if}
       </div>
       {#if parked(perm)}<LifecycleMarker decision={perm} />{/if}
       {#key perm.id}<PermissionCall block={blockOf(perm, 'tool_call')} />{/key}
@@ -188,8 +184,6 @@
       <span class="icon" style:color={STATUS[ds].color} aria-hidden="true">{STATUS[ds].icon}</span>
       <span>{STATUS[ds].label}</span>
       <WaitingChip {rec} />
-      <span class="muted">{inPane ? 'answer it in the pane below: the app never does' : 'answer it on its card'}</span>
-      {#if !inPane}<button type="button" class="link" onclick={() => focusCard(rec?.waiting_on?.kind === 'user' ? rec.waiting_on.ref : null)}>also in Decisions</button>{/if}
       <span class="grow"></span>
       {#if !a.live}{@render resume()}{/if}
     </div>
@@ -218,7 +212,7 @@
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
     <div class="strip error" data-strip="error" tabindex="0" onkeydown={onStripKey} role="group">
       <span class="icon" style:color="var(--color-status-error)" aria-hidden="true">{'\u{F0159}'}</span>
-      <span>{rec?.reason ? `Exited with an error · ${rec.reason}` : 'Exited with an error'} · session saved</span>
+      <span>{rec?.reason ? `Exited with an error · ${rec.reason}` : 'Exited with an error'}</span>
       {#if rec?.waiting_on}<WaitingChip {rec} />{/if}
       <span class="grow"></span>
       {@render resume()}
@@ -227,7 +221,7 @@
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
     <div class="strip" data-strip="suspended" tabindex="0" onkeydown={onStripKey} role="group" data-pane-focus>
       <span class="icon" style:color="var(--color-status-suspended)" aria-hidden="true">{'\u{F04B2}'}</span>
-      <span>Suspended{a.last_event_at_ms ? ` ${clock(a.last_event_at_ms)}` : ''}{cache ? ` · cache ${cache}` : ''} · the session is saved</span>
+      <span>Suspended{a.last_event_at_ms ? ` ${ago(a.last_event_at_ms)} ago` : ''} · session kept{a.context_pct == null ? '' : ` · context ${Math.round(a.context_pct)} %`}</span>
       {#if rec?.waiting_on}<WaitingChip {rec} />{/if}
       <span class="grow"></span>
       {@render resume()}
@@ -237,8 +231,8 @@
   <div class="strip">This agent no longer exists.</div>
 {/if}
 
-{#snippet resume()}
-  <button type="button" class="btn primary" use:tooltip={{ label: 'Resume', key: '⏎' }} onclick={() => agentAction(a.id, 'resume')}>Resume</button>
+{#snippet resume(primary = true)}
+  <button type="button" class="btn" class:primary use:tooltip={{ label: 'Resume', key: '⏎' }} onclick={() => agentAction(a.id, 'resume')}>Resume</button>
 {/snippet}
 
 <TermHost bind:host watch={watching} ontakeover={() => !stopped && takeOver(paneId)}>
@@ -275,20 +269,27 @@
     background: var(--color-surface-raised);
     font: var(--text-label);
   }
+  /* The state's bar, and a tint for the warm and red states (04-agent-strips, as the banner rows). */
   .strip {
-    box-shadow: inset 3px 0 0 var(--color-status-suspended);
+    --strip: var(--color-status-suspended);
+    box-shadow: inset 3px 0 0 var(--strip);
+  }
+  .strip.warn,
+  .strip.limit,
+  .strip.error {
+    background: color-mix(in srgb, var(--strip) 12%, var(--color-surface-pane));
   }
   .strip.warn {
-    box-shadow: inset 3px 0 0 var(--color-status-waiting-for-you);
+    --strip: var(--color-status-waiting-for-you);
   }
   .strip.queued {
-    box-shadow: inset 3px 0 0 var(--color-status-queued);
+    --strip: var(--color-status-queued);
   }
   .strip.limit {
-    box-shadow: inset 3px 0 0 var(--color-status-blocked-by-limit);
+    --strip: var(--color-status-blocked-by-limit);
   }
   .strip.error {
-    box-shadow: inset 3px 0 0 var(--color-status-error);
+    --strip: var(--color-status-error);
   }
   .acts {
     display: inline-flex;
@@ -321,6 +322,9 @@
     outline: none;
   }
   .session.watch {
+    min-height: 36px;
+    height: auto;
+    padding: var(--space-xs) var(--space-md);
     background: var(--color-surface-selected);
     color: var(--color-text-secondary);
   }

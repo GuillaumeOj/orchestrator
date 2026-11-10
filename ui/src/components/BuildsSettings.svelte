@@ -6,6 +6,7 @@
   import { onMount, tick } from 'svelte';
   import { app, applyUpdate, backToMainBuild, checkForUpdates, now30, openUrl, restartToUpdate, toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { keyIgnored } from '../lib/keyboard.js';
   import { move } from '../lib/select.js';
   import { tooltip } from '../lib/tooltip.js';
   import { buildsHeader, listLine, restartConfirm, rowState } from '../lib/update.js';
@@ -81,7 +82,7 @@
       root?.focus();
       return;
     }
-    if (e.target.closest('input, textarea, select, button, a') || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (keyIgnored(e, { controls: true })) return;
     const k = e.key;
     if (k === 'j' || k === 'ArrowDown') selId = move(rows, cur?.id, 1);
     else if (k === 'k' || k === 'ArrowUp') selId = move(rows, cur?.id, -1);
