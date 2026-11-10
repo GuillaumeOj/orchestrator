@@ -41,7 +41,6 @@ const cardIds = (c) => [...c.querySelectorAll('.feed > .stop .card')].map((x) =>
 const selected = (c) => c.querySelector('article.stop.sel .card')?.getAttribute('data-decision') ?? null;
 const buttons = (el) => [...el.querySelectorAll(':scope > .actions button')].map(text);
 const lines = (c) => [...c.querySelectorAll('article.line')];
-const glyph = (k) => (k === 'enter' ? '⏎' : k);
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 beforeEach(() => {
@@ -78,7 +77,7 @@ describe('exit criterion (spec §1a): every Inbox interaction is on a card', () 
     // 13 open: the 5 oldest show, the newer fold (notes §4, F2).
     expect(cardIds(c)).toEqual(all.slice(0, 5).map((d) => d.id));
     const fold = c.querySelector('.fold');
-    expect(text(fold)).toBe('▸ 8 more open · 3 blocking · j');
+    expect(text(fold)).toBe('▸ 8 more open · 3 blocking');
     await fireEvent.click(fold);
     expect(cardIds(c)).toEqual(all.map((d) => d.id));
     for (const d of all) {
@@ -87,7 +86,7 @@ describe('exit criterion (spec §1a): every Inbox interaction is on a card', () 
       expect([...el.querySelectorAll('[data-block]')].map((b) => b.getAttribute('data-block'))).toEqual(
         d.context.map((b) => b.type),
       );
-      const keyed = d.actions.filter((x) => x.key).map((x) => `${x.label} ${glyph(x.key)}`);
+      const keyed = d.actions.filter((x) => x.key).map((x) => x.label); // the key is in the tooltip
       const keyless = d.actions.filter((x) => !x.key).map((x) => x.label);
       expect(buttons(el), d.id).toEqual([...keyed, ...keyless]);
       expect(el.querySelector('[data-state="open"]').textContent).toContain('Waiting for you');
@@ -124,7 +123,7 @@ describe('exit criterion (spec §1a): every Inbox interaction is on a card', () 
       ['perm-2', 'approve'],
     ]);
     expect(card(c, 'perm-1').querySelector('[data-state="decided"]').textContent).toContain('Allowing once · Undo u');
-    expect(buttons(card(c, 'perm-1'))).toEqual(['Undo u']);
+    expect(buttons(card(c, 'perm-1'))).toEqual(['Undo']);
     await press(c, 'u');
     expect(app.pending.map((p) => p.item)).toEqual(['perm-1']);
     // r on the question: Dismiss.
@@ -191,7 +190,7 @@ describe('exit criterion (spec §1a): every Inbox interaction is on a card', () 
     setNow([mk('governor:off_hours')]);
     let r = render(ChatColumn);
     expect(text(card(r.container, 'delivery-7'))).toContain('Retry puts the messages back');
-    expect(buttons(card(r.container, 'delivery-7'))).toEqual(['Open pane o', 'Retry now', 'Restart fresh', 'Dismiss']);
+    expect(buttons(card(r.container, 'delivery-7'))).toEqual(['Open pane', 'Retry now', 'Restart fresh', 'Dismiss']);
     expect(primary(r.container)).toEqual(['Retry now']);
     await fireEvent.click(r.getByText('Retry now'));
     expect(app.pending.at(-1)).toMatchObject({ item: 'delivery-7', action: 'retry' });
@@ -201,7 +200,7 @@ describe('exit criterion (spec §1a): every Inbox interaction is on a card', () 
       app.pending = [];
       setNow([mk(blocker)]);
       r = render(ChatColumn);
-      expect(primary(r.container)).toEqual(['Open pane o']);
+      expect(primary(r.container)).toEqual(['Open pane']);
       r.unmount();
     }
   });
@@ -446,7 +445,7 @@ describe('collapse (notes §2.1)', () => {
     expect(text(card(c, 'gate-pr').querySelector('[data-state="failed"]'))).toContain(
       'Failed · push rejected: non-fast-forward',
     );
-    expect(buttons(card(c, 'gate-pr'))).toEqual(['Approve: push + open PR a', 'Reject r', 'Reply ⏎', 'Dismiss']);
+    expect(buttons(card(c, 'gate-pr'))).toEqual(['Approve: push + open PR', 'Reject', 'Reply', 'Dismiss']);
     expect(card(c, 'error-back-1').classList.contains('muted')).toBe(true);
     expect(buttons(card(c, 'error-back-1'))).toEqual(['Dismiss']);
   });
@@ -474,7 +473,7 @@ describe('collapse (notes §2.1)', () => {
     expect(text(ro.querySelector('.kind'))).toContain('Permission · by rule');
     expect(ro.querySelector('[data-block="tool_call"]')).toBeTruthy();
     expect(text(ro.querySelector('[data-state]'))).toMatch(/Allowed by rule installs · \d\d:\d\d$/);
-    expect(buttons(ro)).toEqual(['Open pane o']);
+    expect(buttons(ro)).toEqual(['Open pane']);
     // ⏎ on the focused line collapses it again (a button: its own ⏎).
     await fireEvent.click(lines(c)[0].querySelector('button'));
     expect(card(c, 'perm-1')).toBeNull();
@@ -536,10 +535,10 @@ describe('filter, fold and keys', () => {
     expect(selected(c)).toBe('gate-restart');
     await press(c, 'j');
     expect(c.querySelector('.fold').classList.contains('sel')).toBe(true);
-    expect(text(c.querySelector('.fold'))).toBe('▸ 2 more open · 1 blocking · j');
+    expect(text(c.querySelector('.fold'))).toBe('▸ 2 more open · 1 blocking');
     await press(c, 'Enter');
     expect(cardIds(c)).toEqual(all.map((d) => d.id));
-    expect(text(c.querySelector('.fold'))).toBe('▾ Fold 2 cards · ⏎');
+    expect(text(c.querySelector('.fold'))).toBe('▾ Fold 2 cards');
     await press(c, 'j');
     expect(selected(c)).toBe('startup-front-1');
   });
@@ -588,7 +587,7 @@ describe('filter, fold and keys', () => {
     await fireEvent.mouseDown(card(c, 'q-2'));
     await press(c, 'r');
     expect(app.pending.map((p) => p.item)).toEqual(['perm-1', 'q-2']);
-    await fireEvent.click([...card(c, 'perm-1').querySelectorAll('.actions button')].find((b) => text(b) === 'Undo u'));
+    await fireEvent.click([...card(c, 'perm-1').querySelectorAll('.actions button')].find((b) => text(b) === 'Undo'));
     expect(app.pending.map((p) => p.item)).toEqual(['q-2']);
     // Sent, the core not answered yet: no actions again, no Undo.
     app.pending[0].sent = true;
@@ -680,7 +679,7 @@ describe('the shell (notes §9)', () => {
     }
   });
 
-  it('the overlay says what is behind it: "3 cards need you, 1 blocking · ⌘⇧I"', async () => {
+  it('the overlay says what is behind it: "3 cards need you, 1 blocking" (key in the tooltip)', async () => {
     const all = kinds();
     setNow([all[0], all[6], all[8]]);
     app.now.counts.global.decisions = 3;
@@ -688,7 +687,9 @@ describe('the shell (notes §9)', () => {
     const { container: c } = render(Inspector, { overlay: true });
     const banner = c.querySelector('.banner');
     expect(text(banner.querySelector('span'))).toMatch(/^\S+ 3 cards need you, 1 blocking$/);
-    expect(text(banner.querySelector('.kbd'))).toBe('⌘+⇧+I');
+    expect(banner.querySelector('.kbd')).toBeNull();
+    // The close is an icon button: × with "Close · esc" in its tooltip (audit §4).
+    expect(c.querySelector('.head button[aria-label="Close inspector"]')).toBeTruthy();
     await fireEvent.click(banner);
     expect(app.inspector).toBe(false);
     expect(app.chatFocus).toEqual({ id: null });

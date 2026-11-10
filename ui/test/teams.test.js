@@ -195,7 +195,8 @@ describe('P2 panes', () => {
     const { container, getByText } = render(BoardPane, { paneId: 'b2' });
     await waitFor(() => getByText('Task 1'));
     expect(calls.some(([c, a]) => c === 'board_open_sync' && a.project === 'shop')).toBe(true);
-    expect(container.querySelector('footer.keys')?.textContent).toMatch(/g\s*open/);
+    // No footer legend: the keys are in the card menu and the Keyboard shortcuts sheet (§8).
+    expect(container.querySelector('footer.keys .kbd')).toBeNull();
     const board = container.querySelector('.board');
     await fireEvent.keyDown(board, { key: 'e' });
     await tick();
@@ -281,7 +282,6 @@ describe('P2 panes', () => {
     expect(rows.length).toBe(2);
     const cells = (r) => [...r.children].map((c) => c.className.split(' ')[0]);
     expect(cells(rows[1])).toEqual(['chip', 'name', 'act', 'st']);
-    expect(rows[1].getAttribute('title')).toBe('Open fx-back-1');
     expect(rows[1].querySelector('.chip').classList.contains('compact')).toBe(true);
     expect(rows[1].querySelector('.name').textContent).toBe('back-1');
     expect(rows[1].querySelector('.act').textContent).toBe('task T-1 · slow');

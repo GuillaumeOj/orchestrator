@@ -508,8 +508,12 @@ describe('planner, banner, status bar, board', () => {
     const el = container.querySelector('.board');
     await fireEvent.keyDown(el, { key: ' ' });
     await tick();
-    const menu = container.querySelector('[aria-label="Task menu"]').textContent;
-    for (const item of ['Open task', 'Run off-hours', 'Move to…', 'Assign node…']) expect(menu).toContain(item);
+    // The card menu is the shared Menu (on the body), keys right-aligned (04-board-pane, §9 bug 3).
+    const menu = document.body.querySelector('[role="menu"][aria-label="Task menu"]');
+    for (const item of ['Open feature', 'Run off-hours', 'Edit', 'Move to', 'Assign'])
+      expect(menu.textContent).toContain(item);
+    expect(menu.textContent).not.toContain('Open task');
+    await fireEvent.keyDown(document.activeElement, { key: 'Escape' });
     await fireEvent.keyDown(el, { key: 'O', shiftKey: true });
     await waitFor(() => expect(calls.some(([c, a]) => c === 'queue_off_hours' && a.task === '14' && a.off)).toBe(true));
     await waitFor(() => expect(container.textContent).toContain('☾ Off-hours'));
@@ -523,11 +527,9 @@ describe('planner, banner, status bar, board', () => {
     );
     // space, m, 4: Move to… Review.
     replies.task_update = {};
-    await fireEvent.keyDown(el, { key: ' ' });
     await fireEvent.keyDown(el, { key: 'm' });
-    await tick();
-    expect(container.querySelector('[aria-label="Move to"]')).toBeTruthy();
-    await fireEvent.keyDown(el, { key: '4' });
+    await waitFor(() => expect(document.activeElement.closest('[role="menu"][aria-label="Move to"]')).toBeTruthy());
+    await fireEvent.keyDown(document.activeElement, { key: '4' });
     await waitFor(() =>
       expect(calls.some(([c, a]) => c === 'task_update' && a.id === 14 && a.status === 'review')).toBe(true),
     );

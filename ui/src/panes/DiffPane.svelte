@@ -4,12 +4,12 @@
   // and the user's own Create PR (push + gh pr create, ADR-009).
   // Keys (pane-local): j/k next/previous file, r refresh, e open in editor, c create PR.
   import { onMount } from 'svelte';
-  import Kbd from '../components/Kbd.svelte';
   import { app, confirm, openEditor, toast } from '../lib/app.svelte.js';
   import { lineKind, patchByFile, STATUS_WORD } from '../lib/diff.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { isTypingTarget } from '../lib/keyboard.js';
+  import { keyIgnored } from '../lib/keyboard.js';
   import { onTopics } from '../lib/now.svelte.js';
+  import { tooltip } from '../lib/tooltip.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -79,7 +79,7 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
+    if (keyIgnored(e)) return;
     const k = { j: () => move(1), k: () => move(-1), r: load, c: startPr, e: () => current && openEditor(`${spec.path}/${current.path}`, null, { projectId: spec.projectId }) }[e.key];
     if (k) {
       e.preventDefault();
@@ -95,8 +95,8 @@
     <span class="muted">against {d?.against ?? '…'} · {files.length} file{files.length === 1 ? '' : 's'} · <span class="add">+{totals.added}</span> <span class="del">−{totals.deleted}</span></span>
     {#if d?.truncated}<span class="warn">patch cut: the file list is complete</span>{/if}
     <span class="grow"></span>
-    <button class="btn ghost" onclick={load}>Refresh <Kbd keys="r" /></button>
-    <button class="btn" onclick={startPr} disabled={busy || !canPr}>Create PR… <Kbd keys="c" /></button>
+    <button class="btn ghost" use:tooltip={{ label: 'Refresh', key: 'r' }} onclick={load}>Refresh</button>
+    <button class="btn" use:tooltip={{ label: 'Create PR', key: 'c' }} onclick={startPr} disabled={busy || !canPr}>Create PR…</button>
   </header>
   {#if err}<p class="err">{err}</p>{/if}
   {#if pr}

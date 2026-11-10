@@ -470,7 +470,7 @@ describe('outcome digest (level 4)', () => {
     ]);
     expect(text(rows[3])).toMatch(/^\S+ T-4 done · checkout API \(back-1\) 00:02$/);
     expect(rows[0].querySelector('.link')).toBeTruthy();
-    expect(text(c.querySelector('.digest .dh'))).toBe('Today · 5 outcomes · Clear · 6 done today c');
+    expect(text(c.querySelector('.digest .dh'))).toBe('Today · 5 outcomes · Clear · 6 done today');
     await fireEvent.keyDown(c.querySelector('[data-chat-focus]'), { key: 'c' });
     await waitFor(() => expect(text(c.querySelector('.digest'))).toContain('6 done today, all seen.'));
     expect(calls.find(([cmd]) => cmd === 'digest_seen')[1]).toEqual({ upTo: 'ev-15' });

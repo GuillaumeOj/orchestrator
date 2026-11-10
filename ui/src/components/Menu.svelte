@@ -180,6 +180,12 @@
         return;
       default:
         if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+          // A row's own key (right-aligned) runs it here: the key works where it is shown.
+          const k = list.findIndex((x, j) => usable(list, j) && keyMatches(x.key, e));
+          if (k >= 0) {
+            activate(level, k);
+            break;
+          }
           const i = find(e.key, cur);
           if (i >= 0) set(i);
           break;
@@ -204,6 +210,20 @@
   }
 
   const toggle = () => (open ? close(true) : openMenu());
+
+  /** Whether a key press is a row's single-key `key` (`e`, `1`, `⇧O`). */
+  function keyMatches(key, e) {
+    if (!key) return false;
+    if (key.length === 1) return key === e.key;
+    return key.length === 2 && key[0] === '⇧' && e.shiftKey && key[1].toLowerCase() === e.key.toLowerCase();
+  }
+
+  /** Opens the menu from outside (a key on the pane), on the submenu of the row `subId` when given. */
+  export async function show(subId = null) {
+    await openMenu();
+    const i = subId ? items.findIndex((x) => x.id === subId) : -1;
+    if (i >= 0) await openSub(i);
+  }
   const triggerAttrs = $derived({
     'aria-haspopup': 'menu',
     'aria-expanded': open,

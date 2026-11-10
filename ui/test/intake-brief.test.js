@@ -122,7 +122,7 @@ describe('the brief card', () => {
     expect(text(el.querySelector('[data-brief-mode]'))).toBe('shop-api · team run · default-web');
     expect(text(el.querySelector('[data-brief-estimate]'))).toBe('≈ 4–7 pp week · from 7 runs in shop-api · size M');
     expect(text(el.querySelector('[data-over-room]'))).toContain("over this week's room (3 pp left)");
-    expect(buttons(el).map(text)).toEqual(['Launch ⏎', 'Edit e', 'Dismiss r']);
+    expect(buttons(el).map(text)).toEqual(['Launch', 'Edit', 'Dismiss']);
     expect(text(el.querySelector('[data-brief-foot]'))).toBe(
       'Want changes? Answer in the chat and the Overwatch sends a new brief.',
     );

@@ -9,8 +9,8 @@
   import { pct } from '../lib/format.js';
   import { attention, featureRun, needYouText, runPhase, statusOf, waitLine } from '../lib/now.svelte.js';
   import { runStateLabel } from '../lib/teams.js';
+  import { tooltip } from '../lib/tooltip.js';
   import AgentChip from './AgentChip.svelte';
-  import Kbd from './Kbd.svelte';
   import StatusBadge from './StatusBadge.svelte';
 
   const focusedAgent = $derived.by(() => {
@@ -53,14 +53,14 @@
 </script>
 
 <nav class="side" aria-label="Projects">
-  <div class="head"><span class="muted">Projects</span><span class="grow"></span><button class="add" title="Add project (⌘N)" aria-label="Add project" onclick={() => (app.overlay = { kind: 'add-project' })}>+</button><Kbd keys="⌘+B" /></div>
+  <div class="head"><span class="muted">Projects</span><span class="grow"></span><button type="button" class="add" aria-label="Add project" use:tooltip={{ label: 'Add project', key: '⌘N' }} onclick={() => (app.overlay = { kind: 'add-project' })}>+</button></div>
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <ul role="tree" tabindex="-1" onkeydown={onKey}>
     {#each byProject as { p, feats, list } (p.id)}
       {@const open = treeOpen(p.id)}
       {@const current = app.workspace.project === p.id}
       <li role="treeitem" aria-selected={current} aria-expanded={open}>
-        <button data-row class="row project" class:selected={current} aria-current={current ? 'true' : undefined} onclick={() => openProjectContext(p.id)} title={p.path}>
+        <button data-row class="row project" class:selected={current} aria-current={current ? 'true' : undefined} onclick={() => openProjectContext(p.id)} use:tooltip={p.path}>
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <span class="caret" aria-hidden="true" onclick={(e) => caret(e, p.id)}>{open ? '▾' : '▸'}</span>
           <span class="name">{p.name}</span>
@@ -77,17 +77,17 @@
               {@const phase = runPhase(f.run)}
               {@const fopen = treeOpen(k)}
               <li role="treeitem" aria-selected={focusedFeature === f.id} aria-expanded={fopen}>
-                <button data-row class="row feature" class:selected={focusedFeature === f.id} onclick={() => clickFeature(f)} title="{f.archived ? 'Deleted, agents left · ' : ''}{f.branch} · {phase ? runStateLabel(phase) : 'no run'}">
+                <button data-row class="row feature" class:selected={focusedFeature === f.id} onclick={() => clickFeature(f)} use:tooltip={`${f.archived ? 'Deleted, agents left · ' : ''}${f.branch} · ${phase ? runStateLabel(phase) : 'no run'}`}>
                   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
                   <span class="caret" aria-hidden="true" onclick={(e) => caret(e, k)}>{fopen ? '▾' : '▸'}</span>
                   <span class="name">{f.slug}</span>
-                  {#if n}<span class="badge" aria-label={needYouText(n)} title={needYouText(n)}>{n}</span>{:else if f.archived}<span class="meta">deleted</span>{:else if phase}<span class="meta">{runStateLabel(phase)}</span>{/if}
+                  {#if n}<span class="badge" aria-label={needYouText(n)} use:tooltip={needYouText(n)}>{n}</span>{:else if f.archived}<span class="meta">deleted</span>{:else if phase}<span class="meta">{runStateLabel(phase)}</span>{/if}
                 </button>
                 {#if fopen}
                   <ul role="group">
                     {#each fl as a (a.id)}
                       <li role="treeitem" aria-selected={focusedAgent === a.id}>
-                        <button data-row class="row agent team" class:selected={focusedAgent === a.id} onclick={() => openAgent(a.id)} title={waitLine(attention(a.id))}>
+                        <button data-row class="row agent team" class:selected={focusedAgent === a.id} onclick={() => openAgent(a.id)} use:tooltip={waitLine(attention(a.id))}>
                           <StatusBadge state={statusOf(a.id)} compact />
                           <AgentChip id={a.id} name={a.team.node} />
                           <span class="meta">{a.context_pct == null && a.live ? '' : pct(a.context_pct)}</span>
@@ -100,7 +100,7 @@
             {/each}
             {#each list as a (a.id)}
               <li role="treeitem" aria-selected={focusedAgent === a.id}>
-                <button data-row class="row agent" class:selected={focusedAgent === a.id} onclick={() => openAgent(a.id)} title={waitLine(attention(a.id))}>
+                <button data-row class="row agent" class:selected={focusedAgent === a.id} onclick={() => openAgent(a.id)} use:tooltip={waitLine(attention(a.id))}>
                   <StatusBadge state={statusOf(a.id)} compact />
                   <AgentChip id={a.id} />
                   <span class="meta">{a.context_pct == null && a.live ? '' : pct(a.context_pct)}</span>
@@ -111,7 +111,7 @@
         {/if}
       </li>
     {:else}
-      <li class="empty muted">No projects yet. <button class="btn ghost" onclick={() => (app.overlay = { kind: 'add-project' })}>Add project <Kbd keys="⌘+N" /></button></li>
+      <li class="empty muted">No projects yet. <button type="button" class="btn ghost" use:tooltip={{ label: 'Add project', key: '⌘N' }} onclick={() => (app.overlay = { kind: 'add-project' })}>Add project</button></li>
     {/each}
   </ul>
 </nav>

@@ -194,12 +194,16 @@ describe('project pane', () => {
     expect(t).toContain('1 other worktree outside the sibling folder (yours, not managed by the app)');
     expect(t).toContain('orch/ branches: orch/solo/old (merged)');
     expect(t).not.toContain('claude/mine (');
-    expect(getAllByText('Remove')).toHaveLength(2); // never offered for the user's own worktree
+    const bins = () => [...container.querySelectorAll('button[aria-label="Remove worktree…"]')];
+    expect(bins()).toHaveLength(2); // never offered for the user's own worktree
+    // R3: a bin icon in the danger colour, beside the ± Diff icon.
+    expect(bins().every((b) => b.classList.contains('icon-btn') && b.classList.contains('danger'))).toBe(true);
+    expect(container.querySelectorAll('button[aria-label="Diff"]')).toHaveLength(2);
     // Removing the unmerged worktree asks to discard it.
-    await fireEvent.click(getAllByText('Remove')[0]);
+    await fireEvent.click(bins()[0]);
     expect(app.overlay.text).toMatch(/^Discard unmerged work in orch\/solo\/back-1/);
     app.overlay = null;
-    await fireEvent.click(getAllByText('Remove')[1]);
+    await fireEvent.click(bins()[1]);
     expect(app.overlay.text).toBe('Remove worktree orch/solo/old?');
     app.overlay.onYes();
     await waitFor(() =>
@@ -207,7 +211,11 @@ describe('project pane', () => {
         true,
       ),
     );
-    expect(getByText('Trust in a pane', { exact: false })).toBeTruthy();
+    // Untrusted: Trust in a pane is in the header's `⋯` (R4).
+    await fireEvent.click(container.querySelector('.head-acts button[aria-label="More actions"]'));
+    expect(
+      [...document.body.querySelectorAll('[role="menuitem"]')].map((r) => r.querySelector('.lab').textContent),
+    ).toContain('Trust in a pane');
   });
 
   it('J11: archive by default, unmerged worktrees kept unless ticked', async () => {

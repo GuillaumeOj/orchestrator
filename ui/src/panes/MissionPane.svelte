@@ -6,7 +6,6 @@
   // `lanes()` (lib/mission.js); this pane keeps the selection, the open
   // lanes and details, and the keys (notes §3.1).
   import { untrack } from 'svelte';
-  import Kbd from '../components/Kbd.svelte';
   import QueueRow from '../components/mission/QueueRow.svelte';
   import ReadyDetails from '../components/mission/ReadyDetails.svelte';
   import ReadyLine from '../components/mission/ReadyLine.svelte';
@@ -43,6 +42,7 @@
   import { allowed, COUNT_KEYS, DONE_ROWS, decisionOf, defaultTarget, footerText, hiddenText, lanes, looseText, rowIndex, stops, target } from '../lib/mission.js';
   import { attention } from '../lib/now.svelte.js';
   import { LEVEL } from '../lib/status.js';
+  import { tooltip } from '../lib/tooltip.js';
 
   let { paneId } = $props();
 
@@ -307,7 +307,7 @@
         {:else if r.kind === 'decisions'}
           <div class="loose">
             <span style:color="var(--color-attention-needs-you)" aria-hidden="true">{LEVEL.needs_you.icon}</span>
-            {looseText(r.count)} · <button class="linkbtn" tabindex="-1" onclick={(e) => (e.stopPropagation(), focusCard(r.ids[0]))}>Show card</button> <Kbd keys="d" />
+            {looseText(r.count)} · <button type="button" class="linkbtn" tabindex="-1" use:tooltip={{ label: 'Show card', key: 'd' }} onclick={(e) => (e.stopPropagation(), focusCard(r.ids[0]))}>Show card</button>
           </div>
         {/if}
         {#if details[r.key] && r.kind !== 'decisions'}<RowDetails ids={ids(r)} {now} origin={r.kind === 'run' ? r.run.origin : r.agent?.origin} />{/if}
@@ -332,7 +332,7 @@
       <div class="empty">
         <h2>No projects yet</h2>
         <p class="secondary">Add a project to see what runs, waits and queues across them.</p>
-        <button class="btn primary" onclick={() => (app.overlay = { kind: 'add-project' })}>Add project <Kbd keys="⌘+N" /></button>
+        <button type="button" class="btn primary" use:tooltip={{ label: 'Add project', key: '⌘N' }} onclick={() => (app.overlay = { kind: 'add-project' })}>Add project</button>
       </div>
     {:else if filteredOut}
       <div class="empty">
@@ -344,7 +344,7 @@
         <div class="empty">
           <h2>Nothing is running</h2>
           <p class="secondary">Start a session or a feature and it shows up here.</p>
-          <button class="btn primary" onclick={() => (app.overlay = { kind: 'new-session' })}>New session <Kbd keys="⌘+T" /></button>
+          <button type="button" class="btn primary" use:tooltip={{ label: 'New session', key: '⌘T' }} onclick={() => (app.overlay = { kind: 'new-session' })}>New session</button>
         </div>
       {/if}
       {#each model.lanes as lane (lane.id)}
@@ -367,17 +367,17 @@
                   {#if st.refreshing}refreshing…{:else if st.failed}{st.failed === 1 ? '1 source failed' : `${st.failed} sources failed`}{:else if st.oldest != null}updated {ageText(st.oldest, now)}{/if}
                 </span>
                 {#if st.withSource}
-                  <button class="btn ghost rbtn" tabindex="-1" disabled={st.refreshing || (app.now.intake?.sources ?? []).some((s) => (!filter || filter.includes(s.project)) && rateLimitedUntil(s, now))} onclick={refreshLane} title="Check GitHub, Linear and repo docs now">{st.refreshing ? 'Refreshing…' : 'Refresh'} <Kbd keys="⇧R" /></button>
+                  <button class="btn ghost rbtn" tabindex="-1" disabled={st.refreshing || (app.now.intake?.sources ?? []).some((s) => (!filter || filter.includes(s.project)) && rateLimitedUntil(s, now))} onclick={refreshLane} use:tooltip={{ label: 'Refresh', key: '⇧R', detail: 'Check GitHub, Linear and repo docs now' }}>{st.refreshing ? 'Refreshing…' : 'Refresh'}</button>
                 {/if}
                 {#if !shut && st.hidden > 0}
-                  <button class="linkbtn rbtn" tabindex="-1" onclick={() => (intakeUi.showHidden = !intakeUi.showHidden)}>{intakeUi.showHidden ? `Hide the ${st.hidden}` : `${st.hidden} hidden · Show`} <Kbd keys="⇧H" /></button>
+                  <button class="linkbtn rbtn" tabindex="-1" use:tooltip={{ label: intakeUi.showHidden ? 'Hide them' : 'Show hidden', key: '⇧H' }} onclick={() => (intakeUi.showHidden = !intakeUi.showHidden)}>{intakeUi.showHidden ? `Hide the ${st.hidden}` : `${st.hidden} hidden · Show`}</button>
                 {/if}
               {/if}
             </h3>
             {#if !shut}
               {#each shown as r (r.key)}{@render item(r)}{/each}
               {#if lane.id === 'done' && lane.rows.length > DONE_ROWS}
-                <button class="more" class:sel={selKey === 'showall'} data-key="showall" tabindex="-1" onclick={() => (showAll = !showAll)}>{showAll ? 'Show fewer' : `Show all ${lane.rows.length}`} <Kbd keys="⏎" /></button>
+                <button class="more" class:sel={selKey === 'showall'} data-key="showall" tabindex="-1" onclick={() => (showAll = !showAll)}>{showAll ? 'Show fewer' : `Show all ${lane.rows.length}`}</button>
               {/if}
             {/if}
           </section>

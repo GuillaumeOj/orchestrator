@@ -390,7 +390,13 @@ describe('sessions over the board (spec §3.3, D5)', () => {
     expect(app.focused).toBe(id);
     const pane = render(AgentPane, { paneId: id }).container;
     await settle();
-    expect(text(pane.querySelector('.session.watch'))).toMatch(/Watching back-1 · ⏎ take over · esc back/i);
+    // Two buttons, keys in their tooltips (§1.3.1): no ⏎ / esc pills.
+    expect(text(pane.querySelector('.session.watch'))).toMatch(/Watching back-1 · your keys go to Mission control/i);
+    expect([...pane.querySelectorAll('.session.watch button')].map(text)).toEqual([
+      'Take over',
+      'Back to Mission control',
+    ]);
+    expect(pane.querySelector('.session.watch .kbd')).toBeNull();
     // The terminal never got the keyboard.
     expect(terms.at(-1).focused).toBe(0);
   });

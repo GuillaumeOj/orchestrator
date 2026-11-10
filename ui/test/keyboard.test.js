@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CHORDS, chordName, classify, hint, kittyKey, LEADER } from '../src/lib/keyboard.js';
+import { CHORDS, chordName, classify, hint, keyIgnored, kittyKey, LEADER } from '../src/lib/keyboard.js';
 
 const key = (k, o = {}) => ({
   key: k,
@@ -109,5 +109,23 @@ describe('⌘/ and ⌘, (design-notes §3.3, §3.4)', () => {
 describe('dialogs', () => {
   it('⌘⏎ reaches the dialog', () => {
     expect(classify({ key: 'Enter', code: 'Enter', metaKey: true })).toEqual({ kind: 'pass' });
+  });
+});
+
+describe('keyIgnored (the pane-local key guard)', () => {
+  const ev = (target, mods = {}) => ({ target, metaKey: false, ctrlKey: false, altKey: false, ...mods });
+  const el = (html) => {
+    const d = document.createElement('div');
+    d.innerHTML = html;
+    return d.firstElementChild;
+  };
+  it('a modifier or a field takes the key; a button only with `controls`', () => {
+    expect(keyIgnored(ev(el('<div></div>')))).toBe(false);
+    expect(keyIgnored(ev(el('<div></div>'), { metaKey: true }))).toBe(true);
+    expect(keyIgnored(ev(el('<input>')))).toBe(true);
+    expect(keyIgnored(ev(el('<button role="combobox"></button>')))).toBe(true);
+    expect(keyIgnored(ev(el('<button></button>')))).toBe(false);
+    expect(keyIgnored(ev(el('<button></button>')), { controls: true })).toBe(true);
+    expect(keyIgnored(ev(el('<a href="#">x</a>')), { controls: true })).toBe(true);
   });
 });

@@ -5,7 +5,8 @@
   // the ⋯ menu (Hide, Open source, Details). Not attention: neutral surface, dashed rule.
   // Under 880 px of row width the project and labels drop to line 2 and the buttons shorten.
   import { estimateText, estimateTip, MODE_LABEL, modeOf, roomWarning, SOURCE_NAME, shownLabels, startLabel } from '../../lib/intake.js';
-  import Kbd from '../Kbd.svelte';
+  import { tooltip } from '../../lib/tooltip.js';
+  import Menu from '../Menu.svelte';
 
   /** @type {{ row: any, selected?: boolean, starting?: boolean, onstart?: (mode: 'team' | 'solo') => void, onhide?: () => void, onunhide?: () => void, onsource?: () => void, ondetails?: () => void }} */
   let { row, selected = false, starting = false, onstart = () => {}, onhide = () => {}, onunhide = () => {}, onsource = () => {}, ondetails = () => {} } = $props();
@@ -18,7 +19,12 @@
   const warn = $derived(roomWarning(item, row.name));
   const GLYPH = { github: '\u{F02A4}', linear: '\u{F0E6D}', repo_docs: '\u{F0214}' };
   const GLYPH_NAME = { github: 'GitHub issue', linear: 'Linear issue', repo_docs: 'Repo doc' };
-  let menu = $state(false);
+  // The row's `⋯` (shared Menu, keys right-aligned: they work on the selected row).
+  const menuItems = $derived([
+    { id: 'details', label: 'Details', key: 'space', run: () => ondetails() },
+    { id: 'source', label: 'Open source', key: 'o', run: () => onsource() },
+    ...(row.hidden ? [] : [{ id: 'hide', label: 'Hide', key: 'x', run: () => onhide() }]),
+  ]);
 </script>
 
 <div class="r" class:hidden={row.hidden} class:sel={selected} data-ready={item.id}>
@@ -35,26 +41,17 @@
       <span class="acts">
         {#each [mode, other] as m, i (m)}
           {@const noTeam = m === 'team' && !canTeam}
-          <button class="btn" class:main={i === 0} tabindex="-1" disabled={starting || noTeam} title={noTeam ? `${row.name} has no team yet` : undefined} aria-label={startLabel(item, m)} onclick={(e) => (e.stopPropagation(), onstart(m))}>
-            <span class="wide">{MODE_LABEL[m].long}</span><span class="narrow">{MODE_LABEL[m].short}</span>{#if !noTeam}{' '}<Kbd keys={i === 0 ? '⏎' : MODE_LABEL[m].key} />{/if}
+          <button class="btn" class:main={i === 0} tabindex="-1" disabled={starting || noTeam} use:tooltip={noTeam ? { label: MODE_LABEL[m].long, detail: `${row.name} has no team yet` } : { label: MODE_LABEL[m].long, key: i === 0 ? '⏎' : MODE_LABEL[m].key }} aria-label={startLabel(item, m)} onclick={(e) => (e.stopPropagation(), onstart(m))}>
+            <span class="wide">{MODE_LABEL[m].long}</span><span class="narrow">{MODE_LABEL[m].short}</span>
           </button>
         {/each}
       </span>
     {:else}
       <span class="grow"></span>
-      <button class="btn" tabindex="-1" aria-label="Unhide {item.ref} {item.title}" onclick={(e) => (e.stopPropagation(), onunhide())}>Unhide <Kbd keys="x" /></button>
+      <button class="btn" tabindex="-1" aria-label="Unhide {item.ref} {item.title}" use:tooltip={{ label: 'Unhide', key: 'x' }} onclick={(e) => (e.stopPropagation(), onunhide())}>Unhide</button>
     {/if}
-    <span class="menuwrap">
-      <button class="btn ghost more" tabindex="-1" aria-label="More for {item.ref}" aria-expanded={menu} onclick={(e) => (e.stopPropagation(), (menu = !menu))}>⋯</button>
-      {#if menu}
-        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-        <div class="menu" role="menu" tabindex="-1" onclick={(e) => (e.stopPropagation(), (menu = false))}>
-          <button role="menuitem" tabindex="-1" onclick={() => ondetails()}>Details <Kbd keys="space" /></button>
-          <button role="menuitem" tabindex="-1" onclick={() => onsource()}>Open source <Kbd keys="o" /></button>
-          {#if !row.hidden}<button role="menuitem" tabindex="-1" onclick={() => onhide()}>Hide <Kbd keys="x" /></button>{/if}
-        </div>
-      {/if}
-    </span>
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <span class="menuwrap" onclick={(e) => e.stopPropagation()}><Menu items={menuItems} label="More for {item.ref}" /></span>
   </div>
   <!-- Line 2 at every width (boards): [warning ·] project · ≤ 2 label chips. -->
   <div class="l2">
@@ -140,34 +137,6 @@
   .menuwrap {
     position: relative;
     flex: none;
-  }
-  .menu {
-    position: absolute;
-    right: 0;
-    top: 100%;
-    z-index: 10;
-    display: flex;
-    flex-direction: column;
-    min-width: 160px;
-    padding: var(--space-xs);
-    background: var(--color-surface-raised);
-    border: var(--border-width-default) solid var(--color-border-strong);
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow-overlay);
-  }
-  .menu button {
-    display: flex;
-    justify-content: space-between;
-    gap: var(--space-md);
-    padding: var(--space-xs) var(--space-sm);
-    border: 0;
-    background: none;
-    color: var(--color-text-primary);
-    font: var(--text-label);
-    text-align: left;
-  }
-  .menu button:hover {
-    background: var(--color-surface-selected);
   }
   /* Full rows at 880 px and up (1512 shell), compact below (notes §2.3, D9c): only the long texts shorten. */
   .narrow {

@@ -28,7 +28,6 @@
   import ClaudeSettings from './ClaudeSettings.svelte';
   import FloatingWindow from './FloatingWindow.svelte';
   import IntegrationsSettings from './IntegrationsSettings.svelte';
-  import Kbd from './Kbd.svelte';
   import McpSettings from './McpSettings.svelte';
   import OverwatchSettings from './OverwatchSettings.svelte';
   import PacingSettings from './PacingSettings.svelte';
@@ -107,7 +106,7 @@
   {:else}
     <section class="later">
       <h2>{section.label}</h2>
-      <p class="muted">Not designed yet. The current values are editable from <Kbd keys="⌘+K" />.</p>
+      <p class="muted">Not designed yet. The current values are editable from the palette (⌘K).</p>
     </section>
   {/if}
 </FloatingWindow>

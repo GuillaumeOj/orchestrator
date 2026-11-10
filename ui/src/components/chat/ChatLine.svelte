@@ -12,7 +12,7 @@
   import { clock } from '../../lib/format.js';
   import { errText } from '../../lib/ipc.js';
   import { undoChip, undoInfo, undoneTail, undoState } from '../../lib/overwatch.js';
-  import Kbd from '../Kbd.svelte';
+  import { tooltip } from '../../lib/tooltip.js';
   import DecisionCard from './DecisionCard.svelte';
 
   /** @type {{ item: any, expanded?: boolean, pulse?: boolean, entries?: any, refok?: (ref: any) => boolean, ontoggle?: () => void, onopen?: (id: string) => void, onref?: (ref: any) => void, onexpand?: () => void }} */
@@ -93,13 +93,13 @@
 
 <article class="line" class:pulse class:leftopen={line.verb === 'left open'} class:undone={!!undone} aria-label={lineLabel(line, now)} data-line={item.id} data-entry={item.key} data-verb={line.verb}>
   <div class="row" class:open={expanded}>
-    <button class="toggle" aria-expanded={expanded} title={lineText(line, entries)} onclick={ontoggle} data-line-toggle={item.key}>
+    <button class="toggle" aria-expanded={expanded} use:tooltip={lineText(line, entries)} onclick={ontoggle} data-line-toggle={item.key}>
       <span class="caret" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
       <span class="head"><span class="verb" class:warn={warnVerb(line.verb)}>{verbText(line.verb)}</span>{line.agent ? ` ${line.agent}` : ''}:</span>
       <span class="what">{line.what ?? ''}</span>
       {#if tail}<span class="tail muted">· {tail}</span>{/if}
     </button>
-    {#if chip}<button class="chip link" data-undo-run onclick={press} aria-label={line.undo.label}>{chip.replace(/ u$/, '')} <Kbd keys="u" /></button>{/if}
+    {#if chip}<button class="chip link" data-undo-run onclick={press} aria-label={line.undo.label} use:tooltip={{ label: chip.replace(/ u$/, ''), key: 'u' }}>{chip.replace(/ u$/, '')}</button>{/if}
     <span class="at muted">{undone || clock(line.at_ms, now)}</span>
   </div>
   {#if expanded}
@@ -116,11 +116,11 @@
           {#if correcting}
             <textarea class="field" rows="2" bind:this={field} bind:value={draft} onkeydown={fieldKey} aria-label="Correction" placeholder="What should {line.agent ?? 'the agent'} know instead?"></textarea>
             <div class="acts">
-              <button class="btn" disabled={busy || !draft.trim()} onclick={() => run(draft.trim())}>{busy ? info.busy : 'Send correction'} <Kbd keys="⌘+⏎" /></button>
-              <button class="btn ghost" onclick={cancel}>Cancel <Kbd keys="esc" /></button>
+              <button class="btn" disabled={busy || !draft.trim()} use:tooltip={{ label: 'Send correction', key: '⌘⏎' }} onclick={() => run(draft.trim())}>{busy ? info.busy : 'Send correction'}</button>
+              <button class="btn ghost" use:tooltip={{ label: 'Cancel', key: 'esc' }} onclick={cancel}>Cancel</button>
             </div>
           {:else}
-            <button class="btn" data-undo-run disabled={busy} onclick={press}>{busy ? info.busy : info.label} {#if !busy}<Kbd keys="u" />{/if}</button>
+            <button class="btn" data-undo-run disabled={busy} use:tooltip={busy ? null : { label: info.label, key: 'u' }} onclick={press}>{busy ? info.busy : info.label}</button>
             <p class="muted">{info.explain}</p>
           {/if}
           {#if failed}<p class="err" role="alert">{failed}</p>{/if}

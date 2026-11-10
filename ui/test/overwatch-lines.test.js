@@ -301,7 +301,7 @@ describe('lines in the column', () => {
       withUndo('Tell the agent'),
       { verb: 'nudged', agent: 'back-1', what: '"rebase"', by_detail: 'idle 12 min' },
     ]);
-    expect(text(art(c, 'c-1').querySelector('.chip'))).toBe('Undo u');
+    expect(text(art(c, 'c-1').querySelector('.chip'))).toBe('Undo');
     expect(art(c, 'c-2').querySelector('.chip')).toBeNull();
     expect(art(c, 'c-1').getAttribute('aria-label')).toMatch(/Undo available\.$/);
   });
@@ -402,7 +402,7 @@ describe('lines in the column', () => {
     const c = await run([
       withUndo('Correct the answer', { verb: 'answered', agent: 'front-1', what: 'API pagination' }),
     ]);
-    expect(text(art(c, 'c-1').querySelector('.chip'))).toBe('Correct u');
+    expect(text(art(c, 'c-1').querySelector('.chip'))).toBe('Correct');
     await fireEvent.click(art(c, 'c-1').querySelector('.chip'));
     await settle();
     const box = art(c, 'c-1').querySelector('textarea');
@@ -507,9 +507,9 @@ describe('the rule proposal card', () => {
     expect(text(el.querySelector('[data-block="rule"]'))).toContain('shop-api · role front');
     expect(text(el.querySelector('[data-link-chat]'))).toBe('Mon 14:02 · front-1 · allowed ↗');
     expect([...el.querySelectorAll('.actions button')].map((b) => b.textContent.replace(/\s+/g, ' ').trim())).toEqual([
-      'Add rule a',
-      'Not now r',
-      'Edit rule ⏎',
+      'Add rule',
+      'Not now',
+      'Edit rule',
     ]);
   });
 

@@ -6,17 +6,17 @@
   // Keys: 1–4 breakdown, R reports list, [ ] previous / next report,
   // e copy as markdown, ⏎ plan next week, esc back to the Week planner.
   import { onMount, untrack } from 'svelte';
-  import Kbd from '../components/Kbd.svelte';
   import PressurePill from '../components/PressurePill.svelte';
   import { app, openPlanner, saveLayout, toast } from '../lib/app.svelte.js';
   import { deliveryReport } from '../lib/delivery.js';
   import { dayHm, dayTime } from '../lib/format.js';
   import { reportLine, reportTip } from '../lib/intake.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { isTypingTarget } from '../lib/keyboard.js';
+  import { keyIgnored } from '../lib/keyboard.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { ACTION_LABEL, API_TIP, delta, kpis, minutes, noData, overwatchLast, reportMarkdown, stateBar, TABS, usd, weekNo } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
+  import { tooltip } from '../lib/tooltip.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -27,6 +27,12 @@
   let err = $state(null);
   let tab = $state('model');
   let showList = $state(false);
+  // Asked for the list (the palette's "Past weekly reports", §9 bug 2): one-shot, not saved in the layout.
+  $effect(() => {
+    if (!spec?.list) return;
+    showList = true;
+    app.panes[paneId] = { ...app.panes[paneId], list: false };
+  });
   let root = $state(null);
 
   const week = $derived(r ? weekNo(Date.parse(r.week_start)) : null);
@@ -71,7 +77,7 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
+    if (keyIgnored(e)) return;
     const k = e.key;
     const n = Number(k);
     if (n >= 1 && n <= 4) tab = TABS[n - 1].id;
@@ -110,8 +116,8 @@
       <span class="secondary">{r.in_progress ? `so far · ${dayTime(Date.parse(r.week_start))} → now` : `${dayTime(Date.parse(r.week_start))} → ${dayTime(Date.parse(r.reset_at))} · ${Math.round(r.totals.weekly_pct)} % at reset`}</span>
       {#if estimated}<span class="tag est">≈ estimated</span>{/if}
       <span class="grow"></span>
-      <button class="btn ghost" onclick={copyMarkdown}>Copy as markdown <Kbd keys="e" /></button>
-      <button class="btn primary" onclick={() => (app.overlay = { kind: 'plan' })}>Plan week {weekNo(Date.parse(r.reset_at))} <Kbd keys="⏎" /></button>
+      <button class="btn ghost" use:tooltip={{ label: 'Copy as markdown', key: 'e' }} onclick={copyMarkdown}>Copy as markdown</button>
+      <button class="btn primary" use:tooltip={{ label: `Plan week ${weekNo(Date.parse(r.reset_at))}`, key: '⏎' }} onclick={() => (app.overlay = { kind: 'plan' })}>Plan week {weekNo(Date.parse(r.reset_at))}</button>
     </header>
     {#if estimated}<p class="warnbox">▲ Estimated: fewer than 20 usage samples this week; pp per row are approximate.</p>{/if}
 
@@ -159,7 +165,7 @@
         <section class="card">
           <div class="ch"><b>Breakdown</b><span class="muted">by {tab} · pp of the week</span></div>
           <div class="tabs" role="tablist">
-            {#each TABS as t, i (t.id)}<button class="tab" class:on={tab === t.id} role="tab" aria-selected={tab === t.id} onclick={() => (tab = t.id)}><Kbd keys={String(i + 1)} /> {t.label}</button>{/each}
+            {#each TABS as t, i (t.id)}<button class="tab" class:on={tab === t.id} role="tab" aria-selected={tab === t.id} use:tooltip={{ label: t.label, key: String(i + 1) }} onclick={() => (tab = t.id)}>{t.label}</button>{/each}
           </div>
           <table class="rows">
             <thead><tr><th>{TABS.find((t) => t.id === tab).label}</th><th>Used</th><th class="share">Share</th><th class="usd" title={API_TIP}>≈ API $</th></tr></thead>
@@ -230,7 +236,7 @@
         {/if}
 
         <section class="card" class:open={showList}>
-          <div class="ch"><b>Past reports</b><span class="grow"></span><span class="muted"><Kbd keys="R" /> list · <Kbd keys="[" /><Kbd keys="]" /> prev/next</span></div>
+          <div class="ch"><b>Past reports</b></div>
           {#each showList ? list : list.slice(0, 4) as x (x.id)}
             <button class="past" class:on={x.id === id} onclick={() => go(x.id)}>
               <span>Week {weekNo(Date.parse(x.week_start))}{x.in_progress ? ' · so far' : ''}&nbsp; {x.final_weekly_pct == null ? 'no data' : `${Math.round(x.final_weekly_pct)} %`}</span>

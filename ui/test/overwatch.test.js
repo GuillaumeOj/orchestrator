@@ -130,7 +130,8 @@ describe('the status in the header (notes §1)', () => {
       setNow([], [], o);
       const r = render(ChatColumn);
       const el = status(r.container);
-      const t = el.getAttribute('title');
+      // A span keeps its native title; the button has the same text as its accessible name (and tooltip).
+      const t = el.getAttribute('title') ?? el.getAttribute('aria-label');
       cleanup();
       return t;
     };
@@ -234,7 +235,7 @@ describe('the input (notes §2)', () => {
       const r = render(ChatColumn);
       const f = field(r.container);
       expect(f, s).toBeTruthy();
-      expect(f.getAttribute('placeholder')).toBe('Ask the Overwatch…');
+      expect(f.getAttribute('placeholder')).toBe('Message the Overwatch · ⏎ to send');
       expect(f.disabled).toBe(false);
       r.unmount();
     }
@@ -360,7 +361,7 @@ describe('the input (notes §2)', () => {
     await fireEvent.click(c.querySelector('[data-day-row]'));
     await settle();
     expect(field(c)).toBeNull();
-    expect(text(c.querySelector('footer.foot'))).toContain('Read-only · Back to today');
+    expect(text(c.querySelector('footer.foot'))).toBe('Read-only');
   });
 });
 
@@ -409,7 +410,7 @@ describe('/ and ⌘L (notes §2.3, §11)', () => {
   it('/ opens the search from the thread and the header button does too; in the input it types', async () => {
     setNow();
     const { container: c } = render(ChatColumn);
-    expect(c.querySelector('.iconbtn').getAttribute('aria-label')).toBe('Search decisions · /');
+    expect(c.querySelector('.iconbtn').getAttribute('aria-label')).toBe('Search decisions');
     await fireEvent.keyDown(feed(c), { key: '/' });
     await settle();
     expect(document.activeElement).toBe(c.querySelector('.search input'));

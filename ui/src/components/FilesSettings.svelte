@@ -11,7 +11,7 @@
   import { errText, invoke } from '../lib/ipc.js';
   import { isTypingTarget } from '../lib/keyboard.js';
   import { accessLabel, accessOptions, addedToast, ICON, inRect, items, midTruncate, pathLines, tilde } from '../lib/projectfiles.js';
-  import Kbd from './Kbd.svelte';
+  import { tooltip } from '../lib/tooltip.js';
   import Select from './Select.svelte';
 
   let { project, name } = $props();
@@ -237,7 +237,7 @@
   <p class="muted lead">Agents read them in place. They aren't copied, versioned or committed.</p>
 
   {#if loadError && !view}
-    <p class="box errbox"><span class="lerr">{ICON.error}</span> Couldn't load {name}'s files: {loadError} <span class="grow"></span><button class="btn ghost" onclick={load}>Retry <Kbd keys="r" /></button></p>
+    <p class="box errbox"><span class="lerr">{ICON.error}</span> Couldn't load {name}'s files: {loadError} <span class="grow"></span><button class="btn ghost" use:tooltip={{ label: 'Retry', key: 'r' }} onclick={load}>Retry</button></p>
   {:else if !view}
     <div class="skel" aria-busy="true"><i></i><i></i><i class="short"></i></div>
   {:else}
@@ -270,7 +270,7 @@
             else if (e.key === 'Escape' && text) (e.preventDefault(), e.stopPropagation(), (text = ''));
           }}
         ></textarea>
-        <button class="btn" disabled={adding || !pathLines(text).length} onclick={addTyped}>Add <Kbd keys="⏎" /></button>
+        <button class="btn" disabled={adding || !pathLines(text).length} use:tooltip={{ label: 'Add', key: '⏎' }} onclick={addTyped}>Add</button>
       </span>
     </label>
 
@@ -295,8 +295,8 @@
               <div class="confirm" data-confirm role="alertdialog" aria-label="Remove {short(f.path)}">
                 <span>Remove from the project? The {f.kind} stays on disk.</span>
                 <span class="grow"></span>
-                <button class="btn danger" onclick={() => remove(f)}>Remove <Kbd keys="⏎" /></button>
-                <button class="btn ghost" onclick={cancelRemove}>Cancel <Kbd keys="esc" /></button>
+                <button class="btn danger" use:tooltip={{ label: 'Remove', key: '⏎' }} onclick={() => remove(f)}>Remove</button>
+                <button class="btn ghost" use:tooltip={{ label: 'Cancel', key: 'esc' }} onclick={cancelRemove}>Cancel</button>
               </div>
             {:else}
               <span class="icon kind" role="img" aria-label={f.kind}>{folder ? ICON.folder : ICON.file}</span>
@@ -311,9 +311,9 @@
                 {/key}
               </span>
               <span class="acts">
-                <button class="act" aria-label="Reveal in Finder" title="Reveal in Finder" disabled={!f.exists} onclick={() => reveal(f)}>{ICON.reveal}</button>
-                {#if !folder}<button class="act" aria-label="Open in editor" title="Open in editor" disabled={!f.exists} onclick={() => edit(f)}>{ICON.editor}</button>{/if}
-                <button class="act" aria-label="Remove" title="Remove ⌫" onclick={() => startRemove(f)}>{ICON.remove}</button>
+                <button class="act" aria-label="Reveal in Finder" use:tooltip={'Reveal in Finder'} disabled={!f.exists} onclick={() => reveal(f)}>{ICON.reveal}</button>
+                {#if !folder}<button class="act" aria-label="Open in editor" use:tooltip={'Open in editor'} disabled={!f.exists} onclick={() => edit(f)}>{ICON.editor}</button>{/if}
+                <button class="act" aria-label="Remove" use:tooltip={{ label: 'Remove', key: '⌫' }} onclick={() => startRemove(f)}>{ICON.remove}</button>
               </span>
             {/if}
           </div>
@@ -322,7 +322,7 @@
       {#if anyWrite}<p class="muted note">Agents may change these files. Two agents writing the same file: the last write wins, nothing undoes it.</p>{/if}
       {#if view.live_agents > 0}<p class="muted note">Running agents get changes when they next start · {view.live_agents} live now</p>{/if}
     {/if}
-    <p class="muted note keys">Changes apply as you make them. <Kbd keys="j" /> <Kbd keys="k" /> rows · <Kbd keys="⏎" /> note · <Kbd keys="a" /> access · <Kbd keys="⌫" /> remove · <Kbd keys="⌘+O" /> browse</p>
+    <p class="muted note applies">Changes apply as you make them.</p>
     <p class="sr" aria-live="polite">{announce}</p>
   {/if}
 </div>
@@ -347,7 +347,7 @@
     margin: 0;
     font: var(--text-caption);
   }
-  .keys {
+  .applies {
     margin-top: var(--space-xs);
   }
   .mono {

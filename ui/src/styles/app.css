@@ -220,6 +220,16 @@ textarea {
 .icon-btn:disabled {
   color: var(--color-text-disabled);
 }
+/* A destructive icon (bin): the danger colour in every enabled state (R3, R4). */
+.icon-btn.danger:not(:disabled) {
+  color: var(--color-status-error);
+}
+/* Icon buttons at the right end of a pane header, `⋯` last (R4). */
+.head-acts {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+}
 
 /* Buttons (Penpot 02): primary, secondary, ghost, danger. */
 .btn {

@@ -4,7 +4,7 @@
   import { onMount } from 'svelte';
   import { toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import Kbd from './Kbd.svelte';
+  import { tooltip } from '../lib/tooltip.js';
   import Select from './Select.svelte';
 
   const KEYS = { refresh: 'intake.refresh_secs', team: 'intake.default_team_pp', solo: 'intake.default_solo_pp' };
@@ -105,7 +105,7 @@
   </div>
   {#if failure}<p class="ferr" role="alert">Could not save: {failure}</p>{/if}
   <div class="actions">
-    <button class="btn primary" disabled={!canSave} onclick={save}>{busy ? 'Saving…' : 'Save'} <Kbd keys="⏎" /></button>
+    <button class="btn primary" disabled={!canSave} use:tooltip={{ label: 'Save', key: '⏎' }} onclick={save}>{busy ? 'Saving…' : 'Save'}</button>
     {#if saved}<span class="done" role="status">Saved</span>{/if}
   </div>
 </section>

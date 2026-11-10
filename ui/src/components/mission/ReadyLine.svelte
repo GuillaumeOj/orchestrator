@@ -3,7 +3,7 @@
   // nothing ready, a source error with its Fix, "+ n more", looking, all hidden.
   // Copy is the notes' (the core's `message` only reaches the tooltip, F3).
   import { errorInfo, rateLimitedUntil } from '../../lib/intake.js';
-  import Kbd from '../Kbd.svelte';
+  import { tooltip } from '../../lib/tooltip.js';
 
   /** @type {{ line: any, now: number, overwatch?: string, onplan?: () => void, onsetup?: () => void, onrefresh?: () => void, onfix?: () => void, onopen?: () => void, onshow?: () => void }} */
   let { line, now, overwatch = 'asleep', onplan = () => {}, onsetup = () => {}, onrefresh = () => {}, onfix = () => {}, onopen = () => {}, onshow = () => {} } = $props();
@@ -18,29 +18,28 @@
   {#if line.line === 'nosource'}
     <span>{line.nameText} {line.many ? 'have' : 'has'} no intake source</span>
     <span class="muted">·</span>
-    <button class="link" tabindex="-1" onclick={(e) => (e.stopPropagation(), onplan())}>Plan with the Overwatch{tail}</button> <Kbd keys="⏎" />
+    <button class="link" tabindex="-1" use:tooltip={{ label: 'Plan with the Overwatch', key: '⏎' }} onclick={(e) => (e.stopPropagation(), onplan())}>Plan with the Overwatch{tail}</button>
     <span class="muted">·</span>
-    <button class="link" tabindex="-1" onclick={(e) => (e.stopPropagation(), onsetup())}>Set up intake</button> <Kbd keys="e" />
+    <button class="link" tabindex="-1" use:tooltip={{ label: 'Set up intake', key: 'e' }} onclick={(e) => (e.stopPropagation(), onsetup())}>Set up intake</button>
   {:else if line.line === 'empty'}
     <span class="muted">{line.merged ? `Nothing ready in ${line.count} projects` : `Nothing ready in ${line.src.label}`}</span>
     <span class="muted">·</span>
-    <button class="link" tabindex="-1" onclick={(e) => (e.stopPropagation(), onrefresh())}>Refresh</button> <Kbd keys="⇧R" />
+    <button class="link" tabindex="-1" use:tooltip={{ label: 'Refresh', key: '⇧R' }} onclick={(e) => (e.stopPropagation(), onrefresh())}>Refresh</button>
   {:else if line.line === 'error'}
     <span title={info.tip}><span aria-hidden="true">{'\u{F0026}'}</span> {line.name} · {info.text}</span>
     {#if fixLabel}
       <span class="muted">·</span>
-      <button class="link" tabindex="-1" onclick={(e) => (e.stopPropagation(), onfix())}>{fixLabel}</button>
-      {#if info.fix !== 'retry'}<Kbd keys="⏎" />{/if}
+      <button class="link" tabindex="-1" use:tooltip={info.fix !== 'retry' ? { label: fixLabel, key: '⏎' } : null} onclick={(e) => (e.stopPropagation(), onfix())}>{fixLabel}</button>
     {/if}
   {:else if line.line === 'more'}
     <span class="muted">+ {line.src.more} more in {line.src.label}</span>
-    {#if line.src.url}<span class="muted">·</span> <button class="link" tabindex="-1" onclick={(e) => (e.stopPropagation(), onopen())}>Open ↗</button> <Kbd keys="⏎" />{/if}
+    {#if line.src.url}<span class="muted">·</span> <button class="link" tabindex="-1" use:tooltip={{ label: 'Open', key: '⏎' }} onclick={(e) => (e.stopPropagation(), onopen())}>Open ↗</button>{/if}
   {:else if line.line === 'looking'}
     <span class="muted">Looking for items in {line.src.label}…</span>
   {:else if line.line === 'allhidden'}
     <span class="muted">All {line.count} items are hidden</span>
     <span class="muted">·</span>
-    <button class="link" tabindex="-1" onclick={(e) => (e.stopPropagation(), onshow())}>Show</button> <Kbd keys="⏎" />
+    <button class="link" tabindex="-1" use:tooltip={{ label: 'Show', key: '⏎' }} onclick={(e) => (e.stopPropagation(), onshow())}>Show</button>
   {/if}
 </div>
 

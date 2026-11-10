@@ -9,7 +9,7 @@
   import { refresh, toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { TIERS as TIER_OPTIONS } from '../lib/options.js';
-  import Kbd from './Kbd.svelte';
+  import { tooltip } from '../lib/tooltip.js';
   import Select from './Select.svelte';
 
   let { onSaved = () => {}, onCancel = null } = $props();
@@ -94,7 +94,7 @@
     <p class="muted">Weights are relative; a weight of 0 drops the allocation. A hard cap stops the allocation for the week once it used that % of the week. Projects not in the plan are charged to “other sessions”; give one a weight to add it.</p>
     {#if error}<p class="err">{error}</p>{/if}
     <div class="foot">
-      {#if onCancel}<button type="button" class="btn ghost" onclick={onCancel}>Cancel <Kbd keys="esc" /></button>{/if}
+      {#if onCancel}<button type="button" class="btn ghost" use:tooltip={{ label: 'Cancel', key: 'esc' }} onclick={onCancel}>Cancel</button>{/if}
       <button type="submit" class="btn primary" disabled={busy || !form.days.length}>{busy ? 'Saving…' : 'Save plan'}</button>
     </div>
   </form>

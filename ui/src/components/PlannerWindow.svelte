@@ -172,12 +172,15 @@
     }
   }
 
+  // §9 bug 5: the button and P are one action with one feedback.
+  const pauseAll = () => governor('pause_all').then(() => (toast('Paused all · Resume all from the palette'), load()));
+
   function onKey(e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key;
     const act = (fn) => (e.preventDefault(), fn());
     if (k === 'S') return act(sprint);
-    if (k === 'P') return act(() => governor('pause_all').then(() => (toast('Paused all · Resume all from the palette'), load())));
+    if (k === 'P') return act(pauseAll);
     if (k === 'u') return act(() => undo(v?.log[logSel]));
     if (k === 'j' || k === 'ArrowDown') return act(() => (logSel = Math.min((v?.log.length ?? 1) - 1, logSel + 1)));
     if (k === 'k' || k === 'ArrowUp') return act(() => (logSel = Math.max(0, logSel - 1)));
@@ -211,7 +214,7 @@
         <button class="btn" onclick={() => setEnforce(false)}>Shadow mode…</button>
       {/if}
       <button class="btn" onclick={sprint} use:tooltip={{ label: 'Sprint mode', key: 'S' }}>Sprint mode</button>
-      <button class="btn danger" onclick={() => governor('pause_all').then(load)} use:tooltip={{ label: 'Pause all', key: 'P' }}>Pause all</button>
+      <button class="btn danger" onclick={pauseAll} use:tooltip={{ label: 'Pause all', key: 'P' }}>Pause all</button>
       <button class="btn" onclick={() => openReport('current')} use:tooltip={{ label: 'Weekly report', key: 'R' }}>Weekly report</button>
       <button class="btn" onclick={() => (app.overlay = { kind: 'plan' })} use:tooltip={{ label: v.plan_set ? 'Edit plan' : 'Set this week’s plan', key: 'e' }}>{v.plan_set ? 'Edit plan…' : 'Set this week’s plan…'}</button>
     </div>

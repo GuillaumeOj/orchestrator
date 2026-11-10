@@ -912,14 +912,17 @@ export function windowSection(section) {
   setWindow({ ...w, section, server: null });
 }
 
-/** FR-818: the weekly report ('current' = this week so far), one pane. */
+/** FR-818: the weekly report ('current' = this week so far), one pane; `'list'` opens it on the
+ *  list of past reports (§9 bug 2: the palette's "Past weekly reports"). */
 export function openReport(reportId = 'current') {
+  const list = reportId === 'list';
+  const id = list ? 'current' : reportId;
   const existing = findPane((s) => s.type === 'report');
   if (existing) {
-    app.panes[existing] = { ...app.panes[existing], reportId };
+    app.panes[existing] = { ...app.panes[existing], reportId: id, list };
     return focusPane(existing);
   }
-  addPane({ type: 'report', reportId });
+  addPane({ type: 'report', reportId: id, list });
 }
 
 /** A link in the browser (the core runs `open`; only http(s)). */
@@ -1362,6 +1365,27 @@ export async function agentAction(id, action, message = null) {
     toast(`${id}: ${errText(e)}`, { kind: 'error' });
   }
 }
+
+/** Kill after a confirm (the `⋯` Menu, the palette). */
+export const confirmKill = (id) =>
+  confirm(
+    `Kill ${id}?`,
+    'Its process group and every process left in its worktree get SIGTERM, then SIGKILL after 5 s. The session can be resumed.',
+    () => agentAction(id, 'kill'),
+    'Kill',
+  );
+
+/** A fresh session after a confirm (the `⋯` Menu, the palette). */
+export const confirmRestartFresh = (id) =>
+  confirm(
+    `Restart ${id} fresh?`,
+    'Its current session is left; a new one starts with its brief and task.',
+    () => restartFresh(id),
+    'Restart fresh',
+  );
+
+/** The Delete agent dialog (the `⋯` Menu, the palette). */
+export const askDeleteAgent = (id) => (app.overlay = { kind: 'delete-agent', agentId: id });
 
 /** FR-202: kill (checked) and hide the agent; its worktree on request. Its
  *  panes close on the refresh (see `prunePanes`). */
@@ -1984,7 +2008,7 @@ export function commands() {
       : []),
     { id: 'plan.edit', label: 'Edit the weekly plan…', run: () => (app.overlay = { kind: 'plan' }) },
     { id: 'report.current', label: 'Weekly report (this week so far)', run: () => openReport('current') },
-    { id: 'report.list', label: 'Past weekly reports', run: () => openReport('current') },
+    { id: 'report.list', label: 'Past weekly reports', run: () => openReport('list') },
     { id: 'team.canvas', label: 'Open the Team canvas', run: () => openCanvas() },
     {
       id: 'team.launch',
@@ -2033,33 +2057,9 @@ export function commands() {
       live && { id: 'agent.interrupt', label: `Interrupt ${a.id} (Esc)`, run: () => agentAction(a.id, 'interrupt') },
       live && { id: 'agent.suspend', label: `Suspend ${a.id}`, run: () => agentAction(a.id, 'suspend') },
       !live && { id: 'agent.resume', label: `Resume ${a.id}`, run: () => agentAction(a.id, 'resume') },
-      {
-        id: 'agent.kill',
-        label: `Kill ${a.id}…`,
-        run: () =>
-          confirm(
-            `Kill ${a.id}?`,
-            'Its process group and every process left in its worktree get SIGTERM, then SIGKILL after 5 s. The session can be resumed.',
-            () => agentAction(a.id, 'kill'),
-            'Kill',
-          ),
-      },
-      {
-        id: 'agent.restart-fresh',
-        label: `Restart ${a.id} fresh…`,
-        run: () =>
-          confirm(
-            `Restart ${a.id} fresh?`,
-            'Its current session is left; a new one starts with its brief and task.',
-            () => restartFresh(a.id),
-            'Restart fresh',
-          ),
-      },
-      {
-        id: 'agent.delete',
-        label: `Delete ${a.id}…`,
-        run: () => (app.overlay = { kind: 'delete-agent', agentId: a.id }),
-      },
+      { id: 'agent.kill', label: `Kill ${a.id}…`, run: () => confirmKill(a.id) },
+      { id: 'agent.restart-fresh', label: `Restart ${a.id} fresh…`, run: () => confirmRestartFresh(a.id) },
+      { id: 'agent.delete', label: `Delete ${a.id}…`, run: () => askDeleteAgent(a.id) },
       { id: 'agent.shell', label: `Shell in ${a.id}'s worktree`, run: () => openShell({ agentId: a.id }) },
       {
         id: 'agent.diff',

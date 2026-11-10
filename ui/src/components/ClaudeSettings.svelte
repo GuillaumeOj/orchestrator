@@ -5,8 +5,9 @@
   import { app, claudeAct, toast } from '../lib/app.svelte.js';
   import { account, compat, hint, installedHeader, keysOf, updateBlock } from '../lib/claude.js';
   import { shortPath } from '../lib/format.js';
+  import { keyIgnored } from '../lib/keyboard.js';
+  import { tooltip } from '../lib/tooltip.js';
   import ClaudeUpdateBlock from './ClaudeUpdateBlock.svelte';
-  import Kbd from './Kbd.svelte';
 
   const c = $derived(app.data?.setup?.claude ?? null);
   const home = $derived(app.data?.core?.user_home ?? '');
@@ -27,7 +28,7 @@
   }
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select, button, a') || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (keyIgnored(e, { controls: true })) return;
     const def = block.buttons.find((b) => b.def);
     if (e.key === 'u' && keys.u) claudeAct('update');
     else if (e.key === 'r' && keys.r) claudeAct('check');
@@ -45,7 +46,7 @@
     <div class="what">
       <div class="l1"><b class="mono">{head.version}</b>{#if head.meta} · {head.meta}{/if}</div>
       {#if head.path}
-        <button class="l2 muted mono path" title="Copy path" onclick={copyPath}>{shortPath(head.path, home)}</button>
+        <button class="l2 muted mono path" use:tooltip={{ label: 'Copy path', detail: head.path }} onclick={copyPath}>{shortPath(head.path, home)}</button>
       {:else if head.missing}
         <div class="l2 muted">{head.missing}</div>
       {/if}
@@ -66,9 +67,7 @@
     {#if acct.note}<div class="kv"><span></span><span class="muted">{acct.note}</span></div>{/if}
   {/if}
   <p class="muted foot">Agents run with auto-update off. The app updates Claude Code only when you ask, and never writes to ~/.claude.</p>
-  <p class="muted hints">
-    {#if keys.u}<Kbd keys="u" /> {keys.uLabel} · {/if}{#if keys.r}<Kbd keys="r" /> check now · {/if}<Kbd keys="esc" /> back to sections
-  </p>
+
 </section>
 
 <style>
@@ -129,9 +128,7 @@
   }
   .note,
   .foot,
-  .hints {
-    font: var(--text-caption);
-  }
+
   .foot {
     margin-top: var(--space-sm);
   }

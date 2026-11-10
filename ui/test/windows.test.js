@@ -226,6 +226,18 @@ describe('focus (design-notes §3.3)', () => {
     expect(document.activeElement).not.toBe(btn);
   });
 
+  it('§9 bug 2: "Past weekly reports" opens the report on its list, "Weekly report" on this week', () => {
+    A.commands()
+      .find((c) => c.id === 'report.list')
+      .run();
+    const id = Object.keys(app.panes).find((k) => app.panes[k].type === 'report');
+    expect(app.panes[id]).toMatchObject({ reportId: 'current', list: true });
+    A.commands()
+      .find((c) => c.id === 'report.current')
+      .run();
+    expect(app.panes[id]).toMatchObject({ reportId: 'current', list: false });
+  });
+
   it('a pane that opens (the palette above the window) closes the window', () => {
     openSettings();
     A.openReport('current');
@@ -328,6 +340,33 @@ describe('Discard-changes guard (design-notes §3.3)', () => {
     expect(app.overlay?.text).toBe('Discard changes?');
     app.overlay.onYes();
     expect(app.window).toBeNull();
+  });
+
+  it('Project settings: Notion saves only its page; Revert puts the saved page back (§9 bug 1)', async () => {
+    const backend = { type: 'github' };
+    replies.project_settings = { settings: { notion_parent_page: 'old' }, backend, track_orchestrator_dir: true };
+    replies.project_settings_set = (a) => ({ ...a.form });
+    replies.board_view = null;
+    replies.integrations_view = { items: [] };
+    openProjectSettings('shop-api', 'notion');
+    const { container, getByText } = render(ProjectSettingsWindow);
+    const input = await waitFor(() => {
+      const el = /** @type {HTMLInputElement | null} */ (
+        container.querySelector('input[placeholder="Notion page URL or id"]')
+      );
+      if (!el) throw new Error('not loaded');
+      return el;
+    });
+    await fireEvent.input(input, { target: { value: 'typo' } });
+    await fireEvent.click(getByText('Revert'));
+    expect(input.value).toBe('old');
+    expect(calls.filter(([c]) => c === 'project_settings').length).toBe(1); // no reload of the other section
+    await fireEvent.input(input, { target: { value: 'https://notion.so/x' } });
+    await fireEvent.click(getByText('Save'));
+    await waitFor(() => expect(calls.some(([c]) => c === 'project_settings_set')).toBe(true));
+    const [, args] = calls.find(([c]) => c === 'project_settings_set');
+    expect(args.form.settings.notion_parent_page).toBe('https://notion.so/x');
+    expect(args.form.backend).toEqual(backend); // the saved backend, as it is
   });
 
   it('Project settings: a clean section closes from the backdrop at once', async () => {
