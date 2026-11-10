@@ -18,6 +18,9 @@
 | D-8 | F9.6 · `FloatingWindow.svelte:onWindowKey` | acceptance: "Esc → closes" | — | With a section nav, Esc inside the content returns to the nav first; a second Esc closes. This is the documented behaviour of the component (dn §3.3) and the acceptance line is the shorter one: **clarify** and amend acceptance |
 | D-9 | F13.4 · `TerminalSettings.svelte` | acceptance lists "Terminal settings" among the Open in kitty places | — | The section has **Open kitty.conf** (opens the file in an nvim tab), which is what the frame draws. No kitty launcher there: **clarify** and amend acceptance |
 
+**Severity** (lead's brief of T-317): **blocking** = D-1 (a first-launch flow step is unreachable), D-2 (a flow step of the design is missing, unless lead amends flows.md). **minor** = D-3, D-4, D-5, D-6, D-7, D-8, D-9.
+Lead decisions applied, not deviations: Project settings opens on Task backend; MCP overrides Inherit / Override, Off hidden; the hidden rows of spec §3.1 are not rendered; the Overwatch section's two cards with the "● Running" pill.
+
 No other deviation found. The rows listed under "Left out (spec §3.1)" are absent as intended.
 
 ## Part 1 · Flows
