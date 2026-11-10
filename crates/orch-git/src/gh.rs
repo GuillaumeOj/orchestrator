@@ -180,6 +180,11 @@ pub struct PrView {
 pub const PR_VIEW_FIELDS: &str =
     "number,url,state,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup";
 
+/// `reviewDecision` of a `gh pr view` / `gh pr list` entry; None when absent or empty.
+fn review_decision(p: &Value) -> Option<String> {
+    p["reviewDecision"].as_str().filter(|s| !s.is_empty()).map(str::to_string)
+}
+
 pub fn parse_pr_view(json: &str) -> Result<PrView> {
     let p: Value = serde_json::from_str(json).context("gh pr view: not JSON")?;
     let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
@@ -194,7 +199,7 @@ pub fn parse_pr_view(json: &str) -> Result<PrView> {
         mergeable: s("mergeable"),
         merge_state: s("mergeStateStatus"),
         ci: summarize_jobs(&p["statusCheckRollup"]),
-        review_decision: p["reviewDecision"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+        review_decision: review_decision(&p),
     })
 }
 
@@ -289,7 +294,7 @@ pub fn parse_pr_list(json: &str) -> Result<Vec<PullRequest>> {
             state: p["state"].as_str().unwrap_or("").into(),
             url: p["url"].as_str().unwrap_or("").into(),
             is_draft: p["isDraft"].as_bool().unwrap_or(false),
-            review_decision: p["reviewDecision"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
+            review_decision: review_decision(&p),
             checks: summarize_rollup(&p["statusCheckRollup"]),
         })
         .collect())
@@ -516,7 +521,6 @@ mod tests {
         let with = |d: &str| json.replace(r#""state""#, &format!(r#""reviewDecision":"{d}","state""#));
         assert_eq!(parse_pr_view(&with("")).unwrap().review_decision, None, "empty string is None");
         assert_eq!(parse_pr_view(&with("APPROVED")).unwrap().review_decision.as_deref(), Some("APPROVED"));
-        assert_eq!(parse_pr_view(&json.replace("MERGED", "CLOSED")).unwrap().state, "closed");
         assert_eq!(parse_pr_view(&json.replace("MERGED", "CLOSED")).unwrap().state, "closed");
         assert!(parse_pr_view("{}").is_err() && parse_pr_view("nope").is_err());
         assert_eq!(pr_view_args(7)[..3], ["pr", "view", "7"]);
