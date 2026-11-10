@@ -170,3 +170,17 @@ No other deviation found. The rows listed under "Left out (spec §3.1)" are abse
 - **Team canvas, Diff, Report, Setup, dialogs**: [x] no legends; Connect / Delete / Duplicate (`⇧D`) as inspector buttons with tooltips · [x] dialogs in the FloatingWindow shell, Cancel / submit tooltips · [x] native selects gone · [ ] popovers are not the shared Menu: **D-7**. Design preview `×`: not walked.
 - **Settings, Project settings, Week planner, Shortcuts**: [x] all four floating windows, no `addPane` for them (`grep addPane`: Mission, report, project, feature, board, canvas, diff, editor only) · [x] 9 / 7 sections · [x] hidden rows absent · [x] Select height, compact only in the two strips · [x] `noselect.test.js` · [x] one model list (`lib/options.js`) · [ ] Revert on every footer: **D-6** · [x] Discard guard on dirty footers.
 - **Whole app**: [x] `grep "<select"` empty · [x] `<Kbd` only in allowed places (`hints.test.js`) · [~] `make lint` UI part passes, `make test` UI part 1043 / 1044 (timing flake), Rust not run · [x] bugs 1–4, 6, 7 fixed; bug 5 partly: **D-3**.
+
+## Lead decisions on the deviations (2026-11-10)
+
+| # | Decision |
+|---|---|
+| D-1 | Fix (T-322) |
+| D-2 | Fix (T-322): confirm dialog as `06-flow-decision` step 5 draws, no undo toast for `always` |
+| D-3 | Fix (T-322): one `pauseAll()` and one toast |
+| D-4 | Accepted: Update / Details come from the Claude Code update feature, merged on main after the design; they resolve the banner's own state. acceptance.md amended |
+| D-5 | Accepted: git, Claude Code chip and RAM items pre-date the redesign and are information (the chip is an update chip); a lost core connection already shows as the core error banner, so no new status item. acceptance.md amended |
+| D-6 | Fix (T-322): Revert on every footer, disabled until dirty |
+| D-7 | Fix (T-322): Team canvas popovers become the shared `Menu` (design-notes "Where Menu is used") |
+| D-8 | Accepted: documented FloatingWindow behaviour; acceptance.md amended |
+| D-9 | Accepted: the frame draws Open kitty.conf; acceptance.md amended |
