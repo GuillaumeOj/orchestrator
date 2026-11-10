@@ -51,7 +51,7 @@
       <button class="btn" tabindex="-1" aria-label="Unhide {item.ref} {item.title}" use:tooltip={{ label: 'Unhide', key: 'x' }} onclick={(e) => (e.stopPropagation(), onunhide())}>Unhide</button>
     {/if}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-    <span class="menuwrap" onclick={(e) => e.stopPropagation()}><Menu items={menuItems} label="More for {item.ref}" /></span>
+    <span class="menuwrap" onclick={(e) => e.stopPropagation()}><Menu items={menuItems} tabindex={-1} label="More for {item.ref}" /></span>
   </div>
   <!-- Line 2 at every width (boards): [warning ·] project · ≤ 2 label chips. -->
   <div class="l2">

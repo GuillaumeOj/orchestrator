@@ -17,8 +17,8 @@
    *             reason?: string, checked?: boolean, items?: any[], separator?: boolean, run?: () => void }} MenuItem
    */
   /** @type {{ items?: MenuItem[], onselect?: (item: MenuItem) => void, label?: string, disabled?: boolean,
-   *           trigger?: import('svelte').Snippet<[Record<string, any>]> }} */
-  let { items = [], onselect, label = 'More actions', disabled = false, trigger } = $props();
+   *           tabindex?: number, trigger?: import('svelte').Snippet<[Record<string, any>]> }} */
+  let { items = [], onselect, label = 'More actions', disabled = false, tabindex = undefined, trigger } = $props();
 
   const uid = $props.id();
   const menuId = `${uid}-menu`;
@@ -269,7 +269,7 @@
   {#if trigger}
     {@render trigger(triggerAttrs)}
   {:else}
-    <button type="button" class="icon-btn" class:pressed={open} aria-label={label} {disabled} use:tooltip={label} {...triggerAttrs}>{'\u{F01D8}'}</button>
+    <button type="button" class="icon-btn" class:pressed={open} aria-label={label} {disabled} {tabindex} use:tooltip={label} {...triggerAttrs}>{'\u{F01D8}'}</button>
   {/if}
 </span>
 

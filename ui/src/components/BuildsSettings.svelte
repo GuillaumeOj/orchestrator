@@ -141,7 +141,7 @@
             {#if st.dot}<span class="dot" aria-hidden="true">●</span>{/if}{st.text}
           </span>
           {#if st.action && !asking}
-            <button class="btn" class:primary={st.action.primary} disabled={st.action.disabled} use:tooltip={{ label: st.action.label, key: '⏎' }} onclick={() => act(r)}>{st.action.label}</button>
+            <button class="btn" class:primary={st.action.primary} disabled={st.action.disabled} use:tooltip={r.id === cur?.id ? { label: st.action.label, key: '⏎' } : null} onclick={() => act(r)}>{st.action.label}</button>
           {/if}
         </div>
         <div class="sub muted">

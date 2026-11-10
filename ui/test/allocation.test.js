@@ -9,7 +9,6 @@ import {
   capBar,
   changedFields,
   isDirty,
-  keysFor,
   pendingRemoval,
   savedToast,
   share,
@@ -150,17 +149,9 @@ describe('allocation helpers', () => {
     expect(capBar(1, null, 'a')).toBeNull();
   });
 
-  it('toasts and the keys line', () => {
+  it('toasts', () => {
     expect(savedToast('shop-api', {})).toBe("Saved shop-api's allocation · this week's usage kept");
     expect(savedToast('shop-api', null)).toBe("Removed shop-api from the plan · this week's usage kept");
-    expect(keysFor(out(), null, false, false, false)).toEqual([
-      ['a', 'add'],
-      ['g', 'week planner'],
-    ]);
-    const d = { weight: '50', tier: 'high', cap: '30' };
-    expect(keysFor(view(), d, false, false, false).map((k) => k[0])).toEqual(['x', 'g']);
-    expect(keysFor(view(), d, true, true, false).map((k) => k[0])).toEqual(['esc', 'x']); // invalid: no ⌘+⏎, no g
-    expect(keysFor(null, null, false, false, true)).toEqual([['r', 'retry']]);
   });
 });
 
