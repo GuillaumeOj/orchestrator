@@ -164,11 +164,19 @@ impl Store {
         let id = id.to_string();
         let topics = [orch_protocol::Topic::Project(id.clone()), orch_protocol::Topic::Board(id.clone())];
         self.write_touching(topics, move |tx| {
-            let taken: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM projects WHERE id<>?1 AND archived=0 AND lower(name)=lower(?2))",
-                params![id, name],
-                |r| r.get(0),
-            )?;
+            // SQLite's lower() is ASCII only: compare with Unicode case folding here.
+            let wanted = name.to_lowercase();
+            let mut st = tx.prepare("SELECT name FROM projects WHERE id<>?1 AND archived=0")?;
+            let mut rows = st.query(params![id])?;
+            let mut taken = false;
+            while let Some(r) = rows.next()? {
+                if r.get::<_, String>(0)?.to_lowercase() == wanted {
+                    taken = true;
+                    break;
+                }
+            }
+            drop(rows);
+            drop(st);
             if taken {
                 anyhow::bail!("A project named {name} already exists");
             }
@@ -773,6 +781,12 @@ pub(crate) mod tests {
         let p = s.project("a").unwrap().unwrap();
         assert_eq!((p.name.as_str(), p.default_branch.as_str()), ("ALPHA", "develop"));
         assert!(s.rename_project("zz", "n").is_err());
+        // Unicode case folding, which SQLite's lower() lacks.
+        let mut c = project("c", "/x/c");
+        c.name = "Été".into();
+        s.upsert_project(&c).unwrap();
+        assert_eq!(err(s.rename_project("b", "été")), "A project named été already exists");
+        s.rename_project("c", "ÉTÉ").unwrap();
     }
 
     #[test]
