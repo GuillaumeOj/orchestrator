@@ -341,6 +341,12 @@ impl Runtime {
         lock(&self.now.topics).insert(topic.into());
     }
 
+    /// Takes the topics touched since the last pump (tests).
+    #[cfg(test)]
+    pub(crate) fn touched(&self) -> Vec<String> {
+        std::mem::take(&mut *lock(&self.now.topics)).into_iter().collect()
+    }
+
     /// Files in `worktree` changed (an edit, a commit, a merge): its Diff pane refetches.
     pub fn touch_worktree(&self, worktree: &std::path::Path) {
         self.touch(orch_protocol::Topic::Worktree(worktree.display().to_string()));
