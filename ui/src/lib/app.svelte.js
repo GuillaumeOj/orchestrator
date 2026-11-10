@@ -2186,19 +2186,26 @@ export async function getNotify() {
   return { desktop: true, sound: true, ...(cur ?? {}) };
 }
 
-/** Stores `key` on or off and returns the new settings; throws when the store refuses. */
-export async function setNotify(key, on) {
-  const next = { ...(await getNotify()), [key]: on };
-  await invoke('settings_set', { key: 'notifications', value: next });
-  return next;
+// Writes are read-modify-write on one object: queued, so two quick toggles don't undo each other.
+let notifyQueue = Promise.resolve();
+
+/** Stores `key` on or off (`on` may be a function of the current settings) and returns the new
+ *  settings; throws when the store refuses. */
+export function setNotify(key, on) {
+  const run = notifyQueue.then(async () => {
+    const cur = await getNotify();
+    const next = { ...cur, [key]: typeof on === 'function' ? on(cur) : on };
+    await invoke('settings_set', { key: 'notifications', value: next });
+    return next;
+  });
+  notifyQueue = run.catch(() => {});
+  return run;
 }
 
 /** Desktop notifications and their sound (both on by default), read by the core's notifier. */
 export async function toggleNotify(key) {
-  const next = { ...(await getNotify()) };
-  next[key] = !next[key];
-  await invoke('settings_set', { key: 'notifications', value: next }).catch(() => {});
-  toast(`${key === 'desktop' ? 'Desktop notifications' : 'Notification sound'} ${next[key] ? 'on' : 'off'}`);
+  const next = await setNotify(key, (cur) => !cur[key]).catch(() => null);
+  if (next) toast(`${key === 'desktop' ? 'Desktop notifications' : 'Notification sound'} ${next[key] ? 'on' : 'off'}`);
 }
 
 /** An explicit choice (dark, light, or null = system) ends the kitty-derived theme. */

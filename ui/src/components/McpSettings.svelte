@@ -146,29 +146,42 @@
     }
   }
 
-  /** Override: a project-scoped copy of the global server (its own env); the form opens on it. */
-  async function setOverride(s) {
-    if (s.scope) return;
-    try {
-      const r = await invoke('mcp_server_save', { server: serverForSave($state.snapshot(s)), scope: { kind: 'project', id: project } });
-      toast(`${project} has its own ${r.name}`);
-      await load();
-      sel = Math.max(0, servers.findIndex((x) => x.id === r.id));
-      edit(servers[sel] ?? r);
-    } catch (e) {
-      toast(`${s.name}: ${errText(e)}`, { kind: 'error' });
-    }
+  /** The registry entry as stored: the form's copy may carry edits not saved yet. */
+  const savedEntry = (s) => servers.find((x) => x.id === s.id) ?? s;
+
+  /** Inherit / Override reload the form: unsaved edits go only after a confirm. */
+  function discardFirst(s, run) {
+    if (!hasChanges()) return run();
+    confirm(`Discard the unsaved changes to ${s.name}?`, 'The form reloads on the stored entry.', run, 'Discard');
   }
 
-  /** Inherit: the project copy goes (behind a confirm when its env differs from the global one). */
+  /** Override: a project-scoped copy of the global server (its own env); the form opens on it. */
+  function setOverride(s) {
+    if (s.scope) return;
+    discardFirst(s, async () => {
+      const g = savedEntry(s);
+      try {
+        const r = await invoke('mcp_server_save', { server: serverForSave($state.snapshot(g)), scope: { kind: 'project', id: project } });
+        toast(`${project} has its own ${r.name}`);
+        await load();
+        sel = Math.max(0, servers.findIndex((x) => x.id === r.id));
+        edit(servers[sel] ?? r);
+      } catch (e) {
+        toast(`${s.name}: ${errText(e)}`, { kind: 'error' });
+      }
+    });
+  }
+
+  /** Inherit: the project copy goes (behind a confirm when it differs from the global entry). */
   function setInherit(s) {
     if (!s.scope) return;
+    const own = serverForSave($state.snapshot(savedEntry(s)));
     const global = (view?.servers ?? []).find((x) => x.id === s.id);
-    const differs = !global || JSON.stringify(s.env ?? {}) !== JSON.stringify(global.env ?? {});
+    const differs = !global || JSON.stringify(own) !== JSON.stringify(serverForSave($state.snapshot(global)));
     const run = async () => {
       try {
         const r = await invoke('mcp_server_delete', { id: s.id, scope: { kind: 'project', id: project } });
-        if (r?.deleted === false) return toast(`${s.name} is used by roles of ${project}`, { kind: 'error' });
+        if (r?.deleted === false || r?.used_by?.length) return toast(`${s.name} is used by roles of ${project}`, { kind: 'error' });
         toast(`${project} uses the global ${s.name}`);
         await load();
         sel = Math.max(0, servers.findIndex((x) => x.id === s.id));
@@ -178,8 +191,8 @@
         toast(`${s.name}: ${errText(e)}`, { kind: 'error' });
       }
     };
-    if (!differs) return run();
-    confirm(`Use the global ${s.name} in ${project}?`, `${project}'s own copy, with its own env, is deleted.`, run, 'Inherit');
+    if (!differs) return discardFirst(s, run);
+    confirm(`Use the global ${s.name} in ${project}?`, `${project}'s own copy of ${s.name}, with its own settings, is deleted.`, run, 'Inherit');
   }
 
   function remove(s) {

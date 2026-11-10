@@ -87,7 +87,7 @@
         </span>
         {#if showUnmapped}
           <ul class="shelp um">
-            {#each unmapped as [k, v] (k + v)}<li class="mono">{k} {v}</li>{/each}
+            {#each unmapped as [k, v], i (i)}<li class="mono">{k} {v}</li>{/each}
           </ul>
         {/if}
       </div>

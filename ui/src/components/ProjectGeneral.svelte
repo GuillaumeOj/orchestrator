@@ -23,7 +23,6 @@
   let branchError = $state('');
   let busy = $state(false);
   let fetching = $state(false);
-  let loaded = false;
 
   // The saved values: the record, refreshed when the window saves or the core says it changed.
   const savedName = $derived(p?.name ?? '');
@@ -39,16 +38,15 @@
     nameError = branchError = '';
   }
 
+  // The fields start on the record, so the section is clean until the first edit.
+  revert();
+
   const branchOptions = $derived((branches ?? (savedBranch ? [savedBranch] : [])).map((b) => ({ value: b, label: b, detail: b === savedBranch ? 'current' : undefined })));
 
   async function load() {
     const [b, d] = await Promise.all([invoke('project_branches', { id: pid }).catch(() => null), invoke('project_detail', { id: pid, withPrs: false }).catch(() => null)]);
     branches = b;
     trusted = d ? d.trusted === true : null;
-    if (!loaded) {
-      loaded = true;
-      revert();
-    }
   }
   onMount(load);
 
@@ -57,10 +55,12 @@
     if (busy || !dirty) return;
     busy = true;
     nameError = branchError = '';
+    let wrote = false;
     try {
       if (nameDirty) {
         try {
           await invoke('rename_project', { id: pid, name: name.trim() });
+          wrote = true;
         } catch (e) {
           nameError = errText(e);
           return;
@@ -69,14 +69,16 @@
       if (branchDirty) {
         try {
           await invoke('set_default_branch', { id: pid, branch });
+          wrote = true;
         } catch (e) {
           branchError = errText(e);
           return;
         }
       }
-      await refresh();
       toast('Saved');
     } finally {
+      // A rename that landed shows even when the branch was refused.
+      if (wrote) await refresh();
       busy = false;
     }
   }

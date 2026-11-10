@@ -197,21 +197,21 @@
         </span>
       </div>
     {/each}
-    <h3 class="grp">Notifications</h3>
-    {#each [['desktop', 'Desktop notifications', 'When a decision waits for you and the app is in the background.'], ['sound', 'Sound', '']] as [k, label, help] (k)}
-      <div class="row" data-row="notify-{k}">
-        <div class="what">
-          <label class="lab" for="ow-n-{k}">{label}</label>
-          {#if help}<p class="muted help">{help}</p>{/if}
-        </div>
-        <span class="num">
-          {#if notifyNote === k}<span class="sok" role="status">✓ Saved</span>{/if}
-          <input id="ow-n-{k}" type="checkbox" role="switch" aria-checked={notify[k]} checked={notify[k]} onchange={(e) => toggleNotify(k, e)} />
-        </span>
-      </div>
-    {/each}
-    {#if notifyError}<p class="err help" role="alert">{notifyError}</p>{/if}
   {/if}
+  <h3 class="grp">Notifications</h3>
+  {#each [['desktop', 'Desktop notifications', 'When a decision waits for you and the app is in the background.'], ['sound', 'Sound', '']] as [k, label, help] (k)}
+    <div class="row" data-row="notify-{k}">
+      <div class="what">
+        <label class="lab" for="ow-n-{k}">{label}</label>
+        {#if help}<p class="muted help">{help}</p>{/if}
+      </div>
+      <span class="num">
+        {#if notifyNote === k}<span class="sok" role="status">✓ Saved</span>{/if}
+        <input id="ow-n-{k}" type="checkbox" role="switch" aria-checked={notify[k]} checked={notify[k]} onchange={(e) => toggleNotify(k, e)} />
+      </span>
+    </div>
+  {/each}
+  {#if notifyError}<p class="err help" role="alert">{notifyError}</p>{/if}
 </section>
 
 <style>
