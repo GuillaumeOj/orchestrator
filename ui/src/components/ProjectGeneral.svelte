@@ -134,7 +134,7 @@
       <h3>Git</h3>
       <div class="srow">
         <span class="slab">Default branch</span>
-        <Select width="hug" value={branch} options={branchOptions} aria-label="Default branch" onchange={(v) => (branch = v)} />
+        <div class="branchsel"><Select value={branch} options={branchOptions} aria-label="Default branch" onchange={(v) => (branch = v)} /></div>
         {#if branchError}<p class="serr shelp" role="alert">{branchError}</p>{/if}
       </div>
       <div class="srow">
@@ -184,6 +184,7 @@
 {/if}
 
 <style>
+  .branchsel { width: 180px; }
   .badge {
     display: inline-flex;
     align-items: center;

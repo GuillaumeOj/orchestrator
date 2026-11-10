@@ -102,7 +102,7 @@
         <span class="slab">Pressure</span>
         <span class="sctl">
           <span class="badge" data-pressure={pressure} style:color={level.color} style:border-color={level.color}><span aria-hidden="true">●</span> {level.label}</span>
-          {#if pacing}<span class="muted">live cap {pacing.governor_cap} · {pacing.live_autonomous} live</span>{/if}
+          {#if pacing}<span class="muted">{pacing.live_autonomous} live of {pacing.governor_cap}</span>{/if}
         </span>
       </div>
       {#if above}

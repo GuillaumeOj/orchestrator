@@ -63,7 +63,7 @@ describe('MemorySettings', () => {
       expect(/** @type {any} */ (container.querySelector('[data-pressure]')).dataset.pressure).toBe('normal'),
     );
     expect(text(container.querySelector('[data-pressure]'))).toContain('Normal');
-    expect(text(container)).toContain('live cap 2 · 1 live');
+    expect(text(container)).toContain('1 live of 2');
   });
 
   it('without per-agent samples: one agents segment', () => {
