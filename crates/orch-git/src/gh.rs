@@ -173,9 +173,12 @@ pub struct PrView {
     /// `CLEAN`, `BEHIND`, `DIRTY`, `BLOCKED`, `UNKNOWN`…
     pub merge_state: String,
     pub ci: CiSummary,
+    /// `APPROVED` / `CHANGES_REQUESTED` / `REVIEW_REQUIRED`; None when GitHub reports none.
+    pub review_decision: Option<String>,
 }
 
-pub const PR_VIEW_FIELDS: &str = "number,url,state,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup";
+pub const PR_VIEW_FIELDS: &str =
+    "number,url,state,headRefOid,baseRefName,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup";
 
 pub fn parse_pr_view(json: &str) -> Result<PrView> {
     let p: Value = serde_json::from_str(json).context("gh pr view: not JSON")?;
@@ -191,6 +194,7 @@ pub fn parse_pr_view(json: &str) -> Result<PrView> {
         mergeable: s("mergeable"),
         merge_state: s("mergeStateStatus"),
         ci: summarize_jobs(&p["statusCheckRollup"]),
+        review_decision: p["reviewDecision"].as_str().filter(|s| !s.is_empty()).map(str::to_string),
     })
 }
 
@@ -508,6 +512,11 @@ mod tests {
         let p = parse_pr_view(json).unwrap();
         assert_eq!((p.state.as_str(), p.head_sha.as_str(), p.base.as_str()), ("merged", "abc", "main"));
         assert_eq!(p.ci.overall, "none");
+        assert_eq!(p.review_decision, None, "absent");
+        let with = |d: &str| json.replace(r#""state""#, &format!(r#""reviewDecision":"{d}","state""#));
+        assert_eq!(parse_pr_view(&with("")).unwrap().review_decision, None, "empty string is None");
+        assert_eq!(parse_pr_view(&with("APPROVED")).unwrap().review_decision.as_deref(), Some("APPROVED"));
+        assert_eq!(parse_pr_view(&json.replace("MERGED", "CLOSED")).unwrap().state, "closed");
         assert_eq!(parse_pr_view(&json.replace("MERGED", "CLOSED")).unwrap().state, "closed");
         assert!(parse_pr_view("{}").is_err() && parse_pr_view("nope").is_err());
         assert_eq!(pr_view_args(7)[..3], ["pr", "view", "7"]);
