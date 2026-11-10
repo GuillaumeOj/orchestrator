@@ -1,17 +1,15 @@
 <script>
   // The input at the foot of the chat (P4.4 notes §2, spec §3.9), in place of the
-  // P4.3 footer: "Ask the Overwatch…". ⏎ sends, ⇧⏎ a new line, Esc leaves to the
+  // P4.3 footer: "Message the Overwatch · ⏎ to send". ⏎ sends, ⇧⏎ a new line, Esc leaves to the
   // thread and keeps the draft, ⌘L focuses it from anywhere. Never disabled by
   // the status: the message waits and says so. The draft lives in `app.chatDraft`.
   import { app, openSettings, projectName } from '../../lib/app.svelte.js';
   import { clearPlan, intakeUi } from '../../lib/intake.svelte.js';
   import { COUNT_FROM, inputHint, MAX_CHARS } from '../../lib/overwatch.js';
-  import Kbd from '../Kbd.svelte';
 
   /** @type {{ ow: any, onsend?: (text: string) => void, onleave?: () => void }} */
   let { ow, onsend = () => {}, onleave = () => {} } = $props();
   let field = $state();
-  let focused = $state(false);
   const draft = $derived(app.chatDraft);
   const n = $derived([...draft.trim()].length); // code points of the trimmed text, like chat_send
   const over = $derived(n > MAX_CHARS);
@@ -61,20 +59,15 @@
     bind:this={field}
     bind:value={app.chatDraft}
     {onkeydown}
-    onfocus={() => (focused = true)}
-    onblur={() => (focused = false)}
     aria-label="Message the Overwatch"
     aria-describedby="ow-input-hint"
     aria-invalid={over || undefined}
-    placeholder="Ask the Overwatch…"
+    placeholder="Message the Overwatch · ⏎ to send"
   ></textarea>
   <div class="hints muted" id="ow-input-hint">
     <span class="state">
       {hint.text}{#if hint.link}<button class="link" onclick={() => openSettings('overwatch')}>{hint.link}</button>{/if}
       {#if n >= COUNT_FROM}<span class:over data-count>{spaced(n)} / {spaced(MAX_CHARS)}</span>{/if}
-    </span>
-    <span class="keys">
-      {#if focused || draft}<Kbd keys="⏎" /> send · <Kbd keys="⇧+⏎" /> new line · <Kbd keys="esc" /> leave{:else}<Kbd keys="⌘+L" />{/if}
     </span>
   </div>
   {#if over}<p class="warn" role="alert">Too long for a message. Put it in a file and ask the Overwatch to read it.</p>{/if}
@@ -116,9 +109,7 @@
   .state {
     min-width: 0;
   }
-  .keys {
-    flex: none;
-  }
+
   .over {
     color: var(--color-status-error);
   }

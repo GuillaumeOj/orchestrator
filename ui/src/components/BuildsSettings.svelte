@@ -7,8 +7,8 @@
   import { app, applyUpdate, backToMainBuild, checkForUpdates, now30, openUrl, restartToUpdate, toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { move } from '../lib/select.js';
+  import { tooltip } from '../lib/tooltip.js';
   import { buildsHeader, listLine, restartConfirm, rowState } from '../lib/update.js';
-  import Kbd from './Kbd.svelte';
 
   const REPO = 'https://github.com/GuillaumeOj/orchestrator';
 
@@ -111,7 +111,7 @@
       {#if header.back.show && !off}
         <div class="back">
           {#if header.back.canCheck}<button class="link" onclick={checkForUpdates}>Check</button>{/if}
-          <button class="btn" disabled={!!header.back.why} title={header.back.why ?? 'Restarts into main (agents are suspended and resume)'} onclick={backToMainBuild}>Back to main</button>
+          <button class="btn" disabled={!!header.back.why} use:tooltip={{ label: 'Back to main', detail: header.back.why ?? 'Restarts into main (agents are suspended and resume)' }} onclick={backToMainBuild}>Back to main</button>
         </div>
       {/if}
     </div>
@@ -119,7 +119,7 @@
   {#if off}
     <p class="muted">PR builds are off: {u.disabled_why ?? 'updates unavailable'}.</p>
   {:else}
-    <p class="muted listline">{listLine(list, refreshing)} · <Kbd keys="r" /> refresh</p>
+    <p class="muted listline">{listLine(list, refreshing)}</p>
     {#if error}
       <p class="warn" role="alert">{error} <button class="link" onclick={load}>Retry</button></p>
     {:else if list?.error}
@@ -140,7 +140,7 @@
             {#if st.dot}<span class="dot" aria-hidden="true">●</span>{/if}{st.text}
           </span>
           {#if st.action && !asking}
-            <button class="btn" class:primary={st.action.primary} disabled={st.action.disabled} onclick={() => act(r)}>{st.action.label}{#if r.id === cur?.id} <Kbd keys="⏎" />{/if}</button>
+            <button class="btn" class:primary={st.action.primary} disabled={st.action.disabled} use:tooltip={{ label: st.action.label, key: '⏎' }} onclick={() => act(r)}>{st.action.label}</button>
           {/if}
         </div>
         <div class="sub muted">
@@ -151,12 +151,12 @@
           <div class="confirm" data-confirm>
             <span>{restartConfirm(u, r.number)}</span>
             <button class="btn primary" data-restart onclick={() => restart()}>Restart</button>
-            <button class="btn ghost" onclick={() => (confirming = null)}>Cancel <Kbd keys="esc" /></button>
+            <button class="btn ghost" use:tooltip={{ label: 'Cancel', key: 'esc' }} onclick={() => (confirming = null)}>Cancel</button>
           </div>
         {/if}
       </div>
     {/each}
-    <p class="muted hints"><Kbd keys="j" /><Kbd keys="k" /> rows · <Kbd keys="⏎" /> install / restart · <Kbd keys="r" /> refresh · <Kbd keys="esc" /> back to sections</p>
+
   {/if}
 </section>
 
@@ -302,9 +302,5 @@
     color: var(--color-accent-default);
     cursor: pointer;
     font: inherit;
-  }
-  .hints {
-    margin: var(--space-sm) 0 0;
-    font: var(--text-caption);
   }
 </style>

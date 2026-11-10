@@ -6,10 +6,10 @@
   import { app, focusCard, inspected } from '../lib/app.svelte.js';
   import { bannerText } from '../lib/chat.js';
   import { counts, openDecisions } from '../lib/now.svelte.js';
+  import { tooltip } from '../lib/tooltip.js';
   import AgentInspector from './inspector/AgentInspector.svelte';
   import DecisionInspector from './inspector/DecisionInspector.svelte';
   import RunInspector from './inspector/RunInspector.svelte';
-  import Kbd from './Kbd.svelte';
 
   let { overlay = false } = $props();
   const s = $derived(inspected());
@@ -19,8 +19,11 @@
 </script>
 
 <aside class="insp" class:overlay aria-label="Inspector">
-  {#if banner}<button class="banner" onclick={() => focusCard()}><span><span class="icon" style:color="var(--color-status-waiting-for-you)" aria-hidden="true">{'\u{F0005}'}</span> {banner}</span><Kbd keys="⌘+⇧+I" /></button>{/if}
-  <div class="head"><span class="muted">Inspector{s ? ` · ${s.kind}` : ''}</span>{#if overlay}<button class="x" onclick={() => (app.inspector = false)}><Kbd keys="esc" /></button>{:else}<Kbd keys="⌘+I" />{/if}</div>
+  {#if banner}<button type="button" class="banner" use:tooltip={{ label: 'Decisions', key: '⌘⇧I' }} onclick={() => focusCard()}><span><span class="icon" style:color="var(--color-status-waiting-for-you)" aria-hidden="true">{'\u{F0005}'}</span> {banner}</span></button>{/if}
+  <div class="head">
+    <span class="muted">Inspector{s ? ` · ${s.kind}` : ''}</span>
+    <button type="button" class="icon-btn" aria-label="Close inspector" use:tooltip={{ label: 'Close', key: overlay ? 'esc' : '⌘I' }} onclick={() => (app.inspector = false)}>{'\u{F0156}'}</button>
+  </div>
   {#if s?.kind === 'agent'}{#key s.id}<AgentInspector id={s.id} />{/key}
   {:else if s?.kind === 'run'}{#key s.id}<RunInspector id={s.id} />{/key}
   {:else if s?.kind === 'decision'}{#key s.id}<DecisionInspector id={s.id} />{/key}
@@ -70,10 +73,5 @@
     justify-content: space-between;
     align-items: center;
     height: var(--size-pane-header);
-  }
-  .x {
-    background: none;
-    border: 0;
-    padding: 0;
   }
 </style>

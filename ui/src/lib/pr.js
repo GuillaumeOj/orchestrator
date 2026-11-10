@@ -77,6 +77,23 @@ export function ciLabel(ci) {
   return `CI: ${state}, ${jobsLine}. Show jobs`;
 }
 
+/** The CI state word after the count (R13, 04-feature-pr-*): `{ text, color }`, null without checks. */
+export function ciWord(ci) {
+  if (!ci || ci.overall === 'none' || !ci.total) return null;
+  if (ci.overall === 'error') return { text: `${countOf(ci, 'error') || 1} failed`, color: ERR };
+  if (ci.overall === 'ok') return { text: 'passed', color: OK };
+  if (ci.overall === 'running') return { text: 'running', color: RUN };
+  return { text: 'waiting', color: MUTED };
+}
+
+/** The review state after the position (review-done state), when GitHub gave one: `approved`. */
+export const reviewWord = (decision) =>
+  ({
+    APPROVED: { text: 'approved', color: OK },
+    CHANGES_REQUESTED: { text: 'changes requested', color: ATTN },
+    REVIEW_REQUIRED: { text: 'review required', color: MUTED },
+  })[decision] ?? null;
+
 /** The popover's footer: `+N more on GitHub ↗` when the core capped the list. */
 export const ciFooter = (ci) =>
   ci && ci.total > jobs(ci).length ? `+${ci.total - jobs(ci).length} more on GitHub ↗` : 'Open checks on GitHub ↗';

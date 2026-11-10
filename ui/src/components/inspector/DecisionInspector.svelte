@@ -5,8 +5,8 @@
   import { app, focusCard } from '../../lib/app.svelte.js';
   import { subjectLine } from '../../lib/inbox.js';
   import { decisionKind } from '../../lib/status.js';
+  import { tooltip } from '../../lib/tooltip.js';
   import ContextBlocks from '../ContextBlocks.svelte';
-  import Kbd from '../Kbd.svelte';
   import LifecycleMarker from '../LifecycleMarker.svelte';
 
   let { id } = $props();
@@ -21,7 +21,7 @@
   <LifecycleMarker decision={d} />
   <ContextBlocks decision={d} />
   <div class="acts">
-    <button class="btn" onclick={() => focusCard(d.id)}>Show card <Kbd keys="d" /></button>
+    <button class="btn" use:tooltip={{ label: 'Show card', key: 'd' }} onclick={() => focusCard(d.id)}>Show card</button>
   </div>
   <p class="muted">Decide on its card: it owns the undo window.</p>
 {:else}

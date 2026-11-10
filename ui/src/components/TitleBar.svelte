@@ -4,7 +4,7 @@
   import { app, focusCard } from '../lib/app.svelte.js';
   import { badgeLabel } from '../lib/chat.js';
   import { counts } from '../lib/now.svelte.js';
-  import Kbd from './Kbd.svelte';
+  import { tooltip } from '../lib/tooltip.js';
   import PacingIndicator from './PacingIndicator.svelte';
 
   const badge = $derived(counts().decisions);
@@ -12,16 +12,14 @@
 
 <header class="title" data-tauri-drag-region>
   <div class="lights" data-tauri-drag-region></div>
-  <button class="search" onclick={() => (app.overlay = { kind: 'palette' })}>
+  <button type="button" class="search" use:tooltip={{ label: 'Jump or run a command', key: '⌘K' }} onclick={() => (app.overlay = { kind: 'palette' })}>
     <span class="icon" aria-hidden="true">{'\u{F0349}'}</span>
     <span class="muted">Jump or run a command</span>
-    <Kbd keys="⌘+K" />
   </button>
   <div class="center" data-tauri-drag-region><PacingIndicator /></div>
-  <button class="decisions" class:on={badge > 0} onclick={() => focusCard()} title={badgeLabel(badge)} aria-label={badgeLabel(badge)}>
+  <button type="button" class="decisions" class:on={badge > 0} onclick={() => focusCard()} use:tooltip={{ label: 'Decisions', key: '⌘⇧I' }} aria-label={badgeLabel(badge)}>
     {#if badge > 0}<span class="icon" style:color="var(--color-status-waiting-for-you)" aria-hidden="true">{'\u{F0005}'}</span>{/if}
     Decisions <span class="count" class:zero={badge === 0}>{badge > 99 ? '99+' : badge}</span>
-    <Kbd keys="⌘+⇧+I" />
   </button>
 </header>
 
@@ -48,7 +46,7 @@
     gap: var(--space-sm);
     width: 300px;
     height: 24px;
-    padding: 0 var(--space-xs) 0 var(--space-sm);
+    padding: 0 var(--space-sm);
     border: var(--border-width-default) solid var(--color-border-subtle);
     border-radius: var(--radius-sm);
     background: var(--color-surface-pane);
@@ -66,9 +64,10 @@
   .decisions {
     display: inline-flex;
     align-items: center;
+    /* R5: one gap token between icon, label and count. */
     gap: var(--space-sm);
     height: 24px;
-    padding: 0 var(--space-xs) 0 var(--space-sm);
+    padding: 0 var(--space-sm);
     border: 0;
     border-radius: var(--radius-sm);
     background: none;

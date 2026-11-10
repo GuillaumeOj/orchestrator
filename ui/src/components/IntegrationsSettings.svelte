@@ -8,8 +8,8 @@
   import { CONNECTOR_TOOLS, checkedAt, DESIGN_TOOLS, INTEGRATION_COPY, integrationDetail, needsUser, sortIntegrations } from '../lib/ecosystem.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { move } from '../lib/select.js';
+  import { tooltip } from '../lib/tooltip.js';
   import ConnBadge from './ConnBadge.svelte';
-  import Kbd from './Kbd.svelte';
   import SecretField from './SecretField.svelte';
 
   /** `initial`: the Settings pane's integrations_view, taken once (no second fetch on open). */
@@ -158,29 +158,24 @@
           <span class="detail ell">{integrationDetail(it)}</span>
           <span class="grow"></span>
           <span class="muted when">{checkedAt(it.checked_at_ms, now)}</span>
-          {#if it.status !== 'not_configured'}<button class="btn ghost" disabled={busy[it.id]} onclick={() => test(it)}>{busy[it.id] ? 'Testing…' : 'Test'} <Kbd keys="t" /></button>{/if}
-          <button class="btn ghost" onclick={() => connect(it)}>{connectLabel(it)} <Kbd keys="⏎" /></button>
-          {#if it.needs_secret && it.has_secret}<button class="btn ghost" onclick={() => remove(it)}>Remove <Kbd keys="x" /></button>{/if}
+          {#if it.status !== 'not_configured'}<button class="btn ghost" disabled={busy[it.id]} use:tooltip={{ label: 'Test', key: 't' }} onclick={() => test(it)}>{busy[it.id] ? 'Testing…' : 'Test'}</button>{/if}
+          <button class="btn ghost" use:tooltip={{ label: connectLabel(it), key: '⏎' }} onclick={() => connect(it)}>{connectLabel(it)}</button>
+          {#if it.needs_secret && it.has_secret}<button class="btn ghost" use:tooltip={{ label: 'Remove', key: 'x' }} onclick={() => remove(it)}>Remove</button>{/if}
         </div>
         {#if it.needs_secret && focused}
           <div class="secretline">
-            <SecretField bind:this={fields[it.id]} stored={it.has_secret} placeholder={INTEGRATION_COPY[it.id]?.placeholder ?? `Paste a ${it.name} token`} error={fieldError[it.id]} onsave={(v) => saveSecret(it, v)} onremove={() => remove(it)} />
+            <SecretField bind:this={fields[it.id]} stored={it.has_secret} placeholder={INTEGRATION_COPY[it.id]?.placeholder ?? `Paste a ${it.name} token`} error={fieldError[it.id]} onsave={(v) => saveSecret(it, v)} />
             {#if failed}<p class="err">{'\u{F0159}'} {it.name} rejected the {INTEGRATION_COPY[it.id]?.secret ?? 'token'}{it.detail ? ` (${it.detail})` : ''}. Paste a new {INTEGRATION_COPY[it.id]?.secret ?? 'token'} with Replace.</p>
             {:else if !it.has_secret}<p class="muted help">{INTEGRATION_COPY[it.id]?.help}</p>{/if}
           </div>
         {/if}
       </div>
     {/each}
-    <p class="muted hints"><Kbd keys="j" /><Kbd keys="k" /> rows · <Kbd keys="t" /> test · <Kbd keys="⏎" /> connect · <Kbd keys="x" /> remove · <Kbd keys="esc" /> back to sections</p>
+
   {/if}
 </section>
 
 <style>
-
-  .hints {
-    margin: var(--space-sm) 0 0;
-    font: var(--text-caption);
-  }
   .ico {
     color: var(--color-text-muted);
   }

@@ -35,7 +35,6 @@
   import FilesSettings from './FilesSettings.svelte';
   import FloatingWindow from './FloatingWindow.svelte';
   import IntakeSettings from './IntakeSettings.svelte';
-  import Kbd from './Kbd.svelte';
   import McpSettings from './McpSettings.svelte';
   import Select from './Select.svelte';
 
@@ -153,13 +152,11 @@
     return { type: 'linear', team: lin.team, ...(lin.project ? { project: lin.project } : {}), ...(states ? { states } : {}) };
   }
 
-  async function save(migrate = null) {
-    if (busy || !saved) return;
-    if (kind === 'linear' && (!connected || !lin.team)) return toast('Pick a Linear team first');
+  // Each section saves itself (design-notes §9 bug 1): the Task backend's Save
+  // sends the saved settings as they are, the Notion one the saved backend.
+  async function send(form, migrate = null) {
     busy = true;
     try {
-      const settings = { ...saved.settings, notion_parent_page: notionPage.trim() || undefined };
-      const form = { settings, backend: backendToSave(), track_orchestrator_dir: saved.track_orchestrator_dir };
       const r = await invoke('project_settings_set', { project: pid, form: migrate ? { ...form, migrate } : form });
       // D8: switching to Linear with tasks: nothing is saved until you choose.
       if (r?.confirm?.kind === 'linear_migrate') {
@@ -176,8 +173,27 @@
     }
   }
 
+  /** Task backend › Save (and the D8 choices). */
+  function saveBackend(migrate = null) {
+    if (busy || !saved) return;
+    if (kind === 'linear' && (!connected || !lin.team)) return toast('Pick a Linear team first');
+    return send({ settings: saved.settings, backend: backendToSave(), track_orchestrator_dir: saved.track_orchestrator_dir }, migrate);
+  }
+
+  /** Notion › Save: only the parent page. */
+  function saveNotion() {
+    if (busy || !saved) return;
+    const settings = { ...saved.settings, notion_parent_page: notionPage.trim() || undefined };
+    return send({ settings, backend: saved.backend, track_orchestrator_dir: saved.track_orchestrator_dir });
+  }
+
+  /** Notion › Revert: the field goes back to the saved page. */
+  function revertNotion() {
+    notionPage = saved?.settings?.notion_parent_page ?? '';
+  }
+
   async function sync() {
-    if (syncing || dirty) return;
+    if (syncing || backendDirty) return;
     syncing = true;
     try {
       const r = await invoke('board_sync', { project: pid });
@@ -202,13 +218,18 @@
     if (section.id === 'files') return files?.onKey(e);
     if (section.id === 'intake') return intake?.onKey(e);
     if (ask) {
-      if (e.key === 'Enter') save('push_open');
-      else if (e.key === 'l') save('leave');
+      if (e.key === 'Enter') saveBackend('push_open');
+      else if (e.key === 'l') saveBackend('leave');
       else if (e.key === 'Escape') ask = null;
       else return;
       return e.preventDefault();
     }
-    if (e.metaKey && e.key === 'Enter') return (e.preventDefault(), save());
+    if (e.metaKey && e.key === 'Enter') {
+      e.preventDefault();
+      if (section.id === 'backend') saveBackend();
+      else if (section.id === 'notion') saveNotion();
+      return;
+    }
     // Section keys work after a click on a segment or a button; not while typing or picking.
     if (isTypingTarget(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
     if (section.id !== 'backend') return;
@@ -218,9 +239,9 @@
     else if (k === 'j' || k === 'ArrowDown') rowSel = Math.min(rows.length - 1, rowSel + 1);
     else if (k === 'k' || k === 'ArrowUp') rowSel = Math.max(0, rowSel - 1);
     else if (k === 'Enter') root?.querySelector(`[data-row="${rowSel}"] [role="combobox"]`)?.focus();
-    else if (k === 'r' && !dirty) sync();
+    else if (k === 'r' && !backendDirty) sync();
     // Esc reverts unsaved changes; with none it goes back to the nav (the window's).
-    else if (k === 'Escape' && dirty) cancel();
+    else if (k === 'Escape' && backendDirty) cancel();
     else return;
     e.preventDefault();
   }
@@ -301,12 +322,12 @@
           <span>{last ? syncLine(last.report, last.at, remoteName(kind)) : 'Not synced from here yet'}</span>
           <span class="muted">· every 5 min while a team runs</span>
           <span class="grow"></span>
-          <button class="btn ghost" disabled={syncing || dirty} use:tooltip={dirty ? { label: 'Save first' } : { label: 'Sync now', key: 'r' }} onclick={sync}>{syncing ? 'Syncing…' : 'Sync now'}</button>
+          <button class="btn ghost" disabled={syncing || backendDirty} use:tooltip={backendDirty ? { label: 'Save first' } : { label: 'Sync now', key: 'r' }} onclick={sync}>{syncing ? 'Syncing…' : 'Sync now'}</button>
         </div>
       {/if}
 
       <div class="foot">
-        <button class="btn primary" disabled={busy || !backendDirty} onclick={() => save()} use:tooltip={{ label: 'Save', key: '⌘⏎' }}>Save</button>
+        <button class="btn primary" disabled={busy || !backendDirty} onclick={() => saveBackend()} use:tooltip={{ label: 'Save', key: '⌘⏎' }}>Save</button>
         <button class="btn ghost" disabled={!backendDirty} onclick={cancel} use:tooltip={{ label: 'Revert', key: 'esc' }}>Revert</button>
       </div>
 
@@ -314,8 +335,8 @@
         <div class="confirm" role="dialog" aria-modal="true" aria-label="Move tasks to Linear">
           <h3>Move {name}'s tasks to Linear?</h3>
           <p>{ask.open} open task{ask.open === 1 ? '' : 's'}.{ask.done ? ` ${ask.done} done tasks are not pushed.` : ''}</p>
-          <button class="btn primary" onclick={() => save('push_open')}>Create {ask.open} open tasks as issues in {lin.team}</button>
-          <button class="btn ghost" onclick={() => save('leave')}>Leave them out (they stay in the app, not synced)</button>
+          <button class="btn primary" onclick={() => saveBackend('push_open')}>Create {ask.open} open tasks as issues in {lin.team}</button>
+          <button class="btn ghost" onclick={() => saveBackend('leave')}>Leave them out (they stay in the app, not synced)</button>
           <button class="btn ghost" onclick={() => (ask = null)} use:tooltip={{ label: 'Cancel', key: 'esc' }}>Cancel</button>
         </div>
       {/if}
@@ -325,14 +346,14 @@
       <label class="line"><span class="lab">Parent page</span><input class="field grow" bind:value={notionPage} placeholder="Notion page URL or id" spellcheck="false" /></label>
       <p class="muted note">Share the page with your Notion integration. The token is in <button class="link" onclick={() => openSettings('integrations')}>Settings › Integrations</button>.</p>
       <div class="foot">
-        <button class="btn primary" disabled={busy || !notionDirty} onclick={() => save()} use:tooltip={{ label: 'Save', key: '⌘⏎' }}>Save</button>
-        <button class="btn ghost" disabled={!notionDirty} onclick={cancel}>Revert</button>
+        <button class="btn primary" disabled={busy || !notionDirty} onclick={() => saveNotion()} use:tooltip={{ label: 'Save', key: '⌘⏎' }}>Save</button>
+        <button class="btn ghost" disabled={!notionDirty} onclick={revertNotion}>Revert</button>
       </div>
     {:else if section.id === 'mcp'}
       {#key spec?.server}<McpSettings project={pid} selected={spec?.server ?? null} />{/key}
     {:else}
       <h2>{section.label}</h2>
-      <p class="muted">Not designed yet. The current values are editable from <Kbd keys="⌘+K" />.</p>
+      <p class="muted">Not designed yet. The current values are editable from the palette (⌘K).</p>
     {/if}
   </div>
 </FloatingWindow>

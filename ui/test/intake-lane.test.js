@@ -482,7 +482,9 @@ describe('Mission control: the Ready to start lane', () => {
     // A Linear item whose project has no team: the team button is disabled with its reason.
     const team = row(c, 'ready:it_3').querySelector('button[aria-label^="Start team run"]');
     expect(team.disabled).toBe(true);
-    expect(team.title).toBe('blog has no team yet');
+    await fireEvent.pointerEnter(team); // the reason is in its tooltip
+    await new Promise((r) => setTimeout(r, 550));
+    expect(document.getElementById('orch-tooltip').textContent).toBe('Start team runblog has no team yet');
     // The hidden one is not rendered; the no-source project has its line.
     expect(row(c, 'ready:it_4')).toBeNull();
     expect(text(row(c, 'intake:nosource'))).toContain('infra has no intake source');

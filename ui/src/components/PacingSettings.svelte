@@ -9,8 +9,8 @@
   import { isTypingTarget } from '../lib/keyboard.js';
   import { checkCap, derivedCaps } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
+  import { tooltip } from '../lib/tooltip.js';
   import IntakeGlobalSettings from './IntakeGlobalSettings.svelte';
-  import Kbd from './Kbd.svelte';
 
   let view = $state(null); // the last PacingSettings from the core
   let loadError = $state(null);
@@ -150,8 +150,7 @@
 
   {#if loadError}
     <p class="secondary help"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> Could not read the pacing settings: {loadError}</p>
-    <div><button class="btn" onclick={load}>Retry <Kbd keys="r" /></button></div>
-    <p class="muted hints"><Kbd keys="r" /> retry · <Kbd keys="esc" /> back to sections</p>
+    <div><button class="btn" use:tooltip={{ label: 'Retry', key: 'r' }} onclick={load}>Retry</button></div>
   {:else if !view}
     <p class="muted line">Reading the pacing settings…</p>
     {#each [0, 1, 2] as i (i)}<div class="skel" aria-busy="true"></div>{/each}
@@ -215,11 +214,11 @@
     {#if saveError}<p class="secondary help"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> Could not save: {saveError}</p>{/if}
 
     <div class="actions">
-      <button class="btn primary" disabled={!canApply} onclick={apply}>{busy ? 'Applying…' : 'Apply'} <Kbd keys="⏎" /></button>
+      <button class="btn primary" disabled={!canApply} use:tooltip={{ label: 'Apply', key: '⏎' }} onclick={apply}>{busy ? 'Applying…' : 'Apply'}</button>
       <button class="btn" disabled={busy || atDefaults} onclick={reset}>Reset to defaults</button>
       {#if saved}<span class="done" role="status">Saved</span>{/if}
     </div>
-    <p class="muted hints"><Kbd keys="⏎" /> apply · <Kbd keys="↑↓" /> step · <Kbd keys="tab" /> next · <Kbd keys="esc" /> back to sections</p>
+
   {/if}
   <!-- After the policy loaded: the block reads its own keys. -->
   {#if view}<IntakeGlobalSettings />{/if}
@@ -241,8 +240,7 @@
     margin: 0;
   }
   .intro,
-  .help,
-  .hints {
+  .help {
     font: var(--text-caption);
   }
   .line {

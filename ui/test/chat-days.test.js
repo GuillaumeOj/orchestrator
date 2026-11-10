@@ -120,7 +120,7 @@ describe('older days', () => {
     expect(lines(c).map((l) => l.dataset.verb)).toEqual(['allowed', 'left open']);
     expect(text(lines(c)[1])).toContain('left open front-1');
     expect(text(c.querySelector('.digest'))).toContain('Sun 1 Nov · 1 outcome');
-    expect(text(c.querySelector('footer'))).toContain('Read-only · Back to today');
+    expect(text(c.querySelector('footer'))).toBe('Read-only');
     expect(c.querySelector('.filters')).toBeNull();
   });
 

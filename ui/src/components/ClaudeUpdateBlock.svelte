@@ -5,7 +5,7 @@
   import { tick } from 'svelte';
   import { claudeAct, claudeBusy, holdSecondClock, now1s, openSettings, openSingleton } from '../lib/app.svelte.js';
   import { updateBlock } from '../lib/claude.js';
-  import Kbd from './Kbd.svelte';
+  import { tooltip } from '../lib/tooltip.js';
 
   /** @type {{ c: any, compact?: boolean }} */
   let { c, compact = false } = $props();
@@ -49,7 +49,7 @@
     <span class="grow"></span>
     {#if st.setup && !compact}<button class="link" onclick={() => openSingleton('setup')}>Set up</button>{/if}
     {#each st.buttons as b (b.id)}
-      <button class="btn" class:primary={b.primary} class:def={b.def && !compact} data-act={b.id} disabled={busy} onclick={() => claudeAct(b.id)}>{b.label}{#if b.def && !compact} <Kbd keys="⏎" />{/if}</button>
+      <button class="btn" class:primary={b.primary} class:def={b.def && !compact} data-act={b.id} disabled={busy} use:tooltip={compact ? null : { label: b.label, key: b.id === 'update' ? 'u' : 'r' }} onclick={() => claudeAct(b.id)}>{b.label}</button>
     {/each}
   </div>
   {#if st.line2}<div class="l2 muted">{st.line2}</div>{/if}

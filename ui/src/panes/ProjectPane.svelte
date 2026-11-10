@@ -5,13 +5,14 @@
   // work is never deleted without its own confirmation.
   // Keys (pane-local): f fetch, p load PRs, t trust, x remove project.
   import { onMount } from 'svelte';
-  import Kbd from '../components/Kbd.svelte';
+  import Menu from '../components/Menu.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import { activeAgents, app, closePane, confirm, openAgent, openDiff, openProjectSettings, openShell, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
   import { ago, dayTime, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { isTypingTarget } from '../lib/keyboard.js';
   import { onTopics, statusOf } from '../lib/now.svelte.js';
+  import { tooltip } from '../lib/tooltip.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -111,6 +112,14 @@
       }), 'Remove project');
   }
 
+  // The header's `⋯` (R4): Fetch, Shell, Diff main, Trust in a pane (untrusted only); keys that work in the pane.
+  const menu = $derived([
+    { id: 'fetch', icon: '\u{F06B0}', label: busy === 'fetch' ? 'Fetching…' : 'Fetch', key: 'f', disabled: !!busy, reason: 'Busy', run: fetchNow },
+    { id: 'shell', icon: '\u{F018D}', label: 'Shell', run: () => openShell({ projectId: p.id, cwd: p.path }) },
+    { id: 'diff', icon: '\u{F0E2B}', label: `Diff ${p?.default_branch ?? 'main'}`, run: () => openDiff(p.id, p.path, d?.status?.branch) },
+    ...(d && d.trusted !== true ? [{ id: 'trust', icon: '\u{F0565}', label: 'Trust in a pane', key: 't', run: () => openTrust(p.id) }] : []),
+  ]);
+
   function onKey(e) {
     if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return;
     const k = { f: fetchNow, p: loadPrs, t: () => openTrust(p.id), x: startRemoval }[e.key];
@@ -131,11 +140,11 @@
       <h2>{p.name}</h2>
       <span class="secondary mono">{short(p.path)}</span>
       <span class="grow"></span>
-      <button class="btn" onclick={fetchNow} disabled={!!busy}>{busy === 'fetch' ? 'Fetching…' : 'Fetch'} <Kbd keys="f" /></button>
-      <button class="btn ghost" onclick={() => openShell({ projectId: p.id, cwd: p.path })}>Shell</button>
-      <button class="btn ghost" onclick={() => openDiff(p.id, p.path, d?.status?.branch)}>Diff</button>
-      <button class="btn ghost" onclick={() => openProjectSettings(p.id)}>Settings</button>
-      <button class="btn danger" onclick={startRemoval}>Remove project… <Kbd keys="x" /></button>
+      <span class="head-acts">
+        <button type="button" class="icon-btn" aria-label="Project settings" use:tooltip={'Project settings'} onclick={() => openProjectSettings(p.id)}>{'\u{F0493}'}</button>
+        <button type="button" class="icon-btn danger" aria-label="Remove project…" use:tooltip={{ label: 'Remove project…', key: 'x' }} onclick={startRemoval}>{'\u{F01B4}'}</button>
+        <Menu items={menu} label="More actions" />
+      </span>
     </div>
 
     <section class="card">
@@ -148,7 +157,7 @@
         <dt>Trust</dt>
         <dd>
           {#if d?.trusted === true}Claude Code trusts this folder
-          {:else}<span class="warn">Not trusted yet</span> · Claude Code asks once per repository <button class="btn" onclick={() => openTrust(p.id)}>Trust in a pane <Kbd keys="t" /></button>{/if}
+          {:else}<span class="warn">Not trusted yet</span> · Claude Code asks once per repository{/if}
         </dd>
       </dl>
     </section>
@@ -160,7 +169,7 @@
       {#each list as a (a.id)}
         <button class="row" onclick={() => openAgent(a.id)}><StatusBadge state={statusOf(a.id)} compact /> <b>{a.id}</b> <span class="muted">{a.branch ?? ''}</span></button>
       {:else}
-        <p class="muted">No session. <button class="btn ghost" onclick={() => (app.overlay = { kind: 'new-session' })}>New session <Kbd keys="⌘+T" /></button></p>
+        <p class="muted">No session. <button type="button" class="btn ghost" use:tooltip={{ label: 'New session', key: '⌘T' }} onclick={() => (app.overlay = { kind: 'new-session' })}>New session</button></p>
       {/each}
     </section>
 
@@ -175,8 +184,10 @@
               <td class="mono">{short(w.path)}</td>
               <td>{verdict(w)}{unmerged(w) ? ' · unmerged work' : ''}{w.row?.agent_id ? ` · ${w.row.agent_id}` : ''}{w.locked ? ' · locked' : ''}</td>
               <td>
-                <button class="btn ghost" onclick={() => openDiff(p.id, w.path, w.branch)}>Diff</button>
-                <button class="btn ghost" disabled={!!busy} onclick={() => removeWorktree(w)}>Remove</button>
+                <span class="head-acts">
+                  <button type="button" class="icon-btn" aria-label="Diff" use:tooltip={'Diff'} onclick={() => openDiff(p.id, w.path, w.branch)}>±</button>
+                  <button type="button" class="icon-btn danger" aria-label="Remove worktree…" disabled={!!busy} use:tooltip={'Remove worktree…'} onclick={() => removeWorktree(w)}>{'\u{F01B4}'}</button>
+                </span>
               </td>
             </tr>
           {:else}
@@ -196,7 +207,7 @@
     </section>
 
     <section class="card">
-      <div class="ch"><b>Pull requests</b><span class="muted">gh</span><span class="grow"></span><button class="btn ghost" onclick={loadPrs} disabled={!!busy}>{busy === 'prs' ? 'Loading…' : 'Load'} <Kbd keys="p" /></button></div>
+      <div class="ch"><b>Pull requests</b><span class="muted">gh</span><span class="grow"></span><button type="button" class="btn ghost" onclick={loadPrs} disabled={!!busy} use:tooltip={{ label: 'Load pull requests', key: 'p' }}>{busy === 'prs' ? 'Loading…' : 'Load'}</button></div>
       {#if prs?.error}<p class="muted">{prs.error}</p>
       {:else if prs}
         {#each prs as pr (pr.number)}

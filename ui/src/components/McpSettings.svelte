@@ -28,8 +28,8 @@
     usedByTitle,
   } from '../lib/ecosystem.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { tooltip } from '../lib/tooltip.js';
   import ConnBadge from './ConnBadge.svelte';
-  import Kbd from './Kbd.svelte';
   import SecretField from './SecretField.svelte';
   import Select from './Select.svelte';
 
@@ -51,6 +51,7 @@
   let stored = $state({}); // Keychain account → stored (mcp_secrets_status); never the value
   const now = $derived(now30());
   let root = $state(null);
+  let kcFields = $state({}); // Keychain account → its SecretField (Replace focuses it)
 
   const servers = $derived(effectiveServers(view, project));
   const cur = $derived(servers[sel] ?? null);
@@ -255,14 +256,14 @@
     <h2>MCP servers</h2>
     <span class="muted">Registry of servers that roles pick from. {project ? `Global, with ${project}'s overrides.` : 'Global, with per-project overrides.'}</span>
     <span class="grow"></span>
-    <button class="btn" onclick={() => startNew()}>New server <Kbd keys="n" /></button>
+    <button class="btn" use:tooltip={{ label: 'New server', key: 'n' }} onclick={() => startNew()}>New server</button>
   </header>
   {#if error}<p class="err">Could not read the registry: {error}</p>{/if}
 
   <div class="split">
     <div class="list">
       {#if view && !servers.length}
-        <p class="muted empty">No MCP servers yet. Add one with <Kbd keys="n" />, or start a design preset: it adds Penpot.</p>
+        <p class="muted empty">No MCP servers yet. Add one with New server, or start a design preset: it adds Penpot.</p>
       {:else if view}
         <table>
           <thead><tr><th>Name</th><th>Kind</th><th>Design tool</th><th>Used by</th><th>Status</th><th>Scope</th></tr></thead>
@@ -282,7 +283,7 @@
             {/each}
           </tbody>
         </table>
-        <p class="muted hints"><Kbd keys="j" /><Kbd keys="k" /> move · <Kbd keys="⏎" /> edit · <Kbd keys="t" /> test · <Kbd keys="x" /> delete</p>
+
       {:else}
         <p class="muted">Loading…</p>
       {/if}
@@ -303,7 +304,7 @@
           <b>{draft.isNew ? 'New MCP server' : s.name}</b>
           {#if !draft.isNew}<ConnBadge status={s.status} connector={s.kind === 'connector'} busy={busy[s.id]} /><span class="muted when">{s.status === 'needs_auth' && s.detail ? `${kindLabel(s.kind)} · ${s.detail}` : checkedAt(s.checked_at_ms, now)}</span>{/if}
           <span class="grow"></span>
-          <button class="x" aria-label="Close" onclick={() => (draft = null)}><Kbd keys="esc" /></button>
+          <button type="button" class="icon-btn" aria-label="Close" use:tooltip={{ label: 'Close', key: 'esc' }} onclick={() => (draft = null)}>{'\u{F0156}'}</button>
         </div>
         <div class="grid">
           <label><span>id</span><input class="field mono" bind:value={draft.server.id} disabled={!draft.isNew} spellcheck="false" placeholder="penpot" /></label>
@@ -337,8 +338,11 @@
             {@const account = keychainAccount(v)}
             {#if account != null}
               <div class="kc">
-                <span class="chip"><span aria-hidden="true">{'\u{F033E}'}</span> {k} from Keychain: {account}</span>
-                <SecretField stored={!!stored[account]} placeholder="Paste the value to store as {account}" onsave={(val) => storeSecret(account, val)} onremove={() => removeSecret(account)} />
+                <span class="kch">
+                  <span class="chip"><span aria-hidden="true">{'\u{F033E}'}</span> {k} from Keychain: {account}</span>
+                  {#if stored[account]}<button class="link" onclick={() => kcFields[account]?.focus()}>Replace</button><button class="link" onclick={() => removeSecret(account)}>Remove</button>{/if}
+                </span>
+                <SecretField bind:this={kcFields[account]} stored={!!stored[account]} placeholder="Paste the value to store as {account}" onsave={(val) => storeSecret(account, val)} />
               </div>
             {/if}
           {/each}
@@ -360,7 +364,6 @@
           {@const h = reconnectHint(s)}
           <div class="box warnbox">
             <p>{h.text}</p>
-            {#if h.action}<button class="btn" onclick={() => reconnect(s)}>{h.action}</button>{/if}
           </div>
         {/if}
 
@@ -370,11 +373,11 @@
         {#if problem}<p class="err">{problem}</p>{/if}
         <div class="foot">
           {#if !draft.isNew}
-            <button class="btn ghost" onclick={() => test(s)} disabled={busy[s.id]}>{busy[s.id] ? 'Testing…' : 'Test'} <Kbd keys="t" /></button>
-            <button class="btn danger" onclick={() => remove(s)}>Delete <Kbd keys="x" /></button>
+            <button class="btn ghost" use:tooltip={{ label: 'Test', key: 't' }} onclick={() => test(s)} disabled={busy[s.id]}>{busy[s.id] ? 'Testing…' : 'Test'}</button>
+            <button class="btn danger" use:tooltip={{ label: 'Delete', key: 'x' }} onclick={() => remove(s)}>Delete</button>
           {/if}
           <span class="grow"></span>
-          <button class="btn primary" onclick={save}>Save <Kbd keys="⌘+⏎" /></button>
+          <button class="btn primary" use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={save}>Save</button>
         </div>
       </aside>
     {/if}
@@ -470,9 +473,6 @@
     background: var(--color-surface-selected);
     box-shadow: inset var(--border-width-focus) 0 0 var(--color-focus);
   }
-  .hints {
-    font: var(--text-caption);
-  }
   .empty {
     padding: var(--space-lg) 0;
   }
@@ -526,6 +526,11 @@
     flex-direction: column;
     gap: var(--space-xxs);
   }
+  .kch {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
   .chip {
     align-self: flex-start;
     padding: 0 var(--space-sm);
@@ -569,13 +574,6 @@
     border: 0;
     color: var(--color-accent-default);
     font: inherit;
-    cursor: pointer;
-  }
-  .x {
-    background: none;
-    border: 0;
-    color: var(--color-text-muted);
-    font: var(--text-title);
     cursor: pointer;
   }
   .err {

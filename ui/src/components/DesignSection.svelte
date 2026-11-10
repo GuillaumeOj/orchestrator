@@ -12,7 +12,7 @@
   import { clock, size } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { move } from '../lib/select.js';
-  import Kbd from './Kbd.svelte';
+  import { tooltip } from '../lib/tooltip.js';
 
   /** @type {{ v: any }} */
   let { v } = $props();
@@ -166,7 +166,7 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <section class="card design" tabindex="0" bind:this={root} onkeydown={onKey} aria-label="Design">
-  <div class="cardh"><b>Design</b><span class="muted">{tiles.length}{sub ? ` · ${sub}` : ''}</span><span class="grow"></span><span class="muted"><Kbd keys="d" /> focus</span></div>
+  <div class="cardh"><b>Design</b><span class="muted">{tiles.length}{sub ? ` · ${sub}` : ''}</span></div>
   {#if !tiles.length}
     <p class="muted empty">{emptyText}</p>
   {:else}
@@ -197,14 +197,14 @@
               <span class="trow"><span class="title" title={a.uri}>{artifactTitle(a)}</span><span class="grow"></span><span class="muted">{clock(a.created_at_ms)}</span></span>
               {#if a.note}<span class="note">{a.note}</span>{/if}
               {#if notMerged(a, p)}<span class="chip">On {who(a.from_node)}'s branch · not merged</span>{/if}
-              {#if linkOnly(a)}<span class="hint">▲ Link only: {a.to_node ? who(a.to_node) : 'agents'} can't open it. <button class="link" onclick={() => askExport(a)}>Ask {who(a.from_node)} to export</button> · x</span>{/if}
-              <span class="foot"><span class="muted">{who(a.from_node)} → {a.to_node ? who(a.to_node) : '—'}</span><span class="grow"></span><button class="link" onclick={() => openArtifact(a)}>Open{linkOnly(a) ? ' ↗' : ''}</button><Kbd keys="⏎" /></span>
+              {#if linkOnly(a)}<span class="hint">▲ Link only: {a.to_node ? who(a.to_node) : 'agents'} can't open it. <button class="link" use:tooltip={{ label: `Ask ${who(a.from_node)} to export`, key: 'x' }} onclick={() => askExport(a)}>Ask {who(a.from_node)} to export</button></span>{/if}
+              <span class="foot"><span class="muted">{who(a.from_node)} → {a.to_node ? who(a.to_node) : '—'}</span><span class="grow"></span><button class="link" use:tooltip={{ label: 'Open', key: '⏎' }} onclick={() => openArtifact(a)}>Open{linkOnly(a) ? ' ↗' : ''}</button></span>
             </div>
           </div>
         {/each}
       </div>
     {/each}
-    <p class="muted keys"><Kbd keys="h j k l" /> move · <Kbd keys="⏎" /> open · <Kbd keys="Space" /> preview · <Kbd keys="x" /> ask {who(tiles.find(linkOnly)?.from_node ?? 'ui')} to export (link tiles)</p>
+
   {/if}
 
   {#if big}
@@ -216,17 +216,18 @@
         <span><span aria-hidden="true">{'\u{F021F}'}</span> <b>{artifactTitle(a)}</b> {[big.w ? `${big.w} × ${big.h}` : null, p?.bytes != null ? size(p.bytes) : null, p?.source ? (p.source === 'branch' ? `${who(a.from_node)}'s branch` : 'integration branch') : null].filter(Boolean).map((x) => `· ${x}`).join(' ')}{#if p?.mime === 'image/svg+xml'} · SVG shown as an image{/if}</span>
         <span class="grow"></span>
         <span class="muted">{imgs.findIndex((x) => x.id === big.id) + 1} / {imgs.length} · {big.fit ? 'Fit' : '100 %'}</span>
+        <button type="button" class="icon-btn" aria-label="Close" use:tooltip={{ label: 'Close', key: 'esc' }} onclick={() => (big = null)}>{'\u{F0156}'}</button>
       </div>
       <div class="stage" class:fit={big.fit}>
         {#if p?.state === 'ok'}
           <img src={p.src} alt={artifactTitle(a)} onload={measure} />
         {:else if p?.state === 'error'}
-          <p class="msg">Could not load this preview: {p.error}. <Kbd keys="⏎" /> Open to try Quick Look</p>
+          <p class="msg">Could not load this preview: {p.error}. Open it (⏎) to try Quick Look.</p>
         {:else}
           <span class="skel big" aria-busy="true"></span>
         {/if}
       </div>
-      <div class="hints"><Kbd keys="0" /> fit <Kbd keys="1" /> 100 % <Kbd keys="←" /> previous <Kbd keys="→" /> next <Kbd keys="⏎" /> open <Kbd keys="esc" /> close</div>
+
     </div>
   {/if}
 </section>
@@ -355,17 +356,7 @@
     gap: var(--space-sm);
     min-width: 0;
   }
-  .keys {
-    margin: 0;
-    font: var(--text-caption);
-  }
-  .hints {
-    display: flex;
-    justify-content: center;
-    gap: var(--space-sm);
-    padding: var(--space-sm);
-    font: var(--text-caption);
-  }
+
   .overlay {
     position: fixed;
     z-index: 50;
