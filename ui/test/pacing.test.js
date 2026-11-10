@@ -38,7 +38,7 @@ vi.mock('../src/lib/ipc.js', () => ({
 }));
 
 const { default: ReportPane } = await import('../src/panes/ReportPane.svelte');
-const { default: PlannerPane } = await import('../src/panes/PlannerPane.svelte');
+const { default: PlannerWindow } = await import('../src/components/PlannerWindow.svelte');
 const { default: BoardPane } = await import('../src/panes/BoardPane.svelte');
 const { default: Banner } = await import('../src/components/Banner.svelte');
 const { default: StatusBar } = await import('../src/components/StatusBar.svelte');
@@ -352,7 +352,7 @@ describe('planner, banner, status bar, board', () => {
     replies.planner_view = planner();
     replies.queue_off_hours = { starts_at: iso(now + 3600000) };
     replies.governor_act = {};
-    const { container, getByText } = render(PlannerPane);
+    const { container, getByText } = render(PlannerWindow);
     await waitFor(() => getByText('Model windows'));
     const t = container.textContent;
     expect(t).toContain('opus week 92 %');
@@ -373,7 +373,7 @@ describe('planner, banner, status bar, board', () => {
   describe('week chart', () => {
     const render0 = async (over) => {
       replies.planner_view = planner(over);
-      const r = render(PlannerPane);
+      const r = render(PlannerWindow);
       await waitFor(() => expect(r.container.querySelector('svg path.fill')).toBeTruthy());
       return r;
     };
@@ -433,11 +433,20 @@ describe('planner, banner, status bar, board', () => {
         running: 0,
       },
     });
-    const { container, getByText } = render(PlannerPane);
+    const { container, getByText } = render(PlannerWindow);
     await waitFor(() => getByText('Run off-hours', { exact: false }));
     const b = [...container.querySelectorAll('button')].find((x) => x.textContent.includes('Run off-hours'));
     expect(b.disabled).toBe(true);
-    expect(b.getAttribute('title')).toBe('Off-hours allowance is 0 % this week. Set it in the plan (e).');
+    // The reason is in the tooltip, not a native title (two tooltips would show).
+    expect(b.hasAttribute('title')).toBe(false);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await fireEvent.pointerEnter(b);
+      vi.advanceTimersByTime(600);
+      expect(document.getElementById('orch-tooltip')?.textContent).toContain('Off-hours allowance is 0 % this week.');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('on battery: one banner and the status bar chip', () => {
@@ -499,8 +508,12 @@ describe('planner, banner, status bar, board', () => {
     const el = container.querySelector('.board');
     await fireEvent.keyDown(el, { key: ' ' });
     await tick();
-    const menu = container.querySelector('[aria-label="Task menu"]').textContent;
-    for (const item of ['Open task', 'Run off-hours', 'Move to…', 'Assign node…']) expect(menu).toContain(item);
+    // The card menu is the shared Menu (on the body), keys right-aligned (04-board-pane, §9 bug 3).
+    const menu = document.body.querySelector('[role="menu"][aria-label="Task menu"]');
+    for (const item of ['Open feature', 'Run off-hours', 'Edit', 'Move to', 'Assign'])
+      expect(menu.textContent).toContain(item);
+    expect(menu.textContent).not.toContain('Open task');
+    await fireEvent.keyDown(document.activeElement, { key: 'Escape' });
     await fireEvent.keyDown(el, { key: 'O', shiftKey: true });
     await waitFor(() => expect(calls.some(([c, a]) => c === 'queue_off_hours' && a.task === '14' && a.off)).toBe(true));
     await waitFor(() => expect(container.textContent).toContain('☾ Off-hours'));
@@ -514,11 +527,9 @@ describe('planner, banner, status bar, board', () => {
     );
     // space, m, 4: Move to… Review.
     replies.task_update = {};
-    await fireEvent.keyDown(el, { key: ' ' });
     await fireEvent.keyDown(el, { key: 'm' });
-    await tick();
-    expect(container.querySelector('[aria-label="Move to"]')).toBeTruthy();
-    await fireEvent.keyDown(el, { key: '4' });
+    await waitFor(() => expect(document.activeElement.closest('[role="menu"][aria-label="Move to"]')).toBeTruthy());
+    await fireEvent.keyDown(document.activeElement, { key: '4' });
     await waitFor(() =>
       expect(calls.some(([c, a]) => c === 'task_update' && a.id === 14 && a.status === 'review')).toBe(true),
     );

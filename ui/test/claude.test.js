@@ -313,7 +313,7 @@ describe('components', () => {
     expect(t).toContain('2.1.330 is available');
     expect(t).toContain('2.1.302 (minimum) – 2.1.317 (last tested)');
     expect(t).toContain('Logged in · claude.ai · max');
-    expect(t).toMatch(/u\s*update\s*·\s*r\s*check now/);
+    expect(t).not.toContain('back to sections'); // the keys are in the buttons' tooltips
     await fireEvent.click(getByText(/Update to 2.1.330/));
     await waitFor(() => expect(calls.some(([c]) => c === 'claude_update_run')).toBe(true));
   });

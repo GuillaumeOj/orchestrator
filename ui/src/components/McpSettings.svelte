@@ -28,8 +28,9 @@
     usedByTitle,
   } from '../lib/ecosystem.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { keyIgnored } from '../lib/keyboard.js';
+  import { tooltip } from '../lib/tooltip.js';
   import ConnBadge from './ConnBadge.svelte';
-  import Kbd from './Kbd.svelte';
   import SecretField from './SecretField.svelte';
   import Select from './Select.svelte';
 
@@ -44,12 +45,14 @@
   let error = $state(null);
   let sel = $state(0);
   let draft = $state(null); // { server, isNew, override, envText, argsText }
+  let draftBase = ''; // the form as it opened (hasChanges compares against it)
   let problem = $state(null);
   let refused = $state(null); // { id, used_by }
   let busy = $state({});
   let stored = $state({}); // Keychain account → stored (mcp_secrets_status); never the value
   const now = $derived(now30());
   let root = $state(null);
+  let kcFields = $state({}); // Keychain account → its SecretField (Replace focuses it)
 
   const servers = $derived(effectiveServers(view, project));
   const cur = $derived(servers[sel] ?? null);
@@ -95,12 +98,19 @@
       envText: envToText(s.env),
       argsText: argsToText(s.args),
     };
+    draftBase = JSON.stringify(draft);
   }
 
   function startNew(over = {}) {
     refused = null;
     problem = null;
     draft = { server: { ...blankServer(), ...over }, isNew: true, override: false, envText: '', argsText: argsToText(over.args) };
+    draftBase = JSON.stringify(draft);
+  }
+
+  /** The server form has edits not saved yet (the Settings window's Discard guard). */
+  export function hasChanges() {
+    return !!draft && JSON.stringify(draft) !== draftBase;
   }
 
   const scopeOf = (override) => (project && override ? { kind: 'project', id: project } : { kind: 'global' });
@@ -134,6 +144,55 @@
     } finally {
       busy = { ...busy, [s.id]: false };
     }
+  }
+
+  /** The registry entry as stored: the form's copy may carry edits not saved yet. */
+  const savedEntry = (s) => servers.find((x) => x.id === s.id) ?? s;
+
+  /** Inherit / Override reload the form: unsaved edits go only after a confirm. */
+  function discardFirst(s, run) {
+    if (!hasChanges()) return run();
+    confirm(`Discard the unsaved changes to ${s.name}?`, 'The form reloads on the stored entry.', run, 'Discard');
+  }
+
+  /** Override: a project-scoped copy of the global server (its own env); the form opens on it. */
+  function setOverride(s) {
+    if (s.scope) return;
+    discardFirst(s, async () => {
+      const g = savedEntry(s);
+      try {
+        const r = await invoke('mcp_server_save', { server: serverForSave($state.snapshot(g)), scope: { kind: 'project', id: project } });
+        toast(`${project} has its own ${r.name}`);
+        await load();
+        sel = Math.max(0, servers.findIndex((x) => x.id === r.id));
+        edit(servers[sel] ?? r);
+      } catch (e) {
+        toast(`${s.name}: ${errText(e)}`, { kind: 'error' });
+      }
+    });
+  }
+
+  /** Inherit: the project copy goes (behind a confirm when it differs from the global entry). */
+  function setInherit(s) {
+    if (!s.scope) return;
+    const own = serverForSave($state.snapshot(savedEntry(s)));
+    const global = (view?.servers ?? []).find((x) => x.id === s.id);
+    const differs = !global || JSON.stringify(own) !== JSON.stringify(serverForSave($state.snapshot(global)));
+    const run = async () => {
+      try {
+        const r = await invoke('mcp_server_delete', { id: s.id, scope: { kind: 'project', id: project } });
+        if (r?.deleted === false || r?.used_by?.length) return toast(`${s.name} is used by roles of ${project}`, { kind: 'error' });
+        toast(`${project} uses the global ${s.name}`);
+        await load();
+        sel = Math.max(0, servers.findIndex((x) => x.id === s.id));
+        if (servers[sel]) edit(servers[sel]);
+        else draft = null;
+      } catch (e) {
+        toast(`${s.name}: ${errText(e)}`, { kind: 'error' });
+      }
+    };
+    if (!differs) return discardFirst(s, run);
+    confirm(`Use the global ${s.name} in ${project}?`, `${project}'s own copy of ${s.name}, with its own settings, is deleted.`, run, 'Inherit');
   }
 
   function remove(s) {
@@ -224,7 +283,7 @@
       root?.focus();
       return;
     }
-    if (e.target.closest('input, textarea, select, button') || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (keyIgnored(e, { controls: true })) return;
     const k = e.key;
     if (k === 'j' || k === 'ArrowDown') sel = Math.min(servers.length - 1, sel + 1);
     else if (k === 'k' || k === 'ArrowUp') sel = Math.max(0, sel - 1);
@@ -247,17 +306,17 @@
     <h2>MCP servers</h2>
     <span class="muted">Registry of servers that roles pick from. {project ? `Global, with ${project}'s overrides.` : 'Global, with per-project overrides.'}</span>
     <span class="grow"></span>
-    <button class="btn" onclick={() => startNew()}>New server <Kbd keys="n" /></button>
+    <button class="btn" use:tooltip={{ label: 'New server', key: 'n' }} onclick={() => startNew()}>New server</button>
   </header>
   {#if error}<p class="err">Could not read the registry: {error}</p>{/if}
 
   <div class="split">
     <div class="list">
       {#if view && !servers.length}
-        <p class="muted empty">No MCP servers yet. Add one with <Kbd keys="n" />, or start a design preset: it adds Penpot.</p>
+        <p class="muted empty">No MCP servers yet. Add one with New server, or start a design preset: it adds Penpot.</p>
       {:else if view}
         <table>
-          <thead><tr><th>Name</th><th>Kind</th><th>Design tool</th><th>Used by</th><th>Status</th><th>Scope</th></tr></thead>
+          <thead><tr><th>Name</th><th>Kind</th><th>Design tool</th><th>Used by</th><th>Status</th><th>{project ? 'For ' + project : 'Scope'}</th></tr></thead>
           <tbody>
             {#each servers as s, i (s.id)}
               <tr class:sel={i === sel} class:editing={draft && !draft.isNew && draft.server.id === s.id} onclick={() => ((sel = i), edit(s))}>
@@ -269,12 +328,12 @@
                   <ConnBadge status={s.status} connector={s.kind === 'connector'} busy={busy[s.id]} />
                   {#if s.status === 'needs_auth' && s.kind !== 'stdio'}<button class="link" onclick={(e) => (e.stopPropagation(), reconnect(s))}>Reconnect</button>{/if}
                 </td>
-                <td class="muted">{s.scope ? `${s.scope} override` : 'Global'}</td>
+                <td class="muted" data-scope>{project ? (s.scope ? 'Override' : 'Inherit') : s.scope ? `${s.scope} override` : 'Global'}</td>
               </tr>
             {/each}
           </tbody>
         </table>
-        <p class="muted hints"><Kbd keys="j" /><Kbd keys="k" /> move · <Kbd keys="⏎" /> edit · <Kbd keys="t" /> test · <Kbd keys="x" /> delete</p>
+
       {:else}
         <p class="muted">Loading…</p>
       {/if}
@@ -295,7 +354,7 @@
           <b>{draft.isNew ? 'New MCP server' : s.name}</b>
           {#if !draft.isNew}<ConnBadge status={s.status} connector={s.kind === 'connector'} busy={busy[s.id]} /><span class="muted when">{s.status === 'needs_auth' && s.detail ? `${kindLabel(s.kind)} · ${s.detail}` : checkedAt(s.checked_at_ms, now)}</span>{/if}
           <span class="grow"></span>
-          <button class="x" aria-label="Close" onclick={() => (draft = null)}><Kbd keys="esc" /></button>
+          <button type="button" class="icon-btn" aria-label="Close" use:tooltip={{ label: 'Close', key: 'esc' }} onclick={() => (draft = null)}>{'\u{F0156}'}</button>
         </div>
         <div class="grid">
           <label><span>id</span><input class="field mono" bind:value={draft.server.id} disabled={!draft.isNew} spellcheck="false" placeholder="penpot" /></label>
@@ -329,8 +388,11 @@
             {@const account = keychainAccount(v)}
             {#if account != null}
               <div class="kc">
-                <span class="chip"><span aria-hidden="true">{'\u{F033E}'}</span> {k} from Keychain: {account}</span>
-                <SecretField stored={!!stored[account]} placeholder="Paste the value to store as {account}" onsave={(val) => storeSecret(account, val)} onremove={() => removeSecret(account)} />
+                <span class="kch">
+                  <span class="chip"><span aria-hidden="true">{'\u{F033E}'}</span> {k} from Keychain: {account}</span>
+                  {#if stored[account]}<button class="link" onclick={() => kcFields[account]?.focus()}>Replace</button><button class="link" onclick={() => removeSecret(account)}>Remove</button>{/if}
+                </span>
+                <SecretField bind:this={kcFields[account]} stored={!!stored[account]} placeholder="Paste the value to store as {account}" onsave={(val) => storeSecret(account, val)} />
               </div>
             {/if}
           {/each}
@@ -352,21 +414,29 @@
           {@const h = reconnectHint(s)}
           <div class="box warnbox">
             <p>{h.text}</p>
-            {#if h.action}<button class="btn" onclick={() => reconnect(s)}>{h.action}</button>{/if}
           </div>
         {/if}
 
-        {#if project}
-          <label class="ck"><input type="checkbox" bind:checked={draft.override} disabled={!draft.isNew && !!s.scope} /> Override for {project}</label>
+        {#if project && !draft.isNew}
+          <div class="kinds" data-override>
+            <span>this project</span>
+            <span class="seg" role="radiogroup" aria-label="{s.name} in {project}">
+              <button type="button" role="radio" aria-checked={!s.scope} class:on={!s.scope} onclick={() => setInherit(s)}>Inherit</button>
+              <button type="button" role="radio" aria-checked={!!s.scope} class:on={!!s.scope} onclick={() => setOverride(s)}>Override</button>
+            </span>
+          </div>
+          <p class="note muted">{s.scope ? `${project} has its own copy of ${s.name}, with its own env.` : `${project} uses the global ${s.name} as it is.`}</p>
+        {:else if project}
+          <label class="ck"><input type="checkbox" bind:checked={draft.override} /> Override for {project}</label>
         {/if}
         {#if problem}<p class="err">{problem}</p>{/if}
         <div class="foot">
           {#if !draft.isNew}
-            <button class="btn ghost" onclick={() => test(s)} disabled={busy[s.id]}>{busy[s.id] ? 'Testing…' : 'Test'} <Kbd keys="t" /></button>
-            <button class="btn danger" onclick={() => remove(s)}>Delete <Kbd keys="x" /></button>
+            <button class="btn ghost" use:tooltip={{ label: 'Test', key: 't' }} onclick={() => test(s)} disabled={busy[s.id]}>{busy[s.id] ? 'Testing…' : 'Test'}</button>
+            <button class="btn danger" use:tooltip={{ label: 'Delete', key: 'x' }} onclick={() => remove(s)}>Delete</button>
           {/if}
           <span class="grow"></span>
-          <button class="btn primary" onclick={save}>Save <Kbd keys="⌘+⏎" /></button>
+          <button class="btn primary" use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={save}>Save</button>
         </div>
       </aside>
     {/if}
@@ -462,9 +532,6 @@
     background: var(--color-surface-selected);
     box-shadow: inset var(--border-width-focus) 0 0 var(--color-focus);
   }
-  .hints {
-    font: var(--text-caption);
-  }
   .empty {
     padding: var(--space-lg) 0;
   }
@@ -518,6 +585,11 @@
     flex-direction: column;
     gap: var(--space-xxs);
   }
+  .kch {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
   .chip {
     align-self: flex-start;
     padding: 0 var(--space-sm);
@@ -561,13 +633,6 @@
     border: 0;
     color: var(--color-accent-default);
     font: inherit;
-    cursor: pointer;
-  }
-  .x {
-    background: none;
-    border: 0;
-    color: var(--color-text-muted);
-    font: var(--text-title);
     cursor: pointer;
   }
   .err {

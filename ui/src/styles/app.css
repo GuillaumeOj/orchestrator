@@ -106,7 +106,7 @@ textarea {
 .kbd {
   display: inline-flex;
   align-items: center;
-  height: 16px;
+  height: var(--size-icon);
   padding: 0 var(--space-xs);
   border: var(--border-width-default) solid var(--color-border-strong);
   border-radius: var(--radius-sm);
@@ -193,14 +193,14 @@ textarea {
   background: var(--color-border-subtle);
 }
 
-/* Icon-only button (⋯, ×, ‹ ›): no box at rest; a component sets another square size. */
+/* Icon-only button (⋯, ×): ghost, 28 (02-button-vs-hint); the strip arrows and dock strip icons set 22. */
 .icon-btn {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: var(--size-control-sm);
-  height: var(--size-control-sm);
+  width: var(--size-control);
+  height: var(--size-control);
   padding: 0;
   border: 0;
   border-radius: var(--radius-sm);
@@ -212,12 +212,23 @@ textarea {
   background: var(--color-surface-raised);
   color: var(--color-text-primary);
 }
+.icon-btn:active:not(:disabled),
 .icon-btn.pressed {
   background: var(--color-surface-selected);
   color: var(--color-text-primary);
 }
 .icon-btn:disabled {
   color: var(--color-text-disabled);
+}
+/* A destructive icon (bin): the danger colour in every enabled state (R3, R4). */
+.icon-btn.danger:not(:disabled) {
+  color: var(--color-status-error);
+}
+/* Icon buttons at the right end of a pane header, `⋯` last (R4). */
+.head-acts {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
 }
 
 /* Buttons (Penpot 02): primary, secondary, ghost, danger. */
@@ -237,15 +248,29 @@ textarea {
 .btn:hover {
   background: var(--color-surface-raised);
 }
+/* Pressed (02-button-vs-hint): one step more than hover. */
+.btn:active:not(:disabled) {
+  background: var(--color-surface-selected);
+}
 .btn.primary {
   background: var(--color-accent-subtle);
   border-color: var(--color-accent-default);
+}
+/* Hover lightens the accent fill one step; pressed is the plain accent tint. */
+.btn.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent-subtle) 80%, var(--color-accent-default));
+}
+.btn.primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent-subtle) 60%, var(--color-accent-default));
 }
 .btn.ghost {
   border-color: transparent;
 }
 .btn.danger {
   border-color: var(--color-status-error);
+}
+.btn.danger:active:not(:disabled) {
+  background: color-mix(in srgb, transparent 80%, var(--color-status-error));
 }
 .btn:disabled {
   color: var(--color-text-disabled);
@@ -304,6 +329,11 @@ select.field {
   user-select: text;
   -webkit-user-select: text;
 }
+/* One line: the Select's box (R11, 02-select). */
+input.field {
+  height: var(--size-control);
+  padding: 0 var(--space-sm);
+}
 
 .grow {
   flex: 1;
@@ -351,4 +381,135 @@ select.field {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
+}
+
+/* A backdrop click on a window with unsaved changes: its footer flashes
+   (design-notes §3.3). Any section's `.foot`, so it lives here. */
+.foot.flash {
+  border-radius: var(--radius-sm);
+  animation: foot-flash 0.6s ease-out 2;
+}
+@keyframes foot-flash {
+  50% {
+    background: var(--color-accent-subtle);
+    box-shadow: 0 0 0 var(--space-xs) var(--color-accent-subtle);
+  }
+}
+
+/* Settings sections (settings-brief §0): title + lead, groups as cards (a header, rows: label
+   column 168 px · control · help), a sticky footer for form sections, a switch. */
+.sset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  max-width: 760px;
+}
+.sset > h2 {
+  margin: 0;
+  font: var(--text-heading);
+}
+.sset > .lead {
+  margin: calc(var(--space-sm) * -1) 0 0;
+}
+.scard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  background: var(--color-surface-pane);
+  border: var(--border-width-default) solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+.scard > h3 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
+  margin: 0;
+  font: var(--text-title);
+}
+.scard > h3 .muted {
+  font: var(--text-caption);
+}
+.srow {
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-sm) var(--space-md);
+}
+.srow > .slab {
+  color: var(--color-text-secondary);
+}
+.srow > .sctl {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+.srow .shelp {
+  grid-column: 2;
+  margin: calc(var(--space-xs) * -1) 0 0;
+  font: var(--text-caption);
+  color: var(--color-text-muted);
+}
+.sok {
+  color: var(--color-status-done);
+  font: var(--text-caption);
+}
+.serr {
+  color: var(--color-status-error);
+  font: var(--text-caption);
+}
+/* A form section's footer sticks to the bottom of the window's content. */
+.sfoot {
+  position: sticky;
+  bottom: calc(var(--space-xl) * -1);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+  margin: var(--space-md) calc(var(--space-xl) * -1) calc(var(--space-xl) * -1);
+  padding: var(--space-md) var(--space-xl);
+  background: var(--color-surface-pane);
+  border-top: var(--border-width-default) solid var(--color-border-subtle);
+}
+.sfoot > .dirty {
+  margin-right: auto;
+  color: var(--color-text-muted);
+}
+input[role="switch"] {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 30px;
+  height: 16px;
+  margin: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-border-strong);
+  cursor: pointer;
+}
+input[role="switch"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-text-primary);
+  transition: left 0.12s;
+}
+input[role="switch"]:checked {
+  background: var(--color-accent-default);
+}
+input[role="switch"]:checked::after {
+  left: 16px;
+}
+input[role="switch"]:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+input[role="switch"]:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
 }

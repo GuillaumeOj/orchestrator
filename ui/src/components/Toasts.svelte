@@ -1,7 +1,7 @@
 <script>
   // Toasts (Penpot 05): bottom-right, 6 s, past tense plus the object; undo when it can be undone.
   import { app, dismissToast, undoItem } from '../lib/app.svelte.js';
-  import Kbd from './Kbd.svelte';
+  import { tooltip } from '../lib/tooltip.js';
 </script>
 
 <div class="toasts" aria-live="polite">
@@ -9,7 +9,7 @@
     <div class="toast" class:error={t.kind === 'error'} class:warn={t.kind === 'warn'}>
       <span class="icon" style:color={t.kind === 'error' ? 'var(--color-status-error)' : t.kind === 'warn' ? 'var(--color-pacing-amber)' : 'var(--color-status-done)'} aria-hidden="true">{t.kind === 'error' ? '\u{F0159}' : t.kind === 'warn' ? '\u{F0026}' : '\u{F012C}'}</span>
       <span class="text">{t.text}</span>
-      {#if t.undo}<button class="btn ghost" onclick={() => undoItem(t.item)}>Undo <Kbd keys="u" /></button>{/if}
+      {#if t.undo}<button type="button" class="btn ghost" use:tooltip={{ label: 'Undo', key: 'u' }} onclick={() => undoItem(t.item)}>Undo</button>{/if}
       {#if t.action}<button class="btn ghost" onclick={() => (dismissToast(t.id), t.action.run())}>{t.action.label}</button>{/if}
       <button class="x" aria-label="Dismiss" onclick={() => dismissToast(t.id)}>×</button>
     </div>

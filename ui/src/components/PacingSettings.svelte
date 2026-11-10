@@ -4,12 +4,13 @@
   // only, recomputed while typing), and the cap in effect now. ↑/↓ step, ⏎ applies, esc leaves
   // the field, then the section; r retries a failed load.
   import { onMount } from 'svelte';
-  import { app, openSingleton, toast } from '../lib/app.svelte.js';
+  import { app, openPlanner, toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { keyIgnored } from '../lib/keyboard.js';
   import { checkCap, derivedCaps } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
+  import { tooltip } from '../lib/tooltip.js';
   import IntakeGlobalSettings from './IntakeGlobalSettings.svelte';
-  import Kbd from './Kbd.svelte';
 
   let view = $state(null); // the last PacingSettings from the core
   let loadError = $state(null);
@@ -126,13 +127,13 @@
   }
 
   function onKey(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, textarea, select, [role="combobox"]')) return;
+    if (keyIgnored(e)) return;
     if (e.key === 'r' && loadError) {
       e.preventDefault();
       load();
     } else if (e.key === 'p') {
       e.preventDefault();
-      openSingleton('planner');
+      openPlanner();
     }
   }
 
@@ -145,12 +146,11 @@
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <section class="pacing" tabindex="-1" data-section-focus={view ? undefined : ''} bind:this={root} onkeydown={onKey} aria-label="Pacing policy">
   <h2>Pacing policy</h2>
-  <p class="muted intro">How many agents may run at once. The <button class="link" onclick={() => openSingleton('planner')}>Week planner</button> edits the plan: days, hours, reserve, allocations.</p>
+  <p class="muted intro">How many agents may run at once. The <button class="link" onclick={() => openPlanner()}>Week planner</button> edits the plan: days, hours, reserve, allocations.</p>
 
   {#if loadError}
     <p class="secondary help"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> Could not read the pacing settings: {loadError}</p>
-    <div><button class="btn" onclick={load}>Retry <Kbd keys="r" /></button></div>
-    <p class="muted hints"><Kbd keys="r" /> retry · <Kbd keys="esc" /> back to sections</p>
+    <div><button class="btn" use:tooltip={{ label: 'Retry', key: 'r' }} onclick={load}>Retry</button></div>
   {:else if !view}
     <p class="muted line">Reading the pacing settings…</p>
     {#each [0, 1, 2] as i (i)}<div class="skel" aria-busy="true"></div>{/each}
@@ -201,7 +201,7 @@
         <p class="secondary help" id="off-cap-err"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> {offErr}</p>
       {/if}
       {#if !view.off_hours_allowance_pct}
-        <p class="secondary help"><span class="muted" aria-hidden="true">{'\u{F02FD}'}</span> The plan has no off-hours allowance, so agents don't run off-hours. Set one in the <button class="link" onclick={() => openSingleton('planner')}>Week planner</button>.</p>
+        <p class="secondary help"><span class="muted" aria-hidden="true">{'\u{F02FD}'}</span> The plan has no off-hours allowance, so agents don't run off-hours. Set one in the <button class="link" onclick={() => openPlanner()}>Week planner</button>.</p>
       {/if}
     </div>
 
@@ -214,11 +214,11 @@
     {#if saveError}<p class="secondary help"><span class="err" aria-hidden="true">{'\u{F0159}'}</span> Could not save: {saveError}</p>{/if}
 
     <div class="actions">
-      <button class="btn primary" disabled={!canApply} onclick={apply}>{busy ? 'Applying…' : 'Apply'} <Kbd keys="⏎" /></button>
+      <button class="btn primary" disabled={!canApply} use:tooltip={{ label: 'Apply', key: '⏎' }} onclick={apply}>{busy ? 'Applying…' : 'Apply'}</button>
       <button class="btn" disabled={busy || atDefaults} onclick={reset}>Reset to defaults</button>
       {#if saved}<span class="done" role="status">Saved</span>{/if}
     </div>
-    <p class="muted hints"><Kbd keys="⏎" /> apply · <Kbd keys="↑↓" /> step · <Kbd keys="tab" /> next · <Kbd keys="esc" /> back to sections</p>
+
   {/if}
   <!-- After the policy loaded: the block reads its own keys. -->
   {#if view}<IntakeGlobalSettings />{/if}
@@ -240,8 +240,7 @@
     margin: 0;
   }
   .intro,
-  .help,
-  .hints {
+  .help {
     font: var(--text-caption);
   }
   .line {

@@ -42,11 +42,5 @@ export const PERMISSION_PROFILES = plain(['strict', 'gated', 'autonomous']);
 
 export const BUDGET_PRIORITIES = plain(['low', 'normal', 'high', 'critical']);
 
-/** A project file's access (`read` / `write` are the stored ids). */
-export const ACCESS_OPTIONS = [
-  { value: 'read', label: 'read' },
-  { value: 'write', label: 'read & write' },
-];
-
 /** Board columns (`lib/teams.js:COLUMNS`), e.g. a Linear state's column. */
 export const BOARD_COLUMNS = COLUMNS.map((c) => ({ value: c.id, label: c.label }));

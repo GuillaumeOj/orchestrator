@@ -8,21 +8,22 @@
   // the strip has the keys, ⏎ or a click takes over, Esc goes back.
   import { onMount } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
+  import AgentMenu from '../components/agent/AgentMenu.svelte';
   import CtxBar from '../components/CtxBar.svelte';
-  import Kbd from '../components/Kbd.svelte';
   import LifecycleMarker from '../components/LifecycleMarker.svelte';
   import PermissionCall from '../components/PermissionCall.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import TermHost from '../components/TermHost.svelte';
   import UndeliveredChip from '../components/UndeliveredChip.svelte';
   import WaitingChip from '../components/WaitingChip.svelte';
-  import { agent, agentAction, app, cancelQueued, confirm, decide, leaveWatch, mountTerm, openEditor, runNow, takeOver, toast } from '../lib/app.svelte.js';
+  import { agent, agentAction, app, cancelQueued, decide, focusCard, leaveWatch, mountTerm, openEditor, runNow, takeOver, toast } from '../lib/app.svelte.js';
   import { ago, clock, duration } from '../lib/format.js';
   import { agentOf, blockOf, parked, visibleItems } from '../lib/inbox.js';
   import { errText } from '../lib/ipc.js';
   import { runNowCost } from '../lib/mission.js';
   import { attention, openDecisions, statusOf } from '../lib/now.svelte.js';
-  import { cacheState, sessionPp as ppOf, STATUS } from '../lib/status.js';
+  import { sessionPp as ppOf, STATUS } from '../lib/status.js';
+  import { tooltip } from '../lib/tooltip.js';
 
   let { paneId } = $props();
   let host = $state();
@@ -33,9 +34,6 @@
   const rec = $derived(a ? attention(a.id) : null);
   const ds = $derived(statusOf(spec?.agentId));
   const fresh = $derived(ds === 'not_started');
-  // Answered in the PTY (a trust dialog, a prompt in the pane); a gate, a team
-  // question or the Governor's ask is answered on its card.
-  const inPane = $derived(/^(trust|wait)-/.test(rec?.waiting_on?.ref ?? ''));
   const snap = $derived(app.data?.usage?.snapshot);
   const sessionPp = $derived(ppOf(a, snap));
   // Its permission prompt (held or parked): its card's own decision, not a second list.
@@ -49,14 +47,31 @@
       app.pending,
     ).find((d) => !(d.id === handedOver && d.actions.some((x) => x.id === 'in_pane'))),
   );
-  // The strip's buttons: the decision's own actions, Deny with message and Open aside (the pane is here).
-  const permActions = $derived((perm?.actions ?? []).filter((x) => x.id !== 'reply' && x.id !== 'open'));
-  const cache = $derived(cacheState(a, clock));
+  // The strip's buttons: the decision's own actions, Deny with message and Open aside (the pane is here);
+  // "Answer in the pane" needs a live session: a not-live strip offers Resume instead (§1.3.1).
+  const permActions = $derived((perm?.actions ?? []).filter((x) => x.id !== 'reply' && x.id !== 'open' && (x.id !== 'in_pane' || a?.live)));
   const watching = $derived(!!spec?.watch);
   // Opened over Mission control and taken over: the strip says how to go back (notes F4).
   const overBoard = $derived(!!spec?.over && !!app.panes[spec.over]);
   const stopped = $derived(!a || rec?.status === 'done' || (ended && !a.live));
   const name = $derived(spec?.agentId ?? '');
+  // The one strip shown (design-notes §1.3.1): it owns Resume and the waiting reason.
+  const strip = $derived.by(() => {
+    if (!a) return null;
+    if (perm) return 'perm';
+    if (rec?.level === 'needs_you') return 'needs';
+    if (rec?.level === 'queued') return 'queued';
+    if (ds === 'blocked_by_limit') return 'blocked';
+    if (ds === 'error') return 'error';
+    return a.live ? null : 'suspended';
+  });
+  // The limit that blocks it and when it resets (ms), for the disabled Resume's reason.
+  const limit = $derived.by(() => {
+    const u = app.data?.usage;
+    const weekly = u?.weekly?.used_pct >= 100;
+    const w = weekly ? u?.weekly : u?.five_hour;
+    return { name: weekly ? 'weekly' : '5-hour', at: w?.resets_at ? w.resets_at * 1000 : null };
+  });
 
   function onWatchKey(e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -93,7 +108,7 @@
   });
 
   function onStripKey(e) {
-    if (e.key === 'Enter' && !a?.live) {
+    if (e.key === 'Enter' && !a?.live && e.target === e.currentTarget) {
       e.preventDefault();
       agentAction(a.id, 'resume');
     }
@@ -105,15 +120,19 @@
   <div class="session watch" tabindex="0" data-pane-focus data-watch role="group" aria-label="Watching {name}" onkeydown={onWatchKey}>
     <span class="icon" aria-hidden="true">{'\u{F06D0}'}</span>
     {#if stopped}
-      <span><b class="mono">{name}</b> has stopped</span> · <Kbd keys="esc" /> back
+      <span><b class="mono">{name}</b> has stopped</span>
     {:else}
-      <span>Watching <b class="mono">{name}</b>{rec?.status === 'paused' ? ' (paused)' : ''}</span> · <Kbd keys="⏎" /> take over · <Kbd keys="esc" /> back
+      <span>Watching <b class="mono">{name}</b>{rec?.status === 'paused' ? ' (paused)' : ''} · your keys go to Mission control</span>
     {/if}
+    <span class="grow"></span>
+    {#if !stopped}<button type="button" class="btn primary" use:tooltip={{ label: 'Take over', key: '⏎' }} onclick={() => takeOver(paneId)}>Take over</button>{/if}
+    <button type="button" class="btn" use:tooltip={{ label: 'Back', key: 'esc' }} onclick={() => leaveWatch(paneId)}>Back to Mission control</button>
   </div>
 {:else if overBoard}
   <div class="session muted">
     <span class="icon" aria-hidden="true">{'\u{F030C}'}</span>
-    {#if stopped}<span><b class="mono">{name}</b> has stopped</span>{:else}<span>Typing in <b class="mono">{name}</b></span>{/if} · <Kbd keys="⌘+; o" /> Mission control
+    {#if stopped}<span><b class="mono">{name}</b> has stopped</span>{:else}<span>Typing in <b class="mono">{name}</b></span>{/if} ·
+    <button type="button" class="link" use:tooltip={{ label: 'Mission control', key: '⌘; o' }} onclick={() => leaveWatch(paneId)}>Mission control</button>
   </div>
 {/if}
 
@@ -121,10 +140,10 @@
   <div class="ah">
     <AgentChip id={a.id} />
     <StatusBadge state={ds} />
-    <WaitingChip {rec} />
-    {#if a.off_hours}<span class="offh" title="Work you scheduled off-hours (FR-816)">· off-hours</span>{/if}
+    {#if !strip}<WaitingChip {rec} />{/if}
+    {#if a.off_hours}<span class="offh" use:tooltip={'Work you scheduled off-hours (FR-816)'}>· off-hours</span>{/if}
     {#if a.model_note}
-      <span class="secondary down" title="Switched by the Governor ({a.model_note.replace(/^downgraded /, '')}); back to the role's model at the next task once it clears.">↓ {a.model ?? 'default model'} · {a.model_note}</span>
+      <span class="secondary down" use:tooltip={`Switched by the Governor (${a.model_note.replace(/^downgraded /, '')}); back to the role's model at the next task once it clears.`}>↓ {a.model ?? 'default model'} · {a.model_note}</span>
     {:else}
       <span class="secondary">{a.model ?? 'default model'}{a.effort ? ` · ${a.effort}` : ''}</span>
     {/if}
@@ -132,71 +151,89 @@
     <span class="muted">session</span><span>{sessionPp == null ? '—' : `${sessionPp.toFixed(1)} pp`}</span>
     <UndeliveredChip {rec} />
     <span class="grow"></span>
-    {#if a.live}
-      <button class="hint" onclick={() => agentAction(a.id, 'interrupt')}><Kbd keys="esc" /> interrupt</button>
-      <button class="hint" onclick={() => agentAction(a.id, 'suspend')}>suspend</button>
-    {:else}
-      <button class="hint" onclick={() => agentAction(a.id, 'resume')}><Kbd keys="⏎" /> resume</button>
-    {/if}
-    <button class="hint" onclick={() => (app.overlay = { kind: 'palette' })}><Kbd keys="⌘+K" /> more</button>
+    <span class="acts">
+      {#if a.live}
+        <button type="button" class="icon-btn" aria-label="Interrupt" use:tooltip={{ label: 'Interrupt', key: 'esc' }} onclick={() => agentAction(a.id, 'interrupt')}>{'\u{F0765}'}</button>
+        <button type="button" class="icon-btn" aria-label="Suspend" use:tooltip={'Suspend'} onclick={() => agentAction(a.id, 'suspend')}>{'\u{F04B2}'}</button>
+      {/if}
+      <AgentMenu agent={a} />
+    </span>
   </div>
 
-  {#if perm}
-    <div class="strip warn perm">
+  {#if strip === 'perm'}
+    <div class="strip warn perm" data-strip="perm">
       <div class="row">
         <span class="icon" style:color="var(--color-status-waiting-for-you)" aria-hidden="true">{'\u{F0005}'}</span>
-        <span><b>Waiting for you</b> for {ago(perm.created_ms)} · {perm.title} · also on its card · ⌘⇧I</span>
+        <span>Permission · {perm.title} · <button type="button" class="link" onclick={() => focusCard(perm.id)}>also in Decisions</button></span>
         <span class="grow"></span>
         {#each permActions as x (x.id)}
           {#if x.id === 'in_pane'}
-            <button class="btn ghost" onclick={() => (handedOver = perm.id)} title="Shows Claude Code's own dialog">{x.label}</button>
+            <button type="button" class="btn" use:tooltip={"Shows Claude Code's own dialog"} onclick={() => (handedOver = perm.id)}>{x.label}</button>
           {:else}
-            <button class="btn" class:primary={x.id === 'approve'} class:danger={x.id === 'reject'} title={x.id === 'always' ? perm.payload?.always : null} onclick={() => decide(perm, x.id)}>{x.label}</button>
+            <button type="button" class="btn" class:primary={x.id === 'approve'} use:tooltip={x.id === 'always' ? perm.payload?.always : null} onclick={() => decide(perm, x.id)}>{x.label}</button>
           {/if}
         {/each}
+        {#if !a.live}{@render resume(false)}{/if}
       </div>
       {#if parked(perm)}<LifecycleMarker decision={perm} />{/if}
       {#key perm.id}<PermissionCall block={blockOf(perm, 'tool_call')} />{/key}
     </div>
-  {:else if rec?.level === 'needs_you'}
-    <div class="strip warn"><span class="icon" style:color={STATUS[ds].color}>{STATUS[ds].icon}</span> <b>{STATUS[ds].label}</b> <WaitingChip {rec} /> · {inPane ? 'answer it in the pane below: the app never does' : 'answer it on its card (⌘⇧I)'}</div>
-  {:else if rec?.level === 'queued'}
-    <div class="strip">
-      <span class="icon" style:color={STATUS[ds].color}>{STATUS[ds].icon}</span>
-      <b>{STATUS[ds].label}</b> <WaitingChip {rec} />
+  {:else if strip === 'needs'}
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+    <div class="strip warn" data-strip="needs" tabindex="0" onkeydown={onStripKey} role="group">
+      <span class="icon" style:color={STATUS[ds].color} aria-hidden="true">{STATUS[ds].icon}</span>
+      <span>{STATUS[ds].label}</span>
+      <WaitingChip {rec} />
+      <span class="grow"></span>
+      {#if !a.live}{@render resume()}{/if}
+    </div>
+  {:else if strip === 'queued'}
+    <div class="strip queued" data-strip="queued">
+      <span class="icon" style:color={STATUS[ds].color} aria-hidden="true">{STATUS[ds].icon}</span>
+      <span>{STATUS[ds].label}</span>
+      <WaitingChip {rec} />
       <span class="grow"></span>
       {#if rec.queue}
-        <button class="btn ghost" onclick={() => cancelQueued(rec)} title="Removes it from the queue; the agent stays as it is">Cancel</button>
-        <button class="btn" onclick={() => runNow(rec)}>
-          {fresh ? 'Start now' : 'Run now'}{runNowCost(rec.queue) ? ` ${runNowCost(rec.queue)}` : ''} <Kbd keys="⏎" />
-        </button>
+        <button type="button" class="btn" onclick={() => runNow(rec)}>{fresh ? 'Start now' : 'Run now'}{runNowCost(rec.queue) ? ` ${runNowCost(rec.queue)}` : ''}</button>
+        <button type="button" class="btn" use:tooltip={'Removes it from the queue; the agent stays as it is'} onclick={() => cancelQueued(rec)}>Cancel</button>
       {/if}
     </div>
-  {:else if ds === 'blocked_by_limit'}
-    <div class="strip"><span class="icon" style:color="var(--color-status-blocked-by-limit)">{'\u{F073A}'}</span> <b>Blocked by limit</b> <WaitingChip {rec} /> · resumes at the reset (CLI auto-continue cancelled)</div>
-  {:else if ds === 'error'}
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-    <div class="strip" tabindex="0" onkeydown={onStripKey} role="group">
-      <span class="icon" style:color="var(--color-status-error)">{'\u{F0159}'}</span>
-      <span>{rec?.reason ? `Error: ${rec.reason}` : 'Exited with an error'} · session saved</span>
+  {:else if strip === 'blocked'}
+    <div class="strip limit" data-strip="blocked">
+      <span class="icon" style:color="var(--color-status-blocked-by-limit)" aria-hidden="true">{'\u{F073A}'}</span>
+      <span>Blocked by the {limit.name} limit{limit.at ? ` · resets ${clock(limit.at)}` : ''}</span>
+      {#if rec?.waiting_on}<WaitingChip {rec} />{/if}
       <span class="grow"></span>
-      <button class="btn" onclick={() => agentAction(a.id, 'resume')}>Resume <Kbd keys="⏎" /></button>
-      <button class="btn danger" onclick={() => (app.overlay = { kind: 'delete-agent', agentId: a.id })}>Delete…</button>
+      <span class="disabled-tip" use:tooltip={limit.at ? `Blocked until the reset · ${clock(limit.at)}` : 'Blocked until the reset'}>
+        <button type="button" class="btn" disabled>Resume</button>
+      </span>
     </div>
-  {:else if !a.live}
+  {:else if strip === 'error'}
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
-    <div class="strip" tabindex="0" onkeydown={onStripKey} role="group" data-pane-focus>
-      <span class="icon" style:color="var(--color-status-suspended)">{'\u{F04B2}'}</span>
-      <span>Suspended{a.last_event_at_ms ? ` ${clock(a.last_event_at_ms)}` : ''}{cache ? ` · cache ${cache}` : ''} · the session is saved</span>
+    <div class="strip error" data-strip="error" tabindex="0" onkeydown={onStripKey} role="group">
+      <span class="icon" style:color="var(--color-status-error)" aria-hidden="true">{'\u{F0159}'}</span>
+      <span>{rec?.reason ? `Exited with an error · ${rec.reason}` : 'Exited with an error'}</span>
+      {#if rec?.waiting_on}<WaitingChip {rec} />{/if}
       <span class="grow"></span>
-      <button class="btn" onclick={() => agentAction(a.id, 'resume')}>Resume <Kbd keys="⏎" /></button>
-      <button class="btn danger" onclick={() => confirm(`Kill ${a.id}?`, 'Also stops leftover processes in its worktree.', () => agentAction(a.id, 'kill'), 'Kill')}>Kill</button>
-      <button class="btn danger" onclick={() => (app.overlay = { kind: 'delete-agent', agentId: a.id })}>Delete…</button>
+      {@render resume()}
+    </div>
+  {:else if strip === 'suspended'}
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+    <div class="strip" data-strip="suspended" tabindex="0" onkeydown={onStripKey} role="group" data-pane-focus>
+      <span class="icon" style:color="var(--color-status-suspended)" aria-hidden="true">{'\u{F04B2}'}</span>
+      <span>Suspended{a.last_event_at_ms ? ` ${ago(a.last_event_at_ms)} ago` : ''} · session kept{a.context_pct == null ? '' : ` · context ${Math.round(a.context_pct)} %`}</span>
+      {#if rec?.waiting_on}<WaitingChip {rec} />{/if}
+      <span class="grow"></span>
+      {@render resume()}
     </div>
   {/if}
 {:else}
   <div class="strip">This agent no longer exists.</div>
 {/if}
+
+{#snippet resume(primary = true)}
+  <button type="button" class="btn" class:primary use:tooltip={{ label: 'Resume', key: '⏎' }} onclick={() => agentAction(a.id, 'resume')}>Resume</button>
+{/snippet}
 
 <TermHost bind:host watch={watching} ontakeover={() => !stopped && takeOver(paneId)}>
   {#if a && !a.live && ended}<div class="ended muted">claude exited · {a.label} · {duration(Date.now() - (a.last_event_at_ms ?? Date.now()))} ago</div>{/if}
@@ -232,8 +269,35 @@
     background: var(--color-surface-raised);
     font: var(--text-label);
   }
+  /* The state's bar, and a tint for the warm and red states (04-agent-strips, as the banner rows). */
+  .strip {
+    --strip: var(--color-status-suspended);
+    box-shadow: inset 3px 0 0 var(--strip);
+  }
+  .strip.warn,
+  .strip.limit,
+  .strip.error {
+    background: color-mix(in srgb, var(--strip) 12%, var(--color-surface-pane));
+  }
   .strip.warn {
-    box-shadow: inset 3px 0 0 var(--color-status-waiting-for-you);
+    --strip: var(--color-status-waiting-for-you);
+  }
+  .strip.queued {
+    --strip: var(--color-status-queued);
+  }
+  .strip.limit {
+    --strip: var(--color-status-blocked-by-limit);
+  }
+  .strip.error {
+    --strip: var(--color-status-error);
+  }
+  .acts {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-xxs);
+  }
+  .disabled-tip {
+    display: inline-flex;
   }
   .strip.perm {
     flex-direction: column;
@@ -258,6 +322,9 @@
     outline: none;
   }
   .session.watch {
+    min-height: 36px;
+    height: auto;
+    padding: var(--space-xs) var(--space-md);
     background: var(--color-surface-selected);
     color: var(--color-text-secondary);
   }

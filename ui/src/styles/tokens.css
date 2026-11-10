@@ -66,6 +66,7 @@
   --text-mono-sm: 400 12px/1.33 "FiraCode Nerd Font Mono", monospace;
   --text-icon: 400 12px/1.33 "FiraCode Nerd Font Mono", monospace;
   --text-key: 400 11px/1.45 "FiraCode Nerd Font Mono", monospace;
+  --color-backdrop: #000000;
 }
 
 :root,

@@ -3,7 +3,7 @@
   // role inspector and the Rules panel. Mouse optional (§9.1): n add, hjkl /
   // arrows select, ⇧+hjkl move, c connect (target number, then edge type 1–4),
   // ⏎ inspect, x delete, = auto-layout, u undo, ⌃r redo, ⇧R library (roles and teams), ⌘⏎ launch,
-  // D duplicate the selected role (the team when none), then 1 global / 2 project (FR-306).
+  // ⇧D duplicate the selected role (the team when none), then 1 global / 2 project (FR-306).
   // Every edit saves (debounced); the core validates and versions the team.
   import { onMount } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
@@ -14,8 +14,10 @@
   import { app, projects, saveLayout, toast } from '../lib/app.svelte.js';
   import * as C from '../lib/canvas.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { BUDGET_PRIORITIES, EFFORTS, PERMISSION_PROFILES, REVIEW_MODES } from '../lib/options.js';
+  import { tooltip } from '../lib/tooltip.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -322,7 +324,7 @@
   }
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select, [role="combobox"]')) {
+    if (isTypingTarget(e.target)) {
       if (e.key === 'Escape' && !e.defaultPrevented) (root?.focus(), e.preventDefault());
       return;
     }
@@ -502,6 +504,14 @@
   });
 </script>
 
+{#snippet mhead(title, cancel = 'Cancel')}
+  <div class="mh"><b>{title}</b><span class="grow"></span><button type="button" class="icon-btn" aria-label="Cancel" use:tooltip={{ label: cancel, key: 'esc' }} onclick={() => ((mode = null), root?.focus())}>{'\u{F0156}'}</button></div>
+{/snippet}
+
+{#snippet opt(label, key, run, disabled = false)}
+  <button type="button" class="opt popover-row" role="menuitem" {disabled} onclick={run}><span>{label}</span><span class="key"><Kbd keys={key} /></span></button>
+{/snippet}
+
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <div class="canvas-pane" tabindex="0" data-pane-focus bind:this={root} onkeydown={onKey} role="application" aria-label="Team canvas">
   <header class="ch">
@@ -512,10 +522,10 @@
       <b>Team canvas</b>
     {/if}
     <span class="grow"></span>
-    <button class="btn ghost" onclick={() => (mode = mode?.kind === 'library' ? null : { kind: 'library' })}>Library <Kbd keys="⇧+R" /></button>
+    <button type="button" class="btn ghost" use:tooltip={{ label: 'Library', key: '⇧R' }} onclick={() => (mode = mode?.kind === 'library' ? null : { kind: 'library' })}>Library</button>
     <button class="btn ghost" onclick={() => (mode = { kind: 'import', text: '' })}>Import</button>
     <button class="btn ghost" disabled={!team} onclick={exportTeam}>Export</button>
-    <button class="btn primary" disabled={!team} onclick={launch}>Launch on feature <Kbd keys="⌘+⏎" /></button>
+    <button type="button" class="btn primary" disabled={!team} use:tooltip={{ label: 'Launch on feature', key: '⌘⏎' }} onclick={launch}>Launch on feature</button>
   </header>
 
   <div class="main">
@@ -567,33 +577,30 @@
             <rect class="vp" x={MM.pad + (-pan.x / zoom - mm.b.x) * mm.s} y={MM.pad + (-pan.y / zoom - mm.b.y) * mm.s} width={mm.vw} height={mm.vh} />
           </svg>
         {/if}
-        <div class="hints">
-          <span><Kbd keys="n" /> add</span><span><Kbd keys="c" /> connect</span><span><Kbd keys="⏎" /> inspect</span><span><Kbd keys="=" /> auto-layout</span><span><Kbd keys="x" /> delete</span><span><Kbd keys="u" /> undo</span><span><Kbd keys="⇧+D" /> duplicate</span><span><Kbd keys="⌃+r" /> redo</span>
-        </div>
       {:else}
         <div class="empty">
           <p><b>No team open.</b></p>
-          <p class="muted">Open one from the library (⇧R) or start a new one.</p>
+          <p class="muted">Open one from the library or start a new one.</p>
           <button class="btn" onclick={newTeam}>New team</button>
         </div>
       {/if}
 
       {#if mode?.kind === 'connect'}
-        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Connect">
+        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="menu" tabindex="-1" aria-label="Connect">
           {#if !mode.to}
-            <b>Connect {mode.from} → …</b>
-            <span class="muted">pick a target: its number or a click · esc cancel</span>
+            {@render mhead(`Connect ${mode.from} → …`)}
+            <span class="muted">pick a target: its number or a click</span>
           {:else}
-            <b>Connect {mode.from} → {mode.to}</b>
-            {#each C.EDGE_KINDS as k, i (k)}<button class="opt" onclick={() => connect(k)}><Kbd keys={String(i + 1)} /> {k}</button>{/each}
-            <span class="muted">esc cancel</span>
+            {@render mhead(`Connect ${mode.from} → ${mode.to}`)}
+            {#each C.EDGE_KINDS as k, i (k)}{@render opt(k, String(i + 1), () => connect(k))}{/each}
           {/if}
         </div>
       {:else if mode?.kind === 'add'}
-        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Add a node">
-          <b>Add a node</b>
-          {#each roles.slice(0, 9) as r, i (r.id)}<button class="opt" onclick={() => addRole(r.id)}><Kbd keys={String(i + 1)} /> <AgentChip id={r.id} role={r.id} color={r.color} name={r.name} /></button>{/each}
-          <span class="muted">esc cancel</span>
+        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="menu" tabindex="-1" aria-label="Add a node">
+          {@render mhead('Add a node')}
+          {#each roles.slice(0, 9) as r, i (r.id)}
+            <button type="button" class="opt popover-row" role="menuitem" onclick={() => addRole(r.id)}><AgentChip id={r.id} role={r.id} color={r.color} name={r.name} /><span class="key"><Kbd keys={String(i + 1)} /></span></button>
+          {/each}
         </div>
       {:else if mode?.kind === 'library'}
         <div class="menu lib" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Library">
@@ -610,7 +617,7 @@
                 <div class="pacts">
                   {#if t.update_available && t.starter}<button class="link" onclick={() => getNewStarter(t)}>Get the new starter</button>{/if}
                   <button class="link" onclick={() => launchPreset(t.team)}>Launch</button>
-                  <button class="link" onclick={() => (mode = { kind: 'dup', what: { kind: 'team', team: t.team } })}>Duplicate</button>
+                  <button type="button" class="link" use:tooltip={{ label: 'Duplicate', key: '⇧D' }} onclick={() => (mode = { kind: 'dup', what: { kind: 'team', team: t.team } })}>Duplicate</button>
                   {#if !t.starter}<button class="link" onclick={() => setPreset(t.team, !t.preset)}>{t.preset ? 'Remove from presets' : 'Save as preset'}</button>{/if}
                 </div>
               </div>
@@ -619,20 +626,19 @@
           <button class="btn ghost" onclick={newTeam}>New team</button>
         </div>
       {:else if mode?.kind === 'starter'}
-        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Starter">
-          <b>Starter · read-only</b>
+        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="menu" tabindex="-1" aria-label="Starter">
+          {@render mhead('Starter · read-only', 'Cancel: the starter is left as it is')}
           <span>{mode.rolePatch ? `Role ${mode.role.name}` : team?.name} is a starter. Starters are templates. Your changes will be saved as a copy.</span>
-          {#if project}<button class="opt" onclick={() => copyStarter('project')}><Kbd keys="⏎" /> Save in {projectName}</button>{/if}
-          <button class="opt" onclick={() => copyStarter('global')}><Kbd keys={project ? 'g' : '⏎'} /> Global</button>
-          <span class="muted">esc cancel (the starter is left as it is)</span>
+          {#if project}{@render opt(`Save in ${projectName}`, '⏎', () => copyStarter('project'))}{/if}
+          {@render opt('Global', project ? 'g' : '⏎', () => copyStarter('global'))}
         </div>
       {:else if mode?.kind === 'dup'}
         {@const w = mode.what}
-        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Duplicate">
-          <b>Duplicate {w?.kind === 'role' ? `role ${w.role.id}` : (w?.team?.name ?? 'team')}</b>
-          <button class="opt" onclick={() => duplicate('global', w)}>Duplicate to global <Kbd keys="D" /><Kbd keys="1" /></button>
-          <button class="opt" disabled={!project} onclick={() => duplicate('project', w)}>Duplicate to {projectName ?? 'a project (open the canvas from one)'} <Kbd keys="D" /><Kbd keys="2" /></button>
-          <span class="muted">A copy at version 1, as &lt;id&gt;-copy · esc cancel</span>
+        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="menu" tabindex="-1" aria-label="Duplicate">
+          {@render mhead(`Duplicate ${w?.kind === 'role' ? `role ${w.role.id}` : (w?.team?.name ?? 'team')}`)}
+          {@render opt('To global', '1', () => duplicate('global', w))}
+          {@render opt(`To ${projectName ?? 'a project (open the canvas from one)'}`, '2', () => duplicate('project', w), !project)}
+          <span class="muted">A copy at version 1, as &lt;id&gt;-copy</span>
         </div>
       {:else if mode?.kind === 'import'}
         <div class="menu lib" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Import a team">
@@ -684,8 +690,9 @@
           <label class="col"><span>prompt</span><textarea class="field" rows="4" value={role.prompt} onchange={(e) => saveRole({ prompt: e.currentTarget.value })}></textarea></label>
           <div class="row">
             {#if !node.is_lead}<button class="btn ghost" onclick={() => edit(C.setLead(team, node.id))}>Make lead</button>{/if}
-            <button class="btn ghost" onclick={() => (mode = { kind: 'connect', from: node.id })}>Connect <Kbd keys="c" /></button>
-            <button class="btn ghost" onclick={removeSelection}>Delete <Kbd keys="x" /></button>
+            <button type="button" class="btn ghost" use:tooltip={{ label: 'Connect', key: 'c' }} onclick={() => (mode = { kind: 'connect', from: node.id })}>Connect</button>
+            <button type="button" class="btn ghost" use:tooltip={{ label: 'Delete', key: 'x' }} onclick={removeSelection}>Delete</button>
+            <button type="button" class="btn ghost" use:tooltip={{ label: 'Duplicate', key: '⇧D' }} onclick={() => (mode = { kind: 'dup', what: { kind: 'role', role } })}>Duplicate</button>
           </div>
           {#if team.edges.some((e) => e.from === node.id || e.to === node.id)}
             <div class="edges-list">
@@ -848,18 +855,14 @@
     fill: none;
     stroke: var(--color-focus);
   }
-  .hints {
-    position: absolute;
-    left: 200px;
-    bottom: var(--space-lg);
+  .mh {
     display: flex;
-    gap: var(--space-md);
-    padding: var(--space-xs) var(--space-sm);
-    background: var(--color-surface-raised);
-    border: var(--border-width-default) solid var(--color-border-subtle);
-    border-radius: var(--radius-sm);
-    color: var(--color-text-secondary);
-    font: var(--text-caption);
+    align-items: center;
+    gap: var(--space-sm);
+  }
+  .key {
+    margin-left: auto;
+    padding-left: var(--space-md);
   }
   .menu {
     position: absolute;

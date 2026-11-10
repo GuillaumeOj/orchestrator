@@ -28,7 +28,7 @@ const inbox = await import('../src/lib/inbox.js');
 const policy = await import('../src/lib/policy.js');
 const pacing = await import('../src/lib/pacing.js');
 const { default: ChatColumn } = await import('../src/components/chat/ChatColumn.svelte');
-const { default: SettingsPane } = await import('../src/panes/SettingsPane.svelte');
+const { default: SettingsWindow } = await import('../src/components/SettingsWindow.svelte');
 const { default: ReportPane } = await import('../src/panes/ReportPane.svelte');
 
 const MIN = 60000;
@@ -301,7 +301,7 @@ describe('lines in the column', () => {
       withUndo('Tell the agent'),
       { verb: 'nudged', agent: 'back-1', what: '"rebase"', by_detail: 'idle 12 min' },
     ]);
-    expect(text(art(c, 'c-1').querySelector('.chip'))).toBe('Undo u');
+    expect(text(art(c, 'c-1').querySelector('.chip'))).toBe('Undo');
     expect(art(c, 'c-2').querySelector('.chip')).toBeNull();
     expect(art(c, 'c-1').getAttribute('aria-label')).toMatch(/Undo available\.$/);
   });
@@ -402,7 +402,7 @@ describe('lines in the column', () => {
     const c = await run([
       withUndo('Correct the answer', { verb: 'answered', agent: 'front-1', what: 'API pagination' }),
     ]);
-    expect(text(art(c, 'c-1').querySelector('.chip'))).toBe('Correct u');
+    expect(text(art(c, 'c-1').querySelector('.chip'))).toBe('Correct');
     await fireEvent.click(art(c, 'c-1').querySelector('.chip'));
     await settle();
     const box = art(c, 'c-1').querySelector('textarea');
@@ -507,9 +507,9 @@ describe('the rule proposal card', () => {
     expect(text(el.querySelector('[data-block="rule"]'))).toContain('shop-api · role front');
     expect(text(el.querySelector('[data-link-chat]'))).toBe('Mon 14:02 · front-1 · allowed ↗');
     expect([...el.querySelectorAll('.actions button')].map((b) => b.textContent.replace(/\s+/g, ' ').trim())).toEqual([
-      'Add rule a',
-      'Not now r',
-      'Edit rule ⏎',
+      'Add rule',
+      'Not now',
+      'Edit rule',
     ]);
   });
 
@@ -600,8 +600,8 @@ describe('Settings → Permissions (notes §9.2)', () => {
         { id: 'blog', name: 'blog' },
       ],
     };
-    app.panes = { p1: { type: 'settings', section: 'permissions' } };
-    const r = render(SettingsPane, { paneId: 'p1' });
+    app.window = { kind: 'settings', section: 'permissions' };
+    const r = render(SettingsWindow);
     await settle();
     return r.container;
   };
@@ -609,7 +609,7 @@ describe('Settings → Permissions (notes §9.2)', () => {
 
   it('is a section after Overwatch', async () => {
     const c = await open();
-    const nav = [...c.querySelectorAll('.sec')].map(text);
+    const nav = [...c.querySelectorAll('[role="tab"]')].map(text);
     expect(nav.indexOf('Permissions')).toBe(nav.indexOf('Overwatch') + 1);
   });
 
@@ -632,7 +632,11 @@ describe('Settings → Permissions (notes §9.2)', () => {
     await fireEvent.click(files[1].querySelector('button'));
     await settle();
     expect(calls.find(([k]) => k === 'policy_open')[1]).toMatchObject({ scope: 'project', project: 'blog' });
-    await fireEvent.click(files[0].querySelector('button'));
+    // The editor opened as a tab: the window gave way to it. Opened again:
+    expect(app.window).toBeNull();
+    app.window = { kind: 'settings', section: 'permissions' };
+    await settle();
+    await fireEvent.click(c.querySelector('[data-policy-file="global"] button'));
     await settle();
     expect(calls.filter(([k]) => k === 'policy_open').at(-1)[1]).toMatchObject({ scope: 'global', project: null });
   });

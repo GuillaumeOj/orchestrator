@@ -36,7 +36,7 @@
     position: fixed;
     inset: 0;
     z-index: 50;
-    background: var(--color-surface-chrome);
+    background: var(--color-backdrop);
     opacity: var(--opacity-backdrop);
   }
   .dlg {

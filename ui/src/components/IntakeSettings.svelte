@@ -7,7 +7,7 @@
   import { openSettings, toast } from '../lib/app.svelte.js';
   import { errorInfo, GH_SCOPE_COMMAND, integrationsRow, SOURCE_NAME } from '../lib/intake.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import Kbd from './Kbd.svelte';
+  import { tooltip } from '../lib/tooltip.js';
   import Select from './Select.svelte';
 
   let { project, name = project } = $props();
@@ -360,7 +360,12 @@
     toast('Copied. Run it in a terminal, then Preview again.');
   }
 
-  /** Called by the pane for keys typed in the section. */
+  /** Unsaved changes (the window's Discard guard). */
+  export function hasChanges() {
+    return dirty;
+  }
+
+  /** Called by the window for keys typed in the section. */
   export function onKey(e) {
     if (e.metaKey && e.key === 'Enter') {
       e.preventDefault();
@@ -386,7 +391,7 @@
 {/snippet}
 
 {#snippet integrations(code, label)}
-  <p class="box info" data-not-set-up>{label} isn't set up. <button class="link" onclick={() => openSettings('integrations', integrationsRow(code), project)}>Settings › Integrations ↗</button></p>
+  <p class="box info" data-not-set-up>{label} isn't set up. <button class="link" onclick={() => openSettings('integrations', integrationsRow(code))}>Settings › Integrations ↗</button></p>
 {/snippet}
 
 <section class="intake" aria-label="Intake">
@@ -515,7 +520,7 @@
             {#if previewErr}
               <p class="ferr" role="alert" title={previewErr.tip}><span aria-hidden="true">{'\u{F0026}'}</span> {previewErr.text}
                 {#if previewErr.fix === 'gh_scope'}<button class="link" onclick={copyCommand}>Copy command</button>
-                {:else if previewErr.fix === 'integrations'}<button class="link" onclick={() => openSettings('integrations', integrationsRow(previewErr.code), project)}>Settings › Integrations ↗</button>{/if}
+                {:else if previewErr.fix === 'integrations'}<button class="link" onclick={() => openSettings('integrations', integrationsRow(previewErr.code))}>Settings › Integrations ↗</button>{/if}
               </p>
             {:else if !preview.count}
               <p class="muted">Nothing matches this source right now. It may still be right: Ready to start will show items when they appear.</p>
@@ -534,7 +539,7 @@
 
     {#if saveError}<p class="ferr" role="alert">Could not save: {saveError}</p>{/if}
     <div class="foot">
-      <button class="btn primary" disabled={busy || !dirty || (touched && !valid)} onclick={save}>{busy ? 'Saving…' : 'Save'} <Kbd keys="⌘+⏎" /></button>
+      <button class="btn primary" disabled={busy || !dirty || (touched && !valid)} use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={save}>{busy ? 'Saving…' : 'Save'}</button>
       {#if dirty}<button class="btn ghost" onclick={revert}>Revert</button>{/if}
     </div>
     <p class="muted hint">Issues labelled <code>orch</code> or <code>orch:*</code> are never listed: they are tasks of the task backend. · Pull requests are not listed. · Intake only reads: starting an item changes nothing at the source.</p>

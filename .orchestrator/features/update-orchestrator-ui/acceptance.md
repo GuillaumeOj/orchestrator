@@ -96,14 +96,14 @@ Storyboard `06-flow-settings.png`. Test: `windows.test.js`, `floatwindow.test.js
 3. Integrations → cards, needs-you first; click a link to another section → window updates in place · *04-settings-integrations-1280*.
 4. Deep link from a banner / toast / StatusBar PR chip → lands on its section with server or PR preselected, no new tab · dn §3.2.
 5. Edit a key → input + Save + Cancel; Remove / Replace only on the row · *04-settings-integrations-editing-a-key-1280* · dn §8.
-6. Esc → closes (an open Select consumes Esc first); focus returns to the opener · dn §3.3.
+6. Esc → closes (an open Select consumes Esc first; with a section nav, Esc inside the content goes back to the nav first and a second Esc closes); focus returns to the opener · dn §3.3.
 7. Section frames present with their state variants: Claude Code (update-available, update-failed), MCP servers (server-error), Terminal & editor (no-kittyconf; only Appearance + read-only Terminal + Open kitty.conf), Pacing policy (shadow-mode; Apply form), Memory (warn; bar from the sample, threshold default 1600 MB), Overwatch (Notifications switches), Permissions, Builds (no channel Select) · dn §13.2.
 8. Autosave sections close without a prompt; sections with a Save/Revert footer ask "Discard changes?" · dn §3.3.
 9. Keyboard focus is trapped; Tab cycles inside · dn §2.4.
 
 ### F10 `project-settings` · Project settings window
 Storyboard `06-flow-project-settings.png`. Test: `windows.test.js`, `settings-sections.test.js`, `projectgeneral.test.js`.
-1. Project pane gear → window "Project settings · orch", 7 sections, General first in the nav · *04-project-settings-files-1280* · dn §3.1.
+1. Project pane gear → window "Project settings · orch", 7 sections, General listed first in the nav, opens on Task backend (default section `backend`, or the deep link's section) · *04-project-settings-files-1280* · dn §3.1.
 2. General → rename + default branch Select are the only dirty fields; footer Save + Revert; path actions, fetch, trust, worktrees, danger zone; untrusted state shows Trust in a pane · *04-project-settings-general-1280*, *…-untrusted-1280* · spec §3.1 (Name, Default branch ship).
 3. Task backend, Linear not connected → link opens Settings › Integrations, which **replaces** this window; Discard guard if dirty · *04-project-settings-task-backend-linear-not-connected-1280* · dn §3.2.
 4. Files → access Select `read` / `read & write` per row; missing-file state · *04-project-settings-files-1280*, *…-missing-file-1280* · R11.
@@ -137,7 +137,7 @@ Storyboard `06-flow-terminal.png`. Test: `shellcwd.test.js`, `terminalsettings.t
 1. New shell (leader t, dock `+` in Shells) → opens in the dock with cwd of the focused worktree; title `zsh · <cwd>` · *03-dock-shells* · dn §6.
 2. Open a file from agent output → nvim opens as a workspace **tab** (project-bound), no split · dn §4.1.
 3. Settings › Terminal & editor → Appearance: theme Select (`setTheme`) and kitty-colours switch (`setKittyTheme`); Terminal block read-only; missing kitty.conf shows its text · *04-settings-terminal-editor-1280*, *…-no-kittyconf-1280* · dn §13.4. Renderer, Editor command, Shells rows hidden (spec §3.1).
-4. Open in kitty (agent `⋯`, project `⋯`/Shell, Terminal settings) → kitty opens in that worktree · dn §1.3.1.
+4. Open in kitty (agent `⋯`, project `⋯`/Shell) → kitty opens in that worktree; Terminal settings has **Open kitty.conf** (the file in an nvim tab), as drawn · dn §1.3.1.
 5. Leader `v` `s` `h` `l` `z` do nothing (`j` `k` stay: into / out of the dock); no `pane.split.*` / `pane.zoom` in palette or menu · dn §4.1.
 
 ### F14 `migrate` · Restart and old layouts
@@ -158,7 +158,7 @@ Tick when the surface shows exactly these actions and nothing more.
 
 ### Banner
 - [ ] Only app-wide kinds: `core` ×; `claude` Set up, ×; `week` / `5h` Week planner, ×; `red` Week planner, Pause all, ×; `ac` Week planner, ×; `w:<text>` ×
-- [ ] No agent condition, no `Later`, no `Details`, no `Kbd` · *03-title-status-banner*
+- [ ] No agent condition, no `Later`, no `Kbd`; the `claude` banner keeps **Update** and **Details** when Claude Code is too old or its update failed (Claude Code update feature, merged after the design; lead) · *03-title-status-banner*
 
 ### Sidebar and icon rail
 - [ ] `+` Add project (tooltip `Add project · ⌘N`) · [ ] tree rows project / feature / agent · [ ] carets on project and feature rows only, state remembered · [ ] no `⌘B` pill
@@ -171,7 +171,7 @@ Tick when the surface shows exactly these actions and nothing more.
 - [ ] View Select (Agents n / Shells n = open dock tabs, all projects; waiting dot per dn §12.7) · [ ] project Select (Agents view) · [ ] tabs · [ ] `‹ ›` · [ ] `+` (Shells view, not when empty) · [ ] Hide dock icon · *02-dock-strip*, *03-dock-agents-filtered*, *03-dock-shells*
 
 ### Status bar
-- [ ] Information only: connection, pressure, ☾, agents/queue counts · [ ] PR build and update chips only when present · [ ] `LEADER` only while held · [ ] pressure and ☾ do not open the planner · *03-title-status-banner*
+- [ ] Information only: pressure, ☾, agents/queue counts, plus the earlier git, Claude Code chip and RAM items (kept; lead); a lost core connection shows as the core error banner, not a status item · [ ] PR build and update chips only when present · [ ] `LEADER` only while held · [ ] pressure and ☾ do not open the planner · *03-title-status-banner*
 
 ### Agent pane
 - [ ] Header: role mark, id, StatusBadge, model, ctx, session, WaitingChip (only without strip), UndeliveredChip · [ ] Interrupt + Suspend (live only) · [ ] `⋯` last

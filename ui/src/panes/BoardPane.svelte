@@ -7,17 +7,19 @@
   // Linear-backed boards mark the cards where Linear's change won (FR-503).
   import { onMount } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
-  import Kbd from '../components/Kbd.svelte';
+  import Menu from '../components/Menu.svelte';
   import Select from '../components/Select.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import TaskModelChip from '../components/TaskModelChip.svelte';
   import { app, openFeature, openUrl, queueOffHours, refresh, toast } from '../lib/app.svelte.js';
   import { ago, clock } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { backendLabel, remoteName, syncCounts } from '../lib/linear.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
   import { blockedBy, COLUMNS, editPatch, handle, moveCursor, remoteLinkLabel, shiftStatus } from '../lib/teams.js';
+  import { tooltip } from '../lib/tooltip.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -27,9 +29,9 @@
   let cur = $state({ col: 1, row: 0 });
   let form = $state(null); // { title, node, run_id, body } for n; { task, node } for a; { task, title, body } for e
   let syncing = $state(false);
-  let menu = $state(false); // the selected card's menu (Open task, Run off-hours, Assign node)
+  /** @type {any} the selected card's `⋯` Menu (space opens it, m on its Move to). */
+  let cardMenu = $state();
   let offHours = $state(null); // planner_view.off_hours (the allowance and the next window)
-  let moveMenu = $state(false); // Move to… (m): the five columns, 1–5
   let root;
 
   const tasks = $derived((v?.tasks ?? []).filter((t) => feature === 'all' || t.feature_id === feature));
@@ -95,7 +97,6 @@
   }
 
   function startEdit(t) {
-    menu = false;
     if (t) form = { kind: 'edit', task: t, title: t.title ?? '', body: t.body ?? '' };
   }
 
@@ -113,7 +114,6 @@
   }
 
   function openRemote(t) {
-    menu = false;
     if (t?.remote_url) openUrl(t.remote_url);
   }
 
@@ -121,7 +121,6 @@
   const isOff = (t) => !!t?.off_hours;
 
   function toggleOffHours(t) {
-    menu = false;
     if (!t) return;
     if (!offHoursAllowed(offHours)) return toast(OFF_DISABLED);
     queueOffHours({ task: t.id, off: !isOff(t) }, handle(t), load);
@@ -142,27 +141,34 @@
     }
   }
 
+  // The selected card's menu (04-board-pane): keys right-aligned, the ones that work on the board.
+  const menuItems = (t) => [
+    { id: 'open', label: 'Open feature', key: '⏎', disabled: !t.feature_id, reason: 'Not part of a feature', run: () => openFeature(t.feature_id) },
+    { id: 'off', label: isOff(t) ? 'Run in working hours' : 'Run off-hours', key: '⇧O', disabled: !offHoursAllowed(offHours), reason: OFF_DISABLED, run: () => toggleOffHours(t) },
+    { separator: true },
+    { id: 'edit', label: 'Edit', key: 'e', run: () => startEdit(t) },
+    ...(remoteLinkLabel(t) ? [{ id: 'remote', label: remoteLinkLabel(t), key: 'g', run: () => openRemote(t) }] : []),
+    {
+      id: 'move',
+      label: 'Move to',
+      key: 'm',
+      items: COLUMNS.map((col, i) => ({ id: col.id, label: col.label, key: String(i + 1), disabled: col.id === t.status, reason: 'Already there', run: () => update(t, { status: col.id }) })),
+    },
+    { id: 'assign', label: 'Assign', key: 'a', disabled: !runOf(t), reason: 'No active run to assign in', run: () => (form = { kind: 'assign', task: t, node: t.node ?? '' }) },
+  ];
+
   function onKey(e) {
-    if (e.target.closest('input, textarea, select, [role="combobox"]')) {
+    if (e.defaultPrevented) return; // the card's Menu trigger took the key
+    if (isTypingTarget(e.target)) {
       if (e.key === 'Enter' && e.metaKey && form?.kind === 'edit') return (saveEdit(), e.preventDefault());
       if (e.key === 'Enter' && e.metaKey && form?.kind === 'new') return (create(), e.preventDefault());
       if (e.key === 'Escape' && !e.defaultPrevented) ((form = null), root?.focus(), e.preventDefault());
       return;
     }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (moveMenu) {
-      const n = Number(e.key);
-      if (n >= 1 && n <= COLUMNS.length && selected) update(selected, { status: COLUMNS[n - 1].id });
-      if ((n >= 1 && n <= COLUMNS.length) || e.key === 'Escape') moveMenu = false;
-      return e.preventDefault();
-    }
-    if (menu && e.key === 'm') return ((menu = false), (moveMenu = true), e.preventDefault());
-    if (menu && e.key === 'Enter' && selected?.feature_id) return ((menu = false), openFeature(selected.feature_id), e.preventDefault());
-    if (menu && e.key === 'e' && selected) return (startEdit(selected), e.preventDefault());
-    if (menu && e.key === 'g' && selected?.remote_url) return (openRemote(selected), e.preventDefault());
-    if (menu && e.key === 'Escape') return ((menu = false), e.preventDefault());
     if (e.key === 'O' || (e.shiftKey && e.key === 'o')) return (toggleOffHours(selected), e.preventDefault());
-    if (e.key === ' ' && selected) return ((menu = !menu), e.preventDefault());
+    if (e.key === ' ' && selected) return (cardMenu?.show(), e.preventDefault());
+    if (e.key === 'm' && selected) return (cardMenu?.show('move'), e.preventDefault());
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     const arrows = { ArrowLeft: 'h', ArrowRight: 'l', ArrowUp: 'k', ArrowDown: 'j' };
     const key = arrows[k] ?? k;
@@ -230,11 +236,11 @@
       {#if v.last_sync_error}<span class="err">backend disconnected: {v.last_sync_error}</span>{/if}
       <span class="grow"></span>
       <div class="chips">
-        <button class="chip" class:on={feature === 'all'} onclick={() => (feature = 'all')}>all features</button>
+        <button class="chip" class:on={feature === 'all'} onclick={() => (feature = 'all')}>All features</button>
         {#each v.features as f (f.id)}<button class="chip" class:on={feature === f.id} onclick={() => (feature = f.id)}>{f.slug}</button>{/each}
       </div>
-      <button class="btn ghost" disabled={syncing} onclick={sync}>{syncing ? 'Syncing…' : 'Sync'} <Kbd keys="r" /></button>
-      <button class="btn" onclick={() => (form = { kind: 'new', title: '', node: '', run_id: v.runs[0]?.id ?? '', body: '' })}>New task <Kbd keys="n" /></button>
+      <button type="button" class="icon-btn" aria-label="Sync" disabled={syncing} use:tooltip={{ label: syncing ? 'Syncing…' : 'Sync', key: 'r' }} onclick={sync}>{'\u{F0450}'}</button>
+      <button type="button" class="btn primary" use:tooltip={{ label: 'New task', key: 'n' }} onclick={() => (form = { kind: 'new', title: '', node: '', run_id: v.runs[0]?.id ?? '', body: '' })}>New task</button>
     </header>
 
     {#if form?.kind === 'new'}
@@ -276,9 +282,15 @@
             {@const blocked = c.id === 'ready' ? blockedBy(t, v.tasks) : []}
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
             <div class="task" class:sel={cur.col === ci && cur.row === ri} onclick={() => ((cur = { col: ci, row: ri }), root?.focus())} ondblclick={() => t.feature_id && openFeature(t.feature_id)}>
-              <div class="tt"><span class="muted mono">{handle(t)}</span><span class="grow"></span><span class="muted">{remoteName(t.backend)}</span></div>
+              <div class="tt">
+                <span class="muted mono">{handle(t)}</span><span class="grow"></span><span class="muted">{remoteName(t.backend)}</span>
+                {#if cur.col === ci && cur.row === ri}
+                  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+                  <span class="cmenu" onclick={(e) => e.stopPropagation()}><Menu bind:this={cardMenu} items={menuItems(t)} label="Task menu" /></span>
+                {/if}
+              </div>
               <div class="title">{t.title} <TaskModelChip task={t} /></div>
-              {#if t.remote_won}<span class="won" title="Changed in {remoteName(t.backend)} and in the app since the last sync; the app now shows {remoteName(t.backend)}'s.">↓ changed in {remoteName(t.backend)}</span>{/if}
+              {#if t.remote_won}<span class="won" use:tooltip={`Changed in ${remoteName(t.backend)} and in the app since the last sync; the app now shows ${remoteName(t.backend)}'s.`}>↓ changed in {remoteName(t.backend)}</span>{/if}
               {#if isOff(t)}<span class="offtag">☾ Off-hours{nextOffHours(offHours) ? ` · starts ${clock(nextOffHours(offHours))}` : ''}</span>{/if}
               <div class="tt">
                 {#if t.node}<AgentChip id={t.node} role={nodeRole(t)} />{:else}<span class="muted">unassigned</span>{/if}
@@ -289,22 +301,6 @@
                 {:else}<span class="muted">—</span>{/if}
               </div>
             </div>
-            {#if menu && cur.col === ci && cur.row === ri}
-              <div class="menu" role="menu" aria-label="Task menu">
-                <button role="menuitem" onclick={() => ((menu = false), t.feature_id && openFeature(t.feature_id))}>Open task <Kbd keys="⏎" /></button>
-                <button role="menuitem" disabled={!offHoursAllowed(offHours)} title={offHoursAllowed(offHours) ? '' : OFF_DISABLED} onclick={() => toggleOffHours(t)}>{isOff(t) ? 'Run in working hours' : 'Run off-hours'} <Kbd keys="⇧+O" /></button>
-                <button role="menuitem" onclick={() => startEdit(t)}>Edit… <Kbd keys="e" /></button>
-                {#if remoteLinkLabel(t)}<button role="menuitem" onclick={() => openRemote(t)}>{remoteLinkLabel(t)} <Kbd keys="g" /></button>{/if}
-                <button role="menuitem" onclick={() => ((menu = false), (moveMenu = true))}>Move to… <Kbd keys="m" /></button>
-                <button role="menuitem" disabled={!runOf(t)} onclick={() => ((menu = false), (form = { kind: 'assign', task: t, node: t.node ?? '' }))}>Assign node… <Kbd keys="a" /></button>
-              </div>
-            {/if}
-            {#if moveMenu && cur.col === ci && cur.row === ri}
-              <div class="menu" role="menu" aria-label="Move to">
-                {#each COLUMNS as col, i (col.id)}<button role="menuitem" disabled={col.id === t.status} onclick={() => ((moveMenu = false), update(t, { status: col.id }))}>{col.label} <Kbd keys={String(i + 1)} /></button>{/each}
-              </div>
-              {#if !offHoursAllowed(offHours)}<p class="muted hint">{OFF_DISABLED}</p>{/if}
-            {/if}
           {:else}
             <p class="muted hint">{c.id === 'ready' ? 'Tasks whose dependencies are done start by themselves.' : 'Nothing here.'}</p>
           {/each}
@@ -312,7 +308,6 @@
       {/each}
     </div>
     <footer class="keys">
-      <span><Kbd keys="h/l" /> column</span><span><Kbd keys="j/k" /> card</span><span><Kbd keys="⇧+h/l" /> move card</span><span><Kbd keys="⏎" /> open</span><span><Kbd keys="a" /> assign</span><span><Kbd keys="e" /> edit</span>{#if selected?.remote_url}<span><Kbd keys="g" /> open</span>{/if}<span><Kbd keys="n" /> new</span><span><Kbd keys="r" /> sync</span><span><Kbd keys="space" /> menu</span><span><Kbd keys="⇧+O" /> off-hours</span>
       {#if selected}<span class="grow"></span><span class="muted">{handle(selected)} · updated {ago(selected.updated_at_ms)}</span>{/if}
     </footer>
   {:else}
@@ -329,32 +324,6 @@
   .offtag {
     color: var(--color-status-done);
     font: var(--text-caption);
-  }
-  .menu {
-    display: flex;
-    flex-direction: column;
-    padding: var(--space-xs);
-    background: var(--color-surface-raised);
-    border: var(--border-width-default) solid var(--color-border-strong);
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow-overlay);
-  }
-  .menu button {
-    display: flex;
-    justify-content: space-between;
-    gap: var(--space-md);
-    padding: var(--space-xs) var(--space-sm);
-    background: none;
-    border: 0;
-    border-radius: var(--radius-sm);
-    color: var(--color-text-primary);
-    font: var(--text-label);
-    text-align: left;
-    cursor: pointer;
-  }
-  .menu button:disabled {
-    color: var(--color-text-disabled);
-    cursor: default;
   }
   .board {
     flex: 1;
@@ -455,6 +424,9 @@
   .blocked {
     color: var(--color-status-queued);
     font: var(--text-caption);
+  }
+  .cmenu {
+    display: contents;
   }
   .hint {
     padding: 0 var(--space-sm);

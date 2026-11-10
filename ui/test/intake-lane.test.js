@@ -25,7 +25,7 @@ const A = await import('../src/lib/app.svelte.js');
 const { app } = A;
 const L = await import('../src/lib/layout.js');
 const I = await import('../src/lib/intake.js');
-const { lanes, readyLane, stops, hints } = await import('../src/lib/mission.js');
+const { lanes, readyLane, stops } = await import('../src/lib/mission.js');
 const { intakeUi } = await import('../src/lib/intake.svelte.js');
 const readyOf = (...a) => lanes(...a).lanes.find((l) => l.id === 'ready');
 const { default: MissionPane } = await import('../src/panes/MissionPane.svelte');
@@ -392,14 +392,6 @@ describe('the lane model (lib/mission.js readyLane, F9)', () => {
     expect(lanes(now, ['infra'], NOW, { projects }).lanes.some((l) => l.id === 'ready')).toBe(false);
   });
 
-  it('gives each Ready row the keys of the notes in the hint row', () => {
-    const r = readyOf({ intake: intake([item('it_1', 'shop-api')], [source('shop-api', { count: 1 })]) }, null, NOW, {
-      projects,
-    }).rows[0];
-    expect(hints(r).map(([k]) => k)).toEqual(['j k', '⏎', 't', 'a', 'space', 'o', 'x', 'f']);
-    expect(hints({ ...r, hidden: true }).map(([k]) => k)).toEqual(['j k', 'x', 'space', 'o', 'f']);
-  });
-
   it('keeps `readyLane` empty for a core without intake', () => {
     expect(readyLane(undefined).rows).toEqual([]);
   });
@@ -448,8 +440,7 @@ describe('Mission control: the Ready to start lane', () => {
     };
     Object.assign(app.now.intake, extra);
     app.selection = null;
-    app.mission = { projects: null };
-    app.missionFilterOpen = false;
+    app.workspace = { project: 'all' };
     app.overlay = null;
     app.toasts = [];
     app.panes = { mc: { type: 'mission', title: 'Mission control' } };
@@ -491,7 +482,9 @@ describe('Mission control: the Ready to start lane', () => {
     // A Linear item whose project has no team: the team button is disabled with its reason.
     const team = row(c, 'ready:it_3').querySelector('button[aria-label^="Start team run"]');
     expect(team.disabled).toBe(true);
-    expect(team.title).toBe('blog has no team yet');
+    await fireEvent.pointerEnter(team); // the reason is in its tooltip
+    await new Promise((r) => setTimeout(r, 550));
+    expect(document.getElementById('orch-tooltip').textContent).toBe('Start team runblog has no team yet');
     // The hidden one is not rendered; the no-source project has its line.
     expect(row(c, 'ready:it_4')).toBeNull();
     expect(text(row(c, 'intake:nosource'))).toContain('infra has no intake source');
@@ -585,7 +578,7 @@ describe('Mission control: the Ready to start lane', () => {
     expect(app.toasts.at(-1).text).toBe('#2 is back in Ready to start.');
   });
 
-  it('⇧R refreshes each shown project with a source; the filter is respected', async () => {
+  it('⇧R refreshes each shown project with a source; the context is respected', async () => {
     const { container: c } = render(MissionPane, { paneId: 'mc' });
     await settle();
     key(c.querySelector('.mc'), 'R', { shiftKey: true });
@@ -595,7 +588,7 @@ describe('Mission control: the Ready to start lane', () => {
       ['intake_refresh', { project: 'blog' }],
     ]);
     calls.length = 0;
-    app.mission = { projects: ['blog'] };
+    app.workspace = { project: 'blog' };
     await settle();
     key(c.querySelector('.mc'), 'R', { shiftKey: true });
     await settle();
@@ -665,11 +658,7 @@ describe('Mission control: the Ready to start lane', () => {
     );
     click(row(c, 'intake:error:shop-api').querySelector('.link'));
     await settle();
-    expect(
-      Object.values(app.panes).some(
-        (p) => p.type === 'project-settings' && p.projectId === 'shop-api' && p.section === 'intake',
-      ),
-    ).toBe(true);
+    expect(app.window).toMatchObject({ kind: 'project-settings', projectId: 'shop-api', section: 'intake' });
   });
 
   it('a collapsed lane keeps the failure visible in its header', async () => {

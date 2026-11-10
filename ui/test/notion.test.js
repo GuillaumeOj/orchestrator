@@ -53,17 +53,28 @@ beforeEach(() => {
   replies.feature_doc = '# Spec';
 });
 
+/** The feature header's `⋯` Menu items (R9), opened afresh; the menu is on the body. */
+async function menuItems(container) {
+  const trigger = container.querySelector('.head-acts button[aria-label="More actions"]');
+  if (trigger.getAttribute('aria-expanded') === 'true') await fireEvent.click(trigger);
+  await fireEvent.click(trigger);
+  const rows = [...document.body.querySelectorAll('[role="menu"] [role^="menuitem"]')];
+  await fireEvent.keyDown(document.activeElement, { key: 'Escape' });
+  return rows;
+}
+const item = (rows, label) => rows.find((r) => r.textContent.includes(label));
+
 describe('Notion publish', () => {
   it('not configured: the button is disabled and says what is missing', async () => {
     replies.notion_status = { page_url: null, published_at_ms: null, comments_seen: 0, error: null };
     replies.project_settings = settings(null);
     replies.integrations_view = notionInt(true);
-    const { container, getByText } = render(FeaturePane, { paneId: 'f1' });
-    await waitFor(() => getByText('Publish to Notion', { exact: false }));
-    const b = [...container.querySelectorAll('button')].find((x) => x.textContent.includes('Publish to Notion'));
-    expect(b.disabled).toBe(true);
+    const { container } = render(FeaturePane, { paneId: 'f1' });
+    await waitFor(() => expect(container.textContent).toContain("Set a Notion parent page in shop-api's settings"));
+    const b = item(await menuItems(container), 'Publish to Notion');
+    expect(b.getAttribute('aria-disabled')).toBe('true');
     expect(container.textContent).toContain(
-      "Set a Notion parent page in shop-api's settings, and connect Notion (⌘+,).",
+      "Set a Notion parent page in shop-api's settings, and connect Notion in Settings › Integrations.",
     );
     await fireEvent.keyDown(container.querySelector('.feature'), { key: 'N' });
     expect(calls.some(([c]) => c === 'notion_publish')).toBe(false);
@@ -80,12 +91,16 @@ describe('Notion publish', () => {
       });
     replies.open_url = null;
     const { container, getByText } = render(FeaturePane, { paneId: 'f1' });
-    await waitFor(() => getByText('Publish to Notion', { exact: false }));
+    await waitFor(async () =>
+      expect(item(await menuItems(container), 'Publish to Notion').getAttribute('aria-disabled')).toBeNull(),
+    );
     await fireEvent.keyDown(container.querySelector('.feature'), { key: 'N' });
     await waitFor(() => getByText('◷ Publishing 4 docs…'));
     done();
-    await waitFor(() => getByText('Refresh in Notion', { exact: false }));
-    expect(container.textContent).toContain('Open in Notion ↗');
+    await waitFor(() => getByText(/Published to Notion/));
+    const rows = await menuItems(container);
+    expect(item(rows, 'Refresh in Notion')).toBeTruthy();
+    expect(item(rows, 'Open in Notion').getAttribute('aria-disabled')).toBeNull();
     const t = app.toasts.at(-1);
     expect(t.text).toBe('Published 4 docs to Notion');
     t.action.run();
@@ -101,7 +116,9 @@ describe('Notion publish', () => {
         'Notion says the integration has no access to the parent page. Share the page with the integration in Notion.',
       );
     const { container, getByText } = render(FeaturePane, { paneId: 'f1' });
-    await waitFor(() => getByText('Publish to Notion', { exact: false }));
+    await waitFor(async () =>
+      expect(item(await menuItems(container), 'Publish to Notion').getAttribute('aria-disabled')).toBeNull(),
+    );
     await fireEvent.keyDown(container.querySelector('.feature'), { key: 'N' });
     await waitFor(() =>
       getByText(

@@ -25,7 +25,7 @@ const { default: SetupPane } = await import('../src/panes/SetupPane.svelte');
 const { default: PlanEditor } = await import('../src/components/PlanEditor.svelte');
 const { default: StatusBar } = await import('../src/components/StatusBar.svelte');
 const { default: Banner } = await import('../src/components/Banner.svelte');
-const { default: PlannerPane } = await import('../src/panes/PlannerPane.svelte');
+const { default: PlannerWindow } = await import('../src/components/PlannerWindow.svelte');
 
 function plannerView(over = {}) {
   const now = Date.now();
@@ -194,12 +194,16 @@ describe('project pane', () => {
     expect(t).toContain('1 other worktree outside the sibling folder (yours, not managed by the app)');
     expect(t).toContain('orch/ branches: orch/solo/old (merged)');
     expect(t).not.toContain('claude/mine (');
-    expect(getAllByText('Remove')).toHaveLength(2); // never offered for the user's own worktree
+    const bins = () => [...container.querySelectorAll('button[aria-label="Remove worktree…"]')];
+    expect(bins()).toHaveLength(2); // never offered for the user's own worktree
+    // R3: a bin icon in the danger colour, beside the ± Diff icon.
+    expect(bins().every((b) => b.classList.contains('icon-btn') && b.classList.contains('danger'))).toBe(true);
+    expect(container.querySelectorAll('button[aria-label="Diff"]')).toHaveLength(2);
     // Removing the unmerged worktree asks to discard it.
-    await fireEvent.click(getAllByText('Remove')[0]);
+    await fireEvent.click(bins()[0]);
     expect(app.overlay.text).toMatch(/^Discard unmerged work in orch\/solo\/back-1/);
     app.overlay = null;
-    await fireEvent.click(getAllByText('Remove')[1]);
+    await fireEvent.click(bins()[1]);
     expect(app.overlay.text).toBe('Remove worktree orch/solo/old?');
     app.overlay.onYes();
     await waitFor(() =>
@@ -207,7 +211,11 @@ describe('project pane', () => {
         true,
       ),
     );
-    expect(getByText('Trust in a pane', { exact: false })).toBeTruthy();
+    // Untrusted: Trust in a pane is in the header's `⋯` (R4).
+    await fireEvent.click(container.querySelector('.head-acts button[aria-label="More actions"]'));
+    expect(
+      [...document.body.querySelectorAll('[role="menuitem"]')].map((r) => r.querySelector('.lab').textContent),
+    ).toContain('Trust in a pane');
   });
 
   it('J11: archive by default, unmerged worktrees kept unless ticked', async () => {
@@ -320,7 +328,7 @@ describe('first run (J0)', () => {
 describe('week planner', () => {
   it('lists the actions of this start and of earlier ones (same ids), counts the shadow week', async () => {
     replies.planner_view = plannerView();
-    const { container } = render(PlannerPane);
+    const { container } = render(PlannerWindow);
     await waitFor(() => expect(text(container)).toContain('green → amber'));
     const t = text(container);
     expect(t).toContain('pause all · why');
@@ -331,7 +339,7 @@ describe('week planner', () => {
 
   it('draws the week usage: legend and the now tag', async () => {
     replies.planner_view = plannerView();
-    const { container } = render(PlannerPane);
+    const { container } = render(PlannerWindow);
     await waitFor(() => expect(text(container)).toContain('Week used'));
     const t = text(container);
     for (const l of ['Week used', 'Agents', 'Plan', 'Forecast', 'W/ governor']) expect(t).toContain(l);
@@ -346,7 +354,7 @@ describe('week planner', () => {
 
   it('offers to enforce once the shadow week is over, and to go back', async () => {
     replies.planner_view = plannerView({ first_run_ms: Date.now() - 8 * 86400000 });
-    const { container, getByText } = render(PlannerPane);
+    const { container, getByText } = render(PlannerWindow);
     await waitFor(() => expect(text(container)).toContain('Shadow week done · Enforce…'));
     await fireEvent.click(getByText('Shadow week done · Enforce…'));
     expect(app.overlay.text).toBe('Enforce the Governor?');
@@ -355,7 +363,7 @@ describe('week planner', () => {
     await waitFor(() => expect(calls.some(([c, a]) => c === 'governor_enforce' && a.enforce === true)).toBe(true));
     cleanup();
     replies.planner_view = plannerView({ shadow: false });
-    const r = render(PlannerPane);
+    const r = render(PlannerWindow);
     await waitFor(() => expect(text(r.container)).toContain('Enforced'));
   });
 });

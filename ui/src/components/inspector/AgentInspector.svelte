@@ -1,13 +1,14 @@
 <script>
-  // Inspector · agent (notes §5.1): status, waiting-on, details, actions.
-  import { agent, agentAction, app, confirm, openDiff, openInKitty, openSession, openShell, projects } from '../../lib/app.svelte.js';
+  // Inspector · agent (notes §5.1, design-notes §12.5): status, waiting-on, details,
+  // Open session and the same `⋯` Menu as the pane header (no Resume / Interrupt / Suspend).
+  import { agent, app, openSession, projects } from '../../lib/app.svelte.js';
   import { clock, mb, shortPath, tokens } from '../../lib/format.js';
   import { originLine } from '../../lib/intake.js';
   import { phaseName } from '../../lib/mission.js';
   import { attention, governorReason, runAttention, statusOf } from '../../lib/now.svelte.js';
   import { cacheState, sessionPp } from '../../lib/status.js';
   import AgentChip from '../AgentChip.svelte';
-  import Kbd from '../Kbd.svelte';
+  import AgentMenu from '../agent/AgentMenu.svelte';
   import OriginChip from '../mission/OriginChip.svelte';
   import StatusBadge from '../StatusBadge.svelte';
   import WaitingChip from '../WaitingChip.svelte';
@@ -44,18 +45,8 @@
     {#if a.git}<dt>Changes</dt><dd>±{a.git.dirty} · ↑{a.git.ahead} ↓{a.git.behind}</dd>{/if}
   </dl>
   <div class="acts">
-    <button class="btn" onclick={() => openSession(a.id)}>Open session <Kbd keys="⏎" /></button>
-    {#if a.live}
-      <button class="btn" onclick={() => agentAction(a.id, 'interrupt')}>Interrupt <Kbd keys="esc" /></button>
-      <button class="btn" onclick={() => agentAction(a.id, 'suspend')}>Suspend <Kbd keys="s" /></button>
-    {:else}
-      <button class="btn" onclick={() => agentAction(a.id, 'resume')}>Resume <Kbd keys="r" /></button>
-    {/if}
-    <button class="btn danger" onclick={() => confirm(`Kill ${a.id}?`, 'SIGTERM to its group and to leftover processes in its worktree, SIGKILL after 5 s.', () => agentAction(a.id, 'kill'), 'Kill')}>Kill <Kbd keys="⇧+K" /></button>
-    <button class="btn danger" onclick={() => (app.overlay = { kind: 'delete-agent', agentId: a.id })}>Delete…</button>
-    <button class="btn ghost" onclick={() => openShell({ agentId: a.id })}>Shell here <Kbd keys="⌘+; t" /></button>
-    <button class="btn ghost" onclick={() => openDiff(a.project_id, a.worktree, a.branch)}>Diff</button>
-    <button class="btn ghost" onclick={() => openInKitty(a.worktree)}>Open in kitty</button>
+    <button type="button" class="btn" onclick={() => openSession(a.id)}>Open session</button>
+    <AgentMenu agent={a} />
   </div>
 {:else}
   <p class="muted">{id} no longer exists.</p>
@@ -90,6 +81,7 @@
   }
   .acts {
     display: flex;
+    align-items: center;
     flex-wrap: wrap;
     gap: var(--space-sm);
   }

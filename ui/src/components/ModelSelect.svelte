@@ -31,14 +31,15 @@
   }
 </script>
 
+<!-- A refused save remounts both: the Select and the custom field show the saved value again. -->
 {#key rev}
   <label><span>{label}</span>
     <Select value={option} {options} noun="model" onchange={pick} />
   </label>
+  {#if option === 'custom'}
+    <input class="field mono custom" aria-label="Custom {label}" placeholder="claude-…" value={modelOption(value) === 'custom' ? value : ''} onchange={(e) => save(modelValue('custom', e.currentTarget.value))} />
+  {/if}
 {/key}
-{#if option === 'custom'}
-  <input class="field mono custom" aria-label="Custom {label}" placeholder="claude-…" value={modelOption(value) === 'custom' ? value : ''} onchange={(e) => save(modelValue('custom', e.currentTarget.value))} />
-{/if}
 
 <style>
   /* The inspector's label grid (the parent's scoped styles do not reach in here). */

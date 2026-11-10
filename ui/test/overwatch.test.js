@@ -29,7 +29,7 @@ const ow = await import('../src/lib/overwatch.js');
 const { classify } = await import('../src/lib/keyboard.js');
 const { thread } = await import('../src/lib/chat.js');
 const { default: ChatColumn } = await import('../src/components/chat/ChatColumn.svelte');
-const { default: SettingsPane } = await import('../src/panes/SettingsPane.svelte');
+const { default: SettingsWindow } = await import('../src/components/SettingsWindow.svelte');
 
 const MIN = 60000;
 const DAY = '2026-11-02';
@@ -130,7 +130,8 @@ describe('the status in the header (notes §1)', () => {
       setNow([], [], o);
       const r = render(ChatColumn);
       const el = status(r.container);
-      const t = el.getAttribute('title');
+      // A span keeps its native title; the button has the same text as its accessible name (and tooltip).
+      const t = el.getAttribute('title') ?? el.getAttribute('aria-label');
       cleanup();
       return t;
     };
@@ -234,7 +235,7 @@ describe('the input (notes §2)', () => {
       const r = render(ChatColumn);
       const f = field(r.container);
       expect(f, s).toBeTruthy();
-      expect(f.getAttribute('placeholder')).toBe('Ask the Overwatch…');
+      expect(f.getAttribute('placeholder')).toBe('Message the Overwatch · ⏎ to send');
       expect(f.disabled).toBe(false);
       r.unmount();
     }
@@ -259,7 +260,7 @@ describe('the input (notes §2)', () => {
     setNow([], [], OW('off'));
     const { container: c } = render(ChatColumn);
     await fireEvent.click(c.querySelector('.hints .link'));
-    expect(Object.values(app.panes).find((p) => p.type === 'settings')?.section).toBe('overwatch');
+    expect(app.window).toMatchObject({ kind: 'settings', section: 'overwatch' });
   });
 
   it('⏎ sends and clears; ⇧⏎ adds a line; empty or blank sends nothing', async () => {
@@ -360,7 +361,7 @@ describe('the input (notes §2)', () => {
     await fireEvent.click(c.querySelector('[data-day-row]'));
     await settle();
     expect(field(c)).toBeNull();
-    expect(text(c.querySelector('footer.foot'))).toContain('Read-only · Back to today');
+    expect(text(c.querySelector('footer.foot'))).toBe('Read-only');
   });
 });
 
@@ -409,7 +410,7 @@ describe('/ and ⌘L (notes §2.3, §11)', () => {
   it('/ opens the search from the thread and the header button does too; in the input it types', async () => {
     setNow();
     const { container: c } = render(ChatColumn);
-    expect(c.querySelector('.iconbtn').getAttribute('aria-label')).toBe('Search decisions · /');
+    expect(c.querySelector('.iconbtn').getAttribute('aria-label')).toBe('Search decisions');
     await fireEvent.keyDown(feed(c), { key: '/' });
     await settle();
     expect(document.activeElement).toBe(c.querySelector('.search input'));
@@ -945,8 +946,8 @@ describe('Settings → Overwatch (notes §9.1)', () => {
   const open = async () => {
     replies.overwatch_settings = { ...SETTINGS };
     replies.set_overwatch_settings = ({ settings }) => ({ ...SETTINGS, ...settings });
-    app.panes = { p1: { type: 'settings', section: 'overwatch' } };
-    const r = render(SettingsPane, { paneId: 'p1' });
+    app.window = { kind: 'settings', section: 'overwatch' };
+    const r = render(SettingsWindow);
     await settle();
     return r.container;
   };
@@ -954,7 +955,7 @@ describe('Settings → Overwatch (notes §9.1)', () => {
 
   it('is a section after Integrations, with the six rows and their defaults', async () => {
     const c = await open();
-    const nav = [...c.querySelectorAll('.sec')].map(text);
+    const nav = [...c.querySelectorAll('[role="tab"]')].map(text);
     expect(nav.indexOf('Overwatch')).toBe(nav.indexOf('Integrations') + 1);
     expect(row(c, 'enabled').querySelector('input').checked).toBe(true);
     expect(picked(row(c, 'model'))).toBe('sonnet');
@@ -1179,8 +1180,8 @@ describe('review fixes (ui review of T-226)', () => {
       rule_threshold: 3,
     };
     replies.settings_get = ({ key }) => (key === 'permissions.hold_secs' ? 120 : null);
-    app.panes = { p1: { type: 'settings', section: 'overwatch' } };
-    const { container: c } = render(SettingsPane, { paneId: 'p1' });
+    app.window = { kind: 'settings', section: 'overwatch' };
+    const { container: c } = render(SettingsWindow);
     await settle();
     const input = /** @type {HTMLInputElement} */ (c.querySelector('[data-row="permission_secs"] input'));
     await fireEvent.change(input, { target: { value: '120' } });
@@ -1193,7 +1194,7 @@ describe('review fixes (ui review of T-226)', () => {
 
   it('Esc from a watched session goes back to where it was opened, not to Mission control', async () => {
     const { openOverwatch, leaveWatch } = await import('../src/lib/app.svelte.js');
-    app.panes = { chat1: { type: 'settings' } };
+    app.panes = { chat1: { type: 'report', title: 'Weekly report' } };
     app.focused = 'chat1';
     setNow([], [], OW('working', { events: 1 }));
     openOverwatch();

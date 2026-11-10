@@ -17,8 +17,8 @@
    *             reason?: string, checked?: boolean, items?: any[], separator?: boolean, run?: () => void }} MenuItem
    */
   /** @type {{ items?: MenuItem[], onselect?: (item: MenuItem) => void, label?: string, disabled?: boolean,
-   *           trigger?: import('svelte').Snippet<[Record<string, any>]> }} */
-  let { items = [], onselect, label = 'More actions', disabled = false, trigger } = $props();
+   *           tabindex?: number, trigger?: import('svelte').Snippet<[Record<string, any>]> }} */
+  let { items = [], onselect, label = 'More actions', disabled = false, tabindex = undefined, trigger } = $props();
 
   const uid = $props.id();
   const menuId = `${uid}-menu`;
@@ -180,6 +180,12 @@
         return;
       default:
         if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+          // A row's own key (right-aligned) runs it here: the key works where it is shown.
+          const k = list.findIndex((x, j) => usable(list, j) && keyMatches(x.key, e));
+          if (k >= 0) {
+            activate(level, k);
+            break;
+          }
           const i = find(e.key, cur);
           if (i >= 0) set(i);
           break;
@@ -204,6 +210,20 @@
   }
 
   const toggle = () => (open ? close(true) : openMenu());
+
+  /** Whether a key press is a row's single-key `key` (`e`, `1`, `⇧O`). */
+  function keyMatches(key, e) {
+    if (!key) return false;
+    if (key.length === 1) return key === e.key;
+    return key.length === 2 && key[0] === '⇧' && e.shiftKey && key[1].toLowerCase() === e.key.toLowerCase();
+  }
+
+  /** Opens the menu from outside (a key on the pane), on the submenu of the row `subId` when given. */
+  export async function show(subId = null) {
+    await openMenu();
+    const i = subId ? items.findIndex((x) => x.id === subId) : -1;
+    if (i >= 0) await openSub(i);
+  }
   const triggerAttrs = $derived({
     'aria-haspopup': 'menu',
     'aria-expanded': open,
@@ -249,7 +269,7 @@
   {#if trigger}
     {@render trigger(triggerAttrs)}
   {:else}
-    <button type="button" class="icon-btn" class:pressed={open} aria-label={label} {disabled} use:tooltip={label} {...triggerAttrs}>{'\u{F01D8}'}</button>
+    <button type="button" class="icon-btn" class:pressed={open} aria-label={label} {disabled} {tabindex} use:tooltip={label} {...triggerAttrs}>{'\u{F01D8}'}</button>
   {/if}
 </span>
 
@@ -297,7 +317,8 @@
   .ck {
     flex: none;
     width: var(--size-icon-sm);
-    color: var(--color-accent-default);
+    /* Quieter than the accent (02-select, 02-menu). */
+    color: var(--color-text-secondary);
     font: var(--text-icon);
   }
   .lab {

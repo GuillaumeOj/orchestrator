@@ -8,8 +8,8 @@
   import { onMount, untrack } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
   import DesignSection from '../components/DesignSection.svelte';
-  import Kbd from '../components/Kbd.svelte';
   import Markdown from '../components/Markdown.svelte';
+  import Menu from '../components/Menu.svelte';
   import PrLine from '../components/PrLine.svelte';
   import Select from '../components/Select.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
@@ -19,9 +19,11 @@
   import { isDesign } from '../lib/ecosystem.js';
   import { ago, dayHm } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { backendLabel, remoteName } from '../lib/linear.js';
   import { onTopics, runAttention, runPhase, statusOf } from '../lib/now.svelte.js';
-  import { handle, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
+  import { docRepoPath, handle, runFinished, runStateColor, runStateLabel, TL_FILTERS, timelineFilter, timelineText } from '../lib/teams.js';
+  import { tooltip } from '../lib/tooltip.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -39,6 +41,7 @@
   });
   let to = $state(null); // a node id; null = the lead (whatever its id)
   let msg = $state('');
+  let sending = $state(false); // a message on its way: a second click or ⏎ does not send it twice
   let root;
   let msgBox = $state(null);
   let design = $state(null);
@@ -104,7 +107,7 @@
     notionReady =
       page && conn?.has_secret
         ? { ok: true }
-        : { ok: false, why: `Set a Notion parent page in ${name}'s settings, and connect Notion (⌘+,).` };
+        : { ok: false, why: `Set a Notion parent page in ${name}'s settings, and connect Notion in Settings › Integrations.` };
   }
 
 
@@ -178,7 +181,8 @@
 
   async function send() {
     const body = msg.trim();
-    if (!body || !run || !to) return;
+    if (!body || !run || !to || sending) return;
+    sending = true;
     try {
       await invoke('message_send', { run: run.id, to, body });
       msg = '';
@@ -186,17 +190,43 @@
       await load();
     } catch (e) {
       toast(errText(e), { kind: 'error' });
+    } finally {
+      sending = false;
     }
   }
 
+  // The shown doc's repo-relative path (R10), null when it is not in the repo.
+  const docPath = $derived(v ? docRepoPath(v.feature, doc.name) : null);
+
+  // The header's `⋯` (R9): Board, Canvas, Publish / Refresh in Notion, Open in Notion; keys that work in the pane.
+  const menu = $derived.by(() => {
+    if (!v) return [];
+    const nr = notionReady;
+    return [
+      { id: 'board', icon: '\u{F0570}', label: 'Board', key: 'b', run: () => openBoard(v.feature.project_id) },
+      { id: 'canvas', icon: '\u{F1546}', label: 'Canvas', key: 'c', disabled: !run, reason: 'No team run yet', run: () => openCanvas(run.team_id, v.feature.project_id) },
+      { separator: true },
+      {
+        id: 'notion',
+        icon: '\u{F0552}',
+        label: notion?.page_url ? 'Refresh in Notion' : 'Publish to Notion',
+        key: 'N',
+        disabled: publishing || !nr?.ok,
+        reason: publishing ? 'Publishing…' : (nr?.why ?? 'Checking Notion…'),
+        run: publish,
+      },
+      { id: 'notion-open', icon: '\u{F03CC}', label: 'Open in Notion', disabled: !notion?.page_url, reason: 'Not published yet', run: () => openUrl(notion.page_url) },
+    ];
+  });
+
   function openDoc() {
     const wt = v?.feature?.integration_worktree;
-    if (!wt || !doc.name) return;
-    openEditor(`${wt}/.orchestrator/features/${v.feature.slug}/${doc.name}`, null, { projectId: v.feature.project_id });
+    if (!wt || !docPath) return;
+    openEditor(`${wt}/${docPath}`, null, { projectId: v.feature.project_id });
   }
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select, [role="combobox"]')) {
+    if (isTypingTarget(e.target)) {
       if (e.key === 'Escape' && !e.defaultPrevented) (root?.focus(), e.preventDefault());
       return;
     }
@@ -240,38 +270,43 @@
   {:else}
     <header class="fh">
       <span class="slug">{v.feature.slug}</span>
-      {#if phase}<span class="pill" style:color={runStateColor(phase)} style:border-color={runStateColor(phase)} title={rr ? `since ${ago(rr.phase_since_ms)}` : null}>{runStateLabel(phase)}</span>{/if}
+      {#if phase}<span class="pill" style:color={runStateColor(phase)} style:border-color={runStateColor(phase)} use:tooltip={rr ? `since ${ago(rr.phase_since_ms)}` : null}>{runStateLabel(phase)}</span>{/if}
       <span class="muted">{v.team?.name ?? ''}{v.team ? ` v${v.team.version}` : ''} · {'\u{E725}'} {v.feature.integration_worktree ? `orch/${v.feature.slug}/integration` : '—'}{run ? ` · started ${ago(run.started_at_ms)}` : ''}</span>
       <span class="grow"></span>
       {#if publishing}
         <span class="muted">◷ Publishing {v.docs.length} doc{v.docs.length === 1 ? '' : 's'}…</span>
-      {:else if notionReady}
-        <button class="btn ghost" disabled={!notionReady.ok} title={notionReady.ok ? '' : notionReady.why} onclick={publish}>{notion?.page_url ? 'Refresh in Notion' : 'Publish to Notion'} <Kbd keys="N" /></button>
       {/if}
-      <button class="btn ghost" onclick={() => openBoard(v.feature.project_id)}>Board <Kbd keys="b" /></button>
-      {#if run}<button class="btn ghost" onclick={() => openCanvas(run.team_id, v.feature.project_id)}>Canvas <Kbd keys="c" /></button>{/if}
-      {#if run && !runFinished(run.status)}
-        <button class="btn" onclick={() => act(paused ? 'resume' : 'pause')}>{paused ? 'Resume team' : 'Pause team'} <Kbd keys="p" /></button>
-        <button class="btn danger" onclick={stop}>Stop</button>
-      {/if}
-      <button class="btn danger" onclick={() => (app.overlay = { kind: 'delete-feature', featureId: v.feature.id })}>Delete…</button>
+      <span class="head-acts">
+        {#if run && !runFinished(run.status)}
+          <button type="button" class="icon-btn" aria-label={paused ? 'Resume team' : 'Pause team'} use:tooltip={{ label: paused ? 'Resume team' : 'Pause team', key: 'p' }} onclick={() => act(paused ? 'resume' : 'pause')}>{paused ? '\u{F040A}' : '\u{F03E4}'}</button>
+          <button type="button" class="icon-btn" aria-label="Stop the team…" use:tooltip={'Stop the team…'} onclick={stop}>{'\u{F04DB}'}</button>
+        {/if}
+        <button type="button" class="icon-btn danger" aria-label="Delete feature…" use:tooltip={'Delete feature…'} onclick={() => (app.overlay = { kind: 'delete-feature', featureId: v.feature.id })}>{'\u{F01B4}'}</button>
+        <Menu items={menu} label="More actions" />
+      </span>
     </header>
 
     {#if notionReady && !notionReady.ok && !notion?.page_url}<p class="nline muted">{notionReady.why}</p>{/if}
     {#if publishError || notion?.error}
       <p class="nerr">✕ Publish failed: {publishError ?? notion.error}</p>
     {:else if notion?.page_url}
-      <p class="nline"><span aria-hidden="true">{'\u{F0219}'}</span> Published {notion.published_at_ms ? dayHm(notion.published_at_ms) : ''} · <button class="link" onclick={() => openUrl(notion.page_url)}>Open in Notion ↗</button>{notion.comments_seen ? ` · ${notion.comments_seen} comment${notion.comments_seen === 1 ? '' : 's'}` : ''}</p>
+      <p class="nline"><span aria-hidden="true">{'\u{F0219}'}</span> Published to Notion {notion.published_at_ms ? dayHm(notion.published_at_ms) : ''}{notion.comments_seen ? ` · ${notion.comments_seen} comment${notion.comments_seen === 1 ? '' : 's'}` : ''}</p>
     {/if}
 
     <div class="cols">
       <div class="left">
         <section class="card">
-          <div class="cardh"><b>Docs</b><span class="muted">.orchestrator/features/{v.feature.slug}/ on the integration branch</span><span class="grow"></span>{#if doc.name}<button class="btn ghost" onclick={openDoc}>Open in nvim <Kbd keys="e" /></button>{/if}</div>
+          <div class="cardh"><b>Docs</b><span class="muted">on the integration branch</span></div>
           {#if v.docs.length}
             <div class="tabs" role="tablist">
               {#each v.docs as d (d)}<button class="tab" class:on={doc.name === d} role="tab" aria-selected={doc.name === d} onclick={() => ((anchor = null), showDoc(d))}>{d}</button>{/each}
             </div>
+            {#if docPath}
+              <div class="docpath" data-docpath>
+                <span class="mono muted ell" use:tooltip={docPath}>{docPath}</span>
+                <button type="button" class="icon-btn" aria-label="Open in nvim" use:tooltip={{ label: 'Open in nvim', key: 'e' }} onclick={openDoc}>{'\u{F11E7}'}</button>
+              </div>
+            {/if}
             <div class="rendered"><Markdown text={doc.text} feature={spec.featureId} ondoc={openSibling} {anchor} {anchorAsked} /></div>
           {:else}
             <p class="muted">No docs yet: the lead writes them in the spec step.</p>
@@ -281,7 +316,7 @@
         <DesignSection bind:this={design} {v} />
 
         <section class="card">
-          <div class="cardh"><b>Tasks</b><span class="muted">{backendLabel(v.project?.backend)} · {byStatus('done').length}/{v.tasks.length} done</span><span class="grow"></span><button class="btn ghost" onclick={() => openBoard(v.feature.project_id)}>Open board <Kbd keys="b" /></button></div>
+          <div class="cardh"><b>Tasks</b><span class="muted">{backendLabel(v.project?.backend)} · {byStatus('done').length}/{v.tasks.length} done</span></div>
           <div class="taskcols">
             {#each [['in_progress', 'In progress', 'working'], ['review', 'Review', 'waiting_gate'], ['ready', 'Ready', 'idle'], ['done', 'Done', 'done']] as [s, label, st] (s)}
               {@const list = byStatus(s)}
@@ -314,7 +349,7 @@
             <div class="agents">
               {#each v.agents as a (a.id)}
                 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-                <div class="trow" onclick={() => openAgent(a.id)} title="Open {a.id}">
+                <div class="trow" onclick={() => openAgent(a.id)} use:tooltip={`Open ${a.id}`}>
                   <AgentChip id={a.id} role={roleOfAgent(a.id)} compact />
                   <span class="name ell">{shortName(a.id)}</span>
                   <span class="act muted ell">{a.tool || (a.task ? `task T-${a.task}` : '')}{a.flag ? ` · ${a.flag}` : ''}</span>
@@ -338,7 +373,7 @@
             <div class="msg">
               <Select width="hug" bind:value={to} options={toOptions} aria-label="To" noun="node" />
               <input class="field grow" bind:this={msgBox} bind:value={msg} placeholder="Message {to === lead ? 'the lead' : to}…" onkeydown={(e) => e.key === 'Enter' && (e.preventDefault(), send())} />
-              <Kbd keys="⏎" />
+              <button type="button" class="icon-btn" aria-label="Send" disabled={!msg.trim() || sending} use:tooltip={{ label: 'Send', key: '⏎' }} onclick={send}>{'\u{F048A}'}</button>
             </div>
           {/if}
         </section>
@@ -350,7 +385,7 @@
           {#each v.artifacts.filter((a) => !isDesign(a)) as a (a.id)}
             <div class="art"><span class="muted">{a.kind}</span> <span class="ell">{a.uri}</span> <span class="muted">({a.from_node}{a.to_node ? ` → ${a.to_node}` : ''})</span></div>
           {/each}
-          {#if v.artifacts.some(isDesign)}<p class="muted nline">Design artifacts moved to the Design section (d).</p>{/if}
+          {#if v.artifacts.some(isDesign)}<p class="muted nline">Design artifacts moved to the Design section.</p>{/if}
         </section>
       </div>
     </div>
@@ -368,6 +403,20 @@
     color: var(--color-status-error);
   }
 
+  .docpath {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-width: 0;
+    font: var(--text-caption);
+  }
+  .docpath .ell {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .nline,
   .nerr {
     margin: 0;
@@ -377,14 +426,6 @@
     padding: var(--space-sm) var(--space-md);
     border: var(--border-width-default) solid var(--color-status-error);
     border-radius: var(--radius-sm);
-  }
-  .link {
-    padding: 0;
-    background: none;
-    border: 0;
-    color: var(--color-accent-default);
-    font: inherit;
-    cursor: pointer;
   }
   .feature {
     flex: 1;

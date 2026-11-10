@@ -1,13 +1,11 @@
 // lib/mission.js (P4.2 spec §3.2, §5): the lanes from `now`, the stepper,
-// the chips' short waits, the queue copy, the filter and the key hints.
+// the chips' short waits, the queue copy, and the footer.
 
 import { describe, expect, it } from 'vitest';
 import {
   defaultTarget,
-  filterLabel,
   footerText,
   hiddenText,
-  hints,
   lanes,
   phaseFull,
   phaseText,
@@ -20,7 +18,6 @@ import {
   target,
   tasksDetail,
   tasksText,
-  toggleProject,
 } from '../src/lib/mission.js';
 import { decision, rec } from './fixture.js';
 import { checkoutRun, MIN, missionNow, today } from './mission-fixture.js';
@@ -194,28 +191,18 @@ describe('lanes(): project filter (D8)', () => {
     expect(ids(laneOf(m, 'queued'))).toEqual(['queue:infra-1', 'queue:ui-1']);
   });
 
-  it('label, toggle (the last project stays), counts summed over the filter', () => {
+  it('footer counts summed over the context project', () => {
     const ps = [
       { id: 'shop-api', name: 'shop-api' },
       { id: 'blog', name: 'blog' },
       { id: 'infra', name: 'infra' },
     ];
-    expect(filterLabel(null, ps)).toBe('All projects');
-    expect(filterLabel(['blog'], ps)).toBe('blog');
-    expect(filterLabel(['blog', 'infra'], ps)).toBe('2 projects of 3');
-    const all = ps.map((p) => p.id);
-    expect(toggleProject(null, 'shop-api', all)).toEqual(['blog', 'infra']);
-    expect(toggleProject(['blog'], 'blog', all)).toEqual(['blog']);
-    expect(toggleProject(['blog', 'infra'], 'shop-api', all)).toBeNull();
     const c = missionNow(NOW).counts;
     expect(footerText(c, null, ps)).toBe('1 needs you · 2 running · 1 waiting · 2 queued · live cap 3/2');
-    expect(footerText(c, ['shop-api', 'blog'], ps)).toBe(
-      '1 needs you · 2 running · 1 waiting · 1 queued · live cap 3/2 · 2 projects of 3',
-    );
     // The cap is global: under any filter it reads the global live / cap, never a per-project sum.
     expect(footerText(c, ['blog'], ps)).toBe('1 running · live cap 3/2');
-    expect(footerText({ ...c, global: { ...c.global, live: 1 } }, ['shop-api', 'infra'], ps)).toBe(
-      '1 needs you · 1 running · 1 waiting · 2 queued · live cap 1/2 · 2 projects of 3',
+    expect(footerText({ ...c, global: { ...c.global, live: 1 } }, ['shop-api'], ps)).toBe(
+      '1 needs you · 1 running · 1 waiting · 1 queued · live cap 1/2',
     );
     expect(footerText(c, null, [])).toBe('No projects');
     expect(hiddenText(c, ['blog', 'infra'], ps)).toBe(
@@ -335,35 +322,5 @@ describe('queue copy (notes §1.5, §1.12, FR-809)', () => {
     );
     expect(d.yes).toBe('Run now ≈ +2.1 pp week');
     expect(runNowDialog(missionNow(NOW).agents['ui-1']).title).toBe('Start ui-1 now?');
-  });
-});
-
-describe('toolbar key hints (notes §1.9)', () => {
-  const n = missionNow(NOW);
-  const text = (h) => h.map(([k, l]) => `${k} ${l}`).join(' · ');
-
-  it('a run row with a blocker', () => {
-    const row = { kind: 'run', run: n.runs['run-12'] };
-    expect(text(hints(row, { target: 'back-1', rec: n.agents['back-1'], decision: 'inbox-1' }))).toBe(
-      'j k move · ⏎ open back-1 · i p s ⇧K back-1 · d decision · h l chips · space details · f filter',
-    );
-  });
-
-  it('only the actions the target allows (notes §1.9)', () => {
-    const row = { kind: 'solo', agent: rec('x', 'working') };
-    expect(text(hints(row, { target: 'x', rec: rec('x', 'working', { level: 'running' }) }))).toContain('i p ⇧K x');
-    expect(text(hints(row, { target: 'x', rec: rec('x', 'idle', { level: 'idle' }) }))).toContain('p s ⇧K x');
-    expect(text(hints(row, { target: 'x', rec: rec('x', 'suspended', { level: 'idle', live: false }) }))).toContain(
-      'p r ⇧K x',
-    );
-  });
-
-  it('a queue row, an outcome, nothing', () => {
-    const row = { kind: 'queue', agent: n.agents['infra-1'] };
-    expect(text(hints(row, { target: 'infra-1', rec: n.agents['infra-1'] }))).toBe(
-      'j k move · ⏎ open infra-1 · n run now · ⌫ cancel · space details · f filter',
-    );
-    expect(text(hints({ kind: 'outcome' }))).toBe('j k move · o open · f filter');
-    expect(text(hints(null))).toBe('j k move · f filter');
   });
 });

@@ -33,8 +33,10 @@
   /** @type {{ title: string, subtitle?: string | null, size?: { w: number, h?: number | null }, minW?: number,
    *           onclose: (reason: 'esc' | 'close' | 'backdrop') => void,
    *           nav?: { id: string, label: string, badge?: string | number }[] | null, section?: string | null,
-   *           onsection?: (id: string) => void, onrestore?: () => void,
-   *           children?: import('svelte').Snippet, titleExtra?: import('svelte').Snippet }} */
+   *           navTitle?: string | null, onsection?: (id: string) => void,
+   *           restoreFocus?: boolean, role?: 'dialog' | 'alertdialog',
+   *           children?: import('svelte').Snippet, titleExtra?: import('svelte').Snippet,
+   *           navBadge?: import('svelte').Snippet<[string]>, onkeydown?: (e: KeyboardEvent) => void }} */
   let {
     title,
     subtitle = null,
@@ -43,10 +45,15 @@
     onclose,
     nav = null,
     section = null,
+    navTitle = null,
     onsection,
-    onrestore,
+    // false: the opener restores the focus itself (the app windows: `closeWindow`).
+    restoreFocus = true,
+    role = 'dialog',
     children,
     titleExtra,
+    navBadge,
+    onkeydown,
   } = $props();
 
   const uid = $props.id();
@@ -84,6 +91,9 @@
       made.push(c);
     }
     tick().then(() => {
+      // A field that took the focus itself (`autofocus`) keeps it.
+      const active = document.activeElement;
+      if (active && active !== win && win?.contains(active)) return;
       const first =
         /** @type {HTMLElement | null} */ (win?.querySelector('[data-autofocus]')) ??
         selectedTab() ??
@@ -93,8 +103,8 @@
     });
     return () => {
       for (const c of made) c.removeAttribute('inert');
+      if (!restoreFocus) return;
       if (opener?.isConnected && opener !== document.body) opener.focus();
-      else onrestore?.();
     };
   });
 
@@ -149,14 +159,14 @@
   <div
     class="win"
     bind:this={win}
-    role="dialog"
+    {role}
     aria-modal="true"
     aria-labelledby={titleId}
     tabindex="-1"
     style:width="{box.w}px"
     style:height={box.h == null ? null : `${box.h}px`}
     style:max-height="{box.maxH}px"
-    onkeydown={onTrapKey}
+    onkeydown={(e) => (onTrapKey(e), onkeydown?.(e))}
   >
     <header class="bar">
       <h2 id={titleId} class="title">{title}{#if subtitle}<span class="sub">{` · ${subtitle}`}</span>{/if}</h2>
@@ -166,6 +176,7 @@
     <div class="main">
       {#if nav}
         <nav class="nav" bind:this={navEl} aria-label="{title} sections">
+          {#if navTitle}<div class="navh">{navTitle}</div>{/if}
           <div role="tablist" aria-orientation="vertical" tabindex="-1" onkeydown={onNavKey}>
             {#each nav as n (n.id)}
               <button
@@ -179,7 +190,7 @@
                 onclick={() => pick(n.id)}
               >
                 <span class="lab">{n.label}</span>
-                {#if n.badge != null}<span class="badge">{n.badge}</span>{/if}
+                {#if navBadge}{@render navBadge(n.id)}{:else if n.badge != null}<span class="badge">{n.badge}</span>{/if}
               </button>
             {/each}
           </div>
@@ -199,7 +210,8 @@
     position: fixed;
     inset: 0;
     z-index: 45;
-    background: var(--color-surface-chrome);
+    /* Black in both themes: it dims the app (lead decision, T-312). */
+    background: var(--color-backdrop);
     opacity: var(--opacity-backdrop);
   }
   .win {
@@ -244,6 +256,10 @@
     display: flex;
     align-items: center;
     min-width: 0;
+    margin-left: auto;
+  }
+  .extra + .x {
+    margin-left: 0;
   }
   .x {
     width: var(--size-control);
@@ -263,10 +279,14 @@
     background: var(--color-surface-chrome);
     border-right: var(--border-width-default) solid var(--color-border-subtle);
   }
+  .navh {
+    padding: var(--space-xs) var(--space-md);
+    color: var(--color-text-muted);
+    font: var(--text-caption);
+  }
   .nav [role='tablist'] {
     display: flex;
     flex-direction: column;
-    gap: var(--space-xxs);
     outline: none;
   }
   .tab {

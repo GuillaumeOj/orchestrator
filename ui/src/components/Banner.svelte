@@ -1,12 +1,12 @@
 <script>
   // Global banners (§9.3, Penpot 05 copy): one at a time, highest attention first;
   // the rest collapse to "+n". Error banners: a 4 px left bar in the status color.
-  import { app, claudeBusy, claudeUpdate, governor, openSettings, openSingleton } from '../lib/app.svelte.js';
+  import { app, claudeBusy, claudeUpdate, governor, openPlanner, openSettings, openSingleton } from '../lib/app.svelte.js';
   import { bannerClaude } from '../lib/claude.js';
   import { when } from '../lib/format.js';
   import { counts } from '../lib/now.svelte.js';
+  import { tooltip } from '../lib/tooltip.js';
   import { isRestoreWarning } from '../lib/update.js';
-  import Kbd from './Kbd.svelte';
 
   let dismissed = $state({});
   // Each `claude update` run is its own state: a dismissal made before it does not cover its outcome.
@@ -40,7 +40,7 @@
     // FR-816: off-hours work waits while the Mac is on battery (one banner, D6).
     if ((d.banners ?? []).some((b) => b.kind === 'not_on_ac')) {
       const n = d.power?.off_hours_pending ?? 0;
-      out.push({ id: 'ac', color: 'var(--color-pacing-amber)', title: 'Off-hours work needs AC power.', text: `${n} off-hours task${n === 1 ? '' : 's'} won't run while the Mac sleeps. Plug in to keep it awake, or they wait for the next off-hours window.`, details: true, later: true });
+      out.push({ id: 'ac', color: 'var(--color-pacing-amber)', title: 'Off-hours work needs AC power.', text: `${n} off-hours task${n === 1 ? '' : 's'} won't run while the Mac sleeps. Plug in to keep it awake, or they wait for the next off-hours window.`, planner: true });
     }
     for (const w of (d.warnings ?? []).filter((w) => !isRestoreWarning(w))) out.push({ id: `w:${w}`, color: 'var(--color-status-queued)', title: 'Check:', text: w });
     return out.filter((b) => !dismissed[b.id]);
@@ -54,13 +54,11 @@
     <span class="text" class:one={top.update}>{top.text}{#if top.fail} <span class="amber">{top.fail}</span>{/if}</span>
     {#if top.update}<button class="btn" disabled={top.update.disabled || claudeBusy()} data-claude-update onclick={claudeUpdate}>{#if top.update.spinner}<span class="spinning" aria-hidden="true">◐</span> {/if}{top.update.label}</button>{/if}
     {#if top.claudeDetails}<button class="btn" onclick={() => openSettings('claude')}>Details</button>{/if}
-    {#if top.planner}<button class="btn" onclick={() => openSingleton('planner')}>Week planner <Kbd keys="⌘+; g" /></button>{/if}
+    {#if top.planner}<button type="button" class="btn" use:tooltip={{ label: 'Week planner', key: '⌘; g' }} onclick={() => openPlanner()}>Week planner</button>{/if}
     {#if top.setup}<button class="btn" onclick={() => openSingleton('setup')}>Set up</button>{/if}
-    {#if top.details}<button class="btn" onclick={() => openSingleton('planner')}>Details <Kbd keys="o" /></button>{/if}
-    {#if top.later}<button class="btn ghost" onclick={() => (dismissed[top.id] = true)}>Later <Kbd keys="esc" /></button>{/if}
-    {#if top.pause}<button class="btn ghost" onclick={() => governor('pause_all')}>Pause all</button>{/if}
+    {#if top.pause}<button type="button" class="btn danger" onclick={() => governor('pause_all')}>Pause all</button>{/if}
     {#if banners.length > 1}<span class="muted">+{banners.length - 1}</span>{/if}
-    <button class="x" aria-label="Dismiss" onclick={() => (dismissed[top.id] = true)}>×</button>
+    <button type="button" class="icon-btn" aria-label="Dismiss" use:tooltip={'Dismiss'} onclick={() => (dismissed[top.id] = true)}>{'\u{F0156}'}</button>
   </div>
 {/if}
 
@@ -86,9 +84,5 @@
   .amber {
     color: var(--color-pacing-amber);
   }
-  .x {
-    background: none;
-    border: 0;
-    color: var(--color-text-muted);
-  }
+
 </style>

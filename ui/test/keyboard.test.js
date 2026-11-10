@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CHORDS, chordName, classify, hint, kittyKey, LEADER } from '../src/lib/keyboard.js';
+import { CHORDS, chordName, classify, hint, keyIgnored, kittyKey, LEADER } from '../src/lib/keyboard.js';
 
 const key = (k, o = {}) => ({
   key: k,
@@ -31,16 +31,29 @@ describe('keyboard contract §9.7', () => {
   it('leader ⌘; then a key', () => {
     const lead = classify(key(';', { meta: true, code: 'Semicolon' }), { terminal: true });
     expect(lead.kind).toBe('leader');
-    expect(classify(key('z', { code: 'KeyZ' }), { leader: true, terminal: true })).toEqual({
+    expect(classify(key('j', { code: 'KeyJ' }), { leader: true, terminal: true })).toEqual({
       kind: 'command',
-      command: 'pane.zoom',
+      command: 'focus.down',
     });
-    expect(classify(key('v'), { leader: true }).command).toBe('pane.split.right');
-    expect(classify(key('s'), { leader: true }).command).toBe('pane.split.below');
+    expect(classify(key('k'), { leader: true }).command).toBe('focus.up');
+    expect(classify(key(']'), { leader: true }).command).toBe('dock.next');
+    expect(classify(key('['), { leader: true }).command).toBe('dock.prev');
     expect(classify(key('Shift'), { leader: true }).kind).toBe('swallow');
     expect(classify(key('q'), { leader: true }).kind).toBe('cancel');
     expect(classify(key('Escape'), { leader: true }).kind).toBe('cancel');
-    for (const k of 'svhjklztewpog') expect(LEADER[k]).toBeTruthy();
+    for (const k of 'jktewpog') expect(LEADER[k]).toBeTruthy();
+  });
+
+  it('single pane (design-notes §4.1): v s h l z cancel the leader; ⌘1…9 stay', () => {
+    for (const k of 'vshlz') {
+      expect(LEADER[k]).toBeUndefined();
+      expect(classify(key(k), { leader: true })).toEqual({ kind: 'cancel' });
+    }
+    for (let n = 1; n <= 9; n++)
+      expect(classify(key(String(n), { meta: true, code: `Digit${n}` })).command).toBe(`pane.focus.${n}`);
+    for (const id of ['pane.zoom', 'pane.split.right', 'pane.split.below', 'focus.left', 'focus.right'])
+      expect(hint(id)).toBe('');
+    expect(hint('focus.down')).toBe('⌘+; j');
   });
 
   it('everything else goes to the PTY; Shift+Enter is ESC CR in agent panes only', () => {
@@ -68,13 +81,51 @@ describe('keyboard contract §9.7', () => {
     expect(hint('decisions')).toBe('⌘+⇧+I');
     expect(hint('overwatch.ask')).toBe('⌘+L');
     expect(hint('decisions.search')).toBe('/'); // a key of the chat, no chord
-    expect(hint('pane.zoom')).toBe('⌘+; z');
+    expect(hint('pane.close')).toBe('⌘+W');
     expect(Object.values(CHORDS)).toContain('session.new');
+  });
+});
+
+describe('⌘/ and ⌘, (design-notes §3.3, §3.4)', () => {
+  it('⌘/ opens the Keyboard shortcuts sheet on QWERTY', () => {
+    const e = key('/', { meta: true, code: 'Slash' });
+    expect(chordName(e)).toBe('cmd+/');
+    expect(classify(e, { terminal: true })).toEqual({ kind: 'command', command: 'shortcuts' });
+  });
+
+  it('⌘/ on AZERTY (⇧: gives "/", Shift held) is the same chord', () => {
+    const e = key('/', { meta: true, shift: true, code: 'Period' });
+    expect(chordName(e)).toBe('cmd+/');
+    expect(classify(e).command).toBe('shortcuts');
+  });
+
+  it('⌘, is Settings; Shift still counts for other keys', () => {
+    expect(classify(key(',', { meta: true, code: 'Comma' })).command).toBe('settings');
+    expect(chordName(key('T', { meta: true, shift: true, code: 'KeyT' }))).toBe('cmd+shift+t');
+    expect(hint('shortcuts')).toBe('⌘+/');
   });
 });
 
 describe('dialogs', () => {
   it('⌘⏎ reaches the dialog', () => {
     expect(classify({ key: 'Enter', code: 'Enter', metaKey: true })).toEqual({ kind: 'pass' });
+  });
+});
+
+describe('keyIgnored (the pane-local key guard)', () => {
+  const ev = (target, mods = {}) => ({ target, metaKey: false, ctrlKey: false, altKey: false, ...mods });
+  const el = (html) => {
+    const d = document.createElement('div');
+    d.innerHTML = html;
+    return d.firstElementChild;
+  };
+  it('a modifier or a field takes the key; a button only with `controls`', () => {
+    expect(keyIgnored(ev(el('<div></div>')))).toBe(false);
+    expect(keyIgnored(ev(el('<div></div>'), { metaKey: true }))).toBe(true);
+    expect(keyIgnored(ev(el('<input>')))).toBe(true);
+    expect(keyIgnored(ev(el('<button role="combobox"></button>')))).toBe(true);
+    expect(keyIgnored(ev(el('<button></button>')))).toBe(false);
+    expect(keyIgnored(ev(el('<button></button>')), { controls: true })).toBe(true);
+    expect(keyIgnored(ev(el('<a href="#">x</a>')), { controls: true })).toBe(true);
   });
 });
