@@ -20,6 +20,7 @@ vi.mock('../src/lib/ipc.js', () => ({
   errText: (e) => (typeof e === 'string' ? e : (e?.message ?? String(e))),
 }));
 
+const { applyNow } = await import('../src/lib/now.svelte.js');
 const { default: ProjectPane } = await import('../src/panes/ProjectPane.svelte');
 const { default: SetupPane } = await import('../src/panes/SetupPane.svelte');
 const { default: PlanEditor } = await import('../src/components/PlanEditor.svelte');
@@ -216,6 +217,80 @@ describe('project pane', () => {
     expect(
       [...document.body.querySelectorAll('[role="menuitem"]')].map((r) => r.querySelector('.lab').textContent),
     ).toContain('Trust in a pane');
+  });
+
+  it('a stale project_detail resolving after a removal does not bring the row back', async () => {
+    const without = { ...detail, worktrees: detail.worktrees.filter((w) => !w.path.endsWith('/old')) };
+    /** @type {((v: unknown) => void) | undefined} */
+    let slow;
+    let n = 0;
+    replies.project_detail = () => {
+      n++;
+      if (n === 1) return Promise.resolve(detail);
+      if (n === 2) return new Promise((r) => (slow = r)); // topic reload that read git before the removal
+      return Promise.resolve(without);
+    };
+    replies.worktree_remove = { worktree_removed: true };
+    const { container, getAllByText } = render(ProjectPane, { paneId: 'p1' });
+    await waitFor(() => expect(text(container)).toContain('shop-api.worktrees/old'));
+    applyNow({ rev: 9001, topics: ['project:shop-api'] });
+    await waitFor(() => expect(slow).toBeTypeOf('function'));
+    await fireEvent.click(container.querySelectorAll('button[aria-label="Remove worktree…"]')[1]);
+    app.overlay.onYes();
+    await waitFor(() => expect(calls.filter(([c]) => c === 'project_detail')).toHaveLength(3));
+    await waitFor(() => expect(text(container)).not.toContain('shop-api.worktrees/old'));
+    /** @type {any} */ (slow)(detail); // the old list lands last
+    await new Promise((r) => setTimeout(r, 20));
+    expect(text(container)).not.toContain('shop-api.worktrees/old');
+  });
+
+  it('the row disappears right after a successful removal, before the reload answers', async () => {
+    let n = 0;
+    replies.project_detail = () => (++n === 1 ? Promise.resolve(detail) : new Promise(() => {}));
+    replies.worktree_remove = { worktree_removed: true };
+    const { container, getAllByText } = render(ProjectPane, { paneId: 'p1' });
+    await waitFor(() => expect(text(container)).toContain('shop-api.worktrees/old'));
+    await fireEvent.click(container.querySelectorAll('button[aria-label="Remove worktree…"]')[1]);
+    app.overlay.onYes();
+    await waitFor(() => expect(text(container)).not.toContain('shop-api.worktrees/old'));
+    expect(text(container)).toContain('shop-api.worktrees/back-1');
+  });
+
+  it('a refused removal keeps the row and shows the core error', async () => {
+    replies.project_detail = detail;
+    replies.worktree_remove = new Error('agent back-1 uses this worktree: archive or kill it first');
+    const { container, getAllByText } = render(ProjectPane, { paneId: 'p1' });
+    await waitFor(() => expect(text(container)).toContain('shop-api.worktrees/old'));
+    await fireEvent.click(container.querySelectorAll('button[aria-label="Remove worktree…"]')[1]);
+    app.overlay.onYes();
+    await waitFor(() => expect(JSON.stringify(app.toasts)).toContain('uses this worktree'));
+    expect(text(container)).toContain('shop-api.worktrees/old');
+  });
+
+  it('a failing PR load still toasts its error', async () => {
+    let n = 0;
+    replies.project_detail = () => (++n === 1 ? Promise.resolve(detail) : Promise.reject(new Error('gh not found')));
+    const { container } = render(ProjectPane, { paneId: 'p1' });
+    await waitFor(() => expect(text(container)).toContain('shop-api.worktrees/old'));
+    await fireEvent.keyDown(container.querySelector('[data-pane-focus]'), { key: 'p' });
+    await waitFor(() => expect(JSON.stringify(app.toasts)).toContain('gh not found'));
+  });
+
+  it('Remove is disabled with the reason while an agent uses the worktree', async () => {
+    replies.project_detail = {
+      ...detail,
+      worktrees: detail.worktrees.map((w) => (w.path.endsWith('/old') ? { ...w, in_use_by: ['back-2'] } : w)),
+    };
+    const { container, getAllByText } = render(ProjectPane, { paneId: 'p1' });
+    await waitFor(() => expect(text(container)).toContain('used by back-2'));
+    const btn = /** @type {HTMLButtonElement} */ (
+      container.querySelectorAll('button[aria-label="Remove worktree…"]')[1]
+    );
+    expect(btn.disabled).toBe(true);
+    expect(
+      /** @type {HTMLButtonElement} */ (container.querySelectorAll('button[aria-label="Remove worktree…"]')[0])
+        .disabled,
+    ).toBe(false);
   });
 
   it('J11: archive by default, unmerged worktrees kept unless ticked', async () => {

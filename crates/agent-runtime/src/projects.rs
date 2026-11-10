@@ -83,6 +83,17 @@ impl Runtime {
             .iter()
             .map(|a| json!({"id": a.id, "state": a.tracker.state, "worktree": a.worktree}))
             .collect();
+        let users = self.live_worktree_users();
+        let worktrees: Vec<Value> = worktrees
+            .iter()
+            .map(|w| {
+                let wp = real(&w.path);
+                let in_use_by: Vec<&str> = users.iter().filter(|(_, u)| *u == wp).map(|(id, _)| id.as_str()).collect();
+                let mut v = json!(w);
+                v["in_use_by"] = json!(in_use_by);
+                v
+            })
+            .collect();
         let mut v = json!({
             "project": p,
             "status": orch_git::status::status(&p.path)?,
@@ -155,12 +166,30 @@ impl Runtime {
         if let Some(a) = self.worktree_users(&wt, "").first() {
             bail!("agent {a} uses this worktree: archive or kill it first");
         }
-        let base = self.store.get_row(&wt).map(|w| w.base).unwrap_or(p.default_branch.clone());
+        // The live rows for this worktree, whatever the spelling of their key
+        // (the listing matches them by canonical path too).
+        let keys: Vec<PathBuf> = self
+            .store
+            .rows_of(&p.path)
+            .into_iter()
+            .filter(|r| r.state != WorktreeRowState::Removed && real(&r.path) == wt)
+            .map(|r| r.path)
+            .collect();
+        let row = keys.first().and_then(|k| self.store.get_row(k));
+        let known_to_git = orch_git::worktree::list(&p.path)?.iter().any(|w| real(&w.path) == wt);
+        if !known_to_git && row.is_none() && !wt.exists() {
+            // Already gone (a second click, another pane): nothing to do.
+            return Ok(RemoveOutcome::default());
+        }
+        let base = row.as_ref().map(|w| w.base.clone()).unwrap_or(p.default_branch.clone());
         let confirm = if confirm_discard { Confirm::DiscardUnmerged } else { Confirm::Safe };
-        let out = cleanup::remove_worktree(&p.path, &wt, &base, delete_branch, confirm)?;
+        let branch = row.as_ref().map(|w| w.branch.as_str());
+        let out = cleanup::remove_worktree_of(&p.path, &wt, &base, branch, delete_branch, confirm)?;
         self.store.write(|s| {
-            if let Some(w) = s.worktrees.get_mut(&wt) {
-                w.state = WorktreeRowState::Removed;
+            for k in keys.iter().chain(std::iter::once(&wt)) {
+                if let Some(w) = s.worktrees.get_mut(k) {
+                    w.state = WorktreeRowState::Removed;
+                }
             }
         })?;
         self.db.audit(
@@ -171,6 +200,7 @@ impl Runtime {
             if confirm_discard { "discard" } else { "safe" },
             json!(out),
         )?;
+        self.touch(orch_protocol::Topic::Project(p.id.clone()));
         Ok(out)
     }
 
@@ -191,15 +221,20 @@ impl Runtime {
     /// Agents other than `except` that use `wt` (canonical) and are neither
     /// archived nor killed: while one does, the worktree is not removed.
     fn worktree_users(&self, wt: &Path, except: &str) -> Vec<String> {
+        self.live_worktree_users().into_iter().filter(|(id, w)| id != except && w == wt).map(|(id, _)| id).collect()
+    }
+
+    /// (agent id, canonical worktree) of every agent neither archived nor killed.
+    fn live_worktree_users(&self) -> Vec<(String, PathBuf)> {
         // Canonicalized outside the lock (a syscall per agent).
         let candidates: Vec<(String, PathBuf)> = self.store.read(|s| {
             s.agents
                 .values()
-                .filter(|a| a.id != except && !matches!(a.tracker.state, AgentState::Archived | AgentState::Killed))
+                .filter(|a| !matches!(a.tracker.state, AgentState::Archived | AgentState::Killed))
                 .map(|a| (a.id.clone(), a.worktree.clone()))
                 .collect()
         });
-        candidates.into_iter().filter(|(_, w)| real(w) == wt).map(|(id, _)| id).collect()
+        candidates.into_iter().map(|(id, w)| (id, real(&w))).collect()
     }
 
     /// Hides an agent for good (FR-202): archived, its queued turns dropped,
@@ -476,5 +511,108 @@ mod tests {
         assert!(!row.path.exists());
         assert!(rt.db.audit_log(Some("a1"), 10).unwrap().iter().any(|e| e.action == "agent_deleted"));
         assert!(rt.delete_agent("nope", false, false).is_err());
+    }
+
+    fn listed(rt: &Runtime, id: &str, wt: &Path) -> bool {
+        let d = rt.project_detail(id, false).unwrap();
+        d["worktrees"].as_array().unwrap().iter().any(|w| real(Path::new(w["path"].as_str().unwrap())) == real(wt))
+    }
+
+    fn setup() -> (tempfile::TempDir, std::sync::Arc<Runtime>, tempfile::TempDir, PathBuf, Project) {
+        let (d, rt) = test_runtime(true);
+        let (r, repo) = scratch_repo();
+        let p = rt.add_project(&repo).unwrap();
+        (d, rt, r, repo, p)
+    }
+
+    #[test]
+    fn a_removed_worktree_leaves_the_listing_in_every_case() {
+        let (_d, rt, _r, repo, p) = setup();
+        let team = |role: &str| WorktreeKindSpec::Team { feature: "f".into(), role: role.into(), n: 1 };
+        // Folder present.
+        let a = rt.create_worktree(&repo, &WorktreeKindSpec::Solo { slug: "a".into() }, None).unwrap();
+        assert!(listed(&rt, &p.id, &a.path));
+        let out = rt.remove_worktree(&p.id, &a.path, true, false).unwrap();
+        assert!(out.worktree_removed && out.branch_deleted, "{out:?}");
+        assert!(!listed(&rt, &p.id, &a.path));
+        assert!(rt.touched().contains(&format!("project:{}", p.id)));
+        // Leaf folder deleted by hand.
+        let b = rt.create_worktree(&repo, &team("back"), None).unwrap();
+        std::fs::remove_dir_all(&b.path).unwrap();
+        rt.remove_worktree(&p.id, &b.path, true, false).unwrap();
+        assert!(!listed(&rt, &p.id, &b.path));
+        // Whole feature folder deleted.
+        let c = rt.create_worktree(&repo, &team("front"), None).unwrap();
+        std::fs::remove_dir_all(c.path.parent().unwrap()).unwrap();
+        rt.remove_worktree(&p.id, &c.path, true, false).unwrap();
+        assert!(!listed(&rt, &p.id, &c.path));
+        // Unknown to git, row live: the branch goes with it.
+        let m = rt.create_worktree(&repo, &WorktreeKindSpec::Solo { slug: "m".into() }, None).unwrap();
+        std::fs::remove_dir_all(&m.path).unwrap();
+        orch_git::fixtures::git(&repo, &["worktree", "prune"]);
+        assert!(listed(&rt, &p.id, &m.path), "a missing row is listed");
+        let out = rt.remove_worktree(&p.id, &m.path, true, false).unwrap();
+        assert!(out.branch_deleted, "{out:?}");
+        assert!(!orch_git::worktree::branch_exists(&repo, &m.branch));
+        assert!(!listed(&rt, &p.id, &m.path));
+        // No row at all: plain `git worktree add` in the sibling folder.
+        let u = real(&orch_git::worktree::worktree_root(&repo)).join("plain");
+        orch_git::fixtures::git(&repo, &["worktree", "add", "-b", "plain", u.to_str().unwrap()]);
+        assert!(listed(&rt, &p.id, &u));
+        rt.remove_worktree(&p.id, &u, true, false).unwrap();
+        assert!(!listed(&rt, &p.id, &u));
+    }
+
+    #[test]
+    fn a_non_canonical_row_key_is_marked_removed() {
+        let (_d, rt, _r, repo, p) = setup();
+        let w = rt.create_worktree(&repo, &WorktreeKindSpec::Solo { slug: "k".into() }, None).unwrap();
+        // Stored under another spelling of the same folder.
+        let odd = w.path.parent().unwrap().join(".").join("k");
+        rt.store
+            .write(|s| {
+                let mut row = s.worktrees.remove(&w.path).unwrap();
+                row.path = odd.clone();
+                s.worktrees.insert(odd.clone(), row);
+            })
+            .unwrap();
+        rt.remove_worktree(&p.id, &w.path, true, false).unwrap();
+        assert_eq!(rt.store.read(|s| s.worktrees[&odd].state), WorktreeRowState::Removed);
+        assert!(!listed(&rt, &p.id, &w.path));
+    }
+
+    #[test]
+    fn in_use_by_follows_the_agent_and_a_second_removal_is_a_no_op() {
+        let (_d, rt, _r, repo, p) = setup();
+        let row = rt.create_worktree(&repo, &WorktreeKindSpec::Solo { slug: "a1".into() }, None).unwrap();
+        rt.store
+            .write(|s| {
+                let a = s.agents.get_mut("a1").unwrap();
+                a.repo = repo.clone();
+                a.worktree = row.path.clone();
+            })
+            .unwrap();
+        let users = |rt: &Runtime| {
+            let d = rt.project_detail(&p.id, false).unwrap();
+            let w = d["worktrees"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|w| real(Path::new(w["path"].as_str().unwrap())) == real(&row.path))
+                .cloned()
+                .unwrap();
+            w["in_use_by"].clone()
+        };
+        assert_eq!(users(&rt), json!(["a1"]));
+        let main = rt.project_detail(&p.id, false).unwrap()["worktrees"][0]["in_use_by"].clone();
+        assert!(main.is_array(), "always present");
+        rt.store.write(|s| s.agents.get_mut("a1").unwrap().tracker.state = AgentState::Killed).unwrap();
+        assert_eq!(users(&rt), json!([]));
+        rt.remove_worktree(&p.id, &row.path, true, false).unwrap();
+        let _ = rt.touched();
+        let again = rt.remove_worktree(&p.id, &row.path, true, false).unwrap();
+        assert_eq!(again, RemoveOutcome::default());
+        let t = rt.touched();
+        assert!(!t.contains(&format!("project:{}", p.id)), "no topic for a no-op: {t:?}");
     }
 }

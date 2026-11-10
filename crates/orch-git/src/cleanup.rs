@@ -235,12 +235,34 @@ pub fn remove_worktree(
     delete_branch: bool,
     confirm: Confirm,
 ) -> Result<RemoveOutcome> {
+    remove_worktree_of(repo, path, base, None, delete_branch, confirm)
+}
+
+/// [`remove_worktree`] with the branch the app recorded for it: when git no
+/// longer knows the worktree, that branch is the one deleted (never the base,
+/// never one checked out in another worktree).
+pub fn remove_worktree_of(
+    repo: &Path,
+    path: &Path,
+    base: &str,
+    row_branch: Option<&str>,
+    delete_branch: bool,
+    confirm: Confirm,
+) -> Result<RemoveOutcome> {
     let p = real(path);
     if p == real(repo) {
         bail!("refusing to remove the main checkout");
     }
     let git_wt = worktree::list(repo)?.into_iter().find(|w| real(&w.path) == p);
-    let branch = git_wt.as_ref().and_then(|w| w.branch.clone());
+    let mut branch = git_wt.as_ref().and_then(|w| w.branch.clone());
+    if git_wt.is_none()
+        && let Some(b) = row_branch
+        && b != base
+        && worktree::branch_exists(repo, b)
+        && !worktree::list(repo)?.iter().any(|w| w.branch.as_deref() == Some(b))
+    {
+        branch = Some(b.to_string());
+    }
     let mut out = RemoveOutcome::default();
     if confirm == Confirm::Safe {
         if p.is_dir() {
