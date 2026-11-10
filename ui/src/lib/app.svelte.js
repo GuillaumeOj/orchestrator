@@ -2271,7 +2271,7 @@ export function decide(d, action, message = null) {
   if (app.pending.some((p) => p.item === d.id)) return;
   // Always allow writes a rule: it asks once (Cancel · Always allow), then goes at once, with no undo window.
   if (action === 'always') {
-    const project = d.subject?.project ?? 'the project';
+    const project = projectName(d.subject?.project) ?? 'the project';
     return confirm(
       `Always allow "${d.payload?.always ?? 'this'}"?`,
       `Adds a rule to ${project}'s policy file. Undo in Settings › Permissions.`,
