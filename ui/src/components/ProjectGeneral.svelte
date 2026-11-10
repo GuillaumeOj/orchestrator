@@ -4,11 +4,12 @@
   // fields (footer Save / Revert, the window's Discard guard); path actions, Fetch now, Trust,
   // Worktrees (root only: "remove merged automatically" is not built) and the danger zone.
   import { onMount } from 'svelte';
-  import { app, askRemoveProject, openInKitty, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
+  import { app, askRemoveProject, copyText, openInKitty, openTrust, projects, refresh, revealPath, toast } from '../lib/app.svelte.js';
   import { dayTime, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { tooltip } from '../lib/tooltip.js';
   import Select from './Select.svelte';
+  import SettingsFooter from './SettingsFooter.svelte';
 
   let { project: pid } = $props();
   const p = $derived(projects().find((x) => x.id === pid) ?? null);
@@ -86,7 +87,7 @@
     try {
       const r = await invoke('project_fetch', { id: pid });
       toast(r?.error ? `Fetch failed · ${p?.name}: ${r.error}` : `Fetched · ${p?.name}`, r?.error ? { kind: 'error' } : {});
-      await refresh();
+      await Promise.all([refresh(), load()]); // a fetch can change the branch list
     } catch (e) {
       toast(errText(e), { kind: 'error' });
     } finally {
@@ -94,15 +95,6 @@
     }
   }
 
-  const reveal = () => invoke('reveal_path', { path: p.path }).catch((e) => toast(errText(e), { kind: 'error' }));
-  const copy = async (text, what) => {
-    try {
-      await navigator.clipboard?.writeText(text);
-      toast(`Copied ${what}`);
-    } catch (e) {
-      toast(errText(e), { kind: 'error' });
-    }
-  };
 </script>
 
 {#if !p}
@@ -116,14 +108,14 @@
       <h3>Project</h3>
       <div class="srow">
         <label class="slab" for="pg-name">Name</label>
-        <input id="pg-name" class="field" bind:value={name} spellcheck="false" aria-invalid={nameError ? 'true' : undefined} aria-describedby={nameError ? 'pg-name-err' : undefined} />
+        <input id="pg-name" class="field narrow" bind:value={name} spellcheck="false" aria-invalid={nameError ? 'true' : undefined} aria-describedby={nameError ? 'pg-name-err' : undefined} />
         {#if nameError}<p class="serr shelp" id="pg-name-err" role="alert">{nameError}</p>{/if}
       </div>
       <div class="srow">
         <span class="slab">Path</span>
         <span class="sctl">
           <span class="mono">{shortPath(p.path, home)}</span>
-          <button type="button" class="icon-btn" aria-label="Reveal in Finder" use:tooltip={'Reveal in Finder'} onclick={reveal}>{'\u{F024B}'}</button>
+          <button type="button" class="icon-btn" aria-label="Reveal in Finder" use:tooltip={'Reveal in Finder'} onclick={() => revealPath(p.path)}>{'\u{F024B}'}</button>
           <button type="button" class="icon-btn" aria-label="Open in kitty" use:tooltip={'Open in kitty'} onclick={() => openInKitty(p.path)}>{'\u{F018D}'}</button>
         </span>
       </div>
@@ -131,7 +123,7 @@
         <span class="slab">Id</span>
         <span class="sctl">
           <span class="muted mono">{p.id}</span>
-          <button type="button" class="icon-btn" aria-label="Copy the id" use:tooltip={'Copy the id'} onclick={() => copy(p.id, 'the id')}>{'\u{F018F}'}</button>
+          <button type="button" class="icon-btn" aria-label="Copy the id" use:tooltip={'Copy the id'} onclick={() => copyText(p.id, 'the id')}>{'\u{F018F}'}</button>
         </span>
       </div>
     </div>
@@ -139,8 +131,8 @@
     <div class="scard" data-group="git">
       <h3>Git</h3>
       <div class="srow">
-        <span class="slab" id="pg-branch-l">Default branch</span>
-        <Select value={branch} options={branchOptions} aria-label="Default branch" onchange={(v) => (branch = v)} />
+        <span class="slab">Default branch</span>
+        <Select width="hug" value={branch} options={branchOptions} aria-label="Default branch" onchange={(v) => (branch = v)} />
         {#if branchError}<p class="serr shelp" role="alert">{branchError}</p>{/if}
       </div>
       <div class="srow">
@@ -185,11 +177,7 @@
       </div>
     </div>
 
-    <div class="sfoot foot">
-      {#if dirty}<span class="dirty" data-dirty>Unsaved changes</span>{/if}
-      <button type="button" class="btn" disabled={!dirty} onclick={revert}>Revert</button>
-      <button type="button" class="btn primary" disabled={busy || !dirty} use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={save}>Save</button>
-    </div>
+    <SettingsFooter {dirty} {busy} onrevert={revert} onsave={save} />
   </section>
 {/if}
 
@@ -210,6 +198,10 @@
   .badge.warn,
   .amber {
     color: var(--color-pacing-amber);
+  }
+  .narrow {
+    width: 260px;
+    max-width: 100%;
   }
   .scard.danger {
     border-color: var(--color-border-subtle);

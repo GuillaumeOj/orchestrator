@@ -38,6 +38,7 @@
   import McpSettings from './McpSettings.svelte';
   import ProjectGeneral from './ProjectGeneral.svelte';
   import Select from './Select.svelte';
+  import SettingsFooter from './SettingsFooter.svelte';
 
   const spec = $derived(app.window);
   // The window is for one project: a new project mounts a new window.
@@ -90,9 +91,17 @@
     return false;
   }
   // Discarding (closing or leaving the section): the fields go back to what is saved.
-  onMount(() => guardWindow(sectionDirty, () => (section.id === 'general' ? general?.revert() : (dirty || ask) && cancel())));
+  /** Discarding the shown section's changes. */
+  function sectionRevert() {
+    if (section.id === 'general') general?.revert();
+    else if (dirty || ask) cancel();
+  }
+  onMount(() => guardWindow(sectionDirty, sectionRevert));
 
   async function load() {
+    // The three reads are independent: started together.
+    const board = invoke('board_view', { project: pid }).catch(() => null);
+    const ints = invoke('integrations_view').catch(() => null);
     try {
       saved = await invoke('project_settings', { project: pid });
       error = null;
@@ -103,10 +112,10 @@
       error = errText(e);
     }
     // The last sync, from the Board's view (kept by the core across restarts).
-    const bv = await invoke('board_view', { project: pid }).catch(() => null);
+    const bv = await board;
     if (bv?.last_sync && bv.last_sync_at_ms) last = { report: bv.last_sync, at: bv.last_sync_at_ms };
     if (bv?.last_sync_error) syncErr = [`Last sync ${bv.last_sync_at_ms ? `${clock(bv.last_sync_at_ms)} ` : ''}failed: ${bv.last_sync_error}`];
-    const iv = await invoke('integrations_view').catch(() => null);
+    const iv = await ints;
     linearInt = iv?.items?.find((i) => i.id === 'linear') ?? null;
     if (kind === 'linear') loadTeams();
   }
@@ -332,11 +341,7 @@
         </div>
       {/if}
 
-      <div class="sfoot foot">
-        {#if backendDirty}<span class="dirty">Unsaved changes</span>{/if}
-        <button type="button" class="btn" disabled={!backendDirty} onclick={cancel} use:tooltip={{ label: 'Revert', key: 'esc' }}>Revert</button>
-        <button type="button" class="btn primary" disabled={busy || !backendDirty} onclick={() => saveBackend()} use:tooltip={{ label: 'Save', key: '⌘⏎' }}>Save</button>
-      </div>
+      <SettingsFooter dirty={backendDirty} {busy} onrevert={cancel} onsave={() => saveBackend()} revertKey="esc" />
 
       {#if ask}
         <div class="confirm" role="dialog" aria-modal="true" aria-label="Move tasks to Linear">
@@ -352,11 +357,7 @@
       <p class="muted lead">Publish to Notion (on a feature's page) creates one page per feature under this parent page.</p>
       <label class="line"><span class="lab">Parent page</span><input class="field grow" bind:value={notionPage} placeholder="Notion page URL or id" spellcheck="false" /></label>
       <p class="muted note">Share the page with your Notion integration. The token is in <button class="link" onclick={() => openSettings('integrations')}>Settings › Integrations</button>.</p>
-      <div class="sfoot foot">
-        {#if notionDirty}<span class="dirty">Unsaved changes</span>{/if}
-        <button type="button" class="btn" disabled={!notionDirty} onclick={revertNotion}>Revert</button>
-        <button type="button" class="btn primary" disabled={busy || !notionDirty} onclick={() => saveNotion()} use:tooltip={{ label: 'Save', key: '⌘⏎' }}>Save</button>
-      </div>
+      <SettingsFooter dirty={notionDirty} {busy} onrevert={revertNotion} onsave={() => saveNotion()} />
     {:else if section.id === 'mcp'}
       {#key spec?.server}<McpSettings project={pid} selected={spec?.server ?? null} />{/key}
     {/if}

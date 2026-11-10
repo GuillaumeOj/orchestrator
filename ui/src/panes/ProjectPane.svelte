@@ -4,7 +4,7 @@
   // workspace trust (J0), and removal with the guided cleanup (J11). Unmerged
   // work is never deleted without its own confirmation.
   // Keys (pane-local): f fetch, p load PRs, t trust, x remove project.
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import Menu from '../components/Menu.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import { activeAgents, app, closePane, confirm, openAgent, openDiff, openProjectSettings, openShell, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
@@ -116,7 +116,7 @@
   $effect(() => {
     if (!spec?.remove || !p) return;
     app.panes[paneId] = { ...app.panes[paneId], remove: false };
-    startRemoval();
+    untrack(startRemoval);
   });
 
   // The header's `⋯` (R4): Fetch, Shell, Diff main, Trust in a pane (untrusted only); keys that work in the pane.

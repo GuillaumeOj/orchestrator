@@ -1,5 +1,4 @@
 <script module>
-  export const WARN_DEFAULT = 1600;
   const MIN = 256;
   const MAX = 65536;
 
@@ -16,7 +15,7 @@
   // threshold `ui.memory_warn_mb` (default 1600, 256–65 536, validated here); the section warns when
   // the sample's total is above it. Under pressure: read-only text and a link to Pacing policy.
   // "Show in the status bar" and the Renderer card are not built (spec §3.1).
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { app, openSettings } from '../lib/app.svelte.js';
   import { mb } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
@@ -29,22 +28,24 @@
   };
 
   const m = $derived(app.data?.memory ?? null);
-  let warnAt = $state(WARN_DEFAULT);
-  let text = $state(String(WARN_DEFAULT));
+  let warnAt = $state(1600);
+  let text = $state('1600');
   let error = $state('');
   let saved = $state(false);
   let timer;
   let pacing = $state(null); // pacing_settings.now: the pressure level and the live cap
 
   onMount(async () => {
-    const v = await invoke('settings_get', { key: KEY }).catch(() => null);
-    if (Number.isInteger(v) && v >= MIN && v <= MAX) warnAt = v;
+    const [v, p] = await Promise.all([invoke('settings_get', { key: KEY }).catch(() => null), invoke('pacing_settings').catch(() => null)]);
+    if (!check(v)) warnAt = v;
     text = String(warnAt);
-    pacing = (await invoke('pacing_settings').catch(() => null))?.now ?? null;
+    pacing = p?.now ?? null;
   });
+  onDestroy(() => clearTimeout(timer));
 
   const above = $derived(!!m && m.total_mb > warnAt);
-  const level = $derived(LEVELS[pacing?.pressure] ?? (above ? LEVELS.warn : LEVELS.normal));
+  const pressure = $derived(LEVELS[pacing?.pressure] ? pacing.pressure : above ? 'warn' : 'normal');
+  const level = $derived(LEVELS[pressure]);
   // Segments in order: App, each agent with a sample (else one "agents" segment), shells.
   const parts = $derived.by(() => {
     if (!m) return [];
@@ -59,7 +60,7 @@
 
   async function commit() {
     const v = Number(text.trim());
-    const bad = text.trim() === '' ? check(NaN) : check(v);
+    const bad = check(v);
     if (bad) {
       error = bad;
       return;
@@ -90,17 +91,17 @@
         <span class="slab">Total</span>
         <div class="sctl bar-wrap">
           <div class="bar" role="img" aria-label="Memory in use: {parts.map((p) => `${p.label} ${mb(p.mb)}`).join(', ')}" class:warn={above}>
-            {#each parts as p (p.key)}<span data-seg={p.key} class="seg {p.cls}" style:width="{(p.mb / scale) * 100}%"></span>{/each}
+            {#each parts as p (p.key)}<span data-seg={p.key} class="mseg {p.cls}" style:width="{(p.mb / scale) * 100}%"></span>{/each}
           </div>
           <div class="legend">
-            {#each parts as p (p.key)}<span class="muted">{p.label} {Math.round(p.mb)}</span>{/each}
+            {#each parts as p (p.key)}<span class="muted">{p.label} {Math.round(p.mb)} MB</span>{/each}
           </div>
         </div>
       </div>
       <div class="srow">
         <span class="slab">Pressure</span>
         <span class="sctl">
-          <span class="badge" data-pressure={pacing?.pressure ?? (above ? 'warn' : 'normal')} style:color={level.color} style:border-color={level.color}><span aria-hidden="true">●</span> {level.label}</span>
+          <span class="badge" data-pressure={pressure} style:color={level.color} style:border-color={level.color}><span aria-hidden="true">●</span> {level.label}</span>
           {#if pacing}<span class="muted">live cap {pacing.governor_cap} · {pacing.live_autonomous} live</span>{/if}
         </span>
       </div>
@@ -155,25 +156,25 @@
   .bar.warn {
     outline: var(--border-width-default) solid var(--color-pacing-amber);
   }
-  .seg {
+  .mseg {
     height: 100%;
   }
-  .seg.app {
+  .mseg.app {
     background: var(--color-accent-default);
   }
-  .seg.a0 {
+  .mseg.a0 {
     background: var(--color-role-2, var(--color-status-queued));
   }
-  .seg.a1 {
+  .mseg.a1 {
     background: var(--color-role-3, var(--color-status-working));
   }
-  .seg.a2 {
+  .mseg.a2 {
     background: var(--color-role-4, var(--color-status-done));
   }
-  .seg.a3 {
+  .mseg.a3 {
     background: var(--color-role-5, var(--color-pacing-amber));
   }
-  .seg.sh {
+  .mseg.sh {
     background: var(--color-text-muted);
   }
   .legend {

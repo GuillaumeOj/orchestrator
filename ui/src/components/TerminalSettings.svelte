@@ -3,6 +3,7 @@
   // Appearance: the theme Select and the kitty-colours switch (autosaved, "Saved" for 2 s).
   // Terminal: what the kitty.conf import gave (read-only) and Open kitty.conf. The Renderer,
   // Editor command and Shells groups are not built (spec §3.1): nothing is rendered for them.
+  import { onDestroy } from 'svelte';
   import { app, openEditor, setKittyTheme, setTheme } from '../lib/app.svelte.js';
   import { tooltip } from '../lib/tooltip.js';
   import Select from './Select.svelte';
@@ -23,6 +24,7 @@
   const padding = $derived(`${kitty?.padding?.[0] ?? 0} px · ${(kitty?.opacity ?? 1).toFixed(2)}`);
   const unmapped = $derived(kitty?.unmapped ?? []);
 
+  let showUnmapped = $state(false);
   let saved = $state('');
   let timer;
   function confirmSaved(what) {
@@ -34,11 +36,11 @@
     setTheme(v === 'system' ? null : v);
     confirmSaved('theme');
   }
+  onDestroy(() => clearTimeout(timer));
   function toggleKitty(e) {
     setKittyTheme(e.currentTarget.checked);
     confirmSaved('kitty');
   }
-  let showUnmapped = $state(false);
 </script>
 
 <section class="sset" aria-label="Terminal and editor settings">
@@ -48,7 +50,7 @@
   <div class="scard" data-group="appearance">
     <h3>Appearance</h3>
     <div class="srow">
-      <span class="slab" id="th-l">Theme</span>
+      <span class="slab">Theme</span>
       <span class="sctl">
         <Select value={theme} options={THEMES} aria-label="Theme" onchange={pickTheme} />
         {#if saved === 'theme'}<span class="sok" role="status">✓ Saved</span>{/if}

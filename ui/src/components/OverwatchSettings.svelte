@@ -4,7 +4,8 @@
   // Each row saves on change (⏎ or blur) with `set_overwatch_settings`; the core
   // checks the values too, and its refusal shows under the field. The old value
   // stays applied until a save lands, and the message says which.
-  import { app, restartOverwatch } from '../lib/app.svelte.js';
+  import { onMount } from 'svelte';
+  import { app, getNotify, restartOverwatch, setNotify } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { MODEL_OPTIONS } from '../lib/options.js';
   import { overwatchOf, sectionStatus } from '../lib/overwatch.js';
@@ -108,20 +109,19 @@
   let notify = $state({ desktop: true, sound: true });
   let notifyNote = $state('');
   let notifyError = $state('');
-  $effect(() => {
-    invoke('settings_get', { key: 'notifications' })
-      .then((v) => (notify = { desktop: true, sound: true, ...(v ?? {}) }))
-      .catch(() => {});
+  let notifyTimer;
+  onMount(() => {
+    getNotify().then((v) => (notify = v));
+    return () => clearTimeout(notifyTimer);
   });
   async function toggleNotify(key, e) {
     const box = e.currentTarget;
-    const next = { ...notify, [key]: box.checked };
     notifyError = '';
     try {
-      await invoke('settings_set', { key: 'notifications', value: next });
-      notify = next;
+      notify = await setNotify(key, box.checked);
       notifyNote = key;
-      setTimeout(() => (notifyNote = ''), 2000);
+      clearTimeout(notifyTimer);
+      notifyTimer = setTimeout(() => (notifyNote = ''), 2000);
     } catch (err) {
       box.checked = !box.checked;
       notifyError = errText(err);
@@ -198,14 +198,14 @@
       </div>
     {/each}
     <h3 class="grp">Notifications</h3>
-    {#each [['desktop', 'Desktop notifications', 'A system notification when something needs you.'], ['sound', 'Sound', 'A sound with it.']] as [k, label, help] (k)}
+    {#each [['desktop', 'Desktop notifications', 'When a decision waits for you and the app is in the background.'], ['sound', 'Sound', '']] as [k, label, help] (k)}
       <div class="row" data-row="notify-{k}">
         <div class="what">
           <label class="lab" for="ow-n-{k}">{label}</label>
-          <p class="muted help">{help}</p>
+          {#if help}<p class="muted help">{help}</p>{/if}
         </div>
         <span class="num">
-          {#if notifyNote === k}<span class="ok" role="status">✓ Saved</span>{/if}
+          {#if notifyNote === k}<span class="sok" role="status">✓ Saved</span>{/if}
           <input id="ow-n-{k}" type="checkbox" role="switch" aria-checked={notify[k]} checked={notify[k]} onchange={(e) => toggleNotify(k, e)} />
         </span>
       </div>
@@ -238,10 +238,7 @@
     margin: var(--space-md) 0 0;
     font: var(--text-title);
   }
-  .ok {
-    color: var(--color-status-done);
-    font: var(--text-caption);
-  }
+
   .state {
     display: inline-flex;
     align-items: center;

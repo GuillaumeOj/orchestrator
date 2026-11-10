@@ -1434,6 +1434,19 @@ export async function governor(action, arg = null) {
   }
 }
 
+/** Reveals a path in Finder; a failure toasts. */
+export const revealPath = (path) => invoke('reveal_path', { path }).catch((e) => toast(errText(e), { kind: 'error' }));
+
+/** Copies text to the clipboard and toasts `Copied <what>`. */
+export async function copyText(text, what) {
+  try {
+    await navigator.clipboard?.writeText(text);
+    toast(`Copied ${what}`);
+  } catch (e) {
+    toast(errText(e), { kind: 'error' });
+  }
+}
+
 export function openInKitty(cwd) {
   invoke('open_in_kitty', { cwd }).catch((e) => toast(errText(e), { kind: 'error' }));
 }
@@ -2167,10 +2180,22 @@ if (typeof window !== 'undefined')
     if (!app.theme) app.themeRev++;
   });
 
+/** The notification settings: desktop and sound, both on unless stored off. */
+export async function getNotify() {
+  const cur = await invoke('settings_get', { key: 'notifications' }).catch(() => null);
+  return { desktop: true, sound: true, ...(cur ?? {}) };
+}
+
+/** Stores `key` on or off and returns the new settings; throws when the store refuses. */
+export async function setNotify(key, on) {
+  const next = { ...(await getNotify()), [key]: on };
+  await invoke('settings_set', { key: 'notifications', value: next });
+  return next;
+}
+
 /** Desktop notifications and their sound (both on by default), read by the core's notifier. */
 export async function toggleNotify(key) {
-  const cur = (await invoke('settings_get', { key: 'notifications' }).catch(() => null)) ?? {};
-  const next = { desktop: true, sound: true, ...cur };
+  const next = { ...(await getNotify()) };
   next[key] = !next[key];
   await invoke('settings_set', { key: 'notifications', value: next }).catch(() => {});
   toast(`${key === 'desktop' ? 'Desktop notifications' : 'Notification sound'} ${next[key] ? 'on' : 'off'}`);
