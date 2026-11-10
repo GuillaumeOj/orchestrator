@@ -35,10 +35,11 @@
     const mine = ++seq;
     try {
       const r = await invoke('project_detail', { id: p.id, withPrs });
-      if (mine !== seq) return null;
-      d = r;
-      err = null;
-      return r;
+      if (mine === seq) {
+        d = r;
+        err = null;
+      }
+      return r; // a stale response is not assigned to `d`, but its PRs are still shown
     } catch (e) {
       if (mine === seq) err = errText(e);
       return null;
