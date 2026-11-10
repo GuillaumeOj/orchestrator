@@ -570,7 +570,10 @@ describe('planner, banner, status bar, board', () => {
     await waitFor(() => getByText('role lead v1'));
     const effort = [...container.querySelectorAll('.inspector label')].find((l) => l.textContent.startsWith('effort'));
     await pick(effort, 'high');
-    expect(container.querySelector('[aria-label="Starter"]').textContent).toContain('Role lead is a starter.');
+    await waitFor(() => expect(document.body.querySelector('[role="menu"][aria-label="Starter"]')).toBeTruthy());
+    expect(document.body.querySelector('[role="menu"][aria-label="Starter"]').textContent).toContain(
+      'Role lead is a starter.',
+    );
     expect(calls.some(([c]) => c === 'role_save')).toBe(false);
     await fireEvent.keyDown(container.querySelector('.canvas-pane'), { key: 'Enter' });
     await waitFor(() =>

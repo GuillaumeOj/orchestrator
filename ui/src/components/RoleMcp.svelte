@@ -5,7 +5,7 @@
   // the role through `onsave` (role_save).
   import { openProjectSettings, openSettings } from '../lib/app.svelte.js';
   import { downgradeProblem, downgradeWarning, downgradeWhen, family, roleMcpNotes, toggleRef } from '../lib/ecosystem.js';
-  import { MODEL_ALIASES, MODEL_OPTIONS } from '../lib/options.js';
+  import { DOWNGRADE_OPTIONS, MODEL_ALIASES } from '../lib/options.js';
   import ConnBadge from './ConnBadge.svelte';
   import Select from './Select.svelte';
 
@@ -65,7 +65,7 @@
     {#if dg}
       <div class="line">
         to
-        <Select width="hug" aria-label="Downgrade to" value={dg.to} options={MODEL_OPTIONS} onchange={(to) => setDowngrade({ ...dg, to })} />
+        <Select width="hug" aria-label="Downgrade to" value={dg.to} options={DOWNGRADE_OPTIONS} onchange={(to) => setDowngrade({ ...dg, to })} />
         when
         <Select width="hug" aria-label="Downgrade when" value={dg.when} options={whenOptions} onchange={(when) => setDowngrade({ ...dg, when })} />
       </div>

@@ -727,7 +727,7 @@ export function findPane(pred) {
 /** Singleton panes (Mission control, Setup) open as a tab, or get focus. */
 export function openSingleton(type) {
   const existing = findPane((s) => s.type === type);
-  if (existing) return focusPane(existing);
+  if (existing) return showPane(existing);
   addPane({ type });
 }
 
@@ -838,10 +838,11 @@ function setWindow(next) {
   unlessDirty(apply);
 }
 
-/** Moves the focus back where it was before the window opened, else to the focused pane. */
-function restoreFocus(el) {
+/** Moves the focus back where it was before the window opened, else to the focused pane.
+ *  Not when the focus moved on meanwhile (a pane opened from the window took it). */
+function restoreFocus(el, was) {
   svelteTick().then(() => {
-    if (app.window) return;
+    if (app.window || app.focused !== was) return;
     if (el?.isConnected) el.focus();
     else if (app.focused) focusPane(app.focused);
   });
@@ -855,7 +856,7 @@ export function closeWindow(force = false) {
     const el = app.windowReturn;
     app.window = null;
     app.windowReturn = null;
-    restoreFocus(el);
+    restoreFocus(el, app.focused);
   };
   if (force) close();
   else unlessDirty(close);
@@ -864,6 +865,12 @@ export function closeWindow(force = false) {
 /** A pane opens (the palette above a window, a link in it): the window gives way, unless it has unsaved changes. */
 function leaveWindow() {
   if (app.window && !windowDirty()) closeWindow(true);
+}
+
+/** An open pane gets the focus (a jump, a link): like a new tab, it gives the window way. */
+function showPane(id) {
+  leaveWindow();
+  focusPane(id);
 }
 
 /** ⌘, and ⌘/: the window of that kind closes when it is open, else opens (replacing another). */
@@ -920,7 +927,7 @@ export function openReport(reportId = 'current') {
   const existing = findPane((s) => s.type === 'report');
   if (existing) {
     app.panes[existing] = { ...app.panes[existing], reportId: id, list };
-    return focusPane(existing);
+    return showPane(existing);
   }
   addPane({ type: 'report', reportId: id, list });
 }
@@ -1012,7 +1019,7 @@ export async function runInPane(run, title, projectId = null) {
 export function openProject(projectId) {
   app.selectedProject = projectId;
   const existing = findPane((s) => s.type === 'project' && s.projectId === projectId);
-  if (existing) return focusPane(existing);
+  if (existing) return showPane(existing);
   addPane({ type: 'project', projectId });
 }
 
@@ -1030,7 +1037,7 @@ export function openFeature(featureId, doc = null, anchor = null, timeline = nul
   if (existing) {
     if (doc) app.panes[existing] = { ...app.panes[existing], doc, anchor };
     if (timeline) app.panes[existing].timeline = timeline;
-    return focusPane(existing);
+    return showPane(existing);
   }
   const f = features().find((x) => x.id === featureId);
   addPane({
@@ -1058,7 +1065,7 @@ export function openBoard(projectId, taskId = null) {
   const existing = findPane((s) => s.type === 'board' && s.projectId === projectId);
   if (existing) {
     if (taskId != null) app.panes[existing] = { ...app.panes[existing], taskId };
-    return focusPane(existing);
+    return showPane(existing);
   }
   addPane({ type: 'board', projectId, taskId });
 }
@@ -1071,14 +1078,14 @@ export function openCanvas(teamId = null, projectId = null) {
   const existing = findPane(
     (s) => s.type === 'canvas' && (teamId ? s.teamId === teamId : (paneProject(s) ?? null) === (project ?? null)),
   );
-  if (existing) return focusPane(existing);
+  if (existing) return showPane(existing);
   addPane({ type: 'canvas', teamId, projectId: project });
 }
 
 /** FR-107: a worktree's diff against its base, one pane per worktree. */
 export function openDiff(projectId, path, branch = null) {
   const existing = findPane((s) => s.type === 'diff' && s.path === path);
-  if (existing) return focusPane(existing);
+  if (existing) return showPane(existing);
   addPane({ type: 'diff', projectId, path, branch });
 }
 
@@ -1120,11 +1127,11 @@ export function openSession(agentId, { watch = false, keepLive = false } = {}) {
   if (!over && !watch) return openAgent(agentId);
   const existing = findPane((s) => s.type === 'agent' && s.agentId === agentId);
   // `keepLive`: a tab you are typing in stays as it is (a link only brings it forward).
-  if (existing && keepLive && !app.panes[existing].watch) return focusPane(existing);
+  if (existing && keepLive && !app.panes[existing].watch) return showPane(existing);
   const from = app.focused;
   if (existing) {
     Object.assign(app.panes[existing], { watch: true, over: over ?? null, from });
-    return focusPane(existing);
+    return showPane(existing);
   }
   return addDockPane({
     type: 'agent',
@@ -1156,7 +1163,7 @@ export function leaveWatch(paneId) {
 /** An agent: a tab of the dock, focused (its tab is focused when it is open). */
 export function openAgent(agentId) {
   const existing = findPane((s) => s.type === 'agent' && s.agentId === agentId);
-  if (existing) return focusPane(existing);
+  if (existing) return showPane(existing);
   addDockPane({ type: 'agent', agentId, projectId: agent(agentId)?.project_id });
 }
 
@@ -1423,6 +1430,10 @@ export async function deleteFeature(featureId, removeWorktrees, discard) {
   await refresh();
   return r;
 }
+
+/** Pause all autonomous work: the planner, the palette and the Banner share this and its toast. */
+export const pauseAll = () =>
+  governor('pause_all').then((r) => (r !== undefined && toast('Paused all · Resume all from the palette'), r));
 
 export async function governor(action, arg = null) {
   try {
@@ -2057,7 +2068,7 @@ export function commands() {
     {
       id: 'governor.pause-all',
       label: 'Pause all autonomous work',
-      run: () => governor('pause_all').then(() => toast('Paused all · resumes on Resume all')),
+      run: pauseAll,
     },
     {
       id: 'governor.resume-all',
@@ -2265,6 +2276,23 @@ export function jumpTargets() {
  *  Its toast says what will be sent; the effect is said when the core pushes it. */
 export function decide(d, action, message = null) {
   if (app.pending.some((p) => p.item === d.id)) return;
+  // Always allow writes a rule: it asks once (Cancel · Always allow), then goes at once, with no undo window.
+  if (action === 'always') {
+    const project = projectName(d.subject?.project) ?? 'the project';
+    return confirm(
+      `Always allow "${d.payload?.always ?? 'this'}"?`,
+      `Adds a rule to ${project}'s policy file. Undo in Settings › Permissions.`,
+      () => {
+        if (app.pending.some((p) => p.item === d.id)) return;
+        app.pending = [
+          ...app.pending,
+          { item: d.id, action, message, at: Date.now() - UNDO_MS, toast: null, project: d.subject?.project ?? null },
+        ];
+        flushDecisions();
+      },
+      'Always allow',
+    );
+  }
   const t = toast(pendingToast(d, action), { ms: UNDO_MS, undo: true, item: d.id });
   app.pending = [
     ...app.pending,

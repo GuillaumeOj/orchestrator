@@ -17,8 +17,9 @@
    *             reason?: string, checked?: boolean, items?: any[], separator?: boolean, run?: () => void }} MenuItem
    */
   /** @type {{ items?: MenuItem[], onselect?: (item: MenuItem) => void, label?: string, disabled?: boolean,
-   *           tabindex?: number, trigger?: import('svelte').Snippet<[Record<string, any>]> }} */
-  let { items = [], onselect, label = 'More actions', disabled = false, tabindex = undefined, trigger } = $props();
+   *           tabindex?: number, heading?: string, hint?: string, onclose?: () => void,
+   *           trigger?: import('svelte').Snippet<[Record<string, any>]> }} */
+  let { items = [], onselect, label = 'More actions', disabled = false, tabindex = undefined, heading = '', hint = '', onclose, trigger } = $props();
 
   const uid = $props.id();
   const menuId = `${uid}-menu`;
@@ -80,13 +81,19 @@
   }
 
   /** Closes everything; `refocus` gives the keyboard back to the trigger. */
-  function close(refocus = true) {
+  function close(refocus = true, dismissed = true) {
     if (!open) return;
     open = false;
     sub = null;
     place = null; // measured afresh on the next open, never shown at a stale spot
     subPlace = null;
     if (refocus) triggerEl()?.focus();
+    if (dismissed) onclose?.(); // closed without running a row (Esc, a click outside); a run's own action follows
+  }
+
+  /** Closes the menu from outside (the state that opened it went away). */
+  export function hide() {
+    if (open) close(false, false);
   }
 
   /** Opens row `i`'s submenu; `focus` (the keyboard) moves into it, a hover leaves the keyboard on the row. */
@@ -113,7 +120,7 @@
 
   function run(item) {
     if (!item || item.disabled || item.separator) return;
-    close(true);
+    close(true, false);
     item.run?.();
     onselect?.(item);
   }
@@ -275,6 +282,8 @@
 
 {#if open}
   <div class="pop popover" id={menuId} role="menu" aria-label={label} tabindex="-1" bind:this={pop} use:portal style={place ? popoverStyle(place) : 'visibility:hidden'} onkeydown={(e) => onMenuKey(e, 0)} onclick={(e) => activate(0, rowIndex(e))} onpointermove={(e) => onRowMove(e, 0)}>
+    {#if heading}<div class="mh"><b>{heading}</b></div>{/if}
+    {#if hint}<p class="mhint muted">{hint}</p>{/if}
     {@render list(items, 0)}
   </div>
   {#if sub}
@@ -298,6 +307,15 @@
 
   .pop {
     min-width: 200px;
+  }
+  .mh {
+    padding: var(--space-xs) var(--space-sm);
+    font: var(--text-body-strong);
+  }
+  .mhint {
+    margin: 0;
+    padding: 0 var(--space-sm) var(--space-xs);
+    font: var(--text-caption);
   }
   .item.sub {
     background: var(--color-surface-raised);

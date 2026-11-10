@@ -137,13 +137,25 @@
     try {
       const r = await invoke('mcp_server_test', { id: s.id, project });
       await load();
-      if (draft?.server.id === r.id && !draft.isNew) draft.server = { ...draft.server, status: r.status, detail: r.detail, checked_at_ms: r.checked_at_ms };
+      if (draft?.server.id === r.id && !draft.isNew) {
+        // The test result is not an edit: a clean form stays clean (its base follows).
+        const clean = !hasChanges();
+        draft.server = { ...draft.server, status: r.status, detail: r.detail, checked_at_ms: r.checked_at_ms };
+        if (clean) draftBase = JSON.stringify(draft);
+      }
       if (r.status === 'connected') toast(`${r.name} connected`);
     } catch (e) {
       toast(`${s.name}: ${errText(e)}`, { kind: 'error' });
     } finally {
       busy = { ...busy, [s.id]: false };
     }
+  }
+
+  /** Revert: the form goes back to the stored entry (a new server's form is cleared). */
+  function revert() {
+    if (draft?.isNew) return (draft = null);
+    const s = servers.find((x) => x.id === draft?.server.id);
+    if (s) edit(s);
   }
 
   /** The registry entry as stored: the form's copy may carry edits not saved yet. */
@@ -316,7 +328,7 @@
         <p class="muted empty">No MCP servers yet. Add one with New server, or start a design preset: it adds Penpot.</p>
       {:else if view}
         <table>
-          <thead><tr><th>Name</th><th>Kind</th><th>Design tool</th><th>Used by</th><th>Status</th><th>{project ? 'For ' + project : 'Scope'}</th></tr></thead>
+          <thead><tr><th>Name</th><th>Kind</th><th>Design tool</th><th>Used by</th><th>Status</th><th>{project ? `For ${project}` : 'Scope'}</th></tr></thead>
           <tbody>
             {#each servers as s, i (s.id)}
               <tr class:sel={i === sel} class:editing={draft && !draft.isNew && draft.server.id === s.id} onclick={() => ((sel = i), edit(s))}>
@@ -436,7 +448,8 @@
             <button class="btn danger" use:tooltip={{ label: 'Delete', key: 'x' }} onclick={() => remove(s)}>Delete</button>
           {/if}
           <span class="grow"></span>
-          <button class="btn primary" use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={save}>Save</button>
+          <button class="btn" disabled={!hasChanges()} onclick={revert}>Revert</button>
+          <button class="btn primary" disabled={!hasChanges()} use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={save}>Save</button>
         </div>
       </aside>
     {/if}

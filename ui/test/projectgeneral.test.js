@@ -158,6 +158,33 @@ describe('General', () => {
     expect(windowDirty()).toBe(true);
   });
 
+  it('a dirty MCP overrides form guards the window too', async () => {
+    replies.mcp_registry_view = {
+      servers: [
+        {
+          id: 'penpot',
+          name: 'Penpot',
+          kind: 'stdio',
+          command: 'penpot',
+          args: [],
+          env: {},
+          status: 'connected',
+          used_by: [],
+        },
+      ],
+      project_overrides: {},
+    };
+    app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'mcp', server: 'penpot' };
+    const { container } = render(ProjectSettingsWindow);
+    await waitFor(() => expect(container.querySelector('aside input.field:not([disabled])')).toBeTruthy());
+    expect(windowDirty()).toBe(false);
+    await fireEvent.input(container.querySelector('aside input.field:not([disabled])'), {
+      target: { value: 'edited' },
+    });
+    await tick();
+    expect(windowDirty()).toBe(true);
+  });
+
   it('untrusted: the badge and Trust in a pane; trusted: the badge only', async () => {
     const { container } = await open();
     expect(container.querySelector('[data-trust="untrusted"]')).toBeTruthy();

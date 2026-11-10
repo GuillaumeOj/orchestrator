@@ -1,7 +1,7 @@
 <script>
   // Global banners (§9.3, Penpot 05 copy): one at a time, highest attention first;
   // the rest collapse to "+n". Error banners: a 4 px left bar in the status color.
-  import { app, claudeBusy, claudeUpdate, governor, openPlanner, openSettings, openSingleton } from '../lib/app.svelte.js';
+  import { app, claudeBusy, claudeUpdate, openPlanner, openSettings, openSingleton, pauseAll } from '../lib/app.svelte.js';
   import { bannerClaude } from '../lib/claude.js';
   import { when } from '../lib/format.js';
   import { counts } from '../lib/now.svelte.js';
@@ -56,7 +56,7 @@
     {#if top.claudeDetails}<button class="btn" onclick={() => openSettings('claude')}>Details</button>{/if}
     {#if top.planner}<button type="button" class="btn" use:tooltip={{ label: 'Week planner', key: '⌘; g' }} onclick={() => openPlanner()}>Week planner</button>{/if}
     {#if top.setup}<button class="btn" onclick={() => openSingleton('setup')}>Set up</button>{/if}
-    {#if top.pause}<button type="button" class="btn danger" onclick={() => governor('pause_all')}>Pause all</button>{/if}
+    {#if top.pause}<button type="button" class="btn danger" onclick={() => pauseAll()}>Pause all</button>{/if}
     {#if banners.length > 1}<span class="muted">+{banners.length - 1}</span>{/if}
     <button type="button" class="icon-btn" aria-label="Dismiss" use:tooltip={'Dismiss'} onclick={() => (dismissed[top.id] = true)}>{'\u{F0156}'}</button>
   </div>

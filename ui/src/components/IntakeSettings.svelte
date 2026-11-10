@@ -540,7 +540,7 @@
     {#if saveError}<p class="ferr" role="alert">Could not save: {saveError}</p>{/if}
     <div class="foot">
       <button class="btn primary" disabled={busy || !dirty || (touched && !valid)} use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={save}>{busy ? 'Saving…' : 'Save'}</button>
-      {#if dirty}<button class="btn ghost" onclick={revert}>Revert</button>{/if}
+      <button class="btn" disabled={!dirty} onclick={revert}>Revert</button>
     </div>
     <p class="muted hint">Issues labelled <code>orch</code> or <code>orch:*</code> are never listed: they are tasks of the task backend. · Pull requests are not listed. · Intake only reads: starting an item changes nothing at the source.</p>
   {/if}

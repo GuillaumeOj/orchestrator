@@ -7,7 +7,7 @@
   // (design-notes §3.3): backdrop, title bar with ×, focus trap; the keys are
   // in the buttons' tooltips.
   import { untrack } from 'svelte';
-  import { activeAgents, agent, app, contextProject, deleteAgent, deleteFeature, features, focusCard, openAgent, openFeature, openProject, openProjectSettings, openSettings, openUrl, projects, refresh, toast } from '../lib/app.svelte.js';
+  import { activeAgents, agent, app, contextProject, deleteAgent, deleteFeature, features, focusCard, openAgent, openFeature, openProjectSettings, openSettings, openUrl, projects, refresh, setContext, toast } from '../lib/app.svelte.js';
   import { designTools, effectiveServers, kindLabel, nodeList } from '../lib/ecosystem.js';
   import { clock, expandHome, shortPath } from '../lib/format.js';
   import { blockOf } from '../lib/inbox.js';
@@ -270,7 +270,7 @@
       close();
       path = '';
       await refresh();
-      openProject(p.id);
+      setContext(p.id); // the new project is the context: its empty state (Open <project> · New session) shows
       toast(`Added ${p.name} · fetching in the background`);
     } catch (e) {
       error = errText(e);

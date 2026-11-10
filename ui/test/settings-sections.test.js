@@ -188,6 +188,32 @@ describe('MCP overrides: Inherit / Override', () => {
     expect(seg(container, 'Inherit').getAttribute('aria-checked')).toBe('true');
   });
 
+  it('the form footer: Revert and Save are disabled until an edit; Revert restores the stored entry', async () => {
+    const { container } = await open();
+    const foot = (re) => [...container.querySelectorAll('aside .foot button')].find((b) => re.test(b.textContent));
+    expect(foot(/^Revert$/).disabled).toBe(true);
+    expect(foot(/^Save$/).disabled).toBe(true);
+    const cmd = container.querySelector('aside input.field:not([disabled])');
+    const was = cmd.value;
+    await fireEvent.input(cmd, { target: { value: `${was}x` } });
+    expect(foot(/^Revert$/).disabled).toBe(false);
+    expect(foot(/^Save$/).disabled).toBe(false);
+    await fireEvent.click(foot(/^Revert$/));
+    expect(container.querySelector('aside input.field:not([disabled])').value).toBe(was);
+    expect(foot(/^Revert$/).disabled).toBe(true);
+  });
+
+  it('Test does not dirty the form: Revert and Save stay disabled', async () => {
+    replies.mcp_server_test = { id: 'penpot', name: 'Penpot', status: 'connected', detail: 'ok', checked_at_ms: 1 };
+    const { container } = await open();
+    const foot = (re) => [...container.querySelectorAll('aside .foot button')].find((b) => re.test(b.textContent));
+    await fireEvent.click(foot(/^Test$/));
+    await waitFor(() => expect(calls.some(([c]) => c === 'mcp_server_test')).toBe(true));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(foot(/^Revert$/).disabled).toBe(true);
+    expect(foot(/^Save$/).disabled).toBe(true);
+  });
+
   it('the list row shows the state: Inherit without a project copy', async () => {
     const { container } = await open();
     expect(text(container.querySelector('[data-scope]'))).toBe('Inherit');

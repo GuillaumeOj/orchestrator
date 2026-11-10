@@ -69,6 +69,7 @@
   let files = $state(null); // FilesSettings (same)
   let intake = $state(null); // IntakeSettings (⌘⏎ saves)
   let general = $state(null); // ProjectGeneral (name and default branch: its own footer)
+  let mcp = $state(null); // McpSettings (the server form is the one with unsaved edits)
 
   const teamOptions = $derived((teams ?? []).map((t) => ({ value: t.key, label: `${t.key} · ${t.name}` })));
   const projectOptions = $derived([{ value: '', label: 'Any project' }, ...(states?.projects ?? []).map((p) => ({ value: p.id, label: p.name }))]);
@@ -88,6 +89,7 @@
     if (section.id === 'general') return !!general?.hasChanges();
     if (section.id === 'intake') return !!intake?.hasChanges();
     if (section.id === 'allocation') return !!alloc?.hasChanges();
+    if (section.id === 'mcp') return !!mcp?.hasChanges();
     return false;
   }
   // Discarding (closing or leaving the section): the fields go back to what is saved.
@@ -359,7 +361,7 @@
       <p class="muted note">Share the page with your Notion integration. The token is in <button class="link" onclick={() => openSettings('integrations')}>Settings › Integrations</button>.</p>
       <SettingsFooter dirty={notionDirty} {busy} onrevert={revertNotion} onsave={() => saveNotion()} />
     {:else if section.id === 'mcp'}
-      {#key spec?.server}<McpSettings project={pid} selected={spec?.server ?? null} />{/key}
+      {#key spec?.server}<McpSettings bind:this={mcp} project={pid} selected={spec?.server ?? null} />{/key}
     {/if}
   </div>
 </FloatingWindow>
