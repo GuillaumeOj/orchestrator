@@ -12,7 +12,7 @@
   // off-hours (or back in working hours). P3: model windows, off-hours bands.
   // the downgrade entries (FR-815, 816, 818, 819).
   import { onMount } from 'svelte';
-  import { app, closeWindow, confirm, governor, openReport, queueOffHours, toast } from '../lib/app.svelte.js';
+  import { app, closeWindow, confirm, governor, openReport, pauseAll, queueOffHours, toast } from '../lib/app.svelte.js';
   import { clock, dayHm, dayTime, duration, pct, pp, when } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { onTopics } from '../lib/now.svelte.js';
@@ -173,14 +173,14 @@
   }
 
   // §9 bug 5: the button and P are one action with one feedback.
-  const pauseAll = () => governor('pause_all').then(() => (toast('Paused all · Resume all from the palette'), load()));
+  const pause = () => pauseAll().then(load);
 
   function onKey(e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key;
     const act = (fn) => (e.preventDefault(), fn());
     if (k === 'S') return act(sprint);
-    if (k === 'P') return act(pauseAll);
+    if (k === 'P') return act(pause);
     if (k === 'u') return act(() => undo(v?.log[logSel]));
     if (k === 'j' || k === 'ArrowDown') return act(() => (logSel = Math.min((v?.log.length ?? 1) - 1, logSel + 1)));
     if (k === 'k' || k === 'ArrowUp') return act(() => (logSel = Math.max(0, logSel - 1)));
@@ -214,7 +214,7 @@
         <button class="btn" onclick={() => setEnforce(false)}>Shadow mode…</button>
       {/if}
       <button class="btn" onclick={sprint} use:tooltip={{ label: 'Sprint mode', key: 'S' }}>Sprint mode</button>
-      <button class="btn danger" onclick={pauseAll} use:tooltip={{ label: 'Pause all', key: 'P' }}>Pause all</button>
+      <button class="btn danger" onclick={pause} use:tooltip={{ label: 'Pause all', key: 'P' }}>Pause all</button>
       <button class="btn" onclick={() => openReport('current')} use:tooltip={{ label: 'Weekly report', key: 'R' }}>Weekly report</button>
       <button class="btn" onclick={() => (app.overlay = { kind: 'plan' })} use:tooltip={{ label: v.plan_set ? 'Edit plan' : 'Set this week’s plan', key: 'e' }}>{v.plan_set ? 'Edit plan…' : 'Set this week’s plan…'}</button>
     </div>

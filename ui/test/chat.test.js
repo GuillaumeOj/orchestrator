@@ -157,10 +157,13 @@ describe('exit criterion (spec §1a): every Inbox interaction is on a card', () 
     expect(app.pending).toHaveLength(0);
     expect(Object.values(app.panes)).toMatchObject([{ type: 'agent', agentId: 'back-1' }]);
     await fireEvent.click(getByText('Always allow'));
+    expect(app.overlay).toMatchObject({ kind: 'confirm', yes: 'Always allow' });
+    expect(app.pending).toHaveLength(0);
+    app.overlay.onYes();
     expect(app.pending.at(-1)).toMatchObject({ item: 'perm-1', action: 'always' });
     await fireEvent.click([...card(c, 'startup-front-1').querySelectorAll('button')].find((b) => text(b) === 'Delete'));
     expect(app.overlay).toMatchObject({ kind: 'confirm', text: 'Delete front-1?' });
-    expect(app.pending).toHaveLength(1);
+    expect(app.pending.some((p) => p.action === 'delete')).toBe(false);
     app.overlay.onYes();
     expect(app.pending.at(-1)).toMatchObject({ item: 'startup-front-1', action: 'delete' });
   });

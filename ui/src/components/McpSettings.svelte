@@ -146,6 +146,13 @@
     }
   }
 
+  /** Revert: the form goes back to the stored entry (a new server's form is cleared). */
+  function revert() {
+    if (draft?.isNew) return (draft = null);
+    const s = servers.find((x) => x.id === draft?.server.id);
+    if (s) edit(s);
+  }
+
   /** The registry entry as stored: the form's copy may carry edits not saved yet. */
   const savedEntry = (s) => servers.find((x) => x.id === s.id) ?? s;
 
@@ -316,7 +323,7 @@
         <p class="muted empty">No MCP servers yet. Add one with New server, or start a design preset: it adds Penpot.</p>
       {:else if view}
         <table>
-          <thead><tr><th>Name</th><th>Kind</th><th>Design tool</th><th>Used by</th><th>Status</th><th>{project ? 'For ' + project : 'Scope'}</th></tr></thead>
+          <thead><tr><th>Name</th><th>Kind</th><th>Design tool</th><th>Used by</th><th>Status</th><th>{project ? `For ${project}` : 'Scope'}</th></tr></thead>
           <tbody>
             {#each servers as s, i (s.id)}
               <tr class:sel={i === sel} class:editing={draft && !draft.isNew && draft.server.id === s.id} onclick={() => ((sel = i), edit(s))}>
@@ -436,7 +443,8 @@
             <button class="btn danger" use:tooltip={{ label: 'Delete', key: 'x' }} onclick={() => remove(s)}>Delete</button>
           {/if}
           <span class="grow"></span>
-          <button class="btn primary" use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={save}>Save</button>
+          <button class="btn" disabled={!hasChanges()} onclick={revert}>Revert</button>
+          <button class="btn primary" disabled={!hasChanges()} use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={save}>Save</button>
         </div>
       </aside>
     {/if}

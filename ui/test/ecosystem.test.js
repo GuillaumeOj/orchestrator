@@ -693,8 +693,12 @@ describe('role inspector, Design section and presets (T-7)', () => {
     await fireEvent.keyDown(pane, { key: 'Escape' }); // nothing selected: D is about the team
     await fireEvent.keyDown(pane, { key: 'D', shiftKey: true });
     await tick();
-    expect(container.querySelector('[aria-label="Duplicate"]').textContent).toContain('To shop-api');
-    await fireEvent.keyDown(pane, { key: '2' });
+    await waitFor(() => expect(document.body.querySelector('[role="menu"][aria-label="Duplicate"]')).toBeTruthy());
+    expect(document.body.querySelector('[role="menu"][aria-label="Duplicate"]').textContent).toContain('To shop-api');
+    // The shared Menu: rows with their keys right-aligned, a row's key runs it.
+    const dupMenu = document.body.querySelector('[role="menu"][aria-label="Duplicate"]');
+    expect([...dupMenu.querySelectorAll('.item .key')].map((k) => k.textContent.trim())).toEqual(['1', '2']);
+    await fireEvent.keyDown(dupMenu, { key: '2' });
     await waitFor(() =>
       expect(
         calls.some(
@@ -931,7 +935,8 @@ describe('role inspector, Design section and presets (T-7)', () => {
     const pane = container.querySelector('.canvas-pane');
     await fireEvent.keyDown(pane, { key: '=' }); // auto-layout: an edit
     await tick();
-    expect(container.querySelector('[aria-label="Starter"]').textContent).toContain(
+    await waitFor(() => expect(document.body.querySelector('[role="menu"][aria-label="Starter"]')).toBeTruthy());
+    expect(document.body.querySelector('[role="menu"][aria-label="Starter"]').textContent).toContain(
       'Starters are templates. Your changes will be saved as a copy.',
     );
     expect(calls.some(([c]) => c === 'team_save')).toBe(false);

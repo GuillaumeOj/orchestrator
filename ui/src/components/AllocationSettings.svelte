@@ -182,7 +182,7 @@
     <div class="skel" aria-busy="true"><i></i><i class="short"></i><i></i></div>
     <h3>Rest of the plan</h3>
     <div class="skel wide" aria-busy="true"><i></i><i></i><i></i><i></i></div>
-    <div class="foot"><button class="btn primary" disabled>Save</button><button class="btn ghost" disabled>Cancel</button></div>
+    <div class="foot"><button class="btn primary" disabled>Save</button><button class="btn" disabled>Revert</button></div>
   {:else}
     {#if !confirmed}
       <p class="box info">ⓘ No weekly plan yet. The core proposes an even split; nothing is applied until you set it up.</p>
@@ -226,7 +226,7 @@
       {/if}
       {#if pending}
         <p class="box warnbox">
-          <span>▲ From the save on, {name}'s agents are charged to other sessions. Cancel keeps it in the plan.</span>
+          <span>▲ From the save on, {name}'s agents are charged to other sessions. Revert keeps it in the plan.</span>
         </p>
       {/if}
     {/if}
@@ -252,7 +252,7 @@
       {#if saveError}<p class="box errbox" role="alert">✕ Couldn't save: {saveError}. Nothing was changed.</p>{/if}
       <div class="foot">
         <button class="btn primary" disabled={busy || !dirty || invalid} use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={save}>Save</button>
-        <button class="btn ghost" disabled={!dirty && !(draft && !view.allocation)} use:tooltip={{ label: 'Cancel', key: 'esc' }} onclick={cancel}>Cancel</button>
+        <button class="btn" disabled={!dirty && !(draft && !view.allocation)} use:tooltip={{ label: 'Revert', key: 'esc' }} onclick={cancel}>Revert</button>
       </div>
     {/if}
   {/if}

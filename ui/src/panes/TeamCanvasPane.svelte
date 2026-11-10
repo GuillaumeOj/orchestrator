@@ -5,9 +5,9 @@
   // ⏎ inspect, x delete, = auto-layout, u undo, ⌃r redo, ⇧R library (roles and teams), ⌘⏎ launch,
   // ⇧D duplicate the selected role (the team when none), then 1 global / 2 project (FR-306).
   // Every edit saves (debounced); the core validates and versions the team.
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
-  import Kbd from '../components/Kbd.svelte';
+  import Menu from '../components/Menu.svelte';
   import ModelSelect from '../components/ModelSelect.svelte';
   import RoleMcp from '../components/RoleMcp.svelte';
   import Select from '../components/Select.svelte';
@@ -46,6 +46,50 @@
   const issues = $derived(team ? (status === 'saved' ? serverIssues : C.localIssues(team)) : []);
   const badNodes = $derived(new Set(issues.map((i) => i.node).filter(Boolean)));
   const lines = $derived(status === 'saved' ? (saved?.rules ?? []) : []);
+  /** @type {any} */
+  let menu = $state();
+  /** The rows of the open action menu, by mode (keys as before: digits, g, ⏎). */
+  const menuSpec = $derived.by(() => {
+    const m = mode;
+    if (m?.kind === 'connect' && m.to)
+      return { label: 'Connect', heading: `Connect ${m.from} → ${m.to}`, hint: '', items: C.EDGE_KINDS.map((k, i) => ({ label: k, key: String(i + 1), run: () => connect(k) })) };
+    if (m?.kind === 'add')
+      return { label: 'Add a node', heading: 'Add a node', hint: '', items: roles.slice(0, 9).map((r, i) => ({ label: r.name ?? r.id, key: String(i + 1), run: () => addRole(r.id) })) };
+    if (m?.kind === 'starter')
+      return {
+        label: 'Starter',
+        heading: 'Starter · read-only',
+        hint: `${m.rolePatch ? `Role ${m.role.name}` : team?.name} is a starter. Starters are templates. Your changes will be saved as a copy.`,
+        items: [
+          ...(project ? [{ label: `Save in ${projectName}`, key: '⏎', run: () => copyStarter('project') }] : []),
+          { label: 'Global', key: project ? 'g' : '⏎', run: () => copyStarter('global') },
+        ],
+      };
+    if (m?.kind === 'dup') {
+      const w = m.what;
+      return {
+        label: 'Duplicate',
+        heading: `Duplicate ${w?.kind === 'role' ? `role ${w.role.id}` : (w?.team?.name ?? 'team')}`,
+        hint: 'A copy at version 1, as <id>-copy',
+        items: [
+          { label: 'To global', key: '1', run: () => duplicate('global', w) },
+          { label: `To ${projectName ?? 'a project (open the canvas from one)'}`, key: '2', disabled: !project, reason: 'Open the canvas from a project to duplicate into it', run: () => duplicate('project', w) },
+        ],
+      };
+    }
+    return { label: 'Actions', heading: '', hint: '', items: [] };
+  });
+  const menuOn = $derived(menuSpec.items.length > 0);
+  /** The menu went away without a row (Esc, a click outside): its mode ends, the canvas takes the keys back. */
+  function closeMode() {
+    if (menuOn) mode = null;
+    root?.focus();
+  }
+  $effect(() => {
+    if (menuOn) untrack(() => menu?.show());
+    else untrack(() => menu?.hide());
+  });
+
   const targets = $derived(mode?.kind === 'connect' && team ? C.targets(team, mode.from) : []);
   const project = $derived(spec?.projectId ?? null);
 
@@ -508,10 +552,6 @@
   <div class="mh"><b>{title}</b><span class="grow"></span><button type="button" class="icon-btn" aria-label="Cancel" use:tooltip={{ label: cancel, key: 'esc' }} onclick={() => ((mode = null), root?.focus())}>{'\u{F0156}'}</button></div>
 {/snippet}
 
-{#snippet opt(label, key, run, disabled = false)}
-  <button type="button" class="opt popover-row" role="menuitem" {disabled} onclick={run}><span>{label}</span><span class="key"><Kbd keys={key} /></span></button>
-{/snippet}
-
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <div class="canvas-pane" tabindex="0" data-pane-focus bind:this={root} onkeydown={onKey} role="application" aria-label="Team canvas">
   <header class="ch">
@@ -585,24 +625,18 @@
         </div>
       {/if}
 
-      {#if mode?.kind === 'connect'}
-        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="menu" tabindex="-1" aria-label="Connect">
-          {#if !mode.to}
-            {@render mhead(`Connect ${mode.from} → …`)}
-            <span class="muted">pick a target: its number or a click</span>
-          {:else}
-            {@render mhead(`Connect ${mode.from} → ${mode.to}`)}
-            {#each C.EDGE_KINDS as k, i (k)}{@render opt(k, String(i + 1), () => connect(k))}{/each}
-          {/if}
+      {#if mode?.kind === 'connect' && !mode.to}
+        <div class="menu pick" role="status">
+          {@render mhead(`Connect ${mode.from} → …`)}
+          <span class="muted">pick a target: its number or a click</span>
         </div>
-      {:else if mode?.kind === 'add'}
-        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="menu" tabindex="-1" aria-label="Add a node">
-          {@render mhead('Add a node')}
-          {#each roles.slice(0, 9) as r, i (r.id)}
-            <button type="button" class="opt popover-row" role="menuitem" onclick={() => addRole(r.id)}><AgentChip id={r.id} role={r.id} color={r.color} name={r.name} /><span class="key"><Kbd keys={String(i + 1)} /></span></button>
-          {/each}
-        </div>
-      {:else if mode?.kind === 'library'}
+      {/if}
+      <!-- The action menus (Connect's edge kind, Add a node, Starter, Duplicate) are the shared Menu,
+           opened on the anchor at the canvas corner while their mode is on. -->
+      <Menu bind:this={menu} items={menuSpec.items} heading={menuSpec.heading} hint={menuSpec.hint} label={menuSpec.label} onclose={closeMode}>
+        {#snippet trigger(attrs)}<button type="button" class="menu-anchor" tabindex="-1" aria-hidden="true" {...attrs}></button>{/snippet}
+      </Menu>
+      {#if mode?.kind === 'library'}
         <div class="menu lib" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Library">
           <b>Library</b>
           <div class="presets">
@@ -624,21 +658,6 @@
             {/each}
           </div>
           <button class="btn ghost" onclick={newTeam}>New team</button>
-        </div>
-      {:else if mode?.kind === 'starter'}
-        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="menu" tabindex="-1" aria-label="Starter">
-          {@render mhead('Starter · read-only', 'Cancel: the starter is left as it is')}
-          <span>{mode.rolePatch ? `Role ${mode.role.name}` : team?.name} is a starter. Starters are templates. Your changes will be saved as a copy.</span>
-          {#if project}{@render opt(`Save in ${projectName}`, '⏎', () => copyStarter('project'))}{/if}
-          {@render opt('Global', project ? 'g' : '⏎', () => copyStarter('global'))}
-        </div>
-      {:else if mode?.kind === 'dup'}
-        {@const w = mode.what}
-        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="menu" tabindex="-1" aria-label="Duplicate">
-          {@render mhead(`Duplicate ${w?.kind === 'role' ? `role ${w.role.id}` : (w?.team?.name ?? 'team')}`)}
-          {@render opt('To global', '1', () => duplicate('global', w))}
-          {@render opt(`To ${projectName ?? 'a project (open the canvas from one)'}`, '2', () => duplicate('project', w), !project)}
-          <span class="muted">A copy at version 1, as &lt;id&gt;-copy</span>
         </div>
       {:else if mode?.kind === 'import'}
         <div class="menu lib" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Import a team">
@@ -877,6 +896,17 @@
     border: var(--border-width-default) solid var(--color-border-strong);
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-overlay);
+  }
+  .menu-anchor {
+    position: absolute;
+    right: var(--space-lg);
+    top: var(--space-lg);
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    border: 0;
+    background: none;
+    pointer-events: none;
   }
   .menu.lib {
     width: 320px;

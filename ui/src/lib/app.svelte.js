@@ -1424,6 +1424,10 @@ export async function deleteFeature(featureId, removeWorktrees, discard) {
   return r;
 }
 
+/** Pause all autonomous work: the planner, the palette and the Banner share this and its toast. */
+export const pauseAll = () =>
+  governor('pause_all').then((r) => (r !== undefined && toast('Paused all · Resume all from the palette'), r));
+
 export async function governor(action, arg = null) {
   try {
     const r = await invoke('governor_act', { action, arg });
@@ -2057,7 +2061,7 @@ export function commands() {
     {
       id: 'governor.pause-all',
       label: 'Pause all autonomous work',
-      run: () => governor('pause_all').then(() => toast('Paused all · resumes on Resume all')),
+      run: pauseAll,
     },
     {
       id: 'governor.resume-all',
@@ -2265,6 +2269,23 @@ export function jumpTargets() {
  *  Its toast says what will be sent; the effect is said when the core pushes it. */
 export function decide(d, action, message = null) {
   if (app.pending.some((p) => p.item === d.id)) return;
+  // Always allow writes a rule: it asks once (Cancel · Always allow), then goes at once, with no undo window.
+  if (action === 'always') {
+    const project = d.subject?.project ?? 'the project';
+    return confirm(
+      `Always allow "${d.payload?.always ?? 'this'}"?`,
+      `Adds a rule to ${project}'s policy file. Undo in Settings › Permissions.`,
+      () => {
+        if (app.pending.some((p) => p.item === d.id)) return;
+        app.pending = [
+          ...app.pending,
+          { item: d.id, action, message, at: Date.now() - UNDO_MS, toast: null, project: d.subject?.project ?? null },
+        ];
+        flushDecisions();
+      },
+      'Always allow',
+    );
+  }
   const t = toast(pendingToast(d, action), { ms: UNDO_MS, undo: true, item: d.id });
   app.pending = [
     ...app.pending,
