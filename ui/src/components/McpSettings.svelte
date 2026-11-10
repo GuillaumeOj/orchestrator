@@ -137,7 +137,12 @@
     try {
       const r = await invoke('mcp_server_test', { id: s.id, project });
       await load();
-      if (draft?.server.id === r.id && !draft.isNew) draft.server = { ...draft.server, status: r.status, detail: r.detail, checked_at_ms: r.checked_at_ms };
+      if (draft?.server.id === r.id && !draft.isNew) {
+        // The test result is not an edit: a clean form stays clean (its base follows).
+        const clean = !hasChanges();
+        draft.server = { ...draft.server, status: r.status, detail: r.detail, checked_at_ms: r.checked_at_ms };
+        if (clean) draftBase = JSON.stringify(draft);
+      }
       if (r.status === 'connected') toast(`${r.name} connected`);
     } catch (e) {
       toast(`${s.name}: ${errText(e)}`, { kind: 'error' });

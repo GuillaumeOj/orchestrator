@@ -23,9 +23,8 @@ export const CHORDS = {
 /** Commands whose key belongs to the chat column, no chord (P4.4 notes §11.4). */
 const LOCAL_KEYS = { 'decisions.search': '/' };
 
-/** Leader sequences: ⌘; then the key. */
-/** Single pane (design-notes §4.1): no split, zoom or left/right focus; j / k
- *  move between the workspace and the dock. */
+/** Leader sequences: ⌘; then the key. Single pane (design-notes §4.1): no split,
+ *  zoom or left/right focus; j / k move between the workspace and the dock. */
 export const LEADER = {
   j: 'focus.down',
   k: 'focus.up',

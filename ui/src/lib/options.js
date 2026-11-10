@@ -13,6 +13,9 @@ export const MODEL_ALIASES = ['opus', 'sonnet', 'haiku', 'fable'];
 /** Required-value model pickers (Overwatch model, a downgrade target): the aliases only. */
 export const MODEL_OPTIONS = plain(MODEL_ALIASES);
 
+/** A downgrade goes to a cheaper model: opus, sonnet, haiku (no fable). */
+export const DOWNGRADE_OPTIONS = MODEL_OPTIONS.filter((m) => m.value !== 'fable');
+
 /** A model picker with no custom id (new session): default, then the aliases. */
 export const MODEL_CHOICES = [{ value: '', label: 'default' }, ...MODEL_OPTIONS];
 

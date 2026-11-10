@@ -5,7 +5,7 @@
   // Worktrees (root only: "remove merged automatically" is not built) and the danger zone.
   import { onMount } from 'svelte';
   import { app, askRemoveProject, copyText, openInKitty, openTrust, projects, refresh, revealPath, toast } from '../lib/app.svelte.js';
-  import { dayTime, shortPath } from '../lib/format.js';
+  import { dayTime, remoteLabel, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { tooltip } from '../lib/tooltip.js';
   import Select from './Select.svelte';
@@ -142,7 +142,7 @@
       {#if remote}
         <div class="srow" data-row="remote">
           <span class="slab">Remote</span>
-          <span class="sctl"><span>{remote.name} · <span class="mono">{remote.url.replace(/^(https?:\/\/|ssh:\/\/|git@)/, '').replace(':', '/').replace(/\.git$/, '')}</span></span></span>
+          <span class="sctl"><span>{remote.name} · <span class="mono">{remoteLabel(remote.url)}</span></span></span>
         </div>
       {/if}
       <div class="srow">

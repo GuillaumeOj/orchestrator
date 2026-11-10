@@ -98,3 +98,11 @@ export const expandHome = (path, home) =>
 /** Token counts: "63 k", "1.2 M". */
 export const tokens = (n) =>
   n >= 1e6 ? `${(n / 1e6).toFixed(1)} M` : n >= 1e3 ? `${Math.round(n / 1e3)} k` : String(n);
+
+/** A git remote as a short label: `git@host:owner/repo.git` → `host/owner/repo`; a URL keeps its
+ *  host (and port) and path, without scheme, user or `.git`. */
+export function remoteLabel(url) {
+  const scp = /^[\w.-]+@([^:/]+):(?!\d+\/)(.+)$/.exec(url);
+  const rest = scp ? `${scp[1]}/${scp[2]}` : url.replace(/^[a-z+]+:\/\//i, '').replace(/^[^@/]+@/, '');
+  return rest.replace(/\.git$/, '');
+}

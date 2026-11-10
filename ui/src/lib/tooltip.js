@@ -82,6 +82,9 @@ function show(node, p) {
   if (owner && owner !== node) hide(owner);
   const t = tipEl();
   fill(t, p);
+  // Measured from the corner: at the last spot its width is cut to what the window has left of it.
+  t.style.top = '0px';
+  t.style.left = '0px';
   t.hidden = false;
   const r = node.getBoundingClientRect();
   const { top, left, above } = placeTip(r, t.offsetWidth, t.offsetHeight, window.innerWidth, window.innerHeight);

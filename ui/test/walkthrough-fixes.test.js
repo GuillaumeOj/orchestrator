@@ -61,3 +61,28 @@ describe('Pause all (D-3)', () => {
     ]);
   });
 });
+
+describe('T-324 review fixes', () => {
+  it('remoteLabel: https, ssh with a port, scp-like', async () => {
+    const { remoteLabel } = await import('../src/lib/format.js');
+    expect(remoteLabel('https://github.com/acme/shop.git')).toBe('github.com/acme/shop');
+    expect(remoteLabel('ssh://git@git.example.com:2222/acme/shop.git')).toBe('git.example.com:2222/acme/shop');
+    expect(remoteLabel('git@github.com:acme/shop.git')).toBe('github.com/acme/shop');
+  });
+
+  it('a downgrade goes to opus, sonnet or haiku only; the other model pickers keep fable', async () => {
+    const { DOWNGRADE_OPTIONS, MODEL_OPTIONS } = await import('../src/lib/options.js');
+    expect(DOWNGRADE_OPTIONS.map((o) => o.value)).toEqual(['opus', 'sonnet', 'haiku']);
+    expect(MODEL_OPTIONS.map((o) => o.value)).toContain('fable');
+  });
+
+  it('opening an open pane from a floating window closes the window and focuses the pane', async () => {
+    app.panes = { a1: { type: 'agent', agentId: 'back-1', title: 'back-1' } };
+    app.layout = { kind: 'leaf', id: 'l1', tabs: [], active: null };
+    app.dock = { open: true, height: 0.45, tabs: ['a1'], active: null, v: 2 };
+    app.window = { kind: 'settings', section: 'claude' };
+    A.openAgent('back-1');
+    expect(app.window).toBeNull();
+    expect(app.focused).toBe('a1');
+  });
+});
