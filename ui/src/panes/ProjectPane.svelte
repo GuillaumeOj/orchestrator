@@ -27,15 +27,24 @@
   let busy = $state(null);
   let removal = $state(null); // J11: { plan, agents, discard: { [path]: bool }, history, removeMerged }
 
-  async function load() {
-    if (!p) return;
+  // One path for every `project_detail`: a response older than the latest request
+  // (or than a local removal) is dropped, so a slow reload can't bring a removed row back.
+  let seq = 0;
+  async function fetchDetail(withPrs) {
+    if (!p) return null;
+    const mine = ++seq;
     try {
-      d = await invoke('project_detail', { id: p.id, withPrs: false });
+      const r = await invoke('project_detail', { id: p.id, withPrs });
+      if (mine !== seq) return null;
+      d = r;
       err = null;
+      return r;
     } catch (e) {
-      err = errText(e);
+      if (mine === seq) err = errText(e);
+      return null;
     }
   }
+  const load = () => fetchDetail(false);
   // Refetched when the core says the project changed (no poll).
   onMount(() => onTopics([`project:${spec.projectId}`], load));
 
@@ -61,8 +70,8 @@
 
   const loadPrs = () =>
     act('prs', async () => {
-      d = await invoke('project_detail', { id: p.id, withPrs: true });
-      prs = d.prs;
+      const r = await fetchDetail(true);
+      if (r) prs = r.prs;
     }, false);
 
   const VERDICT = {
@@ -85,6 +94,8 @@
     const risky = !w.safe_to_remove;
     const run = (discard) => act('wt', async () => {
       await invoke('worktree_remove', { project: p.id, path: w.path, deleteBranch: true, discard });
+      seq++; // a reload that started before the removal must not bring the row back
+      if (d) d = { ...d, worktrees: d.worktrees.filter((x) => x.path !== w.path) };
       toast(`Removed ${short(w.path)}`);
     });
     if (!risky) return confirm(`Remove worktree ${w.branch ?? ''}?`, `${short(w.path)} and its branch. Its work is merged into ${p.default_branch}.`, () => run(false), 'Remove');
@@ -189,11 +200,11 @@
             <tr>
               <td class="mono">{w.branch ?? '—'}</td>
               <td class="mono">{short(w.path)}</td>
-              <td>{verdict(w)}{unmerged(w) ? ' · unmerged work' : ''}{w.row?.agent_id ? ` · ${w.row.agent_id}` : ''}{w.locked ? ' · locked' : ''}</td>
+              <td>{verdict(w)}{unmerged(w) ? ' · unmerged work' : ''}{w.in_use_by?.length ? ` · used by ${w.in_use_by.join(', ')}` : w.row?.agent_id ? ` · ${w.row.agent_id}` : ''}{w.locked ? ' · locked' : ''}</td>
               <td>
                 <span class="head-acts">
                   <button type="button" class="icon-btn" aria-label="Diff" use:tooltip={'Diff'} onclick={() => openDiff(p.id, w.path, w.branch)}>±</button>
-                  <button type="button" class="icon-btn danger" aria-label="Remove worktree…" disabled={!!busy} use:tooltip={'Remove worktree…'} onclick={() => removeWorktree(w)}>{'\u{F01B4}'}</button>
+                  <button type="button" class="icon-btn danger" aria-label="Remove worktree…" disabled={!!busy || !!w.in_use_by?.length} use:tooltip={w.in_use_by?.length ? `used by ${w.in_use_by.join(', ')}: archive or kill it first` : 'Remove worktree…'} onclick={() => removeWorktree(w)}>{'\u{F01B4}'}</button>
                 </span>
               </td>
             </tr>
