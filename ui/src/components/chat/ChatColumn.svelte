@@ -876,7 +876,7 @@
           if (query) query = '';
           else (searchOpen = false), feed?.focus();
         }} />
-        <button class="iconbtn" aria-label="Clear the search" use:tooltip={{ label: 'Clear', key: 'esc' }} onclick={() => (query ? (query = '') : ((searchOpen = false), feed?.focus()))}>×</button>
+        <button class="iconbtn" aria-label={query ? 'Clear the search' : 'Close the search'} use:tooltip={{ label: query ? 'Clear' : 'Close', key: 'esc' }} onclick={() => (query ? (query = '') : ((searchOpen = false), feed?.focus()))}>×</button>
       </div>
     {:else}
       <h2 class="title">{TITLE}</h2>

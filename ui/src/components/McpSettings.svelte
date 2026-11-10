@@ -146,6 +146,55 @@
     }
   }
 
+  /** The registry entry as stored: the form's copy may carry edits not saved yet. */
+  const savedEntry = (s) => servers.find((x) => x.id === s.id) ?? s;
+
+  /** Inherit / Override reload the form: unsaved edits go only after a confirm. */
+  function discardFirst(s, run) {
+    if (!hasChanges()) return run();
+    confirm(`Discard the unsaved changes to ${s.name}?`, 'The form reloads on the stored entry.', run, 'Discard');
+  }
+
+  /** Override: a project-scoped copy of the global server (its own env); the form opens on it. */
+  function setOverride(s) {
+    if (s.scope) return;
+    discardFirst(s, async () => {
+      const g = savedEntry(s);
+      try {
+        const r = await invoke('mcp_server_save', { server: serverForSave($state.snapshot(g)), scope: { kind: 'project', id: project } });
+        toast(`${project} has its own ${r.name}`);
+        await load();
+        sel = Math.max(0, servers.findIndex((x) => x.id === r.id));
+        edit(servers[sel] ?? r);
+      } catch (e) {
+        toast(`${s.name}: ${errText(e)}`, { kind: 'error' });
+      }
+    });
+  }
+
+  /** Inherit: the project copy goes (behind a confirm when it differs from the global entry). */
+  function setInherit(s) {
+    if (!s.scope) return;
+    const own = serverForSave($state.snapshot(savedEntry(s)));
+    const global = (view?.servers ?? []).find((x) => x.id === s.id);
+    const differs = !global || JSON.stringify(own) !== JSON.stringify(serverForSave($state.snapshot(global)));
+    const run = async () => {
+      try {
+        const r = await invoke('mcp_server_delete', { id: s.id, scope: { kind: 'project', id: project } });
+        if (r?.deleted === false || r?.used_by?.length) return toast(`${s.name} is used by roles of ${project}`, { kind: 'error' });
+        toast(`${project} uses the global ${s.name}`);
+        await load();
+        sel = Math.max(0, servers.findIndex((x) => x.id === s.id));
+        if (servers[sel]) edit(servers[sel]);
+        else draft = null;
+      } catch (e) {
+        toast(`${s.name}: ${errText(e)}`, { kind: 'error' });
+      }
+    };
+    if (!differs) return discardFirst(s, run);
+    confirm(`Use the global ${s.name} in ${project}?`, `${project}'s own copy of ${s.name}, with its own settings, is deleted.`, run, 'Inherit');
+  }
+
   function remove(s) {
     if (!s) return;
     const scope = scopeOf(s.scope);
@@ -267,7 +316,7 @@
         <p class="muted empty">No MCP servers yet. Add one with New server, or start a design preset: it adds Penpot.</p>
       {:else if view}
         <table>
-          <thead><tr><th>Name</th><th>Kind</th><th>Design tool</th><th>Used by</th><th>Status</th><th>Scope</th></tr></thead>
+          <thead><tr><th>Name</th><th>Kind</th><th>Design tool</th><th>Used by</th><th>Status</th><th>{project ? 'For ' + project : 'Scope'}</th></tr></thead>
           <tbody>
             {#each servers as s, i (s.id)}
               <tr class:sel={i === sel} class:editing={draft && !draft.isNew && draft.server.id === s.id} onclick={() => ((sel = i), edit(s))}>
@@ -279,7 +328,7 @@
                   <ConnBadge status={s.status} connector={s.kind === 'connector'} busy={busy[s.id]} />
                   {#if s.status === 'needs_auth' && s.kind !== 'stdio'}<button class="link" onclick={(e) => (e.stopPropagation(), reconnect(s))}>Reconnect</button>{/if}
                 </td>
-                <td class="muted">{s.scope ? `${s.scope} override` : 'Global'}</td>
+                <td class="muted" data-scope>{project ? (s.scope ? 'Override' : 'Inherit') : s.scope ? `${s.scope} override` : 'Global'}</td>
               </tr>
             {/each}
           </tbody>
@@ -368,8 +417,17 @@
           </div>
         {/if}
 
-        {#if project}
-          <label class="ck"><input type="checkbox" bind:checked={draft.override} disabled={!draft.isNew && !!s.scope} /> Override for {project}</label>
+        {#if project && !draft.isNew}
+          <div class="kinds" data-override>
+            <span>this project</span>
+            <span class="seg" role="radiogroup" aria-label="{s.name} in {project}">
+              <button type="button" role="radio" aria-checked={!s.scope} class:on={!s.scope} onclick={() => setInherit(s)}>Inherit</button>
+              <button type="button" role="radio" aria-checked={!!s.scope} class:on={!!s.scope} onclick={() => setOverride(s)}>Override</button>
+            </span>
+          </div>
+          <p class="note muted">{s.scope ? `${project} has its own copy of ${s.name}, with its own env.` : `${project} uses the global ${s.name} as it is.`}</p>
+        {:else if project}
+          <label class="ck"><input type="checkbox" bind:checked={draft.override} /> Override for {project}</label>
         {/if}
         {#if problem}<p class="err">{problem}</p>{/if}
         <div class="foot">

@@ -87,12 +87,14 @@ export function ciWord(ci) {
 }
 
 /** The review state after the position (review-done state), when GitHub gave one: `approved`. */
-export const reviewWord = (decision) =>
-  ({
+const REVIEW = new Map(
+  Object.entries({
     APPROVED: { text: 'approved', color: OK },
     CHANGES_REQUESTED: { text: 'changes requested', color: ATTN },
     REVIEW_REQUIRED: { text: 'review required', color: MUTED },
-  })[decision] ?? null;
+  }),
+);
+export const reviewWord = (decision) => REVIEW.get(decision) ?? null;
 
 /** The popover's footer: `+N more on GitHub ↗` when the core capped the list. */
 export const ciFooter = (ci) =>

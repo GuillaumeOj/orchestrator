@@ -376,7 +376,7 @@ describe('Settings pane', () => {
     expect(getByText('New MCP server')).toBeTruthy();
   });
 
-  it('sections not designed yet say where to edit', async () => {
+  it('Terminal & editor is a designed section (no placeholder)', async () => {
     replies.integrations_view = { items: [] };
     app.window = { kind: 'settings', section: 'integrations' };
     const { container, getByText } = render(SettingsWindow);
@@ -386,7 +386,8 @@ describe('Settings pane', () => {
       await tick();
     }
     expect(app.window.section).toBe('terminal');
-    expect(getByText(/Not designed yet/)).toBeTruthy();
+    expect(getByText('Appearance')).toBeTruthy();
+    expect(container.textContent).not.toContain('Not designed yet');
   });
 });
 

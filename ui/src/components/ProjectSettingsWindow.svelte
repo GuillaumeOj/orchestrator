@@ -36,7 +36,9 @@
   import FloatingWindow from './FloatingWindow.svelte';
   import IntakeSettings from './IntakeSettings.svelte';
   import McpSettings from './McpSettings.svelte';
+  import ProjectGeneral from './ProjectGeneral.svelte';
   import Select from './Select.svelte';
+  import SettingsFooter from './SettingsFooter.svelte';
 
   const spec = $derived(app.window);
   // The window is for one project: a new project mounts a new window.
@@ -66,6 +68,7 @@
   let alloc = $state(null); // AllocationSettings (forwards the keys)
   let files = $state(null); // FilesSettings (same)
   let intake = $state(null); // IntakeSettings (⌘⏎ saves)
+  let general = $state(null); // ProjectGeneral (name and default branch: its own footer)
 
   const teamOptions = $derived((teams ?? []).map((t) => ({ value: t.key, label: `${t.key} · ${t.name}` })));
   const projectOptions = $derived([{ value: '', label: 'Any project' }, ...(states?.projects ?? []).map((p) => ({ value: p.id, label: p.name }))]);
@@ -82,14 +85,23 @@
   function sectionDirty() {
     if (section.id === 'backend') return backendDirty || !!ask;
     if (section.id === 'notion') return notionDirty;
+    if (section.id === 'general') return !!general?.hasChanges();
     if (section.id === 'intake') return !!intake?.hasChanges();
     if (section.id === 'allocation') return !!alloc?.hasChanges();
     return false;
   }
   // Discarding (closing or leaving the section): the fields go back to what is saved.
-  onMount(() => guardWindow(sectionDirty, () => (dirty || ask) && cancel()));
+  /** Discarding the shown section's changes. */
+  function sectionRevert() {
+    if (section.id === 'general') general?.revert();
+    else if (dirty || ask) cancel();
+  }
+  onMount(() => guardWindow(sectionDirty, sectionRevert));
 
   async function load() {
+    // The three reads are independent: started together.
+    const board = invoke('board_view', { project: pid }).catch(() => null);
+    const ints = invoke('integrations_view').catch(() => null);
     try {
       saved = await invoke('project_settings', { project: pid });
       error = null;
@@ -100,10 +112,10 @@
       error = errText(e);
     }
     // The last sync, from the Board's view (kept by the core across restarts).
-    const bv = await invoke('board_view', { project: pid }).catch(() => null);
+    const bv = await board;
     if (bv?.last_sync && bv.last_sync_at_ms) last = { report: bv.last_sync, at: bv.last_sync_at_ms };
     if (bv?.last_sync_error) syncErr = [`Last sync ${bv.last_sync_at_ms ? `${clock(bv.last_sync_at_ms)} ` : ''}failed: ${bv.last_sync_error}`];
-    const iv = await invoke('integrations_view').catch(() => null);
+    const iv = await ints;
     linearInt = iv?.items?.find((i) => i.id === 'linear') ?? null;
     if (kind === 'linear') loadTeams();
   }
@@ -228,6 +240,7 @@
       e.preventDefault();
       if (section.id === 'backend') saveBackend();
       else if (section.id === 'notion') saveNotion();
+      else if (section.id === 'general') general?.save();
       return;
     }
     // Section keys work after a click on a segment or a button; not while typing or picking.
@@ -253,7 +266,9 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <!-- data-pane-focus: where a section puts the focus back when its button goes away (it keeps the keys). -->
   <div class="ps" tabindex="-1" data-pane-focus bind:this={root} onkeydown={onKey}>
-    {#if section.id === 'allocation'}
+    {#if section.id === 'general'}
+      <ProjectGeneral bind:this={general} project={pid} />
+    {:else if section.id === 'allocation'}
       <AllocationSettings bind:this={alloc} project={pid} {name} />
     {:else if section.id === 'files'}
       <FilesSettings bind:this={files} project={pid} {name} />
@@ -326,10 +341,7 @@
         </div>
       {/if}
 
-      <div class="foot">
-        <button class="btn primary" disabled={busy || !backendDirty} onclick={() => saveBackend()} use:tooltip={{ label: 'Save', key: '⌘⏎' }}>Save</button>
-        <button class="btn ghost" disabled={!backendDirty} onclick={cancel} use:tooltip={{ label: 'Revert', key: 'esc' }}>Revert</button>
-      </div>
+      <SettingsFooter dirty={backendDirty} {busy} onrevert={cancel} onsave={() => saveBackend()} revertKey="esc" />
 
       {#if ask}
         <div class="confirm" role="dialog" aria-modal="true" aria-label="Move tasks to Linear">
@@ -345,15 +357,9 @@
       <p class="muted lead">Publish to Notion (on a feature's page) creates one page per feature under this parent page.</p>
       <label class="line"><span class="lab">Parent page</span><input class="field grow" bind:value={notionPage} placeholder="Notion page URL or id" spellcheck="false" /></label>
       <p class="muted note">Share the page with your Notion integration. The token is in <button class="link" onclick={() => openSettings('integrations')}>Settings › Integrations</button>.</p>
-      <div class="foot">
-        <button class="btn primary" disabled={busy || !notionDirty} onclick={() => saveNotion()} use:tooltip={{ label: 'Save', key: '⌘⏎' }}>Save</button>
-        <button class="btn ghost" disabled={!notionDirty} onclick={revertNotion}>Revert</button>
-      </div>
+      <SettingsFooter dirty={notionDirty} {busy} onrevert={revertNotion} onsave={() => saveNotion()} />
     {:else if section.id === 'mcp'}
       {#key spec?.server}<McpSettings project={pid} selected={spec?.server ?? null} />{/key}
-    {:else}
-      <h2>{section.label}</h2>
-      <p class="muted">Not designed yet. The current values are editable from the palette (⌘K).</p>
     {/if}
   </div>
 </FloatingWindow>
@@ -471,11 +477,6 @@
   }
   .skel i.short {
     width: 70%;
-  }
-  .foot {
-    display: flex;
-    gap: var(--space-sm);
-    margin-top: var(--space-sm);
   }
   .confirm {
     position: absolute;

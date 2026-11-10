@@ -1016,6 +1016,14 @@ export function openProject(projectId) {
   addPane({ type: 'project', projectId });
 }
 
+/** Project settings › General › Remove project…: the removal flow lives in the project pane,
+ *  so its pane opens and starts it (a one-shot flag the pane clears). */
+export function askRemoveProject(projectId) {
+  openProject(projectId);
+  const id = findPane((s) => s.type === 'project' && s.projectId === projectId);
+  if (id) app.panes[id] = { ...app.panes[id], remove: true };
+}
+
 /** P2: a feature's pane (docs, tasks, team, timeline), one per feature. */
 export function openFeature(featureId, doc = null, anchor = null, timeline = null) {
   const existing = findPane((s) => s.type === 'feature' && s.featureId === featureId);
@@ -1421,6 +1429,19 @@ export async function governor(action, arg = null) {
     const r = await invoke('governor_act', { action, arg });
     await refresh();
     return r;
+  } catch (e) {
+    toast(errText(e), { kind: 'error' });
+  }
+}
+
+/** Reveals a path in Finder; a failure toasts. */
+export const revealPath = (path) => invoke('reveal_path', { path }).catch((e) => toast(errText(e), { kind: 'error' }));
+
+/** Copies text to the clipboard and toasts `Copied <what>`. */
+export async function copyText(text, what) {
+  try {
+    await navigator.clipboard?.writeText(text);
+    toast(`Copied ${what}`);
   } catch (e) {
     toast(errText(e), { kind: 'error' });
   }
@@ -2159,13 +2180,32 @@ if (typeof window !== 'undefined')
     if (!app.theme) app.themeRev++;
   });
 
+/** The notification settings: desktop and sound, both on unless stored off. */
+export async function getNotify() {
+  const cur = await invoke('settings_get', { key: 'notifications' }).catch(() => null);
+  return { desktop: true, sound: true, ...(cur ?? {}) };
+}
+
+// Writes are read-modify-write on one object: queued, so two quick toggles don't undo each other.
+let notifyQueue = Promise.resolve();
+
+/** Stores `key` on or off (`on` may be a function of the current settings) and returns the new
+ *  settings; throws when the store refuses. */
+export function setNotify(key, on) {
+  const run = notifyQueue.then(async () => {
+    const cur = await getNotify();
+    const next = { ...cur, [key]: typeof on === 'function' ? on(cur) : on };
+    await invoke('settings_set', { key: 'notifications', value: next });
+    return next;
+  });
+  notifyQueue = run.catch(() => {});
+  return run;
+}
+
 /** Desktop notifications and their sound (both on by default), read by the core's notifier. */
 export async function toggleNotify(key) {
-  const cur = (await invoke('settings_get', { key: 'notifications' }).catch(() => null)) ?? {};
-  const next = { desktop: true, sound: true, ...cur };
-  next[key] = !next[key];
-  await invoke('settings_set', { key: 'notifications', value: next }).catch(() => {});
-  toast(`${key === 'desktop' ? 'Desktop notifications' : 'Notification sound'} ${next[key] ? 'on' : 'off'}`);
+  const next = await setNotify(key, (cur) => !cur[key]).catch(() => null);
+  if (next) toast(`${key === 'desktop' ? 'Desktop notifications' : 'Notification sound'} ${next[key] ? 'on' : 'off'}`);
 }
 
 /** An explicit choice (dark, light, or null = system) ends the kitty-derived theme. */
