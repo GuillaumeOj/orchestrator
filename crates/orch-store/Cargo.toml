@@ -13,7 +13,7 @@ orch-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile.workspace = true
