@@ -267,6 +267,15 @@ describe('project pane', () => {
     expect(text(container)).toContain('shop-api.worktrees/old');
   });
 
+  it('a failing PR load still toasts its error', async () => {
+    let n = 0;
+    replies.project_detail = () => (++n === 1 ? Promise.resolve(detail) : Promise.reject(new Error('gh not found')));
+    const { container, getByText } = render(ProjectPane, { paneId: 'p1' });
+    await waitFor(() => expect(text(container)).toContain('shop-api.worktrees/old'));
+    await fireEvent.click(getByText('Load'));
+    await waitFor(() => expect(JSON.stringify(app.toasts)).toContain('gh not found'));
+  });
+
   it('Remove is disabled with the reason while an agent uses the worktree', async () => {
     replies.project_detail = {
       ...detail,

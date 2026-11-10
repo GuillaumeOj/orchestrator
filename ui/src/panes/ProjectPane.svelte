@@ -41,6 +41,7 @@
       }
       return r; // a stale response is not assigned to `d`, but its PRs are still shown
     } catch (e) {
+      if (withPrs) throw e; // `loadPrs` runs in `act`, which toasts it
       if (mine === seq) err = errText(e);
       return null;
     }
