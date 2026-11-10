@@ -1,7 +1,7 @@
 // What the layout setting remembers (design-notes §4.2, §5.4; api-contract):
 // the sidebar tree, the workspace's project context, and the migration of a
-// layout saved with splits to the single tab strip. (The dock's view, filter
-// and per-view active tabs come with the dock views.)
+// layout saved with splits to the single tab strip, and the dock's view,
+// project filter and per-view active tabs (§5.4, §12.4).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fixture } from './fixture.js';
 
@@ -16,7 +16,7 @@ vi.mock('../src/lib/ipc.js', () => ({
       if (args.key === 'layout') h.saves.push(args.value);
       return Promise.resolve(null);
     }
-    if (cmd === 'term_spawn') return Promise.resolve({ id: 1, cwd: args.req.cwd ?? '/dev' });
+    if (cmd === 'term_spawn') return Promise.resolve({ id: 1, cwd: args.req.cwd ?? '/dev', shell: 'zsh' });
     return Promise.resolve(null);
   },
 }));
@@ -31,7 +31,17 @@ beforeEach(() => {
   app.panes = {};
   app.layout = null;
   app.focused = null;
-  app.dock = { open: false, height: 0.45, tabs: [], active: null, v: 2 };
+  app.dock = {
+    open: false,
+    height: 0.45,
+    tabs: [],
+    active: null,
+    v: 2,
+    view: 'agents',
+    agentProject: 'all',
+    activeAgent: null,
+    activeShell: null,
+  };
   app.workspace = { project: 'all' };
   app.sidebarTree = {};
   h.saved = null;
@@ -173,5 +183,111 @@ describe('restoreLayout: a layout saved with splits (design-notes §4.2)', () =>
     A.saveLayout();
     vi.advanceTimersByTime(500);
     expect(h.saves.at(-1).layout).toMatchObject({ kind: 'leaf', tabs: ['p1', 'p2', 'p3', 'p4'], active: 'p3' });
+  });
+});
+
+describe('the dock (§5.4, §12.4)', () => {
+  const panes = {
+    p1: { type: 'mission', title: 'Mission control' },
+    p2: { type: 'agent', agentId: 'back-1', projectId: 'shop-api', title: 'back-1' },
+    p3: { type: 'agent', agentId: 'rss-feed', projectId: 'blog', title: 'rss-feed' },
+    p4: { type: 'shell', cwd: '/dev/shop-api', projectId: 'shop-api', title: 'zsh · shop-api' },
+    p5: { type: 'shell', cwd: '/tmp', title: 'zsh · /tmp' },
+  };
+  const dock = (over = {}) => ({
+    open: true,
+    v: 2,
+    height: 0.3,
+    tabs: ['p2', 'p3', 'p4', 'p5'],
+    active: 'p3',
+    ...over,
+  });
+  const layout = { kind: 'leaf', id: 'l1', tabs: ['p1'], active: 'p1' };
+  const restore = async (d, extra = {}) => {
+    h.saved = { layout, panes, focused: 'p1', dock: d, ...extra };
+    await A.restoreLayout();
+  };
+
+  it('saveLayout writes view, agentProject, activeAgent and activeShell with the dock', () => {
+    vi.useFakeTimers();
+    app.dock = {
+      open: true,
+      height: 0.45,
+      tabs: ['p2', 'p4'],
+      active: 'p4',
+      v: 2,
+      view: 'shells',
+      agentProject: 'blog',
+      activeAgent: 'p2',
+      activeShell: 'p4',
+    };
+    A.saveLayout();
+    vi.advanceTimersByTime(500);
+    expect(h.saves.at(-1).dock).toMatchObject({
+      view: 'shells',
+      agentProject: 'blog',
+      activeAgent: 'p2',
+      activeShell: 'p4',
+      active: 'p4',
+    });
+  });
+
+  it('restores the saved view, filter and per-view active tabs', async () => {
+    await restore(
+      dock({ view: 'shells', agentProject: 'shop-api', activeAgent: 'p2', activeShell: 'p5', active: 'p5' }),
+    );
+    expect(app.dock.view).toBe('shells');
+    expect(app.dock.agentProject).toBe('shop-api');
+    expect(app.dock.activeAgent).toBe('p2');
+    expect(app.dock.activeShell).toBe('p5');
+    expect(app.dock.active).toBe('p5');
+    expect(A.dockTabs()).toEqual(['p4', 'p5']);
+  });
+
+  it('view absent: the kind of the saved active tab, else Agents when an agent tab exists', async () => {
+    await restore(dock({ active: 'p5' }));
+    expect(app.dock.view).toBe('shells');
+    expect(app.dock.active).toBe('p5');
+    await restore(dock({ active: null }));
+    expect(app.dock.view).toBe('agents');
+    await restore(dock({ tabs: ['p4', 'p5'], active: null }));
+    expect(app.dock.view).toBe('shells');
+    expect(app.dock.active).toBe('p4');
+  });
+
+  it('an unknown filter → All; an active tab outside the filter → its first tab, else the empty view', async () => {
+    await restore(dock({ view: 'agents', agentProject: 'gone', activeAgent: 'p3' }));
+    expect(app.dock.agentProject).toBe('all');
+    expect(app.dock.active).toBe('p3');
+    await restore(dock({ view: 'agents', agentProject: 'shop-api', activeAgent: 'p3' }));
+    expect(app.dock.active).toBe('p2');
+    await restore(
+      dock({ tabs: ['p3', 'p4'], view: 'agents', agentProject: 'shop-api', activeAgent: 'p3', active: 'p3' }),
+    );
+    expect(app.dock.active).toBe(null);
+    expect(app.dock.agentProject).toBe('shop-api');
+  });
+
+  it('a per-view active tab that is gone or of the other kind falls back to the first of the view', async () => {
+    await restore(dock({ view: 'shells', activeShell: 'p2', activeAgent: 'p9' }));
+    expect(app.dock.activeShell).toBe('p4');
+    expect(app.dock.active).toBe('p4');
+    // The gone agent tab is replaced by the saved active one (an agent), as an older dock would say.
+    expect(app.dock.activeAgent).toBe('p3');
+  });
+
+  it('an older dock (no view fields) restores from `active`', async () => {
+    await restore(dock({ active: 'p4' }));
+    expect(app.dock.view).toBe('shells');
+    expect(app.dock.activeShell).toBe('p4');
+    expect(app.dock.activeAgent).toBe(null);
+    expect(app.dock.agentProject).toBe('all');
+  });
+
+  it('restored shells are live, with the shell the core started', async () => {
+    await restore(dock({ view: 'shells' }));
+    expect(app.panes.p4.live).toBe(true);
+    expect(app.panes.p4.shell).toBe('zsh');
+    expect(app.panes.p4.title).toMatch(/^zsh · /);
   });
 });

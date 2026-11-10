@@ -116,7 +116,7 @@ function cellKey(term) {
 /**
  * source: { kind: 'agent', id } | { kind: 'term', id, spawn?: { rows, cols } }
  *   (`spawn`: the size the PTY was started at, before the pane could fit it)
- * hooks:  { onKey(e) -> bool, onExit(), onOpenPath(file, line), onFocus() }
+ * hooks:  { onKey(e) -> bool, onExit(), onOpenPath(file, line), onFocus(), onOsc7(data), onTitle(text) }
  */
 export class TermPane {
   constructor(source, kitty, hooks) {
@@ -147,6 +147,12 @@ export class TermPane {
     this.term.onData((d) => this.write(d));
     this.term.onBinary((d) => this.write(d));
     this.term.onResize(() => this.syncPty());
+    // OSC 7 (`file://host/path`, the shell's directory) and OSC 0/2 (its title): hooks, read when they fire.
+    this.term.parser.registerOscHandler(7, (data) => {
+      this.hooks.onOsc7?.(data);
+      return true;
+    });
+    this.term.onTitleChange((t) => this.hooks.onTitle?.(t));
     /** The size the PTY was last told (null: not told yet). */
     this.ptySize = null;
     if (kitty?.copy_on_select) {

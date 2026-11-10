@@ -55,6 +55,9 @@ vi.mock('@xterm/xterm', () => {
         this.options = {};
         this.unicode = {};
         this.resized = emitter();
+        this.titled = emitter();
+        this.osc = {};
+        this.parser = { registerOscHandler: (n, fn) => (this.osc[n] = fn) };
         const cell = { width: 8, height: 16 };
         this._core = {
           _renderService: {
@@ -73,6 +76,9 @@ vi.mock('@xterm/xterm', () => {
       onBinary() {}
       onResize(fn) {
         return this.resized(fn);
+      }
+      onTitleChange(fn) {
+        return this.titled(fn);
       }
       registerLinkProvider() {}
       open() {}
@@ -373,5 +379,30 @@ describe('TermPane agent redraw on show', () => {
     await vi.advanceTimersByTimeAsync(NUDGE_MS * 3);
     expect(resizes()).toEqual(['100x30']);
     t.dispose();
+  });
+});
+
+describe('TermPane shell directory hooks', () => {
+  it('hands OSC 7 payloads and OSC 0/2 titles to the hooks, read when they fire', () => {
+    const hooks = { onOsc7: vi.fn(), onTitle: vi.fn() };
+    const t = new TermPane({ kind: 'term', id: 1 }, null, hooks);
+    const term = h.terms[h.terms.length - 1];
+    expect(term.osc[7]('file://mac/Users/me/dev')).toBe(true);
+    expect(hooks.onOsc7).toHaveBeenCalledWith('file://mac/Users/me/dev');
+    term.titled.fire('~/dev');
+    expect(hooks.onTitle).toHaveBeenCalledWith('~/dev');
+    // Hooks replaced later (a re-mount): the new ones are called.
+    const later = { onOsc7: vi.fn() };
+    t.hooks = later;
+    term.osc[7]('file:///tmp');
+    expect(later.onOsc7).toHaveBeenCalledWith('file:///tmp');
+    expect(hooks.onOsc7).toHaveBeenCalledTimes(1);
+  });
+
+  it('works with no hooks at all', () => {
+    new TermPane({ kind: 'term', id: 1 }, null, {});
+    const term = h.terms[h.terms.length - 1];
+    expect(() => term.osc[7]('file:///tmp')).not.toThrow();
+    expect(() => term.titled.fire('x')).not.toThrow();
   });
 });

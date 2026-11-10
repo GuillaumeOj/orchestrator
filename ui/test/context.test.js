@@ -184,6 +184,28 @@ describe('opening a pane of another project (rule 3)', () => {
     A.openCanvas('t2');
     expect(app.panes[A.findPane((s) => s.teamId === 't2')].projectId).toBe('blog');
   });
+
+  it('a team-less canvas is reused only within its own scope (project or app-wide)', () => {
+    A.setContext('shop-api');
+    A.openCanvas();
+    const a = A.findPane((s) => s.type === 'canvas' && s.projectId === 'shop-api');
+    expect(a).toBeTruthy();
+    A.setContext('blog');
+    A.openCanvas();
+    const b = A.findPane((s) => s.type === 'canvas' && s.projectId === 'blog');
+    expect(b).toBeTruthy();
+    expect(b).not.toBe(a);
+    expect(app.workspace.project).toBe('blog');
+    A.openCanvas(); // blog's own again
+    expect(app.focused).toBe(b);
+    A.setContext('all');
+    A.openCanvas(); // neither project's: the app-wide one
+    const g = A.findPane((s) => s.type === 'canvas' && s.projectId == null);
+    expect(g).toBeTruthy();
+    expect(app.workspace.project).toBe('all');
+    A.openCanvas();
+    expect(app.focused).toBe(g);
+  });
 });
 
 describe('⌘1…9 (design-notes §4.1, F3.4)', () => {
