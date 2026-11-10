@@ -9,7 +9,7 @@
   import { attention, runAttention } from '../../lib/now.svelte.js';
   import { STATUS } from '../../lib/status.js';
   import AgentChip from '../AgentChip.svelte';
-  import Kbd from '../Kbd.svelte';
+
   import OriginChip from '../mission/OriginChip.svelte';
   import PhaseStepper from '../mission/PhaseStepper.svelte';
   import PrLine from '../PrLine.svelte';
@@ -71,7 +71,7 @@
   <div class="acts">
     {#if f}<button class="btn" onclick={() => openFeature(f.id)}>Open feature</button>{/if}
     <button class="btn ghost" onclick={() => openBoard(r.project)}>Open board</button>
-    {#if r.pr}<button class="btn ghost" onclick={() => openUrl(r.pr.url)}>Open PR ↗ <Kbd keys="o" /></button>{/if}
+
   </div>
 {:else}
   <p class="muted">This run is over: its outcome is in Done today.</p>

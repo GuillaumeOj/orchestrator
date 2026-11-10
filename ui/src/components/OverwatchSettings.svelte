@@ -4,9 +4,12 @@
   // Each row saves on change (⏎ or blur) with `set_overwatch_settings`; the core
   // checks the values too, and its refusal shows under the field. The old value
   // stays applied until a save lands, and the message says which.
-  import { app, restartOverwatch } from '../lib/app.svelte.js';
+  import { onMount } from 'svelte';
+  import { app, getNotify, restartOverwatch, setNotify } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { MODEL_OPTIONS } from '../lib/options.js';
   import { overwatchOf, sectionStatus } from '../lib/overwatch.js';
+  import Select from './Select.svelte';
 
   /** The number rows: key, label, unit, range, help (notes §9.1). */
   const ROWS = [
@@ -16,11 +19,7 @@
     { key: 'rule_threshold', label: 'Rule threshold', unit: 'times', min: 2, max: 10, help: 'Proposes a rule after you give the same answer this many times.' },
   ];
   const HOLD_DEFAULT = 300; // used when the setting can't be read; the core is the judge either way
-  const MODELS = [
-    { id: 'haiku', label: 'Haiku' },
-    { id: 'sonnet', label: 'Sonnet' },
-    { id: 'opus', label: 'Opus' },
-  ];
+  let rev = $state(0); // a refused model save remounts the picker on the model still applied
 
   /** @type {{ enabled: boolean, model: string, batch_secs: number, permission_secs: number, idle_secs: number, rule_threshold: number } | null} */
   let s = $state(null);
@@ -98,10 +97,35 @@
     if (!ok) box.checked = !on;
   }
 
-  async function pickModel(e) {
+  // The aliases only (§9.7); a stored custom id stays selectable so it is shown, not lost.
+  const modelOptions = $derived(MODEL_OPTIONS.some((m) => m.value === s?.model) ? MODEL_OPTIONS : [...MODEL_OPTIONS, { value: s?.model, label: s?.model }]);
+
+  async function pickModel(model) {
+    if (!(await save('model', model))) rev++;
+  }
+
+  // Notifications (the `notifications` setting, desktop and sound; both on unless stored off):
+  // the palette's two toggles stay; this is their settings home.
+  let notify = $state({ desktop: true, sound: true });
+  let notifyNote = $state('');
+  let notifyError = $state('');
+  let notifyTimer;
+  onMount(() => {
+    getNotify().then((v) => (notify = v));
+    return () => clearTimeout(notifyTimer);
+  });
+  async function toggleNotify(key, e) {
     const box = e.currentTarget;
-    const before = s?.model;
-    if (!(await save('model', box.value)) && before) box.value = before;
+    notifyError = '';
+    try {
+      notify = await setNotify(key, box.checked);
+      notifyNote = key;
+      clearTimeout(notifyTimer);
+      notifyTimer = setTimeout(() => (notifyNote = ''), 2000);
+    } catch (err) {
+      box.checked = !box.checked;
+      notifyError = errText(err);
+    }
   }
 
   async function restart() {
@@ -116,134 +140,118 @@
   }
 </script>
 
-<section class="ow" aria-label="Overwatch settings">
+<section class="sset" aria-label="Overwatch settings">
   <div class="h">
-    <div>
-      <h2>Overwatch</h2>
-      <p class="muted sub">An agent that settles routine prompts for you.</p>
-    </div>
+    <h2>Overwatch</h2>
     {#if status}
-      <span class="state" data-ow-state><span class="dot {ow.status}" aria-hidden="true"></span> {status}</span>
-      {#if ow.status === 'down'}<button class="btn" disabled={restarting} onclick={restart}>{restarting ? 'Restarting…' : 'Restart'}</button>{/if}
-      {#if restartError}<span class="err" role="alert">{restartError}</span>{/if}
+      <span class="end">
+        {#if restartError}<span class="err" role="alert">{restartError}</span>{/if}
+        {#if ow.status === 'down'}<button class="btn" disabled={restarting} onclick={restart}>{restarting ? 'Restarting…' : 'Restart'}</button>{/if}
+        <span class="state pill" data-ow-state><span class="dot {ow.status}" aria-hidden="true"></span> {status}</span>
+      </span>
     {/if}
   </div>
+  <p class="muted lead">An agent that settles routine prompts for you.</p>
   {#if loadError}
     <p class="err">Could not read the settings: {loadError}</p>
   {:else if !s}
     <p class="muted" role="status">Loading…</p>
   {:else}
-    <div class="row" data-row="enabled">
-      <div class="what">
-        <label class="lab" for="ow-enabled">Overwatch</label>
-        <p class="muted help">An agent that settles routine prompts, answers questions from the docs and keeps agents moving. You see a line for everything it does.</p>
-        {#if note}<p class="muted help" role="status" data-note>{note}</p>{/if}
-        {#if errors.enabled}<p class="err help">{errors.enabled}</p>{/if}
-      </div>
-      <input id="ow-enabled" type="checkbox" role="switch" aria-checked={s.enabled} checked={s.enabled} onchange={toggle} />
-    </div>
-    <div class="row" data-row="model">
-      <div class="what">
-        <label class="lab" for="ow-model">Model</label>
-        <p class="muted help">The model for its session. Takes effect at the next session.</p>
-        {#if errors.model}<p class="err help">{errors.model}</p>{/if}
-      </div>
-      <select id="ow-model" class="field" value={s.model} onchange={pickModel}>
-        {#each MODELS as m (m.id)}<option value={m.id}>{m.label}</option>{/each}
-        {#if !MODELS.some((m) => m.id === s?.model)}<option value={s.model}>{s.model}</option>{/if}
-      </select>
-    </div>
-    {#each ROWS as row (row.key)}
-      <div class="row" data-row={row.key}>
-        <div class="what">
-          <label class="lab" for="ow-{row.key}">{row.label}</label>
-          <p class="muted help" id="ow-{row.key}-help">{row.help} ({rangeText(row)})</p>
-          {#if errors[row.key]}<p class="err help" role="alert">{errors[row.key]}</p>{/if}
-        </div>
-        <span class="num">
-          <input
-            id="ow-{row.key}"
-            class="field"
-            type="number"
-            min={row.min}
-            max={row.max}
-            value={s[row.key]}
-            aria-invalid={errors[row.key] ? 'true' : undefined}
-            aria-describedby="ow-{row.key}-help"
-            onchange={(e) => onNumber(row, e)}
-          />
-          <span class="muted">{row.unit}</span>
+    <div class="scard" data-group="overwatch">
+      <h3>Overwatch</h3>
+      <div class="srow" data-row="enabled">
+        <label class="slab" for="ow-enabled">Overwatch</label>
+        <span class="sctl">
+          <input id="ow-enabled" type="checkbox" role="switch" aria-checked={s.enabled} checked={s.enabled} onchange={toggle} />
+          <span>{s.enabled ? 'On' : 'Off'}</span>
         </span>
+        <p class="shelp">An agent that settles routine prompts, answers questions from the docs and keeps agents moving. You see a line for everything it does.</p>
+        {#if note}<p class="shelp" role="status" data-note>{note}</p>{/if}
+        {#if errors.enabled}<p class="err shelp">{errors.enabled}</p>{/if}
+      </div>
+      <div class="srow" data-row="model">
+        <label class="slab" for="ow-model">Model</label>
+        <span class="sctl">{#key rev}<Select id="ow-model" value={s.model} options={modelOptions} onchange={pickModel} />{/key}</span>
+        <p class="shelp">The model for its session. Takes effect at the next session.</p>
+        {#if errors.model}<p class="err shelp">{errors.model}</p>{/if}
+      </div>
+      {#each ROWS as row (row.key)}
+        <div class="srow" data-row={row.key}>
+          <label class="slab" for="ow-{row.key}">{row.label}</label>
+          <span class="sctl">
+            <input
+              id="ow-{row.key}"
+              class="field num"
+              type="number"
+              min={row.min}
+              max={row.max}
+              value={s[row.key]}
+              aria-invalid={errors[row.key] ? 'true' : undefined}
+              aria-describedby="ow-{row.key}-help"
+              onchange={(e) => onNumber(row, e)}
+            />
+            <span class="muted">{row.unit}</span>
+          </span>
+          <p class="shelp" id="ow-{row.key}-help">{row.help} ({rangeText(row)})</p>
+          {#if errors[row.key]}<p class="err shelp" role="alert">{errors[row.key]}</p>{/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
+  <div class="scard" data-group="notifications">
+    <h3>Notifications</h3>
+    {#each [['desktop', 'Desktop notifications', 'When a decision waits for you and the app is in the background.'], ['sound', 'Sound', '']] as [k, label, help] (k)}
+      <div class="srow" data-row="notify-{k}">
+        <label class="slab" for="ow-n-{k}">{label}</label>
+        <span class="sctl">
+          <input id="ow-n-{k}" type="checkbox" role="switch" aria-checked={notify[k]} checked={notify[k]} onchange={(e) => toggleNotify(k, e)} />
+          {#if notifyNote === k}<span class="sok" role="status">✓ Saved</span>{/if}
+        </span>
+        {#if help}<p class="shelp">{help}</p>{/if}
       </div>
     {/each}
-  {/if}
+    {#if notifyError}<p class="err shelp" role="alert">{notifyError}</p>{/if}
+  </div>
 </section>
 
 <style>
-  .ow {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    max-width: 720px;
-  }
   .h {
     display: flex;
     align-items: center;
     gap: var(--space-md);
-    margin-bottom: var(--space-sm);
   }
-  h2 {
+  .h h2 {
     margin: 0;
     font: var(--text-heading);
   }
-  .sub {
-    margin: 0;
+  .end {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-left: auto;
   }
-  .state {
+  .pill {
     display: inline-flex;
     align-items: center;
     gap: var(--space-xs);
-    margin-left: auto;
-    color: var(--color-status-waiting-for-you);
+    height: 20px;
+    padding: 0 var(--space-sm);
+    border: var(--border-width-default) solid currentColor;
+    border-radius: var(--radius-full);
+    color: var(--color-status-done);
     font: var(--text-caption);
+  }
+  .pill:has(.dot.down) {
+    color: var(--color-status-waiting-for-you);
   }
   .dot {
     box-sizing: border-box;
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    border: 1.5px solid var(--color-status-waiting-for-you);
-  }
-  .dot.down {
-    background: var(--color-status-waiting-for-you);
-  }
-  .row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-lg);
-    padding: var(--space-sm) var(--space-md);
-    background: var(--color-surface-pane);
-    border: var(--border-width-default) solid var(--color-border-subtle);
-    border-radius: var(--radius-md);
-  }
-  .what {
-    min-width: 0;
-  }
-  .lab {
-    font: var(--text-body-strong);
-  }
-  .help {
-    margin: 0;
-    font: var(--text-caption);
+    background: currentColor;
   }
   .num {
-    display: flex;
-    flex: none;
-    align-items: center;
-    gap: var(--space-xs);
-  }
-  .num .field {
     width: 96px;
   }
   .field[aria-invalid='true'] {

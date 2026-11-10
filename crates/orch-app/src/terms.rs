@@ -66,6 +66,8 @@ pub struct Term {
     pub kind: TermKind,
     pub cwd: PathBuf,
     pub pid: Option<u32>,
+    /// Basename of the program actually spawned (the shell; also for command panes).
+    pub shell: String,
     master: Mutex<Box<dyn MasterPty + Send>>,
     /// Bytes for the PTY, written in order by the pane's writer thread: a
     /// child that stops reading blocks that thread, never the caller.
@@ -116,6 +118,17 @@ pub fn command(run: Option<&str>) -> CommandBuilder {
     }
 }
 
+/// Basename of the program a builder will run (the default program resolves
+/// to `$SHELL`, else the user's passwd shell: what `portable_pty` spawns).
+fn program_name(cmd: &CommandBuilder) -> String {
+    let prog = if cmd.is_default_prog() {
+        cmd.get_shell()
+    } else {
+        cmd.get_argv().first().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default()
+    };
+    Path::new(&prog).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(prog)
+}
+
 #[derive(Default)]
 pub struct Terms {
     next: AtomicU32,
@@ -128,6 +141,7 @@ impl Terms {
             .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| anyhow!("openpty: {e}"))?;
         let mut cmd = command(run);
+        let shell = program_name(&cmd);
         base_env(&mut cmd);
         let cwd = if cwd.is_dir() { cwd.to_path_buf() } else { agent_runtime::paths::home_dir() };
         cmd.cwd(&cwd);
@@ -158,6 +172,7 @@ impl Terms {
             kind,
             cwd,
             pid,
+            shell,
             master: Mutex::new(pair.master),
             input: Mutex::new(input),
             child: Mutex::new(child),
@@ -180,11 +195,12 @@ impl Terms {
     pub fn kill(&self, id: u32) {
         let t = self.map.lock_ok().remove(&id);
         if let Some(t) = t {
-            if let Some(pid) = t.pid {
+            let mut c = t.child.lock_ok();
+            // Only while the shell is unreaped: cwd() may have reaped it, and its pid may be reused.
+            if let (Some(pid), Ok(None)) = (t.pid, c.try_wait()) {
                 // SAFETY: plain syscall on a pid we spawned.
                 unsafe { libc::killpg(pid as i32, libc::SIGHUP) };
             }
-            let mut c = t.child.lock_ok();
             let _ = c.kill();
             let _ = c.wait();
             t.output.close();
@@ -221,12 +237,46 @@ impl Term {
         self.input.lock_ok().send(bytes.to_vec()).map_err(|_| anyhow!("terminal closed"))
     }
 
+    /// The shell's own working directory (not the foreground job's). `None`
+    /// when the shell has exited: checked first, so a reused pid is never read.
+    pub fn cwd(&self) -> Option<PathBuf> {
+        let pid = self.pid?;
+        // Hold the guard across the read: kill() reaps under it, so the pid cannot be reused meanwhile.
+        let mut child = self.child.lock_ok();
+        if !matches!(child.try_wait(), Ok(None)) {
+            return None;
+        }
+        pid_cwd(pid)
+    }
+
     pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
         self.master
             .lock_ok()
             .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .map_err(|e| anyhow!("resize: {e}"))
     }
+}
+
+#[cfg(target_os = "macos")]
+fn pid_cwd(pid: u32) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    // SAFETY: plain syscall filling a zeroed, correctly sized struct.
+    let info = unsafe {
+        let mut info: libc::proc_vnodepathinfo = std::mem::zeroed();
+        let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as i32;
+        let n = libc::proc_pidinfo(pid as i32, libc::PROC_PIDVNODEPATHINFO, 0, (&raw mut info).cast(), size);
+        if n != size {
+            return None;
+        }
+        info
+    };
+    let raw: Vec<u8> = info.pvi_cdir.vip_path.iter().flatten().map(|c| *c as u8).take_while(|c| *c != 0).collect();
+    (!raw.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&raw)))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn pid_cwd(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
 #[cfg(test)]
@@ -276,5 +326,42 @@ mod tests {
         assert_eq!(o.read_wait(Duration::from_millis(10)).unwrap().len(), HIGH_WATERMARK);
         w.join().unwrap();
         assert_eq!(o.read_wait(Duration::from_millis(10)).unwrap(), b"more");
+    }
+
+    #[test]
+    fn cwd_follows_the_shell_and_is_none_once_it_exited() {
+        let terms = Terms::default();
+        let d = std::env::temp_dir().join(format!("orch-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let canon = d.canonicalize().unwrap();
+        let t = terms
+            .spawn(
+                TermKind::Shell,
+                Path::new("/"),
+                Some(&format!("sh -c 'cd {}; echo ready; sleep 30'", canon.display())),
+                24,
+                80,
+            )
+            .unwrap();
+        assert!(drain(&t, "ready").contains("ready"));
+        assert_eq!(t.cwd().and_then(|p| p.canonicalize().ok()), Some(canon.clone()));
+        assert!(!t.shell.is_empty());
+        let id = t.id;
+        terms.kill(id);
+        assert!(t.cwd().is_none(), "exited: never read a reused pid");
+        assert!(terms.get(id).is_err(), "unknown id");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn pid_cwd_reads_another_process() {
+        let d = std::env::temp_dir().join(format!("orch-pidcwd-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let mut c = std::process::Command::new("sleep").arg("30").current_dir(&d).spawn().unwrap();
+        let got = pid_cwd(c.id());
+        let _ = c.kill();
+        let _ = c.wait();
+        assert_eq!(got.and_then(|p| p.canonicalize().ok()), d.canonicalize().ok());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

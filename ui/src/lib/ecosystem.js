@@ -3,6 +3,7 @@
 // test/ecosystem.test.js. Secrets never pass through here: the UI only knows
 // `has_secret`.
 import { ago, clock, dayHm } from './format.js';
+import { MODEL_ALIASES } from './options.js';
 
 /**
  * Integration and MCP server statuses (§5): glyph + label, never color only.
@@ -234,14 +235,8 @@ export function toggleRef(refs, id, servers) {
   });
 }
 
-/** The models a downgrade can pick. */
-export const MODELS = ['opus', 'sonnet', 'haiku'];
-
-/** Model families, as the core's estimator names them (governor/src/estimator.rs FAMILIES). */
-const FAMILIES = ['opus', 'sonnet', 'haiku', 'fable'];
-
-/** The family of a bare model id ("claude-opus-4" → opus); model windows carry their own `family`. */
-export const family = (model) => FAMILIES.find((m) => String(model ?? '').includes(m)) ?? null;
+/** The family of a bare model id (the aliases are the core's estimator families, governor/src/estimator.rs FAMILIES) ("claude-opus-4" → opus); model windows carry their own `family`. */
+export const family = (model) => MODEL_ALIASES.find((m) => String(model ?? '').includes(m)) ?? null;
 
 /** Downgrade "when" options (§5.5); the window one names the role's model. */
 export function downgradeWhen(model) {

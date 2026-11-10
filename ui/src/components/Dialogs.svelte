@@ -3,9 +3,11 @@
   // or a git URL to clone, J1), Launch a team on a feature (Penpot 04 Launch
   // on feature, J3 step 2), the weekly plan, deleting an agent or a feature
   // (FR-202: killed, checked, hidden; worktrees on request), confirmations.
-  // ⌘⏎ submits; esc cancels.
+  // ⌘⏎ submits; esc cancels. Each is drawn in the FloatingWindow shell
+  // (design-notes §3.3): backdrop, title bar with ×, focus trap; the keys are
+  // in the buttons' tooltips.
   import { untrack } from 'svelte';
-  import { activeAgents, agent, app, contextProject, deleteAgent, deleteFeature, features, focusCard, openAgent, openFeature, openProject, openSettings, openUrl, projects, refresh, toast } from '../lib/app.svelte.js';
+  import { activeAgents, agent, app, contextProject, deleteAgent, deleteFeature, features, focusCard, openAgent, openFeature, openProjectSettings, openSettings, openUrl, projects, refresh, setContext, toast } from '../lib/app.svelte.js';
   import { designTools, effectiveServers, kindLabel, nodeList } from '../lib/ecosystem.js';
   import { clock, expandHome, shortPath } from '../lib/format.js';
   import { blockOf } from '../lib/inbox.js';
@@ -13,14 +15,21 @@
   import { endStarting } from '../lib/intake.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { counts, liveText } from '../lib/now.svelte.js';
+  import { EFFORTS, MODEL_CHOICES, PERMISSION_MODES } from '../lib/options.js';
   import { nextOffHours, OFF_DISABLED, offHoursAllowed } from '../lib/pacing.js';
   import { PRESSURE } from '../lib/status.js';
   import { runFinished, slugify } from '../lib/teams.js';
+  import { tooltip } from '../lib/tooltip.js';
   import ConnBadge from './ConnBadge.svelte';
-  import Kbd from './Kbd.svelte';
+  import FloatingWindow from './FloatingWindow.svelte';
   import PlanEditor from './PlanEditor.svelte';
+  import Select from './Select.svelte';
 
   const o = $derived(app.overlay);
+  // The dialogs keep their small sizes in the window shell (design-notes §3.3).
+  const WIDE = { w: 560, h: null };
+  const SMALL = { w: 420, h: null };
+  const DIALOG_MIN_W = 320;
   let busy = $state(false);
   let error = $state(null);
   // P4.5: the item or brief went stale while the dialog was open (notes §5.3); the form is disabled.
@@ -85,6 +94,16 @@
       loadTeams(project_id);
     });
   });
+  const projectOptions = $derived(projects().map((p) => ({ value: p.id, label: p.name })));
+  const roleOptions = $derived([{ value: '', label: 'plain Claude' }, ...roles.filter((r) => r.id !== 'lead').map((r) => ({ value: r.id, label: r.name }))]);
+  const teamOptions = $derived(
+    (teamsView?.teams ?? []).map((t) => ({
+      value: t.team.id,
+      label: t.team.name,
+      disabled: t.issues.length > 0,
+      reason: t.issues.length ? `Invalid: ${t.issues[0].text}` : undefined,
+    })),
+  );
   const launchTeam = $derived(teamsView?.teams.find((t) => t.team.id === launch.team_id));
   const launchTools = $derived(designTools(launchTeam?.team, teamsView?.roles, registry));
   const free = $derived(features().filter((f) => f.project_id === launch.project_id && (!f.run || runFinished(f.run.status))));
@@ -251,7 +270,7 @@
       close();
       path = '';
       await refresh();
-      openProject(p.id);
+      setContext(p.id); // the new project is the context: its empty state (Open <project> · New session) shows
       toast(`Added ${p.name} · fetching in the background`);
     } catch (e) {
       error = errText(e);
@@ -259,8 +278,9 @@
     }
   }
 
+  // Esc is the window's (it closes the dialog through `close`).
   function onKey(e, submit) {
-    if (e.key === 'Escape') return (e.preventDefault(), close());
+    if (e.defaultPrevented) return; // an Enter a Select consumed
     if (e.key === 'Enter' && (e.metaKey || e.target.tagName === 'INPUT')) return (e.preventDefault(), submit());
   }
 </script>
@@ -289,23 +309,15 @@
 {/snippet}
 
 {#if o && ['new-session', 'add-project', 'launch', 'plan', 'delete-agent', 'delete-feature', 'confirm'].includes(o.kind)}
-  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="scrim" onclick={close}></div>
   {#if o.kind === 'new-session'}
-    <div class="dlg" role="dialog" aria-modal="true" aria-label="New session" tabindex="-1" onkeydown={(e) => onKey(e, startSession)}>
+    <FloatingWindow title="New session" size={WIDE} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, startSession)}>
     <form onsubmit={(e) => (e.preventDefault(), startSession())}>
-      <h3>New session</h3>
       {@render fromIntake()}
       <label>Project
-        <select class="field" bind:value={form.project_id}>
-          {#each projects() as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
-        </select>
+        <Select bind:value={form.project_id} options={projectOptions} noun="project" />
       </label>
       <label>Role
-        <select class="field" value={roleId} onchange={(e) => pickRole(e.currentTarget.value)}>
-          <option value="">plain Claude</option>
-          {#each roles.filter((r) => r.id !== 'lead') as r (r.id)}<option value={r.id}>{r.name}</option>{/each}
-        </select>
+        <Select value={roleId} options={roleOptions} noun="role" onchange={pickRole} />
       </label>
       <label>Task <span class="muted">(first message, optional)</span>
         <textarea class="field" rows={o.prefill ? 12 : 3} bind:value={form.message} bind:this={messageEl} disabled={!!stale} placeholder="What should Claude do?"></textarea>
@@ -318,19 +330,13 @@
       <p class="muted">Worktree: <span class="mono">orch/solo/{form.name || '…'}</span> in <span class="mono">{project ? `${project.name}.worktrees/${form.name}` : '…'}</span> (sibling folder, locked while in use)</p>
       <div class="row">
         <label>Model
-          <select class="field" bind:value={form.model}>
-            <option value="">default</option><option value="haiku">haiku</option><option value="sonnet">sonnet</option><option value="opus">opus</option>
-          </select>
+          <Select bind:value={form.model} options={MODEL_CHOICES} />
         </label>
         <label>Effort
-          <select class="field" bind:value={form.effort}>
-            <option value="">default</option><option>low</option><option>medium</option><option>high</option>
-          </select>
+          <Select bind:value={form.effort} options={EFFORTS} />
         </label>
         <label>Permissions
-          <select class="field" bind:value={form.permission_mode}>
-            <option value="">default (ask)</option><option value="acceptEdits">accept edits</option><option value="plan">plan</option>
-          </select>
+          <Select bind:value={form.permission_mode} options={PERMISSION_MODES} />
         </label>
       </div>
       {#if snap}
@@ -338,19 +344,18 @@
       {/if}
       {#if error}<p class="err">{error}</p>{/if}
       <div class="foot">
-        <button type="button" class="btn ghost" onclick={close}>Cancel <Kbd keys="esc" /></button>
+        <button type="button" class="btn ghost" onclick={close} use:tooltip={{ label: 'Cancel', key: 'esc' }}>Cancel</button>
         {#if stale}
           <button type="button" class="btn primary" bind:this={startBtn} onclick={close}>Close</button>
         {:else}
-          <button type="submit" class="btn primary" bind:this={startBtn} disabled={busy || !form.project_id}>{busy ? 'Starting…' : 'Start session'} <Kbd keys="⌘+⏎" /></button>
+          <button type="submit" class="btn primary" bind:this={startBtn} disabled={busy || !form.project_id} use:tooltip={{ label: 'Start session', key: '⌘⏎' }}>{busy ? 'Starting…' : 'Start session'}</button>
         {/if}
       </div>
     </form>
-    </div>
+    </FloatingWindow>
   {:else if o.kind === 'launch'}
-    <div class="dlg" role="dialog" aria-modal="true" aria-label="Launch on feature" tabindex="-1" onkeydown={(e) => onKey(e, launchTeamOnFeature)}>
+    <FloatingWindow title="Launch {launchTeam?.team.name ?? 'a team'}" size={WIDE} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, launchTeamOnFeature)}>
     <form onsubmit={(e) => (e.preventDefault(), launchTeamOnFeature())}>
-      <h3>Launch {launchTeam?.team.name ?? 'a team'}</h3>
       {@render fromIntake()}
       <div class="seg" role="radiogroup" aria-label="Feature">
         <button type="button" class:on={!launch.existing} onclick={() => (launch.existing = '')}>New feature</button>
@@ -358,14 +363,10 @@
       </div>
       <div class="row">
         <label>Project
-          <select class="field" value={launch.project_id} onchange={(e) => setLaunchProject(e.currentTarget.value)}>
-            {#each projects() as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
-          </select>
+          <Select value={launch.project_id} options={projectOptions} noun="project" onchange={setLaunchProject} />
         </label>
         <label>Team
-          <select class="field" bind:value={launch.team_id}>
-            {#each teamsView?.teams ?? [] as t (t.team.id)}<option value={t.team.id} disabled={t.issues.length > 0}>{t.team.name}{t.issues.length ? ' (invalid)' : ''}</option>{/each}
-          </select>
+          <Select bind:value={launch.team_id} options={teamOptions} noun="team" />
         </label>
       </div>
       {#if !launch.existing}
@@ -385,10 +386,10 @@
         <span>• The lead drafts spec.md (and ux-brief.md, api-contract.md) in <span class="mono">.orchestrator/features/{launchSlug || '…'}/</span>, then asks for the Spec gate.</span>
         <span>• Specialists start after the gate, as the Governor and the live-agent cap allow.</span>
       </div>
-      <label class="offh" title={offHoursAllowed(offHours) ? '' : OFF_DISABLED}><input type="checkbox" bind:checked={launch.off_hours} disabled={!offHoursAllowed(offHours)} /> Run off-hours{nextOffHours(offHours) ? ` (starts ${clock(nextOffHours(offHours))})` : ''}</label>
+      <label class="offh" use:tooltip={offHoursAllowed(offHours) ? null : { label: 'Run off-hours', detail: OFF_DISABLED }}><input type="checkbox" bind:checked={launch.off_hours} disabled={!offHoursAllowed(offHours)} /> Run off-hours{nextOffHours(offHours) ? ` (starts ${clock(nextOffHours(offHours))})` : ''}</label>
       {#each launchTools as d (d.server.id)}
         {#if d.server.status === 'needs_auth'}
-          <p class="note tools warn">{d.server.name} MCP needs authentication: {nodeList(d.nodes, true)} will fail its tools. <button type="button" class="linkbtn" onclick={() => openSettings('mcp', d.server.id, launch.project_id || null)}>Open Settings</button> <Kbd keys="⌘+," /> · Launch anyway <Kbd keys="⌘+⏎" /></p>
+          <p class="note tools warn">{d.server.name} MCP needs authentication: {nodeList(d.nodes, true)} will fail its tools. <button type="button" class="linkbtn" onclick={() => (launch.project_id ? openProjectSettings(launch.project_id, 'mcp', d.server.id) : openSettings('mcp', d.server.id))} use:tooltip={{ label: 'Open Settings', key: '⌘,' }}>Open Settings</button> · or launch anyway.</p>
         {:else}
           <p class="note tools">Design tools: {nodeList(d.nodes)} use <b>{d.server.name}</b> ({kindLabel(d.server.kind)} · <ConnBadge status={d.server.status} connector={d.server.kind === 'connector'} />)</p>
         {/if}
@@ -398,19 +399,18 @@
       {/if}
       {#if error}<p class="err">{error}</p>{/if}
       <div class="foot">
-        <button type="button" class="btn ghost" onclick={close}>Cancel <Kbd keys="esc" /></button>
+        <button type="button" class="btn ghost" onclick={close} use:tooltip={{ label: 'Cancel', key: 'esc' }}>Cancel</button>
         {#if stale}
           <button type="button" class="btn primary" bind:this={startBtn} onclick={close}>Close</button>
         {:else}
-          <button type="submit" class="btn primary" bind:this={startBtn} disabled={busy || !launch.team_id || !launchSlug || !launch.project_id}>{busy ? 'Launching…' : 'Launch'} <Kbd keys="⌘+⏎" /></button>
+          <button type="submit" class="btn primary" bind:this={startBtn} disabled={busy || !launch.team_id || !launchSlug || !launch.project_id} use:tooltip={{ label: 'Launch', key: '⌘⏎' }}>{busy ? 'Launching…' : 'Launch'}</button>
         {/if}
       </div>
     </form>
-    </div>
+    </FloatingWindow>
   {:else if o.kind === 'add-project'}
-    <div class="dlg" role="dialog" aria-modal="true" aria-label="Add project" tabindex="-1" onkeydown={(e) => onKey(e, addProject)}>
+    <FloatingWindow title="Add project" size={WIDE} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, addProject)}>
     <form onsubmit={(e) => (e.preventDefault(), addProject())}>
-      <h3>Add project</h3>
       <!-- svelte-ignore a11y_autofocus -->
       <label>Folder or git URL <input class="field mono" bind:value={path} autofocus placeholder="~/dev/my-project or git@github.com:me/repo.git" spellcheck="false" /></label>
       {#if isUrl(path)}
@@ -421,15 +421,14 @@
       {/if}
       {#if error}<p class="err">{error}</p>{/if}
       <div class="foot">
-        <button type="button" class="btn ghost" onclick={close}>Cancel <Kbd keys="esc" /></button>
-        <button type="submit" class="btn primary" disabled={busy || !path.trim()}>{busy ? (isUrl(path) ? 'Cloning…' : 'Adding…') : isUrl(path) ? 'Clone' : 'Add'} <Kbd keys="⏎" /></button>
+        <button type="button" class="btn ghost" onclick={close} use:tooltip={{ label: 'Cancel', key: 'esc' }}>Cancel</button>
+        <button type="submit" class="btn primary" disabled={busy || !path.trim()} use:tooltip={{ label: isUrl(path) ? 'Clone' : 'Add', key: '⏎' }}>{busy ? (isUrl(path) ? 'Cloning…' : 'Adding…') : isUrl(path) ? 'Clone' : 'Add'}</button>
       </div>
     </form>
-    </div>
+    </FloatingWindow>
   {:else if o.kind === 'delete-agent'}
-    <div class="dlg small" role="alertdialog" aria-modal="true" aria-label="Delete {o.agentId}" tabindex="-1" onkeydown={(e) => onKey(e, confirmDeleteAgent)}>
+    <FloatingWindow title="Delete {o.agentId}?" role="alertdialog" size={SMALL} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, confirmDeleteAgent)}>
     <form onsubmit={(e) => (e.preventDefault(), confirmDeleteAgent())}>
-      <h3>Delete {o.agentId}?</h3>
       <div class="note what">
         <span>• {delAgent?.live ? 'Its process' : 'Any process it left'} and every process left in its worktree get SIGTERM, then SIGKILL after 5 s. The app scans again: nothing is deleted while one survives.</span>
         <span>• The agent leaves the sidebar. Its session transcript, usage and audit log stay.</span>
@@ -450,16 +449,15 @@
       {/if}
       {#if error}<p class="err">{error}</p>{/if}
       <div class="foot">
-        <button type="button" class="btn ghost" onclick={close}>Cancel <Kbd keys="esc" /></button>
+        <button type="button" class="btn ghost" onclick={close} use:tooltip={{ label: 'Cancel', key: 'esc' }}>Cancel</button>
         <!-- svelte-ignore a11y_autofocus -->
-        <button type="submit" class="btn danger" autofocus disabled={busy}>{busy ? 'Deleting…' : 'Kill and delete'} <Kbd keys="⏎" /></button>
+        <button type="submit" class="btn danger" autofocus disabled={busy} use:tooltip={{ label: 'Kill and delete', key: '⏎' }}>{busy ? 'Deleting…' : 'Kill and delete'}</button>
       </div>
     </form>
-    </div>
+    </FloatingWindow>
   {:else if o.kind === 'delete-feature'}
-    <div class="dlg small" role="alertdialog" aria-modal="true" aria-label="Delete feature" tabindex="-1" onkeydown={(e) => onKey(e, confirmDeleteFeature)}>
+    <FloatingWindow title="Delete feature {delFeature?.slug ?? ''}?" role="alertdialog" size={SMALL} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, confirmDeleteFeature)}>
     <form onsubmit={(e) => (e.preventDefault(), confirmDeleteFeature())}>
-      <h3>Delete feature {delFeature?.slug ?? ''}?</h3>
       <div class="note what">
         <span>• Its team run ends (failed, deleted by the user).</span>
         <span>• {delFeatureAgents.length ? `Killed (checked) and deleted: ${delFeatureAgents.map((a) => a.id).join(', ')}.` : 'No agent left.'}</span>
@@ -471,66 +469,36 @@
       {/if}
       {#if error}<p class="err">{error}</p>{/if}
       <div class="foot">
-        <button type="button" class="btn ghost" onclick={close}>Cancel <Kbd keys="esc" /></button>
+        <button type="button" class="btn ghost" onclick={close} use:tooltip={{ label: 'Cancel', key: 'esc' }}>Cancel</button>
         <!-- svelte-ignore a11y_autofocus -->
-        <button type="submit" class="btn danger" autofocus disabled={busy || !delFeature}>{busy ? 'Deleting…' : 'Delete feature'} <Kbd keys="⏎" /></button>
+        <button type="submit" class="btn danger" autofocus disabled={busy || !delFeature} use:tooltip={{ label: 'Delete feature', key: '⏎' }}>{busy ? 'Deleting…' : 'Delete feature'}</button>
       </div>
     </form>
-    </div>
+    </FloatingWindow>
   {:else if o.kind === 'plan'}
-    <div class="dlg" role="dialog" aria-modal="true" aria-label="Weekly plan" tabindex="-1" onkeydown={(e) => e.key === 'Escape' && (e.preventDefault(), close())}>
-      <h3>Weekly plan</h3>
+    <FloatingWindow title="Weekly plan" size={WIDE} minW={DIALOG_MIN_W} onclose={close}>
       <PlanEditor onSaved={close} onCancel={close} />
-    </div>
+    </FloatingWindow>
   {:else}
-    <div class="dlg small" role="alertdialog" aria-modal="true" aria-label={o.text} tabindex="-1" onkeydown={(e) => onKey(e, () => (close(), o.onYes()))}>
+    <FloatingWindow title={o.text} role="alertdialog" size={SMALL} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, () => (close(), o.onYes()))}>
     <form onsubmit={(e) => (e.preventDefault(), close(), o.onYes())}>
-      <h3>{o.text}</h3>
       <p class="secondary detail">{o.detail}</p>
       <div class="foot">
-        <button type="button" class="btn ghost" onclick={close}>{o.no ?? 'Cancel'} <Kbd keys="esc" /></button>
+        <button type="button" class="btn ghost" onclick={close} use:tooltip={{ label: o.no ?? 'Cancel', key: 'esc' }}>{o.no ?? 'Cancel'}</button>
         <!-- svelte-ignore a11y_autofocus -->
-        <button type="submit" class="btn primary" autofocus>{o.yes} <Kbd keys="⏎" /></button>
+        <button type="submit" class="btn primary" autofocus use:tooltip={{ label: o.yes, key: '⏎' }}>{o.yes}</button>
       </div>
     </form>
-    </div>
+    </FloatingWindow>
   {/if}
 {/if}
 
 <style>
-  .scrim {
-    position: fixed;
-    inset: 0;
-    z-index: 50;
-    background: var(--color-surface-chrome);
-    opacity: var(--opacity-backdrop);
-  }
-  .dlg {
-    position: fixed;
-    top: 80px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 51;
-    width: min(560px, 92vw);
+  form {
     display: flex;
     flex-direction: column;
     gap: var(--space-md);
-    padding: var(--space-lg);
-    background: var(--color-surface-pane);
-    border: var(--border-width-default) solid var(--color-border-strong);
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow-overlay);
     font: var(--text-label);
-  }
-  .dlg form {
-    display: contents;
-  }
-  .dlg.small {
-    width: min(420px, 92vw);
-  }
-  h3 {
-    margin: 0;
-    font: var(--text-title);
   }
   label {
     display: flex;

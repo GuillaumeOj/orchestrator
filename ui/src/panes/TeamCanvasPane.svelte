@@ -3,17 +3,21 @@
   // role inspector and the Rules panel. Mouse optional (§9.1): n add, hjkl /
   // arrows select, ⇧+hjkl move, c connect (target number, then edge type 1–4),
   // ⏎ inspect, x delete, = auto-layout, u undo, ⌃r redo, ⇧R library (roles and teams), ⌘⏎ launch,
-  // D duplicate the selected role (the team when none), then 1 global / 2 project (FR-306).
+  // ⇧D duplicate the selected role (the team when none), then 1 global / 2 project (FR-306).
   // Every edit saves (debounced); the core validates and versions the team.
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import AgentChip from '../components/AgentChip.svelte';
-  import Kbd from '../components/Kbd.svelte';
+  import Menu from '../components/Menu.svelte';
   import ModelSelect from '../components/ModelSelect.svelte';
   import RoleMcp from '../components/RoleMcp.svelte';
+  import Select from '../components/Select.svelte';
   import { app, projects, saveLayout, toast } from '../lib/app.svelte.js';
   import * as C from '../lib/canvas.js';
   import { errText, invoke } from '../lib/ipc.js';
+  import { isTypingTarget } from '../lib/keyboard.js';
   import { onTopics } from '../lib/now.svelte.js';
+  import { BUDGET_PRIORITIES, EFFORTS, PERMISSION_PROFILES, REVIEW_MODES } from '../lib/options.js';
+  import { tooltip } from '../lib/tooltip.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -34,6 +38,7 @@
   let saveTimer = null;
 
   const roles = $derived(view?.roles ?? []);
+  const roleOptions = $derived(roles.map((r) => ({ value: r.id, label: r.name })));
   const roleOf = (id) => roles.find((r) => r.id === id);
   const node = $derived(team?.nodes.find((n) => n.id === sel) ?? null);
   const role = $derived(node ? roleOf(node.role_id) : null);
@@ -41,6 +46,50 @@
   const issues = $derived(team ? (status === 'saved' ? serverIssues : C.localIssues(team)) : []);
   const badNodes = $derived(new Set(issues.map((i) => i.node).filter(Boolean)));
   const lines = $derived(status === 'saved' ? (saved?.rules ?? []) : []);
+  /** @type {any} */
+  let menu = $state();
+  /** The rows of the open action menu, by mode (keys as before: digits, g, ⏎). */
+  const menuSpec = $derived.by(() => {
+    const m = mode;
+    if (m?.kind === 'connect' && m.to)
+      return { label: 'Connect', heading: `Connect ${m.from} → ${m.to}`, hint: '', items: C.EDGE_KINDS.map((k, i) => ({ label: k, key: String(i + 1), run: () => connect(k) })) };
+    if (m?.kind === 'add')
+      return { label: 'Add a node', heading: 'Add a node', hint: '', items: roles.slice(0, 9).map((r, i) => ({ label: r.name ?? r.id, key: String(i + 1), run: () => addRole(r.id) })) };
+    if (m?.kind === 'starter')
+      return {
+        label: 'Starter',
+        heading: 'Starter · read-only',
+        hint: `${m.rolePatch ? `Role ${m.role.name}` : team?.name} is a starter. Starters are templates. Your changes will be saved as a copy.`,
+        items: [
+          ...(project ? [{ label: `Save in ${projectName}`, key: '⏎', run: () => copyStarter('project') }] : []),
+          { label: 'Global', key: project ? 'g' : '⏎', run: () => copyStarter('global') },
+        ],
+      };
+    if (m?.kind === 'dup') {
+      const w = m.what;
+      return {
+        label: 'Duplicate',
+        heading: `Duplicate ${w?.kind === 'role' ? `role ${w.role.id}` : (w?.team?.name ?? 'team')}`,
+        hint: 'A copy at version 1, as <id>-copy',
+        items: [
+          { label: 'To global', key: '1', run: () => duplicate('global', w) },
+          { label: `To ${projectName ?? 'a project (open the canvas from one)'}`, key: '2', disabled: !project, reason: 'Open the canvas from a project to duplicate into it', run: () => duplicate('project', w) },
+        ],
+      };
+    }
+    return { label: 'Actions', heading: '', hint: '', items: [] };
+  });
+  const menuOn = $derived(menuSpec.items.length > 0);
+  /** The menu went away without a row (Esc, a click outside): its mode ends, the canvas takes the keys back. */
+  function closeMode() {
+    if (menuOn) mode = null;
+    root?.focus();
+  }
+  $effect(() => {
+    if (menuOn) untrack(() => menu?.show());
+    else untrack(() => menu?.hide());
+  });
+
   const targets = $derived(mode?.kind === 'connect' && team ? C.targets(team, mode.from) : []);
   const project = $derived(spec?.projectId ?? null);
 
@@ -191,21 +240,30 @@
     }
   }
 
+  /** Saves a role patch; resolves false when it is not saved (refused, or waiting on the starter copy). */
   async function saveRole(patch) {
-    if (!role) return;
+    if (!role) return false;
     // A starter role is a template too: ask where to save a copy (§5.8).
     if (role.origin && role.scope?.kind !== 'project') {
       mode = { kind: 'starter', role: $state.snapshot(role), node: node?.id, rolePatch: patch };
       root?.focus();
-      return;
+      return false;
     }
     try {
       await invoke('role_save', { role: { ...$state.snapshot(role), ...patch } });
       await load();
+      return true;
     } catch (e) {
       toast(`Role: ${errText(e)}`, { kind: 'error' });
+      return false;
     }
   }
+
+  // A Select shows its pick at once; one not saved is remounted on the stored value.
+  let rev = $state(0);
+  const saveSel = async (patch) => {
+    if ((await saveRole(patch)) === false) rev++;
+  };
 
   // ---- presets (FR-306): duplicate a team or role, save as preset, launch
   const scopeOf = (t) => t?.scope ?? { kind: 'global' };
@@ -310,8 +368,8 @@
   }
 
   function onKey(e) {
-    if (e.target.closest('input, textarea, select')) {
-      if (e.key === 'Escape') (root?.focus(), e.preventDefault());
+    if (isTypingTarget(e.target)) {
+      if (e.key === 'Escape' && !e.defaultPrevented) (root?.focus(), e.preventDefault());
       return;
     }
     if (!team) return;
@@ -374,7 +432,7 @@
         if (sel && team.nodes.length > 1) mode = { kind: 'connect', from: sel };
         return handled();
       case 'Enter':
-        root?.querySelector('.inspector input, .inspector select')?.focus();
+        root?.querySelector('.inspector input, .inspector [role="combobox"]')?.focus();
         return handled();
       case 'x':
       case 'Backspace':
@@ -490,6 +548,10 @@
   });
 </script>
 
+{#snippet mhead(title, cancel = 'Cancel')}
+  <div class="mh"><b>{title}</b><span class="grow"></span><button type="button" class="icon-btn" aria-label="Cancel" use:tooltip={{ label: cancel, key: 'esc' }} onclick={() => ((mode = null), root?.focus())}>{'\u{F0156}'}</button></div>
+{/snippet}
+
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <div class="canvas-pane" tabindex="0" data-pane-focus bind:this={root} onkeydown={onKey} role="application" aria-label="Team canvas">
   <header class="ch">
@@ -500,10 +562,10 @@
       <b>Team canvas</b>
     {/if}
     <span class="grow"></span>
-    <button class="btn ghost" onclick={() => (mode = mode?.kind === 'library' ? null : { kind: 'library' })}>Library <Kbd keys="⇧+R" /></button>
+    <button type="button" class="btn ghost" use:tooltip={{ label: 'Library', key: '⇧R' }} onclick={() => (mode = mode?.kind === 'library' ? null : { kind: 'library' })}>Library</button>
     <button class="btn ghost" onclick={() => (mode = { kind: 'import', text: '' })}>Import</button>
     <button class="btn ghost" disabled={!team} onclick={exportTeam}>Export</button>
-    <button class="btn primary" disabled={!team} onclick={launch}>Launch on feature <Kbd keys="⌘+⏎" /></button>
+    <button type="button" class="btn primary" disabled={!team} use:tooltip={{ label: 'Launch on feature', key: '⌘⏎' }} onclick={launch}>Launch on feature</button>
   </header>
 
   <div class="main">
@@ -555,35 +617,26 @@
             <rect class="vp" x={MM.pad + (-pan.x / zoom - mm.b.x) * mm.s} y={MM.pad + (-pan.y / zoom - mm.b.y) * mm.s} width={mm.vw} height={mm.vh} />
           </svg>
         {/if}
-        <div class="hints">
-          <span><Kbd keys="n" /> add</span><span><Kbd keys="c" /> connect</span><span><Kbd keys="⏎" /> inspect</span><span><Kbd keys="=" /> auto-layout</span><span><Kbd keys="x" /> delete</span><span><Kbd keys="u" /> undo</span><span><Kbd keys="⇧+D" /> duplicate</span><span><Kbd keys="⌃+r" /> redo</span>
-        </div>
       {:else}
         <div class="empty">
           <p><b>No team open.</b></p>
-          <p class="muted">Open one from the library (⇧R) or start a new one.</p>
+          <p class="muted">Open one from the library or start a new one.</p>
           <button class="btn" onclick={newTeam}>New team</button>
         </div>
       {/if}
 
-      {#if mode?.kind === 'connect'}
-        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Connect">
-          {#if !mode.to}
-            <b>Connect {mode.from} → …</b>
-            <span class="muted">pick a target: its number or a click · esc cancel</span>
-          {:else}
-            <b>Connect {mode.from} → {mode.to}</b>
-            {#each C.EDGE_KINDS as k, i (k)}<button class="opt" onclick={() => connect(k)}><Kbd keys={String(i + 1)} /> {k}</button>{/each}
-            <span class="muted">esc cancel</span>
-          {/if}
+      {#if mode?.kind === 'connect' && !mode.to}
+        <div class="menu pick" role="status">
+          {@render mhead(`Connect ${mode.from} → …`)}
+          <span class="muted">pick a target: its number or a click</span>
         </div>
-      {:else if mode?.kind === 'add'}
-        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Add a node">
-          <b>Add a node</b>
-          {#each roles.slice(0, 9) as r, i (r.id)}<button class="opt" onclick={() => addRole(r.id)}><Kbd keys={String(i + 1)} /> <AgentChip id={r.id} role={r.id} color={r.color} name={r.name} /></button>{/each}
-          <span class="muted">esc cancel</span>
-        </div>
-      {:else if mode?.kind === 'library'}
+      {/if}
+      <!-- The action menus (Connect's edge kind, Add a node, Starter, Duplicate) are the shared Menu,
+           opened on the anchor at the canvas corner while their mode is on. -->
+      <Menu bind:this={menu} items={menuSpec.items} heading={menuSpec.heading} hint={menuSpec.hint} label={menuSpec.label} onclose={closeMode}>
+        {#snippet trigger(attrs)}<button type="button" class="menu-anchor" tabindex="-1" aria-hidden="true" {...attrs}></button>{/snippet}
+      </Menu>
+      {#if mode?.kind === 'library'}
         <div class="menu lib" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Library">
           <b>Library</b>
           <div class="presets">
@@ -598,29 +651,13 @@
                 <div class="pacts">
                   {#if t.update_available && t.starter}<button class="link" onclick={() => getNewStarter(t)}>Get the new starter</button>{/if}
                   <button class="link" onclick={() => launchPreset(t.team)}>Launch</button>
-                  <button class="link" onclick={() => (mode = { kind: 'dup', what: { kind: 'team', team: t.team } })}>Duplicate</button>
+                  <button type="button" class="link" use:tooltip={{ label: 'Duplicate', key: '⇧D' }} onclick={() => (mode = { kind: 'dup', what: { kind: 'team', team: t.team } })}>Duplicate</button>
                   {#if !t.starter}<button class="link" onclick={() => setPreset(t.team, !t.preset)}>{t.preset ? 'Remove from presets' : 'Save as preset'}</button>{/if}
                 </div>
               </div>
             {/each}
           </div>
           <button class="btn ghost" onclick={newTeam}>New team</button>
-        </div>
-      {:else if mode?.kind === 'starter'}
-        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Starter">
-          <b>Starter · read-only</b>
-          <span>{mode.rolePatch ? `Role ${mode.role.name}` : team?.name} is a starter. Starters are templates. Your changes will be saved as a copy.</span>
-          {#if project}<button class="opt" onclick={() => copyStarter('project')}><Kbd keys="⏎" /> Save in {projectName}</button>{/if}
-          <button class="opt" onclick={() => copyStarter('global')}><Kbd keys={project ? 'g' : '⏎'} /> Global</button>
-          <span class="muted">esc cancel (the starter is left as it is)</span>
-        </div>
-      {:else if mode?.kind === 'dup'}
-        {@const w = mode.what}
-        <div class="menu" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Duplicate">
-          <b>Duplicate {w?.kind === 'role' ? `role ${w.role.id}` : (w?.team?.name ?? 'team')}</b>
-          <button class="opt" onclick={() => duplicate('global', w)}>Duplicate to global <Kbd keys="D" /><Kbd keys="1" /></button>
-          <button class="opt" disabled={!project} onclick={() => duplicate('project', w)}>Duplicate to {projectName ?? 'a project (open the canvas from one)'} <Kbd keys="D" /><Kbd keys="2" /></button>
-          <span class="muted">A copy at version 1, as &lt;id&gt;-copy · esc cancel</span>
         </div>
       {:else if mode?.kind === 'import'}
         <div class="menu lib" onpointerdown={(e) => e.stopPropagation()} role="dialog" tabindex="-1" aria-label="Import a team">
@@ -639,43 +676,42 @@
             <span class="muted">role {role.name} v{role.version}</span>
           </div>
           <label><span>role</span>
-            <select class="field" value={node.role_id} onchange={(e) => edit(C.updateNode(team, node.id, { role_id: e.currentTarget.value }))}>
-              {#each roles as r (r.id)}<option value={r.id}>{r.name}</option>{/each}
-            </select>
+            <Select value={node.role_id} options={roleOptions} noun="role" onchange={(role_id) => edit(C.updateNode(team, node.id, { role_id }))} />
           </label>
-          {#key `${node.id}:${node.role_id}`}
+          {#key `${node.id}:${node.role_id}:${rev}`}
             <ModelSelect label="model" value={role.model} onsave={(model) => saveRole({ model })} />
             <ModelSelect label="node model" value={node.overrides?.model} emptyLabel={role.model ? `role: ${role.model}` : undefined} onsave={(model) => edit(C.setNodeModel(team, node.id, model))} />
           {/key}
+          {#key rev}
           <label><span>effort</span>
-            <select class="field" value={role.effort ?? ''} onchange={(e) => saveRole({ effort: e.currentTarget.value || null })}>
-              {#each ['', 'low', 'medium', 'high'] as v (v)}<option value={v}>{v || 'default'}</option>{/each}
-            </select>
+            <Select value={role.effort ?? ''} options={EFFORTS} onchange={(effort) => saveSel({ effort: effort || null })} />
           </label>
+          {/key}
           <div class="lab"><span>tools</span>
             <span class="checks">
               {#each ['edit', 'bash', 'web'] as k (k)}<label class="ck"><input type="checkbox" checked={role.tools[k]} onchange={(e) => saveRole({ tools: { ...role.tools, [k]: e.currentTarget.checked } })} /> {k}</label>{/each}
               <label class="ck"><input type="checkbox" checked={role.subagents_allowed} onchange={(e) => saveRole({ subagents_allowed: e.currentTarget.checked })} /> subagents</label>
             </span>
           </div>
+          {#key rev}
           <label><span>permissions</span>
-            <select class="field" value={role.permission_profile} onchange={(e) => saveRole({ permission_profile: e.currentTarget.value })}>
-              {#each ['strict', 'gated', 'autonomous'] as v (v)}<option value={v}>{v}</option>{/each}
-            </select>
+            <Select value={role.permission_profile} options={PERMISSION_PROFILES} onchange={(permission_profile) => saveSel({ permission_profile })} />
           </label>
+          {/key}
           <RoleMcp {role} servers={registry} isLead={node.is_lead} {project} onsave={saveRole} />
           <label><span>max live</span><input class="field" type="number" min="1" max="9" value={node.max_concurrency} disabled={node.is_lead} onchange={(e) => edit(C.updateNode(team, node.id, { max_concurrency: Math.max(1, Number(e.currentTarget.value) || 1) }))} /></label>
+          {#key rev}
           <label><span>budget</span>
-            <select class="field" value={role.budget_priority} onchange={(e) => saveRole({ budget_priority: e.currentTarget.value })}>
-              {#each ['low', 'normal', 'high', 'critical'] as v (v)}<option value={v}>{v}</option>{/each}
-            </select>
+            <Select value={role.budget_priority} options={BUDGET_PRIORITIES} onchange={(budget_priority) => saveSel({ budget_priority })} />
           </label>
+          {/key}
           <label><span>turn ceiling</span><input class="field" type="number" min="0" placeholder="minutes (none)" value={role.turn_ceiling?.minutes ?? ''} onchange={(e) => saveRole({ turn_ceiling: { ...(role.turn_ceiling ?? {}), minutes: Number(e.currentTarget.value) > 0 ? Number(e.currentTarget.value) : null } })} /></label>
           <label class="col"><span>prompt</span><textarea class="field" rows="4" value={role.prompt} onchange={(e) => saveRole({ prompt: e.currentTarget.value })}></textarea></label>
           <div class="row">
             {#if !node.is_lead}<button class="btn ghost" onclick={() => edit(C.setLead(team, node.id))}>Make lead</button>{/if}
-            <button class="btn ghost" onclick={() => (mode = { kind: 'connect', from: node.id })}>Connect <Kbd keys="c" /></button>
-            <button class="btn ghost" onclick={removeSelection}>Delete <Kbd keys="x" /></button>
+            <button type="button" class="btn ghost" use:tooltip={{ label: 'Connect', key: 'c' }} onclick={() => (mode = { kind: 'connect', from: node.id })}>Connect</button>
+            <button type="button" class="btn ghost" use:tooltip={{ label: 'Delete', key: 'x' }} onclick={removeSelection}>Delete</button>
+            <button type="button" class="btn ghost" use:tooltip={{ label: 'Duplicate', key: '⇧D' }} onclick={() => (mode = { kind: 'dup', what: { kind: 'role', role } })}>Duplicate</button>
           </div>
           {#if team.edges.some((e) => e.from === node.id || e.to === node.id)}
             <div class="edges-list">
@@ -696,11 +732,7 @@
         <div class="rh"><b>Rules</b><span class="grow"></span>{#if issues.length}<span class="err">{issues.length} error{issues.length === 1 ? '' : 's'}</span>{:else if status === 'saved'}<span class="ok">valid</span>{:else}<span class="muted">{status}…</span>{/if}</div>
         {#each issues as i (i.text)}<div class="err">{'\u{F0028}'} {i.text}</div>{/each}
         <label class="lab"><span>review</span>
-          <select class="field" value={team?.review ?? 'self'} disabled={!team} onchange={(e) => edit({ ...team, review: e.currentTarget.value })}>
-            <option value="self">self: /code-review, then /simplify</option>
-            <option value="node">by the reviewer node</option>
-            <option value="none">by the lead</option>
-          </select>
+          <Select value={team?.review ?? 'self'} options={REVIEW_MODES} disabled={!team} onchange={(review) => edit({ ...team, review })} />
         </label>
         {#each lines as [who, what] (who)}
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
@@ -842,18 +874,14 @@
     fill: none;
     stroke: var(--color-focus);
   }
-  .hints {
-    position: absolute;
-    left: 200px;
-    bottom: var(--space-lg);
+  .mh {
     display: flex;
-    gap: var(--space-md);
-    padding: var(--space-xs) var(--space-sm);
-    background: var(--color-surface-raised);
-    border: var(--border-width-default) solid var(--color-border-subtle);
-    border-radius: var(--radius-sm);
-    color: var(--color-text-secondary);
-    font: var(--text-caption);
+    align-items: center;
+    gap: var(--space-sm);
+  }
+  .key {
+    margin-left: auto;
+    padding-left: var(--space-md);
   }
   .menu {
     position: absolute;
@@ -868,6 +896,17 @@
     border: var(--border-width-default) solid var(--color-border-strong);
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-overlay);
+  }
+  .menu-anchor {
+    position: absolute;
+    right: var(--space-lg);
+    top: var(--space-lg);
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    border: 0;
+    background: none;
+    pointer-events: none;
   }
   .menu.lib {
     width: 320px;

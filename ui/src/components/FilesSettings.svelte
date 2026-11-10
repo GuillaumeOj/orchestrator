@@ -9,8 +9,10 @@
   import { onMount, tick } from 'svelte';
   import { app, openEditor, toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import { ACCESS, accessLabel, addedToast, ICON, inRect, items, midTruncate, pathLines, tilde } from '../lib/projectfiles.js';
-  import Kbd from './Kbd.svelte';
+  import { isTypingTarget } from '../lib/keyboard.js';
+  import { accessLabel, accessOptions, addedToast, ICON, inRect, items, midTruncate, pathLines, tilde } from '../lib/projectfiles.js';
+  import { tooltip } from '../lib/tooltip.js';
+  import Select from './Select.svelte';
 
   let { project, name } = $props();
   let view = $state(null); // { files, live_agents }; null = loading
@@ -25,6 +27,7 @@
   let fresh = $state([]); // paths just added (tinted ~2 s)
   let announce = $state('');
   let root = $state(null);
+  let rev = $state(0); // a refused access change remounts its picker on the access still applied
   let browsing = false; // the native panel is open
   let freshTimer = null;
 
@@ -100,6 +103,7 @@
   async function setAccess(f, access) {
     if (f.access === access) return;
     const err = await update(f, { access });
+    if (err) rev++;
     toast(err ?? `${short(f.path)} is now ${accessLabel(access)}`, err ? { kind: 'error' } : {});
   }
 
@@ -129,18 +133,6 @@
       e.currentTarget.blur();
       refocus();
     }
-  }
-
-  function segKey(e, f) {
-    const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
-    if (!d) return;
-    e.preventDefault();
-    const i = ACCESS.findIndex((a) => a.id === f.access);
-    const next = ACCESS[(i + d + ACCESS.length) % ACCESS.length].id;
-    // Read now: once the handler returns, Svelte's delegation resets currentTarget to its root.
-    const seg = e.currentTarget;
-    setAccess(f, next);
-    tick().then(() => seg.querySelector(`[data-access="${next}"]`)?.focus());
   }
 
   async function startRemove(f) {
@@ -186,7 +178,7 @@
       e.preventDefault();
       return browse();
     }
-    if (e.target.closest('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (isTypingTarget(e.target) || e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key;
     if (loadError && !view) {
       if (k !== 'r') return;
@@ -245,7 +237,7 @@
   <p class="muted lead">Agents read them in place. They aren't copied, versioned or committed.</p>
 
   {#if loadError && !view}
-    <p class="box errbox"><span class="lerr">{ICON.error}</span> Couldn't load {name}'s files: {loadError} <span class="grow"></span><button class="btn ghost" onclick={load}>Retry <Kbd keys="r" /></button></p>
+    <p class="box errbox"><span class="lerr">{ICON.error}</span> Couldn't load {name}'s files: {loadError} <span class="grow"></span><button class="btn ghost" use:tooltip={{ label: 'Retry', key: 'r' }} onclick={load}>Retry</button></p>
   {:else if !view}
     <div class="skel" aria-busy="true"><i></i><i></i><i class="short"></i></div>
   {:else}
@@ -278,7 +270,7 @@
             else if (e.key === 'Escape' && text) (e.preventDefault(), e.stopPropagation(), (text = ''));
           }}
         ></textarea>
-        <button class="btn" disabled={adding || !pathLines(text).length} onclick={addTyped}>Add <Kbd keys="⏎" /></button>
+        <button class="btn" disabled={adding || !pathLines(text).length} use:tooltip={{ label: 'Add', key: '⏎' }} onclick={addTyped}>Add</button>
       </span>
     </label>
 
@@ -303,8 +295,8 @@
               <div class="confirm" data-confirm role="alertdialog" aria-label="Remove {short(f.path)}">
                 <span>Remove from the project? The {f.kind} stays on disk.</span>
                 <span class="grow"></span>
-                <button class="btn danger" onclick={() => remove(f)}>Remove <Kbd keys="⏎" /></button>
-                <button class="btn ghost" onclick={cancelRemove}>Cancel <Kbd keys="esc" /></button>
+                <button class="btn danger" use:tooltip={{ label: 'Remove', key: '⏎' }} onclick={() => remove(f)}>Remove</button>
+                <button class="btn ghost" use:tooltip={{ label: 'Cancel', key: 'esc' }} onclick={cancelRemove}>Cancel</button>
               </div>
             {:else}
               <span class="icon kind" role="img" aria-label={f.kind}>{folder ? ICON.folder : ICON.file}</span>
@@ -313,16 +305,15 @@
                 <input class="field note" aria-label="Note for {short(f.path)}" placeholder="What is it for? Agents see this" value={f.note ?? ''} spellcheck="false" onblur={(e) => saveNote(f, e.currentTarget)} onkeydown={(e) => noteKey(e, f)} />
                 {#if noteErr?.path === f.path}<span class="nerr">{noteErr.text}</span>{/if}
               </span>
-              <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_interactive_supports_focus -->
-              <div class="seg" role="radiogroup" aria-label="Access for {short(f.path)}" onkeydown={(e) => segKey(e, f)}>
-                {#each ACCESS as a (a.id)}
-                  <button role="radio" data-access={a.id} aria-checked={f.access === a.id} tabindex={f.access === a.id ? 0 : -1} class:on={f.access === a.id} title={a.id === 'write' ? `Agents can change this ${f.kind}` : `Agents can only read this ${folder ? "folder's files" : 'file'}`} onclick={() => setAccess(f, a.id)}>{a.label}</button>
-                {/each}
-              </div>
+              <span class="access">
+                {#key `${f.path}:${rev}`}
+                  <Select aria-label="Access for {short(f.path)}" value={f.access} options={accessOptions(f.kind)} onchange={(access) => setAccess(f, access)} />
+                {/key}
+              </span>
               <span class="acts">
-                <button class="act" aria-label="Reveal in Finder" title="Reveal in Finder" disabled={!f.exists} onclick={() => reveal(f)}>{ICON.reveal}</button>
-                {#if !folder}<button class="act" aria-label="Open in editor" title="Open in editor" disabled={!f.exists} onclick={() => edit(f)}>{ICON.editor}</button>{/if}
-                <button class="act" aria-label="Remove" title="Remove ⌫" onclick={() => startRemove(f)}>{ICON.remove}</button>
+                <button class="act" aria-label="Reveal in Finder" use:tooltip={'Reveal in Finder'} disabled={!f.exists} onclick={() => reveal(f)}>{ICON.reveal}</button>
+                {#if !folder}<button class="act" aria-label="Open in editor" use:tooltip={'Open in editor'} disabled={!f.exists} onclick={() => edit(f)}>{ICON.editor}</button>{/if}
+                <button class="act" aria-label="Remove" use:tooltip={{ label: 'Remove', key: '⌫' }} onclick={() => startRemove(f)}>{ICON.remove}</button>
               </span>
             {/if}
           </div>
@@ -331,12 +322,17 @@
       {#if anyWrite}<p class="muted note">Agents may change these files. Two agents writing the same file: the last write wins, nothing undoes it.</p>{/if}
       {#if view.live_agents > 0}<p class="muted note">Running agents get changes when they next start · {view.live_agents} live now</p>{/if}
     {/if}
-    <p class="muted note keys">Changes apply as you make them. <Kbd keys="j" /> <Kbd keys="k" /> rows · <Kbd keys="⏎" /> note · <Kbd keys="a" /> access · <Kbd keys="⌫" /> remove · <Kbd keys="⌘+O" /> browse</p>
+    <p class="muted note applies">Changes apply as you make them.</p>
     <p class="sr" aria-live="polite">{announce}</p>
   {/if}
 </div>
 
 <style>
+  /* One width for every row, so the column lines up (04-project-settings-files). */
+  .access {
+    flex: none;
+    width: 136px;
+  }
   .files {
     display: flex;
     flex-direction: column;
@@ -351,7 +347,7 @@
     margin: 0;
     font: var(--text-caption);
   }
-  .keys {
+  .applies {
     margin-top: var(--space-xs);
   }
   .mono {
@@ -515,29 +511,6 @@
   .nerr {
     color: var(--color-status-error);
     font: var(--text-caption);
-  }
-  .seg {
-    display: flex;
-    border: var(--border-width-default) solid var(--color-border-strong);
-    border-radius: var(--radius-sm);
-    overflow: hidden;
-  }
-  .seg button {
-    padding: var(--space-xxs) var(--space-sm);
-    background: none;
-    border: 0;
-    color: var(--color-text-muted);
-    font: var(--text-label);
-    cursor: pointer;
-  }
-  .seg button.on {
-    background: var(--color-accent-subtle);
-    color: var(--color-text-primary);
-    font-weight: 500;
-  }
-  .seg button:focus-visible {
-    outline: var(--border-width-focus) solid var(--color-focus);
-    outline-offset: -2px;
   }
   .acts {
     display: flex;

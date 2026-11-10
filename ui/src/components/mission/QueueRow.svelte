@@ -5,8 +5,8 @@
   // Resume for a paused one) and Cancel. Everything from the record (D7).
   import { waited } from '../../lib/format.js';
   import { runNowCost } from '../../lib/mission.js';
+  import { tooltip } from '../../lib/tooltip.js';
   import AgentChip from '../AgentChip.svelte';
-  import Kbd from '../Kbd.svelte';
   import StatusBadge from '../StatusBadge.svelte';
   import OriginChip from './OriginChip.svelte';
 
@@ -26,10 +26,10 @@
   <span class="grow"></span>
   {#if since}<span class="muted since">{since}</span>{/if}
   {#if rec.queue}
-    <button class="btn" tabindex="-1" onclick={(e) => (e.stopPropagation(), onrun())}>{fresh ? 'Start now' : 'Run now'}{cost ? ` ${cost}` : ''} <Kbd keys="n" /></button>
-    <button class="btn ghost" tabindex="-1" title="Removes it from the queue; the agent stays as it is" onclick={(e) => (e.stopPropagation(), oncancel())}>Cancel</button>
+    <button class="btn" tabindex="-1" use:tooltip={{ label: fresh ? 'Start now' : 'Run now', key: 'n' }} onclick={(e) => (e.stopPropagation(), onrun())}>{fresh ? 'Start now' : 'Run now'}{cost ? ` ${cost}` : ''}</button>
+    <button class="btn ghost" tabindex="-1" use:tooltip={{ label: 'Cancel', detail: 'Removes it from the queue; the agent stays as it is' }} onclick={(e) => (e.stopPropagation(), oncancel())}>Cancel</button>
   {:else if rec.status === 'paused'}
-    <button class="btn" tabindex="-1" onclick={(e) => (e.stopPropagation(), onresume())}>Resume <Kbd keys="r" /></button>
+    <button class="btn" tabindex="-1" use:tooltip={{ label: 'Resume', key: 'r' }} onclick={(e) => (e.stopPropagation(), onresume())}>Resume</button>
   {/if}
 </div>
 

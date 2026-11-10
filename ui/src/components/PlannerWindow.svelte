@@ -1,5 +1,6 @@
 <script>
-  // Week planner (§9.3, FR-802–804, FR-809, Penpot 04 Week planner): read-only
+  // Week planner, the floating window (design-notes §3, 04-week-planner-*.png;
+  // §9.3, FR-802–804, FR-809, Penpot 04 Week planner): read-only
   // forecast from the Governor. The week's usage so far (line, with the agents'
   // part filled inside it) against the plan, forecast and w/ governor lines, all
   // in % of the weekly limit; plus the 5h window, allocations, next-action preview
@@ -11,14 +12,15 @@
   // off-hours (or back in working hours). P3: model windows, off-hours bands.
   // the downgrade entries (FR-815, 816, 818, 819).
   import { onMount } from 'svelte';
-  import Kbd from '../components/Kbd.svelte';
-  import PressurePill from '../components/PressurePill.svelte';
-  import { app, confirm, governor, openReport, queueOffHours, toast } from '../lib/app.svelte.js';
+  import { app, closeWindow, confirm, governor, openReport, pauseAll, queueOffHours, toast } from '../lib/app.svelte.js';
   import { clock, dayHm, dayTime, duration, pct, pp, when } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { onTopics } from '../lib/now.svelte.js';
   import { downgradeText, nextOffHours, OFF_DISABLED, offHoursAllowed, windowLabel, windowQueued } from '../lib/pacing.js';
   import { PRESSURE, queueReason } from '../lib/status.js';
+  import { tooltip } from '../lib/tooltip.js';
+  import FloatingWindow from './FloatingWindow.svelte';
+  import PressurePill from './PressurePill.svelte';
 
   let v = $state(null);
   let err = $state(null);
@@ -170,12 +172,15 @@
     }
   }
 
+  // §9 bug 5: the button and P are one action with one feedback.
+  const pause = () => pauseAll().then(load);
+
   function onKey(e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const k = e.key;
     const act = (fn) => (e.preventDefault(), fn());
     if (k === 'S') return act(sprint);
-    if (k === 'P') return act(() => governor('pause_all').then(() => (toast('Paused all · Resume all from the palette'), load())));
+    if (k === 'P') return act(pause);
     if (k === 'u') return act(() => undo(v?.log[logSel]));
     if (k === 'j' || k === 'ArrowDown') return act(() => (logSel = Math.min((v?.log.length ?? 1) - 1, logSel + 1)));
     if (k === 'k' || k === 'ArrowUp') return act(() => (logSel = Math.max(0, logSel - 1)));
@@ -187,6 +192,7 @@
   }
 </script>
 
+<FloatingWindow title="Week planner" size={{ w: 1100, h: 760 }} onclose={() => closeWindow()} restoreFocus={false}>
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <div class="planner" tabindex="0" data-pane-focus onkeydown={onKey} role="region" aria-label="Week planner">
   {#if err}
@@ -205,12 +211,12 @@
         {#if shadowWeekDone}<button class="btn" onclick={() => setEnforce(true)}>Shadow week done · Enforce…</button>{/if}
       {:else}
         <span class="toggle" title="The Governor holds and queues work">Enforced</span>
-        <button class="btn ghost" onclick={() => setEnforce(false)}>Shadow mode…</button>
+        <button class="btn" onclick={() => setEnforce(false)}>Shadow mode…</button>
       {/if}
-      <button class="btn" onclick={sprint}>Sprint mode <Kbd keys="S" /></button>
-      <button class="btn danger" onclick={() => governor('pause_all').then(load)}>Pause all <Kbd keys="P" /></button>
-      <button class="btn ghost" onclick={() => openReport('current')}>Weekly report <Kbd keys="R" /></button>
-      <button class="btn ghost" onclick={() => (app.overlay = { kind: 'plan' })}>{v.plan_set ? 'Edit plan' : 'Set this week’s plan'} <Kbd keys="e" /></button>
+      <button class="btn" onclick={sprint} use:tooltip={{ label: 'Sprint mode', key: 'S' }}>Sprint mode</button>
+      <button class="btn danger" onclick={pause} use:tooltip={{ label: 'Pause all', key: 'P' }}>Pause all</button>
+      <button class="btn" onclick={() => openReport('current')} use:tooltip={{ label: 'Weekly report', key: 'R' }}>Weekly report</button>
+      <button class="btn" onclick={() => (app.overlay = { kind: 'plan' })} use:tooltip={{ label: v.plan_set ? 'Edit plan' : 'Set this week’s plan', key: 'e' }}>{v.plan_set ? 'Edit plan…' : 'Set this week’s plan…'}</button>
     </div>
 
     <div class="grid">
@@ -307,7 +313,7 @@
         <div class="ch"><b>Next action</b><span class="muted">preview</span></div>
         {#if v.queue.length}
           <p>Next release: <b>{v.queue[0].agent}</b> ({v.queue[0].tier}) · {queueReason(v.queue[0])}{v.queue[0].estimated_start ? ` · ≈ ${clock(Date.parse(v.queue[0].estimated_start))}` : ''}</p>
-          <div class="row"><button class="btn ghost" disabled={!offHoursAllowed(off)} title={offHoursAllowed(off) ? '' : OFF_DISABLED} onclick={() => toggleOffHours()}>{head0Off ? 'Run in working hours' : 'Run off-hours'} <Kbd keys="O" /></button></div>
+          <div class="row"><button class="btn ghost" disabled={!offHoursAllowed(off)} onclick={() => toggleOffHours()} use:tooltip={offHoursAllowed(off) ? { label: head0Off ? 'Run in working hours' : 'Run off-hours', key: 'O' } : { label: OFF_DISABLED }}>{head0Off ? 'Run in working hours' : 'Run off-hours'}</button></div>
         {:else}
           <p class="muted">Nothing queued.</p>
         {/if}
@@ -317,8 +323,8 @@
             <p><span style:color="var(--color-pacing-amber)">▲</span> Ask: {v.pending_ask.reason}</p>
             <p class="muted">{v.pending_ask.expected_effect} · default: {v.pending_ask.ask.default} at {clock(Date.parse(v.pending_ask.ask.deadline))}</p>
             <div class="row">
-              <button class="btn primary" onclick={() => answerAsk(true)}>Apply <Kbd keys="a" /></button>
-              <button class="btn" onclick={() => answerAsk(false)}>Keep running <Kbd keys="r" /></button>
+              <button class="btn primary" onclick={() => answerAsk(true)} use:tooltip={{ label: 'Apply', key: 'a' }}>Apply</button>
+              <button class="btn" onclick={() => answerAsk(false)} use:tooltip={{ label: 'Keep running', key: 'r' }}>Keep running</button>
             </div>
           </div>
         {/if}
@@ -333,7 +339,7 @@
               <span class="muted when" title={entry.past ? 'an earlier start of the app' : ''}>{entry.past ? dayTime(Date.parse(entry.action.ts)) : clock(Date.parse(entry.action.ts))}</span>
               <span class="ic" style:color={p.color}>{logIcon(entry)}</span>
               <span class="what"><b>{describe(entry)}</b> · {entry.action.reason}{entry.action.expected_effect ? ` → ${entry.action.expected_effect}` : ''}{entry.action.mode === 'shadow' ? ' · shadow' : ''}</span>
-              {#if entry.can_undo}<button class="btn ghost" onclick={() => undo(entry)}>Undo <Kbd keys="u" /></button>
+              {#if entry.can_undo}<button class="btn ghost" onclick={() => undo(entry)} use:tooltip={{ label: 'Undo', key: 'u' }}>Undo</button>
               {:else if entry.action.undone_at}<span class="muted">undone</span>{/if}
             </li>
           {:else}
@@ -344,17 +350,14 @@
     </div>
   {/if}
 </div>
+</FloatingWindow>
 
 <style>
   tr.ow td {
     border-top: var(--border-width-default) solid var(--color-border-subtle);
   }
   .planner {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
     outline: none;
-    padding: var(--space-md);
     font: var(--text-label);
   }
   .head {

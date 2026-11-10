@@ -377,7 +377,18 @@ describe('toasts: never before sent, the effect when the core pushes it', () => 
     app.now = nowOf(app.data, { decisions: [perm] });
     replies.inbox_act = { ok: true, lifecycle: { state: 'sent' } };
     decide(perm, 'always');
-    await flushDecisions(Date.now() + UNDO_MS);
+    // It asks once, names the rule and the project's policy file; no undo toast follows.
+    expect(app.overlay).toMatchObject({
+      kind: 'confirm',
+      text: 'Always allow "Bash(pnpm add:*)"?',
+      yes: 'Always allow',
+    });
+    expect(app.overlay.detail).toMatch(/^Adds a rule to .+'s policy file\. Undo in Settings › Permissions\.$/);
+    expect(app.pending).toHaveLength(0);
+    app.overlay.onYes();
+    expect(app.toasts.some((t) => t.undo)).toBe(false);
+    await flushDecisions();
+    expect(calls.find(([cmd]) => cmd === 'inbox_act')[1]).toMatchObject({ item: perm.id, action: 'always' });
     push(2, { ...perm, lifecycle: { state: 'effect', decided_by: 'user', effect: 'allowed' } });
     expect(app.toasts.at(-1).text).toBe('Always allowed · Bash(pnpm add:*) · front-1 resumed');
     const pr = decision({ id: 'gate-6', kind: 'gate', gate: 'pr', subject: { agent: 'lead-1' } });
@@ -470,7 +481,7 @@ describe('outcome digest (level 4)', () => {
     ]);
     expect(text(rows[3])).toMatch(/^\S+ T-4 done · checkout API \(back-1\) 00:02$/);
     expect(rows[0].querySelector('.link')).toBeTruthy();
-    expect(text(c.querySelector('.digest .dh'))).toBe('Today · 5 outcomes · Clear · 6 done today c');
+    expect(text(c.querySelector('.digest .dh'))).toBe('Today · 5 outcomes · Clear · 6 done today');
     await fireEvent.keyDown(c.querySelector('[data-chat-focus]'), { key: 'c' });
     await waitFor(() => expect(text(c.querySelector('.digest'))).toContain('6 done today, all seen.'));
     expect(calls.find(([cmd]) => cmd === 'digest_seen')[1]).toEqual({ upTo: 'ev-15' });

@@ -14,6 +14,10 @@
   import Inspector from './components/Inspector.svelte';
   import Palette from './components/Palette.svelte';
   import PlanChooser from './components/PlanChooser.svelte';
+  import PlannerWindow from './components/PlannerWindow.svelte';
+  import ProjectSettingsWindow from './components/ProjectSettingsWindow.svelte';
+  import SettingsWindow from './components/SettingsWindow.svelte';
+  import ShortcutsSheet from './components/ShortcutsSheet.svelte';
   import Sidebar from './components/Sidebar.svelte';
   import StatusBar from './components/StatusBar.svelte';
   import TitleBar from './components/TitleBar.svelte';
@@ -23,7 +27,7 @@
   import { startDev } from './lib/dev.js';
   import { loadUiFont, prepareKitty } from './lib/fonts.js';
   import { inTauri, invoke, listen } from './lib/ipc.js';
-  import { classify } from './lib/keyboard.js';
+  import { classify, isTypingTarget } from './lib/keyboard.js';
   import { connectNow, onTopics } from './lib/now.svelte.js';
 
   // The `now` topics app_state answers for (its non-attention data): the
@@ -36,13 +40,19 @@
   let ready = $state(false);
   let lastKeyCommand = { id: null, at: 0 };
   const isNav = (k) => k === 'palette' || k === 'jump';
+  // An open Select or Menu takes the Esc first (it closes itself, not the inspector overlay).
+  const OPEN_POPOVER = '[role="combobox"][aria-expanded="true"], [aria-haspopup="menu"][aria-expanded="true"]';
+  // With a window open (design-notes §3.3): the palette and jump open above it,
+  // ⌘T / ⌘N their dialog above it, ⌘W closes it, ⌘, / ⌘/ toggle or replace it;
+  // every other chord and leader key waits until it closes.
+  const OVER_WINDOW = new Set(['palette', 'jump', 'session.new', 'project.add', 'pane.close', 'settings', 'shortcuts']);
 
   // Keyboard contract §9.7, in the capture phase: ⌘-chords and the leader never
   // reach xterm.js; everything else goes on to the focused element.
   function onKeyDown(e) {
     if (e.isComposing) return;
     const inXterm = !!e.target.closest?.('.xterm');
-    const inField = !inXterm && !!e.target.closest?.('input, textarea, select');
+    const inField = !inXterm && isTypingTarget(e.target);
     const r = classify(e, keyContext(e.target));
     const stop = () => {
       e.preventDefault();
@@ -67,13 +77,14 @@
           if (!isNav(app.overlay.kind)) return;
           app.overlay = null;
         }
+        if (app.window && !OVER_WINDOW.has(r.command)) return;
         return run(r.command);
       case 'pty':
         terms.get(app.focused)?.write(r.bytes);
         return stop();
       default:
         // The watch-mode strip's Esc goes back to Mission control; Esc anywhere else closes the overlay.
-        if (e.key === 'Escape' && inspectorOverlay() && !inXterm && !e.target.closest?.('[data-watch]')) {
+        if (e.key === 'Escape' && inspectorOverlay() && !app.window && !inXterm && !document.querySelector(OPEN_POPOVER) && !e.target.closest?.('[data-watch]')) {
           app.inspector = false;
           stop();
         }
@@ -149,6 +160,11 @@
     {#if docked && app.inspector}<Inspector />{/if}
   </div>
   <StatusBar />
+  <!-- One floating window at a time, above the app and under the palette and the dialogs (design-notes §2.4). -->
+  {#if app.window?.kind === 'settings'}<SettingsWindow />
+  {:else if app.window?.kind === 'project-settings'}{#key app.window.projectId}<ProjectSettingsWindow />{/key}
+  {:else if app.window?.kind === 'planner'}<PlannerWindow />
+  {:else if app.window?.kind === 'shortcuts'}<ShortcutsSheet />{/if}
   {#if app.overlay?.kind === 'palette' || app.overlay?.kind === 'jump'}{#key app.overlay.kind}<Palette mode={app.overlay.kind} />{/key}{/if}
   {#if app.overlay?.kind === 'plan-project'}<PlanChooser />{/if}
   <Dialogs />

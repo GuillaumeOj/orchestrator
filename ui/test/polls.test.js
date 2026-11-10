@@ -24,8 +24,12 @@ const ALLOWED = {
     'setInterval(() => (tick.now = Date.now()), 30000)',
     // The elapsed time of a running `claude update`: held only while one runs.
     'setInterval(() => (sec.now = Date.now()), 1000)',
+    // The live shells' `term_cwd` read (api-contract §1): only while a live shell is open and the window visible.
+    'setInterval(() => {',
   ],
   'App.svelte': ['setInterval(flushDecisions, 1000)'],
+  // Press-and-hold on ‹ ›: repeats only while the button is held.
+  'components/TabStrip.svelte': ['setInterval(() => scrollStep(dir), HOLD_REPEAT)'],
 };
 
 describe('no polling (spec §1, §3.5)', () => {

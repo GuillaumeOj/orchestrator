@@ -20,6 +20,7 @@ import {
   timelineText,
 } from '../src/lib/teams.js';
 import { fixture, nowOf } from './fixture.js';
+import { pick, picked } from './pick.js';
 
 const calls = [];
 const replies = {};
@@ -194,7 +195,8 @@ describe('P2 panes', () => {
     const { container, getByText } = render(BoardPane, { paneId: 'b2' });
     await waitFor(() => getByText('Task 1'));
     expect(calls.some(([c, a]) => c === 'board_open_sync' && a.project === 'shop')).toBe(true);
-    expect(container.querySelector('footer.keys')?.textContent).toMatch(/g\s*open/);
+    // No footer legend: the keys are in the card menu and the Keyboard shortcuts sheet (§8).
+    expect(container.querySelector('footer.keys .kbd')).toBeNull();
     const board = container.querySelector('.board');
     await fireEvent.keyDown(board, { key: 'e' });
     await tick();
@@ -280,7 +282,6 @@ describe('P2 panes', () => {
     expect(rows.length).toBe(2);
     const cells = (r) => [...r.children].map((c) => c.className.split(' ')[0]);
     expect(cells(rows[1])).toEqual(['chip', 'name', 'act', 'st']);
-    expect(rows[1].getAttribute('title')).toBe('Open fx-back-1');
     expect(rows[1].querySelector('.chip').classList.contains('compact')).toBe(true);
     expect(rows[1].querySelector('.name').textContent).toBe('back-1');
     expect(rows[1].querySelector('.act').textContent).toBe('task T-1 · slow');
@@ -342,10 +343,8 @@ describe('P2 panes', () => {
     app.overlay = { kind: 'launch', teamId: 'duo', projectId: 'shop-api' };
     const { container } = render(Dialogs);
     await waitFor(() => expect(container.textContent).toContain('duo'));
-    const [projectSel, teamSel] = container.querySelectorAll('select');
-    projectSel.value = 'blog';
-    await fireEvent.change(projectSel);
-    await waitFor(() => expect(/** @type {HTMLSelectElement} */ (teamSel).value).toBe('blog-team'));
+    await pick(container, 'blog');
+    await waitFor(() => expect(picked(container, 1)).toBe('blog-team'));
     expect(calls.filter(([c]) => c === 'teams_view').map(([, a]) => a.project)).toEqual(['shop-api', 'blog']);
     expect(container.textContent).not.toContain('duo');
   });

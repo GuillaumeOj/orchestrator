@@ -2,11 +2,12 @@
   // Write-only secret field (p3-design-notes §5.3). The value leaves the UI
   // on save (the field clears before the core answers) and is never shown
   // back: no reveal, no copy, no length. Stored: "Stored in Keychain".
-  // ⌘⏎ saves, esc cancels.
-  import Kbd from './Kbd.svelte';
+  // ⌘⏎ saves, esc cancels. Replace and Remove are the owner's row buttons
+  // (Replace calls `focus()`), not this field's.
+  import { tooltip } from '../lib/tooltip.js';
 
-  /** @type {{ stored: boolean, placeholder: string, error?: string | null, onsave: (v: string) => void, onremove: () => void }} */
-  let { stored, placeholder, error = null, onsave, onremove } = $props();
+  /** @type {{ stored: boolean, placeholder: string, error?: string | null, onsave: (v: string) => void }} */
+  let { stored, placeholder, error = null, onsave } = $props();
   let value = $state('');
   let replacing = $state(false);
   let input = $state(null);
@@ -48,12 +49,10 @@
     <div class="line">
       <input bind:this={input} class="field mono grow" type="password" autocomplete="off" spellcheck="false" aria-label={placeholder} {placeholder} bind:value onkeydown={onKey} />
       {#if value}
-        <button class="btn primary" onclick={save}>Save <Kbd keys="⌘+⏎" /></button>
-        <button class="btn ghost" onclick={cancel}>Cancel <Kbd keys="esc" /></button>
+        <button class="btn primary" use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={save}>Save</button>
+        <button class="btn ghost" use:tooltip={{ label: 'Cancel', key: 'esc' }} onclick={cancel}>Cancel</button>
       {:else if replacing}
-        <button class="btn ghost" onclick={cancel}>Cancel <Kbd keys="esc" /></button>
-      {:else}
-        <span class="muted"><Kbd keys="⌘+⏎" /> save</span>
+        <button class="btn ghost" use:tooltip={{ label: 'Cancel', key: 'esc' }} onclick={cancel}>Cancel</button>
       {/if}
     </div>
     {#if value}<span class="muted mono typed" aria-hidden="true">{masked}</span>{/if}
@@ -61,10 +60,6 @@
     <div class="line stored">
       <span class="lock" aria-hidden="true">{'\u{F033E}'}</span>
       <span>Stored in Keychain</span>
-      <span class="muted">·</span>
-      <button class="link" onclick={focus}>Replace</button>
-      <span class="muted">·</span>
-      <button class="link" onclick={onremove}>Remove</button>
     </div>
   {/if}
   {#if error}<p class="err">{error}</p>{/if}
@@ -90,17 +85,7 @@
   .typed {
     font: var(--text-caption);
   }
-  .link {
-    padding: 0;
-    background: none;
-    border: 0;
-    color: var(--color-accent-default);
-    font: inherit;
-    cursor: pointer;
-  }
-  .link:focus-visible {
-    outline: var(--border-width-focus) solid var(--color-focus);
-  }
+
   .err {
     margin: 0;
     font: var(--text-caption);

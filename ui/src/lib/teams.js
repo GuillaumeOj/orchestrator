@@ -249,3 +249,12 @@ export function remoteLinkLabel(task) {
   if (!task?.remote_url) return null;
   return task.backend === 'linear' ? 'Open in Linear' : 'Open on GitHub';
 }
+
+/** The repo-relative path of a feature doc (R10: the line under the doc tabs), or null when the
+ *  doc is not in the repo: no integration worktree yet, or a name that is not a plain file of the
+ *  feature's folder. */
+export function docRepoPath(feature, name) {
+  if (!feature?.integration_worktree || !feature.slug || !name) return null;
+  if (name.startsWith('/') || name.split('/').includes('..') || /^[a-z]+:/i.test(name)) return null;
+  return `.orchestrator/features/${feature.slug}/${name}`;
+}

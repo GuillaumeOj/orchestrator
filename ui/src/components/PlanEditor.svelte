@@ -5,10 +5,12 @@
   // confirmed plan the core proposes an even split. Saving keeps the week's
   // usage (the Governor replays it into the new plan).
   import { onMount } from 'svelte';
-  import { share, TIERS } from '../lib/allocation.js';
+  import { share } from '../lib/allocation.js';
   import { refresh, toast } from '../lib/app.svelte.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import Kbd from './Kbd.svelte';
+  import { TIERS as TIER_OPTIONS } from '../lib/options.js';
+  import { tooltip } from '../lib/tooltip.js';
+  import Select from './Select.svelte';
 
   let { onSaved = () => {}, onCancel = null } = $props();
   const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -82,9 +84,7 @@
             <td><input class="field mono" type="number" min="0" step="1" bind:value={a.weight} aria-label="Weight of {a.id}" /></td>
             <td class="muted">{share(a.weight, total)}%</td>
             <td>
-              <select class="field" bind:value={a.tier} aria-label="Tier of {a.id}">
-                {#each TIERS as t (t)}<option value={t}>{t}</option>{/each}
-              </select>
+              <Select bind:value={a.tier} options={TIER_OPTIONS} aria-label="Tier of {a.id}" />
             </td>
             <td><input class="field mono" type="number" min="0" max="100" step="1" placeholder="none" bind:value={a.hard_cap_pct} aria-label="Hard cap of {a.id}" /></td>
           </tr>
@@ -94,7 +94,7 @@
     <p class="muted">Weights are relative; a weight of 0 drops the allocation. A hard cap stops the allocation for the week once it used that % of the week. Projects not in the plan are charged to “other sessions”; give one a weight to add it.</p>
     {#if error}<p class="err">{error}</p>{/if}
     <div class="foot">
-      {#if onCancel}<button type="button" class="btn ghost" onclick={onCancel}>Cancel <Kbd keys="esc" /></button>{/if}
+      {#if onCancel}<button type="button" class="btn ghost" use:tooltip={{ label: 'Cancel', key: 'esc' }} onclick={onCancel}>Cancel</button>{/if}
       <button type="submit" class="btn primary" disabled={busy || !form.days.length}>{busy ? 'Saving…' : 'Save plan'}</button>
     </div>
   </form>

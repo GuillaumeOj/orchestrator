@@ -16,21 +16,18 @@ export const CHORDS = {
   'cmd+l': 'overwatch.ask',
   'cmd+j': 'dock.toggle',
   'cmd+,': 'settings',
+  'cmd+/': 'shortcuts',
   ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`cmd+${n}`, `pane.focus.${n}`])),
 };
 
 /** Commands whose key belongs to the chat column, no chord (P4.4 notes §11.4). */
 const LOCAL_KEYS = { 'decisions.search': '/' };
 
-/** Leader sequences: ⌘; then the key. */
+/** Leader sequences: ⌘; then the key. Single pane (design-notes §4.1): no split,
+ *  zoom or left/right focus; j / k move between the workspace and the dock. */
 export const LEADER = {
-  s: 'pane.split.below',
-  v: 'pane.split.right',
-  h: 'focus.left',
   j: 'focus.down',
   k: 'focus.up',
-  l: 'focus.right',
-  z: 'pane.zoom',
   t: 'shell.new',
   ']': 'dock.next',
   '[': 'dock.prev',
@@ -58,6 +55,17 @@ const NATIVE = new Set([
 
 const MODIFIERS = new Set(['Meta', 'Control', 'Alt', 'Shift', 'CapsLock', 'Fn']);
 
+/** Where a key is typed, not a command: a text field, a native select, a Select box. */
+const TYPING = 'input, textarea, select, [role="combobox"]';
+
+/** The key event's target takes text (pane-local single keys leave it alone). */
+export const isTypingTarget = (el) => !!el?.closest?.(TYPING);
+
+/** A pane-local single key leaves this event alone: a modifier is held, a field has the
+ *  focus, or (`controls`) a button or link does (its own ⏎ / space). */
+export const keyIgnored = (e, { controls = false } = {}) =>
+  e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target) || (controls && !!e.target?.closest?.('button, a'));
+
 /** `cmd+shift+i`-style name; letters lowercased, digits from `code` (layout safe). */
 export function chordName(e) {
   let key = e.key;
@@ -65,7 +73,9 @@ export function chordName(e) {
   else if (e.code === 'Semicolon') key = ';';
   else if (/^Key[A-Z]$/.test(e.code ?? '') && (e.metaKey || e.ctrlKey)) key = e.code.slice(3);
   key = key.toLowerCase();
-  const mods = [e.metaKey && 'cmd', e.ctrlKey && 'ctrl', e.altKey && 'alt', e.shiftKey && 'shift'].filter(Boolean);
+  // `/` is shifted on AZERTY (⇧: gives '/'): the same chord as on QWERTY, so ⌘/ works on both.
+  const shift = e.shiftKey && key !== '/';
+  const mods = [e.metaKey && 'cmd', e.ctrlKey && 'ctrl', e.altKey && 'alt', shift && 'shift'].filter(Boolean);
   return [...mods, key].join('+');
 }
 

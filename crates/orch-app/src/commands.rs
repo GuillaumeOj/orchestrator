@@ -156,6 +156,13 @@ pub fn term_kill(core: CoreState, id: u32) {
     core.terms.kill(id)
 }
 
+/// The shell's current directory; `None` for an unknown or exited terminal
+/// (the UI polls it, a closed pane is not an error).
+#[tauri::command]
+pub fn term_cwd(core: CoreState, id: u32) -> Option<String> {
+    core.terms.get(id).ok()?.cwd().map(|p| p.display().to_string())
+}
+
 #[tauri::command]
 pub async fn editor_open(
     core: CoreState<'_>,
@@ -752,6 +759,21 @@ pub async fn project_clone(
     name: Option<String>,
 ) -> Res<Project> {
     blocking(core, move |c| c.project_clone(&url, parent.as_deref(), name.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn rename_project(core: CoreState<'_>, id: String, name: String) -> Res<Project> {
+    blocking(core, move |c| c.project_rename(&id, &name)).await
+}
+
+#[tauri::command]
+pub async fn set_default_branch(core: CoreState<'_>, id: String, branch: String) -> Res<Project> {
+    blocking(core, move |c| c.project_set_default_branch(&id, &branch)).await
+}
+
+#[tauri::command]
+pub async fn project_branches(core: CoreState<'_>, id: String) -> Res<Vec<String>> {
+    blocking(core, move |c| c.project_branches(&id)).await
 }
 
 #[tauri::command]

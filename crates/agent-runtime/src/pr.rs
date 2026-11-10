@@ -225,6 +225,7 @@ impl Runtime {
             head_sha: view.head_sha.clone(),
             base: view.base.clone(),
             ci: view.ci.clone(),
+            review_decision: view.review_decision.clone(),
             position: gh::position(&view.mergeable, &view.merge_state, counts, base_sha),
             unpushed: orch_git::cleanup::try_ahead_behind(&wt, "HEAD", &view.head_sha).map_or(0, |(a, _)| a),
             rewritten: pushed_sha.as_deref().is_some_and(|p| !orch_git::cleanup::is_merged(&wt, p, "HEAD")),

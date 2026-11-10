@@ -142,20 +142,3 @@ export function savedToast(name, form) {
     ? `Saved ${name}'s allocation · this week's usage kept`
     : `Removed ${name} from the plan · this week's usage kept`;
 }
-
-/** The keys valid right now, for the keys line. */
-export function keysFor(view, draft, dirty, invalid, loadError) {
-  if (loadError) return [['r', 'retry']];
-  if (!view) return [];
-  if (!view.plan_confirmed) return [['g', 'week planner']];
-  const pending = !!view.allocation && pendingRemoval(draft);
-  const keys = [];
-  if (dirty) {
-    if (!invalid) keys.push(['⌘+⏎', 'save']);
-    keys.push(['esc', pending ? 'keep in the plan' : 'cancel']);
-  }
-  if (!view.allocation && !draft) keys.push(['a', 'add']);
-  if (draft && !pending) keys.push(['x', 'remove']);
-  if (!dirty) keys.push(['g', 'week planner']);
-  return keys;
-}

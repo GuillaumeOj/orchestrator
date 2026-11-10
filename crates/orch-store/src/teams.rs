@@ -84,6 +84,9 @@ pub struct PrStatus {
     pub base: String,
     pub ci: CiSummary,
     pub position: PrPosition,
+    /// GitHub's review decision: `APPROVED` / `CHANGES_REQUESTED` / `REVIEW_REQUIRED`.
+    #[serde(default)]
+    pub review_decision: Option<String>,
     /// The PR head the app itself last pushed (the force-with-lease lease).
     #[serde(default)]
     pub pushed_sha: Option<String>,
@@ -1526,6 +1529,16 @@ mod tests {
     use super::*;
     use orch_team::presets;
 
+    #[test]
+    fn old_stored_pr_status_deserializes_without_review_decision() {
+        let mut pr = serde_json::to_value(PrStatus::default()).unwrap();
+        pr.as_object_mut().unwrap().remove("review_decision");
+        assert_eq!(serde_json::from_value::<PrStatus>(pr).unwrap().review_decision, None);
+        let with = PrStatus { review_decision: Some("APPROVED".into()), ..Default::default() };
+        let back: PrStatus = serde_json::from_value(serde_json::to_value(&with).unwrap()).unwrap();
+        assert_eq!(back, with);
+    }
+
     fn store() -> (tempfile::TempDir, Store) {
         let d = tempfile::tempdir().unwrap();
         let s = Store::open(&d.path().join("o.db")).unwrap();
@@ -1748,6 +1761,7 @@ mod tests {
                 }],
             },
             position: PrPosition { status: "behind".into(), behind: 2, ahead: 3, base_sha: Some("def".into()) },
+            review_decision: Some("CHANGES_REQUESTED".into()),
             pushed_sha: Some("abc".into()),
             unpushed: 1,
             rewritten: false,

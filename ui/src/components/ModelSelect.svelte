@@ -1,11 +1,15 @@
 <script>
   // A model picker: the default, an alias, or a custom id typed in a mono input.
   // `value` is the stored model (null for default); `onsave` gets the value to store.
-  import { MODEL_ALIASES, modelOption, modelValue } from '../lib/canvas.js';
+  import { modelOption, modelValue } from '../lib/canvas.js';
+  import { MODELS } from '../lib/options.js';
+  import Select from './Select.svelte';
 
   let { label, value, emptyLabel = "default (Claude Code's)", onsave } = $props();
   let picking = $state(false); // "custom…" picked, text not typed yet
+  let rev = $state(0); // a refused save remounts the picker on the stored value
   const option = $derived(picking ? 'custom' : modelOption(value));
+  const options = $derived(MODELS.map((m) => (m.value === '' ? { ...m, label: emptyLabel } : m)));
 
   // A new stored value (a save landed, an undo) ends the pending pick.
   $effect(() => {
@@ -13,23 +17,29 @@
     picking = false;
   });
 
-  function pick(e) {
-    const v = e.currentTarget.value;
+  // `onsave` may resolve false: not saved, so the picker goes back to the stored value.
+  async function save(model) {
+    if ((await onsave(model)) === false) {
+      picking = false;
+      rev++;
+    }
+  }
+
+  function pick(v) {
     picking = v === 'custom';
-    if (!picking) onsave(modelValue(v));
+    if (!picking) save(modelValue(v));
   }
 </script>
 
-<label><span>{label}</span>
-  <select class="field" value={option} onchange={pick}>
-    <option value="">{emptyLabel}</option>
-    {#each MODEL_ALIASES as v (v)}<option value={v}>{v}</option>{/each}
-    <option value="custom">custom…</option>
-  </select>
-</label>
-{#if option === 'custom'}
-  <input class="field mono custom" aria-label="Custom {label}" placeholder="claude-…" value={modelOption(value) === 'custom' ? value : ''} onchange={(e) => onsave(modelValue('custom', e.currentTarget.value))} />
-{/if}
+<!-- A refused save remounts both: the Select and the custom field show the saved value again. -->
+{#key rev}
+  <label><span>{label}</span>
+    <Select value={option} {options} noun="model" onchange={pick} />
+  </label>
+  {#if option === 'custom'}
+    <input class="field mono custom" aria-label="Custom {label}" placeholder="claude-…" value={modelOption(value) === 'custom' ? value : ''} onchange={(e) => save(modelValue('custom', e.currentTarget.value))} />
+  {/if}
+{/key}
 
 <style>
   /* The inspector's label grid (the parent's scoped styles do not reach in here). */

@@ -21,8 +21,8 @@
     SOURCES_SHOWN,
   } from '../../lib/overwatch.js';
   import { decisionKind, LIFECYCLE } from '../../lib/status.js';
+  import { tooltip } from '../../lib/tooltip.js';
   import ContextBlocks from '../ContextBlocks.svelte';
-  import Kbd from '../Kbd.svelte';
   import LifecycleMarker from '../LifecycleMarker.svelte';
   import BriefBody from './BriefBody.svelte';
 
@@ -187,8 +187,7 @@
   {#if replying}
     <div class="reply">
       <!-- svelte-ignore a11y_autofocus -->
-      <textarea class="field" rows="3" autofocus bind:value={text} onkeydown={replyKey} aria-label="Reply" placeholder={d.kind === 'permission' ? 'Tell Claude what to do instead…' : `Message to ${agentOf(d) ?? 'the agent'}…`}></textarea>
-      <span class="muted"><Kbd keys="⏎" /> send · <Kbd keys="⇧+⏎" /> new line · <Kbd keys="esc" /> cancel</span>
+      <textarea class="field" rows="3" autofocus bind:value={text} onkeydown={replyKey} aria-label="Reply" placeholder={d.kind === 'permission' ? 'Tell Claude what to do instead · ⏎ to send' : `Reply to ${agentOf(d) ?? 'the agent'} · ⏎ to send`}></textarea>
     </div>
   {/if}
   {#if note}
@@ -221,7 +220,8 @@
           class:rec={x.id === recId}
           aria-label={x.id === recId ? `${x.label}, recommended by the Overwatch` : undefined}
           disabled={(x.id === 'answer' && options && !answered) || opening}
-          onclick={() => onkey(x.key)}>{x.label} <Kbd keys={x.key === 'enter' ? '⏎' : x.key} />{#if x.id === recId}{' '}<span class="tag">· recommended</span>{/if}</button
+          use:tooltip={{ label: x.label, key: x.key === 'enter' ? '⏎' : x.key }}
+          onclick={() => onkey(x.key)}>{x.label}{#if x.id === recId}{' '}<span class="tag">· recommended</span>{/if}</button
         >
       {/each}
       {#each keyless(d) as x (x.id)}
@@ -232,17 +232,17 @@
           class:primary={primary ? primary === x.id : x.id === 'restart_fresh'}
           class:danger={x.id === 'delete'}
           class:ghost={primary ? primary !== x.id : x.id !== 'restart_fresh' && x.id !== 'delete'}
-          title={x.id === 'always' ? d.payload?.always : null}
+          use:tooltip={x.id === 'always' && d.payload?.always ? { label: x.label, detail: d.payload.always } : null}
           onclick={() => onact(x.id)}>{x.label}{#if x.id === recId}{' '}<span class="tag">· recommended</span>{/if}</button
         >
       {/each}
     </div>
   {:else if live && pending}
-    {#if !pending.sent}<div class="actions"><button class="btn ghost" onclick={() => onkey('u')}>Undo <Kbd keys="u" /></button></div>{/if}
+    {#if !pending.sent}<div class="actions"><button class="btn ghost" use:tooltip={{ label: 'Undo', key: 'u' }} onclick={() => onkey('u')}>Undo</button></div>{/if}
   {:else if prUrl || (!live && opens.length)}
     <div class="actions">
-      {#if prUrl}<button class="btn ghost" onclick={() => openUrl(prUrl)}>Open PR <Kbd keys="o" /></button>
-      {:else}{#each opens as x (x.id)}<button class="btn ghost" onclick={() => onact(x.id)}>{x.label}{#if x.key}{' '}<Kbd keys={x.key} />{/if}</button>{/each}{/if}
+      {#if prUrl}<button class="btn ghost" use:tooltip={{ label: 'Open PR', key: 'o' }} onclick={() => openUrl(prUrl)}>Open PR</button>
+      {:else}{#each opens as x (x.id)}<button class="btn ghost" use:tooltip={{ label: x.label, key: x.key }} onclick={() => onact(x.id)}>{x.label}</button>{/each}{/if}
     </div>
   {/if}
   {#if deciding && live && !pending}

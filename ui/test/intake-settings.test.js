@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { app, openProjectSettings } from '../src/lib/app.svelte.js';
 import { fixture } from './fixture.js';
+import { pick, picked } from './pick.js';
 
 const calls = [];
 const replies = {};
@@ -19,7 +20,7 @@ vi.mock('../src/lib/ipc.js', () => ({
   errText: (e) => (typeof e === 'string' ? e : (e?.message ?? String(e))),
 }));
 
-const { default: ProjectSettingsPane } = await import('../src/panes/ProjectSettingsPane.svelte');
+const { default: ProjectSettingsWindow } = await import('../src/components/ProjectSettingsWindow.svelte');
 const { default: IntakeGlobalSettings } = await import('../src/components/IntakeGlobalSettings.svelte');
 
 const info = (source = null) => ({
@@ -34,8 +35,8 @@ const last = (cmd) => called(cmd).at(-1)?.[1];
 
 function open(section = 'intake') {
   app.data = fixture();
-  app.panes = { ps: { type: 'project-settings', projectId: 'shop-api', section } };
-  return render(ProjectSettingsPane, { paneId: 'ps' });
+  app.window = { kind: 'project-settings', projectId: 'shop-api', section };
+  return render(ProjectSettingsWindow);
 }
 
 beforeEach(() => {
@@ -54,12 +55,12 @@ describe('Project settings › Intake', () => {
   it('is a section after Task backend, and openProjectSettings selects it', async () => {
     const { getAllByRole, findByRole } = open('backend');
     expect(
-      getAllByRole('button')
+      getAllByRole('tab')
         .map((b) => b.textContent.trim())
         .filter((t) => ['Task backend', 'Intake', 'Allocation'].includes(t)),
     ).toEqual(['Task backend', 'Intake', 'Allocation']);
     openProjectSettings('shop-api', 'intake');
-    expect(app.panes.ps.section).toBe('intake');
+    expect(app.window.section).toBe('intake');
     cleanup();
     open('intake');
     expect(await findByRole('radiogroup', { name: 'Source' })).toBeTruthy();
@@ -103,7 +104,7 @@ describe('Project settings › Intake', () => {
     const { findByRole, findByLabelText, getByLabelText, getByRole } = open();
     await fireEvent.click(await findByRole('radio', { name: 'Linear' }));
     const lteam = await findByLabelText('Team');
-    await waitFor(() => expect(el(lteam).value).toBe('ENG'));
+    await waitFor(() => expect(picked(lteam)).toBe('ENG'));
     await fireEvent.click(getByLabelText('Include backlog'));
     await fireEvent.click(getByRole('button', { name: /^Save/ }));
     await waitFor(() => expect(called('intake_source_set')).toHaveLength(1));
@@ -248,8 +249,8 @@ describe('Settings › Pacing › Intake block', () => {
     const { findByLabelText, getByRole } = render(IntakeGlobalSettings);
     const every = await findByLabelText('Refresh every');
     await loaded();
-    await waitFor(() => expect(el(every).value).toBe('600'));
-    await fireEvent.change(every, { target: { value: '1800' } });
+    await waitFor(() => expect(picked(every)).toBe('600'));
+    await pick(every, '30 min');
     await fireEvent.input(await findByLabelText('Default estimate, team run'), { target: { value: '8' } });
     await fireEvent.click(getByRole('button', { name: /^Save/ }));
     await waitFor(() => expect(called('settings_set')).toHaveLength(2));

@@ -6,7 +6,7 @@
   import { clock, dayTime } from '../../lib/format.js';
   import { ageText, basisText, exactRange, overRoom, SOURCE_NAME } from '../../lib/intake.js';
   import { errText, invoke } from '../../lib/ipc.js';
-  import Kbd from '../Kbd.svelte';
+  import { tooltip } from '../../lib/tooltip.js';
 
   /** @type {{ item: any, name: string, now: number, hidden?: boolean, onstart?: (m: 'team' | 'solo') => void, onhide?: () => void, onunhide?: () => void, onsource?: () => void }} */
   let { item, name, now, hidden = false, onstart = () => {}, onhide = () => {}, onunhide = () => {}, onsource = () => {} } = $props();
@@ -72,13 +72,13 @@
     {#if info.updated_at_ms}<dt>Updated</dt><dd>{ageText(info.updated_at_ms, now)} <span class="muted">({dayTime(info.updated_at_ms)})</span></dd>{/if}
   </dl>
   <div class="acts">
-    <button class="btn ghost" tabindex="-1" onclick={(e) => (e.stopPropagation(), onsource())}>Open source ↗ <Kbd keys="o" /></button>
+    <button class="btn ghost" tabindex="-1" use:tooltip={{ label: 'Open source', key: 'o' }} onclick={(e) => (e.stopPropagation(), onsource())}>Open source ↗</button>
     {#if hidden}
-      <button class="btn" tabindex="-1" onclick={(e) => (e.stopPropagation(), onunhide())}>Unhide <Kbd keys="x" /></button>
+      <button class="btn" tabindex="-1" use:tooltip={{ label: 'Unhide', key: 'x' }} onclick={(e) => (e.stopPropagation(), onunhide())}>Unhide</button>
     {:else}
-      {#if item.can_team !== false}<button class="btn" tabindex="-1" onclick={(e) => (e.stopPropagation(), onstart('team'))}>Start team run <Kbd keys="t" /></button>{/if}
-      <button class="btn" tabindex="-1" onclick={(e) => (e.stopPropagation(), onstart('solo'))}>Start solo <Kbd keys="a" /></button>
-      <button class="btn ghost" tabindex="-1" onclick={(e) => (e.stopPropagation(), onhide())}>Hide <Kbd keys="x" /></button>
+      {#if item.can_team !== false}<button class="btn" tabindex="-1" use:tooltip={{ label: 'Start team run', key: 't' }} onclick={(e) => (e.stopPropagation(), onstart('team'))}>Start team run</button>{/if}
+      <button class="btn" tabindex="-1" use:tooltip={{ label: 'Start solo', key: 'a' }} onclick={(e) => (e.stopPropagation(), onstart('solo'))}>Start solo</button>
+      <button class="btn ghost" tabindex="-1" use:tooltip={{ label: 'Hide', key: 'x' }} onclick={(e) => (e.stopPropagation(), onhide())}>Hide</button>
     {/if}
   </div>
 </div>

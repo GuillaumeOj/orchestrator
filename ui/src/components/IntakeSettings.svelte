@@ -7,7 +7,8 @@
   import { openSettings, toast } from '../lib/app.svelte.js';
   import { errorInfo, GH_SCOPE_COMMAND, integrationsRow, SOURCE_NAME } from '../lib/intake.js';
   import { errText, invoke } from '../lib/ipc.js';
-  import Kbd from './Kbd.svelte';
+  import { tooltip } from '../lib/tooltip.js';
+  import Select from './Select.svelte';
 
   let { project, name = project } = $props();
 
@@ -141,6 +142,15 @@
     return p;
   });
   const valid = $derived(!Object.keys(problems).length);
+  const milestoneOptions = $derived([
+    ...(ghOptions?.milestones ?? []).map((m) => ({ value: m.title, label: `${m.title} · ${m.open_issues} open` })),
+    // A saved milestone the list no longer has stays selectable (shown, not lost).
+    ...(milestone && !(ghOptions?.milestones ?? []).some((m) => m.title === milestone) ? [{ value: milestone, label: milestone }] : []),
+  ]);
+  const ghProjectOptions = $derived((ghOptions?.projects ?? []).map((p) => ({ value: `${p.owner}/${p.number}`, label: `${p.owner} #${p.number} · ${p.title}` })));
+  const teamOptions = $derived((teams ?? []).map((t) => ({ value: t.key, label: `${t.key} · ${t.name}` })));
+  const lprojectOptions = $derived([{ value: '', label: 'Any project' }, ...(linStates?.projects ?? []).map((p) => ({ value: p.id, label: p.name }))]);
+  const llabelOptions = $derived([{ value: '', label: 'Any label' }, ...linLabels.map((l) => ({ value: l, label: l }))]);
   const errs = $derived({ ...(touched ? problems : {}), ...fieldErrors });
 
   // ------------------------------------------------------------ loading
@@ -289,6 +299,7 @@
   }
 
   const pickedProject = $derived(ghOptions?.projects?.find((x) => x.owner === pOwner && String(x.number) === pNumber) ?? null);
+  const statusOptions = $derived([{ value: '', label: 'All statuses' }, ...(pickedProject?.statuses ?? []).map((s) => ({ value: s, label: s }))]);
 
   async function runPreview() {
     touched = true;
@@ -349,7 +360,12 @@
     toast('Copied. Run it in a terminal, then Preview again.');
   }
 
-  /** Called by the pane for keys typed in the section. */
+  /** Unsaved changes (the window's Discard guard). */
+  export function hasChanges() {
+    return dirty;
+  }
+
+  /** Called by the window for keys typed in the section. */
   export function onKey(e) {
     if (e.metaKey && e.key === 'Enter') {
       e.preventDefault();
@@ -375,7 +391,7 @@
 {/snippet}
 
 {#snippet integrations(code, label)}
-  <p class="box info" data-not-set-up>{label} isn't set up. <button class="link" onclick={() => openSettings('integrations', integrationsRow(code), project)}>Settings › Integrations ↗</button></p>
+  <p class="box info" data-not-set-up>{label} isn't set up. <button class="link" onclick={() => openSettings('integrations', integrationsRow(code))}>Settings › Integrations ↗</button></p>
 {/snippet}
 
 <section class="intake" aria-label="Intake">
@@ -427,22 +443,14 @@
       {:else if fkind === 'milestone'}
         <div class="block">
           <label class="lab" for="in-ms">Milestone</label>
-          <select id="in-ms" class="field auto" class:bad={errs.milestone} bind:value={milestone} onchange={edit}>
-            <option value="">Pick a milestone</option>
-            {#each ghOptions?.milestones ?? [] as m (m.title)}<option value={m.title}>{m.title} · {m.open_issues} open</option>{/each}
-            {#if milestone && !(ghOptions?.milestones ?? []).some((m) => m.title === milestone)}<option value={milestone}>{milestone}</option>{/if}
-          </select>
+          <Select id="in-ms" width="hug" bind:value={milestone} options={milestoneOptions} placeholder="Pick a milestone" noun="milestone" error={errs.milestone} onchange={edit} />
           <p class="muted hint">{ghOptions && !ghOptions.milestones?.length ? `No open milestones in ${repo.trim() || info.known_repo || 'the repository'}.` : 'Open issues in this milestone.'}</p>
-          {@render err('milestone')}
         </div>
       {:else}
         {#if ghOptions?.projects?.length}
           <div class="block">
             <label class="lab" for="in-proj">Project</label>
-            <select id="in-proj" class="field auto" value={pickedProject ? `${pickedProject.owner}/${pickedProject.number}` : ''} onchange={(e) => onPickProject(e.currentTarget.value)}>
-              <option value="">Pick a project</option>
-              {#each ghOptions.projects as p (`${p.owner}/${p.number}`)}<option value={`${p.owner}/${p.number}`}>{p.owner} #{p.number} · {p.title}</option>{/each}
-            </select>
+            <Select id="in-proj" width="hug" searchable value={pickedProject ? `${pickedProject.owner}/${pickedProject.number}` : ''} options={ghProjectOptions} placeholder="Pick a project" noun="project" onchange={onPickProject} />
           </div>
         {/if}
         <div class="row">
@@ -451,10 +459,7 @@
           <div class="block">
             <label class="lab" for="in-status">Status</label>
             {#if pickedProject?.statuses?.length}
-              <select id="in-status" class="field auto" bind:value={pStatus} onchange={edit}>
-                <option value="">All statuses</option>
-                {#each pickedProject.statuses as s (s)}<option value={s}>{s}</option>{/each}
-              </select>
+              <Select id="in-status" width="hug" bind:value={pStatus} options={statusOptions} noun="status" onchange={edit} />
             {:else}
               <input id="in-status" class="field" bind:value={pStatus} oninput={edit} placeholder="optional" spellcheck="false" />
             {/if}
@@ -474,26 +479,16 @@
       {:else}
         <div class="block">
           <label class="lab" for="in-team">Team</label>
-          <select id="in-team" class="field auto" class:bad={errs.team} bind:value={team} onchange={() => ((lproject = ''), (llabel = ''), edit())}>
-            <option value="">Pick a team</option>
-            {#each teams as t (t.id)}<option value={t.key}>{t.key} · {t.name}</option>{/each}
-          </select>
-          {@render err('team')}
+          <Select id="in-team" width="hug" searchable bind:value={team} options={teamOptions} placeholder="Pick a team" noun="team" error={errs.team} onchange={() => ((lproject = ''), (llabel = ''), edit())} />
         </div>
         <div class="row">
           <div class="block">
             <label class="lab" for="in-lproj">Project</label>
-            <select id="in-lproj" class="field auto" bind:value={lproject} onchange={edit}>
-              <option value="">Any project</option>
-              {#each linStates?.projects ?? [] as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
-            </select>
+            <Select id="in-lproj" width="hug" searchable bind:value={lproject} options={lprojectOptions} noun="project" onchange={edit} />
           </div>
           <div class="block">
             <label class="lab" for="in-llabel">Label</label>
-            <select id="in-llabel" class="field auto" bind:value={llabel} onchange={edit}>
-              <option value="">Any label</option>
-              {#each linLabels as l (l)}<option value={l}>{l}</option>{/each}
-            </select>
+            <Select id="in-llabel" width="hug" bind:value={llabel} options={llabelOptions} noun="label" onchange={edit} />
           </div>
         </div>
         <label class="check"><input type="checkbox" bind:checked={backlog} onchange={edit} /> Include backlog</label>
@@ -525,7 +520,7 @@
             {#if previewErr}
               <p class="ferr" role="alert" title={previewErr.tip}><span aria-hidden="true">{'\u{F0026}'}</span> {previewErr.text}
                 {#if previewErr.fix === 'gh_scope'}<button class="link" onclick={copyCommand}>Copy command</button>
-                {:else if previewErr.fix === 'integrations'}<button class="link" onclick={() => openSettings('integrations', integrationsRow(previewErr.code), project)}>Settings › Integrations ↗</button>{/if}
+                {:else if previewErr.fix === 'integrations'}<button class="link" onclick={() => openSettings('integrations', integrationsRow(previewErr.code))}>Settings › Integrations ↗</button>{/if}
               </p>
             {:else if !preview.count}
               <p class="muted">Nothing matches this source right now. It may still be right: Ready to start will show items when they appear.</p>
@@ -544,8 +539,8 @@
 
     {#if saveError}<p class="ferr" role="alert">Could not save: {saveError}</p>{/if}
     <div class="foot">
-      <button class="btn primary" disabled={busy || !dirty || (touched && !valid)} onclick={save}>{busy ? 'Saving…' : 'Save'} <Kbd keys="⌘+⏎" /></button>
-      {#if dirty}<button class="btn ghost" onclick={revert}>Revert</button>{/if}
+      <button class="btn primary" disabled={busy || !dirty || (touched && !valid)} use:tooltip={{ label: 'Save', key: '⌘⏎' }} onclick={save}>{busy ? 'Saving…' : 'Save'}</button>
+      <button class="btn" disabled={!dirty} onclick={revert}>Revert</button>
     </div>
     <p class="muted hint">Issues labelled <code>orch</code> or <code>orch:*</code> are never listed: they are tasks of the task backend. · Pull requests are not listed. · Intake only reads: starting an item changes nothing at the source.</p>
   {/if}
