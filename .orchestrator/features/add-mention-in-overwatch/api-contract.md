@@ -36,7 +36,7 @@ The `user` / `text` entry gains, when at least one mention resolved:
 }
 ```
 
-The UI renders `@<slug>` tokens of the text that match a `meta.mentions[].slug` as links to `id` (spec §3.3). Pending messages rebuilt on restart read `meta.mentions[].id`.
+The UI renders the tokens of the text that match a mention as links to `id` (spec §3.3): `@<slug>` or `@<project key>/<slug>` (spec §8–§9), longest match first, trailing `.` trimmed. Pending messages rebuilt on restart read `meta.mentions[].id`.
 
 ## 2. `user_message` event (core → Overwatch)
 

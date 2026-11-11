@@ -79,3 +79,10 @@ ux finalises the interaction in `design/design-notes.md` from [ux-brief.md](ux-b
 - **8, token boundary**: a token ends at the first character outside `[A-Za-z0-9._/-]`, then trailing `.` `/` `-` `_` are trimmed (`@add-mention-in-overwatch.` → `@add-mention-in-overwatch`). Matching (rendering, "still in the text", hand-typed) uses the whole trimmed token, so `@add` never matches inside `@add-mention-in-overwatch`.
 - **"Current"** stays any run not `done` / `failed` (draft, paused, deferred included: the user may well ask why they are stuck).
 - **api-contract**: the event's mention uses `id` (not `feature`), like the meta and the context.
+
+## 9. Decisions after the ui pass (lead, 2026-11-11)
+This section and §8 win over design-notes §3 state 5, §5 and "Changes to the spec" #7 where they still describe `@<slug>` only or "link to the first match", and over ux-brief §2 "a live run" (Current = any run not `done` / `failed`).
+- **Ranking** scores the query against `slug`, `title` and **`<project key>/<slug>`** (the token the app inserts), not `<project name>/<slug>`, so `@shop-api/ch` finds what `@shop-api/checkout` would insert.
+- **Project key fallback**: when the key is empty (a name with no `[a-z0-9._-]` character) or two projects with non-archived features share the key, the token uses the **project id** instead: `@<project id>/<slug>`.
+- **Unsent entries**: the core context stays `{kind, id}`; the UI keeps the resolved snapshot of each mention (`{kind, id, slug, project, …}`, as in api-contract §1 entry meta) on its local unsent entry, so an unsent or retried message renders its mentions like a sent one.
+- **Removed feature**: the muted token also gets `text-decoration: line-through` (plus the existing tooltip and hidden "(feature removed)"), since colour alone barely sets it apart from the body text.
