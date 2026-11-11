@@ -128,5 +128,4 @@ Boards: Drive `Orchestrator.figcraft`, page 04.3 Chat column, row at y 15700 (`m
 - **Removed mention: `--color-text-secondary`, not muted.** Muted on the accent-subtle wash is 3.73:1; secondary is 5.11:1 (light 4.74:1). Still no pill, no underline, not a link.
 - **Highlighted row: the muted parts go `--color-text-secondary`.** Muted on `--color-surface-selected` is 3.73:1 (light 4.30:1), so on the highlighted row the title, the project caption and `No run` take text-secondary (5.11:1, light 4.74:1); at rest they stay muted (4.65:1 on raised, light 4.62:1). This replaces §2's "the title stays `--color-text-muted`".
 - **List height includes its padding.** The app is `box-sizing: border-box`, so the list's `max-height` adds its `--space-xs` top and bottom padding: `min(8 × 32 px + headers × 20 px + 2 × --space-xs, 50vh)`, else 8 rows already scroll.
-- These bullets override §1, §2 and §4 where they differ (matched chars, hover background, removed colour, highlighted-row muted parts). Everything else as written above.
-- `mention-plan-tag.png` shows two **Current** rows (PR open, Planning), so no group headers, per §1.
+- These bullets override §1, §2 and §4 where they differ. Everything else as written above.
