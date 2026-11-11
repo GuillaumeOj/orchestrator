@@ -26,6 +26,8 @@
   const open = $derived(!!tok);
   const projs = $derived(app.data?.projects ?? []);
   const cands = $derived(tok ? candidates(features(), projs, tok.query) : { current: [], other: [], rows: [] });
+  // The highlighted row, kept in range when the features change under the open popup (a poll).
+  const cur = $derived(Math.min(active, Math.max(0, cands.rows.length - 1)));
   const noFeatures = $derived(features().every((f) => f.archived));
   const draft = $derived(app.chatDraft);
   const n = $derived([...draft.trim()].length); // code points of the trimmed text, like chat_send
@@ -110,10 +112,10 @@
   function mentionKey(e) {
     const plain = !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey;
     const last = cands.rows.length - 1;
-    if (e.key === 'ArrowDown' || (e.ctrlKey && !e.metaKey && e.key === 'n')) active = Math.max(0, Math.min(active + 1, last));
-    else if (e.key === 'ArrowUp' || (e.ctrlKey && !e.metaKey && e.key === 'p')) active = Math.max(0, active - 1);
+    if (e.key === 'ArrowDown' || (e.ctrlKey && !e.metaKey && e.key === 'n')) active = Math.max(0, Math.min(cur + 1, last));
+    else if (e.key === 'ArrowUp' || (e.ctrlKey && !e.metaKey && e.key === 'p')) active = Math.max(0, cur - 1);
     else if ((e.key === 'Enter' || e.key === 'Tab') && plain) {
-      if (cands.rows.length) pick(cands.rows[active]);
+      if (cands.rows.length) pick(cands.rows[cur]);
       else close(true);
     } else if (e.key === 'Escape') {
       e.stopPropagation();
@@ -138,7 +140,7 @@
 
 <div class="input" data-overwatch-input>
   {#if open}
-    <MentionPopup current={cands.current} other={cands.other} {active} query={tok.query} none={noFeatures} id={LIST_ID} {optionId} onpick={pick} onhover={(i) => (active = i)} />
+    <MentionPopup current={cands.current} other={cands.other} active={cur} query={tok.query} none={noFeatures} id={LIST_ID} {optionId} onpick={pick} onhover={(i) => (active = i)} />
   {/if}
   {#if intakeUi.plan}
     <span class="plan muted" data-plan-tag>Planning · {projectName(intakeUi.plan)} <button class="x" type="button" aria-label="Stop planning" onclick={() => (clearPlan(), field?.focus())}>✕</button></span>
@@ -157,7 +159,7 @@
     aria-autocomplete="list"
     aria-expanded={open}
     aria-controls={open ? LIST_ID : undefined}
-    aria-activedescendant={open && cands.rows.length ? optionId(active) : undefined}
+    aria-activedescendant={open && cands.rows.length ? optionId(cur) : undefined}
     aria-label="Message the Overwatch"
     aria-describedby="ow-input-hint"
     aria-invalid={over || undefined}

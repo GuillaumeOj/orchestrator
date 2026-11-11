@@ -25,6 +25,7 @@
   const mentioned = $derived.by(() => {
     if (!user) return [];
     if (e.meta?.mentions?.length) return e.meta.mentions;
+    if (!e.context?.mentions?.length) return [];
     const byId = new Map(features().map((f) => [f.id, f]));
     return (e.context?.mentions ?? []).flatMap((m) => (byId.has(m.id) ? [snapshotOf(byId.get(m.id), app.data?.projects)] : []));
   });

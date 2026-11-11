@@ -146,9 +146,12 @@ export function candidates(features, projects, query = '') {
   return { current, other, rows: [...current, ...other] };
 }
 
-/** `text` with the `@query` at `start..caret` replaced by `token` + one space (none added if one follows). */
+/** `text` with the `@query` at `start..caret` replaced by `token` + one space (none added if one follows).
+ *  A caret inside a token also takes the rest of it, so no stray tail is left after the pick. */
 export function insertToken(text, start, caret, token) {
-  const after = text.slice(caret);
+  let end = caret;
+  while (end < text.length && TOKEN_CHAR.test(text[end])) end++;
+  const after = text.slice(end);
   const space = after.startsWith(' ') ? '' : ' ';
   const head = `${text.slice(0, start)}${token}${space}`;
   return { text: head + after, caret: head.length + (space ? 0 : 1) };

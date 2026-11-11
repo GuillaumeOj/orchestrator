@@ -155,6 +155,9 @@ describe('matchPositions, emphasis, insertToken, countText', () => {
     expect(insertToken('hi @ad', 3, 6, '@add')).toEqual({ text: 'hi @add ', caret: 8 });
     expect(insertToken('hi @ad there', 3, 6, '@add')).toEqual({ text: 'hi @add there', caret: 8 });
   });
+  it('insert: a caret inside a token replaces the whole token', () => {
+    expect(insertToken('hi @adxyz there', 3, 6, '@add')).toEqual({ text: 'hi @add there', caret: 8 });
+  });
   it('counts', () => {
     expect([countText(3, true), countText(1, true), countText(0, true), countText(0, false)]).toEqual([
       '3 features',
