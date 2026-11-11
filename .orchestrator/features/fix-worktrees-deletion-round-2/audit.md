@@ -31,7 +31,7 @@
 
 `git grep -n 'confirm(' origin/main -- ui/src` gives these 20 call sites plus the definition. Rows 2 and 9 are reached from several paths (Override / Inherit; close, ⌘W, replace, switch section).
 
-The broken line, for the record: `components/Dialogs.svelte:483` (the ⏎ key) and `:484` (the form submit), both `close(), o.onYes()`.
+The broken line, for the record: `components/Dialogs.svelte:483` (the `onkeydown`, which `onKey` lets through only for ⌘⏎ or an Enter inside an `<input>`; the confirm has no input, so a plain ⏎ on the focused Remove button is the native form submit of `:484`, not `:483`) and `:484` (the form submit), both `close(), o.onYes()`. A U3 test for ⏎ must therefore press ⏎ on the button (`userEvent.keyboard('{Enter}')`, which clicks it) and ⌘⏎ for the keydown path; a bare `keyDown` Enter does nothing.
 
 ## 2. Handlers that clear a `$state` and then read a value derived from it
 
@@ -44,6 +44,7 @@ The broken line, for the record: `components/Dialogs.svelte:483` (the ⏎ key) a
 | `components/Dialogs.svelte:483` | confirm branch, `onkeydown` → `onKey(e, () => (close(), o.onYes()))` | `close()` sets `app.overlay = null`; `o` is then `null`; `o.onYes` throws `TypeError` and the action never runs. |
 | `components/Dialogs.svelte:484` | confirm branch, `onsubmit` → `(e.preventDefault(), close(), o.onYes())` | same. This is the reported bug. |
 | `components/Dialogs.svelte:292` | origin-chip link, `onclick={() => (close(), focusCard(chip.decision))}` | **Probable, not reproduced.** `chip` is `{@const chip = originChip(o.origin)}` (l.291), which Svelte compiles to a derived over `o`. After `close()` the derived is dirty and reading `chip.decision` recomputes `originChip(null.origin)`, a `TypeError`. Same shape as the confirm bug, so `front` should cover it with a test through the real dialog (Launch / New session opened from a brief card, click the `↗` "Show the brief card" button, expect `focusCard` called). Fix: read `const decision = chip.decision` before `close()`. |
+| `components/Dialogs.svelte:121–122` | `launchTeamOnFeature`, toast after `await refresh()` | **Probable, not reproduced (not an overlay read).** `launchSlug` (l.108) is `launch.existing ? free.find(...)?.slug ?? '' : …`, and `free` (l.107) keeps only features without a running run. After `team_launch` and `refresh()` the picked existing feature has a run, drops out of `free`, and the toast says `Launched <team> on  · the lead starts…` with an empty slug. Same shape (a derived re-read after its source moved). Fix: read `const slug = launchSlug` (and the team name) before `close()` / the await. Low impact; `front` may fold it into T-1. |
 
 ### Safe
 
@@ -52,7 +53,7 @@ The broken line, for the record: `components/Dialogs.svelte:483` (the ⏎ key) a
 | `components/Dialogs.svelte:80` | `$effect` for `launch` | `const ov = o;` once, then only `ov` (the safe pattern). |
 | `components/Dialogs.svelte:134–146` | `$effect` for the delete dialogs | `const ov = o;` and `if (app.overlay !== ov) return` in the `.then`. |
 | `components/Dialogs.svelte:225–235` | `close()` | reads `o` **before** clearing (`prefilledSession`, l.227, with the comment). |
-| `components/Dialogs.svelte:112–127` | `launchTeamOnFeature` | `o.intake` is read in the invoke arguments, before `close()` (l.120). After it: `launchTeam`, `launchSlug` derive from `teamsView` / `launch`, not from the overlay. `failed()` uses `o?.intake`, null-safe after a cancel. |
+| `components/Dialogs.svelte:112–127` | `launchTeamOnFeature` (overlay reads only) | `o.intake` is read in the invoke arguments, before `close()` (l.120). After it: `launchTeam`, `launchSlug` derive from `teamsView` / `launch`, not from the overlay (but `launchSlug` goes stale after `refresh()`: see Broken). `failed()` uses `o?.intake`, null-safe after a cancel. |
 | `components/Dialogs.svelte:245–260` | `startSession` | `o.intake` read before the await and before `close()` (l.252). After it: `project` derives from `form.project_id`. |
 | `components/Dialogs.svelte:262–279` | `addProject` | no overlay-derived read; `close()` then `p.id`, `p.name` (the invoke result). |
 | `components/Dialogs.svelte:153–166` | `runDelete` | `const ov = app.overlay` (the state, not the derived) before the await; `if (app.overlay === ov) close()`; the error branch uses the captured `what`. |
@@ -78,7 +79,7 @@ The broken line, for the record: `components/Dialogs.svelte:483` (the ⏎ key) a
 
 ### Not found
 
-No other handler in `ui/src` clears `app.overlay`, `app.window` or another `$state` and then reads a value derived from it. `git grep -nE 'app\.(overlay|window)\s*=' origin/main -- ui/src` lists every writer; the only ones that clear and keep going are `Palette.svelte:22`, `PlanChooser.svelte:12`, `App.svelte:78`, `intake.svelte.js:173`, `app.svelte.js:857` (all safe above) and `Dialogs.svelte`'s `close()`.
+No other handler in `ui/src` clears `app.overlay` or `app.window` and then reads a value derived from it. Panes are the open item: `spec = $derived(app.panes[paneId])` and `p = $derived(projects().find(...))` in `ProjectPane.svelte:19–20`. `doRemove` (l.121–125) reads `p.name` in the toast after `await invoke('project_remove')`; if the core's project-list push lands during that await, `p` is `undefined`, the read throws, `act` shows a `TypeError` toast for a removal that worked, and `closePane(paneId)` is skipped. Not reproduced; the fix is to read `const name = p.name` before the await. `git grep -nE 'app\.(overlay|window)\s*=' origin/main -- ui/src` lists every writer; the only ones that clear and keep going are `Palette.svelte:22`, `PlanChooser.svelte:12`, `App.svelte:78`, `intake.svelte.js:173`, `app.svelte.js:857` (all safe above) and `Dialogs.svelte`'s `close()`.
 
 ## 3. Tests that call `app.overlay.onYes()` directly (they bypass the dialog)
 
@@ -106,5 +107,5 @@ Tests that render `Dialogs` (`delete.test.js:59`, `ecosystem.test.js:666, 906, 9
 
 ## Summary for T-1
 
-- Fix `Dialogs.svelte:483–484` (spec U1) and `:292` (the chip link, U2). Nothing else needs a code change.
+- Fix `Dialogs.svelte:483–484` (spec U1) and `:292` (the chip link, U2). Optional, same family: `launchTeamOnFeature`'s toast slug (l.121) and `ProjectPane.doRemove`'s `p.name` after the await (l.123).
 - Add a test through the real dialog for the chip link; the spec's U3 list covers the confirm branch.
