@@ -204,17 +204,7 @@ impl Runtime {
                     .filter(|d| d.is_dir());
                 let agents: Vec<String> = run
                     .as_ref()
-                    .map(|r| {
-                        self.store.read(|s| {
-                            s.agents
-                                .values()
-                                .filter(|a| a.tracker.state != crate::state::AgentState::Archived)
-                                .filter(|a| a.team.as_ref().is_some_and(|t| t.run_id == r.id))
-                                .map(|a| a.id.clone())
-                                .take(MENTION_AGENTS_MAX)
-                                .collect()
-                        })
-                    })
+                    .map(|r| self.run_agents(&r.id).into_iter().map(|a| a.id).take(MENTION_AGENTS_MAX).collect())
                     .unwrap_or_default();
                 Some(json!({
                     "kind": "feature", "id": f.id, "slug": f.slug, "title": f.title,

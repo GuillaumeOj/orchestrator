@@ -718,6 +718,8 @@ impl Runtime {
     /// day's, or lost with an app restart) join the messages kept in memory.
     pub(super) fn overwatch_load_db_pending(&self) {
         let Ok(entries) = self.db.chat_pending_user() else { return };
+        // Mentions are resolved (store and db reads) before the scheduler lock is taken.
+        let mentions: Vec<_> = entries.iter().map(|e| self.mentions_of_meta(e.meta.as_ref())).collect();
         let mut st = self.ow();
         let known: std::collections::BTreeSet<String> = st
             .pending_user
@@ -726,12 +728,12 @@ impl Runtime {
             .chain(st.in_flight.iter().flat_map(|t| t.events.iter()))
             .filter_map(|e| e.chat.clone())
             .collect();
-        for e in entries.into_iter().filter(|e| !known.contains(&e.id())) {
+        for (e, mentions) in entries.into_iter().zip(mentions).filter(|(e, _)| !known.contains(&e.id())) {
             let text = e.text.clone().unwrap_or_default();
             let mut ev = Event::new(Kind::UserMessage, crate::team::cut(&text, super::chatw::SEND_MAX));
             (ev.text, ev.chat, ev.at_ms) = (Some(text), Some(e.id()), e.at_ms);
             ev.plan = e.meta.as_ref().and_then(|m| m.get("plan")).filter(|p| p.is_object()).cloned();
-            ev.mentions = self.mentions_of_meta(e.meta.as_ref());
+            ev.mentions = mentions;
             st.pending_user.push(ev);
         }
     }
