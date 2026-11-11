@@ -71,3 +71,11 @@ ux finalises the interaction in `design/design-notes.md` from [ux-brief.md](ux-b
 2. **ui** — boards and exports (depends on 1).
 3. **back** — §3.4 (after the rebase; independent of design).
 4. **front** — §3.2, §3.3 (depends on 2; against api-contract, syncs back's branch for the end-to-end check).
+
+## 8. Decisions after the ux pass (lead, 2026-11-11)
+[design/design-notes.md](design/design-notes.md) is final for copy and visuals. On its "Changes to the spec":
+- **1–6 accepted** as written: ⏎ / ⇥ with no match or no features close the popup, keep the text, send nothing, and the popup reopens on the next edit of the token (also after Esc); the popup opens with "No features yet"; group headers only when both groups have rows; popup = the input block's full width, above the planning tag; footer hint and title dropped under 340 px.
+- **7, same slug in two projects**: when the picked feature's slug is shared by another non-archived feature, the inserted token is **`@<project key>/<slug>`**, where project key = the project name lowercased, each run of characters outside `[a-z0-9._-]` replaced by `-`, trimmed of `-`. Otherwise `@<slug>`. A mention matches both forms when rendering (longest first); a hand-typed `@<project key>/<slug>` resolves exactly like a hand-typed unique `@<slug>`. No contract change (the meta snapshot has `slug` and `project`).
+- **8, token boundary**: a token ends at the first character outside `[A-Za-z0-9._/-]`, then trailing `.` `/` `-` `_` are trimmed (`@add-mention-in-overwatch.` → `@add-mention-in-overwatch`). Matching (rendering, "still in the text", hand-typed) uses the whole trimmed token, so `@add` never matches inside `@add-mention-in-overwatch`.
+- **"Current"** stays any run not `done` / `failed` (draft, paused, deferred included: the user may well ask why they are stuck).
+- **api-contract**: the event's mention uses `id` (not `feature`), like the meta and the context.

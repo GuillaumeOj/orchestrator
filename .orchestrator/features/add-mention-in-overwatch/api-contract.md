@@ -46,7 +46,7 @@ The UI renders `@<slug>` tokens of the text that match a `meta.mentions[].slug` 
 "mentions": [
   {
     "kind": "feature",
-    "feature": "f_42",
+    "id": "f_42",
     "slug": "add-mention-in-overwatch",
     "title": "Add Mention In Overwatch",
     "project": "orchestrator",           // name
@@ -65,7 +65,7 @@ The UI renders `@<slug>` tokens of the text that match a `meta.mentions[].slug` 
 `Event::line` appends ` · mentions <compact json>` after ` · plan …`, e.g.
 
 ```
-- [ev-12] user_message · what is @add-mention-in-overwatch waiting on? · mentions [{"kind":"feature","feature":"f_42",…}]
+- [ev-12] user_message · what is @add-mention-in-overwatch waiting on? · mentions [{"kind":"feature","id":"f_42",…}]
 ```
 
 ## 3. Audit
