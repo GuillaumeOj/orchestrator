@@ -118,3 +118,12 @@ None changes the data model; all are behaviour details the spec left open or imp
 6. **Title column dropped at 300 px**, project and state kept.
 7. **Open for lead, data model: two features with the same slug in two projects.** Both can be picked (§3 state 5), but the sent text holds the same `@<slug>` token for both, so `meta.mentions[].slug` cannot tell the UI which id a token links to (spec §3.3), the Overwatch cannot tell which one the text means, and spec §3.2's "token still in the text" check cannot tell which pick it belongs to. Options: insert `@<project>/<slug>` when the slug is not unique among non-archived features (the query charset already allows `/`), or refuse a second same-slug pick. Until settled, front links the token to the first matching mention and keeps both ids in the context.
 8. **Open for lead, token boundary.** The query charset includes `.`, so `@add-mention-in-overwatch.` or `…?` at the end of a sentence: the rendering and "whole token" rules (spec §3.2, §3.3) must trim trailing `.` and punctuation from a token and match the longest `meta.mentions` slug (so `@add` does not link inside `@add-mention-in-overwatch`).
+
+## ui (boards, contrast)
+
+Boards: Drive `Orchestrator.figcraft`, page 04.3 Chat column, row at y 15700 (`mention-popup-open`, `-filtered`, `-empty`, `mention-plan-tag`, `mention-popup-narrow`, `mention-sent`), exported here as PNG (2×). Contrast is WCAG 2 for 13 px text (4.5:1), dark and light tokens.
+
+- **Matched characters: the fallback, on every row and in both themes.** Accent on `--color-surface-selected` is 4.28:1 (dark) and 2.25:1 (light); in light, accent on `--color-surface-raised` (a row at rest) is 2.41:1 too. So matched chars are `--font-weight-semibold` + `--color-text-primary` + underline (`text-decoration-thickness: 1px; text-underline-offset: 2px`) on all rows, highlighted or not: one rule, and the emphasis looks the same as the highlight moves. Text-primary is 6.68:1 on the selected row (light 5.81:1).
+- **Mention hover: the background stays at the 22% mix.** Text-primary on the 38% mix is 3.65:1 (light 4.26:1); on 22% it is 4.73:1 (light 4.87:1). Hover is the underline only, in `currentColor` (text-primary), plus the tooltip.
+- **Removed mention: `--color-text-secondary`, not muted.** Muted on the accent-subtle wash is 3.73:1; secondary is 5.11:1 (light 4.74:1). Still no pill, no underline, not a link.
+- Everything else as written above.
