@@ -237,3 +237,23 @@ describe('mentionRuns', () => {
     expect(runs.map((r) => r.t).join('')).toBe('a\n  @add-mention-in-overwatch\nb');
   });
 });
+
+describe('review fixes', () => {
+  it('a match through <key>/<slug> emphasises the slug part and the project caption', () => {
+    const [r] = candidates([F('a', 'checkout')], [{ id: 'p1', name: 'shop-api' }], 'shop-api/ch').rows;
+    expect(r.slug.filter((x) => x.on).map((x) => x.t)).toEqual(['ch']);
+    expect(
+      r.proj
+        .filter((x) => x.on)
+        .map((x) => x.t)
+        .join(''),
+    ).toBe('shop-api');
+  });
+  it('empty query: recent run activity first', () => {
+    const fs = [
+      F('a', 'a', { created_at_ms: 5 }),
+      F('b', 'b', { created_at_ms: 1, run: { id: 'r', status: 'done', updated_at_ms: 9 } }),
+    ];
+    expect(candidates(fs, P, '').rows.map((r) => r.id)).toEqual(['b', 'a']);
+  });
+});

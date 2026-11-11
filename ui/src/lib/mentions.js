@@ -111,7 +111,7 @@ export function emphasis(text, positions) {
 /**
  * The popup's rows for `query`: `{ current, other, rows }`, each row `{ id, f, token, key, project,
  * current, slug, title }` (`slug` / `title`: the emphasis runs). Current first; within a group by
- * score of `slug`, `title`, `<key>/<slug>` then project name; no query: by creation, newest first.
+ * score of `slug`, `title`, `<key>/<slug>` then project name; no query: by recent run activity, then creation, newest first.
  */
 export function candidates(features, projects, query = '') {
   const name = new Map((projects ?? []).map((p) => [p.id, p.name]));
@@ -122,8 +122,16 @@ export function candidates(features, projects, query = '') {
     const { token, key } = table.get(f.id);
     const s = q ? Math.max(score(q, f.slug), score(q, f.title ?? ''), score(q, `${key}/${f.slug}`)) : 1;
     if (s <= 0) return;
-    const bySlug = q ? matchPositions(q, f.slug) : null;
+    const projectName = name.get(f.project_id) ?? f.project_id;
+    let bySlug = q ? matchPositions(q, f.slug) : null;
     const byTitle = q && !bySlug ? matchPositions(q, f.title ?? '') : null;
+    let byProject = null;
+    if (q && !bySlug && !byTitle) {
+      // The match came through `<key>/<slug>`: the part after the `/` is the slug's, the rest the project's.
+      const at = matchPositions(q, `${key}/${f.slug}`) ?? [];
+      bySlug = at.filter((i) => i > key.length).map((i) => i - key.length - 1);
+      if (projectName.length === key.length) byProject = at.filter((i) => i < key.length);
+    }
     rows.push({
       id: f.id,
       f,
@@ -131,15 +139,17 @@ export function candidates(features, projects, query = '') {
       key,
       s,
       order,
-      project: name.get(f.project_id) ?? f.project_id,
+      project: projectName,
       current: isCurrent(f),
+      activity: Math.max(f.run?.updated_at_ms ?? 0, f.run?.created_at_ms ?? 0, f.created_at_ms ?? 0),
       slug: emphasis(f.slug, bySlug),
       title: emphasis(f.title ?? '', byTitle),
+      proj: emphasis(projectName, byProject),
     });
   });
   const cmp = q
     ? (a, b) => b.s - a.s || a.project.localeCompare(b.project) || a.order - b.order
-    : (a, b) => (b.f.created_at_ms ?? 0) - (a.f.created_at_ms ?? 0) || a.order - b.order;
+    : (a, b) => b.activity - a.activity || a.order - b.order;
   rows.sort(cmp);
   const current = rows.filter((r) => r.current);
   const other = rows.filter((r) => !r.current);

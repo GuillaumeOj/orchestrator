@@ -538,9 +538,9 @@
   /** Send: the core writes the entry and wakes the Overwatch; a refusal keeps the text at the foot (notes §2.2).
    *  `mentions` are the resolved snapshots; a refused send keeps them on its unsent entry so it renders like a sent one. */
   async function sendMessage(text, mentions = [], retry = null) {
+    // A message sent while the planning tag shows is a planning message (the tag stays after a send).
+    const context = retry ? retry.context : sendContext(mentions); // a retry keeps its own (or no) context
     try {
-      // A message sent while the planning tag shows is a planning message (the tag stays after a send).
-      const context = retry ? retry.context : sendContext(mentions); // a retry keeps its own (or no) context
       const r = await invoke('chat_send', context ? { text, context } : { text });
       if (r?.entry && context?.plan) plannedEntries[r.entry.id] = context.plan;
       if (r?.entry) upsertEntries((app.now.chat ??= { day: null, entries: {} }), [r.entry]);
@@ -555,7 +555,7 @@
         at_ms: Date.now(),
         ...(mentions.length ? { meta: { mentions } } : {}),
       };
-      unsent = [...unsent.filter((u) => u !== retry), { entry, why: errText(err), context: retry ? retry.context : sendContext(mentions) }];
+      unsent = [...unsent.filter((u) => u !== retry), { entry, why: errText(err), context }];
     }
   }
 

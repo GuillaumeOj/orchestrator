@@ -21,6 +21,8 @@
   });
 </script>
 
+{#snippet runs(list)}{#each list as s}{#if s.on}<b>{s.t}</b>{:else}{s.t}{/if}{/each}{/snippet}
+
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="popup" data-mention-popup onmousedown={(e) => e.preventDefault()}>
   {#if rows.length}
@@ -38,14 +40,14 @@
               role="option"
               tabindex="-1"
               aria-selected={n === active}
-              aria-label="{r.f.slug}, {r.f.title}, {r.project}, {r.f.run ? runStateLabel(r.f.run.status) : 'No run'}"
+              aria-label="{r.f.slug}, {r.f.title ?? ''}, {r.project}, {r.f.run ? runStateLabel(r.f.run.status) : 'No run'}"
               data-mention-row={r.id}
               onmousemove={() => n !== active && onhover(n)}
               onclick={() => onpick(r)}
             >
-              <span class="slug" aria-hidden="true">@{#each r.slug as s}{#if s.on}<b>{s.t}</b>{:else}{s.t}{/if}{/each}</span>
-              <span class="title" aria-hidden="true">{#each r.title as s}{#if s.on}<b>{s.t}</b>{:else}{s.t}{/if}{/each}</span>
-              <span class="proj" aria-hidden="true">{r.project}</span>
+              <span class="slug" aria-hidden="true">@{@render runs(r.slug)}</span>
+              <span class="title" aria-hidden="true">{@render runs(r.title)}</span>
+              <span class="proj" aria-hidden="true">{@render runs(r.proj)}</span>
               {#if r.f.run}
                 <span class="state" aria-hidden="true"><i style:background={runStateColor(r.f.run.status)}></i>{runStateLabel(r.f.run.status)}</span>
               {:else}
@@ -113,7 +115,8 @@
     font: var(--text-mono);
   }
   .slug b,
-  .title b {
+  .title b,
+  .proj b {
     color: var(--color-text-primary);
     font-weight: var(--font-weight-semibold);
     text-decoration: underline;
@@ -177,7 +180,7 @@
     font: var(--text-body);
   }
   /* A 300 px column: the title and the footer go; the slug, project and state stay. */
-  @container (max-width: 339px) {
+  @container (max-width: 337px) {
     .title,
     .foot {
       display: none;

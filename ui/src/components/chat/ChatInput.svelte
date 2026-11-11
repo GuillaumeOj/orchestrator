@@ -21,14 +21,15 @@
   // The token being completed while the popup is open; `closedFor` is the token a close
   // (Esc, ⏎ / ⇥ with nothing to pick) keeps shut until it is edited.
   let tok = $state(null);
-  let active = $state(0);
+  let activeId = $state(null); // the highlighted feature (an id survives a refresh that reorders the rows)
   let closedFor = null;
   const open = $derived(!!tok);
   const projs = $derived(app.data?.projects ?? []);
   const cands = $derived(tok ? candidates(features(), projs, tok.query) : { current: [], other: [], rows: [] });
-  // The highlighted row, kept in range when the features change under the open popup (a poll).
-  const cur = $derived(Math.min(active, Math.max(0, cands.rows.length - 1)));
-  const noFeatures = $derived(features().every((f) => f.archived));
+  // The highlighted row: the id's, else the first (it left the list or none yet).
+  const cur = $derived(Math.max(0, cands.rows.findIndex((r) => r.id === activeId)));
+  const count = $derived(cands.rows.length);
+  const noFeatures = $derived(!!app.data && features().every((f) => f.archived));
   const draft = $derived(app.chatDraft);
   const n = $derived([...draft.trim()].length); // code points of the trimmed text, like chat_send
   const over = $derived(n > MAX_CHARS);
@@ -52,7 +53,7 @@
   // The live region: the count on open and on each query change (debounced), the help once.
   $effect(() => {
     if (!open) return;
-    const msg = countText(cands.rows.length, !noFeatures);
+    const msg = countText(count, !noFeatures);
     const t = setTimeout(() => {
       onannounce(helped ? msg : `${msg}. ${HELP}`);
       helped = true;
@@ -77,7 +78,7 @@
 
   /** The token at the caret decides the popup. Typing may open it; a caret move only updates or closes it. */
   function sync(typing) {
-    const t = field ? tokenAtCaret(field.value, field.selectionStart) : null;
+    const t = field && app.data ? tokenAtCaret(field.value, field.selectionStart) : null;
     if (!t) {
       tok = null;
       closedFor = null;
@@ -85,13 +86,16 @@
     }
     const kept = closedFor?.start === t.start && closedFor.query === t.query;
     if (tok && t.start === tok.start) {
-      if (t.query !== tok.query) (tok = t), (active = 0);
+      if (t.query !== tok.query) (tok = t), (activeId = null);
     } else if (typing && !kept) {
       tok = t;
-      active = 0;
+      activeId = null;
       closedFor = null;
     } else tok = null;
   }
+
+  // Only typing opens the popup: not undo / redo, a drop, a paste or an autocorrect (design §5).
+  const typed = (type) => !type || type === 'insertText' || type === 'insertCompositionText' || type.startsWith('delete');
 
   function close(keep) {
     if (keep && tok) closedFor = { ...tok };
@@ -111,9 +115,12 @@
   /** The popup's keys; true when it took the key. */
   function mentionKey(e) {
     const plain = !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey;
-    const last = cands.rows.length - 1;
-    if (e.key === 'ArrowDown' || (e.ctrlKey && !e.metaKey && e.key === 'n')) active = Math.max(0, Math.min(cur + 1, last));
-    else if (e.key === 'ArrowUp' || (e.ctrlKey && !e.metaKey && e.key === 'p')) active = Math.max(0, cur - 1);
+    const rows = cands.rows;
+    const down = e.key === 'ArrowDown' || (e.ctrlKey && !e.metaKey && e.key === 'n');
+    const up = e.key === 'ArrowUp' || (e.ctrlKey && !e.metaKey && e.key === 'p');
+    if ((down || up) && !rows.length) return false; // nothing to move in: the caret moves
+    if (down) activeId = rows[Math.min(cur + 1, rows.length - 1)].id;
+    else if (up) activeId = rows[Math.max(0, cur - 1)].id;
     else if ((e.key === 'Enter' || e.key === 'Tab') && plain) {
       if (cands.rows.length) pick(cands.rows[cur]);
       else close(true);
@@ -140,7 +147,7 @@
 
 <div class="input" data-overwatch-input>
   {#if open}
-    <MentionPopup current={cands.current} other={cands.other} active={cur} query={tok.query} none={noFeatures} id={LIST_ID} {optionId} onpick={pick} onhover={(i) => (active = i)} />
+    <MentionPopup current={cands.current} other={cands.other} active={cur} query={tok.query} none={noFeatures} id={LIST_ID} {optionId} onpick={pick} onhover={(i) => (activeId = cands.rows[i]?.id ?? null)} />
   {/if}
   {#if intakeUi.plan}
     <span class="plan muted" data-plan-tag>Planning · {projectName(intakeUi.plan)} <button class="x" type="button" aria-label="Stop planning" onclick={() => (clearPlan(), field?.focus())}>✕</button></span>
@@ -151,15 +158,15 @@
     bind:this={field}
     bind:value={app.chatDraft}
     {onkeydown}
-    oninput={(e) => sync(!/** @type {any} */ (e).inputType?.startsWith('insertFromPaste'))}
+    oninput={(e) => sync(typed(/** @type {any} */ (e).inputType))}
     onkeyup={() => sync(false)}
     onclick={() => sync(false)}
     onblur={() => close(false)}
     role="combobox"
     aria-autocomplete="list"
     aria-expanded={open}
-    aria-controls={open ? LIST_ID : undefined}
-    aria-activedescendant={open && cands.rows.length ? optionId(cur) : undefined}
+    aria-controls={open && count ? LIST_ID : undefined}
+    aria-activedescendant={open && count ? optionId(cur) : undefined}
     aria-label="Message the Overwatch"
     aria-describedby="ow-input-hint"
     aria-invalid={over || undefined}

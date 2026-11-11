@@ -277,6 +277,61 @@ describe('keys', () => {
   });
 });
 
+describe('review fixes', () => {
+  it('the highlight follows the feature when a refresh reorders the rows', async () => {
+    await mount();
+    await type('@');
+    await key('ArrowDown'); // @refunds
+    app.data = { ...app.data, features: [FEATURES[1], FEATURES[0], FEATURES[2], FEATURES[3]] };
+    await settle();
+    await key('Enter');
+    await settle();
+    expect(app.chatDraft).toBe('@refunds ');
+  });
+
+  it('no rows: ↑↓ pass through; aria-controls only with rows; no popup before the data loads', async () => {
+    await mount();
+    await type('@xyz');
+    expect(ta.getAttribute('aria-controls')).toBeNull();
+    const down = new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true });
+    ta.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(false);
+    await type('@');
+    expect(ta.getAttribute('aria-controls')).toBe('ow-mention-list');
+    app.data = null;
+    await type('@');
+    await key('Escape');
+    expect(popup()).toBeNull();
+  });
+
+  it('undo / redo / drop do not open the popup', async () => {
+    await mount();
+    ta.value = '@re';
+    ta.setSelectionRange(3, 3);
+    await fireEvent.input(ta, { inputType: 'historyUndo' });
+    expect(popup()).toBeNull();
+    await fireEvent.input(ta, { inputType: 'insertText' });
+    expect(popup()).not.toBeNull();
+  });
+
+  it('Retry keeps the plan even when the tag was cleared during the send', async () => {
+    await mount();
+    IS.planWithOverwatch('shop-api');
+    await settle();
+    replies.chat_send = new Error('busy');
+    await type('hello');
+    await key('Enter');
+    await settle();
+    IS.clearPlan();
+    replies.chat_send = (a) => ({
+      entry: { id: 'c-r', day: '2026-11-02', at_ms: Date.now(), author: 'user', kind: 'text', text: a.text, rev: 1 },
+    });
+    await fireEvent.click(c.querySelector('[data-entry^="unsent"] button.link'));
+    await settle();
+    expect(sends().at(-1)).toEqual({ text: 'hello', context: { plan: 'shop-api' } });
+  });
+});
+
 describe('what a send carries', () => {
   it('context.mentions beside context.plan; the picks and the drafts are cleared', async () => {
     await mount();
