@@ -40,7 +40,7 @@ The core path (`worktree_remove` → `Runtime::remove_worktree`) is not involved
 - **U1:** in `Dialogs.svelte`'s confirm branch, read the callback **before** closing. One function, used by both the submit and the ⏎ key, for example `function accept() { const yes = o?.onYes; close(); yes?.(); }`. Use the same "read first" rule as the other branches (`const ov = o`, lines 80 and 134).
 - **U2:** check the rest of `Dialogs.svelte`, and the other overlay or window components, for the same pattern: a handler that clears `app.overlay` / `app.window` and then reads a value derived from it. Fix each one found. The gate task's audit (§5, T-0) lists the candidates.
 - **U3, tests in `ui/test/` (vitest), through the real dialog, never `app.overlay.onYes()`:**
-  - `Dialogs` with a confirm overlay: submitting the form, and ⏎, each run `onYes` exactly once and leave `app.overlay` null. Cancel and Esc don't run it.
+  - `Dialogs` with a confirm overlay: clicking the confirm button, ⏎ on the focused button (the native form submit) and ⌘⏎ (the `onKey` keydown path) each run `onYes` exactly once and leave `app.overlay` null. Cancel and Esc don't run it. A bare `keyDown` Enter does nothing (see `audit.md` §1), so the ⏎ test presses it on the button.
   - End to end in the project pane: render `ProjectPane` and `Dialogs` together, click a worktree's **Remove worktree…** button, then the dialog's **Remove** button. `worktree_remove` is invoked with `{ project, path, deleteBranch: true, discard: false }`, the row leaves the list and the `Removed …` toast shows. Do the same for the unmerged case (**Discard and remove** → `discard: true`).
   - One other caller through the dialog, for example `confirmKill` → `agent_action` kill, so the fix is seen to cover more than the pane.
 
@@ -54,7 +54,7 @@ Out of scope: the core's worktree removal (done in PR #60), restyling the dialog
 
 1. In the project pane, approving a worktree's removal removes it: the row leaves the list and a `Removed …` toast shows. A refusal (for example a live agent holding the worktree) shows the core's error toast and keeps the row.
 2. The unmerged case asks **Discard and remove** and removes with `discard: true`.
-3. Every other confirm in the app runs its action once it is approved, with the button or ⏎, and does nothing on Cancel or Esc.
+3. Every other confirm in the app runs its action once it is approved, with the button, ⏎ or ⌘⏎, and does nothing on Cancel or Esc.
 4. No `TypeError` in the console when a confirm is approved.
 5. `bun run test`, `bun run check` and `bun run lint` pass, and `cargo test` / `cargo clippy` still pass.
 
