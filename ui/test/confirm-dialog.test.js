@@ -222,5 +222,6 @@ describe('removing a worktree through the pane and the dialog', () => {
     expect(JSON.stringify(app.toasts)).toContain('Wait for the PR load to finish');
     expect(calls.some(([c]) => c === 'worktree_remove')).toBe(false);
     /** @type {any} */ (release)(detail);
+    await waitFor(() => expect(btn(pane, 'Load PRs')?.disabled).toBe(false)); // the pending action settled
   });
 });

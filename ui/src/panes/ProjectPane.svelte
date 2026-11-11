@@ -53,7 +53,10 @@
   const BUSY_NAME = { fetch: 'the fetch', prs: 'the PR load', wt: 'the worktree removal', remove: 'the project removal' };
   /** Runs an action; then reloads the detail and the app state unless `reload` is false. */
   async function act(label, fn, reload = true) {
-    if (busy) return toast(`Wait for ${BUSY_NAME[busy] ?? busy} to finish`);
+    if (busy) {
+      toast(`Wait for ${BUSY_NAME[busy] ?? busy} to finish`);
+      return;
+    }
     busy = label;
     try {
       await fn();
