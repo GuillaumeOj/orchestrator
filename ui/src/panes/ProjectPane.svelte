@@ -121,9 +121,10 @@
     const discard = Object.entries(removal.discard).filter(([, v]) => v).map(([k]) => k);
     const what = removal.history === 'delete' ? 'Its rules, worktree rows and transcript index are deleted; events, usage and the audit log are kept.' : 'It is hidden; everything is kept.';
     const name = p.name;
+    const choices = { remove_merged: removal.removeMerged, discard, history: removal.history };
     confirm(`Remove project ${name}?`, `${removal.agents.length} agent(s) are stopped and archived. ${discard.length ? `${discard.length} worktree(s) with unmerged work are discarded. ` : ''}${what} .orchestrator/ in the repo is left untouched.`, () =>
       act('remove', async () => {
-        const r = await invoke('project_remove', { id: p.id, choices: { remove_merged: removal.removeMerged, discard, history: removal.history } });
+        const r = await invoke('project_remove', { id: p.id, choices });
         removal = null;
         toast(`Removed ${name}${r.kept?.length ? ` · kept ${r.kept.length} worktree(s) with unmerged work` : ''}`, { ms: 10000 });
         closePane(paneId);
