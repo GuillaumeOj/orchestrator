@@ -5,11 +5,11 @@
 
 ## 1. The popup
 
-**Anchor and size.** A child of the input block (`.input`, made `position: relative`), `position: absolute; left: 0; right: 0; bottom: 100%`. So it is the input block's full width, i.e. the column width (no side margin: it spans the 12 px padding of the block), and its bottom edge sits on the input's top border. It overlays the thread; it never moves the thread, the input or the field's height.
+**Anchor and size.** A child of the input block (`.input`, made `position: relative`), `position: absolute; left: 0; right: 0; bottom: calc(100% + var(--border-width-default))`. So it is the input block's full width, i.e. the column width (no side margin: it spans the 12 px padding of the block), and its bottom edge sits on top of the input block's top border (a plain `bottom: 100%` is measured from the padding box and would cover that border). It overlays the thread; it never moves the thread, the input or the field's height.
 - **360 px column**: popup 360 px wide. **300 px column**: 300 px wide. (Not the textarea's width: the extra 12 px each side buys the slug room.)
 - **Anchor is the input block, not the textarea.** With the planning tag shown (P4.5, §5 state 8) the popup stays above the tag: the tag is never covered. When the field grows to 5 lines the popup keeps its bottom on the block, so it rises with it.
-- Surface: `--color-surface-raised`, `1px --color-border-strong`, `--radius-md`, `--shadow-overlay` (as the ⌘P panel, `.pal`), `z-index` above the feed and under the palette scrim (z 50). Inner padding `--space-xs`, like `.pal ul`.
-- Height: up to 8 rows. List `max-height = 8 × 32 px + the group headers (20 px each)`; beyond it the list scrolls (`overflow-y: auto`). The highlighted row is kept in view with `scrollIntoView({block:'nearest'})`.
+- Surface: `--color-surface-raised` (the ⌘P panel, `.pal`, uses `--color-surface-pane`; the popup is lifted one step because it sits on the pane-coloured thread), `1px --color-border-strong`, `--radius-md`, `--shadow-overlay` (as `.pal`), `z-index` above the feed and under the palette scrim (z 50). Inner padding `--space-xs`, like `.pal ul`.
+- Height: up to 8 rows. List `max-height = min(8 × 32 px + the group headers (20 px each), 50vh)` (the 50vh cap is the ⌘P list's, so a short window never pushes the popup above the column); beyond it the list scrolls (`overflow-y: auto`). The footer is not part of the scrolling list. The highlighted row is kept in view with `scrollIntoView({block:'nearest'})`.
 
 **Groups.** **Current** (a run whose status is not done / failed), then **Other features**. A group header is a 20 px caption line (`--text-caption`, `--color-text-muted`, left padding `--space-sm`): `Current`, `Other features`. **Headers are shown only when both groups have rows**: a lone group needs no title (a lone "Other features" header would suggest a missing "Current"). Headers are not options.
 
@@ -38,7 +38,7 @@ Single line, `min-height 32px` (= `--space-2xl`; no row token exists between `--
 
 1. **Open, empty query** (`@` just typed): current group, then other features, each by most recent activity; row 1 highlighted.
 2. **Filtered** (`@ment`): rows by score, groups kept, matches emphasised, row 1 highlighted.
-3. **No match**: one non-selectable row, `--color-text-muted`, `padding 0 --space-sm`, 32 px: `No feature matches “xyz”` (typographic quotes; the echo is cut at 24 characters with `…`). No footer, no headers. **⏎ and ⇥ close the popup and keep the text; nothing is sent, nothing inserted.** The popup stays closed while the caret stays in that token (typing another character in it, backspacing, or typing `@` again reopens it). A second ⏎ then sends as usual. Rationale: ⏎ is "send" for every other state of the field; swallowing it once, visibly (the popup disappears), is the cost of the rule "⏎ never sends while the popup is open", and the user keeps their text.
+3. **No match**: one non-selectable row, `--color-text-muted`, `padding 0 --space-sm`, 32 px: `No feature matches “xyz”` (typographic quotes; the echo is cut at 24 characters with `…`). No footer, no headers. **⏎ and ⇥ close the popup and keep the text; nothing is sent, nothing inserted.** The popup stays closed until the token changes: **any edit of the token** (a character typed in it or deleted from it) or a new `@` typed reopens it with the new query. Moving the caret (arrows, click) does not reopen it. The same rule holds after **Esc** (§5): closed by Esc, reopened by the next edit of the token. A second ⏎ then sends as usual. Rationale: ⏎ is "send" for every other state of the field; swallowing it once, visibly (the popup disappears), is the cost of the rule "⏎ never sends while the popup is open", and the user keeps their text.
 4. **No features at all** (none non-archived): **the popup opens**, so that `@` isn't silently dead: one non-selectable row `No features yet`. Same ⏎ / ⇥ behaviour as no match. It closes on the space that ends the token like any other.
 5. **Same slug in two projects**: two rows, same slug; the project caption tells them apart; order by score, then project name A→Z. Each row carries its feature id: the pick remembers that id (spec §3.2), so the right one resolves.
 6. **Sent message**: §4. 7. **Removed feature**: §4.
@@ -48,12 +48,12 @@ Single line, `min-height 32px` (= `--space-2xl`; no row token exists between `--
 
 In `ChatText.svelte`, the user's `.body.plain` (`--text-body`, on `--color-accent-subtle`). Each token matching `meta.mentions` is an inline element inside the pre-wrapped text; the `@` is part of it.
 
-**Mention link (rest)**: `<button type="button" class="mention">` styled inline: `font: inherit; line-height: inherit` (no line-height jump: the pill is horizontal padding only), `padding: 0 var(--space-xs)`, `border-radius: var(--radius-sm)`, `background: color-mix(in srgb, var(--color-accent-default) 22%, var(--color-accent-subtle))`, `color: var(--color-text-primary)`, `font-weight: var(--font-weight-semibold)`, `box-decoration-break: clone`, `overflow-wrap: anywhere`, `cursor: pointer`, no border. It reads as a token on the wash and stays text-sized.
+**Mention link (rest)**: `<span class="mention" role="link" tabindex="0">` (not a `<button>`: a button is always inline-block, so it would not wrap with the text, would ignore `box-decoration-break`, and its text is not selectable in WebKit, which would drop the mention from a copied message). The token is rendered with **no whitespace between segments** in the template (the body is `white-space: pre-wrap`, so any template newline or indent would show). `display: inline; user-select: text; font: inherit; line-height: inherit` (no line-height jump: the pill is horizontal padding only), `padding: 0 var(--space-xs)`, `border-radius: var(--radius-sm)`, `background: color-mix(in srgb, var(--color-accent-default) 22%, var(--color-accent-subtle))`, `color: var(--color-text-primary)`, `font-weight: var(--font-weight-semibold)`, `box-decoration-break: clone`, `overflow-wrap: anywhere`, `cursor: pointer`. It reads as a token on the wash and stays text-sized.
 - **Hover**: background mix 38% accent, plus `1px` `--color-accent-default` underline (`text-decoration-thickness: 1px; text-underline-offset: 2px`). Tooltip (the app's `tooltip` action, `lib/tooltip.js`): `<title> · <project>`.
-- **Focus-visible**: `box-shadow: 0 0 0 var(--border-width-focus) var(--color-focus)`, as `.text:focus-visible`. Reachable with ⇥ in reading order. ⏎ / ⎵ / click → `openFeature(id)`.
-- **Accessible name**: `Open feature @slug`.
+- **Focus-visible**: `box-shadow: 0 0 0 var(--border-width-focus) var(--color-focus)`, as `.text:focus-visible`. Reachable with ⇥ in reading order. ⏎ / click → `openFeature(id)` (link semantics: ⎵ does nothing).
+- **Accessible name**: `aria-label="Open feature @slug"`.
 
-**Removed feature** (id no longer in `app.data.features`, or archived-and-gone): not a button, a `<span class="mention gone">`: no background, no underline, `color: var(--color-text-muted)`, same font and padding-less (no pill), `cursor: default`. Tooltip `Feature removed`; a visually hidden ` (feature removed)` follows it for screen readers. Not focusable.
+**Removed feature** (the id is absent from `app.data.features` once the data has loaded: until then, e.g. at start-up, every token renders as a live mention rather than flashing "Feature removed"; an archived feature is still in the list and stays a live mention, as the core keeps archived ids): not a link, a `<span class="mention gone">`: no background, no underline, `color: var(--color-text-muted)`, same font and padding-less (no pill), `cursor: default`. Tooltip `Feature removed`; a visually hidden ` (feature removed)` follows it for screen readers. Not focusable.
 
 A token without a matching `meta.mentions` entry stays plain text, unchanged. Unsent / waking entries render the same from their context. The planning line (`planning · <project>`) is unaffected.
 
@@ -67,6 +67,7 @@ A token without a matching `meta.mentions` entry stays plain text, unchanged. Un
 | Esc | closes the popup only (`stopPropagation`); a second Esc leaves the field as today |
 | click | inserts that row |
 | ⇧⏎ | newline as today, popup closes (a newline ends the token) |
+| ⇧⇥ | not intercepted: focus moves back as usual, the popup closes on blur |
 
 ⏎ is ignored while composing (`isComposing` / keyCode 229), as the existing handler does. Inserted text `@<slug> ` (trailing space, none added if one follows), caret after it, popup closes. The popup never opens from a click or paste, only from typing `@` (or caret moving into a token by typing/deleting inside it).
 
@@ -85,11 +86,11 @@ A token without a matching `meta.mentions` entry stays plain text, unchanged. Un
 
 ## 7. Screen reader
 
-- Textarea: `role="combobox"`, `aria-autocomplete="list"`, `aria-expanded`, `aria-controls="ow-mention-list"`, `aria-activedescendant` = the highlighted option's id. `aria-describedby` keeps `ow-input-hint`.
+- Textarea: `role="combobox"`, `aria-autocomplete="list"`, `aria-expanded`, `aria-controls="ow-mention-list"` (set only while the popup is open: the id does not exist otherwise), `aria-activedescendant` = the highlighted option's id. `aria-describedby` keeps `ow-input-hint`.
 - Popup list: `role="listbox"`, `id="ow-mention-list"`, `aria-label="Features"`. Groups: `role="group"` with `aria-labelledby` the header (when headers are shown, else none). Options: `role="option"`, `aria-selected`; the name is `<slug>, <title>, <project>, <state label>` (`No run` when none): `add-mention-in-overwatch, Add Mention In Overwatch, Orchestrator, Executing`. Decorative bits (dot, emphasis spans) `aria-hidden`.
 - The no-match / no-features rows are not options (`role="presentation"`-ish text), the count is announced instead.
-- Live region (the existing `.sr`, `aria-live="polite"`), updated on open and on each query change, debounced to the settle of typing: `3 features` · `1 feature` · `No feature matches` · `No features yet`. On open, once, `Use up and down arrows to choose, enter to insert, escape to close` (the hint's text, since the footer is dropped at 300 px).
-- Mention button name `Open feature @slug`; removed token read as `@slug (feature removed)`.
+- Live region (the existing `.sr`, `aria-live="polite"`, which lives in `ChatColumn.svelte`: `ChatInput` reports the message up, e.g. an `onannounce` prop), updated on open and on each query change, debounced to the settle of typing: `3 features` · `1 feature` · `No feature matches` · `No features yet`. On open, once, `Use up and down arrows to choose, enter to insert, escape to close` (the hint's text, since the footer is dropped at 300 px).
+- Mention link name `Open feature @slug` (`aria-label`); removed token read as `@slug (feature removed)`.
 
 ## 8. Frames for ui (names kept)
 
@@ -115,3 +116,5 @@ None changes the data model; all are behaviour details the spec left open or imp
 4. **Popup is the column's full width, anchored to the input block** (planning tag stays visible), not the textarea's width.
 5. **Footer hint dropped under 340 px wide**; its text goes to the live region once on open (spec §3.2 doesn't mention the hint, so it needs a line).
 6. **Title column dropped at 300 px**, project and state kept.
+7. **Open for lead, data model: two features with the same slug in two projects.** Both can be picked (§3 state 5), but the sent text holds the same `@<slug>` token for both, so `meta.mentions[].slug` cannot tell the UI which id a token links to (spec §3.3), the Overwatch cannot tell which one the text means, and spec §3.2's "token still in the text" check cannot tell which pick it belongs to. Options: insert `@<project>/<slug>` when the slug is not unique among non-archived features (the query charset already allows `/`), or refuse a second same-slug pick. Until settled, front links the token to the first matching mention and keeps both ids in the context.
+8. **Open for lead, token boundary.** The query charset includes `.`, so `@add-mention-in-overwatch.` or `…?` at the end of a sentence: the rendering and "whole token" rules (spec §3.2, §3.3) must trim trailing `.` and punctuation from a token and match the longest `meta.mentions` slug (so `@add` does not link inside `@add-mention-in-overwatch`).
