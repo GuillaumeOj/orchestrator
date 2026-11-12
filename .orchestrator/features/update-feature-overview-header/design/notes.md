@@ -12,15 +12,17 @@ Layout and copy follow [../ux-brief.md](../ux-brief.md). Existing tokens only, n
 ## Structure
 
 ```
-header.fh            column, gap --space-xxs (2px)  (today .fh shares the flex-row rule with .cardh, .tt, .ev, .msg, .colh: take it out of that list)
+header.fh            column, gap --space-xxs (2px)
 ├─ row 1             flex row, align-items center, gap --space-sm (8px), min-height --size-control (28px)
-│  ├─ .slug          min-width 0, ellipsis, full slug in a use:tooltip (as the pill's tooltip)
+│  ├─ .slug          shrinks with ellipsis, full slug in a use:tooltip (as the pill's)
 │  ├─ .pill          (only with a phase) flex none
 │  ├─ .grow          flex 1
 │  ├─ ◷ Publishing…  (only while publishing) flex none, white-space nowrap
 │  └─ .head-acts     flex none, unchanged (Pause/Resume, Stop, Delete feature…, ⋯)
 └─ row 2             one line: overflow hidden, white-space nowrap, text-overflow ellipsis
 ```
+
+Today `.fh` shares one flex-row rule with `.cardh, .tt, .ev, .msg, .colh` (`FeaturePane.svelte` style block): take `.fh` out of that list rather than changing the shared rule.
 
 ## Tokens
 
