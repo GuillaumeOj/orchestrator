@@ -475,11 +475,16 @@
     gap: var(--space-sm);
     min-height: var(--size-control);
   }
-  .row2 {
-    font: var(--text-caption);
+  /* One line, cut with an ellipsis (the tooltip shows the full text when it is cut). */
+  .row2,
+  .slug,
+  .pubtxt {
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+  .row2 {
+    font: var(--text-caption);
   }
   .slug {
     font: var(--text-heading);
@@ -487,9 +492,6 @@
     /* Shrinks first: the Publishing text only gives way once the slug is down to its minimum. */
     flex: 0 100 auto;
     min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
   }
   .pill,
   .head-acts {
@@ -508,9 +510,6 @@
   .pubtxt {
     flex: 0 1 auto;
     min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
   }
   .pill {
     white-space: nowrap;
