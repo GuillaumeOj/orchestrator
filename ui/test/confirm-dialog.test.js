@@ -225,3 +225,113 @@ describe('removing a worktree through the pane and the dialog', () => {
     await waitFor(() => expect(btn(pane, 'Load PRs')?.disabled).toBe(false)); // the pending action settled
   });
 });
+
+describe('outside worktrees and prune, through the pane and the dialog', () => {
+  const wt = (over) => ({
+    path: '/dev/shop-api/.claude/worktrees/x',
+    branch: 'claude/x',
+    verdict: 'external',
+    outside: true,
+    safe_to_remove: true,
+    dirty: 0,
+    unmerged_commits: 0,
+    in_progress: [],
+    locked: false,
+    lock_reason: null,
+    in_use_by: [],
+    ...over,
+  });
+  const main = { ...detail.worktrees[0] };
+  const setup = async (worktrees, name = 'worktrees/') => {
+    replies.project_detail = { trusted: true, worktrees: [main, ...worktrees], branches: [] };
+    replies.worktree_remove = { worktree_removed: true, kept_branch: null };
+    const pane = render(ProjectPane, { paneId: 'p1' });
+    const dlg = render(Dialogs);
+    await waitFor(() => expect(text(pane.container)).toContain(name));
+    return { pane: pane.container, dlg: dlg.container };
+  };
+  const bins = (c) => [...c.querySelectorAll('button[aria-label="Remove worktree…"]')];
+  const prune = (c) => [...c.querySelectorAll('button')].find((b) => /^Prune \d+ gone/.test(b.textContent.trim()));
+
+  it('an outside row is grouped, has Remove and removes with the right args', async () => {
+    const { pane, dlg } = await setup([wt({})]);
+    expect(text(pane)).toContain('Not created by the app');
+    expect(text(pane)).toContain('yours');
+    await fireEvent.click(bins(pane)[0]);
+    expect(text(dlg)).toContain('Its branch is deleted if merged into main, kept otherwise.');
+    await fireEvent.click(btn(dlg, 'Remove'));
+    await waitFor(() =>
+      expect(calls).toContainEqual([
+        'worktree_remove',
+        { project: 'shop-api', path: '/dev/shop-api/.claude/worktrees/x', deleteBranch: true, discard: false },
+      ]),
+    );
+    await waitFor(() => expect(text(pane)).not.toContain('worktrees/x'));
+  });
+
+  it('an outside prunable row is removable too, with no Diff button', async () => {
+    const { pane, dlg } = await setup([wt({ verdict: 'prunable' })]);
+    expect(text(pane)).toContain('folder gone');
+    expect(pane.querySelectorAll('button[aria-label="Diff"]')).toHaveLength(0);
+    await fireEvent.click(bins(pane)[0]);
+    await fireEvent.click(btn(dlg, 'Remove'));
+    await waitFor(() => expect(calls.some(([c, a]) => c === 'worktree_remove' && a.discard === false)).toBe(true));
+  });
+
+  it('the toast names a kept branch', async () => {
+    const { pane, dlg } = await setup([wt({})]);
+    replies.worktree_remove = { worktree_removed: true, kept_branch: 'claude/x' };
+    await fireEvent.click(bins(pane)[0]);
+    await fireEvent.click(btn(dlg, 'Remove'));
+    await waitFor(() => expect(JSON.stringify(app.toasts)).toContain('kept branch claude/x (unmerged)'));
+  });
+
+  it('a locked row shows its reason and asks Discard and remove', async () => {
+    const { pane, dlg } = await setup([wt({ safe_to_remove: false, locked: true, lock_reason: 'claude agent' })]);
+    expect(text(pane)).toContain('locked: claude agent');
+    await fireEvent.click(bins(pane)[0]);
+    expect(text(dlg)).toContain('claude agent');
+    expect(text(dlg)).toContain('kept if unmerged');
+    await fireEvent.click(btn(dlg, 'Discard and remove'));
+    await waitFor(() =>
+      expect(calls).toContainEqual([
+        'worktree_remove',
+        { project: 'shop-api', path: '/dev/shop-api/.claude/worktrees/x', deleteBranch: true, discard: true },
+      ]),
+    );
+  });
+
+  it('Prune N gone… counts gone rows not in use, prunes, drops them and toasts', async () => {
+    const gone = (n, over) =>
+      wt({ path: `/dev/shop-api/.claude/worktrees/${n}`, branch: `claude/${n}`, verdict: 'prunable', ...over });
+    const { pane, dlg } = await setup([
+      gone('a'),
+      gone('b'),
+      gone('busy', { in_use_by: ['back-1'] }),
+      wt({ path: '/dev/shop-api/.claude/worktrees/here' }),
+    ]);
+    expect(prune(pane).textContent.trim()).toBe('Prune 2 gone…');
+    replies.worktrees_prune = {
+      removed: ['/dev/shop-api/.claude/worktrees/a', '/dev/shop-api/.claude/worktrees/b'],
+      kept_branches: ['claude/b'],
+      deleted_branches: ['claude/a'],
+      skipped: [{ path: '/dev/shop-api/.claude/worktrees/busy', reason: 'in use' }],
+    };
+    await fireEvent.click(prune(pane));
+    expect(text(dlg)).toContain('Prune 2 gone worktrees?');
+    await fireEvent.click(btn(dlg, 'Prune'));
+    await waitFor(() => expect(calls).toContainEqual(['worktrees_prune', { project: 'shop-api' }]));
+    await waitFor(() => expect(text(pane)).not.toContain('worktrees/a'));
+    expect(text(pane)).toContain('worktrees/busy');
+    expect(text(pane)).toContain('worktrees/here');
+    const t = JSON.stringify(app.toasts);
+    expect(t).toContain('Pruned 2 worktrees');
+    expect(t).toContain('kept 1 unmerged branch');
+    expect(t).toContain('skipped 1 in use');
+  });
+
+  it('Prune is absent when nothing is gone', async () => {
+    const { pane } = await setup([wt({})]);
+    expect(prune(pane)).toBeUndefined();
+  });
+});

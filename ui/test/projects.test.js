@@ -192,14 +192,16 @@ describe('project pane', () => {
     expect(t).toContain('Not trusted yet');
     expect(t).toContain('unmerged work · back-1 · locked');
     expect(t).not.toContain('main checkout'); // the main checkout is not listed for removal
-    expect(t).toContain('1 other worktree outside the sibling folder (yours, not managed by the app)');
+    expect(t).toContain('Not created by the app');
+    expect(t).toContain('claude/mine');
+    expect(t).toContain('yours');
     expect(t).toContain('orch/ branches: orch/solo/old (merged)');
     expect(t).not.toContain('claude/mine (');
     const bins = () => [...container.querySelectorAll('button[aria-label="Remove worktree…"]')];
-    expect(bins()).toHaveLength(2); // never offered for the user's own worktree
+    expect(bins()).toHaveLength(3); // the user's own worktree too (outside group)
     // R3: a bin icon in the danger colour, beside the ± Diff icon.
     expect(bins().every((b) => b.classList.contains('icon-btn') && b.classList.contains('danger'))).toBe(true);
-    expect(container.querySelectorAll('button[aria-label="Diff"]')).toHaveLength(2);
+    expect(container.querySelectorAll('button[aria-label="Diff"]')).toHaveLength(3);
     // Removing the unmerged worktree asks to discard it.
     await fireEvent.click(bins()[0]);
     expect(app.overlay.text).toMatch(/^Discard unmerged work in orch\/solo\/back-1/);
