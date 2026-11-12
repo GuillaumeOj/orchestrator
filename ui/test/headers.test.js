@@ -109,6 +109,30 @@ describe('feature pane header (R9)', () => {
     expect(await menuLabels(head)).toEqual(['Board', 'Canvas', 'Publish to Notion', 'Open in Notion']);
   });
 
+  it('two rows: row 1 = slug, pill, actions; row 2 = team, branch, started', async () => {
+    replies.feature_view = view(live);
+    app.panes = { f1: { type: 'feature', featureId: 'f1' } };
+    const { container } = render(FeaturePane, { paneId: 'f1' });
+    await waitFor(() => expect(container.querySelector('.fh .row1')).toBeTruthy());
+    const [r1, r2] = container.querySelector('.fh').children;
+    expect(r1.querySelector('.slug')).toBeTruthy();
+    expect(r1.querySelector('.pill')).toBeTruthy();
+    expect(r1.querySelector('.head-acts')).toBeTruthy();
+    expect(r2.textContent).toMatch(/^Squad v1 · .*orch\/.+\/integration · started /);
+  });
+
+  it('no run: no pill and no started; row 2 keeps team · branch', async () => {
+    replies.feature_view = view(null);
+    app.panes = { f1: { type: 'feature', featureId: 'f1' } };
+    const { container } = render(FeaturePane, { paneId: 'f1' });
+    await waitFor(() => expect(container.querySelector('.fh .row1')).toBeTruthy());
+    const head = container.querySelector('.fh');
+    expect(head.querySelector('.pill')).toBeNull();
+    const row2 = head.children[1].textContent;
+    expect(row2).not.toContain('started');
+    expect(row2).toMatch(/^Squad v1 · /);
+  });
+
   it('paused: Resume team; a finished run has no Pause/Stop, Canvas still in `⋯`', async () => {
     replies.feature_view = view({ ...live, status: 'paused' });
     app.panes = { f1: { type: 'feature', featureId: 'f1' } };

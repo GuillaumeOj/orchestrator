@@ -57,6 +57,16 @@
   // The run's phase as the core's run record has it (a finished run has none: its status).
   const rr = $derived(run ? runAttention(run.id) : null);
   const phase = $derived(runPhase(run));
+  /** Row 2 of the header: the pieces present, joined by ` · ` (the branch piece is always there). */
+  const metaParts = $derived(
+    v
+      ? [
+          v.team ? `${v.team.name} v${v.team.version}` : null,
+          `\u{E725} ${v.feature.integration_worktree ? `orch/${v.feature.slug}/integration` : '—'}`,
+          run ? `started ${ago(run.started_at_ms)}` : null,
+        ].filter(Boolean)
+      : [],
+  );
 
   const byStatus = (s) => (v?.tasks ?? []).filter((t) => t.status === s);
   const events = $derived((v?.timeline ?? []).filter(timelineFilter(tl)).slice(0, 60));
@@ -269,21 +279,24 @@
     <p class="muted pad">Loading…</p>
   {:else}
     <header class="fh">
-      <span class="slug">{v.feature.slug}</span>
-      {#if phase}<span class="pill" style:color={runStateColor(phase)} style:border-color={runStateColor(phase)} use:tooltip={rr ? `since ${ago(rr.phase_since_ms)}` : null}>{runStateLabel(phase)}</span>{/if}
-      <span class="muted">{v.team?.name ?? ''}{v.team ? ` v${v.team.version}` : ''} · {'\u{E725}'} {v.feature.integration_worktree ? `orch/${v.feature.slug}/integration` : '—'}{run ? ` · started ${ago(run.started_at_ms)}` : ''}</span>
-      <span class="grow"></span>
-      {#if publishing}
-        <span class="muted">◷ Publishing {v.docs.length} doc{v.docs.length === 1 ? '' : 's'}…</span>
-      {/if}
-      <span class="head-acts">
-        {#if run && !runFinished(run.status)}
-          <button type="button" class="icon-btn" aria-label={paused ? 'Resume team' : 'Pause team'} use:tooltip={{ label: paused ? 'Resume team' : 'Pause team', key: 'p' }} onclick={() => act(paused ? 'resume' : 'pause')}>{paused ? '\u{F040A}' : '\u{F03E4}'}</button>
-          <button type="button" class="icon-btn" aria-label="Stop the team…" use:tooltip={'Stop the team…'} onclick={stop}>{'\u{F04DB}'}</button>
+      <div class="row1">
+        <span class="slug" use:tooltip={v.feature.slug}>{v.feature.slug}</span>
+        {#if phase}<span class="pill" style:color={runStateColor(phase)} style:border-color={runStateColor(phase)} use:tooltip={rr ? `since ${ago(rr.phase_since_ms)}` : null}>{runStateLabel(phase)}</span>{/if}
+        <span class="grow"></span>
+        {#if publishing}
+          {@const pubText = `◷ Publishing ${v.docs.length} doc${v.docs.length === 1 ? '' : 's'}…`}
+          <span class="muted pubtxt" use:tooltip={pubText}>{pubText}</span>
         {/if}
-        <button type="button" class="icon-btn danger" aria-label="Delete feature…" use:tooltip={'Delete feature…'} onclick={() => (app.overlay = { kind: 'delete-feature', featureId: v.feature.id })}>{'\u{F01B4}'}</button>
-        <Menu items={menu} label="More actions" />
-      </span>
+        <span class="head-acts">
+          {#if run && !runFinished(run.status)}
+            <button type="button" class="icon-btn" aria-label={paused ? 'Resume team' : 'Pause team'} use:tooltip={{ label: paused ? 'Resume team' : 'Pause team', key: 'p' }} onclick={() => act(paused ? 'resume' : 'pause')}>{paused ? '\u{F040A}' : '\u{F03E4}'}</button>
+            <button type="button" class="icon-btn" aria-label="Stop the team…" use:tooltip={'Stop the team…'} onclick={stop}>{'\u{F04DB}'}</button>
+          {/if}
+          <button type="button" class="icon-btn danger" aria-label="Delete feature…" use:tooltip={'Delete feature…'} onclick={() => (app.overlay = { kind: 'delete-feature', featureId: v.feature.id })}>{'\u{F01B4}'}</button>
+          <Menu items={menu} label="More actions" />
+        </span>
+      </div>
+      <div class="row2 muted">{metaParts.join(' · ')}</div>
     </header>
 
     {#if notionReady && !notionReady.ok && !notion?.page_url}<p class="nline muted">{notionReady.why}</p>{/if}
@@ -438,7 +451,6 @@
     outline: none;
     font: var(--text-label);
   }
-  .fh,
   .cardh,
   .tt,
   .ev,
@@ -448,11 +460,44 @@
     align-items: center;
     gap: var(--space-sm);
   }
+  .fh {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-xxs);
+  }
+  .row1 {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    min-height: var(--size-control);
+  }
+  .row2 {
+    font: var(--text-caption);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
   .slug {
     font: var(--text-heading);
     color: var(--color-text-primary);
+    flex: 0 1 auto;
+    min-width: 8ch;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .pill,
+  .head-acts {
+    flex: none;
+  }
+  .pubtxt {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   .pill {
+    white-space: nowrap;
     padding: var(--space-xxs) var(--space-sm);
     border: var(--border-width-default) solid;
     border-radius: var(--radius-sm);
