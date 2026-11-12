@@ -211,6 +211,10 @@ pub struct Event {
     /// docs_dir, intake, recent_briefs}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<Value>,
+    /// The features the user mentioned (`chat_send` `context.mentions`),
+    /// resolved when the event is built (add-mention-in-overwatch api-contract §2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<Vec<Value>>,
 }
 
 impl Event {
@@ -229,6 +233,7 @@ impl Event {
             chat: None,
             candidate: None,
             plan: None,
+            mentions: None,
         }
     }
 
@@ -252,6 +257,10 @@ impl Event {
         if let Some(p) = &self.plan {
             l.push_str(" · plan ");
             l.push_str(&p.to_string());
+        }
+        if let Some(m) = &self.mentions {
+            l.push_str(" · mentions ");
+            l.push_str(&Value::Array(m.clone()).to_string());
         }
         l
     }

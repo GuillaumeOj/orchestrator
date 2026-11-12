@@ -99,6 +99,7 @@ export const app = $state({
   chatFocus: null,
   chatFilter: 'all', // the chat's level filter (notes §5): never saved
   chatDraft: '', // the Overwatch input's draft (P4.4 notes §2): kept while the app is open, never saved
+  chatMentions: /** @type {{ token: string, kind: 'feature', id: string }[]} */ ([]), // the features picked from the @ list, next to the draft
   selectedProject: null,
   theme: null, // null = system, 'dark' | 'light' (user choice)
   themeRev: 0, // bumped when the applied theme may have changed (diagrams redraw)

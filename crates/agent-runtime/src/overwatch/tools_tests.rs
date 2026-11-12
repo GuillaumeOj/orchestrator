@@ -639,3 +639,165 @@ fn other_agents_cannot_call_the_overwatch_tools() {
         assert!(is_err && text.contains("not one of your tools"), "{t}: {text}");
     }
 }
+
+// ------------------------------------------------------------ chat_send mentions
+
+use orch_store::{Feature, Project, TeamRun};
+use orch_team::{RunState, Scope};
+
+/// A project with the feature `f_1` (slug `checkout`), its run `r_1` in `status`, and the docs folder.
+fn mentionable(rt: &Runtime, d: &std::path::Path, status: RunState) -> std::path::PathBuf {
+    let proj = Project {
+        id: "p_1".into(),
+        name: "shop".into(),
+        path: d.join("shop"),
+        default_branch: "main".into(),
+        remotes: vec![],
+        worktree_root: d.join("shop.worktrees"),
+        task_backend: json!({"type": "local"}),
+        track_orchestrator_dir: true,
+        settings: json!({}),
+        created_at_ms: 1,
+        last_active_at_ms: 1,
+        last_fetch_at_ms: None,
+        last_fetch_error: None,
+        archived: false,
+    };
+    rt.db.upsert_project(&proj).unwrap();
+    let wt = d.join("integration");
+    std::fs::create_dir_all(wt.join(".orchestrator/features/checkout")).unwrap();
+    let f = Feature {
+        id: "f_1".into(),
+        project_id: "p_1".into(),
+        slug: "checkout".into(),
+        title: "Checkout v2".into(),
+        brief: "b".into(),
+        base: "main".into(),
+        integration_worktree: Some(wt.clone()),
+        allocation: None,
+        created_at_ms: 1,
+        archived: false,
+    };
+    rt.db.upsert_feature(&f).unwrap();
+    set_run(rt, status);
+    wt
+}
+
+fn set_run(rt: &Runtime, status: RunState) {
+    rt.db
+        .upsert_run(&TeamRun {
+            id: "r_1".into(),
+            team_id: "full-stack".into(),
+            team_scope: Scope::Project("p_1".into()),
+            team_version: 1,
+            feature_id: "f_1".into(),
+            status,
+            resume_status: None,
+            pr_url: None,
+            started_at_ms: 1,
+            ended_at_ms: None,
+            pr_number: None,
+            pr: None,
+        })
+        .unwrap();
+}
+
+fn mention(id: &str) -> Value {
+    json!({"kind": "feature", "id": id})
+}
+
+#[test]
+fn a_mention_resolves_into_the_entry_meta_and_the_event_line() {
+    let (d, rt) = manual();
+    let wt = mentionable(&rt, d.path(), RunState::Executing);
+    let ctx = json!({"mentions": [mention("f_1"), mention("f_1")]});
+    let e = rt.chat_send_with("what is @checkout waiting on?", None, Some(&ctx)).unwrap();
+    let m = &e.meta.as_ref().unwrap()["mentions"];
+    assert_eq!(m.as_array().unwrap().len(), 1, "duplicates collapse: {m}");
+    assert_eq!(
+        m[0],
+        json!({"kind": "feature", "id": "f_1", "slug": "checkout", "title": "Checkout v2",
+               "project_id": "p_1", "project": "shop"})
+    );
+    let audit = rt.db.audit_log(None, 5).unwrap();
+    assert!(audit.iter().any(|a| a.action == "chat_send" && a.detail["mentions"] == 1), "{audit:?}");
+    rt.overwatch_pump_at(t0() + 1);
+    let turn = &super::tests::ow_turns(&rt)[0];
+    let line = turn.lines().find(|l| l.contains("user_message")).unwrap();
+    let json_part = line.split(" · mentions ").nth(1).expect("mentions on the line");
+    let v: Value = serde_json::from_str(json_part).unwrap();
+    assert_eq!(v[0]["run"], "r_1");
+    assert_eq!(v[0]["status"], "executing");
+    assert_eq!(v[0]["project"], "shop");
+    assert_eq!(v[0]["branch"], "orch/checkout/integration");
+    assert_eq!(v[0]["worktree"], json!(wt));
+    assert_eq!(v[0]["docs_dir"], json!(wt.join(".orchestrator/features/checkout")));
+    assert!(v[0]["agents"].is_array() && v[0]["pr_url"].is_null());
+}
+
+#[test]
+fn unknown_ids_are_dropped_and_no_meta_is_written_when_none_resolve() {
+    let (d, rt) = manual();
+    mentionable(&rt, d.path(), RunState::Executing);
+    let e = rt.chat_send_with("hi @gone", None, Some(&json!({"mentions": [mention("f_nope")]}))).unwrap();
+    assert!(e.meta.as_ref().unwrap().get("mentions").is_none());
+    let e = rt.chat_send_with("hi", None, Some(&json!({"mentions": [mention("f_nope"), mention("f_1")]}))).unwrap();
+    assert_eq!(e.meta.as_ref().unwrap()["mentions"].as_array().unwrap().len(), 1);
+    // An archived feature is kept.
+    let mut f = rt.db.feature("f_1").unwrap().unwrap();
+    f.archived = true;
+    rt.db.upsert_feature(&f).unwrap();
+    let e = rt.chat_send_with("old", None, Some(&json!({"mentions": [mention("f_1")]}))).unwrap();
+    assert_eq!(e.meta.as_ref().unwrap()["mentions"][0]["id"], "f_1");
+}
+
+#[test]
+fn a_bad_mentions_shape_is_refused() {
+    let (d, rt) = manual();
+    mentionable(&rt, d.path(), RunState::Executing);
+    let bad = |ctx: Value| {
+        let e = rt.chat_send_with("x", None, Some(&ctx)).unwrap_err().to_string();
+        assert!(e.starts_with("bad_request"), "{ctx}: {e}");
+    };
+    bad(json!({"mentions": "f_1"}));
+    bad(json!({"mentions": [{"kind": "feature"}]}));
+    bad(json!({"mentions": [{"kind": "feature", "id": 3}]}));
+    bad(json!({"mentions": ["f_1"]}));
+    bad(json!({"mentions": [{"kind": "agent", "id": "a1"}]}));
+    bad(json!({"mentions": (0..11).map(|i| mention(&format!("f_{i}"))).collect::<Vec<_>>()}));
+    assert!(rt.db.chat_pending_user().unwrap().is_empty(), "nothing was sent");
+    let ten: Vec<Value> = (0..10).map(|_| mention("f_1")).collect();
+    assert!(rt.chat_send_with("x", None, Some(&json!({"mentions": ten}))).is_ok());
+    assert!(rt.chat_send_with("x", None, Some(&json!({"mentions": null}))).is_ok());
+}
+
+#[test]
+fn mentions_and_plan_ride_together() {
+    let (d, rt) = manual();
+    mentionable(&rt, d.path(), RunState::Spec);
+    let ctx = json!({"plan": "p_1", "mentions": [mention("f_1")]});
+    let e = rt.chat_send_with("plan next to @checkout", None, Some(&ctx)).unwrap();
+    let m = e.meta.as_ref().unwrap();
+    assert!(m["plan"].is_object() && m["mentions"][0]["slug"] == "checkout", "{m}");
+    rt.overwatch_pump_at(t0() + 1);
+    let turn = &super::tests::ow_turns(&rt)[0];
+    let line = turn.lines().find(|l| l.contains("user_message")).unwrap();
+    assert!(line.find(" · plan ").unwrap() < line.find(" · mentions ").unwrap(), "{line}");
+}
+
+#[test]
+fn a_pending_message_re_resolves_its_mentions_on_rebuild() {
+    let (d, rt) = manual();
+    mentionable(&rt, d.path(), RunState::Executing);
+    rt.chat_send_with("status of @checkout?", None, Some(&json!({"mentions": [mention("f_1")]}))).unwrap();
+    // The in-memory event is lost (app restart) and the run moved on meanwhile.
+    rt.ow().queue.clear();
+    set_run(&rt, RunState::PrGate);
+    rt.overwatch_load_db_pending();
+    let ev = rt.ow().pending_user.last().cloned().expect("rebuilt");
+    let m = ev.mentions.expect("mentions re-resolved");
+    assert_eq!((m[0]["id"].as_str(), m[0]["status"].as_str()), (Some("f_1"), Some("pr_gate")));
+    // A feature deleted meanwhile leaves no mentions on the event.
+    assert!(rt.mentions_of_meta(Some(&json!({"mentions": [{"id": "f_gone"}]}))).is_none());
+    assert!(rt.mentions_of_meta(None).is_none());
+}

@@ -13,6 +13,32 @@ use crate::runtime::Runtime;
 /// A user message over this is refused (`bad_request`).
 pub const SEND_MAX: usize = 2_000;
 
+/// Mentions a message may carry, and the agents listed per mention.
+const MENTIONS_MAX: usize = 10;
+const MENTION_AGENTS_MAX: usize = 12;
+
+/// `context.mentions`: the distinct feature ids, in order. A bad shape is `bad_request`.
+fn mention_ids(context: Option<&Value>) -> Result<Vec<String>> {
+    let Some(m) = context.and_then(|c| c.get("mentions")).filter(|m| !m.is_null()) else { return Ok(vec![]) };
+    let items = m.as_array().ok_or_else(|| anyhow::anyhow!("bad_request: context.mentions is an array"))?;
+    if items.len() > MENTIONS_MAX {
+        bail!("bad_request: a message mentions at most {MENTIONS_MAX} features");
+    }
+    let mut ids: Vec<String> = Vec::new();
+    for it in items {
+        let (Some(kind), Some(id)) = (it["kind"].as_str(), it["id"].as_str()) else {
+            bail!("bad_request: a mention is {{kind, id}}");
+        };
+        if kind != "feature" {
+            bail!("bad_request: unknown mention kind {kind:?}");
+        }
+        if !ids.iter().any(|i| i == id) {
+            ids.push(id.to_string());
+        }
+    }
+    Ok(ids)
+}
+
 impl Runtime {
     /// Writes an entry and pushes it with the next `now` event.
     pub(crate) fn chat_put(&self, e: ChatEntry) -> Result<ChatEntry> {
@@ -102,6 +128,7 @@ impl Runtime {
             }
             None => None,
         };
+        let mention_ids = mention_ids(context)?;
         let text = text.trim();
         if text.is_empty() {
             bail!("bad_request: an empty message");
@@ -110,6 +137,7 @@ impl Runtime {
             bail!("bad_request: a message is at most {SEND_MAX} characters");
         }
         let (now, day) = self.overwatch_today();
+        let mentions = self.mention_snapshots(&mention_ids);
         let pending = matches!(self.overwatch_status().status, Status::Off | Status::Down | Status::Paused);
         let e = ChatEntry {
             day,
@@ -123,14 +151,84 @@ impl Runtime {
                 if let Some(p) = &plan {
                     m["plan"] = p.clone();
                 }
+                if !mentions.is_empty() {
+                    m["mentions"] = json!(mentions);
+                }
                 m
             }),
             ..Default::default()
         };
         let e = self.chat_put(e)?;
-        let _ = self.db.audit("user", None, "chat_send", Some(&e.id()), "ok", json!({"chars": text.chars().count()}));
-        self.overwatch_user_message_with(&e.id(), text, plan);
+        let _ = self.db.audit(
+            "user",
+            None,
+            "chat_send",
+            Some(&e.id()),
+            "ok",
+            json!({"chars": text.chars().count(), "mentions": mentions.len()}),
+        );
+        let ids: Vec<String> = mentions.iter().filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
+        let payload = self.mention_payloads(&ids);
+        self.overwatch_user_message_with(&e.id(), text, plan, (!payload.is_empty()).then_some(payload));
         Ok(e)
+    }
+
+    /// The meta snapshot of each mentioned feature that is in the store
+    /// (unknown ids are dropped and logged; archived features are kept).
+    fn mention_snapshots(&self, ids: &[String]) -> Vec<Value> {
+        ids.iter()
+            .filter_map(|id| {
+                let Some(f) = self.db.feature(id).ok().flatten() else {
+                    eprintln!("warn: chat_send: mention of unknown feature {id:?} dropped");
+                    return None;
+                };
+                let project = self.db.project(&f.project_id).ok().flatten().map(|p| p.name);
+                Some(json!({"kind": "feature", "id": f.id, "slug": f.slug, "title": f.title,
+                            "project_id": f.project_id, "project": project}))
+            })
+            .collect()
+    }
+
+    /// The rich payload of the `user_message` event for each feature id
+    /// (api-contract §2): run and status, branch, docs, worktree, agents, PR.
+    pub(crate) fn mention_payloads(&self, ids: &[String]) -> Vec<Value> {
+        ids.iter()
+            .filter_map(|id| {
+                let f = self.db.feature(id).ok().flatten()?;
+                let project = self.db.project(&f.project_id).ok().flatten();
+                let run = self.db.runs(Some(&f.id), false).ok().and_then(|r| r.into_iter().next());
+                let docs = f
+                    .integration_worktree
+                    .as_ref()
+                    .map(|w| w.join(".orchestrator/features").join(&f.slug))
+                    .filter(|d| d.is_dir());
+                let agents: Vec<String> = run
+                    .as_ref()
+                    .map(|r| self.run_agents(&r.id).into_iter().map(|a| a.id).take(MENTION_AGENTS_MAX).collect())
+                    .unwrap_or_default();
+                Some(json!({
+                    "kind": "feature", "id": f.id, "slug": f.slug, "title": f.title,
+                    "project": project.as_ref().map(|p| p.name.clone()),
+                    "project_path": project.as_ref().map(|p| p.path.clone()),
+                    "run": run.as_ref().map(|r| r.id.clone()),
+                    "status": run.as_ref().map(|r| r.status.as_str()),
+                    "branch": f.integration_branch(),
+                    "docs_dir": docs,
+                    "worktree": f.integration_worktree,
+                    "agents": agents,
+                    "pr_url": run.as_ref().and_then(|r| r.pr_url.clone()),
+                }))
+            })
+            .collect()
+    }
+
+    /// The event's mentions of a stored entry's meta (a pending message
+    /// rebuilt on restart): `meta.mentions[].id`, resolved again.
+    pub(crate) fn mentions_of_meta(&self, meta: Option<&Value>) -> Option<Vec<Value>> {
+        let ids: Vec<String> =
+            meta?.get("mentions")?.as_array()?.iter().filter_map(|m| m["id"].as_str().map(str::to_string)).collect();
+        let v = self.mention_payloads(&ids);
+        (!v.is_empty()).then_some(v)
     }
 
     /// The plan payload of a planning message: the project, its docs folder,

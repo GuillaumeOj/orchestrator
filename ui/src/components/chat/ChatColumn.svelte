@@ -528,25 +528,40 @@
     input?.focus();
   }
 
-  /** Send: the core writes the entry and wakes the Overwatch; a refusal keeps the text at the foot (notes §2.2). */
-  async function sendMessage(text, retry = null) {
+  /** The context a send carries: the planning tag's project and the mentioned features (`{kind, id}`). */
+  function sendContext(mentions) {
+    const plan = planContext();
+    if (!mentions.length) return plan;
+    return { ...plan, mentions: mentions.map((m) => ({ kind: m.kind, id: m.id })) };
+  }
+
+  /** Send: the core writes the entry and wakes the Overwatch; a refusal keeps the text at the foot (notes §2.2).
+   *  `mentions` are the resolved snapshots; a refused send keeps them on its unsent entry so it renders like a sent one. */
+  async function sendMessage(text, mentions = [], retry = null) {
+    // A message sent while the planning tag shows is a planning message (the tag stays after a send).
+    const context = retry ? retry.context : sendContext(mentions); // a retry keeps its own (or no) context
     try {
-      // A message sent while the planning tag shows is a planning message (the tag stays after a send).
-      const context = retry ? retry.context : planContext(); // a retry keeps its own (or no) context
       const r = await invoke('chat_send', context ? { text, context } : { text });
-      if (r?.entry && context) plannedEntries[r.entry.id] = context.plan;
+      if (r?.entry && context?.plan) plannedEntries[r.entry.id] = context.plan;
       if (r?.entry) upsertEntries((app.now.chat ??= { day: null, entries: {} }), [r.entry]);
       stick = true;
       toFoot();
     } catch (err) {
-      const entry = retry?.entry ?? { id: `unsent-${++sendSeq}`, kind: 'text', author: 'user', text, at_ms: Date.now() };
-      unsent = [...unsent.filter((u) => u !== retry), { entry, why: errText(err), context: retry ? retry.context : planContext() }];
+      const entry = retry?.entry ?? {
+        id: `unsent-${++sendSeq}`,
+        kind: 'text',
+        author: 'user',
+        text,
+        at_ms: Date.now(),
+        ...(mentions.length ? { meta: { mentions } } : {}),
+      };
+      unsent = [...unsent.filter((u) => u !== retry), { entry, why: errText(err), context }];
     }
   }
 
   function retrySend(u) {
     unsent = unsent.filter((x) => x !== u);
-    sendMessage(u.entry.text, u);
+    sendMessage(u.entry.text, u.entry.meta?.mentions ?? [], u);
   }
 
   /** Remove: a message still waiting for the Overwatch (notes F10). */
@@ -1074,7 +1089,7 @@
   {:else}
     <div class="dock">
       {#if newReply}<button class="pill" data-new-reply onclick={toFoot}>New from the Overwatch ↓</button>{/if}
-      <ChatInput bind:this={input} {ow} onsend={sendMessage} onleave={() => feed?.focus()} />
+      <ChatInput bind:this={input} {ow} onsend={sendMessage} onleave={() => feed?.focus()} onannounce={(m) => (announce = m)} />
     </div>
   {/if}
   <div class="sr" aria-live="polite">{announce}</div>
