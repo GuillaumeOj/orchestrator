@@ -113,14 +113,16 @@
     if (busy || stale) return;
     busy = true;
     error = null;
+    const slug = launchSlug;
+    const teamName = launchTeam?.team.name ?? launch.team_id;
     try {
       const run = await invoke('team_launch', {
-        form: { project_id: launch.project_id, team_id: launch.team_id, slug: launchSlug, title: launch.title, brief: launch.brief, base: launch.base || null, off_hours: launch.off_hours || undefined, intake: o.intake ?? undefined },
+        form: { project_id: launch.project_id, team_id: launch.team_id, slug, title: launch.title, brief: launch.brief, base: launch.base || null, off_hours: launch.off_hours || undefined, intake: o.intake ?? undefined },
       });
       close();
       await refresh();
       openFeature(run.feature_id);
-      toast(`Launched ${launchTeam?.team.name ?? launch.team_id} on ${launchSlug} · the lead starts when the Governor admits it`);
+      toast(`Launched ${teamName} on ${slug} · the lead starts when the Governor admits it`);
     } catch (e) {
       failed(e);
     }
@@ -278,6 +280,13 @@
     }
   }
 
+  // `o` derives from `app.overlay`, which `close()` clears: read the callback first.
+  function accept() {
+    const yes = o?.onYes;
+    close();
+    yes?.();
+  }
+
   // Esc is the window's (it closes the dialog through `close`).
   function onKey(e, submit) {
     if (e.defaultPrevented) return; // an Enter a Select consumed
@@ -289,7 +298,7 @@
   <!-- P4.5 notes §5.1–§5.3: the origin chip, the stale banner, the estimate and the untrusted-text note. -->
   {#if o.origin}
     {@const chip = originChip(o.origin)}
-    <p class="chip" data-origin><span class="muted">{chip.text}</span>{#if chip.url}{' '}<button type="button" class="linkbtn" onclick={() => openUrl(chip.url)} aria-label="Open {chip.ref} at {SOURCE_NAME[chip.source]}">↗</button>{:else if chip.brief}{' '}<button type="button" class="linkbtn" onclick={() => (close(), focusCard(chip.decision))} aria-label="Show the brief card">↗</button>{/if}</p>
+    <p class="chip" data-origin><span class="muted">{chip.text}</span>{#if chip.url}{' '}<button type="button" class="linkbtn" onclick={() => openUrl(chip.url)} aria-label="Open {chip.ref} at {SOURCE_NAME[chip.source]}">↗</button>{:else if chip.brief}{' '}<button type="button" class="linkbtn" onclick={() => { const decision = chip.decision; close(); focusCard(decision); }} aria-label="Show the brief card">↗</button>{/if}</p>
   {/if}
   {#if stale}<p class="err" role="alert" data-stale>{staleBanner(stale)}</p>{/if}
 {/snippet}
@@ -480,8 +489,8 @@
       <PlanEditor onSaved={close} onCancel={close} />
     </FloatingWindow>
   {:else}
-    <FloatingWindow title={o.text} role="alertdialog" size={SMALL} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, () => (close(), o.onYes()))}>
-    <form onsubmit={(e) => (e.preventDefault(), close(), o.onYes())}>
+    <FloatingWindow title={o.text} role="alertdialog" size={SMALL} minW={DIALOG_MIN_W} onclose={close} onkeydown={(e) => onKey(e, accept)}>
+    <form onsubmit={(e) => (e.preventDefault(), accept())}>
       <p class="secondary detail">{o.detail}</p>
       <div class="foot">
         <button type="button" class="btn ghost" onclick={close} use:tooltip={{ label: o.no ?? 'Cancel', key: 'esc' }}>{o.no ?? 'Cancel'}</button>

@@ -50,9 +50,13 @@
   // Refetched when the core says the project changed (no poll).
   onMount(() => onTopics([`project:${spec.projectId}`], load));
 
+  const BUSY_NAME = { fetch: 'the fetch', prs: 'the PR load', wt: 'the worktree removal', remove: 'the project removal' };
   /** Runs an action; then reloads the detail and the app state unless `reload` is false. */
   async function act(label, fn, reload = true) {
-    if (busy) return;
+    if (busy) {
+      toast(`Wait for ${BUSY_NAME[busy] ?? busy} to finish`);
+      return;
+    }
     busy = label;
     try {
       await fn();
@@ -116,11 +120,13 @@
   function doRemove() {
     const discard = Object.entries(removal.discard).filter(([, v]) => v).map(([k]) => k);
     const what = removal.history === 'delete' ? 'Its rules, worktree rows and transcript index are deleted; events, usage and the audit log are kept.' : 'It is hidden; everything is kept.';
-    confirm(`Remove project ${p.name}?`, `${removal.agents.length} agent(s) are stopped and archived. ${discard.length ? `${discard.length} worktree(s) with unmerged work are discarded. ` : ''}${what} .orchestrator/ in the repo is left untouched.`, () =>
+    const name = p.name;
+    const choices = { remove_merged: removal.removeMerged, discard, history: removal.history };
+    confirm(`Remove project ${name}?`, `${removal.agents.length} agent(s) are stopped and archived. ${discard.length ? `${discard.length} worktree(s) with unmerged work are discarded. ` : ''}${what} .orchestrator/ in the repo is left untouched.`, () =>
       act('remove', async () => {
-        const r = await invoke('project_remove', { id: p.id, choices: { remove_merged: removal.removeMerged, discard, history: removal.history } });
+        const r = await invoke('project_remove', { id: p.id, choices });
         removal = null;
-        toast(`Removed ${p.name}${r.kept?.length ? ` · kept ${r.kept.length} worktree(s) with unmerged work` : ''}`, { ms: 10000 });
+        toast(`Removed ${name}${r.kept?.length ? ` · kept ${r.kept.length} worktree(s) with unmerged work` : ''}`, { ms: 10000 });
         closePane(paneId);
       }), 'Remove project');
   }
