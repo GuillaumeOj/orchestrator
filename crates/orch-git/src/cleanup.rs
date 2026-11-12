@@ -329,10 +329,8 @@ fn remove(
             && !prune
             && let Some(w) = git_wt.as_ref().filter(|w| w.foreign_lock())
         {
-            match &w.lock_reason {
-                Some(r) => bail!("{} is locked ({r}): needs confirmation", p.display()),
-                None => bail!("{} is locked: needs confirmation", p.display()),
-            }
+            let why = w.lock_reason.as_ref().map(|r| format!(" ({r})")).unwrap_or_default();
+            bail!("{} is locked{why}: needs confirmation", p.display());
         }
         if p.is_dir() {
             let i = worktree::inspect(&p);
