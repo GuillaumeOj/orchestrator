@@ -325,6 +325,11 @@ const PROJECT_QUERY: &str = "query OrchIntakeProject($owner: String!, $number: I
     content { __typename ... on Issue { number title body url state updatedAt repository { nameWithOwner } \
     labels(first: 20) { nodes { name } } assignees(first: 5) { nodes { login } } milestone { title } } } } } } } } }";
 
+/// The cursor of the next page of a GraphQL `pageInfo`, `None` at the end.
+fn next_cursor(info: &Value) -> Option<String> {
+    info["endCursor"].as_str().filter(|_| info["hasNextPage"] == true).map(str::to_string)
+}
+
 /// GraphQL errors in a `gh api graphql` answer, as a source error.
 fn graphql_errors(v: &Value) -> Option<SourceError> {
     let errs = v["errors"].as_array().filter(|e| !e.is_empty())?;
@@ -382,9 +387,8 @@ fn project_items(gh: &dyn Gh, repo: &str, owner: &str, number: u64, status: Opti
         if page == 0 {
             url = project["url"].as_str().filter(|u| u.starts_with("https://")).map(str::to_string);
         }
-        let info = &project["items"]["pageInfo"];
-        match info["endCursor"].as_str().filter(|_| info["hasNextPage"] == true) {
-            Some(c) => after = Some(c.to_string()),
+        match next_cursor(&project["items"]["pageInfo"]) {
+            Some(c) => after = Some(c),
             None => break,
         }
         partial = page + 1 == MAX_PAGES;
@@ -553,8 +557,7 @@ pub fn linear(gql: &dyn Graphql, backoff: &Backoff, now: u64, q: &LinearQuery) -
     for page in 0..MAX_PAGES {
         let d = backoff.call(now, || gql.call(LINEAR_QUERY, &json!({"filter": filter, "after": after})))?;
         nodes.extend(d["issues"]["nodes"].as_array().cloned().unwrap_or_default());
-        let info = &d["issues"]["pageInfo"];
-        match info["endCursor"].as_str().filter(|_| info["hasNextPage"] == true) {
+        match next_cursor(&d["issues"]["pageInfo"]) {
             Some(c) => after = json!(c),
             None => break,
         }
