@@ -19,7 +19,7 @@ Companion of [spec.md](spec.md). The user's brief fixes what goes on each row; t
 
 1. Row 2 ellipsizes at its end first (one line, never wraps).
 2. Row 1: the slug ellipsizes first (`min-width: 0`, full slug in a tooltip).
-3. While publishing on a narrow pane, the `Publishing N docs…` text also shrinks with an ellipsis (`min-width: 0`), down to the `◷` glyph alone (full text in a tooltip). The slug keeps a small minimum (about 8 characters) so it never disappears entirely.
+3. While publishing on a narrow pane, the `Publishing N docs…` text also shrinks with an ellipsis, down to the `◷` glyph alone (the glyph always stays; full text in a tooltip). The slug has no fixed minimum width (a short slug is never padded); it shrinks first, with a much higher shrink factor than the Publishing text.
 4. The pill and the actions never shrink or wrap; nothing overflows the pane.
 
 ## States
