@@ -28,6 +28,12 @@
       "rangeStrategy": "pin"
     },
     {
+      "description": "svelte-check needs TypeScript 6 installed (its API) next to TypeScript 7 (@typescript/native, run with --tsgo): hold `typescript` on 6 until svelte-check drops that requirement",
+      "matchManagers": ["bun"],
+      "matchPackageNames": ["typescript"],
+      "allowedVersions": "<7"
+    },
+    {
       "groupName": "rust non-major",
       "matchManagers": ["cargo"],
       "matchUpdateTypes": ["minor", "patch"]
