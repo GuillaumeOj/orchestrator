@@ -17,7 +17,7 @@
   import { app, confirm, openAgent, openBoard, openCanvas, openEditor, openUrl, refresh, toast } from '../lib/app.svelte.js';
   import { deliveryMark } from '../lib/delivery.js';
   import { isDesign } from '../lib/ecosystem.js';
-  import { ago, dayHm } from '../lib/format.js';
+  import { ago, dayHm, plural } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { isTypingTarget } from '../lib/keyboard.js';
   import { backendLabel, remoteName } from '../lib/linear.js';
@@ -288,8 +288,8 @@
         {#if phase}<span class="pill" style:color={runStateColor(phase)} style:border-color={runStateColor(phase)} use:tooltip={rr ? `since ${ago(rr.phase_since_ms)}` : null}>{runStateLabel(phase)}</span>{/if}
         <span class="grow"></span>
         {#if publishing}
-          {@const pubText = `◷ Publishing ${v.docs.length} doc${v.docs.length === 1 ? '' : 's'}…`}
-          <span class="muted pubtxt" use:tooltip={ifCut(pubText)}>{pubText}</span>
+          {@const pubText = `Publishing ${plural(v.docs.length, 'doc')}…`}
+          <span class="muted pub"><span class="glyph" aria-hidden="true">◷</span><span class="pubtxt" use:tooltip={ifCut(pubText)}>{pubText}</span></span>
         {/if}
         <span class="head-acts">
           {#if run && !runFinished(run.status)}
@@ -486,7 +486,7 @@
     color: var(--color-text-primary);
     /* Shrinks first: the Publishing text only gives way once the slug is down to its minimum. */
     flex: 0 100 auto;
-    min-width: 8ch;
+    min-width: 0;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
@@ -495,7 +495,17 @@
   .head-acts {
     flex: none;
   }
+  .pub {
+    display: flex;
+    gap: var(--space-xs);
+    min-width: 0;
+    flex: 0 1 auto;
+  }
+  .glyph {
+    flex: none;
+  }
   .pubtxt {
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     white-space: nowrap;
