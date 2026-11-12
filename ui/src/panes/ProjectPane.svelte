@@ -8,7 +8,7 @@
   import Menu from '../components/Menu.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import { activeAgents, app, closePane, confirm, openAgent, openDiff, openProjectSettings, openShell, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
-  import { ago, dayTime, shortPath } from '../lib/format.js';
+  import { ago, dayTime, plural, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { keyIgnored } from '../lib/keyboard.js';
   import { onTopics, statusOf } from '../lib/now.svelte.js';
@@ -84,28 +84,29 @@
     ok: 'in use or clean',
     missing: 'folder gone',
     prunable: 'folder gone',
-    unknown: 'not created by the app',
+    unknown: 'unknown',
     main: 'main checkout',
     external: 'yours',
   };
   const verdict = (w) => VERDICT[w.verdict] ?? w.verdict;
   const ci = (c) => (!c ? '—' : c.failing ? `${c.failing} failing` : c.pending ? `${c.pending} pending` : c.passing ? 'passing' : 'none');
-  const lockText = (w) => (w.locked ? (w.lock_reason ? ` · locked: ${w.lock_reason}` : ' · locked') : '');
+  // The app locks its own worktrees ("orchestrator agent <id>"): not worth a label.
+  const lockText = (w) => (!w.locked || w.lock_reason?.startsWith('orchestrator agent ') ? '' : w.lock_reason ? ` · locked: ${w.lock_reason}` : ' · locked');
   const gone = (w) => w.verdict === 'prunable' || w.verdict === 'missing';
-  const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
   // The sibling folder's worktrees first; the user's own (`outside`) in a second group, same actions.
   const wts = $derived((d?.worktrees ?? []).filter((w) => w.verdict !== 'main'));
-  const isOutside = (w) => w.outside === true || w.verdict === 'external';
+  const isOutside = (w) => w.outside === true;
   const managed = $derived(wts.filter((w) => !isOutside(w)));
   const outside = $derived(wts.filter(isOutside));
   const prunable = $derived(wts.filter((w) => gone(w) && !w.in_use_by?.length));
   const orchBranches = $derived((d?.branches ?? []).filter((b) => b.orch));
-  const unmerged = (w) => !w.safe_to_remove && (w.dirty > 0 || w.unmerged_commits > 0 || w.in_progress?.length > 0);
+  // An outside worktree's commits stay on its kept branch: only a detached HEAD's commits are at risk.
+  const unmerged = (w) => !w.safe_to_remove && (w.dirty > 0 || w.in_progress?.length > 0 || (w.unmerged_commits > 0 && (!isOutside(w) || !w.branch)));
 
   /** What an outside worktree loses on discard (the branch is kept when unmerged). */
   function losses(w) {
     const out = [];
-    if (w.dirty > 0) out.push(plural(w.dirty, 'uncommitted file'));
+    if (w.dirty > 0) out.push(plural(w.dirty, 'uncommitted or untracked file'));
     if (w.in_progress?.length) out.push(`an operation in progress (${w.in_progress.join(', ')})`);
     if (w.locked) out.push(w.lock_reason ? `a lock (${w.lock_reason}), another tool may be using it` : 'a lock, another tool may be using it');
     if (!w.branch && w.unmerged_commits > 0) out.push(`${plural(w.unmerged_commits, 'commit')} on a detached HEAD`);
@@ -119,16 +120,16 @@
       const r = await invoke('worktree_remove', { project: p.id, path: w.path, deleteBranch: true, discard });
       seq++; // a reload that started before the removal must not bring the row back
       if (d) d = { ...d, worktrees: d.worktrees.filter((x) => x.path !== w.path) };
-      toast(`Removed ${short(w.path)}${r?.kept_branch ? ` · kept branch ${r.kept_branch} (unmerged)` : ''}`);
+      toast(`${r?.worktree_removed === false ? 'Already gone' : 'Removed'} ${short(w.path)}${r?.kept_branch ? ` · kept branch ${r.kept_branch} (unmerged)` : ''}`);
     });
     const where = short(w.path);
     const base = p.default_branch;
-    let title = `Remove worktree ${w.branch ?? ''}?`;
+    let title = `Remove worktree ${w.branch ?? where}?`;
     let body;
     if (out) {
       body = risky
         ? `${where}: ${losses(w).join('; ') || 'work that is not saved'}. Removing it discards all of this for good. Its branch is kept if unmerged.`
-        : `${where}. Its branch is deleted if merged into ${base}, kept otherwise.`;
+        : `${where}.${w.branch ? ` Its branch is deleted if merged into ${base}, kept otherwise.` : ''}`;
     } else if (risky) {
       title = `Discard unmerged work in ${w.branch ?? where}?`;
       body = `This worktree has work ${base} does not have (commits, uncommitted or untracked files). It is deleted for good.`;
@@ -140,15 +141,18 @@
 
   function pruneGone() {
     const n = prunable.length;
-    confirm(`Prune ${plural(n, 'gone worktree')}?`, 'Their folders are already gone. Their git entries go, and their branches when merged; unmerged branches are kept.', () =>
+    const locked = prunable.filter((w) => w.locked && !w.lock_reason?.startsWith('orchestrator agent ')).length;
+    confirm(`Prune ${plural(n, 'gone worktree')}?`, `Their folders are already gone. Their git entries go${locked ? ` (${locked} locked)` : ''}, and their branches when merged; unmerged branches are kept.`, () =>
       act('prune', async () => {
         const r = await invoke('worktrees_prune', { project: p.id });
         const removed = new Set(r?.removed ?? []);
         seq++; // as for a single removal
         if (d) d = { ...d, worktrees: d.worktrees.filter((x) => !removed.has(x.path)) };
         const kept = r?.kept_branches?.length ?? 0;
-        const skipped = r?.skipped?.length ?? 0;
-        toast(`${removed.size ? `Pruned ${plural(removed.size, 'worktree')}` : 'Nothing pruned'}${kept ? ` · kept ${plural(kept, 'unmerged branch', 'unmerged branches')}` : ''}${skipped ? ` · skipped ${skipped} in use` : ''}`);
+        const skips = r?.skipped ?? [];
+        const inUse = skips.filter((x) => x.reason?.startsWith('agent ')).length;
+        const other = skips.filter((x) => !x.reason?.startsWith('agent '));
+        toast(`${removed.size ? `Pruned ${plural(removed.size, 'worktree')}` : 'Nothing pruned'}${kept ? ` · kept ${kept} unmerged ${kept === 1 ? 'branch' : 'branches'}` : ''}${inUse ? ` · skipped ${inUse} in use` : ''}${other.length ? ` · skipped ${other.length}: ${other[0].reason}` : ''}`);
       }), 'Prune');
   }
 

@@ -142,6 +142,7 @@ const detail = {
       path: '/dev/shop-api/.claude/worktrees/mine',
       branch: 'claude/mine',
       verdict: 'external',
+      outside: true,
       safe_to_remove: false,
       dirty: 1,
       unmerged_commits: 3,

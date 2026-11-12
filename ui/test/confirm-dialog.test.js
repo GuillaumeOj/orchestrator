@@ -65,6 +65,7 @@ const detail = {
       path: '/dev/shop-api/.claude/worktrees/mine',
       branch: 'claude/mine',
       verdict: 'external',
+      outside: true,
       safe_to_remove: false,
       dirty: 1,
       unmerged_commits: 3,
@@ -315,7 +316,10 @@ describe('outside worktrees and prune, through the pane and the dialog', () => {
       removed: ['/dev/shop-api/.claude/worktrees/a', '/dev/shop-api/.claude/worktrees/b'],
       kept_branches: ['claude/b'],
       deleted_branches: ['claude/a'],
-      skipped: [{ path: '/dev/shop-api/.claude/worktrees/busy', reason: 'in use' }],
+      skipped: [
+        { path: '/dev/shop-api/.claude/worktrees/busy', reason: 'agent back-1 uses this worktree' },
+        { path: '/dev/shop-api/.claude/worktrees/odd', reason: 'its folder is still there' },
+      ],
     };
     await fireEvent.click(prune(pane));
     expect(text(dlg)).toContain('Prune 2 gone worktrees?');
@@ -328,6 +332,7 @@ describe('outside worktrees and prune, through the pane and the dialog', () => {
     expect(t).toContain('Pruned 2 worktrees');
     expect(t).toContain('kept 1 unmerged branch');
     expect(t).toContain('skipped 1 in use');
+    expect(t).toContain('skipped 1: its folder is still there');
   });
 
   it('Prune is absent when nothing is gone', async () => {
