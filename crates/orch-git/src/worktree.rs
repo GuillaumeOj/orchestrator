@@ -78,6 +78,8 @@ pub struct GitWorktree {
     pub head: Option<String>,
     pub branch: Option<String>,
     pub locked: bool,
+    /// Git's `locked <reason>` (none when not locked or locked without a reason).
+    pub lock_reason: Option<String>,
     pub prunable: bool,
     pub bare: bool,
 }
@@ -99,7 +101,10 @@ pub fn parse_porcelain(out: &str) -> Vec<GitWorktree> {
         match k {
             "HEAD" => cur.head = Some(v.into()),
             "branch" => cur.branch = Some(v.trim_start_matches("refs/heads/").into()),
-            "locked" => cur.locked = true,
+            "locked" => {
+                cur.locked = true;
+                cur.lock_reason = Some(v.trim().to_string()).filter(|r| !r.is_empty());
+            }
             "prunable" => cur.prunable = true,
             "bare" => cur.bare = true,
             _ => {}
@@ -208,11 +213,21 @@ pub fn complete(store: &dyn WorktreeLedger, row: &WorktreeRow) -> Result<Worktre
     Ok(done)
 }
 
+/// The reason [`lock`] gives, followed by the agent id.
+const OWN_LOCK: &str = "orchestrator agent ";
+
+impl GitWorktree {
+    /// Locked by another tool (Claude Code, an IDE…), not by the app's own [`lock`].
+    pub fn foreign_lock(&self) -> bool {
+        self.locked && !self.lock_reason.as_deref().is_some_and(|r| r.starts_with(OWN_LOCK))
+    }
+}
+
 /// `git worktree lock`; already locked is fine.
 pub fn lock(repo: &Path, path: &Path, agent_id: Option<&str>) -> Result<()> {
     let locked = list(repo)?.into_iter().any(|w| real(&w.path) == real(path) && w.locked);
     if !locked {
-        let reason = format!("orchestrator agent {}", agent_id.unwrap_or("-"));
+        let reason = format!("{OWN_LOCK}{}", agent_id.unwrap_or("-"));
         git(repo, &["worktree", "lock", "--reason", &reason, &path.display().to_string()])?;
     }
     Ok(())
@@ -309,7 +324,12 @@ mod tests {
         assert_eq!(w.len(), 3);
         assert_eq!(w[1].branch.as_deref(), Some("orch/solo/x"));
         assert!(w[1].locked && !w[0].locked);
+        assert_eq!(w[1].lock_reason.as_deref(), Some("orch"));
+        assert_eq!(w[0].lock_reason, None);
         assert!(w[2].prunable);
+        let w = parse_porcelain("worktree /a\nlocked\n\nworktree /b\nlocked claude agent\n");
+        assert!(w[0].locked && w[0].lock_reason.is_none());
+        assert_eq!(w[1].lock_reason.as_deref(), Some("claude agent"));
     }
 
     #[test]

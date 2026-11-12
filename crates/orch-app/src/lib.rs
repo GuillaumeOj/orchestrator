@@ -265,6 +265,7 @@ pub fn run() {
             commands::project_fetch,
             commands::pr_refresh,
             commands::worktree_remove,
+            commands::worktrees_prune,
             commands::worktree_diff,
             commands::worktree_create_pr,
             commands::project_removal_plan,

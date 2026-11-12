@@ -1183,9 +1183,17 @@ impl Core {
         Ok(json!(self.runtime()?.pr_refresh(feature)?))
     }
 
-    /// FR-104: one worktree of the app's sibling folder; unmerged work needs `discard`.
+    /// FR-104: one worktree of the project, the app's or the user's own (the
+    /// main checkout never); unmerged work needs `discard`, and outside the
+    /// sibling folder an unmerged branch is kept.
     pub fn worktree_remove(&self, project: &str, path: &Path, delete_branch: bool, discard: bool) -> Result<Value> {
         Ok(json!(self.runtime()?.remove_worktree(project, path, delete_branch, discard)?))
+    }
+
+    /// FR-104 bulk: every worktree of the project whose folder is gone, not in
+    /// use; unmerged branches are kept.
+    pub fn worktrees_prune(&self, project: &str) -> Result<Value> {
+        Ok(json!(self.runtime()?.prune_worktrees(project)?))
     }
 
     /// The project, one of its git worktrees (the main checkout included) and the
@@ -2361,10 +2369,22 @@ pub(crate) mod tests {
         orch_git::fixtures::commit_file(&wt.path, "x.txt", "x", "work");
         let own = other.join("mine");
         orch_git::fixtures::git(&other, &["worktree", "add", "-q", "-b", "mine", own.to_str().unwrap()]);
-        assert!(
-            core.worktree_remove(&p.id, &own, true, true).unwrap_err().to_string().contains("only removes its own")
+        // The user's own worktree (here nested in the main checkout) is removable too;
+        // its merged branch goes. A folder that is not a worktree of the repo is refused.
+        let stranger = d.path().join("stranger");
+        std::fs::create_dir_all(&stranger).unwrap();
+        let e = core.worktree_remove(&p.id, &stranger, true, true).unwrap_err().to_string();
+        assert!(e.contains("is not a worktree of"), "{e}");
+        assert!(stranger.exists());
+        let out = core.worktree_remove(&p.id, &own, true, false).unwrap();
+        assert_eq!(
+            (out["worktree_removed"].clone(), out["branch_deleted"].clone()),
+            (json!(true), json!(true)),
+            "{out}"
         );
-        assert!(own.exists());
+        assert_eq!(out["kept_branch"], Value::Null);
+        assert!(!own.exists());
+        assert_eq!(core.worktrees_prune(&p.id).unwrap()["removed"], json!([]));
         // A worktree whose folder is gone is still the app's to prune.
         let gone =
             rt.create_worktree(&other, &orch_protocol::WorktreeKindSpec::Solo { slug: "gone".into() }, None).unwrap();
