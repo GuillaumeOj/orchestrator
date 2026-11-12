@@ -222,7 +222,12 @@ impl Runtime {
         let rows = self.store.rows_of(&p.path);
         let gone: Vec<_> = cleanup::worktrees(&p.path, &rows, &p.default_branch)?
             .into_iter()
-            .filter(|w| matches!(w.verdict, WorktreeVerdict::Prunable | WorktreeVerdict::Missing))
+            // A `missing` row may still have its folder (git forgot it): not gone.
+            .filter(|w| match w.verdict {
+                WorktreeVerdict::Prunable => true,
+                WorktreeVerdict::Missing => !w.path.exists(),
+                _ => false,
+            })
             .collect();
         let mut report = PruneReport::default();
         for w in gone {

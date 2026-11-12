@@ -203,7 +203,7 @@ fn describe(
     let safe = if outside {
         // The user's: an unmerged branch is kept, so only another tool's
         // lock, files on disk or a detached HEAD's own commits would be lost.
-        !w.foreign_lock() && clean && (branch.is_some() || merged) && verdict != WorktreeVerdict::Main
+        !w.foreign_lock() && clean && (branch.is_some() || merged)
     } else {
         matches!(verdict, WorktreeVerdict::Ok | WorktreeVerdict::Unknown | WorktreeVerdict::Prunable)
             && clean
@@ -284,8 +284,12 @@ pub fn remove_worktree_of(
 /// (lock or not: nothing on disk is left to lose), and its branch only when
 /// merged into `base`. A detached HEAD with commits `base` lacks is refused.
 pub fn prune_worktree(repo: &Path, path: &Path, base: &str, row_branch: Option<&str>) -> Result<RemoveOutcome> {
-    if real(path).is_dir() {
-        bail!("{}: its folder is still there", path.display());
+    // Only a folder that is really gone: one that can't be read (permissions,
+    // a volume not mounted) is not pruned.
+    match real(path).try_exists() {
+        Ok(false) => {}
+        Ok(true) => bail!("{}: its folder is still there", path.display()),
+        Err(e) => bail!("{}: can't tell whether its folder is gone: {e}", path.display()),
     }
     remove(repo, path, base, row_branch, true, Confirm::Safe, true)
 }
@@ -364,12 +368,21 @@ fn remove(
         if confirm == Confirm::DiscardUnmerged {
             args.insert(2, "--force");
         }
-        let removed = git(repo, &args);
-        if removed.is_err() && !p.is_dir() {
+        if let Err(e) = git(repo, &args) {
+            if p.is_dir() {
+                // Not removed: give another tool its lock back.
+                if w.locked {
+                    let mut lock = vec!["worktree", "lock"];
+                    if let Some(r) = &w.lock_reason {
+                        lock.extend(["--reason", r.as_str()]);
+                    }
+                    lock.push(ps.as_str());
+                    let _ = git(repo, &lock);
+                }
+                return Err(e);
+            }
             // An older git that can't remove a worktree without its folder.
             git(repo, &["worktree", "prune"])?;
-        } else {
-            removed?;
         }
         out.worktree_removed = true;
         out.log.push(format!("removed worktree {ps}"));
@@ -380,32 +393,25 @@ fn remove(
         out.log.push(format!("removed stray folder {}", p.display()));
     }
     if delete_branch && let Some(b) = branch {
-        if keep_unmerged {
-            if b == base || !is_merged(repo, &b, base) {
-                out.log.push(format!("kept branch {b}: not merged into {base}"));
-                if b != base {
-                    out.kept_branch = Some(b);
-                }
-            } else {
-                // Merged into the base (checked above; `-d` would check HEAD).
-                delete(&mut out, repo, &b, "-D");
-            }
+        if b == base {
+            // Never the base itself (`-d` would delete it when HEAD has it).
+            out.log.push(format!("kept branch {b}: it is the base"));
+        } else if keep_unmerged && !is_merged(repo, &b, base) {
+            out.log.push(format!("kept branch {b}: not merged into {base}"));
+            out.kept_branch = Some(b);
         } else {
-            let flag = if confirm == Confirm::DiscardUnmerged { "-D" } else { "-d" };
-            delete(&mut out, repo, &b, flag);
+            // Merged into the base (checked above) or confirmed: `-D`, since
+            // `-d` would check HEAD or the upstream, not the base.
+            match git(repo, &["branch", "-D", &b]) {
+                Ok(_) => {
+                    out.branch_deleted = true;
+                    out.log.push(format!("deleted branch {b}"));
+                }
+                Err(e) => out.log.push(format!("kept branch {b}: {e}")),
+            }
         }
     }
     Ok(out)
-}
-
-fn delete(out: &mut RemoveOutcome, repo: &Path, b: &str, flag: &str) {
-    match git(repo, &["branch", flag, b]) {
-        Ok(_) => {
-            out.branch_deleted = true;
-            out.log.push(format!("deleted branch {b}"));
-        }
-        Err(e) => out.log.push(format!("kept branch {b}: {e}")),
-    }
 }
 
 /// Deletes a branch with no worktree. Unmerged branches need confirmation.
@@ -610,6 +616,13 @@ mod tests {
         tgit(&repo, &["worktree", "add", "-q", on_main.to_str().unwrap(), "main"]);
         let o = remove_worktree(&repo, &on_main, "main", true, Confirm::Safe).unwrap();
         assert!(o.worktree_removed && !o.branch_deleted && o.kept_branch.is_none(), "{o:?}");
+        assert!(worktree::branch_exists(&repo, "main"));
+        // Nor from the sibling folder (`-d` would delete it: HEAD contains it).
+        let sib = worktree::worktree_root(&repo).join("solo/on-main");
+        std::fs::create_dir_all(sib.parent().unwrap()).unwrap();
+        tgit(&repo, &["worktree", "add", "-q", sib.to_str().unwrap(), "main"]);
+        let o = remove_worktree(&repo, &sib, "main", true, Confirm::Safe).unwrap();
+        assert!(o.worktree_removed && !o.branch_deleted, "{o:?}");
         assert!(worktree::branch_exists(&repo, "main"));
     }
 
