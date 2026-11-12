@@ -502,7 +502,7 @@ export function readyLane(
       });
     for (const i of ready) add(i, false);
     if (showHidden) for (const i of hidden) add(i, true);
-    if (s.more > 0)
+    if (s.more > 0 || s.partial)
       rows.push({
         kind: 'iline',
         line: 'more',

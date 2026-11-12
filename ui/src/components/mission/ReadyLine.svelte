@@ -11,6 +11,8 @@
   const info = $derived(line.line === 'error' ? errorInfo(line.src.error, line.src, now) : null);
   const tail = $derived(overwatch === 'off' ? ' (off: your message waits)' : overwatch === 'down' ? ' (down: your message waits)' : '');
   const fixLabel = $derived(info?.fix === 'gh_scope' ? 'Copy command' : info?.fix === 'retry' ? 'Retry' : info?.fix ? 'Fix' : null);
+  // A refresh that stopped at the read bound undercounts: "n+", or just "+ more" when nothing was counted.
+  const moreText = $derived(line.line === 'more' ? (line.src.partial ? (line.src.more > 0 ? `${line.src.more}+` : '') : line.src.more) : '');
   const until = $derived(line.line === 'error' ? rateLimitedUntil(line.src, now) : null);
 </script>
 
@@ -32,7 +34,7 @@
       <button class="link" tabindex="-1" use:tooltip={info.fix !== 'retry' ? { label: fixLabel, key: '⏎' } : null} onclick={(e) => (e.stopPropagation(), onfix())}>{fixLabel}</button>
     {/if}
   {:else if line.line === 'more'}
-    <span class="muted">+ {line.src.more} more in {line.src.label}</span>
+    <span class="muted">+ {moreText ? `${moreText} ` : ''}more in {line.src.label}</span>
     {#if line.src.url}<span class="muted">·</span> <button class="link" tabindex="-1" use:tooltip={{ label: 'Open', key: '⏎' }} onclick={(e) => (e.stopPropagation(), onopen())}>Open ↗</button>{/if}
   {:else if line.line === 'looking'}
     <span class="muted">Looking for items in {line.src.label}…</span>
