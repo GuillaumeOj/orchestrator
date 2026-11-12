@@ -5,7 +5,7 @@
   // always the user's action; intake only reads. ⌘⏎ saves.
   import { onMount, untrack } from 'svelte';
   import { openSettings, toast } from '../lib/app.svelte.js';
-  import { errorInfo, GH_SCOPE_COMMAND, integrationsRow, SOURCE_NAME } from '../lib/intake.js';
+  import { errorInfo, GH_SCOPE_COMMAND, integrationsRow, moreCount, SOURCE_NAME } from '../lib/intake.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { tooltip } from '../lib/tooltip.js';
   import Select from './Select.svelte';
@@ -529,7 +529,7 @@
               <ul>
                 {#each (preview.items ?? []).slice(0, 5) as it (it.id ?? it.ref)}<li><span class="mono muted">{it.ref}</span> {it.title}</li>{/each}
               </ul>
-              {#if preview.more > 0 || preview.partial}<p class="muted">+ {preview.more > 0 ? `${preview.more}${preview.partial ? '+' : ''} ` : ''}more</p>{/if}
+              {#if preview.more > 0 || preview.partial}{@const n = moreCount(preview.more, preview.partial)}<p class="muted">+ {n ? `${n} ` : ''}more</p>{/if}
             {/if}
             {#if stale}<p class="muted">Changed since this preview</p>{/if}
           </div>

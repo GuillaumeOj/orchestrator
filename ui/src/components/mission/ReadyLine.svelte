@@ -2,7 +2,7 @@
   // A non-item line of the Ready to start lane (P4.5 notes §4.1–§4.2): no source,
   // nothing ready, a source error with its Fix, "+ n more", looking, all hidden.
   // Copy is the notes' (the core's `message` only reaches the tooltip, F3).
-  import { errorInfo, rateLimitedUntil } from '../../lib/intake.js';
+  import { errorInfo, moreCount, rateLimitedUntil } from '../../lib/intake.js';
   import { tooltip } from '../../lib/tooltip.js';
 
   /** @type {{ line: any, now: number, overwatch?: string, onplan?: () => void, onsetup?: () => void, onrefresh?: () => void, onfix?: () => void, onopen?: () => void, onshow?: () => void }} */
@@ -12,7 +12,7 @@
   const tail = $derived(overwatch === 'off' ? ' (off: your message waits)' : overwatch === 'down' ? ' (down: your message waits)' : '');
   const fixLabel = $derived(info?.fix === 'gh_scope' ? 'Copy command' : info?.fix === 'retry' ? 'Retry' : info?.fix ? 'Fix' : null);
   // A refresh that stopped at the read bound undercounts: "n+", or just "+ more" when nothing was counted.
-  const moreText = $derived(line.line === 'more' ? (line.src.partial ? (line.src.more > 0 ? `${line.src.more}+` : '') : line.src.more) : '');
+  const moreText = $derived(line.line === 'more' ? moreCount(line.src.more, line.src.partial) : '');
   const until = $derived(line.line === 'error' ? rateLimitedUntil(line.src, now) : null);
 </script>
 
