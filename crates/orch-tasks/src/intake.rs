@@ -315,6 +315,10 @@ fn rest_issues(gh: &dyn Gh, repo: &str, query: &str) -> R<Listing> {
         }
         items.extend(a.iter().filter_map(rest_issue));
     }
+    // No page at all is no answer, not an empty source.
+    if pages == 0 {
+        return Err(not_json());
+    }
     Ok(Listing::capped(items))
 }
 

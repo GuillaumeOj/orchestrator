@@ -650,7 +650,7 @@ impl Runtime {
         let items: Vec<Value> =
             ready.iter().take(PREVIEW).map(|r| item_json(&ItemFields::of_row(r), &facts, &est)).collect();
         Ok(
-            json!({"preview": {"count": ready.len().min(src::CAP), "more": more, "partial": status.partial, "items": items, "error": status.error}}),
+            json!({"preview": {"count": ready.len().min(src::CAP), "more": more, "partial": status.partial && status.error.is_none(), "items": items, "error": status.error}}),
         )
     }
 
