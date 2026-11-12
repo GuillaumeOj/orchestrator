@@ -67,6 +67,9 @@
         ].filter(Boolean)
       : [],
   );
+  const metaText = $derived(metaParts.join(' · '));
+  /** A tooltip param read when the tooltip shows: the full text, only when the element is cut (ellipsis). */
+  const ifCut = (text) => (node) => (node.scrollWidth > node.clientWidth ? text : null);
 
   const byStatus = (s) => (v?.tasks ?? []).filter((t) => t.status === s);
   const events = $derived((v?.timeline ?? []).filter(timelineFilter(tl)).slice(0, 60));
@@ -280,12 +283,12 @@
   {:else}
     <header class="fh">
       <div class="row1">
-        <span class="slug" use:tooltip={v.feature.slug}>{v.feature.slug}</span>
+        <span class="slug" use:tooltip={ifCut(v.feature.slug)}>{v.feature.slug}</span>
         {#if phase}<span class="pill" style:color={runStateColor(phase)} style:border-color={runStateColor(phase)} use:tooltip={rr ? `since ${ago(rr.phase_since_ms)}` : null}>{runStateLabel(phase)}</span>{/if}
         <span class="grow"></span>
         {#if publishing}
           {@const pubText = `◷ Publishing ${v.docs.length} doc${v.docs.length === 1 ? '' : 's'}…`}
-          <span class="muted pubtxt" use:tooltip={pubText}>{pubText}</span>
+          <span class="muted pubtxt" use:tooltip={ifCut(pubText)}>{pubText}</span>
         {/if}
         <span class="head-acts">
           {#if run && !runFinished(run.status)}
@@ -296,7 +299,7 @@
           <Menu items={menu} label="More actions" />
         </span>
       </div>
-      <div class="row2 muted">{metaParts.join(' · ')}</div>
+      <div class="row2 muted" use:tooltip={ifCut(metaText)}>{metaText}</div>
     </header>
 
     {#if notionReady && !notionReady.ok && !notion?.page_url}<p class="nline muted">{notionReady.why}</p>{/if}
@@ -480,7 +483,8 @@
   .slug {
     font: var(--text-heading);
     color: var(--color-text-primary);
-    flex: 0 1 auto;
+    /* Shrinks first: the Publishing text only gives way once the slug is down to its minimum. */
+    flex: 0 100 auto;
     min-width: 8ch;
     overflow: hidden;
     white-space: nowrap;

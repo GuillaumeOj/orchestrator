@@ -133,6 +133,14 @@ describe('feature pane header (R9)', () => {
     expect(row2).toMatch(/^Squad v1 · /);
   });
 
+  it('no team: row 2 starts with the branch piece, no leading separator', async () => {
+    replies.feature_view = { ...view(null), team: null };
+    app.panes = { f1: { type: 'feature', featureId: 'f1' } };
+    const { container } = render(FeaturePane, { paneId: 'f1' });
+    await waitFor(() => expect(container.querySelector('.fh .row1')).toBeTruthy());
+    expect(container.querySelector('.fh').children[1].textContent).toMatch(/^\u{E725} orch\/checkout\/integration$/u);
+  });
+
   it('paused: Resume team; a finished run has no Pause/Stop, Canvas still in `⋯`', async () => {
     replies.feature_view = view({ ...live, status: 'paused' });
     app.panes = { f1: { type: 'feature', featureId: 'f1' } };
