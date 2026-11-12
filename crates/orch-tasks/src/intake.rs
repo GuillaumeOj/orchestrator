@@ -19,6 +19,9 @@ use crate::linear::{GqlError, Graphql};
 pub const CAP: usize = 50;
 /// An item's body is kept to this many chars.
 pub const BODY_MAX: usize = 4000;
+/// A source is read in at most this many pages of 100 per refresh
+/// (2,000 raw items); past it the listing is `partial`.
+pub const MAX_PAGES: usize = 20;
 /// Repo docs: at most this many matching files are read per refresh.
 const DOCS_MAX: usize = 500;
 
@@ -115,13 +118,16 @@ pub struct Listing {
     /// The list in the source's own UI when the source said where it is
     /// (a Projects v2 board, a Linear team or project view).
     pub url: Option<String>,
+    /// The read stopped at [`MAX_PAGES`] before the end of the source:
+    /// `total` counts only what was read.
+    pub partial: bool,
 }
 
 impl Listing {
     fn capped(mut items: Vec<Fetched>) -> Listing {
         let total = items.len();
         items.truncate(CAP);
-        Listing { items, total, url: None }
+        Listing { items, total, url: None, partial: false }
     }
 
     pub fn more(&self) -> usize {
@@ -292,15 +298,29 @@ fn rest_issue(v: &Value) -> Option<Fetched> {
 }
 
 fn rest_issues(gh: &dyn Gh, repo: &str, query: &str) -> R<Listing> {
-    // One page, oldest first (spec §3.2 order; ≤ 1 request page per refresh).
+    // Every page (`gh` prints one JSON array per page, back to back), oldest
+    // first (spec §3.2 order). A GET: no `-f` here, `gh` would POST.
     let path = format!("repos/{repo}/issues?state=open&{query}&sort=created&direction=asc&per_page=100");
-    let v = gh_json(gh, &["api", &path])?;
-    let items = v.as_array().into_iter().flatten().filter_map(rest_issue).collect();
+    let out = gh_run(gh, &["api", "--paginate", &path])?;
+    let not_json = || SourceError::new("failed", format!("gh api {path}: not JSON"));
+    let mut items = Vec::new();
+    let mut pages = 0;
+    for page in serde_json::Deserializer::from_str(&out).into_iter::<Value>() {
+        let Value::Array(a) = page.map_err(|_| not_json())? else { return Err(not_json()) };
+        pages += 1;
+        if pages > MAX_PAGES {
+            let mut l = Listing::capped(items);
+            l.partial = true;
+            return Ok(l);
+        }
+        items.extend(a.iter().filter_map(rest_issue));
+    }
     Ok(Listing::capped(items))
 }
 
-const PROJECT_QUERY: &str = "query OrchIntakeProject($owner: String!, $number: Int!) { repositoryOwner(login: $owner) { \
-    ... on ProjectV2Owner { projectV2(number: $number) { title url items(first: 100) { nodes { \
+const PROJECT_QUERY: &str = "query OrchIntakeProject($owner: String!, $number: Int!, $after: String) { repositoryOwner(login: $owner) { \
+    ... on ProjectV2Owner { projectV2(number: $number) { title url items(first: 100, after: $after) { \
+    pageInfo { hasNextPage endCursor } nodes { \
     fieldValueByName(name: \"Status\") { ... on ProjectV2ItemFieldSingleSelectValue { name } } \
     content { __typename ... on Issue { number title body url state updatedAt repository { nameWithOwner } \
     labels(first: 20) { nodes { name } } assignees(first: 5) { nodes { login } } milestone { title } } } } } } } } }";
@@ -314,36 +334,38 @@ fn graphql_errors(v: &Value) -> Option<SourceError> {
 }
 
 fn project_items(gh: &dyn Gh, repo: &str, owner: &str, number: u64, status: Option<&str>) -> R<Listing> {
-    let v = gh_json(
-        gh,
-        &[
-            "api",
-            "graphql",
-            "-f",
-            &format!("query={PROJECT_QUERY}"),
-            "-f",
-            &format!("owner={owner}"),
-            "-F",
-            &format!("number={number}"),
-        ],
-    )?;
-    if let Some(e) = graphql_errors(&v) {
-        return Err(e);
-    }
-    let project = &v["data"]["repositoryOwner"]["projectV2"];
-    if project.is_null() {
-        return Err(SourceError::new("not_found", format!("no GitHub project {owner}/{number}")));
-    }
-    let items = project["items"]["nodes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|n| {
-            status.is_none_or(|want| {
+    let mut items = Vec::new();
+    let mut url = None;
+    let mut after: Option<String> = None;
+    let mut partial = false;
+    for page in 0..MAX_PAGES {
+        let mut args = vec![
+            "api".to_string(),
+            "graphql".into(),
+            "-f".into(),
+            format!("query={PROJECT_QUERY}"),
+            "-f".into(),
+            format!("owner={owner}"),
+            "-F".into(),
+            format!("number={number}"),
+        ];
+        if let Some(c) = &after {
+            args.extend(["-f".into(), format!("after={c}")]);
+        }
+        let v = gh_json(gh, &args.iter().map(String::as_str).collect::<Vec<_>>())?;
+        if let Some(e) = graphql_errors(&v) {
+            return Err(e);
+        }
+        let project = &v["data"]["repositoryOwner"]["projectV2"];
+        if project.is_null() {
+            return Err(SourceError::new("not_found", format!("no GitHub project {owner}/{number}")));
+        }
+        items.extend(project["items"]["nodes"].as_array().into_iter().flatten().filter_map(|n| {
+            if !status.is_none_or(|want| {
                 n["fieldValueByName"]["name"].as_str().is_some_and(|s| s.trim().eq_ignore_ascii_case(want.trim()))
-            })
-        })
-        .filter_map(|n| {
+            }) {
+                return None;
+            }
             let c = &n["content"];
             if c["__typename"] != "Issue" || c["state"].is_null() {
                 return None;
@@ -355,11 +377,19 @@ fn project_items(gh: &dyn Gh, repo: &str, owner: &str, number: u64, status: Opti
             f.extra.insert("repo".into(), json!(in_repo));
             f.extra.insert("status".into(), n["fieldValueByName"]["name"].clone());
             Some(f)
-        })
-        .collect();
-    // The board's own link: `/orgs/…` or `/users/…` by who owns it.
-    let url = project["url"].as_str().filter(|u| u.starts_with("https://")).map(str::to_string);
-    Ok(Listing { url, ..Listing::capped(items) })
+        }));
+        // The board's own link: `/orgs/…` or `/users/…` by who owns it.
+        if page == 0 {
+            url = project["url"].as_str().filter(|u| u.starts_with("https://")).map(str::to_string);
+        }
+        let info = &project["items"]["pageInfo"];
+        match info["endCursor"].as_str().filter(|_| info["hasNextPage"] == true) {
+            Some(c) => after = Some(c.to_string()),
+            None => break,
+        }
+        partial = page + 1 == MAX_PAGES;
+    }
+    Ok(Listing { url, partial, ..Listing::capped(items) })
 }
 
 /// The open issues of `repo` that `filter` selects.
@@ -491,8 +521,8 @@ fn team_filter(team: &str) -> Value {
     if uuid { json!({"id": {"eq": team}}) } else { json!({"key": {"eq": team}}) }
 }
 
-const LINEAR_QUERY: &str = "query OrchIntakeIssues($filter: IssueFilter) { issues(first: 100, filter: $filter) { \
-    nodes { id identifier title description url priority estimate sortOrder updatedAt team { key } \
+const LINEAR_QUERY: &str = "query OrchIntakeIssues($filter: IssueFilter, $after: String) { issues(first: 100, after: $after, filter: $filter) { \
+    pageInfo { hasNextPage endCursor } nodes { id identifier title description url priority estimate sortOrder updatedAt team { key } \
     project { slugId } labels { nodes { name } } } } }";
 
 /// What a Linear intake source lists.
@@ -516,11 +546,22 @@ pub fn linear(gql: &dyn Graphql, backoff: &Backoff, now: u64, q: &LinearQuery) -
     if let Some(l) = q.label {
         filter["labels"] = json!({"name": {"eq": l}});
     }
-    let d = backoff.call(now, || gql.call(LINEAR_QUERY, &json!({"filter": filter})))?;
-    let mut rows: Vec<(u64, f64, Fetched)> = d["issues"]["nodes"]
-        .as_array()
-        .into_iter()
-        .flatten()
+    // Every page, each inside the back-off.
+    let mut nodes: Vec<Value> = Vec::new();
+    let mut after = Value::Null;
+    let mut partial = false;
+    for page in 0..MAX_PAGES {
+        let d = backoff.call(now, || gql.call(LINEAR_QUERY, &json!({"filter": filter, "after": after})))?;
+        nodes.extend(d["issues"]["nodes"].as_array().cloned().unwrap_or_default());
+        let info = &d["issues"]["pageInfo"];
+        match info["endCursor"].as_str().filter(|_| info["hasNextPage"] == true) {
+            Some(c) => after = json!(c),
+            None => break,
+        }
+        partial = page + 1 == MAX_PAGES;
+    }
+    let mut rows: Vec<(u64, f64, Fetched)> = nodes
+        .iter()
         .filter_map(|v| {
             let labels = names(&v["labels"], "name");
             if labels.iter().any(|l| is_orch_label(l)) {
@@ -556,15 +597,15 @@ pub fn linear(gql: &dyn Graphql, backoff: &Backoff, now: u64, q: &LinearQuery) -
         })
         .collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
-    let url = linear_view_url(&d["issues"]["nodes"], q.project.is_some());
-    Ok(Listing { url, ..Listing::capped(rows.into_iter().map(|r| r.2).collect()) })
+    let url = linear_view_url(&nodes, q.project.is_some());
+    Ok(Listing { url, partial, ..Listing::capped(rows.into_iter().map(|r| r.2).collect()) })
 }
 
 /// The Linear view of the source: the project (`/project/<slugId>`) or the
 /// team (`/team/<KEY>/active`), the workspace slug being the one in the
 /// issues' own links. `None` while no issue says them.
-fn linear_view_url(nodes: &Value, by_project: bool) -> Option<String> {
-    nodes.as_array()?.iter().find_map(|v| {
+fn linear_view_url(nodes: &[Value], by_project: bool) -> Option<String> {
+    nodes.iter().find_map(|v| {
         let ws = v["url"].as_str()?.strip_prefix("https://linear.app/")?.split('/').next().filter(|w| !w.is_empty())?;
         Some(if by_project {
             format!("https://linear.app/{ws}/project/{}", v["project"]["slugId"].as_str().filter(|s| !s.is_empty())?)
@@ -730,8 +771,8 @@ mod tests {
     impl Gh for FakeGh {
         fn run(&self, args: &[String]) -> anyhow::Result<String> {
             self.calls.lock().unwrap().push(args.to_vec());
-            let key =
-                if args.get(1).map(String::as_str) == Some("graphql") { "graphql".into() } else { args[1].clone() };
+            // The first argument after `api` that is not a flag (`--paginate`).
+            let key = args[1..].iter().find(|a| !a.starts_with('-')).cloned().unwrap();
             let a = self.answers.lock().unwrap();
             let hit = a.iter().find(|(k, _)| key.starts_with(k.as_str())).map(|(_, v)| v.clone());
             match hit {
@@ -747,12 +788,16 @@ mod tests {
     pub(crate) fn assert_read_only(calls: &[Vec<String>]) {
         for c in calls {
             assert!(!c.iter().any(|a| a == "-X" || a == "--method"), "not a GET: {c:?}");
-            let graphql = c.get(1).map(String::as_str) == Some("graphql");
+            let graphql = c.iter().any(|a| a == "graphql");
             if !graphql {
                 assert!(!c.iter().any(|a| a == "-f" || a == "-F" || a.starts_with("--field")), "a field POSTs: {c:?}");
             }
             assert!(!c.iter().any(|a| a.contains("mutation")), "a mutation: {c:?}");
         }
+    }
+
+    fn view(v: &Value, by_project: bool) -> Option<String> {
+        linear_view_url(v.as_array().unwrap(), by_project)
     }
 
     fn issue(n: u64, labels: &[&str]) -> Value {
@@ -782,7 +827,10 @@ mod tests {
         assert!(!l.items.iter().any(|i| ["#2", "#3", "#4"].contains(&i.reference.as_str())));
         let up = first.upsert();
         assert_eq!((up.meta["assignees"][0].as_str(), up.meta["milestone"].as_str()), (Some("ann"), Some("v2")));
-        assert!(gh.calls.lock().unwrap()[0][1].contains("sort=created&direction=asc"));
+        let first = gh.calls.lock().unwrap()[0].clone();
+        assert!(
+            first.iter().any(|a| a == "--paginate") && first.last().unwrap().contains("sort=created&direction=asc")
+        );
         assert_read_only(&gh.calls.lock().unwrap());
         gh.fail("repos/acme/shop/issues", "exec: No such file or directory (os error 2)");
         let e = github(&gh, "acme/shop", &GithubIntakeFilter::Label { names: vec!["ready".into()] }).unwrap_err();
@@ -845,6 +893,174 @@ mod tests {
         assert_eq!(github(&gh, "acme/shop", &f).unwrap_err().code, "not_found");
     }
 
+    /// A `gh` serving a Projects v2 board of `n` items in pages of 100, by
+    /// the `after` cursor it is sent, and REST pages for `--paginate`.
+    struct PagedGh {
+        calls: Mutex<Vec<Vec<String>>>,
+        /// Every board item, in board order.
+        board: Vec<Value>,
+        /// The REST issues (one array per page, printed back to back).
+        rest: Vec<Vec<Value>>,
+    }
+
+    impl Gh for PagedGh {
+        fn run(&self, args: &[String]) -> anyhow::Result<String> {
+            self.calls.lock().unwrap().push(args.to_vec());
+            if args.iter().any(|a| a == "graphql") {
+                let start = args
+                    .iter()
+                    .find_map(|a| a.strip_prefix("after="))
+                    .map_or(0, |c| c.strip_prefix("c").unwrap().parse::<usize>().unwrap());
+                let end = (start + 100).min(self.board.len());
+                let next = end < self.board.len();
+                return Ok(json!({"data": {"repositoryOwner": {"projectV2": {"title": "Road", "items": {
+                    "pageInfo": {"hasNextPage": next, "endCursor": format!("c{end}")},
+                    "nodes": self.board[start..end]}}}}})
+                .to_string());
+            }
+            Ok(self.rest.iter().map(|p| json!(p).to_string()).collect::<Vec<_>>().join("\n"))
+        }
+    }
+
+    fn board_node(n: u64, status: &str, labels: &[&str]) -> Value {
+        json!({"fieldValueByName": {"name": status}, "content": {"__typename": "Issue", "number": n,
+            "title": format!("P{n}"), "body": "b", "url": format!("https://github.com/acme/shop/issues/{n}"),
+            "state": "OPEN", "updatedAt": "2026-11-02T00:00:00Z", "repository": {"nameWithOwner": "acme/shop"},
+            "labels": {"nodes": labels.iter().map(|l| json!({"name": l})).collect::<Vec<_>>()},
+            "assignees": {"nodes": []}, "milestone": null}})
+    }
+
+    fn project(status: Option<&str>) -> GithubIntakeFilter {
+        GithubIntakeFilter::Project { owner: "acme".into(), number: 7, status: status.map(str::to_string) }
+    }
+
+    #[test]
+    fn a_project_board_is_read_page_after_page_in_board_order() {
+        // 250 items over 3 pages; the 180th and 240th are in the Status, so is an `orch` one on page 3.
+        let board = (1..=250)
+            .map(|n| match n {
+                180 | 240 => board_node(n, "Ready", &[]),
+                245 => board_node(n, "Ready", &["orch"]),
+                _ => board_node(n, "Done", &[]),
+            })
+            .collect();
+        let gh = PagedGh { calls: Default::default(), board, rest: vec![] };
+        let l = github(&gh, "acme/shop", &project(Some("Ready"))).unwrap();
+        let refs: Vec<&str> = l.items.iter().map(|i| i.reference.as_str()).collect();
+        assert_eq!((refs, l.total, l.partial), (vec!["#180", "#240"], 2, false));
+        let calls = gh.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 3);
+        assert!(!calls[0].iter().any(|a| a.starts_with("after=")));
+        assert!(calls[1].iter().any(|a| a == "after=c100") && calls[2].iter().any(|a| a == "after=c200"));
+        assert_read_only(&calls);
+        // No Status: every match counts, only CAP are listed.
+        let l = github(&gh, "acme/shop", &project(None)).unwrap();
+        assert_eq!((l.items.len(), l.total, l.more()), (50, 249, 199));
+    }
+
+    #[test]
+    fn a_source_past_twenty_pages_is_partial() {
+        let board = (1..=2150).map(|n| board_node(n, "Ready", &[])).collect();
+        let gh = PagedGh { calls: Default::default(), board, rest: vec![] };
+        let l = github(&gh, "acme/shop", &project(Some("Ready"))).unwrap();
+        assert_eq!((l.total, l.partial, gh.calls.lock().unwrap().len()), (2000, true, MAX_PAGES));
+        // Exactly 20 pages: the end was reached, nothing is cut.
+        let board = (1..=2000).map(|n| board_node(n, "Ready", &[])).collect();
+        let gh = PagedGh { calls: Default::default(), board, rest: vec![] };
+        let l = github(&gh, "acme/shop", &project(Some("Ready"))).unwrap();
+        assert_eq!((l.total, l.partial), (2000, false));
+        // REST: 21 pages of 100 read 20.
+        let rest = (0..21).map(|p| (0..100).map(|i| issue(p * 100 + i + 1, &["ready"])).collect()).collect();
+        let gh = PagedGh { calls: Default::default(), board: vec![], rest };
+        let l = github(&gh, "acme/shop", &GithubIntakeFilter::Label { names: vec!["ready".into()] }).unwrap();
+        assert_eq!((l.total, l.partial), (2000, true));
+        // Linear: more pages forever.
+        let gql = PagedLinear::new(3000);
+        let q = LinearQuery { team: "ENG", project: None, label: None, include_backlog: false };
+        let l = linear(&gql, &Backoff::default(), 1000, &q).unwrap();
+        assert_eq!((l.total, l.partial, gql.calls.lock().unwrap().len()), (2000, true, MAX_PAGES));
+    }
+
+    #[test]
+    fn label_issues_are_read_through_every_page_oldest_first() {
+        let rest = vec![
+            (1..=100).map(|n| issue(n, &["ready"])).collect(),
+            (101..=130).map(|n| issue(n, &["ready"])).chain([issue(999, &["ready", "orch"])]).collect(),
+        ];
+        let gh = PagedGh { calls: Default::default(), board: vec![], rest };
+        let l = github(&gh, "acme/shop", &GithubIntakeFilter::Label { names: vec!["ready".into()] }).unwrap();
+        assert_eq!((l.total, l.more(), l.partial), (130, 80, false));
+        assert_eq!((l.items[0].reference.as_str(), l.items[49].reference.as_str()), ("#1", "#50"));
+        let calls = gh.calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0][..2], ["api", "--paginate"]);
+        assert!(calls[0][2].contains("sort=created&direction=asc&per_page=100"));
+        assert_read_only(&calls);
+    }
+
+    /// Linear serving `n` issues in pages of 100, the last (lowest) priority first.
+    struct PagedLinear {
+        n: usize,
+        calls: Mutex<Vec<Value>>,
+    }
+
+    impl PagedLinear {
+        fn new(n: usize) -> PagedLinear {
+            PagedLinear { n, calls: Default::default() }
+        }
+    }
+
+    impl Graphql for PagedLinear {
+        fn call(&self, _: &str, vars: &Value) -> Result<Value, GqlError> {
+            self.calls.lock().unwrap().push(vars.clone());
+            let start = vars["after"].as_str().map_or(0, |c| c.parse::<usize>().unwrap());
+            let end = (start + 100).min(self.n);
+            let nodes: Vec<Value> = (start..end)
+                .map(|i| {
+                    // The only urgent issue is the very last one read.
+                    let prio = if i + 1 == self.n { 1 } else { 3 };
+                    json!({"id": format!("u{i}"), "identifier": format!("ENG-{i}"), "title": "t", "description": "d",
+                        "url": format!("https://linear.app/x/issue/ENG-{i}"), "priority": prio, "estimate": null,
+                        "team": {"key": "ENG"}, "project": null, "sortOrder": i as f64, "updatedAt": "2026-11-03T00:00:00Z",
+                        "labels": {"nodes": []}})
+                })
+                .collect();
+            Ok(
+                json!({"issues": {"pageInfo": {"hasNextPage": end < self.n, "endCursor": end.to_string()}, "nodes": nodes}}),
+            )
+        }
+    }
+
+    #[test]
+    fn linear_is_sorted_over_every_page() {
+        let gql = PagedLinear::new(150);
+        let q = LinearQuery { team: "ENG", project: None, label: None, include_backlog: false };
+        let l = linear(&gql, &Backoff::default(), 1000, &q).unwrap();
+        assert_eq!((l.total, l.partial, l.items[0].reference.as_str()), (150, false, "ENG-149"));
+        assert_eq!(l.items[1].reference, "ENG-0");
+        let calls = gql.calls.lock().unwrap();
+        assert_eq!((calls.len(), calls[0]["after"].clone(), calls[1]["after"].clone()), (2, Value::Null, json!("100")));
+    }
+
+    #[test]
+    fn a_rate_limit_on_a_later_linear_page_backs_off() {
+        struct Limited(Mutex<usize>);
+        impl Graphql for Limited {
+            fn call(&self, _: &str, _: &Value) -> Result<Value, GqlError> {
+                let mut n = self.0.lock().unwrap();
+                *n += 1;
+                if *n == 2 {
+                    return Err(GqlError::RateLimited { retry_after_s: Some(30) });
+                }
+                Ok(json!({"issues": {"pageInfo": {"hasNextPage": true, "endCursor": "c"}, "nodes": []}}))
+            }
+        }
+        let b = Backoff::default();
+        let q = LinearQuery { team: "ENG", project: None, label: None, include_backlog: false };
+        let e = linear(&Limited(Mutex::new(0)), &b, 1000, &q).unwrap_err();
+        assert_eq!((e.code, e.retry_at_ms), ("rate_limited", Some(31_000)));
+    }
+
     #[test]
     fn a_project_board_links_to_where_github_says_it_is() {
         let gh = FakeGh::default();
@@ -876,14 +1092,14 @@ mod tests {
                    {"url": "https://linear.app/other/issue/X-1", "team": {"key": "X"}, "project": null}])
         };
         let url = "https://linear.app/acme/issue/ENG-42/refunds";
-        assert_eq!(linear_view_url(&nodes(url), false).as_deref(), Some("https://linear.app/acme/team/ENG/active"));
-        assert_eq!(linear_view_url(&nodes(url), true).as_deref(), Some("https://linear.app/acme/project/ab12cd"));
+        assert_eq!(view(&nodes(url), false).as_deref(), Some("https://linear.app/acme/team/ENG/active"));
+        assert_eq!(view(&nodes(url), true).as_deref(), Some("https://linear.app/acme/project/ab12cd"));
         // The first issue that says everything decides; none, none.
         let no_project = json!([{"url": url, "team": {"key": "ENG"}, "project": null},
                                 {"url": url, "team": {"key": "ENG"}, "project": {"slugId": "zz"}}]);
-        assert_eq!(linear_view_url(&no_project, true).as_deref(), Some("https://linear.app/acme/project/zz"));
-        assert_eq!(linear_view_url(&json!([]), false), None);
-        assert_eq!(linear_view_url(&json!([{"url": "https://example.com/x", "team": {"key": "E"}}]), false), None);
+        assert_eq!(view(&no_project, true).as_deref(), Some("https://linear.app/acme/project/zz"));
+        assert_eq!(view(&json!([]), false), None);
+        assert_eq!(view(&json!([{"url": "https://example.com/x", "team": {"key": "E"}}]), false), None);
         // Through the listing: the query asks for them, and the answer's become the source's link.
         let gql = FakeLinear::default();
         let q = LinearQuery { team: "ENG", project: None, label: None, include_backlog: false };

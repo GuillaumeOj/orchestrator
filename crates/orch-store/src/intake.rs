@@ -101,6 +101,10 @@ pub struct IntakeStatus {
     /// Items the source listed past the cap.
     #[serde(default)]
     pub more: usize,
+    /// The last refresh stopped at the read bound: `more` counts only what
+    /// was read.
+    #[serde(default)]
+    pub partial: bool,
     /// Repo docs: the branch tip the cached items were read at.
     #[serde(default)]
     pub tip: Option<String>,

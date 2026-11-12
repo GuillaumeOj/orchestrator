@@ -42,6 +42,14 @@ the life of the process (the runtime holds one `Backends`), so the repository is
 labels are created once, not on every write. A change of the project's backend setting or checkout
 makes a new one.
 
+## Intake sources
+
+`intake.rs` lists what a project's Ready to start lane offers. Every source is read in full, paged
+(Projects v2 `pageInfo`, REST `gh api --paginate`, Linear `pageInfo`), and bounded at 20 pages of
+100 (2,000 raw items) per refresh: past it the listing is `partial` (the lane says "+ n+ more")
+and nothing fails. The filters run on every page. An issue labelled `orch` / `orch:*` is a Board
+task, never intake.
+
 ## GitHub mapping
 
 - Every open issue is on the board: without an `orch:<status>` label it is Backlog (closed =
