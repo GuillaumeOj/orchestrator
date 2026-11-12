@@ -6,13 +6,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use orch_git::cleanup::{self, Confirm, RemoveOutcome};
+use orch_git::cleanup::{self, Confirm, RemoveOutcome, WorktreeVerdict};
 use orch_git::diff::Diff;
 use orch_git::fetch::{Conditions, FetchOutcome, FetchPolicy};
 use orch_git::project::{self, RemovalChoices, RemovalReport};
 use orch_git::repair::{self, RepairReport};
 use orch_protocol::now_ms;
 use orch_store::Project;
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::paths::real;
@@ -20,6 +21,32 @@ use crate::runtime::Runtime;
 use crate::state::AgentState;
 use crate::store::WorktreeRowState;
 use orch_git::worktree::WorktreeLedger;
+
+/// What [`Runtime::prune_worktrees`] did.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct PruneReport {
+    /// Canonical paths, as listed.
+    pub removed: Vec<PathBuf>,
+    /// Unmerged, not deleted.
+    pub kept_branches: Vec<String>,
+    pub deleted_branches: Vec<String>,
+    pub skipped: Vec<Skipped>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Skipped {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
+/// A worktree path, canonical; one whose folder is gone (prunable) is
+/// resolved through its parent.
+fn resolve(path: &Path) -> PathBuf {
+    match (path.exists(), path.parent(), path.file_name()) {
+        (false, Some(dir), Some(name)) => real(dir).join(name),
+        _ => real(path),
+    }
+}
 
 /// Patch size kept in memory for a diff view.
 pub const MAX_PATCH_BYTES: usize = 4 * 1024 * 1024;
@@ -143,10 +170,13 @@ impl Runtime {
         orch_git::diff::diff(&wt, &base, MAX_PATCH_BYTES)
     }
 
-    /// FR-104 cleanup of one worktree of the project's sibling folder (the
-    /// user's own worktrees elsewhere are never removed from here). Refuses
-    /// while an agent that is not archived or killed uses it; unmerged work
-    /// needs `confirm_discard`.
+    /// FR-104 cleanup of one worktree of the project: any of git's worktrees
+    /// of its repository, or a live row of the app, wherever it is (the
+    /// sibling folder's, or the user's own outside it). Refuses the main
+    /// checkout, a path that is neither, and a worktree an agent that is not
+    /// archived or killed uses. Unmerged work needs `confirm_discard`; outside
+    /// the sibling folder an unmerged branch is kept (`kept_branch`), never
+    /// deleted, and a locked worktree needs `confirm_discard`.
     pub fn remove_worktree(
         &self,
         project_id: &str,
@@ -155,17 +185,86 @@ impl Runtime {
         confirm_discard: bool,
     ) -> Result<RemoveOutcome> {
         let p = self.project(project_id)?;
-        // A worktree whose folder is gone (prunable) is resolved through its parent.
-        let wt = match (path.exists(), path.parent(), path.file_name()) {
-            (false, Some(dir), Some(name)) => real(dir).join(name),
-            _ => real(path),
-        };
-        if !wt.starts_with(real(&p.worktree_root)) {
-            bail!("{} is not in {}: the app only removes its own worktrees", path.display(), p.worktree_root.display());
-        }
+        let wt = resolve(path);
         if let Some(a) = self.worktree_users(&wt, "").first() {
             bail!("agent {a} uses this worktree: archive or kill it first");
         }
+        let confirm = if confirm_discard { Confirm::DiscardUnmerged } else { Confirm::Safe };
+        let Some(out) = self.remove_one(&p, &wt, |base, branch| {
+            cleanup::remove_worktree_of(&p.path, &wt, base, branch, delete_branch, confirm)
+        })?
+        else {
+            if wt.exists() {
+                bail!("{} is not a worktree of {}", path.display(), p.name);
+            }
+            // Already gone (a second click, another pane): nothing to do.
+            return Ok(RemoveOutcome::default());
+        };
+        self.db.audit(
+            "user",
+            None,
+            "worktree_removed",
+            wt.to_str(),
+            if confirm_discard { "discard" } else { "safe" },
+            json!(out),
+        )?;
+        self.touch(orch_protocol::Topic::Project(p.id.clone()));
+        Ok(out)
+    }
+
+    /// FR-104 bulk: every listed worktree of the project whose folder is gone
+    /// (`prunable` or `missing`), wherever it is. Git's entry and the app's
+    /// rows go; a branch only when merged into its base (unmerged ones are
+    /// kept and reported, so no confirmation is needed). One in use by a live
+    /// agent, or one that can't be pruned, is skipped with its reason.
+    pub fn prune_worktrees(&self, project_id: &str) -> Result<PruneReport> {
+        let p = self.project(project_id)?;
+        let rows = self.store.rows_of(&p.path);
+        let gone: Vec<_> = cleanup::worktrees(&p.path, &rows, &p.default_branch)?
+            .into_iter()
+            // A `missing` row may still have its folder (git forgot it): not gone.
+            .filter(|w| match w.verdict {
+                WorktreeVerdict::Prunable => true,
+                WorktreeVerdict::Missing => !w.path.exists(),
+                _ => false,
+            })
+            .collect();
+        let mut report = PruneReport::default();
+        for w in gone {
+            let wt = resolve(&w.path);
+            if let Some(a) = self.worktree_users(&wt, "").first() {
+                report.skipped.push(Skipped { path: w.path, reason: format!("agent {a} uses this worktree") });
+                continue;
+            }
+            match self.remove_one(&p, &wt, |base, branch| cleanup::prune_worktree(&p.path, &wt, base, branch)) {
+                Ok(Some(o)) => {
+                    if o.branch_deleted
+                        && let Some(b) = &w.branch
+                    {
+                        report.deleted_branches.push(b.clone());
+                    }
+                    report.kept_branches.extend(o.kept_branch);
+                    report.removed.push(w.path);
+                }
+                // Gone between the listing and now.
+                Ok(None) => report.removed.push(w.path),
+                Err(e) => report.skipped.push(Skipped { path: w.path, reason: format!("{e:#}") }),
+            }
+        }
+        self.db.audit("user", None, "worktrees_pruned", p.path.to_str(), "safe", json!(report))?;
+        self.touch(orch_protocol::Topic::Project(p.id.clone()));
+        Ok(report)
+    }
+
+    /// Runs `remove` (base, recorded branch) on `wt` (canonical) and marks its
+    /// live rows removed. `None` when `wt` is neither one of git's worktrees
+    /// of the project nor a live row (nothing is touched).
+    fn remove_one(
+        &self,
+        p: &Project,
+        wt: &Path,
+        remove: impl FnOnce(&str, Option<&str>) -> Result<RemoveOutcome>,
+    ) -> Result<Option<RemoveOutcome>> {
         // The live rows for this worktree, whatever the spelling of their key
         // (the listing matches them by canonical path too).
         let keys: Vec<PathBuf> = self
@@ -177,31 +276,19 @@ impl Runtime {
             .collect();
         let row = keys.first().and_then(|k| self.store.get_row(k));
         let known_to_git = orch_git::worktree::list(&p.path)?.iter().any(|w| real(&w.path) == wt);
-        if !known_to_git && row.is_none() && !wt.exists() {
-            // Already gone (a second click, another pane): nothing to do.
-            return Ok(RemoveOutcome::default());
+        if !known_to_git && row.is_none() {
+            return Ok(None);
         }
         let base = row.as_ref().map(|w| w.base.clone()).unwrap_or(p.default_branch.clone());
-        let confirm = if confirm_discard { Confirm::DiscardUnmerged } else { Confirm::Safe };
-        let branch = row.as_ref().map(|w| w.branch.as_str());
-        let out = cleanup::remove_worktree_of(&p.path, &wt, &base, branch, delete_branch, confirm)?;
+        let out = remove(&base, row.as_ref().map(|w| w.branch.as_str()))?;
         self.store.write(|s| {
-            for k in keys.iter().chain(std::iter::once(&wt)) {
+            for k in keys.iter().map(PathBuf::as_path).chain(std::iter::once(wt)) {
                 if let Some(w) = s.worktrees.get_mut(k) {
                     w.state = WorktreeRowState::Removed;
                 }
             }
         })?;
-        self.db.audit(
-            "user",
-            None,
-            "worktree_removed",
-            wt.to_str(),
-            if confirm_discard { "discard" } else { "safe" },
-            json!(out),
-        )?;
-        self.touch(orch_protocol::Topic::Project(p.id.clone()));
-        Ok(out)
+        Ok(Some(out))
     }
 
     /// What the delete dialog shows: the agent's worktree (merged, dirty,
@@ -614,5 +701,96 @@ mod tests {
         assert_eq!(again, RemoveOutcome::default());
         let t = rt.touched();
         assert!(!t.contains(&format!("project:{}", p.id)), "no topic for a no-op: {t:?}");
+    }
+    #[test]
+    fn outside_worktrees_are_removed_and_a_stranger_folder_is_refused() {
+        let (_d, rt, _r, repo, p) = setup();
+        let git = |args: &[&str]| orch_git::fixtures::git(&repo, args);
+        // `.claude/worktrees/x`, nested in the main checkout, unmerged.
+        let nested = repo.join(".claude/worktrees/x");
+        git(&["worktree", "add", "-q", "-b", "claude/x", nested.to_str().unwrap(), "main"]);
+        commit_file(&nested, "x.txt", "x", "work");
+        let d = rt.project_detail(&p.id, false).unwrap();
+        let w = d["worktrees"].as_array().unwrap().iter().find(|w| w["branch"] == "claude/x").unwrap().clone();
+        assert_eq!((w["outside"].clone(), w["safe_to_remove"].clone()), (json!(true), json!(true)), "{w}");
+        assert_eq!(w["lock_reason"], Value::Null);
+        let out = rt.remove_worktree(&p.id, &nested, true, false).unwrap();
+        assert!(out.worktree_removed && !out.branch_deleted, "{out:?}");
+        assert_eq!(out.kept_branch.as_deref(), Some("claude/x"));
+        assert!(orch_git::worktree::branch_exists(&repo, "claude/x"));
+        assert!(!listed(&rt, &p.id, &nested));
+        assert!(rt.touched().contains(&format!("project:{}", p.id)));
+        // The main checkout is still refused.
+        let e = rt.remove_worktree(&p.id, &repo, true, true).unwrap_err().to_string();
+        assert_eq!(e, "refusing to remove the main checkout");
+        // A plain folder elsewhere is not a worktree of the project: refused and left on disk.
+        let plain = repo.parent().unwrap().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let e = rt.remove_worktree(&p.id, &plain, true, true).unwrap_err().to_string();
+        assert_eq!(e, format!("{} is not a worktree of {}", plain.display(), p.name));
+        assert!(plain.is_dir());
+        // Nor is a folder in the sibling folder that neither git nor a row knows.
+        let stray = real(&orch_git::worktree::worktree_root(&repo)).join("stray");
+        std::fs::create_dir_all(&stray).unwrap();
+        assert!(rt.remove_worktree(&p.id, &stray, true, true).unwrap_err().to_string().contains("not a worktree"));
+        assert!(stray.is_dir());
+    }
+
+    #[test]
+    fn prune_clears_every_gone_worktree_not_in_use() {
+        let (_d, rt, _r, repo, p) = setup();
+        let git = |args: &[&str]| orch_git::fixtures::git(&repo, args);
+        let solo = |slug: &str| rt.create_worktree(&repo, &WorktreeKindSpec::Solo { slug: slug.into() }, None).unwrap();
+        // The app's, folder gone, merged; the app's, folder gone, unmerged.
+        let merged = solo("merged");
+        std::fs::remove_dir_all(&merged.path).unwrap();
+        let work = solo("work");
+        commit_file(&work.path, "w.txt", "w", "unmerged");
+        std::fs::remove_dir_all(&work.path).unwrap();
+        // Outside, folder gone (locked by another tool); outside, folder present.
+        let mine = repo.parent().unwrap().join("mine");
+        let gone = mine.join("gone");
+        git(&["worktree", "add", "-q", "-b", "gone", gone.to_str().unwrap(), "main"]);
+        git(&["worktree", "lock", "--reason", "claude agent", gone.to_str().unwrap()]);
+        std::fs::remove_dir_all(&gone).unwrap();
+        let here = mine.join("here");
+        git(&["worktree", "add", "-q", "-b", "here", here.to_str().unwrap(), "main"]);
+        // Gone, but in use by a live agent.
+        let used = solo("a1");
+        rt.store
+            .write(|s| {
+                let a = s.agents.get_mut("a1").unwrap();
+                a.repo = repo.clone();
+                a.worktree = used.path.clone();
+            })
+            .unwrap();
+        std::fs::remove_dir_all(&used.path).unwrap();
+        let _ = rt.touched();
+
+        let r = rt.prune_worktrees(&p.id).unwrap();
+        let gone = real(&mine).join("gone");
+        let mut removed = r.removed.iter().map(|p| resolve(p)).collect::<Vec<_>>();
+        removed.sort();
+        let mut want = vec![merged.path.clone(), work.path.clone(), gone.clone()];
+        want.sort();
+        assert_eq!(removed, want, "{r:?}");
+        assert_eq!(r.kept_branches, vec!["orch/solo/work".to_string()]);
+        let mut deleted = r.deleted_branches.clone();
+        deleted.sort();
+        assert_eq!(deleted, vec!["gone".to_string(), "orch/solo/merged".to_string()]);
+        assert_eq!(r.skipped.len(), 1, "{r:?}");
+        assert_eq!(resolve(&r.skipped[0].path), used.path);
+        assert_eq!(r.skipped[0].reason, "agent a1 uses this worktree");
+        assert!(orch_git::worktree::branch_exists(&repo, "orch/solo/work"));
+        for w in [&merged.path, &work.path, &gone] {
+            assert!(!listed(&rt, &p.id, w), "{} still listed", w.display());
+        }
+        assert!(listed(&rt, &p.id, &here) && listed(&rt, &p.id, &used.path));
+        assert_eq!(rt.store.read(|s| s.worktrees[&work.path].state), WorktreeRowState::Removed);
+        assert!(rt.touched().contains(&format!("project:{}", p.id)));
+        assert!(rt.db.audit_log(None, 10).unwrap().iter().any(|e| e.action == "worktrees_pruned"));
+        // Nothing left to prune: an empty report.
+        let r = rt.prune_worktrees(&p.id).unwrap();
+        assert!(r.removed.is_empty() && r.skipped.len() == 1, "{r:?}");
     }
 }

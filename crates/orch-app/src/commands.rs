@@ -804,6 +804,11 @@ pub async fn worktree_remove(
 }
 
 #[tauri::command]
+pub async fn worktrees_prune(core: CoreState<'_>, project: String) -> Res<Value> {
+    blocking(core, move |c| c.worktrees_prune(&project)).await
+}
+
+#[tauri::command]
 pub async fn worktree_diff(core: CoreState<'_>, project: String, path: PathBuf) -> Res<Value> {
     blocking(core, move |c| c.worktree_diff(&project, &path)).await
 }

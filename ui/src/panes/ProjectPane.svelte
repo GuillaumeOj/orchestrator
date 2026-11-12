@@ -8,7 +8,7 @@
   import Menu from '../components/Menu.svelte';
   import StatusBadge from '../components/StatusBadge.svelte';
   import { activeAgents, app, closePane, confirm, openAgent, openDiff, openProjectSettings, openShell, openTrust, projects, refresh, toast } from '../lib/app.svelte.js';
-  import { ago, dayTime, shortPath } from '../lib/format.js';
+  import { ago, dayTime, plural, shortPath } from '../lib/format.js';
   import { errText, invoke } from '../lib/ipc.js';
   import { keyIgnored } from '../lib/keyboard.js';
   import { onTopics, statusOf } from '../lib/now.svelte.js';
@@ -50,7 +50,7 @@
   // Refetched when the core says the project changed (no poll).
   onMount(() => onTopics([`project:${spec.projectId}`], load));
 
-  const BUSY_NAME = { fetch: 'the fetch', prs: 'the PR load', wt: 'the worktree removal', remove: 'the project removal' };
+  const BUSY_NAME = { fetch: 'the fetch', prs: 'the PR load', wt: 'the worktree removal', prune: 'the prune', remove: 'the project removal' };
   /** Runs an action; then reloads the detail and the app state unless `reload` is false. */
   async function act(label, fn, reload = true) {
     if (busy) {
@@ -82,30 +82,78 @@
 
   const VERDICT = {
     ok: 'in use or clean',
-    missing: 'folder gone (prunable)',
-    prunable: 'prunable',
-    unknown: 'not created by the app',
+    missing: 'folder gone',
+    prunable: 'folder gone',
+    unknown: 'unknown',
     main: 'main checkout',
-    external: 'outside the sibling folder',
+    external: 'yours',
   };
   const verdict = (w) => VERDICT[w.verdict] ?? w.verdict;
   const ci = (c) => (!c ? '—' : c.failing ? `${c.failing} failing` : c.pending ? `${c.pending} pending` : c.passing ? 'passing' : 'none');
-  // The app manages its sibling folder; the user's own worktrees are listed, never cleaned up.
-  const managed = $derived((d?.worktrees ?? []).filter((w) => !['main', 'external'].includes(w.verdict)));
-  const external = $derived((d?.worktrees ?? []).filter((w) => w.verdict === 'external'));
+  // The app locks its own worktrees ("orchestrator agent <id>"): not worth a label.
+  const lockText = (w) => (!w.locked || w.lock_reason?.startsWith('orchestrator agent ') ? '' : w.lock_reason ? ` · locked: ${w.lock_reason}` : ' · locked');
+  const gone = (w) => w.verdict === 'prunable' || w.verdict === 'missing';
+  // The sibling folder's worktrees first; the user's own (`outside`) in a second group, same actions.
+  const wts = $derived((d?.worktrees ?? []).filter((w) => w.verdict !== 'main'));
+  const isOutside = (w) => w.outside === true;
+  const managed = $derived(wts.filter((w) => !isOutside(w)));
+  const outside = $derived(wts.filter(isOutside));
+  const prunable = $derived(wts.filter((w) => gone(w) && !w.in_use_by?.length));
   const orchBranches = $derived((d?.branches ?? []).filter((b) => b.orch));
-  const unmerged = (w) => !w.safe_to_remove && (w.dirty > 0 || w.unmerged_commits > 0 || w.in_progress?.length > 0);
+  // An outside worktree's commits stay on its kept branch: only a detached HEAD's commits are at risk.
+  const unmerged = (w) => !w.safe_to_remove && (w.dirty > 0 || w.in_progress?.length > 0 || (w.unmerged_commits > 0 && (!isOutside(w) || !w.branch)));
+
+  /** What an outside worktree loses on discard (the branch is kept when unmerged). */
+  function losses(w) {
+    const out = [];
+    if (w.dirty > 0) out.push(plural(w.dirty, 'uncommitted or untracked file'));
+    if (w.in_progress?.length) out.push(`an operation in progress (${w.in_progress.join(', ')})`);
+    if (w.locked) out.push(w.lock_reason ? `a lock (${w.lock_reason}), another tool may be using it` : 'a lock, another tool may be using it');
+    if (!w.branch && w.unmerged_commits > 0) out.push(`${plural(w.unmerged_commits, 'commit')} on a detached HEAD`);
+    return out;
+  }
 
   function removeWorktree(w) {
     const risky = !w.safe_to_remove;
+    const out = isOutside(w);
     const run = (discard) => act('wt', async () => {
-      await invoke('worktree_remove', { project: p.id, path: w.path, deleteBranch: true, discard });
+      const r = await invoke('worktree_remove', { project: p.id, path: w.path, deleteBranch: true, discard });
       seq++; // a reload that started before the removal must not bring the row back
       if (d) d = { ...d, worktrees: d.worktrees.filter((x) => x.path !== w.path) };
-      toast(`Removed ${short(w.path)}`);
+      toast(`${r?.worktree_removed === false ? 'Already gone' : 'Removed'} ${short(w.path)}${r?.kept_branch ? ` · kept branch ${r.kept_branch} (unmerged)` : ''}`);
     });
-    if (!risky) return confirm(`Remove worktree ${w.branch ?? ''}?`, `${short(w.path)} and its branch. Its work is merged into ${p.default_branch}.`, () => run(false), 'Remove');
-    confirm(`Discard unmerged work in ${w.branch ?? short(w.path)}?`, `This worktree has work ${p.default_branch} does not have (commits, uncommitted or untracked files). It is deleted for good.`, () => run(true), 'Discard and remove');
+    const where = short(w.path);
+    const base = p.default_branch;
+    let title = `Remove worktree ${w.branch ?? where}?`;
+    let body;
+    if (out) {
+      body = risky
+        ? `${where}: ${losses(w).join('; ') || 'work that is not saved'}. Removing it discards all of this for good. Its branch is kept if unmerged.`
+        : `${where}.${w.branch ? ` Its branch is deleted if merged into ${base}, kept otherwise.` : ''}`;
+    } else if (risky) {
+      title = `Discard unmerged work in ${w.branch ?? where}?`;
+      body = `This worktree has work ${base} does not have (commits, uncommitted or untracked files). It is deleted for good.`;
+    } else {
+      body = `${where} and its branch. Its work is merged into ${base}.`;
+    }
+    confirm(title, body, () => run(risky), risky ? 'Discard and remove' : 'Remove');
+  }
+
+  function pruneGone() {
+    const n = prunable.length;
+    const locked = prunable.filter((w) => w.locked && !w.lock_reason?.startsWith('orchestrator agent ')).length;
+    confirm(`Prune ${plural(n, 'gone worktree')}?`, `Their folders are already gone. Their git entries go${locked ? ` (${locked} locked)` : ''}, and their branches when merged; unmerged branches are kept.`, () =>
+      act('prune', async () => {
+        const r = await invoke('worktrees_prune', { project: p.id });
+        const removed = new Set(r?.removed ?? []);
+        seq++; // as for a single removal
+        if (d) d = { ...d, worktrees: d.worktrees.filter((x) => !removed.has(x.path)) };
+        const kept = r?.kept_branches?.length ?? 0;
+        const skips = r?.skipped ?? [];
+        const inUse = skips.filter((x) => x.reason?.startsWith('agent ')).length;
+        const other = skips.filter((x) => !x.reason?.startsWith('agent '));
+        toast(`${removed.size ? `Pruned ${plural(removed.size, 'worktree')}` : 'Nothing pruned'}${kept ? ` · kept ${kept} unmerged ${kept === 1 ? 'branch' : 'branches'}` : ''}${inUse ? ` · skipped ${inUse} in use` : ''}${other.length ? ` · skipped ${other.length}: ${other[0].reason}` : ''}`);
+      }), 'Prune');
   }
 
   async function startRemoval() {
@@ -156,6 +204,22 @@
   }
 </script>
 
+{#snippet wrow(w)}
+  <tr>
+    <td class="mono">{w.branch ?? '—'}</td>
+    <td class="mono">{short(w.path)}</td>
+    <td>{verdict(w)}{unmerged(w) ? ' · unmerged work' : ''}{w.in_use_by?.length ? ` · used by ${w.in_use_by.join(', ')}` : w.row?.agent_id ? ` · ${w.row.agent_id}` : ''}{lockText(w)}</td>
+    <td>
+      <span class="head-acts">
+        {#if !gone(w)}
+          <button type="button" class="icon-btn" aria-label="Diff" use:tooltip={'Diff'} onclick={() => openDiff(p.id, w.path, w.branch)}>±</button>
+        {/if}
+        <button type="button" class="icon-btn danger" aria-label="Remove worktree…" disabled={!!busy || !!w.in_use_by?.length} use:tooltip={w.in_use_by?.length ? `used by ${w.in_use_by.join(', ')}: archive or kill it first` : 'Remove worktree…'} onclick={() => removeWorktree(w)}>{'\u{F01B4}'}</button>
+      </span>
+    </td>
+  </tr>
+{/snippet}
+
 <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <div class="proj" tabindex="0" data-pane-focus onkeydown={onKey} role="region" aria-label="Project {p?.name ?? ''}">
   {#if !p}
@@ -200,35 +264,30 @@
     </section>
 
     <section class="card">
-      <div class="ch"><b>Worktrees</b><span class="muted">sibling folder {p.name}.worktrees · unmerged work is never deleted without confirmation</span></div>
+      <div class="ch">
+        <b>Worktrees</b><span class="muted">sibling folder {p.name}.worktrees · unmerged work is never deleted without confirmation</span><span class="grow"></span>
+        {#if prunable.length}
+          <button type="button" class="btn" disabled={!!busy} onclick={pruneGone}>Prune {prunable.length} gone…</button>
+        {/if}
+      </div>
       <table>
         <thead><tr><th>Branch</th><th>Folder</th><th>State</th><th></th></tr></thead>
         <tbody>
           {#each managed as w (w.path)}
-            <tr>
-              <td class="mono">{w.branch ?? '—'}</td>
-              <td class="mono">{short(w.path)}</td>
-              <td>{verdict(w)}{unmerged(w) ? ' · unmerged work' : ''}{w.in_use_by?.length ? ` · used by ${w.in_use_by.join(', ')}` : w.row?.agent_id ? ` · ${w.row.agent_id}` : ''}{w.locked ? ' · locked' : ''}</td>
-              <td>
-                <span class="head-acts">
-                  <button type="button" class="icon-btn" aria-label="Diff" use:tooltip={'Diff'} onclick={() => openDiff(p.id, w.path, w.branch)}>±</button>
-                  <button type="button" class="icon-btn danger" aria-label="Remove worktree…" disabled={!!busy || !!w.in_use_by?.length} use:tooltip={w.in_use_by?.length ? `used by ${w.in_use_by.join(', ')}: archive or kill it first` : 'Remove worktree…'} onclick={() => removeWorktree(w)}>{'\u{F01B4}'}</button>
-                </span>
-              </td>
-            </tr>
+            {@render wrow(w)}
           {:else}
             <tr><td colspan="4" class="muted">{d ? 'No worktree of the app.' : 'Loading…'}</td></tr>
           {/each}
+          {#if outside.length}
+            <tr><th colspan="4" class="sub">Not created by the app</th></tr>
+            {#each outside as w (w.path)}
+              {@render wrow(w)}
+            {/each}
+          {/if}
         </tbody>
       </table>
       {#if orchBranches.length}
         <p class="muted">orch/ branches: {orchBranches.map((b) => `${b.name}${b.merged ? ' (merged)' : b.ahead_of_base ? ` (+${b.ahead_of_base})` : ''}`).join(' · ')}</p>
-      {/if}
-      {#if external.length}
-        <details>
-          <summary class="muted">{external.length} other worktree{external.length > 1 ? 's' : ''} outside the sibling folder (yours, not managed by the app)</summary>
-          {#each external as w (w.path)}<p class="mono muted">{w.branch ?? '—'} · {short(w.path)}</p>{/each}
-        </details>
       {/if}
     </section>
 
@@ -345,6 +404,9 @@
     display: flex;
     gap: var(--space-md);
     flex-wrap: wrap;
+  }
+  .sub {
+    padding-top: var(--space-sm);
   }
   .warn {
     color: var(--color-status-queued);
