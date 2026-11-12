@@ -555,8 +555,10 @@ pub fn linear(gql: &dyn Graphql, backoff: &Backoff, now: u64, q: &LinearQuery) -
     let mut after = Value::Null;
     let mut partial = false;
     for page in 0..MAX_PAGES {
-        let d = backoff.call(now, || gql.call(LINEAR_QUERY, &json!({"filter": filter, "after": after})))?;
-        nodes.extend(d["issues"]["nodes"].as_array().cloned().unwrap_or_default());
+        let mut d = backoff.call(now, || gql.call(LINEAR_QUERY, &json!({"filter": filter, "after": after})))?;
+        if let Value::Array(a) = d["issues"]["nodes"].take() {
+            nodes.extend(a);
+        }
         match next_cursor(&d["issues"]["pageInfo"]) {
             Some(c) => after = json!(c),
             None => break,

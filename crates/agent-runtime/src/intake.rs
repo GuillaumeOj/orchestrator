@@ -606,7 +606,8 @@ impl Runtime {
                 "url": source_url(&source, repo.as_deref(), status.url.as_deref()),
                 "count": shown,
                 "more": ready.len().saturating_sub(shown) + status.more,
-                "partial": status.partial,
+                // An error answers nothing: the last refresh's bound is not shown with it.
+                "partial": status.partial && status.error.is_none(),
                 "hidden": hidden.len(),
             }));
         }
