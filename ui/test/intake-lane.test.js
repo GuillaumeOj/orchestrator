@@ -29,6 +29,7 @@ const { lanes, readyLane, stops } = await import('../src/lib/mission.js');
 const { intakeUi } = await import('../src/lib/intake.svelte.js');
 const readyOf = (...a) => lanes(...a).lanes.find((l) => l.id === 'ready');
 const { default: MissionPane } = await import('../src/panes/MissionPane.svelte');
+const { default: ReadyLine } = await import('../src/components/mission/ReadyLine.svelte');
 const { default: Dialogs } = await import('../src/components/Dialogs.svelte');
 const { applyNow } = await import('../src/lib/now.svelte.js');
 const { missionData, missionNow } = await import('./mission-fixture.js');
@@ -360,6 +361,23 @@ describe('the lane model (lib/mission.js readyLane, F9)', () => {
     );
     expect(first.header).toBe('Ready to start');
     expect(first.rows.map((r) => r.line)).toEqual(['looking']);
+  });
+
+  it('reads "+ n+ more" / "+ more" when the refresh stopped at the read bound (`partial`)', () => {
+    const lineText = (o) => {
+      const row = readyOf({ intake: intake([], [source('shop-api', o)]) }, null, NOW, { projects }).rows.find(
+        (r) => r.line === 'more',
+      );
+      if (!row) return null;
+      const { container: c } = render(ReadyLine, { line: row, now: NOW });
+      const t = text(c.querySelector('.ln span'));
+      cleanup();
+      return t;
+    };
+    expect(lineText({ more: 12 })).toBe('+ 12 more in acme/shop · label ready');
+    expect(lineText({ more: 1990, partial: true })).toBe('+ 1990+ more in acme/shop · label ready');
+    expect(lineText({ more: 0, partial: true })).toBe('+ more in acme/shop · label ready');
+    expect(lineText({ more: 0 })).toBeNull();
   });
 
   it('says every item is hidden instead of "Nothing ready"', () => {
