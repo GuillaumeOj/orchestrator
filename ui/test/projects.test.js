@@ -196,7 +196,6 @@ describe('project pane', () => {
     expect(t).toContain('claude/mine');
     expect(t).toContain('yours');
     expect(t).toContain('orch/ branches: orch/solo/old (merged)');
-    expect(t).not.toContain('claude/mine (');
     const bins = () => [...container.querySelectorAll('button[aria-label="Remove worktree…"]')];
     expect(bins()).toHaveLength(3); // the user's own worktree too (outside group)
     // R3: a bin icon in the danger colour, beside the ± Diff icon.

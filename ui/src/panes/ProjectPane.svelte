@@ -105,7 +105,7 @@
   /** What an outside worktree loses on discard (the branch is kept when unmerged). */
   function losses(w) {
     const out = [];
-    if (w.dirty > 0) out.push(`${plural(w.dirty, 'uncommitted file')}`);
+    if (w.dirty > 0) out.push(plural(w.dirty, 'uncommitted file'));
     if (w.in_progress?.length) out.push(`an operation in progress (${w.in_progress.join(', ')})`);
     if (w.locked) out.push(w.lock_reason ? `a lock (${w.lock_reason}), another tool may be using it` : 'a lock, another tool may be using it');
     if (!w.branch && w.unmerged_commits > 0) out.push(`${plural(w.unmerged_commits, 'commit')} on a detached HEAD`);
@@ -121,14 +121,21 @@
       if (d) d = { ...d, worktrees: d.worktrees.filter((x) => x.path !== w.path) };
       toast(`Removed ${short(w.path)}${r?.kept_branch ? ` · kept branch ${r.kept_branch} (unmerged)` : ''}`);
     });
-    const title = `Remove worktree ${w.branch ?? ''}?`;
+    const where = short(w.path);
+    const base = p.default_branch;
+    let title = `Remove worktree ${w.branch ?? ''}?`;
+    let body;
     if (out) {
-      if (!risky) return confirm(title, `${short(w.path)}. Its branch is deleted if merged into ${p.default_branch}, kept otherwise.`, () => run(false), 'Remove');
-      const what = losses(w);
-      return confirm(title, `${short(w.path)} has ${what.length ? what.join(', ') : 'work that is not saved'}, which are lost for good. Its branch is kept if unmerged.`, () => run(true), 'Discard and remove');
+      body = risky
+        ? `${where}: ${losses(w).join('; ') || 'work that is not saved'}. Removing it discards all of this for good. Its branch is kept if unmerged.`
+        : `${where}. Its branch is deleted if merged into ${base}, kept otherwise.`;
+    } else if (risky) {
+      title = `Discard unmerged work in ${w.branch ?? where}?`;
+      body = `This worktree has work ${base} does not have (commits, uncommitted or untracked files). It is deleted for good.`;
+    } else {
+      body = `${where} and its branch. Its work is merged into ${base}.`;
     }
-    if (!risky) return confirm(title, `${short(w.path)} and its branch. Its work is merged into ${p.default_branch}.`, () => run(false), 'Remove');
-    confirm(`Discard unmerged work in ${w.branch ?? short(w.path)}?`, `This worktree has work ${p.default_branch} does not have (commits, uncommitted or untracked files). It is deleted for good.`, () => run(true), 'Discard and remove');
+    confirm(title, body, () => run(risky), risky ? 'Discard and remove' : 'Remove');
   }
 
   function pruneGone() {
@@ -141,7 +148,7 @@
         if (d) d = { ...d, worktrees: d.worktrees.filter((x) => !removed.has(x.path)) };
         const kept = r?.kept_branches?.length ?? 0;
         const skipped = r?.skipped?.length ?? 0;
-        toast(`Pruned ${plural(removed.size, 'worktree')}${kept ? ` · kept ${plural(kept, 'unmerged branch', 'unmerged branches')}` : ''}${skipped ? ` · skipped ${skipped} in use` : ''}`);
+        toast(`${removed.size ? `Pruned ${plural(removed.size, 'worktree')}` : 'Nothing pruned'}${kept ? ` · kept ${plural(kept, 'unmerged branch', 'unmerged branches')}` : ''}${skipped ? ` · skipped ${skipped} in use` : ''}`);
       }), 'Prune');
   }
 
