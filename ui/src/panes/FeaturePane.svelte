@@ -58,16 +58,17 @@
   const rr = $derived(run ? runAttention(run.id) : null);
   const phase = $derived(runPhase(run));
   /** Row 2 of the header: the pieces present, joined by ` · ` (the branch piece is always there). */
-  const metaParts = $derived(
+  const metaText = $derived(
     v
       ? [
           v.team ? `${v.team.name} v${v.team.version}` : null,
           `\u{E725} ${v.feature.integration_worktree ? `orch/${v.feature.slug}/integration` : '—'}`,
           run ? `started ${ago(run.started_at_ms)}` : null,
-        ].filter(Boolean)
-      : [],
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : '',
   );
-  const metaText = $derived(metaParts.join(' · '));
   /** A tooltip param read when the tooltip shows: the full text, only when the element is cut (ellipsis). */
   const ifCut = (text) => (node) => (node.scrollWidth > node.clientWidth ? text : null);
 
