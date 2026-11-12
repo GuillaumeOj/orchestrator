@@ -29,9 +29,9 @@ The header becomes **two rows**:
 **Row 2 — meta**
 - The other information, in today's order and wording: `<team> v<version>` · `<branch icon> orch/<slug>/integration` (or `—`) · `started <ago>`.
 - Same separators (` · `), muted, caption-sized text; aligned with the slug's left edge.
-- Pieces that are absent today stay absent (no team → no team part; no run → no `started`). If nothing is left, row 2 is not rendered (no empty gap).
+- Pieces that are absent today stay absent (no team → no team part; no run → no `started`); only the pieces present are joined by ` · ` (no leading separator). The branch piece (or `—`) is always there, so row 2 is always rendered.
 
-Width pressure: row 1's slug ellipsizes before the pill and actions move or wrap; the actions never wrap. Row 2 stays on one line and ellipsizes at its end. Details in the UX brief.
+Width pressure: on row 1 the slug ellipsizes, then the Publishing text (its `◷` stays); the pill and the actions never shrink or wrap. Row 2 stays on one line and ellipsizes at its end. Details in the UX brief.
 
 Out of scope: other pane headers (Project, Agent…), the Notion lines below the header, the menu content, the data shown.
 

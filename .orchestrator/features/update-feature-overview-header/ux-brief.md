@@ -13,12 +13,14 @@ Companion of [spec.md](spec.md). The user's brief fixes what goes on each row; t
 
 - `<header class="fh">` becomes a column of two rows, row gap `--space-xxs` (tight: row 2 belongs to the title).
 - **Row 1**: flex row, `align-items: center`, `gap: --space-sm`. Slug (`--text-heading`, primary) · phase pill · spacer · optional Publishing indicator · `.head-acts`.
-- **Row 2**: single line, `--text-caption`, `--color-text-secondary`/muted as today, left edge aligned with the slug. Content and separators unchanged: `<team> v<n> · <branch icon> <branch> · started <ago>`.
+- **Row 2**: single line, `--text-caption`, `--color-text-muted` (`.muted`, as today), left edge aligned with the slug. Content and separators unchanged: `<team> v<n> · <branch icon> <branch> · started <ago>`; only the pieces present are joined (no leading ` · ` without a team).
 
 ## Width pressure
 
 1. Row 2 ellipsizes at its end first (one line, never wraps).
-2. Row 1: the slug ellipsizes (`min-width: 0`, full slug in a tooltip); the pill, the Publishing indicator and the actions never shrink or wrap.
+2. Row 1: the slug ellipsizes first (`min-width: 0`, full slug in a tooltip).
+3. While publishing on a narrow pane, the `Publishing N docs…` text also shrinks with an ellipsis (`min-width: 0`), down to the `◷` glyph alone (full text in a tooltip). The slug keeps a small minimum (about 8 characters) so it never disappears entirely.
+4. The pill and the actions never shrink or wrap; nothing overflows the pane.
 
 ## States
 
