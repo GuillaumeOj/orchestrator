@@ -498,7 +498,8 @@
   .pub {
     display: flex;
     gap: var(--space-xs);
-    min-width: 0;
+    /* Always room for the ◷ glyph; only the text after it ellipsizes. */
+    min-width: 1.5em;
     flex: 0 1 auto;
   }
   .glyph {
