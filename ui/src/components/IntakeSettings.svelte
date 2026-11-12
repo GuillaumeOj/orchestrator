@@ -529,7 +529,7 @@
               <ul>
                 {#each (preview.items ?? []).slice(0, 5) as it (it.id ?? it.ref)}<li><span class="mono muted">{it.ref}</span> {it.title}</li>{/each}
               </ul>
-              {#if preview.more > 0}<p class="muted">+ {preview.more} more</p>{/if}
+              {#if preview.more > 0 || preview.partial}<p class="muted">+ {preview.more > 0 ? `${preview.more}${preview.partial ? '+' : ''} ` : ''}more</p>{/if}
             {/if}
             {#if stale}<p class="muted">Changed since this preview</p>{/if}
           </div>
