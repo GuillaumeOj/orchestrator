@@ -266,6 +266,13 @@ impl Store {
             tx.execute("DELETE FROM transcript_files WHERE project_id=?1", [&id])?;
             tx.execute("DELETE FROM terminals WHERE project_id=?1", [&id])?;
             tx.execute("DELETE FROM work_nodes WHERE project_id=?1", [&id])?;
+            tx.execute("DELETE FROM work_history WHERE project_id=?1", [&id])?;
+            // The viewer and the fetched-children markers of its tree (`work.viewer:<id>`, `work.children:<id>:<node>`).
+            let children = format!("work.children:{id}:");
+            tx.execute(
+                "DELETE FROM kv WHERE key=?1 OR substr(key, 1, length(?2))=?2",
+                params![format!("work.viewer:{id}"), children],
+            )?;
             tx.execute("DELETE FROM kv WHERE key=?1", [crate::intake::status_key(&id)])?;
             Store::delete_project_teams(tx, &id)?;
             tx.execute("DELETE FROM projects WHERE id=?1", [&id])?;

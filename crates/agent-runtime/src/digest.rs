@@ -52,6 +52,8 @@ pub struct Names {
     pub projects: BTreeMap<String, String>,
     /// task id → (handle, title)
     pub tasks: BTreeMap<u64, (String, String)>,
+    /// project id → tracker kind (`local` | `github` | `linear`)
+    pub trackers: BTreeMap<String, String>,
 }
 
 /// "orch/checkout/back-1" → "back-1".
@@ -93,6 +95,9 @@ pub fn outcome(ev: &Event, run: Option<&str>, names: &Names, seen_up_to: u64, tz
             let id = d.get("task").and_then(Value::as_u64)?;
             let (handle, title) = names.tasks.get(&id).cloned().unwrap_or_else(|| (format!("T-{id}"), String::new()));
             extra.insert("task".into(), json!(id));
+            // The run owning the task opens the feature on it, the tracker says where it lives (F24).
+            extra.insert("run".into(), json!(run));
+            extra.insert("tracker".into(), json!(project.as_ref().and_then(|p| names.trackers.get(p)).cloned()));
             let text = if title.is_empty() { format!("{handle} done") } else { format!("{handle} done · {title}") };
             ("task_done", text)
         }
@@ -157,6 +162,9 @@ pub fn outcome(ev: &Event, run: Option<&str>, names: &Names, seen_up_to: u64, tz
             let remote = s("remote");
             extra.insert("task".into(), d.get("task").cloned().unwrap_or(Value::Null));
             extra.insert("remote".into(), json!(remote));
+            // The run that owns the task and the tracker: the outcome opens the feature on it (F24).
+            extra.insert("run".into(), d.get("run").cloned().unwrap_or(Value::Null));
+            extra.insert("tracker".into(), d.get("tracker").cloned().unwrap_or(Value::Null));
             ("sync_conflict", format!("{} changed here and in {remote}: kept {remote}'s", s("handle")))
         }
         _ => return None,
@@ -265,6 +273,11 @@ impl Runtime {
                 && let Ok(Some(t)) = self.db.task(id)
             {
                 n.tasks.insert(id, (t.handle(), t.title));
+            }
+        }
+        for p in n.runs.values().map(|(_, p)| p.clone()).collect::<std::collections::BTreeSet<_>>() {
+            if let Ok(t) = self.db.tracker(&p) {
+                n.trackers.insert(p, t.tracker.kind().to_string());
             }
         }
         n.projects = self.store.read(|s| {
@@ -393,5 +406,27 @@ mod tests {
         let (start, date) = today(1_793_242_800_000, &tz);
         assert_eq!(date, "2026-10-28");
         assert_eq!(start, 1_793_163_600_000);
+    }
+
+    #[test]
+    fn task_and_conflict_outcomes_name_their_run_and_tracker() {
+        let (mut n, tz) = (names(), TimeZone::UTC);
+        n.trackers.insert("shop".into(), "github".into());
+        let done = outcome(&ev(3, "task.done", None, json!({"task": 4})), Some("run-1"), &n, 0, &tz).unwrap();
+        assert_eq!((done.extra["run"].as_str(), done.extra["tracker"].as_str()), (Some("run-1"), Some("github")));
+        let c = outcome(
+            &ev(
+                11,
+                "task.sync_conflict",
+                None,
+                json!({"task": 9, "handle": "#9", "remote": "GitHub", "project": "shop", "run": "run-1", "tracker": "github"}),
+            ),
+            None,
+            &n,
+            0,
+            &tz,
+        )
+        .unwrap();
+        assert_eq!((c.extra["run"].as_str(), c.extra["tracker"].as_str()), (Some("run-1"), Some("github")));
     }
 }

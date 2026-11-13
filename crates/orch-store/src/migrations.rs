@@ -669,6 +669,22 @@ DELETE FROM tasks WHERE backend IN ('github','linear') AND external_id IS NOT NU
   AND team_run_id IS NULL AND feature_id IS NULL AND node IS NULL
   AND (remote_updated_at IS NULL OR remote_updated_at NOT LIKE 'pending:%');
 "#,
+    // 20 (implement-improve-intake B3): what happened to a tracker item in the
+    // app, for the details panel ("In Orchestrator", F6): started, spec
+    // approved, PR opened, merged, returned… (`what`), newest last.
+    r#"
+CREATE TABLE work_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    at_ms INTEGER NOT NULL,
+    what TEXT NOT NULL,
+    feature TEXT,
+    program TEXT,
+    detail TEXT
+);
+CREATE INDEX work_history_node ON work_history(project_id, node_id, at_ms);
+"#,
 ];
 
 pub(crate) fn migrate(c: &mut Connection) -> Result<()> {

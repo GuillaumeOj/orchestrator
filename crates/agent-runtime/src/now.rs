@@ -584,6 +584,14 @@ impl Runtime {
             if let Some(v) = origin_of(o.run.as_deref(), o.agent.as_deref()) {
                 o.extra.insert("origin".into(), v);
             }
+            let source = o
+                .run
+                .as_deref()
+                .and_then(|r| origins.src_runs.get(r))
+                .or_else(|| o.agent.as_deref().and_then(|a| origins.src_agents.get(a)));
+            if let Some(v) = source {
+                o.extra.insert("source".into(), v.clone());
+            }
         }
         // New outcomes are batched events for the Overwatch (not the day's
         // backlog read at start or at midnight).
@@ -617,11 +625,24 @@ impl Runtime {
             },
             now,
         );
+        // A `T-n` wait names the tracker of its project (F24).
+        let mut trackers: BTreeMap<String, String> = BTreeMap::new();
+        for a in world.agents.values_mut() {
+            let (Some(w), Some(p)) = (a.waiting_on.as_mut(), a.project.as_ref()) else { continue };
+            if w.kind == attention::WaitKind::Task {
+                let k = trackers.entry(p.clone()).or_insert_with(|| {
+                    self.db.tracker(p).map(|t| t.tracker.kind().to_string()).unwrap_or_else(|_| "local".into())
+                });
+                w.tracker = Some(k.clone());
+            }
+        }
         for a in world.agents.values_mut().filter(|a| a.run.is_none()) {
             a.origin = origin_of(None, Some(&a.agent));
+            a.source = origins.src_agents.get(&a.agent).cloned();
         }
         for r in world.runs.values_mut() {
             r.origin = origin_of(Some(&r.run), None);
+            r.source = origins.src_runs.get(&r.run).cloned();
         }
         let state = &mut *st;
         remember_since(&mut world, &mut state.firsts, now);
