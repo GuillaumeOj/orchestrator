@@ -24,6 +24,13 @@ pub struct ProjectSettingsForm {
     pub migrate: Option<String>,
 }
 
+/// D8: what a change of Linear team or project does to the project's tasks.
+struct BackendMove {
+    relink: bool,
+    push: Vec<orch_store::Task>,
+    detach: Vec<orch_store::Task>,
+}
+
 /// Every feature with its latest run, for the sidebar (Projects → Features
 /// → agents), the palette and ⌘P. A deleted (archived) feature is listed,
 /// flagged `archived`, while one of its agents is not deleted: its team is
@@ -312,16 +319,18 @@ impl Core {
     /// without it nothing is saved and the answer is `{confirm: {kind:
     /// "linear_migrate", open, done}}`. `push_open` gives the open tasks to
     /// Linear (created at the sync that follows); `leave` keeps every task
-    /// local and unsynced. Done tasks are never pushed.
-    pub fn project_settings_set(&self, project_id: &str, f: ProjectSettingsForm) -> Result<Value> {
-        let rt = self.runtime()?;
-        let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
-        let mut raw = f.settings;
-        raw.remove("external_files");
-        let mut general: ProjectSettings = serde_json::from_value(Value::Object(raw))?;
-        let old = p.backend();
+    /// local and unsynced. Done tasks are never pushed. `Err(confirm)` here
+    /// is that answer.
+    fn plan_backend_move(
+        &self,
+        rt: &agent_runtime::runtime::Runtime,
+        project_id: &str,
+        old: &TaskBackendConfig,
+        new: &TaskBackendConfig,
+        migrate: Option<&str>,
+    ) -> Result<std::result::Result<BackendMove, Value>> {
         // A change to Linear, or to another Linear team or project (D8).
-        let to_linear = match (&old, &f.backend) {
+        let to_linear = match (old, new) {
             (
                 TaskBackendConfig::Linear { team: a, project: pa, .. },
                 TaskBackendConfig::Linear { team: b, project: pb, .. },
@@ -329,48 +338,46 @@ impl Core {
             (_, TaskBackendConfig::Linear { .. }) => true,
             _ => false,
         };
-        let relink = to_linear && old.kind() == "linear";
-        let mut push = vec![];
-        let mut detach = vec![];
+        let mut mv = BackendMove { relink: to_linear && old.kind() == "linear", push: vec![], detach: vec![] };
         if to_linear {
             let tasks = rt.db.tasks(Some(project_id), None, None)?;
             let (open, done): (Vec<_>, Vec<_>) =
                 tasks.into_iter().partition(|t| t.status != orch_team::TaskStatus::Done);
             if !open.is_empty() || !done.is_empty() {
-                match f.migrate.as_deref() {
+                match migrate {
                     None => {
-                        return Ok(
-                            json!({"confirm": {"kind": "linear_migrate", "open": open.len(), "done": done.len()}}),
-                        );
+                        return Ok(Err(json!({"kind": "linear_migrate", "open": open.len(), "done": done.len()})));
                     }
                     Some("push_open") => {
-                        push = open;
-                        detach = done;
+                        mv.push = open;
+                        mv.detach = done;
                     }
-                    Some("leave") => detach = open.into_iter().chain(done).collect(),
+                    Some("leave") => mv.detach = open.into_iter().chain(done).collect(),
                     Some(other) => bail!("migrate {other:?}: use push_open or leave"),
                 }
             }
         }
-        let (backend, track) = (f.backend, f.track_orchestrator_dir);
-        rt.db.update_project_settings(project_id, move |e| {
-            // FR-112: the stored list stays as the transaction read it.
-            general.external_files = std::mem::take(&mut e.settings.external_files);
-            e.settings = general;
-            (e.backend, e.track_orchestrator_dir) = (backend, track);
-            Ok(())
-        })?;
+        Ok(Ok(mv))
+    }
+
+    /// What D8 does once the new backend is stored.
+    fn finish_backend_move(
+        &self,
+        rt: &agent_runtime::runtime::Runtime,
+        project_id: &str,
+        mv: BackendMove,
+    ) -> Result<()> {
         // From one Linear team or project to another: the old issues are not
         // the new team's, so the tasks not pushed stay local (never written
         // to the old issues again).
-        if relink {
-            for mut t in detach.into_iter().filter(|t| t.backend == "linear") {
+        if mv.relink {
+            for mut t in mv.detach.into_iter().filter(|t| t.backend == "linear") {
                 t.backend = "local".into();
                 rt.db.upsert_task(&t)?;
             }
         }
-        if !push.is_empty() {
-            for mut t in push {
+        if !mv.push.is_empty() {
+            for mut t in mv.push {
                 (t.backend, t.external_id, t.remote_updated_at) = ("linear".into(), None, None);
                 rt.db.upsert_task(&t)?;
             }
@@ -382,7 +389,45 @@ impl Core {
                 }
             }
         }
+        Ok(())
+    }
+
+    pub fn project_settings_set(&self, project_id: &str, f: ProjectSettingsForm) -> Result<Value> {
+        let rt = self.runtime()?;
+        let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
+        let mut raw = f.settings;
+        raw.remove("external_files");
+        let mut general: ProjectSettings = serde_json::from_value(Value::Object(raw))?;
+        let mv = match self.plan_backend_move(rt, project_id, &p.backend(), &f.backend, f.migrate.as_deref())? {
+            Ok(mv) => mv,
+            Err(confirm) => return Ok(json!({"confirm": confirm})),
+        };
+        let (backend, track) = (f.backend, f.track_orchestrator_dir);
+        rt.db.update_project_settings(project_id, move |e| {
+            // FR-112: the stored list stays as the transaction read it.
+            general.external_files = std::mem::take(&mut e.settings.external_files);
+            e.settings = general;
+            (e.backend, e.track_orchestrator_dir) = (backend, track);
+            Ok(())
+        })?;
+        self.finish_backend_move(rt, project_id, mv)?;
         self.project_settings(project_id)
+    }
+
+    /// `tracker_settings_set`: the tracker form's save. The D8 flow of a
+    /// switch to Linear is the project settings': `migrate` answers its
+    /// `{confirm}`.
+    pub fn tracker_settings_set(&self, project_id: &str, settings: &Value, migrate: Option<&str>) -> Result<Value> {
+        let rt = self.runtime()?;
+        let p = rt.db.project(project_id)?.ok_or_else(|| anyhow!("no project {project_id}"))?;
+        let s = agent_runtime::intake::tracker::parse_settings(settings)?;
+        let mv = match self.plan_backend_move(rt, project_id, &p.backend(), &s.task_backend(), migrate)? {
+            Ok(mv) => mv,
+            Err(confirm) => return Ok(json!({"confirm": confirm})),
+        };
+        let out = rt.tracker_commit(project_id, &s)?;
+        self.finish_backend_move(rt, project_id, mv)?;
+        Ok(out)
     }
 
     pub fn linear_teams(&self) -> Result<Value> {
