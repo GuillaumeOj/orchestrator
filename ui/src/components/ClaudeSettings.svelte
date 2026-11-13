@@ -2,12 +2,13 @@
   // Settings › Claude Code (add-update-claude-code ux-brief §2.1): the installed version, the
   // update block, compatibility and the account. Everything is derived from `setup.claude`.
   // Keys: u update / retry, r check now, ⏎ the block's default button, esc back to the sections.
-  import { app, claudeAct, toast } from '../lib/app.svelte.js';
+  import { app, claudeAct, copyText, toast } from '../lib/app.svelte.js';
   import { account, compat, hint, installedHeader, keysOf, updateBlock } from '../lib/claude.js';
   import { shortPath } from '../lib/format.js';
   import { keyIgnored } from '../lib/keyboard.js';
   import { tooltip } from '../lib/tooltip.js';
   import ClaudeUpdateBlock from './ClaudeUpdateBlock.svelte';
+  import CodeText from './CodeText.svelte';
 
   const c = $derived(app.data?.setup?.claude ?? null);
   const home = $derived(app.data?.core?.user_home ?? '');
@@ -58,8 +59,17 @@
     <h3>Compatibility</h3>
     <div class="kv"><span class="muted">Supported</span><span>{cp.supported}</span></div>
     {#each cp.notes as n (n.text)}
-      <div class="kv"><span></span><span class={n.tone}><span aria-hidden="true">{n.tone === 'red' ? '●' : '▲'}</span> {n.text}</span></div>
+      <div class="kv"><span></span><span class={n.tone}><span aria-hidden="true">{n.tone === 'red' ? '●' : '▲'}</span> <CodeText text={n.text} /></span></div>
     {/each}
+    {#if cp.verify}
+      <div class="kv">
+        <span class="muted">To verify</span>
+        <div>
+          <button class="verify" data-verify use:tooltip={'Copy'} onclick={() => copyText(cp.verify.command, 'the command')}>{cp.verify.command} <span aria-hidden="true">{'\u{F018F}'}</span></button>
+          <p class="muted vline">{cp.verify.line} <span class="mono">{cp.verify.doc}</span></p>
+        </div>
+      </div>
+    {/if}
   {/if}
   {#if acct}
     <h3>Account</h3>
@@ -137,6 +147,19 @@
     grid-template-columns: 7em 1fr;
     gap: var(--space-md);
     padding: 0 var(--space-md);
+  }
+  .verify {
+    font-family: var(--font-family-mono);
+    padding: 0 var(--space-sm);
+    border: var(--border-width-default) solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
+    background: none;
+    color: inherit;
+    cursor: copy;
+  }
+  .vline {
+    margin-top: var(--space-xs);
+    font: var(--text-caption);
   }
   .amber {
     color: var(--color-pacing-amber);
