@@ -2,12 +2,13 @@
   // Inspector · run (notes §5.2, Penpot P4.2 Inspector): feature and project,
   // the stepper with its phase and since, the blocker, members with their
   // status and short wait, the tasks, the PR, when it started.
-  import { features, now30, openBoard, openFeature, openUrl, select } from '../../lib/app.svelte.js';
+  import { boardNotice, features, now30, openFeature, openUrl, select } from '../../lib/app.svelte.js';
   import { clock, waited } from '../../lib/format.js';
-  import { originLine } from '../../lib/intake.js';
+  import { originLine, originOf } from '../../lib/intake.js';
   import { phaseFull, phaseName, prText, shortWait, tasksDetail } from '../../lib/mission.js';
   import { attention, runAttention } from '../../lib/now.svelte.js';
   import { STATUS } from '../../lib/status.js';
+  import { openWork } from '../../lib/work.js';
   import AgentChip from '../AgentChip.svelte';
 
   import OriginChip from '../mission/OriginChip.svelte';
@@ -19,14 +20,15 @@
   const now = $derived(Math.max(now30(), Date.now()));
   const f = $derived(features().find((x) => x.run?.id === id) ?? null);
   const b = $derived(r?.blocker);
+  const origin = $derived(originOf(r));
 </script>
 
 {#if r}
   <div class="title"><span style:color="var(--color-phase-executing)" aria-hidden="true">{'\u{F0D3D}'}</span> <b>{r.feature}</b> <span class="muted">{r.project}</span></div>
-  {#if r.origin}
+  {#if origin}
     <section>
       <h4>Started from</h4>
-      <div>{originLine(r.origin)} <OriginChip origin={r.origin} project={r.project} label="Open ↗" /></div>
+      <div>{originLine(origin)} <OriginChip {origin} project={r.project} label="Open ↗" /></div>
     </section>
   {/if}
   <section>
@@ -70,7 +72,8 @@
   {/if}
   <div class="acts">
     {#if f}<button class="btn" onclick={() => openFeature(f.id)}>Open feature</button>{/if}
-    <button class="btn ghost" onclick={() => openBoard(r.project)}>Open board</button>
+    {#if f}<button class="btn ghost" onclick={() => (boardNotice(), openFeature(f.id, null, null, null, { tasks: true }))}>Show tasks</button>{/if}
+    {#if f?.run?.source}<button class="btn ghost" onclick={() => openWork({ projects: [r.project], reveal: f.run.source.node })}>Show in Work</button>{/if}
 
   </div>
 {:else}

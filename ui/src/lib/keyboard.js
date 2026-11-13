@@ -36,6 +36,7 @@ export const LEADER = {
   p: 'agent.pause',
   o: 'mission',
   g: 'planner',
+  b: 'work.browser',
 };
 
 /** ⌘-chords the system menu handles (Edit menu): left alone. */

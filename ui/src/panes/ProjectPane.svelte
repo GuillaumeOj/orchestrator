@@ -13,6 +13,8 @@
   import { keyIgnored } from '../lib/keyboard.js';
   import { onTopics, statusOf } from '../lib/now.svelte.js';
   import { tooltip } from '../lib/tooltip.js';
+  import { originRemote, repoOfRemote } from '../lib/tracker.js';
+  import { openWork } from '../lib/work.js';
 
   let { paneId } = $props();
   const spec = $derived(app.panes[paneId]);
@@ -22,6 +24,8 @@
   const short = (path) => shortPath(path, home);
 
   let d = $state(null);
+  // "Browse shop-api's work in acme/shop" (notes §1.2): the origin remote's repository, when known.
+  const trackerText = $derived(repoOfRemote(originRemote(p)?.url) ?? '');
   let err = $state(null);
   let prs = $state(null);
   let busy = $state(null);
@@ -231,6 +235,7 @@
       <span class="secondary mono">{short(p.path)}</span>
       <span class="grow"></span>
       <span class="head-acts">
+        <button type="button" class="btn" use:tooltip={`Browse ${p.name}'s work${trackerText ? ` in ${trackerText}` : ''}`} onclick={() => openWork({ projects: [p.id] })}>Work</button>
         <button type="button" class="icon-btn" aria-label="Project settings" use:tooltip={'Project settings'} onclick={() => openProjectSettings(p.id)}>{'\u{F0493}'}</button>
         <button type="button" class="icon-btn danger" aria-label="Remove project…" use:tooltip={{ label: 'Remove project…', key: 'x' }} onclick={startRemoval}>{'\u{F01B4}'}</button>
         <Menu items={menu} label="More actions" />

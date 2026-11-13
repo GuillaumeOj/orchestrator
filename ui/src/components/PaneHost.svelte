@@ -4,15 +4,16 @@
   // body switch by `spec.type` picks the pane.
   import { app, focusPane } from '../lib/app.svelte.js';
   import AgentPane from '../panes/AgentPane.svelte';
-  import BoardPane from '../panes/BoardPane.svelte';
   import DiffPane from '../panes/DiffPane.svelte';
   import FeaturePane from '../panes/FeaturePane.svelte';
   import MissionPane from '../panes/MissionPane.svelte';
+  import ProgramPane from '../panes/ProgramPane.svelte';
   import ProjectPane from '../panes/ProjectPane.svelte';
   import ReportPane from '../panes/ReportPane.svelte';
   import SetupPane from '../panes/SetupPane.svelte';
   import TeamCanvasPane from '../panes/TeamCanvasPane.svelte';
   import TermPaneView from '../panes/TermPaneView.svelte';
+  import WorkPane from '../panes/WorkPane.svelte';
 
   /** @type {{ paneId: string, id?: string, labelledby?: string }} */
   let { paneId, id, labelledby } = $props();
@@ -29,8 +30,9 @@
     {:else if spec.type === 'diff'}<DiffPane {paneId} />
     {:else if spec.type === 'canvas'}<TeamCanvasPane {paneId} />
     {:else if spec.type === 'feature'}<FeaturePane {paneId} />
-    {:else if spec.type === 'board'}<BoardPane {paneId} />
     {:else if spec.type === 'report'}<ReportPane {paneId} />
+    {:else if spec.type === 'work'}<WorkPane {paneId} />
+    {:else if spec.type === 'program'}<ProgramPane {paneId} />
     {:else if spec.type === 'setup'}<SetupPane />{/if}
   </div>
 {/if}

@@ -4,6 +4,7 @@
   // since, then Run now / Start now with its cost in the binding window (or
   // Resume for a paused one) and Cancel. Everything from the record (D7).
   import { waited } from '../../lib/format.js';
+  import { originOf } from '../../lib/intake.js';
   import { runNowCost } from '../../lib/mission.js';
   import { tooltip } from '../../lib/tooltip.js';
   import AgentChip from '../AgentChip.svelte';
@@ -19,7 +20,7 @@
 
 <div class="l1">
   <span class="who"><AgentChip id={rec.agent} compact /> <b>{rec.agent}</b> <span class="muted">· {run ? `${run.project} › ${run.feature}` : (rec.project ?? '')}</span></span>
-  {#if rec.origin ?? run?.origin}<OriginChip origin={rec.origin ?? run?.origin} project={run?.project ?? rec.project} />{/if}
+  {#if originOf(rec) ?? originOf(run)}<OriginChip origin={originOf(rec) ?? originOf(run)} project={run?.project ?? rec.project} />{/if}
   <StatusBadge state={rec.status} />
   <span class="reason" title={rec.reason}>{rec.reason}</span>
   {#if tier}<span class="tier" title="Allocation tier: {tier}">{tier}</span>{/if}

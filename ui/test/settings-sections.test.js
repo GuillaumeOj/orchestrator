@@ -85,20 +85,19 @@ describe('Settings window: 9 sections', () => {
   });
 });
 
-describe('Project settings window: 7 sections', () => {
+describe('Project settings window: 6 sections', () => {
   it('the nav lists them, General first, with no Kbd', () => {
     expect(PSECTIONS.map((s) => s.label)).toEqual([
       'General',
       'Files',
-      'Task backend',
-      'Intake',
+      'Tracker',
       'Allocation',
       'Notion',
       'MCP overrides',
     ]);
-    app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'backend' };
+    app.window = { kind: 'project-settings', projectId: 'shop-api', section: 'tracker' };
     const { container } = render(ProjectSettingsWindow);
-    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(7);
+    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(6);
     expect(container.querySelector('[role="tablist"] .kbd')).toBeNull();
   });
 
@@ -113,10 +112,10 @@ describe('Project settings window: 7 sections', () => {
     expect(text(container)).not.toContain('Not designed yet');
   });
 
-  it('opens on Task backend by default (design-notes §3.1); a deep link wins', () => {
+  it('opens on Tracker by default (design-notes §3.1); a deep link wins', () => {
     openProjectSettings('shop-api');
     const { container } = render(ProjectSettingsWindow);
-    expect(text(container.querySelector('[role="tab"][aria-selected="true"]'))).toBe('Task backend');
+    expect(text(container.querySelector('[role="tab"][aria-selected="true"]'))).toBe('Tracker');
     app.window = null;
     openProjectSettings('shop-api', 'general');
     const r = render(ProjectSettingsWindow);

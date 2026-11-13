@@ -743,6 +743,10 @@ impl Core {
         if let Some(n) = item.strip_prefix("brief-") {
             return rt.brief_act(n.parse()?, action);
         }
+        // A program decision (B4): add · ignore · skip · keep · open.
+        if let Some(n) = item.strip_prefix("prog-") {
+            return rt.program_decision_act(n.parse()?, action);
+        }
         // A learned-rule proposal (FR-1308): Add rule · Not now · Edit rule.
         if let Some(n) = item.strip_prefix("rule-") {
             let n: u64 = n.parse()?;

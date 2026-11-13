@@ -99,9 +99,9 @@ describe('openers (design-notes §3.1)', () => {
     expect(app.window).toEqual({ kind: 'settings', section: 'integrations', server: 'github' });
   });
 
-  it('Project settings default to Task backend; one window for every project', () => {
+  it('Project settings default to Tracker; one window for every project', () => {
     openProjectSettings('shop-api');
-    expect(app.window.section).toBe('backend');
+    expect(app.window.section).toBe('tracker');
     openProjectSettings('blog', 'notion');
     expect(app.window).toMatchObject({ kind: 'project-settings', projectId: 'blog', section: 'notion' });
   });
@@ -306,10 +306,10 @@ describe('Discard-changes guard (design-notes §3.3)', () => {
   });
 
   it('switching section asks; a clean window never asks; a server change in place never asks', () => {
-    openProjectSettings('shop-api', 'backend');
+    openProjectSettings('shop-api', 'tracker');
     unguard = guardWindow(() => true);
     A.windowSection('notion');
-    expect(app.window.section).toBe('backend');
+    expect(app.window.section).toBe('tracker');
     app.overlay.onYes();
     expect(app.window.section).toBe('notion');
     app.overlay = null;

@@ -33,6 +33,8 @@ import {
   readyToast,
   updateActions,
 } from './update.js';
+import { openProgram, openProgramPlan, openWork, programTabTitle, togglePause } from './work.js';
+import { scopeTitle } from './workmodel.js';
 
 /** The dock's share of the work column when nothing is saved: agents need rows. */
 const DOCK_HEIGHT = 0.45;
@@ -43,7 +45,7 @@ const CHAT_NARROW = 340;
 /**
  * @typedef {{ rev: number, agents: Record<string, any>, runs: Record<string, any>,
  *   decisions: Record<string, any>, outcomes: any[], counts: { global: any, projects: any },
- *   chat?: { day: string | null, entries: Record<string, any> }, overwatch?: any, intake?: any }} Now
+ *   chat?: { day: string | null, entries: Record<string, any> }, overwatch?: any, intake?: any, programs?: Record<string, any> }} Now
  */
 
 export const app = $state({
@@ -325,8 +327,11 @@ export function paneProject(spec) {
   if (!spec) return null;
   if (spec.type === 'feature')
     return features().find((f) => f.id === spec.featureId)?.project_id ?? spec.projectId ?? null;
-  if (['project', 'board', 'diff', 'trust', 'canvas', 'editor', 'shell'].includes(spec.type))
-    return spec.projectId ?? null;
+  if (['project', 'diff', 'trust', 'canvas', 'editor', 'shell'].includes(spec.type)) return spec.projectId ?? null;
+  // A Work tab on one project is that project's; on several (or all) it is app-wide.
+  if (spec.type === 'work') return spec.projects?.length === 1 ? spec.projects[0] : null;
+  // A Program view belongs to its program's project.
+  if (spec.type === 'program') return app.now.programs?.[spec.programId]?.project ?? spec.projectId ?? null;
   return null;
 }
 
@@ -511,9 +516,10 @@ function title(spec) {
       if (spec.type === 'project') return projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId;
       if (spec.type === 'trust') return `trust · ${spec.projectId}`;
       if (spec.type === 'feature') return features().find((f) => f.id === spec.featureId)?.slug ?? 'feature';
-      if (spec.type === 'board')
-        return `${projects().find((p) => p.id === spec.projectId)?.name ?? spec.projectId} tasks`;
       if (spec.type === 'canvas') return spec.teamId ? `Team: ${spec.teamId}` : 'Team canvas';
+      if (spec.type === 'program')
+        return programTabTitle(app.now.programs?.[spec.programId]?.title || spec.programTitle);
+      if (spec.type === 'work') return scopeTitle(spec.projects ?? null, (spec.projects ?? []).map(projectName));
       if (spec.type === 'diff')
         return `diff · ${
           spec.branch ??
@@ -869,7 +875,7 @@ function leaveWindow() {
 }
 
 /** An open pane gets the focus (a jump, a link): like a new tab, it gives the window way. */
-function showPane(id) {
+export function showPane(id) {
   leaveWindow();
   focusPane(id);
 }
@@ -900,7 +906,7 @@ export function openProjectSettings(projectId, section = null, server = null) {
   const w = app.window;
   if (w?.kind === 'project-settings' && w.projectId === projectId)
     return setWindow({ ...w, section: section ?? w.section, server });
-  setWindow({ kind: 'project-settings', projectId, section: section ?? 'backend', server });
+  setWindow({ kind: 'project-settings', projectId, section: section ?? 'tracker', server });
 }
 
 /** The Week planner window (pacing indicator, banners, leader g, the palette). */
@@ -964,7 +970,14 @@ export function routeOpen(r, projectId = null) {
       focus: r.focus === 'brief' || r.edit ? 'brief' : null,
     });
   else if (r.open === 'editor' && r.scope) openPolicy(r.scope, r.project ?? projectId);
-  else return false;
+  // Program cards (improve-intake notes §7.3): the Program view, its row editor, or the failed feature.
+  else if (r.open === 'program' && r.program) openProgram(r.program);
+  else if (r.open === 'program_add' && r.program) openProgram(r.program, '', { add: r.item ?? true });
+  else if (r.open === 'feature' && r.feature) {
+    const f = projectId ? featureBySlug(projectId, r.feature) : features().find((x) => x.slug === r.feature);
+    if (f) openFeature(f.id);
+    else if (r.program) openProgram(r.program);
+  } else return false;
   return true;
 }
 
@@ -1033,11 +1046,13 @@ export function askRemoveProject(projectId) {
 }
 
 /** P2: a feature's pane (docs, tasks, team, timeline), one per feature. */
-export function openFeature(featureId, doc = null, anchor = null, timeline = null) {
+export function openFeature(featureId, doc = null, anchor = null, timeline = null, land = null) {
   const existing = findPane((s) => s.type === 'feature' && s.featureId === featureId);
+  const landReq = land && { ...land, seq: Date.now() };
   if (existing) {
     if (doc) app.panes[existing] = { ...app.panes[existing], doc, anchor };
     if (timeline) app.panes[existing].timeline = timeline;
+    if (landReq) app.panes[existing] = { ...app.panes[existing], land: landReq };
     return showPane(existing);
   }
   const f = features().find((x) => x.id === featureId);
@@ -1047,6 +1062,7 @@ export function openFeature(featureId, doc = null, anchor = null, timeline = nul
     projectId: f?.project_id,
     ...(doc ? { doc, anchor } : {}),
     ...(timeline ? { timeline } : {}),
+    ...(landReq ? { land: landReq } : {}),
   });
 }
 
@@ -1060,15 +1076,36 @@ export function openDelivery(rec) {
   else openAgent(rec?.agent);
 }
 
-/** P2: a project's Board (FR-502), one per project; `taskId` selects that card. */
-export function openBoard(projectId, taskId = null) {
-  if (!projectId) return toast('No project in focus');
-  const existing = findPane((s) => s.type === 'board' && s.projectId === projectId);
-  if (existing) {
-    if (taskId != null) app.panes[existing] = { ...app.panes[existing], taskId };
-    return showPane(existing);
-  }
-  addPane({ type: 'board', projectId, taskId });
+/** Landing on a task (notes §9.3): the Feature pane of the task's run, Tasks scrolled in, the task
+ *  focused and flashed (`conflict`: its menu open at "Resolve conflict…"). `hint` carries what the
+ *  caller knows (`run`, `feature` slug or id, `remote_url`, `ref`, `tracker`). A run that is gone: a toast offering the upstream issue. */
+export function openTask(projectId, taskId, hint = {}) {
+  const id = String(taskId ?? '').replace(/^T-/, '');
+  const f = taskFeature(projectId, hint);
+  if (f) return openFeature(f.id, null, null, null, { task: id, conflict: !!hint.conflict });
+  const name = `T-${id}`;
+  const url = hint.remote_url ?? null;
+  toast(
+    `${name} belongs to ${hint.feature ?? 'a feature'} (deleted).${url ? ` Open ${hint.ref ?? 'it'}${hint.tracker ? ` in ${hint.tracker}` : ' upstream'}?` : ''}`,
+    url ? { action: { label: 'Open', run: () => openUrl(url) }, ms: 12000 } : {},
+  );
+}
+
+/** The feature of a task link: its run (task links carry `run`, F24), else the feature named by the hint. */
+function taskFeature(projectId, hint) {
+  const all = features();
+  const byRun = hint.run ? all.find((f) => f.run?.id === hint.run) : null;
+  if (byRun) return byRun;
+  if (!hint.feature) return null;
+  return all.find((f) => f.id === hint.feature || (f.project_id === projectId && f.slug === hint.feature)) ?? null;
+}
+
+/** The first time an old Board path is used (Feature `b`, the inspector): one toast, then never (notes §1.3). */
+export async function boardNotice() {
+  const seen = await invoke('settings_get', { key: 'work.board_notice_seen' }).catch(() => null);
+  if (seen) return;
+  invoke('settings_set', { key: 'work.board_notice_seen', value: true }).catch(() => {});
+  toast('The Board is gone: tracker items are in Work (w), team tasks are here in Tasks.', { ms: 9000 });
 }
 
 /** P2: the Team canvas (FR-301), on a team (or the library when none). Bound to
@@ -1571,7 +1608,7 @@ export function saveLayout() {
     const panes = Object.fromEntries(
       Object.entries(app.panes).map(([id, s]) => [
         id,
-        { ...s, termId: undefined, spawn: undefined, watch: undefined, over: undefined },
+        { ...s, termId: undefined, spawn: undefined, watch: undefined, over: undefined, land: undefined },
       ]),
     );
     invoke('settings_set', {
@@ -1654,9 +1691,9 @@ export async function restoreLayout() {
   await Promise.all(
     ids.map(async (id) => {
       let s = saved.panes[id];
-      // A saved `inbox` pane (removed in P4.3): its slot closes, the cards are in the chat.
+      // A saved `inbox` pane (removed in P4.3) or `board` pane (removed in improve-intake): its slot closes.
       // Settings, Project settings and the Week planner are windows now (design-notes §3.1): dropped, never opened at launch.
-      if (!s || s.type === 'inbox' || WINDOW_KINDS.has(s.type) || paneGone(s)) return;
+      if (!s || s.type === 'inbox' || s.type === 'board' || WINDOW_KINDS.has(s.type) || paneGone(s)) return;
       // The Overview became Mission control (D9).
       if (s.type === 'overview') s = { ...s, type: 'mission', title: 'Mission control' };
       // A shell that does not start is dropped from the restored layout.
@@ -1754,7 +1791,7 @@ async function readState() {
  *  however that happened: a button, the CLI, a project removal. */
 function paneGone(s) {
   if (s.type === 'agent') return !activeAgents().some((a) => a.id === s.agentId);
-  if (s.type === 'project' || s.type === 'board') return !projects().some((p) => p.id === s.projectId);
+  if (s.type === 'project') return !projects().some((p) => p.id === s.projectId);
   // Features never read yet (the core's read failed): nothing is known gone.
   if (s.type === 'feature') return app.data?.features != null && !features().some((f) => f.id === s.featureId);
   return false;
@@ -2048,7 +2085,18 @@ export function commands() {
       label: 'Launch a team on a feature…',
       run: () => (app.overlay = { kind: 'launch', projectId: contextProject()?.id ?? null }),
     },
-    { id: 'board.open', label: 'Open the Board of the focused project', run: () => openBoard(contextProject()?.id) },
+    // Work browser (notes §1.2, §12.7): leader ⌘; b opens it on the context project (else all).
+    { id: 'work.browser', label: 'Work browser', run: () => openWork({ projects: workContext() }) },
+    { id: 'work.open', label: 'Open Work (all projects)', run: () => openWork({ projects: null }) },
+    { id: 'work.find', label: 'Find work item…', run: () => openWork({ projects: workContext(), find: true }) },
+    {
+      id: 'work.refresh',
+      label: 'Refresh Work',
+      run: () =>
+        Promise.all((workContext() ?? [null]).map((project) => invoke('work_refresh', { project }))).catch((e) =>
+          toast(`Could not refresh: ${errText(e)}`, { kind: 'error' }),
+        ),
+    },
     { id: 'shell.new', label: 'New shell (dock)', run: () => openShell() },
     { id: 'dock.toggle', label: 'Show or hide the dock', run: () => toggleDock() },
     { id: 'dock.next', label: 'Next dock tab', run: () => cycleDock(1) },
@@ -2121,8 +2169,27 @@ export function commands() {
       run: () => (app.overlay = { kind: 'delete-feature', featureId: f.id }),
     });
   }
+  // Ready parents (notes §12.7): "Run as program: #12 Checkout v2".
+  for (const it of app.now.intake?.items ?? []) {
+    if (!it.node || it.actions?.program !== 'ok' || it.hidden) continue;
+    const name = `${it.ref ? `${it.ref} ` : ''}${it.title ?? ''}`.trim();
+    list.push({
+      id: `program.plan.${it.node}`,
+      label: `Run as program: ${name}`,
+      run: () => openProgramPlan([it.node], { title: name }),
+    });
+  }
+  // Programs in progress (notes §12.7): "Program: Checkout v2", "Pause program Checkout v2".
+  for (const p of Object.values(app.now.programs ?? {})) {
+    list.push({ id: `program.open.${p.id}`, label: `Program: ${p.title}`, run: () => openProgram(p.id, p.title) });
+    list.push({
+      id: `program.pause.${p.id}`,
+      label: `${p.status === 'paused' ? 'Resume' : 'Pause'} program ${p.title}`,
+      run: () => togglePause(p),
+    });
+  }
   for (const p of projects()) {
-    list.push({ id: `board.open.${p.id}`, label: `Board: ${p.name}`, run: () => openBoard(p.id) });
+    list.push({ id: `work.open.${p.id}`, label: `Work: ${p.name}`, run: () => openWork({ projects: [p.id] }) });
     list.push({ id: `project.open.${p.id}`, label: `Open project ${p.name}`, run: () => openProject(p.id) });
     list.push({ id: `project.settings.${p.id}`, label: `${p.name} settings`, run: () => openProjectSettings(p.id) });
     list.push({
@@ -2133,6 +2200,15 @@ export function commands() {
   }
   for (const c of list) c.hint = hint(c.id);
   return list;
+}
+
+/** The project Work opens on from the leader / palette: the focused pane's, else the context's, else all. */
+function workContext() {
+  // A Work tab in focus keeps its own scope (several projects, or all).
+  const s = focusedSpec();
+  if (s?.type === 'work') return s.projects ?? null;
+  const id = paneProject(s) ?? contextProjectId();
+  return id ? [id] : null;
 }
 
 export function run(commandId) {

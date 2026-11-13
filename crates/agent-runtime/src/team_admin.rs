@@ -447,16 +447,41 @@ mod tests {
         let local = project(&rt, "l", json!({"type": "local"}));
         assert!(rt.open_sync(&local).is_none(), "a local backend has nothing to sync");
         assert!(rt.open_sync(&p).unwrap().is_ok());
-        assert_eq!(lists(&gh), 2, "open issues + closed orch issues");
+        assert_eq!(lists(&gh), 1, "the team tasks, open and closed, in one listing");
         // Quick re-open: nothing, but still watched.
         assert!(rt.open_sync(&p).is_none());
-        assert_eq!(lists(&gh), 2);
+        assert_eq!(lists(&gh), 1);
         // Older than the throttle: syncs again.
         let mut last = rt.last_sync("p");
         last["at_ms"] = json!(orch_protocol::now_ms() - OPEN_SYNC_AFTER_MS - 1);
         rt.db.set_setting(&format!("{}p", crate::team::LAST_SYNC_KEY), &last).unwrap();
         assert!(rt.open_sync(&p).unwrap().is_ok());
-        assert_eq!(lists(&gh), 4, "synced again");
+        assert_eq!(lists(&gh), 2, "synced again");
+    }
+
+    /// B1: the task sync reads the tracker, whatever way it was set.
+    #[test]
+    fn the_task_sync_follows_the_tracker() {
+        let (_d, rt, gh) = github_runtime();
+        let p = project(&rt, "p", json!({"type": "local"}));
+        assert!(rt.open_sync(&p).is_none(), "Local: nothing to sync");
+        let mut t = rt.db.tracker("p").unwrap();
+        t.tracker = orch_store::Tracker::Github { repo: Some("me/shop".into()), project_board: None };
+        t.ready = orch_store::ReadyFilter::defaults("github");
+        rt.db.set_tracker("p", &t).unwrap();
+        let p = rt.db.project("p").unwrap().unwrap();
+        assert!(rt.open_sync(&p).unwrap().is_ok());
+        let repos: std::collections::BTreeSet<_> =
+            gh.0.lock().unwrap().iter().filter(|c| c.contains("--paginate")).map(|c| c.contains("me/shop")).collect();
+        assert_eq!(repos, [true].into(), "the tracker's repository is listed");
+        // Back to Local: no more sync.
+        t.tracker = orch_store::Tracker::Local { backlog_glob: None };
+        t.ready = orch_store::ReadyFilter::Local;
+        rt.db.set_tracker("p", &t).unwrap();
+        let p = rt.db.project("p").unwrap().unwrap();
+        let before = lists(&gh);
+        assert!(rt.open_sync(&p).is_none());
+        assert_eq!(lists(&gh), before);
     }
 
     /// Two syncs at once of a project with a never-pushed task make one issue.

@@ -13,6 +13,7 @@ mod report;
 mod reports;
 mod runtime_rows;
 mod teams;
+mod tracker;
 mod transcripts;
 mod util;
 
@@ -21,7 +22,8 @@ pub use db::{Pending, Store, Tx, schema_version};
 pub use ecosystem::IntegrationRow;
 pub use events::{AuditEntry, Event, Retention, RunEvent};
 pub use intake::{
-    BRIEF_SOURCE as INTAKE_BRIEF_SOURCE, IntakeRow, IntakeState, IntakeStatus, IntakeUpsert, TOPIC as INTAKE_TOPIC,
+    BRIEF_SOURCE as INTAKE_BRIEF_SOURCE, IntakeRow, IntakeState, IntakeStatus, IntakeUpsert, PROGRAMS_TOPIC,
+    TOPIC as INTAKE_TOPIC, WorkEvent, WorkIndex,
 };
 pub use migrations::SCHEMA_VERSION;
 pub use model::*;
@@ -33,6 +35,9 @@ pub use teams::{
     Artifact, CiJob, CiSummary, DEFAULT_INTAKE_GLOB, DeliveryState, Feature, FileAccess, FileKind, GithubIntakeFilter,
     IntakeInvalid, IntakeSource, Message, PrPosition, PrStatus, ProjectFile, ProjectSettings, SettingsEdit, Task,
     TaskBackendConfig, TaskFlow, TaskNote, TeamRun, pr_number_from_url, valid_repo,
+};
+pub use tracker::{
+    LINEAR_STATE_TYPES, MigrationNotice, ProjectBoard, REFRESH_SECS, ReadyFilter, Tracker, TrackerSettings, WriteBack,
 };
 pub use transcripts::{IndexStats, SearchHit, TranscriptFile, encode_project_dir, extract_text};
 pub use util::{tag, untag};

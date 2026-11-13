@@ -147,6 +147,11 @@ const EFFECT_VERB = {
   queued: 'answered',
   added: 'added',
   not_now: 'not now',
+  // Program cards (improve-intake notes §7.3).
+  ignored: 'ignored',
+  kept: 'kept',
+  opened: 'opened',
+  resolved: 'resolved',
 };
 const ASK_VERB = { applied: 'run now', skipped: 'kept queued', queued: 'kept queued' };
 const KIND_VERB = { permission: 'allowed', gate: 'approved', ask: 'run now' };

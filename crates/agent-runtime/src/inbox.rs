@@ -1230,10 +1230,12 @@ impl Runtime {
         // Read before the push: a commit landing after it is not taken as pushed.
         let pushed = orch_git::gh::rev_sha(&wt, &branch);
         let draft = p["draft"].as_bool().unwrap_or(false);
+        // Write-back (contract §5): `Closes #n` for the items of the run, the Linear identifier in the title.
+        let (title, body) = self.pr_write_back(agent.as_deref(), &branch, &s("title"), &s("body"));
         let r = match &self.cfg.open_pr {
-            Some(f) => (f.0)(&wt, &base, &branch, &s("title"), &s("body"), draft),
+            Some(f) => (f.0)(&wt, &base, &branch, &title, &body, draft),
             None => orch_git::gh::push(&wt, "origin", &branch)
-                .and_then(|_| self.gh_create_pr(&wt, &base, &branch, &s("title"), &s("body"), draft)),
+                .and_then(|_| self.gh_create_pr(&wt, &base, &branch, &title, &body, draft)),
         };
         let (decision, msg) = match &r {
             Ok(url) => ("ok", format!("ORCH: the user approved; the orchestrator pushed {branch} and opened {url}")),

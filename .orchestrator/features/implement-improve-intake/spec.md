@@ -9,7 +9,7 @@
 >
 > Companions: [api-contract.md](api-contract.md) (the consolidated, binding build contract: improve-intake contract + F1–F40 folded into one set of shapes) · [ux-brief.md](ux-brief.md) (how front uses the boards; ui / ux review).
 
-## 0. Prerequisite: the design must be on the base
+## 0. Prerequisite (done: #67 merged, branch rebased)
 
 The improve-intake docs and exports are on `orch/improve-intake/integration` (pushed, **not yet merged into `main`**). The build reads them from the base branch:
 1. The user merges the improve-intake PR into `main`.
@@ -38,19 +38,19 @@ Each task owns its modules; one back and one front agent, so tasks of a node run
 
 | # | Node | Task | Owns | Depends on |
 |---|---|---|---|---|
-| B1 | back | **Tracker settings + migration**: `TrackerSettings` in the store (replacing `task_backend` + `intake_source`), migration with `migration_notice`, `tracker_settings[_set]`, `tracker_preview`, `tracker_options`, `tracker_notice_dismiss`; task sync and every reader of the two old settings switched to the tracker; old commands removed | `orch-store` (settings, migrations), `agent-runtime/src/intake.rs` settings half, `orch-app` commands | gate |
+| B1 | back | **Tracker settings + migration**: `TrackerSettings` in the store (replacing `task_backend` + `intake_source`), migration with `migration_notice`, `tracker_settings[_set]`, `tracker_preview`, `tracker_options`, `tracker_notice_dismiss`; task sync and every reader of the two old settings switched to the tracker; old commands kept callable until I1 (contract §7) | `orch-store` (settings, migrations), `agent-runtime/src/intake.rs` settings half, `orch-app` commands | gate |
 | B2 | back (opus) | **Tree readers + cache + refresh**: GitHub GraphQL and Linear tree readers, Local reader, `work_nodes` table replacing `intake_items` (and the remote half of `tasks`: task sync keeps only team tasks), one refresher with joined refreshes, per-project `SourceStatus`, Ready filter evaluation, `now.intake` from `work_nodes` (`node`, `breadcrumb`) | `orch-tasks` readers, `orch-store` work cache, `agent-runtime` refresher | B1 |
-| B3 | back | **Work commands + app state**: `work_tree` / `work_search` / `work_node` / `work_reveal` / `work_refresh` / `work_hide` / `work_unhide` / `work_prefill`, `AppState`, roll-up, `actions`, `run.source`, start links (`intake` link → node) | `agent-runtime` work module, `orch-app` commands | B2 |
+| B3 | back | **Work commands + app state**: `work_tree` / `work_search` / `work_node` / `work_reveal` / `work_refresh` / `work_hide` / `work_unhide` / `work_prefill` / `brief_prefill`, `AppState`, roll-up, `actions`, `run.source`, start links (`intake` link → node) | `agent-runtime` work module, `orch-app` commands | B2 |
 | B4 | back (opus) | **Programs**: `program_plan` (grouping, edges, cycles, plan issues, room), `program_start` / `program_update` / `program`, the engine (dependency merges, max at once, Governor), `now.programs` deltas and lane, program decisions, `origin.program`, `decision.program`, events | `agent-runtime` program module, store `programs` tables, `now.rs` | B3 |
 | B5 | back (opus) | **Write-back + agents**: start / PR / merge / parent writes, team tasks as sub-issues, `WorkNode.writeback`, `writeback_retry`, `writeback_failing` decision, `gh_write` / `linear_write`; MCP `read_issue` / `update_issue` additions; lead first-turn source item | `orch-tasks` writes, `agent-runtime` write-back, `orch-mcp` | B3 (B4 for program parent closure) |
 | F1 | front | **Project settings › Tracker** (replaces Intake and Task backend sections; migration notices; errors; Advanced task states) | `ProjectSettingsWindow`, new `TrackerSettings.svelte`, removal of `IntakeSettings` / task-backend UI | gate |
 | F2 | front | **Feature pane + Board removal**: source header, Tasks section (five columns, task moves, keys), landing from links, Board pane and its entry points removed / re-routed, removal toast, shortcut sheet and palette | `FeaturePane`, `BoardPane` (deleted), `RunInspector`, `WaitingChip`, chat links, `shortcuts.js` | F1 |
 | F3 | front (opus) | **Work browser pane**: tree, rows, chips, glyphs, roll-up, fold, depth / Focus here, details, search, filters, view prefs, multi-select, actions, states, keys, entry points (sidebar, Project pane, palette, leader) | new `WorkPane` + `components/work/*`, `lib/work*.js` | F2 |
-| F4 | front | **Mission control + start dialogs**: Work button / `w`, Ready lane changes, prefilled dialogs additions (`work_prefill`, breadcrumb origin chip, sub-issues line, blocked line, write-back line) | `MissionPane`, `mission.js`, `ReadyRow`, `Dialogs` (launch / new-session), `intake*.js` | F3 |
-| F5 | front (opus) | **Programs UI**: plan dialog, Programs lane + row + sub-rows, Program view pane, program cards and collapsed lines, spec / PR program tag and "next spec" focus | new `ProgramPlanDialog`, `ProgramPane`, `components/mission/ProgramRow`, chat cards | F4 |
+| F4 | front | **Mission control + start dialogs** (needs B3's `work_prefill`): Work button / `w`, Ready lane changes, prefilled dialogs additions (`work_prefill`, breadcrumb origin chip, sub-issues line, blocked line, write-back line) | `MissionPane`, `mission.js`, `ReadyRow`, `Dialogs` (launch / new-session), `intake*.js` | F3, B3 |
+| F5 | front (opus) | **Programs UI** (needs B4): plan dialog, Programs lane + row + sub-rows, Program view pane, program cards and collapsed lines, spec / PR program tag and "next spec" focus | new `ProgramPlanDialog`, `ProgramPane`, `components/mission/ProgramRow`, chat cards | F4, B4 |
 | U1 | ui | **Visual QA + README**: every implemented board checked against its export at 1512 and 1280, findings to front through lead; `docs/design/README.md` rows → Implemented | `docs/design/README.md` only | F5 |
 | X1 | ux | **Copy, keys and states pass**: notes §8–§12 copy, keys (§12, conflict table) and states S1–S19 checked in the built app / tests; findings to lead | none (report only) | F5 |
-| I1 | back | **Exit-criterion e2e** (§2) with fake gh / Linear, plus fixes it reveals in back's modules | tests | B4, B5 |
+| I1 | back | **Exit-criterion e2e** (§2) with fake gh / Linear, plus fixes it reveals in back's modules; removal of the old commands (contract §7) | tests, old commands | B4, B5, F5 |
 
 Front reviews: each front task asks ui for a review of its screens against the exports before it reports done.
 

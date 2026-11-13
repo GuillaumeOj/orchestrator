@@ -1,4 +1,4 @@
-// P2 panes: the pure helpers, and the Board, Feature and Team canvas panes
+// P2 panes: the pure helpers, and the Feature and Team canvas panes
 // rendered against a mocked core.
 
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
@@ -35,7 +35,6 @@ vi.mock('../src/lib/ipc.js', () => ({
   errText: (e) => (typeof e === 'string' ? e : (e?.message ?? String(e))),
 }));
 
-const { default: BoardPane } = await import('../src/panes/BoardPane.svelte');
 const { default: FeaturePane } = await import('../src/panes/FeaturePane.svelte');
 const { default: TeamCanvasPane } = await import('../src/panes/TeamCanvasPane.svelte');
 const { default: Dialogs } = await import('../src/components/Dialogs.svelte');
@@ -133,80 +132,6 @@ describe('P2 panes', () => {
     calls.length = 0;
     for (const k of Object.keys(replies)) delete replies[k];
     app.data = fixture();
-  });
-
-  it('the board groups tasks by status and moves the selected card with ⇧l', async () => {
-    replies.board_view = {
-      project: { id: 'shop', name: 'shop-api' },
-      backend: 'github',
-      repo: 'me/shop',
-      last_sync_error: null,
-      tasks: [task(1, 'ready'), task(2, 'ready', { depends_on: [1] }), task(3, 'done', { branch: 'orch/fx/back-1' })],
-      features: [{ id: 'shop-fx', slug: 'fx' }],
-      runs: [
-        {
-          id: 'run-1',
-          feature_id: 'shop-fx',
-          slug: 'fx',
-          status: 'executing',
-          nodes: [
-            { id: 'lead', role: 'lead', lead: true },
-            { id: 'back', role: 'backend', lead: false },
-          ],
-        },
-      ],
-    };
-    replies.task_update = (a) => task(a.id, a.status);
-    app.panes.b1 = { type: 'board', projectId: 'shop', title: 'shop tasks' };
-    const { container, getByText } = render(BoardPane, { paneId: 'b1' });
-    await waitFor(() => getByText('Task 1'));
-    expect(getByText(/GitHub Issues · me\/shop/)).toBeTruthy();
-    expect(getByText(/blocked by T-1/)).toBeTruthy();
-    const board = container.querySelector('.board');
-    await fireEvent.keyDown(board, { key: 'L', shiftKey: true });
-    await waitFor(() =>
-      expect(calls.some(([c, a]) => c === 'task_update' && a.status === 'in_progress' && a.id === 1)).toBe(true),
-    );
-    await fireEvent.keyDown(board, { key: 'n' });
-    await tick();
-    expect(container.querySelector('input[placeholder="Task title"]')).toBeTruthy();
-  });
-
-  it('the board syncs on open and edits a card with e, sending only the changed fields', async () => {
-    replies.board_open_sync = { synced: true };
-    replies.board_view = {
-      project: { id: 'shop', name: 'shop-api' },
-      backend: 'github',
-      repo: 'me/shop',
-      last_sync_error: null,
-      tasks: [
-        task(1, 'ready', {
-          backend: 'github',
-          external_id: '42',
-          body: 'old',
-          remote_url: 'https://github.com/me/shop/issues/42',
-        }),
-      ],
-      features: [],
-      runs: [],
-    };
-    replies.task_update = (a) => task(a.id, 'ready');
-    app.panes.b2 = { type: 'board', projectId: 'shop', title: 'shop tasks' };
-    const { container, getByText } = render(BoardPane, { paneId: 'b2' });
-    await waitFor(() => getByText('Task 1'));
-    expect(calls.some(([c, a]) => c === 'board_open_sync' && a.project === 'shop')).toBe(true);
-    // No footer legend: the keys are in the card menu and the Keyboard shortcuts sheet (§8).
-    expect(container.querySelector('footer.keys .kbd')).toBeNull();
-    const board = container.querySelector('.board');
-    await fireEvent.keyDown(board, { key: 'e' });
-    await tick();
-    expect(getByText('Edit #42')).toBeTruthy();
-    const ta = container.querySelector('textarea');
-    await fireEvent.input(ta, { target: { value: 'new body' } });
-    await fireEvent.keyDown(ta, { key: 'Enter', metaKey: true });
-    await waitFor(() =>
-      expect(calls.some(([c, a]) => c === 'task_update' && a.body === 'new body' && a.title === null)).toBe(true),
-    );
   });
 
   it('the feature pane shows the run, the rendered doc, the team and the timeline', async () => {

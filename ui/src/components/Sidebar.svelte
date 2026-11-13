@@ -5,11 +5,12 @@
   // (a finished run has no record: its own status). The current project is the
   // workspace's context (none in All projects); a project or feature click sets
   // it. Carets are remembered (`app.sidebarTree`, design-notes §5.4).
-  import { activeAgents, app, features, inspected, openAgent, openFeature, openProjectContext, projects, setContext, toggleTree, treeOpen } from '../lib/app.svelte.js';
+  import { activeAgents, app, features, inspected, openAgent, openFeature, openProjectContext, paneProject, projects, setContext, toggleTree, treeOpen } from '../lib/app.svelte.js';
   import { pct } from '../lib/format.js';
   import { attention, featureRun, needYouText, runPhase, statusOf, waitLine } from '../lib/now.svelte.js';
   import { runStateLabel } from '../lib/teams.js';
   import { tooltip } from '../lib/tooltip.js';
+  import { openWork } from '../lib/work.js';
   import AgentChip from './AgentChip.svelte';
   import StatusBadge from './StatusBadge.svelte';
 
@@ -29,6 +30,7 @@
       return { p, feats, list: mine.filter((a) => !ids.has(a.team?.feature_id)) };
     }),
   );
+  const workOpen = $derived(app.panes[app.focused]?.type === 'work' ? paneProject(app.panes[app.focused]) : null);
   const focusedFeature = $derived(app.panes[app.focused]?.type === 'feature' ? app.panes[app.focused].featureId : null);
 
   function clickFeature(f) {
@@ -71,6 +73,14 @@
         </button>
         {#if open}
           <ul role="group">
+            <!-- The project's Work (notes §1.2): the tracker items of this project. -->
+            <li role="treeitem" aria-selected={workOpen === p.id}>
+              <button data-row class="row sub" class:selected={workOpen === p.id} onclick={() => openWork({ projects: [p.id] })} use:tooltip={`Browse ${p.name}'s work`}>
+                <span class="caret" aria-hidden="true"></span>
+                <span class="icon" aria-hidden="true">{'\u{F51E}'}</span>
+                <span class="name">Work</span>
+              </button>
+            </li>
             {#each feats as { f, list: fl } (f.id)}
               {@const k = `f:${f.id}`}
               {@const n = featureRun(f)?.counts?.needs_you ?? 0}
@@ -159,7 +169,8 @@
   .row.agent {
     padding-left: var(--space-xl);
   }
-  .row.feature {
+  .row.feature,
+  .row.sub {
     padding-left: var(--space-lg);
   }
   .row.agent.team {

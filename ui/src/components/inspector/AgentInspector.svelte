@@ -3,7 +3,7 @@
   // Open session and the same `⋯` Menu as the pane header (no Resume / Interrupt / Suspend).
   import { agent, app, openSession, projects } from '../../lib/app.svelte.js';
   import { clock, mb, shortPath, tokens } from '../../lib/format.js';
-  import { originLine } from '../../lib/intake.js';
+  import { originLine, originOf } from '../../lib/intake.js';
   import { phaseName } from '../../lib/mission.js';
   import { attention, governorReason, runAttention, statusOf } from '../../lib/now.svelte.js';
   import { cacheState, sessionPp } from '../../lib/status.js';
@@ -19,6 +19,7 @@
   const rec = $derived(attention(id));
   // Members only: the run it works in, with its phase.
   const run = $derived(rec?.run ? runAttention(rec.run) : null);
+  const origin = $derived(originOf(rec) ?? originOf(run));
   const pp = $derived(sessionPp(a, app.data?.usage?.snapshot));
   const cache = $derived(cacheState(a, clock));
   const home = $derived(app.data?.core?.user_home ?? '');
@@ -30,7 +31,7 @@
   <dl>
     {#if rec?.waiting_on}<dt>Waiting on</dt><dd class="wait"><WaitingChip {rec} /></dd>{/if}
     <dt>Doing</dt><dd>{rec?.activity || (rec?.waiting_on ? '—' : rec?.reason || '—')}</dd>
-    {#if rec?.origin ?? run?.origin}<dt>Started from</dt><dd>{originLine(rec?.origin ?? run?.origin)} <OriginChip origin={rec?.origin ?? run?.origin} project={a.project_id} label="Open ↗" /></dd>{/if}
+    {#if origin}<dt>Started from</dt><dd>{originLine(origin)} <OriginChip {origin} project={a.project_id} label="Open ↗" /></dd>{/if}
     {#if run}<dt>Run</dt><dd>{run.project} › {run.feature} · {phaseName(run)}</dd>{/if}
     <dt>Model</dt><dd>{a.model ?? 'default'}{a.effort ? ` · ${a.effort}` : ''}</dd>
     <dt>Context</dt><dd>{a.context_pct == null ? '—' : `${Math.round(a.context_pct)} % ctx`}{cache ? ` · cache ${cache}` : ''}</dd>

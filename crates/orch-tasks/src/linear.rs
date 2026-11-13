@@ -539,14 +539,10 @@ impl<T: Graphql> LinearIssues<T> {
                 filter["updatedAt"] = json!({"gt": from.to_string()});
                 Coverage::ChangedSince
             }
-            None => {
-                filter["or"] = json!([
-                    {"state": {"type": {"nin": ["completed", "canceled"]}}},
-                    {"labels": {"name": {"eq": LABEL}}},
-                ]);
-                Coverage::OpenAndManaged
-            }
+            None => Coverage::OpenAndManaged,
         };
+        // Team tasks only: the tracker's own issues are the Work tree's.
+        filter["labels"] = json!({"name": {"eq": LABEL}});
         let mut issues = vec![];
         let (query, mut after) = (issues_query(), Value::Null);
         for _ in 0..max_pages {
@@ -1067,7 +1063,7 @@ mod tests {
     fn the_page_cap_is_an_error() {
         let f = fake::FakeLinear::default();
         for n in 1..=60 {
-            f.add(&format!("ENG-{n}"), "x", "st-todo", &[]);
+            f.add(&format!("ENG-{n}"), "x", "st-todo", &["orch"]);
         }
         let l = LinearIssues::new(f.clone(), "ENG", None, BTreeMap::new());
         let e = l.list_capped(None, 2).unwrap_err().to_string();
@@ -1079,7 +1075,7 @@ mod tests {
     #[test]
     fn an_issue_moved_out_of_the_project_is_gone() {
         let f = fake::FakeLinear::default();
-        f.add("ENG-1", "x", "st-todo", &[]);
+        f.add("ENG-1", "x", "st-todo", &["orch"]);
         let l = LinearIssues::new(f.clone(), "ENG", Some("proj-1".into()), BTreeMap::new());
         assert!(l.get("ENG-1").unwrap_err().to_string().contains("no Linear issue ENG-1 in linear:ENG/proj-1"));
         f.edit("ENG-1", |i| i.project = Some("proj-1".into()));
