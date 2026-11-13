@@ -500,14 +500,19 @@ fn by_issue(s: &Store, n: u64) -> Task {
     s.task_by_external("p1", "github", &n.to_string()).unwrap().unwrap()
 }
 
-/// Acceptance 2: more than 500 issues, most without `orch`, read page by
-/// page; the closed ones without `orch` are left on GitHub; reading writes
-/// nothing.
+/// Acceptance 2: more than 500 team tasks, read page by page in one
+/// listing; the issues without `orch` are never listed (they are the Work
+/// tree's, not tasks); reading writes nothing.
 #[test]
 fn github_reads_every_open_issue_paged() {
     let (_d, s, p, gh) = github_setup();
     for n in 1..=600 {
-        gh.add(n, &format!("Issue {n}"), "open", if n == 5 { &["orch:review", "bug"] } else { &["bug"] });
+        gh.add(
+            n,
+            &format!("Issue {n}"),
+            "open",
+            if n == 5 { &["orch", "orch:review", "bug"] } else { &["orch", "bug"] },
+        );
     }
     for n in 601..=700 {
         gh.add(n, "Old managed", "closed", &["orch"]);
@@ -520,29 +525,23 @@ fn github_reads_every_open_issue_paged() {
     assert_eq!(rep.imported.len(), 700);
     assert!(rep.errors.is_empty(), "{rep:?}");
     let w = gh.0.lock().unwrap();
-    assert_eq!(w.calls - calls, 2, "two paged reads, no write");
-    assert_eq!(
-        w.lists,
-        [
-            ("repos/me/shop/issues?state=open&per_page=100".to_string(), 6),
-            ("repos/me/shop/issues?state=closed&labels=orch&per_page=100".to_string(), 1)
-        ]
-    );
+    assert_eq!(w.calls - calls, 1, "one paged read, no write");
+    assert_eq!(w.lists, [("repos/me/shop/issues?state=all&labels=orch&per_page=100".to_string(), 7)]);
     drop(w);
     assert_eq!(by_issue(&s, 1).status, TaskStatus::Backlog);
     assert_eq!(by_issue(&s, 5).status, TaskStatus::Review);
     assert_eq!(by_issue(&s, 650).status, TaskStatus::Done);
     assert!(s.task_by_external("p1", "github", "720").unwrap().is_none());
-    assert_eq!(gh.label_names(1), ["bug"], "import adds no label");
+    assert_eq!(gh.label_names(1), ["orch", "bug"], "import adds no label");
 }
 
-/// Acceptance 3 and 5: a status change sends only labels and state (a
-/// foreign issue becomes managed, its labels kept); a title/body edit only
+/// Acceptance 3 and 5: a status change sends only labels and state (the
+/// issue's own labels kept); a title/body edit only
 /// title and body; nothing changed, nothing sent.
 #[test]
 fn github_writes_only_what_changed() {
     let (_d, s, p, gh) = github_setup();
-    gh.add(1, "Foreign", "open", &["bug"]);
+    gh.add(1, "Foreign", "open", &["orch", "bug"]);
     let svc = svc(&s, &p, &gh);
     svc.sync(1).unwrap();
     let t = by_issue(&s, 1);
@@ -588,18 +587,21 @@ fn github_writes_only_what_changed() {
 #[test]
 fn github_incremental_sync() {
     let (_d, s, p, gh) = github_setup();
-    gh.add(1, "Foreign", "open", &[]);
+    gh.add(1, "Foreign", "open", &["orch"]);
     gh.add(2, "Managed", "open", &["orch", "orch:ready"]);
     let svc = svc(&s, &p, &gh);
     assert_eq!(svc.sync(1).unwrap().imported.len(), 2);
     gh.edit(1, |i| i["title"] = json!("Foreign v2"));
     gh.edit(2, |i| i["state"] = json!("closed"));
     gh.add(3, "Closed elsewhere", "closed", &["wontfix"]);
-    gh.add(4, "New", "open", &[]);
+    gh.add(4, "New", "open", &["orch"]);
     let rep = svc.sync(2).unwrap();
     let last = gh.last_list();
     // The cursor (issue 2's first stamp) minus a minute.
-    assert_eq!(last, format!("repos/me/shop/issues?state=all&since={}&per_page=100", "2026-11-02T10:19:00Z"));
+    assert_eq!(
+        last,
+        format!("repos/me/shop/issues?state=all&labels=orch&since={}&per_page=100", "2026-11-02T10:19:00Z")
+    );
     assert_eq!(rep.imported.len(), 1);
     assert_eq!(rep.updated.len(), 2);
     assert_eq!(by_issue(&s, 1).title, "Foreign v2");
@@ -619,8 +621,8 @@ fn github_incremental_sync() {
 #[test]
 fn github_pending_change_not_in_the_incremental_list() {
     let (_d, s, p, gh) = github_setup();
-    gh.add(1, "Old", "open", &[]);
-    gh.add(2, "Newer", "open", &[]);
+    gh.add(1, "Old", "open", &["orch"]);
+    gh.add(2, "Newer", "open", &["orch"]);
     let svc = svc(&s, &p, &gh);
     svc.sync(1).unwrap();
     let t = by_issue(&s, 1);
@@ -650,8 +652,8 @@ fn github_pending_change_not_in_the_incremental_list() {
 #[test]
 fn github_pending_change_not_in_the_full_list() {
     let (_d, s, p, gh) = github_setup();
-    gh.add(1, "Foreign", "open", &[]);
-    gh.add(2, "Foreign too", "open", &[]);
+    gh.add(1, "Foreign", "open", &["orch"]);
+    gh.add(2, "Foreign too", "open", &["orch"]);
     let svc = svc(&s, &p, &gh);
     svc.sync(1).unwrap();
     gh.edit(1, |i| i["state"] = json!("closed"));
@@ -667,7 +669,7 @@ fn github_pending_change_not_in_the_full_list() {
     gh.edit(2, |i| i["title"] = json!("Theirs"));
     s.set_task_sync_cursor("p1", "github:me/old", "2026-11-02T10:00:00Z").unwrap();
     let rep = svc.sync(4).unwrap();
-    assert!(gh.last_list().contains("state=closed&labels=orch"), "a full read");
+    assert!(!gh.last_list().contains("since="), "a full read");
     assert_eq!((rep.pushed, rep.conflicts), (vec![a.id], vec![b.id]));
     assert_eq!(gh.issue(1)["state"], json!("open"));
     assert_eq!(by_issue(&s, 2).status, TaskStatus::Done);
@@ -678,7 +680,7 @@ fn github_pending_change_not_in_the_full_list() {
 #[test]
 fn github_cursor_survives_a_restart() {
     let (d, s, mut p, gh) = github_setup();
-    gh.add(1, "One", "open", &[]);
+    gh.add(1, "One", "open", &["orch"]);
     svc(&s, &p, &gh).sync(1).unwrap();
     assert_eq!(s.task_sync_cursor("p1").unwrap(), Some(("github:me/shop".into(), stamp(1))));
     s.flush().unwrap();
@@ -689,10 +691,10 @@ fn github_cursor_survives_a_restart() {
     p.path = d.path().join("moved");
     s.upsert_project(&p).unwrap();
     svc(&s, &p, &gh).sync(3).unwrap();
-    assert!(gh.last_list().contains("state=closed&labels=orch"), "a full read: {}", gh.last_list());
+    assert!(!gh.last_list().contains("since="), "a full read: {}", gh.last_list());
     s.set_task_sync_cursor("p1", "github:me/old", &stamp(1)).unwrap();
     svc(&s, &p, &gh).sync(4).unwrap();
-    assert!(gh.last_list().contains("state=closed&labels=orch"), "a full read: {}", gh.last_list());
+    assert!(!gh.last_list().contains("since="), "a full read: {}", gh.last_list());
     assert_eq!(svc(&s, &p, &gh).github_repo().unwrap().as_deref(), Some("me/shop"));
 }
 
@@ -701,13 +703,13 @@ fn github_cursor_survives_a_restart() {
 #[test]
 fn github_full_read_finds_a_tracked_issue_closed_elsewhere() {
     let (_d, s, p, gh) = github_setup();
-    gh.add(1, "Foreign", "open", &[]);
+    gh.add(1, "Foreign", "open", &["orch"]);
     let svc = svc(&s, &p, &gh);
     svc.sync(1).unwrap();
     gh.edit(1, |i| i["state"] = json!("closed"));
     s.set_task_sync_cursor("p1", "github:me/old", &stamp(1)).unwrap();
     let rep = svc.sync(2).unwrap();
-    assert!(gh.last_list().contains("state=closed&labels=orch"), "a full read");
+    assert!(!gh.last_list().contains("since="), "a full read");
     assert_eq!(rep.updated, [by_issue(&s, 1).id]);
     assert_eq!(by_issue(&s, 1).status, TaskStatus::Done);
 }
@@ -716,7 +718,7 @@ fn github_full_read_finds_a_tracked_issue_closed_elsewhere() {
 #[test]
 fn github_unparsable_cursor_is_replaced() {
     let (_d, s, p, gh) = github_setup();
-    gh.add(1, "One", "open", &[]);
+    gh.add(1, "One", "open", &["orch"]);
     s.set_task_sync_cursor("p1", "github:me/shop", "garbage").unwrap();
     svc(&s, &p, &gh).sync(1).unwrap();
     assert_eq!(s.task_sync_cursor("p1").unwrap(), Some(("github:me/shop".into(), stamp(1))));
@@ -768,17 +770,16 @@ fn last_linear_update(lin: &linear::fake::FakeLinear) -> Value {
     lin.0.lock().unwrap().updates.last().cloned().unwrap().1
 }
 
-/// fix-linear-pull §3.4 (1): the first sync imports the team's open issues
-/// without `orch`, each in its state's column, and the closed `orch` ones;
-/// completed or canceled issues without `orch` stay in Linear; reading
-/// writes nothing.
+/// fix-linear-pull §3.4 (1): the first sync imports the team's `orch` issues
+/// (the tracker's own issues are the Work tree's), each in its state's
+/// column; reading writes nothing.
 #[test]
 fn linear_first_sync_reads_every_open_issue() {
     let (_d, s, p, lin) = linear_setup(None);
-    lin.add("ENG-1", "Idea", "st-backlog", &["bug"]);
-    lin.add("ENG-2", "Next", "st-todo", &[]);
-    lin.add("ENG-3", "Doing", "st-progress", &[]);
-    lin.add("ENG-4", "Reviewing", "st-review", &[]);
+    lin.add("ENG-1", "Idea", "st-backlog", &["orch", "bug"]);
+    lin.add("ENG-2", "Next", "st-todo", &["orch"]);
+    lin.add("ENG-3", "Doing", "st-progress", &["orch"]);
+    lin.add("ENG-4", "Reviewing", "st-review", &["orch"]);
     lin.add("ENG-5", "Shipped", "st-done", &[]);
     lin.add("ENG-6", "Dropped", "st-canceled", &[]);
     lin.add("ENG-7", "Ours, done", "st-done", &["orch"]);
@@ -794,8 +795,7 @@ fn linear_first_sync_reads_every_open_issue() {
     }
     assert_eq!(lin.0.lock().unwrap().mutations, Vec::<String>::new(), "reading never writes");
     let (vars, _) = last_linear_list(&lin);
-    assert_eq!(vars["filter"]["or"][0]["state"]["type"]["nin"], json!(["completed", "canceled"]));
-    assert_eq!(vars["filter"]["or"][1]["labels"]["name"]["eq"], "orch");
+    assert_eq!(vars["filter"]["labels"]["name"]["eq"], "orch", "team tasks only");
     assert!(vars["filter"].get("updatedAt").is_none());
 }
 
@@ -804,7 +804,7 @@ fn linear_first_sync_reads_every_open_issue() {
 fn linear_reads_past_the_old_page_cap() {
     let (_d, s, p, lin) = linear_setup(None);
     for n in 1..=1_300 {
-        lin.add(&format!("ENG-{n}"), &format!("Issue {n}"), "st-todo", &[]);
+        lin.add(&format!("ENG-{n}"), &format!("Issue {n}"), "st-todo", &["orch"]);
     }
     let rep = lin_svc(&s, &p, &lin).sync(1).unwrap();
     assert_eq!(rep.imported.len(), 1_300);
@@ -820,10 +820,10 @@ fn linear_reads_past_the_old_page_cap() {
 fn linear_incremental_sync() {
     let (_d, s, p, lin) = linear_setup(None);
     // ENG-3 is older than the overlap of a minute before the cursor.
-    lin.add("ENG-3", "C", "st-todo", &[]);
+    lin.add("ENG-3", "C", "st-todo", &["orch"]);
     lin.wait(300);
-    lin.add("ENG-1", "A", "st-todo", &[]);
-    lin.add("ENG-2", "B", "st-progress", &[]);
+    lin.add("ENG-1", "A", "st-todo", &["orch"]);
+    lin.add("ENG-2", "B", "st-progress", &["orch"]);
     let svc = lin_svc(&s, &p, &lin);
     assert_eq!(svc.sync(1).unwrap().imported.len(), 3);
     let newest = linear::fake::stamp(lin.issue("ENG-2").updated);
@@ -834,13 +834,13 @@ fn linear_incremental_sync() {
     lin.edit("ENG-1", |i| i.title = "A v2".into());
     lin.edit("ENG-2", |i| i.state = "st-done".into());
     lin.add("ENG-4", "Closed elsewhere", "st-done", &[]);
-    lin.add("ENG-5", "New", "st-backlog", &[]);
+    lin.add("ENG-5", "New", "st-backlog", &["orch"]);
     let rep = svc.sync(2).unwrap();
     let (vars, ids) = last_linear_list(&lin);
     let from = newest - jiff::SignedDuration::from_secs(60);
     assert_eq!(vars["filter"]["updatedAt"]["gt"], from.to_string());
     assert!(vars["filter"].get("or").is_none(), "all states");
-    assert_eq!(ids, ["ENG-1", "ENG-2", "ENG-4", "ENG-5"], "ENG-3 did not change");
+    assert_eq!(ids, ["ENG-1", "ENG-2", "ENG-5"], "ENG-3 did not change, ENG-4 is not a team task");
     assert_eq!(rep.updated, [by_key(&s, "ENG-1").id, by_key(&s, "ENG-2").id]);
     assert_eq!(rep.imported, [by_key(&s, "ENG-5").id]);
     assert_eq!(by_key(&s, "ENG-1").title, "A v2");
@@ -861,7 +861,7 @@ fn linear_incremental_sync() {
 #[test]
 fn linear_writes_only_what_changed() {
     let (_d, s, p, lin) = linear_setup(None);
-    lin.add("ENG-1", "Foreign", "st-todo", &["bug"]);
+    lin.add("ENG-1", "Foreign", "st-todo", &["orch", "bug"]);
     let svc = lin_svc(&s, &p, &lin);
     svc.sync(1).unwrap();
     // Edited in Linear since the sync: a status change must not undo it.
@@ -896,9 +896,9 @@ fn linear_writes_only_what_changed() {
 #[test]
 fn linear_pending_change_not_in_the_incremental_list() {
     let (_d, s, p, lin) = linear_setup(None);
-    lin.add("ENG-1", "Old", "st-todo", &[]);
+    lin.add("ENG-1", "Old", "st-todo", &["orch"]);
     lin.wait(300);
-    lin.add("ENG-2", "Other", "st-todo", &[]);
+    lin.add("ENG-2", "Other", "st-todo", &["orch"]);
     let svc = lin_svc(&s, &p, &lin);
     svc.sync(1).unwrap();
     lin.0.lock().unwrap().offline = true;
@@ -921,8 +921,8 @@ fn linear_pending_change_not_in_the_incremental_list() {
 #[test]
 fn linear_project_scopes_the_listing() {
     let (_d, s, p, lin) = linear_setup(Some("proj-1"));
-    lin.add("ENG-1", "In the project", "st-todo", &[]);
-    lin.add("ENG-2", "Elsewhere", "st-todo", &[]);
+    lin.add("ENG-1", "In the project", "st-todo", &["orch"]);
+    lin.add("ENG-2", "Elsewhere", "st-todo", &["orch"]);
     lin.edit("ENG-1", |i| i.project = Some("proj-1".into()));
     let svc = lin_svc(&s, &p, &lin);
     let rep = svc.sync(1).unwrap();
