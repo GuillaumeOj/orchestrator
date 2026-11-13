@@ -43,7 +43,7 @@ MigrationNotice = {                  // F16; null when none or dismissed
 |---|---|---|
 | `tracker_settings` | `project` | `{ settings: TrackerSettings, migration_notice: MigrationNotice \| null }` |
 | `tracker_settings_set` | `project, settings` | same as `tracker_settings` (resolves a `mismatch` notice; triggers a refresh) |
-| `tracker_preview` | `project, settings` (dry run, nothing saved) | `{ roots, items, ready, sample: [WorkNode + breadcrumb] (≤ 5), error: SourceError \| null }` |
+| `tracker_preview` | `project, settings` (dry run, nothing saved) | `{ roots, items, ready, sample: [WorkNode + breadcrumb] (≤ 5; Local: the matched file names), error: SourceError \| null, warning: "gh_sub_issues" \| null }` |
 | `tracker_options` | `project, tracker` (partial: what is filled so far) | GitHub `{ labels[], milestones[], issue_types[], boards: [{owner, number, title, statuses[]}] }` · Linear `{ teams: [{id, key, name}], projects: [{id, name, team}], labels[], states: [{id, name, type}] }` (F17; errors as `SourceError`) |
 | `tracker_notice_dismiss` | `project` | `()` |
 
@@ -118,7 +118,7 @@ SourceError  = P4.5 `{ code, message, fix?, retry_at_ms? }` + codes "linear_comp
 `History = { "at_ms": 0, "what": "started"|"program_queued"|"spec_approved"|"pr_opened"|"merged"|"skipped"|"writeback_done"|"writeback_failed"|"returned", "feature": "<slug>" | null, "program": {id, title} | null, "detail": "…" | null }` (F6; copy in F6 / notes §3).
 
 Starting from a node goes through the existing launch / new-session commands with the P4.5 `intake` link replaced by `"source": "<WorkNode id>"`; the run then carries:
-`run.source = { node, ref, title, url, breadcrumb, tracker: "github"|"linear"|"local", program: {id, title, index, total} | null, deleted: false, closed_upstream: false, write_back: "on"|"off" }` (F23), in `now` run rows and the Feature pane. Task records keep `run` (F24) so `T-n` links open `openFeature(run, {task})`.
+`run.source = { node, ref, title, url, breadcrumb, tracker: "github"|"linear"|"local", program: {id, title, index, total} | null, deleted: false, closed_upstream: false, write_back: "on"|"off", writeback: WorkNode.writeback | null }` (F23; `writeback` carries the last write-back failure for the Feature header Retry), in `now` run rows and the Feature pane. Task records keep `run` (F24) so `T-n` links open `openFeature(run, {task})`; task hints / sync-conflict outcomes carry `run` and `tracker` ("github"|"linear"|"local") so the UI names the tracker without a lookup.
 
 ## 3. Ready lane in `now` (B2)
 
