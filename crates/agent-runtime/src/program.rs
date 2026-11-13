@@ -108,6 +108,12 @@ pub struct Program {
     /// Upstream items the user chose to ignore.
     #[serde(default)]
     pub ignored: Vec<String>,
+    /// Closed items the user chose to "Include anyway": plan and start keep them in their feature.
+    #[serde(default)]
+    pub include: Vec<String>,
+    /// When each of `new_items` was seen upstream, by node id (ms).
+    #[serde(default)]
+    pub new_items_added: BTreeMap<String, u64>,
     #[serde(default)]
     pub estimate: Value,
     #[serde(default)]
@@ -168,7 +174,7 @@ fn open_scope(ctx: &Ctx, i: usize, out: &mut Scope, seen: &mut HashSet<usize>) -
             continue;
         }
         let row = &ctx.rows[n];
-        if !ctx.open(n) {
+        if !ctx.open(n) && !out.include.contains(&row.node_id) {
             out.closed.push(row.node_id.clone());
             continue;
         }
@@ -194,6 +200,8 @@ fn open_scope(ctx: &Ctx, i: usize, out: &mut Scope, seen: &mut HashSet<usize>) -
 struct Scope {
     closed: Vec<String>,
     running: Vec<Value>,
+    /// Closed items kept in anyway (`Program.include`).
+    include: HashSet<String>,
 }
 
 /// The items of each feature under `roots` for `grouping` (first item of a group leads).
@@ -533,12 +541,15 @@ impl Runtime {
             .flatten()
             .filter_map(|c| Some([c[0].as_str()?.to_string(), c[1].as_str()?.to_string()]))
             .collect();
-        let mut p = self.plan_for(&ctx, &idx, grouping, sequential, max, cut)?;
+        let include: Vec<String> =
+            opts["include"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
+        let mut p = self.plan_for(&ctx, &idx, grouping, sequential, max, cut, include)?;
         p.created_at_ms = orch_protocol::now_ms();
         let issues = self.program_issues(&p);
         Ok(json!({"program": p, "issues": issues}))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn plan_for(
         &self,
         ctx: &Ctx,
@@ -547,9 +558,10 @@ impl Runtime {
         sequential: bool,
         max: u32,
         cut: Vec<[String; 2]>,
+        include: Vec<String>,
     ) -> Result<Program> {
         let project = ctx.project.clone();
-        let mut scope = Scope::default();
+        let mut scope = Scope { include: include.iter().cloned().collect(), ..Default::default() };
         let groups = groups(ctx, roots, grouping, &mut scope);
         let team = self.intake_team(&project, None);
         let base = project
@@ -629,6 +641,7 @@ impl Runtime {
             edges,
             cut,
             left_out: LeftOut { closed: scope.closed, running: scope.running },
+            include,
             ..Default::default()
         };
         set_depends(&mut p);
@@ -680,7 +693,7 @@ impl Runtime {
             let before = f.items.len();
             f.items.retain(|id| {
                 let Some(i) = ctx.index(id) else { return false };
-                if !ctx.open(i) {
+                if !ctx.open(i) && !p.include.contains(id) {
                     p.left_out.closed.push(id.clone());
                     return false;
                 }
@@ -801,6 +814,7 @@ impl Runtime {
             "ignore_item" => {
                 let item = arg.as_str().ok_or_else(|| bad("ignore_item", "a node id"))?.to_string();
                 p.new_items.retain(|i| *i != item);
+                p.new_items_added.remove(&item);
                 if !p.ignored.contains(&item) {
                     p.ignored.push(item.clone());
                 }
@@ -866,11 +880,19 @@ impl Runtime {
             .find(|r| r.project_id == p.project)
             .ok_or_else(|| bad("add_item", "no such node"))?;
         let kids: Vec<usize> = ctx.kids_of(i).to_vec();
-        let slug = unique(&kebab(&full.title, 40), 40, |s| {
+        let taken = |s: &str| {
             s == "solo"
                 || p.features.iter().any(|f| f.slug == s)
                 || self.db.feature_by_slug(&p.project, s).ok().flatten().is_some()
-        });
+        };
+        // The user's slug, when given (valid and free), else one made from the title.
+        let slug = match patch.get("slug").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) if !orch_team::valid_slug(s) || s == "solo" || taken(s) => {
+                return Err(bad("slug", format!("slug {s:?}: a-z, 0-9, - and _, at most 40, and not taken")));
+            }
+            Some(s) => s.to_string(),
+            None => unique(&kebab(&full.title, 40), 40, taken),
+        };
         let key = format!(
             "pf-{}",
             p.features.iter().filter_map(|f| f.key.strip_prefix("pf-")?.parse::<u32>().ok()).max().unwrap_or(0) + 1
@@ -896,6 +918,7 @@ impl Runtime {
             }
         }
         p.new_items.retain(|n| *n != node);
+        p.new_items_added.remove(&node);
         set_depends(p);
         p.estimate = self.program_totals(p);
         self.program_close_decisions(p, "add", |k| k == format!("new:{node}"));
@@ -1068,7 +1091,7 @@ impl Runtime {
     fn program_upstream(&self, ctx: &Ctx, p: &mut Program) {
         // A child added under a root, not in any feature (F7).
         let roots: Vec<usize> = p.root.iter().filter_map(|r| ctx.index(r)).collect();
-        let mut scope = Scope::default();
+        let mut scope = Scope { include: p.include.iter().cloned().collect(), ..Default::default() };
         // (the program's own grouping: a "grandchild" plan leaves the child items that have sub-issues
         // out of every feature, and they are not new)
         let all: Vec<usize> = groups(ctx, &roots, &p.grouping, &mut scope).into_iter().flatten().collect();
@@ -1089,6 +1112,7 @@ impl Runtime {
                     ctx.rows[i].parent_id.as_deref().and_then(|q| ctx.index(q)).map(|q| ctx.rows[q].reference.clone()),
                 )
             };
+            p.new_items_added.insert(id.clone(), orch_protocol::now_ms());
             p.new_items.push(id.clone());
             let text = format!(
                 "{r} was added{} in {} upstream.",
@@ -1109,7 +1133,7 @@ impl Runtime {
         for f in p.features.iter_mut().filter(|f| !f.skip) {
             for id in &f.items {
                 let gone = ctx.index(id).is_none();
-                let shut = ctx.index(id).is_some_and(|i| !ctx.open(i));
+                let shut = !p.include.contains(id) && ctx.index(id).is_some_and(|i| !ctx.open(i));
                 let flag = if gone {
                     "deleted_upstream"
                 } else if shut {

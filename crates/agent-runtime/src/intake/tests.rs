@@ -2687,3 +2687,48 @@ fn program_decisions_close_once_with_their_own_word() {
     assert_eq!(item.decided_by.as_deref(), Some("user"));
     assert_eq!(f.rt.lifecycle(n)["effect"], "ignored", "the chat verb");
 }
+
+#[test]
+fn the_user_can_include_a_closed_item_name_an_added_feature_and_see_when_a_new_item_came() {
+    let f = program_fixture();
+    fake_start(&f);
+    // #16 is closed: left out, until the user includes it anyway; plan and start keep it.
+    let plain = plan(&f, json!([ROOT]), "child", json!({}));
+    assert_eq!(plain["program"]["left_out"]["closed"], json!(["gh:acme/shop#16"]));
+    let inc = plan(&f, json!([ROOT]), "child", json!({"include": ["gh:acme/shop#16"]}));
+    assert_eq!(feats(&inc).len(), 4);
+    assert!(feats(&inc).iter().any(|f| f.1 == ["16"]));
+    assert_eq!(inc["program"]["include"], json!(["gh:acme/shop#16"]));
+    assert_eq!(inc["program"]["left_out"]["closed"], json!([]));
+    let r = f.rt.program_start(&inc["program"]).unwrap();
+    let p = &r["program"];
+    assert!(
+        p["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["items"] == json!(["gh:acme/shop#16"]) && x["skip"] == false),
+        "{p}"
+    );
+    let id = p["id"].as_str().unwrap().to_string();
+    // A new item shows when it was seen; adding it takes the user's slug (and refuses a bad one).
+    let t = |n: u64, title: &str, x: Value| {
+        let mut v = tree_issue(n, x);
+        v["title"] = json!(title);
+        v["labels"] = json!({"nodes": []});
+        v
+    };
+    program_tree(&f, vec![t(18, "Gift cards", json!({"parent": {"number": 12}}))]);
+    f.refresh();
+    let p = f.rt.program(&id).unwrap();
+    assert_eq!(p["new_items"], json!(["gh:acme/shop#18"]));
+    assert!(p["new_items_added"]["gh:acme/shop#18"].as_u64().unwrap() > 0);
+    assert!(f.rt.program_update(&id, &json!({"add_item": "gh:acme/shop#18", "slug": "Bad Slug"})).is_err());
+    assert!(
+        f.rt.program_update(&id, &json!({"add_item": "gh:acme/shop#18", "slug": "address-step"})).is_err(),
+        "taken"
+    );
+    let p = f.rt.program_update(&id, &json!({"add_item": "gh:acme/shop#18", "mode": "solo", "slug": "gifts"})).unwrap();
+    assert_eq!(p["features"].as_array().unwrap().last().unwrap()["slug"], "gifts");
+    assert_eq!(p["new_items_added"], json!({}));
+}
